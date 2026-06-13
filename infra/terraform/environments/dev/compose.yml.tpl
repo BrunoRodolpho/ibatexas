@@ -135,8 +135,19 @@ services:
     image: nats:2.11-alpine
     container_name: ibatexas-nats
     restart: unless-stopped
-    command: ["-js"]
+    # T3-10: server-side auth — the server REFUSES unauthenticated clients.
+    # The config file is written by user_data from the repo's
+    # infra/nats/nats-server.app.conf; NATS_APP_NKEY_PUBLIC is interpolated by
+    # compose from /opt/ibatexas/.env (auto-loaded; populated from SSM by
+    # ibatexas-refresh-secrets — push NATS_NKEY_SEED + NATS_APP_NKEY_PUBLIC
+    # via `ibx infra secrets:push` BEFORE deploying). Side effect: jetstream
+    # now actually persists to the mounted /data volume (the old bare `-js`
+    # used the in-container default store dir).
+    command: ["-c", "/etc/nats/nats-server.conf"]
+    environment:
+      NATS_APP_NKEY_PUBLIC: $${NATS_APP_NKEY_PUBLIC:?push NATS_APP_NKEY_PUBLIC to SSM via ibx infra secrets:push (T3-10 NATS auth)}
     volumes:
+      - /opt/ibatexas/nats-server.conf:/etc/nats/nats-server.conf:ro
       - nats_data:/data
     networks: [ibatexas]
     deploy:

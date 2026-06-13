@@ -10,7 +10,18 @@
 //                               adjudicate() and report drift. Requires a
 //                               valid `DATABASE_URL`. Use after upgrading
 //                               a Pack to detect policy drift on real
-//                               historical traffic.
+//                               historical traffic. T1b-3 made it a CI gate:
+//                               exit 0 clean / 1 errors / 2 drift; `--json`
+//                               structured output; `--ci` hard-fails on a
+//                               disabled audit-postgres flag or an empty
+//                               window (vacuous-gate protection); rows in
+//                               the agent session namespace (`agent:`) are
+//                               excluded from the scan set; `--seed-file`
+//                               seeds the committed golden vectors so an
+//                               ephemeral CI database has a real window;
+//                               `--update-golden` re-materializes the
+//                               golden decisions after an intended policy
+//                               change.
 //
 //   - `ibx kernel migrate`    — apply the @adjudicate/audit-postgres SQL
 //                               migrations against `$DATABASE_URL`.
@@ -29,7 +40,7 @@
 //
 // All user-facing strings are pt-BR per CLAUDE.md rule #4.
 
-import { readFile, readdir } from "node:fs/promises"
+import { readFile, readdir, writeFile } from "node:fs/promises"
 import { createRequire } from "node:module"
 import { join, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -174,18 +185,121 @@ async function runStatus(opts: { json?: boolean }): Promise<void> {
 
 // ── ibx kernel replay ─────────────────────────────────────────────────────
 
+// T1b-3 — agent-namespace exclusion (forward-protection for Stage-0 shadow
+// rows, plan-v2 §5 / T3-6). Audit rows written by managed agents carry a
+// session_id with this UNHASHED prefix; every time-windowed production-signal
+// consumer (this replay gate, T2-4's impact graph, the drift baseline)
+// excludes them so shadow-agent traffic can never certify — or contaminate —
+// a production policy gate. D-012 corollary: chat-act rows land with a HASHED
+// session id (`"hashed:" + sha256(conversationId + secret).hex.slice(0, 8)`,
+// written by the audit redactor), so they can never collide with this prefix.
+// It ALSO means the Phase-3 agent composition MUST write agent session ids
+// UNHASHED (redactor skip for the agent principal) or this exclusion is
+// silently defeated. Pinned here as the cross-task convention.
+export const AGENT_SESSION_ID_PREFIX = "agent:"
+
+// Documented limitations of the replay gate — printed in both text and JSON
+// output so an operator (or a CI log reader) never mistakes a green replay
+// for a stronger statement than it makes. pt-BR per CLAUDE.md rule #4.
+const REPLAY_LIMITATIONS: readonly string[] = [
+  "Re-adjudicação contra estado VAZIO (sem rehidratação point-in-time) — guards que leem estado podem divergir legitimamente; interprete o resumo contra os thresholds do runbook.",
+  "Janela vazia não certifica política nenhuma (gate vácuo): em modo --ci, 0 registros é falha dura (exit 1). Semeie golden vectors com --seed-file.",
+  `Registros com session_id no namespace de agente ("${AGENT_SESSION_ID_PREFIX}") são excluídos do scan — shadow rows de agente (Stage 0) nunca certificam política de produção.`,
+]
+
+/**
+ * Exit-code contract of the replay gate (T1b-3):
+ *   0 — every scanned record reproduced its historical decision (clean)
+ *   1 — the run itself is unreliable (record errors / pack coverage gaps /
+ *       connection failures / --ci vacuous-gate refusals)
+ *   2 — the run was sound and policy drift was detected
+ * Errors take precedence over drift: a partially-errored scan cannot be
+ * trusted to have found *all* the drift, so it must not exit 2.
+ */
+function replayExitCode(report: ReplayReport): 0 | 1 | 2 {
+  if (report.errors > 0) return 1
+  const drifted =
+    report.driftedByDecisionKind + report.driftedByBasis + report.driftedByPayload
+  return drifted > 0 ? 2 : 0
+}
+
+// node-postgres hands back JSONB columns as already-parsed objects and
+// TIMESTAMPTZ as `Date`; the package's `rowToRecord` expects the WRITER shape
+// (pre-serialized JSON text + ISO string) and does `JSON.parse(...)` on the
+// jsonb fields — raw pg rows crash it on a live database. Mirror of the
+// canonical normalization in apps/api/src/claustrum/audit-read-paths.ts
+// (P0-2). The mocked-pg tests feed writer-shaped rows, which pass through
+// unchanged (strings stay strings).
+function pgJsonText(v: unknown): string | null {
+  if (v === null || v === undefined) return null
+  return typeof v === "string" ? v : JSON.stringify(v)
+}
+
+function pgIsoTimestamp(v: unknown): string {
+  if (v instanceof Date) return v.toISOString()
+  const parsed = new Date(String(v))
+  if (Number.isNaN(parsed.getTime())) {
+    throw new Error(`intent_audit.recorded_at não é um timestamp válido: ${String(v)}`)
+  }
+  return parsed.toISOString()
+}
+
+function normalizeAuditRow(row: Record<string, unknown>): Record<string, unknown> {
+  return {
+    ...row,
+    recorded_at: pgIsoTimestamp(row.recorded_at),
+    envelope_jsonb: pgJsonText(row.envelope_jsonb) ?? "null",
+    decision_jsonb: pgJsonText(row.decision_jsonb) ?? "null",
+    plan_jsonb: pgJsonText(row.plan_jsonb),
+    supersedes_jsonb: pgJsonText(row.supersedes_jsonb),
+    kernel_identity_jsonb: pgJsonText(row.kernel_identity_jsonb),
+    signature_jsonb: pgJsonText(row.signature_jsonb),
+    metadata_jsonb: pgJsonText(row.metadata_jsonb),
+  }
+}
+
+/** Single JSON document on stdout — the `--json` idiom (mirrors pack-bom). */
+function printReplayJson(out: Record<string, unknown>): void {
+  console.log(
+    JSON.stringify(
+      {
+        command: "kernel.replay",
+        agentSessionPrefix: AGENT_SESSION_ID_PREFIX,
+        limitations: REPLAY_LIMITATIONS,
+        ...out,
+      },
+      null,
+      2,
+    ),
+  )
+}
+
 async function runReplay(opts: {
   since?: string
   intentKind?: string
   limit?: string
   dryRun?: boolean
+  json?: boolean
+  ci?: boolean
+  seedFile?: string
 }): Promise<void> {
+  const ci = opts.ci === true
+  const json = opts.json === true
   const sinceInput = opts.since ?? "24h"
   let sinceMs: number
   try {
     sinceMs = parseDuration(sinceInput)
   } catch (err) {
-    console.error(chalk.red((err as Error).message))
+    if (json) {
+      printReplayJson({
+        status: "invalid-args",
+        ci,
+        error: (err as Error).message,
+        exitCode: 1,
+      })
+    } else {
+      console.error(chalk.red((err as Error).message))
+    }
     process.exitCode = 1
     return
   }
@@ -202,12 +316,54 @@ async function runReplay(opts: {
     false,
   )
 
-  console.log()
-  console.log(chalk.bold("ibx kernel replay"))
-  console.log(chalk.dim(`Janela: últimos ${sinceInput}; limite: ${limit}; kind: ${opts.intentKind ?? "todos"}`))
-  console.log()
+  if (!json) {
+    console.log()
+    console.log(chalk.bold("ibx kernel replay"))
+    console.log(
+      chalk.dim(
+        `Janela: últimos ${sinceInput}; limite: ${limit}; kind: ${opts.intentKind ?? "todos"}${ci ? "; modo: --ci (fail-closed)" : ""}`,
+      ),
+    )
+    console.log()
+  }
 
   if (!postgresEnabled) {
+    // T1b-3 (plan risk #7): in --ci mode a disabled audit-postgres flag is a
+    // HARD failure, never a silent green. A replay that cannot read the audit
+    // store certifies nothing — exiting 0 here would be a vacuous gate.
+    if (ci) {
+      if (json) {
+        printReplayJson({
+          status: "audit-postgres-disabled",
+          ci,
+          exitCode: 1,
+          error:
+            "IBX_AUDIT_POSTGRES_ENABLED não habilitado — em modo --ci isso é falha dura (gate vácuo recusado).",
+        })
+      } else {
+        console.error(
+          chalk.red.bold(
+            "✗ IBX_AUDIT_POSTGRES_ENABLED não habilitado — em modo --ci isso é falha dura (exit 1).",
+          ),
+        )
+        console.error(
+          chalk.dim(
+            "  Um replay que não consegue ler o audit-postgres não certifica política nenhuma (gate vácuo).",
+          ),
+        )
+      }
+      process.exitCode = 1
+      return
+    }
+    if (json) {
+      printReplayJson({
+        status: "audit-postgres-disabled",
+        ci,
+        exitCode: 0,
+        note: "Replay não executado — habilite IBX_AUDIT_POSTGRES_ENABLED (modo operador; use --ci para falhar duro).",
+      })
+      return
+    }
     // STUB: audit-postgres is off in this deployment (task 19 default).
     // Operators flip the flag after the staging soak; until then, we
     // surface a structured TODO so the runbook step is honest.
@@ -244,12 +400,23 @@ async function runReplay(opts: {
 
   const databaseUrl = process.env.DATABASE_URL
   if (!databaseUrl) {
-    console.error(chalk.red("DATABASE_URL não definido. Replay requer conexão Postgres válida."))
+    if (json) {
+      printReplayJson({
+        status: "failed",
+        ci,
+        exitCode: 1,
+        error: "DATABASE_URL não definido. Replay requer conexão Postgres válida.",
+      })
+    } else {
+      console.error(chalk.red("DATABASE_URL não definido. Replay requer conexão Postgres válida."))
+    }
     process.exitCode = 1
     return
   }
 
-  const spinner = ora(`Lendo audit window dos últimos ${sinceInput}…`).start()
+  // ora writes to stderr, but in --json mode we keep stdout/stderr both
+  // machine-friendly: no spinner at all.
+  const spinner = json ? null : ora(`Lendo audit window dos últimos ${sinceInput}…`).start()
   try {
     // Lazy imports — audit-postgres + audit drag heavy deps.
     const { readAuditWindow } = await import("@adjudicate/audit-postgres")
@@ -260,9 +427,26 @@ async function runReplay(opts: {
     const client = new pg.Client({ connectionString: databaseUrl })
     await client.connect()
     try {
+      // CI-gate seeding (T1b-3): insert the committed golden vectors with
+      // recorded_at = now, BEFORE computing the window, so an ephemeral CI
+      // database has a real, non-vacuous window to replay.
+      let seededVectors: number | null = null
+      if (opts.seedFile !== undefined) {
+        seededVectors = await seedGoldenVectors(client, opts.seedFile)
+        if (spinner) {
+          spinner.text = `Semeados ${seededVectors} golden vectors; lendo audit window…`
+        }
+      }
+
       const toIso = new Date().toISOString()
       const fromIso = new Date(Date.now() - sinceMs).toISOString()
 
+      // Agent-namespace exclusion happens in BOTH layers:
+      //   1. SQL (`NOT LIKE 'agent:%'`) — so agent rows never crowd real rows
+      //      out of the LIMIT on a live database;
+      //   2. JS post-filter — counts exclusions for the report and protects
+      //      paths where the SQL predicate is absent (defense in depth).
+      let excludedAgentRows = 0
       const queryFn = {
         async fetchRows(window: {
           fromIso: string
@@ -273,6 +457,8 @@ async function runReplay(opts: {
           const params: unknown[] = [window.fromIso, window.toIso]
           let sql =
             "SELECT * FROM intent_audit WHERE recorded_at >= $1 AND recorded_at < $2"
+          params.push(`${AGENT_SESSION_ID_PREFIX}%`)
+          sql += ` AND session_id NOT LIKE $${params.length}`
           if (window.intentKind) {
             params.push(window.intentKind)
             sql += ` AND intent_kind = $${params.length}`
@@ -285,6 +471,15 @@ async function runReplay(opts: {
             rows: Array<Record<string, unknown>>
           }
           return result.rows
+            .filter((row) => {
+              const sid = row.session_id
+              if (typeof sid === "string" && sid.startsWith(AGENT_SESSION_ID_PREFIX)) {
+                excludedAgentRows += 1
+                return false
+              }
+              return true
+            })
+            .map(normalizeAuditRow)
         },
       }
 
@@ -299,9 +494,68 @@ async function runReplay(opts: {
         },
       )
 
-      spinner.succeed(`Lidos ${records.length} registros de audit.`)
+      spinner?.succeed(
+        `Lidos ${records.length} registros de audit` +
+          (excludedAgentRows > 0
+            ? ` (${excludedAgentRows} no namespace de agente excluídos)`
+            : "") +
+          ".",
+      )
+
+      // T1b-3 (plan risk #7): an empty window in --ci mode is a HARD failure.
+      // Zero records reproduce zero decisions — a green exit here would
+      // certify nothing (the vacuous-gate risk this task closes).
+      if (ci && records.length === 0) {
+        if (json) {
+          printReplayJson({
+            status: "vacuous-empty-window",
+            ci,
+            window: { since: sinceInput, fromIso, toIso },
+            intentKind: opts.intentKind ?? null,
+            limit,
+            seededVectors,
+            scanned: 0,
+            excludedAgentRows,
+            exitCode: 1,
+            error:
+              "Janela de replay vazia em modo --ci — 0 registros não certificam política nenhuma (gate vácuo recusado).",
+          })
+        } else {
+          console.error(
+            chalk.red.bold(
+              "✗ Janela de replay vazia em modo --ci — falha dura (exit 1).",
+            ),
+          )
+          console.error(
+            chalk.dim(
+              "  0 registros não certificam política nenhuma (gate vácuo). Semeie golden vectors com --seed-file.",
+            ),
+          )
+        }
+        process.exitCode = 1
+        return
+      }
 
       if (opts.dryRun) {
+        if (json) {
+          printReplayJson({
+            status: "dry-run",
+            ci,
+            window: { since: sinceInput, fromIso, toIso },
+            intentKind: opts.intentKind ?? null,
+            limit,
+            seededVectors,
+            scanned: records.length,
+            excludedAgentRows,
+            exitCode: 0,
+            records: records.slice(0, 10).map((r) => ({
+              createdAt: r.envelope.createdAt,
+              kind: r.envelope.kind,
+              intentHash: r.intentHash,
+            })),
+          })
+          return
+        }
         console.log(chalk.yellow("\nModo --dry-run: nenhuma re-adjudicação executada."))
         for (const r of records.slice(0, 10)) {
           console.log(
@@ -335,14 +589,253 @@ async function runReplay(opts: {
       const report = await reAdjudicateRecords(
         records as unknown as readonly Record<string, unknown>[],
       )
-      printReplayReport(report)
+      const exitCode = replayExitCode(report)
+      if (json) {
+        printReplayJson({
+          status: exitCode === 0 ? "clean" : exitCode === 2 ? "drift" : "errors",
+          ci,
+          window: { since: sinceInput, fromIso, toIso },
+          intentKind: opts.intentKind ?? null,
+          limit,
+          seededVectors,
+          scanned: records.length,
+          excludedAgentRows,
+          report,
+          exitCode,
+        })
+      } else {
+        printReplayReport(report)
+        printReplayStatusText(exitCode, excludedAgentRows)
+      }
+      if (exitCode !== 0) process.exitCode = exitCode
     } finally {
       await client.end()
     }
   } catch (err) {
-    spinner.fail(chalk.red(`Falhou: ${(err as Error).message}`))
+    spinner?.fail(chalk.red(`Falhou: ${(err as Error).message}`))
+    if (json) {
+      printReplayJson({
+        status: "failed",
+        ci,
+        exitCode: 1,
+        error: (err as Error).message,
+      })
+    }
     process.exitCode = 1
   }
+}
+
+/** Text-mode status + limitations footer for the replay gate. */
+function printReplayStatusText(exitCode: 0 | 1 | 2, excludedAgentRows: number): void {
+  const status =
+    exitCode === 0
+      ? chalk.green("limpo (exit 0)")
+      : exitCode === 2
+        ? chalk.yellow("drift detectado (exit 2)")
+        : chalk.red("erros (exit 1)")
+  console.log(`Status: ${status}`)
+  if (excludedAgentRows > 0) {
+    console.log(
+      chalk.dim(
+        `Excluídos do scan: ${excludedAgentRows} registros no namespace de agente ("${AGENT_SESSION_ID_PREFIX}").`,
+      ),
+    )
+  }
+  console.log()
+  console.log(chalk.dim("Limitações:"))
+  for (const l of REPLAY_LIMITATIONS) {
+    console.log(chalk.dim(`  • ${l}`))
+  }
+  console.log()
+}
+
+// ── golden replay vectors (CI-gate fixtures, T1b-3) ───────────────────────
+//
+// The committed file `packages/cli/governance/replay-golden-vectors.json`
+// holds canonical (envelope, decision) pairs: real v2 IntentEnvelopes (built
+// via @adjudicate/core's buildEnvelope, so intentHash satisfies the DB CHECK)
+// and the Decision each one produced against the CURRENT policy packs on the
+// empty replay state. The PR gate seeds them into an ephemeral audit
+// database (`--seed-file`) and replays the window: a policy/guard change that
+// alters any decision surfaces as drift → exit 2. After an INTENDED policy
+// change, regenerate with `ibx kernel replay --update-golden <file>` and
+// commit the diff — the review of that diff IS the policy-change review.
+
+interface GoldenReplayVector {
+  readonly note?: string
+  readonly envelope: {
+    readonly version: number
+    readonly kind: string
+    readonly payload: unknown
+    readonly createdAt: string
+    readonly nonce: string
+    readonly actor: { readonly principal: string; readonly sessionId: string }
+    readonly taint: string
+    readonly intentHash: string
+  }
+  decision: {
+    readonly kind: string
+    readonly basis?: ReadonlyArray<{ category?: string; code?: string }>
+  } & Record<string, unknown>
+}
+
+interface GoldenReplayVectorFile {
+  readonly comment?: string | readonly string[]
+  readonly vectors: GoldenReplayVector[]
+}
+
+async function loadGoldenVectorFile(path: string): Promise<GoldenReplayVectorFile> {
+  let file: GoldenReplayVectorFile
+  try {
+    file = JSON.parse(await readFile(path, "utf-8")) as GoldenReplayVectorFile
+  } catch (err) {
+    throw new Error(`golden vectors ilegíveis (${path}): ${(err as Error).message}`)
+  }
+  if (!Array.isArray(file.vectors) || file.vectors.length === 0) {
+    throw new Error(
+      `golden vectors vazios (${path}) — um seed vazio produziria um gate vácuo.`,
+    )
+  }
+  return file
+}
+
+/**
+ * Insert the golden vectors into `intent_audit` with `recorded_at = now`, so
+ * they fall inside the subsequent replay window. Uses the audit-postgres
+ * package's own `recordToRow` / `INSERT_AUDIT_SQL` / `auditInsertParams` —
+ * the canonical 25-column mapping (D-014 finding: partial inserts defeat
+ * tamper-evidence; never hand-roll this SQL). Also ensures the current-month
+ * partition exists: `intent_audit` is RANGE-partitioned by recorded_at and
+ * `ibx kernel migrate` applies only the schema, so the CI gate needs nothing
+ * beyond `kernel migrate` + this command.
+ */
+async function seedGoldenVectors(
+  client: {
+    query(sql: string, params?: readonly unknown[]): Promise<unknown>
+  },
+  seedFile: string,
+): Promise<number> {
+  const file = await loadGoldenVectorFile(seedFile)
+  const { INSERT_AUDIT_SQL, auditInsertParams, recordToRow } = await import(
+    "@adjudicate/audit-postgres"
+  )
+  const { monthlyPartitionSpecs, partitionStatement } = await import(
+    "../lib/kernel-migrate.js"
+  )
+  for (const spec of monthlyPartitionSpecs(new Date(), 0, 1)) {
+    await client.query(partitionStatement(spec))
+  }
+  const nowIso = new Date().toISOString()
+  for (const v of file.vectors) {
+    if (v.envelope.actor.sessionId.startsWith(AGENT_SESSION_ID_PREFIX)) {
+      // A golden vector in the agent namespace would be excluded from the
+      // scan set and never replayed — a silent one-vector vacuous gate.
+      throw new Error(
+        `golden vector "${v.note ?? v.envelope.kind}" usa sessionId no namespace de agente ("${AGENT_SESSION_ID_PREFIX}") — seria excluído do scan e nunca replayado.`,
+      )
+    }
+    const record = {
+      version: 2,
+      intentHash: v.envelope.intentHash,
+      envelope: v.envelope,
+      decision: v.decision,
+      decision_basis: v.decision.basis ?? [],
+      at: nowIso,
+      durationMs: 1,
+    }
+    const row = recordToRow(record as never)
+    await client.query(INSERT_AUDIT_SQL, [...auditInsertParams(row)])
+  }
+  return file.vectors.length
+}
+
+/**
+ * `ibx kernel replay --update-golden <file>` — re-adjudicate every golden
+ * envelope against the CURRENT packs (empty replay state, same recipe as the
+ * gate) and rewrite the stored decisions in place. No database involved.
+ * Run after an intended policy change; commit the diff.
+ */
+async function runUpdateGolden(
+  filePath: string,
+  opts: { json?: boolean },
+): Promise<void> {
+  const json = opts.json === true
+  let file: GoldenReplayVectorFile
+  try {
+    file = await loadGoldenVectorFile(filePath)
+  } catch (err) {
+    if (json) {
+      printReplayJson({ status: "failed", exitCode: 1, error: (err as Error).message })
+    } else {
+      console.error(chalk.red((err as Error).message))
+    }
+    process.exitCode = 1
+    return
+  }
+
+  const { adjudicate } = await import("@adjudicate/core/kernel")
+  const packIndex = await loadPackIndex()
+  let changed = 0
+  const missingPacks: string[] = []
+  const adjudicationErrors: string[] = []
+  for (const v of file.vectors) {
+    const pack = packIndex.get(v.envelope.kind)
+    if (!pack) {
+      missingPacks.push(v.envelope.kind)
+      continue
+    }
+    try {
+      const decision = (await adjudicate(
+        v.envelope as never,
+        {} as never,
+        pack.policy as never,
+      )) as GoldenReplayVector["decision"]
+      if (JSON.stringify(decision) !== JSON.stringify(v.decision)) {
+        v.decision = decision
+        changed += 1
+      }
+    } catch (err) {
+      adjudicationErrors.push(`${v.envelope.kind}: ${(err as Error).message}`)
+    }
+  }
+
+  await writeFile(filePath, `${JSON.stringify(file, null, 2)}\n`, "utf-8")
+
+  const failed = missingPacks.length > 0 || adjudicationErrors.length > 0
+  if (json) {
+    printReplayJson({
+      status: failed ? "errors" : "golden-updated",
+      file: filePath,
+      vectors: file.vectors.length,
+      changed,
+      missingPacks,
+      adjudicationErrors,
+      exitCode: failed ? 1 : 0,
+    })
+  } else {
+    console.log()
+    console.log(chalk.bold("ibx kernel replay --update-golden"))
+    console.log(
+      `  ${chalk.cyan(String(file.vectors.length))} vectors; ${chalk.cyan(String(changed))} decisões regravadas → ${filePath}`,
+    )
+    for (const k of missingPacks) {
+      console.error(chalk.red(`  ✗ sem pack instalado para ${k} — vector não re-adjudicado`))
+    }
+    for (const e of adjudicationErrors) {
+      console.error(chalk.red(`  ✗ adjudicate falhou: ${e}`))
+    }
+    if (changed > 0) {
+      console.log(
+        chalk.yellow(
+          "  Commit o diff — a revisão dessas decisões É a revisão da mudança de política.",
+        ),
+      )
+    } else if (!failed) {
+      console.log(chalk.green("  Nenhuma decisão mudou — política estável."))
+    }
+    console.log()
+  }
+  if (failed) process.exitCode = 1
 }
 
 // ── replay implementation helpers ─────────────────────────────────────────
@@ -1255,6 +1748,70 @@ async function runPackBom(opts: {
     }
   }
 
+  // ── Managed agents (T3-3) ──────────────────────────────────────────────
+  // The agent roster is part of the AI-BOM: each AgentDefinition in
+  // @ibatexas/agents folds into the same digest-lock via the upstream
+  // pack-health/PackManifest mapping (`generateAgentAiBom`), keyed
+  // `agent/<id>` in the baseline next to the pack entries. The roster-drift
+  // gate runs first, fail-closed in EVERY mode (a drifting roster must
+  // never be baselined or verified green). Skipped only under `--pack`,
+  // which scopes the command to one pack explicitly.
+  if (opts.pack === undefined) {
+    const { AGENT_REGISTRY, agentRosterDrift, generateAgentAiBom } =
+      await import("@ibatexas/agents")
+    const driftFindings = agentRosterDrift()
+    if (driftFindings.length > 0) {
+      for (const f of driftFindings) {
+        console.error(
+          chalk.red(`✗ agent-roster drift [${f.agentId}] ${f.code}: ${f.detail}`),
+        )
+      }
+      mismatch = true
+    }
+    for (const def of AGENT_REGISTRY) {
+      const bom = generateAgentAiBom(def, {
+        generatedAt: BOM_GENERATED_AT,
+        kernelVersion: KERNEL_VERSION,
+        kernelMinVersion: KERNEL_MIN_VERSION,
+      })
+      digests[bom.packId] = bom.bomDigest
+
+      if (baseline !== undefined) {
+        const want = baseline[bom.packId]
+        if (want === undefined) {
+          console.error(chalk.red(`✗ ${bom.packId}: sem entrada na baseline`))
+          mismatch = true
+        } else if (want !== bom.bomDigest) {
+          console.error(
+            chalk.red(
+              `✗ ${bom.packId}: bomDigest divergente (baseline ${want.slice(0, 12)}…, atual ${bom.bomDigest.slice(0, 12)}…)`,
+            ),
+          )
+          mismatch = true
+        } else {
+          console.log(
+            chalk.green(`✓ ${bom.packId} → ${bom.bomDigest.slice(0, 16)}…`),
+          )
+        }
+      } else if (opts.json) {
+        console.log(JSON.stringify(bom, null, 2))
+      } else {
+        console.log(
+          chalk.bold(`AI-BOM ${bom.packId}@${bom.packVersion}`) +
+            chalk.dim(` (agente gerenciado, stage ${def.autonomyStage})`),
+        )
+        console.log(`  fingerprint : ${bom.fingerprint}`)
+        console.log(`  bomDigest   : ${bom.bomDigest}`)
+        console.log(
+          `  conformance : ${bom.conformance.passedCount}/${bom.conformance.total}`,
+        )
+        console.log(
+          `  health      : ${bom.healthTier} (${bom.healthScore.score}/${bom.healthScore.maxScore})`,
+        )
+      }
+    }
+  }
+
   // When neither verifying nor emitting full JSON, print the digest-lock so an
   // operator can capture/refresh governance/pack-bom-baseline.json.
   if (opts.verifyFile === undefined && opts.json !== true) {
@@ -1312,19 +1869,40 @@ export function registerKernelCommands(group: Command): void {
   group
     .command("replay")
     .description(
-      "Re-feeda registros de audit por adjudicate() e relata drift (--since=24h, --intent-kind=X, --limit=1000)",
+      "Re-feeda registros de audit por adjudicate() e relata drift. Exit: 0 limpo / 1 erros / 2 drift. (--since=24h, --intent-kind=X, --limit=1000)",
     )
     .option("--since <duration>", "Janela de tempo (ex: 24h, 7d, 30m)", "24h")
     .option("--intent-kind <kind>", "Filtra por intent kind (ex: order.checkout.create)")
     .option("--limit <n>", "Limite de registros (default 1000)", "1000")
     .option("--dry-run", "Apenas lista os registros sem re-adjudicar")
+    .option("--json", "Emite o relatório estruturado em JSON (idioma do pack-bom)")
+    .option(
+      "--ci",
+      "Modo CI fail-closed: falha (exit 1) se IBX_AUDIT_POSTGRES_ENABLED não estiver habilitado ou a janela estiver vazia (proteção contra gate vácuo)",
+    )
+    .option(
+      "--seed-file <path>",
+      "Semeia os golden vectors (recorded_at=agora) no intent_audit antes do replay — uso do gate de CI (governance/replay-golden-vectors.json)",
+    )
+    .option(
+      "--update-golden <path>",
+      "Re-adjudica os envelopes do arquivo golden contra os packs atuais e regrava as decisões (sem DB; rode após mudança de política intencional)",
+    )
     .action(
       async (opts: {
         since?: string
         intentKind?: string
         limit?: string
         dryRun?: boolean
+        json?: boolean
+        ci?: boolean
+        seedFile?: string
+        updateGolden?: string
       }) => {
+        if (opts.updateGolden !== undefined) {
+          await runUpdateGolden(opts.updateGolden, { json: opts.json })
+          return
+        }
         await runReplay(opts)
       },
     )
@@ -1389,7 +1967,7 @@ export function registerKernelCommands(group: Command): void {
   group
     .command("pack-bom")
     .description(
-      "Gera o AI Bill-of-Materials (EU AI Act / NIST) dos packs — fingerprint + conformance + health. --verify-file falha (exit 1) se o bomDigest divergir da baseline.",
+      "Gera o AI Bill-of-Materials (EU AI Act / NIST) dos packs E do roster de agentes gerenciados (@ibatexas/agents) — fingerprint + conformance + health. --verify-file falha (exit 1) se o bomDigest divergir da baseline ou se o roster de agentes driftar.",
     )
     .option("--pack <spec>", "Pack alvo (default: todos os first-party)")
     .option("--json", "Emite o AiBom completo em JSON")

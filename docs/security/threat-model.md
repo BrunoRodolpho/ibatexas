@@ -83,7 +83,7 @@ This threat model covers the kernel-gated mutation surface of IbateXas:
 | Stolen JWT replays anonymize | Fresh-OTP gate at `initiate-deletion` (P0-11). Brute-force counter 5 strikes / 30min. 30-min cancel-cooldown. | Implemented (W4) | LOW — stolen JWT is now insufficient by itself for the most destructive operation |
 | Forged staff JWT (admin path) | Twilio Verify OTP at staff login; SQRRL JWT TTL = 1 day; manager role enforced at route. Same-actor gate (P0-5) prevents step-1 + step-2 by same operator | Implemented (W1) | LOW — `ADMIN_API_KEY` is an alternate bearer, but post-W4 (P1-H) `requireManagerRole`/`requireOwnerRole` fail closed for any key without an `ADMIN_API_KEY_ROLES_JSON` role mapping; a leaked key carries only its granted role |
 | Forged Stripe webhook | Signature verification via `STRIPE_WEBHOOK_SECRET`; rejected at handler entrypoint | Implemented | LOW — secret rotation requires Stripe coordination |
-| Forged NATS publish (resume signal, audit record, defer-timeout) | NONE today | **P0-12 DEFERRED** | **HIGH** — NATS Core has no auth on `localhost:4222`. Any process on the network can publish forged signals. Mitigation: deploy NKey/JWT auth + TLS per `remediation/NATS-AUTH-REQUIREMENTS.md`. UNTIL THEN enforce-mode rollout MUST NOT happen for kinds whose resume signal arrives via NATS (PIX, anonymize-grace, payment-status). |
+| Forged NATS publish (resume signal, audit record, defer-timeout) | NONE today | **P0-12 DEFERRED** | **HIGH** — NATS Core has no auth on `localhost:4222`. Any process on the network can publish forged signals. Mitigation: deploy NKey/JWT auth + TLS per `docs/security/NATS-AUTH-REQUIREMENTS.md`. UNTIL THEN enforce-mode rollout MUST NOT happen for kinds whose resume signal arrives via NATS (PIX, anonymize-grace, payment-status). |
 
 ### Tampering with data
 
@@ -151,7 +151,7 @@ The audit surfaced these findings; W4 closed P0-10, P0-11, P0-13, P1-H, and P1-I
 | P0-10 | `actor.sessionId = customerId` plaintext leaks to NATS / Postgres audit | Redactor hashes the field at emit; contract test updated to detect this PII path | CLOSED |
 | P0-11 | Stolen JWT alone authorises destructive anonymize | Fresh-OTP gate at initiate; brute-force counter 5 strikes / 30min; 30-min cancel-cooldown | CLOSED |
 | P0-13 | `anonymizeCustomer` doesn't scrub phone + reviews | Extended to nullify phone, anonymize reviews, scrub email + cpf + address | CLOSED |
-| P0-12 | NATS has zero authentication | Requirements doc filed (`remediation/NATS-AUTH-REQUIREMENTS.md`). Operator action: deploy NKey/JWT auth + TLS | **DEFERRED — operator action** |
+| P0-12 | NATS has zero authentication | Requirements doc filed (`docs/security/NATS-AUTH-REQUIREMENTS.md`). Operator action: deploy NKey/JWT auth + TLS | **DEFERRED — operator action** |
 | P1-H | Admin API-key over-privilege (role gate failed open without JWT) | `ADMIN_API_KEY_ROLES_JSON` role registry (`timingSafeEqual` → `request.adminApiKeyRole`); `requireManagerRole` + new OWNER-only `requireOwnerRole` fail closed for any unmapped key | CLOSED (W4) |
 | P1-I | Refund drip cap (sub-R$200 refunds skip two-step) | Per-staff-day aggregate cap (R$2000/day default) | CLOSED |
 | P1-K | bypass-detection regex line-based — gate is performative | W6-8 extends to 8 scenarios; the multi-line `ALLOWED_MEDUSA_DIRECT` audit lands | PARTIAL — multi-line regex is still line-based for some forbidden patterns; AST-based gate is a follow-up |

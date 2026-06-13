@@ -150,11 +150,20 @@ services:
     # bump (2.10→2.11) — wire-compatible, no data migration needed.
     image: nats:2.11-alpine
     container_name: ibatexas-nats
-    command: ["--jetstream", "--store_dir", "/data", "-m", "8222"]
+    # T3-10: server-side auth (docs/security/NATS-AUTH-REQUIREMENTS.md) — the
+    # server REFUSES unauthenticated clients. NATS_APP_NKEY_PUBLIC must be in
+    # the production .env alongside NATS_NKEY_SEED (the app-side credential the
+    # services read via env_file). Mint a pair with
+    # ./scripts/nats/gen-dev-nats-auth.sh --env-file <prod .env>; rotate per
+    # the ops cadence (>= every 90 days).
+    command: ["-c", "/etc/nats/nats-server.conf"]
+    environment:
+      NATS_APP_NKEY_PUBLIC: ${NATS_APP_NKEY_PUBLIC:?set NATS_APP_NKEY_PUBLIC in .env — see docs/security/NATS-AUTH-REQUIREMENTS.md (T3-10)}
     ports:
       - "127.0.0.1:4222:4222"
       - "127.0.0.1:8222:8222"
     volumes:
+      - ./infra/nats/nats-server.app.conf:/etc/nats/nats-server.conf:ro
       - nats_data:/data
     healthcheck:
       test: ["CMD-SHELL", "nc -z localhost 4222 || exit 1"]

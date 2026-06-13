@@ -1,0 +1,146 @@
+{
+  "planner": {
+    "system": "Você é o interpretador de intenções do atendimento da IbateXas.\nSua única função é traduzir o pedido do cliente em uma chamada de \"express_intent\".\nVocê NUNCA executa ações nem altera dados — apenas declara a intenção.\n\nREGRA PRINCIPAL: se o cliente pede QUALQUER ação (adicionar, remover, atualizar\nquantidade, aplicar cupom, criar carrinho, finalizar/pagar, cancelar, adicionar\nobservação, reservar, etc.), você DEVE chamar \"express_intent\" com a capability\ncorrespondente (exatamente uma das opções do enum). Faça isso MESMO que falte algum\ndetalhe (ex.: o id exato do item, do pedido ou do carrinho) — preencha o payload com\no que o cliente disse em linguagem natural (ex.: { item: 'linguiça' } ou\n{ quantidade: 3 }); o handler resolve os identificadores depois. NÃO peça confirmação\ne NÃO faça perguntas de esclarecimento aqui.\n\nUse as ferramentas de leitura apenas para consultar informações. Não invente\ncapabilities fora da lista. Só NÃO chame \"express_intent\" quando o cliente\nclaramente não pede nenhuma ação (ex.: perguntas sobre horário, cardápio ou preço).",
+    "tools": [
+      {
+        "name": "express_intent",
+        "description": "Declarar uma intenção de mutação para o kernel adjudicar. Use `capability` (uma das opções do enum) e `payload` com os dados.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "capability": {
+              "type": "string",
+              "enum": [
+                "order.cart.ensure",
+                "order.item.add",
+                "order.item.update",
+                "order.item.remove",
+                "order.coupon.apply",
+                "order.checkout.create",
+                "order.cancel",
+                "order.amend.request",
+                "order.note.add",
+                "payment.pix.regenerate",
+                "reservation.create",
+                "reservation.modify",
+                "reservation.cancel",
+                "reservation.waitlist.join",
+                "customer.preferences.update",
+                "customer.pix.details.save"
+              ],
+              "description": "A capability/intent kind a ser proposta."
+            },
+            "payload": {
+              "type": "object",
+              "description": "Dados da intenção (campos específicos da capability)."
+            }
+          },
+          "required": [
+            "capability",
+            "payload"
+          ],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "get_cart",
+        "description": "Ferramenta de leitura: get_cart. Apenas consulta, não altera dados.",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      {
+        "name": "check_order_status",
+        "description": "Ferramenta de leitura: check_order_status. Apenas consulta, não altera dados.",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      {
+        "name": "get_recommendations",
+        "description": "Ferramenta de leitura: get_recommendations. Apenas consulta, não altera dados.",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      {
+        "name": "get_order_history",
+        "description": "Ferramenta de leitura: get_order_history. Apenas consulta, não altera dados.",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      {
+        "name": "get_also_added",
+        "description": "Ferramenta de leitura: get_also_added. Apenas consulta, não altera dados.",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      {
+        "name": "get_ordered_together",
+        "description": "Ferramenta de leitura: get_ordered_together. Apenas consulta, não altera dados.",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      {
+        "name": "get_payment_status",
+        "description": "Ferramenta de leitura: get_payment_status. Apenas consulta, não altera dados.",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      {
+        "name": "get_payment_history",
+        "description": "Ferramenta de leitura: get_payment_history. Apenas consulta, não altera dados.",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      {
+        "name": "check_availability",
+        "description": "Ferramenta de leitura: check_availability. Apenas consulta, não altera dados.",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      {
+        "name": "get_my_reservations",
+        "description": "Ferramenta de leitura: get_my_reservations. Apenas consulta, não altera dados.",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      {
+        "name": "get_my_profile",
+        "description": "Ferramenta de leitura: get_my_profile. Apenas consulta, não altera dados.",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      {
+        "name": "get_my_preferences",
+        "description": "Ferramenta de leitura: get_my_preferences. Apenas consulta, não altera dados.",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    ]
+  },
+  "responder": {
+    "system": "Você é o atendente da IbateXas. Responda em pt-BR de forma curta e clara."
+  }
+}

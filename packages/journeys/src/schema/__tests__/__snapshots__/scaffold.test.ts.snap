@@ -1,0 +1,82 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`scaffoldJourneyFromAudit > matches the snapshot 1`] = `
+"# JOURNEY-000 — FROM-AUDIT SCAFFOLD (\`ibx journey from-audit\`, T2-3).
+#
+# Derived from a production audit slice:
+#   raw chat session id : web:sess-fixture-0001
+#   audit namespace     : hashed:87ac4779
+#   transcript turns    : 3 user / 3 assistant
+#   audited envelopes   : 6 row(s) → 5 expect tuple(s)
+#
+# A scaffold is NEVER born active (status: blocked, blocked_by:
+# [scaffold-review]). Review checklist:
+#   1. renumber JOURNEY-000 to the next free id (registry:
+#      packages/journeys/journeys/) and name the file <id>-<slug>.yaml
+#   2. write title / businessCase / persona (placeholders below)
+#   3. confirm params.authenticated (derived from
+#      ibx_domain.conversations.customer_id; --transcript input defaults
+#      to guest) — it picks the lint persona context (DR-5)
+#   4. review expects[]: promote/demote \`optional: true\` allowances
+#      (T1b-1) and delete incidental tuples
+#   5. replace the TODO goal-state markers in verify[] with real
+#      invariants; add fixture acts for the preconditions the original
+#      production state implied (preconditions ONLY — never asserted
+#      state)
+#   6. activate (status: active, blocked_by: []) only once live-green
+id: JOURNEY-000
+title: "TODO(scaffold-review): title this journey (from-audit scaffold)"
+businessCase: 'TODO(scaffold-review): why does the business care? Scaffolded from a production audit
+  slice of chat session "web:sess-fixture-0001".'
+persona: 'TODO(scaffold-review): persona descriptor (pt-BR). Transcript opens: "Oi, quero uma
+  costela bovina defumada de 1kg"'
+channel: web
+status: blocked
+blocked_by:
+  - scaffold-review
+source: from-audit:web:sess-fixture-0001
+params:
+  authenticated: true
+acts:
+  - kind: chat
+    name: turn-01
+    utterance: Oi, quero uma costela bovina defumada de 1kg
+    note: "assistant replied: Claro! Vou adicionar a costela bovina defumada (1kg) ao seu pedido."
+  - kind: chat
+    name: turn-02
+    utterance: Pode fechar o pedido, pago em dinheiro na retirada
+    note: "assistant replied: Pedido fechado! Retirada no balcão, pagamento em dinheiro."
+  - kind: chat
+    name: turn-03
+    utterance: Mudei de ideia, quero cancelar o pedido <medusa-id>
+    note: "assistant replied: Posso cancelar sim — você confirma o cancelamento?"
+# Observed intentKind×decision tuples from the audit slice, trajectory
+# order, first occurrence per tuple (repeats deduped — IN_ORDER + the T1b-1
+# reconciliation gate match tuples). \`optional: true\` = scaffold heuristic
+# for noisy extras (REFUSE noise before a same-kind success; inner
+# *.status.transition rows) — review every flag; optional entries claim NO
+# coverage cells.
+expects:
+  - intentKind: order.item.add
+    decision: REFUSE
+    optional: true
+  - intentKind: order.cart.ensure
+    decision: EXECUTE
+  - intentKind: order.item.add
+    decision: EXECUTE
+  - intentKind: order.checkout.create
+    decision: EXECUTE
+  - intentKind: order.cancel
+    decision: REQUEST_CONFIRMATION
+# Verify skeleton: trajectory order + tamper-evidence only.
+# TODO(scaffold-review): add goal-state invariants for the session's terminal
+# state (order.goal-state / reservation.goal-state / cart.goal-state) — a
+# scaffold never fabricates goal-state assertions.
+verify:
+  - invariant: audit.trajectory.in_order
+    args:
+      note: "scaffolded: expects[] as a subsequence of the session's hashed audit namespace"
+  - invariant: audit.record.verified
+    args: {}
+"
+`;

@@ -1,0 +1,33 @@
+[
+  {
+    "label": "planner:cancel-confirm-gate",
+    "surface": "planner",
+    "userText": "Quero cancelar meu pedido, por favor.",
+    "response": {
+      "toolCalls": [
+        {
+          "id": "toolu_scripted_cancel_01",
+          "name": "express_intent",
+          "input": {
+            "capability": "order.cancel",
+            "payload": {}
+          }
+        }
+      ],
+      "stopReason": "tool_use",
+      "inputTokens": 0,
+      "outputTokens": 0
+    }
+  },
+  {
+    "label": "responder:cancel-confirm-gate",
+    "surface": "responder",
+    "userText": "Quero cancelar meu pedido, por favor.",
+    "response": {
+      "text": "Certo! Estou cuidando do seu pedido.",
+      "stopReason": "end_turn",
+      "inputTokens": 0,
+      "outputTokens": 0
+    }
+  }
+]

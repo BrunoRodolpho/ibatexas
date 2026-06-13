@@ -1,0 +1,205 @@
+# JOURNEY-015 — paid-order flow: storefront order → T2-1 kernel-routed
+# paid-state fixture (locally signed Stripe webhook) → post-paid customer
+# interactions via chat (plan §5 T2-2b).
+#
+# ── T2-2b AUTHORING CORRECTIONS (executable-spec principle, D-014/D-015):
+#
+#  1. THE PAID TRANSITION IS KERNEL-ROUTED, NEVER FORGED (T2-1): the
+#     `paidState` fixture signs a payment_intent.succeeded event with the
+#     test plane's STRIPE_WEBHOOK_SECRET and POSTs it to the REAL
+#     signature-verified route; the SUT's own webhook→buildSystemEnvelope→
+#     adjudicate→projection path produces the audited
+#     `payment.status.reconcile` EXECUTE. Those system-actor rows
+#     (sessionId `stripe-webhook:<evt id>`) hash OUTSIDE the run namespace
+#     (D-015), so they appear in no expects[] — the paid state is asserted
+#     by the payment.goal-state oracle read, and the fixture-forged check
+#     is satisfied by the in-namespace checkout EXECUTE.
+#     Order auto-confirm is deliberately NOT asserted: payment-lifecycle.ts
+#     skips `method === "cash"` (cash confirms at handoff), and cash is the
+#     only checkout method that EXECUTEs on the test plane — so the journey
+#     asserts the PAYMENT plane (paid) and the order stays `pending`.
+#
+#  2. CANCEL-AFTER-PAID IS *NOT* KERNEL-GATED TODAY (JOURNEY-006's gap
+#     header re-checked; new product gap `cancel-after-paid-kernel-gating`,
+#     extending `order-cancel-kernel-ponr`): NO pack-orders guard reads the
+#     paid state for `order.cancel` — requireCancellable is lastAction-based
+#     (dead via web ctx: buildOrderCtx pins lastAction null, JOURNEY-006),
+#     escalateLargeCancel gates only totals >= R$1.000, and the route's
+#     canPerformAction PONR check reads fulfillmentStatus + clock, not
+#     payment. The route comment ("REQUEST_CONFIRMATION (paid orders)",
+#     order-actions.ts:454) describes a guard that does not exist. CODE-READ
+#     consequence of an actually-executed paid cancel: kernel order.cancel
+#     EXECUTE → executor transitions the ORDER to canceled, then tries
+#     payment paid→canceled — an ILLEGAL transition (VALID_PAYMENT_TRANSITIONS
+#     [paid] = refund/dispute only, packages/types/payment-status.ts:72) —
+#     so the route 409s (P2-LOGIC-CANCELPAY) leaving a CANCELED order with a
+#     LIVE paid payment, and the kernel has audited EXECUTE rows for it (the
+#     D-015 decision-vs-execution divergence class). The intended contract
+#     (the JOURNEY-006 REFUSE cell) needs a paid/PONR-aware ctx + guard;
+#     until then the REFUSE is unproducible and this journey does NOT drive
+#     the divergent HTTP path (a journey may pin a negative, not manufacture
+#     an inconsistent state on the shared stack).
+#
+#  3. WHAT THE POST-PAID CHAT LEG PINS INSTEAD: the conversational cancel of
+#     a PAID order parks at the adopter confirm gate (auto-resolved money
+#     ref → REQUEST_CONFIRMATION) — and because chat cannot resume a parked
+#     confirmation (chat-confirmation-resume), no mutation follows. The
+#     status ask before it is read-only (the planner's read tools are never
+#     executed — single-shot parser, D-014 — so no envelope, no audit row;
+#     plan §5 fact 18 keeps it invisible to expects-matching).
+#
+# Decision-trajectory derivation (run-namespace rows only, D-012 hashing):
+#   * order.checkout.create — EXECUTE (storefront HTTP, cash+pickup,
+#     hashed(customerId)).
+#   * order.cancel — REQUEST_CONFIRMATION (chat, hashed chat sessionId).
+#     Never resumed → the RC row survives supersession resolution.
+#   (paidState's payment.status.reconcile + medusa.admin.order.* rows are
+#   system-actor, structurally outside the run scope.)
+id: JOURNEY-015
+title: Customer pays the order (kernel-routed webhook) and post-paid chat cancel parks at the confirm gate
+businessCase: >-
+  The first journey with real money SETTLED: the customer's order reaches
+  payment=paid through the production webhook path (signature-verified,
+  kernel-adjudicated, audited), and the post-paid conversation stays safe —
+  asking where the order is costs nothing, and asking to cancel a paid
+  order parks behind an explicit confirmation instead of silently unwinding
+  settled money. Finance reasons from intent_audit: the paid transition is
+  a system-actor kernel EXECUTE, not a fixture write.
+persona: >-
+  Gabriela Souza, cliente autenticada, fecha um pedido de combo brisket para
+  retirada e paga na hora. Depois de pagar, pergunta no chat onde está o
+  pedido — e, impaciente, pede para cancelar.
+channel: web
+status: active
+blocked_by: []
+source: docs/agents/plan-v2.md §5 T2-2b (paid-state flow post-T2-1)
+params:
+  authenticated: true
+  customerPhone: "+5519900000009"
+  productHandle: combo-brisket
+  paymentMethod: cash
+  fulfillment: pickup
+acts:
+  - kind: fixture
+    name: seed-authenticated-customer
+    seed: seedCustomer
+    params:
+      phone: "+5519900000009"
+    note: >-
+      Precondition only — Gabriela Souza is one of the SEED_CUSTOMERS;
+      resolved via the read-only oracle role. Distinct from JOURNEY-001's
+      customer so the nightly k=4 money loops never share the per-customer
+      cancel rate limit (D-014: 5/10min).
+  - kind: fixture
+    name: resolve-product-variant
+    seed: resolveProductVariant
+    params:
+      handle: combo-brisket
+    note: Precondition only — read-only catalog resolve (handle → variantId).
+  - kind: http
+    name: create-cart
+    method: POST
+    path: /api/cart
+    asRole: customer
+    body: {}
+    capture:
+      cartId: cart.id
+    note: Storefront cart-create (medusa.cart.create gateway namespace).
+  - kind: http
+    name: add-item
+    method: POST
+    path: /api/cart/:cartId/line-items
+    asRole: customer
+    body:
+      variant_id: ":variantId"
+      quantity: 1
+    note: Storefront item-add (medusa.cart.line_items.add gateway namespace).
+  - kind: http
+    name: checkout-cash
+    method: POST
+    path: /api/cart/checkout
+    asRole: customer
+    body:
+      cartId: ":cartId"
+      paymentMethod: cash
+      deliveryType: pickup
+    note: >-
+      The money commitment: order.checkout.create EXECUTE (user envelope,
+      hashed(customerId) namespace). Cash on the test plane (header
+      correction 1); single item keeps the trajectory to one EXECUTE (no
+      large-ticket confirm).
+  - kind: fixture
+    name: drive-paid-state
+    seed: paidState
+    note: >-
+      T2-1 kernel-routed paid-state fixture: locally signed
+      payment_intent.succeeded → POST /api/webhooks/stripe (REAL
+      signature-verified route) → BullMQ → buildSystemEnvelope →
+      payment.status.reconcile EXECUTE → payments row paid. Declared AFTER
+      the storefront checkout (the fixture never creates orders) and
+      barriers on the paid projection before the chat leg runs.
+  - kind: chat
+    name: post-paid-status-query
+    goal: >-
+      Você acabou de PAGAR seu pedido. Pergunte quanto tempo falta para o
+      pedido ficar pronto (ex.: "Acabei de pagar — quanto tempo até o meu
+      pedido ficar pronto?"). NUNCA cite número, código ou ID do pedido. Se
+      o agente pedir número do pedido ou outros dados, NÃO forneça — envie
+      no máximo 1 mensagem ao todo e então encerre a conversa,
+      independentemente da resposta.
+    note: >-
+      Read-only post-paid interaction (header correction 3): a status ask
+      proposes no envelope (the planner's read tools are recorded, never
+      executed — D-014), so it writes no audit row (plan §5 fact 18) and
+      asserts nothing trail-side. Capped at 1 message so the SUT's
+      clarification loop ("qual o número do pedido?") can never burn the
+      budget the cancel act needs — the live T2-2b flake that split this
+      into two acts.
+  - kind: chat
+    name: post-paid-cancel-request
+    goal: >-
+      Pedir o cancelamento do pedido que acabou de pagar, SEM NUNCA citar
+      número, código ou ID do pedido. Comece com "Quero cancelar meu pedido,
+      por favor.". Se o agente pedir número do pedido, CPF ou qualquer outro
+      dado, recuse educadamente e insista que é o pedido MAIS RECENTE e que
+      quer cancelá-lo (ex.: "Não sei o número — é o meu último pedido, quero
+      cancelar ele."). Envie no máximo 3 mensagens ao todo e então encerre a
+      conversa, independentemente da resposta (a confirmação seria
+      concluída por outro canal).
+    note: >-
+      The JOURNEY-001-proven cancel-ask goal, replayed against a PAID
+      order: parks at the adopter confirm gate (REQUEST_CONFIRMATION on the
+      auto-resolved money ref) and stays unresumable via chat
+      (chat-confirmation-resume), so settled money is never unwound — the
+      RC audit row is this act's deliverable, asserted by verify[], never
+      by reply text. Re-asks may re-park; extra RC rows share the declared
+      tuple. Same chat session as the status act (one conversation per
+      attempt).
+expects:
+  - intentKind: order.checkout.create
+    decision: EXECUTE
+  - intentKind: order.cancel
+    decision: REQUEST_CONFIRMATION
+verify:
+  - invariant: audit.trajectory.in_order
+    args:
+      note: >-
+        checkout EXECUTE then the post-paid cancel confirm-gate RC, as a
+        subsequence of the run's hashed namespaces (customerId + chat
+        session); the paid transition's system-actor rows are outside the
+        scope by construction (D-015)
+  - invariant: audit.record.verified
+    args: {}
+  - invariant: payment.goal-state
+    args:
+      # The T2-1 contract: the run order's ACTIVE payment settled to paid
+      # through the kernel-routed webhook path — and the parked chat cancel
+      # left it untouched.
+      status: paid
+      method: cash
+  - invariant: order.goal-state
+    args:
+      # Cash orders do NOT auto-confirm on paid (payment-lifecycle.ts skips
+      # cash — header correction 1) and the parked cancel never executed:
+      # the order projection stays pending.
+      status: pending

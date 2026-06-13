@@ -1,0 +1,192 @@
+# JOURNEY-010 — reservation lifecycle: customer books, staff checks in and
+# completes (plan §5 T2-2a).
+#
+# ── T2-2a AUTHORING CORRECTIONS (executable-spec principle, D-014/D-015):
+#
+#  1. CHAT RESERVATION-ASSEMBLY IS NOT EXECUTABLE TODAY (product gap
+#     `chat-reservation-assembly` — the reservation-domain sibling of
+#     `chat-order-assembly`): the planner DOES advertise reservation.create
+#     to authed customers (pack-reservations capabilities.ts), but the
+#     single-shot semantic parser emits free-form NL payloads (date/time/
+#     party text) and NO resolver leg maps them to a `timeSlotId`
+#     (resolve-and-assemble.ts resolves reservationId for cancel only;
+#     loadReservationCtx reads payload.timeSlotId verbatim). Every chat
+#     reservation.create therefore hits `requireSlotWithCapacity` with
+#     ctx.slot = null → kernel REFUSE `slot_missing`
+#     (pack-reservations policies.ts:163, state phase — fires before any
+#     business guard, so the negative is deterministic). The unblock is a
+#     read-tool-executing planner (check_availability → timeSlotId), the
+#     same surface chat-order-assembly needs. This journey PINS the gap as
+#     an executable negative, like JOURNEY-009 pins guest item-add.
+#
+#  2. THE CUSTOMER RESERVATION ROUTE IS KERNEL-GATED BUT NOT AUDITED
+#     (product gap `reservation-tools-audit-sink`): POST /api/reservations
+#     (routes/reservations.ts:100) calls the tools-layer createReservation,
+#     which adjudicates via svc.createFromEnvelope — but builds
+#     `createReservationService()` with NO auditSink
+#     (packages/tools/src/reservation/create-reservation.ts:96;
+#     withAdjudicate emits only when options.auditSink is supplied). The
+#     kernel EXECUTE for the customer's reservation.create produces NO
+#     intent_audit row — a decision-vs-audit divergence on the whole
+#     customer reservation tool surface (create/modify/cancel/waitlist;
+#     rule #9 says every decision is audited). Consequence here:
+#     reservation.create EXECUTE CANNOT be an expects[] entry (nothing to
+#     observe); the create's evidence is act-level (201 + reservationId
+#     capture) and the goal state traces to the AUDITED staff transitions.
+#     Unblock: thread getAuditSink() through the reservation tool layer.
+#
+#  3. STAFF TRANSITIONS ARE THE AUDITED SPINE (DR-5 staff-route cells, NO
+#     waiver): POST /api/admin/reservations/:id/checkin and /complete build
+#     envelopes directly (admin/reservations.ts:179/:225 — actor.principal
+#     "user", taint TRUSTED, sessionId `admin:${staffId}`) and the admin
+#     route DOES inject getAuditSink(). Staff auth = staff_token cookie
+#     (authFixture mintStaffToken) + the seeded ACTIVE ibx_domain.staff row
+#     (SEED_STAFF, seed-domain step) re-checked per request; the routes are
+#     manager-gated (requireManagerRole), so the seeded row is a MANAGER.
+#
+# Decision-trajectory derivation (IN_ORDER over the run's hashed audit
+# namespaces — D-012: hashed(chat sessionId) for the chat leg,
+# hashed(`admin:<staffId>`) for the staff legs; the harness includes the
+# admin namespace whenever the seedStaff fixture ran):
+#   * reservation.create — REFUSE via chat (slot_missing; correction 1).
+#   * reservation.checkin — EXECUTE via staff route: requireStaff sees
+#     staffId, requireReservationPresent sees the snapshot,
+#     executeStaffTransitions EXECUTEs; service transitions the row to
+#     "seated" synchronously.
+#   * reservation.complete — EXECUTE via staff route → status "completed".
+#   (The customer's HTTP create is kernel-EXECUTEd but unaudited —
+#   correction 2 — so it appears in NO trajectory; its 201 + capture is the
+#   act-level evidence anchor, the JOURNEY-009 cart-2xx precedent.)
+#
+# Reconciliation: the chat REFUSE and both staff EXECUTEs are declared; the
+# unaudited create writes nothing anywhere. reservation.goal-state traces to
+# the audited staff EXECUTEs (the T1b-1 fixture-forged check is satisfied).
+id: JOURNEY-010
+title: Customer books a table, staff checks the party in and completes the visit
+businessCase: >-
+  The full front-of-house loop: a regular books a table for tomorrow night,
+  the floor manager checks the party in when they arrive and closes the
+  reservation when the table turns. Staff transitions are the
+  revenue-relevant audit trail (no-show disputes, table-turn analytics) and
+  must be kernel-adjudicated under the staff principal; the same run pins
+  that a conversational booking cannot silently bypass slot capacity — the
+  planner advertises reservation.create, and the kernel refuses the
+  slot-less proposal.
+persona: >-
+  Lucas Mendes, cliente autenticado, quer jantar amanhã à noite com mais uma
+  pessoa. Primeiro tenta reservar pelo chat do site; depois conclui a
+  reserva pela conta no site. Tainá, gerente do salão, faz o check-in
+  quando ele chega e conclui a reserva quando a mesa é liberada.
+channel: web
+status: active
+blocked_by: []
+source: docs/agents/plan-v2.md §5 T2-2a
+params:
+  authenticated: true
+  customerPhone: "+5519900000006"
+  staffPhone: "+5519900000900"
+  staffRole: MANAGER
+  partySize: 2
+acts:
+  - kind: fixture
+    name: seed-authenticated-customer
+    seed: seedCustomer
+    params:
+      phone: "+5519900000006"
+    note: >-
+      Precondition only — Lucas Mendes is one of the SEED_CUSTOMERS
+      (packages/domain/src/seed-constants.ts); resolved via the read-only
+      oracle role. He has NO seeded reservations, so the run's booking is
+      his only one.
+  - kind: fixture
+    name: seed-staff-manager
+    seed: seedStaff
+    params:
+      phone: "+5519900000900"
+      role: MANAGER
+    note: >-
+      Precondition only — resolves the seeded ACTIVE MANAGER staff row
+      (SEED_STAFF, packages/domain/src/seed-constants.ts; upserted by the
+      seed-domain step). Surfaces ctx.vars.staffId for the staff cookie AND
+      adds hashed(admin:<staffId>) to the run's audit scope.
+  - kind: chat
+    name: chat-booking-attempt
+    goal: >-
+      Peça EXPLICITAMENTE pelo chat para RESERVAR uma mesa para 2 pessoas
+      amanhã às 20h (ex.: "Quero reservar uma mesa para 2 pessoas amanhã às
+      20h, pode confirmar?"). NUNCA cite códigos ou IDs. Se o agente pedir
+      mais detalhes ou disser que não conseguiu, insista UMA vez repetindo o
+      pedido completo. Envie no máximo 2 mensagens ao todo e então encerre a
+      conversa, independentemente da resposta (a reserva será concluída por
+      outro canal).
+    note: >-
+      Pins the chat-reservation-assembly gap (header correction 1): the
+      planner proposes reservation.create from the explicit booking ask, the
+      NL payload carries no timeSlotId, and the kernel REFUSEs slot_missing
+      — THE pinned row, asserted by verify[], never by reply text (the
+      responder is decision-blind). ADVISORY only (llm-judge-excluded): the
+      reply should steer the customer to the site's booking flow.
+  - kind: fixture
+    name: resolve-future-time-slot
+    seed: resolveTimeSlot
+    params:
+      partySize: 2
+    note: >-
+      Precondition only — read-only resolve of the earliest seeded FUTURE
+      time slot (date >= tomorrow keeps requireSlotInFuture satisfied) with
+      capacity for 2; the journey file never carries a raw slot id and never
+      computes dates.
+  - kind: http
+    name: create-reservation
+    method: POST
+    path: /api/reservations
+    asRole: customer
+    body:
+      timeSlotId: ":timeSlotId"
+      partySize: 2
+    capture:
+      reservationId: reservationId
+    note: >-
+      The documented public booking route (routes/reservations.ts:88):
+      kernel reservation.create EXECUTE (status "confirmed", covers
+      reserved under FOR UPDATE) — but UNAUDITED today
+      (reservation-tools-audit-sink, header correction 2), so the 201 +
+      reservationId capture is this act's evidence; no expects[] entry can
+      exist for it.
+  - kind: http
+    name: staff-checkin
+    method: POST
+    path: /api/admin/reservations/:reservationId/checkin
+    asRole: staff
+    note: >-
+      Deterministic staff-HTTP act (DR-5 staff-route cell, no waiver):
+      manager-gated admin route builds the reservation.checkin envelope
+      directly (TRUSTED, sessionId admin:<staffId>) → kernel EXECUTE →
+      status "seated" + checkedInAt stamped synchronously.
+  - kind: http
+    name: staff-complete
+    method: POST
+    path: /api/admin/reservations/:reservationId/complete
+    asRole: staff
+    note: >-
+      Deterministic staff-HTTP act (DR-5 staff-route cell, no waiver):
+      reservation.complete EXECUTE → status "completed". A non-EXECUTE
+      kernel decision maps to 403, so the 200 IS the transition succeeding.
+expects:
+  - intentKind: reservation.create
+    decision: REFUSE
+  - intentKind: reservation.checkin
+    decision: EXECUTE
+  - intentKind: reservation.complete
+    decision: EXECUTE
+verify:
+  - invariant: audit.trajectory.in_order
+    args:
+      note: >-
+        chat REFUSE then the two staff EXECUTEs, as a subsequence of the
+        run's merged hashed namespaces (chat session + admin:<staffId>)
+  - invariant: audit.record.verified
+    args: {}
+  - invariant: reservation.goal-state
+    args:
+      status: completed

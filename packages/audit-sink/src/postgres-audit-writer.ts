@@ -95,6 +95,15 @@ export interface PrismaRawExecutor {
   $executeRawUnsafe(query: string, ...values: unknown[]): Promise<number>
 }
 
+// T1a-13: the previous column list stopped at v3 (19 columns) and silently
+// DROPPED the v4/v5 fields the sink supplies on every row —
+// kernel_identity_jsonb, policy_version, kernel_version, audit_hash,
+// signature_jsonb, metadata_jsonb. audit_hash is the tamper-evidence hash:
+// "Dropping this on write/read defeats verifyAuditRecord end-to-end"
+// (IntentAuditRow docs, @adjudicate/audit-postgres). Surfaced live by the
+// first JOURNEY-001 run: every persisted v5 row failed the
+// `audit.record.verified` invariant with a NULL audit_hash. The columns all
+// exist in the schema (migrations 008 + 010 — `ibx kernel migrate`).
 const INSERT_INTENT_AUDIT_SQL = `
 INSERT INTO intent_audit (
   intent_hash,
@@ -115,11 +124,18 @@ INSERT INTO intent_audit (
   record_version,
   plan_jsonb,
   nonce,
-  supersedes_jsonb
+  supersedes_jsonb,
+  kernel_identity_jsonb,
+  policy_version,
+  kernel_version,
+  audit_hash,
+  signature_jsonb,
+  metadata_jsonb
 )
 VALUES (
   $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12::jsonb, $13::timestamptz,
-  $14, $15, $16, $17::jsonb, $18, $19::jsonb
+  $14, $15, $16, $17::jsonb, $18, $19::jsonb, $20::jsonb, $21, $22, $23, $24::jsonb,
+  $25::jsonb
 )
 ON CONFLICT DO NOTHING
 `.trim()
@@ -191,6 +207,15 @@ export function createPostgresAuditWriter(
         row.plan_jsonb,
         row.nonce,
         row.supersedes_jsonb,
+        // v4/v5 fields (T1a-13 — see the SQL note above). The sink populates
+        // them (`?? null`) on every row; audit_hash is the tamper-evidence
+        // chain verifyAuditRecord checks.
+        row.kernel_identity_jsonb,
+        row.policy_version,
+        row.kernel_version,
+        row.audit_hash,
+        row.signature_jsonb,
+        row.metadata_jsonb,
       )
       if (affected === 0 && opts.onConflictNoOp) {
         try {

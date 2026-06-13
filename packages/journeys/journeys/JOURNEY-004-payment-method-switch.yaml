@@ -1,0 +1,78 @@
+# JOURNEY-004 — payment-method switch (BLOCKED on ws4 — plan §5 T1a-12).
+#
+# `payment.method.switch` is a registered kernel kind
+# (@ibatexas/pack-payments) but P0-7 de-advertised it from the chat planner
+# (no @ibatexas/tools handler) — it left CHAT_DRIVABLE_TOOL_KINDS and its
+# coverage cells are `waived-pending-WS4` in
+# packages/journeys/governance/journey-coverage-waivers.json. The WS4
+# backlog restores handler + advertisement; until then this journey is
+# blocked and claims no cells.
+#
+# Lint reachability note: while ws4 is open the kind is neither
+# planner-advertised nor registered for chat, so the spec keeps an honest
+# public-HTTP verification act (GET the order's payment) — the surface that
+# v1 lint treats as open — and the chat act carries the post-ws4 goal. The
+# HTTP fallback PATCH /api/orders/:orderId/payment/method exists today
+# (order-actions.ts) but the business case here is the CHAT switch.
+id: JOURNEY-004
+title: Customer switches the payment method of an in-flight order via chat
+businessCase: >-
+  PIX QR codes expire and customers change their minds at the door — "troca
+  para dinheiro" is a top support ask. The switch must be conversational and
+  kernel-adjudicated (cancel-old + create-new payment under the single-active
+  invariant), not a support ticket.
+persona: >-
+  Fernanda Costa, cliente autenticada, fecha um pedido com pagamento PIX,
+  mas o QR não abre no app do banco dela — quer trocar o pagamento do MESMO
+  pedido para dinheiro na retirada, pelo chat.
+channel: web
+status: blocked
+blocked_by:
+  - ws4
+source: docs/agents/plan-v2.md §5 T1a-12 (DR-5 waiver waived-pending-WS4)
+params:
+  authenticated: true
+  customerPhone: "+5519900000005"
+  productHandle: pulled-pork
+  paymentMethodInitial: pix
+  paymentMethodFinal: cash
+  fulfillment: pickup
+acts:
+  - kind: fixture
+    name: seed-authenticated-customer
+    seed: seedCustomer
+    params:
+      phone: "+5519900000005"
+  - kind: chat
+    name: place-pix-order
+    goal: >-
+      Montar um pedido com um pulled pork (300g) para retirada, pagamento
+      via PIX, e finalizar o pedido.
+  - kind: chat
+    name: switch-to-cash
+    goal: >-
+      Pedir para trocar a forma de pagamento do pedido recém-criado de PIX
+      para dinheiro na retirada. Confirme se o agente pedir.
+  - kind: http
+    name: verify-active-payment
+    method: GET
+    path: /api/orders/:orderId/payment
+    asRole: customer
+    note: >-
+      Read-only verification probe — the executor binds :orderId from
+      ctx.vars (surfaced by the driver during place-pix-order).
+expects:
+  - intentKind: order.item.add
+    decision: EXECUTE
+  - intentKind: order.checkout.create
+    decision: EXECUTE
+  - intentKind: payment.method.switch
+    decision: EXECUTE
+verify:
+  - invariant: audit.trajectory.in_order
+    args:
+      note: expects[] as a subsequence of the run-sessionId audit namespace
+  - invariant: order.goal-state
+    args:
+      status: pending
+      paymentMethod: cash

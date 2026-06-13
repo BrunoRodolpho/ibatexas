@@ -1,0 +1,25 @@
+# Lint-gate GOOD fixture — staff-HTTP journey: staff-route kinds are
+# reachable ONLY through staff http acts (check 3 positive case).
+id: JOURNEY-902
+title: Lint fixture — staff checks a reservation in via the admin route
+businessCase: Gate fixture; staff-route envelope kinds must lint green behind a staff http act.
+persona: Funcionária da recepção fazendo check-in de uma reserva confirmada.
+channel: web
+acts:
+  - kind: fixture
+    seed: seedReservation
+    params:
+      status: confirmed
+  - kind: http
+    method: POST
+    path: /api/admin/reservations/checkin
+    asRole: staff
+expects:
+  - intentKind: reservation.checkin
+    decision: EXECUTE
+verify:
+  - invariant: reservation.goal-state
+    args:
+      status: checked_in
+status: active
+source: T1a-2 lint-gate fixture

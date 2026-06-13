@@ -1,17 +1,39 @@
 // lib/lock.ts — Redis-based scenario lock.
 // Prevents concurrent scenario/matrix execution from corrupting state.
-// Uses SET NX EX 300 (5-min auto-expire as safety net).
+// Atomic SET NX EX acquire + ownership-checked Lua release (CLAUDE.md rule #10);
+// pattern reference: apps/api/src/whatsapp/session.ts.
 
+import { randomUUID } from "node:crypto"
 import { getRedis, rk } from "./redis.js"
 
 const LOCK_KEY = "ibx:scenario:lock"
-const LOCK_TTL_SECONDS = 300 // 5 minutes
+const LOCK_TTL_SECONDS = 300 // 5 minutes — auto-expire safety net
 
 interface LockInfo {
   scenario: string
   pid: number
   startedAt: string
 }
+
+// Stored lock value = LockInfo + a per-acquisition UUID token. The release
+// script compares the full stored string, so the token makes each acquisition
+// unique and DEL can only fire for the exact holder that wrote it.
+interface LockValue extends LockInfo {
+  token: string
+}
+
+/**
+ * Lua script: conditional DEL — only deletes if the lock value matches.
+ * Prevents releasing a lock acquired by a different process after our TTL
+ * expired or after a --force takeover.
+ */
+const RELEASE_LOCK_SCRIPT = `
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  return redis.call('DEL', KEYS[1])
+else
+  return 0
+end
+`
 
 /**
  * Acquire the scenario lock. Returns a release function.
@@ -24,50 +46,49 @@ export async function acquireScenarioLock(
   const redis = await getRedis()
   const key = rk(LOCK_KEY)
 
-  // Check existing lock
-  const existing = await redis.get(key)
-  if (existing && !opts?.force) {
-    try {
-      const info = JSON.parse(existing) as LockInfo
-      const elapsed = Math.round((Date.now() - new Date(info.startedAt).getTime()) / 1000)
-      throw new Error(
-        `Another scenario is running: "${info.scenario}" (PID ${info.pid}, started ${elapsed}s ago)\n` +
-        `Use --force to override the lock.`,
-      )
-    } catch (err) {
-      if ((err as Error).message.includes("Another scenario")) throw err
-      // If JSON.parse fails, the lock is corrupted — force acquire
-    }
-  }
-
-  // Set lock
-  const value: LockInfo = {
+  const value: LockValue = {
     scenario: scenarioName,
     pid: process.pid,
     startedAt: new Date().toISOString(),
+    token: randomUUID(),
+  }
+  const serialized = JSON.stringify(value)
+
+  if (opts?.force) {
+    // Deliberate takeover — overwrite whatever holder exists
+    await redis.set(key, serialized, { EX: LOCK_TTL_SECONDS })
+  } else {
+    // Atomic acquire — NX closes the GET-then-SET TOCTOU window
+    const acquired = await redis.set(key, serialized, { NX: true, EX: LOCK_TTL_SECONDS })
+    if (acquired !== "OK") {
+      const existing = await redis.get(key)
+      let info: LockInfo | null = null
+      if (existing) {
+        try {
+          info = JSON.parse(existing) as LockInfo
+        } catch {
+          // Corrupted lock value — treat as no real holder
+        }
+      }
+      if (info) {
+        const elapsed = Math.round((Date.now() - new Date(info.startedAt).getTime()) / 1000)
+        throw new Error(
+          `Another scenario is running: "${info.scenario}" (PID ${info.pid}, started ${elapsed}s ago)\n` +
+          `Use --force to override the lock.`,
+        )
+      }
+      // Corrupted value (or expired between SET and GET) — claim the lock
+      await redis.set(key, serialized, { EX: LOCK_TTL_SECONDS })
+    }
   }
 
-  await redis.set(key, JSON.stringify(value), { EX: LOCK_TTL_SECONDS })
-
-  // Return release function
+  // Release: ownership-checked conditional DEL — never plain redis.del()
   return async () => {
     try {
       const redis = await getRedis()
-      const current = await redis.get(key)
-      // Only delete if WE own the lock (same PID)
-      if (current) {
-        try {
-          const info = JSON.parse(current) as LockInfo
-          if (info.pid === process.pid) {
-            await redis.del(key)
-          }
-        } catch {
-          // Corrupted — delete anyway
-          await redis.del(key)
-        }
-      }
+      await redis.eval(RELEASE_LOCK_SCRIPT, { keys: [key], arguments: [serialized] })
     } catch {
-      // Redis might be disconnected — best effort
+      // Redis might be disconnected — lock expires via TTL
     }
   }
 }

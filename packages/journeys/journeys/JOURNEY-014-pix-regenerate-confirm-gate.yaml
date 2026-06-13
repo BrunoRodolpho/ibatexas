@@ -1,0 +1,239 @@
+# JOURNEY-014 — the EXECUTABLE PIX slice: method-switch to PIX over the
+# public HTTP surface, then the chat confirm gate on `payment.pix.regenerate`
+# — the ONE planner-advertised payment kind (plan §5 T2-2b).
+#
+# ── T2-2b AUTHORING CORRECTIONS (executable-spec principle, D-014/D-015):
+#
+#  1. THE PIX-PENDING DEFER STAYS UNREACHABLE (JOURNEY-007's
+#     `web-pix-pending-ctx`, RE-VERIFIED against current code): the defer
+#     guard (`createPixPendingDeferGuard` composed as `deferOnPendingPix`,
+#     pack-orders policies.ts:405) matches ONLY `order.checkout.create` and
+#     fires ONLY when ctx.paymentStatus is non-null + unconfirmed — and BOTH
+#     web surfaces pin `paymentStatus: null` into the checkout ctx: the
+#     conductor path via loadCartCtx/buildCartCtx
+#     (resolve-and-assemble.ts:242) and the HTTP checkout route explicitly
+#     ("paymentStatus stays null via the builder so the PIX-pending guard
+#     does NOT DEFER at checkout — unchanged", routes/cart.ts:1046). The
+#     in-flight-unconfirmed branch is reachable only on the defer-resolver
+#     WhatsApp resume path. The DEFER→timeout→resume trajectory is therefore
+#     not drivable from any public web surface; `ibx kernel defer/resume`
+#     are inspection tools and the fixture-act governance (schema header)
+#     forbids the harness minting/resuming kernel decisions itself.
+#
+#  2. NEW TEST-PLANE FACT (T2-1/T2-2b — gap `test-plane-live-stripe`): a PIX
+#     checkout cannot even EXECUTE on the test plane — createCheckout's PIX
+#     branch calls stripeAdjudicated.paymentIntents.confirm
+#     (packages/tools/src/cart/create-checkout.ts:71) against the live
+#     Stripe API, and the journey test plane has no PIX-capable Stripe
+#     account. So the pix-pending PRECONDITION (an in-flight PIX charge) is
+#     equally unproducible. Both blockers are recorded on JOURNEY-007.
+#
+#  3. WHAT *IS* DRIVABLE — and what this journey pins:
+#     * A PIX payment ROW via the public method-switch route:
+#       PATCH /api/orders/:id/payment/method (order-actions.ts:1284)
+#       replaces the cash payment with a method=pix row (cancel-old +
+#       create-new, kernel-adjudicated through paymentCmdSvc envelopes;
+#       canTransitionPayment(cash_pending → switching_method) is false so
+#       the preCancel leg is skipped; the new row lands status
+#       `awaiting_payment` — payment-command.service.ts:293). NO Stripe
+#       call: the domain payment plane is test-plane-real.
+#     * The chat confirm gate on `payment.pix.regenerate`: the planner
+#       advertises it to authed customers (the one advertised payment kind,
+#       register-ibatexas-tool-packs.ts:364); an id-less regenerate ask
+#       auto-resolves the most-recent order (ORDER_AUTORESOLVE_KINDS,
+#       resolve-and-assemble.ts:419) → loadPaymentCtx sees the active PIX
+#       row (state passes: requirePaymentExists ok; pix.regenerate is NOT
+#       taint-system-only) → the adopter confirmOnAutoResolveGuard
+#       (prepended to business, compose-policy-packs.ts:70) parks it:
+#       REQUEST_CONFIRMATION. The parked envelope cannot be resumed via chat
+#       (chat-confirmation-resume — the JOURNEY-001 precedent), so the
+#       CONFIRM-GATE AUDIT ROW is the deliverable; pix.regenerate EXECUTE
+#       stays unproducible via chat (auto-resolve always flags) AND via the
+#       HTTP regenerate route (it 422s unless the payment is
+#       `payment_expired`, a state only the expiry job produces).
+#
+#  4. NEW PRODUCT GAP — `payment-command-audit-sink` (the order-actions
+#     sibling of T2-2a's `reservation-tools-audit-sink`): order-actions.ts
+#     builds its route-level command services SINK-LESS
+#     (`createOrderCommandService()` / `createPaymentCommandService(
+#     server.log)`, order-actions.ts:252/:254 — withAdjudicate emits only
+#     when options.auditSink is supplied), so the method-switch's inner
+#     kernel decisions (payment.status.transition cancel of the old row,
+#     user principal sessionId=customerId; payment.create of the pix row,
+#     system actor `customer:<id>`) are kernel-EXECUTEd but produce NO
+#     intent_audit rows — decision-vs-audit divergence on the whole
+#     customer payment-action surface (rule #9 says every decision is
+#     audited). JOURNEY-001's optional allowances for the cancel route's
+#     inner transitions are the same class (tolerated-absent because they
+#     never land). Consequence here: the switch's evidence is act-level
+#     (200 + paymentId/method response) + the payment.goal-state oracle
+#     read; the expects[] entries for those kinds are `optional: true`
+#     allowances so the journey is already-correct the day the sink gets
+#     wired. Unblock: thread getAuditSink() through order-actions' service
+#     construction.
+#
+# Decision-trajectory derivation (run-namespace rows only, D-012 hashing):
+#   * order.checkout.create — EXECUTE (storefront HTTP, cash+pickup;
+#     hashed(customerId) namespace — the JOURNEY-001 assembly pattern).
+#   * payment.pix.regenerate — REQUEST_CONFIRMATION (chat; hashed chat
+#     sessionId namespace). Never resumed; the RC row survives supersession
+#     resolution (nothing later shares its intentHash).
+#   (The method-switch act produces no audit rows today — correction 4.)
+id: JOURNEY-014
+title: Customer switches to PIX, then the chat regenerate ask parks at the confirm gate
+businessCase: >-
+  PIX QR codes expire in minutes and "gera o QR de novo" is a top support
+  ask — it is also a money-path mutation (cancels and recreates the active
+  payment), so a wrong-target regeneration must be impossible. This journey
+  pins the whole executable PIX slice: the customer moves a real order onto
+  PIX through the public payment-method route, and a conversational
+  regenerate ask is kernel-parked behind an explicit confirmation instead of
+  silently recycling whichever payment the resolver guessed.
+persona: >-
+  Beatriz Lima, cliente autenticada, fecha um pedido para retirada pagando
+  em dinheiro, muda de ideia e troca o pagamento para PIX pelo site — e,
+  quando o QR não abre no app do banco, pede no chat para gerar um novo
+  QR code.
+channel: web
+status: active
+blocked_by: []
+source: docs/agents/plan-v2.md §5 T2-2b
+params:
+  authenticated: true
+  customerPhone: "+5519900000007"
+  productHandle: brownie-com-sorvete
+  paymentMethodInitial: cash
+  paymentMethodFinal: pix
+  fulfillment: pickup
+  # Opt-in `customer:<customerId>` audit-namespace scope (T2-2a seam): the
+  # method-switch's payment.create envelope is stamped with the system
+  # actor `customer:<id>` sessionId — in scope so its row is reconciled by
+  # THIS run the day payment-command-audit-sink is fixed.
+  auditScopeCustomerTool: true
+acts:
+  - kind: fixture
+    name: seed-authenticated-customer
+    seed: seedCustomer
+    params:
+      phone: "+5519900000007"
+    note: >-
+      Precondition only — Beatriz Lima is one of the SEED_CUSTOMERS
+      (packages/domain/src/seed-constants.ts); resolved via the read-only
+      oracle role. Shared with blocked JOURNEY-007 (the PIX persona) — 007
+      never runs while blocked, so there is no stack contention.
+  - kind: fixture
+    name: resolve-product-variant
+    seed: resolveProductVariant
+    params:
+      handle: brownie-com-sorvete
+    note: >-
+      Precondition only — read-only catalog resolve (handle → variantId);
+      the journey file never carries a raw Medusa id.
+  - kind: http
+    name: create-cart
+    method: POST
+    path: /api/cart
+    asRole: customer
+    body: {}
+    capture:
+      cartId: cart.id
+    note: >-
+      Storefront cart-create (audits as the medusa.cart.create system
+      envelope — gateway namespace, outside the run scope).
+  - kind: http
+    name: add-item
+    method: POST
+    path: /api/cart/:cartId/line-items
+    asRole: customer
+    body:
+      variant_id: ":variantId"
+      quantity: 1
+    note: >-
+      Storefront item-add (medusa.cart.line_items.add system envelope) —
+      chat order-assembly remains unexecutable (chat-order-assembly,
+      JOURNEY-001 correction 1).
+  - kind: http
+    name: checkout-cash
+    method: POST
+    path: /api/cart/checkout
+    asRole: customer
+    body:
+      cartId: ":cartId"
+      paymentMethod: cash
+      deliveryType: pickup
+    note: >-
+      The money commitment: order.checkout.create EXECUTE (user envelope,
+      hashed(customerId) namespace). Cash is the only checkout method that
+      EXECUTEs on the test plane (header correction 2) — the PIX-ness
+      arrives via the method switch, not the checkout.
+  - kind: http
+    name: switch-to-pix
+    method: PATCH
+    path: /api/orders/:orderId/payment/method
+    asRole: customer
+    body:
+      method: pix
+    note: >-
+      The documented public method-switch (order-actions.ts:1284): cancels
+      the cash payment and creates an active method=pix row (status
+      awaiting_payment) under the per-payment lock — kernel-adjudicated but
+      UNAUDITED today (payment-command-audit-sink, header correction 4), so
+      this act's evidence is the 200 + the payment.goal-state oracle read.
+      :orderId resolves to the run's own order via the projection barrier.
+  - kind: chat
+    name: chat-regenerate-pix
+    goal: >-
+      Diga que o QR code PIX do seu pedido não está abrindo no aplicativo do
+      banco e peça EXPLICITAMENTE para gerar um novo QR code PIX (ex.: "O QR
+      code do PIX não abre aqui, pode gerar um novo pra mim?"). NUNCA cite
+      número, código ou ID de pedido. Se o agente pedir o número do pedido,
+      recuse educadamente e diga que é o seu pedido MAIS RECENTE. Envie no
+      máximo 2 mensagens ao todo e então encerre a conversa,
+      independentemente da resposta (a confirmação será concluída por outro
+      canal).
+    note: >-
+      The deliverable row: the planner proposes payment.pix.regenerate (the
+      one advertised payment kind), the resolver auto-binds the most-recent
+      order and flags autoResolvedMoneyRef, and the adopter confirm guard
+      parks it — REQUEST_CONFIRMATION, asserted by verify[], never by reply
+      text (the responder is decision-blind; chat-confirmation-resume keeps
+      the park unresumable — header correction 3). Re-asks may re-park;
+      extra RC rows share the declared tuple.
+expects:
+  - intentKind: order.checkout.create
+    decision: EXECUTE
+  - intentKind: payment.pix.regenerate
+    decision: REQUEST_CONFIRMATION
+  # payment-command-audit-sink allowances (header correction 4): the
+  # method-switch's inner kernel decisions land in run-scoped namespaces
+  # (payment.status.transition: user/customerId; payment.create:
+  # system/customer:<id> — in scope via params.auditScopeCustomerTool) the
+  # day order-actions wires an audit sink. Declared so the journey is
+  # forward-correct; tolerated absent today; never coverage claims.
+  - intentKind: payment.status.transition
+    decision: EXECUTE
+    optional: true
+  - intentKind: payment.create
+    decision: EXECUTE
+    optional: true
+verify:
+  - invariant: audit.trajectory.in_order
+    args:
+      note: >-
+        checkout EXECUTE then the pix.regenerate confirm-gate RC, as a
+        subsequence of the run's hashed namespaces (customerId + chat
+        session)
+  - invariant: audit.record.verified
+    args: {}
+  - invariant: payment.goal-state
+    args:
+      # The switch's goal state on the oracle plane: the run order's ACTIVE
+      # payment is the new PIX row (awaiting_payment — the non-cash initial
+      # status, payment-command.service.ts:293). The regenerate ask parked,
+      # so no further payment mutation may have happened.
+      status: awaiting_payment
+      method: pix
+  - invariant: order.goal-state
+    args:
+      # The order itself is untouched by the payment-plane switch.
+      status: pending

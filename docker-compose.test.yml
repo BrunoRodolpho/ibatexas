@@ -1,0 +1,145 @@
+# docker-compose.test.yml — T1a-11a ephemeral test infra (journey-test stack).
+#
+# ISOLATION MODEL (binding, plan-v2 §5 T1a-11a): ONE composition per run.
+# Shared-local-infra mode is FORBIDDEN — never point the journey harness at the
+# dev stack. Every run gets dedicated containers + volumes via a distinct
+# compose project name; tear down with `down -v` when the run ends.
+#
+# This file is INFRA-ONLY (postgres / redis / typesense / nats — the same four
+# services and pinned image versions as the dev docker-compose.yml). No compose
+# file anywhere runs the apps: api + commerce boot via the process-compose test
+# profile (process-compose.test.yaml, T1a-11b) loading .env.test.
+#
+# Canonical invocation (run id keeps parallel runs and volumes apart):
+#   docker compose --env-file .env.test -f docker-compose.test.yml -p ibx-test-<run-id> up --wait
+#   ... run journeys ...
+#   docker compose --env-file .env.test -f docker-compose.test.yml -p ibx-test-<run-id> down -v
+#
+# Coexistence with the dev stack:
+#   • project name: defaults to "ibx-test" (top-level `name:`), dev is "ibatexas"
+#     (directory-derived) → container names and named volumes never collide.
+#   • host ports: ALL interpolation vars are IBX_TEST_*-prefixed so the dev .env
+#     (which docker compose auto-loads for substitution when run from the repo
+#     root) can never drag the test stack onto dev ports. Defaults are distinct
+#     from dev: postgres 5434 (dev 5433), redis 6380 (dev 6379), typesense 8109
+#     (dev 8108), nats 4223/8223 (dev 4222/8222). All bound to 127.0.0.1.
+#   • no container_name pins (dev pins ibatexas-*) → compose derives
+#     <project>-<service>-1 per run.
+#
+# Apps resolve these addresses purely from env (.env.test → DATABASE_URL,
+# REDIS_URL, TYPESENSE_HOST/PORT, NATS_URL) via infraEndpoints() in
+# packages/cli/src/services.ts — the port source of truth. Keep .env.test's
+# IBX_TEST_* values and its URL vars in sync (scripts/gen-env-test.sh does).
+#
+# Defense-in-depth on top of dedicated infra: .env.test points REDIS_URL at
+# DB index 1 (BullMQ's "ibx" jobId prefix is hardcoded, not APP_ENV-namespaced),
+# and uses a distinct Postgres database name (ibatexas_test) so accidental
+# cross-wiring to the dev stack fails loudly instead of silently sharing state.
+
+name: ibx-test
+
+services:
+
+  postgres:
+    # DEVIATION from the dev image (postgres:17-alpine), found by T1a-11b: the
+    # claustrum grounding migration (001-create-claustrum-grounding-docs.sql,
+    # an `ibx bootstrap` counted layer) needs the pgvector extension, which the
+    # alpine image does not ship — bootstrap against this stack fails with
+    # `extension "vector" is not available`. pgvector/pgvector:pg17 is the
+    # official postgres:17 image + pgvector preinstalled (same env/healthcheck
+    # semantics).
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: ${IBX_TEST_POSTGRES_USER:-ibatexas}
+      POSTGRES_PASSWORD: ${IBX_TEST_POSTGRES_PASSWORD:-ibatexas-test}
+      POSTGRES_DB: ${IBX_TEST_POSTGRES_DB:-ibatexas_test}
+    ports:
+      - "127.0.0.1:${IBX_TEST_POSTGRES_PORT:-5434}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${IBX_TEST_POSTGRES_USER:-ibatexas}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--requirepass", "${IBX_TEST_REDIS_PASSWORD:-localdev-test}"]
+    ports:
+      - "127.0.0.1:${IBX_TEST_REDIS_PORT:-6380}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${IBX_TEST_REDIS_PASSWORD:-localdev-test}", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  typesense:
+    image: typesense/typesense:27.1
+    environment:
+      TYPESENSE_DATA_DIR: /data
+      TYPESENSE_API_KEY: ${IBX_TEST_TYPESENSE_API_KEY:-ibatexas-test-key}
+    ports:
+      - "127.0.0.1:${IBX_TEST_TYPESENSE_PORT:-8109}:8108"
+    volumes:
+      - typesense_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 5 bash -c 'echo > /dev/tcp/localhost/8108' || exit 1"]
+      interval: 5s
+      timeout: 10s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  nats:
+    image: nats:2.11-alpine
+    # T3-10: server-side auth — config-driven boot (the conf carries auth +
+    # jetstream + monitor, replacing the old flag-style command). Three nkey
+    # users in one account (infra/nats/nats-server.test-plane.conf): the SUT
+    # app (publish+subscribe), the T1b-2 journeys capture (SUBSCRIBE-ONLY,
+    # enforced by the server), and the T3-9 trigger publisher (publish
+    # ibatexas.> only). The public keys are interpolated from .env.test
+    # (IBX_TEST_*-prefixed per this file's convention; no defaults — the :?
+    # guards fail loudly on a stale .env.test: regenerate with
+    # ./scripts/gen-env-test.sh --force).
+    command: ["-c", "/etc/nats/nats-server.conf"]
+    environment:
+      NATS_APP_NKEY_PUBLIC: ${IBX_TEST_NATS_APP_NKEY_PUBLIC:?stale .env.test — regenerate with ./scripts/gen-env-test.sh --force (T3-10 NATS auth)}
+      NATS_CAPTURE_NKEY_PUBLIC: ${IBX_TEST_NATS_CAPTURE_NKEY_PUBLIC:?stale .env.test — regenerate with ./scripts/gen-env-test.sh --force (T3-10 NATS auth)}
+      NATS_TRIGGER_NKEY_PUBLIC: ${IBX_TEST_NATS_TRIGGER_NKEY_PUBLIC:?stale .env.test — regenerate with ./scripts/gen-env-test.sh --force (T3-10 NATS auth)}
+    ports:
+      - "127.0.0.1:${IBX_TEST_NATS_PORT:-4223}:4222"   # client connections
+      - "127.0.0.1:${IBX_TEST_NATS_MONITOR_PORT:-8223}:8222"   # monitoring UI
+    volumes:
+      - ./infra/nats/nats-server.test-plane.conf:/etc/nats/nats-server.conf:ro
+      - nats_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 4222 || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+
+# Named volumes are project-scoped (compose prefixes them with the project
+# name: ibx-test-<run-id>_postgres_data ≠ dev's ibatexas_postgres_data) and
+# ephemeral by contract — always `down -v` at the end of a run.
+volumes:
+  postgres_data:
+  redis_data:
+  typesense_data:
+  nats_data:

@@ -15,6 +15,8 @@ import { registerIntelligenceCommands } from "./commands/intelligence.js"
 import { registerTestCommands } from "./commands/test.js"
 import { registerTagCommands }  from "./commands/tag.js"
 import { registerScenarioCommands } from "./commands/scenario.js"
+import { registerJourneyCommands } from "./commands/journey.js"
+import { registerGraphCommands } from "./commands/graph.js"
 import { registerDebugCommands } from "./commands/debug.js"
 import { registerInspectCommands } from "./commands/inspect.js"
 import { registerDoctorCommands } from "./commands/doctor.js"
@@ -148,6 +150,13 @@ function buildHelpText(): string {
       ],
     },
     {
+      title: "Journey",
+      commands: [
+        { usage: "journey lint",            desc: "Lint the journey registry (--json, --verify-file)" },
+        { usage: "graph export",            desc: "Regenerate the four derived graphs (--check = drift gate)" },
+      ],
+    },
+    {
       title: "Matrix",
       commands: [
         { usage: "matrix list",              desc: "List matrices with variable/state counts" },
@@ -201,7 +210,6 @@ function buildHelpText(): string {
         { usage: "chat list",              desc: "List active Redis sessions" },
         { usage: "chat dump <sessionId>",  desc: "Pretty-print conversation (--source, --json)" },
         { usage: "chat clean [sessionId]", desc: "Delete conversation data (--dry-run)" },
-        { usage: "chat scenarios",         desc: "Run E2E conversation test scenarios (--filter, --list)" },
       ],
     },
     {
@@ -349,6 +357,8 @@ const groupedCommands: { name: string; register: (cmd: Command) => void; descrip
   { name: "test",     register: registerTestCommands },
   { name: "tag",      register: registerTagCommands },
   { name: "scenario", register: registerScenarioCommands },
+  { name: "journey",  register: registerJourneyCommands,  description: "Journeys — LLM-driven journey registry gates (test plane)" },
+  { name: "graph",    register: registerGraphCommands,    description: "Graphs — derived capability/journeys/run/impact graphs + drift gate (test plane)" },
   { name: "debug",    register: registerDebugCommands },
   { name: "inspect",  register: registerInspectCommands },
   { name: "matrix",   register: registerMatrixCommands },
