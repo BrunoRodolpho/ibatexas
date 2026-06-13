@@ -17,6 +17,7 @@ import { registerTagCommands }  from "./commands/tag.js"
 import { registerScenarioCommands } from "./commands/scenario.js"
 import { registerJourneyCommands } from "./commands/journey.js"
 import { registerGraphCommands } from "./commands/graph.js"
+import { registerAgentCommands } from "./commands/agent.js"
 import { registerDebugCommands } from "./commands/debug.js"
 import { registerInspectCommands } from "./commands/inspect.js"
 import { registerDoctorCommands } from "./commands/doctor.js"
@@ -359,6 +360,7 @@ const groupedCommands: { name: string; register: (cmd: Command) => void; descrip
   { name: "scenario", register: registerScenarioCommands },
   { name: "journey",  register: registerJourneyCommands,  description: "Journeys — LLM-driven journey registry gates (test plane)" },
   { name: "graph",    register: registerGraphCommands,    description: "Graphs — derived capability/journeys/run/impact graphs + drift gate (test plane)" },
+  { name: "agent",    register: registerAgentCommands,    description: "Agents — managed-agent registry + test-plane trigger injection (test plane)" },
   { name: "debug",    register: registerDebugCommands },
   { name: "inspect",  register: registerInspectCommands },
   { name: "matrix",   register: registerMatrixCommands },

@@ -55,6 +55,16 @@ export {
 } from "./run-suite-cli.js"
 export { loadTestEnv, parseEnvFile, type LoadTestEnvResult } from "./test-env.js"
 
+// T3-9 — the single allowlisted test-plane NATS publish: wake a managed agent
+// by injecting its trigger event (fingerprint-gated — refuses without
+// IBX_TEST_FINGERPRINT). Consumed by `ibx agent trigger` (CLI test plane) and
+// managed-agent journeys; never by the persona driver (grep-gated).
+export {
+  injectPixFailureTrigger,
+  TriggerInjectFingerprintRequiredError,
+  type PixFailureTriggerOptions,
+} from "./trigger-inject.js"
+
 // T1b-4 — flake policy WITH OWNERSHIP (retry-once = yellow; quarantine after
 // 2 consecutive flaky nights; manual green-twice de-quarantine) + the
 // nightly mode of `ibx journey run --suite`.
