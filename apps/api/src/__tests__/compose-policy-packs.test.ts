@@ -13,6 +13,7 @@ import { describe, expect, it } from "vitest";
 import type { PackV0 } from "@adjudicate/core";
 import { readGuardMetadata, type Guard, type PolicyBundle } from "@adjudicate/core/kernel";
 import {
+  agentKillSwitchGuard,
   agentScopeGuard,
   agentBudgetGuards,
   buildIbatexasPolicyPacks,
@@ -63,15 +64,17 @@ describe("buildIbatexasPolicyPacks", () => {
     }
   });
 
-  it("prepends the adopter AUTH guards (agent scope first, then per-agent budgets) to every pack's auth phase", () => {
+  it("prepends the adopter AUTH guards (kill switch first, then agent scope, then per-agent budgets) to every pack's auth phase", () => {
     for (const p of composed) {
       const auth = (p.policy as PolicyBundle<string, unknown, unknown>).authGuards;
-      expect(auth[0]).toBe(agentScopeGuard);
+      // T3-5: a killed agent REFUSEs before scope/budget are even considered.
+      expect(auth[0]).toBe(agentKillSwitchGuard);
+      expect(auth[1]).toBe(agentScopeGuard);
       for (const [i, budgetGuard] of agentBudgetGuards.entries()) {
-        expect(auth[1 + i]).toBe(budgetGuard);
+        expect(auth[2 + i]).toBe(budgetGuard);
       }
       // The pack's own auth guard follows, unmoved.
-      expect(auth[1 + agentBudgetGuards.length]).toBe(ownAuthGuard);
+      expect(auth[2 + agentBudgetGuards.length]).toBe(ownAuthGuard);
       expect(auth.length).toBe(IBATEXAS_ADOPTER_AUTH_GUARDS.length + 1);
     }
   });
@@ -80,7 +83,8 @@ describe("buildIbatexasPolicyPacks", () => {
     const bundle = composed[0]!.policy as PolicyBundle<string, unknown, unknown>;
     expect(readGuardMetadata(bundle.business[0]!)?.name).toBe("sessionTokenBudget");
     expect(readGuardMetadata(bundle.business[1]!)?.name).toBe("confirmOnAutoResolvedRef");
-    expect(readGuardMetadata(bundle.authGuards[0]!)?.name).toBe("agentScope");
+    expect(readGuardMetadata(bundle.authGuards[0]!)?.name).toBe("agentKillSwitch");
+    expect(readGuardMetadata(bundle.authGuards[1]!)?.name).toBe("agentScope");
     for (const g of agentBudgetGuards) {
       expect(readGuardMetadata(g)?.name).toMatch(/^agentTokenBudget:/);
     }
@@ -110,6 +114,7 @@ describe("buildIbatexasPolicyPacks", () => {
     const bundle = def[0]!.policy as PolicyBundle<string, unknown, unknown>;
     expect(bundle.business[0]).toBe(sessionTokenBudgetGuard);
     expect(bundle.business[1]).toBe(confirmOnAutoResolveGuard);
-    expect(bundle.authGuards[0]).toBe(agentScopeGuard);
+    expect(bundle.authGuards[0]).toBe(agentKillSwitchGuard);
+    expect(bundle.authGuards[1]).toBe(agentScopeGuard);
   });
 });

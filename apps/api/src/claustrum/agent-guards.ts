@@ -53,6 +53,13 @@ export const AGENT_SCOPE_REFUSAL_CODE = "agent_scope_violation";
 export const AGENT_TOKENS_CONSUMED_CTX_KEY = "agentTokensConsumed";
 
 /**
+ * Machine-readable refusal code for a kill-switched agent. Journey oracles and
+ * the T3-6 shadow monitors assert this exact string; the decision also carries
+ * a `kill.ACTIVE` basis (the kernel's own kill-switch basis category).
+ */
+export const AGENT_KILL_SWITCH_REFUSAL_CODE = "agent_kill_switch_active";
+
+/**
  * Parse the agent namespace prefix (`agent:<id>@<version>`) out of a
  * sessionId, or null when the sessionId is not agent-namespaced. The
  * namespace is the segment up to the first `:` after the `agent:` marker
@@ -143,6 +150,51 @@ export function createAgentScopeGuard(
     return null;
   };
   return nameGuard("agentScope", guard);
+}
+
+const refuseKilled = (detail: string) =>
+  refuse(
+    "SECURITY",
+    AGENT_KILL_SWITCH_REFUSAL_CODE,
+    "Este agente está temporariamente desativado.",
+    detail,
+  );
+
+/**
+ * AUTH-phase kill-switch guard. REFUSEs every `agent:`-namespaced envelope whose
+ * agent is currently killed (`isKilled` reads the live per-agent state from the
+ * {@link AgentKillSwitchManager}); non-agent traffic and live agents pass
+ * through (null). The decision carries a `kill.ACTIVE` basis — the kernel's own
+ * kill-switch basis — so audit/replay treat it identically to a global kill.
+ *
+ * `isKilled` is injected (late-bound at bootstrap to the live manager) so the
+ * guard composes the same way for the conductor AND the pure policy-manifest
+ * exporter / CLI, where it defaults to "never killed" (a kill switch is a
+ * RUNTIME control, not static policy). Pure: an in-memory map lookup, no I/O at
+ * decision time — exactly the kernel's own `RuntimeContext.killSwitch.isKilled()`
+ * posture.
+ */
+export function createAgentKillSwitchGuard(
+  isKilled: (agentNamespace: string) => boolean,
+): Guard<string, unknown, unknown> {
+  const guard: Guard<string, unknown, unknown> = (envelope, _state) => {
+    const namespace = parseAgentSessionNamespace(envelope.actor.sessionId);
+    if (namespace === null) return null;
+    if (!isKilled(namespace)) return null;
+    return decisionRefuse(
+      refuseKilled(
+        `agent namespace "${namespace}" kill switch active (kind "${envelope.kind}")`,
+      ),
+      [
+        basis("kill", BASIS_CODES.kill.ACTIVE, {
+          agentNamespace: namespace,
+          kind: envelope.kind,
+          reason: "agent_kill_switch_active",
+        }),
+      ],
+    );
+  };
+  return nameGuard("agentKillSwitch", guard);
 }
 
 /**

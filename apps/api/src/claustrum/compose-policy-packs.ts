@@ -31,7 +31,11 @@ import type { PackV0 } from "@adjudicate/core";
 import { nameGuard, type Guard, type PolicyBundle } from "@adjudicate/core/kernel";
 import { createTokenBudgetGuard, createConfirmGuard } from "@adjudicate/primitives";
 import { AGENT_REGISTRY } from "@ibatexas/agents";
-import { createAgentBudgetGuards, createAgentScopeGuard } from "./agent-guards.js";
+import {
+  createAgentBudgetGuards,
+  createAgentKillSwitchGuard,
+  createAgentScopeGuard,
+} from "./agent-guards.js";
 
 /** A first-party pack with its K/P/S/C generics erased for heterogeneous storage. */
 export type ErasedPack = PackV0<string, unknown, unknown, unknown>;
@@ -106,18 +110,44 @@ export const IBATEXAS_ADOPTER_BUSINESS_GUARDS: ReadonlyArray<
   Guard<string, unknown, unknown>
 > = [sessionTokenBudgetGuard, confirmOnAutoResolveGuard];
 
-// ── Managed-agent scope + budget guards (T3-4) — AUTH phase ─────────────────
+// ── Managed-agent kill + scope + budget guards (T3-4/T3-5) — AUTH phase ─────
 // Built once over the composed AGENT_REGISTRY (@ibatexas/agents, T3-3) and
-// prepended to EVERY pack's auth phase, in evaluation order: scope first
-// (an out-of-scope envelope REFUSEs before its budget is even considered),
-// then one over-budget ESCALATE guard per agent that declares
-// `budgets.tokensPerDay`. All of them are inert (null) for non-agent traffic.
+// prepended to EVERY pack's auth phase, in evaluation order: KILL first (a
+// killed agent REFUSEs before scope/budget are even considered), then scope
+// (an out-of-scope envelope REFUSEs before its budget), then one over-budget
+// ESCALATE guard per agent that declares `budgets.tokensPerDay`. All are inert
+// (null) for non-agent traffic.
+//
+// The kill guard reads LIVE per-agent state from the runtime
+// AgentKillSwitchManager (T3-5). The guard list is a module-level const built
+// at import — before the manager exists — and is ALSO consumed by the pure
+// policy-manifest exporter / CLI (no manager). So the kill state is read
+// through a late-bound holder: `setAgentKillStateReader()` points it at the
+// live manager at bootstrap; everywhere else it defaults to "never killed" (a
+// kill switch is a runtime control, not static policy — the exported manifest
+// must not depend on it).
+let agentKillStateReader: (agentNamespace: string) => boolean = () => false;
+
+/**
+ * Point the AUTH-phase kill guard at the live per-agent kill state (the
+ * AgentKillSwitchManager). Called once from claustrum-bootstrap after the
+ * manager boots. Idempotent; safe to leave unset (guard then never fires).
+ */
+export function setAgentKillStateReader(
+  reader: (agentNamespace: string) => boolean,
+): void {
+  agentKillStateReader = reader;
+}
+
+export const agentKillSwitchGuard = createAgentKillSwitchGuard((ns) =>
+  agentKillStateReader(ns),
+);
 export const agentScopeGuard = createAgentScopeGuard(AGENT_REGISTRY);
 export const agentBudgetGuards = createAgentBudgetGuards(AGENT_REGISTRY);
 
 export const IBATEXAS_ADOPTER_AUTH_GUARDS: ReadonlyArray<
   Guard<string, unknown, unknown>
-> = [agentScopeGuard, ...agentBudgetGuards];
+> = [agentKillSwitchGuard, agentScopeGuard, ...agentBudgetGuards];
 
 /**
  * Build the production policy-pack list: each first-party pack with the
