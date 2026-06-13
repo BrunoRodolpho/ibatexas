@@ -15,7 +15,7 @@
 //                            the 5 packs' CapabilityPlanners — RC-A1 Phase A.1)
 //   - ResponderPort          naiveResponder() (uses ModelProvider)
 //   - ExplainerPort          ibatexasExplainer() (pt-BR templates)
-//   - HandoffPort            noopHandoff() (TODO: wire Slack/PagerDuty)
+//   - HandoffPort            natsHandoff() (ESCALATE → support.handoff_requested)
 //   - TelemetryPort          fastifyTelemetry() (pino + prom-client)
 //   - SessionPort            redisSessionStore() (Redis-backed sessions)
 //   - ToolRegistry           ibatexas tool packs registered as ToolDefinitions
@@ -99,6 +99,7 @@ import {
 
 import { prisma } from "@ibatexas/domain";
 import { emitLlmCall, getRedisClient, rk } from "@ibatexas/tools";
+import { publishNatsEvent } from "@ibatexas/nats-client";
 
 // Audit sink — dev's audit pipeline owns the durable AuditRecord store. The
 // adjudicator consumes the sink composed by `@ibatexas/audit-sink` (boot-time
@@ -810,18 +811,50 @@ export function ibatexasExplainer(): ExplainerPort {
   };
 }
 
-function noopHandoff(): HandoffPort {
+/**
+ * HandoffPort (T3-8): an ESCALATE decision routes to staff via the existing
+ * `support.handoff_requested` NATS surface (subscribers/handoff-subscriber.ts →
+ * WhatsApp staff notification; same event the `handoff_to_human` tool publishes).
+ * The envelope's `actor.sessionId` (a customer/agent session — agent ESCALATEs
+ * carry the `agent:` namespace) is the correlation + dedup key the subscriber
+ * uses (`handoff:${sessionId}`), so a redelivery never double-pages.
+ *
+ * `queue()` MUST NOT throw: the kernel dispatcher catches a throw here as a
+ * `handoff_threw` failure and surfaces an operator-facing message instead of the
+ * intended ESCALATE. A failed publish therefore degrades to a logged error.
+ *
+ * `publish` is injected (default `publishNatsEvent`) so the port is unit-testable
+ * without a broker. NOTE: JOURNEY-003 (checkout-failure-recovery) stays blocked
+ * on `chat-confirmation-resume` — T3-8 closes only `handoff-port-noop`; no phase
+ * closes the web confirmation-resume product gap.
+ */
+export function natsHandoff(
+  publish: (
+    event: string,
+    payload: Record<string, unknown>,
+  ) => Promise<void> = publishNatsEvent,
+): HandoffPort {
   return {
     async queue(envelope: IntentEnvelope, reason: string): Promise<void> {
-      // TODO: wire Slack/PagerDuty. For now, fail-loud in logs only.
-      logger.warn(
-        {
-          component: "handoff",
-          intentHash: (envelope as { intentHash?: string }).intentHash ?? "?",
+      const sessionId = envelope.actor.sessionId;
+      try {
+        await publish("support.handoff_requested", {
+          sessionId,
           reason,
-        },
-        "handoff queued (noop — Slack/PagerDuty not wired)",
-      );
+          intentKind: envelope.kind,
+        });
+        logger.info(
+          { component: "handoff", sessionId, intentKind: envelope.kind, reason },
+          "ESCALATE → handoff queued (support.handoff_requested)",
+        );
+      } catch (err) {
+        // Swallow — queue() must not throw (see header). The subscriber's
+        // idempotency guard absorbs a later redelivery if the publish recovers.
+        logger.error(
+          { component: "handoff", sessionId, reason, err: String(err) },
+          "handoff publish failed (swallowed — queue() must not throw)",
+        );
+      }
     },
   };
 }
@@ -1549,7 +1582,7 @@ export async function bootstrapClaustrum(
     }),
     responder: naiveResponder(modelProvider, anthropicModelId),
     explainer: ibatexasExplainer(),
-    handoff: noopHandoff(),
+    handoff: natsHandoff(),
     telemetry: fastifyTelemetry(tokenUsageStore),
     session: redisSessionStore(),
     tools: toolRegistry,
