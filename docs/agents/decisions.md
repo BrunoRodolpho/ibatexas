@@ -172,6 +172,21 @@ prompts/tool results); JOURNEY-002/005 chat expects likely unexecutable the same
 Phase 1b); order-cancel route rate limit (5/10min/customer) caps same-stack JOURNEY-001 attempts at 4
 per window.
 
+## D-017 — Phase 3 execution pins (set before launch)
+
+- **Upstream consumption without npm publish**: T3-0's claustrum changes (ChannelKind widening +
+  sessionKey lock-key strategy) cannot be published from this session. Strategy: build claustrum
+  locally, `pnpm pack` tarballs into `ibatexas/local-tarballs/`, pin the affected `@claustrum/*` deps
+  to `file:` tarballs on agents/phase-3 (in-repo precedent: the pnpm store shows prior
+  `file+..+local-tarballs+claustrum-core` pins). Real publish + registry pin bump is a push/release
+  item for the user (recorded in phase-1b-pending-push.md).
+- **Stage-0 soak is calendar-gated**: the plan requires ≥1 week journaled Stage-0 shadow before
+  Stage 1. Build + activate + validate the mechanics now (multiple trigger cycles live); the 7-day
+  soak clock starts at activation and the Stage-1 flip is gated on it — recorded with the activation
+  date, not faked.
+- **Agent sessionId**: `agent:<id>@<ver>:entity:<entityId>` with the `agent:` prefix written UNHASHED
+  to intent_audit (redactor change scoped to Phase 3; T1b-3/T2-4 filters already expect it).
+
 ## D-016 — Phase 2 outcomes (2026-06-12, all 9 tasks done; exit criterion verified fresh)
 
 Commits 3d48baa (T2-1), dac0260 (T2-2a), ef447ee (T2-2b), 8471bf2+a0fb5fb (T2-4), c24e1cd (T2-3),
