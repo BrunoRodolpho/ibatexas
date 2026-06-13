@@ -71,11 +71,27 @@
  *                             specifies: name "Usuário Removido", phone
  *                             `anonymized:<sha-prefix>` sentinel, email and
  *                             cpf null.
+ *
+ * T2-2b addition (bound by harness/run-journey-cli.ts):
+ *
+ *   payment.goal-state      → the run's own order's ACTIVE payment row
+ *                             (ibx_domain.payments, createdAt-desc with
+ *                             terminal statuses excluded — the SUT's
+ *                             getActiveByOrderId semantics) reaches
+ *                             `args.status` (and `args.method` when
+ *                             declared) within the goal-state budget. The
+ *                             payment-plane sibling of order.goal-state:
+ *                             JOURNEY-015 asserts the kernel-routed paid
+ *                             transition (T2-1 fixture), JOURNEY-014 the
+ *                             post-method-switch pix/awaiting_payment row.
+ *                             A missing active payment row is a FAILURE
+ *                             (never vacuous).
  */
 export const KNOWN_INVARIANT_IDS: ReadonlySet<string> = new Set([
   "order.goal-state",
   "reservation.goal-state",
   "cart.goal-state",
+  "payment.goal-state",
   "audit.refusal-basis",
   "audit.record.verified",
   "audit.trajectory.exact",

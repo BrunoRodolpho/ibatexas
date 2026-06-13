@@ -22,6 +22,37 @@
 # surface the customer's active in-flight PIX charge (and/or widening
 # journeys to the whatsapp channel) — likely alongside T2-1's
 # kernel-routed paid-state fixture.
+#
+# ── T2-2b RE-VERIFICATION (2026-06-12, post-T2-1 — the gap STANDS, and a
+#    second blocker was found):
+#
+#  * web-pix-pending-ctx re-confirmed against current code: the HTTP
+#    checkout route documents the pin explicitly ("paymentStatus stays null
+#    via the builder so the PIX-pending guard does NOT DEFER at checkout —
+#    unchanged", routes/cart.ts:1046), and the guard composition is
+#    unchanged (deferOnPendingPix matches order.checkout.create only,
+#    pack-orders policies.ts:405-428). No HTTP surface reaches the DEFER:
+#    payment-status/retry/regenerate routes never build an
+#    order.checkout.create envelope, and the regenerate route 422s unless
+#    the payment is already `payment_expired`.
+#
+#  * NEW blocker `test-plane-live-stripe`: even the pix-pending
+#    PRECONDITION is unproducible on the journey test plane — a PIX
+#    checkout EXECUTE calls stripeAdjudicated.paymentIntents.confirm with
+#    payment_method_types ["pix"] against the live Stripe API
+#    (packages/tools/src/cart/create-checkout.ts:71), and the test plane
+#    has no PIX-capable Stripe account (T2-1 ships SIGNED webhooks instead
+#    of live payment-session init for exactly this reason). Acts 2-3 below
+#    (chat PIX checkouts) additionally sit behind chat-order-assembly
+#    (D-014). The DEFER's timeout path (defer parked → 15-min expiry →
+#    defer-resolver resume/refuse) is equally undrivable: nothing can park
+#    the DEFER, `ibx kernel defer/resume` are inspection tools, and
+#    fixture-act governance forbids the harness minting/resuming kernel
+#    decisions itself.
+#
+#  * The EXECUTABLE PIX slice lives in JOURNEY-014 (T2-2b): method-switch
+#    to PIX over the public HTTP surface + the chat confirm gate on
+#    payment.pix.regenerate — the one planner-advertised payment kind.
 id: JOURNEY-007
 title: Checkout with a pending PIX charge defers until confirmation
 businessCase: >-
@@ -37,7 +68,8 @@ channel: web
 status: blocked
 blocked_by:
   - web-pix-pending-ctx
-source: docs/agents/plan-v2.md §5 T1a-12 (gap discovered during authoring)
+  - test-plane-live-stripe
+source: docs/agents/plan-v2.md §5 T1a-12 (gap discovered during authoring; re-verified + extended by T2-2b)
 params:
   authenticated: true
   customerPhone: "+5519900000007"

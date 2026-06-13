@@ -125,7 +125,8 @@ jobs:
         run: ./scripts/test-stack-up.sh
 
       # ── THE suite (T1b-4 nightly contract) ──────────────────────────────
-      # k=4 money flows (JOURNEY-001 — the place+cancel money path), k=1
+      # k=4 money flows (JOURNEY-001 place+cancel; JOURNEY-015 paid-state —
+      # storefront checkout EXECUTE + kernel-routed webhook paid, T2-2b), k=1
       # exploratory; $50 dollar abort (plan §7); retry-once with the 600s
       # rate-limit spacing; --nightly is the ONLY mode that touches the
       # flake ledger. continue-on-error so artifacts/issues/teardown always
@@ -136,7 +137,7 @@ jobs:
         run: |
           mkdir -p artifacts
           ibx journey run --suite --nightly \
-            --k 1 --k-money 4 --money-flows JOURNEY-001 \
+            --k 1 --k-money 4 --money-flows JOURNEY-001,JOURNEY-015 \
             --budget-usd 50 --retry-delay-seconds 600 \
             --json > artifacts/nightly-suite.json
 

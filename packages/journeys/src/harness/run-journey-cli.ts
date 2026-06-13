@@ -861,7 +861,14 @@ function buildExecutors(args: {
     } catch {
       /* body read best-effort */
     }
-    const ok = response.status >= 200 && response.status < 300
+    // T2-2b: a declared expectStatus PINS the status (exact match) — the
+    // executable-spec contract for routes whose correct behaviour is
+    // non-2xx (gateway REQUEST_CONFIRMATION/DEFER → 202, ESCALATE → 503).
+    // Absent → the original 2xx-pass contract.
+    const ok =
+      act.expectStatus !== undefined
+        ? response.status === act.expectStatus
+        : response.status >= 200 && response.status < 300
 
     // Declared response captures: varName → dot-path into the JSON response.
     if (ok && act.capture !== undefined) {
@@ -1080,6 +1087,45 @@ async function runVerifyPhase(args: {
                 `(version=${row?.version ?? "?"}, barrier ${settled.elapsedMs}ms/${settled.polls} polls` +
                 `${typeof orderType === "string" ? `, orderType=${orderType}` : ""}` +
                 `${typeof containsItemHandle === "string" ? `, contains ${containsItemHandle} of [${(observedHandles ?? []).join(", ")}]` : ""})`,
+        })
+      } else if (id === "payment.goal-state") {
+        // T2-2b: the run's own order's ACTIVE payment row must reach
+        // args.status (and, when declared, args.method) on the oracle plane.
+        // Same reader the paid-state fixture barriers on
+        // (domain.activePaymentByOrderId — createdAt-desc, terminal-status
+        // excluded, the SUT's getActiveByOrderId semantics), polled up to
+        // the goal-state budget so projector/BullMQ lag can never flake it.
+        // Never vacuous: a missing active payment row is a FAILURE.
+        const status = verify.args?.["status"]
+        if (typeof status !== "string") {
+          outcomes.push({ invariant: id, ok: false, detail: "args.status missing" })
+          continue
+        }
+        const method = verify.args?.["method"]
+        if (method !== undefined && typeof method !== "string") {
+          outcomes.push({ invariant: id, ok: false, detail: "args.method must be a string" })
+          continue
+        }
+        const orderId = await resolveRunOrderId()
+        const deadline = Date.now() + GOAL_STATE_TIMEOUT_MS
+        let row = await domain.activePaymentByOrderId(orderId)
+        const matches = (): boolean =>
+          row !== null &&
+          row.status === status &&
+          (method === undefined || row.method === method)
+        while (!matches() && Date.now() < deadline) {
+          await new Promise((r) => setTimeout(r, 250))
+          row = await domain.activePaymentByOrderId(orderId)
+        }
+        outcomes.push({
+          invariant: id,
+          ok: matches(),
+          detail:
+            row === null
+              ? `order ${orderId} has NO active payment row (expected status=${status}${method !== undefined ? ` method=${method}` : ""})`
+              : matches()
+                ? `order ${orderId} active payment reached status=${row.status} method=${row.method} (${row.amountInCentavos} centavos)`
+                : `order ${orderId} active payment is status=${row.status} method=${row.method}, expected status=${status}${method !== undefined ? ` method=${method}` : ""}`,
         })
       } else if (id === "reservation.goal-state") {
         // T2-2a: the run's OWN reservation (ctx.vars.reservationId — captured

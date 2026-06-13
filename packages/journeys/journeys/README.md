@@ -18,7 +18,12 @@ README is the only content.
      `utterance` (scripted turn) and/or `goal` (LLM-driver target); at
      least one is required.
    - `http` — public HTTP surface only (`method`, `path`, optional `body`,
-     optional `asRole: anonymous|customer|staff`).
+     optional `asRole: anonymous|customer|staff`, optional `capture`
+     varName → dot-path response extraction, optional `expectStatus`
+     (T2-2b) — when declared the act passes iff the response status EQUALS
+     it, the executable-spec pin for routes whose correct behaviour is
+     non-2xx (gateway REQUEST_CONFIRMATION/DEFER → 202, ESCALATE → 503);
+     absent → the default 2xx-pass contract).
    - `fixture` — **PRECONDITIONS ONLY** via existing seed helpers
      (`seed` + `params`). A fixture may NEVER publish NATS, mint
      SYSTEM-taint envelopes, or write state that later appears in
@@ -57,7 +62,9 @@ README is the only content.
    `DecisionKind` values (`EXECUTE`, `REFUSE`, `ESCALATE`,
    `REQUEST_CONFIRMATION`, `DEFER`, `REWRITE`).
 6. **`verify`** — invariant id + harness-bound args; ids must resolve in
-   the harness registry (lint-checked).
+   the harness registry (lint-checked). `payment.goal-state` (T2-2b)
+   asserts the run order's ACTIVE payment row (`args.status`, optional
+   `args.method`) — the payment-plane sibling of `order.goal-state`.
 7. **`status: blocked`** requires a non-empty `blocked_by` list naming the
    blocking gaps; `status: active` requires it empty.
 8. **`source`** — provenance: the plan/spec section that authored the

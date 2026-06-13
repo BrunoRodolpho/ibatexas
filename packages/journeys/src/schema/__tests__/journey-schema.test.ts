@@ -77,6 +77,46 @@ describe("JourneyFileSchema — valid documents", () => {
     expect(result.ok).toBe(true)
     if (result.ok) expect(result.journey.blocked_by).toEqual([])
   })
+
+  it("accepts http acts pinning a non-2xx expectStatus (T2-2b)", () => {
+    // The executable-spec pin for correct-non-2xx routes: the gateway maps
+    // REQUEST_CONFIRMATION/DEFER → 202 and ESCALATE → 503 (JOURNEY-016's
+    // large-ticket confirm + escalated-cancel legs).
+    for (const expectStatus of [202, 503]) {
+      const doc = {
+        ...validDoc(),
+        acts: [
+          { kind: "chat", goal: "Continuar o pedido." },
+          {
+            kind: "http",
+            method: "POST",
+            path: "/api/orders/:orderId/cancel",
+            asRole: "customer",
+            expectStatus,
+          },
+        ],
+      }
+      expect(validateJourney(doc).ok).toBe(true)
+    }
+  })
+
+  it("rejects a non-HTTP-status expectStatus", () => {
+    for (const expectStatus of [42, 600, 202.5, "202"]) {
+      const doc = {
+        ...validDoc(),
+        acts: [
+          {
+            kind: "http",
+            method: "GET",
+            path: "/api/me",
+            asRole: "customer",
+            expectStatus,
+          },
+        ],
+      }
+      expect(validateJourney(doc).ok).toBe(false)
+    }
+  })
 })
 
 describe("JourneyFileSchema — named errors", () => {

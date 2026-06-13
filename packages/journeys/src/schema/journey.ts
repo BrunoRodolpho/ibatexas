@@ -140,6 +140,15 @@ export const HttpActSchema = z
     /** Auth identity for the call; executors default to `anonymous`. */
     asRole: z.enum(["anonymous", "customer", "staff"]).optional(),
     /**
+     * Expected HTTP status (T2-2b). When declared, the act passes iff the
+     * response status EQUALS it — the executable-spec pin for routes whose
+     * CORRECT behaviour is non-2xx (the customer-intent gateway maps
+     * REQUEST_CONFIRMATION/DEFER → 202 and ESCALATE → 503; JOURNEY-016's
+     * large-ticket confirm + escalated-cancel legs need both). Absent →
+     * the default 2xx-pass contract is unchanged.
+     */
+    expectStatus: z.number().int().min(100).max(599).optional(),
+    /**
      * Response captures: varName → dot-path into the parsed JSON response
      * (e.g. `{ cartId: "cart.id" }`). The harness surfaces each captured
      * value into ctx.vars for later acts (T1a-13).
