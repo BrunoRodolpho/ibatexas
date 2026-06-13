@@ -4,11 +4,13 @@
 // (the pt-BR hard rule covers user-facing product surfaces; recorded in
 // the T2-5 decision notes).
 
-import { useEffect, useState, type ReactNode } from "react"
+import { useEffect, useRef, useState, type ReactNode } from "react"
 import { CoverageMatrixView } from "./components/CoverageMatrixView"
 import { GraphView } from "./components/GraphView"
+import { RunControls } from "./components/RunControls"
 import { RunExplorer } from "./components/RunExplorer"
 import { artifactsBase, fetchArtifactJson, fetchArtifactText, type ArtifactState } from "./lib/artifacts"
+import { qaConfig } from "./lib/qaControl"
 import { parseTraceJsonl, type ParsedTrace } from "./lib/trace"
 import type { CoverageBaseline, CoverageMatrix, GraphDocument, PriceTable } from "./types"
 
@@ -63,6 +65,12 @@ function Pending<T>({ state, children }: { state: ArtifactState<T>; children: (d
 
 export default function App() {
   const [tab, setTab] = useState<TabId>("capability")
+
+  // WS-B: when QA-control is configured, the run-explorer rail gains RunControls.
+  // The loader ref lets RunControls (in the rail) push a completed run's trace
+  // into the RunExplorer view (sibling, both under the same Workbench).
+  const qa = qaConfig()
+  const loaderRef = useRef<((trace: ParsedTrace, source: string) => void) | null>(null)
 
   const capability = useArtifact(() =>
     fetchArtifactJson<GraphDocument>(GRAPH_PATHS["capability"]!),
@@ -130,6 +138,17 @@ export default function App() {
                 initialTrace={parsed}
                 initialSource="committed fixture (packages/journeys/graphs/fixtures/run-trace.jsonl)"
                 priceTable={priceTable.status === "ready" ? priceTable.data : null}
+                registerLoader={(fn) => {
+                  loaderRef.current = fn
+                }}
+                controls={
+                  qa !== null ? (
+                    <RunControls
+                      config={qa}
+                      onTrace={(t, s) => loaderRef.current?.(t, s)}
+                    />
+                  ) : undefined
+                }
               />
             )}
           </Pending>
