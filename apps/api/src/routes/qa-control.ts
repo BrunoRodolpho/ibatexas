@@ -224,13 +224,18 @@ export async function qaControlRoutes(server: FastifyInstance): Promise<void> {
     }
   });
 
+  // Every route does filesystem access (and the run routes spawn processes), so
+  // bound them with the global @fastify/rate-limit (registerRateLimit, server.ts)
+  // via explicit per-route config — generous for a single-operator dev surface.
+  const RL = { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } } as const;
+
   // ── Catalog (feeds the viewer's three run pickers) ──────────────────────────
-  server.get("/internal/qa/journeys", async () => ({ journeys: await listJourneys() }));
-  server.get("/internal/qa/scenarios", async () => ({ scenarios: await listScenarios() }));
-  server.get("/internal/qa/agents", async () => ({ agents: listAgents() }));
+  server.get("/internal/qa/journeys", RL, async () => ({ journeys: await listJourneys() }));
+  server.get("/internal/qa/scenarios", RL, async () => ({ scenarios: await listScenarios() }));
+  server.get("/internal/qa/agents", RL, async () => ({ agents: listAgents() }));
 
   // ── Run list + trace serving ────────────────────────────────────────────────
-  server.get("/internal/qa/runs", async () => {
+  server.get("/internal/qa/runs", RL, async () => {
     if (!existsSync(RUNS_DIR)) return { runs: [] };
     const entries = await readdir(RUNS_DIR, { withFileTypes: true });
     const runs = await Promise.all(
@@ -247,7 +252,7 @@ export async function qaControlRoutes(server: FastifyInstance): Promise<void> {
     return { runs };
   });
 
-  server.get<{ Params: { id: string } }>("/internal/qa/runs/:id/trace", async (request, reply) => {
+  server.get<{ Params: { id: string } }>("/internal/qa/runs/:id/trace", RL, async (request, reply) => {
     const { id } = request.params;
     if (!/^[A-Za-z0-9_-]+$/.test(id)) {
       return reply.code(400).send({ error: "invalid run id" });
@@ -261,15 +266,15 @@ export async function qaControlRoutes(server: FastifyInstance): Promise<void> {
   });
 
   // ── Lint / graph-export (single streamed command) ───────────────────────────
-  server.post("/internal/qa/lint", async (request, reply) =>
+  server.post("/internal/qa/lint", RL, async (request, reply) =>
     streamBatch(request, reply, [{ kind: "command", args: ["journey", "lint", "--json"], label: "lint" }]),
   );
-  server.post("/internal/qa/graph-export", async (request, reply) =>
+  server.post("/internal/qa/graph-export", RL, async (request, reply) =>
     streamBatch(request, reply, [{ kind: "command", args: ["graph", "export"], label: "graph export" }]),
   );
 
   // ── Batch run (journeys / scenarios / agents — one, many, or all) ───────────
-  server.post("/internal/qa/run", async (request, reply) => {
+  server.post("/internal/qa/run", RL, async (request, reply) => {
     const parsed = RunBodySchema.safeParse(request.body ?? {});
     if (!parsed.success) {
       return reply.code(400).send({ error: "invalid run body", detail: parsed.error.issues });
