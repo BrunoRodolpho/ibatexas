@@ -98,13 +98,19 @@ import {
   type RedisPubSubClient,
 } from "@adjudicate/audit";
 
-import { prisma, createOrderQueryService } from "@ibatexas/domain";
+import { prisma, createOrderQueryService, createPaymentQueryService } from "@ibatexas/domain";
+import { rehydratePaymentState } from "@ibatexas/pack-payments";
 import { emitLlmCall, getRedisClient, rk } from "@ibatexas/tools";
 import { publishNatsEvent } from "@ibatexas/nats-client";
 import { AGENT_REGISTRY } from "@ibatexas/agents";
 // Managed-agent plane (T3-9) — composed + started behind IBX_AGENTS_ENABLED.
 import { SystemChannel } from "./claustrum/system-channel.js";
-import { createAgentApprovalEngine } from "./claustrum/agent-approvals.js";
+import {
+  createAgentApprovalEngine,
+  type AgentApprovalEngine,
+  type AgentApprovalRequest,
+  type AgentApprovalStatus,
+} from "./claustrum/agent-approvals.js";
 import {
   agentsEnabled,
   startManagedAgentPlane,
@@ -181,6 +187,10 @@ import {
 let _conductor: Conductor | null = null;
 // Managed-agent plane singleton (T3-9). Null unless IBX_AGENTS_ENABLED started it.
 let _agentPlane: AgentPlane | null = null;
+// Stage-1 approval engine (T3-7). Hoisted so the staff HTTP approvals route
+// (routes/admin/agent-approvals.ts, WS-D1) can reach the SAME in-memory parked
+// store the plane uses. Null unless IBX_AGENTS_ENABLED created it.
+let _agentApprovals: AgentApprovalEngine | null = null;
 // The per-bootstrap pg Pool (audit readiness probe + audit read paths +
 // pgvector grounding + advisory session lock). Tracked at module level so
 // `resetClaustrumForTests()` can end it — a leaked pool keeps the vitest
@@ -197,6 +207,93 @@ export function getConductor(): Conductor {
     );
   }
   return _conductor;
+}
+
+// ── Stage-1 agent approvals — HTTP gateway (WS-D1) ───────────────────────────
+//
+// Exposes the SAME in-memory approval engine the managed-agent plane uses to the
+// staff HTTP route (routes/admin/agent-approvals.ts), so a Stage-1
+// REQUEST_CONFIRMATION can be resolved over the wire. `resolve(accept:true)`
+// re-adjudicates the IDENTICAL parked envelope through `adjudicateAndAudit` with
+// the confirmation receipt — the kernel substitutes EXECUTE for the matching
+// intentHash WHILE STILL ENFORCING EVERY GUARD, so an honest-but-imperfect
+// rebuilt state can only REFUSE, never falsely EXECUTE. The audited EXECUTE +
+// supersession lineage IS the "confirm→EXECUTE over the wire" this closes; the
+// downstream side effect stays the agent runner's concern (the engine, by
+// design, adjudicates+audits — it carries no executor).
+
+export interface AgentApprovalGateway {
+  list(filter?: { status?: AgentApprovalStatus }): ReadonlyArray<AgentApprovalRequest>;
+  get(token: string): AgentApprovalRequest | null;
+  resolve(input: {
+    token: string;
+    accepted: boolean;
+    resolvedBy: { id: string; displayName?: string };
+  }): ReturnType<AgentApprovalEngine["resolve"]>;
+}
+
+/**
+ * Rebuild the FRESH pack state for an agent approval resume from the real
+ * entity (the agent's only Stage-2 executing kind today is
+ * `payment.pix.regenerate`). Built HONESTLY from `createPaymentQueryService`;
+ * the kernel re-runs every guard on resume, so a missing/stale field yields a
+ * REFUSE, never an unsafe EXECUTE.
+ */
+async function rebuildAgentApprovalState(_kind: string, payload: unknown): Promise<unknown> {
+  const p = (payload ?? {}) as { paymentId?: unknown };
+  const paymentId = typeof p.paymentId === "string" ? p.paymentId : null;
+  if (paymentId === null) return rehydratePaymentState({ ctx: { exists: false } });
+
+  const pay = (await createPaymentQueryService().getById(paymentId)) as {
+    status?: string;
+    method?: string;
+    version?: number;
+    orderId?: string;
+    amountInCentavos?: number;
+    regenerationCount?: number;
+  } | null;
+  if (pay === null) return rehydratePaymentState({ ctx: { exists: false } });
+
+  return rehydratePaymentState({
+    ctx: {
+      exists: true,
+      currentStatus: pay.status,
+      currentMethod: pay.method,
+      version: pay.version,
+      orderId: pay.orderId,
+      amountInCentavos: pay.amountInCentavos,
+      regenerationCount: pay.regenerationCount,
+    },
+  });
+}
+
+/**
+ * The staff approvals gateway, or null when the managed-agent plane is not
+ * enabled (no engine → the route returns 404/empty). `policyForKind` +
+ * `getAuditSink()` are read lazily so they always reflect the live wiring.
+ */
+export function getAgentApprovalGateway(): AgentApprovalGateway | null {
+  const engine = _agentApprovals;
+  if (engine === null) return null;
+  return {
+    list: (filter) => engine.list(filter),
+    get: (token) => engine.get(token),
+    resolve: ({ token, accepted, resolvedBy }) =>
+      engine.resolve({
+        token,
+        accepted,
+        resolvedBy,
+        rebuildState: rebuildAgentApprovalState,
+        policyFor: (k) => {
+          const policy = policyForKind(k);
+          if (policy === null) {
+            throw new Error(`agent approval: no installed pack owns kind "${k}"`);
+          }
+          return policy;
+        },
+        sink: getAuditSink(),
+      }),
+  };
 }
 
 // ── Injectable seams (T2-6a — scripted-pipeline harness) ────────────────────
@@ -333,6 +430,7 @@ export async function resetClaustrumForTests(): Promise<ClaustrumResetReport> {
     }
     _agentPlane = null;
   }
+  _agentApprovals = null;
 
   const conductorCleared = _conductor !== null;
   _conductor = null;
@@ -1645,6 +1743,21 @@ export async function bootstrapClaustrum(
           };
         },
       };
+      // Hoist the approval engine so the staff HTTP route (WS-D1) shares its
+      // parked store with the plane (single in-memory producer).
+      const agentApprovals = createAgentApprovalEngine({
+        notify: async (req) => {
+          // Stage-1 approval pending → page staff via the existing handoff surface.
+          await publishNatsEvent("support.handoff_requested", {
+            sessionId: req.agentNamespace,
+            reason: `Aprovação de agente pendente: ${req.intentKind}`,
+            intentKind: req.intentKind,
+            approvalToken: req.token,
+          });
+        },
+        now: () => new Date().toISOString(),
+      });
+      _agentApprovals = agentApprovals;
       _agentPlane = await startManagedAgentPlane({
         registry: AGENT_REGISTRY,
         shadowPorts: {
@@ -1673,18 +1786,7 @@ export async function bootstrapClaustrum(
         }),
         redis: ledgerClient,
         pubsub,
-        approvals: createAgentApprovalEngine({
-          notify: async (req) => {
-            // Stage-1 approval pending → page staff via the existing handoff surface.
-            await publishNatsEvent("support.handoff_requested", {
-              sessionId: req.agentNamespace,
-              reason: `Aprovação de agente pendente: ${req.intentKind}`,
-              intentKind: req.intentKind,
-              approvalToken: req.token,
-            });
-          },
-          now: () => new Date().toISOString(),
-        }),
+        approvals: agentApprovals,
         resolveCustomer: async (orderId) => {
           const order = await createOrderQueryService().getById(orderId);
           return order?.customerId ?? null;

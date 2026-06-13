@@ -20,9 +20,13 @@
       "JOURNEY-004",
       "JOURNEY-006",
       "JOURNEY-007",
-      "JOURNEY-008"
+      "JOURNEY-008",
+      "JOURNEY-017"
     ],
     "gaps": [
+      "agent-namespace-oracle",
+      "agent-trigger-journey-act",
+      "approvals-http-resolve",
       "chat-confirmation-resume",
       "envelope-ingress-gap",
       "handoff-port-noop",
@@ -32,7 +36,7 @@
       "web-pix-pending-ctx",
       "ws4"
     ],
-    "journeys": 16
+    "journeys": 17
   },
   "nodes": [
     {
@@ -1064,6 +1068,16 @@
       }
     },
     {
+      "id": "journey:JOURNEY-017:act:0",
+      "type": "act",
+      "label": "seed-affected-customer",
+      "meta": {
+        "index": 0,
+        "kind": "fixture",
+        "seed": "seedCustomer"
+      }
+    },
+    {
       "id": "expect:customer.anonymize:EXECUTE",
       "type": "expectation",
       "label": "customer.anonymize → EXECUTE",
@@ -1277,6 +1291,36 @@
       "meta": {
         "decision": "REFUSE",
         "intentKind": "reservation.create"
+      }
+    },
+    {
+      "id": "gap:agent-namespace-oracle",
+      "type": "gap",
+      "label": "agent-namespace-oracle",
+      "meta": {
+        "blocks": [
+          "JOURNEY-017"
+        ]
+      }
+    },
+    {
+      "id": "gap:agent-trigger-journey-act",
+      "type": "gap",
+      "label": "agent-trigger-journey-act",
+      "meta": {
+        "blocks": [
+          "JOURNEY-017"
+        ]
+      }
+    },
+    {
+      "id": "gap:approvals-http-resolve",
+      "type": "gap",
+      "label": "approvals-http-resolve",
+      "meta": {
+        "blocks": [
+          "JOURNEY-017"
+        ]
       }
     },
     {
@@ -1709,6 +1753,31 @@
           "payment.goal-state"
         ]
       }
+    },
+    {
+      "id": "journey:JOURNEY-017",
+      "type": "journey",
+      "label": "JOURNEY-017 — Managed agent remediates a failed PIX charge — regenerate (auto/supervised) or escalate, never silently refund",
+      "meta": {
+        "actCount": 1,
+        "blockedBy": [
+          "agent-trigger-journey-act",
+          "agent-namespace-oracle",
+          "approvals-http-resolve"
+        ],
+        "channel": "web",
+        "expectCount": 0,
+        "journeyId": "JOURNEY-017",
+        "optionalExpectCount": 0,
+        "personaContext": "guest",
+        "source": "docs/agents/plan-v2.md §T3-9 + docs/agents/decisions.md D-018 (PIX remediation acceptance harness)",
+        "status": "blocked",
+        "verifyInvariants": [
+          "audit.trajectory.in_order",
+          "audit.record.verified",
+          "payment.goal-state"
+        ]
+      }
     }
   ],
   "edges": [
@@ -1750,6 +1819,21 @@
     {
       "from": "journey:JOURNEY-008",
       "to": "gap:envelope-ingress-gap",
+      "type": "blocked-by"
+    },
+    {
+      "from": "journey:JOURNEY-017",
+      "to": "gap:agent-namespace-oracle",
+      "type": "blocked-by"
+    },
+    {
+      "from": "journey:JOURNEY-017",
+      "to": "gap:agent-trigger-journey-act",
+      "type": "blocked-by"
+    },
+    {
+      "from": "journey:JOURNEY-017",
+      "to": "gap:approvals-http-resolve",
       "type": "blocked-by"
     },
     {
@@ -2910,6 +2994,14 @@
       "type": "has-act",
       "meta": {
         "index": 7
+      }
+    },
+    {
+      "from": "journey:JOURNEY-017",
+      "to": "journey:JOURNEY-017:act:0",
+      "type": "has-act",
+      "meta": {
+        "index": 0
       }
     }
   ]
