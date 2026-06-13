@@ -27,7 +27,6 @@ overrides:
   '@opentelemetry/exporter-prometheus': '>=0.217.0'
   tmp: '>=0.2.6'
   fast-xml-builder: '>=1.1.7'
-  '@claustrum/core': file:./local-tarballs/claustrum-core-0.3.0.tgz
 
 importers:
 
@@ -161,23 +160,23 @@ importers:
         specifier: ^0.82.0
         version: 0.82.0(zod@4.3.6)
       '@claustrum/anthropic':
-        specifier: file:../../local-tarballs/claustrum-anthropic-0.1.2.tgz
-        version: file:local-tarballs/claustrum-anthropic-0.1.2.tgz(@anthropic-ai/sdk@0.82.0(zod@4.3.6))(@claustrum/core@file:local-tarballs/claustrum-core-0.3.0.tgz(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1))
+        specifier: ^0.1.2
+        version: 0.1.2(@anthropic-ai/sdk@0.82.0(zod@4.3.6))(@claustrum/core@0.3.0(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1))
       '@claustrum/channel-web':
-        specifier: file:../../local-tarballs/claustrum-channel-web-0.1.2.tgz
-        version: file:local-tarballs/claustrum-channel-web-0.1.2.tgz(@adjudicate/core@1.3.0)(@claustrum/core@file:local-tarballs/claustrum-core-0.3.0.tgz(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1))
+        specifier: ^0.1.2
+        version: 0.1.2(@adjudicate/core@1.3.0)(@claustrum/core@0.3.0(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1))
       '@claustrum/channel-whatsapp':
-        specifier: file:../../local-tarballs/claustrum-channel-whatsapp-0.2.0.tgz
-        version: file:local-tarballs/claustrum-channel-whatsapp-0.2.0.tgz(@adjudicate/core@1.3.0)(@claustrum/core@file:local-tarballs/claustrum-core-0.3.0.tgz(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1))
+        specifier: ^0.2.0
+        version: 0.2.0(@adjudicate/core@1.3.0)(@claustrum/core@0.3.0(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1))
       '@claustrum/core':
-        specifier: file:../../local-tarballs/claustrum-core-0.3.0.tgz
-        version: file:local-tarballs/claustrum-core-0.3.0.tgz(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1)
+        specifier: ^0.3.0
+        version: 0.3.0(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1)
       '@claustrum/grounding-pgvector':
-        specifier: file:../../local-tarballs/claustrum-grounding-pgvector-0.1.1.tgz
-        version: file:local-tarballs/claustrum-grounding-pgvector-0.1.1.tgz(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1)
+        specifier: ^0.1.1
+        version: 0.1.1(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1)
       '@claustrum/memory-postgres':
-        specifier: file:../../local-tarballs/claustrum-memory-postgres-0.1.1.tgz
-        version: file:local-tarballs/claustrum-memory-postgres-0.1.1.tgz(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1)(prisma@7.6.0(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(magicast@0.3.5)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(typescript@5.9.3))
+        specifier: ^0.1.1
+        version: 0.1.1(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1)(prisma@7.6.0(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(magicast@0.3.5)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(typescript@5.9.3))
       '@fastify/cookie':
         specifier: ^11.0.2
         version: 11.0.2
@@ -1586,48 +1585,42 @@ packages:
   '@clack/prompts@0.11.0':
     resolution: {integrity: sha512-pMN5FcrEw9hUkZA4f+zLlzivQSeQf5dRGJjSUbvVYDLvpKCdQx5OaknvKzgbtXOizhP+SJJJjqEbOe55uKKfAw==}
 
-  '@claustrum/anthropic@file:local-tarballs/claustrum-anthropic-0.1.2.tgz':
-    resolution: {integrity: sha512-tp8FYxet0Q1OryJxVdgbej0MuPNTwYl/HpH4wOfIivugkv2yhTbyEVMtsq6k/Yo8TsmqwqQK0HbvPx+pLcUNPQ==, tarball: file:local-tarballs/claustrum-anthropic-0.1.2.tgz}
-    version: 0.1.2
+  '@claustrum/anthropic@0.1.2':
+    resolution: {integrity: sha512-tp8FYxet0Q1OryJxVdgbej0MuPNTwYl/HpH4wOfIivugkv2yhTbyEVMtsq6k/Yo8TsmqwqQK0HbvPx+pLcUNPQ==}
     engines: {node: '>=20.0.0'}
     peerDependencies:
       '@anthropic-ai/sdk': ^0.82.0
       '@claustrum/core': ^0.3.0
 
-  '@claustrum/channel-web@file:local-tarballs/claustrum-channel-web-0.1.2.tgz':
-    resolution: {integrity: sha512-pBlRTtbVsQ4MYfH+r4sW757RkEIbbayapPP1Ll1k2cwDsOeEp4dnJx++ZhtoKB8siAu4/RN0Qy1Mxb4DqFwbog==, tarball: file:local-tarballs/claustrum-channel-web-0.1.2.tgz}
-    version: 0.1.2
+  '@claustrum/channel-web@0.1.2':
+    resolution: {integrity: sha512-pBlRTtbVsQ4MYfH+r4sW757RkEIbbayapPP1Ll1k2cwDsOeEp4dnJx++ZhtoKB8siAu4/RN0Qy1Mxb4DqFwbog==}
     engines: {node: '>=20.0.0'}
     peerDependencies:
       '@adjudicate/core': ^1.1.0
       '@claustrum/core': ^0.3.0
 
-  '@claustrum/channel-whatsapp@file:local-tarballs/claustrum-channel-whatsapp-0.2.0.tgz':
-    resolution: {integrity: sha512-YNgflVjXmHljGS/MgCgLOxvD3Ev2dQe5LYHyp7ln5fIfqwDKH3eZ4gvUYXNmz+tmXcwya1UmCs7/7VYtjqRr7A==, tarball: file:local-tarballs/claustrum-channel-whatsapp-0.2.0.tgz}
-    version: 0.2.0
+  '@claustrum/channel-whatsapp@0.2.0':
+    resolution: {integrity: sha512-YNgflVjXmHljGS/MgCgLOxvD3Ev2dQe5LYHyp7ln5fIfqwDKH3eZ4gvUYXNmz+tmXcwya1UmCs7/7VYtjqRr7A==}
     engines: {node: '>=20.0.0'}
     peerDependencies:
       '@adjudicate/core': ^1.1.0
       '@claustrum/core': ^0.3.0
 
-  '@claustrum/core@file:local-tarballs/claustrum-core-0.3.0.tgz':
-    resolution: {integrity: sha512-3LGXWFruGA+cwFSLAK2ARQu5FFvdGhf86/J+/PKn98GBApK4DUCzmue6JN93H57k2M9Qax0uMXNK0ic0Lp4NvQ==, tarball: file:local-tarballs/claustrum-core-0.3.0.tgz}
-    version: 0.3.0
+  '@claustrum/core@0.3.0':
+    resolution: {integrity: sha512-3LGXWFruGA+cwFSLAK2ARQu5FFvdGhf86/J+/PKn98GBApK4DUCzmue6JN93H57k2M9Qax0uMXNK0ic0Lp4NvQ==}
     engines: {node: '>=20.0.0'}
     peerDependencies:
       '@adjudicate/core': ^1.1.0
       '@adjudicate/runtime': ^0.2.0
 
-  '@claustrum/grounding-pgvector@file:local-tarballs/claustrum-grounding-pgvector-0.1.1.tgz':
-    resolution: {integrity: sha512-vACBUmFBCWh8Uvr5/LiUJuTiyPmaIfNc8qG5LAKduBpEqJtkP9nT/plRenRYe263aKONQDQ+jI2/Ubjcfv8hhw==, tarball: file:local-tarballs/claustrum-grounding-pgvector-0.1.1.tgz}
-    version: 0.1.1
+  '@claustrum/grounding-pgvector@0.1.1':
+    resolution: {integrity: sha512-vACBUmFBCWh8Uvr5/LiUJuTiyPmaIfNc8qG5LAKduBpEqJtkP9nT/plRenRYe263aKONQDQ+jI2/Ubjcfv8hhw==}
     engines: {node: '>=20.0.0'}
     peerDependencies:
       '@adjudicate/core': ^1.1.0
 
-  '@claustrum/memory-postgres@file:local-tarballs/claustrum-memory-postgres-0.1.1.tgz':
-    resolution: {integrity: sha512-Fs1k0lKSfq8IcK6P4+JMd56O6m+xiMvU+xvWwPbcR9FSKm+P2mqB0RUeCLaJK+0yDyToC8YwCsSjrKXnT9K9IQ==, tarball: file:local-tarballs/claustrum-memory-postgres-0.1.1.tgz}
-    version: 0.1.1
+  '@claustrum/memory-postgres@0.1.1':
+    resolution: {integrity: sha512-Fs1k0lKSfq8IcK6P4+JMd56O6m+xiMvU+xvWwPbcR9FSKm+P2mqB0RUeCLaJK+0yDyToC8YwCsSjrKXnT9K9IQ==}
     engines: {node: '>=20.0.0'}
     peerDependencies:
       '@adjudicate/core': ^1.1.0
@@ -12078,44 +12071,44 @@ snapshots:
       picocolors: 1.1.1
       sisteransi: 1.0.5
 
-  '@claustrum/anthropic@file:local-tarballs/claustrum-anthropic-0.1.2.tgz(@anthropic-ai/sdk@0.82.0(zod@4.3.6))(@claustrum/core@file:local-tarballs/claustrum-core-0.3.0.tgz(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1))':
+  '@claustrum/anthropic@0.1.2(@anthropic-ai/sdk@0.82.0(zod@4.3.6))(@claustrum/core@0.3.0(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1))':
     dependencies:
       '@anthropic-ai/sdk': 0.82.0(zod@4.3.6)
-      '@claustrum/core': file:local-tarballs/claustrum-core-0.3.0.tgz(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1)
+      '@claustrum/core': 0.3.0(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1)
 
-  '@claustrum/channel-web@file:local-tarballs/claustrum-channel-web-0.1.2.tgz(@adjudicate/core@1.3.0)(@claustrum/core@file:local-tarballs/claustrum-core-0.3.0.tgz(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1))':
+  '@claustrum/channel-web@0.1.2(@adjudicate/core@1.3.0)(@claustrum/core@0.3.0(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1))':
     dependencies:
       '@adjudicate/core': 1.3.0
-      '@claustrum/core': file:local-tarballs/claustrum-core-0.3.0.tgz(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1)
+      '@claustrum/core': 0.3.0(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1)
 
-  '@claustrum/channel-whatsapp@file:local-tarballs/claustrum-channel-whatsapp-0.2.0.tgz(@adjudicate/core@1.3.0)(@claustrum/core@file:local-tarballs/claustrum-core-0.3.0.tgz(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1))':
+  '@claustrum/channel-whatsapp@0.2.0(@adjudicate/core@1.3.0)(@claustrum/core@0.3.0(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1))':
     dependencies:
       '@adjudicate/core': 1.3.0
-      '@claustrum/core': file:local-tarballs/claustrum-core-0.3.0.tgz(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1)
+      '@claustrum/core': 0.3.0(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1)
       twilio: 5.13.1
     transitivePeerDependencies:
       - debug
       - supports-color
 
-  '@claustrum/core@file:local-tarballs/claustrum-core-0.3.0.tgz(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1)':
+  '@claustrum/core@0.3.0(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1)':
     dependencies:
       '@adjudicate/core': 1.3.0
       '@adjudicate/runtime': 0.2.1
 
-  '@claustrum/grounding-pgvector@file:local-tarballs/claustrum-grounding-pgvector-0.1.1.tgz(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1)':
+  '@claustrum/grounding-pgvector@0.1.1(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1)':
     dependencies:
       '@adjudicate/core': 1.3.0
-      '@claustrum/core': file:local-tarballs/claustrum-core-0.3.0.tgz(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1)
+      '@claustrum/core': 0.3.0(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1)
       pg: 8.20.0
       pgvector: 0.2.1
     transitivePeerDependencies:
       - '@adjudicate/runtime'
       - pg-native
 
-  '@claustrum/memory-postgres@file:local-tarballs/claustrum-memory-postgres-0.1.1.tgz(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1)(prisma@7.6.0(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(magicast@0.3.5)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(typescript@5.9.3))':
+  '@claustrum/memory-postgres@0.1.1(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1)(prisma@7.6.0(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(magicast@0.3.5)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(typescript@5.9.3))':
     dependencies:
       '@adjudicate/core': 1.3.0
-      '@claustrum/core': file:local-tarballs/claustrum-core-0.3.0.tgz(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1)
+      '@claustrum/core': 0.3.0(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1)
       '@prisma/client': 5.22.0(prisma@7.6.0(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(magicast@0.3.5)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(typescript@5.9.3))
       ioredis: 5.10.1
     transitivePeerDependencies:
