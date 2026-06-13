@@ -69,8 +69,256 @@ pre {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  overflow: auto;
+  overflow: hidden;
   padding: 12px 16px;
+}
+
+/* ── Workbench: left filter rail + scrolling main pane ────────────────────── */
+
+.workbench {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  gap: 12px;
+}
+
+.workbench__main {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
+}
+
+.rail {
+  width: 252px;
+  flex-shrink: 0;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: #fff;
+  border: 1px solid #dde1e6;
+  border-radius: 8px;
+  padding: 10px;
+}
+
+.rail__search {
+  width: 100%;
+  border: 1px solid #b9c0c9;
+  border-radius: 6px;
+  padding: 5px 8px;
+  font-size: 12px;
+}
+
+.rail__row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.rail__hint {
+  color: #6b7480;
+  font-size: 12px;
+}
+
+.rail__toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #21262c;
+}
+
+.rail__link {
+  border: none;
+  background: none;
+  color: #2f6fb7;
+  cursor: pointer;
+  font-size: 11px;
+  padding: 0 2px;
+}
+
+.rail__group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  border-top: 1px solid #eef0f3;
+  padding-top: 8px;
+}
+
+.rail__group-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.rail__group-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #6b7480;
+  font-weight: 700;
+}
+
+.rail__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.rail__item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 4px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.rail__item:hover {
+  background: #f1f3f6;
+}
+
+.rail__item--on {
+  background: #eaf1fb;
+}
+
+.rail__item input {
+  margin: 0;
+}
+
+.rail__swatch {
+  width: 11px;
+  height: 11px;
+  border-radius: 3px;
+  border: 1px solid rgba(0, 0, 0, 0.2);
+  background: var(--cell-color, #fff);
+  flex-shrink: 0;
+}
+
+.rail__item-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rail__item-count {
+  color: #6b7480;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.rail__empty {
+  color: #9aa3ad;
+  font-size: 12px;
+  padding: 2px 4px;
+}
+
+/* ── Run controls (WS-B) ──────────────────────────────────────────────────── */
+
+.run-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.run-controls__cmds {
+  display: flex;
+  gap: 6px;
+}
+
+.rail__btn {
+  border: 1px solid #b9c0c9;
+  border-radius: 6px;
+  background: #fff;
+  padding: 4px 10px;
+  cursor: pointer;
+  font-size: 12px;
+  flex: 1;
+}
+
+.rail__btn:hover:not(:disabled) {
+  background: #f1f3f6;
+}
+
+.rail__btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.rail__btn--primary {
+  background: #2f6fb7;
+  border-color: #2f6fb7;
+  color: #fff;
+  font-weight: 600;
+}
+
+.rail__btn--primary:hover:not(:disabled) {
+  background: #275f9e;
+}
+
+.rail__btn--sm {
+  flex: none;
+  align-self: flex-start;
+  padding: 2px 8px;
+  font-size: 11px;
+}
+
+.run-controls__error {
+  color: #c0392b;
+  font-size: 12px;
+  margin: 2px 0 0;
+  word-break: break-word;
+}
+
+.run-controls__hint {
+  margin: 2px 0 0;
+}
+
+.run-controls__log {
+  background: #1f2329;
+  color: #e6e9ed;
+  border-radius: 6px;
+  padding: 8px;
+  max-height: 220px;
+  overflow: auto;
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+}
+
+.run-controls__run-link {
+  border: none;
+  background: none;
+  color: #2f6fb7;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: ui-monospace, Menlo, monospace;
+  padding: 1px 4px;
+}
+
+.run-controls__run-link:disabled {
+  color: #9aa3ad;
+  cursor: default;
+}
+
+/* Run-status tones for the rail swatches (pass/fail of the last run). */
+.rail__swatch.run-ok {
+  --cell-color: #1e8e3e;
+}
+
+.rail__swatch.run-bad {
+  --cell-color: #c0392b;
 }
 
 .pending {

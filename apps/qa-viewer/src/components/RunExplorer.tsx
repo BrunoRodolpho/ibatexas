@@ -4,7 +4,7 @@
 // never silently $0), and the full act/llm.call/verify timeline.
 // Read-only: traces are artifacts of past runs; nothing here triggers one.
 
-import { useMemo, useState, type ChangeEvent } from "react"
+import { useEffect, useMemo, useState, type ChangeEvent, type ReactNode } from "react"
 import { decisionColor } from "../lib/colors"
 import {
   formatUsd,
@@ -14,6 +14,15 @@ import {
   type ParsedTrace,
 } from "../lib/trace"
 import type { PriceTable, TraceEvent } from "../types"
+import { RailGroup, RailSearch, Workbench, type RailItem } from "./FilterRail"
+
+function eventFamily(e: TraceEvent): string {
+  return e.type.split(".")[0] ?? "event"
+}
+
+function eventSource(e: TraceEvent): string | null {
+  return typeof e["source"] === "string" ? e["source"] : null
+}
 
 function eventDetail(e: TraceEvent): string {
   switch (e.type) {
@@ -69,13 +78,33 @@ export function RunExplorer({
   initialTrace,
   initialSource,
   priceTable,
+  controls,
+  registerLoader,
 }: {
   initialTrace: ParsedTrace
   initialSource: string
   priceTable: PriceTable | null
+  /** Optional rail header (WS-B RunControls) rendered above the filters. */
+  controls?: ReactNode
+  /**
+   * Hands this view's trace setter to a parent so a sibling (RunControls) can
+   * swap in a completed run's trace. Registered once on mount (effect, not
+   * render) to avoid a render-time setState.
+   */
+  registerLoader?: (load: (trace: ParsedTrace, source: string) => void) => void
 }) {
   const [trace, setTrace] = useState(initialTrace)
   const [source, setSource] = useState(initialSource)
+
+  const load = (next: ParsedTrace, nextSource: string) => {
+    setTrace(next)
+    setSource(nextSource)
+  }
+
+  useEffect(() => {
+    // mount-only: expose this instance's stable loader closure to a parent.
+    registerLoader?.(load)
+  }, [])
 
   const run = useMemo(() => summarizeRun(trace.events), [trace])
   const cost = useMemo(() => summarizeCost(trace.events, priceTable), [trace, priceTable])
@@ -87,13 +116,87 @@ export function RunExplorer({
     const file = event.target.files?.[0]
     if (file === undefined) return
     void file.text().then((text) => {
-      setTrace(parseTraceJsonl(text))
-      setSource(file.name)
+      load(parseTraceJsonl(text), file.name)
     })
   }
 
+  // ── Timeline filters (the summaries stay computed over the full trace) ──
+  const [families, setFamilies] = useState<ReadonlySet<string>>(new Set())
+  const [sources, setSources] = useState<ReadonlySet<string>>(new Set())
+  const [query, setQuery] = useState("")
+
+  const familyItems = useMemo<RailItem[]>(() => {
+    const counts = new Map<string, number>()
+    for (const e of trace.events) {
+      const f = eventFamily(e)
+      counts.set(f, (counts.get(f) ?? 0) + 1)
+    }
+    return [...counts.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([id, count]) => ({ id, label: id, count }))
+  }, [trace])
+
+  const sourceItems = useMemo<RailItem[]>(() => {
+    const counts = new Map<string, number>()
+    for (const e of trace.events) {
+      const s = eventSource(e)
+      if (s !== null) counts.set(s, (counts.get(s) ?? 0) + 1)
+    }
+    return [...counts.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([id, count]) => ({ id, label: id, count }))
+  }, [trace])
+
+  const visibleEvents = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    return trace.events.filter((e) => {
+      if (families.size > 0 && !families.has(eventFamily(e))) return false
+      const src = eventSource(e)
+      if (sources.size > 0 && src !== null && !sources.has(src)) return false
+      if (q.length > 0 && !`${e.type} ${eventDetail(e)}`.toLowerCase().includes(q)) return false
+      return true
+    })
+  }, [trace, families, sources, query])
+
+  const toggleIn = (set: (fn: (prev: ReadonlySet<string>) => ReadonlySet<string>) => void) => (
+    id: string,
+  ) =>
+    set((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+
+  const rail = (
+    <>
+      {controls}
+      <RailSearch value={query} onChange={setQuery} placeholder="filter events…" />
+      <RailGroup
+        title="Event"
+        items={familyItems}
+        selected={families}
+        onToggle={toggleIn(setFamilies)}
+        onAll={() => setFamilies(new Set(familyItems.map((i) => i.id)))}
+        onNone={() => setFamilies(new Set())}
+        emptyHint="no events"
+      />
+      {sourceItems.length > 0 && (
+        <RailGroup
+          title="LLM source"
+          items={sourceItems}
+          selected={sources}
+          onToggle={toggleIn(setSources)}
+          onAll={() => setSources(new Set(sourceItems.map((i) => i.id)))}
+          onNone={() => setSources(new Set())}
+        />
+      )}
+    </>
+  )
+
   return (
-    <div className="run-explorer">
+    <Workbench rail={rail}>
+      <div className="run-explorer">
       <div className="run-explorer__bar">
         <label className="file-picker">
           Load trace.jsonl
@@ -103,6 +206,11 @@ export function RunExplorer({
         {trace.badLines > 0 && (
           <span className="meta-chip meta-chip--warn">
             {trace.badLines} unparseable line(s) skipped
+          </span>
+        )}
+        {(families.size > 0 || sources.size > 0 || query.length > 0) && (
+          <span className="meta-chip meta-chip--warn">
+            showing {visibleEvents.length} of {trace.events.length} events
           </span>
         )}
       </div>
@@ -169,7 +277,7 @@ export function RunExplorer({
           </tr>
         </thead>
         <tbody>
-          {trace.events.map((e, i) => {
+          {visibleEvents.map((e, i) => {
             const ts = Date.parse(e.timestamp ?? "")
             const decision =
               typeof e["decision"] === "string" ? decisionColor(e["decision"]) : undefined
@@ -192,6 +300,7 @@ export function RunExplorer({
           })}
         </tbody>
       </table>
-    </div>
+      </div>
+    </Workbench>
   )
 }
