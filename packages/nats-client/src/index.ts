@@ -211,6 +211,54 @@ export async function getNatsConnection(): Promise<NatsConnection> {
   // pendingConnection is harmless (natsConn check succeeds first).
 }
 
+// ── T3-10: dedicated (non-singleton) authenticated connections ─────────────
+//
+// The journey-test plane carries MULTIPLE NATS identities in one process: the
+// app seed (NATS_NKEY_SEED — what getNatsConnection's singleton resolves)
+// plus the SUBSCRIBE-ONLY capture seed and the publish-only trigger seed
+// (IBX_TEST_NATS_CAPTURE_NKEY_SEED / IBX_TEST_NATS_TRIGGER_NKEY_SEED —
+// server-side enforcement in infra/nats/nats-server.test-plane.conf). A
+// process-wide singleton cannot serve two identities, so per-role consumers
+// (the journeys NatsCapture; the T3-9 trigger publish helper) open a
+// DEDICATED connection with EXPLICIT credentials.
+//
+// Deliberately explicit-only: this function NEVER falls back to the env vars
+// getNatsConnection reads — a capture composed with missing capture creds
+// must fail loudly rather than silently ride the publish-capable app
+// credential. Callers wanting env-resolved auth use getNatsConnection().
+// TLS resolution (NATS_TLS_CA / NATS_TLS_REQUIRED) is shared with the
+// singleton path. Callers own the returned connection's lifecycle (close()).
+
+export interface DedicatedNatsAuth {
+  /** Path to a `.creds` file (JWT-bearer auth) — takes precedence. */
+  credsPath?: string
+  /** Raw nkey seed string ("SU..."). */
+  nkeySeed?: string
+}
+
+export async function openDedicatedNatsConnection(auth: DedicatedNatsAuth): Promise<NatsConnection> {
+  let authenticator: Authenticator
+  if (auth.credsPath && auth.credsPath.length > 0) {
+    authenticator = credsAuthenticator(await readFile(auth.credsPath))
+  } else if (auth.nkeySeed && auth.nkeySeed.length > 0) {
+    authenticator = nkeyAuthenticator(new TextEncoder().encode(auth.nkeySeed))
+  } else {
+    throw new Error(
+      "[nats] openDedicatedNatsConnection requires explicit credentials " +
+        "(credsPath or nkeySeed) — use getNatsConnection() for env-resolved auth",
+    )
+  }
+  const natsUrl = process.env.NATS_URL || "nats://localhost:4222"
+  const tls = await resolveTls()
+  return connect({
+    servers: [natsUrl],
+    reconnect: true,
+    maxReconnectAttempts: -1,
+    authenticator,
+    ...(tls ? { tls } : {}),
+  })
+}
+
 // Critical events that require outbox durability.
 // MUST stay in sync with CRITICAL_EVENTS in apps/api/src/jobs/outbox-retry.ts —
 // which now DERIVES from this set (single source of truth). An event in the retry

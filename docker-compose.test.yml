@@ -105,11 +105,25 @@ services:
 
   nats:
     image: nats:2.11-alpine
-    command: ["--jetstream", "--store_dir", "/data", "-m", "8222"]
+    # T3-10: server-side auth — config-driven boot (the conf carries auth +
+    # jetstream + monitor, replacing the old flag-style command). Three nkey
+    # users in one account (infra/nats/nats-server.test-plane.conf): the SUT
+    # app (publish+subscribe), the T1b-2 journeys capture (SUBSCRIBE-ONLY,
+    # enforced by the server), and the T3-9 trigger publisher (publish
+    # ibatexas.> only). The public keys are interpolated from .env.test
+    # (IBX_TEST_*-prefixed per this file's convention; no defaults — the :?
+    # guards fail loudly on a stale .env.test: regenerate with
+    # ./scripts/gen-env-test.sh --force).
+    command: ["-c", "/etc/nats/nats-server.conf"]
+    environment:
+      NATS_APP_NKEY_PUBLIC: ${IBX_TEST_NATS_APP_NKEY_PUBLIC:?stale .env.test — regenerate with ./scripts/gen-env-test.sh --force (T3-10 NATS auth)}
+      NATS_CAPTURE_NKEY_PUBLIC: ${IBX_TEST_NATS_CAPTURE_NKEY_PUBLIC:?stale .env.test — regenerate with ./scripts/gen-env-test.sh --force (T3-10 NATS auth)}
+      NATS_TRIGGER_NKEY_PUBLIC: ${IBX_TEST_NATS_TRIGGER_NKEY_PUBLIC:?stale .env.test — regenerate with ./scripts/gen-env-test.sh --force (T3-10 NATS auth)}
     ports:
       - "127.0.0.1:${IBX_TEST_NATS_PORT:-4223}:4222"   # client connections
       - "127.0.0.1:${IBX_TEST_NATS_MONITOR_PORT:-8223}:8222"   # monitoring UI
     volumes:
+      - ./infra/nats/nats-server.test-plane.conf:/etc/nats/nats-server.conf:ro
       - nats_data:/data
     healthcheck:
       test: ["CMD-SHELL", "nc -z localhost 4222 || exit 1"]

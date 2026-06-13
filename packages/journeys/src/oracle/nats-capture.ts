@@ -29,11 +29,15 @@
 // contract as @ibatexas/nats-client's publishNatsEvent/subscribeNatsEvent.
 // Recorded + asserted subjects are always short-form.
 //
-// Live composition: `connectNatsCapture()` rides @ibatexas/nats-client's
-// `getNatsConnection()` (package→package import — sanctioned), so the
-// capture inherits the repo's NATS auth/TLS env plumbing (NATS_URL,
-// NATS_CREDS_PATH, NATS_NKEY_SEED, …). T3-10 later provisions subscribe-only
-// server-side creds for the test plane; this client is forward-compatible.
+// Live composition: `connectNatsCapture()` uses @ibatexas/nats-client
+// (package→package import — sanctioned). T3-10 added the FOURTH axis —
+// server-side enforcement: on an authed test stack the capture authenticates
+// as a dedicated SUBSCRIBE-ONLY nkey user (IBX_TEST_NATS_CAPTURE_NKEY_SEED;
+// infra/nats/nats-server.test-plane.conf denies its every publish at the
+// server), opened via `openDedicatedNatsConnection` so it never rides the
+// publish-capable app credential (NATS_NKEY_SEED) that also lives in the
+// harness env. Fallback without capture creds: the env-driven singleton
+// (`getNatsConnection()` — NATS_URL, NATS_CREDS_PATH, NATS_NKEY_SEED, …).
 
 /** Thrown when the publish-incapability guard or input validation fails. */
 export class NatsCaptureGuardError extends Error {
@@ -420,17 +424,54 @@ export function createNatsCapture(
 }
 
 /**
- * Live composition: wrap the repo's NATS connection (env-driven auth/TLS via
- * @ibatexas/nats-client) into a publish-incapable capture. `close()` routes
- * through `closeNatsConnection()` so the package singleton resets cleanly.
+ * Live composition: wrap a NATS connection into a publish-incapable capture.
+ *
+ * T3-10 — per-role test-plane credentials (server-side enforcement): when the
+ * capture credential is provisioned (`IBX_TEST_NATS_CAPTURE_CREDS_PATH` or
+ * `IBX_TEST_NATS_CAPTURE_NKEY_SEED`, written by scripts/gen-env-test.sh), the
+ * capture opens a DEDICATED connection authenticated as the SUBSCRIBE-ONLY
+ * capture user (infra/nats/nats-server.test-plane.conf: `publish: deny ">"`).
+ * It must NOT ride the package singleton on an authed stack: the harness env
+ * also carries the app seed (NATS_NKEY_SEED via .env.test), so the singleton
+ * would authenticate as the publish-capable app user — the server-side half
+ * of the publish-incapability guarantee would be silently lost. `close()`
+ * closes the dedicated connection (the singleton is untouched).
+ *
+ * Fallback (no capture credential in the env — unit doubles, pre-T3-10
+ * stacks): the repo's env-driven singleton via `getNatsConnection()`, with
+ * `close()` routed through `closeNatsConnection()` so the package singleton
+ * resets cleanly. The wrapper's client-side guarantees (type slice + runtime
+ * guard + check-bypass leg 8) hold on both paths.
  */
 export async function connectNatsCapture(
   options?: Pick<NatsCaptureOptions, "subjectPrefix">,
 ): Promise<NatsCapture> {
+  const captureCredsPath = process.env.IBX_TEST_NATS_CAPTURE_CREDS_PATH
+  const captureNkeySeed = process.env.IBX_TEST_NATS_CAPTURE_NKEY_SEED
+  const prefixOption =
+    options?.subjectPrefix !== undefined ? { subjectPrefix: options.subjectPrefix } : {}
+
+  if (
+    (captureCredsPath !== undefined && captureCredsPath.length > 0) ||
+    (captureNkeySeed !== undefined && captureNkeySeed.length > 0)
+  ) {
+    const { openDedicatedNatsConnection } = await import("@ibatexas/nats-client")
+    const connection = await openDedicatedNatsConnection({
+      ...(captureCredsPath ? { credsPath: captureCredsPath } : {}),
+      ...(captureNkeySeed ? { nkeySeed: captureNkeySeed } : {}),
+    })
+    return createNatsCapture(connection, {
+      ...prefixOption,
+      onClose: async () => {
+        await connection.close()
+      },
+    })
+  }
+
   const { getNatsConnection, closeNatsConnection } = await import("@ibatexas/nats-client")
   const connection = await getNatsConnection()
   return createNatsCapture(connection, {
-    ...(options?.subjectPrefix !== undefined ? { subjectPrefix: options.subjectPrefix } : {}),
+    ...prefixOption,
     onClose: () => closeNatsConnection(),
   })
 }

@@ -2,6 +2,57 @@
 
 ---
 
+## T3-10 EXECUTION RECORD (2026-06-12) — server-side auth IS NOW CONFIGURED
+
+This runbook was executed by plan-v2 task **T3-10** with one deliberate
+substitution: instead of the full `nsc` operator/JWT-resolver model sketched
+below (which needs an external `nsc` toolchain and a JWT directory mount on
+every surface), authorization is **config-file nkey users inside one account**
+— the same fail-closed posture, provisionable from the repo with zero extra
+tooling, and directly compatible with the existing `NATS_NKEY_SEED` client
+plumbing. The `nsc`/`.creds` path below remains the documented upgrade for
+multi-tenant/prod-rotation needs (`NATS_CREDS_PATH` still works everywhere,
+including `openDedicatedNatsConnection` and the capture's
+`IBX_TEST_NATS_CAPTURE_CREDS_PATH`).
+
+**What is in force now (committed):**
+
+| Surface | Server config | Public key source | Client seed source |
+|---|---|---|---|
+| dev compose (`docker-compose.yml`) | `infra/nats/nats-server.app.conf` (ro mount) | `.env` `NATS_APP_NKEY_PUBLIC` (compose `:?` guard) | `.env` `NATS_NKEY_SEED` |
+| prod compose (`docker-compose.prod.yml`) | same file | prod `.env` | prod `.env` (api/web/admin via `env_file`) |
+| terraform prod (`infra/terraform/environments/production/nats.tf`) | inline mirror written by the container entrypoint (Fargate has no repo mount) — **keep in sync with the .conf** | Secrets Manager `NATS_APP_NKEY_PUBLIC` | Secrets Manager `NATS_NKEY_SEED` → api task (`ecs.tf`) |
+| dev-EC2 template (`…/dev/compose.yml.tpl` + `user_data.sh.tpl`) | rendered from the same .conf into `/opt/ibatexas/nats-server.conf` | SSM → `/opt/ibatexas/.env` | SSM → `.env` → app containers |
+| test stack (`docker-compose.test.yml`, post-dates this runbook) | `infra/nats/nats-server.test-plane.conf` | `.env.test` `IBX_TEST_NATS_*_NKEY_PUBLIC` ×3 | `.env.test` ×3 (below) |
+
+**Test plane (DR-2 closure):** three users in one account — app
+(publish+subscribe; `NATS_NKEY_SEED`), **capture (SUBSCRIBE-ONLY — the server
+denies every publish; `IBX_TEST_NATS_CAPTURE_NKEY_SEED`, preferred by
+`connectNatsCapture()` over the app seed via a dedicated connection)**, and
+the T3-9 trigger publisher (publish `ibatexas.>` only, no subscribe;
+`IBX_TEST_NATS_TRIGGER_NKEY_SEED`). The trigger helper's other containment
+legs (the `IBX_TEST_FINGERPRINT` runtime gate + `check-bypass.sh` leg 8) are
+unchanged. Live enforcement is asserted by
+`scripts/test-stack/nats-auth-probe.mjs` (unauthenticated connect refused;
+capture publish rejected **by the server**; trigger subscribe rejected;
+app round trip green).
+
+**Key provisioning:** per-machine/per-environment user nkey pairs via
+`scripts/nats/gen-nkey-user.mjs`; dev/prod-compose convenience wrapper
+`scripts/nats/gen-dev-nats-auth.sh` (fills `.env`); the test stack's three
+pairs are minted by `scripts/gen-env-test.sh`. Never share seeds across
+machines or environments.
+
+**Still open (deploy/push-dependent — tracked in
+`docs/agents/phase-1b-pending-push.md`):** pushing the real secret VALUES to
+SSM / Secrets Manager and rolling the EC2/ECS stacks (terraform was
+`validate`d only — no apply from this session); **TLS on the public
+listener** (`NATS_TLS_CA`/`NATS_TLS_REQUIRED` client plumbing is live and
+untouched; cert provisioning + distribution is the remaining §2 TLS block
+below); the ≥90-day rotation cadence (§4).
+
+---
+
 # NATS Authentication — OPERATOR ACTION REQUIRED (P0-12)
 
 > Wave 4 security remediation. The code path is now ready to accept NATS
@@ -173,6 +224,10 @@ by ops.
 ---
 
 **Owner:** Platform Operations  
-**Status:** PENDING — code path ready; credential provisioning + server
-configuration must complete before `IBX_KERNEL_ENFORCE` is flipped on
-production.
+**Status:** EXECUTED (T3-10, 2026-06-12) — server-side nkey/account auth
+configured on all five surfaces (dev compose, prod compose, terraform prod,
+dev-EC2 template, test stack) with per-role test-plane users; live
+enforcement proven on the test stack. REMAINING (deploy/push-dependent):
+secret values in SSM/Secrets Manager + stack rollout, TLS on the public
+listener, rotation cadence — see the T3-10 execution record at the top of
+this document and `docs/agents/phase-1b-pending-push.md`.

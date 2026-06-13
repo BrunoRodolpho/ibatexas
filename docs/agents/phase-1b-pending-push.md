@@ -185,3 +185,47 @@ At push/release time:
 3. Re-verify: `pnpm --filter @ibatexas/api test` green; in claustrum,
    `pnpm -C packages/memory-postgres test` green (includes
    `conductor-trigger-chat-serialization.test.ts`).
+
+## 11. T3-10 NATS server-side auth — production / dev-EC2 rollout (deploy-dependent)
+
+Server-side nkey auth is COMMITTED on all five surfaces (dev compose, prod compose,
+terraform prod, dev-EC2 template, test stack) and live-proven on the test stack
+(`scripts/test-stack/nats-auth-probe.mjs`). The local-machine surfaces work today
+(dev compose after `./scripts/nats/gen-dev-nats-auth.sh`; test stack after
+`./scripts/gen-env-test.sh --force`). The remote surfaces need credentials pushed
+and stacks rolled — impossible from this session (no terraform apply, no AWS
+writes, no deploys). After push/deploy access:
+
+1. **Mint per-environment pairs** (never reuse a dev seed): run
+   `node scripts/nats/gen-nkey-user.mjs` once per environment → `SEED PUBLIC`.
+2. **dev-EC2 (SSM)**: `ibx infra secrets:push` with `NATS_NKEY_SEED` +
+   `NATS_APP_NKEY_PUBLIC` (names already declared in
+   `infra/terraform/environments/dev/secrets.tf`), then `terraform apply` in
+   `infra/terraform/environments/dev` (new user_data writes
+   `/opt/ibatexas/nats-server.conf`; note `user_data_replace_on_change = false`
+   — either taint/recreate the instance or write the conf + redeploy via SSM),
+   then trigger `ibatexas-deploy`. Verify: `docker logs ibatexas-nats` shows the
+   config boot; an unauthenticated `nats sub 'ibatexas.>'` against the docker
+   network is refused; api logs `[nats] connected` clean.
+3. **terraform prod (ECS)**: set Secrets Manager values
+   `ibatexas/production/NATS_NKEY_SEED` + `ibatexas/production/NATS_APP_NKEY_PUBLIC`
+   (resources declared in `production/secrets.tf`), `terraform apply` in
+   `infra/terraform/environments/production` (nats task entrypoint + api task
+   secret from `nats.tf`/`ecs.tf`), roll the nats service THEN the api service.
+   `terraform validate` passed locally (1.9.8); plan/apply unverified.
+4. **prod compose host (if used)**: `./scripts/nats/gen-dev-nats-auth.sh
+   --env-file <prod .env>` on the host, `docker compose -f docker-compose.prod.yml
+   up -d nats api`.
+5. **TLS (runbook §2, still open)**: provision server cert/key + CA, mount into
+   the NATS container(s), add the `tls {}` block to
+   `infra/nats/nats-server.app.conf` (and the `nats.tf` inline mirror), set
+   `NATS_TLS_CA` + `NATS_TLS_REQUIRED=true` on every client env. The client
+   plumbing is live and fail-closed already.
+6. **Rotation cadence** (runbook §4): re-mint the pair, push, roll nats then the
+   apps — one service at a time; calendar it at ≥ every 90 days.
+
+Local verification recorded with the T3-10 commit: test-stack probe all-green
+(server-rejected capture publish included), JOURNEY-001 k=1 green on the authed
+stack, `pnpm --filter @ibatexas/nats-client test` 34/34, journeys suite green,
+`terraform validate` green in both environments (the dev module's pre-existing
+`${REDIS_PASSWORD}` template-escape failure was fixed in passing).
