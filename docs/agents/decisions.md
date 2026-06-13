@@ -172,6 +172,42 @@ prompts/tool results); JOURNEY-002/005 chat expects likely unexecutable the same
 Phase 1b); order-cancel route rate limit (5/10min/customer) caps same-stack JOURNEY-001 attempts at 4
 per window.
 
+## D-016 — Phase 2 outcomes (2026-06-12, all 9 tasks done; exit criterion verified fresh)
+
+Commits 3d48baa (T2-1), dac0260 (T2-2a), ef447ee (T2-2b), 8471bf2+a0fb5fb (T2-4), c24e1cd (T2-3),
+f2ac544 (T2-6a), 25a69a0 (T2-6b), c57aeca (T2-7), 94f3d1a (T2-5). Verified: graph --check, lint,
+coverage, QA viewer build+test, scripted-pipeline suite, full pnpm test — all exit 0.
+
+- **SEVENTH SUT bug class (T2-1, `medusa-v2-capture-payment`)**: the webhook paid path was structurally
+  dead — POST /admin/orders/:id/capture-payment is a removed Medusa-v1 endpoint (404 on every call)
+  while medusaAdjudicated audited kernel EXECUTE, and the throw killed the BullMQ job behind its
+  already-claimed 7-day idempotency key → **PAID status permanently lost in production**. Fixes (flag
+  for user review — production money-path behavior changes): dead mutate removed (gap-named log; v2
+  metadata stamp kept; full port to /admin/payments/:id/capture is named backlog); capture-leg failures
+  now isolated (reconciliation always proceeds — payment truth lands even when Medusa bookkeeping
+  fails); reconcile PI-lookup gained an orderId fallback (adopts the order's single ACTIVE payment via
+  the SUT's own metadata.medusaOrderId stamp; never adopts a payment carrying a different PI). Worker
+  gate re-keyed to prod-parity (NODE_ENV test gating stranded jobs — same class as D-014 item 3).
+  Remaining recorded gap: webhook PIX leg passes FORMATTED IBX-#### ids (vs cash flow's raw ids).
+- **Journeys 010–016 all ACTIVE and live-verified** (010 reservation lifecycle w/ staff-HTTP checkin/
+  complete cells — no waiver, per DR-5; 011 reorder-from-history; 012 LGPD export+erasure; 013
+  order-note + review-unadvertised negative; 014 executable PIX slice; 015 paid-state flow via the
+  signed-webhook fixture — added to nightly money flows; 016 large-ticket confirm + escalated cancel).
+  Registry: 16 authored / 10 active / 6 blocked-with-gap-ids. Plan's "≥14 active" not met numerically
+  (D-015 deviation stands): every EXECUTABLE story is active; the gap list is the product backlog.
+- **Paid semantics on the test plane**: cash checkout is the only executable storefront money path;
+  fixture drives cash_pending→paid (kernel-legal); paid journeys assert the PAYMENT plane (order
+  auto-confirm deliberately skips cash). firePaidStateWebhook is fingerprint-gated (trust-anchor
+  containment); STRIPE_WEBHOOK_SECRET is per-machine generated, now load-bearing.
+- **Graph contract**: one nodes/edges JSON schema across capability/journey/run/impact graphs
+  (committed under packages/journeys/graphs/ + README); `ibx graph export --check` is the drift gate;
+  impact generator excludes `agent:` namespaces (T1b-3 filter parity).
+- **T2-6a/b**: bootstrapClaustrum(options) DI + resetClaustrumForTests (fingerprint-gated);
+  content-keyed scripted ModelProvider (complete+stream+embed, loud unknown-key errors); golden
+  fixtures exercise the REAL planner pipeline at zero tokens on PRs.
+- **T2-7**: e2e web overlay (first time web boots in the test profile) + e2e-smoke.yml; push-dependent
+  items extended in phase-1b-pending-push.md.
+
 ## D-015 — Phase 1b outcomes (2026-06-12, all 9 tasks done; exit criterion local parts verified)
 
 Commits e16f86f (T1b-1), 54fc64c (T1b-8), 666d80e (T1b-3), d2127c6 (T1b-2), b5630be (T1b-7),
