@@ -95,11 +95,21 @@ import { portugueseRefusalMessages } from "@adjudicate/locales-pt-br";
 import {
   createRedisLedger,
   type RedisLedgerClient,
+  type RedisPubSubClient,
 } from "@adjudicate/audit";
 
-import { prisma } from "@ibatexas/domain";
+import { prisma, createOrderQueryService } from "@ibatexas/domain";
 import { emitLlmCall, getRedisClient, rk } from "@ibatexas/tools";
 import { publishNatsEvent } from "@ibatexas/nats-client";
+import { AGENT_REGISTRY } from "@ibatexas/agents";
+// Managed-agent plane (T3-9) — composed + started behind IBX_AGENTS_ENABLED.
+import { SystemChannel } from "./claustrum/system-channel.js";
+import { createAgentApprovalEngine } from "./claustrum/agent-approvals.js";
+import {
+  agentsEnabled,
+  startManagedAgentPlane,
+} from "./claustrum/managed-agent-plane.js";
+import type { AgentPlane } from "./claustrum/agent-plane.js";
 
 // Audit sink — dev's audit pipeline owns the durable AuditRecord store. The
 // adjudicator consumes the sink composed by `@ibatexas/audit-sink` (boot-time
@@ -169,6 +179,8 @@ import {
 // ── Singleton ────────────────────────────────────────────────────────────────
 
 let _conductor: Conductor | null = null;
+// Managed-agent plane singleton (T3-9). Null unless IBX_AGENTS_ENABLED started it.
+let _agentPlane: AgentPlane | null = null;
 // The per-bootstrap pg Pool (audit readiness probe + audit read paths +
 // pgvector grounding + advisory session lock). Tracked at module level so
 // `resetClaustrumForTests()` can end it — a leaked pool keeps the vitest
@@ -307,6 +319,20 @@ export interface ClaustrumResetReport {
  */
 export async function resetClaustrumForTests(): Promise<ClaustrumResetReport> {
   assertTestOnlySurface("resetClaustrumForTests()");
+
+  // Tear down the managed-agent plane (kill pollers + bridge worker/subscriptions)
+  // before clearing the conductor, so a re-bootstrap never double-subscribes.
+  if (_agentPlane !== null) {
+    try {
+      await _agentPlane.stop();
+    } catch (err) {
+      logger.warn(
+        { component: "managed-agent-plane", err: (err as Error).message },
+        "resetClaustrumForTests: agent plane stop() failed (continuing)",
+      );
+    }
+    _agentPlane = null;
+  }
 
   const conductorCleared = _conductor !== null;
   _conductor = null;
@@ -1599,6 +1625,79 @@ export async function bootstrapClaustrum(
     // Postgres advisory locks pin acquire/release to one pooled connection.
     sessionLock: new PostgresAdvisorySessionLock(pgPool),
   });
+
+  // ── Managed-agent plane (T3-9) — OPT-IN via IBX_AGENTS_ENABLED ──────────────
+  // Default OFF: a normal boot never subscribes the trigger bridge / boots kill
+  // pollers. When enabled (the test stack), compose the Stage-0 shadow plane from
+  // the SAME ports as the production conductor and start it — that boot starts
+  // the Stage-0 soak clock (D-017). Wrapped fail-OPEN: a plane-start failure logs
+  // and continues; it must never block the api boot / the conductor singleton.
+  if (agentsEnabled()) {
+    try {
+      const subClient = redis.duplicate();
+      await subClient.connect();
+      const pubsub: RedisPubSubClient = {
+        publish: (channel, message) => redis.publish(channel, message),
+        subscribe: async (channel, handler) => {
+          await subClient.subscribe(channel, (message: string) => handler(message));
+          return async () => {
+            await subClient.unsubscribe(channel);
+          };
+        },
+      };
+      _agentPlane = await startManagedAgentPlane({
+        registry: AGENT_REGISTRY,
+        shadowPorts: {
+          adjudicator,
+          memory,
+          grounding,
+          planner: createIbatexasPlanner({
+            model: modelProvider,
+            modelId: anthropicModelId,
+            capabilityPlanners: IBATEXAS_COMPOSED_CAPABILITY_PLANNERS,
+            deriveContext: deriveIbatexasPlannerContext,
+          }),
+          responder: naiveResponder(modelProvider, anthropicModelId),
+          explainer: ibatexasExplainer(),
+          handoff: natsHandoff(),
+          telemetry: fastifyTelemetry(tokenUsageStore),
+          session: redisSessionStore(),
+          tenantResolver: resolveIbatexasTenantPolicy,
+          sessionLock: new PostgresAdvisorySessionLock(pgPool),
+          resolver: createIbatexasResolver(),
+        },
+        realTools: toolRegistry.list(),
+        systemChannel: new SystemChannel({
+          gatewaySigningKey: requireSecret("SYSTEM_GATEWAY_SIGNING_KEY"),
+          gateway: process.env.SYSTEM_GATEWAY_NAME ?? "ibatexas-agent-host",
+        }),
+        redis: ledgerClient,
+        pubsub,
+        approvals: createAgentApprovalEngine({
+          notify: async (req) => {
+            // Stage-1 approval pending → page staff via the existing handoff surface.
+            await publishNatsEvent("support.handoff_requested", {
+              sessionId: req.agentNamespace,
+              reason: `Aprovação de agente pendente: ${req.intentKind}`,
+              intentKind: req.intentKind,
+              approvalToken: req.token,
+            });
+          },
+          now: () => new Date().toISOString(),
+        }),
+        resolveCustomer: async (orderId) => {
+          const order = await createOrderQueryService().getById(orderId);
+          return order?.customerId ?? null;
+        },
+        now: () => new Date().toISOString(),
+      });
+    } catch (err) {
+      logger.error(
+        { component: "managed-agent-plane", err: (err as Error).message },
+        "managed-agent plane failed to start — continuing without it (boot not blocked)",
+      );
+    }
+  }
 
   return _conductor;
 }
