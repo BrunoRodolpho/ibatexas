@@ -280,3 +280,99 @@ Commits e16f86f (T1b-1), 54fc64c (T1b-8), 666d80e (T1b-3), d2127c6 (T1b-2), b563
 ibatexas CLAUDE.md's Agent Behavior section discourages unprompted test runs. The plan's per-task
 acceptance criteria explicitly name verify commands; executing the plan includes running them. The plan
 (and the goal directive) take precedence for this initiative.
+
+## D-018 — Phase 3 outcomes (2026-06-12, resumed session): all 9 task mechanics done; live boot + Stage-0 soak are calendar/stack-gated
+
+Phase 3 (managed agents) implemented on `agents/phase-3`. T3-0/T3-3/T3-4/T3-10 were already committed
+at session start; this session completed T3-1, T3-2, T3-5, T3-6, T3-7, T3-8 and the T3-9 mechanics.
+Commits: eae10f9 (T3-1), 0847411 (T3-2), 0b7e56e (T3-5), 16266a4 (T3-6), 1ac9211 (T3-7), bf81c80
+(T3-8), 484920c (T3-9). All verified: per-task vitest suites green; full `@ibatexas/api` suite 161
+files / 1506 passed / 15 skipped; `@ibatexas/journeys` 381 passed; `@ibatexas/audit-sink` 85 passed;
+CLI 478 passed; `tsc --noEmit` clean across touched packages; `scripts/check-bypass.sh` green.
+
+Engineering decisions / assumptions adopted (most-logical, per the goal directive):
+
+- **T3-1 (SystemChannel)**: committed as-found (the in-flight uncommitted work) after verifying its 10
+  tests + typecheck against the consumed claustrum 0.3.0 tarball (all T3-0 symbols present:
+  sessionKeyAwareLockKey, resolveGatewaySigningKey, verifyGatewayAttestation, widened ChannelKind).
+
+- **T3-2 (trigger bridge + dedup)**: `deriveNonce` is an injectable planner dep defaulting to
+  `deriveDeterministicNonce` — reads `state.perception.externalId` (the `${sourceSubject}:${eventId}`
+  carrier) with a per-envelope `#index` suffix, falling back to `randomUUID()` for chat turns; ONE
+  planner serves both surfaces, no bootstrap planner change needed. The bridge (`agent-trigger-bridge.ts`)
+  owns the dedup stack (loop → redelivery two-phase claim → per-entity cooldown → run under wall-clock
+  cap) and takes an INJECTED turn-runner (T3-6 wires the shadow conductor). LOOP SUPPRESSION reads an
+  OPTIONAL `causalActorSessionId` on the trigger (agent-prefixed → drop); full causal-provenance
+  stamping on every domain event is a follow-up — per-entity cooldown is the always-on loop-breaker
+  meanwhile (matches the plan's "host-level dedup primary"). Model-call cap = `createModelCallCap`
+  wrapper (composed onto the agent model in the live wiring).
+
+- **T3-5 (per-agent kill switch)**: each agent gets ONE `startDistributedKillSwitchPubSub` poller bound
+  to a DEDICATED throwaway `RuntimeContext` (never the global kernel switch), state read via `onApply`
+  into a per-namespace map. Kernel-side `createAgentKillSwitchGuard` (basis `kill.ACTIVE`) is prepended
+  FIRST in the AUTH phase, reading a late-bound holder (`setAgentKillStateReader`) that defaults to
+  never-killed (inert for the pure CLI/manifest exporter; pointed at the live manager in the live wiring).
+  Host-side pre-openCapsule check consults `manager.isKilled` in the runner (live wiring).
+
+- **T3-6 (Stage-0 shadow)**: REDACTOR CHANGE (D-017) landed — `audit-redactor.ts` keeps a strict
+  `agent:<kebab>@<x.y.z>:entity:<id>` sessionId UNHASHED (operational id, not PII; a forged shape is
+  still hashed), so the `agent:` exclusion filters work on stored rows. Sandbox plane =
+  dedicated registry (`sandbox:<id>` no-op tools, conformance-asserted `assertNoRealExecutors`), NOT
+  co-mingled chooseImplementation. The runner OVERRIDES `inbound.conversationId` to the agent sessionId
+  so the planner stamps `envelope.actor.sessionId = agent:…` (how shadow rows land agent-namespaced).
+  `observeDriftRecord` now ROUTES by namespace (agent → shadow monitor, excluded from production
+  baseline). `agent_runs` journal is a logging/in-memory seam — the durable Postgres table (with the
+  soak activation timestamp) lands with the soak gate (below).
+
+- **T3-7 (approvals glue)**: `@adjudicate/approval-engine` is NOT installed (unpublished; D-017
+  no-publish) and expects an `AdjudicatedAgent` while ibatexas runs the claustrum Conductor — so this is
+  the ADOPTER-SIDE engine (`agent-approvals.ts`) built on the proven HTTP-receipt round-trip the
+  customer checkout/confirm path uses: park a single-use token, resolve re-adjudicates the IDENTICAL
+  envelope through `adjudicateAndAudit` carrying a `confirmationReceipt` → EXECUTE. Provenance is
+  projection-grade (DR-6: `resolvedBy` on the request, the kernel receipt records no approver) +
+  `verifyAgentConfirmLineage` (INV-AGENT-CONFIRM-LINEAGE) over the supersession-chain walker. The thin
+  HTTP resolve route + the production engine instance (wired with `resolveCapabilityPolicy` +
+  `resolveAndAssemble`) land in the live wiring.
+
+- **T3-8 (HandoffPort)**: `natsHandoff()` replaces the noop — ESCALATE publishes
+  `support.handoff_requested` (existing subscriber → WhatsApp staff alert); `queue()` never throws
+  (would mask the ESCALATE as `handoff_threw`). JOURNEY-003 stays blocked on `chat-confirmation-resume`.
+
+- **T3-9 (PIX agent ladder)**: `agent-autonomy.ts` = the 3-rung ladder (shadow / supervised:confirm-all
+  / live:auto-allowlist) + `canPromoteToStage1` soak gate (≥7 journaled calendar days from activation +
+  ≥1 run + quiet drift; clock read, never faked). Stage-2 AUTO is a per-kind allowlist
+  ({payment.pix.regenerate}); `pix.charge.refund` is confirm-gated PERMANENTLY. The SINGLE sanctioned
+  test-plane publish helper (`packages/journeys/src/harness/trigger-inject.ts`) wakes the agent in a
+  journey — fingerprint-gated, not in the driver act-tool set, apps/*-unreachable, and a NAMED
+  check-bypass leg-8 carve-out (grep-honest). The PIX_REMEDIATION_AGENT def (T3-3) is already complete
+  at Stage 0.
+
+### CALENDAR/STACK-GATED OPERATIONAL REMAINDER (the activation — not faked, per D-017)
+
+The mechanics are built + unit-validated; the following are operational steps that REQUIRE the running
+test/staging stack and/or a real 7-day soak clock, so they cannot complete in-session:
+
+1. **Live boot wiring** — compose the agent plane in `bootstrapClaustrum`: expose the shared production
+   ports from the bootstrap closure, then wire AGENT_REGISTRY → `createAgentTriggerBridge` (T3-2) with
+   `createShadowTriggerRunner` over `composeShadowConductor` (T3-6) as its runner, boot the
+   `createAgentKillSwitchManager` pollers (T3-5) + `setAgentKillStateReader(manager.isKilled)`, the host-
+   side kill check in the runner, the `createAgentApprovalEngine` (T3-7) + a `POST /api/agents/approvals/
+   :token/resolve` route, and a per-agent `createModelCallCap` on the agent model. Cleanup in
+   `resetClaustrumForTests`. Validate against the test stack (docker-compose.test + process-compose).
+2. **agent_runs durable table** — add the Postgres `agent_runs` migration (records `activatedAt`, decision
+   distribution, stage) that the soak gate reads across restarts.
+3. **Stage-0 activation** — record the activation timestamp (soak clock start) when the plane boots in
+   the test/staging stack; `agent_runs.activatedAt` is the gate input.
+4. **Journey JOURNEY-017-pix-remediation** — author + run via the harness (`injectPixFailureTrigger`
+   fires the trigger; the oracle asserts the shadow audit row + zero Medusa/Prisma mutations at Stage 0).
+   `ibx journey run JOURNEY-017-pix-remediation --k 2` green per stage is the acceptance; Stages 1/2 are
+   gated on the soak below.
+5. **7-day soak → Stage-1 flip → Stage-2** — `canPromoteToStage1` permits the 0→1 flip only on/after
+   `activatedAt + 7d` with quiet drift; the Stage-1→2 promotion follows once supervised approvals are
+   clean. These are FUTURE-DATED, condition-gated operations (a `/schedule`-able follow-up keyed to the
+   recorded activation date + 7 days).
+6. **Recovered-orders measurement** — fold the agent's recovered-order count into `sim_runs`/obs once the
+   journey runs on the live stack.
+
+Push-dependent items (real claustrum publish + registry pin bump, branch-protection checks, nightly
+secrets) remain as recorded in `docs/agents/phase-1b-pending-push.md`.
