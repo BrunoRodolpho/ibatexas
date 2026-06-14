@@ -28,6 +28,7 @@ import { dirname, isAbsolute, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import type { Command } from "commander"
 import chalk from "chalk"
+import type { GraphName } from "@ibatexas/journeys"
 
 // Raiz do monorepo ancorada neste arquivo (idioma de commands/journey.ts).
 const MONOREPO_ROOT = resolve(
@@ -75,7 +76,6 @@ async function runGraphExport(opts: GraphExportFlags): Promise<void> {
     fetchImpactWindow,
     writeImpactWindowFixture,
     GraphExportError,
-    GRAPH_NAMES,
   } = await import("@ibatexas/journeys")
 
   try {
@@ -157,7 +157,7 @@ async function runGraphExport(opts: GraphExportFlags): Promise<void> {
             only: opts.only
               .split(",")
               .map((s) => s.trim())
-              .filter((s) => s.length > 0) as (typeof GRAPH_NAMES)[number][],
+              .filter((s) => s.length > 0) as GraphName[],
           }
         : {}),
     })

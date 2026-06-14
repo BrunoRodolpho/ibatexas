@@ -147,4 +147,7 @@ jobs:
         run: ./scripts/test-stack-down.sh || true
       - name: Compose down (self-hosted safety — keep even on GH-hosted)
         if: always()
-        run: docker compose -f docker-compose.test.yml -p "$IBX_TEST_COMPOSE_PROJECT" down -v --remove-orphans
+        # --env-file .env.test so docker-compose can interpolate the T3-10 NATS
+        # nkey vars (they are `:?`-required even for `down`); `|| true` keeps this
+        # belt-and-suspenders cleanup from ever failing the job.
+        run: docker compose --env-file .env.test -f docker-compose.test.yml -p "$IBX_TEST_COMPOSE_PROJECT" down -v --remove-orphans || true
