@@ -5,6 +5,7 @@ import chalk from "chalk"
 import ora from "ora"
 import { execa, execaSync } from "execa"
 import { ROOT } from "../utils/root.js"
+import { DEV_FLAGS } from "../lib/dev-flags.js"
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -137,6 +138,7 @@ async function pcStart(
   args.push(...processes)
 
   console.log(chalk.bold.blue("\n  IbateXas Dev Environment\n"))
+  printDevFlags()
   console.log(chalk.gray(`  process-compose ${args.join(" ")}\n`))
 
   try {
@@ -305,6 +307,31 @@ async function runPnpmCommand(rawFilter: string | undefined, command: "build" | 
     console.error(chalk.red(`\n  ${failure}\n`))
     process.exit(1)
   }
+}
+
+// ── Behavior flags ────────────────────────────────────────────────────────────
+
+/** Compact one-glance summary of the env flags that change how the stack behaves
+ *  (auth bypass, embeddings, audit, destructive jobs). Warns on risky states so a
+ *  developer notices e.g. "embeddings are fake" before debugging search. */
+function printDevFlags(): void {
+  const KW = 26
+  console.log(chalk.bold("  Behavior flags") + chalk.gray("   (ibx env flags · ibx env toggle <KEY>)"))
+  for (const f of DEV_FLAGS) {
+    const eff = process.env[f.key]
+    const isSet = eff !== undefined && eff.trim() !== ""
+    const warn = f.alert?.(eff)
+
+    let shown: string
+    if (!isSet) shown = chalk.gray(`(unset → ${f.fallback})`)
+    else if (f.kind === "secret") shown = chalk.green("set")
+    else shown = chalk.white(eff)
+
+    const marker = warn ? chalk.yellow("!") : chalk.green("✓")
+    const tail = warn ? "  " + chalk.yellow("⚠ " + warn) : ""
+    console.log(`  ${marker} ${chalk.cyan(f.key.padEnd(KW))} ${shown}${tail}`)
+  }
+  console.log()
 }
 
 // ── URL summary ──────────────────────────────────────────────────────────────
