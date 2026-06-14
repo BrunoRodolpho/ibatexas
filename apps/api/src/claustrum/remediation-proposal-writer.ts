@@ -42,6 +42,11 @@ export interface RemediationProposalWriter {
   ensureTable(): Promise<void>;
   /** Upsert a parked proposal (best-effort; swallows errors). */
   write(proposal: ParkedRemediationProposal): Promise<void>;
+  /**
+   * Transition a proposal's status by its approval token (on resolve). The
+   * adjutant projection then reflects executed/declined. Best-effort.
+   */
+  markResolvedByToken(token: string, status: string, at: string): Promise<void>;
 }
 
 export function createRemediationProposalWriter(
@@ -80,6 +85,19 @@ export function createRemediationProposalWriter(
         logger.error(
           { component: "remediation-proposal-writer", proposalId: p.proposalId, err: (err as Error).message },
           "failed to write remediation proposal (swallowed — approval already parked)",
+        );
+      }
+    },
+    async markResolvedByToken(token, status, at) {
+      try {
+        await pool.query(
+          `UPDATE remediation_proposals SET status = $2, updated_at = $3 WHERE approval_token = $1`,
+          [token, status, at],
+        );
+      } catch (err) {
+        logger.error(
+          { component: "remediation-proposal-writer", token, err: (err as Error).message },
+          "failed to update remediation proposal status on resolve (swallowed)",
         );
       }
     },

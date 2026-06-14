@@ -206,6 +206,9 @@ let _agentPlane: AgentPlane | null = null;
 // (routes/admin/agent-approvals.ts, WS-D1) can reach the SAME in-memory parked
 // store the plane uses. Null unless IBX_AGENTS_ENABLED created it.
 let _agentApprovals: AgentApprovalEngine | null = null;
+// P4 proposal writer (set when the plane boots). The gateway's resolve updates
+// the remediation_proposal status so the adjutant projection reflects it.
+let _proposalWriter: ReturnType<typeof createRemediationProposalWriter> | null = null;
 // The per-bootstrap pg Pool (audit readiness probe + audit read paths +
 // pgvector grounding + advisory session lock). Tracked at module level so
 // `resetClaustrumForTests()` can end it — a leaked pool keeps the vitest
@@ -293,8 +296,8 @@ export function getAgentApprovalGateway(): AgentApprovalGateway | null {
   return {
     list: (filter) => engine.list(filter),
     get: (token) => engine.get(token),
-    resolve: ({ token, accepted, resolvedBy }) =>
-      engine.resolve({
+    resolve: async ({ token, accepted, resolvedBy }) => {
+      const result = await engine.resolve({
         token,
         accepted,
         resolvedBy,
@@ -307,7 +310,16 @@ export function getAgentApprovalGateway(): AgentApprovalGateway | null {
           return policy;
         },
         sink: getAuditSink(),
-      }),
+      });
+      // P4: reflect the resolution in the remediation_proposal so the adjutant
+      // projection shows executed/declined (best-effort; never blocks resolve).
+      await _proposalWriter?.markResolvedByToken(
+        token,
+        accepted ? "executed" : "declined",
+        new Date().toISOString(),
+      );
+      return result;
+    },
   };
 }
 
@@ -1810,6 +1822,7 @@ export async function bootstrapClaustrum(
       // remediation (the adjutant projects from it + agent_runs).
       const proposalWriter = createRemediationProposalWriter(pgPool);
       await proposalWriter.ensureTable();
+      _proposalWriter = proposalWriter;
       _agentPlane = await startManagedAgentPlane({
         registry: AGENT_REGISTRY,
         liveConductor,
