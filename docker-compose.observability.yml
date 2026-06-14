@@ -15,7 +15,7 @@
 
 services:
   victorialogs:
-    image: victoriametrics/victoria-logs:latest-victorialogs
+    image: victoriametrics/victoria-logs:v1.0.0-victorialogs
     container_name: ibatexas-victorialogs
     command:
       - "-storageDataPath=/vlogs"
@@ -26,10 +26,13 @@ services:
     volumes:
       - victorialogs_data:/vlogs
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:9428/health"]
+      # 127.0.0.1 (not localhost): the image binds IPv4 only, busybox wget
+      # resolves localhost → IPv6 ::1 → connection refused.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9428/health"]
       interval: 5s
       timeout: 5s
       retries: 10
+      start_period: 15s
     deploy:
       resources:
         limits:
@@ -52,10 +55,12 @@ services:
       # api runs on the host; reach :3001/metrics via the host-gateway alias.
       - "host.docker.internal:host-gateway"
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8428/health"]
+      # 127.0.0.1 (not localhost): the image binds IPv4 only.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8428/health"]
       interval: 5s
       timeout: 5s
       retries: 10
+      start_period: 15s
     deploy:
       resources:
         limits:
@@ -83,10 +88,11 @@ services:
       victoriametrics:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/api/health || exit 1"]
       interval: 5s
       timeout: 5s
       retries: 15
+      start_period: 20s
     deploy:
       resources:
         limits:
