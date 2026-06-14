@@ -294,6 +294,8 @@ function buildHelpText(): string {
         { usage: "env check [--step n]", desc: "Validate required environment variables" },
         { usage: "env show [--reveal]",  desc: "Display environment variables" },
         { usage: "env gen [bytes]",      desc: "Generate a cryptographic secret" },
+        { usage: "env flags",            desc: "Show behavior-impacting dev flags + effective values" },
+        { usage: "env toggle <k> [v]",   desc: "Set or flip a dev behavior flag in .env" },
       ],
     },
     {

@@ -5,6 +5,7 @@ import chalk from "chalk"
 import ora from "ora"
 import { execa, execaSync } from "execa"
 import { ROOT } from "../utils/root.js"
+import { DEV_FLAGS } from "../lib/dev-flags.js"
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -84,6 +85,7 @@ interface StartOpts {
   tui: boolean
   withTunnel?: boolean
   withStripe?: boolean
+  yes?: boolean
 }
 
 async function pcStart(
@@ -137,7 +139,26 @@ async function pcStart(
   args.push(...processes)
 
   console.log(chalk.bold.blue("\n  IbateXas Dev Environment\n"))
-  console.log(chalk.gray(`  process-compose ${args.join(" ")}\n`))
+  await printStartPlan(processes, skipDocker)
+  printDevFlags()
+
+  // Confirm before launching. Skipped with --yes or when non-interactive
+  // (CI / piped stdin) so scripts don't hang waiting on a prompt.
+  if (!opts.yes && process.stdin.isTTY) {
+    const { confirm } = await import("@inquirer/prompts")
+    let proceed = false
+    try {
+      proceed = await confirm({ message: "Start the dev stack?", default: true })
+    } catch {
+      // Ctrl+C / Esc at the prompt
+    }
+    if (!proceed) {
+      console.log(chalk.gray("\n  Aborted — nothing started.\n"))
+      return
+    }
+  }
+
+  console.log(chalk.gray(`\n  process-compose ${args.join(" ")}\n`))
 
   try {
     await execa("process-compose", args, {
@@ -307,6 +328,59 @@ async function runPnpmCommand(rawFilter: string | undefined, command: "build" | 
   }
 }
 
+// ── Behavior flags ────────────────────────────────────────────────────────────
+
+/** Compact one-glance summary of the env flags that change how the stack behaves
+ *  (auth bypass, embeddings, audit, destructive jobs). Warns on risky states so a
+ *  developer notices e.g. "embeddings are fake" before debugging search. */
+function printDevFlags(): void {
+  const KW = 26
+  console.log(chalk.bold("  Behavior flags") + chalk.gray("   (ibx env flags · ibx env toggle <KEY>)"))
+  for (const f of DEV_FLAGS) {
+    const eff = process.env[f.key]
+    const isSet = eff !== undefined && eff.trim() !== ""
+    const warn = f.alert?.(eff)
+
+    let shown: string
+    if (!isSet) shown = chalk.gray(`(unset → ${f.fallback})`)
+    else if (f.kind === "secret") shown = chalk.green("set")
+    else shown = chalk.white(eff)
+
+    const marker = warn ? chalk.yellow("!") : chalk.green("✓")
+    const tail = warn ? "  " + chalk.yellow("⚠ " + warn) : ""
+    console.log(`  ${marker} ${chalk.cyan(f.key.padEnd(KW))} ${shown}${tail}`)
+  }
+  console.log()
+}
+
+// ── Start plan ────────────────────────────────────────────────────────────────
+
+/** Compact table of what `ibx dev` is about to launch — infra + app URLs +
+ *  optional services — so the developer can eyeball the target before confirming.
+ *  Full URL list lives in `ibx dev urls`. */
+async function printStartPlan(processes: string[], skipDocker: boolean | undefined): Promise<void> {
+  const { resolveServices, infraEndpoints } = await import("../services.js")
+  const all = processes.length === 0 // empty filter = start everything in the YAML
+  const has = (name: string) => all || processes.includes(name)
+
+  console.log(chalk.bold("  Starting") + chalk.gray("   (full URLs: ibx dev urls)"))
+
+  const NAME_W = 18
+  const row = (name: string, detail: string) =>
+    console.log(`  ${chalk.green("▸")} ${name.padEnd(NAME_W)} ${chalk.cyan(detail)}`)
+
+  if (has("infra") && !skipDocker) {
+    row("Infra", infraEndpoints().map((e) => `${e.name} ${e.address}`).join("  ·  "))
+  }
+  for (const svc of resolveServices(undefined)) {
+    if (has(svc.key)) row(svc.name, svc.urls[0]?.url ?? `:${svc.port}`)
+  }
+  if (has("tunnel")) row("ngrok Tunnel", "→ :3001 (WhatsApp webhooks)")
+  if (has("stripe")) row("Stripe", "→ :3001/api/webhooks/stripe")
+
+  console.log()
+}
+
 // ── URL summary ──────────────────────────────────────────────────────────────
 
 /** Print a one-glance summary of every dev URL: apps, infra, observability,
@@ -370,6 +444,7 @@ export function registerDevCommands(dev: Command) {
     .option("--no-tui", "Disable TUI (plain log output)")
     .option("--with-tunnel", "Enable ngrok tunnel")
     .option("--with-stripe", "Enable Stripe webhook forwarding")
+    .option("-y, --yes", "Skip the start confirmation prompt")
     .action(async (services: string[], opts: StartOpts) => {
       await pcStart(services, opts)
     })
@@ -382,6 +457,7 @@ export function registerDevCommands(dev: Command) {
     .option("--no-tui", "Disable TUI (plain log output)")
     .option("--with-tunnel", "Enable ngrok tunnel")
     .option("--with-stripe", "Enable Stripe webhook forwarding")
+    .option("-y, --yes", "Skip the start confirmation prompt")
     .action(async (services: string[], opts: StartOpts) => {
       await pcStart(services, opts)
     })
