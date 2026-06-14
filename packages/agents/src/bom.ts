@@ -22,8 +22,8 @@
  *   - `tools`       = one AiBomToolRef whose `schemaDigest` is the
  *                     sha256(canonical JSON) of the ENTIRE AgentDefinition —
  *                     this is the load-bearing slot that puts budgets,
- *                     autonomyStage, trigger subjects, owner and
- *                     killSwitchKey under the bomDigest. Any change to any
+ *                     trigger subjects, owner and killSwitchKey under the
+ *                     bomDigest. Any change to any
  *                     field of the definition is a material re-baseline
  *                     event, exactly like a pack policy change.
  *
@@ -212,7 +212,7 @@ export function generateAgentAiBom(
       {
         name: `agent-definition:${def.id}`,
         description:
-          "Digest sha256 do canonical-JSON da AgentDefinition completa (budgets, trigger, autonomyStage, owner, killSwitchKey)",
+          "Digest sha256 do canonical-JSON da AgentDefinition completa (budgets, trigger, owner, killSwitchKey)",
         version: def.version,
         schemaDigest: agentDefinitionDigest(def),
       },

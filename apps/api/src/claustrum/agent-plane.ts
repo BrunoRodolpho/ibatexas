@@ -4,17 +4,17 @@
 // (bootstrapClaustrum, behind an opt-in flag) wires them in one call:
 //
 //   trigger bridge (T3-2)  — NATS subscribe + BullMQ dedup worker
-//     └─ runner = KILL-GUARDED shadow runner:
+//     └─ runner = KILL-GUARDED live runner:
 //          host-side kill check (T3-5) BEFORE the turn → if the agent is
 //          killed, suppress (outside the seal pipeline; the kernel-side
 //          kill guard is the in-pipeline backstop), else
-//        shadow trigger runner (T3-6) — sandbox plane, agent: audit rows, journal
+//        live trigger runner (P1) — real tools execute, agent: audit rows, journal
 //   kill-switch manager (T3-5) — per-agent distributed pollers + isKilled
-//   approval engine (T3-7) — Stage-1 confirm-gated resolution surface
+//   approval engine (T3-7) — Stage-1 confirm-gated resolution surface (B2 parks here)
 //
 // composeAgentPlane builds + wires; start()/stop() run the bridge + pollers. The
 // host-side kill check is the piece T3-5 left for the runner — it lands here,
-// wrapping the shadow runner so a killed agent never opens a capsule.
+// wrapping the live runner so a killed agent never opens a capsule.
 
 import type { AgentDefinition } from "@ibatexas/agents";
 import { logger } from "../lib/logger.js";
@@ -58,7 +58,7 @@ export function killGuardedRunner(
 
 export interface AgentPlaneDeps {
   readonly registry: ReadonlyArray<AgentDefinition>;
-  /** The kill-guarded shadow trigger runner (compose via composeShadowConductor + killGuardedRunner). */
+  /** The kill-guarded live trigger runner (createLiveTriggerRunner + killGuardedRunner). */
   readonly runner: TriggerTurnRunner;
   /** Per-agent kill-switch manager (its pollers boot with the plane). */
   readonly killSwitch: AgentKillSwitchManager;
@@ -80,12 +80,12 @@ export interface AgentPlane {
 
 /**
  * Compose the managed-agent plane. The trigger bridge runs the injected
- * (kill-guarded shadow) runner; start() boots the kill-switch pollers THEN the
+ * (kill-guarded live) runner; start() boots the kill-switch pollers THEN the
  * bridge (so a killed agent is already known before its first trigger), stop()
  * tears both down. The live boot (bootstrapClaustrum) constructs the runner from
- * composeShadowConductor + createShadowTriggerRunner + killGuardedRunner and
- * passes it here — kept injected so the plane stays composition-agnostic + the
- * wiring is unit-testable without NATS/Redis.
+ * createLiveTriggerRunner + killGuardedRunner and passes it here — kept injected
+ * so the plane stays composition-agnostic + the wiring is unit-testable without
+ * NATS/Redis.
  */
 export function composeAgentPlane(deps: AgentPlaneDeps): AgentPlane {
   const bridge = createAgentTriggerBridge({

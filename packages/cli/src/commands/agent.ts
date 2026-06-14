@@ -26,7 +26,7 @@ export function registerAgentCommands(group: Command): void {
         console.log(`  ${chalk.cyan(a.id.padEnd(36))} ${a.displayName}`)
         console.log(
           `    ${chalk.dim(
-            `stage ${a.autonomyStage} · triggers: ${a.trigger.subjects.join(", ")} · ` +
+            `triggers: ${a.trigger.subjects.join(", ")} · ` +
               `kinds: ${a.declaredIntentKinds.join(", ")}`,
           )}`,
         )

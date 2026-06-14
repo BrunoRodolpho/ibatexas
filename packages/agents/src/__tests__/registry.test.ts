@@ -29,10 +29,9 @@ describe("AGENT_REGISTRY", () => {
     }
   })
 
-  it("first entry is the PIX remediation draft at Stage 0", () => {
+  it("first entry is the PIX remediation agent", () => {
     expect(AGENT_REGISTRY[0]).toBe(PIX_REMEDIATION_AGENT)
     expect(PIX_REMEDIATION_AGENT.id).toBe("pix-payment-failure-remediation")
-    expect(PIX_REMEDIATION_AGENT.autonomyStage).toBe(0)
   })
 
   it("PIX draft declares only pack-served kinds (pack-payments + platform PIX pack)", () => {

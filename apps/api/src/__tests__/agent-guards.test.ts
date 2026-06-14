@@ -284,7 +284,6 @@ describe("createAgentBudgetGuards (unit)", () => {
     displayName: "Agente de teste",
     declaredIntentKinds: ["payment.pix.regenerate"],
     trigger: { subjects: ["payment.status_changed"], eventKinds: ["payment.failed"] },
-    autonomyStage: 0,
     budgets: {
       maxModelCallsPerTrigger: 1,
       wallClockMsPerTrigger: 1_000,
