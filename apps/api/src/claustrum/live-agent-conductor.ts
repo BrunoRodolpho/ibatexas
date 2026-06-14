@@ -130,6 +130,28 @@ export function deriveIntentKind(envelopes: ReadonlyArray<IntentEnvelope>): stri
   return envelopes.map((e) => e.kind).join("+");
 }
 
+/**
+ * A parked remediation proposal — the P4 producer seam's output. Written to the
+ * shared `remediation_proposals` table (the contract the @adjudicate/adjutant
+ * Postgres store reads) when the agent parks a confirm-gated remediation. Kept
+ * as a local shape so apps/api takes no @adjudicate/adjutant dependency.
+ */
+export interface ParkedRemediationProposal {
+  /** Stable id = the trigger's deterministic externalId. */
+  readonly proposalId: string;
+  /** The incident = the entity the trigger was about (`order:<id>`). */
+  readonly incidentId: string;
+  /** The remediation action = the proposed intent kind. */
+  readonly action: string;
+  /** A parked confirm is a REVIEW disposition. */
+  readonly disposition: "REVIEW";
+  readonly status: "pending_review";
+  readonly approvalToken: string;
+  readonly intentHash: string;
+  /** ISO time the proposal was parked. */
+  readonly at: string;
+}
+
 export interface LiveTriggerRunnerDeps {
   /** Conductor ingredients — recomposed per trigger over the capped model (H1). */
   readonly conductor: LiveAgentConductorDeps;
@@ -139,6 +161,12 @@ export interface LiveTriggerRunnerDeps {
   readonly approvals: AgentApprovalEngine;
   /** Proactive per-agent/per-window refund breaker (gates real-money parks). */
   readonly refundBreaker?: RefundCircuitBreaker;
+  /**
+   * P4 producer seam: write a remediation proposal when a confirm decision parks
+   * (the adjutant projects incidents/proposals from these + agent_runs). Best-
+   * effort; a write failure never breaks the turn. Omit to disable.
+   */
+  readonly proposalSink?: (proposal: ParkedRemediationProposal) => void | Promise<void>;
   /** ISO clock for the agent_runs journal. */
   readonly now: () => string;
 }
@@ -205,9 +233,30 @@ export async function processLiveTurnResult(
 
   // B2 park-seam: a confirm decision queues a REAL approval (the source the
   // console/adjutant /approvals read). Real-money kinds pass the breaker first.
-  // Fail-OPEN on a park error — the kernel already withheld EXECUTE.
+  // Fail-OPEN on a park error — the kernel already withheld EXECUTE. On a
+  // successful park, the P4 producer seam writes a remediation proposal.
   if (result.decision.kind === "REQUEST_CONFIRMATION" && envelopes.length > 0) {
-    await parkApproval(deps, agent.id, envelopes[0]!, result.decision.prompt);
+    const envelope = envelopes[0]!;
+    const token = await parkApproval(deps, agent.id, envelope, result.decision.prompt);
+    if (token !== null && deps.proposalSink) {
+      try {
+        await deps.proposalSink({
+          proposalId: triggerExternalId(event),
+          incidentId: `${event.entityRef.kind}:${event.entityRef.id}`,
+          action: intentKind,
+          disposition: "REVIEW",
+          status: "pending_review",
+          approvalToken: token,
+          intentHash: envelope.intentHash,
+          at: deps.now(),
+        });
+      } catch (err) {
+        logger.error(
+          { component: "live-agent-conductor", agentId: agent.id, err: (err as Error).message },
+          "failed to write remediation proposal (swallowed — approval already parked)",
+        );
+      }
+    }
   }
 
   await deps.journal.record({
@@ -225,13 +274,16 @@ export async function processLiveTurnResult(
   return { decisionKind: result.decision.kind, modelCalls };
 }
 
-/** Park a confirm-gated envelope as a real approval (breaker-gated for money). */
+/**
+ * Park a confirm-gated envelope as a real approval (breaker-gated for money).
+ * Returns the approval token on success, or null when suppressed/failed.
+ */
 async function parkApproval(
   deps: LiveTriggerRunnerDeps,
   agentId: string,
   envelope: IntentEnvelope,
   prompt: string,
-): Promise<void> {
+): Promise<string | null> {
   try {
     if (isRealMoneyKind(envelope.kind) && deps.refundBreaker) {
       const allowed = await deps.refundBreaker.tryConsume(agentId);
@@ -240,14 +292,15 @@ async function parkApproval(
           { component: "live-agent-conductor", agentId, kind: envelope.kind },
           "refund circuit breaker tripped — NOT parking approval this window",
         );
-        return;
+        return null;
       }
     }
-    await deps.approvals.request({ envelope, prompt });
+    const request = await deps.approvals.request({ envelope, prompt });
     logger.info(
-      { component: "live-agent-conductor", agentId, kind: envelope.kind },
+      { component: "live-agent-conductor", agentId, kind: envelope.kind, token: request.token },
       "agent confirm decision parked a real approval (B2)",
     );
+    return request.token;
   } catch (err) {
     // Parking is best-effort: the kernel already withheld EXECUTE, so a park
     // failure cannot move money. Log and continue (turn unaffected).
@@ -255,5 +308,6 @@ async function parkApproval(
       { component: "live-agent-conductor", agentId, kind: envelope.kind, err: (err as Error).message },
       "failed to park agent approval (swallowed — kernel already withheld EXECUTE)",
     );
+    return null;
   }
 }

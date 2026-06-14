@@ -119,6 +119,7 @@ import type { AgentPlane } from "./claustrum/agent-plane.js";
 import type { LiveAgentConductorDeps } from "./claustrum/live-agent-conductor.js";
 import { createPostgresAgentRunJournal } from "./claustrum/agent-run-journal.js";
 import { createRefundCircuitBreaker } from "./claustrum/agent-realmoney-safety.js";
+import { createRemediationProposalWriter } from "./claustrum/remediation-proposal-writer.js";
 
 /**
  * The intent kinds the composed kernel policy confirm-gates for agent sessions
@@ -1804,10 +1805,16 @@ export async function bootstrapClaustrum(
           }),
         buildResponder: (model) => naiveResponder(model, anthropicModelId),
       };
+      // P4 producer seam: ensure the shared remediation_proposals table exists,
+      // then write a proposal whenever the live runner parks a confirm-gated
+      // remediation (the adjutant projects from it + agent_runs).
+      const proposalWriter = createRemediationProposalWriter(pgPool);
+      await proposalWriter.ensureTable();
       _agentPlane = await startManagedAgentPlane({
         registry: AGENT_REGISTRY,
         liveConductor,
         journal: createPostgresAgentRunJournal(prisma),
+        proposalSink: (p) => proposalWriter.write(p),
         redis: ledgerClient,
         pubsub,
         approvals: agentApprovals,

@@ -35,6 +35,7 @@ import {
 import {
   createLiveTriggerRunner,
   type LiveAgentConductorDeps,
+  type ParkedRemediationProposal,
 } from "./live-agent-conductor.js";
 import type { AgentRunJournal } from "./agent-run-journal.js";
 import {
@@ -125,6 +126,8 @@ export interface ManagedAgentPlaneDeps {
   readonly approvals: AgentApprovalEngine;
   /** Proactive per-agent/per-window refund circuit breaker (real-money parks). */
   readonly refundBreaker?: RefundCircuitBreaker;
+  /** P4 producer seam: persist a remediation proposal when an approval parks. */
+  readonly proposalSink?: (proposal: ParkedRemediationProposal) => void | Promise<void>;
   /** Kinds the composed kernel policy confirm-gates (B1) — fail-closed assertion input. */
   readonly realMoneyConfirmKinds: ReadonlySet<string>;
   /** Resolves an order's customer for the trigger mapper. */
@@ -165,6 +168,7 @@ export async function startManagedAgentPlane(
     journal: deps.journal,
     approvals: deps.approvals,
     ...(deps.refundBreaker !== undefined ? { refundBreaker: deps.refundBreaker } : {}),
+    ...(deps.proposalSink !== undefined ? { proposalSink: deps.proposalSink } : {}),
     now: deps.now,
   });
 

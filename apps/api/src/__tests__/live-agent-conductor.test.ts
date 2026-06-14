@@ -135,6 +135,32 @@ describe("processLiveTurnResult", () => {
     expect(requested).toEqual([{ kind: "pix.charge.refund" }]);
   });
 
+  it("P4 producer seam: writes a remediation proposal on a successful park", async () => {
+    const proposals: Array<{ proposalId: string; action: string; approvalToken: string }> = [];
+    const { deps: d } = deps({
+      proposalSink: (p) =>
+        void proposals.push({ proposalId: p.proposalId, action: p.action, approvalToken: p.approvalToken }),
+    });
+    await processLiveTurnResult(d, INPUT, turn("REQUEST_CONFIRMATION", ["pix.charge.refund"]), 1);
+    expect(proposals).toHaveLength(1);
+    expect(proposals[0]).toMatchObject({
+      proposalId: "ibatexas.payment.status_changed:pay-1:failed",
+      action: "pix.charge.refund",
+      approvalToken: "t",
+    });
+  });
+
+  it("P4 producer seam: NO proposal when the park is suppressed (breaker tripped)", async () => {
+    const proposals: unknown[] = [];
+    const tripped: RefundCircuitBreaker = { tryConsume: vi.fn(async () => false) };
+    const { deps: d } = deps({
+      refundBreaker: tripped,
+      proposalSink: (p) => void proposals.push(p),
+    });
+    await processLiveTurnResult(d, INPUT, turn("REQUEST_CONFIRMATION", ["pix.charge.refund"]), 1);
+    expect(proposals).toHaveLength(0);
+  });
+
   it("a park failure is swallowed (the turn still journals)", async () => {
     const { deps: d, records } = deps({
       approvals: {
