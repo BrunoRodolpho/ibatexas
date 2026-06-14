@@ -27,7 +27,7 @@ function resolveFilter(filter: string): string {
 const PC_YAML = path.join(ROOT, "process-compose.yaml")
 
 /** Valid process names in process-compose.yaml (excluding one-shots) */
-const APP_SERVICES = ["commerce", "api", "web", "admin"] as const
+const APP_SERVICES = ["commerce", "api", "web", "admin", "qa-viewer", "adj-console", "adjutant"] as const
 
 // ── process-compose detection ────────────────────────────────────────────────
 
@@ -77,6 +77,28 @@ function checkGhostProcesses(ports: number[]): void {
   process.exit(1)
 }
 
+// ── Cross-repo preflight (non-mutating) ──────────────────────────────────────
+
+/** Warn (never mutate) when a cross-repo service (adj-console / adjutant, both
+ *  in ../adjudicate) is about to start but that sibling repo isn't installed.
+ *  Reminds the developer to run `ibx bootstrap`. Purely advisory — the dev
+ *  stack still launches so the same-repo services come up regardless. */
+function preflightCrossRepo(processes: string[]): void {
+  const all = processes.length === 0
+  const wantsCrossRepo = all || processes.some((p) => p === "adj-console" || p === "adjutant")
+  if (!wantsCrossRepo) return
+
+  const adjudicateModules = path.join(ROOT, "..", "adjudicate", "node_modules")
+  if (fs.existsSync(adjudicateModules)) return
+
+  console.log(chalk.yellow("\n  Cross-repo preflight:") +
+    chalk.white(" ../adjudicate/node_modules is missing."))
+  console.log(chalk.gray("    The adj-console (:5180) + adjutant (:5182) surfaces will fail to start."))
+  console.log(chalk.gray("    Install the sibling repo first: ") +
+    chalk.cyan("cd ../adjudicate && pnpm install") +
+    chalk.gray("  (or ") + chalk.cyan("ibx bootstrap") + chalk.gray(").\n"))
+}
+
 // ── process-compose start ────────────────────────────────────────────────────
 
 interface StartOpts {
@@ -118,7 +140,11 @@ async function pcStart(
   //   named args → only those (process-compose resolves deps)
   //   "all"      → no filter (starts everything including tunnel/stripe)
   //   default    → core only, optionally + tunnel/stripe via flags
-  const CORE = ["infra", "build-packages", "commerce", "api", "web-clean", "web", "admin-clean", "admin"]
+  const CORE = [
+    "infra", "observability", "build-packages",
+    "commerce", "api", "web-clean", "web", "admin-clean", "admin",
+    "qa-viewer", "adj-console", "adjutant",
+  ]
   let processes: string[] = []
 
   if (named.length > 0) {
@@ -132,14 +158,18 @@ async function pcStart(
   }
 
   if (skipDocker) {
-    const idx = processes.indexOf("infra")
-    if (idx !== -1) processes.splice(idx, 1)
+    // Both `infra` and `observability` are docker one-shots — drop both.
+    for (const dockerProc of ["infra", "observability"]) {
+      const idx = processes.indexOf(dockerProc)
+      if (idx !== -1) processes.splice(idx, 1)
+    }
   }
 
   args.push(...processes)
 
   console.log(chalk.bold.blue("\n  IbateXas Dev Environment\n"))
   await printStartPlan(processes, skipDocker)
+  preflightCrossRepo(processes)
   printDevFlags()
 
   // Confirm before launching. Skipped with --yes or when non-interactive
@@ -359,7 +389,7 @@ function printDevFlags(): void {
  *  optional services — so the developer can eyeball the target before confirming.
  *  Full URL list lives in `ibx dev urls`. */
 async function printStartPlan(processes: string[], skipDocker: boolean | undefined): Promise<void> {
-  const { resolveServices, infraEndpoints } = await import("../services.js")
+  const { resolveServices, infraEndpoints, observabilityEndpoints } = await import("../services.js")
   const all = processes.length === 0 // empty filter = start everything in the YAML
   const has = (name: string) => all || processes.includes(name)
 
@@ -372,8 +402,15 @@ async function printStartPlan(processes: string[], skipDocker: boolean | undefin
   if (has("infra") && !skipDocker) {
     row("Infra", infraEndpoints().map((e) => `${e.name} ${e.address}`).join("  ·  "))
   }
-  for (const svc of resolveServices(undefined)) {
-    if (has(svc.key)) row(svc.name, svc.urls[0]?.url ?? `:${svc.port}`)
+  if (has("observability") && !skipDocker) {
+    row("Observability", observabilityEndpoints().map((e) => `${e.name} ${e.address}`).join("  ·  "))
+  }
+  const services = resolveServices(undefined)
+  for (const svc of services) {
+    if ((svc.group ?? "app") === "app" && has(svc.key)) row(svc.name, svc.urls[0]?.url ?? `:${svc.port}`)
+  }
+  for (const svc of services) {
+    if (svc.group === "ops" && has(svc.key)) row(svc.name, svc.urls[0]?.url ?? `:${svc.port}`)
   }
   if (has("tunnel")) row("ngrok Tunnel", "→ :3001 (WhatsApp webhooks)")
   if (has("stripe")) row("Stripe", "→ :3001/api/webhooks/stripe")
@@ -386,7 +423,7 @@ async function printStartPlan(processes: string[], skipDocker: boolean | undefin
 /** Print a one-glance summary of every dev URL: apps, infra, observability,
  *  optional services, and the log-viewing CLI commands. */
 async function printDevUrls(): Promise<void> {
-  const { resolveServices, infraEndpoints } = await import("../services.js")
+  const { resolveServices, infraEndpoints, observabilityEndpoints } = await import("../services.js")
   const { fetchNgrokUrl } = await import("./tunnel.js")
   const { VICTORIALOGS_URL } = await import("../lib/logs-query.js")
 
@@ -399,9 +436,20 @@ async function printDevUrls(): Promise<void> {
 
   console.log(chalk.bold("\n  IbateXas — Dev URLs"))
 
-  // ── Apps ──
+  const services = resolveServices(undefined)
+
+  // ── Apps (product surfaces) ──
   section("Apps")
-  for (const svc of resolveServices(undefined)) {
+  for (const svc of services) {
+    if ((svc.group ?? "app") !== "app") continue
+    for (const link of svc.urls) url(link.label.trim(), link.url)
+    for (const note of svc.notes ?? []) console.log(chalk.gray(`  ${note}`))
+  }
+
+  // ── Ops (operator + QA surfaces) ──
+  section("Ops")
+  for (const svc of services) {
+    if (svc.group !== "ops") continue
     for (const link of svc.urls) url(link.label.trim(), link.url)
     for (const note of svc.notes ?? []) console.log(chalk.gray(`  ${note}`))
   }
@@ -411,11 +459,12 @@ async function printDevUrls(): Promise<void> {
   for (const ep of infraEndpoints()) url(ep.name, ep.address)
   url("NATS Monitor", "http://localhost:8222")
 
-  // ── Observability ──
+  // ── Observability (live obs stack — Grafana/VictoriaLogs/VictoriaMetrics) ──
   section("Observability")
+  for (const ep of observabilityEndpoints()) url(ep.name, ep.address)
+  // VICTORIALOGS_URL is the configured logs endpoint the api ships to; surface
+  // its vmui explicitly in case it diverges from the default obs address.
   url("Logs (vmui)", `${VICTORIALOGS_URL}/select/vmui/`)
-  if (process.env.GRAFANA_URL) url("Grafana", process.env.GRAFANA_URL)
-  else hint("Grafana", "(definir GRAFANA_URL)")
 
   // ── Optional ──
   section("Optional")

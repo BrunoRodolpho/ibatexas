@@ -25,9 +25,15 @@ describe("SERVICES registry", () => {
         expect(svc.name.length).toBeGreaterThan(0)
       })
 
-      it("has a non-empty filter (pnpm workspace)", () => {
+      it("has a non-empty scoped filter (pnpm workspace)", () => {
         expect(svc.filter.length).toBeGreaterThan(0)
-        expect(svc.filter).toContain("@ibatexas/")
+        // Same-repo services are @ibatexas/*; cross-repo ops surfaces
+        // (adj-console / adjutant) filter into the sibling @adjudicate/* repo.
+        if (svc.crossRepo) {
+          expect(svc.filter).toContain("@adjudicate/")
+        } else {
+          expect(svc.filter).toContain("@ibatexas/")
+        }
       })
 
       it("has a non-empty script", () => {
