@@ -1,0 +1,128 @@
+// Admin broadcast / blast (responder-trace-admin D3).
+//
+// Manager-gated (requireManagerRole) proactive WhatsApp send to a recipient
+// segment, with a pre-approved template. Sends SEQUENTIALLY through the existing
+// rate-limited + idempotent WhatsApp client, honors the opt-out registry, and
+// returns per-recipient status + aggregate counts.
+//
+//   POST /api/admin/broadcast                 { recipients[], template } → counts
+//   GET  /api/admin/broadcast/optout          list opted-out recipients
+//   POST /api/admin/broadcast/optout          { recipient } → opt a number out
+//   POST /api/admin/broadcast/optin           { recipient } → re-subscribe
+
+import type { FastifyInstance } from "fastify";
+import { ZodTypeProvider } from "fastify-type-provider-zod";
+import { z } from "zod";
+import { requireManagerRole } from "../../middleware/staff-auth.js";
+import { sendText } from "../../whatsapp/client.js";
+import { runBroadcast } from "../../broadcast/broadcast.js";
+import { getBroadcastOptOutStore } from "../../broadcast/broadcast-optout.js";
+
+const RecipientResultSchema = z.object({
+  recipient: z.string(),
+  status: z.enum(["sent", "skipped_opted_out", "failed"]),
+  error: z.string().optional(),
+});
+
+export async function broadcastRoutes(server: FastifyInstance): Promise<void> {
+  const app = server.withTypeProvider<ZodTypeProvider>();
+
+  app.post(
+    "/api/admin/broadcast",
+    {
+      preHandler: [requireManagerRole],
+      schema: {
+        tags: ["admin"],
+        summary: "Disparo em massa (WhatsApp) — gerente",
+        body: z.object({
+          recipients: z.array(z.string().min(1).max(40)).min(1).max(5000),
+          template: z.string().min(1).max(4096),
+        }),
+        response: {
+          200: z.object({
+            total: z.number().int(),
+            sent: z.number().int(),
+            skipped: z.number().int(),
+            failed: z.number().int(),
+            results: z.array(RecipientResultSchema),
+          }),
+        },
+      },
+    },
+    async (request, reply) => {
+      const { recipients, template } = request.body;
+      const optOut = await getBroadcastOptOutStore();
+      const result = await runBroadcast({
+        recipients,
+        template,
+        // The client adds the `whatsapp:` channel prefix expectations; mirror the
+        // handoff-subscriber call shape. The client itself rate-limits + dedups.
+        send: (recipient, body) => sendText(`whatsapp:${recipient}`, body),
+        isOptedOut: (recipient) => optOut.isOptedOut(recipient),
+      });
+      request.log.info(
+        {
+          component: "broadcast",
+          total: result.total,
+          sent: result.sent,
+          skipped: result.skipped,
+          failed: result.failed,
+        },
+        "[broadcast] blast complete",
+      );
+      return reply.send(result);
+    },
+  );
+
+  app.get(
+    "/api/admin/broadcast/optout",
+    {
+      preHandler: [requireManagerRole],
+      schema: {
+        tags: ["admin"],
+        summary: "Listar destinatários que optaram por não receber",
+        response: { 200: z.object({ recipients: z.array(z.string()) }) },
+      },
+    },
+    async (_request, reply) => {
+      const optOut = await getBroadcastOptOutStore();
+      return reply.send({ recipients: await optOut.list() });
+    },
+  );
+
+  app.post(
+    "/api/admin/broadcast/optout",
+    {
+      preHandler: [requireManagerRole],
+      schema: {
+        tags: ["admin"],
+        summary: "Registrar opt-out de um destinatário",
+        body: z.object({ recipient: z.string().min(1).max(40) }),
+        response: { 200: z.object({ ok: z.boolean() }) },
+      },
+    },
+    async (request, reply) => {
+      const optOut = await getBroadcastOptOutStore();
+      await optOut.optOut(request.body.recipient);
+      return reply.send({ ok: true });
+    },
+  );
+
+  app.post(
+    "/api/admin/broadcast/optin",
+    {
+      preHandler: [requireManagerRole],
+      schema: {
+        tags: ["admin"],
+        summary: "Reativar (opt-in) um destinatário",
+        body: z.object({ recipient: z.string().min(1).max(40) }),
+        response: { 200: z.object({ ok: z.boolean() }) },
+      },
+    },
+    async (request, reply) => {
+      const optOut = await getBroadcastOptOutStore();
+      await optOut.optIn(request.body.recipient);
+      return reply.send({ ok: true });
+    },
+  );
+}
