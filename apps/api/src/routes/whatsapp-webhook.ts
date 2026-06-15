@@ -91,8 +91,8 @@ function isGuestCustomerId(id: string | null | undefined): boolean {
 /**
  * Extract PIX artifacts from a completed turn.
  *
- * The ibatexas responder (`naiveResponder`) does NOT copy tool output onto
- * `RenderedResponse.artifacts`, so PIX copia-e-cola / QR are NOT in
+ * The ibatexas responder (`createIbatexasResponder`) does NOT copy tool output
+ * onto `RenderedResponse.artifacts`, so PIX copia-e-cola / QR are NOT in
  * `turn.response.artifacts`. They DO live in `turn.acted` — the dispatch
  * result of the executed checkout / regenerate-PIX tool (`createCheckout` /
  * `regeneratePix` return `{ pixCopyPaste, pixQrCode, pixExpiresAt, orderId }`).

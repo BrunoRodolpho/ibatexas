@@ -8,7 +8,7 @@
   "expectedDecisionKind": "REQUEST_CONFIRMATION",
   "expectAwaitingConfirmation": true,
   "expectedParkedPayload": { "orderId": "{{ORDER_ID}}" },
-  "expectedResponseText": "Certo! Estou cuidando do seu pedido.",
+  "expectedResponseText": "Identifiquei o item mais recente para esta ação. Confirma que é esse mesmo? Responda sim para continuar.",
   "expectedAudit": {
     "rows": 1,
     "records": [

@@ -13,7 +13,9 @@
 //   - Adjudicator            buildAdjudicator() wrapping @adjudicate/core
 //   - PlannerPort            createIbatexasPlanner() (LLM intent extractor over
 //                            the 5 packs' CapabilityPlanners — RC-A1 Phase A.1)
-//   - ResponderPort          naiveResponder() (uses ModelProvider)
+//   - ResponderPort          createIbatexasResponder() (decision-aware; renders
+//                            the explainer verbatim on REFUSE, grounds the model
+//                            on EXECUTE — claustrum/ibatexas-responder.ts)
 //   - ExplainerPort          ibatexasExplainer() (pt-BR templates)
 //   - HandoffPort            natsHandoff() (ESCALATE → support.handoff_requested)
 //   - TelemetryPort          fastifyTelemetry() (pino + prom-client)
@@ -48,6 +50,7 @@ import {
   type CognitiveState,
   type MemoryAccess,
   type ModelProvider,
+  type PlannerPort,
   type ResponderPort,
   type Session,
   type SessionPort,
@@ -180,6 +183,7 @@ import {
   type SealablePackInput,
 } from "@adjudicate/conformance";
 import { createIbatexasPlanner } from "./claustrum/ibatexas-planner.js";
+import { createIbatexasResponder } from "./claustrum/ibatexas-responder.js";
 import { createIbatexasResolver } from "./claustrum/ibatexas-resolver.js";
 import { sessionTokenKey, resolveAndAssemble } from "./claustrum/resolve-and-assemble.js";
 import {
@@ -1134,40 +1138,10 @@ export function deriveIbatexasPlannerContext(state: CognitiveState): {
   };
 }
 
-/**
- * Minimal responder — a direct Anthropic completion. Richer prompt synthesis
- * (system prompt, tool framing) is incremental work layered on top.
- */
-function naiveResponder(
-  // The consumed surface is exactly the ModelProvider port (`.complete()`) —
-  // typed as such so the T2-6a injectable seam (scripted providers) fits.
-  model: ModelProvider,
-  modelId: string,
-): ResponderPort {
-  return {
-    async respond(input) {
-      const completion = await model.complete({
-        // Resolved fail-fast at boot by bootstrapClaustrum() — no fallback.
-        model: modelId,
-        maxTokens: 1024,
-        system:
-          "Você é o atendente da IbateXas. Responda em pt-BR de forma curta e clara.",
-        messages: [
-          { role: "user", content: input.cognition.perception.text },
-        ],
-      });
-      // F4 / cost accounting: report this turn's synthesis-model token usage so
-      // the loop sums it (plan.usage + draft.usage) onto the TurnRecord.
-      return {
-        text: completion.text,
-        usage: {
-          inputTokens: completion.inputTokens,
-          outputTokens: completion.outputTokens,
-        },
-      };
-    },
-  };
-}
+// The decision-aware responder lives in ./claustrum/ibatexas-responder.ts
+// (createIbatexasResponder). The previous decision-blind `naiveResponder` —
+// which rendered from the user's text alone and could contradict the audited
+// decision — was removed in Phase A (responder-trace-admin-plan.md).
 
 /**
  * Redis-backed SessionPort (claustrum runtime). Persists the full Session
@@ -1721,18 +1695,36 @@ export async function bootstrapClaustrum(
     }),
   );
 
+  // ── Shared planner/responder factories (DRY — one change lands once) ────────
+  // Both planes (the conductor here + the managed-agent plane below) build the
+  // planner and the decision-aware responder identically; the ONLY divergence
+  // is the ModelProvider (the conductor binds the singleton `modelProvider`;
+  // the managed-agent plane passes a per-trigger capped-model factory). Factor
+  // each into one closure over the shared config so a later B/C change to the
+  // planner/responder lands in exactly one place — and so "wire BOTH points"
+  // is a single call, not a standing duplication hazard.
+  const ibxExplainer = ibatexasExplainer();
+  const buildPlanner = (model: ModelProvider): PlannerPort =>
+    createIbatexasPlanner({
+      model,
+      modelId: anthropicModelId,
+      capabilityPlanners: IBATEXAS_COMPOSED_CAPABILITY_PLANNERS,
+      deriveContext: deriveIbatexasPlannerContext,
+    });
+  const buildResponder = (model: ModelProvider): ResponderPort =>
+    createIbatexasResponder({
+      model,
+      modelId: anthropicModelId,
+      explainer: ibxExplainer,
+    });
+
   _conductor = createConductor({
     adjudicator,
     memory,
     grounding,
-    planner: createIbatexasPlanner({
-      model: modelProvider,
-      modelId: anthropicModelId,
-      capabilityPlanners: IBATEXAS_COMPOSED_CAPABILITY_PLANNERS,
-      deriveContext: deriveIbatexasPlannerContext,
-    }),
-    responder: naiveResponder(modelProvider, anthropicModelId),
-    explainer: ibatexasExplainer(),
+    planner: buildPlanner(modelProvider),
+    responder: buildResponder(modelProvider),
+    explainer: ibxExplainer,
     handoff: natsHandoff(),
     telemetry: fastifyTelemetry(tokenUsageStore),
     session: redisSessionStore(),
@@ -1792,7 +1784,7 @@ export async function bootstrapClaustrum(
         adjudicator,
         memory,
         grounding,
-        explainer: ibatexasExplainer(),
+        explainer: ibxExplainer,
         handoff: natsHandoff(),
         telemetry: fastifyTelemetry(tokenUsageStore),
         session: redisSessionStore(),
@@ -1808,14 +1800,10 @@ export async function bootstrapClaustrum(
           gateway: process.env.SYSTEM_GATEWAY_NAME ?? "ibatexas-agent-host",
         }),
         modelProvider,
-        buildPlanner: (model) =>
-          createIbatexasPlanner({
-            model,
-            modelId: anthropicModelId,
-            capabilityPlanners: IBATEXAS_COMPOSED_CAPABILITY_PLANNERS,
-            deriveContext: deriveIbatexasPlannerContext,
-          }),
-        buildResponder: (model) => naiveResponder(model, anthropicModelId),
+        // Same DRY factories the conductor uses — the per-trigger capped model is
+        // passed in by the live runner (H1). Wiring BOTH points is now one call.
+        buildPlanner,
+        buildResponder,
       };
       // P4 producer seam: ensure the shared remediation_proposals table exists,
       // then write a proposal whenever the live runner parks a confirm-gated
