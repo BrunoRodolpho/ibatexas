@@ -22,6 +22,23 @@ processes:
       timeout_seconds: 10
       failure_threshold: 10
 
+  # ── Observability stack (one-shot) ──────────────────────────────────────────
+  # VictoriaLogs (:9428) + VictoriaMetrics (:8428) + Grafana (:3030). Separate
+  # compose file so the obs stack can be brought up/down independently of the
+  # app infra. Grafana provisions the kernel dashboards against VictoriaMetrics;
+  # the API publishes /metrics on :3001 (scraped via host.docker.internal).
+  observability:
+    command: "docker compose -f docker-compose.observability.yml up -d --wait"
+    availability:
+      restart: "no"
+    readiness_probe:
+      exec:
+        command: "docker compose -f docker-compose.observability.yml ps --status running --format '{{.Name}}' | wc -l | xargs test 3 -le"
+      initial_delay_seconds: 2
+      period_seconds: 3
+      timeout_seconds: 10
+      failure_threshold: 10
+
   # ── Package build (one-shot) ────────────────────────────────────────────────
   # Rebuild shared packages so dist/ matches source. Dependency order matters.
   build-packages:
@@ -136,6 +153,88 @@ processes:
       period_seconds: 3
       timeout_seconds: 5
       failure_threshold: 20
+    availability:
+      restart: on_failure
+      max_restarts: 3
+    shutdown:
+      signal: 15
+      timeout_seconds: 10
+
+  # ── QA Viewer (Vite — journeys/graphs/run-explorer) ─────────────────────────
+  # Same-repo static viewer (:3010). Reads committed artifacts; RunControls
+  # optionally drive `ibx` runs via the dev-gated /internal/qa/* API routes.
+  qa-viewer:
+    command: "pnpm --filter @ibatexas/qa-viewer dev"
+    depends_on:
+      build-packages:
+        condition: process_completed_successfully
+    readiness_probe:
+      http_get:
+        host: "localhost"
+        port: 3010
+        path: "/"
+      initial_delay_seconds: 3
+      period_seconds: 3
+      timeout_seconds: 5
+      failure_threshold: 20
+    availability:
+      restart: on_failure
+      max_restarts: 3
+    shutdown:
+      signal: 15
+      timeout_seconds: 10
+
+  # ── Adjudicate Operator Console (Next.js, cross-repo) ────────────────────────
+  # Lives in ../adjudicate; reads ibatexas's SAME Postgres + Redis (injected
+  # env) so every DB-backed route shows real audit/decisions/agents data.
+  adj-console:
+    command: "pnpm --filter @adjudicate/console dev"
+    working_dir: "../adjudicate"
+    environment:
+      - "DATABASE_URL=${DATABASE_URL}"
+      - "REDIS_URL=${REDIS_URL}"
+      - "EMERGENCY_REDIS_KEY=${EMERGENCY_REDIS_KEY}"
+    depends_on:
+      infra:
+        condition: process_completed_successfully
+    readiness_probe:
+      http_get:
+        host: "localhost"
+        port: 5180
+        path: "/"
+      initial_delay_seconds: 5
+      period_seconds: 3
+      timeout_seconds: 5
+      failure_threshold: 30
+    availability:
+      restart: on_failure
+      max_restarts: 3
+    shutdown:
+      signal: 15
+      timeout_seconds: 10
+
+  # ── Adjutant Operator Console (Next.js, cross-repo) ──────────────────────────
+  # Lives in ../adjudicate (package @adjudicate/adjutant-console); same injected
+  # env so it's ready for P4 incident/proposal projection over the shared DB.
+  adjutant:
+    command: "pnpm --filter @adjudicate/adjutant-console dev"
+    working_dir: "../adjudicate"
+    environment:
+      - "DATABASE_URL=${DATABASE_URL}"
+      - "REDIS_URL=${REDIS_URL}"
+      - "EMERGENCY_REDIS_KEY=${EMERGENCY_REDIS_KEY}"
+    depends_on:
+      infra:
+        condition: process_completed_successfully
+    readiness_probe:
+      http_get:
+        host: "localhost"
+        port: 5182
+        path: "/"
+      initial_delay_seconds: 5
+      period_seconds: 3
+      timeout_seconds: 5
+      failure_threshold: 30
     availability:
       restart: on_failure
       max_restarts: 3

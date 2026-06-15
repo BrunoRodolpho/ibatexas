@@ -6,8 +6,9 @@
 //
 // ── W7-P6 (correctness remediation) — mutation egress through medusaAdjudicated ──
 //
-// The 6 mutating sites in this file (cancelOrder POST, cancelItem POST/POST/
-// DELETE/POST, capturePayment POST/POST) historically went through the bare
+// The mutating sites in this file (cancelOrder POST, cancelItem POST/POST/
+// DELETE/POST, capturePayment metadata POST — its v1 capture POST was removed
+// as the dead `medusa-v2-capture-payment` gap, T2-1) historically went through the bare
 // `medusaAdminFn` — bypassing the adjudicate kernel and audit emit. Per
 // Task 17's `medusaAdjudicated` wrapper at packages/tools/src/medusa/
 // adjudicated.ts, each Medusa egress is now a governed IntentEnvelope.
@@ -122,6 +123,9 @@ export function createOrderService(
 ) {
   const fetchAdmin = medusaAdminFn
   const adminAdjudicated = options?.adminAdjudicated
+  // Factory-scoped alias: capturePayment's own `options` param shadows the
+  // factory's, so the injected logger needs a distinct name.
+  const serviceLog = options?.log
 
   /**
    * Dispatch a mutation through the adjudicated wrapper. The wrapper is
@@ -370,12 +374,25 @@ export function createOrderService(
         }
       }
 
-      await mutate({
-        path: `/admin/orders/${orderId}/capture-payment`,
-        method: "POST",
-        sourceSubject: "service:order.capture-payment",
-        idempotencyKey: `order.capture-payment:${orderId}:${paymentIntentId}`,
-      })
+      // ── PRODUCT GAP: medusa-v2-capture-payment (T2-1 live finding) ────────
+      // `POST /admin/orders/:id/capture-payment` is a REMOVED Medusa v1
+      // endpoint — it does not exist in @medusajs/medusa 2.13 (verified
+      // against dist/api/admin/orders/[id]/: archive|cancel|changes|complete|
+      // …, no capture-payment), the same dead-v1-endpoint class as the D-015
+      // order-amend finding (medusa-v2-order-edit). The old mutate() here
+      // audited a kernel EXECUTE for a mutation that 404'd on every call —
+      // decision-vs-execution divergence — and the throw killed the whole
+      // webhook job BEFORE order.placed/reconcile, so the Stripe paid path
+      // never landed. Until the capture is ported to the v2 surface
+      // (resolve the order's payment via *payment_collections.payments, then
+      // POST /admin/payments/:payment_id/capture), the Medusa-side capture
+      // bookkeeping is SKIPPED with a loud log; the domain plane's payment
+      // truth lands via the kernel-audited payment.status.reconcile that
+      // follows in the webhook handler. unblock = port to /admin/payments.
+      serviceLog?.warn?.(
+        { orderId, paymentIntentId, gap: "medusa-v2-capture-payment" },
+        "[order-service] Medusa-side capture skipped — /admin/orders/:id/capture-payment does not exist in Medusa v2 (see gap medusa-v2-capture-payment)",
+      )
       await mutate<{ metadata: { stripePaymentIntentId: string } }>({
         path: `/admin/orders/${orderId}`,
         method: "POST",

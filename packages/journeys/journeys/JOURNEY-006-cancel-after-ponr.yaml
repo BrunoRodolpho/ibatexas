@@ -1,0 +1,95 @@
+# JOURNEY-006 — cancel after the point of no return: the NEGATIVE is the
+# assertion (plan §5 T1a-12 pins `order.cancel` → REFUSE).
+#
+# Intended spec: once an order has passed its point of no return (here: it
+# was already cancelled — a terminal state), a further cancel must surface
+# as an audited kernel REFUSE (`order.already_cancelled`, basis
+# {category: "state", code: "terminal_state"} — pack-orders
+# requireCancellable + BASIS_CODES.state.TERMINAL_STATE), never as a
+# tool-level apology with an EXECUTE on the books.
+#
+# blocked_by: order-cancel-kernel-ponr — DISCOVERED GAP (T1a-12 code read):
+# no public web surface can produce that REFUSE today:
+#   * conductor path — resolve-and-assemble.ts buildOrderCtx pins
+#     `ctx.lastAction: null`, so requireCancellable (`lastAction !==
+#     "cancelled"`) can never fire; the kernel EXECUTEs and only the
+#     cancel_order TOOL fails post-hoc (packages/tools cart/cancel-order.ts
+#     PONR check → escalation event, no kernel REFUSE).
+#   * HTTP path — POST /api/orders/:id/cancel 422s (PAST_PONR) at the route
+#     layer BEFORE the kernel, so nothing is audited; and the gateway's
+#     `adjudicate()` is ledger-less (P0-1 wired the execution ledger into
+#     the conductor's buildAdjudicator only), so the deterministic-nonce
+#     replay REFUSE (`ledger_replay_suppressed`) cannot stand in either.
+# Unblocking = mapping the projection's terminal status into the ctx the
+# kernel sees (e.g. lastAction) or moving the route PONR check behind the
+# kernel. Until then this journey is the pinned spec of the intended
+# behaviour and claims no coverage cells.
+id: JOURNEY-006
+title: Cancelling past the point of no return is kernel-REFUSED
+businessCase: >-
+  Money safety reads from the audit trail: when a cancel can no longer
+  happen, the refusal itself must be a kernel decision with a machine-
+  readable basis — support, finance and the replay gate all reason from
+  intent_audit, not from chat apologies.
+persona: >-
+  Lucas Mendes, cliente autenticado, faz um pedido, cancela — e, distraído,
+  tenta cancelar DE NOVO o mesmo pedido. O sistema precisa recusar a segunda
+  tentativa de forma auditada, não apenas responder educadamente.
+channel: web
+status: blocked
+blocked_by:
+  - order-cancel-kernel-ponr
+source: docs/agents/plan-v2.md §5 T1a-12 (gap discovered during authoring)
+params:
+  authenticated: true
+  customerPhone: "+5519900000006"
+  productHandle: smash-burger-defumado
+  paymentMethod: cash
+  fulfillment: pickup
+acts:
+  - kind: fixture
+    name: seed-authenticated-customer
+    seed: seedCustomer
+    params:
+      phone: "+5519900000006"
+  - kind: chat
+    name: place-order
+    goal: >-
+      Montar um pedido com um smash burger defumado para retirada, pagamento
+      em dinheiro, e finalizar o pedido.
+  - kind: chat
+    name: cancel-order
+    goal: >-
+      Cancelar o pedido recém-criado sem citar número do pedido; quando o
+      agente pedir confirmação, responda "sim".
+  - kind: chat
+    name: cancel-again-past-ponr
+    goal: >-
+      Tentar cancelar o MESMO pedido outra vez ("cancela meu pedido de
+      novo"). A expectativa de negócio é uma recusa explícita: o pedido já
+      está cancelado.
+expects:
+  - intentKind: order.item.add
+    decision: EXECUTE
+  - intentKind: order.checkout.create
+    decision: EXECUTE
+  - intentKind: order.cancel
+    decision: REQUEST_CONFIRMATION
+  - intentKind: order.cancel
+    decision: EXECUTE
+  - intentKind: order.cancel
+    decision: REFUSE
+verify:
+  - invariant: audit.trajectory.in_order
+    args:
+      note: expects[] as a subsequence of the run-sessionId audit namespace
+  - invariant: audit.refusal-basis
+    args:
+      intentKind: order.cancel
+      refusalCode: order.already_cancelled
+      basis:
+        category: state
+        code: terminal_state
+  - invariant: order.goal-state
+    args:
+      status: canceled

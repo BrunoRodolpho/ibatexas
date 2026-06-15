@@ -13,6 +13,7 @@ import { z } from "zod";
 import twilio from "twilio";
 import { createCustomerService, createStaffService, prisma } from "@ibatexas/domain";
 import { getRedisClient, rk, atomicIncr } from "@ibatexas/tools";
+import { parseBoolEnv } from "@ibatexas/types";
 import { buildEnvelope } from "@adjudicate/core";
 import type {
   CustomerCreatePayload,
@@ -256,6 +257,29 @@ const MeResponse = z.object({
   medusaId: z.string().nullable(),
 });
 
+// ── DEV OTP bypass (WS-E) ──────────────────────────────────────────────────
+//
+// Twilio Verify is always real (CLAUDE.md rule #5 — OTP for all, no passwords).
+// For LOCAL manual testing of authenticated flows (storefront login, amend /
+// cancel via chat) without spending real SMS, a HARD-GATED bypass lets a fixed
+// code authenticate. Gated on THREE axes so it can never fire outside a
+// developer's own machine:
+//   1. NODE_ENV === "development"   (test / production never qualify)
+//   2. IBX_DEV_OTP_BYPASS truthy
+//   3. IBX_DEV_OTP_CODE set         (the accepted code; empty ⇒ disabled)
+// On success it issues the REAL customer JWT (issueJwtToken) — only the Twilio
+// round-trip is skipped, and all rate-limit / brute-force gates still apply.
+// Automated journeys use offline JWT minting (packages/journeys auth-fixture),
+// never this path.
+export function devOtpBypass(): { enabled: boolean; code: string } {
+  const code = process.env.IBX_DEV_OTP_CODE ?? "";
+  const enabled =
+    process.env.NODE_ENV === "development" &&
+    parseBoolEnv(process.env.IBX_DEV_OTP_BYPASS, false) &&
+    code.length > 0;
+  return { enabled, code };
+}
+
 // ── Plugin ─────────────────────────────────────────────────────────────────────
 
 export async function authRoutes(server: FastifyInstance): Promise<void> {
@@ -298,6 +322,18 @@ export async function authRoutes(server: FastifyInstance): Promise<void> {
           error: "Too Many Requests",
           message: "Muitas tentativas. Aguarde 10 minutos.",
         });
+      }
+
+      // DEV OTP bypass (WS-E): skip the real Twilio send entirely — the fixed
+      // IBX_DEV_OTP_CODE is accepted by verify-otp below. Rate limits above
+      // still applied. Local-dev only (see devOtpBypass()).
+      const bypass = devOtpBypass();
+      if (bypass.enabled) {
+        server.log.warn(
+          { phone_hash: hash, ip, action: "send_otp_dev_bypass" },
+          "DEV OTP bypass — Twilio send skipped (use IBX_DEV_OTP_CODE to verify)",
+        );
+        return reply.code(200).send({ ok: true });
       }
 
       try {
@@ -357,44 +393,67 @@ export async function authRoutes(server: FastifyInstance): Promise<void> {
           });
         }
 
-        const verification = await verifyTwilioOtp(phone, code);
-
-        if (verification.twilioError) {
-          server.log.error({ phone_hash: hash, ip, action: "verify_otp_error", err: verification.twilioError });
-
-          // 20404 = no pending verification for this phone (expired or never sent)
-          if (verification.twilioError.code === 20404) {
+        // DEV OTP bypass (WS-E): accept the fixed IBX_DEV_OTP_CODE without any
+        // Twilio round-trip (local-dev only — see devOtpBypass()). A wrong code
+        // still records a failure + 400, exactly like a real mismatch.
+        const bypass = devOtpBypass();
+        if (bypass.enabled) {
+          if (code !== bypass.code) {
+            const failCount = await recordVerifyFailure(hash);
+            server.log.info(
+              { phone_hash: hash, ip, action: "verify_otp_dev_bypass", success: false, attempt_count: failCount },
+              "DEV OTP bypass — code mismatch",
+            );
             return reply.code(400).send({
               statusCode: 400,
               error: "Bad Request",
-              message: "Código expirado ou não encontrado. Solicite um novo código.",
+              message: "Código inválido ou expirado.",
+            });
+          }
+          server.log.warn(
+            { phone_hash: hash, ip, action: "verify_otp_dev_bypass", success: true },
+            "DEV OTP bypass — Twilio verify skipped, issuing real JWT",
+          );
+        } else {
+          const verification = await verifyTwilioOtp(phone, code);
+
+          if (verification.twilioError) {
+            server.log.error({ phone_hash: hash, ip, action: "verify_otp_error", err: verification.twilioError });
+
+            // 20404 = no pending verification for this phone (expired or never sent)
+            if (verification.twilioError.code === 20404) {
+              return reply.code(400).send({
+                statusCode: 400,
+                error: "Bad Request",
+                message: "Código expirado ou não encontrado. Solicite um novo código.",
+              });
+            }
+
+            return reply.code(502).send({
+              statusCode: 502,
+              error: "Bad Gateway",
+              message: "Erro ao verificar código. Tente novamente.",
             });
           }
 
-          return reply.code(502).send({
-            statusCode: 502,
-            error: "Bad Gateway",
-            message: "Erro ao verificar código. Tente novamente.",
-          });
-        }
-
-        if (verification.status !== "approved") {
-          const failCount = await recordVerifyFailure(hash);
-          server.log.info(
-            { phone_hash: hash, ip, action: "verify_otp", success: false, attempt_count: failCount },
-            "OTP verification failed",
-          );
-          if (failCount >= 5) {
-            server.log.warn(
-              { action: "otp_abuse_suspected", phone_hash: hash, ip },
-              "Possible OTP abuse detected",
+          if (verification.status !== "approved") {
+            const failCount = await recordVerifyFailure(hash);
+            server.log.info(
+              { phone_hash: hash, ip, action: "verify_otp", success: false, attempt_count: failCount },
+              "OTP verification failed",
             );
+            if (failCount >= 5) {
+              server.log.warn(
+                { action: "otp_abuse_suspected", phone_hash: hash, ip },
+                "Possible OTP abuse detected",
+              );
+            }
+            return reply.code(400).send({
+              statusCode: 400,
+              error: "Bad Request",
+              message: "Código inválido ou expirado.",
+            });
           }
-          return reply.code(400).send({
-            statusCode: 400,
-            error: "Bad Request",
-            message: "Código inválido ou expirado.",
-          });
         }
 
         // Clear failure counter on success

@@ -5,6 +5,7 @@ import chalk from "chalk"
 import ora from "ora"
 import { execa, execaSync } from "execa"
 import { ROOT } from "../utils/root.js"
+import { DEV_FLAGS } from "../lib/dev-flags.js"
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -26,7 +27,7 @@ function resolveFilter(filter: string): string {
 const PC_YAML = path.join(ROOT, "process-compose.yaml")
 
 /** Valid process names in process-compose.yaml (excluding one-shots) */
-const APP_SERVICES = ["commerce", "api", "web", "admin"] as const
+const APP_SERVICES = ["commerce", "api", "web", "admin", "qa-viewer", "adj-console", "adjutant"] as const
 
 // ── process-compose detection ────────────────────────────────────────────────
 
@@ -76,6 +77,28 @@ function checkGhostProcesses(ports: number[]): void {
   process.exit(1)
 }
 
+// ── Cross-repo preflight (non-mutating) ──────────────────────────────────────
+
+/** Warn (never mutate) when a cross-repo service (adj-console / adjutant, both
+ *  in ../adjudicate) is about to start but that sibling repo isn't installed.
+ *  Reminds the developer to run `ibx bootstrap`. Purely advisory — the dev
+ *  stack still launches so the same-repo services come up regardless. */
+function preflightCrossRepo(processes: string[]): void {
+  const all = processes.length === 0
+  const wantsCrossRepo = all || processes.some((p) => p === "adj-console" || p === "adjutant")
+  if (!wantsCrossRepo) return
+
+  const adjudicateModules = path.join(ROOT, "..", "adjudicate", "node_modules")
+  if (fs.existsSync(adjudicateModules)) return
+
+  console.log(chalk.yellow("\n  Cross-repo preflight:") +
+    chalk.white(" ../adjudicate/node_modules is missing."))
+  console.log(chalk.gray("    The adj-console (:5180) + adjutant (:5182) surfaces will fail to start."))
+  console.log(chalk.gray("    Install the sibling repo first: ") +
+    chalk.cyan("cd ../adjudicate && pnpm install") +
+    chalk.gray("  (or ") + chalk.cyan("ibx bootstrap") + chalk.gray(").\n"))
+}
+
 // ── process-compose start ────────────────────────────────────────────────────
 
 interface StartOpts {
@@ -84,6 +107,7 @@ interface StartOpts {
   tui: boolean
   withTunnel?: boolean
   withStripe?: boolean
+  yes?: boolean
 }
 
 async function pcStart(
@@ -116,7 +140,11 @@ async function pcStart(
   //   named args → only those (process-compose resolves deps)
   //   "all"      → no filter (starts everything including tunnel/stripe)
   //   default    → core only, optionally + tunnel/stripe via flags
-  const CORE = ["infra", "build-packages", "commerce", "api", "web-clean", "web", "admin-clean", "admin"]
+  const CORE = [
+    "infra", "observability", "build-packages",
+    "commerce", "api", "web-clean", "web", "admin-clean", "admin",
+    "qa-viewer", "adj-console", "adjutant",
+  ]
   let processes: string[] = []
 
   if (named.length > 0) {
@@ -130,14 +158,37 @@ async function pcStart(
   }
 
   if (skipDocker) {
-    const idx = processes.indexOf("infra")
-    if (idx !== -1) processes.splice(idx, 1)
+    // Both `infra` and `observability` are docker one-shots — drop both.
+    for (const dockerProc of ["infra", "observability"]) {
+      const idx = processes.indexOf(dockerProc)
+      if (idx !== -1) processes.splice(idx, 1)
+    }
   }
 
   args.push(...processes)
 
   console.log(chalk.bold.blue("\n  IbateXas Dev Environment\n"))
-  console.log(chalk.gray(`  process-compose ${args.join(" ")}\n`))
+  await printStartPlan(processes, skipDocker)
+  preflightCrossRepo(processes)
+  printDevFlags()
+
+  // Confirm before launching. Skipped with --yes or when non-interactive
+  // (CI / piped stdin) so scripts don't hang waiting on a prompt.
+  if (!opts.yes && process.stdin.isTTY) {
+    const { confirm } = await import("@inquirer/prompts")
+    let proceed = false
+    try {
+      proceed = await confirm({ message: "Start the dev stack?", default: true })
+    } catch {
+      // Ctrl+C / Esc at the prompt
+    }
+    if (!proceed) {
+      console.log(chalk.gray("\n  Aborted — nothing started.\n"))
+      return
+    }
+  }
+
+  console.log(chalk.gray(`\n  process-compose ${args.join(" ")}\n`))
 
   try {
     await execa("process-compose", args, {
@@ -307,12 +358,72 @@ async function runPnpmCommand(rawFilter: string | undefined, command: "build" | 
   }
 }
 
+// ── Behavior flags ────────────────────────────────────────────────────────────
+
+/** Compact one-glance summary of the env flags that change how the stack behaves
+ *  (auth bypass, embeddings, audit, destructive jobs). Warns on risky states so a
+ *  developer notices e.g. "embeddings are fake" before debugging search. */
+function printDevFlags(): void {
+  const KW = 26
+  console.log(chalk.bold("  Behavior flags") + chalk.gray("   (ibx env flags · ibx env toggle <KEY>)"))
+  for (const f of DEV_FLAGS) {
+    const eff = process.env[f.key]
+    const isSet = eff !== undefined && eff.trim() !== ""
+    const warn = f.alert?.(eff)
+
+    let shown: string
+    if (!isSet) shown = chalk.gray(`(unset → ${f.fallback})`)
+    else if (f.kind === "secret") shown = chalk.green("set")
+    else shown = chalk.white(eff)
+
+    const marker = warn ? chalk.yellow("!") : chalk.green("✓")
+    const tail = warn ? "  " + chalk.yellow("⚠ " + warn) : ""
+    console.log(`  ${marker} ${chalk.cyan(f.key.padEnd(KW))} ${shown}${tail}`)
+  }
+  console.log()
+}
+
+// ── Start plan ────────────────────────────────────────────────────────────────
+
+/** Compact table of what `ibx dev` is about to launch — infra + app URLs +
+ *  optional services — so the developer can eyeball the target before confirming.
+ *  Full URL list lives in `ibx dev urls`. */
+async function printStartPlan(processes: string[], skipDocker: boolean | undefined): Promise<void> {
+  const { resolveServices, infraEndpoints, observabilityEndpoints } = await import("../services.js")
+  const all = processes.length === 0 // empty filter = start everything in the YAML
+  const has = (name: string) => all || processes.includes(name)
+
+  console.log(chalk.bold("  Starting") + chalk.gray("   (full URLs: ibx dev urls)"))
+
+  const NAME_W = 18
+  const row = (name: string, detail: string) =>
+    console.log(`  ${chalk.green("▸")} ${name.padEnd(NAME_W)} ${chalk.cyan(detail)}`)
+
+  if (has("infra") && !skipDocker) {
+    row("Infra", infraEndpoints().map((e) => `${e.name} ${e.address}`).join("  ·  "))
+  }
+  if (has("observability") && !skipDocker) {
+    row("Observability", observabilityEndpoints().map((e) => `${e.name} ${e.address}`).join("  ·  "))
+  }
+  const services = resolveServices(undefined)
+  for (const svc of services) {
+    if ((svc.group ?? "app") === "app" && has(svc.key)) row(svc.name, svc.urls[0]?.url ?? `:${svc.port}`)
+  }
+  for (const svc of services) {
+    if (svc.group === "ops" && has(svc.key)) row(svc.name, svc.urls[0]?.url ?? `:${svc.port}`)
+  }
+  if (has("tunnel")) row("ngrok Tunnel", "→ :3001 (WhatsApp webhooks)")
+  if (has("stripe")) row("Stripe", "→ :3001/api/webhooks/stripe")
+
+  console.log()
+}
+
 // ── URL summary ──────────────────────────────────────────────────────────────
 
 /** Print a one-glance summary of every dev URL: apps, infra, observability,
  *  optional services, and the log-viewing CLI commands. */
 async function printDevUrls(): Promise<void> {
-  const { resolveServices, infraEndpoints } = await import("../services.js")
+  const { resolveServices, infraEndpoints, observabilityEndpoints } = await import("../services.js")
   const { fetchNgrokUrl } = await import("./tunnel.js")
   const { VICTORIALOGS_URL } = await import("../lib/logs-query.js")
 
@@ -325,9 +436,20 @@ async function printDevUrls(): Promise<void> {
 
   console.log(chalk.bold("\n  IbateXas — Dev URLs"))
 
-  // ── Apps ──
+  const services = resolveServices(undefined)
+
+  // ── Apps (product surfaces) ──
   section("Apps")
-  for (const svc of resolveServices(undefined)) {
+  for (const svc of services) {
+    if ((svc.group ?? "app") !== "app") continue
+    for (const link of svc.urls) url(link.label.trim(), link.url)
+    for (const note of svc.notes ?? []) console.log(chalk.gray(`  ${note}`))
+  }
+
+  // ── Ops (operator + QA surfaces) ──
+  section("Ops")
+  for (const svc of services) {
+    if (svc.group !== "ops") continue
     for (const link of svc.urls) url(link.label.trim(), link.url)
     for (const note of svc.notes ?? []) console.log(chalk.gray(`  ${note}`))
   }
@@ -337,11 +459,12 @@ async function printDevUrls(): Promise<void> {
   for (const ep of infraEndpoints()) url(ep.name, ep.address)
   url("NATS Monitor", "http://localhost:8222")
 
-  // ── Observability ──
+  // ── Observability (live obs stack — Grafana/VictoriaLogs/VictoriaMetrics) ──
   section("Observability")
+  for (const ep of observabilityEndpoints()) url(ep.name, ep.address)
+  // VICTORIALOGS_URL is the configured logs endpoint the api ships to; surface
+  // its vmui explicitly in case it diverges from the default obs address.
   url("Logs (vmui)", `${VICTORIALOGS_URL}/select/vmui/`)
-  if (process.env.GRAFANA_URL) url("Grafana", process.env.GRAFANA_URL)
-  else hint("Grafana", "(definir GRAFANA_URL)")
 
   // ── Optional ──
   section("Optional")
@@ -370,6 +493,7 @@ export function registerDevCommands(dev: Command) {
     .option("--no-tui", "Disable TUI (plain log output)")
     .option("--with-tunnel", "Enable ngrok tunnel")
     .option("--with-stripe", "Enable Stripe webhook forwarding")
+    .option("-y, --yes", "Skip the start confirmation prompt")
     .action(async (services: string[], opts: StartOpts) => {
       await pcStart(services, opts)
     })
@@ -382,6 +506,7 @@ export function registerDevCommands(dev: Command) {
     .option("--no-tui", "Disable TUI (plain log output)")
     .option("--with-tunnel", "Enable ngrok tunnel")
     .option("--with-stripe", "Enable Stripe webhook forwarding")
+    .option("-y, --yes", "Skip the start confirmation prompt")
     .action(async (services: string[], opts: StartOpts) => {
       await pcStart(services, opts)
     })

@@ -1,0 +1,177 @@
+#!/usr/bin/env bash
+# scripts/test-stack-up.sh — T1a-11b: bring up the FULL ephemeral journey-test
+# stack with counted, timed steps. This script is the canonical launcher; the
+# measured total wall-clock re-baselines plan-v2 §7 (recorded in
+# docs/agents/phase-1a-measurements.md).
+#
+#   [1/4] infra      docker compose --env-file .env.test -f docker-compose.test.yml
+#                    -p <project> up -d --wait              (T1a-11a composition)
+#   [2/4] migrate    ibx db provision (kernel audit-postgres schema WITH the
+#                    intent_audit monthly partitions + claustrum memory/
+#                    grounding schemas), then ibx bootstrap --skip-docker
+#                    --skip-seed (Medusa + Prisma domain layers + Medusa admin
+#                    user) — all against the test DB
+#   [3/4] apps       process-compose up -f process-compose.test.yaml -e .env.test
+#                    -D -p <pc-port>  → api :3001 + commerce :9000, then wait for
+#                    both readiness endpoints
+#   [4/4] seed       ibx db reindex (creates the Typesense collection missing
+#                    on virgin test infra), then ibx test seed (products →
+#                    reindex → domain → homepage → delivery → orders →
+#                    reviews → intel)
+#
+# Requirements: .env.test (generate with ./scripts/gen-env-test.sh — it
+# interpolates ANTHROPIC_API_KEY from your dev .env; apps/api hard-requires it
+# at boot), docker, process-compose, ibx, curl. App ports 3001/9000 must be
+# free (the test profile binds the same app ports as the dev stack — they
+# cannot coexist; infra ports are distinct so infra can).
+#
+# Knobs (env, all defaulted):
+#   IBX_TEST_COMPOSE_PROJECT  compose project name (default ibx-test; use a
+#                             run id, e.g. ibx-test-$CI_RUN_ID, to keep
+#                             parallel runs and volumes apart)
+#   IBX_TEST_PC_PORT          process-compose server port (default 28505 —
+#                             distinct from the dev instance's 8080)
+#   IBX_TEST_APP_WAIT_SECONDS per-app readiness budget (default 600)
+#   IBX_TEST_E2E              "1" → ALSO boot apps/web (:3000) by overlaying
+#                             process-compose.e2e.yaml on the test profile
+#                             (T2-7 Playwright e2e stack). Default off: the
+#                             journeys harness never needs the storefront UI.
+#
+# Teardown (ALWAYS run it, including after failures):
+#   ./scripts/test-stack-down.sh
+#
+# Exit codes: 0 stack up + seeded; 1 any step failed (stack may be partially
+# up — run test-stack-down.sh).
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$REPO_ROOT"
+
+ENV_FILE=".env.test"
+COMPOSE_FILE="docker-compose.test.yml"
+PC_FILE="process-compose.test.yaml"
+PC_E2E_FILE="process-compose.e2e.yaml"
+PROJECT="${IBX_TEST_COMPOSE_PROJECT:-ibx-test}"
+PC_PORT="${IBX_TEST_PC_PORT:-28505}"
+APP_WAIT_SECONDS="${IBX_TEST_APP_WAIT_SECONDS:-600}"
+E2E="${IBX_TEST_E2E:-0}"
+
+fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
+now() { date +%s; }
+
+# ── Preflight ────────────────────────────────────────────────────────────────
+for bin in docker process-compose ibx curl; do
+  command -v "$bin" >/dev/null 2>&1 || fail "$bin not found on PATH"
+done
+[[ -f "$ENV_FILE" ]] || fail "$ENV_FILE not found — generate it with ./scripts/gen-env-test.sh"
+[[ -f "$PC_FILE" ]] || fail "$PC_FILE not found — run from the repo root"
+
+APP_PORTS=(3001 9000)
+if [[ "$E2E" == "1" ]]; then
+  [[ -f "$PC_E2E_FILE" ]] || fail "$PC_E2E_FILE not found — run from the repo root"
+  APP_PORTS+=(3000)
+fi
+
+for port in "${APP_PORTS[@]}"; do
+  if lsof -ti ":$port" >/dev/null 2>&1; then
+    fail "port $port is busy — the test profile binds the same app ports as dev; stop the dev stack (ibx dev stop) first"
+  fi
+done
+
+# Export the full T1a-11a env contract BEFORE anything boots: rk() captures
+# APP_ENV at module load, and the ibx CLI's dotenv load never overrides shell
+# env (shell > root .env), so every child process below sees the test values.
+set -a
+# shellcheck disable=SC1090
+. "./$ENV_FILE"
+set +a
+
+# apps/api/src/config.ts hard-requires ANTHROPIC_API_KEY at boot. Presence
+# check only — the value is never printed.
+[[ -n "${ANTHROPIC_API_KEY:-}" ]] || fail "ANTHROPIC_API_KEY is empty in $ENV_FILE — regenerate with ./scripts/gen-env-test.sh (interpolates it from .env)"
+
+wait_http() {
+  # wait_http <url> <name> — poll until 2xx (curl -f also rejects the api's
+  # 503 degraded-boot responses), bounded by APP_WAIT_SECONDS.
+  local url="$1" name="$2"
+  local deadline=$(( $(now) + APP_WAIT_SECONDS ))
+  until curl -fsS -o /dev/null --max-time 5 "$url" 2>/dev/null; do
+    if (( $(now) >= deadline )); then
+      echo "error: $name not ready after ${APP_WAIT_SECONDS}s ($url)" >&2
+      echo "--- process-compose state (port $PC_PORT) ---" >&2
+      process-compose process list -p "$PC_PORT" >&2 || true
+      echo "inspect logs: process-compose process logs api -p $PC_PORT (or commerce)" >&2
+      return 1
+    fi
+    sleep 3
+  done
+  echo "  $name ready: $url"
+}
+
+echo "ibx journey-test stack up (project=$PROJECT, pc-port=$PC_PORT)"
+T0=$(now)
+
+# ── [1/4] Infra ──────────────────────────────────────────────────────────────
+echo "[1/4] infra: docker compose -f $COMPOSE_FILE -p $PROJECT up -d --wait"
+docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" -p "$PROJECT" up -d --wait
+T1=$(now)
+
+# ── [2/4] Migration layers ───────────────────────────────────────────────────
+# `ibx db provision` is REQUIRED (bootstrap's kernel step applies the
+# audit-postgres schema but NOT the monthly intent_audit partitions; the api
+# fail-fasts at boot without them: "table 'intent_audit' has no partitions")
+# and MUST run BEFORE bootstrap: the two kernel runners keep separate
+# apply-once ledgers (adjudicate_audit_migrations vs audit_schema_migrations).
+# Bootstrap's runner tolerates already-applied DDL ("já aplicado") so it is
+# safe second; provision's runner does not, so on a fresh DB it must go first.
+echo "[2/4] migrate: ibx db provision + ibx bootstrap --skip-docker --skip-seed (test DB)"
+ibx db provision
+ibx bootstrap --skip-docker --skip-seed
+# T1a-9: SELECT-only oracle role (ibx_oracle_ro) — must run after the migration
+# layers (needs the ibx_domain + audit schemas). The journeys oracle connects
+# via ORACLE_DATABASE_URL (.env.test) using this role.
+IBX_TEST_COMPOSE_PROJECT="$PROJECT" ./scripts/test-stack/provision-oracle-role.sh
+# T1b-5: journeys sim layer (sim_runs/sim_results — persistent run records
+# joined to intent_audit via the hashed sessionId namespaces). Dedicated
+# `ibx journey migrate` step, NOT folded into `ibx db provision`: the sim
+# layer is test-plane-only and dev/prod flows also run `db provision`. The
+# writer role (ibx_sim_writer — INSERT/UPDATE on sim_* only; the oracle
+# stays read-only) is provisioned right after, since its grants need the
+# tables. The runner persists run records via SIM_DATABASE_URL (.env.test).
+ibx journey migrate
+IBX_TEST_COMPOSE_PROJECT="$PROJECT" ./scripts/test-stack/provision-sim-writer-role.sh
+T2=$(now)
+
+# ── [3/4] App boot (process-compose test profile [+ e2e overlay]) ────────────
+PC_FILE_ARGS=(-f "$PC_FILE")
+if [[ "$E2E" == "1" ]]; then
+  # T2-7: overlay merges the web (:3000) process on top of the test profile.
+  PC_FILE_ARGS+=(-f "$PC_E2E_FILE")
+fi
+echo "[3/4] apps: process-compose up ${PC_FILE_ARGS[*]} -e $ENV_FILE -D -p $PC_PORT"
+process-compose up "${PC_FILE_ARGS[@]}" -e "$ENV_FILE" -D -p "$PC_PORT"
+wait_http "http://localhost:9000/health" "commerce (:9000)"
+wait_http "http://localhost:3001/health" "api (:3001)"
+if [[ "$E2E" == "1" ]]; then
+  wait_http "http://localhost:3000/" "web (:3000)"
+fi
+T3=$(now)
+
+# ── [4/4] Seed ───────────────────────────────────────────────────────────────
+# `ibx db reindex` first: it ensureCollectionExists()-creates the Typesense
+# products collection, which is MISSING on the virgin test Typesense — the
+# Medusa seed script (apps/commerce/src/seed.ts) ends by reindexing into that
+# collection and 404s without it (the dev stack never hits this because its
+# Typesense volume persists). With zero products it exits 0 after creating
+# the collection; idempotent afterwards.
+echo "[4/4] seed: ibx db reindex (ensure Typesense collection) + ibx test seed"
+ibx db reindex
+ibx test seed
+T4=$(now)
+
+# ── Measurement ──────────────────────────────────────────────────────────────
+echo ""
+echo "IBX_TEST_STACK_TIMINGS infra=$((T1 - T0))s migrate=$((T2 - T1))s apps=$((T3 - T2))s seed=$((T4 - T3))s total=$((T4 - T0))s"
+echo "Test stack is up. Record total boot+seed wall-clock in docs/agents/phase-1a-measurements.md."
+echo "Tear down with: ./scripts/test-stack-down.sh"

@@ -165,9 +165,32 @@ ibx env show               # show all vars, secrets masked
 ibx env show --reveal      # show full values (be careful!)
 ibx env gen                # generate a 32-byte base64 secret
 ibx env gen 64             # generate a 64-byte secret
+ibx env flags              # show behavior-impacting dev flags + effective values
+ibx env toggle <KEY>       # flip a boolean flag (or apply its dev default)
+ibx env toggle <KEY> <val> # set a flag to an explicit value
 ```
 
 Generate secrets manually: `openssl rand -base64 32`
+
+**Behavior flags** (`ibx env flags`) — the curated set of env vars that change how
+the running stack behaves; the same list is printed at `ibx dev` startup, with a
+`⚠` next to any risky state (OTP bypass on, OpenAI key missing, a destructive job
+not in dry-run):
+
+| Flag | Effect |
+|------|--------|
+| `IBX_DEV_OTP_BYPASS` | `true` → log in locally without Twilio, using `IBX_DEV_OTP_CODE` |
+| `IBX_DEV_OTP_CODE` | the fixed OTP accepted under the bypass |
+| `OPENAI_API_KEY` | unset → embeddings fall back to a hash; semantic search returns garbage |
+| `IBX_AUDIT_POSTGRES_ENABLED` | persist the kernel audit trail to Postgres (enables `ibx kernel replay`) |
+| `IBX_QA_CONTROL_ENABLED` | expose the `/internal/qa/*` test-harness routes |
+| `ENABLE_SWAGGER` | serve the Swagger API docs UI |
+| `RETENTION_DRY_RUN` | `false` → the retention cleaner deletes old records for real |
+| `STALE_ORDER_DRY_RUN` | `false` → unpaid pending orders are auto-cancelled for real |
+
+`toggle` writes to `.env` in place; restart the affected process (e.g. `ibx dev
+restart api`) to pick it up. If your shell exports the same var it wins over `.env`
+— `toggle` warns when that's the case.
 
 ### Testing — `ibx test`
 

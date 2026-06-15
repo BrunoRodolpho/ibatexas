@@ -53,10 +53,12 @@
 import {
   createConsoleSink,
   createNatsSink,
+  createRedisAuditEventBus,
   multiSink,
   persistentBufferedSink,
   type AuditSink,
   type PersistentSpillStorage,
+  type RedisPubSubClient,
 } from "@adjudicate/audit"
 import { createPostgresSink } from "@adjudicate/audit-postgres"
 import type { AuditRecord } from "@adjudicate/core"
@@ -210,6 +212,17 @@ export interface AuditSinkDependencies {
    * to the drift detector's `observe()`.
    */
   readonly onAuditRecord?: (record: AuditRecord) => void
+  /**
+   * P2 — live-tail/drift Redis audit bus. When set, every emit also publishes
+   * the record on the Redis pub/sub channel the console consumer reads
+   * (`audit.event.v1`). Fail-OPEN: a publish failure NEVER blocks the audit
+   * emit (live observation is strictly secondary to governance). Unset ⇒ no
+   * bus arm (a dev without Redis is unaffected). Publish-only — the console is
+   * the subscriber.
+   */
+  readonly pubsub?: RedisPubSubClient
+  /** Pub/sub channel for the audit bus. Default `audit.event.v1`. */
+  readonly auditEventChannel?: string
 }
 
 // ── Module-level lazy state ──────────────────────────────────────────────
@@ -354,7 +367,31 @@ function buildInnerSink(deps: AuditSinkDependencies): AuditSink {
     },
   }
 
-  return multiSink(console_, nats, postgresSinkWithReset, driftObserverSink)
+  // P2 — Redis audit bus arm (live-tail SSE + console drift). Fail-open like
+  // the drift tee: multiSink is STRICT, so this arm swallows EVERYTHING — a
+  // best-effort live-observation publish can NEVER block or fail an audit emit.
+  // Only present when a pubsub client is injected (a dev without Redis is
+  // unaffected). createRedisAuditEventBus returns an AuditEventBus (publish-
+  // only here), so we adapt it to the AuditSink arm shape.
+  const arms: AuditSink[] = [console_, nats, postgresSinkWithReset, driftObserverSink]
+  if (deps.pubsub) {
+    const bus = createRedisAuditEventBus({
+      pubsub: deps.pubsub,
+      channel: deps.auditEventChannel ?? "audit.event.v1",
+    })
+    const busSink: AuditSink = {
+      async emit(record) {
+        try {
+          await bus.publish(record)
+        } catch {
+          // Live observation is strictly secondary to governance — never block.
+        }
+      },
+    }
+    arms.push(busSink)
+  }
+
+  return multiSink(...arms)
 }
 
 function buildSink(deps: AuditSinkDependencies): AuditSink {

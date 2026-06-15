@@ -827,6 +827,20 @@ function redactDecisionPayload(
 //     still be deterministic, but more efficiently we short-circuit when
 //     the sessionId is already a sentinel
 //
+// D-017 / Phase-3 managed agents: a managed agent's sessionId has the strict
+// shape `agent:<kebab-id>@<x.y.z>:entity:<entityId>` (minted by
+// `agentSessionId()` in @ibatexas/agents). Every segment is an OPERATIONAL
+// identifier — the `agent:` audit namespace, the agent id@version, and an
+// entity (order/payment) id — never customer PII (CPF/email/phone/name, which
+// the payload field rules scrub independently). It MUST stay UNHASHED so the
+// time-windowed production-signal consumers (kernel-replay `--ci`, impact
+// graph, drift baseline) can exclude shadow/agent rows via
+// `session_id LIKE 'agent:%'` / `startsWith("agent:")`. The pattern is strict
+// (kebab id + semver) so a FORGED `agent:<pii>` sessionId can never bypass the
+// hash — only a properly-minted namespace is exempt.
+const AGENT_SESSION_ID_RE =
+  /^agent:[a-z][a-z0-9]*(?:-[a-z0-9]+)*@\d+\.\d+\.\d+:entity:.+$/
+
 // Returns a fresh actor object — never mutates input.
 function redactActorSessionId(
   actor: IntentActor,
@@ -840,6 +854,11 @@ function redactActorSessionId(
   // `hashed:xxxxxxxx`), leave it alone so a second redact pass produces
   // the same record.
   if (isSentinelString(sessionId)) {
+    return actor
+  }
+  // D-017: managed-agent namespaces are operational, not PII — keep unhashed so
+  // the agent-namespace exclusion filters work on the stored row (see above).
+  if (AGENT_SESSION_ID_RE.test(sessionId)) {
     return actor
   }
   return {

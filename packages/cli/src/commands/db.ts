@@ -411,16 +411,32 @@ async function runClean(opts: { force?: boolean; all?: boolean } = {}) {
     try {
       const token = await getAdminToken()
       const base = getMedusaUrl()
-      const data = await medusaFetch<Record<string, unknown>>("/admin/products?limit=200&fields=id", { token })
-      const products = (data.products as Array<{ id: string }>) ?? []
 
-      for (const product of products) {
-        await fetch(`${base}/admin/products/${product.id}`, {
+      // Collect ALL product IDs first (paginated — mirrors runReindex). We page
+      // through everything before deleting so offsets stay stable; deleting
+      // mid-pagination would shift later pages and skip products. The old single
+      // limit=200 fetch silently left any products beyond 200 behind.
+      const ids: string[] = []
+      let offset = 0
+      const limit = 100
+      while (true) {
+        const data = await medusaFetch<Record<string, unknown>>(
+          `/admin/products?limit=${limit}&offset=${offset}&fields=id`,
+          { token },
+        )
+        const products = (data.products as Array<{ id: string }> | undefined) ?? []
+        ids.push(...products.map((p) => p.id))
+        if (products.length < limit) break
+        offset += limit
+      }
+
+      for (const id of ids) {
+        await fetch(`${base}/admin/products/${id}`, {
           method: "DELETE",
           headers: { Authorization: `Bearer ${token}` },
         })
       }
-      console.log(chalk.green(`    Deleted ${products.length} Medusa product(s)`))
+      console.log(chalk.green(`    Deleted ${ids.length} Medusa product(s)`))
     } catch (err) {
       console.log(chalk.yellow(`    Medusa clean skipped: ${(err as Error).message}`))
     }

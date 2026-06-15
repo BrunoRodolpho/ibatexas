@@ -1,0 +1,19 @@
+# Lint-gate BAD fixture — expects an intent kind that is NOT in
+# KNOWN_INTENT_KINDS (shape-valid, so it passes the schema; lint must fail
+# it with `unknown_intent_kind`).
+id: JOURNEY-910
+title: Lint fixture — unknown intent kind
+businessCase: Gate fixture; an unknown expected kind must fail lint.
+persona: Cliente autenticado tentando algo que o kernel não conhece.
+channel: web
+params:
+  authenticated: true
+acts:
+  - kind: chat
+    goal: Invocar uma capacidade inexistente.
+expects:
+  - intentKind: order.unicorn.summon
+    decision: EXECUTE
+verify: []
+status: active
+source: T1a-2 lint-gate fixture

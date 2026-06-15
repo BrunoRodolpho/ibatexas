@@ -1,0 +1,180 @@
+# JOURNEY-012 — LGPD Art. 18: data export + immediate erasure
+# (plan §5 T2-2a).
+#
+# ── T2-2a AUTHORING CORRECTIONS (executable-spec principle, D-014/D-015):
+#
+#  1. THE LGPD KINDS ARE HTTP-ONLY BY DESIGN, NOT A GAP: customer.anonymize
+#     / customer.anonymize.cancel are deliberately NEVER planner-advertised
+#     ("the destructive flow is NEVER LLM-callable" —
+#     pack-customer-onboarding capabilities.ts header); the routes are the
+#     only emission point (apps/api/src/routes/me.ts). No chat leg exists
+#     to author, so this journey is all-HTTP like JOURNEY-005.
+#
+#  2. THE MULTI-STEP GRACE FLOW IS NOT DRIVABLE IN THE TEST PLANE
+#     (test-surface gap `lgpd-otp-twilio`): /send-otp → /verify-otp →
+#     /initiate-deletion (customer.anonymize DEFER + 24h grace) requires a
+#     REAL Twilio Verify round-trip (me/anonymize-otp-gate.ts builds the
+#     real client; no fake-Twilio seam exists — the same fact that forced
+#     the authFixture, plan-v2 fact #37). The DEFER/cancel trajectory
+#     stays unauthored until a Twilio test seam exists. The EXECUTABLE
+#     erasure today is the immediate path: DELETE /api/me/data (RC-A1
+#     LGPD Option B, me.ts:696) — requireAuth-gated, no OTP, kernel
+#     customer.anonymize EXECUTE via state.ctx.immediateErasure.
+#
+#  3. ERASURE IS TERMINAL PER STACK — THE CUSTOMER POOL IS THE ATTEMPT
+#     BUDGET: anonymizeCustomer replaces the customer's phone with the
+#     `anonymized:` sentinel, so the seeded phone can never resolve again
+#     on the same stack. The seedCustomer fixture's `phonePool` rotates to
+#     the next un-erased seeded customer per attempt — pool [.0009, .0010]
+#     = 2 attempts per seeded stack (the JOURNEY-001 rate-limit-budget
+#     precedent; pool customers are used by NO other journey, and a fresh
+#     `ibx test seed` stack resets the budget). Nightly runs this journey
+#     k=1.
+#
+# Decision-trajectory derivation (IN_ORDER over hashed(customerId) — D-012;
+# no chat namespace exists in this run):
+#   * order.checkout.create — EXECUTE: the run first places a REAL order
+#     (cash + pickup) so the erasure has fiscal data to scrub around — the
+#     OrderEventLog assert would be vacuous otherwise.
+#   * customer.anonymize — EXECUTE: requireAuthenticated +
+#     requireCustomerExists pass; immediateErasure skips requireFreshOtp +
+#     deferAnonymizeForGrace → executeAnonymize (the pack's WS4 immediate
+#     path). The envelope is user-principal with sessionId = customerId
+#     (buildCustomerEnvelope) → in the run namespace.
+#   * The per-surface scrub records (customer.anonymize.*.scrubbed,
+#     customer.service.ts:1179) are SYSTEM-actor envelopes with sessionId
+#     `customer.anonymize:<customerId>` — they hash OUTSIDE the run
+#     namespace (the D-015 system-actor rule), so no allowances are needed;
+#     their effects are asserted as goal state instead.
+#
+# Goal-state asserts (the LGPD behavior the oracle already tolerates):
+#   * order.event-log.anonymized — every order_event_log row of the run's
+#     order carries {anonymized: true} (anonymizeCustomer surface 5), ≥1 row
+#     (the awaitRunOrder fixture barriers on the order.placed log row BEFORE
+#     the erasure so projector lag can never leave an unscrubbed row).
+#   * customer.anonymize.goal-state — sentinel phone, name "Usuário
+#     Removido", email/cpf null (the fiscal order row survives, the person
+#     does not).
+id: JOURNEY-012
+title: Customer exports their data, then exercises immediate LGPD erasure
+businessCase: >-
+  LGPD Art. 18 in one run: a customer with a real order asks for everything
+  the business holds about them (portability) and then for erasure. The
+  fiscal order must survive de-identified — projection PII scrubbed, event
+  log payloads anonymized, the profile reduced to a sentinel — and the
+  destructive mutation must be kernel-adjudicated and audited under the
+  customer's own principal, with the per-surface scrub records chained to
+  it in the system namespace.
+persona: >-
+  Cliente autenticada pede uma limonada para retirada, baixa uma cópia dos
+  seus dados pessoais e em seguida pede a exclusão definitiva da conta,
+  como garante a LGPD.
+channel: web
+status: active
+blocked_by: []
+source: docs/agents/plan-v2.md §5 T2-2a
+params:
+  authenticated: true
+  productHandle: limonada-suica
+  paymentMethod: cash
+  fulfillment: pickup
+  customerPhonePool:
+    - "+5519900000009"
+    - "+5519900000010"
+acts:
+  - kind: fixture
+    name: seed-poolable-customer
+    seed: seedCustomer
+    params:
+      phonePool:
+        - "+5519900000009"
+        - "+5519900000010"
+    note: >-
+      Precondition only — resolves the FIRST still-un-erased customer from
+      the dedicated LGPD pool (Gabriela Souza / Pedro Rocha — seeded
+      customers no other journey touches; header correction 3). Erasure is
+      terminal per stack: the pool size is the per-stack attempt budget.
+  - kind: fixture
+    name: resolve-product-variant
+    seed: resolveProductVariant
+    params:
+      handle: limonada-suica
+      variantTitle: 500ml
+    note: >-
+      Precondition only — read-only catalog resolve; the journey file never
+      carries a raw Medusa id.
+  - kind: http
+    name: create-cart
+    method: POST
+    path: /api/cart
+    asRole: customer
+    body: {}
+    capture:
+      cartId: cart.id
+  - kind: http
+    name: add-item
+    method: POST
+    path: /api/cart/:cartId/line-items
+    asRole: customer
+    body:
+      variant_id: ":variantId"
+      quantity: 1
+  - kind: http
+    name: checkout
+    method: POST
+    path: /api/cart/checkout
+    asRole: customer
+    body:
+      cartId: ":cartId"
+      paymentMethod: cash
+      deliveryType: pickup
+    note: >-
+      The run's REAL order (order.checkout.create EXECUTE) — the fiscal
+      data the erasure must scrub around without deleting.
+  - kind: fixture
+    name: await-order-and-event-log
+    seed: awaitRunOrder
+    params:
+      requireEventLog: true
+    note: >-
+      Read-only barrier — the run's order projection AND its first
+      order_event_log row must exist BEFORE the erasure act: the scrub runs
+      once at DELETE time, so a projector-lagged log row written after it
+      would stay un-anonymized forever (header: goal-state asserts).
+  - kind: http
+    name: export-my-data
+    method: GET
+    path: /api/me/data
+    asRole: customer
+    note: >-
+      LGPD portability (Art. 18): GET /api/me/data returns the full
+      personal-data export under the per-customer lgpd lock (read-only — no
+      envelope, no audit row; the 200 is the act-level assert).
+  - kind: http
+    name: immediate-erasure
+    method: DELETE
+    path: /api/me/data
+    asRole: customer
+    note: >-
+      The executable erasure path (header correction 2): requireAuth +
+      immediateErasure state → kernel customer.anonymize EXECUTE →
+      anonymizeCustomer scrubs all 7 in-process surfaces in one transaction
+      and emits the system-namespace scrub records. A 200 with
+      success=true IS the committed erasure.
+expects:
+  - intentKind: order.checkout.create
+    decision: EXECUTE
+  - intentKind: customer.anonymize
+    decision: EXECUTE
+verify:
+  - invariant: audit.trajectory.in_order
+    args:
+      note: >-
+        checkout EXECUTE then customer.anonymize EXECUTE in the
+        hashed(customerId) namespace
+  - invariant: audit.record.verified
+    args: {}
+  - invariant: order.event-log.anonymized
+    args: {}
+  - invariant: customer.anonymize.goal-state
+    args: {}

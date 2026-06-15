@@ -1,0 +1,15 @@
+{
+  "id": "smalltalk-noop",
+  "scenario": "Smalltalk noop turn: the customer greets the agent; the planner (correctly) calls no tool, the plan is empty, and the audited bridge fails CLOSED on an empty plan — adjudicatePlan([]) returns REFUSE empty_plan rather than fabricating an EXECUTE (an empty plan must never license a side effect). No audit record is emitted (nothing was adjudicated by the kernel) and no envelope reaches the ledger. The responder still answers the user normally.",
+  "conversation": [
+    { "role": "user", "content": "Oi, tudo bem?" }
+  ],
+  "expectedEnvelopeKinds": [],
+  "expectedDecisionKind": "REFUSE",
+  "expectedRefusalCode": "empty_plan",
+  "expectedResponseText": "Olá! Tudo ótimo por aqui. Como posso ajudar?",
+  "expectedAudit": {
+    "rows": 0
+  },
+  "tags": ["smalltalk", "no-mutation", "empty-plan"]
+}

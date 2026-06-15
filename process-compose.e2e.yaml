@@ -1,0 +1,68 @@
+version: "0.5"
+
+# process-compose.e2e.yaml — T2-7 e2e OVERLAY for the journey-test profile.
+#
+# This file is NOT a standalone profile: it is merged ON TOP of
+# process-compose.test.yaml (process-compose merges every `-f` in order —
+# verified on v1.103.0) to ALSO boot the apps/web storefront (:3000), which
+# the test profile deliberately excluded until T2-7. admin (:3002) stays
+# excluded — no e2e spec exercises it.
+#
+# Canonical launcher (the ONLY supported invocation — keeps the -p port on
+# 28505 so test-stack-down.sh's dev-stack heuristic never sees this profile):
+#
+#   IBX_TEST_E2E=1 ./scripts/test-stack-up.sh
+#     → process-compose up -f process-compose.test.yaml -f process-compose.e2e.yaml \
+#         -e .env.test -D -p <pc-port>
+#
+# ENV CONTRACT: identical to the test profile (read its header). The command
+# sources ./.env.test with `set -a` before exec — the binding mechanism; a
+# yaml-level env block would NOT bind. .env.test already carries the web
+# vars (NEXT_PUBLIC_API_URL=http://localhost:3001 etc.). `next dev -p 3000`
+# pins the port via the CLI flag, so .env.test's PORT=3001 is harmless here
+# (unlike Medusa, which honors PORT — see the commerce note in the test
+# profile).
+#
+# READINESS: the "/" probe forces Next's lazy dev compile on first hit; the
+# first responses can exceed the probe timeout while the compile finishes
+# server-side, so the generous failure_threshold is intentional (CI cold
+# compile, no .next cache).
+
+processes:
+  # ── Web cache cleanup (one-shot — mirrors the dev profile) ─────────────────
+  web-clean:
+    command: "rm -rf apps/web/.next"
+    depends_on:
+      build-packages:
+        condition: process_completed_successfully
+    availability:
+      restart: "no"
+
+  # ── Web (Next.js storefront, :3000) ────────────────────────────────────────
+  # Gated on api healthy: the storefront proxies/fetches against :3001 and the
+  # e2e specs assume one deterministic boot order. web consumes
+  # @ibatexas/types + @ibatexas/ui from SOURCE (next.config transpilePackages)
+  # and @ibatexas/tools from dist — built by the test profile's
+  # build-packages step.
+  web:
+    command: "test -f .env.test || { echo 'missing .env.test — run ./scripts/gen-env-test.sh' >&2; exit 1; }; set -a && . ./.env.test && set +a && exec pnpm --filter @ibatexas/web dev"
+    depends_on:
+      web-clean:
+        condition: process_completed_successfully
+      api:
+        condition: process_healthy
+    readiness_probe:
+      http_get:
+        host: "localhost"
+        port: 3000
+        path: "/"
+      initial_delay_seconds: 10
+      period_seconds: 5
+      timeout_seconds: 10
+      failure_threshold: 60
+    availability:
+      restart: on_failure
+      max_restarts: 3
+    shutdown:
+      signal: 15
+      timeout_seconds: 10

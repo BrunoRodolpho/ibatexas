@@ -12,7 +12,7 @@ import {
 import sensible from "@fastify/sensible";
 import cookie from "@fastify/cookie";
 import type { FastifyRequest, FastifyReply } from "fastify";
-import { authRoutes } from "../routes/auth.js";
+import { authRoutes, devOtpBypass } from "../routes/auth.js";
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────────
 
@@ -1104,5 +1104,54 @@ describe("AUTH-001: Logout cleans up refresh token", () => {
 
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ ok: true });
+  });
+});
+
+// ── WS-E: DEV OTP bypass gate ───────────────────────────────────────────────
+//
+// The bypass MUST be unreachable outside a developer's own machine. These
+// cases pin the three-axis gate (NODE_ENV=development AND IBX_DEV_OTP_BYPASS
+// truthy AND IBX_DEV_OTP_CODE set) so a future refactor can't widen it.
+describe("dev OTP bypass gate (devOtpBypass)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.unstubAllEnvs();
+  });
+
+  it("is ENABLED only when all three axes line up (local dev)", () => {
+    vi.stubEnv("NODE_ENV", "development");
+    vi.stubEnv("IBX_DEV_OTP_BYPASS", "true");
+    vi.stubEnv("IBX_DEV_OTP_CODE", "424242");
+    const gate = devOtpBypass();
+    expect(gate.enabled).toBe(true);
+    expect(gate.code).toBe("424242");
+  });
+
+  it("REFUSES under production even with the flags + code set", () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("IBX_DEV_OTP_BYPASS", "true");
+    vi.stubEnv("IBX_DEV_OTP_CODE", "424242");
+    expect(devOtpBypass().enabled).toBe(false);
+  });
+
+  it("REFUSES under the test profile (NODE_ENV=test)", () => {
+    vi.stubEnv("NODE_ENV", "test");
+    vi.stubEnv("IBX_DEV_OTP_BYPASS", "true");
+    vi.stubEnv("IBX_DEV_OTP_CODE", "424242");
+    expect(devOtpBypass().enabled).toBe(false);
+  });
+
+  it("REFUSES in development when the flag is off", () => {
+    vi.stubEnv("NODE_ENV", "development");
+    vi.stubEnv("IBX_DEV_OTP_BYPASS", "false");
+    vi.stubEnv("IBX_DEV_OTP_CODE", "424242");
+    expect(devOtpBypass().enabled).toBe(false);
+  });
+
+  it("REFUSES in development when no code is configured", () => {
+    vi.stubEnv("NODE_ENV", "development");
+    vi.stubEnv("IBX_DEV_OTP_BYPASS", "true");
+    vi.stubEnv("IBX_DEV_OTP_CODE", "");
+    expect(devOtpBypass().enabled).toBe(false);
   });
 });

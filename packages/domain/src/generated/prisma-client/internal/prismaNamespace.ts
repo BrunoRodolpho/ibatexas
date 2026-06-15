@@ -407,7 +407,8 @@ export const ModelName = {
   DeliveryZone: 'DeliveryZone',
   WeeklySchedule: 'WeeklySchedule',
   Holiday: 'Holiday',
-  ScheduleOverride: 'ScheduleOverride'
+  ScheduleOverride: 'ScheduleOverride',
+  AgentRun: 'AgentRun'
 } as const
 
 export type ModelName = (typeof ModelName)[keyof typeof ModelName]
@@ -423,7 +424,7 @@ export type TypeMap<ExtArgs extends runtime.Types.Extensions.InternalArgs = runt
     omit: GlobalOmitOptions
   }
   meta: {
-    modelProps: "table" | "timeSlot" | "reservation" | "reservationTable" | "waitlist" | "review" | "staff" | "customer" | "address" | "customerPreferences" | "customerOrderItem" | "orderProjection" | "orderStatusHistory" | "orderEventLog" | "payment" | "paymentStatusHistory" | "orderNote" | "loyaltyAccount" | "conversation" | "conversationMessage" | "deliveryZone" | "weeklySchedule" | "holiday" | "scheduleOverride"
+    modelProps: "table" | "timeSlot" | "reservation" | "reservationTable" | "waitlist" | "review" | "staff" | "customer" | "address" | "customerPreferences" | "customerOrderItem" | "orderProjection" | "orderStatusHistory" | "orderEventLog" | "payment" | "paymentStatusHistory" | "orderNote" | "loyaltyAccount" | "conversation" | "conversationMessage" | "deliveryZone" | "weeklySchedule" | "holiday" | "scheduleOverride" | "agentRun"
     txIsolationLevel: TransactionIsolationLevel
   }
   model: {
@@ -2203,6 +2204,80 @@ export type TypeMap<ExtArgs extends runtime.Types.Extensions.InternalArgs = runt
         }
       }
     }
+    AgentRun: {
+      payload: Prisma.$AgentRunPayload<ExtArgs>
+      fields: Prisma.AgentRunFieldRefs
+      operations: {
+        findUnique: {
+          args: Prisma.AgentRunFindUniqueArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$AgentRunPayload> | null
+        }
+        findUniqueOrThrow: {
+          args: Prisma.AgentRunFindUniqueOrThrowArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$AgentRunPayload>
+        }
+        findFirst: {
+          args: Prisma.AgentRunFindFirstArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$AgentRunPayload> | null
+        }
+        findFirstOrThrow: {
+          args: Prisma.AgentRunFindFirstOrThrowArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$AgentRunPayload>
+        }
+        findMany: {
+          args: Prisma.AgentRunFindManyArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$AgentRunPayload>[]
+        }
+        create: {
+          args: Prisma.AgentRunCreateArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$AgentRunPayload>
+        }
+        createMany: {
+          args: Prisma.AgentRunCreateManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        createManyAndReturn: {
+          args: Prisma.AgentRunCreateManyAndReturnArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$AgentRunPayload>[]
+        }
+        delete: {
+          args: Prisma.AgentRunDeleteArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$AgentRunPayload>
+        }
+        update: {
+          args: Prisma.AgentRunUpdateArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$AgentRunPayload>
+        }
+        deleteMany: {
+          args: Prisma.AgentRunDeleteManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        updateMany: {
+          args: Prisma.AgentRunUpdateManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        updateManyAndReturn: {
+          args: Prisma.AgentRunUpdateManyAndReturnArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$AgentRunPayload>[]
+        }
+        upsert: {
+          args: Prisma.AgentRunUpsertArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$AgentRunPayload>
+        }
+        aggregate: {
+          args: Prisma.AgentRunAggregateArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.AggregateAgentRun>
+        }
+        groupBy: {
+          args: Prisma.AgentRunGroupByArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.AgentRunGroupByOutputType>[]
+        }
+        count: {
+          args: Prisma.AgentRunCountArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.AgentRunCountAggregateOutputType> | number
+        }
+      }
+    }
   }
 } & {
   other: {
@@ -2602,6 +2677,23 @@ export const ScheduleOverrideScalarFieldEnum = {
 export type ScheduleOverrideScalarFieldEnum = (typeof ScheduleOverrideScalarFieldEnum)[keyof typeof ScheduleOverrideScalarFieldEnum]
 
 
+export const AgentRunScalarFieldEnum = {
+  id: 'id',
+  agentId: 'agentId',
+  agentVersion: 'agentVersion',
+  sessionId: 'sessionId',
+  entity: 'entity',
+  externalId: 'externalId',
+  decisionKind: 'decisionKind',
+  intentKind: 'intentKind',
+  modelCalls: 'modelCalls',
+  at: 'at',
+  createdAt: 'createdAt'
+} as const
+
+export type AgentRunScalarFieldEnum = (typeof AgentRunScalarFieldEnum)[keyof typeof AgentRunScalarFieldEnum]
+
+
 export const SortOrder = {
   asc: 'asc',
   desc: 'desc'
@@ -2977,6 +3069,7 @@ export type GlobalOmitConfig = {
   weeklySchedule?: Prisma.WeeklyScheduleOmit
   holiday?: Prisma.HolidayOmit
   scheduleOverride?: Prisma.ScheduleOverrideOmit
+  agentRun?: Prisma.AgentRunOmit
 }
 
 /* Types for Logging */

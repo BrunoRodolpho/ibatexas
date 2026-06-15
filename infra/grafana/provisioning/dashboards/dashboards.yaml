@@ -1,0 +1,18 @@
+# Grafana dashboard provisioning (file provider). Loads the committed kernel
+# dashboards mounted at /var/lib/grafana/dashboards (see
+# docker-compose.observability.yml). The dashboards default the `env` template
+# var to dev (flipped from prod) so they match the dev scraper's env=dev label.
+apiVersion: 1
+
+providers:
+  - name: kernel-dashboards
+    orgId: 1
+    folder: Kernel
+    type: file
+    disableDeletion: false
+    editable: true
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

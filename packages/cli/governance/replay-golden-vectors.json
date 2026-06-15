@@ -1,0 +1,506 @@
+{
+  "comment": [
+    "T1b-3 golden replay vectors — the seeded baseline behind the kernel-replay-gate PR check.",
+    "Each vector pins (envelope, decision) for adjudicate(envelope, EMPTY state, pack.policy).",
+    "Seeded into an ephemeral audit DB by `ibx kernel replay --ci --seed-file <this file>`;",
+    "a policy/guard change that alters any decision fails the gate with exit 2.",
+    "After an INTENDED policy change run `ibx kernel replay --update-golden <this file>` and commit the diff.",
+    "Envelopes are frozen (stable nonce/intentHash); only decisions are regenerated.",
+    "sessionId namespace 'golden:' — never 'agent:' (excluded from the scan) nor 'hashed:' (chat rows, D-012)."
+  ],
+  "vectors": [
+    {
+      "note": "orders: checkout on empty state (state machine leg)",
+      "envelope": {
+        "version": 2,
+        "kind": "order.checkout.create",
+        "payload": {
+          "cartId": "cart_golden_01",
+          "deliveryType": "delivery",
+          "customerId": "cus_golden_01"
+        },
+        "createdAt": "2026-06-12T00:00:00.000Z",
+        "nonce": "golden-order.checkout.create-v1",
+        "actor": {
+          "principal": "user",
+          "sessionId": "golden:replay-baseline"
+        },
+        "taint": "TRUSTED",
+        "intentHash": "3eee0c90db20a07f6278bc0836a396c24b7037374adba20c562076dafb88a0f9"
+      },
+      "decision": {
+        "kind": "REFUSE",
+        "refusal": {
+          "kind": "SECURITY",
+          "code": "guard_panic",
+          "userFacing": "System is temporarily unavailable.",
+          "detail": "Guard panic in state phase[4] (requireCartItemsForCheckout): TypeError: Cannot read properties of undefined (reading 'items')"
+        },
+        "basis": [
+          {
+            "category": "schema",
+            "code": "version_supported"
+          },
+          {
+            "category": "kernel",
+            "code": "guard_panic",
+            "detail": {
+              "phase": "state",
+              "index": 4,
+              "guardName": "requireCartItemsForCheckout",
+              "errorName": "TypeError",
+              "message": "Cannot read properties of undefined (reading 'items')"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "note": "orders: item add on empty state (chat REFUSE leg, D-014)",
+      "envelope": {
+        "version": 2,
+        "kind": "order.item.add",
+        "payload": {
+          "cartId": "cart_golden_01",
+          "productHandle": "costela-bovina-defumada",
+          "quantity": 1
+        },
+        "createdAt": "2026-06-12T00:00:00.000Z",
+        "nonce": "golden-order.item.add-v1",
+        "actor": {
+          "principal": "llm",
+          "sessionId": "golden:replay-baseline"
+        },
+        "taint": "UNTRUSTED",
+        "intentHash": "a103f8a771fd75cd5e3dfeba3e0e15839d57e0695d63ca44a5dc27041bc5ac9a"
+      },
+      "decision": {
+        "kind": "REFUSE",
+        "refusal": {
+          "kind": "SECURITY",
+          "code": "guard_panic",
+          "userFacing": "System is temporarily unavailable.",
+          "detail": "Guard panic in state phase[6] (deferOnPendingPix): TypeError: Cannot read properties of undefined (reading 'paymentStatus')"
+        },
+        "basis": [
+          {
+            "category": "schema",
+            "code": "version_supported"
+          },
+          {
+            "category": "kernel",
+            "code": "guard_panic",
+            "detail": {
+              "phase": "state",
+              "index": 6,
+              "guardName": "deferOnPendingPix",
+              "errorName": "TypeError",
+              "message": "Cannot read properties of undefined (reading 'paymentStatus')"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "note": "orders: cancel on empty state (confirm-gate pack leg)",
+      "envelope": {
+        "version": 2,
+        "kind": "order.cancel",
+        "payload": {
+          "orderId": "ord_golden_01",
+          "reason": "cliente desistiu"
+        },
+        "createdAt": "2026-06-12T00:00:00.000Z",
+        "nonce": "golden-order.cancel-v1",
+        "actor": {
+          "principal": "user",
+          "sessionId": "golden:replay-baseline"
+        },
+        "taint": "TRUSTED",
+        "intentHash": "3fb9c3aeadf7f5d24cfd87011aeb657f2e64f23c57ac451c9c8263cf9ac0eddf"
+      },
+      "decision": {
+        "kind": "REFUSE",
+        "refusal": {
+          "kind": "SECURITY",
+          "code": "guard_panic",
+          "userFacing": "System is temporarily unavailable.",
+          "detail": "Guard panic in state phase[1] (requireOrderIdForMutation): TypeError: Cannot read properties of undefined (reading 'orderId')"
+        },
+        "basis": [
+          {
+            "category": "schema",
+            "code": "version_supported"
+          },
+          {
+            "category": "kernel",
+            "code": "guard_panic",
+            "detail": {
+              "phase": "state",
+              "index": 1,
+              "guardName": "requireOrderIdForMutation",
+              "errorName": "TypeError",
+              "message": "Cannot read properties of undefined (reading 'orderId')"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "note": "reservations: create on empty state",
+      "envelope": {
+        "version": 2,
+        "kind": "reservation.create",
+        "payload": {
+          "date": "2026-07-01",
+          "time": "19:00",
+          "partySize": 4,
+          "customerId": "cus_golden_01"
+        },
+        "createdAt": "2026-06-12T00:00:00.000Z",
+        "nonce": "golden-reservation.create-v1",
+        "actor": {
+          "principal": "user",
+          "sessionId": "golden:replay-baseline"
+        },
+        "taint": "TRUSTED",
+        "intentHash": "bf1e38da37a1c90388f654cc236ef8366638b57026ba57a58cc3c09e1cfda475"
+      },
+      "decision": {
+        "kind": "REFUSE",
+        "refusal": {
+          "kind": "SECURITY",
+          "code": "guard_panic",
+          "userFacing": "System is temporarily unavailable.",
+          "detail": "Guard panic in state phase[3] (requireSlotInFuture): TypeError: Cannot read properties of undefined (reading 'slot')"
+        },
+        "basis": [
+          {
+            "category": "schema",
+            "code": "version_supported"
+          },
+          {
+            "category": "kernel",
+            "code": "guard_panic",
+            "detail": {
+              "phase": "state",
+              "index": 3,
+              "guardName": "requireSlotInFuture",
+              "errorName": "TypeError",
+              "message": "Cannot read properties of undefined (reading 'slot')"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "note": "reservations: waitlist join (deep basis chain)",
+      "envelope": {
+        "version": 2,
+        "kind": "reservation.waitlist.join",
+        "payload": {
+          "date": "2026-07-01",
+          "partySize": 2,
+          "customerId": "cus_golden_01"
+        },
+        "createdAt": "2026-06-12T00:00:00.000Z",
+        "nonce": "golden-reservation.waitlist.join-v1",
+        "actor": {
+          "principal": "user",
+          "sessionId": "golden:replay-baseline"
+        },
+        "taint": "TRUSTED",
+        "intentHash": "e840021fc55007aac671bb060b88e2be539ac4b342218947793f7ec2accffdc9"
+      },
+      "decision": {
+        "kind": "REFUSE",
+        "refusal": {
+          "kind": "SECURITY",
+          "code": "guard_panic",
+          "userFacing": "System is temporarily unavailable.",
+          "detail": "Guard panic in auth phase[0]: TypeError: Cannot read properties of undefined (reading 'tenantId')"
+        },
+        "basis": [
+          {
+            "category": "schema",
+            "code": "version_supported"
+          },
+          {
+            "category": "state",
+            "code": "transition_valid"
+          },
+          {
+            "category": "taint",
+            "code": "level_permitted"
+          },
+          {
+            "category": "kernel",
+            "code": "guard_panic",
+            "detail": {
+              "phase": "auth",
+              "index": 0,
+              "errorName": "TypeError",
+              "message": "Cannot read properties of undefined (reading 'tenantId')"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "note": "whatsapp: template send as system actor (deep basis chain)",
+      "envelope": {
+        "version": 2,
+        "kind": "whatsapp.template.send",
+        "payload": {
+          "to": "+5511999990000",
+          "template": "order_update",
+          "params": [
+            "ord_golden_01"
+          ]
+        },
+        "createdAt": "2026-06-12T00:00:00.000Z",
+        "nonce": "golden-whatsapp.template.send-v1",
+        "actor": {
+          "principal": "system",
+          "sessionId": "golden:replay-baseline"
+        },
+        "taint": "SYSTEM",
+        "intentHash": "32b4bc47acbe6bd3e81fa441923e1d923486029c61b661021545f87d0e7af289"
+      },
+      "decision": {
+        "kind": "REFUSE",
+        "refusal": {
+          "kind": "SECURITY",
+          "code": "guard_panic",
+          "userFacing": "System is temporarily unavailable.",
+          "detail": "Guard panic in auth phase[0]: TypeError: Cannot read properties of undefined (reading 'tenantId')"
+        },
+        "basis": [
+          {
+            "category": "schema",
+            "code": "version_supported"
+          },
+          {
+            "category": "state",
+            "code": "transition_valid"
+          },
+          {
+            "category": "taint",
+            "code": "level_permitted"
+          },
+          {
+            "category": "kernel",
+            "code": "guard_panic",
+            "detail": {
+              "phase": "auth",
+              "index": 0,
+              "errorName": "TypeError",
+              "message": "Cannot read properties of undefined (reading 'tenantId')"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "note": "onboarding: customer create (taint leg)",
+      "envelope": {
+        "version": 2,
+        "kind": "customer.create",
+        "payload": {
+          "phone": "+5511999990000",
+          "name": "Golden Baseline"
+        },
+        "createdAt": "2026-06-12T00:00:00.000Z",
+        "nonce": "golden-customer.create-v1",
+        "actor": {
+          "principal": "user",
+          "sessionId": "golden:replay-baseline"
+        },
+        "taint": "TRUSTED",
+        "intentHash": "afd0f01de0dbfa254a98b08c83d855ececf9a579b2ef2883a4c91b843a394903"
+      },
+      "decision": {
+        "kind": "REFUSE",
+        "refusal": {
+          "kind": "SECURITY",
+          "code": "taint_level_insufficient",
+          "userFacing": "I can't perform this action with the information available.",
+          "detail": "Taint TRUSTED insufficient for intent kind customer.create"
+        },
+        "basis": [
+          {
+            "category": "schema",
+            "code": "version_supported"
+          },
+          {
+            "category": "state",
+            "code": "transition_valid"
+          },
+          {
+            "category": "taint",
+            "code": "level_insufficient",
+            "detail": {
+              "actual": "TRUSTED",
+              "kind": "customer.create"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "note": "payments: method switch (deep basis chain)",
+      "envelope": {
+        "version": 2,
+        "kind": "payment.method.switch",
+        "payload": {
+          "orderId": "ord_golden_01",
+          "method": "pix"
+        },
+        "createdAt": "2026-06-12T00:00:00.000Z",
+        "nonce": "golden-payment.method.switch-v1",
+        "actor": {
+          "principal": "user",
+          "sessionId": "golden:replay-baseline"
+        },
+        "taint": "TRUSTED",
+        "intentHash": "dc87d729218c8e1bb9c20a7cf10caa3851ad01ac9ed17edbf214b4fc54a78737"
+      },
+      "decision": {
+        "kind": "REFUSE",
+        "refusal": {
+          "kind": "SECURITY",
+          "code": "guard_panic",
+          "userFacing": "System is temporarily unavailable.",
+          "detail": "Guard panic in auth phase[0]: TypeError: Cannot read properties of undefined (reading 'tenantId')"
+        },
+        "basis": [
+          {
+            "category": "schema",
+            "code": "version_supported"
+          },
+          {
+            "category": "state",
+            "code": "transition_valid"
+          },
+          {
+            "category": "taint",
+            "code": "level_permitted"
+          },
+          {
+            "category": "kernel",
+            "code": "guard_panic",
+            "detail": {
+              "phase": "auth",
+              "index": 0,
+              "errorName": "TypeError",
+              "message": "Cannot read properties of undefined (reading 'tenantId')"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "note": "payments: charge create (deep basis chain)",
+      "envelope": {
+        "version": 2,
+        "kind": "payment.charge.create",
+        "payload": {
+          "orderId": "ord_golden_01",
+          "amountCentavos": 8900,
+          "method": "pix"
+        },
+        "createdAt": "2026-06-12T00:00:00.000Z",
+        "nonce": "golden-payment.charge.create-v1",
+        "actor": {
+          "principal": "user",
+          "sessionId": "golden:replay-baseline"
+        },
+        "taint": "TRUSTED",
+        "intentHash": "d7395b10de5c0e6c4d5b5ba50f8a322f92585c29b18ab16f2d9d53cbe85375d6"
+      },
+      "decision": {
+        "kind": "REFUSE",
+        "refusal": {
+          "kind": "SECURITY",
+          "code": "guard_panic",
+          "userFacing": "System is temporarily unavailable.",
+          "detail": "Guard panic in auth phase[0]: TypeError: Cannot read properties of undefined (reading 'tenantId')"
+        },
+        "basis": [
+          {
+            "category": "schema",
+            "code": "version_supported"
+          },
+          {
+            "category": "state",
+            "code": "transition_valid"
+          },
+          {
+            "category": "taint",
+            "code": "level_permitted"
+          },
+          {
+            "category": "kernel",
+            "code": "guard_panic",
+            "detail": {
+              "phase": "auth",
+              "index": 0,
+              "errorName": "TypeError",
+              "message": "Cannot read properties of undefined (reading 'tenantId')"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "note": "pix pack: charge create (deepest chain incl. auth+business)",
+      "envelope": {
+        "version": 2,
+        "kind": "pix.charge.create",
+        "payload": {
+          "orderId": "ord_golden_01",
+          "amountCentavos": 8900
+        },
+        "createdAt": "2026-06-12T00:00:00.000Z",
+        "nonce": "golden-pix.charge.create-v1",
+        "actor": {
+          "principal": "user",
+          "sessionId": "golden:replay-baseline"
+        },
+        "taint": "TRUSTED",
+        "intentHash": "f1298bcd4224bfd8da39b91e67bebd9b904b47d57140b0d6c03208cf40574d2e"
+      },
+      "decision": {
+        "kind": "DEFER",
+        "signal": "payment.confirmed",
+        "timeoutMs": 900000,
+        "basis": [
+          {
+            "category": "schema",
+            "code": "version_supported"
+          },
+          {
+            "category": "state",
+            "code": "transition_valid"
+          },
+          {
+            "category": "taint",
+            "code": "level_permitted"
+          },
+          {
+            "category": "auth",
+            "code": "scope_sufficient"
+          },
+          {
+            "category": "state",
+            "code": "transition_valid",
+            "detail": {
+              "reason": "awaiting_provider_confirmation",
+              "waitFor": "payment.confirmed"
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

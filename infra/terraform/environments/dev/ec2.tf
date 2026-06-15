@@ -27,6 +27,11 @@ locals {
     ecr_registry = "${data.aws_caller_identity.current.account_id}.dkr.ecr.${var.region}.amazonaws.com"
     compose_yml  = local.rendered_compose
     caddyfile    = file("${path.module}/caddyfile.tpl")
+    # T3-10: NATS server-side auth config (single source of truth in the repo;
+    # user_data writes it to /opt/ibatexas/nats-server.conf for the compose
+    # mount). $NATS_APP_NKEY_PUBLIC inside is resolved by the NATS server at
+    # boot from the container env — never by terraform or the shell.
+    nats_conf    = file("${path.module}/../../../nats/nats-server.app.conf")
     secret_names = jsonencode(local.secret_names)
   })
 }

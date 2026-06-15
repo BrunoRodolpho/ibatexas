@@ -11,8 +11,9 @@
 //   3. cancelItem() (edit)      — POST /admin/orders/:id/edits
 //   4. cancelItem() (remove)    — DELETE /admin/orders/:id/edits/:editId/items/:itemId
 //   5. cancelItem() (confirm)   — POST /admin/orders/:id/edits/:editId/confirm
-//   6. capturePayment() ×2      — POST /admin/orders/:id/capture-payment
-//                                  + POST /admin/orders/:id (metadata)
+//   6. capturePayment()         — POST /admin/orders/:id (metadata stamp;
+//                                  T2-1: the v1 capture POST was removed as
+//                                  the dead `medusa-v2-capture-payment` gap)
 //
 // W8-V1 (NEW-W7-V1) hardened the contract: the old silent fallback to
 // bare fetchAdmin when `adminAdjudicated` was undefined is now a hard
@@ -192,7 +193,7 @@ describe("OrderService — egress governance (W7-P6)", () => {
 
   // ── capturePayment ─────────────────────────────────────────────────────
 
-  it("capturePayment routes capture-payment POST and metadata POST through adminAdjudicated", async () => {
+  it("capturePayment routes the metadata POST through adminAdjudicated (v1 capture POST removed — T2-1)", async () => {
     // GET returns a pending order (no stripePaymentIntentId metadata yet).
     fetchAdmin.mockResolvedValueOnce({
       order: {
@@ -224,19 +225,17 @@ describe("OrderService — egress governance (W7-P6)", () => {
     const result = await svc.capturePayment("order_01", "pi_123")
 
     expect(result).not.toBeNull()
-    expect(adminAdjudicated).toHaveBeenCalledTimes(2)
-    expect(adminAdjudicated.mock.calls[0][0].path).toBe(
-      "/admin/orders/order_01/capture-payment",
-    )
+    // T2-1 (gap medusa-v2-capture-payment): exactly ONE mutation — the
+    // v2-valid metadata stamp. The dead v1 capture POST is never issued
+    // (it 404'd on every call while auditing a kernel EXECUTE — the D-015
+    // decision-vs-execution divergence class).
+    expect(adminAdjudicated).toHaveBeenCalledTimes(1)
+    expect(adminAdjudicated.mock.calls[0][0].path).toBe("/admin/orders/order_01")
     expect(adminAdjudicated.mock.calls[0][0].sourceSubject).toBe(
-      "service:order.capture-payment",
-    )
-    expect(adminAdjudicated.mock.calls[1][0].path).toBe("/admin/orders/order_01")
-    expect(adminAdjudicated.mock.calls[1][0].sourceSubject).toBe(
       "service:order.update-metadata",
     )
     // Metadata payload is forwarded as a typed POST body.
-    expect(adminAdjudicated.mock.calls[1][0].payload).toEqual({
+    expect(adminAdjudicated.mock.calls[0][0].payload).toEqual({
       metadata: { stripePaymentIntentId: "pi_123" },
     })
   })
