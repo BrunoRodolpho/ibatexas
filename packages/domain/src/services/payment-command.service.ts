@@ -453,17 +453,20 @@ export function createPaymentCommandService(
       return null
     }
 
-    const newVersion = payment.version + 1
+    const readVersion = payment.version
+    const newVersion = readVersion + 1
 
-    await prisma.$transaction(async (tx: TxClient) => {
-      await tx.payment.update({
-        where: { id: paymentId },
+    const applied = await prisma.$transaction(async (tx: TxClient) => {
+      const { count } = await tx.payment.updateMany({
+        where: { id: paymentId, version: readVersion },
         data: {
           status: input.newStatus as PrismaPaymentStatus,
           version: newVersion,
           lastStripeEventTs: input.stripeEventTimestamp ?? undefined,
         },
       })
+
+      if (count === 0) return false
 
       await tx.paymentStatusHistory.create({
         data: {
@@ -475,7 +478,11 @@ export function createPaymentCommandService(
           version: newVersion,
         },
       })
+
+      return true
     })
+
+    if (!applied) return null
 
     log?.info?.(
       { paymentId, orderId: payment.orderId, from, to: input.newStatus, version: newVersion, stripeEventId: input.stripeEventId },

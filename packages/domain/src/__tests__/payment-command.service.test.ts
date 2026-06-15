@@ -14,6 +14,7 @@ const mockPaymentCreate = vi.hoisted(() => vi.fn())
 const mockPaymentFindUnique = vi.hoisted(() => vi.fn())
 const mockPaymentFindFirst = vi.hoisted(() => vi.fn())
 const mockPaymentUpdate = vi.hoisted(() => vi.fn())
+const mockPaymentUpdateMany = vi.hoisted(() => vi.fn())
 const mockHistoryCreate = vi.hoisted(() => vi.fn())
 const mockProjectionUpdate = vi.hoisted(() => vi.fn())
 
@@ -23,6 +24,7 @@ const txClient = {
     findUnique: mockPaymentFindUnique,
     findFirst: mockPaymentFindFirst,
     update: mockPaymentUpdate,
+    updateMany: mockPaymentUpdateMany,
   },
   paymentStatusHistory: { create: mockHistoryCreate },
   orderProjection: { update: mockProjectionUpdate },
@@ -36,6 +38,7 @@ vi.mock("../client.js", () => ({
       findUnique: mockPaymentFindUnique,
       findFirst: mockPaymentFindFirst,
       update: mockPaymentUpdate,
+      updateMany: mockPaymentUpdateMany,
     },
     paymentStatusHistory: { create: mockHistoryCreate },
     orderProjection: { update: mockProjectionUpdate },
@@ -420,7 +423,7 @@ describe("PaymentCommandService — R1-DELETE envelope-typed surface", () => {
 
     it("valid reconciliation — updates payment and records history", async () => {
       mockPaymentFindUnique.mockResolvedValue(makePayment({ status: "payment_pending", version: 2 }))
-      mockPaymentUpdate.mockResolvedValue({})
+      mockPaymentUpdateMany.mockResolvedValue({ count: 1 })
       mockHistoryCreate.mockResolvedValue({})
 
       const envelope = buildReconcileEnvelope("pay_01", {
@@ -447,5 +450,64 @@ describe("PaymentCommandService — R1-DELETE envelope-typed surface", () => {
       const result = await svc.findActiveByOrderId("order_01")
       expect(result).toBeNull()
     })
+  })
+})
+
+describe("PaymentCommandService — executeReconcile lost-update (B1b)", () => {
+  let svc: ReturnType<typeof createPaymentCommandService>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    svc = createPaymentCommandService()
+  })
+
+  it("two concurrent reconcile calls at the same starting version — exactly one applies (no lost-update)", async () => {
+    // Both concurrent calls read payment at version 2 (payment_pending → paid is valid)
+    const payment = makePayment({ status: "payment_pending", version: 2 })
+    mockPaymentFindUnique.mockResolvedValue(payment)
+
+    // Simulate in-tx optimistic lock: first call matches version → count 1
+    // second call no longer matches (version bumped) → count 0
+    let updateManyCallCount = 0
+    mockPaymentUpdateMany.mockImplementation(() => {
+      updateManyCallCount++
+      return Promise.resolve({ count: updateManyCallCount === 1 ? 1 : 0 })
+    })
+    mockHistoryCreate.mockResolvedValue({})
+
+    const envelope1 = buildReconcileEnvelope("pay_01", {
+      newStatus: "paid",
+      stripeEventId: "evt_001",
+      stripeEventTimestamp: "2026-04-12T12:00:00Z",
+      expectedOrderId: "order_01",
+    })
+    const envelope2 = buildReconcileEnvelope("pay_01", {
+      newStatus: "paid",
+      stripeEventId: "evt_002",
+      stripeEventTimestamp: "2026-04-12T12:00:01Z",
+      expectedOrderId: "order_01",
+    })
+
+    const results = await Promise.allSettled([
+      svc.reconcileFromWebhookFromEnvelope(envelope1),
+      svc.reconcileFromWebhookFromEnvelope(envelope2),
+    ])
+
+    const applied = results
+      .filter((r) => r.status === "fulfilled")
+      .map((r) => (r as PromiseFulfilledResult<Awaited<ReturnType<typeof svc.reconcileFromWebhookFromEnvelope>>>).value)
+      .filter((v) => v.result !== null)
+
+    const noOps = results
+      .filter((r) => r.status === "fulfilled")
+      .map((r) => (r as PromiseFulfilledResult<Awaited<ReturnType<typeof svc.reconcileFromWebhookFromEnvelope>>>).value)
+      .filter((v) => v.result === null)
+
+    // With the BUGGY code (update without version condition) both succeed → applied.length === 2
+    // With the FIXED code (updateMany where version matches) only one applies → applied.length === 1
+    expect(applied).toHaveLength(1)
+    expect(noOps).toHaveLength(1)
+    // Only one history row written
+    expect(mockHistoryCreate).toHaveBeenCalledTimes(1)
   })
 })
