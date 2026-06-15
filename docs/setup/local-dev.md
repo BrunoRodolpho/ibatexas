@@ -48,32 +48,7 @@ cp .env.example .env
 | `JWT_SECRET` | `openssl rand -base64 32` |
 | `COOKIE_SECRET` | `openssl rand -base64 32` |
 | `ADMIN_API_KEY` | `openssl rand -base64 32` — must match in API and admin app |
-| `SESSION_HMAC_SECRET` | `openssl rand -base64 32` — signs session tokens (fails closed; placeholders rejected) |
-| `WEB_GATEWAY_SIGNING_KEY` | `openssl rand -base64 32` — HMAC the conductor trusts for web-gateway messages |
-| `SYSTEM_GATEWAY_SIGNING_KEY` | `openssl rand -base64 32` — HMAC for the system agent-host channel |
-| `ANTHROPIC_MODEL` | `claude-sonnet-4-6` (required at boot; no in-code fallback) |
-| `EMBEDDING_MODEL_ID` | `text-embedding-3-small` (required at boot) |
 | `APP_ENV` | `development` (default, no action needed) |
-
-> The four `*_SECRET` / `*_SIGNING_KEY` vars and both `*_MODEL*` vars are
-> **fail-closed**: the API throws at boot (or on first login, for
-> `SESSION_HMAC_SECRET`) when they're missing. Provision NATS auth separately with
-> `./scripts/nats/gen-dev-nats-auth.sh` (writes `NATS_NKEY_SEED` +
-> `NATS_APP_NKEY_PUBLIC`). Run `ibx env check` to confirm everything required is set.
-
-**Behavior flags (dev):** Several env vars change how the stack behaves rather than
-whether it boots. Run `ibx env flags` to see them and their effective values, and
-`ibx env toggle <KEY>` to flip one (it rewrites `.env` in place — restart the
-affected process afterward). The same summary prints at the top of `ibx dev`, with
-a `⚠` next to anything risky. The two you'll most likely want on for local work:
-
-```bash
-ibx env toggle IBX_DEV_OTP_BYPASS   # log in without Twilio…
-ibx env toggle IBX_DEV_OTP_CODE     # …using this fixed code (default 424242)
-```
-
-Without an `OPENAI_API_KEY`, embeddings silently fall back to a hash and semantic
-search returns garbage — `ibx env flags` flags this.
 
 **Optional (Stripe card payments):**
 
@@ -160,8 +135,6 @@ ibx auth create-staff --phone "+15125551234" --name "Your Name"
 
 Supports BR (`+55`) and US (`+1`) phones. Roles: `OWNER` (default), `MANAGER`, `ATTENDANT`.
 Login uses WhatsApp OTP — enter your phone on the admin login page to receive a verification code.
-For local dev without Twilio, enable the OTP bypass (`ibx env toggle IBX_DEV_OTP_BYPASS`) and log in
-with `IBX_DEV_OTP_CODE` instead of a real code.
 
 ---
 

@@ -1,9 +1,0 @@
-{
-  "$comment": "Checked-in LLM price table (plan-v2 §7) — the ONLY dollar conversion source. Cost per attempt = Σ llm.call (inputTokens × inputUsdPerMTok + outputTokens × outputUsdPerMTok) / 1e6, split by event source (driver vs sut). Prices are USD per million tokens. A model id missing here makes the cost report fail loudly (never silently $0).",
-  "models": {
-    "claude-sonnet-4-6": {
-      "inputUsdPerMTok": 3,
-      "outputUsdPerMTok": 15
-    }
-  }
-}

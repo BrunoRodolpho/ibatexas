@@ -2,23 +2,12 @@
  * Policy-pack composition — the SINGLE source of the post-prepend pack list.
  *
  * The kernel adjudicates each intent against its owning pack's PolicyBundle,
- * but ibatexas prepends ADOPTER-LEVEL guards to every pack at composition:
- *
- *   business phase — the F4 session token-budget guard (REFUSE over budget /
- *   ADR-120) and the confirm-on-autoresolve guard (REQUEST_CONFIRMATION when
- *   an ambiguous money/booking target was auto-resolved).
- *
- *   auth phase (T3-4) — the managed-agent scope guard (REFUSE
- *   `agent_scope_violation` for `agent:`-namespaced envelopes outside the
- *   agent's declared kinds) and the per-agent over-budget ESCALATE guards.
- *   These MUST sit in AUTH, not business: the kernel evaluates
- *   state → taint → auth → business, and `confirmOnAutoResolveGuard` is
- *   prepended to business — a business-phase scope guard would let an
- *   out-of-scope money kind short-circuit into REQUEST_CONFIRMATION before
- *   it could REFUSE (plan-v2 §9, governance critic).
- *
- * None of these guards are in any published `@ibatexas/pack-*`; they live
- * only here (the agent factories in ./agent-guards.ts).
+ * but ibatexas prepends two ADOPTER-LEVEL business guards to every pack's
+ * `business` phase at composition: the F4 session token-budget guard (REFUSE
+ * over budget / ADR-120) and the confirm-on-autoresolve guard
+ * (REQUEST_CONFIRMATION when an ambiguous money/booking target was
+ * auto-resolved). These guards are NOT in any published `@ibatexas/pack-*`;
+ * they live only here.
  *
  * Both the production router (`claustrum-bootstrap` → `composePolicyRouter`)
  * AND the policy-manifest exporter (`policy-manifest-export`) consume
@@ -30,12 +19,6 @@
 import type { PackV0 } from "@adjudicate/core";
 import { nameGuard, type Guard, type PolicyBundle } from "@adjudicate/core/kernel";
 import { createTokenBudgetGuard, createConfirmGuard } from "@adjudicate/primitives";
-import { AGENT_REGISTRY } from "@ibatexas/agents";
-import {
-  createAgentBudgetGuards,
-  createAgentKillSwitchGuard,
-  createAgentScopeGuard,
-} from "./agent-guards.js";
 
 /** A first-party pack with its K/P/S/C generics erased for heterogeneous storage. */
 export type ErasedPack = PackV0<string, unknown, unknown, unknown>;
@@ -110,48 +93,8 @@ export const IBATEXAS_ADOPTER_BUSINESS_GUARDS: ReadonlyArray<
   Guard<string, unknown, unknown>
 > = [sessionTokenBudgetGuard, confirmOnAutoResolveGuard];
 
-// ── Managed-agent kill + scope + budget guards (T3-4/T3-5) — AUTH phase ─────
-// Built once over the composed AGENT_REGISTRY (@ibatexas/agents, T3-3) and
-// prepended to EVERY pack's auth phase, in evaluation order: KILL first (a
-// killed agent REFUSEs before scope/budget are even considered), then scope
-// (an out-of-scope envelope REFUSEs before its budget), then one over-budget
-// ESCALATE guard per agent that declares `budgets.tokensPerDay`. All are inert
-// (null) for non-agent traffic.
-//
-// The kill guard reads LIVE per-agent state from the runtime
-// AgentKillSwitchManager (T3-5). The guard list is a module-level const built
-// at import — before the manager exists — and is ALSO consumed by the pure
-// policy-manifest exporter / CLI (no manager). So the kill state is read
-// through a late-bound holder: `setAgentKillStateReader()` points it at the
-// live manager at bootstrap; everywhere else it defaults to "never killed" (a
-// kill switch is a runtime control, not static policy — the exported manifest
-// must not depend on it).
-let agentKillStateReader: (agentNamespace: string) => boolean = () => false;
-
-/**
- * Point the AUTH-phase kill guard at the live per-agent kill state (the
- * AgentKillSwitchManager). Called once from claustrum-bootstrap after the
- * manager boots. Idempotent; safe to leave unset (guard then never fires).
- */
-export function setAgentKillStateReader(
-  reader: (agentNamespace: string) => boolean,
-): void {
-  agentKillStateReader = reader;
-}
-
-export const agentKillSwitchGuard = createAgentKillSwitchGuard((ns) =>
-  agentKillStateReader(ns),
-);
-export const agentScopeGuard = createAgentScopeGuard(AGENT_REGISTRY);
-export const agentBudgetGuards = createAgentBudgetGuards(AGENT_REGISTRY);
-
-export const IBATEXAS_ADOPTER_AUTH_GUARDS: ReadonlyArray<
-  Guard<string, unknown, unknown>
-> = [agentKillSwitchGuard, agentScopeGuard, ...agentBudgetGuards];
-
 /**
  * Build the production policy-pack list: each first-party pack with the
- * adopter-level auth guards prepended to its `authGuards` phase and the
  * adopter-level business guards prepended to its `business` phase. This is the
  * EXACT composition `composePolicyRouter` dispatches over and the manifest
  * exporter describes — keeping the two in lockstep by construction.
@@ -161,9 +104,6 @@ export function buildIbatexasPolicyPacks(
   adopterBusinessGuards: ReadonlyArray<
     Guard<string, unknown, unknown>
   > = IBATEXAS_ADOPTER_BUSINESS_GUARDS,
-  adopterAuthGuards: ReadonlyArray<
-    Guard<string, unknown, unknown>
-  > = IBATEXAS_ADOPTER_AUTH_GUARDS,
 ): ReadonlyArray<ErasedPack> {
   return packs.map((p) => {
     const base = p.policy as unknown as PolicyBundle<string, unknown, unknown>;
@@ -171,7 +111,6 @@ export function buildIbatexasPolicyPacks(
       ...p,
       policy: {
         ...base,
-        authGuards: [...adopterAuthGuards, ...base.authGuards],
         business: [...adopterBusinessGuards, ...base.business],
       },
     } as unknown as ErasedPack;

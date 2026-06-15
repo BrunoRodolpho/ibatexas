@@ -26,15 +26,6 @@ locals {
     "MEDUSA_ADMIN_PASSWORD",
     "TYPESENSE_API_KEY",
     "CORS_ORIGIN",
-    # T3-10 — NATS server-side auth. One per-environment user nkey pair
-    # (mint with scripts/nats/gen-nkey-user.mjs): the SEED is the client
-    # credential consumed by @ibatexas/nats-client in every app container;
-    # the PUBLIC key is interpolated into the NATS server config
-    # (infra/nats/nats-server.app.conf) by docker compose. Push both via
-    # `ibx infra secrets:push` BEFORE deploying — the nats container fails
-    # loudly without them.
-    "NATS_NKEY_SEED",
-    "NATS_APP_NKEY_PUBLIC",
   ]
 }
 

@@ -14,16 +14,8 @@
 //     400 "Unrecognized fields: 'expand'"; the order GET must use the `?fields=`
 //     idiom. With `?expand=` the GET threw before any capture ran.
 //
-// T2-1 contract update (gap `medusa-v2-capture-payment`): the
-// `POST /admin/orders/:id/capture-payment` mutate was a REMOVED Medusa v1
-// endpoint (404 on every call — the D-015 dead-v1-endpoint class), so
-// capturePayment now issues exactly ONE mutation — the v2-valid metadata
-// stamp (`POST /admin/orders/:id`) — and the Medusa-side capture bookkeeping
-// is skipped with a loud gap-named log until ported to /admin/payments.
-// The stale-PI guard semantics (what this file pins) are unchanged.
-//
 // Mirrors the DI mocking in order-service-egress.test.ts: fetchAdmin for the GET,
-// adminAdjudicated for the metadata mutation.
+// adminAdjudicated for the capture-payment + metadata mutations.
 
 import { describe, it, expect, vi, beforeEach } from "vitest"
 import { createOrderService, type AdminAdjudicated } from "../order.service.js"
@@ -64,11 +56,9 @@ describe("OrderService.capturePayment — stale-PI guard (P0-PAY-1)", () => {
     const result = await svc().capturePayment("order_01", "pi_123", { amountInCentavos: 8900 })
 
     expect(result).not.toBeNull()
-    // The metadata-stamp POST MUST have been issued (pre-fix: 8900 !== 89 →
-    // returned null before ANY mutation). T2-1: exactly one mutate — the dead
-    // v1 capture POST is gone (gap medusa-v2-capture-payment).
-    expect(adminAdjudicated).toHaveBeenCalledTimes(1)
-    expect(adminAdjudicated.mock.calls[0][0].path).toBe("/admin/orders/order_01")
+    // capture-payment POST MUST have been issued (pre-fix: 8900 !== 89 → returned null)
+    expect(adminAdjudicated).toHaveBeenCalledTimes(2)
+    expect(adminAdjudicated.mock.calls[0][0].path).toBe("/admin/orders/order_01/capture-payment")
   })
 
   it("captures a fractional total R$89,90 (Math.round absorbs the IEEE-754 artifact)", async () => {
@@ -78,11 +68,11 @@ describe("OrderService.capturePayment — stale-PI guard (P0-PAY-1)", () => {
 
     expect(result).not.toBeNull()
     expect(adminAdjudicated).toHaveBeenCalledWith(
-      expect.objectContaining({ path: "/admin/orders/order_01" }),
+      expect.objectContaining({ path: "/admin/orders/order_01/capture-payment" }),
     )
   })
 
-  it("skips (returns null, no mutation) on a genuine amount mismatch — stale PI after amendment", async () => {
+  it("skips (returns null, no capture POST) on a genuine amount mismatch — stale PI after amendment", async () => {
     fetchAdmin.mockResolvedValueOnce(pendingOrder(89)) // 8900 centavos
 
     const result = await svc().capturePayment("order_01", "pi_123", { amountInCentavos: 9000 })
@@ -98,7 +88,7 @@ describe("OrderService.capturePayment — stale-PI guard (P0-PAY-1)", () => {
 
     expect(result).not.toBeNull()
     expect(adminAdjudicated).toHaveBeenCalledWith(
-      expect.objectContaining({ path: "/admin/orders/order_01" }),
+      expect.objectContaining({ path: "/admin/orders/order_01/capture-payment" }),
     )
   })
 

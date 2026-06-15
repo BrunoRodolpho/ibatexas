@@ -3,7 +3,6 @@
 // Or via:  ibx db seed:domain
 
 import { prisma } from "./client.js"
-import { SEED_STAFF } from "./seed-constants.js"
 import {
   LUNCH_STARTS,
   DINNER_STARTS,
@@ -90,34 +89,10 @@ async function seedTimeSlots(days = SEED_DAYS_AHEAD) {
   console.log(`✅  ${result.count} time slots created`)
 }
 
-// ─── Staff (T2-2a) ────────────────────────────────────────────────────────────
-//
-// Seeded ACTIVE staff rows for the journeys harness's staff-HTTP acts
-// (reservation.checkin / reservation.complete admin routes — staff JWT auth
-// re-checks the active row per request). Same upsert idiom as
-// `ibx auth create-staff`; idempotent by phone.
-
-async function seedStaff() {
-  console.log("👤  Seeding staff…")
-
-  await prisma.$transaction(
-    SEED_STAFF.map((staff) =>
-      prisma.staff.upsert({
-        where: { phone: staff.phone },
-        update: { name: staff.name, role: staff.role, active: true },
-        create: { phone: staff.phone, name: staff.name, role: staff.role },
-      }),
-    ),
-  )
-
-  console.log(`✅  ${SEED_STAFF.length} staff upserted`)
-}
-
 async function main() {
   try {
     await seedTables()
     await seedTimeSlots(30)
-    await seedStaff()
     console.log("\n🎉  Domain seed complete\n")
   } finally {
     await prisma.$disconnect()

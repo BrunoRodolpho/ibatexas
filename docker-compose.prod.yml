@@ -79,9 +79,7 @@ services:
     # version jump (15→17): the PGDATA dir is NOT binary-compatible across major
     # versions — an existing v15 volume must be migrated (pg_upgrade or
     # dump+restore) BEFORE starting v17. Do NOT point v17 at a v15 data volume.
-    # pgvector/pgvector:pg17 = official postgres:17 + pgvector; the claustrum
-    # grounding layer needs CREATE EXTENSION vector, absent from postgres:*-alpine.
-    image: pgvector/pgvector:pg17
+    image: postgres:17-alpine
     container_name: ibatexas-postgres
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
@@ -152,20 +150,11 @@ services:
     # bump (2.10→2.11) — wire-compatible, no data migration needed.
     image: nats:2.11-alpine
     container_name: ibatexas-nats
-    # T3-10: server-side auth (docs/security/NATS-AUTH-REQUIREMENTS.md) — the
-    # server REFUSES unauthenticated clients. NATS_APP_NKEY_PUBLIC must be in
-    # the production .env alongside NATS_NKEY_SEED (the app-side credential the
-    # services read via env_file). Mint a pair with
-    # ./scripts/nats/gen-dev-nats-auth.sh --env-file <prod .env>; rotate per
-    # the ops cadence (>= every 90 days).
-    command: ["-c", "/etc/nats/nats-server.conf"]
-    environment:
-      NATS_APP_NKEY_PUBLIC: ${NATS_APP_NKEY_PUBLIC:?set NATS_APP_NKEY_PUBLIC in .env — see docs/security/NATS-AUTH-REQUIREMENTS.md (T3-10)}
+    command: ["--jetstream", "--store_dir", "/data", "-m", "8222"]
     ports:
       - "127.0.0.1:4222:4222"
       - "127.0.0.1:8222:8222"
     volumes:
-      - ./infra/nats/nats-server.app.conf:/etc/nats/nats-server.conf:ro
       - nats_data:/data
     healthcheck:
       test: ["CMD-SHELL", "nc -z localhost 4222 || exit 1"]

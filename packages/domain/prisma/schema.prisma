@@ -654,37 +654,3 @@ model ScheduleOverride {
   @@map("schedule_overrides")
   @@schema("ibx_domain")
 }
-
-// ─── Managed-agent runs ───────────────────────────────────────────────────────
-
-/// Durable journal of managed-agent trigger turns (P1 D-journal). Replaces the
-/// 256-entry in-memory ring as the source of truth for agent run history; the
-/// P4 adjutant projects incidents/proposals from these rows. One row per
-/// (agent, trigger event) — the @@unique([agentId, externalId]) lets the
-/// journal upsert idempotently when a BullMQ retry re-runs the same trigger.
-model AgentRun {
-  id           String   @id @default(cuid())
-  agentId      String   @map("agent_id")
-  agentVersion String   @map("agent_version")
-  /// agent:<id>@<ver>:entity:<entityId> — the unhashed audit namespace.
-  sessionId    String   @map("session_id")
-  /// <entityKind>:<entityId> the trigger was about.
-  entity       String
-  /// <sourceSubject>:<eventId> deterministic carrier (drives the upsert key).
-  externalId   String   @map("external_id")
-  /// Kernel DecisionKind for the turn (EXECUTE, REFUSE, REQUEST_CONFIRMATION, …).
-  decisionKind String   @map("decision_kind")
-  /// Derived from the planned envelope(s) (empty when the turn proposed none).
-  intentKind   String   @map("intent_kind")
-  /// Model calls the turn actually made (≤ the per-trigger cap, H1).
-  modelCalls   Int      @default(0) @map("model_calls")
-  /// ISO turn-completion time (passed in by the runner — never the DB clock).
-  at           DateTime
-  createdAt    DateTime @default(now()) @map("created_at")
-
-  @@unique([agentId, externalId])
-  @@index([agentId, at])
-  @@index([sessionId])
-  @@map("agent_runs")
-  @@schema("ibx_domain")
-}

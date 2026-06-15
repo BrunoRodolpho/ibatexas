@@ -15,7 +15,6 @@
     "upgrade:radar": "tsx scripts/upgrade-radar.ts"
   },
   "devDependencies": {
-    "@ibatexas/journeys": "workspace:*",
     "@playwright/test": "^1.58.2",
     "@types/node": "^22.0.0",
     "@types/uuid": "^10.0.0",
@@ -40,8 +39,7 @@
       "@types/react, @types/react-dom": "medusa pulls React 18 types — force single version to fix JSX portability errors",
       "vite@7": "vitest>vite v7 transitive fix — GHSA-v2wj-q39q-566r (server.fs.deny bypass) + GHSA-p9ff-h696-f583 (WebSocket file read). Scoped to v7 so medusa's vite v5 is untouched. Remove when vitest pulls vite >= 7.3.2.",
       "@rushstack/node-core-library>ajv": "@medusajs/cli>...>@rushstack/node-core-library>ajv transitive fix — GHSA-2g4f-4pwh-qvx6 ReDoS via $data option. Scoped (not global) because @eslint/eslintrc uses ajv v6 API and breaks if forced to v8 ('NOT SUPPORTED: option missingRefs' / 'Cannot set defaultMeta'). Remove when rushstack updates.",
-      "esbuild": "@medusajs/framework>vite v5>esbuild + .>tsx>esbuild transitive fix — GHSA-67mh-4wv8-2f99 dev-server CORS + GHSA-gv7w-rqvm-qjhr (CVE-less, Deno binary-integrity verification, N/A to this Node repo but flagged by audit). Bumped 0.25.0->0.28.1; qa-viewer (vite) build verified green. Remove when medusa upgrades vite to v6+.",
-      "@grpc/grpc-js": "apps/api>testcontainers>dockerode>@grpc/grpc-js transitive fix — GHSA-5375-pq7m-f5r2 (CVE-2026-48068) + GHSA-99f4-grh7-6pcq (CVE-2026-48069) malformed-request server crash. Test-only dependency (Testcontainers / dockerode). Patched in 1.14.4+.",
+      "esbuild": "@medusajs/framework>vite v5>esbuild transitive fix — GHSA-67mh-4wv8-2f99 dev-server CORS issue. Remove when medusa upgrades vite to v6+ (vite 6.4.2+ already pulls esbuild >=0.25).",
       "fast-jwt": "apps/api>@fastify/jwt transitive fix — GHSA-rp9m-7r4c-75qg cache confusion + GHSA-gmvf-9v4p-v8jc (CVE-2026-44351) CRITICAL JWT auth bypass on empty HMAC secret. Patched in 6.2.4+. Remove when @fastify/jwt pulls fast-jwt >=6.2.4.",
       "fast-uri": "apps/api>@fastify/swagger>json-schema-resolver + fastify transitive fix — GHSA-q3j6-qgpj-74h6 (CVE-2026-6321) path traversal + GHSA-v39h-62p7-jpjc (CVE-2026-6322) host confusion. Patched in 3.1.2+.",
       "axios": "apps/api>twilio transitive fix — CVE-2026-42033/42035/42043/44486-44496 cluster (prototype pollution, proxy-auth credential leak, MITM, ReDoS, NO_PROXY bypass). Patched in 1.16.0+. Remove when twilio pulls axios >=1.16.0.",
@@ -64,8 +62,7 @@
       "@types/react-dom": "19.2.3",
       "vite@7": "7.3.2",
       "@rushstack/node-core-library>ajv": "8.18.0",
-      "esbuild": "0.28.1",
-      "@grpc/grpc-js": ">=1.14.4",
+      "esbuild": "0.25.0",
       "fast-jwt": ">=6.2.4",
       "fast-uri": ">=3.1.2",
       "axios": ">=1.16.0",

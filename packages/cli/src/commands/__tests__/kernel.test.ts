@@ -281,11 +281,6 @@ describe("ibx kernel replay (real, mocked-Postgres)", () => {
   afterEach(() => {
     delete process.env.IBX_AUDIT_POSTGRES_ENABLED
     delete process.env.DATABASE_URL
-    // T1b-3 — replay is now a CI gate: drift sets process.exitCode = 2 and
-    // errors set 1. The fixtures here intentionally drift (historical EXECUTE
-    // vs empty-state REFUSE), so reset to keep the runner's exit clean. The
-    // exit-code contract itself is asserted in kernel-replay-gate.test.ts.
-    process.exitCode = 0
   })
 
   it("prints a divergence summary table with total/matched buckets", async () => {

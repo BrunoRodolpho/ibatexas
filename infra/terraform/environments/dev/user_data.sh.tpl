@@ -54,15 +54,6 @@ cat > /opt/ibatexas/Caddyfile <<'CADDY_EOF'
 ${caddyfile}
 CADDY_EOF
 
-# --- Write NATS server config (T3-10 — server-side auth) ---
-# Rendered from the repo's infra/nats/nats-server.app.conf by terraform; the
-# $NATS_APP_NKEY_PUBLIC reference inside is resolved by the NATS SERVER from
-# its container environment (compose interpolates it from /opt/ibatexas/.env),
-# which is why the heredoc is quoted.
-cat > /opt/ibatexas/nats-server.conf <<'NATS_EOF'
-${nats_conf}
-NATS_EOF
-
 # --- Helper: refresh secrets from SSM Parameter Store → .env ---
 cat > /usr/local/bin/ibatexas-refresh-secrets <<'REFRESH_EOF'
 #!/bin/bash
@@ -132,20 +123,17 @@ done
 } >> "$ENV_FILE.new"
 
 # Derive REDIS_URL and NATS_URL from REDIS_PASSWORD so the URL and the
-# requirepass flag passed to `redis-server` (via $${REDIS_PASSWORD} in
+# requirepass flag passed to `redis-server` (via ${REDIS_PASSWORD} in
 # docker-compose.yml) can never drift apart. Any prior REDIS_URL/NATS_URL
 # in SSM is superseded — rotating REDIS_PASSWORD is a single-value change.
-# (T3-10 drive-by: the unescaped template reference here made `terraform
-# validate` fail on this module since the comment landed — escaped now.)
 REDIS_PW=$(awk -F= '$1=="REDIS_PASSWORD"{sub(/^REDIS_PASSWORD=/,""); print; exit}' "$ENV_FILE.new")
 if [ -n "$REDIS_PW" ]; then
   grep -v '^REDIS_URL=' "$ENV_FILE.new" > "$ENV_FILE.new.tmp" && mv "$ENV_FILE.new.tmp" "$ENV_FILE.new"
   echo "REDIS_URL=redis://:$${REDIS_PW}@redis:6379" >> "$ENV_FILE.new"
 fi
-# NATS auth (T3-10) rides nkeys (NATS_NKEY_SEED client-side +
-# NATS_APP_NKEY_PUBLIC server-side, both fetched from SSM above), NOT the URL —
-# so any NATS_URL in SSM would only drift the address. Overwrite with the
-# in-network form regardless.
+# NATS is un-auth'd on the private Docker network (single-VM dev); any NATS_URL
+# in SSM that points to a rotated credential would similarly drift. Overwrite
+# with the in-network form regardless.
 grep -v '^NATS_URL=' "$ENV_FILE.new" > "$ENV_FILE.new.tmp" && mv "$ENV_FILE.new.tmp" "$ENV_FILE.new"
 echo "NATS_URL=nats://nats:4222" >> "$ENV_FILE.new"
 

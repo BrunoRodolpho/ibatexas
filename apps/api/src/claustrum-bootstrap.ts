@@ -15,7 +15,7 @@
 //                            the 5 packs' CapabilityPlanners — RC-A1 Phase A.1)
 //   - ResponderPort          naiveResponder() (uses ModelProvider)
 //   - ExplainerPort          ibatexasExplainer() (pt-BR templates)
-//   - HandoffPort            natsHandoff() (ESCALATE → support.handoff_requested)
+//   - HandoffPort            noopHandoff() (TODO: wire Slack/PagerDuty)
 //   - TelemetryPort          fastifyTelemetry() (pino + prom-client)
 //   - SessionPort            redisSessionStore() (Redis-backed sessions)
 //   - ToolRegistry           ibatexas tool packs registered as ToolDefinitions
@@ -34,6 +34,14 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import { Pool } from "pg";
+import { createRequire } from "node:module";
+
+// apps/api is ESM ("type": "module"); `require` is not a global here. The
+// pack-install + audit-postgres-probe paths below use a dynamic require() to
+// skip-if-missing — shim a working require bound to this module's URL so the
+// bootstrap composes when actually called (it was latent while INERT). Node's
+// require() handles both CJS and ESM (>=22) workspace packages.
+const require = createRequire(import.meta.url);
 import {
   createConductor,
   createToolRegistry,
@@ -47,7 +55,6 @@ import {
   type HandoffPort,
   type CognitiveState,
   type MemoryAccess,
-  type ModelProvider,
   type ResponderPort,
   type Session,
   type SessionPort,
@@ -58,13 +65,10 @@ import {
 import { AnthropicProvider } from "@claustrum/anthropic";
 import {
   createPostgresMemoryProvider,
-  PostgresAdvisorySessionLock,
   type PrismaClientLike,
   type RedisClientLike,
 } from "@claustrum/memory-postgres";
 import { createPgVectorGroundingProvider } from "@claustrum/grounding-pgvector";
-import { failSafeGrounding } from "./claustrum/fail-safe-grounding.js";
-import { failSafeMemory } from "./claustrum/fail-safe-memory.js";
 import { WhatsAppChannel } from "@claustrum/channel-whatsapp";
 import { WebChannel } from "@claustrum/channel-web";
 
@@ -90,80 +94,47 @@ import {
 // pt-BR refusal registry (code → curated, detail-free pt-BR text). The kernel +
 // pack refusals carry a stable `code`; the explainer localizes by it.
 import { portugueseRefusalMessages } from "@adjudicate/locales-pt-br";
-// Execution ledger implementation — Redis SET-NX dedup behind the kernel's
-// Ledger contract (the contract itself lives in @adjudicate/core, above).
-import {
-  createRedisLedger,
-  type RedisLedgerClient,
-  type RedisPubSubClient,
-} from "@adjudicate/audit";
 
-import { prisma, createOrderQueryService, createPaymentQueryService } from "@ibatexas/domain";
-import { rehydratePaymentState } from "@ibatexas/pack-payments";
-import { emitLlmCall, getRedisClient, rk } from "@ibatexas/tools";
-import { publishNatsEvent } from "@ibatexas/nats-client";
-import { AGENT_REGISTRY } from "@ibatexas/agents";
-// Managed-agent plane (T3-9) — composed + started behind IBX_AGENTS_ENABLED.
-import { SystemChannel } from "./claustrum/system-channel.js";
-import {
-  createAgentApprovalEngine,
-  type AgentApprovalEngine,
-  type AgentApprovalRequest,
-  type AgentApprovalStatus,
-} from "./claustrum/agent-approvals.js";
-import {
-  agentsEnabled,
-  startManagedAgentPlane,
-} from "./claustrum/managed-agent-plane.js";
-import type { AgentPlane } from "./claustrum/agent-plane.js";
-import type { LiveAgentConductorDeps } from "./claustrum/live-agent-conductor.js";
-import { createPostgresAgentRunJournal } from "./claustrum/agent-run-journal.js";
-import { createRefundCircuitBreaker } from "./claustrum/agent-realmoney-safety.js";
-import { createRemediationProposalWriter } from "./claustrum/remediation-proposal-writer.js";
-
-/**
- * The intent kinds the composed kernel policy confirm-gates for agent sessions
- * (the B1 rule in pixPolicyBundle.business). Hand-maintained to mirror the
- * composed policy: if a new real-money kind is added to REAL_MONEY_KINDS without
- * a B1 confirm rule added here, startManagedAgentPlane's fail-closed assertion
- * crashes the boot rather than letting money move ungated.
- */
-const AGENT_CONFIRM_GATED_KINDS: ReadonlySet<string> = new Set<string>([
-  "pix.charge.refund",
-]);
+// Pack imports — at the time of this commit, ibatexas's first-party Packs
+// are in packages/pack-*/ but those packages have no published package.json
+// at the root yet (only `dist/`). We import their compiled .d.ts barrel via
+// relative path; pnpm install will resolve these via the workspace symlinks
+// if/when they grow proper package.json files. If a pack isn't yet available,
+// the bootstrap logs a warning and skips it (graceful degradation).
+//
+// TODO(post-cutover): swap these to canonical `@ibatexas/pack-*` imports
+// once each pack's package.json is restored.
+import { prisma } from "@ibatexas/domain";
+import { getRedisClient, rk } from "@ibatexas/tools";
 
 // Audit sink — dev's audit pipeline owns the durable AuditRecord store. The
 // adjudicator consumes the sink composed by `@ibatexas/audit-sink` (boot-time
 // DI). This replaces the audit-branch's bare `createPostgresSink` block: the
 // dev audit-sink threads Postgres + NATS + Redis-spill + PII redaction, and is
 // wired here via `bootstrapAuditSinkDI()` before `buildAdjudicator()` reads it.
-import { __resetAuditSink, getAuditSink } from "@ibatexas/audit-sink";
+import { getAuditSink } from "@ibatexas/audit-sink";
 import { bootstrapAuditSinkDI } from "./audit-sink-bootstrap.js";
 
 // ── RC-A1 cutover composition (Phase A.1/A.2) ────────────────────────────────
 // The production planner + per-kind PolicyBundle router, composed over the 5
 // first-party packs. INERT until bootstrapClaustrum() is called.
-import type { MetricsSink, PolicyBundle } from "@adjudicate/core/kernel";
-import {
-  _resetMetricsSink,
-  hasMetricsSink,
-  setMetricsSink,
-} from "@adjudicate/core/kernel";
+import type { CapabilityPlanner } from "@adjudicate/core/llm";
+import type { PolicyBundle } from "@adjudicate/core/kernel";
+import { hasMetricsSink, setMetricsSink } from "@adjudicate/core/kernel";
 import { createIbatexasMetricsSink } from "./observability/metrics-sink.js";
 import { logger } from "./lib/logger.js";
-// The five first-party packs are named in exactly ONE site —
-// @ibatexas/packs-composed (a workspace package, so the CLI/journeys gates
-// can consume the same composition; an apps/api export is unreachable from
-// packages/*). The pix lifecycle pack is the platform adopter pack (ADR #13),
-// not first-party, so it stays a direct registry import.
+import { ordersPack, ordersCapabilityPlanner } from "@ibatexas/pack-orders";
+import { paymentsPack, paymentsCapabilityPlanner } from "@ibatexas/pack-payments";
 import {
-  IBATEXAS_COMPOSED_CAPABILITY_PLANNERS,
-  IBATEXAS_COMPOSED_PACKS,
-  composedIntentKinds,
-} from "@ibatexas/packs-composed";
-import { paymentsPixPack } from "@adjudicate/pack-payments-pix";
+  reservationsPack,
+  reservationsCapabilityPlanner,
+} from "@ibatexas/pack-reservations";
+import {
+  customerOnboardingPack,
+  customerOnboardingCapabilityPlanner,
+} from "@ibatexas/pack-customer-onboarding";
+import { whatsappPack, whatsappCapabilityPlanner } from "@ibatexas/pack-whatsapp";
 import { requireSecret } from "./utils/require-secret.js";
-import { requireEnv } from "./utils/require-env.js";
 import {
   composePolicyRouter,
   resolveCapabilityPolicy,
@@ -191,32 +162,10 @@ import {
   registerIbatexasToolPacks,
   toolRosterDrift,
 } from "./tools/register-ibatexas-tool-packs.js";
-import {
-  createAuditReadPaths,
-  postgresReaderFromPool,
-  type AuditReadPaths,
-} from "./claustrum/audit-read-paths.js";
 
 // ── Singleton ────────────────────────────────────────────────────────────────
 
 let _conductor: Conductor | null = null;
-// Managed-agent plane singleton (T3-9). Null unless IBX_AGENTS_ENABLED started it.
-let _agentPlane: AgentPlane | null = null;
-// Stage-1 approval engine (T3-7). Hoisted so the staff HTTP approvals route
-// (routes/admin/agent-approvals.ts, WS-D1) can reach the SAME in-memory parked
-// store the plane uses. Null unless IBX_AGENTS_ENABLED created it.
-let _agentApprovals: AgentApprovalEngine | null = null;
-// P4 proposal writer (set when the plane boots). The gateway's resolve updates
-// the remediation_proposal status so the adjutant projection reflects it.
-let _proposalWriter: ReturnType<typeof createRemediationProposalWriter> | null = null;
-// The per-bootstrap pg Pool (audit readiness probe + audit read paths +
-// pgvector grounding + advisory session lock). Tracked at module level so
-// `resetClaustrumForTests()` can end it — a leaked pool keeps the vitest
-// process (and any postgres testcontainer) alive. `_ownsPgPool` is false when
-// the pool was injected via `ClaustrumBootstrapOptions.pgPool` — an injected
-// pool is CALLER-owned and never ended by the reset hook.
-let _pgPool: Pool | null = null;
-let _ownsPgPool = false;
 
 export function getConductor(): Conductor {
   if (!_conductor) {
@@ -225,277 +174,6 @@ export function getConductor(): Conductor {
     );
   }
   return _conductor;
-}
-
-// ── Stage-1 agent approvals — HTTP gateway (WS-D1) ───────────────────────────
-//
-// Exposes the SAME in-memory approval engine the managed-agent plane uses to the
-// staff HTTP route (routes/admin/agent-approvals.ts), so a Stage-1
-// REQUEST_CONFIRMATION can be resolved over the wire. `resolve(accept:true)`
-// re-adjudicates the IDENTICAL parked envelope through `adjudicateAndAudit` with
-// the confirmation receipt — the kernel substitutes EXECUTE for the matching
-// intentHash WHILE STILL ENFORCING EVERY GUARD, so an honest-but-imperfect
-// rebuilt state can only REFUSE, never falsely EXECUTE. The audited EXECUTE +
-// supersession lineage IS the "confirm→EXECUTE over the wire" this closes; the
-// downstream side effect stays the agent runner's concern (the engine, by
-// design, adjudicates+audits — it carries no executor).
-
-export interface AgentApprovalGateway {
-  list(filter?: { status?: AgentApprovalStatus }): ReadonlyArray<AgentApprovalRequest>;
-  get(token: string): AgentApprovalRequest | null;
-  resolve(input: {
-    token: string;
-    accepted: boolean;
-    resolvedBy: { id: string; displayName?: string };
-  }): ReturnType<AgentApprovalEngine["resolve"]>;
-}
-
-/**
- * Rebuild the FRESH pack state for an agent approval resume from the real
- * entity (the agent's only Stage-2 executing kind today is
- * `payment.pix.regenerate`). Built HONESTLY from `createPaymentQueryService`;
- * the kernel re-runs every guard on resume, so a missing/stale field yields a
- * REFUSE, never an unsafe EXECUTE.
- */
-async function rebuildAgentApprovalState(_kind: string, payload: unknown): Promise<unknown> {
-  const p = (payload ?? {}) as { paymentId?: unknown };
-  const paymentId = typeof p.paymentId === "string" ? p.paymentId : null;
-  if (paymentId === null) return rehydratePaymentState({ ctx: { exists: false } });
-
-  const pay = (await createPaymentQueryService().getById(paymentId)) as {
-    status?: string;
-    method?: string;
-    version?: number;
-    orderId?: string;
-    amountInCentavos?: number;
-    regenerationCount?: number;
-  } | null;
-  if (pay === null) return rehydratePaymentState({ ctx: { exists: false } });
-
-  return rehydratePaymentState({
-    ctx: {
-      exists: true,
-      currentStatus: pay.status,
-      currentMethod: pay.method,
-      version: pay.version,
-      orderId: pay.orderId,
-      amountInCentavos: pay.amountInCentavos,
-      regenerationCount: pay.regenerationCount,
-    },
-  });
-}
-
-/**
- * The staff approvals gateway, or null when the managed-agent plane is not
- * enabled (no engine → the route returns 404/empty). `policyForKind` +
- * `getAuditSink()` are read lazily so they always reflect the live wiring.
- */
-export function getAgentApprovalGateway(): AgentApprovalGateway | null {
-  const engine = _agentApprovals;
-  if (engine === null) return null;
-  return {
-    list: (filter) => engine.list(filter),
-    get: (token) => engine.get(token),
-    resolve: async ({ token, accepted, resolvedBy }) => {
-      const result = await engine.resolve({
-        token,
-        accepted,
-        resolvedBy,
-        rebuildState: rebuildAgentApprovalState,
-        policyFor: (k) => {
-          const policy = policyForKind(k);
-          if (policy === null) {
-            throw new Error(`agent approval: no installed pack owns kind "${k}"`);
-          }
-          return policy;
-        },
-        sink: getAuditSink(),
-      });
-      // P4: reflect the resolution in the remediation_proposal so the adjutant
-      // projection shows executed/declined (best-effort; never blocks resolve).
-      await _proposalWriter?.markResolvedByToken(
-        token,
-        accepted ? "executed" : "declined",
-        new Date().toISOString(),
-      );
-      return result;
-    },
-  };
-}
-
-// ── Injectable seams (T2-6a — scripted-pipeline harness) ────────────────────
-
-/**
- * Optional DI seams for `bootstrapClaustrum()`. Production call sites pass
- * NOTHING (zero-arg call in `index.ts` — today's behavior, unchanged); the
- * scripted journey harness (T2-6b) injects a content-keyed ModelProvider plus
- * test-plane infra so a full Conductor composition boots at zero token cost.
- *
- * Scope notes (honest seams, not a full IoC container):
- *  - `redis` overrides the BOOT-TIME client only (execution ledger + memory
- *    provider). The session store and telemetry fold resolve
- *    `getRedisClient()` lazily per call — in the test harness those converge
- *    on the same server because `REDIS_URL` points at the test container.
- *  - `auditSink`, when injected, is handed straight to the adjudicator bridge
- *    and `bootstrapAuditSinkDI()` is SKIPPED — the global `@ibatexas/audit-
- *    sink` leaf DI is left untouched (a test can wire/inspect it separately).
- *  - `metricsSink`, when injected, is installed UNCONDITIONALLY via
- *    `setMetricsSink()` (a test wants determinism); the zero-arg path keeps
- *    the WS7 guard (only install when no sink is present — the production
- *    sink from `installKernelMetricsSink()` wins).
- *  - A warm singleton wins: when `_conductor` already exists the options are
- *    IGNORED and the cached instance is returned (zero-arg double-init parity
- *    with index.ts). Harnesses MUST call `resetClaustrumForTests()` between
- *    differently-composed bootstraps.
- */
-export interface ClaustrumBootstrapOptions {
-  /**
-   * ModelProvider for planner + responder + grounding embeds. Default: a
-   * fresh `AnthropicProvider` over the Anthropic SDK (`ANTHROPIC_API_KEY`).
-   * When injected, the Anthropic SDK client is never constructed.
-   */
-  readonly modelProvider?: ModelProvider;
-  /**
-   * pg Pool for the audit readiness probe, audit read paths, pgvector
-   * grounding, and the advisory session lock. Default: a new `Pool` over
-   * `DATABASE_URL`, OWNED by the bootstrap (ended by the reset hook).
-   * Injected pools are caller-owned: the reset hook never ends them.
-   */
-  readonly pgPool?: Pool;
-  /**
-   * AuditSink for the adjudicator bridge. Default: `bootstrapAuditSinkDI()` +
-   * `getAuditSink()` (the composed Postgres/NATS/spill/redaction pipeline).
-   */
-  readonly auditSink?: AuditSink;
-  /** Kernel MetricsSink. Default: WS7 guard semantics (see above). */
-  readonly metricsSink?: MetricsSink;
-  /**
-   * Boot-time Redis client (execution ledger + memory provider). Default:
-   * the `@ibatexas/tools` singleton via `getRedisClient()` (`REDIS_URL`).
-   */
-  readonly redis?: Awaited<ReturnType<typeof getRedisClient>>;
-}
-
-/**
- * Test-fingerprint gate for the test-only surfaces below. Allowed only under
- * `NODE_ENV=test` (vitest) or when `IBX_TEST_FINGERPRINT` is set (the test
- * profile env, D-010) — a production composition can never reach them.
- */
-function assertTestOnlySurface(surface: string): void {
-  const fingerprint = process.env.IBX_TEST_FINGERPRINT;
-  if (
-    process.env.NODE_ENV === "test" ||
-    (typeof fingerprint === "string" && fingerprint.length > 0)
-  ) {
-    return;
-  }
-  throw new Error(
-    `[claustrum-bootstrap] ${surface} is test-only. It requires NODE_ENV=test ` +
-      `or IBX_TEST_FINGERPRINT to be set; refusing in this environment.`,
-  );
-}
-
-/** What `resetClaustrumForTests()` actually did (per-leg, machine-checkable). */
-export interface ClaustrumResetReport {
-  /** A conductor existed and was cleared. */
-  readonly conductorCleared: boolean;
-  /**
-   * The bootstrap-OWNED pg Pool was ended (`pool.end()` resolved). False when
-   * no pool existed, when the pool was injected (caller-owned), or when
-   * `end()` threw (logged, swallowed — reset must always complete).
-   */
-  readonly pgPoolEnded: boolean;
-  /** `@ibatexas/audit-sink` leaf DI was cleared via `__resetAuditSink()`. */
-  readonly auditSinkReset: boolean;
-  /** Kernel MetricsSink reset via `_resetMetricsSink()` (see caveat below). */
-  readonly metricsSinkReset: boolean;
-}
-
-/**
- * Full reset hook for in-process test harnesses (T2-6a). Clears every piece
- * of process-global state `bootstrapClaustrum()` establishes so two
- * sequential bootstraps in ONE vitest process do not cross-contaminate:
- *
- *  1. `_conductor` singleton → null (`getConductor()` throws again).
- *  2. The bootstrap-OWNED pg Pool → `pool.end()` (no leaked handles).
- *     Injected pools (caller-owned) are left open.
- *  3. Audit-sink leaf DI → `__resetAuditSink()` (deps + cached sink cleared;
- *     `getAuditSink()` fail-closes until the next `bootstrapAuditSinkDI()` —
- *     which the next zero-`auditSink` bootstrap re-runs).
- *  4. Global kernel MetricsSink → `_resetMetricsSink()` (upstream @internal
- *     test hook in `@adjudicate/core` — the ONLY unset path; `setMetricsSink`
- *     has no removal API). `hasMetricsSink()` returns false afterwards, so
- *     the next bootstrap installs a fresh sink. CAVEAT: in the production
- *     boot order this would drop the `installKernelMetricsSink()` production
- *     sink (PostHog/Sentry/Prometheus) — exactly why this hook is gated.
- *
- * Deliberately NOT reset (out of this hook's ownership):
- *  - The shared `@ibatexas/tools` Redis singleton — process-wide infra used
- *    by far more than the conductor; test teardown owns it via
- *    `closeRedisClient()`.
- *  - The W3 observability hook registries on the audit-sink leaf
- *    (`setAuditLagHook` etc.) — inert observers, re-registered by
- *    `installKernelMetricsSink()` in the production boot order only.
- *  - `tokenUsageStore` (module-level, ADR-135) — telemetry-only, outside the
- *    determinism boundary, LRU-bounded.
- *  - Installed kernel packs — `installPack` is re-run-safe (a stateless
- *    conformance check; see the index.ts boot-order note).
- */
-export async function resetClaustrumForTests(): Promise<ClaustrumResetReport> {
-  assertTestOnlySurface("resetClaustrumForTests()");
-
-  // Tear down the managed-agent plane (kill pollers + bridge worker/subscriptions)
-  // before clearing the conductor, so a re-bootstrap never double-subscribes.
-  if (_agentPlane !== null) {
-    try {
-      await _agentPlane.stop();
-    } catch (err) {
-      logger.warn(
-        { component: "managed-agent-plane", err: (err as Error).message },
-        "resetClaustrumForTests: agent plane stop() failed (continuing)",
-      );
-    }
-    _agentPlane = null;
-  }
-  _agentApprovals = null;
-
-  const conductorCleared = _conductor !== null;
-  _conductor = null;
-
-  let pgPoolEnded = false;
-  if (_pgPool && _ownsPgPool && !_pgPool.ended) {
-    try {
-      await _pgPool.end();
-      pgPoolEnded = true;
-    } catch (err) {
-      logger.warn(
-        { component: "claustrum-bootstrap", err: (err as Error).message },
-        "resetClaustrumForTests: owned pg pool end() failed (continuing)",
-      );
-    }
-  }
-  _pgPool = null;
-  _ownsPgPool = false;
-
-  __resetAuditSink();
-  _resetMetricsSink();
-
-  return {
-    conductorCleared,
-    pgPoolEnded,
-    auditSinkReset: true,
-    metricsSinkReset: true,
-  };
-}
-
-/**
- * Test-only accessor for the current per-bootstrap pg Pool (owned or
- * injected). Lets the reset acceptance test spy `end()` / assert `ended` on
- * the pool the bootstrap composed. Same gate as the reset hook.
- */
-export function getClaustrumPgPoolForTests(): Pool | null {
-  assertTestOnlySurface("getClaustrumPgPoolForTests()");
-  return _pgPool;
 }
 
 // ── Adjudicator bridge ───────────────────────────────────────────────────────
@@ -518,16 +196,6 @@ export interface AdjudicatorBridgeDeps {
    * so a side effect cannot double-fire across retried turns.
    */
   readonly ledger?: Ledger;
-  /**
-   * Optional audit READ paths (intent_audit / audit_outcomes) backing the
-   * port's memory-recall surface — replayEnvelopesByCustomerId /
-   * streamAuditByIntentHashPrefix / getOutcomes. Absent (unit tests, partial
-   * composition) → those methods return empty. Fail-SAFE either way: these
-   * reads feed recall, not the money path, and `createAuditReadPaths`
-   * swallows read failures into empty results. The write-audit invariant
-   * (`sink`, fail-closed) is independent of this dep.
-   */
-  readonly auditReads?: AuditReadPaths;
 }
 
 /**
@@ -640,27 +308,18 @@ export function buildAdjudicator(deps: AdjudicatorBridgeDeps): Adjudicator {
         )
       );
     },
-    // Audit read paths (loop-closure Stage 3) — delegate to the injected
-    // reader (claustrum/audit-read-paths.ts). Un-wired dep → empty results,
-    // never a throw: recall degradation must not crash a turn.
-    async replayEnvelopesByCustomerId(customerId, since, tenantId) {
-      if (!deps.auditReads) return [] as ReadonlyArray<AuditRecord>;
-      return deps.auditReads.replayEnvelopesByCustomerId(
-        customerId,
-        since,
-        tenantId,
-      );
+    async replayEnvelopesByCustomerId(_customerId, _since) {
+      // TODO(loop-closure): wire to `createPostgresAuditStore` reader once the
+      // conductor's memory-recall path is exercised (Stage 3). The write-audit
+      // invariant (above) does not depend on this read path.
+      return [] as ReadonlyArray<AuditRecord>;
     },
-    async *streamAuditByIntentHashPrefix(
-      prefix,
-      tenantId,
-    ): AsyncIterable<AuditRecord> {
-      if (!deps.auditReads) return;
-      yield* deps.auditReads.streamAuditByIntentHashPrefix(prefix, tenantId);
+    async *streamAuditByIntentHashPrefix(_prefix): AsyncIterable<AuditRecord> {
+      // TODO(loop-closure): wire through @adjudicate/audit-postgres reader.
     },
-    async getOutcomes(filter) {
-      if (!deps.auditReads) return [];
-      return deps.auditReads.getOutcomes(filter);
+    async getOutcomes(_filter) {
+      // TODO(loop-closure): wire through @adjudicate/audit-postgres outcomes-store.
+      return [];
     },
     verifyAuditRecord(record): AuditVerification {
       // Kernel tamper-evidence verifier (RC-K1 restored the v4 round-trip).
@@ -780,22 +439,37 @@ function installFirstPartyPacks(): SealablePackInput[] {
   // installPack is the kernel-side variant; the runtime never reaches in to
   // mutate the registry — it's a one-time boot step.
   //
-  // The five first-party packs come from the single composition site
-  // (@ibatexas/packs-composed) plus the platform pix adopter pack. A pack
-  // that fails to install (conformance drift, double-install) is logged and
-  // skipped — the F5 seal gate catches a pinned pack that did not install.
-  const packs = [...IBATEXAS_COMPOSED_PACKS, paymentsPixPack] as const;
+  // The dynamic require pattern lets us skip a missing pack gracefully (its
+  // package.json may not yet be wired to the workspace). When restored,
+  // each pack call becomes a plain top-level import.
+  const packs = [
+    "@ibatexas/pack-orders",
+    "@ibatexas/pack-payments",
+    "@ibatexas/pack-reservations",
+    "@ibatexas/pack-customer-onboarding",
+    "@ibatexas/pack-whatsapp",
+    "@adjudicate/pack-payments-pix",
+  ];
 
-  for (const pack of packs) {
+  for (const packName of packs) {
     try {
-      installPack(pack as unknown as ErasedPack);
-      // Seal the SOURCE pack object (pre-installPack-wrap; withBasisAudit
-      // strips guard metadata) so the F5 config seal pins the real surface.
-      installed.push(pack as unknown as SealablePackInput);
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const pack = require(packName);
+      const value =
+        pack[`${pluralCamel(stripScope(packName))}Pack`] ??
+        pack[`${stripScope(packName).replace(/-([a-z])/g, (_, c: string) => c.toUpperCase())}Pack`] ??
+        pack.pack ??
+        pack.default;
+      if (value && typeof installPack === "function") {
+        installPack(value);
+        // Seal the SOURCE pack object (pre-installPack-wrap; withBasisAudit
+        // strips guard metadata) so the F5 config seal pins the real surface.
+        installed.push(value as SealablePackInput);
+      }
     } catch (err) {
       logger.warn(
-        { component: "startup", pack: pack.id, err: (err as Error).message },
-        "Pack could not be installed",
+        { component: "startup", pack: packName, err: (err as Error).message },
+        "Pack could not be installed (likely not yet workspace-published)",
       );
     }
   }
@@ -861,6 +535,15 @@ function assertConfigSealOrThrow(
     { component: "startup", sealedPacks: pinned.size },
     "[config-seal] all pinned pack config seals verified",
   );
+}
+
+function stripScope(name: string): string {
+  return name.replace(/^@[^/]+\//, "").replace(/^pack-/, "");
+}
+
+function pluralCamel(name: string): string {
+  // "orders" -> "orders"; "customer-onboarding" -> "customerOnboarding"
+  return name.replace(/-([a-z])/g, (_, c: string) => c.toUpperCase());
 }
 
 // ── Audit-postgres readiness probe ───────────────────────────────────────────
@@ -962,50 +645,18 @@ export function ibatexasExplainer(): ExplainerPort {
   };
 }
 
-/**
- * HandoffPort (T3-8): an ESCALATE decision routes to staff via the existing
- * `support.handoff_requested` NATS surface (subscribers/handoff-subscriber.ts →
- * WhatsApp staff notification; same event the `handoff_to_human` tool publishes).
- * The envelope's `actor.sessionId` (a customer/agent session — agent ESCALATEs
- * carry the `agent:` namespace) is the correlation + dedup key the subscriber
- * uses (`handoff:${sessionId}`), so a redelivery never double-pages.
- *
- * `queue()` MUST NOT throw: the kernel dispatcher catches a throw here as a
- * `handoff_threw` failure and surfaces an operator-facing message instead of the
- * intended ESCALATE. A failed publish therefore degrades to a logged error.
- *
- * `publish` is injected (default `publishNatsEvent`) so the port is unit-testable
- * without a broker. NOTE: JOURNEY-003 (checkout-failure-recovery) stays blocked
- * on `chat-confirmation-resume` — T3-8 closes only `handoff-port-noop`; no phase
- * closes the web confirmation-resume product gap.
- */
-export function natsHandoff(
-  publish: (
-    event: string,
-    payload: Record<string, unknown>,
-  ) => Promise<void> = publishNatsEvent,
-): HandoffPort {
+function noopHandoff(): HandoffPort {
   return {
     async queue(envelope: IntentEnvelope, reason: string): Promise<void> {
-      const sessionId = envelope.actor.sessionId;
-      try {
-        await publish("support.handoff_requested", {
-          sessionId,
+      // TODO: wire Slack/PagerDuty. For now, fail-loud in logs only.
+      logger.warn(
+        {
+          component: "handoff",
+          intentHash: (envelope as { intentHash?: string }).intentHash ?? "?",
           reason,
-          intentKind: envelope.kind,
-        });
-        logger.info(
-          { component: "handoff", sessionId, intentKind: envelope.kind, reason },
-          "ESCALATE → handoff queued (support.handoff_requested)",
-        );
-      } catch (err) {
-        // Swallow — queue() must not throw (see header). The subscriber's
-        // idempotency guard absorbs a later redelivery if the publish recovers.
-        logger.error(
-          { component: "handoff", sessionId, reason, err: String(err) },
-          "handoff publish failed (swallowed — queue() must not throw)",
-        );
-      }
+        },
+        "handoff queued (noop — Slack/PagerDuty not wired)",
+      );
     },
   };
 }
@@ -1044,7 +695,13 @@ const tokenUsageStore: TokenUsageStore = createInMemoryTokenUsageStore({
 // that was previously inlined here.
 const IBATEXAS_POLICY_PACKS: ReadonlyArray<CapabilityPolicyPack> =
   buildIbatexasPolicyPacks(
-    IBATEXAS_COMPOSED_PACKS as unknown as ReadonlyArray<ErasedPack>,
+    [
+      ordersPack,
+      paymentsPack,
+      reservationsPack,
+      customerOnboardingPack,
+      whatsappPack,
+    ] as unknown as ReadonlyArray<ErasedPack>,
     IBATEXAS_ADOPTER_BUSINESS_GUARDS,
   );
 
@@ -1063,9 +720,20 @@ export function policyForKind(
   return resolveCapabilityPolicy(IBATEXAS_POLICY_PACKS, kind);
 }
 
-// The packs' capability planners — union'd by the production planner — now
-// live alongside the pack list in @ibatexas/packs-composed
-// (IBATEXAS_COMPOSED_CAPABILITY_PLANNERS, imported above).
+/** The packs' capability planners — union'd by the production planner. */
+// CapabilityPlanner<S, C>.plan is declared method-style, so its params compare
+// bivariantly — each pack's concrete planner widens to CapabilityPlanner<unknown,
+// unknown> with no cast. A plain annotation states the erased element type
+// honestly (was an unnecessary `as unknown as` that hid that the widening is free).
+const IBATEXAS_CAPABILITY_PLANNERS: ReadonlyArray<
+  CapabilityPlanner<unknown, unknown>
+> = [
+  ordersCapabilityPlanner,
+  paymentsCapabilityPlanner,
+  reservationsCapabilityPlanner,
+  customerOnboardingCapabilityPlanner,
+  whatsappCapabilityPlanner,
+];
 
 /**
  * Map the claustrum CognitiveState onto the union (state, context) the pack
@@ -1138,17 +806,11 @@ export function deriveIbatexasPlannerContext(state: CognitiveState): {
  * Minimal responder — a direct Anthropic completion. Richer prompt synthesis
  * (system prompt, tool framing) is incremental work layered on top.
  */
-function naiveResponder(
-  // The consumed surface is exactly the ModelProvider port (`.complete()`) —
-  // typed as such so the T2-6a injectable seam (scripted providers) fits.
-  model: ModelProvider,
-  modelId: string,
-): ResponderPort {
+function naiveResponder(model: AnthropicProvider): ResponderPort {
   return {
     async respond(input) {
       const completion = await model.complete({
-        // Resolved fail-fast at boot by bootstrapClaustrum() — no fallback.
-        model: modelId,
+        model: process.env.ANTHROPIC_MODEL ?? "claude-opus-4-5-20250101",
         maxTokens: 1024,
         system:
           "Você é o atendente da IbateXas. Responda em pt-BR de forma curta e clara.",
@@ -1374,30 +1036,6 @@ function fastifyTelemetry(usageStore: TokenUsageStore): TelemetryPort {
           "per-session token fold failed; ignoring",
         );
       }
-      // T1a-13 — SUT-side dollar source: re-emit this turn's token usage as a
-      // JSONL `llm.call` event through the shared @ibatexas/tools emitter.
-      // Inert unless IBX_EVENTS=json (test profile; IBX_EVENTS_FILE adds the
-      // file sink the journey harness parses). `sessionId` carries the
-      // conversation handle so the harness scopes events to its run; only
-      // token COUNTS are emitted — never message content or secrets.
-      try {
-        const total = (record.inputTokens ?? 0) + (record.outputTokens ?? 0);
-        if (total > 0) {
-          emitLlmCall({
-            inputTokens: record.inputTokens ?? 0,
-            outputTokens: record.outputTokens ?? 0,
-            model: process.env.ANTHROPIC_MODEL,
-            source: "sut",
-            sessionId: record.conversationId,
-            duration: record.durationMs,
-          });
-        }
-      } catch (err) {
-        logger.warn(
-          { component: "conductor", event: "llm_call_emit_failed", error: String(err) },
-          "SUT llm.call trace emit failed; ignoring",
-        );
-      }
       // TokenUsageStore (ADR-135) telemetry — dashboard-facing, independent of the
       // Redis fold above (no edge to the F4 guard). Best-effort; never breaks a turn.
       try {
@@ -1461,22 +1099,8 @@ const resolveIbatexasTenantPolicy: TenantResolver = {
 
 // ── Boot ─────────────────────────────────────────────────────────────────────
 
-export async function bootstrapClaustrum(
-  options: ClaustrumBootstrapOptions = {},
-): Promise<Conductor> {
-  // Warm singleton wins — zero-arg double-init parity (index.ts boot order).
-  // Options are IGNORED here by design: an in-process harness that wants a
-  // differently-composed conductor MUST call resetClaustrumForTests() first.
+export async function bootstrapClaustrum(): Promise<Conductor> {
   if (_conductor) return _conductor;
-
-  // Model ids resolve ONCE, fail-fast, before any infra is touched. The
-  // previous inline fallbacks were bogus: a dated Opus id that does not exist
-  // at the Anthropic API (unset env surfaced as a 404 on the FIRST turn, not
-  // at boot), and an OpenAI embedding id stamped onto grounding proofs by an
-  // AnthropicProvider that cannot embed. An unset var now refuses boot,
-  // naming the variable.
-  const anthropicModelId = requireEnv("ANTHROPIC_MODEL");
-  const embeddingModelId = requireEnv("EMBEDDING_MODEL_ID");
 
   const installedPacks = installFirstPartyPacks();
   // F5 — fail boot CLOSED on pack config drift (no-op unless CONFIG_SEAL_DIGESTS
@@ -1495,11 +1119,7 @@ export async function bootstrapClaustrum(
   // Overwriting it here would silently drop those signals. Only install the
   // observability-only sink when NO sink is present (i.e. when claustrum is
   // bootstrapped standalone, e.g. its own tests). The production sink wins.
-  if (options.metricsSink) {
-    // Injected sink (test seam) — installed unconditionally: a scripted
-    // harness needs deterministic ownership of the metrics surface.
-    setMetricsSink(options.metricsSink);
-  } else if (!hasMetricsSink()) {
+  if (!hasMetricsSink()) {
     setMetricsSink(createIbatexasMetricsSink(logger));
   }
 
@@ -1509,41 +1129,26 @@ export async function bootstrapClaustrum(
   // unauditable mutation is refused rather than silently executed. Create the
   // pool first so the readiness probe runs on the very connection backing the
   // Postgres writer (and the pgvector grounding provider below).
-  const pgPool =
-    options.pgPool ??
-    new Pool({
-      connectionString: process.env.DATABASE_URL,
-    });
-  // Track for resetClaustrumForTests(): only a bootstrap-created pool is
-  // OWNED (and therefore ended) by the reset hook; an injected pool stays
-  // caller-owned.
-  _pgPool = pgPool;
-  _ownsPgPool = !options.pgPool;
+  const pgPool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+  });
   await assertAuditPostgresReady(pgPool);
 
-  let modelProvider: ModelProvider;
-  if (options.modelProvider) {
-    // Injected provider (scripted harness, T2-6b) — the Anthropic SDK client
-    // is never constructed, so a scripted composition is structurally unable
-    // to spend tokens.
-    modelProvider = options.modelProvider;
-  } else {
-    const anthropicClient = new Anthropic({
-      apiKey: process.env.ANTHROPIC_API_KEY ?? "",
-    });
-    // The structural AnthropicClientLike type in @claustrum/anthropic exposes
-    // only the subset of the SDK we use; the real Anthropic class has many
-    // more fields. Cast through `unknown` is intentional.
-    modelProvider = new AnthropicProvider({
-      client: anthropicClient as unknown as ConstructorParameters<
-        typeof AnthropicProvider
-      >[0]["client"],
-      // Route the provider's non-fatal warnings (max_tokens fallback) through the
-      // structured logger so they reach VictoriaLogs (cycle-36 L5 sweep) instead
-      // of a bare console.warn in the adapter.
-      onWarn: (message, fields) => logger.warn(fields, message),
-    });
-  }
+  const anthropicClient = new Anthropic({
+    apiKey: process.env.ANTHROPIC_API_KEY ?? "",
+  });
+  // The structural AnthropicClientLike type in @claustrum/anthropic exposes
+  // only the subset of the SDK we use; the real Anthropic class has many
+  // more fields. Cast through `unknown` is intentional.
+  const modelProvider = new AnthropicProvider({
+    client: anthropicClient as unknown as ConstructorParameters<
+      typeof AnthropicProvider
+    >[0]["client"],
+    // Route the provider's non-fatal warnings (max_tokens fallback) through the
+    // structured logger so they reach VictoriaLogs (cycle-36 L5 sweep) instead
+    // of a bare console.warn in the adapter.
+    onWarn: (message, fields) => logger.warn(fields, message),
+  });
 
   // Wire dev's audit-sink dependency injection (Postgres + NATS + Redis spill +
   // PII redaction) BEFORE reading the composed sink. `bootstrapAuditSinkDI`
@@ -1551,52 +1156,14 @@ export async function bootstrapClaustrum(
   // sink` leaf; `getAuditSink()` then returns the fail-closed composed sink the
   // adjudicator bridge consumes. (Replaces the audit-branch's bare
   // `createPostgresSink` + hand-rolled `PostgresWriter` block — dev owns the
-  // richer pipeline.) An injected sink (test seam) SKIPS the global DI wiring
-  // entirely — the bridge consumes the injected sink directly and the leaf's
-  // module state is left untouched.
-  let auditSink: AuditSink;
-  if (options.auditSink) {
-    auditSink = options.auditSink;
-  } else {
-    await bootstrapAuditSinkDI(logger);
-    auditSink = getAuditSink();
-  }
-
-  // Execution ledger (Hard Rule #9) — always-on, fail-closed cross-turn
-  // replay-suppression. Redis must be up BEFORE the adjudicator exists, so the
-  // client connect moves ahead of buildAdjudicator. Fail-closed is structural:
-  // createRedisLedger's checkLedger/recordExecution reject when Redis is
-  // unreachable, adjudicateAndAudit does not catch ledger throws, and the
-  // bridge's safeAuditedAdjudicate catch degrades the throw to REFUSE — Redis
-  // loss is a refusal, never a dedup bypass. Keys go through rk() (Hard Rule
-  // #7); TTL stays the upstream 14-day default.
-  const redis = options.redis ?? (await getRedisClient());
-  // node-redis's generic reply type is `string | Buffer | null`; this client is
-  // never put in buffer mode, so narrow set/get/del to the exact contract the
-  // ledger consumes (RedisLedgerClient) rather than an `as unknown as` cast.
-  // Rejections pass through untouched — that is the fail-closed path.
-  const ledgerClient: RedisLedgerClient = {
-    set: (key, value, options) =>
-      redis.set(key, value, {
-        ...(options?.NX ? { NX: true as const } : {}),
-        ...(options?.EX !== undefined ? { EX: options.EX } : {}),
-      }) as Promise<string | null>,
-    get: (key) => redis.get(key) as Promise<string | null>,
-    del: (key) => redis.del(key),
-  };
-  const ledger = createRedisLedger({ client: ledgerClient, keyFor: rk });
-  // Audit READ paths over the same pool the readiness probe validated —
-  // memory-recall reads (fail-safe: a read outage degrades recall to empty,
-  // logged here, never a thrown turn).
-  const auditReads = createAuditReadPaths({
-    reader: postgresReaderFromPool(pgPool),
-    onError: (err, op) =>
-      logger.warn(
-        { component: "claustrum-bootstrap", op, err: err.message },
-        "audit read path failed (fail-safe: empty result)",
-      ),
-  });
-  const adjudicator = buildAdjudicator({ sink: auditSink, ledger, auditReads });
+  // richer pipeline.)
+  await bootstrapAuditSinkDI(logger);
+  // TODO(Stage 3): wire createRedisLedger({ client: redis, keyFor: rk }) for
+  // cross-turn replay-suppression once EXECUTE fires. The bridge already
+  // accepts an optional `ledger` dep (AdjudicatorBridgeDeps); domain-level
+  // idempotency (cycle-2 PAY-3) guards payment double-fire meanwhile.
+  const adjudicator = buildAdjudicator({ sink: getAuditSink() });
+  const redis = await getRedisClient();
 
   // Tool registry (RC-A1 Phase A) — register the ibatexas tool packs and assert
   // roster integrity before the conductor goes live. The registry keys tools by
@@ -1606,20 +1173,11 @@ export async function bootstrapClaustrum(
   // CLOSED at boot if drift exists — a failed boot beats a live conductor that
   // can't honor the decisions it makes. (Previously this passed an EMPTY registry,
   // so the chat path had no tools at all.)
-  // P0-7: the same gate also probes the composed capability planners under the
-  // named contexts (authed-customer / staff) so a planner-advertised kind with
-  // no registered tool fails the boot; registered-but-unadvertised kinds are
-  // WARN-only (order.review.submit — web-flow-reached, no chat advertisement).
   const toolRegistry = createToolRegistry();
   registerIbatexasToolPacks(toolRegistry);
   const rosterDrift = toolRosterDrift(
     listIbatexasToolPacks(),
-    composedIntentKinds(),
-    {
-      planners: IBATEXAS_COMPOSED_CAPABILITY_PLANNERS,
-      onWarn: (message) =>
-        logger.warn({ component: "claustrum-bootstrap" }, message),
-    },
+    IBATEXAS_POLICY_PACKS.flatMap((p) => p.intents),
   );
   if (rosterDrift.length > 0) {
     throw new Error(
@@ -1632,54 +1190,20 @@ export async function bootstrapClaustrum(
   // adapter's structural slices (the claustrum_memory_* delegates / setex+pipeline),
   // so the cast is irreducible — but name the exact contracts the adapter consumes
   // (`as unknown as <T>`) instead of `as never`, which would swallow real drift.
-  //
-  // Fail-safe wrapper: handleTurn awaits recall() with no catch (the
-  // UNDERSTAND Promise.all), and the adapter's cold path throws today —
-  // the domain PrismaClient generates NO claustrum_memory_* delegates, so
-  // `prisma.claustrum_memory_episodic.findMany` is a TypeError on every
-  // cache-cold turn ("Erro interno." on the chat routes; surfaced by T1a-5's
-  // live contract test). Degrades to empty recall/search/recentActions and
-  // dropped observes — the turn runs memory-less; mutations stay
-  // kernel-guarded. See fail-safe-memory.ts + docs/agents/decisions.md D-012.
-  const memory = failSafeMemory(
-    createPostgresMemoryProvider({
-      prisma: prisma as unknown as PrismaClientLike,
-      redis: redis as unknown as RedisClientLike,
-      adjudicator,
-    }),
-    {
-      onError: (op, err) =>
-        logger.warn(
-          { component: "memory", op, error: String(err) },
-          "memory port degraded (fail-safe): returning empty result",
-        ),
-    },
-  );
+  const memory = createPostgresMemoryProvider({
+    prisma: prisma as unknown as PrismaClientLike,
+    redis: redis as unknown as RedisClientLike,
+    adjudicator,
+  });
 
-  // Fail-safe wrapper: handleTurn awaits retrieve() with no catch, and the
-  // provider chain throws today (AnthropicProvider.embed() has no embedding
-  // proxy configured) — without this every conversational turn rejects before
-  // the planner runs. Degrades to empty retrieval; attestation failure yields
-  // zero proofs (kernel refuses grounding-required envelopes — fail-closed).
-  // See fail-safe-grounding.ts + docs/agents/decisions.md D-009.
-  const grounding = failSafeGrounding(
-    createPgVectorGroundingProvider({
-      // pg.Pool is structurally assignable to pgvector's minimal { query } Pool —
-      // no cast needed (was a redundant `as never`).
-      pool: pgPool,
-      modelProvider,
-      modelId: embeddingModelId,
-      tenantId: "ibatexas",
-    }),
-    {
-      modelId: embeddingModelId,
-      onError: (op, err) =>
-        logger.warn(
-          { component: "grounding", op, error: String(err) },
-          "grounding port degraded (fail-safe): returning empty result",
-        ),
-    },
-  );
+  const grounding = createPgVectorGroundingProvider({
+    // pg.Pool is structurally assignable to pgvector's minimal { query } Pool —
+    // no cast needed (was a redundant `as never`).
+    pool: pgPool,
+    modelProvider,
+    modelId: process.env.EMBEDDING_MODEL_ID ?? "text-embedding-3-small",
+    tenantId: "ibatexas",
+  });
 
   const channels: ChannelDriver[] = [];
 
@@ -1727,13 +1251,13 @@ export async function bootstrapClaustrum(
     grounding,
     planner: createIbatexasPlanner({
       model: modelProvider,
-      modelId: anthropicModelId,
-      capabilityPlanners: IBATEXAS_COMPOSED_CAPABILITY_PLANNERS,
+      modelId: process.env.ANTHROPIC_MODEL ?? "claude-opus-4-5-20250101",
+      capabilityPlanners: IBATEXAS_CAPABILITY_PLANNERS,
       deriveContext: deriveIbatexasPlannerContext,
     }),
-    responder: naiveResponder(modelProvider, anthropicModelId),
+    responder: naiveResponder(modelProvider),
     explainer: ibatexasExplainer(),
-    handoff: natsHandoff(),
+    handoff: noopHandoff(),
     telemetry: fastifyTelemetry(tokenUsageStore),
     session: redisSessionStore(),
     tools: toolRegistry,
@@ -1744,113 +1268,7 @@ export async function bootstrapClaustrum(
     // kernel adjudicates commerce mutations correctly instead of panic-REFUSING
     // against the stub tenant state. See claustrum/resolve-and-assemble.ts.
     resolver: createIbatexasResolver(),
-    // RC-R3 / Decision 1: without a distributed lock the conductor falls back to
-    // its in-process InMemorySessionLock, so two api replicas would adjudicate
-    // the same `${channel}:${customerId}` session concurrently (double-EXECUTE).
-    // Postgres advisory locks pin acquire/release to one pooled connection.
-    sessionLock: new PostgresAdvisorySessionLock(pgPool),
   });
-
-  // ── Managed-agent plane (T3-9) — OPT-IN via IBX_AGENTS_ENABLED ──────────────
-  // Default OFF: a normal boot never subscribes the trigger bridge / boots kill
-  // pollers. When enabled (the test stack), compose the Stage-0 shadow plane from
-  // the SAME ports as the production conductor and start it — that boot starts
-  // the Stage-0 soak clock (D-017). Wrapped fail-OPEN: a plane-start failure logs
-  // and continues; it must never block the api boot / the conductor singleton.
-  if (agentsEnabled()) {
-    try {
-      const subClient = redis.duplicate();
-      await subClient.connect();
-      const pubsub: RedisPubSubClient = {
-        publish: (channel, message) => redis.publish(channel, message),
-        subscribe: async (channel, handler) => {
-          await subClient.subscribe(channel, (message: string) => handler(message));
-          return async () => {
-            await subClient.unsubscribe(channel);
-          };
-        },
-      };
-      // Hoist the approval engine so the staff HTTP route (WS-D1) shares its
-      // parked store with the plane (single in-memory producer).
-      const agentApprovals = createAgentApprovalEngine({
-        notify: async (req) => {
-          // Stage-1 approval pending → page staff via the existing handoff surface.
-          await publishNatsEvent("support.handoff_requested", {
-            sessionId: req.agentNamespace,
-            reason: `Aprovação de agente pendente: ${req.intentKind}`,
-            intentKind: req.intentKind,
-            approvalToken: req.token,
-          });
-        },
-        now: () => new Date().toISOString(),
-      });
-      _agentApprovals = agentApprovals;
-      // Live conductor ingredients — H1 recomposes per trigger over a capped
-      // model, so the planner/responder are passed as factories (over the
-      // capped model) rather than pre-built ports. Tools are the REAL registry.
-      const liveConductor: LiveAgentConductorDeps = {
-        adjudicator,
-        memory,
-        grounding,
-        explainer: ibatexasExplainer(),
-        handoff: natsHandoff(),
-        telemetry: fastifyTelemetry(tokenUsageStore),
-        session: redisSessionStore(),
-        tenantResolver: resolveIbatexasTenantPolicy,
-        sessionLock: new PostgresAdvisorySessionLock(pgPool),
-        resolver: createIbatexasResolver(),
-        tools: toolRegistry,
-        systemChannel: new SystemChannel({
-          // For a boot that can issue refunds, keep requireSecret with NO
-          // devDefault — a known signing key would let anyone mint system-gateway
-          // messages the agent conductor trusts (ties to B3).
-          gatewaySigningKey: requireSecret("SYSTEM_GATEWAY_SIGNING_KEY"),
-          gateway: process.env.SYSTEM_GATEWAY_NAME ?? "ibatexas-agent-host",
-        }),
-        modelProvider,
-        buildPlanner: (model) =>
-          createIbatexasPlanner({
-            model,
-            modelId: anthropicModelId,
-            capabilityPlanners: IBATEXAS_COMPOSED_CAPABILITY_PLANNERS,
-            deriveContext: deriveIbatexasPlannerContext,
-          }),
-        buildResponder: (model) => naiveResponder(model, anthropicModelId),
-      };
-      // P4 producer seam: ensure the shared remediation_proposals table exists,
-      // then write a proposal whenever the live runner parks a confirm-gated
-      // remediation (the adjutant projects from it + agent_runs).
-      const proposalWriter = createRemediationProposalWriter(pgPool);
-      await proposalWriter.ensureTable();
-      _proposalWriter = proposalWriter;
-      _agentPlane = await startManagedAgentPlane({
-        registry: AGENT_REGISTRY,
-        liveConductor,
-        journal: createPostgresAgentRunJournal(prisma),
-        proposalSink: (p) => proposalWriter.write(p),
-        redis: ledgerClient,
-        pubsub,
-        approvals: agentApprovals,
-        // Proactive per-agent/per-window refund money breaker (bounds the FIRST
-        // N money attempts; the kill switch only bounds the tail).
-        refundBreaker: createRefundCircuitBreaker({ redis }),
-        // The kinds the composed kernel policy confirm-gates via the B1
-        // agent-session refund rule. Must cover every REAL_MONEY_KINDS entry or
-        // startManagedAgentPlane refuses to boot (fail-closed).
-        realMoneyConfirmKinds: AGENT_CONFIRM_GATED_KINDS,
-        resolveCustomer: async (orderId) => {
-          const order = await createOrderQueryService().getById(orderId);
-          return order?.customerId ?? null;
-        },
-        now: () => new Date().toISOString(),
-      });
-    } catch (err) {
-      logger.error(
-        { component: "managed-agent-plane", err: (err as Error).message },
-        "managed-agent plane failed to start — continuing without it (boot not blocked)",
-      );
-    }
-  }
 
   return _conductor;
 }

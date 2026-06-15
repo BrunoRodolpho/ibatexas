@@ -14,13 +14,10 @@ import {
   emitStepStart,
   emitStepFinish,
   type ScenarioEvent,
-  type IbxEventBase,
 } from "../lib/events.js"
 
 describe("events — emit + onEvent", () => {
-  // Listeners receive the widened cross-plane base shape (post T1a-1 move
-  // of the emitter into @ibatexas/tools); scenario literals are unchanged.
-  let captured: IbxEventBase[]
+  let captured: ScenarioEvent[]
   let unsub: () => void
 
   beforeEach(() => {
@@ -46,7 +43,7 @@ describe("events — emit + onEvent", () => {
   })
 
   it("dispatches to multiple listeners", () => {
-    const captured2: IbxEventBase[] = []
+    const captured2: ScenarioEvent[] = []
     const unsub2 = onEvent((e) => captured2.push(e))
 
     const event: ScenarioEvent = {
@@ -121,7 +118,7 @@ describe("events — emit + onEvent", () => {
 })
 
 describe("events — convenience helpers", () => {
-  let captured: IbxEventBase[]
+  let captured: ScenarioEvent[]
   let unsub: () => void
 
   beforeEach(() => {
