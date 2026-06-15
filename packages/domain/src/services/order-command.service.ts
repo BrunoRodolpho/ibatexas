@@ -385,16 +385,19 @@ export function createOrderCommandService(
       return null
     }
 
-    const newVersion = projection.version + 1
+    const readVersion = projection.version
+    const newVersion = readVersion + 1
 
-    await prisma.$transaction(async (tx: TxClient) => {
-      await tx.orderProjection.update({
-        where: { id: orderId },
+    const applied = await prisma.$transaction(async (tx: TxClient) => {
+      const { count } = await tx.orderProjection.updateMany({
+        where: { id: orderId, version: readVersion },
         data: {
           fulfillmentStatus: input.newStatus as PrismaFulfillmentStatus,
           version: newVersion,
         },
       })
+
+      if (count === 0) return false
 
       await tx.orderStatusHistory.create({
         data: {
@@ -406,7 +409,11 @@ export function createOrderCommandService(
           version: newVersion,
         },
       })
+
+      return true
     })
+
+    if (!applied) return null
 
     return { version: newVersion }
   }
