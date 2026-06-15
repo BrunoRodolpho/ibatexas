@@ -31,6 +31,7 @@ import { adminPaymentRoutes } from "./payments.js";
 import { adminOrderActionRoutes } from "./order-actions.js";
 import { adminBannerRoutes } from "./banner.js";
 import { adminAgentApprovalRoutes } from "./agent-approvals.js";
+import { conversationRoutes } from "./conversations.js";
 
 // ── W4 P1-H — API-key role registry ─────────────────────────────────────
 //
@@ -191,4 +192,5 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
   await server.register(adminOrderActionRoutes);
   await server.register(adminBannerRoutes);
   await server.register(adminAgentApprovalRoutes);
+  await server.register(conversationRoutes);
 }
