@@ -1,0 +1,209 @@
+# JOURNEY-001 — THE exit journey (plan §5 T1a-12 / T1a-13).
+#
+# ── T1a-13 LIVE CORRECTIONS (the journey is the executable spec of what the
+#    system ACTUALLY does — every claim below was verified against the
+#    running test stack):
+#
+#  1. CHAT ORDER-ASSEMBLY IS NOT EXECUTABLE TODAY (product gap
+#     `chat-order-assembly`): the chat planner is a single-shot semantic
+#     parser (claustrum/ibatexas-planner.ts — one completion over
+#     state.perception.text; `readToolCalls` are recorded but never
+#     executed), so its `order.item.add` payloads are free-form NL (live:
+#     `{"item":"costela bovina defumada","quantidade":"1kg"}`) — never the
+#     `{cartId, variantId, quantity, allergens}` the pack guards + tools
+#     require, and no resolver leg maps them (resolve-and-assemble resolves
+#     orderId/reservationId only). Every chat item-add REFUSEs
+#     `order.cart.missing` by construction. The working order-assembly
+#     surface is the web storefront's public HTTP API (routes/cart.ts),
+#     whose item-add audits as the `medusa.cart.line_items.add` system
+#     envelope — `order.item.add EXECUTE` is currently producible by NO
+#     public surface (recorded; expects[] adjusted accordingly).
+#
+#  2. CHAT CANNOT RESUME A PARKED CONFIRMATION (product gap
+#     `chat-confirmation-resume`, already named by JOURNEY-003.blocked_by):
+#     WebChannel.matchToParked returns null unconditionally
+#     (@claustrum/channel-web), the chat SSE pushes only text_delta + a bare
+#     `done` (routes/chat.ts — the confirmation token never reaches the
+#     client), and no chat-confirm endpoint exists (the only confirm
+#     round-trip is POST /api/cart/checkout/confirm — large-ticket checkout
+#     only). A bare "sim" next turn proposes nothing (single-turn
+#     perception; memory recall fail-safe degraded, D-012). The cancel leg
+#     therefore asserts the confirm GATE via chat (the auto-resolve +
+#     confirmOnAutoResolveGuard REQUEST_CONFIRMATION — this DOES work) and
+#     completes the cancel through the documented public HTTP route
+#     POST /api/orders/:orderId/cancel (order-actions.ts:401; explicit id →
+#     no auto-resolve flag → within-PONR kernel EXECUTE).
+#
+#    When chat-order-assembly / chat-confirmation-resume ship, this journey
+#    reverts to the pure-chat trajectory (item.add + checkout via chat;
+#    REQUEST_CONFIRMATION → receipt-resumed EXECUTE).
+#
+# Decision-trajectory derivation (verified live, 2026-06-12):
+#   * order.checkout.create — EXECUTE: confirmOnAutoResolveGuard matches only
+#     {order.cancel, payment.pix.regenerate, reservation.cancel};
+#     confirmLargeTicket needs >= R$1.000 (this cart is one item).
+#   * order.cancel via chat — REQUEST_CONFIRMATION: the persona cancels
+#     WITHOUT quoting an id → resolve stage auto-resolves the most-recent
+#     order + sets ctx.autoResolvedMoneyRef → confirm guard parks it.
+#   * order.cancel via HTTP — EXECUTE: explicit orderId, requireAuth cookie,
+#     within PONR; inner order.status.transition / payment.status.transition
+#     envelopes follow (IN_ORDER tolerates them as extras).
+#
+# Trajectory mode: IN_ORDER — expects[] as a subsequence of the run's audited
+# trail; incidental envelopes (medusa.* gateway rows live in their own
+# source-subject namespaces; the cancel executor's inner transitions share
+# the customer namespace) are tolerated. Noop/smalltalk turns write no audit
+# rows at all (only envelope rows are observable — plan §5 fact 18).
+#
+# Reconciliation allowances (T1b-1): the post-attempt gate requires EVERY
+# observed envelope in the run's namespaces to be explained by expects[].
+# The cancel route's executor emits inner projection-level transitions
+# (order.status.transition + payment.status.transition,
+# order-actions.ts:504/:545) as user-principal envelopes with
+# actor.sessionId = customerId — they land in the run's hashed(customerId)
+# namespace and are declared below as `optional: true` allowances (observed
+# but not asserted; tolerated absent). The medusa.cart.* gateway rows do NOT
+# need allowances: system-actor envelopes carry
+# actor.sessionId = "<sourceSubject>:<eventId>" (per-event), so their hashed
+# namespaces are structurally outside the run's fetch scope.
+id: JOURNEY-001
+title: Authenticated customer places an order, then cancels it (chat confirm gate)
+businessCase: >-
+  The flagship money loop: a logged-in customer assembles a real order
+  through the storefront's public API (the surface that can actually execute
+  order assembly today — see header corrections), commits it at checkout
+  (cash on pickup), regrets it, and asks to cancel in chat — proving the
+  kernel's confirm gate on auto-resolved money refs — then completes the
+  cancellation through the public cancel route. Every mutation is
+  kernel-adjudicated and audited; checkout and cancel are auth-gated
+  (guests structurally cannot run this — that negative is JOURNEY-009).
+persona: >-
+  Maria Silva, cliente cadastrada e autenticada, quer uma costela bovina
+  defumada para retirar no balcão e pagar em dinheiro — mas logo depois de
+  fechar o pedido muda de ideia e quer cancelar tudo.
+channel: web
+status: active
+blocked_by: []
+source: docs/agents/plan-v2.md §5 T1a-12 (exit journey; run by T1a-13)
+params:
+  authenticated: true
+  customerPhone: "+5519900000001"
+  productHandle: costela-bovina-defumada
+  paymentMethod: cash
+  fulfillment: pickup
+acts:
+  - kind: fixture
+    name: seed-authenticated-customer
+    seed: seedCustomer
+    params:
+      phone: "+5519900000001"
+    note: >-
+      Precondition only — Maria Silva is one of the SEED_CUSTOMERS
+      (packages/domain/src/seed-constants.ts); the harness resolves the
+      seeded row via the read-only oracle role (never writes) and the
+      authFixture (T1a-4) mints her customer JWT cookie.
+  - kind: fixture
+    name: resolve-product-variant
+    seed: resolveProductVariant
+    params:
+      handle: costela-bovina-defumada
+      variantTitle: 1kg
+    note: >-
+      Precondition only — read-only catalog resolve (handle + variant title →
+      variantId) so the journey file never carries a raw Medusa id.
+  - kind: http
+    name: create-cart
+    method: POST
+    path: /api/cart
+    asRole: customer
+    body: {}
+    capture:
+      cartId: cart.id
+    note: >-
+      The storefront's cart-create route; audits as the medusa.cart.create
+      system envelope (gateway namespace). cartId captured for later acts.
+  - kind: http
+    name: add-item
+    method: POST
+    path: /api/cart/:cartId/line-items
+    asRole: customer
+    body:
+      variant_id: ":variantId"
+      quantity: 1
+    note: >-
+      The storefront's item-add route; audits as medusa.cart.line_items.add
+      (system envelope). order.item.add EXECUTE is producible by NO public
+      surface today — see header correction 1.
+  - kind: http
+    name: checkout
+    method: POST
+    path: /api/cart/checkout
+    asRole: customer
+    body:
+      cartId: ":cartId"
+      paymentMethod: cash
+      deliveryType: pickup
+    note: >-
+      The money commitment: order.checkout.create EXECUTE (user envelope in
+      the customer audit namespace). Cash + pickup keeps the kernel
+      trajectory to a single EXECUTE (no PIX defer, no large-ticket confirm).
+  - kind: chat
+    name: request-cancel
+    goal: >-
+      Pedir o cancelamento do pedido que acabou de fazer, SEM NUNCA citar
+      número, código ou ID do pedido. Comece com "Quero cancelar meu pedido,
+      por favor.". Se o agente pedir número do pedido, CPF ou qualquer outro
+      dado, recuse educadamente e insista que é o pedido MAIS RECENTE e que
+      quer cancelá-lo (ex.: "Não sei o número — é o meu último pedido, quero
+      cancelar ele."). Envie no máximo 3 mensagens ao todo e então encerre a
+      conversa, independentemente da resposta (a confirmação será concluída
+      por outro canal).
+    note: >-
+      Asserts the confirm GATE only: the parked envelope cannot be resumed
+      via chat (chat-confirmation-resume product gap — header correction 2),
+      and the naive responder never SURFACES the confirm prompt (it is blind
+      to decision/acted — another facet of the same gap), so the persona
+      cannot react to it; the REQUEST_CONFIRMATION AUDIT ROW is this act's
+      deliverable, asserted by verify[], not by reply text. Multiple cancel
+      requests may park/re-park — extra REQUEST_CONFIRMATION rows are
+      tolerated by IN_ORDER.
+  - kind: http
+    name: confirm-cancel-via-http
+    method: POST
+    path: /api/orders/:orderId/cancel
+    asRole: customer
+    body:
+      reason: "Cancelado pela cliente após confirmação"
+    note: >-
+      The documented public cancel round-trip (order-actions.ts:401):
+      explicit order id (resolved by the harness to the run's own order via
+      the projection barrier), requireAuth cookie, within-PONR → kernel
+      EXECUTE. Runs as a standalone runner act — the persona model never
+      holds the http act-tool in this journey.
+expects:
+  - intentKind: order.checkout.create
+    decision: EXECUTE
+  - intentKind: order.cancel
+    decision: REQUEST_CONFIRMATION
+  - intentKind: order.cancel
+    decision: EXECUTE
+  # T1b-1 reconciliation allowances — the cancel executor's inner
+  # projection-level transitions share the customer audit namespace (see
+  # header). Observed-but-not-asserted; tolerated when absent; never
+  # trajectory requirements and never coverage claims.
+  - intentKind: order.status.transition
+    decision: EXECUTE
+    optional: true
+  - intentKind: payment.status.transition
+    decision: EXECUTE
+    optional: true
+verify:
+  - invariant: audit.trajectory.in_order
+    args:
+      note: expects[] as a subsequence of the run-sessionId audit namespace
+  - invariant: audit.record.verified
+    args: {}
+  - invariant: order.goal-state
+    args:
+      # OrderFulfillmentStatus.CANCELED — packages/types/src/order-status.ts
+      status: canceled

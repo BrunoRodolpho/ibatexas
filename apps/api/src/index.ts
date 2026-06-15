@@ -118,8 +118,19 @@ const start = async (): Promise<void> => {
 
     // Initialize WhatsApp sender (before background jobs that may send notifications)
     initWhatsAppSender();
-    // Start background jobs and NATS subscribers after server is listening
-    if (process.env.NODE_ENV !== "test") {
+    // Start background jobs and NATS subscribers after server is listening.
+    //
+    // T1a-13: the NODE_ENV=test guard exists for UNIT-test processes (vitest
+    // imports server.ts, never this entrypoint) — but the JOURNEY test stack
+    // (T1a-11a env contract) also boots with NODE_ENV=test, and skipping the
+    // subscribers there silently breaks production parity: order.placed never
+    // projects (cart-intelligence), payment lifecycle never settles, defer
+    // resolvers never fire — surfaced by the first JOURNEY-001 live run (no
+    // order_projections row after a successful checkout). The ephemeral test
+    // profile is identified by IBX_TEST_FINGERPRINT (D-010: ONLY .env.test
+    // carries it), so subscribers/jobs run whenever we are NOT a bare
+    // NODE_ENV=test process OR we ARE the fingerprinted journey stack.
+    if (process.env.NODE_ENV !== "test" || process.env.IBX_TEST_FINGERPRINT) {
       // Inject Redis client as outbox writer for critical NATS events
       try {
         const redis = await getRedisClient();

@@ -1,0 +1,153 @@
+# e2e-smoke (T2-7) — Playwright smoke + api-golden-path against the REAL
+# ephemeral test stack, scripted end to end. ZERO TOKENS by construction:
+# no spec touches the chat/LLM surface, and the stack boots with a
+# PLACEHOLDER ANTHROPIC_API_KEY (apps/api only requires the var to be
+# non-empty at boot; any accidental LLM call fails loudly instead of
+# spending). That is what lets this run on every PR with NO repo secrets —
+# fork PRs included.
+#
+# What it runs (playwright.config.ts projects):
+#   smoke  — homepage renders + api /health        (chromium, :3000)
+#   web    — browse → PDP → add-to-cart happy path (chromium, :3000)
+#   api    — health/catalog/cart + the authed JOURNEY-001 HTTP legs:
+#            cart create → line-item → checkout cash/pickup (:3001)
+#
+# Stack: docker-compose.test.yml infra + the process-compose test profile
+# WITH the T2-7 e2e overlay (IBX_TEST_E2E=1 → web :3000 boots too) + full
+# migrate/seed — the same canonical launcher the journeys nightly uses.
+#
+# Verify (after push): gh workflow run e2e-smoke && gh run watch
+#   $(gh run list --workflow e2e-smoke -L1 --json databaseId
+#   -q '.[0].databaseId') --exit-status
+# Then make it a required check on main (push-dependent items:
+# docs/agents/phase-1b-pending-push.md).
+
+name: e2e-smoke
+
+on:
+  pull_request:
+    paths:
+      # The surfaces under test…
+      - "apps/web/**"
+      - "apps/api/**"
+      - "apps/commerce/**"
+      # …their shared workspace deps…
+      - "packages/tools/**"
+      - "packages/types/**"
+      - "packages/ui/**"
+      - "packages/domain/**"
+      # …and the harness itself.
+      - "tests/e2e/**"
+      - "playwright.config.ts"
+      - "process-compose.test.yaml"
+      - "process-compose.e2e.yaml"
+      - "docker-compose.test.yml"
+      - "scripts/test-stack-up.sh"
+      - "scripts/test-stack-down.sh"
+      - "scripts/test-stack/**"
+      - "scripts/gen-env-test.sh"
+      - ".github/workflows/e2e-smoke.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      IBX_TEST_COMPOSE_PROJECT: ibx-e2e-${{ github.run_id }}
+      PROCESS_COMPOSE_VERSION: v1.103.0
+      # sha256 of process-compose_linux_amd64.tar.gz for the pinned version.
+      PROCESS_COMPOSE_SHA256: 79f79f4efcb26b7abb29d5ce7aa2b9807afa1333b1ef1c5dee607b12fbc0ba89
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: pnpm/action-setup@5b4374b04084dc1f9032b52464284b769ac5059e # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @ibatexas/domain db:generate
+
+      # The CLI + its workspace dependency closure (includes
+      # @ibatexas/journeys, whose dist the api spec's fixtures import). The
+      # api/commerce/web apps boot from source via the process-compose
+      # profiles — no app build; the profile's build-packages step rebuilds
+      # types/tools itself.
+      - name: Build the CLI + workspace deps
+        run: pnpm --filter "@ibatexas/cli..." build
+
+      # test-stack-up.sh requires `ibx` on PATH (dist has the node shebang).
+      - name: Put ibx on PATH
+        run: |
+          chmod +x packages/cli/dist/index.js
+          sudo ln -sf "$PWD/packages/cli/dist/index.js" /usr/local/bin/ibx
+          ibx --version
+
+      - name: Install process-compose (pinned + checksum-verified)
+        run: |
+          curl -fsSL -o /tmp/pc.tar.gz "https://github.com/F1bonacc1/process-compose/releases/download/${PROCESS_COMPOSE_VERSION}/process-compose_linux_amd64.tar.gz"
+          echo "${PROCESS_COMPOSE_SHA256}  /tmp/pc.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/pc.tar.gz -C /tmp process-compose
+          sudo mv /tmp/process-compose /usr/local/bin/process-compose
+          process-compose version
+
+      - name: Install Playwright chromium (+ system deps)
+        run: pnpm exec playwright install --with-deps chromium
+
+      # gen-env-test.sh generates EVERY secret per run (JWTs, DB/Redis
+      # passwords, AUDIT_REDACT_SECRET, IBX_TEST_FINGERPRINT, ...) and
+      # interpolates ANTHROPIC_API_KEY from a developer-style .env — which
+      # here is a PLACEHOLDER: this suite is zero-tokens by design (no spec
+      # touches the LLM surface; apps/api only checks the var is non-empty
+      # at boot), so e2e-smoke needs NO repo secret and is fork-PR safe.
+      - name: Generate .env.test (per-run secrets, placeholder LLM key)
+        run: |
+          umask 177
+          printf 'ANTHROPIC_API_KEY=%s\n' "sk-ant-placeholder-e2e-smoke-zero-tokens" > .env
+          ./scripts/gen-env-test.sh
+
+      # Canonical launcher + the T2-7 e2e overlay: infra compose up --wait →
+      # ibx db provision + bootstrap (+ oracle/sim roles) → process-compose
+      # (api :3001 + commerce :9000 + web :3000) → ibx db reindex + test seed.
+      - name: Test stack up (infra + migrate + apps incl. web + seed)
+        run: IBX_TEST_E2E=1 ./scripts/test-stack-up.sh
+
+      # The suite — .env.test sourced so the authed api spec can mint its
+      # fixtures (JWT_SECRET + IBX_TEST_FINGERPRINT + ORACLE_DATABASE_URL).
+      # On CI the authed spec NEVER skips: missing env fails loudly.
+      - name: Run Playwright (smoke + web + api golden path)
+        run: |
+          set -a
+          . ./.env.test
+          set +a
+          pnpm exec playwright test
+
+      # Screenshots + traces of failed tests (playwright.config.ts:
+      # trace retain-on-failure, screenshot only-on-failure).
+      - name: Upload failure artifacts (screenshots/traces)
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: e2e-smoke-${{ github.run_id }}
+          retention-days: 14
+          if-no-files-found: warn
+          path: tests/e2e/.results/
+
+      - name: Tear down the test stack
+        if: always()
+        run: ./scripts/test-stack-down.sh || true
+      - name: Compose down (self-hosted safety — keep even on GH-hosted)
+        if: always()
+        # --env-file .env.test so docker-compose can interpolate the T3-10 NATS
+        # nkey vars (they are `:?`-required even for `down`); `|| true` keeps this
+        # belt-and-suspenders cleanup from ever failing the job.
+        run: docker compose --env-file .env.test -f docker-compose.test.yml -p "$IBX_TEST_COMPOSE_PROJECT" down -v --remove-orphans || true

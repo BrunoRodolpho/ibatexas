@@ -1,3 +1,21 @@
+// playwright.config.ts — T2-7 e2e harness configuration.
+//
+// STACK CONTRACT: these tests run against the EPHEMERAL e2e test stack, never
+// against servers Playwright starts itself (the previous webServer block
+// booted the DEV servers without the .env.test contract — wrong env entirely,
+// removed by T2-7). Bring the stack up first, then run with the test env
+// sourced so the authed specs can mint fixtures (JWT_SECRET,
+// IBX_TEST_FINGERPRINT, ORACLE_DATABASE_URL):
+//
+//   IBX_TEST_E2E=1 ./scripts/test-stack-up.sh
+//   set -a; . ./.env.test; set +a
+//   pnpm exec playwright test
+//   ./scripts/test-stack-down.sh
+//
+// ZERO TOKENS: no spec may exercise the chat/LLM surface — this suite is the
+// scripted, deterministic SUT harness (CI boots the stack with a placeholder
+// ANTHROPIC_API_KEY; any LLM call would fail loudly).
+
 import { defineConfig, devices } from "@playwright/test";
 
 const BASE_URL = process.env.PLAYWRIGHT_BASE_URL ?? "http://localhost:3000";
@@ -24,7 +42,9 @@ export default defineConfig({
   expect: { timeout: 10_000 },
 
   use: {
-    trace: "on-first-retry",
+    /* On CI keep the trace of every failed test (uploaded as an artifact);
+     * locally only the first retry traces. Screenshots always on failure. */
+    trace: process.env.CI ? "retain-on-failure" : "on-first-retry",
     screenshot: "only-on-failure",
   },
 
@@ -54,22 +74,6 @@ export default defineConfig({
         baseURL: BASE_URL,
         ...devices["Desktop Chrome"],
       },
-    },
-  ],
-
-  /* Start the web app + API before tests if not already running */
-  webServer: [
-    {
-      command: "pnpm --filter @ibatexas/web dev",
-      url: BASE_URL,
-      reuseExistingServer: !process.env.CI,
-      timeout: 30_000,
-    },
-    {
-      command: "pnpm --filter @ibatexas/api dev",
-      url: `${API_URL}/health`,
-      reuseExistingServer: !process.env.CI,
-      timeout: 30_000,
     },
   ],
 });

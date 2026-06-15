@@ -1,0 +1,168 @@
+# JOURNEY-013 — order note via chat + review attempt as a pinned negative
+# (plan §5 T2-2a).
+#
+# ── T2-2a AUTHORING CORRECTIONS (executable-spec principle, D-014/D-015):
+#
+#  1. CHAT NOTE-ADD CANNOT BIND ITS TARGET (product gap
+#     `chat-note-autoresolve`): order.note.add IS planner-advertised to
+#     authed customers (pack-orders capabilities.ts:131) and IS in
+#     CHAT_DRIVABLE_TOOL_KINDS — but the resolver's NL→id leg auto-resolves
+#     ONLY order.cancel / payment.pix.regenerate / reservation.cancel
+#     (resolve-and-assemble.ts ORDER_AUTORESOLVE_KINDS:419), so a
+#     conversational note for "my order" (no id quoted — customers don't
+#     know ids) reaches the kernel with ctx.orderId = null and
+#     requireOrderIdForMutation REFUSEs `order.not_found` (pack-orders
+#     policies.ts:343, state phase — deterministic). Unblock: add
+#     order.note.add to the auto-resolve set (non-money kind — no confirm
+#     gate needed). This run PINS the gap as the audited chat REFUSE.
+#
+#  2. THE NOTE EXECUTES OVER THE DOCUMENTED PUBLIC ROUTE: POST
+#     /api/orders/:id/notes (order-actions.ts:898) — requireAuth +
+#     route-side ownership, kernel order.note.add EXECUTE via
+#     addNoteFromEnvelope with getAuditSink() injected. ROUTE QUIRK
+#     (recorded): the route passes `customer:${customerId}` as the
+#     envelope's customerId (order-actions.ts:935), so the EXECUTE row
+#     lands in the hashed(`customer:<id>`) namespace, NOT
+#     hashed(customerId) like the cancel route — this journey declares
+#     params.auditScopeCustomerTool: true so the harness scopes that
+#     namespace into the run (T2-2a harness extension).
+#
+#  3. REVIEW-SUBMIT IS REGISTERED-BUT-UNADVERTISED (stays
+#     `waived-unadvertised` in coverage, per the plan): order.review.submit
+#     is in CHAT_DRIVABLE_TOOL_KINDS but NO planner ever advertises it
+#     (reviews arrive via the web flow) — the SUT's LLM can never propose
+#     it, so nothing reaches the kernel and nothing is audited
+#     (the JOURNEY-009 negative pattern: planner surface, not refusal
+#     message, is the control). The persona explicitly ASKS for a 5-star
+#     review via chat; the deterministic negative is audit-side ABSENCE
+#     (audit.kind-absent), and the kind's coverage waiver stays in place.
+#
+# Decision-trajectory derivation (IN_ORDER over hashed(chat session) +
+# hashed(customerId) + hashed(`customer:<id>`) — D-012 + correction 2):
+#   * order.checkout.create — EXECUTE (storefront assembly, cash + pickup —
+#     the JOURNEY-001 verified derivation).
+#   * order.note.add — REFUSE via chat (`order.not_found`; correction 1).
+#     The persona may re-ask — extra REFUSE rows share the declared tuple
+#     (tuple-level reconciliation) and IN_ORDER tolerates them.
+#   * order.note.add — EXECUTE via the public route (correction 2); 201 +
+#     the audited row; the note row itself is route-confirmed (the response
+#     carries the persisted content).
+id: JOURNEY-013
+title: Customer asks for an order note in chat, completes it on the site — review stays unproposable
+businessCase: >-
+  Kitchen notes are an allergy-adjacent safety surface ("sem cebola") — the
+  business needs them kernel-audited whichever surface carries them. Chat
+  understands the ask but cannot bind the target order today (pinned here
+  as the audited REFUSE), the public route completes it; and the same run
+  pins that no conversation can produce a review envelope — the review tool
+  stays registered-but-unadvertised, a deliberate planner-surface control.
+persona: >-
+  Carlos Pereira, cliente autenticado, acabou de fechar um pedido de
+  costela para retirada e quer avisar a cozinha: sem cebola na farofa.
+  Tenta pelo chat; depois registra a observação pela conta no site. No
+  embalo, tenta deixar uma avaliação 5 estrelas pelo chat.
+channel: web
+status: active
+blocked_by: []
+source: docs/agents/plan-v2.md §5 T2-2a
+params:
+  authenticated: true
+  customerPhone: "+5519900000004"
+  productHandle: costela-bovina-defumada
+  paymentMethod: cash
+  fulfillment: pickup
+  auditScopeCustomerTool: true
+acts:
+  - kind: fixture
+    name: seed-authenticated-customer
+    seed: seedCustomer
+    params:
+      phone: "+5519900000004"
+    note: >-
+      Precondition only — Carlos Pereira is one of the SEED_CUSTOMERS;
+      resolved via the read-only oracle role.
+  - kind: fixture
+    name: resolve-product-variant
+    seed: resolveProductVariant
+    params:
+      handle: costela-bovina-defumada
+      variantTitle: 1kg
+  - kind: http
+    name: create-cart
+    method: POST
+    path: /api/cart
+    asRole: customer
+    body: {}
+    capture:
+      cartId: cart.id
+  - kind: http
+    name: add-item
+    method: POST
+    path: /api/cart/:cartId/line-items
+    asRole: customer
+    body:
+      variant_id: ":variantId"
+      quantity: 1
+  - kind: http
+    name: checkout
+    method: POST
+    path: /api/cart/checkout
+    asRole: customer
+    body:
+      cartId: ":cartId"
+      paymentMethod: cash
+      deliveryType: pickup
+    note: >-
+      The run's order (order.checkout.create EXECUTE, hashed(customerId)
+      namespace) — the note's target.
+  - kind: chat
+    name: chat-note-and-review-attempt
+    goal: >-
+      Primeiro peça EXPLICITAMENTE para ADICIONAR uma observação ao pedido
+      que você acabou de fazer: "sem cebola na farofa" (ex.: "Acabei de
+      fazer um pedido — pode adicionar a observação 'sem cebola na farofa',
+      por favor?"). NUNCA cite números, códigos ou IDs do pedido; se o
+      agente pedir o número, diga que é o seu pedido MAIS RECENTE. Depois,
+      em outra mensagem, peça para deixar uma AVALIAÇÃO 5 estrelas do
+      restaurante pelo chat. Envie no máximo 3 mensagens ao todo e então
+      encerre a conversa, independentemente das respostas (a observação
+      será registrada por outro canal).
+    note: >-
+      Two pinned behaviors in one leg: (a) the conversational note-add is
+      kernel-REFUSED order.not_found — no auto-resolve leg for
+      order.note.add (chat-note-autoresolve gap, header correction 1),
+      asserted via the trajectory; (b) no review envelope can exist
+      (audit.kind-absent — order.review.submit is unadvertised, header
+      correction 3). ADVISORY only (llm-judge-excluded): the reply should
+      steer the customer to the site for both.
+  - kind: http
+    name: add-note-via-route
+    method: POST
+    path: /api/orders/:orderId/notes
+    asRole: customer
+    body:
+      content: "Sem cebola na farofa, por favor."
+    note: >-
+      The documented public note route (order-actions.ts:898): :orderId
+      resolves to the run's own order via the projection barrier;
+      ownership + kernel order.note.add EXECUTE (audited in the
+      hashed(customer:<id>) namespace — header correction 2). The 201
+      response echoes the persisted note content.
+expects:
+  - intentKind: order.checkout.create
+    decision: EXECUTE
+  - intentKind: order.note.add
+    decision: REFUSE
+  - intentKind: order.note.add
+    decision: EXECUTE
+verify:
+  - invariant: audit.trajectory.in_order
+    args:
+      note: >-
+        checkout EXECUTE, chat note REFUSE, route note EXECUTE — a
+        subsequence of the run's merged hashed namespaces
+  - invariant: audit.record.verified
+    args: {}
+  - invariant: audit.kind-absent
+    args:
+      intentKind: order.review.submit

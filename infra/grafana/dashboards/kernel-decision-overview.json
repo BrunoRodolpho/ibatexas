@@ -341,8 +341,8 @@
       {
         "current": {
           "selected": false,
-          "text": "prod",
-          "value": "prod"
+          "text": "dev",
+          "value": "dev"
         },
         "hide": 0,
         "includeAll": false,
@@ -350,9 +350,9 @@
         "multi": false,
         "name": "env",
         "options": [
-          { "selected": false, "text": "dev", "value": "dev" },
+          { "selected": true, "text": "dev", "value": "dev" },
           { "selected": false, "text": "staging", "value": "staging" },
-          { "selected": true, "text": "prod", "value": "prod" }
+          { "selected": false, "text": "prod", "value": "prod" }
         ],
         "query": "dev,staging,prod",
         "queryValue": "",

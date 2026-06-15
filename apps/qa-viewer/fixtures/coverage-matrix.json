@@ -1,0 +1,1200 @@
+{
+  "totals": {
+    "cells": 114,
+    "covered": 4,
+    "uncovered": 104,
+    "waived-pending-WS4": 0,
+    "waived-unadvertised": 6,
+    "waived-quarantined": 0
+  },
+  "cells": [
+    {
+      "key": "chat:order.cart.ensure:EXECUTE",
+      "surface": "chat",
+      "kind": "order.cart.ensure",
+      "decision": "EXECUTE",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:order.cart.ensure:REFUSE",
+      "surface": "chat",
+      "kind": "order.cart.ensure",
+      "decision": "REFUSE",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:order.cart.ensure:ESCALATE",
+      "surface": "chat",
+      "kind": "order.cart.ensure",
+      "decision": "ESCALATE",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:order.cart.ensure:REQUEST_CONFIRMATION",
+      "surface": "chat",
+      "kind": "order.cart.ensure",
+      "decision": "REQUEST_CONFIRMATION",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:order.cart.ensure:DEFER",
+      "surface": "chat",
+      "kind": "order.cart.ensure",
+      "decision": "DEFER",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:order.cart.ensure:REWRITE",
+      "surface": "chat",
+      "kind": "order.cart.ensure",
+      "decision": "REWRITE",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:order.item.add:EXECUTE",
+      "surface": "chat",
+      "kind": "order.item.add",
+      "decision": "EXECUTE",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:order.item.add:REFUSE",
+      "surface": "chat",
+      "kind": "order.item.add",
+      "decision": "REFUSE",
+      "state": "covered",
+      "coveredBy": [
+        "JOURNEY-009"
+      ],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:order.item.add:ESCALATE",
+      "surface": "chat",
+      "kind": "order.item.add",
+      "decision": "ESCALATE",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:order.item.add:REQUEST_CONFIRMATION",
+      "surface": "chat",
+      "kind": "order.item.add",
+      "decision": "REQUEST_CONFIRMATION",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:order.item.add:DEFER",
+      "surface": "chat",
+      "kind": "order.item.add",
+      "decision": "DEFER",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:order.item.add:REWRITE",
+      "surface": "chat",
+      "kind": "order.item.add",
+      "decision": "REWRITE",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:order.item.update:EXECUTE",
+      "surface": "chat",
+      "kind": "order.item.update",
+      "decision": "EXECUTE",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:order.item.update:REFUSE",
+      "surface": "chat",
+      "kind": "order.item.update",
+      "decision": "REFUSE",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:order.item.update:ESCALATE",
+      "surface": "chat",
+      "kind": "order.item.update",
+      "decision": "ESCALATE",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:order.item.update:REQUEST_CONFIRMATION",
+      "surface": "chat",
+      "kind": "order.item.update",
+      "decision": "REQUEST_CONFIRMATION",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:order.item.update:DEFER",
+      "surface": "chat",
+      "kind": "order.item.update",
+      "decision": "DEFER",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:order.item.update:REWRITE",
+      "surface": "chat",
+      "kind": "order.item.update",
+      "decision": "REWRITE",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:order.item.remove:EXECUTE",
+      "surface": "chat",
+      "kind": "order.item.remove",
+      "decision": "EXECUTE",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:order.item.remove:REFUSE",
+      "surface": "chat",
+      "kind": "order.item.remove",
+      "decision": "REFUSE",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:order.item.remove:ESCALATE",
+      "surface": "chat",
+      "kind": "order.item.remove",
+      "decision": "ESCALATE",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:order.item.remove:REQUEST_CONFIRMATION",
+      "surface": "chat",
+      "kind": "order.item.remove",
+      "decision": "REQUEST_CONFIRMATION",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:order.item.remove:DEFER",
+      "surface": "chat",
+      "kind": "order.item.remove",
+      "decision": "DEFER",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:order.item.remove:REWRITE",
+      "surface": "chat",
+      "kind": "order.item.remove",
+      "decision": "REWRITE",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:order.coupon.apply:EXECUTE",
+      "surface": "chat",
+      "kind": "order.coupon.apply",
+      "decision": "EXECUTE",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:order.coupon.apply:REFUSE",
+      "surface": "chat",
+      "kind": "order.coupon.apply",
+      "decision": "REFUSE",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:order.coupon.apply:ESCALATE",
+      "surface": "chat",
+      "kind": "order.coupon.apply",
+      "decision": "ESCALATE",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:order.coupon.apply:REQUEST_CONFIRMATION",
+      "surface": "chat",
+      "kind": "order.coupon.apply",
+      "decision": "REQUEST_CONFIRMATION",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:order.coupon.apply:DEFER",
+      "surface": "chat",
+      "kind": "order.coupon.apply",
+      "decision": "DEFER",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:order.coupon.apply:REWRITE",
+      "surface": "chat",
+      "kind": "order.coupon.apply",
+      "decision": "REWRITE",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:order.checkout.create:EXECUTE",
+      "surface": "chat",
+      "kind": "order.checkout.create",
+      "decision": "EXECUTE",
+      "state": "covered",
+      "coveredBy": [
+        "JOURNEY-001"
+      ],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:order.checkout.create:REFUSE",
+      "surface": "chat",
+      "kind": "order.checkout.create",
+      "decision": "REFUSE",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:order.checkout.create:ESCALATE",
+      "surface": "chat",
+      "kind": "order.checkout.create",
+      "decision": "ESCALATE",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:order.checkout.create:REQUEST_CONFIRMATION",
+      "surface": "chat",
+      "kind": "order.checkout.create",
+      "decision": "REQUEST_CONFIRMATION",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:order.checkout.create:DEFER",
+      "surface": "chat",
+      "kind": "order.checkout.create",
+      "decision": "DEFER",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:order.checkout.create:REWRITE",
+      "surface": "chat",
+      "kind": "order.checkout.create",
+      "decision": "REWRITE",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:order.cancel:EXECUTE",
+      "surface": "chat",
+      "kind": "order.cancel",
+      "decision": "EXECUTE",
+      "state": "covered",
+      "coveredBy": [
+        "JOURNEY-001"
+      ],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:order.cancel:REFUSE",
+      "surface": "chat",
+      "kind": "order.cancel",
+      "decision": "REFUSE",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:order.cancel:ESCALATE",
+      "surface": "chat",
+      "kind": "order.cancel",
+      "decision": "ESCALATE",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:order.cancel:REQUEST_CONFIRMATION",
+      "surface": "chat",
+      "kind": "order.cancel",
+      "decision": "REQUEST_CONFIRMATION",
+      "state": "covered",
+      "coveredBy": [
+        "JOURNEY-001"
+      ],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:order.cancel:DEFER",
+      "surface": "chat",
+      "kind": "order.cancel",
+      "decision": "DEFER",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:order.cancel:REWRITE",
+      "surface": "chat",
+      "kind": "order.cancel",
+      "decision": "REWRITE",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:order.amend.request:EXECUTE",
+      "surface": "chat",
+      "kind": "order.amend.request",
+      "decision": "EXECUTE",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:order.amend.request:REFUSE",
+      "surface": "chat",
+      "kind": "order.amend.request",
+      "decision": "REFUSE",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:order.amend.request:ESCALATE",
+      "surface": "chat",
+      "kind": "order.amend.request",
+      "decision": "ESCALATE",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:order.amend.request:REQUEST_CONFIRMATION",
+      "surface": "chat",
+      "kind": "order.amend.request",
+      "decision": "REQUEST_CONFIRMATION",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:order.amend.request:DEFER",
+      "surface": "chat",
+      "kind": "order.amend.request",
+      "decision": "DEFER",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:order.amend.request:REWRITE",
+      "surface": "chat",
+      "kind": "order.amend.request",
+      "decision": "REWRITE",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:order.note.add:EXECUTE",
+      "surface": "chat",
+      "kind": "order.note.add",
+      "decision": "EXECUTE",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:order.note.add:REFUSE",
+      "surface": "chat",
+      "kind": "order.note.add",
+      "decision": "REFUSE",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:order.note.add:ESCALATE",
+      "surface": "chat",
+      "kind": "order.note.add",
+      "decision": "ESCALATE",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:order.note.add:REQUEST_CONFIRMATION",
+      "surface": "chat",
+      "kind": "order.note.add",
+      "decision": "REQUEST_CONFIRMATION",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:order.note.add:DEFER",
+      "surface": "chat",
+      "kind": "order.note.add",
+      "decision": "DEFER",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:order.note.add:REWRITE",
+      "surface": "chat",
+      "kind": "order.note.add",
+      "decision": "REWRITE",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:order.review.submit:EXECUTE",
+      "surface": "chat",
+      "kind": "order.review.submit",
+      "decision": "EXECUTE",
+      "state": "waived-unadvertised",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": {
+        "category": "waived-unadvertised",
+        "reason": "Registered but never advertised by the orders planner — reviews arrive via the web flow, so no chat journey can drive it (the known registered-but-unadvertised case, WARN-only in roster drift).",
+        "addedAt": "2026-06-12"
+      }
+    },
+    {
+      "key": "chat:order.review.submit:REFUSE",
+      "surface": "chat",
+      "kind": "order.review.submit",
+      "decision": "REFUSE",
+      "state": "waived-unadvertised",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": {
+        "category": "waived-unadvertised",
+        "reason": "Registered but never advertised by the orders planner — reviews arrive via the web flow, so no chat journey can drive it (the known registered-but-unadvertised case, WARN-only in roster drift).",
+        "addedAt": "2026-06-12"
+      }
+    },
+    {
+      "key": "chat:order.review.submit:ESCALATE",
+      "surface": "chat",
+      "kind": "order.review.submit",
+      "decision": "ESCALATE",
+      "state": "waived-unadvertised",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": {
+        "category": "waived-unadvertised",
+        "reason": "Registered but never advertised by the orders planner — reviews arrive via the web flow, so no chat journey can drive it (the known registered-but-unadvertised case, WARN-only in roster drift).",
+        "addedAt": "2026-06-12"
+      }
+    },
+    {
+      "key": "chat:order.review.submit:REQUEST_CONFIRMATION",
+      "surface": "chat",
+      "kind": "order.review.submit",
+      "decision": "REQUEST_CONFIRMATION",
+      "state": "waived-unadvertised",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": {
+        "category": "waived-unadvertised",
+        "reason": "Registered but never advertised by the orders planner — reviews arrive via the web flow, so no chat journey can drive it (the known registered-but-unadvertised case, WARN-only in roster drift).",
+        "addedAt": "2026-06-12"
+      }
+    },
+    {
+      "key": "chat:order.review.submit:DEFER",
+      "surface": "chat",
+      "kind": "order.review.submit",
+      "decision": "DEFER",
+      "state": "waived-unadvertised",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": {
+        "category": "waived-unadvertised",
+        "reason": "Registered but never advertised by the orders planner — reviews arrive via the web flow, so no chat journey can drive it (the known registered-but-unadvertised case, WARN-only in roster drift).",
+        "addedAt": "2026-06-12"
+      }
+    },
+    {
+      "key": "chat:order.review.submit:REWRITE",
+      "surface": "chat",
+      "kind": "order.review.submit",
+      "decision": "REWRITE",
+      "state": "waived-unadvertised",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": {
+        "category": "waived-unadvertised",
+        "reason": "Registered but never advertised by the orders planner — reviews arrive via the web flow, so no chat journey can drive it (the known registered-but-unadvertised case, WARN-only in roster drift).",
+        "addedAt": "2026-06-12"
+      }
+    },
+    {
+      "key": "chat:reservation.create:EXECUTE",
+      "surface": "chat",
+      "kind": "reservation.create",
+      "decision": "EXECUTE",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:reservation.create:REFUSE",
+      "surface": "chat",
+      "kind": "reservation.create",
+      "decision": "REFUSE",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:reservation.create:ESCALATE",
+      "surface": "chat",
+      "kind": "reservation.create",
+      "decision": "ESCALATE",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:reservation.create:REQUEST_CONFIRMATION",
+      "surface": "chat",
+      "kind": "reservation.create",
+      "decision": "REQUEST_CONFIRMATION",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:reservation.create:DEFER",
+      "surface": "chat",
+      "kind": "reservation.create",
+      "decision": "DEFER",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:reservation.create:REWRITE",
+      "surface": "chat",
+      "kind": "reservation.create",
+      "decision": "REWRITE",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:reservation.modify:EXECUTE",
+      "surface": "chat",
+      "kind": "reservation.modify",
+      "decision": "EXECUTE",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:reservation.modify:REFUSE",
+      "surface": "chat",
+      "kind": "reservation.modify",
+      "decision": "REFUSE",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:reservation.modify:ESCALATE",
+      "surface": "chat",
+      "kind": "reservation.modify",
+      "decision": "ESCALATE",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:reservation.modify:REQUEST_CONFIRMATION",
+      "surface": "chat",
+      "kind": "reservation.modify",
+      "decision": "REQUEST_CONFIRMATION",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:reservation.modify:DEFER",
+      "surface": "chat",
+      "kind": "reservation.modify",
+      "decision": "DEFER",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:reservation.modify:REWRITE",
+      "surface": "chat",
+      "kind": "reservation.modify",
+      "decision": "REWRITE",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:reservation.cancel:EXECUTE",
+      "surface": "chat",
+      "kind": "reservation.cancel",
+      "decision": "EXECUTE",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:reservation.cancel:REFUSE",
+      "surface": "chat",
+      "kind": "reservation.cancel",
+      "decision": "REFUSE",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:reservation.cancel:ESCALATE",
+      "surface": "chat",
+      "kind": "reservation.cancel",
+      "decision": "ESCALATE",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:reservation.cancel:REQUEST_CONFIRMATION",
+      "surface": "chat",
+      "kind": "reservation.cancel",
+      "decision": "REQUEST_CONFIRMATION",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:reservation.cancel:DEFER",
+      "surface": "chat",
+      "kind": "reservation.cancel",
+      "decision": "DEFER",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:reservation.cancel:REWRITE",
+      "surface": "chat",
+      "kind": "reservation.cancel",
+      "decision": "REWRITE",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:reservation.waitlist.join:EXECUTE",
+      "surface": "chat",
+      "kind": "reservation.waitlist.join",
+      "decision": "EXECUTE",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:reservation.waitlist.join:REFUSE",
+      "surface": "chat",
+      "kind": "reservation.waitlist.join",
+      "decision": "REFUSE",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:reservation.waitlist.join:ESCALATE",
+      "surface": "chat",
+      "kind": "reservation.waitlist.join",
+      "decision": "ESCALATE",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:reservation.waitlist.join:REQUEST_CONFIRMATION",
+      "surface": "chat",
+      "kind": "reservation.waitlist.join",
+      "decision": "REQUEST_CONFIRMATION",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:reservation.waitlist.join:DEFER",
+      "surface": "chat",
+      "kind": "reservation.waitlist.join",
+      "decision": "DEFER",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:reservation.waitlist.join:REWRITE",
+      "surface": "chat",
+      "kind": "reservation.waitlist.join",
+      "decision": "REWRITE",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:customer.preferences.update:EXECUTE",
+      "surface": "chat",
+      "kind": "customer.preferences.update",
+      "decision": "EXECUTE",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:customer.preferences.update:REFUSE",
+      "surface": "chat",
+      "kind": "customer.preferences.update",
+      "decision": "REFUSE",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:customer.preferences.update:ESCALATE",
+      "surface": "chat",
+      "kind": "customer.preferences.update",
+      "decision": "ESCALATE",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:customer.preferences.update:REQUEST_CONFIRMATION",
+      "surface": "chat",
+      "kind": "customer.preferences.update",
+      "decision": "REQUEST_CONFIRMATION",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:customer.preferences.update:DEFER",
+      "surface": "chat",
+      "kind": "customer.preferences.update",
+      "decision": "DEFER",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:customer.preferences.update:REWRITE",
+      "surface": "chat",
+      "kind": "customer.preferences.update",
+      "decision": "REWRITE",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:customer.pix.details.save:EXECUTE",
+      "surface": "chat",
+      "kind": "customer.pix.details.save",
+      "decision": "EXECUTE",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:customer.pix.details.save:REFUSE",
+      "surface": "chat",
+      "kind": "customer.pix.details.save",
+      "decision": "REFUSE",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:customer.pix.details.save:ESCALATE",
+      "surface": "chat",
+      "kind": "customer.pix.details.save",
+      "decision": "ESCALATE",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:customer.pix.details.save:REQUEST_CONFIRMATION",
+      "surface": "chat",
+      "kind": "customer.pix.details.save",
+      "decision": "REQUEST_CONFIRMATION",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:customer.pix.details.save:DEFER",
+      "surface": "chat",
+      "kind": "customer.pix.details.save",
+      "decision": "DEFER",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:customer.pix.details.save:REWRITE",
+      "surface": "chat",
+      "kind": "customer.pix.details.save",
+      "decision": "REWRITE",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:payment.pix.regenerate:EXECUTE",
+      "surface": "chat",
+      "kind": "payment.pix.regenerate",
+      "decision": "EXECUTE",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:payment.pix.regenerate:REFUSE",
+      "surface": "chat",
+      "kind": "payment.pix.regenerate",
+      "decision": "REFUSE",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:payment.pix.regenerate:ESCALATE",
+      "surface": "chat",
+      "kind": "payment.pix.regenerate",
+      "decision": "ESCALATE",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:payment.pix.regenerate:REQUEST_CONFIRMATION",
+      "surface": "chat",
+      "kind": "payment.pix.regenerate",
+      "decision": "REQUEST_CONFIRMATION",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:payment.pix.regenerate:DEFER",
+      "surface": "chat",
+      "kind": "payment.pix.regenerate",
+      "decision": "DEFER",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "chat:payment.pix.regenerate:REWRITE",
+      "surface": "chat",
+      "kind": "payment.pix.regenerate",
+      "decision": "REWRITE",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "staff-http:reservation.checkin:EXECUTE",
+      "surface": "staff-http",
+      "kind": "reservation.checkin",
+      "decision": "EXECUTE",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "staff-http:reservation.checkin:REFUSE",
+      "surface": "staff-http",
+      "kind": "reservation.checkin",
+      "decision": "REFUSE",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "staff-http:reservation.checkin:ESCALATE",
+      "surface": "staff-http",
+      "kind": "reservation.checkin",
+      "decision": "ESCALATE",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "staff-http:reservation.checkin:REQUEST_CONFIRMATION",
+      "surface": "staff-http",
+      "kind": "reservation.checkin",
+      "decision": "REQUEST_CONFIRMATION",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "staff-http:reservation.checkin:DEFER",
+      "surface": "staff-http",
+      "kind": "reservation.checkin",
+      "decision": "DEFER",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "staff-http:reservation.checkin:REWRITE",
+      "surface": "staff-http",
+      "kind": "reservation.checkin",
+      "decision": "REWRITE",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "staff-http:reservation.complete:EXECUTE",
+      "surface": "staff-http",
+      "kind": "reservation.complete",
+      "decision": "EXECUTE",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "staff-http:reservation.complete:REFUSE",
+      "surface": "staff-http",
+      "kind": "reservation.complete",
+      "decision": "REFUSE",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "staff-http:reservation.complete:ESCALATE",
+      "surface": "staff-http",
+      "kind": "reservation.complete",
+      "decision": "ESCALATE",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "staff-http:reservation.complete:REQUEST_CONFIRMATION",
+      "surface": "staff-http",
+      "kind": "reservation.complete",
+      "decision": "REQUEST_CONFIRMATION",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "staff-http:reservation.complete:DEFER",
+      "surface": "staff-http",
+      "kind": "reservation.complete",
+      "decision": "DEFER",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    },
+    {
+      "key": "staff-http:reservation.complete:REWRITE",
+      "surface": "staff-http",
+      "kind": "reservation.complete",
+      "decision": "REWRITE",
+      "state": "uncovered",
+      "coveredBy": [],
+      "quarantinedBy": [],
+      "waiver": null
+    }
+  ],
+  "dormantWaivers": [
+    {
+      "kind": "payment.method.switch",
+      "decision": "*",
+      "category": "waived-pending-WS4",
+      "reason": "De-advertised in P0-7 (no @ibatexas/tools handler); leaves the chat-drivable surface until the WS4 backlog restores the handler + advertisement. Dormant until the kind rejoins CHAT_DRIVABLE_TOOL_KINDS.",
+      "addedAt": "2026-06-12"
+    },
+    {
+      "kind": "payment.retry",
+      "decision": "*",
+      "category": "waived-pending-WS4",
+      "reason": "De-advertised in P0-7 (no @ibatexas/tools handler); leaves the chat-drivable surface until the WS4 backlog restores the handler + advertisement. Dormant until the kind rejoins CHAT_DRIVABLE_TOOL_KINDS.",
+      "addedAt": "2026-06-12"
+    }
+  ]
+}

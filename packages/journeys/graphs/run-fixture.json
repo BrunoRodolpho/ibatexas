@@ -1,0 +1,344 @@
+{
+  "version": 1,
+  "graph": "run",
+  "meta": {
+    "acts": 7,
+    "decisionsSource": "sanitized fixture (sim_runs join shape)",
+    "envelopes": 5,
+    "journeyId": "JOURNEY-001",
+    "runId": "00000000-0000-4000-8000-000000000001",
+    "verifyOutcomes": 4
+  },
+  "nodes": [
+    {
+      "id": "act:0",
+      "type": "act",
+      "label": "seed-authenticated-customer",
+      "meta": {
+        "durationMs": 300,
+        "index": 0,
+        "kind": "fixture",
+        "outcome": "pass"
+      }
+    },
+    {
+      "id": "act:1",
+      "type": "act",
+      "label": "resolve-product-variant",
+      "meta": {
+        "durationMs": 300,
+        "index": 1,
+        "kind": "fixture",
+        "outcome": "pass"
+      }
+    },
+    {
+      "id": "act:2",
+      "type": "act",
+      "label": "create-cart",
+      "meta": {
+        "durationMs": 600,
+        "index": 2,
+        "kind": "http",
+        "outcome": "pass"
+      }
+    },
+    {
+      "id": "act:3",
+      "type": "act",
+      "label": "add-item",
+      "meta": {
+        "durationMs": 700,
+        "index": 3,
+        "kind": "http",
+        "outcome": "pass"
+      }
+    },
+    {
+      "id": "act:4",
+      "type": "act",
+      "label": "checkout",
+      "meta": {
+        "durationMs": 2000,
+        "index": 4,
+        "kind": "http",
+        "outcome": "pass"
+      }
+    },
+    {
+      "id": "act:5",
+      "type": "act",
+      "label": "request-cancel",
+      "meta": {
+        "durationMs": 6000,
+        "index": 5,
+        "kind": "chat",
+        "outcome": "pass"
+      }
+    },
+    {
+      "id": "act:6",
+      "type": "act",
+      "label": "confirm-cancel-via-http",
+      "meta": {
+        "durationMs": 1500,
+        "index": 6,
+        "kind": "http",
+        "outcome": "pass"
+      }
+    },
+    {
+      "id": "decision:EXECUTE",
+      "type": "decision",
+      "label": "EXECUTE",
+      "meta": {
+        "count": 4
+      }
+    },
+    {
+      "id": "decision:REQUEST_CONFIRMATION",
+      "type": "decision",
+      "label": "REQUEST_CONFIRMATION",
+      "meta": {
+        "count": 1
+      }
+    },
+    {
+      "id": "envelope:0",
+      "type": "envelope",
+      "label": "order.checkout.create",
+      "meta": {
+        "at": "2026-06-12T12:00:05.200Z",
+        "decision": "EXECUTE",
+        "intentKind": "order.checkout.create",
+        "seq": 0
+      }
+    },
+    {
+      "id": "envelope:1",
+      "type": "envelope",
+      "label": "order.cancel",
+      "meta": {
+        "at": "2026-06-12T12:00:11.000Z",
+        "decision": "REQUEST_CONFIRMATION",
+        "intentKind": "order.cancel",
+        "seq": 1
+      }
+    },
+    {
+      "id": "envelope:2",
+      "type": "envelope",
+      "label": "order.cancel",
+      "meta": {
+        "at": "2026-06-12T12:00:13.900Z",
+        "decision": "EXECUTE",
+        "intentKind": "order.cancel",
+        "seq": 2
+      }
+    },
+    {
+      "id": "envelope:3",
+      "type": "envelope",
+      "label": "order.status.transition",
+      "meta": {
+        "at": "2026-06-12T12:00:14.100Z",
+        "decision": "EXECUTE",
+        "intentKind": "order.status.transition",
+        "seq": 3
+      }
+    },
+    {
+      "id": "envelope:4",
+      "type": "envelope",
+      "label": "payment.status.transition",
+      "meta": {
+        "at": "2026-06-12T12:00:14.300Z",
+        "decision": "EXECUTE",
+        "intentKind": "payment.status.transition",
+        "seq": 4
+      }
+    },
+    {
+      "id": "run:00000000-0000-4000-8000-000000000001",
+      "type": "run",
+      "label": "JOURNEY-001 run 00000000-0000-4000-8000-000000000001",
+      "meta": {
+        "decisionsSource": "sanitized fixture (sim_runs join shape)",
+        "durationMs": 19000,
+        "events": 28,
+        "journeyId": "JOURNEY-001",
+        "outcome": "pass",
+        "runId": "00000000-0000-4000-8000-000000000001",
+        "turns": 1
+      }
+    },
+    {
+      "id": "verify:0:audit.trajectory.in_order",
+      "type": "verify",
+      "label": "audit.trajectory.in_order",
+      "meta": {
+        "detail": "matched 3 step(s) over 5 observed record(s)",
+        "invariant": "audit.trajectory.in_order",
+        "outcome": "pass"
+      }
+    },
+    {
+      "id": "verify:1:audit.record.verified",
+      "type": "verify",
+      "label": "audit.record.verified",
+      "meta": {
+        "detail": "5/5 record(s) verified tamper-evident (5 redaction-aware)",
+        "invariant": "audit.record.verified",
+        "outcome": "pass"
+      }
+    },
+    {
+      "id": "verify:2:order.goal-state",
+      "type": "verify",
+      "label": "order.goal-state",
+      "meta": {
+        "detail": "order ord-fixture-0001 reached fulfillmentStatus=canceled",
+        "invariant": "order.goal-state",
+        "outcome": "pass"
+      }
+    },
+    {
+      "id": "verify:3:gate.reconciliation",
+      "type": "verify",
+      "label": "gate.reconciliation",
+      "meta": {
+        "detail": "5 observed envelope(s) all explained (2 by optional allowances)",
+        "invariant": "gate.reconciliation",
+        "outcome": "pass"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "envelope:0",
+      "to": "decision:EXECUTE",
+      "type": "decided"
+    },
+    {
+      "from": "envelope:1",
+      "to": "decision:REQUEST_CONFIRMATION",
+      "type": "decided"
+    },
+    {
+      "from": "envelope:2",
+      "to": "decision:EXECUTE",
+      "type": "decided"
+    },
+    {
+      "from": "envelope:3",
+      "to": "decision:EXECUTE",
+      "type": "decided"
+    },
+    {
+      "from": "envelope:4",
+      "to": "decision:EXECUTE",
+      "type": "decided"
+    },
+    {
+      "from": "run:00000000-0000-4000-8000-000000000001",
+      "to": "act:0",
+      "type": "has-act",
+      "meta": {
+        "index": 0
+      }
+    },
+    {
+      "from": "run:00000000-0000-4000-8000-000000000001",
+      "to": "act:1",
+      "type": "has-act",
+      "meta": {
+        "index": 1
+      }
+    },
+    {
+      "from": "run:00000000-0000-4000-8000-000000000001",
+      "to": "act:2",
+      "type": "has-act",
+      "meta": {
+        "index": 2
+      }
+    },
+    {
+      "from": "run:00000000-0000-4000-8000-000000000001",
+      "to": "act:3",
+      "type": "has-act",
+      "meta": {
+        "index": 3
+      }
+    },
+    {
+      "from": "run:00000000-0000-4000-8000-000000000001",
+      "to": "act:4",
+      "type": "has-act",
+      "meta": {
+        "index": 4
+      }
+    },
+    {
+      "from": "run:00000000-0000-4000-8000-000000000001",
+      "to": "act:5",
+      "type": "has-act",
+      "meta": {
+        "index": 5
+      }
+    },
+    {
+      "from": "run:00000000-0000-4000-8000-000000000001",
+      "to": "act:6",
+      "type": "has-act",
+      "meta": {
+        "index": 6
+      }
+    },
+    {
+      "from": "act:4",
+      "to": "envelope:0",
+      "type": "observed"
+    },
+    {
+      "from": "act:5",
+      "to": "envelope:1",
+      "type": "observed"
+    },
+    {
+      "from": "act:6",
+      "to": "envelope:2",
+      "type": "observed"
+    },
+    {
+      "from": "act:6",
+      "to": "envelope:3",
+      "type": "observed"
+    },
+    {
+      "from": "act:6",
+      "to": "envelope:4",
+      "type": "observed"
+    },
+    {
+      "from": "run:00000000-0000-4000-8000-000000000001",
+      "to": "verify:0:audit.trajectory.in_order",
+      "type": "verified"
+    },
+    {
+      "from": "run:00000000-0000-4000-8000-000000000001",
+      "to": "verify:1:audit.record.verified",
+      "type": "verified"
+    },
+    {
+      "from": "run:00000000-0000-4000-8000-000000000001",
+      "to": "verify:2:order.goal-state",
+      "type": "verified"
+    },
+    {
+      "from": "run:00000000-0000-4000-8000-000000000001",
+      "to": "verify:3:gate.reconciliation",
+      "type": "verified"
+    }
+  ]
+}

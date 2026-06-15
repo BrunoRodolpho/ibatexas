@@ -11,7 +11,7 @@
 // - transitionStatusFromEnvelope: valid transition — version bumped, history recorded
 // - transitionStatusFromEnvelope: invalid transition — throws InvalidTransitionError
 // - transitionStatusFromEnvelope: version mismatch — throws ConcurrencyError
-// - transitionStatusFromEnvelope: missing projection — throws ProjectionNotFoundError
+// - transitionStatusFromEnvelope: missing projection — kernel REFUSE (order.projection.not_found)
 // - reconcileStatusFromEnvelope: stale event — returns null result
 // - reconcileStatusFromEnvelope: missing version — throws MissingEventVersionError
 // - reconcileStatusFromEnvelope: already at target status — returns null
@@ -57,7 +57,6 @@ vi.mock("../client.js", () => ({
 import {
   createOrderCommandService,
   ConcurrencyError,
-  ProjectionNotFoundError,
   InvalidTransitionError,
   MissingEventVersionError,
 } from "../services/order-command.service.js"
@@ -262,11 +261,18 @@ describe("OrderCommandService — R1-DELETE envelope-typed surface", () => {
       await expect(svc.transitionStatusFromEnvelope(envelope)).rejects.toThrow(ConcurrencyError)
     })
 
-    it("throws ProjectionNotFoundError when projection missing", async () => {
+    it("refuses with order.projection.not_found when projection missing (kernel pre-check)", async () => {
       mockProjectionFindUnique.mockResolvedValue(null)
 
       const envelope = buildTransitionEnvelope("order_01", { newStatus: "confirmed", actor: "admin" })
-      await expect(svc.transitionStatusFromEnvelope(envelope)).rejects.toThrow(ProjectionNotFoundError)
+      const out = await svc.transitionStatusFromEnvelope(envelope)
+
+      expect(out.decision).toMatchObject({
+        kind: "REFUSE",
+        refusal: { code: "order.projection.not_found" },
+      })
+      expect(out.result).toBeUndefined()
+      expect(mockProjectionUpdate).not.toHaveBeenCalled()
     })
 
     it("skips version check when expectedVersion is undefined", async () => {

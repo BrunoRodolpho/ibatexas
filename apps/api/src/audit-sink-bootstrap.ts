@@ -64,6 +64,22 @@ export async function bootstrapAuditSinkDI(
     )
   }
 
+  // P2 — publish-only Redis audit bus adapter (live-tail SSE + console drift).
+  // Built HERE, NOT the agentsEnabled-gated RedisPubSubClient in
+  // claustrum-bootstrap — the bus must fire for ALL decisions at boot,
+  // independent of the agent-plane flag. The console is the subscriber; this
+  // side only ever publishes. Absent when Redis is unreachable (the busSink arm
+  // is simply not added — fail-open, the durable sinks are unaffected).
+  const auditPubsub = redis
+    ? {
+        publish: (channel: string, message: string) => redis!.publish(channel, message),
+        // Publish-only: the console subscribes, never this side.
+        subscribe: async (): Promise<() => Promise<void>> => {
+          throw new Error("audit-sink pubsub is publish-only (the console subscribes)")
+        },
+      }
+    : undefined
+
   const deps = {
     ...buildAuditSinkDependencies({
       redis,
@@ -81,6 +97,8 @@ export async function bootstrapAuditSinkDI(
     // F3 — behavioral-drift tee. Fail-open (the leaf arm swallows); sees only
     // redacted records. observe() is no-throw.
     onAuditRecord: observeDriftRecord,
+    // P2 — Redis audit bus arm (publish-only; fail-open in the leaf).
+    ...(auditPubsub ? { pubsub: auditPubsub } : {}),
   }
 
   __setAuditSinkDependencies(deps)
