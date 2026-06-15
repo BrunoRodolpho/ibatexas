@@ -116,6 +116,21 @@ import {
   startManagedAgentPlane,
 } from "./claustrum/managed-agent-plane.js";
 import type { AgentPlane } from "./claustrum/agent-plane.js";
+import type { LiveAgentConductorDeps } from "./claustrum/live-agent-conductor.js";
+import { createPostgresAgentRunJournal } from "./claustrum/agent-run-journal.js";
+import { createRefundCircuitBreaker } from "./claustrum/agent-realmoney-safety.js";
+import { createRemediationProposalWriter } from "./claustrum/remediation-proposal-writer.js";
+
+/**
+ * The intent kinds the composed kernel policy confirm-gates for agent sessions
+ * (the B1 rule in pixPolicyBundle.business). Hand-maintained to mirror the
+ * composed policy: if a new real-money kind is added to REAL_MONEY_KINDS without
+ * a B1 confirm rule added here, startManagedAgentPlane's fail-closed assertion
+ * crashes the boot rather than letting money move ungated.
+ */
+const AGENT_CONFIRM_GATED_KINDS: ReadonlySet<string> = new Set<string>([
+  "pix.charge.refund",
+]);
 
 // Audit sink — dev's audit pipeline owns the durable AuditRecord store. The
 // adjudicator consumes the sink composed by `@ibatexas/audit-sink` (boot-time
@@ -191,6 +206,9 @@ let _agentPlane: AgentPlane | null = null;
 // (routes/admin/agent-approvals.ts, WS-D1) can reach the SAME in-memory parked
 // store the plane uses. Null unless IBX_AGENTS_ENABLED created it.
 let _agentApprovals: AgentApprovalEngine | null = null;
+// P4 proposal writer (set when the plane boots). The gateway's resolve updates
+// the remediation_proposal status so the adjutant projection reflects it.
+let _proposalWriter: ReturnType<typeof createRemediationProposalWriter> | null = null;
 // The per-bootstrap pg Pool (audit readiness probe + audit read paths +
 // pgvector grounding + advisory session lock). Tracked at module level so
 // `resetClaustrumForTests()` can end it — a leaked pool keeps the vitest
@@ -278,8 +296,8 @@ export function getAgentApprovalGateway(): AgentApprovalGateway | null {
   return {
     list: (filter) => engine.list(filter),
     get: (token) => engine.get(token),
-    resolve: ({ token, accepted, resolvedBy }) =>
-      engine.resolve({
+    resolve: async ({ token, accepted, resolvedBy }) => {
+      const result = await engine.resolve({
         token,
         accepted,
         resolvedBy,
@@ -292,7 +310,16 @@ export function getAgentApprovalGateway(): AgentApprovalGateway | null {
           return policy;
         },
         sink: getAuditSink(),
-      }),
+      });
+      // P4: reflect the resolution in the remediation_proposal so the adjutant
+      // projection shows executed/declined (best-effort; never blocks resolve).
+      await _proposalWriter?.markResolvedByToken(
+        token,
+        accepted ? "executed" : "declined",
+        new Date().toISOString(),
+      );
+      return result;
+    },
   };
 }
 
@@ -1758,35 +1785,59 @@ export async function bootstrapClaustrum(
         now: () => new Date().toISOString(),
       });
       _agentApprovals = agentApprovals;
-      _agentPlane = await startManagedAgentPlane({
-        registry: AGENT_REGISTRY,
-        shadowPorts: {
-          adjudicator,
-          memory,
-          grounding,
-          planner: createIbatexasPlanner({
-            model: modelProvider,
+      // Live conductor ingredients — H1 recomposes per trigger over a capped
+      // model, so the planner/responder are passed as factories (over the
+      // capped model) rather than pre-built ports. Tools are the REAL registry.
+      const liveConductor: LiveAgentConductorDeps = {
+        adjudicator,
+        memory,
+        grounding,
+        explainer: ibatexasExplainer(),
+        handoff: natsHandoff(),
+        telemetry: fastifyTelemetry(tokenUsageStore),
+        session: redisSessionStore(),
+        tenantResolver: resolveIbatexasTenantPolicy,
+        sessionLock: new PostgresAdvisorySessionLock(pgPool),
+        resolver: createIbatexasResolver(),
+        tools: toolRegistry,
+        systemChannel: new SystemChannel({
+          // For a boot that can issue refunds, keep requireSecret with NO
+          // devDefault — a known signing key would let anyone mint system-gateway
+          // messages the agent conductor trusts (ties to B3).
+          gatewaySigningKey: requireSecret("SYSTEM_GATEWAY_SIGNING_KEY"),
+          gateway: process.env.SYSTEM_GATEWAY_NAME ?? "ibatexas-agent-host",
+        }),
+        modelProvider,
+        buildPlanner: (model) =>
+          createIbatexasPlanner({
+            model,
             modelId: anthropicModelId,
             capabilityPlanners: IBATEXAS_COMPOSED_CAPABILITY_PLANNERS,
             deriveContext: deriveIbatexasPlannerContext,
           }),
-          responder: naiveResponder(modelProvider, anthropicModelId),
-          explainer: ibatexasExplainer(),
-          handoff: natsHandoff(),
-          telemetry: fastifyTelemetry(tokenUsageStore),
-          session: redisSessionStore(),
-          tenantResolver: resolveIbatexasTenantPolicy,
-          sessionLock: new PostgresAdvisorySessionLock(pgPool),
-          resolver: createIbatexasResolver(),
-        },
-        realTools: toolRegistry.list(),
-        systemChannel: new SystemChannel({
-          gatewaySigningKey: requireSecret("SYSTEM_GATEWAY_SIGNING_KEY"),
-          gateway: process.env.SYSTEM_GATEWAY_NAME ?? "ibatexas-agent-host",
-        }),
+        buildResponder: (model) => naiveResponder(model, anthropicModelId),
+      };
+      // P4 producer seam: ensure the shared remediation_proposals table exists,
+      // then write a proposal whenever the live runner parks a confirm-gated
+      // remediation (the adjutant projects from it + agent_runs).
+      const proposalWriter = createRemediationProposalWriter(pgPool);
+      await proposalWriter.ensureTable();
+      _proposalWriter = proposalWriter;
+      _agentPlane = await startManagedAgentPlane({
+        registry: AGENT_REGISTRY,
+        liveConductor,
+        journal: createPostgresAgentRunJournal(prisma),
+        proposalSink: (p) => proposalWriter.write(p),
         redis: ledgerClient,
         pubsub,
         approvals: agentApprovals,
+        // Proactive per-agent/per-window refund money breaker (bounds the FIRST
+        // N money attempts; the kill switch only bounds the tail).
+        refundBreaker: createRefundCircuitBreaker({ redis }),
+        // The kinds the composed kernel policy confirm-gates via the B1
+        // agent-session refund rule. Must cover every REAL_MONEY_KINDS entry or
+        // startManagedAgentPlane refuses to boot (fail-closed).
+        realMoneyConfirmKinds: AGENT_CONFIRM_GATED_KINDS,
         resolveCustomer: async (orderId) => {
           const order = await createOrderQueryService().getById(orderId);
           return order?.customerId ?? null;

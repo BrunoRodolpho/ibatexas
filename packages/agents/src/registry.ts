@@ -19,13 +19,13 @@ import { AgentDefinitionSchema, type AgentDefinition } from "./definition.js"
 // ── PIX payment-failure remediation (the lighthouse agent) ──────────────────
 //
 // DRAFT seeded at Stage 0 per T3-3; T3-9 fills/finalizes the real definition
-// as the agent climbs the autonomy ladder (Stage 0 shadow → Stage 1
-// confirm-gated → Stage 2 auto for `payment.pix.regenerate` only; refunds
-// always confirm). Declared kinds:
+// Runs the SINGLE live path (the staging ladder was removed): every qualifying
+// trigger really executes through the kernel. Declared kinds:
 //   - `payment.pix.regenerate` — @ibatexas/pack-payments (the customer-facing
-//     composite regenerate kind; the only Stage-2 auto candidate per plan §5)
+//     composite regenerate kind; auto-executes under kernel policy)
 //   - `pix.charge.refund`      — @adjudicate/pack-payments-pix (wire-PSP
-//     refund; permanently confirm-gated)
+//     refund; confirm-gated by the agent-session refund rule, B1) — a refund
+//     decision parks a real approval (B2) the operator resolves.
 // Trigger: the payments domain publishes `payment.status_changed` (CLAUDE.md
 // NATS conventions — short form); the bridge qualifies on failed/expired
 // transitions before opening a capsule.
@@ -38,7 +38,6 @@ export const PIX_REMEDIATION_AGENT: AgentDefinition = AgentDefinitionSchema.pars
     subjects: ["payment.status_changed"],
     eventKinds: ["payment.failed", "payment.expired"],
   },
-  autonomyStage: 0,
   budgets: {
     // Host hard caps (T3-2): one trigger turn is plan → (at most) one
     // envelope → respond; 4 model calls is generous headroom.

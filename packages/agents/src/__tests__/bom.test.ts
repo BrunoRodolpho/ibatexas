@@ -71,12 +71,6 @@ describe("agent AI-BOM mapping", () => {
     expect(bumped.tools[0]?.schemaDigest).not.toBe(base.tools[0]?.schemaDigest)
   })
 
-  it("a stage flip (0 → 1) re-baselines — ladder moves are material events", () => {
-    const base = bomFor(PIX_REMEDIATION_AGENT)
-    const stage1 = bomFor({ ...PIX_REMEDIATION_AGENT, autonomyStage: 1 })
-    expect(stage1.bomDigest).not.toBe(base.bomDigest)
-  })
-
   it("roster drift propagates: an unregistered declared kind fails conformance and moves the digest", () => {
     const drifting = {
       ...PIX_REMEDIATION_AGENT,
@@ -104,7 +98,6 @@ describe("agent AI-BOM mapping", () => {
         "owner",
         "killSwitchKey",
         "budgets",
-        "autonomyStage",
         "trigger",
         "declaredIntentKinds",
         "displayName",

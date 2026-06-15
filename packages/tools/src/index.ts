@@ -265,7 +265,7 @@ export { getApiBase, MEDUSA_ADMIN_URL } from "./api/base-url.js"
 // Port source of truth for `ibx dev urls` / `ibx svc status` (cli re-exports it)
 // and the journeys harness pre-flight hostname denylist (journeys→tools only —
 // journeys never imports the cli).
-export { infraEndpoints } from "./infra/endpoints.js"
+export { infraEndpoints, observabilityEndpoints } from "./infra/endpoints.js"
 export type { InfraEndpoint } from "./infra/endpoints.js"
 
 // ── Structured JSONL event emitter (ibx scenarios + journeys; IBX_EVENTS=json) ─

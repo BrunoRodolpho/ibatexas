@@ -40,3 +40,24 @@ export function infraEndpoints(
     { name: "NATS", address: `${natsUrlParsed.hostname}:${natsUrlParsed.port || 4222}` },
   ]
 }
+
+/** Resolve the observability-stack addresses (Grafana + VictoriaLogs +
+ *  VictoriaMetrics) from env, same vars + defaults as
+ *  docker-compose.observability.yml. Surfaced by `ibx dev urls` under the
+ *  Observability section and shown in the start plan. `env` is injectable for
+ *  tests; defaults to `process.env`. */
+export function observabilityEndpoints(
+  env: Record<string, string | undefined> = process.env,
+): InfraEndpoint[] {
+  const grafana = env.GRAFANA_URL ?? "http://localhost:3030"
+  const victoriaLogs = env.VICTORIALOGS_URL ?? "http://localhost:9428"
+  // VictoriaMetrics has no env reader by design (scraped via docker ports +
+  // scrape.yml); surface its default address documentarily.
+  const victoriaMetrics = "http://localhost:8428"
+
+  return [
+    { name: "Grafana", address: grafana },
+    { name: "VictoriaLogs", address: `${victoriaLogs}/select/vmui/` },
+    { name: "VictoriaMetrics", address: victoriaMetrics },
+  ]
+}

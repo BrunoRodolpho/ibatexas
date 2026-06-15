@@ -28,7 +28,7 @@ docker compose --env-file .env.test -f docker-compose.test.yml -p ibx-test-<run-
 ## Coexistence with the dev stack
 
 `docker-compose.test.yml` clones the four dev infra services (same pinned
-images: `postgres:17-alpine`, `redis:7-alpine`, `typesense/typesense:27.1`,
+images: `pgvector/pgvector:pg17`, `redis:7-alpine`, `typesense/typesense:27.1`,
 `nats:2.11-alpine`) but collides with dev on nothing:
 
 | Axis | Dev (`docker-compose.yml`) | Test (`docker-compose.test.yml`) |

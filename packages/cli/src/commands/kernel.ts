@@ -1798,7 +1798,7 @@ async function runPackBom(opts: {
       } else {
         console.log(
           chalk.bold(`AI-BOM ${bom.packId}@${bom.packVersion}`) +
-            chalk.dim(` (agente gerenciado, stage ${def.autonomyStage})`),
+            chalk.dim(` (agente gerenciado)`),
         )
         console.log(`  fingerprint : ${bom.fingerprint}`)
         console.log(`  bomDigest   : ${bom.bomDigest}`)

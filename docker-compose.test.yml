@@ -41,13 +41,12 @@ name: ibx-test
 services:
 
   postgres:
-    # DEVIATION from the dev image (postgres:17-alpine), found by T1a-11b: the
-    # claustrum grounding migration (001-create-claustrum-grounding-docs.sql,
+    # The claustrum grounding migration (001-create-claustrum-grounding-docs.sql,
     # an `ibx bootstrap` counted layer) needs the pgvector extension, which the
-    # alpine image does not ship — bootstrap against this stack fails with
+    # stock alpine image does not ship — bootstrap fails with
     # `extension "vector" is not available`. pgvector/pgvector:pg17 is the
     # official postgres:17 image + pgvector preinstalled (same env/healthcheck
-    # semantics).
+    # semantics). Matches dev + prod, which use this image for the same reason.
     image: pgvector/pgvector:pg17
     environment:
       POSTGRES_USER: ${IBX_TEST_POSTGRES_USER:-ibatexas}

@@ -1,7 +1,12 @@
 services:
 
   postgres:
-    image: postgres:17-alpine
+    # pgvector/pgvector:pg17 = official postgres:17 + pgvector preinstalled. The
+    # claustrum grounding layer (001-create-claustrum-grounding-docs.sql, run by
+    # `ibx bootstrap` / `ibx db provision`) issues CREATE EXTENSION vector; the
+    # stock postgres:17-alpine image lacks pgvector and fails with
+    # `extension "vector" is not available`. Same env/healthcheck semantics.
+    image: pgvector/pgvector:pg17
     container_name: ibatexas-postgres
     environment:
       POSTGRES_USER: ${POSTGRES_USER}

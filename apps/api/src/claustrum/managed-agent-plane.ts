@@ -1,22 +1,20 @@
-// Managed-agent plane boot wiring (plan-v2 T3-9, step 1 — "flip it on").
+// Managed-agent plane boot wiring (P1 — the SINGLE live path).
 //
-// Composes + starts the full managed-agent plane (trigger bridge T3-2 → host
-// kill-guard T3-5 → Stage-0 shadow runner T3-6, plus the kill-switch manager and
-// the Stage-1 approval engine) from the production ports, BEHIND an opt-in flag.
+// Composes + starts the full managed-agent plane (trigger bridge → host
+// kill-guard → LIVE trigger runner, plus the kill-switch manager and the
+// Stage-1 approval engine) from the production ports, BEHIND an opt-in flag.
 // Default OFF: a normal api boot never touches NATS/BullMQ/agent pollers. An
-// operator sets `IBX_AGENTS_ENABLED=true` on the test stack to activate — that
-// boot is where the Stage-0 soak clock starts (D-017).
+// operator sets `IBX_AGENTS_ENABLED=true` to activate. The staging machinery
+// (shadow conductor, sandbox registry, soak gate, autonomy ladder) is GONE — a
+// trigger really executes; money-moving kinds are confirm-gated by policy (B1)
+// and park a real approval (B2), with a proactive refund circuit breaker and a
+// fail-closed boot assertion guarding the first N money attempts.
 //
 // `createPixTriggerMapper` is the real event→trigger logic: a
 // `payment.status_changed` event carries an orderId + newStatus but NO
 // customerId (the session/memory routing key), so the mapper resolves the
-// order's customer and qualifies the failed/expired transition the PIX agent
-// triggers on. It is pure of infra (the order lookup is injected) and unit-tested.
-//
-// VALIDATION SCOPE: the flag-OFF path + the mapper are unit-validated; the
-// flag-ON `start()` (live NATS subscribe + BullMQ worker + Redis pub/sub kill
-// pollers) is validated by the operator on the running test stack — it cannot be
-// exercised in a unit run.
+// order's customer and qualifies the failed/expired transition. Pure of infra
+// (the order lookup is injected) and unit-tested.
 
 import {
   AGENT_SESSION_NAMESPACE,
@@ -35,11 +33,15 @@ import {
   type AgentPlane,
 } from "./agent-plane.js";
 import {
-  composeShadowConductor,
-  createShadowTriggerRunner,
-  type ShadowConductorDeps,
-} from "./shadow-conductor.js";
-import { createLoggingAgentRunJournal } from "./agent-run-journal.js";
+  createLiveTriggerRunner,
+  type LiveAgentConductorDeps,
+  type ParkedRemediationProposal,
+} from "./live-agent-conductor.js";
+import type { AgentRunJournal } from "./agent-run-journal.js";
+import {
+  assertRealMoneyConfirmGuards,
+  type RefundCircuitBreaker,
+} from "./agent-realmoney-safety.js";
 import type {
   TriggerDedupRedis,
   TriggerEventMapper,
@@ -112,18 +114,22 @@ export function createPixTriggerMapper(
 
 export interface ManagedAgentPlaneDeps {
   readonly registry: ReadonlyArray<AgentDefinition>;
-  /** Production conductor ports reused by the Stage-0 shadow composition. */
-  readonly shadowPorts: Omit<ShadowConductorDeps, "realTools" | "systemChannel">;
-  /** The real tool roster (mirrored into the sandbox registry). */
-  readonly realTools: ShadowConductorDeps["realTools"];
-  /** The non-conversational ingress driver (T3-1). */
-  readonly systemChannel: ShadowConductorDeps["systemChannel"];
+  /** Live conductor ingredients (ports + REAL tools + model seams + systemChannel). */
+  readonly liveConductor: LiveAgentConductorDeps;
+  /** Durable agent_runs journal (Postgres in prod; logging ring in tests). */
+  readonly journal: AgentRunJournal;
   /** Read/write Redis (dedup claims + kill-switch state). The ledger client satisfies this. */
   readonly redis: RedisLedgerClient;
   /** Pub/sub Redis (a separate subscriber connection) for kill-switch propagation. */
   readonly pubsub: RedisPubSubClient;
-  /** Stage-1 approval engine (the confirm-gated resolution surface). */
+  /** Stage-1 approval engine (the confirm-gated resolution surface; B2 target). */
   readonly approvals: AgentApprovalEngine;
+  /** Proactive per-agent/per-window refund circuit breaker (real-money parks). */
+  readonly refundBreaker?: RefundCircuitBreaker;
+  /** P4 producer seam: persist a remediation proposal when an approval parks. */
+  readonly proposalSink?: (proposal: ParkedRemediationProposal) => void | Promise<void>;
+  /** Kinds the composed kernel policy confirm-gates (B1) — fail-closed assertion input. */
+  readonly realMoneyConfirmKinds: ReadonlySet<string>;
   /** Resolves an order's customer for the trigger mapper. */
   readonly resolveCustomer: OrderCustomerResolver;
   /** ISO clock for the agent_runs journal. */
@@ -132,10 +138,11 @@ export interface ManagedAgentPlaneDeps {
 
 /**
  * Compose + start the managed-agent plane IF `IBX_AGENTS_ENABLED=true`; else a
- * no-op returning null. Wires the bridge over a kill-guarded Stage-0 shadow
- * runner, asserts roster integrity fail-closed, and boots the kill-switch
- * pollers + bridge. Returns the started {@link AgentPlane} (call `.stop()` on
- * shutdown / test reset).
+ * no-op returning null. Asserts roster integrity AND real-money confirm-guard
+ * conformance fail-closed (crashes the boot if an agent declares a money kind
+ * without the B1 confirm guard composed), then wires the bridge over a
+ * kill-guarded LIVE trigger runner and boots the kill-switch pollers + bridge.
+ * Returns the started {@link AgentPlane} (call `.stop()` on shutdown / reset).
  */
 export async function startManagedAgentPlane(
   deps: ManagedAgentPlaneDeps,
@@ -145,12 +152,9 @@ export async function startManagedAgentPlane(
 
   // Fail-closed before composing anything that opens an agent capsule.
   assertAgentRosterIntegrity(deps.registry);
-
-  const composition = composeShadowConductor({
-    ...deps.shadowPorts,
-    realTools: deps.realTools,
-    systemChannel: deps.systemChannel,
-  });
+  // Fail-closed: refuse to boot a live plane where a declared real-money kind
+  // lacks a composed sessionId-confirm guard (the blast-radius callout).
+  assertRealMoneyConfirmGuards(deps.registry, deps.realMoneyConfirmKinds);
 
   const killSwitch: AgentKillSwitchManager = createAgentKillSwitchManager({
     registry: deps.registry,
@@ -158,18 +162,18 @@ export async function startManagedAgentPlane(
     pubsub: deps.pubsub,
   });
 
-  const shadowRunner = createShadowTriggerRunner({
-    composition,
-    systemChannel: deps.systemChannel,
-    journal: createLoggingAgentRunJournal(),
-    stage: 0, // Stage-0 shadow; promotion is soak-gated (canPromoteToStage1).
+  const liveRunner = createLiveTriggerRunner({
+    conductor: deps.liveConductor,
+    systemChannel: deps.liveConductor.systemChannel,
+    journal: deps.journal,
+    approvals: deps.approvals,
+    ...(deps.refundBreaker !== undefined ? { refundBreaker: deps.refundBreaker } : {}),
+    ...(deps.proposalSink !== undefined ? { proposalSink: deps.proposalSink } : {}),
     now: deps.now,
   });
 
-  // T3-5 host-side pre-openCapsule kill check wrapping the shadow runner.
-  const runner = killGuardedRunner(shadowRunner, (ns) =>
-    killSwitch.isKilled(ns),
-  );
+  // T3-5 host-side pre-openCapsule kill check wrapping the live runner.
+  const runner = killGuardedRunner(liveRunner, (ns) => killSwitch.isKilled(ns));
 
   const plane = composeAgentPlane({
     registry: deps.registry,
@@ -187,7 +191,7 @@ export async function startManagedAgentPlane(
       agents: deps.registry.map((a) => a.id),
       namespace: AGENT_SESSION_NAMESPACE,
     },
-    "managed-agent plane ENABLED + started (Stage-0 shadow; soak clock running)",
+    "managed-agent plane ENABLED + started (LIVE — single path; refunds confirm-gated)",
   );
   return plane;
 }

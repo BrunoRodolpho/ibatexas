@@ -6,10 +6,11 @@
  * It is a triggered consumer of the SAME kernel-gated pipeline the chat
  * surface uses — so what it declares here is its *authorization envelope*:
  * which intent kinds it may ever express (`declaredIntentKinds`, enforced
- * by T3-4's AUTH-phase scope guard), what wakes it (`trigger`), how far up
- * the autonomy ladder it sits (`autonomyStage`, T3-9), what it may spend
- * (`budgets`, T3-2 host caps + T3-4 escalate guard), how to stop it
- * (`killSwitchKey`, T3-5) and who answers for it (`owner`).
+ * by T3-4's AUTH-phase scope guard), what wakes it (`trigger`), what it may
+ * spend (`budgets`, T3-2 host caps + T3-4 escalate guard), how to stop it
+ * (`killSwitchKey`, T3-5) and who answers for it (`owner`). The agent plane
+ * runs a SINGLE live path (the staging ladder was removed) — every trigger
+ * really executes through the kernel; refunds are confirm-gated by policy.
  *
  * Session identity (D-017): every capsule an agent opens carries
  * `sessionId = agent:<id>@<version>:entity:<entityId>` — the `agent:`
@@ -93,19 +94,6 @@ export type AgentBudgets = z.infer<typeof AgentBudgetsSchema>
 
 // ── AgentDefinition ──────────────────────────────────────────────────────────
 
-/**
- * Autonomy ladder (T3-9): 0 = true shadow (sandbox registry, journaled,
- * zero real mutations); 1 = confirm-gated (approval engine resolves);
- * 2 = auto for explicitly allowlisted kinds only.
- */
-export const AgentAutonomyStageSchema = z.union([
-  z.literal(0),
-  z.literal(1),
-  z.literal(2),
-])
-
-export type AgentAutonomyStage = z.infer<typeof AgentAutonomyStageSchema>
-
 export const AgentDefinitionSchema = z
   .object({
     id: z.string().regex(AGENT_ID_PATTERN, {
@@ -117,7 +105,6 @@ export const AgentDefinitionSchema = z
     displayName: z.string().min(1),
     declaredIntentKinds: z.array(z.string().min(1)).nonempty(),
     trigger: AgentTriggerSchema,
-    autonomyStage: AgentAutonomyStageSchema,
     budgets: AgentBudgetsSchema,
     killSwitchKey: z.string().min(1),
     owner: z.string().min(1),

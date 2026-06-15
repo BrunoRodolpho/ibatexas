@@ -12,13 +12,11 @@ export {
   AGENT_SESSION_NAMESPACE,
   AgentBudgetsSchema,
   AgentDefinitionSchema,
-  AgentAutonomyStageSchema,
   AgentTriggerSchema,
   agentSessionId,
   expectedSessionIdPrefix,
   type AgentBudgets,
   type AgentDefinition,
-  type AgentAutonomyStage,
   type AgentTrigger,
 } from "./definition.js"
 
