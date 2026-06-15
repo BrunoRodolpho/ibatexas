@@ -31,25 +31,17 @@ import {
   CUSTOMER_ONBOARDING_TOOL_TO_INTENT,
 } from "@ibatexas/pack-customer-onboarding";
 import { whatsappPack, WHATSAPP_TOOL_TO_INTENT } from "@ibatexas/pack-whatsapp";
-import { readGuardMetadata } from "@adjudicate/core/kernel";
 import {
   buildIbatexasPolicyPacks,
-  IBATEXAS_ADOPTER_AUTH_GUARDS,
   IBATEXAS_ADOPTER_BUSINESS_GUARDS,
   type ErasedPack,
 } from "./compose-policy-packs.js";
 
-/**
- * Every adopter-level guard prepended to every pack (by stable name):
- * the AUTH-phase agent scope + per-agent budget guards (T3-4) and the
- * business-phase F4 token-budget + confirm-on-autoresolve guards. Derived
- * from the live composed arrays so a new adopter guard (e.g. a new agent in
- * AGENT_REGISTRY) can never silently drift out of the manifest annotation.
- */
+/** The two adopter-level business guards prepended to every pack (by name). */
 const ADOPTER_INJECTED_GUARD_NAMES = [
-  ...IBATEXAS_ADOPTER_AUTH_GUARDS,
-  ...IBATEXAS_ADOPTER_BUSINESS_GUARDS,
-].map((g) => readGuardMetadata(g)?.name ?? g.name);
+  "sessionTokenBudget",
+  "confirmOnAutoResolvedRef",
+];
 
 /** Tool→intent map for each pack, keyed by `pack.id`. */
 const TOOL_MAPS: Readonly<Record<string, Readonly<Record<string, string>>>> = {

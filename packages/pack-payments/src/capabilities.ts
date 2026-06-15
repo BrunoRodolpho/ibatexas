@@ -7,14 +7,10 @@
  * (admin refund / cash confirm / waive). The LLM never holds the
  * authority to confirm a charge, issue a refund, or open a dispute.
  *
- * Of the customer-driven kinds only `payment.pix.regenerate` is
- * LLM-proposable; its MUTATING classification ensures the LLM never
- * sees it as a visible-read tool. `payment.method.switch` and
- * `payment.retry` are DE-ADVERTISED (P0-7): no chat tool is registered
- * for them, so advertising them would let the planner propose an
- * envelope no tool can dispatch (`tool_unresolved` on EXECUTE). They
- * stay pack-owned — the explicit HTTP routes still adjudicate them —
- * and the WS4 backlog re-advertises them alongside their handlers.
+ * The customer-driven kinds (`payment.pix.regenerate`,
+ * `payment.method.switch`, `payment.retry`) ARE LLM-proposable via
+ * tool calls; their MUTATING classification ensures the LLM never
+ * sees them as visible-read tools.
  *
  * Following the `pack-orders` pattern: `paymentsCapabilityPlanner` is
  * wrapped in `safePlan` so any future regression that exposes a
@@ -57,9 +53,7 @@ export const PAYMENT_TOOLS: ToolClassification = {
 /**
  * Tool → intent-kind mapping for the payment domain. The intent-bridge
  * consumes this when translating an LLM-proposed tool call into an
- * `IntentEnvelope` for adjudication. `switch_payment_method` and
- * `retry_payment` stay mapped (and MUTATING-classified) even while
- * de-advertised — the WS4 backlog restores their planner entry.
+ * `IntentEnvelope` for adjudication.
  */
 export const PAYMENT_TOOL_TO_INTENT: Readonly<
   Record<string, PaymentIntentKind>
@@ -74,8 +68,8 @@ export const PAYMENT_TOOL_TO_INTENT: Readonly<
 /**
  * Default planner the Pack ships. Payment-domain context is tiny —
  * the planner exposes a small set of read tools (status + history) and
- * the single customer-driven intent kind with a registered chat tool.
- * Webhook / cron / staff kinds are never LLM-proposable.
+ * the three customer-driven intent kinds. Webhook / cron / staff kinds
+ * are never LLM-proposable.
  */
 const rawPaymentsCapabilityPlanner: CapabilityPlanner<PaymentState, PaymentContext> = {
   plan(state, context): Plan {
@@ -86,10 +80,11 @@ const rawPaymentsCapabilityPlanner: CapabilityPlanner<PaymentState, PaymentConte
 
     // Customer-driven intent kinds the LLM may propose. The taint policy
     // gates SYSTEM-only kinds; the planner additionally narrows the
-    // LLM-proposable surface. `payment.method.switch` / `payment.retry`
-    // are de-advertised until WS4 ships their handlers (see module doc).
+    // LLM-proposable surface.
     const allowedIntents: PaymentIntentKind[] = [
       "payment.pix.regenerate",
+      "payment.method.switch",
+      "payment.retry",
     ]
 
     return {

@@ -35,18 +35,10 @@ function makeRow(): IntentAuditRow {
     recorded_at: new Date("2026-05-23T00:00:00.000Z"),
     duration_ms: 1,
     partition_month: "2026_05",
-    record_version: 5,
+    record_version: 1,
     plan_jsonb: null,
     nonce: "n_test",
     supersedes_jsonb: null,
-    // v4/v5 columns (T1a-13): the sink populates these on every row; the
-    // writer must forward them (audit_hash = the tamper-evidence chain).
-    kernel_identity_jsonb: '{"id":"kern","version":"1.3.0"}',
-    policy_version: "1.0.0",
-    kernel_version: "1.3.0",
-    audit_hash: "deadbeef".repeat(8),
-    signature_jsonb: null,
-    metadata_jsonb: null,
   } as unknown as IntentAuditRow
 }
 
@@ -83,15 +75,11 @@ describe("postgres-audit-writer — P0-14 SQL shape", () => {
 
     expect(prisma.$executeRawUnsafe).toHaveBeenCalledTimes(1)
     const args = prisma.$executeRawUnsafe.mock.calls[0]!.slice(1)
-    // Order matches the SQL — 25 columns total (v5 schema: 19 v3 columns +
-    // kernel_identity/policy_version/kernel_version/audit_hash/signature/
-    // metadata — T1a-13).
-    expect(args).toHaveLength(25)
+    // Order matches the SQL — 19 columns total (v4 schema).
+    expect(args).toHaveLength(19)
     expect(args[0]).toBe(row.intent_hash)
     expect(args[1]).toBe(row.session_id)
     expect(args[2]).toBe(row.kind)
-    expect(args[22]).toBe(row.audit_hash)
-    expect(args[24]).toBe(row.metadata_jsonb)
   })
 
   it("invokes onInsert hook on success", async () => {

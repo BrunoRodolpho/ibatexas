@@ -38,8 +38,9 @@
  * "user expresses an action" case correctly and deterministically.
  *
  * Pure + dependency-injected (model + capability planners passed in), so it is
- * unit-testable with a mocked `ModelProvider` and hand-built capability
- * planners. Wired into `createConductor` by `claustrum-bootstrap.ts`.
+ * unit-testable with a mocked `ModelProvider` and hand-built capability planners
+ * and carries no dependency on the not-yet-workspace-wired `@ibatexas/pack-*`
+ * packages. INERT until wired into `createConductor` at the composition root.
  */
 
 import { randomUUID } from "node:crypto";
@@ -109,44 +110,6 @@ export interface IbatexasPlannerDeps {
   /** Override the system prompt (defaults to the pt-BR semantic-parser prompt). */
   readonly system?: string;
   readonly maxTokens?: number;
-  /**
-   * Per-envelope nonce source (T3-2). The nonce is the kernel's replay key:
-   * `intentHash` folds it, so a deterministic nonce is what lets the Execution
-   * Ledger and the kernel dedup a re-delivered trigger. The default
-   * ({@link deriveDeterministicNonce}) reads `state.perception.externalId` —
-   * the `${sourceSubject}:${eventId}` carrier the SystemChannel (T3-1) sets on
-   * trigger turns — and falls back to `randomUUID()` for conversational turns
-   * (web/WhatsApp leave `externalId` unset), so ONE planner instance serves
-   * both surfaces. `envelopeIndex` disambiguates a multi-envelope plan
-   * (otherwise every envelope in one redelivered trigger would collide on the
-   * same hash). Adopters may inject their own, but it MUST stay deterministic
-   * across redeliveries.
-   */
-  readonly deriveNonce?: (state: CognitiveState, envelopeIndex: number) => string;
-}
-
-/**
- * Default {@link IbatexasPlannerDeps.deriveNonce} (T3-2): deterministic when a
- * trigger carrier is present, random otherwise.
- *
- * - Trigger turns (SystemChannel): `state.perception.externalId` is
- *   `${sourceSubject}:${eventId}`; the first envelope reuses it verbatim and
- *   each subsequent envelope appends a `#<index>` suffix. A re-delivered event
- *   therefore reproduces byte-identical nonces → identical `intentHash`es →
- *   ledger/kernel dedup (the host-level BullMQ jobId + cooldown in the trigger
- *   bridge are the PRIMARY loop-breakers; this is the in-hash backstop).
- * - Conversational turns (web/WhatsApp): no `externalId`, so each turn gets a
- *   fresh `randomUUID()` — preserving the pre-T3-2 behavior exactly.
- */
-export function deriveDeterministicNonce(
-  state: CognitiveState,
-  envelopeIndex: number,
-): string {
-  const externalId = state.perception.externalId;
-  if (externalId === undefined || externalId.length === 0) {
-    return randomUUID();
-  }
-  return envelopeIndex === 0 ? externalId : `${externalId}#${envelopeIndex}`;
 }
 
 interface ExpressIntentInput {
@@ -241,7 +204,6 @@ function buildToolSurface(plan: CapabilityPlan): CompletionRequest["tools"] {
 export function createIbatexasPlanner(deps: IbatexasPlannerDeps): PlannerPort {
   const maxTokens = deps.maxTokens ?? DEFAULT_MAX_TOKENS;
   const system = deps.system ?? DEFAULT_SYSTEM_PROMPT;
-  const deriveNonce = deps.deriveNonce ?? deriveDeterministicNonce;
 
   return {
     async propose(state: CognitiveState): Promise<Plan> {
@@ -301,7 +263,7 @@ export function createIbatexasPlanner(deps: IbatexasPlannerDeps): PlannerPort {
               payload: payload ?? {},
               actor: { principal: "llm", sessionId: state.conversationId },
               taint: "UNTRUSTED",
-              nonce: deriveNonce(state, envelopes.length),
+              nonce: randomUUID(),
             }),
           );
           capabilities.push(capability);

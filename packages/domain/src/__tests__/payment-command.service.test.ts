@@ -47,6 +47,7 @@ vi.mock("../client.js", () => ({
 import {
   createPaymentCommandService,
   PaymentConcurrencyError,
+  PaymentNotFoundError,
   InvalidPaymentTransitionError,
   ActivePaymentExistsError,
 } from "../services/payment-command.service.js"
@@ -295,21 +296,14 @@ describe("PaymentCommandService — R1-DELETE envelope-typed surface", () => {
       await expect(svc.transitionStatusFromEnvelope(envelope)).rejects.toThrow(PaymentConcurrencyError)
     })
 
-    it("refuses with payment.not_found when payment missing (kernel pre-check)", async () => {
+    it("throws PaymentNotFoundError when payment missing", async () => {
       mockPaymentFindUnique.mockResolvedValue(null)
 
       const envelope = buildTransitionEnvelope("pay_nonexistent", {
         newStatus: "payment_pending",
         actor: "system",
       })
-      const out = await svc.transitionStatusFromEnvelope(envelope)
-
-      expect(out.decision).toMatchObject({
-        kind: "REFUSE",
-        refusal: { code: "payment.not_found" },
-      })
-      expect(out.result).toBeUndefined()
-      expect(mockPaymentUpdate).not.toHaveBeenCalled()
+      await expect(svc.transitionStatusFromEnvelope(envelope)).rejects.toThrow(PaymentNotFoundError)
     })
 
     it("skips concurrency check when expectedVersion is undefined", async () => {
@@ -345,18 +339,12 @@ describe("PaymentCommandService — R1-DELETE envelope-typed surface", () => {
   })
 
   describe("reconcileFromWebhookFromEnvelope", () => {
-    it("refuses with payment.not_found when payment missing (kernel pre-check)", async () => {
+    it("returns null when payment not found", async () => {
       mockPaymentFindUnique.mockResolvedValue(null)
 
       const envelope = buildReconcileEnvelope("pay_missing", { newStatus: "paid", stripeEventId: "evt_123" })
       const out = await svc.reconcileFromWebhookFromEnvelope(envelope)
-
-      expect(out.decision).toMatchObject({
-        kind: "REFUSE",
-        refusal: { code: "payment.not_found" },
-      })
-      expect(out.result).toBeUndefined()
-      expect(mockPaymentUpdate).not.toHaveBeenCalled()
+      expect(out.result).toBeNull()
     })
 
     it("returns null when payment is terminal (no resurrection)", async () => {

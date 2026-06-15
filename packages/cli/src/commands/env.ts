@@ -1,13 +1,6 @@
 import crypto from "node:crypto"
 import type { Command } from "commander"
 import chalk from "chalk"
-import {
-  DEV_FLAGS,
-  findFlag,
-  effectiveValue,
-  envFileValue,
-  setEnvFileValue,
-} from "../lib/dev-flags.js"
 
 // ── Env var catalogue ─────────────────────────────────────────────────────────
 
@@ -313,96 +306,4 @@ export function registerEnvCommands(program: Command) {
     .command("generate", { hidden: true })
     .argument("[length]", "Number of bytes (default 32)", "32")
     .action(genAction)
-
-  // ── ibx env flags ────────────────────────────────────────────────────────────
-  env
-    .command("flags")
-    .description("Show behavior-impacting dev flags and their effective values")
-    .action(() => {
-      console.log(chalk.bold(`\n  ibx env flags\n`))
-      const KW = 28
-      for (const f of DEV_FLAGS) {
-        const eff = effectiveValue(f.key)
-        const file = envFileValue(f.key)
-        const isSet = eff !== undefined && eff.trim() !== ""
-
-        let shown: string
-        if (!isSet) shown = chalk.gray(`(unset → ${f.fallback})`)
-        else if (f.kind === "secret") shown = chalk.yellow(maskSecret(eff))
-        else shown = chalk.white(eff)
-
-        console.log(`  ${chalk.cyan(f.key.padEnd(KW))} ${shown}`)
-        console.log(`  ${" ".repeat(KW)} ${chalk.gray(f.impact)}`)
-
-        // shell override note: process.env differs from what's in the .env file
-        if (file !== undefined && eff !== undefined && file !== eff) {
-          console.log(`  ${" ".repeat(KW)} ${chalk.gray(`(.env has "${f.kind === "secret" ? maskSecret(file) : file}" — overridden by your shell)`)}`)
-        }
-        const warn = f.alert?.(eff)
-        if (warn) console.log(`  ${" ".repeat(KW)} ${chalk.yellow("⚠ " + warn)}`)
-        console.log()
-      }
-      console.log(chalk.gray(`  Flip one with: ibx env toggle <KEY> [value]   (then restart the affected process)\n`))
-    })
-
-  // ── ibx env toggle ───────────────────────────────────────────────────────────
-  env
-    .command("toggle")
-    .description("Set or flip a behavior dev flag in .env")
-    .argument("<key>", "flag key (e.g. IBX_DEV_OTP_BYPASS)")
-    .argument("[value]", "value to set; omit to flip a boolean or apply the dev default")
-    .action((key: string, value: string | undefined) => {
-      const flag = findFlag(key)
-      if (!flag) {
-        console.error(chalk.red(`\n  Unknown flag: ${key}`))
-        console.error(chalk.gray(`  Known flags: ${DEV_FLAGS.map((f) => f.key).join(", ")}\n`))
-        process.exit(1)
-      }
-
-      const normalizeBool = (v: string): string | null => {
-        const s = v.trim().toLowerCase()
-        if (["true", "on", "1", "yes"].includes(s)) return "true"
-        if (["false", "off", "0", "no"].includes(s)) return "false"
-        return null
-      }
-
-      const fileVal = envFileValue(flag.key)
-      let newValue: string
-
-      if (value !== undefined) {
-        if (flag.kind === "bool") {
-          const norm = normalizeBool(value)
-          if (norm === null) {
-            console.error(chalk.red(`\n  ${flag.key} is a boolean — use true/false (got "${value}")\n`))
-            process.exit(1)
-          }
-          newValue = norm
-        } else {
-          newValue = value
-        }
-      } else if (flag.kind === "bool") {
-        // flip based on the current effective value
-        newValue = (effectiveValue(flag.key) === "true" || effectiveValue(flag.key) === "1") ? "false" : "true"
-      } else if (flag.devValue !== undefined) {
-        newValue = flag.devValue
-      } else {
-        console.error(chalk.red(`\n  ${flag.key} needs an explicit value (e.g. ibx env toggle ${flag.key} <value>)\n`))
-        process.exit(1)
-      }
-
-      const previous = setEnvFileValue(flag.key, newValue)
-      const before = previous === undefined ? chalk.gray("(unset)") : chalk.gray(previous || "(empty)")
-      console.log(`\n  ${chalk.cyan(flag.key)}  ${before} ${chalk.gray("→")} ${chalk.green(newValue || "(empty)")}`)
-
-      // Warn only on a genuine shell override. process.env was populated at CLI
-      // startup (dotenv, override:false) — so a value that differs from the
-      // *previous* .env file value must have come from the shell, which will keep
-      // winning over the line we just wrote.
-      const eff = effectiveValue(flag.key)
-      const shellOverride = eff !== undefined && eff !== (previous ?? "")
-      if (shellOverride && eff !== newValue) {
-        console.log(chalk.yellow(`  ⚠ Your shell sets ${flag.key}=${flag.kind === "secret" ? maskSecret(eff) : eff} — it overrides .env. Unset it for this change to take effect.`))
-      }
-      console.log(chalk.gray(`  Restart the affected process (e.g. ibx dev restart api) to pick it up.\n`))
-    })
 }

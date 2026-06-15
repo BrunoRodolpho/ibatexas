@@ -30,19 +30,8 @@ import {
   createReservationService,
   prisma,
 } from "@ibatexas/domain";
-import { parseAgentSessionNamespace } from "./agent-guards.js";
 
-/**
- * Per-session LLM-token Redis counter key. Single source of truth (write side:
- * emitTurn). Two identity shapes share this key builder:
- *  - conversational turns — identity slot = customerId (F4 / ADR-120);
- *  - managed-agent capsules (T3-4) — identity slot = the UNHASHED agent
- *    namespace `agent:<id>@<version>` (D-017), aggregating every entity
- *    capsule the agent opens on that channel into one meter. The agent host
- *    (T3-2 trigger bridge) MUST fold agent-turn usage into
- *    `sessionTokenKey(channel, <agent namespace>)` for the per-agent
- *    over-budget ESCALATE guard (agent-guards.ts) to see a real total.
- */
+/** Per-session LLM-token Redis counter key. Single source of truth (write side: emitTurn). */
 export function sessionTokenKey(channel: string, customerId: string): string {
   return rk(`llm:tokens:${channel}:${customerId}`);
 }
@@ -485,22 +474,6 @@ export async function resolveAndAssemble(args: ResolveArgs): Promise<AssembledRe
   const { kind, payload, customerId, channel, sessionId } = args;
   const base = identityCtx(customerId, channel);
   base.sessionTokensConsumed = await readSessionTokensConsumed(channel, customerId);
-
-  // T3-4 — agent-session budget read: when the capsule runs under a managed-
-  // agent sessionId (D-017 `agent:<id>@<ver>:entity:<entityId>`), also read
-  // the agent-namespace token counter (same llm:tokens key shape, identity
-  // slot = the agent namespace — see sessionTokenKey) into
-  // ctx.agentTokensConsumed. The per-agent ESCALATE guard (agent-guards.ts,
-  // AUTH phase) meters off it; same fail-open-to-0 posture as the F4 read.
-  if (sessionId !== undefined) {
-    const agentNamespace = parseAgentSessionNamespace(sessionId);
-    if (agentNamespace !== null) {
-      base.agentTokensConsumed = await readSessionTokensConsumed(
-        channel,
-        agentNamespace,
-      );
-    }
-  }
 
   // NL→id resolution (confirm-first): for irreversible money/booking intents whose
   // target wasn't given explicitly, auto-resolve it and flag the turn so the

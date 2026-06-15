@@ -1046,19 +1046,10 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
       // orders ≥ R$1.000 will not complete. (paymentStatus stays null via the
       // builder so the PIX-pending guard does NOT DEFER at checkout — unchanged.)
       const guestKey = request.customerId ?? `guest:${cartId}`;
-      // T1a-13 fix: thread the request's deliveryType into the ctx builder —
-      // buildCartCtx maps it onto ctx.fulfillment, which the pack's
-      // requireSlotsFilledForCheckout guard requires non-null. Without it the
-      // guard 403'd EVERY web checkout with order.checkout.slots_incomplete
-      // (surfaced by the first JOURNEY-001 live run). Absent deliveryType
-      // still refuses — the customer genuinely hasn't picked a fulfillment.
       const orderState = {
         ctx: await loadCartCtx(
           identityCtx(guestKey, "web"),
-          {
-            paymentMethod,
-            ...(reqDeliveryType !== undefined ? { deliveryType: reqDeliveryType } : {}),
-          } as Record<string, unknown>,
+          { paymentMethod } as Record<string, unknown>,
           { cartId },
         ),
       } as unknown as OrderState;
@@ -1209,28 +1200,11 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
       // Re-load cart state FRESH so a since-changed total re-adjudicates. The
       // confirmationReceipt only satisfies the "ask first" threshold — a cart
       // that grew past the hard cap (≥ R$10.000) is still REFUSEd below.
-      //
-      // T2-2b fix (JOURNEY-016 live finding — same class as the T1a-13
-      // checkout-route fix): the resume ctx MUST carry the parked request's
-      // deliveryType — buildCartCtx maps it onto ctx.fulfillment, which the
-      // pack's requireSlotsFilledForCheckout guard requires non-null.
-      // Without it the confirm leg 403'd `order.checkout.slots_incomplete`
-      // for EVERY large-ticket order: the 202 parked fine and the resume
-      // could never complete — no ≥R$1.000 web order was completable at
-      // all. The original checkout body is stored on the parked receipt
-      // (checkoutBody), so the resume re-adjudicates the same fulfillment
-      // the customer chose.
-      const pendingDeliveryType = pending.checkoutBody["deliveryType"];
       const guestKey = request.customerId ?? `guest:${pending.cartId}`;
       const orderState = {
         ctx: await loadCartCtx(
           identityCtx(guestKey, "web"),
-          {
-            paymentMethod: pending.payload.paymentMethod,
-            ...(typeof pendingDeliveryType === "string"
-              ? { deliveryType: pendingDeliveryType }
-              : {}),
-          } as Record<string, unknown>,
+          { paymentMethod: pending.payload.paymentMethod } as Record<string, unknown>,
           { cartId: pending.cartId },
         ),
       } as unknown as OrderState;

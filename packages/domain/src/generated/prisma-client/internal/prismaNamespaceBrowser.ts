@@ -74,8 +74,7 @@ export const ModelName = {
   DeliveryZone: 'DeliveryZone',
   WeeklySchedule: 'WeeklySchedule',
   Holiday: 'Holiday',
-  ScheduleOverride: 'ScheduleOverride',
-  AgentRun: 'AgentRun'
+  ScheduleOverride: 'ScheduleOverride'
 } as const
 
 export type ModelName = (typeof ModelName)[keyof typeof ModelName]
@@ -452,23 +451,6 @@ export const ScheduleOverrideScalarFieldEnum = {
 } as const
 
 export type ScheduleOverrideScalarFieldEnum = (typeof ScheduleOverrideScalarFieldEnum)[keyof typeof ScheduleOverrideScalarFieldEnum]
-
-
-export const AgentRunScalarFieldEnum = {
-  id: 'id',
-  agentId: 'agentId',
-  agentVersion: 'agentVersion',
-  sessionId: 'sessionId',
-  entity: 'entity',
-  externalId: 'externalId',
-  decisionKind: 'decisionKind',
-  intentKind: 'intentKind',
-  modelCalls: 'modelCalls',
-  at: 'at',
-  createdAt: 'createdAt'
-} as const
-
-export type AgentRunScalarFieldEnum = (typeof AgentRunScalarFieldEnum)[keyof typeof AgentRunScalarFieldEnum]
 
 
 export const SortOrder = {

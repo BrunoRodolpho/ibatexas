@@ -35,28 +35,9 @@ function floatEnv(name: string, fallback: number): number {
 
 let _detector: DriftDetector | null = null;
 
-let _shadowDetector: DriftDetector | null = null;
-
-/**
- * T3-6 / D-017: managed-agent (shadow) audit rows carry an UNHASHED
- * `agent:<id>@<ver>:entity:…` sessionId. They are REAL `intent_audit` rows but
- * MUST be excluded from the PRODUCTION behavioral-drift baseline — a Stage-0
- * shadow's decision distribution is not production signal. Mirrors the
- * kernel-replay `--ci` (T1b-3) and impact-graph (T2-4) exclusions on the same
- * literal prefix. The redactor (audit-sink) keeps the prefix unhashed so this
- * check works on the redacted record the tee sees.
- */
-const AGENT_SESSION_PREFIX = "agent:";
-function isAgentRecord(record: AuditRecord): boolean {
-  // Defensive: the tee must never throw on a malformed/empty record (it runs
-  // on the audit hot path). A record missing envelope/actor simply isn't an
-  // agent row and flows to the production detector (itself no-throw).
-  const sid = record?.envelope?.actor?.sessionId;
-  return typeof sid === "string" && sid.startsWith(AGENT_SESSION_PREFIX);
-}
-
-function makeDetector(scope: string): DriftDetector {
-  return createDriftDetector({
+function detector(): DriftDetector {
+  if (_detector) return _detector;
+  _detector = createDriftDetector({
     baselineWindow: intEnv("IBX_DRIFT_BASELINE_WINDOW", 500),
     alertThreshold: floatEnv("IBX_DRIFT_THRESHOLD", 0.35),
     dimensions: ["decision.kind", "intent.kind", "basis"],
@@ -67,7 +48,6 @@ function makeDetector(scope: string): DriftDetector {
       logger.warn(
         {
           component: "drift",
-          scope,
           dimension: alert.dimension,
           signal: alert.signal,
           magnitude: alert.magnitude,
@@ -78,53 +58,28 @@ function makeDetector(scope: string): DriftDetector {
       );
     },
   });
-}
-
-function detector(): DriftDetector {
-  if (_detector) return _detector;
-  _detector = makeDetector("production");
   return _detector;
-}
-
-/** Stage-0 shadow drift monitor — fed ONLY the agent-namespace rows (T3-6). */
-function shadowDetector(): DriftDetector {
-  if (_shadowDetector) return _shadowDetector;
-  _shadowDetector = makeDetector("shadow-agent");
-  return _shadowDetector;
 }
 
 /**
  * Wired as the audit-sink `onAuditRecord` tee (apps/api boot). Sees only
  * REDACTED records. `observe()` is no-throw; the sink arm swallows anyway.
- *
- * Routes by namespace: agent (shadow) rows feed the shadow monitor and are
- * EXCLUDED from the production baseline; all other rows feed production.
  */
 export function observeDriftRecord(record: AuditRecord): void {
-  if (isAgentRecord(record)) {
-    shadowDetector().observe(record);
-    return;
-  }
   detector().observe(record);
 }
 
 /** Scheduled evaluation — call from a repeatable job. Fires `onDrift` per crossing. */
 export function evaluateDrift(): ReadonlyArray<DriftAlert> {
-  return [...detector().evaluate(), ...shadowDetector().evaluate()];
+  return detector().evaluate();
 }
 
-/** Pure read of the production distribution + drift snapshot (operator surface). */
+/** Pure read of the current distribution + drift snapshot (operator surface). */
 export function driftSnapshot(): DriftSnapshot {
   return detector().snapshot();
 }
 
-/** Pure read of the Stage-0 shadow agent decision distribution (T3-6 monitor). */
-export function shadowDriftSnapshot(): DriftSnapshot {
-  return shadowDetector().snapshot();
-}
-
-/** Test-only reset of the singletons. */
+/** Test-only reset of the singleton. */
 export function __resetDriftDetectorForTest(): void {
   _detector = null;
-  _shadowDetector = null;
 }

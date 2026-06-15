@@ -69,9 +69,6 @@ locals {
       "TYPESENSE_API_KEY",
       "REDIS_URL",
       "NATS_URL",
-      # T3-10: client credential for the now-authenticated NATS server
-      # (nats.tf) — @ibatexas/nats-client picks it up from the env.
-      "NATS_NKEY_SEED",
       "CORS_ORIGIN",
       "SENTRY_DSN",
     ]

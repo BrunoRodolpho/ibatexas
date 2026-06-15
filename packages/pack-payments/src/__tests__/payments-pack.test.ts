@@ -443,26 +443,11 @@ describe("paymentsPack — PackV0 shape", () => {
       { actor: { principal: "user" } },
     )
     expect(plan.visibleReadTools.length).toBeGreaterThan(0)
-    // P0-7: the EXACT advertised list — only the kind with a registered
-    // chat tool. A new entry here must ship its tool in the same change.
-    expect(plan.allowedIntents).toEqual(["payment.pix.regenerate"])
+    expect(plan.allowedIntents.length).toBeGreaterThan(0)
     // No MUTATING tool ever leaks into visibleReadTools.
     for (const t of plan.visibleReadTools) {
       expect(["get_payment_status", "get_payment_history"]).toContain(t)
     }
-  })
-
-  it("de-advertises payment.method.switch + payment.retry (P0-7 — no chat tool until WS4)", () => {
-    const plan = paymentsPack.planner.plan(
-      { ctx: { actor: { principal: "system" }, exists: false } },
-      { actor: { principal: "user" } },
-    )
-    expect(plan.allowedIntents).not.toContain("payment.method.switch")
-    expect(plan.allowedIntents).not.toContain("payment.retry")
-    // They stay pack-owned (HTTP routes adjudicate them) — only the
-    // planner advertisement was withdrawn.
-    expect(paymentsPack.intents).toContain("payment.method.switch")
-    expect(paymentsPack.intents).toContain("payment.retry")
   })
 })
 

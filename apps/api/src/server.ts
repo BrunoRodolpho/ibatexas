@@ -1,4 +1,4 @@
-import Fastify, { type FastifyInstance, type FastifyServerOptions } from "fastify";
+import Fastify, { type FastifyInstance } from "fastify";
 import fastifyJwt from "@fastify/jwt";
 import fastifyCookie from "@fastify/cookie";
 import {
@@ -18,20 +18,17 @@ import { registerErrorHandler } from "./errors/handler.js";
 import { registerRoutes } from "./routes/index.js";
 import { metricsRoutes } from "./routes/metrics.js";
 import { requireSecret } from "./utils/require-secret.js";
-import { buildMultistreamLogger } from "./observability/log-streams.js";
 
 export async function buildServer(): Promise<FastifyInstance> {
-  // When the obs stack is up (VICTORIALOGS_URL set), log through a multistream
-  // (raw JSON → VictoriaLogs + human → stdout); otherwise keep the single
-  // pretty/raw transport. Fastify v5 takes a pre-built instance via
-  // `loggerInstance` and plain options via `logger` — exactly one of the two.
-  const multistreamLogger = buildMultistreamLogger();
-
   // Request/connection timeouts prevent slowloris; trustProxy for reverse proxy (ALB, nginx)
-  // The options object is annotated FastifyServerOptions so the conditional
-  // logger wiring below doesn't leak a concrete pino.Logger into Fastify's
-  // logger generic (it stays the default FastifyBaseLogger the routes expect).
-  const serverOptions: FastifyServerOptions = {
+  const server = Fastify({
+    logger: {
+      level: process.env.LOG_LEVEL ?? "info",
+      transport:
+        process.env.NODE_ENV === "production"
+          ? undefined
+          : { target: "pino-pretty", options: { colorize: true } },
+    },
     // NEW-P1-ENV: was `=== "true"` — silently rejected "TRUE", "1", "yes".
     // parseBoolEnv accepts the canonical truthy lexicon.
     trustProxy: parseBoolEnv(process.env.TRUST_PROXY, false),
@@ -40,22 +37,7 @@ export async function buildServer(): Promise<FastifyInstance> {
     keepAliveTimeout: 72_000,
     // OBS-001: Use client-provided x-request-id or generate a UUID for distributed tracing
     genReqId: genRequestId,
-  };
-  if (multistreamLogger) {
-    // Obs stack up: log through the multistream (raw JSON → VictoriaLogs +
-    // human → stdout). Fastify v5 takes a pre-built instance via loggerInstance.
-    serverOptions.loggerInstance = multistreamLogger;
-  } else {
-    serverOptions.logger = {
-      level: process.env.LOG_LEVEL ?? "info",
-      transport:
-        process.env.NODE_ENV === "production"
-          ? undefined
-          : { target: "pino-pretty", options: { colorize: true } },
-    };
-  }
-
-  const server = Fastify(serverOptions);
+  });
 
   // Zod schema validation/serialization (must be set before routes)
   server.setValidatorCompiler(validatorCompiler);

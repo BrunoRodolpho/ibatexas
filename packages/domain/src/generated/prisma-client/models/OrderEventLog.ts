@@ -14,16 +14,8 @@ import type * as Prisma from "../internal/prismaNamespace.js"
 
 /**
  * Model OrderEventLog
- * Append-only event log for ALL order domain events.
- * Observability + replay + debugging layer.
- * 
- * EXCEPT for LGPD Art. 18 erasure: when `anonymizeCustomer()` runs in
- * customer.service.ts, `payload` for every row keyed by an anonymized
- * customer's orderId is overwritten to `{anonymized: true}` (in-tx
- * scrub + heavy-path pre-batch). Downstream replay / projection-rebuild
- * consumers must tolerate this — a `payload.anonymized === true`
- * sentinel means the original event payload was erased to satisfy
- * the data-subject's erasure right.
+ * Append-only, immutable event log for ALL order domain events.
+ * Observability + replay + debugging layer. Never mutated after insert.
  */
 export type OrderEventLogModel = runtime.Types.Result.DefaultSelection<Prisma.$OrderEventLogPayload>
 

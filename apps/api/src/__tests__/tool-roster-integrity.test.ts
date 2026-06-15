@@ -13,24 +13,28 @@
 
 import { describe, expect, it } from "vitest";
 import type { Capsule } from "@claustrum/core";
-import type { CapabilityPlanner } from "@adjudicate/core/llm";
 import { Channel } from "@ibatexas/types";
-// P0-8: the five first-party packs are named in exactly ONE site — the
-// composed package. This test consumes the same composition boot does.
-import {
-  IBATEXAS_COMPOSED_CAPABILITY_PLANNERS,
-  IBATEXAS_COMPOSED_PACKS,
-  composedIntentKinds,
-} from "@ibatexas/packs-composed";
+import { ordersPack } from "@ibatexas/pack-orders";
+import { paymentsPack } from "@ibatexas/pack-payments";
+import { reservationsPack } from "@ibatexas/pack-reservations";
+import { customerOnboardingPack } from "@ibatexas/pack-customer-onboarding";
+import { whatsappPack } from "@ibatexas/pack-whatsapp";
 import {
   agentCtxFromCapsule,
   listIbatexasToolPacks,
   toolRosterDrift,
-  ROSTER_DRIFT_CONTEXTS,
 } from "../tools/register-ibatexas-tool-packs.js";
 
-// The integrity-gate target set — derived from the composed pack list itself.
-const PACK_INTENT_UNION: ReadonlyArray<string> = composedIntentKinds();
+// The integrity-gate target set: unionOf(packs.flatMap(p => p.intents)).
+const PACKS = [
+  ordersPack,
+  paymentsPack,
+  reservationsPack,
+  customerOnboardingPack,
+  whatsappPack,
+] as ReadonlyArray<{ readonly intents: ReadonlyArray<string> }>;
+
+const PACK_INTENT_UNION: string[] = PACKS.flatMap((p) => [...p.intents]);
 
 // WS3 — the VERIFIED LLM-callable mutating roster. Every entry is a capability
 // string confirmed === its pack intentKind and a handler confirmed exported from
@@ -60,10 +64,9 @@ const EXPECTED_CAPABILITIES = [
   "payment.pix.regenerate",
 ];
 
-// WS4 — pack-owned intents that ship NO `@ibatexas/tools` handler, so they are
-// intentionally NOT registered. P0-7 de-advertised them in pack-payments (a
-// planner-advertised kind with no tool would now FAIL the context-aware drift
-// leg); the WS4 backlog restores the advertisement alongside the handlers.
+// WS4 — pack-owned intents advertised by paymentsCapabilityPlanner that ship NO
+// `@ibatexas/tools` handler, so they are intentionally NOT registered. The
+// roster asserts registered ⊆ pack-owned (not the reverse), so these dangle.
 const DANGLING_PAYMENT_KINDS = ["payment.method.switch", "payment.retry"];
 
 describe("RC-A1 Phase A — tool roster integrity", () => {
@@ -118,10 +121,9 @@ describe("RC-A1 Phase A — tool roster integrity", () => {
     }
   });
 
-  // WS4 — the 2 payment kinds without a handler stay pack-owned yet NOT
-  // registered (and, since P0-7, NOT planner-advertised). This pins the "left
-  // for WS4" decision: when a handler ships, this test must be updated
-  // alongside the roster AND the pack planner's advertisement.
+  // WS4 — the 2 payment kinds the planner advertises but no handler backs are
+  // pack-owned yet NOT registered. This pins the "left for WS4" decision: if a
+  // handler is ever added, this test must be updated alongside the roster.
   it("leaves payment.method.switch + payment.retry pack-owned but unregistered (WS4)", () => {
     const union = new Set(PACK_INTENT_UNION);
     const registered = new Set(
@@ -152,111 +154,6 @@ describe("RC-A1 Phase A — tool roster integrity", () => {
     expect(problems.some((p) => p.includes("not owned by any installed pack"))).toBe(
       true,
     );
-  });
-});
-
-// ── P0-7 — context-aware roster drift ────────────────────────────────────────
-//
-// The advertised surface is context-dependent (planners gate allowedIntents on
-// customerId / staffId / isAuthenticated), so the gate probes the named
-// contexts in ROSTER_DRIFT_CONTEXTS and asserts advertised ⊆ registered per
-// context. The composition under test is the REAL boot composition —
-// IBATEXAS_COMPOSED_CAPABILITY_PLANNERS from @ibatexas/packs-composed, exactly
-// what claustrum-bootstrap passes.
-
-/** Run the gate over the real boot composition, capturing WARN output. */
-function runBootDrift(): { problems: string[]; warnings: string[] } {
-  const warnings: string[] = [];
-  const problems = toolRosterDrift(listIbatexasToolPacks(), PACK_INTENT_UNION, {
-    planners: IBATEXAS_COMPOSED_CAPABILITY_PLANNERS,
-    onWarn: (m) => warnings.push(m),
-  });
-  return { problems, warnings };
-}
-
-describe("P0-7 — context-aware roster drift", () => {
-  it("probes the two named contexts the design documents (authed-customer, staff)", () => {
-    const names = ROSTER_DRIFT_CONTEXTS.map((c) => c.name);
-    expect(names).toContain("authed-customer");
-    expect(names).toContain("staff");
-  });
-
-  it("the real boot composition passes drift (composed planners, all contexts)", () => {
-    expect(runBootDrift().problems).toEqual([]);
-  });
-
-  it("composes the five first-party packs (guards a hollowed composition)", () => {
-    expect(IBATEXAS_COMPOSED_PACKS).toHaveLength(5);
-    expect(IBATEXAS_COMPOSED_CAPABILITY_PLANNERS).toHaveLength(5);
-  });
-
-  // The staff-chat exception: reservation.checkin/complete are STAFF-ROUTE-ONLY
-  // BY DESIGN (live chat pins staffId:null; admin routes build envelopes
-  // directly), yet the reservations planner advertises them for a staff
-  // session. The whitelist must absorb that — and must not be vacuous.
-  it("the staff probe really advertises the whitelisted staff kinds (non-vacuous)", () => {
-    const staff = ROSTER_DRIFT_CONTEXTS.find((c) => c.name === "staff");
-    expect(staff).toBeDefined();
-    const advertised = new Set(
-      IBATEXAS_COMPOSED_CAPABILITY_PLANNERS.flatMap((p) => [
-        ...p.plan(staff!.state, staff!.context).allowedIntents,
-      ]),
-    );
-    expect(advertised.has("reservation.checkin")).toBe(true);
-    expect(advertised.has("reservation.complete")).toBe(true);
-  });
-
-  it("whitelists reservation.checkin/complete under the staff context (no drift)", () => {
-    const { problems } = runBootDrift();
-    expect(
-      problems.filter(
-        (p) => p.includes("reservation.checkin") || p.includes("reservation.complete"),
-      ),
-    ).toEqual([]);
-  });
-
-  // WARN-only on registered-but-unadvertised: order.review.submit has a
-  // registered tool but no planner advertises it under any probed context
-  // (reviews arrive via the web flow) — dead chat weight, never a failure.
-  it("WARNs (never fails) on registered-but-unadvertised kinds — order.review.submit", () => {
-    const { problems, warnings } = runBootDrift();
-    expect(problems).toEqual([]);
-    expect(warnings.some((w) => w.includes("order.review.submit"))).toBe(true);
-    expect(warnings.every((w) => w.includes("WARN only"))).toBe(true);
-  });
-
-  it("a synthetic planner-advertised-but-unregistered kind under authed-customer FAILS drift", () => {
-    // Re-creates the exact dangle P0-7 de-advertised: a planner offers
-    // `payment.method.switch` (pack-owned, no registered tool) to an
-    // authenticated customer.
-    const synthetic: CapabilityPlanner<unknown, unknown> = {
-      plan(state) {
-        const ctx = (
-          state as {
-            ctx?: { isAuthenticated?: boolean; staffId?: string | null };
-          }
-        ).ctx;
-        const authedCustomer =
-          ctx?.isAuthenticated === true && (ctx?.staffId ?? null) === null;
-        return {
-          visibleReadTools: [],
-          allowedIntents: authedCustomer ? ["payment.method.switch"] : [],
-        };
-      },
-    };
-    const problems = toolRosterDrift(listIbatexasToolPacks(), PACK_INTENT_UNION, {
-      planners: [...IBATEXAS_COMPOSED_CAPABILITY_PLANNERS, synthetic],
-      onWarn: () => {},
-    });
-    expect(problems.length).toBeGreaterThan(0);
-    expect(
-      problems.some(
-        (p) =>
-          p.includes('"authed-customer"') &&
-          p.includes("payment.method.switch") &&
-          p.includes("tool_unresolved"),
-      ),
-    ).toBe(true);
   });
 });
 

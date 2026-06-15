@@ -1,12 +1,7 @@
 services:
 
   postgres:
-    # pgvector/pgvector:pg17 = official postgres:17 + pgvector preinstalled. The
-    # claustrum grounding layer (001-create-claustrum-grounding-docs.sql, run by
-    # `ibx bootstrap` / `ibx db provision`) issues CREATE EXTENSION vector; the
-    # stock postgres:17-alpine image lacks pgvector and fails with
-    # `extension "vector" is not available`. Same env/healthcheck semantics.
-    image: pgvector/pgvector:pg17
+    image: postgres:17-alpine
     container_name: ibatexas-postgres
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
@@ -69,21 +64,11 @@ services:
   nats:
     image: nats:2.11-alpine
     container_name: ibatexas-nats
-    # T3-10: server-side auth (docs/security/NATS-AUTH-REQUIREMENTS.md) — the
-    # server now REFUSES unauthenticated clients. Config-driven boot (the conf
-    # carries jetstream + monitor, replacing the old flag-style command).
-    # NATS_APP_NKEY_PUBLIC comes from .env (compose auto-loads it for
-    # interpolation; the :? guard fails loudly when missing). Provision the
-    # per-machine keypair with ./scripts/nats/gen-dev-nats-auth.sh — it writes
-    # NATS_NKEY_SEED (client side) + NATS_APP_NKEY_PUBLIC (server side) to .env.
-    command: ["-c", "/etc/nats/nats-server.conf"]
-    environment:
-      NATS_APP_NKEY_PUBLIC: ${NATS_APP_NKEY_PUBLIC:?run ./scripts/nats/gen-dev-nats-auth.sh to provision NATS auth in .env (T3-10)}
+    command: ["--jetstream", "--store_dir", "/data", "-m", "8222"]
     ports:
       - "127.0.0.1:4222:4222"   # client connections
       - "127.0.0.1:8222:8222"   # monitoring UI
     volumes:
-      - ./infra/nats/nats-server.app.conf:/etc/nats/nats-server.conf:ro
       - nats_data:/data
     healthcheck:
       test: ["CMD-SHELL", "nc -z localhost 4222 || exit 1"]

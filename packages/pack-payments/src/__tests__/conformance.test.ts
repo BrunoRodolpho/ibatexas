@@ -580,9 +580,8 @@ describe("paymentsPack — kernel invariants via runConformance()", () => {
 // NOTE: we deliberately do NOT assert `summary.warning === 0` — the planner
 // omits the many declared, non-system intents (refund.issue, cash.confirm,
 // waive, status.force/transition, …) that are reached by webhook / cron / staff
-// flows, plus the P0-7 de-advertised customer kinds (method.switch, retry —
-// HTTP-route-reached until WS4 ships their chat tools), each a benign
-// `unreachable_intent` warning. `report.passed` stays true (error === 0).
+// flows, each a benign `unreachable_intent` warning. `report.passed` stays true
+// (error === 0).
 
 describe("paymentsPack — policy coherence via analyzePolicy() (AJD-301)", () => {
   // The payments planner `void`s both `state` and `context` — it returns the

@@ -442,15 +442,6 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
       // P2-CONC-ABORT: when this SSE consumer disconnects, signal the producing
       // turn (if it ran on THIS replica) so it stops delivering after the client
       // is gone. Same-replica only — see turnAbortControllers above.
-      //
-      // T1a-13 fix — only abort while the stream is UNFINISHED. The socket
-      // "close" for a COMPLETED stream can fire late (keep-alive pooling delays
-      // socket teardown well past reply.raw.end()), by which time the registry
-      // slot may already belong to the session's NEXT turn — the late close was
-      // aborting that innocent turn, whose `done` then never got pushed and the
-      // client hung to its timeout (surfaced by the first JOURNEY-001 live run;
-      // any user sending a quick follow-up message could lose the reply the
-      // same way). A disconnect is only meaningful BEFORE the terminal chunk.
       const abortTurnOnDisconnect = (): void => {
         turnAbortControllers.get(sessionId)?.abort();
       };
@@ -462,10 +453,6 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
       // in-memory entry exists and we serve directly off its EventEmitter.
       const entry = getStream(sessionId);
       if (entry) {
-        // True once this consumer delivered the terminal chunk — a close event
-        // after that is normal socket teardown, never an early disconnect.
-        let terminated = false;
-
         // Replay buffered chunks for late clients
         for (const chunk of entry.buffer) {
           reply.raw.write(`data: ${JSON.stringify(chunk)}\n\n`);
@@ -481,7 +468,6 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
           reply.raw.write(`data: ${JSON.stringify(chunk)}\n\n`);
           const c = chunk as { type: string };
           if (c.type === "done" || c.type === "error") {
-            terminated = true;
             entry.emitter.off("chunk", onChunk);
             stopHeartbeat();
             reply.raw.end();
@@ -490,11 +476,10 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
 
         entry.emitter.on("chunk", onChunk);
 
-        // Clean up listener + abort the producing turn ONLY if the client
-        // disconnected before the stream terminated (see abortTurnOnDisconnect).
+        // Clean up listener + abort the producing turn if client disconnects early
         request.raw.on("close", () => {
           entry.emitter.off("chunk", onChunk);
-          if (!terminated) abortTurnOnDisconnect();
+          abortTurnOnDisconnect();
         });
         return;
       }
@@ -544,12 +529,10 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
       }
 
       // Otherwise release the duplicated Redis subscriber if the client
-      // disconnects before the stream terminates. Abort only on an EARLY
-      // disconnect — a post-terminal close is normal socket teardown (see
-      // abortTurnOnDisconnect).
+      // disconnects before the stream terminates.
       request.raw.on("close", () => {
-        if (ended) return;
         abortTurnOnDisconnect();
+        if (ended) return;
         ended = true;
         void subscription?.close();
       });

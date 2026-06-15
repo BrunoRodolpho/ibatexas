@@ -11,42 +11,6 @@ resource "aws_cloudwatch_log_group" "nats" {
   }
 }
 
-# T3-10 — NATS server-side authentication (docs/security/NATS-AUTH-REQUIREMENTS.md).
-#
-# MIRROR of infra/nats/nats-server.app.conf — KEEP IN SYNC. ECS Fargate cannot
-# mount a repo file into the task, so the container entrypoint writes the
-# config to /tmp before exec'ing nats-server. The single-quoted CONF heredoc
-# keeps the shell from expanding $NATS_APP_NKEY_PUBLIC — the NATS server
-# resolves it from the container environment at boot (injected from Secrets
-# Manager below) and FAILS TO START when it is unset (fail-closed).
-#
-# Operator prerequisite before deploy: mint a user nkey pair
-# (scripts/nats/gen-nkey-user.mjs) and set the two secrets —
-#   ibatexas/<env>/NATS_APP_NKEY_PUBLIC  (this task)
-#   ibatexas/<env>/NATS_NKEY_SEED        (app tasks — see ecs.tf service_secrets)
-locals {
-  nats_bootstrap_command = <<-EOT
-    cat > /tmp/nats-server.conf <<'CONF'
-    port: 4222
-    http_port: 8222
-
-    jetstream {
-      store_dir: /data
-    }
-
-    accounts {
-      IBX: {
-        jetstream: enabled
-        users: [
-          { nkey: $NATS_APP_NKEY_PUBLIC }
-        ]
-      }
-    }
-    CONF
-    exec nats-server -c /tmp/nats-server.conf
-  EOT
-}
-
 resource "aws_ecs_task_definition" "nats" {
   family                   = "ibatexas-${var.environment}-nats"
   requires_compatibilities = ["FARGATE"]
@@ -56,18 +20,10 @@ resource "aws_ecs_task_definition" "nats" {
   execution_role_arn       = aws_iam_role.ecs_execution.arn
 
   container_definitions = jsonencode([{
-    name       = "nats"
-    image      = "nats:2.11-alpine"
-    essential  = true
-    entryPoint = ["/bin/sh", "-c"]
-    command    = [local.nats_bootstrap_command]
-
-    secrets = [
-      {
-        name      = "NATS_APP_NKEY_PUBLIC"
-        valueFrom = aws_secretsmanager_secret.this["NATS_APP_NKEY_PUBLIC"].arn
-      }
-    ]
+    name      = "nats"
+    image     = "nats:2.11-alpine"
+    essential = true
+    command   = ["--jetstream", "--store_dir", "/data", "-m", "8222"]
 
     portMappings = [
       { containerPort = 4222, protocol = "tcp" },

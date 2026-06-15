@@ -1,18 +1,10 @@
 // API Golden Path — E2E test exercising the full API flow without a browser.
 //
-// Tests the core API endpoints: health, auth, catalog, cart, checkout — and
-// (T2-7) the authenticated money path: the same documented HTTP journey legs
-// JOURNEY-001 drives (cart create → line-item add → checkout cash/pickup),
-// deterministic and ZERO TOKENS (no chat/LLM surface is ever touched).
-//
-// Requires the e2e test stack: IBX_TEST_E2E=1 ./scripts/test-stack-up.sh,
-// then run playwright with .env.test sourced (see playwright.config.ts).
+// Tests the core API endpoints: health, auth, catalog, cart, checkout.
+// Requires live services: api (3001), medusa (9000), postgres, redis, typesense.
+// Run via: ibx test e2e-run api-golden-path
 
 import { test, expect } from "@playwright/test";
-import {
-  authenticatedCustomerFixture,
-  missingE2EEnv,
-} from "./fixtures/test-stack";
 
 // ── Health Check ────────────────────────────────────────────────────────────
 
@@ -148,23 +140,17 @@ test.describe("SEC-001: Checkout payment gating", () => {
 
   test("guest card checkout passes auth check (may fail at Medusa/Stripe)", async ({ request }) => {
     // Card payment should pass the SEC-001 gate (no auth required)
-    // but will fail downstream since the cart doesn't exist.
-    // UNIQUE cartId per invocation: the checkout idempotency gate
-    // (cart.ts — SET NX, EX 120, keyed on cartId when no Idempotency-Key
-    // header is sent) would otherwise 409 on a re-run within 120s of the
-    // last one (observed live: back-to-back local runs).
+    // but will fail downstream at Medusa since cart doesn't exist
     const response = await request.post("/api/cart/checkout", {
       data: {
-        cartId: `test-cart-nonexistent-${Date.now()}`,
+        cartId: "test-cart-nonexistent",
         paymentMethod: "card",
       },
     });
     // Should NOT be 401 — the auth gate passes for card payments
     expect(response.status()).not.toBe(401);
-    // 403: the kernel REFUSEs the checkout envelope for the unknown cart
-    // (runCustomerIntent → err.userFacing) — the live behavior on the test
-    // stack. 400/404/500/502 kept for other downstream failure modes.
-    expect([400, 403, 404, 500, 502]).toContain(response.status());
+    // Will likely be 400/500 (validation/internal) or 502 (Medusa unreachable/cart not found)
+    expect([400, 404, 500, 502]).toContain(response.status());
   });
 });
 
@@ -181,74 +167,6 @@ test.describe("API Delivery", () => {
     const response = await request.get("/api/cart/delivery-estimate?cep=14815000");
     // Should return 200 with estimate, or 400 if zone not configured
     expect([200, 400]).toContain(response.status());
-  });
-});
-
-// ── T2-7: Authenticated golden path — JOURNEY-001's documented HTTP legs ────
-//
-// The flagship money loop's order-assembly surface (storefront HTTP API —
-// chat order assembly is not executable today, see JOURNEY-001's header):
-// authed cart create → line-item add → checkout cash/pickup → kernel EXECUTE.
-// The customer JWT cookie is minted by the journeys authFixture against the
-// stack's own generated secrets (fingerprint-gated), and the seeded customer
-// resolves through the SELECT-only oracle role — see fixtures/test-stack.ts.
-
-test.describe("API Golden Path: authenticated checkout (cash/pickup)", () => {
-  // Skip locally when the e2e env isn't sourced (DX); NEVER skip on CI — a
-  // misconfigured workflow must fail loudly, not silently green.
-  const missing = missingE2EEnv();
-  test.skip(
-    missing !== null && !process.env.CI,
-    `e2e stack env missing (${missing}) — source .env.test and run against IBX_TEST_E2E=1 stack`,
-  );
-
-  test("cart create → line-item add → checkout cash/pickup → order placed", async ({
-    request,
-  }) => {
-    const { cookie } = await authenticatedCustomerFixture();
-    const headers = { cookie };
-
-    // 1. Catalog resolve (public API — journeys never carry raw Medusa ids):
-    //    the flagship product's first variant.
-    const searchResponse = await request.get("/api/products?query=costela");
-    expect(searchResponse.status()).toBe(200);
-    const searchBody = await searchResponse.json();
-    const product = (searchBody.items as Array<{ variants?: Array<{ id: string }> }>).find(
-      (p) => (p.variants?.length ?? 0) > 0,
-    );
-    expect(product, "seeded catalog must contain a costela product with variants").toBeTruthy();
-    const variantId = product!.variants![0].id;
-
-    // 2. Cart create (authed — binds the cart to the customer's Medusa id).
-    const cartResponse = await request.post("/api/cart", { headers });
-    expect(cartResponse.status()).toBe(201);
-    const { cart } = await cartResponse.json();
-    expect(cart).toHaveProperty("id");
-
-    // 3. Line-item add (audits as the medusa.cart.line_items.add system
-    //    envelope — order.item.add EXECUTE is producible by NO public
-    //    surface today, per JOURNEY-001's live-verified header).
-    const addItemResponse = await request.post(`/api/cart/${cart.id}/line-items`, {
-      headers,
-      data: { variant_id: variantId, quantity: 1 },
-    });
-    expect(addItemResponse.status()).toBe(201);
-
-    // 4. The money commitment: checkout cash + pickup → a single kernel
-    //    EXECUTE (no PIX defer, no large-ticket confirm) — exactly
-    //    JOURNEY-001's checkout act.
-    const checkoutResponse = await request.post("/api/cart/checkout", {
-      headers,
-      data: {
-        cartId: cart.id,
-        paymentMethod: "cash",
-        deliveryType: "pickup",
-      },
-    });
-    expect(checkoutResponse.status()).toBe(200);
-    const checkoutBody = await checkoutResponse.json();
-    expect(checkoutBody.success).toBe(true);
-    expect(String(checkoutBody.orderId)).toMatch(/^IBX-\d+$/i);
   });
 });
 

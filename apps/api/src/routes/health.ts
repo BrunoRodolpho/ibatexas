@@ -27,14 +27,6 @@ interface HealthResponse {
   };
   dlq?: Record<string, number>;
   outbox?: Record<string, number>;
-  /**
-   * Environment handshake (T1a-10, D-010): present ONLY when the process was
-   * booted with IBX_TEST_FINGERPRINT set — the ephemeral test profile
-   * (.env.test) is the only env that sets it; dev/prod never do. The journeys
-   * harness pre-flight refuses to drive any stack that does not present a
-   * matching value.
-   */
-  testFingerprint?: string;
 }
 
 /** Run a check with a timeout. Returns "ok" on success, "fail" on error or timeout. */
@@ -150,10 +142,6 @@ export async function healthRoutes(server: FastifyInstance): Promise<void> {
       status = "healthy";
     }
 
-    // Test-profile fingerprint (read per request so it can never be cached
-    // from a stale boot). Empty string counts as unset — never expose it.
-    const testFingerprint = process.env.IBX_TEST_FINGERPRINT;
-
     const body: HealthResponse = {
       status,
       version,
@@ -161,7 +149,6 @@ export async function healthRoutes(server: FastifyInstance): Promise<void> {
       checks,
       ...(Object.keys(queues.dlq).length > 0 && { dlq: queues.dlq }),
       ...(Object.keys(queues.outbox).length > 0 && { outbox: queues.outbox }),
-      ...(testFingerprint ? { testFingerprint } : {}),
     };
 
     // Only log when something is wrong — healthy polls are silent

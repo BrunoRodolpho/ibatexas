@@ -444,45 +444,6 @@ describe("audit-redactor — audit-record shape preservation", () => {
     expect(out.envelope.intentHash).toBe(record.envelope.intentHash)
   })
 
-  // D-017 / T3-6: managed-agent sessionIds stay UNHASHED so the agent-namespace
-  // exclusion filters (kernel-replay --ci, impact graph, drift baseline) work on
-  // the stored row. A FORGED agent-ish sessionId that doesn't match the strict
-  // `agent:<kebab>@<x.y.z>:entity:<id>` shape is still hashed (no PII bypass).
-  it("preserves a properly-minted agent: sessionId unhashed but hashes a forged one", () => {
-    const r = createAuditRedactor({ hashSecret: "salt", warn: vi.fn() })
-
-    function agentRecord(sessionId: string): AuditRecord {
-      const envelope = buildEnvelope({
-        kind: "payment.pix.regenerate",
-        payload: { orderId: "ord_456" },
-        actor: { principal: "system", sessionId },
-        taint: "SYSTEM",
-        nonce: "n_agent_redact",
-        createdAt: "2026-06-12T00:00:00.000Z",
-      })
-      return buildAuditRecord({
-        envelope,
-        decision: { kind: "EXECUTE", basis: [] },
-        durationMs: 1,
-        at: "2026-06-12T00:00:00.001Z",
-      })
-    }
-
-    const minted = "agent:pix-payment-failure-remediation@0.1.0:entity:ord_456"
-    const ok = r.redact(agentRecord(minted))
-    expect(ok.envelope.actor.sessionId).toBe(minted) // UNHASHED — operational id
-
-    // Forged shapes that must NOT bypass the hash:
-    for (const forged of [
-      "agent:not a real namespace with pii user@example.com",
-      "agent:badid:entity:x", // no @version
-      "agent:UPPER@1.0.0:entity:x", // not kebab
-    ]) {
-      const out = r.redact(agentRecord(forged))
-      expect(out.envelope.actor.sessionId).toMatch(/^hashed:[a-f0-9]{8}$/)
-    }
-  })
-
   it("does not mutate the input record (returns a fresh object)", () => {
     const r = createAuditRedactor({ hashSecret: "salt", warn: vi.fn() })
     const payload = { cpf: "12345678900", email: "x@y.com" }
