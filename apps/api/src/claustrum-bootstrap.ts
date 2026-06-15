@@ -48,6 +48,7 @@ import {
   type ExplainerPort,
   type HandoffPort,
   type CognitiveState,
+  type LLMTrace,
   type MemoryAccess,
   type ModelProvider,
   type PlannerPort,
@@ -184,6 +185,11 @@ import {
 } from "@adjudicate/conformance";
 import { createIbatexasPlanner } from "./claustrum/ibatexas-planner.js";
 import { createIbatexasResponder } from "./claustrum/ibatexas-responder.js";
+import { createIbatexasPromptComposer } from "./claustrum/prompts/ibatexas-prompts.js";
+import {
+  createTurnTraceWriter,
+  type TurnTraceWriter,
+} from "./claustrum/turn-trace-writer.js";
 import { createIbatexasResolver } from "./claustrum/ibatexas-resolver.js";
 import { sessionTokenKey, resolveAndAssemble } from "./claustrum/resolve-and-assemble.js";
 import {
@@ -1309,7 +1315,18 @@ function redisSessionStore(): SessionPort {
  * layer). The full implementation will fan out to prom-client metrics
  * and the existing audit-sink subscriber.
  */
-function fastifyTelemetry(usageStore: TokenUsageStore): TelemetryPort {
+function fastifyTelemetry(
+  usageStore: TokenUsageStore,
+  turnTrace?: TurnTraceWriter,
+): TelemetryPort {
+  // C1/C2 — per-turn LLMTrace buffer. The planner/responder emit an LLMTrace
+  // per model call DURING the turn (emitLLMTrace); that trace carries turnId but
+  // NOT conversationId. Buffer by turnId, then flush at emitTurn (which DOES
+  // carry conversationId) into the redacted turn_trace store. LRU-capped so a
+  // turn that emits traces but never reaches emitTurn (mid-turn throw) can't
+  // leak unboundedly.
+  const pendingTraces = new Map<string, LLMTrace[]>();
+  const MAX_PENDING_TURNS = 500;
   return {
     async emitTurn(record: TurnRecord) {
       logger.info(
@@ -1390,12 +1407,64 @@ function fastifyTelemetry(usageStore: TokenUsageStore): TelemetryPort {
           "token-usage store record failed; ignoring",
         );
       }
+      // C2 — flush this turn's buffered LLM-call traces to the REDACTED
+      // turn_trace store, attaching the conversationId only available here. Rows
+      // are keyed (turnId, callIndex); the writer redacts the completion. The
+      // trace write is additive — token accounting stays above (no double count).
+      if (turnTrace !== undefined) {
+        const traces = pendingTraces.get(record.turnId);
+        pendingTraces.delete(record.turnId);
+        if (traces !== undefined && traces.length > 0) {
+          try {
+            await Promise.all(
+              traces.map((t, callIndex) =>
+                turnTrace.write({
+                  turnId: t.turnId,
+                  callIndex,
+                  conversationId: record.conversationId,
+                  ...(t.intentHash !== undefined ? { intentHash: t.intentHash } : {}),
+                  model: t.model,
+                  temperature: t.temperature,
+                  inputTokens: t.inputTokens,
+                  outputTokens: t.outputTokens,
+                  promptManifest: t.promptManifest,
+                  completion: t.completion,
+                  durationMs: t.durationMs,
+                  recordedAt: t.at,
+                  ...(t.schemaVersion !== undefined
+                    ? { schemaVersion: t.schemaVersion }
+                    : {}),
+                }),
+              ),
+            );
+          } catch (err) {
+            logger.warn(
+              { component: "conductor", event: "turn_trace_flush_failed", error: String(err) },
+              "turn_trace flush failed; ignoring",
+            );
+          }
+        }
+      }
     },
-    async emitLLMTrace(_trace) {
-      // Token accounting is folded at emitTurn off the TurnRecord (the
-      // once-per-turn seam that carries customerId). Durable LLM-trace
-      // persistence (separate retention from the audit ledger) is a follow-up.
-      return;
+    async emitLLMTrace(trace) {
+      // C1 — buffer the per-model-call trace for the emitTurn flush (which
+      // attaches conversationId + writes the redacted turn_trace rows). When no
+      // turn_trace writer is wired, this is a no-op. Best-effort: never throws.
+      if (turnTrace === undefined) return;
+      try {
+        const list = pendingTraces.get(trace.turnId);
+        if (list !== undefined) {
+          list.push(trace);
+        } else {
+          if (pendingTraces.size >= MAX_PENDING_TURNS) {
+            const oldest = pendingTraces.keys().next().value;
+            if (oldest !== undefined) pendingTraces.delete(oldest);
+          }
+          pendingTraces.set(trace.turnId, [trace]);
+        }
+      } catch {
+        // ignore — telemetry must never break a turn
+      }
     },
     async emitMemoryAccess(_record: MemoryAccess) {
       return;
@@ -1704,18 +1773,31 @@ export async function bootstrapClaustrum(
   // planner/responder lands in exactly one place — and so "wire BOTH points"
   // is a single call, not a standing duplication hazard.
   const ibxExplainer = ibatexasExplainer();
+  // Phase B/C — content-addressed prompt composer + the redacted turn_trace
+  // writer (the emitLLMTrace sink). ONE telemetry instance is shared across BOTH
+  // planes: it buffers per-call LLMTraces by turnId and flushes them (with
+  // conversationId) to turn_trace at emitTurn. turnId is globally unique, so a
+  // shared buffer across the conductor + managed-agent plane is correct.
+  const promptComposer = createIbatexasPromptComposer();
+  const turnTraceWriter: TurnTraceWriter = createTurnTraceWriter(pgPool);
+  await turnTraceWriter.ensureTable(); // best-effort (writer swallows failures)
+  const telemetry = fastifyTelemetry(tokenUsageStore, turnTraceWriter);
   const buildPlanner = (model: ModelProvider): PlannerPort =>
     createIbatexasPlanner({
       model,
       modelId: anthropicModelId,
       capabilityPlanners: IBATEXAS_COMPOSED_CAPABILITY_PLANNERS,
       deriveContext: deriveIbatexasPlannerContext,
+      promptComposer,
+      telemetry,
     });
   const buildResponder = (model: ModelProvider): ResponderPort =>
     createIbatexasResponder({
       model,
       modelId: anthropicModelId,
       explainer: ibxExplainer,
+      promptComposer,
+      telemetry,
     });
 
   _conductor = createConductor({
@@ -1726,7 +1808,7 @@ export async function bootstrapClaustrum(
     responder: buildResponder(modelProvider),
     explainer: ibxExplainer,
     handoff: natsHandoff(),
-    telemetry: fastifyTelemetry(tokenUsageStore),
+    telemetry,
     session: redisSessionStore(),
     tools: toolRegistry,
     channels,
@@ -1786,7 +1868,10 @@ export async function bootstrapClaustrum(
         grounding,
         explainer: ibxExplainer,
         handoff: natsHandoff(),
-        telemetry: fastifyTelemetry(tokenUsageStore),
+        // Share the SAME telemetry instance as the conductor — the turn_trace
+        // buffer keys on the (globally-unique) turnId, so agent-plane model
+        // calls flush to turn_trace at their emitTurn too.
+        telemetry,
         session: redisSessionStore(),
         tenantResolver: resolveIbatexasTenantPolicy,
         sessionLock: new PostgresAdvisorySessionLock(pgPool),

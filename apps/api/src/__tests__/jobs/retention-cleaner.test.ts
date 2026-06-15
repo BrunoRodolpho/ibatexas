@@ -15,11 +15,15 @@ const mockCmCount = vi.hoisted(() => vi.fn());
 const mockOelFindMany = vi.hoisted(() => vi.fn());
 const mockOelDeleteMany = vi.hoisted(() => vi.fn());
 const mockOelCount = vi.hoisted(() => vi.fn());
+const mockExecuteRaw = vi.hoisted(() => vi.fn());
+const mockQueryRaw = vi.hoisted(() => vi.fn());
 
 vi.mock("@ibatexas/domain", () => ({
   prisma: {
     conversationMessage: { findMany: mockCmFindMany, deleteMany: mockCmDeleteMany, count: mockCmCount },
     orderEventLog: { findMany: mockOelFindMany, deleteMany: mockOelDeleteMany, count: mockOelCount },
+    $executeRaw: mockExecuteRaw,
+    $queryRaw: mockQueryRaw,
   },
 }));
 
@@ -37,6 +41,8 @@ beforeEach(() => {
   mockOelFindMany.mockResolvedValue([]);
   mockCmCount.mockResolvedValue(0);
   mockOelCount.mockResolvedValue(0);
+  mockExecuteRaw.mockResolvedValue(0);
+  mockQueryRaw.mockResolvedValue([{ count: 0 }]);
 });
 
 afterEach(() => {
@@ -96,7 +102,7 @@ describe("retention cleaner — deletion", () => {
     expect(mockCmDeleteMany).toHaveBeenCalledWith({ where: { id: { in: ["m1", "m2"] } } });
     expect(mockOelDeleteMany).toHaveBeenCalledWith({ where: { id: { in: ["e1"] } } });
 
-    expect(res).toEqual({ skipped: false, dryRun: false, conversationMessages: 2, orderEvents: 1 });
+    expect(res).toEqual({ skipped: false, dryRun: false, conversationMessages: 2, orderEvents: 1, turnTraces: 0 });
   });
 
   it("processes large backlogs in bounded batches (loops until a short batch)", async () => {
@@ -129,7 +135,7 @@ describe("retention cleaner — deletion", () => {
     expect(mockOelCount).toHaveBeenCalledWith({ where: { createdAt: { lt: new Date("2026-04-30T12:00:00.000Z") } } });
     expect(mockCmDeleteMany).not.toHaveBeenCalled();
     expect(mockOelDeleteMany).not.toHaveBeenCalled();
-    expect(res).toEqual({ skipped: false, dryRun: true, conversationMessages: 7, orderEvents: 4 });
+    expect(res).toEqual({ skipped: false, dryRun: true, conversationMessages: 7, orderEvents: 4, turnTraces: 0 });
   });
 
   it("a failure purging one table does not block the other (fail-soft per table)", async () => {
@@ -145,5 +151,44 @@ describe("retention cleaner — deletion", () => {
     expect(res.orderEvents).toBe(2);
     expect(res.skipped).toBe(false);
     expect(mockOelDeleteMany).toHaveBeenCalledWith({ where: { id: { in: ["e1", "e2"] } } });
+  });
+});
+
+describe("retention cleaner — turn_trace (independent TURN_TRACE_RETENTION_DAYS knob)", () => {
+  it("sweeps turn_trace on its own knob even when RETENTION_DAYS is unset", async () => {
+    vi.stubEnv("TURN_TRACE_RETENTION_DAYS", "7");
+    mockExecuteRaw.mockResolvedValue(5);
+
+    const res = await cleanupExpiredRecords();
+
+    expect(res.skipped).toBe(false);
+    expect(res.turnTraces).toBe(5);
+    // Prisma-table sweep stayed disabled (RETENTION_DAYS unset).
+    expect(res.conversationMessages).toBe(0);
+    expect(res.orderEvents).toBe(0);
+    expect(mockCmDeleteMany).not.toHaveBeenCalled();
+    expect(mockExecuteRaw).toHaveBeenCalledTimes(1);
+  });
+
+  it("dry-run counts turn_trace rows without deleting", async () => {
+    vi.stubEnv("TURN_TRACE_RETENTION_DAYS", "7");
+    vi.stubEnv("RETENTION_DRY_RUN", "true");
+    mockQueryRaw.mockResolvedValue([{ count: 9 }]);
+
+    const res = await cleanupExpiredRecords();
+
+    expect(res.dryRun).toBe(true);
+    expect(res.turnTraces).toBe(9);
+    expect(mockExecuteRaw).not.toHaveBeenCalled();
+    expect(mockQueryRaw).toHaveBeenCalledTimes(1);
+  });
+
+  it("a turn_trace purge failure is fail-soft (does not throw)", async () => {
+    vi.stubEnv("TURN_TRACE_RETENTION_DAYS", "7");
+    mockExecuteRaw.mockRejectedValue(new Error("relation \"turn_trace\" does not exist"));
+
+    const res = await cleanupExpiredRecords();
+    expect(res.skipped).toBe(false);
+    expect(res.turnTraces).toBe(0);
   });
 });
