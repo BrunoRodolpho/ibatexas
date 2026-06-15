@@ -31,6 +31,10 @@ export const DOMAIN_DELETE_ORDER = [
   "conversationMessage",
   "conversation",
   "orderProjection",
+  // Managed-agent run journal (no FK to other domain tables — placed with the
+  // observability/projection group). Added with the AgentRun model; this entry
+  // closes the db-tables drift the model left open.
+  "agentRun",
   "loyaltyAccount",
   "customer",
   "timeSlot",
