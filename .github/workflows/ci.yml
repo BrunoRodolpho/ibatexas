@@ -30,7 +30,11 @@ jobs:
       # Force the lcov reporter explicitly: per-package `vitest run` does not
       # inherit the root vitest.config coverage.reporter (no vitest workspace),
       # so without this each package emits text-only coverage and Sonar sees 0%.
-      - run: pnpm test -- -- --coverage --coverage.reporter=text --coverage.reporter=lcov
+      # `--force`: turbo's cache key does not include passthrough args after `--`,
+      # so a cached (pre-coverage) `test` run would be REPLAYED and emit no lcov
+      # ("No LCOV files were found" in Sonar). Force fresh execution so each
+      # package actually re-runs vitest with the lcov reporter.
+      - run: pnpm test -- --force -- --coverage --coverage.reporter=text --coverage.reporter=lcov
       # Monorepo coverage→Sonar fix: per-package vitest emits lcov with
       # package-relative `SF:` paths (e.g. `SF:src/x.ts`), but SonarCloud
       # resolves `sonar.sources` from the repo root (`packages/foo/src/x.ts`),
