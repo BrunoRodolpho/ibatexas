@@ -182,7 +182,7 @@ export function createLiveTriggerRunner(
   deps: LiveTriggerRunnerDeps,
 ): TriggerTurnRunner {
   return async (input) => {
-    const { agent, event, sessionId, maxModelCalls } = input;
+    const { event, sessionId, maxModelCalls } = input;
     // H1: a FRESH cap per trigger; recompose the conductor over the capped model.
     const capped = createModelCallCap(deps.conductor.modelProvider, maxModelCalls);
     const conductor = composeLiveAgentConductor(deps.conductor, capped);

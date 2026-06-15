@@ -366,7 +366,7 @@ export function registerEnvCommands(program: Command) {
         return null
       }
 
-      const fileVal = envFileValue(flag.key)
+      const _fileVal = envFileValue(flag.key)
       let newValue: string
 
       if (value !== undefined) {
