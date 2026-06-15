@@ -48,6 +48,7 @@ import {
 } from "../streaming/emitter.js";
 import { acquireWebAgentLock, releaseWebAgentLock } from "../streaming/execution-queue.js";
 import { getConductor } from "../claustrum-bootstrap.js";
+import { isSessionPausedForHuman } from "../escalation/escalation-store.js";
 
 const PostMessageBody = z.object({
   sessionId: z.string().uuid(),
@@ -264,6 +265,16 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
       // ── Delegate to the claustrum Conductor (fire-and-forget) ──────────────
       void (async () => {
         try {
+          // D2 bot-pause gate: once a human takes over this session (an open
+          // escalation), the LLM must stop auto-replying. The user's inbound was
+          // already archived above (appendMessages(user)), so staff still see it;
+          // we just suppress the bot turn. Fail-open (a Redis hiccup keeps the
+          // bot replying — see isSessionPausedForHuman).
+          if (await isSessionPausedForHuman(sessionId)) {
+            pushChunk(sessionId, { type: "done" });
+            return;
+          }
+
           const conductor = getConductor();
           const customerId = request.customerId ?? `guest:${sessionId}`;
 
