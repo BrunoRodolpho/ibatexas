@@ -28,6 +28,18 @@ jobs:
       - name: Verify Docker is available (testcontainer prerequisite)
         run: docker info
       - run: pnpm test -- -- --coverage
+      # Monorepo coverage→Sonar fix: per-package vitest emits lcov with
+      # package-relative `SF:` paths (e.g. `SF:src/x.ts`), but SonarCloud
+      # resolves `sonar.sources` from the repo root (`packages/foo/src/x.ts`),
+      # so coverage never maps → "0.0% Coverage on New Code". Rewrite each
+      # lcov's SF: paths to be root-relative before the scan. Idempotent.
+      - name: Normalize lcov paths for SonarCloud (monorepo)
+        run: |
+          for f in apps/*/coverage/lcov.info packages/*/coverage/lcov.info; do
+            [ -f "$f" ] || continue
+            dir="${f%/coverage/lcov.info}"
+            sed -i "s#^SF:\(${dir}/\)\{0,1\}#SF:${dir}/#" "$f"
+          done
       # Bypass-detection CI gate (task 20). Fails the build if any direct
       # prisma write, direct medusa write, executeToolDirect re-introduction,
       # or setMetricsSink(undefined) reset enters the codebase. The vitest
