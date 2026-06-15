@@ -9,13 +9,15 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // ── Mock Prisma — hoisted to avoid initialization order issues ───────────────
 
 const mockTransaction = vi.hoisted(() => vi.fn());
+const mockReservationFindUnique = vi.hoisted(() => vi.fn());
+const mockTimeSlotFindUnique = vi.hoisted(() => vi.fn());
 
 vi.mock("../../client.js", () => ({
   prisma: {
     $transaction: (...args: unknown[]) => mockTransaction(...args),
-    reservation: { create: vi.fn() },
-    timeSlot: { update: vi.fn() },
-    reservationTable: { findMany: vi.fn() },
+    reservation: { create: vi.fn(), findUnique: (...args: unknown[]) => mockReservationFindUnique(...args), update: vi.fn() },
+    timeSlot: { update: vi.fn(), findUnique: (...args: unknown[]) => mockTimeSlotFindUnique(...args) },
+    reservationTable: { findMany: vi.fn(), deleteMany: vi.fn() },
     table: { findMany: vi.fn() },
   },
 }));
@@ -228,5 +230,94 @@ describe("ReservationService.create — concurrency safety (TOCTOU fix)", () => 
         partySize: 1,
       }),
     ).rejects.toThrow("esgotado");
+  });
+});
+
+describe("ReservationService.modify — concurrency safety (TOCTOU)", () => {
+  let svc: ReturnType<typeof createReservationService>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    svc = createReservationService();
+  });
+
+  it("two concurrent modifies to the same new slot — only one succeeds, second rejected by FOR UPDATE lock", async () => {
+    // Existing reservation on slot_01 (the one being changed away from)
+    const existingReservation = makeReservationRow({
+      id: "res_01",
+      customerId: "cust_01",
+      partySize: 2,
+      status: "confirmed",
+    });
+    // Both concurrent requests read the same existing reservation
+    mockReservationFindUnique.mockResolvedValue(existingReservation);
+
+    // New target slot: stale read (what the buggy out-of-tx prisma.timeSlot.findUnique sees)
+    // It shows 18 reserved / 20 max → 2 available. Both concurrent callers see this
+    // because the lock-free check runs before either transaction commits.
+    const staleNewSlot = {
+      id: "slot_02",
+      date: new Date("2026-03-18"),
+      startTime: "20:00",
+      durationMinutes: 120,
+      maxCovers: 20,
+      reservedCovers: 18,
+      createdAt: new Date(),
+    };
+    mockTimeSlotFindUnique.mockResolvedValue(staleNewSlot);
+
+    // Under the FIXED code the tx.$queryRaw (FOR UPDATE) sees the true state:
+    //   call 1 → 18 reserved (2 available, partySize 2) → succeeds
+    //   call 2 → 20 reserved (0 available, partySize 2) → throws
+    let queryRawCallCount = 0;
+
+    mockTransaction.mockImplementation(async (fn: (tx: unknown) => unknown) => {
+      queryRawCallCount++;
+      const isFirst = queryRawCallCount === 1;
+
+      // What the in-tx FOR UPDATE lock returns for the new slot
+      const lockedNewSlot = {
+        ...staleNewSlot,
+        reservedCovers: isFirst ? 18 : 20, // first caller has space, second does not
+      };
+
+      const tx = {
+        $queryRaw: vi.fn().mockResolvedValue([lockedNewSlot]),
+        timeSlot: { update: vi.fn().mockResolvedValue({}) },
+        reservationTable: {
+          findMany: vi.fn().mockResolvedValue([]),
+          deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
+        },
+        table: {
+          findMany: vi.fn().mockResolvedValue(
+            isFirst
+              ? [{ id: "table_02", number: "2", capacity: 4, location: "indoor", active: true, createdAt: new Date() }]
+              : [],
+          ),
+        },
+        reservation: {
+          update: vi.fn().mockResolvedValue({
+            ...existingReservation,
+            timeSlotId: "slot_02",
+            timeSlot: { ...staleNewSlot },
+          }),
+        },
+      };
+      return fn(tx);
+    });
+
+    const results = await Promise.allSettled([
+      svc.modify("res_01", "cust_01", { newTimeSlotId: "slot_02", newPartySize: 2 }),
+      svc.modify("res_01", "cust_01", { newTimeSlotId: "slot_02", newPartySize: 2 }),
+    ]);
+
+    const succeeded = results.filter((r) => r.status === "fulfilled");
+    const failed = results.filter((r) => r.status === "rejected");
+
+    // With the BUGGY code both succeed (both pass the unlocked out-of-tx check → overbook)
+    // With the FIXED code only one succeeds (second sees full slot under FOR UPDATE lock)
+    expect(succeeded).toHaveLength(1);
+    expect(failed).toHaveLength(1);
+    expect((failed[0] as PromiseRejectedResult).reason.message).toContain("não tem vagas para 2 pessoa(s)");
   });
 });

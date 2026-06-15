@@ -365,16 +365,20 @@ export function createReservationService(options?: ReservationServiceOptions) {
       const newPartySize = changes.newPartySize ?? existing.partySize
       const isChangingSlot = newTimeSlotId !== existing.timeSlotId
 
-      if (isChangingSlot) {
-        const newSlot = await prisma.timeSlot.findUnique({ where: { id: newTimeSlotId } })
-        if (!newSlot) throw new Error("Novo horário não encontrado.")
-        const available = newSlot.maxCovers - newSlot.reservedCovers
-        if (available < newPartySize) {
-          throw new Error(`O horário solicitado não tem vagas para ${newPartySize} pessoa(s).`)
-        }
-      }
-
       const updated = await prisma.$transaction(async (tx) => {
+        if (isChangingSlot) {
+          // Lock the new slot row with FOR UPDATE to prevent concurrent overbooking
+          const locked = await tx.$queryRaw<TimeSlotRow[]>(
+            Prisma.sql`SELECT * FROM ibx_domain.time_slots WHERE id = ${newTimeSlotId} FOR UPDATE`
+          )
+          const newSlot = locked[0]
+          if (!newSlot) throw new Error("Novo horário não encontrado.")
+          const available = newSlot.maxCovers - newSlot.reservedCovers
+          if (available < newPartySize) {
+            throw new Error(`O horário solicitado não tem vagas para ${newPartySize} pessoa(s).`)
+          }
+        }
+
         await tx.timeSlot.update({
           where: { id: existing.timeSlotId },
           data: { reservedCovers: { decrement: existing.partySize } },
@@ -382,7 +386,7 @@ export function createReservationService(options?: ReservationServiceOptions) {
 
         await tx.reservationTable.deleteMany({ where: { reservationId: existing.id } })
 
-        const newTableIds = await assignTables(newTimeSlotId, newPartySize)
+        const newTableIds = await assignTables(newTimeSlotId, newPartySize, tx)
 
         await tx.timeSlot.update({
           where: { id: newTimeSlotId },
