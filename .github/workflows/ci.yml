@@ -27,7 +27,10 @@ jobs:
       # clear error rather than a cryptic mid-suite testcontainer-boot failure.
       - name: Verify Docker is available (testcontainer prerequisite)
         run: docker info
-      - run: pnpm test -- -- --coverage
+      # Force the lcov reporter explicitly: per-package `vitest run` does not
+      # inherit the root vitest.config coverage.reporter (no vitest workspace),
+      # so without this each package emits text-only coverage and Sonar sees 0%.
+      - run: pnpm test -- -- --coverage --coverage.reporter=text --coverage.reporter=lcov
       # Monorepo coverage→Sonar fix: per-package vitest emits lcov with
       # package-relative `SF:` paths (e.g. `SF:src/x.ts`), but SonarCloud
       # resolves `sonar.sources` from the repo root (`packages/foo/src/x.ts`),
