@@ -96,7 +96,7 @@ groups:
           description: |
             audit.intent.decision.v1 publish-confirm lag above 1s. Likely
             JetStream stream slow or consumer ack drift.
-          runbook_url: "https://github.com/ibatexas/ibatexas/blob/main/docs/adjudicate-migration/remediation/NATS-AUTH-REQUIREMENTS.md"
+          runbook_url: "https://github.com/ibatexas/ibatexas/blob/main/docs/security/NATS-AUTH-REQUIREMENTS.md"
 
       # ── 7 ──────────────────────────────────────────────────────────────────
       - alert: KernelLedgerUnavailable

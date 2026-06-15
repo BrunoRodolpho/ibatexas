@@ -95,16 +95,35 @@ export type OrderProjection = Prisma.OrderProjectionModel
 export type OrderStatusHistory = Prisma.OrderStatusHistoryModel
 /**
  * Model OrderEventLog
- * Append-only, immutable event log for ALL order domain events.
- * Observability + replay + debugging layer. Never mutated after insert.
+ * Append-only event log for ALL order domain events.
+ * Observability + replay + debugging layer.
+ * 
+ * EXCEPT for LGPD Art. 18 erasure: when `anonymizeCustomer()` runs in
+ * customer.service.ts, `payload` for every row keyed by an anonymized
+ * customer's orderId is overwritten to `{anonymized: true}` (in-tx
+ * scrub + heavy-path pre-batch). Downstream replay / projection-rebuild
+ * consumers must tolerate this — a `payload.anonymized === true`
+ * sentinel means the original event payload was erased to satisfy
+ * the data-subject's erasure right.
  */
 export type OrderEventLog = Prisma.OrderEventLogModel
 /**
  * Model Payment
- * Payment record for an order. ONE active (non-terminal) payment per order,
- * enforced by partial unique index in migration SQL.
+ * Payment record for an order. ONE active (non-terminal) payment per order.
  * Historical attempts are kept with terminal status for audit trail.
  * Retry/regeneration creates a new row; old one stays terminal.
+ * 
+ * INVARIANT — single active payment per order — is enforced at the DB level by a
+ * MANUALLY-MANAGED PARTIAL UNIQUE INDEX (`payment_active_per_order`):
+ * CREATE UNIQUE INDEX "payment_active_per_order" ON payments(order_id)
+ * WHERE status NOT IN ('refunded','pay_canceled','waived','payment_failed','payment_expired');
+ * Defined in migration 20260412000000_add_payment_tables/migration.sql.
+ * Prisma's schema language cannot express a partial (WHERE-filtered) unique index,
+ * so it is NOT declared via @@unique here and will NOT round-trip on `prisma db pull`.
+ * The terminal-status set above MUST stay in sync with TERMINAL_PAYMENT_STATUSES in
+ * @ibatexas/types (note PaymentStatus.canceled maps to DB value 'pay_canceled').
+ * PaymentCommandService.create() catches the resulting P2002 and surfaces
+ * ActivePaymentExistsError; the findFirst-then-create check is only a fast path.
  */
 export type Payment = Prisma.PaymentModel
 /**
@@ -158,3 +177,12 @@ export type Holiday = Prisma.HolidayModel
  * instead of the WeeklySchedule template. Holidays take precedence over overrides.
  */
 export type ScheduleOverride = Prisma.ScheduleOverrideModel
+/**
+ * Model AgentRun
+ * Durable journal of managed-agent trigger turns (P1 D-journal). Replaces the
+ * 256-entry in-memory ring as the source of truth for agent run history; the
+ * P4 adjutant projects incidents/proposals from these rows. One row per
+ * (agent, trigger event) — the @@unique([agentId, externalId]) lets the
+ * journal upsert idempotently when a BullMQ retry re-runs the same trigger.
+ */
+export type AgentRun = Prisma.AgentRunModel

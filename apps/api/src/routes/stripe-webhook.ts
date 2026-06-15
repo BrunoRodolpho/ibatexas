@@ -131,13 +131,44 @@ async function reconcilePaymentFromStripe(
   newStatus: (typeof PaymentStatus)[keyof typeof PaymentStatus],
   event: Stripe.Event,
   logger: WebhookLogger,
+  /**
+   * T2-1 — orderId fallback for the PI lookup. The PI's `medusaOrderId`
+   * metadata is OUR OWN stamp (capturePayment's kernel-gated metadata
+   * update / the W8-V2 PI-metadata persist), so when the PI id is unknown
+   * locally — the Payment row was created WITHOUT it (the PIX flow's
+   * order.placed subscriber races this reconcile; or the payment's PI was
+   * minted out-of-band) — the order's single ACTIVE payment is the row
+   * this signed event is about. Passed ONLY by payment_intent.succeeded
+   * (the handler that already resolved an orderId); a payment that already
+   * carries a DIFFERENT PI id is never adopted (stale/foreign PI).
+   */
+  fallbackOrderId?: string,
 ): Promise<void> {
   const paymentQuerySvc = createPaymentQueryService();
   const paymentCmdSvc = createPaymentCommandService(logger, {
     auditSink: getAuditSink(),
   });
 
-  const payment = await paymentQuerySvc.getByStripePaymentIntentId(stripePaymentIntentId);
+  let payment = await paymentQuerySvc.getByStripePaymentIntentId(stripePaymentIntentId);
+  if (!payment && fallbackOrderId !== undefined) {
+    const active = await paymentQuerySvc.getActiveByOrderId(fallbackOrderId);
+    if (
+      active &&
+      (active.stripePaymentIntentId === null ||
+        active.stripePaymentIntentId === stripePaymentIntentId)
+    ) {
+      logger.info(
+        {
+          event_id: event.id,
+          stripe_pi: stripePaymentIntentId,
+          order_id: fallbackOrderId,
+          paymentId: active.id,
+        },
+        "[stripe-webhook] PI lookup missed — adopted the order's active payment via metadata.medusaOrderId (T2-1 fallback)",
+      );
+      payment = active;
+    }
+  }
   if (!payment) {
     // Payment row may not exist yet (e.g. PIX cart completion creates it later)
     logger.info(
@@ -432,16 +463,31 @@ async function handlePaymentSucceeded(
   // own re-read of metadata.stripePaymentIntentId (now inside the lock) closes the
   // window for the loser. withLock returns null on contention — folded into the same
   // "already processed" no-op as capturePayment's null.
-  const result = await withLock(`order-capture:${orderId}`, () =>
-    svc.capturePayment(orderId, paymentIntent.id, {
-      amountInCentavos: paymentIntent.amount,
-    }),
-  );
+  //
+  // T2-1 — capture-leg failure isolation: a throw here used to fail the whole
+  // BullMQ job, and because the route's 7-day idempotency key is already
+  // claimed (Stripe will NOT retry) the PAID reconciliation was permanently
+  // lost behind a Medusa bookkeeping error. Payment-state truth must land
+  // regardless: log the capture failure LOUDLY and fall through to the
+  // reconcile (same shape as the lock-contention/already-processed no-op).
+  let result: Awaited<ReturnType<typeof svc.capturePayment>> = null;
+  try {
+    result = await withLock(`order-capture:${orderId}`, () =>
+      svc.capturePayment(orderId, paymentIntent.id, {
+        amountInCentavos: paymentIntent.amount,
+      }),
+    );
+  } catch (err) {
+    logger.error(
+      { event_id: event.id, order_id: orderId, error: String(err) },
+      "[stripe-webhook] capture leg failed — proceeding to payment reconciliation (payment truth must land)",
+    );
+  }
 
   if (!result) {
     logger.info({ event_id: event.id, order_id: orderId }, "Order already processed — no-op");
     // Still reconcile payment status even if order was already processed
-    await reconcilePaymentFromStripe(paymentIntent.id, PaymentStatus.PAID, event, logger);
+    await reconcilePaymentFromStripe(paymentIntent.id, PaymentStatus.PAID, event, logger, orderId);
     return;
   }
 
@@ -466,7 +512,7 @@ async function handlePaymentSucceeded(
   });
 
   // Reconcile payment status → paid
-  await reconcilePaymentFromStripe(paymentIntent.id, PaymentStatus.PAID, event, logger);
+  await reconcilePaymentFromStripe(paymentIntent.id, PaymentStatus.PAID, event, logger, orderId);
 
   // Clean up pending-order entry now that the Medusa order exists
   const domainCustomerId = paymentIntent.metadata?.["customerId"];
@@ -670,9 +716,15 @@ export async function dispatchStripeWebhookEvent(
 
 export async function stripeWebhookRoutes(server: FastifyInstance): Promise<void> {
   // Self-register the durable processor so queued jobs drain on (re)start.
-  // Guarded out of the test env (no BullMQ/Redis worker in unit tests); the
+  // Guarded out of the UNIT-test env (no BullMQ/Redis worker in vitest); the
   // handlers themselves are exercised via dispatchStripeWebhookEvent.
-  if (process.env.NODE_ENV !== "test") {
+  //
+  // T2-1 — prod-parity on the journey test stack (the D-014 subscriber-gating
+  // fix class): the ephemeral test profile boots with NODE_ENV=test AND
+  // IBX_TEST_FINGERPRINT (only .env.test carries the fingerprint — D-010), and
+  // it MUST drain webhook jobs or the signed paid-state fixture's events would
+  // be acked-then-stranded. Mirrors apps/api/src/index.ts:133.
+  if (process.env.NODE_ENV !== "test" || process.env.IBX_TEST_FINGERPRINT) {
     startStripeWebhookProcessor(dispatchStripeWebhookEvent);
   }
 

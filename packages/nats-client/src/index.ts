@@ -21,7 +21,7 @@
 //      to provision creds + flip env vars.
 //   2. OPERATOR — provision NATS server credentials, rotate, flip env
 //      vars on staging/prod. See
-//      `docs/adjudicate-migration/remediation/NATS-AUTH-REQUIREMENTS.md`.
+//      `docs/security/NATS-AUTH-REQUIREMENTS.md`.
 //
 // Env vars consumed by this module:
 //   - NATS_URL              : connect target (defaults to localhost)
@@ -154,8 +154,8 @@ export async function getNatsConnection(): Promise<NatsConnection> {
       "[nats][SECURITY] production requires NATS auth (NATS_CREDS_PATH or " +
       "NATS_NKEY_SEED) and/or TLS (NATS_TLS_CA + NATS_TLS_REQUIRED=true). " +
       "Without authentication any process reaching the NATS port can read " +
-      "audit records and publish forged events. See docs/adjudicate-" +
-      "migration/remediation/NATS-AUTH-REQUIREMENTS.md."
+      "audit records and publish forged events. See " +
+      "docs/security/NATS-AUTH-REQUIREMENTS.md."
     console.error(securityMessage)
     throw new Error(securityMessage)
   }
@@ -209,6 +209,54 @@ export async function getNatsConnection(): Promise<NatsConnection> {
   // No finally block: resetting pendingConnection on success would race with concurrent
   // callers during cold start. The catch block handles the error case; on success
   // pendingConnection is harmless (natsConn check succeeds first).
+}
+
+// ── T3-10: dedicated (non-singleton) authenticated connections ─────────────
+//
+// The journey-test plane carries MULTIPLE NATS identities in one process: the
+// app seed (NATS_NKEY_SEED — what getNatsConnection's singleton resolves)
+// plus the SUBSCRIBE-ONLY capture seed and the publish-only trigger seed
+// (IBX_TEST_NATS_CAPTURE_NKEY_SEED / IBX_TEST_NATS_TRIGGER_NKEY_SEED —
+// server-side enforcement in infra/nats/nats-server.test-plane.conf). A
+// process-wide singleton cannot serve two identities, so per-role consumers
+// (the journeys NatsCapture; the T3-9 trigger publish helper) open a
+// DEDICATED connection with EXPLICIT credentials.
+//
+// Deliberately explicit-only: this function NEVER falls back to the env vars
+// getNatsConnection reads — a capture composed with missing capture creds
+// must fail loudly rather than silently ride the publish-capable app
+// credential. Callers wanting env-resolved auth use getNatsConnection().
+// TLS resolution (NATS_TLS_CA / NATS_TLS_REQUIRED) is shared with the
+// singleton path. Callers own the returned connection's lifecycle (close()).
+
+export interface DedicatedNatsAuth {
+  /** Path to a `.creds` file (JWT-bearer auth) — takes precedence. */
+  credsPath?: string
+  /** Raw nkey seed string ("SU..."). */
+  nkeySeed?: string
+}
+
+export async function openDedicatedNatsConnection(auth: DedicatedNatsAuth): Promise<NatsConnection> {
+  let authenticator: Authenticator
+  if (auth.credsPath && auth.credsPath.length > 0) {
+    authenticator = credsAuthenticator(await readFile(auth.credsPath))
+  } else if (auth.nkeySeed && auth.nkeySeed.length > 0) {
+    authenticator = nkeyAuthenticator(new TextEncoder().encode(auth.nkeySeed))
+  } else {
+    throw new Error(
+      "[nats] openDedicatedNatsConnection requires explicit credentials " +
+        "(credsPath or nkeySeed) — use getNatsConnection() for env-resolved auth",
+    )
+  }
+  const natsUrl = process.env.NATS_URL || "nats://localhost:4222"
+  const tls = await resolveTls()
+  return connect({
+    servers: [natsUrl],
+    reconnect: true,
+    maxReconnectAttempts: -1,
+    authenticator,
+    ...(tls ? { tls } : {}),
+  })
 }
 
 // Critical events that require outbox durability.

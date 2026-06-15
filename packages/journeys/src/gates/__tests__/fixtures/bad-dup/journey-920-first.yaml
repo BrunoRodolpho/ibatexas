@@ -1,0 +1,16 @@
+# Lint-gate BAD fixture (duplicate-id pair, file 1 of 2) — same JOURNEY id
+# in two files; lint must fail the second with `duplicate_journey_id`.
+id: JOURNEY-920
+title: Lint fixture — duplicate id, first definition
+businessCase: Gate fixture; journey ids are unique across the registry.
+persona: Cliente autenticado.
+channel: web
+params:
+  authenticated: true
+acts:
+  - kind: chat
+    goal: Adicionar um item ao carrinho.
+expects: []
+verify: []
+status: active
+source: T1a-2 lint-gate fixture
