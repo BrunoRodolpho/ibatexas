@@ -9,7 +9,7 @@
   "expectedEnvelopeKinds": ["order.item.add"],
   "expectedDecisionKind": "REFUSE",
   "expectedRefusalCode": "order.cart.missing",
-  "expectedResponseText": "Desculpe, não encontrei um carrinho aberto pra adicionar itens agora.",
+  "expectedResponseText": "Não encontrei um carrinho aberto pra essa operação.",
   "expectedAudit": {
     "rows": 1,
     "records": [

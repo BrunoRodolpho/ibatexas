@@ -263,13 +263,17 @@ describe.skipIf(!RUN_BOOTSTRAP_HARNESS)(
     }, 60_000);
 
     it("zero tokens by construction: every model call resolved a registered content key; no SDK, no unknowns", () => {
-      // 3 conversations × (1 planner + 1 responder) completion.
+      // 3 conversations × 1 planner completion = 3, PLUS a responder completion
+      // ONLY for the empty-plan/small-talk turn. The decision-aware responder
+      // (Phase A) is MODEL-FREE on a real REFUSE (renders the explainer) and on
+      // REQUEST_CONFIRMATION (returns decision.prompt), so cart-intent-refused
+      // and cancel-confirm-gate make NO responder model call. Total: 3 + 1 = 4.
       const completes = provider.calls.filter((c) => c.method === "complete");
-      expect(completes.length).toBe(6);
+      expect(completes.length).toBe(4);
       // Content-keyed, never positional: every call resolved to a labeled
       // fixture (an unknown key would have thrown the turn).
       expect(completes.every((c) => c.label !== null)).toBe(true);
-      expect(new Set(completes.map((c) => c.label)).size).toBe(6);
+      expect(new Set(completes.map((c) => c.label)).size).toBe(4);
       // The grounding provider embedded each perception (D-009: scripted
       // embed is IMPLEMENTED; retrieval degraded fail-safe on the absent
       // pgvector schema — that's the grounding-inert product gap, not ours).
@@ -304,8 +308,10 @@ describe.skipIf(!RUN_BOOTSTRAP_HARNESS)(
       expect(result.response.text).toBe(
         "Olá! Tudo ótimo por aqui. Como posso ajudar?",
       );
+      // 4 from the IBX-GC-006 run above + 2 from this re-drive (small-talk calls
+      // both planner and responder each turn; the model-free fixtures do not).
       const completes = provider.calls.filter((c) => c.method === "complete");
-      expect(completes.length).toBe(8);
+      expect(completes.length).toBe(6);
       expect(
         completes.filter((c) => c.label === "planner:smalltalk-noop").length,
       ).toBe(2);
