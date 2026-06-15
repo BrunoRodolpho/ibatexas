@@ -79,7 +79,9 @@ services:
     # version jump (15→17): the PGDATA dir is NOT binary-compatible across major
     # versions — an existing v15 volume must be migrated (pg_upgrade or
     # dump+restore) BEFORE starting v17. Do NOT point v17 at a v15 data volume.
-    image: postgres:17-alpine
+    # pgvector/pgvector:pg17 = official postgres:17 + pgvector; the claustrum
+    # grounding layer needs CREATE EXTENSION vector, absent from postgres:*-alpine.
+    image: pgvector/pgvector:pg17
     container_name: ibatexas-postgres
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
