@@ -37,7 +37,7 @@ import { withCorrelation } from "../lib/logger.js";
 import { scheduleReviewPrompt } from "../jobs/review-prompt.js";
 import { buildCartRecoveryMessage } from "../jobs/cart-recovery-messages.js";
 import { loadSession } from "../session/store.js";
-import { isNewEvent } from "./dedup.js";
+import { isNewEvent, withDedup } from "./dedup.js";
 import { pushToDlq } from "./dlq.js";
 import { buildSystemEnvelope } from "./__shared__/system-actor-envelope.js";
 
@@ -271,12 +271,12 @@ export async function startCartIntelligenceSubscribers(
     if (!customerId) return;
     const itemsWithPrice = items.map((i) => ({ ...i, priceInCentavos: i.priceInCentavos ?? 0 }));
 
-    // Idempotency: skip if this order.placed event was already processed
-    if (!(await isNewEvent(`order:${orderId}`))) {
-      log?.info({ order_id: orderId }, "[cart-intelligence] order.placed duplicate — skipping");
-      return;
-    }
-
+    // Idempotency: fail-closed two-phase guard — claims a short in-flight key,
+    // runs the body, and promotes to the full dedup TTL ONLY on success. If the
+    // body throws (or the process crashes), the claim is released so NATS
+    // redelivery can reprocess (at-least-once). Replaces the former isNewEvent
+    // (mark-before-run) which permanently dropped events on mid-handler crash.
+    const processed = await withDedup(`order:${orderId}`, async () => {
     log?.info(
       { customer_id: customerId, order_id: orderId, item_count: items.length },
       "[cart-intelligence] order.placed — updating intelligence",
@@ -597,6 +597,10 @@ export async function startCartIntelligenceSubscribers(
     } catch (err) {
       log?.error({ customer_id: customerId, order_id: orderId, error: String(err) }, "[cart-intelligence] order.placed handler error");
     }
+    }); // end withDedup
+    if (!processed) {
+      log?.info({ order_id: orderId }, "[cart-intelligence] order.placed duplicate — skipping");
+    }
   }, { queueGroup: "cart-intelligence" });
 
   // ── order.payment_failed ─────────────────────────────────────────────────
@@ -839,13 +843,11 @@ export async function startCartIntelligenceSubscribers(
       body?: string;
     };
 
-    // Idempotency guard — prevent duplicate WhatsApp messages on NATS redelivery
+    // Idempotency guard — fail-closed two-phase guard. Replaces the former
+    // isNewEvent (mark-before-run) to avoid permanently dropping a WhatsApp
+    // delivery if the process crashes mid-send.
     const eventKey = `notification:${customerId || sessionId}:${type}`;
-    if (!(await isNewEvent(eventKey))) {
-      log?.info({ event_key: eventKey }, "[cart-intelligence] notification.send duplicate — skipping");
-      return;
-    }
-
+    const notifProcessed = await withDedup(eventKey, async () => {
     log?.info(
       { notification_type: type, session_id: sessionId, cart_id: cartId, channel },
       "[cart-intelligence] notification.send — processing notification",
@@ -878,6 +880,10 @@ export async function startCartIntelligenceSubscribers(
     } catch (err) {
       log?.error({ customerId, type, error: String(err) }, "[cart-intelligence] notification.send delivery error");
       await pushToDlq("notification.send", payload as Record<string, unknown>, err, log);
+    }
+    }); // end withDedup
+    if (!notifProcessed) {
+      log?.info({ event_key: eventKey }, "[cart-intelligence] notification.send duplicate — skipping");
     }
   }, { queueGroup: "cart-intelligence" });
 
@@ -999,11 +1005,7 @@ export async function startCartIntelligenceSubscribers(
       "[cart-intelligence] order.refunded received",
     );
 
-    if (!(await isNewEvent(`refund:${orderId}:${chargeId}`))) {
-      log?.info({ order_id: orderId }, "[cart-intelligence] order.refunded duplicate — skipping");
-      return;
-    }
-
+    const refundProcessed = await withDedup(`refund:${orderId}:${chargeId}`, async () => {
     void eventLog.append({
       orderId,
       eventType: "order.refunded",
@@ -1034,6 +1036,10 @@ export async function startCartIntelligenceSubscribers(
     } catch (err) {
       log?.error({ order_id: orderId, error: String(err) }, "[cart-intelligence] order.refunded handler error");
     }
+    }); // end withDedup
+    if (!refundProcessed) {
+      log?.info({ order_id: orderId }, "[cart-intelligence] order.refunded duplicate — skipping");
+    }
   }, { queueGroup: "cart-intelligence" });
 
   // ── order.disputed (EVT-003) ──────────────────────────────────────────────
@@ -1050,11 +1056,7 @@ export async function startCartIntelligenceSubscribers(
       "[cart-intelligence] order.disputed received",
     );
 
-    if (!(await isNewEvent(`dispute:${disputeId}`))) {
-      log?.info({ dispute_id: disputeId }, "[cart-intelligence] order.disputed duplicate — skipping");
-      return;
-    }
-
+    const disputeProcessed = await withDedup(`dispute:${disputeId}`, async () => {
     void eventLog.append({
       orderId: orderId ?? "unknown",
       eventType: "order.disputed",
@@ -1096,6 +1098,10 @@ export async function startCartIntelligenceSubscribers(
     } catch (err) {
       log?.error({ dispute_id: disputeId, error: String(err) }, "[cart-intelligence] order.disputed handler error");
     }
+    }); // end withDedup
+    if (!disputeProcessed) {
+      log?.info({ dispute_id: disputeId }, "[cart-intelligence] order.disputed duplicate — skipping");
+    }
   }, { queueGroup: "cart-intelligence" });
 
   // ── order.canceled (EVT-004) ──────────────────────────────────────────────
@@ -1111,11 +1117,7 @@ export async function startCartIntelligenceSubscribers(
       "[cart-intelligence] order.canceled received",
     );
 
-    if (!(await isNewEvent(`canceled:${orderId}`))) {
-      log?.info({ order_id: orderId }, "[cart-intelligence] order.canceled duplicate — skipping");
-      return;
-    }
-
+    const canceledProcessed = await withDedup(`canceled:${orderId}`, async () => {
     void eventLog.append({
       orderId,
       eventType: "order.canceled",
@@ -1143,6 +1145,10 @@ export async function startCartIntelligenceSubscribers(
       log?.info({ customer_id: customerId, order_id: orderId }, "[cart-intelligence] order.canceled — profile updated");
     } catch (err) {
       log?.error({ order_id: orderId, error: String(err) }, "[cart-intelligence] order.canceled handler error");
+    }
+    }); // end withDedup
+    if (!canceledProcessed) {
+      log?.info({ order_id: orderId }, "[cart-intelligence] order.canceled duplicate — skipping");
     }
   }, { queueGroup: "cart-intelligence" });
 
