@@ -17,6 +17,7 @@ const mockGetWhatsAppSender = vi.hoisted(() => vi.fn());
 const mockMedusaAdminFetch = vi.hoisted(() => vi.fn());
 const mockSendText = vi.hoisted(() => vi.fn());
 const mockEventLogAppend = vi.hoisted(() => vi.fn());
+const mockPushToDlq = vi.hoisted(() => vi.fn());
 
 // Store registered handlers so we can invoke them in tests
 const natsHandlers: Record<string, (payload: unknown) => Promise<void>> = {};
@@ -83,6 +84,15 @@ vi.mock("../jobs/review-prompt.js", () => ({
 
 vi.mock("../whatsapp/client.js", () => ({
   sendText: mockSendText,
+}));
+
+// C2: spy on the DLQ so we can assert a failed order.placed is routed there
+// (not silently swallowed + pinned as processed). Keep any other dlq exports real.
+vi.mock("../subscribers/dlq.js", async () => ({
+  ...(await vi.importActual<typeof import("../subscribers/dlq.js")>(
+    "../subscribers/dlq.js",
+  )),
+  pushToDlq: mockPushToDlq,
 }));
 
 // ── Mock Redis client ─────────────────────────────────────────────────────────
@@ -426,6 +436,27 @@ describe("order.placed handler", () => {
 
     expect(mockGetRedisClient).not.toHaveBeenCalled();
     expect(mockRecordOrderItems).not.toHaveBeenCalled();
+  });
+
+  it("[C2] routes a failed order.placed to the DLQ instead of silently pinning it processed", async () => {
+    const mockRedis = createMockRedis({ set: vi.fn().mockResolvedValue("OK") });
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+    // Force the main body to throw: recordOrderItems sits inside the handler's
+    // try whose catch now routes to the DLQ.
+    mockRecordOrderItems.mockRejectedValue(new Error("db down"));
+
+    await natsHandlers["order.placed"]({
+      customerId: "cus_01",
+      orderId: "order_fail",
+      items: [{ productId: "prod_01", variantId: "var_01", quantity: 1, priceInCentavos: 5000 }],
+    });
+
+    expect(mockPushToDlq).toHaveBeenCalledWith(
+      "order.placed",
+      expect.objectContaining({ orderId: "order_fail" }),
+      expect.any(Error),
+      undefined, // no logger injected in this harness
+    );
   });
 
   it("creates CustomerOrderItem rows via createMany", async () => {
