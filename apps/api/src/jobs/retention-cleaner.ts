@@ -7,10 +7,13 @@
 //   RETENTION_DAYS=<n>          OPT-IN. Unset or <= 0 → the Prisma-table sweep is a no-op
 //                               (a destructive sweep must be explicitly configured — there
 //                               is deliberately NO default retention threshold).
-//   TURN_TRACE_RETENTION_DAYS=<n>  OPT-IN, INDEPENDENT knob for the `turn_trace` store
+//   TURN_TRACE_RETENTION_DAYS=<n>  INDEPENDENT knob for the `turn_trace` store
 //                               (per responder-trace-admin-plan.md C2 — the trace gets its
 //                               OWN, typically shorter, retention than the audit/transcript
-//                               tables). Unset or <= 0 → turn_trace is not swept.
+//                               tables). F3: DEFAULTS to 30 days when unset (the trace is a
+//                               bounded forensic aid with imperfect redaction, so it must not
+//                               grow unbounded by default). Set <= 0 to OPT OUT explicitly
+//                               (logged loudly — retains residual PII indefinitely).
 //   RETENTION_DRY_RUN=false     true → count + log what WOULD be deleted, delete nothing.
 //   RETENTION_BATCH_SIZE=1000   rows deleted per batch (bounds each transaction so a large
 //                               first-run backlog never holds one giant DELETE).
@@ -50,10 +53,26 @@ function getRetentionDays(): number {
   return Number.isFinite(n) && n > 0 ? n : 0;
 }
 
-/** Independent retention window (days) for the turn_trace store. 0 = disabled. */
+// F3 / data-minimization: unlike the audit/transcript tables (deliberately
+// opt-in — they are business/legal records that must NOT be auto-deleted), the
+// turn_trace store is a bounded forensic aid whose regex redaction is imperfect
+// (it can miss names/addresses a model echoes inline, see turn-trace-writer.ts).
+// So it gets a conservative DEFAULT retention rather than growing unbounded by
+// default. Operators may lengthen it, or set it <= 0 to OPT OUT explicitly
+// (logged loudly — see cleanupExpiredRecords).
+const DEFAULT_TURN_TRACE_RETENTION_DAYS = 30;
+
+/** Retention window (days) for the turn_trace store. Defaults to 30 when unset;
+ *  an explicit value <= 0 disables the sweep (opt-out). */
 function getTurnTraceRetentionDays(): number {
-  const n = Number(process.env.TURN_TRACE_RETENTION_DAYS);
-  return Number.isFinite(n) && n > 0 ? n : 0;
+  const raw = process.env.TURN_TRACE_RETENTION_DAYS;
+  if (raw === undefined || raw.trim() === "") {
+    return DEFAULT_TURN_TRACE_RETENTION_DAYS;
+  }
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return DEFAULT_TURN_TRACE_RETENTION_DAYS; // malformed → safe default
+  if (n <= 0) return 0; // explicit opt-out
+  return Math.floor(n);
 }
 
 function isDryRun(): boolean {
@@ -189,7 +208,8 @@ export async function cleanupExpiredRecords(log?: FastifyBaseLogger | null): Pro
     }
   }
 
-  // turn_trace has its OWN (typically shorter) retention window.
+  // turn_trace has its OWN (typically shorter) retention window — defaulted to
+  // 30 days (F3) so redacted-but-imperfect rows don't accumulate forever.
   let turnTraces = 0;
   if (turnTraceDays > 0) {
     const traceCutoff = new Date(Date.now() - turnTraceDays * DAY_MS);
@@ -198,6 +218,13 @@ export async function cleanupExpiredRecords(log?: FastifyBaseLogger | null): Pro
     } catch (err) {
       reportJobError("turn_trace", err, effectiveLogger);
     }
+  } else {
+    // Reached only when an operator EXPLICITLY set TURN_TRACE_RETENTION_DAYS <= 0
+    // while the cleaner still runs for RETENTION_DAYS. Surface the residual-PII
+    // risk of an unbounded trace store.
+    effectiveLogger?.warn(
+      "[retention] TURN_TRACE_RETENTION_DAYS explicitly disabled (<= 0) — the redacted turn_trace store will grow UNBOUNDED; its redaction is imperfect, so this retains residual PII indefinitely",
+    );
   }
 
   effectiveLogger?.info(

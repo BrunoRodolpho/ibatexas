@@ -51,7 +51,11 @@ afterEach(() => {
 });
 
 describe("retention cleaner — opt-in gating", () => {
-  it("is a no-op when RETENTION_DAYS is unset (disabled by default)", async () => {
+  // F3: turn_trace now has a 30-day DEFAULT, so the "fully skipped" no-op only
+  // holds when turn_trace is ALSO explicitly opted out (<= 0). These cases pin
+  // the Prisma-table opt-in gating in isolation.
+  it("is a no-op when RETENTION_DAYS is unset and turn_trace opted out", async () => {
+    vi.stubEnv("TURN_TRACE_RETENTION_DAYS", "0");
     const res = await cleanupExpiredRecords();
 
     expect(res.skipped).toBe(true);
@@ -62,21 +66,46 @@ describe("retention cleaner — opt-in gating", () => {
     expect(mockCmDeleteMany).not.toHaveBeenCalled();
     expect(mockOelFindMany).not.toHaveBeenCalled();
     expect(mockOelDeleteMany).not.toHaveBeenCalled();
+    expect(mockExecuteRaw).not.toHaveBeenCalled();
   });
 
-  it("is a no-op when RETENTION_DAYS <= 0", async () => {
+  it("is a no-op when RETENTION_DAYS <= 0 and turn_trace opted out", async () => {
     vi.stubEnv("RETENTION_DAYS", "0");
+    vi.stubEnv("TURN_TRACE_RETENTION_DAYS", "0");
     const res = await cleanupExpiredRecords();
     expect(res.skipped).toBe(true);
     expect(mockCmDeleteMany).not.toHaveBeenCalled();
     expect(mockOelDeleteMany).not.toHaveBeenCalled();
   });
 
-  it("is a no-op when RETENTION_DAYS is not a positive number", async () => {
+  it("is a no-op when RETENTION_DAYS is not a positive number and turn_trace opted out", async () => {
     vi.stubEnv("RETENTION_DAYS", "not-a-number");
+    vi.stubEnv("TURN_TRACE_RETENTION_DAYS", "0");
     const res = await cleanupExpiredRecords();
     expect(res.skipped).toBe(true);
     expect(mockCmDeleteMany).not.toHaveBeenCalled();
+  });
+
+  // F3: turn_trace sweeps by default even with everything else unset.
+  it("[F3] sweeps turn_trace by DEFAULT (30d) when TURN_TRACE_RETENTION_DAYS is unset", async () => {
+    mockExecuteRaw.mockResolvedValue(3);
+    const res = await cleanupExpiredRecords();
+    // Not skipped — the turn_trace default kept the cleaner active.
+    expect(res.skipped).toBe(false);
+    expect(res.turnTraces).toBe(3);
+    // The Prisma-table sweep stayed disabled (RETENTION_DAYS unset).
+    expect(mockCmDeleteMany).not.toHaveBeenCalled();
+    expect(mockOelDeleteMany).not.toHaveBeenCalled();
+    // turn_trace DELETE ran with a ~30-day cutoff.
+    expect(mockExecuteRaw).toHaveBeenCalledTimes(1);
+  });
+
+  it("[F3] disables the turn_trace sweep when explicitly set to 0", async () => {
+    vi.stubEnv("TURN_TRACE_RETENTION_DAYS", "0");
+    const res = await cleanupExpiredRecords();
+    expect(res.skipped).toBe(true);
+    expect(res.turnTraces).toBe(0);
+    expect(mockExecuteRaw).not.toHaveBeenCalled();
   });
 });
 
