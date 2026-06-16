@@ -273,9 +273,11 @@ export async function startCartIntelligenceSubscribers(
 
     // Idempotency: fail-closed two-phase guard — claims a short in-flight key,
     // runs the body, and promotes to the full dedup TTL ONLY on success. If the
-    // body throws (or the process crashes), the claim is released so NATS
-    // redelivery can reprocess (at-least-once). Replaces the former isNewEvent
-    // (mark-before-run) which permanently dropped events on mid-handler crash.
+    // body throws, the claim is released and the failure is routed to the DLQ
+    // for recovery (see the outer catch). Replaces the former isNewEvent
+    // (mark-before-run), which on a mid-handler crash dropped the side effect
+    // AND pinned the event as processed. (No AUTO-redelivery on Core NATS —
+    // recovery is via the DLQ / outbox-retry; see dedup.ts header.)
     const processed = await withDedup(`order:${orderId}`, async () => {
     log?.info(
       { customer_id: customerId, order_id: orderId, item_count: items.length },
@@ -595,7 +597,12 @@ export async function startCartIntelligenceSubscribers(
 
       log?.info({ customer_id: customerId }, "[cart-intelligence] order.placed handled");
     } catch (err) {
+      // C2: don't silently swallow. The two-phase guard would otherwise pin this
+      // event as processed (full TTL) with the side effect lost and no recovery
+      // path. Route it to the DLQ (matching notification.send) so a failed
+      // order.placed is recoverable rather than dropped-and-suppressed.
       log?.error({ customer_id: customerId, order_id: orderId, error: String(err) }, "[cart-intelligence] order.placed handler error");
+      await pushToDlq("order.placed", payload as Record<string, unknown>, err, log);
     }
     }); // end withDedup
     if (!processed) {
