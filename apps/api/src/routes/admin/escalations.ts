@@ -1,6 +1,12 @@
 // Admin escalation queue + take-over reply/resolve (responder-trace-admin D2).
 //
-// Staff-authed via the parent adminRoutes DOM-001 guard (staff JWT | x-admin-key).
+// Manager-gated (requireManagerRole) on top of the parent adminRoutes DOM-001
+// guard. The parent guard only proves the caller is *some* authenticated staff
+// (any role, incl. ATTENDANT) or holds *any* valid x-admin-key — including a
+// key with no role mapping. Take-over reply/resolve deliver arbitrary text to a
+// customer over WhatsApp AS the business and un-pause the bot, so they MUST fail
+// closed for non-manager principals (mirrors D3 broadcast). The read-only queue
+// is gated too: it exposes the open-escalation list (customerId/reason/channel).
 //   GET  /api/admin/escalations                  the open take-over queue
 //   POST /api/admin/escalations/:sessionId/reply  append a staff reply to the
 //        transcript + deliver it on the channel (WhatsApp live; web = recorded)
@@ -16,6 +22,7 @@ import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { createConversationService, prisma } from "@ibatexas/domain";
 import { getWhatsAppSender } from "@ibatexas/tools";
+import { requireManagerRole } from "../../middleware/staff-auth.js";
 import { getEscalationStore } from "../../escalation/escalation-store.js";
 
 const EscalationRecordSchema = z.object({
@@ -37,6 +44,7 @@ export async function escalationRoutes(server: FastifyInstance): Promise<void> {
   app.get(
     "/api/admin/escalations",
     {
+      preHandler: [requireManagerRole],
       schema: {
         tags: ["admin"],
         summary: "Fila de escalações abertas (take-over)",
@@ -55,6 +63,7 @@ export async function escalationRoutes(server: FastifyInstance): Promise<void> {
   app.post(
     "/api/admin/escalations/:sessionId/reply",
     {
+      preHandler: [requireManagerRole],
       schema: {
         tags: ["admin"],
         summary: "Responder a uma conversa em take-over (humano)",
@@ -121,6 +130,7 @@ export async function escalationRoutes(server: FastifyInstance): Promise<void> {
   app.post(
     "/api/admin/escalations/:sessionId/resolve",
     {
+      preHandler: [requireManagerRole],
       schema: {
         tags: ["admin"],
         summary: "Resolver uma escalação (reativa o atendimento automático)",
