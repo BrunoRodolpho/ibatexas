@@ -1,8 +1,15 @@
 // @ibatexas/nats-client
-// NATS Core pub/sub wrapper for domain events.
-// NOTE: Uses Core NATS (fire-and-forget), not JetStream.
-// JetStream (with persistence/durability) is deferred to Step 14 (Observability).
-// TODO: Full JetStream migration needed for production reliability
+// NATS pub/sub wrapper for domain events.
+//
+// TRANSPORT: dual-mode behind NATS_JETSTREAM_ENABLED (at-least-once migration).
+//   - flag OFF (default): Core NATS (fire-and-forget, at-most-once). Publish
+//     durability for critical events comes from the Redis outbox + outbox-retry.
+//   - flag ON: JetStream — publish gets a PubAck (durable; outbox bypassed), and
+//     subscribeNatsEvent uses a durable consumer with manual ack/nak/term so a
+//     failed handler is REDELIVERED (real at-least-once) and poison messages go
+//     to the DLQ after max_deliver. See streams.ts + ~/projects/jetstream-at-
+//     least-once-plan.md. Post-soak, the flag becomes permanent and the Core +
+//     outbox code below is deleted.
 //
 // ── W4 P0-12: NATS authentication ────────────────────────────────────────
 //
@@ -349,25 +356,45 @@ export function outboxKey(envPrefix: string, eventName: string): string {
  * For critical events (order.placed, reservation.created), writes to Redis outbox
  * before NATS publish and removes after success.
  */
+/** Persist a critical event to the Redis outbox (the Core-publish durability
+ *  net). Bounded + best-effort. */
+async function outboxWrite(envPrefix: string, event: string, data: string): Promise<void> {
+  if (!_outboxWriter) return
+  try {
+    const key = outboxKey(envPrefix, event)
+    await _outboxWriter.lPush(key, data)
+    // Bound the list so a prolonged NATS outage can't grow it unbounded.
+    if (_outboxWriter.lTrim && OUTBOX_MAX_LEN > 0) {
+      await _outboxWriter.lTrim(key, 0, OUTBOX_MAX_LEN - 1)
+    }
+  } catch (outboxErr) {
+    console.error(`[nats] Outbox write failed for ${event}:`, (outboxErr as Error).message)
+  }
+}
+
+async function outboxRemove(envPrefix: string, event: string, data: string): Promise<void> {
+  if (!_outboxWriter) return
+  try {
+    await _outboxWriter.lRem(outboxKey(envPrefix, event), 1, data)
+  } catch (removeErr) {
+    console.error(`[nats] Outbox remove failed for ${event}:`, (removeErr as Error).message)
+  }
+}
+
 export async function publishNatsEvent<T extends Record<string, unknown> = Record<string, unknown>>(event: string, payload: T): Promise<void> {
   const data = JSON.stringify(payload)
   const isCritical = OUTBOX_EVENTS.has(event)
   const envPrefix = process.env.APP_ENV ?? "development"
+  const jetstream = process.env.NATS_JETSTREAM_ENABLED === "true"
 
-  // Write to outbox BEFORE NATS publish for critical events
-  if (isCritical && _outboxWriter) {
-    try {
-      const key = outboxKey(envPrefix, event)
-      await _outboxWriter.lPush(key, data)
-      // Bound the list so a prolonged NATS outage can't grow it unbounded.
-      // Keep the newest OUTBOX_MAX_LEN entries (index 0 = newest after lPush).
-      if (_outboxWriter.lTrim && OUTBOX_MAX_LEN > 0) {
-        await _outboxWriter.lTrim(key, 0, OUTBOX_MAX_LEN - 1)
-      }
-    } catch (outboxErr) {
-      console.error(`[nats] Outbox write failed for ${event}:`, (outboxErr as Error).message)
-      // Continue with NATS publish even if outbox write fails
-    }
+  // OUTBOX RETIREMENT (flag-gated): the Redis outbox exists to survive a lost
+  // Core-NATS (fire-and-forget) publish. With JetStream the awaited PubAck IS
+  // the durability, so the outbox is BYPASSED on the success path — and is
+  // retired entirely once the flag is permanent. It is still used as a fallback
+  // ONLY if js.publish errors and we drop to a Core publish (the soak-period
+  // safety net). Flag OFF → unchanged: write-before / remove-after.
+  if (isCritical && !jetstream) {
+    await outboxWrite(envPrefix, event, data)
   }
 
   try {
@@ -375,38 +402,32 @@ export async function publishNatsEvent<T extends Record<string, unknown> = Recor
     const subject = `ibatexas.${event}`
     const bytes = new TextEncoder().encode(data)
 
-    if (process.env.NATS_JETSTREAM_ENABLED === "true") {
-      // Phase 1: durable publish — JetStream persists the message and returns a
-      // PubAck (publish confirmed stored), the basis for later retiring the
-      // Redis outbox. On ANY JS error (a subject with no stream, a transient
-      // hiccup) fall back to a Core publish so an event is never silently
-      // dropped; critical events also remain covered by the outbox-retry job.
+    if (jetstream) {
       try {
-        await nats.jetstream().publish(subject, bytes)
+        await nats.jetstream().publish(subject, bytes) // PubAck → durable; no outbox needed
       } catch (jsErr) {
         console.error(
           `[nats] JetStream publish failed for ${event}, falling back to core:`,
           (jsErr as Error).message,
         )
+        // Fallback drops to a fire-and-forget Core publish — restore the outbox
+        // safety net for this critical event so outbox-retry can re-publish.
+        if (isCritical) await outboxWrite(envPrefix, event, data)
         nats.publish(subject, bytes)
       }
     } else {
       nats.publish(subject, bytes)
     }
 
-    // Remove from outbox after successful NATS publish
-    if (isCritical && _outboxWriter) {
-      try {
-        await _outboxWriter.lRem(outboxKey(envPrefix, event), 1, data)
-      } catch (removeErr) {
-        console.error(`[nats] Outbox remove failed for ${event}:`, (removeErr as Error).message)
-        // Non-fatal: outbox-retry job will re-publish (idempotent on subscriber side)
-      }
+    // Remove from outbox after a successful publish — flag-OFF path only (the
+    // JetStream success path never wrote one).
+    if (isCritical && !jetstream) {
+      await outboxRemove(envPrefix, event, data)
     }
   } catch (error) {
     console.error(`Failed to publish event ${event}:`, (error as Error).message)
-    // Non-critical; don't throw (event publishing is async)
-    // If NATS publish fails, event stays in outbox for retry
+    // Non-critical; don't throw (event publishing is async).
+    // If publish fails, a critical event stays in the outbox for retry.
   }
 }
 

@@ -288,6 +288,46 @@ describe("NATS Client", () => {
     )
   })
 
+  // ── Outbox retirement (flag-gated): JetStream PubAck replaces the outbox ────
+
+  it("[retirement] bypasses the outbox when JetStream publish succeeds (flag on)", async () => {
+    process.env.NATS_JETSTREAM_ENABLED = "true"
+    const writer = {
+      lPush: vi.fn().mockResolvedValue(1),
+      lRem: vi.fn().mockResolvedValue(1),
+      lTrim: vi.fn().mockResolvedValue("OK"),
+    }
+    setOutboxWriter(writer)
+    try {
+      await publishNatsEvent("order.placed", { orderId: "o1" }) // order.placed is critical
+      expect(mockJsPublish).toHaveBeenCalled() // durable via PubAck
+      expect(writer.lPush).not.toHaveBeenCalled() // outbox bypassed
+      expect(writer.lRem).not.toHaveBeenCalled()
+    } finally {
+      delete process.env.NATS_JETSTREAM_ENABLED
+    }
+  })
+
+  it("[retirement] restores the outbox safety net when JetStream publish fails (flag on)", async () => {
+    process.env.NATS_JETSTREAM_ENABLED = "true"
+    mockJsPublish.mockRejectedValueOnce(new Error("no stream matches subject"))
+    const writer = {
+      lPush: vi.fn().mockResolvedValue(1),
+      lRem: vi.fn().mockResolvedValue(1),
+      lTrim: vi.fn().mockResolvedValue("OK"),
+    }
+    setOutboxWriter(writer)
+    try {
+      await publishNatsEvent("order.placed", { orderId: "o1" })
+      // Fallback: outbox written so outbox-retry can recover, then Core publish.
+      expect(writer.lPush).toHaveBeenCalledTimes(1)
+      const conn = await getNatsConnection()
+      expect(conn.publish).toHaveBeenCalled()
+    } finally {
+      delete process.env.NATS_JETSTREAM_ENABLED
+    }
+  })
+
   it("getNatsConnection can be called without error", async () => {
     const conn = await getNatsConnection()
     expect(conn).toBeDefined()
