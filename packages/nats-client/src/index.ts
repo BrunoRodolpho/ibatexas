@@ -37,15 +37,20 @@
 // flipping enforce.
 
 import {
+  AckPolicy,
   connect,
   credsAuthenticator,
+  DeliverPolicy,
+  nanos,
   nkeyAuthenticator,
   type Authenticator,
   type ConnectionOptions,
+  type JsMsg,
   type NatsConnection,
   type TlsOptions,
 } from "nats"
 import { readFile } from "node:fs/promises"
+import { streamForSubject } from "./streams.js"
 
 let natsConn: NatsConnection | null = null
 let pendingConnection: Promise<NatsConnection> | null = null
@@ -433,11 +438,129 @@ export interface SubscribeNatsEventOptions {
   queueGroup?: string
 }
 
+// ── JetStream consumer (at-least-once migration, Phase 2) ────────────────────
+//
+// When NATS_JETSTREAM_ENABLED=true, subscribeNatsEvent attaches a DURABLE
+// JetStream consumer with MANUAL ack instead of a fire-and-forget Core
+// subscription. This is where the at-least-once guarantee actually lands:
+//   handler success         → m.ack()   (consumed; never redelivered)
+//   handler throws           → m.nak()   (redelivered after backoff — REAL retry)
+//   delivered >= maxDeliver  → m.term() + DLQ (terminal poison; stop redelivery)
+// A queueGroup maps to a SHARED durable name so replicas load-balance (the
+// JetStream analog of a Core queue group). withDedup still guards idempotency.
+// Config read at USE-TIME (not module load) so deploy/test env changes apply
+// (CLAUDE.md rule #3). Linear nak backoff is small + configurable so tests run fast.
+function jsMaxDeliver(): number {
+  return Number.parseInt(process.env.NATS_JS_MAX_DELIVER || "5", 10)
+}
+function jsAckWaitMs(): number {
+  return Number.parseInt(process.env.NATS_JS_ACK_WAIT_MS || "30000", 10)
+}
+function jsNakBaseMs(): number {
+  return Number.parseInt(process.env.NATS_JS_NAK_BASE_MS || "1000", 10)
+}
+function jsNakMaxMs(): number {
+  return Number.parseInt(process.env.NATS_JS_NAK_MAX_MS || "30000", 10)
+}
+
+/** Stable durable name for a (subscriber group, event) pair. JetStream durable
+ *  names allow [A-Za-z0-9_-]; the event's dots become underscores. */
+function consumerDurable(event: string, queueGroup?: string): string {
+  return `${queueGroup ?? "default"}__${event}`.replace(/[^A-Za-z0-9_-]/g, "_")
+}
+
+function nakDelayMs(deliveries: number): number {
+  return Math.min(deliveries * jsNakBaseMs(), jsNakMaxMs())
+}
+
+/** Run one JetStream message through the handler and translate the outcome into
+ *  ack / nak(redeliver) / term(DLQ). Never throws — the consume loop must survive. */
+async function handleJsMsg(
+  event: string,
+  handler: (payload: Record<string, unknown>) => void | Promise<void>,
+  m: JsMsg,
+): Promise<void> {
+  let payload: Record<string, unknown> | null = null
+  try {
+    const parsed = JSON.parse(new TextDecoder().decode(m.data)) as Record<string, unknown>
+    payload = parsed
+    await handler(parsed)
+    m.ack()
+  } catch (error) {
+    console.error(`Event handler failed for ${event}:`, (error as Error).message)
+    // deliveryCount is 1-based (1 on the first delivery) and matches max_deliver,
+    // so on the LAST allowed delivery we terminate rather than nak into the void.
+    const deliveries = m.info?.deliveryCount ?? 1
+    if (deliveries >= jsMaxDeliver()) {
+      // Exhausted retries → terminal: DLQ, then term() so JetStream stops redelivering.
+      if (_dlqHandler) {
+        try {
+          await _dlqHandler(event, payload ?? { _raw: safeDecode(m.data) }, error)
+        } catch (dlqErr) {
+          console.error(`DLQ handler failed for ${event}:`, (dlqErr as Error).message)
+        }
+      }
+      m.term()
+    } else {
+      // Transient → nak so JetStream redelivers (the real at-least-once retry).
+      m.nak(nakDelayMs(deliveries))
+    }
+  }
+}
+
+/** JetStream durable-consumer subscription — the flag-on path of subscribeNatsEvent. */
+async function jetstreamSubscribe(
+  event: string,
+  handler: (payload: Record<string, unknown>) => void | Promise<void>,
+  options?: SubscribeNatsEventOptions,
+): Promise<{ unsubscribe: () => void }> {
+  const nc = await getNatsConnection()
+  const subject = `ibatexas.${event}`
+  const stream = streamForSubject(subject)
+  if (!stream) {
+    throw new Error(
+      `[nats] no JetStream stream owns "${subject}" — add it to STREAM_DEFS / run ensureStreams()`,
+    )
+  }
+  const durable = consumerDurable(event, options?.queueGroup)
+  const jsm = await nc.jetstreamManager()
+  // Create the durable consumer only when absent (idempotent re-subscribe).
+  try {
+    await jsm.consumers.info(stream, durable)
+  } catch {
+    await jsm.consumers.add(stream, {
+      durable_name: durable,
+      filter_subject: subject,
+      ack_policy: AckPolicy.Explicit,
+      ack_wait: nanos(jsAckWaitMs()),
+      max_deliver: jsMaxDeliver(),
+      deliver_policy: DeliverPolicy.All,
+    })
+  }
+  const consumer = await nc.jetstream().consumers.get(stream, durable)
+  const messages = await consumer.consume({
+    callback: (m: JsMsg) => {
+      void handleJsMsg(event, handler, m)
+    },
+  })
+  return {
+    unsubscribe: () => {
+      void messages.stop()
+    },
+  }
+}
+
 export async function subscribeNatsEvent(
   event: string,
   handler: (payload: Record<string, unknown>) => void | Promise<void>,
   options?: SubscribeNatsEventOptions,
 ): Promise<{ unsubscribe: () => void }> {
+  // Phase 2: durable JetStream consumer (manual ack → real redelivery) when
+  // enabled; otherwise the original Core NATS fire-and-forget subscription.
+  if (process.env.NATS_JETSTREAM_ENABLED === "true") {
+    return jetstreamSubscribe(event, handler, options)
+  }
+
   const nats = await getNatsConnection()
   const subject = `ibatexas.${event}`
 
