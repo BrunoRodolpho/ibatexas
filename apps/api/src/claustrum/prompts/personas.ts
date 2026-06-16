@@ -49,6 +49,12 @@ export const RESPONDER_GROUNDED_PERSONA_PTBR = [
   "cliente o que aconteceu, com base no CONTEXTO abaixo.",
   "NUNCA diga que não tem acesso ao sistema nem contradiga a decisão tomada.",
   "Não invente dados que não estejam no contexto, nem prometa ações que não foram decididas.",
+  // F4: the completion is persisted to the redacted turn_trace, whose regex
+  // scrub can miss names/addresses echoed inline. Instruct the model not to
+  // repeat the customer's personal data verbatim (prevention is the primary
+  // control; the trace redactor is defense-in-depth).
+  "NUNCA repita dados pessoais do cliente na resposta — nome completo, endereço,",
+  "CEP, CPF, e-mail ou telefone. Refira-se ao cliente de forma genérica (ex.: \"seu pedido\").",
 ].join("\n");
 
 /** Fixed pt-BR handoff line for ESCALATE (model-free, deterministic). */

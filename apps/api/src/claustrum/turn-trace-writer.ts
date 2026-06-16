@@ -15,15 +15,32 @@
 // REDACTION (the load-bearing posture): the completion is FREE PROSE, so it is
 // scrubbed through the ibatexas audit redactor's `redactPayload` (BR-PII regex
 // defense — email/cpf/phone/card → sentinels — + 500-char truncation) BEFORE the
-// row is written. The console only ever sees the redacted text. Caveat (per
-// plan): the redactor is regex/field-oriented and may not scrub names/addresses
-// a model echoes inline; the manifest is just ids/hashes (no redaction needed).
+// row is written, plus a trace-local pass for the Brazilian CEP (postal code)
+// shape (F4). The console only ever sees the redacted text.
+//
+// ACCEPTED RESIDUAL RISK (F4): a regex/field-oriented scrub cannot reliably
+// catch a customer's NAME or full ADDRESS that a model echoes inline. This is
+// mitigated by three compensating controls rather than a perfect scrubber:
+//   (1) PREVENTION — the grounded responder persona instructs the model not to
+//       repeat the customer's personal data verbatim (personas.ts, F4);
+//   (2) DEFENSE-IN-DEPTH — this redaction pass (cpf/email/phone/card/CEP);
+//   (3) MINIMIZATION — the trace has a bounded default retention so any residual
+//       miss ages out (retention-cleaner TURN_TRACE_RETENTION_DAYS default, F3),
+//       and per-subject LGPD erasure deletes it on request (customer.service).
+// The manifest is just ids/hashes (no redaction needed).
 //
 // Best-effort + fail-open: telemetry must NEVER break a turn — every method
 // swallows its errors.
 
 import { createAuditRedactor } from "@ibatexas/audit-sink";
 import { logger } from "../lib/logger.js";
+
+// F4 defense-in-depth: the shared audit redactor covers cpf/email/phone/card.
+// Add a trace-local pass for the Brazilian CEP (postal code) shape — the most
+// regexable component of an address, which the base PII set does not cover. The
+// dashed form (NNNNN-NNN) is high-precision (bare 8-digit runs are too ambiguous
+// to redact safely in an observability trace).
+const CEP_RE = /\b\d{5}-\d{3}\b/g;
 
 /** Minimal structural Postgres surface — pg.Pool satisfies it. */
 export interface TurnTraceWriterPool {
@@ -98,7 +115,10 @@ export function createTurnTraceWriter(
   function redactCompletion(completion: string): string {
     try {
       const scrubbed = redactor.redactPayload(completion);
-      return typeof scrubbed === "string" ? scrubbed : JSON.stringify(scrubbed);
+      const base =
+        typeof scrubbed === "string" ? scrubbed : JSON.stringify(scrubbed);
+      // F4: trace-local CEP pass on top of the shared cpf/email/phone/card scrub.
+      return base.replace(CEP_RE, "[REDACTED:cep]");
     } catch {
       // If redaction itself fails, drop the completion rather than leak it.
       return "[REDACTED:unavailable]";

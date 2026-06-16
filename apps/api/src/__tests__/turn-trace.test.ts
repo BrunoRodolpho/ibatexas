@@ -234,6 +234,16 @@ describe("turn_trace writer redaction", () => {
     expect(scrubbed).toMatch(/REDACTED/i);
   });
 
+  it("[F4] scrubs a Brazilian CEP (postal code) the base PII set misses", () => {
+    const { pool } = mockPool();
+    const writer = createTurnTraceWriter(pool, { redactSecret: "test-secret" });
+    const scrubbed = writer.redactCompletion(
+      "Entrega para a Rua das Flores, 100 — CEP 01310-100.",
+    );
+    expect(scrubbed).not.toContain("01310-100");
+    expect(scrubbed).toContain("[REDACTED:cep]");
+  });
+
   it("write() inserts a redacted completion and purgeOlderThan issues a DELETE", async () => {
     const { pool, queries } = mockPool();
     const writer = createTurnTraceWriter(pool, { redactSecret: "s" });
