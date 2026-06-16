@@ -56,6 +56,7 @@ import {
   type NatsConnection,
   type TlsOptions,
 } from "nats"
+import { createHash } from "node:crypto"
 import { readFile } from "node:fs/promises"
 import { streamForSubject } from "./streams.js"
 
@@ -381,6 +382,27 @@ async function outboxRemove(envPrefix: string, event: string, data: string): Pro
   }
 }
 
+/**
+ * Deterministic JetStream publish id (`Nats-Msg-Id`) for publish-level dedup
+ * (jetstream-at-least-once-plan §3.4). Derived from the event name + the exact
+ * serialized payload, so a publisher retry OR an outbox re-publish of the SAME
+ * logical event collapses to one stream message inside the stream's
+ * `duplicate_window` (streams.ts). Distinct events hash differently.
+ *
+ * This is an ADDITIVE broker-side safety net layered on top of the consume-side
+ * `withDedup` idempotency: it can only collapse byte-identical re-publishes —
+ * exactly the retry/outbox-resweep case — and never drops anything `withDedup`
+ * would not also catch downstream.
+ *
+ * The " " separator is injective for these inputs: event names are ASCII
+ * `domain.action` (no spaces) and JSON.stringify output never starts with a
+ * space, so the first space is always the field boundary — no (event,data)
+ * pair can alias another and cause a false dedup (a dropped event).
+ */
+export function publishMsgId(event: string, data: string): string {
+  return createHash("sha256").update(event).update(" ").update(data).digest("hex")
+}
+
 export async function publishNatsEvent<T extends Record<string, unknown> = Record<string, unknown>>(event: string, payload: T): Promise<void> {
   const data = JSON.stringify(payload)
   const isCritical = OUTBOX_EVENTS.has(event)
@@ -404,7 +426,9 @@ export async function publishNatsEvent<T extends Record<string, unknown> = Recor
 
     if (jetstream) {
       try {
-        await nats.jetstream().publish(subject, bytes) // PubAck → durable; no outbox needed
+        // msgID → Nats-Msg-Id activates the stream's duplicate_window so a
+        // publisher retry / outbox re-publish dedups at the broker (plan §3.4).
+        await nats.jetstream().publish(subject, bytes, { msgID: publishMsgId(event, data) }) // PubAck → durable; no outbox needed
       } catch (jsErr) {
         console.error(
           `[nats] JetStream publish failed for ${event}, falling back to core:`,
