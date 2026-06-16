@@ -93,6 +93,58 @@ function summarizeActed(acted: unknown): Record<string, unknown> | undefined {
   return out;
 }
 
+// ── F1: post-completion consistency guard ────────────────────────────────────
+//
+// The grounded EXECUTE/REWRITE/DEFER branch returns the model's free text to the
+// external send path. Phase A grounds the prompt in the authoritative decision
+// ("não inventar"), but that is a SOFT instruction — a jailbroken/hallucinating
+// model can still emit a reply that contradicts the audited action. We add a
+// deterministic post-check for the one contradiction class that is UNAMBIGUOUS
+// on any grounded branch: the model claiming it has no access / no authority to
+// the system (the exact original-bug phrasing — "não tenho acesso ao sistema de
+// pedidos") right after the kernel adjudicated a real intent and the runtime
+// acted. Such a reply is provably false, so it must never reach the customer.
+//
+// We deliberately do NOT police "claims the action failed": when a dispatch
+// genuinely fails on an EXECUTE the model SHOULD say so, and auto-substituting a
+// success line there would be a worse, false-confirmation bug. The neutral
+// fallback below asserts only what is always true (the request was registered in
+// the audit ledger), so it can never contradict the real outcome either way.
+//
+// The model's ORIGINAL text is still captured in the LLMTrace emitted by
+// completeWith(), so an override remains forensically visible.
+
+/** Neutral, audit-accurate line substituted when the grounded reply contradicts
+ *  the authoritative decision. Claims only that the request was registered —
+ *  never a specific success/failure outcome. */
+export const GROUNDED_SAFE_FALLBACK_PTBR =
+  "Recebi sua solicitação e ela foi registrada. Se precisar de mais detalhes, posso ajudar.";
+
+const NO_AUTHORITY_PATTERNS: ReadonlyArray<RegExp> = [
+  /\bnao (tenho|possuo|teria) acesso\b/,
+  /\bnao tenho como acessar\b/,
+  /\bnao (consigo|posso|consegui|sou capaz de) acessar\b/,
+  /\bsem acesso ao sistema\b/,
+  /\bnao tenho (essa |a )?(autoridade|permissao|autonomia)\b/,
+];
+
+/** Strip diacritics + lowercase so the lexicon matches accented model output. */
+function normalizePtBr(text: string): string {
+  return text
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .toLowerCase();
+}
+
+/** Returns the matched contradiction pattern (for telemetry/debug) or null. */
+export function groundedReplyContradicts(text: string): string | null {
+  const normalized = normalizePtBr(text);
+  for (const re of NO_AUTHORITY_PATTERNS) {
+    if (re.test(normalized)) return re.source;
+  }
+  return null;
+}
+
 export function createIbatexasResponder(
   deps: IbatexasResponderDeps,
 ): ResponderPort {
@@ -224,13 +276,19 @@ export function createIbatexasResponder(
             `${baseSystem}\n\n` +
             `CONTEXTO DA DECISÃO (fonte da verdade, não inventar):\n` +
             JSON.stringify(context);
-          return completeWith({
+          const draft = await completeWith({
             system,
             fragmentManifest,
             userText,
             turnId,
             ...(intentHash !== undefined ? { intentHash } : {}),
           });
+          // F1: the grounded prompt is a soft instruction; never let a model
+          // reply that contradicts the audited decision reach the customer.
+          if (groundedReplyContradicts(draft.text) !== null) {
+            return { text: GROUNDED_SAFE_FALLBACK_PTBR, usage: draft.usage };
+          }
+          return draft;
         }
 
         default: {

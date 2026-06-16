@@ -25,6 +25,7 @@ import type {
 } from "@claustrum/core";
 import {
   createIbatexasResponder,
+  GROUNDED_SAFE_FALLBACK_PTBR,
   RESPONDER_ESCALATE_PTBR,
   RESPONDER_PERSONA_PTBR,
 } from "../claustrum/ibatexas-responder.js";
@@ -236,5 +237,50 @@ describe("createIbatexasResponder", () => {
     const req = complete.mock.calls[0]![0] as CompletionRequest;
     expect(req.system).toContain("payment.confirmed");
     expect(draft.text).toBe("Estou aguardando a confirmação do pagamento.");
+  });
+
+  // ── F1: post-completion consistency guard ──────────────────────────────────
+
+  it("F1: substitutes a safe fallback when the grounded EXECUTE reply claims no system access", async () => {
+    // The model hallucinates the exact original-bug phrasing AFTER the kernel
+    // EXECUTEd a real cancel — this must never reach the customer.
+    const { model, complete } = mockModel(
+      "Desculpe, não tenho acesso ao sistema de pedidos no momento.",
+    );
+    const responder = createIbatexasResponder({ model, modelId: "m", explainer });
+    const decision = { kind: "EXECUTE", basis: [] } as unknown as Decision;
+    const acted = { kind: "dispatched", envelope: { kind: "order.cancel" }, result: { newStatus: "cancelled" } };
+    const draft = await responder.respond(
+      mkInput({ decision, envelopeKinds: ["order.cancel"], acted, text: "cancela meu pedido" }),
+    );
+    // The contradicting model text is dropped for the neutral, audit-accurate line.
+    expect(draft.text).toBe(GROUNDED_SAFE_FALLBACK_PTBR);
+    expect(complete).toHaveBeenCalledTimes(1);
+    // Token usage from the (still-executed, still-traced) model call is preserved.
+    expect(draft.usage).toEqual({ inputTokens: 11, outputTokens: 7 });
+  });
+
+  it("F1: passes a benign grounded reply through unchanged (no false positive)", async () => {
+    const { model } = mockModel("Cancelei seu pedido com sucesso.");
+    const responder = createIbatexasResponder({ model, modelId: "m", explainer });
+    const decision = { kind: "EXECUTE", basis: [] } as unknown as Decision;
+    const acted = { kind: "dispatched", envelope: { kind: "order.cancel" }, result: { newStatus: "cancelled" } };
+    const draft = await responder.respond(
+      mkInput({ decision, envelopeKinds: ["order.cancel"], acted }),
+    );
+    expect(draft.text).toBe("Cancelei seu pedido com sucesso.");
+  });
+
+  it("F1: does NOT auto-correct an honest failure reply on EXECUTE (no false confirmation)", async () => {
+    // A genuine dispatch failure the model honestly reports must pass through —
+    // substituting a success line here would be a worse bug, so the guard
+    // deliberately only polices no-access/no-authority contradictions.
+    const { model } = mockModel("Não foi possível concluir o cancelamento agora.");
+    const responder = createIbatexasResponder({ model, modelId: "m", explainer });
+    const decision = { kind: "EXECUTE", basis: [] } as unknown as Decision;
+    const draft = await responder.respond(
+      mkInput({ decision, envelopeKinds: ["order.cancel"] }),
+    );
+    expect(draft.text).toBe("Não foi possível concluir o cancelamento agora.");
   });
 });
