@@ -14,6 +14,7 @@ import {
 import type { TriggerTurnInput } from "../claustrum/agent-trigger-bridge.js";
 import type { AgentRunRecord } from "../claustrum/agent-run-journal.js";
 import type { RefundCircuitBreaker } from "../claustrum/agent-realmoney-safety.js";
+import type { LearningEvent } from "../learning-sink-bootstrap.js";
 
 const AGENT: AgentDefinition = {
   id: "pix-payment-failure-remediation",
@@ -180,5 +181,42 @@ describe("processLiveTurnResult", () => {
     );
     expect(result.decisionKind).toBe("REQUEST_CONFIRMATION");
     expect(records).toHaveLength(1); // journaled despite the park failure
+  });
+
+  // ERDS-060 learning telemetry — emitted AFTER the journal, outside the kernel.
+  it("emits a learning.event.v1 for the completed turn when a sink is wired", async () => {
+    const events: LearningEvent[] = [];
+    const { deps: d } = deps({
+      learningSink: { recordLearningEvent: async (e) => void events.push(e) },
+    });
+    await processLiveTurnResult(d, INPUT, turn("EXECUTE", ["payment.pix.regenerate"]), 3);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      schemaVersion: 1,
+      at: "2026-06-14T00:00:00.000Z",
+      agentId: "pix-payment-failure-remediation",
+      sessionId: INPUT.sessionId,
+      kind: "agent.turn",
+      decisionKind: "EXECUTE",
+      detail: { entity: "order:order-1", intentKind: "payment.pix.regenerate", modelCalls: 3 },
+    });
+  });
+
+  it("a learning-sink failure is swallowed (turn unaffected)", async () => {
+    const { deps: d, records } = deps({
+      learningSink: {
+        recordLearningEvent: async () => {
+          throw new Error("learning boom");
+        },
+      },
+    });
+    const result = await processLiveTurnResult(
+      d,
+      INPUT,
+      turn("EXECUTE", ["payment.pix.regenerate"]),
+      1,
+    );
+    expect(result.decisionKind).toBe("EXECUTE");
+    expect(records).toHaveLength(1); // journaled despite the learning emit failure
   });
 });

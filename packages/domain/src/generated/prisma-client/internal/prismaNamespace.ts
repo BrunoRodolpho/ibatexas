@@ -408,7 +408,9 @@ export const ModelName = {
   WeeklySchedule: 'WeeklySchedule',
   Holiday: 'Holiday',
   ScheduleOverride: 'ScheduleOverride',
-  AgentRun: 'AgentRun'
+  AgentRun: 'AgentRun',
+  AgentRedTeamRun: 'AgentRedTeamRun',
+  LlmTokenUsage: 'LlmTokenUsage'
 } as const
 
 export type ModelName = (typeof ModelName)[keyof typeof ModelName]
@@ -424,7 +426,7 @@ export type TypeMap<ExtArgs extends runtime.Types.Extensions.InternalArgs = runt
     omit: GlobalOmitOptions
   }
   meta: {
-    modelProps: "table" | "timeSlot" | "reservation" | "reservationTable" | "waitlist" | "review" | "staff" | "customer" | "address" | "customerPreferences" | "customerOrderItem" | "orderProjection" | "orderStatusHistory" | "orderEventLog" | "payment" | "paymentStatusHistory" | "orderNote" | "loyaltyAccount" | "conversation" | "conversationMessage" | "deliveryZone" | "weeklySchedule" | "holiday" | "scheduleOverride" | "agentRun"
+    modelProps: "table" | "timeSlot" | "reservation" | "reservationTable" | "waitlist" | "review" | "staff" | "customer" | "address" | "customerPreferences" | "customerOrderItem" | "orderProjection" | "orderStatusHistory" | "orderEventLog" | "payment" | "paymentStatusHistory" | "orderNote" | "loyaltyAccount" | "conversation" | "conversationMessage" | "deliveryZone" | "weeklySchedule" | "holiday" | "scheduleOverride" | "agentRun" | "agentRedTeamRun" | "llmTokenUsage"
     txIsolationLevel: TransactionIsolationLevel
   }
   model: {
@@ -2278,6 +2280,154 @@ export type TypeMap<ExtArgs extends runtime.Types.Extensions.InternalArgs = runt
         }
       }
     }
+    AgentRedTeamRun: {
+      payload: Prisma.$AgentRedTeamRunPayload<ExtArgs>
+      fields: Prisma.AgentRedTeamRunFieldRefs
+      operations: {
+        findUnique: {
+          args: Prisma.AgentRedTeamRunFindUniqueArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$AgentRedTeamRunPayload> | null
+        }
+        findUniqueOrThrow: {
+          args: Prisma.AgentRedTeamRunFindUniqueOrThrowArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$AgentRedTeamRunPayload>
+        }
+        findFirst: {
+          args: Prisma.AgentRedTeamRunFindFirstArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$AgentRedTeamRunPayload> | null
+        }
+        findFirstOrThrow: {
+          args: Prisma.AgentRedTeamRunFindFirstOrThrowArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$AgentRedTeamRunPayload>
+        }
+        findMany: {
+          args: Prisma.AgentRedTeamRunFindManyArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$AgentRedTeamRunPayload>[]
+        }
+        create: {
+          args: Prisma.AgentRedTeamRunCreateArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$AgentRedTeamRunPayload>
+        }
+        createMany: {
+          args: Prisma.AgentRedTeamRunCreateManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        createManyAndReturn: {
+          args: Prisma.AgentRedTeamRunCreateManyAndReturnArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$AgentRedTeamRunPayload>[]
+        }
+        delete: {
+          args: Prisma.AgentRedTeamRunDeleteArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$AgentRedTeamRunPayload>
+        }
+        update: {
+          args: Prisma.AgentRedTeamRunUpdateArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$AgentRedTeamRunPayload>
+        }
+        deleteMany: {
+          args: Prisma.AgentRedTeamRunDeleteManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        updateMany: {
+          args: Prisma.AgentRedTeamRunUpdateManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        updateManyAndReturn: {
+          args: Prisma.AgentRedTeamRunUpdateManyAndReturnArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$AgentRedTeamRunPayload>[]
+        }
+        upsert: {
+          args: Prisma.AgentRedTeamRunUpsertArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$AgentRedTeamRunPayload>
+        }
+        aggregate: {
+          args: Prisma.AgentRedTeamRunAggregateArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.AggregateAgentRedTeamRun>
+        }
+        groupBy: {
+          args: Prisma.AgentRedTeamRunGroupByArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.AgentRedTeamRunGroupByOutputType>[]
+        }
+        count: {
+          args: Prisma.AgentRedTeamRunCountArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.AgentRedTeamRunCountAggregateOutputType> | number
+        }
+      }
+    }
+    LlmTokenUsage: {
+      payload: Prisma.$LlmTokenUsagePayload<ExtArgs>
+      fields: Prisma.LlmTokenUsageFieldRefs
+      operations: {
+        findUnique: {
+          args: Prisma.LlmTokenUsageFindUniqueArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$LlmTokenUsagePayload> | null
+        }
+        findUniqueOrThrow: {
+          args: Prisma.LlmTokenUsageFindUniqueOrThrowArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$LlmTokenUsagePayload>
+        }
+        findFirst: {
+          args: Prisma.LlmTokenUsageFindFirstArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$LlmTokenUsagePayload> | null
+        }
+        findFirstOrThrow: {
+          args: Prisma.LlmTokenUsageFindFirstOrThrowArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$LlmTokenUsagePayload>
+        }
+        findMany: {
+          args: Prisma.LlmTokenUsageFindManyArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$LlmTokenUsagePayload>[]
+        }
+        create: {
+          args: Prisma.LlmTokenUsageCreateArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$LlmTokenUsagePayload>
+        }
+        createMany: {
+          args: Prisma.LlmTokenUsageCreateManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        createManyAndReturn: {
+          args: Prisma.LlmTokenUsageCreateManyAndReturnArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$LlmTokenUsagePayload>[]
+        }
+        delete: {
+          args: Prisma.LlmTokenUsageDeleteArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$LlmTokenUsagePayload>
+        }
+        update: {
+          args: Prisma.LlmTokenUsageUpdateArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$LlmTokenUsagePayload>
+        }
+        deleteMany: {
+          args: Prisma.LlmTokenUsageDeleteManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        updateMany: {
+          args: Prisma.LlmTokenUsageUpdateManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        updateManyAndReturn: {
+          args: Prisma.LlmTokenUsageUpdateManyAndReturnArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$LlmTokenUsagePayload>[]
+        }
+        upsert: {
+          args: Prisma.LlmTokenUsageUpsertArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$LlmTokenUsagePayload>
+        }
+        aggregate: {
+          args: Prisma.LlmTokenUsageAggregateArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.AggregateLlmTokenUsage>
+        }
+        groupBy: {
+          args: Prisma.LlmTokenUsageGroupByArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.LlmTokenUsageGroupByOutputType>[]
+        }
+        count: {
+          args: Prisma.LlmTokenUsageCountArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.LlmTokenUsageCountAggregateOutputType> | number
+        }
+      }
+    }
   }
 } & {
   other: {
@@ -2694,6 +2844,40 @@ export const AgentRunScalarFieldEnum = {
 export type AgentRunScalarFieldEnum = (typeof AgentRunScalarFieldEnum)[keyof typeof AgentRunScalarFieldEnum]
 
 
+export const AgentRedTeamRunScalarFieldEnum = {
+  id: 'id',
+  agentId: 'agentId',
+  agentVersion: 'agentVersion',
+  testSuite: 'testSuite',
+  testCase: 'testCase',
+  decisionKind: 'decisionKind',
+  intentKind: 'intentKind',
+  modelCalls: 'modelCalls',
+  assertionsPassed: 'assertionsPassed',
+  at: 'at',
+  createdAt: 'createdAt'
+} as const
+
+export type AgentRedTeamRunScalarFieldEnum = (typeof AgentRedTeamRunScalarFieldEnum)[keyof typeof AgentRedTeamRunScalarFieldEnum]
+
+
+export const LlmTokenUsageScalarFieldEnum = {
+  id: 'id',
+  sessionId: 'sessionId',
+  customerId: 'customerId',
+  channel: 'channel',
+  model: 'model',
+  promptTokens: 'promptTokens',
+  completionTokens: 'completionTokens',
+  totalTokens: 'totalTokens',
+  estimatedUsd: 'estimatedUsd',
+  recordedAt: 'recordedAt',
+  createdAt: 'createdAt'
+} as const
+
+export type LlmTokenUsageScalarFieldEnum = (typeof LlmTokenUsageScalarFieldEnum)[keyof typeof LlmTokenUsageScalarFieldEnum]
+
+
 export const SortOrder = {
   asc: 'asc',
   desc: 'desc'
@@ -3070,6 +3254,8 @@ export type GlobalOmitConfig = {
   holiday?: Prisma.HolidayOmit
   scheduleOverride?: Prisma.ScheduleOverrideOmit
   agentRun?: Prisma.AgentRunOmit
+  agentRedTeamRun?: Prisma.AgentRedTeamRunOmit
+  llmTokenUsage?: Prisma.LlmTokenUsageOmit
 }
 
 /* Types for Logging */

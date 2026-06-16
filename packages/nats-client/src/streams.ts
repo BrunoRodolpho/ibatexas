@@ -50,6 +50,7 @@ export const STREAM_DEFS: ReadonlyArray<StreamDef> = [
   { name: "IBX_CUSTOMER", subjects: ["ibatexas.customer.>"], maxAgeMs: 30 * DAY_MS },
   { name: "IBX_ANALYTICS", subjects: ["ibatexas.analytics.>"], maxAgeMs: 7 * DAY_MS },
   { name: "IBX_AUDIT", subjects: ["ibatexas.audit.>"], maxAgeMs: 30 * DAY_MS },
+  { name: "IBX_LEARNING", subjects: ["ibatexas.learning.>"], maxAgeMs: 30 * DAY_MS },
 ]
 
 /**

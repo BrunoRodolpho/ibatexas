@@ -186,3 +186,22 @@ export type ScheduleOverride = Prisma.ScheduleOverrideModel
  * journal upsert idempotently when a BullMQ retry re-runs the same trigger.
  */
 export type AgentRun = Prisma.AgentRunModel
+/**
+ * Model AgentRedTeamRun
+ * Durable store of managed-agent red-team / adversarial test runs (ERDS-058).
+ * Mirrors AgentRun but scoped to the per-release red-team suite: one row per
+ * (suite, case) execution, recording the kernel decision and how many model
+ * calls the case made. Per-release CI population is DEFERRED (it needs an
+ * ANTHROPIC_API_KEY); this lands the store + journal so the suite has somewhere
+ * durable to write. The console/adjutant project red-team coverage from it.
+ */
+export type AgentRedTeamRun = Prisma.AgentRedTeamRunModel
+/**
+ * Model LlmTokenUsage
+ * Durable per-llm.call token usage + estimated USD cost (ERDS-059). Written
+ * alongside the existing telemetry whenever an `llm.call` is emitted: splits
+ * prompt/completion tokens from the call metadata and applies a pricing map to
+ * compute `estimated_usd`. Best-effort / fail-open (a write failure never
+ * affects a turn). The cost dashboards aggregate by session and by customer.
+ */
+export type LlmTokenUsage = Prisma.LlmTokenUsageModel

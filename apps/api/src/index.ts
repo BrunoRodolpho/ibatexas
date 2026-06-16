@@ -6,6 +6,7 @@ import { prisma, createScheduleService } from "@ibatexas/domain";
 import { buildServer } from "./server.js";
 import { bootstrapKernel } from "./plugins/kernel-bootstrap.js";
 import { bootstrapAuditSinkDI } from "./audit-sink-bootstrap.js";
+import { bootstrapLearningSinkDI } from "./learning-sink-bootstrap.js";
 import { bootstrapClaustrum } from "./claustrum-bootstrap.js";
 import { startCartIntelligenceSubscribers } from "./subscribers/cart-intelligence.js";
 import { startHandoffSubscriber } from "./subscribers/handoff-subscriber.js";
@@ -65,6 +66,13 @@ const start = async (): Promise<void> => {
   // (which calls `installKernelMetricsSink` to populate the hook
   // state read by `buildAuditSinkDependencies`).
   await bootstrapAuditSinkDI(server.log);
+
+  // ERDS-060 — register the learning-sink leaf's boot-time DI at the SAME boot
+  // point as the audit sink, before subscribers / routes / workers (and the
+  // managed-agent plane) fire. Unlike the audit sink this is fail-OPEN: a
+  // missing Redis/NATS arm degrades to a no-op `getLearningSink()`, never a
+  // throw — learning telemetry must never gate a turn.
+  await bootstrapLearningSinkDI(server.log);
 
   // WS7 — bootstrap the claustrum Conductor ALONGSIDE the kernel bootstrap.
   // `getConductor()` then returns the live process singleton so the chat +

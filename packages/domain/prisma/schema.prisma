@@ -688,3 +688,64 @@ model AgentRun {
   @@map("agent_runs")
   @@schema("ibx_domain")
 }
+
+// ─── Managed-agent red-team runs ────────────────────────────────────────────────
+
+/// Durable store of managed-agent red-team / adversarial test runs (ERDS-058).
+/// Mirrors AgentRun but scoped to the per-release red-team suite: one row per
+/// (suite, case) execution, recording the kernel decision and how many model
+/// calls the case made. Per-release CI population is DEFERRED (it needs an
+/// ANTHROPIC_API_KEY); this lands the store + journal so the suite has somewhere
+/// durable to write. The console/adjutant project red-team coverage from it.
+model AgentRedTeamRun {
+  id              String   @id @default(cuid()) @map("run_id")
+  agentId         String   @map("agent_id")
+  agentVersion    String?  @map("agent_version")
+  /// The red-team suite this case belongs to (e.g. `prompt-injection`).
+  testSuite       String   @map("test_suite")
+  /// The individual adversarial case within the suite.
+  testCase        String   @map("test_case")
+  /// Kernel DecisionKind the case produced (EXECUTE, REFUSE, …).
+  decisionKind    String   @map("decision_kind")
+  /// Intent kind the case proposed (null when the turn proposed none).
+  intentKind      String?  @map("intent_kind")
+  /// Model calls the case made.
+  modelCalls      Int      @default(0) @map("model_calls")
+  /// Assertions that passed (null when the case records no assertion tally).
+  assertionsPassed Int?    @map("assertions_passed")
+  /// ISO completion time (passed in by the suite — never the DB clock).
+  at              DateTime
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  @@index([agentId, testSuite])
+  @@index([createdAt])
+  @@map("agent_red_team_runs")
+  @@schema("ibx_domain")
+}
+
+// ─── LLM token → USD persistence ────────────────────────────────────────────────
+
+/// Durable per-llm.call token usage + estimated USD cost (ERDS-059). Written
+/// alongside the existing telemetry whenever an `llm.call` is emitted: splits
+/// prompt/completion tokens from the call metadata and applies a pricing map to
+/// compute `estimated_usd`. Best-effort / fail-open (a write failure never
+/// affects a turn). The cost dashboards aggregate by session and by customer.
+model LlmTokenUsage {
+  id               String   @id @default(cuid())
+  sessionId        String   @map("session_id")
+  customerId       String?  @map("customer_id")
+  channel          String?
+  model            String
+  promptTokens     Int      @map("prompt_tokens")
+  completionTokens Int      @map("completion_tokens")
+  totalTokens      Int      @map("total_tokens")
+  /// Estimated cost in USD (pricing-map derived; telemetry, not money-of-record).
+  estimatedUsd     Decimal  @map("estimated_usd") @db.Decimal(12, 6)
+  recordedAt       DateTime @map("recorded_at")
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  @@index([sessionId])
+  @@index([customerId, createdAt])
+  @@map("llm_token_usage")
+  @@schema("ibx_domain")
+}

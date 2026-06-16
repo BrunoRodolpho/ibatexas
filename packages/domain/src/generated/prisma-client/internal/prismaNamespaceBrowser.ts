@@ -75,7 +75,9 @@ export const ModelName = {
   WeeklySchedule: 'WeeklySchedule',
   Holiday: 'Holiday',
   ScheduleOverride: 'ScheduleOverride',
-  AgentRun: 'AgentRun'
+  AgentRun: 'AgentRun',
+  AgentRedTeamRun: 'AgentRedTeamRun',
+  LlmTokenUsage: 'LlmTokenUsage'
 } as const
 
 export type ModelName = (typeof ModelName)[keyof typeof ModelName]
@@ -469,6 +471,40 @@ export const AgentRunScalarFieldEnum = {
 } as const
 
 export type AgentRunScalarFieldEnum = (typeof AgentRunScalarFieldEnum)[keyof typeof AgentRunScalarFieldEnum]
+
+
+export const AgentRedTeamRunScalarFieldEnum = {
+  id: 'id',
+  agentId: 'agentId',
+  agentVersion: 'agentVersion',
+  testSuite: 'testSuite',
+  testCase: 'testCase',
+  decisionKind: 'decisionKind',
+  intentKind: 'intentKind',
+  modelCalls: 'modelCalls',
+  assertionsPassed: 'assertionsPassed',
+  at: 'at',
+  createdAt: 'createdAt'
+} as const
+
+export type AgentRedTeamRunScalarFieldEnum = (typeof AgentRedTeamRunScalarFieldEnum)[keyof typeof AgentRedTeamRunScalarFieldEnum]
+
+
+export const LlmTokenUsageScalarFieldEnum = {
+  id: 'id',
+  sessionId: 'sessionId',
+  customerId: 'customerId',
+  channel: 'channel',
+  model: 'model',
+  promptTokens: 'promptTokens',
+  completionTokens: 'completionTokens',
+  totalTokens: 'totalTokens',
+  estimatedUsd: 'estimatedUsd',
+  recordedAt: 'recordedAt',
+  createdAt: 'createdAt'
+} as const
+
+export type LlmTokenUsageScalarFieldEnum = (typeof LlmTokenUsageScalarFieldEnum)[keyof typeof LlmTokenUsageScalarFieldEnum]
 
 
 export const SortOrder = {
