@@ -1,0 +1,128 @@
+{
+  "schemaVersion": 1,
+  "adopter": "ibatexas",
+  "passed": true,
+  "totals": {
+    "error": 0,
+    "warning": 7,
+    "note": 0
+  },
+  "packs": [
+    {
+      "packId": "ibatexas/pack-customer-onboarding",
+      "packVersion": "1.0.0",
+      "passed": true,
+      "summary": {
+        "error": 0,
+        "warning": 2,
+        "note": 0
+      },
+      "diagnostics": [
+        {
+          "code": "AJD-101",
+          "severity": "warning",
+          "message": "Guard auth[0] has no metadata (no name and no GuardDescription).",
+          "guardId": "auth[0]",
+          "phase": "auth"
+        },
+        {
+          "code": "AJD-102",
+          "severity": "warning",
+          "message": "Pack declares signal 'customer.anonymize.confirmed_after_grace' in Pack.signals but no DEFER guard emits it."
+        }
+      ]
+    },
+    {
+      "packId": "ibatexas/pack-orders",
+      "packVersion": "1.1.0",
+      "passed": true,
+      "summary": {
+        "error": 0,
+        "warning": 2,
+        "note": 0
+      },
+      "diagnostics": [
+        {
+          "code": "AJD-101",
+          "severity": "warning",
+          "message": "Guard auth[0] has no metadata (no name and no GuardDescription).",
+          "guardId": "auth[0]",
+          "phase": "auth"
+        },
+        {
+          "code": "AJD-102",
+          "severity": "warning",
+          "message": "Pack declares signal 'payment.confirmed' in Pack.signals but no DEFER guard emits it."
+        }
+      ]
+    },
+    {
+      "packId": "ibatexas/pack-payments",
+      "packVersion": "1.0.0",
+      "passed": true,
+      "summary": {
+        "error": 0,
+        "warning": 1,
+        "note": 0
+      },
+      "diagnostics": [
+        {
+          "code": "AJD-101",
+          "severity": "warning",
+          "message": "Guard auth[0] has no metadata (no name and no GuardDescription).",
+          "guardId": "auth[0]",
+          "phase": "auth"
+        }
+      ]
+    },
+    {
+      "packId": "ibatexas/pack-reservations",
+      "packVersion": "1.0.0",
+      "passed": true,
+      "summary": {
+        "error": 0,
+        "warning": 1,
+        "note": 0
+      },
+      "diagnostics": [
+        {
+          "code": "AJD-101",
+          "severity": "warning",
+          "message": "Guard auth[0] has no metadata (no name and no GuardDescription).",
+          "guardId": "auth[0]",
+          "phase": "auth"
+        }
+      ]
+    },
+    {
+      "packId": "ibatexas/pack-whatsapp",
+      "packVersion": "1.1.0",
+      "passed": true,
+      "summary": {
+        "error": 0,
+        "warning": 1,
+        "note": 0
+      },
+      "diagnostics": [
+        {
+          "code": "AJD-101",
+          "severity": "warning",
+          "message": "Guard auth[0] has no metadata (no name and no GuardDescription).",
+          "guardId": "auth[0]",
+          "phase": "auth"
+        }
+      ]
+    },
+    {
+      "packId": "pack-payments-pix",
+      "packVersion": "0.1.0-experimental",
+      "passed": true,
+      "summary": {
+        "error": 0,
+        "warning": 0,
+        "note": 0
+      },
+      "diagnostics": []
+    }
+  ]
+}
