@@ -368,8 +368,26 @@ export async function publishNatsEvent<T extends Record<string, unknown> = Recor
   try {
     const nats = await getNatsConnection()
     const subject = `ibatexas.${event}`
+    const bytes = new TextEncoder().encode(data)
 
-    nats.publish(subject, new TextEncoder().encode(data))
+    if (process.env.NATS_JETSTREAM_ENABLED === "true") {
+      // Phase 1: durable publish — JetStream persists the message and returns a
+      // PubAck (publish confirmed stored), the basis for later retiring the
+      // Redis outbox. On ANY JS error (a subject with no stream, a transient
+      // hiccup) fall back to a Core publish so an event is never silently
+      // dropped; critical events also remain covered by the outbox-retry job.
+      try {
+        await nats.jetstream().publish(subject, bytes)
+      } catch (jsErr) {
+        console.error(
+          `[nats] JetStream publish failed for ${event}, falling back to core:`,
+          (jsErr as Error).message,
+        )
+        nats.publish(subject, bytes)
+      }
+    } else {
+      nats.publish(subject, bytes)
+    }
 
     // Remove from outbox after successful NATS publish
     if (isCritical && _outboxWriter) {
