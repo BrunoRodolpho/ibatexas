@@ -26,6 +26,7 @@ import type {
 import {
   createIbatexasResponder,
   RESPONDER_ESCALATE_PTBR,
+  RESPONDER_GROUNDED_FAILURE_PTBR,
   RESPONDER_PERSONA_PTBR,
 } from "../claustrum/ibatexas-responder.js";
 
@@ -213,6 +214,44 @@ describe("createIbatexasResponder", () => {
     expect(req.system).toContain("order.cancel");
     expect(req.system).toContain("cancelled");
     expect(draft.usage).toEqual({ inputTokens: 11, outputTokens: 7 });
+  });
+
+  it("EXECUTE with a FAILED dispatch replies with the deterministic failure line — model-free, no false success, no operator-message leak", async () => {
+    // The model would happily echo a success line if asked — prove we never ask.
+    const { model, complete } = mockModel("Cancelei seu pedido com sucesso.");
+    const responder = createIbatexasResponder({
+      model,
+      modelId: "m",
+      explainer,
+    });
+    const decision = { kind: "EXECUTE", basis: [] } as unknown as Decision;
+    // Shape produced by @claustrum/core dispatch.ts when the tool throws: the
+    // decision stayed EXECUTE but the ACT phase failed. `message` is operator-
+    // facing and must never reach the customer.
+    const acted = {
+      kind: "failed",
+      phase: "EXECUTE",
+      code: "tool_threw",
+      message: "TypeError: cannot read 'id' of undefined at orders.cancel.v1:42",
+      envelope: { kind: "order.cancel" },
+    };
+    const draft = await responder.respond(
+      mkInput({
+        decision,
+        envelopeKinds: ["order.cancel"],
+        capabilities: ["order.cancel"],
+        acted,
+        text: "cancela meu pedido",
+      }),
+    );
+    // Deterministic + model-free: the model is never invoked, so it can never
+    // hallucinate a false "cancelei com sucesso".
+    expect(draft.text).toBe(RESPONDER_GROUNDED_FAILURE_PTBR);
+    expect(complete).not.toHaveBeenCalled();
+    // No success claim and no operator/internal error text leaks to the customer.
+    expect(draft.text.toLowerCase()).not.toContain("sucesso");
+    expect(draft.text).not.toContain("TypeError");
+    expect(draft.text).not.toContain("orders.cancel.v1");
   });
 
   it("DEFER grounds the reply in the deferral signal", async () => {

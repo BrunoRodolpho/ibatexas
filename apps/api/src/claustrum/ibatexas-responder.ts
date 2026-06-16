@@ -25,6 +25,11 @@
 //   EXECUTE / REWRITE / DEFER → a model reply GROUNDED in decision.kind + a
 //       narrowed `acted` (DispatchResult) + the proposed capabilities, so the
 //       reply states what actually happened and never contradicts the action.
+//       If the dispatch FAILED (`acted.kind === "failed"` — the tool threw or
+//       was unresolved) the action did NOT take effect, so a deterministic,
+//       model-free pt-BR failure line is returned instead: never the success
+//       persona (which would falsely confirm), and never the operator-facing
+//       `message` (which can leak capability ids / internal error text).
 //
 // B/C will swap the two model-call system prompts for a claustrum
 // `PromptComposer` composition (content-addressed) and inject a `TelemetryPort`
@@ -56,6 +61,16 @@ export const RESPONDER_GROUNDED_PERSONA_PTBR = [
 export const RESPONDER_ESCALATE_PTBR =
   "Vou transferir você para um de nossos atendentes. Só um momento, por favor.";
 
+/** Deterministic, model-free pt-BR line for a FAILED dispatch (the tool threw or
+ * was unresolved — `acted.kind === "failed"`). The action did NOT take effect,
+ * so the reply must never confirm success and never echo the operator-facing
+ * error `message`. Model-free keeps the chat provably consistent with the
+ * audited outcome (a grounded model reply could still hallucinate a success). */
+export const RESPONDER_GROUNDED_FAILURE_PTBR =
+  "Recebi sua solicitação, mas não consegui concluir essa ação agora. " +
+  "Por favor, tente novamente em alguns instantes. Se o problema continuar, " +
+  "um de nossos atendentes vai te ajudar.";
+
 const DEFAULT_MAX_TOKENS = 1024;
 
 export interface IbatexasResponderDeps {
@@ -76,7 +91,11 @@ function summarizeActed(acted: unknown): Record<string, unknown> | undefined {
   if (typeof a.kind !== "string") return undefined;
   const out: Record<string, unknown> = { dispatch: a.kind };
   const env = (acted as { envelope?: { kind?: unknown } }).envelope;
-  if (env && typeof env.kind === "string") out.executed = env.kind;
+  // A FAILED dispatch did NOT execute its envelope — surfacing it as `executed`
+  // would mislead the grounding model into confirming an action that threw.
+  if (env && typeof env.kind === "string") {
+    out[a.kind === "failed" ? "attempted" : "executed"] = env.kind;
+  }
   const execs = (acted as { executions?: ReadonlyArray<{ envelope?: { kind?: unknown } }> })
     .executions;
   if (Array.isArray(execs)) {
@@ -87,9 +106,22 @@ function summarizeActed(acted: unknown): Record<string, unknown> | undefined {
   if ("result" in a && a.result !== undefined) out.result = a.result;
   const signal = (acted as { signal?: unknown }).signal;
   if (typeof signal === "string") out.signal = signal;
-  const message = (acted as { message?: unknown }).message;
-  if (typeof message === "string") out.message = message;
+  // `acted.message` is OPERATOR-FACING (can carry capability ids / internal error
+  // or stack text — see @claustrum/core dispatch.ts) and is deliberately NOT
+  // forwarded into the model prompt. A failed dispatch is handled model-free
+  // upstream; nothing here should ever leak that text toward the customer.
   return out;
+}
+
+/** True when the runtime dispatch FAILED (the resolved tool threw or the
+ * capability was unresolved — `acted.kind === "failed"`). A failed dispatch
+ * means the action did NOT take effect, so the reply must not confirm success. */
+function dispatchFailed(acted: unknown): boolean {
+  return (
+    acted !== null &&
+    typeof acted === "object" &&
+    (acted as { kind?: unknown }).kind === "failed"
+  );
 }
 
 export function createIbatexasResponder(
@@ -147,6 +179,16 @@ export function createIbatexasResponder(
         case "EXECUTE":
         case "REWRITE":
         case "DEFER": {
+          // Dispatch FAILED (tool threw / unresolved) → the action did NOT
+          // happen. Reply with a deterministic, model-free pt-BR line: the
+          // grounded SUCCESS persona below asserts "o sistema já executou…",
+          // which would be a false confirmation here — exactly the audit
+          // contradiction this responder exists to prevent. Model-free also
+          // guarantees the operator-facing error `message` never reaches a
+          // prompt or the customer.
+          if (dispatchFailed(input.acted)) {
+            return { text: RESPONDER_GROUNDED_FAILURE_PTBR };
+          }
           // The kernel decided + the runtime acted — ground the reply in what
           // happened so it can never contradict the audited action.
           const capabilities =
