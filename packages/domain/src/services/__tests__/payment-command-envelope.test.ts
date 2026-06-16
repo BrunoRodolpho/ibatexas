@@ -22,6 +22,7 @@ const mockPaymentCreate = vi.hoisted(() => vi.fn())
 const mockPaymentFindUnique = vi.hoisted(() => vi.fn())
 const mockPaymentFindFirst = vi.hoisted(() => vi.fn())
 const mockPaymentUpdate = vi.hoisted(() => vi.fn())
+const mockPaymentUpdateMany = vi.hoisted(() => vi.fn())
 const mockHistoryCreate = vi.hoisted(() => vi.fn())
 const mockOrderProjectionUpdate = vi.hoisted(() => vi.fn())
 
@@ -31,6 +32,7 @@ const txClient = {
     findUnique: mockPaymentFindUnique,
     findFirst: mockPaymentFindFirst,
     update: mockPaymentUpdate,
+    updateMany: mockPaymentUpdateMany,
   },
   paymentStatusHistory: { create: mockHistoryCreate },
   orderProjection: { update: mockOrderProjectionUpdate },
@@ -46,6 +48,7 @@ vi.mock("../../client.js", () => ({
       findUnique: mockPaymentFindUnique,
       findFirst: mockPaymentFindFirst,
       update: mockPaymentUpdate,
+      updateMany: mockPaymentUpdateMany,
     },
     paymentStatusHistory: { create: mockHistoryCreate },
     orderProjection: { update: mockOrderProjectionUpdate },
@@ -268,7 +271,7 @@ describe("PaymentCommandService — envelope-typed entry points", () => {
         .mockResolvedValueOnce(makePaymentRow({ status: "payment_pending" }))
         // Executor's own fetch
         .mockResolvedValueOnce(makePaymentRow({ status: "payment_pending" }))
-      mockPaymentUpdate.mockResolvedValue({})
+      mockPaymentUpdateMany.mockResolvedValue({ count: 1 })
       mockHistoryCreate.mockResolvedValue({})
 
       const payload: PaymentStatusReconcilePayload = {
@@ -288,7 +291,7 @@ describe("PaymentCommandService — envelope-typed entry points", () => {
 
       expect(outcome.decision.kind).toBe("EXECUTE")
       expect(outcome.result).toEqual({ version: 2 })
-      expect(mockPaymentUpdate).toHaveBeenCalledOnce()
+      expect(mockPaymentUpdateMany).toHaveBeenCalledOnce()
     })
 
     it("REFUSE: UNTRUSTED taint blocks the SYSTEM-only reconcile", async () => {

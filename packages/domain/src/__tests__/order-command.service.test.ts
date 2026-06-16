@@ -27,6 +27,7 @@ import { buildEnvelope } from "@adjudicate/core"
 const mockProjectionCreate = vi.hoisted(() => vi.fn())
 const mockProjectionFindUnique = vi.hoisted(() => vi.fn())
 const mockProjectionUpdate = vi.hoisted(() => vi.fn())
+const mockProjectionUpdateMany = vi.hoisted(() => vi.fn())
 const mockHistoryCreate = vi.hoisted(() => vi.fn())
 
 // The $transaction mock calls the callback with a tx client that
@@ -36,6 +37,7 @@ const txClient = {
     create: mockProjectionCreate,
     findUnique: mockProjectionFindUnique,
     update: mockProjectionUpdate,
+    updateMany: mockProjectionUpdateMany,
   },
   orderStatusHistory: { create: mockHistoryCreate },
 }
@@ -47,6 +49,7 @@ vi.mock("../client.js", () => ({
       create: mockProjectionCreate,
       findUnique: mockProjectionFindUnique,
       update: mockProjectionUpdate,
+      updateMany: mockProjectionUpdateMany,
     },
     orderStatusHistory: { create: mockHistoryCreate },
   },
@@ -359,6 +362,7 @@ describe("OrderCommandService — R1-DELETE envelope-typed surface", () => {
     it("valid reconciliation — updates projection and records history", async () => {
       mockProjectionFindUnique.mockResolvedValue(makeProjection({ fulfillmentStatus: "pending", version: 1 }))
       mockProjectionUpdate.mockResolvedValue({})
+      mockProjectionUpdateMany.mockResolvedValue({ count: 1 })
       mockHistoryCreate.mockResolvedValue({})
 
       const envelope = buildReconcileEnvelope("order_01", {
@@ -369,8 +373,58 @@ describe("OrderCommandService — R1-DELETE envelope-typed surface", () => {
       const out = await svc.reconcileStatusFromEnvelope(envelope)
 
       expect(out.result).toEqual({ version: 2 })
-      expect(mockProjectionUpdate).toHaveBeenCalledOnce()
       expect(mockHistoryCreate).toHaveBeenCalledOnce()
     })
+  })
+})
+
+describe("OrderCommandService — executeReconcile lost-update (B1b)", () => {
+  let svc: ReturnType<typeof createOrderCommandService>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    svc = createOrderCommandService()
+  })
+
+  it("two concurrent reconcile calls at the same starting version — exactly one applies (no lost-update)", async () => {
+    // Both concurrent calls read projection at version 1
+    const projection = makeProjection({ fulfillmentStatus: "pending", version: 1 })
+    mockProjectionFindUnique.mockResolvedValue(projection)
+
+    // Simulate the in-tx optimistic lock: first call matches (version still 1) → count 1
+    // second call no longer matches (version bumped to 2) → count 0
+    let updateManyCallCount = 0
+    mockProjectionUpdateMany.mockImplementation(() => {
+      updateManyCallCount++
+      // With the FIXED code: first call succeeds (count 1), second is a no-op (count 0)
+      // With the BUGGY code: update is used instead of updateMany, so both always succeed
+      return Promise.resolve({ count: updateManyCallCount === 1 ? 1 : 0 })
+    })
+    mockHistoryCreate.mockResolvedValue({})
+
+    const envelope1 = buildReconcileEnvelope("order_01", { newStatus: "confirmed", eventVersion: 2, actor: "system" })
+    const envelope2 = buildReconcileEnvelope("order_01", { newStatus: "confirmed", eventVersion: 2, actor: "system" })
+
+    const results = await Promise.allSettled([
+      svc.reconcileStatusFromEnvelope(envelope1),
+      svc.reconcileStatusFromEnvelope(envelope2),
+    ])
+
+    const applied = results
+      .filter((r) => r.status === "fulfilled")
+      .map((r) => (r as PromiseFulfilledResult<Awaited<ReturnType<typeof svc.reconcileStatusFromEnvelope>>>).value)
+      .filter((v) => v.result !== null)
+
+    const noOps = results
+      .filter((r) => r.status === "fulfilled")
+      .map((r) => (r as PromiseFulfilledResult<Awaited<ReturnType<typeof svc.reconcileStatusFromEnvelope>>>).value)
+      .filter((v) => v.result === null)
+
+    // With the BUGGY code (update, no version condition) both succeed → applied.length === 2
+    // With the FIXED code (updateMany where version matches) only one applies → applied.length === 1
+    expect(applied).toHaveLength(1)
+    expect(noOps).toHaveLength(1)
+    // Only one history row should be written
+    expect(mockHistoryCreate).toHaveBeenCalledTimes(1)
   })
 })

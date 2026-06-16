@@ -28,6 +28,7 @@ export const DOMAIN_DELETE_ORDER = [
   "orderNote",
   "orderStatusHistory",
   "orderEventLog",
+  "agentRun",
   "conversationMessage",
   "conversation",
   "orderProjection",

@@ -16,6 +16,8 @@ const mockRecordOrderItems = vi.hoisted(() => vi.fn());
 const mockGetWhatsAppSender = vi.hoisted(() => vi.fn());
 const mockMedusaAdminFetch = vi.hoisted(() => vi.fn());
 const mockSendText = vi.hoisted(() => vi.fn());
+const mockEventLogAppend = vi.hoisted(() => vi.fn());
+const mockPushToDlq = vi.hoisted(() => vi.fn());
 
 // Store registered handlers so we can invoke them in tests
 const natsHandlers: Record<string, (payload: unknown) => Promise<void>> = {};
@@ -43,7 +45,7 @@ vi.mock("@ibatexas/domain", () => ({
     getById: vi.fn().mockResolvedValue(null),
   }),
   createOrderEventLogService: () => ({
-    append: vi.fn(),
+    append: mockEventLogAppend,
   }),
   createOrderCommandService: () => ({
     create: vi.fn(),
@@ -82,6 +84,15 @@ vi.mock("../jobs/review-prompt.js", () => ({
 
 vi.mock("../whatsapp/client.js", () => ({
   sendText: mockSendText,
+}));
+
+// C2: spy on the DLQ so we can assert a failed order.placed is routed there
+// (not silently swallowed + pinned as processed). Keep any other dlq exports real.
+vi.mock("../subscribers/dlq.js", async () => ({
+  ...(await vi.importActual<typeof import("../subscribers/dlq.js")>(
+    "../subscribers/dlq.js",
+  )),
+  pushToDlq: mockPushToDlq,
 }));
 
 // ── Mock Redis client ─────────────────────────────────────────────────────────
@@ -425,6 +436,27 @@ describe("order.placed handler", () => {
 
     expect(mockGetRedisClient).not.toHaveBeenCalled();
     expect(mockRecordOrderItems).not.toHaveBeenCalled();
+  });
+
+  it("[C2] routes a failed order.placed to the DLQ instead of silently pinning it processed", async () => {
+    const mockRedis = createMockRedis({ set: vi.fn().mockResolvedValue("OK") });
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+    // Force the main body to throw: recordOrderItems sits inside the handler's
+    // try whose catch now routes to the DLQ.
+    mockRecordOrderItems.mockRejectedValue(new Error("db down"));
+
+    await natsHandlers["order.placed"]({
+      customerId: "cus_01",
+      orderId: "order_fail",
+      items: [{ productId: "prod_01", variantId: "var_01", quantity: 1, priceInCentavos: 5000 }],
+    });
+
+    expect(mockPushToDlq).toHaveBeenCalledWith(
+      "order.placed",
+      expect.objectContaining({ orderId: "order_fail" }),
+      expect.any(Error),
+      undefined, // no logger injected in this harness
+    );
   });
 
   it("creates CustomerOrderItem rows via createMany", async () => {
@@ -1111,4 +1143,129 @@ describe("cart.item_added handler (EVT-006)", () => {
     expect(popularityPrunes[0][1]).toBe(0);
     expect(popularityPrunes[0][2]).toBe(-201);
   });
+});
+
+// ── Tests: B2 fail-closed dedup semantics ────────────────────────────────────
+//
+// Bug B2: side-effecting handlers use isNewEvent (mark-before-run), so a
+// mid-handler crash permanently drops the event (the key is at full TTL before
+// the body runs). The fix is withDedup (two-phase): claims a short in-flight
+// key, runs the body, promotes to full TTL ONLY on success; on throw, releases
+// the claim so NATS redelivery can reprocess.
+//
+// Test mechanism: make eventLog.append throw synchronously on the first handler
+// invocation. This call runs OUTSIDE the handler's inner try/catch block
+// (see cart-intelligence.ts order.placed handler — void eventLog.append(...)
+// precedes the try {}), so the exception ESCAPES the handler body and reaches
+// the dedup wrapper:
+//   - isNewEvent (current code): key is already at full TTL (set BEFORE the
+//     body ran). The uncaught throw does not release the key. Second delivery
+//     sees the key and skips — event is permanently dropped. TEST FAILS.
+//   - withDedup (fixed code): key is at in-flight TTL (short). The uncaught
+//     throw from the closure is caught by withDedup, which calls releaseClaim
+//     (del) before rethrowing. Second delivery can claim the key and reprocess.
+//     TEST PASSES.
+
+describe("B2: fail-closed dedup semantics — withDedup vs isNewEvent", () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
+    mockPublishNatsEvent.mockResolvedValue(undefined);
+    mockRecordOrderItems.mockResolvedValue({ count: 1 });
+    await registerSubscribers();
+  });
+
+  it(
+    "withDedup releases claim on mid-handler crash so redelivery reprocesses " +
+      "(FAILS before fix — isNewEvent permanently marks before body runs)",
+    async () => {
+      // Stateful Redis store: tracks SET NX / DEL for the dedup key.
+      // - SET with NX: grant only if key absent; persist the key (full or inflight).
+      // - SET without NX: promote/overwrite (no-op for test outcome tracking).
+      // - DEL: remove key so the next SET NX can claim it.
+      const store = new Map<string, string>();
+
+      const pipeline = {
+        zIncrBy: vi.fn().mockReturnThis(),
+        zRemRangeByRank: vi.fn().mockReturnThis(),
+        lPush: vi.fn().mockReturnThis(),
+        lTrim: vi.fn().mockReturnThis(),
+        hSet: vi.fn().mockReturnThis(),
+        expire: vi.fn().mockReturnThis(),
+        exec: vi.fn().mockResolvedValue([]),
+      };
+
+      const stateRedis = {
+        set: vi.fn().mockImplementation(
+          async (key: string, _val: string, opts?: { NX?: boolean; EX?: number }) => {
+            if (opts?.NX) {
+              if (store.has(key)) return null; // already claimed
+              store.set(key, "1");
+              return "OK";
+            }
+            // Promotion (no NX): overwrite
+            store.set(key, "1");
+            return "OK";
+          },
+        ),
+        del: vi.fn().mockImplementation(async (key: string) => {
+          store.delete(key);
+          return 1;
+        }),
+        get: vi.fn().mockResolvedValue(null),
+        hGet: vi.fn().mockResolvedValue(null),
+        hIncrBy: vi.fn().mockResolvedValue(1),
+        hSet: vi.fn().mockResolvedValue(true),
+        hDel: vi.fn().mockResolvedValue(1),
+        hKeys: vi.fn().mockResolvedValue([]),
+        incr: vi.fn().mockResolvedValue(1),
+        expire: vi.fn().mockResolvedValue(true),
+        multi: vi.fn().mockReturnValue(pipeline),
+        _pipeline: pipeline,
+      };
+
+      mockGetRedisClient.mockResolvedValue(stateRedis);
+
+      // First delivery: eventLog.append throws SYNCHRONOUSLY — this runs
+      // OUTSIDE the handler's inner try/catch so the exception escapes the
+      // handler body and reaches the dedup wrapper.
+      mockEventLogAppend.mockImplementationOnce(() => {
+        throw new Error("B2 simulated mid-handler crash");
+      });
+
+      // First handler call: dedup claims key, then eventLog.append throws.
+      // The throw propagates out of the handler (uncaught at handler level).
+      await expect(
+        natsHandlers["order.placed"]({
+          customerId: "cus_b2",
+          orderId: "b2_order_01",
+          items: [{ productId: "prod_b2", variantId: "var_b2", quantity: 1, priceInCentavos: 1000 }],
+        }),
+      ).rejects.toThrow("B2 simulated mid-handler crash");
+
+      // eventLog.append is back to normal for second delivery
+      mockEventLogAppend.mockResolvedValue(undefined);
+
+      // Second delivery (NATS redelivery after the crash).
+      // With withDedup (fix): claim was released on throw → second delivery
+      //   claims the key and runs the body → recordOrderItems IS called.
+      // With isNewEvent (bug): key is already at full TTL → second delivery
+      //   skips → recordOrderItems is NOT called → event PERMANENTLY DROPPED.
+      await natsHandlers["order.placed"]({
+        customerId: "cus_b2",
+        orderId: "b2_order_01",
+        items: [{ productId: "prod_b2", variantId: "var_b2", quantity: 1, priceInCentavos: 1000 }],
+      });
+
+      // Assertion: second delivery MUST have processed the event.
+      // FAILS before fix (recordOrderItems not called — isNewEvent blocked it).
+      // PASSES after fix (withDedup released claim — second delivery reprocessed).
+      expect(mockRecordOrderItems).toHaveBeenCalledTimes(1);
+      expect(mockRecordOrderItems).toHaveBeenCalledWith(
+        "cus_b2",
+        "b2_order_01",
+        expect.arrayContaining([expect.objectContaining({ productId: "prod_b2" })]),
+      );
+    },
+  );
 });

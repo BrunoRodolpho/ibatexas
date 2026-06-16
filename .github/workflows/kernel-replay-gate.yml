@@ -55,6 +55,15 @@ jobs:
       DATABASE_URL: postgres://ibatexas:ibatexas-test@127.0.0.1:5434/ibatexas_test
       IBX_AUDIT_POSTGRES_ENABLED: "true"
       COMPOSE_PROJECT: ibx-replay-gate-${{ github.run_id }}
+      # This job boots ONLY the postgres service, but `docker compose up` still
+      # interpolates EVERY service's env at parse time — so the nats service's
+      # `${IBX_TEST_NATS_*_NKEY_PUBLIC:?stale .env.test}` guards (T3-10) abort the
+      # postgres-only boot. NATS is never started in the replay gate, so these are
+      # inert placeholders solely to satisfy interpolation — NOT real credentials,
+      # and NOT a relaxation of the compose `:?` guard for real .env.test usage.
+      IBX_TEST_NATS_APP_NKEY_PUBLIC: replay-gate-postgres-only-unused
+      IBX_TEST_NATS_CAPTURE_NKEY_PUBLIC: replay-gate-postgres-only-unused
+      IBX_TEST_NATS_TRIGGER_NKEY_PUBLIC: replay-gate-postgres-only-unused
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: pnpm/action-setup@5b4374b04084dc1f9032b52464284b769ac5059e # v4
