@@ -1,5 +1,5 @@
 import * as Sentry from "@sentry/node";
-import { closeNatsConnection, setOutboxWriter, setDlqHandler } from "@ibatexas/nats-client";
+import { closeNatsConnection, ensureStreams, getNatsConnection, setOutboxWriter, setDlqHandler } from "@ibatexas/nats-client";
 import { closeRedisClient, getRedisClient } from "@ibatexas/tools";
 import { pushToDlq } from "./subscribers/dlq.js";
 import { prisma, createScheduleService } from "@ibatexas/domain";
@@ -145,6 +145,25 @@ const start = async (): Promise<void> => {
       setDlqHandler((event, payload, error) =>
         pushToDlq(event, payload, error, server.log),
       );
+
+      // JetStream provisioning (at-least-once migration, Phase 0). Flag-gated:
+      // when NATS_JETSTREAM_ENABLED=true, ensure the durable streams exist
+      // BEFORE any subscriber attaches. Additive + fail-soft — it does NOT
+      // change Core NATS delivery, and a provisioning error must not abort boot
+      // (subscribers keep working on Core NATS). See
+      // ~/projects/jetstream-at-least-once-plan.md.
+      if (process.env.NATS_JETSTREAM_ENABLED === "true") {
+        try {
+          const nc = await getNatsConnection();
+          const { added, updated } = await ensureStreams(nc);
+          server.log.info({ added, updated }, "[startup] JetStream streams ensured");
+        } catch (err) {
+          server.log.error(
+            { error: String(err) },
+            "[startup] JetStream stream provisioning failed (continuing on Core NATS)",
+          );
+        }
+      }
 
       // Register subscribers BEFORE starting jobs to prevent race condition
       await startCartIntelligenceSubscribers(server.log);
