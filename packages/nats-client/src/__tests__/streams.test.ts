@@ -15,10 +15,16 @@ import {
 } from "../streams.js"
 
 // Every event domain published/subscribed across the app (first subject segment).
+// MUST mirror the real publishNatsEvent/subscribeNatsEvent call sites — a domain
+// here with no owning STREAM_DEF (or vice-versa) is a coverage gap that silently
+// drops events once consumers migrate to JetStream. ("follow-up" was such a gap:
+// follow-up.due is published by follow-up-poller.ts / consumed by
+// cart-intelligence.ts but had no stream, so js.publish fell back to ephemeral
+// Core publish under JetStream — now owned by IBX_NOTIFY.)
 const ALL_DOMAINS = [
   "order", "cart", "payment", "reservation", "intent", "conversation",
   "support", "product", "search", "review", "notification", "outreach",
-  "customer", "analytics", "audit",
+  "follow-up", "customer", "analytics", "audit",
 ]
 
 describe("STREAM_DEFS taxonomy", () => {
@@ -52,6 +58,31 @@ describe("streamForSubject", () => {
     expect(streamForSubject("ibatexas.payment.status_changed")).toBe("IBX_PAYMENTS")
     expect(streamForSubject("ibatexas.review.submitted")).toBe("IBX_CATALOG")
     expect(streamForSubject("ibatexas.audit.intent.decision.v1")).toBe("IBX_AUDIT")
+    // Regression: follow-up.due had no owning stream (fell back to ephemeral
+    // Core publish under JetStream). It belongs to the notify/outreach domain.
+    expect(streamForSubject("ibatexas.follow-up.due")).toBe("IBX_NOTIFY")
+  })
+
+  it("resolves every real production event subject to a stream (no coverage gap)", () => {
+    // Mirrors the literal (publish|subscribe)NatsEvent("…") call sites in the app.
+    // A new event whose domain lacks a STREAM_DEF will fail here before it can
+    // silently fall back to a non-durable Core publish once JetStream is on.
+    const PRODUCTION_SUBJECTS = [
+      "analytics.event", "cart.abandoned", "cart.item_added",
+      "conversation.message.appended", "customer.anonymize.medusa.pending",
+      "follow-up.due", "intent.defer.timeout", "notification.send",
+      "order.address_changed", "order.canceled", "order.disputed",
+      "order.escalation_needed", "order.note_added", "order.payment_failed",
+      "order.placed", "order.refunded", "order.status_changed", "order.type_changed",
+      "outreach.sent", "payment.method_changed", "payment.status_changed",
+      "product.intelligence.purge", "product.viewed", "reservation.cancelled",
+      "reservation.created", "reservation.modified", "reservation.no_show",
+      "review.prompt", "review.prompt.schedule", "review.submitted",
+      "search.results_viewed", "support.handoff_requested",
+    ]
+    for (const ev of PRODUCTION_SUBJECTS) {
+      expect(streamForSubject(`ibatexas.${ev}`)).toBeDefined()
+    }
   })
 
   it("returns undefined for an unknown subject", () => {
