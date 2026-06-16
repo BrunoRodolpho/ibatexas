@@ -41,7 +41,7 @@
       "vite@7": "vitest/qa-viewer>vite v7 transitive fix — GHSA-v2wj-q39q-566r + GHSA-p9ff-h696-f583 + GHSA-fx2h-pf6j-xcff (server.fs.deny bypass on Windows alternate paths, patched 7.3.5). Bumped 7.3.2->7.3.5. Scoped to v7 so medusa's vite v5 is untouched. Remove when vitest pulls vite >= 7.3.5.",
       "form-data": "apps/api>twilio>axios>form-data transitive fix — GHSA-hmw2-7cc7-3qxx CRLF injection via unescaped multipart field names/filenames. Patched in 4.0.6+. Remove when twilio's axios pulls form-data >=4.0.6.",
       "@rushstack/node-core-library>ajv": "@medusajs/cli>...>@rushstack/node-core-library>ajv transitive fix — GHSA-2g4f-4pwh-qvx6 ReDoS via $data option. Scoped (not global) because @eslint/eslintrc uses ajv v6 API and breaks if forced to v8 ('NOT SUPPORTED: option missingRefs' / 'Cannot set defaultMeta'). Remove when rushstack updates.",
-      "esbuild": "@medusajs/framework>vite v5>esbuild + .>tsx>esbuild transitive fix — GHSA-67mh-4wv8-2f99 dev-server CORS + GHSA-gv7w-rqvm-qjhr (CVE-less, Deno binary-integrity verification, N/A to this Node repo but flagged by audit). Bumped 0.25.0->0.28.1; qa-viewer (vite) build verified green. Remove when medusa upgrades vite to v6+.",
+      "esbuild": "@medusajs/framework>vite v5>esbuild + .>tsx>esbuild transitive fix — GHSA-67mh-4wv8-2f99 dev-server CORS (fixed in 0.25.0). Pinned to ^0.25.0, NOT 0.28.x: esbuild 0.28 lowers destructuring more strictly and crashes Medusa's admin-vite-plugin dep optimizer with thousands of 'Transforming destructuring to the configured target environment is not supported yet' errors against the @react-aria/@ariakit ESM (admin /app/login spins forever). The only advisory 0.28 added over 0.25 was GHSA-gv7w-rqvm-qjhr (Deno binary-integrity verification, N/A to this Node repo), so 0.25.x is fully sufficient. Remove when medusa upgrades vite to v6+.",
       "@grpc/grpc-js": "apps/api>testcontainers>dockerode>@grpc/grpc-js transitive fix — GHSA-5375-pq7m-f5r2 (CVE-2026-48068) + GHSA-99f4-grh7-6pcq (CVE-2026-48069) malformed-request server crash. Test-only dependency (Testcontainers / dockerode). Patched in 1.14.4+.",
       "fast-jwt": "apps/api>@fastify/jwt transitive fix — GHSA-rp9m-7r4c-75qg cache confusion + GHSA-gmvf-9v4p-v8jc (CVE-2026-44351) CRITICAL JWT auth bypass on empty HMAC secret. Patched in 6.2.4+. Remove when @fastify/jwt pulls fast-jwt >=6.2.4.",
       "fast-uri": "apps/api>@fastify/swagger>json-schema-resolver + fastify transitive fix — GHSA-q3j6-qgpj-74h6 (CVE-2026-6321) path traversal + GHSA-v39h-62p7-jpjc (CVE-2026-6322) host confusion. Patched in 3.1.2+.",
@@ -66,7 +66,7 @@
       "vite@7": "7.3.5",
       "form-data": ">=4.0.6",
       "@rushstack/node-core-library>ajv": "8.18.0",
-      "esbuild": "0.28.1",
+      "esbuild": "^0.25.0",
       "@grpc/grpc-js": ">=1.14.4",
       "fast-jwt": ">=6.2.4",
       "fast-uri": ">=3.1.2",
@@ -89,7 +89,8 @@
       "ignoreGhsas": [
         "GHSA-gwhv-j974-6fxm",
         "GHSA-qpfv-44f3-qqx6",
-        "GHSA-fx2h-pf6j-xcff"
+        "GHSA-fx2h-pf6j-xcff",
+        "GHSA-gv7w-rqvm-qjhr"
       ],
       "ignoreCveNotes": {
         "CVE-2026-35042": "fast-jwt <=6.1.0 GHSA-hm7r-c7qw-ghp6 — accepts unknown `crit` header extensions (RFC 7515 violation). No upstream patch released yet. Mitigation: we never set or trust `crit` headers in our JWT flow (Twilio Verify OTP only). Re-check when nearform/fast-jwt ships a fix.",
@@ -98,6 +99,7 @@
         "GHSA-4w7w-66w2-5vf9": "Documentation only — not enforced (pnpm ignoreCves only matches CVE-* IDs). vite <=6.4.1 path traversal in optimized deps .map handling. Pulled by @medusajs/framework which has a hard peer dep on `vite ^5.4.21`, so we cannot override to 6.4.2+ without breaking medusa's admin-vite-plugin. Dev-server-only vuln, not exploitable in production builds. Stays as a moderate in audit output (below the --audit-level=high CI threshold). Remove when medusa upgrades to vite v6+.",
         "GHSA-gwhv-j974-6fxm": "Documentation only — not enforced (pnpm ignoreCves only matches CVE-* IDs). @mikro-orm/core SQL injection. Pulled exclusively by @medusajs/deps@2.13.5 which pins @mikro-orm/core to 6.4.16. Cannot override to a patched 6.6.x line because @medusajs/utils was built against MikroORM 6.4's EventManager (subscribers is an Array with .some()); 6.6+ switched subscribers to a Set, so registerInternalServiceEventSubscriber crashes on the first service bootstrap. Mitigation: nothing in this repo executes user-controlled queries through MikroORM — Medusa is the only consumer and all its query paths are parameterized. Re-check when Medusa upgrades to MikroORM 6.6+ or 7.x.",
         "GHSA-qpfv-44f3-qqx6": "Documentation only — same situation and mitigation as GHSA-gwhv-j974-6fxm. Second SQL injection advisory against the same @mikro-orm/core 6.4.x line pulled via @medusajs/deps@2.13.5. Paired tracking — remove both together when Medusa bumps MikroORM.",
+        "GHSA-gv7w-rqvm-qjhr": "esbuild <0.28.1 — Deno binary-integrity verification bypass, N/A to this Node repo (we never run the esbuild Deno binary). Re-introduced deliberately by pinning esbuild to ^0.25.0: esbuild 0.28 lowers destructuring more strictly and crashes Medusa's admin-vite-plugin dep optimizer against the @react-aria/@ariakit ESM (admin /app/login spins forever), so 0.28 is not usable here. 0.25.x already fixes the only OTHER esbuild advisory (GHSA-67mh dev-server CORS). Remove when medusa upgrades vite to v6+ and esbuild 0.28 becomes usable.",
         "GHSA-fx2h-pf6j-xcff": "vite `server.fs.deny` bypass on Windows alternate paths. The vitest + qa-viewer instances (vite v7) ARE fixed via the `vite@7: 7.3.5` override above. The ONLY remaining instance is `@medusajs/framework>vite` (v5.x), which has no patched release in the 5.x line (patched is >=6.4.3) and cannot be overridden because medusa hard-pins `vite ^5.4.21` (forcing v6 breaks medusa's admin-vite-plugin — see the GHSA-4w7w note). Dev-server-only vuln (we run `vitest run` + production builds, never a long-lived vite dev server) and Windows-only; not exploitable here. Remove when medusa upgrades to vite v6+."
       }
     },
