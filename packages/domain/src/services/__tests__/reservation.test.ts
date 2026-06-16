@@ -22,10 +22,12 @@ vi.mock("../../client.js", () => ({
   },
 }));
 
-// The module uses Prisma.sql — we need a minimal mock
+// The module uses Prisma.sql + Prisma.join — we need a minimal mock. `join`
+// returns a marker object so tests can inspect the interpolated id list.
 vi.mock("../../generated/prisma-client/client.js", () => ({
   Prisma: {
     sql: (strings: TemplateStringsArray, ...values: unknown[]) => ({ strings, values }),
+    join: (values: unknown[], separator = ",") => ({ __join: values, separator }),
   },
   PrismaReservationStatus: {},
 }));
@@ -319,5 +321,59 @@ describe("ReservationService.modify — concurrency safety (TOCTOU)", () => {
     expect(succeeded).toHaveLength(1);
     expect(failed).toHaveLength(1);
     expect((failed[0] as PromiseRejectedResult).reason.message).toContain("não tem vagas para 2 pessoa(s)");
+  });
+
+  it("[C3] locks BOTH old and new slots in deterministic id order (deadlock-safe)", async () => {
+    // existing reservation sits on slot_01; moving to slot_02.
+    const existingReservation = makeReservationRow({
+      id: "res_01",
+      customerId: "cust_01",
+      partySize: 2,
+      status: "confirmed",
+    });
+    mockReservationFindUnique.mockResolvedValue(existingReservation);
+
+    let capturedSql: { strings: string[]; values: unknown[] } | undefined;
+    mockTransaction.mockImplementation(async (fn: (tx: unknown) => unknown) => {
+      const tx = {
+        $queryRaw: vi.fn(async (sql: { strings: string[]; values: unknown[] }) => {
+          capturedSql = sql;
+          // The lock returns both rows; modify().find() picks the new slot.
+          return [
+            makeTimeSlotRow({ id: "slot_01", reservedCovers: 2, maxCovers: 20 }),
+            makeTimeSlotRow({ id: "slot_02", reservedCovers: 10, maxCovers: 20 }),
+          ];
+        }),
+        timeSlot: { update: vi.fn().mockResolvedValue({}) },
+        reservationTable: {
+          findMany: vi.fn().mockResolvedValue([]),
+          deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
+        },
+        table: {
+          findMany: vi.fn().mockResolvedValue([
+            { id: "table_02", number: "2", capacity: 4, location: "indoor", active: true, createdAt: new Date() },
+          ]),
+        },
+        reservation: {
+          update: vi.fn().mockResolvedValue({
+            ...existingReservation,
+            timeSlotId: "slot_02",
+            timeSlot: makeTimeSlotRow({ id: "slot_02" }),
+          }),
+        },
+      };
+      return fn(tx);
+    });
+
+    await svc.modify("res_01", "cust_01", { newTimeSlotId: "slot_02", newPartySize: 2 });
+
+    // The single FOR UPDATE lock query references BOTH slots and orders by id —
+    // a consistent global lock order that prevents the AB-BA swap deadlock.
+    expect(capturedSql).toBeDefined();
+    const text = capturedSql!.strings.join(" ");
+    expect(text).toMatch(/ORDER BY id/i);
+    expect(text).toMatch(/FOR UPDATE/i);
+    const joined = capturedSql!.values[0] as { __join: string[] };
+    expect(joined.__join).toEqual(expect.arrayContaining(["slot_01", "slot_02"]));
   });
 });
