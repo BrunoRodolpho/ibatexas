@@ -497,3 +497,14 @@ export async function closeNatsConnection(): Promise<void> {
   }
 }
 
+// JetStream stream provisioning (at-least-once migration, Phase 0). Additive —
+// does not change delivery for the current Core NATS subscribers.
+export {
+  STREAM_DEFS,
+  ensureStreams,
+  streamForSubject,
+  streamConfig,
+  type StreamDef,
+  type EnsureStreamsResult,
+} from "./streams.js"
+
