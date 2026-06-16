@@ -35,7 +35,7 @@ export async function analyticsRoutes(server: FastifyInstance): Promise<void> {
       const todayIso = today.toISOString();
 
       const qs = new URLSearchParams({
-        created_at: JSON.stringify({ gte: todayIso }),
+        "created_at[gte]": todayIso,
         limit: "500",
         offset: "0",
         fields: "id,total,status",
