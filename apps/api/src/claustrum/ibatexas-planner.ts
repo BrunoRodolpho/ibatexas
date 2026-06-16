@@ -55,42 +55,52 @@ import type {
   ModelProvider,
   Plan,
   PlannerPort,
+  TelemetryPort,
 } from "@claustrum/core";
+import { EXPRESS_INTENT_TOOL, PLANNER_PERSONA } from "./prompts/personas.js";
+import {
+  PLANNER_SURFACE,
+  type IbatexasPromptComposer,
+} from "./prompts/ibatexas-prompts.js";
+import { emitModelCallTrace } from "./llm-trace.js";
 
-/** Per claustrum Hard Rule #1 — the single mutation-proposing tool name. */
-export const EXPRESS_INTENT_TOOL = "express_intent";
+// Re-export so existing importers (tests, registry) keep their import site.
+export { EXPRESS_INTENT_TOOL };
 
 const DEFAULT_MAX_TOKENS = 1024;
+
+// Token budget for the persona composition — the persona is tiny, so any
+// generous budget keeps the inviolable fragment.
+const PROMPT_BUDGET = { maxTokens: 100_000 } as const;
 
 // Empirically tuned against the Phase-A live ceiling: the first prompt
 // under-extracted ID-dependent intents (remove/update/checkout/cancel) ~33% of
 // the time because the model withheld the call when it lacked an item/order id.
 // Instructing it to express the intent with a natural-language payload and let
 // the handler resolve identifiers took the synthetic ceiling 66.7% → 100%.
-const DEFAULT_SYSTEM_PROMPT = [
-  "Você é o interpretador de intenções do atendimento da IbateXas.",
-  `Sua única função é traduzir o pedido do cliente em uma chamada de "${EXPRESS_INTENT_TOOL}".`,
-  "Você NUNCA executa ações nem altera dados — apenas declara a intenção.",
-  "",
-  "REGRA PRINCIPAL: se o cliente pede QUALQUER ação (adicionar, remover, atualizar",
-  "quantidade, aplicar cupom, criar carrinho, finalizar/pagar, cancelar, adicionar",
-  `observação, reservar, etc.), você DEVE chamar "${EXPRESS_INTENT_TOOL}" com a capability`,
-  "correspondente (exatamente uma das opções do enum). Faça isso MESMO que falte algum",
-  "detalhe (ex.: o id exato do item, do pedido ou do carrinho) — preencha o payload com",
-  "o que o cliente disse em linguagem natural (ex.: { item: 'linguiça' } ou",
-  "{ quantidade: 3 }); o handler resolve os identificadores depois. NÃO peça confirmação",
-  "e NÃO faça perguntas de esclarecimento aqui.",
-  "",
-  "Use as ferramentas de leitura apenas para consultar informações. Não invente",
-  `capabilities fora da lista. Só NÃO chame "${EXPRESS_INTENT_TOOL}" quando o cliente`,
-  "claramente não pede nenhuma ação (ex.: perguntas sobre horário, cardápio ou preço).",
-].join("\n");
+// The persona text now lives in claustrum/prompts/personas.ts (PLANNER_PERSONA)
+// so it can be registered as a content-addressed PromptFragment (Phase B);
+// kept byte-identical to the recorded golden surface.
+const DEFAULT_SYSTEM_PROMPT = PLANNER_PERSONA;
 
 export interface IbatexasPlannerDeps {
   /** LLM port (claustrum ModelProvider — AnthropicProvider in production). */
   readonly model: ModelProvider;
   /** Model id, e.g. process.env.ANTHROPIC_MODEL. */
   readonly modelId: string;
+  /**
+   * Content-addressed prompt composer (Phase B). When present, the planner
+   * composes its system prompt from the registered persona fragment (so the
+   * `fragmentManifest` — id@hash — can be recorded in the turn trace) instead
+   * of using the static string. The composed system is byte-identical to
+   * DEFAULT_SYSTEM_PROMPT (single inviolable fragment).
+   */
+  readonly promptComposer?: IbatexasPromptComposer;
+  /**
+   * Telemetry sink for the per-model-call LLMTrace (C1). When present (with a
+   * composer), the planner emits a bounded trace after the model completion.
+   */
+  readonly telemetry?: TelemetryPort;
   /**
    * The installed packs' capability planners. Each returns, for the turn's
    * (state, context), the visible read tools + proposable intent kinds. The
@@ -240,7 +250,6 @@ function buildToolSurface(plan: CapabilityPlan): CompletionRequest["tools"] {
  */
 export function createIbatexasPlanner(deps: IbatexasPlannerDeps): PlannerPort {
   const maxTokens = deps.maxTokens ?? DEFAULT_MAX_TOKENS;
-  const system = deps.system ?? DEFAULT_SYSTEM_PROMPT;
   const deriveNonce = deps.deriveNonce ?? deriveDeterministicNonce;
 
   return {
@@ -267,7 +276,23 @@ export function createIbatexasPlanner(deps: IbatexasPlannerDeps): PlannerPort {
         };
       }
 
+      // Compose the system prompt (content-addressed) when a composer is wired.
+      // The single inviolable persona fragment makes composed.system ===
+      // DEFAULT_SYSTEM_PROMPT, so the recorded golden surfaces stay green; the
+      // composed fragmentManifest (id@hash) feeds the turn trace.
+      let system = deps.system ?? DEFAULT_SYSTEM_PROMPT;
+      let fragmentManifest: ReadonlyArray<string> = [];
+      if (deps.system === undefined && deps.promptComposer !== undefined) {
+        const composed = await deps.promptComposer.composer.compose(
+          { cognition: state, extra: { surface: PLANNER_SURFACE } },
+          PROMPT_BUDGET,
+        );
+        system = composed.system;
+        fragmentManifest = composed.fragmentManifest;
+      }
+
       const allowed = new Set(plan.allowedIntents);
+      const startedAt = Date.now();
       const completion = await deps.model.complete({
         model: deps.modelId,
         system,
@@ -275,6 +300,27 @@ export function createIbatexasPlanner(deps: IbatexasPlannerDeps): PlannerPort {
         tools,
         maxTokens,
       });
+      const durationMs = Date.now() - startedAt;
+
+      // C1 — emit the planner-call LLMTrace (turnId is the correlation key; no
+      // intentHash, as the intent is not yet formed at plan time). Best-effort.
+      if (deps.promptComposer !== undefined && deps.telemetry !== undefined) {
+        await emitModelCallTrace({
+          telemetry: deps.telemetry,
+          registry: deps.promptComposer.registry,
+          turnId: state.turnId,
+          model: deps.modelId,
+          fragmentManifest,
+          completionText: JSON.stringify({
+            text: completion.text,
+            toolCalls: completion.toolCalls ?? [],
+          }),
+          inputTokens: completion.inputTokens,
+          outputTokens: completion.outputTokens,
+          durationMs,
+          at: new Date().toISOString(),
+        });
+      }
 
       const envelopes: IntentEnvelope[] = [];
       const capabilities: string[] = [];

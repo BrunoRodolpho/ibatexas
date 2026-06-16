@@ -35,6 +35,7 @@ import twilio from "twilio";
 import { handleTurn, type ChannelMessage } from "@claustrum/core";
 import { getRedisClient, rk, atomicIncr } from "@ibatexas/tools";
 import { getConductor } from "../claustrum-bootstrap.js";
+import { isSessionPausedForHuman } from "../escalation/escalation-store.js";
 import { loadSession, appendMessages } from "../session/store.js";
 import {
   normalizePhone,
@@ -91,8 +92,8 @@ function isGuestCustomerId(id: string | null | undefined): boolean {
 /**
  * Extract PIX artifacts from a completed turn.
  *
- * The ibatexas responder (`naiveResponder`) does NOT copy tool output onto
- * `RenderedResponse.artifacts`, so PIX copia-e-cola / QR are NOT in
+ * The ibatexas responder (`createIbatexasResponder`) does NOT copy tool output
+ * onto `RenderedResponse.artifacts`, so PIX copia-e-cola / QR are NOT in
  * `turn.response.artifacts`. They DO live in `turn.acted` — the dispatch
  * result of the executed checkout / regenerate-PIX tool (`createCheckout` /
  * `regeneratePix` return `{ pixCopyPaste, pixQrCode, pixExpiresAt, orderId }`).
@@ -142,6 +143,17 @@ async function runConductorTurn(args: {
   sessionKey: string;
   log: LogFn;
 }): Promise<WhatsAppTurn> {
+  // D2 bot-pause gate: when a human has taken over this session (open
+  // escalation), suppress the bot reply. Empty text → the caller sends nothing
+  // (every WhatsApp send is guarded by `if (response.text)`). Fail-open.
+  if (await isSessionPausedForHuman(args.sessionKey)) {
+    args.log.info(
+      { session: args.sessionKey },
+      "[whatsapp] session paused for human takeover — bot reply suppressed",
+    );
+    return { text: "" };
+  }
+
   const conductor = getConductor();
   const inbound: ChannelMessage = {
     channel: "whatsapp",

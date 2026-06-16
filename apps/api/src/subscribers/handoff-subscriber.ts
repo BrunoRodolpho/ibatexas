@@ -1,12 +1,15 @@
 // NATS subscriber: support.handoff_requested
 //
-// Listens for handoff requests from the AI agent and notifies staff via WhatsApp.
+// Listens for handoff requests from the AI agent and (1) records escalation
+// state so the session is PAUSED for the bot + appears in the staff takeover
+// queue (D2), and (2) notifies staff via WhatsApp.
 
 import { subscribeNatsEvent } from "@ibatexas/nats-client";
 import { getWhatsAppSender } from "@ibatexas/tools";
 import type { FastifyBaseLogger } from "fastify";
 import { pushToDlq } from "./dlq.js";
 import { isNewEvent } from "./dedup.js";
+import { getEscalationStore } from "../escalation/escalation-store.js";
 
 export async function startHandoffSubscriber(
   log?: FastifyBaseLogger,
@@ -26,6 +29,23 @@ export async function startHandoffSubscriber(
       { session_id: sessionId, reason },
       "[handoff-subscriber] support.handoff_requested received",
     );
+
+    // D2 — record the escalation (pauses the bot for this session + enqueues it
+    // for staff). Best-effort: a recording failure must not block the staff
+    // alert below (the WhatsApp ping is the fallback signal).
+    try {
+      const store = await getEscalationStore();
+      await store.recordHandoff({
+        sessionId,
+        reason: reason ?? null,
+        at: new Date().toISOString(),
+      });
+    } catch (err) {
+      log?.error(
+        { session_id: sessionId, error: String(err) },
+        "[handoff-subscriber] failed to record escalation state (swallowed)",
+      );
+    }
 
     const staffPhone = process.env.STAFF_NOTIFICATION_PHONE;
     if (!staffPhone) {

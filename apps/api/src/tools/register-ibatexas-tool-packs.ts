@@ -371,6 +371,20 @@ const IBATEXAS_TOOLS: ReadonlyArray<TD<unknown, unknown>> = [
 ];
 
 /**
+ * The pt-BR capability descriptions, keyed by `capability` (=== intentKind).
+ * Single-sourced from {@link IBATEXAS_TOOLS} so the prompt-fragment registry
+ * (claustrum/prompts/ibatexas-prompts.ts) and the tool roster never drift.
+ * This is the prompt CONTENT that, per Hard Rule #4, stays in ibatexas — the
+ * PromptComposer (claustrum) owns only the SHAPE.
+ */
+export const IBATEXAS_CAPABILITY_DESCRIPTIONS: Readonly<Record<string, string>> =
+  Object.freeze(
+    Object.fromEntries(
+      IBATEXAS_TOOLS.map((t) => [String(t.capability), t.description]),
+    ),
+  );
+
+/**
  * Register all ibatexas tool packs onto the conductor's tool registry.
  * Idempotent — calling twice is safe (last write wins on the same `id`).
  */

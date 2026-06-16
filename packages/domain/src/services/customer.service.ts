@@ -778,9 +778,16 @@ export async function anonymizeCustomer(
 
   const customerConversationRows = await prisma.conversation.findMany({
     where: { customerId },
-    select: { id: true },
+    select: { id: true, sessionId: true },
   })
   const customerConversationIds = customerConversationRows.map((row) => row.id)
+  // F3 / P0-LGPD-1: the redacted turn_trace store keys conversation_id by the
+  // SESSION id (the conductor receives conversationId := sessionId; see
+  // chat.ts / whatsapp-webhook.ts), NOT Conversation.id — so erasure keys off
+  // sessionId, distinct from the ConversationMessage scrub below.
+  const customerConversationSessionIds = customerConversationRows
+    .map((row) => row.sessionId)
+    .filter((s): s is string => Boolean(s))
 
   if (customerConversationIds.length > 0) {
     const messageCount = await prisma.conversationMessage.count({
@@ -818,6 +825,28 @@ export async function anonymizeCustomer(
         })
         if (result.count === 0) break
       }
+    }
+  }
+
+  // ── F3 / P0-LGPD-1: turn_trace erasure (right-to-be-forgotten) ─
+  //
+  // Erase the customer's redacted per-LLM-call traces by sessionId (see the
+  // sessionId note above). Raw DELETE because turn_trace is not a Prisma model
+  // — it is the kernel-shaped table the trace writer + adjudicate console share
+  // (swept time-based by retention-cleaner.ts; this is the per-subject erasure
+  // the time-based sweep deliberately complements). Best-effort + fail-soft:
+  // the table may not exist if tracing never ran (missing relation), and an
+  // erasure failure must NEVER abort the anonymize flow.
+  if (customerConversationSessionIds.length > 0) {
+    try {
+      await prisma.$executeRaw`
+        DELETE FROM turn_trace
+        WHERE conversation_id IN (${Prisma.join(customerConversationSessionIds)})`
+    } catch (err) {
+      options?.log?.warn?.(
+        "[anonymize] turn_trace erasure skipped (best-effort)",
+        { customerId, error: String(err) },
+      )
     }
   }
 

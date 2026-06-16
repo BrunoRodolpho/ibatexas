@@ -50,6 +50,7 @@ import {
 } from "@claustrum/core";
 import type { IntentEnvelope } from "@adjudicate/core";
 import { logger } from "../lib/logger.js";
+import { isSessionPausedForHuman } from "../escalation/escalation-store.js";
 import { triggerExternalId, type SystemChannel } from "./system-channel.js";
 import {
   createModelCallCap,
@@ -182,7 +183,13 @@ export function createLiveTriggerRunner(
   deps: LiveTriggerRunnerDeps,
 ): TriggerTurnRunner {
   return async (input) => {
-    const { agent, event, sessionId, maxModelCalls } = input;
+    const { event, sessionId, maxModelCalls } = input;
+    // D2 bot-pause gate (managed-agent plane): if this agent session is under a
+    // human takeover (open escalation), suppress the autonomous turn — don't
+    // recompose, plan, or act. Symmetric with the conversational planes.
+    if (await isSessionPausedForHuman(sessionId)) {
+      return { decisionKind: "PAUSED_FOR_HUMAN", modelCalls: 0 };
+    }
     // H1: a FRESH cap per trigger; recompose the conductor over the capped model.
     const capped = createModelCallCap(deps.conductor.modelProvider, maxModelCalls);
     const conductor = composeLiveAgentConductor(deps.conductor, capped);
