@@ -365,16 +365,29 @@ export function createReservationService(options?: ReservationServiceOptions) {
       const newPartySize = changes.newPartySize ?? existing.partySize
       const isChangingSlot = newTimeSlotId !== existing.timeSlotId
 
-      if (isChangingSlot) {
-        const newSlot = await prisma.timeSlot.findUnique({ where: { id: newTimeSlotId } })
-        if (!newSlot) throw new Error("Novo horário não encontrado.")
-        const available = newSlot.maxCovers - newSlot.reservedCovers
-        if (available < newPartySize) {
-          throw new Error(`O horário solicitado não tem vagas para ${newPartySize} pessoa(s).`)
-        }
-      }
-
       const updated = await prisma.$transaction(async (tx) => {
+        if (isChangingSlot) {
+          // C3: lock BOTH the old and new slot rows up front, in a deterministic
+          // global order (`ORDER BY id ... FOR UPDATE`). The previous code locked
+          // the new slot here and the old slot later via the decrement UPDATE, so
+          // two concurrent reciprocal swaps (A: X→Y, B: Y→X) could form an AB-BA
+          // deadlock. Locking both in id order serializes such swaps on a single
+          // consistent order — no cycle — and also closes the TOCTOU on the old
+          // slot's reservedCovers decrement. (Overbooking guard for the new slot,
+          // B1, is preserved: availability is still checked under the lock.)
+          const locked = await tx.$queryRaw<TimeSlotRow[]>(
+            Prisma.sql`SELECT * FROM ibx_domain.time_slots WHERE id IN (${Prisma.join(
+              [existing.timeSlotId, newTimeSlotId],
+            )}) ORDER BY id FOR UPDATE`
+          )
+          const newSlot = locked.find((s) => s.id === newTimeSlotId)
+          if (!newSlot) throw new Error("Novo horário não encontrado.")
+          const available = newSlot.maxCovers - newSlot.reservedCovers
+          if (available < newPartySize) {
+            throw new Error(`O horário solicitado não tem vagas para ${newPartySize} pessoa(s).`)
+          }
+        }
+
         await tx.timeSlot.update({
           where: { id: existing.timeSlotId },
           data: { reservedCovers: { decrement: existing.partySize } },
@@ -382,7 +395,7 @@ export function createReservationService(options?: ReservationServiceOptions) {
 
         await tx.reservationTable.deleteMany({ where: { reservationId: existing.id } })
 
-        const newTableIds = await assignTables(newTimeSlotId, newPartySize)
+        const newTableIds = await assignTables(newTimeSlotId, newPartySize, tx)
 
         await tx.timeSlot.update({
           where: { id: newTimeSlotId },

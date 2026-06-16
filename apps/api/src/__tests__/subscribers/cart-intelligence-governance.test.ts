@@ -37,6 +37,12 @@ const mockAddStampFromEnvelope = vi.hoisted(() =>
 const mockGetWhatsAppSender = vi.hoisted(() => vi.fn().mockReturnValue(null));
 const mockPushToDlq = vi.hoisted(() => vi.fn());
 const mockIsNewEvent = vi.hoisted(() => vi.fn().mockResolvedValue(true));
+const mockWithDedup = vi.hoisted(() =>
+  vi.fn().mockImplementation(async (_key: string, handler: () => Promise<void>) => {
+    await handler();
+    return true;
+  }),
+);
 
 const natsHandlers: Record<string, (payload: unknown) => Promise<void>> = {};
 
@@ -85,6 +91,7 @@ vi.mock("@ibatexas/domain", () => ({
 
 vi.mock("../../subscribers/dedup.js", () => ({
   isNewEvent: mockIsNewEvent,
+  withDedup: mockWithDedup,
 }));
 
 vi.mock("../../subscribers/dlq.js", () => ({
@@ -240,7 +247,9 @@ describe("cart-intelligence order.placed governance (task 16)", () => {
   });
 
   it("skips when dedup flags the event as duplicate", async () => {
-    mockIsNewEvent.mockResolvedValue(false);
+    // After B2 fix: order.placed uses withDedup (not isNewEvent).
+    // Return false to simulate a duplicate (already processed / in-flight).
+    mockWithDedup.mockResolvedValue(false);
 
     await natsHandlers["order.placed"]!({
       customerId: "cust_04",
