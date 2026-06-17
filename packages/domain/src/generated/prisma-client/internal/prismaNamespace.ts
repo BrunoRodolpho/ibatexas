@@ -2863,6 +2863,7 @@ export type AgentRedTeamRunScalarFieldEnum = (typeof AgentRedTeamRunScalarFieldE
 
 export const LlmTokenUsageScalarFieldEnum = {
   id: 'id',
+  turnId: 'turnId',
   sessionId: 'sessionId',
   customerId: 'customerId',
   channel: 'channel',

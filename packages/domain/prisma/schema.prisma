@@ -685,6 +685,10 @@ model AgentRun {
   @@unique([agentId, externalId])
   @@index([agentId, at])
   @@index([sessionId])
+  /// #28-10: serves the adjudicate incident projection's
+  /// `SELECT DISTINCT ON (entity) ... ORDER BY entity, at DESC` with an index
+  /// scan instead of a full sort. Must be deployed before that loader fix runs.
+  @@index([entity, at(sort: Desc)], map: "agent_runs_entity_at_idx")
   @@map("agent_runs")
   @@schema("ibx_domain")
 }
@@ -732,6 +736,9 @@ model AgentRedTeamRun {
 /// affects a turn). The cost dashboards aggregate by session and by customer.
 model LlmTokenUsage {
   id               String   @id @default(cuid())
+  /// Globally-unique turn id — the idempotency key (#94-1): the per-turn sink
+  /// upserts on this so a BullMQ/turn retry overwrites rather than duplicates.
+  turnId           String   @unique @map("turn_id")
   sessionId        String   @map("session_id")
   customerId       String?  @map("customer_id")
   channel          String?

@@ -16,6 +16,7 @@ import { startStaleOrderChecker } from "./stale-order-checker.js";
 import { startDeferTimeoutSweeper } from "./defer-timeout-sweeper.js";
 import { startAnonymizeMedusaRetry } from "./anonymize-medusa-retry.js";
 import { startRetentionCleaner } from "./retention-cleaner.js";
+import { startLlmTokenUsageRetention } from "./llm-token-usage-retention.js";
 import { startDriftEvaluate } from "./drift-evaluate.js";
 
 /**
@@ -37,6 +38,10 @@ export function registerWorkers(log: FastifyBaseLogger): void {
   // append-only tables (conversation_messages by sent_at, order_event_log by
   // created_at). OPT-IN via RETENTION_DAYS — no-op unless configured.
   startRetentionCleaner(log);
+  // [item C / #94-16] Daily bounded sweep of the append-only llm_token_usage
+  // cost-telemetry table. DEDICATED knob LLM_TOKEN_USAGE_RETENTION_DAYS,
+  // DEFAULTS to 30 (not opt-in) so the table can't grow unbounded by default.
+  startLlmTokenUsageRetention(log);
   // [task 03] Sweeps expired defer:pending:* keys every 60s and publishes
   // intent.defer.timeout for downstream notification fan-out.
   startDeferTimeoutSweeper(log);
@@ -68,6 +73,9 @@ export async function shutdownWorkers(): Promise<void> {
   const { stopDeferTimeoutSweeper } = await import("./defer-timeout-sweeper.js");
   const { stopAnonymizeMedusaRetry } = await import("./anonymize-medusa-retry.js");
   const { stopRetentionCleaner } = await import("./retention-cleaner.js");
+  const { stopLlmTokenUsageRetention } = await import(
+    "./llm-token-usage-retention.js"
+  );
   const { stopDriftEvaluate } = await import("./drift-evaluate.js");
 
   await Promise.all([
@@ -83,6 +91,7 @@ export async function shutdownWorkers(): Promise<void> {
     stopPixExpiryMonitor(),
     stopStaleOrderChecker(),
     stopRetentionCleaner(),
+    stopLlmTokenUsageRetention(),
     stopDeferTimeoutSweeper(),
     stopAnonymizeMedusaRetry(),
     stopDriftEvaluate(),

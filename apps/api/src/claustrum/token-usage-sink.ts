@@ -2,9 +2,11 @@
 //
 // Alongside the existing per-turn telemetry (the JSONL `llm.call` emit + the
 // in-memory TokenUsageStore), this sink persists a DURABLE `llm_token_usage`
-// row per llm.call: prompt/completion token split, the model, and an estimated
-// USD cost derived from a per-model pricing map. The cost dashboards aggregate
-// these rows by session and by customer.
+// row per turn (#94-2 — the write fires once at emitTurn, not per llm.call):
+// prompt/completion token split, the model, and an estimated USD cost derived
+// from a per-model pricing map. The cost dashboards aggregate these rows by
+// session and by customer. The write is idempotent on `turnId` (#94-1) so a
+// BullMQ/turn retry overwrites rather than duplicates.
 //
 // Determinism: this is TELEMETRY, strictly OUTSIDE the kernel decision boundary
 // — Date.now / timestamps are fine, and every write is best-effort / FAIL-OPEN
@@ -61,8 +63,10 @@ export function estimateUsd(
   );
 }
 
-/** The fields a single llm.call contributes to a durable usage row. */
+/** The fields a single turn contributes to a durable usage row. */
 export interface TokenUsageRecord {
+  /** Globally-unique turn id — the idempotency key (#94-1). */
+  readonly turnId: string;
   readonly sessionId: string;
   readonly customerId?: string;
   readonly channel?: string;
@@ -79,23 +83,28 @@ export interface TokenUsageSink {
 
 /**
  * Minimal structural slice of the domain PrismaClient the sink needs: an
- * `llmTokenUsage.create`. The real `prisma` from `@ibatexas/domain` satisfies
- * this; tests inject a fake.
+ * idempotent `llmTokenUsage.upsert` keyed on the `turn_id @unique` column
+ * (#94-1). The real `prisma` from `@ibatexas/domain` satisfies this; tests
+ * inject a fake.
  */
+export interface TokenUsageUpsertData {
+  sessionId: string;
+  customerId?: string | null;
+  channel?: string | null;
+  model: string;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  estimatedUsd: number | string;
+  recordedAt: string | Date;
+}
+
 export interface TokenUsagePrisma {
   llmTokenUsage: {
-    create(args: {
-      data: {
-        sessionId: string;
-        customerId?: string | null;
-        channel?: string | null;
-        model: string;
-        promptTokens: number;
-        completionTokens: number;
-        totalTokens: number;
-        estimatedUsd: number | string;
-        recordedAt: string | Date;
-      };
+    upsert(args: {
+      where: { turnId: string };
+      create: TokenUsageUpsertData & { turnId: string };
+      update: TokenUsageUpsertData;
     }): Promise<unknown>;
   };
 }
@@ -103,8 +112,10 @@ export interface TokenUsagePrisma {
 /**
  * Durable token-usage sink backed by the `llm_token_usage` Postgres table.
  * Splits prompt/completion from the call metadata, applies the pricing map, and
- * persists one row per llm.call. Best-effort / FAIL-OPEN: a write failure logs
- * and is swallowed — cost telemetry must never break a turn.
+ * persists one row per turn — idempotently UPSERTED on `turnId` (#94-1) so a
+ * retry of the same turn overwrites rather than duplicates. Best-effort /
+ * FAIL-OPEN: a write failure logs and is swallowed — cost telemetry must never
+ * break a turn.
  */
 export function createPostgresTokenUsageSink(
   prisma: TokenUsagePrisma,
@@ -118,20 +129,23 @@ export function createPostgresTokenUsageSink(
           usage.promptTokens,
           usage.completionTokens,
         );
-        await prisma.llmTokenUsage.create({
-          data: {
-            sessionId: usage.sessionId,
-            customerId: usage.customerId ?? null,
-            channel: usage.channel ?? null,
-            model: usage.model,
-            promptTokens: usage.promptTokens,
-            completionTokens: usage.completionTokens,
-            totalTokens,
-            // Stored as a string so the pg Decimal column preserves full
-            // precision regardless of JS float representation.
-            estimatedUsd: estimatedUsd.toFixed(6),
-            recordedAt: usage.recordedAt,
-          },
+        const data: TokenUsageUpsertData = {
+          sessionId: usage.sessionId,
+          customerId: usage.customerId ?? null,
+          channel: usage.channel ?? null,
+          model: usage.model,
+          promptTokens: usage.promptTokens,
+          completionTokens: usage.completionTokens,
+          totalTokens,
+          // Stored as a string so the pg Decimal column preserves full
+          // precision regardless of JS float representation.
+          estimatedUsd: estimatedUsd.toFixed(6),
+          recordedAt: usage.recordedAt,
+        };
+        await prisma.llmTokenUsage.upsert({
+          where: { turnId: usage.turnId },
+          create: { turnId: usage.turnId, ...data },
+          update: data,
         });
       } catch (err) {
         logger.warn(

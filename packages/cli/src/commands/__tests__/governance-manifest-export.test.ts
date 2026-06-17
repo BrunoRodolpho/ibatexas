@@ -42,7 +42,8 @@ describe("buildAiBomManifest", () => {
   it("sorts components by packId and stamps the shared kernel versions", () => {
     const m = buildAiBomManifest({ packs: PACKS })
     const ids = Object.keys(m.digests)
-    expect([...ids]).toEqual([...ids].sort((x, y) => x.localeCompare(y)))
+    // #93-1: byte-stable (code-unit) order, matching the exporter's comparator.
+    expect([...ids]).toEqual([...ids].sort((x, y) => (x < y ? -1 : x > y ? 1 : 0)))
     expect(m.kernelMinVersion).toBe("1.0.0")
     expect(m.kernelVersion).toBe("1.3.0")
     expect(m.adopter).toBe("ibatexas")
@@ -85,7 +86,8 @@ describe("buildConfigSealManifest", () => {
     const b = buildConfigSealManifest({ packs: PACKS })
     expect(a).toEqual(b)
     const ids = a.seals.map((s) => s.packId)
-    expect([...ids]).toEqual([...ids].sort((x, y) => x.localeCompare(y)))
+    // #93-1: byte-stable (code-unit) order, matching the exporter's comparator.
+    expect([...ids]).toEqual([...ids].sort((x, y) => (x < y ? -1 : x > y ? 1 : 0)))
   })
 })
 
