@@ -46,7 +46,7 @@ export const STREAM_DEFS: ReadonlyArray<StreamDef> = [
   { name: "IBX_CONVERSATION", subjects: ["ibatexas.conversation.>"], maxAgeMs: 7 * DAY_MS },
   { name: "IBX_SUPPORT", subjects: ["ibatexas.support.>"], maxAgeMs: 14 * DAY_MS },
   { name: "IBX_CATALOG", subjects: ["ibatexas.product.>", "ibatexas.search.>", "ibatexas.review.>"], maxAgeMs: 7 * DAY_MS },
-  { name: "IBX_NOTIFY", subjects: ["ibatexas.notification.>", "ibatexas.outreach.>"], maxAgeMs: 7 * DAY_MS },
+  { name: "IBX_NOTIFY", subjects: ["ibatexas.notification.>", "ibatexas.outreach.>", "ibatexas.follow-up.>"], maxAgeMs: 7 * DAY_MS },
   { name: "IBX_CUSTOMER", subjects: ["ibatexas.customer.>"], maxAgeMs: 30 * DAY_MS },
   { name: "IBX_ANALYTICS", subjects: ["ibatexas.analytics.>"], maxAgeMs: 7 * DAY_MS },
   { name: "IBX_AUDIT", subjects: ["ibatexas.audit.>"], maxAgeMs: 30 * DAY_MS },

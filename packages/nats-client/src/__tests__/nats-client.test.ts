@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest"
 import {
   getNatsConnection,
   publishNatsEvent,
+  publishMsgId,
   subscribeNatsEvent,
   setDlqHandler,
   setOutboxWriter,
@@ -94,9 +95,12 @@ describe("NATS Client", () => {
     process.env.NATS_JETSTREAM_ENABLED = "true"
     try {
       await publishNatsEvent("order.placed", { orderId: "o1" })
+      // 3rd arg: deterministic Nats-Msg-Id activates the stream duplicate_window
+      // (J1). Pinned to the derivation over the exact serialized payload.
       expect(mockJsPublish).toHaveBeenCalledWith(
         "ibatexas.order.placed",
         expect.any(Uint8Array),
+        { msgID: publishMsgId("order.placed", JSON.stringify({ orderId: "o1" })) },
       )
       // The Core publish path is NOT used when JetStream is enabled + healthy.
       const conn = await getNatsConnection()

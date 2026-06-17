@@ -12,6 +12,7 @@ import { invalidateAllQueryCache } from "../cache/query-cache.js";
 import { isAvailableNow, describeAvailabilityWindow } from "../catalog/availability.js";
 import { getTypesenseClient, COLLECTION } from "../typesense/client.js";
 import { assertCartOwnership } from "./assert-cart-ownership.js";
+import { randomUUID } from "node:crypto";
 
 /** Lightweight lookup: get a product's availability window from its variant ID via Typesense.
  *  Medusa v2 removed /store/variants/{id} — search Typesense's variantsJson field instead.
@@ -104,6 +105,14 @@ export async function addToCart(
     quantity: parsed.quantity,
     customerId: ctx.customerId,
     sessionId: ctx.sessionId,
+    // Per-add nonce: makes each distinct add byte-unique so the JetStream
+    // publish-level dedup (Nats-Msg-Id = sha256(event + payload) against the
+    // stream's 2h duplicate_window) cannot collapse two genuinely-separate adds
+    // of the same variant/qty to the same cart. The cart.item_added handler
+    // increments cartAddCount with NO consume-side dedup, so a collapse would
+    // silently undercount. (A transport-level retry of THIS publish reuses the
+    // same serialized bytes, so the intended retry-dedup still holds.)
+    nonce: randomUUID(),
   }).catch((err) => console.error("[add_to_cart] NATS publish error:", (err as Error).message));
 
   return data;
