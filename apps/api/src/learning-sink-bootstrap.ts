@@ -32,6 +32,17 @@ import type { FastifyBaseLogger } from "fastify"
  * The `learning.event.v1` payload — EXACT, shared with the adjudicate console
  * reader. `at` is an ISO timestamp; `detail` is a free-form (already-redacted)
  * bag. Keep this minimal: no message bodies, no secrets.
+ *
+ * TODO(item A — UltraReview #94-20): single-source this from `@adjudicate/core`
+ * by replacing this hand-copied interface with
+ *   `import type { LearningEventV1 } from "@adjudicate/core"`
+ *   `export type LearningEvent = LearningEventV1`
+ * and the two consts below with re-exports, then bump `@adjudicate/core` in
+ * apps/api/package.json from `^1.3.0` to `^1.4.0`. This is GATED on core 1.4.0
+ * being published (the LearningEventV1 contract + changeset ship in the
+ * adjudicate PR; the swap must land AFTER that Version-PR merges and
+ * release.yml publishes — see the plan's sequencing constraint #1). Until then
+ * this stays hand-copied so the ibatexas branch resolves `^1.3.0` and builds.
  */
 export interface LearningEvent {
   readonly schemaVersion: 1

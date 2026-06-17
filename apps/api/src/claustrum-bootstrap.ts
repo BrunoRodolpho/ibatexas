@@ -120,7 +120,10 @@ import {
 // console/adjutant operator UIs read agent approvals. Best-effort, fail-open.
 import { createRedisApprovalRegistry } from "@adjudicate/approval-engine";
 import { createApprovalRedisClient } from "./claustrum/approval-engine-redis-wiring.js";
-import { createAgentApprovalEngineBridge } from "./claustrum/approval-engine-bridge.js";
+import {
+  createAgentApprovalEngineBridge,
+  mirrorTtlSeconds,
+} from "./claustrum/approval-engine-bridge.js";
 import {
   agentsEnabled,
   startManagedAgentPlane,
@@ -1410,25 +1413,35 @@ function fastifyTelemetry(
       // and customer. Best-effort / FAIL-OPEN: the sink swallows its own write
       // errors, and we guard here too — cost telemetry must never break a turn.
       if (tokenUsageSink !== undefined) {
-        try {
-          const promptTokens = record.inputTokens ?? 0;
-          const completionTokens = record.outputTokens ?? 0;
-          if (promptTokens > 0 || completionTokens > 0) {
-            await tokenUsageSink.record({
+        const promptTokens = record.inputTokens ?? 0;
+        const completionTokens = record.outputTokens ?? 0;
+        if (promptTokens > 0 || completionTokens > 0) {
+          // #94-15: off the turn's hot path (fire-and-forget) — the persist must
+          // not gate turn latency. #94-1: idempotent on turnId so a retry of the
+          // same turn overwrites rather than duplicates. #94-2: prefer the per-
+          // turn trace model over the env value (env kept as the fallback —
+          // pendingTraces is only populated when a turn-trace writer is wired;
+          // `?.[0]` captures the first call's model for a multi-call turn).
+          void Promise.resolve(
+            tokenUsageSink.record({
+              turnId: record.turnId,
               sessionId: record.conversationId,
               customerId: record.customerId,
               channel: record.channel,
-              model: process.env.ANTHROPIC_MODEL ?? "claude-sonnet-4-6",
+              model:
+                pendingTraces.get(record.turnId)?.[0]?.model ??
+                process.env.ANTHROPIC_MODEL ??
+                "claude-sonnet-4-6",
               promptTokens,
               completionTokens,
               recordedAt: record.at,
-            });
-          }
-        } catch (err) {
-          logger.warn(
-            { component: "conductor", event: "token_usage_persist_failed", error: String(err) },
-            "llm_token_usage persist failed; ignoring",
-          );
+            }),
+          ).catch((err: unknown) => {
+            logger.warn(
+              { component: "conductor", event: "token_usage_persist_failed", error: String(err) },
+              "llm_token_usage persist failed; ignoring",
+            );
+          });
         }
       }
       // TokenUsageStore (ADR-135) telemetry — dashboard-facing, independent of the
@@ -1918,13 +1931,25 @@ export async function bootstrapClaustrum(
       let agentApprovals: AgentApprovalEngine = inMemoryApprovals;
       if (process.env.REDIS_URL) {
         try {
+          // #92-2: compute the mirror TTL ONCE and thread the SAME value into
+          // both the registry (used by markResolved's default TTL) and the
+          // bridge (used by put()'s per-call TTL), so pending and resolved rows
+          // expire on one clock instead of the registry snapping back to 24h.
+          const mirrorTtl = mirrorTtlSeconds();
           const registry = createRedisApprovalRegistry({
             redis: createApprovalRedisClient(redis),
-            keyPrefix: "adjudicate:approval",
+            // Item D (producer): mirror agent approvals under the DEDICATED
+            // `:agent` keyspace (`adjudicate:approval:agent:req:*`) so the
+            // adjutant can tell them apart from customer-checkout approvals. The
+            // consumer (adjutant) ships first and reads BOTH prefixes, so this
+            // producer flip is rollout-safe.
+            keyPrefix: "adjudicate:approval:agent",
+            ttlSeconds: mirrorTtl,
           });
           agentApprovals = createAgentApprovalEngineBridge({
             inner: inMemoryApprovals,
             registry,
+            ttlSeconds: mirrorTtl,
             onMirrorError: (stage, err) => {
               logger.warn(
                 {

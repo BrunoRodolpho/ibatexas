@@ -102,6 +102,8 @@ describe("createAgentApprovalEngineBridge — resolve mirror (rejected→decline
     // Inner result returned verbatim (status stays the ibatexas "rejected").
     expect(result.request.status).toBe("rejected");
 
+    // Settle the fire-and-forget resolve mirror (#92-5) before asserting it.
+    await new Promise((r) => setTimeout(r, 0));
     // Mirror is the adjudicate "declined", with the approver.
     const mirrored = await registry.get("tok-1");
     expect(mirrored?.status).toBe("declined");
@@ -127,6 +129,8 @@ describe("createAgentApprovalEngineBridge — resolve mirror (rejected→decline
 
     await bridge.resolve({ token: "tok-1", accepted: true, resolvedBy } as never);
 
+    // Settle the fire-and-forget resolve mirror (#92-5).
+    await new Promise((r) => setTimeout(r, 0));
     const mirrored = await registry.get("tok-1");
     expect(mirrored?.status).toBe("approved");
   });
@@ -186,7 +190,55 @@ describe("createAgentApprovalEngineBridge — fail-open", () => {
     } as never);
 
     expect(result.request.status).toBe("rejected");
+    // markResolved is fire-and-forget (#92-5) — settle the rejected promise's
+    // .catch before asserting the swallowed-error hook fired.
+    await new Promise((r) => setTimeout(r, 0));
     expect(onMirrorError).toHaveBeenCalledWith("resolve", expect.any(Error));
+  });
+
+  it("threads the injected ttlSeconds into registry.put() (#92-2)", async () => {
+    const put = vi.fn(async () => {});
+    const registry = {
+      put,
+      get: vi.fn(async () => null),
+      list: vi.fn(async () => []),
+      markResolved: vi.fn(async () => null),
+    };
+    const bridge = createAgentApprovalEngineBridge({
+      inner: stubInner(),
+      registry,
+      ttlSeconds: 3600,
+    });
+    await bridge.request({ envelope: {} as never, prompt: "p" });
+    // Same TTL the bootstrap also passes to the registry, so pending + resolved
+    // rows expire on one clock.
+    expect(put).toHaveBeenCalledWith(
+      expect.objectContaining({ token: "tok-1" }),
+      3600,
+    );
+  });
+
+  it("resolve() does not block on the mirror (fire-and-forget) (#92-5)", async () => {
+    // markResolved never settles — resolve() must still return promptly.
+    const markResolved = vi.fn(() => new Promise<null>(() => {}));
+    const registry = {
+      put: vi.fn(async () => {}),
+      get: vi.fn(async () => null),
+      list: vi.fn(async () => []),
+      markResolved,
+    };
+    const inner = stubInner({
+      resolve: vi.fn(async () => ({
+        request: { ...pendingRequest(), status: "approved" as const },
+      })),
+    });
+    const bridge = createAgentApprovalEngineBridge({ inner, registry });
+    const result = await bridge.resolve({
+      token: "tok-1",
+      accepted: true,
+    } as never);
+    expect(result.request.status).toBe("approved");
+    expect(markResolved).toHaveBeenCalled();
   });
 });
 

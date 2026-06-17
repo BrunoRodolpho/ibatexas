@@ -38,10 +38,14 @@ import type {
 } from "./agent-approvals.js";
 
 /** TTL (seconds) for the mirrored projection. Defaults to 24h (matches the
- *  ConfirmationStore default the adjudicate registry mirrors). Env-overridable. */
-function mirrorTtlSeconds(): number {
+ *  ConfirmationStore default the adjudicate registry mirrors). Env-overridable.
+ *  Exported so the bootstrap can compute it ONCE and thread the SAME value into
+ *  both the registry and the bridge (#92-2). */
+export function mirrorTtlSeconds(): number {
   const raw = process.env.AGENT_APPROVAL_MIRROR_TTL_SECONDS;
-  const n = raw ? Number.parseInt(raw, 10) : NaN;
+  // #92-3: Number() (not parseInt) so trailing garbage like "60s" → NaN → the
+  // 24h default, instead of parseInt silently accepting it as 60.
+  const n = raw ? Number(raw) : NaN;
   return Number.isFinite(n) && n > 0 ? n : 24 * 60 * 60;
 }
 
@@ -135,17 +139,20 @@ export function createAgentApprovalEngineBridge(
 
     async resolve(rd) {
       const result = await inner.resolve(rd);
-      try {
-        const mapped = mapResolvedStatus(result.request.status);
-        await registry.markResolved(
+      // #92-5: fire-and-forget the resolve mirror so a stalled Redis can't gate
+      // the resolve hot path (node-redis has no per-command timeout). Safe from
+      // the put()/markResolved reorder hazard because request()'s put() is still
+      // AWAITED and the approval lifecycle (request → act → resolve) guarantees
+      // the pending row was flushed long before this resolve runs.
+      const mapped = mapResolvedStatus(result.request.status);
+      void registry
+        .markResolved(
           result.request.token,
           mapped,
           result.request.resolvedBy,
           result.request.resolvedAt,
-        );
-      } catch (err) {
-        onError("resolve", err);
-      }
+        )
+        .catch((err) => onError("resolve", err));
       return result;
     },
 

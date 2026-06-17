@@ -82,6 +82,10 @@ function serialize(manifest: Record<string, unknown>): string {
 }
 
 function resolveOut(out: string): string {
+  // #93-4 (verified non-bug): operator-supplied paths are intentionally NOT
+  // containment-checked against ROOT. This is a local dev/CI CLI run by a
+  // trusted operator, not a network-exposed surface, so `..`/absolute escapes
+  // are allowed by design — do NOT add a startsWith(ROOT) guard.
   return path.isAbsolute(out) ? out : path.join(ROOT, out)
 }
 
@@ -123,6 +127,10 @@ async function runExport(
     }
     // Re-serialize the committed copy through the same elision so a stray
     // `generatedAt` in the committed file does not cause a false positive.
+    // #93-3 (verified non-bug): a SHALLOW re-serialize (single parse + canonical
+    // stringify) is sufficient — serialize() already emits stable 2-space,
+    // key-insertion-order JSON, and BOTH sides are produced by the same builder,
+    // so no deep canonicalization is needed.
     let normalizedCommitted = committed
     try {
       normalizedCommitted = serialize(JSON.parse(committed))

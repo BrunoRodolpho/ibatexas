@@ -46,6 +46,7 @@ export type LlmTokenUsageSumAggregateOutputType = {
 
 export type LlmTokenUsageMinAggregateOutputType = {
   id: string | null
+  turnId: string | null
   sessionId: string | null
   customerId: string | null
   channel: string | null
@@ -60,6 +61,7 @@ export type LlmTokenUsageMinAggregateOutputType = {
 
 export type LlmTokenUsageMaxAggregateOutputType = {
   id: string | null
+  turnId: string | null
   sessionId: string | null
   customerId: string | null
   channel: string | null
@@ -74,6 +76,7 @@ export type LlmTokenUsageMaxAggregateOutputType = {
 
 export type LlmTokenUsageCountAggregateOutputType = {
   id: number
+  turnId: number
   sessionId: number
   customerId: number
   channel: number
@@ -104,6 +107,7 @@ export type LlmTokenUsageSumAggregateInputType = {
 
 export type LlmTokenUsageMinAggregateInputType = {
   id?: true
+  turnId?: true
   sessionId?: true
   customerId?: true
   channel?: true
@@ -118,6 +122,7 @@ export type LlmTokenUsageMinAggregateInputType = {
 
 export type LlmTokenUsageMaxAggregateInputType = {
   id?: true
+  turnId?: true
   sessionId?: true
   customerId?: true
   channel?: true
@@ -132,6 +137,7 @@ export type LlmTokenUsageMaxAggregateInputType = {
 
 export type LlmTokenUsageCountAggregateInputType = {
   id?: true
+  turnId?: true
   sessionId?: true
   customerId?: true
   channel?: true
@@ -233,6 +239,7 @@ export type LlmTokenUsageGroupByArgs<ExtArgs extends runtime.Types.Extensions.In
 
 export type LlmTokenUsageGroupByOutputType = {
   id: string
+  turnId: string
   sessionId: string
   customerId: string | null
   channel: string | null
@@ -270,6 +277,7 @@ export type LlmTokenUsageWhereInput = {
   OR?: Prisma.LlmTokenUsageWhereInput[]
   NOT?: Prisma.LlmTokenUsageWhereInput | Prisma.LlmTokenUsageWhereInput[]
   id?: Prisma.StringFilter<"LlmTokenUsage"> | string
+  turnId?: Prisma.StringFilter<"LlmTokenUsage"> | string
   sessionId?: Prisma.StringFilter<"LlmTokenUsage"> | string
   customerId?: Prisma.StringNullableFilter<"LlmTokenUsage"> | string | null
   channel?: Prisma.StringNullableFilter<"LlmTokenUsage"> | string | null
@@ -284,6 +292,7 @@ export type LlmTokenUsageWhereInput = {
 
 export type LlmTokenUsageOrderByWithRelationInput = {
   id?: Prisma.SortOrder
+  turnId?: Prisma.SortOrder
   sessionId?: Prisma.SortOrder
   customerId?: Prisma.SortOrderInput | Prisma.SortOrder
   channel?: Prisma.SortOrderInput | Prisma.SortOrder
@@ -298,6 +307,7 @@ export type LlmTokenUsageOrderByWithRelationInput = {
 
 export type LlmTokenUsageWhereUniqueInput = Prisma.AtLeast<{
   id?: string
+  turnId?: string
   AND?: Prisma.LlmTokenUsageWhereInput | Prisma.LlmTokenUsageWhereInput[]
   OR?: Prisma.LlmTokenUsageWhereInput[]
   NOT?: Prisma.LlmTokenUsageWhereInput | Prisma.LlmTokenUsageWhereInput[]
@@ -311,10 +321,11 @@ export type LlmTokenUsageWhereUniqueInput = Prisma.AtLeast<{
   estimatedUsd?: Prisma.DecimalFilter<"LlmTokenUsage"> | runtime.Decimal | runtime.DecimalJsLike | number | string
   recordedAt?: Prisma.DateTimeFilter<"LlmTokenUsage"> | Date | string
   createdAt?: Prisma.DateTimeFilter<"LlmTokenUsage"> | Date | string
-}, "id">
+}, "id" | "turnId">
 
 export type LlmTokenUsageOrderByWithAggregationInput = {
   id?: Prisma.SortOrder
+  turnId?: Prisma.SortOrder
   sessionId?: Prisma.SortOrder
   customerId?: Prisma.SortOrderInput | Prisma.SortOrder
   channel?: Prisma.SortOrderInput | Prisma.SortOrder
@@ -337,6 +348,7 @@ export type LlmTokenUsageScalarWhereWithAggregatesInput = {
   OR?: Prisma.LlmTokenUsageScalarWhereWithAggregatesInput[]
   NOT?: Prisma.LlmTokenUsageScalarWhereWithAggregatesInput | Prisma.LlmTokenUsageScalarWhereWithAggregatesInput[]
   id?: Prisma.StringWithAggregatesFilter<"LlmTokenUsage"> | string
+  turnId?: Prisma.StringWithAggregatesFilter<"LlmTokenUsage"> | string
   sessionId?: Prisma.StringWithAggregatesFilter<"LlmTokenUsage"> | string
   customerId?: Prisma.StringNullableWithAggregatesFilter<"LlmTokenUsage"> | string | null
   channel?: Prisma.StringNullableWithAggregatesFilter<"LlmTokenUsage"> | string | null
@@ -351,6 +363,7 @@ export type LlmTokenUsageScalarWhereWithAggregatesInput = {
 
 export type LlmTokenUsageCreateInput = {
   id?: string
+  turnId: string
   sessionId: string
   customerId?: string | null
   channel?: string | null
@@ -365,6 +378,7 @@ export type LlmTokenUsageCreateInput = {
 
 export type LlmTokenUsageUncheckedCreateInput = {
   id?: string
+  turnId: string
   sessionId: string
   customerId?: string | null
   channel?: string | null
@@ -379,6 +393,7 @@ export type LlmTokenUsageUncheckedCreateInput = {
 
 export type LlmTokenUsageUpdateInput = {
   id?: Prisma.StringFieldUpdateOperationsInput | string
+  turnId?: Prisma.StringFieldUpdateOperationsInput | string
   sessionId?: Prisma.StringFieldUpdateOperationsInput | string
   customerId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   channel?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
@@ -393,6 +408,7 @@ export type LlmTokenUsageUpdateInput = {
 
 export type LlmTokenUsageUncheckedUpdateInput = {
   id?: Prisma.StringFieldUpdateOperationsInput | string
+  turnId?: Prisma.StringFieldUpdateOperationsInput | string
   sessionId?: Prisma.StringFieldUpdateOperationsInput | string
   customerId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   channel?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
@@ -407,6 +423,7 @@ export type LlmTokenUsageUncheckedUpdateInput = {
 
 export type LlmTokenUsageCreateManyInput = {
   id?: string
+  turnId: string
   sessionId: string
   customerId?: string | null
   channel?: string | null
@@ -421,6 +438,7 @@ export type LlmTokenUsageCreateManyInput = {
 
 export type LlmTokenUsageUpdateManyMutationInput = {
   id?: Prisma.StringFieldUpdateOperationsInput | string
+  turnId?: Prisma.StringFieldUpdateOperationsInput | string
   sessionId?: Prisma.StringFieldUpdateOperationsInput | string
   customerId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   channel?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
@@ -435,6 +453,7 @@ export type LlmTokenUsageUpdateManyMutationInput = {
 
 export type LlmTokenUsageUncheckedUpdateManyInput = {
   id?: Prisma.StringFieldUpdateOperationsInput | string
+  turnId?: Prisma.StringFieldUpdateOperationsInput | string
   sessionId?: Prisma.StringFieldUpdateOperationsInput | string
   customerId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   channel?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
@@ -449,6 +468,7 @@ export type LlmTokenUsageUncheckedUpdateManyInput = {
 
 export type LlmTokenUsageCountOrderByAggregateInput = {
   id?: Prisma.SortOrder
+  turnId?: Prisma.SortOrder
   sessionId?: Prisma.SortOrder
   customerId?: Prisma.SortOrder
   channel?: Prisma.SortOrder
@@ -470,6 +490,7 @@ export type LlmTokenUsageAvgOrderByAggregateInput = {
 
 export type LlmTokenUsageMaxOrderByAggregateInput = {
   id?: Prisma.SortOrder
+  turnId?: Prisma.SortOrder
   sessionId?: Prisma.SortOrder
   customerId?: Prisma.SortOrder
   channel?: Prisma.SortOrder
@@ -484,6 +505,7 @@ export type LlmTokenUsageMaxOrderByAggregateInput = {
 
 export type LlmTokenUsageMinOrderByAggregateInput = {
   id?: Prisma.SortOrder
+  turnId?: Prisma.SortOrder
   sessionId?: Prisma.SortOrder
   customerId?: Prisma.SortOrder
   channel?: Prisma.SortOrder
@@ -515,6 +537,7 @@ export type DecimalFieldUpdateOperationsInput = {
 
 export type LlmTokenUsageSelect<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetSelect<{
   id?: boolean
+  turnId?: boolean
   sessionId?: boolean
   customerId?: boolean
   channel?: boolean
@@ -529,6 +552,7 @@ export type LlmTokenUsageSelect<ExtArgs extends runtime.Types.Extensions.Interna
 
 export type LlmTokenUsageSelectCreateManyAndReturn<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetSelect<{
   id?: boolean
+  turnId?: boolean
   sessionId?: boolean
   customerId?: boolean
   channel?: boolean
@@ -543,6 +567,7 @@ export type LlmTokenUsageSelectCreateManyAndReturn<ExtArgs extends runtime.Types
 
 export type LlmTokenUsageSelectUpdateManyAndReturn<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetSelect<{
   id?: boolean
+  turnId?: boolean
   sessionId?: boolean
   customerId?: boolean
   channel?: boolean
@@ -557,6 +582,7 @@ export type LlmTokenUsageSelectUpdateManyAndReturn<ExtArgs extends runtime.Types
 
 export type LlmTokenUsageSelectScalar = {
   id?: boolean
+  turnId?: boolean
   sessionId?: boolean
   customerId?: boolean
   channel?: boolean
@@ -569,13 +595,18 @@ export type LlmTokenUsageSelectScalar = {
   createdAt?: boolean
 }
 
-export type LlmTokenUsageOmit<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetOmit<"id" | "sessionId" | "customerId" | "channel" | "model" | "promptTokens" | "completionTokens" | "totalTokens" | "estimatedUsd" | "recordedAt" | "createdAt", ExtArgs["result"]["llmTokenUsage"]>
+export type LlmTokenUsageOmit<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetOmit<"id" | "turnId" | "sessionId" | "customerId" | "channel" | "model" | "promptTokens" | "completionTokens" | "totalTokens" | "estimatedUsd" | "recordedAt" | "createdAt", ExtArgs["result"]["llmTokenUsage"]>
 
 export type $LlmTokenUsagePayload<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
   name: "LlmTokenUsage"
   objects: {}
   scalars: runtime.Types.Extensions.GetPayloadResult<{
     id: string
+    /**
+     * Globally-unique turn id — the idempotency key (#94-1): the per-turn sink
+     * upserts on this so a BullMQ/turn retry overwrites rather than duplicates.
+     */
+    turnId: string
     sessionId: string
     customerId: string | null
     channel: string | null
@@ -1013,6 +1044,7 @@ export interface Prisma__LlmTokenUsageClient<T, Null = never, ExtArgs extends ru
  */
 export interface LlmTokenUsageFieldRefs {
   readonly id: Prisma.FieldRef<"LlmTokenUsage", 'String'>
+  readonly turnId: Prisma.FieldRef<"LlmTokenUsage", 'String'>
   readonly sessionId: Prisma.FieldRef<"LlmTokenUsage", 'String'>
   readonly customerId: Prisma.FieldRef<"LlmTokenUsage", 'String'>
   readonly channel: Prisma.FieldRef<"LlmTokenUsage", 'String'>

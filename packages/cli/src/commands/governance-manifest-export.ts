@@ -170,10 +170,18 @@ export function buildAiBomManifest(opts: BuildAiBomManifestOptions): AiBomManife
     }
   }
 
-  boms.sort((a, b) => a.packId.localeCompare(b.packId))
+  // #93-1: code-unit (byte-stable) order, NOT locale-sensitive localeCompare —
+  // the manifest is a byte-stable artifact verified across environments, so its
+  // sort must not depend on LC_COLLATE / the ICU version.
+  boms.sort((a, b) => (a.packId < b.packId ? -1 : a.packId > b.packId ? 1 : 0))
   const digests: Record<string, string> = {}
   const stripped: Array<Omit<AiBom, "generatedAt">> = []
   for (const bom of boms) {
+    // #93-2: fail closed — two components collapsing to the same packId would
+    // silently overwrite (last-wins) in the digest map; throw instead.
+    if (bom.packId in digests) {
+      throw new Error(`duplicate AI-BOM component id: ${bom.packId}`)
+    }
     digests[bom.packId] = bom.bomDigest
     const { generatedAt: _omit, ...rest } = bom
     stripped.push(rest)
@@ -227,7 +235,8 @@ export function buildConfigSealManifest(
     const digest = computeConfigDigest(extractSealableSurface(pack as never))
     seals.push({ packId: pack.id, packVersion: pack.version, digest })
   }
-  seals.sort((a, b) => a.packId.localeCompare(b.packId))
+  // #93-1: code-unit (byte-stable) order — see buildAiBomManifest.
+  seals.sort((a, b) => (a.packId < b.packId ? -1 : a.packId > b.packId ? 1 : 0))
   const digests: Record<string, string> = {}
   for (const s of seals) digests[s.packId] = s.digest
 
@@ -320,7 +329,8 @@ export function buildCoherenceManifest(
       })),
     })
   }
-  packs.sort((a, b) => a.packId.localeCompare(b.packId))
+  // #93-1: code-unit (byte-stable) order — see buildAiBomManifest.
+  packs.sort((a, b) => (a.packId < b.packId ? -1 : a.packId > b.packId ? 1 : 0))
 
   return {
     schemaVersion: 1,
