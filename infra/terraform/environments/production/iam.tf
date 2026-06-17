@@ -83,7 +83,10 @@ data "aws_iam_policy_document" "ecs_task" {
       "elasticfilesystem:ClientMount",
       "elasticfilesystem:ClientWrite",
     ]
-    resources = [aws_efs_file_system.typesense.arn]
+    resources = [
+      aws_efs_file_system.typesense.arn,
+      aws_efs_file_system.nats.arn,
+    ]
   }
 }
 
