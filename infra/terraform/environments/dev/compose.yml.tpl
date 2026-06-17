@@ -40,8 +40,10 @@ services:
       RESTAURANT_TIMEZONE: America/Sao_Paulo
       # At-least-once migration: dev runs the durable-JetStream path (streams
       # provisioned at boot; subscribers use manual ack/nak/term → real
-      # redelivery + DLQ; publishes get a PubAck). Prod JetStream store is on a
-      # persistent EFS volume. See ~/projects/jetstream-at-least-once-plan.md.
+      # redelivery + DLQ; publishes get a PubAck). Dev persists JetStream to the
+      # named docker volume nats_data:/data; prod persists it to EFS
+      # (aws_efs_access_point.nats — see production/{efs,nats}.tf).
+      # See ~/projects/jetstream-at-least-once-plan.md.
       NATS_JETSTREAM_ENABLED: "true"
       # typesense-js expects a bare hostname here (protocol + port are separate
       # fields on the client). Passing a full URL makes DNS try to resolve
