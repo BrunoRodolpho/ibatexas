@@ -18,6 +18,7 @@
   "dependencies": {
     "@adjudicate/adapter-core": "^0.3.0",
     "@adjudicate/analyze": "^0.4.0",
+    "@adjudicate/approval-engine": "^0.2.1",
     "@adjudicate/audit": "^2.0.1",
     "@adjudicate/audit-postgres": "^2.0.1",
     "@adjudicate/conformance": "^1.1.0",

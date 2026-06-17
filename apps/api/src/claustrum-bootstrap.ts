@@ -115,6 +115,12 @@ import {
   type AgentApprovalRequest,
   type AgentApprovalStatus,
 } from "./claustrum/agent-approvals.js";
+// H2 (ERDS-061/062) — mirror the agent-approval registry into the adjudicate
+// Redis registry (shared keyPrefix adjudicate:approval) so the adjudicate
+// console/adjutant operator UIs read agent approvals. Best-effort, fail-open.
+import { createRedisApprovalRegistry } from "@adjudicate/approval-engine";
+import { createApprovalRedisClient } from "./claustrum/approval-engine-redis-wiring.js";
+import { createAgentApprovalEngineBridge } from "./claustrum/approval-engine-bridge.js";
 import {
   agentsEnabled,
   startManagedAgentPlane,
@@ -1846,7 +1852,7 @@ export async function bootstrapClaustrum(
       };
       // Hoist the approval engine so the staff HTTP route (WS-D1) shares its
       // parked store with the plane (single in-memory producer).
-      const agentApprovals = createAgentApprovalEngine({
+      const inMemoryApprovals = createAgentApprovalEngine({
         notify: async (req) => {
           // Stage-1 approval pending → page staff via the existing handoff surface.
           await publishNatsEvent("support.handoff_requested", {
@@ -1858,6 +1864,42 @@ export async function bootstrapClaustrum(
         },
         now: () => new Date().toISOString(),
       });
+      // H2 (ERDS-061/062): when Redis is configured, ALSO mirror the approval
+      // lifecycle into @adjudicate/approval-engine's Redis registry (the shared
+      // keyPrefix "adjudicate:approval" — the adjudicate console/adjutant read
+      // the same `adjudicate:approval:req:*` keys). The in-memory engine stays
+      // authoritative; the mirror is a best-effort, fail-OPEN operator
+      // read-model. If REDIS_URL is unset (or the registry construction throws)
+      // we fall back to the plain in-memory engine with no bridge — a mirror
+      // must never gate the agent runtime.
+      let agentApprovals: AgentApprovalEngine = inMemoryApprovals;
+      if (process.env.REDIS_URL) {
+        try {
+          const registry = createRedisApprovalRegistry({
+            redis: createApprovalRedisClient(redis),
+            keyPrefix: "adjudicate:approval",
+          });
+          agentApprovals = createAgentApprovalEngineBridge({
+            inner: inMemoryApprovals,
+            registry,
+            onMirrorError: (stage, err) => {
+              logger.warn(
+                {
+                  component: "agent-approval-mirror",
+                  stage,
+                  err: (err as Error).message,
+                },
+                "agent-approval Redis mirror failed (swallowed — fail-open)",
+              );
+            },
+          });
+        } catch (err) {
+          logger.warn(
+            { component: "agent-approval-mirror", err: (err as Error).message },
+            "agent-approval Redis registry construction failed — using in-memory engine only (fail-open)",
+          );
+        }
+      }
       _agentApprovals = agentApprovals;
       // Live conductor ingredients — H1 recomposes per trigger over a capped
       // model, so the planner/responder are passed as factories (over the

@@ -9,6 +9,7 @@
 // Best-effort + fail-open: the proposal read-model is operator observation, never
 // governance — a write failure must never affect the parked approval or the turn.
 
+import { REMEDIATION_PROPOSALS_DDL } from "@ibatexas/domain";
 import { logger } from "../lib/logger.js";
 import type { ParkedRemediationProposal } from "./live-agent-conductor.js";
 
@@ -16,26 +17,6 @@ import type { ParkedRemediationProposal } from "./live-agent-conductor.js";
 export interface ProposalWriterPool {
   query(sql: string, params?: ReadonlyArray<unknown>): Promise<unknown>;
 }
-
-/** DDL mirroring @adjudicate/adjutant's remediationProposalsDDL (kept in sync). */
-const REMEDIATION_PROPOSALS_DDL = `
-  CREATE TABLE IF NOT EXISTS remediation_proposals (
-    proposal_id   TEXT PRIMARY KEY,
-    incident_id   TEXT NOT NULL,
-    action        TEXT NOT NULL,
-    blast_radius  INTEGER NOT NULL,
-    disposition   TEXT NOT NULL,
-    status        TEXT NOT NULL,
-    approval_token TEXT,
-    intent_hash   TEXT,
-    envelope_jsonb JSONB,
-    created_at    TIMESTAMPTZ NOT NULL,
-    updated_at    TIMESTAMPTZ NOT NULL
-  );
-  CREATE INDEX IF NOT EXISTS remediation_proposals_incident_idx ON remediation_proposals(incident_id);
-  CREATE INDEX IF NOT EXISTS remediation_proposals_status_idx ON remediation_proposals(status);
-  CREATE INDEX IF NOT EXISTS remediation_proposals_token_idx ON remediation_proposals(approval_token);
-`;
 
 export interface RemediationProposalWriter {
   /** Create the shared table if absent (idempotent). Call once at plane boot. */
