@@ -5,6 +5,7 @@ settings:
   excludeLinksFromLockfile: false
 
 overrides:
+  '@adjudicate/core': 1.4.0
   minimatch: 10.2.4
   rollup: 4.59.0
   glob: 13.0.6
@@ -127,25 +128,25 @@ importers:
     dependencies:
       '@adjudicate/adapter-core':
         specifier: ^0.3.0
-        version: 0.3.0(@adjudicate/admin-sdk@2.1.0(@adjudicate/core@1.3.0)(typescript@5.9.3))
+        version: 0.3.0(@adjudicate/admin-sdk@2.1.0(@adjudicate/core@1.4.0)(typescript@5.9.3))
       '@adjudicate/analyze':
         specifier: ^0.4.0
         version: 0.4.0
       '@adjudicate/approval-engine':
         specifier: ^0.2.1
-        version: 0.2.1(@adjudicate/admin-sdk@2.1.0(@adjudicate/core@1.3.0)(typescript@5.9.3))
+        version: 0.2.1(@adjudicate/admin-sdk@2.1.0(@adjudicate/core@1.4.0)(typescript@5.9.3))
       '@adjudicate/audit':
         specifier: ^2.0.1
-        version: 2.0.1(@adjudicate/admin-sdk@2.1.0(@adjudicate/core@1.3.0)(typescript@5.9.3))
+        version: 2.0.1(@adjudicate/admin-sdk@2.1.0(@adjudicate/core@1.4.0)(typescript@5.9.3))
       '@adjudicate/audit-postgres':
         specifier: ^2.0.1
-        version: 2.0.1(@adjudicate/admin-sdk@2.1.0(@adjudicate/core@1.3.0)(typescript@5.9.3))
+        version: 2.0.1(@adjudicate/admin-sdk@2.1.0(@adjudicate/core@1.4.0)(typescript@5.9.3))
       '@adjudicate/conformance':
         specifier: ^1.1.0
-        version: 1.1.0(@adjudicate/core@1.3.0)
+        version: 1.1.0(@adjudicate/core@1.4.0)
       '@adjudicate/core':
-        specifier: ^1.3.0
-        version: 1.3.0
+        specifier: 1.4.0
+        version: 1.4.0
       '@adjudicate/drift':
         specifier: ^0.2.0
         version: 0.2.0
@@ -166,22 +167,22 @@ importers:
         version: 0.82.0(zod@4.3.6)
       '@claustrum/anthropic':
         specifier: ^0.1.2
-        version: 0.1.2(@anthropic-ai/sdk@0.82.0(zod@4.3.6))(@claustrum/core@0.3.0(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1))
+        version: 0.1.2(@anthropic-ai/sdk@0.82.0(zod@4.3.6))(@claustrum/core@0.3.0(@adjudicate/core@1.4.0)(@adjudicate/runtime@0.2.1))
       '@claustrum/channel-web':
         specifier: ^0.1.2
-        version: 0.1.2(@adjudicate/core@1.3.0)(@claustrum/core@0.3.0(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1))
+        version: 0.1.2(@adjudicate/core@1.4.0)(@claustrum/core@0.3.0(@adjudicate/core@1.4.0)(@adjudicate/runtime@0.2.1))
       '@claustrum/channel-whatsapp':
         specifier: ^0.2.0
-        version: 0.2.0(@adjudicate/core@1.3.0)(@claustrum/core@0.3.0(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1))
+        version: 0.2.0(@adjudicate/core@1.4.0)(@claustrum/core@0.3.0(@adjudicate/core@1.4.0)(@adjudicate/runtime@0.2.1))
       '@claustrum/core':
         specifier: ^0.3.0
-        version: 0.3.0(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1)
+        version: 0.3.0(@adjudicate/core@1.4.0)(@adjudicate/runtime@0.2.1)
       '@claustrum/grounding-pgvector':
         specifier: ^0.1.1
-        version: 0.1.1(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1)
+        version: 0.1.1(@adjudicate/core@1.4.0)(@adjudicate/runtime@0.2.1)
       '@claustrum/memory-postgres':
         specifier: ^0.1.1
-        version: 0.1.1(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1)(prisma@7.6.0(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(magicast@0.3.5)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(typescript@5.9.3))
+        version: 0.1.1(@adjudicate/core@1.4.0)(@adjudicate/runtime@0.2.1)(prisma@7.6.0(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(magicast@0.3.5)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(typescript@5.9.3))
       '@fastify/cookie':
         specifier: ^11.0.2
         version: 11.0.2
@@ -497,7 +498,7 @@ importers:
         version: 9.39.4(jiti@2.6.1)
       eslint-config-next:
         specifier: ^16.2.0
-        version: 16.2.2(@typescript-eslint/parser@8.58.0(eslint@9.39.4(jiti@2.6.1))(typescript@5.9.3))(eslint@9.39.4(jiti@2.6.1))(typescript@5.9.3)
+        version: 16.2.2(eslint@9.39.4(jiti@2.6.1))(typescript@5.9.3)
       tailwindcss:
         specifier: ^4.2.0
         version: 4.2.2
@@ -512,10 +513,10 @@ importers:
     dependencies:
       '@adjudicate/conformance':
         specifier: ^1.1.0
-        version: 1.1.0(@adjudicate/core@1.3.0)
+        version: 1.1.0(@adjudicate/core@1.4.0)
       '@adjudicate/core':
-        specifier: ^1.3.0
-        version: 1.3.0
+        specifier: 1.4.0
+        version: 1.4.0
       '@adjudicate/pack-payments-pix':
         specifier: ^0.2.1
         version: 0.2.1
@@ -546,16 +547,16 @@ importers:
     dependencies:
       '@adjudicate/admin-sdk':
         specifier: ^2.1.0
-        version: 2.1.0(@adjudicate/core@1.3.0)(typescript@5.9.3)
+        version: 2.1.0(@adjudicate/core@1.4.0)(typescript@5.9.3)
       '@adjudicate/audit':
         specifier: ^2.0.1
-        version: 2.0.1(@adjudicate/admin-sdk@2.1.0(@adjudicate/core@1.3.0)(typescript@5.9.3))
+        version: 2.0.1(@adjudicate/admin-sdk@2.1.0(@adjudicate/core@1.4.0)(typescript@5.9.3))
       '@adjudicate/audit-postgres':
         specifier: ^2.0.1
-        version: 2.0.1(@adjudicate/admin-sdk@2.1.0(@adjudicate/core@1.3.0)(typescript@5.9.3))
+        version: 2.0.1(@adjudicate/admin-sdk@2.1.0(@adjudicate/core@1.4.0)(typescript@5.9.3))
       '@adjudicate/core':
-        specifier: ^1.3.0
-        version: 1.3.0
+        specifier: 1.4.0
+        version: 1.4.0
       '@ibatexas/pii':
         specifier: workspace:*
         version: link:../pii
@@ -577,16 +578,16 @@ importers:
         version: 0.4.0
       '@adjudicate/audit':
         specifier: ^2.0.1
-        version: 2.0.1(@adjudicate/admin-sdk@2.1.0(@adjudicate/core@1.3.0)(typescript@5.9.3))
+        version: 2.0.1(@adjudicate/admin-sdk@2.1.0(@adjudicate/core@1.4.0)(typescript@5.9.3))
       '@adjudicate/audit-postgres':
         specifier: ^2.0.1
-        version: 2.0.1(@adjudicate/admin-sdk@2.1.0(@adjudicate/core@1.3.0)(typescript@5.9.3))
+        version: 2.0.1(@adjudicate/admin-sdk@2.1.0(@adjudicate/core@1.4.0)(typescript@5.9.3))
       '@adjudicate/conformance':
         specifier: ^1.1.0
-        version: 1.1.0(@adjudicate/core@1.3.0)
+        version: 1.1.0(@adjudicate/core@1.4.0)
       '@adjudicate/core':
-        specifier: ^1.3.0
-        version: 1.3.0
+        specifier: 1.4.0
+        version: 1.4.0
       '@adjudicate/runtime':
         specifier: ^0.2.1
         version: 0.2.1
@@ -698,10 +699,10 @@ importers:
     dependencies:
       '@adjudicate/audit':
         specifier: ^2.0.1
-        version: 2.0.1(@adjudicate/admin-sdk@2.1.0(@adjudicate/core@1.3.0)(typescript@5.9.3))
+        version: 2.0.1(@adjudicate/admin-sdk@2.1.0(@adjudicate/core@1.4.0)(typescript@5.9.3))
       '@adjudicate/core':
-        specifier: ^1.3.0
-        version: 1.3.0
+        specifier: 1.4.0
+        version: 1.4.0
       '@adjudicate/primitives':
         specifier: ^0.3.0
         version: 0.3.0
@@ -762,7 +763,7 @@ importers:
         version: 9.39.4(jiti@2.6.1)
       eslint-plugin-import:
         specifier: ^2.29.0
-        version: 2.32.0(@typescript-eslint/parser@8.58.0(eslint@9.39.4(jiti@2.6.1))(typescript@5.9.3))(eslint-import-resolver-typescript@3.10.1)(eslint@9.39.4(jiti@2.6.1))
+        version: 2.32.0(@typescript-eslint/parser@8.58.0(eslint@9.39.4(jiti@2.6.1))(typescript@5.9.3))(eslint@9.39.4(jiti@2.6.1))
       typescript:
         specifier: ^5.0.0
         version: 5.9.3
@@ -799,13 +800,13 @@ importers:
     dependencies:
       '@adjudicate/audit':
         specifier: ^2.0.1
-        version: 2.0.1(@adjudicate/admin-sdk@2.1.0(@adjudicate/core@1.3.0)(typescript@5.9.3))
+        version: 2.0.1(@adjudicate/admin-sdk@2.1.0(@adjudicate/core@1.4.0)(typescript@5.9.3))
       '@adjudicate/audit-postgres':
         specifier: ^2.0.1
-        version: 2.0.1(@adjudicate/admin-sdk@2.1.0(@adjudicate/core@1.3.0)(typescript@5.9.3))
+        version: 2.0.1(@adjudicate/admin-sdk@2.1.0(@adjudicate/core@1.4.0)(typescript@5.9.3))
       '@adjudicate/core':
-        specifier: ^1.3.0
-        version: 1.3.0
+        specifier: 1.4.0
+        version: 1.4.0
       '@anthropic-ai/sdk':
         specifier: ^0.82.0
         version: 0.82.0(zod@4.3.6)
@@ -881,8 +882,8 @@ importers:
   packages/pack-customer-onboarding:
     dependencies:
       '@adjudicate/core':
-        specifier: ^1.3.0
-        version: 1.3.0
+        specifier: 1.4.0
+        version: 1.4.0
       '@adjudicate/locales-pt-br':
         specifier: ^0.2.1
         version: 0.2.1
@@ -898,7 +899,7 @@ importers:
         version: 0.3.0
       '@adjudicate/conformance':
         specifier: ^1.1.0
-        version: 1.1.0(@adjudicate/core@1.3.0)
+        version: 1.1.0(@adjudicate/core@1.4.0)
       '@ibatexas/eslint-config':
         specifier: workspace:*
         version: link:../eslint-config
@@ -915,8 +916,8 @@ importers:
   packages/pack-orders:
     dependencies:
       '@adjudicate/core':
-        specifier: ^1.3.0
-        version: 1.3.0
+        specifier: 1.4.0
+        version: 1.4.0
       '@adjudicate/locales-pt-br':
         specifier: ^0.2.1
         version: 0.2.1
@@ -935,7 +936,7 @@ importers:
         version: 0.3.0
       '@adjudicate/conformance':
         specifier: ^1.1.0
-        version: 1.1.0(@adjudicate/core@1.3.0)
+        version: 1.1.0(@adjudicate/core@1.4.0)
       '@ibatexas/eslint-config':
         specifier: workspace:*
         version: link:../eslint-config
@@ -952,8 +953,8 @@ importers:
   packages/pack-payments:
     dependencies:
       '@adjudicate/core':
-        specifier: ^1.3.0
-        version: 1.3.0
+        specifier: 1.4.0
+        version: 1.4.0
       '@adjudicate/locales-pt-br':
         specifier: ^0.2.1
         version: 0.2.1
@@ -969,7 +970,7 @@ importers:
         version: 0.3.0
       '@adjudicate/conformance':
         specifier: ^1.1.0
-        version: 1.1.0(@adjudicate/core@1.3.0)
+        version: 1.1.0(@adjudicate/core@1.4.0)
       '@ibatexas/eslint-config':
         specifier: workspace:*
         version: link:../eslint-config
@@ -986,8 +987,8 @@ importers:
   packages/pack-reservations:
     dependencies:
       '@adjudicate/core':
-        specifier: ^1.3.0
-        version: 1.3.0
+        specifier: 1.4.0
+        version: 1.4.0
       '@adjudicate/locales-pt-br':
         specifier: ^0.2.1
         version: 0.2.1
@@ -1000,7 +1001,7 @@ importers:
         version: 0.3.0
       '@adjudicate/conformance':
         specifier: ^1.1.0
-        version: 1.1.0(@adjudicate/core@1.3.0)
+        version: 1.1.0(@adjudicate/core@1.4.0)
       '@ibatexas/eslint-config':
         specifier: workspace:*
         version: link:../eslint-config
@@ -1017,8 +1018,8 @@ importers:
   packages/pack-whatsapp:
     dependencies:
       '@adjudicate/core':
-        specifier: ^1.3.0
-        version: 1.3.0
+        specifier: 1.4.0
+        version: 1.4.0
       '@adjudicate/locales-pt-br':
         specifier: ^0.2.1
         version: 0.2.1
@@ -1031,7 +1032,7 @@ importers:
         version: 0.3.0
       '@adjudicate/conformance':
         specifier: ^1.1.0
-        version: 1.1.0(@adjudicate/core@1.3.0)
+        version: 1.1.0(@adjudicate/core@1.4.0)
       '@ibatexas/eslint-config':
         specifier: workspace:*
         version: link:../eslint-config
@@ -1048,8 +1049,8 @@ importers:
   packages/packs-composed:
     dependencies:
       '@adjudicate/core':
-        specifier: ^1.3.0
-        version: 1.3.0
+        specifier: 1.4.0
+        version: 1.4.0
       '@ibatexas/pack-customer-onboarding':
         specifier: workspace:*
         version: link:../pack-customer-onboarding
@@ -1094,8 +1095,8 @@ importers:
   packages/tools:
     dependencies:
       '@adjudicate/core':
-        specifier: ^1.3.0
-        version: 1.3.0
+        specifier: 1.4.0
+        version: 1.4.0
       '@adjudicate/primitives':
         specifier: ^0.3.0
         version: 0.3.0
@@ -1207,7 +1208,7 @@ packages:
   '@adjudicate/admin-sdk@2.1.0':
     resolution: {integrity: sha512-J3i3qhMe1XCYCnk99rKrV2Oinwg7/8ETcQHY3nteazedNBgeEkPYWsgHjepIV5vxqyi0SQpT9Ni6Ai3s8s759Q==}
     peerDependencies:
-      '@adjudicate/core': 1.3.0
+      '@adjudicate/core': 1.4.0
 
   '@adjudicate/analyze@0.3.0':
     resolution: {integrity: sha512-oi/eMbdK+ta8feSdmaB+daX/SJJEtO5jhu1LHqKgdcL1xWsjDYCMrTUd2OEjBq2ZsYR4NP6RGg2n0C6Y/7RMGA==}
@@ -1240,10 +1241,10 @@ packages:
   '@adjudicate/conformance@1.1.0':
     resolution: {integrity: sha512-tN9E1s3vLrF9XUq1dXgssVibvFbztEPIv24WBL1feL5ZuDL7rX3Ug/pNh+DQxO5a9dTaTGpKtj5BU+CzsLBD7w==}
     peerDependencies:
-      '@adjudicate/core': 1.3.0
+      '@adjudicate/core': 1.4.0
 
-  '@adjudicate/core@1.3.0':
-    resolution: {integrity: sha512-fWPCE5YeroQHZj5GNYqigQ/Uv3e3LVZJ9ahvYDrR+oJZFDkExkgvxlpf7NxP3mq2GHaJzPtaFeVGjfJ4cVpXug==}
+  '@adjudicate/core@1.4.0':
+    resolution: {integrity: sha512-EyfencrGEhck30QXqrJLq6gjGUs7epeEjQqFRNKdo5SxqYPFfmX8k3B0BPk9fGBFRmiT5FqpLegDosHwE1jGnA==}
 
   '@adjudicate/drift@0.2.0':
     resolution: {integrity: sha512-Tnp7RzZwRdFwvYg7meNWtmxxiE0pXXNMa+A1EY6I/8Ru9F/UvpgfZNRHhndx8dz82OEn3P9E0h5vfQ31uXztKQ==}
@@ -1610,34 +1611,34 @@ packages:
     resolution: {integrity: sha512-pBlRTtbVsQ4MYfH+r4sW757RkEIbbayapPP1Ll1k2cwDsOeEp4dnJx++ZhtoKB8siAu4/RN0Qy1Mxb4DqFwbog==}
     engines: {node: '>=20.0.0'}
     peerDependencies:
-      '@adjudicate/core': ^1.1.0
+      '@adjudicate/core': 1.4.0
       '@claustrum/core': ^0.3.0
 
   '@claustrum/channel-whatsapp@0.2.0':
     resolution: {integrity: sha512-YNgflVjXmHljGS/MgCgLOxvD3Ev2dQe5LYHyp7ln5fIfqwDKH3eZ4gvUYXNmz+tmXcwya1UmCs7/7VYtjqRr7A==}
     engines: {node: '>=20.0.0'}
     peerDependencies:
-      '@adjudicate/core': ^1.1.0
+      '@adjudicate/core': 1.4.0
       '@claustrum/core': ^0.3.0
 
   '@claustrum/core@0.3.0':
     resolution: {integrity: sha512-3LGXWFruGA+cwFSLAK2ARQu5FFvdGhf86/J+/PKn98GBApK4DUCzmue6JN93H57k2M9Qax0uMXNK0ic0Lp4NvQ==}
     engines: {node: '>=20.0.0'}
     peerDependencies:
-      '@adjudicate/core': ^1.1.0
+      '@adjudicate/core': 1.4.0
       '@adjudicate/runtime': ^0.2.0
 
   '@claustrum/grounding-pgvector@0.1.1':
     resolution: {integrity: sha512-vACBUmFBCWh8Uvr5/LiUJuTiyPmaIfNc8qG5LAKduBpEqJtkP9nT/plRenRYe263aKONQDQ+jI2/Ubjcfv8hhw==}
     engines: {node: '>=20.0.0'}
     peerDependencies:
-      '@adjudicate/core': ^1.1.0
+      '@adjudicate/core': 1.4.0
 
   '@claustrum/memory-postgres@0.1.1':
     resolution: {integrity: sha512-Fs1k0lKSfq8IcK6P4+JMd56O6m+xiMvU+xvWwPbcR9FSKm+P2mqB0RUeCLaJK+0yDyToC8YwCsSjrKXnT9K9IQ==}
     engines: {node: '>=20.0.0'}
     peerDependencies:
-      '@adjudicate/core': ^1.1.0
+      '@adjudicate/core': 1.4.0
 
   '@colors/colors@1.6.0':
     resolution: {integrity: sha512-Ir+AOibqzrIsL6ajt3Rz3LskB7OiMVHqltZmspbW/TJuTVuyOMirVqAkjfY6JISiLHgyNqicAC8AyHHGzNd/dA==}
@@ -11289,27 +11290,27 @@ packages:
 
 snapshots:
 
-  '@adjudicate/adapter-core@0.3.0(@adjudicate/admin-sdk@2.1.0(@adjudicate/core@1.3.0)(typescript@5.9.3))':
+  '@adjudicate/adapter-core@0.3.0(@adjudicate/admin-sdk@2.1.0(@adjudicate/core@1.4.0)(typescript@5.9.3))':
     dependencies:
-      '@adjudicate/audit': 2.0.1(@adjudicate/admin-sdk@2.1.0(@adjudicate/core@1.3.0)(typescript@5.9.3))
-      '@adjudicate/conformance': 1.1.0(@adjudicate/core@1.3.0)
-      '@adjudicate/core': 1.3.0
+      '@adjudicate/audit': 2.0.1(@adjudicate/admin-sdk@2.1.0(@adjudicate/core@1.4.0)(typescript@5.9.3))
+      '@adjudicate/conformance': 1.1.0(@adjudicate/core@1.4.0)
+      '@adjudicate/core': 1.4.0
       '@adjudicate/runtime': 0.2.1
     transitivePeerDependencies:
       - '@adjudicate/admin-sdk'
 
-  '@adjudicate/adapter-core@0.3.1(@adjudicate/admin-sdk@2.1.0(@adjudicate/core@1.3.0)(typescript@5.9.3))':
+  '@adjudicate/adapter-core@0.3.1(@adjudicate/admin-sdk@2.1.0(@adjudicate/core@1.4.0)(typescript@5.9.3))':
     dependencies:
-      '@adjudicate/audit': 2.0.1(@adjudicate/admin-sdk@2.1.0(@adjudicate/core@1.3.0)(typescript@5.9.3))
-      '@adjudicate/conformance': 1.1.0(@adjudicate/core@1.3.0)
-      '@adjudicate/core': 1.3.0
+      '@adjudicate/audit': 2.0.1(@adjudicate/admin-sdk@2.1.0(@adjudicate/core@1.4.0)(typescript@5.9.3))
+      '@adjudicate/conformance': 1.1.0(@adjudicate/core@1.4.0)
+      '@adjudicate/core': 1.4.0
       '@adjudicate/runtime': 0.2.1
     transitivePeerDependencies:
       - '@adjudicate/admin-sdk'
 
-  '@adjudicate/admin-sdk@2.1.0(@adjudicate/core@1.3.0)(typescript@5.9.3)':
+  '@adjudicate/admin-sdk@2.1.0(@adjudicate/core@1.4.0)(typescript@5.9.3)':
     dependencies:
-      '@adjudicate/core': 1.3.0
+      '@adjudicate/core': 1.4.0
       '@trpc/server': 11.17.0(typescript@5.9.3)
       zod: 4.3.6
     transitivePeerDependencies:
@@ -11317,43 +11318,43 @@ snapshots:
 
   '@adjudicate/analyze@0.3.0':
     dependencies:
-      '@adjudicate/core': 1.3.0
+      '@adjudicate/core': 1.4.0
       ts-morph: 25.0.1
 
   '@adjudicate/analyze@0.4.0':
     dependencies:
-      '@adjudicate/core': 1.3.0
+      '@adjudicate/core': 1.4.0
       ts-morph: 25.0.1
 
-  '@adjudicate/approval-engine@0.2.1(@adjudicate/admin-sdk@2.1.0(@adjudicate/core@1.3.0)(typescript@5.9.3))':
+  '@adjudicate/approval-engine@0.2.1(@adjudicate/admin-sdk@2.1.0(@adjudicate/core@1.4.0)(typescript@5.9.3))':
     dependencies:
-      '@adjudicate/adapter-core': 0.3.1(@adjudicate/admin-sdk@2.1.0(@adjudicate/core@1.3.0)(typescript@5.9.3))
-      '@adjudicate/core': 1.3.0
+      '@adjudicate/adapter-core': 0.3.1(@adjudicate/admin-sdk@2.1.0(@adjudicate/core@1.4.0)(typescript@5.9.3))
+      '@adjudicate/core': 1.4.0
     transitivePeerDependencies:
       - '@adjudicate/admin-sdk'
 
-  '@adjudicate/audit-postgres@2.0.1(@adjudicate/admin-sdk@2.1.0(@adjudicate/core@1.3.0)(typescript@5.9.3))':
+  '@adjudicate/audit-postgres@2.0.1(@adjudicate/admin-sdk@2.1.0(@adjudicate/core@1.4.0)(typescript@5.9.3))':
     dependencies:
-      '@adjudicate/audit': 2.0.1(@adjudicate/admin-sdk@2.1.0(@adjudicate/core@1.3.0)(typescript@5.9.3))
-      '@adjudicate/core': 1.3.0
+      '@adjudicate/audit': 2.0.1(@adjudicate/admin-sdk@2.1.0(@adjudicate/core@1.4.0)(typescript@5.9.3))
+      '@adjudicate/core': 1.4.0
     optionalDependencies:
-      '@adjudicate/admin-sdk': 2.1.0(@adjudicate/core@1.3.0)(typescript@5.9.3)
+      '@adjudicate/admin-sdk': 2.1.0(@adjudicate/core@1.4.0)(typescript@5.9.3)
 
-  '@adjudicate/audit@2.0.1(@adjudicate/admin-sdk@2.1.0(@adjudicate/core@1.3.0)(typescript@5.9.3))':
+  '@adjudicate/audit@2.0.1(@adjudicate/admin-sdk@2.1.0(@adjudicate/core@1.4.0)(typescript@5.9.3))':
     dependencies:
-      '@adjudicate/core': 1.3.0
+      '@adjudicate/core': 1.4.0
     optionalDependencies:
-      '@adjudicate/admin-sdk': 2.1.0(@adjudicate/core@1.3.0)(typescript@5.9.3)
+      '@adjudicate/admin-sdk': 2.1.0(@adjudicate/core@1.4.0)(typescript@5.9.3)
 
   '@adjudicate/canonical@1.1.0':
     dependencies:
       '@noble/hashes': 1.8.0
 
-  '@adjudicate/conformance@1.1.0(@adjudicate/core@1.3.0)':
+  '@adjudicate/conformance@1.1.0(@adjudicate/core@1.4.0)':
     dependencies:
-      '@adjudicate/core': 1.3.0
+      '@adjudicate/core': 1.4.0
 
-  '@adjudicate/core@1.3.0':
+  '@adjudicate/core@1.4.0':
     dependencies:
       '@adjudicate/canonical': 1.1.0
       '@noble/hashes': 1.8.0
@@ -11361,24 +11362,24 @@ snapshots:
 
   '@adjudicate/drift@0.2.0':
     dependencies:
-      '@adjudicate/core': 1.3.0
+      '@adjudicate/core': 1.4.0
 
   '@adjudicate/locales-pt-br@0.2.1':
     dependencies:
-      '@adjudicate/core': 1.3.0
+      '@adjudicate/core': 1.4.0
 
   '@adjudicate/pack-payments-pix@0.2.1':
     dependencies:
-      '@adjudicate/core': 1.3.0
+      '@adjudicate/core': 1.4.0
       '@adjudicate/primitives': 0.3.0
 
   '@adjudicate/primitives@0.3.0':
     dependencies:
-      '@adjudicate/core': 1.3.0
+      '@adjudicate/core': 1.4.0
 
   '@adjudicate/runtime@0.2.1':
     dependencies:
-      '@adjudicate/core': 1.3.0
+      '@adjudicate/core': 1.4.0
 
   '@alloc/quick-lru@5.2.0': {}
 
@@ -12111,44 +12112,44 @@ snapshots:
       picocolors: 1.1.1
       sisteransi: 1.0.5
 
-  '@claustrum/anthropic@0.1.2(@anthropic-ai/sdk@0.82.0(zod@4.3.6))(@claustrum/core@0.3.0(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1))':
+  '@claustrum/anthropic@0.1.2(@anthropic-ai/sdk@0.82.0(zod@4.3.6))(@claustrum/core@0.3.0(@adjudicate/core@1.4.0)(@adjudicate/runtime@0.2.1))':
     dependencies:
       '@anthropic-ai/sdk': 0.82.0(zod@4.3.6)
-      '@claustrum/core': 0.3.0(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1)
+      '@claustrum/core': 0.3.0(@adjudicate/core@1.4.0)(@adjudicate/runtime@0.2.1)
 
-  '@claustrum/channel-web@0.1.2(@adjudicate/core@1.3.0)(@claustrum/core@0.3.0(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1))':
+  '@claustrum/channel-web@0.1.2(@adjudicate/core@1.4.0)(@claustrum/core@0.3.0(@adjudicate/core@1.4.0)(@adjudicate/runtime@0.2.1))':
     dependencies:
-      '@adjudicate/core': 1.3.0
-      '@claustrum/core': 0.3.0(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1)
+      '@adjudicate/core': 1.4.0
+      '@claustrum/core': 0.3.0(@adjudicate/core@1.4.0)(@adjudicate/runtime@0.2.1)
 
-  '@claustrum/channel-whatsapp@0.2.0(@adjudicate/core@1.3.0)(@claustrum/core@0.3.0(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1))':
+  '@claustrum/channel-whatsapp@0.2.0(@adjudicate/core@1.4.0)(@claustrum/core@0.3.0(@adjudicate/core@1.4.0)(@adjudicate/runtime@0.2.1))':
     dependencies:
-      '@adjudicate/core': 1.3.0
-      '@claustrum/core': 0.3.0(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1)
+      '@adjudicate/core': 1.4.0
+      '@claustrum/core': 0.3.0(@adjudicate/core@1.4.0)(@adjudicate/runtime@0.2.1)
       twilio: 5.13.1
     transitivePeerDependencies:
       - debug
       - supports-color
 
-  '@claustrum/core@0.3.0(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1)':
+  '@claustrum/core@0.3.0(@adjudicate/core@1.4.0)(@adjudicate/runtime@0.2.1)':
     dependencies:
-      '@adjudicate/core': 1.3.0
+      '@adjudicate/core': 1.4.0
       '@adjudicate/runtime': 0.2.1
 
-  '@claustrum/grounding-pgvector@0.1.1(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1)':
+  '@claustrum/grounding-pgvector@0.1.1(@adjudicate/core@1.4.0)(@adjudicate/runtime@0.2.1)':
     dependencies:
-      '@adjudicate/core': 1.3.0
-      '@claustrum/core': 0.3.0(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1)
+      '@adjudicate/core': 1.4.0
+      '@claustrum/core': 0.3.0(@adjudicate/core@1.4.0)(@adjudicate/runtime@0.2.1)
       pg: 8.20.0
       pgvector: 0.2.1
     transitivePeerDependencies:
       - '@adjudicate/runtime'
       - pg-native
 
-  '@claustrum/memory-postgres@0.1.1(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1)(prisma@7.6.0(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(magicast@0.3.5)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(typescript@5.9.3))':
+  '@claustrum/memory-postgres@0.1.1(@adjudicate/core@1.4.0)(@adjudicate/runtime@0.2.1)(prisma@7.6.0(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(magicast@0.3.5)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(typescript@5.9.3))':
     dependencies:
-      '@adjudicate/core': 1.3.0
-      '@claustrum/core': 0.3.0(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1)
+      '@adjudicate/core': 1.4.0
+      '@claustrum/core': 0.3.0(@adjudicate/core@1.4.0)(@adjudicate/runtime@0.2.1)
       '@prisma/client': 5.22.0(prisma@7.6.0(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(magicast@0.3.5)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(typescript@5.9.3))
       ioredis: 5.10.1
     transitivePeerDependencies:
@@ -19501,26 +19502,6 @@ snapshots:
 
   escape-string-regexp@4.0.0: {}
 
-  eslint-config-next@16.2.2(@typescript-eslint/parser@8.58.0(eslint@9.39.4(jiti@2.6.1))(typescript@5.9.3))(eslint@9.39.4(jiti@2.6.1))(typescript@5.9.3):
-    dependencies:
-      '@next/eslint-plugin-next': 16.2.2
-      eslint: 9.39.4(jiti@2.6.1)
-      eslint-import-resolver-node: 0.3.10
-      eslint-import-resolver-typescript: 3.10.1(eslint-plugin-import@2.32.0)(eslint@9.39.4(jiti@2.6.1))
-      eslint-plugin-import: 2.32.0(@typescript-eslint/parser@8.58.0(eslint@9.39.4(jiti@2.6.1))(typescript@5.9.3))(eslint-import-resolver-typescript@3.10.1)(eslint@9.39.4(jiti@2.6.1))
-      eslint-plugin-jsx-a11y: 6.10.2(eslint@9.39.4(jiti@2.6.1))
-      eslint-plugin-react: 7.37.5(eslint@9.39.4(jiti@2.6.1))
-      eslint-plugin-react-hooks: 7.0.1(eslint@9.39.4(jiti@2.6.1))
-      globals: 16.4.0
-      typescript-eslint: 8.58.0(eslint@9.39.4(jiti@2.6.1))(typescript@5.9.3)
-    optionalDependencies:
-      typescript: 5.9.3
-    transitivePeerDependencies:
-      - '@typescript-eslint/parser'
-      - eslint-import-resolver-webpack
-      - eslint-plugin-import-x
-      - supports-color
-
   eslint-config-next@16.2.2(eslint@9.39.4(jiti@2.6.1))(typescript@5.9.3):
     dependencies:
       '@next/eslint-plugin-next': 16.2.2
@@ -19564,29 +19545,13 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  eslint-import-resolver-typescript@3.10.1(eslint-plugin-import@2.32.0)(eslint@9.39.4(jiti@2.6.1)):
-    dependencies:
-      '@nolyfill/is-core-module': 1.0.39
-      debug: 4.4.3(supports-color@8.1.1)
-      eslint: 9.39.4(jiti@2.6.1)
-      get-tsconfig: 4.13.7
-      is-bun-module: 2.0.0
-      stable-hash: 0.0.5
-      tinyglobby: 0.2.15
-      unrs-resolver: 1.11.1
-    optionalDependencies:
-      eslint-plugin-import: 2.32.0(@typescript-eslint/parser@8.58.0(eslint@9.39.4(jiti@2.6.1))(typescript@5.9.3))(eslint-import-resolver-typescript@3.10.1)(eslint@9.39.4(jiti@2.6.1))
-    transitivePeerDependencies:
-      - supports-color
-
-  eslint-module-utils@2.12.1(@typescript-eslint/parser@8.58.0(eslint@9.39.4(jiti@2.6.1))(typescript@5.9.3))(eslint-import-resolver-node@0.3.10)(eslint-import-resolver-typescript@3.10.1)(eslint@9.39.4(jiti@2.6.1)):
+  eslint-module-utils@2.12.1(@typescript-eslint/parser@8.58.0(eslint@9.39.4(jiti@2.6.1))(typescript@5.9.3))(eslint-import-resolver-node@0.3.10)(eslint@9.39.4(jiti@2.6.1)):
     dependencies:
       debug: 3.2.7
     optionalDependencies:
       '@typescript-eslint/parser': 8.58.0(eslint@9.39.4(jiti@2.6.1))(typescript@5.9.3)
       eslint: 9.39.4(jiti@2.6.1)
       eslint-import-resolver-node: 0.3.10
-      eslint-import-resolver-typescript: 3.10.1(eslint-plugin-import@2.32.0)(eslint@9.39.4(jiti@2.6.1))
     transitivePeerDependencies:
       - supports-color
 
@@ -19600,7 +19565,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  eslint-plugin-import@2.32.0(@typescript-eslint/parser@8.58.0(eslint@9.39.4(jiti@2.6.1))(typescript@5.9.3))(eslint-import-resolver-typescript@3.10.1)(eslint@9.39.4(jiti@2.6.1)):
+  eslint-plugin-import@2.32.0(@typescript-eslint/parser@8.58.0(eslint@9.39.4(jiti@2.6.1))(typescript@5.9.3))(eslint@9.39.4(jiti@2.6.1)):
     dependencies:
       '@rtsao/scc': 1.1.0
       array-includes: 3.1.9
@@ -19611,7 +19576,7 @@ snapshots:
       doctrine: 2.1.0
       eslint: 9.39.4(jiti@2.6.1)
       eslint-import-resolver-node: 0.3.10
-      eslint-module-utils: 2.12.1(@typescript-eslint/parser@8.58.0(eslint@9.39.4(jiti@2.6.1))(typescript@5.9.3))(eslint-import-resolver-node@0.3.10)(eslint-import-resolver-typescript@3.10.1)(eslint@9.39.4(jiti@2.6.1))
+      eslint-module-utils: 2.12.1(@typescript-eslint/parser@8.58.0(eslint@9.39.4(jiti@2.6.1))(typescript@5.9.3))(eslint-import-resolver-node@0.3.10)(eslint@9.39.4(jiti@2.6.1))
       hasown: 2.0.2
       is-core-module: 2.16.1
       is-glob: 4.0.3
