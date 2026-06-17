@@ -108,6 +108,24 @@ describe("addToCart", () => {
     )
   })
 
+  it("stamps a unique nonce per add so JetStream dedup can't collapse two distinct adds", async () => {
+    // Regression for the J1 cart.item_added undercount: the handler increments
+    // cartAddCount with no consume-side dedup, so two genuinely-separate adds of
+    // the same variant/qty must NOT carry an identical Nats-Msg-Id. The per-add
+    // nonce is what keeps each publish byte-unique.
+    await addToCart(INPUT, CTX)
+    await addToCart(INPUT, CTX)
+
+    const nonces = mockPublishNatsEvent.mock.calls
+      .filter(([event]) => event === "cart.item_added")
+      .map(([, payload]) => (payload as { nonce?: string }).nonce)
+
+    expect(nonces).toHaveLength(2)
+    expect(nonces[0]).toEqual(expect.any(String))
+    expect(nonces[1]).toEqual(expect.any(String))
+    expect(nonces[0]).not.toBe(nonces[1])
+  })
+
   it("returns error object when Medusa throws", async () => {
     mockLineItemsAdd.mockRejectedValue(new Error("Medusa 500: Internal"))
 
