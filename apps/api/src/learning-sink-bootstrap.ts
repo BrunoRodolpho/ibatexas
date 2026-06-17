@@ -26,44 +26,27 @@
 
 import { getRedisClient } from "@ibatexas/tools"
 import { publishNatsEvent } from "@ibatexas/nats-client"
+import {
+  LEARNING_EVENT_CHANNEL,
+  LEARNING_EVENT_SUBJECT,
+  type LearningEventV1,
+} from "@adjudicate/core"
 import type { FastifyBaseLogger } from "fastify"
 
 /**
- * The `learning.event.v1` payload — EXACT, shared with the adjudicate console
- * reader. `at` is an ISO timestamp; `detail` is a free-form (already-redacted)
- * bag. Keep this minimal: no message bodies, no secrets.
- *
- * TODO(item A — UltraReview #94-20): single-source this from `@adjudicate/core`
- * by replacing this hand-copied interface with
- *   `import type { LearningEventV1 } from "@adjudicate/core"`
- *   `export type LearningEvent = LearningEventV1`
- * and the two consts below with re-exports, then bump `@adjudicate/core` in
- * apps/api/package.json from `^1.3.0` to `^1.4.0`. This is GATED on core 1.4.0
- * being published (the LearningEventV1 contract + changeset ship in the
- * adjudicate PR; the swap must land AFTER that Version-PR merges and
- * release.yml publishes — see the plan's sequencing constraint #1). Until then
- * this stays hand-copied so the ibatexas branch resolves `^1.3.0` and builds.
+ * The `learning.event.v1` payload contract — single-sourced from
+ * `@adjudicate/core` as `LearningEventV1` (item A — UltraReview #94-20) so the
+ * ibatexas publisher and the adjudicate console reader can no longer drift.
+ * Telemetry only: keep payloads minimal — no message bodies, no secrets.
  */
-export interface LearningEvent {
-  readonly schemaVersion: 1
-  /** ISO-8601 time the event was recorded (telemetry — Date.now is fine here). */
-  readonly at: string
-  /** Agent id (e.g. `pix-payment-failure-remediation`) or chat actor namespace. */
-  readonly agentId: string
-  /** The session / conversation namespace the event belongs to. */
-  readonly sessionId: string
-  /** Coarse event kind (e.g. `agent.turn`). */
-  readonly kind: string
-  /** Kernel decision kind for the turn, when one is known. */
-  readonly decisionKind?: string
-  /** Free-form, already-redacted detail bag. */
-  readonly detail?: Record<string, unknown>
-}
+export type LearningEvent = LearningEventV1
 
-/** The NATS subject (short form — the client prepends `ibatexas.`). */
-export const LEARNING_EVENT_SUBJECT = "learning.event.v1"
-/** The Redis pub/sub channel the console live-tail subscribes to. */
-export const LEARNING_EVENT_CHANNEL = "learning.event.v1"
+/**
+ * The NATS subject (short form — the client prepends `ibatexas.`) and the Redis
+ * pub/sub channel the console live-tail subscribes to. Re-exported from
+ * `@adjudicate/core` so the wire subject/channel are single-sourced (item A).
+ */
+export { LEARNING_EVENT_SUBJECT, LEARNING_EVENT_CHANNEL }
 
 /**
  * Best-effort, FAIL-OPEN learning telemetry sink. `recordLearningEvent` NEVER
