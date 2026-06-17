@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "adopter": "ibatexas",
+  "digests": {
+    "ibatexas/pack-customer-onboarding": "927438398f717c41f5a6f6f95a5f54307e7a4ac1b5b46b0eee55866da7e00e88",
+    "ibatexas/pack-orders": "a0f64a8ff867faeefd784bc032a327c85a846b110829f827c6fe10caf1e889b8",
+    "ibatexas/pack-payments": "9f271f8c84403225b5c6715a3b2758869b004c51e87126c7dd3a5f72f0de6fff",
+    "ibatexas/pack-reservations": "430b51adb19bcd1dc3f9f17489a0827f2f4c9a9f2c5f82864f962d421a6f550c",
+    "ibatexas/pack-whatsapp": "54a37a35451bf208b9601c40af5e21293ad6bb91ef6308d754037ff5688d9fb5",
+    "pack-payments-pix": "663c52176fce748a2951a1765248e207d0f6bf7ab1f8d51b7ea9eef0ce126b1a"
+  },
+  "seals": [
+    {
+      "packId": "ibatexas/pack-customer-onboarding",
+      "packVersion": "1.0.0",
+      "digest": "927438398f717c41f5a6f6f95a5f54307e7a4ac1b5b46b0eee55866da7e00e88"
+    },
+    {
+      "packId": "ibatexas/pack-orders",
+      "packVersion": "1.1.0",
+      "digest": "a0f64a8ff867faeefd784bc032a327c85a846b110829f827c6fe10caf1e889b8"
+    },
+    {
+      "packId": "ibatexas/pack-payments",
+      "packVersion": "1.0.0",
+      "digest": "9f271f8c84403225b5c6715a3b2758869b004c51e87126c7dd3a5f72f0de6fff"
+    },
+    {
+      "packId": "ibatexas/pack-reservations",
+      "packVersion": "1.0.0",
+      "digest": "430b51adb19bcd1dc3f9f17489a0827f2f4c9a9f2c5f82864f962d421a6f550c"
+    },
+    {
+      "packId": "ibatexas/pack-whatsapp",
+      "packVersion": "1.1.0",
+      "digest": "54a37a35451bf208b9601c40af5e21293ad6bb91ef6308d754037ff5688d9fb5"
+    },
+    {
+      "packId": "pack-payments-pix",
+      "packVersion": "0.1.0-experimental",
+      "digest": "663c52176fce748a2951a1765248e207d0f6bf7ab1f8d51b7ea9eef0ce126b1a"
+    }
+  ]
+}

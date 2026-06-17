@@ -51,6 +51,16 @@ jobs:
         run: node packages/cli/dist/index.js kernel pack-bom --verify-file packages/cli/governance/pack-bom-baseline.json
       - name: Policy-coherence gate (F11)
         run: node packages/cli/dist/index.js kernel analyze
+      # Governance ARTIFACT exporters (ERDS-055/056/057). Distinct from the
+      # gates above: these verify the committed AI-BOM / config-seal /
+      # policy-coherence JSON artifacts have not drifted from the live packs.
+      # Re-generate with `ibx aibom|seal|coherence export --out <path>`.
+      - name: AI-BOM artifact drift gate (ERDS-055)
+        run: node packages/cli/dist/index.js aibom export --verify-file packages/cli/governance/ai-boms/ibatexas.json
+      - name: Config-seal artifact drift gate (ERDS-056)
+        run: node packages/cli/dist/index.js seal export --verify-file packages/cli/governance/seals/ibatexas.json
+      - name: Policy-coherence artifact drift gate (ERDS-057)
+        run: node packages/cli/dist/index.js coherence export --verify-file packages/cli/governance/coherence/ibatexas.json
       # Normalize per-package lcov SF paths to repo-root-relative so SonarCloud
       # can match coverage to sources. vitest emits SF paths relative to each
       # package (e.g. `SF:src/foo.ts` in packages/domain), but the scanner runs

@@ -38,6 +38,11 @@ import { registerClaustrumCommands } from "./commands/claustrum.js"
 import { registerObsCommands } from "./commands/obs.js"
 import { registerJobsCommands } from "./commands/jobs.js"
 import { registerPolicyCommands } from "./commands/policy.js"
+import {
+  registerAibomCommands,
+  registerSealCommands,
+  registerCoherenceCommands,
+} from "./commands/governance.js"
 
 // ── Load .env files ──────────────────────────────────────────────────────────
 // Env precedence: shell > root .env > cli .env. dotenv semantics: each
@@ -381,6 +386,9 @@ const groupedCommands: { name: string; register: (cmd: Command) => void; descrip
   { name: "obs",     register: registerObsCommands,      description: "Observability — watch kernel decisions and per-turn traces" },
   { name: "jobs",    register: registerJobsCommands,     description: "Background jobs — inspect and replay failed BullMQ jobs" },
   { name: "policy",  register: registerPolicyCommands,   description: "Policy — export + diff the rule-provenance manifest" },
+  { name: "aibom",   register: registerAibomCommands,    description: "AI-BOM — export + verify the AI Bill-of-Materials artifact (EU AI Act / NIST)" },
+  { name: "seal",    register: registerSealCommands,     description: "Config-seal — export + verify the configuration-integrity-seal artifact" },
+  { name: "coherence", register: registerCoherenceCommands, description: "Coherence — export + verify the policy-coherence artifact" },
 ]
 
 for (const { name, register, description } of groupedCommands) {
