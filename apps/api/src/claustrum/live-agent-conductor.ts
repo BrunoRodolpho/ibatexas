@@ -60,6 +60,7 @@ import {
 } from "./agent-trigger-bridge.js";
 import type { AgentRunJournal } from "./agent-run-journal.js";
 import type { AgentApprovalEngine } from "./agent-approvals.js";
+import type { LearningSink } from "../learning-sink-bootstrap.js";
 import {
   isRealMoneyKind,
   type RefundCircuitBreaker,
@@ -168,6 +169,13 @@ export interface LiveTriggerRunnerDeps {
    * effort; a write failure never breaks the turn. Omit to disable.
    */
   readonly proposalSink?: (proposal: ParkedRemediationProposal) => void | Promise<void>;
+  /**
+   * ERDS-060 learning telemetry sink. When set, every completed trigger turn
+   * emits a best-effort `learning.event.v1` AFTER journaling — strictly OUTSIDE
+   * the kernel decision (the decision already happened in handleTurn). Fail-open
+   * (the sink swallows); omit to disable.
+   */
+  readonly learningSink?: LearningSink;
   /** ISO clock for the agent_runs journal. */
   readonly now: () => string;
 }
@@ -277,6 +285,35 @@ export async function processLiveTurnResult(
     modelCalls,
     at: deps.now(),
   });
+
+  // ERDS-060 learning telemetry — emit a `learning.event.v1` for the completed
+  // trigger turn. This is a TELEMETRY hook STRICTLY OUTSIDE the kernel decision:
+  // the decision was already produced by handleTurn (above), and the sink is
+  // best-effort / fail-open, so a publish failure can never affect this turn or
+  // any decision. Kept minimal: kind + decisionKind + the agent/entity handles.
+  if (deps.learningSink !== undefined) {
+    try {
+      await deps.learningSink.recordLearningEvent({
+        schemaVersion: 1,
+        at: deps.now(),
+        agentId: agent.id,
+        sessionId,
+        kind: "agent.turn",
+        decisionKind: result.decision.kind,
+        detail: {
+          agentVersion: agent.version,
+          entity: `${event.entityRef.kind}:${event.entityRef.id}`,
+          intentKind,
+          modelCalls,
+        },
+      });
+    } catch (err) {
+      logger.error(
+        { component: "live-agent-conductor", agentId: agent.id, err: (err as Error).message },
+        "learning event emit failed (swallowed — turn/decision unaffected)",
+      );
+    }
+  }
 
   return { decisionKind: result.decision.kind, modelCalls };
 }

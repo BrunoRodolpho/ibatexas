@@ -38,6 +38,7 @@ import {
   type ParkedRemediationProposal,
 } from "./live-agent-conductor.js";
 import type { AgentRunJournal } from "./agent-run-journal.js";
+import type { LearningSink } from "../learning-sink-bootstrap.js";
 import {
   assertRealMoneyConfirmGuards,
   type RefundCircuitBreaker,
@@ -128,6 +129,8 @@ export interface ManagedAgentPlaneDeps {
   readonly refundBreaker?: RefundCircuitBreaker;
   /** P4 producer seam: persist a remediation proposal when an approval parks. */
   readonly proposalSink?: (proposal: ParkedRemediationProposal) => void | Promise<void>;
+  /** ERDS-060 learning telemetry sink — best-effort `learning.event.v1` per turn. */
+  readonly learningSink?: LearningSink;
   /** Kinds the composed kernel policy confirm-gates (B1) — fail-closed assertion input. */
   readonly realMoneyConfirmKinds: ReadonlySet<string>;
   /** Resolves an order's customer for the trigger mapper. */
@@ -169,6 +172,7 @@ export async function startManagedAgentPlane(
     approvals: deps.approvals,
     ...(deps.refundBreaker !== undefined ? { refundBreaker: deps.refundBreaker } : {}),
     ...(deps.proposalSink !== undefined ? { proposalSink: deps.proposalSink } : {}),
+    ...(deps.learningSink !== undefined ? { learningSink: deps.learningSink } : {}),
     now: deps.now,
   });
 

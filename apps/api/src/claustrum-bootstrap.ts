@@ -130,6 +130,11 @@ import type { LiveAgentConductorDeps } from "./claustrum/live-agent-conductor.js
 import { createPostgresAgentRunJournal } from "./claustrum/agent-run-journal.js";
 import { createRefundCircuitBreaker } from "./claustrum/agent-realmoney-safety.js";
 import { createRemediationProposalWriter } from "./claustrum/remediation-proposal-writer.js";
+// ERDS-059 — durable per-llm.call token→USD persistence (best-effort, fail-open).
+import {
+  createPostgresTokenUsageSink,
+  type TokenUsageSink,
+} from "./claustrum/token-usage-sink.js";
 
 /**
  * The intent kinds the composed kernel policy confirm-gates for agent sessions
@@ -149,6 +154,9 @@ const AGENT_CONFIRM_GATED_KINDS: ReadonlySet<string> = new Set<string>([
 // wired here via `bootstrapAuditSinkDI()` before `buildAdjudicator()` reads it.
 import { __resetAuditSink, getAuditSink } from "@ibatexas/audit-sink";
 import { bootstrapAuditSinkDI } from "./audit-sink-bootstrap.js";
+// ERDS-060 — learning telemetry sink (learning.event.v1). Best-effort, fail-open;
+// injected into the managed-agent plane so each trigger turn emits a learning event.
+import { getLearningSink } from "./learning-sink-bootstrap.js";
 
 // ── RC-A1 cutover composition (Phase A.1/A.2) ────────────────────────────────
 // The production planner + per-kind PolicyBundle router, composed over the 5
@@ -1324,6 +1332,7 @@ function redisSessionStore(): SessionPort {
 function fastifyTelemetry(
   usageStore: TokenUsageStore,
   turnTrace?: TurnTraceWriter,
+  tokenUsageSink?: TokenUsageSink,
 ): TelemetryPort {
   // C1/C2 — per-turn LLMTrace buffer. The planner/responder emit an LLMTrace
   // per model call DURING the turn (emitLLMTrace); that trace carries turnId but
@@ -1394,6 +1403,33 @@ function fastifyTelemetry(
           { component: "conductor", event: "llm_call_emit_failed", error: String(err) },
           "SUT llm.call trace emit failed; ignoring",
         );
+      }
+      // ERDS-059 — durable token→USD persistence. Alongside the JSONL emit
+      // above, persist an llm_token_usage row per turn (prompt/completion split
+      // + pricing-map USD estimate) so the cost dashboards aggregate by session
+      // and customer. Best-effort / FAIL-OPEN: the sink swallows its own write
+      // errors, and we guard here too — cost telemetry must never break a turn.
+      if (tokenUsageSink !== undefined) {
+        try {
+          const promptTokens = record.inputTokens ?? 0;
+          const completionTokens = record.outputTokens ?? 0;
+          if (promptTokens > 0 || completionTokens > 0) {
+            await tokenUsageSink.record({
+              sessionId: record.conversationId,
+              customerId: record.customerId,
+              channel: record.channel,
+              model: process.env.ANTHROPIC_MODEL ?? "claude-sonnet-4-6",
+              promptTokens,
+              completionTokens,
+              recordedAt: record.at,
+            });
+          }
+        } catch (err) {
+          logger.warn(
+            { component: "conductor", event: "token_usage_persist_failed", error: String(err) },
+            "llm_token_usage persist failed; ignoring",
+          );
+        }
       }
       // TokenUsageStore (ADR-135) telemetry — dashboard-facing, independent of the
       // Redis fold above (no edge to the F4 guard). Best-effort; never breaks a turn.
@@ -1787,7 +1823,14 @@ export async function bootstrapClaustrum(
   const promptComposer = createIbatexasPromptComposer();
   const turnTraceWriter: TurnTraceWriter = createTurnTraceWriter(pgPool);
   await turnTraceWriter.ensureTable(); // best-effort (writer swallows failures)
-  const telemetry = fastifyTelemetry(tokenUsageStore, turnTraceWriter);
+  // ERDS-059 — durable token→USD sink (llm_token_usage). Best-effort; the sink
+  // swallows write failures so cost telemetry never breaks a turn.
+  const tokenUsageSink = createPostgresTokenUsageSink(prisma);
+  const telemetry = fastifyTelemetry(
+    tokenUsageStore,
+    turnTraceWriter,
+    tokenUsageSink,
+  );
   const buildPlanner = (model: ModelProvider): PlannerPort =>
     createIbatexasPlanner({
       model,
@@ -1943,6 +1986,9 @@ export async function bootstrapClaustrum(
         liveConductor,
         journal: createPostgresAgentRunJournal(prisma),
         proposalSink: (p) => proposalWriter.write(p),
+        // ERDS-060: each completed trigger turn emits a best-effort
+        // learning.event.v1 (fail-open; the leaf no-ops if Redis+NATS are absent).
+        learningSink: getLearningSink(),
         redis: ledgerClient,
         pubsub,
         approvals: agentApprovals,
