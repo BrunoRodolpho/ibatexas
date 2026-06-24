@@ -62,8 +62,10 @@ import {
   refuseOrderAlreadyCancelled,
   refuseOrderAlreadyShipped,
   refuseOrderPastPonr,
+  refuseOwnershipDenied,
   refuseSlotsIncomplete,
 } from "./refusals.js"
+import { resolveOwnership } from "@adjudicate/core"
 import {
   CONFIRM_LARGE_TICKET_THRESHOLD_CENTAVOS,
   ESCALATE_CANCEL_AMOUNT_CENTAVOS,
@@ -392,6 +394,46 @@ const requireCancellable: OrderGuard = (envelope, state) => {
       reason: "past_ponr",
     }),
   ])
+}
+
+// 034-F1 — kernel ownership/IDOR guard (defense-in-depth). Engages ONLY when the
+// host injects `state.authority` (a per-customer authority graph of OWNED
+// resources + a session→principal map). The order money kinds bind to the order
+// resource via `resourceRefs`; a resource the customer does not own is unbound in
+// the graph ⇒ REFUSE (de-vacuumed — see the pack-orders ownership canary test).
+const OWNERSHIP_GATED_ORDER_KINDS: ReadonlySet<string> = new Set([
+  "order.cancel",
+  "order.amend.request",
+  "order.amend.add_item",
+  "order.amend.update_qty",
+  "order.amend.remove_item",
+])
+
+interface OwnershipAuthority {
+  readonly store: Parameters<typeof resolveOwnership>[0]
+  readonly principalOf?: (sessionId: string) => string | null
+}
+
+const enforceOrderOwnership: OrderGuard = (envelope, state) => {
+  const authority = (state as { authority?: OwnershipAuthority }).authority
+  if (authority === undefined) return null // inert unless the host injects authority
+  if (!OWNERSHIP_GATED_ORDER_KINDS.has(envelope.kind)) return null
+  const fact = resolveOwnership(authority.store, envelope)
+  // (1) Binding: the declared owner must actually own the resource in the graph.
+  if (!fact.bound) {
+    return decisionRefuse(refuseOwnershipDenied(), [
+      basis("auth", BASIS_CODES.auth.SCOPE_INSUFFICIENT, { reason: "resource_not_owned" }),
+    ])
+  }
+  // (2) IDOR gate: the AUTHENTICATED principal (session→identity) must EQUAL the
+  // resolved owner — a different session acting on the resource is REFUSEd.
+  const authed = authority.principalOf?.(envelope.actor.sessionId) ?? null
+  if (authed === null || authed !== fact.principal) {
+    return decisionRefuse(refuseOwnershipDenied(), [
+      basis("auth", BASIS_CODES.auth.SCOPE_INSUFFICIENT, { reason: "tenant_binding_violation" }),
+    ])
+  }
+  return null
 }
 
 const AMEND_KINDS: ReadonlySet<string> = new Set([
@@ -808,7 +850,7 @@ export const ordersPolicyBundle: PolicyBundle<
     requireSlotsFilledForCheckout,
     deferOnPendingPix,
   ],
-  authGuards: [requireTenantBindingGuard, requireAuthenticated, requireCheckoutEligibility],
+  authGuards: [requireTenantBindingGuard, requireAuthenticated, enforceOrderOwnership, requireCheckoutEligibility],
   taint: orderTaintPolicy,
   business: [
     requireExplicitAllergens,

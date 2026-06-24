@@ -11,7 +11,7 @@
 
 import { describe, expect, it } from "vitest"
 import { adjudicate } from "@adjudicate/core/kernel"
-import { buildEnvelope, type IntentEnvelope } from "@adjudicate/core"
+import { buildEnvelope, createAuthorityGraphStore, type IntentEnvelope } from "@adjudicate/core"
 import {
   paymentsPack,
   paymentsPolicyBundle,
@@ -79,6 +79,61 @@ describe("paymentsPolicyBundle — tenant binding (AuthReviewer-009)", () => {
       paymentsPolicyBundle,
     )
     expect(sameTenant.kind).toBe("EXECUTE")
+  })
+})
+
+// ── 034-F1: ownership/IDOR guard (defense-in-depth) ───────────────────────
+
+describe("paymentsPolicyBundle — ownership/IDOR guard (034-F1)", () => {
+  function refundEnv(owner: string, resource: string, sessionId: string) {
+    return buildEnvelope({
+      kind: "payment.refund.issue",
+      payload: { orderId: resource, refundAmountCentavos: 1_000 },
+      actor: { principal: "user", sessionId },
+      taint: "UNTRUSTED",
+      nonce: `n-${sessionId}-${resource}`,
+      createdAt: DET_TIME,
+      resourceRefs: { owner, resource },
+    }) as IntentEnvelope<PaymentIntentKind, PaymentPayload>
+  }
+  function authState(customerId: string, ownedResource: string, knownSession: string): PaymentState {
+    return {
+      ctx: {
+        actor: { principal: "user" },
+        tenantId: "ibatexas",
+        exists: true,
+        currentStatus: "paid",
+        currentMethod: "pix",
+        version: 1,
+        orderId: ownedResource,
+        isTerminal: false,
+        refundedAmountCentavos: 0,
+        amountInCentavos: 50_000,
+        regenerationCount: 0,
+        dailyRetryCount: 0,
+      },
+      authority: {
+        store: createAuthorityGraphStore({
+          edges: [{ principal: customerId, relationship: "owns", resource: ownedResource, permits: { actions: ["payment.refund.issue"] } }],
+        }),
+        principalOf: (sid: string) => (sid === knownSession ? customerId : null),
+      },
+    } as unknown as PaymentState
+  }
+
+  it("CANARY (de-vacuumed): a refund on a NON-owned order REFUSEs payment.ownership_denied", () => {
+    const d = adjudicate(refundEnv("cust-A", "ord-B", "sess-A"), authState("cust-A", "ord-A", "sess-A"), paymentsPolicyBundle)
+    expect(d.kind).toBe("REFUSE")
+    if (d.kind === "REFUSE") expect(d.refusal.code).toBe("payment.ownership_denied")
+  })
+  it("a refund on the OWNED order is NOT refused by the ownership guard", () => {
+    const d = adjudicate(refundEnv("cust-A", "ord-A", "sess-A"), authState("cust-A", "ord-A", "sess-A"), paymentsPolicyBundle)
+    if (d.kind === "REFUSE") expect(d.refusal.code).not.toBe("payment.ownership_denied")
+  })
+  it("IDOR-gate: an unrecognised session REFUSEs even on an owned order", () => {
+    const d = adjudicate(refundEnv("cust-A", "ord-A", "sess-B"), authState("cust-A", "ord-A", "sess-A"), paymentsPolicyBundle)
+    expect(d.kind).toBe("REFUSE")
+    if (d.kind === "REFUSE") expect(d.refusal.code).toBe("payment.ownership_denied")
   })
 })
 

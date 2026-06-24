@@ -70,6 +70,14 @@ export type Ctx = Record<string, unknown>;
 export interface AssembledResolution {
   readonly payload: unknown;
   readonly ctx: Ctx;
+  /**
+   * Resource ids the customer was OWNERSHIP-CONFIRMED to own this turn (the
+   * customer-scoped DB load actually returned the row). Feeds the kernel
+   * authority graph (034-F1) so the ownership guard binds ONLY real-owned
+   * resources — a forged/other-principal id is never in this set, so the guard
+   * REFUSEs rather than vacuously passing. Empty for non-resource (cart/draft) ops.
+   */
+  readonly owned: readonly string[];
 }
 
 const KERNEL_TENANT_ID = (): string => process.env.KERNEL_TENANT_ID ?? "ibatexas";
@@ -119,6 +127,9 @@ export function buildOrderCtx(
     totalInCentavos: order ? order.totalInCentavos : undefined,
     fulfillmentStatus: order ? order.fulfillmentStatus : undefined,
     lastAction: null,
+    // 034-F1: a non-null order here means loadOrderCtx confirmed the customer
+    // owns it (order.customerId === customerId). Drives the authority graph.
+    resourceOwnerConfirmed: order !== null,
   };
   return ctx;
 }
@@ -199,13 +210,26 @@ export async function loadPaymentCtx(
   orderId: string | null,
 ): Promise<Ctx> {
   if (orderId === null) return buildPaymentCtx(base, null, null);
+  // 034-F1: payment ownership flows through the order. `owned` records whether
+  // this customer owns the order, INDEPENDENT of whether an active payment exists
+  // (an owned order with no active payment is still owned) — drives the authority
+  // graph without conflating "not owned" with "no payment".
+  const notOwned = (): Ctx => {
+    const c = buildPaymentCtx(base, orderId, null);
+    c.resourceOwnerConfirmed = false;
+    return c;
+  };
   try {
     // Ownership gate: the order must belong to the customer before its payment is read.
     const order = await createOrderQueryService().getById(orderId);
-    if (!order || order.customerId !== customerId) return buildPaymentCtx(base, orderId, null);
+    if (!order || order.customerId !== customerId) return notOwned();
     const querySvc = createPaymentQueryService();
     const active = await querySvc.getActiveByOrderId(orderId).catch(() => null);
-    if (!active) return buildPaymentCtx(base, orderId, null);
+    if (!active) {
+      const c = buildPaymentCtx(base, orderId, null);
+      c.resourceOwnerConfirmed = true; // order owned; just no active payment
+      return c;
+    }
     const all = await querySvc.listByOrderId(orderId).catch(() => null);
     const regenerationSum = all
       ? all.payments.reduce(
@@ -213,12 +237,14 @@ export async function loadPaymentCtx(
           0,
         )
       : (active as { regenerationCount?: number }).regenerationCount ?? 0;
-    return buildPaymentCtx(base, orderId, {
+    const c = buildPaymentCtx(base, orderId, {
       active: active as unknown as ActivePaymentLite,
       regenerationSum,
     });
+    c.resourceOwnerConfirmed = true;
+    return c;
   } catch {
-    return buildPaymentCtx(base, orderId, null);
+    return notOwned();
   }
 }
 
@@ -547,5 +573,12 @@ export async function resolveAndAssemble(args: ResolveArgs): Promise<AssembledRe
 
   if (autoResolvedMoneyRef) ctx.autoResolvedMoneyRef = true;
 
-  return { payload: resolvedPayload, ctx };
+  // 034-F1: the ownership-confirmed resource set for the kernel authority graph.
+  // ONLY ids the customer-scoped load actually returned (resourceOwnerConfirmed)
+  // are included — a forged/other-principal orderId is never here, so the kernel
+  // ownership guard REFUSEs it (de-vacuumed: the store can't bind what isn't owned).
+  const owned: string[] =
+    orderId !== null && ctx.resourceOwnerConfirmed === true ? [orderId] : [];
+
+  return { payload: resolvedPayload, ctx, owned };
 }

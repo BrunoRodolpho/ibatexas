@@ -90,6 +90,14 @@ export function refuseOrderPastPonr(): Refusal {
   )
 }
 
+export function refuseOwnershipDenied(): Refusal {
+  return refuse(
+    "SECURITY",
+    "order.ownership_denied",
+    "Esse pedido não pertence à sua conta.",
+  )
+}
+
 export function refuseSlotsIncomplete(): Refusal {
   return refuse(
     "STATE",

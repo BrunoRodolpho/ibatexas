@@ -25,6 +25,14 @@ export function refusePaymentNotFound(): Refusal {
   )
 }
 
+export function refusePaymentOwnershipDenied(): Refusal {
+  return refuse(
+    "SECURITY",
+    "payment.ownership_denied",
+    "Esse pagamento não pertence à sua conta.",
+  )
+}
+
 export function refusePaymentTerminal(currentStatus?: string): Refusal {
   return refuse(
     "STATE",

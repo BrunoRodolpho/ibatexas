@@ -13,13 +13,14 @@
 import { buildEnvelope, type IntentEnvelope } from "@adjudicate/core";
 import type { ResolvedEnvelope, ResolverPort } from "@claustrum/core";
 import { resolveAndAssemble } from "./resolve-and-assemble.js";
+import { buildCustomerAuthority, resourceRefsForIntent } from "./authority-wiring.js";
 
 export function createIbatexasResolver(): ResolverPort {
   return {
     async resolve({ plan, cognition, customerId, channel }): Promise<ReadonlyArray<ResolvedEnvelope>> {
       const out: ResolvedEnvelope[] = [];
       for (const env of plan.envelopes) {
-        const { payload, ctx } = await resolveAndAssemble({
+        const { payload, ctx, owned } = await resolveAndAssemble({
           kind: env.kind,
           payload: (env.payload ?? {}) as Record<string, unknown>,
           customerId,
@@ -28,6 +29,15 @@ export function createIbatexasResolver(): ResolverPort {
           // conductor's AgentContext.sessionId, register-ibatexas-tool-packs.ts).
           sessionId: cognition.conversationId,
         });
+        // 034-F1: for money-moving (ownership-gated) kinds, stamp resourceRefs
+        // (owner=customer, resource=orderId) and inject state.authority built from
+        // the ownership-CONFIRMED `owned` set, engaging the kernel ownership guard
+        // as defense-in-depth. Non-gated kinds are untouched.
+        const refs = resourceRefsForIntent(
+          env.kind,
+          payload as Record<string, unknown>,
+          customerId,
+        );
         // Rebuild with the SAME nonce/actor/taint so the intentHash is canonical
         // (unchanged when payload didn't change; fresh when it did). createdAt is
         // metadata-only (not hashed) — preserve it for the audit trail.
@@ -38,8 +48,13 @@ export function createIbatexasResolver(): ResolverPort {
           taint: env.taint,
           nonce: env.nonce,
           createdAt: env.createdAt,
+          ...(refs !== undefined ? { resourceRefs: refs } : {}),
         }) as IntentEnvelope;
-        out.push({ envelope: resolved, state: { ctx } });
+        const state =
+          refs !== undefined
+            ? { ctx, authority: buildCustomerAuthority(customerId, owned, env.actor.sessionId) }
+            : { ctx };
+        out.push({ envelope: resolved, state });
       }
       return out;
     },
