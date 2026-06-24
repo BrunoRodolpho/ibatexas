@@ -440,9 +440,20 @@ interface ResolveArgs {
   readonly sessionId?: string;
 }
 
-const ORDER_BY_ID_KINDS = new Set([
+// Order kinds resolved by id (→ loadOrderCtx, which confirms customer ownership
+// and sets resourceOwnerConfirmed). 034-F1: every OWNERSHIP_GATED order kind MUST
+// be here (or a payment.* kind, handled by loadPaymentCtx) — otherwise it falls to
+// the cart loader, resourceOwnerConfirmed stays unset, `owned` is empty, and the
+// kernel ownership guard REFUSEs the resource's TRUE owner. The granular amend
+// kinds (add_item/update_qty/remove_item) require an orderId and amend an existing
+// order, so they resolve by id exactly like order.amend.request. The
+// ownership-coverage test guards this invariant against drift.
+export const ORDER_BY_ID_KINDS = new Set([
   "order.cancel",
   "order.amend.request",
+  "order.amend.add_item",
+  "order.amend.update_qty",
+  "order.amend.remove_item",
   "order.note.add",
   "order.review.submit",
   "order.address.change",

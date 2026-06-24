@@ -21,13 +21,17 @@ import { getAuditSink } from "@ibatexas/audit-sink";
 import { ordersPolicyBundle } from "@ibatexas/pack-orders";
 import { runCustomerIntent } from "./__shared__/customer-intent-gateway.js";
 
-/** Hard gate: ENABLED only when NOT production AND the test fingerprint is present
- *  (only `.env.test` carries IBX_TEST_FINGERPRINT — D-010). Pure + unit-testable. */
+/** Hard gate: ENABLED only on an explicit test/development plane AND when the test
+ *  fingerprint is present (only `.env.test` carries IBX_TEST_FINGERPRINT, paired
+ *  with NODE_ENV=test — D-010). A POSITIVE allowlist (not a `!== "production"`
+ *  blocklist) because this route ingests a RAW, caller-controlled envelope: an
+ *  unset/unexpected NODE_ENV must fail closed, not open. Pure + unit-testable. */
 export function envelopeIngressGate(): {
   ok: boolean;
-  reason?: "production" | "no-fingerprint";
+  reason?: "env-not-allowed" | "no-fingerprint";
 } {
-  if (process.env.NODE_ENV === "production") return { ok: false, reason: "production" };
+  const env = process.env.NODE_ENV;
+  if (env !== "test" && env !== "development") return { ok: false, reason: "env-not-allowed" };
   if (!process.env.IBX_TEST_FINGERPRINT) return { ok: false, reason: "no-fingerprint" };
   return { ok: true };
 }

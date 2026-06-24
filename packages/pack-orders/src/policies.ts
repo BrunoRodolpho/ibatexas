@@ -163,25 +163,38 @@ function hasOrderId(state: OrderState): boolean {
   return state.ctx.orderId !== null && state.ctx.orderId !== undefined
 }
 
-// Fulfillment statuses past the cancellation point-of-no-return — mirrors the
-// route-layer canPerformAction("cancel_order") rule (order-action-validator.ts):
-// once a order is ready / out for delivery / delivered it can no longer be
-// cancelled. `canceled` is handled separately (already-cancelled, not PONR).
+// Fulfillment statuses past the cancellation point-of-no-return.
+// POST_PONR_FULFILLMENT is the SYSTEM-actor floor: once an order is ready / out
+// for delivery / delivered, not even a system/compensation cancel may proceed.
+// `canceled` is handled separately (already-cancelled, not PONR).
 const POST_PONR_FULFILLMENT: ReadonlySet<string> = new Set([
   "ready",
   "in_delivery",
   "delivered",
 ])
 
+// CUSTOMER-facing PONR additionally includes "preparing": once the kitchen is
+// preparing, a customer self-serve cancel is DENIED + escalated — mirrors the
+// route-layer canPerformAction("cancel_order") rule (order-action-validator.ts,
+// "Cozinha já está preparando"). A SYSTEM actor (order.cancel.system: payment-
+// expiry / stale-order compensation) is NOT bound by the preparing PONR and may
+// still cancel a preparing order.
+const CUSTOMER_POST_PONR_FULFILLMENT: ReadonlySet<string> = new Set([
+  ...POST_PONR_FULFILLMENT,
+  "preparing",
+])
+
 function orderAlreadyCancelled(state: OrderState): boolean {
   return state.ctx.lastAction === "cancelled" || state.ctx.fulfillmentStatus === "canceled"
 }
 
-function canCancelOrder(state: OrderState): boolean {
+function canCancelOrder(state: OrderState, isSystem: boolean): boolean {
   if (!hasOrderId(state)) return false
   if (orderAlreadyCancelled(state)) return false
   const fs = state.ctx.fulfillmentStatus
-  return !(typeof fs === "string" && POST_PONR_FULFILLMENT.has(fs))
+  if (typeof fs !== "string") return true
+  const ponr = isSystem ? POST_PONR_FULFILLMENT : CUSTOMER_POST_PONR_FULFILLMENT
+  return !ponr.has(fs)
 }
 
 function canAmendOrder(state: OrderState): boolean {
@@ -379,9 +392,13 @@ const requireCancellable: OrderGuard = (envelope, state) => {
   ) {
     return null
   }
-  if (canCancelOrder(state)) return null
+  // System/compensation cancels (order.cancel.system, actor.principal="system")
+  // may still cancel a "preparing" order; a customer self-serve cancel may not
+  // (route denies + escalates). actor.principal is forgery-checked upstream.
+  const isSystem = envelope.actor.principal === "system"
+  if (canCancelOrder(state, isSystem)) return null
   // Distinguish an already-cancelled order from one past the point-of-no-return
-  // (ready / out-for-delivery / delivered) so the audit basis is accurate.
+  // so the audit basis is accurate.
   if (orderAlreadyCancelled(state)) {
     return decisionRefuse(refuseOrderAlreadyCancelled(), [
       basis("state", BASIS_CODES.state.TERMINAL_STATE, {
@@ -425,8 +442,12 @@ const enforceOrderOwnership: OrderGuard = (envelope, state) => {
       basis("auth", BASIS_CODES.auth.SCOPE_INSUFFICIENT, { reason: "resource_not_owned" }),
     ])
   }
-  // (2) IDOR gate: the AUTHENTICATED principal (session→identity) must EQUAL the
-  // resolved owner — a different session acting on the resource is REFUSEd.
+  // (2) IDOR gate: the AUTHENTICATED principal behind the acting session must
+  // EQUAL the resource owner. `principalOf` is the host's authenticated
+  // session→principal binding (sourced from the conductor-authenticated session,
+  // INDEPENDENT of the envelope's self-reported actor.sessionId — see
+  // authority-wiring.ts), so a session that is not the authenticated owner (a
+  // forged / cross-session / unbound-agent actor) resolves to null and is REFUSEd.
   const authed = authority.principalOf?.(envelope.actor.sessionId) ?? null
   if (authed === null || authed !== fact.principal) {
     return decisionRefuse(refuseOwnershipDenied(), [

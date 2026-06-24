@@ -28,7 +28,15 @@ describe("envelopeIngressGate", () => {
   it("is DISABLED in production", () => {
     process.env.NODE_ENV = "production";
     process.env.IBX_TEST_FINGERPRINT = "fp";
-    expect(envelopeIngressGate()).toEqual({ ok: false, reason: "production" });
+    expect(envelopeIngressGate()).toEqual({ ok: false, reason: "env-not-allowed" });
+  });
+
+  it("is DISABLED when NODE_ENV is unset/unexpected (positive allowlist, fail-closed)", () => {
+    delete process.env.NODE_ENV;
+    process.env.IBX_TEST_FINGERPRINT = "fp";
+    expect(envelopeIngressGate()).toEqual({ ok: false, reason: "env-not-allowed" });
+    process.env.NODE_ENV = "staging";
+    expect(envelopeIngressGate()).toEqual({ ok: false, reason: "env-not-allowed" });
   });
 
   it("is DISABLED without the test fingerprint", () => {
@@ -37,8 +45,14 @@ describe("envelopeIngressGate", () => {
     expect(envelopeIngressGate()).toEqual({ ok: false, reason: "no-fingerprint" });
   });
 
-  it("is ENABLED on the test plane (not prod + fingerprint present)", () => {
+  it("is ENABLED on the test plane (NODE_ENV=test + fingerprint present)", () => {
     process.env.NODE_ENV = "test";
+    process.env.IBX_TEST_FINGERPRINT = "fp";
+    expect(envelopeIngressGate()).toEqual({ ok: true });
+  });
+
+  it("is ENABLED on a development stack (NODE_ENV=development + fingerprint present)", () => {
+    process.env.NODE_ENV = "development";
     process.env.IBX_TEST_FINGERPRINT = "fp";
     expect(envelopeIngressGate()).toEqual({ ok: true });
   });

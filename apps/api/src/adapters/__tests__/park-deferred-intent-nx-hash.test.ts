@@ -123,6 +123,7 @@ describe.skipIf(!RUN_REAL_REDIS)(
           nonce: envelope.nonce,
           taint: envelope.taint,
           actorPrincipal: envelope.actor.principal,
+          origin: envelope.origin,
         },
         signal: "payment.confirmed",
         ttlSeconds: 60,
@@ -167,6 +168,7 @@ describe.skipIf(!RUN_REAL_REDIS)(
           version: envelope.version,
           nonce: envelope.nonce,
           taint: envelope.taint,
+          origin: envelope.origin,
           // actorPrincipal deliberately omitted at the top level.
         },
         signal: "payment.confirmed",
@@ -203,6 +205,7 @@ describe.skipIf(!RUN_REAL_REDIS)(
           nonce: envelope.nonce,
           taint: envelope.taint,
           actorPrincipal: envelope.actor.principal,
+          origin: envelope.origin,
         },
         signal: "payment.confirmed",
         ttlSeconds: 60,

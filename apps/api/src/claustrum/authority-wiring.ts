@@ -50,18 +50,41 @@ export function resourceRefsForIntent(
 
 export interface CustomerAuthority {
   readonly store: ReturnType<typeof createAuthorityGraphStore>;
-  readonly principalOf: (sessionId: string) => string | null;
+  readonly principalOf: PrincipalForSession;
+}
+
+/** Resolve a session id → its AUTHENTICATED principal (sync — the kernel is pure).
+ *  This is the seam that makes the kernel IDOR gate load-bearing: the binding MUST
+ *  be sourced from the trusted upstream identity (the conductor-authenticated
+ *  session), NOT from the envelope's self-reported `actor.sessionId`. The guard
+ *  then checks `principalOf(envelope.actor.sessionId) === resourceOwner`, which
+ *  genuinely verifies the acting session belongs to the resource owner instead of
+ *  comparing the envelope's actor to itself. */
+export type PrincipalForSession = (sessionId: string) => string | null;
+
+/** Customer-turn principal binding: the conductor-AUTHENTICATED session (i.e.
+ *  `cognition.conversationId`, independent of the envelope's actor) resolves to
+ *  the authenticated customer; any other session id → null (the IDOR gate REFUSEs).
+ *  Staff / managed-agent sessions resolving to a non-owner principal granted
+ *  SCOPED access (delegation) is a documented follow-up — today they resolve to
+ *  null (fail-closed). */
+export function customerPrincipalForSession(
+  authenticatedSessionId: string,
+  customerId: string,
+): PrincipalForSession {
+  return (sessionId) => (sessionId === authenticatedSessionId ? customerId : null);
 }
 
 /** Build the per-turn authority context: an authority graph binding the customer
- *  to ONLY the resources they were ownership-confirmed to own this turn, plus a
- *  sync `principalOf` (the kernel is pure) resolving THIS turn's session to the
- *  authenticated customer. A resource not in `owned` is unbound ⇒ the guard
- *  REFUSEs (de-vacuumed). */
+ *  to ONLY the resources they were ownership-confirmed to own this turn, plus the
+ *  injected `principalForSession` (the authenticated session→principal binding,
+ *  built via `customerPrincipalForSession`). A resource not in `owned` is unbound
+ *  ⇒ the guard REFUSEs (de-vacuumed); a session that is not the authenticated one
+ *  ⇒ principalOf → null ⇒ the IDOR gate REFUSEs. */
 export function buildCustomerAuthority(
   customerId: string,
   owned: readonly string[],
-  sessionId: string,
+  principalForSession: PrincipalForSession,
 ): CustomerAuthority {
   const edges = owned.map((resource) => ({
     principal: customerId,
@@ -71,6 +94,6 @@ export function buildCustomerAuthority(
   }));
   return {
     store: createAuthorityGraphStore({ edges }),
-    principalOf: (sid) => (sid === sessionId ? customerId : null),
+    principalOf: principalForSession,
   };
 }

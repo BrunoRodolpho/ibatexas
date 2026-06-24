@@ -274,11 +274,13 @@ describe.skipIf(!RUN_BOOTSTRAP_HARNESS)(
       // fixture (an unknown key would have thrown the turn).
       expect(completes.every((c) => c.label !== null)).toBe(true);
       expect(new Set(completes.map((c) => c.label)).size).toBe(4);
-      // The grounding provider embedded each perception (D-009: scripted
-      // embed is IMPLEMENTED; retrieval degraded fail-safe on the absent
-      // pgvector schema — that's the grounding-inert product gap, not ours).
+      // DEF-005: grounding is opt-in (CLAUSTRUM_GROUNDING_ENABLED) and runs as a
+      // DESIGNED no-op by default, so the grounding port never calls embed in this
+      // golden run — zero embed calls, not a swallowed throw. (With the flag on AND
+      // a real embedder, the pgvector path would embed each perception; that path is
+      // gated behind a boot capability probe — see provider-embed-capability.ts.)
       const embeds = provider.calls.filter((c) => c.method === "embed");
-      expect(embeds.length).toBe(3);
+      expect(embeds.length).toBe(0);
       expect(provider.calls.filter((c) => c.method === "stream").length).toBe(0);
     });
 

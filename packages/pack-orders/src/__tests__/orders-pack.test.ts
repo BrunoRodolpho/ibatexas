@@ -219,8 +219,8 @@ describe("ordersPolicyBundle — state guards", () => {
     }
   })
 
-  it("EXECUTE/allow order.cancel while still cancellable (pending / confirmed / preparing)", () => {
-    for (const fs of ["pending", "confirmed", "preparing"]) {
+  it("EXECUTE/allow order.cancel while still cancellable (pending / confirmed)", () => {
+    for (const fs of ["pending", "confirmed"]) {
       const decision = adjudicate(
         env("order.cancel", { orderId: "o-1" }),
         state({ orderId: "o-1", fulfillmentStatus: fs }),
@@ -232,6 +232,39 @@ describe("ordersPolicyBundle — state guards", () => {
         expect(decision.refusal.code).not.toBe("order.past_ponr")
         expect(decision.refusal.code).not.toBe("order.already_cancelled")
       }
+    }
+  })
+
+  it("REFUSE a CUSTOMER order.cancel once the kitchen is preparing (route-aligned PONR)", () => {
+    const decision = adjudicate(
+      env("order.cancel", { orderId: "o-1" }),
+      state({ orderId: "o-1", fulfillmentStatus: "preparing" }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REFUSE")
+    if (decision.kind !== "REFUSE") return
+    expect(decision.refusal.code).toBe("order.past_ponr")
+  })
+
+  it("ALLOW a SYSTEM order.cancel.system of a preparing order (compensation exempt)", () => {
+    // pix-expiry / stale-order jobs build order.cancel.system (actor.principal=
+    // "system") and must be able to cancel a preparing order as compensation.
+    const sysEnv = buildEnvelope({
+      kind: "order.cancel.system",
+      payload: { orderId: "o-1" } as OrderPayload,
+      actor: { principal: "system", sessionId: "stale-order-checker:evt-1" },
+      taint: "SYSTEM",
+      nonce: "n-sys",
+      createdAt: DET_TIME,
+    })
+    const decision = adjudicate(
+      sysEnv,
+      state({ orderId: "o-1", fulfillmentStatus: "preparing" }),
+      ordersPolicyBundle,
+    )
+    // The cancellability guard does NOT block a system cancel of a preparing order.
+    if (decision.kind === "REFUSE") {
+      expect(decision.refusal.code).not.toBe("order.past_ponr")
     }
   })
 

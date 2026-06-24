@@ -1,23 +1,31 @@
 /**
- * Phase 0 (ibatexas-sut): live validation of NemotronModelProvider against the
- * FROZEN @claustrum/core ModelProvider contract + live protocol checks +
- * the embed() not_implemented contract (failSafeGrounding relies on it).
+ * Phase 0 (ibatexas-sut): live validation of the Ollama model path
+ * (OpenAIProvider over OllamaFetchClient) against the FROZEN @claustrum/core
+ * ModelProvider contract + live protocol checks + the embed() not_implemented
+ * contract (failSafeGrounding relies on it).
  *
  *   Run: pnpm -F @ibatexas/api exec tsx src/claustrum/nemotron-live-check.ts
+ *   (set LLM_BASE_URL to the Ollama endpoint, e.g. http://192.168.1.80:11434/v1)
  */
 
 import { mkdirSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import { runModelProviderContract } from "@claustrum/core/test-doubles"
-import { CompletionError, type CompletionRequest } from "@claustrum/core"
-import { NemotronModelProvider } from "./nemotron-model-provider.js"
+import { CompletionError, type CompletionRequest, type ModelProvider } from "@claustrum/core"
+import { OpenAIProvider } from "@claustrum/openai"
+import { OllamaFetchClient } from "./ollama-fetch-client.js"
 
 const ARTIFACTS = process.env.NEMO_ARTIFACTS ?? join(homedir(), "projects", "validation_artifacts")
 const PV_DIR = join(ARTIFACTS, "provider-validation")
 mkdirSync(PV_DIR, { recursive: true })
 const MODEL = process.env.LLM_MODEL ?? process.env.NEMOTRON_MODEL ?? "nemotron-3-nano:4b"
-const BASE_URL = process.env.LLM_BASE_URL ?? "http://192.168.1.80:11434/v1"
+const BASE_URL = process.env.LLM_BASE_URL ?? "http://localhost:11434/v1"
+
+/** OpenAIProvider over the local Ollama endpoint, with the served model pinned
+ *  so the contract harness hits MODEL regardless of the req.model it sends. */
+const makeProvider = (): ModelProvider =>
+  new OpenAIProvider({ client: new OllamaFetchClient({ baseUrl: BASE_URL, model: MODEL }) })
 
 const results: Array<{ id: string; group: string; pass: boolean; error?: string; detail?: unknown }> = []
 const queue: Array<{ name: string; body: () => void | Promise<void> }> = []
@@ -49,9 +57,9 @@ async function record(id: string, fn: () => Promise<{ pass: boolean; detail?: un
 }
 
 async function main(): Promise<void> {
-  const provider = new NemotronModelProvider({ baseUrl: BASE_URL, model: MODEL })
+  const provider = makeProvider()
 
-  runModelProviderContract({ factory: () => new NemotronModelProvider({ baseUrl: BASE_URL, model: MODEL }), surface, skipEmbed: true })
+  runModelProviderContract({ factory: makeProvider, surface, skipEmbed: true })
   await runQueued("contract")
 
   // PL1 stop-reason normalization (plain -> end_turn/max_tokens)
@@ -94,9 +102,9 @@ async function main(): Promise<void> {
 
   const passed = results.filter((r) => r.pass).length
   console.log(`\nibatexas-sut provider validation: ${passed}/${results.length}`)
-  writeFileSync(join(PV_DIR, "ibatexas-sut.json"), JSON.stringify({ adapter: "apps/api/src/claustrum/nemotron-model-provider.ts", subject: MODEL, baseUrl: BASE_URL, ranAt: new Date().toISOString(), passed, total: results.length, results }, null, 2))
+  writeFileSync(join(PV_DIR, "ibatexas-sut.json"), JSON.stringify({ adapter: "apps/api/src/claustrum/ollama-fetch-client.ts", subject: MODEL, baseUrl: BASE_URL, ranAt: new Date().toISOString(), passed, total: results.length, results }, null, 2))
   if (passed !== results.length) { console.error("\nibatexas-sut PROVIDER VALIDATION RED"); process.exit(1) }
-  console.log("@claustrum/core ModelProvider contract + live protocol GREEN for NemotronModelProvider.")
+  console.log("@claustrum/core ModelProvider contract + live protocol GREEN for OpenAIProvider over Ollama.")
   process.exit(0)
 }
 

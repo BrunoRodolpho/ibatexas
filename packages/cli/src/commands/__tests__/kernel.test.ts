@@ -470,6 +470,9 @@ describe("ibx kernel defer resume (W7-O1)", () => {
       nonce: "fixture-nonce-o1",
       actor: { principal: "user", sessionId },
       taint: "UNTRUSTED",
+      // 041 — origin is part of the intentHash recipe; it MUST be in both the
+      // hashed pre-image and the parked blob or verify lands in missing_fields.
+      origin: "LLM",
     } as const
     const intentHash = (
       sha256Canonical as (input: unknown) => string
@@ -484,6 +487,7 @@ describe("ibx kernel defer resume (W7-O1)", () => {
         nonce: envelopeMeta.nonce,
         taint: envelopeMeta.taint,
         actorPrincipal: envelopeMeta.actor.principal,
+        origin: envelopeMeta.origin,
       },
       signal: "pix.confirmed",
       parkedAt: "2026-05-23T18:00:00.000Z",
@@ -539,6 +543,9 @@ describe("ibx kernel defer resume (W7-O1)", () => {
         nonce: "tampered-nonce",
         taint: "UNTRUSTED",
         actorPrincipal: "user",
+        // 041 — present so verify reaches the hash check (not missing_fields)
+        // and detects the bogus intentHash as tampered.
+        origin: "LLM",
       },
       signal: "pix.confirmed",
       parkedAt: "2026-05-23T18:00:00.000Z",

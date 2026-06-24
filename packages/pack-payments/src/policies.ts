@@ -148,6 +148,11 @@ const enforcePaymentOwnership: PaymentGuard = (envelope, state) => {
       basis("auth", BASIS_CODES.auth.SCOPE_INSUFFICIENT, { reason: "resource_not_owned" }),
     ])
   }
+  // IDOR gate: the AUTHENTICATED principal behind the acting session must EQUAL
+  // the resource owner. `principalOf` is the host's authenticated session→principal
+  // binding (sourced from the conductor-authenticated session, INDEPENDENT of the
+  // envelope's self-reported actor.sessionId — see authority-wiring.ts), so a
+  // forged / cross-session / unbound-agent actor resolves to null and is REFUSEd.
   const authed = authority.principalOf?.(envelope.actor.sessionId) ?? null
   if (authed === null || authed !== fact.principal) {
     return decisionRefuse(refusePaymentOwnershipDenied(), [

@@ -13,7 +13,11 @@
 import { buildEnvelope, type IntentEnvelope } from "@adjudicate/core";
 import type { ResolvedEnvelope, ResolverPort } from "@claustrum/core";
 import { resolveAndAssemble } from "./resolve-and-assemble.js";
-import { buildCustomerAuthority, resourceRefsForIntent } from "./authority-wiring.js";
+import {
+  buildCustomerAuthority,
+  customerPrincipalForSession,
+  resourceRefsForIntent,
+} from "./authority-wiring.js";
 
 export function createIbatexasResolver(): ResolverPort {
   return {
@@ -52,7 +56,20 @@ export function createIbatexasResolver(): ResolverPort {
         }) as IntentEnvelope;
         const state =
           refs !== undefined
-            ? { ctx, authority: buildCustomerAuthority(customerId, owned, env.actor.sessionId) }
+            ? {
+                ctx,
+                // 034-F1: source the principal binding from the conductor-
+                // AUTHENTICATED session (cognition.conversationId), NOT
+                // env.actor.sessionId — so the kernel IDOR gate verifies the
+                // adjudicated envelope's actor session matches the authenticated
+                // session (the planner stamps actor.sessionId = conversationId, so
+                // a legit turn matches; a divergent/forged actor session REFUSEs).
+                authority: buildCustomerAuthority(
+                  customerId,
+                  owned,
+                  customerPrincipalForSession(cognition.conversationId, customerId),
+                ),
+              }
             : { ctx };
         out.push({ envelope: resolved, state });
       }
