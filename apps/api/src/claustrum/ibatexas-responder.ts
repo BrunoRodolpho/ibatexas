@@ -82,7 +82,11 @@ function summarizeActed(acted: unknown): Record<string, unknown> | undefined {
   ).executions;
   if (Array.isArray(execs)) {
     out.executed = execs
-      .map((e) => e.envelope?.kind)
+      .map((e) =>
+        e !== null && typeof e === "object"
+          ? (e as { envelope?: { kind?: unknown } }).envelope?.kind
+          : undefined,
+      )
       .filter((k): k is string => typeof k === "string");
   }
   if ("result" in a && a.result !== undefined) out.result = a.result;
@@ -143,6 +147,157 @@ export function groundedReplyContradicts(text: string): string | null {
     if (re.test(normalized)) return re.source;
   }
   return null;
+}
+
+// ── F1b: false-success (confabulation) guard ─────────────────────────────────
+//
+// A weak/jailbroken model can claim a customer-visible SUCCESS the runtime never
+// granted — e.g. "Seu pedido já foi registrado com sucesso!" when the kernel only
+// ensured an anonymous cart (`order.cart.ensure`), or REFUSED, or merely DEFERred
+// awaiting payment. The grounded prompt's "não inventar" is a SOFT instruction
+// the 4B ignores. This deterministic post-check makes the claim provable against
+// the AUDITED runtime outcome (`input.acted`, the DispatchResult), not the model.
+//
+// Truth anchor: a success claim is honest ONLY when the runtime actually executed
+// a mutation of the claimed class. "Executed" = dispatch ∈
+// {executed, rewritten_and_executed, executed_plan} (a kernel EXECUTE decision is
+// NOT enough — dispatch can still be "failed"), AND the executed envelope kind is
+// one that justifies that specific claim. Critically, "pagamento aprovado/
+// confirmado" is justified ONLY by a settlement intent (payment.charge/cash/
+// refund.confirm) — NEVER by order.checkout.create or payment.pix.regenerate
+// (those create a checkout/QR; they do not settle money).
+//
+// Conservative by design: it flags only clear domain success-claims that lack a
+// matching execution (minimising false blocks); anything it doesn't recognise
+// passes through. On a hit, the neutral GROUNDED_SAFE_FALLBACK_PTBR is substituted
+// (claims only "request registered"); the model's original text stays forensically
+// visible in the LLMTrace emitted by completeWith().
+
+interface SuccessClaimClass {
+  readonly id: string;
+  /** Completion-assertion patterns (any one match = a claim of this class). */
+  readonly claim: ReadonlyArray<RegExp>;
+  /** Negated forms that mean an HONEST failure, not a confabulation. */
+  readonly negated: ReadonlyArray<RegExp>;
+  /** Executed envelope kinds that make the claim TRUTHFUL. */
+  readonly justifiedBy: ReadonlyArray<string>;
+}
+
+/** Build a claim class from a domain noun + a verb-root alternation. Matches BOTH
+ *  "noun … verb" and "verb … noun" (pt-BR fronts participles freely); conjugations
+ *  are absorbed by `\w*`. `negated` fires when nao/nunca/jamais directly precedes
+ *  the verb (an honest failure report — never substituted). */
+function claimClass(
+  id: string,
+  noun: string,
+  verbs: string,
+  justifiedBy: ReadonlyArray<string>,
+  extra: ReadonlyArray<RegExp> = [],
+): SuccessClaimClass {
+  // Completed-verb form from a ROOT: participle (-ado/-ada/-ido/-ida[+s]) or
+  // 1st/3rd preterite (-ei/-ou/-amos/-aram). Built so NOMINALIZATIONS do not match
+  // — "confirmado/confirmei" hit; "confirmação"/"cancelamento"/"registro" do not.
+  const V = `(?:${verbs})(?:ad[oa]s?|id[oa]s?|ei|ou|amos|aram|iram)`;
+  return {
+    id,
+    claim: [
+      new RegExp(`\\b${noun}\\b[^.!?]{0,40}\\b${V}\\b`),
+      new RegExp(`\\b${V}\\b[^.!?]{0,18}\\b(?:o |a |os |as |seu |sua |teu )?${noun}\\b`),
+      ...extra,
+    ],
+    negated: [new RegExp(`\\b(?:nao|nunca|jamais)\\b[^.!?]{0,14}\\b${V}\\b`)],
+    justifiedBy,
+  };
+}
+
+// Completion-verb ROOTS per domain (the builder appends -ado/-ido/-ei/-ou…).
+// Irregulars (feito/feita) are added as `extra` literals.
+const SUCCESS_CLAIM_CLASSES: ReadonlyArray<SuccessClaimClass> = [
+  claimClass("order-placed", "pedido", "registr|confirm|realiz|finaliz|efetu|conclu|fech|cri", ["order.checkout.create"], [/\bpedido\b[^.!?]{0,30}\bfeito\b/, /\bfeito\b[^.!?]{0,15}\b(?:o |seu )?pedido\b/]),
+  claimClass("purchase-completed", "compra", "finaliz|conclu|realiz|confirm|efetu|fech", ["order.checkout.create"], [/\bcompra\b[^.!?]{0,20}\bfeita\b/]),
+  claimClass("payment-settled", "pagamento", "aprov|confirm|realiz|efetu|conclu|liquid|quit", ["payment.charge.confirm", "payment.cash.confirm", "payment.refund.confirm"], [/\b(?:esta|ta|ja)\s+pago\b/, /\bpix\s+pago\b/, /\bpaguei\b/]),
+  claimClass("order-canceled", "pedido", "cancel", ["order.cancel"], [/\bcancelamento\b[^.!?]{0,20}\b(?:realizad|efetuad|concluid)\w*/]),
+  claimClass("cart-item-added", "carrinho", "adicion|inclu|atualiz", ["order.item.add", "order.item.update", "order.item.remove"], [/\bitem\b[^.!?]{0,15}\badicionad\w*/]),
+  claimClass("refund-done", "reembolso", "process|emit|realiz|efetu|conclu|confirm|aprov", ["payment.refund.issue", "payment.refund.confirm"]),
+  claimClass("note-added", "observac\\w*", "adicion", ["order.note.add"]),
+  claimClass("order-amended", "pedido", "alter|atualiz", ["order.amend.request", "order.amend.add_item", "order.amend.update_qty", "order.amend.remove_item"], [/\badicionad\w*\b[^.!?]{0,15}\bao pedido\b/, /\baltera\w*\b[^.!?]{0,22}\b(?:registrad|realizad)\w*/]),
+  claimClass("reservation-confirmed", "reserva", "confirm|garant|realiz|efetu|conclu", ["reservation.create", "reservation.modify", "reservation.checkin", "reservation.complete"], [/\breserva\b[^.!?]{0,20}\bfeita\b/, /\bmesa\b[^.!?]{0,20}\b(?:reservad|garantid|confirmad)\w*/, /\bcheck-?in\b[^.!?]{0,15}\b(?:feito|confirmad|realizad)\w*/, /\b(?:agendad\w*|agendamento)\b[^.!?]{0,25}\b(?:confirmad|realizad|feito|concluid)\w*/]),
+  // PIX code/QR generation — justified by a checkout (PIX) or a regenerate.
+  { id: "pix-generated", claim: [/\b(?:codigo )?pix\b[^.!?]{0,18}\b(?:gerad|criad|criei|gerei)\w*/, /\bgerei\b[^.!?]{0,15}\bpix\b/], negated: [/\b(?:nao|nunca|jamais)\b[^.!?]{0,14}\b(?:gerad|criad|gerei)\w*/], justifiedBy: ["order.checkout.create", "payment.pix.regenerate"] },
+  // Fulfillment is NEVER performed by the chat responder — any such claim is unearned.
+  { id: "fulfillment-claimed", claim: [/\b(?:a caminho|saiu pra entrega|saiu para entrega|em preparo|no preparo|mandei pro preparo|ja separei|esta sendo preparad|pronto pra retirar|pronto para retirar|pode (?:vir )?(?:retirar|buscar))\b/], negated: [/\bnao\b[^.!?]{0,10}\b(?:a caminho|saiu|pronto)\b/], justifiedBy: [] },
+];
+
+/** The envelope kinds the runtime ACTUALLY executed this turn (empty unless the
+ *  dispatch genuinely committed a mutation). */
+function executedKinds(acted: unknown): ReadonlySet<string> {
+  const out = new Set<string>();
+  const s = summarizeActed(acted);
+  if (s === undefined) return out;
+  const dispatch = s.dispatch;
+  if (dispatch !== "executed" && dispatch !== "rewritten_and_executed" && dispatch !== "executed_plan") {
+    return out; // failed / refused / deferred / awaiting_confirmation / escalated → nothing committed
+  }
+  const ex = s.executed;
+  if (typeof ex === "string") out.add(ex);
+  else if (Array.isArray(ex)) for (const k of ex) if (typeof k === "string") out.add(k);
+  return out;
+}
+
+// Clause-level mood gates — a success PREDICATE inside a question, a future/
+// conditional clause, or a pending-status clause is NOT a completed assertion.
+const QUESTION = /\?/;
+const FUTURE_OR_CONDITIONAL = /\b(?:sera|serao|vai|vao|ira|irao|iremos|vamos|podera|poderao|assim que|quando|caso|logo que|apos|depois que|se (?:voce|vc|tu|o |a |houver|tiver|pagar|confirmar|quiser|precisar|der|fizer))\b/;
+const PENDING_STATUS = /\b(?:recebid|em analise|sendo processad|processand|aguardand|pendente|em processament|em aberto|aguarda)/;
+
+/** Split normalized text into sentences, tagging each with whether it is a question. */
+function sentencesOf(normalized: string): ReadonlyArray<{ text: string; question: boolean }> {
+  const out: Array<{ text: string; question: boolean }> = [];
+  const re = /[^.!?\n;]+[.!?\n;]*/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(normalized)) !== null) {
+    const body = m[0].replace(/[.!?\n;]+$/, "").trim();
+    if (body.length > 0) out.push({ text: body, question: QUESTION.test(m[0]) });
+  }
+  return out;
+}
+
+/** Returns the matched success-claim class id (for telemetry/debug) when the reply
+ *  ASSERTS (declaratively, present/past) a customer-visible success the runtime did
+ *  not grant, else null. Questions, future/conditional, pending-status, and negated
+ *  (honest-failure) phrasings are intentionally NOT flagged. */
+export function replyClaimsUnearnedSuccess(text: string, acted: unknown): string | null {
+  if (typeof text !== "string") return null;
+  const normalized = normalizePtBr(text);
+  const executed = executedKinds(acted);
+  for (const sent of sentencesOf(normalized)) {
+    if (sent.question) continue; // a clarifying question is not a claim
+    if (FUTURE_OR_CONDITIONAL.test(sent.text)) continue; // "será registrado" / "assim que pagar" / "se você..."
+    if (PENDING_STATUS.test(sent.text)) continue; // "pagamento recebido e em análise" (pending, not settled)
+    for (const cls of SUCCESS_CLAIM_CLASSES) {
+      if (cls.negated.some((re) => re.test(sent.text))) continue; // honest failure
+      if (cls.claim.some((re) => re.test(sent.text))) {
+        if (!cls.justifiedBy.some((k) => executed.has(k))) return cls.id;
+      }
+    }
+  }
+  return null;
+}
+
+/** Apply the deterministic post-completion guards to a model-produced draft:
+ *  substitute the neutral, audit-accurate line if the reply makes a no-authority
+ *  claim (F1) or claims a success the runtime did not grant (F1b). Preserves the
+ *  draft's token usage so the loop's cost accounting stays correct. */
+function guardDraft(draft: DraftResponse, acted: unknown): DraftResponse {
+  if (
+    groundedReplyContradicts(draft.text) !== null ||
+    replyClaimsUnearnedSuccess(draft.text, acted) !== null
+  ) {
+    return draft.usage !== undefined
+      ? { text: GROUNDED_SAFE_FALLBACK_PTBR, usage: draft.usage }
+      : { text: GROUNDED_SAFE_FALLBACK_PTBR };
+  }
+  return draft;
 }
 
 export function createIbatexasResponder(
@@ -239,7 +394,10 @@ export function createIbatexasResponder(
               input.cognition,
               [],
             );
-            return completeWith({ system, fragmentManifest, userText, turnId });
+            return guardDraft(
+              await completeWith({ system, fragmentManifest, userText, turnId }),
+              input.acted,
+            );
           }
           // A real action refusal: render the pt-BR refusal VERBATIM (model-free,
           // single-sourced, SECURITY-safe). This is the bug fix.
@@ -283,12 +441,11 @@ export function createIbatexasResponder(
             turnId,
             ...(intentHash !== undefined ? { intentHash } : {}),
           });
-          // F1: the grounded prompt is a soft instruction; never let a model
-          // reply that contradicts the audited decision reach the customer.
-          if (groundedReplyContradicts(draft.text) !== null) {
-            return { text: GROUNDED_SAFE_FALLBACK_PTBR, usage: draft.usage };
-          }
-          return draft;
+          // F1 + F1b: post-completion guards. The grounded prompt is only a soft
+          // instruction — never let a model reply that contradicts the audited
+          // decision (no-authority claim) OR claims a success the runtime did not
+          // grant (confabulation) reach the customer.
+          return guardDraft(draft, input.acted);
         }
 
         default: {
@@ -301,7 +458,10 @@ export function createIbatexasResponder(
             input.cognition,
             [],
           );
-          return completeWith({ system, fragmentManifest, userText, turnId });
+          return guardDraft(
+            await completeWith({ system, fragmentManifest, userText, turnId }),
+            input.acted,
+          );
         }
       }
     },
