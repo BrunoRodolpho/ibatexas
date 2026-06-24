@@ -105,6 +105,7 @@ import {
   createDriverChatExecutor,
 } from "../driver/persona-driver.js"
 import { createAnthropicModelProvider } from "../driver/anthropic-provider.js"
+import { createOllamaModelProvider } from "../driver/ollama-provider.js"
 import {
   reconcileExpects,
   RECONCILIATION_GATE_ID,
@@ -816,7 +817,12 @@ function buildExecutors(args: {
       driver = new PersonaDriver({
         journey,
         runId,
-        provider: createAnthropicModelProvider(),
+        // Driver provider gate (plan C1): IBX_DRIVER_PROVIDER=ollama routes the
+        // persona driver to the local Nemotron /v1 endpoint; default Anthropic.
+        provider:
+          process.env.IBX_DRIVER_PROVIDER === "ollama"
+            ? createOllamaModelProvider()
+            : createAnthropicModelProvider(),
         chatTurn: async (message) => {
           const turn = await chatClient!.perTurn(message)
           onProgress(

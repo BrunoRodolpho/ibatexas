@@ -60,6 +60,7 @@ import {
   type TurnRecord,
 } from "@claustrum/core";
 import { AnthropicProvider } from "@claustrum/anthropic";
+import { NemotronModelProvider } from "./claustrum/nemotron-model-provider.js";
 import {
   createPostgresMemoryProvider,
   PostgresAdvisorySessionLock,
@@ -1625,6 +1626,17 @@ export async function bootstrapClaustrum(
     // is never constructed, so a scripted composition is structurally unable
     // to spend tokens.
     modelProvider = options.modelProvider;
+  } else if (process.env.LLM_PROVIDER === "ollama") {
+    // Live local-model validation (plan C1): route the SUT's untrusted semantic
+    // parser to a local Ollama /v1 endpoint (e.g. nemotron-3-nano:4b). The kernel
+    // (@adjudicate/core) remains the sole authority — only the model swaps.
+    // embed() throws not_implemented -> failSafeGrounding degrades to empty
+    // retrieval, so grounding-required intents fail CLOSED.
+    modelProvider = new NemotronModelProvider();
+    logger.warn(
+      { provider: "ollama", baseUrl: process.env.LLM_BASE_URL, model: process.env.LLM_MODEL },
+      "LLM_PROVIDER=ollama — using local NemotronModelProvider for live validation",
+    );
   } else {
     const anthropicClient = new Anthropic({
       apiKey: process.env.ANTHROPIC_API_KEY ?? "",
