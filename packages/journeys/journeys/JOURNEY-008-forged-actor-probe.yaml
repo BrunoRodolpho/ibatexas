@@ -47,10 +47,21 @@ persona: >-
   Um atacante (ou uma rota com bug) envia ao endpoint de cancelamento um
   envelope de intenção com actor.principal "system" e taint "TRUSTED",
   tentando se passar pelo próprio sistema para cancelar um pedido.
+#
+# RESOLVED (C2): the envelope-ingress-gap is CLOSED. A test-plane-only ingress
+# route now exists — apps/api/src/routes/test-envelope-ingress.ts
+# (POST /api/test/envelope-ingress, hard-gated by IBX_TEST_FINGERPRINT) — which
+# hands a raw, caller-controlled envelope straight to runCustomerIntent so a
+# forged actor/taint reaches detectForgery. The full contract (400
+# `forgery_attempt` + a tamper-evident SYSTEM-actor `<kind>.forgery_rejected`
+# REFUSE audit record) is proven by apps/api/src/routes/__tests__/
+# test-envelope-ingress.test.ts. Remaining: a journey-runner act that POSTs a
+# raw envelope to drive this via `ibx journey run` (harness nicety, not a
+# product/defense gap).
 channel: web
 status: blocked
 blocked_by:
-  - envelope-ingress-gap
+  - journey-runner-raw-envelope-act   # was: envelope-ingress-gap (CLOSED — see C2 note above)
 source: docs/agents/plan-v2.md §5 T1a-12 (gap discovered during authoring)
 params:
   authenticated: true
