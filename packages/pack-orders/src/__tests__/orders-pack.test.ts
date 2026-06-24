@@ -204,6 +204,48 @@ describe("ordersPolicyBundle — state guards", () => {
     expect(decision.refusal.code).toBe("order.already_cancelled")
   })
 
+  it("REFUSE order.cancel past the point-of-no-return (J006: kernel-enforced)", () => {
+    // Mirrors the route-layer canPerformAction rule: once ready / out-for-delivery
+    // / delivered the kernel itself REFUSEs the cancel (not just the route).
+    for (const fs of ["ready", "in_delivery", "delivered"]) {
+      const decision = adjudicate(
+        env("order.cancel", { orderId: "o-1" }),
+        state({ orderId: "o-1", fulfillmentStatus: fs }),
+        ordersPolicyBundle,
+      )
+      expect(decision.kind).toBe("REFUSE")
+      if (decision.kind !== "REFUSE") return
+      expect(decision.refusal.code).toBe("order.past_ponr")
+    }
+  })
+
+  it("EXECUTE/allow order.cancel while still cancellable (pending / confirmed / preparing)", () => {
+    for (const fs of ["pending", "confirmed", "preparing"]) {
+      const decision = adjudicate(
+        env("order.cancel", { orderId: "o-1" }),
+        state({ orderId: "o-1", fulfillmentStatus: fs }),
+        ordersPolicyBundle,
+      )
+      // not REFUSEd by the cancellability guard (may EXECUTE or hit a money gate,
+      // but never the past_ponr/already_cancelled terminal refusal).
+      if (decision.kind === "REFUSE") {
+        expect(decision.refusal.code).not.toBe("order.past_ponr")
+        expect(decision.refusal.code).not.toBe("order.already_cancelled")
+      }
+    }
+  })
+
+  it("REFUSE order.cancel on a canceled fulfillment status as already-cancelled", () => {
+    const decision = adjudicate(
+      env("order.cancel", { orderId: "o-1" }),
+      state({ orderId: "o-1", fulfillmentStatus: "canceled" }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REFUSE")
+    if (decision.kind !== "REFUSE") return
+    expect(decision.refusal.code).toBe("order.already_cancelled")
+  })
+
   it("REFUSE order.checkout.create with incomplete slots (no payment method in state)", () => {
     const decision = adjudicate(
       env("order.checkout.create", {

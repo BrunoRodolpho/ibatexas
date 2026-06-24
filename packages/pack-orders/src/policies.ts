@@ -61,6 +61,7 @@ import {
   refuseNotAuthenticated,
   refuseOrderAlreadyCancelled,
   refuseOrderAlreadyShipped,
+  refuseOrderPastPonr,
   refuseSlotsIncomplete,
 } from "./refusals.js"
 import {
@@ -160,8 +161,25 @@ function hasOrderId(state: OrderState): boolean {
   return state.ctx.orderId !== null && state.ctx.orderId !== undefined
 }
 
+// Fulfillment statuses past the cancellation point-of-no-return — mirrors the
+// route-layer canPerformAction("cancel_order") rule (order-action-validator.ts):
+// once a order is ready / out for delivery / delivered it can no longer be
+// cancelled. `canceled` is handled separately (already-cancelled, not PONR).
+const POST_PONR_FULFILLMENT: ReadonlySet<string> = new Set([
+  "ready",
+  "in_delivery",
+  "delivered",
+])
+
+function orderAlreadyCancelled(state: OrderState): boolean {
+  return state.ctx.lastAction === "cancelled" || state.ctx.fulfillmentStatus === "canceled"
+}
+
 function canCancelOrder(state: OrderState): boolean {
-  return hasOrderId(state) && state.ctx.lastAction !== "cancelled"
+  if (!hasOrderId(state)) return false
+  if (orderAlreadyCancelled(state)) return false
+  const fs = state.ctx.fulfillmentStatus
+  return !(typeof fs === "string" && POST_PONR_FULFILLMENT.has(fs))
 }
 
 function canAmendOrder(state: OrderState): boolean {
@@ -360,9 +378,18 @@ const requireCancellable: OrderGuard = (envelope, state) => {
     return null
   }
   if (canCancelOrder(state)) return null
-  return decisionRefuse(refuseOrderAlreadyCancelled(), [
+  // Distinguish an already-cancelled order from one past the point-of-no-return
+  // (ready / out-for-delivery / delivered) so the audit basis is accurate.
+  if (orderAlreadyCancelled(state)) {
+    return decisionRefuse(refuseOrderAlreadyCancelled(), [
+      basis("state", BASIS_CODES.state.TERMINAL_STATE, {
+        reason: "already_cancelled",
+      }),
+    ])
+  }
+  return decisionRefuse(refuseOrderPastPonr(), [
     basis("state", BASIS_CODES.state.TERMINAL_STATE, {
-      reason: "already_cancelled",
+      reason: "past_ponr",
     }),
   ])
 }
