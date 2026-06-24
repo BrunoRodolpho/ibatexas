@@ -88,7 +88,7 @@ describe("paymentsPolicyBundle — ownership/IDOR guard (034-F1)", () => {
   function refundEnv(owner: string, resource: string, sessionId: string) {
     return buildEnvelope({
       kind: "payment.refund.issue",
-      payload: { orderId: resource, refundAmountCentavos: 1_000 },
+      payload: { orderId: resource, refundAmountCentavos: 1_000 } as unknown as PaymentPayload,
       actor: { principal: "user", sessionId },
       taint: "UNTRUSTED",
       nonce: `n-${sessionId}-${resource}`,
