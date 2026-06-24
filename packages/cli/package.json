@@ -15,12 +15,12 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@adjudicate/analyze": "^0.4.0",
-    "@adjudicate/audit": "^2.0.1",
-    "@adjudicate/audit-postgres": "^2.0.1",
-    "@adjudicate/conformance": "^1.1.0",
-    "@adjudicate/core": "^1.3.0",
-    "@adjudicate/runtime": "^0.2.1",
+    "@adjudicate/analyze": "^0.4.2",
+    "@adjudicate/audit": "^4.0.0",
+    "@adjudicate/audit-postgres": "^4.0.0",
+    "@adjudicate/conformance": "^3.0.0",
+    "@adjudicate/core": "^1.5.0",
+    "@adjudicate/runtime": "^0.3.0",
     "@ibatexas/agents": "workspace:*",
     "@ibatexas/domain": "workspace:*",
     "@ibatexas/intent-kinds": "workspace:*",
@@ -42,7 +42,7 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
-    "@adjudicate/pack-payments-pix": "^0.2.1",
+    "@adjudicate/pack-payments-pix": "^0.3.0",
     "@eslint/eslintrc": "^3.0.0",
     "@ibatexas/eslint-config": "workspace:*",
     "@ibatexas/pack-customer-onboarding": "workspace:*",

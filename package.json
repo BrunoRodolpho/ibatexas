@@ -33,7 +33,7 @@
   "packageManager": "pnpm@10.32.1",
   "pnpm": {
     "overrideNotes": {
-      "@adjudicate/core": "item A (UltraReview #94-20) — force a SINGLE @adjudicate/core version (1.4.0) across the workspace. The published @adjudicate/* deps (adapter-core, audit, audit-postgres, approval-engine, …) pin core to EXACTLY 1.3.0, so apps/api bumping to ^1.4.0 installs two copies and TypeScript rejects cross-version AuditRecord/Decision/DecisionBasis. 1.4.0 is an additive minor (adds LearningEventV1 + the grant_expired basis code), backward-compatible for the 1.3.0-pinned consumers. Remove/relax once the @adjudicate/* deps are bumped to versions depending on core ^1.4.0.",
+      "@adjudicate/core": "item A (UltraReview #94-20) — force a SINGLE @adjudicate/core version (1.5.0) across the workspace. The published @adjudicate/* deps (adapter-core@0.4.0, audit@4.0.0, audit-postgres@4.0.0, approval-engine@0.3.0, analyze@0.4.2, runtime@0.3.0, primitives@0.4.0, pack-payments-pix@0.3.0, drift@0.2.2) now all pin core to EXACTLY 1.5.0, so this override is aligned with the dependency set and prevents any stray older core from being deduped in. Bumped 1.4.0 -> 1.5.0 alongside the 2026-06-24 adjudicate publish. Remove/relax only if the @adjudicate/* deps move to a compatible RANGE (e.g. core ^1.5.0) rather than an exact pin.",
       "minimatch, rollup, glob": "vitest/vite toolchain — review on vite 6 upgrade",
       "express>path-to-regexp": "medusa>express transitive fix — GHSA-37ch-88jc-xwx2 ReDoS. Scoped (not global) because @medusajs/framework declares path-to-regexp ^8.2.0 and uses the v6+ named-export API; forcing 0.1.13 globally crashes commerce at startup with 'pathToRegexp is not a function'. next@16 also declares 6.3.0 and would be silently downgraded. Remove when medusa drops express 4.",
       "lodash": "medusa/prisma transitive fix — GHSA-r5fr-rjxr-66jc code injection via _.template",
@@ -55,7 +55,7 @@
       "fast-xml-builder": "transitive fix — GHSA-5wm8-gmm8-39j9 (CVE-2026-44665) attribute-value injection. Patched in 1.1.7+."
     },
     "overrides": {
-      "@adjudicate/core": "1.4.0",
+      "@adjudicate/core": "1.5.0",
       "minimatch": "10.2.4",
       "rollup": "4.59.0",
       "glob": "13.0.6",

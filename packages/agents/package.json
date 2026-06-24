@@ -18,9 +18,9 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@adjudicate/conformance": "^1.1.0",
-    "@adjudicate/core": "^1.3.0",
-    "@adjudicate/pack-payments-pix": "^0.2.1",
+    "@adjudicate/conformance": "^3.0.0",
+    "@adjudicate/core": "^1.5.0",
+    "@adjudicate/pack-payments-pix": "^0.3.0",
     "@ibatexas/packs-composed": "workspace:*",
     "zod": "^4.3.6"
   },

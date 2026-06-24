@@ -19,10 +19,10 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@adjudicate/audit": "^2.0.1",
+    "@adjudicate/audit": "^4.0.0",
     "@anthropic-ai/sdk": "^0.82.0",
-    "@adjudicate/audit-postgres": "^2.0.1",
-    "@adjudicate/core": "^1.3.0",
+    "@adjudicate/audit-postgres": "^4.0.0",
+    "@adjudicate/core": "^1.5.0",
     "@ibatexas/intent-kinds": "workspace:*",
     "@ibatexas/nats-client": "workspace:*",
     "@ibatexas/packs-composed": "workspace:*",

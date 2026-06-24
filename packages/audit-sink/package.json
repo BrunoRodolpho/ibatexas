@@ -18,10 +18,10 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@adjudicate/admin-sdk": "^2.1.0",
-    "@adjudicate/audit": "^2.0.1",
-    "@adjudicate/audit-postgres": "^2.0.1",
-    "@adjudicate/core": "^1.3.0",
+    "@adjudicate/admin-sdk": "^4.0.0",
+    "@adjudicate/audit": "^4.0.0",
+    "@adjudicate/audit-postgres": "^4.0.0",
+    "@adjudicate/core": "^1.5.0",
     "@ibatexas/pii": "workspace:*"
   },
   "devDependencies": {
