@@ -429,4 +429,33 @@ describe("createIbatexasResponder", () => {
       expect(draft.text).toBe(GROUNDED_SAFE_FALLBACK_PTBR);
     }
   });
+
+  // ── A3: surface user-relevant REWRITE clamps (the 4B can't be trusted to) ────
+
+  it("A3: appends the stock-clamp reason on REWRITE when the model omitted it", async () => {
+    const { model } = mockModel("Pronto, dei uma olhada no seu carrinho.");
+    const responder = createIbatexasResponder({ model, modelId: "m", explainer });
+    const decision = { kind: "REWRITE", rewritten: { kind: "order.item.update" }, reason: "Quantidade ajustada para o estoque disponível.", basis: [] } as unknown as Decision;
+    const acted = { kind: "rewritten_and_executed", envelope: { kind: "order.item.update" }, result: {} };
+    const draft = await responder.respond(mkInput({ decision, envelopeKinds: ["order.item.update"], acted }));
+    expect(draft.text).toBe("Pronto, dei uma olhada no seu carrinho. Quantidade ajustada para o estoque disponível.");
+  });
+
+  it("A3: does NOT surface an internal PII-mask REWRITE reason to the customer", async () => {
+    const { model } = mockModel("Pronto, dei uma olhada no seu carrinho.");
+    const responder = createIbatexasResponder({ model, modelId: "m", explainer });
+    const decision = { kind: "REWRITE", rewritten: { kind: "order.item.update" }, reason: "PII mascarado no payload antes da execução.", basis: [] } as unknown as Decision;
+    const acted = { kind: "rewritten_and_executed", envelope: { kind: "order.item.update" }, result: {} };
+    const draft = await responder.respond(mkInput({ decision, envelopeKinds: ["order.item.update"], acted }));
+    expect(draft.text).toBe("Pronto, dei uma olhada no seu carrinho.");
+  });
+
+  it("A3: does not duplicate the clamp when the model already conveyed an adjustment", async () => {
+    const { model } = mockModel("Ajustei a quantidade pra você.");
+    const responder = createIbatexasResponder({ model, modelId: "m", explainer });
+    const decision = { kind: "REWRITE", rewritten: { kind: "order.item.update" }, reason: "Quantidade ajustada para o estoque disponível.", basis: [] } as unknown as Decision;
+    const acted = { kind: "rewritten_and_executed", envelope: { kind: "order.item.update" }, result: {} };
+    const draft = await responder.respond(mkInput({ decision, envelopeKinds: ["order.item.update"], acted }));
+    expect(draft.text).toBe("Ajustei a quantidade pra você.");
+  });
 });

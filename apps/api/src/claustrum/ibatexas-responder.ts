@@ -300,6 +300,25 @@ function guardDraft(draft: DraftResponse, acted: unknown): DraftResponse {
   return draft;
 }
 
+/** When the kernel REWROTE the envelope with a USER-RELEVANT clamp (e.g. quantity
+ *  reduced to available stock), make sure the customer is actually TOLD. The 4B
+ *  can't be trusted to surface it from the grounded context, so we append the
+ *  kernel's own reason deterministically. Internal security sanitizations (PII
+ *  masking) are deliberately NOT surfaced — those are silent to the customer.
+ *  Note: a clamp that is then re-adjudicated to a friction verb (REWRITE→CONFIRM)
+ *  surfaces as REQUEST_CONFIRMATION, so this only covers the standalone REWRITE. */
+function surfaceRewriteClamp(
+  draft: DraftResponse,
+  decision: { kind: string; reason?: unknown },
+): DraftResponse {
+  if (decision.kind !== "REWRITE") return draft;
+  const reason = typeof decision.reason === "string" ? decision.reason.trim() : "";
+  if (reason.length === 0 || /\b(pii|mascar)/i.test(reason)) return draft;
+  if (/\bajust/.test(normalizePtBr(draft.text))) return draft; // model already conveyed the adjustment
+  const text = `${draft.text.trim()} ${reason}`.trim();
+  return draft.usage !== undefined ? { text, usage: draft.usage } : { text };
+}
+
 export function createIbatexasResponder(
   deps: IbatexasResponderDeps,
 ): ResponderPort {
@@ -444,8 +463,9 @@ export function createIbatexasResponder(
           // F1 + F1b: post-completion guards. The grounded prompt is only a soft
           // instruction — never let a model reply that contradicts the audited
           // decision (no-authority claim) OR claims a success the runtime did not
-          // grant (confabulation) reach the customer.
-          return guardDraft(draft, input.acted);
+          // grant (confabulation) reach the customer. Then surface any user-relevant
+          // REWRITE clamp deterministically (the model can't be trusted to).
+          return surfaceRewriteClamp(guardDraft(draft, input.acted), decision);
         }
 
         default: {
