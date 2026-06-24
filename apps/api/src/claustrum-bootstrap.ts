@@ -70,6 +70,7 @@ import {
 import { createPgVectorGroundingProvider } from "@claustrum/grounding-pgvector";
 import { failSafeGrounding } from "./claustrum/fail-safe-grounding.js";
 import { failSafeMemory } from "./claustrum/fail-safe-memory.js";
+import { noopGroundingProvider, noopMemoryProvider } from "./claustrum/noop-memory-grounding.js";
 import { WhatsAppChannel } from "@claustrum/channel-whatsapp";
 import { WebChannel } from "@claustrum/channel-web";
 
@@ -1751,12 +1752,30 @@ export async function bootstrapClaustrum(
   // live contract test). Degrades to empty recall/search/recentActions and
   // dropped observes — the turn runs memory-less; mutations stay
   // kernel-guarded. See fail-safe-memory.ts + docs/agents/decisions.md D-012.
+  // DEF-005: the @ibatexas/domain Prisma client generates NO claustrum_memory_*
+  // delegates, so createPostgresMemoryProvider throws on every cache-cold turn.
+  // Detect that capability gap UPFRONT and run a DESIGNED no-op (empty recall)
+  // rather than relying on failSafeMemory to swallow a per-turn TypeError —
+  // "safe by design", not "safe by catch". The wrapper stays as a last-resort
+  // guard for genuinely UNEXPECTED provider errors.
+  const memoryDelegatesPresent =
+    typeof (
+      prisma as unknown as { claustrum_memory_episodic?: { findMany?: unknown } }
+    ).claustrum_memory_episodic?.findMany === "function";
+  if (!memoryDelegatesPresent) {
+    logger.info(
+      { component: "memory" },
+      "claustrum_memory_* delegates absent on the domain Prisma client — memory port runs as a designed no-op (empty recall); see DEF-005",
+    );
+  }
   const memory = failSafeMemory(
-    createPostgresMemoryProvider({
-      prisma: prisma as unknown as PrismaClientLike,
-      redis: redis as unknown as RedisClientLike,
-      adjudicator,
-    }),
+    memoryDelegatesPresent
+      ? createPostgresMemoryProvider({
+          prisma: prisma as unknown as PrismaClientLike,
+          redis: redis as unknown as RedisClientLike,
+          adjudicator,
+        })
+      : noopMemoryProvider(),
     {
       onError: (op, err) =>
         logger.warn(
@@ -1772,15 +1791,29 @@ export async function bootstrapClaustrum(
   // the planner runs. Degrades to empty retrieval; attestation failure yields
   // zero proofs (kernel refuses grounding-required envelopes — fail-closed).
   // See fail-safe-grounding.ts + docs/agents/decisions.md D-009.
+  // DEF-005: the configured model provider has no embedding capability (the local
+  // 4B's embed() throws not_implemented; Anthropic has no embedding proxy wired),
+  // so pgvector retrieve() throws on every turn. Gate grounding on an explicit
+  // capability flag and run a DESIGNED no-op (empty retrieval) when embeddings are
+  // unavailable, rather than letting failSafeGrounding swallow the throw each turn.
+  const groundingEnabled = process.env.CLAUSTRUM_GROUNDING_ENABLED === "true";
+  if (!groundingEnabled) {
+    logger.info(
+      { component: "grounding" },
+      "embeddings unavailable (CLAUSTRUM_GROUNDING_ENABLED!=true) — grounding port runs as a designed no-op (empty retrieval); see DEF-005",
+    );
+  }
   const grounding = failSafeGrounding(
-    createPgVectorGroundingProvider({
-      // pg.Pool is structurally assignable to pgvector's minimal { query } Pool —
-      // no cast needed (was a redundant `as never`).
-      pool: pgPool,
-      modelProvider,
-      modelId: embeddingModelId,
-      tenantId: "ibatexas",
-    }),
+    groundingEnabled
+      ? createPgVectorGroundingProvider({
+          // pg.Pool is structurally assignable to pgvector's minimal { query } Pool —
+          // no cast needed (was a redundant `as never`).
+          pool: pgPool,
+          modelProvider,
+          modelId: embeddingModelId,
+          tenantId: "ibatexas",
+        })
+      : noopGroundingProvider(embeddingModelId),
     {
       modelId: embeddingModelId,
       onError: (op, err) =>
