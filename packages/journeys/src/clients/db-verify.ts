@@ -177,7 +177,7 @@ async function main(): Promise<void> {
     const noFailOpen = !byKind.some((r: any) => r.decision_kind !== "EXECUTE" && r.decision_kind !== "REFUSE" && r.decision_kind !== "REQUEST_CONFIRMATION" && r.decision_kind !== "ESCALATE" && r.decision_kind !== "DEFER" && r.decision_kind !== "REWRITE")
     check("all decisions are defined kernel verbs", noFailOpen, "no undefined/blank decision_kind")
     // tamper-evidence: hash-chain column continuity if present
-    const hashCol = cols.find((c) => /audit_hash|record_hash|hash$/.test(c) && !/prev/.test(c))
+    const hashCol = cols.find((c) => /(?:audit_hash|record_hash|hash)$/.test(c) && !/prev/.test(c))
     const prevCol = cols.find((c) => /prev.*hash|previous_hash/.test(c))
     if (hashCol && prevCol) {
       const broken = (await q(`SELECT count(*)::int n FROM "${auditSchema}".intent_audit a WHERE "${prevCol}" IS NOT NULL AND NOT EXISTS (SELECT 1 FROM "${auditSchema}".intent_audit b WHERE b."${hashCol}" = a."${prevCol}")`))[0].n
