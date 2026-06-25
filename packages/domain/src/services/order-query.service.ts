@@ -35,8 +35,20 @@ interface ListByCustomerInput {
 // ── Service ─────────────────────────────────────────────────────────────────
 
 export interface OrderQueryService {
-  /** Get a single order projection with audit history. */
-  getById(orderId: string, opts?: { historyLimit?: number }): Promise<OrderProjectionWithHistory | null>
+  /**
+   * Get a single order projection with audit history.
+   *
+   * Owner-scoping (SDD §N P0-3, Inv 2/13): when `opts.customerId` is provided
+   * the read is `customer_scoped` — the projection is returned ONLY if its
+   * `customerId` matches; a non-owner OR an order with NULL owner attribution
+   * resolves to `null` (Inv 2: "no owner" ≠ "any owner" → REFUSED, never
+   * leaked). When `customerId` is omitted the read is unscoped — the legitimate
+   * internal/staff/system path (admin, projection builders, subscribers, jobs).
+   */
+  getById(
+    orderId: string,
+    opts?: { historyLimit?: number; customerId?: string },
+  ): Promise<OrderProjectionWithHistory | null>
 
   /** List orders for a customer, ordered by medusaCreatedAt desc. */
   listByCustomer(customerId: string, input?: ListByCustomerInput): Promise<ListResult>
@@ -51,7 +63,7 @@ export interface OrderQueryService {
 export function createOrderQueryService(): OrderQueryService {
   return {
     async getById(orderId, opts) {
-      return prisma.orderProjection.findUnique({
+      const order = await prisma.orderProjection.findUnique({
         where: { id: orderId },
         include: {
           statusHistory: {
@@ -60,6 +72,17 @@ export function createOrderQueryService(): OrderQueryService {
           },
         },
       })
+
+      // Owner-scoping (SDD §N P0-3, Inv 2/13). When a customerId is supplied the
+      // read is customer_scoped: only the owner may see the projection. A NULL
+      // owner never matches a supplied customerId, so an unattributed order is
+      // REFUSED rather than leaked (Inv 2: "no owner" ≠ "any owner"). Returning
+      // null keeps the existing not-found contract — callers already handle it.
+      if (opts?.customerId !== undefined && (order === null || order.customerId !== opts.customerId)) {
+        return null
+      }
+
+      return order
     },
 
     async listByCustomer(customerId, input) {
