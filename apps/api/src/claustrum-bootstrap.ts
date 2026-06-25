@@ -214,6 +214,11 @@ import {
 import { createIbatexasResolver } from "./claustrum/ibatexas-resolver.js";
 import { sessionTokenKey, resolveAndAssemble } from "./claustrum/resolve-and-assemble.js";
 import {
+  buildCustomerAuthority,
+  customerPrincipalForSession,
+  resourceRefsForIntent,
+} from "./claustrum/authority-wiring.js";
+import {
   createInMemoryTokenUsageStore,
   type TokenUsageStore,
 } from "@adjudicate/adapter-core";
@@ -578,12 +583,38 @@ async function enrichResumeState(
     return state;
   }
   try {
-    const { ctx } = await resolveAndAssemble({
+    const { payload, ctx, owned, ownershipIndeterminate } = await resolveAndAssemble({
       kind: envelope.kind,
       payload: (envelope.payload ?? {}) as Record<string, unknown>,
       customerId: s.customerId,
       channel: s.channel,
     });
+    // 034-F1 (review finding 13): engage the kernel ownership/IDOR guard on the
+    // RESUME re-adjudication too — the plan stage injects state.authority, but
+    // without this the resumed envelope adjudicates with authority===undefined and
+    // the guard is inert (asymmetric with the plan stage). The freshly-recomputed,
+    // customer-scoped `owned` set is the load-bearing, non-tautological check (it
+    // REFUSEs a now-unowned resource — e.g. an order reassigned since parking).
+    //
+    // principalForSession is bound to the PARKED envelope's actor.sessionId because
+    // the resume turn's resolution.state carries no conversationId. This is safe:
+    // the parked envelope ALREADY passed plan-stage IDOR (its actor.sessionId was
+    // the authenticated session when parked — kernel-vetted, not raw input), and
+    // the framework session-scopes park-matching, so the cross-session check is
+    // covered upstream while resource-ownership is re-verified here.
+    const refs = ownershipIndeterminate
+      ? undefined
+      : resourceRefsForIntent(envelope.kind, payload as Record<string, unknown>, s.customerId);
+    if (refs !== undefined) {
+      return {
+        ctx,
+        authority: buildCustomerAuthority(
+          s.customerId,
+          owned,
+          customerPrincipalForSession(envelope.actor.sessionId, s.customerId),
+        ),
+      };
+    }
     return { ctx };
   } catch {
     return state;
@@ -1771,32 +1802,44 @@ export async function bootstrapClaustrum(
   // rather than relying on failSafeMemory to swallow a per-turn TypeError —
   // "safe by design", not "safe by catch". The wrapper stays as a last-resort
   // guard for genuinely UNEXPECTED provider errors.
-  const memoryDelegatesPresent =
-    typeof (
-      prisma as unknown as { claustrum_memory_episodic?: { findMany?: unknown } }
-    ).claustrum_memory_episodic?.findMany === "function";
+  // Finding 14: probe EVERY claustrum_memory_* delegate the postgres provider
+  // reads (not just episodic) — a partial/renamed delegate set would otherwise
+  // pass a one-delegate probe and then throw per-turn inside the provider, the
+  // very TypeError DEF-005 set out to eliminate.
+  const memDelegates = ["episodic", "semantic", "procedural", "relational"] as const;
+  const prismaForMemory = prisma as unknown as Record<
+    string,
+    { findMany?: unknown } | undefined
+  >;
+  const memoryDelegatesPresent = memDelegates.every(
+    (slice) => typeof prismaForMemory[`claustrum_memory_${slice}`]?.findMany === "function",
+  );
   if (!memoryDelegatesPresent) {
     logger.info(
       { component: "memory" },
-      "claustrum_memory_* delegates absent on the domain Prisma client — memory port runs as a designed no-op (empty recall); see DEF-005",
+      "claustrum_memory_* delegates absent/incomplete on the domain Prisma client — memory port runs as a designed no-op (empty recall); see DEF-005",
     );
   }
-  const memory = failSafeMemory(
-    memoryDelegatesPresent
-      ? createPostgresMemoryProvider({
+  // Finding 33: the no-op provider never throws BY DESIGN, so wrapping it in
+  // failSafeMemory is dead code (a third place the empty shape would materialize).
+  // Use it directly; the failSafe wrapper guards only the REAL postgres provider's
+  // genuinely-unexpected errors.
+  const memory = memoryDelegatesPresent
+    ? failSafeMemory(
+        createPostgresMemoryProvider({
           prisma: prisma as unknown as PrismaClientLike,
           redis: redis as unknown as RedisClientLike,
           adjudicator,
-        })
-      : noopMemoryProvider(),
-    {
-      onError: (op, err) =>
-        logger.warn(
-          { component: "memory", op, error: String(err) },
-          "memory port degraded (fail-safe): returning empty result",
-        ),
-    },
-  );
+        }),
+        {
+          onError: (op, err) =>
+            logger.warn(
+              { component: "memory", op, error: String(err) },
+              "memory port degraded (fail-safe): returning empty result",
+            ),
+        },
+      )
+    : noopMemoryProvider();
 
   // Fail-safe wrapper: handleTurn awaits retrieve() with no catch, and the
   // provider chain throws today (AnthropicProvider.embed() has no embedding
@@ -1825,26 +1868,28 @@ export async function bootstrapClaustrum(
       "embeddings unavailable (CLAUSTRUM_GROUNDING_ENABLED!=true) — grounding port runs as a designed no-op (empty retrieval); see DEF-005",
     );
   }
-  const grounding = failSafeGrounding(
-    groundingActive
-      ? createPgVectorGroundingProvider({
+  // Finding 33: as with memory, the grounding no-op never throws by design — use
+  // it directly; failSafeGrounding wraps only the real pgvector provider.
+  const grounding = groundingActive
+    ? failSafeGrounding(
+        createPgVectorGroundingProvider({
           // pg.Pool is structurally assignable to pgvector's minimal { query } Pool —
           // no cast needed (was a redundant `as never`).
           pool: pgPool,
           modelProvider,
           modelId: embeddingModelId,
           tenantId: "ibatexas",
-        })
-      : noopGroundingProvider(embeddingModelId),
-    {
-      modelId: embeddingModelId,
-      onError: (op, err) =>
-        logger.warn(
-          { component: "grounding", op, error: String(err) },
-          "grounding port degraded (fail-safe): returning empty result",
-        ),
-    },
-  );
+        }),
+        {
+          modelId: embeddingModelId,
+          onError: (op, err) =>
+            logger.warn(
+              { component: "grounding", op, error: String(err) },
+              "grounding port degraded (fail-safe): returning empty result",
+            ),
+        },
+      )
+    : noopGroundingProvider(embeddingModelId);
 
   const channels: ChannelDriver[] = [];
 

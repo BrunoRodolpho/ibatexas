@@ -193,6 +193,11 @@ function claimClass(
   verbs: string,
   justifiedBy: ReadonlyArray<string>,
   extra: ReadonlyArray<RegExp> = [],
+  // Max chars between nao/nunca/jamais and the verb for the honest-failure negation
+  // to fire. Default 14; widened for the money-sensitive payment class so phrasings
+  // like "pagamento ainda nao foi devidamente aprovado" are read as a failure, not
+  // substituted as a false claim (review finding 10).
+  negationWindow = 14,
 ): SuccessClaimClass {
   // Completed-verb form from a ROOT: participle (-ado/-ada/-ido/-ida[+s]) or
   // 1st/3rd preterite (-ei/-ou/-amos/-aram). Built so NOMINALIZATIONS do not match
@@ -205,7 +210,7 @@ function claimClass(
       new RegExp(`\\b${V}\\b[^.!?]{0,18}\\b(?:o |a |os |as |seu |sua |teu )?${noun}\\b`),
       ...extra,
     ],
-    negated: [new RegExp(`\\b(?:nao|nunca|jamais)\\b[^.!?]{0,14}\\b${V}\\b`)],
+    negated: [new RegExp(`\\b(?:nao|nunca|jamais)\\b[^.!?]{0,${negationWindow}}\\b${V}\\b`)],
     justifiedBy,
   };
 }
@@ -215,7 +220,11 @@ function claimClass(
 const SUCCESS_CLAIM_CLASSES: ReadonlyArray<SuccessClaimClass> = [
   claimClass("order-placed", "pedido", "registr|confirm|realiz|finaliz|efetu|conclu|fech|cri", ["order.checkout.create"], [/\bpedido\b[^.!?]{0,30}\bfeito\b/, /\bfeito\b[^.!?]{0,15}\b(?:o |seu )?pedido\b/]),
   claimClass("purchase-completed", "compra", "finaliz|conclu|realiz|confirm|efetu|fech", ["order.checkout.create"], [/\bcompra\b[^.!?]{0,20}\bfeita\b/]),
-  claimClass("payment-settled", "pagamento", "aprov|confirm|realiz|efetu|conclu|liquid|quit", ["payment.charge.confirm", "payment.cash.confirm", "payment.refund.confirm"], [/\b(?:esta|ta|ja)\s+pago\b/, /\bpix\s+pago\b/, /\bpaguei\b/]),
+  // payment-settled = an INBOUND payment was approved/settled. A REFUND confirmation
+  // is the opposite money direction and must NOT justify a "pagamento aprovado"
+  // claim (review finding 12) — it justifies only the `refund-done` class below.
+  // Wider negation window (30) so honest-failure phrasings aren't mis-substituted.
+  claimClass("payment-settled", "pagamento", "aprov|confirm|realiz|efetu|conclu|liquid|quit", ["payment.charge.confirm", "payment.cash.confirm"], [/\b(?:esta|ta|ja)\s+pago\b/, /\bpix\s+pago\b/, /\bpaguei\b/], 30),
   claimClass("order-canceled", "pedido", "cancel", ["order.cancel"], [/\bcancelamento\b[^.!?]{0,20}\b(?:realizad|efetuad|concluid)\w*/]),
   claimClass("cart-item-added", "carrinho", "adicion|inclu|atualiz", ["order.item.add", "order.item.update", "order.item.remove"], [/\bitem\b[^.!?]{0,15}\badicionad\w*/]),
   claimClass("refund-done", "reembolso", "process|emit|realiz|efetu|conclu|confirm|aprov", ["payment.refund.issue", "payment.refund.confirm"]),
@@ -262,6 +271,31 @@ function sentencesOf(normalized: string): ReadonlyArray<{ text: string; question
   return out;
 }
 
+// An UNAMBIGUOUS completion marker. A clause asserting "… com sucesso/êxito" is a
+// definite success even if it also contains a pending word ("pedido recebido E
+// registrado com sucesso"), so the pending-status exemption must NOT apply to it
+// (review finding 8).
+const DEFINITE_SUCCESS = /\bcom (?:sucesso|exito)\b/;
+
+/** Whether a matched success predicate is mood-exempt (future/conditional/pending)
+ *  — but evaluated CLAUSE-LOCALLY (comma/colon-delimited), so a trailing courtesy
+ *  clause ("…, se precisar de algo avise") no longer suppresses a completed claim
+ *  in a DIFFERENT clause (review finding 5). A clause that asserts definite success
+ *  ("…com sucesso") is never pending-exempt (finding 8). */
+function claimIsMoodExempt(sentence: string, claimRe: RegExp): boolean {
+  const m = claimRe.exec(sentence);
+  if (m === null) return false;
+  const start = m.index;
+  // The comma/colon-delimited clause containing the match.
+  const before = Math.max(sentence.lastIndexOf(",", start), sentence.lastIndexOf(":", start));
+  const afters = [sentence.indexOf(",", start), sentence.indexOf(":", start)].filter((i) => i >= 0);
+  const after = afters.length > 0 ? Math.min(...afters) : sentence.length;
+  const clause = sentence.slice(before + 1, after);
+  if (FUTURE_OR_CONDITIONAL.test(clause)) return true;
+  if (PENDING_STATUS.test(clause) && !DEFINITE_SUCCESS.test(clause)) return true;
+  return false;
+}
+
 /** Returns the matched success-claim class id (for telemetry/debug) when the reply
  *  ASSERTS (declaratively, present/past) a customer-visible success the runtime did
  *  not grant, else null. Questions, future/conditional, pending-status, and negated
@@ -272,22 +306,33 @@ export function replyClaimsUnearnedSuccess(text: string, acted: unknown): string
   const executed = executedKinds(acted);
   for (const sent of sentencesOf(normalized)) {
     if (sent.question) continue; // a clarifying question is not a claim
-    if (FUTURE_OR_CONDITIONAL.test(sent.text)) continue; // "será registrado" / "assim que pagar" / "se você..."
-    if (PENDING_STATUS.test(sent.text)) continue; // "pagamento recebido e em análise" (pending, not settled)
     for (const cls of SUCCESS_CLAIM_CLASSES) {
       if (cls.negated.some((re) => re.test(sent.text))) continue; // honest failure
-      if (cls.claim.some((re) => re.test(sent.text))) {
-        if (!cls.justifiedBy.some((k) => executed.has(k))) return cls.id;
-      }
+      // Find the specific claim pattern that matched so the mood gate can be scoped
+      // to ITS clause (not the whole sentence) — a future/conditional/pending word
+      // elsewhere in the sentence no longer blanket-suppresses a completed claim.
+      const matched = cls.claim.find((re) => re.test(sent.text));
+      if (matched === undefined) continue;
+      if (claimIsMoodExempt(sent.text, matched)) continue; // future/conditional/pending clause
+      if (!cls.justifiedBy.some((k) => executed.has(k))) return cls.id;
     }
   }
   return null;
 }
 
+/** Override a draft's text while preserving every other field (usage, artifacts,
+ *  meta). Used where the text is AUGMENTED (not replaced) — e.g. surfacing a
+ *  REWRITE clamp — so a draft's artifacts/meta are not silently dropped. */
+function withText(draft: DraftResponse, text: string): DraftResponse {
+  return { ...draft, text };
+}
+
 /** Apply the deterministic post-completion guards to a model-produced draft:
  *  substitute the neutral, audit-accurate line if the reply makes a no-authority
  *  claim (F1) or claims a success the runtime did not grant (F1b). Preserves the
- *  draft's token usage so the loop's cost accounting stays correct. */
+ *  draft's token usage so the loop's cost accounting stays correct. This is a FULL
+ *  replacement (not `withText`): a confabulated draft's artifacts/meta are
+ *  deliberately discarded — only the cost accounting (usage) survives. */
 function guardDraft(draft: DraftResponse, acted: unknown): DraftResponse {
   if (
     groundedReplyContradicts(draft.text) !== null ||
@@ -312,11 +357,25 @@ function surfaceRewriteClamp(
   decision: { kind: string; reason?: unknown },
 ): DraftResponse {
   if (decision.kind !== "REWRITE") return draft;
+  // Finding 21: guardDraft (F1/F1b) runs BEFORE this and may have substituted the
+  // neutral fallback. Appending a specific clamp reason onto that generic line reads
+  // as contradictory — the fallback already supersedes the clamp note, so leave it.
+  if (draft.text === GROUNDED_SAFE_FALLBACK_PTBR) return draft;
   const reason = typeof decision.reason === "string" ? decision.reason.trim() : "";
   if (reason.length === 0 || /\b(pii|mascar)/i.test(reason)) return draft;
-  if (/\bajust/.test(normalizePtBr(draft.text))) return draft; // model already conveyed the adjustment
+  // Finding 9: only suppress the clamp notice when the model ALREADY conveyed THIS
+  // (stock/quantity) adjustment — keyed on an adjustment verb co-occurring with a
+  // quantity/stock noun, NOT any "ajust" anywhere (an unrelated "Ajustei o endereço"
+  // must not silence a real quantity clamp the customer needs to know about).
+  const t = normalizePtBr(draft.text);
+  if (
+    /\b(?:ajust|reduz|diminu|limit)/.test(t) &&
+    /\b(?:quantidade|estoque|unidade|qtd)\b/.test(t)
+  ) {
+    return draft;
+  }
   const text = `${draft.text.trim()} ${reason}`.trim();
-  return draft.usage !== undefined ? { text, usage: draft.usage } : { text };
+  return withText(draft, text);
 }
 
 export function createIbatexasResponder(

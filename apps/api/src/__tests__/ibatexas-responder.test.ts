@@ -399,6 +399,55 @@ describe("createIbatexasResponder", () => {
     expect(draft.text).toBe("Pagamento recebido e em análise pelo banco.");
   });
 
+  // ── F1b: clause-local mood gating (review findings 5, 8, 10, 12) ─────────────
+
+  it("F1b finding 5: flags a completed claim followed by a CONDITIONAL courtesy tail (clause-local)", async () => {
+    // The conditional ("se precisar…") sits in a DIFFERENT comma-clause than the
+    // claim, so it must NOT suppress the unearned "pedido finalizado".
+    const { model } = mockModel("Seu pedido foi finalizado, se precisar de algo me avise.");
+    const responder = createIbatexasResponder({ model, modelId: "m", explainer });
+    const decision = { kind: "EXECUTE", basis: [] } as unknown as Decision;
+    const acted = { kind: "executed", envelope: { kind: "order.cancel" } }; // no checkout
+    const draft = await responder.respond(mkInput({ decision, envelopeKinds: ["order.cancel"], acted }));
+    expect(draft.text).toBe(GROUNDED_SAFE_FALLBACK_PTBR);
+  });
+
+  it("F1b finding 5: PASSES a JUSTIFIED claim with a conditional courtesy tail (positive control)", async () => {
+    const { model } = mockModel("Seu pedido foi cancelado, se precisar de algo estou à disposição.");
+    const responder = createIbatexasResponder({ model, modelId: "m", explainer });
+    const decision = { kind: "EXECUTE", basis: [] } as unknown as Decision;
+    const acted = { kind: "executed", envelope: { kind: "order.cancel" } };
+    const draft = await responder.respond(mkInput({ decision, envelopeKinds: ["order.cancel"], acted }));
+    expect(draft.text).toBe("Seu pedido foi cancelado, se precisar de algo estou à disposição.");
+  });
+
+  it("F1b finding 8: flags 'recebido E registrado com sucesso' (pending word does not exempt a definite success)", async () => {
+    const { model } = mockModel("Pedido recebido e registrado com sucesso.");
+    const responder = createIbatexasResponder({ model, modelId: "m", explainer });
+    const decision = { kind: "EXECUTE", basis: [] } as unknown as Decision;
+    const acted = { kind: "executed", envelope: { kind: "order.cancel" } }; // no checkout
+    const draft = await responder.respond(mkInput({ decision, envelopeKinds: ["order.cancel"], acted }));
+    expect(draft.text).toBe(GROUNDED_SAFE_FALLBACK_PTBR);
+  });
+
+  it("F1b finding 12: a REFUND confirmation does NOT justify a 'pagamento aprovado' settlement claim", async () => {
+    const { model } = mockModel("Pagamento aprovado!");
+    const responder = createIbatexasResponder({ model, modelId: "m", explainer });
+    const decision = { kind: "EXECUTE", basis: [] } as unknown as Decision;
+    const acted = { kind: "executed", envelope: { kind: "payment.refund.confirm" } }; // refund != inbound settlement
+    const draft = await responder.respond(mkInput({ decision, envelopeKinds: ["payment.refund.confirm"], acted }));
+    expect(draft.text).toBe(GROUNDED_SAFE_FALLBACK_PTBR);
+  });
+
+  it("F1b finding 10: does NOT mis-substitute an honest failure with words between 'não' and the verb (wide negation window)", async () => {
+    const { model } = mockModel("O pagamento ainda não foi devidamente aprovado.");
+    const responder = createIbatexasResponder({ model, modelId: "m", explainer });
+    const decision = { kind: "EXECUTE", basis: [] } as unknown as Decision;
+    const acted = { kind: "failed", phase: "EXECUTE", code: "tool_threw", message: "boom" };
+    const draft = await responder.respond(mkInput({ decision, envelopeKinds: ["payment.charge.confirm"], acted }));
+    expect(draft.text).toBe("O pagamento ainda não foi devidamente aprovado.");
+  });
+
   // ── F1b: additional confabulation classes ──────────────────────────────────
 
   it("F1b: flags a confabulated RESERVATION confirmation when none was created", async () => {

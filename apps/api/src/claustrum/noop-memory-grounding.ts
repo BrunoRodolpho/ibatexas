@@ -14,6 +14,7 @@
 // as a last-resort guard for genuinely UNEXPECTED provider errors.
 
 import type { GroundingPort, MemoryPort } from "@claustrum/core";
+import { emptyMemorySnapshot, emptyRetrievedDocs } from "./empty-defaults.js";
 
 /** Memory port that never throws and stores nothing — the cognitive loop runs
  *  without long-term memory (advisory context only; every mutation still flows
@@ -22,14 +23,7 @@ import type { GroundingPort, MemoryPort } from "@claustrum/core";
 export function noopMemoryProvider(): MemoryPort {
   return {
     async recall(customerId) {
-      return {
-        customerId,
-        episodic: [],
-        semantic: [],
-        procedural: [],
-        relational: [],
-        assembledAt: new Date().toISOString(),
-      };
+      return emptyMemorySnapshot(customerId);
     },
     async observe() {
       /* no long-term memory store — intentional no-op */
@@ -50,7 +44,7 @@ export function noopMemoryProvider(): MemoryPort {
 export function noopGroundingProvider(modelId: string): GroundingPort {
   return {
     async retrieve() {
-      return { docs: [], retrievedAt: new Date().toISOString(), modelId };
+      return emptyRetrievedDocs(modelId);
     },
     async attestGrounding() {
       return [];

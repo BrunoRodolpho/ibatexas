@@ -50,7 +50,12 @@ export class OllamaFetchClient implements OpenAIClientLike {
     // Default to a localhost Ollama; LLM_BASE_URL overrides. No hardcoded LAN IP
     // (CLAUDE.md Hard Rule #3 — config from process.env).
     this.baseUrl = options.baseUrl ?? process.env.LLM_BASE_URL ?? "http://localhost:11434/v1";
-    this.apiKey = options.apiKey ?? process.env.LLM_API_KEY ?? "ollama";
+    // CLAUDE.md Hard Rule #3 — config from process.env, never a hardcoded value.
+    // Default is the ABSENCE of a key (""), not the literal "ollama": a stock Ollama
+    // ignores the bearer, while an authenticated gateway gets a real key from
+    // LLM_API_KEY (documented in .env.example) instead of silently 401-ing on a
+    // hardcoded credential.
+    this.apiKey = options.apiKey ?? process.env.LLM_API_KEY ?? "";
     this.model = options.model;
   }
 

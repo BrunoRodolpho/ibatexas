@@ -24,7 +24,7 @@ export function createIbatexasResolver(): ResolverPort {
     async resolve({ plan, cognition, customerId, channel }): Promise<ReadonlyArray<ResolvedEnvelope>> {
       const out: ResolvedEnvelope[] = [];
       for (const env of plan.envelopes) {
-        const { payload, ctx, owned } = await resolveAndAssemble({
+        const { payload, ctx, owned, ownershipIndeterminate } = await resolveAndAssemble({
           kind: env.kind,
           payload: (env.payload ?? {}) as Record<string, unknown>,
           customerId,
@@ -37,11 +37,18 @@ export function createIbatexasResolver(): ResolverPort {
         // (owner=customer, resource=orderId) and inject state.authority built from
         // the ownership-CONFIRMED `owned` set, engaging the kernel ownership guard
         // as defense-in-depth. Non-gated kinds are untouched.
-        const refs = resourceRefsForIntent(
-          env.kind,
-          payload as Record<string, unknown>,
-          customerId,
-        );
+        //
+        // Finding 11: when ownership is INDETERMINATE (the scoped DB load threw),
+        // do NOT stamp refs / inject authority — otherwise the guard would see an
+        // unbound resource and REFUSE the resource's TRUE owner on a transient DB
+        // error. Leaving it inert falls back to service-layer scoping (fail-safe).
+        const refs = ownershipIndeterminate
+          ? undefined
+          : resourceRefsForIntent(
+              env.kind,
+              payload as Record<string, unknown>,
+              customerId,
+            );
         // Rebuild with the SAME nonce/actor/taint so the intentHash is canonical
         // (unchanged when payload didn't change; fresh when it did). createdAt is
         // metadata-only (not hashed) — preserve it for the audit trail.

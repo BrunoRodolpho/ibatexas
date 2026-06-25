@@ -602,21 +602,30 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
             // payment is terminal — a Medusa hiccup must NOT undo a successful
             // cancel (that would resurrect a billable order), so we log and let
             // the projection + NATS remain the source of truth.
-            try {
-              await medusaAdjudicated({
-                scope: "admin",
-                method: "POST",
-                path: `/admin/orders/${id}/cancel`,
-                idempotencyKey: `${id}:medusa-cancel:${customerId}`,
-                sourceSubject: "route:order.cancel",
-                auditSink: getAuditSink(),
-              });
-            } catch (err) {
-              server.log.error(
-                { orderId: id, error: String(err) },
-                "domain order canceled but Medusa-native cancel failed — public.order may read stale; projection remains authoritative (C3)",
-              );
-            }
+            //
+            // FIRE-AND-FORGET (finding 29): the result is only logged, so awaiting
+            // it just adds a Medusa admin round-trip to the customer's cancel
+            // response latency for no observable benefit. Run it in a background
+            // async IIFE (persistent Fastify server — the promise survives) whose
+            // try/catch absorbs BOTH a synchronous throw and an async rejection, so
+            // a Medusa hiccup never becomes an unhandled rejection or a 500.
+            void (async () => {
+              try {
+                await medusaAdjudicated({
+                  scope: "admin",
+                  method: "POST",
+                  path: `/admin/orders/${id}/cancel`,
+                  idempotencyKey: `${id}:medusa-cancel:${customerId}`,
+                  sourceSubject: "route:order.cancel",
+                  auditSink: getAuditSink(),
+                });
+              } catch (err) {
+                server.log.error(
+                  { orderId: id, error: String(err) },
+                  "domain order canceled but Medusa-native cancel failed — public.order may read stale; projection remains authoritative (C3)",
+                );
+              }
+            })();
 
             await publishNatsEvent("order.canceled", {
               eventType: "order.canceled",

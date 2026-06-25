@@ -14,28 +14,18 @@ import { fileURLToPath } from "node:url"
 import pg from "pg"
 import { mintCustomerToken, cookieHeader } from "./auth-fixture.js"
 import { createDomainReader } from "../oracle/domain-reader.js"
+import { parseEnvFile } from "../harness/test-env.js"
 
 const API_BASE = process.env.IBX_TEST_API_URL ?? "http://localhost:3001"
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../..")
 const PHONE = "+5519900000002"
 const CAP_CENTAVOS = 1_000_000 // CONFIRM_LARGE_TICKET_THRESHOLD (100_000) × 10 = R$10.000,00
 
-function parseEnv(raw: string): Record<string, string> {
-  const out: Record<string, string> = {}
-  for (const line of raw.split("\n")) {
-    const t = line.trim(); if (!t || t.startsWith("#")) continue
-    const eq = t.indexOf("="); if (eq <= 0) continue
-    let v = t.slice(eq + 1).trim()
-    if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) v = v.slice(1, -1)
-    out[t.slice(0, eq).trim()] = v
-  }
-  return out
-}
 const need = (e: Record<string, string>, k: string) => { const v = e[k]; if (!v) throw new Error(`.env.test missing ${k}`); return v }
 const say = (s: string) => console.log(s)
 
 async function main(): Promise<void> {
-  const env = parseEnv(await readFile(path.join(REPO_ROOT, ".env.test"), "utf8"))
+  const env = parseEnvFile(await readFile(path.join(REPO_ROOT, ".env.test"), "utf8"))
   process.env.IBX_TEST_FINGERPRINT = need(env, "IBX_TEST_FINGERPRINT")
   process.env.SESSION_HMAC_SECRET = need(env, "SESSION_HMAC_SECRET")
   const jwtSecret = need(env, "JWT_SECRET")
