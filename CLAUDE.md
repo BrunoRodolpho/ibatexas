@@ -77,3 +77,11 @@ If a command does not exist for what you need, add it to `packages/cli/` first, 
 - Only run tests when explicitly requested
 - Do not start dev servers to verify changes
 - When spawning teammates, use in-process mode: `claude --teammate-mode in-process`
+
+---
+
+## Spec-Driven Development (SDD) — Compilation Authority
+
+[CLAUDE.SDD.md](CLAUDE.SDD.md) in this repo is a **byte-identical copy** of the canonical Spec-Driven Development (SDD) and is the **compilation authority for all SDD-foundation work**. Read it before starting any spec-driven task.
+
+On any conflict between this repo-guide and CLAUDE.SDD.md for SDD-foundation work, **CLAUDE.SDD.md wins** — this guide's repo-specific content (the One Rule, Hard Rules, naming, module system, agent behavior) continues to govern day-to-day implementation, but defers to CLAUDE.SDD.md on SDD method and process.
