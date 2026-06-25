@@ -173,7 +173,7 @@ export function groundedReplyContradicts(text: string): string | null {
 // (claims only "request registered"); the model's original text stays forensically
 // visible in the LLMTrace emitted by completeWith().
 
-interface SuccessClaimClass {
+export interface SuccessClaimClass {
   readonly id: string;
   /** Completion-assertion patterns (any one match = a claim of this class). */
   readonly claim: ReadonlyArray<RegExp>;
@@ -217,7 +217,7 @@ function claimClass(
 
 // Completion-verb ROOTS per domain (the builder appends -ado/-ido/-ei/-ou…).
 // Irregulars (feito/feita) are added as `extra` literals.
-const SUCCESS_CLAIM_CLASSES: ReadonlyArray<SuccessClaimClass> = [
+export const SUCCESS_CLAIM_CLASSES: ReadonlyArray<SuccessClaimClass> = [
   claimClass("order-placed", "pedido", "registr|confirm|realiz|finaliz|efetu|conclu|fech|cri", ["order.checkout.create"], [/\bpedido\b[^.!?]{0,30}\bfeito\b/, /\bfeito\b[^.!?]{0,15}\b(?:o |seu )?pedido\b/]),
   claimClass("purchase-completed", "compra", "finaliz|conclu|realiz|confirm|efetu|fech", ["order.checkout.create"], [/\bcompra\b[^.!?]{0,20}\bfeita\b/]),
   // payment-settled = an INBOUND payment was approved/settled. A REFUND confirmation
