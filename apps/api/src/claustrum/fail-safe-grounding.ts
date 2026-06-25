@@ -21,6 +21,7 @@
 // vendor decision deliberately not made here.
 
 import type { GroundingPort } from "@claustrum/core";
+import { emptyRetrievedDocs } from "./empty-defaults.js";
 
 type GroundingOp = "retrieve" | "attestGrounding";
 
@@ -38,11 +39,7 @@ export function failSafeGrounding(
         return await inner.retrieve(perception, spec);
       } catch (err) {
         opts.onError("retrieve", err);
-        return {
-          docs: [],
-          retrievedAt: new Date().toISOString(),
-          modelId: opts.modelId,
-        };
+        return emptyRetrievedDocs(opts.modelId);
       }
     },
     async attestGrounding(docs, claims) {

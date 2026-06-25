@@ -35,6 +35,7 @@
     "@claustrum/core": "^0.3.0",
     "@claustrum/grounding-pgvector": "^0.1.1",
     "@claustrum/memory-postgres": "^0.1.1",
+    "@claustrum/openai": "^0.1.2",
     "@fastify/cookie": "^11.0.2",
     "@fastify/cors": "^11.2.0",
     "@fastify/helmet": "^13.0.2",

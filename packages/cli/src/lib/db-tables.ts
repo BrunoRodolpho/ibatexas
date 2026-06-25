@@ -70,6 +70,9 @@ export const KERNEL_TABLES = [
   "governance_events",
   "audit_guard_stats",
   "audit_outcomes",
+  // responder-trace-admin (audit-postgres migration 011) — one row per LLM model
+  // call; audit/trace data, so `db clean` truncates it like the others.
+  "turn_trace",
 ] as const
 
 /**

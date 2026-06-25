@@ -2,43 +2,43 @@
   "schemaVersion": 1,
   "adopter": "ibatexas",
   "digests": {
-    "ibatexas/pack-customer-onboarding": "927438398f717c41f5a6f6f95a5f54307e7a4ac1b5b46b0eee55866da7e00e88",
-    "ibatexas/pack-orders": "a0f64a8ff867faeefd784bc032a327c85a846b110829f827c6fe10caf1e889b8",
-    "ibatexas/pack-payments": "9f271f8c84403225b5c6715a3b2758869b004c51e87126c7dd3a5f72f0de6fff",
-    "ibatexas/pack-reservations": "430b51adb19bcd1dc3f9f17489a0827f2f4c9a9f2c5f82864f962d421a6f550c",
-    "ibatexas/pack-whatsapp": "54a37a35451bf208b9601c40af5e21293ad6bb91ef6308d754037ff5688d9fb5",
-    "pack-payments-pix": "663c52176fce748a2951a1765248e207d0f6bf7ab1f8d51b7ea9eef0ce126b1a"
+    "ibatexas/pack-customer-onboarding": "399a5988b5d8a0f4aabc6b01c043e62ac58314cee9bcbdfbff6af77aa301b8e6",
+    "ibatexas/pack-orders": "0cb4df9f7701b87e07b5bb76a959e63951ab3d786a890b7c09f2b6735db29afb",
+    "ibatexas/pack-payments": "f1d7a2c3130bd08aadca86df1ef32965bafac89421a9a2e4660ee6d2d5800a26",
+    "ibatexas/pack-reservations": "0b2b76bab6de0295cbfedfa5e23a16ccf8d9a75728b5f6d85bb71f90671e59dd",
+    "ibatexas/pack-whatsapp": "e2e257a81ca9bc503013c4d88f20b4c0eff25f79f2db3700229ae2c6f4920d95",
+    "pack-payments-pix": "75f161563b3672a05145ffe3e41e0a9b3890233a572370fdbf5d911bc7c9e5fa"
   },
   "seals": [
     {
       "packId": "ibatexas/pack-customer-onboarding",
       "packVersion": "1.0.0",
-      "digest": "927438398f717c41f5a6f6f95a5f54307e7a4ac1b5b46b0eee55866da7e00e88"
+      "digest": "399a5988b5d8a0f4aabc6b01c043e62ac58314cee9bcbdfbff6af77aa301b8e6"
     },
     {
       "packId": "ibatexas/pack-orders",
       "packVersion": "1.1.0",
-      "digest": "a0f64a8ff867faeefd784bc032a327c85a846b110829f827c6fe10caf1e889b8"
+      "digest": "0cb4df9f7701b87e07b5bb76a959e63951ab3d786a890b7c09f2b6735db29afb"
     },
     {
       "packId": "ibatexas/pack-payments",
       "packVersion": "1.0.0",
-      "digest": "9f271f8c84403225b5c6715a3b2758869b004c51e87126c7dd3a5f72f0de6fff"
+      "digest": "f1d7a2c3130bd08aadca86df1ef32965bafac89421a9a2e4660ee6d2d5800a26"
     },
     {
       "packId": "ibatexas/pack-reservations",
       "packVersion": "1.0.0",
-      "digest": "430b51adb19bcd1dc3f9f17489a0827f2f4c9a9f2c5f82864f962d421a6f550c"
+      "digest": "0b2b76bab6de0295cbfedfa5e23a16ccf8d9a75728b5f6d85bb71f90671e59dd"
     },
     {
       "packId": "ibatexas/pack-whatsapp",
       "packVersion": "1.1.0",
-      "digest": "54a37a35451bf208b9601c40af5e21293ad6bb91ef6308d754037ff5688d9fb5"
+      "digest": "e2e257a81ca9bc503013c4d88f20b4c0eff25f79f2db3700229ae2c6f4920d95"
     },
     {
       "packId": "pack-payments-pix",
       "packVersion": "0.1.0-experimental",
-      "digest": "663c52176fce748a2951a1765248e207d0f6bf7ab1f8d51b7ea9eef0ce126b1a"
+      "digest": "75f161563b3672a05145ffe3e41e0a9b3890233a572370fdbf5d911bc7c9e5fa"
     }
   ]
 }

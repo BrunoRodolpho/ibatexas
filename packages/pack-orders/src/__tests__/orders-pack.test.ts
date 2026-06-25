@@ -12,7 +12,7 @@
 
 import { describe, expect, it } from "vitest"
 import { adjudicate } from "@adjudicate/core/kernel"
-import { buildEnvelope, type IntentEnvelope } from "@adjudicate/core"
+import { buildEnvelope, createAuthorityGraphStore, type IntentEnvelope } from "@adjudicate/core"
 import {
   ordersPack,
   ordersPolicyBundle,
@@ -202,6 +202,143 @@ describe("ordersPolicyBundle — state guards", () => {
     expect(decision.kind).toBe("REFUSE")
     if (decision.kind !== "REFUSE") return
     expect(decision.refusal.code).toBe("order.already_cancelled")
+  })
+
+  it("REFUSE order.cancel past the point-of-no-return (J006: kernel-enforced)", () => {
+    // Mirrors the route-layer canPerformAction rule: once ready / out-for-delivery
+    // / delivered the kernel itself REFUSEs the cancel (not just the route).
+    for (const fs of ["ready", "in_delivery", "delivered"]) {
+      const decision = adjudicate(
+        env("order.cancel", { orderId: "o-1" }),
+        state({ orderId: "o-1", fulfillmentStatus: fs }),
+        ordersPolicyBundle,
+      )
+      expect(decision.kind).toBe("REFUSE")
+      if (decision.kind !== "REFUSE") return
+      expect(decision.refusal.code).toBe("order.past_ponr")
+    }
+  })
+
+  it("EXECUTE/allow order.cancel while still cancellable (pending / confirmed)", () => {
+    for (const fs of ["pending", "confirmed"]) {
+      const decision = adjudicate(
+        env("order.cancel", { orderId: "o-1" }),
+        state({ orderId: "o-1", fulfillmentStatus: fs }),
+        ordersPolicyBundle,
+      )
+      // not REFUSEd by the cancellability guard (may EXECUTE or hit a money gate,
+      // but never the past_ponr/already_cancelled terminal refusal).
+      if (decision.kind === "REFUSE") {
+        expect(decision.refusal.code).not.toBe("order.past_ponr")
+        expect(decision.refusal.code).not.toBe("order.already_cancelled")
+      }
+    }
+  })
+
+  it("REFUSE a CUSTOMER order.cancel once the kitchen is preparing (route-aligned PONR)", () => {
+    const decision = adjudicate(
+      env("order.cancel", { orderId: "o-1" }),
+      state({ orderId: "o-1", fulfillmentStatus: "preparing" }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REFUSE")
+    if (decision.kind !== "REFUSE") return
+    expect(decision.refusal.code).toBe("order.past_ponr")
+  })
+
+  it("ALLOW a SYSTEM order.cancel.system of a preparing order (compensation exempt)", () => {
+    // pix-expiry / stale-order jobs build order.cancel.system (actor.principal=
+    // "system") and must be able to cancel a preparing order as compensation.
+    const sysEnv = buildEnvelope({
+      kind: "order.cancel.system",
+      payload: { orderId: "o-1" } as OrderPayload,
+      actor: { principal: "system", sessionId: "stale-order-checker:evt-1" },
+      taint: "SYSTEM",
+      nonce: "n-sys",
+      createdAt: DET_TIME,
+    })
+    const decision = adjudicate(
+      sysEnv,
+      state({ orderId: "o-1", fulfillmentStatus: "preparing" }),
+      ordersPolicyBundle,
+    )
+    // The cancellability guard does NOT block a system cancel of a preparing order.
+    if (decision.kind === "REFUSE") {
+      expect(decision.refusal.code).not.toBe("order.past_ponr")
+    }
+  })
+
+  it("REFUSE order.cancel on a canceled fulfillment status as already-cancelled", () => {
+    const decision = adjudicate(
+      env("order.cancel", { orderId: "o-1" }),
+      state({ orderId: "o-1", fulfillmentStatus: "canceled" }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REFUSE")
+    if (decision.kind !== "REFUSE") return
+    expect(decision.refusal.code).toBe("order.already_cancelled")
+  })
+
+  // ── 034-F1: kernel ownership/IDOR guard (defense-in-depth) ────────────────
+  function cancelEnv(owner: string, resource: string, sessionId: string) {
+    return buildEnvelope({
+      kind: "order.cancel",
+      payload: { orderId: resource },
+      actor: { principal: "llm", sessionId },
+      taint: "UNTRUSTED",
+      nonce: `n-${sessionId}-${resource}`,
+      createdAt: DET_TIME,
+      resourceRefs: { owner, resource },
+    }) as IntentEnvelope<OrderIntentKind, OrderPayload>
+  }
+  function authState(customerId: string, ownedResource: string, knownSession: string, orderId: string): OrderState {
+    return {
+      ctx: {
+        tenantId: "ibatexas",
+        channel: "whatsapp",
+        customerId,
+        isAuthenticated: true,
+        actor: { principal: "user", id: customerId },
+        cartId: null,
+        orderId,
+        fulfillmentStatus: "pending",
+        lastAction: null,
+      },
+      authority: {
+        store: createAuthorityGraphStore({
+          edges: [{ principal: customerId, relationship: "owns", resource: ownedResource, permits: { actions: ["order.cancel"] } }],
+        }),
+        principalOf: (sid: string) => (sid === knownSession ? customerId : null),
+      },
+    } as unknown as OrderState
+  }
+
+  it("OWNERSHIP: a customer cancelling their OWN order is NOT refused by the ownership guard", () => {
+    const decision = adjudicate(cancelEnv("cust-A", "order-A", "sess-A"), authState("cust-A", "order-A", "sess-A", "order-A"), ordersPolicyBundle)
+    if (decision.kind === "REFUSE") expect(decision.refusal.code).not.toBe("order.ownership_denied")
+  })
+
+  it("OWNERSHIP CANARY (de-vacuumed): cancelling a NON-owned order REFUSEs order.ownership_denied", () => {
+    // store binds cust-A → order-A only; the envelope targets order-B → unbound → REFUSE.
+    const decision = adjudicate(cancelEnv("cust-A", "order-B", "sess-A"), authState("cust-A", "order-A", "sess-A", "order-B"), ordersPolicyBundle)
+    expect(decision.kind).toBe("REFUSE")
+    if (decision.kind !== "REFUSE") return
+    expect(decision.refusal.code).toBe("order.ownership_denied")
+  })
+
+  it("OWNERSHIP IDOR-gate: an unrecognised session acting on an owned order REFUSEs", () => {
+    // resource IS owned (bound), but principalOf(sess-B)=null != owner → IDOR REFUSE.
+    const decision = adjudicate(cancelEnv("cust-A", "order-A", "sess-B"), authState("cust-A", "order-A", "sess-A", "order-A"), ordersPolicyBundle)
+    expect(decision.kind).toBe("REFUSE")
+    if (decision.kind !== "REFUSE") return
+    expect(decision.refusal.code).toBe("order.ownership_denied")
+  })
+
+  it("OWNERSHIP: guard is INERT when the host injects NO authority (no resourceRefs path)", () => {
+    // no authority on state ⇒ the ownership guard returns null; cancel proceeds on
+    // the normal guards (here: cancellable order → not an ownership refusal).
+    const decision = adjudicate(env("order.cancel", { orderId: "o-1" }), state({ orderId: "o-1", fulfillmentStatus: "pending" }), ordersPolicyBundle)
+    if (decision.kind === "REFUSE") expect(decision.refusal.code).not.toBe("order.ownership_denied")
   })
 
   it("REFUSE order.checkout.create with incomplete slots (no payment method in state)", () => {

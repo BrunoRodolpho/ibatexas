@@ -70,6 +70,24 @@ export type Ctx = Record<string, unknown>;
 export interface AssembledResolution {
   readonly payload: unknown;
   readonly ctx: Ctx;
+  /**
+   * Resource ids the customer was OWNERSHIP-CONFIRMED to own this turn (the
+   * customer-scoped DB load actually returned the row). Feeds the kernel
+   * authority graph (034-F1) so the ownership guard binds ONLY real-owned
+   * resources — a forged/other-principal id is never in this set, so the guard
+   * REFUSEs rather than vacuously passing. Empty for non-resource (cart/draft) ops.
+   */
+  readonly owned: readonly string[];
+  /**
+   * 034-F1 (review finding 11): TRUE when an ownership-confirmable load
+   * (loadOrderCtx / loadPaymentCtx) could NOT determine ownership because the
+   * scoped DB read threw (resolved orderId present, but `resourceOwnerConfirmed`
+   * left undefined). DISTINCT from "confirmed not owned" (`owned = []`, which
+   * correctly REFUSEs a forged/cross-principal id): on an indeterminate result
+   * the resolver must NOT engage the kernel guard, else a transient DB hiccup
+   * REFUSEs the resource's TRUE owner. Service-layer scoping still applies.
+   */
+  readonly ownershipIndeterminate: boolean;
 }
 
 const KERNEL_TENANT_ID = (): string => process.env.KERNEL_TENANT_ID ?? "ibatexas";
@@ -119,6 +137,9 @@ export function buildOrderCtx(
     totalInCentavos: order ? order.totalInCentavos : undefined,
     fulfillmentStatus: order ? order.fulfillmentStatus : undefined,
     lastAction: null,
+    // 034-F1: a non-null order here means loadOrderCtx confirmed the customer
+    // owns it (order.customerId === customerId). Drives the authority graph.
+    resourceOwnerConfirmed: order !== null,
   };
   return ctx;
 }
@@ -135,7 +156,13 @@ export async function loadOrderCtx(
     if (!order || order.customerId !== customerId) return buildOrderCtx(base, orderId, null);
     return buildOrderCtx(base, orderId, order as unknown as OrderProjectionLite);
   } catch {
-    return buildOrderCtx(base, orderId, null);
+    // 034-F1 (finding 11): ownership INDETERMINATE on a DB error — distinct from
+    // the confirmed-not-owned path above (which sets resourceOwnerConfirmed=false).
+    // Leave it undefined so the resolver keeps the guard inert (no false REFUSE of
+    // the TRUE owner); service-layer scoping still applies.
+    const c = buildOrderCtx(base, orderId, null);
+    c.resourceOwnerConfirmed = undefined;
+    return c;
   }
 }
 
@@ -199,26 +226,52 @@ export async function loadPaymentCtx(
   orderId: string | null,
 ): Promise<Ctx> {
   if (orderId === null) return buildPaymentCtx(base, null, null);
+  // 034-F1: payment ownership flows through the order. `owned` records whether
+  // this customer owns the order, INDEPENDENT of whether an active payment exists
+  // (an owned order with no active payment is still owned) — drives the authority
+  // graph without conflating "not owned" with "no payment".
+  const notOwned = (): Ctx => {
+    const c = buildPaymentCtx(base, orderId, null);
+    c.resourceOwnerConfirmed = false;
+    return c;
+  };
   try {
     // Ownership gate: the order must belong to the customer before its payment is read.
     const order = await createOrderQueryService().getById(orderId);
-    if (!order || order.customerId !== customerId) return buildPaymentCtx(base, orderId, null);
+    if (!order || order.customerId !== customerId) return notOwned();
     const querySvc = createPaymentQueryService();
-    const active = await querySvc.getActiveByOrderId(orderId).catch(() => null);
-    if (!active) return buildPaymentCtx(base, orderId, null);
-    const all = await querySvc.listByOrderId(orderId).catch(() => null);
+    // The active-payment read and the all-attempts read are both keyed only on
+    // orderId and independent — fire them concurrently (finding 28). `all` feeds
+    // regenerationSum, used only when an active payment exists (we ignore it below
+    // when there is none).
+    const [active, all] = await Promise.all([
+      querySvc.getActiveByOrderId(orderId).catch(() => null),
+      querySvc.listByOrderId(orderId).catch(() => null),
+    ]);
+    if (!active) {
+      const c = buildPaymentCtx(base, orderId, null);
+      c.resourceOwnerConfirmed = true; // order owned; just no active payment
+      return c;
+    }
     const regenerationSum = all
       ? all.payments.reduce(
           (s, p) => s + ((p as { regenerationCount?: number }).regenerationCount ?? 0),
           0,
         )
       : (active as { regenerationCount?: number }).regenerationCount ?? 0;
-    return buildPaymentCtx(base, orderId, {
+    const c = buildPaymentCtx(base, orderId, {
       active: active as unknown as ActivePaymentLite,
       regenerationSum,
     });
+    c.resourceOwnerConfirmed = true;
+    return c;
   } catch {
-    return buildPaymentCtx(base, orderId, null);
+    // 034-F1 (finding 11): ownership INDETERMINATE on a DB error — NOT notOwned()
+    // (which sets false → REFUSE). Leave undefined so the resolver keeps the guard
+    // inert rather than REFUSE-ing the TRUE owner on a transient read failure.
+    const c = buildPaymentCtx(base, orderId, null);
+    c.resourceOwnerConfirmed = undefined;
+    return c;
   }
 }
 
@@ -414,9 +467,20 @@ interface ResolveArgs {
   readonly sessionId?: string;
 }
 
-const ORDER_BY_ID_KINDS = new Set([
+// Order kinds resolved by id (→ loadOrderCtx, which confirms customer ownership
+// and sets resourceOwnerConfirmed). 034-F1: every OWNERSHIP_GATED order kind MUST
+// be here (or a payment.* kind, handled by loadPaymentCtx) — otherwise it falls to
+// the cart loader, resourceOwnerConfirmed stays unset, `owned` is empty, and the
+// kernel ownership guard REFUSEs the resource's TRUE owner. The granular amend
+// kinds (add_item/update_qty/remove_item) require an orderId and amend an existing
+// order, so they resolve by id exactly like order.amend.request. The
+// ownership-coverage test guards this invariant against drift.
+export const ORDER_BY_ID_KINDS = new Set([
   "order.cancel",
   "order.amend.request",
+  "order.amend.add_item",
+  "order.amend.update_qty",
+  "order.amend.remove_item",
   "order.note.add",
   "order.review.submit",
   "order.address.change",
@@ -429,6 +493,15 @@ const ORDER_BY_ID_KINDS = new Set([
 // can never auto-execute. The user sees the resolved target and confirms/denies.
 const ORDER_AUTORESOLVE_KINDS = new Set(["order.cancel", "payment.pix.regenerate"]);
 const RESERVATION_AUTORESOLVE_KINDS = new Set(["reservation.cancel"]);
+
+// 034-F1 (review finding 6/7): refund payloads (PaymentRefundIssuePayload /
+// PaymentRefundConfirmPayload) carry ONLY paymentId — never orderId. Since
+// ownership flows through the order, the kernel ownership guard had no resource to
+// bind and ran INERT for every refund. These kinds resolve their owning orderId
+// from the paymentId so loadPaymentCtx can confirm ownership and the authority
+// graph engages. This is an ownership BINDING only — the refund target stays the
+// explicit paymentId — so it does NOT force a confirm like the NL autoresolve path.
+const REFUND_OWNERSHIP_KINDS = new Set(["payment.refund.issue", "payment.refund.confirm"]);
 
 /** NL→id: explicit orderId wins; else auto-resolve the customer's most-recent order. */
 async function resolveOrderId(
@@ -448,6 +521,18 @@ async function resolveOrderId(
       : { orderId: null, autoResolved: false };
   } catch {
     return { orderId: null, autoResolved: false };
+  }
+}
+
+/** 034-F1: resolve the orderId that OWNS a payment, for the refund ownership
+ *  binding (finding 6/7). Fail-safe to null → resolver leaves the guard inert
+ *  (service-layer scoping still applies) rather than REFUSE-ing on a read error. */
+async function resolvePaymentOrderId(paymentId: string): Promise<string | null> {
+  try {
+    const payment = await createPaymentQueryService().getById(paymentId);
+    return payment && typeof payment.orderId === "string" ? payment.orderId : null;
+  } catch {
+    return null;
   }
 }
 
@@ -521,6 +606,18 @@ export async function resolveAndAssemble(args: ResolveArgs): Promise<AssembledRe
     }
   }
 
+  // 034-F1 (finding 6/7): bind refund ownership through the payment's order. The
+  // refund target stays the explicit paymentId; this only supplies the orderId the
+  // ownership graph needs (NOT an autoresolve → no forced confirm).
+  if (
+    REFUND_OWNERSHIP_KINDS.has(kind) &&
+    typeof resolvedPayload.orderId !== "string" &&
+    typeof resolvedPayload.paymentId === "string"
+  ) {
+    const oid = await resolvePaymentOrderId(resolvedPayload.paymentId);
+    if (oid !== null) resolvedPayload = { ...resolvedPayload, orderId: oid };
+  }
+
   const orderId =
     typeof resolvedPayload.orderId === "string" ? resolvedPayload.orderId : null;
 
@@ -547,5 +644,23 @@ export async function resolveAndAssemble(args: ResolveArgs): Promise<AssembledRe
 
   if (autoResolvedMoneyRef) ctx.autoResolvedMoneyRef = true;
 
-  return { payload: resolvedPayload, ctx };
+  // 034-F1: the ownership-confirmed resource set for the kernel authority graph.
+  // ONLY ids the customer-scoped load actually returned (resourceOwnerConfirmed)
+  // are included — a forged/other-principal orderId is never here, so the kernel
+  // ownership guard REFUSEs it (de-vacuumed: the store can't bind what isn't owned).
+  const owned: string[] =
+    orderId !== null && ctx.resourceOwnerConfirmed === true ? [orderId] : [];
+
+  // 034-F1 (finding 11): an ownership-confirmable load (loadOrderCtx /
+  // loadPaymentCtx — the only loaders that set resourceOwnerConfirmed) that THREW
+  // leaves resourceOwnerConfirmed undefined with a resolved orderId. Signal that to
+  // the resolver so it leaves the guard inert instead of REFUSE-ing the TRUE owner
+  // on a transient DB error. (A genuine cross-principal id yields false, not
+  // undefined → owned=[] → correct REFUSE — unaffected.)
+  const ownershipIndeterminate =
+    orderId !== null &&
+    (kind.startsWith("payment.") || ORDER_BY_ID_KINDS.has(kind)) &&
+    ctx.resourceOwnerConfirmed === undefined;
+
+  return { payload: resolvedPayload, ctx, owned, ownershipIndeterminate };
 }

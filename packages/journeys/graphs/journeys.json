@@ -28,8 +28,8 @@
       "agent-trigger-journey-act",
       "approvals-http-resolve",
       "chat-confirmation-resume",
-      "envelope-ingress-gap",
       "handoff-port-noop",
+      "journey-runner-raw-envelope-act",
       "medusa-v2-order-edit-api",
       "order-cancel-kernel-ponr",
       "test-plane-live-stripe",
@@ -1334,22 +1334,22 @@
       }
     },
     {
-      "id": "gap:envelope-ingress-gap",
-      "type": "gap",
-      "label": "envelope-ingress-gap",
-      "meta": {
-        "blocks": [
-          "JOURNEY-008"
-        ]
-      }
-    },
-    {
       "id": "gap:handoff-port-noop",
       "type": "gap",
       "label": "handoff-port-noop",
       "meta": {
         "blocks": [
           "JOURNEY-003"
+        ]
+      }
+    },
+    {
+      "id": "gap:journey-runner-raw-envelope-act",
+      "type": "gap",
+      "label": "journey-runner-raw-envelope-act",
+      "meta": {
+        "blocks": [
+          "JOURNEY-008"
         ]
       }
     },
@@ -1566,7 +1566,7 @@
       "meta": {
         "actCount": 3,
         "blockedBy": [
-          "envelope-ingress-gap"
+          "journey-runner-raw-envelope-act"
         ],
         "channel": "web",
         "expectCount": 2,
@@ -1818,7 +1818,7 @@
     },
     {
       "from": "journey:JOURNEY-008",
-      "to": "gap:envelope-ingress-gap",
+      "to": "gap:journey-runner-raw-envelope-act",
       "type": "blocked-by"
     },
     {

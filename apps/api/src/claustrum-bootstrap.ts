@@ -60,6 +60,7 @@ import {
   type TurnRecord,
 } from "@claustrum/core";
 import { AnthropicProvider } from "@claustrum/anthropic";
+import { OpenAIProvider } from "@claustrum/openai";
 import {
   createPostgresMemoryProvider,
   PostgresAdvisorySessionLock,
@@ -69,6 +70,9 @@ import {
 import { createPgVectorGroundingProvider } from "@claustrum/grounding-pgvector";
 import { failSafeGrounding } from "./claustrum/fail-safe-grounding.js";
 import { failSafeMemory } from "./claustrum/fail-safe-memory.js";
+import { noopGroundingProvider, noopMemoryProvider } from "./claustrum/noop-memory-grounding.js";
+import { OllamaFetchClient } from "./claustrum/ollama-fetch-client.js";
+import { providerCanEmbed } from "./claustrum/provider-embed-capability.js";
 import { WhatsAppChannel } from "@claustrum/channel-whatsapp";
 import { WebChannel } from "@claustrum/channel-web";
 
@@ -209,6 +213,11 @@ import {
 } from "./claustrum/turn-trace-writer.js";
 import { createIbatexasResolver } from "./claustrum/ibatexas-resolver.js";
 import { sessionTokenKey, resolveAndAssemble } from "./claustrum/resolve-and-assemble.js";
+import {
+  buildCustomerAuthority,
+  customerPrincipalForSession,
+  resourceRefsForIntent,
+} from "./claustrum/authority-wiring.js";
 import {
   createInMemoryTokenUsageStore,
   type TokenUsageStore,
@@ -574,12 +583,38 @@ async function enrichResumeState(
     return state;
   }
   try {
-    const { ctx } = await resolveAndAssemble({
+    const { payload, ctx, owned, ownershipIndeterminate } = await resolveAndAssemble({
       kind: envelope.kind,
       payload: (envelope.payload ?? {}) as Record<string, unknown>,
       customerId: s.customerId,
       channel: s.channel,
     });
+    // 034-F1 (review finding 13): engage the kernel ownership/IDOR guard on the
+    // RESUME re-adjudication too — the plan stage injects state.authority, but
+    // without this the resumed envelope adjudicates with authority===undefined and
+    // the guard is inert (asymmetric with the plan stage). The freshly-recomputed,
+    // customer-scoped `owned` set is the load-bearing, non-tautological check (it
+    // REFUSEs a now-unowned resource — e.g. an order reassigned since parking).
+    //
+    // principalForSession is bound to the PARKED envelope's actor.sessionId because
+    // the resume turn's resolution.state carries no conversationId. This is safe:
+    // the parked envelope ALREADY passed plan-stage IDOR (its actor.sessionId was
+    // the authenticated session when parked — kernel-vetted, not raw input), and
+    // the framework session-scopes park-matching, so the cross-session check is
+    // covered upstream while resource-ownership is re-verified here.
+    const refs = ownershipIndeterminate
+      ? undefined
+      : resourceRefsForIntent(envelope.kind, payload as Record<string, unknown>, s.customerId);
+    if (refs !== undefined) {
+      return {
+        ctx,
+        authority: buildCustomerAuthority(
+          s.customerId,
+          owned,
+          customerPrincipalForSession(envelope.actor.sessionId, s.customerId),
+        ),
+      };
+    }
     return { ctx };
   } catch {
     return state;
@@ -1625,6 +1660,19 @@ export async function bootstrapClaustrum(
     // is never constructed, so a scripted composition is structurally unable
     // to spend tokens.
     modelProvider = options.modelProvider;
+  } else if (process.env.LLM_PROVIDER === "ollama") {
+    // Live local-model validation (plan C1): route the SUT's untrusted semantic
+    // parser to a local Ollama /v1 endpoint (e.g. nemotron-3-nano:4b). The kernel
+    // (@adjudicate/core) remains the sole authority — only the model swaps. Reuse
+    // the contract-tested @claustrum/openai OpenAIProvider over a structural
+    // fetch client (OllamaFetchClient) — its embed() throws not_implemented, so
+    // the grounding capability probe / failSafeGrounding degrades to empty
+    // retrieval and grounding-required intents fail CLOSED.
+    modelProvider = new OpenAIProvider({ client: new OllamaFetchClient() });
+    logger.warn(
+      { provider: "ollama", baseUrl: process.env.LLM_BASE_URL, model: process.env.LLM_MODEL },
+      "LLM_PROVIDER=ollama — using OpenAIProvider over a local Ollama endpoint for live validation",
+    );
   } else {
     const anthropicClient = new Anthropic({
       apiKey: process.env.ANTHROPIC_API_KEY ?? "",
@@ -1642,6 +1690,15 @@ export async function bootstrapClaustrum(
       onWarn: (message, fields) => logger.warn(fields, message),
     });
   }
+
+  // The chat model id stamped on each planner/responder CompletionRequest. The
+  // OpenAIProvider forwards req.model to the endpoint, so the Ollama path MUST use
+  // the local model name (was forced inside the old NemotronModelProvider); the
+  // Anthropic path uses the pinned ANTHROPIC_MODEL.
+  const chatModelId =
+    process.env.LLM_PROVIDER === "ollama"
+      ? process.env.LLM_MODEL ?? process.env.ANTHROPIC_MODEL ?? "nemotron-3-nano:4b"
+      : anthropicModelId;
 
   // Wire dev's audit-sink dependency injection (Postgres + NATS + Redis spill +
   // PII redaction) BEFORE reading the composed sink. `bootstrapAuditSinkDI`
@@ -1739,20 +1796,50 @@ export async function bootstrapClaustrum(
   // live contract test). Degrades to empty recall/search/recentActions and
   // dropped observes — the turn runs memory-less; mutations stay
   // kernel-guarded. See fail-safe-memory.ts + docs/agents/decisions.md D-012.
-  const memory = failSafeMemory(
-    createPostgresMemoryProvider({
-      prisma: prisma as unknown as PrismaClientLike,
-      redis: redis as unknown as RedisClientLike,
-      adjudicator,
-    }),
-    {
-      onError: (op, err) =>
-        logger.warn(
-          { component: "memory", op, error: String(err) },
-          "memory port degraded (fail-safe): returning empty result",
-        ),
-    },
+  // DEF-005: the @ibatexas/domain Prisma client generates NO claustrum_memory_*
+  // delegates, so createPostgresMemoryProvider throws on every cache-cold turn.
+  // Detect that capability gap UPFRONT and run a DESIGNED no-op (empty recall)
+  // rather than relying on failSafeMemory to swallow a per-turn TypeError —
+  // "safe by design", not "safe by catch". The wrapper stays as a last-resort
+  // guard for genuinely UNEXPECTED provider errors.
+  // Finding 14: probe EVERY claustrum_memory_* delegate the postgres provider
+  // reads (not just episodic) — a partial/renamed delegate set would otherwise
+  // pass a one-delegate probe and then throw per-turn inside the provider, the
+  // very TypeError DEF-005 set out to eliminate.
+  const memDelegates = ["episodic", "semantic", "procedural", "relational"] as const;
+  const prismaForMemory = prisma as unknown as Record<
+    string,
+    { findMany?: unknown } | undefined
+  >;
+  const memoryDelegatesPresent = memDelegates.every(
+    (slice) => typeof prismaForMemory[`claustrum_memory_${slice}`]?.findMany === "function",
   );
+  if (!memoryDelegatesPresent) {
+    logger.info(
+      { component: "memory" },
+      "claustrum_memory_* delegates absent/incomplete on the domain Prisma client — memory port runs as a designed no-op (empty recall); see DEF-005",
+    );
+  }
+  // Finding 33: the no-op provider never throws BY DESIGN, so wrapping it in
+  // failSafeMemory is dead code (a third place the empty shape would materialize).
+  // Use it directly; the failSafe wrapper guards only the REAL postgres provider's
+  // genuinely-unexpected errors.
+  const memory = memoryDelegatesPresent
+    ? failSafeMemory(
+        createPostgresMemoryProvider({
+          prisma: prisma as unknown as PrismaClientLike,
+          redis: redis as unknown as RedisClientLike,
+          adjudicator,
+        }),
+        {
+          onError: (op, err) =>
+            logger.warn(
+              { component: "memory", op, error: String(err) },
+              "memory port degraded (fail-safe): returning empty result",
+            ),
+        },
+      )
+    : noopMemoryProvider();
 
   // Fail-safe wrapper: handleTurn awaits retrieve() with no catch, and the
   // provider chain throws today (AnthropicProvider.embed() has no embedding
@@ -1760,24 +1847,49 @@ export async function bootstrapClaustrum(
   // the planner runs. Degrades to empty retrieval; attestation failure yields
   // zero proofs (kernel refuses grounding-required envelopes — fail-closed).
   // See fail-safe-grounding.ts + docs/agents/decisions.md D-009.
-  const grounding = failSafeGrounding(
-    createPgVectorGroundingProvider({
-      // pg.Pool is structurally assignable to pgvector's minimal { query } Pool —
-      // no cast needed (was a redundant `as never`).
-      pool: pgPool,
-      modelProvider,
-      modelId: embeddingModelId,
-      tenantId: "ibatexas",
-    }),
-    {
-      modelId: embeddingModelId,
-      onError: (op, err) =>
-        logger.warn(
-          { component: "grounding", op, error: String(err) },
-          "grounding port degraded (fail-safe): returning empty result",
-        ),
-    },
-  );
+  // DEF-005: the configured model provider may have no embedding capability (the
+  // local 4B's embed() throws not_implemented; Anthropic has no embedding proxy
+  // wired), so pgvector retrieve() would throw on every turn. Gate grounding on
+  // BOTH the operator's intent flag AND a real boot-time capability probe — a
+  // flag=true against a non-embedding provider must NOT re-introduce the per-turn
+  // throw. When embeddings are unavailable, run a DESIGNED no-op (empty retrieval)
+  // rather than letting failSafeGrounding swallow the throw each turn.
+  const groundingEnabled = process.env.CLAUSTRUM_GROUNDING_ENABLED === "true";
+  const canEmbed = groundingEnabled ? await providerCanEmbed(modelProvider) : false;
+  const groundingActive = groundingEnabled && canEmbed;
+  if (groundingEnabled && !canEmbed) {
+    logger.warn(
+      { component: "grounding" },
+      "CLAUSTRUM_GROUNDING_ENABLED=true but the model provider cannot embed — running grounding as a designed no-op (empty retrieval); wire a working embedding proxy to enable it. See DEF-005",
+    );
+  } else if (!groundingEnabled) {
+    logger.info(
+      { component: "grounding" },
+      "embeddings unavailable (CLAUSTRUM_GROUNDING_ENABLED!=true) — grounding port runs as a designed no-op (empty retrieval); see DEF-005",
+    );
+  }
+  // Finding 33: as with memory, the grounding no-op never throws by design — use
+  // it directly; failSafeGrounding wraps only the real pgvector provider.
+  const grounding = groundingActive
+    ? failSafeGrounding(
+        createPgVectorGroundingProvider({
+          // pg.Pool is structurally assignable to pgvector's minimal { query } Pool —
+          // no cast needed (was a redundant `as never`).
+          pool: pgPool,
+          modelProvider,
+          modelId: embeddingModelId,
+          tenantId: "ibatexas",
+        }),
+        {
+          modelId: embeddingModelId,
+          onError: (op, err) =>
+            logger.warn(
+              { component: "grounding", op, error: String(err) },
+              "grounding port degraded (fail-safe): returning empty result",
+            ),
+        },
+      )
+    : noopGroundingProvider(embeddingModelId);
 
   const channels: ChannelDriver[] = [];
 
@@ -1847,7 +1959,7 @@ export async function bootstrapClaustrum(
   const buildPlanner = (model: ModelProvider): PlannerPort =>
     createIbatexasPlanner({
       model,
-      modelId: anthropicModelId,
+      modelId: chatModelId,
       capabilityPlanners: IBATEXAS_COMPOSED_CAPABILITY_PLANNERS,
       deriveContext: deriveIbatexasPlannerContext,
       promptComposer,
@@ -1856,7 +1968,7 @@ export async function bootstrapClaustrum(
   const buildResponder = (model: ModelProvider): ResponderPort =>
     createIbatexasResponder({
       model,
-      modelId: anthropicModelId,
+      modelId: chatModelId,
       explainer: ibxExplainer,
       promptComposer,
       telemetry,

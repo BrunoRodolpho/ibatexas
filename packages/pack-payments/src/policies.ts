@@ -30,6 +30,7 @@ import {
   decisionExecute,
   decisionRefuse,
   decisionRequestConfirmation,
+  resolveOwnership,
 } from "@adjudicate/core"
 import {
   type Guard,
@@ -42,6 +43,7 @@ import {
   refuseDefault,
   refuseMethodInvalid,
   refusePaymentNotFound,
+  refusePaymentOwnershipDenied,
   refusePaymentTerminal,
   refuseRefundAmountInvalid,
   refuseRefundOverBalance,
@@ -118,6 +120,46 @@ const requirePaymentExists: PaymentGuard = (envelope, state) => {
       kind: envelope.kind,
     }),
   ])
+}
+
+// 034-F1 — kernel ownership/IDOR guard for customer money kinds (defense-in-depth;
+// mirror of pack-orders). Engages ONLY when the host injects state.authority; the
+// resource is the orderId (payment ownership flows through the order), bound in the
+// per-customer authority graph of OWNED resources. A non-owned order is unbound ⇒
+// REFUSE (de-vacuumed — see the pack-payments ownership canary).
+const OWNERSHIP_GATED_PAYMENT_KINDS: ReadonlySet<string> = new Set([
+  "payment.refund.issue",
+  "payment.refund.confirm",
+  "payment.pix.regenerate",
+])
+
+interface PaymentOwnershipAuthority {
+  readonly store: Parameters<typeof resolveOwnership>[0]
+  readonly principalOf?: (sessionId: string) => string | null
+}
+
+const enforcePaymentOwnership: PaymentGuard = (envelope, state) => {
+  const authority = (state as { authority?: PaymentOwnershipAuthority }).authority
+  if (authority === undefined) return null
+  if (!OWNERSHIP_GATED_PAYMENT_KINDS.has(envelope.kind)) return null
+  const fact = resolveOwnership(authority.store, envelope)
+  if (!fact.bound) {
+    return decisionRefuse(refusePaymentOwnershipDenied(), [
+      basis("auth", BASIS_CODES.auth.SCOPE_INSUFFICIENT, { reason: "resource_not_owned" }),
+    ])
+  }
+  // IDOR gate: the AUTHENTICATED principal behind the acting session must EQUAL
+  // the resource owner. `principalOf` is the host's authenticated session→principal
+  // binding (sourced from the conductor-authenticated session, INDEPENDENT of the
+  // envelope's self-reported actor.sessionId — see authority-wiring.ts), so a
+  // forged / cross-session / unbound-agent actor resolves to null and is REFUSEd.
+  const authed = authority.principalOf?.(envelope.actor.sessionId) ?? null
+  if (authed === null || authed !== fact.principal) {
+    return decisionRefuse(refusePaymentOwnershipDenied(), [
+      basis("auth", BASIS_CODES.auth.SCOPE_INSUFFICIENT, { reason: "tenant_binding_violation" }),
+    ])
+  }
+  return null
 }
 
 /**
@@ -510,7 +552,7 @@ export const paymentsPolicyBundle: PolicyBundle<
   PaymentState
 > = {
   stateGuards: [requirePaymentExists, refuseTerminalTransition],
-  authGuards: [requireTenantBindingGuard],
+  authGuards: [requireTenantBindingGuard, enforcePaymentOwnership],
   taint: paymentsTaintPolicy,
   business: [
     validateCreateMethod,

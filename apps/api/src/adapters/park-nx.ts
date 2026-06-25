@@ -192,12 +192,12 @@ export async function parkDeferredIntentWithNxGuard(
   args: ParkDeferredIntentArgs,
 ): Promise<ParkDeferredIntentNxResult> {
   // W8-Q2: hoist envelope.actor.principal → top-level actorPrincipal AND
-  // assert version/nonce/taint are present at the top level. The framework's
-  // verifyParkedEnvelopeHash reads all four at the envelope's top; if any
-  // is missing, the verifier returns {verified: null, reason: "missing_fields"}
-  // and the silent back-compat branch disables tamper-at-rest detection.
-  // We fail-LOUD at park time so a malformed call never produces an
-  // unverifiable blob in Redis.
+  // assert version/nonce/taint/origin are present at the top level. The
+  // framework's verifyParkedEnvelopeHash (runtime ≥0.3 / 041 added `origin` to
+  // the recipe) reads all FIVE at the envelope's top; if any is missing, the
+  // verifier returns {verified: null, reason: "missing_fields"} and the silent
+  // back-compat branch disables tamper-at-rest detection. We fail-LOUD at park
+  // time so a malformed call never produces an unverifiable blob in Redis.
   const argsHoisted = hoistAndValidateVerificationFields(args)
   const sessionId = argsHoisted.envelope.actor.sessionId
   const parkKey = argsHoisted.rk(deferParkKey(sessionId))
@@ -302,9 +302,9 @@ export async function parkDeferredIntentWithNxGuard(
 // ── Verification-field hoist + validation ────────────────────────────────────
 
 // W8-Q2 sentinel: thrown when a caller asks to park an envelope missing one
-// of the four hash-verification fields the framework's
+// of the five hash-verification fields the framework's
 // `verifyParkedEnvelopeHash` reads at the envelope's top level
-// (`version`, `nonce`, `taint`, `actorPrincipal`). Fail-loud is the
+// (`version`, `nonce`, `taint`, `actorPrincipal`, `origin`). Fail-loud is the
 // adopter-side contract: the framework's `verified: null` back-compat branch
 // is the silent failure mode we MUST prevent — never produce an unverifiable
 // blob.
@@ -325,18 +325,20 @@ export class ParkVerificationFieldsMissingError extends Error {
 }
 
 // W8-Q2: hoist envelope.actor.principal → top-level actorPrincipal AND assert
-// the other three verification fields (version, nonce, taint) are present at
-// the top level. `verifyParkedEnvelopeHash` reads ALL FOUR at the envelope's
-// top; a caller passing a raw `IntentEnvelope` (where principal is nested
-// inside actor) without the explicit hoist — OR a caller forgetting to copy
-// version/nonce/taint up — would silently land in the `missing_fields`
-// back-compat branch and disable tamper-at-rest detection.
+// the other four verification fields (version, nonce, taint, origin) are present
+// at the top level. `verifyParkedEnvelopeHash` reads ALL FIVE at the envelope's
+// top (runtime ≥0.3 / 041 folded `origin` into the intentHash recipe); a caller
+// passing a raw `IntentEnvelope` (where principal is nested inside actor) without
+// the explicit hoist — OR a caller forgetting to copy version/nonce/taint/origin
+// up — would silently land in the `missing_fields` back-compat branch and disable
+// tamper-at-rest detection.
 //
-// Returns the input with `actorPrincipal` populated when the hoist was
-// needed. Throws `ParkVerificationFieldsMissingError` when ANY of the four
-// required fields is unrecoverable (e.g., taint missing with no source).
-// The other three fields (version/nonce/taint) have no canonical fallback
-// source — callers MUST pass them at top level.
+// Returns the input with `actorPrincipal` populated when the hoist was needed.
+// Throws `ParkVerificationFieldsMissingError` when ANY of the five required
+// fields is unrecoverable. `version`/`nonce`/`taint`/`origin` have no canonical
+// fallback source — callers MUST pass them at the top level (origin is always
+// top-level on a built IntentEnvelope, defaulting to DEFAULT_ORIGIN — so a
+// minimal park literal must copy `envelope.origin` up just like the others).
 function hoistAndValidateVerificationFields(
   args: ParkDeferredIntentArgs,
 ): ParkDeferredIntentArgs {
@@ -356,13 +358,14 @@ function hoistAndValidateVerificationFields(
     }
   }
 
-  // Step 2: assert ALL FOUR verification fields are present at top level.
+  // Step 2: assert ALL FIVE verification fields are present at top level.
   // Anything missing is unrecoverable — we'd produce an unverifiable blob.
   const missing: string[] = []
   if (typeof envelope.version !== "number") missing.push("version")
   if (typeof envelope.nonce !== "string") missing.push("nonce")
   if (typeof envelope.taint !== "string") missing.push("taint")
   if (typeof envelope.actorPrincipal !== "string") missing.push("actorPrincipal")
+  if (typeof envelope.origin !== "string") missing.push("origin")
   if (missing.length > 0) {
     throw new ParkVerificationFieldsMissingError(missing, envelope.intentHash)
   }

@@ -357,6 +357,9 @@ export interface OrderState {
     readonly totalInCentavos?: number
     /** Marker recorded after a successful cancel — guards subsequent cancels. */
     readonly lastAction?: "cancelled" | "amended" | null
+    /** Order fulfillment status — drives the kernel cancel point-of-no-return
+     *  guard (mirrors the route-layer canPerformAction rule). */
+    readonly fulfillmentStatus?: string | null
   }
 }
 

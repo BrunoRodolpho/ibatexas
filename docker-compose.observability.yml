@@ -17,6 +17,7 @@ services:
   victorialogs:
     image: victoriametrics/victoria-logs:v1.0.0-victorialogs
     container_name: ibatexas-victorialogs
+    networks: [obs]
     command:
       - "-storageDataPath=/vlogs"
       - "-httpListenAddr=:9428"
@@ -41,6 +42,7 @@ services:
   victoriametrics:
     image: victoriametrics/victoria-metrics:v1.106.0
     container_name: ibatexas-victoriametrics
+    networks: [obs]
     command:
       - "-storageDataPath=/vmdata"
       - "-httpListenAddr=:8428"
@@ -69,6 +71,7 @@ services:
   grafana:
     image: grafana/grafana:11.4.0
     container_name: ibatexas-grafana
+    networks: [obs]
     ports:
       - "127.0.0.1:3030:3000"
     environment:
@@ -97,6 +100,14 @@ services:
       resources:
         limits:
           memory: 256M
+
+# Dedicated network so the obs stack's lifecycle is decoupled from the app infra
+# (docker-compose.yml). Previously both shared the implicit `ibatexas_default`
+# network; when infra recreated it, these containers were left pinned to the old
+# (deleted) network ID and failed to start with "network <id> not found".
+networks:
+  obs:
+    name: ibatexas_obs
 
 volumes:
   victorialogs_data:

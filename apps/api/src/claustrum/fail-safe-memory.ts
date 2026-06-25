@@ -29,6 +29,7 @@
 // not made here.
 
 import type { MemoryPort } from "@claustrum/core";
+import { emptyMemorySnapshot } from "./empty-defaults.js";
 
 type MemoryOp = "recall" | "observe" | "search" | "recentActions";
 
@@ -45,14 +46,7 @@ export function failSafeMemory(
       } catch (err) {
         opts.onError("recall", err);
         // Empty snapshot — the cognitive loop proceeds memory-less.
-        return {
-          customerId,
-          episodic: [],
-          semantic: [],
-          procedural: [],
-          relational: [],
-          assembledAt: new Date().toISOString(),
-        };
+        return emptyMemorySnapshot(customerId);
       }
     },
     async observe(customerId, turn) {

@@ -5,12 +5,12 @@
   "kernelVersion": "1.3.0",
   "digests": {
     "agent/pix-payment-failure-remediation": "966813a40cdbd77a4556ca80f2f8bb32654f6e36f32d34ed8ea637dda140bfcb",
-    "ibatexas/pack-customer-onboarding": "92d15540bf1fd180524c6c39fbe700cad22c0d0f08343986d7bc85247a876713",
-    "ibatexas/pack-orders": "ed64469bf75af1c58e6c431d3235fab9cdfd7193647f4fa8f7b8536a62c68c26",
-    "ibatexas/pack-payments": "e6794b6bf21741cc360625c396a332028f4ef47b09248edbe1b4fac3ffa8e983",
-    "ibatexas/pack-reservations": "f1f6ccab7bc3345be80d606e62d4a6d91d515360b2ae74bfb0b10c4f927270a5",
-    "ibatexas/pack-whatsapp": "bfe4a38367913bcc04539c205f4a636300ea52f161a1b9fc8ad1355e3cd67339",
-    "pack-payments-pix": "950e561a14060a498e5e806b557567bd253eec4d90097bfed5d8d98b37a3ebf0"
+    "ibatexas/pack-customer-onboarding": "203366b62ca1b7c438803ed5907e2ff43897b5b9e07d62c65246a49ab4e6b4fc",
+    "ibatexas/pack-orders": "8247ff2824556956a7fa7a1170cc2b04b1aaa2cc6bcabdcd0c8108632bd618f7",
+    "ibatexas/pack-payments": "a47b8d273f85835c676479d2d66eb2d8c2419cfea6121fae1d6fdd4ae1667653",
+    "ibatexas/pack-reservations": "c0b9c555e776c2b80a629ca9c0e655d5e46a3ab42cda852beac8cd560ff0a163",
+    "ibatexas/pack-whatsapp": "4eaa4da750ddbce4fa67ba7410f65518305b509560453e4a5edfeb78c6fcb254",
+    "pack-payments-pix": "d6a71ea6796ccada541ff88849bfdea8214918e982576278e9d9ed854f40a16b"
   },
   "boms": [
     {
@@ -164,10 +164,10 @@
       ],
       "conformance": {
         "passed": true,
-        "total": 6,
-        "passedCount": 6,
+        "total": 8,
+        "passedCount": 8,
         "failedCount": 0,
-        "reportDigest": "a00a3c5b06d03f9f55cda340ed35e1cbffa38ca23127309e53f0420d936ce5b8"
+        "reportDigest": "9b1c95d759249e0629f28bebd5013dffe91143963ca6df07de1aad329daa5d22"
       },
       "healthTier": "bronze",
       "healthScore": {
@@ -178,7 +178,7 @@
         "eu-ai-act",
         "nist-ai-rmf"
       ],
-      "bomDigest": "92d15540bf1fd180524c6c39fbe700cad22c0d0f08343986d7bc85247a876713"
+      "bomDigest": "203366b62ca1b7c438803ed5907e2ff43897b5b9e07d62c65246a49ab4e6b4fc"
     },
     {
       "bomVersion": "1.0",
@@ -371,10 +371,10 @@
       ],
       "conformance": {
         "passed": true,
-        "total": 6,
-        "passedCount": 6,
+        "total": 8,
+        "passedCount": 8,
         "failedCount": 0,
-        "reportDigest": "9b147aa5888550affe0dcc0620796d3690640408470371fc3ce69da2ef12a760"
+        "reportDigest": "73eaa904b01b158af438f762e20981927937990ce3142eac5bce2eacb12e6b42"
       },
       "healthTier": "bronze",
       "healthScore": {
@@ -385,7 +385,7 @@
         "eu-ai-act",
         "nist-ai-rmf"
       ],
-      "bomDigest": "ed64469bf75af1c58e6c431d3235fab9cdfd7193647f4fa8f7b8536a62c68c26"
+      "bomDigest": "8247ff2824556956a7fa7a1170cc2b04b1aaa2cc6bcabdcd0c8108632bd618f7"
     },
     {
       "bomVersion": "1.0",
@@ -531,10 +531,10 @@
       ],
       "conformance": {
         "passed": true,
-        "total": 6,
-        "passedCount": 6,
+        "total": 8,
+        "passedCount": 8,
         "failedCount": 0,
-        "reportDigest": "b895998b984f9a91f686faec7f9b4561ba82abe92d6e1a1d6847196bca90a7a4"
+        "reportDigest": "29c3a1129daec7bd9e99b5628018cf75c3daf660f1347aaad3855f63779ff89b"
       },
       "healthTier": "bronze",
       "healthScore": {
@@ -545,7 +545,7 @@
         "eu-ai-act",
         "nist-ai-rmf"
       ],
-      "bomDigest": "e6794b6bf21741cc360625c396a332028f4ef47b09248edbe1b4fac3ffa8e983"
+      "bomDigest": "a47b8d273f85835c676479d2d66eb2d8c2419cfea6121fae1d6fdd4ae1667653"
     },
     {
       "bomVersion": "1.0",
@@ -655,10 +655,10 @@
       ],
       "conformance": {
         "passed": true,
-        "total": 6,
-        "passedCount": 6,
+        "total": 8,
+        "passedCount": 8,
         "failedCount": 0,
-        "reportDigest": "0175c83aa2aba3bfa02b0245d7634adf30d571aae5066874997352ad651b08a3"
+        "reportDigest": "2573a1dbd6cb9a2d7750f36feb8d974ca02fa7afade33190a9339491e6f3f38e"
       },
       "healthTier": "bronze",
       "healthScore": {
@@ -669,7 +669,7 @@
         "eu-ai-act",
         "nist-ai-rmf"
       ],
-      "bomDigest": "f1f6ccab7bc3345be80d606e62d4a6d91d515360b2ae74bfb0b10c4f927270a5"
+      "bomDigest": "c0b9c555e776c2b80a629ca9c0e655d5e46a3ab42cda852beac8cd560ff0a163"
     },
     {
       "bomVersion": "1.0",
@@ -733,10 +733,10 @@
       ],
       "conformance": {
         "passed": true,
-        "total": 6,
-        "passedCount": 6,
+        "total": 8,
+        "passedCount": 8,
         "failedCount": 0,
-        "reportDigest": "7236dcfda915519e6e4fee645ec6006c0f270a2ca784660ba67cd63d8d27398f"
+        "reportDigest": "17c5be574ae30d659b259157e5ddad77e24c7b625b15b50f1a2d3873a9c3d399"
       },
       "healthTier": "bronze",
       "healthScore": {
@@ -747,7 +747,7 @@
         "eu-ai-act",
         "nist-ai-rmf"
       ],
-      "bomDigest": "bfe4a38367913bcc04539c205f4a636300ea52f161a1b9fc8ad1355e3cd67339"
+      "bomDigest": "4eaa4da750ddbce4fa67ba7410f65518305b509560453e4a5edfeb78c6fcb254"
     },
     {
       "bomVersion": "1.0",
@@ -829,10 +829,10 @@
       ],
       "conformance": {
         "passed": true,
-        "total": 6,
-        "passedCount": 6,
+        "total": 8,
+        "passedCount": 8,
         "failedCount": 0,
-        "reportDigest": "d712442f28e3b0178c4702c2ff052a8076437e6c52e6ec6c4d92b44675449c5d"
+        "reportDigest": "d6720bc7921f45848ffc5e4caddce66f118c97d6d6e754103fa3bfda0c67e021"
       },
       "healthTier": "bronze",
       "healthScore": {
@@ -843,7 +843,7 @@
         "eu-ai-act",
         "nist-ai-rmf"
       ],
-      "bomDigest": "950e561a14060a498e5e806b557567bd253eec4d90097bfed5d8d98b37a3ebf0"
+      "bomDigest": "d6a71ea6796ccada541ff88849bfdea8214918e982576278e9d9ed854f40a16b"
     }
   ]
 }
