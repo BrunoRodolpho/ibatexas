@@ -360,6 +360,27 @@ export interface OrderState {
     /** Order fulfillment status — drives the kernel cancel point-of-no-return
      *  guard (mirrors the route-layer canPerformAction rule). */
     readonly fulfillmentStatus?: string | null
+    /**
+     * SDD §O#10 (adjacent-type confident-wrong) disambiguation signal.
+     *
+     * `order.amend.add_item` (add a line to a **placed order** — real money,
+     * post-checkout) and `order.item.add` (a **cart** op — low stakes,
+     * pre-checkout) are adjacent intents. A planner mis-frame toward the
+     * higher-stakes amend passes every existing gate (capability catalog,
+     * outcome, P2, P4), so a wrong-but-adjacent real-money action would
+     * EXECUTE and narrate truthfully (the one clause the §2/§C guarantee line
+     * names as a residual). The host sets this `true` ONLY once the user's
+     * intent to amend a *placed order* (rather than build a cart) has been
+     * deterministically disambiguated/confirmed; `requireAmendItemDisambiguation`
+     * (`./policies.ts`) degrades the amend to `REQUEST_CONFIRMATION` whenever it
+     * is absent/false, so the adjacent mis-frame fails SAFE instead of silently
+     * mutating a placed order. Data-independent (a structured flag, not a
+     * free-text re-classification — SDD §H); lenient when absent so a host that
+     * has not yet wired the disambiguation sees the SAFE posture (confirm), not
+     * a bypass. Orthogonal to the Inv 11 money bands — it keys on the amend
+     * KIND, never on an amount.
+     */
+    readonly amendItemConfirmed?: boolean
   }
 }
 

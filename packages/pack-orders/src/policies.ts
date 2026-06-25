@@ -31,6 +31,7 @@ import {
   decisionEscalate,
   decisionExecute,
   decisionRefuse,
+  decisionRequestConfirmation,
 } from "@adjudicate/core"
 import {
   nameGuard,
@@ -705,6 +706,61 @@ const refuseAmountAboveCap: OrderGuard = (envelope, state) => {
   ])
 }
 
+/**
+ * SDD §O#10 — adjacent-type confident-wrong (the one clause under topology
+ * pressure; resolution (a): a stakes-aware REQUEST_CONFIRMATION).
+ *
+ * `order.amend.add_item` (add a line to a **placed order** — REAL MONEY,
+ * post-checkout) and `order.item.add` (a **cart** op — low stakes,
+ * pre-checkout) are *adjacent* intents (claim-registry §1: the corrected
+ * "coloca uma coca" example resolves to `order.amend.add_item`, NOT
+ * `order.item.add`). No data-independent gate fires to distinguish a
+ * planner mis-frame between the two: the capability catalog passes (both
+ * kinds are in the enum), `outcomeConfirmed` passes (the wrong action
+ * *truly* executes), the P2 set is consistent (one claim), and P4 maps the
+ * span (to the wrong sibling). So a wrong-but-adjacent real-money action
+ * would EXECUTE and narrate truthfully — the single place the §2/§C
+ * fail-safe guarantee was *overstated* (pressure-test §4 #10).
+ *
+ * Resolution: the higher-stakes adjacent action (the placed-order amend that
+ * ADDS an item) degrades to `REQUEST_CONFIRMATION` UNLESS the host has set a
+ * deterministic disambiguation flag (`state.ctx.amendItemConfirmed === true`)
+ * recording that the user's intent to amend a *placed order* (vs. build a
+ * cart) was confirmed. The low-stakes cart op (`order.item.add`) is NOT
+ * matched here and keeps its `executeCartOps` EXECUTE path, so a mis-frame
+ * toward real money is caught while normal cart-building is untouched.
+ *
+ * Properties (auditor, scrutinize these):
+ *   • Stakes-aware by KIND, NOT by amount — it keys solely on the
+ *     `order.amend.add_item` kind, never reads `totalInCentavos`, and never
+ *     alters the Inv 11 refund/checkout/cancel amount-band verdicts. It is
+ *     ADDITIVE governance, orthogonal to the money bands.
+ *   • Data-independent (SDD §H): keys on a structured state flag, not a
+ *     free-text re-classification — the genuinely deterministic net, not a
+ *     probabilistic detector.
+ *   • Fail-SAFE when the flag is absent (the adopter-seam direction of
+ *     `requireTenantBinding`/ownership): a host that has not yet wired the
+ *     disambiguation sees the SAFE posture (confirm a real-money mutation),
+ *     never a silent bypass. Only an explicit `true` lets the amend proceed.
+ *   • Scoped to `order.amend.add_item` ONLY — `update_qty`/`remove_item`/
+ *     `request` are not the adjacent pair the registry names and are left to
+ *     their existing verdicts; widening would be over-blocking, not the §O#10
+ *     fix.
+ */
+const requireAmendItemDisambiguation: OrderGuard = (envelope, state) => {
+  if (envelope.kind !== "order.amend.add_item") return null
+  if (state.ctx.amendItemConfirmed === true) return null
+  return decisionRequestConfirmation(
+    "Isso adiciona um item a um pedido que já foi feito (não ao carrinho). Confirma a alteração no pedido?",
+    [
+      basis("business", BASIS_CODES.business.RULE_SATISFIED, {
+        rule: "adjacent_amend_requires_confirmation",
+        kind: envelope.kind,
+      }),
+    ],
+  )
+}
+
 // ── EXECUTE producers (default is REFUSE; positive matches required) ────
 
 /**
@@ -884,6 +940,7 @@ export const ordersPolicyBundle: PolicyBundle<
     validateReviewRating,
     refuseCardPanInPix,
     redactPiiInPix,
+    requireAmendItemDisambiguation,
     executeCartOps,
     executeCheckout,
     executeCancel,
