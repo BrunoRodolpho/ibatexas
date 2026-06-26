@@ -40,6 +40,12 @@ interface CheckoutResult {
   pixQrCode?: string
   pixCopyPaste?: string
   stripeClientSecret?: string
+  /**
+   * R0a guest-card — the Stripe PaymentIntent id. Card orders are created
+   * LATER by the webhook (no `orderId` at checkout); the guest tracks via
+   * `/pedido/<paymentIntentId>`, and the accessToken below is bound to it.
+   */
+  paymentIntentId?: string
   message: string
   /** R0a — signed per-order access token so a guest can track the order. */
   accessToken?: string
@@ -354,6 +360,21 @@ function CheckoutForm() {
       }
 
       if (paymentIntent && paymentIntent.status === "succeeded") {
+        // R0a guest-card — the order is created LATER by the Stripe webhook, so
+        // there's no orderId here; the guest tracks via /pedido/<paymentIntent.id>.
+        // Stash the per-order access token keyed by that SAME id (== the redirect
+        // route param == the /pedido page's lookup key) so the tracking page
+        // appends `?t=` and authorizes its reads/polls. Guest orders have a null
+        // owner → the deny-null-owner guard 404s every read without this token.
+        // The token is bound server-side to the paymentIntentId; paymentIntent.id
+        // is that same id. Best-effort (private mode etc.).
+        if (data.accessToken && typeof window !== "undefined") {
+          try {
+            sessionStorage.setItem(`order-access-token:${paymentIntent.id}`, data.accessToken)
+          } catch {
+            // sessionStorage unavailable — owner cookie path still works for authed users
+          }
+        }
         checkoutCompletedRef.current = true
         track('checkout_completed', {
           orderId: paymentIntent.id,

@@ -981,6 +981,163 @@ describe("POST /api/cart/checkout — R0a mints a per-order access token (gate 3
     expect(verifyOrderAccessToken(body.accessToken!, "order_MINT")).toBe(true);
     expect(verifyOrderAccessToken(body.accessToken!, "order_OTHER")).toBe(false);
   });
+
+  // R0a regression #1 (guest CARD): a card checkout has NO orderId — the order
+  // is created LATER by the Stripe webhook — but it DOES carry the Stripe
+  // PaymentIntent id. The guest tracks via /pedido/<paymentIntentId>, so the
+  // token must be minted bound to that `pi_…` id (not orderId, which is absent).
+  //
+  // NON-VACUOUS: this is exactly the cohort the R0a fix broke — without the
+  // `result.paymentMethod === "card" && result.paymentIntentId` mint branch in
+  // finalizeCheckout, `accessToken` is absent here (orderId is undefined), the
+  // guest lands on /pedido/pi_… with no `?t=`, and the deny-null-owner guard
+  // 404s the webhook-created order. Drop that branch → accessToken is undefined
+  // → the `verifyOrderAccessToken(...)` / typeof assertions go RED.
+  it("guest card checkout (no orderId) mints a token bound to the paymentIntentId", async () => {
+    mockGetRedisClient.mockResolvedValue(
+      createMockRedis({ del: vi.fn().mockResolvedValue(1) }),
+    );
+    // Card branch shape: success, no orderId, a `pi_…` PaymentIntent id.
+    vi.mocked(createCheckout).mockResolvedValueOnce({
+      success: true,
+      paymentMethod: "card",
+      stripeClientSecret: "pi_REG_secret_abc",
+      paymentIntentId: "pi_REG",
+      message: "ok",
+    });
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/cart/checkout",
+      payload: { cartId: "cart_01", paymentMethod: "card" },
+      // guest — no x-customer-id (SEC-001 permits card for guests)
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as {
+      orderId?: string;
+      paymentIntentId?: string;
+      accessToken?: string;
+    };
+    // No orderId on the card path — the webhook creates the order later.
+    expect(body.orderId).toBeUndefined();
+    // The pi_ id is surfaced so the client can key the token by it.
+    expect(body.paymentIntentId).toBe("pi_REG");
+    // The token is minted + BOUND to the pi_ id the guest will navigate to.
+    expect(typeof body.accessToken).toBe("string");
+    expect(verifyOrderAccessToken(body.accessToken!, "pi_REG")).toBe(true);
+    // Binding: the SAME token does NOT authorize a different pi/order.
+    expect(verifyOrderAccessToken(body.accessToken!, "pi_OTHER")).toBe(false);
+  });
+});
+
+// ── R0a regression #1 — guest CARD tracking via the per-order token ─────────
+//
+// The guest pays by card, lands on /pedido/<pi_…>, and polls /orders/:id +
+// /status with the `?t=` token minted at checkout. The webhook-created order
+// has a NULL owner and is resolved from the RAW `pi_…` id via
+// metadata[stripePaymentIntentId]; R0a captures that raw id BEFORE resolution
+// and binds the token to it. This suite proves the round-trip: WITH the bound
+// token → 200 (tracking restored), WITHOUT → 404 (the regression), and the
+// IDOR stays closed (cross-customer + wrong-token → 404).
+
+describe("guest card tracking — pi_ read authorized by the bound per-order token (R0a #1)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
+  });
+
+  // The webhook-created order: NULL owner, resolved from the pi_ id via metadata.
+  // (The resolved Medusa id differs from the pi_ id the guest holds.)
+  function nullOwnerCardOrder(overrides: Record<string, unknown> = {}) {
+    return {
+      id: "order_from_webhook",
+      status: "preparing",
+      display_id: 99,
+      total: 178,
+      subtotal: 158,
+      shipping_total: 20,
+      customer_id: null, // guest checkout — NO owner attribution
+      metadata: { stripePaymentIntentId: "pi_REG" },
+      items: [],
+      created_at: "2026-06-26T00:00:00.000Z",
+      ...overrides,
+    };
+  }
+
+  it("(a) GET /orders/pi_… WITHOUT token → 404 (the regression); WITH the bound token → 200", async () => {
+    // pi_ path resolves the order via the metadata search (returns { orders: [...] }).
+    mockMedusaAdmin.mockResolvedValue({ orders: [nullOwnerCardOrder()] });
+    const app = await buildTestServer();
+
+    // WITHOUT token — the regression cohort: null-owner webhook order 404s.
+    const noTok = await app.inject({ method: "GET", url: "/api/cart/orders/pi_REG" });
+    expect(noTok.statusCode).toBe(404);
+    expect(noTok.json().message).toBe("Pedido não encontrado.");
+
+    // WITH the token minted (bound to the pi_ id) at checkout → 200.
+    const token = createOrderAccessToken("pi_REG");
+    const withTok = await app.inject({
+      method: "GET",
+      url: `/api/cart/orders/pi_REG?t=${encodeURIComponent(token)}`,
+    });
+    expect(withTok.statusCode).toBe(200);
+    expect(withTok.json().order.id).toBe("order_from_webhook");
+  });
+
+  it("(a) GET /orders/pi_…/status WITHOUT token → 404; WITH the bound token → 200", async () => {
+    // Projection is keyed by Medusa id, so a pi_ lookup misses → null → the
+    // route falls to the Medusa metadata fallback (which carries customer_id).
+    mockOrderQueryGetById.mockResolvedValue(null);
+    mockMedusaAdmin.mockResolvedValue({
+      orders: [{
+        fulfillment_status: "not_fulfilled",
+        customer_id: null,
+        metadata: { stripePaymentIntentId: "pi_REG" },
+        updated_at: "2026-06-26T00:00:00.000Z",
+      }],
+    });
+    const app = await buildTestServer();
+
+    const noTok = await app.inject({ method: "GET", url: "/api/cart/orders/pi_REG/status" });
+    expect(noTok.statusCode).toBe(404);
+    expect(noTok.json().error).toBe("Pedido não encontrado.");
+
+    const token = createOrderAccessToken("pi_REG");
+    const withTok = await app.inject({
+      method: "GET",
+      url: `/api/cart/orders/pi_REG/status?t=${encodeURIComponent(token)}`,
+    });
+    expect(withTok.statusCode).toBe(200);
+    expect(withTok.json().status).toBe("pending"); // not_fulfilled → pending
+  });
+
+  it("(c) IDOR still closed — a token minted for a DIFFERENT pi/order → 404 (binding)", async () => {
+    mockMedusaAdmin.mockResolvedValue({ orders: [nullOwnerCardOrder()] });
+    const app = await buildTestServer();
+    const wrongToken = createOrderAccessToken("pi_DIFFERENT");
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/cart/orders/pi_REG?t=${encodeURIComponent(wrongToken)}`,
+    });
+    expect(res.statusCode).toBe(404);
+    expect(res.json().message).toBe("Pedido não encontrado.");
+  });
+
+  it("(c) IDOR still closed — cross-customer authed read of a card pi_ order → 404", async () => {
+    // The order is now owned by cust_A; caller authed as cust_B, no token.
+    mockMedusaAdmin.mockResolvedValue({
+      orders: [nullOwnerCardOrder({ customer_id: "cust_A" })],
+    });
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/cart/orders/pi_REG",
+      headers: { "x-customer-id": "cust_B" },
+    });
+    expect(res.statusCode).toBe(404);
+  });
 });
 
 // ── SEC-001: Cash/PIX checkout auth gate ────────────────────────────────────

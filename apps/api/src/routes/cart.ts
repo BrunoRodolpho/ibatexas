@@ -413,11 +413,26 @@ async function finalizeCheckout(args: {
   }
 
   // R0a — mint a signed per-order access token so a GUEST (null-owner order)
-  // can still authorize the order-tracking reads/polls after checkout. Bound
-  // to result.orderId (the same id the client navigates to /pedido/<id> with),
-  // short TTL. Authed owners don't need it (cookie owner-match covers them) but
-  // returning it is harmless.
-  const accessToken = result.orderId ? createOrderAccessToken(result.orderId) : undefined;
+  // can still authorize the order-tracking reads/polls after checkout. Authed
+  // owners don't need it (cookie owner-match covers them) but returning it is
+  // harmless.
+  //
+  // cash/PIX: the order exists now, so bind the token to result.orderId — the
+  // same id the client navigates to /pedido/<id> with.
+  //
+  // card: the order is created LATER by the Stripe webhook, so there is no
+  // orderId here. The guest tracks via /pedido/<paymentIntentId> (a `pi_…`
+  // id), and the read guards (/orders/:orderId + /status) capture that RAW
+  // caller-supplied id BEFORE resolving it to the Medusa order — so a token
+  // bound to the paymentIntentId lines up exactly with the verify on that
+  // `pi_…` id. Without this, a guest card checkout lands on /pedido/pi_… with
+  // no token and the deny-null-owner guard 404s the webhook-created order.
+  let accessToken: string | undefined;
+  if (result.orderId) {
+    accessToken = createOrderAccessToken(result.orderId);
+  } else if (result.paymentMethod === "card" && result.paymentIntentId) {
+    accessToken = createOrderAccessToken(result.paymentIntentId);
+  }
   return reply.send(accessToken ? { ...result, accessToken } : result);
 }
 

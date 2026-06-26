@@ -30,6 +30,11 @@ export interface CreateCheckoutOutput {
   pixExpiresAt?: string;
   // Card
   stripeClientSecret?: string;
+  // Card — the Stripe PaymentIntent id (e.g. `pi_…`). The order itself is
+  // created LATER by the Stripe webhook, so a card checkout has no `orderId`
+  // yet; the guest tracks via `/pedido/<paymentIntentId>`. Surfaced so the
+  // route can mint a per-order access token bound to this id (R0a guest-card).
+  paymentIntentId?: string;
   // Cash
   orderId?: string;
   message: string;
@@ -439,6 +444,10 @@ export async function createCheckout(
       success: true,
       paymentMethod: "card",
       stripeClientSecret: clientSecret,
+      // R0a guest-card: surface the PaymentIntent id so the route can mint a
+      // per-order access token bound to it (the guest tracks via
+      // `/pedido/<paymentIntentId>` until the webhook creates the order).
+      paymentIntentId,
       message:
         "Sessão de pagamento com cartão iniciada. Use o client_secret para finalizar no frontend.",
     };
