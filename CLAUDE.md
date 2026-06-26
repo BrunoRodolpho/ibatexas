@@ -80,8 +80,13 @@ If a command does not exist for what you need, add it to `packages/cli/` first, 
 
 ---
 
-## Spec-Driven Development (SDD) — Compilation Authority
+## Claims-runtime architecture (the SDD invariants)
 
-[CLAUDE.SDD.md](CLAUDE.SDD.md) in this repo is a **byte-identical copy** of the canonical Spec-Driven Development (SDD) and is the **compilation authority for all SDD-foundation work**. Read it before starting any spec-driven task.
+This repo is the **planner + renderer half** of the IbateXas **"claims-not-prose"** runtime. Full source of truth: the IbateXas Agentic Architecture design set (**v1.1 contract** + **Claim Registry v0.1** + the **SDD** constraint system). This is a distillation — on any conflict the canonical design set wins; surface the conflict, do not silently resolve it.
 
-On any conflict between this repo-guide and CLAUDE.SDD.md for SDD-foundation work, **CLAUDE.SDD.md wins** — this guide's repo-specific content (the One Rule, Hard Rules, naming, module system, agent behavior) continues to govern day-to-day implementation, but defers to CLAUDE.SDD.md on SDD method and process.
+- **Claims, not prose.** The system does not generate responses; it generates *validated claims*, and responses render from them. Soundness + consistency GUARANTEED; correctness + completeness BOUNDED — degrade to `UNKNOWN`/`ESCALATE`/`CLARIFY`, never a confident wrong answer. Verdict `VALIDATED|UNKNOWN|REFUSED`; terminals `RENDER|UNKNOWN|ESCALATE|CLARIFY`. Arrow `adjudicate → claustrum → ibatexas`, never backward.
+- **Claim-aware planner (bounded, not trusted).** The planner SELECTS-and-PARAMETERIZES from the **registry claim-type enum** (constrained generation — never free-generates a type); deterministic walls bound it: **P4 completeness** (every interrogative/imperative span → a claim/`UNKNOWN`/`ESCALATE`/`CLARIFY`; unmapped → `CLARIFY`, never a silent drop) and **§O#9 closed-taxonomy safety routing** (an unrecognized health/safety marker → `ESCALATE`, never pass-through framing). See `apps/api/src/claustrum/ibatexas-planner.ts` + `claim-registry.ts`.
+- **Renderer-from-claims (no model prose).** The renderer is a **pure template-filler** over a proposition-free slot grammar: every rendered proposition/placeholder maps 1:1 to an independently-VALIDATED claim/field (Inv 6); `UNKNOWN`/`REFUSED` render epistemic self-report/offer only (assert no domain/world fact); a set-gate suppression is never re-leaked. **No customer-facing sentence is authored by a probabilistic model.** See `apps/api/src/claustrum/renderer-from-claims.ts` + `slot-grammar.ts`.
+- **The success guard.** `SUCCESS_CLAIM_CLASSES` (11 classes) in `apps/api/src/claustrum/ibatexas-responder.ts` is the anti-confabulation mirror: `fulfillment-claimed` is permanently unearnable (`justifiedBy: []`); `payment-settled` excludes `payment.refund.confirm` (opposite money direction). Claim registry = **37 rows / 40 type names**. Money governance is **threshold-banded** per Inv 11 (constants in `packages/pack-orders` + `@adjudicate/pack-payments-pix`), never a universal confirm-gate.
+
+This guide's repo-specific content (the One Rule, Hard Rules, naming, module system, agent behavior) continues to govern day-to-day implementation and complements these claims-runtime invariants.
