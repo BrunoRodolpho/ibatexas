@@ -51,7 +51,6 @@ import {
   type LLMTrace,
   type MemoryAccess,
   type ModelProvider,
-  type PlannerPort,
   type ResponderPort,
   type Session,
   type SessionPort,
