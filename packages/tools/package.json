@@ -21,7 +21,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@adjudicate/core": "^1.5.0",
+    "@adjudicate/core": "^1.6.0",
     "@adjudicate/primitives": "^0.4.0",
     "@ibatexas/audit-sink": "workspace:*",
     "@ibatexas/domain": "workspace:*",

@@ -21,7 +21,7 @@
     "@adjudicate/admin-sdk": "^4.0.0",
     "@adjudicate/audit": "^4.0.0",
     "@adjudicate/audit-postgres": "^4.0.0",
-    "@adjudicate/core": "^1.5.0",
+    "@adjudicate/core": "^1.6.0",
     "@ibatexas/pii": "workspace:*"
   },
   "devDependencies": {
