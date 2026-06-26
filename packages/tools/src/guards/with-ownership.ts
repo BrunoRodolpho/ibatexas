@@ -15,13 +15,25 @@ type ReservationToolHandler<T, R> = (input: T) => Promise<R>;
  * The guard runs assertOrderOwnership BEFORE the handler executes.
  * If ctx.customerId is missing, the guard is skipped — the handler is responsible
  * for its own auth check (throwing NonRetryableError for unauthenticated access).
+ *
+ * For a `customer_scoped` read, pass `{ requireOwner: true }` so the same
+ * canonical ownership check also REFUSES an order with no owner attribution
+ * (Inv 2: "no owner" ≠ "any owner"). Defaults to the lenient legacy/guest
+ * behavior for existing callers.
  */
 export function withOrderOwnership<T extends { orderId: string }, R>(
   handler: OrderToolHandler<T, R>,
+  opts?: { requireOwner?: boolean },
 ): OrderToolHandler<T, R> {
   return async (input, ctx) => {
     if (ctx.customerId) {
-      await assertOrderOwnership(input.orderId, ctx.customerId);
+      // Only thread opts when a caller asked for strict scoping, so the
+      // default path keeps the canonical 2-arg ownership call shape.
+      if (opts?.requireOwner) {
+        await assertOrderOwnership(input.orderId, ctx.customerId, opts);
+      } else {
+        await assertOrderOwnership(input.orderId, ctx.customerId);
+      }
     }
     return handler(input, ctx);
   };

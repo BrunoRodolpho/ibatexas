@@ -151,7 +151,10 @@ export async function loadOrderCtx(
 ): Promise<Ctx> {
   if (orderId === null) return buildOrderCtx(base, null, null);
   try {
-    const order = await createOrderQueryService().getById(orderId);
+    // Customer-scoped read (SDD §N P0-3): getById enforces ownership at the
+    // domain layer (non-owner / null-owner → null). The post-check below is
+    // retained as defense-in-depth.
+    const order = await createOrderQueryService().getById(orderId, { customerId });
     // Money-safety: never expose another customer's order to the guards.
     if (!order || order.customerId !== customerId) return buildOrderCtx(base, orderId, null);
     return buildOrderCtx(base, orderId, order as unknown as OrderProjectionLite);
@@ -236,8 +239,10 @@ export async function loadPaymentCtx(
     return c;
   };
   try {
-    // Ownership gate: the order must belong to the customer before its payment is read.
-    const order = await createOrderQueryService().getById(orderId);
+    // Ownership gate: the order must belong to the customer before its payment is
+    // read. Customer-scoped getById (SDD §N P0-3) enforces this at the domain
+    // layer; the post-check below is retained as defense-in-depth.
+    const order = await createOrderQueryService().getById(orderId, { customerId });
     if (!order || order.customerId !== customerId) return notOwned();
     const querySvc = createPaymentQueryService();
     // The active-payment read and the all-attempts read are both keyed only on

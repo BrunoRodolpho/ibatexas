@@ -637,7 +637,13 @@ const corpus: ReadonlyArray<Fixture> = [
     expect: { kind: "EXECUTE" },
   },
   {
-    name: "EXECUTE: order.amend.add_item with explicit allergens",
+    // SDD §O#10 (adjacent-type): a placed-order amend that ADDS an item is the
+    // higher-stakes adjacent sibling of the cart op `order.item.add`. Without
+    // the host's deterministic disambiguation flag it degrades to confirmation
+    // so a planner mis-frame toward real money fails SAFE — it no longer
+    // silently EXECUTEs (the behaviour this fixture asserted before the §O#10
+    // fix). Data validity (allergens/qty) is still satisfied here.
+    name: "REQUEST_CONFIRMATION: order.amend.add_item without disambiguation (§O#10 adjacent-type)",
     envelope: env("order.amend.add_item", {
       orderId: "o-1",
       variantId: "v-2",
@@ -645,6 +651,20 @@ const corpus: ReadonlyArray<Fixture> = [
       allergens: [],
     }),
     state: authenticatedState(),
+    expect: { kind: "REQUEST_CONFIRMATION" },
+  },
+  {
+    // The confirmed amend proceeds: once the host sets `amendItemConfirmed`
+    // (the user explicitly meant to change a PLACED order, not the cart), the
+    // §O#10 guard is inert and the amend EXECUTEs through `executeAmend`.
+    name: "EXECUTE: order.amend.add_item once disambiguated (amendItemConfirmed)",
+    envelope: env("order.amend.add_item", {
+      orderId: "o-1",
+      variantId: "v-2",
+      quantity: 1,
+      allergens: [],
+    }),
+    state: authenticatedState({ amendItemConfirmed: true }),
     expect: { kind: "EXECUTE" },
   },
   {

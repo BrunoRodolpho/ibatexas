@@ -649,6 +649,159 @@ describe("ordersPolicyBundle — amount cap (REFUSE above 10× threshold)", () =
   })
 })
 
+// ── Business: §O#10 adjacent-type confident-wrong (stakes-aware confirm) ──
+
+describe("ordersPolicyBundle — §O#10 adjacent-type (order.amend.add_item vs order.item.add)", () => {
+  // The amend-add envelope used across this block — valid allergens + qty so
+  // the only thing the assertions vary is the §O#10 disambiguation posture.
+  const amendAddEnv = () =>
+    env("order.amend.add_item", {
+      orderId: "o-1",
+      variantId: "v-2",
+      quantity: 1,
+      allergens: [],
+    })
+
+  it("REQUEST_CONFIRMATION: placed-order amend ADD with no disambiguation flag (the adjacent mis-frame must NOT silently EXECUTE)", () => {
+    const decision = adjudicate(
+      amendAddEnv(),
+      state({ orderId: "o-1" }), // amendItemConfirmed absent ⇒ ambiguous/adjacent
+      ordersPolicyBundle,
+    )
+    // The single residual the §2/§C guarantee line names: a wrong-but-adjacent
+    // real-money action would otherwise EXECUTE and narrate truthfully. The
+    // stakes-aware guard degrades it to a confirmation instead.
+    expect(decision.kind).toBe("REQUEST_CONFIRMATION")
+    if (decision.kind !== "REQUEST_CONFIRMATION") return
+    // Proposition-free, names the placed-order stakes (pt-BR, CLAUDE.md #4).
+    expect(decision.prompt).toContain("pedido")
+  })
+
+  it("EXECUTE: placed-order amend ADD once the host disambiguates (amendItemConfirmed=true)", () => {
+    const decision = adjudicate(
+      amendAddEnv(),
+      state({ orderId: "o-1", amendItemConfirmed: true }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("EXECUTE")
+  })
+
+  it("EXECUTE: the LOW-STAKES adjacent sibling order.item.add (cart op) is unaffected — no over-blocking", () => {
+    const decision = adjudicate(
+      env("order.item.add", {
+        cartId: "cart-1",
+        variantId: "v-1",
+        quantity: 1,
+        allergens: [],
+      }),
+      state(), // no amendItemConfirmed; cart op must still EXECUTE normally
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("EXECUTE")
+  })
+
+  it("REFUSE-before-confirm: a structurally-invalid amend ADD (missing allergens) still REFUSEs — the §O#10 confirm never papers over data-validity", () => {
+    const decision = adjudicate(
+      env("order.amend.add_item", {
+        orderId: "o-1",
+        variantId: "v-2",
+        quantity: 1,
+        // allergens omitted — CLAUDE.md rule #1 REFUSE must precede the confirm
+      }),
+      state({ orderId: "o-1" }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REFUSE")
+  })
+
+  it("UNAFFECTED siblings: order.amend.update_qty / order.amend.remove_item still EXECUTE (only the registry's named adjacent pair is gated)", () => {
+    const updateQty = adjudicate(
+      env("order.amend.update_qty", { orderId: "o-1", itemId: "item-1", quantity: 2 }),
+      state({ orderId: "o-1" }),
+      ordersPolicyBundle,
+    )
+    expect(updateQty.kind).toBe("EXECUTE")
+
+    const removeItem = adjudicate(
+      env("order.amend.remove_item", { orderId: "o-1", itemId: "item-1" }),
+      state({ orderId: "o-1" }),
+      ordersPolicyBundle,
+    )
+    expect(removeItem.kind).toBe("EXECUTE")
+  })
+
+  // ── Inv 11 money bands UNCHANGED by this change ───────────────────────
+  // The §O#10 guard keys on KIND, never on totalInCentavos, so the
+  // refund/checkout/cancel amount-band verdicts are untouched. (Refund bands
+  // live in pack-payments-pix; the order-domain bands are checkout+cancel.)
+  it("Inv 11 UNCHANGED — checkout >= R$1.000 still REQUEST_CONFIRMATION (band, not §O#10)", () => {
+    const decision = adjudicate(
+      env("order.checkout.create", { cartId: "cart-1", paymentMethod: "card" }),
+      state({ totalInCentavos: 150_000, paymentMethod: "card", paymentStatus: null }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REQUEST_CONFIRMATION")
+  })
+
+  it("Inv 11 UNCHANGED — checkout < R$1.000 still EXECUTE (band, not §O#10)", () => {
+    const decision = adjudicate(
+      env("order.checkout.create", { cartId: "cart-1", paymentMethod: "card" }),
+      state({ totalInCentavos: 50_000, paymentMethod: "card", paymentStatus: null }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("EXECUTE")
+  })
+
+  it("Inv 11 UNCHANGED — cancel >= R$1.000 still ESCALATE; checkout >= R$10.000 still REFUSE (bands, not §O#10)", () => {
+    const cancel = adjudicate(
+      env("order.cancel", { orderId: "o-1", reason: "changed_mind" }),
+      state({ orderId: "o-1", totalInCentavos: 200_000 }),
+      ordersPolicyBundle,
+    )
+    expect(cancel.kind).toBe("ESCALATE")
+
+    const capped = adjudicate(
+      env("order.checkout.create", { cartId: "cart-1", paymentMethod: "card" }),
+      state({ totalInCentavos: 1_500_000, paymentMethod: "card", paymentStatus: null }),
+      ordersPolicyBundle,
+    )
+    expect(capped.kind).toBe("REFUSE")
+  })
+
+  // ── NON-VACUITY: the guard is load-bearing ────────────────────────────
+  // Rebuild the bundle with the §O#10 guard filtered out (by its function
+  // name) and prove the EXACT same adjacent mis-frame then degrades to a
+  // confident EXECUTE — i.e. the assertion above goes RED without the guard.
+  // No shared state is mutated; the original bundle is untouched.
+  it("NON-VACUITY: removing requireAmendItemDisambiguation flips the mis-frame back to EXECUTE", () => {
+    const withGuard = adjudicate(
+      amendAddEnv(),
+      state({ orderId: "o-1" }),
+      ordersPolicyBundle,
+    )
+    expect(withGuard.kind).toBe("REQUEST_CONFIRMATION")
+
+    const businessWithoutGuard = ordersPolicyBundle.business.filter(
+      (g) => g.name !== "requireAmendItemDisambiguation",
+    )
+    // Sanity: exactly one guard was removed (the filter actually matched).
+    expect(businessWithoutGuard.length).toBe(ordersPolicyBundle.business.length - 1)
+
+    const bundleWithoutGuard = {
+      ...ordersPolicyBundle,
+      business: businessWithoutGuard,
+    }
+    const withoutGuard = adjudicate(
+      amendAddEnv(),
+      state({ orderId: "o-1" }),
+      bundleWithoutGuard,
+    )
+    // The unsafe baseline §O#10 names: a confidently-narrated wrong real-money
+    // action. Proves the guard — not some other gate — produces the safe verdict.
+    expect(withoutGuard.kind).toBe("EXECUTE")
+  })
+})
+
 // ── Business: DEFER on pending PIX ──────────────────────────────────────
 
 describe("ordersPolicyBundle — DEFER for pending PIX checkout", () => {

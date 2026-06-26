@@ -44,13 +44,25 @@
 
 import { randomUUID } from "node:crypto";
 import { buildEnvelope } from "@adjudicate/core";
-import type { IntentEnvelope } from "@adjudicate/core";
+import type { CandidateClaim, IntentEnvelope, TurnTerminal } from "@adjudicate/core";
+import {
+  CLAIM_REGISTRY,
+  checkCompleteness,
+  constrainClaimGeneration,
+  hasUnmappedSpan,
+  routeSafety,
+  type ProposedClaim,
+  type RequestSpan,
+  type SafetyRoutingInput,
+  type SpanCompleteness,
+} from "./claim-registry.js";
 import type {
   CapabilityPlanner,
   Plan as CapabilityPlan,
 } from "@adjudicate/core/llm";
 import type {
   CognitiveState,
+  Completion,
   CompletionRequest,
   ModelProvider,
   Plan,
@@ -68,6 +80,17 @@ import { emitModelCallTrace } from "./llm-trace.js";
 export { EXPRESS_INTENT_TOOL };
 
 const DEFAULT_MAX_TOKENS = 1024;
+
+/**
+ * The single CLAIM-proposing tool (Q6b — SDD §H/§P3; claim-registry v0.1 §1).
+ * The CLAIM analogue of `express_intent`: the model SELECTS a registry claim
+ * type (its `type` arg constrained by `enum` to {@link CLAIM_REGISTRY}) and
+ * binds runtime params — it never free-generates a claim type. Out-of-enum
+ * proposals are dropped by the constrained-generation wall
+ * (`constrainClaimGeneration`), exactly as a hallucinated `express_intent`
+ * capability is dropped by the `allowedIntents` guard.
+ */
+export const PROPOSE_CLAIM_TOOL = "propose_claim";
 
 // Token budget for the persona composition — the persona is tiny, so any
 // generous budget keeps the inviolable fragment.
@@ -172,6 +195,70 @@ function isExpressIntentInput(input: unknown): input is ExpressIntentInput {
   );
 }
 
+/**
+ * The raw shape of a `propose_claim` tool call's `input` (Q6b — SDD §H). The
+ * model proposes a `type` (a FREE string — it may hallucinate one outside the
+ * registry; the constrained-generation wall constrains it), a same-subject
+ * `subject` key, and the runtime params the registry type's evidence schema is
+ * parameterized with. Validated structurally before it becomes a `ProposedClaim`.
+ */
+interface ProposeClaimInput {
+  readonly type: string;
+  readonly subject?: string;
+  readonly actor?: unknown;
+  readonly resources?: Readonly<Record<string, unknown>>;
+  readonly value?: unknown;
+  /** Free-text safety markers the model flagged on the request (SDD §O#8/§O#9). */
+  readonly safetyMarkers?: readonly string[];
+  /**
+   * The request spans the model segmented (SDD §O#8) with each span's mapped
+   * claim type (or absent for an unmapped span) — the P4 completeness input.
+   */
+  readonly spans?: ReadonlyArray<{ text: string; mappedClaimType?: string }>;
+}
+
+function isProposeClaimInput(input: unknown): input is ProposeClaimInput {
+  return (
+    input !== null &&
+    typeof input === "object" &&
+    typeof (input as { type?: unknown }).type === "string"
+  );
+}
+
+/**
+ * The output of the claim-aware planner port (Q6b — SDD §H/§P3/§P4/§O#9). The
+ * deterministically-walled result the claustrum CLAIMS-VALIDATE stage (Q6a)
+ * consumes: the typed candidates feed `runClaimsKernel`; the completeness map +
+ * the forced terminal carry the two safe-state decisions the kernel does NOT
+ * make (P4 completeness, §O#9 safety routing) so a span never silently drops
+ * and an unrecognized safety framing never passes through.
+ */
+export interface ClaimPlan {
+  /**
+   * The typed `@adjudicate/core` `CandidateClaim`s that PASSED the registry-enum
+   * constrained-generation wall (SDD §H/§P3). Exactly the `runClaimsKernel`
+   * input shape (Q6a). A model-proposed out-of-enum type is NOT here.
+   */
+  readonly candidates: readonly CandidateClaim[];
+  /**
+   * The P4 completeness map (SDD §C P4 / §J.8): every request span paired with
+   * its deterministic disposition (a registry type / `UNKNOWN` / `ESCALATE` /
+   * `CLARIFY`). An unmapped span is a `CLARIFY` here — never silently dropped.
+   */
+  readonly completeness: readonly SpanCompleteness[];
+  /**
+   * The FORCED turn terminal, when a deterministic wall overrides normal
+   * rendering: `ESCALATE` from the §O#9 closed-taxonomy safety router (an
+   * unrecognized/any safety marker), or `CLARIFY` from P4 (an unmapped span).
+   * `undefined` when no wall forced a terminal — the turn proceeds to the
+   * Claims kernel over `candidates`. The §O#9 ESCALATE takes precedence over a
+   * P4 CLARIFY (a safety escalation outranks a disambiguation).
+   */
+  readonly forcedTerminal?: Extract<TurnTerminal, "ESCALATE" | "CLARIFY">;
+  /** Out-of-enum claim types the constrained-generation wall dropped (telemetry). */
+  readonly droppedClaimTypes: readonly string[];
+}
+
 /** Merge each capability planner's Plan into one union allowlist for the turn. */
 function unionPlans(
   planners: ReadonlyArray<CapabilityPlanner<unknown, unknown>>,
@@ -241,14 +328,42 @@ function buildToolSurface(plan: CapabilityPlan): CompletionRequest["tools"] {
 }
 
 /**
+ * The CLAIM-AWARE planner port (Q6b — SDD §H/§P3/§P4/§O#9; §M ibatexas half of
+ * §Q.6). A `PlannerPort` (the existing intent path, UNCHANGED) PLUS the
+ * claim-aware `proposeClaims` seam: the additive ibatexas-specific surface the
+ * claustrum CLAIMS-VALIDATE stage (Q6a) calls to get the deterministically-
+ * walled `ClaimPlan`. Structurally a superset of `PlannerPort`, so every
+ * existing consumer that expects a `PlannerPort` keeps working (the extra
+ * method is invisible to them).
+ */
+export interface ClaimAwarePlannerPort extends PlannerPort {
+  /**
+   * Propose typed `CandidateClaim`s for the turn through the three deterministic
+   * walls (SDD §8 / §Q.6): constrained generation over the registry enum
+   * (pre-planning), P4 completeness (post-planning), and §O#9 closed-taxonomy
+   * safety routing. Returns the {@link ClaimPlan} the Claims kernel + renderer
+   * consume. Like `propose`, it only PROPOSES — the kernel disposes.
+   */
+  proposeClaims(state: CognitiveState): Promise<ClaimPlan>;
+}
+
+/**
  * Create the production ibatexas planner.
  *
- * The returned `PlannerPort.propose` performs ONE LLM completion with the
+ * The returned port's `PlannerPort.propose` performs ONE LLM completion with the
  * turn's tool surface and translates each in-plan `express_intent` call into an
  * `IntentEnvelope`. Out-of-plan capabilities are dropped (recorded in the
  * rationale); read-tool calls are recorded in `readToolCalls`.
+ *
+ * It ALSO exposes `proposeClaims` (Q6b — SDD §H/§P3/§P4/§O#9): the claim-aware
+ * seam that runs the constrained-generation wall over the registry enum, the P4
+ * completeness post-check, and the §O#9 closed-taxonomy safety router, producing
+ * the typed `CandidateClaim`s the claustrum CLAIMS-VALIDATE stage (Q6a) feeds to
+ * `runClaimsKernel`. The two surfaces share the same injected `model`.
  */
-export function createIbatexasPlanner(deps: IbatexasPlannerDeps): PlannerPort {
+export function createIbatexasPlanner(
+  deps: IbatexasPlannerDeps,
+): ClaimAwarePlannerPort {
   const maxTokens = deps.maxTokens ?? DEFAULT_MAX_TOKENS;
   const deriveNonce = deps.deriveNonce ?? deriveDeterministicNonce;
 
@@ -376,5 +491,139 @@ export function createIbatexasPlanner(deps: IbatexasPlannerDeps): PlannerPort {
         },
       };
     },
+
+    // Q6b — the claim-aware seam (SDD §H/§P3/§P4/§O#9). ONE LLM completion over
+    // the `propose_claim` tool (its `type` constrained by `enum` to the registry
+    // — the pre-planning wall), then the two deterministic post-walls. Mirrors
+    // `propose`'s "model proposes, deterministic checks dispose" shape.
+    async proposeClaims(state: CognitiveState): Promise<ClaimPlan> {
+      // PRE-planning wall, part 1 (SDD §H/§P3): the model's `propose_claim` tool
+      // exposes `type` as an `enum` over the registry — the model can only
+      // SELECT an in-enum type, never type a free string into the schema. The
+      // post-completion `constrainClaimGeneration` is the defense-in-depth
+      // backstop (a compromised prompt that bypasses the enum is still dropped).
+      const claimTool = {
+        name: PROPOSE_CLAIM_TOOL,
+        description:
+          "Propor uma afirmação (claim) para o kernel de claims validar. " +
+          "Use `type` (uma das opções do enum do registro), `subject` (a chave " +
+          "do recurso) e os parâmetros. Nunca invente um tipo fora do enum.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            type: {
+              type: "string",
+              enum: [...CLAIM_REGISTRY],
+              description: "O tipo de claim do registro a ser proposto.",
+            },
+            subject: { type: "string", description: "Chave do recurso/assunto." },
+            value: { description: "A proposição que o renderer preencheria." },
+            safetyMarkers: {
+              type: "array",
+              items: { type: "string" },
+              description: "Marcadores de saúde/segurança detectados (se houver).",
+            },
+            spans: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  text: { type: "string" },
+                  mappedClaimType: { type: "string" },
+                },
+                required: ["text"],
+              },
+              description: "Os trechos do pedido e o claim mapeado a cada um.",
+            },
+          },
+          required: ["type", "subject"],
+          additionalProperties: false,
+        },
+      };
+
+      const system = deps.system ?? DEFAULT_SYSTEM_PROMPT;
+      const completion = await deps.model.complete({
+        model: deps.modelId,
+        system,
+        messages: [{ role: "user", content: state.perception.text }],
+        tools: [claimTool],
+        maxTokens,
+      });
+
+      // Collect the model's proposals + the safety/span inputs from the call(s).
+      const proposals: ProposedClaim[] = [];
+      const spans: RequestSpan[] = [];
+      const safety: SafetyRoutingInput = { markers: collectSafetyMarkers(completion.toolCalls) };
+      for (const call of completion.toolCalls ?? []) {
+        if (call.name !== PROPOSE_CLAIM_TOOL || !isProposeClaimInput(call.input)) {
+          continue;
+        }
+        const input = call.input;
+        proposals.push({
+          // `type` is carried VERBATIM (possibly out-of-enum) so the
+          // constrained-generation wall — not this collection step — is the
+          // single gate that drops a hallucinated type.
+          type: input.type,
+          subject: input.subject ?? "",
+          actor: input.actor ?? { principal: "llm", sessionId: state.conversationId },
+          ...(input.resources !== undefined ? { resources: input.resources } : {}),
+          value: input.value,
+        });
+        for (const span of input.spans ?? []) {
+          spans.push(
+            span.mappedClaimType === undefined
+              ? { text: span.text }
+              : { text: span.text, mappedClaimType: span.mappedClaimType },
+          );
+        }
+      }
+
+      // PRE-planning wall, part 2 (SDD §H/§P3 — defense in depth): only in-enum
+      // types become typed `CandidateClaim`s; out-of-enum proposals are dropped.
+      const { candidates, dropped } = constrainClaimGeneration(proposals);
+
+      // POST-planning wall (SDD §C P4 / §J.8): every span gets a disposition; an
+      // unmapped span is surfaced as CLARIFY, never silently dropped.
+      const completeness = checkCompleteness(spans);
+
+      // SAFETY routing (SDD §O#9): an unrecognized — or any — safety marker
+      // forces ESCALATE (the generic safe terminal); ESCALATE outranks a P4
+      // CLARIFY (a safety escalation is more conservative than a clarification).
+      const safetyTerminal = routeSafety(safety);
+      const forcedTerminal: Extract<TurnTerminal, "ESCALATE" | "CLARIFY"> | undefined =
+        safetyTerminal !== undefined
+          ? safetyTerminal
+          : hasUnmappedSpan(completeness)
+            ? "CLARIFY"
+            : undefined;
+
+      return {
+        candidates,
+        completeness,
+        ...(forcedTerminal !== undefined ? { forcedTerminal } : {}),
+        droppedClaimTypes: dropped,
+      };
+    },
   };
+}
+
+/**
+ * Gather the safety markers the model flagged across this turn's `propose_claim`
+ * calls (Q6b — SDD §O#8/§O#9). The detector (§O#8) is a bounded probabilistic
+ * input; this only COLLECTS its output — `routeSafety` is the deterministic,
+ * closed-taxonomy net that decides ESCALATE. Pure over the call list.
+ */
+function collectSafetyMarkers(
+  toolCalls: Completion["toolCalls"],
+): string[] {
+  const markers: string[] = [];
+  for (const call of toolCalls ?? []) {
+    if (call.name !== PROPOSE_CLAIM_TOOL || !isProposeClaimInput(call.input)) {
+      continue;
+    }
+    for (const m of call.input.safetyMarkers ?? []) {
+      if (typeof m === "string") markers.push(m);
+    }
+  }
+  return markers;
 }
