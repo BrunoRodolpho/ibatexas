@@ -7,7 +7,7 @@
     "agent/pix-payment-failure-remediation": "966813a40cdbd77a4556ca80f2f8bb32654f6e36f32d34ed8ea637dda140bfcb",
     "ibatexas/pack-customer-onboarding": "203366b62ca1b7c438803ed5907e2ff43897b5b9e07d62c65246a49ab4e6b4fc",
     "ibatexas/pack-orders": "8247ff2824556956a7fa7a1170cc2b04b1aaa2cc6bcabdcd0c8108632bd618f7",
-    "ibatexas/pack-payments": "a47b8d273f85835c676479d2d66eb2d8c2419cfea6121fae1d6fdd4ae1667653",
+    "ibatexas/pack-payments": "b508b35667e5ca69ed61d95a0e862e11657a6cc8f32b442b8d0dd1111ab7cea5",
     "ibatexas/pack-reservations": "c0b9c555e776c2b80a629ca9c0e655d5e46a3ab42cda852beac8cd560ff0a163",
     "ibatexas/pack-whatsapp": "4eaa4da750ddbce4fa67ba7410f65518305b509560453e4a5edfeb78c6fcb254",
     "pack-payments-pix": "d6a71ea6796ccada541ff88849bfdea8214918e982576278e9d9ed854f40a16b"
@@ -394,7 +394,7 @@
       "contract": "v0",
       "kernelMinVersion": "1.0.0",
       "kernelVersion": "1.3.0",
-      "fingerprint": "b86d9a790a28aeab40fd70e943d5971c7d113d8a03c30a9e5d6f5637722ad642",
+      "fingerprint": "6078379a259c7c8f01682091a7eb3a53c7490996aa5c095291656045460f328a",
       "intents": [
         "payment.cash.confirm",
         "payment.charge.cancel",
@@ -421,8 +421,12 @@
         "payment.method.invalid",
         "payment.method.same",
         "payment.not_found",
+        "payment.ownership_denied",
         "payment.terminal_state",
+        "refund.already_refunded",
         "refund.amount_invalid",
+        "refund.not_refundable_state",
+        "refund.stale_read",
         "refund.state_divergent",
         "regeneration.cap_exceeded",
         "regeneration.state_divergent",
@@ -505,11 +509,27 @@
           "category": "payment"
         },
         {
+          "basisCode": "payment.ownership_denied",
+          "category": "payment"
+        },
+        {
           "basisCode": "payment.terminal_state",
           "category": "payment"
         },
         {
+          "basisCode": "refund.already_refunded",
+          "category": "refund"
+        },
+        {
           "basisCode": "refund.amount_invalid",
+          "category": "refund"
+        },
+        {
+          "basisCode": "refund.not_refundable_state",
+          "category": "refund"
+        },
+        {
+          "basisCode": "refund.stale_read",
           "category": "refund"
         },
         {
@@ -545,7 +565,7 @@
         "eu-ai-act",
         "nist-ai-rmf"
       ],
-      "bomDigest": "a47b8d273f85835c676479d2d66eb2d8c2419cfea6121fae1d6fdd4ae1667653"
+      "bomDigest": "b508b35667e5ca69ed61d95a0e862e11657a6cc8f32b442b8d0dd1111ab7cea5"
     },
     {
       "bomVersion": "1.0",
