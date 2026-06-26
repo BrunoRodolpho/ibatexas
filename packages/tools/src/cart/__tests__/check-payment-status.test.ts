@@ -151,8 +151,9 @@ describe("checkPaymentStatus — payment IDOR closed (N-P0.2)", () => {
   //    no-owner inputs would return a payment projection. This test pins the
   //    payment that WOULD leak, proving tests (1)/(3) are non-vacuous: the
   //    payment store is fully stubbed to succeed, yet no data escapes because
-  //    the ownership guard short-circuits first. (When the `requireOwner`
-  //    scoping is removed, (1)/(3) go RED — the read succeeds and returns this.)
+  //    the ownership guard short-circuits first. (If the strict-by-default
+  //    ownership guard were removed, (1)/(3) go RED — the read succeeds and
+  //    returns this.)
   it("non-vacuity: a fully-stubbed payment read still never escapes the guard for a non-owner", async () => {
     mockMedusaAdmin.mockResolvedValue(otherCustomerOrderResponse())
     mockGetActiveByOrderId.mockResolvedValue(activePixPayment())

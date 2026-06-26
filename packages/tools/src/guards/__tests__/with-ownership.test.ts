@@ -101,6 +101,39 @@ describe("withOrderOwnership", () => {
     // Handler IS called — it's responsible for its own auth error
     expect(handler).toHaveBeenCalledWith({ orderId: "order_01" }, guestCtx)
   })
+
+  // R0b — STRICT BY DEFAULT mirror: with no opts the wrapper must NOT open the
+  // escape hatch — it threads the canonical 2-arg strict call so the underlying
+  // guard fails closed on an unowned order. NON-VACUOUS: a revert that threads
+  // `{ allowUnowned: true }` (or any opts) by default makes this RED.
+  it("does NOT open the allowUnowned escape hatch by default (strict)", async () => {
+    mockAssertOrderOwnership.mockResolvedValue(undefined)
+    const handler = vi.fn().mockResolvedValue("ok")
+    const wrapped = withOrderOwnership(handler)
+
+    await wrapped({ orderId: "order_01" }, CTX)
+
+    expect(mockAssertOrderOwnership).toHaveBeenCalledWith("order_01", "cus_01")
+    expect(mockAssertOrderOwnership).not.toHaveBeenCalledWith(
+      "order_01",
+      "cus_01",
+      { allowUnowned: true },
+    )
+  })
+
+  // R0b — escape hatch threads through: a caller that opens `allowUnowned: true`
+  // must forward it to the underlying guard (genuine staff/legacy path).
+  it("threads { allowUnowned: true } to assertOrderOwnership when the escape hatch is set", async () => {
+    mockAssertOrderOwnership.mockResolvedValue(undefined)
+    const handler = vi.fn().mockResolvedValue("ok")
+    const wrapped = withOrderOwnership(handler, { allowUnowned: true })
+
+    await wrapped({ orderId: "order_01" }, CTX)
+
+    expect(mockAssertOrderOwnership).toHaveBeenCalledWith("order_01", "cus_01", {
+      allowUnowned: true,
+    })
+  })
 })
 
 // ── withReservationOwnership ───────────────────────────────────────────────────

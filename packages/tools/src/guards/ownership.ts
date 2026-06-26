@@ -13,18 +13,20 @@ import { medusaAdminFetch } from "../cart/_shared.js";
  * Assert that a Medusa order belongs to the given customer.
  * Checks `customer_id` on the order and falls back to `metadata.customerId`.
  *
- * By default an order with NO owner attribution is allowed (legacy/guest order
- * accessed by staff). For a `customer_scoped` claim — where Inv 2 requires
- * "no owner" ≠ "any owner" → REFUSED — pass `{ requireOwner: true }` so an
- * unowned order is rejected rather than leaked.
+ * STRICT BY DEFAULT (SDD Inv 2 — ownership is a property of the
+ * `customer_scoped` claim TYPE, not a per-call flag): an order with NO owner
+ * attribution is a "no owner" resource and resolves REFUSED ("no owner" ≠
+ * "any owner"), so it THROWS unless the caller opens the explicit
+ * `{ allowUnowned: true }` escape hatch — granted only on a genuine
+ * staff/legacy path. Omitting it fails CLOSED.
  *
  * @throws NonRetryableError if the order doesn't exist, belongs to another
- *   customer, or (when `requireOwner`) has no owner attribution at all.
+ *   customer, or (unless `allowUnowned`) has no owner attribution at all.
  */
 export async function assertOrderOwnership(
   orderId: string,
   customerId: string,
-  opts?: { requireOwner?: boolean },
+  opts?: { allowUnowned?: boolean },
 ): Promise<void> {
   const data = await medusaAdminFetch(`/admin/orders/${orderId}`) as {
     order?: {
@@ -40,13 +42,14 @@ export async function assertOrderOwnership(
   const orderCustomerId = data.order.customer_id ?? data.order.metadata?.["customerId"];
   if (!orderCustomerId) {
     // Order has no customer attribution.
-    if (opts?.requireOwner) {
-      // Inv 2: a customer_scoped resource with no owner resolves REFUSED
-      // ("no owner" ≠ "any owner") — never leak it to the caller.
-      throw new NonRetryableError("Acesso negado: este pedido pertence a outro cliente.");
+    if (opts?.allowUnowned) {
+      // Explicit escape hatch: a genuine staff/legacy path operating on an
+      // unowned/guest order. This is the ONLY way an unowned order passes.
+      return;
     }
-    // Default: allow (legacy/guest order accessed by staff).
-    return;
+    // Inv 2 (strict default): a customer_scoped resource with no owner resolves
+    // REFUSED ("no owner" ≠ "any owner") — fail CLOSED, never leak it.
+    throw new NonRetryableError("Acesso negado: este pedido pertence a outro cliente.");
   }
   if (orderCustomerId !== customerId) {
     throw new NonRetryableError("Acesso negado: este pedido pertence a outro cliente.");
