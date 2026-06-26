@@ -204,7 +204,11 @@ import {
   verifyConfigSeal,
   type SealablePackInput,
 } from "@adjudicate/conformance";
-import { createIbatexasPlanner } from "./claustrum/ibatexas-planner.js";
+import {
+  createIbatexasPlanner,
+  type ClaimAwarePlannerPort,
+} from "./claustrum/ibatexas-planner.js";
+import { buildClaimsSeams } from "./claustrum/claims-pipeline.js";
 import { createIbatexasResponder } from "./claustrum/ibatexas-responder.js";
 import { createIbatexasPromptComposer } from "./claustrum/prompts/ibatexas-prompts.js";
 import {
@@ -1956,7 +1960,7 @@ export async function bootstrapClaustrum(
     turnTraceWriter,
     tokenUsageSink,
   );
-  const buildPlanner = (model: ModelProvider): PlannerPort =>
+  const buildPlanner = (model: ModelProvider): ClaimAwarePlannerPort =>
     createIbatexasPlanner({
       model,
       modelId: chatModelId,
@@ -1974,11 +1978,21 @@ export async function bootstrapClaustrum(
       telemetry,
     });
 
+  // B-PR1 — claims-runtime seams (SDD §M / §Q.6), FLAG DEFAULT-OFF. The planner
+  // is hoisted so the claim-planner adapter reuses the SAME claim-aware instance
+  // (its `proposeClaims`, Q6b). `buildClaimsSeams` returns {} when
+  // ENABLE_CLAIMS_PIPELINE is OFF (the default), so the spread below is a no-op
+  // and the Conductor is composed BYTE-IDENTICALLY to today (no INVESTIGATE /
+  // CLAIMS-VALIDATE stage runs). ON → the shadow claims path is injected
+  // (activation is a later PR). No `clock` is passed (not in the published
+  // ConductorOptions; the per-turn clock is PENDING R2a).
+  const planner = buildPlanner(modelProvider);
+  const claimsSeams = buildClaimsSeams({ planner });
   _conductor = createConductor({
     adjudicator,
     memory,
     grounding,
-    planner: buildPlanner(modelProvider),
+    planner,
     responder: buildResponder(modelProvider),
     explainer: ibxExplainer,
     handoff: natsHandoff(),
@@ -1997,6 +2011,9 @@ export async function bootstrapClaustrum(
     // the same `${channel}:${customerId}` session concurrently (double-EXECUTE).
     // Postgres advisory locks pin acquire/release to one pooled connection.
     sessionLock: new PostgresAdvisorySessionLock(pgPool),
+    // B-PR1 — OFF by default → {} (no-op spread, byte-identical). ON → the three
+    // optional claims seams (investigator / claimPlanner / claimsKernel).
+    ...claimsSeams,
   });
 
   // ── Managed-agent plane (T3-9) — OPT-IN via IBX_AGENTS_ENABLED ──────────────
