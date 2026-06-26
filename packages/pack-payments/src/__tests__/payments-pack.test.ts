@@ -111,6 +111,11 @@ describe("paymentsPolicyBundle — ownership/IDOR guard (034-F1)", () => {
         amountInCentavos: 50_000,
         regenerationCount: 0,
         dailyRetryCount: 0,
+        // D1: this fixture injects authority, so the 4-conjunct refund invariant is
+        // now binding. A real authority-wired refund is read live this turn — supply
+        // the freshness marker so these OWNERSHIP tests reach the ownership verdict
+        // (the canary/IDOR cases still REFUSE in the AUTH phase, before freshness).
+        paymentReadThisTurn: true,
       },
       authority: {
         store: createAuthorityGraphStore({

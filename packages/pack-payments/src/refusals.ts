@@ -51,6 +51,47 @@ export function refundStateDivergent(envelopeValue: number, stateValue: number):
   )
 }
 
+// ── D1 multi-conjunct refund-authority refusals (SDD Inv 11 strengthen) ──────
+// The refund verdict requires `ownership ∧ payment-state-refundable ∧
+// refund-eligibility(not-already-refunded) ∧ resource-freshness(read live this
+// turn)`. Ownership is the authGuard (`refusePaymentOwnershipDenied`); these
+// three cover the business conjuncts. All engage only when the host injects
+// `state.authority` (the enforcement seam) and FAIL CLOSED (REFUSE) otherwise.
+
+/** The payment is not in a state from which money can be refunded (e.g. it never
+ *  settled — awaiting/pending/failed — or is already terminal). STATE precondition. */
+export function refundNotInRefundableState(currentStatus?: string): Refusal {
+  return refuse(
+    "STATE",
+    "refund.not_refundable_state",
+    "Esse pagamento não está em um estado que permita reembolso.",
+    currentStatus ? `currentStatus=${currentStatus}` : undefined,
+  )
+}
+
+/** The refundable balance is exhausted — the payment was already fully refunded
+ *  (no `refund-done` remaining). Derived from the LIVE state, independent of the
+ *  (possibly stale) envelope snapshot, so stale authority can't re-issue it. */
+export function refundAlreadyExhausted(refunded: number, amount: number): Refusal {
+  return refuse(
+    "BUSINESS_RULE",
+    "refund.already_refunded",
+    "Esse pagamento já foi totalmente reembolsado.",
+    `refunded=${refunded} amount=${amount}`,
+  )
+}
+
+/** The payment status was NOT read live this turn (`must_read_this_turn` ⟹
+ *  `sourceMode == "live"`). A stale/cached read may not authorize a refund. */
+export function refundStaleRead(): Refusal {
+  return refuse(
+    "STATE",
+    "refund.stale_read",
+    "Não foi possível confirmar o estado atual do pagamento. Tente novamente.",
+    "payment_not_read_this_turn",
+  )
+}
+
 export function refuseRegenerationStateDivergent(
   envelopeValue: number,
   stateValue: number,

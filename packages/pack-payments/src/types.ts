@@ -326,6 +326,17 @@ export interface PaymentState {
     readonly regenerationCount?: number
     readonly dailyRetryCount?: number
     readonly staffRefundDailyTotalCentavos?: number
+    /**
+     * D1 (SDD Inv 11 strengthen / §5 fresh conjunct / §G ledger) — TRUE iff this
+     * payment projection was read LIVE this turn (the `must_read_this_turn`
+     * freshness policy ⟹ `sourceMode == "live"`; "cache cannot masquerade as
+     * live"). The host (`resolve-and-assemble.ts` `buildPaymentCtx`) stamps it on
+     * a live active-payment read. The refund-freshness business guard requires it
+     * `=== true` whenever the host has injected `state.authority` (the 4-conjunct
+     * refund-authority enforcement seam): an absent/false marker ⟹ a stale read ⟹
+     * REFUSE, so stale authority can never authorize a refund off a cached view.
+     */
+    readonly paymentReadThisTurn?: boolean
   }
 }
 
