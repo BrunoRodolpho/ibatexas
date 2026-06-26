@@ -69,9 +69,22 @@ export default function OrderTrackingPage() {
   const [error, setError] = useState<string | null>(null)
   const [pending, setPending] = useState(false)
 
+  // R0a — signed per-order access token stashed at checkout (keyed by orderId).
+  // Guest orders have a null owner, so the API order reads/polls require this
+  // token (or an owner cookie) to authorize — without it they 404 (deny-null-owner).
+  const [accessToken] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null
+    try {
+      return sessionStorage.getItem(`order-access-token:${orderId}`)
+    } catch {
+      return null
+    }
+  })
+  const tokenQuery = accessToken ? `?t=${encodeURIComponent(accessToken)}` : ""
+
   const fetchOrder = useCallback(async () => {
     try {
-      const res = await fetch(`${getApiBase()}/api/cart/orders/${encodeURIComponent(orderId)}`, {
+      const res = await fetch(`${getApiBase()}/api/cart/orders/${encodeURIComponent(orderId)}${tokenQuery}`, {
         credentials: "include",
       })
       if (res.status === 202) {
@@ -90,7 +103,7 @@ export default function OrderTrackingPage() {
     } finally {
       setLoading(false)
     }
-  }, [orderId])
+  }, [orderId, tokenQuery])
 
   useEffect(() => { void fetchOrder() }, [fetchOrder])
 
@@ -107,7 +120,7 @@ export default function OrderTrackingPage() {
     let cancelled = false
     const interval = setInterval(async () => {
       try {
-        const res = await fetch(`${getApiBase()}/api/cart/orders/${encodeURIComponent(orderId)}/status`, {
+        const res = await fetch(`${getApiBase()}/api/cart/orders/${encodeURIComponent(orderId)}/status${tokenQuery}`, {
           credentials: "include",
         })
         if (cancelled) return
@@ -133,7 +146,7 @@ export default function OrderTrackingPage() {
       }
     }, 15_000)
     return () => { cancelled = true; clearInterval(interval) }
-  }, [order?.status, orderId])
+  }, [order?.status, orderId, tokenQuery])
 
   if (loading) {
     return (

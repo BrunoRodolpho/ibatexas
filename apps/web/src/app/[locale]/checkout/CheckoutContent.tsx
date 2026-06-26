@@ -41,6 +41,8 @@ interface CheckoutResult {
   pixCopyPaste?: string
   stripeClientSecret?: string
   message: string
+  /** R0a — signed per-order access token so a guest can track the order. */
+  accessToken?: string
 }
 
 function getDeliveryTypeLabel(
@@ -277,6 +279,18 @@ function CheckoutForm() {
   // large-ticket confirm flow so the PIX/cash/card branches never drift.
   async function proceedWithCheckoutResult(data: CheckoutResult) {
     setResult(data)
+
+    // R0a — persist the signed per-order access token (keyed by orderId) so the
+    // order-tracking page can authorize its reads/polls without an authenticated
+    // session. Guest orders have a null owner, so this token is the only way the
+    // tracking page can read them post-checkout. Best-effort (private mode etc.).
+    if (data.accessToken && data.orderId && typeof window !== "undefined") {
+      try {
+        sessionStorage.setItem(`order-access-token:${data.orderId}`, data.accessToken)
+      } catch {
+        // sessionStorage unavailable — owner cookie path still works for authed users
+      }
+    }
 
     // ── PIX ──
     if (paymentMethod === "pix") {

@@ -59,6 +59,7 @@ export { rk } from "./redis/key.js"
 
 // ── Session claims ───────────────────────────────────────────────────────────
 export { createSessionToken, verifySessionToken, signSessionClaim } from "./session/signed-claims.js"
+export { createOrderAccessToken, verifyOrderAccessToken } from "./session/signed-claims.js"
 export type { SessionClaim } from "./session/signed-claims.js"
 export { atomicIncr } from "./redis/atomic-rate-limit.js"
 export {
