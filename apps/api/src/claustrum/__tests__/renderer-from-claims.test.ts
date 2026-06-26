@@ -19,9 +19,12 @@ import type {
   TurnTerminal,
 } from "@adjudicate/core";
 import {
+  isPropositionFree,
   ORDER_ESTIMATED_ARRIVAL,
   ORDER_FULFILLMENT_STAGE,
   PAYMENT_STATUS,
+  SAFE_TEMPLATES,
+  type Template,
 } from "../slot-grammar.js";
 import { render } from "../renderer-from-claims.js";
 
@@ -193,5 +196,105 @@ describe("renderer-from-claims — §Q.7 pure template-filler", () => {
     const validated: ConsistencyClaim = claim(PAYMENT_STATUS, "VALIDATED", { status: "aprovado" });
     const out = render([validated], "RENDER" satisfies TurnTerminal);
     expect(out.text).toBe("O status do seu pagamento é: aprovado.");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// R3 — terminal routing: an honest-ignorance UNKNOWN renders the epistemic
+// SELF-REPORT, NOT the human-handoff/ESCALATE copy.
+//
+// SDD Inv 6 (render-template purity: UNKNOWN/REFUSED templates assert nothing
+// factual) + §I (the turn terminals RENDER · UNKNOWN · ESCALATE · CLARIFY are
+// DISTINCT, first-class). The prior `terminal === "CLARIFY" ? unknown : escalate`
+// routed UNKNOWN to the escalate copy ("vou encaminhar para um atendente"),
+// conflating "não consegui confirmar" with "estou escalando para um humano".
+// The fix is `terminal === "ESCALATE" ? escalate : unknown`: ESCALATE → handoff;
+// UNKNOWN and CLARIFY → the self-report. These tests are NON-VACUOUS — reverting
+// the ternary turns (a) RED (UNKNOWN would render the handoff copy).
+// ─────────────────────────────────────────────────────────────────────────────
+describe("renderer-from-claims — R3 terminal routing (Inv 6; §I distinct terminals)", () => {
+  const UNKNOWN: TurnTerminal = "UNKNOWN";
+  const ESCALATE: TurnTerminal = "ESCALATE";
+  const CLARIFY: TurnTerminal = "CLARIFY";
+
+  // Distinguishing copy fragments (sourced from slot-grammar's SAFE_TEMPLATES).
+  const SELF_REPORT = "Não localizei"; // unique to SAFE_TEMPLATES.unknown
+  const HANDOFF = "encaminhar para um atendente"; // unique to SAFE_TEMPLATES.escalate
+
+  // The exact rendered string of a proposition-free safe template = its LITERAL
+  // text. Deriving it from SAFE_TEMPLATES ties each assertion to the grammar
+  // itself (not a hand-copied string), so "renders SAFE_TEMPLATES.unknown" is
+  // asserted directly.
+  const literalText = (t: Template): string =>
+    t.slots.map((s) => (s.kind === "LITERAL" ? s.text : "")).join("");
+
+  // (a) NON-VACUOUS: revert to `CLARIFY ? unknown : escalate` and an UNKNOWN
+  // terminal routes to the escalate/handoff copy → this test goes RED.
+  it("terminal UNKNOWN renders SAFE_TEMPLATES.unknown (self-report), NOT the handoff (a)", () => {
+    const out = render(
+      [claim(ORDER_FULFILLMENT_STAGE, "VALIDATED", { stage: "entregue" })],
+      UNKNOWN,
+    );
+    expect(out.terminal).toBe("UNKNOWN");
+    expect(out.lines).toHaveLength(1);
+    expect(out.lines[0]?.kind).toBe("TERMINAL");
+    // It IS the epistemic self-report (SAFE_TEMPLATES.unknown), byte-for-byte.
+    expect(out.text).toBe(literalText(SAFE_TEMPLATES.unknown));
+    expect(out.text).toContain(SELF_REPORT);
+    // ...and is explicitly NOT the human-handoff/escalate copy.
+    expect(out.text).not.toContain(HANDOFF);
+  });
+
+  // (b) ESCALATE keeps rendering the handoff/escalate template.
+  it("terminal ESCALATE renders SAFE_TEMPLATES.escalate (handoff copy) (b)", () => {
+    const out = render(
+      [claim(PAYMENT_STATUS, "VALIDATED", { status: "aprovado" })],
+      ESCALATE,
+    );
+    expect(out.terminal).toBe("ESCALATE");
+    expect(out.lines[0]?.kind).toBe("TERMINAL");
+    expect(out.text).toBe(literalText(SAFE_TEMPLATES.escalate));
+    expect(out.text).toContain(HANDOFF);
+    expect(out.text).not.toContain(SELF_REPORT);
+  });
+
+  // (c) CLARIFY is unchanged — still the self-report (no distinct clarify copy).
+  it("terminal CLARIFY renders SAFE_TEMPLATES.unknown (self-report, unchanged) (c)", () => {
+    const out = render(
+      [claim(ORDER_FULFILLMENT_STAGE, "VALIDATED", { stage: "em preparo" })],
+      CLARIFY,
+    );
+    expect(out.terminal).toBe("CLARIFY");
+    expect(out.lines[0]?.kind).toBe("TERMINAL");
+    expect(out.text).toBe(literalText(SAFE_TEMPLATES.unknown));
+    expect(out.text).toContain(SELF_REPORT);
+    expect(out.text).not.toContain(HANDOFF);
+  });
+
+  // (d) Inv 6: the chosen UNKNOWN/ESCALATE templates are proposition-free — they
+  // assert nothing factual about an order/payment, even with real claims in hand.
+  it("the UNKNOWN and ESCALATE terminal templates remain proposition-free (d; Inv 6)", () => {
+    // Structural: both safe templates carry ZERO proposition slots.
+    expect(isPropositionFree(SAFE_TEMPLATES.unknown)).toBe(true);
+    expect(isPropositionFree(SAFE_TEMPLATES.escalate)).toBe(true);
+    // Behavioural: with real domain claims present, NO order/payment fact leaks.
+    for (const terminal of [UNKNOWN, ESCALATE] as const) {
+      const out = render(
+        [
+          claim(ORDER_FULFILLMENT_STAGE, "VALIDATED", { stage: "entregue" }),
+          claim(PAYMENT_STATUS, "VALIDATED", { status: "aprovado" }),
+          claim(ORDER_ESTIMATED_ARRIVAL, "VALIDATED", { etaMinutes: 45 }),
+        ],
+        terminal,
+      );
+      expect(out.lines).toHaveLength(1);
+      expect(out.lines[0]?.kind).toBe("TERMINAL");
+      // No domain proposition (stage / payment status / ETA) surfaces.
+      expect(out.text).not.toContain("entregue");
+      expect(out.text).not.toContain("aprovado");
+      expect(out.text).not.toContain("45");
+      expect(out.text).not.toContain("etapa");
+      expect(out.text).not.toContain("pagamento é");
+    }
   });
 });

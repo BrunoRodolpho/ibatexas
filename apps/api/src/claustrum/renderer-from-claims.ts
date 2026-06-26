@@ -194,7 +194,13 @@ export function render(
     // from it to the rendered text. This is the §O#5 no-re-leak guarantee, made
     // explicit: the terminal template is the entire customer-facing output.
     void suppressions;
-    const template = terminal === "CLARIFY" ? SAFE_TEMPLATES.unknown : SAFE_TEMPLATES.escalate;
+    // §I terminals are DISTINCT (RENDER · UNKNOWN · ESCALATE · CLARIFY): only a
+    // true human-handoff ESCALATE renders the handoff copy; an honest-ignorance
+    // UNKNOWN — and a CLARIFY — render the epistemic SELF-REPORT (registry §5,
+    // Inv 6), never "vou encaminhar para um atendente". Conflating UNKNOWN with
+    // ESCALATE would mis-assert that the system is escalating when it is merely
+    // reporting that it could not confirm.
+    const template = terminal === "ESCALATE" ? SAFE_TEMPLATES.escalate : SAFE_TEMPLATES.unknown;
     // Defensive: a TERMINAL template MUST be proposition-free (it cannot carry a
     // domain fact). If somehow it weren't, abstain to the bare unknown line rather
     // than risk a leak.
