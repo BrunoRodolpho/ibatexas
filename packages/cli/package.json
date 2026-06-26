@@ -19,7 +19,7 @@
     "@adjudicate/audit": "^4.0.0",
     "@adjudicate/audit-postgres": "^4.0.0",
     "@adjudicate/conformance": "^3.0.0",
-    "@adjudicate/core": "^1.5.0",
+    "@adjudicate/core": "^1.6.0",
     "@adjudicate/runtime": "^0.3.0",
     "@ibatexas/agents": "workspace:*",
     "@ibatexas/domain": "workspace:*",

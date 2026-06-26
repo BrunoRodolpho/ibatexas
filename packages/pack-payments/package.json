@@ -18,10 +18,10 @@
     "test": "vitest run"
   },
   "peerDependencies": {
-    "@adjudicate/core": "^1.5.0"
+    "@adjudicate/core": "^1.6.0"
   },
   "dependencies": {
-    "@adjudicate/core": "^1.5.0",
+    "@adjudicate/core": "^1.6.0",
     "@adjudicate/locales-pt-br": "^0.2.3",
     "@adjudicate/pack-payments-pix": "^0.3.0",
     "@adjudicate/primitives": "^0.4.0"

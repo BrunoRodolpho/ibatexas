@@ -5,7 +5,7 @@ settings:
   excludeLinksFromLockfile: false
 
 overrides:
-  '@adjudicate/core': 1.5.0
+  '@adjudicate/core': 1.6.0
   minimatch: 10.2.4
   rollup: 4.59.0
   glob: 13.0.6
@@ -131,25 +131,25 @@ importers:
     dependencies:
       '@adjudicate/adapter-core':
         specifier: ^0.4.0
-        version: 0.4.0(@adjudicate/admin-sdk@4.0.0(@adjudicate/core@1.5.0)(typescript@5.9.3))
+        version: 0.4.0(@adjudicate/admin-sdk@4.0.0(@adjudicate/core@1.6.0)(typescript@5.9.3))
       '@adjudicate/analyze':
         specifier: ^0.4.2
         version: 0.4.2
       '@adjudicate/approval-engine':
         specifier: ^0.3.0
-        version: 0.3.0(@adjudicate/admin-sdk@4.0.0(@adjudicate/core@1.5.0)(typescript@5.9.3))
+        version: 0.3.0(@adjudicate/admin-sdk@4.0.0(@adjudicate/core@1.6.0)(typescript@5.9.3))
       '@adjudicate/audit':
         specifier: ^4.0.0
-        version: 4.0.0(@adjudicate/admin-sdk@4.0.0(@adjudicate/core@1.5.0)(typescript@5.9.3))
+        version: 4.0.0(@adjudicate/admin-sdk@4.0.0(@adjudicate/core@1.6.0)(typescript@5.9.3))
       '@adjudicate/audit-postgres':
         specifier: ^4.0.0
-        version: 4.0.0(@adjudicate/admin-sdk@4.0.0(@adjudicate/core@1.5.0)(typescript@5.9.3))
+        version: 4.0.0(@adjudicate/admin-sdk@4.0.0(@adjudicate/core@1.6.0)(typescript@5.9.3))
       '@adjudicate/conformance':
         specifier: ^3.0.0
-        version: 3.0.0(@adjudicate/core@1.5.0)
+        version: 3.0.0(@adjudicate/core@1.6.0)
       '@adjudicate/core':
-        specifier: 1.5.0
-        version: 1.5.0
+        specifier: 1.6.0
+        version: 1.6.0
       '@adjudicate/drift':
         specifier: ^0.2.2
         version: 0.2.2
@@ -170,25 +170,25 @@ importers:
         version: 0.82.0(zod@4.3.6)
       '@claustrum/anthropic':
         specifier: ^0.1.2
-        version: 0.1.2(@anthropic-ai/sdk@0.82.0(zod@4.3.6))(@claustrum/core@0.3.0(@adjudicate/core@1.5.0)(@adjudicate/runtime@0.3.0))
+        version: 0.1.2(@anthropic-ai/sdk@0.82.0(zod@4.3.6))(@claustrum/core@0.3.0(@adjudicate/core@1.6.0)(@adjudicate/runtime@0.3.0))
       '@claustrum/channel-web':
         specifier: ^0.1.2
-        version: 0.1.2(@adjudicate/core@1.5.0)(@claustrum/core@0.3.0(@adjudicate/core@1.5.0)(@adjudicate/runtime@0.3.0))
+        version: 0.1.2(@adjudicate/core@1.6.0)(@claustrum/core@0.3.0(@adjudicate/core@1.6.0)(@adjudicate/runtime@0.3.0))
       '@claustrum/channel-whatsapp':
         specifier: ^0.2.0
-        version: 0.2.0(@adjudicate/core@1.5.0)(@claustrum/core@0.3.0(@adjudicate/core@1.5.0)(@adjudicate/runtime@0.3.0))
+        version: 0.2.0(@adjudicate/core@1.6.0)(@claustrum/core@0.3.0(@adjudicate/core@1.6.0)(@adjudicate/runtime@0.3.0))
       '@claustrum/core':
         specifier: ^0.3.0
-        version: 0.3.0(@adjudicate/core@1.5.0)(@adjudicate/runtime@0.3.0)
+        version: 0.3.0(@adjudicate/core@1.6.0)(@adjudicate/runtime@0.3.0)
       '@claustrum/grounding-pgvector':
         specifier: ^0.1.1
-        version: 0.1.1(@adjudicate/core@1.5.0)(@adjudicate/runtime@0.3.0)
+        version: 0.1.1(@adjudicate/core@1.6.0)(@adjudicate/runtime@0.3.0)
       '@claustrum/memory-postgres':
         specifier: ^0.1.1
-        version: 0.1.1(@adjudicate/core@1.5.0)(@adjudicate/runtime@0.3.0)(prisma@7.6.0(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(magicast@0.3.5)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(typescript@5.9.3))
+        version: 0.1.1(@adjudicate/core@1.6.0)(@adjudicate/runtime@0.3.0)(prisma@7.6.0(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(magicast@0.3.5)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(typescript@5.9.3))
       '@claustrum/openai':
         specifier: ^0.1.2
-        version: 0.1.2(@claustrum/core@0.3.0(@adjudicate/core@1.5.0)(@adjudicate/runtime@0.3.0))(openai@4.104.0(ws@8.21.0)(zod@4.3.6))
+        version: 0.1.2(@claustrum/core@0.3.0(@adjudicate/core@1.6.0)(@adjudicate/runtime@0.3.0))(openai@4.104.0(ws@8.21.0)(zod@4.3.6))
       '@fastify/cookie':
         specifier: ^11.0.2
         version: 11.0.2
@@ -519,10 +519,10 @@ importers:
     dependencies:
       '@adjudicate/conformance':
         specifier: ^3.0.0
-        version: 3.0.0(@adjudicate/core@1.5.0)
+        version: 3.0.0(@adjudicate/core@1.6.0)
       '@adjudicate/core':
-        specifier: 1.5.0
-        version: 1.5.0
+        specifier: 1.6.0
+        version: 1.6.0
       '@adjudicate/pack-payments-pix':
         specifier: ^0.3.0
         version: 0.3.0
@@ -553,16 +553,16 @@ importers:
     dependencies:
       '@adjudicate/admin-sdk':
         specifier: ^4.0.0
-        version: 4.0.0(@adjudicate/core@1.5.0)(typescript@5.9.3)
+        version: 4.0.0(@adjudicate/core@1.6.0)(typescript@5.9.3)
       '@adjudicate/audit':
         specifier: ^4.0.0
-        version: 4.0.0(@adjudicate/admin-sdk@4.0.0(@adjudicate/core@1.5.0)(typescript@5.9.3))
+        version: 4.0.0(@adjudicate/admin-sdk@4.0.0(@adjudicate/core@1.6.0)(typescript@5.9.3))
       '@adjudicate/audit-postgres':
         specifier: ^4.0.0
-        version: 4.0.0(@adjudicate/admin-sdk@4.0.0(@adjudicate/core@1.5.0)(typescript@5.9.3))
+        version: 4.0.0(@adjudicate/admin-sdk@4.0.0(@adjudicate/core@1.6.0)(typescript@5.9.3))
       '@adjudicate/core':
-        specifier: 1.5.0
-        version: 1.5.0
+        specifier: 1.6.0
+        version: 1.6.0
       '@ibatexas/pii':
         specifier: workspace:*
         version: link:../pii
@@ -584,16 +584,16 @@ importers:
         version: 0.4.2
       '@adjudicate/audit':
         specifier: ^4.0.0
-        version: 4.0.0(@adjudicate/admin-sdk@4.0.0(@adjudicate/core@1.5.0)(typescript@5.9.3))
+        version: 4.0.0(@adjudicate/admin-sdk@4.0.0(@adjudicate/core@1.6.0)(typescript@5.9.3))
       '@adjudicate/audit-postgres':
         specifier: ^4.0.0
-        version: 4.0.0(@adjudicate/admin-sdk@4.0.0(@adjudicate/core@1.5.0)(typescript@5.9.3))
+        version: 4.0.0(@adjudicate/admin-sdk@4.0.0(@adjudicate/core@1.6.0)(typescript@5.9.3))
       '@adjudicate/conformance':
         specifier: ^3.0.0
-        version: 3.0.0(@adjudicate/core@1.5.0)
+        version: 3.0.0(@adjudicate/core@1.6.0)
       '@adjudicate/core':
-        specifier: 1.5.0
-        version: 1.5.0
+        specifier: 1.6.0
+        version: 1.6.0
       '@adjudicate/runtime':
         specifier: ^0.3.0
         version: 0.3.0
@@ -705,10 +705,10 @@ importers:
     dependencies:
       '@adjudicate/audit':
         specifier: ^4.0.0
-        version: 4.0.0(@adjudicate/admin-sdk@4.0.0(@adjudicate/core@1.5.0)(typescript@5.9.3))
+        version: 4.0.0(@adjudicate/admin-sdk@4.0.0(@adjudicate/core@1.6.0)(typescript@5.9.3))
       '@adjudicate/core':
-        specifier: 1.5.0
-        version: 1.5.0
+        specifier: 1.6.0
+        version: 1.6.0
       '@adjudicate/primitives':
         specifier: ^0.4.0
         version: 0.4.0
@@ -806,13 +806,13 @@ importers:
     dependencies:
       '@adjudicate/audit':
         specifier: ^4.0.0
-        version: 4.0.0(@adjudicate/admin-sdk@4.0.0(@adjudicate/core@1.5.0)(typescript@5.9.3))
+        version: 4.0.0(@adjudicate/admin-sdk@4.0.0(@adjudicate/core@1.6.0)(typescript@5.9.3))
       '@adjudicate/audit-postgres':
         specifier: ^4.0.0
-        version: 4.0.0(@adjudicate/admin-sdk@4.0.0(@adjudicate/core@1.5.0)(typescript@5.9.3))
+        version: 4.0.0(@adjudicate/admin-sdk@4.0.0(@adjudicate/core@1.6.0)(typescript@5.9.3))
       '@adjudicate/core':
-        specifier: 1.5.0
-        version: 1.5.0
+        specifier: 1.6.0
+        version: 1.6.0
       '@anthropic-ai/sdk':
         specifier: ^0.82.0
         version: 0.82.0(zod@4.3.6)
@@ -888,8 +888,8 @@ importers:
   packages/pack-customer-onboarding:
     dependencies:
       '@adjudicate/core':
-        specifier: 1.5.0
-        version: 1.5.0
+        specifier: 1.6.0
+        version: 1.6.0
       '@adjudicate/locales-pt-br':
         specifier: ^0.2.3
         version: 0.2.3
@@ -905,7 +905,7 @@ importers:
         version: 0.4.2
       '@adjudicate/conformance':
         specifier: ^3.0.0
-        version: 3.0.0(@adjudicate/core@1.5.0)
+        version: 3.0.0(@adjudicate/core@1.6.0)
       '@ibatexas/eslint-config':
         specifier: workspace:*
         version: link:../eslint-config
@@ -922,8 +922,8 @@ importers:
   packages/pack-orders:
     dependencies:
       '@adjudicate/core':
-        specifier: 1.5.0
-        version: 1.5.0
+        specifier: 1.6.0
+        version: 1.6.0
       '@adjudicate/locales-pt-br':
         specifier: ^0.2.3
         version: 0.2.3
@@ -942,7 +942,7 @@ importers:
         version: 0.4.2
       '@adjudicate/conformance':
         specifier: ^3.0.0
-        version: 3.0.0(@adjudicate/core@1.5.0)
+        version: 3.0.0(@adjudicate/core@1.6.0)
       '@ibatexas/eslint-config':
         specifier: workspace:*
         version: link:../eslint-config
@@ -959,8 +959,8 @@ importers:
   packages/pack-payments:
     dependencies:
       '@adjudicate/core':
-        specifier: 1.5.0
-        version: 1.5.0
+        specifier: 1.6.0
+        version: 1.6.0
       '@adjudicate/locales-pt-br':
         specifier: ^0.2.3
         version: 0.2.3
@@ -976,7 +976,7 @@ importers:
         version: 0.4.2
       '@adjudicate/conformance':
         specifier: ^3.0.0
-        version: 3.0.0(@adjudicate/core@1.5.0)
+        version: 3.0.0(@adjudicate/core@1.6.0)
       '@ibatexas/eslint-config':
         specifier: workspace:*
         version: link:../eslint-config
@@ -993,8 +993,8 @@ importers:
   packages/pack-reservations:
     dependencies:
       '@adjudicate/core':
-        specifier: 1.5.0
-        version: 1.5.0
+        specifier: 1.6.0
+        version: 1.6.0
       '@adjudicate/locales-pt-br':
         specifier: ^0.2.3
         version: 0.2.3
@@ -1007,7 +1007,7 @@ importers:
         version: 0.4.2
       '@adjudicate/conformance':
         specifier: ^3.0.0
-        version: 3.0.0(@adjudicate/core@1.5.0)
+        version: 3.0.0(@adjudicate/core@1.6.0)
       '@ibatexas/eslint-config':
         specifier: workspace:*
         version: link:../eslint-config
@@ -1024,8 +1024,8 @@ importers:
   packages/pack-whatsapp:
     dependencies:
       '@adjudicate/core':
-        specifier: 1.5.0
-        version: 1.5.0
+        specifier: 1.6.0
+        version: 1.6.0
       '@adjudicate/locales-pt-br':
         specifier: ^0.2.3
         version: 0.2.3
@@ -1038,7 +1038,7 @@ importers:
         version: 0.4.2
       '@adjudicate/conformance':
         specifier: ^3.0.0
-        version: 3.0.0(@adjudicate/core@1.5.0)
+        version: 3.0.0(@adjudicate/core@1.6.0)
       '@ibatexas/eslint-config':
         specifier: workspace:*
         version: link:../eslint-config
@@ -1055,8 +1055,8 @@ importers:
   packages/packs-composed:
     dependencies:
       '@adjudicate/core':
-        specifier: 1.5.0
-        version: 1.5.0
+        specifier: 1.6.0
+        version: 1.6.0
       '@ibatexas/pack-customer-onboarding':
         specifier: workspace:*
         version: link:../pack-customer-onboarding
@@ -1101,8 +1101,8 @@ importers:
   packages/tools:
     dependencies:
       '@adjudicate/core':
-        specifier: 1.5.0
-        version: 1.5.0
+        specifier: 1.6.0
+        version: 1.6.0
       '@adjudicate/primitives':
         specifier: ^0.4.0
         version: 0.4.0
@@ -1211,7 +1211,7 @@ packages:
   '@adjudicate/admin-sdk@4.0.0':
     resolution: {integrity: sha512-Z0VsrVcuOououbvJJlIdmYROVeYPSRTNJYojBWaJjazRdhbdFoJiRkZFGGBgdD5o2pVAOaL/lP/aBQK/3k54eQ==}
     peerDependencies:
-      '@adjudicate/core': 1.5.0
+      '@adjudicate/core': 1.6.0
 
   '@adjudicate/analyze@0.4.2':
     resolution: {integrity: sha512-Rpi/kjmxv4cscUXGVcPxh3qMSlQEsJV9bQtq2lPhAwDe+dWbtbsM1G7Ge5/3MELQUjsDd9Qk5AtRS+2MnYXTIw==}
@@ -1241,10 +1241,10 @@ packages:
   '@adjudicate/conformance@3.0.0':
     resolution: {integrity: sha512-d6OVggOnJ61PbqRyZ7TWSgEebsazrCwK1B8h2ajIY9PJkZlvv69ql743f5y9VOpgugbGMl446Sam7Zsm8rXpBA==}
     peerDependencies:
-      '@adjudicate/core': 1.5.0
+      '@adjudicate/core': 1.6.0
 
-  '@adjudicate/core@1.5.0':
-    resolution: {integrity: sha512-U97v5ZnGA44S6kP0NkvtNi642dmz68YiH5J8IOy2QSwnZry/TkVB/6rsFVLbZKHLfidQTYOn9SI7DpiywX6BgQ==}
+  '@adjudicate/core@1.6.0':
+    resolution: {integrity: sha512-YeA+sfk0aX1T2r4faCPFQgg+OJF4D3zfqpSJ9hgIy8DgNRY549d08mVP4DvZqV2NUpUidgERWhQmDLWKAAZvSA==}
 
   '@adjudicate/drift@0.2.2':
     resolution: {integrity: sha512-QC4nprVCLFHag+czT5RL/9r9K7mQi1grsUNMNMxlUIhk9EFAKkNhZ88HcKHI6XEyEsXcX52UaGVGPwaJ7jLLmA==}
@@ -1611,34 +1611,34 @@ packages:
     resolution: {integrity: sha512-pBlRTtbVsQ4MYfH+r4sW757RkEIbbayapPP1Ll1k2cwDsOeEp4dnJx++ZhtoKB8siAu4/RN0Qy1Mxb4DqFwbog==}
     engines: {node: '>=20.0.0'}
     peerDependencies:
-      '@adjudicate/core': 1.5.0
+      '@adjudicate/core': 1.6.0
       '@claustrum/core': ^0.3.0
 
   '@claustrum/channel-whatsapp@0.2.0':
     resolution: {integrity: sha512-YNgflVjXmHljGS/MgCgLOxvD3Ev2dQe5LYHyp7ln5fIfqwDKH3eZ4gvUYXNmz+tmXcwya1UmCs7/7VYtjqRr7A==}
     engines: {node: '>=20.0.0'}
     peerDependencies:
-      '@adjudicate/core': 1.5.0
+      '@adjudicate/core': 1.6.0
       '@claustrum/core': ^0.3.0
 
   '@claustrum/core@0.3.0':
     resolution: {integrity: sha512-3LGXWFruGA+cwFSLAK2ARQu5FFvdGhf86/J+/PKn98GBApK4DUCzmue6JN93H57k2M9Qax0uMXNK0ic0Lp4NvQ==}
     engines: {node: '>=20.0.0'}
     peerDependencies:
-      '@adjudicate/core': 1.5.0
+      '@adjudicate/core': 1.6.0
       '@adjudicate/runtime': ^0.2.0
 
   '@claustrum/grounding-pgvector@0.1.1':
     resolution: {integrity: sha512-vACBUmFBCWh8Uvr5/LiUJuTiyPmaIfNc8qG5LAKduBpEqJtkP9nT/plRenRYe263aKONQDQ+jI2/Ubjcfv8hhw==}
     engines: {node: '>=20.0.0'}
     peerDependencies:
-      '@adjudicate/core': 1.5.0
+      '@adjudicate/core': 1.6.0
 
   '@claustrum/memory-postgres@0.1.1':
     resolution: {integrity: sha512-Fs1k0lKSfq8IcK6P4+JMd56O6m+xiMvU+xvWwPbcR9FSKm+P2mqB0RUeCLaJK+0yDyToC8YwCsSjrKXnT9K9IQ==}
     engines: {node: '>=20.0.0'}
     peerDependencies:
-      '@adjudicate/core': 1.5.0
+      '@adjudicate/core': 1.6.0
 
   '@claustrum/openai@0.1.2':
     resolution: {integrity: sha512-IYRbt3cNtBuhhfqxjQeJWKX27bjm3NVg/z9+brY46Q3Tk9gIUWwHMk4yLPLnMOFiqazkeXHnyQHIoL3Q8RcHCA==}
@@ -11335,18 +11335,18 @@ packages:
 
 snapshots:
 
-  '@adjudicate/adapter-core@0.4.0(@adjudicate/admin-sdk@4.0.0(@adjudicate/core@1.5.0)(typescript@5.9.3))':
+  '@adjudicate/adapter-core@0.4.0(@adjudicate/admin-sdk@4.0.0(@adjudicate/core@1.6.0)(typescript@5.9.3))':
     dependencies:
-      '@adjudicate/audit': 4.0.0(@adjudicate/admin-sdk@4.0.0(@adjudicate/core@1.5.0)(typescript@5.9.3))
-      '@adjudicate/conformance': 3.0.0(@adjudicate/core@1.5.0)
-      '@adjudicate/core': 1.5.0
+      '@adjudicate/audit': 4.0.0(@adjudicate/admin-sdk@4.0.0(@adjudicate/core@1.6.0)(typescript@5.9.3))
+      '@adjudicate/conformance': 3.0.0(@adjudicate/core@1.6.0)
+      '@adjudicate/core': 1.6.0
       '@adjudicate/runtime': 0.3.0
     transitivePeerDependencies:
       - '@adjudicate/admin-sdk'
 
-  '@adjudicate/admin-sdk@4.0.0(@adjudicate/core@1.5.0)(typescript@5.9.3)':
+  '@adjudicate/admin-sdk@4.0.0(@adjudicate/core@1.6.0)(typescript@5.9.3)':
     dependencies:
-      '@adjudicate/core': 1.5.0
+      '@adjudicate/core': 1.6.0
       '@trpc/server': 11.17.0(typescript@5.9.3)
       zod: 4.3.6
     transitivePeerDependencies:
@@ -11354,38 +11354,38 @@ snapshots:
 
   '@adjudicate/analyze@0.4.2':
     dependencies:
-      '@adjudicate/core': 1.5.0
+      '@adjudicate/core': 1.6.0
       ts-morph: 25.0.1
 
-  '@adjudicate/approval-engine@0.3.0(@adjudicate/admin-sdk@4.0.0(@adjudicate/core@1.5.0)(typescript@5.9.3))':
+  '@adjudicate/approval-engine@0.3.0(@adjudicate/admin-sdk@4.0.0(@adjudicate/core@1.6.0)(typescript@5.9.3))':
     dependencies:
-      '@adjudicate/adapter-core': 0.4.0(@adjudicate/admin-sdk@4.0.0(@adjudicate/core@1.5.0)(typescript@5.9.3))
-      '@adjudicate/core': 1.5.0
+      '@adjudicate/adapter-core': 0.4.0(@adjudicate/admin-sdk@4.0.0(@adjudicate/core@1.6.0)(typescript@5.9.3))
+      '@adjudicate/core': 1.6.0
     transitivePeerDependencies:
       - '@adjudicate/admin-sdk'
 
-  '@adjudicate/audit-postgres@4.0.0(@adjudicate/admin-sdk@4.0.0(@adjudicate/core@1.5.0)(typescript@5.9.3))':
+  '@adjudicate/audit-postgres@4.0.0(@adjudicate/admin-sdk@4.0.0(@adjudicate/core@1.6.0)(typescript@5.9.3))':
     dependencies:
-      '@adjudicate/audit': 4.0.0(@adjudicate/admin-sdk@4.0.0(@adjudicate/core@1.5.0)(typescript@5.9.3))
-      '@adjudicate/core': 1.5.0
+      '@adjudicate/audit': 4.0.0(@adjudicate/admin-sdk@4.0.0(@adjudicate/core@1.6.0)(typescript@5.9.3))
+      '@adjudicate/core': 1.6.0
     optionalDependencies:
-      '@adjudicate/admin-sdk': 4.0.0(@adjudicate/core@1.5.0)(typescript@5.9.3)
+      '@adjudicate/admin-sdk': 4.0.0(@adjudicate/core@1.6.0)(typescript@5.9.3)
 
-  '@adjudicate/audit@4.0.0(@adjudicate/admin-sdk@4.0.0(@adjudicate/core@1.5.0)(typescript@5.9.3))':
+  '@adjudicate/audit@4.0.0(@adjudicate/admin-sdk@4.0.0(@adjudicate/core@1.6.0)(typescript@5.9.3))':
     dependencies:
-      '@adjudicate/core': 1.5.0
+      '@adjudicate/core': 1.6.0
     optionalDependencies:
-      '@adjudicate/admin-sdk': 4.0.0(@adjudicate/core@1.5.0)(typescript@5.9.3)
+      '@adjudicate/admin-sdk': 4.0.0(@adjudicate/core@1.6.0)(typescript@5.9.3)
 
   '@adjudicate/canonical@1.2.0':
     dependencies:
       '@noble/hashes': 1.8.0
 
-  '@adjudicate/conformance@3.0.0(@adjudicate/core@1.5.0)':
+  '@adjudicate/conformance@3.0.0(@adjudicate/core@1.6.0)':
     dependencies:
-      '@adjudicate/core': 1.5.0
+      '@adjudicate/core': 1.6.0
 
-  '@adjudicate/core@1.5.0':
+  '@adjudicate/core@1.6.0':
     dependencies:
       '@adjudicate/canonical': 1.2.0
       '@noble/hashes': 1.8.0
@@ -11393,24 +11393,24 @@ snapshots:
 
   '@adjudicate/drift@0.2.2':
     dependencies:
-      '@adjudicate/core': 1.5.0
+      '@adjudicate/core': 1.6.0
 
   '@adjudicate/locales-pt-br@0.2.3':
     dependencies:
-      '@adjudicate/core': 1.5.0
+      '@adjudicate/core': 1.6.0
 
   '@adjudicate/pack-payments-pix@0.3.0':
     dependencies:
-      '@adjudicate/core': 1.5.0
+      '@adjudicate/core': 1.6.0
       '@adjudicate/primitives': 0.4.0
 
   '@adjudicate/primitives@0.4.0':
     dependencies:
-      '@adjudicate/core': 1.5.0
+      '@adjudicate/core': 1.6.0
 
   '@adjudicate/runtime@0.3.0':
     dependencies:
-      '@adjudicate/core': 1.5.0
+      '@adjudicate/core': 1.6.0
 
   '@alloc/quick-lru@5.2.0': {}
 
@@ -12143,44 +12143,44 @@ snapshots:
       picocolors: 1.1.1
       sisteransi: 1.0.5
 
-  '@claustrum/anthropic@0.1.2(@anthropic-ai/sdk@0.82.0(zod@4.3.6))(@claustrum/core@0.3.0(@adjudicate/core@1.5.0)(@adjudicate/runtime@0.3.0))':
+  '@claustrum/anthropic@0.1.2(@anthropic-ai/sdk@0.82.0(zod@4.3.6))(@claustrum/core@0.3.0(@adjudicate/core@1.6.0)(@adjudicate/runtime@0.3.0))':
     dependencies:
       '@anthropic-ai/sdk': 0.82.0(zod@4.3.6)
-      '@claustrum/core': 0.3.0(@adjudicate/core@1.5.0)(@adjudicate/runtime@0.3.0)
+      '@claustrum/core': 0.3.0(@adjudicate/core@1.6.0)(@adjudicate/runtime@0.3.0)
 
-  '@claustrum/channel-web@0.1.2(@adjudicate/core@1.5.0)(@claustrum/core@0.3.0(@adjudicate/core@1.5.0)(@adjudicate/runtime@0.3.0))':
+  '@claustrum/channel-web@0.1.2(@adjudicate/core@1.6.0)(@claustrum/core@0.3.0(@adjudicate/core@1.6.0)(@adjudicate/runtime@0.3.0))':
     dependencies:
-      '@adjudicate/core': 1.5.0
-      '@claustrum/core': 0.3.0(@adjudicate/core@1.5.0)(@adjudicate/runtime@0.3.0)
+      '@adjudicate/core': 1.6.0
+      '@claustrum/core': 0.3.0(@adjudicate/core@1.6.0)(@adjudicate/runtime@0.3.0)
 
-  '@claustrum/channel-whatsapp@0.2.0(@adjudicate/core@1.5.0)(@claustrum/core@0.3.0(@adjudicate/core@1.5.0)(@adjudicate/runtime@0.3.0))':
+  '@claustrum/channel-whatsapp@0.2.0(@adjudicate/core@1.6.0)(@claustrum/core@0.3.0(@adjudicate/core@1.6.0)(@adjudicate/runtime@0.3.0))':
     dependencies:
-      '@adjudicate/core': 1.5.0
-      '@claustrum/core': 0.3.0(@adjudicate/core@1.5.0)(@adjudicate/runtime@0.3.0)
+      '@adjudicate/core': 1.6.0
+      '@claustrum/core': 0.3.0(@adjudicate/core@1.6.0)(@adjudicate/runtime@0.3.0)
       twilio: 5.13.1
     transitivePeerDependencies:
       - debug
       - supports-color
 
-  '@claustrum/core@0.3.0(@adjudicate/core@1.5.0)(@adjudicate/runtime@0.3.0)':
+  '@claustrum/core@0.3.0(@adjudicate/core@1.6.0)(@adjudicate/runtime@0.3.0)':
     dependencies:
-      '@adjudicate/core': 1.5.0
+      '@adjudicate/core': 1.6.0
       '@adjudicate/runtime': 0.3.0
 
-  '@claustrum/grounding-pgvector@0.1.1(@adjudicate/core@1.5.0)(@adjudicate/runtime@0.3.0)':
+  '@claustrum/grounding-pgvector@0.1.1(@adjudicate/core@1.6.0)(@adjudicate/runtime@0.3.0)':
     dependencies:
-      '@adjudicate/core': 1.5.0
-      '@claustrum/core': 0.3.0(@adjudicate/core@1.5.0)(@adjudicate/runtime@0.3.0)
+      '@adjudicate/core': 1.6.0
+      '@claustrum/core': 0.3.0(@adjudicate/core@1.6.0)(@adjudicate/runtime@0.3.0)
       pg: 8.20.0
       pgvector: 0.2.1
     transitivePeerDependencies:
       - '@adjudicate/runtime'
       - pg-native
 
-  '@claustrum/memory-postgres@0.1.1(@adjudicate/core@1.5.0)(@adjudicate/runtime@0.3.0)(prisma@7.6.0(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(magicast@0.3.5)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(typescript@5.9.3))':
+  '@claustrum/memory-postgres@0.1.1(@adjudicate/core@1.6.0)(@adjudicate/runtime@0.3.0)(prisma@7.6.0(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(magicast@0.3.5)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(typescript@5.9.3))':
     dependencies:
-      '@adjudicate/core': 1.5.0
-      '@claustrum/core': 0.3.0(@adjudicate/core@1.5.0)(@adjudicate/runtime@0.3.0)
+      '@adjudicate/core': 1.6.0
+      '@claustrum/core': 0.3.0(@adjudicate/core@1.6.0)(@adjudicate/runtime@0.3.0)
       '@prisma/client': 5.22.0(prisma@7.6.0(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(magicast@0.3.5)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(typescript@5.9.3))
       ioredis: 5.10.1
     transitivePeerDependencies:
@@ -12188,9 +12188,9 @@ snapshots:
       - prisma
       - supports-color
 
-  '@claustrum/openai@0.1.2(@claustrum/core@0.3.0(@adjudicate/core@1.5.0)(@adjudicate/runtime@0.3.0))(openai@4.104.0(ws@8.21.0)(zod@4.3.6))':
+  '@claustrum/openai@0.1.2(@claustrum/core@0.3.0(@adjudicate/core@1.6.0)(@adjudicate/runtime@0.3.0))(openai@4.104.0(ws@8.21.0)(zod@4.3.6))':
     dependencies:
-      '@claustrum/core': 0.3.0(@adjudicate/core@1.5.0)(@adjudicate/runtime@0.3.0)
+      '@claustrum/core': 0.3.0(@adjudicate/core@1.6.0)(@adjudicate/runtime@0.3.0)
       openai: 4.104.0(ws@8.21.0)(zod@4.3.6)
 
   '@colors/colors@1.6.0': {}

@@ -19,7 +19,7 @@
   },
   "dependencies": {
     "@adjudicate/conformance": "^3.0.0",
-    "@adjudicate/core": "^1.5.0",
+    "@adjudicate/core": "^1.6.0",
     "@adjudicate/pack-payments-pix": "^0.3.0",
     "@ibatexas/packs-composed": "workspace:*",
     "zod": "^4.3.6"
