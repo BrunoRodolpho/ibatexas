@@ -804,7 +804,7 @@ describe("GET /api/cart/orders/:orderId — R0a null-owner IDOR + per-order toke
     const res = await app.inject({
       method: "GET",
       url: "/api/cart/orders/order_guest",
-      // no x-customer-id, no ?t=
+      // no x-customer-id, no X-Order-Access-Token header
     });
     expect(res.statusCode).toBe(404);
     expect(res.json().message).toBe("Pedido não encontrado.");
@@ -818,7 +818,8 @@ describe("GET /api/cart/orders/:orderId — R0a null-owner IDOR + per-order toke
     mockMedusaAdmin.mockResolvedValue(nullOwnerOrder("order_guest"));
     const okRes = await app.inject({
       method: "GET",
-      url: `/api/cart/orders/order_guest?t=${encodeURIComponent(token)}`,
+      url: `/api/cart/orders/order_guest`,
+      headers: { "x-order-access-token": token },
     });
     expect(okRes.statusCode).toBe(200);
     expect(okRes.json().order.id).toBe("order_guest");
@@ -827,7 +828,8 @@ describe("GET /api/cart/orders/:orderId — R0a null-owner IDOR + per-order toke
     mockMedusaAdmin.mockResolvedValue(nullOwnerOrder("order_OTHER"));
     const otherRes = await app.inject({
       method: "GET",
-      url: `/api/cart/orders/order_OTHER?t=${encodeURIComponent(token)}`,
+      url: `/api/cart/orders/order_OTHER`,
+      headers: { "x-order-access-token": token },
     });
     expect(otherRes.statusCode).toBe(404);
     expect(otherRes.json().message).toBe("Pedido não encontrado.");
@@ -845,7 +847,8 @@ describe("GET /api/cart/orders/:orderId — R0a null-owner IDOR + per-order toke
     const app = await buildTestServer();
     const res = await app.inject({
       method: "GET",
-      url: `/api/cart/orders/order_guest?t=${encodeURIComponent(expiredToken)}`,
+      url: `/api/cart/orders/order_guest`,
+      headers: { "x-order-access-token": expiredToken },
     });
     expect(res.statusCode).toBe(404);
   });
@@ -913,14 +916,16 @@ describe("GET /api/cart/orders/:orderId/status — R0a null-owner IDOR + per-ord
 
     const okRes = await app.inject({
       method: "GET",
-      url: `/api/cart/orders/order_guest/status?t=${encodeURIComponent(token)}`,
+      url: `/api/cart/orders/order_guest/status`,
+      headers: { "x-order-access-token": token },
     });
     expect(okRes.statusCode).toBe(200);
     expect(okRes.json().status).toBe("preparing");
 
     const otherRes = await app.inject({
       method: "GET",
-      url: `/api/cart/orders/order_OTHER/status?t=${encodeURIComponent(token)}`,
+      url: `/api/cart/orders/order_OTHER/status`,
+      headers: { "x-order-access-token": token },
     });
     expect(otherRes.statusCode).toBe(404);
     expect(otherRes.json().error).toBe("Pedido não encontrado.");
@@ -936,7 +941,8 @@ describe("GET /api/cart/orders/:orderId/status — R0a null-owner IDOR + per-ord
     const app = await buildTestServer();
     const res = await app.inject({
       method: "GET",
-      url: `/api/cart/orders/order_guest/status?t=${encodeURIComponent(expiredToken)}`,
+      url: `/api/cart/orders/order_guest/status`,
+      headers: { "x-order-access-token": expiredToken },
     });
     expect(res.statusCode).toBe(404);
   });
@@ -990,7 +996,7 @@ describe("POST /api/cart/checkout — R0a mints a per-order access token (gate 3
   // NON-VACUOUS: this is exactly the cohort the R0a fix broke — without the
   // `result.paymentMethod === "card" && result.paymentIntentId` mint branch in
   // finalizeCheckout, `accessToken` is absent here (orderId is undefined), the
-  // guest lands on /pedido/pi_… with no `?t=`, and the deny-null-owner guard
+  // guest lands on /pedido/pi_… with no access token, and the deny-null-owner guard
   // 404s the webhook-created order. Drop that branch → accessToken is undefined
   // → the `verifyOrderAccessToken(...)` / typeof assertions go RED.
   it("guest card checkout (no orderId) mints a token bound to the paymentIntentId", async () => {
@@ -1035,7 +1041,7 @@ describe("POST /api/cart/checkout — R0a mints a per-order access token (gate 3
 // ── R0a regression #1 — guest CARD tracking via the per-order token ─────────
 //
 // The guest pays by card, lands on /pedido/<pi_…>, and polls /orders/:id +
-// /status with the `?t=` token minted at checkout. The webhook-created order
+// /status with the `X-Order-Access-Token` header token minted at checkout. The webhook-created order
 // has a NULL owner and is resolved from the RAW `pi_…` id via
 // metadata[stripePaymentIntentId]; R0a captures that raw id BEFORE resolution
 // and binds the token to it. This suite proves the round-trip: WITH the bound
@@ -1080,7 +1086,8 @@ describe("guest card tracking — pi_ read authorized by the bound per-order tok
     const token = createOrderAccessToken("pi_REG");
     const withTok = await app.inject({
       method: "GET",
-      url: `/api/cart/orders/pi_REG?t=${encodeURIComponent(token)}`,
+      url: `/api/cart/orders/pi_REG`,
+      headers: { "x-order-access-token": token },
     });
     expect(withTok.statusCode).toBe(200);
     expect(withTok.json().order.id).toBe("order_from_webhook");
@@ -1107,7 +1114,8 @@ describe("guest card tracking — pi_ read authorized by the bound per-order tok
     const token = createOrderAccessToken("pi_REG");
     const withTok = await app.inject({
       method: "GET",
-      url: `/api/cart/orders/pi_REG/status?t=${encodeURIComponent(token)}`,
+      url: `/api/cart/orders/pi_REG/status`,
+      headers: { "x-order-access-token": token },
     });
     expect(withTok.statusCode).toBe(200);
     expect(withTok.json().status).toBe("pending"); // not_fulfilled → pending
@@ -1119,7 +1127,8 @@ describe("guest card tracking — pi_ read authorized by the bound per-order tok
     const wrongToken = createOrderAccessToken("pi_DIFFERENT");
     const res = await app.inject({
       method: "GET",
-      url: `/api/cart/orders/pi_REG?t=${encodeURIComponent(wrongToken)}`,
+      url: `/api/cart/orders/pi_REG`,
+      headers: { "x-order-access-token": wrongToken },
     });
     expect(res.statusCode).toBe(404);
     expect(res.json().message).toBe("Pedido não encontrado.");

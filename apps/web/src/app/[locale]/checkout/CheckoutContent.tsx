@@ -364,8 +364,9 @@ function CheckoutForm() {
         // there's no orderId here; the guest tracks via /pedido/<paymentIntent.id>.
         // Stash the per-order access token keyed by that SAME id (== the redirect
         // route param == the /pedido page's lookup key) so the tracking page
-        // appends `?t=` and authorizes its reads/polls. Guest orders have a null
-        // owner → the deny-null-owner guard 404s every read without this token.
+        // sends it via the `X-Order-Access-Token` header and authorizes its
+        // reads/polls. Guest orders have a null owner → the deny-null-owner
+        // guard 404s every read without this token.
         // The token is bound server-side to the paymentIntentId; paymentIntent.id
         // is that same id. Best-effort (private mode etc.).
         if (data.accessToken && typeof window !== "undefined") {

@@ -1404,8 +1404,9 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
         tags: ["cart"],
         summary: "Buscar detalhes do pedido",
         params: z.object({ orderId: z.string().min(1) }),
-        // R0a — optional signed per-order access token (`?t=`) for guest reads.
-        querystring: z.object({ t: z.string().optional() }),
+        // R0a — optional signed per-order access token for guest reads, supplied
+        // via the `X-Order-Access-Token` header (never a query param — CWE-598:
+        // tokens in URLs land in access logs / Referer).
       },
       preHandler: optionalAuth,
     },
@@ -1501,7 +1502,7 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
         orderCustomerId,
         requestCustomerId: request.customerId,
         orderIdParam: orderId,
-        accessToken: request.query.t,
+        accessToken: request.headers["x-order-access-token"] as string | undefined,
       })) {
         return reply.status(404).send({ statusCode: 404, error: "Not Found", message: "Pedido não encontrado." });
       }
@@ -1546,8 +1547,9 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
         tags: ["cart"],
         summary: "Status do pedido (polling)",
         params: z.object({ orderId: z.string().min(1) }),
-        // R0a — optional signed per-order access token (`?t=`) for guest polls.
-        querystring: z.object({ t: z.string().optional() }),
+        // R0a — optional signed per-order access token for guest polls, supplied
+        // via the `X-Order-Access-Token` header (never a query param — CWE-598:
+        // tokens in URLs land in access logs / Referer).
       },
       preHandler: optionalAuth,
     },
@@ -1557,7 +1559,7 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
       // resolution below: the per-order token is bound to the exact id the
       // client holds (== the /pedido/<id> route param), not the resolved id.
       const orderIdParam = orderId;
-      const accessToken = request.query.t;
+      const accessToken = request.headers["x-order-access-token"] as string | undefined;
 
       // Resolve IBX-XXXX display ID to Medusa order ID
       if (/^IBX-\d+$/i.test(orderId)) {

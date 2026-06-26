@@ -80,12 +80,14 @@ export default function OrderTrackingPage() {
       return null
     }
   })
-  const tokenQuery = accessToken ? `?t=${encodeURIComponent(accessToken)}` : ""
 
   const fetchOrder = useCallback(async () => {
     try {
-      const res = await fetch(`${getApiBase()}/api/cart/orders/${encodeURIComponent(orderId)}${tokenQuery}`, {
+      // R0a — token sent via the `X-Order-Access-Token` header (never a query
+      // param: a token in the URL leaks into access logs / Referer — CWE-598).
+      const res = await fetch(`${getApiBase()}/api/cart/orders/${encodeURIComponent(orderId)}`, {
         credentials: "include",
+        headers: accessToken ? { "X-Order-Access-Token": accessToken } : undefined,
       })
       if (res.status === 202) {
         setPending(true)
@@ -103,7 +105,7 @@ export default function OrderTrackingPage() {
     } finally {
       setLoading(false)
     }
-  }, [orderId, tokenQuery])
+  }, [orderId, accessToken])
 
   useEffect(() => { void fetchOrder() }, [fetchOrder])
 
@@ -120,8 +122,9 @@ export default function OrderTrackingPage() {
     let cancelled = false
     const interval = setInterval(async () => {
       try {
-        const res = await fetch(`${getApiBase()}/api/cart/orders/${encodeURIComponent(orderId)}/status${tokenQuery}`, {
+        const res = await fetch(`${getApiBase()}/api/cart/orders/${encodeURIComponent(orderId)}/status`, {
           credentials: "include",
+          headers: accessToken ? { "X-Order-Access-Token": accessToken } : undefined,
         })
         if (cancelled) return
         if (res.ok) {
@@ -146,7 +149,7 @@ export default function OrderTrackingPage() {
       }
     }, 15_000)
     return () => { cancelled = true; clearInterval(interval) }
-  }, [order?.status, orderId, tokenQuery])
+  }, [order?.status, orderId, accessToken])
 
   if (loading) {
     return (
