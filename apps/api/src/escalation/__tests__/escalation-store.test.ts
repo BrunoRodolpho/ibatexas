@@ -57,6 +57,24 @@ describe("escalation store (D2)", () => {
     expect((await store.listOpen()).map((r) => r.sessionId)).toEqual(["s1"]);
   });
 
+  it("recordHandoff persists the caller's customerId when known (D2 — not dropped to null)", async () => {
+    const store = createEscalationStore(redis);
+    const rec = await store.recordHandoff({
+      sessionId: "s1",
+      customerId: "cust-42",
+      at: "2026-06-14T10:00:00.000Z",
+    });
+    expect(rec.customerId).toBe("cust-42");
+    // round-trips through the store (persisted, not just returned).
+    expect((await store.get("s1"))?.customerId).toBe("cust-42");
+  });
+
+  it("recordHandoff defaults customerId to null when the caller has none", async () => {
+    const store = createEscalationStore(redis);
+    const rec = await store.recordHandoff({ sessionId: "s2", at: "2026-06-14T10:00:00.000Z" });
+    expect(rec.customerId).toBeNull();
+  });
+
   it("recordHandoff is idempotent — preserves the original handoffAt + reason", async () => {
     const store = createEscalationStore(redis);
     await store.recordHandoff({ sessionId: "s1", reason: "first", at: "2026-06-14T10:00:00.000Z" });
