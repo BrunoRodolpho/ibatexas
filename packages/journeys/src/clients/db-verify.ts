@@ -51,9 +51,16 @@ interface Ctx { q: QueryFn; domain: DomainReader; http: HttpFn; customer: Custom
 // strip CR/LF so externally-sourced data can't forge log lines (S5145)
 const oneLine = (x: unknown): string => String(x).replace(/[\r\n]+/g, " ")
 const KERNEL_VERBS = new Set(["EXECUTE", "REFUSE", "REQUEST_CONFIRMATION", "ESCALATE", "DEFER", "REWRITE"])
+const BASE_ORIGIN = new URL(API_BASE).origin
 
 async function http(m: string, p: string, cookie: string, body?: unknown): Promise<{ status: number; json: any }> {
-  const r = await fetch(`${API_BASE}${p}`, { method: m, headers: { "content-type": "application/json", cookie }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+  // Pin the request to the configured API origin — the path is built from
+  // run-time ids, so reject anything that would escape the base (S7044/S8476).
+  const url = new URL(p, API_BASE)
+  if (url.origin !== BASE_ORIGIN) {
+    throw new Error("request URL escaped the expected API origin")
+  }
+  const r = await fetch(url, { method: m, headers: { "content-type": "application/json", cookie }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
   let json: any = null; try { json = await r.json() } catch { /* */ }
   return { status: r.status, json }
 }

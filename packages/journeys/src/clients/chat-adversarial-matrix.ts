@@ -57,9 +57,9 @@ interface Result {
   outcome: string; rootCause: string; note: string; ok: boolean
 }
 const results: Result[] = []
-async function say(s: string) { console.log(s); await appendFile(path.join(OUT, "run.log"), s + "\n").catch(() => {}) }
 // Collapse CR/LF in user-controlled text before it reaches a log sink (prevents log-forging).
 const oneLine = (s: string): string => s.replaceAll(/[\r\n]+/g, " ")
+async function say(s: string) { const line = oneLine(s); console.log(line); await appendFile(path.join(OUT, "run.log"), line + "\n").catch(() => {}) }
 
 let env: Record<string, string>, redactSecret = "", jwtSecret = ""
 let reader: AuditReader
