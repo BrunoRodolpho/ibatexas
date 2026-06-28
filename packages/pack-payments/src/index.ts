@@ -112,11 +112,15 @@ export {
 } from "./signals.js"
 
 export {
+  refundAlreadyExhausted,
+  refundNotInRefundableState,
+  refundStaleRead,
   refundStateDivergent,
   refuseAmountNonPositive,
   refuseDefault,
   refuseMethodInvalid,
   refusePaymentNotFound,
+  refusePaymentOwnershipDenied,
   refusePaymentTerminal,
   refuseRefundAmountInvalid,
   refuseRefundOverBalance,
@@ -186,6 +190,10 @@ export const paymentsPack = {
     "payment.default.deny",
     "refund.amount_invalid",
     "refund.state_divergent",
+    "refund.not_refundable_state",
+    "refund.already_refunded",
+    "refund.stale_read",
+    "payment.ownership_denied",
     "regeneration.state_divergent",
     "regeneration.cap_exceeded",
     "retry.cap_exceeded",

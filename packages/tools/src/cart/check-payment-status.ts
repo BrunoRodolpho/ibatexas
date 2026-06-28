@@ -74,13 +74,12 @@ async function checkPaymentStatusImpl(
 
 // N-P0.2 / SEC-002: close the payment IDOR. PAYMENT_STATUS is customer_scoped,
 // reachable only via the OrderProjection-join ownership the canonical guard
-// performs — so assert order ownership BEFORE any payment read. `requireOwner`
-// enforces Inv 2 ("no owner" ≠ "any owner" → REFUSED). Reuses the same
+// performs — so assert order ownership BEFORE any payment read. The guard is
+// STRICT BY DEFAULT (Inv 2: "no owner" ≠ "any owner" → REFUSED), so no opt-in
+// is needed — an unowned order is refused for free. Reuses the same
 // withOrderOwnership / assertOrderOwnership path as check_order_status — no
 // second ownership mechanism.
-export const checkPaymentStatus = withOrderOwnership(checkPaymentStatusImpl, {
-  requireOwner: true,
-});
+export const checkPaymentStatus = withOrderOwnership(checkPaymentStatusImpl);
 
 export const CheckPaymentStatusTool = {
   name: "check_payment_status",

@@ -69,10 +69,25 @@ export default function OrderTrackingPage() {
   const [error, setError] = useState<string | null>(null)
   const [pending, setPending] = useState(false)
 
+  // R0a — signed per-order access token stashed at checkout (keyed by orderId).
+  // Guest orders have a null owner, so the API order reads/polls require this
+  // token (or an owner cookie) to authorize — without it they 404 (deny-null-owner).
+  const [accessToken] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null
+    try {
+      return sessionStorage.getItem(`order-access-token:${orderId}`)
+    } catch {
+      return null
+    }
+  })
+
   const fetchOrder = useCallback(async () => {
     try {
+      // R0a — token sent via the `X-Order-Access-Token` header (never a query
+      // param: a token in the URL leaks into access logs / Referer — CWE-598).
       const res = await fetch(`${getApiBase()}/api/cart/orders/${encodeURIComponent(orderId)}`, {
         credentials: "include",
+        headers: accessToken ? { "X-Order-Access-Token": accessToken } : undefined,
       })
       if (res.status === 202) {
         setPending(true)
@@ -90,7 +105,7 @@ export default function OrderTrackingPage() {
     } finally {
       setLoading(false)
     }
-  }, [orderId])
+  }, [orderId, accessToken])
 
   useEffect(() => { void fetchOrder() }, [fetchOrder])
 
@@ -109,6 +124,7 @@ export default function OrderTrackingPage() {
       try {
         const res = await fetch(`${getApiBase()}/api/cart/orders/${encodeURIComponent(orderId)}/status`, {
           credentials: "include",
+          headers: accessToken ? { "X-Order-Access-Token": accessToken } : undefined,
         })
         if (cancelled) return
         if (res.ok) {
@@ -133,7 +149,7 @@ export default function OrderTrackingPage() {
       }
     }, 15_000)
     return () => { cancelled = true; clearInterval(interval) }
-  }, [order?.status, orderId])
+  }, [order?.status, orderId, accessToken])
 
   if (loading) {
     return (

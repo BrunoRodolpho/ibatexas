@@ -37,6 +37,8 @@ import {
   MedusaAdjudicateNeedsReviewError,
   isValidCpf,
   normalizeCpf,
+  createOrderAccessToken,
+  verifyOrderAccessToken,
 } from "@ibatexas/tools";
 import { Channel } from "@ibatexas/types";
 import { createCustomerService, createOrderCommandService, createPaymentQueryService, prisma } from "@ibatexas/domain";
@@ -262,6 +264,44 @@ async function verifyCartOwnership(
 const checkoutConfirmationStore = createCheckoutConfirmationStore();
 
 /**
+ * R0a — customer-facing order-read authorization (closes the null-owner IDOR).
+ *
+ * SDD Invariant 2 (§J.2): ownership is a VALIDATION predicate — a
+ * `customer_scoped` resource with NO owner attribution is REFUSED, because
+ * "no owner" ≠ "any owner". A lenient `owner && owner !== caller` guard
+ * short-circuits to ALLOW when `owner` is null, leaking guest (null-`customer_id`)
+ * orders to any anonymous `IBX-<n>` enumerator. This predicate denies null-owner
+ * reads unless the caller proves entitlement.
+ *
+ * A read is authorized iff EITHER:
+ *   - the caller is the authenticated owner (`request.customerId` set AND equal
+ *     to the order's owner), OR
+ *   - the caller presents a valid signed per-order access token BOUND to this
+ *     exact `orderId` (the guest-tracking path — PLAN decision (a); minted at
+ *     checkout, HMAC over orderId + short TTL).
+ *
+ * No owner match and no valid token ⇒ the caller gets a 404 (existence-masking).
+ */
+function isOrderReadAuthorized(args: {
+  orderCustomerId: string | null | undefined;
+  requestCustomerId: string | undefined;
+  orderIdParam: string;
+  accessToken: string | undefined;
+}): boolean {
+  const { orderCustomerId, requestCustomerId, orderIdParam, accessToken } = args;
+  // Owner match — authenticated caller IS the order's owner. A null owner never
+  // matches (Inv 2: "no owner" ≠ "any owner").
+  if (requestCustomerId && orderCustomerId && requestCustomerId === orderCustomerId) {
+    return true;
+  }
+  // Signed per-order guest token bound to THIS order.
+  if (accessToken && verifyOrderAccessToken(accessToken, orderIdParam)) {
+    return true;
+  }
+  return false;
+}
+
+/**
  * Shared post-checkout finalize: apply the money-path side effects + shape
  * the response. Used by BOTH `POST /api/cart/checkout` (EXECUTE) and
  * `POST /api/cart/checkout/confirm` so the two paths never drift.
@@ -372,7 +412,28 @@ async function finalizeCheckout(args: {
     }
   }
 
-  return reply.send(result);
+  // R0a — mint a signed per-order access token so a GUEST (null-owner order)
+  // can still authorize the order-tracking reads/polls after checkout. Authed
+  // owners don't need it (cookie owner-match covers them) but returning it is
+  // harmless.
+  //
+  // cash/PIX: the order exists now, so bind the token to result.orderId — the
+  // same id the client navigates to /pedido/<id> with.
+  //
+  // card: the order is created LATER by the Stripe webhook, so there is no
+  // orderId here. The guest tracks via /pedido/<paymentIntentId> (a `pi_…`
+  // id), and the read guards (/orders/:orderId + /status) capture that RAW
+  // caller-supplied id BEFORE resolving it to the Medusa order — so a token
+  // bound to the paymentIntentId lines up exactly with the verify on that
+  // `pi_…` id. Without this, a guest card checkout lands on /pedido/pi_… with
+  // no token and the deny-null-owner guard 404s the webhook-created order.
+  let accessToken: string | undefined;
+  if (result.orderId) {
+    accessToken = createOrderAccessToken(result.orderId);
+  } else if (result.paymentMethod === "card" && result.paymentIntentId) {
+    accessToken = createOrderAccessToken(result.paymentIntentId);
+  }
+  return reply.send(accessToken ? { ...result, accessToken } : result);
 }
 
 export async function cartRoutes(server: FastifyInstance): Promise<void> {
@@ -1343,6 +1404,9 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
         tags: ["cart"],
         summary: "Buscar detalhes do pedido",
         params: z.object({ orderId: z.string().min(1) }),
+        // R0a — optional signed per-order access token for guest reads, supplied
+        // via the `X-Order-Access-Token` header (never a query param — CWE-598:
+        // tokens in URLs land in access logs / Referer).
       },
       preHandler: optionalAuth,
     },
@@ -1427,12 +1491,19 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
         return reply.status(404).send({ statusCode: 404, error: "Not Found", message: "Pedido não encontrado." });
       }
 
-      // Verify ownership — prevent IDOR. A missing caller identity (anonymous
-      // request under optionalAuth) is treated as a mismatch: an owned order is
-      // never readable without proving you are the owner. Order display IDs
-      // (IBX-<n>) are sequential and enumerable, so anonymous reads must fail.
+      // R0a — deny-null-owner IDOR guard (SDD Inv 2/13). Authorize iff the
+      // authenticated caller owns the order OR a valid signed per-order token
+      // bound to this :orderId is presented. A null `customer_id` (guest order)
+      // no longer short-circuits to ALLOW: "no owner" ≠ "any owner". Order
+      // display IDs (IBX-<n>) are sequential + enumerable, so unauthorized
+      // reads must 404.
       const orderCustomerId = order.customer_id ?? order.metadata?.["customerId"];
-      if (orderCustomerId && orderCustomerId !== request.customerId) {
+      if (!isOrderReadAuthorized({
+        orderCustomerId,
+        requestCustomerId: request.customerId,
+        orderIdParam: orderId,
+        accessToken: request.headers["x-order-access-token"] as string | undefined,
+      })) {
         return reply.status(404).send({ statusCode: 404, error: "Not Found", message: "Pedido não encontrado." });
       }
 
@@ -1476,11 +1547,19 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
         tags: ["cart"],
         summary: "Status do pedido (polling)",
         params: z.object({ orderId: z.string().min(1) }),
+        // R0a — optional signed per-order access token for guest polls, supplied
+        // via the `X-Order-Access-Token` header (never a query param — CWE-598:
+        // tokens in URLs land in access logs / Referer).
       },
       preHandler: optionalAuth,
     },
     async (request, reply) => {
       let { orderId } = request.params;
+      // R0a — capture the caller-supplied id BEFORE the IBX-/pi_ → Medusa-id
+      // resolution below: the per-order token is bound to the exact id the
+      // client holds (== the /pedido/<id> route param), not the resolved id.
+      const orderIdParam = orderId;
+      const accessToken = request.headers["x-order-access-token"] as string | undefined;
 
       // Resolve IBX-XXXX display ID to Medusa order ID
       if (/^IBX-\d+$/i.test(orderId)) {
@@ -1513,10 +1592,17 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
         const projection = await querySvc.getById(orderId);
 
         if (projection) {
-          // Verify ownership — a missing caller identity counts as a mismatch
-          // (prevents anonymous enumeration of sequential IBX-<n> order IDs).
-          if (projection.customerId && projection.customerId !== request.customerId) {
-            return reply.status(404).send({ error: "Pedido nao encontrado." });
+          // R0a — deny-null-owner IDOR guard (SDD Inv 2/13). Authorize iff the
+          // authenticated caller owns the order OR a valid signed per-order
+          // token bound to this id is presented. A null owner no longer leaks:
+          // "no owner" ≠ "any owner".
+          if (!isOrderReadAuthorized({
+            orderCustomerId: projection.customerId,
+            requestCustomerId: request.customerId,
+            orderIdParam,
+            accessToken,
+          })) {
+            return reply.status(404).send({ error: "Pedido não encontrado." });
           }
           const pqs = createPaymentQueryService();
           const cp = await pqs.getActiveByOrderId(orderId).catch(() => null);
@@ -1549,11 +1635,17 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
           return reply.status(202).send({ status: "pending", updatedAt: null });
         }
 
-        // Verify ownership — a missing caller identity counts as a mismatch
-        // (prevents anonymous enumeration of sequential IBX-<n> order IDs).
+        // R0a — deny-null-owner IDOR guard (SDD Inv 2/13), Medusa-fallback path.
+        // Authorize iff the authenticated caller owns the order OR a valid
+        // signed per-order token bound to this id is presented.
         const orderCustomerId = order.customer_id ?? order.metadata?.["customerId"];
-        if (orderCustomerId && orderCustomerId !== request.customerId) {
-          return reply.status(404).send({ error: "Pedido nao encontrado." });
+        if (!isOrderReadAuthorized({
+          orderCustomerId,
+          requestCustomerId: request.customerId,
+          orderIdParam,
+          accessToken,
+        })) {
+          return reply.status(404).send({ error: "Pedido não encontrado." });
         }
 
         // Medusa uses "not_fulfilled" / "fulfilled" / "canceled" etc.

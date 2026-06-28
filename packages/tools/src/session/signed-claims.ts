@@ -92,3 +92,69 @@ export function verifySessionToken(token: string): SessionClaim | null {
 
   return claim
 }
+
+// ── Signed per-order access token (R0a) ─────────────────────────────────────
+//
+// A short-TTL HMAC token that authorizes reads of ONE order without an
+// authenticated session — the guest-tracking path. The signature is taken over
+// `${orderId}:${expiresAt}`, so the token is BOUND to a specific order: a token
+// minted for order Y recomputes a different digest when verified against order
+// X, so it can never authorize X (verify() returns false). This realizes PLAN
+// decision (a) — a guest order has a NULL owner, and per SDD Invariant 2 a
+// null-owner `customer_scoped` resource is REFUSED to "any owner"; the ONLY
+// legitimate non-owner read is the holder of this per-order token.
+//
+// Reuses the same crypto primitives as the session token above
+// (createHmac("sha256", sessionSecret()) + timingSafeEqual + base64url) — no
+// new secret, no reinvented crypto.
+
+// TTL: 72h. Long enough for a guest to track an order across the full
+// prep→fulfillment window (and to re-open the link the next day), short enough
+// to bound the blast radius of a leaked tracking link. Bounded constant.
+const ORDER_ACCESS_TOKEN_MAX_AGE_MS = 72 * 60 * 60 * 1000 // 72h
+
+function signOrderAccess(orderId: string, expiresAt: number): string {
+  const payload = `${orderId}:${expiresAt}`
+  return createHmac("sha256", sessionSecret()).update(payload).digest("base64url")
+}
+
+/**
+ * Mint a per-order access token for `orderId`.
+ * Format: `expiresAt.signature` (signature is base64url; base64url has no `.`,
+ * so the split on `.` is unambiguous).
+ */
+export function createOrderAccessToken(orderId: string): string {
+  const expiresAt = Date.now() + ORDER_ACCESS_TOKEN_MAX_AGE_MS
+  const sig = signOrderAccess(orderId, expiresAt)
+  return `${expiresAt}.${sig}`
+}
+
+/**
+ * Verify a per-order access token: valid signature, NOT expired, AND bound to
+ * `orderId` (a token for a different order can never authorize this one).
+ * Returns `false` on any tampering / expiry / orderId mismatch — never throws.
+ */
+export function verifyOrderAccessToken(token: string, orderId: string): boolean {
+  if (typeof token !== "string" || typeof orderId !== "string" || orderId === "") {
+    return false
+  }
+
+  const parts = token.split(".")
+  if (parts.length !== 2) return false
+
+  const [expiresAtStr, signature] = parts
+  const expiresAt = Number.parseInt(expiresAtStr!, 10)
+  if (Number.isNaN(expiresAt)) return false
+
+  // Expiry — reject once past the bounded TTL window.
+  if (Date.now() > expiresAt) return false
+
+  // Recompute the signature BOUND to the supplied orderId + the token's own
+  // expiry stamp and compare timing-safely. A token minted for another order
+  // recomputes a different digest here → mismatch → false (binding).
+  const expected = signOrderAccess(orderId, expiresAt)
+  const sigBuf = Buffer.from(signature!, "base64url")
+  const expBuf = Buffer.from(expected, "base64url")
+  if (sigBuf.length !== expBuf.length) return false
+  return timingSafeEqual(sigBuf, expBuf)
+}

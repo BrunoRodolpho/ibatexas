@@ -2,6 +2,8 @@
 
 > Read these docs before writing any code.
 
+> **Spec authority for the claims runtime:** see [`CLAUDE.SDD.md`](./CLAUDE.SDD.md) — the IbateXas Spec-Driven Development constraint system (compilation authority: §A precedence, §E §5 soundness predicate, §J invariants, §K registry 37/40, §P forbidden misreadings, §R validation gate). Where it and this guide disagree about the claims runtime, CLAUDE.SDD.md wins; surface the conflict.
+
 | Need | Go to |
 |------|-------|
 | System diagrams, module map, "where is X?" | [docs/architecture/](docs/architecture/) |

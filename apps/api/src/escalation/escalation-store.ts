@@ -143,16 +143,26 @@ export async function getEscalationStore(): Promise<EscalationStore> {
 }
 
 /**
- * Hot-path bot-pause gate. Best-effort + fail-OPEN: a Redis hiccup must NEVER
- * wedge the conversational pipeline into permanent silence — if we can't read
- * the flag, the bot keeps replying (a missed pause is recoverable; a stuck-mute
- * bot is not). Returns true only when an OPEN escalation is confirmed.
+ * Hot-path bot-pause gate. Fail-CLOSED per SDD Invariant 7 ("safety-gate reads
+ * fail CLOSED — read-error ≠ read-absence") and §E `HUMAN_HANDOFF_ACTIVE`
+ * ("read-error → safe posture, never concrete `false`").
+ *
+ * This gate decides whether the bot may auto-reply. A read-error means the
+ * pause state is UNKNOWN — the safety gate is *unreachable*, not *absent*. A
+ * concrete `false` (bot keeps replying) would let the LLM talk over a human who
+ * may be handling the session; that is the unsafe posture. So on ANY store/Redis
+ * error we return `true` (treat the session as PAUSED — the safe posture).
+ *
+ * The store-reachable path is unchanged: a genuine "not paused" still returns
+ * false and a genuine OPEN escalation still returns true. Only a read-ERROR is
+ * coerced to the safe `true`; a read-ABSENCE (no record) is a real `false`.
  */
 export async function isSessionPausedForHuman(sessionId: string): Promise<boolean> {
   try {
     const store = await getEscalationStore();
     return await store.isPaused(sessionId);
   } catch {
-    return false;
+    // Fail-CLOSED (Inv 7 / §E): the safety gate is unreachable ⇒ assume PAUSED.
+    return true;
   }
 }

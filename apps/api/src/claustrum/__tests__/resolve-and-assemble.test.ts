@@ -463,6 +463,45 @@ describe("resolve-and-assemble — 034-F1 ownership binding (review findings 6/7
   });
 });
 
+describe("resolve-and-assemble — D1 refund freshness/refundable ctx (Inv 11 strengthen)", () => {
+  it("stamps paymentReadThisTurn + currentStatus on a LIVE active-payment read (feeds the pack's refundable + freshness conjuncts)", async () => {
+    paymentGetById = async (id) => (id === "pay1" ? { id, orderId: "o1" } : null);
+    orderGetById = async () => ({ customerId: "c1" });
+    paymentGetActiveByOrderId = async () => ({
+      status: "paid",
+      method: "pix",
+      amountInCentavos: 30_000,
+      refundedAmountCentavos: 0,
+      version: 1,
+    });
+    const { ctx, owned } = await resolveAndAssemble({
+      kind: "payment.refund.issue",
+      payload: { paymentId: "pay1", refundAmountCentavos: 1000 },
+      customerId: "c1",
+      channel: "web",
+    });
+    // must_read_this_turn marker (SDD §5 fresh / §G sourceMode==live).
+    expect(ctx.paymentReadThisTurn).toBe(true);
+    expect(ctx.currentStatus).toBe("paid"); // refundable-state conjunct sees a settled payment
+    expect(ctx.exists).toBe(true);
+    expect(owned).toEqual(["o1"]); // ownership conjunct: authority graph engages
+  });
+
+  it("does NOT stamp paymentReadThisTurn when the owned order has NO active payment (nothing read live → fails closed at the pack)", async () => {
+    paymentGetById = async (id) => (id === "pay1" ? { id, orderId: "o1" } : null);
+    orderGetById = async () => ({ customerId: "c1" });
+    paymentGetActiveByOrderId = async () => null; // owned, but no active payment
+    const { ctx } = await resolveAndAssemble({
+      kind: "payment.refund.issue",
+      payload: { paymentId: "pay1", refundAmountCentavos: 1000 },
+      customerId: "c1",
+      channel: "web",
+    });
+    expect(ctx.exists).toBe(false);
+    expect(ctx.paymentReadThisTurn).toBeUndefined();
+  });
+});
+
 describe("resolve-and-assemble — identity base", () => {
   it("marks a guest unauthenticated and never sets customerId", async () => {
     const { ctx } = await resolveAndAssemble({

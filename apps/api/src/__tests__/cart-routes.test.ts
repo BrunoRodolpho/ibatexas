@@ -11,11 +11,30 @@ import {
 } from "fastify-type-provider-zod";
 import sensible from "@fastify/sensible";
 import type { FastifyRequest, FastifyReply } from "fastify";
+// Wire the no-op audit sink BEFORE importing the routes. `getAuditSink()`
+// (@ibatexas/audit-sink) is fail-closed: it throws AuditSinkNotInitializedError
+// until `__setAuditSinkDependencies(...)` runs, and the cart routes build
+// wrapper meta with `auditSink: getAuditSink()` on every governed egress +
+// checkout. The apps/api vitest config wires this via `setupFiles`, but a direct
+// `vitest run` from the repo ROOT resolves the root vitest.config.ts (no
+// setupFiles), leaving the sink un-wired → every write/checkout route 500s.
+// Importing the canonical setup here makes this test file config-independent
+// (idempotent: __setAuditSinkDependencies just re-assigns the deps).
+import "./setup.js";
 import { cartRoutes } from "../routes/cart.js";
 import {
   createCheckoutConfirmationStore,
   type PendingCheckout,
 } from "../routes/checkout-confirmation-store.js";
+// R0a — the mocked `@ibatexas/tools` re-exports the REAL token helpers
+// (importActual above) and the mocked `createCheckout`. We mint/verify tokens
+// with the real helpers and override createCheckout's resolved value to assert
+// the checkout response carries a valid per-order token.
+import {
+  createOrderAccessToken,
+  verifyOrderAccessToken,
+  createCheckout,
+} from "@ibatexas/tools";
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────────
 
@@ -37,6 +56,10 @@ const mockAdjudicate = vi.hoisted(() => vi.fn());
 // Mock it so confirm tests control the resolved decision without the real
 // kernel/audit-sink I/O. No existing test touches this verb.
 const mockAdjudicateAndAudit = vi.hoisted(() => vi.fn());
+// R0a — the /status route resolves order projections via
+// createOrderQueryService().getById. Hoisted so each test controls the owner
+// attribution (null owner = guest order) under test.
+const mockOrderQueryGetById = vi.hoisted(() => vi.fn());
 
 const MockMedusaRequestError = vi.hoisted(() =>
   class extends Error {
@@ -100,6 +123,10 @@ vi.mock("@ibatexas/tools", async () => {
     MedusaAdjudicateNeedsReviewError: MockNeedsReviewError,
     isValidCpf: actual.isValidCpf,
     normalizeCpf: actual.normalizeCpf,
+    // R0a — use the REAL per-order token helpers so the IDOR/binding/expiry
+    // guards are exercised faithfully (HMAC sign+verify, not a stubbed true).
+    createOrderAccessToken: actual.createOrderAccessToken,
+    verifyOrderAccessToken: actual.verifyOrderAccessToken,
   };
 });
 
@@ -109,6 +136,10 @@ vi.mock("@ibatexas/domain", () => ({
   }),
   createPaymentQueryService: () => ({
     getActiveByOrderId: vi.fn().mockResolvedValue(null),
+  }),
+  // R0a — the /status route imports this dynamically for the projection path.
+  createOrderQueryService: () => ({
+    getById: mockOrderQueryGetById,
   }),
   prisma: {
     orderProjection: {
@@ -729,6 +760,392 @@ describe("GET /api/cart/orders/:orderId — IDOR check", () => {
     expect(res.statusCode).toBe(404);
     const body = res.json();
     expect(body.message).toBe("Pedido não encontrado.");
+  });
+});
+
+// ── R0a — null-owner IDOR close + signed per-order access token ─────────────
+//
+// CLOSED DEFECT: the old guard `if (owner && owner !== caller) → 404`
+// short-circuited to ALLOW when an order's customer_id was NULL (guest
+// checkout, optionalAuth), leaking the order/status/payment to any anonymous
+// IBX-<n> enumerator. SDD Invariant 2 (§J.2): a `customer_scoped` resource with
+// NO owner attribution resolves REFUSED — "no owner" ≠ "any owner". The read is
+// now authorized iff (authed owner-match) OR (valid signed per-order token bound
+// to THIS orderId). Per PLAN decision (a): no match + no token ⇒ 404.
+
+describe("GET /api/cart/orders/:orderId — R0a null-owner IDOR + per-order token", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
+  });
+
+  function nullOwnerOrder(id: string) {
+    return {
+      order: {
+        id,
+        status: "preparing",
+        display_id: 77,
+        total: 178,
+        subtotal: 158,
+        shipping_total: 20,
+        customer_id: null, // guest checkout — NO owner attribution
+        items: [],
+        created_at: "2026-06-25T00:00:00.000Z",
+      },
+    };
+  }
+
+  // (a) NON-VACUOUS: revert the deny to the lenient `owner && owner !== caller`
+  // form and `customer_id: null` short-circuits to ALLOW → the route returns
+  // 200 (the leak) and this 404 assertion goes RED.
+  it("(a) anonymous + null-owner order + no token → 404 (was a 200 leak)", async () => {
+    mockMedusaAdmin.mockResolvedValue(nullOwnerOrder("order_guest"));
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/cart/orders/order_guest",
+      // no x-customer-id, no X-Order-Access-Token header
+    });
+    expect(res.statusCode).toBe(404);
+    expect(res.json().message).toBe("Pedido não encontrado.");
+  });
+
+  // (d) binding: a valid token authorizes ONLY the order it was minted for.
+  it("(d) per-order token authorizes its bound order (200) but not another (404)", async () => {
+    const token = createOrderAccessToken("order_guest");
+    const app = await buildTestServer();
+
+    mockMedusaAdmin.mockResolvedValue(nullOwnerOrder("order_guest"));
+    const okRes = await app.inject({
+      method: "GET",
+      url: `/api/cart/orders/order_guest`,
+      headers: { "x-order-access-token": token },
+    });
+    expect(okRes.statusCode).toBe(200);
+    expect(okRes.json().order.id).toBe("order_guest");
+
+    // SAME token, DIFFERENT order id → not bound → 404.
+    mockMedusaAdmin.mockResolvedValue(nullOwnerOrder("order_OTHER"));
+    const otherRes = await app.inject({
+      method: "GET",
+      url: `/api/cart/orders/order_OTHER`,
+      headers: { "x-order-access-token": token },
+    });
+    expect(otherRes.statusCode).toBe(404);
+    expect(otherRes.json().message).toBe("Pedido não encontrado.");
+  });
+
+  // (e) expired token → 404. Mint with Date.now pinned in 1970 so the bounded
+  // TTL is long elapsed by real time; only Date.now is mocked (timers untouched,
+  // so app.inject's promises resolve normally).
+  it("(e) expired per-order token → 404", async () => {
+    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(1000);
+    const expiredToken = createOrderAccessToken("order_guest");
+    nowSpy.mockRestore();
+
+    mockMedusaAdmin.mockResolvedValue(nullOwnerOrder("order_guest"));
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/cart/orders/order_guest`,
+      headers: { "x-order-access-token": expiredToken },
+    });
+    expect(res.statusCode).toBe(404);
+  });
+});
+
+describe("GET /api/cart/orders/:orderId/status — R0a null-owner IDOR + per-order token", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
+  });
+
+  function projection(customerId: string | null) {
+    return {
+      customerId,
+      fulfillmentStatus: "preparing",
+      updatedAt: new Date("2026-06-25T00:00:00.000Z"),
+    };
+  }
+
+  // (a) NON-VACUOUS: with the lenient guard, `customerId: null` short-circuits
+  // to ALLOW → the status/payment leak returns 200; this 404 assert goes RED.
+  it("(a) anonymous + null-owner projection + no token → 404 (was a 200 leak)", async () => {
+    mockOrderQueryGetById.mockResolvedValue(projection(null));
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/cart/orders/order_guest/status",
+    });
+    expect(res.statusCode).toBe(404);
+    // (f) accent fix on the touched 404 copy.
+    expect(res.json().error).toBe("Pedido não encontrado.");
+  });
+
+  // (b) cross-customer read (authed as B, order owned by A) → 404.
+  it("(b) cross-customer read → 404", async () => {
+    mockOrderQueryGetById.mockResolvedValue(projection("cus_A"));
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/cart/orders/order_A/status",
+      headers: { "x-customer-id": "cus_B" },
+    });
+    expect(res.statusCode).toBe(404);
+    expect(res.json().error).toBe("Pedido não encontrado.");
+  });
+
+  // (c) authed owner read → 200.
+  it("(c) authed owner read → 200", async () => {
+    mockOrderQueryGetById.mockResolvedValue(projection("cus_OWNER"));
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/cart/orders/order_OWNER/status",
+      headers: { "x-customer-id": "cus_OWNER" },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().status).toBe("preparing");
+  });
+
+  // (d) binding on the /status path.
+  it("(d) per-order token authorizes its bound order (200) but not another (404)", async () => {
+    mockOrderQueryGetById.mockResolvedValue(projection(null));
+    const token = createOrderAccessToken("order_guest");
+    const app = await buildTestServer();
+
+    const okRes = await app.inject({
+      method: "GET",
+      url: `/api/cart/orders/order_guest/status`,
+      headers: { "x-order-access-token": token },
+    });
+    expect(okRes.statusCode).toBe(200);
+    expect(okRes.json().status).toBe("preparing");
+
+    const otherRes = await app.inject({
+      method: "GET",
+      url: `/api/cart/orders/order_OTHER/status`,
+      headers: { "x-order-access-token": token },
+    });
+    expect(otherRes.statusCode).toBe(404);
+    expect(otherRes.json().error).toBe("Pedido não encontrado.");
+  });
+
+  // (e) expired token → 404 on /status.
+  it("(e) expired per-order token → 404", async () => {
+    mockOrderQueryGetById.mockResolvedValue(projection(null));
+    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(1000);
+    const expiredToken = createOrderAccessToken("order_guest");
+    nowSpy.mockRestore();
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/cart/orders/order_guest/status`,
+      headers: { "x-order-access-token": expiredToken },
+    });
+    expect(res.statusCode).toBe(404);
+  });
+});
+
+describe("POST /api/cart/checkout — R0a mints a per-order access token (gate 3)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
+    mockAdjudicate.mockReturnValue({ kind: "EXECUTE", basis: [] });
+  });
+
+  // The checkout response carries a token the guest can use to track the order.
+  // NON-VACUOUS: drop the mint in finalizeCheckout and `accessToken` is absent
+  // → the `verifyOrderAccessToken(...)` assertion throws / the typeof check
+  // fails (RED).
+  it("checkout response carries a valid token bound to the order", async () => {
+    mockGetRedisClient.mockResolvedValue(
+      createMockRedis({ del: vi.fn().mockResolvedValue(1) }),
+    );
+    // Guest card checkout (SEC-001 permits) with a concrete orderId so
+    // finalizeCheckout mints a bound token.
+    vi.mocked(createCheckout).mockResolvedValueOnce({
+      success: true,
+      paymentMethod: "card",
+      orderId: "order_MINT",
+      message: "ok",
+    });
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/cart/checkout",
+      payload: { cartId: "cart_01", paymentMethod: "card" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { orderId?: string; accessToken?: string };
+    expect(body.orderId).toBe("order_MINT");
+    expect(typeof body.accessToken).toBe("string");
+    // The minted token authorizes its own order, and ONLY its own order.
+    expect(verifyOrderAccessToken(body.accessToken!, "order_MINT")).toBe(true);
+    expect(verifyOrderAccessToken(body.accessToken!, "order_OTHER")).toBe(false);
+  });
+
+  // R0a regression #1 (guest CARD): a card checkout has NO orderId — the order
+  // is created LATER by the Stripe webhook — but it DOES carry the Stripe
+  // PaymentIntent id. The guest tracks via /pedido/<paymentIntentId>, so the
+  // token must be minted bound to that `pi_…` id (not orderId, which is absent).
+  //
+  // NON-VACUOUS: this is exactly the cohort the R0a fix broke — without the
+  // `result.paymentMethod === "card" && result.paymentIntentId` mint branch in
+  // finalizeCheckout, `accessToken` is absent here (orderId is undefined), the
+  // guest lands on /pedido/pi_… with no access token, and the deny-null-owner guard
+  // 404s the webhook-created order. Drop that branch → accessToken is undefined
+  // → the `verifyOrderAccessToken(...)` / typeof assertions go RED.
+  it("guest card checkout (no orderId) mints a token bound to the paymentIntentId", async () => {
+    mockGetRedisClient.mockResolvedValue(
+      createMockRedis({ del: vi.fn().mockResolvedValue(1) }),
+    );
+    // Card branch shape: success, no orderId, a `pi_…` PaymentIntent id.
+    vi.mocked(createCheckout).mockResolvedValueOnce({
+      success: true,
+      paymentMethod: "card",
+      stripeClientSecret: "pi_REG_secret_abc",
+      paymentIntentId: "pi_REG",
+      message: "ok",
+    });
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/cart/checkout",
+      payload: { cartId: "cart_01", paymentMethod: "card" },
+      // guest — no x-customer-id (SEC-001 permits card for guests)
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as {
+      orderId?: string;
+      paymentIntentId?: string;
+      accessToken?: string;
+    };
+    // No orderId on the card path — the webhook creates the order later.
+    expect(body.orderId).toBeUndefined();
+    // The pi_ id is surfaced so the client can key the token by it.
+    expect(body.paymentIntentId).toBe("pi_REG");
+    // The token is minted + BOUND to the pi_ id the guest will navigate to.
+    expect(typeof body.accessToken).toBe("string");
+    expect(verifyOrderAccessToken(body.accessToken!, "pi_REG")).toBe(true);
+    // Binding: the SAME token does NOT authorize a different pi/order.
+    expect(verifyOrderAccessToken(body.accessToken!, "pi_OTHER")).toBe(false);
+  });
+});
+
+// ── R0a regression #1 — guest CARD tracking via the per-order token ─────────
+//
+// The guest pays by card, lands on /pedido/<pi_…>, and polls /orders/:id +
+// /status with the `X-Order-Access-Token` header token minted at checkout. The webhook-created order
+// has a NULL owner and is resolved from the RAW `pi_…` id via
+// metadata[stripePaymentIntentId]; R0a captures that raw id BEFORE resolution
+// and binds the token to it. This suite proves the round-trip: WITH the bound
+// token → 200 (tracking restored), WITHOUT → 404 (the regression), and the
+// IDOR stays closed (cross-customer + wrong-token → 404).
+
+describe("guest card tracking — pi_ read authorized by the bound per-order token (R0a #1)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
+  });
+
+  // The webhook-created order: NULL owner, resolved from the pi_ id via metadata.
+  // (The resolved Medusa id differs from the pi_ id the guest holds.)
+  function nullOwnerCardOrder(overrides: Record<string, unknown> = {}) {
+    return {
+      id: "order_from_webhook",
+      status: "preparing",
+      display_id: 99,
+      total: 178,
+      subtotal: 158,
+      shipping_total: 20,
+      customer_id: null, // guest checkout — NO owner attribution
+      metadata: { stripePaymentIntentId: "pi_REG" },
+      items: [],
+      created_at: "2026-06-26T00:00:00.000Z",
+      ...overrides,
+    };
+  }
+
+  it("(a) GET /orders/pi_… WITHOUT token → 404 (the regression); WITH the bound token → 200", async () => {
+    // pi_ path resolves the order via the metadata search (returns { orders: [...] }).
+    mockMedusaAdmin.mockResolvedValue({ orders: [nullOwnerCardOrder()] });
+    const app = await buildTestServer();
+
+    // WITHOUT token — the regression cohort: null-owner webhook order 404s.
+    const noTok = await app.inject({ method: "GET", url: "/api/cart/orders/pi_REG" });
+    expect(noTok.statusCode).toBe(404);
+    expect(noTok.json().message).toBe("Pedido não encontrado.");
+
+    // WITH the token minted (bound to the pi_ id) at checkout → 200.
+    const token = createOrderAccessToken("pi_REG");
+    const withTok = await app.inject({
+      method: "GET",
+      url: `/api/cart/orders/pi_REG`,
+      headers: { "x-order-access-token": token },
+    });
+    expect(withTok.statusCode).toBe(200);
+    expect(withTok.json().order.id).toBe("order_from_webhook");
+  });
+
+  it("(a) GET /orders/pi_…/status WITHOUT token → 404; WITH the bound token → 200", async () => {
+    // Projection is keyed by Medusa id, so a pi_ lookup misses → null → the
+    // route falls to the Medusa metadata fallback (which carries customer_id).
+    mockOrderQueryGetById.mockResolvedValue(null);
+    mockMedusaAdmin.mockResolvedValue({
+      orders: [{
+        fulfillment_status: "not_fulfilled",
+        customer_id: null,
+        metadata: { stripePaymentIntentId: "pi_REG" },
+        updated_at: "2026-06-26T00:00:00.000Z",
+      }],
+    });
+    const app = await buildTestServer();
+
+    const noTok = await app.inject({ method: "GET", url: "/api/cart/orders/pi_REG/status" });
+    expect(noTok.statusCode).toBe(404);
+    expect(noTok.json().error).toBe("Pedido não encontrado.");
+
+    const token = createOrderAccessToken("pi_REG");
+    const withTok = await app.inject({
+      method: "GET",
+      url: `/api/cart/orders/pi_REG/status`,
+      headers: { "x-order-access-token": token },
+    });
+    expect(withTok.statusCode).toBe(200);
+    expect(withTok.json().status).toBe("pending"); // not_fulfilled → pending
+  });
+
+  it("(c) IDOR still closed — a token minted for a DIFFERENT pi/order → 404 (binding)", async () => {
+    mockMedusaAdmin.mockResolvedValue({ orders: [nullOwnerCardOrder()] });
+    const app = await buildTestServer();
+    const wrongToken = createOrderAccessToken("pi_DIFFERENT");
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/cart/orders/pi_REG`,
+      headers: { "x-order-access-token": wrongToken },
+    });
+    expect(res.statusCode).toBe(404);
+    expect(res.json().message).toBe("Pedido não encontrado.");
+  });
+
+  it("(c) IDOR still closed — cross-customer authed read of a card pi_ order → 404", async () => {
+    // The order is now owned by cust_A; caller authed as cust_B, no token.
+    mockMedusaAdmin.mockResolvedValue({
+      orders: [nullOwnerCardOrder({ customer_id: "cust_A" })],
+    });
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/cart/orders/pi_REG",
+      headers: { "x-customer-id": "cust_B" },
+    });
+    expect(res.statusCode).toBe(404);
   });
 });
 

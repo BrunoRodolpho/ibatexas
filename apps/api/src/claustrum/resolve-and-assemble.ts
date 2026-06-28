@@ -220,6 +220,11 @@ export function buildPaymentCtx(
     refundedAmountCentavos: active.refundedAmountCentavos ?? 0,
     amountInCentavos: active.amountInCentavos,
     regenerationCount: regenerationSum,
+    // D1 (SDD §5 fresh conjunct / §G sourceMode==live): buildPaymentCtx is only
+    // ever called with an active payment the caller read LIVE this turn (loadPayment
+    // Ctx's customer-scoped DB read; HTTP routes pass their own fresh read). Stamp
+    // the must_read_this_turn marker so the pack's refund-freshness guard can bind.
+    paymentReadThisTurn: true,
   };
 }
 
