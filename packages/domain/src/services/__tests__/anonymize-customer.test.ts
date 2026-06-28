@@ -47,6 +47,7 @@ const mockOrderEventLogCount = vi.hoisted(() => vi.fn())
 const mockOrderEventLogFindManyOuter = vi.hoisted(() => vi.fn())
 const mockLoyaltyAccountUpdateMany = vi.hoisted(() => vi.fn())
 const mockReservationUpdateMany = vi.hoisted(() => vi.fn())
+const mockExecuteRaw = vi.hoisted(() => vi.fn())
 
 const txClient = {
   customer: { update: mockCustomerUpdate },
@@ -70,6 +71,8 @@ vi.mock("@ibatexas/nats-client", () => ({
 vi.mock("../../client.js", () => ({
   prisma: {
     $transaction: mockTransaction,
+    // F3: per-subject turn_trace erasure (raw DELETE by sessionId).
+    $executeRaw: mockExecuteRaw,
     customer: {
       update: mockCustomerUpdate,
       // audit-2026-05-24 H3 Wave-B: anonymizeCustomer reads medusaId
@@ -138,6 +141,7 @@ describe("anonymizeCustomer — W4 P0-13 LGPD completeness", () => {
     mockOrderEventLogUpdateMany.mockResolvedValue({ count: 0 })
     mockLoyaltyAccountUpdateMany.mockResolvedValue({ count: 0 })
     mockReservationUpdateMany.mockResolvedValue({ count: 0 })
+    mockExecuteRaw.mockResolvedValue(0)
     // H3 wave-a1: default outer mocks (light path — count below threshold,
     // no batching activity).
     mockOrderProjectionFindManyOuter.mockResolvedValue([])
@@ -305,6 +309,7 @@ describe("anonymizeCustomer — NEW-P0-X7 transaction timeout + batching", () =>
     mockOrderEventLogUpdateMany.mockResolvedValue({ count: 0 })
     mockLoyaltyAccountUpdateMany.mockResolvedValue({ count: 0 })
     mockReservationUpdateMany.mockResolvedValue({ count: 0 })
+    mockExecuteRaw.mockResolvedValue(0)
     // H3 wave-a1: default outer mocks (light path — count below threshold,
     // no batching activity).
     mockOrderProjectionFindManyOuter.mockResolvedValue([])
@@ -463,6 +468,7 @@ describe("anonymizeCustomer — H3 wave-a1 scope expansion (7 surfaces)", () => 
     mockOrderEventLogUpdateMany.mockResolvedValue({ count: 0 })
     mockLoyaltyAccountUpdateMany.mockResolvedValue({ count: 0 })
     mockReservationUpdateMany.mockResolvedValue({ count: 0 })
+    mockExecuteRaw.mockResolvedValue(0)
     mockOrderProjectionFindManyOuter.mockResolvedValue([])
     mockConversationFindManyOuter.mockResolvedValue([])
     mockConversationMessageCount.mockResolvedValue(0)
@@ -566,6 +572,37 @@ describe("anonymizeCustomer — H3 wave-a1 scope expansion (7 surfaces)", () => 
         where: { customerId: "cust_01" },
         data: { customerId: null },
       })
+    })
+  })
+
+  // ── F3: turn_trace per-subject erasure (right-to-be-forgotten) ──────
+
+  describe("F3: turn_trace erasure", () => {
+    it("erases turn_trace rows keyed by the customer's sessionIds", async () => {
+      mockConversationFindManyOuter.mockResolvedValue([
+        { id: "conv_a", sessionId: "sess_a" },
+        { id: "conv_b", sessionId: "sess_b" },
+      ])
+      const res = await anonymizeCustomer("cust_01")
+      expect(res).toEqual({ success: true })
+      // The raw DELETE FROM turn_trace ran (keyed by sessionId, not Conversation.id).
+      expect(mockExecuteRaw).toHaveBeenCalledTimes(1)
+    })
+
+    it("skips the erasure when the customer has no conversations", async () => {
+      mockConversationFindManyOuter.mockResolvedValue([])
+      await anonymizeCustomer("cust_01")
+      expect(mockExecuteRaw).not.toHaveBeenCalled()
+    })
+
+    it("is fail-soft: a turn_trace DELETE error never aborts anonymize", async () => {
+      mockConversationFindManyOuter.mockResolvedValue([
+        { id: "conv_a", sessionId: "sess_a" },
+      ])
+      mockExecuteRaw.mockRejectedValue(new Error('relation "turn_trace" does not exist'))
+      const res = await anonymizeCustomer("cust_01")
+      // Erasure failure is swallowed — the rest of the scrub still succeeds.
+      expect(res).toEqual({ success: true })
     })
   })
 

@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest"
 import {
   getNatsConnection,
   publishNatsEvent,
+  publishMsgId,
   subscribeNatsEvent,
   setDlqHandler,
   setOutboxWriter,
@@ -12,6 +13,8 @@ import {
 const mockConnect = vi.hoisted(() => vi.fn())
 const mockCredsAuthenticator = vi.hoisted(() => vi.fn(() => "credsAuth"))
 const mockNkeyAuthenticator = vi.hoisted(() => vi.fn(() => "nkeyAuth"))
+// Phase 1: JetStream client publish (returns a PubAck).
+const mockJsPublish = vi.hoisted(() => vi.fn(async () => ({ seq: 1, stream: "IBX_ORDERS", duplicate: false })))
 
 vi.mock("nats", () => {
   const mockSubscription = {
@@ -25,6 +28,7 @@ vi.mock("nats", () => {
 
   const mockConnection = {
     publish: vi.fn(),
+    jetstream: vi.fn(() => ({ publish: mockJsPublish })),
     subscribe: vi.fn(() => mockSubscription),
     close: vi.fn(),
     drain: vi.fn(),
@@ -83,6 +87,50 @@ describe("NATS Client", () => {
 
     // Should not reject even without a real NATS connection
     await expect(publishNatsEvent(testEvent, testPayload)).resolves.not.toThrow()
+  })
+
+  // ── Phase 1: durable publish via JetStream (PubAck) ────────────────────────
+
+  it("[Phase 1] publishes via JetStream (PubAck) when NATS_JETSTREAM_ENABLED=true", async () => {
+    process.env.NATS_JETSTREAM_ENABLED = "true"
+    try {
+      await publishNatsEvent("order.placed", { orderId: "o1" })
+      // 3rd arg: deterministic Nats-Msg-Id activates the stream duplicate_window
+      // (J1). Pinned to the derivation over the exact serialized payload.
+      expect(mockJsPublish).toHaveBeenCalledWith(
+        "ibatexas.order.placed",
+        expect.any(Uint8Array),
+        { msgID: publishMsgId("order.placed", JSON.stringify({ orderId: "o1" })) },
+      )
+      // The Core publish path is NOT used when JetStream is enabled + healthy.
+      const conn = await getNatsConnection()
+      expect(conn.publish).not.toHaveBeenCalled()
+    } finally {
+      delete process.env.NATS_JETSTREAM_ENABLED
+    }
+  })
+
+  it("[Phase 1] falls back to Core publish when the JetStream publish fails", async () => {
+    process.env.NATS_JETSTREAM_ENABLED = "true"
+    mockJsPublish.mockRejectedValueOnce(new Error("no stream matches subject"))
+    try {
+      await publishNatsEvent("order.placed", { orderId: "o1" })
+      // Fallback: the event is still published on Core NATS, never dropped.
+      const conn = await getNatsConnection()
+      expect(conn.publish).toHaveBeenCalledWith(
+        "ibatexas.order.placed",
+        expect.any(Uint8Array),
+      )
+    } finally {
+      delete process.env.NATS_JETSTREAM_ENABLED
+    }
+  })
+
+  it("[Phase 1] uses Core publish (not JetStream) when the flag is off", async () => {
+    await publishNatsEvent("order.placed", { orderId: "o1" })
+    expect(mockJsPublish).not.toHaveBeenCalled()
+    const conn = await getNatsConnection()
+    expect(conn.publish).toHaveBeenCalled()
   })
 
   it("subscribeNatsEvent returns a subscription handle", async () => {
@@ -242,6 +290,46 @@ describe("NATS Client", () => {
       0,
       4999,
     )
+  })
+
+  // ── Outbox retirement (flag-gated): JetStream PubAck replaces the outbox ────
+
+  it("[retirement] bypasses the outbox when JetStream publish succeeds (flag on)", async () => {
+    process.env.NATS_JETSTREAM_ENABLED = "true"
+    const writer = {
+      lPush: vi.fn().mockResolvedValue(1),
+      lRem: vi.fn().mockResolvedValue(1),
+      lTrim: vi.fn().mockResolvedValue("OK"),
+    }
+    setOutboxWriter(writer)
+    try {
+      await publishNatsEvent("order.placed", { orderId: "o1" }) // order.placed is critical
+      expect(mockJsPublish).toHaveBeenCalled() // durable via PubAck
+      expect(writer.lPush).not.toHaveBeenCalled() // outbox bypassed
+      expect(writer.lRem).not.toHaveBeenCalled()
+    } finally {
+      delete process.env.NATS_JETSTREAM_ENABLED
+    }
+  })
+
+  it("[retirement] restores the outbox safety net when JetStream publish fails (flag on)", async () => {
+    process.env.NATS_JETSTREAM_ENABLED = "true"
+    mockJsPublish.mockRejectedValueOnce(new Error("no stream matches subject"))
+    const writer = {
+      lPush: vi.fn().mockResolvedValue(1),
+      lRem: vi.fn().mockResolvedValue(1),
+      lTrim: vi.fn().mockResolvedValue("OK"),
+    }
+    setOutboxWriter(writer)
+    try {
+      await publishNatsEvent("order.placed", { orderId: "o1" })
+      // Fallback: outbox written so outbox-retry can recover, then Core publish.
+      expect(writer.lPush).toHaveBeenCalledTimes(1)
+      const conn = await getNatsConnection()
+      expect(conn.publish).toHaveBeenCalled()
+    } finally {
+      delete process.env.NATS_JETSTREAM_ENABLED
+    }
   })
 
   it("getNatsConnection can be called without error", async () => {

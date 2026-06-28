@@ -553,6 +553,9 @@ export async function meRoutes(server: FastifyInstance): Promise<void> {
               nonce: envelope.nonce,
               taint: envelope.taint,
               actorPrincipal: envelope.actor.principal,
+              // 041: origin is part of the intentHash recipe — copy it up so the
+              // parked blob stays hash-verifiable at resume (tamper-at-rest).
+              origin: envelope.origin,
             },
             signal: "customer.anonymize.confirmed_after_grace",
             ttlSeconds,

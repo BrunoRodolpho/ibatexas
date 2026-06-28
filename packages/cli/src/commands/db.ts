@@ -15,6 +15,7 @@ import {
 } from "../lib/kernel-migrate.js"
 import type { SqlMigrateResult } from "../lib/sql-migrate.js"
 import { migrateClaustrumDatabase } from "./claustrum.js"
+import { REMEDIATION_PROPOSALS_DDL } from "@ibatexas/domain"
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -179,10 +180,32 @@ async function migrateKernelDatabase(opts: {
 }
 
 /**
+ * Apply the cross-repo `remediation_proposals` table DDL (idempotent). This is a
+ * raw, non-Prisma table written by the live-agent runner (apps/api remediation-
+ * proposal-writer) and read by the @adjudicate/adjutant projection; `db migrate:
+ * domain` does not own it, so provision applies it here. Mirrors the writer's
+ * ensureTable(). DDL is the canonical copy in @ibatexas/domain.
+ */
+async function ensureRemediationProposalsTable(): Promise<void> {
+  const databaseUrl = process.env.DATABASE_URL
+  if (!databaseUrl) {
+    throw new Error("DATABASE_URL is not set. Run: ibx env check")
+  }
+  const client = new Client({ connectionString: databaseUrl })
+  await client.connect()
+  try {
+    await client.query(REMEDIATION_PROPOSALS_DDL)
+  } finally {
+    await client.end()
+  }
+}
+
+/**
  * `ibx db provision` — ensure the kernel audit-postgres + claustrum memory/
- * grounding schema layers exist in DATABASE_URL. Idempotent. Exits non-zero if
- * either layer fails so CI catches an incomplete provision. The Medusa + domain
- * (Prisma) layers are provisioned by `db migrate` / `db migrate:domain`.
+ * grounding + agent remediation_proposals schema layers exist in DATABASE_URL.
+ * Idempotent. Exits non-zero if any layer fails so CI catches an incomplete
+ * provision. The Medusa + domain (Prisma, incl. agent_runs) layers are
+ * provisioned by `db migrate` / `db migrate:domain`.
  */
 async function runProvision() {
   console.log(chalk.bold.blue("\n  🧱  ibx db provision — kernel + claustrum schema\n"))
@@ -212,11 +235,20 @@ async function runProvision() {
     failed = true
   }
 
+  const remediationSpinner = ora({ text: "agent remediation_proposals table", indent: 2 }).start()
+  try {
+    await ensureRemediationProposalsTable()
+    remediationSpinner.succeed(chalk.green("Remediation proposals schema ready"))
+  } catch (err) {
+    remediationSpinner.fail(chalk.red(`Remediation provision failed: ${(err as Error).message}`))
+    failed = true
+  }
+
   if (failed) {
     console.log(chalk.red("\n  ❌  One or more schema layers failed to provision\n"))
     process.exit(1)
   }
-  console.log(chalk.green("\n  ✅  Kernel + claustrum schema provisioned\n"))
+  console.log(chalk.green("\n  ✅  Kernel + claustrum + remediation schema provisioned\n"))
 }
 
 async function runReset(force = false) {

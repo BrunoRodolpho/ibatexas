@@ -26,9 +26,9 @@
     "db:seed:orders": "tsx src/seed-orders.ts"
   },
   "dependencies": {
-    "@adjudicate/audit": "^2.0.1",
-    "@adjudicate/core": "^1.3.0",
-    "@adjudicate/primitives": "^0.3.0",
+    "@adjudicate/audit": "^4.0.0",
+    "@adjudicate/core": "^1.6.0",
+    "@adjudicate/primitives": "^0.4.0",
     "@ibatexas/nats-client": "workspace:*",
     "@ibatexas/pack-customer-onboarding": "workspace:*",
     "@ibatexas/pack-orders": "workspace:*",

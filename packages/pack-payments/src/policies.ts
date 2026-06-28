@@ -30,6 +30,7 @@ import {
   decisionExecute,
   decisionRefuse,
   decisionRequestConfirmation,
+  resolveOwnership,
 } from "@adjudicate/core"
 import {
   type Guard,
@@ -37,11 +38,15 @@ import {
 } from "@adjudicate/core/kernel"
 import { requireTenantBinding } from "@adjudicate/primitives"
 import {
+  refundAlreadyExhausted,
+  refundNotInRefundableState,
+  refundStaleRead,
   refundStateDivergent,
   refuseAmountNonPositive,
   refuseDefault,
   refuseMethodInvalid,
   refusePaymentNotFound,
+  refusePaymentOwnershipDenied,
   refusePaymentTerminal,
   refuseRefundAmountInvalid,
   refuseRefundOverBalance,
@@ -118,6 +123,46 @@ const requirePaymentExists: PaymentGuard = (envelope, state) => {
       kind: envelope.kind,
     }),
   ])
+}
+
+// 034-F1 — kernel ownership/IDOR guard for customer money kinds (defense-in-depth;
+// mirror of pack-orders). Engages ONLY when the host injects state.authority; the
+// resource is the orderId (payment ownership flows through the order), bound in the
+// per-customer authority graph of OWNED resources. A non-owned order is unbound ⇒
+// REFUSE (de-vacuumed — see the pack-payments ownership canary).
+const OWNERSHIP_GATED_PAYMENT_KINDS: ReadonlySet<string> = new Set([
+  "payment.refund.issue",
+  "payment.refund.confirm",
+  "payment.pix.regenerate",
+])
+
+interface PaymentOwnershipAuthority {
+  readonly store: Parameters<typeof resolveOwnership>[0]
+  readonly principalOf?: (sessionId: string) => string | null
+}
+
+const enforcePaymentOwnership: PaymentGuard = (envelope, state) => {
+  const authority = (state as { authority?: PaymentOwnershipAuthority }).authority
+  if (authority === undefined) return null
+  if (!OWNERSHIP_GATED_PAYMENT_KINDS.has(envelope.kind)) return null
+  const fact = resolveOwnership(authority.store, envelope)
+  if (!fact.bound) {
+    return decisionRefuse(refusePaymentOwnershipDenied(), [
+      basis("auth", BASIS_CODES.auth.SCOPE_INSUFFICIENT, { reason: "resource_not_owned" }),
+    ])
+  }
+  // IDOR gate: the AUTHENTICATED principal behind the acting session must EQUAL
+  // the resource owner. `principalOf` is the host's authenticated session→principal
+  // binding (sourced from the conductor-authenticated session, INDEPENDENT of the
+  // envelope's self-reported actor.sessionId — see authority-wiring.ts), so a
+  // forged / cross-session / unbound-agent actor resolves to null and is REFUSEd.
+  const authed = authority.principalOf?.(envelope.actor.sessionId) ?? null
+  if (authed === null || authed !== fact.principal) {
+    return decisionRefuse(refusePaymentOwnershipDenied(), [
+      basis("auth", BASIS_CODES.auth.SCOPE_INSUFFICIENT, { reason: "tenant_binding_violation" }),
+    ])
+  }
+  return null
 }
 
 /**
@@ -205,6 +250,98 @@ const validateMethodSwitch: PaymentGuard = (envelope) => {
     ])
   }
   return null
+}
+
+// ── D1 — refund-action authority as a MULTI-CONJUNCT invariant ──────────────
+//
+// SDD Inv 11 (strengthen) / structured-noodling §D1 / §5 fresh+outcome conjuncts:
+// a refund is authorized iff
+//   `ownership ∧ payment-state-refundable ∧ refund-eligibility(not-already-refunded)
+//    ∧ resource-freshness(read live this turn)`.
+// Ownership is the AUTH-phase guard (`enforcePaymentOwnership`); the other three
+// are BUSINESS-phase guards on the `payment.refund.issue` verdict, evaluated
+// BEFORE `refundMagnitudeGuard` so a non-refundable / already-refunded / stale
+// refund REFUSEs before the amount band could ever EXECUTE. They do NOT touch the
+// amount-band verdict — the bands stay the magnitude guard's job (Inv 11 EXACT).
+//
+// Like `enforcePaymentOwnership`, they engage ONLY when the host has injected
+// `state.authority` (the documented 4-conjunct enforcement seam) and are INERT
+// otherwise — so the legacy/standalone band-ladder corpus (no identity model)
+// adjudicates exactly as before. When the host opts in they are BINDING and
+// FAIL CLOSED: an unsettled status, an exhausted balance, or a not-read-this-turn
+// projection → REFUSE, never EXECUTE. Eligibility/freshness are read from the
+// LIVE per-turn state — NOT the envelope snapshot — so stale authority cannot
+// authorize a refund another process already issued.
+
+/**
+ * Statuses from which money can legitimately be refunded — the payment actually
+ * settled and still carries refundable balance. Mirrors the Prisma `PaymentStatus`
+ * enum: `paid` (settled in full) and `partially_refunded` (settled, balance
+ * remaining). Every other status (awaiting/pending/cash_pending/switching/failed/
+ * expired/refunded/disputed/canceled/waived) is NOT refundable.
+ */
+const REFUNDABLE_PAYMENT_STATUSES: ReadonlySet<string> = new Set([
+  "paid",
+  "partially_refunded",
+])
+
+/** TRUE when the host injected the authority context — the seam that opts the
+ *  refund into the full 4-conjunct invariant (identical gate to
+ *  `enforcePaymentOwnership`). No authority ⇒ the three guards are inert. */
+function refundAuthorityEngaged(state: PaymentState): boolean {
+  return (state as { authority?: unknown }).authority !== undefined
+}
+
+/** D1 conjunct: payment-state-refundable. REFUSEs a refund whose payment never
+ *  settled (or is no longer refundable). Engages only with injected authority. */
+const refundPaymentStateRefundableGuard: PaymentGuard = (envelope, state) => {
+  if (envelope.kind !== "payment.refund.issue") return null
+  if (!refundAuthorityEngaged(state)) return null
+  const status = state.ctx.currentStatus
+  if (typeof status === "string" && REFUNDABLE_PAYMENT_STATUSES.has(status)) {
+    return null
+  }
+  return decisionRefuse(refundNotInRefundableState(status), [
+    basis("state", BASIS_CODES.state.TRANSITION_ILLEGAL, {
+      reason: "payment_not_in_refundable_state",
+      currentStatus: status,
+    }),
+  ])
+}
+
+/** D1 conjunct: refund-eligibility (not-already-refunded). REFUSEs when the LIVE
+ *  state shows the refundable balance is exhausted (refunded ≥ original) — even if
+ *  the envelope snapshot still claims balance. Engages only with injected authority. */
+const refundEligibilityGuard: PaymentGuard = (envelope, state) => {
+  if (envelope.kind !== "payment.refund.issue") return null
+  if (!refundAuthorityEngaged(state)) return null
+  const amount = state.ctx.amountInCentavos
+  const refunded = state.ctx.refundedAmountCentavos ?? 0
+  if (typeof amount === "number" && refunded >= amount) {
+    return decisionRefuse(refundAlreadyExhausted(refunded, amount), [
+      basis("business", BASIS_CODES.business.RULE_VIOLATED, {
+        reason: "refund_already_exhausted",
+        refunded,
+        amount,
+      }),
+    ])
+  }
+  return null
+}
+
+/** D1 conjunct: resource-freshness (must_read_this_turn). REFUSEs unless the
+ *  payment projection was read LIVE this turn (`sourceMode == "live"`). Fail-closed:
+ *  absent/false marker ⟹ stale ⟹ REFUSE. Engages only with injected authority. */
+const refundFreshnessGuard: PaymentGuard = (envelope, state) => {
+  if (envelope.kind !== "payment.refund.issue") return null
+  if (!refundAuthorityEngaged(state)) return null
+  if (state.ctx.paymentReadThisTurn === true) return null
+  return decisionRefuse(refundStaleRead(), [
+    basis("state", BASIS_CODES.state.TRANSITION_ILLEGAL, {
+      reason: "payment_read_stale",
+      paymentReadThisTurn: state.ctx.paymentReadThisTurn ?? null,
+    }),
+  ])
 }
 
 /**
@@ -496,13 +633,21 @@ const executeAll: PaymentGuard = (envelope) => {
  *   business:
  *     1. validateCreateMethod           — shape check create kinds
  *     2. validateMethodSwitch           — shape check switch kind
- *     3. refundMagnitudeGuard           — refund ladder (W3 P0-1)
- *     4. regenerationCountCapGuard      — PIX regen cap (W3 P0-2)
- *     5. retryDailyCapGuard             — retry rate limit
- *     6. escalateAlwaysOnDispute        — disputes always ESCALATE
- *     7. confirmAlwaysOnWaive           — waive always REQUEST_CONFIRMATION
- *     8. confirmAlwaysOnStatusForce     — force-status always confirm
- *     9. executeAll                     — EXECUTE producers
+ *     3. refundPaymentStateRefundableGuard — D1 conjunct: state-refundable
+ *     4. refundEligibilityGuard         — D1 conjunct: not-already-refunded
+ *     5. refundFreshnessGuard           — D1 conjunct: read-live-this-turn
+ *     6. refundMagnitudeGuard           — refund ladder (W3 P0-1; Inv 11 bands)
+ *     7. regenerationCountCapGuard      — PIX regen cap (W3 P0-2)
+ *     8. retryDailyCapGuard             — retry rate limit
+ *     9. escalateAlwaysOnDispute        — disputes always ESCALATE
+ *    10. confirmAlwaysOnWaive           — waive always REQUEST_CONFIRMATION
+ *    11. confirmAlwaysOnStatusForce     — force-status always confirm
+ *    12. executeAll                     — EXECUTE producers
+ *
+ *   D1 (Inv 11 strengthen): guards 3-5 gate the refund verdict on the three
+ *   non-ownership conjuncts (ownership is the AUTH-phase `enforcePaymentOwnership`).
+ *   They run BEFORE the magnitude ladder and are inert unless the host injected
+ *   `state.authority`; they NEVER alter the amount-band verdict (that stays #6).
  */
 export const paymentsPolicyBundle: PolicyBundle<
   PaymentIntentKind,
@@ -510,11 +655,18 @@ export const paymentsPolicyBundle: PolicyBundle<
   PaymentState
 > = {
   stateGuards: [requirePaymentExists, refuseTerminalTransition],
-  authGuards: [requireTenantBindingGuard],
+  authGuards: [requireTenantBindingGuard, enforcePaymentOwnership],
   taint: paymentsTaintPolicy,
   business: [
     validateCreateMethod,
     validateMethodSwitch,
+    // D1 — the three non-ownership conjuncts of the refund-authority invariant,
+    // BEFORE the magnitude ladder so a non-refundable / already-refunded / stale
+    // refund REFUSEs before any amount band could EXECUTE. Inert unless the host
+    // injected state.authority (the 4-conjunct enforcement seam).
+    refundPaymentStateRefundableGuard,
+    refundEligibilityGuard,
+    refundFreshnessGuard,
     refundMagnitudeGuard,
     regenerationCountCapGuard,
     retryDailyCapGuard,

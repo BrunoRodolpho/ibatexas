@@ -14,6 +14,7 @@
 
 import { prisma } from "../client.js"
 import { Prisma } from "../generated/prisma-client/client.js"
+import { toE164BR } from "../phone.js"
 import type { AuditSink, IntentEnvelope } from "@adjudicate/core"
 import {
   conversationPolicyBundle,
@@ -236,6 +237,125 @@ export function createConversationService(options?: ConversationServiceOptions) 
         messageCount: row._count.messages,
         lastMessageAt: row.messages[0]?.sentAt ?? null,
       }))
+    },
+
+    /**
+     * List a single customer's conversations (newest first), with message count
+     * + last-message timestamp. NET-NEW for the admin conversation surface (D1):
+     * `listActive` has no per-customer filter. Same summary shape as listActive.
+     */
+    async findByCustomerId(
+      customerId: string,
+      limit = 50,
+    ): Promise<
+      Array<{
+        id: string
+        sessionId: string
+        customerId: string | null
+        channel: string
+        messageCount: number
+        lastMessageAt: Date | null
+      }>
+    > {
+      const rows = await prisma.conversation.findMany({
+        where: { customerId },
+        take: limit,
+        orderBy: { startedAt: "desc" },
+        select: {
+          id: true,
+          sessionId: true,
+          customerId: true,
+          channel: true,
+          _count: { select: { messages: true } },
+          messages: {
+            take: 1,
+            orderBy: { sentAt: "desc" },
+            select: { sentAt: true },
+          },
+        },
+      })
+
+      return rows.map((row) => ({
+        id: row.id,
+        sessionId: row.sessionId,
+        customerId: row.customerId,
+        channel: row.channel,
+        messageCount: row._count.messages,
+        lastMessageAt: row.messages[0]?.sentAt ?? null,
+      }))
+    },
+
+    /**
+     * Unified conversation search for the admin surface (D1). Dispatches on the
+     * provided filter, most-specific first: sessionId → customerId → phone
+     * (resolved to a customerId via the canonicalized Customer.phone @unique) →
+     * else the recent-activity list. Returns listActive-shaped summaries.
+     */
+    async searchConversations(params: {
+      sessionId?: string
+      customerId?: string
+      phone?: string
+      limit?: number
+    }): Promise<
+      Array<{
+        id: string
+        sessionId: string
+        customerId: string | null
+        channel: string
+        messageCount: number
+        lastMessageAt: Date | null
+      }>
+    > {
+      const limit = params.limit ?? 50
+      if (params.sessionId) {
+        const rows = await prisma.conversation.findMany({
+          where: { sessionId: params.sessionId },
+          take: 1,
+          select: {
+            id: true,
+            sessionId: true,
+            customerId: true,
+            channel: true,
+            _count: { select: { messages: true } },
+            messages: {
+              take: 1,
+              orderBy: { sentAt: "desc" },
+              select: { sentAt: true },
+            },
+          },
+        })
+        return rows.map((row) => ({
+          id: row.id,
+          sessionId: row.sessionId,
+          customerId: row.customerId,
+          channel: row.channel,
+          messageCount: row._count.messages,
+          lastMessageAt: row.messages[0]?.sentAt ?? null,
+        }))
+      }
+      if (params.customerId) {
+        return this.findByCustomerId(params.customerId, limit)
+      }
+      if (params.phone) {
+        // Resolve phone → customerId at the canonicalized @unique boundary
+        // (same toE164BR used at write time, so the lookup never misses on a
+        // formatted variant). toE164BR THROWS on a non-E.164 input (it doesn't
+        // add a country code) — a malformed search phone must degrade to "no
+        // results", never a 500. No customer → no conversations.
+        let canonical: string
+        try {
+          canonical = toE164BR(params.phone)
+        } catch {
+          return []
+        }
+        const customer = await prisma.customer.findUnique({
+          where: { phone: canonical },
+          select: { id: true },
+        })
+        if (!customer) return []
+        return this.findByCustomerId(customer.id, limit)
+      }
+      return this.listActive(limit)
     },
 
     // ── Task 15: envelope-typed entry points ────────────────────────────

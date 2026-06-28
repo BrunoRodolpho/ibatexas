@@ -98,15 +98,17 @@ describe("checkOrderStatus", () => {
     await expect(checkOrderStatus(INPUT, CTX)).rejects.toThrow("Acesso negado")
   })
 
-  it("allows access when neither customer_id nor metadata customerId set (legacy)", async () => {
+  it("REFUSES access when neither customer_id nor metadata customerId set (R0b strict-by-default, Inv 2)", async () => {
     mockMedusaAdmin.mockResolvedValue({
       order: { status: "pending" },
     })
 
-    const result = await checkOrderStatus(INPUT, CTX)
-
-    // When orderCustomerId is falsy, the check is skipped
-    expect(result).toEqual({ order: { status: "pending" } })
+    // R0b: an unowned order is "no owner" → REFUSED for this customer-facing
+    // read. check_order_status gets the inverted strict default for free; we do
+    // NOT add an `allowUnowned` escape hatch to a customer path (that would
+    // re-open the IDOR the guard now closes — Inv 2 "no owner" ≠ "any owner").
+    // NON-VACUOUS: under the old lenient default this returned the order.
+    await expect(checkOrderStatus(INPUT, CTX)).rejects.toThrow("Acesso negado")
   })
 
   it("handles different order IDs", async () => {

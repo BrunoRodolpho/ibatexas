@@ -31,6 +31,7 @@ import {
   decisionEscalate,
   decisionExecute,
   decisionRefuse,
+  decisionRequestConfirmation,
 } from "@adjudicate/core"
 import {
   nameGuard,
@@ -61,8 +62,11 @@ import {
   refuseNotAuthenticated,
   refuseOrderAlreadyCancelled,
   refuseOrderAlreadyShipped,
+  refuseOrderPastPonr,
+  refuseOwnershipDenied,
   refuseSlotsIncomplete,
 } from "./refusals.js"
+import { resolveOwnership } from "@adjudicate/core"
 import {
   CONFIRM_LARGE_TICKET_THRESHOLD_CENTAVOS,
   ESCALATE_CANCEL_AMOUNT_CENTAVOS,
@@ -160,8 +164,38 @@ function hasOrderId(state: OrderState): boolean {
   return state.ctx.orderId !== null && state.ctx.orderId !== undefined
 }
 
-function canCancelOrder(state: OrderState): boolean {
-  return hasOrderId(state) && state.ctx.lastAction !== "cancelled"
+// Fulfillment statuses past the cancellation point-of-no-return.
+// POST_PONR_FULFILLMENT is the SYSTEM-actor floor: once an order is ready / out
+// for delivery / delivered, not even a system/compensation cancel may proceed.
+// `canceled` is handled separately (already-cancelled, not PONR).
+const POST_PONR_FULFILLMENT: ReadonlySet<string> = new Set([
+  "ready",
+  "in_delivery",
+  "delivered",
+])
+
+// CUSTOMER-facing PONR additionally includes "preparing": once the kitchen is
+// preparing, a customer self-serve cancel is DENIED + escalated — mirrors the
+// route-layer canPerformAction("cancel_order") rule (order-action-validator.ts,
+// "Cozinha já está preparando"). A SYSTEM actor (order.cancel.system: payment-
+// expiry / stale-order compensation) is NOT bound by the preparing PONR and may
+// still cancel a preparing order.
+const CUSTOMER_POST_PONR_FULFILLMENT: ReadonlySet<string> = new Set([
+  ...POST_PONR_FULFILLMENT,
+  "preparing",
+])
+
+function orderAlreadyCancelled(state: OrderState): boolean {
+  return state.ctx.lastAction === "cancelled" || state.ctx.fulfillmentStatus === "canceled"
+}
+
+function canCancelOrder(state: OrderState, isSystem: boolean): boolean {
+  if (!hasOrderId(state)) return false
+  if (orderAlreadyCancelled(state)) return false
+  const fs = state.ctx.fulfillmentStatus
+  if (typeof fs !== "string") return true
+  const ponr = isSystem ? POST_PONR_FULFILLMENT : CUSTOMER_POST_PONR_FULFILLMENT
+  return !ponr.has(fs)
 }
 
 function canAmendOrder(state: OrderState): boolean {
@@ -359,12 +393,69 @@ const requireCancellable: OrderGuard = (envelope, state) => {
   ) {
     return null
   }
-  if (canCancelOrder(state)) return null
-  return decisionRefuse(refuseOrderAlreadyCancelled(), [
+  // System/compensation cancels (order.cancel.system, actor.principal="system")
+  // may still cancel a "preparing" order; a customer self-serve cancel may not
+  // (route denies + escalates). actor.principal is forgery-checked upstream.
+  const isSystem = envelope.actor.principal === "system"
+  if (canCancelOrder(state, isSystem)) return null
+  // Distinguish an already-cancelled order from one past the point-of-no-return
+  // so the audit basis is accurate.
+  if (orderAlreadyCancelled(state)) {
+    return decisionRefuse(refuseOrderAlreadyCancelled(), [
+      basis("state", BASIS_CODES.state.TERMINAL_STATE, {
+        reason: "already_cancelled",
+      }),
+    ])
+  }
+  return decisionRefuse(refuseOrderPastPonr(), [
     basis("state", BASIS_CODES.state.TERMINAL_STATE, {
-      reason: "already_cancelled",
+      reason: "past_ponr",
     }),
   ])
+}
+
+// 034-F1 — kernel ownership/IDOR guard (defense-in-depth). Engages ONLY when the
+// host injects `state.authority` (a per-customer authority graph of OWNED
+// resources + a session→principal map). The order money kinds bind to the order
+// resource via `resourceRefs`; a resource the customer does not own is unbound in
+// the graph ⇒ REFUSE (de-vacuumed — see the pack-orders ownership canary test).
+const OWNERSHIP_GATED_ORDER_KINDS: ReadonlySet<string> = new Set([
+  "order.cancel",
+  "order.amend.request",
+  "order.amend.add_item",
+  "order.amend.update_qty",
+  "order.amend.remove_item",
+])
+
+interface OwnershipAuthority {
+  readonly store: Parameters<typeof resolveOwnership>[0]
+  readonly principalOf?: (sessionId: string) => string | null
+}
+
+const enforceOrderOwnership: OrderGuard = (envelope, state) => {
+  const authority = (state as { authority?: OwnershipAuthority }).authority
+  if (authority === undefined) return null // inert unless the host injects authority
+  if (!OWNERSHIP_GATED_ORDER_KINDS.has(envelope.kind)) return null
+  const fact = resolveOwnership(authority.store, envelope)
+  // (1) Binding: the declared owner must actually own the resource in the graph.
+  if (!fact.bound) {
+    return decisionRefuse(refuseOwnershipDenied(), [
+      basis("auth", BASIS_CODES.auth.SCOPE_INSUFFICIENT, { reason: "resource_not_owned" }),
+    ])
+  }
+  // (2) IDOR gate: the AUTHENTICATED principal behind the acting session must
+  // EQUAL the resource owner. `principalOf` is the host's authenticated
+  // session→principal binding (sourced from the conductor-authenticated session,
+  // INDEPENDENT of the envelope's self-reported actor.sessionId — see
+  // authority-wiring.ts), so a session that is not the authenticated owner (a
+  // forged / cross-session / unbound-agent actor) resolves to null and is REFUSEd.
+  const authed = authority.principalOf?.(envelope.actor.sessionId) ?? null
+  if (authed === null || authed !== fact.principal) {
+    return decisionRefuse(refuseOwnershipDenied(), [
+      basis("auth", BASIS_CODES.auth.SCOPE_INSUFFICIENT, { reason: "tenant_binding_violation" }),
+    ])
+  }
+  return null
 }
 
 const AMEND_KINDS: ReadonlySet<string> = new Set([
@@ -615,6 +706,61 @@ const refuseAmountAboveCap: OrderGuard = (envelope, state) => {
   ])
 }
 
+/**
+ * SDD §O#10 — adjacent-type confident-wrong (the one clause under topology
+ * pressure; resolution (a): a stakes-aware REQUEST_CONFIRMATION).
+ *
+ * `order.amend.add_item` (add a line to a **placed order** — REAL MONEY,
+ * post-checkout) and `order.item.add` (a **cart** op — low stakes,
+ * pre-checkout) are *adjacent* intents (claim-registry §1: the corrected
+ * "coloca uma coca" example resolves to `order.amend.add_item`, NOT
+ * `order.item.add`). No data-independent gate fires to distinguish a
+ * planner mis-frame between the two: the capability catalog passes (both
+ * kinds are in the enum), `outcomeConfirmed` passes (the wrong action
+ * *truly* executes), the P2 set is consistent (one claim), and P4 maps the
+ * span (to the wrong sibling). So a wrong-but-adjacent real-money action
+ * would EXECUTE and narrate truthfully — the single place the §2/§C
+ * fail-safe guarantee was *overstated* (pressure-test §4 #10).
+ *
+ * Resolution: the higher-stakes adjacent action (the placed-order amend that
+ * ADDS an item) degrades to `REQUEST_CONFIRMATION` UNLESS the host has set a
+ * deterministic disambiguation flag (`state.ctx.amendItemConfirmed === true`)
+ * recording that the user's intent to amend a *placed order* (vs. build a
+ * cart) was confirmed. The low-stakes cart op (`order.item.add`) is NOT
+ * matched here and keeps its `executeCartOps` EXECUTE path, so a mis-frame
+ * toward real money is caught while normal cart-building is untouched.
+ *
+ * Properties (auditor, scrutinize these):
+ *   • Stakes-aware by KIND, NOT by amount — it keys solely on the
+ *     `order.amend.add_item` kind, never reads `totalInCentavos`, and never
+ *     alters the Inv 11 refund/checkout/cancel amount-band verdicts. It is
+ *     ADDITIVE governance, orthogonal to the money bands.
+ *   • Data-independent (SDD §H): keys on a structured state flag, not a
+ *     free-text re-classification — the genuinely deterministic net, not a
+ *     probabilistic detector.
+ *   • Fail-SAFE when the flag is absent (the adopter-seam direction of
+ *     `requireTenantBinding`/ownership): a host that has not yet wired the
+ *     disambiguation sees the SAFE posture (confirm a real-money mutation),
+ *     never a silent bypass. Only an explicit `true` lets the amend proceed.
+ *   • Scoped to `order.amend.add_item` ONLY — `update_qty`/`remove_item`/
+ *     `request` are not the adjacent pair the registry names and are left to
+ *     their existing verdicts; widening would be over-blocking, not the §O#10
+ *     fix.
+ */
+const requireAmendItemDisambiguation: OrderGuard = (envelope, state) => {
+  if (envelope.kind !== "order.amend.add_item") return null
+  if (state.ctx.amendItemConfirmed === true) return null
+  return decisionRequestConfirmation(
+    "Isso adiciona um item a um pedido que já foi feito (não ao carrinho). Confirma a alteração no pedido?",
+    [
+      basis("business", BASIS_CODES.business.RULE_SATISFIED, {
+        rule: "adjacent_amend_requires_confirmation",
+        kind: envelope.kind,
+      }),
+    ],
+  )
+}
+
 // ── EXECUTE producers (default is REFUSE; positive matches required) ────
 
 /**
@@ -781,7 +927,7 @@ export const ordersPolicyBundle: PolicyBundle<
     requireSlotsFilledForCheckout,
     deferOnPendingPix,
   ],
-  authGuards: [requireTenantBindingGuard, requireAuthenticated, requireCheckoutEligibility],
+  authGuards: [requireTenantBindingGuard, requireAuthenticated, enforceOrderOwnership, requireCheckoutEligibility],
   taint: orderTaintPolicy,
   business: [
     requireExplicitAllergens,
@@ -794,6 +940,7 @@ export const ordersPolicyBundle: PolicyBundle<
     validateReviewRating,
     refuseCardPanInPix,
     redactPiiInPix,
+    requireAmendItemDisambiguation,
     executeCartOps,
     executeCheckout,
     executeCancel,

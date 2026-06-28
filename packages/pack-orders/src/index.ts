@@ -130,6 +130,7 @@ export {
   refuseNotAuthenticated,
   refuseOrderAlreadyCancelled,
   refuseOrderAlreadyShipped,
+  refuseOrderPastPonr,
   refuseQuantityOverLimit,
   refuseSlotsIncomplete,
   portugueseRefusalMessages,

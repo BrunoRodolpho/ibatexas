@@ -298,11 +298,19 @@ export interface AuditVerificationFailure {
   intentHash: string
   intentKind: string
   at: string
-  reason: "tampered" | "envelope_intent_mismatch" | "missing_hash"
-  /** Re-derived hash (absent for `missing_hash`). */
+  reason:
+    | "tampered"
+    | "envelope_intent_mismatch"
+    | "missing_hash"
+    | "invalid_signature"
+  /** Re-derived hash (absent for `missing_hash` / `invalid_signature`). */
   derived?: string
-  /** Stored hash (absent for `missing_hash`). */
+  /** Stored hash (absent for `missing_hash` / `invalid_signature`). */
   stored?: string
+  /** Signing key id (only for `invalid_signature` — 092 asymmetric verify). */
+  keyId?: string
+  /** Signature algorithm (only for `invalid_signature`). */
+  alg?: string
 }
 
 export interface AuditVerificationReport {
@@ -407,6 +415,21 @@ export function verifyFetchedRecords(
       auditHashVerifies(record) === true
     ) {
       redactedVerifiedCount += 1
+      continue
+    }
+    if (verification.reason === "invalid_signature") {
+      // 092 — asymmetric-signature failure. Only reachable when a
+      // `verifySignature` hook is supplied to `verifyAuditRecord` (this caller
+      // does not, so it stays unreachable at runtime); carries keyId/alg, not
+      // derived/stored.
+      failures.push({
+        intentHash: record.intentHash,
+        intentKind: record.envelope.kind,
+        at: record.at,
+        reason: verification.reason,
+        keyId: verification.keyId,
+        alg: verification.alg,
+      })
       continue
     }
     failures.push({

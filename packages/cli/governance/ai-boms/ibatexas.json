@@ -1,0 +1,869 @@
+{
+  "schemaVersion": 1,
+  "adopter": "ibatexas",
+  "kernelMinVersion": "1.0.0",
+  "kernelVersion": "1.3.0",
+  "digests": {
+    "agent/pix-payment-failure-remediation": "966813a40cdbd77a4556ca80f2f8bb32654f6e36f32d34ed8ea637dda140bfcb",
+    "ibatexas/pack-customer-onboarding": "203366b62ca1b7c438803ed5907e2ff43897b5b9e07d62c65246a49ab4e6b4fc",
+    "ibatexas/pack-orders": "8247ff2824556956a7fa7a1170cc2b04b1aaa2cc6bcabdcd0c8108632bd618f7",
+    "ibatexas/pack-payments": "b508b35667e5ca69ed61d95a0e862e11657a6cc8f32b442b8d0dd1111ab7cea5",
+    "ibatexas/pack-reservations": "c0b9c555e776c2b80a629ca9c0e655d5e46a3ab42cda852beac8cd560ff0a163",
+    "ibatexas/pack-whatsapp": "4eaa4da750ddbce4fa67ba7410f65518305b509560453e4a5edfeb78c6fcb254",
+    "pack-payments-pix": "d6a71ea6796ccada541ff88849bfdea8214918e982576278e9d9ed854f40a16b"
+  },
+  "boms": [
+    {
+      "bomVersion": "1.0",
+      "packId": "agent/pix-payment-failure-remediation",
+      "packVersion": "0.1.0",
+      "contract": "v0",
+      "kernelMinVersion": "1.0.0",
+      "kernelVersion": "1.3.0",
+      "fingerprint": "586660a0cac0ec27bd903bef3980457d5c9a99573562a1267a8881af67f5153f",
+      "intents": [
+        "payment.pix.regenerate",
+        "pix.charge.refund"
+      ],
+      "signals": [
+        "payment.expired",
+        "payment.failed"
+      ],
+      "basisCodes": [],
+      "tools": [
+        {
+          "name": "agent-definition:pix-payment-failure-remediation",
+          "description": "Digest sha256 do canonical-JSON da AgentDefinition completa (budgets, trigger, owner, killSwitchKey)",
+          "version": "0.1.0",
+          "schemaDigest": "92712d610f20bac6a5688d636cd467356afa7e91b5e73168e30c1c3063411afc"
+        }
+      ],
+      "rag": [],
+      "promptHashes": [],
+      "guardrails": [],
+      "conformance": {
+        "passed": true,
+        "total": 4,
+        "passedCount": 4,
+        "failedCount": 0,
+        "reportDigest": "81e3c0ca9377d8432b7f215f92d4382c62120d60379336413bacc8cdc73d4da1"
+      },
+      "healthTier": "bronze",
+      "healthScore": {
+        "score": 10,
+        "maxScore": 15
+      },
+      "frameworks": [
+        "eu-ai-act",
+        "nist-ai-rmf"
+      ],
+      "bomDigest": "966813a40cdbd77a4556ca80f2f8bb32654f6e36f32d34ed8ea637dda140bfcb"
+    },
+    {
+      "bomVersion": "1.0",
+      "packId": "ibatexas/pack-customer-onboarding",
+      "packVersion": "1.0.0",
+      "contract": "v0",
+      "kernelMinVersion": "1.0.0",
+      "kernelVersion": "1.3.0",
+      "fingerprint": "d798e24059779f5180f0961a04e95e1a374575c9464849e155d95b2d126a420f",
+      "intents": [
+        "customer.address.add",
+        "customer.address.remove",
+        "customer.anonymize",
+        "customer.anonymize.cancel",
+        "customer.create",
+        "customer.pix.details.save",
+        "customer.preferences.update",
+        "customer.profile.update"
+      ],
+      "signals": [
+        "customer.anonymize.confirmed_after_grace"
+      ],
+      "basisCodes": [
+        "auth.required",
+        "customer.allergens.must_be_explicit",
+        "customer.anonymize.already_pending",
+        "customer.anonymize.cancel_supersedes_parked",
+        "customer.anonymize.no_parked_deletion",
+        "customer.cpf.invalid_format",
+        "customer.default.deny",
+        "customer.not_found",
+        "customer.otp.stale",
+        "customer.profile.rate_limit"
+      ],
+      "tools": [
+        {
+          "name": "customer.address.add"
+        },
+        {
+          "name": "customer.address.remove"
+        },
+        {
+          "name": "customer.anonymize"
+        },
+        {
+          "name": "customer.anonymize.cancel"
+        },
+        {
+          "name": "customer.create"
+        },
+        {
+          "name": "customer.pix.details.save"
+        },
+        {
+          "name": "customer.preferences.update"
+        },
+        {
+          "name": "customer.profile.update"
+        }
+      ],
+      "rag": [],
+      "promptHashes": [],
+      "guardrails": [
+        {
+          "basisCode": "auth.required",
+          "category": "auth"
+        },
+        {
+          "basisCode": "customer.allergens.must_be_explicit",
+          "category": "customer"
+        },
+        {
+          "basisCode": "customer.anonymize.already_pending",
+          "category": "customer"
+        },
+        {
+          "basisCode": "customer.anonymize.cancel_supersedes_parked",
+          "category": "customer"
+        },
+        {
+          "basisCode": "customer.anonymize.no_parked_deletion",
+          "category": "customer"
+        },
+        {
+          "basisCode": "customer.cpf.invalid_format",
+          "category": "customer"
+        },
+        {
+          "basisCode": "customer.default.deny",
+          "category": "customer"
+        },
+        {
+          "basisCode": "customer.not_found",
+          "category": "customer"
+        },
+        {
+          "basisCode": "customer.otp.stale",
+          "category": "customer"
+        },
+        {
+          "basisCode": "customer.profile.rate_limit",
+          "category": "customer"
+        }
+      ],
+      "conformance": {
+        "passed": true,
+        "total": 8,
+        "passedCount": 8,
+        "failedCount": 0,
+        "reportDigest": "9b1c95d759249e0629f28bebd5013dffe91143963ca6df07de1aad329daa5d22"
+      },
+      "healthTier": "bronze",
+      "healthScore": {
+        "score": 10,
+        "maxScore": 15
+      },
+      "frameworks": [
+        "eu-ai-act",
+        "nist-ai-rmf"
+      ],
+      "bomDigest": "203366b62ca1b7c438803ed5907e2ff43897b5b9e07d62c65246a49ab4e6b4fc"
+    },
+    {
+      "bomVersion": "1.0",
+      "packId": "ibatexas/pack-orders",
+      "packVersion": "1.1.0",
+      "contract": "v0",
+      "kernelMinVersion": "1.0.0",
+      "kernelVersion": "1.3.0",
+      "fingerprint": "88c30fabc6b0b6c4705762d62d0ac8ef9dcfe33ba5acd9e0dc7f9dc6e2ba23f7",
+      "intents": [
+        "order.address.change",
+        "order.amend.add_item",
+        "order.amend.remove_item",
+        "order.amend.request",
+        "order.amend.update_qty",
+        "order.cancel",
+        "order.cancel.system",
+        "order.cart.ensure",
+        "order.cart.sync",
+        "order.checkout.create",
+        "order.coupon.apply",
+        "order.item.add",
+        "order.item.remove",
+        "order.item.update",
+        "order.note.add",
+        "order.pix.details.set",
+        "order.projection.create",
+        "order.reorder",
+        "order.review.submit",
+        "order.status.reconcile",
+        "order.status.transition",
+        "order.type.switch"
+      ],
+      "signals": [
+        "payment.confirmed"
+      ],
+      "basisCodes": [
+        "auth.guest_checkout_blocked",
+        "auth.required",
+        "order.already_cancelled",
+        "order.already_shipped",
+        "order.cart.empty",
+        "order.cart.missing",
+        "order.checkout.amount_exceeds_limit",
+        "order.checkout.payment_method_invalid",
+        "order.checkout.payment_method_missing",
+        "order.checkout.slots_incomplete",
+        "order.default.deny",
+        "order.item.allergens_not_explicit",
+        "order.item.quantity_invalid",
+        "order.item.quantity_over_limit",
+        "order.not_found",
+        "order.review.rating_invalid"
+      ],
+      "tools": [
+        {
+          "name": "order.address.change"
+        },
+        {
+          "name": "order.amend.add_item"
+        },
+        {
+          "name": "order.amend.remove_item"
+        },
+        {
+          "name": "order.amend.request"
+        },
+        {
+          "name": "order.amend.update_qty"
+        },
+        {
+          "name": "order.cancel"
+        },
+        {
+          "name": "order.cancel.system"
+        },
+        {
+          "name": "order.cart.ensure"
+        },
+        {
+          "name": "order.cart.sync"
+        },
+        {
+          "name": "order.checkout.create"
+        },
+        {
+          "name": "order.coupon.apply"
+        },
+        {
+          "name": "order.item.add"
+        },
+        {
+          "name": "order.item.remove"
+        },
+        {
+          "name": "order.item.update"
+        },
+        {
+          "name": "order.note.add"
+        },
+        {
+          "name": "order.pix.details.set"
+        },
+        {
+          "name": "order.projection.create"
+        },
+        {
+          "name": "order.reorder"
+        },
+        {
+          "name": "order.review.submit"
+        },
+        {
+          "name": "order.status.reconcile"
+        },
+        {
+          "name": "order.status.transition"
+        },
+        {
+          "name": "order.type.switch"
+        }
+      ],
+      "rag": [],
+      "promptHashes": [],
+      "guardrails": [
+        {
+          "basisCode": "auth.guest_checkout_blocked",
+          "category": "auth"
+        },
+        {
+          "basisCode": "auth.required",
+          "category": "auth"
+        },
+        {
+          "basisCode": "order.already_cancelled",
+          "category": "order"
+        },
+        {
+          "basisCode": "order.already_shipped",
+          "category": "order"
+        },
+        {
+          "basisCode": "order.cart.empty",
+          "category": "order"
+        },
+        {
+          "basisCode": "order.cart.missing",
+          "category": "order"
+        },
+        {
+          "basisCode": "order.checkout.amount_exceeds_limit",
+          "category": "order"
+        },
+        {
+          "basisCode": "order.checkout.payment_method_invalid",
+          "category": "order"
+        },
+        {
+          "basisCode": "order.checkout.payment_method_missing",
+          "category": "order"
+        },
+        {
+          "basisCode": "order.checkout.slots_incomplete",
+          "category": "order"
+        },
+        {
+          "basisCode": "order.default.deny",
+          "category": "order"
+        },
+        {
+          "basisCode": "order.item.allergens_not_explicit",
+          "category": "order"
+        },
+        {
+          "basisCode": "order.item.quantity_invalid",
+          "category": "order"
+        },
+        {
+          "basisCode": "order.item.quantity_over_limit",
+          "category": "order"
+        },
+        {
+          "basisCode": "order.not_found",
+          "category": "order"
+        },
+        {
+          "basisCode": "order.review.rating_invalid",
+          "category": "order"
+        }
+      ],
+      "conformance": {
+        "passed": true,
+        "total": 8,
+        "passedCount": 8,
+        "failedCount": 0,
+        "reportDigest": "73eaa904b01b158af438f762e20981927937990ce3142eac5bce2eacb12e6b42"
+      },
+      "healthTier": "bronze",
+      "healthScore": {
+        "score": 10,
+        "maxScore": 15
+      },
+      "frameworks": [
+        "eu-ai-act",
+        "nist-ai-rmf"
+      ],
+      "bomDigest": "8247ff2824556956a7fa7a1170cc2b04b1aaa2cc6bcabdcd0c8108632bd618f7"
+    },
+    {
+      "bomVersion": "1.0",
+      "packId": "ibatexas/pack-payments",
+      "packVersion": "1.0.0",
+      "contract": "v0",
+      "kernelMinVersion": "1.0.0",
+      "kernelVersion": "1.3.0",
+      "fingerprint": "6078379a259c7c8f01682091a7eb3a53c7490996aa5c095291656045460f328a",
+      "intents": [
+        "payment.cash.confirm",
+        "payment.charge.cancel",
+        "payment.charge.confirm",
+        "payment.charge.create",
+        "payment.charge.expire",
+        "payment.charge.fail",
+        "payment.create",
+        "payment.dispute.open",
+        "payment.method.switch",
+        "payment.pix.regenerate",
+        "payment.refund.confirm",
+        "payment.refund.issue",
+        "payment.retry",
+        "payment.status.force",
+        "payment.status.reconcile",
+        "payment.status.transition",
+        "payment.waive"
+      ],
+      "signals": [],
+      "basisCodes": [
+        "payment.amount_invalid",
+        "payment.default.deny",
+        "payment.method.invalid",
+        "payment.method.same",
+        "payment.not_found",
+        "payment.ownership_denied",
+        "payment.terminal_state",
+        "refund.already_refunded",
+        "refund.amount_invalid",
+        "refund.not_refundable_state",
+        "refund.stale_read",
+        "refund.state_divergent",
+        "regeneration.cap_exceeded",
+        "regeneration.state_divergent",
+        "retry.cap_exceeded"
+      ],
+      "tools": [
+        {
+          "name": "payment.cash.confirm"
+        },
+        {
+          "name": "payment.charge.cancel"
+        },
+        {
+          "name": "payment.charge.confirm"
+        },
+        {
+          "name": "payment.charge.create"
+        },
+        {
+          "name": "payment.charge.expire"
+        },
+        {
+          "name": "payment.charge.fail"
+        },
+        {
+          "name": "payment.create"
+        },
+        {
+          "name": "payment.dispute.open"
+        },
+        {
+          "name": "payment.method.switch"
+        },
+        {
+          "name": "payment.pix.regenerate"
+        },
+        {
+          "name": "payment.refund.confirm"
+        },
+        {
+          "name": "payment.refund.issue"
+        },
+        {
+          "name": "payment.retry"
+        },
+        {
+          "name": "payment.status.force"
+        },
+        {
+          "name": "payment.status.reconcile"
+        },
+        {
+          "name": "payment.status.transition"
+        },
+        {
+          "name": "payment.waive"
+        }
+      ],
+      "rag": [],
+      "promptHashes": [],
+      "guardrails": [
+        {
+          "basisCode": "payment.amount_invalid",
+          "category": "payment"
+        },
+        {
+          "basisCode": "payment.default.deny",
+          "category": "payment"
+        },
+        {
+          "basisCode": "payment.method.invalid",
+          "category": "payment"
+        },
+        {
+          "basisCode": "payment.method.same",
+          "category": "payment"
+        },
+        {
+          "basisCode": "payment.not_found",
+          "category": "payment"
+        },
+        {
+          "basisCode": "payment.ownership_denied",
+          "category": "payment"
+        },
+        {
+          "basisCode": "payment.terminal_state",
+          "category": "payment"
+        },
+        {
+          "basisCode": "refund.already_refunded",
+          "category": "refund"
+        },
+        {
+          "basisCode": "refund.amount_invalid",
+          "category": "refund"
+        },
+        {
+          "basisCode": "refund.not_refundable_state",
+          "category": "refund"
+        },
+        {
+          "basisCode": "refund.stale_read",
+          "category": "refund"
+        },
+        {
+          "basisCode": "refund.state_divergent",
+          "category": "refund"
+        },
+        {
+          "basisCode": "regeneration.cap_exceeded",
+          "category": "regeneration"
+        },
+        {
+          "basisCode": "regeneration.state_divergent",
+          "category": "regeneration"
+        },
+        {
+          "basisCode": "retry.cap_exceeded",
+          "category": "retry"
+        }
+      ],
+      "conformance": {
+        "passed": true,
+        "total": 8,
+        "passedCount": 8,
+        "failedCount": 0,
+        "reportDigest": "29c3a1129daec7bd9e99b5628018cf75c3daf660f1347aaad3855f63779ff89b"
+      },
+      "healthTier": "bronze",
+      "healthScore": {
+        "score": 9,
+        "maxScore": 15
+      },
+      "frameworks": [
+        "eu-ai-act",
+        "nist-ai-rmf"
+      ],
+      "bomDigest": "b508b35667e5ca69ed61d95a0e862e11657a6cc8f32b442b8d0dd1111ab7cea5"
+    },
+    {
+      "bomVersion": "1.0",
+      "packId": "ibatexas/pack-reservations",
+      "packVersion": "1.0.0",
+      "contract": "v0",
+      "kernelMinVersion": "1.0.0",
+      "kernelVersion": "1.3.0",
+      "fingerprint": "88186a9b73c8257aec17d133a134cbd5ec9192777acfdc69f66d2c77a55c5e9f",
+      "intents": [
+        "reservation.cancel",
+        "reservation.checkin",
+        "reservation.complete",
+        "reservation.create",
+        "reservation.modify",
+        "reservation.no_show.mark",
+        "reservation.waitlist.join",
+        "reservation.waitlist.notify"
+      ],
+      "signals": [],
+      "basisCodes": [
+        "auth.required",
+        "reservation.customer.blocked",
+        "reservation.default.deny",
+        "reservation.not_cancellable",
+        "reservation.not_found",
+        "reservation.not_modifiable",
+        "reservation.party_size.invalid",
+        "reservation.slot.full",
+        "reservation.slot.in_past",
+        "reservation.slot.not_found",
+        "reservation.staff_only"
+      ],
+      "tools": [
+        {
+          "name": "reservation.cancel"
+        },
+        {
+          "name": "reservation.checkin"
+        },
+        {
+          "name": "reservation.complete"
+        },
+        {
+          "name": "reservation.create"
+        },
+        {
+          "name": "reservation.modify"
+        },
+        {
+          "name": "reservation.no_show.mark"
+        },
+        {
+          "name": "reservation.waitlist.join"
+        },
+        {
+          "name": "reservation.waitlist.notify"
+        }
+      ],
+      "rag": [],
+      "promptHashes": [],
+      "guardrails": [
+        {
+          "basisCode": "auth.required",
+          "category": "auth"
+        },
+        {
+          "basisCode": "reservation.customer.blocked",
+          "category": "reservation"
+        },
+        {
+          "basisCode": "reservation.default.deny",
+          "category": "reservation"
+        },
+        {
+          "basisCode": "reservation.not_cancellable",
+          "category": "reservation"
+        },
+        {
+          "basisCode": "reservation.not_found",
+          "category": "reservation"
+        },
+        {
+          "basisCode": "reservation.not_modifiable",
+          "category": "reservation"
+        },
+        {
+          "basisCode": "reservation.party_size.invalid",
+          "category": "reservation"
+        },
+        {
+          "basisCode": "reservation.slot.full",
+          "category": "reservation"
+        },
+        {
+          "basisCode": "reservation.slot.in_past",
+          "category": "reservation"
+        },
+        {
+          "basisCode": "reservation.slot.not_found",
+          "category": "reservation"
+        },
+        {
+          "basisCode": "reservation.staff_only",
+          "category": "reservation"
+        }
+      ],
+      "conformance": {
+        "passed": true,
+        "total": 8,
+        "passedCount": 8,
+        "failedCount": 0,
+        "reportDigest": "2573a1dbd6cb9a2d7750f36feb8d974ca02fa7afade33190a9339491e6f3f38e"
+      },
+      "healthTier": "bronze",
+      "healthScore": {
+        "score": 9,
+        "maxScore": 15
+      },
+      "frameworks": [
+        "eu-ai-act",
+        "nist-ai-rmf"
+      ],
+      "bomDigest": "c0b9c555e776c2b80a629ca9c0e655d5e46a3ab42cda852beac8cd560ff0a163"
+    },
+    {
+      "bomVersion": "1.0",
+      "packId": "ibatexas/pack-whatsapp",
+      "packVersion": "1.1.0",
+      "contract": "v0",
+      "kernelMinVersion": "1.0.0",
+      "kernelVersion": "1.3.0",
+      "fingerprint": "cd3f837a3a04f9fa04594a79a37af7f456e1f0a29d5d6d75f3b07cb707a2b988",
+      "intents": [
+        "conversation.message.append",
+        "whatsapp.message.send",
+        "whatsapp.session.handover",
+        "whatsapp.template.send"
+      ],
+      "signals": [],
+      "basisCodes": [
+        "whatsapp.default.deny",
+        "whatsapp.handoff.rate_limited",
+        "whatsapp.staff.recipient_unknown",
+        "whatsapp.template.invalid",
+        "whatsapp.window.expired"
+      ],
+      "tools": [
+        {
+          "name": "conversation.message.append"
+        },
+        {
+          "name": "whatsapp.message.send"
+        },
+        {
+          "name": "whatsapp.session.handover"
+        },
+        {
+          "name": "whatsapp.template.send"
+        }
+      ],
+      "rag": [],
+      "promptHashes": [],
+      "guardrails": [
+        {
+          "basisCode": "whatsapp.default.deny",
+          "category": "whatsapp"
+        },
+        {
+          "basisCode": "whatsapp.handoff.rate_limited",
+          "category": "whatsapp"
+        },
+        {
+          "basisCode": "whatsapp.staff.recipient_unknown",
+          "category": "whatsapp"
+        },
+        {
+          "basisCode": "whatsapp.template.invalid",
+          "category": "whatsapp"
+        },
+        {
+          "basisCode": "whatsapp.window.expired",
+          "category": "whatsapp"
+        }
+      ],
+      "conformance": {
+        "passed": true,
+        "total": 8,
+        "passedCount": 8,
+        "failedCount": 0,
+        "reportDigest": "17c5be574ae30d659b259157e5ddad77e24c7b625b15b50f1a2d3873a9c3d399"
+      },
+      "healthTier": "bronze",
+      "healthScore": {
+        "score": 9,
+        "maxScore": 15
+      },
+      "frameworks": [
+        "eu-ai-act",
+        "nist-ai-rmf"
+      ],
+      "bomDigest": "4eaa4da750ddbce4fa67ba7410f65518305b509560453e4a5edfeb78c6fcb254"
+    },
+    {
+      "bomVersion": "1.0",
+      "packId": "pack-payments-pix",
+      "packVersion": "0.1.0-experimental",
+      "contract": "v0",
+      "kernelMinVersion": "1.0.0",
+      "kernelVersion": "1.3.0",
+      "fingerprint": "cf1ee740cc534d17daebad62dceae222757a71111477de55e6fb96a4cd980f49",
+      "intents": [
+        "pix.charge.confirm",
+        "pix.charge.create",
+        "pix.charge.refund"
+      ],
+      "signals": [
+        "payment.confirmed"
+      ],
+      "basisCodes": [
+        "pix.charge.already_refunded",
+        "pix.charge.amount_invalid",
+        "pix.charge.confirm_requires_webhook",
+        "pix.charge.expired",
+        "pix.charge.failed",
+        "pix.charge.invalid_state_for_confirm",
+        "pix.charge.not_confirmed",
+        "pix.charge.not_found",
+        "pix.charge.rate_limit_exceeded"
+      ],
+      "tools": [
+        {
+          "name": "pix.charge.confirm"
+        },
+        {
+          "name": "pix.charge.create"
+        },
+        {
+          "name": "pix.charge.refund"
+        }
+      ],
+      "rag": [],
+      "promptHashes": [],
+      "guardrails": [
+        {
+          "basisCode": "pix.charge.already_refunded",
+          "category": "pix"
+        },
+        {
+          "basisCode": "pix.charge.amount_invalid",
+          "category": "pix"
+        },
+        {
+          "basisCode": "pix.charge.confirm_requires_webhook",
+          "category": "pix"
+        },
+        {
+          "basisCode": "pix.charge.expired",
+          "category": "pix"
+        },
+        {
+          "basisCode": "pix.charge.failed",
+          "category": "pix"
+        },
+        {
+          "basisCode": "pix.charge.invalid_state_for_confirm",
+          "category": "pix"
+        },
+        {
+          "basisCode": "pix.charge.not_confirmed",
+          "category": "pix"
+        },
+        {
+          "basisCode": "pix.charge.not_found",
+          "category": "pix"
+        },
+        {
+          "basisCode": "pix.charge.rate_limit_exceeded",
+          "category": "pix"
+        }
+      ],
+      "conformance": {
+        "passed": true,
+        "total": 8,
+        "passedCount": 8,
+        "failedCount": 0,
+        "reportDigest": "d6720bc7921f45848ffc5e4caddce66f118c97d6d6e754103fa3bfda0c67e021"
+      },
+      "healthTier": "bronze",
+      "healthScore": {
+        "score": 10,
+        "maxScore": 15
+      },
+      "frameworks": [
+        "eu-ai-act",
+        "nist-ai-rmf"
+      ],
+      "bomDigest": "d6a71ea6796ccada541ff88849bfdea8214918e982576278e9d9ed854f40a16b"
+    }
+  ]
+}

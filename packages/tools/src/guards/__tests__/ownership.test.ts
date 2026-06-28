@@ -54,13 +54,38 @@ describe("assertOrderOwnership", () => {
     ).resolves.toBeUndefined()
   })
 
-  it("passes when order has no customer (guest/legacy order)", async () => {
+  // R0b — STRICT BY DEFAULT (Inv 2: "no owner" ≠ "any owner" → REFUSED).
+  // NON-VACUOUS: the OLD lenient default returned undefined here; the inverted
+  // fail-closed default must THROW. Revert the default to lenient → this RED.
+  it("throws 'Acesso negado' when order has NO owner attribution and NO opts (fail-closed, Inv 2)", async () => {
     mockMedusaAdmin.mockResolvedValue({
       order: { customer_id: undefined, metadata: {} },
     })
 
     await expect(
       assertOrderOwnership("order_01", "cus_01"),
+    ).rejects.toThrow("Acesso negado")
+  })
+
+  it("throws when both customer_id and metadata.customerId are absent (no owner)", async () => {
+    mockMedusaAdmin.mockResolvedValue({
+      order: { customer_id: undefined, metadata: { someOtherKey: "x" } },
+    })
+
+    await expect(
+      assertOrderOwnership("order_01", "cus_01"),
+    ).rejects.toThrow("Acesso negado")
+  })
+
+  // R0b — the `allowUnowned: true` escape hatch (genuine staff/legacy path):
+  // an unowned order passes ONLY when the hatch is explicitly opened.
+  it("passes for an unowned order ONLY when allowUnowned:true (escape hatch)", async () => {
+    mockMedusaAdmin.mockResolvedValue({
+      order: { customer_id: undefined, metadata: {} },
+    })
+
+    await expect(
+      assertOrderOwnership("order_01", "cus_01", { allowUnowned: true }),
     ).resolves.toBeUndefined()
   })
 

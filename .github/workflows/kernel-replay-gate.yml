@@ -55,15 +55,13 @@ jobs:
       DATABASE_URL: postgres://ibatexas:ibatexas-test@127.0.0.1:5434/ibatexas_test
       IBX_AUDIT_POSTGRES_ENABLED: "true"
       COMPOSE_PROJECT: ibx-replay-gate-${{ github.run_id }}
-      # This job boots ONLY the postgres service, but `docker compose up` still
-      # interpolates EVERY service's env at parse time — so the nats service's
-      # `${IBX_TEST_NATS_*_NKEY_PUBLIC:?stale .env.test}` guards (T3-10) abort the
-      # postgres-only boot. NATS is never started in the replay gate, so these are
-      # inert placeholders solely to satisfy interpolation — NOT real credentials,
-      # and NOT a relaxation of the compose `:?` guard for real .env.test usage.
-      IBX_TEST_NATS_APP_NKEY_PUBLIC: replay-gate-postgres-only-unused
-      IBX_TEST_NATS_CAPTURE_NKEY_PUBLIC: replay-gate-postgres-only-unused
-      IBX_TEST_NATS_TRIGGER_NKEY_PUBLIC: replay-gate-postgres-only-unused
+      # docker-compose.test.yml's nats service declares these `:?`-required (T3-10
+      # NATS auth), so they must be non-empty for ANY compose command to parse —
+      # even `up postgres`. This gate starts ONLY postgres (nats never boots), so
+      # placeholder pubkeys suffice; they are never validated by a nats server.
+      IBX_TEST_NATS_APP_NKEY_PUBLIC: UREPLAYGATEAPPNKEYPLACEHOLDERONLYNOTAREALKEY00000000000
+      IBX_TEST_NATS_CAPTURE_NKEY_PUBLIC: UREPLAYGATECAPNKEYPLACEHOLDERONLYNOTAREALKEY00000000000
+      IBX_TEST_NATS_TRIGGER_NKEY_PUBLIC: UREPLAYGATETRGNKEYPLACEHOLDERONLYNOTAREALKEY00000000000
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: pnpm/action-setup@5b4374b04084dc1f9032b52464284b769ac5059e # v4
@@ -82,7 +80,9 @@ jobs:
 
       # Infra-only test compose, postgres service only. Dedicated project name
       # → dedicated containers/volumes; GH-hosted runner teardown is VM
-      # destruction, the `down -v` below is belt-and-suspenders.
+      # destruction, the `down -v` below is belt-and-suspenders. The NATS nkey
+      # placeholders in the job `env:` above let compose interpolate the (unstarted)
+      # nats service; postgres keeps the compose defaults that match DATABASE_URL.
       - name: Boot ephemeral audit Postgres (docker compose)
         run: docker compose -f docker-compose.test.yml -p "$COMPOSE_PROJECT" up -d --wait postgres
 
@@ -99,4 +99,4 @@ jobs:
 
       - name: Teardown compose project
         if: always()
-        run: docker compose -f docker-compose.test.yml -p "$COMPOSE_PROJECT" down -v --remove-orphans
+        run: docker compose -f docker-compose.test.yml -p "$COMPOSE_PROJECT" down -v --remove-orphans || true

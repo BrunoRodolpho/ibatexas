@@ -32,6 +32,15 @@ export const DOMAIN_DELETE_ORDER = [
   "conversationMessage",
   "conversation",
   "orderProjection",
+  // Managed-agent run journal (no FK to other domain tables — placed with the
+  // observability/projection group). Added with the AgentRun model; this entry
+  // closes the db-tables drift the model left open.
+  "agentRun",
+  // Observability/telemetry tables (no FK to other domain tables). Registered
+  // here to close the pre-existing db-tables drift their models (AgentRedTeamRun,
+  // LlmTokenUsage) left open when they merged without a registry entry.
+  "agentRedTeamRun",
+  "llmTokenUsage",
   "loyaltyAccount",
   "customer",
   "timeSlot",
@@ -62,6 +71,9 @@ export const KERNEL_TABLES = [
   "governance_events",
   "audit_guard_stats",
   "audit_outcomes",
+  // responder-trace-admin (audit-postgres migration 011) — one row per LLM model
+  // call; audit/trace data, so `db clean` truncates it like the others.
+  "turn_trace",
 ] as const
 
 /**

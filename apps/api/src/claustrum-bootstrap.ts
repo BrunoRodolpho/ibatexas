@@ -48,9 +48,9 @@ import {
   type ExplainerPort,
   type HandoffPort,
   type CognitiveState,
+  type LLMTrace,
   type MemoryAccess,
   type ModelProvider,
-  type PlannerPort,
   type ResponderPort,
   type Session,
   type SessionPort,
@@ -59,6 +59,7 @@ import {
   type TurnRecord,
 } from "@claustrum/core";
 import { AnthropicProvider } from "@claustrum/anthropic";
+import { OpenAIProvider } from "@claustrum/openai";
 import {
   createPostgresMemoryProvider,
   PostgresAdvisorySessionLock,
@@ -68,6 +69,9 @@ import {
 import { createPgVectorGroundingProvider } from "@claustrum/grounding-pgvector";
 import { failSafeGrounding } from "./claustrum/fail-safe-grounding.js";
 import { failSafeMemory } from "./claustrum/fail-safe-memory.js";
+import { noopGroundingProvider, noopMemoryProvider } from "./claustrum/noop-memory-grounding.js";
+import { OllamaFetchClient } from "./claustrum/ollama-fetch-client.js";
+import { providerCanEmbed } from "./claustrum/provider-embed-capability.js";
 import { WhatsAppChannel } from "@claustrum/channel-whatsapp";
 import { WebChannel } from "@claustrum/channel-web";
 
@@ -114,6 +118,15 @@ import {
   type AgentApprovalRequest,
   type AgentApprovalStatus,
 } from "./claustrum/agent-approvals.js";
+// H2 (ERDS-061/062) — mirror the agent-approval registry into the adjudicate
+// Redis registry (shared keyPrefix adjudicate:approval) so the adjudicate
+// console/adjutant operator UIs read agent approvals. Best-effort, fail-open.
+import { createRedisApprovalRegistry } from "@adjudicate/approval-engine";
+import { createApprovalRedisClient } from "./claustrum/approval-engine-redis-wiring.js";
+import {
+  createAgentApprovalEngineBridge,
+  mirrorTtlSeconds,
+} from "./claustrum/approval-engine-bridge.js";
 import {
   agentsEnabled,
   startManagedAgentPlane,
@@ -123,6 +136,11 @@ import type { LiveAgentConductorDeps } from "./claustrum/live-agent-conductor.js
 import { createPostgresAgentRunJournal } from "./claustrum/agent-run-journal.js";
 import { createRefundCircuitBreaker } from "./claustrum/agent-realmoney-safety.js";
 import { createRemediationProposalWriter } from "./claustrum/remediation-proposal-writer.js";
+// ERDS-059 — durable per-llm.call token→USD persistence (best-effort, fail-open).
+import {
+  createPostgresTokenUsageSink,
+  type TokenUsageSink,
+} from "./claustrum/token-usage-sink.js";
 
 /**
  * The intent kinds the composed kernel policy confirm-gates for agent sessions
@@ -142,6 +160,9 @@ const AGENT_CONFIRM_GATED_KINDS: ReadonlySet<string> = new Set<string>([
 // wired here via `bootstrapAuditSinkDI()` before `buildAdjudicator()` reads it.
 import { __resetAuditSink, getAuditSink } from "@ibatexas/audit-sink";
 import { bootstrapAuditSinkDI } from "./audit-sink-bootstrap.js";
+// ERDS-060 — learning telemetry sink (learning.event.v1). Best-effort, fail-open;
+// injected into the managed-agent plane so each trigger turn emits a learning event.
+import { getLearningSink } from "./learning-sink-bootstrap.js";
 
 // ── RC-A1 cutover composition (Phase A.1/A.2) ────────────────────────────────
 // The production planner + per-kind PolicyBundle router, composed over the 5
@@ -182,10 +203,24 @@ import {
   verifyConfigSeal,
   type SealablePackInput,
 } from "@adjudicate/conformance";
-import { createIbatexasPlanner } from "./claustrum/ibatexas-planner.js";
+import {
+  createIbatexasPlanner,
+  type ClaimAwarePlannerPort,
+} from "./claustrum/ibatexas-planner.js";
+import { buildClaimsSeams } from "./claustrum/claims-pipeline.js";
 import { createIbatexasResponder } from "./claustrum/ibatexas-responder.js";
+import { createIbatexasPromptComposer } from "./claustrum/prompts/ibatexas-prompts.js";
+import {
+  createTurnTraceWriter,
+  type TurnTraceWriter,
+} from "./claustrum/turn-trace-writer.js";
 import { createIbatexasResolver } from "./claustrum/ibatexas-resolver.js";
 import { sessionTokenKey, resolveAndAssemble } from "./claustrum/resolve-and-assemble.js";
+import {
+  buildCustomerAuthority,
+  customerPrincipalForSession,
+  resourceRefsForIntent,
+} from "./claustrum/authority-wiring.js";
 import {
   createInMemoryTokenUsageStore,
   type TokenUsageStore,
@@ -551,12 +586,38 @@ async function enrichResumeState(
     return state;
   }
   try {
-    const { ctx } = await resolveAndAssemble({
+    const { payload, ctx, owned, ownershipIndeterminate } = await resolveAndAssemble({
       kind: envelope.kind,
       payload: (envelope.payload ?? {}) as Record<string, unknown>,
       customerId: s.customerId,
       channel: s.channel,
     });
+    // 034-F1 (review finding 13): engage the kernel ownership/IDOR guard on the
+    // RESUME re-adjudication too — the plan stage injects state.authority, but
+    // without this the resumed envelope adjudicates with authority===undefined and
+    // the guard is inert (asymmetric with the plan stage). The freshly-recomputed,
+    // customer-scoped `owned` set is the load-bearing, non-tautological check (it
+    // REFUSEs a now-unowned resource — e.g. an order reassigned since parking).
+    //
+    // principalForSession is bound to the PARKED envelope's actor.sessionId because
+    // the resume turn's resolution.state carries no conversationId. This is safe:
+    // the parked envelope ALREADY passed plan-stage IDOR (its actor.sessionId was
+    // the authenticated session when parked — kernel-vetted, not raw input), and
+    // the framework session-scopes park-matching, so the cross-session check is
+    // covered upstream while resource-ownership is re-verified here.
+    const refs = ownershipIndeterminate
+      ? undefined
+      : resourceRefsForIntent(envelope.kind, payload as Record<string, unknown>, s.customerId);
+    if (refs !== undefined) {
+      return {
+        ctx,
+        authority: buildCustomerAuthority(
+          s.customerId,
+          owned,
+          customerPrincipalForSession(envelope.actor.sessionId, s.customerId),
+        ),
+      };
+    }
     return { ctx };
   } catch {
     return state;
@@ -1309,7 +1370,19 @@ function redisSessionStore(): SessionPort {
  * layer). The full implementation will fan out to prom-client metrics
  * and the existing audit-sink subscriber.
  */
-function fastifyTelemetry(usageStore: TokenUsageStore): TelemetryPort {
+function fastifyTelemetry(
+  usageStore: TokenUsageStore,
+  turnTrace?: TurnTraceWriter,
+  tokenUsageSink?: TokenUsageSink,
+): TelemetryPort {
+  // C1/C2 — per-turn LLMTrace buffer. The planner/responder emit an LLMTrace
+  // per model call DURING the turn (emitLLMTrace); that trace carries turnId but
+  // NOT conversationId. Buffer by turnId, then flush at emitTurn (which DOES
+  // carry conversationId) into the redacted turn_trace store. LRU-capped so a
+  // turn that emits traces but never reaches emitTurn (mid-turn throw) can't
+  // leak unboundedly.
+  const pendingTraces = new Map<string, LLMTrace[]>();
+  const MAX_PENDING_TURNS = 500;
   return {
     async emitTurn(record: TurnRecord) {
       logger.info(
@@ -1372,6 +1445,43 @@ function fastifyTelemetry(usageStore: TokenUsageStore): TelemetryPort {
           "SUT llm.call trace emit failed; ignoring",
         );
       }
+      // ERDS-059 — durable token→USD persistence. Alongside the JSONL emit
+      // above, persist an llm_token_usage row per turn (prompt/completion split
+      // + pricing-map USD estimate) so the cost dashboards aggregate by session
+      // and customer. Best-effort / FAIL-OPEN: the sink swallows its own write
+      // errors, and we guard here too — cost telemetry must never break a turn.
+      if (tokenUsageSink !== undefined) {
+        const promptTokens = record.inputTokens ?? 0;
+        const completionTokens = record.outputTokens ?? 0;
+        if (promptTokens > 0 || completionTokens > 0) {
+          // #94-15: off the turn's hot path (fire-and-forget) — the persist must
+          // not gate turn latency. #94-1: idempotent on turnId so a retry of the
+          // same turn overwrites rather than duplicates. #94-2: prefer the per-
+          // turn trace model over the env value (env kept as the fallback —
+          // pendingTraces is only populated when a turn-trace writer is wired;
+          // `?.[0]` captures the first call's model for a multi-call turn).
+          void Promise.resolve(
+            tokenUsageSink.record({
+              turnId: record.turnId,
+              sessionId: record.conversationId,
+              customerId: record.customerId,
+              channel: record.channel,
+              model:
+                pendingTraces.get(record.turnId)?.[0]?.model ??
+                process.env.ANTHROPIC_MODEL ??
+                "claude-sonnet-4-6",
+              promptTokens,
+              completionTokens,
+              recordedAt: record.at,
+            }),
+          ).catch((err: unknown) => {
+            logger.warn(
+              { component: "conductor", event: "token_usage_persist_failed", error: String(err) },
+              "llm_token_usage persist failed; ignoring",
+            );
+          });
+        }
+      }
       // TokenUsageStore (ADR-135) telemetry — dashboard-facing, independent of the
       // Redis fold above (no edge to the F4 guard). Best-effort; never breaks a turn.
       try {
@@ -1390,12 +1500,64 @@ function fastifyTelemetry(usageStore: TokenUsageStore): TelemetryPort {
           "token-usage store record failed; ignoring",
         );
       }
+      // C2 — flush this turn's buffered LLM-call traces to the REDACTED
+      // turn_trace store, attaching the conversationId only available here. Rows
+      // are keyed (turnId, callIndex); the writer redacts the completion. The
+      // trace write is additive — token accounting stays above (no double count).
+      if (turnTrace !== undefined) {
+        const traces = pendingTraces.get(record.turnId);
+        pendingTraces.delete(record.turnId);
+        if (traces !== undefined && traces.length > 0) {
+          try {
+            await Promise.all(
+              traces.map((t, callIndex) =>
+                turnTrace.write({
+                  turnId: t.turnId,
+                  callIndex,
+                  conversationId: record.conversationId,
+                  ...(t.intentHash !== undefined ? { intentHash: t.intentHash } : {}),
+                  model: t.model,
+                  temperature: t.temperature,
+                  inputTokens: t.inputTokens,
+                  outputTokens: t.outputTokens,
+                  promptManifest: t.promptManifest,
+                  completion: t.completion,
+                  durationMs: t.durationMs,
+                  recordedAt: t.at,
+                  ...(t.schemaVersion !== undefined
+                    ? { schemaVersion: t.schemaVersion }
+                    : {}),
+                }),
+              ),
+            );
+          } catch (err) {
+            logger.warn(
+              { component: "conductor", event: "turn_trace_flush_failed", error: String(err) },
+              "turn_trace flush failed; ignoring",
+            );
+          }
+        }
+      }
     },
-    async emitLLMTrace(_trace) {
-      // Token accounting is folded at emitTurn off the TurnRecord (the
-      // once-per-turn seam that carries customerId). Durable LLM-trace
-      // persistence (separate retention from the audit ledger) is a follow-up.
-      return;
+    async emitLLMTrace(trace) {
+      // C1 — buffer the per-model-call trace for the emitTurn flush (which
+      // attaches conversationId + writes the redacted turn_trace rows). When no
+      // turn_trace writer is wired, this is a no-op. Best-effort: never throws.
+      if (turnTrace === undefined) return;
+      try {
+        const list = pendingTraces.get(trace.turnId);
+        if (list !== undefined) {
+          list.push(trace);
+        } else {
+          if (pendingTraces.size >= MAX_PENDING_TURNS) {
+            const oldest = pendingTraces.keys().next().value;
+            if (oldest !== undefined) pendingTraces.delete(oldest);
+          }
+          pendingTraces.set(trace.turnId, [trace]);
+        }
+      } catch {
+        // ignore — telemetry must never break a turn
+      }
     },
     async emitMemoryAccess(_record: MemoryAccess) {
       return;
@@ -1501,6 +1663,19 @@ export async function bootstrapClaustrum(
     // is never constructed, so a scripted composition is structurally unable
     // to spend tokens.
     modelProvider = options.modelProvider;
+  } else if (process.env.LLM_PROVIDER === "ollama") {
+    // Live local-model validation (plan C1): route the SUT's untrusted semantic
+    // parser to a local Ollama /v1 endpoint (e.g. nemotron-3-nano:4b). The kernel
+    // (@adjudicate/core) remains the sole authority — only the model swaps. Reuse
+    // the contract-tested @claustrum/openai OpenAIProvider over a structural
+    // fetch client (OllamaFetchClient) — its embed() throws not_implemented, so
+    // the grounding capability probe / failSafeGrounding degrades to empty
+    // retrieval and grounding-required intents fail CLOSED.
+    modelProvider = new OpenAIProvider({ client: new OllamaFetchClient() });
+    logger.warn(
+      { provider: "ollama", baseUrl: process.env.LLM_BASE_URL, model: process.env.LLM_MODEL },
+      "LLM_PROVIDER=ollama — using OpenAIProvider over a local Ollama endpoint for live validation",
+    );
   } else {
     const anthropicClient = new Anthropic({
       apiKey: process.env.ANTHROPIC_API_KEY ?? "",
@@ -1518,6 +1693,15 @@ export async function bootstrapClaustrum(
       onWarn: (message, fields) => logger.warn(fields, message),
     });
   }
+
+  // The chat model id stamped on each planner/responder CompletionRequest. The
+  // OpenAIProvider forwards req.model to the endpoint, so the Ollama path MUST use
+  // the local model name (was forced inside the old NemotronModelProvider); the
+  // Anthropic path uses the pinned ANTHROPIC_MODEL.
+  const chatModelId =
+    process.env.LLM_PROVIDER === "ollama"
+      ? process.env.LLM_MODEL ?? process.env.ANTHROPIC_MODEL ?? "nemotron-3-nano:4b"
+      : anthropicModelId;
 
   // Wire dev's audit-sink dependency injection (Postgres + NATS + Redis spill +
   // PII redaction) BEFORE reading the composed sink. `bootstrapAuditSinkDI`
@@ -1615,20 +1799,50 @@ export async function bootstrapClaustrum(
   // live contract test). Degrades to empty recall/search/recentActions and
   // dropped observes — the turn runs memory-less; mutations stay
   // kernel-guarded. See fail-safe-memory.ts + docs/agents/decisions.md D-012.
-  const memory = failSafeMemory(
-    createPostgresMemoryProvider({
-      prisma: prisma as unknown as PrismaClientLike,
-      redis: redis as unknown as RedisClientLike,
-      adjudicator,
-    }),
-    {
-      onError: (op, err) =>
-        logger.warn(
-          { component: "memory", op, error: String(err) },
-          "memory port degraded (fail-safe): returning empty result",
-        ),
-    },
+  // DEF-005: the @ibatexas/domain Prisma client generates NO claustrum_memory_*
+  // delegates, so createPostgresMemoryProvider throws on every cache-cold turn.
+  // Detect that capability gap UPFRONT and run a DESIGNED no-op (empty recall)
+  // rather than relying on failSafeMemory to swallow a per-turn TypeError —
+  // "safe by design", not "safe by catch". The wrapper stays as a last-resort
+  // guard for genuinely UNEXPECTED provider errors.
+  // Finding 14: probe EVERY claustrum_memory_* delegate the postgres provider
+  // reads (not just episodic) — a partial/renamed delegate set would otherwise
+  // pass a one-delegate probe and then throw per-turn inside the provider, the
+  // very TypeError DEF-005 set out to eliminate.
+  const memDelegates = ["episodic", "semantic", "procedural", "relational"] as const;
+  const prismaForMemory = prisma as unknown as Record<
+    string,
+    { findMany?: unknown } | undefined
+  >;
+  const memoryDelegatesPresent = memDelegates.every(
+    (slice) => typeof prismaForMemory[`claustrum_memory_${slice}`]?.findMany === "function",
   );
+  if (!memoryDelegatesPresent) {
+    logger.info(
+      { component: "memory" },
+      "claustrum_memory_* delegates absent/incomplete on the domain Prisma client — memory port runs as a designed no-op (empty recall); see DEF-005",
+    );
+  }
+  // Finding 33: the no-op provider never throws BY DESIGN, so wrapping it in
+  // failSafeMemory is dead code (a third place the empty shape would materialize).
+  // Use it directly; the failSafe wrapper guards only the REAL postgres provider's
+  // genuinely-unexpected errors.
+  const memory = memoryDelegatesPresent
+    ? failSafeMemory(
+        createPostgresMemoryProvider({
+          prisma: prisma as unknown as PrismaClientLike,
+          redis: redis as unknown as RedisClientLike,
+          adjudicator,
+        }),
+        {
+          onError: (op, err) =>
+            logger.warn(
+              { component: "memory", op, error: String(err) },
+              "memory port degraded (fail-safe): returning empty result",
+            ),
+        },
+      )
+    : noopMemoryProvider();
 
   // Fail-safe wrapper: handleTurn awaits retrieve() with no catch, and the
   // provider chain throws today (AnthropicProvider.embed() has no embedding
@@ -1636,24 +1850,49 @@ export async function bootstrapClaustrum(
   // the planner runs. Degrades to empty retrieval; attestation failure yields
   // zero proofs (kernel refuses grounding-required envelopes — fail-closed).
   // See fail-safe-grounding.ts + docs/agents/decisions.md D-009.
-  const grounding = failSafeGrounding(
-    createPgVectorGroundingProvider({
-      // pg.Pool is structurally assignable to pgvector's minimal { query } Pool —
-      // no cast needed (was a redundant `as never`).
-      pool: pgPool,
-      modelProvider,
-      modelId: embeddingModelId,
-      tenantId: "ibatexas",
-    }),
-    {
-      modelId: embeddingModelId,
-      onError: (op, err) =>
-        logger.warn(
-          { component: "grounding", op, error: String(err) },
-          "grounding port degraded (fail-safe): returning empty result",
-        ),
-    },
-  );
+  // DEF-005: the configured model provider may have no embedding capability (the
+  // local 4B's embed() throws not_implemented; Anthropic has no embedding proxy
+  // wired), so pgvector retrieve() would throw on every turn. Gate grounding on
+  // BOTH the operator's intent flag AND a real boot-time capability probe — a
+  // flag=true against a non-embedding provider must NOT re-introduce the per-turn
+  // throw. When embeddings are unavailable, run a DESIGNED no-op (empty retrieval)
+  // rather than letting failSafeGrounding swallow the throw each turn.
+  const groundingEnabled = process.env.CLAUSTRUM_GROUNDING_ENABLED === "true";
+  const canEmbed = groundingEnabled ? await providerCanEmbed(modelProvider) : false;
+  const groundingActive = groundingEnabled && canEmbed;
+  if (groundingEnabled && !canEmbed) {
+    logger.warn(
+      { component: "grounding" },
+      "CLAUSTRUM_GROUNDING_ENABLED=true but the model provider cannot embed — running grounding as a designed no-op (empty retrieval); wire a working embedding proxy to enable it. See DEF-005",
+    );
+  } else if (!groundingEnabled) {
+    logger.info(
+      { component: "grounding" },
+      "embeddings unavailable (CLAUSTRUM_GROUNDING_ENABLED!=true) — grounding port runs as a designed no-op (empty retrieval); see DEF-005",
+    );
+  }
+  // Finding 33: as with memory, the grounding no-op never throws by design — use
+  // it directly; failSafeGrounding wraps only the real pgvector provider.
+  const grounding = groundingActive
+    ? failSafeGrounding(
+        createPgVectorGroundingProvider({
+          // pg.Pool is structurally assignable to pgvector's minimal { query } Pool —
+          // no cast needed (was a redundant `as never`).
+          pool: pgPool,
+          modelProvider,
+          modelId: embeddingModelId,
+          tenantId: "ibatexas",
+        }),
+        {
+          modelId: embeddingModelId,
+          onError: (op, err) =>
+            logger.warn(
+              { component: "grounding", op, error: String(err) },
+              "grounding port degraded (fail-safe): returning empty result",
+            ),
+        },
+      )
+    : noopGroundingProvider(embeddingModelId);
 
   const channels: ChannelDriver[] = [];
 
@@ -1704,29 +1943,59 @@ export async function bootstrapClaustrum(
   // planner/responder lands in exactly one place — and so "wire BOTH points"
   // is a single call, not a standing duplication hazard.
   const ibxExplainer = ibatexasExplainer();
-  const buildPlanner = (model: ModelProvider): PlannerPort =>
+  // Phase B/C — content-addressed prompt composer + the redacted turn_trace
+  // writer (the emitLLMTrace sink). ONE telemetry instance is shared across BOTH
+  // planes: it buffers per-call LLMTraces by turnId and flushes them (with
+  // conversationId) to turn_trace at emitTurn. turnId is globally unique, so a
+  // shared buffer across the conductor + managed-agent plane is correct.
+  const promptComposer = createIbatexasPromptComposer();
+  const turnTraceWriter: TurnTraceWriter = createTurnTraceWriter(pgPool);
+  await turnTraceWriter.ensureTable(); // best-effort (writer swallows failures)
+  // ERDS-059 — durable token→USD sink (llm_token_usage). Best-effort; the sink
+  // swallows write failures so cost telemetry never breaks a turn.
+  const tokenUsageSink = createPostgresTokenUsageSink(prisma);
+  const telemetry = fastifyTelemetry(
+    tokenUsageStore,
+    turnTraceWriter,
+    tokenUsageSink,
+  );
+  const buildPlanner = (model: ModelProvider): ClaimAwarePlannerPort =>
     createIbatexasPlanner({
       model,
-      modelId: anthropicModelId,
+      modelId: chatModelId,
       capabilityPlanners: IBATEXAS_COMPOSED_CAPABILITY_PLANNERS,
       deriveContext: deriveIbatexasPlannerContext,
+      promptComposer,
+      telemetry,
     });
   const buildResponder = (model: ModelProvider): ResponderPort =>
     createIbatexasResponder({
       model,
-      modelId: anthropicModelId,
+      modelId: chatModelId,
       explainer: ibxExplainer,
+      promptComposer,
+      telemetry,
     });
 
+  // B-PR1 — claims-runtime seams (SDD §M / §Q.6), FLAG DEFAULT-OFF. The planner
+  // is hoisted so the claim-planner adapter reuses the SAME claim-aware instance
+  // (its `proposeClaims`, Q6b). `buildClaimsSeams` returns {} when
+  // ENABLE_CLAIMS_PIPELINE is OFF (the default), so the spread below is a no-op
+  // and the Conductor is composed BYTE-IDENTICALLY to today (no INVESTIGATE /
+  // CLAIMS-VALIDATE stage runs). ON → the shadow claims path is injected
+  // (activation is a later PR). No `clock` is passed (not in the published
+  // ConductorOptions; the per-turn clock is PENDING R2a).
+  const planner = buildPlanner(modelProvider);
+  const claimsSeams = buildClaimsSeams({ planner });
   _conductor = createConductor({
     adjudicator,
     memory,
     grounding,
-    planner: buildPlanner(modelProvider),
+    planner,
     responder: buildResponder(modelProvider),
     explainer: ibxExplainer,
     handoff: natsHandoff(),
-    telemetry: fastifyTelemetry(tokenUsageStore),
+    telemetry,
     session: redisSessionStore(),
     tools: toolRegistry,
     channels,
@@ -1741,6 +2010,9 @@ export async function bootstrapClaustrum(
     // the same `${channel}:${customerId}` session concurrently (double-EXECUTE).
     // Postgres advisory locks pin acquire/release to one pooled connection.
     sessionLock: new PostgresAdvisorySessionLock(pgPool),
+    // B-PR1 — OFF by default → {} (no-op spread, byte-identical). ON → the three
+    // optional claims seams (investigator / claimPlanner / claimsKernel).
+    ...claimsSeams,
   });
 
   // ── Managed-agent plane (T3-9) — OPT-IN via IBX_AGENTS_ENABLED ──────────────
@@ -1764,7 +2036,7 @@ export async function bootstrapClaustrum(
       };
       // Hoist the approval engine so the staff HTTP route (WS-D1) shares its
       // parked store with the plane (single in-memory producer).
-      const agentApprovals = createAgentApprovalEngine({
+      const inMemoryApprovals = createAgentApprovalEngine({
         notify: async (req) => {
           // Stage-1 approval pending → page staff via the existing handoff surface.
           await publishNatsEvent("support.handoff_requested", {
@@ -1776,6 +2048,54 @@ export async function bootstrapClaustrum(
         },
         now: () => new Date().toISOString(),
       });
+      // H2 (ERDS-061/062): when Redis is configured, ALSO mirror the approval
+      // lifecycle into @adjudicate/approval-engine's Redis registry (the shared
+      // keyPrefix "adjudicate:approval" — the adjudicate console/adjutant read
+      // the same `adjudicate:approval:req:*` keys). The in-memory engine stays
+      // authoritative; the mirror is a best-effort, fail-OPEN operator
+      // read-model. If REDIS_URL is unset (or the registry construction throws)
+      // we fall back to the plain in-memory engine with no bridge — a mirror
+      // must never gate the agent runtime.
+      let agentApprovals: AgentApprovalEngine = inMemoryApprovals;
+      if (process.env.REDIS_URL) {
+        try {
+          // #92-2: compute the mirror TTL ONCE and thread the SAME value into
+          // both the registry (used by markResolved's default TTL) and the
+          // bridge (used by put()'s per-call TTL), so pending and resolved rows
+          // expire on one clock instead of the registry snapping back to 24h.
+          const mirrorTtl = mirrorTtlSeconds();
+          const registry = createRedisApprovalRegistry({
+            redis: createApprovalRedisClient(redis),
+            // Item D (producer): mirror agent approvals under the DEDICATED
+            // `:agent` keyspace (`adjudicate:approval:agent:req:*`) so the
+            // adjutant can tell them apart from customer-checkout approvals. The
+            // consumer (adjutant) ships first and reads BOTH prefixes, so this
+            // producer flip is rollout-safe.
+            keyPrefix: "adjudicate:approval:agent",
+            ttlSeconds: mirrorTtl,
+          });
+          agentApprovals = createAgentApprovalEngineBridge({
+            inner: inMemoryApprovals,
+            registry,
+            ttlSeconds: mirrorTtl,
+            onMirrorError: (stage, err) => {
+              logger.warn(
+                {
+                  component: "agent-approval-mirror",
+                  stage,
+                  err: (err as Error).message,
+                },
+                "agent-approval Redis mirror failed (swallowed — fail-open)",
+              );
+            },
+          });
+        } catch (err) {
+          logger.warn(
+            { component: "agent-approval-mirror", err: (err as Error).message },
+            "agent-approval Redis registry construction failed — using in-memory engine only (fail-open)",
+          );
+        }
+      }
       _agentApprovals = agentApprovals;
       // Live conductor ingredients — H1 recomposes per trigger over a capped
       // model, so the planner/responder are passed as factories (over the
@@ -1786,7 +2106,10 @@ export async function bootstrapClaustrum(
         grounding,
         explainer: ibxExplainer,
         handoff: natsHandoff(),
-        telemetry: fastifyTelemetry(tokenUsageStore),
+        // Share the SAME telemetry instance as the conductor — the turn_trace
+        // buffer keys on the (globally-unique) turnId, so agent-plane model
+        // calls flush to turn_trace at their emitTurn too.
+        telemetry,
         session: redisSessionStore(),
         tenantResolver: resolveIbatexasTenantPolicy,
         sessionLock: new PostgresAdvisorySessionLock(pgPool),
@@ -1816,6 +2139,9 @@ export async function bootstrapClaustrum(
         liveConductor,
         journal: createPostgresAgentRunJournal(prisma),
         proposalSink: (p) => proposalWriter.write(p),
+        // ERDS-060: each completed trigger turn emits a best-effort
+        // learning.event.v1 (fail-open; the leaf no-ops if Redis+NATS are absent).
+        learningSink: getLearningSink(),
         redis: ledgerClient,
         pubsub,
         approvals: agentApprovals,

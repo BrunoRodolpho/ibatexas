@@ -4,6 +4,7 @@
 import { NonRetryableError, type AgentContext } from "@ibatexas/types";
 import { createPaymentQueryService } from "@ibatexas/domain";
 import { isTerminalPaymentStatus, PAYMENT_STATUS_LABELS_PT, type PaymentStatus } from "@ibatexas/types";
+import { withOrderOwnership } from "../guards/with-ownership.js";
 
 interface CheckPaymentStatusInput {
   orderId: string;
@@ -24,7 +25,7 @@ interface CheckPaymentStatusOutput {
   attemptCount?: number;
 }
 
-export async function checkPaymentStatus(
+async function checkPaymentStatusImpl(
   input: CheckPaymentStatusInput,
   ctx: AgentContext,
 ): Promise<CheckPaymentStatusOutput> {
@@ -70,6 +71,15 @@ export async function checkPaymentStatus(
     attemptCount: allAttempts.length,
   };
 }
+
+// N-P0.2 / SEC-002: close the payment IDOR. PAYMENT_STATUS is customer_scoped,
+// reachable only via the OrderProjection-join ownership the canonical guard
+// performs — so assert order ownership BEFORE any payment read. The guard is
+// STRICT BY DEFAULT (Inv 2: "no owner" ≠ "any owner" → REFUSED), so no opt-in
+// is needed — an unowned order is refused for free. Reuses the same
+// withOrderOwnership / assertOrderOwnership path as check_order_status — no
+// second ownership mechanism.
+export const checkPaymentStatus = withOrderOwnership(checkPaymentStatusImpl);
 
 export const CheckPaymentStatusTool = {
   name: "check_payment_status",

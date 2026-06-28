@@ -4,6 +4,10 @@
     "claude-sonnet-4-6": {
       "inputUsdPerMTok": 3,
       "outputUsdPerMTok": 15
+    },
+    "nemotron-3-nano:4b": {
+      "inputUsdPerMTok": 0,
+      "outputUsdPerMTok": 0
     }
   }
 }

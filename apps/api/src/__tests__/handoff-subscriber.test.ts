@@ -8,6 +8,10 @@ import { startHandoffSubscriber } from "../subscribers/handoff-subscriber.js"
 
 const mockSubscribeNatsEvent = vi.hoisted(() => vi.fn())
 const mockGetWhatsAppSender = vi.hoisted(() => vi.fn())
+// The subscriber now records escalation state (D2). Mock the store at its module
+// boundary so it's a silent no-op here, leaving the dedup/notification paths
+// (which is what these tests assert) byte-identical to before.
+const mockRecordHandoff = vi.hoisted(() => vi.fn(async () => undefined))
 
 vi.mock("@ibatexas/nats-client", () => ({
   subscribeNatsEvent: mockSubscribeNatsEvent,
@@ -15,6 +19,10 @@ vi.mock("@ibatexas/nats-client", () => ({
 
 vi.mock("@ibatexas/tools", () => ({
   getWhatsAppSender: mockGetWhatsAppSender,
+}))
+
+vi.mock("../escalation/escalation-store.js", () => ({
+  getEscalationStore: vi.fn(async () => ({ recordHandoff: mockRecordHandoff })),
 }))
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -79,6 +87,16 @@ describe("handoff-subscriber", () => {
 
     // Suppress unused variable warning
     void callback
+  })
+
+  it("records escalation state (D2) so the session is paused + enqueued", async () => {
+    delete process.env.STAFF_NOTIFICATION_PHONE
+    const callback = await getRegisteredCallback()
+    await callback({ sessionId: "sess_takeover", reason: "falar com humano" })
+
+    expect(mockRecordHandoff).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: "sess_takeover", reason: "falar com humano" }),
+    )
   })
 
   it("logs handoff request without reason", async () => {

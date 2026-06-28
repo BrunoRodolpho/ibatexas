@@ -17,6 +17,8 @@ import { createTokenBudgetGuard, createConfirmGuard } from "@adjudicate/primitiv
 // ── Mutable mock controls ───────────────────────────────────────────────────
 let redisGet: (key: string) => Promise<string | null> = async () => null;
 let orderGetById: (id: string) => Promise<unknown> = async () => null;
+let paymentGetById: (id: string) => Promise<unknown> = async () => null;
+let paymentGetActiveByOrderId: (orderId: string) => Promise<unknown> = async () => null;
 let reservationGetById: (id: string, customerId: string) => Promise<unknown> = async () => {
   throw new Error("not found");
 };
@@ -39,7 +41,8 @@ vi.mock("@ibatexas/domain", () => ({
     listByCustomer: (cid: string, input?: unknown) => orderListByCustomer(cid, input),
   }),
   createPaymentQueryService: () => ({
-    getActiveByOrderId: async () => null,
+    getById: (id: string) => paymentGetById(id),
+    getActiveByOrderId: (orderId: string) => paymentGetActiveByOrderId(orderId),
     listByOrderId: async () => ({ payments: [], count: 0 }),
   }),
   createCustomerService: () => ({ getById: async () => null }),
@@ -73,6 +76,8 @@ const envelope = buildEnvelope({
 beforeEach(() => {
   redisGet = async () => null;
   orderGetById = async () => null;
+  paymentGetById = async () => null;
+  paymentGetActiveByOrderId = async () => null;
   reservationGetById = async () => {
     throw new Error("not found");
   };
@@ -398,6 +403,102 @@ describe("confirm-on-autoresolve guard (mirrors claustrum-bootstrap)", () => {
       nonce: "n2",
     });
     expect(guard(noteEnv, { ctx: { autoResolvedMoneyRef: true } })).toBeNull();
+  });
+});
+
+describe("resolve-and-assemble — 034-F1 ownership binding (review findings 6/7/11)", () => {
+  it("refund: binds ownership through the payment's order (paymentId → orderId), owner confirmed", async () => {
+    // PaymentRefundIssuePayload carries ONLY paymentId — resolve its owning orderId.
+    paymentGetById = async (id) => (id === "pay1" ? { id, orderId: "o1" } : null);
+    orderGetById = async () => ({ customerId: "c1" });
+    const { payload, owned, ownershipIndeterminate } = await resolveAndAssemble({
+      kind: "payment.refund.issue",
+      payload: { paymentId: "pay1", refundAmountCentavos: 1000 },
+      customerId: "c1",
+      channel: "web",
+    });
+    expect((payload as { orderId?: string }).orderId).toBe("o1"); // bound for the guard
+    expect(owned).toEqual(["o1"]); // → authority graph engages, EXECUTE for the true owner
+    expect(ownershipIndeterminate).toBe(false);
+  });
+
+  it("refund: a cross-principal payment yields owned=[] (guard REFUSEs), not indeterminate", async () => {
+    paymentGetById = async () => ({ id: "pay1", orderId: "o1" });
+    orderGetById = async () => ({ customerId: "SOMEONE-ELSE" }); // not c1's order
+    const { payload, owned, ownershipIndeterminate } = await resolveAndAssemble({
+      kind: "payment.refund.issue",
+      payload: { paymentId: "pay1", refundAmountCentavos: 1000 },
+      customerId: "c1",
+      channel: "web",
+    });
+    expect((payload as { orderId?: string }).orderId).toBe("o1");
+    expect(owned).toEqual([]); // confirmed-not-owned → REFUSE
+    expect(ownershipIndeterminate).toBe(false);
+  });
+
+  it("transient DB error → ownershipIndeterminate=true (guard stays inert, no false REFUSE of the true owner)", async () => {
+    orderGetById = async () => {
+      throw new Error("db timeout");
+    };
+    const { owned, ownershipIndeterminate } = await resolveAndAssemble({
+      kind: "order.cancel",
+      payload: { orderId: "o1" },
+      customerId: "c1",
+      channel: "web",
+    });
+    expect(owned).toEqual([]);
+    expect(ownershipIndeterminate).toBe(true); // ← distinct from confirmed-not-owned
+  });
+
+  it("confirmed-not-owned (customer mismatch) is NOT indeterminate (so the guard REFUSEs)", async () => {
+    orderGetById = async () => ({ customerId: "SOMEONE-ELSE" });
+    const { owned, ownershipIndeterminate } = await resolveAndAssemble({
+      kind: "order.cancel",
+      payload: { orderId: "o1" },
+      customerId: "c1",
+      channel: "web",
+    });
+    expect(owned).toEqual([]);
+    expect(ownershipIndeterminate).toBe(false);
+  });
+});
+
+describe("resolve-and-assemble — D1 refund freshness/refundable ctx (Inv 11 strengthen)", () => {
+  it("stamps paymentReadThisTurn + currentStatus on a LIVE active-payment read (feeds the pack's refundable + freshness conjuncts)", async () => {
+    paymentGetById = async (id) => (id === "pay1" ? { id, orderId: "o1" } : null);
+    orderGetById = async () => ({ customerId: "c1" });
+    paymentGetActiveByOrderId = async () => ({
+      status: "paid",
+      method: "pix",
+      amountInCentavos: 30_000,
+      refundedAmountCentavos: 0,
+      version: 1,
+    });
+    const { ctx, owned } = await resolveAndAssemble({
+      kind: "payment.refund.issue",
+      payload: { paymentId: "pay1", refundAmountCentavos: 1000 },
+      customerId: "c1",
+      channel: "web",
+    });
+    // must_read_this_turn marker (SDD §5 fresh / §G sourceMode==live).
+    expect(ctx.paymentReadThisTurn).toBe(true);
+    expect(ctx.currentStatus).toBe("paid"); // refundable-state conjunct sees a settled payment
+    expect(ctx.exists).toBe(true);
+    expect(owned).toEqual(["o1"]); // ownership conjunct: authority graph engages
+  });
+
+  it("does NOT stamp paymentReadThisTurn when the owned order has NO active payment (nothing read live → fails closed at the pack)", async () => {
+    paymentGetById = async (id) => (id === "pay1" ? { id, orderId: "o1" } : null);
+    orderGetById = async () => ({ customerId: "c1" });
+    paymentGetActiveByOrderId = async () => null; // owned, but no active payment
+    const { ctx } = await resolveAndAssemble({
+      kind: "payment.refund.issue",
+      payload: { paymentId: "pay1", refundAmountCentavos: 1000 },
+      customerId: "c1",
+      channel: "web",
+    });
+    expect(ctx.exists).toBe(false);
+    expect(ctx.paymentReadThisTurn).toBeUndefined();
   });
 });
 

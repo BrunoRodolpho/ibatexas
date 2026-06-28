@@ -27,7 +27,12 @@ jobs:
       # clear error rather than a cryptic mid-suite testcontainer-boot failure.
       - name: Verify Docker is available (testcontainer prerequisite)
         run: docker info
-      - run: pnpm test -- -- --coverage
+      # Force the lcov reporter for EVERY package so SonarCloud gets coverage
+      # from all of them. The root vitest.config sets reporter=[text,lcov], but
+      # packages with their OWN vitest.config (apps/api, domain, …) don't inherit
+      # it and would otherwise emit no lcov → 0% coverage. Passing the reporter
+      # on the CLI applies it uniformly across the turbo fan-out.
+      - run: pnpm test -- -- --coverage --coverage.reporter=lcov --coverage.reporter=text
       # Bypass-detection CI gate (task 20). Fails the build if any direct
       # prisma write, direct medusa write, executeToolDirect re-introduction,
       # or setMetricsSink(undefined) reset enters the codebase. The vitest
@@ -46,6 +51,30 @@ jobs:
         run: node packages/cli/dist/index.js kernel pack-bom --verify-file packages/cli/governance/pack-bom-baseline.json
       - name: Policy-coherence gate (F11)
         run: node packages/cli/dist/index.js kernel analyze
+      # Governance ARTIFACT exporters (ERDS-055/056/057). Distinct from the
+      # gates above: these verify the committed AI-BOM / config-seal /
+      # policy-coherence JSON artifacts have not drifted from the live packs.
+      # Re-generate with `ibx aibom|seal|coherence export --out <path>`.
+      - name: AI-BOM artifact drift gate (ERDS-055)
+        run: node packages/cli/dist/index.js aibom export --verify-file packages/cli/governance/ai-boms/ibatexas.json
+      - name: Config-seal artifact drift gate (ERDS-056)
+        run: node packages/cli/dist/index.js seal export --verify-file packages/cli/governance/seals/ibatexas.json
+      - name: Policy-coherence artifact drift gate (ERDS-057)
+        run: node packages/cli/dist/index.js coherence export --verify-file packages/cli/governance/coherence/ibatexas.json
+      # Normalize per-package lcov SF paths to repo-root-relative so SonarCloud
+      # can match coverage to sources. vitest emits SF paths relative to each
+      # package (e.g. `SF:src/foo.ts` in packages/domain), but the scanner runs
+      # from the repo root with sonar.sources=<pkg>/src — so without this the
+      # gate reports "0.0% Coverage on New Code". Idempotent (rewrites SF:src/ only).
+      - name: Normalize lcov paths for SonarCloud (monorepo)
+        run: |
+          shopt -s nullglob
+          for f in apps/*/coverage/lcov.info packages/*/coverage/lcov.info; do
+            pkg=$(dirname "$(dirname "$f")")
+            sed -i -E "s#^SF:src/#SF:$pkg/src/#" "$f"
+          done
+          echo "Normalized lcov SF paths (sample):"
+          grep -h "^SF:" apps/*/coverage/lcov.info packages/*/coverage/lcov.info 2>/dev/null | sort -u | head -10
       - name: SonarCloud Scan
         uses: SonarSource/sonarqube-scan-action@a31c9398be7ace6bbfaf30c0bd5d415f843d45e9 # v7.0.0
         env:

@@ -1,12 +1,13 @@
 // W8-Q2 — unit tests for the NX-guard park wrapper's
 // `hoistAndValidateVerificationFields` invariant.
 //
-// The framework's `verifyParkedEnvelopeHash` reads four top-level fields off
+// The framework's `verifyParkedEnvelopeHash` reads five top-level fields off
 // the parked envelope to re-derive `intentHash`:
 //   - `version`
 //   - `nonce`
 //   - `taint`
 //   - `actorPrincipal`
+//   - `origin`           (041 folded provenance into the intentHash recipe)
 //
 // If ANY of these is missing on the parked blob, the verifier returns
 // `{verified: null, reason: "missing_fields"}` and (in warn mode) the
@@ -14,7 +15,7 @@
 // inert. Pre-W7-G3 the wrapper hoisted nothing; W7-G3 hoisted only
 // `actorPrincipal`. W8-Q2 extends the contract: the wrapper now refuses
 // (throws `ParkVerificationFieldsMissingError`) at park time whenever any
-// of the four fields cannot be sourced.
+// of the five fields cannot be sourced.
 //
 // These tests stub Redis (just enough to satisfy the framework primitive's
 // happy path) so they run without a Docker testcontainer — the goal is to
@@ -102,6 +103,7 @@ function buildArgs(envelopeOverrides: Record<string, unknown>): {
       nonce: base.nonce,
       taint: base.taint,
       actorPrincipal: base.actor.principal,
+      origin: base.origin,
       ...envelopeOverrides,
     },
     signal: "payment.confirmed",
@@ -185,6 +187,18 @@ describe("W8-Q2 — hoistAndValidateVerificationFields", () => {
     delete args.envelope.actorPrincipal
     // No nested actor.principal either.
     args.envelope.actor = { sessionId: "sess_q2" }
+    await expect(
+      parkDeferredIntentWithNxGuard(
+        args as unknown as Parameters<typeof parkDeferredIntentWithNxGuard>[0],
+      ),
+    ).rejects.toBeInstanceOf(ParkVerificationFieldsMissingError)
+  })
+
+  it("throws when `origin` is missing at top level (041 — part of the hash recipe)", async () => {
+    const args = buildArgs({}) as unknown as {
+      envelope: Record<string, unknown>
+    }
+    delete args.envelope.origin
     await expect(
       parkDeferredIntentWithNxGuard(
         args as unknown as Parameters<typeof parkDeferredIntentWithNxGuard>[0],

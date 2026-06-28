@@ -806,10 +806,17 @@ const FORBIDDEN_REDIS_DEL_LOCK = [
  *     via raw SQL (uses ON CONFLICT to dedupe).
  *   - packages/llm-provider/src/postgres-audit-writer.ts — Task 19 audit
  *     INSERT helper, paired with audit-consumer.
+ *   - apps/api/src/jobs/retention-cleaner.ts — responder-trace-admin C2: the
+ *     turn_trace retention sweep. turn_trace is a TELEMETRY table (not a
+ *     kernel-gated domain entity, not a Prisma model), so a time-based DELETE
+ *     is a maintenance sweep that legitimately runs outside the envelope path —
+ *     exactly like the conversationMessage/orderEventLog deleteMany purges in
+ *     the same file. The DELETE is parameterized (tagged template), not Unsafe.
  */
 const ALLOWED_EXECUTE_RAW = new Set<string>([
   "apps/api/src/subscribers/audit-consumer.ts",
   "packages/llm-provider/src/postgres-audit-writer.ts",
+  "apps/api/src/jobs/retention-cleaner.ts",
 ])
 
 const FORBIDDEN_EXECUTE_RAW = [

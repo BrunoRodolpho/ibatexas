@@ -82,6 +82,22 @@ export function refuseOrderAlreadyShipped(): Refusal {
   )
 }
 
+export function refuseOrderPastPonr(): Refusal {
+  return refuse(
+    "STATE",
+    "order.past_ponr",
+    "Esse pedido já passou do ponto de cancelamento — entre em contato com o restaurante.",
+  )
+}
+
+export function refuseOwnershipDenied(): Refusal {
+  return refuse(
+    "SECURITY",
+    "order.ownership_denied",
+    "Esse pedido não pertence à sua conta.",
+  )
+}
+
 export function refuseSlotsIncomplete(): Refusal {
   return refuse(
     "STATE",

@@ -54,6 +54,23 @@ resource "aws_ecs_task_definition" "nats" {
   cpu                      = 256
   memory                   = 512
   execution_role_arn       = aws_iam_role.ecs_execution.arn
+  task_role_arn            = aws_iam_role.ecs_task.arn
+
+  # Persist the JetStream store to EFS (mounted at /data, matching store_dir
+  # above) so it survives Fargate task replacement.
+  volume {
+    name = "nats-data"
+
+    efs_volume_configuration {
+      file_system_id     = aws_efs_file_system.nats.id
+      transit_encryption = "ENABLED"
+
+      authorization_config {
+        access_point_id = aws_efs_access_point.nats.id
+        iam             = "ENABLED"
+      }
+    }
+  }
 
   container_definitions = jsonencode([{
     name       = "nats"
@@ -73,6 +90,12 @@ resource "aws_ecs_task_definition" "nats" {
       { containerPort = 4222, protocol = "tcp" },
       { containerPort = 8222, protocol = "tcp" }
     ]
+
+    mountPoints = [{
+      sourceVolume  = "nats-data"
+      containerPath = "/data"
+      readOnly      = false
+    }]
 
     logConfiguration = {
       logDriver = "awslogs"
