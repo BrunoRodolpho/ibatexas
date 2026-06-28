@@ -21,6 +21,12 @@ interface BroadcastResult {
   results: RecipientResult[]
 }
 
+function statusColor(status: RecipientResult['status']): string {
+  if (status === 'sent') return 'text-green-700'
+  if (status === 'failed') return 'text-red-600'
+  return 'text-gray-500'
+}
+
 export default function BroadcastPage(): React.JSX.Element {
   const [recipientsText, setRecipientsText] = useState('')
   const [template, setTemplate] = useState('')
@@ -75,8 +81,11 @@ export default function BroadcastPage(): React.JSX.Element {
 
       <div className="flex gap-4">
         <div className="flex w-1/2 flex-col gap-2">
-          <label className="text-sm font-medium">Destinatários (um por linha, E.164)</label>
+          <label htmlFor="broadcast-recipients" className="text-sm font-medium">
+            Destinatários (um por linha, E.164)
+          </label>
           <textarea
+            id="broadcast-recipients"
             value={recipientsText}
             onChange={(e) => setRecipientsText(e.target.value)}
             rows={8}
@@ -85,8 +94,11 @@ export default function BroadcastPage(): React.JSX.Element {
           />
         </div>
         <div className="flex w-1/2 flex-col gap-2">
-          <label className="text-sm font-medium">Mensagem (template)</label>
+          <label htmlFor="broadcast-template" className="text-sm font-medium">
+            Mensagem (template)
+          </label>
           <textarea
+            id="broadcast-template"
             value={template}
             onChange={(e) => setTemplate(e.target.value)}
             rows={8}
@@ -118,15 +130,7 @@ export default function BroadcastPage(): React.JSX.Element {
             {result.results.map((r) => (
               <li key={r.recipient} className="flex justify-between rounded border px-2 py-1">
                 <span className="font-mono">{r.recipient}</span>
-                <span
-                  className={
-                    r.status === 'sent'
-                      ? 'text-green-700'
-                      : r.status === 'failed'
-                        ? 'text-red-600'
-                        : 'text-gray-500'
-                  }
-                >
+                <span className={statusColor(r.status)}>
                   {r.status}
                   {r.error ? ` (${r.error})` : ''}
                 </span>
@@ -137,9 +141,12 @@ export default function BroadcastPage(): React.JSX.Element {
       ) : null}
 
       <div className="mt-4 flex flex-col gap-2 border-t pt-4">
-        <label className="text-sm font-medium">Registrar opt-out</label>
+        <label htmlFor="broadcast-optout" className="text-sm font-medium">
+          Registrar opt-out
+        </label>
         <div className="flex items-center gap-2">
           <input
+            id="broadcast-optout"
             value={optOutPhone}
             onChange={(e) => setOptOutPhone(e.target.value)}
             placeholder="+5511999990000"

@@ -23,12 +23,21 @@ let queue: Queue | null = null;
 let worker: Worker | null = null;
 let logger: FastifyBaseLogger | null = null;
 
-/** Core job logic — exported for direct testing. */
-export async function checkDormantCustomers(log?: FastifyBaseLogger | null): Promise<void> {
-  const effectiveLogger = log ?? logger;
+type DormantCustomer = Awaited<
+  ReturnType<ReturnType<typeof createCustomerService>["findDormantCustomers"]>
+>[number];
 
-  // Time-of-day guard — only send during lunch (10-13) or dinner (17-20) windows in Brazil
-  const currentHour = Number.parseInt(
+interface OutreachRunContext {
+  redis: Awaited<ReturnType<typeof getRedisClient>>;
+  log: FastifyBaseLogger | null;
+  now: Date;
+  dayOfWeek: number;
+  weatherCondition: Awaited<ReturnType<typeof fetchWeatherCondition>>;
+}
+
+/** Current hour (0-23) in the restaurant timezone. */
+function getRestaurantHour(): number {
+  return Number.parseInt(
     new Intl.DateTimeFormat("pt-BR", {
       hour: "numeric",
       hour12: false,
@@ -36,9 +45,151 @@ export async function checkDormantCustomers(log?: FastifyBaseLogger | null): Pro
     }).format(new Date()),
     10,
   );
-  const inLunchWindow = currentHour >= 10 && currentHour < 13;
-  const inDinnerWindow = currentHour >= 17 && currentHour < 20;
-  if (!inLunchWindow && !inDinnerWindow) {
+}
+
+/** True only during the lunch (10-13) or dinner (17-20) outreach windows. */
+function isWithinMealWindow(hour: number): boolean {
+  const inLunchWindow = hour >= 10 && hour < 13;
+  const inDinnerWindow = hour >= 17 && hour < 20;
+  return inLunchWindow || inDinnerWindow;
+}
+
+/** Pick the highest-scoring product id from the profile's score:* fields. */
+function findTopProductId(profile: Record<string, string>): string | null {
+  let topProductId: string | null = null;
+  let topScore = -1;
+  for (const [field, value] of Object.entries(profile)) {
+    if (field.startsWith("score:")) {
+      const score = Number.parseFloat(value);
+      if (score > topScore) {
+        topScore = score;
+        topProductId = field.slice(6);
+      }
+    }
+  }
+  return topProductId;
+}
+
+/** Resolve product name (best-effort — empty string lets the message builder fall back). */
+async function resolveTopProductName(topProductId: string | null): Promise<string> {
+  if (!topProductId) return "";
+  try {
+    const { medusaAdmin } = await import("@ibatexas/tools");
+    const data = (await medusaAdmin(`/admin/products/${topProductId}`)) as {
+      product?: { title?: string };
+    };
+    return data.product?.title ?? "";
+  } catch {
+    // Non-fatal — message builder has a fallback
+    return "";
+  }
+}
+
+/**
+ * Process outreach for a single customer.
+ * Returns true if a message was actually sent (so the caller can count it).
+ */
+async function processCustomerOutreach(
+  customer: DormantCustomer,
+  ctx: OutreachRunContext,
+): Promise<boolean> {
+  const { redis, log, now, dayOfWeek, weatherCondition } = ctx;
+
+  // Check cooldown — skip if outreach was sent recently
+  const cooldownKey = rk(`outreach:last:${customer.id}`);
+  const onCooldown = await redis.exists(cooldownKey);
+  if (onCooldown) {
+    log?.info(
+      { customer_id: customer.id },
+      "[proactive-engagement] Skipping — cooldown active",
+    );
+    return false;
+  }
+
+  // Read profile for risk signals
+  const profileKey = rk(`customer:profile:${customer.id}`);
+  const profile = await redis.hGetAll(profileKey);
+  const noShowCount = Number.parseInt(profile["noShowCount"] ?? "0", 10);
+  const disputeCount = Number.parseInt(profile["disputeCount"] ?? "0", 10);
+
+  if (noShowCount > 2 || disputeCount > 0) {
+    log?.info(
+      { customer_id: customer.id, no_show_count: noShowCount, dispute_count: disputeCount },
+      "[proactive-engagement] Skipping — risk signals",
+    );
+    return false;
+  }
+
+  const topProductId = findTopProductId(profile);
+  const topProductName = await resolveTopProductName(topProductId);
+
+  // Compute days since last order
+  const lastOrderAtStr = profile["lastOrderAt"];
+  const lastOrderMs = lastOrderAtStr ? new Date(lastOrderAtStr).getTime() : 0;
+  const daysSinceLastOrder = lastOrderMs
+    ? Math.floor((now.getTime() - lastOrderMs) / 86400000)
+    : DORMANT_THRESHOLD_DAYS;
+
+  const { message, type: messageType } = buildOutreachMessage(
+    customer.name ?? "",
+    topProductName,
+    daysSinceLastOrder,
+    dayOfWeek,
+    weatherCondition,
+  );
+
+  // Send WhatsApp message
+  await sendText(`whatsapp:${customer.phone}`, message);
+
+  // Set cooldown key
+  await redis.set(cooldownKey, "1", { EX: COOLDOWN_DAYS * 86400 });
+
+  // Increment weekly counter (INCR + set TTL only if key is new)
+  const weeklyKey = rk("outreach:weekly:count");
+  const newCount = await redis.incr(weeklyKey);
+  if (newCount === 1) {
+    await redis.expire(weeklyKey, WEEKLY_COUNTER_TTL);
+  }
+
+  // Publish NATS event
+  await publishNatsEvent("outreach.sent", {
+    customerId: customer.id,
+    messageType,
+    sentAt: now.toISOString(),
+  });
+
+  log?.info(
+    { customer_id: customer.id, message_type: messageType },
+    "[proactive-engagement] Outreach sent",
+  );
+  return true;
+}
+
+/** Log + report an error raised while processing a single customer's outreach. */
+function reportOutreachError(
+  log: FastifyBaseLogger | null,
+  customer: DormantCustomer,
+  err: unknown,
+): void {
+  log?.error(
+    { customer_id: customer.id, error: String(err) },
+    "[proactive-engagement] Error sending outreach",
+  );
+  Sentry.withScope((scope) => {
+    scope.setTag("job", "proactive-engagement");
+    scope.setTag("source", "background-job");
+    scope.setContext("customer", { customerId: customer.id });
+    Sentry.captureException(err);
+  });
+}
+
+/** Core job logic — exported for direct testing. */
+export async function checkDormantCustomers(log?: FastifyBaseLogger | null): Promise<void> {
+  const effectiveLogger = log ?? logger;
+
+  // Time-of-day guard — only send during lunch (10-13) or dinner (17-20) windows in Brazil
+  const currentHour = getRestaurantHour();
+  if (!isWithinMealWindow(currentHour)) {
     effectiveLogger?.info(
       { current_hour: currentHour },
       "[proactive-engagement] Skipping outreach — outside meal window",
@@ -61,115 +212,22 @@ export async function checkDormantCustomers(log?: FastifyBaseLogger | null): Pro
 
   let sentCount = 0;
   const now = new Date();
-  const dayOfWeek = now.getDay();
+  const ctx: OutreachRunContext = {
+    redis,
+    log: effectiveLogger,
+    now,
+    dayOfWeek: now.getDay(),
+    weatherCondition,
+  };
 
   for (const customer of dormantCustomers) {
     if (sentCount >= MAX_MESSAGES_PER_RUN) break;
 
     try {
-      // Check cooldown — skip if outreach was sent recently
-      const cooldownKey = rk(`outreach:last:${customer.id}`);
-      const onCooldown = await redis.exists(cooldownKey);
-      if (onCooldown) {
-        effectiveLogger?.info(
-          { customer_id: customer.id },
-          "[proactive-engagement] Skipping — cooldown active",
-        );
-        continue;
-      }
-
-      // Read profile for risk signals
-      const profileKey = rk(`customer:profile:${customer.id}`);
-      const profile = await redis.hGetAll(profileKey);
-      const noShowCount = Number.parseInt(profile["noShowCount"] ?? "0", 10);
-      const disputeCount = Number.parseInt(profile["disputeCount"] ?? "0", 10);
-
-      if (noShowCount > 2 || disputeCount > 0) {
-        effectiveLogger?.info(
-          { customer_id: customer.id, no_show_count: noShowCount, dispute_count: disputeCount },
-          "[proactive-engagement] Skipping — risk signals",
-        );
-        continue;
-      }
-
-      // Find top product from score:* fields
-      let topProductId: string | null = null;
-      let topScore = -1;
-      for (const [field, value] of Object.entries(profile)) {
-        if (field.startsWith("score:")) {
-          const score = Number.parseFloat(value);
-          if (score > topScore) {
-            topScore = score;
-            topProductId = field.slice(6);
-          }
-        }
-      }
-
-      // Resolve product name (best-effort — fall back to empty string for message default)
-      let topProductName = "";
-      if (topProductId) {
-        try {
-          const { medusaAdmin } = await import("@ibatexas/tools");
-          const data = await medusaAdmin(`/admin/products/${topProductId}`) as {
-            product?: { title?: string };
-          };
-          topProductName = data.product?.title ?? "";
-        } catch {
-          // Non-fatal — message builder has a fallback
-        }
-      }
-
-      // Compute days since last order
-      const lastOrderAtStr = profile["lastOrderAt"];
-      const lastOrderMs = lastOrderAtStr ? new Date(lastOrderAtStr).getTime() : 0;
-      const daysSinceLastOrder = lastOrderMs
-        ? Math.floor((now.getTime() - lastOrderMs) / 86400000)
-        : DORMANT_THRESHOLD_DAYS;
-
-      const { message, type: messageType } = buildOutreachMessage(
-        customer.name ?? "",
-        topProductName,
-        daysSinceLastOrder,
-        dayOfWeek,
-        weatherCondition,
-      );
-
-      // Send WhatsApp message
-      await sendText(`whatsapp:${customer.phone}`, message);
-
-      // Set cooldown key
-      await redis.set(cooldownKey, "1", { EX: COOLDOWN_DAYS * 86400 });
-
-      // Increment weekly counter (INCR + set TTL only if key is new)
-      const weeklyKey = rk("outreach:weekly:count");
-      const newCount = await redis.incr(weeklyKey);
-      if (newCount === 1) {
-        await redis.expire(weeklyKey, WEEKLY_COUNTER_TTL);
-      }
-
-      // Publish NATS event
-      await publishNatsEvent("outreach.sent", {
-        customerId: customer.id,
-        messageType,
-        sentAt: now.toISOString(),
-      });
-
-      sentCount++;
-      effectiveLogger?.info(
-        { customer_id: customer.id, message_type: messageType },
-        "[proactive-engagement] Outreach sent",
-      );
+      const sent = await processCustomerOutreach(customer, ctx);
+      if (sent) sentCount++;
     } catch (err) {
-      effectiveLogger?.error(
-        { customer_id: customer.id, error: String(err) },
-        "[proactive-engagement] Error sending outreach",
-      );
-      Sentry.withScope((scope) => {
-        scope.setTag("job", "proactive-engagement");
-        scope.setTag("source", "background-job");
-        scope.setContext("customer", { customerId: customer.id });
-        Sentry.captureException(err);
-      });
+      reportOutreachError(effectiveLogger, customer, err);
     }
   }
 

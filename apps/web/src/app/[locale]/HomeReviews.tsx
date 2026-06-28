@@ -97,6 +97,9 @@ function initialsFor(name: string): string {
   return parts.map((p) => p[0]?.toUpperCase() ?? '').join('') || '·'
 }
 
+/** Fixed 5-star rating positions — stable keys for a list that never reorders. */
+const STAR_POSITIONS = [0, 1, 2, 3, 4]
+
 /**
  * Customer reviews — editorial two-column layout.
  *
@@ -192,11 +195,11 @@ export function HomeReviews() {
               {heroReview.comment}
             </blockquote>
             <div className="mt-6 flex items-center gap-1">
-              {Array.from({ length: 5 }).map((_, i) => (
+              {STAR_POSITIONS.map((position) => (
                 <Star
-                  key={`hero-star-${i}`}
+                  key={`hero-star-${position}`}
                   className={
-                    i < heroReview.rating
+                    position < heroReview.rating
                       ? 'w-5 h-5 fill-brand-500 text-brand-500'
                       : 'w-5 h-5 fill-smoke-200 text-smoke-200'
                   }

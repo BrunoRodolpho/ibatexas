@@ -74,14 +74,13 @@ function parseDuration(input: string): number {
   }
   const n = Number.parseInt(m[1]!, 10)
   const unit = m[2]!
-  const multiplier =
-    unit === "d"
-      ? 86_400_000
-      : unit === "h"
-        ? 3_600_000
-        : unit === "m"
-          ? 60_000
-          : 1_000
+  const multipliers: Record<string, number> = {
+    d: 86_400_000,
+    h: 3_600_000,
+    m: 60_000,
+    s: 1_000,
+  }
+  const multiplier = multipliers[unit] ?? 1_000
   return n * multiplier
 }
 
@@ -166,7 +165,8 @@ async function runStatus(opts: { json?: boolean }): Promise<void> {
     groups[domain].push(k)
   }
   for (const [domain, kinds] of Object.entries(groups)) {
-    console.log(`  ${chalk.dim(`${domain} (${kinds.length})`)} ${kinds.join(", ")}`)
+    const domainLabel = `${domain} (${kinds.length})`
+    console.log(`  ${chalk.dim(domainLabel)} ${kinds.join(", ")}`)
   }
   console.log()
 
@@ -239,7 +239,7 @@ function pgIsoTimestamp(v: unknown): string {
   if (v instanceof Date) return v.toISOString()
   const parsed = new Date(String(v))
   if (Number.isNaN(parsed.getTime())) {
-    throw new Error(`intent_audit.recorded_at não é um timestamp válido: ${String(v)}`)
+    throw new TypeError(`intent_audit.recorded_at não é um timestamp válido: ${String(v)}`)
   }
   return parsed.toISOString()
 }
@@ -274,21 +274,26 @@ function printReplayJson(out: Record<string, unknown>): void {
   )
 }
 
-async function runReplay(opts: {
-  since?: string
-  intentKind?: string
-  limit?: string
-  dryRun?: boolean
-  json?: boolean
-  ci?: boolean
-  seedFile?: string
-}): Promise<void> {
-  const ci = opts.ci === true
-  const json = opts.json === true
-  const sinceInput = opts.since ?? "24h"
-  let sinceMs: number
+/** Shared window/exclusion context threaded into the replay print helpers. */
+interface ReplayPrintCtx {
+  sinceInput: string
+  fromIso: string
+  toIso: string
+  intentKind: string | undefined
+  limit: number
+  seededVectors: number | null
+  excludedAgentRows: number
+}
+
+/** Parse the `--since` window. On a bad duration, emit the error (JSON/text),
+ *  set exitCode 1, and return null so the caller bails out. */
+function parseReplaySince(
+  sinceInput: string,
+  json: boolean,
+  ci: boolean,
+): number | null {
   try {
-    sinceMs = parseDuration(sinceInput)
+    return parseDuration(sinceInput)
   } catch (err) {
     if (json) {
       printReplayJson({
@@ -301,8 +306,297 @@ async function runReplay(opts: {
       console.error(chalk.red((err as Error).message))
     }
     process.exitCode = 1
+    return null
+  }
+}
+
+/** Text-mode header for `ibx kernel replay` (suppressed under --json). */
+function printReplayHeader(
+  json: boolean,
+  sinceInput: string,
+  limit: number,
+  intentKind: string | undefined,
+  ci: boolean,
+): void {
+  if (json) return
+  console.log()
+  console.log(chalk.bold("ibx kernel replay"))
+  console.log(
+    chalk.dim(
+      `Janela: últimos ${sinceInput}; limite: ${limit}; kind: ${intentKind ?? "todos"}${ci ? "; modo: --ci (fail-closed)" : ""}`,
+    ),
+  )
+  console.log()
+}
+
+/** Handle a deployment where audit-postgres is disabled: hard-fail under --ci,
+ *  otherwise print the operator stub. Sets process.exitCode itself. */
+function reportPostgresDisabled(ci: boolean, json: boolean): void {
+  // T1b-3 (plan risk #7): in --ci mode a disabled audit-postgres flag is a
+  // HARD failure, never a silent green. A replay that cannot read the audit
+  // store certifies nothing — exiting 0 here would be a vacuous gate.
+  if (ci) {
+    if (json) {
+      printReplayJson({
+        status: "audit-postgres-disabled",
+        ci,
+        exitCode: 1,
+        error:
+          "IBX_AUDIT_POSTGRES_ENABLED não habilitado — em modo --ci isso é falha dura (gate vácuo recusado).",
+      })
+    } else {
+      console.error(
+        chalk.red.bold(
+          "✗ IBX_AUDIT_POSTGRES_ENABLED não habilitado — em modo --ci isso é falha dura (exit 1).",
+        ),
+      )
+      console.error(
+        chalk.dim(
+          "  Um replay que não consegue ler o audit-postgres não certifica política nenhuma (gate vácuo).",
+        ),
+      )
+    }
+    process.exitCode = 1
     return
   }
+  if (json) {
+    printReplayJson({
+      status: "audit-postgres-disabled",
+      ci,
+      exitCode: 0,
+      note: "Replay não executado — habilite IBX_AUDIT_POSTGRES_ENABLED (modo operador; use --ci para falhar duro).",
+    })
+    return
+  }
+  // STUB: audit-postgres is off in this deployment (task 19 default).
+  // Operators flip the flag after the staging soak; until then, we
+  // surface a structured TODO so the runbook step is honest.
+  //
+  // W7-O2 fix — replace the phantom `pnpm migrate` step with the
+  // actual operator command. @adjudicate/audit-postgres ships its
+  // schema as raw SQL files; there is no migration runner script.
+  // The earlier message ("Rodar pnpm migrate em @adjudicate/audit-
+  // postgres") sent operators to a non-existent script.
+  console.log(chalk.yellow("⚠  IBX_AUDIT_POSTGRES_ENABLED=false — replay não pode ser executado."))
+  console.log()
+  console.log(chalk.bold("TODO para o operador (quando audit-postgres for habilitado):"))
+  console.log()
+  console.log("  1. Habilitar IBX_AUDIT_POSTGRES_ENABLED=true no .env de produção.")
+  console.log("  2. Aplicar as migrações de @adjudicate/audit-postgres (SQL puro — não há")
+  console.log("     script `migrate`). Em ordem numérica, contra o $DATABASE_URL:")
+  console.log()
+  console.log(chalk.dim("       PKG_DIR=$(node -p \"require.resolve('@adjudicate/audit-postgres/package.json').replace('/package.json','')\")"))
+  console.log(chalk.dim("       for f in \"$PKG_DIR\"/migrations/*.sql; do"))
+  console.log(chalk.dim("         echo \"-- aplicando $f\" && psql \"$DATABASE_URL\" -v ON_ERROR_STOP=1 -f \"$f\""))
+  console.log(chalk.dim("       done"))
+  console.log()
+  console.log("     Pré-requisitos: psql instalado, $DATABASE_URL apontando para o cluster")
+  console.log("     destino, pnpm install já executado (instala @adjudicate/audit-postgres do")
+  console.log("     registry npm).")
+  console.log("  3. Rodar `ibx kernel replay --since=24h` novamente.")
+  console.log()
+  console.log(chalk.dim("Migrações: node_modules/.pnpm/@adjudicate+audit-postgres@*/node_modules/@adjudicate/audit-postgres/migrations/{001..008}-*.sql"))
+  console.log(chalk.dim("Doc: docs/adjudicate-migration/tasks/19-audit-postgres-pgnats-bridge.md"))
+  console.log()
+  process.exitCode = 0
+}
+
+/** Report a missing DATABASE_URL (JSON/text). */
+function reportReplayDbUrlMissing(json: boolean, ci: boolean): void {
+  if (json) {
+    printReplayJson({
+      status: "failed",
+      ci,
+      exitCode: 1,
+      error: "DATABASE_URL não definido. Replay requer conexão Postgres válida.",
+    })
+  } else {
+    console.error(chalk.red("DATABASE_URL não definido. Replay requer conexão Postgres válida."))
+  }
+}
+
+/** Report a thrown replay failure in --json mode (text mode already printed via
+ *  the spinner). */
+function reportReplayFailure(json: boolean, ci: boolean, message: string): void {
+  if (json) {
+    printReplayJson({
+      status: "failed",
+      ci,
+      exitCode: 1,
+      error: message,
+    })
+  }
+}
+
+/**
+ * Build the Postgres-backed `fetchRows` query function for readAuditWindow.
+ * Agent-namespace rows are excluded in SQL (so they never crowd real rows out
+ * of the LIMIT) and re-counted in the JS post-filter (defense in depth);
+ * `counter.value` accumulates the exclusions for the report.
+ */
+function buildAuditQueryFn(
+  client: { query(sql: string, params?: readonly unknown[]): Promise<unknown> },
+  counter: { value: number },
+): {
+  fetchRows(window: {
+    fromIso: string
+    toIso: string
+    intentKind?: string
+    limit?: number
+  }): Promise<readonly Record<string, unknown>[]>
+} {
+  return {
+    async fetchRows(window: {
+      fromIso: string
+      toIso: string
+      intentKind?: string
+      limit?: number
+    }): Promise<readonly Record<string, unknown>[]> {
+      const params: unknown[] = [window.fromIso, window.toIso]
+      let sql =
+        "SELECT * FROM intent_audit WHERE recorded_at >= $1 AND recorded_at < $2"
+      params.push(`${AGENT_SESSION_ID_PREFIX}%`)
+      sql += ` AND session_id NOT LIKE $${params.length}`
+      if (window.intentKind) {
+        params.push(window.intentKind)
+        sql += ` AND intent_kind = $${params.length}`
+      }
+      if (window.limit !== undefined) {
+        params.push(window.limit)
+        sql += ` ORDER BY recorded_at DESC LIMIT $${params.length}`
+      }
+      const result = (await client.query(sql, params)) as {
+        rows: Array<Record<string, unknown>>
+      }
+      return result.rows
+        .filter((row) => {
+          const sid = row.session_id
+          if (typeof sid === "string" && sid.startsWith(AGENT_SESSION_ID_PREFIX)) {
+            counter.value += 1
+            return false
+          }
+          return true
+        })
+        .map(normalizeAuditRow)
+    },
+  }
+}
+
+/** Emit the --ci vacuous-empty-window refusal (JSON/text). */
+function printVacuousEmptyWindow(
+  json: boolean,
+  ci: boolean,
+  ctx: ReplayPrintCtx,
+): void {
+  if (json) {
+    printReplayJson({
+      status: "vacuous-empty-window",
+      ci,
+      window: { since: ctx.sinceInput, fromIso: ctx.fromIso, toIso: ctx.toIso },
+      intentKind: ctx.intentKind ?? null,
+      limit: ctx.limit,
+      seededVectors: ctx.seededVectors,
+      scanned: 0,
+      excludedAgentRows: ctx.excludedAgentRows,
+      exitCode: 1,
+      error:
+        "Janela de replay vazia em modo --ci — 0 registros não certificam política nenhuma (gate vácuo recusado).",
+    })
+  } else {
+    console.error(
+      chalk.red.bold(
+        "✗ Janela de replay vazia em modo --ci — falha dura (exit 1).",
+      ),
+    )
+    console.error(
+      chalk.dim(
+        "  0 registros não certificam política nenhuma (gate vácuo). Semeie golden vectors com --seed-file.",
+      ),
+    )
+  }
+}
+
+/** Print the --dry-run listing (JSON/text). */
+function printReplayDryRun(
+  json: boolean,
+  ci: boolean,
+  records: readonly {
+    envelope: { createdAt: unknown; kind: unknown }
+    intentHash: string
+  }[],
+  ctx: ReplayPrintCtx,
+): void {
+  if (json) {
+    printReplayJson({
+      status: "dry-run",
+      ci,
+      window: { since: ctx.sinceInput, fromIso: ctx.fromIso, toIso: ctx.toIso },
+      intentKind: ctx.intentKind ?? null,
+      limit: ctx.limit,
+      seededVectors: ctx.seededVectors,
+      scanned: records.length,
+      excludedAgentRows: ctx.excludedAgentRows,
+      exitCode: 0,
+      records: records.slice(0, 10).map((r) => ({
+        createdAt: r.envelope.createdAt,
+        kind: r.envelope.kind,
+        intentHash: r.intentHash,
+      })),
+    })
+    return
+  }
+  console.log(chalk.yellow("\nModo --dry-run: nenhuma re-adjudicação executada."))
+  for (const r of records.slice(0, 10)) {
+    console.log(
+      `  ${chalk.dim(r.envelope.createdAt)}  ${chalk.cyan(r.envelope.kind)}  ${chalk.dim(r.intentHash.slice(0, 12))}`,
+    )
+  }
+  if (records.length > 10) {
+    console.log(chalk.dim(`  ... e mais ${records.length - 10}`))
+  }
+}
+
+/** Print the final replay report (JSON document or text report + status). */
+function printReplayResult(
+  json: boolean,
+  ci: boolean,
+  exitCode: 0 | 1 | 2,
+  report: ReplayReport,
+  ctx: ReplayPrintCtx & { scanned: number },
+): void {
+  if (json) {
+    printReplayJson({
+      status: replayStatusLabel(exitCode),
+      ci,
+      window: { since: ctx.sinceInput, fromIso: ctx.fromIso, toIso: ctx.toIso },
+      intentKind: ctx.intentKind ?? null,
+      limit: ctx.limit,
+      seededVectors: ctx.seededVectors,
+      scanned: ctx.scanned,
+      excludedAgentRows: ctx.excludedAgentRows,
+      report,
+      exitCode,
+    })
+  } else {
+    printReplayReport(report)
+    printReplayStatusText(exitCode, ctx.excludedAgentRows)
+  }
+}
+
+async function runReplay(opts: {
+  since?: string
+  intentKind?: string
+  limit?: string
+  dryRun?: boolean
+  json?: boolean
+  ci?: boolean
+  seedFile?: string
+}): Promise<void> {
+  const ci = opts.ci === true
+  const json = opts.json === true
+  const sinceInput = opts.since ?? "24h"
+  const sinceMs = parseReplaySince(sinceInput, json, ci)
+  if (sinceMs === null) return
   const limit = Number.parseInt(opts.limit ?? "1000", 10)
   // `ibx kernel replay` re-feeds audit records FROM Postgres, so — unlike
   // runStatus() above, which merely describes the always-on sink config —
@@ -316,100 +610,16 @@ async function runReplay(opts: {
     false,
   )
 
-  if (!json) {
-    console.log()
-    console.log(chalk.bold("ibx kernel replay"))
-    console.log(
-      chalk.dim(
-        `Janela: últimos ${sinceInput}; limite: ${limit}; kind: ${opts.intentKind ?? "todos"}${ci ? "; modo: --ci (fail-closed)" : ""}`,
-      ),
-    )
-    console.log()
-  }
+  printReplayHeader(json, sinceInput, limit, opts.intentKind, ci)
 
   if (!postgresEnabled) {
-    // T1b-3 (plan risk #7): in --ci mode a disabled audit-postgres flag is a
-    // HARD failure, never a silent green. A replay that cannot read the audit
-    // store certifies nothing — exiting 0 here would be a vacuous gate.
-    if (ci) {
-      if (json) {
-        printReplayJson({
-          status: "audit-postgres-disabled",
-          ci,
-          exitCode: 1,
-          error:
-            "IBX_AUDIT_POSTGRES_ENABLED não habilitado — em modo --ci isso é falha dura (gate vácuo recusado).",
-        })
-      } else {
-        console.error(
-          chalk.red.bold(
-            "✗ IBX_AUDIT_POSTGRES_ENABLED não habilitado — em modo --ci isso é falha dura (exit 1).",
-          ),
-        )
-        console.error(
-          chalk.dim(
-            "  Um replay que não consegue ler o audit-postgres não certifica política nenhuma (gate vácuo).",
-          ),
-        )
-      }
-      process.exitCode = 1
-      return
-    }
-    if (json) {
-      printReplayJson({
-        status: "audit-postgres-disabled",
-        ci,
-        exitCode: 0,
-        note: "Replay não executado — habilite IBX_AUDIT_POSTGRES_ENABLED (modo operador; use --ci para falhar duro).",
-      })
-      return
-    }
-    // STUB: audit-postgres is off in this deployment (task 19 default).
-    // Operators flip the flag after the staging soak; until then, we
-    // surface a structured TODO so the runbook step is honest.
-    //
-    // W7-O2 fix — replace the phantom `pnpm migrate` step with the
-    // actual operator command. @adjudicate/audit-postgres ships its
-    // schema as raw SQL files; there is no migration runner script.
-    // The earlier message ("Rodar pnpm migrate em @adjudicate/audit-
-    // postgres") sent operators to a non-existent script.
-    console.log(chalk.yellow("⚠  IBX_AUDIT_POSTGRES_ENABLED=false — replay não pode ser executado."))
-    console.log()
-    console.log(chalk.bold("TODO para o operador (quando audit-postgres for habilitado):"))
-    console.log()
-    console.log("  1. Habilitar IBX_AUDIT_POSTGRES_ENABLED=true no .env de produção.")
-    console.log("  2. Aplicar as migrações de @adjudicate/audit-postgres (SQL puro — não há")
-    console.log("     script `migrate`). Em ordem numérica, contra o $DATABASE_URL:")
-    console.log()
-    console.log(chalk.dim("       PKG_DIR=$(node -p \"require.resolve('@adjudicate/audit-postgres/package.json').replace('/package.json','')\")"))
-    console.log(chalk.dim("       for f in \"$PKG_DIR\"/migrations/*.sql; do"))
-    console.log(chalk.dim("         echo \"-- aplicando $f\" && psql \"$DATABASE_URL\" -v ON_ERROR_STOP=1 -f \"$f\""))
-    console.log(chalk.dim("       done"))
-    console.log()
-    console.log("     Pré-requisitos: psql instalado, $DATABASE_URL apontando para o cluster")
-    console.log("     destino, pnpm install já executado (instala @adjudicate/audit-postgres do")
-    console.log("     registry npm).")
-    console.log("  3. Rodar `ibx kernel replay --since=24h` novamente.")
-    console.log()
-    console.log(chalk.dim("Migrações: node_modules/.pnpm/@adjudicate+audit-postgres@*/node_modules/@adjudicate/audit-postgres/migrations/{001..008}-*.sql"))
-    console.log(chalk.dim("Doc: docs/adjudicate-migration/tasks/19-audit-postgres-pgnats-bridge.md"))
-    console.log()
-    process.exitCode = 0
+    reportPostgresDisabled(ci, json)
     return
   }
 
   const databaseUrl = process.env.DATABASE_URL
   if (!databaseUrl) {
-    if (json) {
-      printReplayJson({
-        status: "failed",
-        ci,
-        exitCode: 1,
-        error: "DATABASE_URL não definido. Replay requer conexão Postgres válida.",
-      })
-    } else {
-      console.error(chalk.red("DATABASE_URL não definido. Replay requer conexão Postgres válida."))
-    }
+    reportReplayDbUrlMissing(json, ci)
     process.exitCode = 1
     return
   }
@@ -446,42 +656,8 @@ async function runReplay(opts: {
       //      out of the LIMIT on a live database;
       //   2. JS post-filter — counts exclusions for the report and protects
       //      paths where the SQL predicate is absent (defense in depth).
-      let excludedAgentRows = 0
-      const queryFn = {
-        async fetchRows(window: {
-          fromIso: string
-          toIso: string
-          intentKind?: string
-          limit?: number
-        }): Promise<readonly Record<string, unknown>[]> {
-          const params: unknown[] = [window.fromIso, window.toIso]
-          let sql =
-            "SELECT * FROM intent_audit WHERE recorded_at >= $1 AND recorded_at < $2"
-          params.push(`${AGENT_SESSION_ID_PREFIX}%`)
-          sql += ` AND session_id NOT LIKE $${params.length}`
-          if (window.intentKind) {
-            params.push(window.intentKind)
-            sql += ` AND intent_kind = $${params.length}`
-          }
-          if (window.limit !== undefined) {
-            params.push(window.limit)
-            sql += ` ORDER BY recorded_at DESC LIMIT $${params.length}`
-          }
-          const result = (await client.query(sql, params)) as {
-            rows: Array<Record<string, unknown>>
-          }
-          return result.rows
-            .filter((row) => {
-              const sid = row.session_id
-              if (typeof sid === "string" && sid.startsWith(AGENT_SESSION_ID_PREFIX)) {
-                excludedAgentRows += 1
-                return false
-              }
-              return true
-            })
-            .map(normalizeAuditRow)
-        },
-      }
+      const counter = { value: 0 }
+      const queryFn = buildAuditQueryFn(client, counter)
 
       const records = await readAuditWindow(
         // @ts-expect-error — the runtime cast matches AuditQueryFn shape.
@@ -489,10 +665,11 @@ async function runReplay(opts: {
         {
           fromIso,
           toIso,
-          ...(opts.intentKind !== undefined ? { intentKind: opts.intentKind } : {}),
+          ...(opts.intentKind === undefined ? {} : { intentKind: opts.intentKind }),
           limit,
         },
       )
+      const excludedAgentRows = counter.value
 
       spinner?.succeed(
         `Lidos ${records.length} registros de audit` +
@@ -502,69 +679,27 @@ async function runReplay(opts: {
           ".",
       )
 
+      const replayCtx: ReplayPrintCtx = {
+        sinceInput,
+        fromIso,
+        toIso,
+        intentKind: opts.intentKind,
+        limit,
+        seededVectors,
+        excludedAgentRows,
+      }
+
       // T1b-3 (plan risk #7): an empty window in --ci mode is a HARD failure.
       // Zero records reproduce zero decisions — a green exit here would
       // certify nothing (the vacuous-gate risk this task closes).
       if (ci && records.length === 0) {
-        if (json) {
-          printReplayJson({
-            status: "vacuous-empty-window",
-            ci,
-            window: { since: sinceInput, fromIso, toIso },
-            intentKind: opts.intentKind ?? null,
-            limit,
-            seededVectors,
-            scanned: 0,
-            excludedAgentRows,
-            exitCode: 1,
-            error:
-              "Janela de replay vazia em modo --ci — 0 registros não certificam política nenhuma (gate vácuo recusado).",
-          })
-        } else {
-          console.error(
-            chalk.red.bold(
-              "✗ Janela de replay vazia em modo --ci — falha dura (exit 1).",
-            ),
-          )
-          console.error(
-            chalk.dim(
-              "  0 registros não certificam política nenhuma (gate vácuo). Semeie golden vectors com --seed-file.",
-            ),
-          )
-        }
+        printVacuousEmptyWindow(json, ci, replayCtx)
         process.exitCode = 1
         return
       }
 
       if (opts.dryRun) {
-        if (json) {
-          printReplayJson({
-            status: "dry-run",
-            ci,
-            window: { since: sinceInput, fromIso, toIso },
-            intentKind: opts.intentKind ?? null,
-            limit,
-            seededVectors,
-            scanned: records.length,
-            excludedAgentRows,
-            exitCode: 0,
-            records: records.slice(0, 10).map((r) => ({
-              createdAt: r.envelope.createdAt,
-              kind: r.envelope.kind,
-              intentHash: r.intentHash,
-            })),
-          })
-          return
-        }
-        console.log(chalk.yellow("\nModo --dry-run: nenhuma re-adjudicação executada."))
-        for (const r of records.slice(0, 10)) {
-          console.log(
-            `  ${chalk.dim(r.envelope.createdAt)}  ${chalk.cyan(r.envelope.kind)}  ${chalk.dim(r.intentHash.slice(0, 12))}`,
-          )
-        }
-        if (records.length > 10) {
-          console.log(chalk.dim(`  ... e mais ${records.length - 10}`))
-        }
+        printReplayDryRun(json, ci, records, replayCtx)
         return
       }
 
@@ -590,49 +725,34 @@ async function runReplay(opts: {
         records as unknown as readonly Record<string, unknown>[],
       )
       const exitCode = replayExitCode(report)
-      if (json) {
-        printReplayJson({
-          status: exitCode === 0 ? "clean" : exitCode === 2 ? "drift" : "errors",
-          ci,
-          window: { since: sinceInput, fromIso, toIso },
-          intentKind: opts.intentKind ?? null,
-          limit,
-          seededVectors,
-          scanned: records.length,
-          excludedAgentRows,
-          report,
-          exitCode,
-        })
-      } else {
-        printReplayReport(report)
-        printReplayStatusText(exitCode, excludedAgentRows)
-      }
+      printReplayResult(json, ci, exitCode, report, {
+        ...replayCtx,
+        scanned: records.length,
+      })
       if (exitCode !== 0) process.exitCode = exitCode
     } finally {
       await client.end()
     }
   } catch (err) {
     spinner?.fail(chalk.red(`Falhou: ${(err as Error).message}`))
-    if (json) {
-      printReplayJson({
-        status: "failed",
-        ci,
-        exitCode: 1,
-        error: (err as Error).message,
-      })
-    }
+    reportReplayFailure(json, ci, (err as Error).message)
     process.exitCode = 1
   }
 }
 
+/** Machine-readable status label for the replay exit code (JSON `status`). */
+function replayStatusLabel(exitCode: 0 | 1 | 2): "clean" | "drift" | "errors" {
+  if (exitCode === 0) return "clean"
+  if (exitCode === 2) return "drift"
+  return "errors"
+}
+
 /** Text-mode status + limitations footer for the replay gate. */
 function printReplayStatusText(exitCode: 0 | 1 | 2, excludedAgentRows: number): void {
-  const status =
-    exitCode === 0
-      ? chalk.green("limpo (exit 0)")
-      : exitCode === 2
-        ? chalk.yellow("drift detectado (exit 2)")
-        : chalk.red("erros (exit 1)")
+  let status: string
+  if (exitCode === 0) status = chalk.green("limpo (exit 0)")
+  else if (exitCode === 2) status = chalk.yellow("drift detectado (exit 2)")
+  else status = chalk.red("erros (exit 1)")
   console.log(`Status: ${status}`)
   if (excludedAgentRows > 0) {
     console.log(
@@ -755,6 +875,80 @@ async function seedGoldenVectors(
  * gate) and rewrite the stored decisions in place. No database involved.
  * Run after an intended policy change; commit the diff.
  */
+interface UpdateGoldenResult {
+  changed: number
+  missingPacks: string[]
+  adjudicationErrors: string[]
+}
+
+/**
+ * Re-adjudicate every golden vector against the current packs (empty replay
+ * state) and rewrite each stored decision in place. Extracted from
+ * runUpdateGolden to keep that orchestrator within its complexity budget.
+ */
+async function reAdjudicateGoldenVectors(
+  vectors: GoldenReplayVector[],
+): Promise<UpdateGoldenResult> {
+  const { adjudicate } = await import("@adjudicate/core/kernel")
+  const packIndex = await loadPackIndex()
+  let changed = 0
+  const missingPacks: string[] = []
+  const adjudicationErrors: string[] = []
+  for (const v of vectors) {
+    const pack = packIndex.get(v.envelope.kind)
+    if (!pack) {
+      missingPacks.push(v.envelope.kind)
+      continue
+    }
+    try {
+      // adjudicate() is synchronous (the pure deterministic kernel).
+      const decision = adjudicate(
+        v.envelope as never,
+        {} as never,
+        pack.policy as never,
+      ) as GoldenReplayVector["decision"]
+      if (JSON.stringify(decision) !== JSON.stringify(v.decision)) {
+        v.decision = decision
+        changed += 1
+      }
+    } catch (err) {
+      adjudicationErrors.push(`${v.envelope.kind}: ${(err as Error).message}`)
+    }
+  }
+  return { changed, missingPacks, adjudicationErrors }
+}
+
+/** Human-readable summary for `runUpdateGolden` (non-JSON mode). */
+function printUpdateGoldenText(
+  filePath: string,
+  file: GoldenReplayVectorFile,
+  result: UpdateGoldenResult,
+  failed: boolean,
+): void {
+  const { changed, missingPacks, adjudicationErrors } = result
+  console.log()
+  console.log(chalk.bold("ibx kernel replay --update-golden"))
+  console.log(
+    `  ${chalk.cyan(String(file.vectors.length))} vectors; ${chalk.cyan(String(changed))} decisões regravadas → ${filePath}`,
+  )
+  for (const k of missingPacks) {
+    console.error(chalk.red(`  ✗ sem pack instalado para ${k} — vector não re-adjudicado`))
+  }
+  for (const e of adjudicationErrors) {
+    console.error(chalk.red(`  ✗ adjudicate falhou: ${e}`))
+  }
+  if (changed > 0) {
+    console.log(
+      chalk.yellow(
+        "  Commit o diff — a revisão dessas decisões É a revisão da mudança de política.",
+      ),
+    )
+  } else if (!failed) {
+    console.log(chalk.green("  Nenhuma decisão mudou — política estável."))
+  }
+  console.log()
+}
+
 async function runUpdateGolden(
   filePath: string,
   opts: { json?: boolean },
@@ -773,31 +967,8 @@ async function runUpdateGolden(
     return
   }
 
-  const { adjudicate } = await import("@adjudicate/core/kernel")
-  const packIndex = await loadPackIndex()
-  let changed = 0
-  const missingPacks: string[] = []
-  const adjudicationErrors: string[] = []
-  for (const v of file.vectors) {
-    const pack = packIndex.get(v.envelope.kind)
-    if (!pack) {
-      missingPacks.push(v.envelope.kind)
-      continue
-    }
-    try {
-      const decision = (await adjudicate(
-        v.envelope as never,
-        {} as never,
-        pack.policy as never,
-      )) as GoldenReplayVector["decision"]
-      if (JSON.stringify(decision) !== JSON.stringify(v.decision)) {
-        v.decision = decision
-        changed += 1
-      }
-    } catch (err) {
-      adjudicationErrors.push(`${v.envelope.kind}: ${(err as Error).message}`)
-    }
-  }
+  const result = await reAdjudicateGoldenVectors(file.vectors)
+  const { missingPacks, adjudicationErrors } = result
 
   await writeFile(filePath, `${JSON.stringify(file, null, 2)}\n`, "utf-8")
 
@@ -807,33 +978,13 @@ async function runUpdateGolden(
       status: failed ? "errors" : "golden-updated",
       file: filePath,
       vectors: file.vectors.length,
-      changed,
+      changed: result.changed,
       missingPacks,
       adjudicationErrors,
       exitCode: failed ? 1 : 0,
     })
   } else {
-    console.log()
-    console.log(chalk.bold("ibx kernel replay --update-golden"))
-    console.log(
-      `  ${chalk.cyan(String(file.vectors.length))} vectors; ${chalk.cyan(String(changed))} decisões regravadas → ${filePath}`,
-    )
-    for (const k of missingPacks) {
-      console.error(chalk.red(`  ✗ sem pack instalado para ${k} — vector não re-adjudicado`))
-    }
-    for (const e of adjudicationErrors) {
-      console.error(chalk.red(`  ✗ adjudicate falhou: ${e}`))
-    }
-    if (changed > 0) {
-      console.log(
-        chalk.yellow(
-          "  Commit o diff — a revisão dessas decisões É a revisão da mudança de política.",
-        ),
-      )
-    } else if (!failed) {
-      console.log(chalk.green("  Nenhuma decisão mudou — política estável."))
-    }
-    console.log()
+    printUpdateGoldenText(filePath, file, result, failed)
   }
   if (failed) process.exitCode = 1
 }
@@ -848,6 +999,47 @@ interface ReplayReport {
   driftedByPayload: number
   errors: number
   byKind: Record<string, { total: number; drifted: number }>
+}
+
+/**
+ * Compare a freshly re-adjudicated decision against the historical one and
+ * classify the drift (or "match"). Pure — extracted from reAdjudicateRecords
+ * so the loop stays within the cognitive-complexity budget.
+ */
+function classifyReplayDrift(
+  current: { kind: string; basis?: unknown },
+  historical: { kind?: string; basis?: unknown },
+): "match" | "decisionKind" | "basis" | "payload" {
+  if (current.kind !== historical.kind) return "decisionKind"
+
+  // Same kind — check basis-drift.
+  const histBasis = flattenBasis(
+    (historical as { basis?: ReadonlyArray<{ category?: string; code?: string }> })
+      .basis ?? [],
+  )
+  const currBasis = flattenBasis(
+    (current as { basis?: ReadonlyArray<{ category?: string; code?: string }> })
+      .basis ?? [],
+  )
+  if (
+    histBasis.length !== currBasis.length ||
+    histBasis.some((b, i) => b !== currBasis[i])
+  ) {
+    return "basis"
+  }
+
+  // For REWRITE decisions, check payload equality.
+  if (current.kind === "REWRITE") {
+    const histRewritten = JSON.stringify(
+      (historical as { rewritten?: unknown }).rewritten ?? null,
+    )
+    const currRewritten = JSON.stringify(
+      (current as { rewritten?: unknown }).rewritten ?? null,
+    )
+    if (histRewritten !== currRewritten) return "payload"
+  }
+
+  return "match"
 }
 
 async function reAdjudicateRecords(
@@ -872,7 +1064,7 @@ async function reAdjudicateRecords(
     const envelope = (record as { envelope?: { kind?: string } }).envelope
     const historical = (record as { decision?: { kind?: string; basis?: unknown } })
       .decision
-    if (!envelope || !envelope.kind || !historical) {
+    if (!envelope?.kind || !historical) {
       report.errors += 1
       continue
     }
@@ -893,57 +1085,28 @@ async function reAdjudicateRecords(
       // Run adjudicate against an empty default state. See the comment
       // in runReplay about state rehydration — the absence of state
       // primarily exercises the policy's guards that do NOT read state.
-      current = (await adjudicate(
+      // adjudicate() is synchronous (the pure deterministic kernel), so no
+      // await is needed; the try/catch still captures a thrown decision.
+      current = adjudicate(
         envelope as never,
         {} as never,
         pack.policy as never,
-      )) as { kind: string; basis?: unknown }
+      ) as { kind: string; basis?: unknown }
     } catch {
       report.errors += 1
       continue
     }
 
     // ── Classify drift ─────────────────────────────────────────────────
-    if (current.kind !== historical.kind) {
-      report.driftedByDecisionKind += 1
-      report.byKind[kind]!.drifted += 1
+    const drift = classifyReplayDrift(current, historical)
+    if (drift === "match") {
+      report.matched += 1
       continue
     }
-
-    // Same kind — check basis-drift.
-    const histBasis = flattenBasis(
-      (historical as { basis?: ReadonlyArray<{ category?: string; code?: string }> })
-        .basis ?? [],
-    )
-    const currBasis = flattenBasis(
-      (current as { basis?: ReadonlyArray<{ category?: string; code?: string }> })
-        .basis ?? [],
-    )
-    if (
-      histBasis.length !== currBasis.length ||
-      histBasis.some((b, i) => b !== currBasis[i])
-    ) {
-      report.driftedByBasis += 1
-      report.byKind[kind]!.drifted += 1
-      continue
-    }
-
-    // For REWRITE decisions, check payload equality.
-    if (current.kind === "REWRITE") {
-      const histRewritten = JSON.stringify(
-        (historical as { rewritten?: unknown }).rewritten ?? null,
-      )
-      const currRewritten = JSON.stringify(
-        (current as { rewritten?: unknown }).rewritten ?? null,
-      )
-      if (histRewritten !== currRewritten) {
-        report.driftedByPayload += 1
-        report.byKind[kind]!.drifted += 1
-        continue
-      }
-    }
-
-    report.matched += 1
+    if (drift === "decisionKind") report.driftedByDecisionKind += 1
+    else if (drift === "basis") report.driftedByBasis += 1
+    else report.driftedByPayload += 1
+    report.byKind[kind]!.drifted += 1
   }
   return report
 }
@@ -1024,8 +1187,9 @@ function printReplayReport(report: ReplayReport): void {
     console.log()
     for (const [kind, stats] of sorted) {
       const pct = stats.total > 0 ? ((stats.drifted / stats.total) * 100).toFixed(1) : "0.0"
+      const pctLabel = `(${pct}%)`
       console.log(
-        `  ${chalk.cyan(String(stats.drifted).padStart(5))} / ${String(stats.total).padStart(5)}  ${chalk.dim(`(${pct}%)`)}  ${kind}`,
+        `  ${chalk.cyan(String(stats.drifted).padStart(5))} / ${String(stats.total).padStart(5)}  ${chalk.dim(pctLabel)}  ${kind}`,
       )
     }
     console.log()
@@ -1054,7 +1218,7 @@ async function resolveAuditPostgresMigrationsDir(): Promise<string> {
     .resolve
   const indexPath =
     typeof metaResolve === "function"
-      ? fileURLToPath(await metaResolve("@adjudicate/audit-postgres"))
+      ? fileURLToPath(metaResolve("@adjudicate/audit-postgres"))
       : createRequire(import.meta.url).resolve("@adjudicate/audit-postgres")
   return join(dirname(dirname(indexPath)), "migrations")
 }
@@ -1083,7 +1247,7 @@ export interface MigrateLog {
 const AUDIT_MIGRATIONS_LEDGER = "audit_schema_migrations"
 
 function escapeRegExp(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  return s.replace(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`)
 }
 
 /** Parse the constraint name out of a Postgres check_violation message. */
@@ -1107,7 +1271,7 @@ function isSupersededConstraint(
   name: string,
   laterMigrations: readonly PendingMigration[],
 ): boolean {
-  const re = new RegExp(`ADD\\s+CONSTRAINT\\s+${escapeRegExp(name)}\\b`, "i")
+  const re = new RegExp(String.raw`ADD\s+CONSTRAINT\s+${escapeRegExp(name)}\b`, "i")
   return laterMigrations.some((m) => re.test(m.sql))
 }
 
@@ -1267,12 +1431,16 @@ export async function loadAuditPostgresMigrations(): Promise<PendingMigration[]>
  * Exported so `ibx bootstrap` can call it as part of first-time setup
  * (after Prisma migrations + seeds).
  */
+/** Default structured logger for `applyAuditPostgresMigrations` — defined once
+ *  (not as an object-literal default param, which re-allocates per call). */
+const DEFAULT_MIGRATE_LOG: MigrateLog = {
+  info: (msg) => console.log(msg),
+  warn: (msg) => console.warn(msg),
+}
+
 export async function applyAuditPostgresMigrations(
   databaseUrl: string,
-  log: MigrateLog = {
-    info: (msg) => console.log(msg),
-    warn: (msg) => console.warn(msg),
-  },
+  log: MigrateLog = DEFAULT_MIGRATE_LOG,
 ): Promise<void> {
   const migrations = await loadAuditPostgresMigrations()
   if (migrations.length === 0) {
@@ -1659,38 +1827,55 @@ async function loadPacksForGovernance(
   return out
 }
 
-async function runPackBom(opts: {
-  pack?: string
-  json?: boolean
-  verifyFile?: string
-}): Promise<void> {
+/**
+ * Compare one BOM digest against the baseline (verify mode) or print it
+ * (JSON / full text). Returns true on a baseline mismatch. Shared by the pack
+ * and the managed-agent loops so the comparison logic lives in one place.
+ */
+function reportBomDigest(
+  packId: string,
+  digest: string,
+  baseline: Record<string, string> | undefined,
+  json: boolean,
+  bom: unknown,
+  printFull: () => void,
+): boolean {
+  if (baseline === undefined) {
+    if (json) {
+      console.log(JSON.stringify(bom, null, 2))
+    } else {
+      printFull()
+    }
+    return false
+  }
+  const want = baseline[packId]
+  if (want === undefined) {
+    console.error(chalk.red(`✗ ${packId}: sem entrada na baseline`))
+    return true
+  }
+  if (want === digest) {
+    console.log(chalk.green(`✓ ${packId} → ${digest.slice(0, 16)}…`))
+    return false
+  }
+  console.error(
+    chalk.red(
+      `✗ ${packId}: bomDigest divergente (baseline ${want.slice(0, 12)}…, atual ${digest.slice(0, 12)}…)`,
+    ),
+  )
+  return true
+}
+
+/** Generate + report the AI-BOM for every first-party pack. Returns true on a
+ *  baseline mismatch. Mutates `digests` with each pack's digest. */
+async function appendPackBoms(
+  packs: GovernancePack[],
+  baseline: Record<string, string> | undefined,
+  json: boolean,
+  digests: Record<string, string>,
+): Promise<boolean> {
   const { generateAiBom, runConformance, scorePackHealth } = await import(
     "@adjudicate/conformance"
   )
-  const packs = await loadPacksForGovernance(opts.pack)
-  if (packs.length === 0) {
-    console.error(
-      chalk.red(`Nenhum pack encontrado${opts.pack ? ` para ${opts.pack}` : ""}.`),
-    )
-    process.exitCode = 1
-    return
-  }
-
-  let baseline: Record<string, string> | undefined
-  if (opts.verifyFile !== undefined) {
-    try {
-      baseline = JSON.parse(await readFile(opts.verifyFile, "utf-8")) as Record<
-        string,
-        string
-      >
-    } catch {
-      console.error(chalk.red(`Baseline ilegível: ${opts.verifyFile}`))
-      process.exitCode = 1
-      return
-    }
-  }
-
-  const digests: Record<string, string> = {}
   let mismatch = false
   for (const pack of packs) {
     const conformance = runConformance(pack as never)
@@ -1717,85 +1902,63 @@ async function runPackBom(opts: {
       kernelVersion: KERNEL_VERSION,
     })
     digests[pack.id] = bom.bomDigest
-
-    if (baseline !== undefined) {
-      const want = baseline[pack.id]
-      if (want === undefined) {
-        console.error(chalk.red(`✗ ${pack.id}: sem entrada na baseline`))
-        mismatch = true
-      } else if (want !== bom.bomDigest) {
-        console.error(
-          chalk.red(
-            `✗ ${pack.id}: bomDigest divergente (baseline ${want.slice(0, 12)}…, atual ${bom.bomDigest.slice(0, 12)}…)`,
-          ),
+    const isMismatch = reportBomDigest(
+      pack.id,
+      bom.bomDigest,
+      baseline,
+      json,
+      bom,
+      () => {
+        console.log(chalk.bold(`AI-BOM ${pack.id}@${pack.version}`))
+        console.log(`  fingerprint : ${bom.fingerprint}`)
+        console.log(`  bomDigest   : ${bom.bomDigest}`)
+        console.log(
+          `  conformance : ${bom.conformance.passedCount}/${bom.conformance.total}`,
         )
-        mismatch = true
-      } else {
-        console.log(chalk.green(`✓ ${pack.id} → ${bom.bomDigest.slice(0, 16)}…`))
-      }
-    } else if (opts.json) {
-      console.log(JSON.stringify(bom, null, 2))
-    } else {
-      console.log(chalk.bold(`AI-BOM ${pack.id}@${pack.version}`))
-      console.log(`  fingerprint : ${bom.fingerprint}`)
-      console.log(`  bomDigest   : ${bom.bomDigest}`)
-      console.log(
-        `  conformance : ${bom.conformance.passedCount}/${bom.conformance.total}`,
-      )
-      console.log(
-        `  health      : ${bom.healthTier} (${bom.healthScore.score}/${bom.healthScore.maxScore})`,
-      )
-    }
+        console.log(
+          `  health      : ${bom.healthTier} (${bom.healthScore.score}/${bom.healthScore.maxScore})`,
+        )
+      },
+    )
+    if (isMismatch) mismatch = true
   }
+  return mismatch
+}
 
-  // ── Managed agents (T3-3) ──────────────────────────────────────────────
-  // The agent roster is part of the AI-BOM: each AgentDefinition in
-  // @ibatexas/agents folds into the same digest-lock via the upstream
-  // pack-health/PackManifest mapping (`generateAgentAiBom`), keyed
-  // `agent/<id>` in the baseline next to the pack entries. The roster-drift
-  // gate runs first, fail-closed in EVERY mode (a drifting roster must
-  // never be baselined or verified green). Skipped only under `--pack`,
-  // which scopes the command to one pack explicitly.
-  if (opts.pack === undefined) {
-    const { AGENT_REGISTRY, agentRosterDrift, generateAgentAiBom } =
-      await import("@ibatexas/agents")
-    const driftFindings = agentRosterDrift()
-    if (driftFindings.length > 0) {
-      for (const f of driftFindings) {
-        console.error(
-          chalk.red(`✗ agent-roster drift [${f.agentId}] ${f.code}: ${f.detail}`),
-        )
-      }
-      mismatch = true
+/** Generate + report the AI-BOM for every managed agent, running the
+ *  roster-drift gate first (fail-closed in every mode). Returns true on a
+ *  baseline mismatch or roster drift. Mutates `digests`. */
+async function appendAgentBoms(
+  baseline: Record<string, string> | undefined,
+  json: boolean,
+  digests: Record<string, string>,
+): Promise<boolean> {
+  const { AGENT_REGISTRY, agentRosterDrift, generateAgentAiBom } =
+    await import("@ibatexas/agents")
+  let mismatch = false
+  const driftFindings = agentRosterDrift()
+  if (driftFindings.length > 0) {
+    for (const f of driftFindings) {
+      console.error(
+        chalk.red(`✗ agent-roster drift [${f.agentId}] ${f.code}: ${f.detail}`),
+      )
     }
-    for (const def of AGENT_REGISTRY) {
-      const bom = generateAgentAiBom(def, {
-        generatedAt: BOM_GENERATED_AT,
-        kernelVersion: KERNEL_VERSION,
-        kernelMinVersion: KERNEL_MIN_VERSION,
-      })
-      digests[bom.packId] = bom.bomDigest
-
-      if (baseline !== undefined) {
-        const want = baseline[bom.packId]
-        if (want === undefined) {
-          console.error(chalk.red(`✗ ${bom.packId}: sem entrada na baseline`))
-          mismatch = true
-        } else if (want !== bom.bomDigest) {
-          console.error(
-            chalk.red(
-              `✗ ${bom.packId}: bomDigest divergente (baseline ${want.slice(0, 12)}…, atual ${bom.bomDigest.slice(0, 12)}…)`,
-            ),
-          )
-          mismatch = true
-        } else {
-          console.log(
-            chalk.green(`✓ ${bom.packId} → ${bom.bomDigest.slice(0, 16)}…`),
-          )
-        }
-      } else if (opts.json) {
-        console.log(JSON.stringify(bom, null, 2))
-      } else {
+    mismatch = true
+  }
+  for (const def of AGENT_REGISTRY) {
+    const bom = generateAgentAiBom(def, {
+      generatedAt: BOM_GENERATED_AT,
+      kernelVersion: KERNEL_VERSION,
+      kernelMinVersion: KERNEL_MIN_VERSION,
+    })
+    digests[bom.packId] = bom.bomDigest
+    const isMismatch = reportBomDigest(
+      bom.packId,
+      bom.bomDigest,
+      baseline,
+      json,
+      bom,
+      () => {
         console.log(
           chalk.bold(`AI-BOM ${bom.packId}@${bom.packVersion}`) +
             chalk.dim(` (agente gerenciado)`),
@@ -1808,8 +1971,54 @@ async function runPackBom(opts: {
         console.log(
           `  health      : ${bom.healthTier} (${bom.healthScore.score}/${bom.healthScore.maxScore})`,
         )
-      }
+      },
+    )
+    if (isMismatch) mismatch = true
+  }
+  return mismatch
+}
+
+async function runPackBom(opts: {
+  pack?: string
+  json?: boolean
+  verifyFile?: string
+}): Promise<void> {
+  const packs = await loadPacksForGovernance(opts.pack)
+  if (packs.length === 0) {
+    const scope = opts.pack ? ` para ${opts.pack}` : ""
+    console.error(chalk.red(`Nenhum pack encontrado${scope}.`))
+    process.exitCode = 1
+    return
+  }
+
+  let baseline: Record<string, string> | undefined
+  if (opts.verifyFile !== undefined) {
+    try {
+      baseline = JSON.parse(await readFile(opts.verifyFile, "utf-8")) as Record<
+        string,
+        string
+      >
+    } catch {
+      console.error(chalk.red(`Baseline ilegível: ${opts.verifyFile}`))
+      process.exitCode = 1
+      return
     }
+  }
+
+  const json = opts.json === true
+  const digests: Record<string, string> = {}
+  let mismatch = await appendPackBoms(packs, baseline, json, digests)
+
+  // ── Managed agents (T3-3) ──────────────────────────────────────────────
+  // The agent roster is part of the AI-BOM: each AgentDefinition in
+  // @ibatexas/agents folds into the same digest-lock via the upstream
+  // pack-health/PackManifest mapping (`generateAgentAiBom`), keyed
+  // `agent/<id>` in the baseline next to the pack entries. The roster-drift
+  // gate runs first, fail-closed in EVERY mode (a drifting roster must
+  // never be baselined or verified green). Skipped only under `--pack`,
+  // which scopes the command to one pack explicitly.
+  if (opts.pack === undefined) {
+    if (await appendAgentBoms(baseline, json, digests)) mismatch = true
   }
 
   // When neither verifying nor emitting full JSON, print the digest-lock so an
@@ -1834,9 +2043,8 @@ async function runAnalyze(opts: {
   )
   const packs = await loadPacksForGovernance(opts.pack)
   if (packs.length === 0) {
-    console.error(
-      chalk.red(`Nenhum pack encontrado${opts.pack ? ` para ${opts.pack}` : ""}.`),
-    )
+    const scope = opts.pack ? ` para ${opts.pack}` : ""
+    console.error(chalk.red(`Nenhum pack encontrado${scope}.`))
     process.exitCode = 1
     return
   }
@@ -1954,7 +2162,7 @@ export function registerKernelCommands(group: Command): void {
       ) => {
         try {
           await runDeferResume(sessionId, {
-            ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
+            ...(opts.signal === undefined ? {} : { signal: opts.signal }),
             jsonOnly: opts.json === true,
           })
         } finally {
@@ -2007,11 +2215,8 @@ export function registerKernelCommands(group: Command): void {
       )
       const packs = await loadPacksForGovernance(opts.pack)
       if (packs.length === 0) {
-        console.error(
-          chalk.red(
-            `Nenhum pack encontrado${opts.pack ? ` para ${opts.pack}` : ""}.`,
-          ),
-        )
+        const scope = opts.pack ? ` para ${opts.pack}` : ""
+        console.error(chalk.red(`Nenhum pack encontrado${scope}.`))
         process.exitCode = 1
         return
       }

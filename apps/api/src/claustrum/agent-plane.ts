@@ -23,7 +23,6 @@ import type {
   AgentTriggerBridge,
   TriggerDedupRedis,
   TriggerEventMapper,
-  TriggerOutcome,
   TriggerTurnRunner,
 } from "./agent-trigger-bridge.js";
 import { createAgentTriggerBridge } from "./agent-trigger-bridge.js";
@@ -116,4 +115,4 @@ export function composeAgentPlane(deps: AgentPlaneDeps): AgentPlane {
   };
 }
 
-export type { TriggerOutcome };
+export type { TriggerOutcome } from "./agent-trigger-bridge.js";

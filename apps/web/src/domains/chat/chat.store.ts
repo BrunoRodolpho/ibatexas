@@ -7,16 +7,16 @@ const SESSION_SECRET_KEY = 'chat_session_secret'
 
 /** Read guest session secret from sessionStorage (survives refresh, dies with tab) */
 function loadSessionSecret(): string | undefined {
-  if (typeof window === 'undefined') return undefined
+  if (typeof globalThis.window === 'undefined') return undefined
   return sessionStorage.getItem(SESSION_SECRET_KEY) ?? undefined
 }
 
 function saveSessionSecret(secret: string): void {
-  if (typeof window !== 'undefined') sessionStorage.setItem(SESSION_SECRET_KEY, secret)
+  if (typeof globalThis.window !== 'undefined') sessionStorage.setItem(SESSION_SECRET_KEY, secret)
 }
 
 function clearSessionSecret(): void {
-  if (typeof window !== 'undefined') sessionStorage.removeItem(SESSION_SECRET_KEY)
+  if (typeof globalThis.window !== 'undefined') sessionStorage.removeItem(SESSION_SECRET_KEY)
 }
 
 export interface ChatMessage {

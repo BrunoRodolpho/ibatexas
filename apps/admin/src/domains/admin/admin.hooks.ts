@@ -258,7 +258,8 @@ export function useAdminReservationsPage() {
       if (dateFilter) params.set('date', dateFilter)
       if (statusFilter) params.set('status', statusFilter)
       const qs = params.toString()
-      const url = `/api/admin/reservations${qs ? `?${qs}` : ''}`
+      const query = qs ? `?${qs}` : ''
+      const url = `/api/admin/reservations${query}`
       const data = await apiFetch(url)
       setReservations(data.reservations ?? [])
     } catch {
@@ -313,7 +314,8 @@ export function useAdminReviews() {
       const params = new URLSearchParams()
       if (ratingFilter) params.set('rating', ratingFilter)
       const qs = params.toString()
-      const url = `/api/admin/reviews${qs ? `?${qs}` : ''}`
+      const query = qs ? `?${qs}` : ''
+      const url = `/api/admin/reviews${query}`
       const data = await apiFetch(url)
       setReviews(data.reviews ?? [])
     } catch {

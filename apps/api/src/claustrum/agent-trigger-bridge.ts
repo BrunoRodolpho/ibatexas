@@ -256,9 +256,8 @@ async function runWithWallClock(
   agent: AgentDefinition,
   getRunner: () => TriggerTurnRunner,
   event: TriggerEvent,
-  now: (() => number) | undefined,
+  _now: (() => number) | undefined,
 ): Promise<TriggerTurnResult> {
-  void now;
   const controller = new AbortController();
   const sessionId = agentSessionId(agent, event.entityRef.id);
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -409,15 +408,15 @@ export function createAgentTriggerBridge(
           {
             agent,
             event: data.event,
-            ...(data.causalActorSessionId !== undefined
-              ? { causalActorSessionId: data.causalActorSessionId }
-              : {}),
+            ...(data.causalActorSessionId === undefined
+              ? {}
+              : { causalActorSessionId: data.causalActorSessionId }),
           },
           {
             redis: deps.redis,
             runner: deps.runner,
-            ...(deps.journal !== undefined ? { journal: deps.journal } : {}),
-            ...(deps.now !== undefined ? { now: deps.now } : {}),
+            ...(deps.journal === undefined ? {} : { journal: deps.journal }),
+            ...(deps.now === undefined ? {} : { now: deps.now }),
           },
         );
       });
@@ -429,9 +428,9 @@ export function createAgentTriggerBridge(
             subject,
             async (payload) => {
               const eventKind = String(
-                (payload as { eventType?: unknown }).eventType ??
+                ((payload as { eventType?: unknown }).eventType ??
                   (payload as { kind?: unknown }).kind ??
-                  "",
+                  "") as string,
               );
               if (
                 eventKind.length > 0 &&
@@ -447,9 +446,9 @@ export function createAgentTriggerBridge(
                 {
                   agentId: agent.id,
                   event: candidate.event,
-                  ...(candidate.causalActorSessionId !== undefined
-                    ? { causalActorSessionId: candidate.causalActorSessionId }
-                    : {}),
+                  ...(candidate.causalActorSessionId === undefined
+                    ? {}
+                    : { causalActorSessionId: candidate.causalActorSessionId }),
                 } satisfies TriggerJobData,
                 {
                   // Queue-layer redelivery dedup (stripe-webhook-processor.ts:86).

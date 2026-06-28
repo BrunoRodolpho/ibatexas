@@ -61,7 +61,7 @@ let queue: Queue | null = null;
 let worker: Worker | null = null;
 
 function getQueue(): Queue {
-  if (!queue) queue = createQueue(QUEUE_NAME);
+  queue ??= createQueue(QUEUE_NAME);
   return queue;
 }
 

@@ -103,9 +103,9 @@ export function createPixTriggerMapper(
         entityRef: { kind: "order", id: e.orderId, customerId },
         ...(typeof e.timestamp === "string" ? { occurredAt: e.timestamp } : {}),
       },
-      ...(e.causalActorSessionId !== undefined
-        ? { causalActorSessionId: e.causalActorSessionId }
-        : {}),
+      ...(e.causalActorSessionId === undefined
+        ? {}
+        : { causalActorSessionId: e.causalActorSessionId }),
     };
     return job;
   };
@@ -170,9 +170,9 @@ export async function startManagedAgentPlane(
     systemChannel: deps.liveConductor.systemChannel,
     journal: deps.journal,
     approvals: deps.approvals,
-    ...(deps.refundBreaker !== undefined ? { refundBreaker: deps.refundBreaker } : {}),
-    ...(deps.proposalSink !== undefined ? { proposalSink: deps.proposalSink } : {}),
-    ...(deps.learningSink !== undefined ? { learningSink: deps.learningSink } : {}),
+    ...(deps.refundBreaker === undefined ? {} : { refundBreaker: deps.refundBreaker }),
+    ...(deps.proposalSink === undefined ? {} : { proposalSink: deps.proposalSink }),
+    ...(deps.learningSink === undefined ? {} : { learningSink: deps.learningSink }),
     now: deps.now,
   });
 

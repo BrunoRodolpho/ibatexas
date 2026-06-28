@@ -66,14 +66,18 @@ function buildFlushPatterns(
 
 function extractId(key: string): string {
   const parts = key.split(":")
-  return parts[parts.length - 1]
+  return parts.at(-1) ?? ""
 }
 
 async function showWaRateStatus(redis: RedisClient, identifier?: string): Promise<void> {
   const pattern = identifier ? rk(`wa:rate:${identifier}`) : rk("wa:rate:*")
-  const keys = identifier
-    ? (await redis.exists(rk(`wa:rate:${identifier}`))) ? [rk(`wa:rate:${identifier}`)] : []
-    : await scanKeysForPattern(redis, pattern)
+  let keys: string[]
+  if (identifier) {
+    const exists = await redis.exists(rk(`wa:rate:${identifier}`))
+    keys = exists ? [rk(`wa:rate:${identifier}`)] : []
+  } else {
+    keys = await scanKeysForPattern(redis, pattern)
+  }
 
   console.log(chalk.bold("\n  WhatsApp messages"))
 
@@ -96,9 +100,13 @@ async function showWaRateStatus(redis: RedisClient, identifier?: string): Promis
 
 async function showTokenBudgetStatus(redis: RedisClient, identifier?: string): Promise<void> {
   const pattern = identifier ? rk(`llm:tokens:${identifier}`) : rk("llm:tokens:*")
-  const keys = identifier
-    ? (await redis.exists(rk(`llm:tokens:${identifier}`))) ? [rk(`llm:tokens:${identifier}`)] : []
-    : await scanKeysForPattern(redis, pattern)
+  let keys: string[]
+  if (identifier) {
+    const exists = await redis.exists(rk(`llm:tokens:${identifier}`))
+    keys = exists ? [rk(`llm:tokens:${identifier}`)] : []
+  } else {
+    keys = await scanKeysForPattern(redis, pattern)
+  }
 
   console.log(chalk.bold("\n  LLM token budget"))
 

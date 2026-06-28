@@ -57,7 +57,7 @@ async function autoFixReviewSync(): Promise<void> {
 async function runAutoFixes(results: DiagResult[], needsIntelRebuild: boolean): Promise<void> {
   console.log(chalk.bold("\n  Auto-fix"))
 
-  const productMismatch = results.find((r) => r.check === "Products" && r.status !== "ok")
+  const productMismatch = results.some((r) => r.check === "Products" && r.status !== "ok")
   if (productMismatch) {
     await autoFixReindex()
   }
@@ -66,7 +66,7 @@ async function runAutoFixes(results: DiagResult[], needsIntelRebuild: boolean): 
     await autoFixIntelligence()
   }
 
-  const reviewWarn = results.find((r) => r.check === "Reviews" && r.status !== "ok")
+  const reviewWarn = results.some((r) => r.check === "Reviews" && r.status !== "ok")
   if (reviewWarn) {
     await autoFixReviewSync()
   }

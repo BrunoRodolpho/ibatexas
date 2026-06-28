@@ -41,39 +41,39 @@ export function isAvailableNow(availabilityWindow: string, schedule?: Restaurant
 }
 
 /**
- * Get a human-readable description of an availability window.
- * Uses schedule hours when available.
+ * Describe a window using today's DB schedule hours.
+ * Returns null when there is no matching day entry (caller falls back to env).
  */
-export function describeAvailabilityWindow(availabilityWindow: string, schedule?: RestaurantSchedule): string {
-  if (schedule) {
-    // Extract hours from today's schedule
-    const tz = process.env.RESTAURANT_TIMEZONE || "America/Sao_Paulo"
-    const dayStr = new Intl.DateTimeFormat("en-US", { timeZone: tz, weekday: "short" }).format(new Date())
-    const dayMap: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 }
-    const dow = dayMap[dayStr] ?? new Date().getDay()
-    const day = schedule.days.find((d) => d.dayOfWeek === dow)
+function describeFromSchedule(availabilityWindow: string, schedule: RestaurantSchedule): string | null {
+  const tz = process.env.RESTAURANT_TIMEZONE || "America/Sao_Paulo"
+  const dayStr = new Intl.DateTimeFormat("en-US", { timeZone: tz, weekday: "short" }).format(new Date())
+  const dayMap: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 }
+  const dow = dayMap[dayStr] ?? new Date().getDay()
+  const day = schedule.days.find((d) => d.dayOfWeek === dow)
+  if (!day) return null
 
-    if (day) {
-      const lunchStr = day.lunchStart && day.lunchEnd
-        ? `${Number.parseInt(day.lunchStart, 10)}h-${Number.parseInt(day.lunchEnd, 10)}h` : null
-      const dinnerStr = day.dinnerStart && day.dinnerEnd
-        ? `${Number.parseInt(day.dinnerStart, 10)}h-${Number.parseInt(day.dinnerEnd, 10)}h` : null
+  const lunchStr = day.lunchStart && day.lunchEnd
+    ? `${Number.parseInt(day.lunchStart, 10)}h-${Number.parseInt(day.lunchEnd, 10)}h` : null
+  const dinnerStr = day.dinnerStart && day.dinnerEnd
+    ? `${Number.parseInt(day.dinnerStart, 10)}h-${Number.parseInt(day.dinnerEnd, 10)}h` : null
 
-      switch (availabilityWindow) {
-        case AvailabilityWindow.ALMOCO:
-          return lunchStr ? `almoço (${lunchStr})` : "almoço"
-        case AvailabilityWindow.JANTAR:
-          return dinnerStr ? `jantar (${dinnerStr})` : "jantar"
-        case AvailabilityWindow.CONGELADOS:
-        case AvailabilityWindow.SEMPRE:
-          return "sempre disponível"
-        default:
-          return "sempre disponível"
-      }
-    }
+  switch (availabilityWindow) {
+    case AvailabilityWindow.ALMOCO:
+      return lunchStr ? `almoço (${lunchStr})` : "almoço"
+    case AvailabilityWindow.JANTAR:
+      return dinnerStr ? `jantar (${dinnerStr})` : "jantar"
+    case AvailabilityWindow.CONGELADOS:
+    case AvailabilityWindow.SEMPRE:
+      return "sempre disponível"
+    default:
+      return "sempre disponível"
   }
+}
 
-  // Fallback: env vars
+/**
+ * Describe a window using the env-var fallback hours.
+ */
+function describeFromEnv(availabilityWindow: string): string {
   const lunchStart = process.env.RESTAURANT_LUNCH_START_HOUR || "11"
   const lunchEnd = process.env.RESTAURANT_LUNCH_END_HOUR || "15"
   const dinnerStart = process.env.RESTAURANT_DINNER_START_HOUR || "18"
@@ -90,4 +90,16 @@ export function describeAvailabilityWindow(availabilityWindow: string, schedule?
     default:
       return "sempre disponível"
   }
+}
+
+/**
+ * Get a human-readable description of an availability window.
+ * Uses schedule hours when available.
+ */
+export function describeAvailabilityWindow(availabilityWindow: string, schedule?: RestaurantSchedule): string {
+  if (schedule) {
+    const scheduled = describeFromSchedule(availabilityWindow, schedule)
+    if (scheduled !== null) return scheduled
+  }
+  return describeFromEnv(availabilityWindow)
 }

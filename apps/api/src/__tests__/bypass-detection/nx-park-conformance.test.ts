@@ -261,7 +261,7 @@ describe("audit-2026-05-24 T1 — NX-park conformance", () => {
     const synthetic =
       `import { parkDeferredIntent } from "@adjudicate/runtime"`
     const matches = Array.from(synthetic.matchAll(FORBIDDEN_PARK_IMPORT))
-    expect(matches.length).toBe(1)
+    expect(matches).toHaveLength(1)
   })
 
   it("multi-line `parkDeferredIntent` import IS caught by the regex (positive test)", () => {
@@ -275,7 +275,7 @@ describe("audit-2026-05-24 T1 — NX-park conformance", () => {
       `} from "@adjudicate/runtime"`,
     ].join("\n")
     const matches = Array.from(synthetic.matchAll(FORBIDDEN_PARK_IMPORT))
-    expect(matches.length).toBe(1)
+    expect(matches).toHaveLength(1)
   })
 
   it("`type parkDeferredIntent` (type-only) IS caught (positive test)", () => {
@@ -285,6 +285,6 @@ describe("audit-2026-05-24 T1 — NX-park conformance", () => {
     const synthetic =
       `import type { parkDeferredIntent } from "@adjudicate/runtime"`
     const matches = Array.from(synthetic.matchAll(FORBIDDEN_PARK_IMPORT))
-    expect(matches.length).toBe(1)
+    expect(matches).toHaveLength(1)
   })
 })

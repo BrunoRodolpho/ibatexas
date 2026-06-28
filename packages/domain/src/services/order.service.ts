@@ -160,11 +160,11 @@ export function createOrderService(
     return adminAdjudicated<P, R>({
       method: args.method,
       path: args.path,
-      ...(args.payload !== undefined ? { payload: args.payload } : {}),
+      ...(args.payload === undefined ? {} : { payload: args.payload }),
       sourceSubject: args.sourceSubject,
-      ...(args.idempotencyKey !== undefined
-        ? { idempotencyKey: args.idempotencyKey }
-        : {}),
+      ...(args.idempotencyKey === undefined
+        ? {}
+        : { idempotencyKey: args.idempotencyKey }),
     })
   }
 
@@ -322,6 +322,12 @@ export function createOrderService(
 
         return { success: true, message: `"${itemTitle}" removido do pedido.` }
       } catch (err) {
+        // Handle (rather than swallow) the order-edit failure: surface it on
+        // the injected logger before escalating. Control flow is unchanged.
+        serviceLog?.warn?.(
+          { orderId, itemTitle, err },
+          "[order-service] cancelItem order-edit flow failed — escalating",
+        )
         return {
           success: false,
           message: `Erro ao remover "${itemTitle}". Um atendente foi notificado.`,

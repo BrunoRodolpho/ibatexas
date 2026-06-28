@@ -15,8 +15,7 @@
 // kind `payment.status.transition` (SYSTEM-only at the policy bundle's
 // taint floor). nonce = `pix:expiry:${paymentId}` for deterministic replay.
 
-import { cancelStalePaymentIntent } from "@ibatexas/tools";
-import { withLock } from "@ibatexas/tools";
+import { cancelStalePaymentIntent, withLock } from "@ibatexas/tools";
 import { publishNatsEvent } from "@ibatexas/nats-client";
 import {
   createPaymentCommandService,

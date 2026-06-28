@@ -105,8 +105,8 @@ describe.skipIf(!RUN_REAL_REDIS)(
       ).toBeLessThanOrEqual(cap)
 
       // Stronger: exactly floor(cap/amount) = 2 should be allowed.
-      expect(allowed.length).toBe(Math.floor(cap / amount))
-      expect(refused.length).toBe(N - Math.floor(cap / amount))
+      expect(allowed).toHaveLength(Math.floor(cap / amount))
+      expect(refused).toHaveLength(N - Math.floor(cap / amount))
 
       // Verify the actual stored counter matches the sum of allowed.
       const redis = await setupRedis()
@@ -163,6 +163,9 @@ describe("P1-I-TRUE refund cap — synthetic guard", () => {
           "and REDIS_TEST_URL=redis://localhost:6380 pnpm vitest to exercise.",
       )
     }
-    expect(true).toBe(true)
+    // Smoke-assert the module under test loaded (the dynamic import of the
+    // payments route resolved the helper) so this non-skipped guard exercises
+    // a real condition rather than an unconditional truth.
+    expect(typeof tryReserveDailyRefund).toBe("function")
   })
 })

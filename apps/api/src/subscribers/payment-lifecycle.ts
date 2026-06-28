@@ -30,8 +30,7 @@
 //
 // Existing dedup (`isNewEvent`) and event-log archival are preserved.
 
-import { subscribeNatsEvent } from "@ibatexas/nats-client";
-import { publishNatsEvent } from "@ibatexas/nats-client";
+import { subscribeNatsEvent, publishNatsEvent } from "@ibatexas/nats-client";
 import {
   createOrderCommandService,
   createOrderQueryService,
@@ -59,6 +58,240 @@ const EXPECTED_TRANSITION_ERRORS = new Set([
 
 function isExpectedTransitionError(err: unknown): boolean {
   return err instanceof Error && EXPECTED_TRANSITION_ERRORS.has(err.name);
+}
+
+type OrderCommandService = ReturnType<typeof createOrderCommandService>;
+type OrderQueryService = ReturnType<typeof createOrderQueryService>;
+
+interface PaymentLifecycleDeps {
+  readonly orderCmdSvc: OrderCommandService;
+  readonly orderQuerySvc: OrderQueryService;
+  readonly log?: FastifyBaseLogger;
+}
+
+// ── Payment confirmed → auto-confirm order ──────────────────────────────────
+// Extracted from the dispatch switch to keep the subscriber callback's
+// cognitive complexity bounded. Behavior is identical to the inlined case.
+async function handlePaymentPaid(
+  deps: PaymentLifecycleDeps,
+  event: PaymentStatusChangedEvent & { eventType?: string },
+  rawPayload: Record<string, unknown>,
+): Promise<void> {
+  const { orderCmdSvc, orderQuerySvc, log } = deps;
+  const { orderId, paymentId, newStatus, method } = event;
+
+  // Only auto-confirm for electronic payments (PIX/card).
+  // Cash orders are confirmed via admin workflow.
+  if (method === "cash") return;
+
+  const order = await orderQuerySvc.getById(orderId);
+  if (!order) return;
+
+  // Only advance pending → confirmed
+  if (order.fulfillmentStatus !== "pending") {
+    log?.info(
+      { orderId, fulfillmentStatus: order.fulfillmentStatus },
+      "[payment-lifecycle] Order not pending — skipping auto-confirm",
+    );
+    return;
+  }
+
+  // ── Task 16: kernel-gated transition ──────────────────────────
+  const transitionPayload: OrderStatusTransitionPayload = {
+    orderId,
+    newStatus: OrderFulfillmentStatus.CONFIRMED,
+    actor: "system",
+    reason: "Pagamento confirmado",
+  };
+  const envelope = buildSystemEnvelope({
+    kind: "order.status.transition" as const,
+    payload: transitionPayload,
+    sourceSubject: "payment.status_changed",
+    eventId: `auto_confirm:${paymentId}:${newStatus}`,
+  });
+
+  try {
+    const outcome = await orderCmdSvc.transitionStatusFromEnvelope(envelope);
+
+    if (
+      outcome.decision.kind !== "EXECUTE" &&
+      outcome.decision.kind !== "REWRITE"
+    ) {
+      // REFUSE / DEFER / REQUEST_CONFIRMATION / ESCALATE — mutation skipped.
+      const decisionKind = outcome.decision.kind;
+      const refusalCode =
+        outcome.decision.kind === "REFUSE"
+          ? outcome.decision.refusal.code
+          : undefined;
+      log?.warn(
+        { orderId, paymentId, decision: decisionKind, refusalCode },
+        "[payment-lifecycle] kernel did not authorize auto-confirm — mutation skipped",
+      );
+      if (outcome.decision.kind === "REFUSE") {
+        await pushToDlq(
+          "payment.status_changed",
+          rawPayload,
+          `kernel REFUSE: ${outcome.decision.refusal.code}`,
+          log,
+        );
+      }
+      return;
+    }
+
+    await publishNatsEvent("order.status_changed", {
+      eventType: "order.status_changed",
+      orderId,
+      displayId: order.displayId,
+      previousStatus: OrderFulfillmentStatus.PENDING,
+      newStatus: OrderFulfillmentStatus.CONFIRMED,
+      customerId: order.customerId ?? null,
+      updatedBy: "system",
+      version: order.version + 1,
+      timestamp: new Date().toISOString(),
+    });
+
+    log?.info({ orderId }, "[payment-lifecycle] Order auto-confirmed after payment");
+  } catch (err) {
+    if (isExpectedTransitionError(err)) {
+      // ConcurrencyError / InvalidTransitionError — another process (or a
+      // prior delivery) already advanced the order. Benign, info-level.
+      log?.info(
+        { orderId, paymentId, error: String(err) },
+        "[payment-lifecycle] Auto-confirm skipped — order already advanced",
+      );
+    } else {
+      // Unexpected: money was taken but the order was NOT confirmed and
+      // nobody is watching. Escalate like the disputed branch (DLQ + staff
+      // alert) instead of letting the payload evaporate into a warn log.
+      log?.error(
+        { orderId, paymentId, error: String(err) },
+        "[payment-lifecycle] Auto-confirm FAILED unexpectedly — escalating (DLQ + staff alert)",
+      );
+      await pushToDlq(
+        "payment.status_changed",
+        rawPayload,
+        err,
+        log,
+      );
+      await publishNatsEvent("order.escalation_needed", {
+        eventType: "order.escalation_needed",
+        orderId,
+        reason: "auto_confirm_failed",
+        paymentId,
+        timestamp: new Date().toISOString(),
+      });
+    }
+  }
+}
+
+// ── Payment refunded on pending/confirmed → cancel order ────────────────────
+// Extracted from the dispatch switch to keep the subscriber callback's
+// cognitive complexity bounded. Behavior is identical to the inlined case.
+async function handlePaymentRefunded(
+  deps: PaymentLifecycleDeps,
+  event: PaymentStatusChangedEvent & { eventType?: string },
+  rawPayload: Record<string, unknown>,
+): Promise<void> {
+  const { orderCmdSvc, orderQuerySvc, log } = deps;
+  const { orderId, paymentId, newStatus } = event;
+
+  const order = await orderQuerySvc.getById(orderId);
+  if (!order) return;
+
+  const cancelable = [
+    OrderFulfillmentStatus.PENDING,
+    OrderFulfillmentStatus.CONFIRMED,
+  ] as string[];
+
+  if (!cancelable.includes(order.fulfillmentStatus)) {
+    log?.info(
+      { orderId, fulfillmentStatus: order.fulfillmentStatus },
+      "[payment-lifecycle] Order past cancelable state — skipping auto-cancel on refund",
+    );
+    return;
+  }
+
+  // ── Task 16: kernel-gated cancel ──────────────────────────────
+  const cancelPayload: OrderStatusTransitionPayload = {
+    orderId,
+    newStatus: OrderFulfillmentStatus.CANCELED,
+    actor: "system",
+    reason: "Pagamento reembolsado",
+  };
+  const envelope = buildSystemEnvelope({
+    kind: "order.status.transition" as const,
+    payload: cancelPayload,
+    sourceSubject: "payment.status_changed",
+    eventId: `auto_cancel:${paymentId}:${newStatus}`,
+  });
+
+  try {
+    const outcome = await orderCmdSvc.transitionStatusFromEnvelope(envelope);
+
+    if (
+      outcome.decision.kind !== "EXECUTE" &&
+      outcome.decision.kind !== "REWRITE"
+    ) {
+      const decisionKind = outcome.decision.kind;
+      const refusalCode =
+        outcome.decision.kind === "REFUSE"
+          ? outcome.decision.refusal.code
+          : undefined;
+      log?.warn(
+        { orderId, paymentId, decision: decisionKind, refusalCode },
+        "[payment-lifecycle] kernel did not authorize auto-cancel — mutation skipped",
+      );
+      if (outcome.decision.kind === "REFUSE") {
+        await pushToDlq(
+          "payment.status_changed",
+          rawPayload,
+          `kernel REFUSE: ${outcome.decision.refusal.code}`,
+          log,
+        );
+      }
+      return;
+    }
+
+    await publishNatsEvent("order.canceled", {
+      eventType: "order.canceled",
+      orderId,
+      displayId: order.displayId,
+      customerId: order.customerId ?? null,
+      reason: "Pagamento reembolsado",
+      canceledBy: "system",
+      timestamp: new Date().toISOString(),
+    });
+
+    log?.info({ orderId }, "[payment-lifecycle] Order canceled after full refund");
+  } catch (err) {
+    if (isExpectedTransitionError(err)) {
+      // ConcurrencyError / InvalidTransitionError — order already moved on.
+      log?.info(
+        { orderId, paymentId, error: String(err) },
+        "[payment-lifecycle] Auto-cancel skipped — order already advanced",
+      );
+    } else {
+      // Unexpected: money was refunded but the order was NOT canceled.
+      // Escalate (DLQ + staff alert) like the disputed branch.
+      log?.error(
+        { orderId, paymentId, error: String(err) },
+        "[payment-lifecycle] Auto-cancel after refund FAILED unexpectedly — escalating (DLQ + staff alert)",
+      );
+      await pushToDlq(
+        "payment.status_changed",
+        rawPayload,
+        err,
+        log,
+      );
+      await publishNatsEvent("order.escalation_needed", {
+        eventType: "order.escalation_needed",
+        orderId,
+        reason: "refund_cancel_failed",
+        paymentId,
+        timestamp: new Date().toISOString(),
+      });
+    }
+  }
 }
 
 export async function startPaymentLifecycleSubscriber(
@@ -98,213 +331,22 @@ export async function startPaymentLifecycleSubscriber(
 
       switch (newStatus) {
         // ── Payment confirmed → auto-confirm order ────────────────────────
-        case PaymentStatus.PAID: {
-          // Only auto-confirm for electronic payments (PIX/card).
-          // Cash orders are confirmed via admin workflow.
-          if (method === "cash") break;
-
-          const order = await orderQuerySvc.getById(orderId);
-          if (!order) break;
-
-          // Only advance pending → confirmed
-          if (order.fulfillmentStatus !== "pending") {
-            log?.info(
-              { orderId, fulfillmentStatus: order.fulfillmentStatus },
-              "[payment-lifecycle] Order not pending — skipping auto-confirm",
-            );
-            break;
-          }
-
-          // ── Task 16: kernel-gated transition ──────────────────────────
-          const transitionPayload: OrderStatusTransitionPayload = {
-            orderId,
-            newStatus: OrderFulfillmentStatus.CONFIRMED,
-            actor: "system",
-            reason: "Pagamento confirmado",
-          };
-          const envelope = buildSystemEnvelope({
-            kind: "order.status.transition" as const,
-            payload: transitionPayload,
-            sourceSubject: "payment.status_changed",
-            eventId: `auto_confirm:${paymentId}:${newStatus}`,
-          });
-
-          try {
-            const outcome = await orderCmdSvc.transitionStatusFromEnvelope(envelope);
-
-            if (
-              outcome.decision.kind !== "EXECUTE" &&
-              outcome.decision.kind !== "REWRITE"
-            ) {
-              // REFUSE / DEFER / REQUEST_CONFIRMATION / ESCALATE — mutation skipped.
-              const decisionKind = outcome.decision.kind;
-              const refusalCode =
-                outcome.decision.kind === "REFUSE"
-                  ? outcome.decision.refusal.code
-                  : undefined;
-              log?.warn(
-                { orderId, paymentId, decision: decisionKind, refusalCode },
-                "[payment-lifecycle] kernel did not authorize auto-confirm — mutation skipped",
-              );
-              if (outcome.decision.kind === "REFUSE") {
-                await pushToDlq(
-                  "payment.status_changed",
-                  payload as Record<string, unknown>,
-                  `kernel REFUSE: ${outcome.decision.refusal.code}`,
-                  log,
-                );
-              }
-              break;
-            }
-
-            await publishNatsEvent("order.status_changed", {
-              eventType: "order.status_changed",
-              orderId,
-              displayId: order.displayId,
-              previousStatus: OrderFulfillmentStatus.PENDING,
-              newStatus: OrderFulfillmentStatus.CONFIRMED,
-              customerId: order.customerId ?? null,
-              updatedBy: "system",
-              version: order.version + 1,
-              timestamp: new Date().toISOString(),
-            });
-
-            log?.info({ orderId }, "[payment-lifecycle] Order auto-confirmed after payment");
-          } catch (err) {
-            if (isExpectedTransitionError(err)) {
-              // ConcurrencyError / InvalidTransitionError — another process (or a
-              // prior delivery) already advanced the order. Benign, info-level.
-              log?.info(
-                { orderId, paymentId, error: String(err) },
-                "[payment-lifecycle] Auto-confirm skipped — order already advanced",
-              );
-            } else {
-              // Unexpected: money was taken but the order was NOT confirmed and
-              // nobody is watching. Escalate like the disputed branch (DLQ + staff
-              // alert) instead of letting the payload evaporate into a warn log.
-              log?.error(
-                { orderId, paymentId, error: String(err) },
-                "[payment-lifecycle] Auto-confirm FAILED unexpectedly — escalating (DLQ + staff alert)",
-              );
-              await pushToDlq(
-                "payment.status_changed",
-                payload as Record<string, unknown>,
-                err,
-                log,
-              );
-              await publishNatsEvent("order.escalation_needed", {
-                eventType: "order.escalation_needed",
-                orderId,
-                reason: "auto_confirm_failed",
-                paymentId,
-                timestamp: new Date().toISOString(),
-              });
-            }
-          }
+        case PaymentStatus.PAID:
+          await handlePaymentPaid(
+            { orderCmdSvc, orderQuerySvc, log },
+            event,
+            payload as Record<string, unknown>,
+          );
           break;
-        }
 
         // ── Payment refunded on pending/confirmed → cancel order ──────────
-        case PaymentStatus.REFUNDED: {
-          const order = await orderQuerySvc.getById(orderId);
-          if (!order) break;
-
-          const cancelable = [
-            OrderFulfillmentStatus.PENDING,
-            OrderFulfillmentStatus.CONFIRMED,
-          ] as string[];
-
-          if (!cancelable.includes(order.fulfillmentStatus)) {
-            log?.info(
-              { orderId, fulfillmentStatus: order.fulfillmentStatus },
-              "[payment-lifecycle] Order past cancelable state — skipping auto-cancel on refund",
-            );
-            break;
-          }
-
-          // ── Task 16: kernel-gated cancel ──────────────────────────────
-          const cancelPayload: OrderStatusTransitionPayload = {
-            orderId,
-            newStatus: OrderFulfillmentStatus.CANCELED,
-            actor: "system",
-            reason: "Pagamento reembolsado",
-          };
-          const envelope = buildSystemEnvelope({
-            kind: "order.status.transition" as const,
-            payload: cancelPayload,
-            sourceSubject: "payment.status_changed",
-            eventId: `auto_cancel:${paymentId}:${newStatus}`,
-          });
-
-          try {
-            const outcome = await orderCmdSvc.transitionStatusFromEnvelope(envelope);
-
-            if (
-              outcome.decision.kind !== "EXECUTE" &&
-              outcome.decision.kind !== "REWRITE"
-            ) {
-              const decisionKind = outcome.decision.kind;
-              const refusalCode =
-                outcome.decision.kind === "REFUSE"
-                  ? outcome.decision.refusal.code
-                  : undefined;
-              log?.warn(
-                { orderId, paymentId, decision: decisionKind, refusalCode },
-                "[payment-lifecycle] kernel did not authorize auto-cancel — mutation skipped",
-              );
-              if (outcome.decision.kind === "REFUSE") {
-                await pushToDlq(
-                  "payment.status_changed",
-                  payload as Record<string, unknown>,
-                  `kernel REFUSE: ${outcome.decision.refusal.code}`,
-                  log,
-                );
-              }
-              break;
-            }
-
-            await publishNatsEvent("order.canceled", {
-              eventType: "order.canceled",
-              orderId,
-              displayId: order.displayId,
-              customerId: order.customerId ?? null,
-              reason: "Pagamento reembolsado",
-              canceledBy: "system",
-              timestamp: new Date().toISOString(),
-            });
-
-            log?.info({ orderId }, "[payment-lifecycle] Order canceled after full refund");
-          } catch (err) {
-            if (isExpectedTransitionError(err)) {
-              // ConcurrencyError / InvalidTransitionError — order already moved on.
-              log?.info(
-                { orderId, paymentId, error: String(err) },
-                "[payment-lifecycle] Auto-cancel skipped — order already advanced",
-              );
-            } else {
-              // Unexpected: money was refunded but the order was NOT canceled.
-              // Escalate (DLQ + staff alert) like the disputed branch.
-              log?.error(
-                { orderId, paymentId, error: String(err) },
-                "[payment-lifecycle] Auto-cancel after refund FAILED unexpectedly — escalating (DLQ + staff alert)",
-              );
-              await pushToDlq(
-                "payment.status_changed",
-                payload as Record<string, unknown>,
-                err,
-                log,
-              );
-              await publishNatsEvent("order.escalation_needed", {
-                eventType: "order.escalation_needed",
-                orderId,
-                reason: "refund_cancel_failed",
-                paymentId,
-                timestamp: new Date().toISOString(),
-              });
-            }
-          }
+        case PaymentStatus.REFUNDED:
+          await handlePaymentRefunded(
+            { orderCmdSvc, orderQuerySvc, log },
+            event,
+            payload as Record<string, unknown>,
+          );
           break;
-        }
 
         // ── Payment expired → notify customer ─────────────────────────────
         case PaymentStatus.PAYMENT_EXPIRED: {

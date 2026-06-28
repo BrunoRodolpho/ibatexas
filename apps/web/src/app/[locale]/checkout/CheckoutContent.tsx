@@ -69,6 +69,57 @@ function getPaymentMethodLabel(
   return t('cash')
 }
 
+function formatCpf(value: string): string {
+  const digits = value.replace(/\D/g, "").slice(0, 11)
+  if (digits.length <= 3) return digits
+  if (digits.length <= 6) return `${digits.slice(0, 3)}.${digits.slice(3)}`
+  if (digits.length <= 9) return `${digits.slice(0, 3)}.${digits.slice(3, 6)}.${digits.slice(6)}`
+  return `${digits.slice(0, 3)}.${digits.slice(3, 6)}.${digits.slice(6, 9)}-${digits.slice(9)}`
+}
+
+function isValidCpf(cpf: string): boolean {
+  const digits = cpf.replace(/\D/g, "")
+  if (digits.length !== 11) return false
+  if (/^(\d)\1+$/.test(digits)) return false
+  let sum = 0
+  for (let i = 0; i < 9; i++) sum += Number(digits[i]) * (10 - i)
+  let check = 11 - (sum % 11)
+  if (check >= 10) check = 0
+  if (check !== Number(digits[9])) return false
+  sum = 0
+  for (let i = 0; i < 10; i++) sum += Number(digits[i]) * (11 - i)
+  check = 11 - (sum % 11)
+  if (check >= 10) check = 0
+  return check === Number(digits[10])
+}
+
+// R0a — persist the signed per-order access token (keyed by id) so the
+// order-tracking page can authorize reads/polls without an authenticated
+// session. Best-effort (private/incognito mode may block sessionStorage).
+function persistOrderAccessToken(id: string, accessToken: string): void {
+  if (typeof globalThis.window === "undefined") return
+  try {
+    sessionStorage.setItem(`order-access-token:${id}`, accessToken)
+  } catch {
+    // sessionStorage unavailable — owner cookie path still works for authed users
+  }
+}
+
+function toDeliveryTypePayload(
+  isShipping: boolean,
+  deliveryType: "delivery" | "pickup" | "dine-in",
+): string {
+  if (isShipping) return 'shipping'
+  if (deliveryType === 'dine-in') return 'dine_in'
+  return deliveryType
+}
+
+function deliveryTypeButtonClass(disabled: boolean, selected: boolean): string {
+  if (disabled) return "border-smoke-100 text-smoke-300 cursor-not-allowed bg-smoke-50"
+  if (selected) return "border-brand-600 bg-brand-50 text-brand-700"
+  return "border-smoke-200 text-smoke-400 hover:border-smoke-300"
+}
+
 // ── Inner checkout form (needs Stripe hooks) ─────────────────────────────────
 
 function CheckoutForm() {
@@ -251,35 +302,97 @@ function CheckoutForm() {
     }
   }
 
-  function formatCpf(value: string): string {
-    const digits = value.replace(/\D/g, "").slice(0, 11)
-    if (digits.length <= 3) return digits
-    if (digits.length <= 6) return `${digits.slice(0, 3)}.${digits.slice(3)}`
-    if (digits.length <= 9) return `${digits.slice(0, 3)}.${digits.slice(3, 6)}.${digits.slice(6)}`
-    return `${digits.slice(0, 3)}.${digits.slice(3, 6)}.${digits.slice(6, 9)}-${digits.slice(9)}`
-  }
-
-  function isValidCpf(cpf: string): boolean {
-    const digits = cpf.replace(/\D/g, "")
-    if (digits.length !== 11) return false
-    if (/^(\d)\1+$/.test(digits)) return false
-    let sum = 0
-    for (let i = 0; i < 9; i++) sum += Number(digits[i]) * (10 - i)
-    let check = 11 - (sum % 11)
-    if (check >= 10) check = 0
-    if (check !== Number(digits[9])) return false
-    sum = 0
-    for (let i = 0; i < 10; i++) sum += Number(digits[i]) * (11 - i)
-    check = 11 - (sum % 11)
-    if (check >= 10) check = 0
-    return check === Number(digits[10])
-  }
-
   const pixFieldsValid = paymentMethod !== "pix" || (
     pixName.trim().split(/\s+/).length >= 2 &&
-    /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(pixEmail) &&
+    /^[^\s@]+@[^\s.@]+(?:\.[^\s.@]+)+$/.test(pixEmail) &&
     isValidCpf(pixCpf)
   )
+
+  // ── Cash: record the completed order then advance to the confirmed stage. ──
+  function completeCashCheckout(data: CheckoutResult) {
+    if (!checkoutCompletedRef.current && data?.orderId) {
+      checkoutCompletedRef.current = true
+      track('checkout_completed', {
+        orderId: data.orderId,
+        orderTotal: total,
+        itemCount: items.length,
+        paymentMethod,
+        currency: 'BRL',
+        ibx_session_id: getSessionId(),
+      })
+      saveOrder({
+        items: items.map((item) => ({
+          productId: item.productId,
+          title: item.title,
+          price: item.price,
+          imageUrl: item.imageUrl ?? undefined,
+          quantity: item.quantity,
+          variantId: item.variantId ?? undefined,
+          variantTitle: item.variantTitle ?? undefined,
+        })),
+        total,
+        orderId: data.orderId,
+        date: new Date().toISOString(),
+      })
+    }
+    clearCart()
+    setStage("confirmed")
+  }
+
+  // ── Card: confirm payment inline. ──
+  async function completeCardCheckout(data: CheckoutResult) {
+    const clientSecret = data.stripeClientSecret
+    if (!clientSecret) return
+    if (!stripe || !elements) {
+      setError(t('stripe_unavailable'))
+      return
+    }
+    const cardElement = elements.getElement(CardElement)
+    if (!cardElement) {
+      setError(t('payment_error'))
+      return
+    }
+
+    const { error: stripeError, paymentIntent } = await stripe.confirmCardPayment(
+      clientSecret,
+      { payment_method: { card: cardElement } }
+    )
+
+    if (stripeError) {
+      setError(stripeError.message ?? t('payment_error'))
+      return
+    }
+
+    if (paymentIntent?.status !== "succeeded") {
+      // 3DS: Stripe handles the redirect automatically
+      // The stripe-return page handles the callback
+      return
+    }
+
+    // R0a guest-card — the order is created LATER by the Stripe webhook, so
+    // there's no orderId here; the guest tracks via /pedido/<paymentIntent.id>.
+    // Stash the per-order access token keyed by that SAME id (== the redirect
+    // route param == the /pedido page's lookup key) so the tracking page
+    // sends it via the `X-Order-Access-Token` header and authorizes its
+    // reads/polls. Guest orders have a null owner → the deny-null-owner
+    // guard 404s every read without this token.
+    // The token is bound server-side to the paymentIntentId; paymentIntent.id
+    // is that same id. Best-effort (private mode etc.).
+    if (data.accessToken) {
+      persistOrderAccessToken(paymentIntent.id, data.accessToken)
+    }
+    checkoutCompletedRef.current = true
+    track('checkout_completed', {
+      orderId: paymentIntent.id,
+      orderTotal: total,
+      itemCount: items.length,
+      paymentMethod: 'card',
+      currency: 'BRL',
+      ibx_session_id: getSessionId(),
+    })
+    clearCart()
+    router.push(`/pedido/${paymentIntent.id}`)
+  }
 
   // Apply a successful checkout result — shared by the normal flow and the
   // large-ticket confirm flow so the PIX/cash/card branches never drift.
@@ -290,12 +403,8 @@ function CheckoutForm() {
     // order-tracking page can authorize its reads/polls without an authenticated
     // session. Guest orders have a null owner, so this token is the only way the
     // tracking page can read them post-checkout. Best-effort (private mode etc.).
-    if (data.accessToken && data.orderId && typeof window !== "undefined") {
-      try {
-        sessionStorage.setItem(`order-access-token:${data.orderId}`, data.accessToken)
-      } catch {
-        // sessionStorage unavailable — owner cookie path still works for authed users
-      }
+    if (data.accessToken && data.orderId) {
+      persistOrderAccessToken(data.orderId, data.accessToken)
     }
 
     // ── PIX ──
@@ -307,91 +416,13 @@ function CheckoutForm() {
 
     // ── Cash ──
     if (paymentMethod === "cash") {
-      if (!checkoutCompletedRef.current && data?.orderId) {
-        checkoutCompletedRef.current = true
-        track('checkout_completed', {
-          orderId: data.orderId,
-          orderTotal: total,
-          itemCount: items.length,
-          paymentMethod,
-          currency: 'BRL',
-          ibx_session_id: getSessionId(),
-        })
-        saveOrder({
-          items: items.map((item) => ({
-            productId: item.productId,
-            title: item.title,
-            price: item.price,
-            imageUrl: item.imageUrl ?? undefined,
-            quantity: item.quantity,
-            variantId: item.variantId ?? undefined,
-            variantTitle: item.variantTitle ?? undefined,
-          })),
-          total,
-          orderId: data.orderId,
-          date: new Date().toISOString(),
-        })
-      }
-      clearCart()
-      setStage("confirmed")
+      completeCashCheckout(data)
       return
     }
 
     // ── Card: confirm payment inline ──
-    if (paymentMethod === "card" && data.stripeClientSecret) {
-      if (!stripe || !elements) {
-        setError(t('stripe_unavailable'))
-        return
-      }
-      const cardElement = elements.getElement(CardElement)
-      if (!cardElement) {
-        setError(t('payment_error'))
-        return
-      }
-
-      const { error: stripeError, paymentIntent } = await stripe.confirmCardPayment(
-        data.stripeClientSecret,
-        { payment_method: { card: cardElement } }
-      )
-
-      if (stripeError) {
-        setError(stripeError.message ?? t('payment_error'))
-        return
-      }
-
-      if (paymentIntent && paymentIntent.status === "succeeded") {
-        // R0a guest-card — the order is created LATER by the Stripe webhook, so
-        // there's no orderId here; the guest tracks via /pedido/<paymentIntent.id>.
-        // Stash the per-order access token keyed by that SAME id (== the redirect
-        // route param == the /pedido page's lookup key) so the tracking page
-        // sends it via the `X-Order-Access-Token` header and authorizes its
-        // reads/polls. Guest orders have a null owner → the deny-null-owner
-        // guard 404s every read without this token.
-        // The token is bound server-side to the paymentIntentId; paymentIntent.id
-        // is that same id. Best-effort (private mode etc.).
-        if (data.accessToken && typeof window !== "undefined") {
-          try {
-            sessionStorage.setItem(`order-access-token:${paymentIntent.id}`, data.accessToken)
-          } catch {
-            // sessionStorage unavailable — owner cookie path still works for authed users
-          }
-        }
-        checkoutCompletedRef.current = true
-        track('checkout_completed', {
-          orderId: paymentIntent.id,
-          orderTotal: total,
-          itemCount: items.length,
-          paymentMethod: 'card',
-          currency: 'BRL',
-          ibx_session_id: getSessionId(),
-        })
-        clearCart()
-        router.push(`/pedido/${paymentIntent.id}`)
-        return
-      }
-
-      // 3DS: Stripe handles the redirect automatically
-      // The stripe-return page handles the callback
+    if (paymentMethod === "card") {
+      await completeCardCheckout(data)
     }
   }
 
@@ -431,29 +462,76 @@ function CheckoutForm() {
     }
   }
 
+  // Fallback: create a Medusa cart if the store doesn't have one yet.
+  async function ensureMedusaCartId(): Promise<string | null> {
+    if (medusaCartId) return medusaCartId
+    try {
+      const createRes = await fetch(`${getApiBase()}/api/cart`, {
+        method: "POST",
+        credentials: "include",
+      })
+      if (createRes.ok) {
+        const createData = await createRes.json() as { cart?: { id: string } }
+        if (createData.cart?.id) {
+          setMedusaCartId(createData.cart.id)
+          return createData.cart.id
+        }
+      }
+    } catch {
+      // fall through to null
+    }
+    return null
+  }
+
+  function buildCheckoutBody(cartId: string): string {
+    return JSON.stringify({
+      cartId,
+      paymentMethod,
+      deliveryType: toDeliveryTypePayload(isShipping, deliveryType),
+      tipInCentavos: tipAmount > 0 ? tipAmount : undefined,
+      deliveryCep: deliveryType === "delivery" ? cepInput : undefined,
+      notes: notes.trim() || undefined,
+      items: items.filter((i) => i.variantId).map((i) => ({ variantId: i.variantId!, quantity: i.quantity, productType: i.productType })),
+      ...(paymentMethod === "pix" ? {
+        pixName: pixName.trim() || undefined,
+        pixEmail: pixEmail.trim() || undefined,
+        pixCpf: pixCpf.replace(/\D/g, "") || undefined,
+      } : {}),
+    })
+  }
+
+  // Map a checkout HTTP response onto the UI flow (confirm dialog / error / success).
+  async function processCheckoutResponse(res: Response): Promise<void> {
+    // Large-ticket confirmation: the API parked the checkout (202) and needs
+    // the customer to confirm before the payment fires. Checkout never
+    // DEFERs, so `confirmationRequired` is an unambiguous 202 discriminator.
+    if (res.status === 202) {
+      const body = await res.json().catch(() => ({})) as {
+        confirmationRequired?: boolean
+        confirmationId?: string
+        prompt?: string
+      }
+      if (body.confirmationRequired && body.confirmationId) {
+        setConfirmation({ confirmationId: body.confirmationId, prompt: body.prompt ?? '' })
+        return
+      }
+      throw new Error(t('payment_error'))
+    }
+    if (!res.ok) {
+      // Prefer the pack's pt-BR refusal copy (`error`, e.g. the ≥ R$10.000
+      // cap) over the generic fallback message.
+      const data = await res.json().catch(() => ({})) as { message?: string; error?: string }
+      throw new Error(data.error ?? data.message ?? t('payment_error'))
+    }
+    const data = await res.json() as CheckoutResult
+    await proceedWithCheckoutResult(data)
+  }
+
   async function handleCheckout() {
     setLoading(true)
     setError(null)
     try {
-      // Fallback: create Medusa cart if needed
-      let cartId = medusaCartId
-      if (!cartId) {
-        try {
-          const createRes = await fetch(`${getApiBase()}/api/cart`, {
-            method: "POST",
-            credentials: "include",
-          })
-          if (createRes.ok) {
-            const createData = await createRes.json() as { cart?: { id: string } }
-            if (createData.cart?.id) {
-              cartId = createData.cart.id
-              setMedusaCartId(cartId)
-            }
-          }
-        } catch {
-          // fall through to error below
-        }
-      }
+      const cartId = await ensureMedusaCartId()
       if (!cartId) {
         setError(t('cart_not_found'))
         setLoading(false)
@@ -464,44 +542,9 @@ function CheckoutForm() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({
-          cartId,
-          paymentMethod,
-          deliveryType: isShipping ? 'shipping' : deliveryType === 'dine-in' ? 'dine_in' : deliveryType,
-          tipInCentavos: tipAmount > 0 ? tipAmount : undefined,
-          deliveryCep: deliveryType === "delivery" ? cepInput : undefined,
-          notes: notes.trim() || undefined,
-          items: items.filter((i) => i.variantId).map((i) => ({ variantId: i.variantId!, quantity: i.quantity, productType: i.productType })),
-          ...(paymentMethod === "pix" ? {
-            pixName: pixName.trim() || undefined,
-            pixEmail: pixEmail.trim() || undefined,
-            pixCpf: pixCpf.replace(/\D/g, "") || undefined,
-          } : {}),
-        }),
+        body: buildCheckoutBody(cartId),
       })
-      // Large-ticket confirmation: the API parked the checkout (202) and needs
-      // the customer to confirm before the payment fires. Checkout never
-      // DEFERs, so `confirmationRequired` is an unambiguous 202 discriminator.
-      if (res.status === 202) {
-        const body = await res.json().catch(() => ({})) as {
-          confirmationRequired?: boolean
-          confirmationId?: string
-          prompt?: string
-        }
-        if (body.confirmationRequired && body.confirmationId) {
-          setConfirmation({ confirmationId: body.confirmationId, prompt: body.prompt ?? '' })
-          return
-        }
-        throw new Error(t('payment_error'))
-      }
-      if (!res.ok) {
-        // Prefer the pack's pt-BR refusal copy (`error`, e.g. the ≥ R$10.000
-        // cap) over the generic fallback message.
-        const data = await res.json().catch(() => ({})) as { message?: string; error?: string }
-        throw new Error(data.error ?? data.message ?? t('payment_error'))
-      }
-      const data = await res.json() as CheckoutResult
-      await proceedWithCheckoutResult(data)
+      await processCheckoutResponse(res)
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : t('payment_error')
       track('checkout_error', {
@@ -713,13 +756,7 @@ function CheckoutForm() {
                     onClick={() => !disabledByClosed && setDeliveryType(type)}
                     disabled={disabledByClosed}
                     title={disabledByClosed ? t('delivery_type_disabled_closed') : undefined}
-                    className={`flex-1 rounded-sm border min-h-[44px] py-2 text-sm font-medium transition-colors ${
-                      disabledByClosed
-                        ? "border-smoke-100 text-smoke-300 cursor-not-allowed bg-smoke-50"
-                        : deliveryType === type
-                          ? "border-brand-600 bg-brand-50 text-brand-700"
-                          : "border-smoke-200 text-smoke-400 hover:border-smoke-300"
-                    }`}
+                    className={`flex-1 rounded-sm border min-h-[44px] py-2 text-sm font-medium transition-colors ${deliveryTypeButtonClass(disabledByClosed, deliveryType === type)}`}
                   >
                     {getDeliveryTypeLabel(type, t)}
                   </button>
@@ -747,7 +784,7 @@ function CheckoutForm() {
               {deliveryEstimate && deliveryEstimate.isLocalZone && (
                 <p className="text-sm text-charcoal-700">{deliveryEstimate.message}{deliveryEstimate.feeInCentavos > 0 ? ` · ${formatBRL(deliveryEstimate.feeInCentavos)}` : ''}</p>
               )}
-              {deliveryEstimate && deliveryEstimate.isLocalZone === false && (
+              {deliveryEstimate?.isLocalZone === false && (
                 <div className="rounded-sm border border-brand-200 bg-brand-50/30 p-3 space-y-1">
                   <p className="text-sm font-medium text-charcoal-900">{t('delivery_shipping_title')}</p>
                   <p className="text-xs text-smoke-500">{t('delivery_shipping_desc', { cep: cepInput })}</p>

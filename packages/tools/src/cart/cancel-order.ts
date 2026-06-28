@@ -20,6 +20,57 @@ import { publishNatsEvent } from "@ibatexas/nats-client";
 import { createTooledOrderService } from "./_shared.js";
 import { cancelStalePaymentIntent } from "./_stripe-helpers.js";
 
+// Best-effort cancellation of the active Payment row tied to a just-canceled order.
+// Routes the status transition through the kernel-adjudicated envelope path.
+async function cancelActivePaymentForOrder(
+  orderId: string,
+  customerId: string,
+): Promise<void> {
+  const paymentQuerySvc = createPaymentQueryService();
+  const paymentCmdSvc = createPaymentCommandService();
+
+  const activePayment = await paymentQuerySvc.getActiveByOrderId(orderId).catch(() => null);
+  if (!activePayment) return;
+
+  const PAID_STATUSES = ["paid", "refunded", "canceled", "waived"];
+  if (PAID_STATUSES.includes(activePayment.status)) return;
+
+  // Cancel Stripe PI if exists
+  if (activePayment.stripePaymentIntentId) {
+    await cancelStalePaymentIntent(activePayment.stripePaymentIntentId);
+  }
+
+  // Transition payment → canceled via the kernel-adjudicated path.
+  const cancelEnvelope = buildEnvelope<
+    "payment.status.transition",
+    PaymentStatusTransitionPayload
+  >({
+    kind: "payment.status.transition",
+    payload: {
+      paymentId: activePayment.id,
+      newStatus: "canceled",
+      actor: "customer",
+      actorId: customerId,
+      reason: "order_canceled",
+      expectedVersion: activePayment.version,
+    },
+    nonce: randomUUID(),
+    actor: { principal: "user", sessionId: customerId },
+    taint: "TRUSTED",
+  });
+  await paymentCmdSvc.transitionStatusFromEnvelope(cancelEnvelope);
+
+  void publishNatsEvent("payment.status_changed", {
+    orderId,
+    paymentId: activePayment.id,
+    previousStatus: activePayment.status,
+    newStatus: "canceled",
+    method: activePayment.method,
+    version: activePayment.version + 1,
+    timestamp: new Date().toISOString(),
+  });
+}
+
 export async function cancelOrder(
   input: CancelOrderInput,
   ctx: AgentContext,
@@ -39,50 +90,7 @@ export async function cancelOrder(
   // If order cancellation succeeded, also cancel the active Payment
   if (result.success) {
     try {
-      const paymentQuerySvc = createPaymentQueryService();
-      const paymentCmdSvc = createPaymentCommandService();
-
-      const activePayment = await paymentQuerySvc.getActiveByOrderId(parsed.orderId).catch(() => null);
-
-      if (activePayment) {
-        const PAID_STATUSES = ["paid", "refunded", "canceled", "waived"];
-        if (!PAID_STATUSES.includes(activePayment.status)) {
-          // Cancel Stripe PI if exists
-          if (activePayment.stripePaymentIntentId) {
-            await cancelStalePaymentIntent(activePayment.stripePaymentIntentId);
-          }
-
-          // Transition payment → canceled via the kernel-adjudicated path.
-          const cancelEnvelope = buildEnvelope<
-            "payment.status.transition",
-            PaymentStatusTransitionPayload
-          >({
-            kind: "payment.status.transition",
-            payload: {
-              paymentId: activePayment.id,
-              newStatus: "canceled",
-              actor: "customer",
-              actorId: ctx.customerId,
-              reason: "order_canceled",
-              expectedVersion: activePayment.version,
-            },
-            nonce: randomUUID(),
-            actor: { principal: "user", sessionId: ctx.customerId },
-            taint: "TRUSTED",
-          });
-          await paymentCmdSvc.transitionStatusFromEnvelope(cancelEnvelope);
-
-          void publishNatsEvent("payment.status_changed", {
-            orderId: parsed.orderId,
-            paymentId: activePayment.id,
-            previousStatus: activePayment.status,
-            newStatus: "canceled",
-            method: activePayment.method,
-            version: activePayment.version + 1,
-            timestamp: new Date().toISOString(),
-          });
-        }
-      }
+      await cancelActivePaymentForOrder(parsed.orderId, ctx.customerId);
     } catch (paymentErr) {
       // Log but don't fail — order is already canceled, payment cleanup is best-effort
       console.error("[cancel_order] Failed to cancel payment:", (paymentErr as Error).message);

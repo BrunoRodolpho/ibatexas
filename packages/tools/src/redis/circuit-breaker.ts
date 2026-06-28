@@ -109,9 +109,7 @@ let instance: RedisCircuitBreaker | null = null;
 
 /** Get the shared circuit breaker singleton (lazy-init). */
 export function getCircuitBreaker(opts?: CircuitBreakerOptions): RedisCircuitBreaker {
-  if (!instance) {
-    instance = new RedisCircuitBreaker(opts);
-  }
+  instance ??= new RedisCircuitBreaker(opts);
   return instance;
 }
 

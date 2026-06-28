@@ -92,7 +92,7 @@ async function cancelReservationImpl(
     // ── Build the IntentEnvelope ──────────────────────────────────────
     const payload: ReservationCancelPayload = {
       reservationId: parsed.reservationId,
-      ...(parsed.reason !== undefined ? { reason: parsed.reason } : {}),
+      ...(parsed.reason === undefined ? {} : { reason: parsed.reason }),
     }
     const envelope = buildEnvelope<"reservation.cancel", ReservationCancelPayload>({
       kind: "reservation.cancel",
@@ -110,12 +110,14 @@ async function cancelReservationImpl(
     })
 
     if (outcome.decision.kind !== "EXECUTE" && outcome.decision.kind !== "REWRITE") {
-      const message =
-        outcome.decision.kind === "REFUSE"
-          ? outcome.decision.refusal.userFacing
-          : outcome.decision.kind === "REQUEST_CONFIRMATION"
-            ? outcome.decision.prompt
-            : "Não foi possível cancelar a reserva no momento."
+      let message: string
+      if (outcome.decision.kind === "REFUSE") {
+        message = outcome.decision.refusal.userFacing
+      } else if (outcome.decision.kind === "REQUEST_CONFIRMATION") {
+        message = outcome.decision.prompt
+      } else {
+        message = "Não foi possível cancelar a reserva no momento."
+      }
       return {
         success: false,
         message,

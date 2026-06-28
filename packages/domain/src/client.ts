@@ -25,9 +25,7 @@ function createPrismaClient(): PrismaClient {
 }
 
 function getPrismaClient(): PrismaClient {
-  if (!globalForPrisma._prisma) {
-    globalForPrisma._prisma = createPrismaClient()
-  }
+  globalForPrisma._prisma ??= createPrismaClient()
   return globalForPrisma._prisma
 }
 

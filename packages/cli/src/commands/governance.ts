@@ -101,8 +101,9 @@ async function runExport(
 ): Promise<void> {
   const packs = await loadPacksForGovernance(opts.pack)
   if (packs.length === 0) {
+    const scope = opts.pack ? ` para ${opts.pack}` : ""
     console.error(
-      chalk.red(`Nenhum pack encontrado${opts.pack ? ` para ${opts.pack}` : ""}.`),
+      chalk.red(`Nenhum pack encontrado${scope}.`),
     )
     process.exitCode = 1
     return

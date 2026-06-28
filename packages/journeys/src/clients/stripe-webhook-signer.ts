@@ -146,7 +146,7 @@ export function buildPaymentIntentSucceededEvent(
         last_payment_error: null,
         metadata: {
           medusaOrderId: opts.orderId,
-          ...(opts.customerId !== undefined ? { customerId: opts.customerId } : {}),
+          ...(opts.customerId === undefined ? {} : { customerId: opts.customerId }),
         },
       },
     },

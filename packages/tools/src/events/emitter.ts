@@ -71,6 +71,9 @@ export type IbxEventType = ScenarioEventType | JourneyEventType
 /** Journey act kinds (mirrors the JourneyFileSchema act discriminator). */
 export type ActKindName = "chat" | "http" | "fixture"
 
+/** Terminal outcome of a journey / act / chat-turn. */
+export type EventOutcome = "pass" | "fail" | "error"
+
 // ── Event shapes ─────────────────────────────────────────────────────────────
 
 /**
@@ -93,7 +96,7 @@ export interface IbxEventBase {
   act?: string
   actKind?: ActKindName
   actIndex?: number
-  outcome?: "pass" | "fail" | "error"
+  outcome?: EventOutcome
   // preflight.check — which environment-handshake check this record is for
   check?: string
   // journey.aborted — machine-readable abort reason (e.g. "token_ceiling")
@@ -227,7 +230,7 @@ export function emitJourneyEnd(
   journey: string,
   runId: string,
   duration: number,
-  outcome: "pass" | "fail" | "error",
+  outcome: EventOutcome,
 ): void {
   emit({ type: "journey.end", timestamp: new Date().toISOString(), journey, runId, duration, outcome })
 }
@@ -249,7 +252,7 @@ export function emitActEnd(
   actKind: ActKindName,
   actIndex: number,
   duration: number,
-  outcome: "pass" | "fail" | "error",
+  outcome: EventOutcome,
   detail?: string,
 ): void {
   emit({
@@ -262,7 +265,7 @@ export function emitActEnd(
     actIndex,
     duration,
     outcome,
-    ...(detail !== undefined ? { detail } : {}),
+    ...(detail === undefined ? {} : { detail }),
   })
 }
 
@@ -290,7 +293,7 @@ export function emitChatTurnEnd(args: {
   sessionId: string
   turn: number
   duration: number
-  outcome: "pass" | "fail" | "error"
+  outcome: EventOutcome
   journey?: string
   runId?: string
   detail?: string

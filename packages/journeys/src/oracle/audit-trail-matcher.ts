@@ -285,7 +285,7 @@ function matchAnyOrder(
 
 function stepLabel(step: ExpectedTrajectoryStep): string {
   const base = `${step.intentKind}/${step.decision}`
-  return step.label !== undefined ? `${step.label} (${base})` : base
+  return step.label === undefined ? base : `${step.label} (${base})`
 }
 
 function renderDiff(args: {
@@ -303,18 +303,18 @@ function renderDiff(args: {
     args.ok
       ? `audit trajectory matched (mode=${args.mode})`
       : `audit trajectory MISMATCH (mode=${args.mode})`,
+    `expected (${args.expected.length} steps):`,
   )
-  lines.push(`expected (${args.expected.length} steps):`)
   for (let i = 0; i < args.expected.length; i++) {
     const matched = args.matchedObservedIndex[i]
-    if (matched !== undefined) {
-      lines.push(`  [${i}] MATCH ${stepLabel(args.expected[i]!)} -> observed[${matched}]`)
-    } else {
+    if (matched === undefined) {
       const mismatch = args.mismatches.find((m) => m.expectedIndex === i)
       const reason = mismatch?.reason ?? "no_matching_record"
       const at =
-        mismatch?.observedIndex !== undefined ? ` vs observed[${mismatch.observedIndex}]` : ""
+        mismatch?.observedIndex === undefined ? "" : ` vs observed[${mismatch.observedIndex}]`
       lines.push(`  [${i}] MISS  ${stepLabel(args.expected[i]!)} (${reason}${at})`)
+    } else {
+      lines.push(`  [${i}] MATCH ${stepLabel(args.expected[i]!)} -> observed[${matched}]`)
     }
   }
   lines.push(`observed (${args.observed.length} records):`)
@@ -362,12 +362,14 @@ export function matchTrajectory(
     report = resolved.report
   }
 
-  const internals =
-    opts.mode === "EXACT"
-      ? matchExact(expected, trail)
-      : opts.mode === "IN_ORDER"
-        ? matchInOrder(expected, trail)
-        : matchAnyOrder(expected, trail)
+  let internals: MatchInternals
+  if (opts.mode === "EXACT") {
+    internals = matchExact(expected, trail)
+  } else if (opts.mode === "IN_ORDER") {
+    internals = matchInOrder(expected, trail)
+  } else {
+    internals = matchAnyOrder(expected, trail)
+  }
 
   const consumed = new Set(
     internals.matchedObservedIndex.filter((j): j is number => j !== undefined),
@@ -407,7 +409,7 @@ export function matchTrajectory(
     unmatchedExpected,
     unmatchedObserved,
     mismatches: internals.mismatches,
-    ...(report !== undefined ? { supersession: report } : {}),
+    ...(report === undefined ? {} : { supersession: report }),
     diff,
   }
 }

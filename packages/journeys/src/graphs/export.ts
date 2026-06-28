@@ -181,6 +181,66 @@ function countOf(serialized: string, key: "nodes" | "edges"): number {
   return doc[key].length
 }
 
+/** Resolve the graph subset to (re)generate, validating each requested name. */
+function resolveGraphNames(
+  only: ReadonlyArray<GraphName> | undefined,
+): ReadonlyArray<GraphName> {
+  const names: ReadonlyArray<GraphName> =
+    only !== undefined && only.length > 0 ? only : GRAPH_NAMES
+  for (const name of names) {
+    if (!GRAPH_NAMES.includes(name)) {
+      throw new GraphExportError(
+        `unknown graph "${name}" (known: ${GRAPH_NAMES.join(", ")})`,
+      )
+    }
+  }
+  return names
+}
+
+/** Build the per-graph generator opts, carrying only the overrides that are set. */
+function buildGenerateOpts(
+  graphsDir: string,
+  options: ExportGraphsOptions,
+): {
+  graphsDir: string
+  journeysDir?: string
+  runTracePath?: string
+  runDecisionsPath?: string
+} {
+  const opts: {
+    graphsDir: string
+    journeysDir?: string
+    runTracePath?: string
+    runDecisionsPath?: string
+  } = { graphsDir }
+  if (options.journeysDir !== undefined) opts.journeysDir = options.journeysDir
+  if (options.runTracePath !== undefined) opts.runTracePath = options.runTracePath
+  if (options.runDecisionsPath !== undefined) {
+    opts.runDecisionsPath = options.runDecisionsPath
+  }
+  return opts
+}
+
+/**
+ * Check-mode status for one graph: byte-diff the freshly serialized graph
+ * against the committed artifact. A missing file is `missing`; an exact
+ * match is `clean`; anything else is `drift`.
+ */
+async function diffCommittedGraph(
+  path: string,
+  serialized: string,
+): Promise<GraphExportStatus> {
+  let committed: string | null
+  try {
+    committed = await readFile(path, "utf8")
+  } catch {
+    committed = null
+  }
+  if (committed === null) return "missing"
+  if (committed === serialized) return "clean"
+  return "drift"
+}
+
 /**
  * Regenerate the four graphs (write mode) or regenerate-and-diff against
  * the committed artifacts (check mode). Check mode NEVER writes; a drifted
@@ -192,15 +252,7 @@ export async function exportGraphs(
 ): Promise<GraphExportReport> {
   const check = options.check === true
   const graphsDir = options.graphsDir ?? DEFAULT_GRAPHS_DIR
-  const names: ReadonlyArray<GraphName> =
-    options.only !== undefined && options.only.length > 0 ? options.only : GRAPH_NAMES
-  for (const name of names) {
-    if (!GRAPH_NAMES.includes(name)) {
-      throw new GraphExportError(
-        `unknown graph "${name}" (known: ${GRAPH_NAMES.join(", ")})`,
-      )
-    }
-  }
+  const names = resolveGraphNames(options.only)
   if (check && (options.runTracePath !== undefined || options.runDecisionsPath !== undefined)) {
     throw new GraphExportError(
       "check mode always diffs the COMMITTED fixtures — run-graph input overrides are refused",
@@ -209,26 +261,13 @@ export async function exportGraphs(
 
   const entries: GraphExportEntry[] = []
   for (const name of names) {
-    const serialized = await generateGraph(name, {
-      graphsDir,
-      ...(options.journeysDir !== undefined ? { journeysDir: options.journeysDir } : {}),
-      ...(options.runTracePath !== undefined ? { runTracePath: options.runTracePath } : {}),
-      ...(options.runDecisionsPath !== undefined
-        ? { runDecisionsPath: options.runDecisionsPath }
-        : {}),
-    })
+    const serialized = await generateGraph(name, buildGenerateOpts(graphsDir, options))
     const file = GRAPH_FILES[name]
     const path = join(graphsDir, file)
 
     let status: GraphExportStatus
     if (check) {
-      let committed: string | null = null
-      try {
-        committed = await readFile(path, "utf8")
-      } catch {
-        committed = null
-      }
-      status = committed === null ? "missing" : committed === serialized ? "clean" : "drift"
+      status = await diffCommittedGraph(path, serialized)
     } else {
       await mkdir(dirname(path), { recursive: true })
       await writeFile(path, serialized)

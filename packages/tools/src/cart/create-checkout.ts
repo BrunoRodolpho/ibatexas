@@ -178,49 +178,48 @@ async function confirmPixAndGetQrCode(
   }
 }
 
-export async function createCheckout(
-  input: CreateCheckoutInput,
-  ctx: AgentContext,
-  extra?: { customerName?: string; customerEmail?: string; customerTaxId?: string },
-): Promise<CreateCheckoutOutput> {
-  const parsed = CreateCheckoutInputSchema.parse(input);
-  const { cartId, paymentMethod, tipInCentavos, deliveryCep } = parsed;
+// ── create_checkout helpers ─────────────────────────────────────────────
+// Module-local helpers keep `createCheckout` flat: each owns one adjudicated
+// egress / branch so the orchestrator stays readable and below the cognitive
+// complexity threshold. Behavior is identical to the previous inline form.
 
-  // Verify cart total > 0 before proceeding with checkout
-  const cartData = await medusaStoreFetch(`/store/carts/${cartId}`) as {
-    cart?: { total?: number; items?: unknown[] };
-  };
-  const cartTotal = cartData.cart?.total ?? 0;
-  if (cartTotal <= 0) {
-    throw new NonRetryableError(
-      "Carrinho vazio ou com valor zero. Adicione itens antes de finalizar o pedido.",
-    );
-  }
+type CartLineItem = {
+  variant_id: string;
+  title?: string;
+  quantity: number;
+  unit_price: number;
+  variant?: { product_id?: string; title?: string };
+};
 
-  // Apply welcome credit if available (first-time customer coupon)
-  if (ctx.customerId) {
-    try {
-      const welcomeCode = await getAndConsumeWelcomeCredit(ctx.customerId);
-      if (welcomeCode) {
-        await medusaStoreAdjudicated.carts.promotions.add(
-          { cartId, promoCodes: [welcomeCode] },
-          {
-            sourceSubject: "cart:create-checkout:apply-promotion",
-            actorPrincipal: "llm",
-            auditSink: getAuditSink(),
-            ...(ctx.customerId ? { customerId: ctx.customerId } : {}),
-            ...(ctx.sessionId ? { sessionId: ctx.sessionId } : {}),
-          },
-        );
-        console.warn(`[checkout] Welcome credit ${welcomeCode} applied for customer ${ctx.customerId}`);
-      }
-    } catch (err) {
-      // Medusa rejected the code (expired, already used, or not configured) — continue without discount
-      console.warn(`[checkout] Welcome credit application failed for customer ${ctx.customerId}: ${(err as Error).message}`);
+async function applyWelcomeCredit(cartId: string, ctx: AgentContext): Promise<void> {
+  if (!ctx.customerId) return;
+  try {
+    const welcomeCode = await getAndConsumeWelcomeCredit(ctx.customerId);
+    if (welcomeCode) {
+      await medusaStoreAdjudicated.carts.promotions.add(
+        { cartId, promoCodes: [welcomeCode] },
+        {
+          sourceSubject: "cart:create-checkout:apply-promotion",
+          actorPrincipal: "llm",
+          auditSink: getAuditSink(),
+          ...(ctx.customerId ? { customerId: ctx.customerId } : {}),
+          ...(ctx.sessionId ? { sessionId: ctx.sessionId } : {}),
+        },
+      );
+      console.warn(`[checkout] Welcome credit ${welcomeCode} applied for customer ${ctx.customerId}`);
     }
+  } catch (err) {
+    // Medusa rejected the code (expired, already used, or not configured) — continue without discount
+    console.warn(`[checkout] Welcome credit application failed for customer ${ctx.customerId}: ${(err as Error).message}`);
   }
+}
 
-  // 1. Update cart metadata with tip and delivery CEP
+async function buildCheckoutMetadata(
+  paymentMethod: string,
+  tipInCentavos: number | undefined,
+  deliveryCep: string | undefined,
+  ctx: AgentContext,
+): Promise<Record<string, string>> {
   const metadata: Record<string, string> = {};
   if (tipInCentavos) metadata["tipInCentavos"] = String(tipInCentavos);
   if (deliveryCep) metadata["deliveryCep"] = deliveryCep;
@@ -242,7 +241,14 @@ export async function createCheckout(
       // If schedule lookup fails, omit the flag — safe to continue without it
     }
   }
+  return metadata;
+}
 
+async function updateCartMetadata(
+  cartId: string,
+  metadata: Record<string, string>,
+  ctx: AgentContext,
+): Promise<void> {
   await medusaStoreAdjudicated.carts.update(
     { cartId, body: { metadata } },
     {
@@ -253,71 +259,58 @@ export async function createCheckout(
       ...(ctx.sessionId ? { sessionId: ctx.sessionId } : {}),
     },
   );
+}
 
-  // 2. Get or create payment collection (Medusa v2 flow)
-  const cartForPC = await medusaStoreFetch(`/store/carts/${cartId}`) as {
-    cart?: {
-      payment_collection?: { id: string };
-      items?: Array<{
-        variant_id: string;
-        title?: string;
-        quantity: number;
-        unit_price: number;
-        variant?: { product_id?: string; title?: string };
-      }>;
-    };
-  };
-  let paymentCollectionId = cartForPC.cart?.payment_collection?.id;
+async function resolvePaymentCollectionId(
+  cartId: string,
+  existingId: string | undefined,
+  ctx: AgentContext,
+): Promise<string | undefined> {
+  if (existingId) return existingId;
+  const pcData = await medusaStoreAdjudicated.paymentCollections.create(
+    { cartId },
+    {
+      sourceSubject: "cart:create-checkout:create-payment-collection",
+      actorPrincipal: "llm",
+      auditSink: getAuditSink(),
+      ...(ctx.customerId ? { customerId: ctx.customerId } : {}),
+      ...(ctx.sessionId ? { sessionId: ctx.sessionId } : {}),
+    },
+  ) as { payment_collection?: { id: string } };
+  return pcData.payment_collection?.id;
+}
 
-  if (!paymentCollectionId) {
-    const pcData = await medusaStoreAdjudicated.paymentCollections.create(
-      { cartId },
-      {
-        sourceSubject: "cart:create-checkout:create-payment-collection",
-        actorPrincipal: "llm",
-        auditSink: getAuditSink(),
-        ...(ctx.customerId ? { customerId: ctx.customerId } : {}),
-        ...(ctx.sessionId ? { sessionId: ctx.sessionId } : {}),
-      },
-    ) as { payment_collection?: { id: string } };
-    paymentCollectionId = pcData.payment_collection?.id;
-  }
-
-  if (!paymentCollectionId) {
-    return {
-      success: false,
-      paymentMethod,
-      message: "Não foi possível inicializar o pagamento. Tente novamente.",
-    };
-  }
-
-  // 3. Resolve the payment provider ID dynamically from Medusa
-  //    (avoids hardcoding — the ID format varies by Medusa version + config)
-  let providerId: string;
+async function resolveProviderId(paymentMethod: string, cart: unknown): Promise<string> {
   if (paymentMethod === "cash") {
-    providerId = "pp_system_default";
-  } else {
-    // Query registered providers and find the Stripe one
-    const cartRegion = cartForPC.cart as { region_id?: string } | undefined;
-    const regionParam = cartRegion?.region_id ? `?region_id=${cartRegion.region_id}` : "";
-    try {
-      const providersData = await medusaStoreFetch(`/store/payment-providers${regionParam}`) as {
-        payment_providers?: Array<{ id: string; is_enabled?: boolean }>;
-      };
-      const stripeProvider = providersData.payment_providers?.find(
-        (p) => p.id.includes("stripe"),
-      );
-      providerId = stripeProvider?.id ?? "pp_stripe_stripe";
-      console.warn("[create_checkout] Resolved Stripe provider_id: %s", providerId);
-    } catch {
-      // Fallback to common default
-      providerId = "pp_stripe_stripe";
-      console.warn("[create_checkout] Could not query payment providers — using default: %s", providerId);
-    }
+    return "pp_system_default";
   }
+  // Query registered providers and find the Stripe one
+  const cartRegion = cart as { region_id?: string } | undefined;
+  const regionParam = cartRegion?.region_id ? `?region_id=${cartRegion.region_id}` : "";
+  try {
+    const providersData = await medusaStoreFetch(`/store/payment-providers${regionParam}`) as {
+      payment_providers?: Array<{ id: string; is_enabled?: boolean }>;
+    };
+    const stripeProvider = providersData.payment_providers?.find(
+      (p) => p.id.includes("stripe"),
+    );
+    const providerId = stripeProvider?.id ?? "pp_stripe_stripe";
+    console.warn("[create_checkout] Resolved Stripe provider_id: %s", providerId);
+    return providerId;
+  } catch {
+    // Fallback to common default
+    const providerId = "pp_stripe_stripe";
+    console.warn("[create_checkout] Could not query payment providers — using default: %s", providerId);
+    return providerId;
+  }
+}
 
-  // 4. Initialize payment session on the payment collection
-  const rawSessionData = await medusaStoreAdjudicated.paymentCollections.paymentSessions.create(
+async function createPaymentSession(
+  paymentCollectionId: string,
+  providerId: string,
+  ctx: AgentContext,
+): Promise<unknown> {
+  return medusaStoreAdjudicated.paymentCollections.paymentSessions.create(
     { paymentCollectionId, providerId },
     {
       sourceSubject: "cart:create-checkout:create-payment-session",
@@ -327,10 +320,12 @@ export async function createCheckout(
       ...(ctx.sessionId ? { sessionId: ctx.sessionId } : {}),
     },
   );
+}
 
-  // Debug: log the response shape to diagnose Stripe data extraction
-  console.warn("[create_checkout] payment session response: %s", JSON.stringify(rawSessionData).slice(0, 1500));
-
+function extractStripeSessionData(rawSessionData: unknown): {
+  clientSecret?: string;
+  paymentIntentId?: string;
+} {
   // Medusa v2 response shape varies — try multiple extraction paths
   const sessionObj = rawSessionData as Record<string, unknown>;
   const paymentSession = (
@@ -349,69 +344,162 @@ export async function createCheckout(
     paymentIntentId ?? "MISSING",
   );
 
-  if (paymentMethod === "cash") {
-    // Extract cart items for the order.placed event
-    const cartItems = (cartForPC.cart?.items ?? []).map((item) => ({
-      productId: item.variant?.product_id ?? "",
-      variantId: item.variant_id,
-      title: item.title ?? item.variant?.title ?? "",
-      quantity: item.quantity,
-      priceInCentavos: reaisToCentavos(item.unit_price),
-    }));
+  return { clientSecret, paymentIntentId };
+}
 
-    // Complete cart directly for cash payment
-    const completedData = await medusaStoreAdjudicated.carts.complete(
-      { cartId },
-      {
-        sourceSubject: "cart:create-checkout:complete",
-        actorPrincipal: "llm",
-        auditSink: getAuditSink(),
-        ...(ctx.customerId ? { customerId: ctx.customerId } : {}),
-        ...(ctx.sessionId ? { sessionId: ctx.sessionId } : {}),
-      },
-    ) as { type?: string; order?: { id: string; display_id?: number; total?: number; subtotal?: number; shipping_total?: number } };
+async function completeCashOrder(
+  cartId: string,
+  items: CartLineItem[] | undefined,
+  metadata: Record<string, string>,
+  tipInCentavos: number | undefined,
+  ctx: AgentContext,
+): Promise<CreateCheckoutOutput> {
+  // Extract cart items for the order.placed event
+  const cartItems = (items ?? []).map((item) => ({
+    productId: item.variant?.product_id ?? "",
+    variantId: item.variant_id,
+    title: item.title ?? item.variant?.title ?? "",
+    quantity: item.quantity,
+    priceInCentavos: reaisToCentavos(item.unit_price),
+  }));
 
-    const rawOrderId = completedData.order?.id;
-    const orderId = completedData.order?.display_id
-      ? formatOrderId(completedData.order.display_id)
-      : rawOrderId;
+  // Complete cart directly for cash payment
+  const completedData = await medusaStoreAdjudicated.carts.complete(
+    { cartId },
+    {
+      sourceSubject: "cart:create-checkout:complete",
+      actorPrincipal: "llm",
+      auditSink: getAuditSink(),
+      ...(ctx.customerId ? { customerId: ctx.customerId } : {}),
+      ...(ctx.sessionId ? { sessionId: ctx.sessionId } : {}),
+    },
+  ) as { type?: string; order?: { id: string; display_id?: number; total?: number; subtotal?: number; shipping_total?: number } };
 
-    if (rawOrderId) {
-      void publishNatsEvent("order.placed", {
-        eventType: "order.placed",
-        orderId: rawOrderId,
-        displayId: completedData.order?.display_id ?? 0,
-        paymentMethod: "cash",
-        paymentStatus: "cash_pending",
-        customerId: ctx.customerId,
-        customerEmail: null,
-        customerName: null,
-        customerPhone: null,
-        totalInCentavos: reaisToCentavos(completedData.order?.total ?? 0),
-        subtotalInCentavos: reaisToCentavos(completedData.order?.subtotal ?? 0),
-        shippingInCentavos: reaisToCentavos(completedData.order?.shipping_total ?? 0),
-        deliveryType: metadata["deliveryType"] ?? "pickup",
-        tipInCentavos: tipInCentavos ?? 0,
-        items: cartItems,
-      }).catch((err) => console.error("[create_checkout] NATS publish error:", (err as Error).message));
-    }
+  const rawOrderId = completedData.order?.id;
+  const orderId = completedData.order?.display_id
+    ? formatOrderId(completedData.order.display_id)
+    : rawOrderId;
 
-    // Untrack completed cart
-    try {
-      const redis = await getRedisClient();
-      await redis.hDel(rk("active:carts"), cartId);
-    } catch {
-      // Non-critical — TTL will expire
-    }
-
-    return {
-      success: true,
+  if (rawOrderId) {
+    void publishNatsEvent("order.placed", {
+      eventType: "order.placed",
+      orderId: rawOrderId,
+      displayId: completedData.order?.display_id ?? 0,
       paymentMethod: "cash",
-      orderId,
-      message: orderId
-        ? `Pedido realizado com sucesso (${orderId})! Pagamento em dinheiro na entrega.`
-        : "Pedido realizado! Pagamento em dinheiro na entrega.",
+      paymentStatus: "cash_pending",
+      customerId: ctx.customerId,
+      customerEmail: null,
+      customerName: null,
+      customerPhone: null,
+      totalInCentavos: reaisToCentavos(completedData.order?.total ?? 0),
+      subtotalInCentavos: reaisToCentavos(completedData.order?.subtotal ?? 0),
+      shippingInCentavos: reaisToCentavos(completedData.order?.shipping_total ?? 0),
+      deliveryType: metadata["deliveryType"] ?? "pickup",
+      tipInCentavos: tipInCentavos ?? 0,
+      items: cartItems,
+    }).catch((err) => console.error("[create_checkout] NATS publish error:", (err as Error).message));
+  }
+
+  // Untrack completed cart
+  try {
+    const redis = await getRedisClient();
+    await redis.hDel(rk("active:carts"), cartId);
+  } catch {
+    // Non-critical — TTL will expire
+  }
+
+  return {
+    success: true,
+    paymentMethod: "cash",
+    orderId,
+    message: orderId
+      ? `Pedido realizado com sucesso (${orderId})! Pagamento em dinheiro na entrega.`
+      : "Pedido realizado! Pagamento em dinheiro na entrega.",
+  };
+}
+
+async function trackPendingCardCheckout(
+  customerId: string | undefined,
+  paymentIntentId: string | undefined,
+  cartId: string,
+): Promise<void> {
+  // Track pending checkout so /account/orders can show it before webhook fires
+  if (!customerId || !paymentIntentId) return;
+  try {
+    const redis = await getRedisClient();
+    await redis.hSet(rk(`customer:pending-orders:${customerId}`), paymentIntentId, JSON.stringify({
+      paymentIntentId,
+      cartId,
+      paymentMethod: "card",
+      createdAt: new Date().toISOString(),
+    }));
+    await redis.expire(rk(`customer:pending-orders:${customerId}`), 86400 * 7);
+  } catch {
+    // Non-critical
+  }
+}
+
+export async function createCheckout(
+  input: CreateCheckoutInput,
+  ctx: AgentContext,
+  extra?: { customerName?: string; customerEmail?: string; customerTaxId?: string },
+): Promise<CreateCheckoutOutput> {
+  const parsed = CreateCheckoutInputSchema.parse(input);
+  const { cartId, paymentMethod, tipInCentavos, deliveryCep } = parsed;
+
+  // Verify cart total > 0 before proceeding with checkout
+  const cartData = await medusaStoreFetch(`/store/carts/${cartId}`) as {
+    cart?: { total?: number; items?: unknown[] };
+  };
+  const cartTotal = cartData.cart?.total ?? 0;
+  if (cartTotal <= 0) {
+    throw new NonRetryableError(
+      "Carrinho vazio ou com valor zero. Adicione itens antes de finalizar o pedido.",
+    );
+  }
+
+  // Apply welcome credit if available (first-time customer coupon)
+  await applyWelcomeCredit(cartId, ctx);
+
+  // 1. Update cart metadata with tip and delivery CEP
+  const metadata = await buildCheckoutMetadata(paymentMethod, tipInCentavos, deliveryCep, ctx);
+  await updateCartMetadata(cartId, metadata, ctx);
+
+  // 2. Get or create payment collection (Medusa v2 flow)
+  const cartForPC = await medusaStoreFetch(`/store/carts/${cartId}`) as {
+    cart?: {
+      payment_collection?: { id: string };
+      items?: CartLineItem[];
     };
+  };
+  const paymentCollectionId = await resolvePaymentCollectionId(
+    cartId,
+    cartForPC.cart?.payment_collection?.id,
+    ctx,
+  );
+
+  if (!paymentCollectionId) {
+    return {
+      success: false,
+      paymentMethod,
+      message: "Não foi possível inicializar o pagamento. Tente novamente.",
+    };
+  }
+
+  // 3. Resolve the payment provider ID dynamically from Medusa
+  //    (avoids hardcoding — the ID format varies by Medusa version + config)
+  const providerId = await resolveProviderId(paymentMethod, cartForPC.cart);
+
+  // 4. Initialize payment session on the payment collection
+  const rawSessionData = await createPaymentSession(paymentCollectionId, providerId, ctx);
+
+  // Debug: log the response shape to diagnose Stripe data extraction
+  console.warn("[create_checkout] payment session response: %s", JSON.stringify(rawSessionData).slice(0, 1500));
+
+  const { clientSecret, paymentIntentId } = extractStripeSessionData(rawSessionData);
+
+  if (paymentMethod === "cash") {
+    return completeCashOrder(cartId, cartForPC.cart?.items, metadata, tipInCentavos, ctx);
   }
 
   // 5. For PIX/card: use extracted Stripe PaymentIntent data
@@ -425,21 +513,7 @@ export async function createCheckout(
   }
 
   if (paymentMethod === "card") {
-    // Track pending checkout so /account/orders can show it before webhook fires
-    if (ctx.customerId && paymentIntentId) {
-      try {
-        const redis = await getRedisClient();
-        await redis.hSet(rk(`customer:pending-orders:${ctx.customerId}`), paymentIntentId, JSON.stringify({
-          paymentIntentId,
-          cartId,
-          paymentMethod: "card",
-          createdAt: new Date().toISOString(),
-        }));
-        await redis.expire(rk(`customer:pending-orders:${ctx.customerId}`), 86400 * 7);
-      } catch {
-        // Non-critical
-      }
-    }
+    await trackPendingCardCheckout(ctx.customerId, paymentIntentId, cartId);
     return {
       success: true,
       paymentMethod: "card",

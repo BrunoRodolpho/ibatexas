@@ -118,7 +118,7 @@ describe("Analytics Layer", () => {
 
       // session_started should fire first, then pdp_viewed
       const calls = consoleSpy.mock.calls.filter((c) => c[0] === "[analytics]")
-      expect(calls.length).toBe(2)
+      expect(calls).toHaveLength(2)
       expect(calls[0][1]).toBe("session_started")
       expect(calls[1][1]).toBe("pdp_viewed")
 
@@ -131,7 +131,7 @@ describe("Analytics Layer", () => {
       track("search_performed", { query: "costela" })
 
       const calls = consoleSpy.mock.calls.filter((c) => c[0] === "[analytics]")
-      expect(calls.length).toBe(2)
+      expect(calls).toHaveLength(2)
       expect(calls[0][1]).toBe("session_started")
       expect(calls[1][1]).toBe("search_performed")
 
@@ -144,7 +144,7 @@ describe("Analytics Layer", () => {
       track("checkout_started", { cartTotal: 8900 })
 
       const calls = consoleSpy.mock.calls.filter((c) => c[0] === "[analytics]")
-      expect(calls.length).toBe(2)
+      expect(calls).toHaveLength(2)
       expect(calls[0][1]).toBe("session_started")
       expect(calls[1][1]).toBe("checkout_started")
 
@@ -157,7 +157,7 @@ describe("Analytics Layer", () => {
       track("cart_drawer_opened", {})
 
       const calls = consoleSpy.mock.calls.filter((c) => c[0] === "[analytics]")
-      expect(calls.length).toBe(1)
+      expect(calls).toHaveLength(1)
       expect(calls[0][1]).toBe("cart_drawer_opened")
 
       consoleSpy.mockRestore()
@@ -173,7 +173,7 @@ describe("Analytics Layer", () => {
       const sessionStartedCalls = consoleSpy.mock.calls.filter(
         (c) => c[0] === "[analytics]" && c[1] === "session_started",
       )
-      expect(sessionStartedCalls.length).toBe(1)
+      expect(sessionStartedCalls).toHaveLength(1)
 
       consoleSpy.mockRestore()
     })
@@ -187,7 +187,7 @@ describe("Analytics Layer", () => {
       const sessionStartedCalls = consoleSpy.mock.calls.filter(
         (c) => c[0] === "[analytics]" && c[1] === "session_started",
       )
-      expect(sessionStartedCalls.length).toBe(0)
+      expect(sessionStartedCalls).toHaveLength(0)
 
       consoleSpy.mockRestore()
     })
@@ -283,7 +283,7 @@ describe("Analytics Layer", () => {
       const scrollCalls = consoleSpy.mock.calls.filter(
         (c) => c[0] === "[analytics]" && c[1] === "pdp_scroll_depth",
       )
-      expect(scrollCalls.length).toBe(4)
+      expect(scrollCalls).toHaveLength(4)
       expect(scrollCalls[0][2].depth).toBe(25)
       expect(scrollCalls[1][2].depth).toBe(50)
       expect(scrollCalls[2][2].depth).toBe(75)
@@ -325,7 +325,7 @@ describe("Analytics Layer", () => {
       const scrollCalls = consoleSpy.mock.calls.filter(
         (c) => c[0] === "[analytics]" && c[1] === "pdp_scroll_depth" && c[2].depth === 50,
       )
-      expect(scrollCalls.length).toBe(1)
+      expect(scrollCalls).toHaveLength(1)
 
       cleanup()
       consoleSpy.mockRestore()
@@ -352,7 +352,7 @@ describe("Analytics Layer", () => {
       const scrollCalls = consoleSpy.mock.calls.filter(
         (c) => c[0] === "[analytics]" && c[1] === "pdp_scroll_depth",
       )
-      expect(scrollCalls.length).toBe(1)
+      expect(scrollCalls).toHaveLength(1)
       expect(scrollCalls[0][2].depth).toBe(100)
       expect(scrollCalls[0][2].productId).toBe("prod_short")
 

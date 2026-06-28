@@ -68,7 +68,9 @@ export class GraphContractError extends Error {
 
 /** Code-point string comparison — locale-independent, byte-stable. */
 function cmp(a: string, b: string): number {
-  return a < b ? -1 : a > b ? 1 : 0
+  if (a < b) return -1
+  if (a > b) return 1
+  return 0
 }
 
 /** Recursively sort object keys so meta serializes byte-stably. */
@@ -117,9 +119,9 @@ export function finalizeGraph(doc: GraphDocument): GraphDocument {
       id: n.id,
       type: n.type,
       label: n.label,
-      ...(n.meta !== undefined
-        ? { meta: canonicalJsonValue(n.meta) as Record<string, JsonValue> }
-        : {}),
+      ...(n.meta === undefined
+        ? {}
+        : { meta: canonicalJsonValue(n.meta) as Record<string, JsonValue> }),
     }))
   const edges = [...doc.edges]
     .sort((a, b) => cmp(a.type, b.type) || cmp(a.from, b.from) || cmp(a.to, b.to))
@@ -127,9 +129,9 @@ export function finalizeGraph(doc: GraphDocument): GraphDocument {
       from: e.from,
       to: e.to,
       type: e.type,
-      ...(e.meta !== undefined
-        ? { meta: canonicalJsonValue(e.meta) as Record<string, JsonValue> }
-        : {}),
+      ...(e.meta === undefined
+        ? {}
+        : { meta: canonicalJsonValue(e.meta) as Record<string, JsonValue> }),
     }))
 
   return {

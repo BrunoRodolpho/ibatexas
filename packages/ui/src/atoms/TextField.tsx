@@ -29,7 +29,10 @@ function TextField({
   const reactId = useId()
   const fieldId = id || reactId
   const resolvedHint = helperText ?? hint
-  const state = disabled ? 'disabled' : error ? 'error' : 'default'
+  const errorState = error ? 'error' : 'default'
+  const state = disabled ? 'disabled' : errorState
+  const resolvedHintId = resolvedHint ? `${fieldId}-hint` : undefined
+  const describedBy = error ? `${fieldId}-error` : resolvedHintId
 
   return (
     <div className="flex flex-col gap-1">
@@ -52,7 +55,7 @@ function TextField({
         required={required}
         disabled={disabled}
         aria-invalid={error ? true : undefined}
-        aria-describedby={error ? `${fieldId}-error` : resolvedHint ? `${fieldId}-hint` : undefined}
+        aria-describedby={describedBy}
         {...props}
       />
       {error && (

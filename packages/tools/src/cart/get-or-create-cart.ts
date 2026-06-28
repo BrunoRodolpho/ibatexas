@@ -141,7 +141,7 @@ export async function getOrCreateCart(
         sourceSubject: "cart:get-or-create-cart",
         actorPrincipal: "llm",
         auditSink: getAuditSink(),
-        ...(ctx.customerId !== undefined ? { customerId: ctx.customerId } : {}),
+        ...(ctx.customerId === undefined ? {} : { customerId: ctx.customerId }),
         sessionId: ctx.sessionId,
       },
     )) as { cart?: { id: string } };

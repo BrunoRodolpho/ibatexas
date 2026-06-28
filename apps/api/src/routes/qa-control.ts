@@ -199,6 +199,34 @@ function frame(reply: FastifyReply, event: Record<string, unknown>): void {
   reply.raw.write(`${JSON.stringify(event)}\n`);
 }
 
+// ── Run-item resolution + validation (catalog-derived) ────────────────────────
+
+/** Expand an `all:*` selector into the trusted, catalog-derived run list. */
+async function resolveAllItems(
+  all: "journeys" | "scenarios" | "agents",
+): Promise<RunItem[]> {
+  if (all === "journeys") {
+    return (await listJourneys())
+      .filter((j) => j.status === "active")
+      .map((j): RunItem => ({ kind: "journey", id: j.id }));
+  }
+  if (all === "scenarios") {
+    return (await listScenarios()).map((s): RunItem => ({ kind: "scenario", id: s.name }));
+  }
+  return listAgents().map((a): RunItem => ({ kind: "agent", id: a.id }));
+}
+
+/** Validate caller-supplied items against the live catalog. Returns the first
+ *  item whose id is absent from its kind's catalog, or null when all resolve. */
+async function findUnknownItem(items: RunItem[]): Promise<RunItem | null> {
+  const idsByKind: Record<RunKind, Set<string>> = {
+    journey: new Set((await listJourneys()).map((j) => j.id)),
+    scenario: new Set((await listScenarios()).map((s) => s.name)),
+    agent: new Set(listAgents().map((a) => a.id)),
+  };
+  return items.find((it) => !idsByKind[it.kind].has(it.id)) ?? null;
+}
+
 // ── Plugin ────────────────────────────────────────────────────────────────────
 
 export async function qaControlRoutes(server: FastifyInstance): Promise<void> {
@@ -283,18 +311,8 @@ export async function qaControlRoutes(server: FastifyInstance): Promise<void> {
     }
     const body = parsed.data;
 
-    let items: RunItem[];
-    if (body.all === "journeys") {
-      items = (await listJourneys())
-        .filter((j) => j.status === "active")
-        .map((j) => ({ kind: "journey", id: j.id }));
-    } else if (body.all === "scenarios") {
-      items = (await listScenarios()).map((s) => ({ kind: "scenario", id: s.name }));
-    } else if (body.all === "agents") {
-      items = listAgents().map((a) => ({ kind: "agent", id: a.id }));
-    } else {
-      items = body.items ?? [];
-    }
+    const items =
+      body.all !== undefined ? await resolveAllItems(body.all) : (body.items ?? []);
     if (items.length === 0) {
       return reply.code(400).send({ error: "no items to run" });
     }
@@ -304,19 +322,11 @@ export async function qaControlRoutes(server: FastifyInstance): Promise<void> {
     // child process is spawned, rather than passing an unknown id through to
     // the `ibx` argv (defense-in-depth behind the dev gate + bearer).
     if (body.all === undefined) {
-      const journeyIds = new Set((await listJourneys()).map((j) => j.id));
-      const scenarioIds = new Set((await listScenarios()).map((s) => s.name));
-      const agentIds = new Set(listAgents().map((a) => a.id));
-      for (const it of items) {
-        const known =
-          it.kind === "journey"
-            ? journeyIds.has(it.id)
-            : it.kind === "scenario"
-              ? scenarioIds.has(it.id)
-              : agentIds.has(it.id);
-        if (!known) {
-          return reply.code(400).send({ error: `unknown ${it.kind} id: ${it.id}` });
-        }
+      const unknownItem = await findUnknownItem(items);
+      if (unknownItem !== null) {
+        return reply
+          .code(400)
+          .send({ error: `unknown ${unknownItem.kind} id: ${unknownItem.id}` });
       }
     }
 
@@ -337,6 +347,23 @@ interface BatchUnit {
   id?: string;
   args: string[];
   label: string;
+}
+
+/** After a journey run, the freshly-created runs/<id>/ dir holds its trace.
+ *  Returns the newest dir absent from `before`, or undefined when none appeared. */
+async function freshestRunId(before: Set<string>): Promise<string | undefined> {
+  const after = await listRunDirs();
+  const fresh = [...after].filter((d) => !before.has(d));
+  if (fresh.length === 0) return undefined;
+  const withMtime = await Promise.all(
+    fresh.map(async (d) => {
+      const tracePath = join(RUNS_DIR, d, "trace.jsonl");
+      const mtime = existsSync(tracePath) ? (await stat(tracePath)).mtimeMs : 0;
+      return { d, mtime };
+    }),
+  );
+  withMtime.sort((a, b) => b.mtime - a.mtime);
+  return withMtime[0]?.d;
 }
 
 async function streamBatch(
@@ -368,22 +395,8 @@ async function streamBatch(
     );
 
     // For a journey, the new runs/<id>/ dir created during this run is the trace.
-    let runId: string | undefined;
-    if (unit.kind === "journey") {
-      const after = await listRunDirs();
-      const fresh = [...after].filter((d) => !before.has(d));
-      if (fresh.length > 0) {
-        const withMtime = await Promise.all(
-          fresh.map(async (d) => {
-            const tracePath = join(RUNS_DIR, d, "trace.jsonl");
-            const mtime = existsSync(tracePath) ? (await stat(tracePath)).mtimeMs : 0;
-            return { d, mtime };
-          }),
-        );
-        withMtime.sort((a, b) => b.mtime - a.mtime);
-        runId = withMtime[0]?.d;
-      }
-    }
+    const runId =
+      unit.kind === "journey" ? await freshestRunId(before) : undefined;
 
     frame(reply, {
       type: "item.end",

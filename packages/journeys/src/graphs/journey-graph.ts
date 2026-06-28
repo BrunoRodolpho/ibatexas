@@ -37,16 +37,19 @@ function actMeta(act: JourneyAct, index: number): Record<string, JsonValue> {
         path: act.path,
         asRole: act.asRole ?? "anonymous",
       }
-    case "chat":
-      return {
-        ...base,
-        mode:
-          act.utterance !== undefined && act.goal !== undefined
-            ? "utterance+goal"
-            : act.utterance !== undefined
-              ? "utterance"
-              : "goal",
+    case "chat": {
+      const hasUtterance = act.utterance !== undefined
+      const hasGoal = act.goal !== undefined
+      let mode: string
+      if (hasUtterance && hasGoal) {
+        mode = "utterance+goal"
+      } else if (hasUtterance) {
+        mode = "utterance"
+      } else {
+        mode = "goal"
       }
+      return { ...base, mode }
+    }
     case "fixture":
       return { ...base, seed: act.seed }
   }
@@ -131,7 +134,7 @@ export function buildJourneyGraph(journeys: ReadonlyArray<Journey>): GraphDocume
       id: `gap:${gapId}`,
       type: "gap",
       label: gapId,
-      meta: { blocks: [...blocks].sort() },
+      meta: { blocks: [...blocks].sort((a, b) => a.localeCompare(b)) },
     })
   }
 
@@ -141,12 +144,12 @@ export function buildJourneyGraph(journeys: ReadonlyArray<Journey>): GraphDocume
     graph: "journeys",
     meta: {
       journeys: journeys.length,
-      active: active.map((j) => j.id).sort(),
+      active: active.map((j) => j.id).sort((a, b) => a.localeCompare(b)),
       blocked: journeys
         .filter((j) => j.status === "blocked")
         .map((j) => j.id)
-        .sort(),
-      gaps: [...gapBlocks.keys()].sort(),
+        .sort((a, b) => a.localeCompare(b)),
+      gaps: [...gapBlocks.keys()].sort((a, b) => a.localeCompare(b)),
     },
     nodes,
     edges,

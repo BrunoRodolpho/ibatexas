@@ -34,7 +34,7 @@
 // are now reachable only via `EXECUTE` decisions from the kernel.
 
 import { createHash, randomUUID } from "node:crypto";
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { buildEnvelope } from "@adjudicate/core";
@@ -133,6 +133,19 @@ function deriveAdminNonce(idempotencyKey: string): string {
   return createHash("sha256").update(idempotencyKey).digest("hex");
 }
 
+/**
+ * Normalize the `Idempotency-Key` header (single string, repeated-header
+ * array, or absent) to one non-empty key or `null`. Extracted to keep the
+ * refund route handler's cognitive complexity bounded.
+ */
+function normalizeIdempotencyKey(
+  header: string | string[] | undefined,
+): string | null {
+  if (typeof header === "string" && header.length > 0) return header;
+  if (Array.isArray(header) && header[0]) return header[0];
+  return null;
+}
+
 function refundDailyBucketKey(staffId: string | null, now: Date = new Date()): string {
   const yyyy = now.getUTCFullYear();
   const mm = String(now.getUTCMonth() + 1).padStart(2, "0");
@@ -203,7 +216,7 @@ export async function tryReserveDailyRefund(
       String(capCentavos),
       String(REFUND_DAILY_KEY_TTL_SECONDS),
     ],
-  })) as [number, number] | { 0: number; 1: number } | unknown;
+  })) as unknown;
   // node-redis returns Lua table as array; some shims may return
   // object-with-numeric-keys. Normalize.
   const arr = Array.isArray(raw)
@@ -511,6 +524,92 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
     };
   }
 
+  // ── Shared refusal-reply helpers ─────────────────────────────────────
+  //
+  // The refund step-1 / step-2 routes and the force-status step-2 route
+  // each map a non-EXECUTE kernel decision onto an HTTP reply with the
+  // same body shape. Extracting these keeps each route handler's
+  // cognitive complexity bounded while preserving the exact responses.
+  type RefundRefusedDecision = Extract<
+    Awaited<ReturnType<typeof executeRefund>>,
+    { kind: "refused" }
+  >["decision"];
+
+  function replyRefundRefused(
+    reply: FastifyReply,
+    decision: RefundRefusedDecision,
+    opts: {
+      readonly requestConfirmationError: string;
+      readonly confirmationId?: string;
+    },
+  ) {
+    const idPart =
+      opts.confirmationId === undefined
+        ? {}
+        : { confirmationId: opts.confirmationId };
+    if (decision.kind === "ESCALATE") {
+      return reply.code(503).send({
+        error: "Reembolso acima do limite — requer aprovação humana.",
+        reason: decision.reason,
+        ...idPart,
+      });
+    }
+    if (decision.kind === "REQUEST_CONFIRMATION") {
+      return reply.code(202).send({
+        error: opts.requestConfirmationError,
+        prompt: decision.prompt,
+        code: "REQUEST_CONFIRMATION",
+        ...idPart,
+      });
+    }
+    const refusalText =
+      decision.kind === "REFUSE"
+        ? decision.refusal.userFacing
+        : "Operação não permitida pela política do kernel.";
+    return reply.code(403).send({ error: refusalText });
+  }
+
+  type TransitionOutcome = Awaited<
+    ReturnType<typeof paymentCmdSvc.transitionStatusFromEnvelope>
+  >;
+
+  function transitionRefusalText(
+    decision: TransitionOutcome["decision"],
+  ): string {
+    return decision.kind === "REFUSE"
+      ? decision.refusal.userFacing
+      : "Operação não permitida pela política do kernel.";
+  }
+
+  async function replyForceStatusConcurrency(
+    err: unknown,
+    reply: FastifyReply,
+    ctx: {
+      readonly orderId: string;
+      readonly confirmationId: string;
+      readonly staffId: string | null;
+      readonly expectedVersion: number | null;
+    },
+  ) {
+    if ((err as Error).name !== "PaymentConcurrencyError") throw err;
+    await eventLogSvc.append({
+      orderId: ctx.orderId,
+      eventType: "admin.force_status.stale_version_refused",
+      discriminator: ctx.confirmationId,
+      payload: {
+        confirmationId: ctx.confirmationId,
+        staffId: ctx.staffId,
+        expectedVersion: ctx.expectedVersion,
+        message: (err as Error).message,
+      },
+      timestamp: new Date(),
+    });
+    return reply.code(409).send({
+      error:
+        "Pagamento foi atualizado por outro atendente após a aprovação. Reabra a operação.",
+    });
+  }
+
   // ── POST /api/admin/orders/:id/payment/refund (step 1) ────────────────────
   app.post(
     "/api/admin/orders/:id/payment/refund",
@@ -584,12 +683,7 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
       // a client bug worth surfacing as 400 rather than masking with a
       // collision-prone fallback.
       const idempotencyHeader = request.headers["idempotency-key"];
-      const normalizedHeader =
-        typeof idempotencyHeader === "string" && idempotencyHeader.length > 0
-          ? idempotencyHeader
-          : Array.isArray(idempotencyHeader) && idempotencyHeader[0]
-            ? idempotencyHeader[0]
-            : null;
+      const normalizedHeader = normalizeIdempotencyKey(idempotencyHeader);
       if (normalizedHeader === null) {
         return reply.code(400).send({
           statusCode: 400,
@@ -732,24 +826,10 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
           // sees a slightly-inflated counter, which is the safe side.
           await rollbackDailyRefundReservation(staffId, refundAmount);
           // W3 P0-1 — surface the kernel's magnitude-decision distinctly.
-          if (result.decision.kind === "ESCALATE") {
-            return reply.code(503).send({
-              error: "Reembolso acima do limite — requer aprovação humana.",
-              reason: result.decision.reason,
-            });
-          }
-          if (result.decision.kind === "REQUEST_CONFIRMATION") {
-            return reply.code(202).send({
-              error: "Reembolso requer confirmação de segundo operador.",
-              prompt: result.decision.prompt,
-              code: "REQUEST_CONFIRMATION",
-            });
-          }
-          const refusalText =
-            result.decision.kind === "REFUSE"
-              ? result.decision.refusal.userFacing
-              : "Operação não permitida pela política do kernel.";
-          return reply.code(403).send({ error: refusalText });
+          return replyRefundRefused(reply, result.decision, {
+            requestConfirmationError:
+              "Reembolso requer confirmação de segundo operador.",
+          });
         }
         return reply.send({
           success: true,
@@ -1033,26 +1113,11 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
           },
           timestamp: new Date(),
         });
-        if (result.decision.kind === "ESCALATE") {
-          return reply.code(503).send({
-            error: "Reembolso acima do limite — requer aprovação humana.",
-            reason: result.decision.reason,
-            confirmationId,
-          });
-        }
-        if (result.decision.kind === "REQUEST_CONFIRMATION") {
-          return reply.code(202).send({
-            error: "Reembolso requer confirmação adicional do kernel.",
-            prompt: result.decision.prompt,
-            code: "REQUEST_CONFIRMATION",
-            confirmationId,
-          });
-        }
-        const refusalText =
-          result.decision.kind === "REFUSE"
-            ? result.decision.refusal.userFacing
-            : "Operação não permitida pela política do kernel.";
-        return reply.code(403).send({ error: refusalText });
+        return replyRefundRefused(reply, result.decision, {
+          requestConfirmationError:
+            "Reembolso requer confirmação adicional do kernel.",
+          confirmationId,
+        });
       }
 
       return reply.send({
@@ -1282,9 +1347,9 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
       // if the payment was mutated between the two operator clicks.
       const envelopePayload: PaymentStatusTransitionPayload = {
         ...storedPayload,
-        ...(pending.expectedVersion !== undefined
-          ? { expectedVersion: pending.expectedVersion }
-          : {}),
+        ...(pending.expectedVersion === undefined
+          ? {}
+          : { expectedVersion: pending.expectedVersion }),
       };
       const envelope = buildEnvelope<
         "payment.status.transition",
@@ -1303,33 +1368,18 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
       } catch (err) {
         // audit-2026-05-24 P2-5: optimistic-concurrency conflict — payment
         // advanced between step 1 and step 2.
-        if ((err as Error).name === "PaymentConcurrencyError") {
-          await eventLogSvc.append({
-            orderId: id,
-            eventType: "admin.force_status.stale_version_refused",
-            discriminator: confirmationId,
-            payload: {
-              confirmationId,
-              staffId,
-              expectedVersion: pending.expectedVersion ?? null,
-              message: (err as Error).message,
-            },
-            timestamp: new Date(),
-          });
-          return reply.code(409).send({
-            error: "Pagamento foi atualizado por outro atendente após a aprovação. Reabra a operação.",
-          });
-        }
-        throw err;
+        return await replyForceStatusConcurrency(err, reply, {
+          orderId: id,
+          confirmationId,
+          staffId,
+          expectedVersion: pending.expectedVersion ?? null,
+        });
       }
       if (
         outcome.decision.kind !== "EXECUTE" &&
         outcome.decision.kind !== "REWRITE"
       ) {
-        const refusalText =
-          outcome.decision.kind === "REFUSE"
-            ? outcome.decision.refusal.userFacing
-            : "Operação não permitida pela política do kernel.";
+        const refusalText = transitionRefusalText(outcome.decision);
         await eventLogSvc.append({
           orderId: id,
           eventType: "admin.force_status.refused",

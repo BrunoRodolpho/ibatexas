@@ -25,6 +25,251 @@ import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils"
 import { indexProductsBatch, type MedusaProductInput } from "@ibatexas/tools"
 import { CATEGORIES, SEED_PRODUCTS } from "./seed-data"
 
+type SeedProduct = (typeof SEED_PRODUCTS)[number]
+
+/** Shape of the reused-product graph read during the price-heal pass. */
+interface ReusedSeedProduct {
+  handle: string
+  variants?: Array<{ id: string; title: string; price_set?: { id: string } | null }>
+}
+
+// ── Idempotent ensure-helpers (extracted to keep `seed` low-complexity) ───────
+
+async function ensureSalesChannel(
+  salesChannelModule: ISalesChannelModuleService,
+  name: string,
+) {
+  // Sales channel — find by name (only creates if none exist). NOTE: a Medusa
+  // list* call with a filter but no `select` projects ONLY `id` — every other
+  // field comes back undefined. We read `.name` below, so select it explicitly.
+  const existingChannels = await salesChannelModule.listSalesChannels(
+    { name },
+    { select: ["id", "name"] },
+  )
+  if (existingChannels.length > 1) {
+    console.warn(
+      `  ⚠ ${existingChannels.length} sales channels named "${name}" — using the first; clean up duplicates (e.g. ibx db reset).`,
+    )
+  }
+  return (
+    existingChannels[0] ??
+    (await salesChannelModule.createSalesChannels([
+      { name, description: "Canal de vendas padrão", is_disabled: false },
+    ]))[0]
+  )
+}
+
+async function ensureStore(
+  storeModule: IStoreModuleService,
+  salesChannelId: string,
+  storeName: string,
+) {
+  // Store — singleton. Reuse the existing one if present (a prior seed / Medusa
+  // bootstrap leaves one behind) and point it at our sales channel; else create.
+  const existingStores = await storeModule.listStores()
+  if (existingStores.length > 1) {
+    console.warn(
+      `  ⚠ ${existingStores.length} stores exist — using the first; clean up duplicates (e.g. ibx db reset).`,
+    )
+  }
+  const existingStore = existingStores[0]
+  return existingStore
+    ? await storeModule.updateStores(existingStore.id, {
+        name: storeName,
+        default_sales_channel_id: salesChannelId,
+      })
+    : await storeModule.createStores({
+        name: storeName,
+        supported_currencies: [{ currency_code: "brl", is_default: true }],
+        default_sales_channel_id: salesChannelId,
+      })
+}
+
+async function ensureRegion(
+  regionModule: IRegionModuleService,
+  regionName: string,
+) {
+  // Region — find by COUNTRY OWNERSHIP, not name. Country "br" can belong to
+  // exactly one region, and re-assigning it throws. A region owning "br" may
+  // have been renamed in admin, so matching on name alone could miss it and
+  // re-throw "Countries with codes 'br' are already assigned to a region".
+  const allRegions = await regionModule.listRegions({}, { relations: ["countries"] })
+  const regionOwnsBr = allRegions.some((r) =>
+    r.countries?.some((c) => c.iso_2 === "br"),
+  )
+  if (!regionOwnsBr) {
+    await regionModule.createRegions({
+      name: regionName,
+      currency_code: "brl",
+      countries: ["br"],
+    })
+  }
+}
+
+/**
+ * Child categories (parents must already be in `categoryMap`). Split out of
+ * `ensureCategories` to keep each function's complexity in budget.
+ */
+async function createMissingChildCategories(
+  productModule: IProductModuleService,
+  categoryMap: Map<string, string>,
+): Promise<void> {
+  // Children (parents now guaranteed in categoryMap).
+  const children = CATEGORIES.filter(
+    (c): c is typeof c & { parent: string } => c.parent !== null,
+  )
+  const missingChildren = children.filter((c) => !categoryMap.has(c.handle))
+  if (missingChildren.length === 0) return
+
+  const createdChildren = await productModule.createProductCategories(
+    missingChildren.map((c) => {
+      const parentId = categoryMap.get(c.parent)
+      if (!parentId) {
+        throw new Error(`Parent category '${c.parent}' not found for child '${c.handle}'`)
+      }
+      return {
+        name: c.name,
+        handle: c.handle,
+        is_active: true,
+        parent_category_id: parentId,
+      }
+    }),
+  )
+  for (const child of createdChildren) {
+    if (child.handle) categoryMap.set(child.handle, child.id)
+  }
+}
+
+/**
+ * Ensure all categories exist (idempotent by handle). Fills `categoryMap`
+ * (handle → id) and returns how many already existed (for the log).
+ */
+async function ensureCategories(
+  productModule: IProductModuleService,
+  categoryMap: Map<string, string>,
+): Promise<number> {
+  // `select` is REQUIRED here: a filtered list* projects only `id` otherwise,
+  // so `cat.handle` would be undefined and every existing category missed.
+  const existingCategories = await productModule.listProductCategories(
+    { handle: CATEGORIES.map((c) => c.handle) },
+    { select: ["id", "handle"] },
+  )
+  for (const cat of existingCategories) {
+    if (cat.handle) categoryMap.set(cat.handle, cat.id)
+  }
+
+  // Root categories first (children reference their parent's id).
+  const roots = CATEGORIES.filter((c) => c.parent === null)
+  for (const root of roots) {
+    if (categoryMap.has(root.handle)) continue
+    const [created] = await productModule.createProductCategories([
+      { name: root.name, handle: root.handle, is_active: true },
+    ])
+    categoryMap.set(root.handle, created.id)
+  }
+
+  await createMissingChildCategories(productModule, categoryMap)
+
+  return existingCategories.length
+}
+
+/**
+ * Ensure all tags exist (idempotent by value). `value` is unique and tags
+ * survive `clean --all`. Returns value → id.
+ */
+async function ensureTags(
+  productModule: IProductModuleService,
+): Promise<Map<string, string>> {
+  const allTags = [...new Set(SEED_PRODUCTS.flatMap((p) => p.tags))]
+  const tagMap = new Map<string, string>()
+  // `select` required — a filtered list* projects only `id`, so without it
+  // `t.value` is undefined and every existing tag is missed (then re-created → throws).
+  const existingTags = await productModule.listProductTags(
+    { value: allTags },
+    { select: ["id", "value"] },
+  )
+  for (const t of existingTags) tagMap.set(t.value, t.id)
+  const missingTagValues = allTags.filter((v) => !tagMap.has(v))
+  if (missingTagValues.length > 0) {
+    const createdTags = await productModule.createProductTags(
+      missingTagValues.map((value) => ({ value })),
+    )
+    for (const t of createdTags) tagMap.set(t.value, t.id)
+  }
+  return tagMap
+}
+
+/** Build the `createProducts` input for a single seed product. */
+function buildProductCreateInput(
+  product: SeedProduct,
+  categoryId: string,
+  tagMap: Map<string, string>,
+) {
+  const hasVariants = product.variants.length > 1
+  return {
+    title: product.title,
+    handle: product.handle,
+    description: product.description,
+    status: "published" as const,
+    // Medusa v2 uses category_ids (array of IDs), not categories objects
+    category_ids: [categoryId],
+    // Medusa v2 uses tag_ids (array of IDs), not tag objects
+    tag_ids: product.tags.map((t) => tagMap.get(t)!).filter(Boolean),
+    options: hasVariants
+      ? [
+          {
+            title: "Variante",
+            values: product.variants.map((v) => v.title),
+          },
+        ]
+      : [],
+    variants: product.variants.map((v) => ({
+      title: v.title,
+      manage_inventory: false,
+      ...(hasVariants ? { options: { Variante: v.title } } : {}),
+    })),
+    metadata: { ...product.metadata, categoryHandle: product.categoryHandle },
+  }
+}
+
+/** Variant → price entries for the freshly-created variants of a product. */
+function collectNewVariantPrices(
+  createdVariants: ReadonlyArray<{ id: string; title: string }>,
+  product: SeedProduct,
+): { variantId: string; amount: number }[] {
+  const prices: { variantId: string; amount: number }[] = []
+  for (const variant of createdVariants) {
+    const seedVariant = product.variants.find((v) => v.title === variant.title)
+    if (seedVariant) {
+      prices.push({ variantId: variant.id, amount: seedVariant.price })
+    }
+  }
+  return prices
+}
+
+/**
+ * Variant → price entries for reused products that are MISSING a price_set —
+ * heal pass over the reused-product graph. Fully-priced variants are left
+ * untouched (re-linking an already-linked variant throws).
+ */
+function collectHealedVariantPrices(
+  reusedGraph: ReusedSeedProduct[],
+): { variantId: string; amount: number }[] {
+  const prices: { variantId: string; amount: number }[] = []
+  for (const p of reusedGraph) {
+    const seedProduct = SEED_PRODUCTS.find((s) => s.handle === p.handle)
+    if (!seedProduct) continue
+    for (const variant of p.variants ?? []) {
+      if (variant.price_set) continue // already priced — leave it
+      const seedVariant = seedProduct.variants.find((v) => v.title === variant.title)
+      if (seedVariant) {
+        prices.push({ variantId: variant.id, amount: seedVariant.price })
+      }
+    }
+  }
+  return prices
+}
+
 export default async function seed({ container }: ExecArgs) {
   const productModule =
     container.resolve<IProductModuleService>(Modules.PRODUCT)
@@ -53,59 +298,9 @@ export default async function seed({ container }: ExecArgs) {
 
   console.log("  Ensuring store, sales channel & region...")
 
-  // Sales channel — find by name (only creates if none exist). NOTE: a Medusa
-  // list* call with a filter but no `select` projects ONLY `id` — every other
-  // field comes back undefined. We read `.name` below, so select it explicitly.
-  const existingChannels = await salesChannelModule.listSalesChannels(
-    { name: SALES_CHANNEL_NAME },
-    { select: ["id", "name"] },
-  )
-  if (existingChannels.length > 1) {
-    console.warn(
-      `  ⚠ ${existingChannels.length} sales channels named "${SALES_CHANNEL_NAME}" — using the first; clean up duplicates (e.g. ibx db reset).`,
-    )
-  }
-  const salesChannel =
-    existingChannels[0] ??
-    (await salesChannelModule.createSalesChannels([
-      { name: SALES_CHANNEL_NAME, description: "Canal de vendas padrão", is_disabled: false },
-    ]))[0]
-
-  // Store — singleton. Reuse the existing one if present (a prior seed / Medusa
-  // bootstrap leaves one behind) and point it at our sales channel; else create.
-  const existingStores = await storeModule.listStores()
-  if (existingStores.length > 1) {
-    console.warn(
-      `  ⚠ ${existingStores.length} stores exist — using the first; clean up duplicates (e.g. ibx db reset).`,
-    )
-  }
-  const existingStore = existingStores[0]
-  const store = existingStore
-    ? await storeModule.updateStores(existingStore.id, {
-        name: STORE_NAME,
-        default_sales_channel_id: salesChannel.id,
-      })
-    : await storeModule.createStores({
-        name: STORE_NAME,
-        supported_currencies: [{ currency_code: "brl", is_default: true }],
-        default_sales_channel_id: salesChannel.id,
-      })
-
-  // Region — find by COUNTRY OWNERSHIP, not name. Country "br" can belong to
-  // exactly one region, and re-assigning it throws. A region owning "br" may
-  // have been renamed in admin, so matching on name alone could miss it and
-  // re-throw "Countries with codes 'br' are already assigned to a region".
-  const allRegions = await regionModule.listRegions({}, { relations: ["countries"] })
-  const regionOwningBr = allRegions.find((r) =>
-    r.countries?.some((c) => c.iso_2 === "br"),
-  )
-  if (!regionOwningBr) {
-    await regionModule.createRegions({
-      name: REGION_NAME,
-      currency_code: "brl",
-      countries: ["br"],
-    })
-  }
+  const salesChannel = await ensureSalesChannel(salesChannelModule, SALES_CHANNEL_NAME)
+  const store = await ensureStore(storeModule, salesChannel.id, STORE_NAME)
+  await ensureRegion(regionModule, REGION_NAME)
 
   console.log(`  ✓ Store "${store.name}", sales channel & region ready`)
 
@@ -117,51 +312,9 @@ export default async function seed({ container }: ExecArgs) {
   console.log("  Ensuring categories...")
 
   const categoryMap = new Map<string, string>() // handle → id
+  const reusedCategoryCount = await ensureCategories(productModule, categoryMap)
 
-  // `select` is REQUIRED here: a filtered list* projects only `id` otherwise,
-  // so `cat.handle` would be undefined and every existing category missed.
-  const existingCategories = await productModule.listProductCategories(
-    { handle: CATEGORIES.map((c) => c.handle) },
-    { select: ["id", "handle"] },
-  )
-  for (const cat of existingCategories) {
-    if (cat.handle) categoryMap.set(cat.handle, cat.id)
-  }
-
-  // Root categories first (children reference their parent's id).
-  const roots = CATEGORIES.filter((c) => c.parent === null)
-  for (const root of roots) {
-    if (categoryMap.has(root.handle)) continue
-    const [created] = await productModule.createProductCategories([
-      { name: root.name, handle: root.handle, is_active: true },
-    ])
-    categoryMap.set(root.handle, created.id)
-  }
-
-  // Children (parents now guaranteed in categoryMap).
-  const children = CATEGORIES.filter((c): c is typeof c & { parent: string } => c.parent !== null)
-  const missingChildren = children.filter((c) => !categoryMap.has(c.handle))
-  if (missingChildren.length > 0) {
-    const createdChildren = await productModule.createProductCategories(
-      missingChildren.map((c) => {
-        const parentId = categoryMap.get(c.parent)
-        if (!parentId) {
-          throw new Error(`Parent category '${c.parent}' not found for child '${c.handle}'`)
-        }
-        return {
-          name: c.name,
-          handle: c.handle,
-          is_active: true,
-          parent_category_id: parentId,
-        }
-      })
-    )
-    for (const child of createdChildren) {
-      if (child.handle) categoryMap.set(child.handle, child.id)
-    }
-  }
-
-  console.log(`  ✓ ${CATEGORIES.length} categories ready (${existingCategories.length} reused)`)
+  console.log(`  ✓ ${CATEGORIES.length} categories ready (${reusedCategoryCount} reused)`)
 
   // ── 2. Products (idempotent by handle) ────────────────────────────────────
 
@@ -169,22 +322,7 @@ export default async function seed({ container }: ExecArgs) {
 
   // Tags — `value` is unique and tags survive `clean --all`. Find existing,
   // create only the missing values, then build value → id.
-  const allTags = [...new Set(SEED_PRODUCTS.flatMap((p) => p.tags))]
-  const tagMap = new Map<string, string>()
-  // `select` required — a filtered list* projects only `id`, so without it
-  // `t.value` is undefined and every existing tag is missed (then re-created → throws).
-  const existingTags = await productModule.listProductTags(
-    { value: allTags },
-    { select: ["id", "value"] },
-  )
-  for (const t of existingTags) tagMap.set(t.value, t.id)
-  const missingTagValues = allTags.filter((v) => !tagMap.has(v))
-  if (missingTagValues.length > 0) {
-    const createdTags = await productModule.createProductTags(
-      missingTagValues.map((value) => ({ value }))
-    )
-    for (const t of createdTags) tagMap.set(t.value, t.id)
-  }
+  const tagMap = await ensureTags(productModule)
 
   // Pre-existing products (by handle). `clean --all` deletes products, so on a
   // typical reseed none exist; but re-running `seed` without a clean (or the
@@ -221,20 +359,9 @@ export default async function seed({ container }: ExecArgs) {
       fields: ["handle", "variants.id", "variants.title", "variants.price_set.id"],
       filters: { id: existingProducts.map((p) => p.id) },
     })
-    for (const p of reusedGraph as unknown as Array<{
-      handle: string
-      variants?: { id: string; title: string; price_set?: { id: string } | null }[]
-    }>) {
-      const seedProduct = SEED_PRODUCTS.find((s) => s.handle === p.handle)
-      if (!seedProduct) continue
-      for (const variant of p.variants ?? []) {
-        if (variant.price_set) continue // already priced — leave it
-        const seedVariant = seedProduct.variants.find((v) => v.title === variant.title)
-        if (seedVariant) {
-          variantPrices.push({ variantId: variant.id, amount: seedVariant.price })
-        }
-      }
-    }
+    variantPrices.push(
+      ...collectHealedVariantPrices(reusedGraph as unknown as ReusedSeedProduct[]),
+    )
   }
 
   for (const product of SEED_PRODUCTS) {
@@ -249,33 +376,8 @@ export default async function seed({ container }: ExecArgs) {
       throw new Error(`Category not found: ${product.categoryHandle}`)
     }
 
-    const hasVariants = product.variants.length > 1
-
     const [createdProduct] = await productModule.createProducts([
-      {
-        title: product.title,
-        handle: product.handle,
-        description: product.description,
-        status: "published" as const,
-        // Medusa v2 uses category_ids (array of IDs), not categories objects
-        category_ids: [categoryId],
-        // Medusa v2 uses tag_ids (array of IDs), not tag objects
-        tag_ids: product.tags.map((t) => tagMap.get(t)!).filter(Boolean),
-        options: hasVariants
-          ? [
-              {
-                title: "Variante",
-                values: product.variants.map((v) => v.title),
-              },
-            ]
-          : [],
-        variants: product.variants.map((v) => ({
-          title: v.title,
-          manage_inventory: false,
-          ...(hasVariants ? { options: { Variante: v.title } } : {}),
-        })),
-        metadata: { ...product.metadata, categoryHandle: product.categoryHandle },
-      },
+      buildProductCreateInput(product, categoryId, tagMap),
     ])
 
     allProductIds.push(createdProduct.id)
@@ -290,12 +392,7 @@ export default async function seed({ container }: ExecArgs) {
       },
     ])
 
-    for (const variant of createdProduct.variants ?? []) {
-      const seedVariant = product.variants.find((v) => v.title === variant.title)
-      if (seedVariant) {
-        variantPrices.push({ variantId: variant.id, amount: seedVariant.price })
-      }
-    }
+    variantPrices.push(...collectNewVariantPrices(createdProduct.variants ?? [], product))
   }
 
   console.log(

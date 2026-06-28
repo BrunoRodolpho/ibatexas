@@ -97,12 +97,22 @@ export async function setupPostgresTestContainer(): Promise<PostgresTestHarness>
   // runs everything in `prisma/migrations/` against the empty container
   // DB. DATABASE_URL is passed explicitly so the CLI doesn't try to read
   // a local .env file (the worktree may not have one).
+  // Pin PATH to fixed, non-writable system dirs plus Node's own bin dir
+  // (which ships `npx`), so the spawned lookup never consults a
+  // potentially-writable directory inherited from the ambient PATH.
+  const safePath = [
+    path.dirname(process.execPath),
+    "/usr/local/bin",
+    "/usr/bin",
+    "/bin",
+  ].join(path.delimiter)
+
   const migrateResult = spawnSync(
     "npx",
     ["prisma", "migrate", "deploy", "--schema=prisma/schema.prisma"],
     {
       cwd: domainRoot,
-      env: { ...process.env, DATABASE_URL: url },
+      env: { ...process.env, DATABASE_URL: url, PATH: safePath },
       encoding: "utf-8",
       timeout: 180_000,
     },

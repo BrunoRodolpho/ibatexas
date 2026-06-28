@@ -9,9 +9,9 @@ interface ThemeStore {
 }
 
 export const useThemeStore = create<ThemeStore>((set) => ({
-  theme: (typeof window !== 'undefined'
-    ? (localStorage.getItem('ibx-theme') as Theme) || 'system'
-    : 'system'),
+  theme: (typeof globalThis.window === 'undefined'
+    ? 'system'
+    : (localStorage.getItem('ibx-theme') as Theme) || 'system'),
   setTheme: (theme) => {
     localStorage.setItem('ibx-theme', theme)
     set({ theme })
@@ -21,7 +21,7 @@ export const useThemeStore = create<ThemeStore>((set) => ({
 
 function applyTheme(theme: Theme) {
   const root = document.documentElement
-  if (theme === 'dark' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+  if (theme === 'dark' || (theme === 'system' && globalThis.matchMedia('(prefers-color-scheme: dark)').matches)) {
     root.classList.add('dark')
   } else {
     root.classList.remove('dark')

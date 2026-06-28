@@ -67,7 +67,7 @@ export const CarouselCard = ({
   const handleQuickAdd = () => {
     // Variant-required products: bounce to PDP so the user picks a variant.
     if (hasMultipleVariants) {
-      window.location.assign(linkHref)
+      globalThis.location.assign(linkHref)
       return
     }
     const minimal = {

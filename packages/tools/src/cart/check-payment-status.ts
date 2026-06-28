@@ -1,9 +1,8 @@
 // check_payment_status tool — fetch current payment status for an order
 // READ_ONLY tool: returns payment status, method, PIX expiry, retry eligibility.
 
-import { NonRetryableError, type AgentContext } from "@ibatexas/types";
+import { NonRetryableError, isTerminalPaymentStatus, PAYMENT_STATUS_LABELS_PT, type AgentContext, type PaymentStatus } from "@ibatexas/types";
 import { createPaymentQueryService } from "@ibatexas/domain";
-import { isTerminalPaymentStatus, PAYMENT_STATUS_LABELS_PT, type PaymentStatus } from "@ibatexas/types";
 import { withOrderOwnership } from "../guards/with-ownership.js";
 
 interface CheckPaymentStatusInput {

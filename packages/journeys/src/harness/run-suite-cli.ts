@@ -123,46 +123,82 @@ function abortedByBudgetJourneyReport(
   }
 }
 
+/**
+ * Selection: active journeys in registry order, narrowed by `--only`. Unknown
+ * or non-active `--only` ids fail loudly (blocked ids name their gaps).
+ */
+function selectSuiteJourneys(
+  registry: ReadonlyArray<Journey>,
+  only: string[] | undefined,
+): Journey[] {
+  const active = registry.filter((j) => j.status === "active")
+  if (only === undefined || only.length === 0) {
+    return active
+  }
+  const activeIds = new Set(active.map((j) => j.id))
+  for (const id of only) {
+    if (!activeIds.has(id)) {
+      const known = registry.find((j) => j.id === id)
+      throw new JourneyRunCliError(
+        known === undefined
+          ? `--only ${id}: journey not found in the registry (${registry.length} loaded)`
+          : `--only ${id}: journey is blocked by [${known.blocked_by.join(", ")}] — suites run active journeys only`,
+      )
+    }
+  }
+  const onlySet = new Set(only)
+  return active.filter((j) => onlySet.has(j.id))
+}
+
+/**
+ * Money-flow ids must exist in the registry (typos fail loudly); ids not
+ * selected are tolerated (a narrowed `--only` run is still well-formed).
+ */
+function validateMoneyFlows(registry: ReadonlyArray<Journey>, moneyFlows: Set<string>): void {
+  for (const id of moneyFlows) {
+    if (!registry.some((j) => j.id === id)) {
+      throw new JourneyRunCliError(`--money-flows ${id}: journey not found in the registry`)
+    }
+  }
+}
+
+/** Build the per-journey run options, threading through optional overrides. */
+function buildRunJourneyOptions(
+  journey: Journey,
+  jk: number,
+  budget: DollarBudget,
+  onProgress: (line: string) => void,
+  options: RunJourneySuiteCliOptions,
+): RunJourneyCliOptions {
+  return {
+    journeyId: journey.id,
+    k: jk,
+    ...(options.dir === undefined ? {} : { dir: options.dir }),
+    ...(options.envFile === undefined ? {} : { envFile: options.envFile }),
+    ...(options.runsDir === undefined ? {} : { runsDir: options.runsDir }),
+    onProgress,
+    budget, // the SHARED accumulator — per-attempt charging happens inside
+  }
+}
+
 // ── Entry point (`ibx journey run --suite` calls this) ───────────────────────
 
 export async function runJourneySuiteCli(
   options: RunJourneySuiteCliOptions = {},
 ): Promise<JourneySuiteReport> {
   const k = requirePositiveInt(options.k ?? 1, "--k")
-  const kMoney = options.kMoney !== undefined ? requirePositiveInt(options.kMoney, "--k-money") : k
+  const kMoney = options.kMoney === undefined ? k : requirePositiveInt(options.kMoney, "--k-money")
   const moneyFlows = new Set(options.moneyFlows ?? [])
   const onProgress = options.onProgress ?? (() => undefined)
   const runJourneyFn = options.runJourneyFn ?? runJourneyCli
 
   // ── Selection: active journeys, registry order, narrowed by --only ─────────
   const registry = await loadJourneys(options.dir)
-  const active = registry.filter((j) => j.status === "active")
-  let selected = active
-  if (options.only !== undefined && options.only.length > 0) {
-    const activeIds = new Set(active.map((j) => j.id))
-    for (const id of options.only) {
-      if (!activeIds.has(id)) {
-        const known = registry.find((j) => j.id === id)
-        throw new JourneyRunCliError(
-          known !== undefined
-            ? `--only ${id}: journey is blocked by [${known.blocked_by.join(", ")}] — suites run active journeys only`
-            : `--only ${id}: journey not found in the registry (${registry.length} loaded)`,
-        )
-      }
-    }
-    const onlySet = new Set(options.only)
-    selected = active.filter((j) => onlySet.has(j.id))
-  }
+  const selected = selectSuiteJourneys(registry, options.only)
   if (selected.length === 0) {
     throw new JourneyRunCliError("suite selected 0 active journeys — nothing to run")
   }
-  // Money-flow ids must exist in the registry (typos fail loudly); ids not
-  // selected are tolerated (a narrowed --only run is still well-formed).
-  for (const id of moneyFlows) {
-    if (!registry.some((j) => j.id === id)) {
-      throw new JourneyRunCliError(`--money-flows ${id}: journey not found in the registry`)
-    }
-  }
+  validateMoneyFlows(registry, moneyFlows)
 
   // ── ONE budget spans the suite (the abort accumulator) ─────────────────────
   const budget = createDollarBudget(resolveBudgetCapUsd(options.budgetUsd, options.env))
@@ -190,15 +226,9 @@ export async function runJourneySuiteCli(
     }
 
     onProgress(`suite: ${journey.id} starting (k=${jk})`)
-    const report = await runJourneyFn({
-      journeyId: journey.id,
-      k: jk,
-      ...(options.dir !== undefined ? { dir: options.dir } : {}),
-      ...(options.envFile !== undefined ? { envFile: options.envFile } : {}),
-      ...(options.runsDir !== undefined ? { runsDir: options.runsDir } : {}),
-      onProgress,
-      budget, // the SHARED accumulator — per-attempt charging happens inside
-    })
+    const report = await runJourneyFn(
+      buildRunJourneyOptions(journey, jk, budget, onProgress, options),
+    )
     reports.push(report)
     onProgress(`suite: ${journey.id} ${report.pass ? "PASS" : "FAIL"} — ${renderBudgetLine(budget)}`)
   }

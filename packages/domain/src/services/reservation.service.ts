@@ -683,12 +683,14 @@ export function createReservationService(options?: ReservationServiceOptions) {
         state,
         reservationsPolicyBundle,
         async (payload) => {
+          const completeOrNoShowStatus =
+            envelope.kind === "reservation.complete"
+              ? ("completed" as const)
+              : ("no_show" as const)
           const newStatus =
             envelope.kind === "reservation.checkin"
               ? ("seated" as const)
-              : envelope.kind === "reservation.complete"
-                ? ("completed" as const)
-                : ("no_show" as const)
+              : completeOrNoShowStatus
           return this.transition(payload.reservationId, newStatus)
         },
         adjudicateOptions,

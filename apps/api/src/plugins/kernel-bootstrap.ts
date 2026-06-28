@@ -79,16 +79,12 @@ let _registry: Registry | null = null
 let _recorder: KernelMetricsRecorder | null = null
 
 export function getKernelRegistry(): Registry {
-  if (_registry === null) {
-    _registry = new Registry()
-  }
+  _registry ??= new Registry()
   return _registry
 }
 
 export function getKernelMetricsRecorder(): KernelMetricsRecorder {
-  if (_recorder === null) {
-    _recorder = createKernelMetricsRecorder(getKernelRegistry(), logger)
-  }
+  _recorder ??= createKernelMetricsRecorder(getKernelRegistry(), logger)
   return _recorder
 }
 

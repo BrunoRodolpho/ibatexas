@@ -235,8 +235,10 @@ const start = async (): Promise<void> => {
 // served, yet the pod looked "alive" to a bare `node` orchestrator. Wrap with
 // an explicit catch so bootstrap failures exit non-zero. Sentry still captures
 // via the catch flow (Sentry.captureException is invoked before exit).
-start().catch((err) => {
+try {
+  await start();
+} catch (err) {
   if (process.env.SENTRY_DSN) Sentry.captureException(err);
   logger.fatal({ err }, "[fatal] startup error");
   process.exit(1);
-});
+}

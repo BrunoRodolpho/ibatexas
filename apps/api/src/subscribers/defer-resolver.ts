@@ -336,20 +336,34 @@ function deferResumingKey(intentHash: string, signal: string): string {
   return `defer:resuming:${deferResumeHash(intentHash, signal)}`
 }
 
-export async function resolveDeferredSession(
-  args: ResolveDeferredSessionArgs,
-): Promise<ResolveResult> {
-  const { sessionId, signal, event, log } = args
-  const redis = await getRedisClient()
+type RedisClient = Awaited<ReturnType<typeof getRedisClient>>
 
-  // Pre-flight tamper check. We read the raw blob ourselves so we can DLQ
-  // a tampered envelope before calling resumeDeferredIntent (which would
-  // consume the cycle counter and fail with a logger-only warning).
-  //
+// ── resolveDeferredSession helpers (extracted to bound cognitive complexity) ──
+//
+// Each helper preserves the inlined behavior, log messages and side effects
+// exactly; only the control flow was lifted into named functions.
+
+type ParkedEnvelopeLoadResult =
+  | { readonly kind: "proceed"; readonly parked: ParkedEnvelope }
+  | { readonly kind: "terminal"; readonly result: ResolveResult }
+
+/**
+ * Pre-flight load + validate of the parked blob: robust GET, JSON parse,
+ * signal-match, and T-005 hash verification. Returns the parsed envelope to
+ * proceed, or a terminal {@link ResolveResult} (already DLQ'd / key-deleted as
+ * the original inline code did).
+ */
+async function loadAndValidateParkedEnvelope(args: {
+  readonly redis: RedisClient
+  readonly rawKey: string
+  readonly sessionId: string
+  readonly signal: string
+  readonly log?: FastifyBaseLogger
+}): Promise<ParkedEnvelopeLoadResult> {
+  const { redis, rawKey, sessionId, signal, log } = args
+
   // P1-D — distinguish transient Redis errors from a real "no parked
-  // envelope". The pre-W2 `.catch(() => null)` collapsed both into "no
-  // park", silently dropping PIX confirmations during Redis IOErrors.
-  const rawKey = rk(`defer:pending:${sessionId}`)
+  // envelope". The pre-W2 `.catch(() => null)` collapsed both into "no park".
   const getResult = await robustRedisGet(redis, rawKey, log)
   if (getResult.kind === "error") {
     log?.error(
@@ -363,14 +377,17 @@ export async function resolveDeferredSession(
       log,
     )
     return {
-      kind: "transient_error",
-      reason: `redis_get_failed: ${
-        (getResult.err as Error)?.message ?? "unknown"
-      }`,
+      kind: "terminal",
+      result: {
+        kind: "transient_error",
+        reason: `redis_get_failed: ${
+          (getResult.err as Error)?.message ?? "unknown"
+        }`,
+      },
     }
   }
   if (getResult.kind === "missing") {
-    return { kind: "no_park" }
+    return { kind: "terminal", result: { kind: "no_park" } }
   }
   const raw = getResult.value
   let parked: ParkedEnvelope
@@ -390,13 +407,16 @@ export async function resolveDeferredSession(
     // Don't leave the malformed key around — it will trip every subsequent
     // resume sweep with the same parse error.
     await redis.del(rawKey).catch(() => {})
-    return { kind: "resume_failed", reason: "malformed_envelope" }
+    return {
+      kind: "terminal",
+      result: { kind: "resume_failed", reason: "malformed_envelope" },
+    }
   }
 
   // Signal-mismatch is not an error — different wire events can fire while
   // a single park waits for `payment.confirmed`. Skip silently.
   if (parked.signal !== signal) {
-    return { kind: "signal_mismatch" }
+    return { kind: "terminal", result: { kind: "signal_mismatch" } }
   }
 
   // T-005: verify hash BEFORE doing any resume-state mutations so a tampered
@@ -427,30 +447,17 @@ export async function resolveDeferredSession(
     // Delete the tampered key — leaving it would re-trip on every resume.
     await redis.del(rawKey).catch(() => {})
     return {
-      kind: "park_blob_tampered",
-      intentHash: parked.envelope.intentHash,
+      kind: "terminal",
+      result: {
+        kind: "park_blob_tampered",
+        intentHash: parked.envelope.intentHash,
+      },
     }
   }
-  // W8-Q2: fail-loud refuse on missing verification fields.
-  //
-  // The runtime's `verifyParkedEnvelopeHash` returns `{verified: null,
-  // reason: "missing_fields"}` when the parked blob lacks any of
-  // {version, nonce, taint, actorPrincipal} at the envelope's top level.
-  // The runtime treats this as a back-compat branch (warn + proceed under
-  // `verifyHash: "warn"`), which silently disables tamper-at-rest detection.
-  //
-  // The adopter-side contract is stricter: the NX-park wrapper now refuses
-  // to write such blobs (`ParkVerificationFieldsMissingError`), so any
-  // `missing_fields` blob we see at resume time is either pre-W8-Q2 legacy
-  // or evidence that the field-stripping path is being exercised in the
-  // wild. Either way we MUST refuse — proceeding would re-execute an
-  // envelope we cannot prove is the one originally adjudicated.
-  //
-  // We do NOT remove the runtime's back-compat branch (other adopters
-  // outside ibatexas may legitimately rely on warn mode); we just refuse
-  // at our boundary. Tampered + unverifiable both DLQ + return a refusal
-  // kind; the parked key is deleted so the same blob doesn't re-trip on
-  // every signal.
+  // W8-Q2: fail-loud refuse on missing verification fields. The runtime
+  // returns `{verified: null}` (back-compat warn mode) when the blob lacks
+  // hash-verification fields; the adopter-side contract refuses — proceeding
+  // would re-execute an envelope we cannot prove is the one adjudicated.
   if (verification.verified === null) {
     log?.warn(
       {
@@ -478,8 +485,338 @@ export async function resolveDeferredSession(
     )
     // Delete the unverifiable key — leaving it would re-trip on every resume.
     await redis.del(rawKey).catch(() => {})
-    return { kind: "park_blob_unverifiable" }
+    return { kind: "terminal", result: { kind: "park_blob_unverifiable" } }
   }
+
+  return { kind: "proceed", parked }
+}
+
+/**
+ * Emit the REFUSE audit record for the "sweeper won the race" branch
+ * (E2 Fix-b). Side-effect only; never throws (build/emit failures are logged).
+ */
+function emitParkMissingAfterSweeperAudit(args: {
+  readonly parked: ParkedEnvelope
+  readonly intentHash: string
+  readonly signal: string
+  readonly sessionId: string
+  readonly log?: FastifyBaseLogger
+}): void {
+  const { parked, intentHash, signal, sessionId, log } = args
+  try {
+    const refusalEnvelope = buildSystemEnvelope({
+      kind: parked.envelope.kind,
+      payload: parked.envelope.payload,
+      sourceSubject: "payment.status_changed",
+      eventId: `${intentHash}:parkKey_missing_after_sweeper`,
+    })
+    const record = buildAuditRecord({
+      envelope: refusalEnvelope,
+      decision: {
+        kind: "REFUSE",
+        refusal: {
+          kind: "BUSINESS_RULE",
+          code: "defer.resume.skipped",
+          userFacing:
+            "Resumo do defer cancelado — confirmação de pagamento já foi processada pelo sweeper.",
+          detail: "parkKey_missing_after_sweeper",
+        },
+        basis: [
+          {
+            category: "business",
+            code: BASIS_CODES.business.RULE_VIOLATED,
+            detail: {
+              rule: "parkKey_missing_after_sweeper",
+              kind: parked.envelope.kind,
+              signal,
+            },
+          },
+        ],
+      },
+      durationMs: 0,
+      supersedes: {
+        predecessorIntentHash: intentHash,
+        predecessorAt: parked.parkedAt,
+        reason: "defer_resumed",
+      },
+    })
+    void getAuditSink()
+      .emit(record)
+      .catch((err: unknown) => {
+        log?.warn(
+          { sessionId, intentHash, err: (err as Error).message },
+          "[defer-resolver] defer.resume.skipped audit emit failed",
+        )
+      })
+  } catch (err) {
+    log?.warn(
+      { sessionId, intentHash, err: (err as Error).message },
+      "[defer-resolver] defer.resume.skipped audit record build failed",
+    )
+  }
+}
+
+/**
+ * P0-8 step 3 — bump the per-intentHash cycle counter. Returns a terminal
+ * {@link ResolveResult} (releasing the resuming lock) when the cap is exceeded
+ * or the INCR fails; returns `null` to proceed.
+ */
+async function incrementResumeCycleOrRelease(args: {
+  readonly redis: RedisClient
+  readonly intentHash: string
+  readonly sessionId: string
+  readonly signal: string
+  readonly resumingKey: string
+  readonly resumingLockValue: string | null
+  readonly log?: FastifyBaseLogger
+}): Promise<ResolveResult | null> {
+  const {
+    redis,
+    intentHash,
+    sessionId,
+    signal,
+    resumingKey,
+    resumingLockValue,
+    log,
+  } = args
+  const cycleKey = rk(`defer:cycle:${intentHash}`)
+  const cap = DEFAULT_MAX_RESUME_CYCLES
+  try {
+    const cycles = await redis.incr(cycleKey)
+    await redis
+      .expire(cycleKey, DEFER_PENDING_TTL_GRACE_SECONDS)
+      .catch(() => {})
+    if (cycles > cap) {
+      log?.warn(
+        { sessionId, signal, intentHash, cycles, cap },
+        "[defer-resolver] cycle cap exceeded — refusing to re-execute",
+      )
+      // Clear the resuming marker so the next attempt isn't blocked by it
+      // even though this attempt is refused.
+      await releaseDeferResumingLock(resumingKey, resumingLockValue)
+      return { kind: "cycle_cap_exceeded", intentHash }
+    }
+    return null
+  } catch (err) {
+    log?.error(
+      { sessionId, signal, intentHash, err: (err as Error).message },
+      "[defer-resolver] cycle counter INCR failed — releasing resuming slot",
+    )
+    await releaseDeferResumingLock(resumingKey, resumingLockValue)
+    return { kind: "resume_failed", reason: "cycle_counter_failed" }
+  }
+}
+
+/**
+ * Emit the audit record linking the resumption back to the original park
+ * (P1-5 `supersedes`). Side-effect only; never throws.
+ */
+function emitResumeAudit(args: {
+  readonly envelope: IntentEnvelope
+  readonly decision: Decision
+  readonly intentHash: string
+  readonly parkedAt: string
+  readonly sessionId: string
+  readonly startedAt: number
+  readonly log?: FastifyBaseLogger
+}): void {
+  const { envelope, decision, intentHash, parkedAt, sessionId, startedAt, log } =
+    args
+  try {
+    const record = buildAuditRecord({
+      envelope,
+      decision,
+      durationMs: Date.now() - startedAt,
+      supersedes: {
+        predecessorIntentHash: intentHash,
+        predecessorAt: parkedAt,
+        reason: "defer_resumed",
+      },
+    })
+    void getAuditSink()
+      .emit(record)
+      .catch((err: unknown) => {
+        log?.warn(
+          { sessionId, intentHash, err: (err as Error).message },
+          "[defer-resolver] audit emit failed",
+        )
+      })
+  } catch (err) {
+    log?.warn(
+      { sessionId, intentHash, err: (err as Error).message },
+      "[defer-resolver] audit record build failed",
+    )
+  }
+}
+
+/**
+ * P0-8 step 4 — dispatch the resumed decision. Returns whether dispatch
+ * happened and whether it failed (the caller commits or rolls back). Behavior
+ * mirrors the previously-inlined EXECUTE/REWRITE/DEFER/else branches exactly.
+ */
+async function dispatchResumedDecision(args: {
+  readonly decision: Decision
+  readonly envelope: IntentEnvelope
+  readonly sessionId: string
+  readonly intentHash: string
+  readonly signal: string
+  readonly log?: FastifyBaseLogger
+}): Promise<{ readonly dispatched: boolean; readonly dispatchFailed: boolean }> {
+  const { decision, envelope, sessionId, intentHash, signal, log } = args
+  let dispatched = false
+  let dispatchFailed = false
+  if (decision.kind === "EXECUTE" || decision.kind === "REWRITE") {
+    if (_dispatcher) {
+      try {
+        await _dispatcher(
+          { envelope, sessionId, originalIntentHash: intentHash },
+          log,
+        )
+        dispatched = true
+        log?.info(
+          { sessionId, intentHash, signal, kind: decision.kind },
+          "[defer-resolver] resumed intent dispatched",
+        )
+      } catch (err) {
+        dispatchFailed = true
+        log?.error(
+          {
+            sessionId,
+            intentHash,
+            signal,
+            err: (err as Error).message,
+          },
+          "[defer-resolver] dispatcher threw on resumed intent — leaving park intact for retry",
+        )
+        await pushToDlq(
+          "intent.defer.resume",
+          { sessionId, signal, intentHash, decision: decision.kind },
+          err,
+          log,
+        )
+      }
+    } else {
+      // NEW-P0-X1 — Boot-window race fix. Treat "EXECUTE/REWRITE with no
+      // dispatcher" as a dispatch failure — clear the resuming marker, leave
+      // the parked envelope intact, and route to DLQ for retry.
+      dispatchFailed = true
+      log?.error(
+        { sessionId, intentHash, signal, kind: decision.kind },
+        "[defer-resolver] EXECUTE on resume but no dispatcher wired — DATA-LOSS GUARD: leaving park intact for retry (NEW-P0-X1)",
+      )
+      await pushToDlq(
+        "intent.defer.resume",
+        { sessionId, signal, intentHash, decision: decision.kind },
+        new Error("dispatcher_not_wired"),
+        log,
+      )
+    }
+  } else if (decision.kind === "DEFER") {
+    // The kernel still wants to wait — fall through. The park TTL will
+    // eventually trip the timeout sweeper. Cycle counter still incremented
+    // above so the cap protects against pathological re-DEFER.
+    log?.info(
+      { sessionId, intentHash, signal: decision.signal },
+      "[defer-resolver] re-adjudicate returned DEFER — leaving in-flight",
+    )
+  } else {
+    // REFUSE / REQUEST_CONFIRMATION / ESCALATE — kernel rejected on resume.
+    log?.info(
+      { sessionId, intentHash, signal, kind: decision.kind },
+      "[defer-resolver] resumed envelope re-adjudicated to non-EXECUTE",
+    )
+  }
+  return { dispatched, dispatchFailed }
+}
+
+// ── NATS subscriber callback helpers ────────────────────────────────────────
+
+/** SCAN the `defer:pending:*` namespace, flattening batched yields. */
+async function scanParkedKeys(redis: RedisClient): Promise<string[]> {
+  const pattern = rk("defer:pending:*")
+  const seenKeys: string[] = []
+  for await (const key of redis.scanIterator({
+    MATCH: pattern,
+    COUNT: SCAN_COUNT,
+  })) {
+    if (Array.isArray(key)) {
+      // Some node-redis builds yield batches; flatten defensively.
+      seenKeys.push(...key)
+    } else {
+      seenKeys.push(key as string)
+    }
+  }
+  return seenKeys
+}
+
+/** Per-session outcome logging for the resume sweep. */
+function logResolveResult(
+  result: ResolveResult,
+  ctx: {
+    readonly sessionId: string
+    readonly paymentId: string
+    readonly orderId: string
+    readonly log?: FastifyBaseLogger
+  },
+): void {
+  const { sessionId, paymentId, orderId, log } = ctx
+  if (result.kind === "re_adjudicated") {
+    log?.info(
+      {
+        sessionId,
+        paymentId,
+        orderId,
+        intentHash: result.intentHash,
+        kind: result.decision.kind,
+        dispatched: result.dispatched,
+      },
+      "[defer-resolver] re-adjudicated resumed intent",
+    )
+  } else if (result.kind === "park_blob_tampered") {
+    // Already DLQ'd in resolveDeferredSession.
+    log?.warn(
+      { sessionId, paymentId, intentHash: result.intentHash },
+      "[defer-resolver] tampered park blob — see DLQ intent.defer.resume",
+    )
+  } else if (result.kind === "transient_error") {
+    // P1-D — Redis IOError exhausted retries; the resume was DLQ'd
+    // in resolveDeferredSession. Log at ERROR level for ops alerting.
+    log?.error(
+      { sessionId, paymentId, orderId, reason: result.reason },
+      "[defer-resolver] transient Redis error — PIX confirmation queued in DLQ",
+    )
+  } else if (result.kind === "park_missing_after_lock") {
+    // audit-2026-05-24 E2 (Fix-b) — sweeper won the race; the resolver
+    // stepped down cleanly. The skip audit was already emitted inside
+    // resolveDeferredSession.
+    log?.info(
+      { sessionId, paymentId, orderId, intentHash: result.intentHash },
+      "[defer-resolver] sweeper won race — resume skipped (E2 Fix-b)",
+    )
+  }
+}
+
+export async function resolveDeferredSession(
+  args: ResolveDeferredSessionArgs,
+): Promise<ResolveResult> {
+  const { sessionId, signal, event, log } = args
+  const redis = await getRedisClient()
+
+  // Pre-flight load + tamper check. We read the raw blob ourselves so we can
+  // DLQ a tampered envelope before claiming a resuming slot. P1-D — the helper
+  // distinguishes transient Redis errors from a real "no parked envelope".
+  const rawKey = rk(`defer:pending:${sessionId}`)
+  const loaded = await loadAndValidateParkedEnvelope({
+    redis,
+    rawKey,
+    sessionId,
+    signal,
+    log,
+  })
+  if (loaded.kind === "terminal") {
+    return loaded.result
+  }
+  const parked = loaded.parked
 
   const intentHash = parked.envelope.intentHash
   const resumingKey = rk(deferResumingKey(intentHash, signal))
@@ -569,57 +906,13 @@ export async function resolveDeferredSession(
       { sessionId, signal, intentHash },
       "[defer-resolver] parkKey missing after SETNX — sweeper won race, releasing and exiting (E2 Fix-b)",
     )
-    try {
-      const refusalEnvelope = buildSystemEnvelope({
-        kind: parked.envelope.kind,
-        payload: parked.envelope.payload,
-        sourceSubject: "payment.status_changed",
-        eventId: `${intentHash}:parkKey_missing_after_sweeper`,
-      })
-      const record = buildAuditRecord({
-        envelope: refusalEnvelope,
-        decision: {
-          kind: "REFUSE",
-          refusal: {
-            kind: "BUSINESS_RULE",
-            code: "defer.resume.skipped",
-            userFacing:
-              "Resumo do defer cancelado — confirmação de pagamento já foi processada pelo sweeper.",
-            detail: "parkKey_missing_after_sweeper",
-          },
-          basis: [
-            {
-              category: "business",
-              code: BASIS_CODES.business.RULE_VIOLATED,
-              detail: {
-                rule: "parkKey_missing_after_sweeper",
-                kind: parked.envelope.kind,
-                signal,
-              },
-            },
-          ],
-        },
-        durationMs: 0,
-        supersedes: {
-          predecessorIntentHash: intentHash,
-          predecessorAt: parked.parkedAt,
-          reason: "defer_resumed",
-        },
-      })
-      void getAuditSink()
-        .emit(record)
-        .catch((err: unknown) => {
-          log?.warn(
-            { sessionId, intentHash, err: (err as Error).message },
-            "[defer-resolver] defer.resume.skipped audit emit failed",
-          )
-        })
-    } catch (err) {
-      log?.warn(
-        { sessionId, intentHash, err: (err as Error).message },
-        "[defer-resolver] defer.resume.skipped audit record build failed",
-      )
-    }
+    emitParkMissingAfterSweeperAudit({
+      parked,
+      intentHash,
+      signal,
+      sessionId,
+      log,
+    })
     await releaseDeferResumingLock(resumingKey, resumingLockValue)
     return { kind: "park_missing_after_lock", intentHash }
   }
@@ -647,30 +940,17 @@ export async function resolveDeferredSession(
   // BEFORE dispatch so a runaway DEFER → resume → DEFER chain refuses past
   // the cap without dispatching the offending cycle. Mirrors the runtime's
   // resumeDeferredIntent cycle-cap logic.
-  const cycleKey = rk(`defer:cycle:${intentHash}`)
-  const cap = DEFAULT_MAX_RESUME_CYCLES
-  try {
-    const cycles = await redis.incr(cycleKey)
-    await redis
-      .expire(cycleKey, DEFER_PENDING_TTL_GRACE_SECONDS)
-      .catch(() => {})
-    if (cycles > cap) {
-      log?.warn(
-        { sessionId, signal, intentHash, cycles, cap },
-        "[defer-resolver] cycle cap exceeded — refusing to re-execute",
-      )
-      // Clear the resuming marker so the next attempt isn't blocked by it
-      // even though this attempt is refused.
-      await releaseDeferResumingLock(resumingKey, resumingLockValue)
-      return { kind: "cycle_cap_exceeded", intentHash }
-    }
-  } catch (err) {
-    log?.error(
-      { sessionId, signal, intentHash, err: (err as Error).message },
-      "[defer-resolver] cycle counter INCR failed — releasing resuming slot",
-    )
-    await releaseDeferResumingLock(resumingKey, resumingLockValue)
-    return { kind: "resume_failed", reason: "cycle_counter_failed" }
+  const cycleResult = await incrementResumeCycleOrRelease({
+    redis,
+    intentHash,
+    sessionId,
+    signal,
+    resumingKey,
+    resumingLockValue,
+    log,
+  })
+  if (cycleResult) {
+    return cycleResult
   }
 
   // ── Re-execute through adjudicate() ──────────────────────────────────
@@ -705,111 +985,24 @@ export async function resolveDeferredSession(
   // by following `record.supersedes.predecessorIntentHash`. The parked
   // envelope's `intentHash` IS the predecessor; `parked.parkedAt` is the
   // wall-clock anchor of the park step the audit reader joins on.
-  try {
-    const record = buildAuditRecord({
-      envelope,
-      decision,
-      durationMs: Date.now() - startedAt,
-      supersedes: {
-        predecessorIntentHash: intentHash,
-        predecessorAt: parked.parkedAt,
-        reason: "defer_resumed",
-      },
-    })
-    void getAuditSink()
-      .emit(record)
-      .catch((err: unknown) => {
-        log?.warn(
-          { sessionId, intentHash, err: (err as Error).message },
-          "[defer-resolver] audit emit failed",
-        )
-      })
-  } catch (err) {
-    log?.warn(
-      { sessionId, intentHash, err: (err as Error).message },
-      "[defer-resolver] audit record build failed",
-    )
-  }
+  emitResumeAudit({
+    envelope,
+    decision,
+    intentHash,
+    parkedAt: parked.parkedAt,
+    sessionId,
+    startedAt,
+    log,
+  })
 
-  let dispatched = false
-  let dispatchFailed = false
-  if (decision.kind === "EXECUTE" || decision.kind === "REWRITE") {
-    if (_dispatcher) {
-      try {
-        await _dispatcher(
-          { envelope, sessionId, originalIntentHash: intentHash },
-          log,
-        )
-        dispatched = true
-        log?.info(
-          { sessionId, intentHash, signal, kind: decision.kind },
-          "[defer-resolver] resumed intent dispatched",
-        )
-      } catch (err) {
-        dispatchFailed = true
-        log?.error(
-          {
-            sessionId,
-            intentHash,
-            signal,
-            err: (err as Error).message,
-          },
-          "[defer-resolver] dispatcher threw on resumed intent — leaving park intact for retry",
-        )
-        await pushToDlq(
-          "intent.defer.resume",
-          { sessionId, signal, intentHash, decision: decision.kind },
-          err,
-          log,
-        )
-      }
-    } else {
-      // NEW-P0-X1 — Boot-window race fix.
-      //
-      // Pre-fix: when the dispatcher is null (the boot-window between
-      // `startDeferResolverSubscriber(...)` and `setResumeIntentDispatcher(...)`
-      // in `index.ts`), this branch logged a warning and FELL THROUGH to the
-      // COMMIT path below — marking `defer:resumed:{hash}` durably committed
-      // and deleting `defer:pending:{sessionId}`. The intent was NEVER
-      // dispatched. Silent data loss on every cold boot for any in-flight
-      // PIX confirmation that landed during the boot window.
-      //
-      // Post-fix: treat "EXECUTE/REWRITE with no dispatcher" as a dispatch
-      // failure — clear the resuming marker, leave the parked envelope
-      // intact, and route to DLQ. The next NATS delivery (or sweeper
-      // recovery scan) can retry; the parked envelope is recoverable.
-      //
-      // The proper fix in `apps/api/src/index.ts` is to wire the dispatcher
-      // via `startDeferResolverSubscriber({ dispatcher })` BEFORE the NATS
-      // subscription becomes live — this branch is the belt-and-braces
-      // guard for any caller that forgets.
-      dispatchFailed = true
-      log?.error(
-        { sessionId, intentHash, signal, kind: decision.kind },
-        "[defer-resolver] EXECUTE on resume but no dispatcher wired — DATA-LOSS GUARD: leaving park intact for retry (NEW-P0-X1)",
-      )
-      await pushToDlq(
-        "intent.defer.resume",
-        { sessionId, signal, intentHash, decision: decision.kind },
-        new Error("dispatcher_not_wired"),
-        log,
-      )
-    }
-  } else if (decision.kind === "DEFER") {
-    // The kernel still wants to wait — fall through. The park TTL will
-    // eventually trip the timeout sweeper. Cycle counter still incremented
-    // above so the cap protects against pathological re-DEFER.
-    log?.info(
-      { sessionId, intentHash, signal: decision.signal },
-      "[defer-resolver] re-adjudicate returned DEFER — leaving in-flight",
-    )
-  } else {
-    // REFUSE / REQUEST_CONFIRMATION / ESCALATE — kernel rejected on resume.
-    log?.info(
-      { sessionId, intentHash, signal, kind: decision.kind },
-      "[defer-resolver] resumed envelope re-adjudicated to non-EXECUTE",
-    )
-  }
+  const { dispatched, dispatchFailed } = await dispatchResumedDecision({
+    decision,
+    envelope,
+    sessionId,
+    intentHash,
+    signal,
+    log,
+  })
 
   // P0-8 — Two-phase commit, step 4: COMMIT or ROLLBACK.
   if (dispatchFailed) {
@@ -927,20 +1120,9 @@ export async function startDeferResolverSubscriber(
     // SCAN over the `defer:pending:*` namespace. SCAN is non-blocking and
     // safe to call from a subscriber callback. KEYS would O(N)-block Redis
     // for the duration of the scan — avoided per CLAUDE.md best practice.
-    const pattern = rk("defer:pending:*")
-    const seenKeys: string[] = []
+    let seenKeys: string[]
     try {
-      for await (const key of redis.scanIterator({
-        MATCH: pattern,
-        COUNT: SCAN_COUNT,
-      })) {
-        if (Array.isArray(key)) {
-          // Some node-redis builds yield batches; flatten defensively.
-          seenKeys.push(...key)
-        } else {
-          seenKeys.push(key as string)
-        }
-      }
+      seenKeys = await scanParkedKeys(redis)
     } catch (err) {
       log?.error(
         { err: (err as Error).message },
@@ -958,7 +1140,7 @@ export async function startDeferResolverSubscriber(
     }
 
     for (const key of seenKeys) {
-      const m = key.match(/defer:pending:(.+)$/)
+      const m = /defer:pending:(.+)$/.exec(key)
       if (!m) continue
       const sessionId = m[1]!
 
@@ -970,40 +1152,7 @@ export async function startDeferResolverSubscriber(
           log,
         })
 
-        if (result.kind === "re_adjudicated") {
-          log?.info(
-            {
-              sessionId,
-              paymentId,
-              orderId,
-              intentHash: result.intentHash,
-              kind: result.decision.kind,
-              dispatched: result.dispatched,
-            },
-            "[defer-resolver] re-adjudicated resumed intent",
-          )
-        } else if (result.kind === "park_blob_tampered") {
-          // Already DLQ'd in resolveDeferredSession.
-          log?.warn(
-            { sessionId, paymentId, intentHash: result.intentHash },
-            "[defer-resolver] tampered park blob — see DLQ intent.defer.resume",
-          )
-        } else if (result.kind === "transient_error") {
-          // P1-D — Redis IOError exhausted retries; the resume was DLQ'd
-          // in resolveDeferredSession. Log at ERROR level for ops alerting.
-          log?.error(
-            { sessionId, paymentId, orderId, reason: result.reason },
-            "[defer-resolver] transient Redis error — PIX confirmation queued in DLQ",
-          )
-        } else if (result.kind === "park_missing_after_lock") {
-          // audit-2026-05-24 E2 (Fix-b) — sweeper won the race; the resolver
-          // stepped down cleanly. The skip audit was already emitted inside
-          // resolveDeferredSession.
-          log?.info(
-            { sessionId, paymentId, orderId, intentHash: result.intentHash },
-            "[defer-resolver] sweeper won race — resume skipped (E2 Fix-b)",
-          )
-        }
+        logResolveResult(result, { sessionId, paymentId, orderId, log })
       } catch (err) {
         // Belt-and-braces: never let one bad envelope take down the whole
         // resume sweep. resolveDeferredSession already handles its own

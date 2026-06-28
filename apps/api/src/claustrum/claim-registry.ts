@@ -246,9 +246,9 @@ export function selectCandidateClaim(
       minSourceIntegrity: spec.minSourceIntegrity,
       kind: spec.kind,
       actor: proposed.actor,
-      ...(proposed.resources !== undefined
-        ? { resources: proposed.resources }
-        : {}),
+      ...(proposed.resources === undefined
+        ? {}
+        : { resources: proposed.resources }),
     },
     // Customer-scoped types partition by their owner-bound subject; the subject
     // is the Q4 same-subject consistency key (SDD §D).

@@ -82,6 +82,7 @@ import {
   createAdminConfirmationStore,
   NULL_STAFF_REFUSAL_PT_BR,
   SAME_ACTOR_REFUSAL_PT_BR,
+  type ConsumeWithSameActorOutcome,
   type PendingAdminAction,
 } from "./admin-confirmation-store.js";
 
@@ -117,6 +118,158 @@ function principalFor(staffId: string | null): {
     taint: "SYSTEM",
     sessionId: "admin:api-key",
   };
+}
+
+/**
+ * Result of {@link gateConsumedAdminAction}: either a reply descriptor
+ * for a refused/invalid receipt (`ok: false`) or the validated pending
+ * action to proceed with (`ok: true`).
+ */
+type AdminConsumeGate =
+  | { readonly ok: false; readonly code: number; readonly error: string }
+  | { readonly ok: true; readonly pending: PendingAdminAction };
+
+/**
+ * Validate a consumed admin-confirmation receipt and enforce the
+ * two-person separation-of-duty gate shared by `force-cancel/confirm`
+ * and `waive/confirm`. Emits the matching refusal audit entry for each
+ * violation kind and returns either a reply descriptor (`ok: false`) or
+ * the validated pending action (`ok: true`).
+ *
+ * Behavior-preserving extraction of the previously-inlined
+ * consume-rejection ladder (kept identical ordering + event payloads;
+ * only the `eventType` prefix and the expected route vary per caller).
+ */
+async function gateConsumedAdminAction(
+  consumed: ConsumeWithSameActorOutcome,
+  deps: {
+    readonly eventLogSvc: ReturnType<typeof createOrderEventLogService>;
+    readonly orderId: string;
+    readonly confirmationId: string;
+    readonly staffId: string | null;
+    readonly eventPrefix: "admin.force_cancel" | "admin.waive";
+    readonly expectedRoute: "force-cancel" | "waive";
+  },
+): Promise<AdminConsumeGate> {
+  const {
+    eventLogSvc,
+    orderId,
+    confirmationId,
+    staffId,
+    eventPrefix,
+    expectedRoute,
+  } = deps;
+  const invalidReceipt: AdminConsumeGate = {
+    ok: false,
+    code: 410,
+    error: "Confirmação inválida, expirada ou já utilizada.",
+  };
+  if (consumed.kind === "missing") {
+    return invalidReceipt;
+  }
+  if (consumed.kind === "null_staff_violation") {
+    await eventLogSvc.append({
+      orderId,
+      eventType: `${eventPrefix}.null_staff_refused`,
+      discriminator: confirmationId,
+      payload: {
+        confirmationId,
+        staffId,
+        pendingStaffId: consumed.pending.staffId,
+        reason: consumed.reason,
+      },
+      timestamp: new Date(),
+    });
+    return { ok: false, code: 403, error: NULL_STAFF_REFUSAL_PT_BR };
+  }
+  if (consumed.kind === "actor_type_mismatch") {
+    await eventLogSvc.append({
+      orderId,
+      eventType: `${eventPrefix}.actor_type_mismatch_refused`,
+      discriminator: confirmationId,
+      payload: {
+        confirmationId,
+        staffId,
+        pendingActor: consumed.pendingActor,
+        requestActor: consumed.requestActor,
+      },
+      timestamp: new Date(),
+    });
+    return { ok: false, code: 403, error: ACTOR_TYPE_MISMATCH_REFUSAL_PT_BR };
+  }
+  if (consumed.kind === "same_actor_violation") {
+    await eventLogSvc.append({
+      orderId,
+      eventType: `${eventPrefix}.same_actor_refused`,
+      discriminator: confirmationId,
+      payload: {
+        confirmationId,
+        staffId,
+        pendingStaffId: consumed.pending.staffId,
+      },
+      timestamp: new Date(),
+    });
+    return { ok: false, code: 403, error: SAME_ACTOR_REFUSAL_PT_BR };
+  }
+  const pending = consumed.pending;
+  if (pending.route !== expectedRoute || pending.orderId !== orderId) {
+    return invalidReceipt;
+  }
+  return { ok: true, pending };
+}
+
+/**
+ * Best-effort cancellation of an order's active payment after a forced
+ * order cancellation. Mirrors the legacy inline behavior exactly: skips
+ * when no active payment exists or it is already terminal, and swallows
+ * any transition error (the payment may already be terminal — non-fatal).
+ */
+async function cancelActivePaymentBestEffort(deps: {
+  readonly paymentQuerySvc: ReturnType<typeof createPaymentQueryService>;
+  readonly paymentCmdSvc: ReturnType<typeof createPaymentCommandService>;
+  readonly orderId: string;
+  readonly staffId: string | null;
+  readonly actorPrincipal: "user" | "system";
+  readonly taint: "TRUSTED" | "SYSTEM";
+  readonly sessionId: string;
+}): Promise<void> {
+  const {
+    paymentQuerySvc,
+    paymentCmdSvc,
+    orderId,
+    staffId,
+    actorPrincipal,
+    taint,
+    sessionId,
+  } = deps;
+  const activePayment = await paymentQuerySvc
+    .getActiveByOrderId(orderId)
+    .catch(() => null);
+  if (
+    !activePayment ||
+    isTerminalPaymentStatus(activePayment.status as PaymentStatus)
+  ) {
+    return;
+  }
+  try {
+    const paymentPayload: PaymentStatusTransitionPayload = {
+      paymentId: activePayment.id,
+      newStatus: PaymentStatus.CANCELED,
+      actor: "admin",
+      ...(staffId ? { actorId: staffId } : {}),
+      reason: "Pedido cancelado pelo admin",
+    };
+    const paymentEnvelope = buildEnvelope({
+      kind: "payment.status.transition" as const,
+      payload: paymentPayload,
+      nonce: randomUUID(),
+      actor: { principal: actorPrincipal, sessionId },
+      taint,
+    });
+    await paymentCmdSvc.transitionStatusFromEnvelope(paymentEnvelope);
+  } catch {
+    // Payment may already be terminal — non-fatal.
+  }
 }
 
 export async function adminOrderActionRoutes(server: FastifyInstance): Promise<void> {
@@ -261,69 +414,22 @@ export async function adminOrderActionRoutes(server: FastifyInstance): Promise<v
         staffId,
         requestActorPrincipal,
       );
-      if (consumed.kind === "missing") {
-        return reply.code(410).send({
-          error: "Confirmação inválida, expirada ou já utilizada.",
-        });
+      // Two-person separation-of-duty + receipt validity gate. The
+      // refusal kinds (missing / null_staff / actor_type_mismatch /
+      // same_actor / wrong-route) each emit their own audit entry inside
+      // the helper; P0-5 / P0-5-TRUE rules are unchanged.
+      const gate = await gateConsumedAdminAction(consumed, {
+        eventLogSvc,
+        orderId: id,
+        confirmationId,
+        staffId,
+        eventPrefix: "admin.force_cancel",
+        expectedRoute: "force-cancel",
+      });
+      if (!gate.ok) {
+        return reply.code(gate.code).send({ error: gate.error });
       }
-      if (consumed.kind === "null_staff_violation") {
-        // P0-5-TRUE: two-person rule requires two identifiable staff
-        // members. An API-key step on either side cannot satisfy it.
-        await eventLogSvc.append({
-          orderId: id,
-          eventType: "admin.force_cancel.null_staff_refused",
-          discriminator: confirmationId,
-          payload: {
-            confirmationId,
-            staffId,
-            pendingStaffId: consumed.pending.staffId,
-            reason: consumed.reason,
-          },
-          timestamp: new Date(),
-        });
-        return reply.code(403).send({ error: NULL_STAFF_REFUSAL_PT_BR });
-      }
-      if (consumed.kind === "actor_type_mismatch") {
-        // P0-5-TRUE: actor-type mismatch — same human bouncing between
-        // credential paths defeats separation-of-duty.
-        await eventLogSvc.append({
-          orderId: id,
-          eventType: "admin.force_cancel.actor_type_mismatch_refused",
-          discriminator: confirmationId,
-          payload: {
-            confirmationId,
-            staffId,
-            pendingActor: consumed.pendingActor,
-            requestActor: consumed.requestActor,
-          },
-          timestamp: new Date(),
-        });
-        return reply
-          .code(403)
-          .send({ error: ACTOR_TYPE_MISMATCH_REFUSAL_PT_BR });
-      }
-      if (consumed.kind === "same_actor_violation") {
-        // P0-5: another operator must confirm step 2. Receipt is
-        // already drained — operator restarts from step 1.
-        await eventLogSvc.append({
-          orderId: id,
-          eventType: "admin.force_cancel.same_actor_refused",
-          discriminator: confirmationId,
-          payload: {
-            confirmationId,
-            staffId,
-            pendingStaffId: consumed.pending.staffId,
-          },
-          timestamp: new Date(),
-        });
-        return reply.code(403).send({ error: SAME_ACTOR_REFUSAL_PT_BR });
-      }
-      const pending = consumed.pending;
-      if (pending.route !== "force-cancel" || pending.orderId !== id) {
-        return reply.code(410).send({
-          error: "Confirmação inválida, expirada ou já utilizada.",
-        });
-      }
+      const pending = gate.pending;
 
       const order = await orderQuerySvc.getById(id);
       if (!order) {
@@ -348,9 +454,9 @@ export async function adminOrderActionRoutes(server: FastifyInstance): Promise<v
       // the two operator clicks.
       const payload: OrderStatusTransitionPayload = {
         ...storedPayload,
-        ...(pending.expectedVersion !== undefined
-          ? { expectedVersion: pending.expectedVersion }
-          : {}),
+        ...(pending.expectedVersion === undefined
+          ? {}
+          : { expectedVersion: pending.expectedVersion }),
       };
       const envelope = buildEnvelope<
         "order.status.transition",
@@ -393,33 +499,15 @@ export async function adminOrderActionRoutes(server: FastifyInstance): Promise<v
         const result = outcome.result!;
 
         // Cancel active payment if not terminal — preserves legacy behavior.
-        const activePayment = await paymentQuerySvc
-          .getActiveByOrderId(id)
-          .catch(() => null);
-        if (
-          activePayment &&
-          !isTerminalPaymentStatus(activePayment.status as PaymentStatus)
-        ) {
-          try {
-            const paymentPayload: PaymentStatusTransitionPayload = {
-              paymentId: activePayment.id,
-              newStatus: PaymentStatus.CANCELED,
-              actor: "admin",
-              ...(staffId ? { actorId: staffId } : {}),
-              reason: "Pedido cancelado pelo admin",
-            };
-            const paymentEnvelope = buildEnvelope({
-              kind: "payment.status.transition" as const,
-              payload: paymentPayload,
-              nonce: randomUUID(),
-              actor: { principal: actorPrincipal, sessionId },
-              taint,
-            });
-            await paymentCmdSvc.transitionStatusFromEnvelope(paymentEnvelope);
-          } catch {
-            // Payment may already be terminal — non-fatal.
-          }
-        }
+        await cancelActivePaymentBestEffort({
+          paymentQuerySvc,
+          paymentCmdSvc,
+          orderId: id,
+          staffId,
+          actorPrincipal,
+          taint,
+          sessionId,
+        });
 
         await publishNatsEvent("order.canceled", {
           orderId: id,
@@ -691,64 +779,21 @@ export async function adminOrderActionRoutes(server: FastifyInstance): Promise<v
         staffId,
         requestActorPrincipal,
       );
-      if (consumed.kind === "missing") {
-        return reply.code(410).send({
-          error: "Confirmação inválida, expirada ou já utilizada.",
-        });
+      // Two-person separation-of-duty + receipt validity gate (P0-5 /
+      // P0-5-TRUE rules unchanged; each refusal kind emits its own audit
+      // entry inside the helper).
+      const gate = await gateConsumedAdminAction(consumed, {
+        eventLogSvc,
+        orderId: id,
+        confirmationId,
+        staffId,
+        eventPrefix: "admin.waive",
+        expectedRoute: "waive",
+      });
+      if (!gate.ok) {
+        return reply.code(gate.code).send({ error: gate.error });
       }
-      if (consumed.kind === "null_staff_violation") {
-        await eventLogSvc.append({
-          orderId: id,
-          eventType: "admin.waive.null_staff_refused",
-          discriminator: confirmationId,
-          payload: {
-            confirmationId,
-            staffId,
-            pendingStaffId: consumed.pending.staffId,
-            reason: consumed.reason,
-          },
-          timestamp: new Date(),
-        });
-        return reply.code(403).send({ error: NULL_STAFF_REFUSAL_PT_BR });
-      }
-      if (consumed.kind === "actor_type_mismatch") {
-        await eventLogSvc.append({
-          orderId: id,
-          eventType: "admin.waive.actor_type_mismatch_refused",
-          discriminator: confirmationId,
-          payload: {
-            confirmationId,
-            staffId,
-            pendingActor: consumed.pendingActor,
-            requestActor: consumed.requestActor,
-          },
-          timestamp: new Date(),
-        });
-        return reply
-          .code(403)
-          .send({ error: ACTOR_TYPE_MISMATCH_REFUSAL_PT_BR });
-      }
-      if (consumed.kind === "same_actor_violation") {
-        // P0-5: another operator must confirm step 2.
-        await eventLogSvc.append({
-          orderId: id,
-          eventType: "admin.waive.same_actor_refused",
-          discriminator: confirmationId,
-          payload: {
-            confirmationId,
-            staffId,
-            pendingStaffId: consumed.pending.staffId,
-          },
-          timestamp: new Date(),
-        });
-        return reply.code(403).send({ error: SAME_ACTOR_REFUSAL_PT_BR });
-      }
-      const pending = consumed.pending;
-      if (pending.route !== "waive" || pending.orderId !== id) {
-        return reply.code(410).send({
-          error: "Confirmação inválida, expirada ou já utilizada.",
-        });
-      }
+      const pending = gate.pending;
 
       const order = await orderQuerySvc.getById(id);
       if (!order) {
@@ -783,9 +828,9 @@ export async function adminOrderActionRoutes(server: FastifyInstance): Promise<v
       // step 1 and step 2 the executor will throw ConcurrencyError.
       const envelopePayload: PaymentStatusTransitionPayload = {
         ...storedPayload,
-        ...(pending.expectedVersion !== undefined
-          ? { expectedVersion: pending.expectedVersion }
-          : {}),
+        ...(pending.expectedVersion === undefined
+          ? {}
+          : { expectedVersion: pending.expectedVersion }),
       };
       const envelope = buildEnvelope<
         "payment.status.transition",

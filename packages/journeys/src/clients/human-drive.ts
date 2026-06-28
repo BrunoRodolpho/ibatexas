@@ -10,7 +10,7 @@
 //   IBX_LIVE_CONTRACT=1 pnpm --filter @ibatexas/journeys exec tsx \
 //     src/clients/human-drive.ts
 
-import { createHash } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
 import { readFile, mkdir, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { homedir } from "node:os"
@@ -80,6 +80,53 @@ function describeDecision(rec: AuditRecord): string {
   }
 }
 
+function recordKey(rec: AuditRecord, fallback: string): string {
+  const hash = (rec as { auditHash?: string }).auditHash ?? rec.envelope.intentHash ?? fallback
+  return `${rec.envelope.kind}:${hash}`
+}
+
+async function fetchTurnReply(client: ChatClient, say: string): Promise<{ reply: string; error?: string }> {
+  try {
+    const t = await client.perTurn(say)
+    return { reply: t.replyText.trim() }
+  } catch (e) {
+    return { reply: "", error: (e as Error).message }
+  }
+}
+
+function logTurnReply(reply: string, error: string | undefined): void {
+  if (error) {
+    console.log(`  ⚠️  (turn error: ${error})`)
+    return
+  }
+  console.log(`  🤖 bot:   ${reply.slice(0, 400)}${reply.length > 400 ? "…" : ""}`)
+}
+
+// Poll intent_audit for rows produced by THIS turn (unseen since last poll).
+async function collectNewRecords(reader: AuditReader, auditScope: string, seenHashes: Set<string>): Promise<AuditRecord[]> {
+  const deadline = Date.now() + 8000
+  for (;;) {
+    const recs = await reader.fetchRecords({ sessionIds: [auditScope] })
+    const newRecs = recs.filter((r) => !seenHashes.has(recordKey(r, randomUUID())))
+    if (newRecs.length > 0 || Date.now() >= deadline) {
+      for (const r of recs) seenHashes.add(recordKey(r, ""))
+      return newRecs
+    }
+    await new Promise((r) => setTimeout(r, 800))
+  }
+}
+
+function logKernelDecisions(newRecs: AuditRecord[]): void {
+  if (newRecs.length === 0) {
+    console.log(`  ⚖️  kernel: (no mutating intent proposed — nothing to adjudicate; the agent stayed in conversation/refused on its own)`)
+    return
+  }
+  for (const r of newRecs) {
+    const detail = r.decision.kind === "EXECUTE" ? "EXECUTE" : describeDecision(r)
+    console.log(`  ⚖️  kernel: ${r.envelope.kind} -> ${detail}`)
+  }
+}
+
 async function main(): Promise<void> {
   await mkdir(OUT_DIR, { recursive: true })
   const env = parseEnvFile(await readFile(ENV_TEST_PATH, "utf8"))
@@ -115,40 +162,13 @@ async function main(): Promise<void> {
   for (const [i, step] of CONVERSATION.entries()) {
     console.log(`\n[Turn ${i + 1}] ${step.intent}`)
     console.log(`  🧑 me:    ${step.say}`)
-    let reply = ""
-    let error: string | undefined
-    try {
-      const t = await client.perTurn(step.say)
-      reply = t.replyText.trim()
-    } catch (e) {
-      error = (e as Error).message
-    }
-    if (error) console.log(`  ⚠️  (turn error: ${error})`)
-    else console.log(`  🤖 bot:   ${reply.slice(0, 400)}${reply.length > 400 ? "…" : ""}`)
+    const { reply, error } = await fetchTurnReply(client, step.say)
+    logTurnReply(reply, error)
 
     // Read the kernel's decisions for THIS turn (new audit rows since last poll).
-    let newRecs: AuditRecord[] = []
-    const deadline = Date.now() + 8000
-    for (;;) {
-      const recs = await reader.fetchRecords({ sessionIds: [auditScope] })
-      newRecs = recs.filter((r) => {
-        const hk = `${r.envelope.kind}:${(r as { auditHash?: string }).auditHash ?? r.envelope.intentHash ?? Math.random()}`
-        return !seenHashes.has(hk)
-      })
-      if (newRecs.length > 0 || Date.now() >= deadline) {
-        for (const r of recs) seenHashes.add(`${r.envelope.kind}:${(r as { auditHash?: string }).auditHash ?? r.envelope.intentHash ?? ""}`)
-        break
-      }
-      await new Promise((r) => setTimeout(r, 800))
-    }
+    const newRecs = await collectNewRecords(reader, auditScope, seenHashes)
+    logKernelDecisions(newRecs)
 
-    if (newRecs.length === 0) {
-      console.log(`  ⚖️  kernel: (no mutating intent proposed — nothing to adjudicate; the agent stayed in conversation/refused on its own)`)
-    } else {
-      for (const r of newRecs) {
-        console.log(`  ⚖️  kernel: ${r.envelope.kind} -> ${r.decision.kind === "EXECUTE" ? "EXECUTE" : describeDecision(r)}`)
-      }
-    }
     transcript.push({ turn: i + 1, intent: step.intent, me: step.say, bot: reply, error, decisions: newRecs.map((r) => ({ kind: r.envelope.kind, decision: r.decision.kind, detail: describeDecision(r) })) })
   }
 
@@ -157,16 +177,19 @@ async function main(): Promise<void> {
   console.log("\n──────────────────────────────────────────────────────────────────────")
   console.log(`  FULL KERNEL AUDIT TRAIL for this session (${allRecs.length} adjudicated envelope(s)):`)
   for (const r of allRecs) console.log(`    • ${r.envelope.kind.padEnd(24)} -> ${r.decision.kind}`)
-  const anyExecuteOnProbe = false
   console.log("\n  Governance check: every mutating proposal received a defined kernel Decision; the two")
   console.log("  'misbehaving customer' probes did NOT yield a silent unauthorized EXECUTE.")
   console.log("══════════════════════════════════════════════════════════════════════\n")
 
   await writeFile(path.join(OUT_DIR, "transcript.json"), JSON.stringify({ customerId, session: client.sessionId, auditScope, ranAt: new Date().toISOString(), conversation: transcript, fullAudit: allRecs.map((r) => ({ kind: r.envelope.kind, decision: r.decision.kind })) }, null, 2))
-  void anyExecuteOnProbe
   await reader.close().catch(() => undefined)
   await oracle.end().catch(() => undefined)
   process.exit(0)
 }
 
-main().catch((e) => { console.error(e); process.exit(1) })
+try {
+  await main()
+} catch (e) {
+  console.error(e)
+  process.exit(1)
+}

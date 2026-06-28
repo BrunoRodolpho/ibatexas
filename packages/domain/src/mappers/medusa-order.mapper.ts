@@ -2,8 +2,7 @@
 // Isolates the projection/event system from Medusa schema drift.
 // All Medusa-to-domain conversions go through these functions.
 
-import type { OrderEventItem } from "@ibatexas/types"
-import type { MedusaOrderRaw } from "@ibatexas/types"
+import type { OrderEventItem, MedusaOrderRaw } from "@ibatexas/types"
 
 /** Current schema version for itemsJson stored in OrderProjection. */
 export const ITEMS_SCHEMA_VERSION = 1

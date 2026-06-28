@@ -13,7 +13,7 @@ type LoginStep = 'phone' | 'otp'
 /* ── Cookie helpers ─────────────────────────────────────────────────── */
 
 function getCookie(name: string): string | undefined {
-  const match = document.cookie.match(new RegExp(`(?:^|; )${name}=([^;]*)`))
+  const match = new RegExp(`(?:^|; )${name}=([^;]*)`).exec(document.cookie)
   return match ? decodeURIComponent(match[1]) : undefined
 }
 
@@ -65,6 +65,8 @@ function toE164(formatted: string, country: CountryCode): string {
 
 /* ── Skeleton ───────────────────────────────────────────────────────── */
 
+const SKELETON_CARD_KEYS = ['card-1', 'card-2', 'card-3', 'card-4'] as const
+
 function AdminSkeleton() {
   return (
     <div className="flex h-screen overflow-hidden bg-smoke-50">
@@ -85,8 +87,8 @@ function AdminSkeleton() {
         </header>
         <main className="flex-1 overflow-y-auto bg-smoke-100/50 p-6">
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            {Array.from({ length: 4 }).map((_, i) => (
-              <div key={i} className="h-24 rounded-sm bg-smoke-200 animate-pulse" />
+            {SKELETON_CARD_KEYS.map((key) => (
+              <div key={key} className="h-24 rounded-sm bg-smoke-200 animate-pulse" />
             ))}
           </div>
           <div className="mt-6 h-64 rounded-sm bg-smoke-200 animate-pulse" />
@@ -369,8 +371,8 @@ export default function AdminRootLayout({ children }: { readonly children: React
       setAuthStatus(checkSession())
     }
 
-    window.addEventListener('storage', handler)
-    return () => window.removeEventListener('storage', handler)
+    globalThis.addEventListener('storage', handler)
+    return () => globalThis.removeEventListener('storage', handler)
   }, [])
 
   /* ── Global error capture ───────────────────────────────────────── */

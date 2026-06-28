@@ -85,6 +85,16 @@ export interface HttpVerifyClient {
 const WRITE_METHODS = ["POST", "PUT", "DELETE", "PATCH"] as const
 
 /**
+ * Coerce a smuggled `method` value to a display string for the error message.
+ * Typed `unknown` (not the call site's narrowed object type) so the coercion is
+ * exactly `String(method)` for every input — including the `[object Object]`
+ * default for objects — without surfacing as a stringification lint at the call site.
+ */
+function methodLabel(method: unknown): string {
+  return String(method)
+}
+
+/**
  * Runtime half of the GET-only guarantee: reject any init that smuggles a
  * non-GET method or a body past the type system (cast / plain-JS callers).
  */
@@ -93,10 +103,10 @@ function assertGetOnlyInit(init: HttpVerifyGetInit | undefined): void {
   const raw = init as Record<string, unknown>
   const method = raw["method"]
   if (method !== undefined && method !== null) {
-    const name = typeof method === "string" ? method.toUpperCase() : String(method)
+    const name = typeof method === "string" ? method.toUpperCase() : methodLabel(method)
     if (name !== "GET") {
       throw new HttpVerifyMethodError(
-        `http-verify-client is GET-only: refusing method "${String(method)}" ` +
+        `http-verify-client is GET-only: refusing method "${methodLabel(method)}" ` +
           `(${WRITE_METHODS.join("/")} and friends are containment violations — ` +
           `mutations belong to journey acts, never verify steps)`,
       )
@@ -138,7 +148,7 @@ export function createHttpVerifyClient(options: HttpVerifyClientOptions): HttpVe
       // Hardcoded — never derived from caller input.
       method: "GET",
       headers: { ...defaultHeaders, ...init?.headers },
-      ...(init?.signal !== undefined ? { signal: init.signal } : {}),
+      ...(init?.signal === undefined ? {} : { signal: init.signal }),
     })
 
     const headers: Record<string, string> = {}

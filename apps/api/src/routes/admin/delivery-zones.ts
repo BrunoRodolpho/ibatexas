@@ -67,9 +67,10 @@ export async function deliveryZoneRoutes(server: FastifyInstance): Promise<void>
       }
       const dupes = request.body.cepPrefixes.filter((c) => allUsedCeps.has(c));
       if (dupes.length > 0) {
+        const dupeList = dupes.map((c) => `${c} (${allUsedCeps.get(c)})`).join(", ");
         return reply.code(422).send({
           error: "CEPs já atribuídos",
-          message: `CEPs já usados em outras zonas: ${dupes.map((c) => `${c} (${allUsedCeps.get(c)})`).join(", ")}`,
+          message: `CEPs já usados em outras zonas: ${dupeList}`,
         });
       }
       const zone = await deliveryZoneSvc.create(request.body);
@@ -107,9 +108,10 @@ export async function deliveryZoneRoutes(server: FastifyInstance): Promise<void>
       }
       const dupes = request.body.cepPrefixes.filter((c) => allUsedCeps.has(c));
       if (dupes.length > 0) {
+        const dupeList = dupes.map((c) => `${c} (${allUsedCeps.get(c)})`).join(", ");
         return reply.code(422).send({
           error: "CEPs já atribuídos",
-          message: `CEPs já usados em outras zonas: ${dupes.map((c) => `${c} (${allUsedCeps.get(c)})`).join(", ")}`,
+          message: `CEPs já usados em outras zonas: ${dupeList}`,
         });
       }
       const zone = await deliveryZoneSvc.update(request.params.id, request.body);

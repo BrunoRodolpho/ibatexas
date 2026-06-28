@@ -60,7 +60,7 @@ describe("buildIbatexasPolicyPacks", () => {
       expect(business[0]).toBe(sessionTokenBudgetGuard);
       expect(business[1]).toBe(confirmOnAutoResolveGuard);
       expect(business[2]).toBe(ownGuard); // the pack's own guard, unmoved
-      expect(business.length).toBe(3);
+      expect(business).toHaveLength(3);
     }
   });
 
@@ -75,7 +75,7 @@ describe("buildIbatexasPolicyPacks", () => {
       }
       // The pack's own auth guard follows, unmoved.
       expect(auth[2 + agentBudgetGuards.length]).toBe(ownAuthGuard);
-      expect(auth.length).toBe(IBATEXAS_ADOPTER_AUTH_GUARDS.length + 1);
+      expect(auth).toHaveLength(IBATEXAS_ADOPTER_AUTH_GUARDS.length + 1);
     }
   });
 
@@ -105,7 +105,7 @@ describe("buildIbatexasPolicyPacks", () => {
     const custom = buildIbatexasPolicyPacks(packs, [ownGuard], []);
     const bundle = custom[0]!.policy as PolicyBundle<string, unknown, unknown>;
     expect(bundle.business[0]).toBe(ownGuard);
-    expect(bundle.business.length).toBe(2);
+    expect(bundle.business).toHaveLength(2);
     expect(bundle.authGuards).toEqual([ownAuthGuard]);
   });
 

@@ -6,7 +6,7 @@ const PII_KEYS = new Set([
 
 /** Patterns that likely contain PII values. */
 const PII_PATTERNS = [
-  /\S+@\S+\.\S+/,                                  // email
+  /[^\s@]+@[^\s@.]+\.[^\s@.]+/,                     // email
   /(\+55)?\s?\(?\d{2}\)?\s?\d{4,5}[-\s]?\d{4}/,   // BR phone
   /\d{3}\.?\d{3}\.?\d{3}[-.]?\d{2}/,               // CPF
 ];
@@ -27,11 +27,9 @@ export function sanitizeProperties(
 
     if (typeof value === "string") {
       const redacted = PII_PATTERNS.some((p) => p.test(value));
-      result[key] = redacted
-        ? "[REDACTED]"
-        : value.length > MAX_VALUE_LENGTH
-          ? value.slice(0, MAX_VALUE_LENGTH)
-          : value;
+      const truncated =
+        value.length > MAX_VALUE_LENGTH ? value.slice(0, MAX_VALUE_LENGTH) : value;
+      result[key] = redacted ? "[REDACTED]" : truncated;
     } else if (typeof value === "object" && value !== null && !Array.isArray(value)) {
       result[key] = sanitizeProperties(value as Record<string, unknown>);
     } else {

@@ -240,6 +240,114 @@ function assertShortForm(pattern: string, prefix: string): void {
   }
 }
 
+/**
+ * Run one `expectSubjects` window. Defined at module scope (not nested inside
+ * `createNatsCapture` → `expectSubjects`) so the recorder/timeout callbacks
+ * stay within the function-nesting budget. The recorder is armed SYNCHRONOUSLY
+ * inside the Promise executor — only messages delivered to it count for this
+ * window — then `beforeWindow` (flush + caller act) runs; an act failure fails
+ * the expectation.
+ */
+function awaitSubjectExpectations(args: {
+  within: number
+  published: string[]
+  notPublished: string[]
+  pump: (
+    shortFormPattern: string,
+    onMessage: (message: CapturedMessage) => void,
+  ) => { unsubscribe(): void }
+  beforeWindow: () => Promise<void>
+}): Promise<ExpectSubjectsResult> {
+  const { within, published, notPublished, pump, beforeWindow } = args
+  const observed: string[] = []
+  const observedSet = new Set<string>()
+  const matchedBy: Record<string, string[]> = {}
+  for (const pattern of published) matchedBy[pattern] = []
+  const forbiddenSeen: { pattern: string; subject: string }[] = []
+
+  return new Promise<ExpectSubjectsResult>((resolve, reject) => {
+    let settled = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+
+    // Idempotent settle guard: claims the single resolution, clears the timer,
+    // and tears down the recorder. Returns false if already settled.
+    const settleGuard = (): boolean => {
+      if (settled) return false
+      settled = true
+      if (timer !== undefined) clearTimeout(timer)
+      recorder.unsubscribe()
+      return true
+    }
+
+    const succeed = (): void => {
+      if (settleGuard()) {
+        resolve({ observed: [...observed], matchedBy: { ...matchedBy } })
+      }
+    }
+
+    const fail = (message: string): void => {
+      if (!settleGuard()) return
+      reject(
+        new NatsCaptureExpectationError(message, {
+          missing: published.filter((pattern) => matchedBy[pattern].length === 0),
+          forbiddenSeen: [...forbiddenSeen],
+          observed: [...observed],
+        }),
+      )
+    }
+
+    const recorder = pump(">", (message) => {
+      if (settled) return
+      if (!observedSet.has(message.subject)) {
+        observedSet.add(message.subject)
+        observed.push(message.subject)
+      }
+      for (const pattern of notPublished) {
+        if (subjectMatchesPattern(message.subject, pattern)) {
+          forbiddenSeen.push({ pattern, subject: message.subject })
+          fail(
+            `expectSubjects: forbidden subject "${message.subject}" was published ` +
+              `(matches notPublished pattern "${pattern}")`,
+          )
+          return
+        }
+      }
+      for (const pattern of published) {
+        if (subjectMatchesPattern(message.subject, pattern)) {
+          matchedBy[pattern].push(message.subject)
+        }
+      }
+      // Early resolve only when no absence assertions are pending — a
+      // notPublished expectation needs the FULL window to prove absence.
+      if (
+        notPublished.length === 0 &&
+        published.every((pattern) => matchedBy[pattern].length > 0)
+      ) {
+        succeed()
+      }
+    })
+
+    timer = setTimeout(() => {
+      const missing = published.filter((pattern) => matchedBy[pattern].length === 0)
+      if (missing.length > 0) {
+        fail(
+          `expectSubjects: window (${within}ms) closed with unmatched published ` +
+            `pattern(s): ${missing.join(", ")} — observed: [${observed.join(", ")}]`,
+        )
+      } else {
+        succeed()
+      }
+    }, within)
+
+    void beforeWindow().catch((error: unknown) => {
+      fail(
+        `expectSubjects: act threw before the window closed: ` +
+          `${error instanceof Error ? error.message : String(error)}`,
+      )
+    })
+  })
+}
+
 /** Wrap a subscribe-only connection slice into a publish-incapable capture. */
 export function createNatsCapture(
   connection: SubscribeOnlyConnection,
@@ -305,94 +413,19 @@ export function createNatsCapture(
       assertShortForm(pattern, prefix)
     }
 
-    // Arm the recorder SYNCHRONOUSLY (before any act, before returning):
-    // only messages delivered to this subscription count for this window.
-    const observed: string[] = []
-    const observedSet = new Set<string>()
-    const matchedBy: Record<string, string[]> = {}
-    for (const pattern of published) matchedBy[pattern] = []
-    const forbiddenSeen: { pattern: string; subject: string }[] = []
-
-    return new Promise<ExpectSubjectsResult>((resolve, reject) => {
-      let settled = false
-      let timer: ReturnType<typeof setTimeout> | undefined
-
-      const settle = (outcome: () => void): void => {
-        if (settled) return
-        settled = true
-        if (timer !== undefined) clearTimeout(timer)
-        recorder.unsubscribe()
-        outcome()
-      }
-
-      const succeed = (): void =>
-        settle(() => resolve({ observed: [...observed], matchedBy: { ...matchedBy } }))
-
-      const fail = (message: string): void =>
-        settle(() =>
-          reject(
-            new NatsCaptureExpectationError(message, {
-              missing: published.filter((pattern) => matchedBy[pattern].length === 0),
-              forbiddenSeen: [...forbiddenSeen],
-              observed: [...observed],
-            }),
-          ),
-        )
-
-      const recorder = pump(">", (message) => {
-        if (settled) return
-        if (!observedSet.has(message.subject)) {
-          observedSet.add(message.subject)
-          observed.push(message.subject)
-        }
-        for (const pattern of notPublished) {
-          if (subjectMatchesPattern(message.subject, pattern)) {
-            forbiddenSeen.push({ pattern, subject: message.subject })
-            fail(
-              `expectSubjects: forbidden subject "${message.subject}" was published ` +
-                `(matches notPublished pattern "${pattern}")`,
-            )
-            return
-          }
-        }
-        for (const pattern of published) {
-          if (subjectMatchesPattern(message.subject, pattern)) {
-            matchedBy[pattern].push(message.subject)
-          }
-        }
-        // Early resolve only when no absence assertions are pending — a
-        // notPublished expectation needs the FULL window to prove absence.
-        if (
-          notPublished.length === 0 &&
-          published.every((pattern) => matchedBy[pattern].length > 0)
-        ) {
-          succeed()
-        }
-      })
-
-      timer = setTimeout(() => {
-        const missing = published.filter((pattern) => matchedBy[pattern].length === 0)
-        if (missing.length > 0) {
-          fail(
-            `expectSubjects: window (${opts.within}ms) closed with unmatched published ` +
-              `pattern(s): ${missing.join(", ")} — observed: [${observed.join(", ")}]`,
-          )
-        } else {
-          succeed()
-        }
-      }, opts.within)
-
-      // Subscribe-before-act ordering: flush interest (when the connection
-      // supports it), then run the act. An act failure fails the expectation.
-      void (async () => {
+    // Subscribe-before-act ordering: the recorder is armed synchronously, then
+    // interest is flushed (when supported) and the act runs — without the
+    // caller juggling unawaited promises. `connection.flush` / `opts.act` are
+    // called as methods so their `this` binding is preserved.
+    return awaitSubjectExpectations({
+      within: opts.within,
+      published,
+      notPublished,
+      pump,
+      beforeWindow: async () => {
         await connection.flush?.()
         if (opts.act) await opts.act()
-      })().catch((error: unknown) => {
-        fail(
-          `expectSubjects: act threw before the window closed: ` +
-            `${error instanceof Error ? error.message : String(error)}`,
-        )
-      })
+      },
     })
   }
 
@@ -449,7 +482,7 @@ export async function connectNatsCapture(
   const captureCredsPath = process.env.IBX_TEST_NATS_CAPTURE_CREDS_PATH
   const captureNkeySeed = process.env.IBX_TEST_NATS_CAPTURE_NKEY_SEED
   const prefixOption =
-    options?.subjectPrefix !== undefined ? { subjectPrefix: options.subjectPrefix } : {}
+    options?.subjectPrefix === undefined ? {} : { subjectPrefix: options.subjectPrefix }
 
   if (
     (captureCredsPath !== undefined && captureCredsPath.length > 0) ||

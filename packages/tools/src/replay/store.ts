@@ -63,11 +63,12 @@ export async function loadReplayEntry(traceId: string): Promise<ReplayEntry | nu
 /**
  * List recent replay entries (last 50) for debugging.
  */
-export async function listRecentReplays(sessionId?: string): Promise<string[]> {
+export async function listRecentReplays(_sessionId?: string): Promise<string[]> {
   try {
     const redis = await getRedisClient()
-    // Use SCAN to find replay keys (limited to 50 results)
-    const pattern = rk(sessionId ? `replay:*` : `replay:*`)
+    // Use SCAN to find replay keys (limited to 50 results). Replay keys are
+    // `replay:{traceId}` — they carry no session id, so all entries are scanned.
+    const pattern = rk(`replay:*`)
     const keys: string[] = []
     let cursor = "0"
     do {

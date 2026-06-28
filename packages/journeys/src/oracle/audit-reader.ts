@@ -97,7 +97,8 @@ function assertScoped(scope: RunSessionScope): void {
 
 /** Escape LIKE metacharacters so a prefix is always a literal prefix match. */
 function likePrefixPattern(prefix: string): string {
-  return `${prefix.replace(/[\\%_]/g, (c) => `\\${c}`)}%`
+  const escaped = prefix.replace(/[\\%_]/g, (c) => `\\${c}`)
+  return `${escaped}%`
 }
 
 // ── Reader surface ───────────────────────────────────────────────────────────
@@ -207,7 +208,7 @@ function isoTimestamp(value: string | Date): string {
   if (value instanceof Date) return value.toISOString()
   const parsed = new Date(value)
   if (Number.isNaN(parsed.getTime())) {
-    throw new Error(`intent_audit.recorded_at is not a parseable timestamp: ${value}`)
+    throw new TypeError(`intent_audit.recorded_at is not a parseable timestamp: ${value}`)
   }
   return parsed.toISOString()
 }
@@ -252,7 +253,7 @@ export function createAuditReader(opts: CreateAuditReaderOptions = {}): AuditRea
     }
     if (scope.sessionIdPrefix !== undefined && scope.sessionIdPrefix.length > 0) {
       params.push(likePrefixPattern(scope.sessionIdPrefix))
-      scopeClauses.push(`session_id LIKE $${params.length} ESCAPE '\\'`)
+      scopeClauses.push(String.raw`session_id LIKE $${params.length} ESCAPE '\'`)
     }
     const where: string[] = [`(${scopeClauses.join(" OR ")})`]
 

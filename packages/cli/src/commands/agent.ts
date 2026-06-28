@@ -79,8 +79,9 @@ export function registerAgentCommands(group: Command): void {
             chalk.green("  ✓ trigger injected") +
               ` agent=${agent.id} subject=payment.status_changed status=${status}`,
           )
+          const triggerDetail = `eventId=${eventId} order=${orderId} payment=${paymentId}`
           console.log(
-            `    ${chalk.dim(`eventId=${eventId} order=${orderId} payment=${paymentId}`)}`,
+            `    ${chalk.dim(triggerDetail)}`,
           )
           console.log(
             `    ${chalk.dim(

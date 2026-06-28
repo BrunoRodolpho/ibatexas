@@ -151,23 +151,39 @@ function truncate(text: string, max = 600): string {
   return text.length > max ? `${text.slice(0, max)}…` : text
 }
 
+function ownerLine(owner: string): string {
+  const assignment =
+    owner === ""
+      ? "UNASSIGNED — claim it by setting `owner` in packages/journeys/governance/flake-ledger.json"
+      : `@${owner}`
+  return `Owner (flake ledger): ${assignment}`
+}
+
+function attemptLine(a: JourneyRunReport["attempts"][number]): string {
+  if (a.pass) return `- attempt ${a.attempt} [${a.runId}]: PASS`
+  const errorSuffix = a.error === undefined ? "" : ` — ${truncate(a.error)}`
+  return `- attempt ${a.attempt} [${a.runId}]: FAIL${errorSuffix}`
+}
+
+function runSection(label: string, report: JourneyRunReport): string[] {
+  const greenCount = report.attempts.filter((a) => a.pass).length
+  return [
+    `### ${label} (k=${report.k}, ${greenCount}/${report.k} green, $${report.totalCostUsd.toFixed(4)})`,
+    ...report.attempts.map(attemptLine),
+    "",
+  ]
+}
+
 function journeyFailureBody(outcome: NightlyJourneyOutcome, date: string, owner: string): string {
   const runs = [
     { label: "first run", report: outcome.firstRun },
-    ...(outcome.retryRun !== undefined ? [{ label: "retry", report: outcome.retryRun }] : []),
+    ...(outcome.retryRun === undefined ? [] : [{ label: "retry", report: outcome.retryRun }]),
   ]
   const lines = [
     `Nightly journey suite ${date}: **${outcome.journey} is RED** (failed${outcome.retried ? " twice — first run AND the single retry" : ""}).`,
     "",
-    ...runs.flatMap(({ label, report }) => [
-      `### ${label} (k=${report.k}, ${report.attempts.filter((a) => a.pass).length}/${report.k} green, $${report.totalCostUsd.toFixed(4)})`,
-      ...report.attempts.map(
-        (a) =>
-          `- attempt ${a.attempt} [${a.runId}]: ${a.pass ? "PASS" : `FAIL${a.error !== undefined ? ` — ${truncate(a.error)}` : ""}`}`,
-      ),
-      "",
-    ]),
-    `Owner (flake ledger): ${owner === "" ? "UNASSIGNED — claim it by setting \`owner\` in packages/journeys/governance/flake-ledger.json" : `@${owner}`}`,
+    ...runs.flatMap(({ label, report }) => runSection(label, report)),
+    ownerLine(owner),
     "Trace JSONL: the `journeys-nightly` workflow-run artifacts (runs/<runId>/trace.jsonl).",
   ]
   return lines.join("\n")
@@ -183,37 +199,42 @@ function quarantineBody(journeyId: string, date: string, owner: string): string 
     "```",
     ...DEQUARANTINE_MANUAL_COMMANDS,
     "```",
-    `Owner (flake ledger): ${owner === "" ? "UNASSIGNED — claim it by setting \`owner\` in packages/journeys/governance/flake-ledger.json" : `@${owner}`}`,
+    ownerLine(owner),
   ].join("\n")
 }
 
-// ── Entry point (`ibx journey run --suite --nightly` calls this) ─────────────
+// ── Entry-point helpers (extracted to keep runNightlySuiteCli readable) ──────
 
-export async function runNightlySuiteCli(
-  options: RunNightlySuiteCliOptions = {},
-): Promise<NightlySuiteReport> {
-  const onProgress = options.onProgress ?? (() => undefined)
-  const inner = options.runJourneyFn ?? runJourneyCli
-  const sleepFn =
-    options.sleepFn ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)))
+function resolveRetryDelaySeconds(options: RunNightlySuiteCliOptions): number {
   const retryDelaySeconds = options.retryDelaySeconds ?? 0
   if (!Number.isInteger(retryDelaySeconds) || retryDelaySeconds < 0) {
     throw new JourneyRunCliError(
       `--retry-delay-seconds must be a non-negative integer (got ${String(options.retryDelaySeconds)})`,
     )
   }
+  return retryDelaySeconds
+}
+
+function resolveDate(options: RunNightlySuiteCliOptions): string {
   const date = options.date ?? new Date().toISOString().slice(0, 10)
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
     throw new JourneyRunCliError(`nightly date must be YYYY-MM-DD (got "${date}")`)
   }
+  return date
+}
 
-  // ── Ledger: the authoritative quarantine list (malformed file = loud) ──────
-  const ledgerPath = options.ledgerPath ?? DEFAULT_FLAKE_LEDGER_PATH
-  const ledgerBefore = loadFlakeLedger(ledgerPath)
-  const quarantinedBefore = quarantinedJourneyIds(ledgerBefore)
+interface NightlySelection {
+  quarantinedSkipped: string[]
+  runnable: string[]
+}
 
+function selectRunnable(
+  registry: Awaited<ReturnType<typeof loadJourneys>>,
+  options: RunNightlySuiteCliOptions,
+  quarantinedBefore: string[],
+  onProgress: (line: string) => void,
+): NightlySelection {
   // ── Selection: active (∩ --only) minus quarantined — skips REPORTED ────────
-  const registry = await loadJourneys(options.dir)
   const active = registry.filter((j) => j.status === "active")
   const activeIds = new Set(active.map((j) => j.id))
   if (options.only !== undefined) {
@@ -237,48 +258,64 @@ export async function runNightlySuiteCli(
       `nightly: ${id} QUARANTINED — skipped (de-quarantine: ${DEQUARANTINE_MANUAL_COMMANDS.join(" && ")})`,
     )
   }
+  return { quarantinedSkipped, runnable }
+}
 
-  // Vacuous-green protection: a night that runs nothing is RED, never green.
-  if (runnable.length === 0) {
-    const body = [
-      `Nightly journey suite ${date}: ZERO runnable journeys — `,
-      quarantinedSkipped.length > 0
-        ? `every selected active journey is quarantined (${quarantinedSkipped.join(", ")}).`
-        : "the registry has no active journeys in the selection.",
-      "",
-      "A nightly that runs nothing certifies nothing (vacuous-green protection) — de-quarantine or activate journeys.",
-    ].join("\n")
-    return {
-      nightly: true,
-      date,
-      pass: false,
-      outcomes: [],
-      quarantinedSkipped,
-      ledger: {
-        path: ledgerPath,
-        changed: false,
-        quarantinedBefore,
-        quarantinedAfter: quarantinedBefore,
-        newlyQuarantined: [],
+function buildZeroRunnableReport(
+  date: string,
+  quarantinedSkipped: string[],
+  quarantinedBefore: string[],
+  ledgerPath: string,
+): NightlySuiteReport {
+  const reason =
+    quarantinedSkipped.length > 0
+      ? `every selected active journey is quarantined (${quarantinedSkipped.join(", ")}).`
+      : "the registry has no active journeys in the selection."
+  const body = [
+    `Nightly journey suite ${date}: ZERO runnable journeys — `,
+    reason,
+    "",
+    "A nightly that runs nothing certifies nothing (vacuous-green protection) — de-quarantine or activate journeys.",
+  ].join("\n")
+  return {
+    nightly: true,
+    date,
+    pass: false,
+    outcomes: [],
+    quarantinedSkipped,
+    ledger: {
+      path: ledgerPath,
+      changed: false,
+      quarantinedBefore,
+      quarantinedAfter: quarantinedBefore,
+      newlyQuarantined: [],
+    },
+    issues: [
+      {
+        journey: "suite",
+        owner: "",
+        title: `[journeys-nightly] ${date}: zero runnable journeys`,
+        body,
       },
-      issues: [
-        {
-          journey: "suite",
-          owner: "",
-          title: `[journeys-nightly] ${date}: zero runnable journeys`,
-          body,
-        },
-      ],
-      suite: null,
-    }
+    ],
+    suite: null,
   }
+}
 
-  // ── Suite run with the retry-once wrapper ───────────────────────────────────
-  const sideChannel = new Map<
-    string,
-    { firstRun: JourneyRunReport; retryRun?: JourneyRunReport }
-  >()
-  const retryOnce = async (opts: RunJourneyCliOptions): Promise<JourneyRunReport> => {
+type SideEntry = { firstRun: JourneyRunReport; retryRun?: JourneyRunReport }
+
+function createRetryOnceRunner(params: {
+  inner: (options: RunJourneyCliOptions) => Promise<JourneyRunReport>
+  sleepFn: (ms: number) => Promise<void>
+  retryDelaySeconds: number
+  onProgress: (line: string) => void
+}): {
+  run: (opts: RunJourneyCliOptions) => Promise<JourneyRunReport>
+  sideChannel: Map<string, SideEntry>
+} {
+  const { inner, sleepFn, retryDelaySeconds, onProgress } = params
+  const sideChannel = new Map<string, SideEntry>()
+  const run = async (opts: RunJourneyCliOptions): Promise<JourneyRunReport> => {
     const firstRun = await inner(opts)
     // No retry when: it passed, the dollar cap truncated it, or the shared
     // suite budget is already exhausted (a retry would only report
@@ -291,63 +328,58 @@ export async function runNightlySuiteCli(
       sideChannel.set(opts.journeyId, { firstRun })
       return firstRun
     }
-    onProgress(
-      `nightly: ${opts.journeyId} failed — retry-once (flake probe)` +
-        (retryDelaySeconds > 0
-          ? ` after ${retryDelaySeconds}s (order-cancel rate-limit window, D-014)`
-          : ""),
-    )
+    const delaySuffix =
+      retryDelaySeconds > 0
+        ? ` after ${retryDelaySeconds}s (order-cancel rate-limit window, D-014)`
+        : ""
+    onProgress(`nightly: ${opts.journeyId} failed — retry-once (flake probe)${delaySuffix}`)
     if (retryDelaySeconds > 0) await sleepFn(retryDelaySeconds * 1000)
     const retryRun = await inner(opts)
     sideChannel.set(opts.journeyId, { firstRun, retryRun })
     return retryRun
   }
+  return { run, sideChannel }
+}
 
-  const suite = await runJourneySuiteCli({
-    only: runnable,
-    ...(options.k !== undefined ? { k: options.k } : {}),
-    ...(options.kMoney !== undefined ? { kMoney: options.kMoney } : {}),
-    ...(options.moneyFlows !== undefined ? { moneyFlows: options.moneyFlows } : {}),
-    ...(options.budgetUsd !== undefined ? { budgetUsd: options.budgetUsd } : {}),
-    ...(options.dir !== undefined ? { dir: options.dir } : {}),
-    ...(options.envFile !== undefined ? { envFile: options.envFile } : {}),
-    ...(options.runsDir !== undefined ? { runsDir: options.runsDir } : {}),
-    ...(options.env !== undefined ? { env: options.env } : {}),
-    onProgress,
-    runJourneyFn: retryOnce,
-  })
+function resolveOutcome(firstPass: boolean, retried: boolean, passed: boolean): NightlyOutcome {
+  if (firstPass) return "green"
+  if (retried && passed) return "yellow"
+  return "red"
+}
 
-  // ── Outcomes (suite-level budget truncation = red, never silently lost) ────
-  const outcomes: NightlyJourneyOutcome[] = suite.journeys.map((finalReport) => {
-    const side = sideChannel.get(finalReport.journey)
-    if (side === undefined) {
-      // The suite truncated this journey BEFORE it started (dollar cap).
-      return {
-        journey: finalReport.journey,
-        outcome: "red" as const,
-        retried: false,
-        abortedByBudget: true,
-        firstRun: finalReport,
-      }
-    }
-    const retried = side.retryRun !== undefined
-    const passed = (side.retryRun ?? side.firstRun).pass
-    const abortedByBudget = (side.retryRun ?? side.firstRun).status === ABORTED_BY_BUDGET
-    const outcome: NightlyOutcome = side.firstRun.pass
-      ? "green"
-      : retried && passed
-        ? "yellow"
-        : "red"
+function toNightlyOutcome(
+  finalReport: JourneyRunReport,
+  side: SideEntry | undefined,
+): NightlyJourneyOutcome {
+  if (side === undefined) {
+    // The suite truncated this journey BEFORE it started (dollar cap).
     return {
       journey: finalReport.journey,
-      outcome,
-      retried,
-      abortedByBudget,
-      firstRun: side.firstRun,
-      ...(side.retryRun !== undefined ? { retryRun: side.retryRun } : {}),
+      outcome: "red",
+      retried: false,
+      abortedByBudget: true,
+      firstRun: finalReport,
     }
-  })
+  }
+  const retried = side.retryRun !== undefined
+  const finalRun = side.retryRun ?? side.firstRun
+  const outcome = resolveOutcome(side.firstRun.pass, retried, finalRun.pass)
+  return {
+    journey: finalReport.journey,
+    outcome,
+    retried,
+    abortedByBudget: finalRun.status === ABORTED_BY_BUDGET,
+    firstRun: side.firstRun,
+    ...(side.retryRun === undefined ? {} : { retryRun: side.retryRun }),
+  }
+}
 
+function foldLedger(
+  ledgerBefore: FlakeLedger,
+  outcomes: NightlyJourneyOutcome[],
+  date: string,
+  ledgerPath: string,
+): { ledger: FlakeLedger; changed: boolean; newlyQuarantined: string[] } {
   // ── Ledger fold (green deletes, yellow streaks/quarantines, red no-ops) ────
   let ledger: FlakeLedger = ledgerBefore
   let changed = false
@@ -362,8 +394,38 @@ export async function runNightlySuiteCli(
     if (result.newlyQuarantined) newlyQuarantined.push(o.journey)
   }
   if (changed) saveFlakeLedger(ledger, ledgerPath)
-  const quarantinedAfter = quarantinedJourneyIds(ledger)
+  return { ledger, changed, newlyQuarantined }
+}
 
+function buildBudgetAbortIssue(suite: JourneySuiteReport, date: string): NightlyIssuePayload {
+  const truncated = suite.journeys
+    .filter((j) => j.status === ABORTED_BY_BUDGET)
+    .map((j) => j.journey)
+    .join(", ")
+  return {
+    journey: "suite",
+    owner: "",
+    title: `[journeys-nightly] ${date}: suite aborted-by-budget ($${suite.budget.spentUsd.toFixed(2)} >= $${suite.budget.capUsd.toFixed(2)})`,
+    body: [
+      `Nightly journey suite ${date}: the dollar cap truncated the run (RED).`,
+      "",
+      suite.costLine,
+      "",
+      `Truncated journeys (reported, never dropped): ${truncated}`,
+      "",
+      "Investigate the spend before re-running — the cap is the safety net, not a knob to raise casually (plan §7).",
+    ].join("\n"),
+  }
+}
+
+function buildIssues(params: {
+  outcomes: NightlyJourneyOutcome[]
+  newlyQuarantined: string[]
+  ledger: FlakeLedger
+  suite: JourneySuiteReport
+  date: string
+}): NightlyIssuePayload[] {
+  const { outcomes, newlyQuarantined, ledger, suite, date } = params
   // ── Issue payloads (the workflow step runs `gh issue create` over these) ───
   const issues: NightlyIssuePayload[] = []
   for (const o of outcomes) {
@@ -386,25 +448,80 @@ export async function runNightlySuiteCli(
     })
   }
   if (suite.abortedByBudget) {
-    issues.push({
-      journey: "suite",
-      owner: "",
-      title: `[journeys-nightly] ${date}: suite aborted-by-budget ($${suite.budget.spentUsd.toFixed(2)} >= $${suite.budget.capUsd.toFixed(2)})`,
-      body: [
-        `Nightly journey suite ${date}: the dollar cap truncated the run (RED).`,
-        "",
-        suite.costLine,
-        "",
-        "Truncated journeys (reported, never dropped): " +
-          suite.journeys
-            .filter((j) => j.status === ABORTED_BY_BUDGET)
-            .map((j) => j.journey)
-            .join(", "),
-        "",
-        "Investigate the spend before re-running — the cap is the safety net, not a knob to raise casually (plan §7).",
-      ].join("\n"),
-    })
+    issues.push(buildBudgetAbortIssue(suite, date))
   }
+  return issues
+}
+
+// ── Entry point (`ibx journey run --suite --nightly` calls this) ─────────────
+
+export async function runNightlySuiteCli(
+  options: RunNightlySuiteCliOptions = {},
+): Promise<NightlySuiteReport> {
+  const onProgress = options.onProgress ?? (() => undefined)
+  const inner = options.runJourneyFn ?? runJourneyCli
+  const sleepFn =
+    options.sleepFn ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)))
+  const retryDelaySeconds = resolveRetryDelaySeconds(options)
+  const date = resolveDate(options)
+
+  // ── Ledger: the authoritative quarantine list (malformed file = loud) ──────
+  const ledgerPath = options.ledgerPath ?? DEFAULT_FLAKE_LEDGER_PATH
+  const ledgerBefore = loadFlakeLedger(ledgerPath)
+  const quarantinedBefore = quarantinedJourneyIds(ledgerBefore)
+
+  // ── Selection: active (∩ --only) minus quarantined — skips REPORTED ────────
+  const registry = await loadJourneys(options.dir)
+  const { quarantinedSkipped, runnable } = selectRunnable(
+    registry,
+    options,
+    quarantinedBefore,
+    onProgress,
+  )
+
+  // Vacuous-green protection: a night that runs nothing is RED, never green.
+  if (runnable.length === 0) {
+    return buildZeroRunnableReport(date, quarantinedSkipped, quarantinedBefore, ledgerPath)
+  }
+
+  // ── Suite run with the retry-once wrapper ───────────────────────────────────
+  const { run: retryOnce, sideChannel } = createRetryOnceRunner({
+    inner,
+    sleepFn,
+    retryDelaySeconds,
+    onProgress,
+  })
+
+  const suite = await runJourneySuiteCli({
+    only: runnable,
+    ...(options.k === undefined ? {} : { k: options.k }),
+    ...(options.kMoney === undefined ? {} : { kMoney: options.kMoney }),
+    ...(options.moneyFlows === undefined ? {} : { moneyFlows: options.moneyFlows }),
+    ...(options.budgetUsd === undefined ? {} : { budgetUsd: options.budgetUsd }),
+    ...(options.dir === undefined ? {} : { dir: options.dir }),
+    ...(options.envFile === undefined ? {} : { envFile: options.envFile }),
+    ...(options.runsDir === undefined ? {} : { runsDir: options.runsDir }),
+    ...(options.env === undefined ? {} : { env: options.env }),
+    onProgress,
+    runJourneyFn: retryOnce,
+  })
+
+  // ── Outcomes (suite-level budget truncation = red, never silently lost) ────
+  const outcomes: NightlyJourneyOutcome[] = suite.journeys.map((finalReport) =>
+    toNightlyOutcome(finalReport, sideChannel.get(finalReport.journey)),
+  )
+
+  // ── Ledger fold (green deletes, yellow streaks/quarantines, red no-ops) ────
+  const { ledger, changed, newlyQuarantined } = foldLedger(
+    ledgerBefore,
+    outcomes,
+    date,
+    ledgerPath,
+  )
+  const quarantinedAfter = quarantinedJourneyIds(ledger)
+
+  // ── Issue payloads (the workflow step runs `gh issue create` over these) ───
+  const issues = buildIssues({ outcomes, newlyQuarantined, ledger, suite, date })
 
   const pass = suite.pass
   onProgress(

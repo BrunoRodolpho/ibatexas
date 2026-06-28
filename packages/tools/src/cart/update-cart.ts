@@ -25,7 +25,7 @@ export async function updateCart(
         sourceSubject: "cart:update-cart",
         actorPrincipal: "llm",
         auditSink: getAuditSink(),
-        ...(ctx.customerId !== undefined ? { customerId: ctx.customerId } : {}),
+        ...(ctx.customerId === undefined ? {} : { customerId: ctx.customerId }),
         sessionId: ctx.sessionId,
       },
     );

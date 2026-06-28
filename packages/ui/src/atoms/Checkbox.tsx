@@ -23,6 +23,13 @@ function Checkbox({
   const reactId = useId()
   const fieldId = id || reactId
 
+  let describedBy: string | undefined
+  if (error) {
+    describedBy = `${fieldId}-error`
+  } else if (hint) {
+    describedBy = `${fieldId}-hint`
+  }
+
   return (
     <div className="flex flex-col gap-1">
       <div className="flex items-start gap-2">
@@ -42,7 +49,7 @@ function Checkbox({
           required={required}
           disabled={disabled}
           aria-invalid={error ? true : undefined}
-          aria-describedby={error ? `${fieldId}-error` : hint ? `${fieldId}-hint` : undefined}
+          aria-describedby={describedBy}
           {...props}
         />
         {label && (

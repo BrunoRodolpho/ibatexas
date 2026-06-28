@@ -287,7 +287,7 @@ describe("supersession chains (via @adjudicate/audit walker)", () => {
     expect(records).toEqual([resolved, refusal])
     expect(report.chains).toHaveLength(1)
     expect(report.chains[0]!.head.intentHash).toBe(resolved.intentHash)
-    expect(report.chains[0]!.length).toBe(2)
+    expect(report.chains[0]!).toHaveLength(2)
     expect(report.cycles).toEqual([])
     expect(report.danglingReferences).toEqual([])
   })

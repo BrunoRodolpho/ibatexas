@@ -21,7 +21,7 @@ function parseCepInput(input: string): { ceps: string[]; invalid: string[] } {
   const ceps: string[] = []
   const invalid: string[] = []
   for (const p of parts) {
-    const digits = p.replace(/[^0-9]/g, '')
+    const digits = p.replace(/\D/g, '')
     if (digits.length === 5 || digits.length === 8) {
       ceps.push(digits)
     } else {
@@ -52,6 +52,11 @@ const emptyZone = (): Omit<DeliveryZone, 'id'> => ({
   estimatedMinutes: 60,
   active: true,
 })
+
+function zoneBorderClass(zone: DeliveryZone, isEditing: boolean): string {
+  if (isEditing) return 'border-brand-200 bg-brand-50/50'
+  return zone.active ? 'border-smoke-200 bg-white' : 'border-smoke-200 bg-smoke-50/50'
+}
 
 export interface AdminZonasPageProps {
   apiBase: string
@@ -190,7 +195,7 @@ export function AdminZonasPage({ apiBase }: Readonly<AdminZonasPageProps>) {
       list = list.filter((z) => z.name.toLowerCase().includes(q))
     }
     if (cepQuery.trim()) {
-      const q = cepQuery.replace(/[^0-9]/g, '')
+      const q = cepQuery.replace(/\D/g, '')
       if (q) list = list.filter((z) => z.cepPrefixes.some((c) => c.includes(q)))
     }
     return list
@@ -330,11 +335,7 @@ export function AdminZonasPage({ apiBase }: Readonly<AdminZonasPageProps>) {
       {!loading && filteredZones.length > 0 && (
         <div className="space-y-3">
           {filteredZones.map((zone) => (
-            <div key={zone.id} className={`rounded-sm border transition-colors ${
-              editingId === zone.id
-                ? 'border-brand-200 bg-brand-50/50'
-                : zone.active ? 'border-smoke-200 bg-white' : 'border-smoke-200 bg-smoke-50/50'
-            } p-4`}>
+            <div key={zone.id} className={`rounded-sm border transition-colors ${zoneBorderClass(zone, editingId === zone.id)} p-4`}>
               {editingId === zone.id ? (
                 /* ── Inline edit mode ── */
                 <div>

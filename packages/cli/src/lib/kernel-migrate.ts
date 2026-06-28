@@ -16,7 +16,6 @@
 import fs from "node:fs"
 import path from "node:path"
 import {
-  listMigrationFiles,
   monthlyPartitionSpecsFor,
   partitionStatementFor,
   runSqlMigrations,
@@ -26,7 +25,8 @@ import {
 } from "./sql-migrate.js"
 
 // Re-exported so existing importers keep their single import site.
-export { listMigrationFiles, type PartitionSpec, type PgClientLike }
+export { listMigrationFiles } from "./sql-migrate.js"
+export { type PartitionSpec, type PgClientLike }
 
 /** The migrations the kernel audit sink depends on. */
 export const AUDIT_MIGRATION_FILE_RE = /^\d{3}-.*\.sql$/

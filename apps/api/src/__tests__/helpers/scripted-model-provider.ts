@@ -61,6 +61,13 @@ export interface ScriptedRequestContent {
   }>;
 }
 
+/** Ascending codepoint string comparison (stable, locale-independent). */
+function compareStringsAscending(a: string, b: string): number {
+  if (a < b) return -1;
+  if (a > b) return 1;
+  return 0;
+}
+
 /**
  * Deep key-sorted JSON. Object keys are sorted so two structurally-equal
  * inputSchemas serialize identically; ARRAY ORDER IS PRESERVED — message
@@ -75,7 +82,7 @@ function stableJson(value: unknown): string {
   }
   const entries = Object.entries(value as Record<string, unknown>)
     .filter(([, v]) => v !== undefined)
-    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    .sort(([a], [b]) => compareStringsAscending(a, b));
   return `{${entries
     .map(([k, v]) => `${JSON.stringify(k)}:${stableJson(v)}`)
     .join(",")}}`;
@@ -153,6 +160,16 @@ export interface CreateScriptedModelProviderOptions {
 
 const CAPTURE_ENV = "IBX_SCRIPTED_CAPTURE_DIR";
 
+function summarizeTools(tools: ScriptedRequestContent["tools"]): string {
+  if (tools === undefined) return "<none>";
+  const names = tools
+    .slice(0, 3)
+    .map((t) => t.name)
+    .join(", ");
+  const overflow = tools.length > 3 ? `, +${tools.length - 3}` : "";
+  return `[${names}${overflow}]`;
+}
+
 function summarizeRequest(req: ScriptedRequestContent): string {
   const sys = req.system === undefined ? "<none>" : truncate(req.system, 72);
   const first = req.messages[0];
@@ -160,13 +177,7 @@ function summarizeRequest(req: ScriptedRequestContent): string {
     first === undefined
       ? "<none>"
       : `${first.role}: ${truncate(first.content, 72)}`;
-  const tools =
-    req.tools === undefined
-      ? "<none>"
-      : `[${req.tools
-          .slice(0, 3)
-          .map((t) => t.name)
-          .join(", ")}${req.tools.length > 3 ? `, +${req.tools.length - 3}` : ""}]`;
+  const tools = summarizeTools(req.tools);
   return `system=${sys} | messages=${req.messages.length} (${msg}) | tools=${tools}`;
 }
 
@@ -179,6 +190,35 @@ function sharedPrefixLength(a: string, b: string): number {
   let i = 0;
   while (i < max && a[i] === b[i]) i++;
   return i;
+}
+
+function toCompletion(
+  req: CompletionRequest,
+  scripted: ScriptedCompletion | null,
+): Completion {
+  if (scripted === null) {
+    // Capture-mode placeholder — clearly marked, zero tool calls.
+    return {
+      model: req.model,
+      stopReason: "end_turn",
+      text: "[scripted-capture-placeholder]",
+      inputTokens: 0,
+      outputTokens: 0,
+    };
+  }
+  const toolCalls = scripted.toolCalls;
+  return {
+    model: req.model,
+    stopReason:
+      scripted.stopReason ??
+      (toolCalls !== undefined && toolCalls.length > 0
+        ? "tool_use"
+        : "end_turn"),
+    text: scripted.text ?? "",
+    ...(toolCalls === undefined ? {} : { toolCalls }),
+    inputTokens: scripted.inputTokens ?? 0,
+    outputTokens: scripted.outputTokens ?? 0,
+  };
 }
 
 /**
@@ -267,35 +307,6 @@ export function createScriptedModelProvider(
         `re-record the fixture if the change is intended. ` +
         `Set ${CAPTURE_ENV} to capture canonical requests for authoring.`,
     );
-  }
-
-  function toCompletion(
-    req: CompletionRequest,
-    scripted: ScriptedCompletion | null,
-  ): Completion {
-    if (scripted === null) {
-      // Capture-mode placeholder — clearly marked, zero tool calls.
-      return {
-        model: req.model,
-        stopReason: "end_turn",
-        text: "[scripted-capture-placeholder]",
-        inputTokens: 0,
-        outputTokens: 0,
-      };
-    }
-    const toolCalls = scripted.toolCalls;
-    return {
-      model: req.model,
-      stopReason:
-        scripted.stopReason ??
-        (toolCalls !== undefined && toolCalls.length > 0
-          ? "tool_use"
-          : "end_turn"),
-      text: scripted.text ?? "",
-      ...(toolCalls !== undefined ? { toolCalls } : {}),
-      inputTokens: scripted.inputTokens ?? 0,
-      outputTokens: scripted.outputTokens ?? 0,
-    };
   }
 
   return {

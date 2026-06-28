@@ -168,7 +168,6 @@ export function createRedisSpillStorage(
       // framework's ack contract permits this — see
       // `PersistentSpillStorage.ack` JSDoc in @adjudicate/audit.
       // The argument is intentionally unused.
-      void _record
     },
   }
 }

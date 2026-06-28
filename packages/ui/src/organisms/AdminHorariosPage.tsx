@@ -106,6 +106,11 @@ function formatDateLong(dateStr: string): string {
   return d.toLocaleDateString('pt-BR', { weekday: 'long', day: 'numeric', month: 'short', year: 'numeric' })
 }
 
+function formatHolidayDate(dateStr: string): string {
+  const [y, m, d] = dateStr.split('-')
+  return `${d}/${m}/${y}`
+}
+
 function dayTemplateBlocks(day: DaySchedule): TimeBlock[] {
   const blocks: TimeBlock[] = []
   if (day.lunchStart && day.lunchEnd) blocks.push({ label: 'Almoço', start: day.lunchStart, end: day.lunchEnd })
@@ -126,7 +131,7 @@ function DayEditModal({
   onSave,
   onDelete,
   onClose,
-}: {
+}: Readonly<{
   dateStr: string
   templateBlocks: TimeBlock[]
   templateIsOpen: boolean
@@ -135,10 +140,9 @@ function DayEditModal({
   onSave: (date: string, data: { isOpen: boolean; blocks: TimeBlock[]; note?: string | null }) => Promise<void>
   onDelete: (date: string) => Promise<void>
   onClose: () => void
-}) {
-  const initialMode: DayMode = existingOverride
-    ? (existingOverride.isOpen ? 'custom' : 'closed')
-    : 'default'
+}>) {
+  const overrideMode: DayMode = existingOverride?.isOpen ? 'custom' : 'closed'
+  const initialMode: DayMode = existingOverride ? overrideMode : 'default'
 
   const [mode, setMode] = useState<DayMode>(initialMode)
   const [blocks, setBlocks] = useState<TimeBlock[]>(
@@ -205,7 +209,7 @@ function DayEditModal({
 
       <div className="space-y-4">
         {/* Default */}
-        <label className="flex items-start gap-3 cursor-pointer rounded-sm border border-smoke-200 p-3 hover:bg-smoke-50">
+        <label aria-label="Usar horário padrão" className="flex items-start gap-3 cursor-pointer rounded-sm border border-smoke-200 p-3 hover:bg-smoke-50">
           <input type="radio" name="mode" checked={mode === 'default'} onChange={() => setMode('default')} className="mt-0.5" />
           <div>
             <p className="text-sm font-medium text-charcoal-900">Usar horário padrão</p>
@@ -214,7 +218,7 @@ function DayEditModal({
         </label>
 
         {/* Custom */}
-        <label className="flex items-start gap-3 cursor-pointer rounded-sm border border-smoke-200 p-3 hover:bg-smoke-50">
+        <label aria-label="Horário especial" className="flex items-start gap-3 cursor-pointer rounded-sm border border-smoke-200 p-3 hover:bg-smoke-50">
           <input type="radio" name="mode" checked={mode === 'custom'} onChange={() => setMode('custom')} className="mt-0.5" />
           <div className="flex-1">
             <p className="text-sm font-medium text-charcoal-900">Horário especial</p>
@@ -264,8 +268,9 @@ function DayEditModal({
         {/* Note */}
         {mode !== 'default' && (
           <div className="ml-7">
-            <label className="block text-xs font-medium text-[var(--color-text-secondary)] mb-1">Nota (opcional)</label>
+            <label htmlFor="day-note" className="block text-xs font-medium text-[var(--color-text-secondary)] mb-1">Nota (opcional)</label>
             <input
+              id="day-note"
               value={note}
               onChange={(e) => setNote(e.target.value)}
               placeholder="Ex: Evento especial, reformas..."
@@ -491,11 +496,6 @@ export function AdminHorariosPage({ apiBase }: Readonly<AdminHorariosPageProps>)
 
   // ── Render helpers ─────────────────────────────────────────────────
 
-  function formatHolidayDate(dateStr: string): string {
-    const [y, m, d] = dateStr.split('-')
-    return `${d}/${m}/${y}`
-  }
-
   const todayStr = toDateStr(today.getFullYear(), today.getMonth(), today.getDate())
 
   if (loading) return <PageSkeleton variant="spinner" />
@@ -593,7 +593,7 @@ export function AdminHorariosPage({ apiBase }: Readonly<AdminHorariosPageProps>)
                   key={cell.date}
                   onClick={() => setEditingDate(cell.date)}
                   className={`relative min-h-[52px] border-b border-r border-smoke-200 p-1.5 text-left transition-colors hover:bg-brand-50
-                    ${!cell.inMonth ? 'bg-smoke-50 text-smoke-300' : 'bg-white text-charcoal-700'}
+                    ${cell.inMonth ? 'bg-white text-charcoal-700' : 'bg-smoke-50 text-smoke-300'}
                     ${isToday ? 'ring-2 ring-inset ring-brand-500' : ''}
                     ${isClosed && cell.inMonth ? 'bg-accent-red/5' : ''}
                   `}
@@ -703,12 +703,12 @@ export function AdminHorariosPage({ apiBase }: Readonly<AdminHorariosPageProps>)
             <p className="text-sm font-semibold text-charcoal-900">Novo feriado</p>
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <label className="block text-xs font-semibold uppercase tracking-editorial text-[var(--color-text-secondary)] mb-1">Data</label>
-                <input type="date" value={holidayDate} onChange={(e) => setHolidayDate(e.target.value)} className="w-full rounded-sm border border-smoke-200 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none" />
+                <label htmlFor="holiday-date" className="block text-xs font-semibold uppercase tracking-editorial text-[var(--color-text-secondary)] mb-1">Data</label>
+                <input id="holiday-date" type="date" value={holidayDate} onChange={(e) => setHolidayDate(e.target.value)} className="w-full rounded-sm border border-smoke-200 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none" />
               </div>
               <div>
-                <label className="block text-xs font-semibold uppercase tracking-editorial text-[var(--color-text-secondary)] mb-1">Descrição</label>
-                <input value={holidayLabel} onChange={(e) => setHolidayLabel(e.target.value)} placeholder="Ex: Natal" className="w-full rounded-sm border border-smoke-200 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none" />
+                <label htmlFor="holiday-label" className="block text-xs font-semibold uppercase tracking-editorial text-[var(--color-text-secondary)] mb-1">Descrição</label>
+                <input id="holiday-label" value={holidayLabel} onChange={(e) => setHolidayLabel(e.target.value)} placeholder="Ex: Natal" className="w-full rounded-sm border border-smoke-200 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none" />
               </div>
             </div>
             <div className="flex items-center gap-4">
@@ -739,8 +739,8 @@ export function AdminHorariosPage({ apiBase }: Readonly<AdminHorariosPageProps>)
           <div className="rounded-sm border border-brand-200 bg-brand-50 p-4 space-y-3">
             <p className="text-sm font-semibold text-charcoal-900">Nova exceção de horário</p>
             <div>
-              <label className="block text-xs font-semibold uppercase tracking-editorial text-[var(--color-text-secondary)] mb-1">Data</label>
-              <input type="date" value={exceptionDate} onChange={(e) => setExceptionDate(e.target.value)} className="w-64 rounded-sm border border-smoke-200 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none" />
+              <label htmlFor="exception-date" className="block text-xs font-semibold uppercase tracking-editorial text-[var(--color-text-secondary)] mb-1">Data</label>
+              <input id="exception-date" type="date" value={exceptionDate} onChange={(e) => setExceptionDate(e.target.value)} className="w-64 rounded-sm border border-smoke-200 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none" />
             </div>
             <div className="flex gap-2">
               <button

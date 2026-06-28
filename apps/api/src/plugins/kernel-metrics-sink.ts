@@ -655,9 +655,13 @@ export interface KernelMetricsRecorder {
  * Fail-mode: every operation is wrapped; errors logged via `log` (or
  * `console.warn`); never throws.
  */
+const DEFAULT_METRICS_RECORDER_LOGGER: MetricsSinkLogger = {
+  warn: (o, m) => console.warn(m, o),
+}
+
 export function createKernelMetricsRecorder(
   register: Registry,
-  log: MetricsSinkLogger = { warn: (o, m) => console.warn(m, o) },
+  log: MetricsSinkLogger = DEFAULT_METRICS_RECORDER_LOGGER,
 ): KernelMetricsRecorder {
   function get<T>(name: string): T | null {
     const m = register.getSingleMetric(name)

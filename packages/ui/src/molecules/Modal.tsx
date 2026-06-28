@@ -40,7 +40,7 @@ export function Modal({
   closeButton = true,
   footer,
   size = 'md',
-}: ModalProps): React.JSX.Element | null {
+}: Readonly<ModalProps>): React.JSX.Element | null {
   const dialogRef = useRef<HTMLDialogElement>(null)
   const titleId = useId()
 
@@ -62,7 +62,6 @@ export function Modal({
       <dialog
         ref={dialogRef}
         open
-        role="dialog"
         aria-modal="true"
         className="fixed inset-0 z-50 overflow-y-auto flex items-center justify-center w-full h-full m-0 max-w-none max-h-none p-0 border-none bg-transparent pointer-events-none"
         aria-labelledby={titleId}
@@ -128,7 +127,7 @@ export function Sheet({
   closeButton = true,
   footer,
   position = 'right',
-}: SheetProps): React.JSX.Element | null {
+}: Readonly<SheetProps>): React.JSX.Element | null {
   const sheetRef = useRef<HTMLDialogElement>(null)
   const titleId = useId()
 
@@ -150,7 +149,6 @@ export function Sheet({
       <dialog
         ref={sheetRef}
         open
-        role="dialog"
         aria-modal="true"
         className={clsx(
           'fixed z-50 bg-smoke-50 shadow-xl overflow-y-auto p-0 border-none',

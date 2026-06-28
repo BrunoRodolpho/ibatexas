@@ -78,6 +78,59 @@ async function checkRevocation(jti: string | undefined): Promise<void> {
   }
 }
 
+// ── Staff path: staff JWT lives in `staff_token` (separate from customer cookie) ──
+// Extracted from extractAuth to keep that function's cognitive complexity low.
+async function extractStaffAuth(request: FastifyRequest): Promise<void> {
+  const staffTokenRaw = request.cookies?.["staff_token"];
+  if (!staffTokenRaw) return;
+
+  try {
+    // JWTSPLIT (audit): verify the staff token with the DEDICATED staff instance
+    // (separate secret + audience at server.jwt.staff). A customer token presented
+    // in the staff_token cookie now fails at the crypto/audience layer (separate
+    // secret) BEFORE the app-level userType/aud checks below — fail-closed earlier,
+    // same outcome.
+    const staffJwt = (request as unknown as { server: { jwt: { staff: { verify: (token: string) => JwtPayload } } } }).server.jwt.staff;
+    const payload = staffJwt.verify(staffTokenRaw);
+
+    if (payload.userType !== "staff") return; // Unexpected — not a staff token
+
+    // NEW-P0-X8 + audit-2026-05-24 P1-6: same defense-in-depth for the
+    // staff path. Reject empty- or whitespace-only `sub`.
+    if (typeof payload.sub !== "string" || payload.sub.trim().length === 0) {
+      return;
+    }
+
+    // audit-2026-05-25 (I2): aud claim binding for staff_token. Legacy
+    // tokens with undefined aud are accepted during rollover.
+    if (
+      payload.aud !== undefined &&
+      payload.aud !== COOKIE_TO_EXPECTED_AUD.staff_token
+    ) {
+      return;
+    }
+
+    // SEC-004: Check revocation for staff token too
+    await checkRevocation(payload.jti);
+
+    // STAFFREVOKE: re-check the staff member is still active on every request.
+    // Deactivation is a DB change (admin panel / seed) with NO token-revocation
+    // event, so otherwise a deactivated staff's staff_token would keep working
+    // until its expiry. Staff traffic is admin-panel volume (not the customer
+    // hot path), so this per-request PK lookup is negligible. getById throws if
+    // the row was deleted → caught below → treated as unauthenticated (fail-closed).
+    const staff = await createStaffService().getById(payload.sub);
+    if (!staff.active) return; // deactivated → do not attach staff identity
+
+    request.userType = "staff";
+    request.staffId = payload.sub;
+    request.staffRole = payload.role as "OWNER" | "MANAGER" | "ATTENDANT";
+  } catch (err) {
+    if (err instanceof RedisUnavailableError) throw err;
+    // Invalid staff_token — treat as unauthenticated
+  }
+}
+
 async function extractAuth(request: FastifyRequest): Promise<void> {
   // ── Customer / guest path: fastifyJwt reads the `token` httpOnly cookie ──
   try {
@@ -136,55 +189,8 @@ async function extractAuth(request: FastifyRequest): Promise<void> {
     // Invalid or missing `token` cookie — fall through to staff_token check
   }
 
-  // ── Staff path: staff JWT lives in `staff_token` (separate from customer cookie) ──
-  const staffTokenRaw = request.cookies?.["staff_token"];
-  if (!staffTokenRaw) return;
-
-  try {
-    // JWTSPLIT (audit): verify the staff token with the DEDICATED staff instance
-    // (separate secret + audience at server.jwt.staff). A customer token presented
-    // in the staff_token cookie now fails at the crypto/audience layer (separate
-    // secret) BEFORE the app-level userType/aud checks below — fail-closed earlier,
-    // same outcome.
-    const staffJwt = (request as unknown as { server: { jwt: { staff: { verify: (token: string) => JwtPayload } } } }).server.jwt.staff;
-    const payload = staffJwt.verify(staffTokenRaw);
-
-    if (payload.userType !== "staff") return; // Unexpected — not a staff token
-
-    // NEW-P0-X8 + audit-2026-05-24 P1-6: same defense-in-depth for the
-    // staff path. Reject empty- or whitespace-only `sub`.
-    if (typeof payload.sub !== "string" || payload.sub.trim().length === 0) {
-      return;
-    }
-
-    // audit-2026-05-25 (I2): aud claim binding for staff_token. Legacy
-    // tokens with undefined aud are accepted during rollover.
-    if (
-      payload.aud !== undefined &&
-      payload.aud !== COOKIE_TO_EXPECTED_AUD.staff_token
-    ) {
-      return;
-    }
-
-    // SEC-004: Check revocation for staff token too
-    await checkRevocation(payload.jti);
-
-    // STAFFREVOKE: re-check the staff member is still active on every request.
-    // Deactivation is a DB change (admin panel / seed) with NO token-revocation
-    // event, so otherwise a deactivated staff's staff_token would keep working
-    // until its expiry. Staff traffic is admin-panel volume (not the customer
-    // hot path), so this per-request PK lookup is negligible. getById throws if
-    // the row was deleted → caught below → treated as unauthenticated (fail-closed).
-    const staff = await createStaffService().getById(payload.sub);
-    if (!staff.active) return; // deactivated → do not attach staff identity
-
-    request.userType = "staff";
-    request.staffId = payload.sub;
-    request.staffRole = payload.role as "OWNER" | "MANAGER" | "ATTENDANT";
-  } catch (err) {
-    if (err instanceof RedisUnavailableError) throw err;
-    // Invalid staff_token — treat as unauthenticated
-  }
+  // ── Staff path: handled in a dedicated helper to keep complexity bounded ──
+  await extractStaffAuth(request);
 }
 
 /**

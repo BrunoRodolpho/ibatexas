@@ -17,7 +17,7 @@ const DEFAULT_PROBE_TIMEOUT_MS = 3000;
 
 function probeTimeoutMs(): number {
   const raw = process.env.CLAUSTRUM_EMBED_PROBE_TIMEOUT_MS;
-  const n = raw === undefined ? NaN : Number.parseInt(raw, 10);
+  const n = raw === undefined ? Number.NaN : Number.parseInt(raw, 10);
   return Number.isFinite(n) && n > 0 ? n : DEFAULT_PROBE_TIMEOUT_MS;
 }
 

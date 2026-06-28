@@ -103,7 +103,7 @@ export const useCartStore = create<CartState>()(
           const itemId = resolveCartItemId(product.id, selectedVariant?.id)
           const now = Date.now()
 
-          const existing = state.items.find((item) => item.id === itemId)
+          const existing = state.items.some((item) => item.id === itemId)
           if (existing) {
             return {
               lastModifiedAt: now,

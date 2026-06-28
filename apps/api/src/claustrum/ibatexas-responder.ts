@@ -211,11 +211,11 @@ function claimClass(
   return {
     id,
     claim: [
-      new RegExp(`\\b${noun}\\b[^.!?]{0,40}\\b${V}\\b`),
-      new RegExp(`\\b${V}\\b[^.!?]{0,18}\\b(?:o |a |os |as |seu |sua |teu )?${noun}\\b`),
+      new RegExp(String.raw`\b${noun}\b[^.!?]{0,40}\b${V}\b`),
+      new RegExp(String.raw`\b${V}\b[^.!?]{0,18}\b(?:o |a |os |as |seu |sua |teu )?${noun}\b`),
       ...extra,
     ],
-    negated: [new RegExp(`\\b(?:nao|nunca|jamais)\\b[^.!?]{0,${negationWindow}}\\b${V}\\b`)],
+    negated: [new RegExp(String.raw`\b(?:nao|nunca|jamais)\b[^.!?]{0,${negationWindow}}\b${V}\b`)],
     justifiedBy,
   };
 }
@@ -233,7 +233,7 @@ export const SUCCESS_CLAIM_CLASSES: ReadonlyArray<SuccessClaimClass> = [
   claimClass("order-canceled", "pedido", "cancel", ["order.cancel"], [/\bcancelamento\b[^.!?]{0,20}\b(?:realizad|efetuad|concluid)\w*/]),
   claimClass("cart-item-added", "carrinho", "adicion|inclu|atualiz", ["order.item.add", "order.item.update", "order.item.remove"], [/\bitem\b[^.!?]{0,15}\badicionad\w*/]),
   claimClass("refund-done", "reembolso", "process|emit|realiz|efetu|conclu|confirm|aprov", ["payment.refund.issue", "payment.refund.confirm"]),
-  claimClass("note-added", "observac\\w*", "adicion", ["order.note.add"]),
+  claimClass("note-added", String.raw`observac\w*`, "adicion", ["order.note.add"]),
   claimClass("order-amended", "pedido", "alter|atualiz", ["order.amend.request", "order.amend.add_item", "order.amend.update_qty", "order.amend.remove_item"], [/\badicionad\w*\b[^.!?]{0,15}\bao pedido\b/, /\baltera\w*\b[^.!?]{0,22}\b(?:registrad|realizad)\w*/]),
   claimClass("reservation-confirmed", "reserva", "confirm|garant|realiz|efetu|conclu", ["reservation.create", "reservation.modify", "reservation.checkin", "reservation.complete"], [/\breserva\b[^.!?]{0,20}\bfeita\b/, /\bmesa\b[^.!?]{0,20}\b(?:reservad|garantid|confirmad)\w*/, /\bcheck-?in\b[^.!?]{0,15}\b(?:feito|confirmad|realizad)\w*/, /\b(?:agendad\w*|agendamento)\b[^.!?]{0,25}\b(?:confirmad|realizad|feito|concluid)\w*/]),
   // PIX code/QR generation — justified by a checkout (PIX) or a regenerate.
@@ -261,16 +261,25 @@ function executedKinds(acted: unknown): ReadonlySet<string> {
 // Clause-level mood gates — a success PREDICATE inside a question, a future/
 // conditional clause, or a pending-status clause is NOT a completed assertion.
 const QUESTION = /\?/;
-const FUTURE_OR_CONDITIONAL = /\b(?:sera|serao|vai|vao|ira|irao|iremos|vamos|podera|poderao|assim que|quando|caso|logo que|apos|depois que|se (?:voce|vc|tu|o |a |houver|tiver|pagar|confirmar|quiser|precisar|der|fizer))\b/;
+// Split into two simpler patterns (combined via || at the call site) to keep each
+// regex under the complexity budget; the union of matches is identical to the
+// original single alternation. `serao?`/`va[io]`/`irao?`/`poderao?` are exact
+// factorings of sera|serao / vai|vao / ira|irao / podera|poderao.
+const FUTURE_OR_CONDITIONAL =
+  /\b(?:serao?|va[io]|irao?|iremos|vamos|poderao?|assim que|quando|caso|logo que|apos|depois que)\b/;
+const FUTURE_OR_CONDITIONAL_SE =
+  /\bse (?:voce|vc|tu|o |a |houver|tiver|pagar|confirmar|quiser|precisar|der|fizer)\b/;
 const PENDING_STATUS = /\b(?:recebid|em analise|sendo processad|processand|aguardand|pendente|em processament|em aberto|aguarda)/;
 
 /** Split normalized text into sentences, tagging each with whether it is a question. */
 function sentencesOf(normalized: string): ReadonlyArray<{ text: string; question: boolean }> {
   const out: Array<{ text: string; question: boolean }> = [];
-  const re = /[^.!?\n;]+[.!?\n;]*/g;
+  // Capture the leading non-terminator run (group 1) directly, so the trailing
+  // terminator run is dropped without the super-linear `/[.!?\n;]+$/` strip.
+  const re = /([^.!?\n;]+)[.!?\n;]*/g;
   let m: RegExpExecArray | null;
   while ((m = re.exec(normalized)) !== null) {
-    const body = m[0].replace(/[.!?\n;]+$/, "").trim();
+    const body = m[1].trim();
     if (body.length > 0) out.push({ text: body, question: QUESTION.test(m[0]) });
   }
   return out;
@@ -296,7 +305,7 @@ function claimIsMoodExempt(sentence: string, claimRe: RegExp): boolean {
   const afters = [sentence.indexOf(",", start), sentence.indexOf(":", start)].filter((i) => i >= 0);
   const after = afters.length > 0 ? Math.min(...afters) : sentence.length;
   const clause = sentence.slice(before + 1, after);
-  if (FUTURE_OR_CONDITIONAL.test(clause)) return true;
+  if (FUTURE_OR_CONDITIONAL.test(clause) || FUTURE_OR_CONDITIONAL_SE.test(clause)) return true;
   if (PENDING_STATUS.test(clause) && !DEFINITE_SUCCESS.test(clause)) return true;
   return false;
 }
@@ -305,22 +314,36 @@ function claimIsMoodExempt(sentence: string, claimRe: RegExp): boolean {
  *  ASSERTS (declaratively, present/past) a customer-visible success the runtime did
  *  not grant, else null. Questions, future/conditional, pending-status, and negated
  *  (honest-failure) phrasings are intentionally NOT flagged. */
+/** Scan ONE sentence for a success-claim class the runtime did not justify. Honest
+ *  failures (negated forms) and mood-exempt clauses (future/conditional/pending) are
+ *  skipped. Returns the matched class id, or null when the sentence makes no unearned
+ *  claim. Extracted from replyClaimsUnearnedSuccess so both bodies stay within the
+ *  cognitive-complexity budget; behavior is identical (same iteration + ordering). */
+function unearnedClaimInSentence(
+  sentenceText: string,
+  executed: ReadonlySet<string>,
+): string | null {
+  for (const cls of SUCCESS_CLAIM_CLASSES) {
+    if (cls.negated.some((re) => re.test(sentenceText))) continue; // honest failure
+    // Find the specific claim pattern that matched so the mood gate can be scoped
+    // to ITS clause (not the whole sentence) — a future/conditional/pending word
+    // elsewhere in the sentence no longer blanket-suppresses a completed claim.
+    const matched = cls.claim.find((re) => re.test(sentenceText));
+    if (matched === undefined) continue;
+    if (claimIsMoodExempt(sentenceText, matched)) continue; // future/conditional/pending clause
+    if (!cls.justifiedBy.some((k) => executed.has(k))) return cls.id;
+  }
+  return null;
+}
+
 export function replyClaimsUnearnedSuccess(text: string, acted: unknown): string | null {
   if (typeof text !== "string") return null;
   const normalized = normalizePtBr(text);
   const executed = executedKinds(acted);
   for (const sent of sentencesOf(normalized)) {
     if (sent.question) continue; // a clarifying question is not a claim
-    for (const cls of SUCCESS_CLAIM_CLASSES) {
-      if (cls.negated.some((re) => re.test(sent.text))) continue; // honest failure
-      // Find the specific claim pattern that matched so the mood gate can be scoped
-      // to ITS clause (not the whole sentence) — a future/conditional/pending word
-      // elsewhere in the sentence no longer blanket-suppresses a completed claim.
-      const matched = cls.claim.find((re) => re.test(sent.text));
-      if (matched === undefined) continue;
-      if (claimIsMoodExempt(sent.text, matched)) continue; // future/conditional/pending clause
-      if (!cls.justifiedBy.some((k) => executed.has(k))) return cls.id;
-    }
+    const hit = unearnedClaimInSentence(sent.text, executed);
+    if (hit !== null) return hit;
   }
   return null;
 }
@@ -343,9 +366,9 @@ function guardDraft(draft: DraftResponse, acted: unknown): DraftResponse {
     groundedReplyContradicts(draft.text) !== null ||
     replyClaimsUnearnedSuccess(draft.text, acted) !== null
   ) {
-    return draft.usage !== undefined
-      ? { text: GROUNDED_SAFE_FALLBACK_PTBR, usage: draft.usage }
-      : { text: GROUNDED_SAFE_FALLBACK_PTBR };
+    return draft.usage === undefined
+      ? { text: GROUNDED_SAFE_FALLBACK_PTBR }
+      : { text: GROUNDED_SAFE_FALLBACK_PTBR, usage: draft.usage };
   }
   return draft;
 }
@@ -441,7 +464,7 @@ export function createIbatexasResponder(
         outputTokens: completion.outputTokens,
         durationMs,
         at: new Date().toISOString(),
-        ...(args.intentHash !== undefined ? { intentHash: args.intentHash } : {}),
+        ...(args.intentHash === undefined ? {} : { intentHash: args.intentHash }),
       });
     }
 
@@ -522,7 +545,7 @@ export function createIbatexasResponder(
             fragmentManifest,
             userText,
             turnId,
-            ...(intentHash !== undefined ? { intentHash } : {}),
+            ...(intentHash === undefined ? {} : { intentHash }),
           });
           // F1 + F1b: post-completion guards. The grounded prompt is only a soft
           // instruction — never let a model reply that contradicts the audited
@@ -533,9 +556,10 @@ export function createIbatexasResponder(
         }
 
         default: {
-          // Exhaustiveness guard — a new Decision kind must be handled here.
-          const _exhaustive: never = decision;
-          void _exhaustive;
+          // Exhaustiveness guard — a new Decision kind must be handled here. The
+          // `satisfies never` keeps the compile-time check (adding a kind without a
+          // case errors) without the runtime fall-through changing.
+          decision satisfies never;
           const { system, fragmentManifest } = await composeSystem(
             RESPONDER_CONVERSATIONAL_SURFACE,
             RESPONDER_PERSONA_PTBR,

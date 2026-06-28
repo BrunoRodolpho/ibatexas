@@ -59,7 +59,7 @@ const RESPONSIVE_COLS: Record<number, Array<[minWidth: number, cols: number]>> =
 /** Returns the current column count based on window width and the columns prop. */
 function useResponsiveCols(columns: number): number {
   const breakpoints = RESPONSIVE_COLS[columns] ?? RESPONSIVE_COLS[5]!
-  const fallback = breakpoints[breakpoints.length - 1]![1]
+  const fallback = breakpoints.at(-1)![1]
 
   const [cols, setCols] = useState(fallback)
 
@@ -251,16 +251,16 @@ export const ProductGrid = ({
 /* ------------------------------------------------------------------ */
 
 interface VirtualizedGridProps {
-  gridProducts: Product[]
-  columns: number
-  gridColsClass: string
-  showFeatured: boolean
-  onAddToCart?: (productId: string) => void
-  getProductHref?: (product: Product) => string
-  getCartQuantity: (productId: string) => number
-  getCartItemId: (productId: string) => string | undefined
-  updateItem: (id: string, data: { quantity: number }) => void
-  removeItem: (id: string) => void
+  readonly gridProducts: Product[]
+  readonly columns: number
+  readonly gridColsClass: string
+  readonly showFeatured: boolean
+  readonly onAddToCart?: (productId: string) => void
+  readonly getProductHref?: (product: Product) => string
+  readonly getCartQuantity: (productId: string) => number
+  readonly getCartItemId: (productId: string) => string | undefined
+  readonly updateItem: (id: string, data: { quantity: number }) => void
+  readonly removeItem: (id: string) => void
 }
 
 function VirtualizedGrid({

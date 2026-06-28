@@ -3,6 +3,7 @@ import type { Command } from "commander"
 import chalk from "chalk"
 import {
   DEV_FLAGS,
+  type DevFlag,
   findFlag,
   effectiveValue,
   envFileValue,
@@ -189,6 +190,40 @@ function maskSecret(value: string): string {
   return value.slice(0, 4) + "•".repeat(Math.min(value.length - 8, 20)) + value.slice(-4)
 }
 
+/** Coerce a user-supplied boolean-ish string to `"true"`/`"false"`, or null if unrecognized. */
+function normalizeBool(value: string): string | null {
+  const s = value.trim().toLowerCase()
+  if (["true", "on", "1", "yes"].includes(s)) return "true"
+  if (["false", "off", "0", "no"].includes(s)) return "false"
+  return null
+}
+
+/**
+ * Resolve the new `.env` value for `ibx env toggle` from the flag and the
+ * optional CLI argument. Mirrors the prior inline logic exactly — including the
+ * error-and-exit paths — extracted to keep the command action's complexity low.
+ */
+function resolveToggleValue(flag: DevFlag, value: string | undefined): string {
+  if (value !== undefined) {
+    if (flag.kind !== "bool") return value
+    const norm = normalizeBool(value)
+    if (norm === null) {
+      console.error(chalk.red(`\n  ${flag.key} is a boolean — use true/false (got "${value}")\n`))
+      process.exit(1)
+    }
+    return norm
+  }
+  if (flag.kind === "bool") {
+    // flip based on the current effective value
+    return (effectiveValue(flag.key) === "true" || effectiveValue(flag.key) === "1") ? "false" : "true"
+  }
+  if (flag.devValue !== undefined) {
+    return flag.devValue
+  }
+  console.error(chalk.red(`\n  ${flag.key} needs an explicit value (e.g. ibx env toggle ${flag.key} <value>)\n`))
+  process.exit(1)
+}
+
 // ── Command registration ──────────────────────────────────────────────────────
 
 export function registerEnvCommands(program: Command) {
@@ -336,7 +371,9 @@ export function registerEnvCommands(program: Command) {
 
         // shell override note: process.env differs from what's in the .env file
         if (file !== undefined && eff !== undefined && file !== eff) {
-          console.log(`  ${" ".repeat(KW)} ${chalk.gray(`(.env has "${f.kind === "secret" ? maskSecret(file) : file}" — overridden by your shell)`)}`)
+          const fileShown = f.kind === "secret" ? maskSecret(file) : file
+          const overrideNote = chalk.gray(`(.env has "${fileShown}" — overridden by your shell)`)
+          console.log(`  ${" ".repeat(KW)} ${overrideNote}`)
         }
         const warn = f.alert?.(eff)
         if (warn) console.log(`  ${" ".repeat(KW)} ${chalk.yellow("⚠ " + warn)}`)
@@ -359,36 +396,8 @@ export function registerEnvCommands(program: Command) {
         process.exit(1)
       }
 
-      const normalizeBool = (v: string): string | null => {
-        const s = v.trim().toLowerCase()
-        if (["true", "on", "1", "yes"].includes(s)) return "true"
-        if (["false", "off", "0", "no"].includes(s)) return "false"
-        return null
-      }
-
       const _fileVal = envFileValue(flag.key)
-      let newValue: string
-
-      if (value !== undefined) {
-        if (flag.kind === "bool") {
-          const norm = normalizeBool(value)
-          if (norm === null) {
-            console.error(chalk.red(`\n  ${flag.key} is a boolean — use true/false (got "${value}")\n`))
-            process.exit(1)
-          }
-          newValue = norm
-        } else {
-          newValue = value
-        }
-      } else if (flag.kind === "bool") {
-        // flip based on the current effective value
-        newValue = (effectiveValue(flag.key) === "true" || effectiveValue(flag.key) === "1") ? "false" : "true"
-      } else if (flag.devValue !== undefined) {
-        newValue = flag.devValue
-      } else {
-        console.error(chalk.red(`\n  ${flag.key} needs an explicit value (e.g. ibx env toggle ${flag.key} <value>)\n`))
-        process.exit(1)
-      }
+      const newValue = resolveToggleValue(flag, value)
 
       const previous = setEnvFileValue(flag.key, newValue)
       const before = previous === undefined ? chalk.gray("(unset)") : chalk.gray(previous || "(empty)")

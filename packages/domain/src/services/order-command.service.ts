@@ -36,17 +36,20 @@
 // that the LLM never proposes directly.
 
 import { prisma } from "../client.js"
-import { Prisma } from "../generated/prisma-client/client.js"
-import type { PrismaClient } from "../generated/prisma-client/client.js"
-import type {
-  OrderFulfillmentStatus as PrismaFulfillmentStatus,
-  OrderActor as PrismaActor,
+import {
+  Prisma,
+  type PrismaClient,
+  type OrderFulfillmentStatus as PrismaFulfillmentStatus,
+  type OrderActor as PrismaActor,
 } from "../generated/prisma-client/client.js"
 import { canTransition, type OrderFulfillmentStatus } from "@ibatexas/types"
 import type { CreateOrderProjectionInput } from "../mappers/medusa-order.mapper.js"
 import type { AuditSink, IntentEnvelope } from "@adjudicate/core"
-import { ordersPolicyBundle, type OrderState } from "@ibatexas/pack-orders"
-import type { OrderNoteAddPayload } from "@ibatexas/pack-orders"
+import {
+  ordersPolicyBundle,
+  type OrderState,
+  type OrderNoteAddPayload,
+} from "@ibatexas/pack-orders"
 import {
   withAdjudicate,
   type AdjudicatedResult,
@@ -238,6 +241,20 @@ type Logger = { warn?: (...args: unknown[]) => void }
 export interface OrderCommandServiceOptions {
   readonly auditSink?: AuditSink
   readonly log?: Logger
+}
+
+/**
+ * Map the service-facing note author surface to the narrower Prisma
+ * `OrderActor` enum. `staff` acts via the admin path; `llm` proposals are
+ * attributed to `system` on the projection row (the envelope's
+ * `actor.principal` remains the authoritative provenance for audit/replay).
+ */
+function mapNoteAuthorToActor(
+  author: "customer" | "staff" | "system" | "llm",
+): PrismaActor {
+  if (author === "staff") return "admin" as PrismaActor
+  if (author === "llm") return "system" as PrismaActor
+  return author as PrismaActor
 }
 
 export function createOrderCommandService(
@@ -510,12 +527,7 @@ export function createOrderCommandService(
       // envelope's `actor.principal` is the authoritative provenance for
       // audit / replay; the OrderActor enum value is the projection-row
       // attribution.
-      const noteActor: PrismaActor =
-        extras.author === "staff"
-          ? ("admin" as PrismaActor)
-          : extras.author === "llm"
-            ? ("system" as PrismaActor)
-            : (extras.author as PrismaActor)
+      const noteActor: PrismaActor = mapNoteAuthorToActor(extras.author)
       return withAdjudicate(
         envelope,
         orderState,
@@ -527,9 +539,9 @@ export function createOrderCommandService(
               author: noteActor,
               authorId: extras.authorId,
               content: payload.body,
-              ...(payload.isInternal !== undefined
-                ? { isInternal: payload.isInternal }
-                : {}),
+              ...(payload.isInternal === undefined
+                ? {}
+                : { isInternal: payload.isInternal }),
             },
           })
           return { noteId: note.id, orderId: payload.orderId }

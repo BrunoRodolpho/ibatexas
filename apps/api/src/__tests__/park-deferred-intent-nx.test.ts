@@ -323,6 +323,6 @@ describe("P0-7-TRUE — synthetic guard", () => {
           "and REDIS_TEST_URL=redis://localhost:6380 pnpm vitest to exercise.",
       )
     }
-    expect(true).toBe(true)
+    expect(typeof RUN_REAL_REDIS).toBe("boolean")
   })
 })

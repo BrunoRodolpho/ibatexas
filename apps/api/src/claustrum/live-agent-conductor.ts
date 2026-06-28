@@ -121,7 +121,7 @@ export function composeLiveAgentConductor(
     // DR-4: honor the entity-scoped sessionKey the trigger bridge supplies so an
     // agent turn serializes against the customer's chat turns.
     lockKeyStrategy: sessionKeyAwareLockKey,
-    ...(deps.resolver !== undefined ? { resolver: deps.resolver } : {}),
+    ...(deps.resolver === undefined ? {} : { resolver: deps.resolver }),
   });
 }
 

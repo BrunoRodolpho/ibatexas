@@ -66,7 +66,7 @@ export async function envelopeIngressRoutes(server: FastifyInstance): Promise<vo
       policy: ordersPolicyBundle as unknown as PolicyBundle<string, unknown, unknown>,
       executor: async () => ({ ok: true }),
       ctx: { customerId: "test-ingress", route: "test.envelope-ingress", log: server.log },
-      ...(auditSink !== undefined ? { auditSink } : {}),
+      ...(auditSink === undefined ? {} : { auditSink }),
     });
     return reply.code(result.statusCode).send(result.body);
   });
