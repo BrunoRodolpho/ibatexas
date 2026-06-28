@@ -1,8 +1,9 @@
 name: Deploy — Production
 
 on:
-  push:
-    branches: [main]
+  # Manual-only: production deploy runs on demand (Actions tab → "Run workflow",
+  # or `gh workflow run deploy.yml`), not automatically on every push to main.
+  workflow_dispatch:
 
 concurrency:
   group: deploy-production
