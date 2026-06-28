@@ -77,20 +77,24 @@ function formatCpf(value: string): string {
   return `${digits.slice(0, 3)}.${digits.slice(3, 6)}.${digits.slice(6, 9)}-${digits.slice(9)}`
 }
 
+// Receita Federal check digit over the first `len` digits (len = 9 → first
+// verifier, 10 → second). Weights run len+1 down to 2; a remainder of 0/1
+// yields check digit 0.
+function cpfCheckDigit(digits: string, len: number): number {
+  let sum = 0
+  for (let i = 0; i < len; i++) sum += Number(digits[i]) * (len + 1 - i)
+  const check = 11 - (sum % 11)
+  return check >= 10 ? 0 : check
+}
+
 function isValidCpf(cpf: string): boolean {
   const digits = cpf.replace(/\D/g, "")
   if (digits.length !== 11) return false
   if (/^(\d)\1+$/.test(digits)) return false
-  let sum = 0
-  for (let i = 0; i < 9; i++) sum += Number(digits[i]) * (10 - i)
-  let check = 11 - (sum % 11)
-  if (check >= 10) check = 0
-  if (check !== Number(digits[9])) return false
-  sum = 0
-  for (let i = 0; i < 10; i++) sum += Number(digits[i]) * (11 - i)
-  check = 11 - (sum % 11)
-  if (check >= 10) check = 0
-  return check === Number(digits[10])
+  return (
+    cpfCheckDigit(digits, 9) === Number(digits[9]) &&
+    cpfCheckDigit(digits, 10) === Number(digits[10])
+  )
 }
 
 // R0a — persist the signed per-order access token (keyed by id) so the

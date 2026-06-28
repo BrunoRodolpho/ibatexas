@@ -704,12 +704,53 @@ async function fixtureResolveHistoricalOrderItem(
   }
 }
 
+/**
+ * Shared :orderId resolution via the projection barrier (T1b-0 stale-exclusion
+ * contract). Awaits the run's OWN order projection — excluding the pre-attempt
+ * latest order id held in `fctx.orderIdState` — then surfaces it into
+ * ctx.vars.orderId and emits the orderId evidence capture. Returns the resolved
+ * id, or a `{ failure }` ActExecutionResult (labelled per caller) when the
+ * projection never appeared. Folds the byte-identical resolve block that
+ * fixtureAwaitRunOrder and fixturePaidState both ran.
+ */
+async function awaitRunOrderProjection(args: {
+  ctx: JourneyRunContext
+  customerId: string
+  fctx: FixtureContext
+  label: string
+}): Promise<{ orderId: string } | { failure: ActExecutionResult }> {
+  const { ctx, customerId, fctx, label } = args
+  const { barrier, journey, runId, runStartedAt, orderIdState } = fctx
+  const stale = orderIdState.value
+  const settled = await awaitProjection({
+    prisma: barrier,
+    filter: { customerId, createdAt: { gte: runStartedAt } },
+    predicate: (state) => state.projection !== null && state.projection.id !== stale,
+    timeoutMs: ORDER_RESOLVE_TIMEOUT_MS,
+    pollMs: 250,
+  })
+  const orderId = settled.projection?.id
+  if (typeof orderId !== "string") {
+    return {
+      failure: { ok: false, detail: `${label}: the run's order projection never appeared` },
+    }
+  }
+  ctx.vars["orderId"] = orderId
+  emitEvidenceCapture({
+    evidence: "orderId",
+    detail: orderId,
+    journey: journey.id,
+    runId,
+  })
+  return { orderId }
+}
+
 async function fixtureAwaitRunOrder(
   act: FixtureAct,
   ctx: JourneyRunContext,
   fctx: FixtureContext,
 ): Promise<ActExecutionResult> {
-  const { barrier, journey, runId, runStartedAt, orderIdState } = fctx
+  const { barrier } = fctx
   // T2-2a: read-only BARRIER — waits for the run's OWN order projection
   // (same stale-exclusion contract as the http-act `:orderId` binding)
   // and, with `requireEventLog: true`, for at least one
@@ -726,25 +767,14 @@ async function fixtureAwaitRunOrder(
   }
   let orderId = ctx.vars["orderId"]
   if (typeof orderId !== "string" || orderId === "") {
-    const stale = orderIdState.value
-    const settled = await awaitProjection({
-      prisma: barrier,
-      filter: { customerId, createdAt: { gte: runStartedAt } },
-      predicate: (state) => state.projection !== null && state.projection.id !== stale,
-      timeoutMs: ORDER_RESOLVE_TIMEOUT_MS,
-      pollMs: 250,
+    const resolved = await awaitRunOrderProjection({
+      ctx,
+      customerId,
+      fctx,
+      label: "awaitRunOrder",
     })
-    orderId = settled.projection?.id
-    if (typeof orderId !== "string") {
-      return { ok: false, detail: "awaitRunOrder: the run's order projection never appeared" }
-    }
-    ctx.vars["orderId"] = orderId
-    emitEvidenceCapture({
-      evidence: "orderId",
-      detail: orderId,
-      journey: journey.id,
-      runId,
-    })
+    if ("failure" in resolved) return resolved.failure
+    orderId = resolved.orderId
   }
   if (act.params?.["requireEventLog"] === true) {
     const deadline = Date.now() + ORDER_RESOLVE_TIMEOUT_MS
@@ -772,7 +802,7 @@ async function fixturePaidState(
   ctx: JourneyRunContext,
   fctx: FixtureContext,
 ): Promise<ActExecutionResult> {
-  const { domain, barrier, journey, runId, apiBaseUrl, runStartedAt, orderIdState } = fctx
+  const { domain, journey, runId, apiBaseUrl } = fctx
   // ── T2-1 paid-state fixture — kernel-routed, NEVER projection-forged ──
   // Drives the run's order to payment=paid through the REAL
   // signature-verified Stripe webhook route (locally signed with the test
@@ -791,8 +821,11 @@ async function fixturePaidState(
   // as the http-act `:orderId` binding (resolveHttpPath): the order must
   // have been created by EARLIER acts through the public storefront
   // surface; this fixture never creates orders.
-  let orderId = ctx.vars["orderId"]
-  if (typeof orderId !== "string" || orderId === "") {
+  const existingOrderId = ctx.vars["orderId"]
+  let orderId: string
+  if (typeof existingOrderId === "string" && existingOrderId !== "") {
+    orderId = existingOrderId
+  } else {
     const customerId = ctx.vars["customerId"]
     if (typeof customerId !== "string") {
       return {
@@ -801,25 +834,14 @@ async function fixturePaidState(
           "paidState: ctx.vars.orderId/customerId unset — declare seedCustomer and the storefront checkout acts first",
       }
     }
-    const stale = orderIdState.value
-    const settled = await awaitProjection({
-      prisma: barrier,
-      filter: { customerId, createdAt: { gte: runStartedAt } },
-      predicate: (state) => state.projection !== null && state.projection.id !== stale,
-      timeoutMs: ORDER_RESOLVE_TIMEOUT_MS,
-      pollMs: 250,
+    const resolved = await awaitRunOrderProjection({
+      ctx,
+      customerId,
+      fctx,
+      label: "paidState",
     })
-    orderId = settled.projection?.id
-    if (typeof orderId !== "string") {
-      return { ok: false, detail: "paidState: the run's order projection never appeared" }
-    }
-    ctx.vars["orderId"] = orderId
-    emitEvidenceCapture({
-      evidence: "orderId",
-      detail: orderId,
-      journey: journey.id,
-      runId,
-    })
+    if ("failure" in resolved) return resolved.failure
+    orderId = resolved.orderId
   }
   // Event amount MUST equal the order total (capturePayment's stale-PI
   // guard); the active payment row's amount IS that total.

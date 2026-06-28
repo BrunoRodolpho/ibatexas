@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url"
 import pg from "pg"
 import { mintCustomerToken, cookieHeader } from "./auth-fixture.js"
 import { createDomainReader } from "../oracle/domain-reader.js"
+import { parseEnv, need } from "./_client-shared.js"
 
 const API_BASE = process.env.IBX_TEST_API_URL ?? "http://localhost:3001"
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../..")
@@ -22,19 +23,6 @@ const OUT = path.join(homedir(), "projects", "validation_artifacts", "db-verify"
 const PHONE = "+5519900000001"
 const HANDLE = "costela-bovina-defumada"
 const VARIANT_TITLE = "1kg"
-
-function parseEnv(raw: string): Record<string, string> {
-  const out: Record<string, string> = {}
-  for (const line of raw.split("\n")) {
-    const t = line.trim(); if (!t || t.startsWith("#")) continue
-    const eq = t.indexOf("="); if (eq <= 0) continue
-    let v = t.slice(eq + 1).trim()
-    if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) v = v.slice(1, -1)
-    out[t.slice(0, eq).trim()] = v
-  }
-  return out
-}
-const need = (e: Record<string, string>, k: string) => { const v = e[k]; if (!v) { throw new Error(`.env.test missing ${k}`) } return v }
 
 const checks: Array<{ name: string; ok: boolean; detail: string }> = []
 const log: string[] = []

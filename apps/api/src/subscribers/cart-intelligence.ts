@@ -125,6 +125,108 @@ type OrderPlacedItem = {
   priceInCentavos?: number;
 };
 
+// ── Shared profile-update helpers (CPD dedup) ───────────────────────────────────
+
+// Resolve the customerId for an order via the Medusa admin API, falling back to
+// metadata.customerId. Returns undefined when neither is present.
+async function lookupOrderCustomerId(orderId: string): Promise<string | undefined> {
+  const { medusaAdmin } = await import("@ibatexas/tools");
+  const data = await medusaAdmin(`/admin/orders/${orderId}`) as {
+    order?: { customer_id?: string; metadata?: Record<string, string> };
+  };
+  return data.order?.customer_id ?? data.order?.metadata?.["customerId"];
+}
+
+// Shared customer-profile mutation flow for the lightweight "profile updated"
+// handlers (reservation.* and outreach.sent). Resolves Redis + the profile key,
+// runs the caller's mutation, then emits the standard info log; failures are caught
+// and emitted as the standard handler-error log (never rethrown).
+async function applyProfileUpdate(
+  customerId: string,
+  mutate: (redis: RedisClient, profileKey: string) => Promise<void>,
+  infoFields: Record<string, unknown>,
+  infoMessage: string,
+  errorMessage: string,
+  log?: FastifyBaseLogger,
+): Promise<void> {
+  try {
+    const redis = await getRedisClient();
+    const profileKey = rk(`customer:profile:${customerId}`);
+    await mutate(redis, profileKey);
+    log?.info(infoFields, infoMessage);
+  } catch (err) {
+    log?.error({ customer_id: customerId, error: String(err) }, errorMessage);
+  }
+}
+
+// Shared flow for order.* profile updates that must first resolve the customer via
+// the Medusa admin API (order.refunded / order.canceled). Emits the standard
+// skip / updated / error logs byte-for-byte; never rethrows.
+async function updateProfileForOrderEvent(
+  orderId: string,
+  eventLabel: string,
+  mutate: (redis: RedisClient, profileKey: string) => Promise<void>,
+  log?: FastifyBaseLogger,
+): Promise<void> {
+  try {
+    const customerId = await lookupOrderCustomerId(orderId);
+    if (!customerId) {
+      log?.info({ order_id: orderId }, `[cart-intelligence] ${eventLabel} — no customerId found, skipping profile update`);
+      return;
+    }
+
+    const redis = await getRedisClient();
+    const profileKey = rk(`customer:profile:${customerId}`);
+    await mutate(redis, profileKey);
+    await resetProfileTtl(customerId);
+
+    log?.info({ customer_id: customerId, order_id: orderId }, `[cart-intelligence] ${eventLabel} — profile updated`);
+  } catch (err) {
+    log?.error({ order_id: orderId, error: String(err) }, `[cart-intelligence] ${eventLabel} handler error`);
+  }
+}
+
+// Minimal view of a kernel Decision needed for SYSTEM-envelope write handling.
+type KernelDecisionView =
+  | { kind: "REFUSE"; refusal: { code: string } }
+  | { kind: "EXECUTE" | "REWRITE" | "ESCALATE" | "REQUEST_CONFIRMATION" | "DEFER" };
+
+// Shared post-decision handling for SYSTEM-envelope command outcomes
+// (order.projection.create / payment.create). Returns true when the kernel
+// authorized the write (EXECUTE/REWRITE) — the caller then emits its own success
+// log. On any other decision it emits the standard "kernel did not authorize"
+// warning and, on REFUSE, routes the source event to the DLQ. Behaviour is
+// byte-identical to the previous inline branches; kernel/audit semantics untouched.
+async function handleKernelWriteDecision(
+  decision: KernelDecisionView,
+  opts: {
+    orderId: string;
+    warnMessage: string;
+    dlqSubject: string;
+    dlqReasonLabel: string;
+    payload: Record<string, unknown>;
+    log?: FastifyBaseLogger;
+  },
+): Promise<boolean> {
+  if (decision.kind === "EXECUTE" || decision.kind === "REWRITE") {
+    return true;
+  }
+  const refusalCode = decision.kind === "REFUSE" ? decision.refusal.code : undefined;
+  opts.log?.warn(
+    { order_id: opts.orderId, decision: decision.kind, refusalCode },
+    opts.warnMessage,
+  );
+  if (decision.kind === "REFUSE") {
+    await pushToDlq(
+      opts.dlqSubject,
+      opts.payload,
+      `kernel REFUSE (${opts.dlqReasonLabel}): ${decision.refusal.code}`,
+      opts.log,
+    );
+  }
+  return false;
+}
+
 // ── cart.abandoned helpers ──────────────────────────────────────────────────────
 
 // Returns the nudge tier to send, or null when the abandoned-cart nudge should be
@@ -443,27 +545,15 @@ async function createOrderProjection(
       tipInCentavos: orderPayload.tipInCentavos ?? 0,
       medusaCreatedAt: new Date(),
     });
-    if (
-      outcome.decision.kind !== "EXECUTE" &&
-      outcome.decision.kind !== "REWRITE"
-    ) {
-      const refusalCode =
-        outcome.decision.kind === "REFUSE"
-          ? outcome.decision.refusal.code
-          : undefined;
-      log?.warn(
-        { order_id: orderId, decision: outcome.decision.kind, refusalCode },
-        "[cart-intelligence] order projection create — kernel did not authorize",
-      );
-      if (outcome.decision.kind === "REFUSE") {
-        await pushToDlq(
-          "order.placed",
-          payload as Record<string, unknown>,
-          `kernel REFUSE (projection): ${outcome.decision.refusal.code}`,
-          log,
-        );
-      }
-    } else {
+    const authorized = await handleKernelWriteDecision(outcome.decision, {
+      orderId,
+      warnMessage: "[cart-intelligence] order projection create — kernel did not authorize",
+      dlqSubject: "order.placed",
+      dlqReasonLabel: "projection",
+      payload: payload as Record<string, unknown>,
+      log,
+    });
+    if (authorized) {
       log?.info({ order_id: orderId }, "[cart-intelligence] order projection created");
     }
   } catch (projErr) {
@@ -510,27 +600,15 @@ async function createPaymentRow(
       eventId: `payment:${orderId}`,
     });
     const outcome = await paymentCmdSvc.createFromEnvelope(envelope);
-    if (
-      outcome.decision.kind !== "EXECUTE" &&
-      outcome.decision.kind !== "REWRITE"
-    ) {
-      const refusalCode =
-        outcome.decision.kind === "REFUSE"
-          ? outcome.decision.refusal.code
-          : undefined;
-      log?.warn(
-        { order_id: orderId, decision: outcome.decision.kind, refusalCode },
-        "[cart-intelligence] payment.create — kernel did not authorize",
-      );
-      if (outcome.decision.kind === "REFUSE") {
-        await pushToDlq(
-          "order.placed",
-          payload as Record<string, unknown>,
-          `kernel REFUSE (payment): ${outcome.decision.refusal.code}`,
-          log,
-        );
-      }
-    } else {
+    const authorized = await handleKernelWriteDecision(outcome.decision, {
+      orderId,
+      warnMessage: "[cart-intelligence] payment.create — kernel did not authorize",
+      dlqSubject: "order.placed",
+      dlqReasonLabel: "payment",
+      payload: payload as Record<string, unknown>,
+      log,
+    });
+    if (authorized) {
       log?.info({ order_id: orderId, method }, "[cart-intelligence] payment row created");
     }
   } catch (payErr) {
@@ -1033,16 +1111,18 @@ export async function startCartIntelligenceSubscribers(
     const { customerId } = payload as { customerId?: string };
     if (!customerId) return;
 
-    try {
-      const redis = await getRedisClient();
-      const profileKey = rk(`customer:profile:${customerId}`);
-      await redis.hIncrBy(profileKey, "reservationCount", 1);
-      await redis.hSet(profileKey, "lastReservationAt", new Date().toISOString());
-      await resetProfileTtl(customerId);
-      log?.info({ customer_id: customerId }, "[cart-intelligence] reservation.created — profile updated");
-    } catch (err) {
-      log?.error({ customer_id: customerId, error: String(err) }, "[cart-intelligence] reservation.created handler error");
-    }
+    await applyProfileUpdate(
+      customerId,
+      async (redis, profileKey) => {
+        await redis.hIncrBy(profileKey, "reservationCount", 1);
+        await redis.hSet(profileKey, "lastReservationAt", new Date().toISOString());
+        await resetProfileTtl(customerId);
+      },
+      { customer_id: customerId },
+      "[cart-intelligence] reservation.created — profile updated",
+      "[cart-intelligence] reservation.created handler error",
+      log,
+    );
   }, { queueGroup: "cart-intelligence" });
 
   // ── reservation.modified ─────────────────────────────────────────────
@@ -1050,14 +1130,16 @@ export async function startCartIntelligenceSubscribers(
     const { customerId } = payload as { customerId?: string };
     if (!customerId) return;
 
-    try {
-      const redis = await getRedisClient();
-      const profileKey = rk(`customer:profile:${customerId}`);
-      await redis.hSet(profileKey, "lastReservationModifiedAt", new Date().toISOString());
-      log?.info({ customer_id: customerId }, "[cart-intelligence] reservation.modified — profile updated");
-    } catch (err) {
-      log?.error({ customer_id: customerId, error: String(err) }, "[cart-intelligence] reservation.modified handler error");
-    }
+    await applyProfileUpdate(
+      customerId,
+      async (redis, profileKey) => {
+        await redis.hSet(profileKey, "lastReservationModifiedAt", new Date().toISOString());
+      },
+      { customer_id: customerId },
+      "[cart-intelligence] reservation.modified — profile updated",
+      "[cart-intelligence] reservation.modified handler error",
+      log,
+    );
   }, { queueGroup: "cart-intelligence" });
 
   // ── reservation.cancelled ───────────────────────────────────────────────
@@ -1065,14 +1147,16 @@ export async function startCartIntelligenceSubscribers(
     const { customerId } = payload as { customerId?: string };
     if (!customerId) return;
 
-    try {
-      const redis = await getRedisClient();
-      const profileKey = rk(`customer:profile:${customerId}`);
-      await redis.hIncrBy(profileKey, "cancellationCount", 1);
-      log?.info({ customer_id: customerId }, "[cart-intelligence] reservation.cancelled — profile updated");
-    } catch (err) {
-      log?.error({ customer_id: customerId, error: String(err) }, "[cart-intelligence] reservation.cancelled handler error");
-    }
+    await applyProfileUpdate(
+      customerId,
+      async (redis, profileKey) => {
+        await redis.hIncrBy(profileKey, "cancellationCount", 1);
+      },
+      { customer_id: customerId },
+      "[cart-intelligence] reservation.cancelled — profile updated",
+      "[cart-intelligence] reservation.cancelled handler error",
+      log,
+    );
   }, { queueGroup: "cart-intelligence" });
 
   // ── reservation.no_show ─────────────────────────────────────────────────
@@ -1080,14 +1164,16 @@ export async function startCartIntelligenceSubscribers(
     const { customerId } = payload as { customerId?: string };
     if (!customerId) return;
 
-    try {
-      const redis = await getRedisClient();
-      const profileKey = rk(`customer:profile:${customerId}`);
-      await redis.hIncrBy(profileKey, "noShowCount", 1);
-      log?.info({ customer_id: customerId }, "[cart-intelligence] reservation.no_show — profile updated");
-    } catch (err) {
-      log?.error({ customer_id: customerId, error: String(err) }, "[cart-intelligence] reservation.no_show handler error");
-    }
+    await applyProfileUpdate(
+      customerId,
+      async (redis, profileKey) => {
+        await redis.hIncrBy(profileKey, "noShowCount", 1);
+      },
+      { customer_id: customerId },
+      "[cart-intelligence] reservation.no_show — profile updated",
+      "[cart-intelligence] reservation.no_show handler error",
+      log,
+    );
   }, { queueGroup: "cart-intelligence" });
 
   // ── review.prompt (delivery — sends WhatsApp review request) ────────────
@@ -1155,28 +1241,15 @@ export async function startCartIntelligenceSubscribers(
       timestamp: new Date().toISOString(),
     });
 
-    try {
-      // Look up customerId from the order via Medusa
-      const { medusaAdmin } = await import("@ibatexas/tools");
-      const data = await medusaAdmin(`/admin/orders/${orderId}`) as {
-        order?: { customer_id?: string; metadata?: Record<string, string> };
-      };
-      const customerId = data.order?.customer_id ?? data.order?.metadata?.["customerId"];
-      if (!customerId) {
-        log?.info({ order_id: orderId }, "[cart-intelligence] order.refunded — no customerId found, skipping profile update");
-        return;
-      }
-
-      const redis = await getRedisClient();
-      const profileKey = rk(`customer:profile:${customerId}`);
-      await redis.hIncrBy(profileKey, "refundCount", 1);
-      await redis.hIncrBy(profileKey, "totalRefundAmount", amountRefunded);
-      await resetProfileTtl(customerId);
-
-      log?.info({ customer_id: customerId, order_id: orderId }, "[cart-intelligence] order.refunded — profile updated");
-    } catch (err) {
-      log?.error({ order_id: orderId, error: String(err) }, "[cart-intelligence] order.refunded handler error");
-    }
+    await updateProfileForOrderEvent(
+      orderId,
+      "order.refunded",
+      async (redis, profileKey) => {
+        await redis.hIncrBy(profileKey, "refundCount", 1);
+        await redis.hIncrBy(profileKey, "totalRefundAmount", amountRefunded);
+      },
+      log,
+    );
     }); // end withDedup
     if (!refundProcessed) {
       log?.info({ order_id: orderId }, "[cart-intelligence] order.refunded duplicate — skipping");
@@ -1223,11 +1296,7 @@ export async function startCartIntelligenceSubscribers(
 
       // Update customer profile if orderId is available
       if (orderId) {
-        const { medusaAdmin } = await import("@ibatexas/tools");
-        const data = await medusaAdmin(`/admin/orders/${orderId}`) as {
-          order?: { customer_id?: string; metadata?: Record<string, string> };
-        };
-        const customerId = data.order?.customer_id ?? data.order?.metadata?.["customerId"];
+        const customerId = await lookupOrderCustomerId(orderId);
         if (customerId) {
           const redis = await getRedisClient();
           const profileKey = rk(`customer:profile:${customerId}`);
@@ -1267,26 +1336,14 @@ export async function startCartIntelligenceSubscribers(
       timestamp: new Date().toISOString(),
     });
 
-    try {
-      const { medusaAdmin } = await import("@ibatexas/tools");
-      const data = await medusaAdmin(`/admin/orders/${orderId}`) as {
-        order?: { customer_id?: string; metadata?: Record<string, string> };
-      };
-      const customerId = data.order?.customer_id ?? data.order?.metadata?.["customerId"];
-      if (!customerId) {
-        log?.info({ order_id: orderId }, "[cart-intelligence] order.canceled — no customerId found, skipping profile update");
-        return;
-      }
-
-      const redis = await getRedisClient();
-      const profileKey = rk(`customer:profile:${customerId}`);
-      await redis.hIncrBy(profileKey, "orderCancellationCount", 1);
-      await resetProfileTtl(customerId);
-
-      log?.info({ customer_id: customerId, order_id: orderId }, "[cart-intelligence] order.canceled — profile updated");
-    } catch (err) {
-      log?.error({ order_id: orderId, error: String(err) }, "[cart-intelligence] order.canceled handler error");
-    }
+    await updateProfileForOrderEvent(
+      orderId,
+      "order.canceled",
+      async (redis, profileKey) => {
+        await redis.hIncrBy(profileKey, "orderCancellationCount", 1);
+      },
+      log,
+    );
     }); // end withDedup
     if (!canceledProcessed) {
       log?.info({ order_id: orderId }, "[cart-intelligence] order.canceled duplicate — skipping");
@@ -1385,21 +1442,17 @@ export async function startCartIntelligenceSubscribers(
     };
     if (!customerId) return;
 
-    try {
-      const redis = await getRedisClient();
-      const profileKey = rk(`customer:profile:${customerId}`);
-      await redis.hSet(profileKey, "lastOutreachAt", new Date().toISOString());
-      await resetProfileTtl(customerId);
-      log?.info(
-        { customer_id: customerId, message_type: messageType },
-        "[cart-intelligence] outreach.sent — profile updated",
-      );
-    } catch (err) {
-      log?.error(
-        { customer_id: customerId, error: String(err) },
-        "[cart-intelligence] outreach.sent handler error",
-      );
-    }
+    await applyProfileUpdate(
+      customerId,
+      async (redis, profileKey) => {
+        await redis.hSet(profileKey, "lastOutreachAt", new Date().toISOString());
+        await resetProfileTtl(customerId);
+      },
+      { customer_id: customerId, message_type: messageType },
+      "[cart-intelligence] outreach.sent — profile updated",
+      "[cart-intelligence] outreach.sent handler error",
+      log,
+    );
   }, { queueGroup: "cart-intelligence" });
 
   // ── cart.item_added (EVT-006) ─────────────────────────────────────────────

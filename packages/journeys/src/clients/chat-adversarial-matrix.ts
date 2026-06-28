@@ -23,6 +23,7 @@ import { fileURLToPath } from "node:url"
 import pg from "pg"
 import type { AuditRecord } from "@adjudicate/core"
 import { mintCustomerToken, cookieHeader } from "./auth-fixture.js"
+import { parseEnv, need } from "./_client-shared.js"
 import { ChatClient } from "./chat-client.js"
 import { createAuditReader, type AuditReader } from "../oracle/audit-reader.js"
 import { createDomainReader } from "../oracle/domain-reader.js"
@@ -37,18 +38,6 @@ const VARIANT_TITLE = "1kg"
 const PASS = process.env.MATRIX_PASS ?? "both"
 
 import { createHash } from "node:crypto"
-function parseEnv(raw: string): Record<string, string> {
-  const out: Record<string, string> = {}
-  for (const line of raw.split("\n")) {
-    const t = line.trim(); if (!t || t.startsWith("#")) continue
-    const eq = t.indexOf("="); if (eq <= 0) continue
-    let v = t.slice(eq + 1).trim()
-    if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) v = v.slice(1, -1)
-    out[t.slice(0, eq).trim()] = v
-  }
-  return out
-}
-const need = (e: Record<string, string>, k: string) => { const v = e[k]; if (!v) { throw new Error(`.env.test missing ${k}`) } return v }
 const hashScope = (sessionId: string, secret: string) => `hashed:${createHash("sha256").update(sessionId).update(secret).digest("hex").slice(0, 8)}`
 
 interface Result {

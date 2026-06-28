@@ -69,17 +69,30 @@ function extractId(key: string): string {
   return parts.at(-1) ?? ""
 }
 
-async function showWaRateStatus(redis: RedisClient, identifier?: string): Promise<void> {
-  const pattern = identifier ? rk(`wa:rate:${identifier}`) : rk("wa:rate:*")
+interface CounterStatusConfig {
+  keyPrefix: string
+  header: string
+  limit: number
+  isBlocked: (num: number) => boolean
+  unit: string
+}
+
+async function showCounterStatus(
+  redis: RedisClient,
+  identifier: string | undefined,
+  config: CounterStatusConfig,
+): Promise<void> {
+  const { keyPrefix, header, limit, isBlocked, unit } = config
+  const pattern = identifier ? rk(`${keyPrefix}:${identifier}`) : rk(`${keyPrefix}:*`)
   let keys: string[]
   if (identifier) {
-    const exists = await redis.exists(rk(`wa:rate:${identifier}`))
-    keys = exists ? [rk(`wa:rate:${identifier}`)] : []
+    const exists = await redis.exists(rk(`${keyPrefix}:${identifier}`))
+    keys = exists ? [rk(`${keyPrefix}:${identifier}`)] : []
   } else {
     keys = await scanKeysForPattern(redis, pattern)
   }
 
-  console.log(chalk.bold("\n  WhatsApp messages"))
+  console.log(chalk.bold(`\n  ${header}`))
 
   if (keys.length === 0) {
     console.log(chalk.gray("  No active keys"))
@@ -91,40 +104,31 @@ async function showWaRateStatus(redis: RedisClient, identifier?: string): Promis
     const ttl = await redis.ttl(key)
     const id = extractId(key)
     const num = Number.parseInt(count ?? "0", 10)
-    const blocked = num > WA_RATE_LIMIT
+    const blocked = isBlocked(num)
     const icon = blocked ? chalk.red("✗") : chalk.green("·")
     const ttlSuffix = ttl > 0 ? chalk.gray(` (${ttl}s)`) : ""
-    console.log(`  ${icon} ${chalk.cyan(id)}  msgs: ${count ?? "0"}/${WA_RATE_LIMIT}${ttlSuffix}`)
+    console.log(`  ${icon} ${chalk.cyan(id)}  ${unit}: ${count ?? "0"}/${limit}${ttlSuffix}`)
   }
 }
 
+async function showWaRateStatus(redis: RedisClient, identifier?: string): Promise<void> {
+  await showCounterStatus(redis, identifier, {
+    keyPrefix: "wa:rate",
+    header: "WhatsApp messages",
+    limit: WA_RATE_LIMIT,
+    isBlocked: (num) => num > WA_RATE_LIMIT,
+    unit: "msgs",
+  })
+}
+
 async function showTokenBudgetStatus(redis: RedisClient, identifier?: string): Promise<void> {
-  const pattern = identifier ? rk(`llm:tokens:${identifier}`) : rk("llm:tokens:*")
-  let keys: string[]
-  if (identifier) {
-    const exists = await redis.exists(rk(`llm:tokens:${identifier}`))
-    keys = exists ? [rk(`llm:tokens:${identifier}`)] : []
-  } else {
-    keys = await scanKeysForPattern(redis, pattern)
-  }
-
-  console.log(chalk.bold("\n  LLM token budget"))
-
-  if (keys.length === 0) {
-    console.log(chalk.gray("  No active keys"))
-    return
-  }
-
-  for (const key of keys) {
-    const count = await redis.get(key)
-    const ttl = await redis.ttl(key)
-    const id = extractId(key)
-    const num = Number.parseInt(count ?? "0", 10)
-    const blocked = num >= TOKEN_BUDGET
-    const icon = blocked ? chalk.red("✗") : chalk.green("·")
-    const ttlSuffix = ttl > 0 ? chalk.gray(` (${ttl}s)`) : ""
-    console.log(`  ${icon} ${chalk.cyan(id)}  tokens: ${count ?? "0"}/${TOKEN_BUDGET}${ttlSuffix}`)
-  }
+  await showCounterStatus(redis, identifier, {
+    keyPrefix: "llm:tokens",
+    header: "LLM token budget",
+    limit: TOKEN_BUDGET,
+    isBlocked: (num) => num >= TOKEN_BUDGET,
+    unit: "tokens",
+  })
 }
 
 async function showOtherStatus(redis: RedisClient): Promise<void> {

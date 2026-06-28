@@ -5,7 +5,7 @@
 // PUT    /api/admin/delivery-zones/:id    — update zone
 // DELETE /api/admin/delivery-zones/:id   — delete zone
 
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { createDeliveryZoneService } from "@ibatexas/domain";
@@ -23,6 +23,51 @@ const DeliveryZoneBody = z.object({
   estimatedMinutes: z.number().int().min(1).max(180),
   active: z.boolean().optional().default(true),
 });
+
+type DeliveryZoneService = ReturnType<typeof createDeliveryZoneService>;
+
+// Idempotency guard shared by the mutating zone routes (create/update/delete).
+// Returns true when a duplicate request was detected and a 409 was already sent.
+async function rejectIfDuplicateRequest(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  action: string,
+): Promise<boolean> {
+  const requestId = request.headers["x-request-id"] as string | undefined;
+  if (!requestId) return false;
+  const redis = await getRedisClient();
+  const isNew = await redis.set(rk(`dz:${action}:dedup:${requestId}`), "1", { EX: 300, NX: true });
+  if (!isNew) {
+    reply.code(409).send({ error: "Requisicao duplicada." });
+    return true;
+  }
+  return false;
+}
+
+// Reject CEP prefixes already assigned to another zone. Pass excludeZoneId on
+// update to skip the zone being edited. Returns true when a conflict was
+// detected and a 422 was already sent.
+async function rejectOnCepConflict(
+  deliveryZoneSvc: DeliveryZoneService,
+  reply: FastifyReply,
+  cepPrefixes: string[],
+  excludeZoneId?: string,
+): Promise<boolean> {
+  const existing = await deliveryZoneSvc.listAll();
+  const allUsedCeps = new Map<string, string>();
+  for (const z of existing) {
+    if (excludeZoneId !== undefined && z.id === excludeZoneId) continue;
+    for (const c of z.cepPrefixes) allUsedCeps.set(c, z.name);
+  }
+  const dupes = cepPrefixes.filter((c) => allUsedCeps.has(c));
+  if (dupes.length === 0) return false;
+  const dupeList = dupes.map((c) => `${c} (${allUsedCeps.get(c)})`).join(", ");
+  reply.code(422).send({
+    error: "CEPs já atribuídos",
+    message: `CEPs já usados em outras zonas: ${dupeList}`,
+  });
+  return true;
+}
 
 export async function deliveryZoneRoutes(server: FastifyInstance): Promise<void> {
   const app = server.withTypeProvider<ZodTypeProvider>();
@@ -52,27 +97,10 @@ export async function deliveryZoneRoutes(server: FastifyInstance): Promise<void>
       },
     },
     async (request, reply) => {
-      const requestId = request.headers["x-request-id"] as string | undefined;
-      if (requestId) {
-        const redis = await getRedisClient();
-        const isNew = await redis.set(rk(`dz:create:dedup:${requestId}`), "1", { EX: 300, NX: true });
-        if (!isNew) return reply.code(409).send({ error: "Requisicao duplicada." });
-      }
+      if (await rejectIfDuplicateRequest(request, reply, "create")) return reply;
       const deliveryZoneSvc = createDeliveryZoneService();
       // Check for duplicate CEPs across existing zones
-      const existing = await deliveryZoneSvc.listAll();
-      const allUsedCeps = new Map<string, string>();
-      for (const z of existing) {
-        for (const c of z.cepPrefixes) allUsedCeps.set(c, z.name);
-      }
-      const dupes = request.body.cepPrefixes.filter((c) => allUsedCeps.has(c));
-      if (dupes.length > 0) {
-        const dupeList = dupes.map((c) => `${c} (${allUsedCeps.get(c)})`).join(", ");
-        return reply.code(422).send({
-          error: "CEPs já atribuídos",
-          message: `CEPs já usados em outras zonas: ${dupeList}`,
-        });
-      }
+      if (await rejectOnCepConflict(deliveryZoneSvc, reply, request.body.cepPrefixes)) return reply;
       const zone = await deliveryZoneSvc.create(request.body);
       void invalidateDeliveryCache();
       return reply.code(201).send({ zone });
@@ -92,28 +120,11 @@ export async function deliveryZoneRoutes(server: FastifyInstance): Promise<void>
       },
     },
     async (request, reply) => {
-      const requestId = request.headers["x-request-id"] as string | undefined;
-      if (requestId) {
-        const redis = await getRedisClient();
-        const isNew = await redis.set(rk(`dz:update:dedup:${requestId}`), "1", { EX: 300, NX: true });
-        if (!isNew) return reply.code(409).send({ error: "Requisicao duplicada." });
-      }
+      if (await rejectIfDuplicateRequest(request, reply, "update")) return reply;
       const deliveryZoneSvc = createDeliveryZoneService();
       // Check for duplicate CEPs across OTHER zones (exclude the one being updated)
-      const existing = await deliveryZoneSvc.listAll();
-      const allUsedCeps = new Map<string, string>();
-      for (const z of existing) {
-        if (z.id === request.params.id) continue;
-        for (const c of z.cepPrefixes) allUsedCeps.set(c, z.name);
-      }
-      const dupes = request.body.cepPrefixes.filter((c) => allUsedCeps.has(c));
-      if (dupes.length > 0) {
-        const dupeList = dupes.map((c) => `${c} (${allUsedCeps.get(c)})`).join(", ");
-        return reply.code(422).send({
-          error: "CEPs já atribuídos",
-          message: `CEPs já usados em outras zonas: ${dupeList}`,
-        });
-      }
+      if (await rejectOnCepConflict(deliveryZoneSvc, reply, request.body.cepPrefixes, request.params.id))
+        return reply;
       const zone = await deliveryZoneSvc.update(request.params.id, request.body);
       void invalidateDeliveryCache();
       return reply.send({ zone });
@@ -132,12 +143,7 @@ export async function deliveryZoneRoutes(server: FastifyInstance): Promise<void>
       },
     },
     async (request, reply) => {
-      const requestId = request.headers["x-request-id"] as string | undefined;
-      if (requestId) {
-        const redis = await getRedisClient();
-        const isNew = await redis.set(rk(`dz:delete:dedup:${requestId}`), "1", { EX: 300, NX: true });
-        if (!isNew) return reply.code(409).send({ error: "Requisicao duplicada." });
-      }
+      if (await rejectIfDuplicateRequest(request, reply, "delete")) return reply;
       const deliveryZoneSvc = createDeliveryZoneService();
       await deliveryZoneSvc.remove(request.params.id);
       void invalidateDeliveryCache();

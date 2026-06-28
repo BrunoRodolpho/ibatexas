@@ -69,6 +69,111 @@ interface PaymentLifecycleDeps {
   readonly log?: FastifyBaseLogger;
 }
 
+// The adjudicated outcome returned by the order command service. Aliased here so
+// the shared decision-gate helper can narrow the discriminated `decision` union
+// (REFUSE carries `refusal.code`) exactly as the inlined call sites did.
+type TransitionOutcome = Awaited<
+  ReturnType<OrderCommandService["transitionStatusFromEnvelope"]>
+>;
+
+// ── Shared: kernel decision gate ────────────────────────────────────────────
+// The auto-confirm and auto-cancel handlers gate their NATS mutation on the same
+// kernel decision: proceed only on EXECUTE / REWRITE; on REFUSE / DEFER /
+// REQUEST_CONFIRMATION / ESCALATE the mutation is skipped (warn-logged), and a
+// REFUSE additionally pushes the raw payload to the DLQ. Returns `true` when the
+// caller should proceed with the mutation, `false` when it was skipped. Behavior
+// is byte-identical to the previously-inlined blocks; only `action` (the
+// human-readable label in the warn message) varies per call site.
+async function kernelAuthorizedMutation(
+  outcome: TransitionOutcome,
+  ctx: {
+    orderId: string;
+    paymentId: string;
+    rawPayload: Record<string, unknown>;
+    action: "auto-confirm" | "auto-cancel";
+    log?: FastifyBaseLogger;
+  },
+): Promise<boolean> {
+  const { orderId, paymentId, rawPayload, action, log } = ctx;
+  if (
+    outcome.decision.kind !== "EXECUTE" &&
+    outcome.decision.kind !== "REWRITE"
+  ) {
+    // REFUSE / DEFER / REQUEST_CONFIRMATION / ESCALATE — mutation skipped.
+    const decisionKind = outcome.decision.kind;
+    const refusalCode =
+      outcome.decision.kind === "REFUSE"
+        ? outcome.decision.refusal.code
+        : undefined;
+    log?.warn(
+      { orderId, paymentId, decision: decisionKind, refusalCode },
+      `[payment-lifecycle] kernel did not authorize ${action} — mutation skipped`,
+    );
+    if (outcome.decision.kind === "REFUSE") {
+      await pushToDlq(
+        "payment.status_changed",
+        rawPayload,
+        `kernel REFUSE: ${outcome.decision.refusal.code}`,
+        log,
+      );
+    }
+    return false;
+  }
+  return true;
+}
+
+// ── Shared: post-transition error escalation ────────────────────────────────
+// Both handlers wrap their kernel-gated transition + publish in an identical
+// try/catch. An EXPECTED transition error (Concurrency / InvalidTransition) means
+// another process already advanced the order — benign, info-level. Anything else
+// is money-at-risk (money moved but the order did not follow) and is escalated:
+// DLQ + an `order.escalation_needed` event. The skipped/failed log messages and
+// the escalation `reason` are the only per-call-site variations, passed in so the
+// emitted log content and event payload stay byte-identical to the inlined code.
+async function escalateTransitionError(
+  err: unknown,
+  ctx: {
+    orderId: string;
+    paymentId: string;
+    rawPayload: Record<string, unknown>;
+    skippedMsg: string;
+    failedMsg: string;
+    escalationReason: string;
+    log?: FastifyBaseLogger;
+  },
+): Promise<void> {
+  const { orderId, paymentId, rawPayload, skippedMsg, failedMsg, escalationReason, log } = ctx;
+  if (isExpectedTransitionError(err)) {
+    // ConcurrencyError / InvalidTransitionError — another process (or a prior
+    // delivery) already advanced the order. Benign, info-level.
+    log?.info(
+      { orderId, paymentId, error: String(err) },
+      skippedMsg,
+    );
+  } else {
+    // Unexpected: money moved but the order did NOT follow and nobody is
+    // watching. Escalate (DLQ + staff alert) like the disputed branch instead
+    // of letting the payload evaporate into a warn log.
+    log?.error(
+      { orderId, paymentId, error: String(err) },
+      failedMsg,
+    );
+    await pushToDlq(
+      "payment.status_changed",
+      rawPayload,
+      err,
+      log,
+    );
+    await publishNatsEvent("order.escalation_needed", {
+      eventType: "order.escalation_needed",
+      orderId,
+      reason: escalationReason,
+      paymentId,
+      timestamp: new Date().toISOString(),
+    });
+  }
+}
+
 // ── Payment confirmed → auto-confirm order ──────────────────────────────────
 // Extracted from the dispatch switch to keep the subscriber callback's
 // cognitive complexity bounded. Behavior is identical to the inlined case.
@@ -114,27 +219,14 @@ async function handlePaymentPaid(
     const outcome = await orderCmdSvc.transitionStatusFromEnvelope(envelope);
 
     if (
-      outcome.decision.kind !== "EXECUTE" &&
-      outcome.decision.kind !== "REWRITE"
+      !(await kernelAuthorizedMutation(outcome, {
+        orderId,
+        paymentId,
+        rawPayload,
+        action: "auto-confirm",
+        log,
+      }))
     ) {
-      // REFUSE / DEFER / REQUEST_CONFIRMATION / ESCALATE — mutation skipped.
-      const decisionKind = outcome.decision.kind;
-      const refusalCode =
-        outcome.decision.kind === "REFUSE"
-          ? outcome.decision.refusal.code
-          : undefined;
-      log?.warn(
-        { orderId, paymentId, decision: decisionKind, refusalCode },
-        "[payment-lifecycle] kernel did not authorize auto-confirm — mutation skipped",
-      );
-      if (outcome.decision.kind === "REFUSE") {
-        await pushToDlq(
-          "payment.status_changed",
-          rawPayload,
-          `kernel REFUSE: ${outcome.decision.refusal.code}`,
-          log,
-        );
-      }
       return;
     }
 
@@ -152,35 +244,15 @@ async function handlePaymentPaid(
 
     log?.info({ orderId }, "[payment-lifecycle] Order auto-confirmed after payment");
   } catch (err) {
-    if (isExpectedTransitionError(err)) {
-      // ConcurrencyError / InvalidTransitionError — another process (or a
-      // prior delivery) already advanced the order. Benign, info-level.
-      log?.info(
-        { orderId, paymentId, error: String(err) },
-        "[payment-lifecycle] Auto-confirm skipped — order already advanced",
-      );
-    } else {
-      // Unexpected: money was taken but the order was NOT confirmed and
-      // nobody is watching. Escalate like the disputed branch (DLQ + staff
-      // alert) instead of letting the payload evaporate into a warn log.
-      log?.error(
-        { orderId, paymentId, error: String(err) },
-        "[payment-lifecycle] Auto-confirm FAILED unexpectedly — escalating (DLQ + staff alert)",
-      );
-      await pushToDlq(
-        "payment.status_changed",
-        rawPayload,
-        err,
-        log,
-      );
-      await publishNatsEvent("order.escalation_needed", {
-        eventType: "order.escalation_needed",
-        orderId,
-        reason: "auto_confirm_failed",
-        paymentId,
-        timestamp: new Date().toISOString(),
-      });
-    }
+    await escalateTransitionError(err, {
+      orderId,
+      paymentId,
+      rawPayload,
+      skippedMsg: "[payment-lifecycle] Auto-confirm skipped — order already advanced",
+      failedMsg: "[payment-lifecycle] Auto-confirm FAILED unexpectedly — escalating (DLQ + staff alert)",
+      escalationReason: "auto_confirm_failed",
+      log,
+    });
   }
 }
 
@@ -229,26 +301,14 @@ async function handlePaymentRefunded(
     const outcome = await orderCmdSvc.transitionStatusFromEnvelope(envelope);
 
     if (
-      outcome.decision.kind !== "EXECUTE" &&
-      outcome.decision.kind !== "REWRITE"
+      !(await kernelAuthorizedMutation(outcome, {
+        orderId,
+        paymentId,
+        rawPayload,
+        action: "auto-cancel",
+        log,
+      }))
     ) {
-      const decisionKind = outcome.decision.kind;
-      const refusalCode =
-        outcome.decision.kind === "REFUSE"
-          ? outcome.decision.refusal.code
-          : undefined;
-      log?.warn(
-        { orderId, paymentId, decision: decisionKind, refusalCode },
-        "[payment-lifecycle] kernel did not authorize auto-cancel — mutation skipped",
-      );
-      if (outcome.decision.kind === "REFUSE") {
-        await pushToDlq(
-          "payment.status_changed",
-          rawPayload,
-          `kernel REFUSE: ${outcome.decision.refusal.code}`,
-          log,
-        );
-      }
       return;
     }
 
@@ -264,33 +324,15 @@ async function handlePaymentRefunded(
 
     log?.info({ orderId }, "[payment-lifecycle] Order canceled after full refund");
   } catch (err) {
-    if (isExpectedTransitionError(err)) {
-      // ConcurrencyError / InvalidTransitionError — order already moved on.
-      log?.info(
-        { orderId, paymentId, error: String(err) },
-        "[payment-lifecycle] Auto-cancel skipped — order already advanced",
-      );
-    } else {
-      // Unexpected: money was refunded but the order was NOT canceled.
-      // Escalate (DLQ + staff alert) like the disputed branch.
-      log?.error(
-        { orderId, paymentId, error: String(err) },
-        "[payment-lifecycle] Auto-cancel after refund FAILED unexpectedly — escalating (DLQ + staff alert)",
-      );
-      await pushToDlq(
-        "payment.status_changed",
-        rawPayload,
-        err,
-        log,
-      );
-      await publishNatsEvent("order.escalation_needed", {
-        eventType: "order.escalation_needed",
-        orderId,
-        reason: "refund_cancel_failed",
-        paymentId,
-        timestamp: new Date().toISOString(),
-      });
-    }
+    await escalateTransitionError(err, {
+      orderId,
+      paymentId,
+      rawPayload,
+      skippedMsg: "[payment-lifecycle] Auto-cancel skipped — order already advanced",
+      failedMsg: "[payment-lifecycle] Auto-cancel after refund FAILED unexpectedly — escalating (DLQ + staff alert)",
+      escalationReason: "refund_cancel_failed",
+      log,
+    });
   }
 }
 

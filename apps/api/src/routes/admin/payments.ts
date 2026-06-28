@@ -50,10 +50,6 @@ import {
   type PaymentRefundIssuePayload,
   type PaymentStatusTransitionPayload,
 } from "@ibatexas/domain";
-import type {
-  OrderNoteAddPayload,
-  OrderState,
-} from "@ibatexas/pack-orders";
 import { getAuditSink } from "@ibatexas/audit-sink";
 import {
   PaymentStatus,
@@ -61,13 +57,17 @@ import {
 } from "@ibatexas/types";
 import { requireStaff, requireManagerRole } from "../../middleware/staff-auth.js";
 import {
-  ACTOR_TYPE_MISMATCH_REFUSAL_PT_BR,
-  consumeWithSameActorCheck,
   createAdminConfirmationStore,
-  NULL_STAFF_REFUSAL_PT_BR,
-  SAME_ACTOR_REFUSAL_PT_BR,
   type PendingAdminAction,
 } from "./admin-confirmation-store.js";
+import {
+  adjudicateAdminNote,
+  consumeAndGateAdminAction,
+  kernelRefusalText,
+  logStaleVersionRefusal,
+  principalFor,
+  refuseTransitionWithLog,
+} from "./_shared-actions.js";
 
 const OrderIdParams = z.object({ id: z.string().min(1) });
 
@@ -256,25 +256,6 @@ async function rollbackDailyRefundReservation(
 const REFUND_DRIP_CAP_PT_BR =
   "Limite diário de reembolsos sem confirmação atingido. Esta operação requer confirmação de outro operador.";
 
-function principalFor(staffId: string | null): {
-  readonly actorPrincipal: "user" | "system";
-  readonly taint: "TRUSTED" | "SYSTEM";
-  readonly sessionId: string;
-} {
-  if (staffId) {
-    return {
-      actorPrincipal: "user",
-      taint: "TRUSTED",
-      sessionId: `admin:${staffId}`,
-    };
-  }
-  return {
-    actorPrincipal: "system",
-    taint: "SYSTEM",
-    sessionId: "admin:api-key",
-  };
-}
-
 export async function adminPaymentRoutes(server: FastifyInstance): Promise<void> {
   const app = server.withTypeProvider<ZodTypeProvider>();
   // Defer audit-sink resolution to onReady. Plugin bodies execute during
@@ -369,10 +350,7 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
         outcome.decision.kind !== "EXECUTE" &&
         outcome.decision.kind !== "REWRITE"
       ) {
-        const refusalText =
-          outcome.decision.kind === "REFUSE"
-            ? outcome.decision.refusal.userFacing
-            : "Operação não permitida pela política do kernel.";
+        const refusalText = kernelRefusalText(outcome.decision);
         return reply.code(403).send({ error: refusalText });
       }
       const result = outcome.result!;
@@ -562,23 +540,7 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
         ...idPart,
       });
     }
-    const refusalText =
-      decision.kind === "REFUSE"
-        ? decision.refusal.userFacing
-        : "Operação não permitida pela política do kernel.";
-    return reply.code(403).send({ error: refusalText });
-  }
-
-  type TransitionOutcome = Awaited<
-    ReturnType<typeof paymentCmdSvc.transitionStatusFromEnvelope>
-  >;
-
-  function transitionRefusalText(
-    decision: TransitionOutcome["decision"],
-  ): string {
-    return decision.kind === "REFUSE"
-      ? decision.refusal.userFacing
-      : "Operação não permitida pela política do kernel.";
+    return reply.code(403).send({ error: kernelRefusalText(decision) });
   }
 
   async function replyForceStatusConcurrency(
@@ -592,21 +554,15 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
     },
   ) {
     if ((err as Error).name !== "PaymentConcurrencyError") throw err;
-    await eventLogSvc.append({
+    return logStaleVersionRefusal({
+      eventLogSvc,
+      reply,
       orderId: ctx.orderId,
+      confirmationId: ctx.confirmationId,
+      staffId: ctx.staffId,
       eventType: "admin.force_status.stale_version_refused",
-      discriminator: ctx.confirmationId,
-      payload: {
-        confirmationId: ctx.confirmationId,
-        staffId: ctx.staffId,
-        expectedVersion: ctx.expectedVersion,
-        message: (err as Error).message,
-      },
-      timestamp: new Date(),
-    });
-    return reply.code(409).send({
-      error:
-        "Pagamento foi atualizado por outro atendente após a aprovação. Reabra a operação.",
+      expectedVersion: ctx.expectedVersion,
+      message: (err as Error).message,
     });
   }
 
@@ -915,72 +871,25 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
       const { id } = request.params;
       const { confirmationId } = request.body;
       const staffId = request.staffId ?? null;
-      const { actorPrincipal: requestActorPrincipal } = principalFor(staffId);
 
-      const consumed = await consumeWithSameActorCheck(
+      // Two-person separation-of-duty + receipt validity gate. Each refusal
+      // kind (missing / null_staff / actor_type_mismatch / same_actor /
+      // wrong-route) emits its own audit entry inside the helper; P0-5 /
+      // P0-5-TRUE rules are unchanged. P0-5: refund is a money path — a
+      // different operator must confirm.
+      const gate = await consumeAndGateAdminAction({
         confirmationStore,
+        eventLogSvc,
         confirmationId,
+        orderId: id,
         staffId,
-        requestActorPrincipal,
-      );
-      if (consumed.kind === "missing") {
-        return reply.code(410).send({
-          error: "Confirmação inválida, expirada ou já utilizada.",
-        });
+        eventPrefix: "admin.refund",
+        expectedRoute: "refund",
+      });
+      if (!gate.ok) {
+        return reply.code(gate.code).send({ error: gate.error });
       }
-      if (consumed.kind === "null_staff_violation") {
-        await eventLogSvc.append({
-          orderId: id,
-          eventType: "admin.refund.null_staff_refused",
-          discriminator: confirmationId,
-          payload: {
-            confirmationId,
-            staffId,
-            pendingStaffId: consumed.pending.staffId,
-            reason: consumed.reason,
-          },
-          timestamp: new Date(),
-        });
-        return reply.code(403).send({ error: NULL_STAFF_REFUSAL_PT_BR });
-      }
-      if (consumed.kind === "actor_type_mismatch") {
-        await eventLogSvc.append({
-          orderId: id,
-          eventType: "admin.refund.actor_type_mismatch_refused",
-          discriminator: confirmationId,
-          payload: {
-            confirmationId,
-            staffId,
-            pendingActor: consumed.pendingActor,
-            requestActor: consumed.requestActor,
-          },
-          timestamp: new Date(),
-        });
-        return reply
-          .code(403)
-          .send({ error: ACTOR_TYPE_MISMATCH_REFUSAL_PT_BR });
-      }
-      if (consumed.kind === "same_actor_violation") {
-        // P0-5: refund is a money path — another operator must confirm.
-        await eventLogSvc.append({
-          orderId: id,
-          eventType: "admin.refund.same_actor_refused",
-          discriminator: confirmationId,
-          payload: {
-            confirmationId,
-            staffId,
-            pendingStaffId: consumed.pending.staffId,
-          },
-          timestamp: new Date(),
-        });
-        return reply.code(403).send({ error: SAME_ACTOR_REFUSAL_PT_BR });
-      }
-      const pending = consumed.pending;
-      if (pending.route !== "refund" || pending.orderId !== id) {
-        return reply.code(410).send({
-          error: "Confirmação inválida, expirada ou já utilizada.",
-        });
-      }
+      const pending = gate.pending;
 
       const order = await orderQuerySvc.getById(id);
       if (!order) {
@@ -1255,74 +1164,25 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
       const { id } = request.params;
       const { confirmationId } = request.body;
       const staffId = request.staffId ?? null;
-      const { actorPrincipal: requestActorPrincipal } = principalFor(staffId);
 
-      const consumed = await consumeWithSameActorCheck(
+      // Two-person separation-of-duty + receipt validity gate. Each refusal
+      // kind emits its own audit entry inside the helper; P0-5 / P0-5-TRUE
+      // rules are unchanged. P0-5: force-status is OWNER-only but still
+      // requires a second operator to confirm step 2 — a single owner
+      // double-clicking does not satisfy separation-of-duty.
+      const gate = await consumeAndGateAdminAction({
         confirmationStore,
+        eventLogSvc,
         confirmationId,
+        orderId: id,
         staffId,
-        requestActorPrincipal,
-      );
-      if (consumed.kind === "missing") {
-        return reply.code(410).send({
-          error: "Confirmação inválida, expirada ou já utilizada.",
-        });
+        eventPrefix: "admin.force_status",
+        expectedRoute: "force-status",
+      });
+      if (!gate.ok) {
+        return reply.code(gate.code).send({ error: gate.error });
       }
-      if (consumed.kind === "null_staff_violation") {
-        await eventLogSvc.append({
-          orderId: id,
-          eventType: "admin.force_status.null_staff_refused",
-          discriminator: confirmationId,
-          payload: {
-            confirmationId,
-            staffId,
-            pendingStaffId: consumed.pending.staffId,
-            reason: consumed.reason,
-          },
-          timestamp: new Date(),
-        });
-        return reply.code(403).send({ error: NULL_STAFF_REFUSAL_PT_BR });
-      }
-      if (consumed.kind === "actor_type_mismatch") {
-        await eventLogSvc.append({
-          orderId: id,
-          eventType: "admin.force_status.actor_type_mismatch_refused",
-          discriminator: confirmationId,
-          payload: {
-            confirmationId,
-            staffId,
-            pendingActor: consumed.pendingActor,
-            requestActor: consumed.requestActor,
-          },
-          timestamp: new Date(),
-        });
-        return reply
-          .code(403)
-          .send({ error: ACTOR_TYPE_MISMATCH_REFUSAL_PT_BR });
-      }
-      if (consumed.kind === "same_actor_violation") {
-        // P0-5: force-status is OWNER-only; still requires a second
-        // operator to confirm step 2 — separation-of-duty isn't
-        // satisfied by a single owner double-clicking.
-        await eventLogSvc.append({
-          orderId: id,
-          eventType: "admin.force_status.same_actor_refused",
-          discriminator: confirmationId,
-          payload: {
-            confirmationId,
-            staffId,
-            pendingStaffId: consumed.pending.staffId,
-          },
-          timestamp: new Date(),
-        });
-        return reply.code(403).send({ error: SAME_ACTOR_REFUSAL_PT_BR });
-      }
-      const pending = consumed.pending;
-      if (pending.route !== "force-status" || pending.orderId !== id) {
-        return reply.code(410).send({
-          error: "Confirmação inválida, expirada ou já utilizada.",
-        });
-      }
+      const pending = gate.pending;
 
       const order = await orderQuerySvc.getById(id);
       if (!order) {
@@ -1379,20 +1239,17 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
         outcome.decision.kind !== "EXECUTE" &&
         outcome.decision.kind !== "REWRITE"
       ) {
-        const refusalText = transitionRefusalText(outcome.decision);
-        await eventLogSvc.append({
+        return refuseTransitionWithLog({
+          eventLogSvc,
+          reply,
           orderId: id,
+          confirmationId,
+          staffId,
           eventType: "admin.force_status.refused",
-          discriminator: confirmationId,
-          payload: {
-            confirmationId,
-            staffId,
-            decision: outcome.decision.kind,
-            intentHash: envelope.intentHash,
-          },
-          timestamp: new Date(),
+          decisionKind: outcome.decision.kind,
+          intentHash: envelope.intentHash,
+          refusalText: kernelRefusalText(outcome.decision),
         });
-        return reply.code(403).send({ error: refusalText });
       }
       const result = outcome.result!;
 
@@ -1450,78 +1307,42 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
       const { id } = request.params;
 
       // W7-P4: route the admin note through addNoteFromEnvelope so the
-      // order.note.add intent is kernel-adjudicated and audit-emitted.
-      // The Wave-6 finding flagged the direct prisma.orderNote.create as a
-      // parallel/duplicate surface bypass.
+      // order.note.add intent is kernel-adjudicated and audit-emitted (see
+      // adjudicateAdminNote in _shared-actions.ts).
       const order = await orderQuerySvc.getById(id);
       if (!order) {
         return reply.code(404).send({ error: "Pedido não encontrado." });
       }
       const staffId = request.staffId ?? null;
-      const noteEnvelope = buildEnvelope<
-        "order.note.add",
-        OrderNoteAddPayload
-      >({
-        kind: "order.note.add" as const,
-        payload: {
-          orderId: id,
-          body: request.body.content,
-        },
-        nonce: randomUUID(),
-        actor: staffId
-          ? { principal: "user", sessionId: `admin:${staffId}` }
-          : { principal: "system", sessionId: "admin:api-key" },
-        taint: staffId ? "TRUSTED" : "SYSTEM",
+      const note = await adjudicateAdminNote({
+        orderCmdSvc,
+        order,
+        orderId: id,
+        staffId,
+        content: request.body.content,
       });
-      const noteOrderState: OrderState = {
-        ctx: {
-          channel: "web",
-          customerId: order.customerId,
-          cartId: null,
-          orderId: id,
-          paymentMethod: (order.paymentMethod as
-            | "pix"
-            | "card"
-            | "cash"
-            | null) ?? null,
-          paymentStatus: order.paymentStatus,
-          totalInCentavos: order.totalInCentavos,
-        },
-      };
-      const outcome = await orderCmdSvc.addNoteFromEnvelope(
-        noteEnvelope,
-        noteOrderState,
-        {
-          author: "staff",
-          ...(staffId ? { authorId: staffId } : {}),
-        },
-      );
 
-      if (outcome.decision.kind !== "EXECUTE" && outcome.decision.kind !== "REWRITE") {
-        const message =
-          outcome.decision.kind === "REFUSE"
-            ? outcome.decision.refusal.userFacing
-            : "Não foi possível adicionar a nota no momento.";
+      if (note.kind === "refused") {
+        const message = kernelRefusalText(
+          note.decision,
+          "Não foi possível adicionar a nota no momento.",
+        );
         return reply.code(403).send({ error: message });
       }
-      const noteResult = outcome.result!;
-      const persisted = await prisma.orderNote.findUnique({
-        where: { id: noteResult.noteId },
-      });
 
       await publishNatsEvent("order.note_added", {
         eventType: "order.note_added",
         orderId: id,
-        noteId: noteResult.noteId,
+        noteId: note.noteId,
         author: "admin",
         timestamp: new Date().toISOString(),
       });
 
       return reply.code(201).send({
-        id: noteResult.noteId,
-        content: persisted?.content ?? request.body.content,
+        id: note.noteId,
+        content: note.persisted?.content ?? request.body.content,
         createdAt:
-          persisted?.createdAt?.toISOString() ?? new Date().toISOString(),
+          note.persisted?.createdAt?.toISOString() ?? new Date().toISOString(),
       });
     },
   );
