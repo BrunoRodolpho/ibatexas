@@ -92,8 +92,13 @@ function summarizeActed(acted: unknown): Record<string, unknown> | undefined {
   if ("result" in a && a.result !== undefined) out.result = a.result;
   const signal = (acted as { signal?: unknown }).signal;
   if (typeof signal === "string") out.signal = signal;
-  const message = (acted as { message?: unknown }).message;
-  if (typeof message === "string") out.message = message;
+  // `acted.message` is OPERATOR-FACING (can carry capability ids / internal
+  // error or stack text — see @claustrum/core dispatch.ts) and is deliberately
+  // NOT forwarded into the model prompt: doing so risks leaking that text to the
+  // customer via the grounded reply. The F1/F1b post-completion guards police the
+  // OUTPUT, but the leak is an INPUT-side concern they don't cover — so we drop it
+  // at the source (restores the #89 "no operator-message leak" hardening that the
+  // dev claims-runtime lineage didn't carry forward).
   return out;
 }
 
