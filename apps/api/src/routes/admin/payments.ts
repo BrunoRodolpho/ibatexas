@@ -62,6 +62,7 @@ import {
 } from "./admin-confirmation-store.js";
 import {
   adjudicateAdminNote,
+  buildAdminTransitionEnvelope,
   consumeAndGateAdminAction,
   kernelRefusalText,
   logStaleVersionRefusal,
@@ -282,6 +283,42 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
   const orderQuerySvc = createOrderQueryService();
   const eventLogSvc = createOrderEventLogService(server.log);
   const confirmationStore = createAdminConfirmationStore();
+
+  // Behavior-preserving extraction of the order-existence + active-payment
+  // load (404 on either miss) duplicated byte-for-byte between the
+  // refund/confirm and force-status/confirm step-2 handlers. `getById`
+  // validates the order exists (404 "Pedido não encontrado.") then
+  // `getActiveByOrderId` loads the active payment (404 "Nenhum pagamento
+  // ativo encontrado.") — same await ordering, no `.catch`, same codes /
+  // messages. The order row itself is not returned: both call sites only
+  // consume the active payment; the order load is purely an existence gate.
+  async function loadOrderAndActivePayment(orderId: string): Promise<
+    | {
+        readonly ok: false;
+        readonly code: number;
+        readonly body: Record<string, unknown>;
+      }
+    | {
+        readonly ok: true;
+        readonly payment: NonNullable<
+          Awaited<ReturnType<typeof paymentQuerySvc.getActiveByOrderId>>
+        >;
+      }
+  > {
+    const order = await orderQuerySvc.getById(orderId);
+    if (!order) {
+      return { ok: false, code: 404, body: { error: "Pedido não encontrado." } };
+    }
+    const payment = await paymentQuerySvc.getActiveByOrderId(orderId);
+    if (!payment) {
+      return {
+        ok: false,
+        code: 404,
+        body: { error: "Nenhum pagamento ativo encontrado." },
+      };
+    }
+    return { ok: true, payment };
+  }
 
   // ── POST /api/admin/orders/:id/payment/confirm-cash ───────────────────────
   app.post(
@@ -891,15 +928,11 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
       }
       const pending = gate.pending;
 
-      const order = await orderQuerySvc.getById(id);
-      if (!order) {
-        return reply.code(404).send({ error: "Pedido não encontrado." });
+      const loaded = await loadOrderAndActivePayment(id);
+      if (!loaded.ok) {
+        return reply.code(loaded.code).send(loaded.body);
       }
-
-      const payment = await paymentQuerySvc.getActiveByOrderId(id);
-      if (!payment) {
-        return reply.code(404).send({ error: "Nenhum pagamento ativo encontrado." });
-      }
+      const payment = loaded.payment;
 
       const stored = pending.payload as unknown as {
         readonly paymentId: string;
@@ -1184,15 +1217,11 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
       }
       const pending = gate.pending;
 
-      const order = await orderQuerySvc.getById(id);
-      if (!order) {
-        return reply.code(404).send({ error: "Pedido não encontrado." });
+      const loaded = await loadOrderAndActivePayment(id);
+      if (!loaded.ok) {
+        return reply.code(loaded.code).send(loaded.body);
       }
-
-      const payment = await paymentQuerySvc.getActiveByOrderId(id);
-      if (!payment) {
-        return reply.code(404).send({ error: "Nenhum pagamento ativo encontrado." });
-      }
+      const payment = loaded.payment;
 
       const storedPayload = pending.payload as unknown as PaymentStatusTransitionPayload;
       if (storedPayload.paymentId !== payment.id) {
@@ -1201,26 +1230,14 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
         });
       }
 
-      const { actorPrincipal, taint, sessionId } = principalFor(staffId);
-      // audit-2026-05-24 P2-5: thread the step-1 version into the
-      // envelope payload. The executor REFUSEs (PaymentConcurrencyError)
-      // if the payment was mutated between the two operator clicks.
-      const envelopePayload: PaymentStatusTransitionPayload = {
-        ...storedPayload,
-        ...(pending.expectedVersion === undefined
-          ? {}
-          : { expectedVersion: pending.expectedVersion }),
-      };
-      const envelope = buildEnvelope<
+      // audit-2026-05-24 P2-5: the step-1 version is threaded into the
+      // envelope payload (inside buildAdminTransitionEnvelope). The executor
+      // REFUSEs (PaymentConcurrencyError) if the payment was mutated between
+      // the two operator clicks.
+      const { envelope } = buildAdminTransitionEnvelope<
         "payment.status.transition",
         PaymentStatusTransitionPayload
-      >({
-        kind: "payment.status.transition",
-        payload: envelopePayload,
-        nonce: pending.nonce,
-        actor: { principal: actorPrincipal, sessionId },
-        taint,
-      });
+      >({ pending, staffId, kind: "payment.status.transition" });
 
       let outcome;
       try {

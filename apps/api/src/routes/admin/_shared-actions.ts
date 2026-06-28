@@ -29,7 +29,7 @@
 
 import { randomUUID } from "node:crypto";
 import type { FastifyReply } from "fastify";
-import { buildEnvelope } from "@adjudicate/core";
+import { buildEnvelope, type IntentEnvelope } from "@adjudicate/core";
 import {
   createOrderCommandService,
   createOrderEventLogService,
@@ -105,6 +105,66 @@ export function kernelRefusalText(
   return decision.kind === "REFUSE" && decision.refusal !== undefined
     ? decision.refusal.userFacing
     : fallback;
+}
+
+/**
+ * Build the kernel envelope for a confirm-step (etapa-2) status transition.
+ *
+ * Behavior-preserving extraction of the provably-identical envelope-build
+ * skeleton shared by the `force-cancel/confirm` (order.status.transition),
+ * `waive/confirm` and `force-status/confirm` (payment.status.transition)
+ * handlers:
+ *
+ *   1. derive `principalFor(staffId)` → actor principal / taint / sessionId,
+ *   2. thread the step-1 snapshot version into the payload (audit-2026-05-24
+ *      P2-5): `{ ...storedPayload, ...(expectedVersion ?? omit) }`,
+ *   3. `buildEnvelope` with `{ kind, payload, nonce: pending.nonce, actor,
+ *      taint }`.
+ *
+ * The resulting `payload` is byte-identical to the previous inline build
+ * (same keys, same values, same conditional `expectedVersion`) so the
+ * computed `intentHash` is unchanged. `principalFor` is pure, so deriving it
+ * here (rather than before each call site's inline divergent guards) has no
+ * observable effect.
+ *
+ * The per-route DIVERGENT money/governance logic stays inline at each call
+ * site and is intentionally NOT unified here: the `paymentId` active-payment
+ * swap guard, the concurrency try/catch (order `ConcurrencyError` → 409 vs
+ * payment `PaymentConcurrencyError` → `logStaleVersionRefusal`), the
+ * non-EXECUTE refusal `eventType`, which NATS event is published, the
+ * executed-audit payload, and the `cancelActivePaymentBestEffort` call. The
+ * derived `actorPrincipal` / `taint` / `sessionId` are surfaced so the
+ * force-cancel path can reuse them for its payment-cancel call.
+ */
+export function buildAdminTransitionEnvelope<
+  K extends string,
+  P extends { readonly expectedVersion?: number },
+>(deps: {
+  readonly pending: PendingAdminAction;
+  readonly staffId: string | null;
+  readonly kind: K;
+}): {
+  readonly envelope: IntentEnvelope<K, P>;
+  readonly actorPrincipal: "user" | "system";
+  readonly taint: "TRUSTED" | "SYSTEM";
+  readonly sessionId: string;
+} {
+  const { actorPrincipal, taint, sessionId } = principalFor(deps.staffId);
+  const storedPayload = deps.pending.payload as unknown as P;
+  const payload = {
+    ...storedPayload,
+    ...(deps.pending.expectedVersion === undefined
+      ? {}
+      : { expectedVersion: deps.pending.expectedVersion }),
+  } as unknown as P;
+  const envelope = buildEnvelope<K, P>({
+    kind: deps.kind,
+    payload,
+    nonce: deps.pending.nonce,
+    actor: { principal: actorPrincipal, sessionId },
+    taint,
+  });
+  return { envelope, actorPrincipal, taint, sessionId };
 }
 
 /**

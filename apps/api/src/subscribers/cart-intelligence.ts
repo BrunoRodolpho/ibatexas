@@ -159,6 +159,33 @@ async function applyProfileUpdate(
   }
 }
 
+// Registers a queue-grouped NATS subscription for a lightweight reservation.*
+// profile-counter event: destructures + guards customerId, then runs the caller's
+// mutation through applyProfileUpdate with the standard info-field shape and
+// info/error log strings. Collapses the otherwise byte-identical reservation
+// handler registrations into one call site (only the mutate ops + log strings differ).
+async function registerProfileCounterSub(
+  event: string,
+  mutate: (redis: RedisClient, profileKey: string) => Promise<void>,
+  infoLabel: string,
+  errLabel: string,
+  log?: FastifyBaseLogger,
+): Promise<void> {
+  await subscribeNatsEvent(event, async (payload) => {
+    const { customerId } = payload as { customerId?: string };
+    if (!customerId) return;
+
+    await applyProfileUpdate(
+      customerId,
+      mutate,
+      { customer_id: customerId },
+      infoLabel,
+      errLabel,
+      log,
+    );
+  }, { queueGroup: "cart-intelligence" });
+}
+
 // Shared flow for order.* profile updates that must first resolve the customer via
 // the Medusa admin API (order.refunded / order.canceled). Emits the standard
 // skip / updated / error logs byte-for-byte; never rethrows.
@@ -1126,55 +1153,37 @@ export async function startCartIntelligenceSubscribers(
   }, { queueGroup: "cart-intelligence" });
 
   // ── reservation.modified ─────────────────────────────────────────────
-  await subscribeNatsEvent("reservation.modified", async (payload) => {
-    const { customerId } = payload as { customerId?: string };
-    if (!customerId) return;
-
-    await applyProfileUpdate(
-      customerId,
-      async (redis, profileKey) => {
-        await redis.hSet(profileKey, "lastReservationModifiedAt", new Date().toISOString());
-      },
-      { customer_id: customerId },
-      "[cart-intelligence] reservation.modified — profile updated",
-      "[cart-intelligence] reservation.modified handler error",
-      log,
-    );
-  }, { queueGroup: "cart-intelligence" });
+  await registerProfileCounterSub(
+    "reservation.modified",
+    async (redis, profileKey) => {
+      await redis.hSet(profileKey, "lastReservationModifiedAt", new Date().toISOString());
+    },
+    "[cart-intelligence] reservation.modified — profile updated",
+    "[cart-intelligence] reservation.modified handler error",
+    log,
+  );
 
   // ── reservation.cancelled ───────────────────────────────────────────────
-  await subscribeNatsEvent("reservation.cancelled", async (payload) => {
-    const { customerId } = payload as { customerId?: string };
-    if (!customerId) return;
-
-    await applyProfileUpdate(
-      customerId,
-      async (redis, profileKey) => {
-        await redis.hIncrBy(profileKey, "cancellationCount", 1);
-      },
-      { customer_id: customerId },
-      "[cart-intelligence] reservation.cancelled — profile updated",
-      "[cart-intelligence] reservation.cancelled handler error",
-      log,
-    );
-  }, { queueGroup: "cart-intelligence" });
+  await registerProfileCounterSub(
+    "reservation.cancelled",
+    async (redis, profileKey) => {
+      await redis.hIncrBy(profileKey, "cancellationCount", 1);
+    },
+    "[cart-intelligence] reservation.cancelled — profile updated",
+    "[cart-intelligence] reservation.cancelled handler error",
+    log,
+  );
 
   // ── reservation.no_show ─────────────────────────────────────────────────
-  await subscribeNatsEvent("reservation.no_show", async (payload) => {
-    const { customerId } = payload as { customerId?: string };
-    if (!customerId) return;
-
-    await applyProfileUpdate(
-      customerId,
-      async (redis, profileKey) => {
-        await redis.hIncrBy(profileKey, "noShowCount", 1);
-      },
-      { customer_id: customerId },
-      "[cart-intelligence] reservation.no_show — profile updated",
-      "[cart-intelligence] reservation.no_show handler error",
-      log,
-    );
-  }, { queueGroup: "cart-intelligence" });
+  await registerProfileCounterSub(
+    "reservation.no_show",
+    async (redis, profileKey) => {
+      await redis.hIncrBy(profileKey, "noShowCount", 1);
+    },
+    "[cart-intelligence] reservation.no_show — profile updated",
+    "[cart-intelligence] reservation.no_show handler error",
+    log,
+  );
 
   // ── review.prompt (delivery — sends WhatsApp review request) ────────────
   await subscribeNatsEvent("review.prompt", async (payload) => {

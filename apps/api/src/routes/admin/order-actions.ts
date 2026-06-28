@@ -77,6 +77,7 @@ import {
 } from "./admin-confirmation-store.js";
 import {
   adjudicateAdminNote,
+  buildAdminTransitionEnvelope,
   consumeAndGateAdminAction,
   kernelRefusalText,
   logStaleVersionRefusal,
@@ -377,28 +378,15 @@ export async function adminOrderActionRoutes(server: FastifyInstance): Promise<v
       }
       const order = loaded.order;
 
-      const { actorPrincipal, taint, sessionId } = principalFor(staffId);
-      const storedPayload = pending.payload as unknown as OrderStatusTransitionPayload;
-      // audit-2026-05-24 P2-5: thread the step-1 version into the
-      // envelope payload so the executor's optimistic-concurrency check
-      // fires if another mutation has bumped `order.version` between
-      // the two operator clicks.
-      const payload: OrderStatusTransitionPayload = {
-        ...storedPayload,
-        ...(pending.expectedVersion === undefined
-          ? {}
-          : { expectedVersion: pending.expectedVersion }),
-      };
-      const envelope = buildEnvelope<
-        "order.status.transition",
-        OrderStatusTransitionPayload
-      >({
-        kind: "order.status.transition",
-        payload,
-        nonce: pending.nonce,
-        actor: { principal: actorPrincipal, sessionId },
-        taint,
-      });
+      // audit-2026-05-24 P2-5: the step-1 version is threaded into the
+      // envelope payload (inside buildAdminTransitionEnvelope) so the
+      // executor's optimistic-concurrency check fires if another mutation
+      // has bumped `order.version` between the two operator clicks.
+      const { envelope, actorPrincipal, taint, sessionId } =
+        buildAdminTransitionEnvelope<
+          "order.status.transition",
+          OrderStatusTransitionPayload
+        >({ pending, staffId, kind: "order.status.transition" });
 
       try {
         const outcome = await orderCmdSvc.transitionStatusFromEnvelope(envelope);
@@ -706,7 +694,6 @@ export async function adminOrderActionRoutes(server: FastifyInstance): Promise<v
       }
       const activePayment = loaded.activePayment;
 
-      const { actorPrincipal, taint, sessionId } = principalFor(staffId);
       const storedPayload = pending.payload as unknown as PaymentStatusTransitionPayload;
       // Ensure the payment id in the receipt still matches today's active
       // payment — defensive against an active payment swap between the two
@@ -717,25 +704,14 @@ export async function adminOrderActionRoutes(server: FastifyInstance): Promise<v
         });
       }
 
-      // audit-2026-05-24 P2-5: thread the step-1 version into the
-      // envelope payload. If the payment has been mutated between
-      // step 1 and step 2 the executor will throw ConcurrencyError.
-      const envelopePayload: PaymentStatusTransitionPayload = {
-        ...storedPayload,
-        ...(pending.expectedVersion === undefined
-          ? {}
-          : { expectedVersion: pending.expectedVersion }),
-      };
-      const envelope = buildEnvelope<
+      // audit-2026-05-24 P2-5: the step-1 version is threaded into the
+      // envelope payload (inside buildAdminTransitionEnvelope). If the
+      // payment has been mutated between step 1 and step 2 the executor
+      // will throw ConcurrencyError.
+      const { envelope } = buildAdminTransitionEnvelope<
         "payment.status.transition",
         PaymentStatusTransitionPayload
-      >({
-        kind: "payment.status.transition",
-        payload: envelopePayload,
-        nonce: pending.nonce,
-        actor: { principal: actorPrincipal, sessionId },
-        taint,
-      });
+      >({ pending, staffId, kind: "payment.status.transition" });
 
       let outcome;
       try {
