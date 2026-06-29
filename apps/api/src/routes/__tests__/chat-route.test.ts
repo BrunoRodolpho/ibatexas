@@ -27,6 +27,10 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import Fastify, { type FastifyInstance } from "fastify";
 import { EventEmitter } from "node:events";
+// EGRESS BRAND (E-1): a text_delta StreamChunk carries a branded RenderedReply
+// in memory; the SSE chokepoint (chunkToWire) unwraps it. Mint both the chunks
+// the route emits (assertions) and the chunks fed into the stream (mock data).
+import { mintRenderedReply } from "@adjudicate/core";
 import { validatorCompiler, serializerCompiler } from "fastify-type-provider-zod";
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────
@@ -98,6 +102,12 @@ vi.mock("../../streaming/emitter.js", () => ({
   getStream: mockGetStream,
   subscribeToStream: mockSubscribeToStream,
   cleanupStream: mockCleanupStream,
+  // EGRESS BRAND (E-1): the SSE chokepoint extracts the branded text_delta
+  // payload to a plain string for the wire.
+  chunkToWire: (chunk: { type: string; delta?: { text: string } }) =>
+    chunk.type === "text_delta"
+      ? { type: "text_delta", delta: chunk.delta?.text }
+      : chunk,
 }));
 
 vi.mock("../../streaming/execution-queue.js", () => ({
@@ -365,7 +375,7 @@ describe("POST /api/chat/messages — Conductor turn delivery (fire-and-forget)"
 
     expect(mockPushChunk).toHaveBeenCalledWith(SID, {
       type: "text_delta",
-      delta: "Olá! Como posso ajudar?",
+      delta: mintRenderedReply("Olá! Como posso ajudar?"),
     });
     expect(mockPushChunk).toHaveBeenCalledWith(SID, { type: "done" });
 
@@ -457,7 +467,9 @@ describe("POST /api/chat/messages — W1 no-reply incident seam", () => {
     // Customer harm-reducer: a pt-BR holding chunk, THEN the terminal done.
     expect(mockPushChunk).toHaveBeenCalledWith(SID, {
       type: "text_delta",
-      delta: expect.stringContaining("não consegui montar uma resposta"),
+      delta: expect.objectContaining({
+        text: expect.stringContaining("não consegui montar uma resposta"),
+      }),
     });
     expect(mockPushChunk).toHaveBeenCalledWith(SID, { type: "done" });
     // The model never produced a usable reply → nothing persisted as assistant.
@@ -497,7 +509,7 @@ describe("POST /api/chat/messages — W1 no-reply incident seam", () => {
     expect(mockOpenIncidentInline).not.toHaveBeenCalled();
     expect(mockPushChunk).toHaveBeenCalledWith(SID, {
       type: "text_delta",
-      delta: "Pedido confirmado!",
+      delta: mintRenderedReply("Pedido confirmado!"),
     });
     expect(assistantWasPersisted()).toBe(true);
   });
@@ -588,7 +600,7 @@ describe("POST /api/chat/messages — W1 supersession (F1) & catch parity (F2)",
     // B delivered its reply; A (superseded) delivered nothing of its own.
     expect(mockPushChunk).toHaveBeenCalledWith(SID, {
       type: "text_delta",
-      delta: "Resposta da segunda mensagem.",
+      delta: mintRenderedReply("Resposta da segunda mensagem."),
     });
     await app.close();
   });
@@ -718,7 +730,7 @@ describe("POST /api/chat/messages — W1 supersession (F1) & catch parity (F2)",
     expect(mockEmitNoDelivery).not.toHaveBeenCalled();
     expect(mockPushChunk).toHaveBeenCalledWith(SID, {
       type: "text_delta",
-      delta: "Tudo certo!",
+      delta: mintRenderedReply("Tudo certo!"),
     });
     await app.close();
   });
@@ -777,7 +789,7 @@ describe("GET /api/chat/stream/:sessionId — chunk delivery", () => {
     mockGetStream.mockReturnValue({
       emitter: new EventEmitter(),
       buffer: [
-        { type: "text_delta", delta: "parcial" },
+        { type: "text_delta", delta: mintRenderedReply("parcial") },
         { type: "done" },
       ],
       seq: 2,
@@ -812,7 +824,7 @@ describe("GET /api/chat/stream/:sessionId — chunk delivery", () => {
 
     // Wait until the handler has subscribed, then push live chunks.
     await waitFor(() => emitter.listenerCount("chunk") > 0);
-    emitter.emit("chunk", { type: "text_delta", delta: "ao-vivo" });
+    emitter.emit("chunk", { type: "text_delta", delta: mintRenderedReply("ao-vivo") });
     emitter.emit("chunk", { type: "done" });
 
     const res = await injectPromise;
@@ -827,7 +839,7 @@ describe("GET /api/chat/stream/:sessionId — chunk delivery", () => {
     const close = vi.fn().mockResolvedValue(undefined);
     mockSubscribeToStream.mockImplementation(
       async (_sid: string, onChunk: (c: unknown) => void) => {
-        onChunk({ type: "text_delta", delta: "via-redis" });
+        onChunk({ type: "text_delta", delta: mintRenderedReply("via-redis") });
         onChunk({ type: "done" });
         return { close };
       },

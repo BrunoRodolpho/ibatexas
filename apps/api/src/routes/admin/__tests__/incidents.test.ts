@@ -14,6 +14,9 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import Fastify, { type FastifyInstance } from "fastify";
+// EGRESS BRAND (E-1): the staff reply is minted into a branded RenderedReply
+// before it reaches sendText; assert against the minted reply.
+import { mintRenderedReply } from "@adjudicate/core";
 import {
   serializerCompiler,
   validatorCompiler,
@@ -211,7 +214,7 @@ describe("POST /api/admin/incidents/:id/reply phone resolution", () => {
       expect(mockCustomerFindUnique).not.toHaveBeenCalled();
       expect(mockSendText).toHaveBeenCalledWith(
         "whatsapp:+5511988887777",
-        "ola, desculpe a demora",
+        mintRenderedReply("ola, desculpe a demora"),
       );
       // A delivered staff reply closes the incident (P1-3).
       expect(mockCloseAuto).toHaveBeenCalledTimes(1);
@@ -245,7 +248,7 @@ describe("POST /api/admin/incidents/:id/reply phone resolution", () => {
         where: { id: "cust_2" },
         select: { phone: true },
       });
-      expect(mockSendText).toHaveBeenCalledWith("whatsapp:+5511977776666", "oi");
+      expect(mockSendText).toHaveBeenCalledWith("whatsapp:+5511977776666", mintRenderedReply("oi"));
       // Transcript append tagged via:staff_takeover (+incidentId).
       expect(mockAppendMessage).toHaveBeenCalledTimes(1);
       expect(mockAppendMessage.mock.calls[0]?.[0]?.metadata).toMatchObject({

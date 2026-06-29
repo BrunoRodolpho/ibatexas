@@ -25,6 +25,9 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { ConcurrencyError } from "@ibatexas/domain";
+// EGRESS BRAND (E-1): sendText receives a branded RenderedReply (`{ text }` at
+// runtime) minted in @adjudicate/core; assert against a minted reply / its text.
+import { mintRenderedReply } from "@adjudicate/core";
 
 // ── Hoisted mocks ───────────────────────────────────────────────────────────
 
@@ -317,7 +320,7 @@ describe("notification.send handler", () => {
 
     expect(senderSendText).toHaveBeenCalledWith(
       "whatsapp:5519999990000",
-      "Seu pedido foi recebido!",
+      mintRenderedReply("Seu pedido foi recebido!"),
     );
   });
 
@@ -336,7 +339,7 @@ describe("notification.send handler", () => {
 
     expect(senderSendText).toHaveBeenCalledWith(
       "whatsapp:5519999990001",
-      "mensagem personalizada",
+      mintRenderedReply("mensagem personalizada"),
     );
   });
 
@@ -481,10 +484,10 @@ describe("review.prompt delivery handler", () => {
     });
 
     expect(senderSendText).toHaveBeenCalledTimes(1);
-    const [to, message] = senderSendText.mock.calls[0] as [string, string];
+    const [to, message] = senderSendText.mock.calls[0] as [string, { text: string }];
     expect(to).toBe("whatsapp:5519999991111");
-    expect(message).toContain("Como foi sua experiência?");
-    expect(message).toContain("https://ibatexas.example/conta/pedidos");
+    expect(message.text).toContain("Como foi sua experiência?");
+    expect(message.text).toContain("https://ibatexas.example/conta/pedidos");
   });
 
   it("does not send when APP_BASE_URL is not configured", async () => {

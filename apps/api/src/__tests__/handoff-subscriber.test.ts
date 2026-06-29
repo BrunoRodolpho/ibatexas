@@ -137,7 +137,7 @@ describe("handoff-subscriber", () => {
     expect(mockSendText).toHaveBeenCalledOnce()
     expect(mockSendText).toHaveBeenCalledWith(
       "whatsapp:+5511999990001",
-      expect.stringContaining("sess_notify"),
+      expect.objectContaining({ text: expect.stringContaining("sess_notify") }),
     )
   })
 
@@ -153,8 +153,8 @@ describe("handoff-subscriber", () => {
 
     await callback({ sessionId: "sess_reason", reason: "problema no pedido" })
 
-    const [, message] = mockSendText.mock.calls[0] as [string, string]
-    expect(message).toContain("problema no pedido")
+    const [, message] = mockSendText.mock.calls[0] as [string, { text: string }]
+    expect(message.text).toContain("problema no pedido")
   })
 
   it("skips WhatsApp notification when STAFF_NOTIFICATION_PHONE is not set", async () => {

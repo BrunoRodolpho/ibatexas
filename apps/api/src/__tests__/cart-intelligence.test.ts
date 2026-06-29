@@ -5,6 +5,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { startCartIntelligenceSubscribers } from "../subscribers/cart-intelligence.js";
 
+// EGRESS BRAND (E-1): sendText now receives a branded RenderedReply (`{ text }`
+// at runtime). Match by the unwrapped text via objectContaining.
+const textContaining = (sub: string) =>
+  expect.objectContaining({ text: expect.stringContaining(sub) });
+
 // ── Hoisted mocks ──────────────────────────────────────────────────────────────
 
 const mockSubscribeNatsEvent = vi.hoisted(() => vi.fn());
@@ -805,7 +810,7 @@ describe("order.disputed handler (EVT-003)", () => {
 
     expect(mockSendText).toHaveBeenCalledWith(
       "whatsapp:+5519900000099",
-      expect.stringContaining("order_d01"),
+      textContaining("order_d01"),
     );
   });
 
@@ -844,7 +849,7 @@ describe("order.disputed handler (EVT-003)", () => {
     // Should still send WhatsApp alert to staff
     expect(mockSendText).toHaveBeenCalledWith(
       "whatsapp:+5519900000099",
-      expect.stringContaining("N/A"),
+      textContaining("N/A"),
     );
     // But no Medusa fetch or profile update
     expect(mockMedusaAdminFetch).not.toHaveBeenCalled();

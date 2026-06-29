@@ -154,7 +154,10 @@ describe("ibatexas-investigator — origin labelling at mint", () => {
 
     const first = ledger.resolve("first-party").entry;
     expect(first?.taint).toBe("TRUSTED");
-    expect(first?.originProvenance).toBe("TRUSTED");
+    // EGRESS-BRAND wave bumps the kernel to the 3-value OriginProvenance: a
+    // read-layer "TRUSTED" taint maps FAIL-CLOSED to TRUSTED_THIRD_PARTY (never
+    // FIRST_PARTY) — see originProvenanceOf in ibatexas-investigator.ts.
+    expect(first?.originProvenance).toBe("TRUSTED_THIRD_PARTY");
     // The investigator owns the clock — fetchedAt is the injected now().
     expect(first?.fetchedAt).toBe(42);
     expect(first?.sourceMode).toBe("live");

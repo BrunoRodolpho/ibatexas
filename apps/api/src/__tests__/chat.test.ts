@@ -9,6 +9,7 @@ import {
 } from "fastify-type-provider-zod";
 import sensible from "@fastify/sensible";
 import { Channel } from "@ibatexas/types";
+import { mintRenderedReply } from "@adjudicate/core";
 import { chatRoutes } from "../routes/chat.js";
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────────
@@ -45,6 +46,12 @@ vi.mock("../streaming/emitter.js", () => ({
   getStream: mockGetStream,
   subscribeToStream: mockSubscribeToStream,
   cleanupStream: mockCleanupStream,
+  // EGRESS BRAND (E-1): the route serializes via chunkToWire, extracting the
+  // branded text_delta payload to a plain string for the SSE wire.
+  chunkToWire: (chunk: { type: string; delta?: { text: string } }) =>
+    chunk.type === "text_delta"
+      ? { type: "text_delta", delta: chunk.delta?.text }
+      : chunk,
 }));
 vi.mock("../streaming/execution-queue.js", () => ({
   acquireWebAgentLock: mockAcquireWebAgentLock,
@@ -191,7 +198,9 @@ describe("GET /api/chat/stream/:sessionId", () => {
     mockGetStream.mockReturnValue({
       emitter,
       buffer: [
-        { type: "text_delta", delta: "Olá" },
+        // EGRESS BRAND (E-1): an in-memory text_delta carries a branded
+        // RenderedReply; the SSE chokepoint unwraps it after proving provenance.
+        { type: "text_delta", delta: mintRenderedReply("Olá") },
         { type: "done" },
       ],
     });

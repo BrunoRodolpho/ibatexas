@@ -24,7 +24,13 @@
 
 import { describe, it, expect, vi, beforeEach, afterAll } from "vitest";
 import Fastify from "fastify";
+import { mintRenderedReply } from "@adjudicate/core";
 import { whatsappWebhookRoutes } from "../routes/whatsapp-webhook.js";
+
+// EGRESS BRAND (E-1): sendText receives a branded RenderedReply (`{ text }` at
+// runtime); match the body by its unwrapped text.
+const textContaining = (sub: string) =>
+  expect.objectContaining({ text: expect.stringContaining(sub) });
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────────
 
@@ -243,7 +249,7 @@ describe("handleMessageAsync — media handling", () => {
     await vi.waitFor(() => {
       expect(mockSendText).toHaveBeenCalledWith(
         `whatsapp:${PHONE}`,
-        expect.stringContaining("Recebi sua mídia"),
+        textContaining("Recebi sua mídia"),
       );
     }, { timeout: 2000 });
 
@@ -291,7 +297,7 @@ describe("handleMessageAsync — new customer onboarding (debounce-skip path)", 
     );
 
     // LGPD opt-in disclosure sent + marked
-    expect(mockSendText).toHaveBeenCalledWith(`whatsapp:${PHONE}`, expect.stringContaining("LGPD"));
+    expect(mockSendText).toHaveBeenCalledWith(`whatsapp:${PHONE}`, textContaining("LGPD"));
     expect(mockMarkOptedIn).toHaveBeenCalledWith(HASH);
 
     // Inbound user message persisted to the session
@@ -423,7 +429,7 @@ describe("handleMessageAsync — conductor turn", () => {
 
     expect(mockSendText).toHaveBeenCalledWith(
       `whatsapp:${PHONE}`,
-      "Olá! Como posso ajudar você hoje?",
+      mintRenderedReply("Olá! Como posso ajudar você hoje?"),
     );
     expect(mockAppendMessages).toHaveBeenCalledWith(
       "sess-1",
@@ -466,16 +472,18 @@ describe("handleMessageAsync — conductor turn", () => {
     // Agent text was sent first, then the PIX copia-e-cola block (text omitted the code).
     expect(mockSendText).toHaveBeenCalledWith(
       `whatsapp:${PHONE}`,
-      "Pedido confirmado! Aqui está o pagamento.",
+      mintRenderedReply("Pedido confirmado! Aqui está o pagamento."),
     );
     expect(mockSendText).toHaveBeenCalledWith(
       `whatsapp:${PHONE}`,
-      expect.stringContaining("Código PIX (copia e cola)"),
+      textContaining("Código PIX (copia e cola)"),
     );
     const pixBlock = mockSendText.mock.calls.find((c) =>
-      String(c[1]).includes("Código PIX (copia e cola)"),
+      (c[1] as { text: string }).text.includes("Código PIX (copia e cola)"),
     );
-    expect(String(pixBlock?.[1])).toContain("00020126PIX-COPIA-E-COLA-CODE");
+    expect((pixBlock?.[1] as { text: string } | undefined)?.text).toContain(
+      "00020126PIX-COPIA-E-COLA-CODE",
+    );
     // QR sent as media
     expect(mockSendMedia).toHaveBeenCalledWith(
       `whatsapp:${PHONE}`,
@@ -497,7 +505,7 @@ describe("handleMessageAsync — conductor turn", () => {
 
     expect(mockSendText).toHaveBeenCalledWith(
       `whatsapp:${PHONE}`,
-      expect.stringContaining("problema técnico"),
+      textContaining("problema técnico"),
     );
     // Failure path must NOT promote the claim to the 24h window.
     expect(mockRedis.set).not.toHaveBeenCalledWith(
@@ -539,7 +547,7 @@ describe("handleMessageAsync — conductor turn", () => {
     await vi.waitFor(() => {
       expect(mockSendText).toHaveBeenCalledWith(
         `whatsapp:${PHONE}`,
-        "Comandos: cardápio, carrinho, ajuda.",
+        mintRenderedReply("Comandos: cardápio, carrinho, ajuda."),
       );
     }, { timeout: 4000 });
 
@@ -571,6 +579,6 @@ describe("handleMessageAsync — conductor turn", () => {
 
     // Lock acquired for the main turn AND re-acquired for the retry.
     expect(mockAcquireAgentLock.mock.calls.length).toBeGreaterThanOrEqual(2);
-    expect(mockSendText).toHaveBeenCalledWith(`whatsapp:${PHONE}`, "Claro, vou adicionar.");
+    expect(mockSendText).toHaveBeenCalledWith(`whatsapp:${PHONE}`, mintRenderedReply("Claro, vou adicionar."));
   }, 15000);
 });
