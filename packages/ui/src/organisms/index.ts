@@ -64,3 +64,9 @@ export {
   StormDigestBanner,
   type StormDigestBannerProps,
 } from './StormDigestBanner'
+export {
+  AdminIncidentesPage,
+  type AdminIncidentesPageProps,
+  type IncidentInboxCounts,
+  type IncidentInboxStats,
+} from './AdminIncidentesPage'
