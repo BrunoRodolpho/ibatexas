@@ -31,6 +31,23 @@ const TWILIO_IMPORT_BAN = {
     "Raw `twilio` SDK egress is restricted to the branded chokepoint (apps/api/src/whatsapp/client.ts). Send customer text via sendText(...) with a RenderedReply minted in @adjudicate/core.",
 };
 
+// (e) close the raw-HTTP egress vector: a direct call to the Twilio REST host
+// (`https://api.twilio.com/...`) bypasses the SDK-import ban entirely (Theorem E
+// is sole-emitter, not sole-importer). Ban any reference to the host — string
+// literal or template — so customer egress cannot be smuggled via `fetch`.
+const TWILIO_REST_HOST_BAN = [
+  {
+    selector: "Literal[value=/api\\.twilio\\.com/]",
+    message:
+      "Direct calls to the Twilio REST host (api.twilio.com) are banned outside the kernel-gated egress chokepoint (Theorem E-1 sole-emitter). Send customer text via sendText(...) with a minted RenderedReply.",
+  },
+  {
+    selector: "TemplateElement[value.raw=/api\\.twilio\\.com/]",
+    message:
+      "Direct calls to the Twilio REST host (api.twilio.com) are banned outside the kernel-gated egress chokepoint (Theorem E-1 sole-emitter).",
+  },
+];
+
 // Files allowed to import the raw `twilio` SDK: the egress chokepoint plus the
 // inbound-validation / Verify-OTP surfaces (non-message-egress uses).
 const TWILIO_ALLOWED = [
@@ -45,13 +62,18 @@ export default [
   {
     files: ["src/**/*.ts"],
     rules: {
-      "no-restricted-syntax": ["error", RENDERED_REPLY_CAST_BAN],
+      "no-restricted-syntax": [
+        "error",
+        RENDERED_REPLY_CAST_BAN,
+        ...TWILIO_REST_HOST_BAN,
+      ],
       "no-restricted-imports": ["error", { paths: [TWILIO_IMPORT_BAN] }],
     },
   },
   {
     // Egress chokepoint + Twilio inbound/OTP surfaces may import the SDK; the
-    // RenderedReply cast ban still applies to them.
+    // RenderedReply cast ban + REST-host ban still apply to them (they use the
+    // SDK, never a raw api.twilio.com fetch).
     files: TWILIO_ALLOWED,
     rules: {
       "no-restricted-imports": "off",

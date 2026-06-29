@@ -24,12 +24,33 @@ const TWILIO_IMPORT_BAN = {
     "Raw `twilio` SDK egress is restricted to the kernel-gated wrapper (packages/tools/src/twilio/adjudicated.ts).",
 };
 
+// (e) close the raw-HTTP egress vector: ban any reference to the Twilio REST
+// host (`api.twilio.com`) — string literal or template — so customer egress
+// cannot be smuggled via `fetch` past the SDK-import ban (Theorem E-1
+// sole-emitter, not sole-importer).
+const TWILIO_REST_HOST_BAN = [
+  {
+    selector: "Literal[value=/api\\.twilio\\.com/]",
+    message:
+      "Direct calls to the Twilio REST host (api.twilio.com) are banned outside the kernel-gated egress wrapper (Theorem E-1 sole-emitter).",
+  },
+  {
+    selector: "TemplateElement[value.raw=/api\\.twilio\\.com/]",
+    message:
+      "Direct calls to the Twilio REST host (api.twilio.com) are banned outside the kernel-gated egress wrapper (Theorem E-1 sole-emitter).",
+  },
+];
+
 export default [
   ...compat.extends("@ibatexas/eslint-config"),
   {
     files: ["src/**/*.ts"],
     rules: {
-      "no-restricted-syntax": ["error", RENDERED_REPLY_CAST_BAN],
+      "no-restricted-syntax": [
+        "error",
+        RENDERED_REPLY_CAST_BAN,
+        ...TWILIO_REST_HOST_BAN,
+      ],
       "no-restricted-imports": ["error", { paths: [TWILIO_IMPORT_BAN] }],
     },
   },
