@@ -53,24 +53,24 @@ describe('tagToBadgeVariant', () => {
   // ── Unknown / fallback ──────────────────────────────────────────────
 
   describe('fallback behavior', () => {
-    it('returns "info" for unknown tags', () => {
-      expect(tagToBadgeVariant('desconhecido')).toBe('info')
+    it('returns "default" (grey) for unknown tags', () => {
+      expect(tagToBadgeVariant('desconhecido')).toBe('default')
     })
 
-    it('returns "info" for empty string', () => {
-      expect(tagToBadgeVariant('')).toBe('info')
+    it('returns "default" (grey) for empty string', () => {
+      expect(tagToBadgeVariant('')).toBe('default')
     })
 
     it('is case-sensitive — "Popular" is unknown', () => {
-      expect(tagToBadgeVariant('Popular')).toBe('info')
+      expect(tagToBadgeVariant('Popular')).toBe('default')
     })
 
     it('does not trim whitespace — " popular " is unknown', () => {
-      expect(tagToBadgeVariant(' popular ')).toBe('info')
+      expect(tagToBadgeVariant(' popular ')).toBe('default')
     })
 
-    it('returns "info" for tags with special characters', () => {
-      expect(tagToBadgeVariant('popular!')).toBe('info')
+    it('returns "default" (grey) for tags with special characters', () => {
+      expect(tagToBadgeVariant('popular!')).toBe('default')
     })
   })
 

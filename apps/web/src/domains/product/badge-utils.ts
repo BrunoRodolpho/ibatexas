@@ -48,8 +48,10 @@ const TAG_TO_BADGE: Record<string, BadgeVariant> = {
 
 /**
  * Convert a product tag string into a type-safe Badge variant.
- * Falls back to 'info' for unknown tags.
+ * Falls back to 'default' (grey) for unknown tags.
+ * NOTE: 'info' is intentionally NOT the fallback — it was recolored blue for
+ * the AUTO_RESOLVED incident status. Unknown product tags must stay grey.
  */
 export function tagToBadgeVariant(tag: string): BadgeVariant {
-  return TAG_TO_BADGE[tag] ?? 'info'
+  return TAG_TO_BADGE[tag] ?? 'default'
 }
