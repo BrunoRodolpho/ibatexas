@@ -756,3 +756,79 @@ model LlmTokenUsage {
   @@map("llm_token_usage")
   @@schema("ibx_domain")
 }
+
+model ConversationIncident {
+  id               String   @id @default(cuid())
+  sessionId        String   @map("session_id")            // soft correlation, no @relation
+  conversationId   String?  @map("conversation_id")       // nullable; archiver may not have created it yet
+  customerId       String?  @map("customer_id")           // guest markers normalized to null
+  channel          String                                  // plain String, NOT an enum (agent plane later, no ALTER TYPE)
+  senderRef        String?  @map("sender_ref")            // P1-5: channel-addressable handle to route a staff reply
+  kind             IncidentKind          @default(no_reply)
+  cause            IncidentCause                            // original cause
+  lastCause        IncidentCause?        @map("last_cause")
+  severity         IncidentSeverity      @default(medium)
+  status           IncidentStatus        @default(OPEN)
+  dropCount        Int       @default(1) @map("drop_count")
+  customerImpacted Boolean   @default(true) @map("customer_impacted") // P2-10: false when a canned apology was sent
+  openedAt         DateTime  @map("opened_at")              // PASSED IN — no DB default
+  lastDropAt       DateTime  @map("last_drop_at")           // PASSED IN — no DB default
+  acknowledgedAt   DateTime? @map("acknowledged_at")
+  acknowledgedBy   String?   @map("acknowledged_by")
+  resolvedAt       DateTime? @map("resolved_at")
+  resolvedBy       String?   @map("resolved_by")
+  resolutionType   IncidentResolutionType? @map("resolution_type")
+  priorIncidentId  String?   @map("prior_incident_id")      // re-open chain, soft self-ref, no FK
+  lastTurnId       String?   @map("last_turn_id")
+  lastDecisionKind String?   @map("last_decision_kind")
+  closingTurnId    String?   @map("closing_turn_id")
+  externalId       String    @unique @map("external_id")    // <sourceSubject>:<eventId> dedup backstop
+  phoneHash        String?   @map("phone_hash")             // LGPD hash for analytics/correlation
+  detail           String?                                   // non-PII diagnostic
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt      @map("updated_at")
+  @@index([status, openedAt])
+  @@index([sessionId])
+  @@index([customerId])
+  @@schema("ibx_domain")
+}
+enum IncidentKind {
+  no_reply
+
+  @@schema("ibx_domain")
+}
+
+enum IncidentCause {
+  empty_completion
+  whitespace_only
+  send_failed
+  retry_exhausted
+  timeout
+
+  @@schema("ibx_domain")
+}
+
+enum IncidentSeverity {
+  low
+  medium
+  high
+
+  @@schema("ibx_domain")
+}
+
+enum IncidentStatus {
+  OPEN
+  ACKNOWLEDGED
+  AUTO_RESOLVED
+  RESOLVED
+
+  @@schema("ibx_domain")
+}
+
+enum IncidentResolutionType {
+  AUTO
+  STAFF
+  HANDED_OFF
+
+  @@schema("ibx_domain")
+}

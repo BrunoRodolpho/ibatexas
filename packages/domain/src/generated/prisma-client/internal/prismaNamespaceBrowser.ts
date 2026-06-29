@@ -77,7 +77,8 @@ export const ModelName = {
   ScheduleOverride: 'ScheduleOverride',
   AgentRun: 'AgentRun',
   AgentRedTeamRun: 'AgentRedTeamRun',
-  LlmTokenUsage: 'LlmTokenUsage'
+  LlmTokenUsage: 'LlmTokenUsage',
+  ConversationIncident: 'ConversationIncident'
 } as const
 
 export type ModelName = (typeof ModelName)[keyof typeof ModelName]
@@ -506,6 +507,41 @@ export const LlmTokenUsageScalarFieldEnum = {
 } as const
 
 export type LlmTokenUsageScalarFieldEnum = (typeof LlmTokenUsageScalarFieldEnum)[keyof typeof LlmTokenUsageScalarFieldEnum]
+
+
+export const ConversationIncidentScalarFieldEnum = {
+  id: 'id',
+  sessionId: 'sessionId',
+  conversationId: 'conversationId',
+  customerId: 'customerId',
+  channel: 'channel',
+  senderRef: 'senderRef',
+  kind: 'kind',
+  cause: 'cause',
+  lastCause: 'lastCause',
+  severity: 'severity',
+  status: 'status',
+  dropCount: 'dropCount',
+  customerImpacted: 'customerImpacted',
+  openedAt: 'openedAt',
+  lastDropAt: 'lastDropAt',
+  acknowledgedAt: 'acknowledgedAt',
+  acknowledgedBy: 'acknowledgedBy',
+  resolvedAt: 'resolvedAt',
+  resolvedBy: 'resolvedBy',
+  resolutionType: 'resolutionType',
+  priorIncidentId: 'priorIncidentId',
+  lastTurnId: 'lastTurnId',
+  lastDecisionKind: 'lastDecisionKind',
+  closingTurnId: 'closingTurnId',
+  externalId: 'externalId',
+  phoneHash: 'phoneHash',
+  detail: 'detail',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+} as const
+
+export type ConversationIncidentScalarFieldEnum = (typeof ConversationIncidentScalarFieldEnum)[keyof typeof ConversationIncidentScalarFieldEnum]
 
 
 export const SortOrder = {

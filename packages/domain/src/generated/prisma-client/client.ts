@@ -229,3 +229,8 @@ export type AgentRedTeamRun = Prisma.AgentRedTeamRunModel
  * affects a turn). The cost dashboards aggregate by session and by customer.
  */
 export type LlmTokenUsage = Prisma.LlmTokenUsageModel
+/**
+ * Model ConversationIncident
+ * 
+ */
+export type ConversationIncident = Prisma.ConversationIncidentModel
