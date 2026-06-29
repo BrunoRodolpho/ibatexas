@@ -56,6 +56,13 @@ const mockReleaseLock = vi.hoisted(() => vi.fn());
 
 const mockIsSessionPausedForHuman = vi.hoisted(() => vi.fn());
 
+// W1 no-reply seam: keep the PURE classifier real (it maps disposition → cause),
+// mock ONLY the two side-effecting collaborators (NATS emit + governed open) so
+// the route's classify→open→fallback ordering is exercised end-to-end without a
+// real kernel/NATS/DB.
+const mockEmitNoDelivery = vi.hoisted(() => vi.fn());
+const mockOpenIncidentInline = vi.hoisted(() => vi.fn());
+
 vi.mock("@ibatexas/tools", () => ({
   getRedisClient: mockGetRedisClient,
   rk: (k: string) => `ibatexas:${k}`,
@@ -105,6 +112,15 @@ vi.mock("../../claustrum-bootstrap.js", () => ({
 vi.mock("../../escalation/escalation-store.js", () => ({
   isSessionPausedForHuman: mockIsSessionPausedForHuman,
 }));
+
+vi.mock("../../conversation/no-delivery.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../conversation/no-delivery.js")>();
+  return {
+    ...actual, // keep classifyTurnDelivery (pure) + the types
+    emitNoDelivery: mockEmitNoDelivery,
+    openIncidentInline: mockOpenIncidentInline,
+  };
+});
 
 import { chatRoutes } from "../chat.js";
 
@@ -157,14 +173,20 @@ beforeEach(() => {
 
   mockIsSessionPausedForHuman.mockResolvedValue(false);
 
-  mockOpenCapsule.mockResolvedValue({ id: "capsule-1" });
+  mockOpenCapsule.mockResolvedValue({ id: "capsule-1", turnId: "turn-1" });
   mockCloseCapsule.mockResolvedValue(undefined);
   mockGetConductor.mockReturnValue({
     openCapsule: mockOpenCapsule,
     closeCapsule: mockCloseCapsule,
   });
-  // Default turn yields an assistant reply.
-  mockHandleTurn.mockResolvedValue({ response: { text: "Olá! Como posso ajudar?" } });
+  // Default turn yields a deliverable assistant reply.
+  mockHandleTurn.mockResolvedValue({
+    response: { text: "Olá! Como posso ajudar?" },
+    decision: { kind: "EXECUTE" },
+  });
+
+  mockEmitNoDelivery.mockResolvedValue(undefined);
+  mockOpenIncidentInline.mockResolvedValue({ kind: "opened", incidentId: "inc-1" });
 });
 
 afterEach(() => {
@@ -348,7 +370,7 @@ describe("POST /api/chat/messages — Conductor turn delivery (fire-and-forget)"
     expect(mockPushChunk).toHaveBeenCalledWith(SID, { type: "done" });
 
     expect(assistantWasPersisted()).toBe(true);
-    expect(mockCloseCapsule).toHaveBeenCalledWith({ id: "capsule-1" });
+    expect(mockCloseCapsule).toHaveBeenCalledWith({ id: "capsule-1", turnId: "turn-1" });
     expect(mockCleanupStream).toHaveBeenCalledWith(SID);
   });
 
@@ -387,6 +409,124 @@ describe("POST /api/chat/messages — Conductor turn delivery (fire-and-forget)"
       expect.objectContaining({ type: "text_delta" }),
     );
     expect(assistantWasPersisted()).toBe(false);
+  });
+});
+
+// ── W1 no-reply seam (web/chat plane, P1-9) ─────────────────────────────────
+// The web analog of the WhatsApp empty/failure substitution: a genuine drop
+// (empty / whitespace / aborted-without-delivery) opens a governed incident via
+// the SHARED conversation/no-delivery.ts machinery, and a flag-gated pt-BR
+// holding chunk replaces the bare `{type:"done"}`. A delivered reply, the
+// intentional bot-pause, and an ESCALATE handoff are never incidents.
+describe("POST /api/chat/messages — W1 no-reply incident seam", () => {
+  async function postGuest(message = "oi"): Promise<void> {
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/chat/messages",
+      payload: { sessionId: SID, message, channel: "web" },
+    });
+    expect(res.statusCode).toBe(200);
+    await app.close();
+  }
+
+  it("empty completion: opens an `empty_completion` web incident and (flag on) pushes a pt-BR holding chunk before `done`", async () => {
+    vi.stubEnv("WEB_EMPTY_COMPLETION_HOLDING", "true");
+    mockHandleTurn.mockResolvedValue({ response: { text: "" }, decision: { kind: "EXECUTE" } });
+
+    await postGuest();
+    await waitFor(() => mockReleaseLock.mock.calls.length > 0);
+
+    // Notification fan-out + durable governed open, both keyed on the web turn.
+    expect(mockEmitNoDelivery).toHaveBeenCalledWith(
+      expect.objectContaining({ cause: "empty_completion", channel: "web", sessionId: SID }),
+      expect.anything(),
+    );
+    expect(mockOpenIncidentInline).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cause: "empty_completion",
+        channel: "web",
+        customerImpacted: true,
+        senderRef: `web:${SID}`,
+        turnId: "turn-1",
+        messageSid: expect.stringMatching(/^[0-9a-f-]{36}$/), // messageId fallback
+      }),
+      expect.anything(),
+    );
+
+    // Customer harm-reducer: a pt-BR holding chunk, THEN the terminal done.
+    expect(mockPushChunk).toHaveBeenCalledWith(SID, {
+      type: "text_delta",
+      delta: expect.stringContaining("não consegui montar uma resposta"),
+    });
+    expect(mockPushChunk).toHaveBeenCalledWith(SID, { type: "done" });
+    // The model never produced a usable reply → nothing persisted as assistant.
+    expect(assistantWasPersisted()).toBe(false);
+  });
+
+  it("whitespace-only completion: opens a `whitespace_only` incident (flag off → no holding chunk)", async () => {
+    vi.stubEnv("WEB_EMPTY_COMPLETION_HOLDING", "false");
+    mockHandleTurn.mockResolvedValue({ response: { text: "   \n  " }, decision: { kind: "EXECUTE" } });
+
+    await postGuest();
+    await waitFor(() => mockReleaseLock.mock.calls.length > 0);
+
+    expect(mockOpenIncidentInline).toHaveBeenCalledWith(
+      expect.objectContaining({ cause: "whitespace_only", channel: "web" }),
+      expect.anything(),
+    );
+    // Flag off → bare done, no holding chunk, no text_delta at all.
+    expect(mockPushChunk).not.toHaveBeenCalledWith(
+      SID,
+      expect.objectContaining({ type: "text_delta" }),
+    );
+    expect(mockPushChunk).toHaveBeenCalledWith(SID, { type: "done" });
+  });
+
+  it("deliverable reply: NO incident, NO holding chunk, delivers + persists normally", async () => {
+    vi.stubEnv("WEB_EMPTY_COMPLETION_HOLDING", "true");
+    mockHandleTurn.mockResolvedValue({
+      response: { text: "Pedido confirmado!" },
+      decision: { kind: "EXECUTE" },
+    });
+
+    await postGuest();
+    await waitFor(() => mockReleaseLock.mock.calls.length > 0);
+
+    expect(mockEmitNoDelivery).not.toHaveBeenCalled();
+    expect(mockOpenIncidentInline).not.toHaveBeenCalled();
+    expect(mockPushChunk).toHaveBeenCalledWith(SID, {
+      type: "text_delta",
+      delta: "Pedido confirmado!",
+    });
+    expect(assistantWasPersisted()).toBe(true);
+  });
+
+  it("bot-paused session: NO incident (pause is excluded by construction)", async () => {
+    vi.stubEnv("WEB_EMPTY_COMPLETION_HOLDING", "true");
+    mockIsSessionPausedForHuman.mockResolvedValue(true);
+
+    await postGuest();
+    await waitFor(() => mockReleaseLock.mock.calls.length > 0);
+
+    expect(mockOpenIncidentInline).not.toHaveBeenCalled();
+    expect(mockEmitNoDelivery).not.toHaveBeenCalled();
+    expect(mockPushChunk).toHaveBeenCalledWith(SID, { type: "done" });
+  });
+
+  it("ESCALATE handoff with empty text: NO incident, NO holding chunk (deliberate yield to a human)", async () => {
+    vi.stubEnv("WEB_EMPTY_COMPLETION_HOLDING", "true");
+    mockHandleTurn.mockResolvedValue({ response: { text: "" }, decision: { kind: "ESCALATE" } });
+
+    await postGuest();
+    await waitFor(() => mockReleaseLock.mock.calls.length > 0);
+
+    expect(mockOpenIncidentInline).not.toHaveBeenCalled();
+    expect(mockPushChunk).not.toHaveBeenCalledWith(
+      SID,
+      expect.objectContaining({ type: "text_delta" }),
+    );
+    expect(mockPushChunk).toHaveBeenCalledWith(SID, { type: "done" });
   });
 });
 
