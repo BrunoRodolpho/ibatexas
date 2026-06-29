@@ -88,8 +88,14 @@ export function classifyTurnDelivery(
   }
 
   if (input.disposition === "empty_completion") {
+    // PIX-only false-positive (F1): an empty model completion that nonetheless
+    // delivered a PIX action (textSent=false, hasPixData=true → deliveredText=true)
+    // DID reach the customer — for empty text, `deliveredText == hasPixData`.
+    if (input.deliveredText) return null;
     return { cause: "empty_completion", customerImpacted: true };
   }
+  // NOTE: `whitespace_only` is intentionally NOT short-circuited on deliveredText —
+  // whitespace text IS sent (textSent=true), so a blank reply stays a flagged drop.
   if (input.disposition === "whitespace_only") {
     return { cause: "whitespace_only", customerImpacted: true };
   }
@@ -100,16 +106,24 @@ export function classifyTurnDelivery(
 /**
  * PURE. Discriminate a thrown send/turn into a cause. `sendEntered` MUST be set
  * `true` immediately before `sendText` (NOT by wrapping+swallowing it — that
- * breaks Twilio retry/idempotency). A pre-send turn exception → `turn_error`,
+ * breaks Twilio retry/idempotency). `sendCompleted` MUST be set `true`
+ * immediately AFTER `sendText` returns. A pre-send turn exception → `turn_error`,
  * which is OUT of the frozen taxonomy (canned apology only, no incident).
+ *
+ * `send_failed` is classified ONLY when `sendEntered && !sendCompleted` — i.e.
+ * the throw happened inside `sendText`. A POST-send throw (`sendEntered &&
+ * sendCompleted`, e.g. a later `appendMessages` failure) maps to `turn_error`
+ * (F2): the customer was already served, so opening a `send_failed` incident +
+ * sending a second "problema técnico" message would be a false positive.
  */
 export function classifyCatchError(input: {
   readonly aborted: boolean;
   readonly message: string;
   readonly sendEntered: boolean;
+  readonly sendCompleted?: boolean;
 }): CatchCause {
   if (input.aborted || /timed out/i.test(input.message)) return "timeout";
-  if (input.sendEntered) return "send_failed";
+  if (input.sendEntered && !input.sendCompleted) return "send_failed";
   return "turn_error";
 }
 

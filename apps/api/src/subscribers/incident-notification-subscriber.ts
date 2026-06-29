@@ -41,7 +41,7 @@ const CAUSE_PT: Record<string, string> = {
 };
 const SEVERITY_PT: Record<string, string> = {
   low: "baixa",
-  medium: "media",
+  medium: "média",
   high: "alta",
 };
 
@@ -152,8 +152,8 @@ async function sendIncidentPing(
   const message = [
     `🚨 *Incidente no atendimento*`,
     ``,
-    `Uma falha de resposta automatica impediu a entrega ao cliente.`,
-    `Sessao: ${fields.sessionId ?? "desconhecida"}${causeLine}${sevLine}`,
+    `Uma falha de resposta automática impediu a entrega ao cliente.`,
+    `Sessão: ${fields.sessionId ?? "desconhecida"}${causeLine}${sevLine}`,
     ``,
     `Verifique o painel de Incidentes.`,
   ].join("\n");
@@ -177,7 +177,7 @@ async function sendStormDigest(
   const message = [
     `🚨 *Incidentes em massa no atendimento*`,
     ``,
-    `${spikeCount} falhas de resposta automatica nos ultimos minutos — provavel indisponibilidade do modelo.`,
+    `${spikeCount} falhas de resposta automática nos últimos minutos — provável indisponibilidade do modelo.`,
     ``,
     `Verifique o painel de Incidentes e o status do modelo.`,
   ].join("\n");

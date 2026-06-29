@@ -927,6 +927,11 @@ async function handleMessageAsync(
   // catch reads it to discriminate a thrown send (`send_failed`) from a pre-send
   // turn exception (`turn_error`).
   let sendEntered = false;
+  // `sendCompleted` is flipped true immediately AFTER `sendText` returns. The
+  // catch reads BOTH flags so a POST-send throw (e.g. a later `appendMessages`
+  // failure) is classified `turn_error`, not a spurious `send_failed` incident +
+  // duplicate "problema técnico" message to an already-served customer (F2).
+  let sendCompleted = false;
   try {
     // ── Shortcut / state machine + conductor turn (raced against the deadline) ──
     const outcome = await runConductorAgentTurn({
@@ -950,6 +955,7 @@ async function handleMessageAsync(
     if (agentResponse.text && !turnAbort.signal.aborted) {
       sendEntered = true;
       await sendText(`whatsapp:${phone}`, agentResponse.text);
+      sendCompleted = true;
       textSent = true;
 
       // Save assistant response to session
@@ -1014,6 +1020,7 @@ async function handleMessageAsync(
       aborted: turnAbort.signal.aborted,
       message: (err as Error).message,
       sendEntered,
+      sendCompleted,
     });
     // `turn_error` is OUT of the frozen taxonomy → canned apology only, no
     // incident. `timeout` / `send_failed` open a governed incident.

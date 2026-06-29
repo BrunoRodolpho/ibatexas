@@ -53,11 +53,26 @@ describe("classifyTurnDelivery", () => {
     ).toBeNull();
   });
 
-  it("returns null when an empty-text turn still delivered PIX (false-positive fix)", () => {
-    // empty text but PIX copia-e-cola/QR reached the customer → deliveredText=true
+  it("returns null when an empty_completion turn still delivered PIX (F1 false-positive fix)", () => {
+    // empty model text but PIX copia-e-cola/QR reached the customer → for empty
+    // text deliveredText == hasPixData, so this must NOT flag a no-reply incident.
     expect(
-      classifyTurnDelivery({ disposition: "deliverable", deliveredText: true }),
+      classifyTurnDelivery({ disposition: "empty_completion", deliveredText: true }),
     ).toBeNull();
+  });
+
+  it("flags empty_completion as a drop when nothing was delivered (deliveredText=false)", () => {
+    expect(
+      classifyTurnDelivery({ disposition: "empty_completion", deliveredText: false }),
+    ).toEqual({ cause: "empty_completion", customerImpacted: true });
+  });
+
+  it("still flags whitespace_only even if deliveredText is true (whitespace IS sent)", () => {
+    // Whitespace text is actually sent (textSent=true), so a blank reply stays a
+    // flagged drop and is NOT short-circuited like empty_completion (F1).
+    expect(
+      classifyTurnDelivery({ disposition: "whitespace_only", deliveredText: true }),
+    ).toEqual({ cause: "whitespace_only", customerImpacted: true });
   });
 
   it("every returned classification is customerImpacted=true (per cause)", () => {
@@ -83,10 +98,18 @@ describe("classifyCatchError", () => {
     ).toBe("timeout");
   });
 
-  it("maps a thrown send (sendEntered) to send_failed", () => {
+  it("maps a thrown send (sendEntered, not completed) to send_failed", () => {
     expect(
-      classifyCatchError({ aborted: false, message: "Twilio 500", sendEntered: true }),
+      classifyCatchError({ aborted: false, message: "Twilio 500", sendEntered: true, sendCompleted: false }),
     ).toBe("send_failed");
+  });
+
+  it("maps a POST-send throw (sendEntered && sendCompleted) to turn_error, not send_failed (F2)", () => {
+    // sendText SUCCEEDED, then a later in-try statement (e.g. appendMessages)
+    // threw. The customer was already served, so no spurious send_failed incident.
+    expect(
+      classifyCatchError({ aborted: false, message: "appendMessages failed", sendEntered: true, sendCompleted: true }),
+    ).toBe("turn_error");
   });
 
   it("maps a pre-send turn exception to turn_error (out of frozen taxonomy)", () => {
