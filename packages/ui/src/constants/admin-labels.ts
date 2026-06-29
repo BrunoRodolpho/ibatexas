@@ -266,6 +266,15 @@ export const EMPTY_STATES = {
 } as const
 
 // ---------------------------------------------------------------------------
+// Incidents (falhas de resposta automática)
+// ---------------------------------------------------------------------------
+
+export const INCIDENT_LABELS = {
+  nav: 'Incidentes',
+  navTitle: 'Falhas de resposta automática',
+} as const
+
+// ---------------------------------------------------------------------------
 // Miscellaneous inline templates / prefixes
 // ---------------------------------------------------------------------------
 

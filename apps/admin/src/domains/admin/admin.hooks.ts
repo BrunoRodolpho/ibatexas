@@ -330,6 +330,34 @@ export function useAdminReviews() {
   return { reviews, loading, ratingFilter, setRatingFilter }
 }
 
+// ── Open incident count (sidebar badge) ──────────────────────────────────────
+
+/**
+ * Cheap 30s poll of the independent open-incident count that backs the
+ * persistent sidebar badge. Degrades to 0 (no pill) on any failure so the nav
+ * never breaks.
+ */
+export function useOpenIncidentCount(): number {
+  const [openCount, setOpenCount] = useState(0)
+
+  useEffect(() => {
+    let cancelled = false
+    const fetchCount = async () => {
+      try {
+        const data = await apiFetch('/api/admin/incidents?status=OPEN&limit=1')
+        if (!cancelled) setOpenCount(typeof data?.openCount === 'number' ? data.openCount : 0)
+      } catch {
+        if (!cancelled) setOpenCount(0)
+      }
+    }
+    fetchCount()
+    const interval = setInterval(fetchCount, 30_000)
+    return () => { cancelled = true; clearInterval(interval) }
+  }, [])
+
+  return openCount
+}
+
 // ── Analytics ──────────────────────────────────────────────────────────────
 
 export interface AnalyticsSummary {
