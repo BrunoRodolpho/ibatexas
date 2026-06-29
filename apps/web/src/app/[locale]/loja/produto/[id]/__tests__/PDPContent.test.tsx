@@ -438,7 +438,7 @@ describe("PDPContent — unified cross-sell suggestions", () => {
     const call = H.mocks.addItem.mock.calls[0]
     expect(call[0]).toEqual(expect.objectContaining({ id: "aa1", title: "Pão de Alho", price: 1500, variants: [] }))
     expect(call[1]).toBe(1)
-    expect(call.length).toBe(2)
+    expect(call).toHaveLength(2)
     expect(H.mocks.track).toHaveBeenCalledWith(
       "pdp_cross_sell_added",
       expect.objectContaining({ suggestedId: "aa1", source: "also_added" }),

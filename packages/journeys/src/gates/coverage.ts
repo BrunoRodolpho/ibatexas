@@ -359,18 +359,21 @@ function candidateCellKeys(
 }
 
 /**
- * Record one journey's claim on a cell: counted journeys cover it; quarantined
- * journeys stay visible; blocked (non-quarantined) journeys contribute nothing.
+ * How a journey claims a cell: `counted` journeys cover it; `quarantined`
+ * journeys stay visible; `ignored` (blocked, non-quarantined) journeys
+ * contribute nothing.
  */
+type CellClaimRole = "counted" | "quarantined" | "ignored"
+
+/** Record one journey's claim on a cell, per its {@link CellClaimRole}. */
 function recordCellClaim(
   cell: CoverageCell,
   journeyId: string,
-  counted: boolean,
-  quarantined: boolean,
+  role: CellClaimRole,
 ): void {
-  if (counted) {
+  if (role === "counted") {
     if (!cell.coveredBy.includes(journeyId)) cell.coveredBy.push(journeyId)
-  } else if (quarantined) {
+  } else if (role === "quarantined") {
     if (!cell.quarantinedBy.includes(journeyId)) cell.quarantinedBy.push(journeyId)
   }
 }
@@ -387,6 +390,9 @@ function processJourney(
   const hasStaffHttp = journey.acts.some(
     (a) => a.kind === "http" && a.asRole === "staff",
   )
+  let claimRole: CellClaimRole = "ignored"
+  if (counted) claimRole = "counted"
+  else if (quarantined) claimRole = "quarantined"
 
   const claimedCells: string[] = []
   const unmatchedExpects: JourneyPassEntry["unmatchedExpects"] = []
@@ -400,7 +406,7 @@ function processJourney(
       if (cell === undefined) continue
       matched = true
       claimedCells.push(key)
-      recordCellClaim(cell, journey.id, counted, quarantined)
+      recordCellClaim(cell, journey.id, claimRole)
     }
     if (!matched) {
       unmatchedExpects.push({

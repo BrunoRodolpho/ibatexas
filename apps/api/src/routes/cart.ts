@@ -88,6 +88,10 @@ function mapMedusaErrorToReply(err: unknown, reply: FastifyReply): boolean {
 
 type RedisClient = Awaited<ReturnType<typeof getRedisClient>>;
 
+/** Supported checkout payment methods (mirrors the `z.enum(["pix","card","cash"])`
+ *  body schema on POST /api/cart/checkout). */
+type PaymentMethod = "pix" | "card" | "cash";
+
 // ── P0-7 (audit-2026-05-24) — deterministic idempotency-key helpers ────────
 //
 // Replays of the same logical operation MUST produce the same envelope
@@ -310,7 +314,7 @@ async function finalizeCheckout(args: {
   reply: FastifyReply;
   result: Awaited<ReturnType<typeof createCheckout>>;
   cartId: string;
-  paymentMethod: "pix" | "card" | "cash";
+  paymentMethod: PaymentMethod;
   customerId: string | undefined;
   pixExtra?: { customerName?: string; customerEmail?: string; customerTaxId?: string };
   notes?: string;
@@ -688,7 +692,7 @@ async function syncLocalCartForCheckout(args: {
  *  Returns the first matching rejection, or null when the checkout may proceed. */
 function validateCheckoutComposition(args: {
   mealPeriod: string;
-  paymentMethod: "pix" | "card" | "cash";
+  paymentMethod: PaymentMethod;
   deliveryType: "delivery" | "shipping" | "pickup" | "dine_in" | undefined;
   items: Array<{ productType?: "food" | "frozen" | "merchandise" }> | undefined;
   customerId: string | undefined;
@@ -815,7 +819,7 @@ async function resolvePixBillingDetails(args: {
  *  details only for PIX checkouts. */
 function buildCheckoutPayload(
   cartId: string,
-  paymentMethod: "pix" | "card" | "cash",
+  paymentMethod: PaymentMethod,
   pixExtra: { customerName?: string; customerEmail?: string; customerTaxId?: string } | undefined,
 ): OrderCheckoutCreatePayload {
   return {
@@ -839,7 +843,7 @@ function buildCheckoutPayload(
  *  requires a non-null fulfillment). */
 async function buildCheckoutOrderState(args: {
   guestKey: string;
-  paymentMethod: "pix" | "card" | "cash";
+  paymentMethod: PaymentMethod;
   deliveryType: string | undefined;
   cartId: string;
 }): Promise<OrderState> {
@@ -867,7 +871,7 @@ async function respondToCheckoutDecision(args: {
   checkoutIdempotencyKey: string;
   cartId: string;
   sessionId: string;
-  paymentMethod: "pix" | "card" | "cash";
+  paymentMethod: PaymentMethod;
   customerId: string | undefined;
   userType: UserType;
   checkoutBody: Record<string, unknown>;

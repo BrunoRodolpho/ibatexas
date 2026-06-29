@@ -363,9 +363,9 @@ export class ChatClient {
     })
   }
 
-  /** Resolve the turn's failure: a timeout error supersedes the raw cause. */
-  #turnFailure(err: unknown, timedOut: boolean): unknown {
-    return timedOut ? new ChatTurnTimeoutError(this.sessionId, this.#turnTimeoutMs) : err
+  /** Build the per-turn timeout failure (supersedes the raw cause when the deadline elapsed). */
+  #turnTimeoutFailure(): ChatTurnTimeoutError {
+    return new ChatTurnTimeoutError(this.sessionId, this.#turnTimeoutMs)
   }
 
   /** Render a failure into the `chat.turn.end` detail string. */
@@ -449,7 +449,8 @@ export class ChatClient {
         ...(outputTokens === undefined ? {} : { outputTokens }),
       }
     } catch (err) {
-      const failure = this.#turnFailure(err, timedOut)
+      // A timeout error supersedes the raw cause when the deadline elapsed.
+      const failure = timedOut ? this.#turnTimeoutFailure() : err
       this.#emitTurnEnd(turn, Date.now() - t0, "error", this.#failureDetail(failure))
       throw failure
     } finally {

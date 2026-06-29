@@ -1272,22 +1272,24 @@ async function writeSession(session: Session): Promise<void> {
   });
 }
 
-function redisSessionStore(): SessionPort {
-  // Read-modify-write a stored session by id. No-op if the session is unknown
-  // (per the SessionPort contract). Serialized by the Conductor's per-session
-  // lock, so a plain RMW is race-free.
-  async function mutateSession(
-    sessionId: string,
-    fn: (s: Session) => Session,
-  ): Promise<void> {
-    const existing = await readSession(sessionId);
-    if (!existing) return;
-    await writeSession({
-      ...fn(existing),
-      lastActivityAt: new Date().toISOString(),
-    });
-  }
+// Read-modify-write a stored session by id. No-op if the session is unknown
+// (per the SessionPort contract). Serialized by the Conductor's per-session
+// lock, so a plain RMW is race-free. Module-scoped (S7721): it closes over only
+// the module-level readSession/writeSession helpers, never redisSessionStore
+// locals, so hoisting it out of the store factory is behaviour-preserving.
+async function mutateSession(
+  sessionId: string,
+  fn: (s: Session) => Session,
+): Promise<void> {
+  const existing = await readSession(sessionId);
+  if (!existing) return;
+  await writeSession({
+    ...fn(existing),
+    lastActivityAt: new Date().toISOString(),
+  });
+}
 
+function redisSessionStore(): SessionPort {
   return {
     async load(customerId, channel) {
       const sessionId = `${channel}:${customerId}`;

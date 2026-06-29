@@ -312,7 +312,7 @@ export async function qaControlRoutes(server: FastifyInstance): Promise<void> {
     const body = parsed.data;
 
     const items =
-      body.all !== undefined ? await resolveAllItems(body.all) : (body.items ?? []);
+      body.all === undefined ? (body.items ?? []) : await resolveAllItems(body.all);
     if (items.length === 0) {
       return reply.code(400).send({ error: "no items to run" });
     }

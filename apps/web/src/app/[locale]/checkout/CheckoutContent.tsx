@@ -26,6 +26,7 @@ const stripePromise = process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY
 
 type PaymentMethod = "pix" | "card" | "cash"
 type Stage = "checkout" | "pix_waiting" | "confirmed"
+type DeliveryType = "delivery" | "pickup" | "dine-in"
 
 interface DeliveryEstimate {
   feeInCentavos: number
@@ -52,7 +53,7 @@ interface CheckoutResult {
 }
 
 function getDeliveryTypeLabel(
-  type: "delivery" | "pickup" | "dine-in",
+  type: DeliveryType,
   t: (key: string) => string,
 ): string {
   if (type === "delivery") return t('delivery_type_delivery')
@@ -101,7 +102,7 @@ function isValidCpf(cpf: string): boolean {
 // order-tracking page can authorize reads/polls without an authenticated
 // session. Best-effort (private/incognito mode may block sessionStorage).
 function persistOrderAccessToken(id: string, accessToken: string): void {
-  if (typeof globalThis.window === "undefined") return
+  if (globalThis.window === undefined) return
   try {
     sessionStorage.setItem(`order-access-token:${id}`, accessToken)
   } catch {
@@ -111,7 +112,7 @@ function persistOrderAccessToken(id: string, accessToken: string): void {
 
 function toDeliveryTypePayload(
   isShipping: boolean,
-  deliveryType: "delivery" | "pickup" | "dine-in",
+  deliveryType: DeliveryType,
 ): string {
   if (isShipping) return 'shipping'
   if (deliveryType === 'dine-in') return 'dine_in'
@@ -144,7 +145,7 @@ function CheckoutForm() {
   const [notes, setNotes] = useState("")
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("pix")
   const [tipPercent, setTipPercent] = useState(0)
-  const [deliveryType, setDeliveryType] = useState<"delivery" | "pickup" | "dine-in">("delivery")
+  const [deliveryType, setDeliveryType] = useState<DeliveryType>("delivery")
   const [cepInput, setCepInput] = useState(cep ?? "")
   const [deliveryEstimate, setDeliveryEstimate] = useState<DeliveryEstimate | null>(
     deliveryFee == null ? null : { feeInCentavos: deliveryFee, estimatedMinutes: estimatedDeliveryMinutes ?? 60, message: "" }

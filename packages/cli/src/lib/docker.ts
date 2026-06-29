@@ -8,10 +8,12 @@ interface ContainerDiag {
   exitCode: number
 }
 
-// Lazy quantifiers keep the match confined to a single line (`.` excludes
-// newlines) while avoiding the super-linear backtracking of greedy `.*`.
+// Bounded lazy quantifiers keep the match confined to a single line (`.`
+// excludes newlines) and run in linear time: capping each gap at 200 chars
+// avoids the super-linear backtracking of unbounded `.*?` while still
+// spanning the short text in a real Postgres version-mismatch error.
 const PG_VERSION_RE =
-  /initialized by postgresql version (\d+).*?not compatible.*?version (\d+)/i
+  /initialized by postgresql version (\d+).{0,200}?not compatible.{0,200}?version (\d+)/i
 
 /**
  * Inspect Docker containers after a `docker compose up` failure and return

@@ -95,7 +95,7 @@ export interface AdminPedidosPageProps {
   onError?: (msg: string) => void
 }
 
-function PaymentStatusCell({ status }: Readonly<{ status: string }>) {
+function paymentBadge(status: string) {
   return (
     <Badge variant={paymentVariant(status)} className="text-xs">
       {PAYMENT_STATUS_LABELS[status] ?? STATUS_LABELS[status] ?? status}
@@ -111,15 +111,11 @@ const ADVANCE_STATUS_LABELS: Record<string, string> = {
   delivered: ACTION_LABELS.markDelivered,
 }
 
-function AdvanceStatusCell({
-  row,
-  onAdvanceStatus,
-  advanceDisabled,
-}: Readonly<{
-  row: OrderSummary & { version?: number }
-  onAdvanceStatus: (orderId: string, newStatus: string, version?: number) => void
-  advanceDisabled?: boolean
-}>) {
+function advanceButton(
+  row: OrderSummary & { version?: number },
+  onAdvanceStatus: (orderId: string, newStatus: string, version?: number) => void,
+  advanceDisabled?: boolean,
+) {
   const { id, status } = row
   const next = getNextStatus(status as OrderFulfillmentStatus)
   if (!next) return null
@@ -172,7 +168,7 @@ export function AdminPedidosPage({
     }),
     col.accessor('paymentStatus', {
       header: ORDER_COLUMN_HEADERS.payment,
-      cell: (i) => <PaymentStatusCell status={i.getValue() as string} />,
+      cell: (i) => paymentBadge(i.getValue() as string),
     }),
     col.accessor('createdAt', {
       header: ORDER_COLUMN_HEADERS.date,
@@ -184,12 +180,10 @@ export function AdminPedidosPage({
     ...(onAdvanceStatus ? [col.display({
       id: 'actions',
       header: '',
-      cell: (i) => (
-        <AdvanceStatusCell
-          row={i.row.original as OrderSummary & { version?: number }}
-          onAdvanceStatus={onAdvanceStatus}
-          advanceDisabled={advanceDisabled}
-        />
+      cell: (i) => advanceButton(
+        i.row.original as OrderSummary & { version?: number },
+        onAdvanceStatus,
+        advanceDisabled,
       ),
     })] : []),
   ]

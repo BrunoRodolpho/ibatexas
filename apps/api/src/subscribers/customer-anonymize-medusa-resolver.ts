@@ -273,7 +273,10 @@ function emitMedusaAnonymizeAudit(args: EmitAuditArgs): void {
               attempt: payload.attempt,
               ...(err === undefined
                 ? {}
-                : { errorMessage: (err as Error).message ?? String(err) }),
+                : {
+                    errorMessage:
+                      err instanceof Error ? err.message : String(err),
+                  }),
             },
           },
         ],

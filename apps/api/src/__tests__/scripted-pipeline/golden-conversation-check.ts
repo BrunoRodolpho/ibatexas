@@ -292,8 +292,8 @@ export function createGoldenConversationCheck(
 
       for (const fixture of fixtures) {
         const failure = await verifyFixture(conductor, fixture);
-        if (failure !== null) failures.push(failure);
-        else verified++;
+        if (failure === null) verified++;
+        else failures.push(failure);
       }
 
       if (failures.length > 0) {
