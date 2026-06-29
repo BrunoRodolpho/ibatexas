@@ -42,6 +42,11 @@ import {
   type IbatexasPromptComposer,
 } from "./prompts/ibatexas-prompts.js";
 import { emitModelCallTrace } from "./llm-trace.js";
+import {
+  closedHoursBackstop,
+  closedHoursPromptNote,
+  type ScheduleSignal,
+} from "./closed-hours.js";
 
 // Re-export so existing importers (tests) keep their import site.
 export {
@@ -66,6 +71,18 @@ export interface IbatexasResponderDeps {
   readonly promptComposer?: IbatexasPromptComposer;
   /** Telemetry sink for the per-model-call LLMTrace (C1). */
   readonly telemetry?: TelemetryPort;
+  /**
+   * Resolve the current structured open/closed signal for THIS turn (fix B,
+   * Stage 1). Called per `respond()` because the signal is time-dependent. When
+   * it reports `isClosed`, the closed-hours soft note is injected into the LLM
+   * context AND the deterministic backstop polices the draft so it can never
+   * falsely assert the store is open / confirm an immediate order while closed.
+   * Omitted in unit tests / when no schedule is wired → no closed-hours behavior.
+   */
+  readonly resolveScheduleSignal?: () =>
+    | Promise<ScheduleSignal | undefined>
+    | ScheduleSignal
+    | undefined;
 }
 
 /** Best-effort, BOUNDED summary of the dispatch result for model grounding.
@@ -489,20 +506,33 @@ export function createIbatexasResponder(
         | undefined;
       const intentHash = firstEnvelope?.intentHash;
 
+      // fix B (Stage 1): resolve the structured closed-hours signal ONCE for the
+      // turn. `closedNote` is the soft layer (injected into every model-call
+      // branch's system prompt); `closedHoursBackstop(_, scheduleSignal)` is the
+      // deterministic hard layer wrapped around every model-authored draft.
+      const scheduleSignal = deps.resolveScheduleSignal
+        ? ((await deps.resolveScheduleSignal()) ?? undefined)
+        : undefined;
+      const closedNote = closedHoursPromptNote(scheduleSignal);
+
       switch (decision.kind) {
         case "REFUSE": {
           // A REFUSE on an EMPTY plan is the "nothing to authorize" sentinel
           // (small-talk / informational turn) — reply conversationally.
           if (input.plan.envelopes.length === 0) {
-            const { system, fragmentManifest } = await composeSystem(
+            const { system: base, fragmentManifest } = await composeSystem(
               RESPONDER_CONVERSATIONAL_SURFACE,
               RESPONDER_PERSONA_PTBR,
               input.cognition,
               [],
             );
-            return guardDraft(
-              await completeWith({ system, fragmentManifest, userText, turnId }),
-              input.acted,
+            const system = base + closedNote;
+            return closedHoursBackstop(
+              guardDraft(
+                await completeWith({ system, fragmentManifest, userText, turnId }),
+                input.acted,
+              ),
+              scheduleSignal,
             );
           }
           // A real action refusal: render the pt-BR refusal VERBATIM (model-free,
@@ -539,7 +569,8 @@ export function createIbatexasResponder(
           const system =
             `${baseSystem}\n\n` +
             `CONTEXTO DA DECISÃO (fonte da verdade, não inventar):\n` +
-            JSON.stringify(context);
+            JSON.stringify(context) +
+            closedNote;
           const draft = await completeWith({
             system,
             fragmentManifest,
@@ -552,7 +583,10 @@ export function createIbatexasResponder(
           // decision (no-authority claim) OR claims a success the runtime did not
           // grant (confabulation) reach the customer. Then surface any user-relevant
           // REWRITE clamp deterministically (the model can't be trusted to).
-          return surfaceRewriteClamp(guardDraft(draft, input.acted), decision);
+          return closedHoursBackstop(
+            surfaceRewriteClamp(guardDraft(draft, input.acted), decision),
+            scheduleSignal,
+          );
         }
 
         default: {
@@ -560,15 +594,19 @@ export function createIbatexasResponder(
           // `satisfies never` keeps the compile-time check (adding a kind without a
           // case errors) without the runtime fall-through changing.
           decision satisfies never;
-          const { system, fragmentManifest } = await composeSystem(
+          const { system: base, fragmentManifest } = await composeSystem(
             RESPONDER_CONVERSATIONAL_SURFACE,
             RESPONDER_PERSONA_PTBR,
             input.cognition,
             [],
           );
-          return guardDraft(
-            await completeWith({ system, fragmentManifest, userText, turnId }),
-            input.acted,
+          const system = base + closedNote;
+          return closedHoursBackstop(
+            guardDraft(
+              await completeWith({ system, fragmentManifest, userText, turnId }),
+              input.acted,
+            ),
+            scheduleSignal,
           );
         }
       }

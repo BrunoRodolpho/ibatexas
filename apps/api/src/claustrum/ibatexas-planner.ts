@@ -75,6 +75,10 @@ import {
   type IbatexasPromptComposer,
 } from "./prompts/ibatexas-prompts.js";
 import { emitModelCallTrace } from "./llm-trace.js";
+import {
+  closedHoursPromptNote,
+  type ScheduleSignal,
+} from "./closed-hours.js";
 
 // Re-export so existing importers (tests, registry) keep their import site.
 export { EXPRESS_INTENT_TOOL };
@@ -156,6 +160,17 @@ export interface IbatexasPlannerDeps {
    * across redeliveries.
    */
   readonly deriveNonce?: (state: CognitiveState, envelopeIndex: number) => string;
+  /**
+   * Resolve the current structured open/closed signal for THIS turn (fix B,
+   * Stage 1). When it reports `isClosed`, a pt-BR closed-hours note is appended
+   * to the planner's LLM context so planning knows the store is closed (the soft
+   * layer; the deterministic backstop lives in the responder). Time-dependent, so
+   * it is invoked per `propose()`. Omitted in unit tests → no prompt change.
+   */
+  readonly resolveScheduleSignal?: () =>
+    | Promise<ScheduleSignal | undefined>
+    | ScheduleSignal
+    | undefined;
 }
 
 /**
@@ -464,6 +479,14 @@ export function createIbatexasPlanner(
         system = composed.system;
         fragmentManifest = composed.fragmentManifest;
       }
+
+      // fix B (Stage 1) — soft layer: when the store is closed, tell the planner
+      // so it does not propose immediate-fulfillment intents / so the model knows
+      // the real state. Empty string when open → prompt byte-identical to today.
+      const scheduleSignal = deps.resolveScheduleSignal
+        ? ((await deps.resolveScheduleSignal()) ?? undefined)
+        : undefined;
+      system += closedHoursPromptNote(scheduleSignal);
 
       const allowed = new Set(plan.allowedIntents);
       const startedAt = Date.now();

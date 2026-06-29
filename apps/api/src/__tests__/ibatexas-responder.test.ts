@@ -507,4 +507,88 @@ describe("createIbatexasResponder", () => {
     const draft = await responder.respond(mkInput({ decision, envelopeKinds: ["order.item.update"], acted }));
     expect(draft.text).toBe("Ajustei a quantidade pra você.");
   });
+
+  // ── fix B (Stage 1): deterministic closed-hours backstop ────────────────────
+
+  const closedSignal = { isClosed: true as const, mealPeriod: "closed" as const, nextOpenDay: "amanhã" };
+  const openSignal = { isClosed: false as const, mealPeriod: "lunch" as const };
+  const CLOSED_DISCLOSURE =
+    "No momento estamos fechados (reabrimos amanhã). Posso registrar seu pedido para retirada agendada.";
+
+  it("closed: repairs a grounded reply that falsely confirms an immediate order", async () => {
+    // The store is closed, yet the 4B confirms an immediate order — the exact
+    // defect B. The backstop overrides it deterministically.
+    const { model } = mockModel("Estamos abertos! Seu pedido sairá para entrega agora.");
+    const responder = createIbatexasResponder({
+      model,
+      modelId: "m",
+      explainer,
+      resolveScheduleSignal: () => closedSignal,
+    });
+    const decision = { kind: "EXECUTE", basis: [] } as unknown as Decision;
+    const acted = { kind: "executed", envelope: { kind: "order.checkout.create" }, result: { orderId: "IBX-1" } };
+    const draft = await responder.respond(
+      mkInput({ decision, envelopeKinds: ["order.checkout.create"], acted, text: "quero pedido pra entrega agora" }),
+    );
+    expect(draft.text).toBe(CLOSED_DISCLOSURE);
+  });
+
+  it("closed: repairs a conversational reply that falsely says 'estamos abertos'", async () => {
+    const { model } = mockModel("Sim, estamos abertos! Pode fazer seu pedido.");
+    const responder = createIbatexasResponder({
+      model,
+      modelId: "m",
+      explainer,
+      resolveScheduleSignal: async () => closedSignal,
+    });
+    const decision = { kind: "REFUSE", refusal: { code: "empty_plan" } } as unknown as Decision;
+    const draft = await responder.respond(
+      mkInput({ decision, envelopeKinds: [], text: "vocês estão abertos?" }),
+    );
+    expect(draft.text).toBe(CLOSED_DISCLOSURE);
+  });
+
+  it("closed: injects the closed-hours note into the model system prompt", async () => {
+    const { model, complete } = mockModel("Posso agendar sua retirada.");
+    const responder = createIbatexasResponder({
+      model,
+      modelId: "m",
+      explainer,
+      resolveScheduleSignal: () => closedSignal,
+    });
+    const decision = { kind: "REFUSE", refusal: { code: "empty_plan" } } as unknown as Decision;
+    await responder.respond(mkInput({ decision, envelopeKinds: [], text: "oi" }));
+    const req = complete.mock.calls[0]![0] as CompletionRequest;
+    expect(req.system).toContain("FECHADA");
+    expect(req.system).toContain("retirada agendada");
+  });
+
+  it("closed: passes a correct closed-disclosure reply through unchanged", async () => {
+    const { model } = mockModel("No momento estamos fechados, posso agendar sua retirada.");
+    const responder = createIbatexasResponder({
+      model,
+      modelId: "m",
+      explainer,
+      resolveScheduleSignal: () => closedSignal,
+    });
+    const decision = { kind: "REFUSE", refusal: { code: "empty_plan" } } as unknown as Decision;
+    const draft = await responder.respond(mkInput({ decision, envelopeKinds: [], text: "tão abertos?" }));
+    expect(draft.text).toBe("No momento estamos fechados, posso agendar sua retirada.");
+  });
+
+  it("open: a reply that says 'estamos abertos' is NOT repaired", async () => {
+    const { model, complete } = mockModel("Sim, estamos abertos! Pode fazer seu pedido.");
+    const responder = createIbatexasResponder({
+      model,
+      modelId: "m",
+      explainer,
+      resolveScheduleSignal: () => openSignal,
+    });
+    const decision = { kind: "REFUSE", refusal: { code: "empty_plan" } } as unknown as Decision;
+    const draft = await responder.respond(mkInput({ decision, envelopeKinds: [], text: "abertos?" }));
+    expect(draft.text).toBe("Sim, estamos abertos! Pode fazer seu pedido.");
+    // No closed note injected on the open path.
+    const req = complete.mock.calls[0]![0] as CompletionRequest;
+    expect(req.system).not.toContain("FECHADA");
+  });
 });

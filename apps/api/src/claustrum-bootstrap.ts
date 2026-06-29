@@ -106,7 +106,14 @@ import {
 
 import { prisma, claustrumMemoryPrisma, createOrderQueryService, createPaymentQueryService } from "@ibatexas/domain";
 import { rehydratePaymentState } from "@ibatexas/pack-payments";
-import { emitLlmCall, getRedisClient, rk } from "@ibatexas/tools";
+import {
+  emitLlmCall,
+  getRedisClient,
+  getScheduleSignal,
+  loadSchedule,
+  rk,
+  type ScheduleSignal,
+} from "@ibatexas/tools";
 import { publishNatsEvent } from "@ibatexas/nats-client";
 import { AGENT_REGISTRY } from "@ibatexas/agents";
 // Managed-agent plane (T3-9) — composed + started behind IBX_AGENTS_ENABLED.
@@ -412,6 +419,19 @@ export interface ClaustrumBootstrapOptions {
    * the `@ibatexas/tools` singleton via `getRedisClient()` (`REDIS_URL`).
    */
   readonly redis?: Awaited<ReturnType<typeof getRedisClient>>;
+  /**
+   * Per-turn structured closed-hours signal source for the planner + responder
+   * (fix B, Stage 1). Default: the production resolver (Redis read-through
+   * `loadSchedule()` + env timezone → {@link getScheduleSignal}). Injectable so
+   * deterministic suites (e.g. the content-addressed golden-conversation
+   * pipeline) can PIN it — the production resolver depends on wall-clock time, so
+   * leaving it default would make the composed prompt non-deterministic. Return
+   * `undefined` to disable the closed-hours grounding/backstop entirely.
+   */
+  readonly resolveScheduleSignal?: () =>
+    | Promise<ScheduleSignal | undefined>
+    | ScheduleSignal
+    | undefined;
 }
 
 /**
@@ -2051,6 +2071,23 @@ export async function bootstrapClaustrum(
     turnTraceWriter,
     tokenUsageSink,
   );
+  // fix B (Stage 1) — the per-turn structured closed-hours signal. Sourced from
+  // the Redis read-through schedule cache (loadSchedule) + the env timezone, it
+  // grounds the planner + responder LLM context (soft layer) and arms the
+  // responder's deterministic closed-hours backstop (hard layer). Best-effort:
+  // a schedule-load failure yields `undefined` (no closed-hours behavior) rather
+  // than breaking the turn.
+  const resolveScheduleSignal =
+    options.resolveScheduleSignal ??
+    (async (): Promise<ScheduleSignal | undefined> => {
+      try {
+        const schedule = await loadSchedule();
+        const tz = process.env.RESTAURANT_TIMEZONE ?? "America/Sao_Paulo";
+        return getScheduleSignal(schedule, tz);
+      } catch {
+        return undefined;
+      }
+    });
   const buildPlanner = (model: ModelProvider): ClaimAwarePlannerPort =>
     createIbatexasPlanner({
       model,
@@ -2059,6 +2096,7 @@ export async function bootstrapClaustrum(
       deriveContext: deriveIbatexasPlannerContext,
       promptComposer,
       telemetry,
+      resolveScheduleSignal,
     });
   const buildResponder = (model: ModelProvider): ResponderPort =>
     createIbatexasResponder({
@@ -2067,6 +2105,7 @@ export async function bootstrapClaustrum(
       explainer: ibxExplainer,
       promptComposer,
       telemetry,
+      resolveScheduleSignal,
     });
 
   // B-PR1 — claims-runtime seams (SDD §M / §Q.6), FLAG DEFAULT-OFF. The planner

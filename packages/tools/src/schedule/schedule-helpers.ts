@@ -98,6 +98,39 @@ function mealPeriodFromEnv(hour: number): "lunch" | "dinner" | "closed" {
   return "closed"
 }
 
+// ── Structured open/closed signal ────────────────────────────────────────────
+
+/**
+ * A STRUCTURED (not free-text) open/closed signal for the conversational loop.
+ * The planner + responder consume `isClosed` deterministically — the agent must
+ * never assert "estamos abertos" while this says the store is closed. Sourced
+ * from {@link getMealPeriodFromSchedule}; when closed, `nextOpenDay` carries the
+ * human-readable reopen day from {@link getNextOpenDay}.
+ */
+export interface ScheduleSignal {
+  readonly isClosed: boolean
+  readonly mealPeriod: "lunch" | "dinner" | "closed"
+  /** Human-readable next opening (e.g. "amanhã") — present only when closed. */
+  readonly nextOpenDay?: string
+}
+
+/**
+ * Build the deterministic {@link ScheduleSignal} for "now" in the given tz. This
+ * is the single source of the closed-hours fact the agent loop grounds on (the
+ * soft prompt note + the deterministic backstop both read `isClosed`).
+ */
+export function getScheduleSignal(
+  schedule: RestaurantSchedule | undefined,
+  tz: string,
+): ScheduleSignal {
+  const mealPeriod = getMealPeriodFromSchedule(schedule, tz)
+  const isClosed = mealPeriod === "closed"
+  if (isClosed && schedule) {
+    return { isClosed, mealPeriod, nextOpenDay: getNextOpenDay(schedule, tz) }
+  }
+  return { isClosed, mealPeriod }
+}
+
 // ── Schedule-aware availability check ────────────────────────────────────────
 
 /**
