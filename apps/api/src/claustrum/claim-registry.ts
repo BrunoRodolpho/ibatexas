@@ -62,9 +62,16 @@ import type {
  *   - `STORE_OPEN_NOW`      — the OVERRIDE-AWARE "is it open right now" read
  *     (public; W6-falsified by a present ScheduleOverride — Triad slice).
  *   - `ORDER_FULFILLMENT_STAGE` — a customer-scoped, live STATUS read
- *     (owner-scoped, `must_read_this_turn` — SDD §E / §N P1).
+ *     (owner-scoped, `must_read_this_turn` — SDD §E / §N P1). NOT full Triad
+ *     coverage yet: it degrades SAFE to UNKNOWN until per-resource ORDER key
+ *     namespacing + F3 per-turn `owns` (the conductor refactor) land; the
+ *     falsifier/valueBinding below are the kernel-side wiring, not end-to-end
+ *     activation.
  *   - `PAYMENT_STATUS`      — a customer-scoped, live, first-party money read
- *     (ownership required, `first_party_only` — SDD §E / §N P0).
+ *     (ownership required, `first_party_only` — SDD §E / §N P0). Same caveat:
+ *     degrades SAFE to UNKNOWN pending per-resource PAYMENT key namespacing +
+ *     F3 per-turn `owns`; the rows below declare the predicate, they do not by
+ *     themselves prove a VALIDATED render fires this turn.
  *   - `PURCHASE_COMPLETED`  — an ACTION claim (`action_outcome`; does NOT imply
  *     settlement — SDD §E / §K Cluster F).
  *
