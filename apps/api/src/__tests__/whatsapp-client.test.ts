@@ -1,6 +1,7 @@
 // Unit tests for whatsapp/client.ts — mock twilio.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { mintRenderedReply, unwrapRendered } from "@adjudicate/core";
 import { TwilioAdjudicateRefusedError } from "@ibatexas/tools";
 import {
   splitForWhatsApp,
@@ -99,32 +100,37 @@ describe("getWhatsAppNumber", () => {
 // ── splitForWhatsApp ──────────────────────────────────────────────────────────
 
 describe("splitForWhatsApp", () => {
+  // EGRESS BRAND (E-1): splitForWhatsApp now takes/returns RenderedReply. Mint
+  // inputs and unwrap outputs to assert on the underlying string content.
+  const split = (s: string): string[] =>
+    splitForWhatsApp(mintRenderedReply(s)).map(unwrapRendered);
+
   it("returns single-element array for short text", () => {
-    const result = splitForWhatsApp("Olá!");
+    const result = split("Olá!");
     expect(result).toEqual(["Olá!"]);
   });
 
   it("returns text as-is when exactly 4096 chars", () => {
     const text = "a".repeat(4096);
-    const result = splitForWhatsApp(text);
+    const result = split(text);
     expect(result).toEqual([text]);
   });
 
   it("splits text longer than 4096 chars", () => {
     const text = "a".repeat(5000);
-    const result = splitForWhatsApp(text);
+    const result = split(text);
     expect(result.length).toBeGreaterThan(1);
   });
 
   it("prefixes parts with (1/N) indicators when split", () => {
     const text = "a".repeat(5000);
-    const result = splitForWhatsApp(text);
+    const result = split(text);
     expect(result[0]).toMatch(/^\(1\/\d+\)\n/);
     expect(result[1]).toMatch(/^\(2\/\d+\)\n/);
   });
 
   it("does not add part indicators for single-part messages", () => {
-    const result = splitForWhatsApp("Curto");
+    const result = split("Curto");
     expect(result[0]).not.toMatch(/^\(\d+\/\d+\)/);
   });
 
@@ -134,13 +140,13 @@ describe("splitForWhatsApp", () => {
     const sentence2 = "B".repeat(2000) + ".";
     const text = `${sentence1} ${sentence2}`;
 
-    const result = splitForWhatsApp(text);
+    const result = split(text);
     expect(result.length).toBeGreaterThan(1);
     // First part should end near a sentence boundary
   });
 
   it("handles empty string", () => {
-    const result = splitForWhatsApp("");
+    const result = split("");
     expect(result).toEqual([""]);
   });
 });
@@ -149,7 +155,7 @@ describe("splitForWhatsApp", () => {
 
 describe("sendText", () => {
   it("sends a short message via Twilio", async () => {
-    const promise = sendText("whatsapp:+5511999887766", "Olá!");
+    const promise = sendText("whatsapp:+5511999887766", mintRenderedReply("Olá!"));
     // Advance past the 600ms initial typing delay
     await vi.advanceTimersByTimeAsync(700);
     await promise;
@@ -164,7 +170,7 @@ describe("sendText", () => {
   it("sends multiple parts for long messages", async () => {
     const longText = "Palavra. ".repeat(600); // well over 4096 chars
 
-    const promise = sendText("whatsapp:+5511999887766", longText);
+    const promise = sendText("whatsapp:+5511999887766", mintRenderedReply(longText));
     // Advance enough time for delays between parts
     await vi.advanceTimersByTimeAsync(5000);
     await promise;
@@ -178,7 +184,7 @@ describe("sendText", () => {
       .mockRejectedValueOnce(httpError(503))
       .mockResolvedValueOnce({ sid: "SM_ok" });
 
-    const promise = sendText("whatsapp:+5511999887766", "Oi");
+    const promise = sendText("whatsapp:+5511999887766", mintRenderedReply("Oi"));
     // Advance past initial delay + retries (600ms + 200ms + 400ms)
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
@@ -194,7 +200,7 @@ describe("sendText", () => {
       .mockRejectedValueOnce(err);
 
     // Attach rejection handler immediately to prevent unhandled rejection
-    const promise = sendText("whatsapp:+5511999887766", "Oi").catch((e) => e);
+    const promise = sendText("whatsapp:+5511999887766", mintRenderedReply("Oi")).catch((e) => e);
     // Advance past all retry delays
     await vi.advanceTimersByTimeAsync(5000);
 
@@ -222,7 +228,7 @@ describe("sendText", () => {
     });
     mockMessagesCreate.mockRejectedValueOnce(refusedErr);
 
-    const promise = sendText("whatsapp:+5511999887766", "x").catch((e) => e);
+    const promise = sendText("whatsapp:+5511999887766", mintRenderedReply("x")).catch((e) => e);
     await vi.advanceTimersByTimeAsync(5000);
 
     const result = await promise;
@@ -239,7 +245,7 @@ describe("sendText", () => {
       .mockRejectedValueOnce(transient)
       .mockRejectedValueOnce(transient);
 
-    const promise = sendText("whatsapp:+5511999887766", "x").catch((e) => e);
+    const promise = sendText("whatsapp:+5511999887766", mintRenderedReply("x")).catch((e) => e);
     await vi.advanceTimersByTimeAsync(5000);
 
     await promise;
@@ -255,7 +261,7 @@ describe("send reliability — retry policy (P1-NET-WASEND)", () => {
     // Timeout occurs AFTER the request may have been delivered → must not retry.
     mockMessagesCreate.mockRejectedValueOnce(timeoutError());
 
-    const promise = sendText("whatsapp:+5511999887766", "Oi").catch((e) => e);
+    const promise = sendText("whatsapp:+5511999887766", mintRenderedReply("Oi")).catch((e) => e);
     await vi.advanceTimersByTimeAsync(5000);
     const result = await promise;
 
@@ -268,7 +274,7 @@ describe("send reliability — retry policy (P1-NET-WASEND)", () => {
     // 400 = bad request; Twilio answered and rejected it → retrying is pointless.
     mockMessagesCreate.mockRejectedValueOnce(httpError(400));
 
-    const promise = sendText("whatsapp:+5511999887766", "Oi").catch((e) => e);
+    const promise = sendText("whatsapp:+5511999887766", mintRenderedReply("Oi")).catch((e) => e);
     await vi.advanceTimersByTimeAsync(5000);
     await promise;
 
@@ -280,7 +286,7 @@ describe("send reliability — retry policy (P1-NET-WASEND)", () => {
       .mockRejectedValueOnce(Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }))
       .mockResolvedValueOnce({ sid: "SM_ok" });
 
-    const promise = sendText("whatsapp:+5511999887766", "Oi");
+    const promise = sendText("whatsapp:+5511999887766", mintRenderedReply("Oi"));
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
 
@@ -288,7 +294,7 @@ describe("send reliability — retry policy (P1-NET-WASEND)", () => {
   });
 
   it("claims a deterministic idempotency key (SET NX) before sending", async () => {
-    const promise = sendText("whatsapp:+5511999887766", "Olá!");
+    const promise = sendText("whatsapp:+5511999887766", mintRenderedReply("Olá!"));
     await vi.advanceTimersByTimeAsync(700);
     await promise;
 
@@ -304,7 +310,7 @@ describe("send reliability — retry policy (P1-NET-WASEND)", () => {
     // Simulate a prior attempt that already claimed the key (e.g. timed out post-send).
     mockRedisSet.mockResolvedValue(null);
 
-    const promise = sendText("whatsapp:+5511999887766", "Olá!");
+    const promise = sendText("whatsapp:+5511999887766", mintRenderedReply("Olá!"));
     await vi.advanceTimersByTimeAsync(700);
     await promise;
 
@@ -316,7 +322,7 @@ describe("send reliability — retry policy (P1-NET-WASEND)", () => {
   it("fails open: still sends when the idempotency Redis claim throws", async () => {
     mockRedisSet.mockRejectedValue(new Error("redis down"));
 
-    const promise = sendText("whatsapp:+5511999887766", "Olá!");
+    const promise = sendText("whatsapp:+5511999887766", mintRenderedReply("Olá!"));
     await vi.advanceTimersByTimeAsync(700);
     await promise;
 
@@ -328,7 +334,7 @@ describe("send reliability — retry policy (P1-NET-WASEND)", () => {
 
 describe("send rate limiter (P1-SCALE-TWILIORATE)", () => {
   it("acquires a token (keyed by sending number) before each create", async () => {
-    const promise = sendText("whatsapp:+5511999887766", "Olá!");
+    const promise = sendText("whatsapp:+5511999887766", mintRenderedReply("Olá!"));
     await vi.advanceTimersByTimeAsync(700);
     await promise;
 
@@ -342,7 +348,7 @@ describe("send rate limiter (P1-SCALE-TWILIORATE)", () => {
     // First poll: no token, wait 100ms. Second poll: token granted.
     mockRedisEval.mockResolvedValueOnce([0, 100]).mockResolvedValueOnce([1, 0]);
 
-    const sendPromise = sendText("whatsapp:+5511999887766", "Olá!");
+    const sendPromise = sendText("whatsapp:+5511999887766", mintRenderedReply("Olá!"));
     // 600ms typing delay, then first bucket poll returns "wait 100ms" and the
     // limiter must back off — at this instant the create has NOT happened.
     await vi.advanceTimersByTimeAsync(600);
@@ -360,7 +366,7 @@ describe("send rate limiter (P1-SCALE-TWILIORATE)", () => {
   it("fails open: proceeds with the send when the limiter Redis throws", async () => {
     mockRedisEval.mockRejectedValue(new Error("redis down"));
 
-    const promise = sendText("whatsapp:+5511999887766", "Olá!");
+    const promise = sendText("whatsapp:+5511999887766", mintRenderedReply("Olá!"));
     await vi.advanceTimersByTimeAsync(700);
     await promise;
 

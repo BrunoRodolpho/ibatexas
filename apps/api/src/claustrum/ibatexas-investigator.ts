@@ -21,8 +21,31 @@
 // injected (default `Date.now`) so the recorded timestamps are deterministic in
 // tests.
 
-import type { EvidenceEntryInput, LedgerTaint, SourceMode } from "@adjudicate/core";
+import type {
+  EvidenceEntryInput,
+  LedgerTaint,
+  OriginProvenance,
+  SourceMode,
+} from "@adjudicate/core";
 import type { InvestigateInput, InvestigatorPort } from "@claustrum/core";
+
+/**
+ * Map the read-layer 2-value {@link LedgerTaint} onto the 3-value
+ * {@link OriginProvenance} the R1-led kernel (`@adjudicate/core` >= 1.7.0)
+ * requires — the resolution of the `TODO(R1-published)` on {@link TurnRead}.
+ *
+ * FAIL-CLOSED (per that TODO): a read-layer `"TRUSTED"` maps to
+ * `TRUSTED_THIRD_PARTY`, NEVER `FIRST_PARTY` — only an explicit first-party mint
+ * earns `FIRST_PARTY`, which this host's reads never claim. `UNTRUSTED_DATA`
+ * stays `UNTRUSTED_DATA` and never washes up.
+ *
+ * NOTE: this is a Read-layer / C3 origin-trust concern (NOT egress brand); it is
+ * adapted here only because the egress-brand wave bumps the consumed kernel to
+ * the 3-value `OriginProvenance`. See the wave report.
+ */
+function originProvenanceOf(taint: LedgerTaint): OriginProvenance {
+  return taint === "UNTRUSTED_DATA" ? "UNTRUSTED_DATA" : "TRUSTED_THIRD_PARTY";
+}
 
 /**
  * One read the investigator records into the per-turn Evidence Ledger.
@@ -132,8 +155,8 @@ export function createIbatexasInvestigator(
           fetchedAt: now(),
           sourceMode: r.sourceMode ?? "live",
           taint: r.origin,
-          // 2-value published originProvenance (see TurnRead.origin TODO).
-          originProvenance: r.origin,
+          // 3-value originProvenance (R1-led kernel >= 1.7.0); fail-closed map.
+          originProvenance: originProvenanceOf(r.origin),
         };
         ledger.record(entry);
       }

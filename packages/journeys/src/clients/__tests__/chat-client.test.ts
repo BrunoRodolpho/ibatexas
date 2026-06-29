@@ -9,6 +9,7 @@ import { describe, it, expect, afterEach } from "vitest"
 import { createServer, type IncomingHttpHeaders, type Server } from "node:http"
 import { randomUUID } from "node:crypto"
 import { onEvent, type IbxEventBase } from "@ibatexas/tools"
+import { mintRenderedReply, unwrapRendered } from "@adjudicate/core"
 import type { StreamChunk } from "@ibatexas/types"
 import {
   ChatClient,
@@ -63,8 +64,12 @@ interface StubChat {
 }
 
 function sseWrite(res: NodeJS.WritableStream, chunk: StreamChunk): void {
-  // Exact frame shape: `data: <json>\n\n` (chat.ts:458/:468/:496).
-  res.write(`data: ${JSON.stringify(chunk)}\n\n`)
+  // Exact frame shape: `data: <json>\n\n` (chat.ts). EGRESS BRAND (E-1): the
+  // server extracts the branded `text_delta` payload to a string on the wire
+  // (chat.ts uses `chunkToWire`); mirror that so the SUT sees string deltas.
+  const wire =
+    chunk.type === "text_delta" ? { ...chunk, delta: unwrapRendered(chunk.delta) } : chunk
+  res.write(`data: ${JSON.stringify(wire)}\n\n`)
 }
 
 async function readJson(req: NodeJS.ReadableStream): Promise<unknown> {
@@ -85,7 +90,7 @@ async function createStubChat(options: StubOptions = {}): Promise<StubChat> {
   const reply =
     options.reply ??
     ((message: string): StreamChunk[] => [
-      { type: "text_delta", delta: `eco: ${message}` },
+      { type: "text_delta", delta: mintRenderedReply(`eco: ${message}`) },
       { type: "done" },
     ])
   const dropFirstAttempts = options.dropFirstAttempts ?? 0
@@ -324,8 +329,8 @@ describe("ChatClient — offline contract (stub chat route)", () => {
   it("tolerates a dropped stream via buffered replay — idempotent accumulation, first done wins", async () => {
     stub = await createStubChat({
       reply: () => [
-        { type: "text_delta", delta: "Olá" },
-        { type: "text_delta", delta: " mundo" },
+        { type: "text_delta", delta: mintRenderedReply("Olá") },
+        { type: "text_delta", delta: mintRenderedReply(" mundo") },
         { type: "done" },
       ],
       dropFirstAttempts: 1,
@@ -346,9 +351,9 @@ describe("ChatClient — offline contract (stub chat route)", () => {
   it("ignores frames after the first done (terminal contract — chat.ts:459-463)", async () => {
     stub = await createStubChat({
       reply: () => [
-        { type: "text_delta", delta: "ok" },
+        { type: "text_delta", delta: mintRenderedReply("ok") },
         { type: "done" },
-        { type: "text_delta", delta: "EXTRA" },
+        { type: "text_delta", delta: mintRenderedReply("EXTRA") },
         { type: "done" },
       ],
     })
@@ -360,7 +365,7 @@ describe("ChatClient — offline contract (stub chat route)", () => {
   it("surfaces tokens from the done chunk when the SUT reports them", async () => {
     stub = await createStubChat({
       reply: () => [
-        { type: "text_delta", delta: "resp" },
+        { type: "text_delta", delta: mintRenderedReply("resp") },
         { type: "done", inputTokens: 321, outputTokens: 45 },
       ],
     })
@@ -386,7 +391,7 @@ describe("ChatClient — offline contract (stub chat route)", () => {
   it("exhausted stream attempts without done → ChatStreamIncompleteError", async () => {
     stub = await createStubChat({
       reply: () => [
-        { type: "text_delta", delta: "nunca termina" },
+        { type: "text_delta", delta: mintRenderedReply("nunca termina") },
         { type: "done" },
       ],
       dropFirstAttempts: 99,

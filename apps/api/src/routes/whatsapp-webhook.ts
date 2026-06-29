@@ -33,6 +33,12 @@ import { parse as parseQuerystring } from "node:querystring";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import twilio from "twilio";
 import { handleTurn, type ChannelMessage } from "@claustrum/core";
+import {
+  mintBroadcastReply,
+  mintFallbackReply,
+  mintReceiptReply,
+  wrapLegacyResponderText,
+} from "@adjudicate/core";
 import { getRedisClient, rk, atomicIncr } from "@ibatexas/tools";
 import { getConductor } from "../claustrum-bootstrap.js";
 import { isSessionPausedForHuman } from "../escalation/escalation-store.js";
@@ -247,7 +253,7 @@ async function retryForMissedMessages(
     });
 
     if (retryResponse.text) {
-      await sendText(`whatsapp:${phone}`, retryResponse.text);
+      await sendText(`whatsapp:${phone}`, wrapLegacyResponderText(retryResponse.text));
       await appendMessages(session.sessionId, [
         { role: "assistant", content: retryResponse.text },
       ], true, { customerId: session.customerId, channel: "whatsapp" });
@@ -541,7 +547,7 @@ export async function whatsappWebhookRoutes(server: FastifyInstance): Promise<vo
         const rateMsg = ratePhone
           ? `Você está enviando mensagens rápido demais! 😅 Aguarde um momento ou acesse ${rateSite} / ligue ${ratePhone}`
           : `Você está enviando mensagens rápido demais! 😅 Aguarde um momento ou acesse ${rateSite}`;
-        await sendText(`whatsapp:${phone}`, rateMsg).catch(() => {});
+        await sendText(`whatsapp:${phone}`, mintFallbackReply(rateMsg)).catch(() => {});
         return reply.code(429).type("text/xml").send("<Response/>");
       }
 
@@ -574,7 +580,7 @@ async function tryShortcutOrStateMachine(
     log.info({ phone_hash: hash, shortcut: shortcut.type }, "[whatsapp.shortcut]");
     const response = await handleShortcut(shortcut.type);
     if (response) {
-      await sendText(`whatsapp:${phone}`, response);
+      await sendText(`whatsapp:${phone}`, mintBroadcastReply(response));
       await appendMessages(session.sessionId, [{ role: "assistant", content: response }], true, {
         customerId: session.customerId,
         channel: "whatsapp",
@@ -607,7 +613,8 @@ type WaSession = Awaited<ReturnType<typeof resolveWhatsAppSession>>;
 /** Send a WhatsApp message, swallowing failures (Twilio may be down). Best-effort only. */
 async function sendBestEffort(to: string, message: string): Promise<void> {
   try {
-    await sendText(to, message);
+    // Best-effort fallback/holding messages → branded via the fallback minter.
+    await sendText(to, mintFallbackReply(message));
   } catch {
     // Best-effort — can't do more (e.g. Twilio is down)
   }
@@ -698,7 +705,9 @@ async function sendPixFollowUp(
   if (pixCopyPaste && !textHasPixCode) {
     await sendText(
       `whatsapp:${phone}`,
-      `*Código PIX (copia e cola):*\n\n${pixCopyPaste}\n\n☝️ Copie e cole no app do seu banco.\nNÃO clique — cole no app.`,
+      mintReceiptReply(
+        `*Código PIX (copia e cola):*\n\n${pixCopyPaste}\n\n☝️ Copie e cole no app do seu banco.\nNÃO clique — cole no app.`,
+      ),
     );
   }
 
@@ -857,7 +866,9 @@ async function handleMessageAsync(
   if (numMedia > 0 && !messageBody) {
     await sendText(
       `whatsapp:${phone}`,
-      "Recebi sua mídia 👍\n\nAinda não consigo analisar imagens ou áudio.\nPode me explicar em palavras?",
+      mintFallbackReply(
+        "Recebi sua mídia 👍\n\nAinda não consigo analisar imagens ou áudio.\nPode me explicar em palavras?",
+      ),
     );
     return;
   }
@@ -893,7 +904,7 @@ async function handleMessageAsync(
   // ── LGPD opt-in disclosure (once per phone) ─────────────────────────────────
   const lgpdJustSent = !(await hasOptedIn(hash));
   if (lgpdJustSent) {
-    await sendText(`whatsapp:${phone}`, LGPD_OPTIN_MESSAGE);
+    await sendText(`whatsapp:${phone}`, mintFallbackReply(LGPD_OPTIN_MESSAGE));
     await markOptedIn(hash);
   }
 
@@ -961,7 +972,7 @@ async function handleMessageAsync(
     let textSent = false;
     if (agentResponse.text && !turnAbort.signal.aborted) {
       sendEntered = true;
-      await sendText(`whatsapp:${phone}`, agentResponse.text);
+      await sendText(`whatsapp:${phone}`, wrapLegacyResponderText(agentResponse.text));
       sendCompleted = true;
       textSent = true;
 

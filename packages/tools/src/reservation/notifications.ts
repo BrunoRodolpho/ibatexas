@@ -1,6 +1,7 @@
 // WhatsApp notifications for reservations.
 // Uses the WhatsAppSender interface injected at startup from apps/api.
 
+import { mintCronReply } from "@adjudicate/core"
 import type { ReservationDTO, WaitlistDTO } from "@ibatexas/types"
 import { getWhatsAppSender } from "../whatsapp/sender.js"
 import { locationLabel, formatDateBR } from "./utils.js"
@@ -50,7 +51,7 @@ export async function sendReservationConfirmation(
   }
 
   try {
-    await sender.sendText(`whatsapp:${phone}`, message)
+    await sender.sendText(`whatsapp:${phone}`, mintCronReply(message))
   } catch (err) {
     console.error("[whatsapp.notification.error] Reservation confirmation failed:", {
       reservationId: reservation.id,
@@ -88,7 +89,7 @@ export async function sendReservationModified(
   if (!phone) return
 
   try {
-    await sender.sendText(`whatsapp:${phone}`, message)
+    await sender.sendText(`whatsapp:${phone}`, mintCronReply(message))
   } catch (err) {
     console.error("[whatsapp.notification.error] Reservation modified notification failed:", { reservationId: reservation.id, error: String(err) })
   }
@@ -121,7 +122,7 @@ export async function sendReservationCancelled(
   if (!phone) return
 
   try {
-    await sender.sendText(`whatsapp:${phone}`, message)
+    await sender.sendText(`whatsapp:${phone}`, mintCronReply(message))
   } catch (err) {
     console.error("[whatsapp.notification.error] Reservation cancelled notification failed:", { reservationId, error: String(err) })
   }
@@ -154,7 +155,7 @@ export async function sendReservationReminder(
   if (!phone) return
 
   try {
-    await sender.sendText(`whatsapp:${phone}`, message)
+    await sender.sendText(`whatsapp:${phone}`, mintCronReply(message))
   } catch (err) {
     console.error("[whatsapp.notification.error] Reservation reminder failed:", { reservationId: reservation.id, error: String(err) })
   }
@@ -202,7 +203,7 @@ export async function notifyWaitlistSpotAvailable(
   }
 
   try {
-    await sender.sendText(`whatsapp:${phone}`, message)
+    await sender.sendText(`whatsapp:${phone}`, mintCronReply(message))
   } catch (err) {
     console.error("[whatsapp.notification.error] Waitlist notification failed:", {
       waitlistId: waitlist.id,

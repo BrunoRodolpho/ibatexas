@@ -20,6 +20,7 @@
 import type { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
+import { mintBroadcastReply } from "@adjudicate/core";
 import { createConversationService, prisma } from "@ibatexas/domain";
 import { getWhatsAppSender } from "@ibatexas/tools";
 import { requireManagerRole } from "../../middleware/staff-auth.js";
@@ -113,7 +114,7 @@ export async function escalationRoutes(server: FastifyInstance): Promise<void> {
           });
           const sender = getWhatsAppSender();
           if (customer?.phone && sender) {
-            await sender.sendText(`whatsapp:${customer.phone}`, text);
+            await sender.sendText(`whatsapp:${customer.phone}`, mintBroadcastReply(text));
             delivered = true;
           }
         } catch (err) {

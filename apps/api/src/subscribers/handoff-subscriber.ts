@@ -4,6 +4,7 @@
 // state so the session is PAUSED for the bot + appears in the staff takeover
 // queue (D2), and (2) notifies staff via WhatsApp.
 
+import { mintBroadcastReply } from "@adjudicate/core";
 import { subscribeNatsEvent } from "@ibatexas/nats-client";
 import { getWhatsAppSender } from "@ibatexas/tools";
 import type { FastifyBaseLogger } from "fastify";
@@ -80,7 +81,7 @@ export async function startHandoffSubscriber(
     ].join("\n");
 
     try {
-      await sender.sendText(`whatsapp:${staffPhone}`, message);
+      await sender.sendText(`whatsapp:${staffPhone}`, mintBroadcastReply(message));
       log?.info({ session_id: sessionId }, "[handoff-subscriber] Staff notified via WhatsApp");
     } catch (err) {
       log?.error(

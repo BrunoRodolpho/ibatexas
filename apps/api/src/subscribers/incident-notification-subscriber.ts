@@ -19,6 +19,7 @@
 // metric (as a structured counter log; the prom-client Registry is not exposed
 // to subscribers in Phase 1).
 
+import { mintBroadcastReply } from "@adjudicate/core";
 import { subscribeNatsEvent } from "@ibatexas/nats-client";
 import { getWhatsAppSender, getRedisClient, rk, atomicIncr } from "@ibatexas/tools";
 import type { FastifyBaseLogger } from "fastify";
@@ -159,7 +160,7 @@ async function sendIncidentPing(
   ].join("\n");
 
   try {
-    await sender.sendText(`whatsapp:${staffPhone}`, message);
+    await sender.sendText(`whatsapp:${staffPhone}`, mintBroadcastReply(message));
     log?.info({ session_id: fields.sessionId }, "[incident-notification] staff notified via WhatsApp");
   } catch (err) {
     log?.error({ session_id: fields.sessionId, error: String(err) }, "[incident-notification] failed to send WhatsApp ping");
@@ -183,7 +184,7 @@ async function sendStormDigest(
   ].join("\n");
 
   try {
-    await sender.sendText(`whatsapp:${staffPhone}`, message);
+    await sender.sendText(`whatsapp:${staffPhone}`, mintBroadcastReply(message));
     log?.warn({ spike_count: spikeCount }, "[incident-notification] storm digest sent (rate-spike)");
   } catch (err) {
     log?.error({ spike_count: spikeCount, error: String(err) }, "[incident-notification] failed to send storm digest");

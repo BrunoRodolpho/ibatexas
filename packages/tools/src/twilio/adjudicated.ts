@@ -68,9 +68,11 @@ import {
   decisionExecute,
   decisionRefuse,
   refuse,
+  unwrapRendered,
   type AuditSink,
   type Decision,
   type IntentEnvelope,
+  type RenderedReply,
 } from "@adjudicate/core"
 import {
   adjudicate,
@@ -145,7 +147,13 @@ const twilioWrapperTaintPolicy = createSystemTaintPolicy({
 export interface TwilioMessageSendPayload {
   readonly from: string
   readonly to: string
-  readonly body?: string
+  /**
+   * EGRESS BRAND (Plan 1 / Theorem E-1): the message body is a
+   * runtime-non-forgeable `RenderedReply`. The kernel envelope + audit path
+   * carry the branded value unchanged; the string is extracted exactly once,
+   * at the final `client.messages.create` chokepoint, via `unwrapRendered`.
+   */
+  readonly body?: RenderedReply
   readonly mediaUrl?: ReadonlyArray<string>
 }
 
@@ -182,7 +190,10 @@ const refuseInvalidMessagePayload: TwilioGuard = (envelope) => {
       ],
     )
   }
-  const hasBody = typeof payload.body === "string" && payload.body.length > 0
+  // `body` is a branded RenderedReply (minted upstream); unwrap to inspect
+  // emptiness. Provenance is asserted by `unwrapRendered` — a forged body
+  // throws here rather than reaching the SDK.
+  const hasBody = payload.body !== undefined && unwrapRendered(payload.body).length > 0
   const hasMedia = Array.isArray(payload.mediaUrl) && payload.mediaUrl.length > 0
   if (!hasBody && !hasMedia) {
     return decisionRefuse(
@@ -515,7 +526,11 @@ export const twilioAdjudicated = {
       return client.messages.create({
         from: env.payload.from,
         to: env.payload.to,
-        ...(env.payload.body === undefined ? {} : { body: env.payload.body }),
+        // SOLE egress chokepoint: extract the string AFTER proving the body was
+        // genuinely minted (defense-in-depth layer (b)).
+        ...(env.payload.body === undefined
+          ? {}
+          : { body: unwrapRendered(env.payload.body) }),
         ...(env.payload.mediaUrl === undefined
           ? {}
           : { mediaUrl: [...env.payload.mediaUrl] }),

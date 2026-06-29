@@ -19,6 +19,13 @@
 import { createHash } from "node:crypto";
 import twilio from "twilio";
 import {
+  mintRenderedReply,
+  mintReceiptReply,
+  mintBroadcastReply,
+  unwrapRendered,
+  type RenderedReply,
+} from "@adjudicate/core";
+import {
   twilioAdjudicated,
   TwilioAdjudicateRefusedError,
   getRedisClient,
@@ -217,11 +224,17 @@ function findSplitIndex(chunk: string): number {
 }
 
 /**
- * Split text at sentence boundaries (`.!?`), then newline, then space.
- * If split, each part is prefixed with `(1/N)`.
+ * Split a {@link RenderedReply} at sentence boundaries (`.!?`), then newline,
+ * then space. If split, each part is prefixed with `(1/N)`.
+ *
+ * EGRESS BRAND (Plan 1 / Theorem E-1): the string is extracted once (after
+ * proving provenance via `unwrapRendered`), split, and every substring is
+ * re-minted via `mintRenderedReply` so the brand is preserved across the split
+ * — egress downstream still receives only branded values.
  */
-export function splitForWhatsApp(text: string): string[] {
-  if (text.length <= MAX_WHATSAPP_LENGTH) return [text];
+export function splitForWhatsApp(reply: RenderedReply): RenderedReply[] {
+  const text = unwrapRendered(reply);
+  if (text.length <= MAX_WHATSAPP_LENGTH) return [mintRenderedReply(text)];
 
   const parts: string[] = [];
   let remaining = text;
@@ -238,9 +251,9 @@ export function splitForWhatsApp(text: string): string[] {
 
   // Add part indicators
   if (parts.length > 1) {
-    return parts.map((p, i) => `(${i + 1}/${parts.length})\n${p}`);
+    return parts.map((p, i) => mintRenderedReply(`(${i + 1}/${parts.length})\n${p}`));
   }
-  return parts;
+  return parts.map((p) => mintRenderedReply(p));
 }
 
 // ── Shared send-rate limiter ─────────────────────────────────────────────────
@@ -348,7 +361,7 @@ async function acquireSendToken(from: string): Promise<void> {
  * Send a text message, auto-splitting if >4096 chars.
  * Retries up to 3x; never on a post-send-ambiguous timeout.
  */
-export async function sendText(to: string, body: string): Promise<void> {
+export async function sendText(to: string, body: RenderedReply): Promise<void> {
   const parts = splitForWhatsApp(body);
   const hash = hashPhone(to.replace("whatsapp:", ""));
 
@@ -375,13 +388,22 @@ export async function sendText(to: string, body: string): Promise<void> {
  * @param ctx   Log namespace + the adjudication metadata for this send.
  */
 async function createMessage(
-  params: { from: string; to: string; body?: string; mediaUrl?: string[] },
+  params: { from: string; to: string; body?: RenderedReply; mediaUrl?: string[] },
   hash: string,
   part: number,
   ctx: { logTag: string; sourceSubject: string; reason: string },
 ): Promise<void> {
   const { from, to } = params;
-  const idemKey = idempotencyKey(from, to, params.body ?? "", part, params.mediaUrl?.[0]);
+  // The idempotency hash is computed over the underlying string; unwrap (which
+  // also asserts provenance) for the digest only. The branded value flows on to
+  // the SITE-4 chokepoint unchanged.
+  const idemKey = idempotencyKey(
+    from,
+    to,
+    params.body ? unwrapRendered(params.body) : "",
+    part,
+    params.mediaUrl?.[0],
+  );
 
   // Client-side dedup: if this exact logical send was already claimed (e.g. a
   // prior attempt timed out post-send), skip the create to avoid double-billing.
@@ -436,7 +458,7 @@ async function createMessage(
 
 async function sendSingleMessage(
   to: string,
-  body: string,
+  body: RenderedReply,
   hash: string,
   part: number,
 ): Promise<void> {
@@ -478,7 +500,9 @@ export async function sendInteractiveList(
     lines.push("");
   }
 
-  await sendText(to, lines.join("\n").trimEnd());
+  // Templated interactive menu (deterministic, operator-shaped) → branded via
+  // the broadcast operational minter before egress.
+  await sendText(to, mintBroadcastReply(lines.join("\n").trimEnd()));
 }
 
 /**
@@ -492,7 +516,10 @@ export async function sendInteractiveButtons(
 ): Promise<void> {
   // Until Twilio Content Templates are approved, send as formatted text
   const buttonLabels = buttons.map((b) => `▸ *${b.title}*`).join("\n");
-  await sendText(to, `${body}\n\n${buttonLabels}\n\n_Responda com a opção desejada._`);
+  await sendText(
+    to,
+    mintBroadcastReply(`${body}\n\n${buttonLabels}\n\n_Responda com a opção desejada._`),
+  );
 }
 
 /**
@@ -509,7 +536,7 @@ export async function sendMedia(to: string, mediaUrl: string, body?: string): Pr
   const hash = hashPhone(to.replace("whatsapp:", ""));
 
   await createMessage(
-    { from, to, mediaUrl: [mediaUrl], ...(body ? { body } : {}) },
+    { from, to, mediaUrl: [mediaUrl], ...(body ? { body: mintReceiptReply(body) } : {}) },
     hash,
     0,
     { logTag: "sendMedia", sourceSubject: "whatsapp:sendMedia", reason: "send-media" },

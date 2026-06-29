@@ -1,6 +1,7 @@
 // Unit tests for whatsapp/formatter.ts — pure async generator consumer, no mocks needed.
 
 import { describe, it, expect } from "vitest";
+import { mintRenderedReply } from "@adjudicate/core";
 import type { StreamChunk } from "@ibatexas/types";
 import { collectAgentResponse } from "../whatsapp/formatter.js";
 
@@ -17,9 +18,9 @@ async function* fakeGenerator(chunks: StreamChunk[]): AsyncGenerator<StreamChunk
 describe("collectAgentResponse", () => {
   it("collects text_delta chunks into a single string", async () => {
     const chunks: StreamChunk[] = [
-      { type: "text_delta", delta: "Olá, " },
-      { type: "text_delta", delta: "bem-vindo " },
-      { type: "text_delta", delta: "ao IbateXas!" },
+      { type: "text_delta", delta: mintRenderedReply("Olá, ") },
+      { type: "text_delta", delta: mintRenderedReply("bem-vindo ") },
+      { type: "text_delta", delta: mintRenderedReply("ao IbateXas!") },
       { type: "done" },
     ];
 
@@ -32,7 +33,7 @@ describe("collectAgentResponse", () => {
   it("tracks tool_start events in toolsUsed array", async () => {
     const chunks: StreamChunk[] = [
       { type: "tool_start", toolName: "search_products", toolUseId: "tu_1" },
-      { type: "text_delta", delta: "Encontrei 3 produtos." },
+      { type: "text_delta", delta: mintRenderedReply("Encontrei 3 produtos.") },
       { type: "tool_start", toolName: "get_cart", toolUseId: "tu_2" },
       { type: "done" },
     ];
@@ -45,7 +46,7 @@ describe("collectAgentResponse", () => {
 
   it("extracts token counts from done chunk", async () => {
     const chunks: StreamChunk[] = [
-      { type: "text_delta", delta: "Resposta." },
+      { type: "text_delta", delta: mintRenderedReply("Resposta.") },
       { type: "done", inputTokens: 150, outputTokens: 42 },
     ];
 
@@ -57,7 +58,7 @@ describe("collectAgentResponse", () => {
 
   it("leaves token counts undefined when done has no token info", async () => {
     const chunks: StreamChunk[] = [
-      { type: "text_delta", delta: "Sem tokens." },
+      { type: "text_delta", delta: mintRenderedReply("Sem tokens.") },
       { type: "done" },
     ];
 
@@ -90,7 +91,7 @@ describe("collectAgentResponse", () => {
 
   it("throws on error chunk", async () => {
     const chunks: StreamChunk[] = [
-      { type: "text_delta", delta: "Parcial..." },
+      { type: "text_delta", delta: mintRenderedReply("Parcial...") },
       { type: "error", message: "Falha no agente" },
     ];
 
@@ -103,7 +104,7 @@ describe("collectAgentResponse", () => {
     const chunks: StreamChunk[] = [
       { type: "tool_start", toolName: "search", toolUseId: "tu_1" },
       { type: "tool_result", toolName: "search", toolUseId: "tu_1", success: true },
-      { type: "text_delta", delta: "Resultado." },
+      { type: "text_delta", delta: mintRenderedReply("Resultado.") },
       { type: "done", inputTokens: 10, outputTokens: 5 },
     ];
 
@@ -118,7 +119,7 @@ describe("collectAgentResponse", () => {
   it("concatenates many small deltas correctly", async () => {
     const chars = "Resposta longa com vários caracteres especiais: ção ã é".split("");
     const chunks: StreamChunk[] = [
-      ...chars.map((c) => ({ type: "text_delta" as const, delta: c })),
+      ...chars.map((c) => ({ type: "text_delta" as const, delta: mintRenderedReply(c) })),
       { type: "done" },
     ];
 

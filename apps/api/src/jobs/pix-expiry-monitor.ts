@@ -13,6 +13,7 @@ import { getRedisClient, rk, medusaAdmin } from "@ibatexas/tools";
 import { createPaymentQueryService } from "@ibatexas/domain";
 import { PaymentStatus } from "@ibatexas/types";
 import type { Queue, Worker } from "bullmq";
+import { mintCronReply } from "@adjudicate/core";
 import { sendText } from "../whatsapp/client.js";
 import logger from "../lib/logger.js";
 import { createQueue, createWorker, type Job } from "./queue.js";
@@ -94,7 +95,7 @@ export async function processPixExpiry(job: Job<PixExpiryJobData>): Promise<void
   if (stage === "reminder") {
     await sendText(
       `whatsapp:${phone}`,
-      "Seu QR PIX expira em 5 minutos! Ainda dá tempo de escanear 🍖",
+      mintCronReply("Seu QR PIX expira em 5 minutos! Ainda dá tempo de escanear 🍖"),
     );
   } else {
     // Check if this is a scheduled-pickup order — send a tailored message
@@ -111,12 +112,14 @@ export async function processPixExpiry(job: Job<PixExpiryJobData>): Promise<void
     if (isScheduledPickup) {
       await sendText(
         `whatsapp:${phone}`,
-        "Seu PIX expirou, mas o pedido tá salvo! Manda 'novo pix' que gero outro, ou pode pagar em dinheiro/cartão na retirada.",
+        mintCronReply(
+          "Seu PIX expirou, mas o pedido tá salvo! Manda 'novo pix' que gero outro, ou pode pagar em dinheiro/cartão na retirada.",
+        ),
       );
     } else {
       await sendText(
         `whatsapp:${phone}`,
-        "O PIX expirou, mas seu pedido tá salvo. Quer que eu gere um novo QR?",
+        mintCronReply("O PIX expirou, mas seu pedido tá salvo. Quer que eu gere um novo QR?"),
       );
     }
   }

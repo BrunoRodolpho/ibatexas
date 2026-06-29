@@ -35,6 +35,7 @@ import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { v4 as uuidv4 } from "uuid";
 import { handleTurn, type ChannelMessage } from "@claustrum/core";
+import { mintFallbackReply, wrapLegacyResponderText } from "@adjudicate/core";
 import { Channel, type StreamChunk } from "@ibatexas/types";
 import { getRedisClient, rk, createSessionToken, verifySessionToken } from "@ibatexas/tools";
 import { loadSession, appendMessages } from "../session/store.js";
@@ -45,6 +46,7 @@ import {
   getStream,
   subscribeToStream,
   cleanupStream,
+  chunkToWire,
 } from "../streaming/emitter.js";
 import { acquireWebAgentLock, releaseWebAgentLock } from "../streaming/execution-queue.js";
 import { getConductor } from "../claustrum-bootstrap.js";
@@ -384,7 +386,12 @@ async function runConductorTurn(params: {
       // Streaming Option A: a single assembled text chunk. Only delivered when
       // the client is still listening (not aborted).
       if (!aborted && disposition === "deliverable") {
-        pushChunk(sessionId, { type: "text_delta", delta: turn.response.text });
+        // EGRESS BRAND (E-1): legacy prose responder text → branded via the
+        // transitional minter (W5 binds the claims pipeline value directly).
+        pushChunk(sessionId, {
+          type: "text_delta",
+          delta: wrapLegacyResponderText(turn.response.text),
+        });
 
         // Persist the assistant reply on dev's Redis session store AFTER
         // the turn (SessionPort.save is a stub — see the user-message note).
@@ -429,7 +436,10 @@ async function runConductorTurn(params: {
           isWebEmptyHoldingEnabled() &&
           (disposition === "empty_completion" || disposition === "whitespace_only")
         ) {
-          pushChunk(sessionId, { type: "text_delta", delta: WEB_HOLDING_MESSAGE_PTBR });
+          pushChunk(sessionId, {
+            type: "text_delta",
+            delta: mintFallbackReply(WEB_HOLDING_MESSAGE_PTBR),
+          });
         }
       }
 
@@ -580,7 +590,7 @@ function serveFromLocalStream(
 
   // Replay buffered chunks for late clients
   for (const chunk of entry.buffer) {
-    reply.raw.write(`data: ${JSON.stringify(chunk)}\n\n`);
+    reply.raw.write(`data: ${JSON.stringify(chunkToWire(chunk))}\n\n`);
     if (chunk.type === "done" || chunk.type === "error") {
       stopHeartbeat();
       reply.raw.end();
@@ -590,7 +600,7 @@ function serveFromLocalStream(
 
   // Listen for new chunks
   const onChunk = (chunk: unknown): void => {
-    reply.raw.write(`data: ${JSON.stringify(chunk)}\n\n`);
+    reply.raw.write(`data: ${JSON.stringify(chunkToWire(chunk as StreamChunk))}\n\n`);
     const c = chunk as { type: string };
     if (c.type === "done" || c.type === "error") {
       terminated = true;
@@ -628,7 +638,7 @@ async function serveFromRedis(
 
   const writeChunk = (chunk: StreamChunk): void => {
     if (ended) return;
-    reply.raw.write(`data: ${JSON.stringify(chunk)}\n\n`);
+    reply.raw.write(`data: ${JSON.stringify(chunkToWire(chunk))}\n\n`);
     if (chunk.type === "done" || chunk.type === "error") {
       ended = true;
       stopHeartbeat();

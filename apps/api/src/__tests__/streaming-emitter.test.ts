@@ -1,6 +1,7 @@
 // Unit tests for streaming/emitter.ts — pure in-memory SSE bridge
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
+import { mintRenderedReply } from "@adjudicate/core"
 import type { StreamChunk } from "@ibatexas/types"
 import {
   createStream,
@@ -38,7 +39,7 @@ describe("pushChunk", () => {
     const entry = getStream("test_02")!
     entry.emitter.on("chunk", (c: StreamChunk) => chunks.push(c))
 
-    const chunk: StreamChunk = { type: "text_delta", delta: "Olá" }
+    const chunk: StreamChunk = { type: "text_delta", delta: mintRenderedReply("Olá") }
     pushChunk("test_02", chunk)
 
     expect(chunks).toHaveLength(1)
@@ -47,7 +48,7 @@ describe("pushChunk", () => {
   })
 
   it("silently ignores pushes to nonexistent sessions", () => {
-    expect(() => pushChunk("ghost", { type: "text_delta", delta: "x" })).not.toThrow()
+    expect(() => pushChunk("ghost", { type: "text_delta", delta: mintRenderedReply("x") })).not.toThrow()
   })
 })
 

@@ -28,6 +28,7 @@ import {
   type IncidentSeverity,
   type IncidentStatus,
 } from "@ibatexas/domain";
+import { mintBroadcastReply } from "@adjudicate/core";
 import { getAuditSink } from "@ibatexas/audit-sink";
 import { getWhatsAppSender } from "@ibatexas/tools";
 import { requireManagerRole } from "../../middleware/staff-auth.js";
@@ -306,7 +307,7 @@ export async function adminIncidentRoutes(server: FastifyInstance): Promise<void
         try {
           const sender = getWhatsAppSender();
           if (sender) {
-            await sender.sendText(to, text);
+            await sender.sendText(to, mintBroadcastReply(text));
             delivered = true;
           }
         } catch (err) {
