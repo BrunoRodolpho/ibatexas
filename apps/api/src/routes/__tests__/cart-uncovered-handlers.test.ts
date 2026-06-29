@@ -428,6 +428,26 @@ describe("POST /api/cart/checkout — composition guards (422)", () => {
     expect(res.json().code).toBe("KITCHEN_CLOSED");
   });
 
+  it("kitchen closed + food + deliveryType=pickup BUT deliveryCep present → 422 KITCHEN_CLOSED (immediate delivery; subset of create-checkout's !deliveryCep pickup set)", async () => {
+    mockGetMealPeriod.mockReturnValue("closed");
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/cart/checkout",
+      payload: {
+        cartId: "cart_01",
+        paymentMethod: "card",
+        deliveryType: "pickup",
+        deliveryCep: "01310-100",
+        items: [{ variantId: "v1", quantity: 1, productType: "food" }],
+      },
+    });
+    // create-checkout keys pickup on the ABSENCE of deliveryCep, so a present cep
+    // means immediate DELIVERY downstream — must NOT slip through as scheduled pickup.
+    expect(res.statusCode).toBe(422);
+    expect(res.json().code).toBe("KITCHEN_CLOSED");
+  });
+
   // Accepted closed-hours paths run the full kernel/executor chain, so the
   // local-item sync helpers need their Medusa mocks (mirrors the sync-chain
   // suite below). EXECUTE → createCheckout is invoked → 200.

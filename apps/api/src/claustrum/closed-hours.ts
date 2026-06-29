@@ -94,7 +94,11 @@ function matchesAffirmative(
     for (const m of normalized.matchAll(re)) {
       const idx = m.index ?? 0;
       const before = normalized.slice(Math.max(0, idx - 18), idx);
-      if (!CLOSED_NEGATORS.test(before)) return true;
+      // Honor a negator sitting just BEFORE the match AND one embedded INSIDE the
+      // matched span — e.g. "a loja nao esta aberta", where the "nao" lives between
+      // "loja" and "aberta" inside m[0] and the 18-char prefix alone would miss it.
+      // Test the prefix PLUS the matched text so such honest closed statements pass.
+      if (!CLOSED_NEGATORS.test(before + m[0])) return true;
     }
   }
   return false;

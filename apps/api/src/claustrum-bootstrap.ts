@@ -2075,17 +2075,42 @@ export async function bootstrapClaustrum(
   // the Redis read-through schedule cache (loadSchedule) + the env timezone, it
   // grounds the planner + responder LLM context (soft layer) and arms the
   // responder's deterministic closed-hours backstop (hard layer). Best-effort:
-  // a schedule-load failure yields `undefined` (no closed-hours behavior) rather
-  // than breaking the turn.
+  // it never throws out of the turn.
   const resolveScheduleSignal =
     options.resolveScheduleSignal ??
     (async (): Promise<ScheduleSignal | undefined> => {
+      const tz = process.env.RESTAURANT_TIMEZONE ?? "America/Sao_Paulo";
       try {
         const schedule = await loadSchedule();
-        const tz = process.env.RESTAURANT_TIMEZONE ?? "America/Sao_Paulo";
         return getScheduleSignal(schedule, tz);
-      } catch {
-        return undefined;
+      } catch (err) {
+        // Fail-open-vs-fail-closed (DECIDED): on a schedule-load failure (e.g. a
+        // Redis blip + a DB hiccup) do NOT blindly default to "closed" — a
+        // false-"closed" would harm EVERY customer for the duration of the blip.
+        // Instead align to the system-wide convention: getMealPeriodFromSchedule()
+        // already treats a missing/undefined schedule by falling back to the
+        // env-var hours (RESTAURANT_*_HOUR) — it does NOT treat unknown as closed.
+        // Deriving getScheduleSignal(undefined, tz) here keeps BOTH closed-hours
+        // layers (the soft prompt note + the deterministic backstop) ARMED on those
+        // env hours rather than reverting to pure-prompt (which would let the 4B
+        // falsely assert "open"). Returning a signal — not undefined — is the
+        // deliberate tradeoff. (No readily-available last-known-good cached signal:
+        // loadSchedule already consulted the Redis cache before this throw.)
+        // (b) Observability: WARN so this silent degrade is visible in logs/obs.
+        logger.warn(
+          {
+            component: "claustrum-bootstrap",
+            scope: "closed-hours",
+            err: (err as Error).message,
+          },
+          "schedule signal resolve failed; falling back to env-var hours (closed-hours layers stay armed)",
+        );
+        try {
+          return getScheduleSignal(undefined, tz);
+        } catch {
+          // Last resort: the resolver must never throw and break the turn.
+          return undefined;
+        }
       }
     });
   const buildPlanner = (model: ModelProvider): ClaimAwarePlannerPort =>

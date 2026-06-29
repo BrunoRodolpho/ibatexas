@@ -705,10 +705,20 @@ function validateCheckoutComposition(args: {
   // *scheduled* pickup (the `scheduledPickup` tag is applied downstream by
   // create-checkout.ts buildCheckoutMetadata); only IMMEDIATE-DELIVERY (local
   // delivery / dine-in) food orders are still REFUSED while closed. Frozen/merch
-  // are always allowed. Pickup is distinguished exactly as create-checkout.ts
-  // does it — no deliveryCep (and not an explicit delivery/dine_in type).
+  // are always allowed. Pickup MUST be distinguished EXACTLY as create-checkout.ts
+  // does it: buildCheckoutMetadata keys pickup SOLELY on the ABSENCE of a
+  // deliveryCep (`deliveryType = deliveryCep ? "delivery" : "pickup"`; the
+  // scheduledPickup tag is applied only when !deliveryCep). So the accepted
+  // (scheduled-pickup) set here must be a SUBSET of create-checkout's `!deliveryCep`
+  // set — otherwise `closed + food + deliveryType="pickup" + deliveryCep present`
+  // would be accepted here yet treated as immediate DELIVERY downstream (the hole).
+  // We therefore require NO deliveryCep and an unset/pickup type; explicit
+  // delivery / shipping / dine_in remain immediate and are still REFUSED while closed.
   const isScheduledPickup =
-    deliveryType === "pickup" || (!deliveryType && !deliveryCep);
+    !deliveryCep &&
+    deliveryType !== "delivery" &&
+    deliveryType !== "shipping" &&
+    deliveryType !== "dine_in";
   if (
     mealPeriod === "closed" &&
     !isScheduledPickup &&

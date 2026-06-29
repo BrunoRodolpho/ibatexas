@@ -47,6 +47,9 @@ describe("assertsOpenOrImmediate", () => {
     expect(
       assertsOpenOrImmediate("Estamos fechados, sem entrega agora."),
     ).toBe(false);
+    // F3: the negator sits INSIDE the matched 'loja … aberta' span (not just in
+    // the 18-char prefix). It is an honest "the store is not open" statement.
+    expect(assertsOpenOrImmediate("A loja não está aberta.")).toBe(false);
   });
 
   it("does NOT flag a neutral reply", () => {
@@ -89,6 +92,13 @@ describe("closedHoursBackstop", () => {
     const d = draft(
       "No momento estamos fechados, mas posso registrar seu pedido para retirada agendada.",
     );
+    expect(closedHoursBackstop(d, CLOSED)).toBe(d);
+  });
+
+  it("passes a draft with an in-span negator unchanged when closed (F3)", () => {
+    // "não" lives inside the matched 'loja … aberta' span — honored as honest,
+    // so the backstop must NOT overwrite this reply while closed.
+    const d = draft("A loja não está aberta.");
     expect(closedHoursBackstop(d, CLOSED)).toBe(d);
   });
 
