@@ -214,7 +214,11 @@ beforeEach(() => {
     openCapsule: vi.fn().mockResolvedValue({ id: "capsule-1" }),
     closeCapsule: vi.fn().mockResolvedValue(undefined),
   });
-  mockHandleTurn.mockResolvedValue({ response: { text: "Resposta padrão" }, acted: null });
+  mockHandleTurn.mockResolvedValue({
+    response: { text: "Resposta padrão" },
+    acted: null,
+    decision: { kind: "EXECUTE" },
+  });
 });
 
 afterAll(() => {
@@ -391,6 +395,7 @@ describe("handleMessageAsync — conductor turn", () => {
     mockHandleTurn.mockResolvedValue({
       response: { text: "Olá! Como posso ajudar você hoje?" },
       acted: null,
+      decision: { kind: "EXECUTE" },
     });
 
     const app = await buildTestServer();
@@ -445,6 +450,7 @@ describe("handleMessageAsync — conductor turn", () => {
           orderId: "ord-42",
         },
       },
+      decision: { kind: "EXECUTE" },
     });
 
     const app = await buildTestServer();
@@ -548,7 +554,11 @@ describe("handleMessageAsync — conductor turn", () => {
     // Every loadSession returns a user-last history → the post-lock re-check fires
     // and re-runs the conductor exactly once.
     mockLoadSession.mockResolvedValue([{ role: "user", content: "esqueci de adicionar a bebida" }]);
-    mockHandleTurn.mockResolvedValue({ response: { text: "Claro, vou adicionar." }, acted: null });
+    mockHandleTurn.mockResolvedValue({
+      response: { text: "Claro, vou adicionar." },
+      acted: null,
+      decision: { kind: "EXECUTE" },
+    });
 
     const app = await buildTestServer();
     const res = await post(app, "MessageSid=SM_RETRY&From=whatsapp%3A%2B5511999999999&Body=oi");
