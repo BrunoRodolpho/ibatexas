@@ -96,6 +96,19 @@ export interface TurnRead {
 }
 
 /**
+ * Sentinel a {@link TurnRead}'s `read` may return to mean "this read found
+ * NOTHING this turn" — a genuine ABSENCE, distinct from BOTH a recorded value and
+ * a read ERROR (Inv 7). The investigator SKIPS it (neither `record` nor
+ * `recordError`), leaving the key ABSENT in the ledger. Used by the STORE_OPEN_NOW
+ * falsifier read (F1): a day with no ScheduleOverride must leave
+ * `schedule:schedule_override` ABSENT so the cross-key falsifier does NOT fire
+ * (only a PRESENT falsifier value is a live contradiction — soundness.ts /
+ * `resolveAgainstFalsifiers`); recording a fabricated "no override" present value
+ * would wrongly poison EVERY no-override turn to UNKNOWN.
+ */
+export const ABSENT_READ: unique symbol = Symbol("ABSENT_READ");
+
+/**
  * Derive this turn's reads from the resolved cognition + plan. INJECTED so the
  * host can wire the real first-party read backends later; defaults to
  * {@link defaultTurnReads}.
@@ -141,6 +154,11 @@ export function defaultTurnReads(input: InvestigateInput): TurnRead[] {
 // decomposer + registry bind candidate claims to these). Namespaced so a triad
 // read can never collide with a legacy `read:<tool>:<i>` key.
 const SCHEDULE_KEY = "schedule:store_open_now";
+// STORE_OPEN_NOW FALSIFIER key (F1; W6 CE#3). Aligned VERBATIM with the registry's
+// STORE_OPEN_NOW `falsifiers[].key` (claim-registry.ts) so the kernel's
+// `resolveAgainstFalsifiers` finds the recorded override and demotes a present-
+// override turn to UNKNOWN. Recorded ONLY when an override actually exists today.
+const SCHEDULE_OVERRIDE_KEY = "schedule:schedule_override";
 const ORDER_FULFILLMENT_KEY = (orderId: string): string =>
   `order_fulfillment_stage:${orderId}`;
 const PAYMENT_STATUS_KEY = (orderId: string): string => `payment_status:${orderId}`;
@@ -204,6 +222,25 @@ export function createFirstPartyTurnReads(
       originProvenance: "FIRST_PARTY",
       sourceMode: "live",
       read: () => backend.readSchedule(),
+    });
+
+    // STORE_OPEN_NOW FALSIFIER (F1; W6 CE#3) — TODAY's ScheduleOverride. Recorded
+    // as a PRESENT ledger entry ONLY when an override exists this turn; otherwise
+    // the read returns ABSENT_READ → the investigator SKIPS it → the key stays
+    // ABSENT → `resolveAgainstFalsifiers` does NOT fire. A present override →
+    // `schedule:schedule_override` present in the ledger → the kernel demotes
+    // STORE_OPEN_NOW to UNKNOWN (the open/closed signal cannot account for a
+    // per-date override — schedule-helpers reads only days + holidays). Public
+    // first-party config; no owner — so it runs for guests too (placed BEFORE the
+    // authenticated-customer gate).
+    reads.push({
+      key: SCHEDULE_OVERRIDE_KEY,
+      source: "schedule.readScheduleOverride",
+      origin: "TRUSTED",
+      originProvenance: "FIRST_PARTY",
+      // The registry falsifier declares `must_read_this_turn` → record it LIVE.
+      sourceMode: "live",
+      read: async () => (await backend.readScheduleOverride()) ?? ABSENT_READ,
     });
 
     if (!isAuthenticatedCustomer(customerId)) return reads;
@@ -294,6 +331,12 @@ export function createIbatexasInvestigator(
           ledger.recordError(r.key, reasonOf(err));
           continue;
         }
+
+        // ABSENCE (F1) — a read that found NOTHING (the ABSENT_READ sentinel) is a
+        // genuine ledger ABSENCE: neither a recorded value nor an error (Inv 7).
+        // Skip it so the key stays absent (e.g. no ScheduleOverride today → the
+        // falsifier does not fire).
+        if (value === ABSENT_READ) continue;
 
         const entry: EvidenceEntryInput = {
           key: r.key,

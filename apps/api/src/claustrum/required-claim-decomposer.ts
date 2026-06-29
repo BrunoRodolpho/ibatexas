@@ -85,6 +85,33 @@ for (const types of Object.values(REQUIRED_CLAIM_CLOSURE)) {
   }
 }
 
+/**
+ * The §O#8 SPAN-SEGMENTER (deterministic approximation; Plan 1 Phase 3 / F2). Maps
+ * a raw request text to the closed {@link SpanClass} set the §O#15 decomposer
+ * quantifies over, by matching CONSERVATIVE pt-BR markers. CLOSED + demote-only:
+ * an unmatched text yields the EMPTY set (no companion forced — the planner's own
+ * P4/§O#9 nets still run); matching multiple classes UNIONS them (over-include,
+ * never under-include). The probabilistic §O#8 segmenter is the canonical input —
+ * this keyword net is the deterministic stand-in for the wired Triad slice (the
+ * full segmenter is the deferred follow-on). Pure: no clock/RNG/IO.
+ *
+ * Markers (representative — SDD §Q scope guard):
+ *   - PICKUP_Q         — "retir(ar/ada)" / "buscar" / "pegar" (a pickup question
+ *     requires BOTH the store-open + order-stage companions — §O#15 worked case).
+ *   - STORE_OPEN_NOW_Q — "abert" / "fechad" / "que horas" / "funciona" / "horário".
+ *   - ORDER_STATUS_Q   — "pedido" / "cadê" / "status".
+ *   - PAYMENT_STATUS_Q — "pagamento" / "paguei" / "pix" / "aprovad" / "pago".
+ */
+export function classifyRequestSpans(text: string): SpanClass[] {
+  const t = text.toLowerCase();
+  const classes: SpanClass[] = [];
+  if (/retir|buscar|pegar/.test(t)) classes.push("PICKUP_Q");
+  if (/abert|fechad|que horas|funciona|hor[áa]rio/.test(t)) classes.push("STORE_OPEN_NOW_Q");
+  if (/pedido|cad[êe]|status/.test(t)) classes.push("ORDER_STATUS_Q");
+  if (/pagamento|paguei|pix|aprovad|pago/.test(t)) classes.push("PAYMENT_STATUS_Q");
+  return classes;
+}
+
 /** Is `value` a recognized, in-table span-class? Pure. */
 export function isSpanClass(value: unknown): value is SpanClass {
   return (

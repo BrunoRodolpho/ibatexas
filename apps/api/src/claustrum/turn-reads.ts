@@ -38,11 +38,24 @@ import {
   loadSchedule,
   type ScheduleSignal,
 } from "@ibatexas/tools";
+import type { ScheduleOverrideEntry } from "@ibatexas/types";
 
 // ── Read value shapes (concrete; the renderer fills 1:1 from validated claims) ─
 
 /** STORE_OPEN_NOW / STORE_HOURS — the deterministic, config-derived schedule fact. */
 export type ScheduleRead = ScheduleSignal;
+
+/**
+ * STORE_OPEN_NOW FALSIFIER (Plan 1 Phase 3 / F1; W6 CE#3) — the day's
+ * ScheduleOverride. A per-date exception (`isOpen` + `blocks`) that CONTRADICTS
+ * the weekly-schedule-derived open/closed signal: `getScheduleSignal` is computed
+ * ONLY from `days` + `holidays` (schedule-helpers.ts) and does NOT account for
+ * per-date overrides, so a present override means the signal cannot be trusted →
+ * the kernel's `resolveAgainstFalsifiers` demotes STORE_OPEN_NOW to UNKNOWN. Read
+ * ONLY for TODAY (the turn's tz date); a day with NO override resolves to absence
+ * (the falsifier does not fire) — never a fabricated "no override" present value.
+ */
+export type ScheduleOverrideRead = ScheduleOverrideEntry;
 
 /** ORDER_FULFILLMENT_STAGE — the owner-scoped order's current fulfillment stage. */
 export interface OrderFulfillmentRead {
@@ -74,6 +87,12 @@ export interface ReservationRead {
 export interface TriadReadBackend {
   /** First-party schedule signal (STORE_OPEN_NOW / STORE_HOURS). Public; no owner. */
   readSchedule(): Promise<ScheduleRead>;
+  /**
+   * STORE_OPEN_NOW FALSIFIER read (F1): TODAY's {@link ScheduleOverrideRead}, or
+   * `null` when no override exists for the turn's date (absence — the falsifier
+   * does NOT fire). Public first-party config; no owner.
+   */
+  readScheduleOverride(): Promise<ScheduleOverrideRead | null>;
   /** Owner-scoped ORDER_FULFILLMENT_STAGE read; `null` when not owned / absent. */
   readOrderFulfillment(
     orderId: string,
@@ -100,9 +119,31 @@ async function defaultScheduleRead(): Promise<ScheduleRead> {
   return getScheduleSignal(schedule, tz);
 }
 
+/** Today's local date as "YYYY-MM-DD" in `tz` (mirrors schedule-helpers' private
+ *  `getLocalDateStr`; en-CA yields YYYY-MM-DD). The override is keyed by date. */
+function localDateStr(tz: string): string {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: tz }).format(new Date());
+}
+
+/**
+ * Default STORE_OPEN_NOW FALSIFIER read (F1): TODAY's ScheduleOverride from the
+ * SAME read-through schedule the open/closed signal uses ({@link loadSchedule} —
+ * cache + DB), matched on the turn's tz date. `null` when no override exists for
+ * today (absence — the falsifier never fires). First-party config-derived.
+ */
+async function defaultScheduleOverrideRead(): Promise<ScheduleOverrideRead | null> {
+  const tz = process.env.RESTAURANT_TIMEZONE ?? "America/Sao_Paulo";
+  const schedule = await loadSchedule();
+  const today = localDateStr(tz);
+  return schedule.overrides.find((o) => o.date === today) ?? null;
+}
+
 export interface DomainTriadReadBackendDeps {
   /** Override the schedule read (testing). Defaults to {@link defaultScheduleRead}. */
   readonly schedule?: () => Promise<ScheduleRead>;
+  /** Override the schedule-override read (testing). Defaults to
+   *  {@link defaultScheduleOverrideRead}. */
+  readonly scheduleOverride?: () => Promise<ScheduleOverrideRead | null>;
 }
 
 /**
@@ -113,8 +154,10 @@ export function createDomainTriadReadBackend(
   deps: DomainTriadReadBackendDeps = {},
 ): TriadReadBackend {
   const readSchedule = deps.schedule ?? defaultScheduleRead;
+  const readScheduleOverride = deps.scheduleOverride ?? defaultScheduleOverrideRead;
   return {
     readSchedule,
+    readScheduleOverride,
 
     async readOrderFulfillment(orderId, customerId) {
       // Owner-scoped (SDD §N P0-3, Inv 2): getById with `{ customerId }` returns

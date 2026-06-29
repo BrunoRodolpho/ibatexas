@@ -24,26 +24,59 @@
 // Dependency arrow stays `adjudicate → claustrum → ibatexas`: this adapter is the
 // ibatexas (downstream) deliverable; claustrum exposes only the port contract.
 
-import type { ClaimsKernelResult } from "@adjudicate/core";
+import type { ClaimsKernelResult, ClaimVerdict } from "@adjudicate/core";
 import type {
+  ClaimsRenderContext,
   ClaimsRendererPort,
   ClaimsRenderResult,
 } from "@claustrum/core";
+import {
+  checkRequiredClaimCompleteness,
+  classifyRequestSpans,
+  decomposeRequiredClaims,
+} from "./required-claim-decomposer.js";
 import { render } from "./renderer-from-claims.js";
 
 /**
  * Build the ibatexas `ClaimsRendererPort` from the pure `renderer-from-claims`.
- * PURE/deterministic: same `ClaimsKernelResult` ⟹ same text (the renderer reads
- * no clock/RNG/IO). On a non-RENDER terminal it returns ONLY the proposition-free
- * safe template; on an empty renderable set it returns empty text (the claustrum
- * loop then falls back to the operational responder draft — never silence).
+ * PURE/deterministic: same `(ClaimsKernelResult, context)` ⟹ same text (no
+ * clock/RNG/IO). On a non-RENDER terminal it returns ONLY the proposition-free
+ * safe template.
+ *
+ * §O#15 REQUIRED-CLAIM COMPLETENESS GATE (Plan 1 Phase 3 / F2). Before rendering,
+ * the adapter runs the DETERMINISTIC, PLANNER-INDEPENDENT decomposer over THIS
+ * request: it classifies the request text into span-classes
+ * ({@link classifyRequestSpans}), decomposes the MANDATORY required-claim set
+ * ({@link decomposeRequiredClaims}), and checks it against the kernel's per-claim
+ * verdicts ({@link checkRequiredClaimCompleteness}). A required companion that
+ * resolved ABSENT / UNKNOWN / REFUSED DEGRADES the turn to a proposition-free
+ * UNKNOWN — closing the "render the easy half" hole (a literal-true subset
+ * rendered while a required companion silently disappeared from the renderable
+ * set). DEMOTE-ONLY: the gate only turns a `RENDER` into `UNKNOWN`; it never
+ * upgrades, and never touches an already-safe ESCALATE/CLARIFY/UNKNOWN terminal.
  */
 export function createIbatexasClaimsRenderer(): ClaimsRendererPort {
   return {
-    render(claims: ClaimsKernelResult): ClaimsRenderResult {
+    render(
+      claims: ClaimsKernelResult,
+      context?: ClaimsRenderContext,
+    ): ClaimsRenderResult {
+      // §O#15 required-completeness gate over THIS request's span-classes.
+      const required = decomposeRequiredClaims(
+        classifyRequestSpans(context?.requestText ?? ""),
+      );
+      const resolved = new Map<string, ClaimVerdict>(
+        claims.perClaim.map((c) => [c.type, c.verdict] as const),
+      );
+      const degrade =
+        claims.terminal === "RENDER" &&
+        checkRequiredClaimCompleteness(required, resolved).degrade;
+
       const result = render(
         claims.renderable,
-        claims.terminal,
+        // Demote-only: a missing required companion forces a proposition-free
+        // UNKNOWN; otherwise the kernel's own terminal stands.
+        degrade ? "UNKNOWN" : claims.terminal,
         claims.consistency.suppressions,
       );
       return { text: result.text };

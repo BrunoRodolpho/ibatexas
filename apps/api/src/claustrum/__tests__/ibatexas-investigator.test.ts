@@ -20,7 +20,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { EvidenceLedger } from "@adjudicate/core";
+import { EvidenceLedger, runClaimsKernel } from "@adjudicate/core";
 import type { CognitiveState, Plan } from "@claustrum/core";
 import type { InvestigateInput } from "@claustrum/core";
 import {
@@ -29,6 +29,8 @@ import {
   defaultTurnReads,
   type TurnRead,
 } from "../ibatexas-investigator.js";
+import { selectCandidateClaim } from "../claim-registry.js";
+import { createPerTurnClaimsKernelDeps } from "../ibatexas-claims-kernel-deps.js";
 import type { TriadReadBackend } from "../turn-reads.js";
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────
@@ -212,6 +214,8 @@ describe("ibatexas-investigator — default read gatherer", () => {
 function stubBackend(over: Partial<TriadReadBackend> = {}): TriadReadBackend {
   return {
     readSchedule: async () => ({ isClosed: false, mealPeriod: "dinner" }),
+    // Default: no ScheduleOverride today (the falsifier does not fire).
+    readScheduleOverride: async () => null,
     readOrderFulfillment: async (orderId) => ({ orderId, fulfillmentStatus: "preparing" }),
     readPaymentStatus: async (orderId) => ({ orderId, status: "paid", method: "pix" }),
     readReservation: async (reservationId) => ({
@@ -332,5 +336,96 @@ describe("ibatexas-investigator — first-party triad gatherer", () => {
     const res = ledger.resolve("reservation_status:r-7");
     expect(res.state).toBe("present");
     expect(res.entry?.value).toEqual({ reservationId: "r-7", status: "confirmed", partySize: 4 });
+  });
+});
+
+// ── F1: the STORE_OPEN_NOW falsifier FIRES end-to-end (W6 CE#3) ────────────────
+//
+// The investigator records the day's ScheduleOverride under the registry-declared
+// falsifier key `schedule:schedule_override` ONLY when one exists; the kernel's
+// `resolveAgainstFalsifiers` (now LINKED via the W6 core) then demotes a present-
+// override STORE_OPEN_NOW to UNKNOWN. NON-VACUITY: the SAME setup with NO override
+// VALIDATES — so the test proves the arm fires, not that everything is UNKNOWN.
+describe("F1 — STORE_OPEN_NOW falsifier fires end-to-end (investigator → kernel)", () => {
+  const OVERRIDE_TODAY = {
+    id: "ov-1",
+    date: "2026-06-29",
+    isOpen: false,
+    blocks: [],
+    note: "feriado emergencial",
+  };
+
+  /** Run investigator (schedule + override) → runClaimsKernel over a STORE_OPEN_NOW
+   *  candidate whose C6-bound value matches the recorded schedule signal. */
+  async function runStoreOpenNow(
+    override: typeof OVERRIDE_TODAY | null,
+  ): Promise<{ verdict: string; terminal: string }> {
+    const ledger = new EvidenceLedger("t-f1");
+    const investigator = createIbatexasInvestigator({
+      gatherReads: createFirstPartyTurnReads(
+        stubBackend({
+          readSchedule: async () => ({ isClosed: false, mealPeriod: "dinner" }),
+          readScheduleOverride: async () => override,
+        }),
+      ),
+      now: () => 999,
+    });
+    await investigator.investigate(triadInput({ envelopes: [] }, ledger, "guest:abc"));
+
+    const candidate = selectCandidateClaim({
+      type: "STORE_OPEN_NOW",
+      subject: "store",
+      actor: { principal: "system" },
+      // C6 value-from-ledger: the rendered mealPeriod must equal the schedule
+      // signal's mealPeriod recorded in the ledger ("dinner").
+      value: { mealPeriod: "dinner" },
+    });
+    const deps = createPerTurnClaimsKernelDeps({
+      now: 999,
+      ownership: { principal: "", ownedResources: new Set<string>() },
+      outcomes: [],
+    });
+    const result = runClaimsKernel(ledger, [candidate!], deps);
+    return {
+      verdict: result.perClaim[0]?.verdict ?? "MISSING",
+      terminal: result.terminal,
+    };
+  }
+
+  it("a PRESENT ScheduleOverride is recorded under the falsifier key and demotes STORE_OPEN_NOW to UNKNOWN", async () => {
+    const ledger = new EvidenceLedger("t");
+    const investigator = createIbatexasInvestigator({
+      gatherReads: createFirstPartyTurnReads(
+        stubBackend({ readScheduleOverride: async () => OVERRIDE_TODAY }),
+      ),
+      now: () => 999,
+    });
+    await investigator.investigate(triadInput({ envelopes: [] }, ledger, "guest:abc"));
+
+    const override = ledger.resolve("schedule:schedule_override");
+    expect(override.state).toBe("present");
+    expect(override.entry?.originProvenance).toBe("FIRST_PARTY");
+
+    const { verdict } = await runStoreOpenNow(OVERRIDE_TODAY);
+    expect(verdict).toBe("UNKNOWN"); // falsifier fired — not a false "open"
+  });
+
+  it("NON-VACUITY: with NO override today the falsifier key is ABSENT and STORE_OPEN_NOW VALIDATES", async () => {
+    const ledger = new EvidenceLedger("t");
+    const investigator = createIbatexasInvestigator({
+      gatherReads: createFirstPartyTurnReads(
+        stubBackend({ readScheduleOverride: async () => null }),
+      ),
+      now: () => 999,
+    });
+    await investigator.investigate(triadInput({ envelopes: [] }, ledger, "guest:abc"));
+
+    // ABSENCE, not error — the sentinel skip leaves the key never-recorded.
+    expect(ledger.resolve("schedule:schedule_override").state).toBe("absent");
+    expect(ledger.errorReason("schedule:schedule_override")).toBeUndefined();
+
+    const { verdict, terminal } = await runStoreOpenNow(null);
+    expect(verdict).toBe("VALIDATED");
+    expect(terminal).toBe("RENDER");
   });
 });
