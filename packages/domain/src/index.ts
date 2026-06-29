@@ -50,6 +50,29 @@ export {
   type ConversationDeletePayload,
   type ConversationDeleteAllPayload,
 } from "./services/__shared__/conversation-policy.js"
+
+// No-reply incident journal (W1) — governed open/close + reads.
+export {
+  createIncidentService,
+  deriveSeverity,
+  SEVERITY_AGING_THRESHOLD_MINUTES,
+  type IncidentService,
+  type IncidentServiceOptions,
+  type OpenIncidentResult,
+  type IncidentListResult,
+  type IncidentListParams,
+  type DeriveSeverityInput,
+} from "./services/incident.service.js"
+export {
+  incidentPolicyBundle,
+  incidentTaintPolicy,
+  FROZEN_CAUSES,
+  type IncidentIntentKind,
+  type IncidentPayload,
+  type IncidentOpenPayload,
+  type IncidentClosePayload,
+  type IncidentState,
+} from "./services/__shared__/incident-policy.js"
 export { createTableService, type TableService } from "./services/table.service.js"
 export { createDeliveryZoneService, type DeliveryZoneService } from "./services/delivery-zone.service.js"
 export { createLoyaltyService, type LoyaltyService, type LoyaltyServiceOptions } from "./services/loyalty.service.js"
@@ -188,6 +211,12 @@ export type {
   LoyaltyAccount,
   Conversation,
   ConversationMessage,
+  ConversationIncident,
+  IncidentKind,
+  IncidentCause,
+  IncidentSeverity,
+  IncidentStatus,
+  IncidentResolutionType,
   TableLocation,
   ReservationStatus,
   StaffRole,
