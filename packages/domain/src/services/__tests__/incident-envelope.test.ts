@@ -315,7 +315,11 @@ describe("closeIncidentFromEnvelope — current-on-found / null-on-missing", () 
 })
 
 describe("openIncidentFromEnvelope — dedup + P2002 race", () => {
-  beforeEach(() => vi.clearAllMocks())
+  // resetAllMocks (not clearAllMocks) so that mockFindUnique's implementation is
+  // wiped between tests — the new externalId short-circuit in openExecutor calls
+  // findUnique unconditionally, so stale mockResolvedValue from the close-block
+  // tests would otherwise fire the guard when it should be a no-op.
+  beforeEach(() => vi.resetAllMocks())
 
   it("increments an existing non-terminal incident (no new row)", async () => {
     mockFindFirst.mockResolvedValueOnce(makeRow({ dropCount: 1 })) // existing open
@@ -369,10 +373,31 @@ describe("openIncidentFromEnvelope — dedup + P2002 race", () => {
     expect(mockUpdate).toHaveBeenCalledTimes(1)
   })
 
+  it("redelivery of the same externalId while incident is OPEN does not increment dropCount", async () => {
+    // The row already exists for this externalId (sequential at-least-once redelivery
+    // while the incident is still OPEN). The new short-circuit at the top of openExecutor
+    // should return it as-is without calling update or create.
+    mockFindUnique.mockResolvedValue(makeRow({ dropCount: 1, status: "OPEN" }))
+
+    const svc = createIncidentService()
+    const out = await svc.openIncidentFromEnvelope(systemOpenEnv(openPayload()), state)
+
+    expect(out.result?.opened).toBe(false)
+    expect((out.result?.incident as { dropCount: number }).dropCount).toBe(1)
+    expect(mockUpdate).not.toHaveBeenCalled()
+    expect(mockCreate).not.toHaveBeenCalled()
+  })
+
   it("catches an externalId P2002 → idempotent replay (returns existing, no increment)", async () => {
+    // Short-circuit guard sees no row yet (first findUnique call); create races and
+    // loses with a P2002 on the externalId unique index; catch block re-reads the
+    // row (second findUnique call) and returns it without incrementing.
+    mockFindUnique
+      .mockResolvedValueOnce(null) // (0) short-circuit: externalId not yet in DB
+      .mockResolvedValueOnce(makeRow({ dropCount: 1 })) // (0-catch) re-read after P2002
     mockFindFirst
-      .mockResolvedValueOnce(null) // existing check: none
-      .mockResolvedValueOnce(null) // prior terminal: none
+      .mockResolvedValueOnce(null) // (1) existing open: none
+      .mockResolvedValueOnce(null) // (2) prior terminal: none
     mockCreate.mockRejectedValue(
       new Prisma.PrismaClientKnownRequestError("dup", {
         code: "P2002",
@@ -380,7 +405,6 @@ describe("openIncidentFromEnvelope — dedup + P2002 race", () => {
         meta: { target: "conversation_incidents_external_id_key" },
       }),
     )
-    mockFindUnique.mockResolvedValue(makeRow({ dropCount: 1 }))
 
     const svc = createIncidentService()
     const out = await svc.openIncidentFromEnvelope(systemOpenEnv(openPayload()), state)

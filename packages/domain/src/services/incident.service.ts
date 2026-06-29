@@ -189,6 +189,15 @@ export function createIncidentService(options?: IncidentServiceOptions) {
   ): Promise<OpenIncidentResult> {
     const now = new Date()
 
+    // (0) Same-event replay guard: if this externalId is already persisted (common
+    // at-least-once redelivery while the incident is still OPEN) → return it as-is
+    // without touching dropCount. The catch(P2002) backstop below still handles the
+    // tight concurrent-create race; this check handles the sequential redelivery path.
+    const replayed = await prisma.conversationIncident.findUnique({
+      where: { externalId: payload.externalId },
+    })
+    if (replayed) return { opened: false, incident: replayed }
+
     // (1) Already an open incident on this session → increment (per-incident dedup).
     const existing = await prisma.conversationIncident.findFirst({
       where: { sessionId: payload.sessionId, status: { in: [...NON_TERMINAL] } },
