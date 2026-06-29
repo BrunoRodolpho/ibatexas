@@ -18,6 +18,7 @@
 // per-turn clock is PENDING R2a — see ibatexas-claims-kernel-deps.ts).
 
 import type { ConductorOptions } from "@claustrum/core";
+import { createIbatexasClaimsRenderer } from "./claims-renderer-adapter.js";
 import { createIbatexasClaimPlanner } from "./ibatexas-claim-planner.js";
 import { createPerTurnClaimsKernelDeps } from "./ibatexas-claims-kernel-deps.js";
 import { createIbatexasInvestigator } from "./ibatexas-investigator.js";
@@ -34,13 +35,17 @@ export function claimsPipelineEnabled(
 }
 
 /**
- * The three OPTIONAL claims seams of `ConductorOptions`. Spread into
- * `createConductor`; `{}` when the flag is OFF (a no-op spread → byte-identical
- * Conductor composition).
+ * The OPTIONAL claims seams of `ConductorOptions`. Spread into `createConductor`;
+ * `{}` when the flag is OFF (a no-op spread → byte-identical Conductor
+ * composition). The render-from-claims seam (`claimsRenderer`, Plan 1 Phase 3 /
+ * E-2) is bundled here so it activates ATOMICALLY with the rest of the pipeline:
+ * the renderer only ever supersedes the model draft when the INVESTIGATE +
+ * CLAIMS-VALIDATE stages also ran (handleTurn 6a guards on a `claims` result),
+ * so a partial wiring can never render from an absent claim set.
  */
 export type ClaimsSeams = Pick<
   ConductorOptions,
-  "investigator" | "claimPlanner" | "claimsKernel"
+  "investigator" | "claimPlanner" | "claimsKernel" | "claimsRenderer"
 >;
 
 export interface BuildClaimsSeamsDeps {
@@ -89,5 +94,13 @@ export function buildClaimsSeams(deps: BuildClaimsSeamsDeps): ClaimsSeams {
       ownership: { principal: "", ownedResources: new Set<string>() },
       outcomes: [],
     }),
+    // E-2 render-from-claims (SDD §B / §Q.7) — the loop-level closure of the
+    // "claims-not-prose" thesis. When ON, `handleTurn` stage 6a renders the reply
+    // TEXT from the VALIDATED claim set via the pure `renderer-from-claims`
+    // (C6 value-from-ledger; Inv 6 1:1; proposition-free safe terminals),
+    // superseding the model draft. On no-renderable-claim the claustrum loop
+    // falls back to the operational responder draft (never raw model prose as a
+    // confident fact; never silence). Inert while the flag is COMMITTED OFF.
+    claimsRenderer: createIbatexasClaimsRenderer(),
   };
 }
