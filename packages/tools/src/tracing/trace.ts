@@ -90,7 +90,7 @@ export async function persistTrace(trace: TraceContext): Promise<void> {
 /**
  * Load a trace from Redis by ID (for replay/debugging).
  */
-export async function loadTrace(traceId: string): Promise<unknown | null> {
+export async function loadTrace(traceId: string): Promise<unknown> {
   try {
     const redis = await getRedisClient()
     const data = await redis.get(rk(`trace:${traceId}`))

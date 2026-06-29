@@ -144,6 +144,6 @@ export function setupGlobalErrorCapture(): () => void {
     addToast({ type: 'error', message, dedupeKey: 'global-unhandled' })
   }
 
-  window.addEventListener('unhandledrejection', handler)
-  return () => window.removeEventListener('unhandledrejection', handler)
+  globalThis.addEventListener('unhandledrejection', handler)
+  return () => globalThis.removeEventListener('unhandledrejection', handler)
 }

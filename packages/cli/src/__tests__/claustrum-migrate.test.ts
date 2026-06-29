@@ -91,7 +91,7 @@ describe("runClaustrumMigrations — fresh database", () => {
     const partCalls = h.calls.filter((c) =>
       c.text.includes("PARTITION OF claustrum_memory_episodic FOR VALUES"),
     )
-    expect(partCalls.length).toBe(result.partitionsEnsured.length)
+    expect(partCalls).toHaveLength(result.partitionsEnsured.length)
   })
 })
 

@@ -50,7 +50,7 @@ export async function submitReview(
     orderId,
     productId,
     rating,
-    ...(comment !== undefined ? { comment } : {}),
+    ...(comment === undefined ? {} : { comment }),
   }
 
   // ── Project state for the pack policies ────────────────────────────

@@ -57,6 +57,114 @@ export function isValidEmail(email: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
 }
 
+// ── Field-validation helpers ──────────────────────────────────────────────────
+
+type FieldResult<K extends string> = { [P in K]?: string } & { error?: string }
+
+/** Semantic consistency checks (anti-misparse). Returns the collected errors. */
+function checkSemanticConsistency(input: SetPixDetailsInput): string[] {
+  const errors: string[] = []
+  if (input.name?.includes("@")) {
+    errors.push("Campo nome contém um email — informe apenas o nome completo")
+  }
+  if (input.email && !input.email.includes("@")) {
+    errors.push(`Email inválido — falta o símbolo @: "${input.email}"`)
+  }
+  if (input.cpf?.includes("@")) {
+    errors.push("Campo CPF contém um email — informe apenas o CPF")
+  }
+  const nameDigits = input.name ? input.name.replace(/\D/g, "") : ""
+  if (input.name && /^\d+$/.test(nameDigits) && nameDigits.length >= 8) {
+    errors.push("Campo nome parece conter apenas números — informe o nome completo")
+  }
+  return errors
+}
+
+function validateEmailField(raw: string): FieldResult<"email"> {
+  const sanitized = sanitize(raw).toLowerCase()
+  if (isValidEmail(sanitized)) return { email: sanitized }
+  return { error: `Email inválido: "${raw}"` }
+}
+
+function validateCpfField(raw: string): FieldResult<"cpf"> {
+  const sanitized = sanitize(raw)
+  const normalized = normalizeCpf(sanitized)
+  if (normalized && isValidCpf(sanitized)) return { cpf: normalized }
+  return { error: `CPF inválido: "${raw}". Formato esperado: 000.000.000-00 (11 dígitos)` }
+}
+
+/** Name — must have at least 2 words. */
+function validateNameField(raw: string): FieldResult<"name"> {
+  const sanitized = sanitize(raw)
+  const words = sanitized.split(/\s+/).filter((w) => w.length > 0)
+  if (words.length >= 2) {
+    return { name: words.map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(" ") }
+  }
+  return { error: `Nome incompleto: "${raw}". Preciso do nome e sobrenome.` }
+}
+
+function buildMissing(
+  name: string | undefined,
+  email: string | undefined,
+  cpf: string | undefined,
+  errors: string[],
+): string[] {
+  const missing: string[] = []
+  if (!name && !errors.some((e) => e.includes("nome"))) missing.push("nome completo (nome e sobrenome)")
+  if (!email && !errors.some((e) => e.includes("Email") || e.includes("email"))) missing.push("email")
+  if (!cpf && !errors.some((e) => e.includes("CPF"))) missing.push("CPF (formato 000.000.000-00)")
+  return missing
+}
+
+function collectValidFields(
+  name: string | undefined,
+  email: string | undefined,
+  cpf: string | undefined,
+): string[] {
+  return Object.keys({
+    ...(name ? { name } : {}),
+    ...(email ? { email } : {}),
+    ...(cpf ? { cpf } : {}),
+  })
+}
+
+type PixDetailsEvent = { type: string; payload: { name?: string; email?: string; cpf?: string } }
+
+function buildEvent(
+  hasAnyValid: boolean,
+  name: string | undefined,
+  email: string | undefined,
+  cpf: string | undefined,
+): PixDetailsEvent | undefined {
+  if (!hasAnyValid) return undefined
+  return {
+    type: "PIX_DETAILS_COLLECTED",
+    payload: {
+      ...(name && { name }),
+      ...(email && { email }),
+      ...(cpf && { cpf }),
+    },
+  }
+}
+
+function buildResultMessage(
+  allPresent: boolean,
+  name: string | undefined,
+  email: string | undefined,
+  cpf: string | undefined,
+  errors: string[],
+  missing: string[],
+): string {
+  if (allPresent) {
+    return `Dados completos: ${name}, ${email}, CPF ${maskCpf(cpf!)}`
+  }
+  if (errors.length > 0) {
+    const stillMissing = missing.length > 0 ? `. Ainda falta: ${missing.join(", ")}` : ""
+    return `${errors.join(". ")}${stillMissing}`
+  }
+  return `Falta: ${missing.join(", ")}`
+}
+
 // ── Main handler ──────────────────────────────────────────────────────────────
 
 export async function setPixDetails(
@@ -70,88 +178,47 @@ export async function setPixDetails(
   message: string
 }> {
   const startMs = Date.now()
-  const errors: string[] = []
 
   // ── Semantic consistency checks (anti-misparse) ───────────────────────────
-  if (input.name?.includes("@")) {
-    errors.push("Campo nome contém um email — informe apenas o nome completo")
-  }
-  if (input.email && !input.email.includes("@")) {
-    errors.push(`Email inválido — falta o símbolo @: "${input.email}"`)
-  }
-  if (input.cpf?.includes("@")) {
-    errors.push("Campo CPF contém um email — informe apenas o CPF")
-  }
-  if (input.name && /^\d+$/.test(input.name.replace(/\D/g, "")) && input.name.replace(/\D/g, "").length >= 8) {
-    errors.push("Campo nome parece conter apenas números — informe o nome completo")
-  }
+  const semanticErrors = checkSemanticConsistency(input)
 
   // If semantic errors were found, return early
-  if (errors.length > 0) {
+  if (semanticErrors.length > 0) {
     const durationMs = Date.now() - startMs
     console.warn(
       "[extraction] tool=%s valid=%s fields=%s errors=%s latency=%dms",
       "set_pix_details",
       false,
       [],
-      errors,
+      semanticErrors,
       durationMs,
     )
-    return { valid: false, errors, missing: [], message: errors.join(". ") }
+    return { valid: false, errors: semanticErrors, missing: [], message: semanticErrors.join(". ") }
   }
 
   // ── Field validation ──────────────────────────────────────────────────────
+  const errors: string[] = []
 
-  // Email
-  let email: string | undefined
-  if (input.email) {
-    const sanitized = sanitize(input.email).toLowerCase()
-    if (isValidEmail(sanitized)) {
-      email = sanitized
-    } else {
-      errors.push(`Email inválido: "${input.email}"`)
-    }
-  }
+  const emailResult: FieldResult<"email"> = input.email ? validateEmailField(input.email) : {}
+  if (emailResult.error) errors.push(emailResult.error)
+  const email = emailResult.email
 
-  // CPF
-  let cpf: string | undefined
-  if (input.cpf) {
-    const sanitized = sanitize(input.cpf)
-    const normalized = normalizeCpf(sanitized)
-    if (normalized && isValidCpf(sanitized)) {
-      cpf = normalized
-    } else {
-      errors.push(`CPF inválido: "${input.cpf}". Formato esperado: 000.000.000-00 (11 dígitos)`)
-    }
-  }
+  const cpfResult: FieldResult<"cpf"> = input.cpf ? validateCpfField(input.cpf) : {}
+  if (cpfResult.error) errors.push(cpfResult.error)
+  const cpf = cpfResult.cpf
 
-  // Name — must have at least 2 words
-  let name: string | undefined
-  if (input.name) {
-    const sanitized = sanitize(input.name)
-    const words = sanitized.split(/\s+/).filter((w) => w.length > 0)
-    if (words.length >= 2) {
-      name = words.map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(" ")
-    } else {
-      errors.push(`Nome incompleto: "${input.name}". Preciso do nome e sobrenome.`)
-    }
-  }
+  const nameResult: FieldResult<"name"> = input.name ? validateNameField(input.name) : {}
+  if (nameResult.error) errors.push(nameResult.error)
+  const name = nameResult.name
 
   // ── Build missing list ────────────────────────────────────────────────────
-  const missing: string[] = []
-  if (!name && !errors.some((e) => e.includes("nome"))) missing.push("nome completo (nome e sobrenome)")
-  if (!email && !errors.some((e) => e.includes("Email") || e.includes("email"))) missing.push("email")
-  if (!cpf && !errors.some((e) => e.includes("CPF"))) missing.push("CPF (formato 000.000.000-00)")
+  const missing = buildMissing(name, email, cpf, errors)
 
   // ── Build result ──────────────────────────────────────────────────────────
   const hasAnyValid = !!(name || email || cpf)
   const allPresent = hasAnyValid && errors.length === 0 && missing.length === 0
 
-  const validFields = Object.keys({
-    ...(name ? { name } : {}),
-    ...(email ? { email } : {}),
-    ...(cpf ? { cpf } : {}),
-  })
+  const validFields = collectValidFields(name, email, cpf)
 
   const durationMs = Date.now() - startMs
   console.warn(
@@ -163,27 +230,11 @@ export async function setPixDetails(
     durationMs,
   )
 
-  let message: string
-  if (allPresent) {
-    message = `Dados completos: ${name}, ${email}, CPF ${maskCpf(cpf!)}`
-  } else if (errors.length > 0) {
-    message = `${errors.join(". ")}${missing.length > 0 ? `. Ainda falta: ${missing.join(", ")}` : ""}`
-  } else {
-    message = `Falta: ${missing.join(", ")}`
-  }
+  const message = buildResultMessage(allPresent, name, email, cpf, errors, missing)
 
   return {
     valid: hasAnyValid,
-    event: hasAnyValid
-      ? {
-          type: "PIX_DETAILS_COLLECTED",
-          payload: {
-            ...(name && { name }),
-            ...(email && { email }),
-            ...(cpf && { cpf }),
-          },
-        }
-      : undefined,
+    event: buildEvent(hasAnyValid, name, email, cpf),
     errors,
     missing,
     message,

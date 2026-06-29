@@ -160,7 +160,7 @@ describe("runAuditMigrations — fresh database", () => {
     const isPartitionDDL = (t: string) =>
       t.includes("PARTITION OF intent_audit FOR VALUES")
     const partCalls = h.calls.filter((c) => isPartitionDDL(c.text))
-    expect(partCalls.length).toBe(result.partitionsEnsured.length)
+    expect(partCalls).toHaveLength(result.partitionsEnsured.length)
     // Partition creation comes after the last tracking insert (parent table first).
     const lastInsertIdx = h.calls.reduce(
       (acc, c, i) =>

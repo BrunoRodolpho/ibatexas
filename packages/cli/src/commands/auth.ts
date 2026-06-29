@@ -194,11 +194,11 @@ export function registerAuthCommands(group: Command): void {
         const existing = await prisma.staff.findUnique({ where: { phone } })
         if (existing) {
           spinner.warn(chalk.yellow(`Staff already exists: ${existing.name} (${existing.role})`))
-          if (!existing.active) {
+          if (existing.active) {
+            console.log(chalk.gray("  No changes needed.\n"))
+          } else {
             await prisma.staff.update({ where: { phone }, data: { active: true } })
             console.log(chalk.green("  Reactivated.\n"))
-          } else {
-            console.log(chalk.gray("  No changes needed.\n"))
           }
           return
         }

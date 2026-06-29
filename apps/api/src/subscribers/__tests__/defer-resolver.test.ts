@@ -307,7 +307,7 @@ describe("defer-resolver subscriber", () => {
     const ledgerKeys = [...store.keys()].filter((k) =>
       k.startsWith("test:defer:resumed:"),
     )
-    expect(ledgerKeys.length).toBe(1)
+    expect(ledgerKeys).toHaveLength(1)
 
     // Audit record was emitted.
     expect(mockGetAuditSinkEmit).toHaveBeenCalled()
@@ -562,12 +562,12 @@ describe("defer-resolver subscriber", () => {
       const resumingKeys = [...store.keys()].filter((k) =>
         k.startsWith("test:defer:resuming:"),
       )
-      expect(resumingKeys.length).toBe(1)
+      expect(resumingKeys).toHaveLength(1)
       // Long-term dedup ledger NOT yet written — commit happens after this.
       const resumedKeys = [...store.keys()].filter((k) =>
         k.startsWith("test:defer:resumed:"),
       )
-      expect(resumedKeys.length).toBe(0)
+      expect(resumedKeys).toHaveLength(0)
     })
     const { setResumeIntentDispatcher, startDeferResolverSubscriber } =
       await import("../defer-resolver.js")
@@ -581,11 +581,11 @@ describe("defer-resolver subscriber", () => {
     const resumingKeysPost = [...store.keys()].filter((k) =>
       k.startsWith("test:defer:resuming:"),
     )
-    expect(resumingKeysPost.length).toBe(0)
+    expect(resumingKeysPost).toHaveLength(0)
     const resumedKeysPost = [...store.keys()].filter((k) =>
       k.startsWith("test:defer:resumed:"),
     )
-    expect(resumedKeysPost.length).toBe(1)
+    expect(resumedKeysPost).toHaveLength(1)
     // Parked key was consumed (commit deletes it).
     expect(store.get(`test:defer:pending:${sessionId}`)).toBeUndefined()
     // Verify intentHash is consistent.
@@ -621,13 +621,13 @@ describe("defer-resolver subscriber", () => {
     const resumingKeys = [...store.keys()].filter((k) =>
       k.startsWith("test:defer:resuming:"),
     )
-    expect(resumingKeys.length).toBe(0)
+    expect(resumingKeys).toHaveLength(0)
     // Long-term dedup ledger NOT written — dispatch failed, this resume
     // never durably committed.
     const resumedKeys = [...store.keys()].filter((k) =>
       k.startsWith("test:defer:resumed:"),
     )
-    expect(resumedKeys.length).toBe(0)
+    expect(resumedKeys).toHaveLength(0)
     // intentHash sanity check.
     expect(envelope.intentHash).toBeTruthy()
 
@@ -663,7 +663,7 @@ describe("defer-resolver subscriber", () => {
     const resumingMid = [...store.keys()].filter((k) =>
       k.startsWith("test:defer:resuming:"),
     )
-    expect(resumingMid.length).toBe(1)
+    expect(resumingMid).toHaveLength(1)
 
     // Fire second delivery DURING the first dispatcher's wait. It should
     // see the resuming marker and short-circuit as duplicate_suppressed.
@@ -712,7 +712,7 @@ describe("defer-resolver subscriber", () => {
     const resumedKeys = [...store.keys()].filter((k) =>
       k.startsWith("test:defer:resumed:"),
     )
-    expect(resumedKeys.length).toBe(1)
+    expect(resumedKeys).toHaveLength(1)
 
     setResumeIntentDispatcher(null)
   })
@@ -767,7 +767,7 @@ describe("defer-resolver subscriber", () => {
     expect(result.kind).toBe("no_park")
     // No DLQ on a legitimate "no park found" — only on transient errors.
     const dlqKeys = [...store.keys()].filter((k) => k.includes("dlq:"))
-    expect(dlqKeys.length).toBe(0)
+    expect(dlqKeys).toHaveLength(0)
   })
 
   // ── P1-5 — supersedes wired on resume audit record ───────────────────────
@@ -929,7 +929,7 @@ describe("defer-resolver subscriber", () => {
       const resumingKeys = [...store.keys()].filter((k) =>
         k.startsWith("test:defer:resuming:"),
       )
-      expect(resumingKeys.length).toBe(0)
+      expect(resumingKeys).toHaveLength(0)
       // The cycle counter must NOT have been incremented — we short-circuited
       // before the INCR. (A counter increment on the loser path would be a
       // subtle cycle-cap drift bug.)
@@ -940,7 +940,7 @@ describe("defer-resolver subscriber", () => {
       const resumedKeys = [...store.keys()].filter((k) =>
         k.startsWith("test:defer:resumed:"),
       )
-      expect(resumedKeys.length).toBe(0)
+      expect(resumedKeys).toHaveLength(0)
     } finally {
       redisStub.get = originalGet
       setResumeIntentDispatcher(null)
@@ -981,7 +981,7 @@ describe("defer-resolver subscriber", () => {
     expect(envelope.intentHash).toBeTruthy()
     // No DLQ when the retry eventually succeeded.
     const dlqKeys = [...store.keys()].filter((k) => k.includes("dlq:"))
-    expect(dlqKeys.length).toBe(0)
+    expect(dlqKeys).toHaveLength(0)
 
     redisStub.get = originalGet
     setResumeIntentDispatcher(null)

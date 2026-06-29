@@ -282,15 +282,23 @@ export function __resetAuditSink(): void {
 
 // ── Sink construction ────────────────────────────────────────────────────
 
-function buildInnerSink(deps: AuditSinkDependencies): AuditSink {
-  const reportSinkFailure = (event: AuditSinkFailureEvent): void => {
-    if (!deps.onSinkFailure) return
-    try {
-      deps.onSinkFailure(event)
-    } catch {
-      // Telemetry MUST NEVER block audit emission. Swallow.
-    }
+/**
+ * Fire the per-failure observability hook, fail-open. Shared by the inner-sink
+ * and buffered-sink builders so telemetry can NEVER block an audit emit.
+ */
+function reportSinkFailure(
+  deps: AuditSinkDependencies,
+  event: AuditSinkFailureEvent,
+): void {
+  if (!deps.onSinkFailure) return
+  try {
+    deps.onSinkFailure(event)
+  } catch {
+    // Telemetry MUST NEVER block audit emission. Swallow.
   }
+}
+
+function buildInnerSink(deps: AuditSinkDependencies): AuditSink {
   const errorClassOf = (err: unknown): string => {
     if (err instanceof Error) {
       return err.constructor.name || "Error"
@@ -311,7 +319,7 @@ function buildInnerSink(deps: AuditSinkDependencies): AuditSink {
       },
     },
     onFailure: (event) => {
-      reportSinkFailure({
+      reportSinkFailure(deps, {
         sink: "nats",
         subject: event.subject,
         errorClass: event.errorClass,
@@ -336,7 +344,7 @@ function buildInnerSink(deps: AuditSinkDependencies): AuditSink {
         { err: err.message, intentKind: record.envelope.kind },
         "[audit-sink] postgres sink emit failed — falling back to spill storage",
       )
-      reportSinkFailure({
+      reportSinkFailure(deps, {
         sink: "postgres",
         subject: "audit.intent.decision.v1",
         errorClass: errorClassOf(err),
@@ -402,15 +410,6 @@ function buildSink(deps: AuditSinkDependencies): AuditSink {
   let spillDepth = 0
   let bufferSpillConsecutiveFailures = 0
 
-  const reportSinkFailure = (event: AuditSinkFailureEvent): void => {
-    if (!deps.onSinkFailure) return
-    try {
-      deps.onSinkFailure(event)
-    } catch {
-      // Telemetry MUST NEVER block audit emission. Swallow.
-    }
-  }
-
   const buffered = persistentBufferedSink({
     inner: innerSink,
     storage: deps.spillStorage,
@@ -430,7 +429,11 @@ function buildSink(deps: AuditSinkDependencies): AuditSink {
       }
     },
     onSpill: (record, reason) => {
-      if (reason !== "capacity") {
+      if (reason === "capacity") {
+        // Capacity-only spills mean the queue is shedding into durable
+        // storage but no sink errored — reset the streak.
+        bufferSpillConsecutiveFailures = 0
+      } else {
         deps.logger.warn(
           {
             intentKind: record.envelope.kind,
@@ -440,16 +443,12 @@ function buildSink(deps: AuditSinkDependencies): AuditSink {
           "[audit-sink] audit spill",
         )
         bufferSpillConsecutiveFailures += 1
-        reportSinkFailure({
+        reportSinkFailure(deps, {
           sink: "postgres",
           subject: "audit.intent.decision.v1",
           errorClass: `spill_${reason}`,
           consecutiveFailures: bufferSpillConsecutiveFailures,
         })
-      } else {
-        // Capacity-only spills mean the queue is shedding into durable
-        // storage but no sink errored — reset the streak.
-        bufferSpillConsecutiveFailures = 0
       }
       bufferDepth = Math.max(bufferDepth, capacity)
       if (deps.onBufferSize) {
@@ -519,9 +518,7 @@ export function getAuditSink(): AuditSink {
   if (!_deps) {
     throw new AuditSinkNotInitializedError()
   }
-  if (!_sink) {
-    _sink = buildSink(_deps)
-  }
+  _sink ??= buildSink(_deps)
   return _sink
 }
 

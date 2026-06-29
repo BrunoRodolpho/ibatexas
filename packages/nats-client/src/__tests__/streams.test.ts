@@ -133,7 +133,7 @@ describe("ensureStreams", () => {
     const res = await ensureStreams(nc)
     expect(update).toHaveBeenCalledTimes(STREAM_DEFS.length)
     expect(add).not.toHaveBeenCalled()
-    expect(res.updated.length).toBe(STREAM_DEFS.length)
+    expect(res.updated).toHaveLength(STREAM_DEFS.length)
   })
 
   it("mixes ADD + UPDATE for a partially-provisioned cluster", async () => {

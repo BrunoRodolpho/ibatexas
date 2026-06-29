@@ -50,7 +50,7 @@ export interface TurnRead {
    * Produce the read VALUE. May throw / reject — a thrown read is recorded as a
    * read ERROR (Inv 7), NEVER silently omitted.
    */
-  readonly read: () => unknown | Promise<unknown>;
+  readonly read: () => unknown;
 }
 
 /**

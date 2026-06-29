@@ -81,7 +81,7 @@ let stripeClient: Stripe | undefined;
 function getStripe(): Stripe {
   const key = process.env.STRIPE_SECRET_KEY;
   if (!key) throw new Error("STRIPE_SECRET_KEY not set");
-  if (!stripeClient) stripeClient = new Stripe(key);
+  stripeClient ??= new Stripe(key);
   return stripeClient;
 }
 
@@ -126,6 +126,48 @@ function buildReconcileEnvelope(args: {
   });
 }
 
+type PaymentQuerySvc = ReturnType<typeof createPaymentQueryService>;
+type ReconcilePaymentRow = Awaited<
+  ReturnType<PaymentQuerySvc["getByStripePaymentIntentId"]>
+>;
+
+/**
+ * Resolve the Payment row this reconcile is about: the PI lookup, falling back
+ * (T2-1) to the order's single ACTIVE payment when the PI id is unknown locally
+ * and a `fallbackOrderId` is supplied — but only when that active payment
+ * carries no PI id or the SAME PI id (never adopting a stale/foreign PI).
+ */
+async function resolvePaymentForReconcile(
+  paymentQuerySvc: PaymentQuerySvc,
+  stripePaymentIntentId: string,
+  fallbackOrderId: string | undefined,
+  event: Stripe.Event,
+  logger: WebhookLogger,
+): Promise<ReconcilePaymentRow> {
+  const payment = await paymentQuerySvc.getByStripePaymentIntentId(stripePaymentIntentId);
+  if (payment || fallbackOrderId === undefined) {
+    return payment;
+  }
+  const active = await paymentQuerySvc.getActiveByOrderId(fallbackOrderId);
+  if (
+    active &&
+    (active.stripePaymentIntentId === null ||
+      active.stripePaymentIntentId === stripePaymentIntentId)
+  ) {
+    logger.info(
+      {
+        event_id: event.id,
+        stripe_pi: stripePaymentIntentId,
+        order_id: fallbackOrderId,
+        paymentId: active.id,
+      },
+      "[stripe-webhook] PI lookup missed — adopted the order's active payment via metadata.medusaOrderId (T2-1 fallback)",
+    );
+    return active;
+  }
+  return payment;
+}
+
 async function reconcilePaymentFromStripe(
   stripePaymentIntentId: string,
   newStatus: (typeof PaymentStatus)[keyof typeof PaymentStatus],
@@ -149,26 +191,13 @@ async function reconcilePaymentFromStripe(
     auditSink: getAuditSink(),
   });
 
-  let payment = await paymentQuerySvc.getByStripePaymentIntentId(stripePaymentIntentId);
-  if (!payment && fallbackOrderId !== undefined) {
-    const active = await paymentQuerySvc.getActiveByOrderId(fallbackOrderId);
-    if (
-      active &&
-      (active.stripePaymentIntentId === null ||
-        active.stripePaymentIntentId === stripePaymentIntentId)
-    ) {
-      logger.info(
-        {
-          event_id: event.id,
-          stripe_pi: stripePaymentIntentId,
-          order_id: fallbackOrderId,
-          paymentId: active.id,
-        },
-        "[stripe-webhook] PI lookup missed — adopted the order's active payment via metadata.medusaOrderId (T2-1 fallback)",
-      );
-      payment = active;
-    }
-  }
+  const payment = await resolvePaymentForReconcile(
+    paymentQuerySvc,
+    stripePaymentIntentId,
+    fallbackOrderId,
+    event,
+    logger,
+  );
   if (!payment) {
     // Payment row may not exist yet (e.g. PIX cart completion creates it later)
     logger.info(
@@ -297,6 +326,176 @@ async function reconcilePaymentFromStripe(
 
 // ── Event handlers ──────────────────────────────────────────────────────────
 
+/**
+ * Governance-driven skips (REFUSE / DEFER / NEEDS_REVIEW) are logged + swallowed
+ * — we still ack Stripe with 200 so no retry storm fires (mirrors the existing
+ * Task 12 reconcile branch). The audit record captures the kernel decision; ops
+ * sees the refusal via metrics. Covers both medusa egress (cart.complete) and
+ * stripe egress (paymentIntents.update metadata persist).
+ */
+function handlePixCompletionError(
+  err: unknown,
+  event: Stripe.Event,
+  cartId: string,
+  logger: WebhookLogger,
+): void {
+  if (
+    err instanceof MedusaAdjudicateRefusedError ||
+    err instanceof MedusaAdjudicateDeferredError ||
+    err instanceof MedusaAdjudicateNeedsReviewError ||
+    err instanceof StripeAdjudicateRefusedError ||
+    err instanceof StripeAdjudicateDeferredError ||
+    err instanceof StripeAdjudicateNeedsReviewError
+  ) {
+    logger.warn(
+      {
+        event_id: event.id,
+        cart_id: cartId,
+        kind: err.name,
+        code:
+          err instanceof MedusaAdjudicateRefusedError ||
+          err instanceof StripeAdjudicateRefusedError
+            ? err.code
+            : undefined,
+      },
+      "PIX: cart-complete or metadata-persist refused/deferred by kernel",
+    );
+  } else {
+    logger.error({ event_id: event.id, cart_id: cartId, error: String(err) }, "PIX: failed to complete cart");
+  }
+}
+
+/**
+ * PIX flow: the cart was not completed at checkout time. Now that payment has
+ * succeeded, complete the Medusa cart (creating the order) and persist the new
+ * orderId back onto the PaymentIntent metadata.
+ *
+ * ── P0-X9 migration ───────────────────────────────────────────────────
+ * The cart-complete POST is a Medusa write — routes through medusaAdjudicated
+ * for kernel governance + audit. The Stripe event ID is the deterministic
+ * idempotency key (and the envelope's nonce), so a re-delivered webhook produces
+ * a byte-identical intentHash and the kernel / Execution Ledger can dedupe even
+ * if Stripe retries past the outer Redis 7-day window (matches the Task 12
+ * reconcile pattern). sourceSubject = "webhook:stripe:<event.id>" surfaces in
+ * audit.
+ *
+ * Returns the resolved orderId (the original `orderId` when there is nothing to
+ * complete). Throws on cart-complete lock contention so the BullMQ job retries.
+ */
+async function completePixCartIfNeeded(
+  paymentIntent: Stripe.PaymentIntent,
+  event: Stripe.Event,
+  orderId: string | undefined,
+  logger: WebhookLogger,
+): Promise<string | undefined> {
+  const cartId = paymentIntent.metadata?.["cartId"];
+  if (orderId || !cartId) {
+    return orderId;
+  }
+
+  // PIXDUP: serialize concurrent payment_intent.succeeded events for the SAME
+  // cart with a distributed try-lock (realistic after amend_order/regenerate_pix
+  // mints a 2nd PI → a 2nd distinct event.id; the SET-NX gate AND the
+  // medusaAdjudicated nonce both key on event.id, so neither dedupes across the
+  // two events — only this lock + Medusa's own internal serialization do).
+  // Loser gets null and is retried; Medusa's /complete is idempotent
+  // (creates an order only when !order_id, else returns the cart's linked
+  // order), so a retry re-runs /complete and gets the SAME order — never a
+  // strand or a duplicate. (No local `pix:completed` flag: a crash between the
+  // flag and completion would strand the order behind a suppressing flag.)
+  let contended = false;
+  let resolvedOrderId = orderId;
+  try {
+    const completion = await withLock(`cart-complete:${cartId}`, () =>
+      medusaAdjudicated<
+        Record<string, unknown>,
+        { type?: string; order?: { id: string; display_id?: number } }
+      >({
+        scope: "store",
+        method: "POST",
+        path: `/store/carts/${cartId}/complete`,
+        payload: {},
+        intentKind: "medusa.cart.complete",
+        idempotencyKey: event.id,
+        sourceSubject: `webhook:stripe:${event.id}`,
+        auditSink: getAuditSink(),
+        log: logger,
+      }),
+    );
+
+    if (completion === null) {
+      // Another worker holds the cart-complete lock — mark contention and
+      // throw AFTER the try so the governance catch below doesn't swallow it.
+      contended = true;
+    } else {
+      resolvedOrderId = completion.order?.display_id
+        ? formatOrderId(completion.order.display_id)
+        : completion.order?.id;
+
+      if (resolvedOrderId) {
+        // W8-V2 (NEW-W7-V2): persist orderId back to the PaymentIntent
+        // through the kernel-gated wrapper rather than a bare Stripe SDK
+        // call. The bare `stripe.paymentIntents.update(...)` here was the
+        // last surviving stripe.* bypass in apps/api/src/routes/ after
+        // W7-P5 closed the cart-tool sites; it slipped past W7-P5's
+        // scope. The idempotency key keys the metadata-update to the
+        // Stripe event so a re-delivered webhook produces a
+        // byte-identical envelope hash (replay-safe).
+        await stripeAdjudicated.paymentIntents.update(
+          paymentIntent.id,
+          {
+            metadata: { ...paymentIntent.metadata, medusaOrderId: resolvedOrderId },
+          },
+          {
+            sourceSubject: `webhook:stripe:${event.id}`,
+            idempotencyKey: `${event.id}:metadata-update:${paymentIntent.id}`,
+            auditSink: getAuditSink(),
+            log: logger,
+          },
+        );
+        logger.info({ event_id: event.id, cart_id: cartId, order_id: resolvedOrderId }, "PIX: cart completed, order created");
+      }
+    }
+  } catch (err) {
+    handlePixCompletionError(err, event, cartId, logger);
+  }
+
+  if (contended) {
+    logger.info(
+      { event_id: event.id, cart_id: cartId },
+      "PIX: cart completion in progress on another worker — will retry",
+    );
+    throw new Error(`cart-complete in progress for cart ${cartId}`);
+  }
+
+  return resolvedOrderId;
+}
+
+/**
+ * W7-P6: route order.service mutations through the kernel-gated wrapper. The
+ * adminAdjudicated closure binds the source-subject + audit sink at this call
+ * site; the service's mutate() helper picks it up.
+ */
+function buildWebhookOrderService(event: Stripe.Event, logger: WebhookLogger) {
+  return createOrderService(medusaAdmin, {
+    adminAdjudicated: (args) =>
+      medusaAdjudicated({
+        scope: "admin",
+        method: args.method,
+        path: args.path,
+        ...(args.payload === undefined ? {} : { payload: args.payload }),
+        ...(args.intentKind ? { intentKind: args.intentKind as never } : {}),
+        ...(args.idempotencyKey === undefined
+          ? {}
+          : { idempotencyKey: args.idempotencyKey }),
+        sourceSubject: `webhook:stripe:${event.id}:${args.sourceSubject}`,
+        auditSink: getAuditSink(),
+        log: logger,
+      }),
+    log: logger,
+  });
+}
+
 async function handlePaymentSucceeded(
   event: Stripe.Event,
   startMs: number,
@@ -310,152 +509,19 @@ async function handlePaymentSucceeded(
     "Stripe webhook received",
   );
 
-  let orderId: string | undefined = paymentIntent.metadata?.["medusaOrderId"];
-
-  // PIX flow: cart was not completed at checkout time — complete it now
-  // that payment has succeeded, creating the Medusa order.
-  //
-  // ── P0-X9 migration ───────────────────────────────────────────────────
-  // The cart-complete POST is a Medusa write — routes through
-  // medusaAdjudicated for kernel governance + audit. The Stripe event ID
-  // is the deterministic idempotency key (and the envelope's nonce), so a
-  // re-delivered webhook produces a byte-identical intentHash and the
-  // kernel / Execution Ledger can dedupe even if Stripe retries past the
-  // outer Redis 7-day window (matches the Task 12 reconcile pattern).
-  // sourceSubject = "webhook:stripe:<event.id>" surfaces in audit.
-  const cartId = paymentIntent.metadata?.["cartId"];
-  if (!orderId && cartId) {
-    // PIXDUP: serialize concurrent payment_intent.succeeded events for the SAME
-    // cart with a distributed try-lock (realistic after amend_order/regenerate_pix
-    // mints a 2nd PI → a 2nd distinct event.id; the SET-NX gate AND the
-    // medusaAdjudicated nonce both key on event.id, so neither dedupes across the
-    // two events — only this lock + Medusa's own internal serialization do).
-    // Loser gets null and is retried; Medusa's /complete is idempotent
-    // (creates an order only when !order_id, else returns the cart's linked
-    // order), so a retry re-runs /complete and gets the SAME order — never a
-    // strand or a duplicate. (No local `pix:completed` flag: a crash between the
-    // flag and completion would strand the order behind a suppressing flag.)
-    let contended = false;
-    try {
-      const completion = await withLock(`cart-complete:${cartId}`, () =>
-        medusaAdjudicated<
-          Record<string, unknown>,
-          { type?: string; order?: { id: string; display_id?: number } }
-        >({
-          scope: "store",
-          method: "POST",
-          path: `/store/carts/${cartId}/complete`,
-          payload: {},
-          intentKind: "medusa.cart.complete",
-          idempotencyKey: event.id,
-          sourceSubject: `webhook:stripe:${event.id}`,
-          auditSink: getAuditSink(),
-          log: logger,
-        }),
-      );
-
-      if (completion === null) {
-        // Another worker holds the cart-complete lock — mark contention and
-        // throw AFTER the try so the governance catch below doesn't swallow it.
-        contended = true;
-      } else {
-        const completedData = completion;
-
-        orderId = completedData.order?.display_id
-          ? formatOrderId(completedData.order.display_id)
-          : completedData.order?.id;
-
-      if (orderId) {
-        // W8-V2 (NEW-W7-V2): persist orderId back to the PaymentIntent
-        // through the kernel-gated wrapper rather than a bare Stripe SDK
-        // call. The bare `stripe.paymentIntents.update(...)` here was the
-        // last surviving stripe.* bypass in apps/api/src/routes/ after
-        // W7-P5 closed the cart-tool sites; it slipped past W7-P5's
-        // scope. The idempotency key keys the metadata-update to the
-        // Stripe event so a re-delivered webhook produces a
-        // byte-identical envelope hash (replay-safe).
-        await stripeAdjudicated.paymentIntents.update(
-          paymentIntent.id,
-          {
-            metadata: { ...paymentIntent.metadata, medusaOrderId: orderId },
-          },
-          {
-            sourceSubject: `webhook:stripe:${event.id}`,
-            idempotencyKey: `${event.id}:metadata-update:${paymentIntent.id}`,
-            auditSink: getAuditSink(),
-            log: logger,
-          },
-        );
-        logger.info({ event_id: event.id, cart_id: cartId, order_id: orderId }, "PIX: cart completed, order created");
-      }
-      }
-    } catch (err) {
-      // Governance-driven skips (REFUSE / DEFER / NEEDS_REVIEW) are
-      // logged + swallowed — we still ack Stripe with 200 so no retry
-      // storm fires (mirrors the existing Task 12 reconcile branch).
-      // The audit record captures the kernel decision; ops sees the
-      // refusal via metrics. Covers both medusa egress (cart.complete)
-      // and stripe egress (paymentIntents.update metadata persist).
-      if (
-        err instanceof MedusaAdjudicateRefusedError ||
-        err instanceof MedusaAdjudicateDeferredError ||
-        err instanceof MedusaAdjudicateNeedsReviewError ||
-        err instanceof StripeAdjudicateRefusedError ||
-        err instanceof StripeAdjudicateDeferredError ||
-        err instanceof StripeAdjudicateNeedsReviewError
-      ) {
-        logger.warn(
-          {
-            event_id: event.id,
-            cart_id: cartId,
-            kind: err.name,
-            code:
-              err instanceof MedusaAdjudicateRefusedError ||
-              err instanceof StripeAdjudicateRefusedError
-                ? err.code
-                : undefined,
-          },
-          "PIX: cart-complete or metadata-persist refused/deferred by kernel",
-        );
-      } else {
-        logger.error({ event_id: event.id, cart_id: cartId, error: String(err) }, "PIX: failed to complete cart");
-      }
-    }
-
-    if (contended) {
-      logger.info(
-        { event_id: event.id, cart_id: cartId },
-        "PIX: cart completion in progress on another worker — will retry",
-      );
-      throw new Error(`cart-complete in progress for cart ${cartId}`);
-    }
-  }
+  const orderId = await completePixCartIfNeeded(
+    paymentIntent,
+    event,
+    paymentIntent.metadata?.["medusaOrderId"],
+    logger,
+  );
 
   if (!orderId) {
     logger.warn({ event_id: event.id }, "payment_intent.succeeded missing medusaOrderId metadata");
     return;
   }
 
-  // W7-P6: route order.service mutations through the kernel-gated wrapper.
-  // The adminAdjudicated closure binds the source-subject + audit sink at
-  // this call site; the service's mutate() helper picks it up.
-  const svc = createOrderService(medusaAdmin, {
-    adminAdjudicated: (args) =>
-      medusaAdjudicated({
-        scope: "admin",
-        method: args.method,
-        path: args.path,
-        ...(args.payload !== undefined ? { payload: args.payload } : {}),
-        ...(args.intentKind ? { intentKind: args.intentKind as never } : {}),
-        ...(args.idempotencyKey !== undefined
-          ? { idempotencyKey: args.idempotencyKey }
-          : {}),
-        sourceSubject: `webhook:stripe:${event.id}:${args.sourceSubject}`,
-        auditSink: getAuditSink(),
-        log: logger,
-      }),
-    log: logger,
-  });
+  const svc = buildWebhookOrderService(event, logger);
   // Serialize capture per order (P0-PAY-2). Two distinct payment_intent.succeeded
   // events for one order (realistic after amend_order/regenerate_pix mints a 2nd PI)
   // would otherwise both pass capturePayment's metadata guard and both capture +

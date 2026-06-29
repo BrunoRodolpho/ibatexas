@@ -62,11 +62,11 @@ export function createTooledOrderService(
         scope: "admin",
         method: args.method,
         path: args.path,
-        ...(args.payload !== undefined ? { payload: args.payload } : {}),
+        ...(args.payload === undefined ? {} : { payload: args.payload }),
         ...(args.intentKind ? { intentKind: args.intentKind as never } : {}),
-        ...(args.idempotencyKey !== undefined
-          ? { idempotencyKey: args.idempotencyKey }
-          : {}),
+        ...(args.idempotencyKey === undefined
+          ? {}
+          : { idempotencyKey: args.idempotencyKey }),
         sourceSubject: `${sourceSubject}:${args.sourceSubject}`,
         // audit-2026-05-24 H2 (A1): the leaf-package cycle break landed,
         // so every medusa egress in order.service.ts now emits an audit

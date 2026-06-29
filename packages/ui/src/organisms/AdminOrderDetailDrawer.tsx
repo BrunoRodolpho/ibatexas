@@ -10,8 +10,10 @@ function formatBRL(centavos: number) {
   return (centavos / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
 }
 
-function statusVariant(status: string): 'success' | 'warning' | 'danger' | 'default' {
-  const map: Record<string, 'success' | 'warning' | 'danger' | 'default'> = {
+type BadgeVariant = 'success' | 'warning' | 'danger' | 'default'
+
+function statusVariant(status: string): BadgeVariant {
+  const map: Record<string, BadgeVariant> = {
     completed: 'success',
     delivered: 'success',
     confirmed: 'success',
@@ -23,8 +25,8 @@ function statusVariant(status: string): 'success' | 'warning' | 'danger' | 'defa
   return map[status] ?? 'default'
 }
 
-function paymentVariant(status: string): 'success' | 'warning' | 'danger' | 'default' {
-  const map: Record<string, 'success' | 'warning' | 'danger' | 'default'> = {
+function paymentVariant(status: string): BadgeVariant {
+  const map: Record<string, BadgeVariant> = {
     paid: 'success',
     awaiting_payment: 'warning',
     payment_pending: 'warning',
@@ -50,6 +52,30 @@ const ACTOR_LABELS: Record<string, string> = {
   system: 'Sistema',
   system_backfill: 'Migração',
   customer: 'Cliente',
+}
+
+function currentPaymentMethodLabel(method: string): string {
+  if (method === 'pix') return 'PIX'
+  if (method === 'card') return 'Cartão'
+  return 'Dinheiro'
+}
+
+function deliveryTypeLabel(deliveryType: string): string {
+  if (deliveryType === 'delivery') return 'Entrega'
+  if (deliveryType === 'pickup') return 'Retirada'
+  return 'No local'
+}
+
+function paymentMethodLabel(method: string): string {
+  if (method === 'cash') return 'Dinheiro'
+  if (method === 'pix') return 'PIX'
+  return 'Cartão'
+}
+
+function paymentStatusColor(status: string): string {
+  if (status === 'paid') return 'text-accent-green'
+  if (status === 'canceled') return 'text-accent-red'
+  return 'text-smoke-600'
 }
 
 export interface StatusHistoryEntry {
@@ -112,8 +138,8 @@ export interface AdminOrderDetailDrawerProps {
   readonly open: boolean
   readonly onClose: () => void
   readonly onAdvanceStatus: (orderId: string, newStatus: string, version?: number) => void
-  onAction?: (orderId: string, action: string, body?: Record<string, unknown>) => Promise<void>
-  paymentHistory?: Array<{
+  readonly onAction?: (orderId: string, action: string, body?: Record<string, unknown>) => Promise<void>
+  readonly paymentHistory?: Array<{
     id: string
     method: string
     status: string
@@ -153,8 +179,14 @@ export function AdminOrderDetailDrawer({
       {/* Overlay */}
       <div
         ref={overlayRef}
+        role="button"
+        tabIndex={0}
+        aria-label="Fechar"
         className="fixed inset-0 z-40 bg-charcoal-900/30 transition-opacity"
         onClick={onClose}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') onClose()
+        }}
       />
 
       {/* Drawer */}
@@ -201,7 +233,7 @@ export function AdminOrderDetailDrawer({
                 </Badge>
               </div>
               <span className="text-xs text-smoke-400">
-                {order.currentPayment.method === 'pix' ? 'PIX' : order.currentPayment.method === 'card' ? 'Cartão' : 'Dinheiro'}
+                {currentPaymentMethodLabel(order.currentPayment.method)}
               </span>
             </div>
           )}
@@ -245,13 +277,13 @@ export function AdminOrderDetailDrawer({
                 {order.delivery_type && (
                   <div className="flex justify-between">
                     <span className="text-smoke-400">Modalidade</span>
-                    <span>{order.delivery_type === 'delivery' ? 'Entrega' : order.delivery_type === 'pickup' ? 'Retirada' : 'No local'}</span>
+                    <span>{deliveryTypeLabel(order.delivery_type)}</span>
                   </div>
                 )}
                 {order.payment_method && (
                   <div className="flex justify-between">
                     <span className="text-smoke-400">Pagamento</span>
-                    <span>{order.payment_method === 'cash' ? 'Dinheiro' : order.payment_method === 'pix' ? 'PIX' : 'Cartão'}</span>
+                    <span>{paymentMethodLabel(order.payment_method)}</span>
                   </div>
                 )}
                 {(order.tip_in_centavos ?? 0) > 0 && (
@@ -392,7 +424,7 @@ export function AdminOrderDetailDrawer({
                     <div>
                       <span className="font-medium capitalize">{p.method}</span>
                       <span className="mx-1">·</span>
-                      <span className={p.status === 'paid' ? 'text-accent-green' : p.status === 'canceled' ? 'text-accent-red' : 'text-smoke-600'}>
+                      <span className={paymentStatusColor(p.status)}>
                         {p.status}
                       </span>
                     </div>

@@ -96,9 +96,13 @@ export class PaidStateWebhookError extends Error {
 /** The paid transition never appeared on the oracle plane within the budget. */
 export class PaidStateBarrierTimeoutError extends Error {
   constructor(orderId: string, timeoutMs: number, last: DomainPaymentRow | null) {
+    const observed =
+      last === null
+        ? "no active payment row"
+        : `status=${last.status} method=${last.method}`
     super(
       `awaitPaidState: order ${orderId} active payment never reached "paid" within ${timeoutMs}ms ` +
-        `(last observed: ${last === null ? "no active payment row" : `status=${last.status} method=${last.method}`})`,
+        `(last observed: ${observed})`,
     )
     this.name = "PaidStateBarrierTimeoutError"
   }
@@ -164,9 +168,9 @@ export async function firePaidStateWebhook(
   const { eventId, paymentIntentId, payload } = buildPaymentIntentSucceededEvent({
     orderId: options.orderId,
     amountInCentavos: options.amountInCentavos,
-    ...(options.paymentIntentId !== undefined ? { paymentIntentId: options.paymentIntentId } : {}),
-    ...(options.eventId !== undefined ? { eventId: options.eventId } : {}),
-    ...(options.customerId !== undefined ? { customerId: options.customerId } : {}),
+    ...(options.paymentIntentId === undefined ? {} : { paymentIntentId: options.paymentIntentId }),
+    ...(options.eventId === undefined ? {} : { eventId: options.eventId }),
+    ...(options.customerId === undefined ? {} : { customerId: options.customerId }),
   })
   const signature = stripeSignatureHeader(payload, options.webhookSecret)
 

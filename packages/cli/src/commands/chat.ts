@@ -253,6 +253,61 @@ async function deleteAllSessions(
   return { redisDeleted: allKeys.length }
 }
 
+async function cleanPostgresSession(sessionId: string, dryRun: boolean): Promise<number> {
+  try {
+    const { createConversationService } = await import("@ibatexas/domain")
+    const svc = createConversationService()
+    if (dryRun) {
+      const conversation = await svc.findBySessionId(sessionId)
+      const pgDeleted = conversation ? 1 : 0
+      if (pgDeleted > 0) {
+        console.log(chalk.yellow(`  [dry-run] would delete 1 Postgres conversation`))
+      } else {
+        console.log(chalk.gray("  No Postgres conversation found for this session"))
+      }
+      return pgDeleted
+    }
+    const deleted = await svc.deleteBySessionId(sessionId)
+    const pgDeleted = deleted ? 1 : 0
+    if (pgDeleted > 0) {
+      console.log(chalk.green("  Deleted 1 Postgres conversation"))
+    } else {
+      console.log(chalk.gray("  No Postgres conversation found for this session"))
+    }
+    return pgDeleted
+  } catch {
+    console.log(chalk.yellow("  Postgres clean skipped (domain package unavailable)"))
+    return 0
+  }
+}
+
+async function cleanPostgresAll(dryRun: boolean): Promise<number> {
+  try {
+    const { createConversationService } = await import("@ibatexas/domain")
+    const svc = createConversationService()
+    if (dryRun) {
+      const active = await svc.listActive(10000)
+      const pgDeleted = active.length
+      if (pgDeleted > 0) {
+        console.log(chalk.yellow(`  [dry-run] would delete ${pgDeleted} Postgres conversation(s)`))
+      } else {
+        console.log(chalk.gray("  No Postgres conversations found"))
+      }
+      return pgDeleted
+    }
+    const pgDeleted = await svc.deleteAll()
+    if (pgDeleted > 0) {
+      console.log(chalk.green(`  Deleted ${pgDeleted} Postgres conversation(s)`))
+    } else {
+      console.log(chalk.gray("  No Postgres conversations found"))
+    }
+    return pgDeleted
+  } catch {
+    console.log(chalk.yellow("  Postgres clean skipped (domain package unavailable)"))
+    return 0
+  }
+}
+
 async function runClean(
   sessionId: string | undefined,
   opts: { dryRun: boolean }
@@ -271,60 +326,13 @@ async function runClean(
       console.log(chalk.bold(`\n  Cleaning session: ${chalk.cyan(sessionId)}\n`))
       const result = await deleteSpecificSession(redis, sessionId, opts.dryRun)
       redisDeleted = result.redisDeleted
-
-      // Postgres
-      try {
-        const { createConversationService } = await import("@ibatexas/domain")
-        const svc = createConversationService()
-        if (opts.dryRun) {
-          const conversation = await svc.findBySessionId(sessionId)
-          pgDeleted = conversation ? 1 : 0
-          if (pgDeleted > 0) {
-            console.log(chalk.yellow(`  [dry-run] would delete 1 Postgres conversation`))
-          } else {
-            console.log(chalk.gray("  No Postgres conversation found for this session"))
-          }
-        } else {
-          const deleted = await svc.deleteBySessionId(sessionId)
-          pgDeleted = deleted ? 1 : 0
-          if (pgDeleted > 0) {
-            console.log(chalk.green("  Deleted 1 Postgres conversation"))
-          } else {
-            console.log(chalk.gray("  No Postgres conversation found for this session"))
-          }
-        }
-      } catch {
-        console.log(chalk.yellow("  Postgres clean skipped (domain package unavailable)"))
-      }
+      pgDeleted = await cleanPostgresSession(sessionId, opts.dryRun)
     } else {
       // All sessions
       console.log(chalk.bold("\n  Cleaning ALL conversation data\n"))
       const result = await deleteAllSessions(redis, opts.dryRun)
       redisDeleted = result.redisDeleted
-
-      // Postgres
-      try {
-        const { createConversationService } = await import("@ibatexas/domain")
-        const svc = createConversationService()
-        if (opts.dryRun) {
-          const active = await svc.listActive(10000)
-          pgDeleted = active.length
-          if (pgDeleted > 0) {
-            console.log(chalk.yellow(`  [dry-run] would delete ${pgDeleted} Postgres conversation(s)`))
-          } else {
-            console.log(chalk.gray("  No Postgres conversations found"))
-          }
-        } else {
-          pgDeleted = await svc.deleteAll()
-          if (pgDeleted > 0) {
-            console.log(chalk.green(`  Deleted ${pgDeleted} Postgres conversation(s)`))
-          } else {
-            console.log(chalk.gray("  No Postgres conversations found"))
-          }
-        }
-      } catch {
-        console.log(chalk.yellow("  Postgres clean skipped (domain package unavailable)"))
-      }
+      pgDeleted = await cleanPostgresAll(opts.dryRun)
     }
 
     // Summary

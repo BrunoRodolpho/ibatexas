@@ -66,7 +66,7 @@ export async function addToCart(
         sourceSubject: "cart:add-to-cart",
         actorPrincipal: "llm",
         auditSink: getAuditSink(),
-        ...(ctx.customerId !== undefined ? { customerId: ctx.customerId } : {}),
+        ...(ctx.customerId === undefined ? {} : { customerId: ctx.customerId }),
         sessionId: ctx.sessionId,
       },
     );

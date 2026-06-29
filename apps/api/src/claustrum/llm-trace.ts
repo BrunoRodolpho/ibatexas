@@ -46,9 +46,9 @@ export async function emitModelCallTrace(args: ModelCallTraceArgs): Promise<void
   if (telemetry === undefined) return;
   try {
     const promptManifest =
-      args.registry !== undefined
-        ? manifestWithHashes(args.registry, args.fragmentManifest)
-        : [...args.fragmentManifest];
+      args.registry === undefined
+        ? [...args.fragmentManifest]
+        : manifestWithHashes(args.registry, args.fragmentManifest);
     const trace: LLMTrace = boundLLMTrace({
       turnId: args.turnId,
       promptManifest,
@@ -59,7 +59,7 @@ export async function emitModelCallTrace(args: ModelCallTraceArgs): Promise<void
       completion: args.completionText,
       durationMs: args.durationMs,
       at: args.at,
-      ...(args.intentHash !== undefined ? { intentHash: args.intentHash } : {}),
+      ...(args.intentHash === undefined ? {} : { intentHash: args.intentHash }),
     });
     await telemetry.emitLLMTrace(trace);
   } catch {

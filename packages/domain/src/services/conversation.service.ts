@@ -382,9 +382,9 @@ export function createConversationService(options?: ConversationServiceOptions) 
             conversationId: payload.conversationId,
             role: payload.role,
             content: payload.content,
-            ...(extras?.metadata !== undefined
-              ? { metadata: extras.metadata }
-              : {}),
+            ...(extras?.metadata === undefined
+              ? {}
+              : { metadata: extras.metadata }),
           })
         },
         adjudicateOptions,

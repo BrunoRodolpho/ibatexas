@@ -94,7 +94,7 @@ export function MediaGallery({ images, thumbnail, title, className }: MediaGalle
             alt={`${title} — imagem ${selectedIndex + 1} de ${media.length}`}
             variant="detail"
             className="aspect-square"
-            priority={selectedIndex === 0}
+            preload={selectedIndex === 0}
           />
         )}
 

@@ -59,6 +59,18 @@ interface Order {
   notes?: OrderNote[]
 }
 
+function deliveryTypeLabel(deliveryType: string | null | undefined): string {
+  if (deliveryType === 'delivery') return 'Entrega'
+  if (deliveryType === 'pickup') return 'Retirada'
+  return 'No local'
+}
+
+function paymentMethodLabel(method: string | null | undefined): string {
+  if (method === 'cash') return 'Dinheiro'
+  if (method === 'pix') return 'PIX'
+  return 'Cartão'
+}
+
 export default function OrderTrackingPage() {
   const t = useTranslations()
   const params = useParams<{ orderId: string }>()
@@ -73,7 +85,7 @@ export default function OrderTrackingPage() {
   // Guest orders have a null owner, so the API order reads/polls require this
   // token (or an owner cookie) to authorize — without it they 404 (deny-null-owner).
   const [accessToken] = useState<string | null>(() => {
-    if (typeof window === "undefined") return null
+    if (typeof globalThis.window === "undefined") return null
     try {
       return sessionStorage.getItem(`order-access-token:${orderId}`)
     } catch {
@@ -258,13 +270,13 @@ export default function OrderTrackingPage() {
             {order.delivery_type && (
               <div className="flex justify-between text-sm">
                 <span className="text-smoke-400">Modalidade</span>
-                <span className="text-charcoal-700">{order.delivery_type === 'delivery' ? 'Entrega' : order.delivery_type === 'pickup' ? 'Retirada' : 'No local'}</span>
+                <span className="text-charcoal-700">{deliveryTypeLabel(order.delivery_type)}</span>
               </div>
             )}
             {(order.currentPayment?.method ?? order.payment_method) && (
               <div className="flex justify-between text-sm">
                 <span className="text-smoke-400">Pagamento</span>
-                <span className="text-charcoal-700">{(order.currentPayment?.method ?? order.payment_method) === 'cash' ? 'Dinheiro' : (order.currentPayment?.method ?? order.payment_method) === 'pix' ? 'PIX' : 'Cartão'}</span>
+                <span className="text-charcoal-700">{paymentMethodLabel(order.currentPayment?.method ?? order.payment_method)}</span>
               </div>
             )}
             {(order.tip_in_centavos ?? 0) > 0 && (

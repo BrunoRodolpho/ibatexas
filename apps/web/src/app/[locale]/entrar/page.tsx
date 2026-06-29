@@ -57,7 +57,7 @@ export default function EntrarPage() {
     }
   }, [step])
 
-  async function handleSendOtp(e?: React.FormEvent) {
+  async function handleSendOtp(e?: React.SyntheticEvent) {
     e?.preventDefault()
     if (rawPhone.length < 10) {
       setError("Informe um número de celular válido")

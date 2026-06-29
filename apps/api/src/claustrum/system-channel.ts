@@ -164,9 +164,9 @@ export function renderTriggerPerceptionText(event: TriggerEvent): string {
     `event-id: ${event.eventId}`,
     `entity: ${event.entityRef.kind} ${event.entityRef.id}`,
     `customer: ${event.entityRef.customerId}`,
-    ...(event.occurredAt !== undefined
-      ? [`occurred-at: ${event.occurredAt}`]
-      : []),
+    ...(event.occurredAt === undefined
+      ? []
+      : [`occurred-at: ${event.occurredAt}`]),
     `payload: ${canonicalJson(event.payload)}`,
   ];
   return lines.join("\n");
@@ -183,7 +183,7 @@ export interface SystemRenderJournalEntry {
   readonly conversationId: string;
   /** The synthesized turn text — operator-facing trace, never delivered. */
   readonly text: string;
-  readonly meta?: RenderedResponse["meta"];
+  readonly meta?: Exclude<RenderedResponse["meta"], undefined>;
 }
 
 // ── Config + driver ──────────────────────────────────────────────────────────
@@ -260,7 +260,7 @@ export class SystemChannel implements ChannelDriver {
       customerId: response.customerId,
       conversationId: response.conversationId,
       text: response.text,
-      ...(response.meta !== undefined ? { meta: response.meta } : {}),
+      ...(response.meta === undefined ? {} : { meta: response.meta }),
     };
     const journal = this.config.journal;
     if (journal !== undefined) {
@@ -319,8 +319,6 @@ export class SystemChannel implements ChannelDriver {
    * agent-envelope confirmations resolve through the approvals glue (T3-7).
    */
   matchToParked(_channelEvent: ChannelMessage, _session: Session): ParkedMatch | null {
-    void _channelEvent;
-    void _session;
     return null;
   }
 }

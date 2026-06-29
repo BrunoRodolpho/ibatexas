@@ -147,6 +147,285 @@ export interface DeferTimeoutEventPayload extends Record<string, unknown> {
   readonly timestamp: string;
 }
 
+type RedisClient = Awaited<ReturnType<typeof getRedisClient>>;
+
+/**
+ * SCAN the `defer:pending:*` namespace and collect up to MAX_KEYS_PER_SWEEP
+ * candidate keys. Shared by the steady-state sweep and the recovery scan so
+ * both iterate identically; SCAN errors propagate to the caller, which owns
+ * the per-path logging + Sentry tagging.
+ */
+async function collectParkedCandidates(redis: RedisClient): Promise<string[]> {
+  const candidates: string[] = [];
+  const pattern = rk("defer:pending:*");
+  for await (const key of redis.scanIterator({
+    MATCH: pattern,
+    COUNT: SCAN_COUNT,
+  })) {
+    if (Array.isArray(key)) {
+      candidates.push(...key);
+    } else {
+      candidates.push(key as string);
+    }
+    if (candidates.length >= MAX_KEYS_PER_SWEEP) break;
+  }
+  return candidates;
+}
+
+/**
+ * Per-candidate processing variant. The steady-state sweep and the startup
+ * recovery scan run byte-identical logic; they differ only in the log lines
+ * they emit and whether the parked key is DEL'd when the recovery-fired marker
+ * is already set. {@link processParkedCandidate} is the shared body; these two
+ * variants parameterise it.
+ */
+interface CandidateLogVariant {
+  /** Warn line when the parked envelope JSON is malformed. */
+  readonly malformedWarn: string;
+  /** Debug line when the recovery-fired marker is already set. */
+  readonly dedupSkip: string;
+  /**
+   * Whether to DEL the parked key when skipping via the recovery-fired
+   * marker. The steady-state sweep DELs it so it doesn't loop forever; the
+   * recovery scan leaves it for the next normal tick to clean up.
+   */
+  readonly delKeyOnDedupSkip: boolean;
+  /** Debug line when the defer-resolver mutex is already held. */
+  readonly mutexSkip: string;
+  /** Error line when publishNatsEvent throws. */
+  readonly publishFail: string;
+  /** Info line after a successful publish + parked-key DEL. */
+  readonly success: string;
+}
+
+const SWEEP_LOG_VARIANT: CandidateLogVariant = {
+  malformedWarn:
+    "[defer-timeout-sweeper] malformed parked envelope — publishing minimal timeout",
+  dedupSkip:
+    "[defer-timeout-sweeper] timeout already fired by recovery scan — skipping",
+  delKeyOnDedupSkip: true,
+  mutexSkip:
+    "[defer-timeout-sweeper] resolver mid-flight — skipping timeout publish",
+  publishFail:
+    "[defer-timeout-sweeper] publishNatsEvent failed — leaving key for retry",
+  success:
+    "[defer-timeout-sweeper] published intent.defer.timeout and deleted parked key",
+};
+
+const RECOVERY_LOG_VARIANT: CandidateLogVariant = {
+  malformedWarn:
+    "[defer-timeout-sweeper] malformed parked envelope during recovery — publishing minimal timeout",
+  dedupSkip:
+    "[defer-timeout-sweeper] recovery: timeout already fired — skipping",
+  delKeyOnDedupSkip: false,
+  mutexSkip: "[defer-timeout-sweeper] recovery: resolver mid-flight — skipping",
+  publishFail:
+    "[defer-timeout-sweeper] recovery: publishNatsEvent failed — leaving key for retry",
+  success:
+    "[defer-timeout-sweeper] RECOVERY published intent.defer.timeout — worker was down during deadline",
+};
+
+/**
+ * Shared per-candidate processing for both the steady-state sweep and the
+ * startup recovery scan. Returns `true` when a timeout event was published for
+ * `key`. The two callers differ only in the log lines emitted and whether the
+ * parked key is DEL'd on the dedup-skip path — both captured by
+ * {@link CandidateLogVariant} so this body stays byte-identical across paths.
+ */
+async function processParkedCandidate(
+  redis: RedisClient,
+  key: string,
+  variant: CandidateLogVariant,
+  effectiveLogger?: FastifyBaseLogger | null,
+): Promise<boolean> {
+  // PTTL would give us millisecond precision but TTL is plenty for a
+  // 60s cadence. Returns -1 if no expire, -2 if key missing. We treat
+  // -1 (no TTL) as "expired" because parked envelopes must always
+  // have a TTL — a missing TTL is itself an invariant violation.
+  const ttl = await redis.ttl(key).catch(() => -2);
+  if (ttl === -2) {
+    // Key vanished between SCAN and TTL — fine, nothing to do.
+    return false;
+  }
+  if (ttl > IMMINENT_TTL_SECONDS) {
+    // Still has time; the responder/resolver paths own this one.
+    return false;
+  }
+
+  // Read the parked envelope so we can pull intentHash + signal +
+  // parkedAt for the timeout event. If the blob is non-null but
+  // malformed (JSON.parse fails), we still publish a minimal event so
+  // ops can see what got cleaned up — that's a genuine data-corruption
+  // case worth surfacing.
+  //
+  // audit-2026-05-24 E3: if `raw === null` here, the key vanished
+  // between our SCAN/TTL pass and this GET. The only path that DELs a
+  // parkKey out from under the sweeper is the defer-resolver winning
+  // the race. Honour the `intent.defer.timeout` contract (every event
+  // has a non-empty intentHash) by suppressing the publish entirely.
+  const raw = await redis.get(key).catch(() => null);
+  const sessionId = parseSessionId(key);
+  if (raw === null) {
+    effectiveLogger?.debug(
+      { parkKey: key },
+      "sweeper: parkKey vanished between SCAN/TTL and GET — resolver won the race; suppressing publish",
+    );
+    return false;
+  }
+  let intentHash = "";
+  let signal = "";
+  let parkedAt = "";
+  try {
+    const parked = JSON.parse(raw) as ParkedEnvelope;
+    intentHash = parked.envelope?.intentHash ?? "";
+    signal = parked.signal ?? "";
+    parkedAt = parked.parkedAt ?? "";
+  } catch (parseErr) {
+    effectiveLogger?.warn(
+      { key, err: (parseErr as Error).message },
+      variant.malformedWarn,
+    );
+  }
+
+  // P1-E: dedup against a prior firing (recovery scan or an earlier
+  // sweep). If the timeout was already fired for this intent (e.g.,
+  // worker restarted between recovery and the first tick), SETNX returns
+  // null and we skip — the first firing was the one source of truth.
+  const recoveryKey = rk(`recovery:fired:${intentHash || sessionId}`);
+  const acquired = await redis
+    .set(recoveryKey, new Date().toISOString(), {
+      NX: true,
+      EX: RECOVERY_FIRED_TTL_SECONDS,
+    })
+    .catch(() => null);
+  if (acquired !== "OK") {
+    effectiveLogger?.debug(
+      { sessionId, intentHash, signal, ttl },
+      variant.dedupSkip,
+    );
+    if (variant.delKeyOnDedupSkip) {
+      // Steady-state: still DEL the parked key so it doesn't loop forever.
+      await redis.del(key).catch(() => {});
+    }
+    return false;
+  }
+
+  // audit-2026-05-24 P0-2: sweeper-vs-resolver mutex.
+  //
+  // SETNX the same `defer:resuming:{deferResumeHash}` key the defer-resolver
+  // claims before dispatching. If the resolver is mid-flight we MUST NOT
+  // publish `intent.defer.timeout`. When intentHash is unavailable (malformed
+  // park blob), fall back to a session-scoped lock.
+  const resumingMutexKey = rk(
+    intentHash && signal
+      ? `defer:resuming:${deferResumeHash(intentHash, signal)}`
+      : `defer:resuming:fallback:${sessionId}`,
+  );
+  // audit-2026-05-25 (I7): UUID-bearing SETNX + Lua-CAD release.
+  const mutex = await acquireDeferResumingLock(
+    resumingMutexKey,
+    SWEEPER_RESUMING_TTL_SECONDS,
+    "sweeper",
+  );
+  if (!mutex.acquired) {
+    effectiveLogger?.debug(
+      { sessionId, intentHash, signal, ttl },
+      variant.mutexSkip,
+    );
+    // Release the recovery marker so the next attempt can re-fire if the
+    // resolver crashes and the parked key is still around.
+    await redis.del(recoveryKey).catch(() => {});
+    // Do NOT DEL the parked key — the resolver owns its lifecycle.
+    return false;
+  }
+
+  // Publish the timeout. Subscribers (e.g. notification fan-out)
+  // consume `intent.defer.timeout` to drive user-facing follow-ups.
+  const payload: DeferTimeoutEventPayload = {
+    eventType: "intent.defer.timeout",
+    sessionId,
+    intentHash,
+    signal,
+    parkedAt,
+    timestamp: new Date().toISOString(),
+  };
+  try {
+    await publishNatsEvent("intent.defer.timeout", payload);
+  } catch (publishErr) {
+    // publishNatsEvent already swallows NATS errors internally; this
+    // path only fires for synchronous misuse. Don't DEL the key if
+    // publish failed so the next sweep retries. Also release the
+    // dedup marker AND the sweeper mutex so retry can re-claim them.
+    await redis.del(recoveryKey).catch(() => {});
+    await releaseDeferResumingLock(resumingMutexKey, mutex.lockValue);
+    effectiveLogger?.error(
+      { key, err: (publishErr as Error).message },
+      variant.publishFail,
+    );
+    return false;
+  }
+
+  // W3-7 — bump kernel_defer_timeout_total{kind} after the publish
+  // succeeded. Recorder is fail-open by design.
+  await bumpDeferTimeoutMetric(signal || "unknown");
+
+  // Idempotent cleanup. DEL the parked key so subsequent sweeps don't
+  // re-publish for the same session.
+  await redis.del(key).catch(() => {
+    // Best-effort. Even if DEL fails, the Redis TTL will eventually
+    // garbage-collect the key.
+  });
+
+  // audit-2026-05-24 P0-2 + 2026-05-25 I7: Lua compare-and-delete
+  // release of the sweeper-vs-resolver mutex now that both the
+  // publish and the parked-key DEL have completed.
+  await releaseDeferResumingLock(resumingMutexKey, mutex.lockValue);
+
+  effectiveLogger?.info(
+    { sessionId, intentHash, signal, ttl },
+    variant.success,
+  );
+  return true;
+}
+
+/**
+ * Steady-state per-candidate processing — extracted to keep
+ * {@link sweepDeferTimeouts}'s cognitive complexity bounded. Returns `true`
+ * when a timeout event was published for `key`. Delegates to the shared
+ * {@link processParkedCandidate} with the steady-state log variant.
+ */
+async function processSweepCandidate(
+  redis: RedisClient,
+  key: string,
+  effectiveLogger?: FastifyBaseLogger | null,
+): Promise<boolean> {
+  return processParkedCandidate(redis, key, SWEEP_LOG_VARIANT, effectiveLogger);
+}
+
+/**
+ * Recovery per-candidate processing — extracted to keep
+ * {@link runRecoveryScan}'s cognitive complexity bounded. Returns `true`
+ * when a timeout event was published for `key`. Delegates to the shared
+ * {@link processParkedCandidate} with the recovery-specific log variant.
+ *
+ * Behavioural note vs the steady-state sweep, preserved exactly here via
+ * {@link RECOVERY_LOG_VARIANT}: the recovery path does NOT DEL the parked key
+ * on the dedup-skip path (it leaves it for the next normal tick), and emits
+ * the `recovery:`-prefixed log lines.
+ */
+async function processRecoveryCandidate(
+  redis: RedisClient,
+  key: string,
+  effectiveLogger?: FastifyBaseLogger | null,
+): Promise<boolean> {
+  return processParkedCandidate(
+    redis,
+    key,
+    RECOVERY_LOG_VARIANT,
+    effectiveLogger,
+  );
+}
+
 /**
  * Core sweep logic — exported for direct unit testing without BullMQ.
  *
@@ -187,20 +466,9 @@ export async function sweepDeferTimeouts(
 
   // Collect candidates first via SCAN; do the per-key TTL/DEL work after
   // we've finished iterating so we don't hold the cursor open for too long.
-  const candidates: string[] = [];
-  const pattern = rk("defer:pending:*");
+  let candidates: string[];
   try {
-    for await (const key of redis.scanIterator({
-      MATCH: pattern,
-      COUNT: SCAN_COUNT,
-    })) {
-      if (Array.isArray(key)) {
-        candidates.push(...key);
-      } else {
-        candidates.push(key as string);
-      }
-      if (candidates.length >= MAX_KEYS_PER_SWEEP) break;
-    }
+    candidates = await collectParkedCandidates(redis);
   } catch (err) {
     effectiveLogger?.error(
       { err: (err as Error).message },
@@ -224,181 +492,9 @@ export async function sweepDeferTimeouts(
 
   for (const key of candidates) {
     try {
-      // PTTL would give us millisecond precision but TTL is plenty for a
-      // 60s cadence. Returns -1 if no expire, -2 if key missing. We treat
-      // -1 (no TTL) as "expired" because parked envelopes must always
-      // have a TTL — a missing TTL is itself an invariant violation.
-      const ttl = await redis.ttl(key).catch(() => -2);
-      if (ttl === -2) {
-        // Key vanished between SCAN and TTL — fine, nothing to do.
-        continue;
+      if (await processSweepCandidate(redis, key, effectiveLogger)) {
+        publishedCount++;
       }
-      if (ttl > IMMINENT_TTL_SECONDS) {
-        // Still has time; the responder/resolver paths own this one.
-        continue;
-      }
-
-      // Read the parked envelope so we can pull intentHash + signal +
-      // parkedAt for the timeout event. If the blob is non-null but
-      // malformed (JSON.parse fails), we still publish a minimal event so
-      // ops can see what got cleaned up — that's a genuine data-corruption
-      // case worth surfacing.
-      //
-      // audit-2026-05-24 E3: if `raw === null` here, the key vanished
-      // between our SCAN/TTL pass and this GET. The only path that DELs a
-      // parkKey out from under the sweeper is the defer-resolver winning
-      // the race (it DELs both the parkKey and the resuming mutex on
-      // commit). Publishing `intent.defer.timeout` with empty intentHash +
-      // empty signal under a session-scoped fallback mutex creates a
-      // "ghost" event that no downstream consumer can match (all consumers
-      // key on intentHash). The implicit contract of `intent.defer.timeout`
-      // is "every event has a non-empty intentHash"; honour that contract
-      // by suppressing the publish entirely. Future consumers (e.g., a
-      // metrics counter or forensic replay) can trust the contract without
-      // having to filter empty events.
-      const raw = await redis.get(key).catch(() => null);
-      const sessionId = parseSessionId(key);
-      if (raw === null) {
-        effectiveLogger?.debug(
-          { parkKey: key },
-          "sweeper: parkKey vanished between SCAN/TTL and GET — resolver won the race; suppressing publish",
-        );
-        continue;
-      }
-      let intentHash = "";
-      let signal = "";
-      let parkedAt = "";
-      try {
-        const parked = JSON.parse(raw) as ParkedEnvelope;
-        intentHash = parked.envelope?.intentHash ?? "";
-        signal = parked.signal ?? "";
-        parkedAt = parked.parkedAt ?? "";
-      } catch (parseErr) {
-        effectiveLogger?.warn(
-          { key, err: (parseErr as Error).message },
-          "[defer-timeout-sweeper] malformed parked envelope — publishing minimal timeout",
-        );
-      }
-
-      // P1-E: dedup against the recovery scan. If a recovery scan fired
-      // this timeout already (e.g., worker restarted between recovery and
-      // the first tick), SETNX returns null and we skip — the recovery
-      // scan was the one source of truth for this intent.
-      const recoveryKey = rk(
-        `recovery:fired:${intentHash || sessionId}`,
-      );
-      const acquired = await redis
-        .set(recoveryKey, new Date().toISOString(), {
-          NX: true,
-          EX: RECOVERY_FIRED_TTL_SECONDS,
-        })
-        .catch(() => null);
-      if (acquired !== "OK") {
-        effectiveLogger?.debug(
-          { sessionId, intentHash, signal, ttl },
-          "[defer-timeout-sweeper] timeout already fired by recovery scan — skipping",
-        );
-        // Still DEL the parked key so it doesn't loop forever.
-        await redis.del(key).catch(() => {});
-        continue;
-      }
-
-      // audit-2026-05-24 P0-2: sweeper-vs-resolver mutex.
-      //
-      // SETNX the same `defer:resuming:{deferResumeHash}` key the defer-resolver
-      // claims before dispatching. If the resolver is mid-flight (signal arrived
-      // just-in-time as TTL crossed the imminent threshold), we MUST NOT publish
-      // `intent.defer.timeout` — that would race against the resolver's resume
-      // for destructive intents whose timeout-handler runs the same executor
-      // (e.g., LGPD anonymize) or for any future PIX-timeout consumer (P1-7).
-      // The resolver, on commit, deletes both the resuming marker and the
-      // parked key; the next sweep tick sees nothing to do. If the resolver
-      // crashes mid-flight, the resuming marker's TTL clears the lock; the
-      // next sweep tick re-acquires + publishes.
-      //
-      // When intentHash is unavailable (malformed park blob), we can't derive
-      // the same key the resolver would; fall back to a session-scoped lock
-      // so the legitimate-malformed-blob path still serializes against ops
-      // tooling that may resolve by sessionId.
-      const resumingMutexKey = rk(
-        intentHash && signal
-          ? `defer:resuming:${deferResumeHash(intentHash, signal)}`
-          : `defer:resuming:fallback:${sessionId}`,
-      );
-      // audit-2026-05-25 (I7): UUID-bearing SETNX + Lua-CAD release.
-      // Pre-fix the SETNX value was a timestamp string and release was
-      // a plain redis.del — under TTL expiry + slow sweeper, the DEL
-      // could erase another acquirer's lock and reopen the double-
-      // dispatch window (CLAUDE.md rule #10 violation).
-      const mutex = await acquireDeferResumingLock(
-        resumingMutexKey,
-        SWEEPER_RESUMING_TTL_SECONDS,
-        "sweeper",
-      );
-      if (!mutex.acquired) {
-        effectiveLogger?.debug(
-          { sessionId, intentHash, signal, ttl },
-          "[defer-timeout-sweeper] resolver mid-flight — skipping timeout publish",
-        );
-        // Release the recovery marker so the next sweep can re-fire if the
-        // resolver crashes and the parked key is still around.
-        await redis.del(recoveryKey).catch(() => {});
-        // Do NOT DEL the parked key — the resolver owns its lifecycle.
-        continue;
-      }
-
-      // Publish the timeout. Subscribers (e.g. notification fan-out)
-      // consume `intent.defer.timeout` to drive user-facing follow-ups.
-      const payload: DeferTimeoutEventPayload = {
-        eventType: "intent.defer.timeout",
-        sessionId,
-        intentHash,
-        signal,
-        parkedAt,
-        timestamp: new Date().toISOString(),
-      };
-      try {
-        await publishNatsEvent("intent.defer.timeout", payload);
-      } catch (publishErr) {
-        // publishNatsEvent already swallows NATS errors internally; this
-        // path only fires for synchronous misuse. Don't DEL the key if
-        // publish failed so the next sweep retries. Also release the
-        // dedup marker AND the sweeper mutex so retry can re-claim them.
-        await redis.del(recoveryKey).catch(() => {});
-        await releaseDeferResumingLock(resumingMutexKey, mutex.lockValue);
-        effectiveLogger?.error(
-          { key, err: (publishErr as Error).message },
-          "[defer-timeout-sweeper] publishNatsEvent failed — leaving key for retry",
-        );
-        continue;
-      }
-
-      // W3-7 — bump kernel_defer_timeout_total{kind} after the publish
-      // succeeded. The resume `signal` is the closest available "kind"
-      // label; the original intent kind isn't part of the parked payload
-      // schema today. Recorder is fail-open by design.
-      await bumpDeferTimeoutMetric(signal || "unknown");
-
-      // Idempotent cleanup. DEL the parked key so subsequent sweeps don't
-      // re-publish for the same session.
-      await redis.del(key).catch(() => {
-        // Best-effort. Even if DEL fails, the Redis TTL will eventually
-        // garbage-collect the key.
-      });
-
-      // audit-2026-05-24 P0-2 + 2026-05-25 I7: Lua compare-and-delete
-      // release of the sweeper-vs-resolver mutex now that both the
-      // publish and the parked-key DEL have completed. The marker's TTL
-      // would clean it up anyway, but explicit ownership-checked release
-      // lets unrelated resumes for the same (intentHash, signal) pair
-      // re-enter without waiting on the 60s TTL.
-      await releaseDeferResumingLock(resumingMutexKey, mutex.lockValue);
-
-      publishedCount++;
-      effectiveLogger?.info(
-        { sessionId, intentHash, signal, ttl },
-        "[defer-timeout-sweeper] published intent.defer.timeout and deleted parked key",
-      );
     } catch (err) {
       // Per-key error containment. Continue with the rest of the batch.
       effectiveLogger?.error(
@@ -423,7 +519,7 @@ export async function sweepDeferTimeouts(
 
 function parseSessionId(key: string): string {
   // rk() prepends `${APP_ENV}:` so the suffix is `defer:pending:{sessionId}`.
-  const m = key.match(/defer:pending:(.+)$/);
+  const m = /defer:pending:(.+)$/.exec(key);
   return m ? m[1]! : key;
 }
 
@@ -471,20 +567,9 @@ export async function runRecoveryScan(
   // Same SCAN pattern as the regular sweep — the recovery scan is a
   // one-shot variant of the same logic, with the additional idempotency
   // marker.
-  const candidates: string[] = [];
-  const pattern = rk("defer:pending:*");
+  let candidates: string[];
   try {
-    for await (const key of redis.scanIterator({
-      MATCH: pattern,
-      COUNT: SCAN_COUNT,
-    })) {
-      if (Array.isArray(key)) {
-        candidates.push(...key);
-      } else {
-        candidates.push(key as string);
-      }
-      if (candidates.length >= MAX_KEYS_PER_SWEEP) break;
-    }
+    candidates = await collectParkedCandidates(redis);
   } catch (err) {
     effectiveLogger?.error(
       { err: (err as Error).message },
@@ -500,124 +585,9 @@ export async function runRecoveryScan(
 
   for (const key of candidates) {
     try {
-      const ttl = await redis.ttl(key).catch(() => -2);
-      if (ttl === -2) continue;
-      // For recovery scan: pick up everything ≤ IMMINENT_TTL_SECONDS, same
-      // threshold as the steady-state sweep. Anything fresher is owned
-      // by the next normal tick.
-      if (ttl > IMMINENT_TTL_SECONDS) continue;
-
-      // audit-2026-05-24 E3: same race-loser suppression as the
-      // steady-state sweep — if `raw === null`, the parkKey vanished
-      // between SCAN/TTL and GET (resolver won the race and DEL'd it on
-      // commit). Publishing an empty-intentHash ghost violates the
-      // `intent.defer.timeout` contract; skip.
-      const raw = await redis.get(key).catch(() => null);
-      const sessionId = parseSessionId(key);
-      if (raw === null) {
-        effectiveLogger?.debug(
-          { parkKey: key },
-          "sweeper: parkKey vanished between SCAN/TTL and GET — resolver won the race; suppressing publish",
-        );
-        continue;
+      if (await processRecoveryCandidate(redis, key, effectiveLogger)) {
+        recoveryFiredCount++;
       }
-      let intentHash = "";
-      let signal = "";
-      let parkedAt = "";
-      try {
-        const parked = JSON.parse(raw) as ParkedEnvelope;
-        intentHash = parked.envelope?.intentHash ?? "";
-        signal = parked.signal ?? "";
-        parkedAt = parked.parkedAt ?? "";
-      } catch (parseErr) {
-        effectiveLogger?.warn(
-          { key, err: (parseErr as Error).message },
-          "[defer-timeout-sweeper] malformed parked envelope during recovery — publishing minimal timeout",
-        );
-      }
-
-      // Idempotency: SETNX the recovery-fired marker keyed by intentHash.
-      // If a previous sweep (recovery or steady-state) already fired the
-      // timeout for this intent, we skip. Falls back to sessionId when
-      // intentHash is unavailable (malformed blob).
-      const recoveryKey = rk(
-        `recovery:fired:${intentHash || sessionId}`,
-      );
-      const acquired = await redis
-        .set(recoveryKey, new Date().toISOString(), {
-          NX: true,
-          EX: RECOVERY_FIRED_TTL_SECONDS,
-        })
-        .catch(() => null);
-      if (acquired !== "OK") {
-        effectiveLogger?.debug(
-          { sessionId, intentHash, signal, ttl },
-          "[defer-timeout-sweeper] recovery: timeout already fired — skipping",
-        );
-        continue;
-      }
-
-      // audit-2026-05-24 P0-2: sweeper-vs-resolver mutex. Same coordination
-      // pattern as the steady-state sweep — if the defer-resolver is already
-      // mid-flight for this (intentHash, signal) pair, don't publish a
-      // duplicate `intent.defer.timeout`. Mirrors the resolver's
-      // `defer:resuming:{deferResumeHash}` lock.
-      const resumingMutexKey = rk(
-        intentHash && signal
-          ? `defer:resuming:${deferResumeHash(intentHash, signal)}`
-          : `defer:resuming:fallback:${sessionId}`,
-      );
-      const mutex = await acquireDeferResumingLock(
-        resumingMutexKey,
-        SWEEPER_RESUMING_TTL_SECONDS,
-        "sweeper",
-      );
-      if (!mutex.acquired) {
-        effectiveLogger?.debug(
-          { sessionId, intentHash, signal, ttl },
-          "[defer-timeout-sweeper] recovery: resolver mid-flight — skipping",
-        );
-        // Release the recovery marker so the next attempt can re-claim it
-        // once the resolver completes (or its lock expires).
-        await redis.del(recoveryKey).catch(() => {});
-        continue;
-      }
-
-      const payload: DeferTimeoutEventPayload = {
-        eventType: "intent.defer.timeout",
-        sessionId,
-        intentHash,
-        signal,
-        parkedAt,
-        timestamp: new Date().toISOString(),
-      };
-      try {
-        await publishNatsEvent("intent.defer.timeout", payload);
-      } catch (publishErr) {
-        // Same as steady-state: don't DEL key on publish failure. Release
-        // the dedup marker AND the sweeper mutex so the next attempt can retry.
-        await redis.del(recoveryKey).catch(() => {});
-        await releaseDeferResumingLock(resumingMutexKey, mutex.lockValue);
-        effectiveLogger?.error(
-          { key, err: (publishErr as Error).message },
-          "[defer-timeout-sweeper] recovery: publishNatsEvent failed — leaving key for retry",
-        );
-        continue;
-      }
-
-      // W3-7 — recovery path bumps kernel_defer_timeout_total too.
-      await bumpDeferTimeoutMetric(signal || "unknown");
-
-      await redis.del(key).catch(() => {});
-
-      // audit-2026-05-25 I7: Lua compare-and-delete release.
-      await releaseDeferResumingLock(resumingMutexKey, mutex.lockValue);
-
-      recoveryFiredCount++;
-      effectiveLogger?.info(
-        { sessionId, intentHash, signal, ttl },
-        "[defer-timeout-sweeper] RECOVERY published intent.defer.timeout — worker was down during deadline",
-      );
     } catch (err) {
       effectiveLogger?.error(
         { key, err: (err as Error).message },

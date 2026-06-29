@@ -54,11 +54,12 @@ export function SwitchTypeDialog({ orderId, currentType, isOpen, onClose, onMuta
   }, [orderId, selectedType, currentType, onMutate, onClose, t])
 
   // Impact preview message
-  const impactMessage = selectedType === 'delivery' && currentType !== 'delivery'
-    ? t('switch_type_delivery_fee_add')
-    : selectedType !== 'delivery' && currentType === 'delivery'
-      ? t('switch_type_delivery_fee_remove')
-      : null
+  let impactMessage: string | null = null
+  if (selectedType === 'delivery' && currentType !== 'delivery') {
+    impactMessage = t('switch_type_delivery_fee_add')
+  } else if (selectedType !== 'delivery' && currentType === 'delivery') {
+    impactMessage = t('switch_type_delivery_fee_remove')
+  }
 
   const footer = (
     <div className="flex gap-2 justify-end">

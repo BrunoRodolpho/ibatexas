@@ -60,34 +60,30 @@ async function main(): Promise<void> {
   }
 
   // 3. tool_result continuation: feed back a result with the echoed id; loop continues, no throw.
-  {
-    if (toolUseId === "") {
-      check("J3-tool_result-continuation", false, { reason: "no tool_use id from J2 to thread back" })
-    } else {
-      const req: ModelRequest = {
-        model: MODEL,
-        maxTokens: 128,
-        system: "When the user wants to add an item to the cart, call order.cart.add. After a tool result, confirm to the user in one sentence.",
-        messages: [
-          { role: "user", content: "Add 2 of sku ABC-123 to my cart please." },
-          { role: "assistant", content: [{ type: "tool_use", id: toolUseId, name: "order.cart.add", input: { sku: "ABC-123", qty: 2 } }] },
-          { role: "user", content: [{ type: "tool_result", toolUseId, content: "Added 2x ABC-123 to cart. Cart total R$ 24,00." }] },
-        ],
-        tools: [CART_TOOL],
-      }
-      const r = await provider.complete(req)
-      check("J3-tool_result-continuation", r.stopReason !== null && r.usage.inputTokens > 0, { stopReason: r.stopReason, text: r.content.find((b) => b.type === "text") })
+  if (toolUseId === "") {
+    check("J3-tool_result-continuation", false, { reason: "no tool_use id from J2 to thread back" })
+  } else {
+    const req: ModelRequest = {
+      model: MODEL,
+      maxTokens: 128,
+      system: "When the user wants to add an item to the cart, call order.cart.add. After a tool result, confirm to the user in one sentence.",
+      messages: [
+        { role: "user", content: "Add 2 of sku ABC-123 to my cart please." },
+        { role: "assistant", content: [{ type: "tool_use", id: toolUseId, name: "order.cart.add", input: { sku: "ABC-123", qty: 2 } }] },
+        { role: "user", content: [{ type: "tool_result", toolUseId, content: "Added 2x ABC-123 to cart. Cart total R$ 24,00." }] },
+      ],
+      tools: [CART_TOOL],
     }
+    const r = await provider.complete(req)
+    check("J3-tool_result-continuation", r.stopReason !== null && r.usage.inputTokens > 0, { stopReason: r.stopReason, text: r.content.find((b) => b.type === "text") })
   }
 
   // 4. malformed-argument resilience is structural: ollama returns valid JSON, but
   //    assert the parser surfaces a {__raw} fallback rather than throwing (unit-level).
-  {
-    // We can't force Ollama to emit malformed JSON deterministically, so this is a
-    // documented N/A-live check; the __raw path is covered by code review of
-    // ollama-provider.ts (try/catch -> {__raw}). Mark applicable=false.
-    check("J4-malformed-__raw", true, { applicable: false, note: "try/catch -> {__raw} fallback present in ollama-provider.ts; not deterministically inducible live" })
-  }
+  // We can't force Ollama to emit malformed JSON deterministically, so this is a
+  // documented N/A-live check; the __raw path is covered by code review of
+  // ollama-provider.ts (try/catch -> {__raw}). Mark applicable=false.
+  check("J4-malformed-__raw", true, { applicable: false, note: "try/catch -> {__raw} fallback present in ollama-provider.ts; not deterministically inducible live" })
 
   const passed = results.filter((r) => r.pass).length
   console.log(`\nibatexas-journeys driver provider validation: ${passed}/${results.length}`)
@@ -97,4 +93,9 @@ async function main(): Promise<void> {
   process.exit(0)
 }
 
-main().catch((e) => { console.error(e); process.exit(1) })
+try {
+  await main()
+} catch (e) {
+  console.error(e)
+  process.exit(1)
+}

@@ -77,9 +77,9 @@ export function registerStripeCommands(group: Command): void {
 
       // Check for test vs live mode
       const key = process.env.STRIPE_SECRET_KEY
-      if (key && key.startsWith("sk_test_")) {
+      if (key?.startsWith("sk_test_")) {
         console.log(`\n  ${chalk.yellow("⚠")} Using ${chalk.yellow("test")} mode keys (sandbox)`)
-      } else if (key && key.startsWith("sk_live_")) {
+      } else if (key?.startsWith("sk_live_")) {
         console.log(`\n  ${chalk.red("⚠")} Using ${chalk.red("live")} mode keys — be careful!`)
       }
 
@@ -87,7 +87,8 @@ export function registerStripeCommands(group: Command): void {
       try {
         const redis = await getRedis()
         const keys = await scanKeysForPattern(redis, rk("webhook:processed:*"))
-        console.log(`\n  ${chalk.gray(`Webhook idempotency keys in Redis: ${keys.length}`)}`)
+        const idempotencySummary = chalk.gray(`Webhook idempotency keys in Redis: ${keys.length}`)
+        console.log(`\n  ${idempotencySummary}`)
         await closeRedis()
       } catch {
         // Redis not available — skip silently
@@ -160,9 +161,7 @@ export function registerStripeCommands(group: Command): void {
   group
     .command("trigger [event]")
     .description("Fire a test webhook event (default: payment_intent.succeeded)")
-    .action(async (event?: string) => {
-      const eventType = event ?? "payment_intent.succeeded"
-
+    .action(async (eventType = "payment_intent.succeeded") => {
       console.log(chalk.cyan(`\n  Triggering ${chalk.bold(eventType)}...\n`))
 
       try {
@@ -267,11 +266,13 @@ export function registerStripeCommands(group: Command): void {
           console.log(`  ${chalk.green("✓")} ${cartId} → ${chalk.cyan(result.orderId)}`)
         } else {
           failed++
-          console.log(`  ${chalk.gray("·")} ${cartId} ${chalk.gray(`(${result.error})`)}`)
+          const errorNote = chalk.gray(`(${result.error})`)
+          console.log(`  ${chalk.gray("·")} ${cartId} ${errorNote}`)
         }
       }
 
-      console.log(chalk.bold(`\n  Done. ${chalk.green(succeeded)} completed, ${chalk.gray(`${failed} skipped`)}.\n`))
+      const skippedNote = chalk.gray(`${failed} skipped`)
+      console.log(chalk.bold(`\n  Done. ${chalk.green(succeeded)} completed, ${skippedNote}.\n`))
       await closeRedis()
     })
 

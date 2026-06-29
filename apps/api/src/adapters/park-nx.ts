@@ -48,8 +48,7 @@
 // can be removed once the framework primitive gains NX semantics.
 
 import { randomUUID } from "node:crypto"
-import { parkDeferredIntent } from "@adjudicate/runtime"
-import { deferCounterKey, deferParkKey } from "@adjudicate/runtime"
+import { deferCounterKey, deferParkKey, parkDeferredIntent } from "@adjudicate/runtime"
 import type {
   ParkDeferredIntentArgs,
   ParkDeferredIntentResult,

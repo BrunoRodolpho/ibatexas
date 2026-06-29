@@ -38,7 +38,7 @@ export interface UseFormReturn<T extends Record<string, unknown>> {
   /** Wraps your submit handler with validation + loading state */
   handleSubmit: (
     onSubmit: (data: T) => void | Promise<void>,
-  ) => (e?: React.FormEvent) => void
+  ) => (e?: React.SyntheticEvent) => void
   /** Current per-field errors */
   errors: Partial<Record<keyof T & string, string>>
   /** Current field values */
@@ -153,7 +153,7 @@ export function useForm<T extends Record<string, unknown>>(
 
   const handleSubmit = useCallback(
     (onSubmit: (data: T) => void | Promise<void>) =>
-      (e?: React.FormEvent) => {
+      (e?: React.SyntheticEvent) => {
         if (e) e.preventDefault()
 
         const result = validate(values)

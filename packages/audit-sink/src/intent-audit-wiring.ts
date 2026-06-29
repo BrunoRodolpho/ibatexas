@@ -114,19 +114,19 @@ const defaultWiringLogger: WiringLogger = {
   warn(obj, msg) {
     if (typeof obj === "string") {
       console.warn("[ibx-audit-sink]", obj)
-    } else if (msg !== undefined) {
-      console.warn("[ibx-audit-sink]", msg, obj)
-    } else {
+    } else if (msg === undefined) {
       console.warn("[ibx-audit-sink]", obj)
+    } else {
+      console.warn("[ibx-audit-sink]", msg, obj)
     }
   },
   error(obj, msg) {
     if (typeof obj === "string") {
       console.error("[ibx-audit-sink]", obj)
-    } else if (msg !== undefined) {
-      console.error("[ibx-audit-sink]", msg, obj)
-    } else {
+    } else if (msg === undefined) {
       console.error("[ibx-audit-sink]", obj)
+    } else {
+      console.error("[ibx-audit-sink]", msg, obj)
     }
   },
 }
@@ -349,8 +349,8 @@ export function buildAuditSinkDependencies(
 
   const postgresWriter = createPostgresAuditWriter({
     prisma: live.prismaWriter,
-    onInsert: (row) => {
-      void row
+    onInsert: (_row) => {
+      // No per-insert telemetry; the inserted row is intentionally ignored.
     },
     onConflictNoOp: () => {
       if (!_auditDedupHook) return
@@ -492,9 +492,8 @@ function defaultNatsPublisher(): AuditSinkNatsPublisher {
   return {
     async publish(_subject, _payload) {
       // No-op: see the NATS-wrinkle note above. Production injects a live
-      // publisher via `buildAuditSinkDependencies`.
-      void _subject
-      void _payload
+      // publisher via `buildAuditSinkDependencies`. Params are intentionally
+      // ignored.
     },
   }
 }

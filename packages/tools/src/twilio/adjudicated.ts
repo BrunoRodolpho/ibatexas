@@ -78,6 +78,7 @@ import {
   type PolicyBundle,
 } from "@adjudicate/core/kernel"
 import { createSystemTaintPolicy } from "@adjudicate/primitives"
+import { randomBytes } from "node:crypto"
 import twilio from "twilio"
 
 // ── Intent-kind vocabulary ──────────────────────────────────────────────
@@ -514,10 +515,10 @@ export const twilioAdjudicated = {
       return client.messages.create({
         from: env.payload.from,
         to: env.payload.to,
-        ...(env.payload.body !== undefined ? { body: env.payload.body } : {}),
-        ...(env.payload.mediaUrl !== undefined
-          ? { mediaUrl: [...env.payload.mediaUrl] }
-          : {}),
+        ...(env.payload.body === undefined ? {} : { body: env.payload.body }),
+        ...(env.payload.mediaUrl === undefined
+          ? {}
+          : { mediaUrl: [...env.payload.mediaUrl] }),
       })
     },
   },
@@ -534,5 +535,5 @@ export const twilioAdjudicated = {
 function cryptoRandomNonce(): string {
   const c = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto
   if (c?.randomUUID) return c.randomUUID()
-  return `twilio-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+  return `twilio-${Date.now()}-${randomBytes(4).toString("hex")}`
 }

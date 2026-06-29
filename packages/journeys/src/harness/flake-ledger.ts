@@ -120,6 +120,17 @@ export function loadFlakeLedger(path: string = DEFAULT_FLAKE_LEDGER_PATH): Flake
   return parsed.data
 }
 
+/**
+ * Stable journey-id comparator: code-unit (lexicographic) order, identical to
+ * a bare `Array.prototype.sort()` — kept so serialized ledgers stay
+ * byte-identical across runs.
+ */
+function compareJourneyIds(a: string, b: string): number {
+  if (a < b) return -1
+  if (a > b) return 1
+  return 0
+}
+
 /** Persist the ledger: stable journey-id key order + trailing newline. */
 export function saveFlakeLedger(
   ledger: FlakeLedger,
@@ -129,7 +140,7 @@ export function saveFlakeLedger(
     version: ledger.version,
     journeys: Object.fromEntries(
       Object.keys(ledger.journeys)
-        .sort()
+        .sort(compareJourneyIds)
         .map((id) => [id, ledger.journeys[id]!]),
     ),
   }
@@ -141,7 +152,7 @@ export function quarantinedJourneyIds(ledger: FlakeLedger): string[] {
   return Object.values(ledger.journeys)
     .filter((e) => e.status === "quarantined")
     .map((e) => e.journey)
-    .sort()
+    .sort(compareJourneyIds)
 }
 
 /** The assignable owner for a journey — "" when unknown/unassigned. */

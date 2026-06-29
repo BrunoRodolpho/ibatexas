@@ -32,7 +32,7 @@
 import { randomUUID } from "node:crypto";
 import type Stripe from "stripe";
 import { AmendOrderInputSchema, NonRetryableError, canPerformAction, isTerminalPaymentStatus, type AmendOrderInput, type AmendOrderResult, type AgentContext, type CustomerAction, type OrderFulfillmentStatus, type PaymentStatus } from "@ibatexas/types";
-import { buildEnvelope } from "@adjudicate/core";
+import { buildEnvelope, type Decision } from "@adjudicate/core";
 import { getAuditSink } from "@ibatexas/audit-sink";
 import { createOrderQueryService, createPaymentQueryService, createPaymentCommandService, type OrderService, type PaymentCreatePayload, type PaymentStatusTransitionPayload } from "@ibatexas/domain";
 import { publishNatsEvent } from "@ibatexas/nats-client";
@@ -217,6 +217,464 @@ async function syncPaymentAndPixAfterAmendment(
   );
 }
 
+// ── Action-handler helpers ────────────────────────────────────────────────
+//
+// amendOrder dispatches each `action` to a dedicated handler below. The
+// handlers were extracted verbatim from amendOrder's per-action `if` blocks to
+// keep each unit's cognitive complexity bounded; behaviour is unchanged. The
+// narrowed (non-null) `customerId` is threaded explicitly so the handlers do
+// not re-derive the auth guard.
+
+/** The Medusa order shape returned by OrderService.getOrder. */
+type AmendedOrder = Awaited<ReturnType<OrderService["getOrder"]>>["order"];
+
+/** pt-BR label for a payment method (cash → dinheiro, pix → PIX, else cartão). */
+function paymentMethodLabelPtBr(method: string): string {
+  if (method === "cash") return "dinheiro";
+  if (method === "pix") return "PIX";
+  return "cartão";
+}
+
+/**
+ * Map a payment kernel decision to a user-facing failure message, or null when
+ * the decision succeeded (EXECUTE / REWRITE). Mirrors the inline
+ * `kind !== EXECUTE && kind !== REWRITE` guards: REFUSE surfaces its own
+ * userFacing copy, any other non-success kind uses the provided fallback.
+ */
+function decisionFailureMessage(
+  decision: Decision,
+  fallback: string,
+): string | null {
+  if (decision.kind === "EXECUTE" || decision.kind === "REWRITE") return null;
+  if (decision.kind === "REFUSE") return decision.refusal.userFacing;
+  return fallback;
+}
+
+async function handleAddItem(
+  parsed: AmendOrderInput,
+  customerId: string,
+  order: AmendedOrder,
+  svc: OrderService,
+): Promise<AmendOrderResult> {
+  // Adding new items has no PONR restriction (unless in delivery, caught above)
+  if (!parsed.variantId) {
+    return { success: false, message: "ID da variante necessário para adicionar item." };
+  }
+  try {
+    // Create order edit → add item → confirm — all kernel-adjudicated.
+    const editData = await medusaAdjudicated<undefined, { order_edit: { id: string } }>({
+      scope: "admin",
+      method: "POST",
+      path: `/admin/orders/${parsed.orderId}/edits`,
+      sourceSubject: `tool:amend-order:${customerId}`,
+      auditSink: getAuditSink(),
+    });
+    const editId = editData.order_edit.id;
+
+    await medusaAdjudicated<{ variant_id: string; quantity: number }, unknown>({
+      scope: "admin",
+      method: "POST",
+      path: `/admin/orders/${parsed.orderId}/edits/${editId}/items`,
+      payload: { variant_id: parsed.variantId, quantity: parsed.quantity ?? 1 },
+      sourceSubject: `tool:amend-order:${customerId}`,
+      auditSink: getAuditSink(),
+    });
+
+    await medusaAdjudicated<undefined, unknown>({
+      scope: "admin",
+      method: "POST",
+      path: `/admin/orders/${parsed.orderId}/edits/${editId}/confirm`,
+      sourceSubject: `tool:amend-order:${customerId}`,
+      auditSink: getAuditSink(),
+    });
+
+    const pixResult = await syncPaymentAndPixAfterAmendment(
+      parsed.orderId,
+      order.metadata?.["stripePaymentIntentId"],
+      svc,
+      customerId,
+    );
+    return {
+      success: true,
+      message: pixResult?.newPixQrCodeText
+        ? "Item adicionado ao pedido. Novo código PIX gerado — use o código abaixo para pagar."
+        : "Item adicionado ao pedido.",
+      ...pixResult,
+    };
+  } catch (err) {
+    return {
+      success: false,
+      message: `Erro ao adicionar item: ${(err as Error).message}`,
+      needsEscalation: true,
+    };
+  }
+}
+
+async function handleRemoveItem(
+  parsed: AmendOrderInput,
+  customerId: string,
+  order: AmendedOrder,
+  svc: OrderService,
+): Promise<AmendOrderResult> {
+  if (!parsed.itemTitle) {
+    return { success: false, message: "Nome do item necessário para remover." };
+  }
+  const result = await svc.cancelItem(parsed.orderId, customerId, parsed.itemTitle);
+
+  if (result.needsEscalation) {
+    void publishNatsEvent("order.escalation_needed", {
+      orderId: parsed.orderId,
+      customerId,
+      reason: "amend_remove_past_ponr",
+      itemTitle: parsed.itemTitle,
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  // Regenerate PIX if item was removed successfully (total changed)
+  if (result.success) {
+    const pixResult = await syncPaymentAndPixAfterAmendment(
+      parsed.orderId,
+      order.metadata?.["stripePaymentIntentId"],
+      svc,
+      customerId,
+    );
+    if (pixResult?.newPixQrCodeText) {
+      return {
+        ...result,
+        message: result.message + " Novo código PIX gerado — use o código abaixo para pagar.",
+        ...pixResult,
+      };
+    }
+  }
+
+  return result;
+}
+
+async function handleUpdateQty(
+  parsed: AmendOrderInput,
+  customerId: string,
+  order: AmendedOrder,
+  svc: OrderService,
+): Promise<AmendOrderResult> {
+  if (!parsed.itemTitle || !parsed.quantity) {
+    return { success: false, message: "Nome do item e quantidade necessários." };
+  }
+
+  // Find the item
+  const item = (order.items ?? []).find(
+    (i) => i.title.toLowerCase() === parsed.itemTitle!.toLowerCase(),
+  );
+  if (!item) {
+    return { success: false, message: `Item "${parsed.itemTitle}" não encontrado no pedido.` };
+  }
+
+  // PONR check for quantity change
+  if (order.created_at) {
+    const { getEffectivePonr, isWithinPonr } = await import("@ibatexas/domain");
+    const metadata = (item as unknown as { metadata?: Record<string, unknown> }).metadata;
+    const amendMinutes = typeof metadata?.amendPonrMinutes === "number"
+      ? metadata.amendPonrMinutes
+      : undefined;
+    const ponr = getEffectivePonr({ amendMinutes });
+    if (!isWithinPonr(new Date(order.created_at), ponr.amendMinutes)) {
+      void publishNatsEvent("order.escalation_needed", {
+        orderId: parsed.orderId,
+        customerId,
+        reason: "amend_qty_past_ponr",
+        itemTitle: parsed.itemTitle,
+        timestamp: new Date().toISOString(),
+      });
+      return {
+        success: false,
+        message: `Prazo para alterar "${parsed.itemTitle}" já passou. Um atendente foi notificado.`,
+        needsEscalation: true,
+      };
+    }
+  }
+
+  // Update quantity via order edit — kernel-adjudicated.
+  try {
+    const editData = await medusaAdjudicated<undefined, { order_edit: { id: string } }>({
+      scope: "admin",
+      method: "POST",
+      path: `/admin/orders/${parsed.orderId}/edits`,
+      sourceSubject: `tool:amend-order:${customerId}`,
+      auditSink: getAuditSink(),
+    });
+    const editId = editData.order_edit.id;
+
+    await medusaAdjudicated<{ quantity: number }, unknown>({
+      scope: "admin",
+      method: "POST",
+      path: `/admin/orders/${parsed.orderId}/edits/${editId}/items/${item.id}`,
+      payload: { quantity: parsed.quantity },
+      sourceSubject: `tool:amend-order:${customerId}`,
+      auditSink: getAuditSink(),
+    });
+
+    await medusaAdjudicated<undefined, unknown>({
+      scope: "admin",
+      method: "POST",
+      path: `/admin/orders/${parsed.orderId}/edits/${editId}/confirm`,
+      sourceSubject: `tool:amend-order:${customerId}`,
+      auditSink: getAuditSink(),
+    });
+
+    const pixResult = await syncPaymentAndPixAfterAmendment(
+      parsed.orderId,
+      order.metadata?.["stripePaymentIntentId"],
+      svc,
+      customerId,
+    );
+    return {
+      success: true,
+      message: pixResult?.newPixQrCodeText
+        ? `Quantidade de "${parsed.itemTitle}" atualizada para ${parsed.quantity}. Novo código PIX gerado — use o código abaixo para pagar.`
+        : `Quantidade de "${parsed.itemTitle}" atualizada para ${parsed.quantity}.`,
+      ...pixResult,
+    };
+  } catch (err) {
+    return {
+      success: false,
+      message: `Erro ao atualizar quantidade: ${(err as Error).message}`,
+      needsEscalation: true,
+    };
+  }
+}
+
+/**
+ * Create the Stripe PaymentIntent for the new method during a change_payment
+ * switch (pix/card only — cash has no PI). Returns the PI and, for pix, the
+ * QR-code expiry. Extracted from the switch critical section verbatim.
+ */
+async function createSwitchPaymentIntent(
+  parsed: AmendOrderInput,
+  customerId: string,
+  activePaymentId: string,
+  amountInCentavos: number,
+): Promise<{ newStripePI: Stripe.PaymentIntent | null; pixExpiresAt: Date | undefined }> {
+  let newStripePI: Stripe.PaymentIntent | null = null;
+  let pixExpiresAt: Date | undefined;
+
+  if (parsed.paymentMethod === "pix" || parsed.paymentMethod === "card") {
+    // Stripe PI create for the new payment method — kernel-adjudicated.
+    newStripePI = await stripeAdjudicated.paymentIntents.create(
+      {
+        amount: amountInCentavos,
+        currency: "brl",
+        payment_method_types: [parsed.paymentMethod],
+        metadata: { orderId: parsed.orderId },
+      },
+      {
+        sourceSubject: `tool:amend-order:change_payment:${customerId}`,
+        idempotencyKey: `amend:switch:${activePaymentId}:${parsed.paymentMethod}`,
+        auditSink: getAuditSink(),
+      },
+    ) as Stripe.PaymentIntent;
+
+    if (parsed.paymentMethod === "pix") {
+      const pixData = (newStripePI as Stripe.PaymentIntent & {
+        next_action?: { pix_display_qr_code?: { expires_at?: number } };
+      }).next_action?.pix_display_qr_code;
+      if (pixData?.expires_at) {
+        pixExpiresAt = new Date(pixData.expires_at * 1000);
+      }
+    }
+  }
+
+  return { newStripePI, pixExpiresAt };
+}
+
+/**
+ * Build the success response for a completed payment-method switch. Extracted
+ * verbatim from the tail of the switch critical section.
+ */
+function buildSwitchSuccessResponse(
+  parsed: AmendOrderInput,
+  newStripePI: Stripe.PaymentIntent | null,
+): AmendOrderResult {
+  if (parsed.paymentMethod === "cash") {
+    return { success: true, message: "Pagamento alterado para dinheiro. Pague na retirada." };
+  }
+
+  if (parsed.paymentMethod === "pix" && newStripePI) {
+    const pixData = (newStripePI as Stripe.PaymentIntent & {
+      next_action?: { pix_display_qr_code?: { data?: string; image_url_svg?: string } };
+    }).next_action?.pix_display_qr_code;
+    return {
+      success: true,
+      message: "Pagamento alterado para PIX. Novo código gerado.",
+      newPixQrCodeText: pixData?.data,
+      newPixQrCodeUrl: pixData?.image_url_svg,
+    };
+  }
+
+  if (parsed.paymentMethod === "card" && newStripePI) {
+    return {
+      success: true,
+      message: "Pagamento alterado para cartão.",
+      stripeClientSecret: newStripePI.client_secret ?? undefined,
+    };
+  }
+
+  return { success: true, message: "Forma de pagamento alterada." };
+}
+
+async function handleChangePayment(
+  parsed: AmendOrderInput,
+  customerId: string,
+  order: AmendedOrder,
+): Promise<AmendOrderResult> {
+  if (!parsed.paymentMethod) {
+    return { success: false, message: "Método de pagamento necessário." };
+  }
+
+  const paymentQuerySvc = createPaymentQueryService();
+  const paymentCmdSvc = createPaymentCommandService();
+  const activePayment = await paymentQuerySvc.getActiveByOrderId(parsed.orderId).catch(() => null);
+
+  // If no Payment row exists, fall back to legacy Medusa metadata path
+  if (!activePayment) {
+    const oldPiId = order.metadata?.["stripePaymentIntentId"] as string | undefined;
+    if (oldPiId) await cancelStalePaymentIntent(oldPiId);
+    return { success: true, message: `Pagamento alterado para ${paymentMethodLabelPtBr(parsed.paymentMethod)}.` };
+  }
+
+  // Block switch if already paid or terminal
+  const terminalForSwitch = ["paid", "refunded", "canceled", "waived"];
+  if (terminalForSwitch.includes(activePayment.status)) {
+    return { success: false, message: "Pagamento já finalizado — não pode trocar." };
+  }
+
+  // Same method — no-op
+  if (activePayment.method === parsed.paymentMethod) {
+    return { success: false, message: "Já está usando este método de pagamento." };
+  }
+
+  const sessionTag = `tool:amend-order:${customerId}`;
+
+  // Atomic switch via distributed lock on payment.
+  // Every payment mutation now flows through *FromEnvelope.
+  const switchResult = await withLock<AmendOrderResult>(`payment:${activePayment.id}`, async () => {
+    // 1. Transition → switching_method (kernel-adjudicated)
+    const toSwitchingEnv = buildEnvelope<
+      "payment.status.transition",
+      PaymentStatusTransitionPayload
+    >({
+      kind: "payment.status.transition",
+      payload: {
+        paymentId: activePayment.id,
+        newStatus: "switching_method",
+        actor: "customer",
+        actorId: customerId,
+        reason: `switch_to_${parsed.paymentMethod}`,
+        expectedVersion: activePayment.version,
+      },
+      nonce: randomUUID(),
+      actor: { principal: "user", sessionId: customerId },
+      taint: "TRUSTED",
+    });
+    const toSwitchOutcome = await paymentCmdSvc.transitionStatusFromEnvelope(toSwitchingEnv);
+    const toSwitchFail = decisionFailureMessage(
+      toSwitchOutcome.decision,
+      "Não foi possível iniciar a troca de método.",
+    );
+    if (toSwitchFail !== null) {
+      return { success: false, message: toSwitchFail };
+    }
+
+    // 2. Cancel old Stripe PI
+    if (activePayment.stripePaymentIntentId) {
+      await cancelStalePaymentIntent(activePayment.stripePaymentIntentId);
+    }
+
+    // 3. Transition old payment → canceled (kernel-adjudicated)
+    const afterSwitch = await paymentQuerySvc.getById(activePayment.id);
+    const cancelEnv = buildEnvelope<
+      "payment.status.transition",
+      PaymentStatusTransitionPayload
+    >({
+      kind: "payment.status.transition",
+      payload: {
+        paymentId: activePayment.id,
+        newStatus: "canceled",
+        actor: "customer",
+        actorId: customerId,
+        reason: "method_switch_completed",
+        expectedVersion: afterSwitch?.version ?? activePayment.version + 1,
+      },
+      nonce: randomUUID(),
+      actor: { principal: "user", sessionId: customerId },
+      taint: "TRUSTED",
+    });
+    const cancelOutcome = await paymentCmdSvc.transitionStatusFromEnvelope(cancelEnv);
+    const cancelFail = decisionFailureMessage(
+      cancelOutcome.decision,
+      "Não foi possível cancelar o pagamento anterior.",
+    );
+    if (cancelFail !== null) {
+      return { success: false, message: cancelFail };
+    }
+
+    // 4. Create new Payment row (kernel-adjudicated)
+    const { newStripePI, pixExpiresAt } = await createSwitchPaymentIntent(
+      parsed,
+      customerId,
+      activePayment.id,
+      activePayment.amountInCentavos,
+    );
+
+    const createPayload: PaymentCreatePayload = {
+      orderId: parsed.orderId,
+      method: parsed.paymentMethod!,
+      amountInCentavos: activePayment.amountInCentavos,
+      ...(newStripePI?.id ? { stripePaymentIntentId: newStripePI.id } : {}),
+      ...(pixExpiresAt ? { pixExpiresAt: pixExpiresAt.toISOString() } : {}),
+    };
+    const createEnv = buildEnvelope<"payment.create", PaymentCreatePayload>({
+      kind: "payment.create",
+      payload: createPayload,
+      nonce: randomUUID(),
+      actor: { principal: "system", sessionId: sessionTag },
+      taint: "SYSTEM",
+    });
+    const createOutcome = await paymentCmdSvc.createFromEnvelope(createEnv);
+    const createFail = decisionFailureMessage(
+      createOutcome.decision,
+      "Não foi possível criar pagamento com novo método.",
+    );
+    if (createFail !== null) {
+      return { success: false, message: createFail };
+    }
+    const newPayment = createOutcome.result!;
+
+    // 5. Publish events
+    void publishNatsEvent("payment.method_changed", {
+      orderId: parsed.orderId,
+      paymentId: newPayment.id,
+      previousMethod: activePayment.method,
+      newMethod: parsed.paymentMethod,
+      timestamp: new Date().toISOString(),
+    });
+
+    void publishNatsEvent("payment.status_changed", {
+      orderId: parsed.orderId,
+      paymentId: newPayment.id,
+      previousStatus: "awaiting_payment",
+      newStatus: parsed.paymentMethod === "cash" ? "cash_pending" : "payment_pending",
+      method: parsed.paymentMethod,
+      version: newPayment.version,
+      timestamp: new Date().toISOString(),
+    });
+
+    // 6. Build response
+    return buildSwitchSuccessResponse(parsed, newStripePI);
+  });
+
+  return switchResult ?? { success: false, message: "Operação em andamento. Tente novamente em instantes." };
+}
+
 export async function amendOrder(
   input: AmendOrderInput,
   ctx: AgentContext,
@@ -226,12 +684,13 @@ export async function amendOrder(
   if (!ctx.customerId) {
     throw new NonRetryableError("Autenticação necessária para modificar pedido.");
   }
+  const customerId = ctx.customerId;
 
   // W8-V1: route order.service mutations through the kernel-gated wrapper
   // via the shared factory. svc.getOrder (GET) still bypasses the wrapper;
   // mutating helpers (svc.cancelItem) now go through medusaAdjudicated.
   const svc = createTooledOrderService("tool:amend_order");
-  const { order, ownershipValid } = await svc.getOrder(parsed.orderId, ctx.customerId);
+  const { order, ownershipValid } = await svc.getOrder(parsed.orderId, customerId);
 
   if (!ownershipValid) {
     return { success: false, message: "Pedido não encontrado." };
@@ -265,386 +724,19 @@ export async function amendOrder(
   }
 
   if (parsed.action === "add") {
-    // Adding new items has no PONR restriction (unless in delivery, caught above)
-    if (!parsed.variantId) {
-      return { success: false, message: "ID da variante necessário para adicionar item." };
-    }
-    try {
-      // Create order edit → add item → confirm — all kernel-adjudicated.
-      const editData = await medusaAdjudicated<undefined, { order_edit: { id: string } }>({
-        scope: "admin",
-        method: "POST",
-        path: `/admin/orders/${parsed.orderId}/edits`,
-        sourceSubject: `tool:amend-order:${ctx.customerId}`,
-        auditSink: getAuditSink(),
-      });
-      const editId = editData.order_edit.id;
-
-      await medusaAdjudicated<{ variant_id: string; quantity: number }, unknown>({
-        scope: "admin",
-        method: "POST",
-        path: `/admin/orders/${parsed.orderId}/edits/${editId}/items`,
-        payload: { variant_id: parsed.variantId, quantity: parsed.quantity ?? 1 },
-        sourceSubject: `tool:amend-order:${ctx.customerId}`,
-        auditSink: getAuditSink(),
-      });
-
-      await medusaAdjudicated<undefined, unknown>({
-        scope: "admin",
-        method: "POST",
-        path: `/admin/orders/${parsed.orderId}/edits/${editId}/confirm`,
-        sourceSubject: `tool:amend-order:${ctx.customerId}`,
-        auditSink: getAuditSink(),
-      });
-
-      const pixResult = await syncPaymentAndPixAfterAmendment(
-        parsed.orderId,
-        order.metadata?.["stripePaymentIntentId"],
-        svc,
-        ctx.customerId,
-      );
-      return {
-        success: true,
-        message: pixResult?.newPixQrCodeText
-          ? "Item adicionado ao pedido. Novo código PIX gerado — use o código abaixo para pagar."
-          : "Item adicionado ao pedido.",
-        ...pixResult,
-      };
-    } catch (err) {
-      return {
-        success: false,
-        message: `Erro ao adicionar item: ${(err as Error).message}`,
-        needsEscalation: true,
-      };
-    }
+    return handleAddItem(parsed, customerId, order, svc);
   }
 
   if (parsed.action === "remove") {
-    if (!parsed.itemTitle) {
-      return { success: false, message: "Nome do item necessário para remover." };
-    }
-    const result = await svc.cancelItem(parsed.orderId, ctx.customerId, parsed.itemTitle);
-
-    if (result.needsEscalation) {
-      void publishNatsEvent("order.escalation_needed", {
-        orderId: parsed.orderId,
-        customerId: ctx.customerId,
-        reason: "amend_remove_past_ponr",
-        itemTitle: parsed.itemTitle,
-        timestamp: new Date().toISOString(),
-      });
-    }
-
-    // Regenerate PIX if item was removed successfully (total changed)
-    if (result.success) {
-      const pixResult = await syncPaymentAndPixAfterAmendment(
-        parsed.orderId,
-        order.metadata?.["stripePaymentIntentId"],
-        svc,
-        ctx.customerId,
-      );
-      if (pixResult?.newPixQrCodeText) {
-        return {
-          ...result,
-          message: result.message + " Novo código PIX gerado — use o código abaixo para pagar.",
-          ...pixResult,
-        };
-      }
-    }
-
-    return result;
+    return handleRemoveItem(parsed, customerId, order, svc);
   }
 
   if (parsed.action === "update_qty") {
-    if (!parsed.itemTitle || !parsed.quantity) {
-      return { success: false, message: "Nome do item e quantidade necessários." };
-    }
-
-    // Find the item
-    const item = (order.items ?? []).find(
-      (i) => i.title.toLowerCase() === parsed.itemTitle!.toLowerCase(),
-    );
-    if (!item) {
-      return { success: false, message: `Item "${parsed.itemTitle}" não encontrado no pedido.` };
-    }
-
-    // PONR check for quantity change
-    if (order.created_at) {
-      const { getEffectivePonr, isWithinPonr } = await import("@ibatexas/domain");
-      const metadata = (item as unknown as { metadata?: Record<string, unknown> }).metadata;
-      const amendMinutes = typeof metadata?.amendPonrMinutes === "number"
-        ? metadata.amendPonrMinutes
-        : undefined;
-      const ponr = getEffectivePonr({ amendMinutes });
-      if (!isWithinPonr(new Date(order.created_at), ponr.amendMinutes)) {
-        void publishNatsEvent("order.escalation_needed", {
-          orderId: parsed.orderId,
-          customerId: ctx.customerId,
-          reason: "amend_qty_past_ponr",
-          itemTitle: parsed.itemTitle,
-          timestamp: new Date().toISOString(),
-        });
-        return {
-          success: false,
-          message: `Prazo para alterar "${parsed.itemTitle}" já passou. Um atendente foi notificado.`,
-          needsEscalation: true,
-        };
-      }
-    }
-
-    // Update quantity via order edit — kernel-adjudicated.
-    try {
-      const editData = await medusaAdjudicated<undefined, { order_edit: { id: string } }>({
-        scope: "admin",
-        method: "POST",
-        path: `/admin/orders/${parsed.orderId}/edits`,
-        sourceSubject: `tool:amend-order:${ctx.customerId}`,
-        auditSink: getAuditSink(),
-      });
-      const editId = editData.order_edit.id;
-
-      await medusaAdjudicated<{ quantity: number }, unknown>({
-        scope: "admin",
-        method: "POST",
-        path: `/admin/orders/${parsed.orderId}/edits/${editId}/items/${item.id}`,
-        payload: { quantity: parsed.quantity },
-        sourceSubject: `tool:amend-order:${ctx.customerId}`,
-        auditSink: getAuditSink(),
-      });
-
-      await medusaAdjudicated<undefined, unknown>({
-        scope: "admin",
-        method: "POST",
-        path: `/admin/orders/${parsed.orderId}/edits/${editId}/confirm`,
-        sourceSubject: `tool:amend-order:${ctx.customerId}`,
-        auditSink: getAuditSink(),
-      });
-
-      const pixResult = await syncPaymentAndPixAfterAmendment(
-        parsed.orderId,
-        order.metadata?.["stripePaymentIntentId"],
-        svc,
-        ctx.customerId,
-      );
-      return {
-        success: true,
-        message: pixResult?.newPixQrCodeText
-          ? `Quantidade de "${parsed.itemTitle}" atualizada para ${parsed.quantity}. Novo código PIX gerado — use o código abaixo para pagar.`
-          : `Quantidade de "${parsed.itemTitle}" atualizada para ${parsed.quantity}.`,
-        ...pixResult,
-      };
-    } catch (err) {
-      return {
-        success: false,
-        message: `Erro ao atualizar quantidade: ${(err as Error).message}`,
-        needsEscalation: true,
-      };
-    }
+    return handleUpdateQty(parsed, customerId, order, svc);
   }
 
   if (parsed.action === "change_payment") {
-    if (!parsed.paymentMethod) {
-      return { success: false, message: "Método de pagamento necessário." };
-    }
-
-    const paymentQuerySvc = createPaymentQueryService();
-    const paymentCmdSvc = createPaymentCommandService();
-    const activePayment = await paymentQuerySvc.getActiveByOrderId(parsed.orderId).catch(() => null);
-
-    // If no Payment row exists, fall back to legacy Medusa metadata path
-    if (!activePayment) {
-      const oldPiId = order.metadata?.["stripePaymentIntentId"] as string | undefined;
-      if (oldPiId) await cancelStalePaymentIntent(oldPiId);
-      return { success: true, message: `Pagamento alterado para ${parsed.paymentMethod === "cash" ? "dinheiro" : parsed.paymentMethod === "pix" ? "PIX" : "cartão"}.` };
-    }
-
-    // Block switch if already paid or terminal
-    const terminalForSwitch = ["paid", "refunded", "canceled", "waived"];
-    if (terminalForSwitch.includes(activePayment.status)) {
-      return { success: false, message: "Pagamento já finalizado — não pode trocar." };
-    }
-
-    // Same method — no-op
-    if (activePayment.method === parsed.paymentMethod) {
-      return { success: false, message: "Já está usando este método de pagamento." };
-    }
-
-    const sessionTag = `tool:amend-order:${ctx.customerId}`;
-
-    // Atomic switch via distributed lock on payment.
-    // Every payment mutation now flows through *FromEnvelope.
-    const switchResult = await withLock<AmendOrderResult>(`payment:${activePayment.id}`, async () => {
-      // 1. Transition → switching_method (kernel-adjudicated)
-      const toSwitchingEnv = buildEnvelope<
-        "payment.status.transition",
-        PaymentStatusTransitionPayload
-      >({
-        kind: "payment.status.transition",
-        payload: {
-          paymentId: activePayment.id,
-          newStatus: "switching_method",
-          actor: "customer",
-          actorId: ctx.customerId,
-          reason: `switch_to_${parsed.paymentMethod}`,
-          expectedVersion: activePayment.version,
-        },
-        nonce: randomUUID(),
-        actor: { principal: "user", sessionId: ctx.customerId! },
-        taint: "TRUSTED",
-      });
-      const toSwitchOutcome = await paymentCmdSvc.transitionStatusFromEnvelope(toSwitchingEnv);
-      if (
-        toSwitchOutcome.decision.kind !== "EXECUTE" &&
-        toSwitchOutcome.decision.kind !== "REWRITE"
-      ) {
-        const msg =
-          toSwitchOutcome.decision.kind === "REFUSE"
-            ? toSwitchOutcome.decision.refusal.userFacing
-            : "Não foi possível iniciar a troca de método.";
-        return { success: false, message: msg };
-      }
-
-      // 2. Cancel old Stripe PI
-      if (activePayment.stripePaymentIntentId) {
-        await cancelStalePaymentIntent(activePayment.stripePaymentIntentId);
-      }
-
-      // 3. Transition old payment → canceled (kernel-adjudicated)
-      const afterSwitch = await paymentQuerySvc.getById(activePayment.id);
-      const cancelEnv = buildEnvelope<
-        "payment.status.transition",
-        PaymentStatusTransitionPayload
-      >({
-        kind: "payment.status.transition",
-        payload: {
-          paymentId: activePayment.id,
-          newStatus: "canceled",
-          actor: "customer",
-          actorId: ctx.customerId,
-          reason: "method_switch_completed",
-          expectedVersion: afterSwitch?.version ?? activePayment.version + 1,
-        },
-        nonce: randomUUID(),
-        actor: { principal: "user", sessionId: ctx.customerId! },
-        taint: "TRUSTED",
-      });
-      const cancelOutcome = await paymentCmdSvc.transitionStatusFromEnvelope(cancelEnv);
-      if (
-        cancelOutcome.decision.kind !== "EXECUTE" &&
-        cancelOutcome.decision.kind !== "REWRITE"
-      ) {
-        const msg =
-          cancelOutcome.decision.kind === "REFUSE"
-            ? cancelOutcome.decision.refusal.userFacing
-            : "Não foi possível cancelar o pagamento anterior.";
-        return { success: false, message: msg };
-      }
-
-      // 4. Create new Payment row (kernel-adjudicated)
-      let newStripePI: Stripe.PaymentIntent | null = null;
-      let pixExpiresAt: Date | undefined;
-
-      if (parsed.paymentMethod === "pix" || parsed.paymentMethod === "card") {
-        // Stripe PI create for the new payment method — kernel-adjudicated.
-        newStripePI = await stripeAdjudicated.paymentIntents.create(
-          {
-            amount: activePayment.amountInCentavos,
-            currency: "brl",
-            payment_method_types: [parsed.paymentMethod],
-            metadata: { orderId: parsed.orderId },
-          },
-          {
-            sourceSubject: `tool:amend-order:change_payment:${ctx.customerId}`,
-            idempotencyKey: `amend:switch:${activePayment.id}:${parsed.paymentMethod}`,
-            auditSink: getAuditSink(),
-          },
-        ) as Stripe.PaymentIntent;
-
-        if (parsed.paymentMethod === "pix") {
-          const pixData = (newStripePI as Stripe.PaymentIntent & {
-            next_action?: { pix_display_qr_code?: { expires_at?: number } };
-          }).next_action?.pix_display_qr_code;
-          if (pixData?.expires_at) {
-            pixExpiresAt = new Date(pixData.expires_at * 1000);
-          }
-        }
-      }
-
-      const createPayload: PaymentCreatePayload = {
-        orderId: parsed.orderId,
-        method: parsed.paymentMethod!,
-        amountInCentavos: activePayment.amountInCentavos,
-        ...(newStripePI?.id ? { stripePaymentIntentId: newStripePI.id } : {}),
-        ...(pixExpiresAt ? { pixExpiresAt: pixExpiresAt.toISOString() } : {}),
-      };
-      const createEnv = buildEnvelope<"payment.create", PaymentCreatePayload>({
-        kind: "payment.create",
-        payload: createPayload,
-        nonce: randomUUID(),
-        actor: { principal: "system", sessionId: sessionTag },
-        taint: "SYSTEM",
-      });
-      const createOutcome = await paymentCmdSvc.createFromEnvelope(createEnv);
-      if (
-        createOutcome.decision.kind !== "EXECUTE" &&
-        createOutcome.decision.kind !== "REWRITE"
-      ) {
-        const msg =
-          createOutcome.decision.kind === "REFUSE"
-            ? createOutcome.decision.refusal.userFacing
-            : "Não foi possível criar pagamento com novo método.";
-        return { success: false, message: msg };
-      }
-      const newPayment = createOutcome.result!;
-
-      // 5. Publish events
-      void publishNatsEvent("payment.method_changed", {
-        orderId: parsed.orderId,
-        paymentId: newPayment.id,
-        previousMethod: activePayment.method,
-        newMethod: parsed.paymentMethod,
-        timestamp: new Date().toISOString(),
-      });
-
-      void publishNatsEvent("payment.status_changed", {
-        orderId: parsed.orderId,
-        paymentId: newPayment.id,
-        previousStatus: "awaiting_payment",
-        newStatus: parsed.paymentMethod === "cash" ? "cash_pending" : "payment_pending",
-        method: parsed.paymentMethod,
-        version: newPayment.version,
-        timestamp: new Date().toISOString(),
-      });
-
-      // Build response
-      if (parsed.paymentMethod === "cash") {
-        return { success: true, message: "Pagamento alterado para dinheiro. Pague na retirada." };
-      }
-
-      if (parsed.paymentMethod === "pix" && newStripePI) {
-        const pixData = (newStripePI as Stripe.PaymentIntent & {
-          next_action?: { pix_display_qr_code?: { data?: string; image_url_svg?: string } };
-        }).next_action?.pix_display_qr_code;
-        return {
-          success: true,
-          message: "Pagamento alterado para PIX. Novo código gerado.",
-          newPixQrCodeText: pixData?.data,
-          newPixQrCodeUrl: pixData?.image_url_svg,
-        };
-      }
-
-      if (parsed.paymentMethod === "card" && newStripePI) {
-        return {
-          success: true,
-          message: "Pagamento alterado para cartão.",
-          stripeClientSecret: newStripePI.client_secret ?? undefined,
-        };
-      }
-
-      return { success: true, message: "Forma de pagamento alterada." };
-    });
-
-    return switchResult ?? { success: false, message: "Operação em andamento. Tente novamente em instantes." };
+    return handleChangePayment(parsed, customerId, order);
   }
 
   return { success: false, message: "Ação não reconhecida." };

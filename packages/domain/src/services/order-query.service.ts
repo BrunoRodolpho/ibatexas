@@ -4,8 +4,7 @@
 // this service. The projection table is the source of truth for reads.
 
 import { prisma } from "../client.js"
-import type { OrderFulfillmentStatus as PrismaFulfillmentStatus } from "../generated/prisma-client/client.js"
-import type { OrderProjection, OrderStatusHistory } from "../generated/prisma-client/client.js"
+import type { OrderFulfillmentStatus as PrismaFulfillmentStatus, OrderProjection, OrderStatusHistory } from "../generated/prisma-client/client.js"
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -78,7 +77,7 @@ export function createOrderQueryService(): OrderQueryService {
       // owner never matches a supplied customerId, so an unattributed order is
       // REFUSED rather than leaked (Inv 2: "no owner" ≠ "any owner"). Returning
       // null keeps the existing not-found contract — callers already handle it.
-      if (opts?.customerId !== undefined && (order === null || order.customerId !== opts.customerId)) {
+      if (opts?.customerId !== undefined && order?.customerId !== opts.customerId) {
         return null
       }
 

@@ -48,6 +48,24 @@ function describe(job: Job): { id: string; type: string; eventId: string } {
   }
 }
 
+/** Replay a single job. Returns true only when the job was actually retried. */
+async function replayJob(job: Job, dry: boolean): Promise<boolean> {
+  const { id, type } = describe(job)
+  if (dry) {
+    console.log(chalk.dim(`  would replay ${id} (${type}, attempts ${job.attemptsMade})`))
+    return false
+  }
+  // Only failed jobs can be retried; skip anything mid-flight.
+  const state = await job.getState()
+  if (state !== "failed") {
+    console.log(chalk.yellow(`  skip ${id} — state is ${state}, not failed`))
+    return false
+  }
+  await job.retry() // failed → waiting; the api worker reprocesses it
+  console.log(chalk.green(`  ✓ replayed ${id} (${type})`))
+  return true
+}
+
 export function registerJobsCommands(group: Command): void {
   group.description("Background jobs — inspect and replay failed BullMQ jobs")
 
@@ -58,7 +76,7 @@ export function registerJobsCommands(group: Command): void {
     .option("-n, --count <n>", "Max jobs to show", "50")
     .action(async (queue: string | undefined, opts: { count: string }) => {
       const name = queue ?? DEFAULT_QUEUE
-      const limit = parseInt(opts.count, 10) || 50
+      const limit = Number.parseInt(opts.count, 10) || 50
       const spinner = ora(`Reading failed jobs in ${name}…`).start()
       let q: Queue | undefined
       try {
@@ -106,14 +124,16 @@ export function registerJobsCommands(group: Command): void {
         }
         const state = await job.getState()
         const { id, type, eventId } = describe(job)
-        console.log(`${chalk.bold(`Job ${id}`)} ${chalk.dim(`(${state})`)}`)
+        const jobHeader = chalk.bold(`Job ${id}`)
+        const stateLabel = chalk.dim(`(${state})`)
+        console.log(`${jobHeader} ${stateLabel}`)
         console.log(`  name          ${job.name}`)
         console.log(`  event.type    ${type}`)
         console.log(`  event.id      ${eventId}`)
         console.log(`  attemptsMade  ${chalk.red(String(job.attemptsMade))}`)
         if (job.failedReason) {
           console.log(chalk.red(`  failedReason:`))
-          console.log(chalk.gray(`    ${job.failedReason.split("\n").join("\n    ")}`))
+          console.log(chalk.gray(`    ${job.failedReason.replaceAll("\n", "\n    ")}`))
         }
       } catch (err) {
         spinner.fail(chalk.red(`Failed: ${(err as Error).message}`))
@@ -152,20 +172,7 @@ export function registerJobsCommands(group: Command): void {
 
         let replayed = 0
         for (const job of targets) {
-          const { id, type } = describe(job)
-          if (dry) {
-            console.log(chalk.dim(`  would replay ${id} (${type}, attempts ${job.attemptsMade})`))
-            continue
-          }
-          // Only failed jobs can be retried; skip anything mid-flight.
-          const state = await job.getState()
-          if (state !== "failed") {
-            console.log(chalk.yellow(`  skip ${id} — state is ${state}, not failed`))
-            continue
-          }
-          await job.retry() // failed → waiting; the api worker reprocesses it
-          console.log(chalk.green(`  ✓ replayed ${id} (${type})`))
-          replayed++
+          if (await replayJob(job, dry)) replayed++
         }
 
         if (dry) {

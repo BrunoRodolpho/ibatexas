@@ -285,12 +285,12 @@ describeIntegration(
           `AND column_name='metadata_jsonb'`,
         [SCHEMA],
       )
-      expect(col.rows.length).toBe(1)
+      expect(col.rows).toHaveLength(1)
 
       const ledger = await client.query(
         `SELECT filename FROM audit_schema_migrations`,
       )
-      expect(ledger.rows.length).toBe(migrations.length)
+      expect(ledger.rows).toHaveLength(migrations.length)
 
       // The original v4 row survived (no data loss).
       const rows = await client.query(

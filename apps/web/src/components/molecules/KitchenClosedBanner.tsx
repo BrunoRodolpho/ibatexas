@@ -7,12 +7,12 @@ import { Link } from '@/i18n/navigation'
 import type { CartItem } from '@/domains/cart'
 
 interface KitchenClosedBannerProps {
-  nextOpenDay: string
-  kitchenItems: CartItem[]
+  readonly nextOpenDay: string
+  readonly kitchenItems: CartItem[]
   /** When provided, shows a "remove unavailable items" button. */
-  onRemoveKitchenItems?: () => void
+  readonly onRemoveKitchenItems?: () => void
   /** Compact mode for cart drawer (hides item list). */
-  compact?: boolean
+  readonly compact?: boolean
 }
 
 export function KitchenClosedBanner({

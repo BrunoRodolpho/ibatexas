@@ -95,7 +95,7 @@ export const INTENT_KIND_PATTERN = /^[a-z][a-z0-9_]*(\.[a-z0-9_]+)+$/
  * `cart_id` through — T1a-13: the storefront line-items route's body field
  * tripped the original any-length pattern).
  */
-export const RAW_MEDUSA_ID_PATTERN = /(^|[^A-Za-z0-9_])(prod|variant|cart)_[A-Za-z0-9]{8,}/
+export const RAW_MEDUSA_ID_PATTERN = /(^|\W)(prod|variant|cart)_[A-Za-z0-9]{8,}/
 
 // ── Acts ─────────────────────────────────────────────────────────────────────
 
@@ -340,17 +340,17 @@ export interface JourneySchemaError {
   message: string
 }
 
-const CUSTOM_CODES: readonly JourneySchemaErrorCode[] = [
+const CUSTOM_CODES: ReadonlySet<JourneySchemaErrorCode> = new Set([
   "raw_medusa_id",
   "blocked_without_reason",
   "active_with_blockers",
   "chat_act_missing_text",
-]
+])
 
 function namedCode(issue: z.core.$ZodIssue): JourneySchemaErrorCode {
   if (issue.code === "custom") {
     const prefix = issue.message.split(":", 1)[0] as JourneySchemaErrorCode
-    return CUSTOM_CODES.includes(prefix) ? prefix : "schema_violation"
+    return CUSTOM_CODES.has(prefix) ? prefix : "schema_violation"
   }
   const [head, , leaf] = issue.path
   if (head === "id") return "invalid_journey_id"

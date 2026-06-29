@@ -60,28 +60,34 @@ export function getMealPeriodFromSchedule(
   const { hour, minute, dayOfWeek } = getLocalTime(tz)
   const timeMinutes = hour * 60 + minute
 
-  if (schedule) {
-    const day = schedule.days.find((d) => d.dayOfWeek === dayOfWeek)
-    if (!day || !day.isOpen) return "closed"
+  if (!schedule) return mealPeriodFromEnv(hour)
 
-    // Check if today is a holiday
-    const todayStr = getLocalDateStr(tz)
-    if (schedule.holidays.some((h) => h.date === todayStr)) return "closed"
+  const day = schedule.days.find((d) => d.dayOfWeek === dayOfWeek)
+  if (!day?.isOpen) return "closed"
 
-    if (day.lunchStart && day.lunchEnd) {
-      const lunchStartMin = parseTimeToMinutes(day.lunchStart)
-      const lunchEndMin = parseTimeToMinutes(day.lunchEnd)
-      if (timeMinutes >= lunchStartMin && timeMinutes < lunchEndMin) return "lunch"
-    }
-    if (day.dinnerStart && day.dinnerEnd) {
-      const dinnerStartMin = parseTimeToMinutes(day.dinnerStart)
-      const dinnerEndMin = parseTimeToMinutes(day.dinnerEnd)
-      if (timeMinutes >= dinnerStartMin && timeMinutes < dinnerEndMin) return "dinner"
-    }
-    return "closed"
-  }
+  // Check if today is a holiday
+  const todayStr = getLocalDateStr(tz)
+  if (schedule.holidays.some((h) => h.date === todayStr)) return "closed"
 
-  // Fallback to env vars
+  if (isWithinTimeWindow(timeMinutes, day.lunchStart, day.lunchEnd)) return "lunch"
+  if (isWithinTimeWindow(timeMinutes, day.dinnerStart, day.dinnerEnd)) return "dinner"
+  return "closed"
+}
+
+/** True when `timeMinutes` falls inside the [start, end) window, if both bounds exist. */
+function isWithinTimeWindow(
+  timeMinutes: number,
+  start: string | null,
+  end: string | null,
+): boolean {
+  if (!start || !end) return false
+  const startMin = parseTimeToMinutes(start)
+  const endMin = parseTimeToMinutes(end)
+  return timeMinutes >= startMin && timeMinutes < endMin
+}
+
+/** Env-var fallback meal period when no DB schedule is provided. */
+function mealPeriodFromEnv(hour: number): "lunch" | "dinner" | "closed" {
   const lunchStart = Number.parseInt(process.env.RESTAURANT_LUNCH_START_HOUR || "11", 10)
   const lunchEnd = Number.parseInt(process.env.RESTAURANT_LUNCH_END_HOUR || "15", 10)
   const dinnerStart = Number.parseInt(process.env.RESTAURANT_DINNER_START_HOUR || "18", 10)
@@ -139,7 +145,7 @@ export function getNextOpenDay(
 
     // Skip closed days
     const day = schedule.days.find((d) => d.dayOfWeek === futureDow)
-    if (!day || !day.isOpen) continue
+    if (!day?.isOpen) continue
 
     // Build human-readable string
     if (offset === 1) return "amanhã"
@@ -172,7 +178,7 @@ export function getFrozenPickupMessage(
     const futureDow = (dayOfWeek + offset) % 7
     if (holidayDates.has(futureDate)) continue
     const day = schedule.days.find((d) => d.dayOfWeek === futureDow)
-    if (!day || !day.isOpen) continue
+    if (!day?.isOpen) continue
 
     const periods: string[] = []
     if (day.lunchStart && day.lunchEnd) {

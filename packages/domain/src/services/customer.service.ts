@@ -58,6 +58,96 @@ export interface CustomerServiceOptions {
   readonly log?: { readonly warn?: (...args: unknown[]) => void; readonly error?: (...args: unknown[]) => void }
 }
 
+// ── Module-local executors ──────────────────────────────────────────────
+//
+// The Prisma logic shared by the `@deprecated` bare-arg methods and the
+// envelope-typed entry points lives here. The envelope wrappers MUST NOT
+// call the `@deprecated` methods directly (that would route through a
+// deprecated surface); both call these helpers instead.
+
+async function performUpdatePreferences(
+  customerId: string,
+  input: {
+    dietaryRestrictions?: string[]
+    allergenExclusions?: string[]
+    favoriteCategories?: string[]
+  },
+) {
+  const allergenExclusions = Array.isArray(input.allergenExclusions)
+    ? input.allergenExclusions
+    : []
+
+  const dietaryRestrictions = Array.isArray(input.dietaryRestrictions)
+    ? input.dietaryRestrictions
+    : []
+
+  const favoriteCategories = Array.isArray(input.favoriteCategories)
+    ? input.favoriteCategories
+    : []
+
+  await prisma.customerPreferences.upsert({
+    where: { customerId },
+    create: { customerId, allergenExclusions, dietaryRestrictions, favoriteCategories },
+    update: {
+      ...(input.allergenExclusions === undefined ? {} : { allergenExclusions }),
+      ...(input.dietaryRestrictions === undefined ? {} : { dietaryRestrictions }),
+      ...(input.favoriteCategories === undefined ? {} : { favoriteCategories }),
+    },
+  })
+
+  return { allergenExclusions, dietaryRestrictions, favoriteCategories }
+}
+
+async function performSubmitReview(input: {
+  customerId: string
+  productId: string
+  orderId: string
+  rating: number
+  comment?: string
+  channel: Channel
+}) {
+  const { customerId, productId, orderId, rating, comment, channel } = input
+
+  await prisma.review.upsert({
+    where: { orderId_customerId: { orderId, customerId } },
+    create: {
+      orderId,
+      productId,
+      productIds: [productId],
+      customerId,
+      rating,
+      comment: comment ?? null,
+      channel,
+    },
+    update: { rating, comment: comment ?? null },
+  })
+
+  const stats = await prisma.review.aggregate({
+    where: { productId },
+    _avg: { rating: true },
+    _count: { rating: true },
+  })
+
+  return {
+    avgRating: stats._avg.rating ?? rating,
+    reviewCount: stats._count.rating,
+  }
+}
+
+async function performUpdatePixDetails(
+  customerId: string,
+  data: { name?: string; email?: string; cpf?: string },
+) {
+  await prisma.customer.update({
+    where: { id: customerId },
+    data: {
+      ...(data.name ? { name: data.name } : {}),
+      ...(data.email ? { email: data.email } : {}),
+      ...(data.cpf ? { cpf: data.cpf } : {}),
+    },
+  })
+}
+
 export function createCustomerService(options?: CustomerServiceOptions) {
   const adjudicateOptions = {
     ...(options?.auditSink ? { auditSink: options.auditSink } : {}),
@@ -101,29 +191,7 @@ export function createCustomerService(options?: CustomerServiceOptions) {
         favoriteCategories?: string[]
       },
     ) {
-      const allergenExclusions = Array.isArray(input.allergenExclusions)
-        ? input.allergenExclusions
-        : []
-
-      const dietaryRestrictions = Array.isArray(input.dietaryRestrictions)
-        ? input.dietaryRestrictions
-        : []
-
-      const favoriteCategories = Array.isArray(input.favoriteCategories)
-        ? input.favoriteCategories
-        : []
-
-      await prisma.customerPreferences.upsert({
-        where: { customerId },
-        create: { customerId, allergenExclusions, dietaryRestrictions, favoriteCategories },
-        update: {
-          ...(input.allergenExclusions === undefined ? {} : { allergenExclusions }),
-          ...(input.dietaryRestrictions === undefined ? {} : { dietaryRestrictions }),
-          ...(input.favoriteCategories === undefined ? {} : { favoriteCategories }),
-        },
-      })
-
-      return { allergenExclusions, dietaryRestrictions, favoriteCategories }
+      return performUpdatePreferences(customerId, input)
     },
 
     /**
@@ -144,32 +212,7 @@ export function createCustomerService(options?: CustomerServiceOptions) {
       comment?: string
       channel: Channel
     }) {
-      const { customerId, productId, orderId, rating, comment, channel } = input
-
-      await prisma.review.upsert({
-        where: { orderId_customerId: { orderId, customerId } },
-        create: {
-          orderId,
-          productId,
-          productIds: [productId],
-          customerId,
-          rating,
-          comment: comment ?? null,
-          channel,
-        },
-        update: { rating, comment: comment ?? null },
-      })
-
-      const stats = await prisma.review.aggregate({
-        where: { productId },
-        _avg: { rating: true },
-        _count: { rating: true },
-      })
-
-      return {
-        avgRating: stats._avg.rating ?? rating,
-        reviewCount: stats._count.rating,
-      }
+      return performSubmitReview(input)
     },
 
     /**
@@ -224,14 +267,7 @@ export function createCustomerService(options?: CustomerServiceOptions) {
      *   `packages/pack-customer-onboarding`.
      */
     async updatePixDetails(customerId: string, data: { name?: string; email?: string; cpf?: string }) {
-      await prisma.customer.update({
-        where: { id: customerId },
-        data: {
-          ...(data.name ? { name: data.name } : {}),
-          ...(data.email ? { email: data.email } : {}),
-          ...(data.cpf ? { cpf: data.cpf } : {}),
-        },
-      })
+      return performUpdatePixDetails(customerId, data)
     },
 
     /**
@@ -379,14 +415,14 @@ export function createCustomerService(options?: CustomerServiceOptions) {
         async (payload) => {
           // Pack's allergenExclusions / dietaryFlags / favoriteCategories are
           // ReadonlyArray<string>; service's update method accepts string[].
-          return this.updatePreferences(extras.customerId, {
+          return performUpdatePreferences(extras.customerId, {
             allergenExclusions: payload.allergenExclusions as string[],
-            ...(payload.dietaryFlags !== undefined
-              ? { dietaryRestrictions: payload.dietaryFlags as string[] }
-              : {}),
-            ...(payload.favoriteCategories !== undefined
-              ? { favoriteCategories: payload.favoriteCategories as string[] }
-              : {}),
+            ...(payload.dietaryFlags === undefined
+              ? {}
+              : { dietaryRestrictions: payload.dietaryFlags as string[] }),
+            ...(payload.favoriteCategories === undefined
+              ? {}
+              : { favoriteCategories: payload.favoriteCategories as string[] }),
           })
         },
         adjudicateOptions,
@@ -421,12 +457,12 @@ export function createCustomerService(options?: CustomerServiceOptions) {
         state,
         ordersPolicyBundle,
         async (payload) => {
-          return this.submitReview({
+          return performSubmitReview({
             customerId: extras.customerId,
             productId: payload.productId,
             orderId: payload.orderId,
             rating: payload.rating,
-            ...(payload.comment !== undefined ? { comment: payload.comment } : {}),
+            ...(payload.comment === undefined ? {} : { comment: payload.comment }),
             channel: extras.channel,
           })
         },
@@ -452,7 +488,7 @@ export function createCustomerService(options?: CustomerServiceOptions) {
         state,
         customerOnboardingPolicyBundle,
         async (payload) => {
-          return this.updatePixDetails(extras.customerId, {
+          return performUpdatePixDetails(extras.customerId, {
             name: payload.name,
             email: payload.email,
             cpf: payload.cpf,
@@ -714,59 +750,9 @@ export async function anonymizeCustomer(
   })
   const medusaIdForCompensation = customerForCompensation?.medusaId ?? null
 
-  // Count reviews so we know whether to take the heavy-customer path.
-  // `prisma.review.count` is cheap (covered by the customerId index).
-  const reviewCount = await prisma.review.count({ where: { customerId } })
-
-  if (reviewCount > REVIEW_BATCH_HEAVY_THRESHOLD) {
-    // ── Heavy path ────────────────────────────────────────────────
-    //
-    // Strategy:
-    //   1. Scrub review comments in batches OUTSIDE the main tx.
-    //      Each batch is a small updateMany filtered to reviews that
-    //      still carry a non-null comment for this customer, capped
-    //      at REVIEW_BATCH_SIZE rows. This avoids holding locks for
-    //      the duration of the long write.
-    //   2. After every comment is scrubbed, run the core anonymize
-    //      transaction (customer + address + preferences + a
-    //      cleanup pass on reviews + order items) with the explicit
-    //      60 s timeout. The cleanup pass is a no-op `updateMany`
-    //      that catches any reviews inserted while batching was in
-    //      flight — small operation, no timeout risk.
-    //
-    // If ANY batch fails the function throws — the caller MUST NOT
-    // clean up the Redis receipt. A retry repeats the remaining
-    // batches (the scrub is idempotent: comment=null updates remain
-    // null) and reaches the core tx on success.
-
-    let scrubbedSoFar = 0
-    // Safety cap: at REVIEW_BATCH_SIZE per loop we visit at most
-    // ceil(reviewCount / REVIEW_BATCH_SIZE) iterations before all
-    // not-yet-scrubbed comments are null. Loop exits as soon as a
-    // batch reports zero rows updated.
-    const maxLoops = Math.ceil(reviewCount / REVIEW_BATCH_SIZE) + 1
-    for (let i = 0; i < maxLoops; i++) {
-      // Find the next batch by primary-key chunk. We re-query rather
-      // than tracking offsets so concurrent inserts don't shift the
-      // window — updateMany with a LIMIT can't express that in
-      // Prisma directly, so we fetch ids first.
-      const nextBatch = await prisma.review.findMany({
-        where: { customerId, comment: { not: null } },
-        select: { id: true },
-        take: REVIEW_BATCH_SIZE,
-        orderBy: { id: "asc" },
-      })
-      if (nextBatch.length === 0) break
-      const ids = nextBatch.map((r) => r.id)
-      const result = await prisma.review.updateMany({
-        where: { id: { in: ids } },
-        data: { comment: null },
-      })
-      scrubbedSoFar += result.count
-      if (result.count === 0) break
-    }
-    void scrubbedSoFar
-  }
+  // Scrub review comments in batches OUTSIDE the main tx when the customer
+  // has enough reviews to risk a long-held lock (heavy-customer path).
+  await scrubReviewCommentsHeavyPath(customerId)
 
   // ── H3 wave-a1: ConversationMessage heavy-path pre-scrub ───────
   //
@@ -789,66 +775,10 @@ export async function anonymizeCustomer(
     .map((row) => row.sessionId)
     .filter((s): s is string => Boolean(s))
 
-  if (customerConversationIds.length > 0) {
-    const messageCount = await prisma.conversationMessage.count({
-      where: { conversationId: { in: customerConversationIds } },
-    })
-    if (messageCount > CONVERSATION_MESSAGE_BATCH_HEAVY_THRESHOLD) {
-      // Same loop shape as the review heavy path: re-query in id chunks
-      // so concurrent inserts don't shift the window; exit when a batch
-      // reports zero rows (every message already carries the placeholder).
-      const maxLoops =
-        Math.ceil(messageCount / CONVERSATION_MESSAGE_BATCH_SIZE) + 1
-      for (let i = 0; i < maxLoops; i++) {
-        const nextBatch = await prisma.conversationMessage.findMany({
-          where: {
-            conversationId: { in: customerConversationIds },
-            content: { not: CONVERSATION_MESSAGE_PLACEHOLDER },
-          },
-          select: { id: true },
-          take: CONVERSATION_MESSAGE_BATCH_SIZE,
-          orderBy: { id: "asc" },
-        })
-        if (nextBatch.length === 0) break
-        const ids = nextBatch.map((r) => r.id)
-        const result = await prisma.conversationMessage.updateMany({
-          where: { id: { in: ids } },
-          // audit-2026-05-25 (I9): also scrub `metadata` (Json?). No
-          // current production producer fills it (verified via
-          // conversation-archiver.ts:76 which passes no extras), but the
-          // column is schema-permitted for arbitrary JSON and any future
-          // metadata writer would otherwise leak past anonymize.
-          data: {
-            content: CONVERSATION_MESSAGE_PLACEHOLDER,
-            metadata: Prisma.JsonNull,
-          },
-        })
-        if (result.count === 0) break
-      }
-    }
-  }
+  await scrubConversationMessagesHeavyPath(customerConversationIds)
 
   // ── F3 / P0-LGPD-1: turn_trace erasure (right-to-be-forgotten) ─
-  //
-  // Erase the customer's redacted per-LLM-call traces by sessionId (see the
-  // sessionId note above). Raw DELETE because turn_trace is not a Prisma model
-  // — it is the kernel-shaped table the trace writer + adjudicate console share
-  // (swept time-based by retention-cleaner.ts; this is the per-subject erasure
-  // the time-based sweep deliberately complements). Best-effort + fail-soft:
-  // the table may not exist if tracing never ran (missing relation), and an
-  // erasure failure must NEVER abort the anonymize flow.
-  if (customerConversationSessionIds.length > 0) {
-    try {
-      await prisma.$executeRaw`
-        DELETE FROM turn_trace
-        WHERE conversation_id IN (${Prisma.join(customerConversationSessionIds)})`
-    } catch (err) {
-      options?.log?.warn?.(
-        "[anonymize] turn_trace erasure skipped (best-effort)",
-        { customerId, error: String(err) },
-      )
-    }
-  }
+  await eraseTurnTraces(customerConversationSessionIds, customerId, options)
 
   // ── H3 wave-a1: OrderEventLog heavy-path pre-scrub ─────────────
   //
@@ -863,42 +793,7 @@ export async function anonymizeCustomer(
   })
   const customerOrderIds = customerOrderRows.map((row) => row.id)
 
-  if (customerOrderIds.length > 0) {
-    const eventCount = await prisma.orderEventLog.count({
-      where: { orderId: { in: customerOrderIds } },
-    })
-    if (eventCount > ORDER_EVENT_LOG_BATCH_HEAVY_THRESHOLD) {
-      // The "already-scrubbed" predicate cannot trivially be expressed
-      // against a JSON column in Prisma, so we paginate by id-greater-than
-      // cursor and let the updateMany be idempotent on rerun (replacing
-      // {anonymized:true} with {anonymized:true} is a no-op).
-      const maxLoops =
-        Math.ceil(eventCount / ORDER_EVENT_LOG_BATCH_SIZE) + 1
-      let cursor: string | null = null
-      for (let i = 0; i < maxLoops; i++) {
-        const baseWhere = { orderId: { in: customerOrderIds } }
-        const where =
-          cursor === null
-            ? baseWhere
-            : { ...baseWhere, id: { gt: cursor } }
-        const nextBatch: Array<{ id: string }> =
-          await prisma.orderEventLog.findMany({
-            where,
-            select: { id: true },
-            take: ORDER_EVENT_LOG_BATCH_SIZE,
-            orderBy: { id: "asc" },
-          })
-        if (nextBatch.length === 0) break
-        const ids = nextBatch.map((r) => r.id)
-        const result = await prisma.orderEventLog.updateMany({
-          where: { id: { in: ids } },
-          data: { payload: { anonymized: true } },
-        })
-        if (result.count === 0) break
-        cursor = ids[ids.length - 1] ?? null
-      }
-    }
-  }
+  await scrubOrderEventLogsHeavyPath(customerOrderIds)
 
   // ── Core anonymize transaction ─────────────────────────────────
   //
@@ -1160,29 +1055,211 @@ export async function anonymizeCustomer(
   //    handles either shape (it uses parkedIntentHash for audit
   //    correlation but a null is acceptable for caller paths that
   //    don't have one).
-  if (medusaIdForCompensation) {
-    try {
-      await publishNatsEvent("customer.anonymize.medusa.pending", {
-        customerId,
-        medusaId: medusaIdForCompensation,
-        parkedIntentHash:
-          options?.predecessor?.predecessorIntentHash ?? null,
-        parkedAt: options?.predecessor?.predecessorAt ?? null,
-        attempt: 1,
-      })
-    } catch (err) {
-      // Outbox guarantees at-least-once delivery on broker recovery;
-      // a thrown promise here means Redis itself is unreachable, which
-      // is operationally severe but not enough to fail-back the
-      // committed scrub. Log + Sentry alert.
-      options?.log?.warn?.(
-        "[anonymize-customer] medusa-pending publish failed (outbox unavailable):",
-        (err as Error).message ?? String(err),
-      )
-    }
-  }
+  await kickoffMedusaCompensation(customerId, medusaIdForCompensation, options)
 
   return { success: true }
+}
+
+/**
+ * Heavy-customer review-comment pre-scrub. Runs OUTSIDE the main anonymize
+ * transaction so a long-running write does not hold locks. No-op when the
+ * customer has at most REVIEW_BATCH_HEAVY_THRESHOLD reviews.
+ *
+ * Strategy: scrub review comments in REVIEW_BATCH_SIZE-sized batches. Each
+ * batch is a small updateMany filtered to reviews that still carry a non-null
+ * comment for this customer. The core tx's cleanup updateMany catches any
+ * reviews inserted while batching was in flight.
+ *
+ * If ANY batch fails the function throws — the caller MUST NOT clean up the
+ * Redis receipt. A retry repeats the remaining batches (idempotent: comment=
+ * null updates remain null) and reaches the core tx on success.
+ */
+async function scrubReviewCommentsHeavyPath(customerId: string): Promise<void> {
+  // `prisma.review.count` is cheap (covered by the customerId index).
+  const reviewCount = await prisma.review.count({ where: { customerId } })
+  if (reviewCount <= REVIEW_BATCH_HEAVY_THRESHOLD) return
+
+  // Safety cap: at REVIEW_BATCH_SIZE per loop we visit at most
+  // ceil(reviewCount / REVIEW_BATCH_SIZE) iterations before all not-yet-
+  // scrubbed comments are null. Loop exits as soon as a batch reports zero
+  // rows updated.
+  const maxLoops = Math.ceil(reviewCount / REVIEW_BATCH_SIZE) + 1
+  for (let i = 0; i < maxLoops; i++) {
+    // Re-query rather than tracking offsets so concurrent inserts don't shift
+    // the window — updateMany with a LIMIT can't express that in Prisma
+    // directly, so we fetch ids first.
+    const nextBatch = await prisma.review.findMany({
+      where: { customerId, comment: { not: null } },
+      select: { id: true },
+      take: REVIEW_BATCH_SIZE,
+      orderBy: { id: "asc" },
+    })
+    if (nextBatch.length === 0) break
+    const ids = nextBatch.map((r) => r.id)
+    const result = await prisma.review.updateMany({
+      where: { id: { in: ids } },
+      data: { comment: null },
+    })
+    if (result.count === 0) break
+  }
+}
+
+/**
+ * Heavy-customer ConversationMessage content pre-scrub. ConversationMessage
+ * rows link to a customer indirectly via Conversation.customerId (no direct
+ * FK), so the caller resolves the conversation ids first. No-op when the
+ * customer has no conversations or at most the heavy threshold of messages.
+ */
+async function scrubConversationMessagesHeavyPath(
+  conversationIds: string[],
+): Promise<void> {
+  if (conversationIds.length === 0) return
+  const messageCount = await prisma.conversationMessage.count({
+    where: { conversationId: { in: conversationIds } },
+  })
+  if (messageCount <= CONVERSATION_MESSAGE_BATCH_HEAVY_THRESHOLD) return
+
+  // Same loop shape as the review heavy path: re-query in id chunks so
+  // concurrent inserts don't shift the window; exit when a batch reports zero
+  // rows (every message already carries the placeholder).
+  const maxLoops = Math.ceil(messageCount / CONVERSATION_MESSAGE_BATCH_SIZE) + 1
+  for (let i = 0; i < maxLoops; i++) {
+    const nextBatch = await prisma.conversationMessage.findMany({
+      where: {
+        conversationId: { in: conversationIds },
+        content: { not: CONVERSATION_MESSAGE_PLACEHOLDER },
+      },
+      select: { id: true },
+      take: CONVERSATION_MESSAGE_BATCH_SIZE,
+      orderBy: { id: "asc" },
+    })
+    if (nextBatch.length === 0) break
+    const ids = nextBatch.map((r) => r.id)
+    const result = await prisma.conversationMessage.updateMany({
+      where: { id: { in: ids } },
+      // audit-2026-05-25 (I9): also scrub `metadata` (Json?). No current
+      // production producer fills it (verified via conversation-archiver.ts:76
+      // which passes no extras), but the column is schema-permitted for
+      // arbitrary JSON and any future metadata writer would otherwise leak
+      // past anonymize.
+      data: {
+        content: CONVERSATION_MESSAGE_PLACEHOLDER,
+        metadata: Prisma.JsonNull,
+      },
+    })
+    if (result.count === 0) break
+  }
+}
+
+/**
+ * F3 / P0-LGPD-1: turn_trace erasure (right-to-be-forgotten).
+ *
+ * Erase the customer's redacted per-LLM-call traces by sessionId. Raw DELETE
+ * because turn_trace is not a Prisma model — it is the kernel-shaped table the
+ * trace writer + adjudicate console share (swept time-based by
+ * retention-cleaner.ts; this is the per-subject erasure the time-based sweep
+ * deliberately complements). Best-effort + fail-soft: the table may not exist
+ * if tracing never ran (missing relation), and an erasure failure must NEVER
+ * abort the anonymize flow.
+ */
+async function eraseTurnTraces(
+  sessionIds: string[],
+  customerId: string,
+  options?: AnonymizeCustomerOptions,
+): Promise<void> {
+  if (sessionIds.length === 0) return
+  try {
+    await prisma.$executeRaw`
+        DELETE FROM turn_trace
+        WHERE conversation_id IN (${Prisma.join(sessionIds)})`
+  } catch (err) {
+    options?.log?.warn?.(
+      "[anonymize] turn_trace erasure skipped (best-effort)",
+      { customerId, error: String(err) },
+    )
+  }
+}
+
+/**
+ * Heavy-customer OrderEventLog payload pre-scrub. OrderEventLog has NO customer
+ * FK — the link is via orderId → OrderProjection.customerId, so the caller
+ * resolves the order ids first. No-op when the customer has no orders or at
+ * most the heavy threshold of events.
+ */
+async function scrubOrderEventLogsHeavyPath(orderIds: string[]): Promise<void> {
+  if (orderIds.length === 0) return
+  const eventCount = await prisma.orderEventLog.count({
+    where: { orderId: { in: orderIds } },
+  })
+  if (eventCount <= ORDER_EVENT_LOG_BATCH_HEAVY_THRESHOLD) return
+
+  // The "already-scrubbed" predicate cannot trivially be expressed against a
+  // JSON column in Prisma, so we paginate by id-greater-than cursor and let the
+  // updateMany be idempotent on rerun (replacing {anonymized:true} with
+  // {anonymized:true} is a no-op).
+  const maxLoops = Math.ceil(eventCount / ORDER_EVENT_LOG_BATCH_SIZE) + 1
+  let cursor: string | null = null
+  for (let i = 0; i < maxLoops; i++) {
+    const baseWhere = { orderId: { in: orderIds } }
+    const where =
+      cursor === null ? baseWhere : { ...baseWhere, id: { gt: cursor } }
+    const nextBatch: Array<{ id: string }> =
+      await prisma.orderEventLog.findMany({
+        where,
+        select: { id: true },
+        take: ORDER_EVENT_LOG_BATCH_SIZE,
+        orderBy: { id: "asc" },
+      })
+    if (nextBatch.length === 0) break
+    const ids = nextBatch.map((r) => r.id)
+    const result = await prisma.orderEventLog.updateMany({
+      where: { id: { in: ids } },
+      data: { payload: { anonymized: true } },
+    })
+    if (result.count === 0) break
+    cursor = ids.at(-1) ?? null
+  }
+}
+
+/**
+ * H3 wave-b: Medusa cross-DB compensation kickoff. The 7 in-process Prisma
+ * surfaces are scrubbed by the core tx; surface 8 — the Medusa-side customer
+ * row — lives in a separate Postgres database reachable only via HTTP admin
+ * API. Emit a NATS pending event so the Wave-B subscriber
+ * (`customer-anonymize-medusa-resolver` in apps/api) can complete the
+ * compensation chain. If the customer was never linked to a Medusa row
+ * (medusaId === null), skip — there's nothing to scrub.
+ *
+ * `customer.anonymize.medusa.pending` is in OUTBOX_EVENTS, so a NATS failure
+ * writes to the Redis outbox and the outbox-retry job re-publishes when NATS
+ * recovers. Only catastrophic misconfig (no Redis at all) can throw here —
+ * which we log but do NOT fail the anonymize, since the in-process scrub is
+ * already committed and the LGPD clock is satisfied.
+ */
+async function kickoffMedusaCompensation(
+  customerId: string,
+  medusaId: string | null,
+  options?: AnonymizeCustomerOptions,
+): Promise<void> {
+  if (!medusaId) return
+  try {
+    await publishNatsEvent("customer.anonymize.medusa.pending", {
+      customerId,
+      medusaId,
+      parkedIntentHash: options?.predecessor?.predecessorIntentHash ?? null,
+      parkedAt: options?.predecessor?.predecessorAt ?? null,
+      attempt: 1,
+    })
+  } catch (err) {
+    // Outbox guarantees at-least-once delivery on broker recovery; a thrown
+    // promise here means Redis itself is unreachable, which is operationally
+    // severe but not enough to fail-back the committed scrub. Log + Sentry
+    // alert.
+    options?.log?.warn?.(
+      "[anonymize-customer] medusa-pending publish failed (outbox unavailable):",
+      (err as Error).message ?? String(err),
+    )
+  }
 }
 
 function emitScrubAuditRecords(
@@ -1224,7 +1301,7 @@ function emitScrubAuditRecords(
         envelope,
         decision,
         durationMs: 0,
-        ...(supersedes !== undefined ? { supersedes } : {}),
+        ...(supersedes === undefined ? {} : { supersedes }),
       })
       void auditSink.emit(record).catch((err: unknown) => {
         options.log?.error?.(

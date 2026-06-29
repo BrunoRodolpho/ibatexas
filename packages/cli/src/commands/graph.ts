@@ -28,7 +28,12 @@ import { dirname, isAbsolute, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import type { Command } from "commander"
 import chalk from "chalk"
-import type { GraphName } from "@ibatexas/journeys"
+import type {
+  ExportGraphsOptions,
+  GraphExportEntry,
+  GraphExportReport,
+  GraphName,
+} from "@ibatexas/journeys"
 
 // Raiz do monorepo ancorada neste arquivo (idioma de commands/journey.ts).
 const MONOREPO_ROOT = resolve(
@@ -44,6 +49,14 @@ function resolveUserPath(p: string): string {
   return existsSync(fromRoot) ? fromRoot : fromCwd
 }
 
+/** ms per duration unit — keys mirror the `[dhms]` group in `parseDuration`. */
+const MS_PER_DURATION_UNIT: Readonly<Record<string, number>> = {
+  d: 86_400_000,
+  h: 3_600_000,
+  m: 60_000,
+  s: 1_000,
+}
+
 /** Parses "24h" / "30m" / "7d" / "60s" → ms (mirror of kernel.ts's helper). */
 function parseDuration(input: string): number {
   const m = /^(\d+)([dhms])$/.exec(input.trim())
@@ -53,9 +66,7 @@ function parseDuration(input: string): number {
     )
   }
   const n = Number.parseInt(m[1]!, 10)
-  const multiplier =
-    m[2] === "d" ? 86_400_000 : m[2] === "h" ? 3_600_000 : m[2] === "m" ? 60_000 : 1_000
-  return n * multiplier
+  return n * MS_PER_DURATION_UNIT[m[2]!]!
 }
 
 interface GraphExportFlags {
@@ -70,124 +81,154 @@ interface GraphExportFlags {
   since?: string
 }
 
+type JourneysModule = typeof import("@ibatexas/journeys")
+
+/**
+ * `--capture-impact`: aggregate the live/seeded `intent_audit` window into the
+ * committed fixture before regenerating the graphs. Returns `false` (with
+ * `process.exitCode` already set) when the run must abort.
+ */
+async function captureImpactWindow(
+  opts: GraphExportFlags,
+  journeys: Pick<JourneysModule, "fetchImpactWindow" | "writeImpactWindowFixture">,
+): Promise<boolean> {
+  if (opts.check === true) {
+    console.error(
+      chalk.red("--capture-impact não combina com --check (o check nunca escreve)"),
+    )
+    process.exitCode = 1
+    return false
+  }
+  const databaseUrl = process.env.DATABASE_URL
+  if (databaseUrl === undefined || databaseUrl === "") {
+    console.error(
+      chalk.red("DATABASE_URL não definido — a captura agrega o intent_audit ao vivo."),
+    )
+    process.exitCode = 1
+    return false
+  }
+  const sinceMs = parseDuration(opts.since ?? "24h")
+  const toIso = new Date().toISOString()
+  const fromIso = new Date(Date.now() - sinceMs).toISOString()
+
+  const { default: pg } = await import("pg")
+  const client = new pg.Client({ connectionString: databaseUrl })
+  await client.connect()
+  let fixturePath: string
+  let excludedAgentRows: number
+  let rowCount: number
+  try {
+    const window = await journeys.fetchImpactWindow(client, {
+      fromIso,
+      toIso,
+      source: "test-stack intent_audit aggregation (ibx graph export --capture-impact)",
+    })
+    excludedAgentRows = window.excludedAgentRows
+    rowCount = window.rows.length
+    fixturePath = await journeys.writeImpactWindowFixture(
+      {
+        comment: [
+          "T2-4 impact-window fixture — kind×decision counts aggregated from a",
+          "test-stack intent_audit window, EXCLUDING the 'agent:' session",
+          "namespace (same filter as the T1b-3 kernel-replay gate; the exclusion",
+          "count is reported, never silent). Captured via `ibx graph export",
+          "--capture-impact` against a golden-vector-seeded audit database; the",
+          "committed impact.json regenerates from THIS file so the drift gate",
+          "stays deterministic and DB-free. Recapture + regenerate together.",
+        ],
+        ...window,
+      },
+      opts.dir === undefined ? undefined : resolveUserPath(opts.dir),
+    )
+  } finally {
+    await client.end().catch(() => undefined)
+  }
+  if (opts.json !== true) {
+    console.log(
+      chalk.dim(
+        `impact window captured -> ${fixturePath} (${rowCount} kind×decision rows, ` +
+          `${excludedAgentRows} agent-namespace row(s) excluded)`,
+      ),
+    )
+  }
+  return true
+}
+
+/** Build the `exportGraphs` options object from the resolved CLI flags. */
+function buildExportOptions(opts: GraphExportFlags): ExportGraphsOptions {
+  return {
+    ...(opts.check === true ? { check: true } : {}),
+    ...(opts.dir === undefined ? {} : { graphsDir: resolveUserPath(opts.dir) }),
+    ...(opts.journeysDir === undefined
+      ? {}
+      : { journeysDir: resolveUserPath(opts.journeysDir) }),
+    ...(opts.runTrace === undefined
+      ? {}
+      : { runTracePath: resolveUserPath(opts.runTrace) }),
+    ...(opts.runDecisions === undefined
+      ? {}
+      : { runDecisionsPath: resolveUserPath(opts.runDecisions) }),
+    ...(opts.only === undefined
+      ? {}
+      : {
+          only: opts.only
+            .split(",")
+            .map((s) => s.trim())
+            .filter((s) => s.length > 0) as GraphName[],
+        }),
+  }
+}
+
+/** Print one graph entry line (written/clean → stdout; drift/missing → stderr). */
+function printGraphEntry(entry: GraphExportEntry): void {
+  const line = `${entry.graph} (${entry.file}): ${entry.nodes} nodes, ${entry.edges} edges`
+  if (entry.status === "written") {
+    console.log(chalk.green(`✓ ${line} — written`))
+    return
+  }
+  if (entry.status === "clean") {
+    console.log(chalk.green(`✓ ${line} — clean`))
+    return
+  }
+  console.error(chalk.red(`✗ ${line} — ${entry.status.toUpperCase()}`))
+}
+
+/** Render the export report: `--json` passthrough or the human-readable summary. */
+function printExportReport(report: GraphExportReport, opts: GraphExportFlags): void {
+  if (opts.json === true) {
+    console.log(JSON.stringify(report, null, 2))
+    return
+  }
+  for (const entry of report.graphs) {
+    printGraphEntry(entry)
+  }
+  if (report.mode === "check") {
+    console.log(
+      report.ok
+        ? chalk.green("✓ committed graphs are current (regenerate-and-diff clean)")
+        : chalk.red(
+            "✗ graph drift — os grafos são DERIVADOS: rode `ibx graph export` e commit o diff " +
+              "(nunca edite os .json à mão; packages/journeys/graphs/README.md)",
+          ),
+    )
+    return
+  }
+  console.log(chalk.dim(`graphs dir: ${report.graphsDir}`))
+}
+
 async function runGraphExport(opts: GraphExportFlags): Promise<void> {
-  const {
-    exportGraphs,
-    fetchImpactWindow,
-    writeImpactWindowFixture,
-    GraphExportError,
-  } = await import("@ibatexas/journeys")
+  const journeys = await import("@ibatexas/journeys")
+  const { exportGraphs, GraphExportError } = journeys
 
   try {
     // ── --capture-impact: live/seeded audit DB → committed window fixture ──
     if (opts.captureImpact === true) {
-      if (opts.check === true) {
-        console.error(
-          chalk.red("--capture-impact não combina com --check (o check nunca escreve)"),
-        )
-        process.exitCode = 1
-        return
-      }
-      const databaseUrl = process.env.DATABASE_URL
-      if (databaseUrl === undefined || databaseUrl === "") {
-        console.error(
-          chalk.red("DATABASE_URL não definido — a captura agrega o intent_audit ao vivo."),
-        )
-        process.exitCode = 1
-        return
-      }
-      const sinceMs = parseDuration(opts.since ?? "24h")
-      const toIso = new Date().toISOString()
-      const fromIso = new Date(Date.now() - sinceMs).toISOString()
-
-      const { default: pg } = await import("pg")
-      const client = new pg.Client({ connectionString: databaseUrl })
-      await client.connect()
-      let fixturePath: string
-      let excludedAgentRows: number
-      let rowCount: number
-      try {
-        const window = await fetchImpactWindow(client, {
-          fromIso,
-          toIso,
-          source: "test-stack intent_audit aggregation (ibx graph export --capture-impact)",
-        })
-        excludedAgentRows = window.excludedAgentRows
-        rowCount = window.rows.length
-        fixturePath = await writeImpactWindowFixture(
-          {
-            comment: [
-              "T2-4 impact-window fixture — kind×decision counts aggregated from a",
-              "test-stack intent_audit window, EXCLUDING the 'agent:' session",
-              "namespace (same filter as the T1b-3 kernel-replay gate; the exclusion",
-              "count is reported, never silent). Captured via `ibx graph export",
-              "--capture-impact` against a golden-vector-seeded audit database; the",
-              "committed impact.json regenerates from THIS file so the drift gate",
-              "stays deterministic and DB-free. Recapture + regenerate together.",
-            ],
-            ...window,
-          },
-          opts.dir !== undefined ? resolveUserPath(opts.dir) : undefined,
-        )
-      } finally {
-        await client.end().catch(() => undefined)
-      }
-      if (opts.json !== true) {
-        console.log(
-          chalk.dim(
-            `impact window captured -> ${fixturePath} (${rowCount} kind×decision rows, ` +
-              `${excludedAgentRows} agent-namespace row(s) excluded)`,
-          ),
-        )
-      }
+      const captured = await captureImpactWindow(opts, journeys)
+      if (!captured) return
     }
 
-    const report = await exportGraphs({
-      ...(opts.check === true ? { check: true } : {}),
-      ...(opts.dir !== undefined ? { graphsDir: resolveUserPath(opts.dir) } : {}),
-      ...(opts.journeysDir !== undefined
-        ? { journeysDir: resolveUserPath(opts.journeysDir) }
-        : {}),
-      ...(opts.runTrace !== undefined ? { runTracePath: resolveUserPath(opts.runTrace) } : {}),
-      ...(opts.runDecisions !== undefined
-        ? { runDecisionsPath: resolveUserPath(opts.runDecisions) }
-        : {}),
-      ...(opts.only !== undefined
-        ? {
-            only: opts.only
-              .split(",")
-              .map((s) => s.trim())
-              .filter((s) => s.length > 0) as GraphName[],
-          }
-        : {}),
-    })
-
-    if (opts.json === true) {
-      console.log(JSON.stringify(report, null, 2))
-    } else {
-      for (const entry of report.graphs) {
-        const line = `${entry.graph} (${entry.file}): ${entry.nodes} nodes, ${entry.edges} edges`
-        if (entry.status === "written") {
-          console.log(chalk.green(`✓ ${line} — written`))
-        } else if (entry.status === "clean") {
-          console.log(chalk.green(`✓ ${line} — clean`))
-        } else {
-          console.error(chalk.red(`✗ ${line} — ${entry.status.toUpperCase()}`))
-        }
-      }
-      if (report.mode === "check") {
-        console.log(
-          report.ok
-            ? chalk.green("✓ committed graphs are current (regenerate-and-diff clean)")
-            : chalk.red(
-                "✗ graph drift — os grafos são DERIVADOS: rode `ibx graph export` e commit o diff " +
-                  "(nunca edite os .json à mão; packages/journeys/graphs/README.md)",
-              ),
-        )
-      } else {
-        console.log(chalk.dim(`graphs dir: ${report.graphsDir}`))
-      }
-    }
+    const report = await exportGraphs(buildExportOptions(opts))
+    printExportReport(report, opts)
     if (!report.ok) process.exitCode = 1
   } catch (err) {
     if (err instanceof Error && err.name === "GraphExportError") {

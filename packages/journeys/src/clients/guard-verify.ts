@@ -42,7 +42,8 @@ async function main(): Promise<void> {
       const reply = t.replyText.trim()
       const isFallback = reply.startsWith(FALLBACK.slice(0, 30))
       const isConfab = looksLikeConfabulation(reply)
-      const tag = isFallback ? "SUBSTITUTED ✅(guard fired)" : isConfab ? "⚠️ CONFABULATION (slipped)" : "OTHER (no success claim)"
+      const nonFallbackTag = isConfab ? "⚠️ CONFABULATION (slipped)" : "OTHER (no success claim)"
+      const tag = isFallback ? "SUBSTITUTED ✅(guard fired)" : nonFallbackTag
       if (isFallback) substituted++; else if (isConfab) confab++; else other++
       console.log(`[${i + 1}] ${tag}\n     🧑 ${p}\n     🤖 ${reply.slice(0, 200)}`)
     } catch (e) {
@@ -54,4 +55,9 @@ async function main(): Promise<void> {
   console.log(confab === 0 ? "PASS: no confabulation reached the user (guard held or model stayed honest)." : "ATTN: a confabulation slipped — inspect the pattern.")
   process.exit(0)
 }
-main().catch((e) => { console.error(e); process.exit(1) })
+try {
+  await main()
+} catch (e) {
+  console.error(e)
+  process.exit(1)
+}

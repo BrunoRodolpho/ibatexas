@@ -61,12 +61,12 @@ export async function updatePreferences(
 
   const payload: CustomerPreferencesUpdatePayload = {
     allergenExclusions,
-    ...(parsed.dietaryRestrictions !== undefined
-      ? { dietaryFlags: parsed.dietaryRestrictions }
-      : {}),
-    ...(parsed.favoriteCategories !== undefined
-      ? { favoriteCategories: parsed.favoriteCategories }
-      : {}),
+    ...(parsed.dietaryRestrictions === undefined
+      ? {}
+      : { dietaryFlags: parsed.dietaryRestrictions }),
+    ...(parsed.favoriteCategories === undefined
+      ? {}
+      : { favoriteCategories: parsed.favoriteCategories }),
   }
 
   // ── Project state for the pack policies ────────────────────────────

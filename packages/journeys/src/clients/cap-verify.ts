@@ -21,8 +21,9 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..
 const PHONE = "+5519900000002"
 const CAP_CENTAVOS = 1_000_000 // CONFIRM_LARGE_TICKET_THRESHOLD (100_000) × 10 = R$10.000,00
 
-const need = (e: Record<string, string>, k: string) => { const v = e[k]; if (!v) throw new Error(`.env.test missing ${k}`); return v }
+const need = (e: Record<string, string>, k: string) => { const v = e[k]; if (!v) { throw new Error(`.env.test missing ${k}`) } return v }
 const say = (s: string) => console.log(s)
+const oneLine = (s: unknown): string => String(s).replace(/[\r\n]+/g, " ")
 
 async function main(): Promise<void> {
   const env = parseEnvFile(await readFile(path.join(REPO_ROOT, ".env.test"), "utf8"))
@@ -37,7 +38,7 @@ async function main(): Promise<void> {
   const cookie = cookieHeader(mintCustomerToken({ customerId: customer.id, jwtSecret }))
 
   const http = async (m: string, p: string, body?: unknown): Promise<{ status: number; json: any }> => {
-    const r = await fetch(`${API_BASE}${p}`, { method: m, headers: { "content-type": "application/json", cookie }, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) })
+    const r = await fetch(`${API_BASE}${p}`, { method: m, headers: { "content-type": "application/json", cookie }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
     let json: any = null; try { json = await r.json() } catch { /* */ }
     return { status: r.status, json }
   }
@@ -50,7 +51,7 @@ async function main(): Promise<void> {
 
   const cartId = (await http("POST", "/api/cart", {})).json?.cart?.id
   if (!cartId) throw new Error("could not create cart")
-  say(`cart=${cartId}; filling toward >= R$${(CAP_CENTAVOS / 100).toFixed(0)} (cap=${CAP_CENTAVOS} centavos)`)
+  say(`cart=${oneLine(cartId)}; filling toward >= R$${(CAP_CENTAVOS / 100).toFixed(0)} (cap=${CAP_CENTAVOS} centavos)`)
 
   const cartTotal = (j: any): number => {
     const c = j?.cart ?? j
@@ -79,7 +80,7 @@ async function main(): Promise<void> {
   const blob = JSON.stringify(co.json ?? {})
   const refused = co.status >= 400 || /REFUSE|amount_exceeds_limit|exceeds/i.test(blob)
   const codeMatch = /amount_exceeds_limit/i.test(blob)
-  say(`\ncheckout HTTP ${co.status} :: ${blob.slice(0, 200)}`)
+  say(`\ncheckout HTTP ${co.status} :: ${oneLine(blob.slice(0, 200))}`)
 
   // No NEW order projection created for the over-cap cart.
   await new Promise((r) => setTimeout(r, 1500))
@@ -91,4 +92,9 @@ async function main(): Promise<void> {
   await pool.end()
   process.exit(pass ? 0 : 1)
 }
-main().catch((e) => { console.error(e); process.exit(1) })
+try {
+  await main()
+} catch (e) {
+  console.error(e)
+  process.exit(1)
+}

@@ -40,7 +40,7 @@ import {
   createOrderAccessToken,
   verifyOrderAccessToken,
 } from "@ibatexas/tools";
-import { Channel } from "@ibatexas/types";
+import { Channel, type UserType } from "@ibatexas/types";
 import { createCustomerService, createOrderCommandService, createPaymentQueryService, prisma } from "@ibatexas/domain";
 import { ordersPolicyBundle, type OrderCheckoutCreatePayload, type OrderNoteAddPayload, type OrderState } from "@ibatexas/pack-orders";
 import { portugueseRefusalMessages } from "@ibatexas/pack-orders";
@@ -350,66 +350,7 @@ async function finalizeCheckout(args: {
   // is kernel-adjudicated and audit-emitted. The Wave-6 finding flagged the
   // direct prisma.orderNote.create as a parallel/duplicate surface bypass.
   if (notes && result.orderId) {
-    try {
-      const displayIdMatch = /^IBX-(\d+)$/i.exec(result.orderId);
-      if (displayIdMatch) {
-        const displayId = Number.parseInt(displayIdMatch[1], 10);
-        const projection = await prisma.orderProjection.findFirst({
-          where: { displayId },
-          select: {
-            id: true,
-            customerId: true,
-            paymentMethod: true,
-            paymentStatus: true,
-            totalInCentavos: true,
-          },
-        });
-        if (projection) {
-          const noteEnvelope = buildCustomerEnvelope<
-            "order.note.add",
-            OrderNoteAddPayload
-          >({
-            kind: "order.note.add" as const,
-            payload: {
-              orderId: projection.id,
-              body: notes,
-            },
-            nonce: randomUUID(),
-            customerId: customerId
-              ? `customer:${customerId}`
-              : `cart:${cartId}`,
-          });
-          const noteOrderState: OrderState = {
-            ctx: {
-              channel: "web",
-              customerId: projection.customerId,
-              cartId: null,
-              orderId: projection.id,
-              paymentMethod: (projection.paymentMethod as
-                | "pix"
-                | "card"
-                | "cash"
-                | null) ?? null,
-              paymentStatus: projection.paymentStatus,
-              totalInCentavos: projection.totalInCentavos,
-            },
-          };
-          const orderCmdSvc = createOrderCommandService(undefined, {
-            auditSink: getAuditSink(),
-          });
-          await orderCmdSvc.addNoteFromEnvelope(
-            noteEnvelope,
-            noteOrderState,
-            {
-              author: "customer",
-              ...(customerId ? { authorId: customerId } : {}),
-            },
-          );
-        }
-      }
-    } catch {
-      // note persistence is best-effort
-    }
+    await persistCheckoutOrderNote({ notes, orderId: result.orderId, customerId, cartId });
   }
 
   // R0a — mint a signed per-order access token so a GUEST (null-owner order)
@@ -427,13 +368,757 @@ async function finalizeCheckout(args: {
   // bound to the paymentIntentId lines up exactly with the verify on that
   // `pi_…` id. Without this, a guest card checkout lands on /pedido/pi_… with
   // no token and the deny-null-owner guard 404s the webhook-created order.
-  let accessToken: string | undefined;
-  if (result.orderId) {
-    accessToken = createOrderAccessToken(result.orderId);
-  } else if (result.paymentMethod === "card" && result.paymentIntentId) {
-    accessToken = createOrderAccessToken(result.paymentIntentId);
-  }
+  const accessToken = mintOrderAccessToken(result);
   return reply.send(accessToken ? { ...result, accessToken } : result);
+}
+
+// ── route-local logger alias + checkout helper types ───────────────────────
+type RouteLog = FastifyInstance["log"];
+
+/** A fixable/terminal checkout rejection: the HTTP status + pt-BR body the
+ *  route sends verbatim. Lets the extracted validators return a decision
+ *  without owning the `reply`. */
+type CheckoutRejection = { status: number; body: Record<string, unknown> };
+
+/** Medusa order shape used by the customer-facing order-read endpoint. */
+type MedusaOrder = {
+  id: string;
+  status: string;
+  display_id: number;
+  total: number;
+  subtotal: number;
+  shipping_total: number;
+  customer_id?: string;
+  metadata?: Record<string, string>;
+  items: Array<{
+    id: string;
+    title: string;
+    quantity: number;
+    unit_price: number;
+    thumbnail?: string;
+    variant_id?: string;
+    metadata?: Record<string, string>;
+  }>;
+  created_at: string;
+};
+
+/** Result of resolving a caller-supplied order id to a Medusa order: either the
+ *  (possibly absent) order, or a 202-pending body to surface. */
+type ResolvedOrderRead =
+  | { kind: "order"; order: MedusaOrder | undefined }
+  | { kind: "pending"; body: Record<string, unknown> };
+
+/** Computed order-status poll outcome: the HTTP status, the body, and whether
+ *  to set Cache-Control: no-store. */
+type StatusReadOutcome = { status: number; body: Record<string, unknown>; noStore: boolean };
+
+/** Persist a customer's checkout note as an OrderNote — best-effort, never
+ *  fails checkout. Routed through addNoteFromEnvelope so the order.note.add
+ *  intent is kernel-adjudicated + audit-emitted (W7-P4). */
+async function persistCheckoutOrderNote(args: {
+  notes: string;
+  orderId: string;
+  customerId: string | undefined;
+  cartId: string;
+}): Promise<void> {
+  const { notes, orderId, customerId, cartId } = args;
+  try {
+    const displayIdMatch = /^IBX-(\d+)$/i.exec(orderId);
+    if (!displayIdMatch) return;
+    const displayId = Number.parseInt(displayIdMatch[1], 10);
+    const projection = await prisma.orderProjection.findFirst({
+      where: { displayId },
+      select: {
+        id: true,
+        customerId: true,
+        paymentMethod: true,
+        paymentStatus: true,
+        totalInCentavos: true,
+      },
+    });
+    if (!projection) return;
+    const noteEnvelope = buildCustomerEnvelope<
+      "order.note.add",
+      OrderNoteAddPayload
+    >({
+      kind: "order.note.add" as const,
+      payload: {
+        orderId: projection.id,
+        body: notes,
+      },
+      nonce: randomUUID(),
+      customerId: customerId
+        ? `customer:${customerId}`
+        : `cart:${cartId}`,
+    });
+    const noteOrderState: OrderState = {
+      ctx: {
+        channel: "web",
+        customerId: projection.customerId,
+        cartId: null,
+        orderId: projection.id,
+        paymentMethod: (projection.paymentMethod as
+          | "pix"
+          | "card"
+          | "cash"
+          | null) ?? null,
+        paymentStatus: projection.paymentStatus,
+        totalInCentavos: projection.totalInCentavos,
+      },
+    };
+    const orderCmdSvc = createOrderCommandService(undefined, {
+      auditSink: getAuditSink(),
+    });
+    await orderCmdSvc.addNoteFromEnvelope(
+      noteEnvelope,
+      noteOrderState,
+      {
+        author: "customer",
+        ...(customerId ? { authorId: customerId } : {}),
+      },
+    );
+  } catch {
+    // note persistence is best-effort
+  }
+}
+
+/** Mint a signed per-order access token so a GUEST (null-owner order) can
+ *  authorize order-tracking reads after checkout. cash/PIX bind the token to
+ *  the order id; card binds to the Stripe paymentIntentId (the order is created
+ *  later by the webhook). */
+function mintOrderAccessToken(
+  result: Awaited<ReturnType<typeof createCheckout>>,
+): string | undefined {
+  if (result.orderId) {
+    return createOrderAccessToken(result.orderId);
+  }
+  if (result.paymentMethod === "card" && result.paymentIntentId) {
+    return createOrderAccessToken(result.paymentIntentId);
+  }
+  return undefined;
+}
+
+/** Resolve the Medusa `customer_id` binding for a new cart when the caller is an
+ *  authenticated customer with a linked Medusa id. Best-effort: on lookup
+ *  failure the cart is created as a guest cart. */
+async function resolveCustomerCartBody(
+  customerId: string | undefined,
+): Promise<Record<string, unknown>> {
+  if (!customerId) return {};
+  try {
+    const customerSvc = createCustomerService();
+    const customer = await customerSvc.getById(customerId);
+    if (customer.medusaId) {
+      return { customer_id: customer.medusaId };
+    }
+  } catch {
+    // Customer lookup failed — create cart without binding (guest mode)
+  }
+  return {};
+}
+
+/** Cancel any live Stripe PaymentIntents on a cart's payment sessions so a
+ *  replaced cart can't leave an orphaned QR code that still charges the
+ *  customer. Best-effort per session. */
+async function cancelStaleStripeSessions(
+  sessions: Array<{ provider_id: string; data?: { id?: string } }>,
+): Promise<void> {
+  for (const session of sessions) {
+    const piId = session.data?.id;
+    if (piId && session.provider_id.includes("stripe")) {
+      await cancelStalePaymentIntent(piId).catch(() => {});
+    }
+  }
+}
+
+/** Best-effort clear of a clean cart's existing line items before checkout
+ *  re-adds the client's local items. The kernel may REFUSE on a terminal cart;
+ *  that's surfaced via the wrapper's typed error and silenced here so the
+ *  checkout flow can still proceed. */
+async function clearExistingCartItems(
+  cartId: string,
+  items: Array<{ id: string }>,
+  customerId: string | undefined,
+  log: RouteLog,
+): Promise<void> {
+  for (const item of items) {
+    await medusaAdjudicated<undefined, unknown>({
+      scope: "store",
+      method: "DELETE",
+      path: `/store/carts/${cartId}/line-items/${item.id}`,
+      intentKind: "medusa.cart.line_items.remove",
+      idempotencyKey: `checkout-clear:${cartId}:${item.id}`,
+      sourceSubject: `route:POST /api/cart/checkout:cust:${customerId ?? "guest"}`,
+      auditSink: getAuditSink(),
+      log,
+    }).catch((err) => {
+      log.warn(
+        { err: (err as Error).message ?? String(err), itemId: item.id },
+        "[cart/checkout] clear-existing-item failed — continuing",
+      );
+    });
+  }
+}
+
+/** Inspect the customer's current Medusa cart and decide whether checkout must
+ *  start a fresh cart. A completed cart or one with live payment sessions
+ *  (Stripe PIs cancelled first to avoid orphan QR charges) forces a new cart; a
+ *  clean cart just has its stale items cleared in place. A 404 (cart
+ *  purged/expired) also forces a fresh cart. */
+async function checkoutCartNeedsReplacement(args: {
+  cartId: string;
+  customerId: string | undefined;
+  log: RouteLog;
+}): Promise<boolean> {
+  const { cartId, customerId, log } = args;
+  try {
+    const existingCart = await medusaStore(`/store/carts/${cartId}`) as {
+      cart?: {
+        completed_at?: string;
+        items?: Array<{ id: string }>;
+        payment_collection?: {
+          id: string;
+          payment_sessions?: Array<{ id: string; provider_id: string; data?: { id?: string } }>;
+        };
+      };
+    };
+
+    if (existingCart.cart?.completed_at) {
+      return true;
+    }
+    const sessions = existingCart.cart?.payment_collection?.payment_sessions;
+    if (sessions?.length) {
+      // Cancel Stripe PIs to prevent orphaned QR codes from charging the customer
+      await cancelStaleStripeSessions(sessions);
+      return true;
+    }
+    // Cart is clean — just clear old items before re-adding
+    await clearExistingCartItems(cartId, existingCart.cart?.items ?? [], customerId, log);
+    return false;
+  } catch (err) {
+    // Cart doesn't exist in Medusa (purged/expired) — create fresh
+    if (err instanceof MedusaRequestError && err.statusCode === 404) {
+      return true;
+    }
+    throw err;
+  }
+}
+
+/** Add the client's local cart items to the (possibly freshly created) Medusa
+ *  cart during checkout. */
+async function addLocalItemsToCart(args: {
+  cartId: string;
+  localItems: Array<{ variantId: string; quantity: number; productType?: string }>;
+  customerId: string | undefined;
+  log: RouteLog;
+}): Promise<void> {
+  const { cartId, localItems, customerId, log } = args;
+  for (const item of localItems) {
+    await medusaAdjudicated<
+      { variant_id: string; quantity: number; metadata?: { productType: string } },
+      unknown
+    >({
+      scope: "store",
+      method: "POST",
+      path: `/store/carts/${cartId}/line-items`,
+      payload: {
+        variant_id: item.variantId,
+        quantity: item.quantity,
+        ...(item.productType ? { metadata: { productType: item.productType } } : {}),
+      },
+      intentKind: "medusa.cart.line_items.add",
+      idempotencyKey: `checkout-add:${cartId}:${item.variantId}:${randomUUID()}`,
+      sourceSubject: `route:POST /api/cart/checkout:cust:${customerId ?? "guest"}`,
+      headers: { "Content-Type": "application/json" },
+      auditSink: getAuditSink(),
+      log,
+    });
+  }
+}
+
+/** Sync the client's local cart items into Medusa before checkout. Returns the
+ *  cartId to check out against (a fresh one if the existing cart was completed /
+ *  had live payment sessions / was purged), or a rejection if a new cart could
+ *  not be created. */
+async function syncLocalCartForCheckout(args: {
+  cartId: string;
+  localItems: Array<{ variantId: string; quantity: number; productType?: string }>;
+  customerId: string | undefined;
+  log: RouteLog;
+}): Promise<{ cartId: string } | { rejection: CheckoutRejection }> {
+  const { localItems, customerId, log } = args;
+  let cartId = args.cartId;
+
+  const needsNewCart = await checkoutCartNeedsReplacement({ cartId, customerId, log });
+
+  if (needsNewCart) {
+    // Bind customer to new cart so the order is linked to their account
+    const newCartBody = await resolveCustomerCartBody(customerId);
+    const newCart = await medusaAdjudicated<Record<string, unknown>, { cart?: { id: string } }>({
+      scope: "store",
+      method: "POST",
+      path: "/store/carts",
+      payload: newCartBody,
+      intentKind: "medusa.cart.create",
+      idempotencyKey: `checkout-new-cart:${cartId}:${randomUUID()}`,
+      sourceSubject: `route:POST /api/cart/checkout:cust:${customerId ?? "guest"}`,
+      headers: { "Content-Type": "application/json" },
+      auditSink: getAuditSink(),
+      log,
+    });
+    if (!newCart.cart?.id) {
+      return {
+        rejection: {
+          status: 500,
+          body: { statusCode: 500, error: "Internal", message: "Não foi possível criar um novo carrinho." },
+        },
+      };
+    }
+    cartId = newCart.cart.id;
+    await trackCartId(cartId, customerId ? "customer" : "guest");
+  }
+
+  // Add local items to the (possibly new) cart
+  await addLocalItemsToCart({ cartId, localItems, customerId, log });
+  return { cartId };
+}
+
+/** Validate checkout composition: kitchen-closed (food blocked), delivery-type
+ *  vs payment/cart combinations, and the cash/PIX auth requirement (SEC-001).
+ *  Returns the first matching rejection, or null when the checkout may proceed. */
+function validateCheckoutComposition(args: {
+  mealPeriod: string;
+  paymentMethod: "pix" | "card" | "cash";
+  deliveryType: "delivery" | "shipping" | "pickup" | "dine_in" | undefined;
+  items: Array<{ productType?: "food" | "frozen" | "merchandise" }> | undefined;
+  customerId: string | undefined;
+}): CheckoutRejection | null {
+  const { mealPeriod, paymentMethod, deliveryType, customerId } = args;
+  const localItems = args.items ?? [];
+
+  // Block food orders when restaurant is closed — frozen/merch always allowed
+  if (mealPeriod === "closed" && localItems.some((i) => i.productType === "food")) {
+    return {
+      status: 422,
+      body: {
+        statusCode: 422,
+        error: "Unprocessable Entity",
+        message: "A cozinha está fechada no momento. Itens de comida não podem ser pedidos agora.",
+        code: "KITCHEN_CLOSED",
+      },
+    };
+  }
+
+  if (deliveryType === "shipping") {
+    if (localItems.some((i) => i.productType !== "merchandise")) {
+      return {
+        status: 422,
+        body: {
+          statusCode: 422,
+          error: "Unprocessable Entity",
+          message: "Apenas produtos da loja podem ser enviados pelo correio. Itens de comida e congelados precisam de entrega local ou retirada.",
+          code: "SHIPPING_NON_MERCHANDISE",
+        },
+      };
+    }
+    if (paymentMethod === "cash") {
+      return {
+        status: 422,
+        body: {
+          statusCode: 422,
+          error: "Unprocessable Entity",
+          message: "Pagamento em dinheiro não disponível para envios. Escolha PIX ou cartão.",
+          code: "CASH_NOT_ALLOWED_FOR_SHIPPING",
+        },
+      };
+    }
+  }
+
+  if (deliveryType === "dine_in" && !localItems.some((i) => i.productType === "food")) {
+    return {
+      status: 422,
+      body: {
+        statusCode: 422,
+        error: "Unprocessable Entity",
+        message: "Comer no restaurante disponível apenas para pedidos com itens de comida.",
+        code: "DINEIN_REQUIRES_FOOD",
+      },
+    };
+  }
+
+  // SEC-001: Cash/PIX requires authentication — Stripe validates identity for card payments
+  if ((paymentMethod === "cash" || paymentMethod === "pix") && !customerId) {
+    return {
+      status: 401,
+      body: {
+        statusCode: 401,
+        error: "Unauthorized",
+        message: "Autenticação necessária para pagamento em dinheiro/PIX.",
+      },
+    };
+  }
+
+  return null;
+}
+
+/** Resolve PIX billing details for checkout: validate any submitted CPF at the
+ *  trust boundary (Receita Federal checksum), then merge submitted form fields
+ *  over cached values. Returns a rejection on an invalid CPF, or the resolved
+ *  billing extra. */
+async function resolvePixBillingDetails(args: {
+  pixName?: string;
+  pixEmail?: string;
+  pixCpf?: string;
+  customerId: string | undefined;
+}): Promise<
+  | { rejection: CheckoutRejection }
+  | { pixExtra: { customerName?: string; customerEmail?: string; customerTaxId?: string } }
+> {
+  const { pixName, pixEmail, pixCpf, customerId } = args;
+
+  // P1-DATA-CPF: validate the CPF checksum before it flows to Stripe + Prisma.
+  let normalizedFormCpf: string | undefined;
+  if (pixCpf !== undefined && pixCpf.trim() !== "") {
+    const normalized = normalizeCpf(pixCpf);
+    if (!normalized || !isValidCpf(pixCpf)) {
+      return {
+        rejection: {
+          status: 422,
+          body: {
+            statusCode: 422,
+            error: "Unprocessable Entity",
+            message: "CPF inválido. Verifique os dígitos e tente novamente. Formato: 000.000.000-00.",
+            code: "INVALID_CPF",
+          },
+        },
+      };
+    }
+    normalizedFormCpf = normalized;
+  }
+
+  // Try loading cached PIX details for authenticated customers
+  let cached: { name?: string; email?: string; cpf?: string } | null = null;
+  if (customerId) {
+    cached = await loadCachedPixDetails(customerId);
+  }
+
+  return {
+    pixExtra: {
+      customerName: pixName ?? cached?.name,
+      customerEmail: pixEmail ?? cached?.email,
+      customerTaxId: normalizedFormCpf ?? cached?.cpf,
+    },
+  };
+}
+
+/** Build the `order.checkout.create` kernel payload, attaching PIX billing
+ *  details only for PIX checkouts. */
+function buildCheckoutPayload(
+  cartId: string,
+  paymentMethod: "pix" | "card" | "cash",
+  pixExtra: { customerName?: string; customerEmail?: string; customerTaxId?: string } | undefined,
+): OrderCheckoutCreatePayload {
+  return {
+    cartId,
+    paymentMethod,
+    ...(paymentMethod === "pix" && pixExtra
+      ? {
+          pixDetails: {
+            name: pixExtra.customerName ?? "",
+            email: pixExtra.customerEmail ?? "",
+            cpf: pixExtra.customerTaxId ?? "",
+          },
+        }
+      : {}),
+  };
+}
+
+/** Build the orders ctx for checkout from the REAL cart via the shared
+ *  resolve-and-assemble builder, threading the request's deliveryType onto
+ *  ctx.fulfillment (T1a-13: the pack's requireSlotsFilledForCheckout guard
+ *  requires a non-null fulfillment). */
+async function buildCheckoutOrderState(args: {
+  guestKey: string;
+  paymentMethod: "pix" | "card" | "cash";
+  deliveryType: string | undefined;
+  cartId: string;
+}): Promise<OrderState> {
+  const { guestKey, paymentMethod, deliveryType, cartId } = args;
+  return {
+    ctx: await loadCartCtx(
+      identityCtx(guestKey, "web"),
+      {
+        paymentMethod,
+        ...(deliveryType === undefined ? {} : { deliveryType }),
+      } as Record<string, unknown>,
+      { cartId },
+    ),
+  } as unknown as OrderState;
+}
+
+/** Map the adjudicated checkout decision onto the HTTP response: park a
+ *  large-ticket REQUEST_CONFIRMATION (202 + receipt), surface any other
+ *  non-EXECUTE/REWRITE decision verbatim, or finalize the money-path side
+ *  effects on EXECUTE/REWRITE. Shared so the checkout paths never drift. */
+async function respondToCheckoutDecision(args: {
+  reply: FastifyReply;
+  out: Awaited<ReturnType<typeof runCustomerIntent>>;
+  checkoutPayload: OrderCheckoutCreatePayload;
+  checkoutIdempotencyKey: string;
+  cartId: string;
+  sessionId: string;
+  paymentMethod: "pix" | "card" | "cash";
+  customerId: string | undefined;
+  userType: UserType;
+  checkoutBody: Record<string, unknown>;
+  pixExtra: { customerName?: string; customerEmail?: string; customerTaxId?: string } | undefined;
+  notes: string | undefined;
+  releaseGate: () => Promise<void>;
+}): Promise<FastifyReply> {
+  const {
+    reply, out, checkoutPayload, checkoutIdempotencyKey, cartId, sessionId,
+    paymentMethod, customerId, userType, checkoutBody, pixExtra, notes, releaseGate,
+  } = args;
+
+  // REQUEST_CONFIRMATION (large-ticket ≥ R$1.000) — park the prepared checkout
+  // under a single-use receipt and enrich the 202 with the confirmationId.
+  if (out.decision.kind === "REQUEST_CONFIRMATION") {
+    const prompt = out.decision.prompt;
+    const parked = await checkoutConfirmationStore.create({
+      kind: "order.checkout.create",
+      payload: checkoutPayload,
+      idempotencyKey: checkoutIdempotencyKey,
+      cartId,
+      customerId: sessionId,
+      userType,
+      checkoutBody,
+      ...(pixExtra ? { pixExtra } : {}),
+      prompt,
+      createdAt: new Date().toISOString(),
+    });
+    return reply.code(202).send({
+      confirmationRequired: true,
+      confirmationId: parked.confirmationId,
+      prompt,
+      ttlSeconds: parked.ttlSeconds,
+    });
+  }
+
+  // Other non-EXECUTE/REWRITE branches (REFUSE 403 / DEFER 202 / ESCALATE 503)
+  // — surface the gateway's reply verbatim.
+  if (out.decision.kind !== "EXECUTE" && out.decision.kind !== "REWRITE") {
+    return reply.code(out.statusCode).send(out.body);
+  }
+
+  // EXECUTE / REWRITE: apply post-checkout side effects + respond.
+  const result = out.body as Awaited<ReturnType<typeof createCheckout>>;
+  return finalizeCheckout({
+    reply,
+    result,
+    cartId,
+    paymentMethod,
+    customerId,
+    ...(pixExtra ? { pixExtra } : {}),
+    ...(notes ? { notes } : {}),
+    onFixableFailure: releaseGate,
+  });
+}
+
+/** Resolve a caller-supplied order id (Stripe `pi_`, display `IBX-<n>`, or raw
+ *  Medusa id) to a Medusa order for the order-read endpoint, or a 202-pending
+ *  body when the order does not exist yet. */
+async function resolveOrderForRead(orderId: string): Promise<ResolvedOrderRead> {
+  if (orderId.startsWith("pi_")) {
+    // PIX/card: orderId is a Stripe PaymentIntent ID — order may not exist yet
+    // (created only after Stripe webhook fires). Search by metadata.
+    let order: MedusaOrder | undefined;
+    try {
+      const searchData = await medusaAdmin(`/admin/orders?metadata[stripePaymentIntentId]=${encodeURIComponent(orderId)}&limit=1`) as {
+        orders?: MedusaOrder[];
+      };
+      order = searchData.orders?.[0];
+    } catch {
+      // Order not found via metadata — may not exist yet
+    }
+    if (!order) {
+      // Order hasn't been created yet (webhook hasn't fired)
+      return {
+        kind: "pending",
+        body: {
+          status: "pending",
+          paymentIntentId: orderId,
+          message: "Aguardando confirmação do pagamento. O pedido será criado automaticamente após a confirmação.",
+        },
+      };
+    }
+    return { kind: "order", order };
+  }
+
+  if (/^IBX-\d+$/i.test(orderId)) {
+    // Display ID format (e.g. "IBX-0004") — resolve to Medusa order via OrderProjection
+    return resolveDisplayIdOrder(orderId);
+  }
+
+  const data = await medusaAdmin(`/admin/orders/${orderId}`) as { order?: MedusaOrder };
+  return { kind: "order", order: data.order };
+}
+
+/** Resolve an `IBX-<n>` display id to a Medusa order via the OrderProjection,
+ *  falling back to a Medusa display_id query (NATS subscriber lag), or a
+ *  202-pending body when still unresolved. */
+async function resolveDisplayIdOrder(orderId: string): Promise<ResolvedOrderRead> {
+  const displayId = Number.parseInt(orderId.replace(/^IBX-/i, ""), 10);
+  const projection = await prisma.orderProjection.findFirst({
+    where: { displayId },
+    select: { id: true },
+  });
+  if (projection) {
+    const data = await medusaAdmin(`/admin/orders/${projection.id}`) as { order?: MedusaOrder };
+    return { kind: "order", order: data.order };
+  }
+  // Fallback: projection not created yet (NATS subscriber lag) — query Medusa by display_id
+  let order: MedusaOrder | undefined;
+  try {
+    const searchData = await medusaAdmin(
+      `/admin/orders?display_id=${displayId}&limit=1`,
+    ) as { orders?: MedusaOrder[] };
+    order = searchData.orders?.[0];
+  } catch {
+    // Medusa query failed
+  }
+  if (!order) {
+    return {
+      kind: "pending",
+      body: {
+        status: "pending",
+        message: "Aguardando confirmação do pedido...",
+      },
+    };
+  }
+  return { kind: "order", order };
+}
+
+/** Resolve an `IBX-<n>` display id to a Medusa order id for the status-poll
+ *  endpoint (projection first, Medusa display_id query as backfill grace).
+ *  Returns the input unchanged for non-display ids or when unresolved. */
+async function resolveStatusOrderId(orderId: string): Promise<string> {
+  if (!/^IBX-\d+$/i.test(orderId)) return orderId;
+  const displayId = Number.parseInt(orderId.replace(/^IBX-/i, ""), 10);
+  const proj = await prisma.orderProjection.findFirst({
+    where: { displayId },
+    select: { id: true },
+  });
+  if (proj) return proj.id;
+  // Fallback: projection not created yet (NATS subscriber lag) — query Medusa by display_id
+  try {
+    const searchData = await medusaAdmin(
+      `/admin/orders?display_id=${displayId}&limit=1&fields=id`,
+    ) as { orders?: Array<{ id: string }> };
+    if (searchData.orders?.[0]?.id) {
+      return searchData.orders[0].id;
+    }
+  } catch {
+    // Will fall through to existing 202 handling
+  }
+  return orderId;
+}
+
+/** Compute the order-status poll outcome (projection-first, Medusa fallback),
+ *  enforcing the R0a deny-null-owner IDOR guard on both paths. */
+async function computeOrderStatus(args: {
+  orderId: string;
+  orderIdParam: string;
+  accessToken: string | undefined;
+  customerId: string | undefined;
+  log: RouteLog;
+}): Promise<StatusReadOutcome> {
+  const { orderId, orderIdParam, accessToken, customerId, log } = args;
+  try {
+    // Primary: read from projection
+    const { createOrderQueryService: createQS } = await import("@ibatexas/domain");
+    const querySvc = createQS();
+    const projection = await querySvc.getById(orderId);
+
+    if (projection) {
+      // R0a — deny-null-owner IDOR guard (SDD Inv 2/13).
+      if (!isOrderReadAuthorized({
+        orderCustomerId: projection.customerId,
+        requestCustomerId: customerId,
+        orderIdParam,
+        accessToken,
+      })) {
+        return { status: 404, body: { error: "Pedido não encontrado." }, noStore: false };
+      }
+      const pqs = createPaymentQueryService();
+      const cp = await pqs.getActiveByOrderId(orderId).catch(() => null);
+      return {
+        status: 200,
+        noStore: true,
+        body: {
+          status: projection.fulfillmentStatus,
+          paymentStatus: cp ? cp.status : null,
+          updatedAt: projection.updatedAt?.toISOString() ?? null,
+          source: "projection",
+        },
+      };
+    }
+
+    // Fallback: projection not found — use Medusa (backfill grace + pi_ lookup)
+    log.warn({ orderId }, "projection_fallback_used — order status poll");
+    let order: { fulfillment_status?: string; status?: string; updated_at?: string; customer_id?: string; metadata?: Record<string, string> } | undefined;
+
+    if (orderId.startsWith("pi_")) {
+      const searchData = await medusaAdmin(`/admin/orders?metadata[stripePaymentIntentId]=${encodeURIComponent(orderId)}&limit=1&fields=fulfillment_status,status,updated_at,customer_id,metadata`) as {
+        orders?: Array<typeof order>;
+      };
+      order = searchData.orders?.[0];
+    } else {
+      const data = await medusaAdmin(`/admin/orders/${orderId}?fields=fulfillment_status,status,updated_at,customer_id,metadata`) as {
+        order?: NonNullable<typeof order>;
+      };
+      order = data.order;
+    }
+
+    if (!order) {
+      return { status: 202, body: { status: "pending", updatedAt: null }, noStore: false };
+    }
+
+    // R0a — deny-null-owner IDOR guard (SDD Inv 2/13), Medusa-fallback path.
+    const orderCustomerId = order.customer_id ?? order.metadata?.["customerId"];
+    if (!isOrderReadAuthorized({
+      orderCustomerId,
+      requestCustomerId: customerId,
+      orderIdParam,
+      accessToken,
+    })) {
+      return { status: 404, body: { error: "Pedido não encontrado." }, noStore: false };
+    }
+
+    // Medusa uses "not_fulfilled" / "fulfilled" / "canceled" etc. Normalize to
+    // our domain vocabulary so the frontend stays consistent.
+    const rawStatus = order.fulfillment_status ?? order.status ?? "pending";
+    const MEDUSA_STATUS_MAP: Record<string, string> = {
+      not_fulfilled: "pending",
+      fulfilled: "delivered",
+      partially_fulfilled: "preparing",
+      returned: "canceled",
+      requires_action: "pending",
+    };
+    const normalizedStatus = MEDUSA_STATUS_MAP[rawStatus] ?? rawStatus;
+
+    return {
+      status: 200,
+      noStore: true,
+      body: {
+        status: normalizedStatus,
+        updatedAt: order.updated_at ?? null,
+        source: "medusa_fallback",
+      },
+    };
+  } catch (err) {
+    log.error(err, "Failed to fetch order status");
+    return { status: 502, body: { error: "Failed to fetch order status" }, noStore: false };
+  }
 }
 
 export async function cartRoutes(server: FastifyInstance): Promise<void> {
@@ -801,7 +1486,7 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
             productType: z.enum(["food", "frozen", "merchandise"]).optional(),
           })).optional(),
           pixName: z.string().optional(),
-          pixEmail: z.string().email().optional(),
+          pixEmail: z.email().optional(),
           pixCpf: z.string().optional(),
           notes: z.string().max(500).optional(),
         }),
@@ -815,62 +1500,22 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
         return reply.status(403).send({ statusCode: 403, error: "Forbidden", message: "Carrinho pertence a outro usuário." });
       }
 
-      // Block food orders when restaurant is closed — frozen/merch always allowed
+      // Block food orders when restaurant is closed; validate delivery-type vs
+      // payment/cart combinations; enforce the cash/PIX auth requirement.
       const schedule = await loadSchedule();
       const tz = process.env.RESTAURANT_TIMEZONE ?? "America/Sao_Paulo";
       const mealPeriod = getMealPeriodFromSchedule(schedule, tz);
-      if (mealPeriod === "closed") {
-        const hasKitchenItems = (request.body.items ?? []).some((i) => i.productType === "food");
-        if (hasKitchenItems) {
-          return reply.status(422).send({
-            statusCode: 422,
-            error: "Unprocessable Entity",
-            message: "A cozinha está fechada no momento. Itens de comida não podem ser pedidos agora.",
-            code: "KITCHEN_CLOSED",
-          });
-        }
-      }
-
-      // Validate delivery type + payment method + cart composition combinations
       const { paymentMethod, deliveryType: reqDeliveryType, items: localItems } = request.body;
-      if (reqDeliveryType === "shipping") {
-        const hasNonMerch = (localItems ?? []).some((i) => i.productType !== "merchandise");
-        if (hasNonMerch) {
-          return reply.status(422).send({
-            statusCode: 422,
-            error: "Unprocessable Entity",
-            message: "Apenas produtos da loja podem ser enviados pelo correio. Itens de comida e congelados precisam de entrega local ou retirada.",
-            code: "SHIPPING_NON_MERCHANDISE",
-          });
-        }
-        if (paymentMethod === "cash") {
-          return reply.status(422).send({
-            statusCode: 422,
-            error: "Unprocessable Entity",
-            message: "Pagamento em dinheiro não disponível para envios. Escolha PIX ou cartão.",
-            code: "CASH_NOT_ALLOWED_FOR_SHIPPING",
-          });
-        }
-      }
-      if (reqDeliveryType === "dine_in") {
-        const hasFoodItems = (localItems ?? []).some((i) => i.productType === "food");
-        if (!hasFoodItems) {
-          return reply.status(422).send({
-            statusCode: 422,
-            error: "Unprocessable Entity",
-            message: "Comer no restaurante disponível apenas para pedidos com itens de comida.",
-            code: "DINEIN_REQUIRES_FOOD",
-          });
-        }
-      }
 
-      // SEC-001: Cash/PIX requires authentication — Stripe validates identity for card payments
-      if ((paymentMethod === "cash" || paymentMethod === "pix") && !request.customerId) {
-        return reply.status(401).send({
-          statusCode: 401,
-          error: "Unauthorized",
-          message: "Autenticação necessária para pagamento em dinheiro/PIX.",
-        });
+      const compositionRejection = validateCheckoutComposition({
+        mealPeriod,
+        paymentMethod,
+        deliveryType: reqDeliveryType,
+        items: localItems,
+        customerId: request.customerId,
+      });
+      if (compositionRejection) {
+        return reply.status(compositionRejection.status).send(compositionRejection.body);
       }
 
       // P0-PAY-3 (audit-2026-05-27) — checkout-endpoint dedup. Defense-in-depth
@@ -898,194 +1543,45 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
       let cartId = request.body.cartId;
 
       if (localItems && localItems.length > 0) {
-        let needsNewCart = false;
-
-        try {
-          const existingCart = await medusaStore(`/store/carts/${cartId}`) as {
-            cart?: {
-              completed_at?: string;
-              items?: Array<{ id: string }>;
-              payment_collection?: {
-                id: string;
-                payment_sessions?: Array<{ id: string; provider_id: string; data?: { id?: string } }>;
-              };
-            };
-          };
-
-          if (existingCart.cart?.completed_at) {
-            needsNewCart = true;
-          } else if (existingCart.cart?.payment_collection?.payment_sessions?.length) {
-            // Cancel Stripe PIs to prevent orphaned QR codes from charging the customer
-            for (const session of existingCart.cart.payment_collection.payment_sessions) {
-              const piId = session.data?.id;
-              if (piId && session.provider_id.includes("stripe")) {
-                await cancelStalePaymentIntent(piId).catch(() => {});
-              }
-            }
-            needsNewCart = true;
-          } else {
-            // Cart is clean — just clear old items before re-adding
-            const existingItems = existingCart.cart?.items ?? [];
-            for (const item of existingItems) {
-              await medusaAdjudicated<undefined, unknown>({
-                scope: "store",
-                method: "DELETE",
-                path: `/store/carts/${cartId}/line-items/${item.id}`,
-                intentKind: "medusa.cart.line_items.remove",
-                idempotencyKey: `checkout-clear:${cartId}:${item.id}`,
-                sourceSubject: `route:POST /api/cart/checkout:cust:${request.customerId ?? "guest"}`,
-                auditSink: getAuditSink(),
-                log: server.log,
-              }).catch((err) => {
-                // Best-effort clear — matches the pre-migration catch(() => {})
-                // semantics. The kernel may REFUSE on a terminal cart; that's
-                // surfaced via the wrapper's typed error and silenced here so
-                // the checkout flow can still create a fresh cart below.
-                server.log.warn(
-                  { err: (err as Error).message ?? String(err), itemId: item.id },
-                  "[cart/checkout] clear-existing-item failed — continuing",
-                );
-              });
-            }
-          }
-        } catch (err) {
-          // Cart doesn't exist in Medusa (purged/expired) — create fresh
-          if (err instanceof MedusaRequestError && err.statusCode === 404) {
-            needsNewCart = true;
-          } else {
-            throw err;
-          }
+        const syncResult = await syncLocalCartForCheckout({
+          cartId,
+          localItems,
+          customerId: request.customerId,
+          log: server.log,
+        });
+        if ("rejection" in syncResult) {
+          return reply.status(syncResult.rejection.status).send(syncResult.rejection.body);
         }
-
-        if (needsNewCart) {
-          // Bind customer to new cart so the order is linked to their account
-          let newCartBody: Record<string, unknown> = {};
-          if (request.customerId) {
-            try {
-              const customerSvc = createCustomerService();
-              const customer = await customerSvc.getById(request.customerId);
-              if (customer.medusaId) {
-                newCartBody = { customer_id: customer.medusaId };
-              }
-            } catch {
-              // Fall through — create as guest
-            }
-          }
-          const newCart = await medusaAdjudicated<Record<string, unknown>, { cart?: { id: string } }>({
-            scope: "store",
-            method: "POST",
-            path: "/store/carts",
-            payload: newCartBody,
-            intentKind: "medusa.cart.create",
-            idempotencyKey: `checkout-new-cart:${request.body.cartId}:${randomUUID()}`,
-            sourceSubject: `route:POST /api/cart/checkout:cust:${request.customerId ?? "guest"}`,
-            headers: { "Content-Type": "application/json" },
-            auditSink: getAuditSink(),
-            log: server.log,
-          });
-          if (!newCart.cart?.id) {
-            return reply.status(500).send({ statusCode: 500, error: "Internal", message: "Não foi possível criar um novo carrinho." });
-          }
-          cartId = newCart.cart.id;
-          await trackCartId(cartId, request.customerId ? "customer" : "guest");
-        }
-
-        // Add local items to the (possibly new) cart
-        for (const item of localItems) {
-          await medusaAdjudicated<
-            { variant_id: string; quantity: number; metadata?: { productType: string } },
-            unknown
-          >({
-            scope: "store",
-            method: "POST",
-            path: `/store/carts/${cartId}/line-items`,
-            payload: {
-              variant_id: item.variantId,
-              quantity: item.quantity,
-              ...(item.productType ? { metadata: { productType: item.productType } } : {}),
-            },
-            intentKind: "medusa.cart.line_items.add",
-            idempotencyKey: `checkout-add:${cartId}:${item.variantId}:${randomUUID()}`,
-            sourceSubject: `route:POST /api/cart/checkout:cust:${request.customerId ?? "guest"}`,
-            headers: { "Content-Type": "application/json" },
-            auditSink: getAuditSink(),
-            log: server.log,
-          });
-        }
+        cartId = syncResult.cartId;
       }
 
       // Resolve PIX billing details: form fields override cached data
       let pixExtra: { customerName?: string; customerEmail?: string; customerTaxId?: string } | undefined;
       if (paymentMethod === "pix") {
-        const pixName = request.body.pixName;
-        const pixEmail = request.body.pixEmail;
-        const pixCpf = request.body.pixCpf;
-
-        // P1-DATA-CPF: validate the CPF checksum at the trust boundary before it
-        // flows to Stripe (billing_details.tax_id) and Prisma. The Zod schema only
-        // checks it's a string; reuse the Receita Federal checksum validator and
-        // store the normalized (masked-format) value. Invalid → fixable 422; the
-        // request is rejected before the adjudicate envelope is built, so no
-        // checkout nonce is committed and the customer can correct and resubmit.
-        // (Cached CPF was already validated on entry via set_pix_details.)
-        let normalizedFormCpf: string | undefined;
-        if (pixCpf !== undefined && pixCpf.trim() !== "") {
-          const normalized = normalizeCpf(pixCpf);
-          if (!normalized || !isValidCpf(pixCpf)) {
-            return reply.status(422).send({
-              statusCode: 422,
-              error: "Unprocessable Entity",
-              message: "CPF inválido. Verifique os dígitos e tente novamente. Formato: 000.000.000-00.",
-              code: "INVALID_CPF",
-            });
-          }
-          normalizedFormCpf = normalized;
+        const pixResult = await resolvePixBillingDetails({
+          pixName: request.body.pixName,
+          pixEmail: request.body.pixEmail,
+          pixCpf: request.body.pixCpf,
+          customerId: request.customerId,
+        });
+        if ("rejection" in pixResult) {
+          return reply.status(pixResult.rejection.status).send(pixResult.rejection.body);
         }
-
-        // Try loading cached PIX details for authenticated customers
-        let cached: { name?: string; email?: string; cpf?: string } | null = null;
-        if (request.customerId) {
-          cached = await loadCachedPixDetails(request.customerId);
-        }
-
-        pixExtra = {
-          customerName: pixName ?? cached?.name,
-          customerEmail: pixEmail ?? cached?.email,
-          customerTaxId: normalizedFormCpf ?? cached?.cpf,
-        };
+        pixExtra = pixResult.pixExtra;
       }
 
       // ── Task 14 — wrap checkout in adjudicate envelope ────────────────
       //
-      // Build the `order.checkout.create` envelope with the customer-actor
-      // signature. The kernel may EXECUTE / REWRITE / REFUSE / DEFER (PIX
-      // pending) / REQUEST_CONFIRMATION (large-ticket) / ESCALATE here —
-      // the gateway dispatches `createCheckout` only on EXECUTE / REWRITE.
-      //
-      // For guest carts (no customerId), `sessionId` falls back to the
-      // cartId so envelopes from anonymous flows still have a stable key
-      // for audit + park bookkeeping.
-      const checkoutPayload: OrderCheckoutCreatePayload = {
-        cartId,
-        paymentMethod,
-        ...(paymentMethod === "pix" && pixExtra
-          ? {
-              pixDetails: {
-                name: pixExtra.customerName ?? "",
-                email: pixExtra.customerEmail ?? "",
-                cpf: pixExtra.customerTaxId ?? "",
-              },
-            }
-          : {}),
-      };
+      // The kernel may EXECUTE / REWRITE / REFUSE / DEFER (PIX pending) /
+      // REQUEST_CONFIRMATION (large-ticket) / ESCALATE here. For guest carts
+      // (no customerId), `sessionId` falls back to the cartId so anonymous
+      // flows still have a stable key for audit + park bookkeeping.
+      const checkoutPayload = buildCheckoutPayload(cartId, paymentMethod, pixExtra);
 
       const sessionId = request.customerId ?? cartId;
       // ── P0-7 (audit-2026-05-24) — deterministic idempotency-key ─────────
-      //
-      // POST /api/cart/checkout creates a payment (PIX/card/cash) and
-      // an order. A retry on the same cart MUST dedupe to avoid double
-      // payment. Prefer the client's `Idempotency-Key` header; fall back
-      // to `${cartId}:checkout` (a cart is logically checked out once).
+      // Prefer the client's `Idempotency-Key` header; fall back to
+      // `${cartId}:checkout` (a cart is logically checked out once).
       const checkoutIdempotencyKey = resolveCartIdempotencyKey(
         request.headers["idempotency-key"],
         `${cartId}:checkout`,
@@ -1098,31 +1594,19 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
       });
 
       // Unified state contract (Phase 2): build the orders ctx from the REAL cart
-      // (loaded by cartId) via the shared resolve-and-assemble builder, so the web
-      // checkout adjudicates against the same ctx the conductor uses.
-      // ⚠️ BEHAVIOR CHANGE (ratified): this now loads the real cart total, so the
-      // large-ticket guards apply at web checkout — confirmLargeTicket (≥ R$1.000)
-      // → REQUEST_CONFIRMATION (HTTP 202) and refuseAmountAboveCap (≥ R$10.000) →
-      // REFUSE (403). The web frontend MUST handle the 202 confirmation reply, or
-      // orders ≥ R$1.000 will not complete. (paymentStatus stays null via the
-      // builder so the PIX-pending guard does NOT DEFER at checkout — unchanged.)
+      // via the shared resolve-and-assemble builder, so the web checkout
+      // adjudicates against the same ctx the conductor uses.
+      // ⚠️ BEHAVIOR (ratified): the large-ticket guards apply at web checkout —
+      // confirmLargeTicket (≥ R$1.000) → REQUEST_CONFIRMATION (HTTP 202) and
+      // refuseAmountAboveCap (≥ R$10.000) → REFUSE (403). The web frontend MUST
+      // handle the 202 confirmation reply, or orders ≥ R$1.000 will not complete.
       const guestKey = request.customerId ?? `guest:${cartId}`;
-      // T1a-13 fix: thread the request's deliveryType into the ctx builder —
-      // buildCartCtx maps it onto ctx.fulfillment, which the pack's
-      // requireSlotsFilledForCheckout guard requires non-null. Without it the
-      // guard 403'd EVERY web checkout with order.checkout.slots_incomplete
-      // (surfaced by the first JOURNEY-001 live run). Absent deliveryType
-      // still refuses — the customer genuinely hasn't picked a fulfillment.
-      const orderState = {
-        ctx: await loadCartCtx(
-          identityCtx(guestKey, "web"),
-          {
-            paymentMethod,
-            ...(reqDeliveryType !== undefined ? { deliveryType: reqDeliveryType } : {}),
-          } as Record<string, unknown>,
-          { cartId },
-        ),
-      } as unknown as OrderState;
+      const orderState = await buildCheckoutOrderState({
+        guestKey,
+        paymentMethod,
+        deliveryType: reqDeliveryType,
+        cartId,
+      });
 
       const out = await runCustomerIntent({
         envelope,
@@ -1149,52 +1633,20 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
         refusalMessages: portugueseRefusalMessages,
       });
 
-      // ── REQUEST_CONFIRMATION (large-ticket ≥ R$1.000) — park the prepared
-      // checkout under a single-use receipt and ask the customer to confirm.
-      // The gateway already mapped a 202 { confirmationRequired, prompt }; we
-      // enrich it with the confirmationId the customer sends back to
-      // POST /api/cart/checkout/confirm. (Without this, the 202 carries no
-      // resume handle and orders ≥ R$1.000 could not complete.)
-      if (out.decision.kind === "REQUEST_CONFIRMATION") {
-        const prompt = out.decision.prompt;
-        const parked = await checkoutConfirmationStore.create({
-          kind: "order.checkout.create",
-          payload: checkoutPayload,
-          idempotencyKey: checkoutIdempotencyKey,
-          cartId,
-          customerId: sessionId,
-          userType: request.userType ?? "guest",
-          checkoutBody: request.body as Record<string, unknown>,
-          ...(pixExtra ? { pixExtra } : {}),
-          prompt,
-          createdAt: new Date().toISOString(),
-        });
-        return reply.code(202).send({
-          confirmationRequired: true,
-          confirmationId: parked.confirmationId,
-          prompt,
-          ttlSeconds: parked.ttlSeconds,
-        });
-      }
-
-      // ── Other non-EXECUTE/REWRITE branches (REFUSE 403 / DEFER 202 /
-      // ESCALATE 503) — surface the gateway's reply verbatim (it already
-      // mapped pt-BR copy + status code).
-      if (out.decision.kind !== "EXECUTE" && out.decision.kind !== "REWRITE") {
-        return reply.code(out.statusCode).send(out.body);
-      }
-
-      // ── EXECUTE / REWRITE: apply post-checkout side effects + respond.
-      const result = out.body as Awaited<ReturnType<typeof createCheckout>>;
-      return finalizeCheckout({
+      return respondToCheckoutDecision({
         reply,
-        result,
+        out,
+        checkoutPayload,
+        checkoutIdempotencyKey,
         cartId,
+        sessionId,
         paymentMethod,
         customerId: request.customerId,
-        ...(pixExtra ? { pixExtra } : {}),
-        ...(request.body.notes ? { notes: request.body.notes } : {}),
-        onFixableFailure: async () => {
+        userType: request.userType ?? "guest",
+        checkoutBody: request.body as Record<string, unknown>,
+        pixExtra,
+        notes: request.body.notes,
+        releaseGate: async () => {
           // P0-PAY-3 — fixable failure: release the idempotency gate so the
           // customer can correct + retry immediately rather than waiting out
           // the 120s TTL.
@@ -1411,81 +1863,12 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
       preHandler: optionalAuth,
     },
     async (request, reply) => {
-      type MedusaOrder = {
-        id: string;
-        status: string;
-        display_id: number;
-        total: number;
-        subtotal: number;
-        shipping_total: number;
-        customer_id?: string;
-        metadata?: Record<string, string>;
-        items: Array<{
-          id: string;
-          title: string;
-          quantity: number;
-          unit_price: number;
-          thumbnail?: string;
-          variant_id?: string;
-          metadata?: Record<string, string>;
-        }>;
-        created_at: string;
-      };
-
-      let order: MedusaOrder | undefined;
       const { orderId } = request.params;
-
-      if (orderId.startsWith("pi_")) {
-        // PIX/card: orderId is a Stripe PaymentIntent ID — order may not exist yet
-        // (created only after Stripe webhook fires). Search by metadata.
-        try {
-          const searchData = await medusaAdmin(`/admin/orders?metadata[stripePaymentIntentId]=${encodeURIComponent(orderId)}&limit=1`) as {
-            orders?: MedusaOrder[];
-          };
-          order = searchData.orders?.[0];
-        } catch {
-          // Order not found via metadata — may not exist yet
-        }
-
-        if (!order) {
-          // Order hasn't been created yet (webhook hasn't fired)
-          return reply.status(202).send({
-            status: "pending",
-            paymentIntentId: orderId,
-            message: "Aguardando confirmação do pagamento. O pedido será criado automaticamente após a confirmação.",
-          });
-        }
-      } else if (/^IBX-\d+$/i.test(orderId)) {
-        // Display ID format (e.g. "IBX-0004") — resolve to Medusa order via OrderProjection
-        const displayId = Number.parseInt(orderId.replace(/^IBX-/i, ""), 10);
-        const projection = await prisma.orderProjection.findFirst({
-          where: { displayId },
-          select: { id: true },
-        });
-        if (projection) {
-          const data = await medusaAdmin(`/admin/orders/${projection.id}`) as { order?: MedusaOrder };
-          order = data.order;
-        } else {
-          // Fallback: projection not created yet (NATS subscriber lag) — query Medusa by display_id
-          try {
-            const searchData = await medusaAdmin(
-              `/admin/orders?display_id=${displayId}&limit=1`,
-            ) as { orders?: MedusaOrder[] };
-            order = searchData.orders?.[0];
-          } catch {
-            // Medusa query failed
-          }
-          if (!order) {
-            return reply.status(202).send({
-              status: "pending",
-              message: "Aguardando confirmação do pedido...",
-            });
-          }
-        }
-      } else {
-        const data = await medusaAdmin(`/admin/orders/${orderId}`) as { order?: MedusaOrder };
-        order = data.order;
+      const resolved = await resolveOrderForRead(orderId);
+      if (resolved.kind === "pending") {
+        return reply.status(202).send(resolved.body);
       }
+      const order = resolved.order;
 
       if (!order) {
         return reply.status(404).send({ statusCode: 404, error: "Not Found", message: "Pedido não encontrado." });
@@ -1554,122 +1937,24 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
       preHandler: optionalAuth,
     },
     async (request, reply) => {
-      let { orderId } = request.params;
       // R0a — capture the caller-supplied id BEFORE the IBX-/pi_ → Medusa-id
-      // resolution below: the per-order token is bound to the exact id the
-      // client holds (== the /pedido/<id> route param), not the resolved id.
-      const orderIdParam = orderId;
+      // resolution: the per-order token is bound to the exact id the client
+      // holds (== the /pedido/<id> route param), not the resolved id.
+      const orderIdParam = request.params.orderId;
       const accessToken = request.headers["x-order-access-token"] as string | undefined;
+      const orderId = await resolveStatusOrderId(orderIdParam);
 
-      // Resolve IBX-XXXX display ID to Medusa order ID
-      if (/^IBX-\d+$/i.test(orderId)) {
-        const displayId = Number.parseInt(orderId.replace(/^IBX-/i, ""), 10);
-        const proj = await prisma.orderProjection.findFirst({
-          where: { displayId },
-          select: { id: true },
-        });
-        if (proj) {
-          orderId = proj.id;
-        } else {
-          // Fallback: projection not created yet (NATS subscriber lag) — query Medusa by display_id
-          try {
-            const searchData = await medusaAdmin(
-              `/admin/orders?display_id=${displayId}&limit=1&fields=id`,
-            ) as { orders?: Array<{ id: string }> };
-            if (searchData.orders?.[0]?.id) {
-              orderId = searchData.orders[0].id;
-            }
-          } catch {
-            // Will fall through to existing 202 handling
-          }
-        }
-      }
-
-      try {
-        // Primary: read from projection
-        const { createOrderQueryService: createQS } = await import("@ibatexas/domain");
-        const querySvc = createQS();
-        const projection = await querySvc.getById(orderId);
-
-        if (projection) {
-          // R0a — deny-null-owner IDOR guard (SDD Inv 2/13). Authorize iff the
-          // authenticated caller owns the order OR a valid signed per-order
-          // token bound to this id is presented. A null owner no longer leaks:
-          // "no owner" ≠ "any owner".
-          if (!isOrderReadAuthorized({
-            orderCustomerId: projection.customerId,
-            requestCustomerId: request.customerId,
-            orderIdParam,
-            accessToken,
-          })) {
-            return reply.status(404).send({ error: "Pedido não encontrado." });
-          }
-          const pqs = createPaymentQueryService();
-          const cp = await pqs.getActiveByOrderId(orderId).catch(() => null);
-          reply.header("Cache-Control", "no-store");
-          return reply.send({
-            status: projection.fulfillmentStatus,
-            paymentStatus: cp ? cp.status : null,
-            updatedAt: projection.updatedAt?.toISOString() ?? null,
-            source: "projection",
-          });
-        }
-
-        // Fallback: projection not found — use Medusa (backfill grace + pi_ lookup)
-        server.log.warn({ orderId }, "projection_fallback_used — order status poll");
-        let order: { fulfillment_status?: string; status?: string; updated_at?: string; customer_id?: string; metadata?: Record<string, string> } | undefined;
-
-        if (orderId.startsWith("pi_")) {
-          const searchData = await medusaAdmin(`/admin/orders?metadata[stripePaymentIntentId]=${encodeURIComponent(orderId)}&limit=1&fields=fulfillment_status,status,updated_at,customer_id,metadata`) as {
-            orders?: Array<typeof order>;
-          };
-          order = searchData.orders?.[0];
-        } else {
-          const data = await medusaAdmin(`/admin/orders/${orderId}?fields=fulfillment_status,status,updated_at,customer_id,metadata`) as {
-            order?: typeof order;
-          };
-          order = data.order;
-        }
-
-        if (!order) {
-          return reply.status(202).send({ status: "pending", updatedAt: null });
-        }
-
-        // R0a — deny-null-owner IDOR guard (SDD Inv 2/13), Medusa-fallback path.
-        // Authorize iff the authenticated caller owns the order OR a valid
-        // signed per-order token bound to this id is presented.
-        const orderCustomerId = order.customer_id ?? order.metadata?.["customerId"];
-        if (!isOrderReadAuthorized({
-          orderCustomerId,
-          requestCustomerId: request.customerId,
-          orderIdParam,
-          accessToken,
-        })) {
-          return reply.status(404).send({ error: "Pedido não encontrado." });
-        }
-
-        // Medusa uses "not_fulfilled" / "fulfilled" / "canceled" etc.
-        // Normalize to our domain vocabulary so the frontend stays consistent.
-        const rawStatus = order.fulfillment_status ?? order.status ?? "pending";
-        const MEDUSA_STATUS_MAP: Record<string, string> = {
-          not_fulfilled: "pending",
-          fulfilled: "delivered",
-          partially_fulfilled: "preparing",
-          returned: "canceled",
-          requires_action: "pending",
-        };
-        const normalizedStatus = MEDUSA_STATUS_MAP[rawStatus] ?? rawStatus;
-
+      const outcome = await computeOrderStatus({
+        orderId,
+        orderIdParam,
+        accessToken,
+        customerId: request.customerId,
+        log: server.log,
+      });
+      if (outcome.noStore) {
         reply.header("Cache-Control", "no-store");
-        return reply.send({
-          status: normalizedStatus,
-          updatedAt: order.updated_at ?? null,
-          source: "medusa_fallback",
-        });
-      } catch (err) {
-        server.log.error(err, "Failed to fetch order status");
-        reply.code(502).send({ error: "Failed to fetch order status" });
       }
+      return reply.status(outcome.status).send(outcome.body);
     },
   );
 

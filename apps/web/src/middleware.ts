@@ -61,5 +61,7 @@ export const config = {
   // - API routes
   // - Next.js internals (_next)
   // - Static files (favicon, images, etc.)
+  // NB: must stay a plain string literal — Next statically parses this config
+  // (a String.raw tagged template is not statically analyzable here).
   matcher: ["/((?!api|_next|_vercel|.*\\..*).*)"],
 }

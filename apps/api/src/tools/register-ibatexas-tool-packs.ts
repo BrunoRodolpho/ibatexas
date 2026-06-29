@@ -525,12 +525,15 @@ export interface ToolRosterDriftOptions {
   readonly onWarn?: (message: string) => void;
 }
 
-export function toolRosterDrift(
+/**
+ * Check 1 (`registered ⊆ pack-owned`): for every registered tool,
+ * `capability === intentKind` and that kind is owned by an installed pack.
+ * Returns one problem string per violation, in tool order.
+ */
+function checkRegisteredAgainstPacks(
   tools: ReadonlyArray<TD<unknown, unknown>>,
-  packIntentKinds: ReadonlyArray<string>,
-  options?: ToolRosterDriftOptions,
+  union: ReadonlySet<string>,
 ): string[] {
-  const union = new Set(packIntentKinds);
   const problems: string[] = [];
   for (const t of tools) {
     const cap = t.capability as unknown as string;
@@ -547,49 +550,85 @@ export function toolRosterDrift(
       );
     }
   }
+  return problems;
+}
+
+/** Collect every intent kind the planners advertise under a single probe context. */
+function advertisedKindsForProbe(
+  planners: ReadonlyArray<CapabilityPlanner<unknown, unknown>>,
+  probe: RosterDriftContext,
+): Set<string> {
+  const advertised = new Set<string>();
+  for (const planner of planners) {
+    for (const kind of planner.plan(probe.state, probe.context).allowedIntents) {
+      advertised.add(kind);
+    }
+  }
+  return advertised;
+}
+
+/**
+ * Context-aware leg (P0-7): `advertised ⊆ registered` per named context. Returns
+ * a problem per dangling advertised kind; emits WARN (never a problem) for
+ * registered-but-unadvertised kinds via `onWarn`.
+ */
+function checkAdvertisedAgainstRegistered(
+  tools: ReadonlyArray<TD<unknown, unknown>>,
+  planners: ReadonlyArray<CapabilityPlanner<unknown, unknown>>,
+  contexts: ReadonlyArray<RosterDriftContext>,
+  onWarn: (message: string) => void,
+): string[] {
+  const problems: string[] = [];
+  // Registration is keyed by `capability` (resolveTool matches it against
+  // envelope.kind; check 1 pins capability === intentKind).
+  const registered = new Set(
+    tools.map((t) => t.capability as unknown as string),
+  );
+  const advertisedAnywhere = new Set<string>();
+  for (const probe of contexts) {
+    const advertised = advertisedKindsForProbe(planners, probe);
+    for (const kind of advertised) {
+      advertisedAnywhere.add(kind);
+      if (registered.has(kind)) continue;
+      if (ADVERTISED_NOT_REGISTERED_WHITELIST.has(`${probe.name}:${kind}`)) {
+        continue;
+      }
+      problems.push(
+        `context "${probe.name}": planner-advertised kind "${kind}" has no registered tool — ` +
+          `express_intent could propose it but dispatchDecision would be tool_unresolved`,
+      );
+    }
+  }
+  // Registered-but-unadvertised: unreachable via chat under every probed
+  // context — dead weight, never a dispatch failure. WARN, never fail.
+  for (const kind of registered) {
+    if (!advertisedAnywhere.has(kind)) {
+      onWarn(
+        `toolRosterDrift: registered kind "${kind}" is not advertised by any planner under ` +
+          `the probed contexts (${contexts.map((c) => c.name).join(", ")}) — ` +
+          `unreachable via chat (WARN only)`,
+      );
+    }
+  }
+  return problems;
+}
+
+export function toolRosterDrift(
+  tools: ReadonlyArray<TD<unknown, unknown>>,
+  packIntentKinds: ReadonlyArray<string>,
+  options?: ToolRosterDriftOptions,
+): string[] {
+  const union = new Set(packIntentKinds);
+  const problems: string[] = checkRegisteredAgainstPacks(tools, union);
 
   // ── Context-aware leg (P0-7): advertised ⊆ registered per named context ──
   const planners = options?.planners;
   if (planners !== undefined && planners.length > 0) {
     const contexts = options?.contexts ?? ROSTER_DRIFT_CONTEXTS;
     const onWarn = options?.onWarn ?? ((m: string) => console.warn(m));
-    // Registration is keyed by `capability` (resolveTool matches it against
-    // envelope.kind; check 1 above pins capability === intentKind).
-    const registered = new Set(
-      tools.map((t) => t.capability as unknown as string),
+    problems.push(
+      ...checkAdvertisedAgainstRegistered(tools, planners, contexts, onWarn),
     );
-    const advertisedAnywhere = new Set<string>();
-    for (const probe of contexts) {
-      const advertised = new Set<string>();
-      for (const planner of planners) {
-        for (const kind of planner.plan(probe.state, probe.context)
-          .allowedIntents) {
-          advertised.add(kind);
-        }
-      }
-      for (const kind of advertised) {
-        advertisedAnywhere.add(kind);
-        if (registered.has(kind)) continue;
-        if (ADVERTISED_NOT_REGISTERED_WHITELIST.has(`${probe.name}:${kind}`)) {
-          continue;
-        }
-        problems.push(
-          `context "${probe.name}": planner-advertised kind "${kind}" has no registered tool — ` +
-            `express_intent could propose it but dispatchDecision would be tool_unresolved`,
-        );
-      }
-    }
-    // Registered-but-unadvertised: unreachable via chat under every probed
-    // context — dead weight, never a dispatch failure. WARN, never fail.
-    for (const kind of registered) {
-      if (!advertisedAnywhere.has(kind)) {
-        onWarn(
-          `toolRosterDrift: registered kind "${kind}" is not advertised by any planner under ` +
-            `the probed contexts (${contexts.map((c) => c.name).join(", ")}) — ` +
-            `unreachable via chat (WARN only)`,
-        );
-      }
-    }
   }
 
   return problems;

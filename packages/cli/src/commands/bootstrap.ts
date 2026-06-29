@@ -21,38 +21,33 @@ interface BootstrapOpts {
   skipSeed?: boolean
 }
 
-async function runBootstrap(opts: BootstrapOpts) {
-  // Steps: Docker, Medusa, domain, kernel audit schema, claustrum schema,
-  // admin user, (+ seed, + verify when seeding).
-  const TOTAL = opts.skipSeed ? 6 : 8
-  console.log(chalk.bold.blue("\n  🚀  IbateXas Bootstrap\n"))
-
-  let stepNum = 0
-
-  // ── [1] Docker ────────────────────────────────────────────────────────────
-  if (!opts.skipDocker) {
-    step(++stepNum, TOTAL, "Starting Docker containers…")
-    const spinner = ora({ text: "docker compose up -d --wait", indent: 4 }).start()
-    try {
-      await execa("docker", ["compose", "up", "-d", "--wait"], { cwd: ROOT })
-      spinner.succeed(chalk.green("Docker services healthy"))
-    } catch {
-      spinner.fail(chalk.red("Docker failed to start"))
-      const diagnostic = await diagnoseDockerFailure()
-      if (diagnostic) {
-        console.error("")
-        console.error(diagnostic)
-        console.error("")
-      }
-      process.exit(1)
-    }
-  } else {
-    step(++stepNum, TOTAL, "Skipping Docker (--skip-docker)")
+// ── [1] Docker ────────────────────────────────────────────────────────────────
+async function stepDocker(opts: BootstrapOpts, n: number, total: number) {
+  if (opts.skipDocker) {
+    step(n, total, "Skipping Docker (--skip-docker)")
     console.log(chalk.gray("    Assuming containers are already running"))
+    return
   }
+  step(n, total, "Starting Docker containers…")
+  const spinner = ora({ text: "docker compose up -d --wait", indent: 4 }).start()
+  try {
+    await execa("docker", ["compose", "up", "-d", "--wait"], { cwd: ROOT })
+    spinner.succeed(chalk.green("Docker services healthy"))
+  } catch {
+    spinner.fail(chalk.red("Docker failed to start"))
+    const diagnostic = await diagnoseDockerFailure()
+    if (diagnostic) {
+      console.error("")
+      console.error(diagnostic)
+      console.error("")
+    }
+    process.exit(1)
+  }
+}
 
-  // ── [2] Medusa migrations ─────────────────────────────────────────────────
-  step(++stepNum, TOTAL, "Running Medusa migrations…")
+// ── [2] Medusa migrations ───────────────────────────────────────────────────────
+async function stepMedusaMigrations(n: number, total: number) {
+  step(n, total, "Running Medusa migrations…")
   const medusaSpinner = ora({ text: "medusa db:migrate", indent: 4 }).start()
   try {
     await execa("pnpm", ["--filter", "@ibatexas/commerce", "db:migrate"], {
@@ -64,9 +59,11 @@ async function runBootstrap(opts: BootstrapOpts) {
     console.error(chalk.gray(`    ${String(err)}`))
     process.exit(1)
   }
+}
 
-  // ── [3] Domain (Prisma) migrations ────────────────────────────────────────
-  step(++stepNum, TOTAL, "Running domain migrations…")
+// ── [3] Domain (Prisma) migrations ──────────────────────────────────────────────
+async function stepDomainMigrations(n: number, total: number) {
+  step(n, total, "Running domain migrations…")
   const prismaSpinner = ora({ text: "prisma db push", indent: 4 }).start()
   try {
     await execa("pnpm", ["--filter", "@ibatexas/domain", "db:push"], {
@@ -78,105 +75,114 @@ async function runBootstrap(opts: BootstrapOpts) {
     console.error(chalk.gray(`    ${String(err)}`))
     process.exit(1)
   }
+}
 
-  // ── [4] Kernel audit-postgres migrations ──────────────────────────────────
-  step(++stepNum, TOTAL, "Applying adjudicate kernel migrations…")
+// ── [4] Kernel audit-postgres migrations ─────────────────────────────────────────
+async function stepKernelMigrations(n: number, total: number) {
+  step(n, total, "Applying adjudicate kernel migrations…")
   const kernelSpinner = ora({ text: "@adjudicate/audit-postgres migrations", indent: 4 }).start()
   try {
-    if (!process.env.DATABASE_URL) {
-      kernelSpinner.warn(chalk.yellow("Skipped — DATABASE_URL not set in .env"))
-    } else {
+    if (process.env.DATABASE_URL) {
       await applyAuditPostgresMigrations(process.env.DATABASE_URL, {
         info: () => {},
         warn: () => {},
       })
       kernelSpinner.succeed(chalk.green("Kernel migrations complete"))
+    } else {
+      kernelSpinner.warn(chalk.yellow("Skipped — DATABASE_URL not set in .env"))
     }
   } catch (err) {
     kernelSpinner.fail(chalk.red("Kernel migrations failed"))
     console.error(chalk.gray(`    ${(err as Error).message}`))
     process.exit(1)
   }
+}
 
-  // ── [5] Claustrum memory + grounding schema ───────────────────────────────
-  // The claustrum-on-dev Conductor's memory/grounding providers read the
-  // claustrum_memory_* + claustrum_grounding_docs tables. Their @claustrum/*
-  // SQL migrations + episodic partitions are applied here (apply-once,
-  // idempotent) so the same DATABASE_URL holds every schema layer the runtime
-  // needs. Without this, the conductor boots but memory recall / grounding fail.
-  step(++stepNum, TOTAL, "Provisioning claustrum schema…")
+// ── [5] Claustrum memory + grounding schema ──────────────────────────────────────
+// The claustrum-on-dev Conductor's memory/grounding providers read the
+// claustrum_memory_* + claustrum_grounding_docs tables. Their @claustrum/*
+// SQL migrations + episodic partitions are applied here (apply-once,
+// idempotent) so the same DATABASE_URL holds every schema layer the runtime
+// needs. Without this, the conductor boots but memory recall / grounding fail.
+async function stepClaustrumSchema(n: number, total: number) {
+  step(n, total, "Provisioning claustrum schema…")
   const claustrumSpinner = ora({ text: "memory + grounding (pgvector)", indent: 4 }).start()
   try {
-    if (!process.env.DATABASE_URL) {
-      claustrumSpinner.warn(chalk.yellow("Skipped — DATABASE_URL not set in .env"))
-    } else {
+    if (process.env.DATABASE_URL) {
       const result = await migrateClaustrumDatabase()
       const applied = result.applied.length > 0 ? `${result.applied.length} applied` : "up to date"
       claustrumSpinner.succeed(
         chalk.green(`Claustrum schema ready (${applied}, ${result.partitionsEnsured.length} partitions)`),
       )
+    } else {
+      claustrumSpinner.warn(chalk.yellow("Skipped — DATABASE_URL not set in .env"))
     }
   } catch (err) {
     claustrumSpinner.fail(chalk.red("Claustrum schema migration failed"))
     console.error(chalk.gray(`    ${(err as Error).message}`))
     process.exit(1)
   }
+}
 
-  // ── [6] Medusa admin user ─────────────────────────────────────────────────
-  step(++stepNum, TOTAL, "Creating Medusa admin user…")
+// ── [6] Medusa admin user ────────────────────────────────────────────────────────
+async function stepAdminUser(n: number, total: number) {
+  step(n, total, "Creating Medusa admin user…")
   const adminEmail = process.env.MEDUSA_ADMIN_EMAIL
   const adminPassword = process.env.MEDUSA_ADMIN_PASSWORD
   if (!adminEmail || !adminPassword) {
     console.log(chalk.yellow("    Skipped — MEDUSA_ADMIN_EMAIL or MEDUSA_ADMIN_PASSWORD not set in .env"))
-  } else {
-    const adminSpinner = ora({ text: `user: ${adminEmail}`, indent: 4 }).start()
+    return
+  }
+  const adminSpinner = ora({ text: `user: ${adminEmail}`, indent: 4 }).start()
+  try {
+    await execa(
+      "npx",
+      ["medusa", "user", "--email", adminEmail, "--password", adminPassword],
+      { cwd: path.join(ROOT, "apps/commerce") },
+    )
+    adminSpinner.succeed(chalk.green(`Admin user created (${adminEmail})`))
+  } catch {
+    // User may already exist — that's fine
+    adminSpinner.warn(chalk.yellow(`Admin user may already exist (${adminEmail})`))
+  }
+}
+
+// ── [7] Seed data ────────────────────────────────────────────────────────────────
+async function stepSeed(n: number, total: number) {
+  step(n, total, "Seeding data…")
+
+  const seeds = [
+    { label: "domain tables (Table + TimeSlot)", filter: "@ibatexas/domain", script: "db:seed:tables" },
+    { label: "delivery (zones + addresses)", filter: "@ibatexas/domain", script: "db:seed:delivery" },
+  ]
+
+  for (const seed of seeds) {
+    const spinner = ora({ text: seed.label, indent: 4 }).start()
     try {
-      await execa(
-        "npx",
-        ["medusa", "user", "--email", adminEmail, "--password", adminPassword],
-        { cwd: path.join(ROOT, "apps/commerce") },
-      )
-      adminSpinner.succeed(chalk.green(`Admin user created (${adminEmail})`))
+      await execa("pnpm", ["--filter", seed.filter, seed.script], {
+        cwd: ROOT,
+      })
+      spinner.succeed(chalk.green(seed.label))
     } catch {
-      // User may already exist — that's fine
-      adminSpinner.warn(chalk.yellow(`Admin user may already exist (${adminEmail})`))
+      spinner.warn(chalk.yellow(`${seed.label} — failed (non-fatal)`))
     }
   }
+}
 
-  // ── [7] Seed data ─────────────────────────────────────────────────────────
-  if (!opts.skipSeed) {
-    step(++stepNum, TOTAL, "Seeding data…")
-
-    const seeds = [
-      { label: "domain tables (Table + TimeSlot)", filter: "@ibatexas/domain", script: "db:seed:tables" },
-      { label: "delivery (zones + addresses)", filter: "@ibatexas/domain", script: "db:seed:delivery" },
-    ]
-
-    for (const seed of seeds) {
-      const spinner = ora({ text: seed.label, indent: 4 }).start()
-      try {
-        await execa("pnpm", ["--filter", seed.filter, seed.script], {
-          cwd: ROOT,
-        })
-        spinner.succeed(chalk.green(seed.label))
-      } catch {
-        spinner.warn(chalk.yellow(`${seed.label} — failed (non-fatal)`))
-      }
-    }
-
-    // ── [8] Verify ────────────────────────────────────────────────────────
-    step(++stepNum, TOTAL, "Verifying infrastructure…")
-    try {
-      await execa("node", [
-        path.join(ROOT, "packages/cli/dist/index.js"),
-        "svc", "health",
-      ], { cwd: ROOT, stdio: "inherit" })
-    } catch {
-      console.log(chalk.yellow("    Health check had issues — review output above"))
-    }
+// ── [8] Verify ───────────────────────────────────────────────────────────────────
+async function stepVerify(n: number, total: number) {
+  step(n, total, "Verifying infrastructure…")
+  try {
+    await execa("node", [
+      path.join(ROOT, "packages/cli/dist/index.js"),
+      "svc", "health",
+    ], { cwd: ROOT, stdio: "inherit" })
+  } catch {
+    console.log(chalk.yellow("    Health check had issues — review output above"))
   }
+}
 
-  // ── Done ──────────────────────────────────────────────────────────────────
+function printNextSteps() {
   console.log("")
   console.log(chalk.green.bold("  ✅  Bootstrap complete!"))
   console.log("")
@@ -186,6 +192,27 @@ async function runBootstrap(opts: BootstrapOpts) {
   console.log(chalk.cyan("    ibx db seed:homepage       # seed customers + reviews (requires Medusa running)"))
   console.log(chalk.cyan("    ibx db reindex             # index products into Typesense"))
   console.log("")
+}
+
+async function runBootstrap(opts: BootstrapOpts) {
+  // Steps: Docker, Medusa, domain, kernel audit schema, claustrum schema,
+  // admin user, (+ seed, + verify when seeding).
+  const TOTAL = opts.skipSeed ? 6 : 8
+  console.log(chalk.bold.blue("\n  🚀  IbateXas Bootstrap\n"))
+
+  await stepDocker(opts, 1, TOTAL)
+  await stepMedusaMigrations(2, TOTAL)
+  await stepDomainMigrations(3, TOTAL)
+  await stepKernelMigrations(4, TOTAL)
+  await stepClaustrumSchema(5, TOTAL)
+  await stepAdminUser(6, TOTAL)
+
+  if (!opts.skipSeed) {
+    await stepSeed(7, TOTAL)
+    await stepVerify(8, TOTAL)
+  }
+
+  printNextSteps()
 }
 
 // ── Command registration ──────────────────────────────────────────────────────

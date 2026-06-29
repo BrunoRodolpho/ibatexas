@@ -22,6 +22,8 @@ import {
   MISC_LABELS,
 } from '../constants/admin-labels'
 
+type BadgeVariant = 'success' | 'warning' | 'danger' | 'default'
+
 const col = createColumnHelper<OrderSummary>()
 
 function formatBRL(centavos: number) {
@@ -36,8 +38,8 @@ function maskPhone(email: string) {
 
 const STATUS_LABELS = ORDER_STATUS_LABELS
 
-function statusVariant(status: string): 'success' | 'warning' | 'danger' | 'default' {
-  const map: Record<string, 'success' | 'warning' | 'danger' | 'default'> = {
+function statusVariant(status: string): BadgeVariant {
+  const map: Record<string, BadgeVariant> = {
     completed: 'success',
     delivered: 'success',
     confirmed: 'success',
@@ -50,8 +52,8 @@ function statusVariant(status: string): 'success' | 'warning' | 'danger' | 'defa
   return map[status] ?? 'default'
 }
 
-function paymentVariant(status: string): 'success' | 'warning' | 'danger' | 'default' {
-  const map: Record<string, 'success' | 'warning' | 'danger' | 'default'> = {
+function paymentVariant(status: string): BadgeVariant {
+  const map: Record<string, BadgeVariant> = {
     paid: 'success',
     captured: 'success',
     awaiting_payment: 'warning',
@@ -93,6 +95,46 @@ export interface AdminPedidosPageProps {
   onError?: (msg: string) => void
 }
 
+function PaymentStatusCell({ status }: Readonly<{ status: string }>) {
+  return (
+    <Badge variant={paymentVariant(status)} className="text-xs">
+      {PAYMENT_STATUS_LABELS[status] ?? STATUS_LABELS[status] ?? status}
+    </Badge>
+  )
+}
+
+const ADVANCE_STATUS_LABELS: Record<string, string> = {
+  confirmed: ACTION_LABELS.confirmOrder,
+  preparing: ACTION_LABELS.startPreparing,
+  ready: ACTION_LABELS.markReady,
+  in_delivery: ACTION_LABELS.sendDelivery,
+  delivered: ACTION_LABELS.markDelivered,
+}
+
+function AdvanceStatusCell({
+  row,
+  onAdvanceStatus,
+  advanceDisabled,
+}: Readonly<{
+  row: OrderSummary & { version?: number }
+  onAdvanceStatus: (orderId: string, newStatus: string, version?: number) => void
+  advanceDisabled?: boolean
+}>) {
+  const { id, status } = row
+  const next = getNextStatus(status as OrderFulfillmentStatus)
+  if (!next) return null
+
+  return (
+    <button
+      onClick={(e) => { e.stopPropagation(); onAdvanceStatus(id, next, row.version) }}
+      disabled={advanceDisabled}
+      className="rounded-sm bg-brand-600 px-3 py-1 text-xs font-medium text-white hover:bg-brand-700 whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"
+    >
+      {ADVANCE_STATUS_LABELS[next] ?? ACTION_LABELS.advanceStatus}
+    </button>
+  )
+}
+
 export function AdminPedidosPage({
   orders,
   loading,
@@ -130,14 +172,7 @@ export function AdminPedidosPage({
     }),
     col.accessor('paymentStatus', {
       header: ORDER_COLUMN_HEADERS.payment,
-      cell: (i) => {
-        const v = i.getValue() as string
-        return (
-          <Badge variant={paymentVariant(v)} className="text-xs">
-            {PAYMENT_STATUS_LABELS[v] ?? STATUS_LABELS[v] ?? v}
-          </Badge>
-        )
-      },
+      cell: (i) => <PaymentStatusCell status={i.getValue() as string} />,
     }),
     col.accessor('createdAt', {
       header: ORDER_COLUMN_HEADERS.date,
@@ -149,30 +184,13 @@ export function AdminPedidosPage({
     ...(onAdvanceStatus ? [col.display({
       id: 'actions',
       header: '',
-      cell: (i) => {
-        const row = i.row.original as OrderSummary & { version?: number }
-        const { id, status } = row
-        const next = getNextStatus(status as OrderFulfillmentStatus)
-        if (!next) return null
-
-        const labels: Record<string, string> = {
-          confirmed: ACTION_LABELS.confirmOrder,
-          preparing: ACTION_LABELS.startPreparing,
-          ready: ACTION_LABELS.markReady,
-          in_delivery: ACTION_LABELS.sendDelivery,
-          delivered: ACTION_LABELS.markDelivered,
-        }
-
-        return (
-          <button
-            onClick={(e) => { e.stopPropagation(); onAdvanceStatus(id, next, row.version) }}
-            disabled={advanceDisabled}
-            className="rounded-sm bg-brand-600 px-3 py-1 text-xs font-medium text-white hover:bg-brand-700 whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {labels[next] ?? ACTION_LABELS.advanceStatus}
-          </button>
-        )
-      },
+      cell: (i) => (
+        <AdvanceStatusCell
+          row={i.row.original as OrderSummary & { version?: number }}
+          onAdvanceStatus={onAdvanceStatus}
+          advanceDisabled={advanceDisabled}
+        />
+      ),
     })] : []),
   ]
 

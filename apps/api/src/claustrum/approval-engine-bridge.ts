@@ -45,7 +45,7 @@ export function mirrorTtlSeconds(): number {
   const raw = process.env.AGENT_APPROVAL_MIRROR_TTL_SECONDS;
   // #92-3: Number() (not parseInt) so trailing garbage like "60s" → NaN → the
   // 24h default, instead of parseInt silently accepting it as 60.
-  const n = raw ? Number(raw) : NaN;
+  const n = raw ? Number(raw) : Number.NaN;
   return Number.isFinite(n) && n > 0 ? n : 24 * 60 * 60;
 }
 
@@ -69,13 +69,19 @@ function mapResolvedStatus(
       // Should never reach markResolved with a still-pending status; treat as
       // declined defensively rather than throwing (this is best-effort mirror).
       return "declined";
-    default: {
+    default:
       // Exhaustiveness guard — a new ibatexas status must be mapped explicitly.
-      const _exhaustive: never = status;
-      void _exhaustive;
-      return "declined";
-    }
+      return mapUnknownStatus(status);
   }
+}
+
+/**
+ * Exhaustiveness guard: `status` is `never` here, so adding a new ibatexas
+ * status without a matching case above becomes a compile-time error. As this is
+ * a best-effort mirror, an unexpected value still falls back to `declined`.
+ */
+function mapUnknownStatus(_status: never): "declined" {
+  return "declined";
 }
 
 /** Build the adjudicate display projection from an ibatexas approval request. */

@@ -7,9 +7,8 @@ import { useCartStore } from '@/domains/cart'
 import { useUIStore } from '@/domains/ui'
 import { ProductGrid } from '@/components/organisms'
 import { ProductGridSkeleton } from '@/components/molecules/ProductGridSkeleton'
-import { Container } from '@/components/atoms'
+import { Container, JsonLd } from '@/components/atoms'
 import { Link } from '@/i18n/navigation'
-import { JsonLd } from '@/components/atoms'
 import { track } from '@/domains/analytics'
 
 export default function ShopPage() {

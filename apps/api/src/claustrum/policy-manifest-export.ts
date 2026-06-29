@@ -115,16 +115,16 @@ export function buildIbatexasPolicyManifest(
       ...(srcPaths !== undefined && srcPaths.length > 0
         ? { sourceFiles: loadSourceFiles(srcPaths) }
         : {}),
-      ...(opts.sourceRoot !== undefined ? { sourceRoot: opts.sourceRoot } : {}),
+      ...(opts.sourceRoot === undefined ? {} : { sourceRoot: opts.sourceRoot }),
     };
   }
 
   return describeInstalledPacks(packs, {
     adopter: "ibatexas",
-    ...(opts.kernelVersion !== undefined
-      ? { kernelVersion: opts.kernelVersion }
-      : {}),
-    ...(opts.generatedAt !== undefined ? { generatedAt: opts.generatedAt } : {}),
+    ...(opts.kernelVersion === undefined
+      ? {}
+      : { kernelVersion: opts.kernelVersion }),
+    ...(opts.generatedAt === undefined ? {} : { generatedAt: opts.generatedAt }),
     perPackOptions,
   });
 }

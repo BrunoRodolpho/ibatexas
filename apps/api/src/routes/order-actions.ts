@@ -15,7 +15,16 @@ import type { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { buildEnvelope } from "@adjudicate/core";
-import { getRedisClient, rk, withLock } from "@ibatexas/tools";
+import {
+  getRedisClient,
+  rk,
+  withLock,
+  amendOrder,
+  changeDeliveryAddress,
+  switchOrderType,
+  medusaAdmin,
+  medusaAdjudicated,
+} from "@ibatexas/tools";
 import { publishNatsEvent } from "@ibatexas/nats-client";
 import {
   createOrderCommandService,
@@ -37,7 +46,6 @@ import {
   isTerminalPaymentStatus,
 } from "@ibatexas/types";
 import { getEffectivePonr } from "@ibatexas/domain";
-import { amendOrder, changeDeliveryAddress, switchOrderType, medusaAdmin, medusaAdjudicated } from "@ibatexas/tools";
 import {
   ordersPolicyBundle,
   portugueseRefusalMessages,
@@ -243,6 +251,147 @@ function resolveIdempotencyKey(
     return headerValue[0];
   }
   return fallback;
+}
+
+/**
+ * No-op rejection handler. Kept at module scope so awaited `.catch()` calls in
+ * deeply-nested closures don't add an extra nested-function level (S2004).
+ */
+const ignoreError = () => undefined;
+
+/** Loaded order state for the batch-amend route (projection-first, Medusa fallback). */
+type AmendOrderLoadResult =
+  | { found: false }
+  | {
+      found: true;
+      fulfillmentStatus: OrderFulfillmentStatus;
+      itemProductTypeMap: Map<string, string | undefined>;
+    };
+
+/**
+ * Resolve the current fulfillment status + item→productType map for an order,
+ * preferring the local projection and falling back to a Medusa admin read.
+ * Returns `{ found: false }` when neither source has the order.
+ */
+async function loadAmendOrderState(
+  orderQuerySvc: ReturnType<typeof createOrderQueryService>,
+  id: string,
+): Promise<AmendOrderLoadResult> {
+  const projection = await orderQuerySvc.getById(id);
+  if (projection) {
+    const projectionItems =
+      (projection.itemsJson as Array<{ title: string; productType?: string }>) ?? [];
+    return {
+      found: true,
+      fulfillmentStatus: projection.fulfillmentStatus as OrderFulfillmentStatus,
+      itemProductTypeMap: new Map(
+        projectionItems.map((i) => [i.title.toLowerCase(), i.productType]),
+      ),
+    };
+  }
+
+  // Fallback: projection not populated — read from Medusa
+  try {
+    const data = (await medusaAdmin(
+      `/admin/orders/${id}?fields=id,fulfillment_status,*items`,
+    )) as {
+      order?: {
+        fulfillment_status?: string;
+        items?: Array<{ title?: string; metadata?: Record<string, string> }>;
+      };
+    };
+    if (!data.order) {
+      return { found: false };
+    }
+    const itemProductTypeMap = Array.isArray(data.order.items)
+      ? new Map<string, string | undefined>(
+          data.order.items.map((i) => [
+            (i.title ?? "").toLowerCase(),
+            i.metadata?.["productType"],
+          ]),
+        )
+      : new Map<string, string | undefined>();
+    return {
+      found: true,
+      fulfillmentStatus: (data.order.fulfillment_status ?? "pending") as OrderFulfillmentStatus,
+      itemProductTypeMap,
+    };
+  } catch {
+    return { found: false };
+  }
+}
+
+type AmendChange = { type: "remove" | "update_qty"; itemTitle: string; quantity?: number };
+
+/**
+ * Pre-validate every requested change against the current fulfillment status.
+ * Returns `{ ok: false }` with the refusal reason on the first disallowed
+ * action, otherwise `{ ok: true }` with the list of locked (in-preparation
+ * food) item titles.
+ */
+function validateAmendChanges(
+  changes: ReadonlyArray<AmendChange>,
+  fulfillmentStatus: OrderFulfillmentStatus,
+  isPreparing: boolean,
+  itemProductTypeMap: Map<string, string | undefined>,
+): { ok: false; reason: string | undefined } | { ok: true; lockedItems: string[] } {
+  const lockedItems: string[] = [];
+  for (const change of changes) {
+    // Check if action is allowed for current fulfillment status
+    const actionType = change.type === "remove" ? "amend_remove_item" : "amend_update_qty";
+    const check = canPerformAction(actionType as Parameters<typeof canPerformAction>[0], {
+      fulfillmentStatus,
+    });
+    if (!check.allowed) {
+      return { ok: false, reason: check.reason };
+    }
+
+    // During preparing: food items are locked
+    if (isPreparing) {
+      const productType = itemProductTypeMap.get(change.itemTitle.toLowerCase());
+      if (productType === "food") {
+        lockedItems.push(change.itemTitle);
+      }
+    }
+  }
+  return { ok: true, lockedItems };
+}
+
+/**
+ * Apply the batch of amend changes sequentially, stopping at the first thrown
+ * error to avoid partial state. Returns the per-item results and whether any
+ * change failed.
+ */
+async function applyAmendChanges(
+  changes: ReadonlyArray<AmendChange>,
+  orderId: string,
+  ctx: AgentContext,
+): Promise<{
+  results: Array<{ itemTitle: string; success: boolean; message?: string }>;
+  hasFailure: boolean;
+}> {
+  const results: Array<{ itemTitle: string; success: boolean; message?: string }> = [];
+  let hasFailure = false;
+  for (const change of changes) {
+    try {
+      const result = await amendOrder(
+        {
+          orderId,
+          action: change.type,
+          itemTitle: change.itemTitle,
+          quantity: change.quantity,
+        },
+        ctx,
+      );
+      results.push({ itemTitle: change.itemTitle, success: result.success, message: result.message });
+      if (!result.success) hasFailure = true;
+    } catch (err) {
+      results.push({ itemTitle: change.itemTitle, success: false, message: (err as Error).message });
+      hasFailure = true;
+      break; // Stop on first failure to prevent partial state
+    }
+  }
+  return { results, hasFailure };
 }
 
 const OrderIdParams = z.object({ id: z.string().min(1) });
@@ -710,65 +859,31 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
       }
 
       // Fetch current order state (projection-first, Medusa fallback)
-      let fulfillmentStatus: OrderFulfillmentStatus = OrderFulfillmentStatus.PENDING;
-      let itemProductTypeMap = new Map<string, string | undefined>();
-
-      const projection = await orderQuerySvc.getById(id);
-      if (projection) {
-        fulfillmentStatus = projection.fulfillmentStatus as OrderFulfillmentStatus;
-        const projectionItems = (projection.itemsJson as Array<{ title: string; productType?: string }>) ?? [];
-        itemProductTypeMap = new Map(projectionItems.map(i => [i.title.toLowerCase(), i.productType]));
-      } else {
-        // Fallback: projection not populated — read from Medusa
-        try {
-          const data = await medusaAdmin(
-            `/admin/orders/${id}?fields=id,fulfillment_status,*items`,
-          ) as { order?: { fulfillment_status?: string; items?: Array<{ title?: string; metadata?: Record<string, string> }> } };
-          if (!data.order) {
-            return reply.code(404).send({ error: "Pedido não encontrado." });
-          }
-          fulfillmentStatus = (data.order.fulfillment_status ?? "pending") as OrderFulfillmentStatus;
-          if (Array.isArray(data.order.items)) {
-            itemProductTypeMap = new Map(
-              data.order.items.map(i => [(i.title ?? "").toLowerCase(), i.metadata?.["productType"]]),
-            );
-          }
-        } catch {
-          return reply.code(404).send({ error: "Pedido não encontrado." });
-        }
+      const state = await loadAmendOrderState(orderQuerySvc, id);
+      if (!state.found) {
+        return reply.code(404).send({ error: "Pedido não encontrado." });
       }
-
+      const { fulfillmentStatus, itemProductTypeMap } = state;
       const isPreparing = fulfillmentStatus === "preparing";
 
       // ── Pre-validate ALL changes before applying any ──────────────────
-      const lockedItems: string[] = [];
-      for (const change of request.body.changes) {
-        // Check if action is allowed for current fulfillment status
-        const actionType = change.type === "remove" ? "amend_remove_item" : "amend_update_qty";
-        const check = canPerformAction(actionType as Parameters<typeof canPerformAction>[0], {
-          fulfillmentStatus,
+      const validation = validateAmendChanges(
+        request.body.changes,
+        fulfillmentStatus,
+        isPreparing,
+        itemProductTypeMap,
+      );
+      if (!validation.ok) {
+        return reply.code(422).send({
+          error: validation.reason,
+          code: "ACTION_NOT_ALLOWED",
         });
-        if (!check.allowed) {
-          return reply.code(422).send({
-            error: check.reason,
-            code: "ACTION_NOT_ALLOWED",
-          });
-        }
-
-        // During preparing: food items are locked
-        if (isPreparing) {
-          const productType = itemProductTypeMap.get(change.itemTitle.toLowerCase());
-          if (productType === "food") {
-            lockedItems.push(change.itemTitle);
-          }
-        }
       }
-
-      if (lockedItems.length > 0) {
+      if (validation.lockedItems.length > 0) {
         return reply.code(422).send({
           error: "Alguns itens estão em preparo e não podem ser alterados.",
           code: "ITEM_NOW_LOCKED",
-          lockedItems,
+          lockedItems: validation.lockedItems,
         });
       }
 
@@ -783,28 +898,11 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
       }
 
       // ── Apply all changes sequentially ────────────────────────────────
-      const results: Array<{ itemTitle: string; success: boolean; message?: string }> = [];
-      let hasFailure = false;
-
-      for (const change of request.body.changes) {
-        try {
-          const result = await amendOrder(
-            {
-              orderId: id,
-              action: change.type,
-              itemTitle: change.itemTitle,
-              quantity: change.quantity,
-            },
-            apiContext(customerId),
-          );
-          results.push({ itemTitle: change.itemTitle, success: result.success, message: result.message });
-          if (!result.success) hasFailure = true;
-        } catch (err) {
-          results.push({ itemTitle: change.itemTitle, success: false, message: (err as Error).message });
-          hasFailure = true;
-          break; // Stop on first failure to prevent partial state
-        }
-      }
+      const { results, hasFailure } = await applyAmendChanges(
+        request.body.changes,
+        id,
+        apiContext(customerId),
+      );
 
       if (hasFailure) {
         return reply.code(422).send({
@@ -870,8 +968,8 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
         changes: [
           {
             op: packOp,
-            ...(request.body.variantId !== undefined ? { variantId: request.body.variantId } : {}),
-            ...(request.body.quantity !== undefined ? { quantity: request.body.quantity } : {}),
+            ...(request.body.variantId === undefined ? {} : { variantId: request.body.variantId }),
+            ...(request.body.quantity === undefined ? {} : { quantity: request.body.quantity }),
           },
         ],
       };
@@ -1421,7 +1519,7 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
                   actor: { principal: "user", sessionId: customerId },
                   taint: "TRUSTED",
                 });
-                await paymentCmdSvc.transitionStatusFromEnvelope(switchingEnvelope).catch(() => undefined);
+                await paymentCmdSvc.transitionStatusFromEnvelope(switchingEnvelope).catch(ignoreError);
               }
             : undefined,
           log: server.log,
@@ -1519,12 +1617,12 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
         orderId: id,
         address: {
           street: reqBody.address.address1,
-          ...(reqBody.address.address2 !== undefined
-            ? { complement: reqBody.address.address2 }
-            : {}),
-          ...(reqBody.address.neighborhood !== undefined
-            ? { neighborhood: reqBody.address.neighborhood }
-            : {}),
+          ...(reqBody.address.address2 === undefined
+            ? {}
+            : { complement: reqBody.address.address2 }),
+          ...(reqBody.address.neighborhood === undefined
+            ? {}
+            : { neighborhood: reqBody.address.neighborhood }),
           city: reqBody.address.city,
           state: reqBody.address.state,
           zip: reqBody.address.postalCode,

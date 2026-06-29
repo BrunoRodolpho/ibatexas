@@ -20,6 +20,25 @@ const FUNNEL_STAGES: [event: string, label: string][] = [
   ["payment.reconciled", "reconciled"],
 ]
 
+// Shared live-tail loop: subscribe to `stream`, render each line, and stop
+// cleanly on Ctrl-C. Aborted tails are silent; other failures surface a hint.
+async function followLiveTail(stream: string, label: string): Promise<void> {
+  console.log(chalk.dim(`  watching ${label} — ${VICTORIALOGS_URL}\n`))
+  const controller = new AbortController()
+  const stop = (): void => controller.abort()
+  process.on("SIGINT", stop)
+  try {
+    await tailLogs(stream, (e) => console.log(renderLogLine(e)), controller.signal)
+  } catch (err) {
+    if (!controller.signal.aborted) {
+      console.error(unreachableHint(err))
+      process.exitCode = 1
+    }
+  } finally {
+    process.off("SIGINT", stop)
+  }
+}
+
 export function registerObsCommands(obs: Command): void {
   obs.description("Observability — watch kernel decisions and per-turn traces")
 
@@ -99,26 +118,14 @@ export function registerObsCommands(obs: Command): void {
       const piFilter = opts.pi ? ` payment_intent_id:=${JSON.stringify(opts.pi)}` : ""
       const stream = `component:=${PAYMENT_COMPONENT}${piFilter}`
       if (opts.follow) {
-        console.log(chalk.dim(`  watching payments — ${VICTORIALOGS_URL}\n`))
-        const controller = new AbortController()
-        const stop = (): void => controller.abort()
-        process.on("SIGINT", stop)
-        try {
-          await tailLogs(stream, (e) => console.log(renderLogLine(e)), controller.signal)
-        } catch (err) {
-          if (!controller.signal.aborted) {
-            console.error(unreachableHint(err))
-            process.exitCode = 1
-          }
-        } finally {
-          process.off("SIGINT", stop)
-        }
+        await followLiveTail(stream, "payments")
         return
       }
       try {
         const entries = await queryLogs(`_time:${since} ${stream}`, opts.limit)
         if (entries.length === 0) {
-          console.log(chalk.dim(`  no payment events in the last ${since}${opts.pi ? ` for ${opts.pi}` : ""} — widen --since or drive a checkout`))
+          const forPi = opts.pi ? ` for ${opts.pi}` : ""
+          console.log(chalk.dim(`  no payment events in the last ${since}${forPi} — widen --since or drive a checkout`))
           return
         }
         if (opts.pi) console.log(chalk.bold(`\n  Payment ${chalk.cyan(opts.pi)} — ${entries.length} lines\n`))

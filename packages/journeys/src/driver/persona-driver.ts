@@ -428,7 +428,7 @@ export class PersonaDriver {
     const body = toolUse.input["body"]
     const effective: HttpAct = {
       ...declared,
-      ...(body !== undefined ? { body: body as JsonValue } : {}),
+      ...(body === undefined ? {} : { body: body as JsonValue }),
     }
     const result = await this.#http(effective)
     return {

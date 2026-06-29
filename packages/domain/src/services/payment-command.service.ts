@@ -14,8 +14,11 @@
 // during incremental caller migration).
 
 import { prisma } from "../client.js"
-import type { PrismaClient } from "../generated/prisma-client/client.js"
-import type { PaymentStatus as PrismaPaymentStatus, OrderActor as PrismaActor } from "../generated/prisma-client/client.js"
+import type {
+  PrismaClient,
+  PaymentStatus as PrismaPaymentStatus,
+  OrderActor as PrismaActor,
+} from "../generated/prisma-client/client.js"
 import {
   canTransitionPayment,
   isTerminalPaymentStatus,
@@ -664,15 +667,15 @@ export function createPaymentCommandService(
             orderId: payload.orderId,
             method: payload.method,
             amountInCentavos: payload.amountInCentavos,
-            ...(payload.stripePaymentIntentId !== undefined
-              ? { stripePaymentIntentId: payload.stripePaymentIntentId }
-              : {}),
-            ...(payload.pixExpiresAt !== undefined
-              ? { pixExpiresAt: new Date(payload.pixExpiresAt) }
-              : {}),
-            ...(payload.idempotencyKey !== undefined
-              ? { idempotencyKey: payload.idempotencyKey }
-              : {}),
+            ...(payload.stripePaymentIntentId === undefined
+              ? {}
+              : { stripePaymentIntentId: payload.stripePaymentIntentId }),
+            ...(payload.pixExpiresAt === undefined
+              ? {}
+              : { pixExpiresAt: new Date(payload.pixExpiresAt) }),
+            ...(payload.idempotencyKey === undefined
+              ? {}
+              : { idempotencyKey: payload.idempotencyKey }),
           }
           return executeCreate(input)
         },
@@ -710,12 +713,12 @@ export function createPaymentCommandService(
           const input: ReconcileFromWebhookInput = {
             newStatus: payload.newStatus as PaymentStatus,
             stripeEventId: payload.stripeEventId,
-            ...(payload.stripeEventTimestamp !== undefined
-              ? { stripeEventTimestamp: new Date(payload.stripeEventTimestamp) }
-              : {}),
-            ...(payload.expectedOrderId !== undefined
-              ? { expectedOrderId: payload.expectedOrderId }
-              : {}),
+            ...(payload.stripeEventTimestamp === undefined
+              ? {}
+              : { stripeEventTimestamp: new Date(payload.stripeEventTimestamp) }),
+            ...(payload.expectedOrderId === undefined
+              ? {}
+              : { expectedOrderId: payload.expectedOrderId }),
           }
           return executeReconcile(payload.paymentId, input)
         },

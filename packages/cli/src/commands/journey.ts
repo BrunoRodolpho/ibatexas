@@ -44,75 +44,67 @@ function resolveUserPath(p: string): string {
   return existsSync(fromRoot) ? fromRoot : fromCwd
 }
 
-async function runJourneyLint(opts: {
-  json?: boolean
-  verifyFile?: string
-  dir?: string
-}): Promise<void> {
-  const { lintJourneys, lintDigestLock, verifyLintBaseline } = await import(
-    "@ibatexas/journeys"
-  )
-  const report = await lintJourneys(
-    opts.dir !== undefined ? { dir: opts.dir } : undefined,
-  )
+type JourneysModule = typeof import("@ibatexas/journeys")
+type LintReport = Awaited<ReturnType<JourneysModule["lintJourneys"]>>
 
-  // ── Problemas de lint → exit 1 (com ou sem --json) ─────────────────────
-  if (!report.ok) {
-    if (opts.json === true) {
-      console.log(JSON.stringify(report, null, 2))
-    } else {
-      for (const p of report.problems) {
-        const where = p.journeyId !== null ? ` (${p.journeyId})` : ""
-        const at = p.path !== null ? ` em ${p.path}` : ""
-        console.error(chalk.red(`✗ ${p.file}${where}: ${p.code}${at} — ${p.message}`))
-      }
-      console.error(
-        chalk.red(`${report.problems.length} problema(s) de lint em ${report.journeys.length} jornada(s).`),
-      )
-    }
-    process.exitCode = 1
-    return
-  }
-
-  // ── Verificação de baseline (idioma pack-bom) ──────────────────────────
-  if (opts.verifyFile !== undefined) {
-    let baseline: Record<string, string>
-    try {
-      baseline = JSON.parse(await readFile(opts.verifyFile, "utf-8")) as Record<
-        string,
-        string
-      >
-    } catch {
-      console.error(chalk.red(`Baseline ilegível: ${opts.verifyFile}`))
-      process.exitCode = 1
-      return
-    }
-    const mismatches = verifyLintBaseline(report, baseline)
-    const bad = new Map(mismatches.map((m) => [m.journeyId, m]))
-    for (const entry of report.journeys) {
-      const mismatch = bad.get(entry.id)
-      if (mismatch === undefined) {
-        console.log(chalk.green(`✓ ${entry.id} → ${entry.digest.slice(0, 16)}…`))
-      } else if (mismatch.reason === "missing_in_baseline") {
-        console.error(chalk.red(`✗ ${entry.id}: sem entrada na baseline`))
-      } else {
-        console.error(
-          chalk.red(
-            `✗ ${entry.id}: digest divergente (baseline ${mismatch.expected?.slice(0, 12)}…, atual ${mismatch.actual.slice(0, 12)}…)`,
-          ),
-        )
-      }
-    }
-    if (mismatches.length > 0) process.exitCode = 1
-    return
-  }
-
-  // ── Saída limpa ─────────────────────────────────────────────────────────
-  if (opts.json === true) {
+function reportLintProblems(report: LintReport, json: boolean): void {
+  if (json) {
     console.log(JSON.stringify(report, null, 2))
     return
   }
+  for (const p of report.problems) {
+    const where = p.journeyId === null ? "" : ` (${p.journeyId})`
+    const at = p.path === null ? "" : ` em ${p.path}`
+    console.error(chalk.red(`✗ ${p.file}${where}: ${p.code}${at} — ${p.message}`))
+  }
+  console.error(
+    chalk.red(
+      `${report.problems.length} problema(s) de lint em ${report.journeys.length} jornada(s).`,
+    ),
+  )
+}
 
+async function verifyLintBaselineCli(
+  report: LintReport,
+  verifyFile: string,
+  verifyLintBaseline: JourneysModule["verifyLintBaseline"],
+): Promise<void> {
+  let baseline: Record<string, string>
+  try {
+    baseline = JSON.parse(await readFile(verifyFile, "utf-8")) as Record<string, string>
+  } catch {
+    console.error(chalk.red(`Baseline ilegível: ${verifyFile}`))
+    process.exitCode = 1
+    return
+  }
+  const mismatches = verifyLintBaseline(report, baseline)
+  const bad = new Map(mismatches.map((m) => [m.journeyId, m]))
+  for (const entry of report.journeys) {
+    const mismatch = bad.get(entry.id)
+    if (mismatch === undefined) {
+      console.log(chalk.green(`✓ ${entry.id} → ${entry.digest.slice(0, 16)}…`))
+    } else if (mismatch.reason === "missing_in_baseline") {
+      console.error(chalk.red(`✗ ${entry.id}: sem entrada na baseline`))
+    } else {
+      console.error(
+        chalk.red(
+          `✗ ${entry.id}: digest divergente (baseline ${mismatch.expected?.slice(0, 12)}…, atual ${mismatch.actual.slice(0, 12)}…)`,
+        ),
+      )
+    }
+  }
+  if (mismatches.length > 0) process.exitCode = 1
+}
+
+function reportLintClean(
+  report: LintReport,
+  json: boolean,
+  lintDigestLock: JourneysModule["lintDigestLock"],
+): void {
+  if (json) {
+    console.log(JSON.stringify(report, null, 2))
+    return
+  }
   if (report.journeys.length === 0) {
     console.log(chalk.green("✓ Registry vazio — lint passa vacuamente (0 jornadas)."))
   } else {
@@ -129,138 +121,149 @@ async function runJourneyLint(opts: {
   console.log(JSON.stringify(lintDigestLock(report), null, 2))
 }
 
-// ── `ibx journey coverage` (T1a-3) ─────────────────────────────────────────
-
-async function runJourneyCoverage(opts: {
+async function runJourneyLint(opts: {
   json?: boolean
   verifyFile?: string
   dir?: string
-  waivers?: string
-  out?: string
-  quarantined?: string
 }): Promise<void> {
-  const {
-    computeJourneyCoverage,
-    coverageMatrixView,
-    journeyPassView,
-    coverageBaseline,
-    verifyCoverageBaseline,
-    CoverageBaselineSchema,
-  } = await import("@ibatexas/journeys")
+  const { lintJourneys, lintDigestLock, verifyLintBaseline } = await import(
+    "@ibatexas/journeys"
+  )
+  const report = await lintJourneys(
+    opts.dir === undefined ? undefined : { dir: opts.dir },
+  )
 
-  const report = await computeJourneyCoverage({
-    ...(opts.dir !== undefined ? { dir: resolveUserPath(opts.dir) } : {}),
-    ...(opts.waivers !== undefined ? { waiversPath: resolveUserPath(opts.waivers) } : {}),
-    ...(opts.quarantined !== undefined
-      ? {
-          quarantined: opts.quarantined
-            .split(",")
-            .map((s) => s.trim())
-            .filter((s) => s.length > 0),
-        }
-      : {}),
-  })
-
-  // ── Problemas (registry/waivers quebrados) → exit 1 ────────────────────
+  // ── Problemas de lint → exit 1 (com ou sem --json) ─────────────────────
   if (!report.ok) {
-    if (opts.json === true) {
-      console.log(JSON.stringify(report, null, 2))
-    } else {
-      for (const p of report.problems) {
-        console.error(chalk.red(`✗ ${p.file}: ${p.code} — ${p.message}`))
-      }
-    }
+    reportLintProblems(report, opts.json === true)
     process.exitCode = 1
     return
   }
 
-  // ── --out: grava as duas views (matriz célula-a-célula + journey-pass) ─
-  if (opts.out !== undefined) {
-    const outDir = resolveUserPath(opts.out)
-    await mkdir(outDir, { recursive: true })
-    await writeFile(
-      join(outDir, "coverage-matrix.json"),
-      `${JSON.stringify(coverageMatrixView(report), null, 2)}\n`,
-    )
-    await writeFile(
-      join(outDir, "coverage-journeys.json"),
-      `${JSON.stringify(journeyPassView(report), null, 2)}\n`,
-    )
-    if (opts.json !== true) {
-      console.log(
-        chalk.dim(`views gravadas em ${outDir}/coverage-matrix.json + coverage-journeys.json`),
-      )
-    }
-  }
-
-  const t = report.totals
-  const totalsLine =
-    `${t.covered}/${t.cells} células cobertas, ${t.uncovered} descobertas, ` +
-    `waived: ${t["waived-pending-WS4"]} pending-WS4 / ` +
-    `${t["waived-unadvertised"]} unadvertised / ` +
-    `${t["waived-quarantined"]} quarantined`
-
-  // ── Verificação de baseline (regressão covered→uncovered) ──────────────
+  // ── Verificação de baseline (idioma pack-bom) ──────────────────────────
   if (opts.verifyFile !== undefined) {
-    const verifyPath = resolveUserPath(opts.verifyFile)
-    let baselineRaw: unknown
-    try {
-      baselineRaw = JSON.parse(await readFile(verifyPath, "utf-8"))
-    } catch {
-      console.error(chalk.red(`Baseline ilegível: ${verifyPath}`))
-      process.exitCode = 1
-      return
-    }
-    const baselineParsed = CoverageBaselineSchema.safeParse(baselineRaw)
-    if (!baselineParsed.success) {
-      console.error(
-        chalk.red(`Baseline inválida (${opts.verifyFile}): esperado {"covered": [...]}`),
-      )
-      process.exitCode = 1
-      return
-    }
-    const result = verifyCoverageBaseline(report, baselineParsed.data)
-
-    if (opts.json === true) {
-      console.log(
-        JSON.stringify({ ...report, verify: { file: opts.verifyFile, ...result } }, null, 2),
-      )
-    } else {
-      for (const r of result.regressions) {
-        console.error(
-          chalk.red(`✗ regressão: ${r.cell} estava coberta na baseline, agora ${r.state}`),
-        )
-      }
-      for (const cell of result.quarantinedClaims) {
-        console.warn(
-          chalk.yellow(`⚠ ${cell} coberta na baseline, agora waived-quarantined (flake ledger)`),
-        )
-      }
-      if (result.newlyCovered.length > 0) {
-        console.log(
-          chalk.dim(
-            `${result.newlyCovered.length} célula(s) coberta(s) ainda fora da baseline — atualize ${opts.verifyFile} para reivindicá-las.`,
-          ),
-        )
-      }
-      if (result.ok) {
-        console.log(chalk.green(`✓ Sem regressão de cobertura. ${totalsLine}`))
-      } else {
-        console.error(
-          chalk.red(`${result.regressions.length} regressão(ões) de cobertura. ${totalsLine}`),
-        )
-      }
-    }
-    if (!result.ok) process.exitCode = 1
+    await verifyLintBaselineCli(report, opts.verifyFile, verifyLintBaseline)
     return
   }
 
   // ── Saída limpa ─────────────────────────────────────────────────────────
-  if (opts.json === true) {
+  reportLintClean(report, opts.json === true, lintDigestLock)
+}
+
+// ── `ibx journey coverage` (T1a-3) ─────────────────────────────────────────
+
+type CoverageReport = Awaited<ReturnType<JourneysModule["computeJourneyCoverage"]>>
+type CoverageVerifyResult = ReturnType<JourneysModule["verifyCoverageBaseline"]>
+
+function reportCoverageProblems(report: CoverageReport, json: boolean): void {
+  if (json) {
     console.log(JSON.stringify(report, null, 2))
     return
   }
+  for (const p of report.problems) {
+    console.error(chalk.red(`✗ ${p.file}: ${p.code} — ${p.message}`))
+  }
+}
 
+async function writeCoverageViews(
+  report: CoverageReport,
+  outDir: string,
+  json: boolean,
+  deps: JourneysModule,
+): Promise<void> {
+  await mkdir(outDir, { recursive: true })
+  await writeFile(
+    join(outDir, "coverage-matrix.json"),
+    `${JSON.stringify(deps.coverageMatrixView(report), null, 2)}\n`,
+  )
+  await writeFile(
+    join(outDir, "coverage-journeys.json"),
+    `${JSON.stringify(deps.journeyPassView(report), null, 2)}\n`,
+  )
+  if (!json) {
+    console.log(
+      chalk.dim(`views gravadas em ${outDir}/coverage-matrix.json + coverage-journeys.json`),
+    )
+  }
+}
+
+function renderCoverageVerifyHuman(
+  result: CoverageVerifyResult,
+  totalsLine: string,
+  verifyFile: string,
+): void {
+  for (const r of result.regressions) {
+    console.error(
+      chalk.red(`✗ regressão: ${r.cell} estava coberta na baseline, agora ${r.state}`),
+    )
+  }
+  for (const cell of result.quarantinedClaims) {
+    console.warn(
+      chalk.yellow(`⚠ ${cell} coberta na baseline, agora waived-quarantined (flake ledger)`),
+    )
+  }
+  if (result.newlyCovered.length > 0) {
+    console.log(
+      chalk.dim(
+        `${result.newlyCovered.length} célula(s) coberta(s) ainda fora da baseline — atualize ${verifyFile} para reivindicá-las.`,
+      ),
+    )
+  }
+  if (result.ok) {
+    console.log(chalk.green(`✓ Sem regressão de cobertura. ${totalsLine}`))
+  } else {
+    console.error(
+      chalk.red(`${result.regressions.length} regressão(ões) de cobertura. ${totalsLine}`),
+    )
+  }
+}
+
+async function verifyCoverageCli(
+  report: CoverageReport,
+  verifyFile: string,
+  totalsLine: string,
+  json: boolean,
+  deps: JourneysModule,
+): Promise<void> {
+  const verifyPath = resolveUserPath(verifyFile)
+  let baselineRaw: unknown
+  try {
+    baselineRaw = JSON.parse(await readFile(verifyPath, "utf-8"))
+  } catch {
+    console.error(chalk.red(`Baseline ilegível: ${verifyPath}`))
+    process.exitCode = 1
+    return
+  }
+  const baselineParsed = deps.CoverageBaselineSchema.safeParse(baselineRaw)
+  if (!baselineParsed.success) {
+    console.error(
+      chalk.red(`Baseline inválida (${verifyFile}): esperado {"covered": [...]}`),
+    )
+    process.exitCode = 1
+    return
+  }
+  const result = deps.verifyCoverageBaseline(report, baselineParsed.data)
+
+  if (json) {
+    console.log(
+      JSON.stringify({ ...report, verify: { file: verifyFile, ...result } }, null, 2),
+    )
+  } else {
+    renderCoverageVerifyHuman(result, totalsLine, verifyFile)
+  }
+  if (!result.ok) process.exitCode = 1
+}
+
+function reportCoverageClean(
+  report: CoverageReport,
+  totalsLine: string,
+  json: boolean,
+  deps: JourneysModule,
+): void {
+  if (json) {
+    console.log(JSON.stringify(report, null, 2))
+    return
+  }
   console.log(chalk.green(`✓ ${totalsLine}`))
   if (report.dormantWaivers.length > 0) {
     console.log(
@@ -274,7 +277,60 @@ async function runJourneyCoverage(opts: {
   console.log(
     chalk.dim("baseline (packages/journeys/governance/journey-coverage-baseline.json):"),
   )
-  console.log(JSON.stringify(coverageBaseline(report), null, 2))
+  console.log(JSON.stringify(deps.coverageBaseline(report), null, 2))
+}
+
+async function runJourneyCoverage(opts: {
+  json?: boolean
+  verifyFile?: string
+  dir?: string
+  waivers?: string
+  out?: string
+  quarantined?: string
+}): Promise<void> {
+  const deps = await import("@ibatexas/journeys")
+  const { computeJourneyCoverage } = deps
+
+  const report = await computeJourneyCoverage({
+    ...(opts.dir === undefined ? {} : { dir: resolveUserPath(opts.dir) }),
+    ...(opts.waivers === undefined ? {} : { waiversPath: resolveUserPath(opts.waivers) }),
+    ...(opts.quarantined === undefined
+      ? {}
+      : {
+          quarantined: opts.quarantined
+            .split(",")
+            .map((s) => s.trim())
+            .filter((s) => s.length > 0),
+        }),
+  })
+
+  // ── Problemas (registry/waivers quebrados) → exit 1 ────────────────────
+  if (!report.ok) {
+    reportCoverageProblems(report, opts.json === true)
+    process.exitCode = 1
+    return
+  }
+
+  // ── --out: grava as duas views (matriz célula-a-célula + journey-pass) ─
+  if (opts.out !== undefined) {
+    await writeCoverageViews(report, resolveUserPath(opts.out), opts.json === true, deps)
+  }
+
+  const t = report.totals
+  const totalsLine =
+    `${t.covered}/${t.cells} células cobertas, ${t.uncovered} descobertas, ` +
+    `waived: ${t["waived-pending-WS4"]} pending-WS4 / ` +
+    `${t["waived-unadvertised"]} unadvertised / ` +
+    `${t["waived-quarantined"]} quarantined`
+
+  // ── Verificação de baseline (regressão covered→uncovered) ──────────────
+  if (opts.verifyFile !== undefined) {
+    await verifyCoverageCli(report, opts.verifyFile, totalsLine, opts.json === true, deps)
+    return
+  }
+
+  // ── Saída limpa ─────────────────────────────────────────────────────────
+  reportCoverageClean(report, totalsLine, opts.json === true, deps)
 }
 
 // ── `ibx journey migrate` (T1b-5) ───────────────────────────────────────────
@@ -348,18 +404,208 @@ function parseIdList(raw: string): string[] {
     .filter((s) => s.length > 0)
 }
 
-async function runJourneyRun(id: string | undefined, opts: JourneyRunCliFlags): Promise<void> {
-  const {
-    runJourneyCli,
-    runJourneySuiteCli,
-    runNightlySuiteCli,
-    JourneyRunCliError,
-    BudgetConfigError,
-    FlakeLedgerError,
-  } = await import("@ibatexas/journeys")
+type NightlyReport = Awaited<ReturnType<JourneysModule["runNightlySuiteCli"]>>
+type SuiteReport = Awaited<ReturnType<JourneysModule["runJourneySuiteCli"]>>
+type SingleReport = Awaited<ReturnType<JourneysModule["runJourneyCli"]>>
 
-  const k = opts.k !== undefined ? Number.parseInt(opts.k, 10) : 1
-  const budgetUsd = opts.budgetUsd !== undefined ? Number.parseFloat(opts.budgetUsd) : undefined
+function formatNightlyOutcome(o: NightlyReport["outcomes"][number]): string {
+  if (o.outcome === "green") return chalk.green(`✓ ${o.journey}: GREEN`)
+  if (o.outcome === "yellow") {
+    return chalk.yellow(`⚠ ${o.journey}: YELLOW (failed once, passed the retry)`)
+  }
+  let suffix = ""
+  if (o.abortedByBudget) suffix = " (aborted-by-budget)"
+  else if (o.retried) suffix = " (failed twice)"
+  return chalk.red(`✗ ${o.journey}: RED${suffix}`)
+}
+
+function renderNightlyReport(report: NightlyReport): void {
+  for (const skipped of report.quarantinedSkipped) {
+    console.log(chalk.yellow(`⊘ ${skipped}: QUARANTINED — skipped (flake ledger)`))
+  }
+  for (const o of report.outcomes) {
+    console.log(formatNightlyOutcome(o))
+  }
+  if (report.ledger.changed) {
+    const newlyQuarantined =
+      report.ledger.newlyQuarantined.length > 0
+        ? ` — newly quarantined: ${report.ledger.newlyQuarantined.join(", ")}`
+        : ""
+    console.log(chalk.dim(`flake ledger UPDATED (${report.ledger.path})${newlyQuarantined}`))
+  }
+  for (const issue of report.issues) {
+    console.error(chalk.red(`issue: ${issue.title}`))
+  }
+  console.log(
+    report.pass
+      ? chalk.green(`✓ nightly green (${report.outcomes.length} journeys, ${report.date})`)
+      : chalk.red(`✗ nightly RED (${report.date})`),
+  )
+}
+
+function renderSuiteReport(report: SuiteReport): void {
+  for (const j of report.journeys) {
+    const aborted = j.status === "aborted-by-budget"
+    const failLabel = aborted ? "ABORTED-BY-BUDGET" : "FAIL"
+    const head = j.pass
+      ? chalk.green(`✓ ${j.journey}: PASS`)
+      : chalk.red(`✗ ${j.journey}: ${failLabel}`)
+    const greenCount = `${j.attempts.filter((a) => a.pass).length}/${j.k} green`
+    const detail = chalk.dim(`(${greenCount})`)
+    console.log(`${head} ${detail}`)
+    console.log(j.costLine)
+  }
+  console.log(report.costLine)
+  if (report.abortedByBudget) {
+    console.error(
+      chalk.red(
+        `✗ suite aborted-by-budget: spent $${report.budget.spentUsd.toFixed(4)} >= cap $${report.budget.capUsd.toFixed(4)} (${report.budget.source}) — RED run`,
+      ),
+    )
+  }
+  console.log(
+    report.pass
+      ? chalk.green(`✓ suite green (${report.journeys.length} journeys)`)
+      : chalk.red(
+          `✗ suite RED (${report.journeys.filter((j) => j.pass).length}/${report.journeys.length} green)`,
+        ),
+  )
+}
+
+function renderSingleReport(report: SingleReport): void {
+  for (const attempt of report.attempts) {
+    const failLabel =
+      attempt.status === "aborted-by-budget" ? "ABORTED-BY-BUDGET" : "FAIL"
+    const head = attempt.pass
+      ? chalk.green(`✓ attempt ${attempt.attempt}: PASS`)
+      : chalk.red(`✗ attempt ${attempt.attempt}: ${failLabel}`)
+    const meta = `runId=${attempt.runId} turns=${attempt.turns} ${(attempt.durationMs / 1000).toFixed(1)}s ${attempt.certifying ? "certifying" : "NON-certifying"}`
+    console.log(`${head} ${chalk.dim(meta)}`)
+    console.log(attempt.costLine)
+    if (attempt.error !== undefined) console.error(chalk.red(`  ${attempt.error}`))
+  }
+  console.log(report.costLine)
+  if (report.status === "aborted-by-budget") {
+    console.error(
+      chalk.red(
+        `✗ aborted-by-budget: spent $${report.budget.spentUsd.toFixed(4)} >= cap $${report.budget.capUsd.toFixed(4)} (${report.budget.source})`,
+      ),
+    )
+  }
+  console.log(
+    report.pass
+      ? chalk.green(`✓ ${report.journey} green ${report.k}/${report.k}`)
+      : chalk.red(
+          `✗ ${report.journey} failed (${report.attempts.filter((a) => a.pass).length}/${report.k} green)`,
+        ),
+  )
+}
+
+// ── Nightly path (T1b-4): suite + retry-once + flake ledger ─────────────
+// SOMENTE o modo nightly lê/escreve o flake ledger — runs locais de
+// suíte nunca mutam o estado de quarentena.
+async function runNightlyPath(
+  id: string | undefined,
+  opts: JourneyRunCliFlags,
+  deps: JourneysModule,
+  k: number,
+  budgetUsd: number | undefined,
+  onProgress: (line: string) => void,
+): Promise<void> {
+  if (opts.suite !== true || id !== undefined) {
+    console.error(chalk.red("--nightly requer --suite (e não combina com <id>)"))
+    process.exitCode = 1
+    return
+  }
+  const report = await deps.runNightlySuiteCli({
+    ...(opts.only === undefined ? {} : { only: parseIdList(opts.only) }),
+    k,
+    ...(opts.kMoney === undefined ? {} : { kMoney: Number.parseInt(opts.kMoney, 10) }),
+    ...(opts.moneyFlows === undefined ? {} : { moneyFlows: parseIdList(opts.moneyFlows) }),
+    ...(budgetUsd === undefined ? {} : { budgetUsd }),
+    ...(opts.retryDelaySeconds === undefined
+      ? {}
+      : { retryDelaySeconds: Number.parseInt(opts.retryDelaySeconds, 10) }),
+    ...(opts.dir === undefined ? {} : { dir: resolveUserPath(opts.dir) }),
+    ...(opts.envFile === undefined ? {} : { envFile: resolveUserPath(opts.envFile) }),
+    onProgress,
+  })
+
+  if (opts.json === true) {
+    console.log(JSON.stringify(report, null, 2))
+  } else {
+    renderNightlyReport(report)
+  }
+  if (!report.pass) process.exitCode = 1
+}
+
+// ── Suite path (T1b-8): all active journeys, sequential, dollar-capped ──
+async function runSuitePath(
+  id: string | undefined,
+  opts: JourneyRunCliFlags,
+  deps: JourneysModule,
+  k: number,
+  budgetUsd: number | undefined,
+  onProgress: (line: string) => void,
+): Promise<void> {
+  if (id !== undefined) {
+    console.error(
+      chalk.red("--suite roda todas as jornadas ativas — não combine com <id> (use --only)"),
+    )
+    process.exitCode = 1
+    return
+  }
+  const report = await deps.runJourneySuiteCli({
+    ...(opts.only === undefined ? {} : { only: parseIdList(opts.only) }),
+    k,
+    ...(opts.kMoney === undefined ? {} : { kMoney: Number.parseInt(opts.kMoney, 10) }),
+    ...(opts.moneyFlows === undefined ? {} : { moneyFlows: parseIdList(opts.moneyFlows) }),
+    ...(budgetUsd === undefined ? {} : { budgetUsd }),
+    ...(opts.dir === undefined ? {} : { dir: resolveUserPath(opts.dir) }),
+    ...(opts.envFile === undefined ? {} : { envFile: resolveUserPath(opts.envFile) }),
+    onProgress,
+  })
+
+  if (opts.json === true) {
+    console.log(JSON.stringify(report, null, 2))
+  } else {
+    renderSuiteReport(report)
+  }
+  if (!report.pass) process.exitCode = 1
+}
+
+// ── Single-journey path (T1a-13; budget applies to the --k loop too) ────
+async function runSinglePath(
+  id: string,
+  opts: JourneyRunCliFlags,
+  deps: JourneysModule,
+  k: number,
+  budgetUsd: number | undefined,
+  onProgress: (line: string) => void,
+): Promise<void> {
+  const report = await deps.runJourneyCli({
+    journeyId: id,
+    k,
+    ...(budgetUsd === undefined ? {} : { budgetUsd }),
+    ...(opts.dir === undefined ? {} : { dir: resolveUserPath(opts.dir) }),
+    ...(opts.envFile === undefined ? {} : { envFile: resolveUserPath(opts.envFile) }),
+    onProgress,
+  })
+
+  if (opts.json === true) {
+    console.log(JSON.stringify(report, null, 2))
+  } else {
+    renderSingleReport(report)
+  }
+  if (!report.pass) process.exitCode = 1
+}
+
+async function runJourneyRun(id: string | undefined, opts: JourneyRunCliFlags): Promise<void> {
+  const deps = await import("@ibatexas/journeys")
+  const { JourneyRunCliError, BudgetConfigError, FlakeLedgerError } = deps
+
+  const k = opts.k === undefined ? 1 : Number.parseInt(opts.k, 10)
+  const budgetUsd = opts.budgetUsd === undefined ? undefined : Number.parseFloat(opts.budgetUsd)
   // Progress lines stream to stderr so --json keeps stdout machine-clean.
   const onProgress = (line: string): void => {
     if (opts.json === true) process.stderr.write(`${line}\n`)
@@ -367,165 +613,22 @@ async function runJourneyRun(id: string | undefined, opts: JourneyRunCliFlags): 
   }
 
   try {
-    // ── Nightly path (T1b-4): suite + retry-once + flake ledger ─────────────
-    // SOMENTE o modo nightly lê/escreve o flake ledger — runs locais de
-    // suíte nunca mutam o estado de quarentena.
     if (opts.nightly === true) {
-      if (opts.suite !== true || id !== undefined) {
-        console.error(chalk.red("--nightly requer --suite (e não combina com <id>)"))
-        process.exitCode = 1
-        return
-      }
-      const report = await runNightlySuiteCli({
-        ...(opts.only !== undefined ? { only: parseIdList(opts.only) } : {}),
-        k,
-        ...(opts.kMoney !== undefined ? { kMoney: Number.parseInt(opts.kMoney, 10) } : {}),
-        ...(opts.moneyFlows !== undefined ? { moneyFlows: parseIdList(opts.moneyFlows) } : {}),
-        ...(budgetUsd !== undefined ? { budgetUsd } : {}),
-        ...(opts.retryDelaySeconds !== undefined
-          ? { retryDelaySeconds: Number.parseInt(opts.retryDelaySeconds, 10) }
-          : {}),
-        ...(opts.dir !== undefined ? { dir: resolveUserPath(opts.dir) } : {}),
-        ...(opts.envFile !== undefined ? { envFile: resolveUserPath(opts.envFile) } : {}),
-        onProgress,
-      })
-
-      if (opts.json === true) {
-        console.log(JSON.stringify(report, null, 2))
-      } else {
-        for (const skipped of report.quarantinedSkipped) {
-          console.log(chalk.yellow(`⊘ ${skipped}: QUARANTINED — skipped (flake ledger)`))
-        }
-        for (const o of report.outcomes) {
-          const line =
-            o.outcome === "green"
-              ? chalk.green(`✓ ${o.journey}: GREEN`)
-              : o.outcome === "yellow"
-                ? chalk.yellow(`⚠ ${o.journey}: YELLOW (failed once, passed the retry)`)
-                : chalk.red(
-                    `✗ ${o.journey}: RED${o.abortedByBudget ? " (aborted-by-budget)" : o.retried ? " (failed twice)" : ""}`,
-                  )
-          console.log(line)
-        }
-        if (report.ledger.changed) {
-          console.log(
-            chalk.dim(
-              `flake ledger UPDATED (${report.ledger.path})` +
-                (report.ledger.newlyQuarantined.length > 0
-                  ? ` — newly quarantined: ${report.ledger.newlyQuarantined.join(", ")}`
-                  : ""),
-            ),
-          )
-        }
-        for (const issue of report.issues) {
-          console.error(chalk.red(`issue: ${issue.title}`))
-        }
-        console.log(
-          report.pass
-            ? chalk.green(`✓ nightly green (${report.outcomes.length} journeys, ${report.date})`)
-            : chalk.red(`✗ nightly RED (${report.date})`),
-        )
-      }
-      if (!report.pass) process.exitCode = 1
+      await runNightlyPath(id, opts, deps, k, budgetUsd, onProgress)
       return
     }
 
-    // ── Suite path (T1b-8): all active journeys, sequential, dollar-capped ──
     if (opts.suite === true) {
-      if (id !== undefined) {
-        console.error(chalk.red("--suite roda todas as jornadas ativas — não combine com <id> (use --only)"))
-        process.exitCode = 1
-        return
-      }
-      const report = await runJourneySuiteCli({
-        ...(opts.only !== undefined ? { only: parseIdList(opts.only) } : {}),
-        k,
-        ...(opts.kMoney !== undefined ? { kMoney: Number.parseInt(opts.kMoney, 10) } : {}),
-        ...(opts.moneyFlows !== undefined ? { moneyFlows: parseIdList(opts.moneyFlows) } : {}),
-        ...(budgetUsd !== undefined ? { budgetUsd } : {}),
-        ...(opts.dir !== undefined ? { dir: resolveUserPath(opts.dir) } : {}),
-        ...(opts.envFile !== undefined ? { envFile: resolveUserPath(opts.envFile) } : {}),
-        onProgress,
-      })
-
-      if (opts.json === true) {
-        console.log(JSON.stringify(report, null, 2))
-      } else {
-        for (const j of report.journeys) {
-          const aborted = j.status === "aborted-by-budget"
-          const head = j.pass
-            ? chalk.green(`✓ ${j.journey}: PASS`)
-            : chalk.red(`✗ ${j.journey}: ${aborted ? "ABORTED-BY-BUDGET" : "FAIL"}`)
-          console.log(
-            `${head} ${chalk.dim(`(${j.attempts.filter((a) => a.pass).length}/${j.k} green)`)}`,
-          )
-          console.log(j.costLine)
-        }
-        console.log(report.costLine)
-        if (report.abortedByBudget) {
-          console.error(
-            chalk.red(
-              `✗ suite aborted-by-budget: spent $${report.budget.spentUsd.toFixed(4)} >= cap $${report.budget.capUsd.toFixed(4)} (${report.budget.source}) — RED run`,
-            ),
-          )
-        }
-        console.log(
-          report.pass
-            ? chalk.green(`✓ suite green (${report.journeys.length} journeys)`)
-            : chalk.red(`✗ suite RED (${report.journeys.filter((j) => j.pass).length}/${report.journeys.length} green)`),
-        )
-      }
-      if (!report.pass) process.exitCode = 1
+      await runSuitePath(id, opts, deps, k, budgetUsd, onProgress)
       return
     }
 
-    // ── Single-journey path (T1a-13; budget applies to the --k loop too) ────
     if (id === undefined) {
       console.error(chalk.red("informe uma jornada (<id>) ou rode a suíte com --suite"))
       process.exitCode = 1
       return
     }
-    const report = await runJourneyCli({
-      journeyId: id,
-      k,
-      ...(budgetUsd !== undefined ? { budgetUsd } : {}),
-      ...(opts.dir !== undefined ? { dir: resolveUserPath(opts.dir) } : {}),
-      ...(opts.envFile !== undefined ? { envFile: resolveUserPath(opts.envFile) } : {}),
-      onProgress,
-    })
-
-    if (opts.json === true) {
-      console.log(JSON.stringify(report, null, 2))
-    } else {
-      for (const attempt of report.attempts) {
-        const head = attempt.pass
-          ? chalk.green(`✓ attempt ${attempt.attempt}: PASS`)
-          : chalk.red(
-              `✗ attempt ${attempt.attempt}: ${attempt.status === "aborted-by-budget" ? "ABORTED-BY-BUDGET" : "FAIL"}`,
-            )
-        console.log(
-          `${head} ${chalk.dim(
-            `runId=${attempt.runId} turns=${attempt.turns} ${(attempt.durationMs / 1000).toFixed(1)}s ${attempt.certifying ? "certifying" : "NON-certifying"}`,
-          )}`,
-        )
-        console.log(attempt.costLine)
-        if (attempt.error !== undefined) console.error(chalk.red(`  ${attempt.error}`))
-      }
-      console.log(report.costLine)
-      if (report.status === "aborted-by-budget") {
-        console.error(
-          chalk.red(
-            `✗ aborted-by-budget: spent $${report.budget.spentUsd.toFixed(4)} >= cap $${report.budget.capUsd.toFixed(4)} (${report.budget.source})`,
-          ),
-        )
-      }
-      console.log(
-        report.pass
-          ? chalk.green(`✓ ${report.journey} green ${report.k}/${report.k}`)
-          : chalk.red(`✗ ${report.journey} failed (${report.attempts.filter((a) => a.pass).length}/${report.k} green)`),
-      )
-    }
-    if (!report.pass) process.exitCode = 1
+    await runSinglePath(id, opts, deps, k, budgetUsd, onProgress)
   } catch (err) {
     if (
       err instanceof JourneyRunCliError ||
@@ -568,7 +671,7 @@ async function runJourneyFlake(opts: {
   } = await import("@ibatexas/journeys")
 
   const ledgerPath =
-    opts.ledger !== undefined ? resolveUserPath(opts.ledger) : DEFAULT_FLAKE_LEDGER_PATH
+    opts.ledger === undefined ? DEFAULT_FLAKE_LEDGER_PATH : resolveUserPath(opts.ledger)
   try {
     const ledger = loadFlakeLedger(ledgerPath)
 
@@ -603,9 +706,10 @@ async function runJourneyFlake(opts: {
         e.status === "quarantined"
           ? chalk.red(`⊘ ${e.journey}: quarantined desde ${e.quarantinedAt ?? "?"}`)
           : chalk.yellow(`⚠ ${e.journey}: flaky (${e.consecutiveFlakyNights} noite(s) consecutiva(s))`)
-      console.log(
-        `${head} ${chalk.dim(`firstSeen=${e.firstSeen} lastFlakyNight=${e.lastFlakyNight} owner=${e.owner === "" ? "UNASSIGNED" : e.owner}`)}`,
+      const detail = chalk.dim(
+        `firstSeen=${e.firstSeen} lastFlakyNight=${e.lastFlakyNight} owner=${e.owner === "" ? "UNASSIGNED" : e.owner}`,
       )
+      console.log(`${head} ${detail}`)
     }
   } catch (err) {
     if (err instanceof FlakeLedgerError) {
@@ -652,7 +756,7 @@ async function runJourneyFromAudit(
   // Contrato de env do plano de teste (mesma semântica de `journey run`):
   // .env.test é autoritativo — AUDIT_REDACT_SECRET + ORACLE_DATABASE_URL.
   const envFile =
-    opts.envFile !== undefined ? resolveUserPath(opts.envFile) : join(MONOREPO_ROOT, ".env.test")
+    opts.envFile === undefined ? join(MONOREPO_ROOT, ".env.test") : resolveUserPath(opts.envFile)
   try {
     const loaded = loadTestEnv(envFile)
     console.error(
@@ -666,11 +770,11 @@ async function runJourneyFromAudit(
 
   try {
     const transcript =
-      opts.transcript !== undefined
-        ? transcriptFromChatDumpJson(await readFile(resolveUserPath(opts.transcript), "utf-8"))
-        : undefined
+      opts.transcript === undefined
+        ? undefined
+        : transcriptFromChatDumpJson(await readFile(resolveUserPath(opts.transcript), "utf-8"))
     const result = await scaffoldFromAuditSession(sessionId, {
-      ...(transcript !== undefined ? { transcript } : {}),
+      ...(transcript === undefined ? {} : { transcript }),
     })
     // Resumo no stderr — stdout fica limpo para pipe do YAML.
     console.error(
@@ -679,7 +783,9 @@ async function runJourneyFromAudit(
           `${result.expectTuples} expect tuple(s), ${result.chatActs} chat act(s)`,
       ),
     )
-    if (opts.out !== undefined) {
+    if (opts.out === undefined) {
+      process.stdout.write(result.yaml)
+    } else {
       const outPath = resolveOutPath(opts.out)
       await mkdir(dirname(outPath), { recursive: true })
       await writeFile(outPath, result.yaml)
@@ -688,8 +794,6 @@ async function runJourneyFromAudit(
           `✓ scaffold written: ${outPath} (status: blocked, blocked_by: [scaffold-review]) — review before activation`,
         ),
       )
-    } else {
-      process.stdout.write(result.yaml)
     }
   } catch (err) {
     if (err instanceof FromAuditScaffoldError || err instanceof OracleDatabaseUrlError) {

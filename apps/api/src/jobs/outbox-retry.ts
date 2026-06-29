@@ -31,6 +31,66 @@ let queue: Queue | null = null;
 let worker: Worker | null = null;
 let logger: FastifyBaseLogger | null = null;
 
+/**
+ * Process a single outbox entry: parse it, re-publish via NATS, and route a
+ * poison (unparseable) entry to the DLQ. Extracted from {@link processOutbox} to
+ * keep that function's nesting/complexity bounded; behavior is identical to the
+ * inlined per-entry loop body (a parse failure short-circuits via `return`,
+ * which is equivalent to the loop's previous `continue`).
+ */
+async function processOutboxEntry(
+  redis: Awaited<ReturnType<typeof getRedisClient>>,
+  event: string,
+  key: string,
+  entry: string,
+  effectiveLogger: FastifyBaseLogger | null,
+): Promise<void> {
+  let payload: Record<string, unknown>;
+  try {
+    payload = JSON.parse(entry) as Record<string, unknown>;
+  } catch (parseErr) {
+    // Poison entry — unparseable, can never be re-published. Move it to
+    // the DLQ and remove it from the outbox so it stops blocking the page.
+    effectiveLogger?.error(
+      { event, error: String(parseErr) },
+      "[outbox-retry] Poison outbox entry — routing to DLQ",
+    );
+    await pushToDlq(event, { _rawEntry: entry }, parseErr, effectiveLogger ?? undefined);
+    try {
+      await redis.lRem(key, 1, entry);
+    } catch (remErr) {
+      effectiveLogger?.error(
+        { event, error: String(remErr) },
+        "[outbox-retry] Failed to remove poison entry from outbox",
+      );
+    }
+    return;
+  }
+
+  try {
+    // Re-publish via NATS (this will also attempt to LREM from outbox on success)
+    await publishNatsEvent(event, payload);
+  } catch (err) {
+    effectiveLogger?.error(
+      { event, error: String(err) },
+      "[outbox-retry] Failed to re-publish event",
+    );
+    Sentry.withScope((scope) => {
+      scope.setTag("job", "outbox-retry");
+      scope.setTag("source", "background-job");
+      scope.setContext("event", { eventType: event });
+      Sentry.captureException(err);
+    });
+    // Parseable but publish failed: leave it in the outbox (publishNatsEvent
+    // only LREMs on success) so the next cycle retries it. No per-entry
+    // attempt cap — subscriber dedup (isNewEvent) keys on payload content and
+    // the outbox uses exact-string LREM, so embedding a counter would mutate
+    // the stored entry and break both. Unbounded growth is capped on the
+    // write side (OUTBOX_MAX_LEN lTrim) + bounded read here; a durable
+    // attempt cap is deferred to the JetStream migration (max-deliver + DLQ).
+  }
+}
+
 /** Core job logic — exported for direct testing. */
 export async function processOutbox(log?: FastifyBaseLogger | null): Promise<void> {
   const effectiveLogger = log ?? logger;
@@ -65,50 +125,7 @@ export async function processOutbox(log?: FastifyBaseLogger | null): Promise<voi
       );
 
       for (const entry of entries) {
-        let payload: Record<string, unknown>;
-        try {
-          payload = JSON.parse(entry) as Record<string, unknown>;
-        } catch (parseErr) {
-          // Poison entry — unparseable, can never be re-published. Move it to
-          // the DLQ and remove it from the outbox so it stops blocking the page.
-          effectiveLogger?.error(
-            { event, error: String(parseErr) },
-            "[outbox-retry] Poison outbox entry — routing to DLQ",
-          );
-          await pushToDlq(event, { _rawEntry: entry }, parseErr, effectiveLogger ?? undefined);
-          try {
-            await redis.lRem(key, 1, entry);
-          } catch (remErr) {
-            effectiveLogger?.error(
-              { event, error: String(remErr) },
-              "[outbox-retry] Failed to remove poison entry from outbox",
-            );
-          }
-          continue;
-        }
-
-        try {
-          // Re-publish via NATS (this will also attempt to LREM from outbox on success)
-          await publishNatsEvent(event, payload);
-        } catch (err) {
-          effectiveLogger?.error(
-            { event, error: String(err) },
-            "[outbox-retry] Failed to re-publish event",
-          );
-          Sentry.withScope((scope) => {
-            scope.setTag("job", "outbox-retry");
-            scope.setTag("source", "background-job");
-            scope.setContext("event", { eventType: event });
-            Sentry.captureException(err);
-          });
-          // Parseable but publish failed: leave it in the outbox (publishNatsEvent
-          // only LREMs on success) so the next cycle retries it. No per-entry
-          // attempt cap — subscriber dedup (isNewEvent) keys on payload content and
-          // the outbox uses exact-string LREM, so embedding a counter would mutate
-          // the stored entry and break both. Unbounded growth is capped on the
-          // write side (OUTBOX_MAX_LEN lTrim) + bounded read here; a durable
-          // attempt cap is deferred to the JetStream migration (max-deliver + DLQ).
-        }
+        await processOutboxEntry(redis, event, key, entry, effectiveLogger);
       }
     }
   } finally {
@@ -143,7 +160,7 @@ export function startOutboxRetry(log?: FastifyBaseLogger): void {
 
   // Run immediately on startup, then every REPEAT_INTERVAL_MS + jitter.
   // Jitter (0-15s) prevents thundering herd when multiple instances restart.
-  const jitter = Math.floor(Math.random() * 15_000);
+  const jitter = crypto.randomInt(15_000);
   void queue.upsertJobScheduler("outbox-retry-repeat", {
     every: REPEAT_INTERVAL_MS + jitter,
     immediately: true,

@@ -379,6 +379,36 @@ function confirmAuditFailClosedReply(
 }
 
 /**
+ * Best-effort audit emit for the default (non-receipt) path. An audit
+ * failure NEVER blocks the mutation: a record-build throw is caught, and the
+ * async emit is fire-and-forget with its own `.catch`. Extracted so
+ * `runCustomerIntent` stays within its cognitive-complexity budget.
+ */
+function emitBestEffortAudit(
+  auditSink: AuditSink | undefined,
+  envelope: IntentEnvelope,
+  decision: Decision,
+  ctx: CustomerIntentContext,
+  durationMs: number,
+): void {
+  if (!auditSink) return;
+  try {
+    const record = buildAuditRecord({ envelope, decision, durationMs });
+    void auditSink.emit(record).catch((err: unknown) => {
+      ctx.log?.warn?.(
+        { route: ctx.route, customerId: ctx.customerId, err: (err as Error)?.message },
+        "[customer-intent-gateway] audit emit failed",
+      );
+    });
+  } catch (err) {
+    ctx.log?.warn?.(
+      { route: ctx.route, customerId: ctx.customerId, err: (err as Error)?.message },
+      "[customer-intent-gateway] audit record build failed",
+    );
+  }
+}
+
+/**
  * Dispatch a customer-driven envelope through the adjudicate kernel.
  *
  * Decision branching:
@@ -491,26 +521,7 @@ export async function runCustomerIntent<R>(
     decision = adjudicate(envelope, state, policy);
 
     // ── Audit emit — best-effort, never blocks ──────────────────────────
-    if (auditSink) {
-      try {
-        const record = buildAuditRecord({
-          envelope,
-          decision,
-          durationMs: Date.now() - startedAt,
-        });
-        void auditSink.emit(record).catch((err: unknown) => {
-          ctx.log?.warn?.(
-            { route: ctx.route, customerId: ctx.customerId, err: (err as Error)?.message },
-            "[customer-intent-gateway] audit emit failed",
-          );
-        });
-      } catch (err) {
-        ctx.log?.warn?.(
-          { route: ctx.route, customerId: ctx.customerId, err: (err as Error)?.message },
-          "[customer-intent-gateway] audit record build failed",
-        );
-      }
-    }
+    emitBestEffortAudit(auditSink, envelope, decision, ctx, Date.now() - startedAt);
   }
 
   // ── Branch on decision kind ───────────────────────────────────────────

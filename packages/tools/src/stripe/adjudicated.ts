@@ -76,6 +76,7 @@ import {
 } from "@adjudicate/core/kernel"
 import { createSystemTaintPolicy } from "@adjudicate/primitives"
 import Stripe from "stripe"
+import { randomBytes } from "node:crypto"
 
 // ── Intent-kind vocabulary ──────────────────────────────────────────────
 
@@ -630,5 +631,5 @@ export const stripeAdjudicated = {
 function cryptoRandomNonce(): string {
   const c = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto
   if (c?.randomUUID) return c.randomUUID()
-  return `stripe-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+  return `stripe-${Date.now()}-${randomBytes(4).toString("hex")}`
 }

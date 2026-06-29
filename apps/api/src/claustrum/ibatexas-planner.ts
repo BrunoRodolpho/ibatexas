@@ -328,6 +328,65 @@ function buildToolSurface(plan: CapabilityPlan): CompletionRequest["tools"] {
 }
 
 /**
+ * Translate the model's tool calls into the planner's outputs (RC-A1): each
+ * in-plan `express_intent` becomes an `IntentEnvelope`; a visible read tool is
+ * recorded in `readToolCalls`; a malformed/out-of-plan/unknown call is dropped
+ * (recorded in `dropped` for the rationale). Pure over the call list + the
+ * turn's allowlist — the same "model proposes, deterministic checks dispose"
+ * shape as `propose`, extracted so `propose` stays within complexity budget.
+ */
+function translateToolCalls(args: {
+  readonly toolCalls: Completion["toolCalls"];
+  readonly allowed: ReadonlySet<string>;
+  readonly visibleReadTools: ReadonlyArray<string>;
+  readonly state: CognitiveState;
+  readonly deriveNonce: (state: CognitiveState, envelopeIndex: number) => string;
+}): {
+  envelopes: IntentEnvelope[];
+  capabilities: string[];
+  readToolCalls: Array<{ name: string; input: unknown }>;
+  dropped: string[];
+} {
+  const envelopes: IntentEnvelope[] = [];
+  const capabilities: string[] = [];
+  const readToolCalls: Array<{ name: string; input: unknown }> = [];
+  const dropped: string[] = [];
+
+  for (const call of args.toolCalls ?? []) {
+    if (call.name === EXPRESS_INTENT_TOOL) {
+      if (!isExpressIntentInput(call.input)) {
+        dropped.push(`${EXPRESS_INTENT_TOOL}(malformed)`);
+        continue;
+      }
+      const { capability, payload } = call.input;
+      // Defense in depth: never build an envelope for a capability the
+      // pack planners did not authorize this turn, even if the model
+      // (or a compromised prompt) emits one.
+      if (!args.allowed.has(capability)) {
+        dropped.push(capability);
+        continue;
+      }
+      envelopes.push(
+        buildEnvelope({
+          kind: capability,
+          payload: payload ?? {},
+          actor: { principal: "llm", sessionId: args.state.conversationId },
+          taint: "UNTRUSTED",
+          nonce: args.deriveNonce(args.state, envelopes.length),
+        }),
+      );
+      capabilities.push(capability);
+    } else if (args.visibleReadTools.includes(call.name)) {
+      readToolCalls.push({ name: call.name, input: call.input });
+    } else {
+      dropped.push(call.name);
+    }
+  }
+
+  return { envelopes, capabilities, readToolCalls, dropped };
+}
+
+/**
  * The CLAIM-AWARE planner port (Q6b — SDD §H/§P3/§P4/§O#9; §M ibatexas half of
  * §Q.6). A `PlannerPort` (the existing intent path, UNCHANGED) PLUS the
  * claim-aware `proposeClaims` seam: the additive ibatexas-specific surface the
@@ -437,41 +496,14 @@ export function createIbatexasPlanner(
         });
       }
 
-      const envelopes: IntentEnvelope[] = [];
-      const capabilities: string[] = [];
-      const readToolCalls: Array<{ name: string; input: unknown }> = [];
-      const dropped: string[] = [];
-
-      for (const call of completion.toolCalls ?? []) {
-        if (call.name === EXPRESS_INTENT_TOOL) {
-          if (!isExpressIntentInput(call.input)) {
-            dropped.push(`${EXPRESS_INTENT_TOOL}(malformed)`);
-            continue;
-          }
-          const { capability, payload } = call.input;
-          // Defense in depth: never build an envelope for a capability the
-          // pack planners did not authorize this turn, even if the model
-          // (or a compromised prompt) emits one.
-          if (!allowed.has(capability)) {
-            dropped.push(capability);
-            continue;
-          }
-          envelopes.push(
-            buildEnvelope({
-              kind: capability,
-              payload: payload ?? {},
-              actor: { principal: "llm", sessionId: state.conversationId },
-              taint: "UNTRUSTED",
-              nonce: deriveNonce(state, envelopes.length),
-            }),
-          );
-          capabilities.push(capability);
-        } else if (plan.visibleReadTools.includes(call.name)) {
-          readToolCalls.push({ name: call.name, input: call.input });
-        } else {
-          dropped.push(call.name);
-        }
-      }
+      const { envelopes, capabilities, readToolCalls, dropped } =
+        translateToolCalls({
+          toolCalls: completion.toolCalls,
+          allowed,
+          visibleReadTools: plan.visibleReadTools,
+          state,
+          deriveNonce,
+        });
 
       const rationale =
         dropped.length > 0
@@ -566,7 +598,7 @@ export function createIbatexasPlanner(
           type: input.type,
           subject: input.subject ?? "",
           actor: input.actor ?? { principal: "llm", sessionId: state.conversationId },
-          ...(input.resources !== undefined ? { resources: input.resources } : {}),
+          ...(input.resources === undefined ? {} : { resources: input.resources }),
           value: input.value,
         });
         for (const span of input.spans ?? []) {
@@ -591,16 +623,12 @@ export function createIbatexasPlanner(
       // CLARIFY (a safety escalation is more conservative than a clarification).
       const safetyTerminal = routeSafety(safety);
       const forcedTerminal: Extract<TurnTerminal, "ESCALATE" | "CLARIFY"> | undefined =
-        safetyTerminal !== undefined
-          ? safetyTerminal
-          : hasUnmappedSpan(completeness)
-            ? "CLARIFY"
-            : undefined;
+        safetyTerminal ?? (hasUnmappedSpan(completeness) ? "CLARIFY" : undefined);
 
       return {
         candidates,
         completeness,
-        ...(forcedTerminal !== undefined ? { forcedTerminal } : {}),
+        ...(forcedTerminal === undefined ? {} : { forcedTerminal }),
         droppedClaimTypes: dropped,
       };
     },

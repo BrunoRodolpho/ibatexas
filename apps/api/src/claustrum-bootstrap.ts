@@ -41,7 +41,6 @@ import {
   createToolRegistry,
   type Adjudicator,
   type AuditVerification,
-  type Capsule,
   type ChannelDriver,
   type ConfirmationReceipt,
   type Conductor,
@@ -1251,29 +1250,29 @@ function isGuestCustomerId(customerId: string): boolean {
 // `sessionTokenKey` is the single source of truth, exported by resolve-and-assemble
 // (the read side) and imported here (the write side) so the key can never drift.
 
+async function readSession(sessionId: string): Promise<Session | null> {
+  const redis = await getRedisClient();
+  const raw = await redis.get(claustrumSessionKey(sessionId));
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as Session;
+  } catch {
+    // Corrupt blob → treat as absent; a fresh session is rebuilt (fail-safe).
+    return null;
+  }
+}
+
+async function writeSession(session: Session): Promise<void> {
+  const redis = await getRedisClient();
+  const ttl = isGuestCustomerId(session.customerId)
+    ? CLAUSTRUM_SESSION_TTL_GUEST_SECONDS
+    : CLAUSTRUM_SESSION_TTL_CUSTOMER_SECONDS;
+  await redis.set(claustrumSessionKey(session.id), JSON.stringify(session), {
+    EX: ttl,
+  });
+}
+
 function redisSessionStore(): SessionPort {
-  async function readSession(sessionId: string): Promise<Session | null> {
-    const redis = await getRedisClient();
-    const raw = await redis.get(claustrumSessionKey(sessionId));
-    if (!raw) return null;
-    try {
-      return JSON.parse(raw) as Session;
-    } catch {
-      // Corrupt blob → treat as absent; a fresh session is rebuilt (fail-safe).
-      return null;
-    }
-  }
-
-  async function writeSession(session: Session): Promise<void> {
-    const redis = await getRedisClient();
-    const ttl = isGuestCustomerId(session.customerId)
-      ? CLAUSTRUM_SESSION_TTL_GUEST_SECONDS
-      : CLAUSTRUM_SESSION_TTL_CUSTOMER_SECONDS;
-    await redis.set(claustrumSessionKey(session.id), JSON.stringify(session), {
-      EX: ttl,
-    });
-  }
-
   // Read-modify-write a stored session by id. No-op if the session is unknown
   // (per the SessionPort contract). Serialized by the Conductor's per-session
   // lock, so a plain RMW is race-free.
@@ -1363,6 +1362,52 @@ function redisSessionStore(): SessionPort {
     // SessionPort.isStale() was removed upstream (claustrum APIReviewer-011,
     // commit 21c5393 — it was unused in the runtime). Do not re-add it.
   };
+}
+
+/**
+ * C2 — flush a turn's buffered LLM-call traces to the REDACTED turn_trace
+ * store, attaching the conversationId only available at emitTurn. Rows are
+ * keyed (turnId, callIndex); the writer redacts the completion. The trace
+ * write is additive — token accounting stays separate (no double count).
+ * Module-local helper extracted from emitTurn to keep its complexity bounded.
+ */
+async function flushTurnTraces(
+  record: TurnRecord,
+  turnTrace: TurnTraceWriter | undefined,
+  pendingTraces: Map<string, LLMTrace[]>,
+): Promise<void> {
+  if (turnTrace === undefined) return;
+  const traces = pendingTraces.get(record.turnId);
+  pendingTraces.delete(record.turnId);
+  if (traces === undefined || traces.length === 0) return;
+  try {
+    await Promise.all(
+      traces.map((t, callIndex) =>
+        turnTrace.write({
+          turnId: t.turnId,
+          callIndex,
+          conversationId: record.conversationId,
+          ...(t.intentHash === undefined ? {} : { intentHash: t.intentHash }),
+          model: t.model,
+          temperature: t.temperature,
+          inputTokens: t.inputTokens,
+          outputTokens: t.outputTokens,
+          promptManifest: t.promptManifest,
+          completion: t.completion,
+          durationMs: t.durationMs,
+          recordedAt: t.at,
+          ...(t.schemaVersion === undefined
+            ? {}
+            : { schemaVersion: t.schemaVersion }),
+        }),
+      ),
+    );
+  } catch (err) {
+    logger.warn(
+      { component: "conductor", event: "turn_trace_flush_failed", error: String(err) },
+      "turn_trace flush failed; ignoring",
+    );
+  }
 }
 
 /**
@@ -1501,43 +1546,8 @@ function fastifyTelemetry(
         );
       }
       // C2 — flush this turn's buffered LLM-call traces to the REDACTED
-      // turn_trace store, attaching the conversationId only available here. Rows
-      // are keyed (turnId, callIndex); the writer redacts the completion. The
-      // trace write is additive — token accounting stays above (no double count).
-      if (turnTrace !== undefined) {
-        const traces = pendingTraces.get(record.turnId);
-        pendingTraces.delete(record.turnId);
-        if (traces !== undefined && traces.length > 0) {
-          try {
-            await Promise.all(
-              traces.map((t, callIndex) =>
-                turnTrace.write({
-                  turnId: t.turnId,
-                  callIndex,
-                  conversationId: record.conversationId,
-                  ...(t.intentHash !== undefined ? { intentHash: t.intentHash } : {}),
-                  model: t.model,
-                  temperature: t.temperature,
-                  inputTokens: t.inputTokens,
-                  outputTokens: t.outputTokens,
-                  promptManifest: t.promptManifest,
-                  completion: t.completion,
-                  durationMs: t.durationMs,
-                  recordedAt: t.at,
-                  ...(t.schemaVersion !== undefined
-                    ? { schemaVersion: t.schemaVersion }
-                    : {}),
-                }),
-              ),
-            );
-          } catch (err) {
-            logger.warn(
-              { component: "conductor", event: "turn_trace_flush_failed", error: String(err) },
-              "turn_trace flush failed; ignoring",
-            );
-          }
-        }
-      }
+      // turn_trace store, attaching the conversationId only available here.
+      await flushTurnTraces(record, turnTrace, pendingTraces);
     },
     async emitLLMTrace(trace) {
       // C1 — buffer the per-model-call trace for the emitTurn flush (which
@@ -1546,14 +1556,14 @@ function fastifyTelemetry(
       if (turnTrace === undefined) return;
       try {
         const list = pendingTraces.get(trace.turnId);
-        if (list !== undefined) {
-          list.push(trace);
-        } else {
+        if (list === undefined) {
           if (pendingTraces.size >= MAX_PENDING_TURNS) {
             const oldest = pendingTraces.keys().next().value;
             if (oldest !== undefined) pendingTraces.delete(oldest);
           }
           pendingTraces.set(trace.turnId, [trace]);
+        } else {
+          list.push(trace);
         }
       } catch {
         // ignore — telemetry must never break a turn
@@ -1597,6 +1607,239 @@ const resolveIbatexasTenantPolicy: TenantResolver = {
 
 // ── Boot ─────────────────────────────────────────────────────────────────────
 
+/**
+ * Install the kernel MetricsSink under WS7 coexistence semantics (an injected
+ * sink wins unconditionally; otherwise install the observability-only sink only
+ * when no production sink is already present). Extracted from bootstrapClaustrum
+ * to keep its cognitive complexity bounded; behavior is unchanged.
+ */
+function installMetricsSink(options: ClaustrumBootstrapOptions): void {
+  if (options.metricsSink) {
+    // Injected sink (test seam) — installed unconditionally: a scripted
+    // harness needs deterministic ownership of the metrics surface.
+    setMetricsSink(options.metricsSink);
+  } else if (!hasMetricsSink()) {
+    setMetricsSink(createIbatexasMetricsSink(logger));
+  }
+}
+
+/**
+ * Resolve the ModelProvider for planner + responder + grounding embeds.
+ * Extracted from bootstrapClaustrum (complexity); behavior is unchanged.
+ */
+function resolveModelProvider(options: ClaustrumBootstrapOptions): ModelProvider {
+  if (options.modelProvider) {
+    // Injected provider (scripted harness, T2-6b) — the Anthropic SDK client
+    // is never constructed, so a scripted composition is structurally unable
+    // to spend tokens.
+    return options.modelProvider;
+  }
+  if (process.env.LLM_PROVIDER === "ollama") {
+    // Live local-model validation (plan C1): route the SUT's untrusted semantic
+    // parser to a local Ollama /v1 endpoint (e.g. nemotron-3-nano:4b). The kernel
+    // (@adjudicate/core) remains the sole authority — only the model swaps. Reuse
+    // the contract-tested @claustrum/openai OpenAIProvider over a structural
+    // fetch client (OllamaFetchClient) — its embed() throws not_implemented, so
+    // the grounding capability probe / failSafeGrounding degrades to empty
+    // retrieval and grounding-required intents fail CLOSED.
+    const provider = new OpenAIProvider({ client: new OllamaFetchClient() });
+    logger.warn(
+      { provider: "ollama", baseUrl: process.env.LLM_BASE_URL, model: process.env.LLM_MODEL },
+      "LLM_PROVIDER=ollama — using OpenAIProvider over a local Ollama endpoint for live validation",
+    );
+    return provider;
+  }
+  const anthropicClient = new Anthropic({
+    apiKey: process.env.ANTHROPIC_API_KEY ?? "",
+  });
+  // The structural AnthropicClientLike type in @claustrum/anthropic exposes
+  // only the subset of the SDK we use; the real Anthropic class has many
+  // more fields. Cast through `unknown` is intentional.
+  return new AnthropicProvider({
+    client: anthropicClient as unknown as ConstructorParameters<
+      typeof AnthropicProvider
+    >[0]["client"],
+    // Route the provider's non-fatal warnings (max_tokens fallback) through the
+    // structured logger so they reach VictoriaLogs (cycle-36 L5 sweep) instead
+    // of a bare console.warn in the adapter.
+    onWarn: (message, fields) => logger.warn(fields, message),
+  });
+}
+
+/**
+ * Resolve the MemoryPort. DEF-005: when the domain Prisma client generates no
+ * claustrum_memory_* delegates, run a DESIGNED no-op (empty recall) instead of
+ * a per-turn TypeError. Extracted from bootstrapClaustrum (complexity).
+ */
+function resolveMemoryPort(
+  redis: Awaited<ReturnType<typeof getRedisClient>>,
+  adjudicator: Adjudicator,
+) {
+  const memDelegates = ["episodic", "semantic", "procedural", "relational"] as const;
+  const prismaForMemory = prisma as unknown as Record<
+    string,
+    { findMany?: unknown } | undefined
+  >;
+  const memoryDelegatesPresent = memDelegates.every(
+    (slice) => typeof prismaForMemory[`claustrum_memory_${slice}`]?.findMany === "function",
+  );
+  if (!memoryDelegatesPresent) {
+    logger.info(
+      { component: "memory" },
+      "claustrum_memory_* delegates absent/incomplete on the domain Prisma client — memory port runs as a designed no-op (empty recall); see DEF-005",
+    );
+  }
+  // Finding 33: the no-op provider never throws BY DESIGN, so wrapping it in
+  // failSafeMemory is dead code (a third place the empty shape would materialize).
+  // Use it directly; the failSafe wrapper guards only the REAL postgres provider's
+  // genuinely-unexpected errors.
+  return memoryDelegatesPresent
+    ? failSafeMemory(
+        createPostgresMemoryProvider({
+          prisma: prisma as unknown as PrismaClientLike,
+          redis: redis as unknown as RedisClientLike,
+          adjudicator,
+        }),
+        {
+          onError: (op, err) =>
+            logger.warn(
+              { component: "memory", op, error: String(err) },
+              "memory port degraded (fail-safe): returning empty result",
+            ),
+        },
+      )
+    : noopMemoryProvider();
+}
+
+/**
+ * Resolve the GroundingPort. DEF-005: gate grounding on BOTH the operator flag
+ * AND a real boot-time embedding-capability probe; when embeddings are
+ * unavailable, run a DESIGNED no-op (empty retrieval). Extracted from
+ * bootstrapClaustrum (complexity).
+ */
+async function resolveGroundingPort(
+  modelProvider: ModelProvider,
+  pgPool: Pool,
+  embeddingModelId: string,
+) {
+  const groundingEnabled = process.env.CLAUSTRUM_GROUNDING_ENABLED === "true";
+  const canEmbed = groundingEnabled ? await providerCanEmbed(modelProvider) : false;
+  const groundingActive = groundingEnabled && canEmbed;
+  if (groundingEnabled && !canEmbed) {
+    logger.warn(
+      { component: "grounding" },
+      "CLAUSTRUM_GROUNDING_ENABLED=true but the model provider cannot embed — running grounding as a designed no-op (empty retrieval); wire a working embedding proxy to enable it. See DEF-005",
+    );
+  } else if (!groundingEnabled) {
+    logger.info(
+      { component: "grounding" },
+      "embeddings unavailable (CLAUSTRUM_GROUNDING_ENABLED!=true) — grounding port runs as a designed no-op (empty retrieval); see DEF-005",
+    );
+  }
+  // Finding 33: as with memory, the grounding no-op never throws by design — use
+  // it directly; failSafeGrounding wraps only the real pgvector provider.
+  return groundingActive
+    ? failSafeGrounding(
+        createPgVectorGroundingProvider({
+          // pg.Pool is structurally assignable to pgvector's minimal { query } Pool —
+          // no cast needed (was a redundant `as never`).
+          pool: pgPool,
+          modelProvider,
+          modelId: embeddingModelId,
+          tenantId: "ibatexas",
+        }),
+        {
+          modelId: embeddingModelId,
+          onError: (op, err) =>
+            logger.warn(
+              { component: "grounding", op, error: String(err) },
+              "grounding port degraded (fail-safe): returning empty result",
+            ),
+        },
+      )
+    : noopGroundingProvider(embeddingModelId);
+}
+
+/**
+ * Build the ChannelDriver[] (WhatsApp when TWILIO_* is configured, plus the
+ * Web channel). Extracted from bootstrapClaustrum (complexity); unchanged.
+ */
+function buildChannelDrivers(): ChannelDriver[] {
+  const channels: ChannelDriver[] = [];
+
+  if (
+    process.env.TWILIO_ACCOUNT_SID &&
+    process.env.TWILIO_AUTH_TOKEN &&
+    process.env.TWILIO_FROM
+  ) {
+    channels.push(
+      new WhatsAppChannel({
+        accountSid: process.env.TWILIO_ACCOUNT_SID,
+        authToken: process.env.TWILIO_AUTH_TOKEN,
+        twilioFrom: process.env.TWILIO_FROM,
+        gatewaySigningKey:
+          process.env.WA_GATEWAY_SIGNING_KEY ??
+          process.env.TWILIO_AUTH_TOKEN,
+      }),
+    );
+  } else {
+    logger.warn(
+      { component: "startup" },
+      "WhatsApp channel disabled — TWILIO_* env vars not set",
+    );
+  }
+
+  // Web channel sink — for SSE, the actual delivery is via the streaming
+  // emitter; the WebChannel.render just hands the response back to the
+  // route handler via a sink callback set up per-request. For now, no-op.
+  channels.push(
+    new WebChannel({
+      // Require a real signing key — no source-committed default. A known key
+      // would let anyone mint web-gateway messages the conductor trusts. Fails
+      // closed in prod/dev when WEB_GATEWAY_SIGNING_KEY is unset.
+      gatewaySigningKey: requireSecret("WEB_GATEWAY_SIGNING_KEY"),
+      sink: async () => {
+        // Replaced per-request by chat.ts via attachStream() pattern (TODO).
+      },
+      gateway: process.env.WEB_GATEWAY_NAME ?? "ibatexas-api",
+    }),
+  );
+
+  return channels;
+}
+
+/**
+ * Resolve the AuditSink for the adjudicator bridge. An injected sink (test
+ * seam) skips the global DI wiring entirely. Extracted from bootstrapClaustrum
+ * (complexity); behavior is unchanged.
+ */
+async function resolveAuditSink(
+  options: ClaustrumBootstrapOptions,
+): Promise<AuditSink> {
+  if (options.auditSink) return options.auditSink;
+  await bootstrapAuditSinkDI(logger);
+  return getAuditSink();
+}
+
+/**
+ * Narrow the node-redis client to the exact RedisLedgerClient contract the
+ * execution ledger consumes (set/get/del). Rejections pass through untouched —
+ * that is the fail-closed path. Extracted from bootstrapClaustrum (complexity).
+ */
+function buildLedgerClient(
+  redis: Awaited<ReturnType<typeof getRedisClient>>,
+): RedisLedgerClient {
+  return {
+    set: (key, value, options) =>
+      redis.set(key, value, {
+        ...(options?.NX ? { NX: true as const } : {}),
+        ...(options?.EX === undefined ? {} : { EX: options.EX }),
+      }) as Promise<string | null>,
+    get: (key) => redis.get(key) as Promise<string | null>,
+    del: (key) => redis.del(key),
+  };
+}
+
 export async function bootstrapClaustrum(
   options: ClaustrumBootstrapOptions = {},
 ): Promise<Conductor> {
@@ -1631,13 +1874,7 @@ export async function bootstrapClaustrum(
   // Overwriting it here would silently drop those signals. Only install the
   // observability-only sink when NO sink is present (i.e. when claustrum is
   // bootstrapped standalone, e.g. its own tests). The production sink wins.
-  if (options.metricsSink) {
-    // Injected sink (test seam) — installed unconditionally: a scripted
-    // harness needs deterministic ownership of the metrics surface.
-    setMetricsSink(options.metricsSink);
-  } else if (!hasMetricsSink()) {
-    setMetricsSink(createIbatexasMetricsSink(logger));
-  }
+  installMetricsSink(options);
 
   // Audit infra — dev's audit pipeline (`@ibatexas/audit-sink`) is the durable
   // AuditRecord store (`intent_audit` via Postgres, plus NATS fan-out + Redis
@@ -1657,42 +1894,7 @@ export async function bootstrapClaustrum(
   _ownsPgPool = !options.pgPool;
   await assertAuditPostgresReady(pgPool);
 
-  let modelProvider: ModelProvider;
-  if (options.modelProvider) {
-    // Injected provider (scripted harness, T2-6b) — the Anthropic SDK client
-    // is never constructed, so a scripted composition is structurally unable
-    // to spend tokens.
-    modelProvider = options.modelProvider;
-  } else if (process.env.LLM_PROVIDER === "ollama") {
-    // Live local-model validation (plan C1): route the SUT's untrusted semantic
-    // parser to a local Ollama /v1 endpoint (e.g. nemotron-3-nano:4b). The kernel
-    // (@adjudicate/core) remains the sole authority — only the model swaps. Reuse
-    // the contract-tested @claustrum/openai OpenAIProvider over a structural
-    // fetch client (OllamaFetchClient) — its embed() throws not_implemented, so
-    // the grounding capability probe / failSafeGrounding degrades to empty
-    // retrieval and grounding-required intents fail CLOSED.
-    modelProvider = new OpenAIProvider({ client: new OllamaFetchClient() });
-    logger.warn(
-      { provider: "ollama", baseUrl: process.env.LLM_BASE_URL, model: process.env.LLM_MODEL },
-      "LLM_PROVIDER=ollama — using OpenAIProvider over a local Ollama endpoint for live validation",
-    );
-  } else {
-    const anthropicClient = new Anthropic({
-      apiKey: process.env.ANTHROPIC_API_KEY ?? "",
-    });
-    // The structural AnthropicClientLike type in @claustrum/anthropic exposes
-    // only the subset of the SDK we use; the real Anthropic class has many
-    // more fields. Cast through `unknown` is intentional.
-    modelProvider = new AnthropicProvider({
-      client: anthropicClient as unknown as ConstructorParameters<
-        typeof AnthropicProvider
-      >[0]["client"],
-      // Route the provider's non-fatal warnings (max_tokens fallback) through the
-      // structured logger so they reach VictoriaLogs (cycle-36 L5 sweep) instead
-      // of a bare console.warn in the adapter.
-      onWarn: (message, fields) => logger.warn(fields, message),
-    });
-  }
+  const modelProvider = resolveModelProvider(options);
 
   // The chat model id stamped on each planner/responder CompletionRequest. The
   // OpenAIProvider forwards req.model to the endpoint, so the Ollama path MUST use
@@ -1712,13 +1914,7 @@ export async function bootstrapClaustrum(
   // richer pipeline.) An injected sink (test seam) SKIPS the global DI wiring
   // entirely — the bridge consumes the injected sink directly and the leaf's
   // module state is left untouched.
-  let auditSink: AuditSink;
-  if (options.auditSink) {
-    auditSink = options.auditSink;
-  } else {
-    await bootstrapAuditSinkDI(logger);
-    auditSink = getAuditSink();
-  }
+  const auditSink = await resolveAuditSink(options);
 
   // Execution ledger (Hard Rule #9) — always-on, fail-closed cross-turn
   // replay-suppression. Redis must be up BEFORE the adjudicator exists, so the
@@ -1733,15 +1929,7 @@ export async function bootstrapClaustrum(
   // never put in buffer mode, so narrow set/get/del to the exact contract the
   // ledger consumes (RedisLedgerClient) rather than an `as unknown as` cast.
   // Rejections pass through untouched — that is the fail-closed path.
-  const ledgerClient: RedisLedgerClient = {
-    set: (key, value, options) =>
-      redis.set(key, value, {
-        ...(options?.NX ? { NX: true as const } : {}),
-        ...(options?.EX !== undefined ? { EX: options.EX } : {}),
-      }) as Promise<string | null>,
-    get: (key) => redis.get(key) as Promise<string | null>,
-    del: (key) => redis.del(key),
-  };
+  const ledgerClient: RedisLedgerClient = buildLedgerClient(redis);
   const ledger = createRedisLedger({ client: ledgerClient, keyFor: rk });
   // Audit READ paths over the same pool the readiness probe validated —
   // memory-recall reads (fail-safe: a read outage degrades recall to empty,
@@ -1809,40 +1997,7 @@ export async function bootstrapClaustrum(
   // reads (not just episodic) — a partial/renamed delegate set would otherwise
   // pass a one-delegate probe and then throw per-turn inside the provider, the
   // very TypeError DEF-005 set out to eliminate.
-  const memDelegates = ["episodic", "semantic", "procedural", "relational"] as const;
-  const prismaForMemory = prisma as unknown as Record<
-    string,
-    { findMany?: unknown } | undefined
-  >;
-  const memoryDelegatesPresent = memDelegates.every(
-    (slice) => typeof prismaForMemory[`claustrum_memory_${slice}`]?.findMany === "function",
-  );
-  if (!memoryDelegatesPresent) {
-    logger.info(
-      { component: "memory" },
-      "claustrum_memory_* delegates absent/incomplete on the domain Prisma client — memory port runs as a designed no-op (empty recall); see DEF-005",
-    );
-  }
-  // Finding 33: the no-op provider never throws BY DESIGN, so wrapping it in
-  // failSafeMemory is dead code (a third place the empty shape would materialize).
-  // Use it directly; the failSafe wrapper guards only the REAL postgres provider's
-  // genuinely-unexpected errors.
-  const memory = memoryDelegatesPresent
-    ? failSafeMemory(
-        createPostgresMemoryProvider({
-          prisma: prisma as unknown as PrismaClientLike,
-          redis: redis as unknown as RedisClientLike,
-          adjudicator,
-        }),
-        {
-          onError: (op, err) =>
-            logger.warn(
-              { component: "memory", op, error: String(err) },
-              "memory port degraded (fail-safe): returning empty result",
-            ),
-        },
-      )
-    : noopMemoryProvider();
+  const memory = resolveMemoryPort(redis, adjudicator);
 
   // Fail-safe wrapper: handleTurn awaits retrieve() with no catch, and the
   // provider chain throws today (AnthropicProvider.embed() has no embedding
@@ -1857,82 +2012,13 @@ export async function bootstrapClaustrum(
   // flag=true against a non-embedding provider must NOT re-introduce the per-turn
   // throw. When embeddings are unavailable, run a DESIGNED no-op (empty retrieval)
   // rather than letting failSafeGrounding swallow the throw each turn.
-  const groundingEnabled = process.env.CLAUSTRUM_GROUNDING_ENABLED === "true";
-  const canEmbed = groundingEnabled ? await providerCanEmbed(modelProvider) : false;
-  const groundingActive = groundingEnabled && canEmbed;
-  if (groundingEnabled && !canEmbed) {
-    logger.warn(
-      { component: "grounding" },
-      "CLAUSTRUM_GROUNDING_ENABLED=true but the model provider cannot embed — running grounding as a designed no-op (empty retrieval); wire a working embedding proxy to enable it. See DEF-005",
-    );
-  } else if (!groundingEnabled) {
-    logger.info(
-      { component: "grounding" },
-      "embeddings unavailable (CLAUSTRUM_GROUNDING_ENABLED!=true) — grounding port runs as a designed no-op (empty retrieval); see DEF-005",
-    );
-  }
-  // Finding 33: as with memory, the grounding no-op never throws by design — use
-  // it directly; failSafeGrounding wraps only the real pgvector provider.
-  const grounding = groundingActive
-    ? failSafeGrounding(
-        createPgVectorGroundingProvider({
-          // pg.Pool is structurally assignable to pgvector's minimal { query } Pool —
-          // no cast needed (was a redundant `as never`).
-          pool: pgPool,
-          modelProvider,
-          modelId: embeddingModelId,
-          tenantId: "ibatexas",
-        }),
-        {
-          modelId: embeddingModelId,
-          onError: (op, err) =>
-            logger.warn(
-              { component: "grounding", op, error: String(err) },
-              "grounding port degraded (fail-safe): returning empty result",
-            ),
-        },
-      )
-    : noopGroundingProvider(embeddingModelId);
-
-  const channels: ChannelDriver[] = [];
-
-  if (
-    process.env.TWILIO_ACCOUNT_SID &&
-    process.env.TWILIO_AUTH_TOKEN &&
-    process.env.TWILIO_FROM
-  ) {
-    channels.push(
-      new WhatsAppChannel({
-        accountSid: process.env.TWILIO_ACCOUNT_SID,
-        authToken: process.env.TWILIO_AUTH_TOKEN,
-        twilioFrom: process.env.TWILIO_FROM,
-        gatewaySigningKey:
-          process.env.WA_GATEWAY_SIGNING_KEY ??
-          process.env.TWILIO_AUTH_TOKEN,
-      }),
-    );
-  } else {
-    logger.warn(
-      { component: "startup" },
-      "WhatsApp channel disabled — TWILIO_* env vars not set",
-    );
-  }
-
-  // Web channel sink — for SSE, the actual delivery is via the streaming
-  // emitter; the WebChannel.render just hands the response back to the
-  // route handler via a sink callback set up per-request. For now, no-op.
-  channels.push(
-    new WebChannel({
-      // Require a real signing key — no source-committed default. A known key
-      // would let anyone mint web-gateway messages the conductor trusts. Fails
-      // closed in prod/dev when WEB_GATEWAY_SIGNING_KEY is unset.
-      gatewaySigningKey: requireSecret("WEB_GATEWAY_SIGNING_KEY"),
-      sink: async () => {
-        // Replaced per-request by chat.ts via attachStream() pattern (TODO).
-      },
-      gateway: process.env.WEB_GATEWAY_NAME ?? "ibatexas-api",
-    }),
+  const grounding = await resolveGroundingPort(
+    modelProvider,
+    pgPool,
+    embeddingModelId,
   );
+
+  const channels = buildChannelDrivers();
 
   // ── Shared planner/responder factories (DRY — one change lands once) ────────
   // Both planes (the conductor here + the managed-agent plane below) build the
@@ -2170,4 +2256,5 @@ export async function bootstrapClaustrum(
 }
 
 // Re-export types frequently used by routes.
-export type { Capsule, Conductor };
+export type { Conductor };
+export type { Capsule } from "@claustrum/core";

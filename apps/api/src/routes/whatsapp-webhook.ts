@@ -531,6 +531,237 @@ async function tryShortcutOrStateMachine(
 // (CLAUDE.md hard rule #3; documented in .env.example).
 const WA_TURN_TIMEOUT_MS = Number.parseInt(process.env.WA_TURN_TIMEOUT_MS ?? "60000", 10);
 
+// ── Session shape resolved by resolveWhatsAppSession (shared by the helpers below) ──
+type WaSession = Awaited<ReturnType<typeof resolveWhatsAppSession>>;
+
+/** Send a WhatsApp message, swallowing failures (Twilio may be down). Best-effort only. */
+async function sendBestEffort(to: string, message: string): Promise<void> {
+  try {
+    await sendText(to, message);
+  } catch {
+    // Best-effort — can't do more (e.g. Twilio is down)
+  }
+}
+
+/** Track daily conversation count (new sessions) + per-session message count (SEC-003: atomic INCR + EXPIRE). */
+async function trackMessageMetrics(session: WaSession, log: LogFn): Promise<void> {
+  if (session.isNew) {
+    try {
+      const metricsRedis = await getRedisClient();
+      const todayDateStr = new Date().toISOString().slice(0, 10);
+      const convKey = rk(`metrics:conversations:daily:${todayDateStr}`);
+      await atomicIncr(metricsRedis, convKey, 48 * 60 * 60);
+    } catch (metricsErr) {
+      log.warn({ error: String(metricsErr) }, "[whatsapp.metrics] Failed to track conversation count");
+    }
+  }
+
+  try {
+    const metricsRedis = await getRedisClient();
+    const msgCountKey = rk(`metrics:messages:${session.sessionId}`);
+    await atomicIncr(metricsRedis, msgCountKey, 48 * 60 * 60);
+  } catch (metricsErr) {
+    log.warn({ error: String(metricsErr) }, "[whatsapp.metrics] Failed to track message count");
+  }
+}
+
+/** Store a GPS pin if the inbound carried one; synthesize a location message when the body is empty. */
+async function storeLocationIfPresent(
+  body: TwilioWebhookBody,
+  messageBody: string,
+  hash: string,
+  session: WaSession,
+  log: LogFn,
+): Promise<void> {
+  const lat = body.Latitude ? Number.parseFloat(body.Latitude) : undefined;
+  const lng = body.Longitude ? Number.parseFloat(body.Longitude) : undefined;
+  if (lat === undefined || lng === undefined || Number.isNaN(lat) || Number.isNaN(lng)) {
+    return;
+  }
+  await storeLastLocation(hash, lat, lng);
+  log.info({ phone_hash: hash }, "[whatsapp.location] GPS pin stored");
+  // If message body is empty, synthesize a location message for the agent
+  if (!messageBody) {
+    const locationText = `[localização compartilhada: lat=${lat}, lng=${lng}]`;
+    await appendMessages(session.sessionId, [{ role: "user", content: locationText }], true, {
+      customerId: session.customerId,
+      channel: "whatsapp",
+    });
+  }
+}
+
+/**
+ * Fold the stored GPS pin + the "lgpd just sent" hint into the turn's inbound text.
+ * Pre-cutover these reached the agent via `AgentContext`; the Capsule carries
+ * neither, so they ride in the inbound text (the same channel the empty-body
+ * location message already uses). Preserves the GPS-aware + LGPD-aware behavior.
+ */
+function buildAgentInput(
+  baseInput: string,
+  lastLocation: Awaited<ReturnType<typeof getLastLocation>>,
+  lgpdJustSent: boolean,
+): string {
+  const inputSuffixes: string[] = [];
+  if (lastLocation) {
+    inputSuffixes.push(
+      `[localização do cliente: lat=${lastLocation.lat}, lng=${lastLocation.lng}]`,
+    );
+  }
+  if (lgpdJustSent) {
+    inputSuffixes.push("[hint: lgpd_just_sent]");
+  }
+  return inputSuffixes.length > 0 ? `${baseInput}\n${inputSuffixes.join("\n")}` : baseInput;
+}
+
+/** PIX follow-up: send copia-e-cola + QR code if the LLM omitted them, then schedule expiry reminders. */
+async function sendPixFollowUp(
+  pixData: NonNullable<WhatsAppTurn["pixData"]>,
+  agentText: string,
+  phone: string,
+  hash: string,
+  session: WaSession,
+  log: LogFn,
+): Promise<void> {
+  const { pixCopyPaste, pixQrCode } = pixData;
+  const textHasPixCode = pixCopyPaste && agentText.includes(pixCopyPaste);
+
+  if (pixCopyPaste && !textHasPixCode) {
+    await sendText(
+      `whatsapp:${phone}`,
+      `*Código PIX (copia e cola):*\n\n${pixCopyPaste}\n\n☝️ Copie e cole no app do seu banco.\nNÃO clique — cole no app.`,
+    );
+  }
+
+  if (pixQrCode) {
+    await sendMedia(`whatsapp:${phone}`, pixQrCode, "QR Code PIX").catch((err) => {
+      log.warn({ error: String(err) }, "[whatsapp.pix.qr_send_failed] Falling back to text-only PIX");
+    });
+  }
+
+  // Schedule PIX expiry reminders (25min reminder + 30min expired)
+  const pixOrderId = pixData.orderId;
+  if (pixCopyPaste && (pixOrderId || session.customerId)) {
+    void schedulePixExpiryMonitor({
+      phone,
+      phoneHash: hash,
+      orderId: pixOrderId || session.customerId!,
+    }).catch((err) => {
+      log.warn({ error: String(err) }, "[whatsapp.pix.expiry_schedule_failed]");
+    });
+  }
+}
+
+type AgentTurnOutcome =
+  | { handled: true }
+  | { handled: false; response: WhatsAppTurn };
+
+/**
+ * Try the shortcut/state machine, then run the conductor turn raced against the
+ * max-turn deadline (P2-CONC-ABORT). Returns `{ handled: true }` when a shortcut
+ * already replied, otherwise the agent response.
+ */
+async function runConductorAgentTurn(args: {
+  body: TwilioWebhookBody;
+  messageBody: string;
+  hash: string;
+  phone: string;
+  session: WaSession;
+  userMessage: string;
+  lgpdJustSent: boolean;
+  turnAbort: AbortController;
+  startMs: number;
+  log: LogFn;
+}): Promise<AgentTurnOutcome> {
+  const { body, messageBody, hash, phone, session, userMessage, lgpdJustSent, turnAbort, startMs, log } = args;
+
+  // ── Shortcut / state machine (bypass LLM if possible) ─────────────────
+  const handled = await tryShortcutOrStateMachine(body, messageBody, hash, phone, session, log);
+  if (handled) return { handled: true };
+
+  // Load session history AFTER debounce to include all queued messages
+  const history = await loadSession(session.sessionId);
+  const trimmedHistory = history.slice(-MAX_HISTORY_MESSAGES);
+
+  // Get the last user message from history (may differ from userMessage if multiple arrived)
+  const lastUserMsg = [...trimmedHistory].reverse().find((m) => m.role === "user");
+  const baseInput = lastUserMsg?.content || userMessage;
+
+  const lastLocation = await getLastLocation(hash);
+  const agentInput = buildAgentInput(baseInput, lastLocation, lgpdJustSent);
+
+  log.info(
+    { phone_hash: hash, session_id: session.sessionId, history_length: trimmedHistory.length },
+    "[whatsapp.agent.start]",
+  );
+
+  // ── Run the conductor turn ────────────────────────────────────────────
+  // The conductor loads memory + resolves tenant/policy from the Capsule. A
+  // guest session (no real customer id) gets a guest marker.
+  const conductorCustomerId = isGuestCustomerId(session.customerId)
+    ? `guest:${session.sessionId}`
+    : session.customerId;
+  // Race the turn against the max-turn deadline (P2-CONC-ABORT). The Capsule takes
+  // no external signal, so the race + the aborted-gate on the send is the bound.
+  const turnPromise = runConductorTurn({
+    input: agentInput,
+    customerId: conductorCustomerId,
+    sessionKey: session.sessionId,
+    log,
+  });
+  turnPromise.catch(() => {}); // swallow a late rejection if the timeout wins
+  const agentResponse = await Promise.race([
+    turnPromise,
+    new Promise<never>((_, reject) => {
+      if (turnAbort.signal.aborted) reject(new Error("WhatsApp turn timed out"));
+      turnAbort.signal.addEventListener("abort", () => reject(new Error("WhatsApp turn timed out")), { once: true });
+    }),
+  ]);
+
+  const durationMs = Date.now() - startMs;
+  log.info(
+    {
+      phone_hash: hash,
+      duration_ms: durationMs,
+      has_pix: Boolean(agentResponse.pixData),
+    },
+    "[whatsapp.agent.finish]",
+  );
+
+  return { handled: false, response: agentResponse };
+}
+
+/** Best-effort post-lock re-check; never let it crash the outer handler. */
+async function safeRetryForMissedMessages(
+  session: { sessionId: string; customerId: string },
+  hash: string,
+  phone: string,
+  log: LogFn,
+): Promise<void> {
+  try {
+    await retryForMissedMessages(session, hash, phone, log);
+  } catch {
+    // Best-effort re-check — don't let this crash the outer handler
+  }
+}
+
+/** Phase 3 finalize: promote the claim on success / release it on failure (P2-SEC-WAIDEMPOTENCY). */
+async function finalizeIdempotency(
+  redis: Awaited<ReturnType<typeof getRedisClient>>,
+  messageSid: string,
+  succeeded: boolean,
+  log: LogFn,
+): Promise<void> {
+  try {
+    if (succeeded) {
+      await confirmProcessed(redis, messageSid);
+    } else {
+      await releaseClaim(redis, messageSid);
+    }
+  } catch (finalizeErr) {
+    log.warn(finalizeErr, "[whatsapp.async] Idempotency finalize failed (in-flight TTL is the backstop)");
+  }
+}
+
 async function handleMessageAsync(
   body: TwilioWebhookBody,
   messageSid: string,
@@ -564,42 +795,11 @@ async function handleMessageAsync(
   // ── Resolve session ─────────────────────────────────────────────────────────
   const session = await resolveWhatsAppSession(phone);
 
-  // ── Track daily conversation count (SEC-003: atomic INCR + EXPIRE) ─────────
-  if (session.isNew) {
-    try {
-      const metricsRedis = await getRedisClient();
-      const todayDateStr = new Date().toISOString().slice(0, 10);
-      const convKey = rk(`metrics:conversations:daily:${todayDateStr}`);
-      await atomicIncr(metricsRedis, convKey, 48 * 60 * 60);
-    } catch (metricsErr) {
-      log.warn({ error: String(metricsErr) }, "[whatsapp.metrics] Failed to track conversation count");
-    }
-  }
-
-  // ── Track per-session message count (SEC-003: atomic INCR + EXPIRE) ────────
-  try {
-    const metricsRedis = await getRedisClient();
-    const msgCountKey = rk(`metrics:messages:${session.sessionId}`);
-    await atomicIncr(metricsRedis, msgCountKey, 48 * 60 * 60);
-  } catch (metricsErr) {
-    log.warn({ error: String(metricsErr) }, "[whatsapp.metrics] Failed to track message count");
-  }
+  // ── Track conversation + per-session message counts (SEC-003: atomic INCR + EXPIRE) ──
+  await trackMessageMetrics(session, log);
 
   // ── Store GPS location if provided ─────────────────────────────────────────
-  const lat = body.Latitude ? Number.parseFloat(body.Latitude) : undefined;
-  const lng = body.Longitude ? Number.parseFloat(body.Longitude) : undefined;
-  if (lat !== undefined && lng !== undefined && !Number.isNaN(lat) && !Number.isNaN(lng)) {
-    await storeLastLocation(hash, lat, lng);
-    log.info({ phone_hash: hash }, "[whatsapp.location] GPS pin stored");
-    // If message body is empty, synthesize a location message for the agent
-    if (!messageBody) {
-      const locationText = `[localização compartilhada: lat=${lat}, lng=${lng}]`;
-      await appendMessages(session.sessionId, [{ role: "user", content: locationText }], true, {
-        customerId: session.customerId,
-        channel: "whatsapp",
-      });
-    }
-  }
+  await storeLocationIfPresent(body, messageBody, hash, session, log);
   log.info(
     { phone_hash: hash, session_id: session.sessionId, is_new: session.isNew },
     "[whatsapp.session.resolved]",
@@ -660,78 +860,21 @@ async function handleMessageAsync(
   }
 
   try {
-    // ── Shortcut / state machine (bypass LLM if possible) ─────────────────
-    const handled = await tryShortcutOrStateMachine(body, messageBody, hash, phone, session, log);
-    if (handled) return;
-
-    // ── Agent call ──────────────────────────────────────────────────────────
-    // Load session history AFTER debounce to include all queued messages
-    const history = await loadSession(session.sessionId);
-    const trimmedHistory = history.slice(-MAX_HISTORY_MESSAGES);
-
-    // Get the last user message from history (may differ from userMessage if multiple arrived)
-    const lastUserMsg = [...trimmedHistory].reverse().find((m) => m.role === "user");
-    const baseInput = lastUserMsg?.content || userMessage;
-
-    // Pre-cutover, `runOrchestrator` received the stored GPS pin + the
-    // "lgpd just sent" hint via `AgentContext` (buildWhatsAppContext). The
-    // Capsule/ChannelMessage carries neither a `lastLocation` nor a free-form
-    // hints field, so we fold those signals into the turn's inbound text (the
-    // same channel by which the empty-body location message already reaches the
-    // agent). This preserves the GPS-aware + LGPD-aware behavior.
-    const lastLocation = await getLastLocation(hash);
-    const inputSuffixes: string[] = [];
-    if (lastLocation) {
-      inputSuffixes.push(
-        `[localização do cliente: lat=${lastLocation.lat}, lng=${lastLocation.lng}]`,
-      );
-    }
-    if (lgpdJustSent) {
-      inputSuffixes.push("[hint: lgpd_just_sent]");
-    }
-    const agentInput =
-      inputSuffixes.length > 0 ? `${baseInput}\n${inputSuffixes.join("\n")}` : baseInput;
-
-    log.info(
-      { phone_hash: hash, session_id: session.sessionId, history_length: trimmedHistory.length },
-      "[whatsapp.agent.start]",
-    );
-
-    // ── Run the conductor turn ────────────────────────────────────────────
-    // The conductor loads memory + resolves tenant/policy from the Capsule; it
-    // does not consume dev's `trimmedHistory` (that history persistence stays on
-    // dev's Redis session store, which the claustrum SessionPort stub does not
-    // replace). A guest session (no real customer id) gets a guest marker.
-    const conductorCustomerId = isGuestCustomerId(session.customerId)
-      ? `guest:${session.sessionId}`
-      : session.customerId;
-    // Race the turn against the max-turn deadline (P2-CONC-ABORT). The Capsule
-    // takes no external signal, so the race + the aborted-gate on the send below
-    // is the delivery bound.
-    const turnPromise = runConductorTurn({
-      input: agentInput,
-      customerId: conductorCustomerId,
-      sessionKey: session.sessionId,
+    // ── Shortcut / state machine + conductor turn (raced against the deadline) ──
+    const outcome = await runConductorAgentTurn({
+      body,
+      messageBody,
+      hash,
+      phone,
+      session,
+      userMessage,
+      lgpdJustSent,
+      turnAbort,
+      startMs,
       log,
     });
-    turnPromise.catch(() => {}); // swallow a late rejection if the timeout wins
-    const agentResponse = await Promise.race([
-      turnPromise,
-      new Promise<never>((_, reject) => {
-        if (turnAbort.signal.aborted) reject(new Error("WhatsApp turn timed out"));
-        turnAbort.signal.addEventListener("abort", () => reject(new Error("WhatsApp turn timed out")), { once: true });
-      }),
-    ]);
-
-    const durationMs = Date.now() - startMs;
-    log.info(
-      {
-        phone_hash: hash,
-        duration_ms: durationMs,
-        has_pix: Boolean(agentResponse.pixData),
-      },
-      "[whatsapp.agent.finish]",
-    );
+    if (outcome.handled) return;
+    const agentResponse = outcome.response;
 
     // ── Send response ─────────────────────────────────────────────────────
     // Skip a stale reply if the turn raced past the deadline (P2-CONC-ABORT).
@@ -750,81 +893,33 @@ async function handleMessageAsync(
 
     // ── PIX follow-up: send copia-e-cola + QR code if LLM omitted them ──
     if (agentResponse.pixData) {
-      const { pixCopyPaste, pixQrCode } = agentResponse.pixData;
-      const textHasPixCode = pixCopyPaste && agentResponse.text?.includes(pixCopyPaste);
-
-      if (pixCopyPaste && !textHasPixCode) {
-        await sendText(
-          `whatsapp:${phone}`,
-          `*Código PIX (copia e cola):*\n\n${pixCopyPaste}\n\n☝️ Copie e cole no app do seu banco.\nNÃO clique — cole no app.`,
-        );
-      }
-
-      if (pixQrCode) {
-        await sendMedia(`whatsapp:${phone}`, pixQrCode, "QR Code PIX").catch((err) => {
-          log.warn({ error: String(err) }, "[whatsapp.pix.qr_send_failed] Falling back to text-only PIX");
-        });
-      }
-
-      // Schedule PIX expiry reminders (25min reminder + 30min expired)
-      const pixOrderId = agentResponse.pixData.orderId;
-      if (pixCopyPaste && (pixOrderId || session.customerId)) {
-        void schedulePixExpiryMonitor({
-          phone,
-          phoneHash: hash,
-          orderId: pixOrderId || session.customerId!,
-        }).catch((err) => {
-          log.warn({ error: String(err) }, "[whatsapp.pix.expiry_schedule_failed]");
-        });
-      }
+      await sendPixFollowUp(agentResponse.pixData, agentResponse.text, phone, hash, session, log);
     }
 
   } catch (err) {
     log.error(err, "[whatsapp.agent.error] Agent processing failed");
-
-    // Send fallback error message
-    try {
-      await sendText(
-        `whatsapp:${phone}`,
-        "Desculpe, estou com um problema técnico. Tente novamente em alguns instantes.",
-      );
-    } catch {
-      // Best-effort — can't do more
-    }
+    // Send fallback error message (best-effort)
+    await sendBestEffort(
+      `whatsapp:${phone}`,
+      "Desculpe, estou com um problema técnico. Tente novamente em alguns instantes.",
+    );
   } finally {
     await releaseAgentLock(hash, lockValue);
-
-    // Re-check for unprocessed messages after lock release
-    try {
-      await retryForMissedMessages(session, hash, phone, log);
-    } catch {
-      // Best-effort re-check — don't let this crash the outer handler
-    }
+    // Re-check for unprocessed messages after lock release (best-effort)
+    await safeRetryForMissedMessages(session, hash, phone, log);
   }
   } catch (outerErr) {
     log.error(outerErr, "[whatsapp.handler.error] Early-stage failure in async handler");
-    try {
-      await sendText(
-        `whatsapp:${phone}`,
-        "Desculpe, ocorreu um erro. Tente novamente em alguns instantes.",
-      );
-    } catch {
-      // Best-effort — sendText itself may fail if Twilio is down
-    }
+    await sendBestEffort(
+      `whatsapp:${phone}`,
+      "Desculpe, ocorreu um erro. Tente novamente em alguns instantes.",
+    );
   } finally {
     clearTimeout(turnTimer);
     // Phase 3 (P2-SEC-WAIDEMPOTENCY): promote the claim on success so the SID is
     // dedup'd for the full window; on failure release it so Twilio's retry can
-    // reprocess instead of being black-holed for 24h. Both best-effort — the
-    // short in-flight TTL is the backstop.
-    try {
-      if (succeeded) {
-        await confirmProcessed(idempotencyRedis, messageSid);
-      } else {
-        await releaseClaim(idempotencyRedis, messageSid);
-      }
-    } catch (finalizeErr) {
-      log.warn(finalizeErr, "[whatsapp.async] Idempotency finalize failed (in-flight TTL is the backstop)");
-    }
+    // reprocess instead of being black-holed for 24h. The short in-flight TTL is
+    // the backstop.
+    await finalizeIdempotency(idempotencyRedis, messageSid, succeeded, log);
   }
 }

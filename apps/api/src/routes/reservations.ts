@@ -55,7 +55,7 @@ const CancelReservationBody = z.object({
 }).strict()
 
 const MyReservationsQuery = z.object({
-  status: z.nativeEnum(ReservationStatus).optional(),
+  status: z.enum(ReservationStatus).optional(),
   limit: z.coerce.number().int().min(1).max(50).optional().default(10),
 }).strict()
 

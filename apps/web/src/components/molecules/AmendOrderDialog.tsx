@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useMemo, useCallback } from 'react'
+import { useState, useMemo, useCallback, type ReactNode } from 'react'
 import { useTranslations } from 'next-intl'
 import { Button } from '@ibatexas/ui/atoms'
 import { Modal } from '@ibatexas/ui/molecules'
@@ -218,6 +218,42 @@ export function AmendOrderDialog({ orderId, items, fulfillmentStatus, isOpen, on
             const currentQty = quantities.get(item.id) ?? item.quantity
             const isConfirmingRemove = confirmingRemoveId === item.id
 
+            // Line 2: Controls (or locked hint)
+            let controls: ReactNode
+            if (locked) {
+              controls = <p className="text-xs text-smoke-400">{t('amend_item_locked_hint')}</p>
+            } else if (isConfirmingRemove) {
+              // Inline remove confirmation
+              controls = (
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-accent-red">{t('amend_remove_confirm')}</span>
+                  <Button variant="danger" size="sm" onClick={() => executeRemove(item.id)}>
+                    Sim
+                  </Button>
+                  <Button variant="secondary" size="sm" onClick={cancelRemove}>
+                    Não
+                  </Button>
+                </div>
+              )
+            } else {
+              controls = (
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Button variant="secondary" size="sm" disabled={currentQty <= 1} onClick={() => updateQty(item.id, currentQty - 1)}>
+                      −
+                    </Button>
+                    <span className="text-sm font-medium w-8 text-center">{currentQty}</span>
+                    <Button variant="secondary" size="sm" onClick={() => updateQty(item.id, currentQty + 1)}>
+                      +
+                    </Button>
+                  </div>
+                  <button type="button" onClick={() => confirmRemove(item.id)} className="text-xs text-accent-red/70 hover:text-accent-red underline underline-offset-2 transition-colors">
+                    {t('amend_remove')}
+                  </button>
+                </div>
+              )
+            }
+
             return (
               <div key={item.id} className={`py-3 border-b border-smoke-100 last:border-0 ${locked ? 'opacity-50' : ''}`}>
                 {/* Line 1: Title + lock badge */}
@@ -231,35 +267,7 @@ export function AmendOrderDialog({ orderId, items, fulfillmentStatus, isOpen, on
                 </div>
 
                 {/* Line 2: Controls (or locked hint) */}
-                {locked ? (
-                  <p className="text-xs text-smoke-400">{t('amend_item_locked_hint')}</p>
-                ) : isConfirmingRemove ? (
-                  // Inline remove confirmation
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs text-accent-red">{t('amend_remove_confirm')}</span>
-                    <Button variant="danger" size="sm" onClick={() => executeRemove(item.id)}>
-                      Sim
-                    </Button>
-                    <Button variant="secondary" size="sm" onClick={cancelRemove}>
-                      Não
-                    </Button>
-                  </div>
-                ) : (
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <Button variant="secondary" size="sm" disabled={currentQty <= 1} onClick={() => updateQty(item.id, currentQty - 1)}>
-                        −
-                      </Button>
-                      <span className="text-sm font-medium w-8 text-center">{currentQty}</span>
-                      <Button variant="secondary" size="sm" onClick={() => updateQty(item.id, currentQty + 1)}>
-                        +
-                      </Button>
-                    </div>
-                    <button type="button" onClick={() => confirmRemove(item.id)} className="text-xs text-accent-red/70 hover:text-accent-red underline underline-offset-2 transition-colors">
-                      {t('amend_remove')}
-                    </button>
-                  </div>
-                )}
+                {controls}
               </div>
             )
           })}

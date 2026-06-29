@@ -78,7 +78,7 @@ function lastUserMessage(
 ): string | undefined {
   for (let i = fixture.conversation.length - 1; i >= 0; i--) {
     const m = fixture.conversation[i];
-    if (m !== undefined && m.role === "user") return m.content;
+    if (m?.role === "user") return m.content;
   }
   return undefined;
 }
@@ -91,6 +91,164 @@ function isSubset(
   const a = actual as Record<string, unknown>;
   return Object.entries(expected).every(
     ([k, v]) => JSON.stringify(a[k]) === JSON.stringify(v),
+  );
+}
+
+// The resolved outcome of a single driven turn (handleTurn's awaited result).
+type TurnResult = Awaited<ReturnType<typeof handleTurn>>;
+
+// Each per-fixture check returns a failure message, or null when it passes.
+// They are evaluated in order and short-circuit on the first failure, exactly
+// mirroring the original sequence of `continue`-guarded assertions.
+
+// ── Base CC-006 assertions ──
+function checkEnvelopeKinds(
+  fixture: GoldenConversationFixture,
+  result: TurnResult,
+): string | null {
+  const actualKinds = Array.from(
+    new Set(result.plan.envelopes.map((e) => String(e.kind))),
+  ).sort((a, b) => a.localeCompare(b));
+  const expectedKinds = Array.from(
+    new Set(fixture.expectedEnvelopeKinds.map(String)),
+  ).sort((a, b) => a.localeCompare(b));
+  if (
+    actualKinds.length !== expectedKinds.length ||
+    actualKinds.some((k, i) => k !== expectedKinds[i])
+  ) {
+    return `fixture "${fixture.id}": envelope kinds [${actualKinds.join(",")}] ≠ expected [${expectedKinds.join(",")}]`;
+  }
+  return null;
+}
+
+function checkDecisionKind(
+  fixture: GoldenConversationFixture,
+  result: TurnResult,
+): string | null {
+  if (result.decision.kind !== fixture.expectedDecisionKind) {
+    return `fixture "${fixture.id}": decision.kind=${result.decision.kind} ≠ expected ${fixture.expectedDecisionKind}`;
+  }
+  return null;
+}
+
+// ── T2-6b extensions ──
+function checkRefusalCode(
+  fixture: GoldenConversationFixture,
+  result: TurnResult,
+): string | null {
+  if (fixture.expectedRefusalCode === undefined) return null;
+  const refusal =
+    result.decision.kind === "REFUSE"
+      ? (result.decision as { refusal: { code: string } }).refusal
+      : undefined;
+  if (refusal?.code !== fixture.expectedRefusalCode) {
+    return `fixture "${fixture.id}": refusal.code=${refusal?.code ?? "<none>"} ≠ expected ${fixture.expectedRefusalCode}`;
+  }
+  const acted = result.acted as { kind: string; code?: string };
+  if (acted.kind !== "refused" || acted.code !== fixture.expectedRefusalCode) {
+    return `fixture "${fixture.id}": acted=${acted.kind}/${acted.code ?? "<none>"} ≠ refused/${fixture.expectedRefusalCode}`;
+  }
+  return null;
+}
+
+async function checkAwaitingConfirmation(
+  conductor: Conductor,
+  fixture: GoldenConversationFixture,
+  result: TurnResult,
+): Promise<string | null> {
+  if (fixture.expectAwaitingConfirmation !== true) return null;
+  if (result.response.meta?.awaitingConfirmation !== true) {
+    return (
+      `fixture "${fixture.id}": response.meta.awaitingConfirmation not set ` +
+      `(meta=${JSON.stringify(result.response.meta ?? null)})`
+    );
+  }
+  const session = await conductor.sessions.load(
+    cc006CustomerId(fixture.id),
+    "web",
+  );
+  const parked = session.pendingConfirmations;
+  if (parked.length !== 1) {
+    return `fixture "${fixture.id}": expected exactly 1 parked confirmation, found ${parked.length}`;
+  }
+  if (
+    fixture.expectedParkedPayload !== undefined &&
+    !isSubset(fixture.expectedParkedPayload, parked[0]?.envelope.payload)
+  ) {
+    return (
+      `fixture "${fixture.id}": parked payload ${JSON.stringify(parked[0]?.envelope.payload)} ` +
+      `does not contain expected ${JSON.stringify(fixture.expectedParkedPayload)}`
+    );
+  }
+  return null;
+}
+
+function checkResponseText(
+  fixture: GoldenConversationFixture,
+  result: TurnResult,
+): string | null {
+  if (
+    fixture.expectedResponseText !== undefined &&
+    result.response.text !== fixture.expectedResponseText
+  ) {
+    return (
+      `fixture "${fixture.id}": response.text=${JSON.stringify(result.response.text)} ` +
+      `≠ expected ${JSON.stringify(fixture.expectedResponseText)}`
+    );
+  }
+  return null;
+}
+
+// Drive one fixture and run every assertion; returns the first failure message
+// (or null when the fixture fully verifies).
+async function verifyFixture(
+  conductor: Conductor,
+  fixture: GoldenConversationFixture,
+): Promise<string | null> {
+  const text = lastUserMessage(fixture);
+  if (text === undefined) return `fixture "${fixture.id}": no user message`;
+
+  const customerId = cc006CustomerId(fixture.id);
+  const conversationId = cc006ConversationId(fixture.id);
+
+  let capsule;
+  try {
+    capsule = await conductor.openCapsule({
+      channel: "web",
+      customerId,
+      inbound: {
+        channel: "web",
+        customerId,
+        conversationId,
+        text,
+        receivedAt: FIXED_RECEIVED_AT,
+      },
+    });
+  } catch (err) {
+    return `fixture "${fixture.id}": openCapsule threw: ${(err as Error).message}`;
+  }
+
+  let result: TurnResult;
+  try {
+    result = await handleTurn(capsule, {
+      channel: "web",
+      customerId,
+      conversationId,
+      text,
+      receivedAt: FIXED_RECEIVED_AT,
+    });
+  } catch (err) {
+    await conductor.closeCapsule(capsule);
+    return `fixture "${fixture.id}": handleTurn threw: ${(err as Error).message}`;
+  }
+  await conductor.closeCapsule(capsule);
+
+  return (
+    checkEnvelopeKinds(fixture, result) ??
+    checkDecisionKind(fixture, result) ??
+    checkRefusalCode(fixture, result) ??
+    (await checkAwaitingConfirmation(conductor, fixture, result)) ??
+    checkResponseText(fixture, result)
   );
 }
 
@@ -133,139 +291,9 @@ export function createGoldenConversationCheck(
       let verified = 0;
 
       for (const fixture of fixtures) {
-        const text = lastUserMessage(fixture);
-        if (text === undefined) {
-          failures.push(`fixture "${fixture.id}": no user message`);
-          continue;
-        }
-        const customerId = cc006CustomerId(fixture.id);
-        const conversationId = cc006ConversationId(fixture.id);
-
-        let capsule;
-        try {
-          capsule = await conductor.openCapsule({
-            channel: "web",
-            customerId,
-            inbound: {
-              channel: "web",
-              customerId,
-              conversationId,
-              text,
-              receivedAt: FIXED_RECEIVED_AT,
-            },
-          });
-        } catch (err) {
-          failures.push(
-            `fixture "${fixture.id}": openCapsule threw: ${(err as Error).message}`,
-          );
-          continue;
-        }
-
-        let result;
-        try {
-          result = await handleTurn(capsule, {
-            channel: "web",
-            customerId,
-            conversationId,
-            text,
-            receivedAt: FIXED_RECEIVED_AT,
-          });
-        } catch (err) {
-          await conductor.closeCapsule(capsule);
-          failures.push(
-            `fixture "${fixture.id}": handleTurn threw: ${(err as Error).message}`,
-          );
-          continue;
-        }
-        await conductor.closeCapsule(capsule);
-
-        // ── Base CC-006 assertions ──
-        const actualKinds = Array.from(
-          new Set(result.plan.envelopes.map((e) => String(e.kind))),
-        ).sort();
-        const expectedKinds = Array.from(
-          new Set(fixture.expectedEnvelopeKinds.map(String)),
-        ).sort();
-        if (
-          actualKinds.length !== expectedKinds.length ||
-          actualKinds.some((k, i) => k !== expectedKinds[i])
-        ) {
-          failures.push(
-            `fixture "${fixture.id}": envelope kinds [${actualKinds.join(",")}] ≠ expected [${expectedKinds.join(",")}]`,
-          );
-          continue;
-        }
-        if (result.decision.kind !== fixture.expectedDecisionKind) {
-          failures.push(
-            `fixture "${fixture.id}": decision.kind=${result.decision.kind} ≠ expected ${fixture.expectedDecisionKind}`,
-          );
-          continue;
-        }
-
-        // ── T2-6b extensions ──
-        if (fixture.expectedRefusalCode !== undefined) {
-          const refusal =
-            result.decision.kind === "REFUSE"
-              ? (result.decision as { refusal: { code: string } }).refusal
-              : undefined;
-          if (refusal?.code !== fixture.expectedRefusalCode) {
-            failures.push(
-              `fixture "${fixture.id}": refusal.code=${refusal?.code ?? "<none>"} ≠ expected ${fixture.expectedRefusalCode}`,
-            );
-            continue;
-          }
-          const acted = result.acted as { kind: string; code?: string };
-          if (acted.kind !== "refused" || acted.code !== fixture.expectedRefusalCode) {
-            failures.push(
-              `fixture "${fixture.id}": acted=${acted.kind}/${acted.code ?? "<none>"} ≠ refused/${fixture.expectedRefusalCode}`,
-            );
-            continue;
-          }
-        }
-
-        if (fixture.expectAwaitingConfirmation === true) {
-          if (result.response.meta?.awaitingConfirmation !== true) {
-            failures.push(
-              `fixture "${fixture.id}": response.meta.awaitingConfirmation not set ` +
-                `(meta=${JSON.stringify(result.response.meta ?? null)})`,
-            );
-            continue;
-          }
-          const session = await conductor.sessions.load(customerId, "web");
-          const parked = session.pendingConfirmations;
-          if (parked.length !== 1) {
-            failures.push(
-              `fixture "${fixture.id}": expected exactly 1 parked confirmation, found ${parked.length}`,
-            );
-            continue;
-          }
-          if (
-            fixture.expectedParkedPayload !== undefined &&
-            !isSubset(
-              fixture.expectedParkedPayload,
-              parked[0]?.envelope.payload,
-            )
-          ) {
-            failures.push(
-              `fixture "${fixture.id}": parked payload ${JSON.stringify(parked[0]?.envelope.payload)} ` +
-                `does not contain expected ${JSON.stringify(fixture.expectedParkedPayload)}`,
-            );
-            continue;
-          }
-        }
-
-        if (
-          fixture.expectedResponseText !== undefined &&
-          result.response.text !== fixture.expectedResponseText
-        ) {
-          failures.push(
-            `fixture "${fixture.id}": response.text=${JSON.stringify(result.response.text)} ` +
-              `≠ expected ${JSON.stringify(fixture.expectedResponseText)}`,
-          );
-          continue;
-        }
-
-        verified++;
+        const failure = await verifyFixture(conductor, fixture);
+        if (failure !== null) failures.push(failure);
+        else verified++;
       }
 
       if (failures.length > 0) {

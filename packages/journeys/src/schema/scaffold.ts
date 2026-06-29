@@ -167,14 +167,14 @@ export interface ScaffoldedJourney {
 const VALID_EXPECT_DECISIONS: ReadonlySet<string> = new Set(JOURNEY_EXPECT_DECISIONS)
 
 /** Inner projection-level transitions — optional-allowance precedent (JOURNEY-001). */
-const INNER_TRANSITION_KIND = /\.status\.transition$/
+const INNER_TRANSITION_SUFFIX = ".status.transition"
 
 /**
  * Global scrub of raw Medusa entity-id literals (the schema's
  * `raw_medusa_id` rule) out of free transcript text — journeys reference
  * catalog entities by handle only, and production ids are not seed-stable.
  */
-const RAW_MEDUSA_ID_SCRUB = /(^|[^A-Za-z0-9_])((?:prod|variant|cart)_[A-Za-z0-9]{8,})/g
+const RAW_MEDUSA_ID_SCRUB = /(^|\W)((?:prod|variant|cart)_[A-Za-z0-9]{8,})/g
 
 function scrubRawMedusaIds(text: string): string {
   return text.replace(RAW_MEDUSA_ID_SCRUB, "$1<medusa-id>")
@@ -217,7 +217,7 @@ function deriveExpects(observed: readonly ScaffoldObservedDecision[]): {
     if (seen.has(key)) continue // duplicates: IN_ORDER + tuple reconciliation tolerate repeats
     seen.add(key)
     const optional =
-      INNER_TRANSITION_KIND.test(o.intentKind) ||
+      o.intentKind.endsWith(INNER_TRANSITION_SUFFIX) ||
       (o.decision === "REFUSE" && kindsWithNonRefuse.has(o.intentKind))
     expects.push({
       intentKind: o.intentKind,
@@ -235,6 +235,25 @@ interface DerivedChatAct {
   note?: string
 }
 
+/**
+ * The assistant reply that followed a user turn (before the next user turn) —
+ * review context only, never asserted.
+ */
+function findAssistantNote(
+  messages: readonly ScaffoldTranscriptMessage[],
+  afterIndex: number,
+): string | undefined {
+  for (let j = afterIndex + 1; j < messages.length; j++) {
+    const next = messages[j]!
+    const role = next.role.toLowerCase()
+    if (role === "user") break
+    if (role === "assistant" && next.content.trim().length > 0) {
+      return `assistant replied: ${truncate(scrubRawMedusaIds(next.content), 160)}`
+    }
+  }
+  return undefined
+}
+
 function deriveChatActs(transcript: ScaffoldTranscript): DerivedChatAct[] {
   const messages = transcript.messages
   const acts: DerivedChatAct[] = []
@@ -243,23 +262,12 @@ function deriveChatActs(transcript: ScaffoldTranscript): DerivedChatAct[] {
     if (msg.role.toLowerCase() !== "user") continue
     const utterance = scrubRawMedusaIds(msg.content).trim()
     if (utterance.length === 0) continue
-    // The assistant reply that followed (before the next user turn) — review
-    // context only, never asserted.
-    let note: string | undefined
-    for (let j = i + 1; j < messages.length; j++) {
-      const next = messages[j]!
-      const role = next.role.toLowerCase()
-      if (role === "user") break
-      if (role === "assistant" && next.content.trim().length > 0) {
-        note = `assistant replied: ${truncate(scrubRawMedusaIds(next.content), 160)}`
-        break
-      }
-    }
+    const note = findAssistantNote(messages, i)
     acts.push({
       kind: "chat",
       name: `turn-${String(acts.length + 1).padStart(2, "0")}`,
       utterance,
-      ...(note !== undefined ? { note } : {}),
+      ...(note === undefined ? {} : { note }),
     })
   }
   return acts
@@ -466,7 +474,7 @@ export async function scaffoldFromAuditSession(
   const reader = createAuditReader({
     pool,
     env,
-    ...(options.maxRows !== undefined ? { maxRows: options.maxRows } : {}),
+    ...(options.maxRows === undefined ? {} : { maxRows: options.maxRows }),
   })
 
   try {

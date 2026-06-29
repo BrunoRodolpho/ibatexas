@@ -80,7 +80,7 @@ describe("forged-envelope ingress (J008 contract)", () => {
     expect((reply.body as { code?: string }).code).toBe("forgery_attempt");
     expect(reply.decision.kind).toBe("REFUSE");
     // tamper-evident SYSTEM-actor audit record was emitted (not minted as the customer)
-    expect(records.length).toBe(1);
+    expect(records).toHaveLength(1);
     const blob = JSON.stringify(records[0]);
     expect(blob).toContain("forgery_attempt");
     expect(blob).toContain("system");
@@ -104,7 +104,7 @@ describe("forged-envelope ingress (J008 contract)", () => {
     });
     expect(reply.statusCode).toBe(400);
     expect((reply.body as { code?: string }).code).toBe("forgery_attempt");
-    expect(records.length).toBe(1);
+    expect(records).toHaveLength(1);
   });
 
   it("does NOT flag a legitimate user/UNTRUSTED envelope as forgery (positive control)", async () => {

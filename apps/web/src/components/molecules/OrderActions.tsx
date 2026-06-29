@@ -117,11 +117,14 @@ export function OrderActions({ orderId, fulfillmentStatus, currentPayment, order
   if (!hasAnyAction) return null
 
   // Contextual switch-type label
-  const switchTypeLabel = orderType === 'delivery'
-    ? t('switch_type_to_pickup')
-    : orderType === 'pickup'
-      ? t('switch_type_to_delivery')
-      : t('switch_type_to_dine_in')
+  let switchTypeLabel: string
+  if (orderType === 'delivery') {
+    switchTypeLabel = t('switch_type_to_pickup')
+  } else if (orderType === 'pickup') {
+    switchTypeLabel = t('switch_type_to_delivery')
+  } else {
+    switchTypeLabel = t('switch_type_to_dine_in')
+  }
 
   // Available payment method switch targets (exclude current)
   const switchTargets = ['pix', 'card', 'cash'].filter((m) => m !== paymentMethod)

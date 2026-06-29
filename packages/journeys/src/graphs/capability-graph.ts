@@ -103,27 +103,48 @@ interface IntrospectablePack {
 // ── Builder ──────────────────────────────────────────────────────────────────
 
 /**
- * Build the capability graph from the live composition. Pure given its
- * build-time imports — same inputs, same bytes (contract.ts determinism).
+ * Code-point string comparison — locale-independent, byte-stable. Mirrors
+ * `contract.ts`'s `cmp`: meta arrays (dangling / unadvertised / contexts) are
+ * NOT re-sorted by canonicalization, so their order is load-bearing and MUST
+ * stay locale-independent (localeCompare would break cross-machine stability).
  */
-export function buildCapabilityGraph(): GraphDocument {
-  const packs = IBATEXAS_COMPOSED_PACKS as ReadonlyArray<IntrospectablePack>
-  const planners = IBATEXAS_COMPOSED_CAPABILITY_PLANNERS
+function compareCodePoint(a: string, b: string): number {
+  if (a < b) return -1
+  if (a > b) return 1
+  return 0
+}
 
-  // Planner ↔ pack association: packs-composed documents BOTH lists in
-  // canonical pack order, so they zip by index; a length mismatch falls back
-  // to positional planner ids rather than mis-attributing.
-  const plannerEntries = planners.map((planner, i) => {
-    const pack = packs.length === planners.length ? packs[i] : undefined
-    const id = pack !== undefined ? `planner:${pack.id}` : `planner:${i}`
+interface PlannerEntry {
+  readonly id: string
+  readonly packId: string | null
+  readonly advertised: Record<JourneyPersonaContext, ReadonlySet<string>>
+}
+
+/**
+ * Planner ↔ pack association: packs-composed documents BOTH lists in canonical
+ * pack order, so they zip by index; a length mismatch falls back to positional
+ * planner ids rather than mis-attributing.
+ */
+function buildPlannerEntries(
+  planners: ReadonlyArray<CapabilityPlanner<unknown, unknown>>,
+  packs: ReadonlyArray<IntrospectablePack>,
+): PlannerEntry[] {
+  const zip = packs.length === planners.length
+  return planners.map((planner, i) => {
+    const pack = zip ? packs[i] : undefined
+    const id = pack === undefined ? `planner:${i}` : `planner:${pack.id}`
     const advertised: Record<JourneyPersonaContext, ReadonlySet<string>> = {
       "authed-customer": plannerAdvertised(planner, "authed-customer"),
       guest: plannerAdvertised(planner, "guest"),
     }
     return { id, packId: pack?.id ?? null, advertised }
   })
+}
 
-  // Per-kind advertisement: kind → planner id → contexts.
+/** Per-kind advertisement: kind → planner id → contexts. */
+function buildAdvertisedBy(
+  plannerEntries: ReadonlyArray<PlannerEntry>,
+): Map<string, Map<string, JourneyPersonaContext[]>> {
   const advertisedBy = new Map<string, Map<string, JourneyPersonaContext[]>>()
   for (const entry of plannerEntries) {
     for (const context of CAPABILITY_PERSONA_CONTEXTS) {
@@ -136,14 +157,152 @@ export function buildCapabilityGraph(): GraphDocument {
       }
     }
   }
+  return advertisedBy
+}
 
-  const registered = new Set(CHAT_DRIVABLE_TOOL_KINDS)
+/** First composed pack to declare each kind (canonical owner). */
+function buildPackByKind(
+  packs: ReadonlyArray<IntrospectablePack>,
+): Map<string, IntrospectablePack> {
   const packByKind = new Map<string, IntrospectablePack>()
   for (const pack of packs) {
     for (const kind of pack.intents) {
       if (!packByKind.has(kind)) packByKind.set(kind, pack)
     }
   }
+  return packByKind
+}
+
+/** Pack nodes + their `declares` edges. */
+function buildPackGraph(packs: ReadonlyArray<IntrospectablePack>): {
+  nodes: GraphNode[]
+  edges: GraphEdge[]
+} {
+  const nodes: GraphNode[] = []
+  const edges: GraphEdge[] = []
+  for (const pack of packs) {
+    nodes.push({
+      id: `pack:${pack.id}`,
+      type: "pack",
+      label: pack.id,
+      meta: {
+        intentCount: pack.intents.length,
+        policyDefault: pack.policy.default,
+        ...(pack.version === undefined ? {} : { version: pack.version }),
+      },
+    })
+    for (const kind of pack.intents) {
+      edges.push({ from: `pack:${pack.id}`, to: `intent:${kind}`, type: "declares" })
+    }
+  }
+  return { nodes, edges }
+}
+
+interface IntentNodeContext {
+  readonly advertisedBy: Map<string, Map<string, JourneyPersonaContext[]>>
+  readonly registered: ReadonlySet<string>
+  readonly packByKind: Map<string, IntrospectablePack>
+}
+
+/** One intent node, carrying the P0-7 dangling/unadvertised flags. */
+function buildIntentNode(kind: string, ctx: IntentNodeContext): GraphNode {
+  const byPlanner = ctx.advertisedBy.get(kind)
+  const advertisedContexts = [
+    ...new Set([...(byPlanner?.values() ?? [])].flat()),
+  ].sort(compareCodePoint)
+  const flags: string[] = []
+  if (byPlanner !== undefined && !ctx.registered.has(kind)) flags.push("dangling")
+  if (ctx.registered.has(kind) && byPlanner === undefined) flags.push("unadvertised")
+  return {
+    id: `intent:${kind}`,
+    type: "intent",
+    label: kind,
+    meta: {
+      domain: kind.split(".")[0] ?? "",
+      knownKind: KNOWN_INTENT_KINDS.has(kind),
+      composedPack: ctx.packByKind.get(kind)?.id ?? null,
+      chatDrivable: ctx.registered.has(kind),
+      staffRoute: STAFF_ROUTE_KINDS.has(kind),
+      advertisedContexts,
+      plausibleDecisions: [...plausibleDecisions(kind)],
+      flags,
+    },
+  }
+}
+
+/** Tool nodes + their `registers` edges. */
+function buildToolGraph(): { nodes: GraphNode[]; edges: GraphEdge[] } {
+  const nodes: GraphNode[] = []
+  const edges: GraphEdge[] = []
+  for (const kind of CHAT_DRIVABLE_TOOL_KINDS) {
+    nodes.push({
+      id: `tool:${kind}`,
+      type: "tool",
+      label: kind,
+      meta: { capability: kind, surface: "chat" },
+    })
+    edges.push({ from: `intent:${kind}`, to: `tool:${kind}`, type: "registers" })
+  }
+  return { nodes, edges }
+}
+
+/** Planner nodes + their `plans` edges. */
+function buildPlannerGraph(plannerEntries: ReadonlyArray<PlannerEntry>): {
+  nodes: GraphNode[]
+  edges: GraphEdge[]
+} {
+  const nodes: GraphNode[] = []
+  const edges: GraphEdge[] = []
+  for (const entry of plannerEntries) {
+    nodes.push({
+      id: entry.id,
+      type: "planner",
+      label:
+        entry.packId === null ? entry.id : `${entry.packId} capability planner`,
+      meta: {
+        pack: entry.packId,
+        advertisedCounts: Object.fromEntries(
+          CAPABILITY_PERSONA_CONTEXTS.map((c) => [c, entry.advertised[c].size]),
+        ) as Record<string, JsonValue>,
+      },
+    })
+    if (entry.packId !== null) {
+      edges.push({ from: `pack:${entry.packId}`, to: entry.id, type: "plans" })
+    }
+  }
+  return { nodes, edges }
+}
+
+/** `advertises` edges: planner → intent (per persona context). */
+function buildAdvertisesEdges(
+  advertisedBy: Map<string, Map<string, JourneyPersonaContext[]>>,
+): GraphEdge[] {
+  const edges: GraphEdge[] = []
+  for (const [kind, byPlanner] of advertisedBy) {
+    for (const [plannerId, contexts] of byPlanner) {
+      edges.push({
+        from: plannerId,
+        to: `intent:${kind}`,
+        type: "advertises",
+        meta: { contexts: [...new Set(contexts)].sort(compareCodePoint) },
+      })
+    }
+  }
+  return edges
+}
+
+/**
+ * Build the capability graph from the live composition. Pure given its
+ * build-time imports — same inputs, same bytes (contract.ts determinism).
+ */
+export function buildCapabilityGraph(): GraphDocument {
+  const packs = IBATEXAS_COMPOSED_PACKS as ReadonlyArray<IntrospectablePack>
+  const planners = IBATEXAS_COMPOSED_CAPABILITY_PLANNERS
+
+  const plannerEntries = buildPlannerEntries(planners, packs)
+  const advertisedBy = buildAdvertisedBy(plannerEntries)
+  const registered = new Set(CHAT_DRIVABLE_TOOL_KINDS)
+  const packByKind = buildPackByKind(packs)
 
   // Intent domain: every kind any source names (a planner advertising an
   // out-of-union kind must still surface — that too is a dangling fact).
@@ -156,93 +315,33 @@ export function buildCapabilityGraph(): GraphDocument {
   ])
 
   // ── The P0-7 facts ────────────────────────────────────────────────────────
-  const dangling = [...advertisedBy.keys()].filter((kind) => !registered.has(kind)).sort()
-  const unadvertised = [...registered].filter((kind) => !advertisedBy.has(kind)).sort()
+  const dangling = [...advertisedBy.keys()]
+    .filter((kind) => !registered.has(kind))
+    .sort(compareCodePoint)
+  const unadvertised = [...registered]
+    .filter((kind) => !advertisedBy.has(kind))
+    .sort(compareCodePoint)
 
-  const nodes: GraphNode[] = []
-  const edges: GraphEdge[] = []
+  const packGraph = buildPackGraph(packs)
+  const intentNodes = [...intentDomain]
+    .sort(compareCodePoint)
+    .map((kind) => buildIntentNode(kind, { advertisedBy, registered, packByKind }))
+  const toolGraph = buildToolGraph()
+  const plannerGraph = buildPlannerGraph(plannerEntries)
+  const advertisesEdges = buildAdvertisesEdges(advertisedBy)
 
-  for (const pack of packs) {
-    nodes.push({
-      id: `pack:${pack.id}`,
-      type: "pack",
-      label: pack.id,
-      meta: {
-        intentCount: pack.intents.length,
-        policyDefault: pack.policy.default,
-        ...(pack.version !== undefined ? { version: pack.version } : {}),
-      },
-    })
-    for (const kind of pack.intents) {
-      edges.push({ from: `pack:${pack.id}`, to: `intent:${kind}`, type: "declares" })
-    }
-  }
-
-  for (const kind of [...intentDomain].sort()) {
-    const byPlanner = advertisedBy.get(kind)
-    const advertisedContexts = [
-      ...new Set([...(byPlanner?.values() ?? [])].flat()),
-    ].sort()
-    const flags: string[] = []
-    if (byPlanner !== undefined && !registered.has(kind)) flags.push("dangling")
-    if (registered.has(kind) && byPlanner === undefined) flags.push("unadvertised")
-    nodes.push({
-      id: `intent:${kind}`,
-      type: "intent",
-      label: kind,
-      meta: {
-        domain: kind.split(".")[0] ?? "",
-        knownKind: KNOWN_INTENT_KINDS.has(kind),
-        composedPack: packByKind.get(kind)?.id ?? null,
-        chatDrivable: registered.has(kind),
-        staffRoute: STAFF_ROUTE_KINDS.has(kind),
-        advertisedContexts,
-        plausibleDecisions: [...plausibleDecisions(kind)],
-        flags,
-      },
-    })
-  }
-
-  for (const kind of CHAT_DRIVABLE_TOOL_KINDS) {
-    nodes.push({
-      id: `tool:${kind}`,
-      type: "tool",
-      label: kind,
-      meta: { capability: kind, surface: "chat" },
-    })
-    edges.push({ from: `intent:${kind}`, to: `tool:${kind}`, type: "registers" })
-  }
-
-  for (const entry of plannerEntries) {
-    nodes.push({
-      id: entry.id,
-      type: "planner",
-      label:
-        entry.packId !== null
-          ? `${entry.packId} capability planner`
-          : entry.id,
-      meta: {
-        pack: entry.packId,
-        advertisedCounts: Object.fromEntries(
-          CAPABILITY_PERSONA_CONTEXTS.map((c) => [c, entry.advertised[c].size]),
-        ) as Record<string, JsonValue>,
-      },
-    })
-    if (entry.packId !== null) {
-      edges.push({ from: `pack:${entry.packId}`, to: entry.id, type: "plans" })
-    }
-  }
-
-  for (const [kind, byPlanner] of advertisedBy) {
-    for (const [plannerId, contexts] of byPlanner) {
-      edges.push({
-        from: plannerId,
-        to: `intent:${kind}`,
-        type: "advertises",
-        meta: { contexts: [...new Set(contexts)].sort() },
-      })
-    }
-  }
+  const nodes: GraphNode[] = [
+    ...packGraph.nodes,
+    ...intentNodes,
+    ...toolGraph.nodes,
+    ...plannerGraph.nodes,
+  ]
+  const edges: GraphEdge[] = [
+    ...packGraph.edges,
+    ...toolGraph.edges,
+    ...plannerGraph.edges,
+    ...advertisesEdges,
+  ]
 
   return finalizeGraph({
     version: 1,

@@ -130,7 +130,7 @@ function guardEmits(guard: AnyGuard): ReadonlyArray<DecisionKind> | null {
   if (description === undefined) return null
   switch (description.kind) {
     case "threshold":
-      return description.emits !== undefined ? [description.emits] : null
+      return description.emits === undefined ? null : [description.emits]
     case "state_defer":
       return ["DEFER"]
     case "system_taint":
@@ -286,6 +286,194 @@ function buildCells(): CoverageCell[] {
   return cells
 }
 
+/** Load + validate the waivers file, recording any failure as a problem. */
+async function loadCoverageWaivers(
+  waiversPath: string,
+  problems: CoverageProblem[],
+): Promise<CoverageWaiver[]> {
+  try {
+    const raw: unknown = JSON.parse(await readFile(waiversPath, "utf8"))
+    const parsed = WaiversFileSchema.safeParse(raw)
+    if (parsed.success) return parsed.data
+    problems.push({
+      code: "waivers_invalid",
+      file: waiversPath,
+      message: parsed.error.issues
+        .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
+        .join("; "),
+    })
+    return []
+  } catch (err) {
+    problems.push({
+      code: err instanceof SyntaxError ? "waivers_invalid" : "waivers_unreadable",
+      file: waiversPath,
+      message: (err as Error).message,
+    })
+    return []
+  }
+}
+
+/**
+ * Load the Journey Registry, recording any failure as a problem. The loader
+ * throws on the first bad file — lint owns the per-problem detail; coverage
+ * just refuses a broken registry.
+ */
+async function loadJourneyRegistry(
+  dir: string,
+  problems: CoverageProblem[],
+): Promise<Journey[]> {
+  try {
+    return await loadJourneys(dir)
+  } catch (err) {
+    if (err instanceof JourneyLoadError) {
+      problems.push({
+        code: err.errors.length > 0 ? "journey_invalid" : "registry_unreadable",
+        file: err.file,
+        message: err.message,
+      })
+    } else {
+      problems.push({
+        code: "registry_unreadable",
+        file: dir,
+        message: (err as Error).message,
+      })
+    }
+    return []
+  }
+}
+
+/** The domain cell keys an expect maps to, given the journey's act surfaces. */
+function candidateCellKeys(
+  expect: Journey["expects"][number],
+  hasChat: boolean,
+  hasStaffHttp: boolean,
+): string[] {
+  const candidates: string[] = []
+  if (hasChat) {
+    candidates.push(coverageCellKey("chat", expect.intentKind, expect.decision))
+  }
+  if (hasStaffHttp) {
+    candidates.push(coverageCellKey("staff-http", expect.intentKind, expect.decision))
+  }
+  return candidates
+}
+
+/**
+ * Record one journey's claim on a cell: counted journeys cover it; quarantined
+ * journeys stay visible; blocked (non-quarantined) journeys contribute nothing.
+ */
+function recordCellClaim(
+  cell: CoverageCell,
+  journeyId: string,
+  counted: boolean,
+  quarantined: boolean,
+): void {
+  if (counted) {
+    if (!cell.coveredBy.includes(journeyId)) cell.coveredBy.push(journeyId)
+  } else if (quarantined) {
+    if (!cell.quarantinedBy.includes(journeyId)) cell.quarantinedBy.push(journeyId)
+  }
+}
+
+/** Map a single journey's expects onto domain cells, mutating claimed cells in place. */
+function processJourney(
+  journey: Journey,
+  quarantinedIds: ReadonlySet<string>,
+  byKey: ReadonlyMap<string, CoverageCell>,
+): JourneyPassEntry {
+  const quarantined = quarantinedIds.has(journey.id)
+  const counted = journey.status === "active" && !quarantined
+  const hasChat = journey.acts.some((a) => a.kind === "chat")
+  const hasStaffHttp = journey.acts.some(
+    (a) => a.kind === "http" && a.asRole === "staff",
+  )
+
+  const claimedCells: string[] = []
+  const unmatchedExpects: JourneyPassEntry["unmatchedExpects"] = []
+  for (const expect of journey.expects) {
+    // `optional: true` entries are reconciliation ALLOWANCES (T1b-1) — the
+    // run tolerates them absent, so they may never claim a cell covered.
+    if (expect.optional === true) continue
+    let matched = false
+    for (const key of candidateCellKeys(expect, hasChat, hasStaffHttp)) {
+      const cell = byKey.get(key)
+      if (cell === undefined) continue
+      matched = true
+      claimedCells.push(key)
+      recordCellClaim(cell, journey.id, counted, quarantined)
+    }
+    if (!matched) {
+      unmatchedExpects.push({
+        intentKind: expect.intentKind,
+        decision: expect.decision,
+      })
+    }
+  }
+
+  return {
+    id: journey.id,
+    status: journey.status,
+    quarantined,
+    counted,
+    verifyOnly: journey.expects.length === 0,
+    claimedCells,
+    unmatchedExpects,
+  }
+}
+
+/** Assign a single cell's final state: covered ▸ waived-quarantined ▸ file waiver ▸ uncovered. */
+function applyCellState(cell: CoverageCell, waiver: CoverageWaiver | undefined): void {
+  if (cell.coveredBy.length > 0) {
+    cell.state = "covered"
+  } else if (cell.quarantinedBy.length > 0) {
+    cell.state = "waived-quarantined"
+    cell.waiver = {
+      category: "waived-quarantined",
+      reason: `quarantined journeys: ${cell.quarantinedBy.join(", ")}`,
+      addedAt: null,
+    }
+  } else if (waiver !== undefined) {
+    cell.state = waiver.category
+    cell.waiver = {
+      category: waiver.category,
+      reason: waiver.reason,
+      addedAt: waiver.addedAt,
+    }
+  }
+}
+
+/** Resolve every cell's state and return the waivers that matched no domain cell. */
+function assignCellStates(
+  cells: ReadonlyArray<CoverageCell>,
+  waivers: ReadonlyArray<CoverageWaiver>,
+): CoverageWaiver[] {
+  const matchedWaivers = new Set<CoverageWaiver>()
+  for (const cell of cells) {
+    const waiver = waivers.find(
+      (w) =>
+        w.kind === cell.kind &&
+        (w.decision === undefined || w.decision === "*" || w.decision === cell.decision),
+    )
+    if (waiver !== undefined) matchedWaivers.add(waiver)
+    applyCellState(cell, waiver)
+  }
+  return waivers.filter((w) => !matchedWaivers.has(w))
+}
+
+/** Tally cell states into the report totals. */
+function computeCoverageTotals(cells: ReadonlyArray<CoverageCell>): CoverageTotals {
+  const totals: CoverageTotals = {
+    cells: cells.length,
+    covered: 0,
+    uncovered: 0,
+    "waived-pending-WS4": 0,
+    "waived-unadvertised": 0,
+    "waived-quarantined": 0,
+  }
+  for (const cell of cells) totals[cell.state] += 1
+  return totals
+}
+
 /**
  * Compute the coverage report over the Journey Registry. Never throws on
  * content — registry/waiver failures land in `report.problems` (and a
@@ -299,152 +487,24 @@ export async function computeJourneyCoverage(
 
   // 1. Waivers.
   const waiversPath = options?.waiversPath ?? DEFAULT_COVERAGE_WAIVERS_PATH
-  let waivers: CoverageWaiver[] = []
-  try {
-    const raw: unknown = JSON.parse(await readFile(waiversPath, "utf8"))
-    const parsed = WaiversFileSchema.safeParse(raw)
-    if (parsed.success) {
-      waivers = parsed.data
-    } else {
-      problems.push({
-        code: "waivers_invalid",
-        file: waiversPath,
-        message: parsed.error.issues
-          .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
-          .join("; "),
-      })
-    }
-  } catch (err) {
-    problems.push({
-      code: err instanceof SyntaxError ? "waivers_invalid" : "waivers_unreadable",
-      file: waiversPath,
-      message: (err as Error).message,
-    })
-  }
+  const waivers = await loadCoverageWaivers(waiversPath, problems)
 
-  // 2. Journeys (loader throws on the first bad file — lint owns the
-  //    per-problem detail; coverage just refuses a broken registry).
-  let journeyList: Journey[] = []
-  try {
-    journeyList = await loadJourneys(options?.dir ?? DEFAULT_JOURNEYS_DIR)
-  } catch (err) {
-    if (err instanceof JourneyLoadError) {
-      problems.push({
-        code: err.errors.length > 0 ? "journey_invalid" : "registry_unreadable",
-        file: err.file,
-        message: err.message,
-      })
-    } else {
-      problems.push({
-        code: "registry_unreadable",
-        file: options?.dir ?? DEFAULT_JOURNEYS_DIR,
-        message: (err as Error).message,
-      })
-    }
-  }
+  // 2. Journeys.
+  const journeyList = await loadJourneyRegistry(
+    options?.dir ?? DEFAULT_JOURNEYS_DIR,
+    problems,
+  )
 
   // 3. Domain matrix + claim mapping.
   const cells = buildCells()
   const byKey = new Map(cells.map((c) => [c.key, c]))
-  const journeys: JourneyPassEntry[] = []
+  const journeys = journeyList.map((journey) =>
+    processJourney(journey, quarantinedIds, byKey),
+  )
 
-  for (const journey of journeyList) {
-    const quarantined = quarantinedIds.has(journey.id)
-    const counted = journey.status === "active" && !quarantined
-    const hasChat = journey.acts.some((a) => a.kind === "chat")
-    const hasStaffHttp = journey.acts.some(
-      (a) => a.kind === "http" && a.asRole === "staff",
-    )
-
-    const claimedCells: string[] = []
-    const unmatchedExpects: JourneyPassEntry["unmatchedExpects"] = []
-    for (const expect of journey.expects) {
-      // `optional: true` entries are reconciliation ALLOWANCES (T1b-1) — the
-      // run tolerates them absent, so they may never claim a cell covered.
-      if (expect.optional === true) continue
-      const candidates: string[] = []
-      if (hasChat) {
-        candidates.push(coverageCellKey("chat", expect.intentKind, expect.decision))
-      }
-      if (hasStaffHttp) {
-        candidates.push(
-          coverageCellKey("staff-http", expect.intentKind, expect.decision),
-        )
-      }
-      let matched = false
-      for (const key of candidates) {
-        const cell = byKey.get(key)
-        if (cell === undefined) continue
-        matched = true
-        claimedCells.push(key)
-        if (counted) {
-          if (!cell.coveredBy.includes(journey.id)) cell.coveredBy.push(journey.id)
-        } else if (quarantined) {
-          if (!cell.quarantinedBy.includes(journey.id)) {
-            cell.quarantinedBy.push(journey.id)
-          }
-        }
-        // blocked (non-quarantined) journeys claim but contribute nothing.
-      }
-      if (!matched) {
-        unmatchedExpects.push({
-          intentKind: expect.intentKind,
-          decision: expect.decision,
-        })
-      }
-    }
-
-    journeys.push({
-      id: journey.id,
-      status: journey.status,
-      quarantined,
-      counted,
-      verifyOnly: journey.expects.length === 0,
-      claimedCells,
-      unmatchedExpects,
-    })
-  }
-
-  // 4. State assignment: covered ▸ waived-quarantined ▸ file waiver ▸ uncovered.
-  const matchedWaivers = new Set<CoverageWaiver>()
-  for (const cell of cells) {
-    const waiver = waivers.find(
-      (w) =>
-        w.kind === cell.kind &&
-        (w.decision === undefined || w.decision === "*" || w.decision === cell.decision),
-    )
-    if (waiver !== undefined) matchedWaivers.add(waiver)
-
-    if (cell.coveredBy.length > 0) {
-      cell.state = "covered"
-    } else if (cell.quarantinedBy.length > 0) {
-      cell.state = "waived-quarantined"
-      cell.waiver = {
-        category: "waived-quarantined",
-        reason: `quarantined journeys: ${cell.quarantinedBy.join(", ")}`,
-        addedAt: null,
-      }
-    } else if (waiver !== undefined) {
-      cell.state = waiver.category
-      cell.waiver = {
-        category: waiver.category,
-        reason: waiver.reason,
-        addedAt: waiver.addedAt,
-      }
-    }
-  }
-  const dormantWaivers = waivers.filter((w) => !matchedWaivers.has(w))
-
-  // 5. Totals.
-  const totals: CoverageTotals = {
-    cells: cells.length,
-    covered: 0,
-    uncovered: 0,
-    "waived-pending-WS4": 0,
-    "waived-unadvertised": 0,
-    "waived-quarantined": 0,
-  }
-  for (const cell of cells) totals[cell.state] += 1
+  // 4. State assignment + 5. totals.
+  const dormantWaivers = assignCellStates(cells, waivers)
+  const totals = computeCoverageTotals(cells)
 
   return {
     ok: problems.length === 0,
@@ -493,13 +553,23 @@ export const CoverageBaselineSchema = z
   .object({ covered: z.array(z.string()) })
   .strict()
 
+/**
+ * Explicit string comparator (S2871) that reproduces the default
+ * `Array.prototype.sort()` UTF-16 code-unit order over the stable cell keys.
+ */
+function byStringOrder(a: string, b: string): number {
+  if (a < b) return -1
+  if (a > b) return 1
+  return 0
+}
+
 /** Capture the current covered cells as a baseline (sorted, stable). */
 export function coverageBaseline(report: JourneyCoverageReport): CoverageBaseline {
   return {
     covered: report.cells
       .filter((c) => c.state === "covered")
       .map((c) => c.key)
-      .sort(),
+      .sort(byStringOrder),
   }
 }
 
@@ -550,7 +620,7 @@ export function verifyCoverageBaseline(
   const newlyCovered = report.cells
     .filter((c) => c.state === "covered" && !claimed.has(c.key))
     .map((c) => c.key)
-    .sort()
+    .sort(byStringOrder)
 
   return { ok: regressions.length === 0, regressions, quarantinedClaims, newlyCovered }
 }

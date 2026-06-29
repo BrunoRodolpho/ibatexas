@@ -582,7 +582,7 @@ describe("Bypass detection — NEW-P0-X9 multi-line scan", () => {
     const matches = fixtureContent.split("\n").filter((l) => oldPattern.test(l))
     // The old pattern would catch ZERO of the 4 multi-line cases (the
     // method literal is always on a separate line from the call).
-    expect(matches.length).toBe(0)
+    expect(matches).toHaveLength(0)
   })
 })
 
@@ -637,7 +637,7 @@ describe("Bypass detection — W7-G2 template-literal multi-line scan", () => {
       /medusaStore\s*\([^()]*?\{[^{}]*?\bmethod\s*:\s*['"](POST|PUT|DELETE|PATCH)['"]/g
     const fixtureContent = readTemplateFixture()
     const matches = Array.from(fixtureContent.matchAll(preFixPattern))
-    expect(matches.length).toBe(0)
+    expect(matches).toHaveLength(0)
   })
 
   it("each FORBIDDEN_MEDUSA_MULTILINE pattern's quote class admits backticks", () => {
@@ -991,8 +991,10 @@ describe("Bypass detection — W6-8 extension: console.log of envelope/payload (
           `\n[W6-8 WARN] Suspicious console.log of PII-bearing field (${offenders.length} match${offenders.length === 1 ? "" : "es"}):\n${lines}\n\n`,
         )
       }
-      // Always passes — this is a warning gate.
-      expect(true).toBe(true)
+      // Always passes — this is a warning gate. `offenders` is always an
+      // array (scan() never returns null/undefined), so this assertion is
+      // unconditionally satisfied just like the prior `true`/`true` check.
+      expect(offenders).toBeDefined()
     })
   }
 })
@@ -1298,7 +1300,7 @@ describe("Bypass detection — W7-P2: admin scheduler/tables/zones DEFERRED_ADMI
     //
     // The sentinel is intentionally strict (equality, not "≤ 10") to
     // catch silent additions.
-    expect(DEFERRED_ADMIN_LOW_RISK.length).toBe(10)
+    expect(DEFERRED_ADMIN_LOW_RISK).toHaveLength(10)
   })
 })
 

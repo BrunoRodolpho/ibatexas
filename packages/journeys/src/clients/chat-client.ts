@@ -75,7 +75,7 @@ export class ChatHttpError extends ChatClientError {
   readonly body: string
 
   constructor(op: string, status: number, body: string) {
-    super(`${op} failed: HTTP ${status}${body ? ` — ${body}` : ""}`)
+    super(`${op} failed: HTTP ${status}` + (body ? ` — ${body}` : ""))
     this.name = "ChatHttpError"
     this.status = status
     this.body = body
@@ -321,6 +321,58 @@ export class ChatClient {
     return headers
   }
 
+  /** Build the journey/runId trace fields shared by the chat.turn.* events. */
+  #traceFields(): { journey?: string; runId?: string } {
+    const fields: { journey?: string; runId?: string } = {}
+    if (this.#journeyId !== undefined) fields.journey = this.#journeyId
+    if (this.#runId !== undefined) fields.runId = this.#runId
+    return fields
+  }
+
+  /** Build the journeyId/runId fields for the barrier context. */
+  #barrierFields(): { journeyId?: string; runId?: string } {
+    const fields: { journeyId?: string; runId?: string } = {}
+    if (this.#journeyId !== undefined) fields.journeyId = this.#journeyId
+    if (this.#runId !== undefined) fields.runId = this.#runId
+    return fields
+  }
+
+  /** Emit the `chat.turn.start` trace event for a turn. */
+  #emitTurnStart(turn: number): void {
+    emitChatTurnStart({
+      sessionId: this.sessionId,
+      turn,
+      ...this.#traceFields(),
+    })
+  }
+
+  /** Emit the `chat.turn.end` trace event for a turn. */
+  #emitTurnEnd(
+    turn: number,
+    duration: number,
+    outcome: "pass" | "fail" | "error",
+    detail: string,
+  ): void {
+    emitChatTurnEnd({
+      sessionId: this.sessionId,
+      turn,
+      duration,
+      outcome,
+      detail,
+      ...this.#traceFields(),
+    })
+  }
+
+  /** Resolve the turn's failure: a timeout error supersedes the raw cause. */
+  #turnFailure(err: unknown, timedOut: boolean): unknown {
+    return timedOut ? new ChatTurnTimeoutError(this.sessionId, this.#turnTimeoutMs) : err
+  }
+
+  /** Render a failure into the `chat.turn.end` detail string. */
+  #failureDetail(failure: unknown): string {
+    return failure instanceof Error ? `${failure.name}: ${failure.message}` : String(failure)
+  }
+
   /**
    * Run one user turn: POST the message, stream the SSE response to the
    * terminal `done`, await the injected barrier (when any), and return
@@ -335,12 +387,7 @@ export class ChatClient {
     const startedAt = new Date().toISOString()
     const t0 = Date.now()
 
-    emitChatTurnStart({
-      sessionId: this.sessionId,
-      turn,
-      ...(this.#journeyId !== undefined ? { journey: this.#journeyId } : {}),
-      ...(this.#runId !== undefined ? { runId: this.#runId } : {}),
-    })
+    this.#emitTurnStart(turn)
 
     const controller = new AbortController()
     let timedOut = false
@@ -372,8 +419,7 @@ export class ChatClient {
           turn,
           messageId,
           replyText,
-          ...(this.#journeyId !== undefined ? { journeyId: this.#journeyId } : {}),
-          ...(this.#runId !== undefined ? { runId: this.#runId } : {}),
+          ...this.#barrierFields(),
         })
         barrierMs = Date.now() - barrierStart
       }
@@ -381,17 +427,10 @@ export class ChatClient {
       const totalMs = Date.now() - t0
       this.#turn = turn
 
-      emitChatTurnEnd({
-        sessionId: this.sessionId,
-        turn,
-        duration: totalMs,
-        outcome: "pass",
-        detail:
-          `post=${postMs}ms stream=${streamMs}ms` +
-          (barrierMs !== undefined ? ` barrier=${barrierMs}ms` : ""),
-        ...(this.#journeyId !== undefined ? { journey: this.#journeyId } : {}),
-        ...(this.#runId !== undefined ? { runId: this.#runId } : {}),
-      })
+      const detail =
+        `post=${postMs}ms stream=${streamMs}ms` +
+        (barrierMs === undefined ? "" : ` barrier=${barrierMs}ms`)
+      this.#emitTurnEnd(turn, totalMs, "pass", detail)
 
       return {
         turn,
@@ -403,25 +442,15 @@ export class ChatClient {
           startedAt,
           postMs,
           streamMs,
-          ...(barrierMs !== undefined ? { barrierMs } : {}),
+          ...(barrierMs === undefined ? {} : { barrierMs }),
           totalMs,
         },
-        ...(inputTokens !== undefined ? { inputTokens } : {}),
-        ...(outputTokens !== undefined ? { outputTokens } : {}),
+        ...(inputTokens === undefined ? {} : { inputTokens }),
+        ...(outputTokens === undefined ? {} : { outputTokens }),
       }
     } catch (err) {
-      const failure = timedOut
-        ? new ChatTurnTimeoutError(this.sessionId, this.#turnTimeoutMs)
-        : err
-      emitChatTurnEnd({
-        sessionId: this.sessionId,
-        turn,
-        duration: Date.now() - t0,
-        outcome: "error",
-        detail: failure instanceof Error ? `${failure.name}: ${failure.message}` : String(failure),
-        ...(this.#journeyId !== undefined ? { journey: this.#journeyId } : {}),
-        ...(this.#runId !== undefined ? { runId: this.#runId } : {}),
-      })
+      const failure = this.#turnFailure(err, timedOut)
+      this.#emitTurnEnd(turn, Date.now() - t0, "error", this.#failureDetail(failure))
       throw failure
     } finally {
       clearTimeout(timer)
@@ -456,7 +485,7 @@ export class ChatClient {
       await new Promise((r) => setTimeout(r, POST_LOCK_RETRY_DELAY_MS))
     }
 
-    if (res === undefined || !res.ok) {
+    if (!res?.ok) {
       throw new ChatHttpError(
         "POST /api/chat/messages",
         res?.status ?? 0,
@@ -500,6 +529,19 @@ export class ChatClient {
     }
 
     throw new ChatStreamIncompleteError(this.sessionId, this.#maxStreamAttempts)
+  }
+
+  /** Build the completed-turn result from a `done` chunk (token fields optional). */
+  #doneResult(
+    chunk: { inputTokens?: number; outputTokens?: number },
+    replyText: string,
+  ): { replyText: string; inputTokens?: number; outputTokens?: number } {
+    const result: { replyText: string; inputTokens?: number; outputTokens?: number } = {
+      replyText,
+    }
+    if (chunk.inputTokens !== undefined) result.inputTokens = chunk.inputTokens
+    if (chunk.outputTokens !== undefined) result.outputTokens = chunk.outputTokens
+    return result
   }
 
   /**
@@ -553,11 +595,7 @@ export class ChatClient {
           // Turn complete (chat.ts:459-463). The route ends the stream here;
           // we stop reading immediately so any buffered post-done frames from
           // a replaying intermediary are ignored (first `done` wins).
-          return {
-            replyText,
-            ...(chunk.inputTokens !== undefined ? { inputTokens: chunk.inputTokens } : {}),
-            ...(chunk.outputTokens !== undefined ? { outputTokens: chunk.outputTokens } : {}),
-          }
+          return this.#doneResult(chunk, replyText)
         } else if (chunk.type === "error") {
           throw new ChatStreamError(this.sessionId, chunk.message)
         }
