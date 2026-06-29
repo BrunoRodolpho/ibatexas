@@ -210,3 +210,23 @@ export type LlmTokenUsage = Prisma.LlmTokenUsageModel
  * 
  */
 export type ConversationIncident = Prisma.ConversationIncidentModel
+/**
+ * Model claustrum_memory_episodic
+ * 
+ */
+export type claustrum_memory_episodic = Prisma.claustrum_memory_episodicModel
+/**
+ * Model claustrum_memory_semantic
+ * 
+ */
+export type claustrum_memory_semantic = Prisma.claustrum_memory_semanticModel
+/**
+ * Model claustrum_memory_procedural
+ * 
+ */
+export type claustrum_memory_procedural = Prisma.claustrum_memory_proceduralModel
+/**
+ * Model claustrum_memory_relational
+ * 
+ */
+export type claustrum_memory_relational = Prisma.claustrum_memory_relationalModel

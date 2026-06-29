@@ -78,7 +78,11 @@ export const ModelName = {
   AgentRun: 'AgentRun',
   AgentRedTeamRun: 'AgentRedTeamRun',
   LlmTokenUsage: 'LlmTokenUsage',
-  ConversationIncident: 'ConversationIncident'
+  ConversationIncident: 'ConversationIncident',
+  claustrum_memory_episodic: 'claustrum_memory_episodic',
+  claustrum_memory_semantic: 'claustrum_memory_semantic',
+  claustrum_memory_procedural: 'claustrum_memory_procedural',
+  claustrum_memory_relational: 'claustrum_memory_relational'
 } as const
 
 export type ModelName = (typeof ModelName)[keyof typeof ModelName]
@@ -542,6 +546,55 @@ export const ConversationIncidentScalarFieldEnum = {
 } as const
 
 export type ConversationIncidentScalarFieldEnum = (typeof ConversationIncidentScalarFieldEnum)[keyof typeof ConversationIncidentScalarFieldEnum]
+
+
+export const Claustrum_memory_episodicScalarFieldEnum = {
+  id: 'id',
+  customer_id: 'customer_id',
+  turn_id: 'turn_id',
+  conversation_id: 'conversation_id',
+  user_text: 'user_text',
+  response_text: 'response_text',
+  decision_kind: 'decision_kind',
+  intent_hash: 'intent_hash',
+  recorded_at: 'recorded_at'
+} as const
+
+export type Claustrum_memory_episodicScalarFieldEnum = (typeof Claustrum_memory_episodicScalarFieldEnum)[keyof typeof Claustrum_memory_episodicScalarFieldEnum]
+
+
+export const Claustrum_memory_semanticScalarFieldEnum = {
+  customer_id: 'customer_id',
+  key: 'key',
+  value: 'value',
+  confidence: 'confidence',
+  tags: 'tags',
+  recorded_at: 'recorded_at'
+} as const
+
+export type Claustrum_memory_semanticScalarFieldEnum = (typeof Claustrum_memory_semanticScalarFieldEnum)[keyof typeof Claustrum_memory_semanticScalarFieldEnum]
+
+
+export const Claustrum_memory_proceduralScalarFieldEnum = {
+  id: 'id',
+  customer_id: 'customer_id',
+  workflow_kind: 'workflow_kind',
+  description: 'description',
+  last_used_at: 'last_used_at'
+} as const
+
+export type Claustrum_memory_proceduralScalarFieldEnum = (typeof Claustrum_memory_proceduralScalarFieldEnum)[keyof typeof Claustrum_memory_proceduralScalarFieldEnum]
+
+
+export const Claustrum_memory_relationalScalarFieldEnum = {
+  id: 'id',
+  customer_id: 'customer_id',
+  signal_kind: 'signal_kind',
+  content: 'content',
+  observed_at: 'observed_at'
+} as const
+
+export type Claustrum_memory_relationalScalarFieldEnum = (typeof Claustrum_memory_relationalScalarFieldEnum)[keyof typeof Claustrum_memory_relationalScalarFieldEnum]
 
 
 export const SortOrder = {
