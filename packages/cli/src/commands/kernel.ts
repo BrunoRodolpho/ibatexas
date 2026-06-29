@@ -208,6 +208,12 @@ const REPLAY_LIMITATIONS: readonly string[] = [
 ]
 
 /**
+ * The replay gate's exit code: 0 clean / 1 errors / 2 drift. Declared once as a
+ * named alias (not re-spelled inline at each use site).
+ */
+type ReplayExitCode = 0 | 1 | 2
+
+/**
  * Exit-code contract of the replay gate (T1b-3):
  *   0 — every scanned record reproduced its historical decision (clean)
  *   1 — the run itself is unreliable (record errors / pack coverage gaps /
@@ -216,7 +222,7 @@ const REPLAY_LIMITATIONS: readonly string[] = [
  * Errors take precedence over drift: a partially-errored scan cannot be
  * trusted to have found *all* the drift, so it must not exit 2.
  */
-function replayExitCode(report: ReplayReport): 0 | 1 | 2 {
+function replayExitCode(report: ReplayReport): ReplayExitCode {
   if (report.errors > 0) return 1
   const drifted =
     report.driftedByDecisionKind + report.driftedByBasis + report.driftedByPayload
@@ -401,18 +407,19 @@ function reportPostgresDisabled(ci: boolean, json: boolean): void {
   process.exitCode = 0
 }
 
-/** Report a missing DATABASE_URL (JSON/text). */
-function reportReplayDbUrlMissing(json: boolean, ci: boolean): void {
-  if (json) {
-    printReplayJson({
-      status: "failed",
-      ci,
-      exitCode: 1,
-      error: "DATABASE_URL não definido. Replay requer conexão Postgres válida.",
-    })
-  } else {
-    console.error(chalk.red("DATABASE_URL não definido. Replay requer conexão Postgres válida."))
-  }
+/** Report a missing DATABASE_URL as a single JSON document (`--json`). */
+function reportReplayDbUrlMissingJson(ci: boolean): void {
+  printReplayJson({
+    status: "failed",
+    ci,
+    exitCode: 1,
+    error: "DATABASE_URL não definido. Replay requer conexão Postgres válida.",
+  })
+}
+
+/** Report a missing DATABASE_URL in text mode. */
+function reportReplayDbUrlMissingText(): void {
+  console.error(chalk.red("DATABASE_URL não definido. Replay requer conexão Postgres válida."))
 }
 
 /** Report a thrown replay failure in --json mode (text mode already printed via
@@ -482,38 +489,35 @@ function buildAuditQueryFn(
   }
 }
 
-/** Emit the --ci vacuous-empty-window refusal (JSON/text). */
-function printVacuousEmptyWindow(
-  json: boolean,
-  ci: boolean,
-  ctx: ReplayPrintCtx,
-): void {
-  if (json) {
-    printReplayJson({
-      status: "vacuous-empty-window",
-      ci,
-      window: { since: ctx.sinceInput, fromIso: ctx.fromIso, toIso: ctx.toIso },
-      intentKind: ctx.intentKind ?? null,
-      limit: ctx.limit,
-      seededVectors: ctx.seededVectors,
-      scanned: 0,
-      excludedAgentRows: ctx.excludedAgentRows,
-      exitCode: 1,
-      error:
-        "Janela de replay vazia em modo --ci — 0 registros não certificam política nenhuma (gate vácuo recusado).",
-    })
-  } else {
-    console.error(
-      chalk.red.bold(
-        "✗ Janela de replay vazia em modo --ci — falha dura (exit 1).",
-      ),
-    )
-    console.error(
-      chalk.dim(
-        "  0 registros não certificam política nenhuma (gate vácuo). Semeie golden vectors com --seed-file.",
-      ),
-    )
-  }
+/** Emit the --ci vacuous-empty-window refusal as a single JSON document. */
+function printVacuousEmptyWindowJson(ci: boolean, ctx: ReplayPrintCtx): void {
+  printReplayJson({
+    status: "vacuous-empty-window",
+    ci,
+    window: { since: ctx.sinceInput, fromIso: ctx.fromIso, toIso: ctx.toIso },
+    intentKind: ctx.intentKind ?? null,
+    limit: ctx.limit,
+    seededVectors: ctx.seededVectors,
+    scanned: 0,
+    excludedAgentRows: ctx.excludedAgentRows,
+    exitCode: 1,
+    error:
+      "Janela de replay vazia em modo --ci — 0 registros não certificam política nenhuma (gate vácuo recusado).",
+  })
+}
+
+/** Emit the --ci vacuous-empty-window refusal in text mode. */
+function printVacuousEmptyWindowText(): void {
+  console.error(
+    chalk.red.bold(
+      "✗ Janela de replay vazia em modo --ci — falha dura (exit 1).",
+    ),
+  )
+  console.error(
+    chalk.dim(
+      "  0 registros não certificam política nenhuma (gate vácuo). Semeie golden vectors com --seed-file.",
+    ),
+  )
 }
 
 /** Print the --dry-run listing (JSON/text). */
@@ -556,31 +560,35 @@ function printReplayDryRun(
   }
 }
 
-/** Print the final replay report (JSON document or text report + status). */
-function printReplayResult(
-  json: boolean,
+/** Print the final replay report as a single JSON document (`--json`). */
+function printReplayResultJson(
   ci: boolean,
-  exitCode: 0 | 1 | 2,
+  exitCode: ReplayExitCode,
   report: ReplayReport,
   ctx: ReplayPrintCtx & { scanned: number },
 ): void {
-  if (json) {
-    printReplayJson({
-      status: replayStatusLabel(exitCode),
-      ci,
-      window: { since: ctx.sinceInput, fromIso: ctx.fromIso, toIso: ctx.toIso },
-      intentKind: ctx.intentKind ?? null,
-      limit: ctx.limit,
-      seededVectors: ctx.seededVectors,
-      scanned: ctx.scanned,
-      excludedAgentRows: ctx.excludedAgentRows,
-      report,
-      exitCode,
-    })
-  } else {
-    printReplayReport(report)
-    printReplayStatusText(exitCode, ctx.excludedAgentRows)
-  }
+  printReplayJson({
+    status: replayStatusLabel(exitCode),
+    ci,
+    window: { since: ctx.sinceInput, fromIso: ctx.fromIso, toIso: ctx.toIso },
+    intentKind: ctx.intentKind ?? null,
+    limit: ctx.limit,
+    seededVectors: ctx.seededVectors,
+    scanned: ctx.scanned,
+    excludedAgentRows: ctx.excludedAgentRows,
+    report,
+    exitCode,
+  })
+}
+
+/** Print the final replay report + status footer in text mode. */
+function printReplayResultText(
+  exitCode: ReplayExitCode,
+  report: ReplayReport,
+  ctx: ReplayPrintCtx & { scanned: number },
+): void {
+  printReplayReport(report)
+  printReplayStatusText(exitCode, ctx.excludedAgentRows)
 }
 
 async function runReplay(opts: {
@@ -619,7 +627,8 @@ async function runReplay(opts: {
 
   const databaseUrl = process.env.DATABASE_URL
   if (!databaseUrl) {
-    reportReplayDbUrlMissing(json, ci)
+    if (json) reportReplayDbUrlMissingJson(ci)
+    else reportReplayDbUrlMissingText()
     process.exitCode = 1
     return
   }
@@ -693,7 +702,8 @@ async function runReplay(opts: {
       // Zero records reproduce zero decisions — a green exit here would
       // certify nothing (the vacuous-gate risk this task closes).
       if (ci && records.length === 0) {
-        printVacuousEmptyWindow(json, ci, replayCtx)
+        if (json) printVacuousEmptyWindowJson(ci, replayCtx)
+        else printVacuousEmptyWindowText()
         process.exitCode = 1
         return
       }
@@ -725,10 +735,9 @@ async function runReplay(opts: {
         records as unknown as readonly Record<string, unknown>[],
       )
       const exitCode = replayExitCode(report)
-      printReplayResult(json, ci, exitCode, report, {
-        ...replayCtx,
-        scanned: records.length,
-      })
+      const resultCtx = { ...replayCtx, scanned: records.length }
+      if (json) printReplayResultJson(ci, exitCode, report, resultCtx)
+      else printReplayResultText(exitCode, report, resultCtx)
       if (exitCode !== 0) process.exitCode = exitCode
     } finally {
       await client.end()
@@ -741,14 +750,14 @@ async function runReplay(opts: {
 }
 
 /** Machine-readable status label for the replay exit code (JSON `status`). */
-function replayStatusLabel(exitCode: 0 | 1 | 2): "clean" | "drift" | "errors" {
+function replayStatusLabel(exitCode: ReplayExitCode): "clean" | "drift" | "errors" {
   if (exitCode === 0) return "clean"
   if (exitCode === 2) return "drift"
   return "errors"
 }
 
 /** Text-mode status + limitations footer for the replay gate. */
-function printReplayStatusText(exitCode: 0 | 1 | 2, excludedAgentRows: number): void {
+function printReplayStatusText(exitCode: ReplayExitCode, excludedAgentRows: number): void {
   let status: string
   if (exitCode === 0) status = chalk.green("limpo (exit 0)")
   else if (exitCode === 2) status = chalk.yellow("drift detectado (exit 2)")

@@ -9,7 +9,7 @@ interface ThemeStore {
 }
 
 export const useThemeStore = create<ThemeStore>((set) => ({
-  theme: (typeof globalThis.window === 'undefined'
+  theme: (globalThis.window === undefined
     ? 'system'
     : (localStorage.getItem('ibx-theme') as Theme) || 'system'),
   setTheme: (theme) => {

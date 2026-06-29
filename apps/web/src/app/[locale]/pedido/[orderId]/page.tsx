@@ -85,7 +85,7 @@ export default function OrderTrackingPage() {
   // Guest orders have a null owner, so the API order reads/polls require this
   // token (or an owner cookie) to authorize — without it they 404 (deny-null-owner).
   const [accessToken] = useState<string | null>(() => {
-    if (typeof globalThis.window === "undefined") return null
+    if (globalThis.window === undefined) return null
     try {
       return sessionStorage.getItem(`order-access-token:${orderId}`)
     } catch {

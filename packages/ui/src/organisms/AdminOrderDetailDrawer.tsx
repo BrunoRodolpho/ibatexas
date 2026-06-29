@@ -157,7 +157,7 @@ export function AdminOrderDetailDrawer({
   onAction,
   paymentHistory,
 }: AdminOrderDetailDrawerProps) {
-  const overlayRef = useRef<HTMLDivElement>(null)
+  const overlayRef = useRef<HTMLButtonElement>(null)
 
   // Close on Escape
   useEffect(() => {
@@ -177,16 +177,12 @@ export function AdminOrderDetailDrawer({
   return (
     <>
       {/* Overlay */}
-      <div
+      <button
         ref={overlayRef}
-        role="button"
-        tabIndex={0}
+        type="button"
         aria-label="Fechar"
         className="fixed inset-0 z-40 bg-charcoal-900/30 transition-opacity"
         onClick={onClose}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' || e.key === ' ') onClose()
-        }}
       />
 
       {/* Drawer */}

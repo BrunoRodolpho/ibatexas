@@ -1360,12 +1360,43 @@ async function syncAwsDeployRole(roleArn: string | undefined, existingSecrets: S
   console.log(chalk.gray("      Set manually: gh secret set AWS_DEPLOY_ROLE_ARN"))
 }
 
+type ResolvedCoreSecret =
+  | { status: "value"; value: string; source: "local" | "prompt" }
+  | { status: "empty" }
+  | { status: "cancelled" }
+
+/** Resolve a core secret value: prefer local files, else prompt. "cancelled" = user aborted (Ctrl+C). */
+async function resolveCoreSecretValue(
+  name: string,
+  resolveLocal: (name: string) => string | undefined,
+  promptMessage: string,
+): Promise<ResolvedCoreSecret> {
+  const local = resolveLocal(name)
+  if (local) return { status: "value", value: local, source: "local" }
+
+  const { password } = await import("@inquirer/prompts")
+  let prompted: string | undefined
+  try {
+    prompted = (await password({ message: promptMessage })).trim() || undefined
+  } catch {
+    return { status: "cancelled" }
+  }
+  return prompted ? { status: "value", value: prompted, source: "prompt" } : { status: "empty" }
+}
+
+function logSkippedCoreSecret(name: string, isOptional: boolean): void {
+  if (isOptional) {
+    console.log(chalk.gray(`    ○ ${name} (skipped)`))
+  } else {
+    console.log(chalk.yellow(`    ⚠ ${name} (skipped — deploy may fail without this)`))
+  }
+}
+
 async function syncCoreGithubSecrets(
   existingSecrets: Set<string>,
   resolveLocal: (name: string) => string | undefined,
   force: boolean,
 ): Promise<void> {
-  const { password } = await import("@inquirer/prompts")
   for (const name of ["DIRECT_DATABASE_URL", "STAGING_DIRECT_DATABASE_URL", "SONAR_TOKEN"]) {
     const isOptional = name === "SONAR_TOKEN"
 
@@ -1375,29 +1406,16 @@ async function syncCoreGithubSecrets(
     }
 
     // Try local files first; only prompt if truly unknown
-    let value = resolveLocal(name)
-    let source: "local" | "prompt" = "local"
-    if (!value) {
-      source = "prompt"
-      try {
-        value = (await password({
-          message: `${name}${isOptional ? " (optional, press Enter to skip)" : ""}:`,
-        })).trim() || undefined
-      } catch {
-        break
-      }
-    }
+    const promptMessage = `${name}${isOptional ? " (optional, press Enter to skip)" : ""}:`
+    const resolved = await resolveCoreSecretValue(name, resolveLocal, promptMessage)
+    if (resolved.status === "cancelled") break
 
-    if (!value) {
-      if (isOptional) {
-        console.log(chalk.gray(`    ○ ${name} (skipped)`))
-      } else {
-        console.log(chalk.yellow(`    ⚠ ${name} (skipped — deploy may fail without this)`))
-      }
+    if (resolved.status === "empty") {
+      logSkippedCoreSecret(name, isOptional)
       continue
     }
 
-    await ghSecretSet(name, value, source === "local" ? `${name} (from local)` : name)
+    await ghSecretSet(name, resolved.value, resolved.source === "local" ? `${name} (from local)` : name)
   }
 }
 
