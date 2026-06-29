@@ -391,7 +391,7 @@ describe("cart-ownership guard — 403 on a foreign cart", () => {
 // ── validateCheckoutComposition 422 branches ─────────────────────────────────
 
 describe("POST /api/cart/checkout — composition guards (422)", () => {
-  it("kitchen closed + a food item → 422 KITCHEN_CLOSED", async () => {
+  it("kitchen closed + IMMEDIATE-DELIVERY food (deliveryType=delivery) → 422 KITCHEN_CLOSED", async () => {
     mockGetMealPeriod.mockReturnValue("closed");
     const app = await buildTestServer();
     const res = await app.inject({
@@ -400,12 +400,98 @@ describe("POST /api/cart/checkout — composition guards (422)", () => {
       payload: {
         cartId: "cart_01",
         paymentMethod: "card",
+        deliveryType: "delivery",
         items: [{ variantId: "v1", quantity: 1, productType: "food" }],
       },
     });
     expect(res.statusCode).toBe(422);
     expect(res.json().code).toBe("KITCHEN_CLOSED");
     expect(res.json().message).toContain("cozinha está fechada");
+    // Decided policy: the refusal surfaces the scheduled-pickup affordance.
+    expect(res.json().message).toContain("agendar uma retirada");
+  });
+
+  it("kitchen closed + IMMEDIATE-DELIVERY food (deliveryCep present, no type) → 422 KITCHEN_CLOSED", async () => {
+    mockGetMealPeriod.mockReturnValue("closed");
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/cart/checkout",
+      payload: {
+        cartId: "cart_01",
+        paymentMethod: "card",
+        deliveryCep: "01310-100",
+        items: [{ variantId: "v1", quantity: 1, productType: "food" }],
+      },
+    });
+    expect(res.statusCode).toBe(422);
+    expect(res.json().code).toBe("KITCHEN_CLOSED");
+  });
+
+  // Accepted closed-hours paths run the full kernel/executor chain, so the
+  // local-item sync helpers need their Medusa mocks (mirrors the sync-chain
+  // suite below). EXECUTE → createCheckout is invoked → 200.
+  function setupAcceptedCheckoutMocks() {
+    const redis = createMockRedis();
+    mockGetRedisClient.mockResolvedValue(redis);
+    mockMedusaStore.mockResolvedValue({ cart: { items: [], payment_collection: null } });
+    mockMedusaAdjudicated.mockResolvedValue({ ok: true });
+  }
+
+  it("kitchen closed + PICKUP food → ACCEPTED as scheduled (no 422; mirrors create-checkout)", async () => {
+    mockGetMealPeriod.mockReturnValue("closed");
+    setupAcceptedCheckoutMocks();
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/cart/checkout",
+      payload: {
+        cartId: "cart_01",
+        paymentMethod: "cash",
+        deliveryType: "pickup",
+        items: [{ variantId: "v1", quantity: 1, productType: "food" }],
+      },
+      headers: { "x-customer-id": "cus_01" },
+    });
+    // No KITCHEN_CLOSED refusal — the order proceeds to the kernel/executor.
+    expect(res.statusCode).toBe(200);
+    expect(mockCreateCheckout).toHaveBeenCalledTimes(1);
+  });
+
+  it("kitchen closed + UNSPECIFIED type/no cep food → treated as pickup → ACCEPTED", async () => {
+    mockGetMealPeriod.mockReturnValue("closed");
+    setupAcceptedCheckoutMocks();
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/cart/checkout",
+      payload: {
+        cartId: "cart_01",
+        paymentMethod: "cash",
+        items: [{ variantId: "v1", quantity: 1, productType: "food" }],
+      },
+      headers: { "x-customer-id": "cus_01" },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(mockCreateCheckout).toHaveBeenCalledTimes(1);
+  });
+
+  it("kitchen closed + PICKUP with frozen/merch only → ACCEPTED (frozen always allowed)", async () => {
+    mockGetMealPeriod.mockReturnValue("closed");
+    setupAcceptedCheckoutMocks();
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/cart/checkout",
+      payload: {
+        cartId: "cart_01",
+        paymentMethod: "cash",
+        deliveryType: "pickup",
+        items: [{ variantId: "v1", quantity: 1, productType: "frozen" }],
+      },
+      headers: { "x-customer-id": "cus_01" },
+    });
+    expect(res.statusCode).toBe(200);
   });
 
   it("shipping with a non-merchandise item → 422 SHIPPING_NON_MERCHANDISE", async () => {

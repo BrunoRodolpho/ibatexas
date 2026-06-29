@@ -51,6 +51,18 @@ vi.mock("@ibatexas/nats-client", () => ({
   publishNatsEvent: mockPublishNatsEvent,
 }))
 
+// Schedule lookup drives the scheduled-pickup tagging (closed + no deliveryCep).
+const mockLoadSchedule = vi.hoisted(() => vi.fn())
+const mockGetMealPeriod = vi.hoisted(() => vi.fn())
+
+vi.mock("../../cache/schedule-cache.js", () => ({
+  loadSchedule: mockLoadSchedule,
+}))
+
+vi.mock("../../schedule/schedule-helpers.js", () => ({
+  getMealPeriodFromSchedule: mockGetMealPeriod,
+}))
+
 vi.mock("stripe", () => {
   return {
     default: vi.fn().mockImplementation(() => ({
@@ -148,6 +160,8 @@ describe("createCheckout", () => {
     mockPublishNatsEvent.mockResolvedValue(undefined)
     mockStripeConfirm.mockResolvedValue({})
     mockStripeUpdate.mockResolvedValue({})
+    mockLoadSchedule.mockResolvedValue({ days: {} })
+    mockGetMealPeriod.mockReturnValue("lunch")
     process.env.STRIPE_SECRET_KEY = "sk_test_123"
   })
 
@@ -188,6 +202,42 @@ describe("createCheckout", () => {
 
       const [payload] = mockCartsUpdate.mock.calls[0]
       expect(payload.body.metadata.deliveryCep).toBe("12345-678")
+    })
+
+    // ── Closed-hours policy: scheduled-pickup tagging ───────────────────────
+    // Mirrors the cart.ts checkout gate — a closed PICKUP order (no deliveryCep)
+    // is ACCEPTED and tagged `scheduledPickup`, while an immediate-delivery
+    // order (deliveryCep present) is never tagged.
+    it("tags scheduledPickup=true for a PICKUP order while the kitchen is closed", async () => {
+      setupCashMocks()
+      mockGetMealPeriod.mockReturnValue("closed")
+
+      await createCheckout(BASE_INPUT, CTX) // no deliveryCep → pickup
+
+      const [payload] = mockCartsUpdate.mock.calls[0]
+      expect(payload.body.metadata.scheduledPickup).toBe("true")
+      expect(payload.body.metadata.deliveryType).toBe("pickup")
+    })
+
+    it("does NOT tag scheduledPickup for an immediate DELIVERY order while closed", async () => {
+      setupCashMocks()
+      mockGetMealPeriod.mockReturnValue("closed")
+
+      await createCheckout({ ...BASE_INPUT, deliveryCep: "12345-678" }, CTX)
+
+      const [payload] = mockCartsUpdate.mock.calls[0]
+      expect(payload.body.metadata.scheduledPickup).toBeUndefined()
+      expect(payload.body.metadata.deliveryType).toBe("delivery")
+    })
+
+    it("does NOT tag scheduledPickup for a PICKUP order while OPEN", async () => {
+      setupCashMocks()
+      mockGetMealPeriod.mockReturnValue("lunch")
+
+      await createCheckout(BASE_INPUT, CTX)
+
+      const [payload] = mockCartsUpdate.mock.calls[0]
+      expect(payload.body.metadata.scheduledPickup).toBeUndefined()
     })
   })
 
