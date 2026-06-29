@@ -24,10 +24,12 @@ import { EvidenceLedger } from "@adjudicate/core";
 import type { CognitiveState, Plan } from "@claustrum/core";
 import type { InvestigateInput } from "@claustrum/core";
 import {
+  createFirstPartyTurnReads,
   createIbatexasInvestigator,
   defaultTurnReads,
   type TurnRead,
 } from "../ibatexas-investigator.js";
+import type { TriadReadBackend } from "../turn-reads.js";
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -198,5 +200,132 @@ describe("ibatexas-investigator — default read gatherer", () => {
         ledger: new EvidenceLedger(),
       }),
     ).toHaveLength(0);
+  });
+});
+
+// ── first-party gatherer — REAL owner-scoped triad reads ─────────────────────
+
+/** A controllable stub TriadReadBackend (no DB). */
+function stubBackend(over: Partial<TriadReadBackend> = {}): TriadReadBackend {
+  return {
+    readSchedule: async () => ({ isClosed: false, mealPeriod: "dinner" }),
+    readOrderFulfillment: async (orderId) => ({ orderId, fulfillmentStatus: "preparing" }),
+    readPaymentStatus: async (orderId) => ({ orderId, status: "paid", method: "pix" }),
+    readReservation: async (reservationId) => ({
+      reservationId,
+      status: "confirmed",
+      partySize: 4,
+    }),
+    ...over,
+  };
+}
+
+function triadInput(
+  plan: Plan,
+  ledger: EvidenceLedger,
+  customerId = "cust-1",
+): InvestigateInput {
+  return { cognition: cognition(), plan, customerId, channel: "web", ledger };
+}
+
+describe("ibatexas-investigator — first-party triad gatherer", () => {
+  it("always records the schedule read as a first-party TRUSTED present value", async () => {
+    const ledger = new EvidenceLedger("t");
+    const investigator = createIbatexasInvestigator({
+      gatherReads: createFirstPartyTurnReads(stubBackend()),
+      now: () => 999,
+    });
+    await investigator.investigate(triadInput({ envelopes: [] }, ledger));
+
+    const sched = ledger.resolve("schedule:store_open_now");
+    expect(sched.state).toBe("present");
+    expect(sched.entry?.taint).toBe("TRUSTED");
+    expect(sched.entry?.originProvenance).toBe("TRUSTED");
+    expect(sched.entry?.fetchedAt).toBe(999);
+    expect(sched.entry?.value).toEqual({ isClosed: false, mealPeriod: "dinner" });
+  });
+
+  it("reads owner-scoped ORDER_FULFILLMENT_STAGE + PAYMENT_STATUS for a plan orderId", async () => {
+    const ledger = new EvidenceLedger("t");
+    const plan: Plan = {
+      envelopes: [
+        {
+          kind: "order.cancel",
+          payload: { orderId: "order-42" },
+        } as unknown as Plan["envelopes"][number],
+      ],
+    };
+    const investigator = createIbatexasInvestigator({
+      gatherReads: createFirstPartyTurnReads(stubBackend()),
+    });
+    await investigator.investigate(triadInput(plan, ledger));
+
+    const pay = ledger.resolve("payment_status:order-42");
+    expect(pay.state).toBe("present");
+    expect(pay.entry?.taint).toBe("TRUSTED");
+    expect(pay.entry?.value).toEqual({ orderId: "order-42", status: "paid", method: "pix" });
+
+    const ful = ledger.resolve("order_fulfillment_stage:order-42");
+    expect(ful.state).toBe("present");
+    expect(ful.entry?.value).toEqual({ orderId: "order-42", fulfillmentStatus: "preparing" });
+  });
+
+  it("a CROSS-OWNER payment read (backend null) records a fail-closed ERROR, never a value", async () => {
+    const ledger = new EvidenceLedger("t");
+    const plan: Plan = {
+      envelopes: [
+        { kind: "order.cancel", payload: { orderId: "order-99" } } as unknown as Plan["envelopes"][number],
+      ],
+    };
+    const investigator = createIbatexasInvestigator({
+      // The backend refuses the cross-owner read (null) — the IDOR close.
+      gatherReads: createFirstPartyTurnReads(
+        stubBackend({
+          readPaymentStatus: async () => null,
+          readOrderFulfillment: async () => null,
+        }),
+      ),
+    });
+    await investigator.investigate(triadInput(plan, ledger));
+
+    const pay = ledger.resolve("payment_status:order-99");
+    // Refused/empty — state error, NO concrete value exposed (Inv 7, fail closed).
+    expect(pay.state).toBe("error");
+    expect(pay.entry).toBeUndefined();
+    expect(ledger.errorReason("payment_status:order-99")).toContain("not owned or absent");
+  });
+
+  it("skips owner-scoped resource reads for a guest turn (schedule only)", async () => {
+    const ledger = new EvidenceLedger("t");
+    const plan: Plan = {
+      envelopes: [
+        { kind: "order.cancel", payload: { orderId: "order-42" } } as unknown as Plan["envelopes"][number],
+      ],
+    };
+    const investigator = createIbatexasInvestigator({
+      gatherReads: createFirstPartyTurnReads(stubBackend()),
+    });
+    await investigator.investigate(triadInput(plan, ledger, "guest:abc"));
+
+    expect(ledger.resolve("schedule:store_open_now").state).toBe("present");
+    // No owner-scoped resource reads for an unauthenticated customer.
+    expect(ledger.resolve("payment_status:order-42").state).toBe("absent");
+    expect(ledger.resolve("order_fulfillment_stage:order-42").state).toBe("absent");
+  });
+
+  it("reads owner-scoped reservation status for a plan reservationId", async () => {
+    const ledger = new EvidenceLedger("t");
+    const plan: Plan = {
+      envelopes: [],
+      readToolCalls: [{ name: "reservation.lookup", input: { reservationId: "r-7" } }],
+    };
+    const investigator = createIbatexasInvestigator({
+      gatherReads: createFirstPartyTurnReads(stubBackend()),
+    });
+    await investigator.investigate(triadInput(plan, ledger));
+
+    const res = ledger.resolve("reservation_status:r-7");
+    expect(res.state).toBe("present");
+    expect(res.entry?.value).toEqual({ reservationId: "r-7", status: "confirmed", partySize: 4 });
   });
 });

@@ -10,29 +10,34 @@
 // INJECTED here (the ownership model, action-outcome confirmation, the clock, the
 // same-subject constraint table).
 //
-// B-PR1 SCOPE — bootstrap seam, FLAG DEFAULT-OFF. The published
-// `ConductorOptions.claimsKernel` is a PROCESS-WIDE value (one `ClaimsKernelDeps`
-// held by the Conductor, threaded onto every Capsule), but `owns` /
-// `outcomeConfirmed` / `now` are genuinely PER-TURN. The published seam has no
-// per-turn deps surface yet (the same gap as the per-turn `clock` — PENDING
-// R2a), so the process-wide defaults below FAIL CLOSED:
+// TWO construction paths:
 //
-//   - `owns`            → `false` (Inv 2: "no owner attribution" ≠ "any owner" →
-//                         REFUSED). PENDING the per-turn authority threading —
-//                         the real owner check binds the customer-scoped
-//                         resolveAndAssemble owned-resource set (authority-wiring.ts).
-//   - `outcomeConfirmed`→ `false` (Inv 4: an `action_claim` with no confirmed
-//                         outcome is a confabulation → REFUSED). PENDING the
-//                         per-turn Action verdict + dispatch threading.
-//   - `now`             → captured `Date.now()` ONCE at construction (the
-//                         published `SoundnessDeps.now` is a static `number`).
-//                         A per-turn `now` is PENDING R2a; it is NOT passed via
-//                         `ConductorOptions` (no `clock` field there). Fine for
-//                         B-PR1: the claims path is OFF, so the cacheable-tier
-//                         staleness window is moot until activation.
+//   1. `createIbatexasClaimsKernelDeps` — the PROCESS-WIDE, FAIL-CLOSED bootstrap
+//      seam (B-PR1). The published `ConductorOptions.claimsKernel` is a
+//      process-wide value (one `ClaimsKernelDeps` threaded onto every Capsule),
+//      but `owns` / `outcomeConfirmed` / `now` are genuinely PER-TURN. Absent the
+//      per-turn threading, the defaults FAIL CLOSED (`owns → false`,
+//      `outcomeConfirmed → false`, `now` captured once). Used where no per-turn
+//      facts exist yet.
 //
-// Real predicates are INJECTABLE so the activation PR (and the tests) can thread
-// the live per-turn capabilities without re-shaping this module.
+//   2. `createPerTurnClaimsKernelDeps` — the REAL per-turn path (Track-A INPUT
+//      precondition). Given this turn's facts it builds deps with:
+//        - `owns`             — REAL owner attribution derived from the
+//          source-of-record owned-resource set (the customer-scoped
+//          resolveAndAssemble `owned` set / authority-wiring.ts), NOT a stub
+//          `true`. "no owner attribution" ≠ "any owner" → a resource outside the
+//          owned set is REFUSED (Inv 2). The PAYMENT_STATUS IDOR is closed UPSTREAM
+//          at the read (turn-reads.ts) so the owned set never contains a
+//          cross-owner resource.
+//        - `outcomeConfirmed` — REAL, derived from this turn's Action-kernel
+//          verdict + dispatch result (`EXECUTE ∧ dispatched ∧ result.success ∧
+//          settlement`), NOT a stub (Inv 4).
+//        - `now` (R2a)        — a PER-TURN timestamp captured at TURN START and
+//          passed in, instead of the module-load static `Date.now()`. The
+//          published `SoundnessDeps.now` stays a `number` (signature-compatible);
+//          this path simply supplies a fresh per-turn value.
+//      The Conductor seam threading (one deps per turn) is W5b; this wave provides
+//      the REAL builders that wave injects.
 
 import {
   DEFAULT_CONSISTENCY_TABLE,
@@ -88,5 +93,139 @@ export function createIbatexasClaimsKernelDeps(
   return {
     soundness,
     consistency: { table: config.consistencyTable ?? DEFAULT_CONSISTENCY_TABLE },
+  };
+}
+
+// ── REAL per-turn soundness predicates (Track-A INPUT precondition) ────────────
+
+/**
+ * The per-turn ownership facts the REAL `owns` predicate quantifies over (Inv 2;
+ * SDD §E C1). Sourced from the source-of-record, NOT a stub:
+ *  - `principal`      — the AUTHENTICATED customer for this turn (the conductor
+ *    identity, not the envelope's self-reported actor — authority-wiring.ts).
+ *  - `ownedResources` — the resources the customer was OWNERSHIP-CONFIRMED to own
+ *    this turn (the customer-scoped resolveAndAssemble `owned` set). Because the
+ *    set is built from owner-scoped DB reads, a forged / cross-owner resource is
+ *    never in it ⇒ the predicate REFUSEs (de-vacuumed; "no owner" ≠ "any owner").
+ */
+export interface OwnershipFacts {
+  readonly principal: string;
+  readonly ownedResources: ReadonlySet<string>;
+}
+
+/** Best-effort identity of a kernel-abstract `actor` (string id, or `{ principal
+ *  | customerId | id }`); `undefined` when the actor carries no embedded id. */
+function actorIdOf(actor: unknown): string | undefined {
+  if (typeof actor === "string") return actor;
+  if (typeof actor === "object" && actor !== null) {
+    const o = actor as Record<string, unknown>;
+    for (const k of ["principal", "customerId", "id"] as const) {
+      if (typeof o[k] === "string") return o[k];
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Build the REAL `owns(actor, resource)` predicate (Inv 2; SDD §E C1) from this
+ * turn's {@link OwnershipFacts}. PURE (no IO) — the kernel requires it. A claim
+ * VALIDATEs ownership iff:
+ *   - `resource` is a non-empty string IN the principal-scoped owned set, AND
+ *   - the claim's `actor`, when it carries a concrete identity, matches the
+ *     authenticated `principal` (defense in depth — a DIFFERING actor id fails
+ *     closed; an actor with no embedded id relies on the owned-set scoping).
+ */
+export function buildOwns(
+  facts: OwnershipFacts,
+): (actor: unknown, resource: unknown) => boolean {
+  return (actor, resource) => {
+    if (typeof resource !== "string" || !facts.ownedResources.has(resource)) {
+      return false;
+    }
+    const actorId = actorIdOf(actor);
+    return actorId === undefined || actorId === facts.principal;
+  };
+}
+
+/**
+ * One action's outcome this turn (SDD §E C4; Inv 4) — the Action-kernel verdict +
+ * dispatch result for a single resource the action acted on. `confirmed` requires
+ * `EXECUTE ∧ dispatched ∧ result.success ∧ (settlement, for money)`; `settled`
+ * absent = not-applicable (a present `false` is distinct — settlement ≠ session).
+ */
+export interface ActionOutcome {
+  /** The resource the action acted on (e.g. an orderId) — the C1 binding key. */
+  readonly resource: string;
+  /** The Action-kernel decision kind; only `"EXECUTE"` can confirm. */
+  readonly verdict: string;
+  /** Dispatch reached the handler. */
+  readonly dispatched: boolean;
+  /** `result.success` of the dispatched action. */
+  readonly success: boolean;
+  /** Durable downstream settlement (money). Absent = n/a; a present `false` blocks. */
+  readonly settled?: boolean;
+}
+
+/** Did this action's outcome CONFIRM (SDD §E C4 / Inv 4)? Pure. */
+export function actionOutcomeConfirmed(o: ActionOutcome): boolean {
+  return o.verdict === "EXECUTE" && o.dispatched && o.success && o.settled !== false;
+}
+
+/**
+ * Build the REAL `outcomeConfirmed(claim)` accessor (Inv 4; SDD §E C4) from this
+ * turn's action outcomes. PURE. An `action_claim` confirms ONLY when one of its
+ * bound resources (`claim.resources` values) has a CONFIRMED outcome this turn;
+ * no bound resource ⇒ no confirmable outcome ⇒ `false` (fail closed — an
+ * unconfirmed action never validates).
+ */
+export function buildOutcomeConfirmed(
+  outcomes: readonly ActionOutcome[] = [],
+): (claim: MinimalClaim) => boolean {
+  const confirmed = new Set<string>();
+  for (const o of outcomes) {
+    if (actionOutcomeConfirmed(o)) confirmed.add(o.resource);
+  }
+  return (claim) => {
+    const bound = Object.values(claim.resources ?? {}).filter(
+      (r): r is string => typeof r === "string",
+    );
+    return bound.length > 0 && bound.some((r) => confirmed.has(r));
+  };
+}
+
+/** This turn's facts for the REAL {@link createPerTurnClaimsKernelDeps}. */
+export interface PerTurnClaimsKernelFacts {
+  /** R2a — the per-turn timestamp captured at TURN START (epoch-millis). */
+  readonly now: number;
+  /** Owner-attribution facts for the REAL `owns` predicate. */
+  readonly ownership: OwnershipFacts;
+  /** This turn's Action verdict + dispatch outcomes for the REAL `outcomeConfirmed`. */
+  readonly outcomes?: readonly ActionOutcome[];
+  /** Optional consistency-table override; defaults to DEFAULT_CONSISTENCY_TABLE. */
+  readonly consistencyTable?: readonly ConsistencyConstraint[];
+}
+
+/**
+ * Build the REAL per-turn `ClaimsKernelDeps` (Track-A INPUT precondition). Unlike
+ * the process-wide fail-closed {@link createIbatexasClaimsKernelDeps}, this binds
+ * the genuine per-turn capabilities: REAL owner attribution, REAL action-outcome
+ * confirmation, and the per-turn R2a clock (`facts.now`, captured at turn start —
+ * NOT the module-load static). Signature-compatible with the CURRENT published
+ * kernel (`SoundnessDeps.now` stays a `number`). The Conductor seam threading
+ * (one deps per turn) is W5b.
+ */
+export function createPerTurnClaimsKernelDeps(
+  facts: PerTurnClaimsKernelFacts,
+): ClaimsKernelDeps {
+  return {
+    soundness: {
+      owns: buildOwns(facts.ownership),
+      outcomeConfirmed: buildOutcomeConfirmed(facts.outcomes ?? []),
+      // R2a — per-turn `now` captured at turn start (not module-load static).
+      now: facts.now,
+    },
+    consistency: {
+      table: facts.consistencyTable ?? DEFAULT_CONSISTENCY_TABLE,
+    },
   };
 }
