@@ -104,7 +104,7 @@ import {
   type RedisPubSubClient,
 } from "@adjudicate/audit";
 
-import { prisma, createOrderQueryService, createPaymentQueryService } from "@ibatexas/domain";
+import { prisma, claustrumMemoryPrisma, createOrderQueryService, createPaymentQueryService } from "@ibatexas/domain";
 import { rehydratePaymentState } from "@ibatexas/pack-payments";
 import { emitLlmCall, getRedisClient, rk } from "@ibatexas/tools";
 import { publishNatsEvent } from "@ibatexas/nats-client";
@@ -1678,7 +1678,11 @@ function resolveMemoryPort(
   adjudicator: Adjudicator,
 ) {
   const memDelegates = ["episodic", "semantic", "procedural", "relational"] as const;
-  const prismaForMemory = prisma as unknown as Record<
+  // DEF-005: probe the DEDICATED claustrum-memory Prisma client (generate-only
+  // mirror of the @claustrum-owned public-schema tables), NOT the domain client.
+  // The domain client must not declare these models (doing so would bring the
+  // unmanaged public schema under Prisma management — `db reset`/migrate hazard).
+  const prismaForMemory = claustrumMemoryPrisma as unknown as Record<
     string,
     { findMany?: unknown } | undefined
   >;
@@ -1688,7 +1692,7 @@ function resolveMemoryPort(
   if (!memoryDelegatesPresent) {
     logger.info(
       { component: "memory" },
-      "claustrum_memory_* delegates absent/incomplete on the domain Prisma client — memory port runs as a designed no-op (empty recall); see DEF-005",
+      "claustrum_memory_* delegates absent/incomplete on the dedicated memory Prisma client — memory port runs as a designed no-op (empty recall); see DEF-005",
     );
   }
   // Finding 33: the no-op provider never throws BY DESIGN, so wrapping it in
@@ -1698,7 +1702,7 @@ function resolveMemoryPort(
   return memoryDelegatesPresent
     ? failSafeMemory(
         createPostgresMemoryProvider({
-          prisma: prisma as unknown as PrismaClientLike,
+          prisma: claustrumMemoryPrisma as unknown as PrismaClientLike,
           redis: redis as unknown as RedisClientLike,
           adjudicator,
         }),

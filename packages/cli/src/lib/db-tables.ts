@@ -31,6 +31,9 @@ export const DOMAIN_DELETE_ORDER = [
   "agentRun",
   "conversationMessage",
   "conversation",
+  // W1 incident log (no FK to any domain table — soft sessionId/conversationId
+  // correlations only). Incident/observability data, wiped by a default clean.
+  "conversationIncident",
   "orderProjection",
   // Observability/telemetry tables (no FK to other domain tables). Registered
   // here to close the pre-existing db-tables drift their models (AgentRedTeamRun,

@@ -2,6 +2,7 @@
 // Exports the Prisma client singleton, domain services, and re-exports generated Prisma types.
 
 export { prisma } from "./client.js"
+export { claustrumMemoryPrisma } from "./claustrum-memory-client.js"
 
 // Cross-repo raw DDL (non-Prisma table; see file header)
 export { REMEDIATION_PROPOSALS_DDL } from "./remediation-proposals-ddl.js"

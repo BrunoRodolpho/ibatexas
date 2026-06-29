@@ -411,11 +411,7 @@ export const ModelName = {
   AgentRun: 'AgentRun',
   AgentRedTeamRun: 'AgentRedTeamRun',
   LlmTokenUsage: 'LlmTokenUsage',
-  ConversationIncident: 'ConversationIncident',
-  claustrum_memory_episodic: 'claustrum_memory_episodic',
-  claustrum_memory_semantic: 'claustrum_memory_semantic',
-  claustrum_memory_procedural: 'claustrum_memory_procedural',
-  claustrum_memory_relational: 'claustrum_memory_relational'
+  ConversationIncident: 'ConversationIncident'
 } as const
 
 export type ModelName = (typeof ModelName)[keyof typeof ModelName]
@@ -431,7 +427,7 @@ export type TypeMap<ExtArgs extends runtime.Types.Extensions.InternalArgs = runt
     omit: GlobalOmitOptions
   }
   meta: {
-    modelProps: "table" | "timeSlot" | "reservation" | "reservationTable" | "waitlist" | "review" | "staff" | "customer" | "address" | "customerPreferences" | "customerOrderItem" | "orderProjection" | "orderStatusHistory" | "orderEventLog" | "payment" | "paymentStatusHistory" | "orderNote" | "loyaltyAccount" | "conversation" | "conversationMessage" | "deliveryZone" | "weeklySchedule" | "holiday" | "scheduleOverride" | "agentRun" | "agentRedTeamRun" | "llmTokenUsage" | "conversationIncident" | "claustrum_memory_episodic" | "claustrum_memory_semantic" | "claustrum_memory_procedural" | "claustrum_memory_relational"
+    modelProps: "table" | "timeSlot" | "reservation" | "reservationTable" | "waitlist" | "review" | "staff" | "customer" | "address" | "customerPreferences" | "customerOrderItem" | "orderProjection" | "orderStatusHistory" | "orderEventLog" | "payment" | "paymentStatusHistory" | "orderNote" | "loyaltyAccount" | "conversation" | "conversationMessage" | "deliveryZone" | "weeklySchedule" | "holiday" | "scheduleOverride" | "agentRun" | "agentRedTeamRun" | "llmTokenUsage" | "conversationIncident"
     txIsolationLevel: TransactionIsolationLevel
   }
   model: {
@@ -2507,302 +2503,6 @@ export type TypeMap<ExtArgs extends runtime.Types.Extensions.InternalArgs = runt
         }
       }
     }
-    claustrum_memory_episodic: {
-      payload: Prisma.$claustrum_memory_episodicPayload<ExtArgs>
-      fields: Prisma.claustrum_memory_episodicFieldRefs
-      operations: {
-        findUnique: {
-          args: Prisma.claustrum_memory_episodicFindUniqueArgs<ExtArgs>
-          result: runtime.Types.Utils.PayloadToResult<Prisma.$claustrum_memory_episodicPayload> | null
-        }
-        findUniqueOrThrow: {
-          args: Prisma.claustrum_memory_episodicFindUniqueOrThrowArgs<ExtArgs>
-          result: runtime.Types.Utils.PayloadToResult<Prisma.$claustrum_memory_episodicPayload>
-        }
-        findFirst: {
-          args: Prisma.claustrum_memory_episodicFindFirstArgs<ExtArgs>
-          result: runtime.Types.Utils.PayloadToResult<Prisma.$claustrum_memory_episodicPayload> | null
-        }
-        findFirstOrThrow: {
-          args: Prisma.claustrum_memory_episodicFindFirstOrThrowArgs<ExtArgs>
-          result: runtime.Types.Utils.PayloadToResult<Prisma.$claustrum_memory_episodicPayload>
-        }
-        findMany: {
-          args: Prisma.claustrum_memory_episodicFindManyArgs<ExtArgs>
-          result: runtime.Types.Utils.PayloadToResult<Prisma.$claustrum_memory_episodicPayload>[]
-        }
-        create: {
-          args: Prisma.claustrum_memory_episodicCreateArgs<ExtArgs>
-          result: runtime.Types.Utils.PayloadToResult<Prisma.$claustrum_memory_episodicPayload>
-        }
-        createMany: {
-          args: Prisma.claustrum_memory_episodicCreateManyArgs<ExtArgs>
-          result: BatchPayload
-        }
-        createManyAndReturn: {
-          args: Prisma.claustrum_memory_episodicCreateManyAndReturnArgs<ExtArgs>
-          result: runtime.Types.Utils.PayloadToResult<Prisma.$claustrum_memory_episodicPayload>[]
-        }
-        delete: {
-          args: Prisma.claustrum_memory_episodicDeleteArgs<ExtArgs>
-          result: runtime.Types.Utils.PayloadToResult<Prisma.$claustrum_memory_episodicPayload>
-        }
-        update: {
-          args: Prisma.claustrum_memory_episodicUpdateArgs<ExtArgs>
-          result: runtime.Types.Utils.PayloadToResult<Prisma.$claustrum_memory_episodicPayload>
-        }
-        deleteMany: {
-          args: Prisma.claustrum_memory_episodicDeleteManyArgs<ExtArgs>
-          result: BatchPayload
-        }
-        updateMany: {
-          args: Prisma.claustrum_memory_episodicUpdateManyArgs<ExtArgs>
-          result: BatchPayload
-        }
-        updateManyAndReturn: {
-          args: Prisma.claustrum_memory_episodicUpdateManyAndReturnArgs<ExtArgs>
-          result: runtime.Types.Utils.PayloadToResult<Prisma.$claustrum_memory_episodicPayload>[]
-        }
-        upsert: {
-          args: Prisma.claustrum_memory_episodicUpsertArgs<ExtArgs>
-          result: runtime.Types.Utils.PayloadToResult<Prisma.$claustrum_memory_episodicPayload>
-        }
-        aggregate: {
-          args: Prisma.Claustrum_memory_episodicAggregateArgs<ExtArgs>
-          result: runtime.Types.Utils.Optional<Prisma.AggregateClaustrum_memory_episodic>
-        }
-        groupBy: {
-          args: Prisma.claustrum_memory_episodicGroupByArgs<ExtArgs>
-          result: runtime.Types.Utils.Optional<Prisma.Claustrum_memory_episodicGroupByOutputType>[]
-        }
-        count: {
-          args: Prisma.claustrum_memory_episodicCountArgs<ExtArgs>
-          result: runtime.Types.Utils.Optional<Prisma.Claustrum_memory_episodicCountAggregateOutputType> | number
-        }
-      }
-    }
-    claustrum_memory_semantic: {
-      payload: Prisma.$claustrum_memory_semanticPayload<ExtArgs>
-      fields: Prisma.claustrum_memory_semanticFieldRefs
-      operations: {
-        findUnique: {
-          args: Prisma.claustrum_memory_semanticFindUniqueArgs<ExtArgs>
-          result: runtime.Types.Utils.PayloadToResult<Prisma.$claustrum_memory_semanticPayload> | null
-        }
-        findUniqueOrThrow: {
-          args: Prisma.claustrum_memory_semanticFindUniqueOrThrowArgs<ExtArgs>
-          result: runtime.Types.Utils.PayloadToResult<Prisma.$claustrum_memory_semanticPayload>
-        }
-        findFirst: {
-          args: Prisma.claustrum_memory_semanticFindFirstArgs<ExtArgs>
-          result: runtime.Types.Utils.PayloadToResult<Prisma.$claustrum_memory_semanticPayload> | null
-        }
-        findFirstOrThrow: {
-          args: Prisma.claustrum_memory_semanticFindFirstOrThrowArgs<ExtArgs>
-          result: runtime.Types.Utils.PayloadToResult<Prisma.$claustrum_memory_semanticPayload>
-        }
-        findMany: {
-          args: Prisma.claustrum_memory_semanticFindManyArgs<ExtArgs>
-          result: runtime.Types.Utils.PayloadToResult<Prisma.$claustrum_memory_semanticPayload>[]
-        }
-        create: {
-          args: Prisma.claustrum_memory_semanticCreateArgs<ExtArgs>
-          result: runtime.Types.Utils.PayloadToResult<Prisma.$claustrum_memory_semanticPayload>
-        }
-        createMany: {
-          args: Prisma.claustrum_memory_semanticCreateManyArgs<ExtArgs>
-          result: BatchPayload
-        }
-        createManyAndReturn: {
-          args: Prisma.claustrum_memory_semanticCreateManyAndReturnArgs<ExtArgs>
-          result: runtime.Types.Utils.PayloadToResult<Prisma.$claustrum_memory_semanticPayload>[]
-        }
-        delete: {
-          args: Prisma.claustrum_memory_semanticDeleteArgs<ExtArgs>
-          result: runtime.Types.Utils.PayloadToResult<Prisma.$claustrum_memory_semanticPayload>
-        }
-        update: {
-          args: Prisma.claustrum_memory_semanticUpdateArgs<ExtArgs>
-          result: runtime.Types.Utils.PayloadToResult<Prisma.$claustrum_memory_semanticPayload>
-        }
-        deleteMany: {
-          args: Prisma.claustrum_memory_semanticDeleteManyArgs<ExtArgs>
-          result: BatchPayload
-        }
-        updateMany: {
-          args: Prisma.claustrum_memory_semanticUpdateManyArgs<ExtArgs>
-          result: BatchPayload
-        }
-        updateManyAndReturn: {
-          args: Prisma.claustrum_memory_semanticUpdateManyAndReturnArgs<ExtArgs>
-          result: runtime.Types.Utils.PayloadToResult<Prisma.$claustrum_memory_semanticPayload>[]
-        }
-        upsert: {
-          args: Prisma.claustrum_memory_semanticUpsertArgs<ExtArgs>
-          result: runtime.Types.Utils.PayloadToResult<Prisma.$claustrum_memory_semanticPayload>
-        }
-        aggregate: {
-          args: Prisma.Claustrum_memory_semanticAggregateArgs<ExtArgs>
-          result: runtime.Types.Utils.Optional<Prisma.AggregateClaustrum_memory_semantic>
-        }
-        groupBy: {
-          args: Prisma.claustrum_memory_semanticGroupByArgs<ExtArgs>
-          result: runtime.Types.Utils.Optional<Prisma.Claustrum_memory_semanticGroupByOutputType>[]
-        }
-        count: {
-          args: Prisma.claustrum_memory_semanticCountArgs<ExtArgs>
-          result: runtime.Types.Utils.Optional<Prisma.Claustrum_memory_semanticCountAggregateOutputType> | number
-        }
-      }
-    }
-    claustrum_memory_procedural: {
-      payload: Prisma.$claustrum_memory_proceduralPayload<ExtArgs>
-      fields: Prisma.claustrum_memory_proceduralFieldRefs
-      operations: {
-        findUnique: {
-          args: Prisma.claustrum_memory_proceduralFindUniqueArgs<ExtArgs>
-          result: runtime.Types.Utils.PayloadToResult<Prisma.$claustrum_memory_proceduralPayload> | null
-        }
-        findUniqueOrThrow: {
-          args: Prisma.claustrum_memory_proceduralFindUniqueOrThrowArgs<ExtArgs>
-          result: runtime.Types.Utils.PayloadToResult<Prisma.$claustrum_memory_proceduralPayload>
-        }
-        findFirst: {
-          args: Prisma.claustrum_memory_proceduralFindFirstArgs<ExtArgs>
-          result: runtime.Types.Utils.PayloadToResult<Prisma.$claustrum_memory_proceduralPayload> | null
-        }
-        findFirstOrThrow: {
-          args: Prisma.claustrum_memory_proceduralFindFirstOrThrowArgs<ExtArgs>
-          result: runtime.Types.Utils.PayloadToResult<Prisma.$claustrum_memory_proceduralPayload>
-        }
-        findMany: {
-          args: Prisma.claustrum_memory_proceduralFindManyArgs<ExtArgs>
-          result: runtime.Types.Utils.PayloadToResult<Prisma.$claustrum_memory_proceduralPayload>[]
-        }
-        create: {
-          args: Prisma.claustrum_memory_proceduralCreateArgs<ExtArgs>
-          result: runtime.Types.Utils.PayloadToResult<Prisma.$claustrum_memory_proceduralPayload>
-        }
-        createMany: {
-          args: Prisma.claustrum_memory_proceduralCreateManyArgs<ExtArgs>
-          result: BatchPayload
-        }
-        createManyAndReturn: {
-          args: Prisma.claustrum_memory_proceduralCreateManyAndReturnArgs<ExtArgs>
-          result: runtime.Types.Utils.PayloadToResult<Prisma.$claustrum_memory_proceduralPayload>[]
-        }
-        delete: {
-          args: Prisma.claustrum_memory_proceduralDeleteArgs<ExtArgs>
-          result: runtime.Types.Utils.PayloadToResult<Prisma.$claustrum_memory_proceduralPayload>
-        }
-        update: {
-          args: Prisma.claustrum_memory_proceduralUpdateArgs<ExtArgs>
-          result: runtime.Types.Utils.PayloadToResult<Prisma.$claustrum_memory_proceduralPayload>
-        }
-        deleteMany: {
-          args: Prisma.claustrum_memory_proceduralDeleteManyArgs<ExtArgs>
-          result: BatchPayload
-        }
-        updateMany: {
-          args: Prisma.claustrum_memory_proceduralUpdateManyArgs<ExtArgs>
-          result: BatchPayload
-        }
-        updateManyAndReturn: {
-          args: Prisma.claustrum_memory_proceduralUpdateManyAndReturnArgs<ExtArgs>
-          result: runtime.Types.Utils.PayloadToResult<Prisma.$claustrum_memory_proceduralPayload>[]
-        }
-        upsert: {
-          args: Prisma.claustrum_memory_proceduralUpsertArgs<ExtArgs>
-          result: runtime.Types.Utils.PayloadToResult<Prisma.$claustrum_memory_proceduralPayload>
-        }
-        aggregate: {
-          args: Prisma.Claustrum_memory_proceduralAggregateArgs<ExtArgs>
-          result: runtime.Types.Utils.Optional<Prisma.AggregateClaustrum_memory_procedural>
-        }
-        groupBy: {
-          args: Prisma.claustrum_memory_proceduralGroupByArgs<ExtArgs>
-          result: runtime.Types.Utils.Optional<Prisma.Claustrum_memory_proceduralGroupByOutputType>[]
-        }
-        count: {
-          args: Prisma.claustrum_memory_proceduralCountArgs<ExtArgs>
-          result: runtime.Types.Utils.Optional<Prisma.Claustrum_memory_proceduralCountAggregateOutputType> | number
-        }
-      }
-    }
-    claustrum_memory_relational: {
-      payload: Prisma.$claustrum_memory_relationalPayload<ExtArgs>
-      fields: Prisma.claustrum_memory_relationalFieldRefs
-      operations: {
-        findUnique: {
-          args: Prisma.claustrum_memory_relationalFindUniqueArgs<ExtArgs>
-          result: runtime.Types.Utils.PayloadToResult<Prisma.$claustrum_memory_relationalPayload> | null
-        }
-        findUniqueOrThrow: {
-          args: Prisma.claustrum_memory_relationalFindUniqueOrThrowArgs<ExtArgs>
-          result: runtime.Types.Utils.PayloadToResult<Prisma.$claustrum_memory_relationalPayload>
-        }
-        findFirst: {
-          args: Prisma.claustrum_memory_relationalFindFirstArgs<ExtArgs>
-          result: runtime.Types.Utils.PayloadToResult<Prisma.$claustrum_memory_relationalPayload> | null
-        }
-        findFirstOrThrow: {
-          args: Prisma.claustrum_memory_relationalFindFirstOrThrowArgs<ExtArgs>
-          result: runtime.Types.Utils.PayloadToResult<Prisma.$claustrum_memory_relationalPayload>
-        }
-        findMany: {
-          args: Prisma.claustrum_memory_relationalFindManyArgs<ExtArgs>
-          result: runtime.Types.Utils.PayloadToResult<Prisma.$claustrum_memory_relationalPayload>[]
-        }
-        create: {
-          args: Prisma.claustrum_memory_relationalCreateArgs<ExtArgs>
-          result: runtime.Types.Utils.PayloadToResult<Prisma.$claustrum_memory_relationalPayload>
-        }
-        createMany: {
-          args: Prisma.claustrum_memory_relationalCreateManyArgs<ExtArgs>
-          result: BatchPayload
-        }
-        createManyAndReturn: {
-          args: Prisma.claustrum_memory_relationalCreateManyAndReturnArgs<ExtArgs>
-          result: runtime.Types.Utils.PayloadToResult<Prisma.$claustrum_memory_relationalPayload>[]
-        }
-        delete: {
-          args: Prisma.claustrum_memory_relationalDeleteArgs<ExtArgs>
-          result: runtime.Types.Utils.PayloadToResult<Prisma.$claustrum_memory_relationalPayload>
-        }
-        update: {
-          args: Prisma.claustrum_memory_relationalUpdateArgs<ExtArgs>
-          result: runtime.Types.Utils.PayloadToResult<Prisma.$claustrum_memory_relationalPayload>
-        }
-        deleteMany: {
-          args: Prisma.claustrum_memory_relationalDeleteManyArgs<ExtArgs>
-          result: BatchPayload
-        }
-        updateMany: {
-          args: Prisma.claustrum_memory_relationalUpdateManyArgs<ExtArgs>
-          result: BatchPayload
-        }
-        updateManyAndReturn: {
-          args: Prisma.claustrum_memory_relationalUpdateManyAndReturnArgs<ExtArgs>
-          result: runtime.Types.Utils.PayloadToResult<Prisma.$claustrum_memory_relationalPayload>[]
-        }
-        upsert: {
-          args: Prisma.claustrum_memory_relationalUpsertArgs<ExtArgs>
-          result: runtime.Types.Utils.PayloadToResult<Prisma.$claustrum_memory_relationalPayload>
-        }
-        aggregate: {
-          args: Prisma.Claustrum_memory_relationalAggregateArgs<ExtArgs>
-          result: runtime.Types.Utils.Optional<Prisma.AggregateClaustrum_memory_relational>
-        }
-        groupBy: {
-          args: Prisma.claustrum_memory_relationalGroupByArgs<ExtArgs>
-          result: runtime.Types.Utils.Optional<Prisma.Claustrum_memory_relationalGroupByOutputType>[]
-        }
-        count: {
-          args: Prisma.claustrum_memory_relationalCountArgs<ExtArgs>
-          result: runtime.Types.Utils.Optional<Prisma.Claustrum_memory_relationalCountAggregateOutputType> | number
-        }
-      }
-    }
   }
 } & {
   other: {
@@ -3289,55 +2989,6 @@ export const ConversationIncidentScalarFieldEnum = {
 export type ConversationIncidentScalarFieldEnum = (typeof ConversationIncidentScalarFieldEnum)[keyof typeof ConversationIncidentScalarFieldEnum]
 
 
-export const Claustrum_memory_episodicScalarFieldEnum = {
-  id: 'id',
-  customer_id: 'customer_id',
-  turn_id: 'turn_id',
-  conversation_id: 'conversation_id',
-  user_text: 'user_text',
-  response_text: 'response_text',
-  decision_kind: 'decision_kind',
-  intent_hash: 'intent_hash',
-  recorded_at: 'recorded_at'
-} as const
-
-export type Claustrum_memory_episodicScalarFieldEnum = (typeof Claustrum_memory_episodicScalarFieldEnum)[keyof typeof Claustrum_memory_episodicScalarFieldEnum]
-
-
-export const Claustrum_memory_semanticScalarFieldEnum = {
-  customer_id: 'customer_id',
-  key: 'key',
-  value: 'value',
-  confidence: 'confidence',
-  tags: 'tags',
-  recorded_at: 'recorded_at'
-} as const
-
-export type Claustrum_memory_semanticScalarFieldEnum = (typeof Claustrum_memory_semanticScalarFieldEnum)[keyof typeof Claustrum_memory_semanticScalarFieldEnum]
-
-
-export const Claustrum_memory_proceduralScalarFieldEnum = {
-  id: 'id',
-  customer_id: 'customer_id',
-  workflow_kind: 'workflow_kind',
-  description: 'description',
-  last_used_at: 'last_used_at'
-} as const
-
-export type Claustrum_memory_proceduralScalarFieldEnum = (typeof Claustrum_memory_proceduralScalarFieldEnum)[keyof typeof Claustrum_memory_proceduralScalarFieldEnum]
-
-
-export const Claustrum_memory_relationalScalarFieldEnum = {
-  id: 'id',
-  customer_id: 'customer_id',
-  signal_kind: 'signal_kind',
-  content: 'content',
-  observed_at: 'observed_at'
-} as const
-
-export type Claustrum_memory_relationalScalarFieldEnum = (typeof Claustrum_memory_relationalScalarFieldEnum)[keyof typeof Claustrum_memory_relationalScalarFieldEnum]
-
-
 export const SortOrder = {
   asc: 'asc',
   desc: 'desc'
@@ -3652,20 +3303,6 @@ export type ListEnumIncidentResolutionTypeFieldRefInput<$PrismaModel> = FieldRef
 
 
 /**
- * Reference to a field of type 'BigInt'
- */
-export type BigIntFieldRefInput<$PrismaModel> = FieldRefInputType<$PrismaModel, 'BigInt'>
-    
-
-
-/**
- * Reference to a field of type 'BigInt[]'
- */
-export type ListBigIntFieldRefInput<$PrismaModel> = FieldRefInputType<$PrismaModel, 'BigInt[]'>
-    
-
-
-/**
  * Reference to a field of type 'Float'
  */
 export type FloatFieldRefInput<$PrismaModel> = FieldRefInputType<$PrismaModel, 'Float'>
@@ -3801,10 +3438,6 @@ export type GlobalOmitConfig = {
   agentRedTeamRun?: Prisma.AgentRedTeamRunOmit
   llmTokenUsage?: Prisma.LlmTokenUsageOmit
   conversationIncident?: Prisma.ConversationIncidentOmit
-  claustrum_memory_episodic?: Prisma.claustrum_memory_episodicOmit
-  claustrum_memory_semantic?: Prisma.claustrum_memory_semanticOmit
-  claustrum_memory_procedural?: Prisma.claustrum_memory_proceduralOmit
-  claustrum_memory_relational?: Prisma.claustrum_memory_relationalOmit
 }
 
 /* Types for Logging */

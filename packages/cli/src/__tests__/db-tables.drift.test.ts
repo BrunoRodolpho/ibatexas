@@ -34,14 +34,7 @@ function prismaModelDelegates(): string[] {
   const names: string[] = []
   const re = /^model\s+(\w+)\s*\{/gm
   let m: RegExpExecArray | null
-  while ((m = re.exec(schema)) !== null) {
-    // claustrum_memory_* are GENERATE-ONLY mirrors of @claustrum-owned tables
-    // (public schema, provisioned by claustrum SQL migrations). They belong to
-    // MEMORY_TABLES, not the domain registry, so they are excluded from the
-    // domain (Prisma) drift guard. See DEF-005.
-    if (m[1]!.startsWith("claustrum_memory_")) continue
-    names.push(toDelegate(m[1]!))
-  }
+  while ((m = re.exec(schema)) !== null) names.push(toDelegate(m[1]!))
   return names
 }
 
