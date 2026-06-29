@@ -24,7 +24,12 @@ import {
   type TwilioAdjudicatedMeta,
   type WhatsAppSender,
 } from "@ibatexas/tools";
-import { sendText } from "../whatsapp/client.js";
+import {
+  sendText,
+  sendMedia,
+  sendInteractiveList,
+  sendInteractiveButtons,
+} from "../whatsapp/client.js";
 import { pushChunk } from "../streaming/emitter.js";
 
 // Never invoked — this file exists purely so tsc evaluates the assertions.
@@ -62,4 +67,23 @@ export function __egressBrandTypeCoverage(): void {
   pushChunk("sid", { type: "text_delta", delta: reply }); // POSITIVE.
   // @ts-expect-error E-1: a text_delta stream chunk carries a RenderedReply delta.
   pushChunk("sid", { type: "text_delta", delta: "bare string" });
+
+  // ── (5) sendMedia customer-facing caption (F4) ─────────────────────────────
+  // The optional caption is minted at the producer; sendMedia no longer mints
+  // unvalidated prose internally.
+  void sendMedia("whatsapp:+1", "https://cdn/x.png", reply); // POSITIVE.
+  // @ts-expect-error E-1: sendMedia caption is a RenderedReply, not a bare string.
+  void sendMedia("whatsapp:+1", "https://cdn/x.png", "bare string");
+
+  // ── (6) sendInteractiveList customer-facing body (F4) ──────────────────────
+  // `_buttonText` stays a string (fixed UI affordance label, not customer-prose);
+  // the customer-facing `body` MUST be a RenderedReply.
+  void sendInteractiveList("whatsapp:+1", reply, "Ver", []); // POSITIVE.
+  // @ts-expect-error E-1: sendInteractiveList body is a RenderedReply, not a bare string.
+  void sendInteractiveList("whatsapp:+1", "bare string", "Ver", []);
+
+  // ── (7) sendInteractiveButtons customer-facing body (F4) ───────────────────
+  void sendInteractiveButtons("whatsapp:+1", reply, []); // POSITIVE.
+  // @ts-expect-error E-1: sendInteractiveButtons body is a RenderedReply, not a bare string.
+  void sendInteractiveButtons("whatsapp:+1", "bare string", []);
 }

@@ -20,7 +20,6 @@ import { createHash } from "node:crypto";
 import twilio from "twilio";
 import {
   mintRenderedReply,
-  mintReceiptReply,
   mintBroadcastReply,
   unwrapRendered,
   type RenderedReply,
@@ -481,13 +480,20 @@ async function sendSingleMessage(
  */
 export async function sendInteractiveList(
   to: string,
-  body: string,
+  body: RenderedReply,
   _buttonText: string,
   sections: InteractiveSection[],
 ): Promise<void> {
+  // EGRESS BRAND (Plan 1 / F4): the customer-facing `body` is minted by the
+  // CALLER (the producer) and arrives as a `RenderedReply`; this function never
+  // mints unvalidated customer prose. The numbered-list scaffolding below
+  // (section titles, row numbers) is fixed, operator-shaped UI — not
+  // customer-prose — so the COMPOSED text is (re-)minted via the broadcast
+  // operational minter just before egress.
+  //
   // Interactive messages via Twilio require pre-registered Content Templates (contentSid).
   // Until templates are approved in production, send as formatted numbered text.
-  const lines: string[] = [body, ""];
+  const lines: string[] = [unwrapRendered(body), ""];
 
   let counter = 1;
   for (const section of sections) {
@@ -511,14 +517,21 @@ export async function sendInteractiveList(
  */
 export async function sendInteractiveButtons(
   to: string,
-  body: string,
+  body: RenderedReply,
   buttons: InteractiveButton[],
 ): Promise<void> {
-  // Until Twilio Content Templates are approved, send as formatted text
+  // EGRESS BRAND (Plan 1 / F4): the customer-facing `body` is minted by the
+  // CALLER and arrives as a `RenderedReply`. The button labels + the
+  // "Responda com a opção desejada" prompt are fixed operator-shaped UI, so the
+  // composed text is (re-)minted via the broadcast operational minter at egress.
+  //
+  // Until Twilio Content Templates are approved, send as formatted text.
   const buttonLabels = buttons.map((b) => `▸ *${b.title}*`).join("\n");
   await sendText(
     to,
-    mintBroadcastReply(`${body}\n\n${buttonLabels}\n\n_Responda com a opção desejada._`),
+    mintBroadcastReply(
+      `${unwrapRendered(body)}\n\n${buttonLabels}\n\n_Responda com a opção desejada._`,
+    ),
   );
 }
 
@@ -528,7 +541,15 @@ export async function sendInteractiveButtons(
  * Routes through the shared rate limiter + idempotency guard; retries only on
  * provably non-delivering errors (never on a post-send-ambiguous timeout).
  */
-export async function sendMedia(to: string, mediaUrl: string, body?: string): Promise<void> {
+export async function sendMedia(
+  to: string,
+  mediaUrl: string,
+  body?: RenderedReply,
+): Promise<void> {
+  // EGRESS BRAND (Plan 1 / F4): the optional customer-facing caption `body` is
+  // minted by the CALLER (the producer) and arrives as a `RenderedReply`; this
+  // function never mints unvalidated customer prose internally.
+  //
   // Touch the legacy client factory so a missing TWILIO_* env is surfaced
   // before the kernel-gated send is attempted.
   getTwilioClient();
@@ -536,7 +557,7 @@ export async function sendMedia(to: string, mediaUrl: string, body?: string): Pr
   const hash = hashPhone(to.replace("whatsapp:", ""));
 
   await createMessage(
-    { from, to, mediaUrl: [mediaUrl], ...(body ? { body: mintReceiptReply(body) } : {}) },
+    { from, to, mediaUrl: [mediaUrl], ...(body ? { body } : {}) },
     hash,
     0,
     { logTag: "sendMedia", sourceSubject: "whatsapp:sendMedia", reason: "send-media" },

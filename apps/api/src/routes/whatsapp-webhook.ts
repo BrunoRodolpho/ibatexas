@@ -712,7 +712,9 @@ async function sendPixFollowUp(
   }
 
   if (pixQrCode) {
-    await sendMedia(`whatsapp:${phone}`, pixQrCode, "QR Code PIX").catch((err) => {
+    // EGRESS BRAND (Plan 1 / F4): mint the customer-facing caption at the
+    // producer; sendMedia no longer mints prose internally.
+    await sendMedia(`whatsapp:${phone}`, pixQrCode, mintReceiptReply("QR Code PIX")).catch((err) => {
       log.warn({ error: String(err) }, "[whatsapp.pix.qr_send_failed] Falling back to text-only PIX");
     });
   }

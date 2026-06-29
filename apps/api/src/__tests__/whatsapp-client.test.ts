@@ -420,7 +420,7 @@ describe("sendInteractiveList", () => {
 
     const promise = sendInteractiveList(
       "whatsapp:+5511999887766",
-      "Confira nosso cardápio",
+      mintRenderedReply("Confira nosso cardápio"),
       "Ver cardápio",
       sections,
     );
@@ -444,7 +444,7 @@ describe("sendInteractiveList", () => {
 
     const promise = sendInteractiveList(
       "whatsapp:+5511999887766",
-      "Corpo",
+      mintRenderedReply("Corpo"),
       "Botão",
       sections,
     );
@@ -465,7 +465,7 @@ describe("sendInteractiveList", () => {
 
     const promise = sendInteractiveList(
       "whatsapp:+5511999887766",
-      "Corpo",
+      mintRenderedReply("Corpo"),
       "Botão",
       sections,
     );
@@ -489,7 +489,7 @@ describe("sendInteractiveButtons", () => {
 
     const promise = sendInteractiveButtons(
       "whatsapp:+5511999887766",
-      "Como pagar?",
+      mintRenderedReply("Como pagar?"),
       buttons,
     );
     await vi.advanceTimersByTimeAsync(1000);
@@ -512,7 +512,7 @@ describe("sendInteractiveButtons", () => {
 
     const promise = sendInteractiveButtons(
       "whatsapp:+5511999887766",
-      "Escolha",
+      mintRenderedReply("Escolha"),
       buttons,
     );
     await vi.advanceTimersByTimeAsync(1000);

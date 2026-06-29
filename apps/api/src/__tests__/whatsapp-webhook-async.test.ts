@@ -488,7 +488,10 @@ describe("handleMessageAsync — conductor turn", () => {
     expect(mockSendMedia).toHaveBeenCalledWith(
       `whatsapp:${PHONE}`,
       "data:image/png;base64,QR",
-      "QR Code PIX",
+      // F4: the caption is now minted at the producer (RenderedReply), not a
+      // bare string. The brand symbol is shared across minters, so a reply
+      // minted here deep-equals the webhook's `mintReceiptReply("QR Code PIX")`.
+      mintRenderedReply("QR Code PIX"),
     );
   }, 15000);
 
