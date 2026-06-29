@@ -790,6 +790,7 @@ model ConversationIncident {
   @@index([status, openedAt])
   @@index([sessionId])
   @@index([customerId])
+  @@map("conversation_incidents")
   @@schema("ibx_domain")
 }
 enum IncidentKind {

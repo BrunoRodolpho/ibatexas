@@ -591,4 +591,60 @@ describe("createIbatexasResponder", () => {
     const req = complete.mock.calls[0]![0] as CompletionRequest;
     expect(req.system).not.toContain("FECHADA");
   });
+
+  // ── closed + F1/F1b neutral fallback → restore closed-disclosure ────────────
+  // guardDraft (F1/F1b) full-replaces a draft that bundled an UNEARNED success
+  // claim WITH the closed-disclosure → the neutral GROUNDED_SAFE_FALLBACK, which is
+  // SILENT on closure. While closed, that drops a correct closed-disclosure, so the
+  // delivery guard substitutes closedHoursDisclosure() (asserts nothing open).
+
+  it("closed: a draft stripped to the neutral fallback (false success) discloses closed instead", async () => {
+    const { model } = mockModel("Seu pedido já foi registrado com sucesso!");
+    const responder = createIbatexasResponder({
+      model,
+      modelId: "m",
+      explainer,
+      resolveScheduleSignal: () => closedSignal,
+    });
+    const decision = { kind: "EXECUTE", basis: [] } as unknown as Decision;
+    const acted = { kind: "executed", envelope: { kind: "order.cart.ensure" }, result: { cartId: "cart_1" } };
+    const draft = await responder.respond(
+      mkInput({ decision, envelopeKinds: ["order.cart.ensure"], acted, text: "finaliza meu pedido" }),
+    );
+    expect(draft.text).toBe(CLOSED_DISCLOSURE);
+    // Token usage from the (still-traced) model call survives the substitution.
+    expect(draft.usage).toEqual({ inputTokens: 11, outputTokens: 7 });
+  });
+
+  it("open: the same false-success draft stays the neutral fallback (no disclosure)", async () => {
+    const { model } = mockModel("Seu pedido já foi registrado com sucesso!");
+    const responder = createIbatexasResponder({
+      model,
+      modelId: "m",
+      explainer,
+      resolveScheduleSignal: () => openSignal,
+    });
+    const decision = { kind: "EXECUTE", basis: [] } as unknown as Decision;
+    const acted = { kind: "executed", envelope: { kind: "order.cart.ensure" }, result: { cartId: "cart_1" } };
+    const draft = await responder.respond(
+      mkInput({ decision, envelopeKinds: ["order.cart.ensure"], acted, text: "finaliza meu pedido" }),
+    );
+    expect(draft.text).toBe(GROUNDED_SAFE_FALLBACK_PTBR);
+  });
+
+  it("closed: an already-correct closed-disclosure reply (no fallback) is untouched", async () => {
+    // The model already discloses closed + offers scheduling and makes NO false
+    // success claim, so neither guardDraft nor the closed-hours delivery guard
+    // should touch it — the substitution fires ONLY for the neutral fallback.
+    const { model } = mockModel("No momento estamos fechados, posso agendar sua retirada amanhã.");
+    const responder = createIbatexasResponder({
+      model,
+      modelId: "m",
+      explainer,
+      resolveScheduleSignal: () => closedSignal,
+    });
+    const decision = { kind: "REFUSE", refusal: { code: "empty_plan" } } as unknown as Decision;
+    const draft = await responder.respond(mkInput({ decision, envelopeKinds: [], text: "tão abertos?" }));
+    expect(draft.text).toBe("No momento estamos fechados, posso agendar sua retirada amanhã.");
+  });
 });

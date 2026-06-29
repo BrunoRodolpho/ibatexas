@@ -63,9 +63,9 @@ import {
   createPostgresMemoryProvider,
   PostgresAdvisorySessionLock,
   type PrismaClientLike,
-  type RedisClientLike,
 } from "@claustrum/memory-postgres";
 import { createPgVectorGroundingProvider } from "@claustrum/grounding-pgvector";
+import { toMemoryRedisClient } from "./claustrum/memory-redis-adapter.js";
 import { failSafeGrounding } from "./claustrum/fail-safe-grounding.js";
 import { failSafeMemory } from "./claustrum/fail-safe-memory.js";
 import { noopGroundingProvider, noopMemoryProvider } from "./claustrum/noop-memory-grounding.js";
@@ -1723,7 +1723,10 @@ function resolveMemoryPort(
     ? failSafeMemory(
         createPostgresMemoryProvider({
           prisma: claustrumMemoryPrisma as unknown as PrismaClientLike,
-          redis: redis as unknown as RedisClientLike,
+          // node-redis v4 → ioredis-shaped surface the provider expects (setex /
+          // pipeline). Without this shim recall's write-through threw on every
+          // cache-cold turn and degraded to empty. See memory-redis-adapter.ts.
+          redis: toMemoryRedisClient(redis),
           adjudicator,
         }),
         {

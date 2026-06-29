@@ -44,6 +44,7 @@ import {
 import { emitModelCallTrace } from "./llm-trace.js";
 import {
   closedHoursBackstop,
+  closedHoursDisclosure,
   closedHoursPromptNote,
   type ScheduleSignal,
 } from "./closed-hours.js";
@@ -390,6 +391,31 @@ function guardDraft(draft: DraftResponse, acted: unknown): DraftResponse {
   return draft;
 }
 
+/** Closed-hours delivery guard. Runs the deterministic `closedHoursBackstop`
+ *  (repairs a draft that falsely asserts open / confirms an immediate order), then
+ *  closes a SECOND gap: when the store isClosed and the post-guard text is the
+ *  neutral GROUNDED_SAFE_FALLBACK (because F1/F1b stripped a draft that bundled an
+ *  unearned success claim WITH the closed-disclosure), substitute the canonical
+ *  closedHoursDisclosure(). The fallback is audit-accurate but SILENT on closure —
+ *  this restores the closed/scheduling disclosure the guard dropped. Conservative:
+ *  fires only while closed and only for the neutral fallback (a draft that already
+ *  discloses closed, or any other text, is left untouched). The disclosure asserts
+ *  nothing open, preserving the NEVER-open / never-immediate guarantee. */
+function closedHoursDeliveryGuard(
+  draft: DraftResponse,
+  signal: ScheduleSignal | undefined,
+): DraftResponse {
+  const repaired = closedHoursBackstop(draft, signal);
+  if (
+    signal?.isClosed &&
+    repaired.text === GROUNDED_SAFE_FALLBACK_PTBR
+  ) {
+    const text = closedHoursDisclosure(signal);
+    return repaired.usage === undefined ? { text } : { text, usage: repaired.usage };
+  }
+  return repaired;
+}
+
 /** When the kernel REWROTE the envelope with a USER-RELEVANT clamp (e.g. quantity
  *  reduced to available stock), make sure the customer is actually TOLD. The 4B
  *  can't be trusted to surface it from the grounded context, so we append the
@@ -527,7 +553,7 @@ export function createIbatexasResponder(
               [],
             );
             const system = base + closedNote;
-            return closedHoursBackstop(
+            return closedHoursDeliveryGuard(
               guardDraft(
                 await completeWith({ system, fragmentManifest, userText, turnId }),
                 input.acted,
@@ -583,7 +609,7 @@ export function createIbatexasResponder(
           // decision (no-authority claim) OR claims a success the runtime did not
           // grant (confabulation) reach the customer. Then surface any user-relevant
           // REWRITE clamp deterministically (the model can't be trusted to).
-          return closedHoursBackstop(
+          return closedHoursDeliveryGuard(
             surfaceRewriteClamp(guardDraft(draft, input.acted), decision),
             scheduleSignal,
           );
@@ -601,7 +627,7 @@ export function createIbatexasResponder(
             [],
           );
           const system = base + closedNote;
-          return closedHoursBackstop(
+          return closedHoursDeliveryGuard(
             guardDraft(
               await completeWith({ system, fragmentManifest, userText, turnId }),
               input.acted,
