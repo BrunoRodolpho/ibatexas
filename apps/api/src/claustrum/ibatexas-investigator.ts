@@ -41,16 +41,18 @@ import {
 /**
  * Map the read-layer 2-value {@link LedgerTaint} onto the 3-value
  * {@link OriginProvenance} the R1-led kernel (`@adjudicate/core` >= 1.7.0)
- * requires — the resolution of the `TODO(R1-published)` on {@link TurnRead}.
+ * requires — the FALLBACK when a read does NOT explicitly declare its origin.
  *
- * FAIL-CLOSED (per that TODO): a read-layer `"TRUSTED"` maps to
- * `TRUSTED_THIRD_PARTY`, NEVER `FIRST_PARTY` — only an explicit first-party mint
- * earns `FIRST_PARTY`, which this host's reads never claim. `UNTRUSTED_DATA`
- * stays `UNTRUSTED_DATA` and never washes up.
+ * FAIL-CLOSED: a read-layer `"TRUSTED"` maps to `TRUSTED_THIRD_PARTY`, NEVER
+ * `FIRST_PARTY` — only a read that EXPLICITLY declares `originProvenance:
+ * "FIRST_PARTY"` (a genuine first-party DB/config read; see
+ * {@link createFirstPartyTurnReads}) earns it; nothing is auto-promoted.
+ * `UNTRUSTED_DATA` stays `UNTRUSTED_DATA` and never washes up.
  *
- * NOTE: this is a Read-layer / C3 origin-trust concern (NOT egress brand); it is
- * adapted here only because the egress-brand wave bumps the consumed kernel to
- * the 3-value `OriginProvenance`. See the wave report.
+ * Plan 1 Phase 3: the new kernel is LINKED, so genuine first-party reads now
+ * carry the 3-value `FIRST_PARTY` directly (via `TurnRead.originProvenance`),
+ * unblocking the `first_party_only` provenance conjunct (PAYMENT_STATUS). This
+ * map remains the fail-closed default for reads that do not declare an origin.
  */
 function originProvenanceOf(taint: LedgerTaint): OriginProvenance {
   return taint === "UNTRUSTED_DATA" ? "UNTRUSTED_DATA" : "TRUSTED_THIRD_PARTY";
@@ -63,19 +65,27 @@ function originProvenanceOf(taint: LedgerTaint): OriginProvenance {
  * `LedgerTaint`: a first-party DB read is `"TRUSTED"`; an untrusted / free-text
  * (LLM- or customer-derived) read is `"UNTRUSTED_DATA"`.
  *
- * TODO(R1-published): the 3-value `OriginProvenance` (with `FIRST_PARTY`) lives
- * in the LOCAL/unpublished R1-led kernel — it is NOT in published
- * `@adjudicate/core@1.6.0` (whose `EvidenceEntry.originProvenance` is the 2-value
- * `LedgerTaint`). Do NOT fake a `FIRST_PARTY` against the 2-value type here; a
- * first-party read is labeled `"TRUSTED"` until the 3-value kernel publishes.
+ * Plan 1 Phase 3: the 3-value `OriginProvenance` (with `FIRST_PARTY`) kernel is
+ * now LINKED (`@adjudicate/core` >= 1.7.0). A genuine first-party DB/config read
+ * declares `originProvenance: "FIRST_PARTY"` directly (unblocking the
+ * `first_party_only` PAYMENT_STATUS conjunct); a read that omits it falls back to
+ * the fail-closed {@link originProvenanceOf} map (`TRUSTED` →
+ * `TRUSTED_THIRD_PARTY`) — nothing is auto-promoted to first-party.
  */
 export interface TurnRead {
   /** The evidence key this read binds (the ledger / claims kernel key). */
   readonly key: string;
   /** Human/system-readable descriptor of which read produced the value. */
   readonly source: string;
-  /** Origin trust at mint (published 2-value `LedgerTaint`) — see the type doc. */
+  /** Read-layer 2-value trust at mint (`LedgerTaint`) → the entry's `taint`. */
   readonly origin: LedgerTaint;
+  /**
+   * The 3-value C3 origin axis (`FIRST_PARTY | TRUSTED_THIRD_PARTY |
+   * UNTRUSTED_DATA`) → the entry's `originProvenance`. EXPLICIT for a genuine
+   * first-party read; omitted ⟹ the fail-closed {@link originProvenanceOf}
+   * fallback (never auto-promoted to `FIRST_PARTY`).
+   */
+  readonly originProvenance?: OriginProvenance;
   /** `"live"` (read this turn) vs `"cache"`. Defaults to `"live"`. */
   readonly sourceMode?: SourceMode;
   /**
@@ -190,6 +200,8 @@ export function createFirstPartyTurnReads(
       key: SCHEDULE_KEY,
       source: "schedule.getScheduleSignal",
       origin: "TRUSTED",
+      // First-party config-derived read (Plan 1 Phase 3) → 3-value FIRST_PARTY.
+      originProvenance: "FIRST_PARTY",
       sourceMode: "live",
       read: () => backend.readSchedule(),
     });
@@ -206,6 +218,8 @@ export function createFirstPartyTurnReads(
         key: ORDER_FULFILLMENT_KEY(orderId),
         source: "order.getById",
         origin: "TRUSTED",
+        // Owner-scoped first-party DB read → 3-value FIRST_PARTY (Plan 1 Phase 3).
+        originProvenance: "FIRST_PARTY",
         sourceMode: "live",
         read: async () => {
           const v = await backend.readOrderFulfillment(orderId, customerId);
@@ -217,6 +231,9 @@ export function createFirstPartyTurnReads(
         key: PAYMENT_STATUS_KEY(orderId),
         source: "payment.getActiveByOrderId",
         origin: "TRUSTED",
+        // Owner-scoped first-party money read → FIRST_PARTY (satisfies the
+        // PAYMENT_STATUS `first_party_only` provenance conjunct; Plan 1 Phase 3).
+        originProvenance: "FIRST_PARTY",
         sourceMode: "live",
         read: async () => {
           // OWNER-SCOPED (IDOR close): a cross-owner orderId yields null → error,
@@ -233,6 +250,8 @@ export function createFirstPartyTurnReads(
         key: RESERVATION_KEY(reservationId),
         source: "reservation.getById",
         origin: "TRUSTED",
+        // Owner-scoped first-party DB read → 3-value FIRST_PARTY (Plan 1 Phase 3).
+        originProvenance: "FIRST_PARTY",
         sourceMode: "live",
         read: async () => {
           const v = await backend.readReservation(reservationId, customerId);
@@ -284,8 +303,10 @@ export function createIbatexasInvestigator(
           fetchedAt: now(),
           sourceMode: r.sourceMode ?? "live",
           taint: r.origin,
-          // 3-value originProvenance (R1-led kernel >= 1.7.0); fail-closed map.
-          originProvenance: originProvenanceOf(r.origin),
+          // 3-value originProvenance (R1-led kernel >= 1.7.0): the read's EXPLICIT
+          // origin when declared (a genuine first-party read → FIRST_PARTY),
+          // otherwise the fail-closed map (TRUSTED → TRUSTED_THIRD_PARTY).
+          originProvenance: r.originProvenance ?? originProvenanceOf(r.origin),
         };
         ledger.record(entry);
       }

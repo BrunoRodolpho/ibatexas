@@ -19,7 +19,7 @@
 
 import type { ConductorOptions } from "@claustrum/core";
 import { createIbatexasClaimPlanner } from "./ibatexas-claim-planner.js";
-import { createIbatexasClaimsKernelDeps } from "./ibatexas-claims-kernel-deps.js";
+import { createPerTurnClaimsKernelDeps } from "./ibatexas-claims-kernel-deps.js";
 import { createIbatexasInvestigator } from "./ibatexas-investigator.js";
 import type { ClaimAwarePlannerPort } from "./ibatexas-planner.js";
 
@@ -68,6 +68,26 @@ export function buildClaimsSeams(deps: BuildClaimsSeamsDeps): ClaimsSeams {
   return {
     investigator: createIbatexasInvestigator(),
     claimPlanner: createIbatexasClaimPlanner(deps.planner),
-    claimsKernel: createIbatexasClaimsKernelDeps(),
+    // W5a F2 — build the kernel deps via the REAL per-turn builder
+    // (createPerTurnClaimsKernelDeps), not the process-wide fail-closed stub. The
+    // R2a per-turn `now` is supplied PER TURN by the Conductor's `clock()` seam
+    // (conductor.ts rebuilds `claimsKernel.soundness.now` on every openCapsule),
+    // so the boot value here is immediately superseded.
+    //
+    // FAIL-CLOSED BOOT FACTS (intentional): `ownership.ownedResources` is EMPTY
+    // and `outcomes` is empty at boot, so `owns → false` / `outcomeConfirmed →
+    // false` until the per-turn facts are threaded. The genuine per-turn ownership
+    // facts (the resolveAndAssemble owned set) become available only AFTER the
+    // resolve stage inside `handleTurn`; threading them onto the kernel deps
+    // requires the Conductor per-turn claims-deps seam (the W5b conductor seam,
+    // which today rebuilds ONLY `now`). Until that seam lands, the OWNER-SCOPED
+    // Triad members (ORDER_FULFILLMENT_STAGE, PAYMENT_STATUS) DEGRADE TO UNKNOWN
+    // (honest ignorance — never a false render); STORE_OPEN_NOW (public, no owner)
+    // is unaffected. The flag stays COMMITTED OFF, so this is inert in production.
+    claimsKernel: createPerTurnClaimsKernelDeps({
+      now: Date.now(),
+      ownership: { principal: "", ownedResources: new Set<string>() },
+      outcomes: [],
+    }),
   };
 }

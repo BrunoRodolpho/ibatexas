@@ -124,6 +124,8 @@ const prop = (claimType: string, field: string): TemplateSlot => ({
 export const ORDER_FULFILLMENT_STAGE = "ORDER_FULFILLMENT_STAGE";
 export const PAYMENT_STATUS = "PAYMENT_STATUS";
 export const ORDER_ESTIMATED_ARRIVAL = "ORDER_ESTIMATED_ARRIVAL";
+/** Triad slice (Plan 1 Phase 3) — the override-aware "is it open right now" type. */
+export const STORE_OPEN_NOW = "STORE_OPEN_NOW";
 
 /**
  * Per-type `validated` (asserting) templates, keyed by claim type. Each is the ONE
@@ -131,6 +133,17 @@ export const ORDER_ESTIMATED_ARRIVAL = "ORDER_ESTIMATED_ARRIVAL";
  * (Inv 6). Static pt-BR around the slots; no free text.
  */
 export const VALIDATED_TEMPLATES: Readonly<Record<string, Template>> = {
+  [STORE_OPEN_NOW]: {
+    claimType: STORE_OPEN_NOW,
+    posture: "validated",
+    slots: [
+      lit("No momento, o período de funcionamento é: "),
+      // Bound 1:1 to the C6 value-binding field (the ScheduleSignal `mealPeriod`)
+      // so the rendered proposition is the ledger-sourced, falsifier-checked value.
+      prop(STORE_OPEN_NOW, "mealPeriod"),
+      lit("."),
+    ],
+  },
   [ORDER_FULFILLMENT_STAGE]: {
     claimType: ORDER_FULFILLMENT_STAGE,
     posture: "validated",

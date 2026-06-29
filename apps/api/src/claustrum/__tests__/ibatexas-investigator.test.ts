@@ -232,7 +232,7 @@ function triadInput(
 }
 
 describe("ibatexas-investigator — first-party triad gatherer", () => {
-  it("always records the schedule read as a first-party TRUSTED present value", async () => {
+  it("always records the schedule read as a first-party (FIRST_PARTY) present value", async () => {
     const ledger = new EvidenceLedger("t");
     const investigator = createIbatexasInvestigator({
       gatherReads: createFirstPartyTurnReads(stubBackend()),
@@ -243,7 +243,9 @@ describe("ibatexas-investigator — first-party triad gatherer", () => {
     const sched = ledger.resolve("schedule:store_open_now");
     expect(sched.state).toBe("present");
     expect(sched.entry?.taint).toBe("TRUSTED");
-    expect(sched.entry?.originProvenance).toBe("TRUSTED");
+    // Plan 1 Phase 3: a genuine first-party config read now carries the 3-value
+    // FIRST_PARTY origin (the new kernel is linked) — not the fail-closed fallback.
+    expect(sched.entry?.originProvenance).toBe("FIRST_PARTY");
     expect(sched.entry?.fetchedAt).toBe(999);
     expect(sched.entry?.value).toEqual({ isClosed: false, mealPeriod: "dinner" });
   });

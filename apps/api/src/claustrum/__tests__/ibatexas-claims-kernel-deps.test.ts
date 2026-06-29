@@ -209,6 +209,20 @@ describe("ibatexas-claims-kernel-deps — createPerTurnClaimsKernelDeps", () => 
         kind: "read_claim",
         actor: "cust-1",
         resources: { payment_status: resourceId },
+        // W6 (linked kernel >= 1.8.0): a claim VALIDATEs only if its type is
+        // falsifier-complete. Declare a falsifier on a key that is NOT recorded
+        // in the test ledger, so the eligibility cap is satisfied and the runtime
+        // arm never fires — the verdict isolates the `owns` predicate under test.
+        falsifierComplete: true,
+        falsifiers: [
+          {
+            key: "_not_recorded_falsifier",
+            ownershipPolicy: "not_applicable",
+            freshnessPolicy: "static",
+            sourceIntegrity: "structured",
+            provenancePolicy: "preserve",
+          },
+        ],
       },
       subject: resourceId,
       type: "PAYMENT_STATUS",
@@ -225,7 +239,11 @@ describe("ibatexas-claims-kernel-deps — createPerTurnClaimsKernelDeps", () => 
       fetchedAt: 1_000,
       sourceMode: "live",
       taint: "TRUSTED",
-      originProvenance: "TRUSTED",
+      // 3-value origin axis (the linked R1-led kernel): a first-party money read.
+      // ("TRUSTED" is the read-LAYER taint, NOT a valid OriginProvenance member —
+      // the W6 structural-provenance write guard normalizes an invalid origin to
+      // UNTRUSTED_DATA, which would REFUSE; use the real 3-value value here.)
+      originProvenance: "FIRST_PARTY",
     });
     return l;
   }

@@ -86,10 +86,25 @@ function fillProposition(
   if (!Object.hasOwn(record, slot.field)) return null;
   const fieldValue = record[slot.field];
   if (fieldValue === null || fieldValue === undefined) return null;
-  // Field values are primitive per registry §5 / the slot grammar; assert the
-  // primitive shape so the deterministic String() coercion is total. The cast is
-  // erased at runtime — the coercion is byte-identical to String(fieldValue).
-  const text = String(fieldValue as string | number | boolean | bigint);
+  // CLOSED VALUE-GRAMMAR (Plan 1 Phase 3 / W6 C6) — the rendered proposition is
+  // restricted to the SAME closed scalar grammar the kernel's C6 value-binding
+  // compares over (`string | number | boolean`; `@adjudicate/core` soundness
+  // `withinValueGrammar`). The previous `as string | number | boolean | bigint`
+  // cast was a soft "any non-empty primitive" gap — it would coerce a `bigint`,
+  // and (because the cast is erased) ANY value, to a string. We now NARROW at
+  // runtime: a field outside the closed scalar grammar (object / array / bigint /
+  // symbol / function) is NOT a single proposition value we may assert → the slot
+  // is UNFILLABLE (abstain), never a coerced blob. This pairs with C6: a rendered
+  // value is only ever the ledger-bound scalar the kernel licensed (value-from-
+  // ledger), so the renderer cannot widen what soundness already narrowed.
+  if (
+    typeof fieldValue !== "string" &&
+    typeof fieldValue !== "number" &&
+    typeof fieldValue !== "boolean"
+  ) {
+    return null;
+  }
+  const text = String(fieldValue);
   // Empty/blank ⟹ absence (registry §5), not a blank proposition.
   if (text.trim() === "") return null;
   return text;

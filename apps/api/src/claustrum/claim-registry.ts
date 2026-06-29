@@ -59,6 +59,8 @@ import type {
  *     (floor `structured`; a free-text "sem alérgenos" must FAIL → UNKNOWN —
  *     SDD §E worked types).
  *   - `STORE_HOURS`         — a public, cacheable INFORM read.
+ *   - `STORE_OPEN_NOW`      — the OVERRIDE-AWARE "is it open right now" read
+ *     (public; W6-falsified by a present ScheduleOverride — Triad slice).
  *   - `ORDER_FULFILLMENT_STAGE` — a customer-scoped, live STATUS read
  *     (owner-scoped, `must_read_this_turn` — SDD §E / §N P1).
  *   - `PAYMENT_STATUS`      — a customer-scoped, live, first-party money read
@@ -72,6 +74,7 @@ import type {
 export const CLAIM_REGISTRY = [
   "MENU_ITEM_ALLERGENS",
   "STORE_HOURS",
+  "STORE_OPEN_NOW",
   "ORDER_FULFILLMENT_STAGE",
   "PAYMENT_STATUS",
   "PURCHASE_COMPLETED",
@@ -112,6 +115,37 @@ interface RegistryClaimSpec {
   readonly requiredEvidence: readonly EvidenceRequirement[];
   /** The Q4 consistency partition key derivation: is this claim customer-scoped? */
   readonly customerScoped: boolean;
+  /**
+   * W6 falsifier-completeness (Plan 1 Phase 3; `@adjudicate/core` >= 1.8.0). When
+   * `true`, this type has ENUMERATED every evidence that — if PRESENT this turn —
+   * FALSIFIES the claim (the `falsifiers[]`), so the kernel's eligibility cap lets
+   * it reach VALIDATED and the runtime arm (`resolveAgainstFalsifiers`) demotes it
+   * to UNKNOWN when a falsifier actually fires. A type that cannot HONESTLY
+   * enumerate its falsifiers MUST omit this (defaults to `false` → UNKNOWN-only);
+   * declaring completeness without real falsifiers is the §R lying case (the kernel
+   * hard-throws). Omitted ⟹ the type stays UNKNOWN-only under the pipeline (the
+   * fail-safe default the SDD §Q scope guard prescribes for un-upgraded types).
+   */
+  readonly falsifierComplete?: boolean;
+  /**
+   * The W6 falsifiers (each an `EvidenceRequirement`): a DIFFERENT key whose
+   * PRESENCE this turn contradicts the claim (e.g. STORE_OPEN_NOW ← a present
+   * ScheduleOverride; PAYMENT_STATUS=paid ← a present refund/chargeback). Declared
+   * iff `falsifierComplete` is `true`.
+   */
+  readonly falsifiers?: readonly EvidenceRequirement[];
+  /**
+   * The W6 C6 value-binding: bind the RENDERED `value` to a specific evidence
+   * entry's value so the customer-visible number/string is LEDGER-SOURCED, never a
+   * model confabulation that rode the surplus channel. `key` MUST be one of
+   * {@link requiredEvidence} keys (the kernel hard-throws otherwise); `path`
+   * projects the bound field on BOTH sides before the canonical `sameValue`
+   * compare. Omitted ⟹ §5 stays value-agnostic for this type (no-op).
+   */
+  readonly valueBinding?: {
+    readonly key: string;
+    readonly path?: readonly (string | number)[];
+  };
 }
 
 /**
@@ -150,6 +184,42 @@ const REGISTRY_SPECS = {
     ],
     customerScoped: false,
   },
+  // Triad slice (Plan 1 Phase 3) — STORE_OPEN_NOW is OVERRIDE-AWARE: the schedule
+  // signal is the backing read, and a present ScheduleOverride FALSIFIES it (the
+  // W6 cross-key runtime arm). The evidence key is aligned VERBATIM with the
+  // investigator's `SCHEDULE_KEY` ("schedule:store_open_now", ibatexas-investigator.ts)
+  // so the candidate validates against the actual recorded ledger entry.
+  STORE_OPEN_NOW: {
+    kind: "read_claim",
+    minSourceIntegrity: "trusted_service",
+    requiredEvidence: [
+      {
+        key: "schedule:store_open_now",
+        ownershipPolicy: "not_applicable",
+        // The schedule signal is read this turn from first-party config + cache;
+        // a short cacheable ttl bounds staleness (mirrors STORE_HOURS posture).
+        freshnessPolicy: { kind: "cacheable", ttl: 3600 },
+        sourceIntegrity: "trusted_service",
+        provenancePolicy: "preserve",
+      },
+    ],
+    customerScoped: false,
+    // W6 — a present ScheduleOverride contradicts the computed open/closed signal.
+    falsifierComplete: true,
+    falsifiers: [
+      {
+        key: "schedule:schedule_override",
+        ownershipPolicy: "not_applicable",
+        freshnessPolicy: "must_read_this_turn",
+        sourceIntegrity: "trusted_service",
+        provenancePolicy: "preserve",
+      },
+    ],
+    // C6 — the rendered open/closed proposition is bound to the schedule signal's
+    // `mealPeriod` field (the ScheduleSignal shape from @ibatexas/tools), so the
+    // value is ledger-sourced, never model-authored.
+    valueBinding: { key: "schedule:store_open_now", path: ["mealPeriod"] },
+  },
   ORDER_FULFILLMENT_STAGE: {
     kind: "read_claim",
     minSourceIntegrity: "structured",
@@ -164,6 +234,19 @@ const REGISTRY_SPECS = {
       },
     ],
     customerScoped: true,
+    // W6 — a present order CANCELLATION falsifies any in-progress fulfillment stage.
+    falsifierComplete: true,
+    falsifiers: [
+      {
+        key: "order_cancelled",
+        ownershipPolicy: "required",
+        freshnessPolicy: "must_read_this_turn",
+        sourceIntegrity: "structured",
+        provenancePolicy: "preserve",
+      },
+    ],
+    // C6 — bind the rendered stage to the read's `stage` field (ledger-sourced).
+    valueBinding: { key: "fulfillment_stage", path: ["stage"] },
   },
   PAYMENT_STATUS: {
     kind: "read_claim",
@@ -179,6 +262,27 @@ const REGISTRY_SPECS = {
       },
     ],
     customerScoped: true,
+    // W6 — a `paid` payment status is falsified by a present refund OR chargeback
+    // (opposite money direction). BOTH are enumerated (honest completeness).
+    falsifierComplete: true,
+    falsifiers: [
+      {
+        key: "payment_refund",
+        ownershipPolicy: "required",
+        freshnessPolicy: "must_read_this_turn",
+        sourceIntegrity: "first_party_verified",
+        provenancePolicy: "first_party_only",
+      },
+      {
+        key: "payment_chargeback",
+        ownershipPolicy: "required",
+        freshnessPolicy: "must_read_this_turn",
+        sourceIntegrity: "first_party_verified",
+        provenancePolicy: "first_party_only",
+      },
+    ],
+    // C6 — bind the rendered status to the read's `status` field (ledger-sourced).
+    valueBinding: { key: "payment_status", path: ["status"] },
   },
   PURCHASE_COMPLETED: {
     kind: "action_claim",
@@ -239,7 +343,10 @@ export function selectCandidateClaim(
     // never free-generate.
     return undefined;
   }
-  const spec = REGISTRY_SPECS[proposed.type];
+  // Widen the `as const` literal member to the interface so the OPTIONAL W6
+  // fields (falsifierComplete / falsifiers / valueBinding) are readable on every
+  // member (a member that omits them is `undefined`, not a missing property).
+  const spec: RegistryClaimSpec = REGISTRY_SPECS[proposed.type];
   return {
     soundness: {
       requiredEvidence: spec.requiredEvidence,
@@ -249,6 +356,18 @@ export function selectCandidateClaim(
       ...(proposed.resources === undefined
         ? {}
         : { resources: proposed.resources }),
+      // W6 falsifier-completeness (Plan 1 Phase 3) — threaded from the type's
+      // FIXED spec, NEVER model-authored: the eligibility cap + the runtime arm
+      // (resolveAgainstFalsifiers) live in the kernel. A type with no declared
+      // falsifiers stays UNKNOWN-only (the fail-safe default).
+      ...(spec.falsifierComplete === true
+        ? { falsifierComplete: true, falsifiers: spec.falsifiers ?? [] }
+        : {}),
+      // W6 C6 value-binding — bind the rendered value to its licensing ledger
+      // entry (also FIXED per type; the model never authors the binding).
+      ...(spec.valueBinding === undefined
+        ? {}
+        : { valueBinding: spec.valueBinding }),
     },
     // Customer-scoped types partition by their owner-bound subject; the subject
     // is the Q4 same-subject consistency key (SDD §D).
