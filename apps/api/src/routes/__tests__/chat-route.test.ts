@@ -1,0 +1,514 @@
+// Coverage for routes/chat.ts — the thin delegate over the @claustrum Conductor.
+//
+// We exercise the real route handlers (built into an isolated Fastify app and
+// driven via inject) with every external collaborator mocked: Redis, the
+// session store, the streaming emitter, the execution-queue lock, the Conductor
+// bootstrap, the bot-pause gate, and handleTurn. NO real LLM, DB, Redis or NATS.
+//
+// What this pins down (behaviour, not lines):
+//   POST /api/chat/messages
+//     - guest first-contact mints a session secret (echoed in the body)
+//     - guest replay with a wrong secret → 403 (pt-BR)
+//     - authenticated owner-token mismatch → 403; foreign owner → 403
+//     - happy authenticated path returns a session token
+//     - busy session (lock not acquired) → 409
+//     - zod body validation → 400
+//     - fire-and-forget runConductorTurn: normal turn (text_delta + done +
+//       assistant persistence + capsule close + cleanup + lock release),
+//       bot-paused short-circuit, handleTurn failure → error chunk, empty reply.
+//   GET /api/chat/stream/:sessionId (hijacked SSE)
+//     - CORS allowlist header is reflected only for an allowed Origin
+//     - authenticated non-owner / guest secret-mismatch → "Acesso negado." frame
+//     - Redis failure → fail-closed 503 frame
+//     - same-replica replay of a terminated buffer
+//     - same-replica live delivery off the EventEmitter
+//     - cross-replica delivery via subscribeToStream
+
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import Fastify, { type FastifyInstance } from "fastify";
+import { EventEmitter } from "node:events";
+import { validatorCompiler, serializerCompiler } from "fastify-type-provider-zod";
+
+// ── Hoisted mocks ──────────────────────────────────────────────────────────
+
+const mockRedisGet = vi.hoisted(() => vi.fn());
+const mockRedisSet = vi.hoisted(() => vi.fn());
+const mockGetRedisClient = vi.hoisted(() => vi.fn());
+const mockCreateSessionToken = vi.hoisted(() => vi.fn());
+const mockVerifySessionToken = vi.hoisted(() => vi.fn());
+
+const mockHandleTurn = vi.hoisted(() => vi.fn());
+const mockGetConductor = vi.hoisted(() => vi.fn());
+const mockOpenCapsule = vi.hoisted(() => vi.fn());
+const mockCloseCapsule = vi.hoisted(() => vi.fn());
+
+const mockLoadSession = vi.hoisted(() => vi.fn());
+const mockAppendMessages = vi.hoisted(() => vi.fn());
+
+const mockCreateStream = vi.hoisted(() => vi.fn());
+const mockPushChunk = vi.hoisted(() => vi.fn());
+const mockGetStream = vi.hoisted(() => vi.fn());
+const mockSubscribeToStream = vi.hoisted(() => vi.fn());
+const mockCleanupStream = vi.hoisted(() => vi.fn());
+
+const mockAcquireLock = vi.hoisted(() => vi.fn());
+const mockReleaseLock = vi.hoisted(() => vi.fn());
+
+const mockIsSessionPausedForHuman = vi.hoisted(() => vi.fn());
+
+vi.mock("@ibatexas/tools", () => ({
+  getRedisClient: mockGetRedisClient,
+  rk: (k: string) => `ibatexas:${k}`,
+  createSessionToken: mockCreateSessionToken,
+  verifySessionToken: mockVerifySessionToken,
+}));
+
+vi.mock("@claustrum/core", () => ({
+  handleTurn: mockHandleTurn,
+}));
+
+vi.mock("../../middleware/auth.js", () => ({
+  // Per-request synthetic auth: an `x-test-customer-id` header authenticates.
+  optionalAuth: (
+    request: { headers: Record<string, string>; customerId?: string },
+    _reply: unknown,
+    done: () => void,
+  ) => {
+    const cid = request.headers["x-test-customer-id"];
+    if (cid) request.customerId = cid;
+    done();
+  },
+}));
+
+vi.mock("../../session/store.js", () => ({
+  loadSession: mockLoadSession,
+  appendMessages: mockAppendMessages,
+}));
+
+vi.mock("../../streaming/emitter.js", () => ({
+  createStream: mockCreateStream,
+  pushChunk: mockPushChunk,
+  getStream: mockGetStream,
+  subscribeToStream: mockSubscribeToStream,
+  cleanupStream: mockCleanupStream,
+}));
+
+vi.mock("../../streaming/execution-queue.js", () => ({
+  acquireWebAgentLock: mockAcquireLock,
+  releaseWebAgentLock: mockReleaseLock,
+}));
+
+vi.mock("../../claustrum-bootstrap.js", () => ({
+  getConductor: mockGetConductor,
+}));
+
+vi.mock("../../escalation/escalation-store.js", () => ({
+  isSessionPausedForHuman: mockIsSessionPausedForHuman,
+}));
+
+import { chatRoutes } from "../chat.js";
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+
+const SID = "11111111-1111-4111-8111-111111111111";
+
+async function buildApp(): Promise<FastifyInstance> {
+  const app = Fastify();
+  app.setValidatorCompiler(validatorCompiler);
+  app.setSerializerCompiler(serializerCompiler);
+  await app.register(chatRoutes);
+  await app.ready();
+  return app;
+}
+
+async function waitFor(predicate: () => boolean, timeoutMs = 1500): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (predicate()) return;
+    await new Promise((r) => setTimeout(r, 5));
+  }
+  throw new Error("waitFor timed out");
+}
+
+function assistantWasPersisted(): boolean {
+  return mockAppendMessages.mock.calls.some(
+    (c) => Array.isArray(c[1]) && c[1][0]?.role === "assistant",
+  );
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.stubEnv("NODE_ENV", "test");
+  vi.stubEnv("CORS_ORIGIN", "");
+  vi.stubEnv("SSE_HEARTBEAT_MS", "0"); // disable the keep-alive interval by default
+
+  mockGetRedisClient.mockResolvedValue({ get: mockRedisGet, set: mockRedisSet });
+  mockRedisGet.mockResolvedValue(null);
+  mockRedisSet.mockResolvedValue("OK");
+
+  mockCreateSessionToken.mockReturnValue("session-token-xyz");
+  mockVerifySessionToken.mockReturnValue(null);
+
+  mockLoadSession.mockResolvedValue([]);
+  mockAppendMessages.mockResolvedValue(undefined);
+
+  mockAcquireLock.mockResolvedValue(true);
+  mockReleaseLock.mockResolvedValue(undefined);
+
+  mockIsSessionPausedForHuman.mockResolvedValue(false);
+
+  mockOpenCapsule.mockResolvedValue({ id: "capsule-1" });
+  mockCloseCapsule.mockResolvedValue(undefined);
+  mockGetConductor.mockReturnValue({
+    openCapsule: mockOpenCapsule,
+    closeCapsule: mockCloseCapsule,
+  });
+  // Default turn yields an assistant reply.
+  mockHandleTurn.mockResolvedValue({ response: { text: "Olá! Como posso ajudar?" } });
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+
+// ── POST /api/chat/messages ─────────────────────────────────────────────────
+
+describe("POST /api/chat/messages — auth, ownership & lock guards", () => {
+  it("guest first contact: 200 + a freshly minted session secret", async () => {
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/chat/messages",
+      payload: { sessionId: SID, message: "oi", channel: "web" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.messageId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(typeof body.sessionSecret).toBe("string"); // minted because none existed
+    expect(body.sessionToken).toBeUndefined(); // guests get no JWT
+    // Secret was persisted with a 1h TTL.
+    expect(mockRedisSet).toHaveBeenCalledWith(
+      "ibatexas:session:secret:" + SID,
+      expect.any(String),
+      { EX: 3600 },
+    );
+    await app.close();
+  });
+
+  it("guest replay with a wrong secret → 403 (pt-BR)", async () => {
+    mockRedisGet.mockResolvedValue("the-real-secret"); // a secret already exists
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/chat/messages",
+      headers: { "x-session-secret": "wrong" },
+      payload: { sessionId: SID, message: "oi", channel: "web" },
+    });
+
+    expect(res.statusCode).toBe(403);
+    expect(res.json().message).toBe("Segredo de sessão inválido.");
+    // Guard fired before the lock was ever taken.
+    expect(mockAcquireLock).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it("guest replay with the matching secret → 200 and NO new secret", async () => {
+    mockRedisGet.mockResolvedValue("the-real-secret");
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/chat/messages",
+      headers: { "x-session-secret": "the-real-secret" },
+      payload: { sessionId: SID, message: "oi", channel: "web" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().sessionSecret).toBeUndefined();
+    await app.close();
+  });
+
+  it("authenticated owner: 200 + a session token", async () => {
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/chat/messages",
+      headers: { "x-test-customer-id": "cust_A" },
+      payload: { sessionId: SID, message: "oi", channel: "web" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().sessionToken).toBe("session-token-xyz");
+    expect(res.json().sessionSecret).toBeUndefined(); // not a guest
+    // Owner key re-asserted with a 24h TTL.
+    expect(mockRedisSet).toHaveBeenCalledWith(
+      "ibatexas:session:owner:" + SID,
+      "cust_A",
+      { EX: 86400 },
+    );
+    await app.close();
+  });
+
+  it("authenticated with a mismatched session token → 403", async () => {
+    mockVerifySessionToken.mockReturnValue({ sessionId: "other-session", customerId: "cust_A" });
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/chat/messages",
+      headers: { "x-test-customer-id": "cust_A", "x-session-token": "tampered" },
+      payload: { sessionId: SID, message: "oi", channel: "web" },
+    });
+
+    expect(res.statusCode).toBe(403);
+    expect(res.json().message).toBe("Token de sessão inválido.");
+    await app.close();
+  });
+
+  it("authenticated but the session is owned by someone else → 403", async () => {
+    mockRedisGet.mockResolvedValue("cust_B"); // existing owner differs
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/chat/messages",
+      headers: { "x-test-customer-id": "cust_A" },
+      payload: { sessionId: SID, message: "oi", channel: "web" },
+    });
+
+    expect(res.statusCode).toBe(403);
+    expect(res.json().message).toBe("Sessão pertence a outro usuário.");
+    await app.close();
+  });
+
+  it("session already running (lock not acquired) → 409", async () => {
+    mockAcquireLock.mockResolvedValue(false);
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/chat/messages",
+      payload: { sessionId: SID, message: "oi", channel: "web" },
+    });
+
+    expect(res.statusCode).toBe(409);
+    expect(res.json().message).toBe("Aguarde a resposta anterior.");
+    await app.close();
+  });
+
+  it("rejects an empty message via the zod body schema → 400", async () => {
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/chat/messages",
+      payload: { sessionId: SID, message: "", channel: "web" },
+    });
+    expect(res.statusCode).toBe(400);
+    await app.close();
+  });
+
+  it("rejects an unknown channel via the zod body schema → 400", async () => {
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/chat/messages",
+      payload: { sessionId: SID, message: "oi", channel: "carrier-pigeon" },
+    });
+    expect(res.statusCode).toBe(400);
+    await app.close();
+  });
+});
+
+// ── POST → fire-and-forget runConductorTurn delivery ────────────────────────
+
+describe("POST /api/chat/messages — Conductor turn delivery (fire-and-forget)", () => {
+  async function postGuest(message = "oi"): Promise<void> {
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/chat/messages",
+      payload: { sessionId: SID, message, channel: "web" },
+    });
+    expect(res.statusCode).toBe(200);
+    await app.close();
+  }
+
+  it("normal turn: pushes text_delta + done, persists the assistant reply, closes the capsule, releases the lock", async () => {
+    await postGuest();
+    await waitFor(() => mockReleaseLock.mock.calls.length > 0);
+
+    expect(mockIsSessionPausedForHuman).toHaveBeenCalledWith(SID);
+    expect(mockGetConductor).toHaveBeenCalledTimes(1);
+    expect(mockOpenCapsule).toHaveBeenCalledWith(
+      expect.objectContaining({ channel: "web", sessionKey: SID }),
+    );
+    expect(mockHandleTurn).toHaveBeenCalledTimes(1);
+
+    expect(mockPushChunk).toHaveBeenCalledWith(SID, {
+      type: "text_delta",
+      delta: "Olá! Como posso ajudar?",
+    });
+    expect(mockPushChunk).toHaveBeenCalledWith(SID, { type: "done" });
+
+    expect(assistantWasPersisted()).toBe(true);
+    expect(mockCloseCapsule).toHaveBeenCalledWith({ id: "capsule-1" });
+    expect(mockCleanupStream).toHaveBeenCalledWith(SID);
+  });
+
+  it("bot-paused session: emits only `done` and never runs the Conductor", async () => {
+    mockIsSessionPausedForHuman.mockResolvedValue(true);
+    await postGuest();
+    await waitFor(() => mockReleaseLock.mock.calls.length > 0);
+
+    expect(mockPushChunk).toHaveBeenCalledWith(SID, { type: "done" });
+    expect(mockGetConductor).not.toHaveBeenCalled();
+    expect(mockHandleTurn).not.toHaveBeenCalled();
+    expect(assistantWasPersisted()).toBe(false);
+    // Finally-block cleanup still runs.
+    expect(mockCleanupStream).toHaveBeenCalledWith(SID);
+  });
+
+  it("handleTurn failure: emits an error chunk, still closes the capsule and releases the lock", async () => {
+    mockHandleTurn.mockRejectedValue(new Error("planner exploded"));
+    await postGuest();
+    await waitFor(() => mockReleaseLock.mock.calls.length > 0);
+
+    expect(mockPushChunk).toHaveBeenCalledWith(SID, { type: "error", message: "Erro interno." });
+    // The inner try/finally closed the capsule before the error propagated.
+    expect(mockCloseCapsule).toHaveBeenCalledTimes(1);
+    expect(assistantWasPersisted()).toBe(false);
+  });
+
+  it("empty assistant reply: emits `done` only, no assistant persistence", async () => {
+    mockHandleTurn.mockResolvedValue({ response: { text: "" } });
+    await postGuest();
+    await waitFor(() => mockReleaseLock.mock.calls.length > 0);
+
+    expect(mockPushChunk).toHaveBeenCalledWith(SID, { type: "done" });
+    expect(mockPushChunk).not.toHaveBeenCalledWith(
+      SID,
+      expect.objectContaining({ type: "text_delta" }),
+    );
+    expect(assistantWasPersisted()).toBe(false);
+  });
+});
+
+// ── GET /api/chat/stream/:sessionId (hijacked SSE) ──────────────────────────
+
+describe("GET /api/chat/stream/:sessionId — access guards", () => {
+  it("authenticated non-owner is denied with an SSE error frame", async () => {
+    mockRedisGet.mockResolvedValue("cust_owner"); // owner key
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/chat/stream/${SID}`,
+      headers: { "x-test-customer-id": "cust_intruder" },
+    });
+
+    expect(res.payload).toContain('"type":"error"');
+    expect(res.payload).toContain("Acesso negado.");
+    expect(mockGetStream).not.toHaveBeenCalled(); // rejected before serving
+    await app.close();
+  });
+
+  it("guest with a wrong secret is denied with an SSE error frame", async () => {
+    mockRedisGet.mockResolvedValue("real-secret"); // secret key exists
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/chat/stream/${SID}`,
+      headers: { "x-session-secret": "nope" },
+    });
+
+    expect(res.payload).toContain("Acesso negado.");
+    await app.close();
+  });
+
+  it("fails closed with a 503 frame when the Redis ownership check throws", async () => {
+    mockRedisGet.mockRejectedValue(new Error("redis down"));
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/chat/stream/${SID}`,
+      headers: { "x-test-customer-id": "cust_A" },
+    });
+
+    expect(res.statusCode).toBe(503);
+    expect(res.payload).toContain("Erro temporario. Tente novamente.");
+    await app.close();
+  });
+});
+
+describe("GET /api/chat/stream/:sessionId — chunk delivery", () => {
+  it("same-replica: replays a buffer that already terminated, with CORS for an allowed Origin", async () => {
+    vi.stubEnv("SSE_HEARTBEAT_MS", "15000"); // exercise the keep-alive interval branch
+    mockRedisGet.mockResolvedValue(null); // guest, no secret → falls through to serving
+    mockGetStream.mockReturnValue({
+      emitter: new EventEmitter(),
+      buffer: [
+        { type: "text_delta", delta: "parcial" },
+        { type: "done" },
+      ],
+      seq: 2,
+    });
+
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/chat/stream/${SID}`,
+      headers: { origin: "http://localhost:5173" },
+    });
+
+    expect(res.payload).toContain('data: {"type":"text_delta","delta":"parcial"}');
+    expect(res.payload).toContain('data: {"type":"done"}');
+    // CORS allowlist reflected the dev-LAN Origin.
+    expect(res.headers["access-control-allow-origin"]).toBe("http://localhost:5173");
+    expect(res.headers["access-control-allow-credentials"]).toBe("true");
+    expect(res.headers["content-type"]).toContain("text/event-stream");
+    await app.close();
+  });
+
+  it("same-replica: streams live chunks off the EventEmitter until the terminal `done`", async () => {
+    mockRedisGet.mockResolvedValue(null);
+    const emitter = new EventEmitter();
+    mockGetStream.mockReturnValue({ emitter, buffer: [], seq: 0 });
+
+    const app = await buildApp();
+    const injectPromise = app.inject({
+      method: "GET",
+      url: `/api/chat/stream/${SID}`,
+    });
+
+    // Wait until the handler has subscribed, then push live chunks.
+    await waitFor(() => emitter.listenerCount("chunk") > 0);
+    emitter.emit("chunk", { type: "text_delta", delta: "ao-vivo" });
+    emitter.emit("chunk", { type: "done" });
+
+    const res = await injectPromise;
+    expect(res.payload).toContain('"delta":"ao-vivo"');
+    expect(res.payload).toContain('"type":"done"');
+    await app.close();
+  });
+
+  it("cross-replica: delivers via subscribeToStream and closes the subscription", async () => {
+    mockRedisGet.mockResolvedValue(null);
+    mockGetStream.mockReturnValue(undefined); // no local entry → Redis path
+    const close = vi.fn().mockResolvedValue(undefined);
+    mockSubscribeToStream.mockImplementation(
+      async (_sid: string, onChunk: (c: unknown) => void) => {
+        onChunk({ type: "text_delta", delta: "via-redis" });
+        onChunk({ type: "done" });
+        return { close };
+      },
+    );
+
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/chat/stream/${SID}`,
+    });
+
+    expect(mockSubscribeToStream).toHaveBeenCalledWith(SID, expect.any(Function));
+    expect(res.payload).toContain('"delta":"via-redis"');
+    expect(res.payload).toContain('"type":"done"');
+    expect(close).toHaveBeenCalled();
+    await app.close();
+  });
+});
