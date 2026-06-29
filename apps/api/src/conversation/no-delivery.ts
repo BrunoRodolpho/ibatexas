@@ -161,11 +161,35 @@ export async function emitNoDelivery(
 }
 
 /** Build the per-event dedup id: `turnId`-keyed when available, else `messageSid`. */
-function deriveEventId(sessionId: string, turnId?: string | null, messageSid?: string | null): string {
+export function deriveEventId(sessionId: string, turnId?: string | null, messageSid?: string | null): string {
   if (turnId) return `${sessionId}:${turnId}`;
   if (messageSid) return `${sessionId}:${messageSid}`;
   return `${sessionId}:no-id`;
 }
+
+/**
+ * The `@@unique` externalId for an incident open derived from a no-delivery
+ * signal. SINGLE-SOURCED so the inline open (webhook) and the durable
+ * `incident-subscriber` backstop derive the SAME id — the unique constraint +
+ * `findFirst-OPEN` then collapse the two paths to one row (no double open / no
+ * double `incident_opened` ping) when both fire for the same drop.
+ */
+export function noDeliveryExternalId(
+  signal: Pick<NoDeliverySignal, "sessionId" | "turnId" | "messageSid">,
+): string {
+  return `conversation.no_delivery:${deriveEventId(signal.sessionId, signal.turnId, signal.messageSid)}`;
+}
+
+/**
+ * Outcome of {@link openIncidentInline}. Lets a caller (the durable
+ * `incident-subscriber`) branch on a governance REFUSE to persist a flagged
+ * suspect row, while the webhook caller simply ignores it (fail-open).
+ */
+export type InlineOpenResult =
+  | { readonly kind: "opened"; readonly incidentId: string }
+  | { readonly kind: "duplicate" }
+  | { readonly kind: "refused"; readonly cause: string; readonly code?: string }
+  | { readonly kind: "error"; readonly error: unknown };
 
 /**
  * Synchronous, FAIL-OPEN, governed incident OPEN through the kernel chokepoint.
@@ -176,14 +200,16 @@ function deriveEventId(sessionId: string, turnId?: string | null, messageSid?: s
  * `conversation.incident_opened` (best-effort) so increments never re-ping.
  *
  * NEVER throws — the webhook response must not break on an incident-open failure.
+ * Returns an {@link InlineOpenResult} so the durable subscriber can react to a
+ * REFUSE; the webhook caller ignores the value.
  */
 export async function openIncidentInline(
   signal: NoDeliverySignal,
   log: LogFn,
-): Promise<void> {
+): Promise<InlineOpenResult> {
   try {
     const eventId = deriveEventId(signal.sessionId, signal.turnId, signal.messageSid);
-    const externalId = `conversation.no_delivery:${eventId}`;
+    const externalId = noDeliveryExternalId(signal);
 
     const svc = createIncidentService({ auditSink: getAuditSink(), log });
 
@@ -231,15 +257,28 @@ export async function openIncidentInline(
             "[no-delivery] incident_opened publish failed (badge is source of truth)",
           );
         }
+        return { kind: "opened", incidentId: outcome.result.incident.id };
       }
+      // EXECUTE but opened === false → replay / dropCount increment (dedup).
+      return { kind: "duplicate" };
     } else if (outcome.decision.kind === "REFUSE") {
       // Frozen-cause guard fired — a buggy detector failed CLOSED at the kernel.
+      const code =
+        "refusal" in outcome.decision
+          ? (outcome.decision as { refusal?: { code?: string } }).refusal?.code
+          : undefined;
       log.error(
-        { session: signal.sessionId, cause: signal.cause },
+        { session: signal.sessionId, cause: signal.cause, code },
         "[no-delivery] kernel REFUSED incident open (cause out of frozen taxonomy)",
       );
+      return code === undefined
+        ? { kind: "refused", cause: signal.cause }
+        : { kind: "refused", cause: signal.cause, code };
     }
+    // Any other decision kind (DEFER/CLARIFY/etc.) — treat as a non-open no-op.
+    return { kind: "duplicate" };
   } catch (err) {
     log.error(err, "[no-delivery] inline incident open failed (fail-open; webhook continues)");
+    return { kind: "error", error: err };
   }
 }

@@ -10,6 +10,8 @@ import { bootstrapLearningSinkDI } from "./learning-sink-bootstrap.js";
 import { bootstrapClaustrum } from "./claustrum-bootstrap.js";
 import { startCartIntelligenceSubscribers } from "./subscribers/cart-intelligence.js";
 import { startHandoffSubscriber } from "./subscribers/handoff-subscriber.js";
+import { startIncidentSubscriber } from "./subscribers/incident-subscriber.js";
+import { startIncidentNotificationSubscriber } from "./subscribers/incident-notification-subscriber.js";
 import { startConversationArchiver } from "./subscribers/conversation-archiver.js";
 import { startPaymentLifecycleSubscriber } from "./subscribers/payment-lifecycle.js";
 import { startDeferResolverSubscriber } from "./subscribers/defer-resolver.js";
@@ -176,6 +178,12 @@ const start = async (): Promise<void> => {
       // Register subscribers BEFORE starting jobs to prevent race condition
       await startCartIntelligenceSubscribers(server.log);
       await startHandoffSubscriber(server.log);
+      // W1 no-reply incident — durable backstop consumer of conversation.no_delivery
+      // (redelivery/replay + future out-of-process emitters; inline open is the
+      // primary durability path) and the out-of-band staff WhatsApp ping consumer
+      // of conversation.incident_opened (storm-digest rate-limited).
+      await startIncidentSubscriber(server.log);
+      await startIncidentNotificationSubscriber(server.log);
       await startConversationArchiver(server.log);
       await startPaymentLifecycleSubscriber(server.log);
       // [task 03] defer-resolver wired after payment-lifecycle so the lifecycle
