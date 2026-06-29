@@ -530,6 +530,200 @@ describe("POST /api/chat/messages — W1 no-reply incident seam", () => {
   });
 });
 
+// ── W1 seam — supersession (F1) & conductor-throw catch parity (F2) ──────────
+// F1: `turnAbort.signal.aborted` is set by BOTH a genuine SSE client-disconnect
+// AND a newer turn superseding this one. Only a STILL-CURRENT aborted turn (the
+// registry slot is still ours) is a real drop; a superseded turn (a successor
+// took the slot and will answer) must open NO incident.
+// F2: a conductor/handleTurn THROW skipped the inner classify; the catch must
+// open a governed incident (WhatsApp :899 parity) rather than only pushing a
+// bare {type:error}.
+describe("POST /api/chat/messages — W1 supersession (F1) & catch parity (F2)", () => {
+  it("F1: a superseded turn (a newer turn arrived for the same session) opens NO incident", async () => {
+    vi.stubEnv("WEB_EMPTY_COMPLETION_HOLDING", "true");
+
+    // Turn A hangs until released and (if it were still current) would be an
+    // empty-completion drop. Turn B arrives first, supersedes A (aborts its
+    // controller + takes the registry slot), and answers deliverably.
+    let releaseA!: () => void;
+    const gateA = new Promise<void>((r) => {
+      releaseA = r;
+    });
+    mockHandleTurn
+      .mockImplementationOnce(async () => {
+        await gateA;
+        return { response: { text: "" }, decision: { kind: "EXECUTE" } }; // empty → would-be drop
+      })
+      .mockResolvedValueOnce({
+        response: { text: "Resposta da segunda mensagem." },
+        decision: { kind: "EXECUTE" },
+      });
+
+    const app = await buildApp();
+
+    // POST A — fire-and-forget turn hangs on gateA.
+    await app.inject({
+      method: "POST",
+      url: "/api/chat/messages",
+      payload: { sessionId: SID, message: "A", channel: "web" },
+    });
+    await waitFor(() => mockHandleTurn.mock.calls.length === 1);
+
+    // POST B — supersedes A (previous?.abort()) and resolves deliverably.
+    await app.inject({
+      method: "POST",
+      url: "/api/chat/messages",
+      payload: { sessionId: SID, message: "B", channel: "web" },
+    });
+    await waitFor(() => mockHandleTurn.mock.calls.length === 2);
+    await waitFor(() => mockReleaseLock.mock.calls.length >= 1); // B completed
+
+    // Now release A — it resolves aborted + NO-LONGER-CURRENT (superseded).
+    releaseA();
+    await waitFor(() => mockReleaseLock.mock.calls.length >= 2);
+
+    // A was superseded → suppressed like a bot-pause: no incident at all.
+    expect(mockOpenIncidentInline).not.toHaveBeenCalled();
+    expect(mockEmitNoDelivery).not.toHaveBeenCalled();
+    // B delivered its reply; A (superseded) delivered nothing of its own.
+    expect(mockPushChunk).toHaveBeenCalledWith(SID, {
+      type: "text_delta",
+      delta: "Resposta da segunda mensagem.",
+    });
+    await app.close();
+  });
+
+  it("F1: a genuine client-disconnect while still-current + nothing delivered → timeout incident (customerImpacted)", async () => {
+    vi.stubEnv("WEB_EMPTY_COMPLETION_HOLDING", "false");
+
+    // The turn would be deliverable, but the SSE client disconnects before it
+    // resolves, so nothing reaches the customer — a genuine timeout-class drop.
+    let releaseTurn!: () => void;
+    const gate = new Promise<void>((r) => {
+      releaseTurn = r;
+    });
+    mockHandleTurn.mockImplementation(async () => {
+      await gate;
+      return { response: { text: "resposta tardia" }, decision: { kind: "EXECUTE" } };
+    });
+
+    // Serve the GET off a local stream that never terminates, so the consumer's
+    // request "close" (driven by the abort below) lands while UNFINISHED →
+    // abortTurnOnDisconnect aborts the STILL-CURRENT producing turn.
+    const emitter = new EventEmitter();
+    mockGetStream.mockReturnValue({ emitter, buffer: [], seq: 0 });
+
+    const app = await buildApp();
+
+    await app.inject({
+      method: "POST",
+      url: "/api/chat/messages",
+      payload: { sessionId: SID, message: "oi", channel: "web" },
+    });
+    await waitFor(() => mockHandleTurn.mock.calls.length === 1);
+
+    // Open the SSE stream, then disconnect it via an AbortSignal once subscribed.
+    const ac = new AbortController();
+    const getPromise = app
+      .inject({ method: "GET", url: `/api/chat/stream/${SID}`, signal: ac.signal })
+      .catch(() => undefined); // a client disconnect rejects the inject — expected
+    await waitFor(() => emitter.listenerCount("chunk") > 0);
+    ac.abort(); // disconnect → request "close" → abortTurnOnDisconnect() (still current)
+    // The close handler removes the chunk listener as it aborts the turn.
+    await waitFor(() => emitter.listenerCount("chunk") === 0);
+
+    // Release the turn: it resolves aborted, still-current, with nothing delivered.
+    releaseTurn();
+    await waitFor(() => mockReleaseLock.mock.calls.length > 0);
+    await getPromise;
+
+    expect(mockOpenIncidentInline).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cause: "timeout",
+        customerImpacted: true,
+        channel: "web",
+        sessionId: SID,
+        turnId: "turn-1",
+      }),
+      expect.anything(),
+    );
+    // Aborted client → nothing was delivered to it.
+    expect(mockPushChunk).not.toHaveBeenCalledWith(
+      SID,
+      expect.objectContaining({ type: "text_delta" }),
+    );
+    expect(mockPushChunk).not.toHaveBeenCalledWith(SID, { type: "done" });
+    await app.close();
+  });
+
+  it("F2: the conductor throws → opens an incident (send_failed, customerImpacted=false) + degraded {type:error} — WA :899 parity", async () => {
+    mockHandleTurn.mockRejectedValue(new Error("conductor exploded"));
+
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/chat/messages",
+      payload: { sessionId: SID, message: "oi", channel: "web" },
+    });
+    expect(res.statusCode).toBe(200);
+    await waitFor(() => mockReleaseLock.mock.calls.length > 0);
+
+    // The throw is covered: emit + governed open, keyed on the web messageId
+    // (no turnId is in scope on the catch path), customerImpacted=false because
+    // the degraded {type:error} reached the still-connected client.
+    expect(mockEmitNoDelivery).toHaveBeenCalledWith(
+      expect.objectContaining({ cause: "send_failed", channel: "web", customerImpacted: false }),
+      expect.anything(),
+    );
+    expect(mockOpenIncidentInline).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cause: "send_failed",
+        customerImpacted: false,
+        channel: "web",
+        sessionId: SID,
+        senderRef: `web:${SID}`,
+        turnId: null, // catch path has no turnId — dedup falls back to messageId
+        messageSid: expect.stringMatching(/^[0-9a-f-]{36}$/),
+      }),
+      expect.anything(),
+    );
+
+    // Degraded delivery still reached the client; nothing was persisted.
+    expect(mockPushChunk).toHaveBeenCalledWith(SID, { type: "error", message: "Erro interno." });
+    expect(assistantWasPersisted()).toBe(false);
+    expect(mockCloseCapsule).toHaveBeenCalledTimes(1);
+    await app.close();
+  });
+
+  it("F2: a post-result throw (closeCapsule after a delivered reply) does NOT open a false incident", async () => {
+    // A normal deliverable turn, but capsule close fails AFTER the reply was
+    // delivered + classified. The inner path already owned the (no-)incident
+    // decision, so the catch must not double-open.
+    mockHandleTurn.mockResolvedValue({
+      response: { text: "Tudo certo!" },
+      decision: { kind: "EXECUTE" },
+    });
+    mockCloseCapsule.mockRejectedValue(new Error("capsule close failed"));
+
+    const app = await buildApp();
+    await app.inject({
+      method: "POST",
+      url: "/api/chat/messages",
+      payload: { sessionId: SID, message: "oi", channel: "web" },
+    });
+    await waitFor(() => mockReleaseLock.mock.calls.length > 0);
+
+    // Reply was delivered → no drop, no incident despite the post-delivery throw.
+    expect(mockOpenIncidentInline).not.toHaveBeenCalled();
+    expect(mockEmitNoDelivery).not.toHaveBeenCalled();
+    expect(mockPushChunk).toHaveBeenCalledWith(SID, {
+      type: "text_delta",
+      delta: "Tudo certo!",
+    });
+    await app.close();
+  });
+});
+
 // ── GET /api/chat/stream/:sessionId (hijacked SSE) ──────────────────────────
 
 describe("GET /api/chat/stream/:sessionId — access guards", () => {
