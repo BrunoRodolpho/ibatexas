@@ -412,6 +412,21 @@ export function createIncidentService(options?: IncidentServiceOptions) {
       })
       return rows.map((r) => refreshSeverity(r, now))
     },
+
+    /**
+     * Cheap indexed lookup for THE non-terminal incident on a session (backs the
+     * auto-close / handoff-close seams). Returns `null` on the happy path — the
+     * `@@index([sessionId])` makes this fast enough to run on every delivered
+     * reply. Severity is NOT recomputed (callers only need the id/status).
+     */
+    async findOpenBySession(
+      sessionId: string,
+    ): Promise<ConversationIncident | null> {
+      return prisma.conversationIncident.findFirst({
+        where: { sessionId, status: { in: [...NON_TERMINAL] } },
+        orderBy: { openedAt: "desc" },
+      })
+    },
   }
 }
 

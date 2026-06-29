@@ -10,6 +10,7 @@ import type { FastifyBaseLogger } from "fastify";
 import { pushToDlq } from "./dlq.js";
 import { isNewEvent } from "./dedup.js";
 import { getEscalationStore } from "../escalation/escalation-store.js";
+import { resolveIncidentOnHandoff } from "../incidents/incident-auto-close.js";
 
 export async function startHandoffSubscriber(
   log?: FastifyBaseLogger,
@@ -33,12 +34,13 @@ export async function startHandoffSubscriber(
     // D2 — record the escalation (pauses the bot for this session + enqueues it
     // for staff). Best-effort: a recording failure must not block the staff
     // alert below (the WhatsApp ping is the fallback signal).
+    const handoffAt = new Date().toISOString();
     try {
       const store = await getEscalationStore();
       await store.recordHandoff({
         sessionId,
         reason: reason ?? null,
-        at: new Date().toISOString(),
+        at: handoffAt,
       });
     } catch (err) {
       log?.error(
@@ -46,6 +48,15 @@ export async function startHandoffSubscriber(
         "[handoff-subscriber] failed to record escalation state (swallowed)",
       );
     }
+
+    // P1-3: if the handoff opens on a session that still has an OPEN incident,
+    // the bot is now paused and can never auto-close it — resolve it here as
+    // HANDED_OFF (resolved_by=system:escalation). Fail-open, idempotent.
+    await resolveIncidentOnHandoff(sessionId, handoffAt, {
+      info: (...a: unknown[]) => log?.info(a[0] as object, a[1] as string),
+      warn: (...a: unknown[]) => log?.warn(a[0] as object, a[1] as string),
+      error: (...a: unknown[]) => log?.error(a[0] as object, a[1] as string),
+    });
 
     const staffPhone = process.env.STAFF_NOTIFICATION_PHONE;
     if (!staffPhone) {

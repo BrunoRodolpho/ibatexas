@@ -59,6 +59,7 @@ import {
   openIncidentInline,
   type TurnDisposition,
 } from "../conversation/no-delivery.js";
+import { closeIncidentOnDeliveredReply } from "../incidents/incident-auto-close.js";
 import { matchShortcut, buildHelpText, buildWelcomeText } from "../whatsapp/shortcuts.js";
 import { LGPD_OPTIN_MESSAGE } from "../whatsapp/constants.js";
 import { scheduleHesitationNudge, markCustomerReplied } from "../jobs/hesitation-nudge.js";
@@ -250,6 +251,12 @@ async function retryForMissedMessages(
       await appendMessages(session.sessionId, [
         { role: "assistant", content: retryResponse.text },
       ], true, { customerId: session.customerId, channel: "whatsapp" });
+      // Same-invocation self-heal: this best-effort second attempt delivered →
+      // AUTO_RESOLVE any OPEN incident on the session (same delivered predicate;
+      // this branch never sends PIX, so text-delivered is the predicate here).
+      if (retryResponse.turnId) {
+        await closeIncidentOnDeliveredReply(session.sessionId, retryResponse.turnId, log);
+      }
     } else if (
       retryResponse.disposition === "empty_completion" ||
       retryResponse.disposition === "whitespace_only"
@@ -979,6 +986,16 @@ async function handleMessageAsync(
     // genuine-drop decision on what actually reached the customer.
     const hasPixData = Boolean(agentResponse.pixData);
     const deliveredText = textSent || hasPixData;
+
+    // ── Auto-close (Q2): a successfully-delivered reply self-heals an OPEN
+    // incident on this session → AUTO_RESOLVED. Gated on the SAME delivered
+    // predicate as detection (REVIEW-v2: a PIX-only recovery must close too, so
+    // this sits OUT of the `if (agentResponse.text…)` text gate). Fail-open,
+    // idempotent, fast-null on the happy path. ──
+    if (deliveredText && agentResponse.turnId) {
+      await closeIncidentOnDeliveredReply(session.sessionId, agentResponse.turnId, log);
+    }
+
     const classification = classifyTurnDelivery({
       disposition: agentResponse.disposition,
       ...(agentResponse.decisionKind !== undefined ? { decisionKind: agentResponse.decisionKind } : {}),
