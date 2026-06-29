@@ -4,39 +4,11 @@ import { useEffect, useRef } from 'react'
 import { X, Clock } from 'lucide-react'
 import { Badge } from '../atoms/Badge'
 import { ORDER_STATUS_LABELS, PAYMENT_STATUS_LABELS, ACTION_LABELS } from '../constants/admin-labels'
+import { statusVariant, paymentVariant } from '../utils/status-variant'
 import { getNextStatus, formatOrderId, ORDER_STATUS_LABELS_PT, type OrderFulfillmentStatus } from '@ibatexas/types'
 
 function formatBRL(centavos: number) {
   return (centavos / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
-}
-
-type BadgeVariant = 'success' | 'warning' | 'danger' | 'default'
-
-function statusVariant(status: string): BadgeVariant {
-  const map: Record<string, BadgeVariant> = {
-    completed: 'success',
-    delivered: 'success',
-    confirmed: 'success',
-    pending: 'warning',
-    preparing: 'warning',
-    ready: 'warning',
-    canceled: 'danger',
-  }
-  return map[status] ?? 'default'
-}
-
-function paymentVariant(status: string): BadgeVariant {
-  const map: Record<string, BadgeVariant> = {
-    paid: 'success',
-    awaiting_payment: 'warning',
-    payment_pending: 'warning',
-    cash_pending: 'warning',
-    switching_method: 'warning',
-    payment_expired: 'danger',
-    payment_failed: 'danger',
-    canceled: 'danger',
-  }
-  return map[status] ?? 'default'
 }
 
 const ADVANCE_LABELS: Record<string, string> = {

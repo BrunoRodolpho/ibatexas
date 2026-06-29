@@ -57,3 +57,39 @@ export function formatRating(rating: number): string {
     maximumFractionDigits: 1,
   })
 }
+
+/**
+ * Aging threshold for no-reply incidents, in minutes. An OPEN incident older
+ * than this is "aged" — the customer is hanging — and renders its idade in red.
+ */
+export const INCIDENT_AGING_MINUTES = 20
+
+/**
+ * Relative pt-BR age formatter for the Incidentes queue/drawer.
+ * Orders only ever showed an absolute `toLocaleString`; aging needs relative time.
+ * @example formatAge('2026-06-29T14:00:00Z') // "há 31 min" | "há 2 h" | "agora"
+ */
+export function formatAge(date: string | Date, now: Date = new Date()): string {
+  const then = typeof date === 'string' ? new Date(date) : date
+  const diffMs = now.getTime() - then.getTime()
+  const diffMin = Math.floor(diffMs / 60_000)
+  if (diffMin < 1) return 'agora'
+  if (diffMin < 60) return `há ${diffMin} min`
+  const diffH = Math.floor(diffMin / 60)
+  if (diffH < 24) return `há ${diffH} h`
+  const diffD = Math.floor(diffH / 24)
+  return `há ${diffD} d`
+}
+
+/**
+ * Whether an incident opened-at timestamp has crossed the aging threshold
+ * (drives the red `text-accent-red` idade styling).
+ */
+export function isAged(
+  date: string | Date,
+  thresholdMinutes: number = INCIDENT_AGING_MINUTES,
+  now: Date = new Date(),
+): boolean {
+  const then = typeof date === 'string' ? new Date(date) : date
+  return now.getTime() - then.getTime() > thresholdMinutes * 60_000
+}
