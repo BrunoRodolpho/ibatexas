@@ -52,7 +52,7 @@ export async function switchOrderType(
   const orderQuerySvc = createOrderQueryService();
   const order = await orderQuerySvc.getById(input.orderId);
 
-  if (!order || order.customerId !== ctx.customerId) {
+  if (order?.customerId !== ctx.customerId) {
     return { success: false, message: "Pedido não encontrado." };
   }
 

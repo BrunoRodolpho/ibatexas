@@ -161,10 +161,11 @@ export class ProjectionBarrierTimeoutError extends Error {
     const seenProjection =
       projection === null ? "projection=absent" : `projection.version=${projection.version}`
     const seenTypes = [...new Set(events.map((event) => event.eventType))].join(", ")
+    const typesSuffix = seenTypes.length > 0 ? ` [${seenTypes}]` : ""
     super(
       `projection_barrier_timeout: ${args.condition} on ${args.target} not reached after ` +
         `${args.elapsedMs}ms (${args.polls} polls); last seen: ${seenProjection}, ` +
-        `${events.length} event(s)${seenTypes.length > 0 ? ` [${seenTypes}]` : ""}`,
+        `${events.length} event(s)${typesSuffix}`,
     )
     this.name = "ProjectionBarrierTimeoutError"
     this.lastSeen = args.lastSeen
@@ -191,7 +192,7 @@ function isSatisfied(state: ProjectionBarrierState, opts: AwaitProjectionOptions
 }
 
 async function pollOnce(opts: AwaitProjectionOptions): Promise<ProjectionBarrierState> {
-  const where = opts.orderId !== undefined ? { id: opts.orderId } : (opts.filter as Record<string, unknown>)
+  const where = opts.orderId === undefined ? (opts.filter as Record<string, unknown>) : { id: opts.orderId }
   const projection = await opts.prisma.orderProjection.findFirst({ where })
   const eventOrderId = opts.orderId ?? projection?.id
   const events =
@@ -243,7 +244,7 @@ export async function awaitProjection(opts: AwaitProjectionOptions): Promise<Awa
     const remainingMs = timeoutMs - (Date.now() - startedAt)
     if (remainingMs <= 0) {
       throw new ProjectionBarrierTimeoutError({
-        target: opts.orderId !== undefined ? `order ${opts.orderId}` : `filter ${JSON.stringify(opts.filter)}`,
+        target: opts.orderId === undefined ? `filter ${JSON.stringify(opts.filter)}` : `order ${opts.orderId}`,
         condition: describeCondition(opts),
         lastSeen,
         elapsedMs: Date.now() - startedAt,

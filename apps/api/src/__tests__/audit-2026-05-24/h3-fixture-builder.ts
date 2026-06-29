@@ -45,7 +45,7 @@
 // so it can be reused for staff-actor negative tests etc.
 
 import { randomUUID } from "node:crypto"
-import { prisma } from "@ibatexas/domain"
+import { prisma, type Prisma } from "@ibatexas/domain"
 
 export interface PIIFixtureSpec {
   /** Customer ID. Auto-generated if not supplied. */
@@ -158,13 +158,13 @@ export interface BuiltFixture {
     conversationMessages: unknown[]
     orderStatusHistory: unknown[]
     orderEventLogs: unknown[]
-    loyaltyAccount: unknown | null
+    loyaltyAccount: unknown
     reservations: unknown[]
     timeSlots: unknown[]
     staffActors: unknown[]
     addresses: unknown[]
     reviews: unknown[]
-    preferences: unknown | null
+    preferences: unknown
     orderItems: unknown[]
   }
 }
@@ -206,233 +206,52 @@ export async function buildPIIFixture(spec: PIIFixtureSpec): Promise<BuiltFixtur
         phone: spec.phone,
         email: spec.email,
         name: spec.name,
-        ...(spec.cpf !== undefined ? { cpf: spec.cpf } : {}),
+        ...(spec.cpf === undefined ? {} : { cpf: spec.cpf }),
       },
     })
 
     // ── (2) Staff rows referenced by orderStatusHistory ─────────────
-    // Staff actions are encoded as actor='admin' with an actorId pointing
-    // at a staff row (the OrderActor enum has no `staff` value; the
-    // schema comment on actorId notes it can carry staff.id OR customer.id).
-    const staffActorIds = new Set<string>()
-    for (const h of spec.orderStatusHistory ?? []) {
-      if (h.actorType === "admin" && h.actorId) staffActorIds.add(h.actorId)
-    }
-    const staffActors: unknown[] = []
-    for (const staffId of staffActorIds) {
-      const s = await tx.staff.create({
-        data: {
-          id: staffId,
-          // Use a phone uniqueness-safe stub scoped to the customerId so
-          // parallel-iteration tests don't collide on staff.phone unique.
-          phone: `+55119${staffId.slice(-8).padStart(8, "0")}`,
-          name: `Staff ${staffId}`,
-        },
-      })
-      staffActors.push(s)
-    }
+    const staffActors = await createStaffActors(tx, spec)
 
     // ── (3) Order projections (Surface 1) ──────────────────────────
-    const orderProjections: unknown[] = []
-    const createdProjectionIds = new Set<string>()
-    for (let i = 0; i < (spec.orderProjections ?? []).length; i++) {
-      const op = spec.orderProjections![i]!
-      const id = projectionIdsByIndex[i]!
-      const proj = await tx.orderProjection.create({
-        data: {
-          id,
-          displayId: 1000 + i,
-          customerId,
-          customerEmail: op.customerEmail,
-          customerName: op.customerName,
-          customerPhone: op.customerPhone,
-          shippingAddressJson: op.shippingAddressJson as Parameters<
-            typeof tx.orderProjection.create
-          >[0]["data"]["shippingAddressJson"],
-          medusaCreatedAt: new Date(),
-        },
-      })
-      orderProjections.push(proj)
-      createdProjectionIds.add(id)
-    }
-    // Backfill referenced order IDs that the caller didn't explicitly
-    // declare in spec.orderProjections — orderStatusHistory + orderEventLog
-    // have FK constraints on order_projections.id.
-    for (const orderId of referencedOrderIds) {
-      if (createdProjectionIds.has(orderId)) continue
-      const proj = await tx.orderProjection.create({
-        data: {
-          id: orderId,
-          displayId: 9000 + createdProjectionIds.size,
-          customerId,
-          medusaCreatedAt: new Date(),
-        },
-      })
-      orderProjections.push(proj)
-      createdProjectionIds.add(orderId)
-    }
+    const orderProjections = await createOrderProjections(
+      tx,
+      spec,
+      customerId,
+      projectionIdsByIndex,
+      referencedOrderIds,
+    )
 
     // ── (4) Order status history (Surface 4) ───────────────────────
-    const orderStatusHistory: unknown[] = []
-    for (const h of spec.orderStatusHistory ?? []) {
-      const row = await tx.orderStatusHistory.create({
-        data: {
-          orderId: h.orderId,
-          fromStatus: "pending",
-          toStatus: "confirmed",
-          actor: h.actorType,
-          ...(h.actorId !== undefined ? { actorId: h.actorId } : {}),
-          ...(h.reason !== undefined ? { reason: h.reason } : {}),
-          version: 1,
-        },
-      })
-      orderStatusHistory.push(row)
-    }
+    const orderStatusHistory = await createOrderStatusHistory(tx, spec)
 
     // ── (5) Order event log (Surface 5) ────────────────────────────
-    const orderEventLogs: unknown[] = []
-    for (let i = 0; i < (spec.orderEventLogs ?? []).length; i++) {
-      const e = spec.orderEventLogs![i]!
-      const row = await tx.orderEventLog.create({
-        data: {
-          orderId: e.orderId,
-          eventType: e.eventType,
-          idempotencyKey: `idem_t4_${customerId.slice(-8)}_${i}_${randomUUID().slice(0, 8)}`,
-          payload: e.payload as Parameters<
-            typeof tx.orderEventLog.create
-          >[0]["data"]["payload"],
-          timestamp: new Date(),
-        },
-      })
-      orderEventLogs.push(row)
-    }
+    const orderEventLogs = await createOrderEventLogs(tx, spec, customerId)
 
     // ── (6) Conversations + messages (Surfaces 2 + 3) ──────────────
-    const conversations: unknown[] = []
-    const conversationMessages: unknown[] = []
-    for (let i = 0; i < (spec.conversations ?? []).length; i++) {
-      const c = spec.conversations![i]!
-      const conv = await tx.conversation.create({
-        data: {
-          sessionId: c.sessionId ?? `sess_t4_${customerId.slice(-8)}_${i}`,
-          customerId,
-          channel: "web",
-        },
-      })
-      conversations.push(conv)
-      for (const m of c.messages) {
-        const msg = await tx.conversationMessage.create({
-          data: {
-            conversationId: (conv as { id: string }).id,
-            role: m.role,
-            content: m.content,
-          },
-        })
-        conversationMessages.push(msg)
-      }
-    }
+    const { conversations, conversationMessages } = await createConversations(
+      tx,
+      spec,
+      customerId,
+    )
 
     // ── (7) Loyalty account (Surface 6) ────────────────────────────
-    let loyaltyAccount: unknown | null = null
-    if (spec.loyaltyAccount) {
-      loyaltyAccount = await tx.loyaltyAccount.create({
-        data: {
-          customerId,
-          stamps: spec.loyaltyAccount.stamps,
-          totalEarned: spec.loyaltyAccount.totalEarned,
-          redeemed: spec.loyaltyAccount.redeemed ?? 0,
-        },
-      })
-    }
+    const loyaltyAccount = await createLoyaltyAccount(tx, spec, customerId)
 
     // ── (8) Reservations + supporting TimeSlots (Surface 7) ────────
-    const reservations: unknown[] = []
-    const timeSlots: unknown[] = []
-    for (let i = 0; i < (spec.reservations ?? []).length; i++) {
-      const r = spec.reservations![i]!
-      // Each reservation needs a TimeSlot — make a unique one per row so
-      // we don't trip the (date, startTime) unique constraint across
-      // iterations.
-      const slotDate = new Date(Date.UTC(2026, 5, 1 + i))
-      const slot = await tx.timeSlot.create({
-        data: {
-          date: slotDate,
-          startTime: `${(18 + (i % 4)).toString().padStart(2, "0")}:${(i * 7) % 60}`.replace(
-            /:(\d)$/,
-            ":0$1",
-          ),
-          maxCovers: 40,
-        },
-      })
-      timeSlots.push(slot)
-      const reservation = await tx.reservation.create({
-        data: {
-          customerId,
-          timeSlotId: (slot as { id: string }).id,
-          partySize: r.partySize,
-          specialRequests: r.specialRequests as Parameters<
-            typeof tx.reservation.create
-          >[0]["data"]["specialRequests"],
-        },
-      })
-      reservations.push(reservation)
-    }
+    const { reservations, timeSlots } = await createReservations(tx, spec, customerId)
 
     // ── (W4-a) Addresses ─────────────────────────────────────────────
-    const addresses: unknown[] = []
-    for (const a of spec.addresses ?? []) {
-      const addr = await tx.address.create({
-        data: { customerId, ...a },
-      })
-      addresses.push(addr)
-    }
+    const addresses = await createAddresses(tx, spec, customerId)
 
     // ── (W4-b) Reviews ───────────────────────────────────────────────
-    const reviews: unknown[] = []
-    for (const r of spec.reviews ?? []) {
-      // Reviews have a (orderId, customerId) unique — auto-skip duplicates.
-      const rev = await tx.review.create({
-        data: {
-          orderId: r.orderId,
-          customerId,
-          rating: r.rating,
-          comment: r.comment,
-          channel: r.channel ?? "web",
-          productIds: [],
-        },
-      })
-      reviews.push(rev)
-    }
+    const reviews = await createReviews(tx, spec, customerId)
 
     // ── (W4-c) Preferences ───────────────────────────────────────────
-    let preferences: unknown | null = null
-    if (spec.preferences) {
-      preferences = await tx.customerPreferences.create({
-        data: {
-          customerId,
-          dietaryRestrictions: spec.preferences.dietaryRestrictions ?? [],
-          allergenExclusions: spec.preferences.allergenExclusions ?? [],
-          favoriteCategories: spec.preferences.favoriteCategories ?? [],
-        },
-      })
-    }
+    const preferences = await createPreferences(tx, spec, customerId)
 
     // ── (W4-d) Order items (CustomerOrderItem — delink on anonymize) ─
-    const orderItems: unknown[] = []
-    for (const oi of spec.orderItems ?? []) {
-      const item = await tx.customerOrderItem.create({
-        data: {
-          customerId,
-          medusaOrderId: oi.medusaOrderId,
-          productId: oi.productId,
-          variantId: oi.variantId,
-          quantity: oi.quantity,
-          priceInCentavos: oi.priceInCentavos,
-          orderedAt: new Date(),
-        },
-      })
-      orderItems.push(item)
-    }
+    const orderItems = await createOrderItems(tx, spec, customerId)
 
     return {
       customerId,
@@ -454,6 +273,300 @@ export async function buildPIIFixture(spec: PIIFixtureSpec): Promise<BuiltFixtur
       },
     }
   })
+}
+
+// ── Per-surface insert helpers ───────────────────────────────────────
+// Extracted verbatim from buildPIIFixture's transaction body to keep each
+// unit's cognitive complexity low. Every helper writes through the supplied
+// transaction client `tx`, so all inserts still share buildPIIFixture's atomic
+// `$transaction`. Write order and generated IDs are identical to performing the
+// inserts inline.
+
+async function createStaffActors(
+  tx: Prisma.TransactionClient,
+  spec: PIIFixtureSpec,
+): Promise<unknown[]> {
+  // Staff rows referenced by orderStatusHistory. Staff actions are encoded as
+  // actor='admin' with an actorId pointing at a staff row (the OrderActor enum
+  // has no `staff` value; the schema comment on actorId notes it can carry
+  // staff.id OR customer.id).
+  const staffActorIds = new Set<string>()
+  for (const h of spec.orderStatusHistory ?? []) {
+    if (h.actorType === "admin" && h.actorId) staffActorIds.add(h.actorId)
+  }
+  const staffActors: unknown[] = []
+  for (const staffId of staffActorIds) {
+    const s = await tx.staff.create({
+      data: {
+        id: staffId,
+        // Use a phone uniqueness-safe stub scoped to the customerId so
+        // parallel-iteration tests don't collide on staff.phone unique.
+        phone: `+55119${staffId.slice(-8).padStart(8, "0")}`,
+        name: `Staff ${staffId}`,
+      },
+    })
+    staffActors.push(s)
+  }
+  return staffActors
+}
+
+async function createOrderProjections(
+  tx: Prisma.TransactionClient,
+  spec: PIIFixtureSpec,
+  customerId: string,
+  projectionIdsByIndex: string[],
+  referencedOrderIds: Set<string>,
+): Promise<unknown[]> {
+  const orderProjections: unknown[] = []
+  const createdProjectionIds = new Set<string>()
+  for (let i = 0; i < (spec.orderProjections ?? []).length; i++) {
+    const op = spec.orderProjections![i]!
+    const id = projectionIdsByIndex[i]!
+    const proj = await tx.orderProjection.create({
+      data: {
+        id,
+        displayId: 1000 + i,
+        customerId,
+        customerEmail: op.customerEmail,
+        customerName: op.customerName,
+        customerPhone: op.customerPhone,
+        shippingAddressJson: op.shippingAddressJson as Parameters<
+          typeof tx.orderProjection.create
+        >[0]["data"]["shippingAddressJson"],
+        medusaCreatedAt: new Date(),
+      },
+    })
+    orderProjections.push(proj)
+    createdProjectionIds.add(id)
+  }
+  // Backfill referenced order IDs that the caller didn't explicitly
+  // declare in spec.orderProjections — orderStatusHistory + orderEventLog
+  // have FK constraints on order_projections.id.
+  for (const orderId of referencedOrderIds) {
+    if (createdProjectionIds.has(orderId)) continue
+    const proj = await tx.orderProjection.create({
+      data: {
+        id: orderId,
+        displayId: 9000 + createdProjectionIds.size,
+        customerId,
+        medusaCreatedAt: new Date(),
+      },
+    })
+    orderProjections.push(proj)
+    createdProjectionIds.add(orderId)
+  }
+  return orderProjections
+}
+
+async function createOrderStatusHistory(
+  tx: Prisma.TransactionClient,
+  spec: PIIFixtureSpec,
+): Promise<unknown[]> {
+  const orderStatusHistory: unknown[] = []
+  for (const h of spec.orderStatusHistory ?? []) {
+    const row = await tx.orderStatusHistory.create({
+      data: {
+        orderId: h.orderId,
+        fromStatus: "pending",
+        toStatus: "confirmed",
+        actor: h.actorType,
+        ...(h.actorId === undefined ? {} : { actorId: h.actorId }),
+        ...(h.reason === undefined ? {} : { reason: h.reason }),
+        version: 1,
+      },
+    })
+    orderStatusHistory.push(row)
+  }
+  return orderStatusHistory
+}
+
+async function createOrderEventLogs(
+  tx: Prisma.TransactionClient,
+  spec: PIIFixtureSpec,
+  customerId: string,
+): Promise<unknown[]> {
+  const orderEventLogs: unknown[] = []
+  for (let i = 0; i < (spec.orderEventLogs ?? []).length; i++) {
+    const e = spec.orderEventLogs![i]!
+    const row = await tx.orderEventLog.create({
+      data: {
+        orderId: e.orderId,
+        eventType: e.eventType,
+        idempotencyKey: `idem_t4_${customerId.slice(-8)}_${i}_${randomUUID().slice(0, 8)}`,
+        payload: e.payload as Parameters<
+          typeof tx.orderEventLog.create
+        >[0]["data"]["payload"],
+        timestamp: new Date(),
+      },
+    })
+    orderEventLogs.push(row)
+  }
+  return orderEventLogs
+}
+
+async function createConversations(
+  tx: Prisma.TransactionClient,
+  spec: PIIFixtureSpec,
+  customerId: string,
+): Promise<{ conversations: unknown[]; conversationMessages: unknown[] }> {
+  const conversations: unknown[] = []
+  const conversationMessages: unknown[] = []
+  for (let i = 0; i < (spec.conversations ?? []).length; i++) {
+    const c = spec.conversations![i]!
+    const conv = await tx.conversation.create({
+      data: {
+        sessionId: c.sessionId ?? `sess_t4_${customerId.slice(-8)}_${i}`,
+        customerId,
+        channel: "web",
+      },
+    })
+    conversations.push(conv)
+    for (const m of c.messages) {
+      const msg = await tx.conversationMessage.create({
+        data: {
+          conversationId: (conv as { id: string }).id,
+          role: m.role,
+          content: m.content,
+        },
+      })
+      conversationMessages.push(msg)
+    }
+  }
+  return { conversations, conversationMessages }
+}
+
+async function createLoyaltyAccount(
+  tx: Prisma.TransactionClient,
+  spec: PIIFixtureSpec,
+  customerId: string,
+): Promise<unknown> {
+  if (!spec.loyaltyAccount) return null
+  const loyaltyAccount = await tx.loyaltyAccount.create({
+    data: {
+      customerId,
+      stamps: spec.loyaltyAccount.stamps,
+      totalEarned: spec.loyaltyAccount.totalEarned,
+      redeemed: spec.loyaltyAccount.redeemed ?? 0,
+    },
+  })
+  return loyaltyAccount
+}
+
+async function createReservations(
+  tx: Prisma.TransactionClient,
+  spec: PIIFixtureSpec,
+  customerId: string,
+): Promise<{ reservations: unknown[]; timeSlots: unknown[] }> {
+  const reservations: unknown[] = []
+  const timeSlots: unknown[] = []
+  for (let i = 0; i < (spec.reservations ?? []).length; i++) {
+    const r = spec.reservations![i]!
+    // Each reservation needs a TimeSlot — make a unique one per row so
+    // we don't trip the (date, startTime) unique constraint across
+    // iterations.
+    const slotDate = new Date(Date.UTC(2026, 5, 1 + i))
+    const slot = await tx.timeSlot.create({
+      data: {
+        date: slotDate,
+        startTime: `${(18 + (i % 4)).toString().padStart(2, "0")}:${(i * 7) % 60}`.replace(
+          /:(\d)$/,
+          ":0$1",
+        ),
+        maxCovers: 40,
+      },
+    })
+    timeSlots.push(slot)
+    const reservation = await tx.reservation.create({
+      data: {
+        customerId,
+        timeSlotId: (slot as { id: string }).id,
+        partySize: r.partySize,
+        specialRequests: r.specialRequests as Parameters<
+          typeof tx.reservation.create
+        >[0]["data"]["specialRequests"],
+      },
+    })
+    reservations.push(reservation)
+  }
+  return { reservations, timeSlots }
+}
+
+async function createAddresses(
+  tx: Prisma.TransactionClient,
+  spec: PIIFixtureSpec,
+  customerId: string,
+): Promise<unknown[]> {
+  const addresses: unknown[] = []
+  for (const a of spec.addresses ?? []) {
+    const addr = await tx.address.create({
+      data: { customerId, ...a },
+    })
+    addresses.push(addr)
+  }
+  return addresses
+}
+
+async function createReviews(
+  tx: Prisma.TransactionClient,
+  spec: PIIFixtureSpec,
+  customerId: string,
+): Promise<unknown[]> {
+  const reviews: unknown[] = []
+  for (const r of spec.reviews ?? []) {
+    // Reviews have a (orderId, customerId) unique — auto-skip duplicates.
+    const rev = await tx.review.create({
+      data: {
+        orderId: r.orderId,
+        customerId,
+        rating: r.rating,
+        comment: r.comment,
+        channel: r.channel ?? "web",
+        productIds: [],
+      },
+    })
+    reviews.push(rev)
+  }
+  return reviews
+}
+
+async function createPreferences(
+  tx: Prisma.TransactionClient,
+  spec: PIIFixtureSpec,
+  customerId: string,
+): Promise<unknown> {
+  if (!spec.preferences) return null
+  const preferences = await tx.customerPreferences.create({
+    data: {
+      customerId,
+      dietaryRestrictions: spec.preferences.dietaryRestrictions ?? [],
+      allergenExclusions: spec.preferences.allergenExclusions ?? [],
+      favoriteCategories: spec.preferences.favoriteCategories ?? [],
+    },
+  })
+  return preferences
+}
+
+async function createOrderItems(
+  tx: Prisma.TransactionClient,
+  spec: PIIFixtureSpec,
+  customerId: string,
+): Promise<unknown[]> {
+  const orderItems: unknown[] = []
+  for (const oi of spec.orderItems ?? []) {
+    const item = await tx.customerOrderItem.create({
+      data: {
+        customerId,
+        medusaOrderId: oi.medusaOrderId,
+        productId: oi.productId,
+        variantId: oi.variantId,
+        quantity: oi.quantity,
+        priceInCentavos: oi.priceInCentavos,
+        orderedAt: new Date(),
+      },
+    })
+    orderItems.push(item)
+  }
+  return orderItems
 }
 
 /**

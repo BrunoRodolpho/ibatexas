@@ -48,7 +48,7 @@ function formatDate(iso: string): string {
 
 type OrderFilter = 'all' | 'active' | 'completed' | 'canceled'
 
-const ACTIVE_STATUSES = ['pending', 'confirmed', 'preparing', 'ready', 'in_delivery']
+const ACTIVE_STATUSES = new Set(['pending', 'confirmed', 'preparing', 'ready', 'in_delivery'])
 
 function getFulfillmentBadgeStyle(status: string): string {
   switch (status) {
@@ -145,7 +145,7 @@ export default function AccountOrdersPage() {
     if (filter === 'all') return orders
     return orders.filter((o) => {
       const fs = o.fulfillmentStatus ?? o.status ?? 'pending'
-      if (filter === 'active') return ACTIVE_STATUSES.includes(fs)
+      if (filter === 'active') return ACTIVE_STATUSES.has(fs)
       if (filter === 'completed') return fs === 'delivered' || fs === 'completed'
       if (filter === 'canceled') return fs === 'canceled'
       return true
@@ -154,7 +154,7 @@ export default function AccountOrdersPage() {
 
   const counts = useMemo(() => ({
     all: orders.length,
-    active: orders.filter(o => ACTIVE_STATUSES.includes(o.fulfillmentStatus ?? o.status ?? 'pending')).length,
+    active: orders.filter(o => ACTIVE_STATUSES.has(o.fulfillmentStatus ?? o.status ?? 'pending')).length,
     completed: orders.filter(o => ['delivered', 'completed'].includes(o.fulfillmentStatus ?? o.status ?? '')).length,
     canceled: orders.filter(o => (o.fulfillmentStatus ?? o.status) === 'canceled').length,
   }), [orders])
@@ -195,9 +195,9 @@ export default function AccountOrdersPage() {
   }, [customerId])
 
   useEffect(() => {
-    const TERMINAL = ['delivered', 'canceled', 'completed']
+    const TERMINAL = new Set(['delivered', 'canceled', 'completed'])
     const hasPending = orders.some(
-      (o) => !TERMINAL.includes(o.fulfillmentStatus || o.status)
+      (o) => !TERMINAL.has(o.fulfillmentStatus || o.status)
     )
     if (!hasPending) return
     const interval = setInterval(() => { fetchOrders() }, 15_000)

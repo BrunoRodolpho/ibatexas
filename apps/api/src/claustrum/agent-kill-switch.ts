@@ -101,7 +101,7 @@ export function createAgentKillSwitchManager(
           pubsub: deps.pubsub,
           key: agentKillSwitchKey(agent),
           channel: agentKillSwitchChannel(agent),
-          ...(deps.pollMs !== undefined ? { pollMs: deps.pollMs } : {}),
+          ...(deps.pollMs === undefined ? {} : { pollMs: deps.pollMs }),
           context: isolatedContext,
           logger: {
             warn: (e) =>

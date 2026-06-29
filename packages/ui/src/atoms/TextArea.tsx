@@ -35,7 +35,10 @@ function TextArea({
   const reactId = useId()
   const fieldId = id || reactId
   const resolvedHint = helperText ?? hint
-  const state = disabled ? 'disabled' : error ? 'error' : 'default'
+  const errorState = error ? 'error' : 'default'
+  const state = disabled ? 'disabled' : errorState
+  const resolvedHintId = resolvedHint ? `${fieldId}-hint` : undefined
+  const describedBy = error ? `${fieldId}-error` : resolvedHintId
   const charCount = typeof value === 'string' ? value.length : undefined
 
   return (
@@ -60,7 +63,7 @@ function TextArea({
         value={value}
         defaultValue={defaultValue}
         aria-invalid={error ? true : undefined}
-        aria-describedby={error ? `${fieldId}-error` : resolvedHint ? `${fieldId}-hint` : undefined}
+        aria-describedby={describedBy}
         {...props}
       />
       <div className="flex items-center justify-between">

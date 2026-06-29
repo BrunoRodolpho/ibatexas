@@ -59,11 +59,12 @@ export function createIbatexasResolver(): ResolverPort {
           taint: env.taint,
           nonce: env.nonce,
           createdAt: env.createdAt,
-          ...(refs !== undefined ? { resourceRefs: refs } : {}),
+          ...(refs === undefined ? {} : { resourceRefs: refs }),
         }) as IntentEnvelope;
         const state =
-          refs !== undefined
-            ? {
+          refs === undefined
+            ? { ctx }
+            : {
                 ctx,
                 // 034-F1: source the principal binding from the conductor-
                 // AUTHENTICATED session (cognition.conversationId), NOT
@@ -76,8 +77,7 @@ export function createIbatexasResolver(): ResolverPort {
                   owned,
                   customerPrincipalForSession(cognition.conversationId, customerId),
                 ),
-              }
-            : { ctx };
+              };
         out.push({ envelope: resolved, state });
       }
       return out;

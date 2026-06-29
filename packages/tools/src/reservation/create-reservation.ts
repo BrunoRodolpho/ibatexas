@@ -78,9 +78,9 @@ export async function createReservation(
   const payload: ReservationCreatePayload = {
     timeSlotId: parsed.timeSlotId,
     partySize: parsed.partySize,
-    ...(parsed.specialRequests !== undefined
-      ? { specialRequests: parsed.specialRequests as unknown as ReadonlyArray<string> }
-      : {}),
+    ...(parsed.specialRequests === undefined
+      ? {}
+      : { specialRequests: parsed.specialRequests as unknown as ReadonlyArray<string> }),
   }
   const envelope = buildEnvelope<"reservation.create", ReservationCreatePayload>({
     kind: "reservation.create",

@@ -106,11 +106,11 @@ async function modifyReservationImpl(
     // ── Build the IntentEnvelope ──────────────────────────────────────
     const payload: ReservationModifyPayload = {
       reservationId: parsed.reservationId,
-      ...(parsed.newTimeSlotId !== undefined ? { newTimeSlotId: parsed.newTimeSlotId } : {}),
-      ...(parsed.newPartySize !== undefined ? { newPartySize: parsed.newPartySize } : {}),
-      ...(parsed.specialRequests !== undefined
-        ? { specialRequests: parsed.specialRequests as unknown as ReadonlyArray<string> }
-        : {}),
+      ...(parsed.newTimeSlotId === undefined ? {} : { newTimeSlotId: parsed.newTimeSlotId }),
+      ...(parsed.newPartySize === undefined ? {} : { newPartySize: parsed.newPartySize }),
+      ...(parsed.specialRequests === undefined
+        ? {}
+        : { specialRequests: parsed.specialRequests as unknown as ReadonlyArray<string> }),
     }
     const envelope = buildEnvelope<"reservation.modify", ReservationModifyPayload>({
       kind: "reservation.modify",

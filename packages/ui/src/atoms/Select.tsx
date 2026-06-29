@@ -42,7 +42,10 @@ function Select({
 }: SelectProps & { ref?: Ref<HTMLSelectElement> }) {
   const reactId = useId()
   const fieldId = id || reactId
-  const state = disabled ? 'disabled' : error ? 'error' : 'default'
+  const errorState = error ? 'error' : 'default'
+  const state = disabled ? 'disabled' : errorState
+  const hintId = hint ? `${fieldId}-hint` : undefined
+  const describedBy = error ? `${fieldId}-error` : hintId
 
   return (
     <div className="flex flex-col gap-1">
@@ -68,7 +71,7 @@ function Select({
         required={required}
         disabled={disabled}
         aria-invalid={error ? true : undefined}
-        aria-describedby={error ? `${fieldId}-error` : hint ? `${fieldId}-hint` : undefined}
+        aria-describedby={describedBy}
         {...props}
       >
         {placeholder && (

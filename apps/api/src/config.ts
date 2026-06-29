@@ -13,7 +13,7 @@ const envSchema = z.object({
 
   // Medusa — admin auth is JWT-over-emailpass using MEDUSA_ADMIN_EMAIL/PASSWORD;
   // the publishable key is auto-resolved at runtime in packages/tools/src/medusa/client.ts.
-  MEDUSA_URL: z.string().url().default("http://localhost:9000"),
+  MEDUSA_URL: z.url().default("http://localhost:9000"),
   MEDUSA_ADMIN_EMAIL: z.string().min(1, "MEDUSA_ADMIN_EMAIL is required"),
   MEDUSA_ADMIN_PASSWORD: z.string().min(1, "MEDUSA_ADMIN_PASSWORD is required"),
 
@@ -42,7 +42,6 @@ const envSchema = z.object({
   // (No proxy rewrite / path transformation either — see .env.example for the
   // full contract. This refine is the startup backstop for the documented rule.)
   TWILIO_WEBHOOK_URL: z
-    .string()
     .url()
     .refine((u) => !new URL(u).search, {
       message:
@@ -59,7 +58,7 @@ const envSchema = z.object({
   STRIPE_WEBHOOK_SECRET: z.string().min(1, "STRIPE_WEBHOOK_SECRET is required"),
 
   // CORS
-  WEB_URL: z.string().url().optional(),
+  WEB_URL: z.url().optional(),
   CORS_ORIGIN: z.string().optional(),
 
   // Restaurant

@@ -71,7 +71,7 @@ function formatTime(iso: string | null): string {
   if (!iso) return '—'
   try {
     const d = new Date(iso)
-    if (isNaN(d.getTime())) return '—'
+    if (Number.isNaN(d.getTime())) return '—'
     return d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
   } catch { return '—' }
 }
@@ -80,7 +80,7 @@ function formatDate(iso: string | null): string {
   if (!iso) return '—'
   try {
     const d = new Date(iso)
-    if (isNaN(d.getTime())) return '—'
+    if (Number.isNaN(d.getTime())) return '—'
     return d.toLocaleDateString('pt-BR', { day: '2-digit', month: 'short' })
   } catch { return '—' }
 }
@@ -233,15 +233,22 @@ export function AdminReservasPage({
     return acc
   }, {})
 
+  // Header subtitle — inner pluralization extracted out of the JSX so the
+  // ternaries are not nested (behavior identical: pure string selection).
+  const reservaLabel = total === 1 ? 'reserva' : 'reservas'
+  const pessoaLabel = totalGuests === 1 ? 'pessoa' : 'pessoas'
+  const headerSubtitle =
+    !loading && total > 0
+      ? `${total} ${reservaLabel} · ${totalGuests} ${pessoaLabel}`
+      : undefined
+
   return (
     <PageShell>
       {/* Header */}
       <PageHeader
         icon={CalendarDays}
         title={PAGE_TITLES.reservations}
-        subtitle={!loading && total > 0
-          ? `${total} ${total === 1 ? 'reserva' : 'reservas'} · ${totalGuests} ${totalGuests === 1 ? 'pessoa' : 'pessoas'}`
-          : undefined}
+        subtitle={headerSubtitle}
       />
 
       {/* ── Filter bar: date tabs + date picker + status dots ─────── */}

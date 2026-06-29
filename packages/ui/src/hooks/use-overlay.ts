@@ -13,7 +13,7 @@ const FOCUSABLE_SELECTOR =
 const overlayStack: RefObject<HTMLElement | null>[] = []
 
 function isTopmost(ref: RefObject<HTMLElement | null>): boolean {
-  return overlayStack.length > 0 && overlayStack[overlayStack.length - 1] === ref
+  return overlayStack.length > 0 && overlayStack.at(-1) === ref
 }
 
 /* ── useFocusReturn ───────────────────────────────────────────────── */

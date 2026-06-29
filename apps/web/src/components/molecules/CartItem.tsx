@@ -7,13 +7,11 @@ import { useTranslations } from 'next-intl'
 import NextImage from 'next/image'
 
 interface CartItemProps {
-  readonly id: string
   readonly productId: string
   readonly title: string
   readonly price: number
   readonly imageUrl?: string
   readonly quantity: number
-  readonly specialInstructions?: string
   readonly variantTitle?: string
   readonly productType?: 'food' | 'frozen' | 'merchandise'
   readonly isKitchenClosed?: boolean

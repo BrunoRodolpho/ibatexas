@@ -65,7 +65,7 @@ export class OllamaFetchClient implements OpenAIClientLike {
 
   /** Pin the served model when a model override was configured. */
   private wireBody(body: OpenAIChatCompletionsBody): OpenAIChatCompletionsBody {
-    return this.model !== undefined ? { ...body, model: this.model } : body;
+    return this.model === undefined ? body : { ...body, model: this.model };
   }
 
   readonly chat = {

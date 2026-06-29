@@ -140,12 +140,12 @@ export async function withAdjudicate<K extends string, P, S, R>(
         envelope,
         decision,
         durationMs: Date.now() - startedAt,
-        ...(options.policyVersion !== undefined
-          ? { policyVersion: options.policyVersion }
-          : {}),
-        ...(options.kernelIdentity !== undefined
-          ? { kernelIdentity: options.kernelIdentity }
-          : {}),
+        ...(options.policyVersion === undefined
+          ? {}
+          : { policyVersion: options.policyVersion }),
+        ...(options.kernelIdentity === undefined
+          ? {}
+          : { kernelIdentity: options.kernelIdentity }),
       })
       // Fire-and-forget: any error from the sink is logged, not propagated.
       void options.auditSink.emit(record).catch((err: unknown) => {
@@ -194,21 +194,32 @@ export async function withAdjudicate<K extends string, P, S, R>(
  * Carries the full decision so callers up the stack can surface the
  * pt-BR refusal copy from `decision.refusal.userFacing`.
  */
+/**
+ * Resolve the pt-BR user-facing message for a non-EXECUTE decision.
+ * Extracted from the nested-ternary chain so each Decision kind maps to
+ * its message via a flat switch — behaviour is identical to the prior
+ * REFUSE → ESCALATE → REQUEST_CONFIRMATION → DEFER → default ordering.
+ */
+function commandRefusalMessage(decision: Decision): string {
+  switch (decision.kind) {
+    case "REFUSE":
+      return decision.refusal.userFacing
+    case "ESCALATE":
+      return decision.reason
+    case "REQUEST_CONFIRMATION":
+      return decision.prompt
+    case "DEFER":
+      return `Operação aguardando sinal: ${decision.signal}`
+    default:
+      return "Operação não permitida."
+  }
+}
+
 export class CommandRefusedError extends Error {
   public readonly decision: Decision
 
   constructor(decision: Decision) {
-    const userFacing =
-      decision.kind === "REFUSE"
-        ? decision.refusal.userFacing
-        : decision.kind === "ESCALATE"
-          ? decision.reason
-          : decision.kind === "REQUEST_CONFIRMATION"
-            ? decision.prompt
-            : decision.kind === "DEFER"
-              ? `Operação aguardando sinal: ${decision.signal}`
-              : "Operação não permitida."
-    super(userFacing)
+    super(commandRefusalMessage(decision))
     this.name = "CommandRefusedError"
     this.decision = decision
   }

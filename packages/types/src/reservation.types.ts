@@ -35,7 +35,7 @@ export enum SpecialRequestType {
 // ─── Sub-schemas ──────────────────────────────────────────────────────────────
 
 export const SpecialRequestSchema = z.object({
-  type: z.nativeEnum(SpecialRequestType),
+  type: z.enum(SpecialRequestType),
   notes: z.string().max(200).optional(),
 })
 
@@ -183,7 +183,7 @@ export interface CancelReservationOutput {
 // get_my_reservations
 export const GetMyReservationsInputSchema = z.object({
   customerId: z.string(),
-  status: z.nativeEnum(ReservationStatus).optional().describe("Filtrar por status"),
+  status: z.enum(ReservationStatus).optional().describe("Filtrar por status"),
   limit: z.number().int().min(1).max(50).optional().default(10),
 })
 

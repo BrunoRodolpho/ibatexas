@@ -34,15 +34,22 @@ function RadioGroup({
   onChange,
   layout = 'vertical',
   className,
-}: RadioGroupProps) {
+}: Readonly<RadioGroupProps>) {
   const reactId = useId()
   const groupId = id || reactId
+
+  let describedBy: string | undefined
+  if (error) {
+    describedBy = `${groupId}-error`
+  } else if (hint) {
+    describedBy = `${groupId}-hint`
+  }
 
   return (
     <fieldset
       className={clsx('flex flex-col gap-2', className)}
       aria-invalid={error ? true : undefined}
-      aria-describedby={error ? `${groupId}-error` : hint ? `${groupId}-hint` : undefined}
+      aria-describedby={describedBy}
     >
       {label && (
         <legend
@@ -61,7 +68,6 @@ function RadioGroup({
           layout === 'vertical' ? 'flex-col' : 'flex-row flex-wrap',
         )}
         role="radiogroup"
-        aria-labelledby={label ? undefined : undefined}
       >
         {options.map((opt) => {
           const optId = `${groupId}-${opt.value}`

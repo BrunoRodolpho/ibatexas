@@ -40,6 +40,14 @@ function renderStars(rating: number) {
   )
 }
 
+function renderProductId(id: string | null) {
+  return id ? (
+    <span className="font-mono text-xs text-[var(--color-text-secondary)]">{id.slice(0, 8)}…</span>
+  ) : (
+    '—'
+  )
+}
+
 function formatDate(iso: string) {
   try {
     return new Date(iso).toLocaleDateString('pt-BR', {
@@ -78,10 +86,7 @@ export function AdminAvaliacoesPage({
     }),
     col.accessor('productId', {
       header: REVIEW_COLUMN_HEADERS.product,
-      cell: (i) => {
-        const id = i.getValue()
-        return id ? <span className="font-mono text-xs text-[var(--color-text-secondary)]">{id.slice(0, 8)}…</span> : '—'
-      },
+      cell: (i) => renderProductId(i.getValue()),
     }),
     col.accessor('customerPhone', {
       header: REVIEW_COLUMN_HEADERS.customer,

@@ -113,6 +113,6 @@ describe("P0-X-OTP — pre-fix demo guard", () => {
         "[P0-X-OTP pre-fix demo] REDIS_TEST_URL not set; skipping real-Redis race demo.",
       )
     }
-    expect(true).toBe(true)
+    expect(typeof RUN_REAL_REDIS).toBe("boolean")
   })
 })

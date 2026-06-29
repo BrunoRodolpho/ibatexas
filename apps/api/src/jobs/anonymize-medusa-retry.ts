@@ -319,7 +319,7 @@ export function startAnonymizeMedusaRetry(log?: FastifyBaseLogger): void {
 
   // Run immediately on startup, then every REPEAT_INTERVAL_MS + jitter.
   // Jitter (0-15s) prevents thundering herd on multi-replica restart.
-  const jitter = Math.floor(Math.random() * 15_000);
+  const jitter = crypto.randomInt(15_000);
   void queue.upsertJobScheduler("anonymize-medusa-retry-repeat", {
     every: REPEAT_INTERVAL_MS + jitter,
     immediately: true,

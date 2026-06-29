@@ -144,7 +144,7 @@ export async function loadGoldenFixtures(
       !Array.isArray(raw.expectedEnvelopeKinds) ||
       typeof raw.expectedDecisionKind !== "string"
     ) {
-      throw new Error(
+      throw new TypeError(
         `[fixture-format] ${entry} is not a valid CC-006-format fixture ` +
           `(id/conversation/expectedEnvelopeKinds/expectedDecisionKind required)`,
       );
@@ -196,7 +196,7 @@ export async function loadScriptedEntries(
     f.endsWith(".completions.json"),
   );
   const entries: ScriptedEntry[] = [];
-  for (const file of files.sort()) {
+  for (const file of [...files].sort((a, b) => a.localeCompare(b))) {
     const rows = applyTemplates(
       await readJson<CompletionEntryFile[]>(path.join(dir, file)),
       subs,

@@ -28,9 +28,19 @@ const POST_TIMEOUT_MS = Number(process.env.VICTORIALOGS_POST_TIMEOUT_MS ?? 5_000
  * carry `msg` + ISO `time`; we tag the log stream by `component`+`event` so
  * LogsQL `component:kernel event:decision` filters work out of the box.
  */
+/**
+ * Strip trailing "/" characters in linear time (no regex backtracking).
+ * Equivalent to `s.replace(/\/+$/, "")` for the URL-base normalization here.
+ */
+function stripTrailingSlashes(value: string): string {
+  let end = value.length;
+  while (end > 0 && value[end - 1] === "/") end -= 1;
+  return value.slice(0, end);
+}
+
 export function createVictoriaLogsStream(baseUrl: string): Writable {
   const url =
-    baseUrl.replace(/\/+$/, "") +
+    stripTrailingSlashes(baseUrl) +
     "/insert/jsonline?_msg_field=msg&_time_field=time&_stream_fields=component,event";
 
   let buffer: string[] = [];

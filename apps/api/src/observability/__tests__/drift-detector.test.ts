@@ -45,7 +45,7 @@ describe("F3 drift detection", () => {
       dimensions: ["decision.kind"],
     });
     for (let i = 0; i < 20; i++) det.observe(rec("EXECUTE"));
-    expect(det.evaluate().length).toBe(0);
+    expect(det.evaluate()).toHaveLength(0);
   });
 
   it("the observe() tee never throws on a malformed/empty record", () => {

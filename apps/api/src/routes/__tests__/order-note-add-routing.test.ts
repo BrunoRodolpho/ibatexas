@@ -56,19 +56,29 @@ describe("P4 — 4 orderNote.create sites wired to addNoteFromEnvelope", () => {
     expect(src).not.toMatch(/prisma\.orderNote\.create\s*\(/)
   })
 
-  it("apps/api/src/routes/admin/order-actions.ts: staff-notes uses addNoteFromEnvelope", () => {
-    const src = read("admin/order-actions.ts")
+  // The two admin routes were de-duplicated: their identical note-add
+  // envelope-build + addNoteFromEnvelope + persisted-lookup block was
+  // extracted UNCHANGED into admin/_shared-actions.ts (`adjudicateAdminNote`).
+  // The W7-P4 chokepoint is therefore asserted on the shared helper below;
+  // here we assert each route DELEGATES to it and keeps no direct write.
+  it("admin/_shared-actions.ts: adjudicateAdminNote is the kernel-routed note chokepoint", () => {
+    const src = read("admin/_shared-actions.ts")
     expect(src).toContain("addNoteFromEnvelope")
     expect(src).toMatch(/kind:\s*"order\.note\.add"/)
     expect(src).toContain("W7-P4")
+    // The persisted re-read uses findUnique; there is NO direct create write.
     expect(src).not.toMatch(/prisma\.orderNote\.create\s*\(/)
   })
 
-  it("apps/api/src/routes/admin/payments.ts: admin /notes uses addNoteFromEnvelope", () => {
+  it("apps/api/src/routes/admin/order-actions.ts: staff-notes delegates to adjudicateAdminNote", () => {
+    const src = read("admin/order-actions.ts")
+    expect(src).toContain("adjudicateAdminNote")
+    expect(src).not.toMatch(/prisma\.orderNote\.create\s*\(/)
+  })
+
+  it("apps/api/src/routes/admin/payments.ts: admin /notes delegates to adjudicateAdminNote", () => {
     const src = read("admin/payments.ts")
-    expect(src).toContain("addNoteFromEnvelope")
-    expect(src).toMatch(/kind:\s*"order\.note\.add"/)
-    expect(src).toContain("W7-P4")
+    expect(src).toContain("adjudicateAdminNote")
     expect(src).not.toMatch(/prisma\.orderNote\.create\s*\(/)
   })
 
@@ -92,11 +102,12 @@ describe("P4 — 4 orderNote.create sites wired to addNoteFromEnvelope", () => {
       orderActionsSrc.match(/taint:\s*"UNTRUSTED"/) ||
         orderActionsSrc.match(/buildCustomerEnvelope</),
     ).not.toBeNull()
-    // Admin routes do TRUSTED for staffId, SYSTEM for null.
-    const adminA = read("admin/order-actions.ts")
-    expect(adminA).toMatch(/taint:\s*staffId\s*\?\s*"TRUSTED"\s*:\s*"SYSTEM"/)
-    const adminP = read("admin/payments.ts")
-    expect(adminP).toMatch(/taint:\s*staffId\s*\?\s*"TRUSTED"\s*:\s*"SYSTEM"/)
+    // Admin note-add taint (TRUSTED for staffId, SYSTEM for null) now lives in
+    // the shared `adjudicateAdminNote` helper both admin routes delegate to.
+    const shared = read("admin/_shared-actions.ts")
+    expect(shared).toMatch(/taint:\s*deps\.staffId\s*\?\s*"TRUSTED"\s*:\s*"SYSTEM"/)
+    expect(read("admin/order-actions.ts")).toContain("adjudicateAdminNote")
+    expect(read("admin/payments.ts")).toContain("adjudicateAdminNote")
   })
 
   it("admin/order-actions.ts uses the audit-wired orderCmdSvc", () => {

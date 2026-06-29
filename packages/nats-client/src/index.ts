@@ -590,7 +590,8 @@ async function jetstreamSubscribe(
   })
   return {
     unsubscribe: () => {
-      void messages.stop()
+      // fire-and-forget consumer teardown; stop() returns void, not a promise
+      messages.stop()
     },
   }
 }

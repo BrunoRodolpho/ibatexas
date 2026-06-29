@@ -72,9 +72,8 @@ export class PreflightRefusalError extends Error {
 
   constructor(checks: PreflightCheckRecord[]) {
     const failures = checks.filter((c) => !c.ok)
-    super(
-      `preflight_refused: ${failures.map((f) => `[${f.name}] ${f.detail}`).join("; ")}`,
-    )
+    const summary = failures.map((f) => `[${f.name}] ${f.detail}`).join("; ")
+    super(`preflight_refused: ${summary}`)
     this.name = "PreflightRefusalError"
     this.checks = checks
   }
@@ -252,10 +251,11 @@ function checkHostnames(
       detail: `non-local endpoint(s) refused: ${offenders.join(", ")}`,
     }
   }
+  const summary = hosts.map((h) => `${h.name}=${h.hostname}`).join(", ")
   return {
     name: "hostnames",
     ok: true,
-    detail: `all endpoints local/ephemeral: ${hosts.map((h) => `${h.name}=${h.hostname}`).join(", ")}`,
+    detail: `all endpoints local/ephemeral: ${summary}`,
   }
 }
 
@@ -357,8 +357,8 @@ export async function runPreflight(options: PreflightOptions = {}): Promise<Pref
       check: check.name,
       outcome: check.ok ? "pass" : "fail",
       detail: check.detail,
-      ...(options.journeyId !== undefined ? { journey: options.journeyId } : {}),
-      ...(options.runId !== undefined ? { runId: options.runId } : {}),
+      ...(options.journeyId === undefined ? {} : { journey: options.journeyId }),
+      ...(options.runId === undefined ? {} : { runId: options.runId }),
     })
   }
 

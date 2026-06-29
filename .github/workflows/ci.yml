@@ -32,7 +32,18 @@ jobs:
       # packages with their OWN vitest.config (apps/api, domain, …) don't inherit
       # it and would otherwise emit no lcov → 0% coverage. Passing the reporter
       # on the CLI applies it uniformly across the turbo fan-out.
-      - run: pnpm test -- -- --coverage --coverage.reporter=lcov --coverage.reporter=text
+      #
+      # IMPORTANT: invoke turbo directly with a SINGLE `--` passthrough. The old
+      # `pnpm test -- -- --coverage` form double-stacked the separator, so vitest
+      # received `vitest run -- --coverage` and treated `--coverage` as a positional
+      # test-name FILTER (not a flag) → coverage never ran → no lcov → Sonar 0% for
+      # every file. `turbo test -- --coverage` reaches the task as `vitest run --coverage`.
+      #
+      # --testTimeout=60000: v8 coverage instrumentation + the parallel turbo fan-out
+      # across ~19 packages (each booting Postgres/Redis testcontainers) slows tests on
+      # CI cores; the default 5s timeout flakes under that load (e.g. pack-payments).
+      # 60s is ample headroom for unit tests and keeps this required `check` job green.
+      - run: pnpm exec turbo test -- --coverage --coverage.reporter=lcov --coverage.reporter=text --testTimeout=60000
       # Bypass-detection CI gate (task 20). Fails the build if any direct
       # prisma write, direct medusa write, executeToolDirect re-introduction,
       # or setMetricsSink(undefined) reset enters the codebase. The vitest

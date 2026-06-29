@@ -41,7 +41,7 @@
 // no documented PII in `metadata` today, full-replace is the safe
 // default (cross-db.md §"Risk 2: Medusa customer metadata").
 
-import { subscribeNatsEvent, publishNatsEvent } from "@ibatexas/nats-client";
+import { subscribeNatsEvent } from "@ibatexas/nats-client";
 import {
   clearMedusaAnonymizePending,
   medusaAdjudicated,
@@ -163,9 +163,9 @@ export async function handleMedusaAnonymizePending(
       parkedIntentHash,
       parkedAt,
       attempt: payload.attempt,
-      ...(existingEntry?.firstEmittedAt !== undefined
-        ? { firstEmittedAt: existingEntry.firstEmittedAt }
-        : {}),
+      ...(existingEntry?.firstEmittedAt === undefined
+        ? {}
+        : { firstEmittedAt: existingEntry.firstEmittedAt }),
     },
     log,
   );
@@ -271,9 +271,9 @@ function emitMedusaAnonymizeAudit(args: EmitAuditArgs): void {
               rule,
               kind,
               attempt: payload.attempt,
-              ...(err !== undefined
-                ? { errorMessage: (err as Error).message ?? String(err) }
-                : {}),
+              ...(err === undefined
+                ? {}
+                : { errorMessage: (err as Error).message ?? String(err) }),
             },
           },
         ],
@@ -347,4 +347,4 @@ export const _customerAnonymizeMedusaInternals = {
 
 // Re-export so tests can spy on the publish path without depending on
 // the nats-client module directly (the mock surface lives there).
-export { publishNatsEvent as _publishForTests };
+export { publishNatsEvent as _publishForTests } from "@ibatexas/nats-client";

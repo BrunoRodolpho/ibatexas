@@ -130,10 +130,9 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
   server.addHook("preHandler", async (request, reply) => {
     // Try staff JWT first (optionalAuth sets staffId/staffRole if present)
     await new Promise<void>((resolve) => {
-      optionalAuth(request, reply, (err) => {
-        if (err) resolve(); // JWT verification failed — try API key next
-        else resolve();
-      });
+      // Resolve regardless of outcome: JWT verification success OR failure
+      // both fall through to the API-key check below.
+      optionalAuth(request, reply, () => resolve());
     });
 
     // If staff JWT is valid, allow through

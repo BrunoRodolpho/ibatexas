@@ -138,6 +138,30 @@ async function executeAct(
   }
 }
 
+/** Resolve the journey-level outcome string emitted on `journey.end`. */
+function journeyOutcomeOf(
+  ok: boolean,
+  runError: string | undefined,
+): "pass" | "error" | "fail" {
+  if (ok) return "pass"
+  if (runError !== undefined) return "error"
+  return "fail"
+}
+
+/**
+ * Resolve the result's optional `error` field: an executor throw wins,
+ * otherwise (when the run did not pass) fall back to the last act's detail.
+ */
+function resolveRunError(
+  runError: string | undefined,
+  ok: boolean,
+  records: ActRunRecord[],
+): string | undefined {
+  if (runError !== undefined) return runError
+  if (!ok) return records.at(-1)?.detail ?? "act_failed"
+  return undefined
+}
+
 /**
  * Run a journey's acts sequentially. Fail-fast: the first failing/throwing
  * act stops the run. Never throws for act-level failures — returns a
@@ -193,24 +217,21 @@ export async function runJourney(
 
     const durationMs = Date.now() - actStart
     emitActEnd(journey.id, runId, name, act.kind, index, durationMs, outcome, detail)
-    records.push({ index, name, kind: act.kind, outcome, durationMs, ...(detail !== undefined ? { detail } : {}) })
+    records.push({ index, name, kind: act.kind, outcome, durationMs, ...(detail === undefined ? {} : { detail }) })
 
     if (outcome !== "pass") break // sequential + fail-fast
   }
 
   const ok = records.length === journey.acts.length && records.every((r) => r.outcome === "pass")
-  emitJourneyEnd(journey.id, runId, Date.now() - journeyStart, ok ? "pass" : runError !== undefined ? "error" : "fail")
+  emitJourneyEnd(journey.id, runId, Date.now() - journeyStart, journeyOutcomeOf(ok, runError))
 
+  const finalError = resolveRunError(runError, ok, records)
   return {
     journeyId: journey.id,
     runId,
     ok,
     certifying: preflightResult.certifying,
     acts: records,
-    ...(runError !== undefined
-      ? { error: runError }
-      : !ok
-        ? { error: records.at(-1)?.detail ?? "act_failed" }
-        : {}),
+    ...(finalError === undefined ? {} : { error: finalError }),
   }
 }

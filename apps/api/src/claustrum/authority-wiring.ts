@@ -45,7 +45,7 @@ export function resourceRefsForIntent(
   customerId: string,
 ): Record<string, string> | undefined {
   const resource = ownershipResource(kind, payload);
-  return resource !== null ? { owner: customerId, resource } : undefined;
+  return resource === null ? undefined : { owner: customerId, resource };
 }
 
 export interface CustomerAuthority {

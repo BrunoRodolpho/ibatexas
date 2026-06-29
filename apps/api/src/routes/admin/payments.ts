@@ -34,7 +34,7 @@
 // are now reachable only via `EXECUTE` decisions from the kernel.
 
 import { createHash, randomUUID } from "node:crypto";
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { buildEnvelope } from "@adjudicate/core";
@@ -50,10 +50,6 @@ import {
   type PaymentRefundIssuePayload,
   type PaymentStatusTransitionPayload,
 } from "@ibatexas/domain";
-import type {
-  OrderNoteAddPayload,
-  OrderState,
-} from "@ibatexas/pack-orders";
 import { getAuditSink } from "@ibatexas/audit-sink";
 import {
   PaymentStatus,
@@ -61,13 +57,18 @@ import {
 } from "@ibatexas/types";
 import { requireStaff, requireManagerRole } from "../../middleware/staff-auth.js";
 import {
-  ACTOR_TYPE_MISMATCH_REFUSAL_PT_BR,
-  consumeWithSameActorCheck,
   createAdminConfirmationStore,
-  NULL_STAFF_REFUSAL_PT_BR,
-  SAME_ACTOR_REFUSAL_PT_BR,
   type PendingAdminAction,
 } from "./admin-confirmation-store.js";
+import {
+  adjudicateAdminNote,
+  buildAdminTransitionEnvelope,
+  consumeAndGateAdminAction,
+  kernelRefusalText,
+  logStaleVersionRefusal,
+  principalFor,
+  refuseTransitionWithLog,
+} from "./_shared-actions.js";
 
 const OrderIdParams = z.object({ id: z.string().min(1) });
 
@@ -131,6 +132,19 @@ const REFUND_DAILY_KEY_TTL_SECONDS = 25 * 60 * 60; // 25h to cover DST + clock s
 // override (industry standard, e.g. Stripe).
 function deriveAdminNonce(idempotencyKey: string): string {
   return createHash("sha256").update(idempotencyKey).digest("hex");
+}
+
+/**
+ * Normalize the `Idempotency-Key` header (single string, repeated-header
+ * array, or absent) to one non-empty key or `null`. Extracted to keep the
+ * refund route handler's cognitive complexity bounded.
+ */
+function normalizeIdempotencyKey(
+  header: string | string[] | undefined,
+): string | null {
+  if (typeof header === "string" && header.length > 0) return header;
+  if (Array.isArray(header) && header[0]) return header[0];
+  return null;
 }
 
 function refundDailyBucketKey(staffId: string | null, now: Date = new Date()): string {
@@ -203,7 +217,7 @@ export async function tryReserveDailyRefund(
       String(capCentavos),
       String(REFUND_DAILY_KEY_TTL_SECONDS),
     ],
-  })) as [number, number] | { 0: number; 1: number } | unknown;
+  })) as unknown;
   // node-redis returns Lua table as array; some shims may return
   // object-with-numeric-keys. Normalize.
   const arr = Array.isArray(raw)
@@ -243,25 +257,6 @@ async function rollbackDailyRefundReservation(
 const REFUND_DRIP_CAP_PT_BR =
   "Limite diário de reembolsos sem confirmação atingido. Esta operação requer confirmação de outro operador.";
 
-function principalFor(staffId: string | null): {
-  readonly actorPrincipal: "user" | "system";
-  readonly taint: "TRUSTED" | "SYSTEM";
-  readonly sessionId: string;
-} {
-  if (staffId) {
-    return {
-      actorPrincipal: "user",
-      taint: "TRUSTED",
-      sessionId: `admin:${staffId}`,
-    };
-  }
-  return {
-    actorPrincipal: "system",
-    taint: "SYSTEM",
-    sessionId: "admin:api-key",
-  };
-}
-
 export async function adminPaymentRoutes(server: FastifyInstance): Promise<void> {
   const app = server.withTypeProvider<ZodTypeProvider>();
   // Defer audit-sink resolution to onReady. Plugin bodies execute during
@@ -288,6 +283,42 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
   const orderQuerySvc = createOrderQueryService();
   const eventLogSvc = createOrderEventLogService(server.log);
   const confirmationStore = createAdminConfirmationStore();
+
+  // Behavior-preserving extraction of the order-existence + active-payment
+  // load (404 on either miss) duplicated byte-for-byte between the
+  // refund/confirm and force-status/confirm step-2 handlers. `getById`
+  // validates the order exists (404 "Pedido não encontrado.") then
+  // `getActiveByOrderId` loads the active payment (404 "Nenhum pagamento
+  // ativo encontrado.") — same await ordering, no `.catch`, same codes /
+  // messages. The order row itself is not returned: both call sites only
+  // consume the active payment; the order load is purely an existence gate.
+  async function loadOrderAndActivePayment(orderId: string): Promise<
+    | {
+        readonly ok: false;
+        readonly code: number;
+        readonly body: Record<string, unknown>;
+      }
+    | {
+        readonly ok: true;
+        readonly payment: NonNullable<
+          Awaited<ReturnType<typeof paymentQuerySvc.getActiveByOrderId>>
+        >;
+      }
+  > {
+    const order = await orderQuerySvc.getById(orderId);
+    if (!order) {
+      return { ok: false, code: 404, body: { error: "Pedido não encontrado." } };
+    }
+    const payment = await paymentQuerySvc.getActiveByOrderId(orderId);
+    if (!payment) {
+      return {
+        ok: false,
+        code: 404,
+        body: { error: "Nenhum pagamento ativo encontrado." },
+      };
+    }
+    return { ok: true, payment };
+  }
 
   // ── POST /api/admin/orders/:id/payment/confirm-cash ───────────────────────
   app.post(
@@ -356,10 +387,7 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
         outcome.decision.kind !== "EXECUTE" &&
         outcome.decision.kind !== "REWRITE"
       ) {
-        const refusalText =
-          outcome.decision.kind === "REFUSE"
-            ? outcome.decision.refusal.userFacing
-            : "Operação não permitida pela política do kernel.";
+        const refusalText = kernelRefusalText(outcome.decision);
         return reply.code(403).send({ error: refusalText });
       }
       const result = outcome.result!;
@@ -511,6 +539,70 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
     };
   }
 
+  // ── Shared refusal-reply helpers ─────────────────────────────────────
+  //
+  // The refund step-1 / step-2 routes and the force-status step-2 route
+  // each map a non-EXECUTE kernel decision onto an HTTP reply with the
+  // same body shape. Extracting these keeps each route handler's
+  // cognitive complexity bounded while preserving the exact responses.
+  type RefundRefusedDecision = Extract<
+    Awaited<ReturnType<typeof executeRefund>>,
+    { kind: "refused" }
+  >["decision"];
+
+  function replyRefundRefused(
+    reply: FastifyReply,
+    decision: RefundRefusedDecision,
+    opts: {
+      readonly requestConfirmationError: string;
+      readonly confirmationId?: string;
+    },
+  ) {
+    const idPart =
+      opts.confirmationId === undefined
+        ? {}
+        : { confirmationId: opts.confirmationId };
+    if (decision.kind === "ESCALATE") {
+      return reply.code(503).send({
+        error: "Reembolso acima do limite — requer aprovação humana.",
+        reason: decision.reason,
+        ...idPart,
+      });
+    }
+    if (decision.kind === "REQUEST_CONFIRMATION") {
+      return reply.code(202).send({
+        error: opts.requestConfirmationError,
+        prompt: decision.prompt,
+        code: "REQUEST_CONFIRMATION",
+        ...idPart,
+      });
+    }
+    return reply.code(403).send({ error: kernelRefusalText(decision) });
+  }
+
+  async function replyForceStatusConcurrency(
+    err: unknown,
+    reply: FastifyReply,
+    ctx: {
+      readonly orderId: string;
+      readonly confirmationId: string;
+      readonly staffId: string | null;
+      readonly expectedVersion: number | null;
+    },
+  ) {
+    if ((err as Error).name !== "PaymentConcurrencyError") throw err;
+    return logStaleVersionRefusal({
+      eventLogSvc,
+      reply,
+      orderId: ctx.orderId,
+      confirmationId: ctx.confirmationId,
+      staffId: ctx.staffId,
+      eventType: "admin.force_status.stale_version_refused",
+      expectedVersion: ctx.expectedVersion,
+      message: (err as Error).message,
+    });
+  }
+
   // ── POST /api/admin/orders/:id/payment/refund (step 1) ────────────────────
   app.post(
     "/api/admin/orders/:id/payment/refund",
@@ -584,12 +676,7 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
       // a client bug worth surfacing as 400 rather than masking with a
       // collision-prone fallback.
       const idempotencyHeader = request.headers["idempotency-key"];
-      const normalizedHeader =
-        typeof idempotencyHeader === "string" && idempotencyHeader.length > 0
-          ? idempotencyHeader
-          : Array.isArray(idempotencyHeader) && idempotencyHeader[0]
-            ? idempotencyHeader[0]
-            : null;
+      const normalizedHeader = normalizeIdempotencyKey(idempotencyHeader);
       if (normalizedHeader === null) {
         return reply.code(400).send({
           statusCode: 400,
@@ -732,24 +819,10 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
           // sees a slightly-inflated counter, which is the safe side.
           await rollbackDailyRefundReservation(staffId, refundAmount);
           // W3 P0-1 — surface the kernel's magnitude-decision distinctly.
-          if (result.decision.kind === "ESCALATE") {
-            return reply.code(503).send({
-              error: "Reembolso acima do limite — requer aprovação humana.",
-              reason: result.decision.reason,
-            });
-          }
-          if (result.decision.kind === "REQUEST_CONFIRMATION") {
-            return reply.code(202).send({
-              error: "Reembolso requer confirmação de segundo operador.",
-              prompt: result.decision.prompt,
-              code: "REQUEST_CONFIRMATION",
-            });
-          }
-          const refusalText =
-            result.decision.kind === "REFUSE"
-              ? result.decision.refusal.userFacing
-              : "Operação não permitida pela política do kernel.";
-          return reply.code(403).send({ error: refusalText });
+          return replyRefundRefused(reply, result.decision, {
+            requestConfirmationError:
+              "Reembolso requer confirmação de segundo operador.",
+          });
         }
         return reply.send({
           success: true,
@@ -835,82 +908,31 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
       const { id } = request.params;
       const { confirmationId } = request.body;
       const staffId = request.staffId ?? null;
-      const { actorPrincipal: requestActorPrincipal } = principalFor(staffId);
 
-      const consumed = await consumeWithSameActorCheck(
+      // Two-person separation-of-duty + receipt validity gate. Each refusal
+      // kind (missing / null_staff / actor_type_mismatch / same_actor /
+      // wrong-route) emits its own audit entry inside the helper; P0-5 /
+      // P0-5-TRUE rules are unchanged. P0-5: refund is a money path — a
+      // different operator must confirm.
+      const gate = await consumeAndGateAdminAction({
         confirmationStore,
+        eventLogSvc,
         confirmationId,
+        orderId: id,
         staffId,
-        requestActorPrincipal,
-      );
-      if (consumed.kind === "missing") {
-        return reply.code(410).send({
-          error: "Confirmação inválida, expirada ou já utilizada.",
-        });
+        eventPrefix: "admin.refund",
+        expectedRoute: "refund",
+      });
+      if (!gate.ok) {
+        return reply.code(gate.code).send({ error: gate.error });
       }
-      if (consumed.kind === "null_staff_violation") {
-        await eventLogSvc.append({
-          orderId: id,
-          eventType: "admin.refund.null_staff_refused",
-          discriminator: confirmationId,
-          payload: {
-            confirmationId,
-            staffId,
-            pendingStaffId: consumed.pending.staffId,
-            reason: consumed.reason,
-          },
-          timestamp: new Date(),
-        });
-        return reply.code(403).send({ error: NULL_STAFF_REFUSAL_PT_BR });
-      }
-      if (consumed.kind === "actor_type_mismatch") {
-        await eventLogSvc.append({
-          orderId: id,
-          eventType: "admin.refund.actor_type_mismatch_refused",
-          discriminator: confirmationId,
-          payload: {
-            confirmationId,
-            staffId,
-            pendingActor: consumed.pendingActor,
-            requestActor: consumed.requestActor,
-          },
-          timestamp: new Date(),
-        });
-        return reply
-          .code(403)
-          .send({ error: ACTOR_TYPE_MISMATCH_REFUSAL_PT_BR });
-      }
-      if (consumed.kind === "same_actor_violation") {
-        // P0-5: refund is a money path — another operator must confirm.
-        await eventLogSvc.append({
-          orderId: id,
-          eventType: "admin.refund.same_actor_refused",
-          discriminator: confirmationId,
-          payload: {
-            confirmationId,
-            staffId,
-            pendingStaffId: consumed.pending.staffId,
-          },
-          timestamp: new Date(),
-        });
-        return reply.code(403).send({ error: SAME_ACTOR_REFUSAL_PT_BR });
-      }
-      const pending = consumed.pending;
-      if (pending.route !== "refund" || pending.orderId !== id) {
-        return reply.code(410).send({
-          error: "Confirmação inválida, expirada ou já utilizada.",
-        });
-      }
+      const pending = gate.pending;
 
-      const order = await orderQuerySvc.getById(id);
-      if (!order) {
-        return reply.code(404).send({ error: "Pedido não encontrado." });
+      const loaded = await loadOrderAndActivePayment(id);
+      if (!loaded.ok) {
+        return reply.code(loaded.code).send(loaded.body);
       }
-
-      const payment = await paymentQuerySvc.getActiveByOrderId(id);
-      if (!payment) {
-        return reply.code(404).send({ error: "Nenhum pagamento ativo encontrado." });
-      }
+      const payment = loaded.payment;
 
       const stored = pending.payload as unknown as {
         readonly paymentId: string;
@@ -1033,26 +1055,11 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
           },
           timestamp: new Date(),
         });
-        if (result.decision.kind === "ESCALATE") {
-          return reply.code(503).send({
-            error: "Reembolso acima do limite — requer aprovação humana.",
-            reason: result.decision.reason,
-            confirmationId,
-          });
-        }
-        if (result.decision.kind === "REQUEST_CONFIRMATION") {
-          return reply.code(202).send({
-            error: "Reembolso requer confirmação adicional do kernel.",
-            prompt: result.decision.prompt,
-            code: "REQUEST_CONFIRMATION",
-            confirmationId,
-          });
-        }
-        const refusalText =
-          result.decision.kind === "REFUSE"
-            ? result.decision.refusal.userFacing
-            : "Operação não permitida pela política do kernel.";
-        return reply.code(403).send({ error: refusalText });
+        return replyRefundRefused(reply, result.decision, {
+          requestConfirmationError:
+            "Reembolso requer confirmação adicional do kernel.",
+          confirmationId,
+        });
       }
 
       return reply.send({
@@ -1190,84 +1197,31 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
       const { id } = request.params;
       const { confirmationId } = request.body;
       const staffId = request.staffId ?? null;
-      const { actorPrincipal: requestActorPrincipal } = principalFor(staffId);
 
-      const consumed = await consumeWithSameActorCheck(
+      // Two-person separation-of-duty + receipt validity gate. Each refusal
+      // kind emits its own audit entry inside the helper; P0-5 / P0-5-TRUE
+      // rules are unchanged. P0-5: force-status is OWNER-only but still
+      // requires a second operator to confirm step 2 — a single owner
+      // double-clicking does not satisfy separation-of-duty.
+      const gate = await consumeAndGateAdminAction({
         confirmationStore,
+        eventLogSvc,
         confirmationId,
+        orderId: id,
         staffId,
-        requestActorPrincipal,
-      );
-      if (consumed.kind === "missing") {
-        return reply.code(410).send({
-          error: "Confirmação inválida, expirada ou já utilizada.",
-        });
+        eventPrefix: "admin.force_status",
+        expectedRoute: "force-status",
+      });
+      if (!gate.ok) {
+        return reply.code(gate.code).send({ error: gate.error });
       }
-      if (consumed.kind === "null_staff_violation") {
-        await eventLogSvc.append({
-          orderId: id,
-          eventType: "admin.force_status.null_staff_refused",
-          discriminator: confirmationId,
-          payload: {
-            confirmationId,
-            staffId,
-            pendingStaffId: consumed.pending.staffId,
-            reason: consumed.reason,
-          },
-          timestamp: new Date(),
-        });
-        return reply.code(403).send({ error: NULL_STAFF_REFUSAL_PT_BR });
-      }
-      if (consumed.kind === "actor_type_mismatch") {
-        await eventLogSvc.append({
-          orderId: id,
-          eventType: "admin.force_status.actor_type_mismatch_refused",
-          discriminator: confirmationId,
-          payload: {
-            confirmationId,
-            staffId,
-            pendingActor: consumed.pendingActor,
-            requestActor: consumed.requestActor,
-          },
-          timestamp: new Date(),
-        });
-        return reply
-          .code(403)
-          .send({ error: ACTOR_TYPE_MISMATCH_REFUSAL_PT_BR });
-      }
-      if (consumed.kind === "same_actor_violation") {
-        // P0-5: force-status is OWNER-only; still requires a second
-        // operator to confirm step 2 — separation-of-duty isn't
-        // satisfied by a single owner double-clicking.
-        await eventLogSvc.append({
-          orderId: id,
-          eventType: "admin.force_status.same_actor_refused",
-          discriminator: confirmationId,
-          payload: {
-            confirmationId,
-            staffId,
-            pendingStaffId: consumed.pending.staffId,
-          },
-          timestamp: new Date(),
-        });
-        return reply.code(403).send({ error: SAME_ACTOR_REFUSAL_PT_BR });
-      }
-      const pending = consumed.pending;
-      if (pending.route !== "force-status" || pending.orderId !== id) {
-        return reply.code(410).send({
-          error: "Confirmação inválida, expirada ou já utilizada.",
-        });
-      }
+      const pending = gate.pending;
 
-      const order = await orderQuerySvc.getById(id);
-      if (!order) {
-        return reply.code(404).send({ error: "Pedido não encontrado." });
+      const loaded = await loadOrderAndActivePayment(id);
+      if (!loaded.ok) {
+        return reply.code(loaded.code).send(loaded.body);
       }
-
-      const payment = await paymentQuerySvc.getActiveByOrderId(id);
-      if (!payment) {
-        return reply.code(404).send({ error: "Nenhum pagamento ativo encontrado." });
-      }
+      const payment = loaded.payment;
 
       const storedPayload = pending.payload as unknown as PaymentStatusTransitionPayload;
       if (storedPayload.paymentId !== payment.id) {
@@ -1276,26 +1230,14 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
         });
       }
 
-      const { actorPrincipal, taint, sessionId } = principalFor(staffId);
-      // audit-2026-05-24 P2-5: thread the step-1 version into the
-      // envelope payload. The executor REFUSEs (PaymentConcurrencyError)
-      // if the payment was mutated between the two operator clicks.
-      const envelopePayload: PaymentStatusTransitionPayload = {
-        ...storedPayload,
-        ...(pending.expectedVersion !== undefined
-          ? { expectedVersion: pending.expectedVersion }
-          : {}),
-      };
-      const envelope = buildEnvelope<
+      // audit-2026-05-24 P2-5: the step-1 version is threaded into the
+      // envelope payload (inside buildAdminTransitionEnvelope). The executor
+      // REFUSEs (PaymentConcurrencyError) if the payment was mutated between
+      // the two operator clicks.
+      const { envelope } = buildAdminTransitionEnvelope<
         "payment.status.transition",
         PaymentStatusTransitionPayload
-      >({
-        kind: "payment.status.transition",
-        payload: envelopePayload,
-        nonce: pending.nonce,
-        actor: { principal: actorPrincipal, sessionId },
-        taint,
-      });
+      >({ pending, staffId, kind: "payment.status.transition" });
 
       let outcome;
       try {
@@ -1303,46 +1245,28 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
       } catch (err) {
         // audit-2026-05-24 P2-5: optimistic-concurrency conflict — payment
         // advanced between step 1 and step 2.
-        if ((err as Error).name === "PaymentConcurrencyError") {
-          await eventLogSvc.append({
-            orderId: id,
-            eventType: "admin.force_status.stale_version_refused",
-            discriminator: confirmationId,
-            payload: {
-              confirmationId,
-              staffId,
-              expectedVersion: pending.expectedVersion ?? null,
-              message: (err as Error).message,
-            },
-            timestamp: new Date(),
-          });
-          return reply.code(409).send({
-            error: "Pagamento foi atualizado por outro atendente após a aprovação. Reabra a operação.",
-          });
-        }
-        throw err;
+        return await replyForceStatusConcurrency(err, reply, {
+          orderId: id,
+          confirmationId,
+          staffId,
+          expectedVersion: pending.expectedVersion ?? null,
+        });
       }
       if (
         outcome.decision.kind !== "EXECUTE" &&
         outcome.decision.kind !== "REWRITE"
       ) {
-        const refusalText =
-          outcome.decision.kind === "REFUSE"
-            ? outcome.decision.refusal.userFacing
-            : "Operação não permitida pela política do kernel.";
-        await eventLogSvc.append({
+        return refuseTransitionWithLog({
+          eventLogSvc,
+          reply,
           orderId: id,
+          confirmationId,
+          staffId,
           eventType: "admin.force_status.refused",
-          discriminator: confirmationId,
-          payload: {
-            confirmationId,
-            staffId,
-            decision: outcome.decision.kind,
-            intentHash: envelope.intentHash,
-          },
-          timestamp: new Date(),
+          decisionKind: outcome.decision.kind,
+          intentHash: envelope.intentHash,
+          refusalText: kernelRefusalText(outcome.decision),
         });
-        return reply.code(403).send({ error: refusalText });
       }
       const result = outcome.result!;
 
@@ -1400,78 +1324,42 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
       const { id } = request.params;
 
       // W7-P4: route the admin note through addNoteFromEnvelope so the
-      // order.note.add intent is kernel-adjudicated and audit-emitted.
-      // The Wave-6 finding flagged the direct prisma.orderNote.create as a
-      // parallel/duplicate surface bypass.
+      // order.note.add intent is kernel-adjudicated and audit-emitted (see
+      // adjudicateAdminNote in _shared-actions.ts).
       const order = await orderQuerySvc.getById(id);
       if (!order) {
         return reply.code(404).send({ error: "Pedido não encontrado." });
       }
       const staffId = request.staffId ?? null;
-      const noteEnvelope = buildEnvelope<
-        "order.note.add",
-        OrderNoteAddPayload
-      >({
-        kind: "order.note.add" as const,
-        payload: {
-          orderId: id,
-          body: request.body.content,
-        },
-        nonce: randomUUID(),
-        actor: staffId
-          ? { principal: "user", sessionId: `admin:${staffId}` }
-          : { principal: "system", sessionId: "admin:api-key" },
-        taint: staffId ? "TRUSTED" : "SYSTEM",
+      const note = await adjudicateAdminNote({
+        orderCmdSvc,
+        order,
+        orderId: id,
+        staffId,
+        content: request.body.content,
       });
-      const noteOrderState: OrderState = {
-        ctx: {
-          channel: "web",
-          customerId: order.customerId,
-          cartId: null,
-          orderId: id,
-          paymentMethod: (order.paymentMethod as
-            | "pix"
-            | "card"
-            | "cash"
-            | null) ?? null,
-          paymentStatus: order.paymentStatus,
-          totalInCentavos: order.totalInCentavos,
-        },
-      };
-      const outcome = await orderCmdSvc.addNoteFromEnvelope(
-        noteEnvelope,
-        noteOrderState,
-        {
-          author: "staff",
-          ...(staffId ? { authorId: staffId } : {}),
-        },
-      );
 
-      if (outcome.decision.kind !== "EXECUTE" && outcome.decision.kind !== "REWRITE") {
-        const message =
-          outcome.decision.kind === "REFUSE"
-            ? outcome.decision.refusal.userFacing
-            : "Não foi possível adicionar a nota no momento.";
+      if (note.kind === "refused") {
+        const message = kernelRefusalText(
+          note.decision,
+          "Não foi possível adicionar a nota no momento.",
+        );
         return reply.code(403).send({ error: message });
       }
-      const noteResult = outcome.result!;
-      const persisted = await prisma.orderNote.findUnique({
-        where: { id: noteResult.noteId },
-      });
 
       await publishNatsEvent("order.note_added", {
         eventType: "order.note_added",
         orderId: id,
-        noteId: noteResult.noteId,
+        noteId: note.noteId,
         author: "admin",
         timestamp: new Date().toISOString(),
       });
 
       return reply.code(201).send({
-        id: noteResult.noteId,
-        content: persisted?.content ?? request.body.content,
+        id: note.noteId,
+        content: note.persisted?.content ?? request.body.content,
         createdAt:
-          persisted?.createdAt?.toISOString() ?? new Date().toISOString(),
+          note.persisted?.createdAt?.toISOString() ?? new Date().toISOString(),
       });
     },
   );

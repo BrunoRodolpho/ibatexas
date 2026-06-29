@@ -4,9 +4,8 @@ import { useTransition } from 'react'
 import { useTranslations } from 'next-intl'
 import { ArrowRight, X } from 'lucide-react'
 import { Button, MarqueeStrip } from '../atoms'
-import { useRouter } from '@/i18n/navigation'
+import { Link, useRouter } from '@/i18n/navigation'
 import { useFirstVisit } from '@/domains/session/useFirstVisit'
-import { Link } from '@/i18n/navigation'
 
 /**
  * Animated promo ticker — editorial marquee for first-time visitors.

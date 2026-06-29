@@ -118,7 +118,7 @@ describe("events emitter — journey-plane union", () => {
   it("rejects unknown event kinds at the type level", () => {
     // @ts-expect-error — "journey.teleport" is not part of the union
     const bogus: IbxEvent = { type: "journey.teleport", timestamp: new Date().toISOString() }
-    void bogus
+    expect(bogus).toBeDefined()
   })
 })
 

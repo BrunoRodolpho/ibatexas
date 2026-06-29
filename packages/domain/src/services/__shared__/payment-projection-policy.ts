@@ -60,9 +60,12 @@ export type PaymentProjectionIntentKind =
   // this into a composite `payment.pix.regenerate` kind.
   | "payment.regeneration.count.increment"
 
+/** Supported payment instruments (CLAUDE.md PIX-first). */
+export type PaymentMethod = "pix" | "card" | "cash"
+
 export interface PaymentCreatePayload {
   readonly orderId: string
-  readonly method: "pix" | "card" | "cash"
+  readonly method: PaymentMethod
   /** Centavos integer per CLAUDE.md rule #2. */
   readonly amountInCentavos: number
   readonly stripePaymentIntentId?: string
@@ -90,8 +93,8 @@ export interface PaymentStatusReconcilePayload {
 
 export interface PaymentMethodSwitchPayload {
   readonly orderId: string
-  readonly fromMethod: "pix" | "card" | "cash"
-  readonly toMethod: "pix" | "card" | "cash"
+  readonly fromMethod: PaymentMethod
+  readonly toMethod: PaymentMethod
   readonly customerId: string
 }
 
@@ -153,7 +156,7 @@ export interface PaymentProjectionState {
     /** Payment row exists (true for transition / reconcile, false for create). */
     readonly exists: boolean
     readonly currentStatus?: string
-    readonly currentMethod?: "pix" | "card" | "cash"
+    readonly currentMethod?: PaymentMethod
     readonly version?: number
     /** Order id the payment belongs to — for ownership cross-checks. */
     readonly orderId?: string

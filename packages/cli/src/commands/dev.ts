@@ -6,6 +6,7 @@ import ora from "ora"
 import { execa, execaSync } from "execa"
 import { ROOT } from "../utils/root.js"
 import { DEV_FLAGS } from "../lib/dev-flags.js"
+import type { ServiceDef } from "../services.js"
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -110,6 +111,62 @@ interface StartOpts {
   yes?: boolean
 }
 
+/** Resolve which process-compose processes to launch from the requested
+ *  services + flags:
+ *    named args → only those (process-compose resolves deps)
+ *    "all"      → no filter (starts everything including tunnel/stripe)
+ *    default    → core only, optionally + tunnel/stripe via flags
+ *  Docker one-shots (`infra`, `observability`) are dropped when skipping Docker. */
+function resolveProcessList(
+  services: string[],
+  opts: StartOpts,
+  skipDocker: boolean | undefined,
+): string[] {
+  const isAll = services.includes("all")
+  const named = services.filter((s) => s !== "all")
+
+  const CORE = [
+    "infra", "observability", "build-packages",
+    "commerce", "api", "web-clean", "web", "admin-clean", "admin",
+    "qa-viewer", "adj-console", "adjutant",
+  ]
+  let processes: string[]
+
+  if (named.length > 0) {
+    processes = named
+  } else if (isAll) {
+    processes = [] // empty = start all processes in YAML
+  } else {
+    processes = [...CORE]
+    if (opts.withTunnel) processes.push("tunnel")
+    if (opts.withStripe) processes.push("stripe")
+  }
+
+  if (skipDocker) {
+    // Both `infra` and `observability` are docker one-shots — drop both.
+    for (const dockerProc of ["infra", "observability"]) {
+      const idx = processes.indexOf(dockerProc)
+      if (idx !== -1) processes.splice(idx, 1)
+    }
+  }
+
+  return processes
+}
+
+/** Confirm before launching. Returns true (start) with --yes or when
+ *  non-interactive (CI / piped stdin) so scripts don't hang on a prompt;
+ *  otherwise prompts, treating Ctrl+C / Esc at the prompt as a decline. */
+async function confirmStart(opts: StartOpts): Promise<boolean> {
+  if (opts.yes || !process.stdin.isTTY) return true
+  const { confirm } = await import("@inquirer/prompts")
+  try {
+    return await confirm({ message: "Start the dev stack?", default: true })
+  } catch {
+    // Ctrl+C / Esc at the prompt
+    return false
+  }
+}
+
 async function pcStart(
   services: string[],
   opts: StartOpts,
@@ -132,38 +189,8 @@ async function pcStart(
 
   if (!opts.tui) args.push("-t=false")
 
-  const isAll = services.includes("all")
   const skipDocker = opts.skipDocker || opts.noDocker
-  const named = services.filter((s) => s !== "all")
-
-  // Build process list:
-  //   named args → only those (process-compose resolves deps)
-  //   "all"      → no filter (starts everything including tunnel/stripe)
-  //   default    → core only, optionally + tunnel/stripe via flags
-  const CORE = [
-    "infra", "observability", "build-packages",
-    "commerce", "api", "web-clean", "web", "admin-clean", "admin",
-    "qa-viewer", "adj-console", "adjutant",
-  ]
-  let processes: string[] = []
-
-  if (named.length > 0) {
-    processes = named
-  } else if (isAll) {
-    processes = [] // empty = start all processes in YAML
-  } else {
-    processes = [...CORE]
-    if (opts.withTunnel) processes.push("tunnel")
-    if (opts.withStripe) processes.push("stripe")
-  }
-
-  if (skipDocker) {
-    // Both `infra` and `observability` are docker one-shots — drop both.
-    for (const dockerProc of ["infra", "observability"]) {
-      const idx = processes.indexOf(dockerProc)
-      if (idx !== -1) processes.splice(idx, 1)
-    }
-  }
+  const processes = resolveProcessList(services, opts, skipDocker)
 
   args.push(...processes)
 
@@ -174,18 +201,9 @@ async function pcStart(
 
   // Confirm before launching. Skipped with --yes or when non-interactive
   // (CI / piped stdin) so scripts don't hang waiting on a prompt.
-  if (!opts.yes && process.stdin.isTTY) {
-    const { confirm } = await import("@inquirer/prompts")
-    let proceed = false
-    try {
-      proceed = await confirm({ message: "Start the dev stack?", default: true })
-    } catch {
-      // Ctrl+C / Esc at the prompt
-    }
-    if (!proceed) {
-      console.log(chalk.gray("\n  Aborted — nothing started.\n"))
-      return
-    }
+  if (!(await confirmStart(opts))) {
+    console.log(chalk.gray("\n  Aborted — nothing started.\n"))
+    return
   }
 
   console.log(chalk.gray(`\n  process-compose ${args.join(" ")}\n`))
@@ -246,8 +264,7 @@ async function pcStop(
 
 // ── process-compose restart ──────────────────────────────────────────────────
 
-async function pcRestart(serviceKey: string | undefined): Promise<void> {
-  const target = serviceKey ?? "all"
+async function pcRestart(target = "all"): Promise<void> {
   console.log(chalk.bold.blue(`\n  Restarting ${target}…\n`))
 
   const installed = await checkProcessCompose()
@@ -420,6 +437,15 @@ async function printStartPlan(processes: string[], skipDocker: boolean | undefin
 
 // ── URL summary ──────────────────────────────────────────────────────────────
 
+/** Print one service's URL links + notes into the dev-URL summary. */
+function printServiceLinks(
+  svc: ServiceDef,
+  url: (label: string, value: string) => void,
+): void {
+  for (const link of svc.urls) url(link.label.trim(), link.url)
+  for (const note of svc.notes ?? []) console.log(chalk.gray(`  ${note}`))
+}
+
 /** Print a one-glance summary of every dev URL: apps, infra, observability,
  *  optional services, and the log-viewing CLI commands. */
 async function printDevUrls(): Promise<void> {
@@ -441,17 +467,13 @@ async function printDevUrls(): Promise<void> {
   // ── Apps (product surfaces) ──
   section("Apps")
   for (const svc of services) {
-    if ((svc.group ?? "app") !== "app") continue
-    for (const link of svc.urls) url(link.label.trim(), link.url)
-    for (const note of svc.notes ?? []) console.log(chalk.gray(`  ${note}`))
+    if ((svc.group ?? "app") === "app") printServiceLinks(svc, url)
   }
 
   // ── Ops (operator + QA surfaces) ──
   section("Ops")
   for (const svc of services) {
-    if (svc.group !== "ops") continue
-    for (const link of svc.urls) url(link.label.trim(), link.url)
-    for (const note of svc.notes ?? []) console.log(chalk.gray(`  ${note}`))
+    if (svc.group === "ops") printServiceLinks(svc, url)
   }
 
   // ── Infra ──

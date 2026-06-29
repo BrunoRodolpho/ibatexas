@@ -74,6 +74,7 @@
 // `apps/api/src/routes/admin/payments.ts` (refund), and
 // `apps/api/src/routes/me.ts` (anonymize) for reference patterns.
 
+import { randomBytes } from "node:crypto"
 import {
   basis,
   BASIS_CODES,
@@ -656,7 +657,7 @@ async function dispatchHttp<R>(args: MedusaAdjudicatedArgs<unknown>): Promise<R>
       init.body = JSON.stringify(args.payload)
     }
   }
-  const headers: Record<string, string> = { ...(args.headers ?? {}) }
+  const headers: Record<string, string> = { ...args.headers }
   if (args.idempotencyKey !== undefined) {
     headers["Idempotency-Key"] = args.idempotencyKey
   }
@@ -687,5 +688,5 @@ function cryptoRandomNonce(): string {
   // requires the caller to supply idempotencyKey.
   const c = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto
   if (c?.randomUUID) return c.randomUUID()
-  return `medusa-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+  return `medusa-${Date.now()}-${randomBytes(8).toString("hex")}`
 }

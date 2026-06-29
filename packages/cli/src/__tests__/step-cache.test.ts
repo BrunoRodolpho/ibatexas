@@ -147,7 +147,7 @@ describe("cacheStep", () => {
     expect(entry.durationMs).toBe(1500)
     expect(entry.completedAt).toBe("2025-06-01T12:00:00.000Z")
     expect(entry.inputHash).toBeDefined()
-    expect(entry.inputHash.length).toBe(16)
+    expect(entry.inputHash).toHaveLength(16)
   })
 })
 

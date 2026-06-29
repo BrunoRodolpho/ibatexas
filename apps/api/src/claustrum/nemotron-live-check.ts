@@ -80,9 +80,13 @@ async function main(): Promise<void> {
     const stream = provider.stream({ model: MODEL, system: "When asked to refund, call express_intent with capability and payload. No prose.", messages: [{ role: "user", content: "Refund charge cha-7 for R$ 4,00." }], tools: [REFUND_TOOL], maxTokens: 256 } as CompletionRequest)
     const seen: string[] = []
     let name: string | undefined
-    for await (const c of stream) { seen.push(c.type); if (c.type === "tool_use_start") name = c.name; if (c.type === "done" || c.type === "cancelled") break }
+    for await (const c of stream) {
+      seen.push(c.type)
+      if (c.type === "tool_use_start") { name = c.name }
+      if (c.type === "done" || c.type === "cancelled") { break }
+    }
     const terminals = seen.filter((t) => t === "done" || t === "cancelled")
-    return { pass: terminals.length === 1 && seen[seen.length - 1] === terminals[0] && name === "express_intent", detail: { events: seen, name } }
+    return { pass: terminals.length === 1 && seen.at(-1) === terminals[0] && name === "express_intent", detail: { events: seen, name } }
   })
 
   // PL4 embed() throws CompletionError("not_implemented") — failSafeGrounding contract
@@ -95,8 +99,8 @@ async function main(): Promise<void> {
   await record("SUT-PL5-stream-cancel", async () => {
     const stream = provider.stream({ model: MODEL, messages: [{ role: "user", content: "Write a long paragraph about rivers." }], maxTokens: 512 } as CompletionRequest)
     let n = 0
-    for await (const c of stream) { n += 1; if (n >= 2) { stream.cancel(); break } void c }
-    for await (const _c of stream) void _c
+    for await (const _c of stream) { n += 1; if (n >= 2) { stream.cancel(); break } }
+    for await (const _c of stream) { /* drain remaining chunks after cancel */ }
     return { pass: stream.aborted === true, detail: { chunks: n } }
   })
 
@@ -108,4 +112,9 @@ async function main(): Promise<void> {
   process.exit(0)
 }
 
-main().catch((e) => { console.error(e); process.exit(1) })
+try {
+  await main()
+} catch (e) {
+  console.error(e)
+  process.exit(1)
+}

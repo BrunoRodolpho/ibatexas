@@ -392,7 +392,7 @@ function buildKernelContext(
     sessionId,
     channel: Channel.WhatsApp,
     userType: "customer",
-    ...(customerId !== undefined ? { customerId } : {}),
+    ...(customerId === undefined ? {} : { customerId }),
   }
 }
 

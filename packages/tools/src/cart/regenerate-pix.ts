@@ -97,7 +97,7 @@ export async function regeneratePix(
   const result = await withLock<RegeneratePixOutput>(`payment:${active.id}`, async () => {
     // Re-read to confirm still expired (might have changed while acquiring lock)
     const freshPayment = await querySvc.getById(active.id);
-    if (!freshPayment || freshPayment.status !== "payment_expired") {
+    if (freshPayment?.status !== "payment_expired") {
       return { success: false, message: "O status do pagamento mudou. Atualize a página." };
     }
 

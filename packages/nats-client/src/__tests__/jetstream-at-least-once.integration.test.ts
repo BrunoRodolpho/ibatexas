@@ -98,7 +98,7 @@ describe("JetStream consumer — at-least-once (real NATS)", () => {
     await waitFor(() => calls.length >= 1)
     // Give a (wrong) redelivery time to fire — it must not.
     await new Promise((r) => setTimeout(r, 1500))
-    expect(calls.length).toBe(1)
+    expect(calls).toHaveLength(1)
     sub.unsubscribe()
   }, 30_000)
 
@@ -120,7 +120,7 @@ describe("JetStream consumer — at-least-once (real NATS)", () => {
     )
     // max_deliver=3 → delivered exactly 3 times, then terminal → DLQ once.
     expect(attempts).toBe(3)
-    expect(dlqEvents.filter((e) => e === "order.refunded").length).toBe(before + 1)
+    expect(dlqEvents.filter((e) => e === "order.refunded")).toHaveLength(before + 1)
     sub.unsubscribe()
   }, 30_000)
 
@@ -139,7 +139,7 @@ describe("JetStream consumer — at-least-once (real NATS)", () => {
     await publishNatsEvent("order.canceled", { orderId: "rec-1" })
     await waitFor(() => ok.length >= 1, 15_000)
     expect(attempts).toBe(2) // failed once → redelivered → succeeded
-    expect(ok.length).toBe(1)
+    expect(ok).toHaveLength(1)
     sub.unsubscribe()
   }, 30_000)
 })

@@ -133,27 +133,29 @@ function renderReport(args: {
     args.ok
       ? `reconciliation OK (${args.journeyId})`
       : `reconciliation FAILED (${args.journeyId})`,
+    `expected (${args.expected.length} declared):`,
   )
-  lines.push(`expected (${args.expected.length} declared):`)
   args.expected.forEach((e, i) => {
     const tag = e.optional ? " [optional]" : ""
-    const tally =
-      e.observedCount > 0
-        ? `observed ${e.observedCount}`
-        : e.optional
-          ? "absent (tolerated)"
-          : "absent (trajectory matcher owns this failure)"
+    const absentTally = e.optional
+      ? "absent (tolerated)"
+      : "absent (trajectory matcher owns this failure)"
+    const tally = e.observedCount > 0 ? `observed ${e.observedCount}` : absentTally
     lines.push(`  [${i}] ${e.intentKind}/${e.decision}${tag} — ${tally}`)
   })
+  const supersededNote =
+    args.supersededCount > 0
+      ? `, ${args.supersededCount} superseded intermediate(s) dropped`
+      : ""
   lines.push(
-    `observed (${args.observed.length} record(s) in the run namespaces` +
-      `${args.supersededCount > 0 ? `, ${args.supersededCount} superseded intermediate(s) dropped` : ""}):`,
+    `observed (${args.observed.length} record(s) in the run namespaces${supersededNote}):`,
   )
   args.observed.forEach((o, j) => {
+    const optionalNote = o.explanation === "optional" ? " (optional)" : ""
     const tail =
       o.explanation === "unexplained"
         ? "UNEXPLAINED"
-        : `expects[${o.expectIndex}]${o.explanation === "optional" ? " (optional)" : ""}`
+        : `expects[${o.expectIndex}]${optionalNote}`
     lines.push(
       `  [${j}] ${o.intentKind}/${o.decision} intentHash=${o.intentHash.slice(0, 12)} at=${o.at} <- ${tail}`,
     )
@@ -209,17 +211,20 @@ export function reconcileExpects(
       (e) => e.intentKind === intentKind && e.decision === decision,
     )
     if (expectIndex >= 0) expected[expectIndex]!.observedCount += 1
+    let explanation: EnvelopeExplanation
+    if (expectIndex < 0) {
+      explanation = "unexplained"
+    } else if (expected[expectIndex]!.optional) {
+      explanation = "optional"
+    } else {
+      explanation = "expected"
+    }
     return {
       intentKind,
       decision,
       intentHash: record.intentHash,
       at: record.at,
-      explanation:
-        expectIndex < 0
-          ? "unexplained"
-          : expected[expectIndex]!.optional
-            ? "optional"
-            : "expected",
+      explanation,
       ...(expectIndex >= 0 ? { expectIndex } : {}),
     }
   })

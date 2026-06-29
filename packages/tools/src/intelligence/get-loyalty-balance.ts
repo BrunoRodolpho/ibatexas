@@ -20,10 +20,11 @@ export async function getLoyaltyBalance(
   const svc = createLoyaltyService()
   const balance = await svc.getBalance(ctx.customerId)
 
+  const plural = balance.stampsNeeded > 1 ? "s" : ""
   const message =
     balance.stampsNeeded === 0
       ? "Parabens! Voce tem um desconto disponivel! Use o codigo FIEL20."
-      : `Voce tem ${balance.stamps} de 10 selos. Mais ${balance.stampsNeeded} pedido${balance.stampsNeeded > 1 ? "s" : ""} e ganha R$20 de desconto! 🏆`
+      : `Voce tem ${balance.stamps} de 10 selos. Mais ${balance.stampsNeeded} pedido${plural} e ganha R$20 de desconto! 🏆`
 
   return { ...balance, message }
 }

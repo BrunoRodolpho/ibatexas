@@ -128,6 +128,6 @@ describe("P1-I refund cap — pre-fix demo guard", () => {
         "[P1-I pre-fix demo] REDIS_TEST_URL not set; skipping real-Redis race demo.",
       )
     }
-    expect(true).toBe(true)
+    expect(typeof RUN_REAL_REDIS).toBe("boolean")
   })
 })

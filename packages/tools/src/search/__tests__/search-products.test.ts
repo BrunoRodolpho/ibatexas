@@ -238,7 +238,7 @@ describe("searchProducts", () => {
       const result = await searchProducts({ query: "costela" })
 
       expect(result.totalFound).toBe(12)
-      expect(result.products.length).toBe(1)
+      expect(result.products).toHaveLength(1)
     })
 
     it("is 0 when Typesense returns no results", async () => {

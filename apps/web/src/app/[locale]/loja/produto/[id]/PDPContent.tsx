@@ -23,6 +23,64 @@ interface PDPContentProps {
   readonly productId: string
 }
 
+type SuggestionSource = 'also_added' | 'cross_sell' | 'people_also_ordered'
+
+interface UnifiedSuggestion {
+  readonly id: string
+  readonly title: string
+  readonly price: number
+  readonly imageUrl: string | null
+  readonly source: SuggestionSource
+}
+
+type SuggestionCandidate = {
+  readonly id: string
+  readonly title: string
+  readonly price: number
+  readonly imageUrl?: string | null
+  readonly categoryHandle?: string
+}
+
+// Append products not already in `seen` as suggestions of a given source.
+function appendSuggestions(
+  products: ReadonlyArray<SuggestionCandidate>,
+  source: SuggestionSource,
+  seen: Set<string>,
+  merged: UnifiedSuggestion[],
+): void {
+  for (const p of products) {
+    if (seen.has(p.id)) continue
+    seen.add(p.id)
+    merged.push({ id: p.id, title: p.title, price: p.price, imageUrl: p.imageUrl ?? null, source })
+  }
+}
+
+// Cart-aware complementary picks: products in categories that complement what's
+// already in the cart (and not already suggested or themselves in the cart).
+function appendCartAwareSuggestions(
+  cartItems: ReadonlyArray<{ readonly productId: string }>,
+  pool: ReadonlyArray<SuggestionCandidate>,
+  seen: Set<string>,
+  merged: UnifiedSuggestion[],
+): void {
+  if (cartItems.length === 0 || pool.length === 0) return
+  const cartProductIds = new Set(cartItems.map((i) => i.productId))
+  const crossCategories = new Set<string>()
+  for (const item of cartItems) {
+    const p = pool.find((pp) => pp.id === item.productId)
+    if (p?.categoryHandle) {
+      CROSS_SELL_MAP[p.categoryHandle]?.forEach((c) => crossCategories.add(c))
+    }
+  }
+  for (const p of pool) {
+    if (seen.has(p.id) || cartProductIds.has(p.id)) continue
+    if (p.categoryHandle && crossCategories.has(p.categoryHandle)) {
+      seen.add(p.id)
+      merged.push({ id: p.id, title: p.title, price: p.price, imageUrl: p.imageUrl ?? null, source: 'people_also_ordered' })
+    }
+  }
+}
+
 // ── Skeleton Loading ─────────────────────────────────────────────────────
 function PDPSkeleton() {
   return (
@@ -151,52 +209,15 @@ export default function PDPContent({ productId }: PDPContentProps) {
   const { data: allProductsData } = useProducts({ limit: 50 })
   const allProductsPool = useMemo(() => allProductsData?.items ?? [], [allProductsData?.items])
 
-  type SuggestionSource = 'also_added' | 'cross_sell' | 'people_also_ordered'
-  interface UnifiedSuggestion {
-    readonly id: string
-    readonly title: string
-    readonly price: number
-    readonly imageUrl: string | null
-    readonly source: SuggestionSource
-  }
-
   const unifiedSuggestions = useMemo<UnifiedSuggestion[]>(() => {
     const seen = new Set<string>([productId])
     const merged: UnifiedSuggestion[] = []
-
     // 1. Collaborative "also added" — highest signal, goes first
-    for (const p of alsoAddedProducts) {
-      if (seen.has(p.id)) continue
-      seen.add(p.id)
-      merged.push({ id: p.id, title: p.title, price: p.price, imageUrl: p.imageUrl ?? null, source: 'also_added' })
-    }
-
+    appendSuggestions(alsoAddedProducts, 'also_added', seen, merged)
     // 2. Category cross-sell
-    for (const p of crossSellProducts) {
-      if (seen.has(p.id)) continue
-      seen.add(p.id)
-      merged.push({ id: p.id, title: p.title, price: p.price, imageUrl: p.imageUrl ?? null, source: 'cross_sell' })
-    }
-
+    appendSuggestions(crossSellProducts, 'cross_sell', seen, merged)
     // 3. Cart-aware complementary — only when cart has items
-    if (cartItems.length > 0 && allProductsPool.length > 0) {
-      const cartProductIds = new Set(cartItems.map((i) => i.productId))
-      const crossCategories = new Set<string>()
-      for (const item of cartItems) {
-        const p = allProductsPool.find((pp) => pp.id === item.productId)
-        if (p?.categoryHandle) {
-          CROSS_SELL_MAP[p.categoryHandle]?.forEach((c) => crossCategories.add(c))
-        }
-      }
-      for (const p of allProductsPool) {
-        if (seen.has(p.id) || cartProductIds.has(p.id)) continue
-        if (p.categoryHandle && crossCategories.has(p.categoryHandle)) {
-          seen.add(p.id)
-          merged.push({ id: p.id, title: p.title, price: p.price, imageUrl: p.imageUrl ?? null, source: 'people_also_ordered' })
-        }
-      }
-    }
-
+    appendCartAwareSuggestions(cartItems, allProductsPool, seen, merged)
     return merged.slice(0, 8)
   }, [productId, alsoAddedProducts, crossSellProducts, allProductsPool, cartItems])
 

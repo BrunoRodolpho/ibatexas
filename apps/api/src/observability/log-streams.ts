@@ -20,7 +20,7 @@ import { createVictoriaLogsStream } from "./victorialogs-stream.js";
 /** The configured VictoriaLogs base URL, or undefined when the obs stack is off. */
 export function victoriaLogsUrl(): string | undefined {
   const u = process.env.VICTORIALOGS_URL?.trim();
-  return u ? u : undefined;
+  return u || undefined;
 }
 
 /** Build a pino multistream fanning raw JSON → VictoriaLogs and human-readable

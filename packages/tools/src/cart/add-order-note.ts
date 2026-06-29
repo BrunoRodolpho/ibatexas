@@ -17,13 +17,16 @@
 //     wrapped at the chokepoint)
 
 import { randomUUID } from "node:crypto";
-import { NonRetryableError, type AgentContext } from "@ibatexas/types";
-import { canPerformAction } from "@ibatexas/types";
+import {
+  NonRetryableError,
+  canPerformAction,
+  type AgentContext,
+  type OrderFulfillmentStatus,
+} from "@ibatexas/types";
 import { createOrderQueryService, createOrderCommandService } from "@ibatexas/domain";
 import { buildEnvelope } from "@adjudicate/core";
 import { type OrderNoteAddPayload, type OrderState } from "@ibatexas/pack-orders";
 import { publishNatsEvent } from "@ibatexas/nats-client";
-import type { OrderFulfillmentStatus } from "@ibatexas/types";
 
 interface AddOrderNoteInput {
   orderId: string;
@@ -50,7 +53,7 @@ export async function addOrderNote(
   const orderQuerySvc = createOrderQueryService();
   const order = await orderQuerySvc.getById(input.orderId);
 
-  if (!order || order.customerId !== ctx.customerId) {
+  if (order?.customerId !== ctx.customerId) {
     return { success: false, message: "Pedido não encontrado." };
   }
 

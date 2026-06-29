@@ -67,9 +67,10 @@ function buildRedisShim(
 
 export async function registerRateLimit(server: FastifyInstance): Promise<void> {
   const isProduction = process.env.NODE_ENV === "production";
+  const defaultMax = isProduction ? 30 : 200;
   const maxRequests = process.env.RATE_LIMIT_MAX
     ? Number(process.env.RATE_LIMIT_MAX)
-    : isProduction ? 30 : 200;
+    : defaultMax;
 
   // Try to back the limiter with the shared Redis connection so the limit is
   // enforced cluster-wide. If Redis is unavailable at boot, fall back to the

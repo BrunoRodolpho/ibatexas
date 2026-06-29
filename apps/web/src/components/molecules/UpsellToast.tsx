@@ -111,7 +111,7 @@ export function UpsellToast() {
   }
 
   return (
-    <div
+    <section
       className="fixed left-4 right-4 sm:left-auto sm:right-6 sm:max-w-sm z-50 animate-fade-up"
       style={{
         // Sits above the StickyCartBar (~4.5rem tall) + safe-area + gap, so
@@ -123,7 +123,6 @@ export function UpsellToast() {
       onMouseLeave={() => setIsPaused(false)}
       onFocus={() => setIsPaused(true)}
       onBlur={() => setIsPaused(false)}
-      role="region"
       aria-label={t('upsell.also_add')}
       aria-live="polite"
       aria-atomic="true"
@@ -188,6 +187,6 @@ export function UpsellToast() {
           />
         </div>
       </div>
-    </div>
+    </section>
   )
 }

@@ -890,8 +890,6 @@ function recomputeAuditHash(record: AuditRecord): AuditRecord {
   // verifies. We re-attach metadata to the output unchanged — it survives
   // redaction but is never part of the tamper-evident pre-image.
   const { auditHash: _previous, signature: _signature, metadata, ...rest } = record
-  void _previous
-  void _signature
   const auditHash = sha256Canonical(rest)
   return metadata === undefined ? { ...rest, auditHash } : { ...rest, metadata, auditHash }
 }
@@ -923,132 +921,136 @@ function walk(value: unknown, path: string, ctx: WalkContext): unknown {
   if (typeof value === "number" || typeof value === "boolean") return value
   if (typeof value === "bigint" || typeof value === "symbol") return value
 
-  if (typeof value === "string") {
-    // If this string is at a path that the per-intent-kind rule names,
-    // it gets the full `[REDACTED]` treatment regardless of content. This
-    // is how we scrub `whatsapp.message.send.body` even when the body is
-    // a fully-formed sentence with no PII regex match.
-    if (path.length > 0 && pathMatchesKindRule(path, ctx.kindFieldPaths)) {
-      // Idempotency guard — don't replace an already-redacted sentinel.
-      return isSentinelString(value) ? value : SENTINEL_FIELD
-    }
-    return redactString(value)
-  }
-
-  if (Array.isArray(value)) {
-    const out: unknown[] = new Array(value.length)
-    for (let i = 0; i < value.length; i++) {
-      out[i] = walk(value[i], path.length === 0 ? `[${i}]` : `${path}[${i}]`, ctx)
-    }
-    return out
-  }
-
+  if (typeof value === "string") return walkString(value, path, ctx)
+  if (Array.isArray(value)) return walkArray(value, path, ctx)
   if (typeof value === "object") {
-    const obj = value as Record<string, unknown>
-    // NEW-P0-X5: use `Object.create(null)` so assigning a key called
-    // `__proto__` does NOT mutate the prototype chain of our output. We
-    // also reject `__proto__` / `constructor` / `prototype` as own-key
-    // names during walk — a JSON.parse'd payload with `{"__proto__": ...}`
-    // exposes the key via `Object.keys`, and `out["__proto__"] = X` on a
-    // plain `{}` would silently set the prototype. With a null-prototype
-    // container the assignment becomes a regular property (still rejected
-    // explicitly so downstream JSON serialisation doesn't carry the
-    // pollution shape forward).
-    const out: Record<string, unknown> = Object.create(null) as Record<
-      string,
-      unknown
-    >
-    for (const rawKey of Object.keys(obj)) {
-      // Drop pollution-class keys outright. These never carry useful audit
-      // payload; an LLM emitting an envelope with `__proto__` is either
-      // adversarial or unintentionally constructing a polluted object.
-      if (
-        rawKey === "__proto__" ||
-        rawKey === "constructor" ||
-        rawKey === "prototype"
-      ) {
-        continue
-      }
-      const v = obj[rawKey]
-      // Key-level scrub: if a KEY itself contains a PII shape (rare but the
-      // bypass corpus includes it — e.g. `"12345678900_was_processed"`), we
-      // run it through the same regex defense so the JSON-serialised record
-      // doesn't leak the value-as-key.
-      const key = redactString(rawKey)
-      const childPath = path.length === 0 ? key : `${path}.${key}`
-      const lowerKey = rawKey.toLowerCase()
-
-      // Field-name match — REDACT. The match is on the ORIGINAL key (pre-
-      // scrub) so that a key like `"cpf"` still routes to REDACT even though
-      // the key itself has no PII shape.
-      if (ctx.redactFields.has(lowerKey)) {
-        // String / number / bigint values — coerce to sentinel. A numeric
-        // CPF (e.g. `cpf: 12345678900`) must not survive as a number; its
-        // digits are still a PII shape in the JSON-serialised record.
-        if (typeof v === "string") {
-          out[key] = isSentinelString(v) ? v : SENTINEL_FIELD
-        } else if (
-          typeof v === "number" ||
-          typeof v === "bigint" ||
-          typeof v === "boolean"
-        ) {
-          // Booleans don't leak PII but we still scrub for shape uniformity.
-          out[key] = SENTINEL_FIELD
-        } else if (v === null || v === undefined) {
-          out[key] = v
-        } else {
-          // Recurse but force the child path to be marked — most defensive:
-          // walk into the object and replace every leaf string with sentinel.
-          out[key] = redactSubtree(v)
-        }
-        continue
-      }
-
-      // Field-name match — HASH.
-      if (ctx.hashFields.has(lowerKey)) {
-        if (typeof v === "string") {
-          out[key] = isSentinelString(v) ? v : hashValue(v, ctx.hashSecret)
-        } else if (
-          typeof v === "number" ||
-          typeof v === "bigint"
-        ) {
-          out[key] = hashValue(String(v), ctx.hashSecret)
-        } else if (v === null || v === undefined) {
-          out[key] = v
-        } else {
-          // Coerce to JSON, then hash. Captures `{name: {first: "x"}}` shapes.
-          out[key] = hashValue(JSON.stringify(v), ctx.hashSecret)
-        }
-        continue
-      }
-
-      // Per-intent-kind path match — REDACT entire subtree.
-      if (pathMatchesKindRule(childPath, ctx.kindFieldPaths)) {
-        if (typeof v === "string") {
-          out[key] = isSentinelString(v) ? v : SENTINEL_FIELD
-        } else if (
-          typeof v === "number" ||
-          typeof v === "bigint" ||
-          typeof v === "boolean"
-        ) {
-          out[key] = SENTINEL_FIELD
-        } else if (v === null || v === undefined) {
-          out[key] = v
-        } else {
-          out[key] = redactSubtree(v)
-        }
-        continue
-      }
-
-      // Recurse — let the regex defense pick up any leaf PII strings.
-      out[key] = walk(v, childPath, ctx)
-    }
-    return out
+    return walkObject(value as Record<string, unknown>, path, ctx)
   }
 
   // Fallback (functions, exotic types) — drop to sentinel so we never leak
   // a stringified function body containing closure-captured PII.
   return SENTINEL_FIELD
+}
+
+// String leaf. If this string is at a path that the per-intent-kind rule names,
+// it gets the full `[REDACTED]` treatment regardless of content. This is how we
+// scrub `whatsapp.message.send.body` even when the body is a fully-formed
+// sentence with no PII regex match. Otherwise the regex/length defenses run.
+function walkString(value: string, path: string, ctx: WalkContext): string {
+  if (path.length > 0 && pathMatchesKindRule(path, ctx.kindFieldPaths)) {
+    // Idempotency guard — don't replace an already-redacted sentinel.
+    return isSentinelString(value) ? value : SENTINEL_FIELD
+  }
+  return redactString(value)
+}
+
+// Array — re-create, walking each index with its `[i]` path segment.
+function walkArray(value: unknown[], path: string, ctx: WalkContext): unknown[] {
+  const out: unknown[] = new Array(value.length)
+  for (let i = 0; i < value.length; i++) {
+    out[i] = walk(value[i], path.length === 0 ? `[${i}]` : `${path}[${i}]`, ctx)
+  }
+  return out
+}
+
+// Object — re-create on a null-prototype container, dropping pollution-class
+// keys, and route each value through the REDACT / HASH / per-kind / recurse
+// rules in that priority order (identical to the pre-refactor if/continue chain).
+function walkObject(
+  obj: Record<string, unknown>,
+  path: string,
+  ctx: WalkContext,
+): Record<string, unknown> {
+  // NEW-P0-X5: use `Object.create(null)` so assigning a key called
+  // `__proto__` does NOT mutate the prototype chain of our output. We
+  // also reject `__proto__` / `constructor` / `prototype` as own-key
+  // names during walk — a JSON.parse'd payload with `{"__proto__": ...}`
+  // exposes the key via `Object.keys`, and `out["__proto__"] = X` on a
+  // plain `{}` would silently set the prototype. With a null-prototype
+  // container the assignment becomes a regular property (still rejected
+  // explicitly so downstream JSON serialisation doesn't carry the
+  // pollution shape forward).
+  const out: Record<string, unknown> = Object.create(null) as Record<
+    string,
+    unknown
+  >
+  for (const rawKey of Object.keys(obj)) {
+    // Drop pollution-class keys outright. These never carry useful audit
+    // payload; an LLM emitting an envelope with `__proto__` is either
+    // adversarial or unintentionally constructing a polluted object.
+    if (
+      rawKey === "__proto__" ||
+      rawKey === "constructor" ||
+      rawKey === "prototype"
+    ) {
+      continue
+    }
+    const v = obj[rawKey]
+    // Key-level scrub: if a KEY itself contains a PII shape (rare but the
+    // bypass corpus includes it — e.g. `"12345678900_was_processed"`), we
+    // run it through the same regex defense so the JSON-serialised record
+    // doesn't leak the value-as-key.
+    const key = redactString(rawKey)
+    const childPath = path.length === 0 ? key : `${path}.${key}`
+    const lowerKey = rawKey.toLowerCase()
+
+    // Field-name match — REDACT. The match is on the ORIGINAL key (pre-
+    // scrub) so that a key like `"cpf"` still routes to REDACT even though
+    // the key itself has no PII shape.
+    if (ctx.redactFields.has(lowerKey)) {
+      out[key] = redactFieldValue(v)
+    } else if (ctx.hashFields.has(lowerKey)) {
+      // Field-name match — HASH.
+      out[key] = hashFieldValue(v, ctx.hashSecret)
+    } else if (pathMatchesKindRule(childPath, ctx.kindFieldPaths)) {
+      // Per-intent-kind path match — REDACT entire subtree.
+      out[key] = redactFieldValue(v)
+    } else {
+      // Recurse — let the regex defense pick up any leaf PII strings.
+      out[key] = walk(v, childPath, ctx)
+    }
+  }
+  return out
+}
+
+// REDACT replacement for a single field value (used by both the field-name
+// REDACT match and the per-intent-kind path match — historically identical
+// branches). String / number / bigint values coerce to the sentinel: a numeric
+// CPF (e.g. `cpf: 12345678900`) must not survive as a number; its digits are
+// still a PII shape in the JSON-serialised record. null/undefined pass through;
+// non-scalars recurse via `redactSubtree`, replacing every leaf string.
+function redactFieldValue(v: unknown): unknown {
+  if (typeof v === "string") {
+    return isSentinelString(v) ? v : SENTINEL_FIELD
+  }
+  if (
+    typeof v === "number" ||
+    typeof v === "bigint" ||
+    typeof v === "boolean"
+  ) {
+    // Booleans don't leak PII but we still scrub for shape uniformity.
+    return SENTINEL_FIELD
+  }
+  if (v === null || v === undefined) {
+    return v
+  }
+  return redactSubtree(v)
+}
+
+// HASH replacement for a single field value. Strings hash directly; numbers and
+// bigints are stringified first; null/undefined pass through; non-scalars are
+// JSON-coerced then hashed (captures `{name: {first: "x"}}` shapes).
+function hashFieldValue(v: unknown, hashSecret: string): unknown {
+  if (typeof v === "string") {
+    return isSentinelString(v) ? v : hashValue(v, hashSecret)
+  }
+  if (typeof v === "number" || typeof v === "bigint") {
+    return hashValue(String(v), hashSecret)
+  }
+  if (v === null || v === undefined) {
+    return v
+  }
+  return hashValue(JSON.stringify(v), hashSecret)
 }
 
 // Replace every leaf string in a subtree with the REDACT sentinel. Used when

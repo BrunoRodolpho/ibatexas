@@ -15,7 +15,7 @@ const DEFAULT_DEPLOY_TIMEOUT = 15 * 60 * 1000
 
 const VALID_SERVICES = ["api", "web", "admin", "nats", "typesense"] as const
 
-const AUTO_POPULATED_SECRETS = ["REDIS_URL", "NATS_URL"]
+const AUTO_POPULATED_SECRETS = new Set(["REDIS_URL", "NATS_URL"])
 
 const ALL_SECRETS = [
   "JWT_SECRET",
@@ -36,7 +36,7 @@ const ALL_SECRETS = [
   "MEDUSA_ADMIN_PASSWORD",
 ]
 
-const MANUAL_SECRETS = ALL_SECRETS.filter(s => !AUTO_POPULATED_SECRETS.includes(s))
+const MANUAL_SECRETS = ALL_SECRETS.filter(s => !AUTO_POPULATED_SECRETS.has(s))
 
 const GITHUB_SECRETS = [
   "AWS_DEPLOY_ROLE_ARN",
@@ -185,6 +185,38 @@ function secretsBackend(env: string): SecretsBackend {
   return DEFAULT_SECRETS_BACKEND[env] ?? "secretsmanager"
 }
 
+async function readSecretFromSsm(env: string, name: string): Promise<string | null> {
+  const res = await awsCommand([
+    "ssm", "get-parameter",
+    "--name", ssmParamPath(env, name),
+    "--with-decryption",
+    "--region", DEFAULT_REGION,
+    "--output", "json",
+  ])
+  if (res.exitCode !== 0) return null
+  try {
+    const data = JSON.parse(res.stdout)
+    const value = data.Parameter?.Value as string | undefined
+    if (value && value !== "__placeholder__") return value
+  } catch { /* fall through */ }
+  return null
+}
+
+async function readSecretFromSecretsManager(env: string, name: string): Promise<string | null> {
+  const res = await awsCommand([
+    "secretsmanager", "get-secret-value",
+    "--secret-id", secretPath(env, name),
+    "--region", DEFAULT_REGION,
+    "--output", "json",
+  ])
+  if (res.exitCode !== 0) return null
+  try {
+    const data = JSON.parse(res.stdout)
+    if (data.SecretString?.trim()) return data.SecretString as string
+  } catch { /* fall through */ }
+  return null
+}
+
 /** Read a secret's current value, trying both stores (SSM first for dev). */
 async function readSecret(env: string, name: string): Promise<string | null> {
   const backend = secretsBackend(env)
@@ -193,35 +225,10 @@ async function readSecret(env: string, name: string): Promise<string | null> {
     : ["secretsmanager", "ssm"]
 
   for (const b of order) {
-    if (b === "ssm") {
-      const res = await awsCommand([
-        "ssm", "get-parameter",
-        "--name", ssmParamPath(env, name),
-        "--with-decryption",
-        "--region", DEFAULT_REGION,
-        "--output", "json",
-      ])
-      if (res.exitCode === 0) {
-        try {
-          const data = JSON.parse(res.stdout)
-          const value = data.Parameter?.Value as string | undefined
-          if (value && value !== "__placeholder__") return value
-        } catch { /* fall through */ }
-      }
-    } else {
-      const res = await awsCommand([
-        "secretsmanager", "get-secret-value",
-        "--secret-id", secretPath(env, name),
-        "--region", DEFAULT_REGION,
-        "--output", "json",
-      ])
-      if (res.exitCode === 0) {
-        try {
-          const data = JSON.parse(res.stdout)
-          if (data.SecretString?.trim()) return data.SecretString as string
-        } catch { /* fall through */ }
-      }
-    }
+    const value = b === "ssm"
+      ? await readSecretFromSsm(env, name)
+      : await readSecretFromSecretsManager(env, name)
+    if (value !== null) return value
   }
   return null
 }
@@ -466,7 +473,7 @@ const CHECKS: InfraCheckDef[] = [
     severity: "degraded",
     run: async (env) => {
       const instance = await findHostInstance(env)
-      if (!instance || instance.state !== "running") return { status: "skip", detail: "instance not running" }
+      if (instance?.state !== "running") return { status: "skip", detail: "instance not running" }
       const res = await awsCommand([
         "ssm", "describe-instance-information",
         "--filters", `Key=InstanceIds,Values=${instance.id}`,
@@ -529,7 +536,8 @@ const CHECKS: InfraCheckDef[] = [
       const missing = results.filter(r => !r.ok).map(r => r.name)
       if (missing.length === 0) return { status: "ok", detail: `${populated}/${ALL_SECRETS.length} populated (${backend})` }
       if (populated === 0) return { status: "error", detail: `0/${ALL_SECRETS.length} — none set (${backend})` }
-      return { status: "warn", detail: `${populated}/${ALL_SECRETS.length} — missing: ${missing.slice(0, 3).join(", ")}${missing.length > 3 ? ` +${missing.length - 3} more` : ""} (${backend})` }
+      const more = missing.length > 3 ? ` +${missing.length - 3} more` : ""
+      return { status: "warn", detail: `${populated}/${ALL_SECRETS.length} — missing: ${missing.slice(0, 3).join(", ")}${more} (${backend})` }
     },
   },
   // ── GitHub ────────────────────────────────────────────────────
@@ -592,15 +600,16 @@ function renderTemplate(tplPath: string, vars: Record<string, string>): string {
   // we want the substitution to ignore the escaped form.
   return raw
     .replace(/(^|[^$])\$\{([a-z_]+)\}/g, (match, lead, key) => {
-      return Object.prototype.hasOwnProperty.call(vars, key) ? `${lead}${vars[key]}` : match
+      return Object.hasOwn(vars, key) ? `${lead}${vars[key]}` : match
     })
-    .replace(/\$\$\{/g, "${")
+    .replaceAll("$${", "${")
 }
 
 async function resolveTerraformVars(env: string): Promise<{ region: string; account_id: string; domain: string; ecr_registry: string; environment: string }> {
   const identity = await awsCommand(["sts", "get-caller-identity", "--query", "Account", "--output", "text"])
   const accountId = identity.stdout.trim()
-  const domain = env === "production" ? "ibatexas.com.br" : "ibatexas.com.br"
+  // Same apex domain across every environment today; kept as one constant.
+  const domain = "ibatexas.com.br"
   return {
     region: DEFAULT_REGION,
     account_id: accountId,
@@ -630,14 +639,14 @@ async function runHostSync(opts: { env?: string }): Promise<void> {
   const userDataRaw = fs.readFileSync(userDataTpl, "utf8")
 
   function extractHeredoc(marker: string): string {
-    const re = new RegExp(`cat > (?:/[^\\s]+) <<'${marker}'\\n([\\s\\S]+?)\\n${marker}`)
-    const m = userDataRaw.match(re)
+    const re = new RegExp(String.raw`cat > (?:/[^\s]+) <<'${marker}'\n([\s\S]+?)\n${marker}`)
+    const m = re.exec(userDataRaw)
     if (!m) {
       console.error(chalk.red(`  Could not extract ${marker} body from user_data.sh.tpl`))
       process.exit(1)
     }
     return m[1]
-      .replace(/\$\$\{/g, "${")
+      .replaceAll("$${", "${")
       .replace(/\$\{([a-z_]+)\}/g, (raw, k) => (vars as Record<string, string>)[k] ?? raw)
   }
 
@@ -769,6 +778,13 @@ async function runAllChecks(env: string): Promise<InfraCheckResult[]> {
   return results
 }
 
+function statusIcon(status: CheckStatus): string {
+  if (status === "ok") return chalk.green("✓")
+  if (status === "warn") return chalk.yellow("⚠")
+  if (status === "error") return chalk.red("✗")
+  return chalk.gray("○")
+}
+
 function renderConfidenceSummary(results: InfraCheckResult[]) {
   const blocking = results.filter(r => r.severity === "blocking" && (r.result.status === "error" || r.result.status === "warn"))
   const degraded = results.filter(r => r.severity === "degraded" && (r.result.status === "error" || r.result.status === "warn"))
@@ -803,7 +819,7 @@ function renderDashboard(results: InfraCheckResult[]) {
   for (const [group, checks] of groups) {
     console.log(chalk.bold(`  ${group.toUpperCase()}`))
     for (const c of checks) {
-      const icon = c.result.status === "ok" ? chalk.green("✓") : c.result.status === "warn" ? chalk.yellow("⚠") : c.result.status === "error" ? chalk.red("✗") : chalk.gray("○")
+      const icon = statusIcon(c.result.status)
       console.log(`    ${icon} ${c.label.padEnd(24)} ${chalk.gray(c.result.detail)}`)
     }
     console.log("")
@@ -816,7 +832,7 @@ function renderChecklist(results: InfraCheckResult[]) {
   let i = 0
   for (const c of results) {
     i++
-    const icon = c.result.status === "ok" ? chalk.green("✓") : c.result.status === "warn" ? chalk.yellow("⚠") : c.result.status === "error" ? chalk.red("✗") : chalk.gray("○")
+    const icon = statusIcon(c.result.status)
     const num = String(i).padStart(2, " ")
     console.log(`  ${num}. ${icon}  ${c.label.padEnd(24)} ${chalk.gray(c.result.detail)}`)
   }
@@ -959,6 +975,22 @@ async function runPlan(opts: { out?: string; env?: string }) {
 
 // ── Subcommand: apply ─────────────────────────────────────────────────────────
 
+function printApplyOutputs(outputs: Record<string, { value: unknown }>) {
+  console.log(chalk.bold("\n  Key Outputs:\n"))
+  if (outputs.route53_nameservers) {
+    console.log(chalk.white("  Route53 NS records (set at domain registrar):"))
+    const ns = outputs.route53_nameservers.value as string[]
+    for (const n of ns) console.log(chalk.cyan(`    ${n}`))
+  }
+  if (outputs.github_deploy_role_arn) {
+    console.log(chalk.white(`\n  GitHub Deploy Role ARN:`))
+    console.log(chalk.cyan(`    ${outputs.github_deploy_role_arn.value}`))
+  }
+  if (outputs.redis_endpoint) console.log(chalk.gray(`  Redis:     ${outputs.redis_endpoint.value}`))
+  if (outputs.nats_endpoint) console.log(chalk.gray(`  NATS:      ${outputs.nats_endpoint.value}`))
+  if (outputs.typesense_endpoint) console.log(chalk.gray(`  Typesense: ${outputs.typesense_endpoint.value}`))
+}
+
 async function runApply(opts: { plan?: string; env?: string }) {
   const { execa } = await import("execa")
   const env = opts.env ?? getEnvironment()
@@ -980,19 +1012,7 @@ async function runApply(opts: { plan?: string; env?: string }) {
   // Print outputs
   const outputs = await terraformOutput(env)
   if (outputs) {
-    console.log(chalk.bold("\n  Key Outputs:\n"))
-    if (outputs.route53_nameservers) {
-      console.log(chalk.white("  Route53 NS records (set at domain registrar):"))
-      const ns = outputs.route53_nameservers.value as string[]
-      for (const n of ns) console.log(chalk.cyan(`    ${n}`))
-    }
-    if (outputs.github_deploy_role_arn) {
-      console.log(chalk.white(`\n  GitHub Deploy Role ARN:`))
-      console.log(chalk.cyan(`    ${outputs.github_deploy_role_arn.value}`))
-    }
-    if (outputs.redis_endpoint) console.log(chalk.gray(`  Redis:     ${outputs.redis_endpoint.value}`))
-    if (outputs.nats_endpoint) console.log(chalk.gray(`  NATS:      ${outputs.nats_endpoint.value}`))
-    if (outputs.typesense_endpoint) console.log(chalk.gray(`  Typesense: ${outputs.typesense_endpoint.value}`))
+    printApplyOutputs(outputs)
   } else {
     console.log(chalk.yellow("\n  ⚠ Terraform outputs unavailable — infrastructure may be incomplete"))
   }
@@ -1015,6 +1035,119 @@ async function runApply(opts: { plan?: string; env?: string }) {
 
 // ── Subcommand: secrets ───────────────────────────────────────────────────────
 
+type SecretOutcome = "populated" | "skipped" | "invalid" | "cancelled"
+
+interface SecretTally {
+  populated: number
+  skipped: number
+  alreadySet: number
+  invalid: number
+  populatedValues: Record<string, string>
+}
+
+/** Pre-fetch all target secrets in parallel (tries both stores, SSM first for dev). */
+async function prefetchExistingSecrets(env: string, targetSecrets: string[]): Promise<Map<string, string>> {
+  const existingSecrets = new Map<string, string>()
+  const spinner = ora("  Checking existing secrets…").start()
+  const checks = await Promise.all(
+    targetSecrets.map(async (name) => {
+      const value = await readSecret(env, name)
+      return { name, value }
+    }),
+  )
+  for (const { name, value } of checks) {
+    if (value) existingSecrets.set(name, value)
+  }
+  spinner.succeed(`  ${existingSecrets.size}/${targetSecrets.length} secrets already set`)
+  return existingSecrets
+}
+
+/** Non-interactive: read a single secret value from process.env. */
+async function resolveSecretFromEnv(env: string, name: string): Promise<{ outcome: SecretOutcome; value?: string }> {
+  const envValue = process.env[name]
+  if (!envValue) {
+    console.log(chalk.gray(`  ○ ${name.padEnd(28)} (not in env — skipped)`))
+    return { outcome: "skipped" }
+  }
+  const validation = validateSecret(name, envValue)
+  if (validation !== true) {
+    console.log(chalk.red(`  ✗ ${name.padEnd(28)} (invalid — ${validation})`))
+    return { outcome: "invalid" }
+  }
+  const ok = await writeSecret(env, name, envValue)
+  if (ok) {
+    console.log(chalk.green(`  ✓ ${name.padEnd(28)} (populated from env)`))
+    return { outcome: "populated", value: envValue }
+  }
+  console.log(chalk.red(`  ✗ ${name.padEnd(28)} (write failed)`))
+  return { outcome: "invalid" }
+}
+
+/** Interactive: prompt for a single secret value (masked for sensitive keys). */
+async function resolveSecretInteractive(env: string, name: string): Promise<{ outcome: SecretOutcome; value?: string }> {
+  const { password, input } = await import("@inquirer/prompts")
+  const promptFn = SENSITIVE_SECRETS.has(name) ? password : input
+  let value: string
+  try {
+    value = await promptFn({
+      message: `${name}:`,
+      validate: (v: string) => {
+        if (!v.trim()) return true  // allow empty = skip
+        return validateSecret(name, v)
+      },
+    })
+  } catch {
+    // User cancelled (Ctrl+C)
+    return { outcome: "cancelled" }
+  }
+
+  if (!value.trim()) {
+    console.log(chalk.gray(`  ○ ${name.padEnd(28)} (skipped)`))
+    return { outcome: "skipped" }
+  }
+
+  const ok = await writeSecret(env, name, value)
+  if (ok) {
+    console.log(chalk.green(`  ✓ ${name.padEnd(28)} (populated)`))
+    return { outcome: "populated", value }
+  }
+  console.log(chalk.red(`  ✗ ${name.padEnd(28)} (write failed)`))
+  return { outcome: "invalid" }
+}
+
+async function populateSecrets(
+  env: string,
+  targetSecrets: string[],
+  existingSecrets: Map<string, string>,
+  opts: { fromEnv?: boolean; force?: boolean },
+): Promise<SecretTally> {
+  const tally: SecretTally = { populated: 0, skipped: 0, alreadySet: 0, invalid: 0, populatedValues: {} }
+  for (const name of targetSecrets) {
+    // Check if already set (from parallel pre-fetch)
+    if (!opts.force && existingSecrets.has(name)) {
+      console.log(chalk.green(`  ✓ ${name.padEnd(28)} (already set)`))
+      tally.alreadySet++
+      tally.populatedValues[name] = existingSecrets.get(name)!
+      continue
+    }
+
+    const res = opts.fromEnv
+      ? await resolveSecretFromEnv(env, name)
+      : await resolveSecretInteractive(env, name)
+
+    if (res.outcome === "cancelled") break
+    if (res.outcome === "populated") {
+      tally.populated++
+      tally.populatedValues[name] = res.value!
+    } else if (res.outcome === "skipped") {
+      tally.skipped++
+    } else {
+      tally.invalid++
+    }
+  }
+  return tally
+}
+
 async function runSecrets(opts: { env?: string; force?: boolean; fromEnv?: boolean; only?: string }) {
   const env = opts.env ?? getEnvironment()
   console.log(chalk.bold.blue("\n  🔐  Secrets Manager\n"))
@@ -1029,109 +1162,29 @@ async function runSecrets(opts: { env?: string; force?: boolean; fromEnv?: boole
     return
   }
 
-  let populated = 0
-  let skipped = 0
-  let alreadySet = 0
-  let invalid = 0
-  const populatedValues: Record<string, string> = {}
-
   const backend = secretsBackend(env)
   console.log(chalk.gray(`  Backend: ${backend} (override with SECRETS_BACKEND env var)\n`))
 
-  // Pre-fetch all secrets in parallel (tries both stores, SSM first for dev).
-  const existingSecrets = new Map<string, string>()
-  if (!opts.force) {
-    const spinner = ora("  Checking existing secrets…").start()
-    const checks = await Promise.all(
-      targetSecrets.map(async (name) => {
-        const value = await readSecret(env, name)
-        return { name, value }
-      }),
-    )
-    for (const { name, value } of checks) {
-      if (value) existingSecrets.set(name, value)
-    }
-    spinner.succeed(`  ${existingSecrets.size}/${targetSecrets.length} secrets already set`)
-  }
+  const existingSecrets = opts.force
+    ? new Map<string, string>()
+    : await prefetchExistingSecrets(env, targetSecrets)
 
-  for (const name of targetSecrets) {
-    // Check if already set (from parallel pre-fetch)
-    if (!opts.force && existingSecrets.has(name)) {
-      console.log(chalk.green(`  ✓ ${name.padEnd(28)} (already set)`))
-      alreadySet++
-      populatedValues[name] = existingSecrets.get(name)!
-      continue
-    }
-
-    if (opts.fromEnv) {
-      // Non-interactive: read from process.env
-      const envValue = process.env[name]
-      if (!envValue) {
-        console.log(chalk.gray(`  ○ ${name.padEnd(28)} (not in env — skipped)`))
-        skipped++
-        continue
-      }
-      const validation = validateSecret(name, envValue)
-      if (validation !== true) {
-        console.log(chalk.red(`  ✗ ${name.padEnd(28)} (invalid — ${validation})`))
-        invalid++
-        continue
-      }
-      const ok = await writeSecret(env, name, envValue)
-      if (ok) {
-        console.log(chalk.green(`  ✓ ${name.padEnd(28)} (populated from env)`))
-        populated++
-        populatedValues[name] = envValue
-      } else {
-        console.log(chalk.red(`  ✗ ${name.padEnd(28)} (write failed)`))
-        invalid++
-      }
-    } else {
-      // Interactive: prompt for value
-      const { password, input } = await import("@inquirer/prompts")
-      const promptFn = SENSITIVE_SECRETS.has(name) ? password : input
-      let value: string
-      try {
-        value = await promptFn({
-          message: `${name}:`,
-          validate: (v: string) => {
-            if (!v.trim()) return true  // allow empty = skip
-            return validateSecret(name, v)
-          },
-        })
-      } catch {
-        // User cancelled (Ctrl+C)
-        break
-      }
-
-      if (!value.trim()) {
-        console.log(chalk.gray(`  ○ ${name.padEnd(28)} (skipped)`))
-        skipped++
-        continue
-      }
-
-      const ok = await writeSecret(env, name, value)
-      if (ok) {
-        console.log(chalk.green(`  ✓ ${name.padEnd(28)} (populated)`))
-        populated++
-        populatedValues[name] = value
-      } else {
-        console.log(chalk.red(`  ✗ ${name.padEnd(28)} (write failed)`))
-        invalid++
-      }
-    }
-  }
+  const tally = await populateSecrets(env, targetSecrets, existingSecrets, opts)
 
   // Cross-secret validation
-  const warnings = crossValidateSecrets(populatedValues, env)
+  const warnings = crossValidateSecrets(tally.populatedValues, env)
   if (warnings.length > 0) {
     console.log(chalk.yellow("\n  Cross-validation warnings:"))
     for (const w of warnings) console.log(chalk.yellow(`    ⚠ ${w}`))
   }
 
   // Summary
-  console.log(chalk.bold(`\n  Summary: ${chalk.green(`${populated} populated`)}, ${chalk.gray(`${alreadySet} already set`)}, ${chalk.yellow(`${skipped} skipped`)}, ${chalk.red(`${invalid} invalid`)}`))
-  const remaining = targetSecrets.length - populated - alreadySet
+  const populatedLabel = chalk.green(`${tally.populated} populated`)
+  const alreadySetLabel = chalk.gray(`${tally.alreadySet} already set`)
+  const skippedLabel = chalk.yellow(`${tally.skipped} skipped`)
+  const invalidLabel = chalk.red(`${tally.invalid} invalid`)
+  console.log(chalk.bold(`\n  Summary: ${populatedLabel}, ${alreadySetLabel}, ${skippedLabel}, ${invalidLabel}`))
+  const remaining = targetSecrets.length - tally.populated - tally.alreadySet
   if (remaining > 0) {
     console.log(chalk.yellow(`  ⚠ ${remaining} secret(s) still empty — deploy may fail`))
   }
@@ -1189,9 +1242,7 @@ async function runSecretsExport(opts: { file?: string }) {
       }
     }
     if (catLines.length > 0) {
-      lines.push(`# ${category.label}`)
-      lines.push(...catLines)
-      lines.push("")
+      lines.push(`# ${category.label}`, ...catLines, "")
     }
   }
 
@@ -1199,7 +1250,9 @@ async function runSecretsExport(opts: { file?: string }) {
   fs.writeFileSync(outPath, lines.join("\n"), "utf-8")
 
   console.log(chalk.green(`  ✓ Written to infra/secrets.env`))
-  console.log(chalk.bold(`\n  Summary: ${chalk.green(`${exported} exported`)}, ${chalk.yellow(`${missing.length} missing`)}`))
+  const exportedLabel = chalk.green(`${exported} exported`)
+  const missingLabel = chalk.yellow(`${missing.length} missing`)
+  console.log(chalk.bold(`\n  Summary: ${exportedLabel}, ${missingLabel}`))
   if (missing.length > 0) {
     console.log(chalk.yellow(`  ⚠ Missing: ${missing.join(", ")}`))
     console.log(chalk.gray(`    Fill them in infra/secrets.env before running: ibx infra secrets:push`))
@@ -1223,11 +1276,12 @@ async function runSecretsPush(opts: { file?: string; env?: string; force?: boole
   const content = fs.readFileSync(sourcePath, "utf-8")
   let loaded = 0
 
+  const secretLineRe = /^(?:export\s+)?([A-Z_]+)=["']?(.+?)["']?$/
   for (const line of content.split("\n")) {
     const trimmed = line.trim()
     if (!trimmed || trimmed.startsWith("#")) continue
     // Match: export KEY="value", export KEY=value, KEY="value", KEY=value
-    const match = trimmed.match(/^(?:export\s+)?([A-Z_]+)=["']?(.+?)["']?$/)
+    const match = secretLineRe.exec(trimmed)
     if (match) {
       const [, key, value] = match
       if (MANUAL_SECRETS.includes(key)) {
@@ -1244,33 +1298,27 @@ async function runSecretsPush(opts: { file?: string; env?: string; force?: boole
 
 // ── Subcommand: github ────────────────────────────────────────────────────────
 
-async function runGithub(opts: { force?: boolean } = {}) {
+/**
+ * Build a resolver over local secret sources, in lookup order:
+ * .env (dev source of truth) → infra/secrets.env (SSM snapshot, populated by
+ * `ibx infra secrets:export`). Both are optional.
+ */
+async function makeLocalResolver(): Promise<(name: string) => string | undefined> {
+  const dotenv = await import("dotenv")
+  const envPath = path.resolve(ROOT, ".env")
+  const secretsEnvPath = path.resolve(ROOT, "infra/secrets.env")
+  const fromDotEnv: Record<string, string> = fs.existsSync(envPath)
+    ? dotenv.parse(fs.readFileSync(envPath, "utf-8"))
+    : {}
+  const fromSecretsEnv: Record<string, string> = fs.existsSync(secretsEnvPath)
+    ? dotenv.parse(fs.readFileSync(secretsEnvPath, "utf-8"))
+    : {}
+  return (name: string) => (fromDotEnv[name]?.trim() || fromSecretsEnv[name]?.trim()) || undefined
+}
+
+/** Fetch the repo's existing GitHub secret + variable names (degrade to empty on error). */
+async function fetchGithubInventory(): Promise<{ existingSecrets: Set<string>; existingVariables: Set<string> }> {
   const { execa } = await import("execa")
-  const { confirm, password } = await import("@inquirer/prompts")
-  const env = getEnvironment()
-  console.log(chalk.bold.blue("\n  🐙  GitHub Secrets\n"))
-  envBanner(env)
-
-  const TOTAL = 4
-  let stepNum = 0
-
-  // [1] Verify gh CLI
-  step(++stepNum, TOTAL, "Verifying GitHub CLI…")
-  try {
-    await execa("gh", ["auth", "status"])
-  } catch {
-    console.error(chalk.red("    gh CLI not installed or not authenticated. Run: gh auth login"))
-    process.exit(1)
-  }
-
-  // Detect repo
-  const repoResult = await execa("gh", ["repo", "view", "--json", "nameWithOwner"])
-  const repo = JSON.parse(repoResult.stdout).nameWithOwner
-  const proceed = await confirm({ message: `Setting secrets for: ${chalk.bold(repo)} — Continue?`, default: true })
-  if (!proceed) { console.log(chalk.gray("    Cancelled")); return }
-
-  // Fetch existing secrets/variables so re-runs don't re-prompt for values
-  // already present on the repo. Pass --force to re-sync every key.
   const existingSecrets = new Set<string>()
   const existingVariables = new Set<string>()
   try {
@@ -1281,53 +1329,47 @@ async function runGithub(opts: { force?: boolean } = {}) {
     const { stdout } = await execa("gh", ["variable", "list", "--json", "name"])
     for (const v of JSON.parse(stdout) as Array<{ name: string }>) existingVariables.add(v.name)
   } catch { /* fall through */ }
+  return { existingSecrets, existingVariables }
+}
 
-  // Local lookup order: .env (dev source of truth) → infra/secrets.env (SSM
-  // snapshot, populated by `ibx infra secrets:export`). Both are optional.
-  const envPath = path.resolve(ROOT, ".env")
-  const secretsEnvPath = path.resolve(ROOT, "infra/secrets.env")
-  const dotenv = await import("dotenv")
-  const fromDotEnv: Record<string, string> = fs.existsSync(envPath)
-    ? dotenv.parse(fs.readFileSync(envPath, "utf-8"))
-    : {}
-  const fromSecretsEnv: Record<string, string> = fs.existsSync(secretsEnvPath)
-    ? dotenv.parse(fs.readFileSync(secretsEnvPath, "utf-8"))
-    : {}
-  const resolveLocal = (name: string): string | undefined => {
-    const v = fromDotEnv[name]?.trim() || fromSecretsEnv[name]?.trim()
-    return v || undefined
+/** Set one GitHub secret, rendering spinner success/failure. */
+async function ghSecretSet(name: string, value: string, successLabel: string): Promise<void> {
+  const { execa } = await import("execa")
+  const spinner = ora({ text: name, indent: 4 }).start()
+  try {
+    await execa("gh", ["secret", "set", name, "--body", value])
+    spinner.succeed(chalk.green(successLabel))
+  } catch {
+    spinner.fail(chalk.red(`${name} — failed to set`))
   }
+}
 
-  // [2] Get deploy role ARN from terraform output
-  step(++stepNum, TOTAL, "Reading Terraform outputs…")
-  const outputs = await terraformOutput(env)
-  const roleArn = outputs?.github_deploy_role_arn?.value as string | undefined
-
-  // [3] Set core secrets (deploy role + database URLs + optional sonar)
-  step(++stepNum, TOTAL, "Setting GitHub secrets…")
-
+async function syncAwsDeployRole(roleArn: string | undefined, existingSecrets: Set<string>): Promise<void> {
   // AWS_DEPLOY_ROLE_ARN always refreshes from terraform (it's the source of
   // truth and can rotate on infra changes). Still honor --force-skip via
   // existingSecrets check only when terraform output is missing.
   if (roleArn) {
-    const spinner = ora({ text: "AWS_DEPLOY_ROLE_ARN", indent: 4 }).start()
-    try {
-      await execa("gh", ["secret", "set", "AWS_DEPLOY_ROLE_ARN", "--body", roleArn])
-      spinner.succeed(chalk.green("AWS_DEPLOY_ROLE_ARN (from terraform output)"))
-    } catch {
-      spinner.fail(chalk.red("AWS_DEPLOY_ROLE_ARN — failed to set"))
-    }
-  } else if (!existingSecrets.has("AWS_DEPLOY_ROLE_ARN")) {
-    console.log(chalk.yellow("    ⚠ AWS_DEPLOY_ROLE_ARN unavailable — terraform outputs not found"))
-    console.log(chalk.gray("      Set manually: gh secret set AWS_DEPLOY_ROLE_ARN"))
-  } else {
-    console.log(chalk.gray("    ✓ AWS_DEPLOY_ROLE_ARN (already set, terraform output missing)"))
+    await ghSecretSet("AWS_DEPLOY_ROLE_ARN", roleArn, "AWS_DEPLOY_ROLE_ARN (from terraform output)")
+    return
   }
+  if (existingSecrets.has("AWS_DEPLOY_ROLE_ARN")) {
+    console.log(chalk.gray("    ✓ AWS_DEPLOY_ROLE_ARN (already set, terraform output missing)"))
+    return
+  }
+  console.log(chalk.yellow("    ⚠ AWS_DEPLOY_ROLE_ARN unavailable — terraform outputs not found"))
+  console.log(chalk.gray("      Set manually: gh secret set AWS_DEPLOY_ROLE_ARN"))
+}
 
+async function syncCoreGithubSecrets(
+  existingSecrets: Set<string>,
+  resolveLocal: (name: string) => string | undefined,
+  force: boolean,
+): Promise<void> {
+  const { password } = await import("@inquirer/prompts")
   for (const name of ["DIRECT_DATABASE_URL", "STAGING_DIRECT_DATABASE_URL", "SONAR_TOKEN"]) {
     const isOptional = name === "SONAR_TOKEN"
 
-    if (existingSecrets.has(name) && !opts.force) {
+    if (existingSecrets.has(name) && !force) {
       console.log(chalk.gray(`    ✓ ${name} (already set — pass --force to re-sync)`))
       continue
     }
@@ -1355,20 +1397,18 @@ async function runGithub(opts: { force?: boolean } = {}) {
       continue
     }
 
-    const spinner = ora({ text: name, indent: 4 }).start()
-    try {
-      await execa("gh", ["secret", "set", name, "--body", value])
-      spinner.succeed(chalk.green(source === "local" ? `${name} (from local)` : name))
-    } catch {
-      spinner.fail(chalk.red(`${name} — failed to set`))
-    }
+    await ghSecretSet(name, value, source === "local" ? `${name} (from local)` : name)
   }
+}
 
-  // [4] Set NEXT_PUBLIC_* build-arg secrets + variables, preferring local files
-  step(++stepNum, TOTAL, "Setting build-arg secrets and variables…")
-
+async function syncBuildArgSecrets(
+  existingSecrets: Set<string>,
+  resolveLocal: (name: string) => string | undefined,
+  force: boolean,
+): Promise<void> {
+  const { password } = await import("@inquirer/prompts")
   for (const name of BUILD_ARG_SECRETS) {
-    if (existingSecrets.has(name) && !opts.force) {
+    if (existingSecrets.has(name) && !force) {
       console.log(chalk.gray(`    ✓ ${name} (already set — pass --force to re-sync)`))
       continue
     }
@@ -1389,17 +1429,18 @@ async function runGithub(opts: { force?: boolean } = {}) {
       console.log(chalk.gray(`    ○ ${name} (skipped)`))
       continue
     }
-    const spinner = ora({ text: name, indent: 4 }).start()
-    try {
-      await execa("gh", ["secret", "set", name, "--body", value])
-      spinner.succeed(chalk.green(source === "local" ? `${name} (from local)` : name))
-    } catch {
-      spinner.fail(chalk.red(`${name} — failed to set`))
-    }
+    await ghSecretSet(name, value, source === "local" ? `${name} (from local)` : name)
   }
+}
 
+async function syncBuildArgVariables(
+  existingVariables: Set<string>,
+  resolveLocal: (name: string) => string | undefined,
+  force: boolean,
+): Promise<void> {
+  const { execa } = await import("execa")
   for (const [name, defaultValue] of Object.entries(BUILD_ARG_VARIABLES)) {
-    if (existingVariables.has(name) && !opts.force) {
+    if (existingVariables.has(name) && !force) {
       console.log(chalk.gray(`    ✓ ${name} (already set — pass --force to re-sync)`))
       continue
     }
@@ -1413,6 +1454,53 @@ async function runGithub(opts: { force?: boolean } = {}) {
       spinner.fail(chalk.red(`${name} — failed to set`))
     }
   }
+}
+
+async function runGithub(opts: { force?: boolean } = {}) {
+  const { execa } = await import("execa")
+  const { confirm } = await import("@inquirer/prompts")
+  const env = getEnvironment()
+  console.log(chalk.bold.blue("\n  🐙  GitHub Secrets\n"))
+  envBanner(env)
+
+  const TOTAL = 4
+  let stepNum = 0
+
+  // [1] Verify gh CLI
+  step(++stepNum, TOTAL, "Verifying GitHub CLI…")
+  try {
+    await execa("gh", ["auth", "status"])
+  } catch {
+    console.error(chalk.red("    gh CLI not installed or not authenticated. Run: gh auth login"))
+    process.exit(1)
+  }
+
+  // Detect repo
+  const repoResult = await execa("gh", ["repo", "view", "--json", "nameWithOwner"])
+  const repo = JSON.parse(repoResult.stdout).nameWithOwner
+  const proceed = await confirm({ message: `Setting secrets for: ${chalk.bold(repo)} — Continue?`, default: true })
+  if (!proceed) { console.log(chalk.gray("    Cancelled")); return }
+
+  // Fetch existing secrets/variables so re-runs don't re-prompt for values
+  // already present on the repo. Pass --force to re-sync every key.
+  const { existingSecrets, existingVariables } = await fetchGithubInventory()
+
+  const resolveLocal = await makeLocalResolver()
+
+  // [2] Get deploy role ARN from terraform output
+  step(++stepNum, TOTAL, "Reading Terraform outputs…")
+  const outputs = await terraformOutput(env)
+  const roleArn = outputs?.github_deploy_role_arn?.value as string | undefined
+
+  // [3] Set core secrets (deploy role + database URLs + optional sonar)
+  step(++stepNum, TOTAL, "Setting GitHub secrets…")
+  await syncAwsDeployRole(roleArn, existingSecrets)
+  await syncCoreGithubSecrets(existingSecrets, resolveLocal, !!opts.force)
+
+  // [4] Set NEXT_PUBLIC_* build-arg secrets + variables, preferring local files
+  step(++stepNum, TOTAL, "Setting build-arg secrets and variables…")
+  await syncBuildArgSecrets(existingSecrets, resolveLocal, !!opts.force)
+  await syncBuildArgVariables(existingVariables, resolveLocal, !!opts.force)
 
   console.log(chalk.green.bold("\n  ✅  GitHub secrets configured!\n"))
 }
@@ -1431,17 +1519,27 @@ interface AuditRow {
   readonly localAvailable: boolean
 }
 
-async function runSecretsAudit(opts: { env?: string; fix?: boolean; json?: boolean }) {
+function parseSsmKeys(res: { exitCode: number; stdout: string }, prefix: string): Set<string> {
+  const keys = new Set<string>()
+  if (res.exitCode !== 0) return keys
+  try {
+    const names = JSON.parse(res.stdout) as string[]
+    for (const full of names) keys.add(full.startsWith(prefix) ? full.slice(prefix.length) : full)
+  } catch { /* swallow — treat as empty */ }
+  return keys
+}
+
+function parseGhNameSet(raw: string): Set<string> {
+  const set = new Set<string>()
+  try {
+    for (const item of JSON.parse(raw) as Array<{ name: string }>) set.add(item.name)
+  } catch { /* swallow */ }
+  return set
+}
+
+/** Query SSM + GitHub secret/variable stores in parallel; failures degrade to empty sets. */
+async function fetchSecretStores(env: string): Promise<{ ssmKeys: Set<string>; ghSecrets: Set<string>; ghVars: Set<string> }> {
   const { execa } = await import("execa")
-  const env = opts.env ?? getEnvironment()
-
-  if (!opts.json) {
-    console.log(chalk.bold.blue("\n  🔍  Secrets Audit\n"))
-    envBanner(env)
-  }
-
-  // Query all three stores in parallel. Failures degrade to "empty set" so a
-  // missing `gh` auth or offline SSM still produces a readable report.
   const [ssmRes, ghSecretsRes, ghVarsRes] = await Promise.all([
     awsCommand([
       "ssm", "get-parameters-by-path",
@@ -1454,38 +1552,17 @@ async function runSecretsAudit(opts: { env?: string; fix?: boolean; json?: boole
     execa("gh", ["variable", "list", "--json", "name"]).catch(() => ({ stdout: "[]" })),
   ])
 
-  const ssmKeys = new Set<string>()
-  if (ssmRes.exitCode === 0) {
-    try {
-      const names = JSON.parse(ssmRes.stdout) as string[]
-      const prefix = `/${SECRET_PATH_PREFIX}/${env}/`
-      for (const full of names) ssmKeys.add(full.startsWith(prefix) ? full.slice(prefix.length) : full)
-    } catch { /* swallow — treat as empty */ }
+  return {
+    ssmKeys: parseSsmKeys(ssmRes, `/${SECRET_PATH_PREFIX}/${env}/`),
+    ghSecrets: parseGhNameSet(ghSecretsRes.stdout),
+    ghVars: parseGhNameSet(ghVarsRes.stdout),
   }
+}
 
-  const ghSecrets = new Set<string>()
-  try {
-    for (const s of JSON.parse(ghSecretsRes.stdout) as Array<{ name: string }>) ghSecrets.add(s.name)
-  } catch { /* swallow */ }
-
-  const ghVars = new Set<string>()
-  try {
-    for (const v of JSON.parse(ghVarsRes.stdout) as Array<{ name: string }>) ghVars.add(v.name)
-  } catch { /* swallow */ }
-
-  // Local lookup: .env (dev source of truth) → infra/secrets.env (SSM snapshot)
-  const envPath = path.resolve(ROOT, ".env")
-  const secretsEnvPath = path.resolve(ROOT, "infra/secrets.env")
-  const dotenv = await import("dotenv")
-  const fromDotEnv: Record<string, string> = fs.existsSync(envPath)
-    ? dotenv.parse(fs.readFileSync(envPath, "utf-8"))
-    : {}
-  const fromSecretsEnv: Record<string, string> = fs.existsSync(secretsEnvPath)
-    ? dotenv.parse(fs.readFileSync(secretsEnvPath, "utf-8"))
-    : {}
-  const resolveLocal = (k: string): string | undefined =>
-    (fromDotEnv[k]?.trim() || fromSecretsEnv[k]?.trim()) || undefined
-
+function buildAuditRows(
+  stores: { ssmKeys: Set<string>; ghSecrets: Set<string>; ghVars: Set<string> },
+  resolveLocal: (k: string) => string | undefined,
+): AuditRow[] {
   // Expected sets — ground truth lives at the top of this file.
   const ghSecretExpected: Array<[string, boolean]> = [
     ["AWS_DEPLOY_ROLE_ARN", false],
@@ -1497,35 +1574,83 @@ async function runSecretsAudit(opts: { env?: string; fix?: boolean; json?: boole
 
   const rows: AuditRow[] = []
   for (const k of MANUAL_SECRETS) {
-    rows.push({ key: k, store: "SSM", present: ssmKeys.has(k), optional: false, localAvailable: !!resolveLocal(k) })
+    rows.push({ key: k, store: "SSM", present: stores.ssmKeys.has(k), optional: false, localAvailable: !!resolveLocal(k) })
   }
   for (const [k, optional] of ghSecretExpected) {
-    rows.push({ key: k, store: "GH Secret", present: ghSecrets.has(k), optional, localAvailable: !!resolveLocal(k) })
+    rows.push({ key: k, store: "GH Secret", present: stores.ghSecrets.has(k), optional, localAvailable: !!resolveLocal(k) })
   }
   for (const k of Object.keys(BUILD_ARG_VARIABLES)) {
-    rows.push({ key: k, store: "GH Variable", present: ghVars.has(k), optional: false, localAvailable: !!resolveLocal(k) })
+    rows.push({ key: k, store: "GH Variable", present: stores.ghVars.has(k), optional: false, localAvailable: !!resolveLocal(k) })
   }
+  return rows
+}
+
+function auditRowIcon(row: AuditRow): string {
+  if (row.present) return chalk.green("✓")
+  return row.optional ? chalk.gray("○") : chalk.red("✗")
+}
+
+function renderAuditRows(rows: AuditRow[]) {
+  // Group by store for output
+  for (const store of ["SSM", "GH Secret", "GH Variable"] as const) {
+    const storeRows = rows.filter((r) => r.store === store)
+    console.log(chalk.bold(`\n  ${store}`))
+    for (const r of storeRows) {
+      const hint = !r.present && r.localAvailable ? chalk.cyan(" (local available)") : ""
+      const opt = r.optional && !r.present ? chalk.gray(" optional") : ""
+      console.log(`    ${auditRowIcon(r)}  ${r.key}${hint}${opt}`)
+    }
+  }
+}
+
+async function applyAuditFixes(fixable: AuditRow[], env: string, resolveLocal: (k: string) => string | undefined) {
+  const { execa } = await import("execa")
+  console.log(chalk.bold.blue("  🔧  Applying fixes…\n"))
+  for (const r of fixable) {
+    const value = resolveLocal(r.key)!
+    const spinner = ora({ text: `${r.store}: ${r.key}`, indent: 4 }).start()
+    try {
+      if (r.store === "SSM") {
+        const res = await awsCommand([
+          "ssm", "put-parameter",
+          "--name", ssmParamPath(env, r.key),
+          "--value", value,
+          "--type", "SecureString",
+          "--overwrite",
+          "--region", DEFAULT_REGION,
+        ])
+        if (res.exitCode !== 0) throw new Error(`aws put-parameter exited ${res.exitCode}`)
+      } else if (r.store === "GH Secret") {
+        await execa("gh", ["secret", "set", r.key, "--body", value])
+      } else {
+        await execa("gh", ["variable", "set", r.key, "--body", value])
+      }
+      spinner.succeed(chalk.green(`${r.store}: ${r.key} (from local)`))
+    } catch (err) {
+      spinner.fail(chalk.red(`${r.store}: ${r.key} — ${(err as Error).message}`))
+    }
+  }
+  console.log("")
+}
+
+async function runSecretsAudit(opts: { env?: string; fix?: boolean; json?: boolean }) {
+  const env = opts.env ?? getEnvironment()
+
+  if (!opts.json) {
+    console.log(chalk.bold.blue("\n  🔍  Secrets Audit\n"))
+    envBanner(env)
+  }
+
+  const stores = await fetchSecretStores(env)
+  const resolveLocal = await makeLocalResolver()
+  const rows = buildAuditRows(stores, resolveLocal)
 
   if (opts.json) {
     console.log(JSON.stringify({ env, rows }, null, 2))
     return
   }
 
-  // Group by store for output
-  for (const store of ["SSM", "GH Secret", "GH Variable"] as const) {
-    const storeRows = rows.filter((r) => r.store === store)
-    console.log(chalk.bold(`\n  ${store}`))
-    for (const r of storeRows) {
-      const icon = r.present
-        ? chalk.green("✓")
-        : r.optional
-          ? chalk.gray("○")
-          : chalk.red("✗")
-      const hint = !r.present && r.localAvailable ? chalk.cyan(" (local available)") : ""
-      const opt = r.optional && !r.present ? chalk.gray(" optional") : ""
-      console.log(`    ${icon}  ${r.key}${hint}${opt}`)
-    }
-  }
+  renderAuditRows(rows)
 
   const required = rows.filter((r) => !r.optional)
   const missing = required.filter((r) => !r.present)
@@ -1538,39 +1663,13 @@ async function runSecretsAudit(opts: { env?: string; fix?: boolean; json?: boole
     return
   }
 
-  console.log(
-    chalk.bold(
-      `  Summary: ${chalk.red(`${missing.length} missing`)} · ${chalk.cyan(`${fixable.length} fixable from local`)} · ${chalk.yellow(`${manual.length} need manual input`)}\n`,
-    ),
-  )
+  const missingLabel = chalk.red(`${missing.length} missing`)
+  const fixableLabel = chalk.cyan(`${fixable.length} fixable from local`)
+  const manualLabel = chalk.yellow(`${manual.length} need manual input`)
+  console.log(chalk.bold(`  Summary: ${missingLabel} · ${fixableLabel} · ${manualLabel}\n`))
 
   if (opts.fix && fixable.length > 0) {
-    console.log(chalk.bold.blue("  🔧  Applying fixes…\n"))
-    for (const r of fixable) {
-      const value = resolveLocal(r.key)!
-      const spinner = ora({ text: `${r.store}: ${r.key}`, indent: 4 }).start()
-      try {
-        if (r.store === "SSM") {
-          const res = await awsCommand([
-            "ssm", "put-parameter",
-            "--name", ssmParamPath(env, r.key),
-            "--value", value,
-            "--type", "SecureString",
-            "--overwrite",
-            "--region", DEFAULT_REGION,
-          ])
-          if (res.exitCode !== 0) throw new Error(`aws put-parameter exited ${res.exitCode}`)
-        } else if (r.store === "GH Secret") {
-          await execa("gh", ["secret", "set", r.key, "--body", value])
-        } else {
-          await execa("gh", ["variable", "set", r.key, "--body", value])
-        }
-        spinner.succeed(chalk.green(`${r.store}: ${r.key} (from local)`))
-      } catch (err) {
-        spinner.fail(chalk.red(`${r.store}: ${r.key} — ${(err as Error).message}`))
-      }
-    }
-    console.log("")
+    await applyAuditFixes(fixable, env, resolveLocal)
   } else if (fixable.length > 0) {
     console.log(chalk.gray(`  Re-run with --fix to auto-push ${fixable.length} key(s) available locally.\n`))
   }
@@ -1773,9 +1872,9 @@ async function runDeploy(opts: { target?: string; watch?: boolean; timeout?: str
 }
 
 function parseDuration(s: string): number {
-  const match = s.match(/^(\d+)(m|s|ms)?$/)
+  const match = /^(\d+)(m|s|ms)?$/.exec(s)
   if (!match) return DEFAULT_DEPLOY_TIMEOUT
-  const value = parseInt(match[1], 10)
+  const value = Number.parseInt(match[1], 10)
   const unit = match[2] ?? "m"
   if (unit === "ms") return value
   if (unit === "s") return value * 1000
@@ -1784,18 +1883,7 @@ function parseDuration(s: string): number {
 
 // ── Subcommand: doctor ────────────────────────────────────────────────────────
 
-async function runDoctor() {
-  const env = getEnvironment()
-  console.log(chalk.bold.blue("\n  🩺  Infrastructure Doctor\n"))
-  envBanner(env)
-
-  // Run all standard checks first
-  const results = await runAllChecks(env)
-  renderDashboard(results)
-
-  // Additional deep checks
-  console.log(chalk.bold("  Deep Diagnostics\n"))
-
+async function checkEcrRepos() {
   // Check ECR repos have images
   for (const svc of ["api", "web", "admin"]) {
     const spinner = ora({ text: `ECR ibatexas-${svc}`, indent: 4 }).start()
@@ -1812,9 +1900,11 @@ async function runDoctor() {
       spinner.fail(chalk.red(`ibatexas-${svc}: repo not found`))
     }
   }
+}
 
+async function checkDoctorLogGroups(env: string) {
   // Check CloudWatch log groups
-  for (const svc of [...VALID_SERVICES]) {
+  for (const svc of VALID_SERVICES) {
     const logGroup = `/ecs/ibatexas/${env}/${svc}`
     const spinner = ora({ text: `Log group: ${logGroup}`, indent: 4 }).start()
     const res = await awsCommand(["logs", "describe-log-groups", "--log-group-name-prefix", logGroup, "--region", DEFAULT_REGION, "--output", "json"])
@@ -1833,7 +1923,9 @@ async function runDoctor() {
       spinner.fail(chalk.red(`${logGroup}: query failed`))
     }
   }
+}
 
+async function checkCloudMap() {
   // Check Cloud Map service discovery
   const spinner = ora({ text: "Cloud Map services", indent: 4 }).start()
   const nsRes = await awsCommand(["servicediscovery", "list-namespaces", "--region", DEFAULT_REGION, "--output", "json"])
@@ -1853,42 +1945,55 @@ async function runDoctor() {
   } else {
     spinner.fail(chalk.red("Cloud Map query failed"))
   }
+}
+
+async function runDoctor() {
+  const env = getEnvironment()
+  console.log(chalk.bold.blue("\n  🩺  Infrastructure Doctor\n"))
+  envBanner(env)
+
+  // Run all standard checks first
+  const results = await runAllChecks(env)
+  renderDashboard(results)
+
+  // Additional deep checks
+  console.log(chalk.bold("  Deep Diagnostics\n"))
+  await checkEcrRepos()
+  await checkDoctorLogGroups(env)
+  await checkCloudMap()
 
   console.log("")
 }
 
 // ── Subcommand: explain ───────────────────────────────────────────────────────
 
-async function runExplain() {
+interface ExplainFinding {
+  step: number
+  label: string
+  ok: boolean
+  detail: string
+  cause?: string
+}
+
+async function explainGithubActions(env: string, step: number): Promise<ExplainFinding> {
   const { execa } = await import("execa")
-  const env = getEnvironment()
-  console.log(chalk.bold.blue("\n  🔍  Explain — Why is the deploy failing?\n"))
-  envBanner(env)
-
-  const findings: { step: number; label: string; ok: boolean; detail: string; cause?: string }[] = []
-  let stepNum = 0
-
-  // 1. Check GitHub Actions last run
-  stepNum++
   try {
     const result = await execa("gh", ["run", "list", "--limit", "1", "--json", "status,conclusion,name,headBranch", "--branch", env === "dev" ? "dev" : "main"])
     const runs = JSON.parse(result.stdout)
-    if (runs.length > 0) {
-      const run = runs[0]
-      if (run.conclusion === "success") {
-        findings.push({ step: stepNum, label: "GitHub Actions", ok: true, detail: `${run.name}: success` })
-      } else {
-        findings.push({ step: stepNum, label: "GitHub Actions", ok: false, detail: `${run.name}: ${run.conclusion ?? run.status}`, cause: "Workflow failed — check GitHub Actions logs" })
-      }
-    } else {
-      findings.push({ step: stepNum, label: "GitHub Actions", ok: false, detail: "no recent runs found", cause: "No deploy has been triggered yet" })
+    if (runs.length === 0) {
+      return { step, label: "GitHub Actions", ok: false, detail: "no recent runs found", cause: "No deploy has been triggered yet" }
     }
+    const run = runs[0]
+    if (run.conclusion === "success") {
+      return { step, label: "GitHub Actions", ok: true, detail: `${run.name}: success` }
+    }
+    return { step, label: "GitHub Actions", ok: false, detail: `${run.name}: ${run.conclusion ?? run.status}`, cause: "Workflow failed — check GitHub Actions logs" }
   } catch {
-    findings.push({ step: stepNum, label: "GitHub Actions", ok: false, detail: "gh CLI unavailable", cause: "Install gh CLI to check workflow status" })
+    return { step, label: "GitHub Actions", ok: false, detail: "gh CLI unavailable", cause: "Install gh CLI to check workflow status" }
   }
+}
 
-  // 2. Check ECR has images
-  stepNum++
+async function explainEcrImages(step: number): Promise<ExplainFinding> {
   let hasImages = true
   for (const svc of ["api", "web", "admin"]) {
     const res = await awsCommand(["ecr", "describe-images", "--repository-name", `ibatexas-${svc}`, "--region", DEFAULT_REGION, "--output", "json", "--max-items", "1"])
@@ -1898,25 +2003,23 @@ async function runExplain() {
       if (!data.imageDetails?.length) { hasImages = false; break }
     } catch { hasImages = false; break }
   }
-  if (hasImages) {
-    findings.push({ step: stepNum, label: "ECR Images", ok: true, detail: "images present for all services" })
-  } else {
-    findings.push({ step: stepNum, label: "ECR Images", ok: false, detail: "missing images", cause: "Build step may have failed — check GitHub Actions" })
-  }
+  return hasImages
+    ? { step, label: "ECR Images", ok: true, detail: "images present for all services" }
+    : { step, label: "ECR Images", ok: false, detail: "missing images", cause: "Build step may have failed — check GitHub Actions" }
+}
 
-  // 3. Check EC2 host instance
-  stepNum++
+async function explainEc2Host(env: string, step: number): Promise<ExplainFinding> {
   const instance = await findHostInstance(env)
-  if (instance && instance.state === "running") {
-    findings.push({ step: stepNum, label: "EC2 Host", ok: true, detail: `${instance.id} running` })
-  } else if (instance) {
-    findings.push({ step: stepNum, label: "EC2 Host", ok: false, detail: `${instance.id} ${instance.state}`, cause: instance.state === "stopped" ? "run 'ibx infra resume'" : "instance not ready" })
-  } else {
-    findings.push({ step: stepNum, label: "EC2 Host", ok: false, detail: "no instance with Role tag found", cause: "run 'terraform apply' first" })
+  if (instance?.state === "running") {
+    return { step, label: "EC2 Host", ok: true, detail: `${instance.id} running` }
   }
+  if (instance) {
+    return { step, label: "EC2 Host", ok: false, detail: `${instance.id} ${instance.state}`, cause: instance.state === "stopped" ? "run 'ibx infra resume'" : "instance not ready" }
+  }
+  return { step, label: "EC2 Host", ok: false, detail: "no instance with Role tag found", cause: "run 'terraform apply' first" }
+}
 
-  // 4. HTTPS health probes
-  stepNum++
+async function explainHttpsEndpoints(step: number): Promise<ExplainFinding> {
   const healthProbes = await Promise.all([
     httpProbe("https://ibatexas.com.br/"),
     httpProbe("https://api.ibatexas.com.br/health"),
@@ -1925,32 +2028,13 @@ async function runExplain() {
   const labels = ["web", "api", "admin"]
   const allHealthy = healthProbes.every(p => p.ok)
   if (allHealthy) {
-    findings.push({ step: stepNum, label: "HTTPS Endpoints", ok: true, detail: "all 3 hosts reachable" })
-  } else {
-    const failing = healthProbes.map((p, i) => p.ok ? null : `${labels[i]}: ${p.detail}`).filter(Boolean).join(", ")
-    findings.push({ step: stepNum, label: "HTTPS Endpoints", ok: false, detail: failing || "unreachable", cause: "check docker compose logs via `ibx infra logs <svc>`" })
+    return { step, label: "HTTPS Endpoints", ok: true, detail: "all 3 hosts reachable" }
   }
+  const failing = healthProbes.map((p, i) => p.ok ? null : `${labels[i]}: ${p.detail}`).filter(Boolean).join(", ")
+  return { step, label: "HTTPS Endpoints", ok: false, detail: failing || "unreachable", cause: "check docker compose logs via `ibx infra logs <svc>`" }
+}
 
-  // 5. Legacy placeholder to keep variable scoping — removed event check path
-  stepNum++
-  const eventsRes = { exitCode: 1, stdout: "" }
-  if (eventsRes.exitCode === 0) {
-    try {
-      const data = JSON.parse(eventsRes.stdout)
-      const events = data.services?.[0]?.events?.slice(0, 3) ?? []
-      const hasStoppedEvents = events.some((e: { message: string }) => e.message.includes("stopped") || e.message.includes("STOPPED"))
-      if (hasStoppedEvents) {
-        findings.push({ step: stepNum, label: "Application Startup", ok: false, detail: "tasks are crashing", cause: "Check: ibx infra logs api" })
-      } else {
-        findings.push({ step: stepNum, label: "Application Startup", ok: true, detail: "no crash events" })
-      }
-    } catch {
-      findings.push({ step: stepNum, label: "Application Startup", ok: false, detail: "could not check events" })
-    }
-  }
-
-  // 6. Check secrets (tries both backends per env)
-  stepNum++
+async function explainSecrets(env: string, step: number): Promise<ExplainFinding> {
   const secretResults = await Promise.all(
     MANUAL_SECRETS.map(async (name) => {
       const value = await readSecret(env, name)
@@ -1959,12 +2043,13 @@ async function runExplain() {
   )
   const missingSecrets = secretResults.filter((n): n is string => n !== null)
   if (missingSecrets.length === 0) {
-    findings.push({ step: stepNum, label: "Secrets", ok: true, detail: "all populated" })
-  } else {
-    findings.push({ step: stepNum, label: "Secrets", ok: false, detail: `${missingSecrets.length} missing`, cause: `Missing: ${missingSecrets.slice(0, 3).join(", ")}${missingSecrets.length > 3 ? ` +${missingSecrets.length - 3} more` : ""}` })
+    return { step, label: "Secrets", ok: true, detail: "all populated" }
   }
+  const more = missingSecrets.length > 3 ? ` +${missingSecrets.length - 3} more` : ""
+  return { step, label: "Secrets", ok: false, detail: `${missingSecrets.length} missing`, cause: `Missing: ${missingSecrets.slice(0, 3).join(", ")}${more}` }
+}
 
-  // Print findings
+function printExplainFindings(findings: ExplainFinding[]) {
   console.log("")
   for (const f of findings) {
     const icon = f.ok ? chalk.green("✓") : chalk.red("✗")
@@ -1988,6 +2073,23 @@ async function runExplain() {
     console.log(chalk.green.bold("\n  ✅  No issues found — deployment chain looks healthy"))
   }
   console.log("")
+}
+
+async function runExplain() {
+  const env = getEnvironment()
+  console.log(chalk.bold.blue("\n  🔍  Explain — Why is the deploy failing?\n"))
+  envBanner(env)
+
+  // Steps run in sequence; step 5 is reserved (legacy event-check path removed).
+  const findings: ExplainFinding[] = [
+    await explainGithubActions(env, 1),
+    await explainEcrImages(2),
+    await explainEc2Host(env, 3),
+    await explainHttpsEndpoints(4),
+    await explainSecrets(env, 6),
+  ]
+
+  printExplainFindings(findings)
 }
 
 // ── Command Registration ──────────────────────────────────────────────────────

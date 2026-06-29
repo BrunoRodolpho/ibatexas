@@ -120,29 +120,17 @@ function num(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null
 }
 
-/**
- * Build the run graph from parsed trace events + the run's observed kernel
- * decisions. Pure. Throws `GraphContractError` when the decisions file's
- * runId disagrees with the trace's (mixing two runs is always a bug).
- */
-export function buildRunGraph(args: {
-  events: ReadonlyArray<RunTraceEvent>
-  decisions: RunDecisionsFile
-}): GraphDocument {
-  const { events, decisions } = args
+/** Ascending comparator over the ISO `at` field (lexicographic == chronological). */
+function byAtAscending(a: { at: string }, b: { at: string }): number {
+  if (a.at < b.at) return -1
+  if (a.at > b.at) return 1
+  return 0
+}
 
-  const journeyStart = events.find((e) => e.type === "journey.start")
-  const traceRunId = str(journeyStart?.runId)
-  if (traceRunId !== null && traceRunId !== decisions.runId) {
-    throw new GraphContractError(
-      `run-graph input mismatch: trace runId "${traceRunId}" != decisions runId "${decisions.runId}"`,
-    )
-  }
-  const runId = decisions.runId
-  const journeyId = str(journeyStart?.journey) ?? decisions.journeyId
-  const journeyEnd = events.find((e) => e.type === "journey.end")
-
-  // ── Acts (paired act.start/act.end by actIndex) ───────────────────────────
+/** Pair act.start/act.end trace events into act windows, keyed by actIndex. */
+function collectActWindows(
+  events: ReadonlyArray<RunTraceEvent>,
+): Map<number, ActWindow> {
   const acts = new Map<number, ActWindow>()
   for (const event of events) {
     if (event.type !== "act.start" && event.type !== "act.end") continue
@@ -168,6 +156,33 @@ export function buildRunGraph(args: {
     }
     acts.set(index, window)
   }
+  return acts
+}
+
+/**
+ * Build the run graph from parsed trace events + the run's observed kernel
+ * decisions. Pure. Throws `GraphContractError` when the decisions file's
+ * runId disagrees with the trace's (mixing two runs is always a bug).
+ */
+export function buildRunGraph(args: {
+  events: ReadonlyArray<RunTraceEvent>
+  decisions: RunDecisionsFile
+}): GraphDocument {
+  const { events, decisions } = args
+
+  const journeyStart = events.find((e) => e.type === "journey.start")
+  const traceRunId = str(journeyStart?.runId)
+  if (traceRunId !== null && traceRunId !== decisions.runId) {
+    throw new GraphContractError(
+      `run-graph input mismatch: trace runId "${traceRunId}" != decisions runId "${decisions.runId}"`,
+    )
+  }
+  const runId = decisions.runId
+  const journeyId = str(journeyStart?.journey) ?? decisions.journeyId
+  const journeyEnd = events.find((e) => e.type === "journey.end")
+
+  // ── Acts (paired act.start/act.end by actIndex) ───────────────────────────
+  const acts = collectActWindows(events)
 
   const nodes: GraphNode[] = []
   const edges: GraphEdge[] = []
@@ -209,9 +224,7 @@ export function buildRunGraph(args: {
 
   // ── Envelopes → decisions ─────────────────────────────────────────────────
   const decisionCounts = new Map<string, number>()
-  const ordered = [...decisions.decisions].sort((a, b) =>
-    a.at < b.at ? -1 : a.at > b.at ? 1 : 0,
-  )
+  const ordered = [...decisions.decisions].sort(byAtAscending)
   ordered.forEach((decision, seq) => {
     const envelopeNodeId = `envelope:${seq}`
     nodes.push({
@@ -234,16 +247,18 @@ export function buildRunGraph(args: {
         decision.at >= act.startedAt &&
         decision.at <= act.endedAt,
     )
-    edges.push({
-      from: owner !== undefined ? `act:${owner.index}` : runNodeId,
-      to: envelopeNodeId,
-      type: "observed",
-    })
-    edges.push({
-      from: envelopeNodeId,
-      to: `decision:${decision.decision}`,
-      type: "decided",
-    })
+    edges.push(
+      {
+        from: owner === undefined ? runNodeId : `act:${owner.index}`,
+        to: envelopeNodeId,
+        type: "observed",
+      },
+      {
+        from: envelopeNodeId,
+        to: `decision:${decision.decision}`,
+        type: "decided",
+      },
+    )
   })
 
   for (const [decisionKind, count] of decisionCounts) {

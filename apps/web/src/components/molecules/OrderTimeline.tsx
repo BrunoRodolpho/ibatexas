@@ -52,7 +52,7 @@ export function OrderTimeline({ status, deliveryType }: OrderTimelineProps) {
   }
 
   const rawIndex = steps.indexOf(status as typeof steps[number])
-  const currentIndex = rawIndex >= 0 ? rawIndex : 0
+  const currentIndex = Math.max(rawIndex, 0)
 
   return (
     <div className="space-y-0">

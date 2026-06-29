@@ -146,7 +146,7 @@ function isoTimestamp(v: string | Date): string {
   if (v instanceof Date) return v.toISOString();
   const parsed = new Date(v);
   if (Number.isNaN(parsed.getTime())) {
-    throw new Error(`intent_audit.recorded_at is not a parseable timestamp: ${v}`);
+    throw new TypeError(`intent_audit.recorded_at is not a parseable timestamp: ${v}`);
   }
   return parsed.toISOString();
 }
@@ -294,7 +294,7 @@ export function createAuditReadPaths(deps: AuditReadPathsDeps): AuditReadPaths {
           yield record;
         }
         if (rows.length < STREAM_PAGE_SIZE) return;
-        const last = rows[rows.length - 1]!;
+        const last = rows.at(-1)!;
         cursor = { hash: last.intent_hash, at: isoTimestamp(last.recorded_at) };
       }
     },
@@ -358,7 +358,7 @@ export function createAuditReadPaths(deps: AuditReadPathsDeps): AuditReadPaths {
           // The audit_outcomes CHECK constrains the vocabulary (migration 007).
           observed: r.observed as OutcomeRow["observed"],
           at: isoTimestamp(r.observed_at),
-          ...(r.note !== null ? { note: r.note } : {}),
+          ...(r.note === null ? {} : { note: r.note }),
         }));
       } catch (err) {
         report(err, "getOutcomes");

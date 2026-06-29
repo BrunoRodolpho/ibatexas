@@ -100,11 +100,11 @@ export async function analyticsRoutes(server: FastifyInstance): Promise<void> {
           redis.get(rk(`metrics:wa_orders:daily:${todayDateStr}`)),
           redis.get(rk("metrics:avg_messages_to_checkout")),
         ]);
-        outreachWeekly = outreachVal ? parseInt(outreachVal, 10) : 0;
-        const conversations = convsVal ? parseInt(convsVal, 10) : 0;
-        const waOrders = waOrdersVal ? parseInt(waOrdersVal, 10) : 0;
+        outreachWeekly = outreachVal ? Number.parseInt(outreachVal, 10) : 0;
+        const conversations = convsVal ? Number.parseInt(convsVal, 10) : 0;
+        const waOrders = waOrdersVal ? Number.parseInt(waOrdersVal, 10) : 0;
         waConversionRate = conversations > 0 ? Math.round((waOrders / conversations) * 100) : 0;
-        avgMessagesToCheckout = avgMsgsVal ? Math.round(parseFloat(avgMsgsVal)) : 0;
+        avgMessagesToCheckout = avgMsgsVal ? Math.round(Number.parseFloat(avgMsgsVal)) : 0;
       } catch (err) {
         server.log.warn({ err }, "Dashboard: failed to fetch from Medusa — returning zeros")
       }

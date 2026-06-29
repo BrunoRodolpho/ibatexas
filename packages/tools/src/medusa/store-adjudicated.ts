@@ -67,6 +67,7 @@
 //     Audit emit is best-effort; the kernel is always-on.
 //   - #2 centavos: this wrapper is payload-agnostic — pass-through.
 
+import { randomBytes } from "node:crypto"
 import {
   basis,
   BASIS_CODES,
@@ -243,137 +244,150 @@ export interface MedusaStorePaymentSessionCreatePayload {
  * quantities must be >= 1. We avoid UUID validation (Medusa's cart_*
  * and pcol_* ids are not RFC-4122 UUIDs).
  */
-const refuseInvalidPayload: MedusaStoreGuard = (envelope) => {
-  const kind = envelope.kind
-  const p = envelope.payload as Record<string, unknown>
+const MSG_EMPTY_CART_ID =
+  "Não foi possível processar a operação no carrinho porque o identificador está vazio."
+const MSG_INVALID_QUANTITY =
+  "Não foi possível processar a operação no carrinho porque a quantidade é inválida."
+const MSG_EMPTY_ITEM_ID =
+  "Não foi possível processar a operação no carrinho porque o item não foi identificado."
 
-  const empty = (v: unknown): boolean =>
-    typeof v !== "string" || v.trim().length === 0
+/** An id is "empty" when it is not a non-blank string. */
+const isEmptyId = (v: unknown): boolean =>
+  typeof v !== "string" || v.trim().length === 0
 
-  const refuseEmpty = (rule: string, message: string): Decision => {
-    return decisionRefuse(
-      refuse("BUSINESS_RULE", `medusa.store.payload.${rule}`, message),
-      [
-        basis("business", BASIS_CODES.business.RULE_VIOLATED, {
-          rule: `medusa_store_payload_${rule}`,
-          kind,
-        }),
-      ],
+/** A quantity is invalid when it is not a finite number >= 1. */
+const isInvalidQuantity = (v: unknown): boolean =>
+  typeof v !== "number" || !Number.isFinite(v) || v < 1
+
+/** Build the structured payload-refusal Decision for a given rule. */
+function refusePayload(
+  kind: MedusaStoreIntentKind,
+  rule: string,
+  message: string,
+): Decision {
+  return decisionRefuse(
+    refuse("BUSINESS_RULE", `medusa.store.payload.${rule}`, message),
+    [
+      basis("business", BASIS_CODES.business.RULE_VIOLATED, {
+        rule: `medusa_store_payload_${rule}`,
+        kind,
+      }),
+    ],
+  )
+}
+
+type PayloadValidator = (
+  kind: MedusaStoreIntentKind,
+  p: Record<string, unknown>,
+) => Decision | null
+
+const validateLineItemAdd: PayloadValidator = (kind, p) => {
+  if (isEmptyId(p["cartId"])) {
+    return refusePayload(kind, "empty_cart_id", MSG_EMPTY_CART_ID)
+  }
+  if (isEmptyId(p["variantId"])) {
+    return refusePayload(
+      kind,
+      "empty_variant_id",
+      "Não foi possível adicionar o item porque o produto não foi identificado.",
     )
   }
-
-  switch (kind) {
-    case "medusa.store.cart.line_item.add": {
-      if (empty(p["cartId"])) {
-        return refuseEmpty(
-          "empty_cart_id",
-          "Não foi possível processar a operação no carrinho porque o identificador está vazio.",
-        )
-      }
-      if (empty(p["variantId"])) {
-        return refuseEmpty(
-          "empty_variant_id",
-          "Não foi possível adicionar o item porque o produto não foi identificado.",
-        )
-      }
-      const q = p["quantity"]
-      if (typeof q !== "number" || !Number.isFinite(q) || q < 1) {
-        return refuseEmpty(
-          "invalid_quantity",
-          "Não foi possível processar a operação no carrinho porque a quantidade é inválida.",
-        )
-      }
-      return null
-    }
-    case "medusa.store.cart.line_item.update": {
-      if (empty(p["cartId"])) {
-        return refuseEmpty(
-          "empty_cart_id",
-          "Não foi possível processar a operação no carrinho porque o identificador está vazio.",
-        )
-      }
-      if (empty(p["itemId"])) {
-        return refuseEmpty(
-          "empty_item_id",
-          "Não foi possível processar a operação no carrinho porque o item não foi identificado.",
-        )
-      }
-      const q = p["quantity"]
-      if (typeof q !== "number" || !Number.isFinite(q) || q < 1) {
-        return refuseEmpty(
-          "invalid_quantity",
-          "Não foi possível processar a operação no carrinho porque a quantidade é inválida.",
-        )
-      }
-      return null
-    }
-    case "medusa.store.cart.line_item.remove": {
-      if (empty(p["cartId"])) {
-        return refuseEmpty(
-          "empty_cart_id",
-          "Não foi possível processar a operação no carrinho porque o identificador está vazio.",
-        )
-      }
-      if (empty(p["itemId"])) {
-        return refuseEmpty(
-          "empty_item_id",
-          "Não foi possível processar a operação no carrinho porque o item não foi identificado.",
-        )
-      }
-      return null
-    }
-    case "medusa.store.cart.email.update":
-    case "medusa.store.cart.metadata.update":
-    case "medusa.store.cart.complete":
-    case "medusa.store.payment_collection.create": {
-      if (empty(p["cartId"])) {
-        return refuseEmpty(
-          "empty_cart_id",
-          "Não foi possível processar a operação no carrinho porque o identificador está vazio.",
-        )
-      }
-      return null
-    }
-    case "medusa.store.cart.promotion.add": {
-      if (empty(p["cartId"])) {
-        return refuseEmpty(
-          "empty_cart_id",
-          "Não foi possível processar a operação no carrinho porque o identificador está vazio.",
-        )
-      }
-      const codes = p["promoCodes"]
-      if (
-        !Array.isArray(codes) ||
-        codes.length === 0 ||
-        codes.some((c) => empty(c))
-      ) {
-        return refuseEmpty(
-          "empty_promo_codes",
-          "Não foi possível aplicar o cupom porque o código está vazio.",
-        )
-      }
-      return null
-    }
-    case "medusa.store.payment_collection.payment_session.create": {
-      if (empty(p["paymentCollectionId"])) {
-        return refuseEmpty(
-          "empty_payment_collection_id",
-          "Não foi possível inicializar o pagamento porque a coleção de pagamento não foi identificada.",
-        )
-      }
-      if (empty(p["providerId"])) {
-        return refuseEmpty(
-          "empty_provider_id",
-          "Não foi possível inicializar o pagamento porque o provedor não foi identificado.",
-        )
-      }
-      return null
-    }
-    case "medusa.store.cart.create":
-    case "medusa.store.unknown":
-    default:
-      return null
+  if (isInvalidQuantity(p["quantity"])) {
+    return refusePayload(kind, "invalid_quantity", MSG_INVALID_QUANTITY)
   }
+  return null
+}
+
+const validateLineItemUpdate: PayloadValidator = (kind, p) => {
+  if (isEmptyId(p["cartId"])) {
+    return refusePayload(kind, "empty_cart_id", MSG_EMPTY_CART_ID)
+  }
+  if (isEmptyId(p["itemId"])) {
+    return refusePayload(kind, "empty_item_id", MSG_EMPTY_ITEM_ID)
+  }
+  if (isInvalidQuantity(p["quantity"])) {
+    return refusePayload(kind, "invalid_quantity", MSG_INVALID_QUANTITY)
+  }
+  return null
+}
+
+const validateLineItemRemove: PayloadValidator = (kind, p) => {
+  if (isEmptyId(p["cartId"])) {
+    return refusePayload(kind, "empty_cart_id", MSG_EMPTY_CART_ID)
+  }
+  if (isEmptyId(p["itemId"])) {
+    return refusePayload(kind, "empty_item_id", MSG_EMPTY_ITEM_ID)
+  }
+  return null
+}
+
+const validateCartIdOnly: PayloadValidator = (kind, p) => {
+  if (isEmptyId(p["cartId"])) {
+    return refusePayload(kind, "empty_cart_id", MSG_EMPTY_CART_ID)
+  }
+  return null
+}
+
+const validatePromotionAdd: PayloadValidator = (kind, p) => {
+  if (isEmptyId(p["cartId"])) {
+    return refusePayload(kind, "empty_cart_id", MSG_EMPTY_CART_ID)
+  }
+  const codes = p["promoCodes"]
+  if (
+    !Array.isArray(codes) ||
+    codes.length === 0 ||
+    codes.some((c) => isEmptyId(c))
+  ) {
+    return refusePayload(
+      kind,
+      "empty_promo_codes",
+      "Não foi possível aplicar o cupom porque o código está vazio.",
+    )
+  }
+  return null
+}
+
+const validatePaymentSession: PayloadValidator = (kind, p) => {
+  if (isEmptyId(p["paymentCollectionId"])) {
+    return refusePayload(
+      kind,
+      "empty_payment_collection_id",
+      "Não foi possível inicializar o pagamento porque a coleção de pagamento não foi identificada.",
+    )
+  }
+  if (isEmptyId(p["providerId"])) {
+    return refusePayload(
+      kind,
+      "empty_provider_id",
+      "Não foi possível inicializar o pagamento porque o provedor não foi identificado.",
+    )
+  }
+  return null
+}
+
+/**
+ * Per-kind payload validators. Kinds absent from this map (`cart.create`,
+ * `unknown`) have no light-validation and fall through to `null` (no opinion).
+ */
+const PAYLOAD_VALIDATORS: Partial<
+  Record<MedusaStoreIntentKind, PayloadValidator>
+> = {
+  "medusa.store.cart.line_item.add": validateLineItemAdd,
+  "medusa.store.cart.line_item.update": validateLineItemUpdate,
+  "medusa.store.cart.line_item.remove": validateLineItemRemove,
+  "medusa.store.cart.email.update": validateCartIdOnly,
+  "medusa.store.cart.metadata.update": validateCartIdOnly,
+  "medusa.store.cart.complete": validateCartIdOnly,
+  "medusa.store.payment_collection.create": validateCartIdOnly,
+  "medusa.store.cart.promotion.add": validatePromotionAdd,
+  "medusa.store.payment_collection.payment_session.create":
+    validatePaymentSession,
+}
+
+const refuseInvalidPayload: MedusaStoreGuard = (envelope) => {
+  const validator = PAYLOAD_VALIDATORS[envelope.kind]
+  if (!validator) return null
+  return validator(envelope.kind, envelope.payload as Record<string, unknown>)
 }
 
 const executeKnownKinds: MedusaStoreGuard = (envelope) => {
@@ -685,7 +699,7 @@ async function runKernelAndAudit<P>(
  */
 function buildHttpInit(
   method: "POST" | "DELETE" | "PATCH" | "PUT",
-  body: unknown | undefined,
+  body: unknown,
   idempotencyKey: string | undefined,
 ): RequestInit {
   const init: RequestInit = { method }
@@ -771,7 +785,7 @@ export const medusaStoreAdjudicated = {
       const hasEmail =
         payload.body !== null &&
         typeof payload.body === "object" &&
-        Object.prototype.hasOwnProperty.call(payload.body, "email")
+        Object.hasOwn(payload.body, "email")
       const kind: MedusaStoreIntentKind = hasEmail
         ? "medusa.store.cart.email.update"
         : "medusa.store.cart.metadata.update"
@@ -976,5 +990,5 @@ export const medusaStoreAdjudicated = {
 function cryptoRandomNonce(): string {
   const c = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto
   if (c?.randomUUID) return c.randomUUID()
-  return `medusa-store-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+  return `medusa-store-${Date.now()}-${randomBytes(8).toString("hex")}`
 }

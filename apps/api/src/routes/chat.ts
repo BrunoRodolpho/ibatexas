@@ -30,7 +30,7 @@
 //     cross-replica path.
 
 import crypto from "node:crypto";
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { v4 as uuidv4 } from "uuid";
@@ -51,19 +51,19 @@ import { getConductor } from "../claustrum-bootstrap.js";
 import { isSessionPausedForHuman } from "../escalation/escalation-store.js";
 
 const PostMessageBody = z.object({
-  sessionId: z.string().uuid(),
+  sessionId: z.uuid(),
   message: z.string().min(1).max(2000),
-  channel: z.nativeEnum(Channel),
+  channel: z.enum(Channel),
 });
 
 const PostMessageResponse = z.object({
-  messageId: z.string().uuid(),
+  messageId: z.uuid(),
   sessionToken: z.string().optional(),
   sessionSecret: z.string().optional(),
 });
 
 const StreamParams = z.object({
-  sessionId: z.string().uuid(),
+  sessionId: z.uuid(),
 });
 
 // ── CORS allowlist for the SSE endpoint (P2-SEC-SSECORS) ──────────────────────
@@ -140,6 +140,338 @@ function resolveSseHeartbeatMs(): number {
 // would need a Redis signal and is intentionally out of scope.
 const turnAbortControllers = new Map<string, AbortController>();
 
+// ── POST helpers (S3776: keep the route handler's cognitive complexity low) ───
+
+/** Send a 403 Forbidden with a pt-BR message. */
+function sendForbidden(reply: FastifyReply, message: string): void {
+  void (reply as unknown as { status(code: number): typeof reply }).status(403).send({
+    statusCode: 403,
+    error: "Forbidden",
+    message,
+  } as never);
+}
+
+/**
+ * Session-ownership verification (zero-trust). Returns true if the request was
+ * rejected (a 403 has been sent) and the caller must stop. On success the owner
+ * key is (re)asserted with a 24h TTL.
+ */
+async function rejectOnOwnershipFailure(
+  redis: Awaited<ReturnType<typeof getRedisClient>>,
+  sessionId: string,
+  customerId: string,
+  tokenHeader: string | undefined,
+  reply: FastifyReply,
+): Promise<boolean> {
+  const ownerKey = rk(`session:owner:${sessionId}`);
+  const existingOwner = await redis.get(ownerKey);
+
+  if (tokenHeader) {
+    const claim = verifySessionToken(tokenHeader);
+    if (claim?.sessionId !== sessionId || claim?.customerId !== customerId) {
+      sendForbidden(reply, "Token de sessão inválido.");
+      return true;
+    }
+  }
+
+  if (existingOwner && existingOwner !== customerId) {
+    sendForbidden(reply, "Sessão pertence a outro usuário.");
+    return true;
+  }
+
+  await redis.set(ownerKey, customerId, { EX: 86400 });
+  return false;
+}
+
+/**
+ * Guest session secret (prevents session hijacking). On a first request it mints
+ * + stores a 1h secret (returned to echo to the client); on a subsequent request
+ * it verifies the provided secret, rejecting (403) on mismatch.
+ */
+async function resolveGuestSecret(
+  redis: Awaited<ReturnType<typeof getRedisClient>>,
+  sessionId: string,
+  providedSecret: string | undefined,
+  reply: FastifyReply,
+): Promise<{ rejected: boolean; secret?: string }> {
+  const secretKey = rk(`session:secret:${sessionId}`);
+  const existingSecret = await redis.get(secretKey);
+
+  if (existingSecret) {
+    // Subsequent request — verify secret
+    if (providedSecret !== existingSecret) {
+      sendForbidden(reply, "Segredo de sessão inválido.");
+      return { rejected: true };
+    }
+    return { rejected: false };
+  }
+
+  // First request — generate and store secret
+  const secret = crypto.randomUUID();
+  await redis.set(secretKey, secret, { EX: 3600 });
+  return { rejected: false, secret };
+}
+
+/**
+ * Delegate one turn to the claustrum Conductor (fire-and-forget). Mirrors dev's
+ * hardening: bot-pause gate, single assembled text chunk + terminal done,
+ * assistant-message persistence, abort-aware delivery, and finally cleanup.
+ */
+async function runConductorTurn(params: {
+  server: FastifyInstance;
+  sessionId: string;
+  message: string;
+  messageId: string;
+  customerId: string | undefined;
+  isAuthenticated: boolean;
+  turnAbort: AbortController;
+}): Promise<void> {
+  const { server, sessionId, message, messageId, customerId, isAuthenticated, turnAbort } = params;
+  try {
+    // D2 bot-pause gate: once a human takes over this session (an open
+    // escalation), the LLM must stop auto-replying. The user's inbound was
+    // already archived above (appendMessages(user)), so staff still see it;
+    // we just suppress the bot turn. Fail-open (a Redis hiccup keeps the
+    // bot replying — see isSessionPausedForHuman).
+    if (await isSessionPausedForHuman(sessionId)) {
+      pushChunk(sessionId, { type: "done" });
+      return;
+    }
+
+    const conductor = getConductor();
+    const turnCustomerId = customerId ?? `guest:${sessionId}`;
+
+    const inbound: ChannelMessage = {
+      channel: "web",
+      customerId: turnCustomerId,
+      conversationId: sessionId,
+      externalId: messageId,
+      text: message,
+      receivedAt: new Date().toISOString(),
+      locale: "pt-BR",
+    };
+
+    const capsule = await conductor.openCapsule({
+      channel: "web",
+      customerId: turnCustomerId,
+      sessionKey: sessionId,
+      inbound,
+    });
+
+    try {
+      const turn = await handleTurn(capsule, inbound);
+
+      // Client disconnected mid-turn — skip delivery + persistence of a
+      // reply nobody is listening for.
+      if (turnAbort.signal.aborted) return;
+
+      // Streaming Option A: a single assembled text chunk + terminal done.
+      if (turn.response.text) {
+        pushChunk(sessionId, { type: "text_delta", delta: turn.response.text });
+
+        // Persist the assistant reply on dev's Redis session store AFTER
+        // the turn (SessionPort.save is a stub — see the user-message note).
+        await appendMessages(
+          sessionId,
+          [{ role: "assistant", content: turn.response.text }],
+          isAuthenticated,
+          { customerId, channel: "web" },
+        );
+      }
+      pushChunk(sessionId, { type: "done" });
+    } finally {
+      await conductor.closeCapsule(capsule);
+    }
+  } catch (err) {
+    server.log.error(err, "[chat] Conductor turn failed");
+    if (!turnAbort.signal.aborted) {
+      pushChunk(sessionId, { type: "error", message: "Erro interno." });
+    }
+  } finally {
+    // Retire the registry slot only if it is still ours — a newer turn for
+    // the same session may have replaced it.
+    if (turnAbortControllers.get(sessionId) === turnAbort) {
+      turnAbortControllers.delete(sessionId);
+    }
+    cleanupStream(sessionId);
+    await releaseWebAgentLock(sessionId);
+  }
+}
+
+// ── GET (SSE) helpers (S3776: keep the route handler's cognitive complexity low) ──
+
+/** Write a terminal SSE error frame (event-stream headers + end). */
+function writeSseError(reply: FastifyReply, message: string): void {
+  reply.raw.setHeader("Content-Type", "text/event-stream");
+  reply.raw.flushHeaders();
+  reply.raw.write(`data: ${JSON.stringify({ type: "error", message })}\n\n`);
+  reply.raw.end();
+}
+
+/**
+ * Verify the SSE consumer may read this session's stream (authenticated owner,
+ * or guest with a matching secret). Returns true if access was denied (an error
+ * frame was written + the response ended) and the caller must stop. Fails closed
+ * on a Redis error (503).
+ */
+async function denyStreamAccess(
+  server: FastifyInstance,
+  sessionId: string,
+  customerId: string | undefined,
+  providedSecret: string | undefined,
+  reply: FastifyReply,
+): Promise<boolean> {
+  try {
+    const redis = await getRedisClient();
+    if (customerId) {
+      // Authenticated stream: must own the session.
+      const owner = await redis.get(rk(`session:owner:${sessionId}`));
+      if (owner && customerId !== owner) {
+        writeSseError(reply, "Acesso negado.");
+        return true;
+      }
+    } else {
+      // Guest stream (P2-SEC-SSECORS): when a guest secret EXISTS for this
+      // session (minted by POST /api/chat/messages), require x-session-secret
+      // to match it — otherwise any guest could read another guest's stream
+      // by knowing the sessionId. When NO secret exists, this is either a
+      // non-existent/unowned stream or an authless dev session: do NOT reject
+      // here — fall through to the getStream/replay/404 path below, which
+      // returns "Sessão não encontrada" (preserving dev's GET contract).
+      const expectedSecret = await redis.get(rk(`session:secret:${sessionId}`));
+      if (expectedSecret && providedSecret !== expectedSecret) {
+        writeSseError(reply, "Acesso negado.");
+        return true;
+      }
+    }
+    return false;
+  } catch (err) {
+    server.log.warn({ sessionId, err }, "Redis session ownership check failed — failing closed");
+    reply.raw.writeHead(503, { "Content-Type": "text/event-stream" });
+    reply.raw.write(
+      `data: ${JSON.stringify({ type: "error", message: "Erro temporario. Tente novamente." })}\n\n`,
+    );
+    reply.raw.end();
+    return true;
+  }
+}
+
+/**
+ * Same-replica fast path: if the producer ran on THIS replica, replay the
+ * buffered chunks and stream live ones off the in-memory emitter. Returns true
+ * if it handled the request (an entry existed).
+ */
+function serveFromLocalStream(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  sessionId: string,
+  stopHeartbeat: () => void,
+  abortTurnOnDisconnect: () => void,
+): boolean {
+  const entry = getStream(sessionId);
+  if (!entry) return false;
+
+  // True once this consumer delivered the terminal chunk — a close event
+  // after that is normal socket teardown, never an early disconnect.
+  let terminated = false;
+
+  // Replay buffered chunks for late clients
+  for (const chunk of entry.buffer) {
+    reply.raw.write(`data: ${JSON.stringify(chunk)}\n\n`);
+    if (chunk.type === "done" || chunk.type === "error") {
+      stopHeartbeat();
+      reply.raw.end();
+      return true;
+    }
+  }
+
+  // Listen for new chunks
+  const onChunk = (chunk: unknown): void => {
+    reply.raw.write(`data: ${JSON.stringify(chunk)}\n\n`);
+    const c = chunk as { type: string };
+    if (c.type === "done" || c.type === "error") {
+      terminated = true;
+      entry.emitter.off("chunk", onChunk);
+      stopHeartbeat();
+      reply.raw.end();
+    }
+  };
+
+  entry.emitter.on("chunk", onChunk);
+
+  // Clean up listener + abort the producing turn ONLY if the client
+  // disconnected before the stream terminated (see abortTurnOnDisconnect).
+  request.raw.on("close", () => {
+    entry.emitter.off("chunk", onChunk);
+    if (!terminated) abortTurnOnDisconnect();
+  });
+  return true;
+}
+
+/**
+ * Cross-replica path: the producer ran on a *different* replica, so there is no
+ * local entry. Stream via Redis Pub/Sub + replay list, polling briefly (2s) for
+ * the producer to publish its first chunk.
+ */
+async function serveFromRedis(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  sessionId: string,
+  stopHeartbeat: () => void,
+  abortTurnOnDisconnect: () => void,
+): Promise<void> {
+  let subscription: Awaited<ReturnType<typeof subscribeToStream>>;
+  let ended = false;
+
+  const writeChunk = (chunk: StreamChunk): void => {
+    if (ended) return;
+    reply.raw.write(`data: ${JSON.stringify(chunk)}\n\n`);
+    if (chunk.type === "done" || chunk.type === "error") {
+      ended = true;
+      stopHeartbeat();
+      void subscription?.close();
+      reply.raw.end();
+    }
+  };
+
+  const deadline = Date.now() + 2000;
+  while (Date.now() < deadline && !subscription) {
+    subscription = await subscribeToStream(sessionId, writeChunk);
+    if (subscription) break;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+
+  if (!subscription) {
+    stopHeartbeat();
+    reply.raw.write(
+      `data: ${JSON.stringify({ type: "error", message: "Sessão não encontrada." })}\n\n`,
+    );
+    reply.raw.end();
+    return;
+  }
+
+  // The whole stream (incl. a terminal done/error) can be delivered
+  // synchronously from the replay list *inside* subscribeToStream, before
+  // `subscription` was assignable — in which case writeChunk's close() ran
+  // as a no-op. Close now so we never leak the duplicated subscriber.
+  if (ended) {
+    stopHeartbeat();
+    void subscription.close();
+    return;
+  }
+
+  // Otherwise release the duplicated Redis subscriber if the client
+  // disconnects before the stream terminates. Abort only on an EARLY
+  // disconnect — a post-terminal close is normal socket teardown (see
+  // abortTurnOnDisconnect).
+  request.raw.on("close", () => {
+    if (ended) return;
+    abortTurnOnDisconnect();
+    ended = true;
+    void subscription?.close();
+  });
+}
+
 export async function chatRoutes(server: FastifyInstance): Promise<void> {
   const app = server.withTypeProvider<ZodTypeProvider>();
 
@@ -159,60 +491,28 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
     async (request, reply) => {
       const { sessionId, message } = request.body;
 
-      // ── Session ownership verification (zero-trust) ──────────────────────
       const redis = await getRedisClient();
-      const ownerKey = rk(`session:owner:${sessionId}`);
 
+      // ── Session ownership verification (zero-trust) ──────────────────────
       if (request.customerId) {
-        const existingOwner = await redis.get(ownerKey);
-
         const tokenHeader = request.headers["x-session-token"] as string | undefined;
-        if (tokenHeader) {
-          const claim = verifySessionToken(tokenHeader);
-          if (!claim || claim.sessionId !== sessionId || claim.customerId !== request.customerId) {
-            void (reply as unknown as { status(code: number): typeof reply }).status(403).send({
-              statusCode: 403,
-              error: "Forbidden",
-              message: "Token de sessão inválido.",
-            } as never);
-            return reply;
-          }
-        }
-
-        if (existingOwner && existingOwner !== request.customerId) {
-          void (reply as unknown as { status(code: number): typeof reply }).status(403).send({
-            statusCode: 403,
-            error: "Forbidden",
-            message: "Sessão pertence a outro usuário.",
-          } as never);
-          return reply;
-        }
-
-        await redis.set(ownerKey, request.customerId, { EX: 86400 });
+        const rejected = await rejectOnOwnershipFailure(
+          redis,
+          sessionId,
+          request.customerId,
+          tokenHeader,
+          reply,
+        );
+        if (rejected) return reply;
       }
 
       // ── SEC: Guest session secret (prevents session hijacking) ─────────────
       let sessionSecret: string | undefined;
       if (!request.customerId) {
-        const secretKey = rk(`session:secret:${sessionId}`);
-        const existingSecret = await redis.get(secretKey);
         const providedSecret = request.headers["x-session-secret"] as string | undefined;
-
-        if (existingSecret) {
-          // Subsequent request — verify secret
-          if (providedSecret !== existingSecret) {
-            void (reply as unknown as { status(code: number): typeof reply }).status(403).send({
-              statusCode: 403,
-              error: "Forbidden",
-              message: "Segredo de sessão inválido.",
-            } as never);
-            return reply;
-          }
-        } else {
-          // First request — generate and store secret
-          sessionSecret = crypto.randomUUID();
-          await redis.set(secretKey, sessionSecret, { EX: 3600 });
-        }
+        const guest = await resolveGuestSecret(redis, sessionId, providedSecret, reply);
+        if (guest.rejected) return reply;
+        sessionSecret = guest.secret;
       }
 
       // Track session activity for idle rotation
@@ -263,77 +563,15 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
       turnAbortControllers.set(sessionId, turnAbort);
 
       // ── Delegate to the claustrum Conductor (fire-and-forget) ──────────────
-      void (async () => {
-        try {
-          // D2 bot-pause gate: once a human takes over this session (an open
-          // escalation), the LLM must stop auto-replying. The user's inbound was
-          // already archived above (appendMessages(user)), so staff still see it;
-          // we just suppress the bot turn. Fail-open (a Redis hiccup keeps the
-          // bot replying — see isSessionPausedForHuman).
-          if (await isSessionPausedForHuman(sessionId)) {
-            pushChunk(sessionId, { type: "done" });
-            return;
-          }
-
-          const conductor = getConductor();
-          const customerId = request.customerId ?? `guest:${sessionId}`;
-
-          const inbound: ChannelMessage = {
-            channel: "web",
-            customerId,
-            conversationId: sessionId,
-            externalId: messageId,
-            text: message,
-            receivedAt: new Date().toISOString(),
-            locale: "pt-BR",
-          };
-
-          const capsule = await conductor.openCapsule({
-            channel: "web",
-            customerId,
-            sessionKey: sessionId,
-            inbound,
-          });
-
-          try {
-            const turn = await handleTurn(capsule, inbound);
-
-            // Client disconnected mid-turn — skip delivery + persistence of a
-            // reply nobody is listening for.
-            if (turnAbort.signal.aborted) return;
-
-            // Streaming Option A: a single assembled text chunk + terminal done.
-            if (turn.response.text) {
-              pushChunk(sessionId, { type: "text_delta", delta: turn.response.text });
-
-              // Persist the assistant reply on dev's Redis session store AFTER
-              // the turn (SessionPort.save is a stub — see the user-message note).
-              await appendMessages(
-                sessionId,
-                [{ role: "assistant", content: turn.response.text }],
-                isAuthenticated,
-                { customerId: request.customerId, channel: "web" },
-              );
-            }
-            pushChunk(sessionId, { type: "done" });
-          } finally {
-            await conductor.closeCapsule(capsule);
-          }
-        } catch (err) {
-          server.log.error(err, "[chat] Conductor turn failed");
-          if (!turnAbort.signal.aborted) {
-            pushChunk(sessionId, { type: "error", message: "Erro interno." });
-          }
-        } finally {
-          // Retire the registry slot only if it is still ours — a newer turn for
-          // the same session may have replaced it.
-          if (turnAbortControllers.get(sessionId) === turnAbort) {
-            turnAbortControllers.delete(sessionId);
-          }
-          cleanupStream(sessionId);
-          await releaseWebAgentLock(sessionId);
-        }
-      })();
+      void runConductorTurn({
+        server,
+        sessionId,
+        message,
+        messageId,
+        customerId: request.customerId,
+        isAuthenticated,
+        turnAbort,
+      });
 
       return reply.send({
         messageId,
@@ -374,47 +612,8 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
       }
 
       // Verify session ownership / guest-secret before allowing the connection.
-      try {
-        const redis = await getRedisClient();
-        if (request.customerId) {
-          // Authenticated stream: must own the session.
-          const owner = await redis.get(rk(`session:owner:${sessionId}`));
-          if (owner && request.customerId !== owner) {
-            reply.raw.setHeader("Content-Type", "text/event-stream");
-            reply.raw.flushHeaders();
-            reply.raw.write(
-              `data: ${JSON.stringify({ type: "error", message: "Acesso negado." })}\n\n`,
-            );
-            reply.raw.end();
-            return;
-          }
-        } else {
-          // Guest stream (P2-SEC-SSECORS): when a guest secret EXISTS for this
-          // session (minted by POST /api/chat/messages), require x-session-secret
-          // to match it — otherwise any guest could read another guest's stream
-          // by knowing the sessionId. When NO secret exists, this is either a
-          // non-existent/unowned stream or an authless dev session: do NOT reject
-          // here — fall through to the getStream/replay/404 path below, which
-          // returns "Sessão não encontrada" (preserving dev's GET contract).
-          const expectedSecret = await redis.get(rk(`session:secret:${sessionId}`));
-          const providedSecret = request.headers["x-session-secret"] as string | undefined;
-          if (expectedSecret && providedSecret !== expectedSecret) {
-            reply.raw.setHeader("Content-Type", "text/event-stream");
-            reply.raw.flushHeaders();
-            reply.raw.write(
-              `data: ${JSON.stringify({ type: "error", message: "Acesso negado." })}\n\n`,
-            );
-            reply.raw.end();
-            return;
-          }
-        }
-      } catch (err) {
-        server.log.warn({ sessionId, err }, "Redis session ownership check failed — failing closed");
-        reply.raw.writeHead(503, { "Content-Type": "text/event-stream" });
-        reply.raw.write(
-          `data: ${JSON.stringify({ type: "error", message: "Erro temporario. Tente novamente." })}\n\n`,
-        );
-        reply.raw.end();
+      const providedSecret = request.headers["x-session-secret"] as string | undefined;
+      if (await denyStreamAccess(server, sessionId, request.customerId, providedSecret, reply)) {
         return;
       }
 
@@ -471,42 +670,7 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
 
       // Same-replica fast path: if the producer ran on THIS replica, the
       // in-memory entry exists and we serve directly off its EventEmitter.
-      const entry = getStream(sessionId);
-      if (entry) {
-        // True once this consumer delivered the terminal chunk — a close event
-        // after that is normal socket teardown, never an early disconnect.
-        let terminated = false;
-
-        // Replay buffered chunks for late clients
-        for (const chunk of entry.buffer) {
-          reply.raw.write(`data: ${JSON.stringify(chunk)}\n\n`);
-          if (chunk.type === "done" || chunk.type === "error") {
-            stopHeartbeat();
-            reply.raw.end();
-            return;
-          }
-        }
-
-        // Listen for new chunks
-        const onChunk = (chunk: unknown): void => {
-          reply.raw.write(`data: ${JSON.stringify(chunk)}\n\n`);
-          const c = chunk as { type: string };
-          if (c.type === "done" || c.type === "error") {
-            terminated = true;
-            entry.emitter.off("chunk", onChunk);
-            stopHeartbeat();
-            reply.raw.end();
-          }
-        };
-
-        entry.emitter.on("chunk", onChunk);
-
-        // Clean up listener + abort the producing turn ONLY if the client
-        // disconnected before the stream terminated (see abortTurnOnDisconnect).
-        request.raw.on("close", () => {
-          entry.emitter.off("chunk", onChunk);
-          if (!terminated) abortTurnOnDisconnect();
-        });
+      if (serveFromLocalStream(request, reply, sessionId, stopHeartbeat, abortTurnOnDisconnect)) {
         return;
       }
 
@@ -514,56 +678,7 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
       // is no local entry. Stream via Redis Pub/Sub + replay list, polling
       // briefly (2s) for the producer to publish its first chunk — same grace
       // the in-memory bridge previously gave a GET that raced the POST.
-      let subscription: Awaited<ReturnType<typeof subscribeToStream>>;
-      let ended = false;
-
-      const writeChunk = (chunk: StreamChunk): void => {
-        if (ended) return;
-        reply.raw.write(`data: ${JSON.stringify(chunk)}\n\n`);
-        if (chunk.type === "done" || chunk.type === "error") {
-          ended = true;
-          stopHeartbeat();
-          void subscription?.close();
-          reply.raw.end();
-        }
-      };
-
-      const deadline = Date.now() + 2000;
-      while (Date.now() < deadline && !subscription) {
-        subscription = await subscribeToStream(sessionId, writeChunk);
-        if (subscription) break;
-        await new Promise((r) => setTimeout(r, 100));
-      }
-
-      if (!subscription) {
-        stopHeartbeat();
-        reply.raw.write(
-          `data: ${JSON.stringify({ type: "error", message: "Sessão não encontrada." })}\n\n`,
-        );
-        reply.raw.end();
-        return;
-      }
-
-      // The whole stream (incl. a terminal done/error) can be delivered
-      // synchronously from the replay list *inside* subscribeToStream, before
-      // `subscription` was assignable — in which case writeChunk's close() ran
-      // as a no-op. Close now so we never leak the duplicated subscriber.
-      if (ended) {
-        stopHeartbeat();
-        void subscription.close();
-        return;
-      }
-
-      // Otherwise release the duplicated Redis subscriber if the client
-      // disconnects before the stream terminates. Abort only on an EARLY
-      // disconnect — a post-terminal close is normal socket teardown (see
-      // abortTurnOnDisconnect).
-      request.raw.on("close", () => {
-        if (ended) return;
-        abortTurnOnDisconnect();
-        ended = true;
-        void subscription?.close();
-      });
+      await serveFromRedis(request, reply, sessionId, stopHeartbeat, abortTurnOnDisconnect);
     },
   );
 }

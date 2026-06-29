@@ -79,14 +79,17 @@ function fillProposition(
 ): string | null {
   const backing = byType.get(slot.claimType);
   // Inv 6: the backing claim must EXIST, be VALIDATED, and carry the exact field.
-  if (backing === undefined || backing.verdict !== "VALIDATED") return null;
+  if (backing?.verdict !== "VALIDATED") return null;
   const value = backing.value;
   if (value === null || typeof value !== "object") return null;
   const record = value as Record<string, unknown>;
-  if (!Object.prototype.hasOwnProperty.call(record, slot.field)) return null;
+  if (!Object.hasOwn(record, slot.field)) return null;
   const fieldValue = record[slot.field];
   if (fieldValue === null || fieldValue === undefined) return null;
-  const text = String(fieldValue);
+  // Field values are primitive per registry §5 / the slot grammar; assert the
+  // primitive shape so the deterministic String() coercion is total. The cast is
+  // erased at runtime — the coercion is byte-identical to String(fieldValue).
+  const text = String(fieldValue as string | number | boolean | bigint);
   // Empty/blank ⟹ absence (registry §5), not a blank proposition.
   if (text.trim() === "") return null;
   return text;
@@ -185,80 +188,107 @@ export function render(
   suppressions: readonly SuppressionRecord[] = [],
 ): RenderResult {
   // ── 1. §O#5 render-half: a non-RENDER terminal emits ONLY the safe template. ──
-  // The suppressed proposition's value never reaches here (SuppressionRecord
-  // carries no `value`), and we deliberately do NOT inspect any claim's value on
-  // this path — the customer sees only the system's safe posture.
   if (terminal !== "RENDER") {
-    // `suppressions` is accepted and structurally available, but we read NONE of
-    // its content into the output — it has no `value` field, and we add nothing
-    // from it to the rendered text. This is the §O#5 no-re-leak guarantee, made
-    // explicit: the terminal template is the entire customer-facing output.
-    void suppressions;
-    // §I terminals are DISTINCT (RENDER · UNKNOWN · ESCALATE · CLARIFY): only a
-    // true human-handoff ESCALATE renders the handoff copy; an honest-ignorance
-    // UNKNOWN — and a CLARIFY — render the epistemic SELF-REPORT (registry §5,
-    // Inv 6), never "vou encaminhar para um atendente". Conflating UNKNOWN with
-    // ESCALATE would mis-assert that the system is escalating when it is merely
-    // reporting that it could not confirm.
-    const template = terminal === "ESCALATE" ? SAFE_TEMPLATES.escalate : SAFE_TEMPLATES.unknown;
-    // Defensive: a TERMINAL template MUST be proposition-free (it cannot carry a
-    // domain fact). If somehow it weren't, abstain to the bare unknown line rather
-    // than risk a leak.
-    const text = isPropositionFree(template)
-      ? (renderTemplate(template, new Map()) ?? "")
-      : "";
-    const line: RenderedLine = { kind: "TERMINAL", text };
-    return { text, terminal, lines: [line] };
+    return renderTerminalResult(terminal, suppressions);
   }
 
-  // ── 2. RENDER path: index by type for the Inv 6 1:1 proposition lookup. ──
+  // ── 2. RENDER path: index by type for the Inv 6 1:1 proposition lookup, then
+  // render each claim — in input order — to its line. ──
+  const byType = indexValidatedClaims(renderableClaims);
+  const lines = renderableClaims.map((claim) => renderClaimLine(claim, byType));
+  const text = lines.map((l) => l.text).join(" ");
+  return { text, terminal, lines };
+}
+
+/**
+ * §O#5 render-half: a non-RENDER terminal emits ONLY the proposition-free safe
+ * template. The suppressed proposition's value never reaches here
+ * (`SuppressionRecord` carries no `value`), and we deliberately inspect NO claim's
+ * value on this path — the customer sees only the system's safe posture.
+ *
+ * `suppressions` is accepted and structurally available, but we read NONE of its
+ * content into the output — it has no `value` field, and we add nothing from it
+ * to the rendered text. This is the §O#5 no-re-leak guarantee, made explicit: the
+ * terminal template is the entire customer-facing output.
+ *
+ * §I terminals are DISTINCT (RENDER · UNKNOWN · ESCALATE · CLARIFY): only a true
+ * human-handoff ESCALATE renders the handoff copy; an honest-ignorance UNKNOWN —
+ * and a CLARIFY — render the epistemic SELF-REPORT (registry §5, Inv 6), never
+ * "vou encaminhar para um atendente". Conflating UNKNOWN with ESCALATE would
+ * mis-assert that the system is escalating when it is merely reporting that it
+ * could not confirm.
+ */
+function renderTerminalResult(
+  terminal: TurnTerminal,
+  _suppressions: readonly SuppressionRecord[],
+): RenderResult {
+  const template = terminal === "ESCALATE" ? SAFE_TEMPLATES.escalate : SAFE_TEMPLATES.unknown;
+  // Defensive: a TERMINAL template MUST be proposition-free (it cannot carry a
+  // domain fact). If somehow it weren't, abstain to the bare unknown line rather
+  // than risk a leak.
+  const text = isPropositionFree(template)
+    ? (renderTemplate(template, new Map()) ?? "")
+    : "";
+  const line: RenderedLine = { kind: "TERMINAL", text };
+  return { text, terminal, lines: [line] };
+}
+
+/**
+ * Index the renderable claims by type for the Inv 6 1:1 proposition lookup. Only
+ * VALIDATED claims back a proposition (Inv 6); a non-validated duplicate type must
+ * never become the backing of a slot, so we index VALIDATED only (first wins).
+ */
+function indexValidatedClaims(
+  renderableClaims: readonly RenderableClaim[],
+): Map<string, RenderableClaim> {
   const byType = new Map<string, RenderableClaim>();
   for (const claim of renderableClaims) {
-    // Only VALIDATED claims back a proposition (Inv 6); a non-validated duplicate
-    // type must never become the backing of a slot, so we index VALIDATED only.
     if (claim.verdict === "VALIDATED" && !byType.has(claim.type)) {
       byType.set(claim.type, claim);
     }
   }
+  return byType;
+}
 
-  const lines: RenderedLine[] = [];
-  for (const claim of renderableClaims) {
-    if (claim.verdict === "VALIDATED") {
-      const template = VALIDATED_TEMPLATES[claim.type];
-      if (template === undefined) {
-        // Un-modelled VALIDATED type: we have no template, and §O#3 forbids
-        // free-authoring one → abstain (UNKNOWN), never invent prose.
-        const safe = SAFE_TEMPLATES.unknown;
-        lines.push({
-          kind: "ABSTENTION",
-          claimType: claim.type,
-          text: renderTemplate(safe, byType) ?? "",
-        });
-        continue;
-      }
-      const filled = renderTemplate(template, byType);
-      if (filled === null) {
-        // Inv 6 fail-safe: a proposition slot had no backing → abstain, no fact.
-        const safe = SAFE_TEMPLATES.unknown;
-        lines.push({
-          kind: "UNFILLABLE",
-          claimType: claim.type,
-          text: renderTemplate(safe, byType) ?? "",
-        });
-        continue;
-      }
-      lines.push({ kind: "ASSERTION", claimType: claim.type, text: filled });
-      continue;
-    }
+/**
+ * Render ONE renderable claim to its RenderedLine on the RENDER path (Inv 6 / §O#3):
+ *   · VALIDATED + a `validated` template exists → fill it. If any proposition slot
+ *     is UNFILLABLE → ABSTAIN to the UNKNOWN safe template (never a fabricated fact).
+ *   · VALIDATED but no modelled template → ABSTAIN (UNKNOWN) — we never free-author
+ *     prose for an un-modelled type (§O#3).
+ *   · UNKNOWN / REFUSED → the proposition-free safe template (registry §5).
+ */
+function renderClaimLine(
+  claim: RenderableClaim,
+  byType: ReadonlyMap<string, RenderableClaim>,
+): RenderedLine {
+  if (claim.verdict !== "VALIDATED") {
     // UNKNOWN / REFUSED → proposition-free safe template (registry §5).
     const safe = safeTemplateForVerdict(claim.verdict);
-    lines.push({
+    return {
       kind: "ABSTENTION",
       claimType: claim.type,
       text: renderTemplate(safe, byType) ?? "",
-    });
+    };
   }
-
-  const text = lines.map((l) => l.text).join(" ");
-  return { text, terminal, lines };
+  const template = VALIDATED_TEMPLATES[claim.type];
+  if (template === undefined) {
+    // Un-modelled VALIDATED type: we have no template, and §O#3 forbids
+    // free-authoring one → abstain (UNKNOWN), never invent prose.
+    return {
+      kind: "ABSTENTION",
+      claimType: claim.type,
+      text: renderTemplate(SAFE_TEMPLATES.unknown, byType) ?? "",
+    };
+  }
+  const filled = renderTemplate(template, byType);
+  if (filled === null) {
+    // Inv 6 fail-safe: a proposition slot had no backing → abstain, no fact.
+    return {
+      kind: "UNFILLABLE",
+      claimType: claim.type,
+      text: renderTemplate(SAFE_TEMPLATES.unknown, byType) ?? "",
+    };
+  }
+  return { kind: "ASSERTION", claimType: claim.type, text: filled };
 }

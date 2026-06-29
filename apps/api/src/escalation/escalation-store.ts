@@ -81,7 +81,7 @@ export function createEscalationStore(redis: EscalationRedis): EscalationStore {
       const existing = parse(await redis.get(recKey(input.sessionId)));
       // Idempotent on NATS redelivery: keep the original open record (handoffAt,
       // reason) rather than resetting it.
-      if (existing && existing.status === "open") return existing;
+      if (existing?.status === "open") return existing;
       const rec: EscalationRecord = {
         sessionId: input.sessionId,
         customerId: input.customerId ?? null,
@@ -122,7 +122,7 @@ export function createEscalationStore(redis: EscalationRedis): EscalationStore {
       const open: EscalationRecord[] = [];
       for (let i = 0; i < members.length; i++) {
         const rec = recs[i];
-        if (rec && rec.status === "open") {
+        if (rec?.status === "open") {
           open.push(rec);
         } else {
           // Self-heal: a missing/resolved record left a stale set member.

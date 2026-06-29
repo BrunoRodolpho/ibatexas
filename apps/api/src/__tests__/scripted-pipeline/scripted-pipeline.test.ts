@@ -258,7 +258,7 @@ describe.skipIf(!RUN_BOOTSTRAP_HARNESS)(
           assertPool,
           cc006ConversationId(fixture.id),
         );
-        expect(raw.length).toBe(0);
+        expect(raw).toHaveLength(0);
       }
     }, 60_000);
 
@@ -269,7 +269,7 @@ describe.skipIf(!RUN_BOOTSTRAP_HARNESS)(
       // REQUEST_CONFIRMATION (returns decision.prompt), so cart-intent-refused
       // and cancel-confirm-gate make NO responder model call. Total: 3 + 1 = 4.
       const completes = provider.calls.filter((c) => c.method === "complete");
-      expect(completes.length).toBe(4);
+      expect(completes).toHaveLength(4);
       // Content-keyed, never positional: every call resolved to a labeled
       // fixture (an unknown key would have thrown the turn).
       expect(completes.every((c) => c.label !== null)).toBe(true);
@@ -280,8 +280,10 @@ describe.skipIf(!RUN_BOOTSTRAP_HARNESS)(
       // a real embedder, the pgvector path would embed each perception; that path is
       // gated behind a boot capability probe — see provider-embed-capability.ts.)
       const embeds = provider.calls.filter((c) => c.method === "embed");
-      expect(embeds.length).toBe(0);
-      expect(provider.calls.filter((c) => c.method === "stream").length).toBe(0);
+      expect(embeds).toHaveLength(0);
+      expect(
+        provider.calls.filter((c) => c.method === "stream"),
+      ).toHaveLength(0);
     });
 
     it("repeated turns resolve by CONTENT, not cursor: re-driving a conversation returns the identical scripted behavior", async () => {
@@ -313,13 +315,13 @@ describe.skipIf(!RUN_BOOTSTRAP_HARNESS)(
       // 4 from the IBX-GC-006 run above + 2 from this re-drive (small-talk calls
       // both planner and responder each turn; the model-free fixtures do not).
       const completes = provider.calls.filter((c) => c.method === "complete");
-      expect(completes.length).toBe(6);
+      expect(completes).toHaveLength(6);
       expect(
-        completes.filter((c) => c.label === "planner:smalltalk-noop").length,
-      ).toBe(2);
+        completes.filter((c) => c.label === "planner:smalltalk-noop"),
+      ).toHaveLength(2);
       expect(
-        completes.filter((c) => c.label === "responder:smalltalk-noop").length,
-      ).toBe(2);
+        completes.filter((c) => c.label === "responder:smalltalk-noop"),
+      ).toHaveLength(2);
     }, 30_000);
   },
 );

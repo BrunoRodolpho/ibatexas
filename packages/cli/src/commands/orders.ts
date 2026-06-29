@@ -8,6 +8,41 @@ import type { OrderFulfillmentStatus } from "@ibatexas/types"
 import chalk from "chalk"
 import ora from "ora"
 
+function formatStatusArrow(fromStatus: string, toStatus: string): string {
+  return fromStatus === toStatus
+    ? chalk.dim("(initial)")
+    : `${fromStatus} → ${chalk.cyan(toStatus)}`
+}
+
+/** Replay events to compute expected projection state. */
+function replayEvents(
+  events: ReadonlyArray<{ eventType: string; payload: unknown }>,
+  canTransition: (from: OrderFulfillmentStatus, to: OrderFulfillmentStatus) => boolean,
+): { status: string; version: number } {
+  let status = "pending" as string
+  let version = 0
+
+  for (const evt of events) {
+    const payload = evt.payload as Record<string, unknown>
+
+    if (evt.eventType === "order.placed") {
+      status = (payload.fulfillment_status as string) ?? "pending"
+      version = 1
+    } else if (evt.eventType === "order.status_changed") {
+      const newStatus = (payload.new_status as string) ?? (payload.newStatus as string)
+      if (newStatus && canTransition(status as OrderFulfillmentStatus, newStatus as OrderFulfillmentStatus)) {
+        status = newStatus
+        version++
+      }
+    } else {
+      // Other event types (refunded, disputed, etc.) — track version
+      version++
+    }
+  }
+
+  return { status, version }
+}
+
 export function registerOrdersCommands(group: Command): void {
   group.description("Orders — projection management and debugging")
 
@@ -29,9 +64,7 @@ export function registerOrdersCommands(group: Command): void {
 
         spinner.stop()
 
-        if (!projection) {
-          console.log(chalk.yellow(`No projection found for order ${orderId}`))
-        } else {
+        if (projection) {
           console.log(chalk.bold("\n── Projection ──"))
           console.log(`  ID:         ${projection.id}`)
           console.log(`  Display ID: ${projection.displayId}`)
@@ -45,10 +78,12 @@ export function registerOrdersCommands(group: Command): void {
           if (projection.statusHistory.length > 0) {
             console.log(chalk.bold("\n── Status History ──"))
             for (const h of projection.statusHistory) {
-              const arrow = h.fromStatus === h.toStatus ? chalk.dim("(initial)") : `${h.fromStatus} → ${chalk.cyan(h.toStatus)}`
+              const arrow = formatStatusArrow(h.fromStatus, h.toStatus)
               console.log(`  v${h.version} ${arrow}  by ${h.actor}  ${chalk.dim(h.createdAt.toISOString())}`)
             }
           }
+        } else {
+          console.log(chalk.yellow(`No projection found for order ${orderId}`))
         }
 
         if (events.length === 0) {
@@ -96,26 +131,7 @@ export function registerOrdersCommands(group: Command): void {
         const current = await querySvc.getById(orderId)
 
         // 3. Replay events to compute expected state
-        let status = "pending" as string
-        let version = 0
-
-        for (const evt of events) {
-          const payload = evt.payload as Record<string, unknown>
-
-          if (evt.eventType === "order.placed") {
-            status = (payload.fulfillment_status as string) ?? "pending"
-            version = 1
-          } else if (evt.eventType === "order.status_changed") {
-            const newStatus = (payload.new_status as string) ?? (payload.newStatus as string)
-            if (newStatus && canTransition(status as OrderFulfillmentStatus, newStatus as OrderFulfillmentStatus)) {
-              status = newStatus
-              version++
-            }
-          } else {
-            // Other event types (refunded, disputed, etc.) — track version
-            version++
-          }
-        }
+        const { status, version } = replayEvents(events, canTransition)
 
         spinner.stop()
 

@@ -89,7 +89,7 @@ export interface AgentApprovalResolveDeps {
   readonly accepted: boolean;
   readonly resolvedBy: { readonly id: string; readonly displayName?: string };
   /** Rebuild the FRESH pack state for re-adjudication (entity state may have moved). */
-  readonly rebuildState: (intentKind: string, payload: unknown) => Promise<unknown> | unknown;
+  readonly rebuildState: (intentKind: string, payload: unknown) => unknown;
   /** Resolve the kind's PolicyBundle (e.g. resolveCapabilityPolicy(packs, kind)). */
   readonly policyFor: (intentKind: string) => PolicyBundle<string, unknown, unknown>;
   /** Audit sink the resume's `adjudicateAndAudit` emits through (fail-closed). */
@@ -269,8 +269,7 @@ export function verifyAgentConfirmLineage(
   else if (approval.resolvedBy === undefined) reasons.push("approval projection missing resolvedBy (approver)");
 
   // Surface the supersession chain (informational — the kernel links resume→awaiting).
-  const report = buildSupersessionChains([...auditRecords]);
-  void report;
+  buildSupersessionChains([...auditRecords]);
 
   return { ok: reasons.length === 0, reasons };
 }

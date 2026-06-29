@@ -163,7 +163,7 @@ export function track(
   // Enrich checkout_completed with stored UTM params for attribution
   if (event === 'checkout_completed') {
     const utmParams = getStoredUtmParams()
-    trackRaw(event, { ...properties, ...(utmParams ?? {}) })
+    trackRaw(event, { ...properties, ...utmParams })
     return
   }
 

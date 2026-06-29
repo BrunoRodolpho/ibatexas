@@ -121,7 +121,7 @@ export function envFileValue(key: string, envPath = ENV_PATH): string | undefine
     .find((l) => l.startsWith(`${key}=`))
   if (line === undefined) return undefined
   // strip inline comment (" #...") then surrounding quotes
-  let v = line.slice(line.indexOf("=") + 1).replace(/\s+#.*$/, "").trim()
+  let v = line.slice(line.indexOf("=") + 1).replace(/\s#.*$/, "").trim()
   if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) {
     v = v.slice(1, -1)
   }
@@ -139,15 +139,16 @@ export function setEnvFileValue(key: string, value: string, envPath = ENV_PATH):
   }
   const previous = envFileValue(key, envPath)
   const safe = value === "" || /^[A-Za-z0-9_./:+=@,-]+$/.test(value)
-  const rendered = safe ? value : `'${value.replace(/'/g, "'\\''")}'`
+  const escapedSingleQuote = String.raw`'\''`
+  const rendered = safe ? value : `'${value.replaceAll("'", escapedSingleQuote)}'`
   const lines = fs.readFileSync(envPath, "utf8").split("\n")
   const idx = lines.findIndex((l) => l.startsWith(`${key}=`))
   if (idx >= 0) {
     // preserve any inline comment on the existing line
-    const comment = lines[idx].match(/\s#.*$/)?.[0] ?? ""
+    const comment = /\s#.*$/.exec(lines[idx])?.[0] ?? ""
     lines[idx] = `${key}=${rendered}${comment}`
-  } else if (lines.length > 0 && lines[lines.length - 1] === "") {
-    lines.splice(lines.length - 1, 0, `${key}=${rendered}`)
+  } else if (lines.length > 0 && lines.at(-1) === "") {
+    lines.splice(-1, 0, `${key}=${rendered}`)
   } else {
     lines.push(`${key}=${rendered}`)
   }

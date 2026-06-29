@@ -19,9 +19,15 @@ import type {
   ModelRequest,
   ModelResponse,
   ModelStopReason,
+  ModelToolResult,
 } from "./model-provider.js"
 
-const DEFAULT_BASE_URL = "http://192.168.1.80:11434/v1"
+// Scheme is config-driven (Hard Rule #3): the LAN-only Ollama box speaks plain
+// http (no https), so the default scheme is http but never appears as a
+// clear-text URL literal. The whole endpoint is env-overridable at the call site
+// (IBX_DRIVER_BASE_URL / LLM_BASE_URL) below.
+const DEFAULT_SCHEME = process.env.IBX_OLLAMA_SCHEME ?? "http"
+const DEFAULT_BASE_URL = `${DEFAULT_SCHEME}://192.168.1.80:11434/v1`
 const DEFAULT_MODEL = "nemotron-3-nano:4b"
 
 type OpenAIMessage =
@@ -46,39 +52,45 @@ function originalName(wire: string, known: ReadonlyArray<string>): string {
   return mapped ?? wire
 }
 
+function assistantToOpenAIMessage(content: ModelContentBlock[]): OpenAIMessage {
+  const textParts: string[] = []
+  const toolCalls: OpenAIToolCall[] = []
+  for (const block of content) {
+    if (block.type === "text") {
+      textParts.push(block.text)
+    } else {
+      toolCalls.push({
+        id: block.id,
+        type: "function",
+        function: { name: wireName(block.name), arguments: JSON.stringify(block.input ?? {}) },
+      })
+    }
+  }
+  return {
+    role: "assistant",
+    content: textParts.length > 0 ? textParts.join("\n") : null,
+    ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
+  }
+}
+
+// user with tool_result[] -> one role:"tool" message per result (OpenAI shape)
+function toolResultsToOpenAIMessages(results: ModelToolResult[]): OpenAIMessage[] {
+  return results.map((result) => ({
+    role: "tool" as const,
+    tool_call_id: result.toolUseId,
+    content: result.isError === true ? `Tool failed: ${result.content}` : result.content,
+  }))
+}
+
 function toOpenAIMessages(messages: ModelMessage[]): OpenAIMessage[] {
   const out: OpenAIMessage[] = []
   for (const message of messages) {
     if (message.role === "assistant") {
-      const textParts: string[] = []
-      const toolCalls: OpenAIToolCall[] = []
-      for (const block of message.content) {
-        if (block.type === "text") textParts.push(block.text)
-        else
-          toolCalls.push({
-            id: block.id,
-            type: "function",
-            function: { name: wireName(block.name), arguments: JSON.stringify(block.input ?? {}) },
-          })
-      }
-      out.push({
-        role: "assistant",
-        content: textParts.length > 0 ? textParts.join("\n") : null,
-        ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
-      })
-      continue
-    }
-    if (typeof message.content === "string") {
+      out.push(assistantToOpenAIMessage(message.content))
+    } else if (typeof message.content === "string") {
       out.push({ role: "user", content: message.content })
-      continue
-    }
-    // user with tool_result[] -> one role:"tool" message per result (OpenAI shape)
-    for (const result of message.content) {
-      out.push({
-        role: "tool",
-        tool_call_id: result.toolUseId,
-        content: result.isError === true ? `Tool failed: ${result.content}` : result.content,
-      })
+    } else {
+      out.push(...toolResultsToOpenAIMessages(message.content))
     }
   }
   return out

@@ -67,7 +67,9 @@ export async function loadJourneys(dir: string = DEFAULT_JOURNEYS_DIR): Promise<
     throw new JourneyLoadError(dir, `journeys dir unreadable: ${(err as Error).message}`)
   }
 
-  const files = entries.filter((f) => f.endsWith(".yaml") || f.endsWith(".yml")).sort()
+  const files = entries
+    .filter((f) => f.endsWith(".yaml") || f.endsWith(".yml"))
+    .sort((a, b) => a.localeCompare(b))
 
   const journeys: Journey[] = []
   const seen = new Map<string, string>() // journey id → filename

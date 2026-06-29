@@ -333,7 +333,9 @@ export async function lintJourneys(
     }
   }
 
-  const files = entries.filter((f) => f.endsWith(".yaml") || f.endsWith(".yml")).sort()
+  const files = entries
+    .filter((f) => f.endsWith(".yaml") || f.endsWith(".yml"))
+    .sort((a, b) => a.localeCompare(b))
   const seen = new Map<string, string>() // journey id → filename
 
   for (const file of files) {

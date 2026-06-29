@@ -84,6 +84,20 @@ export interface AgentRosterLike {
   ) => AiBom
 }
 
+// ── Shared byte-stable comparator ───────────────────────────────────────────
+//
+// #93-1: code-unit (byte-stable) order, NOT locale-sensitive localeCompare —
+// the manifests are byte-stable artifacts verified across environments, so the
+// sort must not depend on LC_COLLATE / the ICU version.
+function comparePackId(
+  a: { readonly packId: string },
+  b: { readonly packId: string },
+): number {
+  if (a.packId < b.packId) return -1
+  if (a.packId > b.packId) return 1
+  return 0
+}
+
 // ── AI-BOM manifest (ERDS-055) ──────────────────────────────────────────────
 
 export interface AiBomManifest {
@@ -173,7 +187,7 @@ export function buildAiBomManifest(opts: BuildAiBomManifestOptions): AiBomManife
   // #93-1: code-unit (byte-stable) order, NOT locale-sensitive localeCompare —
   // the manifest is a byte-stable artifact verified across environments, so its
   // sort must not depend on LC_COLLATE / the ICU version.
-  boms.sort((a, b) => (a.packId < b.packId ? -1 : a.packId > b.packId ? 1 : 0))
+  boms.sort(comparePackId)
   const digests: Record<string, string> = {}
   const stripped: Array<Omit<AiBom, "generatedAt">> = []
   for (const bom of boms) {
@@ -194,7 +208,7 @@ export function buildAiBomManifest(opts: BuildAiBomManifestOptions): AiBomManife
     kernelVersion: KERNEL_VERSION,
     digests,
     boms: stripped,
-    ...(opts.generatedAt !== undefined ? { generatedAt: opts.generatedAt } : {}),
+    ...(opts.generatedAt === undefined ? {} : { generatedAt: opts.generatedAt }),
   }
 }
 
@@ -236,7 +250,7 @@ export function buildConfigSealManifest(
     seals.push({ packId: pack.id, packVersion: pack.version, digest })
   }
   // #93-1: code-unit (byte-stable) order — see buildAiBomManifest.
-  seals.sort((a, b) => (a.packId < b.packId ? -1 : a.packId > b.packId ? 1 : 0))
+  seals.sort(comparePackId)
   const digests: Record<string, string> = {}
   for (const s of seals) digests[s.packId] = s.digest
 
@@ -245,7 +259,7 @@ export function buildConfigSealManifest(
     adopter: "ibatexas",
     digests,
     seals,
-    ...(opts.generatedAt !== undefined ? { generatedAt: opts.generatedAt } : {}),
+    ...(opts.generatedAt === undefined ? {} : { generatedAt: opts.generatedAt }),
   }
 }
 
@@ -311,9 +325,9 @@ export function buildCoherenceManifest(
     note += report.summary.note
     packs.push({
       packId: report.packId,
-      ...(report.packVersion !== undefined
-        ? { packVersion: report.packVersion }
-        : {}),
+      ...(report.packVersion === undefined
+        ? {}
+        : { packVersion: report.packVersion }),
       passed: report.passed,
       summary: {
         error: report.summary.error,
@@ -324,13 +338,13 @@ export function buildCoherenceManifest(
         code: d.code,
         severity: d.severity,
         message: d.message,
-        ...(d.guardId !== undefined ? { guardId: d.guardId } : {}),
-        ...(d.phase !== undefined ? { phase: d.phase } : {}),
+        ...(d.guardId === undefined ? {} : { guardId: d.guardId }),
+        ...(d.phase === undefined ? {} : { phase: d.phase }),
       })),
     })
   }
   // #93-1: code-unit (byte-stable) order — see buildAiBomManifest.
-  packs.sort((a, b) => (a.packId < b.packId ? -1 : a.packId > b.packId ? 1 : 0))
+  packs.sort(comparePackId)
 
   return {
     schemaVersion: 1,
@@ -338,6 +352,6 @@ export function buildCoherenceManifest(
     passed,
     totals: { error, warning, note },
     packs,
-    ...(opts.generatedAt !== undefined ? { generatedAt: opts.generatedAt } : {}),
+    ...(opts.generatedAt === undefined ? {} : { generatedAt: opts.generatedAt }),
   }
 }

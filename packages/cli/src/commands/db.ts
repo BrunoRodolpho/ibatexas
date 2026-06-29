@@ -406,6 +406,79 @@ async function runReset(force = false) {
   console.log(chalk.green("\n  ✅  Database reset and reseed complete\n"))
 }
 
+// ── db clean helpers (extracted to bound cognitive complexity) ─────────────────
+
+async function cleanDomainData(step: (msg: string) => void): Promise<void> {
+  step("Cleaning domain tables…")
+  try {
+    const { prisma } = await import("@ibatexas/domain")
+
+    await cleanDomainTables(prisma)
+
+    console.log(chalk.green("    All domain tables emptied"))
+    await prisma.$disconnect()
+  } catch (err) {
+    console.log(chalk.red(`    Domain clean failed: ${(err as Error).message}`))
+  }
+}
+
+async function cleanMedusaProducts(step: (msg: string) => void): Promise<void> {
+  step("Deleting Medusa products…")
+  try {
+    const token = await getAdminToken()
+    const base = getMedusaUrl()
+
+    // Collect ALL product IDs first (paginated — mirrors runReindex). We page
+    // through everything before deleting so offsets stay stable; deleting
+    // mid-pagination would shift later pages and skip products. The old single
+    // limit=200 fetch silently left any products beyond 200 behind.
+    const ids: string[] = []
+    let offset = 0
+    const limit = 100
+    while (true) {
+      const data = await medusaFetch<Record<string, unknown>>(
+        `/admin/products?limit=${limit}&offset=${offset}&fields=id`,
+        { token },
+      )
+      const products = (data.products as Array<{ id: string }> | undefined) ?? []
+      ids.push(...products.map((p) => p.id))
+      if (products.length < limit) break
+      offset += limit
+    }
+
+    for (const id of ids) {
+      await fetch(`${base}/admin/products/${id}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}` },
+      })
+    }
+    console.log(chalk.green(`    Deleted ${ids.length} Medusa product(s)`))
+  } catch (err) {
+    console.log(chalk.yellow(`    Medusa clean skipped: ${(err as Error).message}`))
+  }
+
+  step("Clearing Typesense index…")
+  try {
+    const { recreateCollection } = await import("@ibatexas/tools")
+    await recreateCollection()
+    console.log(chalk.green("    Typesense collection recreated (empty)"))
+  } catch {
+    console.log(chalk.yellow("    Typesense clean skipped"))
+  }
+}
+
+async function cleanRedisCache(step: (msg: string) => void): Promise<void> {
+  step("Clearing Redis cache…")
+  try {
+    const { invalidateAllQueryCache, closeRedisClient } = await import("@ibatexas/tools")
+    await invalidateAllQueryCache()
+    console.log(chalk.green("    Query cache cleared"))
+    await closeRedisClient()
+  } catch {
+    console.log(chalk.yellow("    Redis clean skipped (Redis unavailable)"))
+  }
+}
+
 async function runClean(opts: { force?: boolean; all?: boolean } = {}) {
   guardDestructive("db clean")
   const scope = opts.all ? "ALL data (domain + Medusa products + Typesense + Redis)" : "domain data (customers, reservations, reviews, etc.)"
@@ -424,75 +497,11 @@ async function runClean(opts: { force?: boolean; all?: boolean } = {}) {
   const step = (msg: string) =>
     console.log(chalk.bold(`\n  ${chalk.cyan("→")} ${msg}`))
 
-  // ── Domain tables (FK-safe order: children first) ───────────────────────
-  step("Cleaning domain tables…")
-  try {
-    const { prisma } = await import("@ibatexas/domain")
-
-    await cleanDomainTables(prisma)
-
-    console.log(chalk.green("    All domain tables emptied"))
-    await prisma.$disconnect()
-  } catch (err) {
-    console.log(chalk.red(`    Domain clean failed: ${(err as Error).message}`))
-  }
-
-  // ── Medusa products (--all only) ────────────────────────────────────────
+  await cleanDomainData(step)
   if (opts.all) {
-    step("Deleting Medusa products…")
-    try {
-      const token = await getAdminToken()
-      const base = getMedusaUrl()
-
-      // Collect ALL product IDs first (paginated — mirrors runReindex). We page
-      // through everything before deleting so offsets stay stable; deleting
-      // mid-pagination would shift later pages and skip products. The old single
-      // limit=200 fetch silently left any products beyond 200 behind.
-      const ids: string[] = []
-      let offset = 0
-      const limit = 100
-      while (true) {
-        const data = await medusaFetch<Record<string, unknown>>(
-          `/admin/products?limit=${limit}&offset=${offset}&fields=id`,
-          { token },
-        )
-        const products = (data.products as Array<{ id: string }> | undefined) ?? []
-        ids.push(...products.map((p) => p.id))
-        if (products.length < limit) break
-        offset += limit
-      }
-
-      for (const id of ids) {
-        await fetch(`${base}/admin/products/${id}`, {
-          method: "DELETE",
-          headers: { Authorization: `Bearer ${token}` },
-        })
-      }
-      console.log(chalk.green(`    Deleted ${ids.length} Medusa product(s)`))
-    } catch (err) {
-      console.log(chalk.yellow(`    Medusa clean skipped: ${(err as Error).message}`))
-    }
-
-    step("Clearing Typesense index…")
-    try {
-      const { recreateCollection } = await import("@ibatexas/tools")
-      await recreateCollection()
-      console.log(chalk.green("    Typesense collection recreated (empty)"))
-    } catch {
-      console.log(chalk.yellow("    Typesense clean skipped"))
-    }
+    await cleanMedusaProducts(step)
   }
-
-  // ── Redis cache ─────────────────────────────────────────────────────────
-  step("Clearing Redis cache…")
-  try {
-    const { invalidateAllQueryCache, closeRedisClient } = await import("@ibatexas/tools")
-    await invalidateAllQueryCache()
-    console.log(chalk.green("    Query cache cleared"))
-    await closeRedisClient()
-  } catch {
-    console.log(chalk.yellow("    Redis clean skipped (Redis unavailable)"))
-  }
+  await cleanRedisCache(step)
 
   console.log(chalk.green("\n  ✅  Clean complete\n"))
 }
@@ -694,6 +703,75 @@ async function runStatus() {
 
 // ── Order Projection Backfill ─────────────────────────────────────────────────
 
+type DomainModule = typeof import("@ibatexas/domain")
+
+/**
+ * Backfill one Medusa order into its OrderProjection (+ initial status history).
+ * Returns whether the order was newly backfilled or skipped (already at a higher
+ * version, or a unique-constraint race). Extracted from runBackfillOrderProjections
+ * to bound cognitive complexity; behaviour matches the former inline loop body.
+ */
+async function backfillSingleOrderProjection(
+  prisma: DomainModule["prisma"],
+  toOrderProjectionData: DomainModule["toOrderProjectionData"],
+  rawOrder: Record<string, unknown>,
+  batchId: string,
+  spinner: ReturnType<typeof ora>,
+): Promise<"backfilled" | "skipped"> {
+  try {
+    const projData = toOrderProjectionData(
+      rawOrder as unknown as Parameters<typeof toOrderProjectionData>[0],
+      { pricesInCentavos: false }, // Medusa returns reais
+    )
+
+    // Upsert — skip if version > 1 (already has real transitions)
+    const existing = await prisma.orderProjection.findUnique({
+      where: { id: projData.id },
+      select: { version: true },
+    })
+
+    if (existing && existing.version > 1) {
+      return "skipped"
+    }
+
+    await prisma.orderProjection.upsert({
+      where: { id: projData.id },
+      create: {
+        ...projData,
+        fulfillmentStatus: projData.fulfillmentStatus as "pending" | "confirmed" | "preparing" | "ready" | "in_delivery" | "delivered" | "canceled",
+        itemsJson: projData.itemsJson as unknown as object,
+        shippingAddressJson: projData.shippingAddressJson ?? undefined,
+        version: 1,
+      },
+      update: {}, // no-op if exists with version 1
+    })
+
+    // Create initial status history entry (only if projection was just created)
+    if (!existing) {
+      const status = projData.fulfillmentStatus as "pending" | "confirmed" | "preparing" | "ready" | "in_delivery" | "delivered" | "canceled"
+      await prisma.orderStatusHistory.create({
+        data: {
+          orderId: projData.id,
+          fromStatus: status,
+          toStatus: status,
+          actor: "system_backfill",
+          reason: "Historical backfill",
+          version: 1,
+          backfillBatchId: batchId,
+        },
+      })
+    }
+
+    return "backfilled"
+  } catch (orderErr) {
+    // Skip individual order errors (e.g. duplicate key race)
+    if (!String(orderErr).includes("Unique constraint")) {
+      spinner.warn(`Order ${(rawOrder as { id?: string }).id}: ${String(orderErr)}`)
+    }
+    return "skipped"
+  }
+}
+
 async function runBackfillOrderProjections() {
   const spinner = ora("Backfilling order projections from Medusa…").start()
   let backfilled = 0
@@ -729,64 +807,19 @@ async function runBackfillOrderProjections() {
       const orders = data.orders ?? []
 
       if (orders.length === 0) {
-        hasMore = false
         break
       }
 
       for (const rawOrder of orders) {
-        try {
-          const projData = toOrderProjectionData(
-            rawOrder as unknown as Parameters<typeof toOrderProjectionData>[0],
-            { pricesInCentavos: false }, // Medusa returns reais
-          )
-
-          // Upsert — skip if version > 1 (already has real transitions)
-          const existing = await prisma.orderProjection.findUnique({
-            where: { id: projData.id },
-            select: { version: true },
-          })
-
-          if (existing && existing.version > 1) {
-            skipped++
-            continue
-          }
-
-          await prisma.orderProjection.upsert({
-            where: { id: projData.id },
-            create: {
-              ...projData,
-              fulfillmentStatus: projData.fulfillmentStatus as "pending" | "confirmed" | "preparing" | "ready" | "in_delivery" | "delivered" | "canceled",
-              itemsJson: projData.itemsJson as unknown as object,
-              shippingAddressJson: projData.shippingAddressJson ?? undefined,
-              version: 1,
-            },
-            update: {}, // no-op if exists with version 1
-          })
-
-          // Create initial status history entry (only if projection was just created)
-          if (!existing) {
-            const status = projData.fulfillmentStatus as "pending" | "confirmed" | "preparing" | "ready" | "in_delivery" | "delivered" | "canceled"
-            await prisma.orderStatusHistory.create({
-              data: {
-                orderId: projData.id,
-                fromStatus: status,
-                toStatus: status,
-                actor: "system_backfill",
-                reason: "Historical backfill",
-                version: 1,
-                backfillBatchId: batchId,
-              },
-            })
-          }
-
-          backfilled++
-        } catch (orderErr) {
-          // Skip individual order errors (e.g. duplicate key race)
-          if (!String(orderErr).includes("Unique constraint")) {
-            spinner.warn(`Order ${(rawOrder as { id?: string }).id}: ${String(orderErr)}`)
-          }
-          skipped++
-        }
+        const outcome = await backfillSingleOrderProjection(
+          prisma,
+          toOrderProjectionData,
+          rawOrder,
+          batchId,
+          spinner,
+        )
+        if (outcome === "backfilled") backfilled++
+        else skipped++
       }
 
       spinner.text = `Backfilling order projections… (${backfilled} created, ${skipped} skipped, offset ${offset})`
@@ -823,6 +856,87 @@ function mapLegacyPaymentStatus(medusaStatus: string | null | undefined): string
   }
 }
 
+type PaymentBackfillOrder = Pick<
+  Awaited<ReturnType<DomainModule["prisma"]["orderProjection"]["findMany"]>>[number],
+  "id" | "paymentStatus" | "paymentMethod" | "totalInCentavos"
+>
+
+/**
+ * Backfill one Payment row (+ initial history + order link) for an order
+ * projection with no current payment. Returns whether a payment was created or
+ * skipped (race-guard hit / unique-constraint). Extracted from runBackfillPayments
+ * to bound cognitive complexity; behaviour matches the former inline loop body.
+ */
+async function backfillSinglePayment(
+  prisma: DomainModule["prisma"],
+  order: PaymentBackfillOrder,
+  spinner: ReturnType<typeof ora>,
+): Promise<"created" | "skipped"> {
+  try {
+    const method = (order.paymentMethod ?? "pix") as "pix" | "card" | "cash"
+    const mappedStatus = mapLegacyPaymentStatus(order.paymentStatus)
+
+    // Determine initial status based on method (same as PaymentCommandService.create)
+    const initialStatus = method === "cash" ? "cash_pending" : "awaiting_payment"
+
+    let outcome: "created" | "skipped" = "created"
+
+    // Create Payment row in a transaction
+    await prisma.$transaction(async (tx) => {
+      // Double-check no active payment exists (race guard)
+      const existing = await tx.payment.findFirst({
+        where: {
+          orderId: order.id,
+          status: {
+            notIn: ["refunded", "canceled", "waived", "payment_failed", "payment_expired"],
+          },
+        },
+        select: { id: true },
+      })
+
+      if (existing) {
+        outcome = "skipped"
+        return
+      }
+
+      const payment = await tx.payment.create({
+        data: {
+          orderId: order.id,
+          method,
+          status: mappedStatus as "awaiting_payment" | "payment_pending" | "paid" | "cash_pending" | "canceled" | "refunded",
+          amountInCentavos: order.totalInCentavos,
+          version: 1,
+        },
+      })
+
+      // Record initial history
+      await tx.paymentStatusHistory.create({
+        data: {
+          paymentId: payment.id,
+          fromStatus: initialStatus as "awaiting_payment" | "cash_pending",
+          toStatus: mappedStatus as "awaiting_payment" | "payment_pending" | "paid" | "cash_pending" | "canceled" | "refunded",
+          actor: "system_backfill",
+          reason: "Historical backfill from OrderProjection",
+          version: 1,
+        },
+      })
+
+      // Link payment to order
+      await tx.orderProjection.update({
+        where: { id: order.id },
+        data: { currentPaymentId: payment.id },
+      })
+    })
+
+    return outcome
+  } catch (orderErr) {
+    if (!String(orderErr).includes("Unique constraint")) {
+      spinner.warn(`Order ${order.id}: ${String(orderErr)}`)
+    }
+    return "skipped"
+  }
+}
+
 async function runBackfillPayments() {
   const spinner = ora("Backfilling payment rows from order projections…").start()
   let created = 0
@@ -849,72 +963,13 @@ async function runBackfillPayments() {
       })
 
       if (orders.length === 0) {
-        hasMore = false
         break
       }
 
       for (const order of orders) {
-        try {
-          const method = (order.paymentMethod ?? "pix") as "pix" | "card" | "cash"
-          const mappedStatus = mapLegacyPaymentStatus(order.paymentStatus)
-
-          // Determine initial status based on method (same as PaymentCommandService.create)
-          const initialStatus = method === "cash" ? "cash_pending" : "awaiting_payment"
-
-          // Create Payment row in a transaction
-          await prisma.$transaction(async (tx) => {
-            // Double-check no active payment exists (race guard)
-            const existing = await tx.payment.findFirst({
-              where: {
-                orderId: order.id,
-                status: {
-                  notIn: ["refunded", "canceled", "waived", "payment_failed", "payment_expired"],
-                },
-              },
-              select: { id: true },
-            })
-
-            if (existing) {
-              skipped++
-              return
-            }
-
-            const payment = await tx.payment.create({
-              data: {
-                orderId: order.id,
-                method,
-                status: mappedStatus as "awaiting_payment" | "payment_pending" | "paid" | "cash_pending" | "canceled" | "refunded",
-                amountInCentavos: order.totalInCentavos,
-                version: 1,
-              },
-            })
-
-            // Record initial history
-            await tx.paymentStatusHistory.create({
-              data: {
-                paymentId: payment.id,
-                fromStatus: initialStatus as "awaiting_payment" | "cash_pending",
-                toStatus: mappedStatus as "awaiting_payment" | "payment_pending" | "paid" | "cash_pending" | "canceled" | "refunded",
-                actor: "system_backfill",
-                reason: "Historical backfill from OrderProjection",
-                version: 1,
-              },
-            })
-
-            // Link payment to order
-            await tx.orderProjection.update({
-              where: { id: order.id },
-              data: { currentPaymentId: payment.id },
-            })
-
-            created++
-          })
-        } catch (orderErr) {
-          if (!String(orderErr).includes("Unique constraint")) {
-            spinner.warn(`Order ${order.id}: ${String(orderErr)}`)
-          }
-          skipped++
-        }
+        const outcome = await backfillSinglePayment(prisma, order, spinner)
+        if (outcome === "created") created++
+        else skipped++
       }
 
       spinner.text = `Backfilling payments… (${created} created, ${skipped} skipped, offset ${offset})`

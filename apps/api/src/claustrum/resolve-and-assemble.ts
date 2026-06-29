@@ -156,7 +156,7 @@ export async function loadOrderCtx(
     // retained as defense-in-depth.
     const order = await createOrderQueryService().getById(orderId, { customerId });
     // Money-safety: never expose another customer's order to the guards.
-    if (!order || order.customerId !== customerId) return buildOrderCtx(base, orderId, null);
+    if (order?.customerId !== customerId) return buildOrderCtx(base, orderId, null);
     return buildOrderCtx(base, orderId, order as unknown as OrderProjectionLite);
   } catch {
     // 034-F1 (finding 11): ownership INDETERMINATE on a DB error — distinct from
@@ -248,7 +248,7 @@ export async function loadPaymentCtx(
     // read. Customer-scoped getById (SDD §N P0-3) enforces this at the domain
     // layer; the post-check below is retained as defense-in-depth.
     const order = await createOrderQueryService().getById(orderId, { customerId });
-    if (!order || order.customerId !== customerId) return notOwned();
+    if (order?.customerId !== customerId) return notOwned();
     const querySvc = createPaymentQueryService();
     // The active-payment read and the all-attempts read are both keyed only on
     // orderId and independent — fire them concurrently (finding 28). `all` feeds
@@ -571,6 +571,106 @@ async function resolveReservationId(
   }
 }
 
+// ── resolveAndAssemble helpers (extracted to bound cognitive complexity) ──────
+
+/**
+ * T3-4 agent-session budget read: when the capsule runs under a managed-agent
+ * sessionId (D-017 `agent:<id>@<ver>:entity:<entityId>`), read the agent-
+ * namespace token counter (same llm:tokens key shape, identity slot = the agent
+ * namespace — see sessionTokenKey) so the per-agent ESCALATE guard
+ * (agent-guards.ts, AUTH phase) can meter off it. Returns undefined for a normal
+ * (non-agent) conversational turn. Same fail-open-to-0 posture as the F4 read.
+ */
+async function readAgentSessionTokens(
+  channel: string,
+  sessionId: string | undefined,
+): Promise<number | undefined> {
+  if (sessionId === undefined) return undefined;
+  const agentNamespace = parseAgentSessionNamespace(sessionId);
+  if (agentNamespace === null) return undefined;
+  return readSessionTokensConsumed(channel, agentNamespace);
+}
+
+/**
+ * NL→id resolution (confirm-first): for irreversible money/booking intents whose
+ * target wasn't given explicitly, auto-resolve it and flag the turn so the
+ * confirm-on-autoresolve guard REQUEST_CONFIRMATIONs (the user sees the target).
+ */
+async function applyAutoResolve(
+  kind: string,
+  payload: Ctx,
+  customerId: string,
+): Promise<{ payload: Ctx; autoResolvedMoneyRef: boolean }> {
+  if (ORDER_AUTORESOLVE_KINDS.has(kind)) {
+    const r = await resolveOrderId(payload, customerId);
+    if (r.autoResolved && r.orderId !== null) {
+      return { payload: { ...payload, orderId: r.orderId }, autoResolvedMoneyRef: true };
+    }
+  } else if (RESERVATION_AUTORESOLVE_KINDS.has(kind)) {
+    const r = await resolveReservationId(payload, customerId);
+    if (r.autoResolved && r.reservationId !== null) {
+      return {
+        payload: { ...payload, reservationId: r.reservationId },
+        autoResolvedMoneyRef: true,
+      };
+    }
+  }
+  return { payload, autoResolvedMoneyRef: false };
+}
+
+/**
+ * 034-F1 (finding 6/7): bind refund ownership through the payment's order. The
+ * refund target stays the explicit paymentId; this only supplies the orderId the
+ * ownership graph needs (NOT an autoresolve → no forced confirm).
+ */
+async function bindRefundOwnership(kind: string, payload: Ctx): Promise<Ctx> {
+  if (
+    REFUND_OWNERSHIP_KINDS.has(kind) &&
+    typeof payload.orderId !== "string" &&
+    typeof payload.paymentId === "string"
+  ) {
+    const oid = await resolvePaymentOrderId(payload.paymentId);
+    if (oid !== null) return { ...payload, orderId: oid };
+  }
+  return payload;
+}
+
+/**
+ * Dispatch by kind to the right loader. Unknown / whatsapp kinds get the identity
+ * base only (guards needing entity state see null → REFUSE cleanly, never panic).
+ */
+async function loadCtxForKind(
+  kind: string,
+  base: Ctx,
+  customerId: string,
+  resolvedPayload: Ctx,
+  orderId: string | null,
+  sessionId: string | undefined,
+): Promise<Ctx> {
+  if (kind.startsWith("payment.")) {
+    return loadPaymentCtx(base, customerId, orderId);
+  }
+  if (ORDER_BY_ID_KINDS.has(kind)) {
+    return loadOrderCtx(base, customerId, orderId);
+  }
+  if (kind.startsWith("reservation.")) {
+    return loadReservationCtx(base, customerId, resolvedPayload);
+  }
+  if (kind.startsWith("customer.")) {
+    return loadCustomerCtx(base, customerId);
+  }
+  if (kind.startsWith("order.")) {
+    // Remaining order.* are cart/draft ops (ensure/item.*/checkout/coupon).
+    return loadCartCtx(base, resolvedPayload, {
+      ...(sessionId === undefined ? {} : { sessionId }),
+      ...(typeof resolvedPayload.cartId === "string"
+        ? { cartId: resolvedPayload.cartId }
+        : {}),
+    });
+  }
+  return { ...base, cartId: null, orderId, items: undefined };
+}
+
 /**
  * CONDUCTOR entry: build the identity base + F4 token counter, then dispatch by
  * kind to the right loader. Unknown / whatsapp kinds get the identity base only
@@ -581,76 +681,27 @@ export async function resolveAndAssemble(args: ResolveArgs): Promise<AssembledRe
   const base = identityCtx(customerId, channel);
   base.sessionTokensConsumed = await readSessionTokensConsumed(channel, customerId);
 
-  // T3-4 — agent-session budget read: when the capsule runs under a managed-
-  // agent sessionId (D-017 `agent:<id>@<ver>:entity:<entityId>`), also read
-  // the agent-namespace token counter (same llm:tokens key shape, identity
-  // slot = the agent namespace — see sessionTokenKey) into
-  // ctx.agentTokensConsumed. The per-agent ESCALATE guard (agent-guards.ts,
-  // AUTH phase) meters off it; same fail-open-to-0 posture as the F4 read.
-  if (sessionId !== undefined) {
-    const agentNamespace = parseAgentSessionNamespace(sessionId);
-    if (agentNamespace !== null) {
-      base.agentTokensConsumed = await readSessionTokensConsumed(
-        channel,
-        agentNamespace,
-      );
-    }
-  }
+  // T3-4 — agent-session budget read into ctx.agentTokensConsumed (undefined for
+  // a normal conversational turn).
+  const agentTokens = await readAgentSessionTokens(channel, sessionId);
+  if (agentTokens !== undefined) base.agentTokensConsumed = agentTokens;
 
-  // NL→id resolution (confirm-first): for irreversible money/booking intents whose
-  // target wasn't given explicitly, auto-resolve it and flag the turn so the
-  // confirm-on-autoresolve guard REQUEST_CONFIRMATIONs (the user sees the target).
-  let resolvedPayload: Ctx = payload;
-  let autoResolvedMoneyRef = false;
-  if (ORDER_AUTORESOLVE_KINDS.has(kind)) {
-    const r = await resolveOrderId(payload, customerId);
-    if (r.autoResolved && r.orderId !== null) {
-      resolvedPayload = { ...payload, orderId: r.orderId };
-      autoResolvedMoneyRef = true;
-    }
-  } else if (RESERVATION_AUTORESOLVE_KINDS.has(kind)) {
-    const r = await resolveReservationId(payload, customerId);
-    if (r.autoResolved && r.reservationId !== null) {
-      resolvedPayload = { ...payload, reservationId: r.reservationId };
-      autoResolvedMoneyRef = true;
-    }
-  }
-
-  // 034-F1 (finding 6/7): bind refund ownership through the payment's order. The
-  // refund target stays the explicit paymentId; this only supplies the orderId the
-  // ownership graph needs (NOT an autoresolve → no forced confirm).
-  if (
-    REFUND_OWNERSHIP_KINDS.has(kind) &&
-    typeof resolvedPayload.orderId !== "string" &&
-    typeof resolvedPayload.paymentId === "string"
-  ) {
-    const oid = await resolvePaymentOrderId(resolvedPayload.paymentId);
-    if (oid !== null) resolvedPayload = { ...resolvedPayload, orderId: oid };
-  }
+  // NL→id resolution (confirm-first) then the 034-F1 refund ownership binding.
+  const auto = await applyAutoResolve(kind, payload, customerId);
+  const autoResolvedMoneyRef = auto.autoResolvedMoneyRef;
+  const resolvedPayload = await bindRefundOwnership(kind, auto.payload);
 
   const orderId =
     typeof resolvedPayload.orderId === "string" ? resolvedPayload.orderId : null;
 
-  let ctx: Ctx;
-  if (kind.startsWith("payment.")) {
-    ctx = await loadPaymentCtx(base, customerId, orderId);
-  } else if (ORDER_BY_ID_KINDS.has(kind)) {
-    ctx = await loadOrderCtx(base, customerId, orderId);
-  } else if (kind.startsWith("reservation.")) {
-    ctx = await loadReservationCtx(base, customerId, resolvedPayload);
-  } else if (kind.startsWith("customer.")) {
-    ctx = await loadCustomerCtx(base, customerId);
-  } else if (kind.startsWith("order.")) {
-    // Remaining order.* are cart/draft ops (ensure/item.*/checkout/coupon).
-    ctx = await loadCartCtx(base, resolvedPayload, {
-      ...(sessionId !== undefined ? { sessionId } : {}),
-      ...(typeof resolvedPayload.cartId === "string"
-        ? { cartId: resolvedPayload.cartId }
-        : {}),
-    });
-  } else {
-    ctx = { ...base, cartId: null, orderId, items: undefined };
-  }
+  const ctx = await loadCtxForKind(
+    kind,
+    base,
+    customerId,
+    resolvedPayload,
+    orderId,
+    sessionId,
+  );
 
   if (autoResolvedMoneyRef) ctx.autoResolvedMoneyRef = true;
 

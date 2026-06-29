@@ -11,10 +11,27 @@ export const VICTORIALOGS_URL = process.env.VICTORIALOGS_URL ?? "http://localhos
 
 // pino numeric levels ↔ names.
 const LEVEL_NUM: Record<string, number> = { trace: 10, debug: 20, info: 30, warn: 40, error: 50, fatal: 60 }
-const LEVEL_NAME = (n: number): string =>
-  n >= 60 ? "FATAL" : n >= 50 ? "ERROR" : n >= 40 ? "WARN" : n >= 30 ? "INFO" : n >= 20 ? "DEBUG" : "TRACE"
-const levelColor = (n: number): ((s: string) => string) =>
-  n >= 50 ? chalk.red : n >= 40 ? chalk.yellow : n >= 30 ? chalk.green : chalk.gray
+const LEVEL_NAME = (n: number): string => {
+  if (n >= 60) return "FATAL"
+  if (n >= 50) return "ERROR"
+  if (n >= 40) return "WARN"
+  if (n >= 30) return "INFO"
+  if (n >= 20) return "DEBUG"
+  return "TRACE"
+}
+const levelColor = (n: number): ((s: string) => string) => {
+  if (n >= 50) return chalk.red
+  if (n >= 40) return chalk.yellow
+  if (n >= 30) return chalk.green
+  return chalk.gray
+}
+
+/** Strip trailing slashes (linear scan; avoids the super-linear backtracking of a `/\/+$/` replace). */
+function stripTrailingSlashes(s: string): string {
+  let end = s.length
+  while (end > 0 && s[end - 1] === "/") end--
+  return s.slice(0, end)
+}
 
 export interface LogFilters {
   /** component tag (kernel/conductor/route/subscriber/job/…) — positional or --component */
@@ -83,7 +100,7 @@ export function renderLogLine(e: LogEntry): string {
 
 /** One-shot query → most-recent entries (chronological). Throws on connection error. */
 export async function queryLogs(query: string, limit = 200): Promise<LogEntry[]> {
-  const url = `${VICTORIALOGS_URL.replace(/\/+$/, "")}/select/logsql/query`
+  const url = `${stripTrailingSlashes(VICTORIALOGS_URL)}/select/logsql/query`
   const body = new URLSearchParams({ query, limit: String(limit) })
   const res = await fetch(url, {
     method: "POST",
@@ -103,7 +120,7 @@ export async function queryLogs(query: string, limit = 200): Promise<LogEntry[]>
 
 /** Live tail (`/select/logsql/tail`). Calls onLine per entry until the signal aborts. */
 export async function tailLogs(query: string, onLine: (e: LogEntry) => void, signal: AbortSignal): Promise<void> {
-  const url = `${VICTORIALOGS_URL.replace(/\/+$/, "")}/select/logsql/tail`
+  const url = `${stripTrailingSlashes(VICTORIALOGS_URL)}/select/logsql/tail`
   const body = new URLSearchParams({ query })
   const res = await fetch(url, {
     method: "POST",

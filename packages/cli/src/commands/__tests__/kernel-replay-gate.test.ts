@@ -372,7 +372,7 @@ describe("ibx kernel replay --seed-file", () => {
     const inserts = pgFake.capturedSql.filter((s) =>
       s.includes("INSERT INTO intent_audit"),
     )
-    expect(inserts.length).toBe(vectors.length)
+    expect(inserts).toHaveLength(vectors.length)
     const partitionDdl = pgFake.capturedSql.filter((s) =>
       s.includes("PARTITION OF intent_audit FOR VALUES"),
     )

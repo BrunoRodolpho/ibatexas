@@ -161,8 +161,8 @@ describe("coverage domain (DR-5)", () => {
     const staffCells = report.cells.filter((c) => c.surface === "staff-http")
     // All five first-party packs attach no guard metadata today → the
     // plausible set falls back to the full 6-decision set per kind.
-    expect(chatCells.length).toBe(CHAT_DRIVABLE_TOOL_KINDS.length * 6)
-    expect(staffCells.length).toBe(STAFF_ROUTE_KINDS.size * 6)
+    expect(chatCells).toHaveLength(CHAT_DRIVABLE_TOOL_KINDS.length * 6)
+    expect(staffCells).toHaveLength(STAFF_ROUTE_KINDS.size * 6)
     expect(report.totals.cells).toBe(report.cells.length)
     expect(new Set(report.cells.map((c) => c.key)).size).toBe(report.cells.length)
   })
