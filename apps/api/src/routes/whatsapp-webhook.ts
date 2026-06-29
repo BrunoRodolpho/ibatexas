@@ -52,6 +52,13 @@ import {
   getLastLocation,
 } from "../whatsapp/session.js";
 import { sendText, sendMedia } from "../whatsapp/client.js";
+import {
+  classifyTurnDelivery,
+  classifyCatchError,
+  emitNoDelivery,
+  openIncidentInline,
+  type TurnDisposition,
+} from "../conversation/no-delivery.js";
 import { matchShortcut, buildHelpText, buildWelcomeText } from "../whatsapp/shortcuts.js";
 import { LGPD_OPTIN_MESSAGE } from "../whatsapp/constants.js";
 import { scheduleHesitationNudge, markCustomerReplied } from "../jobs/hesitation-nudge.js";
@@ -72,6 +79,16 @@ type LogFn = { info: (...args: unknown[]) => void; error: (...args: unknown[]) =
 // stay identical to the pre-cutover `collectAgentResponse` consumer.
 interface WhatsAppTurn {
   readonly text: string;
+  /**
+   * REQUIRED — the compile-time guard forcing every return path to classify its
+   * delivery outcome. Distinguishes the intentional bot-pause `{text:""}` from a
+   * byte-identical empty model completion (the no-reply incident discriminator).
+   */
+  readonly disposition: TurnDisposition;
+  /** `capsule.turnId` — dedup + audit correlation (absent on the pause path). */
+  readonly turnId?: string;
+  /** `turn.decision.kind` — an `ESCALATE` handoff is never a drop. */
+  readonly decisionKind?: string;
   readonly pixData?: {
     pixCopyPaste?: string;
     pixQrCode?: string;
@@ -151,7 +168,7 @@ async function runConductorTurn(args: {
       { session: args.sessionKey },
       "[whatsapp] session paused for human takeover — bot reply suppressed",
     );
-    return { text: "" };
+    return { text: "", disposition: "suppressed_paused" };
   }
 
   const conductor = getConductor();
@@ -172,7 +189,23 @@ async function runConductorTurn(args: {
   try {
     const turn = await handleTurn(capsule, inbound);
     const pixData = extractPixData(turn.acted);
-    return { text: turn.response.text ?? "", ...(pixData ? { pixData } : {}) };
+    // Classify the delivery outcome at the source (the only place that can tell
+    // an empty completion from a whitespace-only one). The pause early-return
+    // above is the only `suppressed_paused`; everything here is a real turn.
+    const rawText = turn.response.text ?? "";
+    const disposition: TurnDisposition =
+      rawText.length === 0
+        ? "empty_completion"
+        : rawText.trim() === ""
+          ? "whitespace_only"
+          : "deliverable";
+    return {
+      text: rawText,
+      disposition,
+      turnId: capsule.turnId,
+      decisionKind: turn.decision.kind,
+      ...(pixData ? { pixData } : {}),
+    };
   } finally {
     await conductor.closeCapsule(capsule);
   }
@@ -217,6 +250,27 @@ async function retryForMissedMessages(
       await appendMessages(session.sessionId, [
         { role: "assistant", content: retryResponse.text },
       ], true, { customerId: session.customerId, channel: "whatsapp" });
+    } else if (
+      retryResponse.disposition === "empty_completion" ||
+      retryResponse.disposition === "whitespace_only"
+    ) {
+      // Second-pass empty/whitespace (not paused, not ESCALATE) → retry_exhausted.
+      // No `body.MessageSid` is in scope here; dedup on `retryResponse.turnId`.
+      if (retryResponse.decisionKind !== "ESCALATE") {
+        const signal = {
+          sessionId: session.sessionId,
+          cause: "retry_exhausted" as const,
+          customerImpacted: true,
+          channel: "whatsapp",
+          customerId: session.customerId,
+          senderRef: `whatsapp:${phone}`,
+          phoneHash: hash,
+          turnId: retryResponse.turnId ?? null,
+          decisionKind: retryResponse.decisionKind ?? null,
+        };
+        await emitNoDelivery(signal, log);
+        await openIncidentInline(signal, log);
+      }
     }
   } catch (retryErr) {
     log.error(retryErr, "[whatsapp.agent.retry.error] Retry agent processing failed");
@@ -530,6 +584,15 @@ async function tryShortcutOrStateMachine(
 // not pin the turn open forever (Twilio already got its 200). Overridable via env
 // (CLAUDE.md hard rule #3; documented in .env.example).
 const WA_TURN_TIMEOUT_MS = Number.parseInt(process.env.WA_TURN_TIMEOUT_MS ?? "60000", 10);
+
+// Flag-gated customer-facing holding message — the harm reducer when the bot
+// produces no usable text (empty / whitespace completion). Sent STRICTLY AFTER
+// classify+emit+open so a substitution bug can never mask incident emission.
+// This is THE single empty/failure substitution at the send site (the merged
+// "fix C"); the kernel-layer GROUNDED_SAFE_FALLBACK is a separate, earlier seam.
+const WA_EMPTY_COMPLETION_HOLDING = process.env.WA_EMPTY_COMPLETION_HOLDING === "true";
+const WA_HOLDING_MESSAGE_PTBR =
+  "Desculpe, não consegui montar uma resposta agora. Pode tentar de novo? Se preferir, responda *menu* para ver as opções ou *ajuda* para falar com a gente.";
 
 // ── Session shape resolved by resolveWhatsAppSession (shared by the helpers below) ──
 type WaSession = Awaited<ReturnType<typeof resolveWhatsAppSession>>;
@@ -859,6 +922,11 @@ async function handleMessageAsync(
     return;
   }
 
+  // `sendEntered` is flipped true immediately BEFORE `sendText` (never by
+  // wrapping+swallowing it — that breaks Twilio retry/idempotency). The `:899`
+  // catch reads it to discriminate a thrown send (`send_failed`) from a pre-send
+  // turn exception (`turn_error`).
+  let sendEntered = false;
   try {
     // ── Shortcut / state machine + conductor turn (raced against the deadline) ──
     const outcome = await runConductorAgentTurn({
@@ -878,8 +946,11 @@ async function handleMessageAsync(
 
     // ── Send response ─────────────────────────────────────────────────────
     // Skip a stale reply if the turn raced past the deadline (P2-CONC-ABORT).
+    let textSent = false;
     if (agentResponse.text && !turnAbort.signal.aborted) {
+      sendEntered = true;
       await sendText(`whatsapp:${phone}`, agentResponse.text);
+      textSent = true;
 
       // Save assistant response to session
       await appendMessages(session.sessionId, [
@@ -896,9 +967,72 @@ async function handleMessageAsync(
       await sendPixFollowUp(agentResponse.pixData, agentResponse.text, phone, hash, session, log);
     }
 
+    // ── No-delivery reconcile (AFTER the PIX block — false-positive fix) ──
+    // PIX copia-e-cola + QR is delivered regardless of text, so a turn with
+    // empty text but `pixData` DID reach the customer. `deliveredText` keys the
+    // genuine-drop decision on what actually reached the customer.
+    const hasPixData = Boolean(agentResponse.pixData);
+    const deliveredText = textSent || hasPixData;
+    const classification = classifyTurnDelivery({
+      disposition: agentResponse.disposition,
+      ...(agentResponse.decisionKind !== undefined ? { decisionKind: agentResponse.decisionKind } : {}),
+      deliveredText,
+    });
+    if (classification) {
+      // Ordered classify → emit → open → (holding). Emission can never be masked
+      // by a substitution bug because the holding send is strictly last.
+      const signal = {
+        sessionId: session.sessionId,
+        cause: classification.cause,
+        customerImpacted: classification.customerImpacted,
+        channel: "whatsapp",
+        customerId: session.customerId,
+        senderRef: `whatsapp:${phone}`,
+        phoneHash: hash,
+        turnId: agentResponse.turnId ?? null,
+        decisionKind: agentResponse.decisionKind ?? null,
+      };
+      await emitNoDelivery(signal, log);
+      await openIncidentInline(signal, log);
+
+      // Customer-facing holding message — ONLY for an empty/whitespace
+      // completion (NOT the abort-with-text timeout path, NOT the pause).
+      if (
+        WA_EMPTY_COMPLETION_HOLDING &&
+        (agentResponse.disposition === "empty_completion" ||
+          agentResponse.disposition === "whitespace_only")
+      ) {
+        await sendBestEffort(`whatsapp:${phone}`, WA_HOLDING_MESSAGE_PTBR);
+      }
+    }
+
   } catch (err) {
     log.error(err, "[whatsapp.agent.error] Agent processing failed");
-    // Send fallback error message (best-effort)
+    // Discriminate the throw into a cause (no `turnId` is in scope here — the
+    // capsule opened+closed inside `runConductorTurn`; dedup on `MessageSid`).
+    const cause = classifyCatchError({
+      aborted: turnAbort.signal.aborted,
+      message: (err as Error).message,
+      sendEntered,
+    });
+    // `turn_error` is OUT of the frozen taxonomy → canned apology only, no
+    // incident. `timeout` / `send_failed` open a governed incident.
+    if (cause === "timeout" || cause === "send_failed") {
+      const signal = {
+        sessionId: session.sessionId,
+        cause,
+        customerImpacted: true,
+        channel: "whatsapp",
+        customerId: session.customerId,
+        senderRef: `whatsapp:${phone}`,
+        phoneHash: hash,
+        turnId: null,
+        messageSid: body.MessageSid ?? null,
+      };
+      await emitNoDelivery(signal, log);
+      await openIncidentInline(signal, log);
+    }
+    // Send fallback error message (best-effort) — unchanged behavior.
     await sendBestEffort(
       `whatsapp:${phone}`,
       "Desculpe, estou com um problema técnico. Tente novamente em alguns instantes.",
