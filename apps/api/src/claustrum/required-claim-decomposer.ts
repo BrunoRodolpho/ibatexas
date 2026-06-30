@@ -32,6 +32,11 @@ import {
   isRegistryClaimType,
   type RegistryClaimType,
 } from "./claim-registry.js";
+// inv.18 v2 — STORE_OPEN_NOW's closure row (span class + required companions) AND its
+// pt-BR span markers are GENERATED from its ClaimDefinition source by the
+// claimdef-compiler (./claimdefs/store-open-now.generated.ts — DO NOT EDIT). The
+// previously-handwritten closure entry + the marker regex collapse into these splices.
+import { STORE_OPEN_NOW_CLOSURE } from "./claimdefs/store-open-now.generated.js";
 
 /**
  * A SPAN-CLASS — the coarse, CLOSED category a request span falls into (SDD §O#15;
@@ -66,12 +71,13 @@ export type SpanClass =
  * below).
  */
 export const REQUIRED_CLAIM_CLOSURE = {
-  STORE_OPEN_NOW_Q: ["STORE_OPEN_NOW"],
+  // inv.18 v2 — STORE_OPEN_NOW_Q's row is GENERATED (span class + required set).
+  [STORE_OPEN_NOW_CLOSURE.spanClass]: STORE_OPEN_NOW_CLOSURE.requires,
   ORDER_STATUS_Q: ["ORDER_FULFILLMENT_STAGE"],
   PAYMENT_STATUS_Q: ["PAYMENT_STATUS"],
   // §O#15 worked example — a pickup question requires BOTH companions.
   PICKUP_Q: ["STORE_OPEN_NOW", "ORDER_FULFILLMENT_STAGE"],
-} as const satisfies Record<SpanClass, readonly RegistryClaimType[]>;
+} satisfies Record<SpanClass, readonly RegistryClaimType[]>;
 
 // Compile-time + load-time guard: every closure value must be an in-registry type.
 // (Belt-and-braces over the `satisfies` above — also catches a hand-edited table.)
@@ -106,7 +112,10 @@ export function classifyRequestSpans(text: string): SpanClass[] {
   const t = text.toLowerCase();
   const classes: SpanClass[] = [];
   if (/retir|buscar|pegar/.test(t)) classes.push("PICKUP_Q");
-  if (/abert|fechad|que horas|funciona|hor[áa]rio/.test(t)) classes.push("STORE_OPEN_NOW_Q");
+  // inv.18 v2 — the STORE_OPEN_NOW_Q markers are GENERATED from the def source.
+  if (STORE_OPEN_NOW_CLOSURE.markers.some((m) => m.test(t))) {
+    classes.push(STORE_OPEN_NOW_CLOSURE.spanClass);
+  }
   if (/pedido|cad[êe]|status/.test(t)) classes.push("ORDER_STATUS_Q");
   if (/pagamento|paguei|pix|aprovad|pago/.test(t)) classes.push("PAYMENT_STATUS_Q");
   return classes;

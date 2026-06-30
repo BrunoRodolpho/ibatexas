@@ -37,6 +37,10 @@
  * import beyond the `@adjudicate/core` claims types it consumes.
  */
 
+// inv.18 v2 — STORE_OPEN_NOW's validated template is GENERATED from its
+// ClaimDefinition source by the claimdef-compiler (DO NOT EDIT the generated file).
+import { STORE_OPEN_NOW_TEMPLATE } from "./claimdefs/store-open-now.generated.js";
+
 /**
  * A typed slot in a template.
  *
@@ -132,17 +136,12 @@ export const STORE_OPEN_NOW = "STORE_OPEN_NOW";
  * (Inv 6). Static pt-BR around the slots; no free text.
  */
 export const VALIDATED_TEMPLATES: Readonly<Record<string, Template>> = {
-  [STORE_OPEN_NOW]: {
-    claimType: STORE_OPEN_NOW,
-    posture: "validated",
-    slots: [
-      lit("No momento, o período de funcionamento é: "),
-      // Bound 1:1 to the C6 value-binding field (the ScheduleSignal `mealPeriod`)
-      // so the rendered proposition is the ledger-sourced, falsifier-checked value.
-      prop(STORE_OPEN_NOW, "mealPeriod"),
-      lit("."),
-    ],
-  },
+  // inv.18 v2 — the STORE_OPEN_NOW template is GENERATED from its ClaimDefinition
+  // source (./claimdefs/store-open-now.generated.ts — DO NOT EDIT). The proposition
+  // slot prop(STORE_OPEN_NOW, "mealPeriod") is derived from the source's
+  // render.prop("mealPeriod") with claimType filled = self; the ~11-line handwritten
+  // entry collapsed into this single spliced import.
+  [STORE_OPEN_NOW]: STORE_OPEN_NOW_TEMPLATE,
   [ORDER_FULFILLMENT_STAGE]: {
     claimType: ORDER_FULFILLMENT_STAGE,
     posture: "validated",

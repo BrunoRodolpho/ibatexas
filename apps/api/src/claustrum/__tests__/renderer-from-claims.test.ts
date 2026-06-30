@@ -14,10 +14,13 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import type {
+  CandidateClaim,
+  CanonicalClaim,
   ConsistencyClaim,
   SuppressionRecord,
   TurnTerminal,
 } from "@adjudicate/core";
+import { EvidenceLedger, runClaimsKernel } from "@adjudicate/core";
 import {
   isPropositionFree,
   ORDER_FULFILLMENT_STAGE,
@@ -26,7 +29,13 @@ import {
   STORE_OPEN_NOW,
   type Template,
 } from "../slot-grammar.js";
-import { render } from "../renderer-from-claims.js";
+import { REGISTRY_SPECS } from "../claim-registry.js";
+import { createIbatexasClaimsKernelDeps } from "../ibatexas-claims-kernel-deps.js";
+// The bulk of these tests exercise the PURE template-filler core directly (it takes
+// raw renderable claims incl. the UNKNOWN/REFUSED postures the kernel-minted set never
+// carries). Production egress goes through `render`, which REQUIRES kernel-minted
+// CanonicalClaims (the inv.17 entry brand) — covered in the dedicated block below.
+import { render, renderRenderables } from "../renderer-from-claims.js";
 
 // ── builders ────────────────────────────────────────────────────────────────
 const claim = (
@@ -41,7 +50,7 @@ const RENDER: TurnTerminal = "RENDER";
 describe("renderer-from-claims — §Q.7 pure template-filler", () => {
   // ── Acceptance 1: a VALIDATED claim renders via its template, 1:1 (Inv 6). ──
   it("renders a VALIDATED claim's field value in its template slot (Inv 6 1:1)", () => {
-    const out = render(
+    const out = renderRenderables(
       [claim(ORDER_FULFILLMENT_STAGE, "VALIDATED", { stage: "em preparo" })],
       RENDER,
     );
@@ -53,7 +62,7 @@ describe("renderer-from-claims — §Q.7 pure template-filler", () => {
   });
 
   it("binds each proposition slot 1:1 to the right claim type+field (no cross-fill)", () => {
-    const out = render(
+    const out = renderRenderables(
       [
         claim(PAYMENT_STATUS, "VALIDATED", { status: "aprovado" }),
         claim(STORE_OPEN_NOW, "VALIDATED", { mealPeriod: "almoço" }, "order-1"),
@@ -69,7 +78,7 @@ describe("renderer-from-claims — §Q.7 pure template-filler", () => {
 
   // ── Acceptance 2: UNKNOWN/REFUSED → proposition-free; NO domain fact. ──
   it("renders an UNKNOWN claim as a proposition-free self-report (no domain fact)", () => {
-    const out = render(
+    const out = renderRenderables(
       [claim(ORDER_FULFILLMENT_STAGE, "UNKNOWN", { stage: "entregue" })],
       RENDER,
     );
@@ -85,7 +94,7 @@ describe("renderer-from-claims — §Q.7 pure template-filler", () => {
   });
 
   it("renders a REFUSED claim as a proposition-free could-not-confirm (no domain fact)", () => {
-    const out = render(
+    const out = renderRenderables(
       [claim(PAYMENT_STATUS, "REFUSED", { status: "aprovado" })],
       RENDER,
     );
@@ -97,7 +106,7 @@ describe("renderer-from-claims — §Q.7 pure template-filler", () => {
   // ── Acceptance 5 / Inv 6: a slot with no backing validated claim → abstain. ──
   it("abstains (no fabricated fact) when a proposition slot has no backing validated claim", () => {
     // VALIDATED claim of the right TYPE, but the value is MISSING the bound field.
-    const out = render(
+    const out = renderRenderables(
       [claim(ORDER_FULFILLMENT_STAGE, "VALIDATED", { somethingElse: "x" })],
       RENDER,
     );
@@ -107,7 +116,7 @@ describe("renderer-from-claims — §Q.7 pure template-filler", () => {
   });
 
   it("empty/blank field value resolves to abstention, never a blank proposition (registry §5)", () => {
-    const out = render(
+    const out = renderRenderables(
       [claim(ORDER_FULFILLMENT_STAGE, "VALIDATED", { stage: "   " })],
       RENDER,
     );
@@ -127,7 +136,7 @@ describe("renderer-from-claims — §Q.7 pure template-filler", () => {
     };
     // Even if a caller (wrongly) still passes the suppressed claims AND the
     // terminal is ESCALATE, the value must not surface.
-    const out = render(
+    const out = renderRenderables(
       [
         claim(ORDER_FULFILLMENT_STAGE, "VALIDATED", { stage: "entregue" }),
         claim(STORE_OPEN_NOW, "VALIDATED", { mealPeriod: "almoço" }),
@@ -147,7 +156,7 @@ describe("renderer-from-claims — §Q.7 pure template-filler", () => {
   });
 
   it("§O#5: a set-gate UNKNOWN terminal also emits only the safe template", () => {
-    const out = render(
+    const out = renderRenderables(
       [claim(PAYMENT_STATUS, "VALIDATED", { status: "aprovado" })],
       "UNKNOWN",
       [],
@@ -163,8 +172,8 @@ describe("renderer-from-claims — §Q.7 pure template-filler", () => {
       claim(ORDER_FULFILLMENT_STAGE, "VALIDATED", { stage: "saiu para entrega" }),
       claim(PAYMENT_STATUS, "UNKNOWN", { status: "x" }),
     ];
-    const a = render(input, RENDER);
-    const b = render(input, RENDER);
+    const a = renderRenderables(input, RENDER);
+    const b = renderRenderables(input, RENDER);
     expect(a.text).toBe(b.text);
     expect(a).toEqual(b);
   });
@@ -194,7 +203,7 @@ describe("renderer-from-claims — §Q.7 pure template-filler", () => {
     // against the renderer's signature. The runtime assertion confirms the
     // verdict union the kernel defines drives the branch.
     const validated: ConsistencyClaim = claim(PAYMENT_STATUS, "VALIDATED", { status: "aprovado" });
-    const out = render([validated], "RENDER" satisfies TurnTerminal);
+    const out = renderRenderables([validated], "RENDER" satisfies TurnTerminal);
     expect(out.text).toBe("O status do seu pagamento é: aprovado.");
   });
 });
@@ -231,7 +240,7 @@ describe("renderer-from-claims — R3 terminal routing (Inv 6; §I distinct term
   // (a) NON-VACUOUS: revert to `CLARIFY ? unknown : escalate` and an UNKNOWN
   // terminal routes to the escalate/handoff copy → this test goes RED.
   it("terminal UNKNOWN renders SAFE_TEMPLATES.unknown (self-report), NOT the handoff (a)", () => {
-    const out = render(
+    const out = renderRenderables(
       [claim(ORDER_FULFILLMENT_STAGE, "VALIDATED", { stage: "entregue" })],
       UNKNOWN,
     );
@@ -247,7 +256,7 @@ describe("renderer-from-claims — R3 terminal routing (Inv 6; §I distinct term
 
   // (b) ESCALATE keeps rendering the handoff/escalate template.
   it("terminal ESCALATE renders SAFE_TEMPLATES.escalate (handoff copy) (b)", () => {
-    const out = render(
+    const out = renderRenderables(
       [claim(PAYMENT_STATUS, "VALIDATED", { status: "aprovado" })],
       ESCALATE,
     );
@@ -260,7 +269,7 @@ describe("renderer-from-claims — R3 terminal routing (Inv 6; §I distinct term
 
   // (c) CLARIFY is unchanged — still the self-report (no distinct clarify copy).
   it("terminal CLARIFY renders SAFE_TEMPLATES.unknown (self-report, unchanged) (c)", () => {
-    const out = render(
+    const out = renderRenderables(
       [claim(ORDER_FULFILLMENT_STAGE, "VALIDATED", { stage: "em preparo" })],
       CLARIFY,
     );
@@ -279,7 +288,7 @@ describe("renderer-from-claims — R3 terminal routing (Inv 6; §I distinct term
     expect(isPropositionFree(SAFE_TEMPLATES.escalate)).toBe(true);
     // Behavioural: with real domain claims present, NO order/payment fact leaks.
     for (const terminal of [UNKNOWN, ESCALATE] as const) {
-      const out = render(
+      const out = renderRenderables(
         [
           claim(ORDER_FULFILLMENT_STAGE, "VALIDATED", { stage: "entregue" }),
           claim(PAYMENT_STATUS, "VALIDATED", { status: "aprovado" }),
@@ -296,5 +305,64 @@ describe("renderer-from-claims — R3 terminal routing (Inv 6; §I distinct term
       expect(out.text).not.toContain("etapa");
       expect(out.text).not.toContain("pagamento é");
     }
+  });
+});
+
+// ── inv.17 ENTRY BRAND: `render` REQUIRES kernel-minted CanonicalClaims ────────
+//
+// The renderer's PUBLIC entry can author prose ONLY from a CanonicalClaim minted by
+// `runClaimsKernel` on the VALIDATED ∧ P2-consistent renderable set. A raw claim +
+// model value can NEVER reach prose: a forged `as CanonicalClaim` literal throws at
+// `unwrapCanonical`. This is the type-level + runtime form of "claims, not prose".
+describe("renderer-from-claims — render() requires a kernel-minted CanonicalClaim (inv.17)", () => {
+  it("THROWS on a forged (non-minted) CanonicalClaim cast — no prose from a raw claim", () => {
+    const forged = {
+      subject: "s",
+      type: STORE_OPEN_NOW,
+      value: { mealPeriod: "jantar" },
+    } as unknown as CanonicalClaim;
+    expect(() => render([forged], RENDER)).toThrow(/forged or non-minted/);
+  });
+
+  it("renders a STORE_OPEN_NOW claim ONLY from the kernel-minted renderableCanonical", () => {
+    // Drive the REAL kernel: a present, fresh schedule signal with the bound
+    // `mealPeriod` field; no ScheduleOverride present (falsifier does not fire).
+    const NOW = 10_000;
+    const ledger = new EvidenceLedger("t");
+    ledger.record({
+      key: "schedule:store_open_now",
+      value: { mealPeriod: "jantar" },
+      source: "schedule.getSignal",
+      fetchedAt: NOW,
+      sourceMode: "live",
+      taint: "TRUSTED",
+      originProvenance: "FIRST_PARTY",
+    });
+    const candidate: CandidateClaim = {
+      soundness: REGISTRY_SPECS.STORE_OPEN_NOW.requiredEvidence
+        ? {
+            requiredEvidence: REGISTRY_SPECS.STORE_OPEN_NOW.requiredEvidence,
+            minSourceIntegrity: REGISTRY_SPECS.STORE_OPEN_NOW.minSourceIntegrity,
+            kind: REGISTRY_SPECS.STORE_OPEN_NOW.kind,
+            actor: "system",
+            falsifierComplete: true,
+            falsifiers: REGISTRY_SPECS.STORE_OPEN_NOW.falsifiers ?? [],
+            valueBinding: REGISTRY_SPECS.STORE_OPEN_NOW.valueBinding,
+          }
+        : (undefined as never),
+      subject: "store",
+      type: STORE_OPEN_NOW,
+      value: { mealPeriod: "jantar" },
+    };
+    const result = runClaimsKernel(
+      ledger,
+      [candidate],
+      createIbatexasClaimsKernelDeps({ now: () => NOW }),
+    );
+    // Sanity: the kernel actually minted a renderable canonical claim.
+    expect(result.terminal).toBe("RENDER");
+    expect(result.renderableCanonical).toHaveLength(1);
+    const out = render(result.renderableCanonical, RENDER);
+    expect(out.text).toBe("No momento, o período de funcionamento é: jantar.");
   });
 });

@@ -46,6 +46,11 @@ import type {
   EvidenceRequirement,
   TurnTerminal,
 } from "@adjudicate/core";
+// inv.18 v2 — the STORE_OPEN_NOW registry spec is GENERATED from its ClaimDefinition
+// source by the claimdef-compiler (./claimdefs/store-open-now.generated.ts — DO NOT
+// EDIT). The ~30-line handwritten stanza collapsed into this one import; the runtime
+// got SMALLER for this type and can no longer drift from the slot grammar / closure.
+import { STORE_OPEN_NOW_REGISTRY_SPEC } from "./claimdefs/store-open-now.generated.js";
 
 /**
  * The REGISTRY enum — the closed, representative set of claim TYPE names the
@@ -191,42 +196,12 @@ export const REGISTRY_SPECS = {
     ],
     customerScoped: false,
   },
-  // Triad slice (Plan 1 Phase 3) — STORE_OPEN_NOW is OVERRIDE-AWARE: the schedule
-  // signal is the backing read, and a present ScheduleOverride FALSIFIES it (the
-  // W6 cross-key runtime arm). The evidence key is aligned VERBATIM with the
-  // investigator's `SCHEDULE_KEY` ("schedule:store_open_now", ibatexas-investigator.ts)
-  // so the candidate validates against the actual recorded ledger entry.
-  STORE_OPEN_NOW: {
-    kind: "read_claim",
-    minSourceIntegrity: "trusted_service",
-    requiredEvidence: [
-      {
-        key: "schedule:store_open_now",
-        ownershipPolicy: "not_applicable",
-        // The schedule signal is read this turn from first-party config + cache;
-        // a short cacheable ttl bounds staleness (mirrors STORE_HOURS posture).
-        freshnessPolicy: { kind: "cacheable", ttl: 3600 },
-        sourceIntegrity: "trusted_service",
-        provenancePolicy: "preserve",
-      },
-    ],
-    customerScoped: false,
-    // W6 — a present ScheduleOverride contradicts the computed open/closed signal.
-    falsifierComplete: true,
-    falsifiers: [
-      {
-        key: "schedule:schedule_override",
-        ownershipPolicy: "not_applicable",
-        freshnessPolicy: "must_read_this_turn",
-        sourceIntegrity: "trusted_service",
-        provenancePolicy: "preserve",
-      },
-    ],
-    // C6 — the rendered open/closed proposition is bound to the schedule signal's
-    // `mealPeriod` field (the ScheduleSignal shape from @ibatexas/tools), so the
-    // value is ledger-sourced, never model-authored.
-    valueBinding: { key: "schedule:store_open_now", path: ["mealPeriod"] },
-  },
+  // Triad slice — STORE_OPEN_NOW is now GENERATED from its ClaimDefinition source
+  // (inv.18 v2). The override-aware evidence + W6 falsifier + C6 value-binding all
+  // come from `./claimdefs/store-open-now.generated.ts`, compiled from the single
+  // `store-open-now.claim.ts` source. This one line REPLACES the ~30-line handwritten
+  // stanza (and can never drift from the template / closure, which are generated too).
+  STORE_OPEN_NOW: STORE_OPEN_NOW_REGISTRY_SPEC,
   ORDER_FULFILLMENT_STAGE: {
     kind: "read_claim",
     minSourceIntegrity: "structured",
@@ -306,7 +281,7 @@ export const REGISTRY_SPECS = {
     ],
     customerScoped: true,
   },
-} as const satisfies Record<RegistryClaimType, RegistryClaimSpec>;
+} satisfies Record<RegistryClaimType, RegistryClaimSpec>;
 
 /**
  * A model PROPOSAL of a claim, BEFORE the constrained-generation wall (SDD §H).
