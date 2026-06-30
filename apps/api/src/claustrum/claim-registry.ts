@@ -306,9 +306,10 @@ const REGISTRY_SPECS = {
     // `fulfillmentStatus` (turn-reads.ts), NOT `stage` — the old `["stage"]` path
     // projected `undefined` on both sides → C6 ABSTAIN → the claim demoted UNKNOWN
     // even for the legit owner. The path now matches the read field so C6 compares
-    // a real scalar (claustrum claims-validate.ts binds the candidate value to the
-    // SAME ledger entry → claimSide === evidenceSide → C6 PASSes by construction,
-    // without skipping any conjunct). `valueBinding.key` stays a member of
+    // a real scalar (the claim-planner adapter, `ibatexas-claim-planner.ts`, binds
+    // the owner-scoped candidate value to the SAME present ledger entry →
+    // claimSide === evidenceSide → C6 PASSes by construction, without skipping any
+    // conjunct: ownership/freshness/falsifiers all still run). `valueBinding.key` stays a member of
     // requiredEvidence (suffixed `:{subject}` in lockstep) so the kernel's C6
     // structural guard never throws.
     valueBinding: { key: "order_fulfillment_stage", path: ["fulfillmentStatus"] },
@@ -368,6 +369,29 @@ const REGISTRY_SPECS = {
     customerScoped: true,
   },
 } as const satisfies Record<RegistryClaimType, RegistryClaimSpec>;
+
+/**
+ * The owner-scoped, per-resource BASE ledger key for a registry type (FIX 2 —
+ * owner-scoped subject resolution). It is the `order_fulfillment_stage` /
+ * `payment_status` prefix the investigator records the owner-scoped read under,
+ * BEFORE the `:{subject}` suffix (`parameterizeKeysBySubject`). `undefined` for a
+ * public, single-key type (STORE_OPEN_NOW / STORE_HOURS / MENU_ITEM_ALLERGENS):
+ * those carry no owner-scoped subject, so the claim planner never re-resolves
+ * their subject from owner-scoped reads. Pure.
+ *
+ * Used by the claim planner (`ibatexas-planner.ts`, FIX 2) to map a candidate's
+ * owner-scoped TYPE onto the base key whose PRESENT owner-scoped ledger ids are
+ * the ONLY admissible subjects — so the subject derives from the authenticated
+ * owner-scoped reads, never the 4B's (possibly empty/hallucinated) extraction.
+ */
+export function ownerScopedBaseKey(type: RegistryClaimType): string | undefined {
+  const spec: RegistryClaimSpec = REGISTRY_SPECS[type];
+  if (spec.perResourceKey !== true) return undefined;
+  const required = spec.requiredEvidence.find(
+    (e) => e.ownershipPolicy === "required",
+  );
+  return required?.key;
+}
 
 /**
  * A model PROPOSAL of a claim, BEFORE the constrained-generation wall (SDD §H).

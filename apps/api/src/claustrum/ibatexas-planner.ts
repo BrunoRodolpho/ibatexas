@@ -47,10 +47,12 @@ import { buildEnvelope } from "@adjudicate/core";
 import type { CandidateClaim, IntentEnvelope, TurnTerminal } from "@adjudicate/core";
 import {
   CLAIM_REGISTRY,
+  canonicalizeRegistryType,
   checkCompleteness,
   constrainClaimGeneration,
   deriveCandidateValues,
   hasUnmappedSpan,
+  ownerScopedBaseKey,
   routeSafety,
   type ProposedClaim,
   type RequestSpan,
@@ -415,6 +417,31 @@ function translateToolCalls(args: {
  * existing consumer that expects a `PlannerPort` keeps working (the extra
  * method is invisible to them).
  */
+/**
+ * The AUTHENTICATED, owner-scoped context the claim planner stamps an owner-scoped
+ * candidate's actor + subject FROM (FIX 1 + FIX 2; SDD §E C1, Inv 2). NEITHER
+ * field is ever model- or session-authored — both come from the conductor's
+ * authenticated identity + this turn's owner-scoped reads:
+ *
+ *  - `customerId`       — the AUTHENTICATED principal for this turn
+ *    (`capsule.customerId`, threaded by CLAIMS-VALIDATE). The planner stamps EVERY
+ *    candidate's `actor.principal` with this — never `"llm"`, never the model's
+ *    self-reported `actor` (FIX 1). `buildOwns` then PASSES for the legit owner and
+ *    still REFUSES a mismatch (the defense-in-depth check is NOT weakened).
+ *  - `ownedByBaseKey`   — the owner-scoped resource ids that resolved PRESENT this
+ *    turn, grouped by base key (`ownedResourceIdsByBaseKey`). The ONLY admissible
+ *    subjects for an owner-scoped candidate (FIX 2): exactly one → bind it; many →
+ *    CLARIFY; none → no resolution (degrade SAFE to UNKNOWN — never the model's id).
+ *
+ * Both OPTIONAL: absent (unit tests / a non-owner-scoped turn) ⟹ the planner keeps
+ * the model's subject and stamps an `"unauthenticated"` actor that owns nothing
+ * (fail-closed), so a missing auth context can never validate an owner-scoped claim.
+ */
+export interface ClaimAuthContext {
+  readonly customerId?: string;
+  readonly ownedByBaseKey?: ReadonlyMap<string, readonly string[]>;
+}
+
 export interface ClaimAwarePlannerPort extends PlannerPort {
   /**
    * Propose typed `CandidateClaim`s for the turn through the three deterministic
@@ -422,8 +449,14 @@ export interface ClaimAwarePlannerPort extends PlannerPort {
    * (pre-planning), P4 completeness (post-planning), and §O#9 closed-taxonomy
    * safety routing. Returns the {@link ClaimPlan} the Claims kernel + renderer
    * consume. Like `propose`, it only PROPOSES — the kernel disposes.
+   *
+   * `auth` (optional) carries the AUTHENTICATED owner-scoped context (FIX 1 + FIX
+   * 2): the candidate actor/subject derive from it, never from the model.
    */
-  proposeClaims(state: CognitiveState): Promise<ClaimPlan>;
+  proposeClaims(
+    state: CognitiveState,
+    auth?: ClaimAuthContext,
+  ): Promise<ClaimPlan>;
 }
 
 /**
@@ -556,7 +589,10 @@ export function createIbatexasPlanner(
     // the `propose_claim` tool (its `type` constrained by `enum` to the registry
     // — the pre-planning wall), then the two deterministic post-walls. Mirrors
     // `propose`'s "model proposes, deterministic checks dispose" shape.
-    async proposeClaims(state: CognitiveState): Promise<ClaimPlan> {
+    async proposeClaims(
+      state: CognitiveState,
+      auth?: ClaimAuthContext,
+    ): Promise<ClaimPlan> {
       // PRE-planning wall, part 1 (SDD §H/§P3): the model's `propose_claim` tool
       // exposes `type` as an `enum` over the registry — the model can only
       // SELECT an in-enum type, never type a free string into the schema. The
@@ -624,23 +660,84 @@ export function createIbatexasPlanner(
         maxTokens,
       });
 
+      // FIX 1 (actor) — the AUTHENTICATED principal for this turn. The candidate
+      // actor is stamped from THIS (capsule.customerId, threaded by CLAIMS-VALIDATE),
+      // NEVER from `"llm"` and NEVER from the model's self-reported `input.actor`
+      // (SDD §E C1, Inv 2). `buildOwns` then passes for the legit owner and still
+      // refuses a mismatch (its actorId===principal check is NOT weakened). Absent
+      // auth ⟹ a fail-closed `"unauthenticated"` principal that owns nothing.
+      const authPrincipal =
+        auth?.customerId !== undefined && auth.customerId.trim() !== ""
+          ? auth.customerId
+          : "unauthenticated";
+
       // Collect the model's proposals + the safety/span inputs from the call(s).
       const proposals: ProposedClaim[] = [];
       const spans: RequestSpan[] = [];
+      // FIX 2 (subject) — tracks whether an owner-scoped claim could not be bound
+      // to a SINGLE owned resource because the authenticated customer owns ≥2
+      // relevant ones → CLARIFY (ask which), never a guess.
+      let ownerScopedAmbiguous = false;
       const safety: SafetyRoutingInput = { markers: collectSafetyMarkers(completion.toolCalls) };
       for (const call of completion.toolCalls ?? []) {
         if (call.name !== PROPOSE_CLAIM_TOOL || !isProposeClaimInput(call.input)) {
           continue;
         }
         const input = call.input;
+
+        // FIX 2 (subject) — for an owner-scoped, per-resource type the SUBJECT must
+        // come from the AUTHENTICATED owner-scoped reads (the 4B routinely fails to
+        // extract a correct orderId — BUG 2 — emitting empty/missing/hallucinated
+        // ids). `ownerScopedBaseKey` is `undefined` for a public single-key type
+        // (STORE_OPEN_NOW/STORE_HOURS/MENU_ITEM_ALLERGENS) → its subject is left
+        // as-is. For an owner-scoped type, `subject` is resolved ONLY from
+        // `auth.ownedByBaseKey` (the owner-scoped reads that resolved PRESENT this
+        // turn — IDOR-safe). A model-supplied id is honored ONLY if it is itself an
+        // OWNED resource; otherwise it is discarded.
+        const canonicalType = canonicalizeRegistryType(input.type);
+        const baseKey =
+          canonicalType !== undefined ? ownerScopedBaseKey(canonicalType) : undefined;
+        let subject = input.subject ?? "";
+        if (baseKey !== undefined) {
+          const owned = auth?.ownedByBaseKey?.get(baseKey) ?? [];
+          const modelSubject = (input.subject ?? "").trim();
+          if (modelSubject !== "" && owned.includes(modelSubject)) {
+            // The model named an OWNED resource — accept it (IDOR-safe: it is in
+            // the authenticated owner-scoped present set).
+            subject = modelSubject;
+          } else if (owned.length === 1) {
+            // The model's id was empty/missing/non-owned, but the authenticated
+            // customer owns exactly ONE relevant resource → bind it (FIX 2).
+            subject = owned[0] as string;
+          } else if (owned.length > 1) {
+            // ≥2 owned relevant resources and no unambiguous model match → CLARIFY,
+            // never guess. Drop this owner-scoped proposal (no candidate emitted).
+            ownerScopedAmbiguous = true;
+            continue;
+          } else {
+            // 0 owned → no admissible subject. Keep the model's id; the kernel's
+            // owner-scoped `owns` refuses it → honest UNKNOWN/REFUSED, never a leak.
+            subject = modelSubject;
+          }
+        }
+
         proposals.push({
           // `type` is carried VERBATIM (possibly out-of-enum) so the
           // constrained-generation wall — not this collection step — is the
           // single gate that drops a hallucinated type.
           type: input.type,
-          subject: input.subject ?? "",
-          actor: input.actor ?? { principal: "llm", sessionId: state.conversationId },
-          ...(input.resources === undefined ? {} : { resources: input.resources }),
+          subject,
+          // FIX 1 — the AUTHENTICATED principal, never `input.actor` (model
+          // self-assertion) and never `"llm"`.
+          actor: { principal: authPrincipal, sessionId: state.conversationId },
+          // FIX 2 — DO NOT honor model-supplied `resources` for an owner-scoped
+          // type (it could re-introduce a non-owned id via the C1 binding); the
+          // per-resource binding is derived deterministically from the resolved
+          // `subject` in `selectCandidateClaim`. A non-owner-scoped type keeps any
+          // explicit resources (none from the 4B — the tool exposes no resources).
+          ...(baseKey === undefined && input.resources !== undefined
+            ? { resources: input.resources }
+            : {}),
           // tag-then-derive (STEP 1): the model NEVER authors a value — the
           // `value` field was removed from the tool schema. Seed it `undefined`;
           // `deriveCandidateValues` (below) sets it from the first-party read for
@@ -682,8 +779,12 @@ export function createIbatexasPlanner(
       // forces ESCALATE (the generic safe terminal); ESCALATE outranks a P4
       // CLARIFY (a safety escalation is more conservative than a clarification).
       const safetyTerminal = routeSafety(safety);
+      // FIX 2 — an owner-scoped claim the authenticated customer owns ≥2 relevant
+      // resources for forces CLARIFY (ask which order), exactly like an unmapped P4
+      // span: never a guess. §O#9 ESCALATE still outranks it (safety > clarify).
       const forcedTerminal: Extract<TurnTerminal, "ESCALATE" | "CLARIFY"> | undefined =
-        safetyTerminal ?? (hasUnmappedSpan(completeness) ? "CLARIFY" : undefined);
+        safetyTerminal ??
+        (hasUnmappedSpan(completeness) || ownerScopedAmbiguous ? "CLARIFY" : undefined);
 
       // F2 observability (claim-planner visibility): the Q6b `proposeClaims`
       // model call was previously INVISIBLE in `turn_trace` (only the intent

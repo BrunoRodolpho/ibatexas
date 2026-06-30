@@ -108,7 +108,32 @@ export interface TriadReadBackend {
     reservationId: string,
     customerId: string,
   ): Promise<ReservationRead | null>;
+  /**
+   * Enumerate the AUTHENTICATED customer's OWN, RELEVANT (non-terminal) order ids
+   * (FIX 2 — owner-scoped subject resolution; the BUG-2 close). OWNER-SCOPED by
+   * construction: the underlying `listByCustomer(customerId)` filters on
+   * `customerId`, so only the customer's own orders are ever returned — no
+   * model/session id is involved. "Relevant" = a non-terminal fulfillment stage
+   * (an order a customer would ask the status of), so a long delivered/canceled
+   * history does not force a perpetual CLARIFY. Returns `[]` for a customer with no
+   * active orders.
+   */
+  listActiveOrderIds(customerId: string): Promise<string[]>;
 }
+
+/**
+ * The non-terminal ("active") fulfillment stages — an order in one of these is a
+ * RELEVANT owned order for FIX 2 enumeration (the kind a customer asks the status
+ * of). `delivered` / `canceled` are TERMINAL and excluded. Mirrors the
+ * `OrderFulfillmentStatus` enum (packages/domain/prisma/schema.prisma).
+ */
+const ACTIVE_FULFILLMENT_STAGES: ReadonlySet<string> = new Set<string>([
+  "pending",
+  "confirmed",
+  "preparing",
+  "ready",
+  "in_delivery",
+]);
 
 /** Default first-party schedule read: the Redis read-through cache + env tz →
  *  the deterministic {@link getScheduleSignal} (mirrors claustrum-bootstrap's
@@ -199,6 +224,18 @@ export function createDomainTriadReadBackend(
         status: String(r.status),
         partySize: r.partySize,
       };
+    },
+
+    async listActiveOrderIds(customerId) {
+      // OWNER-SCOPED (FIX 2): `listByCustomer` filters on `customerId`, so this only
+      // ever returns the AUTHENTICATED customer's own orders — never a model/session
+      // id, never another owner's order. Bounded + filtered to non-terminal stages.
+      const { orders } = await createOrderQueryService().listByCustomer(customerId, {
+        limit: 20,
+      });
+      return orders
+        .filter((o) => ACTIVE_FULFILLMENT_STAGES.has(String(o.fulfillmentStatus)))
+        .map((o) => o.id);
     },
   };
 }

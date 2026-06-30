@@ -209,7 +209,7 @@ export class OwnerScopedReadUnavailable extends Error {
 export function createFirstPartyTurnReads(
   backend: TriadReadBackend = createDomainTriadReadBackend(),
 ): TurnReadGatherer {
-  return (input: InvestigateInput): TurnRead[] => {
+  return async (input: InvestigateInput): Promise<TurnRead[]> => {
     const customerId = input.customerId;
     const reads: TurnRead[] = [];
 
@@ -250,7 +250,24 @@ export function createFirstPartyTurnReads(
       readToolCalls: input.plan.readToolCalls,
     });
 
-    for (const orderId of orderIds) {
+    // FIX 2 (BUG 2 close) — the 4B routinely fails to extract a correct orderId
+    // into the read-tool param (empty/missing/hallucinated), so the model-driven
+    // `orderIds` alone often miss the owner's real order ⇒ the owner-scoped read
+    // never runs ⇒ no owned resource ⇒ the legit owner is REFUSED. Independently
+    // enumerate the AUTHENTICATED customer's OWN active orders (owner-scoped — keyed
+    // ONLY by `customerId`) and union them in, so the ledger carries the owner's
+    // real orders regardless of the model's extraction. IDOR-safe: every id here is
+    // the customer's own; the per-resource reads below stay owner-scoped too. A
+    // best-effort failure degrades to the model-extracted ids (never throws the turn).
+    const ownedActiveOrderIds = await backend
+      .listActiveOrderIds(customerId)
+      .catch(() => [] as string[]);
+    const allOrderIds: string[] = [...orderIds];
+    for (const id of ownedActiveOrderIds) {
+      if (!allOrderIds.includes(id)) allOrderIds.push(id);
+    }
+
+    for (const orderId of allOrderIds) {
       reads.push({
         key: ORDER_FULFILLMENT_KEY(orderId),
         source: "order.getById",

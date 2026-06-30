@@ -240,11 +240,49 @@ export function createPerTurnClaimsKernelDeps(
  * These are the ONLY keys whose presence attributes ownership; public keys
  * (`schedule:*`) are NOT owner resources and are excluded.
  */
-const OWNER_SCOPED_KEY_PREFIXES = [
+export const OWNER_SCOPED_KEY_PREFIXES = [
   "order_fulfillment_stage:",
   "payment_status:",
   "reservation_status:",
 ] as const;
+
+/**
+ * Group the AUTHENTICATED owner-scoped resource ids this turn's ledger holds by
+ * their BASE key (the prefix without the trailing `:`), reading ONLY entries that
+ * resolved PRESENT (FIX 2 — owner-scoped subject resolution; the IDOR close).
+ *
+ * The result is `{ order_fulfillment_stage: [id, …], payment_status: [id, …] }`
+ * — the EXACT, owner-scoped set of subjects the claim planner may bind to an
+ * owner-scoped candidate. Because the set is built ONLY from PRESENT owner-scoped
+ * reads (a forged / cross-owner read errored → absent → excluded), a model- or
+ * session-supplied non-owned id is NEVER an admissible subject ("no owner" ≠
+ * "any owner", Inv 2). PURE — the kernel/planner contract requires it.
+ */
+export function ownedResourceIdsByBaseKey(
+  ledger: EvidenceLedgerLike,
+): Map<string, string[]> {
+  const byBase = new Map<string, string[]>();
+  for (const key of ledger.keys()) {
+    const prefix = OWNER_SCOPED_KEY_PREFIXES.find((p) => key.startsWith(p));
+    if (prefix === undefined) continue;
+    if (ledger.resolve(key).state !== "present") continue;
+    const resourceId = key.slice(prefix.length);
+    if (resourceId.length === 0) continue;
+    const base = prefix.slice(0, -1); // drop trailing ":"
+    const ids = byBase.get(base);
+    if (ids === undefined) byBase.set(base, [resourceId]);
+    else if (!ids.includes(resourceId)) ids.push(resourceId);
+  }
+  return byBase;
+}
+
+/** The minimal read-only ledger surface {@link ownedResourceIdsByBaseKey} needs
+ *  (a subset of the published `EvidenceLedger`) — keeps the helper unit-testable
+ *  with a tiny stub and avoids importing the full ledger type here. */
+export interface EvidenceLedgerLike {
+  keys(): Iterable<string>;
+  resolve(key: string): { readonly state: string };
+}
 
 /**
  * Build the per-turn `ClaimsKernelDeps` (the Conductor `claimsKernelDepsForTurn`

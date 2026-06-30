@@ -223,6 +223,9 @@ function stubBackend(over: Partial<TriadReadBackend> = {}): TriadReadBackend {
       status: "confirmed",
       partySize: 4,
     }),
+    // FIX 2 — default: no auto-enumerated active orders (tests that exercise the
+    // owner-order enumeration override this).
+    listActiveOrderIds: async () => [],
     ...over,
   };
 }
