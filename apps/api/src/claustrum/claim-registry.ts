@@ -153,6 +153,23 @@ interface RegistryClaimSpec {
     readonly key: string;
     readonly path?: readonly (string | number)[];
   };
+  /**
+   * Wall-2 groundwork (Track A on 4B; tag-then-derive plan STEP 3). When `true`,
+   * this type's reads are recorded by the investigator under PER-RESOURCE keys
+   * (`order_fulfillment_stage:{id}`, `payment_status:{id}` —
+   * `ibatexas-investigator.ts`), NOT a plain key. `selectCandidateClaim` therefore
+   * PARAMETERIZES this type's `requiredEvidence`/`falsifiers`/`valueBinding` keys
+   * by the candidate `subject` (`${baseKey}:${subject}`) so the kernel's
+   * `ledger.resolve(key)` finds the actual per-resource entry. STORE_OPEN_NOW (a
+   * public, single-key type whose `schedule:store_open_now` matches the
+   * investigator verbatim) leaves this OMITTED — its keys are never parameterized.
+   *
+   * NOTE: per-resource alignment is necessary-but-not-sufficient for these
+   * owner-scoped types to go LIVE; the per-turn `owns` threading is a conductor
+   * (`@claustrum/core`) republish (Wall 2, out of scope here). Until then
+   * ORDER/PAYMENT degrade SAFE to UNKNOWN (owns false / read-error / value-absent).
+   */
+  readonly perResourceKey?: boolean;
 }
 
 /**
@@ -232,7 +249,11 @@ const REGISTRY_SPECS = {
     minSourceIntegrity: "structured",
     requiredEvidence: [
       {
-        key: "fulfillment_stage",
+        // STEP 3 key-alignment: the BASE name now matches the investigator's
+        // `ORDER_FULFILLMENT_KEY` base (`order_fulfillment_stage`,
+        // ibatexas-investigator.ts:162); `selectCandidateClaim` appends `:{subject}`
+        // (perResourceKey) so the kernel resolves the actual per-order entry.
+        key: "order_fulfillment_stage",
         // Customer-scoped — owner-scoped `getById` (SDD §E / §N P1).
         ownershipPolicy: "required",
         freshnessPolicy: "must_read_this_turn",
@@ -241,6 +262,8 @@ const REGISTRY_SPECS = {
       },
     ],
     customerScoped: true,
+    // The investigator records the schedule-style PER-RESOURCE key — parameterize.
+    perResourceKey: true,
     // W6 — a present order CANCELLATION falsifies any in-progress fulfillment stage.
     falsifierComplete: true,
     falsifiers: [
@@ -253,7 +276,11 @@ const REGISTRY_SPECS = {
       },
     ],
     // C6 — bind the rendered stage to the read's `stage` field (ledger-sourced).
-    valueBinding: { key: "fulfillment_stage", path: ["stage"] },
+    // (The read shape's field is `fulfillmentStatus`; reconciling the value PATH is
+    // part of the Wall-2 republish — irrelevant publish-free since these stay
+    // UNKNOWN. The KEY is what STEP 3 aligns; `valueBinding.key` stays a member of
+    // requiredEvidence so the kernel's C6 structural guard never throws.)
+    valueBinding: { key: "order_fulfillment_stage", path: ["stage"] },
   },
   PAYMENT_STATUS: {
     kind: "read_claim",
@@ -269,6 +296,9 @@ const REGISTRY_SPECS = {
       },
     ],
     customerScoped: true,
+    // STEP 3 key-alignment: the investigator records `payment_status:{id}`
+    // (ibatexas-investigator.ts:164) — parameterize this type's keys by subject.
+    perResourceKey: true,
     // W6 — a `paid` payment status is falsified by a present refund OR chargeback
     // (opposite money direction). BOTH are enumerated (honest completeness).
     falsifierComplete: true,
@@ -353,7 +383,16 @@ export function selectCandidateClaim(
   // Widen the `as const` literal member to the interface so the OPTIONAL W6
   // fields (falsifierComplete / falsifiers / valueBinding) are readable on every
   // member (a member that omits them is `undefined`, not a missing property).
-  const spec: RegistryClaimSpec = REGISTRY_SPECS[proposed.type];
+  const baseSpec: RegistryClaimSpec = REGISTRY_SPECS[proposed.type];
+  // STEP 3 key-alignment: an owner-scoped, per-resource type (perResourceKey) has
+  // its evidence/falsifier/value-binding keys parameterized by the candidate
+  // `subject` so they match the investigator's `${base}:{id}` ledger keys. A
+  // single-key public type (STORE_OPEN_NOW) is untouched. PURE — the model never
+  // authors the key shape (it only supplies `subject`).
+  const spec: RegistryClaimSpec =
+    baseSpec.perResourceKey === true
+      ? parameterizeKeysBySubject(baseSpec, proposed.subject)
+      : baseSpec;
   return {
     soundness: {
       requiredEvidence: spec.requiredEvidence,
@@ -385,6 +424,44 @@ export function selectCandidateClaim(
 }
 
 /**
+ * STEP 3 — parameterize an owner-scoped, per-resource type's evidence/falsifier/
+ * value-binding keys by the candidate `subject` (`${baseKey}:${subject}`) so they
+ * match the investigator's per-resource ledger keys
+ * (`order_fulfillment_stage:{id}`, `payment_status:{id}`,
+ * `order_cancelled:{id}`, `payment_refund:{id}`, `payment_chargeback:{id}`). PURE.
+ *
+ * INVARIANT preserved: `valueBinding.key` is suffixed with the SAME `:{subject}`
+ * as its requiredEvidence member, so it stays a member of the requiredEvidence key
+ * set and the kernel's C6 structural guard (soundness.ts) never throws. The model
+ * authors NONE of this — only `subject`; the evidence/falsifier SHAPE is FIXED.
+ */
+function parameterizeKeysBySubject(
+  spec: RegistryClaimSpec,
+  subject: string,
+): RegistryClaimSpec {
+  const suffix = `:${subject}`;
+  const rekey = (e: EvidenceRequirement): EvidenceRequirement => ({
+    ...e,
+    key: `${e.key}${suffix}`,
+  });
+  return {
+    ...spec,
+    requiredEvidence: spec.requiredEvidence.map(rekey),
+    ...(spec.falsifiers === undefined
+      ? {}
+      : { falsifiers: spec.falsifiers.map(rekey) }),
+    ...(spec.valueBinding === undefined
+      ? {}
+      : {
+          valueBinding: {
+            ...spec.valueBinding,
+            key: `${spec.valueBinding.key}${suffix}`,
+          },
+        }),
+  };
+}
+
+/**
  * Run the constrained-generation wall over a batch of model proposals (SDD §H).
  * Returns the typed candidates that PASSED the enum constraint plus the names
  * of the proposals that were DROPPED (recorded for the planner rationale +
@@ -405,6 +482,72 @@ export function constrainClaimGeneration(
     }
   }
   return { candidates, dropped };
+}
+
+/**
+ * The first-party reads the ibatexas claim planner has available to DERIVE a
+ * candidate's bound `value` from (tag-then-derive plan STEP 2). PUBLISH-FREE:
+ * these are re-reads from the SAME first-party source the investigator records,
+ * NOT the per-turn ledger (the planner has no ledger access — that ledger-exact
+ * derivation is the Wall-2 `claims-validate.ts` republish). For STORE_OPEN_NOW the
+ * re-read is byte-equal to the recorded `schedule:store_open_now` entry, so the
+ * kernel's C6 value-binding passes BY CONSTRUCTION — without skipping C6.
+ */
+export interface FirstPartyDerivationReads {
+  /** The schedule signal — the SAME `readSchedule()` the investigator records
+   *  (`ibatexas-investigator.ts` SCHEDULE_KEY). Only `mealPeriod` is bound (C6). */
+  readonly scheduleSignal?: { readonly mealPeriod?: unknown };
+}
+
+/**
+ * tag-then-derive (STEP 2) — for a SINGLE candidate, OVERWRITE `value` from a
+ * first-party read so the C6-bound field equals its licensing evidence value,
+ * making the model a value-AUTHOR no longer (it only emits the `type` tag). PURE.
+ *
+ * HARD CONSTRAINT (i): this NEVER sets `validated`, NEVER skips a conjunct. It only
+ * replaces `candidate.value` UPSTREAM of `runClaimsKernel`; the kernel then runs
+ * EVERY conjunct (C0/∀-evidence/C4/C6 + the falsifier CAP + the CE#3 runtime arm).
+ * A derived value that contradicts a present falsifier STILL demotes to UNKNOWN.
+ *
+ * Scope: only STORE_OPEN_NOW is derivable publish-free (its read is public,
+ * single-key, re-readable in the planner). A bound type with NO available
+ * first-party read here (ORDER_FULFILLMENT_STAGE / PAYMENT_STATUS — owner-scoped,
+ * per-resource, NOT re-read in the planner to avoid an IDOR re-open) is passed
+ * through UNCHANGED → its value stays as-proposed (undefined under the tag
+ * protocol) → C6 ABSTAINs / ownership fails → the honest UNKNOWN residual. A type
+ * with no `valueBinding` at all is also passed through unchanged.
+ */
+export function deriveBoundValue(
+  candidate: CandidateClaim,
+  reads: FirstPartyDerivationReads,
+): CandidateClaim {
+  // No binding ⟹ §5 is value-agnostic for this type — never re-author its value.
+  if (candidate.soundness.valueBinding === undefined) return candidate;
+
+  if (candidate.type === "STORE_OPEN_NOW") {
+    if (reads.scheduleSignal === undefined) return candidate;
+    // C6 binds path ["mealPeriod"] against `schedule:store_open_now`; project the
+    // SAME field from the first-party read so claimSide === evidenceSide (PASS).
+    return { ...candidate, value: { mealPeriod: reads.scheduleSignal.mealPeriod } };
+  }
+
+  // Owner-scoped per-resource types have no planner-available first-party read
+  // (deriving them would require an owner-scoped re-read — reserved for Wall 2 to
+  // keep the IDOR closed). Pass through → honest UNKNOWN residual.
+  return candidate;
+}
+
+/**
+ * tag-then-derive (STEP 2) — derive bound values across a candidate batch. PURE.
+ * The planner runs this AFTER `constrainClaimGeneration` and BEFORE returning the
+ * `ClaimPlan`, so the candidates the kernel validates carry first-party-derived
+ * (never model-authored) values for every publish-free-derivable bound type.
+ */
+export function deriveCandidateValues(
+  candidates: readonly CandidateClaim[],
+  reads: FirstPartyDerivationReads,
+): CandidateClaim[] {
+  return candidates.map((c) => deriveBoundValue(c, reads));
 }
 
 /**

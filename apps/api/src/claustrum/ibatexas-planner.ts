@@ -49,6 +49,7 @@ import {
   CLAIM_REGISTRY,
   checkCompleteness,
   constrainClaimGeneration,
+  deriveCandidateValues,
   hasUnmappedSpan,
   routeSafety,
   type ProposedClaim,
@@ -69,7 +70,11 @@ import type {
   PlannerPort,
   TelemetryPort,
 } from "@claustrum/core";
-import { EXPRESS_INTENT_TOOL, PLANNER_PERSONA } from "./prompts/personas.js";
+import {
+  CLAIM_PLANNER_PERSONA,
+  EXPRESS_INTENT_TOOL,
+  PLANNER_PERSONA,
+} from "./prompts/personas.js";
 import {
   PLANNER_SURFACE,
   type IbatexasPromptComposer,
@@ -213,16 +218,16 @@ function isExpressIntentInput(input: unknown): input is ExpressIntentInput {
 /**
  * The raw shape of a `propose_claim` tool call's `input` (Q6b — SDD §H). The
  * model proposes a `type` (a FREE string — it may hallucinate one outside the
- * registry; the constrained-generation wall constrains it), a same-subject
- * `subject` key, and the runtime params the registry type's evidence schema is
- * parameterized with. Validated structurally before it becomes a `ProposedClaim`.
+ * registry; the constrained-generation wall constrains it) and a same-subject
+ * `subject` key. tag-then-derive (STEP 1): there is NO `value` field — the model
+ * never authors a value; it is derived first-party downstream. Validated
+ * structurally before it becomes a `ProposedClaim`.
  */
 interface ProposeClaimInput {
   readonly type: string;
   readonly subject?: string;
   readonly actor?: unknown;
   readonly resources?: Readonly<Record<string, unknown>>;
-  readonly value?: unknown;
   /** Free-text safety markers the model flagged on the request (SDD §O#8/§O#9). */
   readonly safetyMarkers?: readonly string[];
   /**
@@ -559,10 +564,18 @@ export function createIbatexasPlanner(
       // backstop (a compromised prompt that bypasses the enum is still dropped).
       const claimTool = {
         name: PROPOSE_CLAIM_TOOL,
+        // tag-then-derive (STEP 1 — tag protocol): the model SELECTS only a claim
+        // `type` (enum-constrained) + its `subject`. It does NOT — and CANNOT —
+        // author a `value`: the value is DERIVED downstream from the first-party
+        // ledger read the type's `valueBinding` names (claim-registry.ts
+        // `deriveCandidateValues`), so the kernel's C6 value-binding is satisfied
+        // by a LEDGER-sourced value, never a 4B confabulation. A typed enum is a
+        // harder constraint than a free-text value — far more 4B-robust.
         description:
           "Propor uma afirmação (claim) para o kernel de claims validar. " +
-          "Use `type` (uma das opções do enum do registro), `subject` (a chave " +
-          "do recurso) e os parâmetros. Nunca invente um tipo fora do enum.",
+          "Selecione APENAS `type` (uma das opções do enum do registro) e " +
+          "`subject` (a chave do recurso). NÃO escreva o valor/proposição — o " +
+          "sistema deriva o valor da fonte primária. Nunca invente um tipo fora do enum.",
         inputSchema: {
           type: "object",
           properties: {
@@ -572,7 +585,6 @@ export function createIbatexasPlanner(
               description: "O tipo de claim do registro a ser proposto.",
             },
             subject: { type: "string", description: "Chave do recurso/assunto." },
-            value: { description: "A proposição que o renderer preencheria." },
             safetyMarkers: {
               type: "array",
               items: { type: "string" },
@@ -596,7 +608,11 @@ export function createIbatexasPlanner(
         },
       };
 
-      const system = deps.system ?? DEFAULT_SYSTEM_PROMPT;
+      // tag-then-derive (STEP 1): the CLAIM path uses a CLAIM-framed persona, NOT
+      // the intent persona (DEFAULT_SYSTEM_PROMPT) — the intent persona's "sua
+      // única função é express_intent" SUPPRESSES the propose_claim call on a 4B
+      // (verified live on nemotron-3-nano:4b). `deps.system` still overrides (tests).
+      const system = deps.system ?? CLAIM_PLANNER_PERSONA;
       const completion = await deps.model.complete({
         model: deps.modelId,
         system,
@@ -622,7 +638,12 @@ export function createIbatexasPlanner(
           subject: input.subject ?? "",
           actor: input.actor ?? { principal: "llm", sessionId: state.conversationId },
           ...(input.resources === undefined ? {} : { resources: input.resources }),
-          value: input.value,
+          // tag-then-derive (STEP 1): the model NEVER authors a value — the
+          // `value` field was removed from the tool schema. Seed it `undefined`;
+          // `deriveCandidateValues` (below) sets it from the first-party read for
+          // every publish-free-derivable bound type. A type with no deriver keeps
+          // `undefined` → C6 ABSTAIN / honest UNKNOWN (never a model confabulation).
+          value: undefined,
         });
         for (const span of input.spans ?? []) {
           spans.push(
@@ -637,6 +658,19 @@ export function createIbatexasPlanner(
       // types become typed `CandidateClaim`s; out-of-enum proposals are dropped.
       const { candidates, dropped } = constrainClaimGeneration(proposals);
 
+      // tag-then-derive (STEP 2 — value derivation, PRE-kernel): OVERWRITE each
+      // bound candidate's `value` from the SAME first-party read the investigator
+      // records (here: the schedule signal for STORE_OPEN_NOW). This replaces the
+      // value AUTHOR (the model) with a first-party deriver — it sets NO verdict
+      // and skips NO conjunct. `runClaimsValidate` then runs the full kernel
+      // (C6 + falsifier/CE#3 + provenance + freshness) over these candidates, so
+      // C6 passes BY CONSTRUCTION (derived value == the ledger value C6 compares)
+      // while a present falsifier STILL demotes the claim to UNKNOWN.
+      const scheduleSignal = deps.resolveScheduleSignal
+        ? ((await deps.resolveScheduleSignal()) ?? undefined)
+        : undefined;
+      const derivedCandidates = deriveCandidateValues(candidates, { scheduleSignal });
+
       // POST-planning wall (SDD §C P4 / §J.8): every span gets a disposition; an
       // unmapped span is surfaced as CLARIFY, never silently dropped.
       const completeness = checkCompleteness(spans);
@@ -649,7 +683,7 @@ export function createIbatexasPlanner(
         safetyTerminal ?? (hasUnmappedSpan(completeness) ? "CLARIFY" : undefined);
 
       return {
-        candidates,
+        candidates: derivedCandidates,
         completeness,
         ...(forcedTerminal === undefined ? {} : { forcedTerminal }),
         droppedClaimTypes: dropped,

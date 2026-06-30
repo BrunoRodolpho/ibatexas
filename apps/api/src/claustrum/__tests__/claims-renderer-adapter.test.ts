@@ -36,6 +36,10 @@ const kernelResult = (
 ): ClaimsKernelResult => ({
   perClaim: [],
   renderable,
+  // inv.17 kernel-surface compat (egress-brand HEAD): ClaimsKernelResult now
+  // carries the kernel-minted CanonicalClaim set. The activation-branch adapter
+  // renders from `renderable`, so an empty canonical set is inert for these tests.
+  renderableCanonical: [],
   terminal,
   consistency: { renderable, terminal, suppressions: [] },
 });
@@ -86,6 +90,8 @@ describe("claims-renderer-adapter — F2 required-claim completeness gate (§O#1
   ): ClaimsKernelResult => ({
     perClaim: perClaim.map((p) => ({ subject: "s", type: p.type, verdict: p.verdict })),
     renderable,
+    // inv.17 kernel-surface compat (see `kernelResult` above) — inert here.
+    renderableCanonical: [],
     terminal: "RENDER",
     consistency: { renderable, terminal: "RENDER", suppressions: [] },
   });
