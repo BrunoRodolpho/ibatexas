@@ -149,7 +149,14 @@ export const VALIDATED_TEMPLATES: Readonly<Record<string, Template>> = {
     posture: "validated",
     slots: [
       lit("Seu pedido está na etapa: "),
-      prop(ORDER_FULFILLMENT_STAGE, "stage"),
+      // F1 — bind 1:1 to the C6 value-binding FIELD. The kernel validates this
+      // claim's value at `valueBinding.path = ["fulfillmentStatus"]` (claim-
+      // registry.ts) against the ledger; the OrderFulfillmentRead shape's field is
+      // `fulfillmentStatus` (turn-reads.ts), NOT `stage`. The old `stage` slot read
+      // a field the validated value never carries → the proposition was UNFILLABLE
+      // and a legitimately-VALIDATED ORDER claim abstained to UNKNOWN. Reading the
+      // ACTUAL value field makes a VALIDATED ORDER claim render.
+      prop(ORDER_FULFILLMENT_STAGE, "fulfillmentStatus"),
       lit("."),
     ],
   },

@@ -12,6 +12,7 @@ import { describe, expect, it } from "vitest";
 import { isRegistryClaimType, type RegistryClaimType } from "../claim-registry.js";
 import {
   checkRequiredClaimCompleteness,
+  classifyRequestSpans,
   decomposeRequiredClaims,
   isSpanClass,
   REQUIRED_CLAIM_CLOSURE,
@@ -120,5 +121,66 @@ describe("required-claim completeness — quantifies over the REQUIRED set (SDD 
     const r = checkRequiredClaimCompleteness(new Set(), new Map());
     expect(r.complete).toBe(true);
     expect(r.degrade).toBe(false);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// F2 — the polysemous "status" must route by its DISCRIMINATOR (payment vs order),
+// not unconditionally to ORDER. NON-VACUOUS: with the old `/pedido|cad[êe]|status/`
+// → ORDER_STATUS_Q rule, "status do meu pagamento" wrongly carried ORDER_STATUS_Q.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("classifyRequestSpans — F2 'status' polysemy disambiguation (§O#8/§O#15)", () => {
+  it("'qual o status do meu pagamento?' → PAYMENT_STATUS_Q (NOT misrouted to ORDER)", () => {
+    const spans = classifyRequestSpans("qual o status do meu pagamento?");
+    expect(spans).toContain("PAYMENT_STATUS_Q");
+    expect(spans).not.toContain("ORDER_STATUS_Q");
+    // …and it decomposes to PAYMENT_STATUS, never ORDER_FULFILLMENT_STAGE.
+    const required = decomposeRequiredClaims(spans);
+    expect(required.has("PAYMENT_STATUS")).toBe(true);
+    expect(required.has("ORDER_FULFILLMENT_STAGE")).toBe(false);
+  });
+
+  it("'qual o status do meu pedido?' → ORDER_STATUS_Q (NOT payment)", () => {
+    const spans = classifyRequestSpans("qual o status do meu pedido?");
+    expect(spans).toContain("ORDER_STATUS_Q");
+    expect(spans).not.toContain("PAYMENT_STATUS_Q");
+    const required = decomposeRequiredClaims(spans);
+    expect(required.has("ORDER_FULFILLMENT_STAGE")).toBe(true);
+    expect(required.has("PAYMENT_STATUS")).toBe(false);
+  });
+
+  it("a BARE 'status' with no discriminator → BOTH companions (conservative over-decompose)", () => {
+    const spans = classifyRequestSpans("qual o status?");
+    expect(spans).toContain("ORDER_STATUS_Q");
+    expect(spans).toContain("PAYMENT_STATUS_Q");
+    const required = decomposeRequiredClaims(spans);
+    expect(required.has("ORDER_FULFILLMENT_STAGE")).toBe(true);
+    expect(required.has("PAYMENT_STATUS")).toBe(true);
+  });
+
+  it("payment phrasing variants (pix / cobrança / pagar) route to PAYMENT_STATUS_Q", () => {
+    for (const text of [
+      "já caiu meu pix?",
+      "qual o valor da cobrança?",
+      "como faço para pagar?",
+    ]) {
+      expect(classifyRequestSpans(text)).toContain("PAYMENT_STATUS_Q");
+    }
+  });
+
+  it("order/delivery phrasing (entrega / chegou / preparo) routes to ORDER_STATUS_Q", () => {
+    for (const text of [
+      "cadê minha entrega?",
+      "meu pedido já chegou?",
+      "ainda está em preparo?",
+    ]) {
+      expect(classifyRequestSpans(text)).toContain("ORDER_STATUS_Q");
+    }
+  });
+
+  it("a payment+order compound 'status do pedido e do pagamento' keeps BOTH (over-include)", () => {
+    const spans = classifyRequestSpans("qual o status do pedido e do pagamento?");
+    expect(spans).toContain("ORDER_STATUS_Q");
+    expect(spans).toContain("PAYMENT_STATUS_Q");
   });
 });

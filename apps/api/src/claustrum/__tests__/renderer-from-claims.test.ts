@@ -42,7 +42,7 @@ describe("renderer-from-claims — §Q.7 pure template-filler", () => {
   // ── Acceptance 1: a VALIDATED claim renders via its template, 1:1 (Inv 6). ──
   it("renders a VALIDATED claim's field value in its template slot (Inv 6 1:1)", () => {
     const out = render(
-      [claim(ORDER_FULFILLMENT_STAGE, "VALIDATED", { stage: "em preparo" })],
+      [claim(ORDER_FULFILLMENT_STAGE, "VALIDATED", { fulfillmentStatus: "em preparo" })],
       RENDER,
     );
     expect(out.terminal).toBe("RENDER");
@@ -70,7 +70,7 @@ describe("renderer-from-claims — §Q.7 pure template-filler", () => {
   // ── Acceptance 2: UNKNOWN/REFUSED → proposition-free; NO domain fact. ──
   it("renders an UNKNOWN claim as a proposition-free self-report (no domain fact)", () => {
     const out = render(
-      [claim(ORDER_FULFILLMENT_STAGE, "UNKNOWN", { stage: "entregue" })],
+      [claim(ORDER_FULFILLMENT_STAGE, "UNKNOWN", { fulfillmentStatus: "entregue" })],
       RENDER,
     );
     // It must be an epistemic self-report / offer (registry §5)...
@@ -108,7 +108,7 @@ describe("renderer-from-claims — §Q.7 pure template-filler", () => {
 
   it("empty/blank field value resolves to abstention, never a blank proposition (registry §5)", () => {
     const out = render(
-      [claim(ORDER_FULFILLMENT_STAGE, "VALIDATED", { stage: "   " })],
+      [claim(ORDER_FULFILLMENT_STAGE, "VALIDATED", { fulfillmentStatus: "   " })],
       RENDER,
     );
     expect(out.lines[0]?.kind).toBe("UNFILLABLE");
@@ -129,7 +129,7 @@ describe("renderer-from-claims — §Q.7 pure template-filler", () => {
     // terminal is ESCALATE, the value must not surface.
     const out = render(
       [
-        claim(ORDER_FULFILLMENT_STAGE, "VALIDATED", { stage: "entregue" }),
+        claim(ORDER_FULFILLMENT_STAGE, "VALIDATED", { fulfillmentStatus: "entregue" }),
         claim(ORDER_ESTIMATED_ARRIVAL, "VALIDATED", { etaMinutes: 45 }),
       ],
       "ESCALATE",
@@ -160,7 +160,7 @@ describe("renderer-from-claims — §Q.7 pure template-filler", () => {
   // ── Acceptance 3 / §O#3: deterministic, byte-identical, NO model call. ──
   it("§O#3: identical input yields byte-identical output (pure, no model)", () => {
     const input: ConsistencyClaim[] = [
-      claim(ORDER_FULFILLMENT_STAGE, "VALIDATED", { stage: "saiu para entrega" }),
+      claim(ORDER_FULFILLMENT_STAGE, "VALIDATED", { fulfillmentStatus: "saiu para entrega" }),
       claim(PAYMENT_STATUS, "UNKNOWN", { status: "x" }),
     ];
     const a = render(input, RENDER);
@@ -232,7 +232,7 @@ describe("renderer-from-claims — R3 terminal routing (Inv 6; §I distinct term
   // terminal routes to the escalate/handoff copy → this test goes RED.
   it("terminal UNKNOWN renders SAFE_TEMPLATES.unknown (self-report), NOT the handoff (a)", () => {
     const out = render(
-      [claim(ORDER_FULFILLMENT_STAGE, "VALIDATED", { stage: "entregue" })],
+      [claim(ORDER_FULFILLMENT_STAGE, "VALIDATED", { fulfillmentStatus: "entregue" })],
       UNKNOWN,
     );
     expect(out.terminal).toBe("UNKNOWN");
@@ -261,7 +261,7 @@ describe("renderer-from-claims — R3 terminal routing (Inv 6; §I distinct term
   // (c) CLARIFY is unchanged — still the self-report (no distinct clarify copy).
   it("terminal CLARIFY renders SAFE_TEMPLATES.unknown (self-report, unchanged) (c)", () => {
     const out = render(
-      [claim(ORDER_FULFILLMENT_STAGE, "VALIDATED", { stage: "em preparo" })],
+      [claim(ORDER_FULFILLMENT_STAGE, "VALIDATED", { fulfillmentStatus: "em preparo" })],
       CLARIFY,
     );
     expect(out.terminal).toBe("CLARIFY");
@@ -281,7 +281,7 @@ describe("renderer-from-claims — R3 terminal routing (Inv 6; §I distinct term
     for (const terminal of [UNKNOWN, ESCALATE] as const) {
       const out = render(
         [
-          claim(ORDER_FULFILLMENT_STAGE, "VALIDATED", { stage: "entregue" }),
+          claim(ORDER_FULFILLMENT_STAGE, "VALIDATED", { fulfillmentStatus: "entregue" }),
           claim(PAYMENT_STATUS, "VALIDATED", { status: "aprovado" }),
           claim(ORDER_ESTIMATED_ARRIVAL, "VALIDATED", { etaMinutes: 45 }),
         ],
@@ -296,5 +296,81 @@ describe("renderer-from-claims — R3 terminal routing (Inv 6; §I distinct term
       expect(out.text).not.toContain("etapa");
       expect(out.text).not.toContain("pagamento é");
     }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// F1 — ORDER_FULFILLMENT_STAGE renderer field alignment (slot reads
+// `fulfillmentStatus`, the C6 value-binding field). A VALIDATED ORDER claim now
+// RENDERS instead of abstaining to UNKNOWN.
+//
+// F3 — PRESENTATION-ONLY pt-BR enum localization. The DISPLAYED string is
+// localized at the render seam; the claim's BOUND value stays the RAW LEDGER ENUM
+// so C6 keeps binding. Unmapped enum → SAFE fallback (raw). These are NON-VACUOUS:
+// reverting F1 turns the first RED (UNFILLABLE); reverting F3 turns the localized
+// assertions RED (raw English would surface).
+// ─────────────────────────────────────────────────────────────────────────────
+describe("renderer-from-claims — F1 ORDER field bind + F3 pt-BR enum localization", () => {
+  // F1: a VALIDATED ORDER claim carrying the ACTUAL ledger field `fulfillmentStatus`
+  // (raw enum) renders — and F3 localizes the displayed enum to pt-BR.
+  it("F1: a VALIDATED ORDER_FULFILLMENT_STAGE claim renders its stage (was UNFILLABLE)", () => {
+    const out = render(
+      [claim(ORDER_FULFILLMENT_STAGE, "VALIDATED", { fulfillmentStatus: "preparing" })],
+      RENDER,
+    );
+    expect(out.lines[0]?.kind).toBe("ASSERTION");
+    // F1 + F3: the raw ledger enum `preparing` renders, localized to pt-BR.
+    expect(out.text).toBe("Seu pedido está na etapa: em preparo.");
+  });
+
+  // F3 + C6: PAYMENT_STATUS `paid` DISPLAYS as `pago` while the claim's BOUND value
+  // stays the raw ledger enum `paid` (the renderer never mutates the claim).
+  it("F3: PAYMENT_STATUS paid → 'pago' in the text WHILE claim.value stays 'paid' (C6 binds)", () => {
+    const input = claim(PAYMENT_STATUS, "VALIDATED", { status: "paid" });
+    const out = render([input], RENDER);
+    // Displayed string is localized…
+    expect(out.text).toBe("O status do seu pagamento é: pago.");
+    // …but the BOUND value is UNCHANGED — still the raw ledger enum (C6 value-
+    // binding compares THIS, so it must stay `paid`, never `pago`).
+    expect((input.value as { status: string }).status).toBe("paid");
+    expect(out.text).not.toContain("paid");
+  });
+
+  it("F3: STORE_OPEN_NOW closed → 'fechado' and lunch/dinner → 'almoço'/'jantar'", () => {
+    expect(
+      render([claim("STORE_OPEN_NOW", "VALIDATED", { mealPeriod: "closed" })], RENDER).text,
+    ).toBe("No momento, o período de funcionamento é: fechado.");
+    expect(
+      render([claim("STORE_OPEN_NOW", "VALIDATED", { mealPeriod: "lunch" })], RENDER).text,
+    ).toBe("No momento, o período de funcionamento é: almoço.");
+    expect(
+      render([claim("STORE_OPEN_NOW", "VALIDATED", { mealPeriod: "dinner" })], RENDER).text,
+    ).toBe("No momento, o período de funcionamento é: jantar.");
+  });
+
+  it("F3: ORDER fulfillment delivered → 'entregue', ready → 'pronto'", () => {
+    expect(
+      render([claim(ORDER_FULFILLMENT_STAGE, "VALIDATED", { fulfillmentStatus: "delivered" })], RENDER).text,
+    ).toBe("Seu pedido está na etapa: entregue.");
+    expect(
+      render([claim(ORDER_FULFILLMENT_STAGE, "VALIDATED", { fulfillmentStatus: "ready" })], RENDER).text,
+    ).toBe("Seu pedido está na etapa: pronto.");
+  });
+
+  it("F3: an UNMAPPED enum member degrades SAFE to the raw value (never crash, never blank)", () => {
+    const out = render(
+      [claim(PAYMENT_STATUS, "VALIDATED", { status: "chargeback_pending" })],
+      RENDER,
+    );
+    // Unmapped → SAFE fallback to the raw value (the claim still renders, not UNKNOWN).
+    expect(out.lines[0]?.kind).toBe("ASSERTION");
+    expect(out.text).toBe("O status do seu pagamento é: chargeback_pending.");
+  });
+
+  it("F3 is DISPLAY-only: localization never mutates the input claim value (C6 preserved)", () => {
+    const input = claim(ORDER_FULFILLMENT_STAGE, "VALIDATED", { fulfillmentStatus: "preparing" });
+    render([input], RENDER);
+    // The bound value the kernel's C6 compares is untouched after rendering.
+    expect((input.value as { fulfillmentStatus: string }).fulfillmentStatus).toBe("preparing");
   });
 });

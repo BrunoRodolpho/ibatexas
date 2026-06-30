@@ -47,10 +47,14 @@ const kernelResult = (
 describe("claims-renderer-adapter — E-2 bridge to ClaimsRendererPort", () => {
   it("renders a VALIDATED claim's LEDGER-bound field value (C6) into its template", () => {
     const renderer = createIbatexasClaimsRenderer();
-    // The kernel's C6 guaranteed `value.stage` equals the licensing ledger entry;
-    // the adapter renders exactly that bound field — no model-authored surplus.
+    // The kernel's C6 guaranteed `value.fulfillmentStatus` equals the licensing
+    // ledger entry (the raw enum); the adapter renders exactly that bound field
+    // (F1), localized to pt-BR for display (F3) — no model-authored surplus.
     const out = renderer.render(
-      kernelResult([claim(ORDER_FULFILLMENT_STAGE, "VALIDATED", { stage: "em preparo" })], "RENDER"),
+      kernelResult(
+        [claim(ORDER_FULFILLMENT_STAGE, "VALIDATED", { fulfillmentStatus: "preparing" })],
+        "RENDER",
+      ),
     );
     expect(out.text).toBe("Seu pedido está na etapa: em preparo.");
   });
@@ -72,7 +76,7 @@ describe("claims-renderer-adapter — E-2 bridge to ClaimsRendererPort", () => {
   it("is deterministic — same input ⟹ byte-identical text", () => {
     const renderer = createIbatexasClaimsRenderer();
     const input = kernelResult(
-      [claim(ORDER_FULFILLMENT_STAGE, "VALIDATED", { stage: "saiu para entrega" })],
+      [claim(ORDER_FULFILLMENT_STAGE, "VALIDATED", { fulfillmentStatus: "out_for_delivery" })],
       "RENDER",
     );
     expect(renderer.render(input).text).toBe(renderer.render(input).text);

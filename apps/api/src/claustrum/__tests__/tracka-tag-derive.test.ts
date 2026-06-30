@@ -134,10 +134,14 @@ describe("Track A 4B — tag→derive→VALIDATED for STORE_OPEN_NOW", () => {
     expect(result.terminal).toBe("RENDER");
     expect(result.renderable).toHaveLength(1);
     // The derived value equals the ledger entry's bound field (not a model value).
+    // C6 binds against THIS raw ledger enum — it stays `dinner` (F3 is display-only).
     expect(result.renderable[0]?.value).toEqual({ mealPeriod: "dinner" });
 
     const out = render(result.renderable, result.terminal);
-    expect(out.text).toContain("dinner");
+    // F3 — the DISPLAYED enum is localized to pt-BR (Hard Rule #4); the raw English
+    // enum never reaches the customer, while the bound value above stays `dinner`.
+    expect(out.text).toContain("jantar");
+    expect(out.text).not.toContain("dinner");
   });
 });
 

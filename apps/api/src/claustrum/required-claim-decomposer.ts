@@ -99,16 +99,42 @@ for (const types of Object.values(REQUIRED_CLAIM_CLOSURE)) {
  *   - PICKUP_Q         — "retir(ar/ada)" / "buscar" / "pegar" (a pickup question
  *     requires BOTH the store-open + order-stage companions — §O#15 worked case).
  *   - STORE_OPEN_NOW_Q — "abert" / "fechad" / "que horas" / "funciona" / "horário".
- *   - ORDER_STATUS_Q   — "pedido" / "cadê" / "status".
- *   - PAYMENT_STATUS_Q — "pagamento" / "paguei" / "pix" / "aprovad" / "pago".
+ *   - PAYMENT_STATUS_Q — payment-bearing phrasing: "pagamento" / "pago" / "pix" /
+ *     "cobrança" / "pagar" / "paguei" / "aprovad".
+ *   - ORDER_STATUS_Q   — order/delivery phrasing: "pedido" / "entrega" / "preparo" /
+ *     "saiu" / "chegou" / "cadê".
+ *
+ * F2 — the polysemous bare word "status". It used to map UNCONDITIONALLY to
+ * ORDER_STATUS_Q, so "qual o status do meu pagamento?" MISROUTED to ORDER (the
+ * order companion would resolve from the WRONG resource / or drop the payment
+ * companion). The fix routes "status" by its DISCRIMINATOR: payment phrasing →
+ * PAYMENT_STATUS_Q; order/delivery phrasing → ORDER_STATUS_Q; a BARE "status"
+ * with NEITHER discriminator → over-include BOTH companions (conservative-over-
+ * decomposing — the decomposer is a TCB member, so over-include is safe and
+ * under-include is not; neither required companion is ever silently dropped).
  */
 export function classifyRequestSpans(text: string): SpanClass[] {
   const t = text.toLowerCase();
   const classes: SpanClass[] = [];
+
   if (/retir|buscar|pegar/.test(t)) classes.push("PICKUP_Q");
   if (/abert|fechad|que horas|funciona|hor[áa]rio/.test(t)) classes.push("STORE_OPEN_NOW_Q");
-  if (/pedido|cad[êe]|status/.test(t)) classes.push("ORDER_STATUS_Q");
-  if (/pagamento|paguei|pix|aprovad|pago/.test(t)) classes.push("PAYMENT_STATUS_Q");
+
+  // Precise discriminators that DISAMBIGUATE the polysemous "status".
+  const paymentPhrasing = /pagamento|pago|pix|cobran[çc]a|pagar|paguei|aprovad/.test(t);
+  const orderPhrasing = /pedido|entrega|preparo|sa[ií]u|chegou|cad[êe]/.test(t);
+
+  if (orderPhrasing) classes.push("ORDER_STATUS_Q");
+  if (paymentPhrasing) classes.push("PAYMENT_STATUS_Q");
+
+  // Bare "status" with NO payment/order discriminator → over-include BOTH (never
+  // silently drop either companion). If a discriminator is present, the precise
+  // branch above already routed it; we add nothing here to avoid the old misroute.
+  if (/status/.test(t) && !paymentPhrasing && !orderPhrasing) {
+    if (!classes.includes("ORDER_STATUS_Q")) classes.push("ORDER_STATUS_Q");
+    if (!classes.includes("PAYMENT_STATUS_Q")) classes.push("PAYMENT_STATUS_Q");
+  }
+
   return classes;
 }
 

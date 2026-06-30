@@ -47,6 +47,7 @@ import type {
   SuppressionRecord,
   TurnTerminal,
 } from "@adjudicate/core";
+import { localizeClaimEnum } from "./claims-labels.js";
 import {
   isPropositionFree,
   SAFE_TEMPLATES,
@@ -107,7 +108,16 @@ function fillProposition(
   const text = String(fieldValue);
   // Empty/blank ⟹ absence (registry §5), not a blank proposition.
   if (text.trim() === "") return null;
-  return text;
+  // F3 — PRESENTATION-ONLY pt-BR localization (Hard Rule #4). C6 has ALREADY
+  // validated the BOUND value against the ledger upstream (the kernel's
+  // valueBindingVerdict); the claim's `value` here is the raw ledger enum and is
+  // NOT mutated — we localize ONLY the displayed string we emit. This is keyed by
+  // the slot's exact `(claimType, field)` binding, so the same enum string can
+  // localize differently per slot. An unmapped enum/member degrades SAFE to the
+  // raw value (never crash, never fabricate). Because we localize the DISPLAY and
+  // leave the bound value untouched, C6 keeps matching the ledger entry (the value
+  // binding never sees this string).
+  return localizeClaimEnum(slot.claimType, slot.field, text);
 }
 
 /**
