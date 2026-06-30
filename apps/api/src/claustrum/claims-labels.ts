@@ -26,44 +26,58 @@
  * never participates in C6 value-binding (which compares the raw bound value).
  *
  * SCOPE (SDD §Q scope guard): the Trustworthiness-Triad slice (PAYMENT_STATUS,
- * STORE_OPEN_NOW, ORDER_FULFILLMENT_STAGE). Extra ledger enum members are mapped
- * defensively so a status the ledger can emit never reaches the customer in raw
- * English; any still-unmapped member degrades SAFE to the raw value.
+ * STORE_OPEN_NOW, ORDER_FULFILLMENT_STAGE). The map is EXHAUSTIVE over each read's
+ * REAL enum domain — the exact members the INVESTIGATE-stage reads can emit:
+ *   - PAYMENT_STATUS.status              → every `PaymentStatus` member
+ *                                          (@ibatexas/types · packages/domain/prisma)
+ *   - ORDER_FULFILLMENT_STAGE.fulfillmentStatus
+ *                                        → every `OrderFulfillmentStatus` member
+ *   - STORE_OPEN_NOW.mealPeriod          → every `ScheduleSignal["mealPeriod"]`
+ *                                          member ("lunch" | "dinner" | "closed")
+ * so NO status the read can produce ever reaches the customer in raw English. The
+ * exhaustiveness is pinned by the coverage test (claims-labels.test.ts), which
+ * iterates the authoritative enum sources and FAILS on any unmapped member. The
+ * safe fallback below still degrades a genuinely-unknown value to the raw string
+ * (never crash, never block a render) — it is a backstop, not a substitute for the
+ * map being complete.
  */
 export const CLAIM_ENUM_DISPLAY_PT_BR: Readonly<
   Record<string, Readonly<Record<string, string>>>
 > = {
-  // PAYMENT_STATUS.status — the PIX/payment lifecycle enum (raw ledger values).
+  // PAYMENT_STATUS.status — the full Payment lifecycle enum (raw ledger values,
+  // i.e. the Prisma `PaymentStatus` member name; `canceled`, not the @map column
+  // value `pay_canceled`). EXHAUSTIVE over PaymentStatus (12 members).
   "PAYMENT_STATUS.status": {
+    awaiting_payment: "aguardando pagamento",
+    payment_pending: "pagamento pendente",
+    payment_expired: "pagamento expirado",
+    payment_failed: "pagamento falhou",
+    cash_pending: "pagamento em dinheiro pendente",
     paid: "pago",
-    pending: "pendente",
-    failed: "falhou",
+    switching_method: "trocando forma de pagamento",
+    partially_refunded: "parcialmente reembolsado",
     refunded: "reembolsado",
-    processing: "em processamento",
+    disputed: "em disputa",
     canceled: "cancelado",
-    cancelled: "cancelado",
-    expired: "expirado",
-    authorized: "autorizado",
-    awaiting: "aguardando",
+    waived: "isento",
   },
-  // STORE_OPEN_NOW.mealPeriod — the override-aware meal-period / open-state enum.
+  // STORE_OPEN_NOW.mealPeriod — the deterministic meal-period / open-state signal.
+  // EXHAUSTIVE over ScheduleSignal["mealPeriod"] ("lunch" | "dinner" | "closed").
   "STORE_OPEN_NOW.mealPeriod": {
     lunch: "almoço",
     dinner: "jantar",
-    breakfast: "café da manhã",
     closed: "fechado",
-    open: "aberto",
   },
-  // ORDER_FULFILLMENT_STAGE.fulfillmentStatus — the order fulfillment-stage enum.
+  // ORDER_FULFILLMENT_STAGE.fulfillmentStatus — the order fulfillment-stage enum
+  // (Prisma `OrderFulfillmentStatus` member name). EXHAUSTIVE over the 7 members.
   "ORDER_FULFILLMENT_STAGE.fulfillmentStatus": {
+    pending: "pendente",
+    confirmed: "confirmado",
     preparing: "em preparo",
     ready: "pronto",
+    in_delivery: "saiu para entrega",
     delivered: "entregue",
-    out_for_delivery: "saiu para entrega",
-    pending: "pendente",
-    fulfilled: "concluído",
     canceled: "cancelado",
-    cancelled: "cancelado",
   },
 };
 
