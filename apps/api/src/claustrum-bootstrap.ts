@@ -2145,7 +2145,13 @@ export async function bootstrapClaustrum(
   // (activation is a later PR). No `clock` is passed (not in the published
   // ConductorOptions; the per-turn clock is PENDING R2a).
   const planner = buildPlanner(modelProvider);
-  const claimsSeams = buildClaimsSeams({ planner });
+  // F2 observability (RCA 2026-06-29): when the claims pipeline is ENABLED but the
+  // LINKED kernels are below the egress-brand floor, log a loud warning so the
+  // kernel-version drop point (silent store-open → UNKNOWN) is visible at boot.
+  const claimsSeams = buildClaimsSeams({
+    planner,
+    warn: (message) => logger.warn(message),
+  });
   _conductor = createConductor({
     adjudicator,
     memory,

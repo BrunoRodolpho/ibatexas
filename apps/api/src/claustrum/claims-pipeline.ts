@@ -19,6 +19,11 @@
 
 import type { ConductorOptions } from "@claustrum/core";
 import { createIbatexasClaimsRenderer } from "./claims-renderer-adapter.js";
+import {
+  claimsKernelFloorWarnings,
+  resolveKernelVersions,
+  type ResolvedKernelVersions,
+} from "./claims-kernel-floor.js";
 import { createIbatexasClaimPlanner } from "./ibatexas-claim-planner.js";
 import { createPerTurnClaimsKernelDeps } from "./ibatexas-claims-kernel-deps.js";
 import { createIbatexasInvestigator } from "./ibatexas-investigator.js";
@@ -57,6 +62,36 @@ export interface BuildClaimsSeamsDeps {
   readonly planner: ClaimAwarePlannerPort;
   /** Env override (testing). Defaults to `process.env`. */
   readonly env?: NodeJS.ProcessEnv;
+  /**
+   * Sink for the boot-time kernel-floor warning (F2 observability — RCA
+   * 2026-06-29). Called ONCE per below-floor kernel when the pipeline is ENABLED,
+   * so a kernel-version mismatch (the silent store-open → UNKNOWN drop point) is
+   * operator-VISIBLE at boot instead of mysterious. Defaults to `console.warn`;
+   * the composition root injects the structured logger. Best-effort — a throwing
+   * sink would surface at boot, so keep it non-throwing.
+   */
+  readonly warn?: (message: string) => void;
+  /**
+   * Resolve the linked kernel versions (testing seam). Defaults to the
+   * best-effort runtime resolver; tests inject a fixed map.
+   */
+  readonly resolveKernelVersions?: () => ResolvedKernelVersions;
+}
+
+/**
+ * Emit the kernel-floor warnings for an ENABLED pipeline. PURE wrt the seam
+ * build (telemetry side-channel) — extracted so it is unit-testable and so a
+ * resolution failure never blocks seam assembly. Exported for the boot path +
+ * tests.
+ */
+export function warnOnBelowFloorKernel(deps: BuildClaimsSeamsDeps): void {
+  const warn = deps.warn ?? ((m: string) => console.warn(m));
+  try {
+    const resolved = (deps.resolveKernelVersions ?? resolveKernelVersions)();
+    for (const message of claimsKernelFloorWarnings(resolved)) warn(message);
+  } catch {
+    // Observability must never break boot.
+  }
 }
 
 /**
@@ -70,6 +105,10 @@ export function buildClaimsSeams(deps: BuildClaimsSeamsDeps): ClaimsSeams {
     // OFF (default): no seams — byte-identical to today.
     return {};
   }
+  // F2 observability (RCA 2026-06-29): the pipeline is ENABLED — surface a loud
+  // warning if the LINKED kernels are below the egress-brand floor, so the
+  // kernel-version drop point (silent store-open → UNKNOWN) is visible at boot.
+  warnOnBelowFloorKernel(deps);
   return {
     investigator: createIbatexasInvestigator(),
     claimPlanner: createIbatexasClaimPlanner(deps.planner),

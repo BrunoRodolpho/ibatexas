@@ -613,6 +613,9 @@ export function createIbatexasPlanner(
       // única função é express_intent" SUPPRESSES the propose_claim call on a 4B
       // (verified live on nemotron-3-nano:4b). `deps.system` still overrides (tests).
       const system = deps.system ?? CLAIM_PLANNER_PERSONA;
+      // F2 observability: time the claim-planner completion so its LLMTrace
+      // (emitted below) carries a real duration, like the intent `propose` path.
+      const claimStartedAt = Date.now();
       const completion = await deps.model.complete({
         model: deps.modelId,
         system,
@@ -681,6 +684,42 @@ export function createIbatexasPlanner(
       const safetyTerminal = routeSafety(safety);
       const forcedTerminal: Extract<TurnTerminal, "ESCALATE" | "CLARIFY"> | undefined =
         safetyTerminal ?? (hasUnmappedSpan(completeness) ? "CLARIFY" : undefined);
+
+      // F2 observability (claim-planner visibility): the Q6b `proposeClaims`
+      // model call was previously INVISIBLE in `turn_trace` (only the intent
+      // `propose` and the responder emitted an LLMTrace) — so the in-pipeline
+      // 4B tag and the first-party-derived candidate value could not be seen.
+      // Emit a bounded LLMTrace here so the claim-planner call lands as its own
+      // `turn_trace` row, carrying BOTH the raw model tag (toolCalls) AND the
+      // derived candidate {type,value} pairs. Best-effort, NON-throwing (the
+      // `emitModelCallTrace` sink swallows all errors — telemetry never breaks a
+      // turn). Uses a synthetic persona manifest tag (this path uses the static
+      // CLAIM_PLANNER_PERSONA, not the PromptComposer fragment graph).
+      if (deps.telemetry !== undefined) {
+        await emitModelCallTrace({
+          telemetry: deps.telemetry,
+          registry: deps.promptComposer?.registry,
+          turnId: state.turnId,
+          model: deps.modelId,
+          fragmentManifest: ["ibatexas/claim-planner.persona"],
+          completionText: JSON.stringify({
+            stage: "claims-validate/proposeClaims",
+            modelText: completion.text,
+            toolCalls: completion.toolCalls ?? [],
+            derivedCandidates: derivedCandidates.map((c) => ({
+              type: c.type,
+              subject: c.subject,
+              value: c.value,
+            })),
+            droppedClaimTypes: dropped,
+            ...(forcedTerminal === undefined ? {} : { forcedTerminal }),
+          }),
+          inputTokens: completion.inputTokens,
+          outputTokens: completion.outputTokens,
+          durationMs: Date.now() - claimStartedAt,
+          at: new Date().toISOString(),
+        });
+      }
 
       return {
         candidates: derivedCandidates,
