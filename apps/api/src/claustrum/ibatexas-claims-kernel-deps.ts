@@ -46,6 +46,7 @@ import {
   type MinimalClaim,
   type SoundnessDeps,
 } from "@adjudicate/core";
+import type { ClaimsKernelDepsForTurn } from "@claustrum/core";
 
 export interface IbatexasClaimsKernelDepsConfig {
   /**
@@ -229,3 +230,61 @@ export function createPerTurnClaimsKernelDeps(
     },
   };
 }
+
+// ── W5b PER-TURN OWNS builder (fix 2 — the Conductor `claimsKernelDepsForTurn`) ──
+
+/**
+ * The OWNER-SCOPED per-resource ledger key prefixes the investigator writes
+ * (ibatexas-investigator.ts): `order_fulfillment_stage:{id}` / `payment_status:{id}`
+ * / `reservation_status:{id}`. The resource id is the SUFFIX after the prefix.
+ * These are the ONLY keys whose presence attributes ownership; public keys
+ * (`schedule:*`) are NOT owner resources and are excluded.
+ */
+const OWNER_SCOPED_KEY_PREFIXES = [
+  "order_fulfillment_stage:",
+  "payment_status:",
+  "reservation_status:",
+] as const;
+
+/**
+ * Build the per-turn `ClaimsKernelDeps` (the Conductor `claimsKernelDepsForTurn`
+ * seam) by rebuilding the REAL `owns` predicate from THIS turn's threaded Evidence
+ * Ledger + the AUTHENTICATED `customerId` (fix 2 / Inv 2; SDD §E C1). PURE — the
+ * kernel requires it.
+ *
+ * The owned-resource set is derived ONLY from owner-scoped ledger entries that
+ * resolved PRESENT this turn: a forged / cross-owner read throws
+ * `OwnerScopedReadUnavailable` in the investigator → `recordError` → state `error`
+ * (NOT present) → its resource is NEVER added to the owned set → `owns → false` →
+ * REFUSED ("no owner" ≠ "any owner"). The principal is the conductor's
+ * authenticated `customerId` — NEVER the envelope's self-reported actor or a
+ * session/model id. `outcomeConfirmed` / `now` are inherited from `base` (the
+ * deps already carry the per-turn floored `now`; `outcomeConfirmed` stays
+ * fail-closed — read_claims do not trigger C4).
+ */
+export const buildPerTurnOwnsFromLedger: ClaimsKernelDepsForTurn = ({
+  ledger,
+  customerId,
+  base,
+}): ClaimsKernelDeps => {
+  const ownedResources = new Set<string>();
+  for (const key of ledger.keys()) {
+    const prefix = OWNER_SCOPED_KEY_PREFIXES.find((p) => key.startsWith(p));
+    if (prefix === undefined) continue;
+    // PRESENT-ONLY: an errored/absent owner-scoped read (cross-owner / unavailable)
+    // never attributes ownership (the IDOR close).
+    if (ledger.resolve(key).state !== "present") continue;
+    const resourceId = key.slice(prefix.length);
+    if (resourceId.length > 0) ownedResources.add(resourceId);
+  }
+  return {
+    ...base,
+    soundness: {
+      ...base.soundness,
+      // De-vacuumed: owns is true ONLY for a resource present in THIS turn's
+      // owner-scoped read set, and (defense-in-depth in buildOwns) only when the
+      // claim actor matches the authenticated principal.
+      owns: buildOwns({ principal: customerId, ownedResources }),
+    },
+  };
+};

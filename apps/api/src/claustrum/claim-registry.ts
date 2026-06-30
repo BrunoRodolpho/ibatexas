@@ -104,6 +104,32 @@ export function isRegistryClaimType(value: unknown): value is RegistryClaimType 
 }
 
 /**
+ * CASING-ROBUST canonicalization (fix 3 — RCA 2026-06-29). The local 4B model
+ * emits a correctly-CLASSIFIED registry type with NON-CANONICAL casing
+ * (`ORDER_fulfillment_stage`, `PAYMENT_status`); the registry members are all
+ * UPPER_SNAKE, so a raw exact-case membership check ({@link isRegistryClaimType})
+ * DROPPED such a candidate → with the order/stage claim gone the candidate set
+ * went empty → the turn fell back to the lie-capable PROSE responder, which
+ * FABRICATED. This normalizes case (`raw.toUpperCase()` — registry members are
+ * UPPER_SNAKE) BEFORE the membership test, RESCUING a correctly-classified tag
+ * from being wrongly dropped into the prose path.
+ *
+ * Returns the CANONICAL `RegistryClaimType` when `raw` maps to a known type
+ * (case-insensitively), else `undefined`. A tag that does NOT match even after
+ * canonicalization still returns `undefined` → it is DROPPED by the constrained-
+ * generation wall (never free-generated) and the planner's P4/safety routing
+ * yields a proposition-free safe terminal (UNKNOWN/CLARIFY/ESCALATE) — NEVER
+ * fabricating prose. Pure; no allocation beyond the upper-case string.
+ */
+export function canonicalizeRegistryType(
+  raw: unknown,
+): RegistryClaimType | undefined {
+  if (typeof raw !== "string") return undefined;
+  const upper = raw.toUpperCase();
+  return REGISTRY_SET.has(upper) ? (upper as RegistryClaimType) : undefined;
+}
+
+/**
  * The per-registry-type evidence + claim SCHEMA the planner parameterizes into a
  * `CandidateClaim.soundness` (`MinimalClaim`). Transcribed from the SDD §E
  * worked types (the §5 conjuncts each field feeds): ownership, freshness,
@@ -275,12 +301,17 @@ const REGISTRY_SPECS = {
         provenancePolicy: "preserve",
       },
     ],
-    // C6 — bind the rendered stage to the read's `stage` field (ledger-sourced).
-    // (The read shape's field is `fulfillmentStatus`; reconciling the value PATH is
-    // part of the Wall-2 republish — irrelevant publish-free since these stay
-    // UNKNOWN. The KEY is what STEP 3 aligns; `valueBinding.key` stays a member of
-    // requiredEvidence so the kernel's C6 structural guard never throws.)
-    valueBinding: { key: "order_fulfillment_stage", path: ["stage"] },
+    // C6 — bind the rendered stage to the read's ACTUAL field (ledger-sourced).
+    // Wall-2 reconcile (fix 4a): the OrderFulfillmentRead shape field is
+    // `fulfillmentStatus` (turn-reads.ts), NOT `stage` — the old `["stage"]` path
+    // projected `undefined` on both sides → C6 ABSTAIN → the claim demoted UNKNOWN
+    // even for the legit owner. The path now matches the read field so C6 compares
+    // a real scalar (claustrum claims-validate.ts binds the candidate value to the
+    // SAME ledger entry → claimSide === evidenceSide → C6 PASSes by construction,
+    // without skipping any conjunct). `valueBinding.key` stays a member of
+    // requiredEvidence (suffixed `:{subject}` in lockstep) so the kernel's C6
+    // structural guard never throws.
+    valueBinding: { key: "order_fulfillment_stage", path: ["fulfillmentStatus"] },
   },
   PAYMENT_STATUS: {
     kind: "read_claim",
@@ -374,16 +405,21 @@ export interface ProposedClaim {
 export function selectCandidateClaim(
   proposed: ProposedClaim,
 ): CandidateClaim | undefined {
-  if (!isRegistryClaimType(proposed.type)) {
-    // Defense in depth: a type outside the closed registry is NOT emitted as a
-    // candidate. This is the constrained-generation guard (SDD §H/§P3) — drop,
-    // never free-generate.
+  // fix 3 — CASING-ROBUST membership: canonicalize the (possibly miscased) model
+  // tag to its UPPER_SNAKE registry form BEFORE the membership test, so a
+  // correctly-classified-but-miscased type (`ORDER_fulfillment_stage`) is RESCUED
+  // rather than dropped into the lie-capable prose path. A tag that does not map
+  // even after canonicalization → `undefined` → DROPPED by the constrained-
+  // generation wall (degrade SAFE; the planner routes UNKNOWN/CLARIFY/ESCALATE).
+  const canonicalType = canonicalizeRegistryType(proposed.type);
+  if (canonicalType === undefined) {
     return undefined;
   }
   // Widen the `as const` literal member to the interface so the OPTIONAL W6
   // fields (falsifierComplete / falsifiers / valueBinding) are readable on every
   // member (a member that omits them is `undefined`, not a missing property).
-  const baseSpec: RegistryClaimSpec = REGISTRY_SPECS[proposed.type];
+  // Keyed by the CANONICAL type so a miscased tag selects the right spec.
+  const baseSpec: RegistryClaimSpec = REGISTRY_SPECS[canonicalType];
   // STEP 3 key-alignment: an owner-scoped, per-resource type (perResourceKey) has
   // its evidence/falsifier/value-binding keys parameterized by the candidate
   // `subject` so they match the investigator's `${base}:{id}` ledger keys. A
@@ -393,15 +429,34 @@ export function selectCandidateClaim(
     baseSpec.perResourceKey === true
       ? parameterizeKeysBySubject(baseSpec, proposed.subject)
       : baseSpec;
+  // fix 2 (owner-attribution C1 binding): the model authors ONLY `type` + `subject`
+  // (the propose_claim tool exposes no `resources`), so an owner-scoped per-resource
+  // claim would reach the kernel with NO C1 binding → `claim.resources?.[key]`
+  // undefined → ownership REFUSED even for the legit owner. DERIVE the binding from
+  // `subject` (the resource id), keyed by EACH suffixed requiredEvidence key so the
+  // kernel's `evaluateEvidence` ownership check finds it. IDOR stays closed: the
+  // per-turn `owns` (claims-pipeline.ts) gates `subject` against the owner-scoped
+  // reads that actually returned PRESENT this turn — a forged/cross-owner subject
+  // is never read → not owned → REFUSED ("no owner" ≠ "any owner", Inv 2). An
+  // explicitly-supplied `resources` (tests / non-per-resource types) is honored
+  // verbatim; a non-per-resource type with no resources stays unbound.
+  const resources: Readonly<Record<string, unknown>> | undefined =
+    proposed.resources !== undefined
+      ? proposed.resources
+      : baseSpec.perResourceKey === true
+        ? Object.fromEntries(
+            spec.requiredEvidence
+              .filter((e) => e.ownershipPolicy === "required")
+              .map((e) => [e.key, proposed.subject]),
+          )
+        : undefined;
   return {
     soundness: {
       requiredEvidence: spec.requiredEvidence,
       minSourceIntegrity: spec.minSourceIntegrity,
       kind: spec.kind,
       actor: proposed.actor,
-      ...(proposed.resources === undefined
-        ? {}
-        : { resources: proposed.resources }),
+      ...(resources === undefined ? {} : { resources }),
       // W6 falsifier-completeness (Plan 1 Phase 3) — threaded from the type's
       // FIXED spec, NEVER model-authored: the eligibility cap + the runtime arm
       // (resolveAgainstFalsifiers) live in the kernel. A type with no declared
@@ -418,7 +473,9 @@ export function selectCandidateClaim(
     // Customer-scoped types partition by their owner-bound subject; the subject
     // is the Q4 same-subject consistency key (SDD §D).
     subject: proposed.subject,
-    type: proposed.type,
+    // The CANONICAL type so ALL downstream keying/rendering uses the UPPER_SNAKE
+    // form (never the raw miscased tag) — fix 3.
+    type: canonicalType,
     value: proposed.value,
   };
 }
@@ -608,11 +665,15 @@ export function checkCompleteness(
       // SDD §J.8 — an unmapped span is surfaced as CLARIFY, never dropped.
       return { text: span.text, disposition: "CLARIFY" };
     }
-    if (!isRegistryClaimType(span.mappedClaimType)) {
-      // Defense in depth: a mapped-but-out-of-enum type is not silently honored.
+    // fix 3 — canonicalize a correctly-mapped-but-miscased span so it is not
+    // needlessly forced to CLARIFY (mirrors selectCandidateClaim). A span that
+    // does not map even after canonicalization still → CLARIFY (defense in depth:
+    // a hallucinated/out-of-enum mapped type is not silently honored as a claim).
+    const canonical = canonicalizeRegistryType(span.mappedClaimType);
+    if (canonical === undefined) {
       return { text: span.text, disposition: "CLARIFY" };
     }
-    return { text: span.text, disposition: span.mappedClaimType };
+    return { text: span.text, disposition: canonical };
   });
 }
 

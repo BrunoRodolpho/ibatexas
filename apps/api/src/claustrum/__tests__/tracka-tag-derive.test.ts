@@ -30,7 +30,6 @@ import {
   EvidenceLedger,
   runClaimsKernel,
   type CandidateClaim,
-  type TurnTerminal,
 } from "@adjudicate/core";
 import type { CognitiveState, Completion, ModelProvider } from "@claustrum/core";
 import {
@@ -83,7 +82,6 @@ function claimCall(input: unknown): NonNullable<Completion["toolCalls"]>[number]
   return { id: "tc-1", name: PROPOSE_CLAIM_TOOL, input };
 }
 
-const RENDER: TurnTerminal = "RENDER";
 const NOW = 10_000;
 
 /** A first-party schedule signal — the bound `mealPeriod` is the ledger scalar. */

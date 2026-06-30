@@ -17,7 +17,10 @@
 // No `clock` is wired (the published `ConductorOptions` has no `clock` field; the
 // per-turn clock is PENDING R2a — see ibatexas-claims-kernel-deps.ts).
 
-import type { ConductorOptions } from "@claustrum/core";
+import type {
+  ClaimsKernelDepsForTurn,
+  ConductorOptions,
+} from "@claustrum/core";
 import { createIbatexasClaimsRenderer } from "./claims-renderer-adapter.js";
 import {
   claimsKernelFloorWarnings,
@@ -25,7 +28,10 @@ import {
   type ResolvedKernelVersions,
 } from "./claims-kernel-floor.js";
 import { createIbatexasClaimPlanner } from "./ibatexas-claim-planner.js";
-import { createPerTurnClaimsKernelDeps } from "./ibatexas-claims-kernel-deps.js";
+import {
+  buildPerTurnOwnsFromLedger,
+  createPerTurnClaimsKernelDeps,
+} from "./ibatexas-claims-kernel-deps.js";
 import { createIbatexasInvestigator } from "./ibatexas-investigator.js";
 import type { ClaimAwarePlannerPort } from "./ibatexas-planner.js";
 
@@ -50,7 +56,11 @@ export function claimsPipelineEnabled(
  */
 export type ClaimsSeams = Pick<
   ConductorOptions,
-  "investigator" | "claimPlanner" | "claimsKernel" | "claimsRenderer"
+  | "investigator"
+  | "claimPlanner"
+  | "claimsKernel"
+  | "claimsKernelDepsForTurn"
+  | "claimsRenderer"
 >;
 
 export interface BuildClaimsSeamsDeps {
@@ -118,21 +128,29 @@ export function buildClaimsSeams(deps: BuildClaimsSeamsDeps): ClaimsSeams {
     // (conductor.ts rebuilds `claimsKernel.soundness.now` on every openCapsule),
     // so the boot value here is immediately superseded.
     //
-    // FAIL-CLOSED BOOT FACTS (intentional): `ownership.ownedResources` is EMPTY
-    // and `outcomes` is empty at boot, so `owns → false` / `outcomeConfirmed →
-    // false` until the per-turn facts are threaded. The genuine per-turn ownership
-    // facts (the resolveAndAssemble owned set) become available only AFTER the
-    // resolve stage inside `handleTurn`; threading them onto the kernel deps
-    // requires the Conductor per-turn claims-deps seam (the W5b conductor seam,
-    // which today rebuilds ONLY `now`). Until that seam lands, the OWNER-SCOPED
-    // Triad members (ORDER_FULFILLMENT_STAGE, PAYMENT_STATUS) DEGRADE TO UNKNOWN
-    // (honest ignorance — never a false render); STORE_OPEN_NOW (public, no owner)
-    // is unaffected. The flag stays COMMITTED OFF, so this is inert in production.
+    // PROCESS-WIDE BASE (fail-closed): `ownership.ownedResources` is EMPTY and
+    // `outcomes` is empty at boot, so the base `owns → false` / `outcomeConfirmed
+    // → false`. The genuine per-turn owner attribution is now threaded by the W5b
+    // Conductor seam below (`claimsKernelDepsForTurn`) — the conductor previously
+    // rebuilt ONLY `now`, leaving the boot-empty owner set, which REFUSED every
+    // owner-scoped claim even for its legit owner. `now` is still superseded
+    // per-turn by the conductor `clock()` seam + the CLAIMS-VALIDATE freshness
+    // floor. The flag stays COMMITTED OFF, so all of this is inert in production.
     claimsKernel: createPerTurnClaimsKernelDeps({
       now: Date.now(),
       ownership: { principal: "", ownedResources: new Set<string>() },
       outcomes: [],
     }),
+    // W5b PER-TURN OWNS (fix 2): rebuild `owns` for THIS turn from the OWNER-SCOPED
+    // reads that returned PRESENT in the threaded ledger + the AUTHENTICATED
+    // `customerId` (the conductor identity). `buildPerTurnOwnsFromLedger` derives
+    // the owned-resource set ONLY from present owner-scoped ledger entries (a
+    // forged/cross-owner read throws → recordError → absent → never owned), so the
+    // owner-scoped Triad members (ORDER_FULFILLMENT_STAGE, PAYMENT_STATUS) VALIDATE
+    // for the legit owner while IDOR stays closed ("no owner" ≠ "any owner",
+    // Inv 2). `outcomeConfirmed` stays the fail-closed base (read_claims do not
+    // trigger C4). NO session/model id ever feeds the owned set.
+    claimsKernelDepsForTurn: buildPerTurnOwnsFromLedger satisfies ClaimsKernelDepsForTurn,
     // E-2 render-from-claims (SDD §B / §Q.7) — the loop-level closure of the
     // "claims-not-prose" thesis. When ON, `handleTurn` stage 6a renders the reply
     // TEXT from the VALIDATED claim set via the pure `renderer-from-claims`
