@@ -113,7 +113,7 @@ export function isRegistryClaimType(value: unknown): value is RegistryClaimType 
  * it (SDD §O#3 "no model-authored …"; the soundness predicate quantifies over
  * THIS typed structure, never prose — §R topology condition 2).
  */
-interface RegistryClaimSpec {
+export interface RegistryClaimSpec {
   /** The §5 claim kind — drives C4 (`action_claim` ⟹ outcome-confirmed). */
   readonly kind: "read_claim" | "action_claim";
   /** The C2 source-integrity FLOOR this type's evidence must meet-or-exceed. */
@@ -161,7 +161,7 @@ interface RegistryClaimSpec {
  * compile error (`satisfies Record<RegistryClaimType, …>`) — the registry and
  * its evidence schema can never silently diverge.
  */
-const REGISTRY_SPECS = {
+export const REGISTRY_SPECS = {
   MENU_ITEM_ALLERGENS: {
     kind: "read_claim",
     // SDD §E: free-text "sem alérgenos" must fail → the floor is `structured`.

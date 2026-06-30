@@ -20,10 +20,10 @@ import type {
 } from "@adjudicate/core";
 import {
   isPropositionFree,
-  ORDER_ESTIMATED_ARRIVAL,
   ORDER_FULFILLMENT_STAGE,
   PAYMENT_STATUS,
   SAFE_TEMPLATES,
+  STORE_OPEN_NOW,
   type Template,
 } from "../slot-grammar.js";
 import { render } from "../renderer-from-claims.js";
@@ -56,15 +56,15 @@ describe("renderer-from-claims — §Q.7 pure template-filler", () => {
     const out = render(
       [
         claim(PAYMENT_STATUS, "VALIDATED", { status: "aprovado" }),
-        claim(ORDER_ESTIMATED_ARRIVAL, "VALIDATED", { etaMinutes: 25 }, "order-1"),
+        claim(STORE_OPEN_NOW, "VALIDATED", { mealPeriod: "almoço" }, "order-1"),
       ],
       RENDER,
     );
     expect(out.text).toContain("O status do seu pagamento é: aprovado.");
-    expect(out.text).toContain("A previsão de chegada é de 25 minutos.");
-    // The payment line must carry ONLY the payment field, not the ETA, and v.v.
+    expect(out.text).toContain("No momento, o período de funcionamento é: almoço.");
+    // The payment line must carry ONLY the payment field, not the store-open one, and v.v.
     const paymentLine = out.lines.find((l) => l.claimType === PAYMENT_STATUS);
-    expect(paymentLine?.text).not.toContain("25");
+    expect(paymentLine?.text).not.toContain("almoço");
   });
 
   // ── Acceptance 2: UNKNOWN/REFUSED → proposition-free; NO domain fact. ──
@@ -121,7 +121,7 @@ describe("renderer-from-claims — §Q.7 pure template-filler", () => {
     // the renderer must emit ONLY the safe terminal template.
     const suppression: SuppressionRecord = {
       subject: "order-1",
-      conflictTypes: [ORDER_FULFILLMENT_STAGE, ORDER_ESTIMATED_ARRIVAL],
+      conflictTypes: [ORDER_FULFILLMENT_STAGE, STORE_OPEN_NOW],
       reason: "MUTUAL_EXCLUSION_CONFLICT",
       terminal: "ESCALATE",
     };
@@ -130,7 +130,7 @@ describe("renderer-from-claims — §Q.7 pure template-filler", () => {
     const out = render(
       [
         claim(ORDER_FULFILLMENT_STAGE, "VALIDATED", { stage: "entregue" }),
-        claim(ORDER_ESTIMATED_ARRIVAL, "VALIDATED", { etaMinutes: 45 }),
+        claim(STORE_OPEN_NOW, "VALIDATED", { mealPeriod: "almoço" }),
       ],
       "ESCALATE",
       [suppression],
@@ -138,9 +138,9 @@ describe("renderer-from-claims — §Q.7 pure template-filler", () => {
     expect(out.terminal).toBe("ESCALATE");
     expect(out.lines).toHaveLength(1);
     expect(out.lines[0]?.kind).toBe("TERMINAL");
-    // The suppressed propositions ("entregue", "45") must NOT appear.
+    // The suppressed propositions ("entregue", "almoço") must NOT appear.
     expect(out.text).not.toContain("entregue");
-    expect(out.text).not.toContain("45");
+    expect(out.text).not.toContain("almoço");
     expect(out.text).not.toContain("etapa");
     // It IS the safe handoff template.
     expect(out.text).toContain("encaminhar para um atendente");
@@ -283,16 +283,16 @@ describe("renderer-from-claims — R3 terminal routing (Inv 6; §I distinct term
         [
           claim(ORDER_FULFILLMENT_STAGE, "VALIDATED", { stage: "entregue" }),
           claim(PAYMENT_STATUS, "VALIDATED", { status: "aprovado" }),
-          claim(ORDER_ESTIMATED_ARRIVAL, "VALIDATED", { etaMinutes: 45 }),
+          claim(STORE_OPEN_NOW, "VALIDATED", { mealPeriod: "almoço" }),
         ],
         terminal,
       );
       expect(out.lines).toHaveLength(1);
       expect(out.lines[0]?.kind).toBe("TERMINAL");
-      // No domain proposition (stage / payment status / ETA) surfaces.
+      // No domain proposition (stage / payment status / store-open) surfaces.
       expect(out.text).not.toContain("entregue");
       expect(out.text).not.toContain("aprovado");
-      expect(out.text).not.toContain("45");
+      expect(out.text).not.toContain("almoço");
       expect(out.text).not.toContain("etapa");
       expect(out.text).not.toContain("pagamento é");
     }

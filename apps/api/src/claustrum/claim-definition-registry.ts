@@ -1,0 +1,183 @@
+// claim-definition-registry.ts — the inv.18 ClaimDefinition compiler, APPLIED to
+// the REAL ibatexas Trustworthiness-Triad registry (Plan 1 / W5b follow-on).
+//
+// This is the APPLICATION half of the inv.18 v1 slice: the generic, fail-closed
+// completeness/consistency VALIDATOR lives in `@adjudicate/core`
+// (`validateClaimDefinitions`, registry-agnostic + testable on synthetic
+// fixtures); HERE we ASSEMBLE the three today-scattered ibatexas facets —
+//
+//   - the registry evidence/falsifier/value-binding SPECS (`claim-registry.ts`
+//     `REGISTRY_SPECS`, keyed by the closed `CLAIM_REGISTRY` enum),
+//   - the render-template slot grammar (`slot-grammar.ts` `VALIDATED_TEMPLATES`),
+//   - the decomposition closure (`required-claim-decomposer.ts`
+//     `REQUIRED_CLAIM_CLOSURE`),
+//
+// — into one `Record<type, ClaimDefinition>` and RUN the validator over it
+// FAIL-CLOSED at registry load (`assertClaimDefinitionRegistryValid`, called from
+// the claims-pipeline boot in `claims-pipeline.ts`). The three previously
+// UNENFORCED alignment conventions become ONE mechanism that REJECTS the
+// definition set — refusing to boot the claims pipeline — rather than silently
+// booting an inconsistent registry:
+//
+//   (a) every render-template PROPOSITION slot is backed by a value projection
+//       bound to a `requiredEvidence` key                        (INV-1 / INV-7)
+//   (b) every `falsifierComplete: true` type enumerates falsifiers (INV-2)
+//   (c) every VALIDATED_TEMPLATES entry has a registered ClaimDefinition (INV-3)
+//       — this is what makes the dangling ORDER_ESTIMATED_ARRIVAL state (a
+//       template with no registry row) MECHANICALLY IMPOSSIBLE; that dangling
+//       template was deleted in `slot-grammar.ts` so this validator passes clean.
+//
+// …plus every Triad-scoped type appears in some decomposition closure (INV-4),
+// provenance is default-deny (INV-5), C0 non-vacuity (INV-6), and structural
+// validity incl. cacheable-requires-ttl (INV-8).
+//
+// PURE assembly (no clock/RNG/IO); the validator itself is definition-load-time
+// only. No kernel-downstream import (SDD §R: adjudicate → claustrum → ibatexas).
+
+import {
+  validateClaimDefinitions,
+  type ClaimDefinition,
+  type RenderTemplate,
+  type TemplateSlot as CoreTemplateSlot,
+  type ValidationContext,
+  type ValidationResult,
+  type ValueProjection,
+} from "@adjudicate/core";
+import {
+  CLAIM_REGISTRY,
+  REGISTRY_SPECS,
+  type RegistryClaimSpec,
+  type RegistryClaimType,
+} from "./claim-registry.js";
+import { REQUIRED_CLAIM_CLOSURE } from "./required-claim-decomposer.js";
+import { VALIDATED_TEMPLATES } from "./slot-grammar.js";
+
+/**
+ * The Trustworthiness-Triad-scoped registry types (the live, owner/override-aware
+ * reads the §O#15 decomposer quantifies over — `required-claim-decomposer.ts`
+ * scope note). Declared EXPLICITLY (NOT derived from the closure table) so INV-4
+ * is a MEANINGFUL check: a Triad type that is absent from every
+ * `REQUIRED_CLAIM_CLOSURE` value would be REJECTED (it would be unreachable by
+ * the P4 required-set completeness check). The non-Triad public/action types
+ * (MENU_ITEM_ALLERGENS, STORE_HOURS, PURCHASE_COMPLETED) are deliberately NOT
+ * marked, so INV-4 imposes no closure obligation on them.
+ */
+const TRIAD_SCOPED_TYPES: ReadonlySet<RegistryClaimType> = new Set<RegistryClaimType>([
+  "STORE_OPEN_NOW",
+  "ORDER_FULFILLMENT_STAGE",
+  "PAYMENT_STATUS",
+]);
+
+/**
+ * Assemble ONE generic `ClaimDefinition` from the scattered ibatexas facets for a
+ * single registry type. The render template (if any) is lifted from
+ * `VALIDATED_TEMPLATES`; the value projections that back its PROPOSITION slots are
+ * derived from the type's `valueBinding` (so each slot's `field` binds to the
+ * §5-gated evidence `key` — INV-1/INV-7); falsifiers + the value binding are
+ * threaded verbatim from the registry spec. Pure.
+ */
+function buildClaimDefinition(type: RegistryClaimType): ClaimDefinition {
+  // Widen the `as const` literal member to the interface so the OPTIONAL fields
+  // (valueBinding / falsifierComplete / falsifiers) are readable on EVERY member
+  // (a member that omits them reads `undefined`, not a missing property) — the
+  // same widening `selectCandidateClaim` uses in claim-registry.ts.
+  const spec: RegistryClaimSpec = REGISTRY_SPECS[type];
+  const template = VALIDATED_TEMPLATES[type];
+
+  const renderTemplate: RenderTemplate | undefined =
+    template === undefined
+      ? undefined
+      : { slots: template.slots as readonly CoreTemplateSlot[] };
+
+  // Derive a value projection for every PROPOSITION slot in the render template,
+  // binding the slot's `field` to the type's value-binding evidence `key` (with
+  // its optional projection `path`). Only types that carry BOTH a template and a
+  // value binding produce projections — the public/action types carry neither.
+  let valueProjections: ValueProjection[] | undefined;
+  if (template !== undefined && spec.valueBinding !== undefined) {
+    const binding = spec.valueBinding;
+    valueProjections = template.slots
+      .filter(
+        (slot): slot is Extract<typeof slot, { kind: "PROPOSITION" }> =>
+          slot.kind === "PROPOSITION",
+      )
+      .map((slot) => ({
+        field: slot.field,
+        key: binding.key,
+        ...(binding.path === undefined ? {} : { path: binding.path }),
+      }));
+  }
+
+  return {
+    type,
+    kind: spec.kind,
+    requiredEvidence: spec.requiredEvidence,
+    minSourceIntegrity: spec.minSourceIntegrity,
+    triadScoped: TRIAD_SCOPED_TYPES.has(type),
+    ...(spec.valueBinding === undefined ? {} : { valueBinding: spec.valueBinding }),
+    ...(valueProjections === undefined ? {} : { valueProjections }),
+    ...(renderTemplate === undefined ? {} : { renderTemplate }),
+    ...(spec.falsifierComplete === true
+      ? { falsifierComplete: true, falsifiers: spec.falsifiers ?? [] }
+      : {}),
+  };
+}
+
+/**
+ * The assembled REAL Triad registry as generic `ClaimDefinition`s, keyed by type.
+ * Built once from `CLAIM_REGISTRY` + `REGISTRY_SPECS` (the `Record` is exhaustive
+ * over the closed enum). Pure data — the fail-closed VALIDATION is a separate
+ * call ({@link assertClaimDefinitionRegistryValid}) so this module can be
+ * imported (e.g. by tests) without triggering a throw.
+ */
+export const CLAIM_DEFINITIONS: Readonly<Record<RegistryClaimType, ClaimDefinition>> =
+  Object.fromEntries(
+    CLAIM_REGISTRY.map((type) => [type, buildClaimDefinition(type)] as const),
+  ) as Readonly<Record<RegistryClaimType, ClaimDefinition>>;
+
+/**
+ * The cross-tables the SET-level invariants (INV-3 template→registered, INV-4
+ * decomposition-closure) quantify over: the real `VALIDATED_TEMPLATES`, the real
+ * `REQUIRED_CLAIM_CLOSURE`, and the closed `CLAIM_REGISTRY` enum as the
+ * "registered" universe. Exposed so a test can validate the real registry with
+ * the real cross-tables, and inject a corrupted one to prove load REJECTS.
+ */
+export const CLAIM_DEFINITION_CONTEXT: ValidationContext = {
+  templates: VALIDATED_TEMPLATES,
+  closures: REQUIRED_CLAIM_CLOSURE,
+  registryEnum: CLAIM_REGISTRY,
+};
+
+/**
+ * Run the inv.18 validator over a definition set + cross-tables and return the
+ * raw {@link ValidationResult} (no throw). Defaults to the REAL registry; a test
+ * passes a mutated set/context to assert the SPECIFIC rejection code. Pure.
+ */
+export function validateClaimDefinitionRegistry(
+  defs: Readonly<Record<string, ClaimDefinition>> = CLAIM_DEFINITIONS,
+  context: ValidationContext = CLAIM_DEFINITION_CONTEXT,
+): ValidationResult {
+  return validateClaimDefinitions(defs, context);
+}
+
+/**
+ * FAIL-CLOSED registry-load guard (inv.18 v1). Validates the assembled Triad
+ * registry against its cross-tables and THROWS on any incomplete/inconsistent
+ * definition — refusing to boot the claims pipeline rather than serving an
+ * unaligned registry. Called from `claims-pipeline.ts` `buildClaimsSeams` when
+ * `ENABLE_CLAIMS_PIPELINE` is ON. Idempotent + pure (no clock/RNG/IO); safe to
+ * call repeatedly. The thrown message carries the stable invariant CODE + reason.
+ */
+export function assertClaimDefinitionRegistryValid(
+  defs: Readonly<Record<string, ClaimDefinition>> = CLAIM_DEFINITIONS,
+  context: ValidationContext = CLAIM_DEFINITION_CONTEXT,
+): void {
+  const result = validateClaimDefinitionRegistry(defs, context);
+  if (!result.ok) {
+    throw new Error(
+      `[claim-definition-registry] FAIL-CLOSED: the claim definition registry is ` +
+        `incomplete/inconsistent and must not boot the claims pipeline (inv.18 ` +
+        `${result.code}): ${result.reason}`,
+    );
+  }
+}

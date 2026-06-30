@@ -123,7 +123,6 @@ const prop = (claimType: string, field: string): TemplateSlot => ({
 /** The representative claim types this kernel-foundation grammar models. */
 export const ORDER_FULFILLMENT_STAGE = "ORDER_FULFILLMENT_STAGE";
 export const PAYMENT_STATUS = "PAYMENT_STATUS";
-export const ORDER_ESTIMATED_ARRIVAL = "ORDER_ESTIMATED_ARRIVAL";
 /** Triad slice (Plan 1 Phase 3) — the override-aware "is it open right now" type. */
 export const STORE_OPEN_NOW = "STORE_OPEN_NOW";
 
@@ -162,15 +161,16 @@ export const VALIDATED_TEMPLATES: Readonly<Record<string, Template>> = {
       lit("."),
     ],
   },
-  [ORDER_ESTIMATED_ARRIVAL]: {
-    claimType: ORDER_ESTIMATED_ARRIVAL,
-    posture: "validated",
-    slots: [
-      lit("A previsão de chegada é de "),
-      prop(ORDER_ESTIMATED_ARRIVAL, "etaMinutes"),
-      lit(" minutos."),
-    ],
-  },
+  // NOTE: ORDER_ESTIMATED_ARRIVAL was REMOVED here (inv.18 validator wiring). It
+  // had a `validated` template (a PROPOSITION slot prop(…, "etaMinutes")) but NO
+  // registered ClaimDefinition — it is absent from CLAIM_REGISTRY/REGISTRY_SPECS
+  // (claim-registry.ts), so it carried no requiredEvidence, no valueBinding for
+  // `etaMinutes`, and no falsifiers. That is exactly the dangling-template
+  // alignment-convention violation the ClaimDefinition validator (INV-3:
+  // template → registered-definition) now REJECTS at registry load. Deleting the
+  // dangling entry is the cleanest hygiene fix; promote it to a real
+  // ClaimDefinition (registry row + eta read evidence + value-binding) if an ETA
+  // claim is ever genuinely needed.
 };
 
 /**
