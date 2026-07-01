@@ -36,7 +36,7 @@ import {
   type LogFn,
   type NoDeliverySignal,
 } from "../conversation/no-delivery.js";
-import { isNewEvent } from "./dedup.js";
+import { withDedup } from "./dedup.js";
 
 /** Coerce a payload field to a NoDeliverySignal. Required: sessionId + cause. */
 function toSignal(payload: Record<string, unknown>): NoDeliverySignal | null {
@@ -141,30 +141,47 @@ export async function startIncidentSubscriber(
 
       const eventId = deriveEventId(signal.sessionId, signal.turnId, signal.messageSid);
 
-      // Idempotency guard — at-most-once per (session,turn|sid). WRAPPED fail-open:
-      // isNewEvent THROWS when Redis is down; we proceed anyway because the domain
-      // `findFirst-OPEN` increment + `@@unique(externalId)` collapse duplicates.
-      let fresh = true;
-      try {
-        fresh = await isNewEvent(`incident:no_delivery:${eventId}`);
-      } catch {
-        fresh = true; // fail-open — domain dedup is the real backstop
-      }
-      if (!fresh) {
-        log?.info({ session: signal.sessionId, event_id: eventId }, "[incident-subscriber] duplicate — skipping");
-        return;
-      }
+      // Two-phase idempotency (withDedup): the 7-day dedup key is committed ONLY
+      // after the side effect SUCCEEDS. A transient failure (kind:"error") is
+      // rethrown so (a) the dedup key is NOT committed and (b) JetStream
+      // redelivers (Core NATS → DLQ) — an owed reply is never ack-suppressed for
+      // 7 days. Genuine duplicates collapse via the claim + the domain
+      // findFirst-OPEN / @@unique(externalId) guards. The claim fails CLOSED on
+      // Redis-down (DedupUnavailableError → redeliver / DLQ), consistent with the
+      // other side-effecting subscribers (payment-lifecycle, cart-intelligence).
+      const processed = await withDedup(
+        `incident:no_delivery:${eventId}`,
+        async () => {
+          // Same governed open the inline webhook path uses (publishes
+          // conversation.incident_opened on a genuinely NEW open).
+          const result = await openIncidentInline(signal, lf);
 
-      // Same governed open the inline webhook path uses (publishes
-      // conversation.incident_opened on a genuinely NEW open).
-      const result = await openIncidentInline(signal, lf);
+          if (result.kind === "refused") {
+            await persistSuspectRow(signal, eventId, result.code, lf);
+          } else if (result.kind === "opened") {
+            log?.info(
+              { session: signal.sessionId, incident_id: result.incidentId, cause: signal.cause },
+              "[incident-subscriber] opened incident via durable backstop",
+            );
+          } else if (result.kind === "error") {
+            // Do NOT swallow: swallowing would ack the message AND promote the
+            // dedup key to the full TTL, silently losing the owed reply for 7
+            // days. Rethrow → withDedup releases the claim (key uncommitted) and
+            // the subscriber surfaces it for redelivery (JetStream) / DLQ (Core).
+            throw result.error instanceof Error
+              ? result.error
+              : new Error(
+                  `[incident-subscriber] inline incident open failed: ${String(result.error)}`,
+                );
+          }
+          // kind:"duplicate" → success no-op; the claim promotes to the full TTL.
+        },
+      );
 
-      if (result.kind === "refused") {
-        await persistSuspectRow(signal, eventId, result.code, lf);
-      } else if (result.kind === "opened") {
+      if (!processed) {
         log?.info(
-          { session: signal.sessionId, incident_id: result.incidentId, cause: signal.cause },
-          "[incident-subscriber] opened incident via durable backstop",
+          { session: signal.sessionId, event_id: eventId },
+          "[incident-subscriber] duplicate — skipping",
         );
       }
     },

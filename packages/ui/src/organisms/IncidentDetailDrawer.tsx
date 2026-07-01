@@ -275,7 +275,7 @@ export function IncidentDetailDrawer({
                 className="flex items-center gap-1 text-xs text-brand-700 hover:underline"
               >
                 <ArrowUp className="h-3 w-3" />
-                {INCIDENT_LABELS.reopenedFrom(formatIncidentId(incident.priorIncidentId), '')}
+                {INCIDENT_LABELS.reopenedFrom(formatIncidentId(incident.priorIncidentId), formatAge(incident.openedAt))}
               </button>
             )}
           </div>

@@ -61,6 +61,7 @@ import {
   type NoDeliverySignal,
   type TurnDisposition,
 } from "../conversation/no-delivery.js";
+import { closeIncidentOnDeliveredReply } from "../incidents/incident-auto-close.js";
 
 const PostMessageBody = z.object({
   sessionId: z.uuid(),
@@ -404,6 +405,16 @@ async function runConductorTurn(params: {
         deliveredText = true;
       }
 
+      // Auto-close (M4): a successfully-delivered web reply self-heals an OPEN
+      // incident on this session → AUTO_RESOLVED, matching the WhatsApp seam
+      // (whatsapp-webhook.ts:1009). Gated on the SAME delivered predicate (web has
+      // no PIX side-channel, so `deliveredText` already implies a trimmed non-blank
+      // reply). Detached fire-and-forget (fail-open + idempotent) so it never gates
+      // the SSE turn.
+      if (deliveredText && capsule.turnId) {
+        void closeIncidentOnDeliveredReply(sessionId, capsule.turnId, server.log).catch(() => {});
+      }
+
       // Classify on BOTH the normal and abort paths (pause is already excluded —
       // it returned before openCapsule). `deliveredText` keys the genuine-drop
       // decision on what actually reached the customer, so an aborted-with-text
@@ -478,23 +489,29 @@ async function runConductorTurn(params: {
         sendEntered: false,
         sendCompleted: false,
       });
-      // `turn_error` is OUTSIDE the frozen IncidentCause taxonomy; coerce it to
-      // `send_failed` (the same safe coercion the suspect-row backstop uses) so
-      // the throw is recorded, never silently swallowed. `customerImpacted` is
-      // false when the degraded {type:error} reached the still-connected client —
-      // only an aborted client (gone) got nothing.
-      await openWebDrop({
-        sessionId,
-        messageId,
-        customerId,
-        turnId: undefined,
-        decisionKind: undefined,
-        classification: {
-          cause: catchCause === "timeout" ? "timeout" : "send_failed",
-          customerImpacted: aborted,
-        },
-        log: server.log,
-      });
+      // WhatsApp parity (M5, whatsapp-webhook.ts:1057): a pre-result internal
+      // exception is `turn_error` — OUTSIDE the frozen IncidentCause taxonomy — so
+      // it opens NO incident (the degraded {type:error} pushed below is the web
+      // analog of WhatsApp's canned-apology-only path). Only `timeout` /
+      // `send_failed` open a governed incident. (`send_failed` cannot arise on this
+      // pre-result branch — no send was attempted — so this effectively opens only
+      // on a timeout/abort.) `customerImpacted` is false when the degraded
+      // {type:error} reached the still-connected client; only an aborted client got
+      // nothing.
+      if (catchCause === "timeout" || catchCause === "send_failed") {
+        await openWebDrop({
+          sessionId,
+          messageId,
+          customerId,
+          turnId: undefined,
+          decisionKind: undefined,
+          classification: {
+            cause: catchCause,
+            customerImpacted: aborted,
+          },
+          log: server.log,
+        });
+      }
     }
 
     if (!aborted) {

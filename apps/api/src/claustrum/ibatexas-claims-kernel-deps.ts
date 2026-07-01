@@ -262,13 +262,7 @@ export function ownedResourceIdsByBaseKey(
   ledger: EvidenceLedgerLike,
 ): Map<string, string[]> {
   const byBase = new Map<string, string[]>();
-  for (const key of ledger.keys()) {
-    const prefix = OWNER_SCOPED_KEY_PREFIXES.find((p) => key.startsWith(p));
-    if (prefix === undefined) continue;
-    if (ledger.resolve(key).state !== "present") continue;
-    const resourceId = key.slice(prefix.length);
-    if (resourceId.length === 0) continue;
-    const base = prefix.slice(0, -1); // drop trailing ":"
+  for (const { base, resourceId } of presentOwnerScopedResources(ledger)) {
     const ids = byBase.get(base);
     if (ids === undefined) byBase.set(base, [resourceId]);
     else if (!ids.includes(resourceId)) ids.push(resourceId);
@@ -276,12 +270,35 @@ export function ownedResourceIdsByBaseKey(
   return byBase;
 }
 
-/** The minimal read-only ledger surface {@link ownedResourceIdsByBaseKey} needs
- *  (a subset of the published `EvidenceLedger`) — keeps the helper unit-testable
- *  with a tiny stub and avoids importing the full ledger type here. */
+/** The minimal read-only ledger surface the owner-scope helpers need (a subset of
+ *  the published `EvidenceLedger`) — keeps them unit-testable with a tiny stub and
+ *  avoids importing the full ledger type here. */
 export interface EvidenceLedgerLike {
   keys(): Iterable<string>;
   resolve(key: string): { readonly state: string };
+}
+
+/**
+ * The SINGLE owner-scope IDOR filter, shared by {@link ownedResourceIdsByBaseKey}
+ * and {@link buildPerTurnOwnsFromLedger} so a future edit cannot reopen the wall in
+ * only one copy. Yields `{ base, resourceId }` for every ledger key that BOTH (a)
+ * starts with an {@link OWNER_SCOPED_KEY_PREFIXES} prefix AND (b) resolved PRESENT
+ * this turn — the IDOR close: an errored/absent owner-scoped read (cross-owner /
+ * unavailable) never attributes ownership. `base` is the prefix without its
+ * trailing ":"; `resourceId` is the (non-empty) suffix. PURE — the kernel/planner
+ * contract requires it.
+ */
+function* presentOwnerScopedResources(
+  ledger: EvidenceLedgerLike,
+): Iterable<{ readonly base: string; readonly resourceId: string }> {
+  for (const key of ledger.keys()) {
+    const prefix = OWNER_SCOPED_KEY_PREFIXES.find((p) => key.startsWith(p));
+    if (prefix === undefined) continue;
+    if (ledger.resolve(key).state !== "present") continue;
+    const resourceId = key.slice(prefix.length);
+    if (resourceId.length === 0) continue;
+    yield { base: prefix.slice(0, -1), resourceId };
+  }
 }
 
 /**
@@ -306,14 +323,10 @@ export const buildPerTurnOwnsFromLedger: ClaimsKernelDepsForTurn = ({
   base,
 }): ClaimsKernelDeps => {
   const ownedResources = new Set<string>();
-  for (const key of ledger.keys()) {
-    const prefix = OWNER_SCOPED_KEY_PREFIXES.find((p) => key.startsWith(p));
-    if (prefix === undefined) continue;
-    // PRESENT-ONLY: an errored/absent owner-scoped read (cross-owner / unavailable)
-    // never attributes ownership (the IDOR close).
-    if (ledger.resolve(key).state !== "present") continue;
-    const resourceId = key.slice(prefix.length);
-    if (resourceId.length > 0) ownedResources.add(resourceId);
+  // PRESENT-ONLY owner-scope filter (the IDOR close), shared with
+  // `ownedResourceIdsByBaseKey` via `presentOwnerScopedResources`.
+  for (const { resourceId } of presentOwnerScopedResources(ledger)) {
+    ownedResources.add(resourceId);
   }
   return {
     ...base,

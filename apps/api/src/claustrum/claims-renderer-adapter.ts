@@ -38,6 +38,17 @@ import {
 import { render } from "./renderer-from-claims.js";
 
 /**
+ * Least-trusted → most-trusted ordering used to FOLD co-typed verdicts to the
+ * WORST instance when one turn resolves MULTIPLE claims of the same type (see the
+ * `resolved` fold below). `REFUSED ≺ UNKNOWN ≺ VALIDATED`.
+ */
+const VERDICT_TRUST_RANK: Record<ClaimVerdict, number> = {
+  REFUSED: 0,
+  UNKNOWN: 1,
+  VALIDATED: 2,
+};
+
+/**
  * Build the ibatexas `ClaimsRendererPort` from the pure `renderer-from-claims`.
  * PURE/deterministic: same `(ClaimsKernelResult, context)` ⟹ same text (no
  * clock/RNG/IO). On a non-RENDER terminal it returns ONLY the proposition-free
@@ -65,9 +76,25 @@ export function createIbatexasClaimsRenderer(): ClaimsRendererPort {
       const required = decomposeRequiredClaims(
         classifyRequestSpans(context?.requestText ?? ""),
       );
-      const resolved = new Map<string, ClaimVerdict>(
-        claims.perClaim.map((c) => [c.type, c.verdict] as const),
-      );
+      // §O#15 completeness reads a per-TYPE verdict map. When one turn resolves
+      // MULTIPLE claims of the SAME type (e.g. a multi-order request that binds two
+      // ORDER_FULFILLMENT_STAGE instances to distinct owned subjects), a later
+      // VALIDATED instance must NOT MASK an earlier UNKNOWN/REFUSED one — a plain
+      // last-entry-wins Map would report the type satisfied while the weaker
+      // instance is silently dropped from `renderableCanonical` (the "render the
+      // easy half" collapse the gate exists to prevent). Fold co-typed verdicts to
+      // the WORST (least-trusted) instance: a type counts as VALIDATED here IFF
+      // EVERY instance of it validated.
+      const resolved = new Map<string, ClaimVerdict>();
+      for (const c of claims.perClaim) {
+        const prior = resolved.get(c.type);
+        if (
+          prior === undefined ||
+          VERDICT_TRUST_RANK[c.verdict] < VERDICT_TRUST_RANK[prior]
+        ) {
+          resolved.set(c.type, c.verdict);
+        }
+      }
       const degrade =
         claims.terminal === "RENDER" &&
         checkRequiredClaimCompleteness(required, resolved).degrade;

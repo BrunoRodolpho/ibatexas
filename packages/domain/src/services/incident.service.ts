@@ -160,8 +160,15 @@ export function createIncidentService(options?: IncidentServiceOptions) {
     now: Date,
   ): Promise<ConversationIncident> {
     const nextDropCount = existing.dropCount + 1
+    // customerImpacted is MONOTONIC (never downgrade true→false): a later
+    // TRUE-ghost drop escalates a degraded (aviso-enviado, customerImpacted=false)
+    // incident to silêncio so it can reach the high/silêncio branch. Escalate only
+    // when the incoming drop is explicitly customer-impacting; an unknown/omitted
+    // impact preserves the known existing value.
+    const nextCustomerImpacted =
+      existing.customerImpacted || payload.customerImpacted === true
     const severity = deriveSeverity({
-      customerImpacted: existing.customerImpacted,
+      customerImpacted: nextCustomerImpacted,
       dropCount: nextDropCount,
       openedAt: existing.openedAt,
       priorIncidentId: existing.priorIncidentId,
@@ -174,6 +181,13 @@ export function createIncidentService(options?: IncidentServiceOptions) {
         lastCause: payload.cause,
         lastDropAt: now,
         severity,
+        customerImpacted: nextCustomerImpacted,
+        // Advance externalId to THIS drop's id so the step-0 replay guard matches
+        // a redelivered increment (ordinary NATS at-least-once) and does NOT
+        // double-count dropCount. The id is unique to this event (the step-0
+        // findUnique already returned null for it), so no @@unique(externalId)
+        // collision is possible here.
+        externalId: payload.externalId,
         ...(payload.lastTurnId !== undefined
           ? { lastTurnId: payload.lastTurnId }
           : {}),
@@ -357,10 +371,14 @@ export function createIncidentService(options?: IncidentServiceOptions) {
      */
     async list(params: IncidentListParams = {}): Promise<IncidentListResult> {
       const now = new Date()
+      // Severity is NOT a DB filter: `deriveSeverity` is the ONE source of truth
+      // and is recomputed at read time, so the persisted `severity` column lags
+      // once an incident ages past the threshold (e.g. medium → high). Filtering
+      // on the stale column would exclude a row that is displayed as `high`. So
+      // the severity predicate is applied to the DERIVED value below.
       const where: Prisma.ConversationIncidentWhereInput = {
         ...(params.status ? { status: params.status } : {}),
         ...(params.cause ? { cause: params.cause } : {}),
-        ...(params.severity ? { severity: params.severity } : {}),
         ...(params.sessionId ? { sessionId: params.sessionId } : {}),
         ...(params.agingMinutes !== undefined
           ? {
@@ -370,14 +388,41 @@ export function createIncidentService(options?: IncidentServiceOptions) {
             }
           : {}),
       }
+      const limit = params.limit ?? 50
+      const offset = params.offset ?? 0
+      const openCountP = prisma.conversationIncident.count({
+        where: { status: "OPEN" },
+      })
+
+      if (params.severity) {
+        // Recompute-then-filter: the severity predicate can't be pushed into SQL
+        // (see above), so it — and therefore pagination — must be applied in
+        // memory over the derived severity. PERF CAVEAT: this scans every row
+        // matching the non-severity filters (no DB `take`/`skip`). Bounded in
+        // practice — incidents are exceptional and status/session/aging narrow
+        // the set — but revisit if incident volume ever grows large.
+        const [all, openCount] = await Promise.all([
+          prisma.conversationIncident.findMany({
+            where,
+            orderBy: { openedAt: "desc" },
+          }),
+          openCountP,
+        ])
+        const rows = all
+          .map((r) => refreshSeverity(r, now))
+          .filter((r) => r.severity === params.severity)
+          .slice(offset, offset + limit)
+        return { rows, openCount }
+      }
+
       const [rows, openCount] = await Promise.all([
         prisma.conversationIncident.findMany({
           where,
           orderBy: { openedAt: "desc" },
-          take: params.limit ?? 50,
-          skip: params.offset ?? 0,
+          take: limit,
+          skip: offset,
         }),
-        prisma.conversationIncident.count({ where: { status: "OPEN" } }),
+        openCountP,
       ])
       return { rows: rows.map((r) => refreshSeverity(r, now)), openCount }
     },

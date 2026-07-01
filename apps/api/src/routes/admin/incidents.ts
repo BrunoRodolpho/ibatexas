@@ -23,6 +23,7 @@ import {
   createIncidentService,
   createConversationService,
   prisma,
+  FROZEN_CAUSES,
   type ConversationIncident,
   type IncidentClosePayload,
   type IncidentSeverity,
@@ -51,19 +52,13 @@ const STATUS_VALUES = [
   "RESOLVED",
 ] as const satisfies readonly IncidentStatus[];
 
-const CAUSE_VALUES = [
-  "empty_completion",
-  "whitespace_only",
-  "send_failed",
-  "retry_exhausted",
-  "timeout",
-] as const;
-
+// Cause filter values are the canonical FROZEN_CAUSES from incident-policy.ts —
+// the single source of truth the detector/guard also enforce. Do NOT hand-copy.
 const SEVERITY_VALUES = ["low", "medium", "high"] as const satisfies readonly IncidentSeverity[];
 
 const ListQuery = z.object({
   status: z.enum(STATUS_VALUES).optional(),
-  cause: z.enum(CAUSE_VALUES).optional(),
+  cause: z.enum(FROZEN_CAUSES).optional(),
   severity: z.enum(SEVERITY_VALUES).optional(),
   sessionId: z.string().min(1).max(256).optional(),
   agingMinutes: z.coerce.number().int().min(0).optional(),

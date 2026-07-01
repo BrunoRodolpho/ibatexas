@@ -15,6 +15,7 @@ const mockReviewFindMany = vi.hoisted(() => vi.fn())
 const mockReviewCount = vi.hoisted(() => vi.fn())
 
 vi.mock("@ibatexas/domain", () => ({
+  FROZEN_CAUSES: ["empty_completion", "whitespace_only", "send_failed", "retry_exhausted", "timeout"],
   createReservationService: () => ({
     findAll: vi.fn(async () => []),
     findConfirmedForDate: vi.fn(async () => []),

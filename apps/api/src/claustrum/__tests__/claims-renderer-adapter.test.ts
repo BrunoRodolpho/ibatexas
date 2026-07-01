@@ -206,6 +206,32 @@ describe("claims-renderer-adapter — F2 required-claim completeness gate (§O#1
     expect(out.text).not.toContain("jantar");
   });
 
+  it("M12: two same-type instances — a VALIDATED ordered AFTER an UNKNOWN does NOT mask it (worst-verdict fold)", () => {
+    const renderer = createIbatexasClaimsRenderer();
+    // A multi-order request binds TWO ORDER_FULFILLMENT_STAGE instances: order-1
+    // resolved UNKNOWN, order-2 VALIDATED (and ordered LAST). A last-entry-wins
+    // per-type map would report ORDER_FULFILLMENT_STAGE satisfied (VALIDATED) and
+    // render order-2's stage while silently dropping the UNKNOWN order-1 — the
+    // "render the easy half" collapse. The fold to the WORST verdict makes the
+    // §O#15 gate see UNKNOWN → the turn degrades to a proposition-free UNKNOWN.
+    const out = renderer.render(
+      resultWith(
+        [
+          { type: ORDER_FULFILLMENT_STAGE, verdict: "UNKNOWN" },
+          { type: ORDER_FULFILLMENT_STAGE, verdict: "VALIDATED" },
+        ],
+        [claim(ORDER_FULFILLMENT_STAGE, "VALIDATED", { fulfillmentStatus: "preparing" }, "order-2")],
+      ),
+      { requestText: "cadê meu pedido?" },
+    );
+    expect(out.text).toBe(
+      "Não localizei essa informação confirmada agora. Quer que eu verifique?",
+    );
+    // The literal-true half (order-2 "em preparo") is NOT leaked.
+    expect(out.text).not.toContain("etapa");
+    expect(out.text).not.toContain("preparo");
+  });
+
   it("NON-VACUITY: a STORE_OPEN_NOW-only question with its sole required claim VALIDATED RENDERS in full", () => {
     const renderer = createIbatexasClaimsRenderer();
     const out = renderer.render(

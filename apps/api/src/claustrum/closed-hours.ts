@@ -73,7 +73,7 @@ const FALSE_OPEN_PATTERNS: ReadonlyArray<RegExp> = [
 
 // Affirmative "your immediate order/delivery is happening now" confirmations.
 const FALSE_IMMEDIATE_PATTERNS: ReadonlyArray<RegExp> = [
-  /\bentreg\w*\b[^.!?]{0,18}\b(?:agora|imediat\w*|ja ja|em \d+\s*min|hoje)\b/g,
+  /\bentreg\w*\b[^.!?]{0,18}\b(?:agora|imediat\w*|ja ja|em \d+\s*min(?:uto)?s?|hoje)\b/g,
   /\b(?:sai|saiu|saira|sairao)\b[^.!?]{0,6}\b(?:para|pra)\b[^.!?]{0,4}\bentrega\b/g,
   /\ba caminho\b/g,
   /\bem preparo\b/g,
@@ -83,7 +83,11 @@ const FALSE_IMMEDIATE_PATTERNS: ReadonlyArray<RegExp> = [
 // Negation / closed markers that flip an apparent open-assertion into an HONEST
 // closed statement ("nao estamos abertos", "fechado, sem entrega agora") — when
 // one of these sits just before the match, the clause is NOT a falsehood.
-const CLOSED_NEGATORS = /\b(?:nao|nunca|jamais|sem|fechad\w*|fora do horario)\b/;
+// `sem` still negates a genuine absence ("sem entrega agora"), but must NOT cancel
+// the backstop when it heads a benefit phrase ("sem taxa/custo/juros/fila"), which
+// is an immediate-delivery affirmative, not a negation.
+const CLOSED_NEGATORS =
+  /\b(?:nao|nunca|jamais|sem(?!\s+(?:tax|custo|juro|fila)\w*)|fechad\w*|fora do horario)\b/;
 
 /** True when an affirmative (non-negated) match of any pattern exists. */
 function matchesAffirmative(

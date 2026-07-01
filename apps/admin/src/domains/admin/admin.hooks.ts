@@ -479,10 +479,17 @@ export function useAdminIncidentsPage() {
   const [causeFilter, setCauseFilter] = useState('')
   const [severityFilter, setSeverityFilter] = useState('')
 
+  const hasLoadedRef = useRef(false)
+
   useEffect(() => {
     let cancelled = false
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- data-fetch effect; loading flag drives the skeleton
-    setLoading(true)
+    // Flash the skeleton ONLY on the initial load; the 30s poll refreshes rows in
+    // place (mirrors the catch-branch intent — never disrupt existing rows on a
+    // transient poll).
+    if (!hasLoadedRef.current) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- initial load only; loading flag drives the skeleton
+      setLoading(true)
+    }
     apiFetch(`/api/admin/incidents?limit=${INCIDENT_FETCH_LIMIT}`)
       .then((data: IncidentListResponse) => {
         if (cancelled) return
@@ -496,7 +503,7 @@ export function useAdminIncidentsPage() {
         // error so the page can toast (we never silently swallow — escalações bug).
         setError(err instanceof Error ? err.message : 'load_failed')
       })
-      .finally(() => { if (!cancelled) setLoading(false) })
+      .finally(() => { if (!cancelled) { setLoading(false); hasLoadedRef.current = true } })
     return () => { cancelled = true }
   }, [refreshKey])
 

@@ -63,6 +63,11 @@ const mockSchedulePixExpiryMonitor = vi.hoisted(() => vi.fn());
 const mockGetConductor = vi.hoisted(() => vi.fn());
 const mockHandleTurn = vi.hoisted(() => vi.fn());
 const mockIsSessionPausedForHuman = vi.hoisted(() => vi.fn());
+// W1 no-reply seam: keep the PURE classifiers real; mock only the side-effecting
+// collaborators (NATS emit + governed open) and the auto-close (M3/L10).
+const mockEmitNoDelivery = vi.hoisted(() => vi.fn());
+const mockOpenIncidentInline = vi.hoisted(() => vi.fn());
+const mockCloseIncidentOnDeliveredReply = vi.hoisted(() => vi.fn());
 
 vi.mock("twilio", () => ({
   default: Object.assign(() => ({}), { validateRequest: mockValidateRequest }),
@@ -84,6 +89,19 @@ vi.mock("../claustrum-bootstrap.js", () => ({
 
 vi.mock("../escalation/escalation-store.js", () => ({
   isSessionPausedForHuman: mockIsSessionPausedForHuman,
+}));
+
+vi.mock("../conversation/no-delivery.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../conversation/no-delivery.js")>();
+  return {
+    ...actual, // keep classifyTurnDelivery + classifyCatchError (pure) + the types
+    emitNoDelivery: mockEmitNoDelivery,
+    openIncidentInline: mockOpenIncidentInline,
+  };
+});
+
+vi.mock("../incidents/incident-auto-close.js", () => ({
+  closeIncidentOnDeliveredReply: mockCloseIncidentOnDeliveredReply,
 }));
 
 vi.mock("../session/store.js", () => ({
@@ -225,6 +243,9 @@ beforeEach(() => {
     acted: null,
     decision: { kind: "EXECUTE" },
   });
+  mockEmitNoDelivery.mockResolvedValue(undefined);
+  mockOpenIncidentInline.mockResolvedValue({ kind: "opened", incidentId: "inc-1" });
+  mockCloseIncidentOnDeliveredReply.mockResolvedValue(undefined);
 });
 
 afterAll(() => {
@@ -583,5 +604,65 @@ describe("handleMessageAsync — conductor turn", () => {
     // Lock acquired for the main turn AND re-acquired for the retry.
     expect(mockAcquireAgentLock.mock.calls.length).toBeGreaterThanOrEqual(2);
     expect(mockSendText).toHaveBeenCalledWith(`whatsapp:${PHONE}`, mintRenderedReply("Claro, vou adicionar."));
+  }, 15000);
+
+  it("M3: a whitespace-only retry reply is NOT sent, does NOT auto-close, and flags retry_exhausted", async () => {
+    // Post-lock re-check fires (user-last history); the retry produces a blank
+    // completion. A whitespace reply must NOT be delivered (raw truthiness would
+    // have sent "\n" and auto-resolved the incident) and the whitespace_only
+    // else-if must be reachable → a retry_exhausted incident, not a self-heal.
+    mockLoadSession.mockResolvedValue([{ role: "user", content: "cadê minha resposta?" }]);
+    mockHandleTurn
+      .mockResolvedValueOnce({ response: { text: "Perfeito!" }, acted: null, decision: { kind: "EXECUTE" } })
+      .mockResolvedValueOnce({ response: { text: "  \n " }, acted: null, decision: { kind: "EXECUTE" } });
+
+    const app = await buildTestServer();
+    const res = await post(app, "MessageSid=SM_WS_RETRY&From=whatsapp%3A%2B5511999999999&Body=oi");
+    expect(res.statusCode).toBe(200);
+
+    await vi.waitFor(() => {
+      expect(mockHandleTurn).toHaveBeenCalledTimes(2);
+    }, { timeout: 4000 });
+    await vi.waitFor(() => {
+      expect(mockOpenIncidentInline).toHaveBeenCalled();
+    }, { timeout: 4000 });
+
+    // Main deliverable reply WAS sent; the whitespace-only retry reply was NOT.
+    expect(mockSendText).toHaveBeenCalledWith(`whatsapp:${PHONE}`, mintRenderedReply("Perfeito!"));
+    expect(mockSendText).not.toHaveBeenCalledWith(`whatsapp:${PHONE}`, mintRenderedReply("  \n "));
+    // The blank retry did NOT auto-resolve an OPEN incident…
+    expect(mockCloseIncidentOnDeliveredReply).not.toHaveBeenCalled();
+    // …and the now-reachable whitespace_only branch flagged it as retry_exhausted.
+    expect(mockOpenIncidentInline).toHaveBeenCalledWith(
+      expect.objectContaining({ cause: "retry_exhausted", channel: "whatsapp" }),
+      expect.anything(),
+    );
+  }, 15000);
+
+  it("L10: a delivered reply still auto-closes an OPEN incident (detached fire-and-forget)", async () => {
+    // Default history ends with an assistant message → no post-lock retry. Give
+    // the main turn a turnId so the (now detached) close is observable.
+    mockGetConductor.mockReturnValue({
+      openCapsule: vi.fn().mockResolvedValue({ id: "capsule-1", turnId: "turn-main" }),
+      closeCapsule: vi.fn().mockResolvedValue(undefined),
+    });
+    mockHandleTurn.mockResolvedValue({
+      response: { text: "Tudo certo!" },
+      acted: null,
+      decision: { kind: "EXECUTE" },
+    });
+
+    const app = await buildTestServer();
+    const res = await post(app, "MessageSid=SM_CLOSE&From=whatsapp%3A%2B5511999999999&Body=oi");
+    expect(res.statusCode).toBe(200);
+
+    // Fire-and-forget: the close may settle after the reply path — wait for it.
+    await vi.waitFor(() => {
+      expect(mockCloseIncidentOnDeliveredReply).toHaveBeenCalledWith(
+        "sess-1",
+        "turn-main",
+        expect.anything(),
+      );
+    }, { timeout: 4000 });
   }, 15000);
 });

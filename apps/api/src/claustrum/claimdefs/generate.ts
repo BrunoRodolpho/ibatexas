@@ -6,7 +6,8 @@
  * editable artifact; the registry spec, render template, decomposition closure,
  * validator-wiring definition, and the doc card are all MACHINE-EMITTED with a
  * `@generated` header + a source checksum, and a CI/boot drift guard
- * (`./store-open-now.drift.ts`) re-runs this and fail-closes on any divergence.
+ * (`./__tests__/generated-drift.test.ts`) re-runs this and fail-closes on any
+ * divergence.
  *
  * Run it with:  pnpm exec tsx apps/api/src/claustrum/claimdefs/generate.ts
  *
@@ -68,7 +69,7 @@ const HEADER = (sourceFile: string, checksum: string): string =>
     "//",
     "// The editable artifact is the .claim.ts SOURCE; every export below is a pure",
     "// projection of it computed by @adjudicate/core compileClaimDefinition. A boot/CI",
-    "// drift guard (./store-open-now.drift.ts) fail-closes if this file diverges.",
+    "// drift guard (./__tests__/generated-drift.test.ts) fail-closes if this file diverges.",
   ].join("\n");
 
 /** Build the GENERATED .ts module content for one unit. */

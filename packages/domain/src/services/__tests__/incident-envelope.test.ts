@@ -416,3 +416,123 @@ describe("openIncidentFromEnvelope — dedup + P2002 race", () => {
     })
   })
 })
+
+describe("incrementDrop — replay-guard + customerImpacted monotonicity", () => {
+  beforeEach(() => vi.resetAllMocks())
+
+  it("[M6] advances externalId to the new drop's id so a redelivered increment replays (no double-count)", async () => {
+    mockFindUnique.mockResolvedValue(null) // (0) this drop's externalId not yet persisted
+    mockFindFirst.mockResolvedValueOnce(
+      makeRow({ dropCount: 1, externalId: "whatsapp:wa:5511999999999:turn_1" }),
+    ) // (1) existing OPEN incident, opened by an earlier drop
+    mockUpdate.mockImplementation(({ data }: { data: Record<string, unknown> }) =>
+      makeRow({ ...data, dropCount: 2 }),
+    )
+
+    const svc = createIncidentService()
+    const out = await svc.openIncidentFromEnvelope(
+      systemOpenEnv(openPayload({ externalId: "whatsapp:wa:5511999999999:turn_2" })),
+      state,
+    )
+
+    expect(out.result?.opened).toBe(false)
+    // The row's externalId now points at THIS drop → a redelivery of turn_2 hits
+    // the step-0 findUnique guard and returns as-is instead of incrementing again.
+    expect(mockUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          externalId: "whatsapp:wa:5511999999999:turn_2",
+          dropCount: { increment: 1 },
+        }),
+      }),
+    )
+  })
+
+  it("[M8] escalates customerImpacted false→true on a customer-impacting drop (enters the silêncio/high branch)", async () => {
+    mockFindUnique.mockResolvedValue(null)
+    mockFindFirst.mockResolvedValueOnce(
+      makeRow({ dropCount: 1, customerImpacted: false, severity: "low" }),
+    ) // degraded incident: a canned message reached the customer (aviso enviado)
+    mockUpdate.mockImplementation(({ data }: { data: Record<string, unknown> }) =>
+      makeRow({ ...data, dropCount: 2 }),
+    )
+
+    const svc = createIncidentService()
+    await svc.openIncidentFromEnvelope(
+      systemOpenEnv(openPayload({ customerImpacted: true })), // TRUE-ghost: nothing reached the customer
+      state,
+    )
+
+    // Persisted TRUE + recomputed severity high (silêncio + dropCount≥2). Pre-fix
+    // the update carried no customerImpacted at all, so it stayed degraded.
+    expect(mockUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ customerImpacted: true, severity: "high" }),
+      }),
+    )
+  })
+
+  it("[M8] never downgrades customerImpacted true→false on a non-impacting drop", async () => {
+    mockFindUnique.mockResolvedValue(null)
+    mockFindFirst.mockResolvedValueOnce(
+      makeRow({ dropCount: 1, customerImpacted: true }),
+    )
+    mockUpdate.mockResolvedValue(makeRow({ dropCount: 2 }))
+
+    const svc = createIncidentService()
+    await svc.openIncidentFromEnvelope(
+      systemOpenEnv(openPayload({ customerImpacted: false })),
+      state,
+    )
+
+    expect(mockUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ customerImpacted: true }),
+      }),
+    )
+  })
+})
+
+describe("list — severity filter matches the DERIVED (read-time) severity [M7]", () => {
+  beforeEach(() => vi.resetAllMocks())
+
+  it("includes a row that aged into 'high' even though its persisted severity column lags at 'medium'", async () => {
+    const agedOpenedAt = new Date(Date.now() - 21 * 60_000) // past the 20-min aging threshold
+    // silêncio + aged → deriveSeverity = high, but the column was frozen at 'medium'
+    // (written when the drop was fresh). Filtering on the stale column would drop it.
+    const agedSilencio = makeRow({
+      id: "aged",
+      severity: "medium",
+      customerImpacted: true,
+      dropCount: 1,
+      openedAt: agedOpenedAt,
+    })
+    // aviso enviado + fresh → derives to 'low'.
+    const freshAviso = makeRow({
+      id: "fresh",
+      severity: "low",
+      customerImpacted: false,
+      dropCount: 1,
+      openedAt: new Date(),
+    })
+    mockFindMany.mockResolvedValue([agedSilencio, freshAviso])
+    mockCount.mockResolvedValue(2)
+
+    const svc = createIncidentService()
+    const out = await svc.list({ severity: "high" })
+
+    // Only the aged row matches the DERIVED severity — the displayed set and the
+    // filtered set agree.
+    expect(out.rows).toHaveLength(1)
+    expect((out.rows[0] as { id: string }).id).toBe("aged")
+    expect(out.rows[0]!.severity).toBe("high")
+
+    // The severity predicate is NOT pushed into the DB where-clause (it can't be —
+    // the column is stale).
+    const whereArg = (mockFindMany.mock.calls[0]![0] as { where: Record<string, unknown> }).where
+    expect(whereArg).not.toHaveProperty("severity")
+
+    // Independent open count is preserved (never rows.length).
+    expect(out.openCount).toBe(2)
+  })
+})

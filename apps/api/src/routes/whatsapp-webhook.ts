@@ -252,7 +252,11 @@ async function retryForMissedMessages(
       log,
     });
 
-    if (retryResponse.text) {
+    // Gate on a TRIMMED non-blank reply (M3) — mirrors classifyTurnDelivery's
+    // notion of a real delivered reply. A whitespace-only completion ("\n") is
+    // NOT a delivered reply: it must not be sent and must not auto-resolve the
+    // OPEN incident; instead it falls through to the whitespace_only branch below.
+    if (retryResponse.text && retryResponse.text.trim().length > 0) {
       await sendText(`whatsapp:${phone}`, wrapLegacyResponderText(retryResponse.text));
       await appendMessages(session.sessionId, [
         { role: "assistant", content: retryResponse.text },
@@ -1006,7 +1010,13 @@ async function handleMessageAsync(
     // this sits OUT of the `if (agentResponse.text…)` text gate). Fail-open,
     // idempotent, fast-null on the happy path. ──
     if (deliveredText && agentResponse.turnId) {
-      await closeIncidentOnDeliveredReply(session.sessionId, agentResponse.turnId, log);
+      // Detached (L10): the close is fail-open + idempotent, so it must NOT be
+      // awaited on the hot path — awaiting a DB lookup on every delivered reply
+      // extends the lock-hold and gates finally/lock-release/finalizeIdempotency.
+      // Fire-and-forget with a swallow (behavior otherwise identical).
+      void closeIncidentOnDeliveredReply(session.sessionId, agentResponse.turnId, log).catch(
+        () => {},
+      );
     }
 
     const classification = classifyTurnDelivery({

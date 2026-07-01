@@ -44,6 +44,13 @@ vi.mock("@ibatexas/domain", () => ({
     appendMessage: mockAppendMessage,
   }),
   prisma: { customer: { findUnique: mockCustomerFindUnique } },
+  FROZEN_CAUSES: [
+    "empty_completion",
+    "whitespace_only",
+    "send_failed",
+    "retry_exhausted",
+    "timeout",
+  ],
 }));
 
 vi.mock("@ibatexas/audit-sink", () => ({ getAuditSink: () => undefined }));
@@ -123,6 +130,27 @@ describe("GET /api/admin/incidents is manager-gated", () => {
       expect(body.openCount).toBe(7);
       // Active (OPEN) bucket first, aged-first within it, terminal last.
       expect(body.incidents.map((i) => i.id)).toEqual(["A", "B", "C"]);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("accepts a FROZEN cause filter and rejects an unknown one (400)", async () => {
+    // The cause filter enum is derived from the canonical FROZEN_CAUSES (no
+    // hand-copied list) — a frozen value validates, anything else 400s.
+    mockList.mockResolvedValue({ rows: [], openCount: 0 });
+    const server = await buildServer(MANAGER);
+    try {
+      const ok = await server.inject({
+        method: "GET",
+        url: "/api/admin/incidents?cause=empty_completion",
+      });
+      expect(ok.statusCode).toBe(200);
+      const bad = await server.inject({
+        method: "GET",
+        url: "/api/admin/incidents?cause=not_a_cause",
+      });
+      expect(bad.statusCode).toBe(400);
     } finally {
       await server.close();
     }

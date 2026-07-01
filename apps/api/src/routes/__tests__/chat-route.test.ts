@@ -66,6 +66,8 @@ const mockIsSessionPausedForHuman = vi.hoisted(() => vi.fn());
 // real kernel/NATS/DB.
 const mockEmitNoDelivery = vi.hoisted(() => vi.fn());
 const mockOpenIncidentInline = vi.hoisted(() => vi.fn());
+// W1 auto-close seam (M4): a delivered web reply self-heals an OPEN incident.
+const mockCloseIncidentOnDeliveredReply = vi.hoisted(() => vi.fn());
 
 vi.mock("@ibatexas/tools", () => ({
   getRedisClient: mockGetRedisClient,
@@ -132,6 +134,10 @@ vi.mock("../../conversation/no-delivery.js", async (importOriginal) => {
   };
 });
 
+vi.mock("../../incidents/incident-auto-close.js", () => ({
+  closeIncidentOnDeliveredReply: mockCloseIncidentOnDeliveredReply,
+}));
+
 import { chatRoutes } from "../chat.js";
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -197,6 +203,7 @@ beforeEach(() => {
 
   mockEmitNoDelivery.mockResolvedValue(undefined);
   mockOpenIncidentInline.mockResolvedValue({ kind: "opened", incidentId: "inc-1" });
+  mockCloseIncidentOnDeliveredReply.mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -514,6 +521,36 @@ describe("POST /api/chat/messages — W1 no-reply incident seam", () => {
     expect(assistantWasPersisted()).toBe(true);
   });
 
+  it("M4: a delivered web reply auto-closes an OPEN incident (WhatsApp :1009 parity)", async () => {
+    mockHandleTurn.mockResolvedValue({
+      response: { text: "Pronto, resolvido!" },
+      decision: { kind: "EXECUTE" },
+    });
+
+    await postGuest();
+    await waitFor(() => mockReleaseLock.mock.calls.length > 0);
+
+    // The web plane now self-heals its own OPEN incidents on a delivered reply,
+    // keyed on the per-turn id from the capsule (the WhatsApp seam analog).
+    expect(mockCloseIncidentOnDeliveredReply).toHaveBeenCalledWith(
+      SID,
+      "turn-1",
+      expect.anything(),
+    );
+    // A delivered reply is not a drop → no incident opened.
+    expect(mockOpenIncidentInline).not.toHaveBeenCalled();
+  });
+
+  it("M4: an empty (undelivered) web reply does NOT auto-close", async () => {
+    mockHandleTurn.mockResolvedValue({ response: { text: "" }, decision: { kind: "EXECUTE" } });
+
+    await postGuest();
+    await waitFor(() => mockReleaseLock.mock.calls.length > 0);
+
+    // Nothing reached the customer → no self-heal (the drop stays flagged).
+    expect(mockCloseIncidentOnDeliveredReply).not.toHaveBeenCalled();
+  });
+
   it("bot-paused session: NO incident (pause is excluded by construction)", async () => {
     vi.stubEnv("WEB_EMPTY_COMPLETION_HOLDING", "true");
     mockIsSessionPausedForHuman.mockResolvedValue(true);
@@ -668,7 +705,11 @@ describe("POST /api/chat/messages — W1 supersession (F1) & catch parity (F2)",
     await app.close();
   });
 
-  it("F2: the conductor throws → opens an incident (send_failed, customerImpacted=false) + degraded {type:error} — WA :899 parity", async () => {
+  it("M5: a pre-result internal throw (turn_error) opens NO incident but still degrades to {type:error} — WhatsApp :1057 parity", async () => {
+    // A non-aborted conductor throw before any result is `turn_error`, which is
+    // OUTSIDE the frozen IncidentCause taxonomy. WhatsApp drops it (canned apology
+    // only, no incident); the web plane must match — it previously coerced it into
+    // a self-contradictory `send_failed` incident (no send was attempted).
     mockHandleTurn.mockRejectedValue(new Error("conductor exploded"));
 
     const app = await buildApp();
@@ -680,27 +721,11 @@ describe("POST /api/chat/messages — W1 supersession (F1) & catch parity (F2)",
     expect(res.statusCode).toBe(200);
     await waitFor(() => mockReleaseLock.mock.calls.length > 0);
 
-    // The throw is covered: emit + governed open, keyed on the web messageId
-    // (no turnId is in scope on the catch path), customerImpacted=false because
-    // the degraded {type:error} reached the still-connected client.
-    expect(mockEmitNoDelivery).toHaveBeenCalledWith(
-      expect.objectContaining({ cause: "send_failed", channel: "web", customerImpacted: false }),
-      expect.anything(),
-    );
-    expect(mockOpenIncidentInline).toHaveBeenCalledWith(
-      expect.objectContaining({
-        cause: "send_failed",
-        customerImpacted: false,
-        channel: "web",
-        sessionId: SID,
-        senderRef: `web:${SID}`,
-        turnId: null, // catch path has no turnId — dedup falls back to messageId
-        messageSid: expect.stringMatching(/^[0-9a-f-]{36}$/),
-      }),
-      expect.anything(),
-    );
+    // turn_error → NO governed incident (WhatsApp parity), NO NATS fan-out.
+    expect(mockOpenIncidentInline).not.toHaveBeenCalled();
+    expect(mockEmitNoDelivery).not.toHaveBeenCalled();
 
-    // Degraded delivery still reached the client; nothing was persisted.
+    // The degraded {type:error} still reached the client; nothing was persisted.
     expect(mockPushChunk).toHaveBeenCalledWith(SID, { type: "error", message: "Erro interno." });
     expect(assistantWasPersisted()).toBe(false);
     expect(mockCloseCapsule).toHaveBeenCalledTimes(1);

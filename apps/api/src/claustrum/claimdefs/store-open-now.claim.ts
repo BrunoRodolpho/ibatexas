@@ -42,8 +42,12 @@ export const STORE_OPEN_NOW_SOURCE = defineClaim({
     {
       key: "schedule:store_open_now",
       ownershipPolicy: "not_applicable",
-      // A short cacheable ttl bounds staleness (mirrors STORE_HOURS posture).
-      freshnessPolicy: { kind: "cacheable", ttl: 3600 },
+      // "is it open RIGHT NOW" is a same-turn signal: a cacheable snapshot could
+      // validate a stale mealPeriod across a meal-period boundary. Require a LIVE
+      // this-turn read (matches the falsifier's posture below); the investigator
+      // already records the schedule read `sourceMode: "live"`, so this only
+      // tightens the contract — no runtime behavior change.
+      freshnessPolicy: "must_read_this_turn",
       sourceIntegrity: "trusted_service",
       provenancePolicy: "preserve",
     },

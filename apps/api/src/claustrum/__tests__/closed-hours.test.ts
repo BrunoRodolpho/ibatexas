@@ -37,6 +37,14 @@ describe("assertsOpenOrImmediate", () => {
     expect(assertsOpenOrImmediate("Vamos entregar agora mesmo.")).toBe(true);
     expect(assertsOpenOrImmediate("Seu pedido já está em preparo.")).toBe(true);
     expect(assertsOpenOrImmediate("Pode vir retirar agora.")).toBe(true);
+    // M1: "sem taxa/custo/juros/fila" is a benefit phrase, NOT a negation — it
+    // must not suppress an immediate-delivery affirmative.
+    expect(
+      assertsOpenOrImmediate("Fazemos a entrega sem taxa agora mesmo!"),
+    ).toBe(true);
+    expect(assertsOpenOrImmediate("Entregamos sem custo agora.")).toBe(true);
+    // M2: the dominant pt-BR "em 30 minutos" (not just the "min" abbreviation).
+    expect(assertsOpenOrImmediate("Sua entrega chega em 30 minutos.")).toBe(true);
   });
 
   it("does NOT flag a negated / closed statement (honest)", () => {
@@ -47,6 +55,9 @@ describe("assertsOpenOrImmediate", () => {
     expect(
       assertsOpenOrImmediate("Estamos fechados, sem entrega agora."),
     ).toBe(false);
+    // M1 guard: a genuine `sem` negation (no "fechado" nearby) still suppresses —
+    // "sem entrega" is a real absence, not a benefit phrase.
+    expect(assertsOpenOrImmediate("Sem entrega agora.")).toBe(false);
     // F3: the negator sits INSIDE the matched 'loja … aberta' span (not just in
     // the 18-char prefix). It is an honest "the store is not open" statement.
     expect(assertsOpenOrImmediate("A loja não está aberta.")).toBe(false);
@@ -93,6 +104,22 @@ describe("closedHoursBackstop", () => {
       "No momento estamos fechados, mas posso registrar seu pedido para retirada agendada.",
     );
     expect(closedHoursBackstop(d, CLOSED)).toBe(d);
+  });
+
+  it("still fires while closed for a benefit-phrase / pt-BR minutes draft (M1/M2)", () => {
+    // M1: "sem taxa" is a benefit, not a negation — the backstop must NOT be
+    // suppressed while closed.
+    expect(
+      closedHoursBackstop(
+        draft("Fazemos a entrega sem taxa agora mesmo!"),
+        CLOSED,
+      ).text,
+    ).toBe(closedHoursDisclosure(CLOSED));
+    // M2: the dominant pt-BR "em 30 minutos" is caught (not just the "min" abbrev).
+    expect(
+      closedHoursBackstop(draft("Sua entrega chega em 30 minutos."), CLOSED)
+        .text,
+    ).toBe(closedHoursDisclosure(CLOSED));
   });
 
   it("passes a draft with an in-span negator unchanged when closed (F3)", () => {
