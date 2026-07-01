@@ -105,10 +105,35 @@ export interface OpenIncidentResult {
   readonly incident: ConversationIncident
 }
 
+export interface IncidentStats {
+  /**
+   * OPEN-only count — backs the "Abertos" StatCard. Deliberately DISTINCT from
+   * `IncidentListResult.openCount` (which counts NON_TERMINAL = OPEN +
+   * ACKNOWLEDGED for the sidebar badge) so the "Abertos" and "Reconhecidos"
+   * cards never double-count the same acknowledged incident.
+   */
+  readonly open: number
+  readonly acknowledged: number
+  readonly resolvedToday: number
+  readonly resolvedAuto: number
+  readonly resolvedStaff: number
+  readonly avgMinutes: number
+}
+
 export interface IncidentListResult {
   readonly rows: readonly ConversationIncident[]
-  /** Independent COUNT(status=OPEN) — NEVER `rows.length`. */
+  /**
+   * Independent COUNT of NON_TERMINAL (OPEN + ACKNOWLEDGED) incidents — NEVER
+   * `rows.length` and never affected by the list filters. Backs the sidebar
+   * "still needs attention" badge (an acknowledged incident still counts).
+   */
   readonly openCount: number
+  /**
+   * Independent StatCard aggregate (M10) — computed with its OWN queries, NOT
+   * derived from the (paginated / OPEN-first) `rows` window, so resolved-today /
+   * avg-time stay correct during a storm when zero resolved rows are in view.
+   */
+  readonly stats: IncidentStats
 }
 
 export interface IncidentListParams {
@@ -120,6 +145,11 @@ export interface IncidentListParams {
   readonly agingMinutes?: number
   readonly limit?: number
   readonly offset?: number
+  /**
+   * Lower bound for the resolved-today stat window (terminal incidents with
+   * `resolvedAt >= resolvedSince`). Defaults to server start-of-today.
+   */
+  readonly resolvedSince?: Date
 }
 
 export interface IncidentServiceOptions {
@@ -145,6 +175,42 @@ function refreshSeverity(
       now,
     }),
   }
+}
+
+/** Server-local start-of-today — default lower bound for the resolved-today stat window. */
+function startOfServerDay(now: Date): Date {
+  const d = new Date(now)
+  d.setHours(0, 0, 0, 0)
+  return d
+}
+
+/**
+ * INDEPENDENT StatCard aggregate (M10). Runs its OWN queries — an OPEN count, an
+ * ACKNOWLEDGED count, and the small terminal `resolvedAt >= resolvedSince` set —
+ * so the resolved-today / avg-time cards stay correct during a storm when the
+ * OPEN-first list window contains zero resolved rows. PERF: the resolved-since
+ * set is small/bounded (one day of terminal incidents; incidents are exceptional).
+ */
+async function computeStats(resolvedSince: Date): Promise<IncidentStats> {
+  const [open, acknowledged, resolved] = await Promise.all([
+    prisma.conversationIncident.count({ where: { status: "OPEN" } }),
+    prisma.conversationIncident.count({ where: { status: "ACKNOWLEDGED" } }),
+    prisma.conversationIncident.findMany({
+      where: { status: { in: [...TERMINAL] }, resolvedAt: { gte: resolvedSince } },
+      select: { openedAt: true, resolvedAt: true, resolutionType: true },
+    }),
+  ])
+  const resolvedToday = resolved.length
+  const resolvedAuto = resolved.filter((r) => r.resolutionType === "AUTO").length
+  const resolvedStaff = resolvedToday - resolvedAuto
+  // Ignore negative durations (clock skew / bad data) — mirrors the client guard.
+  const durations = resolved
+    .map((r) => (r.resolvedAt ? r.resolvedAt.getTime() - r.openedAt.getTime() : -1))
+    .filter((ms) => ms >= 0)
+  const avgMinutes = durations.length
+    ? Math.round(durations.reduce((a, b) => a + b, 0) / durations.length / 60_000)
+    : 0
+  return { open, acknowledged, resolvedToday, resolvedAuto, resolvedStaff, avgMinutes }
 }
 
 export function createIncidentService(options?: IncidentServiceOptions) {
@@ -364,9 +430,12 @@ export function createIncidentService(options?: IncidentServiceOptions) {
     // ── Reads ──────────────────────────────────────────────────────────────
 
     /**
-     * Filtered incident list + an INDEPENDENT open count. `openCount` is a
-     * standalone COUNT(status=OPEN) — never `rows.length` and never affected by
-     * the list filters (it backs the in-app badge). Severity is recomputed at
+     * Filtered incident list + an INDEPENDENT open count + an INDEPENDENT stat
+     * aggregate. `openCount` is a standalone COUNT of NON_TERMINAL (OPEN +
+     * ACKNOWLEDGED) — never `rows.length` and never affected by the list filters
+     * (it backs the "still needs attention" sidebar badge, so an acknowledged
+     * incident still counts). `stats` (M10) is likewise computed with its own
+     * queries, not the paginated/OPEN-first row window. Severity is recomputed at
      * read time on every returned row.
      */
     async list(params: IncidentListParams = {}): Promise<IncidentListResult> {
@@ -391,8 +460,10 @@ export function createIncidentService(options?: IncidentServiceOptions) {
       const limit = params.limit ?? 50
       const offset = params.offset ?? 0
       const openCountP = prisma.conversationIncident.count({
-        where: { status: "OPEN" },
+        where: { status: { in: [...NON_TERMINAL] } },
       })
+      // Independent stat aggregate (M10) — own queries, not the `rows` window.
+      const statsP = computeStats(params.resolvedSince ?? startOfServerDay(now))
 
       if (params.severity) {
         // Recompute-then-filter: the severity predicate can't be pushed into SQL
@@ -401,21 +472,22 @@ export function createIncidentService(options?: IncidentServiceOptions) {
         // matching the non-severity filters (no DB `take`/`skip`). Bounded in
         // practice — incidents are exceptional and status/session/aging narrow
         // the set — but revisit if incident volume ever grows large.
-        const [all, openCount] = await Promise.all([
+        const [all, openCount, stats] = await Promise.all([
           prisma.conversationIncident.findMany({
             where,
             orderBy: { openedAt: "desc" },
           }),
           openCountP,
+          statsP,
         ])
         const rows = all
           .map((r) => refreshSeverity(r, now))
           .filter((r) => r.severity === params.severity)
           .slice(offset, offset + limit)
-        return { rows, openCount }
+        return { rows, openCount, stats }
       }
 
-      const [rows, openCount] = await Promise.all([
+      const [rows, openCount, stats] = await Promise.all([
         prisma.conversationIncident.findMany({
           where,
           orderBy: { openedAt: "desc" },
@@ -423,8 +495,9 @@ export function createIncidentService(options?: IncidentServiceOptions) {
           skip: offset,
         }),
         openCountP,
+        statsP,
       ])
-      return { rows: rows.map((r) => refreshSeverity(r, now)), openCount }
+      return { rows: rows.map((r) => refreshSeverity(r, now)), openCount, stats }
     },
 
     async get(id: string): Promise<ConversationIncident | null> {
@@ -432,9 +505,15 @@ export function createIncidentService(options?: IncidentServiceOptions) {
       return row ? refreshSeverity(row) : null
     },
 
-    /** Independent COUNT(status=OPEN) — backs the sidebar badge. */
+    /**
+     * Independent COUNT of NON_TERMINAL (OPEN + ACKNOWLEDGED) incidents — backs
+     * the "still needs attention" sidebar badge (an acknowledged incident still
+     * needs a human, so it stays counted).
+     */
     async countOpen(): Promise<number> {
-      return prisma.conversationIncident.count({ where: { status: "OPEN" } })
+      return prisma.conversationIncident.count({
+        where: { status: { in: [...NON_TERMINAL] } },
+      })
     },
 
     async listOpen(limit = 50): Promise<readonly ConversationIncident[]> {

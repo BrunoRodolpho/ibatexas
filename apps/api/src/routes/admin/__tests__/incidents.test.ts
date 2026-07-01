@@ -155,6 +155,76 @@ describe("GET /api/admin/incidents is manager-gated", () => {
       await server.close();
     }
   });
+
+  it("[M11/M10] returns openCount (NON_TERMINAL) + a stats object and threads resolvedSince", async () => {
+    mockList.mockResolvedValue({
+      rows: [],
+      openCount: 9, // NON_TERMINAL (OPEN + ACKNOWLEDGED) badge count
+      stats: {
+        open: 5,
+        acknowledged: 4,
+        resolvedToday: 3,
+        resolvedAuto: 2,
+        resolvedStaff: 1,
+        avgMinutes: 12,
+      },
+    });
+    const server = await buildServer(MANAGER);
+    try {
+      const iso = "2026-06-29T03:00:00.000Z";
+      const res = await server.inject({
+        method: "GET",
+        url: `/api/admin/incidents?resolvedSince=${encodeURIComponent(iso)}`,
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json() as {
+        openCount: number;
+        stats: Record<string, number>;
+      };
+      expect(body.openCount).toBe(9);
+      expect(body.stats).toMatchObject({
+        open: 5,
+        acknowledged: 4,
+        resolvedToday: 3,
+        resolvedAuto: 2,
+        resolvedStaff: 1,
+        avgMinutes: 12,
+      });
+      // resolvedSince is parsed to a Date and threaded into the service call.
+      const arg = mockList.mock.calls[0]?.[0] as { resolvedSince?: Date };
+      expect(arg.resolvedSince).toBeInstanceOf(Date);
+      expect((arg.resolvedSince as Date).toISOString()).toBe(iso);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("[M10] ignores an unparseable resolvedSince (no 400, param omitted)", async () => {
+    mockList.mockResolvedValue({
+      rows: [],
+      openCount: 0,
+      stats: {
+        open: 0,
+        acknowledged: 0,
+        resolvedToday: 0,
+        resolvedAuto: 0,
+        resolvedStaff: 0,
+        avgMinutes: 0,
+      },
+    });
+    const server = await buildServer(MANAGER);
+    try {
+      const res = await server.inject({
+        method: "GET",
+        url: "/api/admin/incidents?resolvedSince=not-a-date",
+      });
+      expect(res.statusCode).toBe(200);
+      const arg = mockList.mock.calls[0]?.[0] as { resolvedSince?: Date };
+      expect(arg.resolvedSince).toBeUndefined();
+    } finally {
+      await server.close();
+    }
+  });
 });
 
 describe("POST /api/admin/incidents/:id/resolve", () => {

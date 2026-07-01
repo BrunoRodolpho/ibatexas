@@ -410,6 +410,7 @@ const TERMINAL_STATUSES: ReadonlySet<string> = new Set(['AUTO_RESOLVED', 'RESOLV
 interface IncidentListResponse {
   readonly incidents: AdminIncident[]
   readonly openCount: number
+  readonly stats?: IncidentStats
 }
 
 export interface IncidentStats {
@@ -427,22 +428,25 @@ function startOfToday(now: Date = new Date()): Date {
   return d
 }
 
-function computeIncidentStats(rows: readonly AdminIncident[], openCount: number): IncidentStats {
-  const today = startOfToday()
-  const acknowledged = rows.filter((r) => r.status === 'ACKNOWLEDGED').length
-  const resolvedToday = rows.filter(
-    (r) => r.resolvedAt != null && new Date(r.resolvedAt) >= today,
-  )
-  const resolvedAuto = resolvedToday.filter((r) => r.resolutionType === 'AUTO').length
-  const resolvedStaff = resolvedToday.length - resolvedAuto
-  const durations = resolvedToday
-    .filter((r) => r.resolvedAt != null)
-    .map((r) => new Date(r.resolvedAt as string).getTime() - new Date(r.openedAt).getTime())
-    .filter((ms) => ms >= 0)
-  const avgMinutes = durations.length
-    ? Math.round(durations.reduce((a, b) => a + b, 0) / durations.length / 60_000)
-    : 0
-  return { open: openCount, acknowledged, resolvedToday: resolvedToday.length, resolvedAuto, resolvedStaff, avgMinutes }
+const EMPTY_STATS: IncidentStats = {
+  open: 0,
+  acknowledged: 0,
+  resolvedToday: 0,
+  resolvedAuto: 0,
+  resolvedStaff: 0,
+  avgMinutes: 0,
+}
+
+/**
+ * Adopt the INDEPENDENT server stat aggregate (M10): `open` (OPEN-only, distinct
+ * from the NON_TERMINAL sidebar openCount so the "Abertos" card never
+ * double-counts "Reconhecidos"), `acknowledged`, and resolvedToday/Auto/Staff/
+ * avgMinutes — all computed server-side over their own queries, NOT derived from
+ * the OPEN-first limit=100 row window (which during a storm holds zero resolved
+ * rows). Falls back to zeros if an older API omits `stats` so the cards never crash.
+ */
+function computeIncidentStats(serverStats: IncidentStats | undefined): IncidentStats {
+  return serverStats ?? EMPTY_STATS
 }
 
 /** Most common cause across the currently-OPEN incidents (drives the storm copy). */
@@ -472,6 +476,7 @@ function dominantOpenCause(rows: readonly AdminIncident[]): string {
 export function useAdminIncidentsPage() {
   const [allIncidents, setAllIncidents] = useState<AdminIncident[]>([])
   const [openCount, setOpenCount] = useState(0)
+  const [serverStats, setServerStats] = useState<IncidentStats | undefined>(undefined)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [refreshKey, setRefreshKey] = useState(0)
@@ -490,11 +495,16 @@ export function useAdminIncidentsPage() {
       // eslint-disable-next-line react-hooks/set-state-in-effect -- initial load only; loading flag drives the skeleton
       setLoading(true)
     }
-    apiFetch(`/api/admin/incidents?limit=${INCIDENT_FETCH_LIMIT}`)
+    // resolvedSince bounds the server's INDEPENDENT resolved-today aggregate to
+    // local midnight (M10) so "Resolvidos hoje"/"Tempo médio" stay correct even
+    // when a storm pushes all resolved rows out of the OPEN-first fetch window.
+    const resolvedSince = encodeURIComponent(startOfToday().toISOString())
+    apiFetch(`/api/admin/incidents?limit=${INCIDENT_FETCH_LIMIT}&resolvedSince=${resolvedSince}`)
       .then((data: IncidentListResponse) => {
         if (cancelled) return
         setAllIncidents(Array.isArray(data?.incidents) ? data.incidents : [])
         setOpenCount(typeof data?.openCount === 'number' ? data.openCount : 0)
+        setServerStats(data?.stats)
         setError(null)
       })
       .catch((err: unknown) => {
@@ -534,18 +544,22 @@ export function useAdminIncidentsPage() {
     [allIncidents, statusFilter, causeFilter, severityFilter],
   )
 
+  // Adopt the INDEPENDENT server aggregate (M10) — see computeIncidentStats.
+  const stats = useMemo(() => computeIncidentStats(serverStats), [serverStats])
+
   const counts = useMemo(() => {
     const active = allIncidents.filter((i) => !TERMINAL_STATUSES.has(i.status))
     return {
-      open: openCount, // authoritative independent count (may exceed the fetched window)
-      acknowledged: allIncidents.filter((i) => i.status === 'ACKNOWLEDGED').length,
+      // OPEN-only / ACK-only server aggregates: the OPEN filter chip must NOT
+      // show the NON_TERMINAL openCount (which now includes ACKNOWLEDGED), and
+      // the chips must agree with the StatCards fed by the same aggregate.
+      open: stats.open,
+      acknowledged: stats.acknowledged,
       high: active.filter((i) => i.severity === 'high').length,
       medium: active.filter((i) => i.severity === 'medium').length,
       low: active.filter((i) => i.severity === 'low').length,
     }
-  }, [allIncidents, openCount])
-
-  const stats = useMemo(() => computeIncidentStats(allIncidents, openCount), [allIncidents, openCount])
+  }, [allIncidents, stats])
   const dominantCause = useMemo(() => dominantOpenCause(allIncidents), [allIncidents])
 
   const hasActiveFilters = statusFilter !== '' || causeFilter !== '' || severityFilter !== ''

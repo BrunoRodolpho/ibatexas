@@ -64,6 +64,9 @@ const ListQuery = z.object({
   agingMinutes: z.coerce.number().int().min(0).optional(),
   limit: z.coerce.number().int().min(1).max(100).optional(),
   offset: z.coerce.number().int().min(0).optional(),
+  // Lower bound (ISO) for the resolved-today stat window. Parsed leniently in
+  // the handler (unparseable → ignored, service defaults to start-of-today).
+  resolvedSince: z.string().min(1).max(64).optional(),
 });
 
 // ── Default sort (computed server-side — DataTable can't multi-key) ───────────
@@ -132,7 +135,14 @@ export async function adminIncidentRoutes(server: FastifyInstance): Promise<void
     },
     async (request, reply) => {
       const q = request.query as z.infer<typeof ListQuery>;
-      const { rows, openCount } = await svc().list({
+      // Lenient ISO parse: ignore an unparseable value (the service then defaults
+      // resolvedSince to server start-of-today) rather than 400ing the whole list.
+      let resolvedSince: Date | undefined;
+      if (q.resolvedSince) {
+        const d = new Date(q.resolvedSince);
+        if (!Number.isNaN(d.getTime())) resolvedSince = d;
+      }
+      const { rows, openCount, stats } = await svc().list({
         ...(q.status ? { status: q.status } : {}),
         ...(q.cause ? { cause: q.cause } : {}),
         ...(q.severity ? { severity: q.severity } : {}),
@@ -140,11 +150,13 @@ export async function adminIncidentRoutes(server: FastifyInstance): Promise<void
         ...(q.agingMinutes !== undefined ? { agingMinutes: q.agingMinutes } : {}),
         ...(q.limit !== undefined ? { limit: q.limit } : {}),
         ...(q.offset !== undefined ? { offset: q.offset } : {}),
+        ...(resolvedSince ? { resolvedSince } : {}),
       });
       // Pre-sort here (severity already refreshed read-time by the service).
-      // openCount is the INDEPENDENT COUNT(status=OPEN), never rows.length.
+      // openCount is the INDEPENDENT NON_TERMINAL count, never rows.length; stats
+      // is the INDEPENDENT StatCard aggregate (M10), never derived from rows.
       const incidents = [...rows].sort(defaultIncidentSort);
-      return reply.send({ incidents, openCount });
+      return reply.send({ incidents, openCount, stats });
     },
   );
 

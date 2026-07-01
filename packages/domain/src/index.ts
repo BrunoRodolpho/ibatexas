@@ -62,6 +62,7 @@ export {
   type OpenIncidentResult,
   type IncidentListResult,
   type IncidentListParams,
+  type IncidentStats,
   type DeriveSeverityInput,
 } from "./services/incident.service.js"
 export {

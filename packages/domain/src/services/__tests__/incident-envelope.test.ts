@@ -527,12 +527,151 @@ describe("list — severity filter matches the DERIVED (read-time) severity [M7]
     expect((out.rows[0] as { id: string }).id).toBe("aged")
     expect(out.rows[0]!.severity).toBe("high")
 
-    // The severity predicate is NOT pushed into the DB where-clause (it can't be —
-    // the column is stale).
-    const whereArg = (mockFindMany.mock.calls[0]![0] as { where: Record<string, unknown> }).where
+    // The severity predicate is NOT pushed into the DB where-clause of the LIST
+    // query (it can't be — the column is stale). The list query is the findMany
+    // WITHOUT a resolvedAt bound (that one is the independent stats aggregate).
+    const listCall = mockFindMany.mock.calls.find(
+      (c) => !(c[0] as { where: Record<string, unknown> }).where.resolvedAt,
+    )!
+    const whereArg = (listCall[0] as { where: Record<string, unknown> }).where
     expect(whereArg).not.toHaveProperty("severity")
 
     // Independent open count is preserved (never rows.length).
     expect(out.openCount).toBe(2)
+  })
+})
+
+describe("list — openCount NON_TERMINAL (M11) + independent stats aggregate (M10)", () => {
+  beforeEach(() => vi.resetAllMocks())
+
+  // count(...) keyed by the queried status so we can distinguish the three count
+  // calls (NON_TERMINAL openCount, OPEN stat, ACKNOWLEDGED stat) regardless of order.
+  function keyCounts(openN: number, ackN: number) {
+    mockCount.mockImplementation((args: { where: { status: unknown } }) => {
+      const s = args.where.status
+      if (s === "OPEN") return Promise.resolve(openN)
+      if (s === "ACKNOWLEDGED") return Promise.resolve(ackN)
+      return Promise.resolve(openN + ackN) // NON_TERMINAL { in: [...] }
+    })
+  }
+  // findMany routes the resolved-since aggregate (has a resolvedAt bound) vs the
+  // list-window query (no resolvedAt bound) to distinct fixtures.
+  function keyFindMany(resolvedRows: unknown[], listRows: unknown[]) {
+    mockFindMany.mockImplementation((args: { where: Record<string, unknown> }) =>
+      Promise.resolve(args.where.resolvedAt ? resolvedRows : listRows),
+    )
+  }
+
+  it("[M11] openCount counts NON_TERMINAL — an ACKNOWLEDGED incident is included, not dropped", async () => {
+    keyCounts(3, 2) // 3 OPEN + 2 ACKNOWLEDGED
+    keyFindMany([], [makeRow({ id: "o1", status: "OPEN" })])
+
+    const svc = createIncidentService()
+    const out = await svc.list()
+
+    // Pre-M11 openCount was OPEN-only (3); the badge must now be OPEN+ACK = 5.
+    expect(out.openCount).toBe(5)
+    // The badge query used the NON_TERMINAL { in: [...] } predicate (not status:"OPEN").
+    const nonTerminalCall = mockCount.mock.calls.find(
+      (c) => typeof (c[0] as { where: { status: unknown } }).where.status === "object",
+    )!
+    expect(
+      (nonTerminalCall[0] as { where: { status: { in: string[] } } }).where.status.in,
+    ).toEqual(expect.arrayContaining(["OPEN", "ACKNOWLEDGED"]))
+  })
+
+  it("[M10] stats come from an INDEPENDENT resolved-since set, not the OPEN-first list window", async () => {
+    const resolvedAuto = makeRow({
+      id: "r_auto",
+      status: "AUTO_RESOLVED",
+      resolutionType: "AUTO",
+      openedAt: new Date("2026-06-29T10:00:00.000Z"),
+      resolvedAt: new Date("2026-06-29T10:10:00.000Z"), // 10 min
+    })
+    const resolvedStaff = makeRow({
+      id: "r_staff",
+      status: "RESOLVED",
+      resolutionType: "STAFF",
+      openedAt: new Date("2026-06-29T10:00:00.000Z"),
+      resolvedAt: new Date("2026-06-29T10:30:00.000Z"), // 30 min
+    })
+    // Storm: the list window (limit=100) holds ONLY open rows — zero resolved —
+    // yet the stats aggregate is computed from its own resolved-since query.
+    const stormWindow = Array.from({ length: 100 }, (_, i) =>
+      makeRow({ id: `open_${i}`, status: "OPEN" }),
+    )
+    keyCounts(100, 4)
+    keyFindMany([resolvedAuto, resolvedStaff], stormWindow)
+
+    const svc = createIncidentService()
+    const out = await svc.list({ limit: 100 })
+
+    // resolved-today reflects the independent set although the window has none.
+    expect(out.stats.resolvedToday).toBe(2)
+    expect(out.stats.resolvedAuto).toBe(1)
+    expect(out.stats.resolvedStaff).toBe(1)
+    expect(out.stats.avgMinutes).toBe(20) // mean(10, 30) minutes
+    // open is OPEN-only (NOT the NON_TERMINAL openCount); acknowledged is ACK-only.
+    expect(out.stats.open).toBe(100)
+    expect(out.stats.acknowledged).toBe(4)
+    expect(out.openCount).toBe(104) // badge = NON_TERMINAL (100 + 4)
+
+    // The resolved-since query filtered on TERMINAL status + a resolvedAt lower bound.
+    const resolvedCall = mockFindMany.mock.calls.find(
+      (c) => (c[0] as { where: Record<string, unknown> }).where.resolvedAt,
+    )!
+    const w = (resolvedCall[0] as {
+      where: { status: { in: string[] }; resolvedAt: { gte: Date } }
+    }).where
+    expect(w.status.in).toEqual(expect.arrayContaining(["AUTO_RESOLVED", "RESOLVED"]))
+    expect(w.resolvedAt.gte).toBeInstanceOf(Date)
+  })
+
+  it("[M10] ignores negative durations and returns 0 avgMinutes when the set is empty", async () => {
+    const skewed = makeRow({
+      id: "skewed",
+      status: "RESOLVED",
+      resolutionType: "STAFF",
+      openedAt: new Date("2026-06-29T10:10:00.000Z"),
+      resolvedAt: new Date("2026-06-29T10:00:00.000Z"), // resolved BEFORE opened (skew)
+    })
+    keyCounts(0, 0)
+    keyFindMany([skewed], [])
+
+    const svc = createIncidentService()
+    const out = await svc.list()
+
+    expect(out.stats.resolvedToday).toBe(1) // still counted
+    expect(out.stats.avgMinutes).toBe(0) // negative duration ignored → no data → 0
+  })
+
+  it("[M10] defaults resolvedSince to server start-of-today and honors an explicit value", async () => {
+    keyCounts(0, 0)
+    keyFindMany([], [])
+    const svc = createIncidentService()
+
+    await svc.list()
+    const defCall = mockFindMany.mock.calls.find(
+      (c) => (c[0] as { where: Record<string, unknown> }).where.resolvedAt,
+    )!
+    const defGte = (defCall[0] as { where: { resolvedAt: { gte: Date } } }).where
+      .resolvedAt.gte
+    // Start-of-(server-local)-today: all sub-day components zeroed.
+    expect([
+      defGte.getHours(),
+      defGte.getMinutes(),
+      defGte.getSeconds(),
+      defGte.getMilliseconds(),
+    ]).toEqual([0, 0, 0, 0])
+
+    mockFindMany.mockClear()
+    const since = new Date("2026-06-01T00:00:00.000Z")
+    await svc.list({ resolvedSince: since })
+    const expCall = mockFindMany.mock.calls.find(
+      (c) => (c[0] as { where: Record<string, unknown> }).where.resolvedAt,
+    )!
+    expect(
+      (expCall[0] as { where: { resolvedAt: { gte: Date } } }).where.resolvedAt.gte,
+    ).toBe(since)
   })
 })
