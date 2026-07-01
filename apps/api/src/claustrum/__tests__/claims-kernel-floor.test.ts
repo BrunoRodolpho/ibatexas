@@ -4,7 +4,7 @@
  * RCA 2026-06-29: with the pipeline ENABLED, a store-open turn silently degraded
  * to UNKNOWN because the runtime resolved the PUBLISHED kernels (@adjudicate/core
  * 1.6.0 + @claustrum/core 0.3.1), which lack the egress-brand surface the
- * Track-A code requires (>=1.7.0 W6 + >=0.3.2 6a render-from-claims). That drop
+ * Track-A code requires (>=1.8.0 W6 + >=0.4.0 6a render-from-claims). That drop
  * point was invisible. This guard makes it operator-VISIBLE at boot.
  *
  * These tests pin the PURE warning function + the boot-wiring (`buildClaimsSeams`
@@ -45,14 +45,14 @@ describe("claimsKernelFloorWarnings — pure floor check", () => {
     expect(warnings).toHaveLength(2);
     expect(warnings.join("\n")).toContain("@adjudicate/core@1.6.0 is BELOW");
     expect(warnings.join("\n")).toContain("@claustrum/core@0.3.1 is BELOW");
-    expect(warnings.join("\n")).toContain(">=1.7.0");
+    expect(warnings.join("\n")).toContain(">=1.8.0");
   });
 
   it("is SILENT when the linked kernels meet the floor (egress-brand state)", () => {
     expect(
       claimsKernelFloorWarnings({
         "@adjudicate/core": CLAIMS_KERNEL_FLOOR["@adjudicate/core"],
-        "@claustrum/core": "0.3.5",
+        "@claustrum/core": "0.4.5",
       }),
     ).toEqual([]);
   });
@@ -66,7 +66,7 @@ describe("claimsKernelFloorWarnings — pure floor check", () => {
     ).toHaveLength(1);
   });
 
-  it("compares numerically, not lexically (1.10.0 is NOT below 1.7.0)", () => {
+  it("compares numerically, not lexically (1.10.0 is NOT below 1.8.0)", () => {
     expect(
       claimsKernelFloorWarnings({ "@adjudicate/core": "1.10.0" }),
     ).toEqual([]);
@@ -74,7 +74,7 @@ describe("claimsKernelFloorWarnings — pure floor check", () => {
 
   it("treats an exact-floor version as satisfied (>= floor)", () => {
     expect(
-      claimsKernelFloorWarnings({ "@claustrum/core": "0.3.2" }),
+      claimsKernelFloorWarnings({ "@claustrum/core": "0.4.0" }),
     ).toEqual([]);
   });
 });

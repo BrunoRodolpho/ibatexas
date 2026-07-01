@@ -94,9 +94,14 @@ export function classifyTurnDelivery(
     if (input.deliveredText) return null;
     return { cause: "empty_completion", customerImpacted: true };
   }
-  // NOTE: `whitespace_only` is intentionally NOT short-circuited on deliveredText —
-  // whitespace text IS sent (textSent=true), so a blank reply stays a flagged drop.
   if (input.disposition === "whitespace_only") {
+    // PIX-only false-positive (F5): same guard as empty_completion. A whitespace
+    // reply is NOT a delivered reply — the send gate trims it (mirroring the retry
+    // M3 gate), so it is never sent as text (textSent=false) and `deliveredText ==
+    // hasPixData` here. So a blank completion that still delivered a PIX action DID
+    // reach the customer and must NOT open an incident + a duplicate holding message;
+    // a blank completion that delivered nothing (deliveredText=false) stays flagged.
+    if (input.deliveredText) return null;
     return { cause: "whitespace_only", customerImpacted: true };
   }
 

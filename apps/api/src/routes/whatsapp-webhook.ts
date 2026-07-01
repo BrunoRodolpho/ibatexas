@@ -975,8 +975,13 @@ async function handleMessageAsync(
 
     // ── Send response ─────────────────────────────────────────────────────
     // Skip a stale reply if the turn raced past the deadline (P2-CONC-ABORT).
+    // Gate on a TRIMMED non-blank reply (mirrors the retry M3 gate + classifyTurnDelivery):
+    // a whitespace-only completion is NOT a delivered reply — sending it would push a
+    // blank bubble AND make `deliveredText` (below) true, wrongly auto-resolving an
+    // incident and masking the whitespace_only PIX-only guard (F5). Left unsent, so
+    // `deliveredText == hasPixData` for a whitespace turn, exactly like empty_completion.
     let textSent = false;
-    if (agentResponse.text && !turnAbort.signal.aborted) {
+    if (agentResponse.text && agentResponse.text.trim().length > 0 && !turnAbort.signal.aborted) {
       sendEntered = true;
       await sendText(`whatsapp:${phone}`, wrapLegacyResponderText(agentResponse.text));
       sendCompleted = true;

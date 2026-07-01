@@ -67,11 +67,19 @@ describe("classifyTurnDelivery", () => {
     ).toEqual({ cause: "empty_completion", customerImpacted: true });
   });
 
-  it("still flags whitespace_only even if deliveredText is true (whitespace IS sent)", () => {
-    // Whitespace text is actually sent (textSent=true), so a blank reply stays a
-    // flagged drop and is NOT short-circuited like empty_completion (F1).
+  it("returns null when a whitespace_only turn still delivered PIX (F5 false-positive fix)", () => {
+    // A whitespace reply is NOT sent as text (the send gate trims it), so
+    // deliveredText == hasPixData: a blank completion that still delivered a PIX
+    // action reached the customer and must NOT flag a no-reply incident.
     expect(
       classifyTurnDelivery({ disposition: "whitespace_only", deliveredText: true }),
+    ).toBeNull();
+  });
+
+  it("flags whitespace_only as a drop when nothing was delivered (deliveredText=false)", () => {
+    // A blank reply that delivered nothing is still a genuine ghost.
+    expect(
+      classifyTurnDelivery({ disposition: "whitespace_only", deliveredText: false }),
     ).toEqual({ cause: "whitespace_only", customerImpacted: true });
   });
 

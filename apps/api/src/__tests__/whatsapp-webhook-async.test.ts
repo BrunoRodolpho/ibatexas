@@ -639,6 +639,48 @@ describe("handleMessageAsync — conductor turn", () => {
     );
   }, 15000);
 
+  it("F5: a whitespace main reply that delivered PIX is NOT sent as text and opens NO incident", async () => {
+    // The model returned a blank completion but the turn DID deliver a PIX action
+    // (copia-e-cola + QR). Whitespace is NOT a delivered reply → not sent, but the
+    // PIX reached the customer, so deliveredText == hasPixData == true and the
+    // whitespace_only PIX-only guard (F5) must suppress the incident + holding msg.
+    mockHandleTurn.mockResolvedValue({
+      response: { text: "  \n " },
+      acted: {
+        kind: "executed",
+        result: {
+          pixCopyPaste: "00020126PIX-WHITESPACE-CASE",
+          pixQrCode: "data:image/png;base64,QR",
+          pixExpiresAt: "2026-06-28T23:59:00Z",
+          orderId: "ord-ws",
+        },
+      },
+      decision: { kind: "EXECUTE" },
+    });
+
+    const app = await buildTestServer();
+    const res = await post(app, "MessageSid=SM_WS_PIX&From=whatsapp%3A%2B5511999999999&Body=pagar");
+    expect(res.statusCode).toBe(200);
+
+    // The PIX copia-e-cola block confirms the turn was fully processed.
+    await vi.waitFor(() => {
+      expect(mockSendText).toHaveBeenCalledWith(
+        `whatsapp:${PHONE}`,
+        textContaining("Código PIX (copia e cola)"),
+      );
+    }, { timeout: 4000 });
+
+    // Whitespace text was NOT sent as a message…
+    expect(mockSendText).not.toHaveBeenCalledWith(`whatsapp:${PHONE}`, mintRenderedReply("  \n "));
+    // …no empty-completion holding message was pushed…
+    expect(mockSendText).not.toHaveBeenCalledWith(
+      `whatsapp:${PHONE}`,
+      textContaining("não consegui montar uma resposta"),
+    );
+    // …and NO no-delivery incident was opened (PIX reached the customer).
+    expect(mockOpenIncidentInline).not.toHaveBeenCalled();
+  }, 15000);
+
   it("L10: a delivered reply still auto-closes an OPEN incident (detached fire-and-forget)", async () => {
     // Default history ends with an assistant message → no post-lock retry. Give
     // the main turn a turnId so the (now detached) close is observable.

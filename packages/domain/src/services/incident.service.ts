@@ -201,7 +201,14 @@ async function computeStats(resolvedSince: Date): Promise<IncidentStats> {
     }),
   ])
   const resolvedToday = resolved.length
-  const resolvedAuto = resolved.filter((r) => r.resolutionType === "AUTO").length
+  // SYSTEM-driven closes are NOT staff work: AUTO (self-heal on the next delivered
+  // reply) and HANDED_OFF (`resolveIncidentOnHandoff` → resolvedBy `system:escalation`)
+  // are both closed by the system, not by a human clicking "resolver". Counting
+  // HANDED_OFF as staff over-reported the "você" sub-line. `resolvedStaff` is the
+  // genuinely-manual remainder (STAFF), so `auto + você = resolvedToday` still holds.
+  const resolvedAuto = resolved.filter(
+    (r) => r.resolutionType === "AUTO" || r.resolutionType === "HANDED_OFF",
+  ).length
   const resolvedStaff = resolvedToday - resolvedAuto
   // Ignore negative durations (clock skew / bad data) — mirrors the client guard.
   const durations = resolved

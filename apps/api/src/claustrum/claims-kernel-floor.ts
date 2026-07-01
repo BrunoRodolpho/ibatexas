@@ -8,11 +8,12 @@
 // resolved the PUBLISHED kernels (@adjudicate/core 1.6.0 + @claustrum/core
 // 0.3.1), which LACK exactly the features the Track-A tag-then-derive code
 // requires:
-//   - @adjudicate/core >= 1.7.0 — the W6 surface: `valueBinding` /
-//     `falsifierComplete` / `resolveAgainstFalsifiers` + `renderableCanonical`.
-//     Below this a STORE_OPEN_NOW candidate carrying a `valueBinding` it ignores
-//     can never reach VALIDATED → UNKNOWN.
-//   - @claustrum/core >= 0.3.2 — the `handleTurn` stage 6a render-from-claims
+//   - @adjudicate/core >= 1.8.0 — the W6 egress-brand surface: `valueBinding` /
+//     `falsifierComplete` / `resolveAgainstFalsifiers` + `renderableCanonical` /
+//     `unwrapCanonical`. Below this a STORE_OPEN_NOW candidate carrying a
+//     `valueBinding` it ignores can never reach VALIDATED → UNKNOWN (and the
+//     renderer's value-imports would not even resolve).
+//   - @claustrum/core >= 0.4.0 — the `handleTurn` stage 6a render-from-claims
 //     (`claimsRenderer`). Below this there is no stage to render a VALIDATED set.
 //
 // This is a Wall-2 (kernel/conductor republish) condition: NO ibatexas-only edit
@@ -33,8 +34,8 @@ import { dirname, join, parse as parsePath } from "node:path";
  * required surface is in a PUBLISHED kernel ≤ the listed version.
  */
 export const CLAIMS_KERNEL_FLOOR = {
-  "@adjudicate/core": "1.7.0",
-  "@claustrum/core": "0.3.2",
+  "@adjudicate/core": "1.8.0",
+  "@claustrum/core": "0.4.0",
 } as const;
 
 export type KernelPackage = keyof typeof CLAIMS_KERNEL_FLOOR;

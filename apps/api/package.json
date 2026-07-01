@@ -22,7 +22,7 @@
     "@adjudicate/audit": "^4.0.0",
     "@adjudicate/audit-postgres": "^4.0.0",
     "@adjudicate/conformance": "^3.0.0",
-    "@adjudicate/core": "^1.6.0",
+    "@adjudicate/core": "^1.8.0",
     "@adjudicate/drift": "^0.2.2",
     "@adjudicate/locales-pt-br": "^0.2.3",
     "@adjudicate/pack-payments-pix": "^0.3.0",

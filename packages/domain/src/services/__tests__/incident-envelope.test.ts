@@ -595,22 +595,33 @@ describe("list — openCount NON_TERMINAL (M11) + independent stats aggregate (M
       openedAt: new Date("2026-06-29T10:00:00.000Z"),
       resolvedAt: new Date("2026-06-29T10:30:00.000Z"), // 30 min
     })
+    // HANDED_OFF is a SYSTEM-driven close (resolveIncidentOnHandoff → system:escalation),
+    // NOT staff work: it must count toward `resolvedAuto`, not `resolvedStaff` (F4).
+    const resolvedHandoff = makeRow({
+      id: "r_handoff",
+      status: "RESOLVED",
+      resolvedBy: "system:escalation",
+      resolutionType: "HANDED_OFF",
+      openedAt: new Date("2026-06-29T10:00:00.000Z"),
+      resolvedAt: new Date("2026-06-29T10:20:00.000Z"), // 20 min
+    })
     // Storm: the list window (limit=100) holds ONLY open rows — zero resolved —
     // yet the stats aggregate is computed from its own resolved-since query.
     const stormWindow = Array.from({ length: 100 }, (_, i) =>
       makeRow({ id: `open_${i}`, status: "OPEN" }),
     )
     keyCounts(100, 4)
-    keyFindMany([resolvedAuto, resolvedStaff], stormWindow)
+    keyFindMany([resolvedAuto, resolvedStaff, resolvedHandoff], stormWindow)
 
     const svc = createIncidentService()
     const out = await svc.list({ limit: 100 })
 
     // resolved-today reflects the independent set although the window has none.
-    expect(out.stats.resolvedToday).toBe(2)
-    expect(out.stats.resolvedAuto).toBe(1)
+    expect(out.stats.resolvedToday).toBe(3)
+    // AUTO + HANDED_OFF are system-driven → resolvedAuto=2; only STAFF is "você".
+    expect(out.stats.resolvedAuto).toBe(2)
     expect(out.stats.resolvedStaff).toBe(1)
-    expect(out.stats.avgMinutes).toBe(20) // mean(10, 30) minutes
+    expect(out.stats.avgMinutes).toBe(20) // mean(10, 30, 20) minutes
     // open is OPEN-only (NOT the NON_TERMINAL openCount); acknowledged is ACK-only.
     expect(out.stats.open).toBe(100)
     expect(out.stats.acknowledged).toBe(4)
