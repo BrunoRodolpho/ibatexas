@@ -137,7 +137,7 @@ describe("Track A 4B — tag→derive→VALIDATED for STORE_OPEN_NOW", () => {
     // C6 binds against THIS raw ledger enum — it stays `dinner` (F3 is display-only).
     expect(result.renderable[0]?.value).toEqual({ mealPeriod: "dinner" });
 
-    const out = render(result.renderable, result.terminal);
+    const out = render(result.renderableCanonical, result.terminal);
     // F3 — the DISPLAYED enum is localized to pt-BR (Hard Rule #4); the raw English
     // enum never reaches the customer, while the bound value above stays `dinner`.
     expect(out.text).toContain("jantar");
@@ -181,7 +181,7 @@ describe("Track A 4B — a present override STILL demotes the derived claim (HAR
     // The falsifier RUNTIME arm fired → UNKNOWN (NOT bypassed by derivation).
     expect(result.perClaim[0]?.verdict).toBe("UNKNOWN");
     expect(result.renderable).toHaveLength(0);
-    const out = render(result.renderable, result.terminal);
+    const out = render(result.renderableCanonical, result.terminal);
     // Proposition-free safe terminal — no derived meal-period asserted.
     expect(out.text).not.toContain("dinner");
   });
@@ -291,7 +291,7 @@ describe("Track A 4B — a non-owner PAYMENT_STATUS degrades SAFE (HARD GUARD ii
     const result = runClaimsKernel(ledger, [mallorysPayCandidate()], mallorysDeps());
     expect(result.perClaim[0]?.verdict).toBe("UNKNOWN");
     expect(result.renderable).toHaveLength(0);
-    const out = render(result.renderable, result.terminal);
+    const out = render(result.renderableCanonical, result.terminal);
     expect(out.text).not.toContain("paid");
   });
 
@@ -313,7 +313,7 @@ describe("Track A 4B — a non-owner PAYMENT_STATUS degrades SAFE (HARD GUARD ii
     // owns(mallory, "order-OWNER") === false → ownership DENIED → REFUSED (safe).
     expect(result.perClaim[0]?.verdict).not.toBe("VALIDATED");
     expect(result.renderable).toHaveLength(0);
-    const out = render(result.renderable, result.terminal);
+    const out = render(result.renderableCanonical, result.terminal);
     expect(out.text).not.toContain("paid");
   });
 });

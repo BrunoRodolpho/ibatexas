@@ -73,7 +73,11 @@ export function createIbatexasClaimsRenderer(): ClaimsRendererPort {
         checkRequiredClaimCompleteness(required, resolved).degrade;
 
       const result = render(
-        claims.renderable,
+        // inv.17 — the renderer's REQUIRED input is the kernel-MINTED CanonicalClaim
+        // set (`renderableCanonical`, 1:1 with `renderable`), NOT the raw renderable
+        // claims. The renderer cannot author prose from a raw claim + model value;
+        // only the kernel mints canonical claims, on the VALIDATED ∧ P2-consistent set.
+        claims.renderableCanonical,
         // Demote-only: a missing required companion forces a proposition-free
         // UNKNOWN; otherwise the kernel's own terminal stands.
         degrade ? "UNKNOWN" : claims.terminal,

@@ -21,6 +21,7 @@ import type {
   ClaimsKernelDepsForTurn,
   ConductorOptions,
 } from "@claustrum/core";
+import { assertClaimDefinitionRegistryValid } from "./claim-definition-registry.js";
 import { createIbatexasClaimsRenderer } from "./claims-renderer-adapter.js";
 import {
   claimsKernelFloorWarnings,
@@ -115,6 +116,16 @@ export function buildClaimsSeams(deps: BuildClaimsSeamsDeps): ClaimsSeams {
     // OFF (default): no seams — byte-identical to today.
     return {};
   }
+  // inv.18 v1 FAIL-CLOSED registry load (FIRST — fail-closed before anything else):
+  // before constructing any claims seam, assert the assembled ClaimDefinition
+  // registry is complete + consistent (every render-template slot backed by a
+  // §5-gated projection; every falsifierComplete type enumerates falsifiers; every
+  // VALIDATED_TEMPLATES entry has a registered definition; Triad-closure membership;
+  // provenance default-deny). An incomplete/inconsistent definition THROWS here —
+  // the claims pipeline refuses to boot rather than serving an unaligned registry.
+  // This is what makes a dangling template (a template with no backing
+  // ClaimDefinition) mechanically impossible at load.
+  assertClaimDefinitionRegistryValid();
   // F2 observability (RCA 2026-06-29): the pipeline is ENABLED — surface a loud
   // warning if the LINKED kernels are below the egress-brand floor, so the
   // kernel-version drop point (silent store-open → UNKNOWN) is visible at boot.

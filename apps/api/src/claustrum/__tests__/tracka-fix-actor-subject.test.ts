@@ -172,7 +172,7 @@ describe("Track A FIX 1+2 — owner candidate (empty model subject) → actor+su
     expect(result.terminal).toBe("RENDER");
     expect(result.renderable).toHaveLength(1);
     expect(result.renderable[0]?.value).toMatchObject({ fulfillmentStatus: "preparing" });
-    const out = render(result.renderable, result.terminal);
+    const out = render(result.renderableCanonical, result.terminal);
     expect(out.text.length).toBeGreaterThan(0);
   });
 });
@@ -217,7 +217,7 @@ describe("Track A FIX 1+2 — a forged / model-supplied NON-OWNED id never valid
 
     expect(result.perClaim[0]?.verdict).not.toBe("VALIDATED");
     expect(result.renderable).toHaveLength(0);
-    const out = render(result.renderable, result.terminal);
+    const out = render(result.renderableCanonical, result.terminal);
     expect(out.text).not.toContain("preparing");
   });
 

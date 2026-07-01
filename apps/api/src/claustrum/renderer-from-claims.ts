@@ -42,11 +42,13 @@
  * kernel-downstream import.
  */
 import type {
+  CanonicalClaim,
   ClaimVerdict,
   ConsistencyClaim,
   SuppressionRecord,
   TurnTerminal,
 } from "@adjudicate/core";
+import { unwrapCanonical } from "@adjudicate/core";
 import { localizeClaimEnum } from "./claims-labels.js";
 import {
   isPropositionFree,
@@ -208,6 +210,33 @@ export interface RenderedLine {
  * output byte is a static template literal or a VALIDATED field value.
  */
 export function render(
+  canonicalClaims: readonly CanonicalClaim[],
+  terminal: TurnTerminal,
+  suppressions: readonly SuppressionRecord[] = [],
+): RenderResult {
+  // ── inv.17 ENTRY BRAND: the renderer's REQUIRED input is the kernel-minted
+  // CanonicalClaim. `unwrapCanonical` asserts WeakSet provenance and THROWS on a
+  // forged literal cast `as CanonicalClaim`, so the renderer CANNOT author prose from
+  // a raw claim + model value — only from a claim that fully VALIDATED (incl. C6
+  // value-binding) AND survived P2 into the renderable set. Each minted claim is, by
+  // construction, VALIDATED, so we tag the unwrapped carrier accordingly. This closes
+  // the egress loop's ENTRY (CanonicalClaim) opposite RenderedReply's EXIT brand.
+  const renderableClaims: readonly RenderableClaim[] = canonicalClaims.map((c) => {
+    const { subject, type, value } = unwrapCanonical(c);
+    return { subject, type, value, verdict: "VALIDATED" as const };
+  });
+  return renderRenderables(renderableClaims, terminal, suppressions);
+}
+
+/**
+ * The PURE template-filler CORE (the §Q.7 algorithm). It is the implementation
+ * `render` delegates to AFTER the inv.17 provenance unwrap; it is exported for the
+ * UNIT tests of the deterministic filler logic (which exercise UNKNOWN/REFUSED
+ * postures the kernel-minted renderable set never carries). PRODUCTION egress goes
+ * exclusively through `render` (canonical-gated) — never call this from the egress
+ * path with un-minted claims.
+ */
+export function renderRenderables(
   renderableClaims: readonly RenderableClaim[],
   terminal: TurnTerminal,
   suppressions: readonly SuppressionRecord[] = [],

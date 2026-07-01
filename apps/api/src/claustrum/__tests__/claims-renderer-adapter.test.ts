@@ -15,11 +15,20 @@
  */
 import { describe, expect, it } from "vitest";
 import type {
+  CandidateClaim,
+  CanonicalClaim,
   ClaimsKernelResult,
   ConsistencyClaim,
   TurnTerminal,
 } from "@adjudicate/core";
+import { EvidenceLedger, runClaimsKernel } from "@adjudicate/core";
 import { ORDER_FULFILLMENT_STAGE } from "../slot-grammar.js";
+import {
+  REGISTRY_SPECS,
+  type RegistryClaimSpec,
+  type RegistryClaimType,
+} from "../claim-registry.js";
+import { createIbatexasClaimsKernelDeps } from "../ibatexas-claims-kernel-deps.js";
 import { createIbatexasClaimsRenderer } from "../claims-renderer-adapter.js";
 
 const claim = (
@@ -29,6 +38,64 @@ const claim = (
   subject = "order-1",
 ): ConsistencyClaim => ({ subject, type, verdict, value });
 
+/**
+ * inv.17 — MINT the kernel-stamped CanonicalClaim set the adapter requires. The
+ * adapter consumes `renderableCanonical` (NOT the raw renderable), so we drive the
+ * REAL `runClaimsKernel` over a ledger that validates each VALIDATED renderable: it
+ * records every requiredEvidence key with the claim's value (so C6 binds), with no
+ * falsifier present, owns-all. Non-VALIDATED renderables never mint (the kernel drops
+ * them), exactly as in production.
+ */
+const NOW = 10_000;
+function mintRenderable(
+  renderable: readonly ConsistencyClaim[],
+): readonly CanonicalClaim[] {
+  const validated = renderable.filter((c) => c.verdict === "VALIDATED");
+  if (validated.length === 0) return [];
+  const ledger = new EvidenceLedger("t");
+  const candidates: CandidateClaim[] = validated.map((c) => {
+    const spec: RegistryClaimSpec = REGISTRY_SPECS[c.type as RegistryClaimType];
+    for (const e of spec.requiredEvidence) {
+      ledger.record({
+        key: e.key,
+        value: c.value,
+        source: "test",
+        fetchedAt: NOW,
+        sourceMode: "live",
+        taint: "TRUSTED",
+        originProvenance: "FIRST_PARTY",
+      });
+    }
+    // Bind every required-key's resource to the subject so the C1 ownership check
+    // (ownershipPolicy: "required") resolves to an OWNED resource (owns()=>true);
+    // an absent binding for a required key is "no owner" → REFUSED.
+    const resources = Object.fromEntries(
+      spec.requiredEvidence.map((e) => [e.key, c.subject]),
+    );
+    return {
+      soundness: {
+        requiredEvidence: spec.requiredEvidence,
+        minSourceIntegrity: spec.minSourceIntegrity,
+        kind: spec.kind,
+        actor: c.subject,
+        resources,
+        ...(spec.falsifierComplete === true
+          ? { falsifierComplete: true, falsifiers: spec.falsifiers ?? [] }
+          : {}),
+        ...(spec.valueBinding === undefined ? {} : { valueBinding: spec.valueBinding }),
+      },
+      subject: c.subject,
+      type: c.type,
+      value: c.value,
+    };
+  });
+  return runClaimsKernel(
+    ledger,
+    candidates,
+    createIbatexasClaimsKernelDeps({ now: () => NOW, owns: () => true }),
+  ).renderableCanonical;
+}
+
 /** Build a minimal `ClaimsKernelResult` from a renderable set + terminal. */
 const kernelResult = (
   renderable: readonly ConsistencyClaim[],
@@ -36,10 +103,11 @@ const kernelResult = (
 ): ClaimsKernelResult => ({
   perClaim: [],
   renderable,
-  // inv.17 kernel-surface compat (egress-brand HEAD): ClaimsKernelResult now
-  // carries the kernel-minted CanonicalClaim set. The activation-branch adapter
-  // renders from `renderable`, so an empty canonical set is inert for these tests.
-  renderableCanonical: [],
+  // inv.17 — the merged adapter renders from the kernel-MINTED CanonicalClaim set
+  // (`renderableCanonical`), so we MINT it via the real kernel (`mintRenderable`);
+  // an empty set would make the adapter render nothing and the non-empty-render
+  // assertions below would be vacuous.
+  renderableCanonical: mintRenderable(renderable),
   terminal,
   consistency: { renderable, terminal, suppressions: [] },
 });
@@ -94,8 +162,9 @@ describe("claims-renderer-adapter — F2 required-claim completeness gate (§O#1
   ): ClaimsKernelResult => ({
     perClaim: perClaim.map((p) => ({ subject: "s", type: p.type, verdict: p.verdict })),
     renderable,
-    // inv.17 kernel-surface compat (see `kernelResult` above) — inert here.
-    renderableCanonical: [],
+    // inv.17 — mint the CanonicalClaim set via the real kernel (see `kernelResult`
+    // above); the merged adapter renders from `renderableCanonical`.
+    renderableCanonical: mintRenderable(renderable),
     terminal: "RENDER",
     consistency: { renderable, terminal: "RENDER", suppressions: [] },
   });
