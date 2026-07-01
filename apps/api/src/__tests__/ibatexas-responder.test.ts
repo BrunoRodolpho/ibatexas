@@ -514,10 +514,43 @@ describe("createIbatexasResponder", () => {
   const openSignal = { isClosed: false as const, mealPeriod: "lunch" as const };
   const CLOSED_DISCLOSURE =
     "No momento estamos fechados (reabrimos amanhã). Posso registrar seu pedido para retirada agendada.";
+  // F6: the confirmation for an ACCEPTED scheduled-pickup order (not the generic offer).
+  const SCHEDULED_CONFIRMATION =
+    "Seu pedido foi registrado para retirada agendada (retirada a partir de amanhã).";
+  const SCHEDULED_CONFIRMATION_PIX =
+    "Seu pedido foi registrado para retirada agendada (retirada a partir de amanhã). Falta só concluir o pagamento via PIX para confirmar.";
 
-  it("closed: repairs a grounded reply that falsely confirms an immediate order", async () => {
-    // The store is closed, yet the 4B confirms an immediate order — the exact
-    // defect B. The backstop overrides it deterministically.
+  it("F6(a): an ACCEPTED scheduled-pickup order + a false-immediate draft → CONFIRMATION, not the offer", async () => {
+    // Store closed; the 4B falsely says the accepted scheduled order is "em preparo".
+    // guardDraft (fulfillment-claimed) neutralizes that to the fallback, and the
+    // closed-hours guard would normally upgrade the fallback to the generic OFFER —
+    // but because a scheduled PICKUP was genuinely accepted this turn, it must instead
+    // acknowledge the order (F6). Was previously CODIFIED as the buggy OFFER output.
+    const { model } = mockModel("Seu pedido já está em preparo e sai em 20 minutos!");
+    const responder = createIbatexasResponder({
+      model,
+      modelId: "m",
+      explainer,
+      resolveScheduleSignal: () => closedSignal,
+    });
+    const decision = { kind: "EXECUTE", basis: [] } as unknown as Decision;
+    const acted = {
+      kind: "executed",
+      envelope: { kind: "order.checkout.create" },
+      result: { orderId: "IBX-1", scheduledPickup: true, paymentMethod: "cash" },
+    };
+    const draft = await responder.respond(
+      mkInput({ decision, envelopeKinds: ["order.checkout.create"], acted, text: "quero retirar amanhã" }),
+    );
+    expect(draft.text).toBe(SCHEDULED_CONFIRMATION);
+  });
+
+  it("F6(b): a DELIVERY order accepted while closed → SAFE degrade (never a false pickup confirmation)", async () => {
+    // CRITICAL correctness trap: the kernel does NOT gate closed-hours, so a delivery/
+    // immediate order can also EXECUTE while closed. `scheduledPickup` is absent here →
+    // the closed-hours guard must keep the SAFE degrade (offer/disclosure) and MUST NOT
+    // convert it into a pickup confirmation. (This is the delivery variant that the old
+    // :518 test asserted — preserved verbatim as the safe-degrade proof.)
     const { model } = mockModel("Estamos abertos! Seu pedido sairá para entrega agora.");
     const responder = createIbatexasResponder({
       model,
@@ -526,11 +559,66 @@ describe("createIbatexasResponder", () => {
       resolveScheduleSignal: () => closedSignal,
     });
     const decision = { kind: "EXECUTE", basis: [] } as unknown as Decision;
-    const acted = { kind: "executed", envelope: { kind: "order.checkout.create" }, result: { orderId: "IBX-1" } };
+    // Delivery order → NO scheduledPickup marker on the result.
+    const acted = {
+      kind: "executed",
+      envelope: { kind: "order.checkout.create" },
+      result: { orderId: "IBX-1", paymentMethod: "pix" },
+    };
     const draft = await responder.respond(
       mkInput({ decision, envelopeKinds: ["order.checkout.create"], acted, text: "quero pedido pra entrega agora" }),
     );
     expect(draft.text).toBe(CLOSED_DISCLOSURE);
+  });
+
+  it("F6(c): an accepted scheduled PIX pickup → CONFIRMATION reflecting awaiting-payment", async () => {
+    // A scheduled PIX pickup EXECUTEs + generates the QR (QR-first-then-confirm), so the
+    // order IS registered but payment is still pending. The confirmation says so.
+    const { model } = mockModel("Seu pedido está a caminho!");
+    const responder = createIbatexasResponder({
+      model,
+      modelId: "m",
+      explainer,
+      resolveScheduleSignal: () => closedSignal,
+    });
+    const decision = { kind: "EXECUTE", basis: [] } as unknown as Decision;
+    const acted = {
+      kind: "executed",
+      envelope: { kind: "order.checkout.create" },
+      result: {
+        orderId: "IBX-2",
+        scheduledPickup: true,
+        paymentMethod: "pix",
+        pixCopyPaste: "00020126PIX",
+      },
+    };
+    const draft = await responder.respond(
+      mkInput({ decision, envelopeKinds: ["order.checkout.create"], acted, text: "quero retirar amanhã, pago no pix" }),
+    );
+    expect(draft.text).toBe(SCHEDULED_CONFIRMATION_PIX);
+  });
+
+  it("F6(d): a CLEAN scheduled-pickup confirmation draft is left untouched", async () => {
+    // The model already produced an accurate confirmation (no false-immediate claim):
+    // nothing was clobbered, so the guard must NOT substitute its own string.
+    const clean = "Perfeito! Seu pedido para retirada agendada está registrado.";
+    const { model } = mockModel(clean);
+    const responder = createIbatexasResponder({
+      model,
+      modelId: "m",
+      explainer,
+      resolveScheduleSignal: () => closedSignal,
+    });
+    const decision = { kind: "EXECUTE", basis: [] } as unknown as Decision;
+    const acted = {
+      kind: "executed",
+      envelope: { kind: "order.checkout.create" },
+      result: { orderId: "IBX-3", scheduledPickup: true, paymentMethod: "cash" },
+    };
+    const draft = await responder.respond(
+      mkInput({ decision, envelopeKinds: ["order.checkout.create"], acted, text: "quero retirar amanhã" }),
+    );
+    expect(draft.text).toBe(clean);
   });
 
   it("closed: repairs a conversational reply that falsely says 'estamos abertos'", async () => {

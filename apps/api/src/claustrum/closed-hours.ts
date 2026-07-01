@@ -45,6 +45,26 @@ export function closedHoursDisclosure(
 }
 
 /**
+ * Confirmation for an ACCEPTED scheduled-pickup order placed while closed (F6).
+ * The generic `closedHoursDisclosure` is an OFFER ("Posso registrar…") — wrong for
+ * a customer whose order DID go through. This acknowledges the accepted order instead.
+ * Reserved for the caller that has PROVEN a scheduled-pickup checkout was accepted
+ * this turn (never used for delivery/immediate orders). `awaitingPixPayment` reflects
+ * the QR-first-then-confirm PIX flow: the checkout EXECUTEd + generated the QR, but
+ * payment is still pending (the QR is delivered on the side-channel).
+ */
+export function closedHoursScheduledConfirmation(
+  signal: Pick<ScheduleSignal, "nextOpenDay">,
+  awaitingPixPayment = false,
+): string {
+  const reopen = signal.nextOpenDay ? ` (retirada a partir de ${signal.nextOpenDay})` : "";
+  const base = `Seu pedido foi registrado para retirada agendada${reopen}.`;
+  return awaitingPixPayment
+    ? `${base} Falta só concluir o pagamento via PIX para confirmar.`
+    : base;
+}
+
+/**
  * The SOFT layer: a pt-BR instruction appended to the planner + responder LLM
  * context when the store is closed. Returns "" when open (so the composed prompt
  * is byte-identical to today on the open path).

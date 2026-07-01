@@ -46,6 +46,7 @@ import {
   closedHoursBackstop,
   closedHoursDisclosure,
   closedHoursPromptNote,
+  closedHoursScheduledConfirmation,
   type ScheduleSignal,
 } from "./closed-hours.js";
 
@@ -276,6 +277,33 @@ function executedKinds(acted: unknown): ReadonlySet<string> {
   return out;
 }
 
+/**
+ * Whether the runtime ACCEPTED a scheduled-pickup order this turn (F6). True ONLY
+ * when a checkout genuinely COMMITTED (`order.checkout.create` ∈ executedKinds — an
+ * EXECUTE/REWRITE that actually ran, never a REFUSE/DEFER) AND the checkout output
+ * flagged `scheduledPickup === true`. That flag is set ONLY for pickup (no
+ * deliveryCep) placed while closed, so a delivery/immediate order accepted while
+ * closed (the kernel does NOT gate closed-hours) is `accepted === false` and keeps
+ * the SAFE closed-hours degrade — never a false pickup confirmation.
+ *
+ * `awaitingPixPayment` reflects the QR-first-then-confirm PIX flow: a scheduled PIX
+ * pickup EXECUTEs + generates the QR but payment is still pending. (A re-entry while
+ * a PIX is already pending is a kernel DEFER — the checkout does NOT run that turn,
+ * so there is no `acted.result` and `accepted` is correctly false.)
+ */
+function acceptedScheduledPickup(
+  acted: unknown,
+): { accepted: boolean; awaitingPixPayment: boolean } {
+  if (!executedKinds(acted).has("order.checkout.create")) {
+    return { accepted: false, awaitingPixPayment: false };
+  }
+  const result = summarizeActed(acted)?.result as
+    | { scheduledPickup?: unknown; paymentMethod?: unknown }
+    | undefined;
+  const accepted = result?.scheduledPickup === true;
+  return { accepted, awaitingPixPayment: accepted && result?.paymentMethod === "pix" };
+}
+
 // Clause-level mood gates — a success PREDICATE inside a question, a future/
 // conditional clause, or a pending-status clause is NOT a completed assertion.
 const QUESTION = /\?/;
@@ -404,12 +432,30 @@ function guardDraft(draft: DraftResponse, acted: unknown): DraftResponse {
 function closedHoursDeliveryGuard(
   draft: DraftResponse,
   signal: ScheduleSignal | undefined,
+  scheduled: { accepted: boolean; awaitingPixPayment: boolean } = {
+    accepted: false,
+    awaitingPixPayment: false,
+  },
 ): DraftResponse {
   const repaired = closedHoursBackstop(draft, signal);
-  if (
-    signal?.isClosed &&
-    repaired.text === GROUNDED_SAFE_FALLBACK_PTBR
-  ) {
+  if (!signal?.isClosed) return repaired;
+
+  // F6: a scheduled-pickup order was ACCEPTED this turn. Neither the backstop's OFFER
+  // disclosure nor the neutral success-guard fallback acknowledges the order went
+  // through — both read as "I can register your order", telling a customer whose
+  // scheduled order WAS placed that it wasn't. Substitute a confirmation, but ONLY
+  // when the draft was ACTUALLY clobbered (repaired by the backstop, or replaced with
+  // the neutral fallback) — a clean scheduled-confirmation draft is left untouched.
+  // `scheduled.accepted` is true ONLY for a proven scheduled PICKUP (never a
+  // delivery/immediate order that also EXECUTEs while closed → those keep the degrade).
+  const clobbered =
+    repaired.text !== draft.text || repaired.text === GROUNDED_SAFE_FALLBACK_PTBR;
+  if (scheduled.accepted && clobbered) {
+    const text = closedHoursScheduledConfirmation(signal, scheduled.awaitingPixPayment);
+    return repaired.usage === undefined ? { text } : { text, usage: repaired.usage };
+  }
+
+  if (repaired.text === GROUNDED_SAFE_FALLBACK_PTBR) {
     const text = closedHoursDisclosure(signal);
     return repaired.usage === undefined ? { text } : { text, usage: repaired.usage };
   }
@@ -540,6 +586,10 @@ export function createIbatexasResponder(
         ? ((await deps.resolveScheduleSignal()) ?? undefined)
         : undefined;
       const closedNote = closedHoursPromptNote(scheduleSignal);
+      // F6: did the runtime accept a scheduled-pickup order this turn? Drives the
+      // closed-hours delivery guard's confirmation-vs-offer branch. Empty on the
+      // REFUSE/DEFER/no-checkout paths (executedKinds is empty there).
+      const scheduled = acceptedScheduledPickup(input.acted);
 
       switch (decision.kind) {
         case "REFUSE": {
@@ -559,6 +609,7 @@ export function createIbatexasResponder(
                 input.acted,
               ),
               scheduleSignal,
+              scheduled,
             );
           }
           // A real action refusal: render the pt-BR refusal VERBATIM (model-free,
@@ -612,6 +663,7 @@ export function createIbatexasResponder(
           return closedHoursDeliveryGuard(
             surfaceRewriteClamp(guardDraft(draft, input.acted), decision),
             scheduleSignal,
+            scheduled,
           );
         }
 
@@ -633,6 +685,7 @@ export function createIbatexasResponder(
               input.acted,
             ),
             scheduleSignal,
+            scheduled,
           );
         }
       }

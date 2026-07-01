@@ -37,6 +37,15 @@ export interface CreateCheckoutOutput {
   paymentIntentId?: string;
   // Cash
   orderId?: string;
+  /**
+   * True when this checkout was accepted as a SCHEDULED PICKUP — pickup (no
+   * `deliveryCep`) placed while the restaurant is closed (see `buildCheckoutMetadata`).
+   * Surfaced from the cart metadata onto the tool output so the dispatch `result`
+   * (→ responder `input.acted.result`) can distinguish an accepted scheduled-pickup
+   * order from a delivery/immediate order when rendering the closed-hours reply (F6).
+   * Absent/false for delivery, immediate, or non-accepted checkouts.
+   */
+  scheduledPickup?: boolean;
   message: string;
 }
 
@@ -464,6 +473,9 @@ export async function createCheckout(
   // 1. Update cart metadata with tip and delivery CEP
   const metadata = await buildCheckoutMetadata(paymentMethod, tipInCentavos, deliveryCep, ctx);
   await updateCartMetadata(cartId, metadata, ctx);
+  // Surfaced onto every accepted-checkout return below so the responder can tell an
+  // accepted scheduled-pickup order from a delivery/immediate one (F6).
+  const scheduledPickup = metadata["scheduledPickup"] === "true";
 
   // 2. Get or create payment collection (Medusa v2 flow)
   const cartForPC = await medusaStoreFetch(`/store/carts/${cartId}`) as {
@@ -499,7 +511,7 @@ export async function createCheckout(
   const { clientSecret, paymentIntentId } = extractStripeSessionData(rawSessionData);
 
   if (paymentMethod === "cash") {
-    return completeCashOrder(cartId, cartForPC.cart?.items, metadata, tipInCentavos, ctx);
+    return { ...(await completeCashOrder(cartId, cartForPC.cart?.items, metadata, tipInCentavos, ctx)), scheduledPickup };
   }
 
   // 5. For PIX/card: use extracted Stripe PaymentIntent data
@@ -522,6 +534,7 @@ export async function createCheckout(
       // per-order access token bound to it (the guest tracks via
       // `/pedido/<paymentIntentId>` until the webhook creates the order).
       paymentIntentId,
+      scheduledPickup,
       message:
         "Sessão de pagamento com cartão iniciada. Use o client_secret para finalizar no frontend.",
     };
@@ -536,11 +549,12 @@ export async function createCheckout(
         message: "Nome e email são obrigatórios para pagamento PIX.",
       };
     }
-    return confirmPixAndGetQrCode(paymentIntentId, {
+    const pixResult = await confirmPixAndGetQrCode(paymentIntentId, {
       name: extra?.customerName,
       email: extra?.customerEmail,
       taxId: extra?.customerTaxId,
     }, cartId, ctx.customerId);
+    return { ...pixResult, scheduledPickup };
   }
 
   return {
