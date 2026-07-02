@@ -411,6 +411,49 @@ function withText(draft: DraftResponse, text: string): DraftResponse {
   return { ...draft, text };
 }
 
+// ── F6 (BKL-064): pt-BR-only output guard (Spanish leak) ──────────────────────
+//
+// The 4B occasionally answers in Spanish (a known nemotron failure — the model
+// drifts to the nearest high-resource Romance language). Hard Rule #4: every
+// customer-facing sentence is pt-BR only. The F1/F1b guards above are pt-BR
+// lexicons, so a Spanish draft slips past them unclamped — this closes that gap.
+//
+// DELIBERATELY CONSERVATIVE (false-positive on valid pt-BR is worse than a
+// missed leak): only two triggers, each chosen to never fire on Portuguese —
+//   (1) Spanish inverted punctuation ¿ / ¡ — orthographically impossible in pt-BR;
+//   (2) ≥2 distinct Spanish-EXCLUSIVE tokens — each word below is not a valid
+//       Portuguese word AND does not collapse onto one after diacritic-stripping
+//       (so "muy"≠"muito", "pero"≠"mas", "bien"≠"bem", "gracias"≠"obrigado";
+//       "olá"/"também"/"aqui"/"como" are Portuguese and are intentionally absent).
+// The ñ character (never pt-BR) counts as one token-signal. A single lone token
+// is NOT enough (a proper noun / brand could be a fluke), so the bar is 2.
+//
+// On a hit the draft is clamped to a neutral pt-BR line that asserts NO domain
+// fact (never leaks a Spanish success claim); the original stays forensically
+// visible in the LLMTrace from completeWith().
+export const PT_BR_LANGUAGE_FALLBACK_PTBR =
+  "Desculpe, tive um problema ao gerar a resposta. Pode repetir, por favor?";
+
+const SPANISH_EXCLUSIVE_PUNCT = /[¿¡]/;
+const SPANISH_ONLY_TOKENS: ReadonlyArray<string> = [
+  "gracias", "hola", "usted", "ustedes", "nosotros", "ellos", "ellas",
+  "muy", "ahora", "pero", "bien", "buenos", "buenas", "espanol", "manana",
+];
+
+/** Returns a signal string (for telemetry) when the draft looks like Spanish, else null. */
+export function replyLeaksSpanish(text: string): string | null {
+  if (SPANISH_EXCLUSIVE_PUNCT.test(text)) return "spanish_punct";
+  const hasEnye = /ñ/.test(text.toLowerCase());
+  // Diacritic-strip + lowercase so "español"/"mañana" match despite accents/ñ.
+  const normalized = normalizePtBr(text).replace(/ñ/g, "n");
+  const hits = SPANISH_ONLY_TOKENS.filter((w) =>
+    new RegExp(`(^|[^\\p{L}])${w}([^\\p{L}]|$)`, "u").test(normalized),
+  );
+  const signals = hits.length + (hasEnye ? 1 : 0);
+  if (signals >= 2) return `spanish_tokens:${hits.join(",")}${hasEnye ? ",ñ" : ""}`;
+  return null;
+}
+
 /** Apply the deterministic post-completion guards to a model-produced draft:
  *  substitute the neutral, audit-accurate line if the reply makes a no-authority
  *  claim (F1) or claims a success the runtime did not grant (F1b). Preserves the
@@ -425,6 +468,13 @@ function guardDraft(draft: DraftResponse, acted: unknown): DraftResponse {
     return draft.usage === undefined
       ? { text: GROUNDED_SAFE_FALLBACK_PTBR }
       : { text: GROUNDED_SAFE_FALLBACK_PTBR, usage: draft.usage };
+  }
+  // F6 (BKL-064): a Spanish-leaked draft slips past the pt-BR lexicons above —
+  // clamp it to a neutral pt-BR line that asserts no domain fact.
+  if (replyLeaksSpanish(draft.text) !== null) {
+    return draft.usage === undefined
+      ? { text: PT_BR_LANGUAGE_FALLBACK_PTBR }
+      : { text: PT_BR_LANGUAGE_FALLBACK_PTBR, usage: draft.usage };
   }
   return draft;
 }
@@ -441,15 +491,20 @@ function observedGuardDraft(
 ): DraftResponse {
   const guarded = guardDraft(draft, acted);
   if (guarded.text !== draft.text) {
+    let guard: string;
+    if (groundedReplyContradicts(draft.text) !== null) {
+      guard = "contradiction";
+    } else if (replyClaimsUnearnedSuccess(draft.text, acted) !== null) {
+      guard = "unearned_success";
+    } else {
+      guard = "spanish_leak";
+    }
     logger.warn(
       {
         component: "responder",
         event: "success_guard.clamp",
         turnId,
-        guard:
-          groundedReplyContradicts(draft.text) !== null
-            ? "contradiction"
-            : "unearned_success",
+        guard,
       },
       "success-guard clamped a model draft to the neutral fallback",
     );

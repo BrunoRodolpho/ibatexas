@@ -26,8 +26,10 @@ import type {
 import {
   createIbatexasResponder,
   GROUNDED_SAFE_FALLBACK_PTBR,
+  PT_BR_LANGUAGE_FALLBACK_PTBR,
   RESPONDER_ESCALATE_PTBR,
   RESPONDER_PERSONA_PTBR,
+  replyLeaksSpanish,
 } from "../claustrum/ibatexas-responder.js";
 
 function mockModel(text = "RESPOSTA_DO_MODELO"): {
@@ -734,5 +736,62 @@ describe("createIbatexasResponder", () => {
     const decision = { kind: "REFUSE", refusal: { code: "empty_plan" } } as unknown as Decision;
     const draft = await responder.respond(mkInput({ decision, envelopeKinds: [], text: "tão abertos?" }));
     expect(draft.text).toBe("No momento estamos fechados, posso agendar sua retirada amanhã.");
+  });
+});
+
+// ── F6 (BKL-064): pt-BR-only output guard (Spanish leak) ──────────────────────
+describe("replyLeaksSpanish — conservative Spanish detector (BKL-064)", () => {
+  it("does NOT flag valid pt-BR (no false positives)", () => {
+    for (const ptbr of [
+      "Recebi sua solicitação e ela foi registrada.",
+      "Olá! Seu pedido foi confirmado com sucesso, muito obrigado!",
+      "No momento estamos fechados, posso agendar sua retirada amanhã.",
+      "Também temos opções sem glúten aqui. Como posso ajudar?",
+      "O pagamento via PIX está pendente; assim que cair, avisamos.",
+    ]) {
+      expect(replyLeaksSpanish(ptbr)).toBeNull();
+    }
+  });
+
+  it("flags Spanish inverted punctuation (zero-FP trigger)", () => {
+    expect(replyLeaksSpanish("¡Hola! ¿En qué puedo ayudarte?")).not.toBeNull();
+    expect(replyLeaksSpanish("Su pedido está listo ¿algo más?")).not.toBeNull();
+  });
+
+  it("flags ≥2 distinct Spanish-exclusive tokens", () => {
+    expect(replyLeaksSpanish("Gracias, su pedido estará listo ahora.")).not.toBeNull();
+    expect(replyLeaksSpanish("Hola, muy bien, nosotros entregamos rápido.")).not.toBeNull();
+    expect(replyLeaksSpanish("El niño de la mañana llegó.")).not.toBeNull(); // ñ + manana
+  });
+
+  it("does NOT flag a single lone token (below the confidence bar)", () => {
+    // A lone 'pero'/'bien' could be a fluke/brand — 2 signals required.
+    expect(replyLeaksSpanish("Tudo pero certo com seu pedido.")).toBeNull();
+  });
+});
+
+describe("guardDraft — Spanish leak clamps to the pt-BR language fallback (BKL-064)", () => {
+  it("clamps a Spanish EXECUTE draft the pt-BR guards would miss", async () => {
+    // Spanish, ≥2 exclusive tokens (hola/muy/gracias), NO success-claim words —
+    // so it slips past the pt-BR F1/F1b lexicons and must hit the language guard.
+    const { model } = mockModel("Hola, su pedido llegará muy pronto. Gracias.");
+    const responder = createIbatexasResponder({ model, modelId: "m", explainer });
+    const decision = { kind: "EXECUTE", basis: [] } as unknown as Decision;
+    const acted = {
+      kind: "executed",
+      toolId: "orders.cancel.v1",
+      envelope: { kind: "order.cancel" },
+      result: { status: "cancelled" },
+    };
+    const draft = await responder.respond(
+      mkInput({
+        decision,
+        envelopeKinds: ["order.cancel"],
+        capabilities: ["order.cancel"],
+        acted,
+        text: "cancela meu pedido",
+      }),
+    );
+    expect(draft.text).toBe(PT_BR_LANGUAGE_FALLBACK_PTBR);
   });
 });
