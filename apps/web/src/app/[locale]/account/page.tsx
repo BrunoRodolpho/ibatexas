@@ -7,6 +7,13 @@ import { useSessionStore } from '@/domains/session'
 import { apiFetch } from '@/lib/api'
 import { Button, Container } from "@/components/atoms"
 import { Flame, Heart, Package, User } from 'lucide-react'
+import { LgpdDataExport } from './_components/LgpdDataExport'
+import { LoyaltyBalanceCard } from './_components/LoyaltyBalanceCard'
+import { DietaryPreferencesCard } from './_components/DietaryPreferencesCard'
+import { ProductReviewsCard } from './_components/ProductReviewsCard'
+import { EditProfileCard } from './_components/EditProfileCard'
+import { AccountDeletionCard } from './_components/AccountDeletionCard'
+import { AddressBookCard } from './_components/AddressBookCard'
 
 interface CustomerProfile {
   id: string
@@ -147,15 +154,11 @@ export default function AccountPage() {
           )}
         </div>
 
-        {/* Preferences */}
-        <div className="rounded-sm shadow-card border border-smoke-200/40 bg-smoke-50 p-5 hover:shadow-card-hover hover:-translate-y-0.5 transition-premium">
-          <h2 className="text-micro font-semibold uppercase tracking-editorial text-smoke-400">
-            {t("account.preferences")}
-          </h2>
-          <p className="mt-3 text-sm text-smoke-400">
-            {t("account.dietary_restrictions")} e {t("account.allergens")}
-          </p>
-        </div>
+        {/* Edit profile (CUS-061 — name/email, governed save) */}
+        <EditProfileCard />
+
+        {/* Preferences (CUS-062 — dietary flags, governed save) */}
+        <DietaryPreferencesCard />
 
         {/* Wishlist */}
         <Link
@@ -173,15 +176,20 @@ export default function AccountPage() {
           </p>
         </Link>
 
-        {/* Saved Addresses */}
-        <div className="rounded-sm shadow-card border border-smoke-200/40 bg-smoke-50 p-5 hover:shadow-card-hover hover:-translate-y-0.5 transition-premium">
-          <h2 className="text-micro font-semibold uppercase tracking-editorial text-smoke-400">
-            {t("account.saved_addresses")}
-          </h2>
-          <p className="mt-3 text-sm text-smoke-400">
-            {t("account.addresses_description")}
-          </p>
-        </div>
+        {/* Saved Addresses (CUS-063 — governed address book) */}
+        <AddressBookCard />
+
+        {/* Loyalty balance (CUS-067 web view) */}
+        <LoyaltyBalanceCard />
+
+        {/* Product reviews for delivered orders (CUS-049 web view) */}
+        <ProductReviewsCard />
+
+        {/* LGPD data export (CUS-064) */}
+        <LgpdDataExport />
+
+        {/* LGPD account deletion (CUS-065 — OTP-gated, 24h grace) */}
+        <AccountDeletionCard />
       </div>
     </Container>
   )

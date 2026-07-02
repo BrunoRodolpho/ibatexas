@@ -78,6 +78,8 @@ export {
   type GetOrderHistoryInput,
   RegeneratePixInputSchema,
   type RegeneratePixInput,
+  COUPON_REJECTED_CODE,
+  type CouponRejectedCode,
 } from "./cart.types.js"
 
 // Intelligence types

@@ -119,3 +119,81 @@ describe("RC-A1 Stage 1 — audited Adjudicator bridge", () => {
     expect(result.ok).toBe(false);
   });
 });
+
+// ── F4/L4 — multi-envelope adjudication uses per-envelope states (BKL-029) ────
+// The conductor resolves a distinct SystemState per envelope and passes them
+// order-aligned as the 4th arg; the bridge must adjudicate envelopes[i] against
+// perEnvelopeStates[i] ?? state. A recording stateGuard captures which state
+// each envelope was adjudicated against (returns null = pass, so the plan
+// EXECUTEs and no REFUSE decision needs constructing).
+describe("F4/L4 — adjudicatePlan per-envelope states (BKL-029)", () => {
+  function recordingPolicy(seen: { kind: string; marker: unknown }[]): unknown {
+    return {
+      stateGuards: [
+        (env: { kind: string }, state: { marker?: unknown } | null) => {
+          seen.push({ kind: env.kind, marker: state?.marker });
+          return null; // record-only; never blocks
+        },
+      ],
+      authGuards: [],
+      business: [],
+      taint: { minimumFor: () => "UNTRUSTED" as const },
+      default: "EXECUTE" as const,
+    };
+  }
+
+  function planEnvelope(kind: string, nonce: string) {
+    return buildEnvelope({
+      kind,
+      payload: {},
+      actor: { principal: "user", sessionId: "web:cust-1" },
+      taint: "UNTRUSTED",
+      nonce,
+      createdAt: "2026-05-28T12:00:00.000Z",
+    });
+  }
+
+  it("adjudicates each envelope against its order-aligned perEnvelopeStates[i]", async () => {
+    const sink = capturingSink();
+    const bridge = buildAdjudicator({ sink });
+    const seen: { kind: string; marker: unknown }[] = [];
+    const env0 = planEnvelope("test.plan.first", "n-plan-0");
+    const env1 = planEnvelope("test.plan.second", "n-plan-1");
+
+    const decision = await bridge.adjudicatePlan(
+      [env0, env1],
+      { channel: "web", marker: "SHARED" } as never,
+      recordingPolicy(seen) as never,
+      [
+        { channel: "web", marker: "A" },
+        { channel: "web", marker: "B" },
+      ] as never,
+    );
+
+    expect(decision.kind).toBe("EXECUTE");
+    // Each envelope saw its OWN per-envelope state — never the shared fallback.
+    expect(seen.find((s) => s.kind === "test.plan.first")?.marker).toBe("A");
+    expect(seen.find((s) => s.kind === "test.plan.second")?.marker).toBe("B");
+    expect(seen.some((s) => s.marker === "SHARED")).toBe(false);
+    // One audit record per envelope (kill-all-or-execute-all serialization).
+    expect(sink.records).toHaveLength(2);
+  });
+
+  it("falls back to the shared state when perEnvelopeStates is omitted", async () => {
+    const sink = capturingSink();
+    const bridge = buildAdjudicator({ sink });
+    const seen: { kind: string; marker: unknown }[] = [];
+
+    await bridge.adjudicatePlan(
+      [
+        planEnvelope("test.plan.first", "n-plan-2"),
+        planEnvelope("test.plan.second", "n-plan-3"),
+      ],
+      { channel: "web", marker: "SHARED" } as never,
+      recordingPolicy(seen) as never,
+    );
+
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.every((s) => s.marker === "SHARED")).toBe(true);
+  });
+});

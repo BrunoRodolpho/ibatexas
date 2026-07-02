@@ -39,6 +39,7 @@ import {
   createCheckout,
   createReservation,
   getOrCreateCart,
+  handoffToHuman,
   joinWaitlist,
   modifyReservation,
   regeneratePix,
@@ -211,7 +212,7 @@ function makeReservationTool(opts: {
 // against its pack's `intents` array (pack-{orders,reservations,customer-
 // onboarding,payments}/src/index.ts) on the WS3 sweep.
 //
-// 17 LLM-callable mutating tools = the union of every pack CapabilityPlanner's
+// 18 LLM-callable mutating tools = the union of every pack CapabilityPlanner's
 // `allowedIntents` that has a `@ibatexas/tools` handler. The two payment kinds
 // that ship no handler were DE-ADVERTISED in pack-payments (P0-7) — the
 // context-aware leg of `toolRosterDrift()` below now fails the boot if a
@@ -367,6 +368,21 @@ const IBATEXAS_TOOLS: ReadonlyArray<TD<unknown, unknown>> = [
     riskLevel: "high",
     requiresConfirmation: true,
     execute: (input, ctx) => regeneratePix(input as never, ctx),
+  }),
+  // F5/L3 (BKL-030) — customer-side escalation on-ramp. sessionId is threaded
+  // from the runtime ctx (identity), NOT the LLM payload; the LLM may extract
+  // an optional reason. Executor publishes support.handoff_requested.
+  makeTool({
+    id: "ibatexas.support.handoffToHuman.v1",
+    capability: "whatsapp.handoff.request",
+    intentKind: "whatsapp.handoff.request",
+    description: "Transferir o atendimento para um atendente humano quando o cliente pedir para falar com uma pessoa.",
+    riskLevel: "low",
+    execute: (input, ctx) =>
+      handoffToHuman({
+        sessionId: ctx.sessionId,
+        reason: (input as { reason?: string }).reason,
+      }),
   }),
 ];
 

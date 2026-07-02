@@ -177,6 +177,7 @@ export const whatsappPack = {
     "whatsapp.template.send",
     "whatsapp.session.handover",
     "conversation.message.append",
+    "whatsapp.handoff.request",
   ],
   policy: whatsappPolicyBundle,
   planner: whatsappCapabilityPlanner,

@@ -85,7 +85,11 @@ async function performUpdatePreferences(
     ? input.favoriteCategories
     : []
 
-  await prisma.customerPreferences.upsert({
+  // Return the AUTHORITATIVE stored row, not the coerced inputs: on a
+  // partial update the DB preserves omitted fields, and callers cache the
+  // return value (Redis profile hash) — returning coerced-empty arrays for
+  // omitted fields would poison that cache with emptier preferences.
+  const row = await prisma.customerPreferences.upsert({
     where: { customerId },
     create: { customerId, allergenExclusions, dietaryRestrictions, favoriteCategories },
     update: {
@@ -95,7 +99,11 @@ async function performUpdatePreferences(
     },
   })
 
-  return { allergenExclusions, dietaryRestrictions, favoriteCategories }
+  return {
+    allergenExclusions: row.allergenExclusions,
+    dietaryRestrictions: row.dietaryRestrictions,
+    favoriteCategories: row.favoriteCategories,
+  }
 }
 
 async function performSubmitReview(input: {
@@ -146,6 +154,61 @@ async function performUpdatePixDetails(
       ...(data.cpf ? { cpf: data.cpf } : {}),
     },
   })
+}
+
+async function performUpdateProfile(
+  customerId: string,
+  data: { name?: string; email?: string },
+) {
+  await prisma.customer.update({
+    where: { id: customerId },
+    data: {
+      ...(data.name ? { name: data.name } : {}),
+      ...(data.email ? { email: data.email } : {}),
+    },
+  })
+}
+
+/** Domain shape for a saved address (matches the Prisma Address model). */
+export interface CustomerAddressInput {
+  street: string
+  number?: string
+  complement?: string
+  district?: string
+  city: string
+  state: string
+  cep: string
+  isDefault?: boolean
+}
+
+async function performAddAddress(customerId: string, input: CustomerAddressInput) {
+  // Prisma requires `number` + `district`; the pack payload leaves them
+  // optional, so default rather than reject (S/N = "sem número", common in BR).
+  return prisma.address.create({
+    data: {
+      customerId,
+      street: input.street,
+      number: input.number && input.number.trim() ? input.number.trim() : "S/N",
+      ...(input.complement ? { complement: input.complement } : {}),
+      district: input.district?.trim() ?? "",
+      city: input.city,
+      state: input.state.toUpperCase().slice(0, 2),
+      cep: input.cep.replace(/\D/g, "").slice(0, 8),
+      isDefault: input.isDefault ?? false,
+    },
+  })
+}
+
+/**
+ * Ownership-scoped delete: the WHERE binds both id AND customerId, so a
+ * customer can only remove their OWN address (IDOR-safe — a foreign addressId
+ * matches zero rows). Returns the deleted count for the route's 404 decision.
+ */
+async function performRemoveAddress(customerId: string, addressId: string) {
+  const { count } = await prisma.address.deleteMany({
+    where: { id: addressId, customerId },
+  })
+  return { count }
 }
 
 export function createCustomerService(options?: CustomerServiceOptions) {
@@ -268,6 +331,41 @@ export function createCustomerService(options?: CustomerServiceOptions) {
      */
     async updatePixDetails(customerId: string, data: { name?: string; email?: string; cpf?: string }) {
       return performUpdatePixDetails(customerId, data)
+    },
+
+    /**
+     * Update the customer's profile (name / email). This is the sanctioned
+     * executor for the `customer.profile.update` envelope wrapper — the caller
+     * (apps/api me route) runs adjudication via `runCustomerIntent` against the
+     * customer-onboarding Pack (auth + rate-limit + PII guards) BEFORE invoking
+     * this. Never call it un-adjudicated for a customer-facing mutation.
+     */
+    async updateProfile(customerId: string, data: { name?: string; email?: string }) {
+      return performUpdateProfile(customerId, data)
+    },
+
+    /** List a customer's saved addresses (default first). Read-only, owner-scoped. */
+    async listAddresses(customerId: string) {
+      return prisma.address.findMany({
+        where: { customerId },
+        orderBy: [{ isDefault: "desc" }, { id: "asc" }],
+      })
+    },
+
+    /**
+     * Add a saved address. Sanctioned executor for the `customer.address.add`
+     * envelope — the caller adjudicates via `runCustomerIntent` first.
+     */
+    async addAddress(customerId: string, input: CustomerAddressInput) {
+      return performAddAddress(customerId, input)
+    },
+
+    /**
+     * Remove a saved address, ownership-scoped (id AND customerId). Sanctioned
+     * executor for the `customer.address.remove` envelope. Returns { count }.
+     */
+    async removeAddress(customerId: string, addressId: string) {
+      return performRemoveAddress(customerId, addressId)
     },
 
     /**

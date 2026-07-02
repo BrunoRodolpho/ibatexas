@@ -271,7 +271,8 @@
     "you_might_like": "Combina com seu pedido",
     "add_suggestion": "Adicionar",
     "kitchen_closed_warning": "Cozinha fechada — alguns itens indisponíveis",
-    "item_unavailable": "Indisponível"
+    "item_unavailable": "Indisponível",
+    "item_instructions_placeholder": "Observação do item (ex.: sem cebola)"
   },
   "checkout": {
     "title": "Finalizar pedido",
@@ -348,7 +349,9 @@
     "payment_cash_unavailable": "Pagamento em dinheiro não disponível para envios.",
     "kitchen_closed_mixed_hint": "Congelados e produtos continuam disponíveis para entrega.",
     "notes_label": "Observações",
-    "notes_placeholder": "Ex: sem cebola, ponto da carne, interfone 42..."
+    "notes_placeholder": "Ex: sem cebola, ponto da carne, interfone 42...",
+    "notes_remaining": "{count} caracteres restantes (incluindo observações dos itens)",
+    "notes_too_long": "Observações muito longas — reduza o texto (máximo {max} caracteres no total)"
   },
   "account": {
     "title": "Minha Conta",
@@ -365,6 +368,98 @@
     "allergens": "Alérgenos",
     "saved_addresses": "Endereços Salvos",
     "addresses_description": "Endereços salvos para entrega",
+    "data_export": {
+      "title": "Meus Dados (LGPD)",
+      "description": "Baixe uma cópia dos seus dados pessoais (LGPD Art. 18 — portabilidade).",
+      "button": "Baixar meus dados",
+      "loading": "Preparando…",
+      "error": "Não foi possível exportar agora. Tente novamente em instantes."
+    },
+    "loyalty": {
+      "title": "Fidelidade",
+      "description": "Acumule selos a cada pedido e ganhe recompensas.",
+      "progress": "Você tem {stamps} de {total} selos — faltam {needed} para a recompensa.",
+      "reward_ready": "Parabéns! Você tem uma recompensa disponível. 🏆"
+    },
+    "dietary_prefs": {
+      "description": "Selecione suas restrições alimentares. Usamos isso para destacar o que serve para você.",
+      "save": "Salvar preferências",
+      "saving": "Salvando…",
+      "saved": "Preferências salvas!",
+      "error": "Não foi possível salvar agora. Tente novamente.",
+      "load_error": "Não foi possível carregar suas preferências agora.",
+      "retry": "Tentar novamente",
+      "flags": {
+        "vegetariano": "Vegetariano",
+        "vegano": "Vegano",
+        "sem_gluten": "Sem glúten",
+        "sem_lactose": "Sem lactose"
+      }
+    },
+    "reviews": {
+      "title": "Avaliações",
+      "description": "Avalie os produtos dos seus pedidos entregues.",
+      "empty": "Nenhum produto para avaliar no momento.",
+      "order_label": "Pedido {id}",
+      "comment_placeholder": "Comentário (opcional)",
+      "submit": "Enviar avaliação",
+      "submitting": "Enviando…",
+      "submitted": "Avaliação enviada!",
+      "error": "Não foi possível enviar agora. Tente novamente.",
+      "rating_required": "Escolha de 1 a 5 estrelas."
+    },
+    "edit_profile": {
+      "title": "Editar perfil",
+      "description": "Atualize seu nome e e-mail.",
+      "name_label": "Nome",
+      "email_label": "E-mail",
+      "save": "Salvar",
+      "saving": "Salvando…",
+      "saved": "Perfil atualizado!",
+      "error": "Não foi possível salvar agora. Tente novamente.",
+      "invalid_email": "E-mail inválido."
+    },
+    "address_book": {
+      "title": "Endereços salvos",
+      "description": "Gerencie seus endereços de entrega.",
+      "empty": "Nenhum endereço salvo.",
+      "add": "Adicionar endereço",
+      "adding": "Salvando…",
+      "street": "Rua",
+      "number": "Número",
+      "complement": "Complemento",
+      "neighborhood": "Bairro",
+      "city": "Cidade",
+      "state": "UF",
+      "zip": "CEP",
+      "set_default": "Definir como padrão",
+      "default_badge": "Padrão",
+      "save": "Salvar endereço",
+      "cancel": "Cancelar",
+      "remove": "Remover",
+      "removing": "Removendo…",
+      "incomplete": "Preencha rua, cidade, UF e CEP válidos.",
+      "error": "Não foi possível concluir agora. Tente novamente."
+    },
+    "delete_account": {
+      "title": "Excluir conta",
+      "description": "Exclua permanentemente sua conta e seus dados (LGPD Art. 18).",
+      "start": "Solicitar exclusão",
+      "sending": "Enviando código…",
+      "otp_sent": "Enviamos um código por WhatsApp. Digite abaixo para confirmar.",
+      "otp_placeholder": "Código de 6 dígitos",
+      "verify": "Verificar código",
+      "verifying": "Verificando…",
+      "verified": "Verificado. Confirme a exclusão — você terá 24 horas para cancelar.",
+      "confirm": "Confirmar exclusão",
+      "confirming": "Agendando…",
+      "scheduled": "Exclusão agendada. Você tem 24 horas para cancelar.",
+      "cancel": "Cancelar exclusão",
+      "canceling": "Cancelando…",
+      "canceled": "Exclusão cancelada.",
+      "error": "Não foi possível concluir agora. Tente novamente.",
+      "invalid_otp": "Digite o código de 6 dígitos."
+    },
     "payment_methods": "Métodos de Pagamento",
     "payment_description": "Seus métodos de pagamento",
     "wishlist": "Minha Lista de Desejos",

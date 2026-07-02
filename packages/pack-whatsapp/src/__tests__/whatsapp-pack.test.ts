@@ -540,12 +540,15 @@ describe("whatsappPack — PackV0 shape", () => {
     expect(whatsappPack.signals).toEqual([])
   })
 
-  it("planner exposes zero MUTATING tools to the LLM", () => {
+  it("planner exposes zero MUTATING tools to the LLM (handoff wired but not yet advertised — BKL-030)", () => {
     const plan = whatsappPack.planner.plan(baseState(), {
       channel: "whatsapp",
       customerId: "c-1",
       staffId: null,
     })
+    // whatsapp.handoff.request is registered + adjudicable but advertisement is
+    // deferred (see capabilities.ts) until the golden-conversation fixtures can
+    // be regenerated for the new express_intent surface (BKL-030-activation).
     expect(plan.visibleReadTools).toEqual([])
     expect(plan.allowedIntents).toEqual([])
   })

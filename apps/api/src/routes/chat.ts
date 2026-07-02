@@ -37,7 +37,7 @@ import { v4 as uuidv4 } from "uuid";
 import { handleTurn, type ChannelMessage } from "@claustrum/core";
 import { mintFallbackReply, wrapLegacyResponderText } from "@adjudicate/core";
 import { Channel, type StreamChunk } from "@ibatexas/types";
-import { getRedisClient, rk, createSessionToken, verifySessionToken } from "@ibatexas/tools";
+import { getRedisClient, rk, createSessionToken, verifySessionToken, getOrCreateCart } from "@ibatexas/tools";
 import { loadSession, appendMessages } from "../session/store.js";
 import { optionalAuth } from "../middleware/auth.js";
 import {
@@ -353,6 +353,27 @@ async function runConductorTurn(params: {
 
     const conductor = getConductor();
     const turnCustomerId = customerId ?? `guest:${sessionId}`;
+
+    // BKL-066: ensure a Medusa cart exists for this session BEFORE the turn, so a
+    // cart-op the model proposes (e.g. order.item.add on a fresh session)
+    // adjudicates against a real cart — the pack-orders requireCartIdForCartOps
+    // guard needs payload.cartId, which BKL-028 threads only when the session cart
+    // exists (cart:active:session:<sid>, the SAME key getOrCreateCart writes). This
+    // is idempotent (reuses the session cart after the first turn) and mirrors the
+    // web app's cart-per-session; the guard is NOT weakened. Never fatal.
+    try {
+      await getOrCreateCart(
+        {},
+        {
+          channel: Channel.Web,
+          sessionId,
+          ...(customerId ? { customerId } : {}),
+          userType: customerId ? "customer" : "guest",
+        },
+      );
+    } catch (err) {
+      server.log.warn({ err }, "[chat] cart pre-ensure failed (non-fatal)");
+    }
 
     const inbound: ChannelMessage = {
       channel: "web",

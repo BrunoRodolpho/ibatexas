@@ -241,6 +241,77 @@ describe("createCheckout", () => {
     })
   })
 
+  // ── Coupon application (CUS-016 / D1) ─────────────────────────────────────
+  // A customer-validated coupon threaded via the checkout body must be applied
+  // to the REAL Medusa cart before the payment collection is created, so the
+  // charged total reflects the discount. Absent → no coupon promotion added.
+  // Medusa rejecting the coupon → the money path fails CLOSED: checkout
+  // aborts BEFORE any payment collection is created (never a silent
+  // full-price charge).
+  describe("coupon application (CUS-016 / D1)", () => {
+    const couponAddCalls = () =>
+      mockCartsPromotionsAdd.mock.calls.filter(
+        ([, opts]) => (opts as { sourceSubject?: string })?.sourceSubject === "cart:create-checkout:apply-coupon",
+      )
+
+    it("applies a supplied couponCode to the Medusa cart via a governed promotion.add and proceeds with checkout", async () => {
+      setupCashMocks()
+
+      const result = await createCheckout({ ...BASE_INPUT, couponCode: "SAVE10" }, CTX)
+
+      const calls = couponAddCalls()
+      expect(calls).toHaveLength(1)
+      expect(calls[0][0]).toEqual(
+        expect.objectContaining({ cartId: "cart_01", promoCodes: ["SAVE10"] }),
+      )
+      expect(calls[0][1]).toEqual(
+        expect.objectContaining({ sourceSubject: "cart:create-checkout:apply-coupon", actorPrincipal: "llm" }),
+      )
+      // Clean apply → checkout proceeds on the discounted cart.
+      expect(result.success).toBe(true)
+      expect(result.code).toBeUndefined()
+      expect(mockPaymentCollectionsCreate).toHaveBeenCalledTimes(1)
+      expect(mockCartsComplete).toHaveBeenCalledTimes(1)
+    })
+
+    it("does NOT add a coupon promotion when no couponCode is supplied — checkout unchanged", async () => {
+      setupCashMocks()
+
+      const result = await createCheckout(BASE_INPUT, CTX)
+
+      expect(couponAddCalls()).toHaveLength(0)
+      expect(result.success).toBe(true)
+      expect(result.code).toBeUndefined()
+      expect(mockPaymentCollectionsCreate).toHaveBeenCalledTimes(1)
+    })
+
+    it("aborts checkout fail-CLOSED when Medusa rejects the coupon — no payment collection created", async () => {
+      // Queue ONLY what the abort path consumes (the total-check read + the
+      // coupon rejection) — `vi.clearAllMocks()` does not flush unconsumed
+      // `mockResolvedValueOnce` queues, so setupCashMocks() here would leak
+      // stale once-values into subsequent tests.
+      mockMedusaStoreFetch.mockResolvedValueOnce(CART_WITH_TOTAL)
+      mockCartsPromotionsAdd.mockRejectedValueOnce(new Error("promotion expired"))
+
+      const result = await createCheckout({ ...BASE_INPUT, couponCode: "EXPIRED" }, CTX)
+
+      // Typed failure the route maps to a 422 — never a silent full-price charge.
+      expect(result.success).toBe(false)
+      expect(result.code).toBe("COUPON_REJECTED")
+      expect(result.paymentMethod).toBe("cash")
+      expect(result.message).toContain("cupom")
+      expect(result.message).toContain("Remova o cupom")
+
+      // Abort happens BEFORE any payment-side effect: no metadata update, no
+      // payment collection, no payment session, no cart completion, no event.
+      expect(mockCartsUpdate).not.toHaveBeenCalled()
+      expect(mockPaymentCollectionsCreate).not.toHaveBeenCalled()
+      expect(mockPaymentSessionsCreate).not.toHaveBeenCalled()
+      expect(mockCartsComplete).not.toHaveBeenCalled()
+      expect(mockPublishNatsEvent).not.toHaveBeenCalled()
+    })
+  })
+
   describe("cash payment", () => {
     const CART_ITEMS_RESPONSE = {
       cart: {

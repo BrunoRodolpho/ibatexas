@@ -140,4 +140,6 @@ export const CHAT_DRIVABLE_TOOL_KINDS: ReadonlyArray<string> = [
   "customer.pix.details.save",
   // pack-payments (1)
   "payment.pix.regenerate",
+  // pack-whatsapp (1) — BKL-030 customer-side escalation on-ramp
+  "whatsapp.handoff.request",
 ]

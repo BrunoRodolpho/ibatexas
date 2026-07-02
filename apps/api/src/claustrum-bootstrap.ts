@@ -692,16 +692,25 @@ export function buildAdjudicator(deps: AdjudicatorBridgeDeps): Adjudicator {
         receipt,
       );
     },
-    async adjudicatePlan(envelopes, state, policy): Promise<Decision> {
+    async adjudicatePlan(envelopes, state, policy, perEnvelopeStates): Promise<Decision> {
       // @adjudicate/core 1.x exposes only the single-envelope verb; serialize
       // multi-envelope plans (kill-all-or-execute-all). When 2.x ships
       // `adjudicatePlan` natively, swap this out.
+      //
+      // F4/L4 (BKL-029): the conductor resolves a distinct SystemState per
+      // envelope (order-aligned `perEnvelopeStates`) and passes it as the 4th
+      // arg per the Adjudicator port contract. Adjudicate `envelopes[i]`
+      // against `perEnvelopeStates[i] ?? state` — so a genuinely decomposed
+      // compound message ("add 2 tacos e vocês abrem até 22h?") no longer
+      // adjudicates every envelope against one shared ctx (which made any
+      // friction-verb envelope panic-REFUSE on the wrong resolved state).
+      // Omitted (the common single-state case) → every envelope uses `state`.
       let last: Decision | undefined;
-      for (const env of envelopes) {
+      for (let i = 0; i < envelopes.length; i++) {
         last = await safeAuditedAdjudicate(
           deps,
-          env as IntentEnvelope,
-          state,
+          envelopes[i] as IntentEnvelope,
+          perEnvelopeStates?.[i] ?? state,
           policy,
         );
         const d = last as { kind?: string };

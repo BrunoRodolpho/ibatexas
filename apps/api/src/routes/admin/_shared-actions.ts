@@ -221,6 +221,11 @@ async function gateConsumedAdminAction(
   if (consumed.kind === "missing") {
     return invalidReceipt;
   }
+  // Wrong route/order for this receipt: refused BEFORE the consume (the
+  // receipt survives for a correctly aimed confirm), same 410 to the caller.
+  if (consumed.kind === "target_mismatch") {
+    return invalidReceipt;
+  }
   if (consumed.kind === "null_staff_violation") {
     await eventLogSvc.append({
       orderId,
@@ -297,6 +302,7 @@ export async function consumeAndGateAdminAction(deps: {
     deps.confirmationId,
     deps.staffId,
     requestActorPrincipal,
+    { route: deps.expectedRoute, orderId: deps.orderId },
   );
   return gateConsumedAdminAction(consumed, {
     eventLogSvc: deps.eventLogSvc,

@@ -62,6 +62,8 @@ const mockMarkCustomerReplied = vi.hoisted(() => vi.fn());
 const mockSchedulePixExpiryMonitor = vi.hoisted(() => vi.fn());
 const mockGetConductor = vi.hoisted(() => vi.fn());
 const mockHandleTurn = vi.hoisted(() => vi.fn());
+// B4: cart pre-ensure before the conductor turn (mirrors chat.ts BKL-066).
+const mockGetOrCreateCart = vi.hoisted(() => vi.fn());
 const mockIsSessionPausedForHuman = vi.hoisted(() => vi.fn());
 // W1 Redis-outage fix: the webhook gate now reads the store via readPauseState
 // (real, kept below) → getEscalationStore().isPaused(), so it can DISTINGUISH a
@@ -86,6 +88,7 @@ vi.mock("@ibatexas/tools", () => ({
   getRedisClient: mockGetRedisClient,
   rk: mockRk,
   atomicIncr: mockAtomicIncr,
+  getOrCreateCart: mockGetOrCreateCart,
 }));
 
 vi.mock("../claustrum-bootstrap.js", () => ({
@@ -242,6 +245,12 @@ beforeEach(() => {
   mockIsSessionPausedForHuman.mockResolvedValue(false);
   mockIsPaused.mockResolvedValue(false);
   mockGetEscalationStore.mockResolvedValue({ isPaused: mockIsPaused });
+  mockGetOrCreateCart.mockResolvedValue({
+    cartId: "cart_pre_1",
+    items: [],
+    total: 0,
+    message: "Carrinho vazio pronto para adicionar itens.",
+  });
   mockGetConductor.mockReturnValue({
     openCapsule: vi.fn().mockResolvedValue({ id: "capsule-1" }),
     closeCapsule: vi.fn().mockResolvedValue(undefined),
@@ -456,6 +465,24 @@ describe("handleMessageAsync — conductor turn", () => {
     expect(mockHandleTurn).toHaveBeenCalledTimes(1);
     expect(conductor.closeCapsule).toHaveBeenCalled();
 
+    // B4 (the D-014 WhatsApp plane): the Medusa cart pre-ensure ran BEFORE the
+    // conductor turn, keyed by the SAME sessionId the resolver reads
+    // (cart:active:session:<sessionKey> ← cognition.conversationId === "sess-1"),
+    // so a fresh session's order.item.add adjudicates against a real cart.
+    expect(mockGetOrCreateCart).toHaveBeenCalledTimes(1);
+    expect(mockGetOrCreateCart).toHaveBeenCalledWith(
+      {},
+      expect.objectContaining({
+        channel: "whatsapp",
+        sessionId: "sess-1",
+        customerId: "cus-1",
+        userType: "customer",
+      }),
+    );
+    const preEnsureOrder = mockGetOrCreateCart.mock.invocationCallOrder[0]!;
+    const turnOrder = mockHandleTurn.mock.invocationCallOrder[0]!;
+    expect(preEnsureOrder).toBeLessThan(turnOrder);
+
     expect(mockSendText).toHaveBeenCalledWith(
       `whatsapp:${PHONE}`,
       mintRenderedReply("Olá! Como posso ajudar você hoje?"),
@@ -471,6 +498,56 @@ describe("handleMessageAsync — conductor turn", () => {
     expect(mockReleaseAgentLock).toHaveBeenCalledWith(HASH, "lock-uuid");
     // Success path never releases (DELs) the claim.
     expect(mockRedis.del).not.toHaveBeenCalled();
+  }, 15000);
+
+  it("B4: a guest session pre-ensures the cart WITHOUT a customerId (userType guest)", async () => {
+    mockResolveWhatsAppSession.mockResolvedValue({
+      phone: PHONE,
+      sessionId: "sess-guest",
+      customerId: "", // no real customer → guest marker path
+      isNew: false,
+    });
+
+    const app = await buildTestServer();
+    const res = await post(app, "MessageSid=SM_GUEST&From=whatsapp%3A%2B5511999999999&Body=oi");
+    expect(res.statusCode).toBe(200);
+
+    await vi.waitFor(() => {
+      expect(mockGetOrCreateCart).toHaveBeenCalledTimes(1);
+    }, { timeout: 4000 });
+
+    expect(mockGetOrCreateCart).toHaveBeenCalledWith(
+      {},
+      expect.objectContaining({
+        channel: "whatsapp",
+        sessionId: "sess-guest",
+        userType: "guest",
+      }),
+    );
+    // The guest marker must NOT be forwarded as a customerId.
+    const ctx = mockGetOrCreateCart.mock.calls[0]![1] as Record<string, unknown>;
+    expect(ctx.customerId).toBeUndefined();
+  }, 15000);
+
+  it("B4: a cart pre-ensure failure is non-fatal — the turn still runs and replies", async () => {
+    mockGetOrCreateCart.mockRejectedValue(new Error("medusa down"));
+    mockHandleTurn.mockResolvedValue({
+      response: { text: "Resposta mesmo sem carrinho" },
+      acted: null,
+      decision: { kind: "EXECUTE" },
+    });
+
+    const app = await buildTestServer();
+    const res = await post(app, "MessageSid=SM_CARTFAIL&From=whatsapp%3A%2B5511999999999&Body=oi");
+    expect(res.statusCode).toBe(200);
+
+    await vi.waitFor(() => {
+      expect(mockSendText).toHaveBeenCalledWith(
+        `whatsapp:${PHONE}`,
+        mintRenderedReply("Resposta mesmo sem carrinho"),
+      );
+    }, { timeout: 4000 });
+    expect(mockHandleTurn).toHaveBeenCalledTimes(1);
   }, 15000);
 
   it("extracts PIX artifacts from turn.acted and sends copia-e-cola + QR + schedules expiry monitor", async () => {

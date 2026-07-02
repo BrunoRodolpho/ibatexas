@@ -54,6 +54,8 @@ export const WHATSAPP_TOOLS: ToolClassification = {
     "send_whatsapp_message",
     "send_whatsapp_template",
     "handover_whatsapp_session",
+    // F5/L3 (BKL-030) — customer-side escalation on-ramp.
+    "request_human_handoff",
   ]),
 }
 
@@ -65,7 +67,9 @@ export const WHATSAPP_TOOLS: ToolClassification = {
  */
 export const WHATSAPP_TOOL_TO_INTENT: Readonly<
   Record<string, WhatsAppIntentKind>
-> = {}
+> = {
+  request_human_handoff: "whatsapp.handoff.request",
+}
 
 // ── Planner implementation ──────────────────────────────────────────────
 
@@ -81,12 +85,18 @@ const rawWhatsappCapabilityPlanner: CapabilityPlanner<
 > = {
   plan(state, context): Plan {
     // Reference the parameters so TypeScript's `noUnusedParameters` is
-    // satisfied. They are intentionally not inspected — this Pack
-    // exposes nothing to the LLM regardless of session state.
+    // satisfied. They are intentionally not inspected.
     void state
     void context
     return {
       visibleReadTools: filterReadOnly(WHATSAPP_TOOLS, []),
+      // F5/L3 (BKL-030): the governed `whatsapp.handoff.request` intent is
+      // fully wired (registered, policied, adjudicable) but NOT yet advertised
+      // to the LLM — advertising it changes the express_intent surface, which
+      // invalidates the content-addressed golden-conversation fixtures
+      // (scripted-pipeline). Activation = advertise here + regenerate those
+      // fixtures (BKL-030-activation), the same registered-but-unadvertised
+      // pattern `order.review.submit` uses.
       allowedIntents: [],
     }
   },

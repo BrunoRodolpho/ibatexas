@@ -6,6 +6,7 @@ import { useTranslations } from "next-intl"
 import { loadStripe } from "@stripe/stripe-js"
 import { Elements, CardElement, useStripe, useElements } from "@stripe/react-stripe-js"
 import { useCartStore, hasKitchenOnlyFood, getKitchenItems } from '@/domains/cart'
+import { mergeItemInstructionsIntoNotes, CHECKOUT_NOTES_MAX } from '@/domains/checkout'
 import { useSessionStore } from '@/domains/session'
 import { useKitchenStatus } from '@/domains/schedule'
 import { Link } from "@/i18n/navigation"
@@ -133,7 +134,7 @@ function CheckoutForm() {
   const router = useRouter()
   const stripe = useStripe()
   const elements = useElements()
-  const { items, getTotal, cep, setCep, deliveryFee, estimatedDeliveryMinutes, setDeliveryEstimate: persistDeliveryEstimate, medusaCartId, setMedusaCartId, clearCart, termsAccepted, setTermsAccepted, removeItem } = useCartStore()
+  const { items, getTotal, cep, setCep, deliveryFee, estimatedDeliveryMinutes, setDeliveryEstimate: persistDeliveryEstimate, medusaCartId, setMedusaCartId, clearCart, termsAccepted, setTermsAccepted, removeItem, updateItem, couponCode } = useCartStore()
   const { customerId, isAuthenticated } = useSessionStore()
   const { saveOrder } = useOrderHistory()
   const { data: kitchenStatus } = useKitchenStatus()
@@ -169,6 +170,12 @@ function CheckoutForm() {
   const deliveryFeeAmount = deliveryType === "delivery" ? (deliveryEstimate?.feeInCentavos ?? 0) : 0
   const tipAmount = Math.round(subtotal * tipPercent / 100)
   const total = subtotal + deliveryFeeAmount + tipAmount
+
+  // CUS-015 — merged order note (customer note + per-item instructions).
+  // Never truncated: on overflow submit is blocked so the kitchen never
+  // silently loses an instruction (e.g. an allergy note).
+  const mergedNotes = mergeItemInstructionsIntoNotes(notes, items)
+  const notesRemaining = CHECKOUT_NOTES_MAX - mergedNotes.notes.length
 
   useEffect(() => {
     if (!isAuthenticated()) {
@@ -495,7 +502,14 @@ function CheckoutForm() {
       deliveryType: toDeliveryTypePayload(isShipping, deliveryType),
       tipInCentavos: tipAmount > 0 ? tipAmount : undefined,
       deliveryCep: deliveryType === "delivery" ? cepInput : undefined,
-      notes: notes.trim() || undefined,
+      // Fold per-item special instructions into the order note so they reach
+      // the kitchen via the OrderNote path (CUS-015). Falls back to the plain
+      // note when no item carries an instruction. Overflow is blocked before
+      // this point (handleCheckout guard + disabled submit) — never truncated.
+      notes: mergedNotes.notes || undefined,
+      // Thread the validated coupon so the API applies it to the Medusa cart
+      // and the charged total reflects the discount the customer saw (CUS-016).
+      couponCode: couponCode || undefined,
       items: items.filter((i) => i.variantId).map((i) => ({ variantId: i.variantId!, quantity: i.quantity, productType: i.productType })),
       ...(paymentMethod === "pix" ? {
         pixName: pixName.trim() || undefined,
@@ -533,6 +547,12 @@ function CheckoutForm() {
   }
 
   async function handleCheckout() {
+    // Merged notes above the server cap would be silently truncated by the
+    // API — refuse to submit; the customer must shorten the text instead.
+    if (mergedNotes.overflow) {
+      setError(t('notes_too_long', { max: CHECKOUT_NOTES_MAX }))
+      return
+    }
     setLoading(true)
     setError(null)
     try {
@@ -729,9 +749,22 @@ function CheckoutForm() {
           {items.map((item) => {
             const isUnavailable = isKitchenClosed && item.productType === 'food'
             return (
-              <div key={item.id} className={`flex justify-between text-sm ${isUnavailable ? 'text-smoke-400 line-through' : 'text-charcoal-700'}`}>
-                <span>{item.quantity}&times; {item.title}{item.variantTitle ? ` — ${item.variantTitle}` : ""}{isUnavailable ? ` (${tCart('item_unavailable').toLowerCase()})` : ""}</span>
-                <span className="tabular-nums">{formatBRL(item.price * item.quantity)}</span>
+              <div key={item.id} className="space-y-1">
+                <div className={`flex justify-between text-sm ${isUnavailable ? 'text-smoke-400 line-through' : 'text-charcoal-700'}`}>
+                  <span>{item.quantity}&times; {item.title}{item.variantTitle ? ` — ${item.variantTitle}` : ""}{isUnavailable ? ` (${tCart('item_unavailable').toLowerCase()})` : ""}</span>
+                  <span className="tabular-nums">{formatBRL(item.price * item.quantity)}</span>
+                </div>
+                {!isUnavailable && (
+                  <input
+                    type="text"
+                    value={item.specialInstructions ?? ''}
+                    onChange={(e) => updateItem(item.id, { specialInstructions: e.target.value })}
+                    maxLength={140}
+                    placeholder={tCart('item_instructions_placeholder')}
+                    aria-label={tCart('item_instructions_placeholder')}
+                    className="w-full rounded-sm border border-smoke-200 bg-white px-2 py-1 text-xs text-charcoal-700 placeholder:text-smoke-400"
+                  />
+                )}
               </div>
             )
           })}
@@ -835,6 +868,12 @@ function CheckoutForm() {
             placeholder={t('notes_placeholder')}
             className="w-full rounded-sm border border-smoke-200/60 shadow-xs bg-smoke-50 px-3 py-3 text-sm focus:border-charcoal-900 focus:outline-none transition-[border-color] duration-[200ms] ease-luxury resize-none"
           />
+          {/* Live budget for the MERGED note (this field + per-item instructions). */}
+          <p aria-live="polite" className={`text-xs ${notesRemaining < 0 ? 'text-accent-red' : 'text-smoke-400'}`}>
+            {notesRemaining < 0
+              ? t('notes_too_long', { max: CHECKOUT_NOTES_MAX })
+              : t('notes_remaining', { count: notesRemaining })}
+          </p>
         </div>
 
         {/* Payment method */}
@@ -964,7 +1003,7 @@ function CheckoutForm() {
           size="lg"
           className="w-full min-h-[44px]"
           onClick={handleCheckout}
-          disabled={loading || !termsAccepted || (deliveryType === "delivery" && !deliveryEstimate) || !pixFieldsValid || (isKitchenClosed && cartHasKitchenFood)}
+          disabled={loading || !termsAccepted || (deliveryType === "delivery" && !deliveryEstimate) || !pixFieldsValid || (isKitchenClosed && cartHasKitchenFood) || mergedNotes.overflow}
         >
           {loading ? t('processing') : t('confirm_order', { total: formatBRL(total) })}
         </Button>

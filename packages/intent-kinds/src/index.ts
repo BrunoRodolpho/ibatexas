@@ -110,6 +110,8 @@ const WHATSAPP_INTENT_KINDS = [
   "whatsapp.template.send",
   "whatsapp.session.handover",
   "conversation.message.append",
+  // BKL-030: customer-side escalation on-ramp (LLM-proposable).
+  "whatsapp.handoff.request",
 ] as const satisfies readonly WhatsAppIntentKind[]
 
 // ── Pack-payments-pix intent surface ─────────────────────────────────────────
@@ -181,11 +183,11 @@ const CUSTOMER_ONBOARDING_INTENT_KINDS = [
 // W5-4 target: ≥60 kinds total. Current count:
 //   22 (orders, post W5-2)
 //  + 8 (reservations)
-//  + 4 (whatsapp, post W5-6)
+//  + 5 (whatsapp, post W5-6 + BKL-030 whatsapp.handoff.request)
 //  + 3 (pix-payments)
 //  + 17 (pack-payments, new W5-1)
 //  + 8 (customer-onboarding)
-//  = 62 distinct kinds, ≥60 target met.
+//  = 63 distinct kinds, ≥60 target met.
 //
 // Future Pack growth (`@ibatexas/pack-auth`, `@ibatexas/pack-loyalty`,
 // `@ibatexas/pack-ops`) extends this set from inside their own modules.

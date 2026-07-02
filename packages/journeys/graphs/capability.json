@@ -3,16 +3,17 @@
   "graph": "capability",
   "meta": {
     "dangling": [],
-    "intentKinds": 63,
+    "intentKinds": 64,
     "packs": 5,
     "personaContexts": [
       "authed-customer",
       "guest"
     ],
     "planners": 5,
-    "registeredTools": 17,
+    "registeredTools": 18,
     "unadvertised": [
-      "order.review.submit"
+      "order.review.submit",
+      "whatsapp.handoff.request"
     ]
   },
   "nodes": [
@@ -1377,6 +1378,30 @@
       }
     },
     {
+      "id": "intent:whatsapp.handoff.request",
+      "type": "intent",
+      "label": "whatsapp.handoff.request",
+      "meta": {
+        "advertisedContexts": [],
+        "chatDrivable": true,
+        "composedPack": "ibatexas/pack-whatsapp",
+        "domain": "whatsapp",
+        "flags": [
+          "unadvertised"
+        ],
+        "knownKind": true,
+        "plausibleDecisions": [
+          "EXECUTE",
+          "REFUSE",
+          "ESCALATE",
+          "REQUEST_CONFIRMATION",
+          "DEFER",
+          "REWRITE"
+        ],
+        "staffRoute": false
+      }
+    },
+    {
       "id": "intent:whatsapp.message.send",
       "type": "intent",
       "label": "whatsapp.message.send",
@@ -1487,7 +1512,7 @@
       "type": "pack",
       "label": "ibatexas/pack-whatsapp",
       "meta": {
-        "intentCount": 4,
+        "intentCount": 5,
         "policyDefault": "REFUSE",
         "version": "1.1.0"
       }
@@ -1702,6 +1727,15 @@
       "label": "reservation.waitlist.join",
       "meta": {
         "capability": "reservation.waitlist.join",
+        "surface": "chat"
+      }
+    },
+    {
+      "id": "tool:whatsapp.handoff.request",
+      "type": "tool",
+      "label": "whatsapp.handoff.request",
+      "meta": {
+        "capability": "whatsapp.handoff.request",
         "surface": "chat"
       }
     }
@@ -2155,6 +2189,11 @@
     },
     {
       "from": "pack:ibatexas/pack-whatsapp",
+      "to": "intent:whatsapp.handoff.request",
+      "type": "declares"
+    },
+    {
+      "from": "pack:ibatexas/pack-whatsapp",
       "to": "intent:whatsapp.message.send",
       "type": "declares"
     },
@@ -2276,6 +2315,11 @@
     {
       "from": "intent:reservation.waitlist.join",
       "to": "tool:reservation.waitlist.join",
+      "type": "registers"
+    },
+    {
+      "from": "intent:whatsapp.handoff.request",
+      "to": "tool:whatsapp.handoff.request",
       "type": "registers"
     }
   ]

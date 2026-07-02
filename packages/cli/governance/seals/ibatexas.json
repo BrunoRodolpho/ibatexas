@@ -6,7 +6,7 @@
     "ibatexas/pack-orders": "28644bee5479776dd9e75758c08ffea618eddab9cbe1919a3df94761e9a807d9",
     "ibatexas/pack-payments": "9c3b80526ebb75af3b672c95c56e9ca68ba4720af481035ce9166f71b824860c",
     "ibatexas/pack-reservations": "0b2b76bab6de0295cbfedfa5e23a16ccf8d9a75728b5f6d85bb71f90671e59dd",
-    "ibatexas/pack-whatsapp": "e2e257a81ca9bc503013c4d88f20b4c0eff25f79f2db3700229ae2c6f4920d95",
+    "ibatexas/pack-whatsapp": "ee4620f0643462d9c6bf7e00b1cada0ca44cf924f33758d8769c302499a2c06f",
     "pack-payments-pix": "75f161563b3672a05145ffe3e41e0a9b3890233a572370fdbf5d911bc7c9e5fa"
   },
   "seals": [
@@ -33,7 +33,7 @@
     {
       "packId": "ibatexas/pack-whatsapp",
       "packVersion": "1.1.0",
-      "digest": "e2e257a81ca9bc503013c4d88f20b4c0eff25f79f2db3700229ae2c6f4920d95"
+      "digest": "ee4620f0643462d9c6bf7e00b1cada0ca44cf924f33758d8769c302499a2c06f"
     },
     {
       "packId": "pack-payments-pix",

@@ -139,9 +139,17 @@ describe("closedHoursBackstop", () => {
 });
 
 describe("closedHoursPromptNote", () => {
-  it("is empty when open or absent", () => {
-    expect(closedHoursPromptNote(OPEN)).toBe("");
+  it("is empty when the signal is absent (unknown state — keeps scripted prompts byte-identical)", () => {
     expect(closedHoursPromptNote(undefined)).toBe("");
+  });
+
+  it("grounds the OPEN state so the model does not guess/say closed (BKL-026)", () => {
+    const note = closedHoursPromptNote(OPEN);
+    expect(note).toContain("ABERTA");
+    expect(note).toContain("almoço"); // OPEN.mealPeriod === "lunch"
+    expect(note).not.toContain("FECHADA");
+    // Must not invent a specific closing hour (the signal carries no close time).
+    expect(note).toContain("Não invente");
   });
 
   it("instructs the model not to claim open and offers scheduled pickup when closed", () => {
