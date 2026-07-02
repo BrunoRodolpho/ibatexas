@@ -39,6 +39,8 @@ vi.mock("@ibatexas/tools", () => ({
   rk: mockRk,
   atomicIncr: mockAtomicIncr,
   getLoyaltyBalance: mockGetLoyaltyBalance,
+  // B4: the webhook now pre-ensures a cart before the conductor turn.
+  getOrCreateCart: vi.fn(async () => ({ cartId: "cart_test", items: [], total: 0, message: "" })),
 }));
 
 vi.mock("@ibatexas/nats-client", () => ({

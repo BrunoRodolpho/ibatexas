@@ -39,7 +39,7 @@ import {
   mintReceiptReply,
   wrapLegacyResponderText,
 } from "@adjudicate/core";
-import { getRedisClient, rk, atomicIncr, getLoyaltyBalance } from "@ibatexas/tools";
+import { getRedisClient, rk, atomicIncr, getLoyaltyBalance, getOrCreateCart } from "@ibatexas/tools";
 import { Channel } from "@ibatexas/types";
 import { getConductor } from "../claustrum-bootstrap.js";
 import { loadSession, appendMessages } from "../session/store.js";
@@ -197,6 +197,29 @@ async function runConductorTurn(args: {
       "[whatsapp] bot-pause gate unreachable (Redis?) — suppressing reply + flagging pause_read_error",
     );
     return { text: "", disposition: "suppressed_paused", pauseReadError: true };
+  }
+
+  // BKL-066 (review B4 — the WhatsApp plane): ensure a Medusa cart exists for
+  // this session BEFORE the turn, mirroring chat.ts. The resolver threads
+  // cartId from rk(`cart:active:session:${sessionId}`) with sessionId =
+  // cognition.conversationId (ibatexas-resolver.ts), and conversationId here
+  // IS args.sessionKey — so the pre-ensure MUST use the same sessionKey or a
+  // fresh session's order.item.add still REFUSEs on requireCartIdForCartOps.
+  // Idempotent (reuses the session cart after the first turn); the guard is
+  // NOT weakened. Never fatal.
+  try {
+    const realCustomerId = isGuestCustomerId(args.customerId) ? null : args.customerId;
+    await getOrCreateCart(
+      {},
+      {
+        channel: Channel.WhatsApp,
+        sessionId: args.sessionKey,
+        ...(realCustomerId ? { customerId: realCustomerId } : {}),
+        userType: realCustomerId ? "customer" : "guest",
+      },
+    );
+  } catch (err) {
+    args.log.warn({ err }, "[whatsapp] cart pre-ensure failed (non-fatal)");
   }
 
   const conductor = getConductor();

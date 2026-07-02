@@ -96,6 +96,14 @@ const mockRedisDecr = vi.hoisted(() =>
   }),
 );
 const mockRedisExpire = vi.hoisted(() => vi.fn(async (_key: string, _seconds: number) => 1));
+// B5 — the preferences route refreshes the personalization profile hash
+// (customer:profile:<id> field "preferences") after a successful EXECUTE.
+const mockRedisHSet = vi.hoisted(() =>
+  vi.fn(async (key: string, field: string, value: string) => {
+    redisStorage.set(`hash:${key}:${field}`, value);
+    return 1;
+  }),
+);
 
 // P0-X-OTP — Atomic Lua script for acquireOtpAttempt. Emulates the
 // OTP_ACQUIRE_ATTEMPT_LUA script defined in anonymize-otp-gate.ts.
@@ -176,8 +184,12 @@ vi.mock("@ibatexas/tools", () => ({
     decr: mockRedisDecr,
     expire: mockRedisExpire,
     eval: mockRedisEval,
+    hSet: mockRedisHSet,
   })),
   rk: (k: string) => `ibatexas:${k}`,
+  // B5 — mirror the real export (30 days) so the route's TTL refresh is
+  // assertable without importing the real (redis-connecting) module.
+  PROFILE_TTL_SECONDS: 30 * 24 * 60 * 60,
   // WS7: the immediate-erasure DELETE runs anonymizeCustomer under a
   // per-customer lock. The hermetic stub just invokes the critical section.
   withLock: vi.fn(async (_key: string, fn: () => Promise<unknown>) => fn()),
@@ -997,6 +1009,87 @@ describe("POST /api/me/preferences — dietary preferences (governed)", () => {
         "cust_01",
         expect.objectContaining({ allergenExclusions: ["gluten"], dietaryRestrictions: ["vegetarian"] }),
       );
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("[B5] refreshes the Redis personalization profile hash after a successful EXECUTE", async () => {
+    // The persisted prefs the service returns — the SAME object must land
+    // serialized in customer:profile:<id> field "preferences" (the shape the
+    // update_preferences tool writes), so the agent plane stops serving stale
+    // preferences after a web save.
+    const persisted = {
+      allergenExclusions: ["gluten"],
+      dietaryRestrictions: ["vegetarian"],
+      favoriteCategories: ["churrasco"],
+    };
+    mockUpdatePreferences.mockResolvedValue(persisted);
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/me/preferences",
+        headers: { "x-customer-id": "cust_01", "content-type": "application/json" },
+        payload: { allergenExclusions: ["gluten"], dietaryFlags: ["vegetarian"], favoriteCategories: ["churrasco"] },
+      });
+      expect(res.statusCode).toBe(200);
+
+      // Same key + field + serialized shape as the tool's pipeline.hSet.
+      expect(mockRedisHSet).toHaveBeenCalledWith(
+        "ibatexas:customer:profile:cust_01",
+        "preferences",
+        JSON.stringify(persisted),
+      );
+      // TTL reset to the profile TTL (30 days), mirroring the tool.
+      expect(mockRedisExpire).toHaveBeenCalledWith(
+        "ibatexas:customer:profile:cust_01",
+        30 * 24 * 60 * 60,
+      );
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("[B5] does NOT touch the profile hash when adjudication refuses (no EXECUTE)", async () => {
+    // An empty-but-explicit allergen array is fine; force a refusal via the
+    // pack's PII scan instead: the profile-hash refresh must not run when the
+    // executor never persisted. Simplest deterministic refusal here: make the
+    // service throw so runCustomerIntent surfaces a non-200.
+    mockUpdatePreferences.mockRejectedValue(new Error("db down"));
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/me/preferences",
+        headers: { "x-customer-id": "cust_01", "content-type": "application/json" },
+        payload: { allergenExclusions: [] },
+      });
+      expect(res.statusCode).not.toBe(200);
+      expect(mockRedisHSet).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("[B5] a Redis refresh failure is non-fatal — the save still returns 200", async () => {
+    mockUpdatePreferences.mockResolvedValue({
+      allergenExclusions: [],
+      dietaryRestrictions: [],
+      favoriteCategories: [],
+    });
+    mockRedisHSet.mockRejectedValueOnce(new Error("redis down"));
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/me/preferences",
+        headers: { "x-customer-id": "cust_01", "content-type": "application/json" },
+        payload: { allergenExclusions: [] },
+      });
+      // The mutation persisted; the cache refresh failing must not 500.
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({ success: true });
     } finally {
       await app.close();
     }

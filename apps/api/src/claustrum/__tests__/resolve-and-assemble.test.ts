@@ -460,6 +460,66 @@ describe("resolve-and-assemble — NL→variantId (BKL-061)", () => {
   });
 });
 
+// ── Review B3 — order.item.add quantity coercion ─────────────────────────────
+// The old `typeof quantity !== "number" → 1` silently rewrote the 4B's string
+// emission ("2") to 1 — a customer asking for 2 items got 1. Positive-integer
+// strings coerce; positive-integer numbers are kept; a MISSING quantity
+// defaults to 1; a present-but-invalid value passes through untouched so the
+// tool schema refuses loudly (never a silently different quantity).
+describe("resolve-and-assemble — order.item.add quantity coercion (B3)", () => {
+  async function quantityFor(raw: unknown): Promise<unknown> {
+    const { payload } = await resolveAndAssemble({
+      kind: "order.item.add",
+      payload: {
+        variantId: "var_explicit",
+        allergens: [],
+        ...(raw === undefined ? {} : { quantity: raw }),
+      },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    return (payload as { quantity?: unknown }).quantity;
+  }
+
+  it('coerces a positive-integer string: "2" → 2', async () => {
+    expect(await quantityFor("2")).toBe(2);
+  });
+
+  it('coerces a padded positive-integer string: " 4 " → 4', async () => {
+    expect(await quantityFor(" 4 ")).toBe(4);
+  });
+
+  it("keeps a positive-integer number: 3 → 3", async () => {
+    expect(await quantityFor(3)).toBe(3);
+  });
+
+  it("defaults a missing quantity to 1", async () => {
+    expect(await quantityFor(undefined)).toBe(1);
+  });
+
+  // A PRESENT but invalid quantity is passed through untouched so
+  // AddToCartInputSchema (z.number().int().min(1)) refuses LOUDLY and the
+  // customer gets a clarify — a silent rewrite to 1 would put a quantity in
+  // the cart the customer never asked for.
+  it('passes junk string through for a loud refusal: "abc" stays "abc"', async () => {
+    expect(await quantityFor("abc")).toBe("abc");
+  });
+
+  it("passes zero through for a loud refusal (never a silent 1)", async () => {
+    expect(await quantityFor(0)).toBe(0);
+    expect(await quantityFor("0")).toBe("0");
+  });
+
+  it("passes a negative quantity through for a loud refusal: -1 stays -1", async () => {
+    expect(await quantityFor(-1)).toBe(-1);
+  });
+
+  it("passes a fractional quantity through for a loud refusal: 2.5 stays 2.5", async () => {
+    expect(await quantityFor(2.5)).toBe(2.5);
+  });
+});
+
 describe("resolve-and-assemble — NL→id confirm-first (auto-resolve money intents)", () => {
   it("order.cancel with NO orderId auto-resolves the most-recent order + flags autoResolvedMoneyRef", async () => {
     orderListByCustomer = async () => ({

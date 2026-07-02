@@ -46,7 +46,7 @@ import { createHash } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
-import { getRedisClient, rk, withLock, submitReview } from "@ibatexas/tools";
+import { getRedisClient, rk, withLock, submitReview, PROFILE_TTL_SECONDS } from "@ibatexas/tools";
 import { Channel } from "@ibatexas/types";
 // WS5: park guard now lives in apps/api (the `park-deferred-intent-nx` seam
 // re-exports `apps/api/src/adapters/park-nx.ts`). me.ts's DEFER call sites
@@ -327,6 +327,10 @@ export async function meRoutes(server: FastifyInstance): Promise<void> {
         },
       } as unknown as CustomerOnboardingState;
 
+      // Review B5: captured from the executor so the post-EXECUTE cache
+      // refresh serializes the SAME persisted shape the update_preferences
+      // tool writes (packages/tools/src/intelligence/update-preferences.ts).
+      let persistedPrefs: unknown = null;
       const out = await runCustomerIntent({
         envelope,
         state,
@@ -334,7 +338,7 @@ export async function meRoutes(server: FastifyInstance): Promise<void> {
         executor: async () => {
           // EXECUTE: persist via the bare service method (the sanctioned executor
           // for the envelope wrapper). Adjudication already ran in runCustomerIntent.
-          await createCustomerService().updatePreferences(customerId, {
+          persistedPrefs = await createCustomerService().updatePreferences(customerId, {
             allergenExclusions: [...body.allergenExclusions],
             ...(body.dietaryFlags ? { dietaryRestrictions: [...body.dietaryFlags] } : {}),
             ...(body.favoriteCategories ? { favoriteCategories: [...body.favoriteCategories] } : {}),
@@ -351,6 +355,24 @@ export async function meRoutes(server: FastifyInstance): Promise<void> {
       });
 
       if (out.statusCode === 200) {
+        // Review B5: refresh the Redis personalization profile hash — same
+        // key + field + serialized shape as the update_preferences tool —
+        // so the agent plane stops serving stale preferences after a web
+        // save. Best-effort: the mutation already persisted; a cache
+        // refresh failure must not fail the request (TTL bounds staleness).
+        if (persistedPrefs !== null) {
+          try {
+            const redis = await getRedisClient();
+            const profileKey = rk(`customer:profile:${customerId}`);
+            await redis.hSet(profileKey, "preferences", JSON.stringify(persistedPrefs));
+            await redis.expire(profileKey, PROFILE_TTL_SECONDS);
+          } catch (err) {
+            request.log.warn(
+              { err },
+              "[me.preferences] falha ao atualizar o cache de perfil no Redis (não-fatal)",
+            );
+          }
+        }
         return reply.code(200).send({ success: true });
       }
       void (reply as unknown as { status(code: number): typeof reply })

@@ -743,11 +743,28 @@ async function threadResolvedIdsIntoPayload(
         }
       }
     }
-    if (typeof out.quantity !== "number") {
-      out = { ...out, quantity: 1 };
-    }
+    // Review B3: the 4B often emits quantity as a STRING ("2") — the old
+    // `typeof !== "number" → 1` silently rewrote "2 costelas" to quantity 1.
+    // Coerce a positive-integer string; default only when ABSENT. A present
+    // but invalid value (0, negatives, fractions, junk) is left untouched so
+    // AddToCartInputSchema refuses loudly and the customer gets a clarify —
+    // never a silently different quantity.
+    out = { ...out, quantity: coerceQuantity(out.quantity) };
   }
   return out;
+}
+
+/** Positive-integer coercion for order.item.add quantity (review B3). */
+function coerceQuantity(raw: unknown): unknown {
+  if (raw === undefined || raw === null) return 1;
+  if (typeof raw === "string") {
+    const trimmed = raw.trim();
+    if (/^\d+$/.test(trimmed)) {
+      const parsed = Number.parseInt(trimmed, 10);
+      if (parsed > 0) return parsed;
+    }
+  }
+  return raw;
 }
 
 /**

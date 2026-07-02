@@ -85,7 +85,11 @@ async function performUpdatePreferences(
     ? input.favoriteCategories
     : []
 
-  await prisma.customerPreferences.upsert({
+  // Return the AUTHORITATIVE stored row, not the coerced inputs: on a
+  // partial update the DB preserves omitted fields, and callers cache the
+  // return value (Redis profile hash) — returning coerced-empty arrays for
+  // omitted fields would poison that cache with emptier preferences.
+  const row = await prisma.customerPreferences.upsert({
     where: { customerId },
     create: { customerId, allergenExclusions, dietaryRestrictions, favoriteCategories },
     update: {
@@ -95,7 +99,11 @@ async function performUpdatePreferences(
     },
   })
 
-  return { allergenExclusions, dietaryRestrictions, favoriteCategories }
+  return {
+    allergenExclusions: row.allergenExclusions,
+    dietaryRestrictions: row.dietaryRestrictions,
+    favoriteCategories: row.favoriteCategories,
+  }
 }
 
 async function performSubmitReview(input: {
