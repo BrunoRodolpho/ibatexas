@@ -50,12 +50,12 @@ import {
 } from "../streaming/emitter.js";
 import { acquireWebAgentLock, releaseWebAgentLock } from "../streaming/execution-queue.js";
 import { getConductor } from "../claustrum-bootstrap.js";
-import { isSessionPausedForHuman } from "../escalation/escalation-store.js";
 import {
   classifyTurnDelivery,
   classifyCatchError,
   emitNoDelivery,
   openIncidentInline,
+  readPauseState,
   type LogFn,
   type NoDeliveryClassification,
   type NoDeliverySignal,
@@ -323,10 +323,30 @@ async function runConductorTurn(params: {
   try {
     // D2 bot-pause gate: once a human takes over this session (an open
     // escalation), the LLM must stop auto-replying. The user's inbound was
-    // already archived above (appendMessages(user)), so staff still see it;
-    // we just suppress the bot turn. Fail-CLOSED (a Redis hiccup assumes PAUSED —
-    // see isSessionPausedForHuman — so it never falls through to the seam below).
-    if (await isSessionPausedForHuman(sessionId)) {
+    // already archived above (appendMessages(user)), so staff still see it; we
+    // just suppress the bot turn. Fail-CLOSED, but a pause READ-ERROR is
+    // DISTINGUISHED from a genuine pause (W1 Redis-outage fix):
+    const pause = await readPauseState(sessionId);
+    if (pause === "paused") {
+      pushChunk(sessionId, { type: "done" });
+      return;
+    }
+    if (pause === "read_error") {
+      // Still fail-CLOSED (suppress — a human MIGHT be handling it), but the
+      // customer got silence without a confirmed pause → open a durable
+      // pause_read_error incident via the Redis-FREE inline path (openIncidentInline
+      // routes through the pure kernel + a DB-side replay guard, never the Redis
+      // dedup layer). Storm-bounded by the per-session partial unique index;
+      // notifications aggregate via the storm digest, never a per-incident ping.
+      await openWebDrop({
+        sessionId,
+        messageId,
+        customerId,
+        turnId: undefined,
+        decisionKind: undefined,
+        classification: { cause: "pause_read_error", customerImpacted: true },
+        log: server.log,
+      });
       pushChunk(sessionId, { type: "done" });
       return;
     }
@@ -358,27 +378,21 @@ async function runConductorTurn(params: {
       // the catch (F2 gate).
       turnHandled = true;
 
-      // Client disconnected mid-turn — we must NOT deliver/persist a reply
-      // nobody is listening for, but we must STILL classify (the web analog of
-      // P0-2): an aborted turn delivered nothing even if it produced text, so
-      // it is a genuine drop. Classifying only after the text push (or
-      // early-returning here) would silently exclude the abort path.
+      // Client disconnected mid-turn — we must NOT deliver/persist a reply nobody
+      // is listening for.
       const aborted = turnAbort.signal.aborted;
 
-      // F1 — distinguish the TWO things that set `turnAbort.signal.aborted`:
-      //   (a) a genuine SSE client-disconnect (abortTurnOnDisconnect) — this turn
-      //       is STILL the session's current/registered turn, no one will answer
-      //       the customer ⇒ a real timeout-class drop, and
-      //   (b) a NEWER turn for the same session superseding this one
-      //       (`previous?.abort()` in POST) — a successor now owns the registry
-      //       slot and WILL answer the customer ⇒ NOT a ghost.
-      // The registry is the discriminator: if our controller is no longer the
-      // session's current one, a successor exists ⇒ suppress like the bot-pause
-      // (`suppressed_paused → null`), never opening a false incident.
-      const supersededAbort =
-        aborted && turnAbortControllers.get(sessionId) !== turnAbort;
-
-      const disposition: TurnDisposition = supersededAbort
+      // #6 — `turnAbort.signal.aborted` is set by BOTH:
+      //   (a) a genuine SSE client-disconnect (tab close / backgrounding via
+      //       abortTurnOnDisconnect), and
+      //   (b) a NEWER turn superseding this one (`previous?.abort()` in POST).
+      // NEITHER is a customer-facing delivery failure: in (a) the customer LEFT
+      // (routine user behavior — nobody is waiting), and in (b) a successor now
+      // owns the slot and WILL answer. A web SSE turn has no wall-clock deadline,
+      // so every abort is one of these two → suppress like a bot-pause
+      // (`suppressed_paused → null`), never opening a false timeout incident +
+      // staff ping (that noise storm was the old over-eager P0-2 web analog).
+      const disposition: TurnDisposition = aborted
         ? "suppressed_paused"
         : webDisposition(turn.response.text);
       const decisionKind = turn.decision?.kind;
@@ -462,10 +476,6 @@ async function runConductorTurn(params: {
   } catch (err) {
     server.log.error(err, "[chat] Conductor turn failed");
     const aborted = turnAbort.signal.aborted;
-    // F1 carry-over: a supersession-abort is excluded here too — its successor
-    // answers the customer, so a throw on the superseded turn is not a ghost.
-    const supersededAbort =
-      aborted && turnAbortControllers.get(sessionId) !== turnAbort;
 
     // F2 — WhatsApp :899 parity. classify/emit/open lived only in the inner try,
     // so a conductor/handleTurn throw (an explicit no-delivery class, P2-17) used
@@ -474,30 +484,28 @@ async function runConductorTurn(params: {
     //     classify never ran and the customer got only the degraded {type:error}.
     //     (A post-result throw, e.g. closeCapsule, is already owned by the inner
     //     path — do NOT double-open.)
-    //   - `!supersededAbort` ⇒ never a false incident for a superseded turn.
+    //   - `!aborted` ⇒ #6: a client-disconnect (or a superseding newer turn) is
+    //     NOT a delivery failure — nobody is waiting for THIS reply — so never open
+    //     an incident (nor a staff ping) for it. Only a throw with the client STILL
+    //     connected reaches the classify below.
     // Pause (returns before openCapsule) and ESCALATE (a throw carries no
     // decision) are excluded by construction. Fail-open: openWebDrop never throws
     // and the degraded {type:error} is pushed strictly AFTER emit+open so a
     // substitution can never mask emission.
-    if (!turnHandled && !supersededAbort) {
-      // Mirror WA's catch discrimination. No conductor result reached delivery on
-      // this branch, so `sendEntered/sendCompleted` are false: classifyCatchError
-      // yields `timeout` (abort/timeout) or `turn_error` (a pre/internal throw).
+    if (!turnHandled && !aborted) {
+      // The client is still connected (not aborted) and no conductor result reached
+      // delivery, so `sendEntered/sendCompleted` are false: classifyCatchError
+      // yields `timeout` (a provider "timed out" throw) or `turn_error` (a
+      // pre/internal throw). `turn_error` is OUTSIDE the frozen taxonomy → NO
+      // incident (WhatsApp M5 parity; the degraded {type:error} below is the web
+      // analog of the canned-apology-only path). `customerImpacted` is false — the
+      // degraded {type:error} reaches the still-connected client (not silence).
       const catchCause = classifyCatchError({
-        aborted,
+        aborted: false,
         message: err instanceof Error ? err.message : String(err),
         sendEntered: false,
         sendCompleted: false,
       });
-      // WhatsApp parity (M5, whatsapp-webhook.ts:1057): a pre-result internal
-      // exception is `turn_error` — OUTSIDE the frozen IncidentCause taxonomy — so
-      // it opens NO incident (the degraded {type:error} pushed below is the web
-      // analog of WhatsApp's canned-apology-only path). Only `timeout` /
-      // `send_failed` open a governed incident. (`send_failed` cannot arise on this
-      // pre-result branch — no send was attempted — so this effectively opens only
-      // on a timeout/abort.) `customerImpacted` is false when the degraded
-      // {type:error} reached the still-connected client; only an aborted client got
-      // nothing.
       if (catchCause === "timeout" || catchCause === "send_failed") {
         await openWebDrop({
           sessionId,
@@ -507,7 +515,7 @@ async function runConductorTurn(params: {
           decisionKind: undefined,
           classification: {
             cause: catchCause,
-            customerImpacted: aborted,
+            customerImpacted: false,
           },
           log: server.log,
         });

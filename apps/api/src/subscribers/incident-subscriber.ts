@@ -108,15 +108,78 @@ async function persistSuspectRow(
       "[incident-subscriber][SUSPECT] governance REFUSED open — persisted flagged suspect row (owed reply NOT forgotten)",
     );
   } catch (err) {
-    // P2002 = a redelivery already wrote this suspect row → idempotent no-op.
     const code = (err as { code?: string }).code;
     if (code === "P2002") {
-      log.info({ session: signal.sessionId, externalId }, "[incident-subscriber][SUSPECT] suspect row already persisted — skip");
+      // Two DISTINCT unique constraints can fire here — disambiguate by target:
+      //   (a) conversation_incidents_external_id_key → the SAME suspect row was
+      //       already written (redelivery) → idempotent no-op.
+      //   (b) conversation_incidents_session_open_uq (the partial unique index:
+      //       one non-terminal incident per session) → the session already has a
+      //       DIFFERENT open incident, so a second OPEN suspect row is impossible.
+      //       Do NOT silently drop the owed reply this row promises to alert about —
+      //       attach the suspect marker to the existing open incident instead.
+      const target = String(
+        (err as { meta?: { target?: unknown } }).meta?.target ?? "",
+      );
+      if (target.includes("external")) {
+        log.info({ session: signal.sessionId, externalId }, "[incident-subscriber][SUSPECT] suspect row already persisted — skip");
+        return;
+      }
+      await attachSuspectToOpenIncident(signal, detail, log);
       return;
     }
     log.error(
       { session: signal.sessionId, error: String(err) },
       "[incident-subscriber][SUSPECT] FAILED to persist suspect row — owed reply at risk",
+    );
+  }
+}
+
+/**
+ * A governance-REFUSED suspect collided with the per-session open-incident
+ * partial unique index — the session already has a DIFFERENT open incident, so a
+ * second OPEN row cannot exist. Rather than DROP the owed reply, fold the suspect
+ * marker into the existing open incident (bump the drop count, keep
+ * customerImpacted monotonic, append the [SUSPECT] detail) and alert LOUDLY.
+ */
+async function attachSuspectToOpenIncident(
+  signal: NoDeliverySignal,
+  suspectDetail: string,
+  log: LogFn,
+): Promise<void> {
+  try {
+    const existing = await prisma.conversationIncident.findFirst({
+      where: { sessionId: signal.sessionId, status: { in: ["OPEN", "ACKNOWLEDGED"] } },
+      orderBy: { openedAt: "desc" },
+    });
+    if (!existing) {
+      // Race: the blocking incident closed between our failed create and this
+      // re-read. The owed reply is still unrecorded → surface it loudly rather
+      // than swallow (consistent with the generic persist-failure branch).
+      log.error(
+        { session: signal.sessionId, rawCause: signal.cause },
+        "[incident-subscriber][SUSPECT] session-open collision but no open incident on re-read — owed reply at risk",
+      );
+      return;
+    }
+    await prisma.conversationIncident.update({
+      where: { id: existing.id },
+      data: {
+        dropCount: { increment: 1 },
+        lastDropAt: new Date(),
+        // customerImpacted is MONOTONIC (never downgrade true→false).
+        customerImpacted: existing.customerImpacted || signal.customerImpacted,
+        detail: existing.detail ? `${existing.detail}\n${suspectDetail}` : suspectDetail,
+      },
+    });
+    log.error(
+      { session: signal.sessionId, incidentId: existing.id, rawCause: signal.cause },
+      "[incident-subscriber][SUSPECT] governance REFUSED open + session already has an open incident — attached suspect to it (owed reply NOT forgotten)",
+    );
+  } catch (err) {
+    log.error(
+      { session: signal.sessionId, error: String(err) },
+      "[incident-subscriber][SUSPECT] FAILED to attach suspect to open incident — owed reply at risk",
     );
   }
 }

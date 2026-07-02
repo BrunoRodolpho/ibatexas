@@ -1,5 +1,12 @@
-import { describe, it, expect } from "vitest";
-import { classifyTurnDelivery, classifyCatchError } from "../no-delivery.js";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+
+const mockIsPaused = vi.hoisted(() => vi.fn());
+const mockGetEscalationStore = vi.hoisted(() => vi.fn());
+vi.mock("../../escalation/escalation-store.js", () => ({
+  getEscalationStore: mockGetEscalationStore,
+}));
+
+import { classifyTurnDelivery, classifyCatchError, readPauseState } from "../no-delivery.js";
 
 // `classifyTurnDelivery` is PURE — no DB, NATS, or kernel needed. These tests
 // pin the no-false-positive short-circuits (layer 1), the abort-with-text
@@ -120,9 +127,62 @@ describe("classifyCatchError", () => {
     ).toBe("turn_error");
   });
 
+  it("[#4] a POST-send throw whose message contains 'timed out' is turn_error, not timeout (already served)", () => {
+    // The reply WAS served (sendEntered && sendCompleted); a later throw whose
+    // message merely contains "timed out" (e.g. a downstream persistence call)
+    // must NOT be misclassified `timeout` (customerImpacted) — the post-send
+    // discrimination runs BEFORE the message regex.
+    expect(
+      classifyCatchError({
+        aborted: false,
+        message: "connection timed out while appending",
+        sendEntered: true,
+        sendCompleted: true,
+      }),
+    ).toBe("turn_error");
+    // And an ABORTED-but-already-served turn is likewise turn_error (served wins).
+    expect(
+      classifyCatchError({
+        aborted: true,
+        message: "WhatsApp turn timed out",
+        sendEntered: true,
+        sendCompleted: true,
+      }),
+    ).toBe("turn_error");
+  });
+
   it("maps a pre-send turn exception to turn_error (out of frozen taxonomy)", () => {
     expect(
       classifyCatchError({ aborted: false, message: "planner blew up", sendEntered: false }),
     ).toBe("turn_error");
+  });
+});
+
+// readPauseState DISAMBIGUATES a genuine pause from a Redis read-error at the gate
+// (W1 Redis-outage fix): `isSessionPausedForHuman` collapses both to `true`.
+describe("readPauseState", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetEscalationStore.mockResolvedValue({ isPaused: mockIsPaused });
+  });
+
+  it("returns 'paused' for a genuine open escalation", async () => {
+    mockIsPaused.mockResolvedValue(true);
+    await expect(readPauseState("sess_1")).resolves.toBe("paused");
+  });
+
+  it("returns 'active' when the session is not paused", async () => {
+    mockIsPaused.mockResolvedValue(false);
+    await expect(readPauseState("sess_2")).resolves.toBe("active");
+  });
+
+  it("returns 'read_error' when the store read throws (Redis unreachable)", async () => {
+    mockIsPaused.mockRejectedValue(new Error("redis down"));
+    await expect(readPauseState("sess_3")).resolves.toBe("read_error");
+  });
+
+  it("returns 'read_error' when the store cannot even be constructed", async () => {
+    mockGetEscalationStore.mockRejectedValue(new Error("redis down"));
+    await expect(readPauseState("sess_4")).resolves.toBe("read_error");
   });
 });

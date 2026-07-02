@@ -58,6 +58,9 @@ export const FROZEN_CAUSES = [
   "send_failed",
   "retry_exhausted",
   "timeout",
+  // A bot-pause gate READ-ERROR (Redis unreachable) fails closed and silences the
+  // customer — a genuine ghost distinct from an intentional handoff pause (W1).
+  "pause_read_error",
 ] as const satisfies readonly IncidentCause[]
 
 export interface IncidentOpenPayload {

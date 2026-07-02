@@ -11,6 +11,7 @@ import type { ClaimVerdict } from "@adjudicate/core";
 import { describe, expect, it } from "vitest";
 import { isRegistryClaimType, type RegistryClaimType } from "../claim-registry.js";
 import {
+  type ActiveResourceOwnership,
   checkRequiredClaimCompleteness,
   classifyRequestSpans,
   decomposeRequiredClaims,
@@ -182,5 +183,112 @@ describe("classifyRequestSpans — F2 'status' polysemy disambiguation (§O#8/§
     const spans = classifyRequestSpans("qual o status do pedido e do pagamento?");
     expect(spans).toContain("ORDER_STATUS_Q");
     expect(spans).toContain("PAYMENT_STATUS_Q");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #8 — OWNERSHIP-AWARE required companions. A companion about a resource the
+// customer PROVABLY does not own (an active order / active payment) is DROPPED, so
+// it can no longer degrade a legitimately-VALIDATED answer. Gate fires ONLY on a
+// positive first-party `false`; undefined ownership / a `true` flag preserves the
+// pre-#8 over-including behavior byte-for-byte (demote-only under doubt).
+// ─────────────────────────────────────────────────────────────────────────────
+describe("required-claim decomposer — #8 ownership-aware companions", () => {
+  const GUEST_OWNS_NOTHING: ActiveResourceOwnership = {
+    hasActiveOrder: false,
+    hasActivePayment: false,
+  };
+
+  it("#8a a GUEST's pickup-phrased hours question requires STORE_OPEN_NOW ONLY (no forced ORDER companion → not degraded)", () => {
+    // "posso pegar uma marmita aí agora?" — a guest with no order. The pickup
+    // marker classifies PICKUP_Q, whose closure forces {STORE_OPEN_NOW,
+    // ORDER_FULFILLMENT_STAGE}. Before #8 the forced ORDER companion resolved
+    // ABSENT and degraded the VALIDATED store-hours answer to UNKNOWN.
+    const spans = classifyRequestSpans("posso pegar uma marmita aí agora?");
+    expect(spans).toContain("PICKUP_Q");
+
+    const required = decomposeRequiredClaims(spans, GUEST_OWNS_NOTHING);
+    expect(required.has("STORE_OPEN_NOW")).toBe(true); // public config — never gated.
+    expect(required.has("ORDER_FULFILLMENT_STAGE")).toBe(false); // guest owns no order.
+    expect([...required]).toEqual(["STORE_OPEN_NOW"]);
+
+    // …and with the store-hours claim VALIDATED the turn is NOT degraded.
+    const completeness = checkRequiredClaimCompleteness(
+      required,
+      new Map([["STORE_OPEN_NOW", "VALIDATED"]]),
+    );
+    expect(completeness.degrade).toBe(false);
+    expect(completeness.complete).toBe(true);
+  });
+
+  it("#8b a bare 'status' from a customer with NO active payment requires ORDER only (no forced PAYMENT companion → not degraded)", () => {
+    // Customer HAS an active order but NO active payment row. Bare "status"
+    // over-includes both ORDER_STATUS_Q + PAYMENT_STATUS_Q; before #8 the forced
+    // PAYMENT companion resolved ABSENT and degraded the order-status answer.
+    const spans = classifyRequestSpans("qual o status?");
+    const ownership: ActiveResourceOwnership = {
+      hasActiveOrder: true,
+      hasActivePayment: false,
+    };
+
+    const required = decomposeRequiredClaims(spans, ownership);
+    expect(required.has("ORDER_FULFILLMENT_STAGE")).toBe(true);
+    expect(required.has("PAYMENT_STATUS")).toBe(false); // no active payment → not forced.
+
+    const completeness = checkRequiredClaimCompleteness(
+      required,
+      new Map([["ORDER_FULFILLMENT_STAGE", "VALIDATED"]]),
+    );
+    expect(completeness.degrade).toBe(false);
+    expect(completeness.complete).toBe(true);
+  });
+
+  it("keeps a gated companion when the customer DOES own the resource (over-include preserved)", () => {
+    // An authenticated customer WITH an active order asking a pickup question
+    // legitimately needs BOTH the store-open and the order-stage companion.
+    const spans = classifyRequestSpans("posso pegar meu pedido agora?");
+    const required = decomposeRequiredClaims(spans, {
+      hasActiveOrder: true,
+      hasActivePayment: false,
+    });
+    expect(required.has("STORE_OPEN_NOW")).toBe(true);
+    expect(required.has("ORDER_FULFILLMENT_STAGE")).toBe(true);
+  });
+
+  it("STORE_OPEN_NOW is NEVER ownership-gated (public config, owned by nobody)", () => {
+    const required = decomposeRequiredClaims(
+      ["STORE_OPEN_NOW_Q"],
+      GUEST_OWNS_NOTHING,
+    );
+    expect([...required]).toEqual(["STORE_OPEN_NOW"]);
+  });
+
+  it("OMITTED ownership is byte-identical to the pre-#8 over-including decomposer", () => {
+    // No signal threaded → nothing dropped → the full conservative union stands.
+    expect([...decomposeRequiredClaims(["PICKUP_Q"])]).toEqual([
+      "STORE_OPEN_NOW",
+      "ORDER_FULFILLMENT_STAGE",
+    ]);
+    const bare = decomposeRequiredClaims(classifyRequestSpans("qual o status?"));
+    expect(bare.has("ORDER_FULFILLMENT_STAGE")).toBe(true);
+    expect(bare.has("PAYMENT_STATUS")).toBe(true);
+  });
+
+  it("drops ONLY the companion whose flag is a positive false (independent gating)", () => {
+    // hasActiveOrder true, hasActivePayment false → ORDER kept, PAYMENT dropped.
+    const spans = classifyRequestSpans("qual o status?");
+    const onlyOrder = decomposeRequiredClaims(spans, {
+      hasActiveOrder: true,
+      hasActivePayment: false,
+    });
+    expect(onlyOrder.has("ORDER_FULFILLMENT_STAGE")).toBe(true);
+    expect(onlyOrder.has("PAYMENT_STATUS")).toBe(false);
+    // …and the mirror case.
+    const onlyPayment = decomposeRequiredClaims(spans, {
+      hasActiveOrder: false,
+      hasActivePayment: true,
+    });
+    expect(onlyPayment.has("ORDER_FULFILLMENT_STAGE")).toBe(false);
+    expect(onlyPayment.has("PAYMENT_STATUS")).toBe(true);
   });
 });

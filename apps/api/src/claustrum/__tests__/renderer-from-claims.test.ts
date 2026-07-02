@@ -76,6 +76,39 @@ describe("renderer-from-claims — §Q.7 pure template-filler", () => {
     expect(paymentLine?.text).not.toContain("almoço");
   });
 
+  // ── Inv 6 1:1 (literal-falsehood regression): two VALIDATED claims of the SAME
+  // type on DISTINCT owned subjects each render THEIR OWN value — never the
+  // first-of-type. Before the fix, `fillProposition` read `byType.get(type)` (the
+  // FIRST validated claim of that type) for every line, so order B's line rendered
+  // order A's stage → the customer was told a literal falsehood ("em preparo" for a
+  // pedido already "saiu para entrega"), breaking the 1:1 claim↔proposition binding.
+  it("Inv 6: same-type claims on distinct subjects each render their OWN value (not first-of-type)", () => {
+    const out = renderRenderables(
+      [
+        claim(ORDER_FULFILLMENT_STAGE, "VALIDATED", { fulfillmentStatus: "preparing" }, "order-A"),
+        claim(ORDER_FULFILLMENT_STAGE, "VALIDATED", { fulfillmentStatus: "in_delivery" }, "order-B"),
+      ],
+      RENDER,
+    );
+    // Two ASSERTION lines, each carrying its OWN subject's localized stage.
+    expect(out.lines).toHaveLength(2);
+    expect(out.lines[0]).toEqual({
+      kind: "ASSERTION",
+      claimType: ORDER_FULFILLMENT_STAGE,
+      text: "Seu pedido está na etapa: em preparo.",
+    });
+    expect(out.lines[1]).toEqual({
+      kind: "ASSERTION",
+      claimType: ORDER_FULFILLMENT_STAGE,
+      text: "Seu pedido está na etapa: saiu para entrega.",
+    });
+    // The joined text carries BOTH distinct stages — order B is NOT mis-told order
+    // A's stage (the literal falsehood the fix closes).
+    expect(out.text).toBe(
+      "Seu pedido está na etapa: em preparo. Seu pedido está na etapa: saiu para entrega.",
+    );
+  });
+
   // ── Acceptance 2: UNKNOWN/REFUSED → proposition-free; NO domain fact. ──
   it("renders an UNKNOWN claim as a proposition-free self-report (no domain fact)", () => {
     const out = renderRenderables(

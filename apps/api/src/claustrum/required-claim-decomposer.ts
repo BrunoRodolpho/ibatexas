@@ -161,21 +161,98 @@ export function isSpanClass(value: unknown): value is SpanClass {
 }
 
 /**
+ * The FIRST-PARTY, owner-scoped ACTIVE-RESOURCE signal for THIS turn's customer
+ * (#8 — ownership-aware required companions). It answers the ONLY two questions
+ * the decomposer needs to stop forcing a companion the customer cannot possibly
+ * have:
+ *
+ *   - `hasActiveOrder`   — the customer OWNS ≥1 active order this turn.
+ *   - `hasActivePayment` — the customer OWNS ≥1 active payment row this turn.
+ *
+ * WHY (the #8 over-inclusion bug): forcing `ORDER_FULFILLMENT_STAGE` /
+ * `PAYMENT_STATUS` as a required companion FROM A KEYWORD degrades a legitimately-
+ * VALIDATED answer when the customer has no such resource — the companion can only
+ * resolve ABSENT/UNKNOWN/REFUSED, so the completeness gate demotes the turn to a
+ * proposition-free UNKNOWN (#8a: a GUEST's pickup-phrased hours question loses its
+ * VALIDATED store-hours answer to a forced ORDER companion; #8b: a bare "status"
+ * from a customer with NO active payment row loses its order-status answer to a
+ * forced PAYMENT companion). A companion about a resource that PROVABLY does not
+ * exist hides NOTHING — there is no "easy half" to leak — so requiring it is pure
+ * loss.
+ *
+ * SOUNDNESS + FAIL-CLOSED CONTRACT (load-bearing — do NOT weaken):
+ *   - A field is `false` ONLY on a POSITIVE first-party determination that the
+ *     resource does NOT exist for THIS customer (e.g. an owner-scoped
+ *     `listActiveOrderIds(customerId)` returned empty; a guest owns nothing).
+ *     `false` is the ONLY value that DROPS a companion.
+ *   - On ANY uncertainty (a read error, an unknown/absent signal) the caller MUST
+ *     pass `true` — or omit the whole `ownership` argument — so the companion is
+ *     KEPT: the decomposer stays over-including / demote-only under doubt. NEVER
+ *     derive this from the model, from customer free-text, or from the planner's
+ *     `perClaim` verdicts — an ABSENT `perClaim` entry cannot be distinguished
+ *     from a non-existent resource, which reintroduces the exact "render the easy
+ *     half" ambiguity this whole stage exists to close.
+ *   - The signal must be OWNER-SCOPED first-party (IDOR-safe): keyed only by the
+ *     authenticated `customerId`, never by a model-extracted / cross-owner id.
+ */
+export interface ActiveResourceOwnership {
+  /** Customer OWNS ≥1 active order this turn (positive first-party fact). */
+  readonly hasActiveOrder: boolean;
+  /** Customer OWNS ≥1 active payment row this turn (positive first-party fact). */
+  readonly hasActivePayment: boolean;
+}
+
+/**
+ * Maps each OWNERSHIP-GATED required claim type to the {@link ActiveResourceOwnership}
+ * flag that must hold for it to STAY required. A required type NOT in this map
+ * (e.g. `STORE_OPEN_NOW` — PUBLIC first-party config, owned by nobody) is NEVER
+ * gated: it stays required whenever its span-class matches (so a guest's pickup /
+ * hours question still requires — and can still render — the store-open answer).
+ */
+const OWNERSHIP_GATED_TYPES = {
+  ORDER_FULFILLMENT_STAGE: "hasActiveOrder",
+  PAYMENT_STATUS: "hasActivePayment",
+} as const satisfies Partial<Record<RegistryClaimType, keyof ActiveResourceOwnership>>;
+
+/**
  * DECOMPOSE the request's span-classes into the MANDATORY required-claim-type set
  * (SDD §O#15). CONSERVATIVE-OVER-DECOMPOSING: the result is the UNION over every
  * recognized class — over-including companions, never under-including. An
  * unrecognized class contributes nothing (the planner's own P4/§O#9 nets handle
  * it; this stage only ADDS required companions, never suppresses). Deterministic
  * + order-stable. Pure.
+ *
+ * `ownership` (#8) — the OPTIONAL first-party {@link ActiveResourceOwnership}
+ * signal. When supplied, an ownership-gated companion ({@link OWNERSHIP_GATED_TYPES}
+ * — `ORDER_FULFILLMENT_STAGE` / `PAYMENT_STATUS`) is DROPPED from the required set
+ * iff its flag is a POSITIVE `false` (the customer PROVABLY has no such active
+ * resource). This is the only place the required set SHRINKS, and it is sound: a
+ * companion about a non-existent resource can never validate and hides nothing.
+ * When `ownership` is omitted (the default — the signal is not yet threaded to
+ * this layer; see DEFER note below) or a flag is `true`, NOTHING is dropped and
+ * the behavior is byte-identical to the pre-#8 over-including decomposer.
  */
 export function decomposeRequiredClaims(
   spanClasses: readonly string[],
+  ownership?: ActiveResourceOwnership,
 ): ReadonlySet<RegistryClaimType> {
   const required = new Set<RegistryClaimType>();
   for (const cls of spanClasses) {
     if (!isSpanClass(cls)) continue; // unrecognized → no forced companion.
     for (const t of REQUIRED_CLAIM_CLOSURE[cls]) required.add(t);
   }
+
+  // #8 OWNERSHIP GATE — drop a companion ONLY on a POSITIVE first-party `false`
+  // (the resource provably does not exist for this customer). Undefined ownership
+  // or a `true` flag keeps the companion (over-include / demote-only under doubt).
+  if (ownership !== undefined) {
+    for (const type of Object.keys(
+      OWNERSHIP_GATED_TYPES,
+    ) as (keyof typeof OWNERSHIP_GATED_TYPES)[]) {
+      if (ownership[OWNERSHIP_GATED_TYPES[type]] === false) required.delete(type);
+    }
+  }
+
   return required;
 }
 

@@ -59,6 +59,11 @@ const mockAcquireLock = vi.hoisted(() => vi.fn());
 const mockReleaseLock = vi.hoisted(() => vi.fn());
 
 const mockIsSessionPausedForHuman = vi.hoisted(() => vi.fn());
+// W1 Redis-outage fix: the gate now reads the store via readPauseState (real) →
+// getEscalationStore().isPaused(), so it DISTINGUISHES a genuine pause from a
+// Redis read-error.
+const mockIsPaused = vi.hoisted(() => vi.fn());
+const mockGetEscalationStore = vi.hoisted(() => vi.fn());
 
 // W1 no-reply seam: keep the PURE classifier real (it maps disposition → cause),
 // mock ONLY the two side-effecting collaborators (NATS emit + governed open) so
@@ -123,6 +128,7 @@ vi.mock("../../claustrum-bootstrap.js", () => ({
 
 vi.mock("../../escalation/escalation-store.js", () => ({
   isSessionPausedForHuman: mockIsSessionPausedForHuman,
+  getEscalationStore: mockGetEscalationStore,
 }));
 
 vi.mock("../../conversation/no-delivery.js", async (importOriginal) => {
@@ -188,6 +194,8 @@ beforeEach(() => {
   mockReleaseLock.mockResolvedValue(undefined);
 
   mockIsSessionPausedForHuman.mockResolvedValue(false);
+  mockIsPaused.mockResolvedValue(false);
+  mockGetEscalationStore.mockResolvedValue({ isPaused: mockIsPaused });
 
   mockOpenCapsule.mockResolvedValue({ id: "capsule-1", turnId: "turn-1" });
   mockCloseCapsule.mockResolvedValue(undefined);
@@ -373,7 +381,7 @@ describe("POST /api/chat/messages — Conductor turn delivery (fire-and-forget)"
     await postGuest();
     await waitFor(() => mockReleaseLock.mock.calls.length > 0);
 
-    expect(mockIsSessionPausedForHuman).toHaveBeenCalledWith(SID);
+    expect(mockIsPaused).toHaveBeenCalledWith(SID);
     expect(mockGetConductor).toHaveBeenCalledTimes(1);
     expect(mockOpenCapsule).toHaveBeenCalledWith(
       expect.objectContaining({ channel: "web", sessionKey: SID }),
@@ -392,7 +400,7 @@ describe("POST /api/chat/messages — Conductor turn delivery (fire-and-forget)"
   });
 
   it("bot-paused session: emits only `done` and never runs the Conductor", async () => {
-    mockIsSessionPausedForHuman.mockResolvedValue(true);
+    mockIsPaused.mockResolvedValue(true);
     await postGuest();
     await waitFor(() => mockReleaseLock.mock.calls.length > 0);
 
@@ -553,13 +561,37 @@ describe("POST /api/chat/messages — W1 no-reply incident seam", () => {
 
   it("bot-paused session: NO incident (pause is excluded by construction)", async () => {
     vi.stubEnv("WEB_EMPTY_COMPLETION_HOLDING", "true");
-    mockIsSessionPausedForHuman.mockResolvedValue(true);
+    mockIsPaused.mockResolvedValue(true);
 
     await postGuest();
     await waitFor(() => mockReleaseLock.mock.calls.length > 0);
 
     expect(mockOpenIncidentInline).not.toHaveBeenCalled();
     expect(mockEmitNoDelivery).not.toHaveBeenCalled();
+    expect(mockPushChunk).toHaveBeenCalledWith(SID, { type: "done" });
+  });
+
+  it("#2: a pause-gate READ-ERROR opens a pause_read_error web incident (Redis-free) + emits only done", async () => {
+    vi.stubEnv("WEB_EMPTY_COMPLETION_HOLDING", "true");
+    // The bot-pause gate is unreachable (Redis down). Fail-CLOSED (no reply), but
+    // a customer-impacted ghost WITHOUT a confirmed pause → a durable
+    // pause_read_error incident opens via the inline (Redis-free) path.
+    mockGetEscalationStore.mockRejectedValue(new Error("redis down"));
+
+    await postGuest();
+    await waitFor(() => mockReleaseLock.mock.calls.length > 0);
+
+    expect(mockOpenIncidentInline).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cause: "pause_read_error",
+        customerImpacted: true,
+        channel: "web",
+        sessionId: SID,
+      }),
+      expect.anything(),
+    );
+    // Fail-CLOSED: the conductor never ran; the client just gets a terminal done.
+    expect(mockGetConductor).not.toHaveBeenCalled();
     expect(mockPushChunk).toHaveBeenCalledWith(SID, { type: "done" });
   });
 
@@ -642,11 +674,14 @@ describe("POST /api/chat/messages — W1 supersession (F1) & catch parity (F2)",
     await app.close();
   });
 
-  it("F1: a genuine client-disconnect while still-current + nothing delivered → timeout incident (customerImpacted)", async () => {
+  it("#6: a genuine client-disconnect (still-current) opens NO incident — routine user behavior, not a delivery failure", async () => {
     vi.stubEnv("WEB_EMPTY_COMPLETION_HOLDING", "false");
 
     // The turn would be deliverable, but the SSE client disconnects before it
-    // resolves, so nothing reaches the customer — a genuine timeout-class drop.
+    // resolves. A tab-close / backgrounding is routine user behavior — nobody is
+    // waiting — so it must NOT open a governed incident + staff ping (the old
+    // over-eager P0-2 web analog). A web SSE turn has no wall-clock deadline, so
+    // every abort is a client-close (or a supersession); neither is a ghost.
     let releaseTurn!: () => void;
     const gate = new Promise<void>((r) => {
       releaseTurn = r;
@@ -686,16 +721,9 @@ describe("POST /api/chat/messages — W1 supersession (F1) & catch parity (F2)",
     await waitFor(() => mockReleaseLock.mock.calls.length > 0);
     await getPromise;
 
-    expect(mockOpenIncidentInline).toHaveBeenCalledWith(
-      expect.objectContaining({
-        cause: "timeout",
-        customerImpacted: true,
-        channel: "web",
-        sessionId: SID,
-        turnId: "turn-1",
-      }),
-      expect.anything(),
-    );
+    // #6: a client disconnect is NOT a delivery failure → NO incident, NO ping.
+    expect(mockOpenIncidentInline).not.toHaveBeenCalled();
+    expect(mockEmitNoDelivery).not.toHaveBeenCalled();
     // Aborted client → nothing was delivered to it.
     expect(mockPushChunk).not.toHaveBeenCalledWith(
       SID,

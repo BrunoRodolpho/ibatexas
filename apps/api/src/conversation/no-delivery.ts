@@ -22,6 +22,7 @@ import { publishNatsEvent } from "@ibatexas/nats-client";
 import { createIncidentService, type IncidentCause, type IncidentOpenPayload } from "@ibatexas/domain";
 import { getAuditSink } from "@ibatexas/audit-sink";
 import { buildSystemEnvelope } from "../subscribers/__shared__/system-actor-envelope.js";
+import { getEscalationStore } from "../escalation/escalation-store.js";
 
 /** Mirror of the webhook `LogFn` (lives only at whatsapp-webhook.ts:66). */
 export type LogFn = {
@@ -127,9 +128,42 @@ export function classifyCatchError(input: {
   readonly sendEntered: boolean;
   readonly sendCompleted?: boolean;
 }): CatchCause {
+  // F2 (post-send discrimination FIRST): if the reply was ALREADY served
+  // (sendEntered && sendCompleted), a later throw is a `turn_error` — the customer
+  // was served, so it is never a customer-impacted drop. This MUST precede the
+  // `/timed out/` regex below: a post-send throw whose message merely contains
+  // "timed out" (e.g. a downstream persistence call) would otherwise be
+  // misclassified `timeout` (customerImpacted true) though the reply WAS delivered.
+  if (input.sendEntered && input.sendCompleted) return "turn_error";
   if (input.aborted || /timed out/i.test(input.message)) return "timeout";
   if (input.sendEntered && !input.sendCompleted) return "send_failed";
   return "turn_error";
+}
+
+/**
+ * The bot-pause gate state, DISAMBIGUATED (W1 Redis-outage fix). `isSessionPausedForHuman`
+ * collapses a Redis read-ERROR and a genuine OPEN escalation both to `true` (fail-closed) —
+ * so a Redis outage silently suppresses every reply and opens ZERO incidents. This reads the
+ * escalation store directly to tell the two apart:
+ *
+ *   - `"paused"`      — a genuine OPEN escalation: a human is handling it, STAY excluded
+ *                       (never an incident).
+ *   - `"read_error"`  — the store/Redis was unreachable: still fail-CLOSED (suppress the bot,
+ *                       a human MIGHT be handling it) BUT the customer got silence and we could
+ *                       NOT confirm a pause, so this is a `pause_read_error` ghost the caller
+ *                       must open a durable incident for (via the Redis-FREE inline path).
+ *   - `"active"`      — a genuine "not paused": proceed with the turn.
+ */
+export type PauseGateState = "paused" | "read_error" | "active";
+
+export async function readPauseState(sessionId: string): Promise<PauseGateState> {
+  try {
+    const store = await getEscalationStore();
+    return (await store.isPaused(sessionId)) ? "paused" : "active";
+  } catch {
+    // Fail-CLOSED distinct from a genuine pause: the gate was unreachable.
+    return "read_error";
+  }
 }
 
 export interface NoDeliverySignal {

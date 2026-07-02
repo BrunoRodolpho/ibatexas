@@ -20,7 +20,10 @@ vi.mock("@ibatexas/domain", () => ({
   }),
 }));
 
-import { closeIncidentOnDeliveredReply } from "../incidents/incident-auto-close.js";
+import {
+  closeIncidentOnDeliveredReply,
+  closeIncidentOnStaffReply,
+} from "../incidents/incident-auto-close.js";
 
 beforeEach(() => {
   findOpenBySession.mockReset();
@@ -82,6 +85,42 @@ describe("closeIncidentOnDeliveredReply", () => {
 
     await expect(
       closeIncidentOnDeliveredReply("sess_4", "turn_z"),
+    ).resolves.toBeUndefined();
+    expect(closeIncidentFromEnvelope).not.toHaveBeenCalled();
+  });
+});
+
+describe("closeIncidentOnStaffReply (#7 — manual take-over close)", () => {
+  it("closes as STAFF with the staff identity (never AUTO/system)", async () => {
+    findOpenBySession.mockResolvedValue({ id: "inc_9", status: "OPEN" });
+
+    await closeIncidentOnStaffReply("sess_9", "staff:mgr_1", "staff_takeover:mgr_1:123");
+
+    expect(closeIncidentFromEnvelope).toHaveBeenCalledTimes(1);
+    const envelope = closeIncidentFromEnvelope.mock.calls[0]![0] as IntentEnvelope<
+      "incident.ticket.close",
+      { id: string; resolvedBy: string; resolutionType: string }
+    >;
+    expect(envelope.payload).toMatchObject({
+      id: "inc_9",
+      resolvedBy: "staff:mgr_1",
+      resolutionType: "STAFF",
+    });
+    // A staff take-over is NOT a bot self-heal → must never record AUTO/system.
+    expect(envelope.payload.resolutionType).not.toBe("AUTO");
+    expect(envelope.payload.resolvedBy).not.toBe("system");
+  });
+
+  it("is a fast-null no-op when no incident is open on the session", async () => {
+    findOpenBySession.mockResolvedValue(null);
+    await closeIncidentOnStaffReply("sess_10", "admin-key", "marker");
+    expect(closeIncidentFromEnvelope).not.toHaveBeenCalled();
+  });
+
+  it("is fail-open: a lookup error never propagates to the reply path", async () => {
+    findOpenBySession.mockRejectedValue(new Error("db down"));
+    await expect(
+      closeIncidentOnStaffReply("sess_11", "staff:x", "marker"),
     ).resolves.toBeUndefined();
     expect(closeIncidentFromEnvelope).not.toHaveBeenCalled();
   });

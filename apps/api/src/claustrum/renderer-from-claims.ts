@@ -72,6 +72,21 @@ export type RenderableClaim = ConsistencyClaim;
  * otherwise `null` — the slot is UNFILLABLE (no backing) and the caller must
  * abstain, never fabricate.
  *
+ * Inv 6 1:1 binding — WHICH claim instance backs the slot:
+ *   · When the slot names the LINE claim's OWN type (`slot.claimType === self.type`
+ *     — the overwhelmingly common case; every `validated` template in the grammar
+ *     self-references its own type), the slot resolves to THIS `self` claim's value.
+ *     This is the fix for the literal falsehood: two VALIDATED claims of the SAME
+ *     type on DISTINCT owned subjects (order A "preparing", order B "in_delivery")
+ *     must each render THEIR OWN value — never the first-of-type from `byType`.
+ *   · When the slot names a DIFFERENT (genuinely cross-referenced) type, it falls
+ *     back to the by-type index (`byType.get`). Cross-type references are absent
+ *     from the current representative grammar, but the fallback preserves the
+ *     designed cross-type behavior for when one is added.
+ *
+ * `self` is optional so the proposition-free safe/terminal templates (which never
+ * reach this function — they carry no PROPOSITION slot) can render without a claim.
+ *
  * "non-empty" mirrors registry §5: an empty / default value resolves to absence,
  * never to a confident assertion (so an empty field cannot smuggle in a blank
  * proposition).
@@ -79,8 +94,10 @@ export type RenderableClaim = ConsistencyClaim;
 function fillProposition(
   slot: Extract<TemplateSlot, { kind: "PROPOSITION" }>,
   byType: ReadonlyMap<string, RenderableClaim>,
+  self?: RenderableClaim,
 ): string | null {
-  const backing = byType.get(slot.claimType);
+  const backing =
+    self !== undefined && slot.claimType === self.type ? self : byType.get(slot.claimType);
   // Inv 6: the backing claim must EXIST, be VALIDATED, and carry the exact field.
   if (backing?.verdict !== "VALIDATED") return null;
   const value = backing.value;
@@ -129,10 +146,16 @@ function fillProposition(
  * template abstains rather than emit a partial/half-asserted sentence (Inv 6: no
  * unbacked assertion). A proposition-free template (no PROPOSITION slots) can never
  * be unfillable, so it always renders.
+ *
+ * `self` is the specific claim this template is rendering FOR (the line claim). It
+ * is threaded to `fillProposition` so a self-type proposition slot binds 1:1 to
+ * THIS instance's value (Inv 6), not the first-of-type index. Proposition-free
+ * templates ignore it.
  */
 function renderTemplate(
   template: Template,
   byType: ReadonlyMap<string, RenderableClaim>,
+  self?: RenderableClaim,
 ): string | null {
   const parts: string[] = [];
   for (const slot of template.slots) {
@@ -140,7 +163,7 @@ function renderTemplate(
       parts.push(slot.text);
       continue;
     }
-    const filled = fillProposition(slot, byType);
+    const filled = fillProposition(slot, byType, self);
     if (filled === null) return null; // unbacked proposition ⟹ abstain (Inv 6)
     parts.push(filled);
   }
@@ -288,9 +311,13 @@ function renderTerminalResult(
 }
 
 /**
- * Index the renderable claims by type for the Inv 6 1:1 proposition lookup. Only
- * VALIDATED claims back a proposition (Inv 6); a non-validated duplicate type must
- * never become the backing of a slot, so we index VALIDATED only (first wins).
+ * Index the renderable claims by type — the CROSS-TYPE fallback for a proposition
+ * slot that references a type OTHER than its line claim's own (a self-type slot
+ * resolves directly from the line claim instance in `fillProposition`, NOT from
+ * this index, so same-type duplicates on distinct subjects each render their own
+ * value — Inv 6 1:1). Only VALIDATED claims back a proposition (Inv 6); a
+ * non-validated duplicate type must never become the backing of a slot, so we index
+ * VALIDATED only (first wins — this ambiguity is why self-type slots bypass it).
  */
 function indexValidatedClaims(
   renderableClaims: readonly RenderableClaim[],
@@ -335,7 +362,10 @@ function renderClaimLine(
       text: renderTemplate(SAFE_TEMPLATES.unknown, byType) ?? "",
     };
   }
-  const filled = renderTemplate(template, byType);
+  // Inv 6 1:1: render THIS claim instance's own value — pass `claim` so a self-type
+  // proposition slot resolves from it, not the first-of-type `byType` index (two
+  // VALIDATED claims of the same type on distinct subjects each render their own).
+  const filled = renderTemplate(template, byType, claim);
   if (filled === null) {
     // Inv 6 fail-safe: a proposition slot had no backing → abstain, no fact.
     return {

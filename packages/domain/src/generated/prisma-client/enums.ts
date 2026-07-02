@@ -110,7 +110,8 @@ export const IncidentCause = {
   whitespace_only: 'whitespace_only',
   send_failed: 'send_failed',
   retry_exhausted: 'retry_exhausted',
-  timeout: 'timeout'
+  timeout: 'timeout',
+  pause_read_error: 'pause_read_error'
 } as const
 
 export type IncidentCause = (typeof IncidentCause)[keyof typeof IncidentCause]

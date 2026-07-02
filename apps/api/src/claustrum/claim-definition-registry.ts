@@ -49,6 +49,13 @@ import {
   type RegistryClaimSpec,
   type RegistryClaimType,
 } from "./claim-registry.js";
+// inv.18 v2 — the STORE_OPEN_NOW ClaimDefinition is GENERATED from its single
+// `store-open-now.claim.ts` source by the claimdef-compiler. Boot CONSUMES it
+// VERBATIM (see GENERATED_DEFINITIONS below) as the single source of truth, rather
+// than hand-reassembling it — so "sound-by-construction" cannot quietly decay into
+// "sound-by-convention" (the EGRESS-finding failure shape). The generated definition
+// is no longer dead: it is the object the validator actually runs over for this type.
+import { STORE_OPEN_NOW_DEFINITION } from "./claimdefs/store-open-now.generated.js";
 import { REQUIRED_CLAIM_CLOSURE } from "./required-claim-decomposer.js";
 import { VALIDATED_TEMPLATES } from "./slot-grammar.js";
 
@@ -61,6 +68,12 @@ import { VALIDATED_TEMPLATES } from "./slot-grammar.js";
  * the P4 required-set completeness check). The non-Triad public/action types
  * (MENU_ITEM_ALLERGENS, STORE_HOURS, PURCHASE_COMPLETED) are deliberately NOT
  * marked, so INV-4 imposes no closure obligation on them.
+ *
+ * This set drives `triadScoped` only for the HAND-ASSEMBLED types (see
+ * {@link buildClaimDefinition}). STORE_OPEN_NOW is still listed for documentation +
+ * as the fail-safe should its generated consumption ever be removed, but its
+ * `triadScoped` flag is now sourced from the generated {@link STORE_OPEN_NOW_DEFINITION}
+ * (a compile-time constant in its `.claim.ts` source), not from this set.
  */
 const TRIAD_SCOPED_TYPES: ReadonlySet<RegistryClaimType> = new Set<RegistryClaimType>([
   "STORE_OPEN_NOW",
@@ -69,12 +82,38 @@ const TRIAD_SCOPED_TYPES: ReadonlySet<RegistryClaimType> = new Set<RegistryClaim
 ]);
 
 /**
+ * The GENERATED ClaimDefinitions the boot fold CONSUMES verbatim — the single
+ * source of truth for any type that has a compiled `*.claim.ts` source. A type
+ * present here is NEVER hand-reassembled by {@link buildClaimDefinition}; the
+ * generated object (checked in-sync with its source by the
+ * `claimdefs/__tests__/generated-drift.test.ts` drift guard) is the exact
+ * `ClaimDefinition` the fail-closed validator runs over. This closes the
+ * dead-definition loophole: the compiler's `STORE_OPEN_NOW_DEFINITION` used to be
+ * imported nowhere while boot separately hand-rebuilt the same shape from a
+ * separately-maintained `TRIAD_SCOPED_TYPES` — two sources that could silently
+ * drift (sound-by-convention). Now there is ONE.
+ *
+ * `Partial` because only types with a `.claim.ts` source appear; the remaining
+ * registry types fall back to {@link buildClaimDefinition} until they too are
+ * compiled from source.
+ */
+const GENERATED_DEFINITIONS: Readonly<
+  Partial<Record<RegistryClaimType, ClaimDefinition>>
+> = {
+  STORE_OPEN_NOW: STORE_OPEN_NOW_DEFINITION,
+};
+
+/**
  * Assemble ONE generic `ClaimDefinition` from the scattered ibatexas facets for a
- * single registry type. The render template (if any) is lifted from
- * `VALIDATED_TEMPLATES`; the value projections that back its PROPOSITION slots are
- * derived from the type's `valueBinding` (so each slot's `field` binds to the
- * §5-gated evidence `key` — INV-1/INV-7); falsifiers + the value binding are
- * threaded verbatim from the registry spec. Pure.
+ * single registry type — the FALLBACK path for types that do NOT yet have a
+ * compiled `.claim.ts` source in {@link GENERATED_DEFINITIONS}. The render template
+ * (if any) is lifted from `VALIDATED_TEMPLATES`; the value projections that back its
+ * PROPOSITION slots are derived from the type's `valueBinding` (so each slot's
+ * `field` binds to the §5-gated evidence `key` — INV-1/INV-7); falsifiers + the
+ * value binding are threaded verbatim from the registry spec. Pure.
+ *
+ * A type that HAS a generated definition (STORE_OPEN_NOW) is consumed verbatim and
+ * never routed through here — see the {@link CLAIM_DEFINITIONS} fold.
  */
 function buildClaimDefinition(type: RegistryClaimType): ClaimDefinition {
   // Widen the `as const` literal member to the interface so the OPTIONAL fields
@@ -125,14 +164,19 @@ function buildClaimDefinition(type: RegistryClaimType): ClaimDefinition {
 
 /**
  * The assembled REAL Triad registry as generic `ClaimDefinition`s, keyed by type.
- * Built once from `CLAIM_REGISTRY` + `REGISTRY_SPECS` (the `Record` is exhaustive
- * over the closed enum). Pure data — the fail-closed VALIDATION is a separate
+ * Built once from `CLAIM_REGISTRY` (the `Record` is exhaustive over the closed
+ * enum): a type with a compiled source is CONSUMED from {@link GENERATED_DEFINITIONS}
+ * verbatim (single source of truth); the rest fall back to hand-assembly via
+ * {@link buildClaimDefinition}. Pure data — the fail-closed VALIDATION is a separate
  * call ({@link assertClaimDefinitionRegistryValid}) so this module can be
  * imported (e.g. by tests) without triggering a throw.
  */
 export const CLAIM_DEFINITIONS: Readonly<Record<RegistryClaimType, ClaimDefinition>> =
   Object.fromEntries(
-    CLAIM_REGISTRY.map((type) => [type, buildClaimDefinition(type)] as const),
+    CLAIM_REGISTRY.map(
+      (type) =>
+        [type, GENERATED_DEFINITIONS[type] ?? buildClaimDefinition(type)] as const,
+    ),
   ) as Readonly<Record<RegistryClaimType, ClaimDefinition>>;
 
 /**

@@ -16,6 +16,8 @@ const mockDeriveEventId = vi.hoisted(() => vi.fn(() => "evt_1"));
 const mockRedisSet = vi.hoisted(() => vi.fn());
 const mockRedisDel = vi.hoisted(() => vi.fn());
 const mockCreate = vi.hoisted(() => vi.fn());
+const mockFindFirst = vi.hoisted(() => vi.fn());
+const mockUpdate = vi.hoisted(() => vi.fn());
 
 const natsHandlers: Record<string, (payload: unknown) => Promise<void>> = {};
 
@@ -29,7 +31,13 @@ vi.mock("@ibatexas/nats-client", () => ({
 }));
 
 vi.mock("@ibatexas/domain", () => ({
-  prisma: { conversationIncident: { create: mockCreate } },
+  prisma: {
+    conversationIncident: {
+      create: mockCreate,
+      findFirst: mockFindFirst,
+      update: mockUpdate,
+    },
+  },
   FROZEN_CAUSES: ["send_failed", "timeout", "empty_completion"],
 }));
 
@@ -108,5 +116,62 @@ describe("incident-subscriber — H1 two-phase durability", () => {
     await handler(signalPayload);
 
     expect(committedFullTtl()).toBe(true);
+  });
+});
+
+describe("incident-subscriber — [#3] suspect-row P2002 disambiguation", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockDeriveEventId.mockReturnValue("evt_1");
+    mockRedisSet.mockResolvedValue("OK");
+    // Governance REFUSED the governed open → the durable backstop persists a
+    // flagged suspect row so the owed reply is never silently lost.
+    mockOpenIncidentInline.mockResolvedValue({ kind: "refused", cause: "bogus_cause", code: "X" });
+  });
+
+  it("session-open collision ATTACHES the suspect to the existing open incident (not dropped)", async () => {
+    // The suspect create loses to the per-session open-incident partial unique
+    // index — the session already has a DIFFERENT open incident. The owed reply
+    // MUST be attached to it, never silently dropped.
+    mockCreate.mockRejectedValue(
+      Object.assign(new Error("dup"), {
+        code: "P2002",
+        meta: { target: "conversation_incidents_session_open_uq" },
+      }),
+    );
+    mockFindFirst.mockResolvedValue({ id: "inc_open", customerImpacted: false, detail: "prior" });
+    mockUpdate.mockResolvedValue({});
+
+    const handler = await getHandler();
+    await handler(signalPayload);
+
+    expect(mockFindFirst).toHaveBeenCalled();
+    expect(mockUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: "inc_open" },
+        data: expect.objectContaining({
+          dropCount: { increment: 1 },
+          customerImpacted: true, // monotonic: false || signal.true
+        }),
+      }),
+    );
+    // The owed reply was recorded → the two-phase dedup key commits.
+    expect(committedFullTtl()).toBe(true);
+  });
+
+  it("external_id collision is an idempotent no-op (redelivered suspect) — no attach", async () => {
+    mockCreate.mockRejectedValue(
+      Object.assign(new Error("dup"), {
+        code: "P2002",
+        meta: { target: "conversation_incidents_external_id_key" },
+      }),
+    );
+
+    const handler = await getHandler();
+    await handler(signalPayload);
+
+    // A redelivered suspect: neither re-read nor attach — just skip.
+    expect(mockFindFirst).not.toHaveBeenCalled();
+    expect(mockUpdate).not.toHaveBeenCalled();
   });
 });

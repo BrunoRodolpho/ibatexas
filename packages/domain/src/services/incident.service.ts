@@ -260,6 +260,14 @@ export function createIncidentService(options?: IncidentServiceOptions) {
         // double-count dropCount. The id is unique to this event (the step-0
         // findUnique already returned null for it), so no @@unique(externalId)
         // collision is possible here.
+        //
+        // DEFERRED (schema decision): this is dedupe-LATEST — the row remembers
+        // only the most recent event id, so a redelivery of an EARLIER drop (after
+        // a newer one advanced externalId) could double-count. AIRTIGHT per-event
+        // dedup needs a per-row processed-key SET (e.g. a `processed_event_ids`
+        // text[] column, or a child dedup table) so every event id is remembered,
+        // not just the latest. That is a schema addition owned by the schema wave;
+        // keep dedupe-latest until it lands rather than half-implement it.
         externalId: payload.externalId,
         ...(payload.lastTurnId !== undefined
           ? { lastTurnId: payload.lastTurnId }

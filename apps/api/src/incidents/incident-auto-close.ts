@@ -110,6 +110,32 @@ export async function closeIncidentOnDeliveredReply(
 }
 
 /**
+ * STAFF take-over: a human delivered a reply on the session (admin incidents
+ * `/reply` or escalations `/reply`). This IS a delivered assistant reply that
+ * closes the incident, but it is genuinely MANUAL work — it MUST record
+ * `resolutionType=STAFF` + the staff identity, NOT AUTO/system (which would
+ * corrupt the self-heal-rate metric by crediting the bot for a human's fix).
+ * Idempotent and fail-open. `deliveredMarker` keys the close `eventId`.
+ */
+export async function closeIncidentOnStaffReply(
+  sessionId: string,
+  resolvedBy: string,
+  deliveredMarker: string,
+  log?: LogFn,
+): Promise<void> {
+  return closeActiveIncident(
+    sessionId,
+    {
+      resolutionType: "STAFF",
+      resolvedBy,
+      deliveredId: deliveredMarker,
+      sourceSubject: "incident.staff_takeover",
+    },
+    log,
+  );
+}
+
+/**
  * HANDED_OFF: a human handoff opened on a session that still has an OPEN
  * incident. The bot is now paused and can never auto-close it, so resolve it
  * here → RESOLVED, `resolved_by=system:escalation` (P1-3). Idempotent and

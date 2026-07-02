@@ -63,6 +63,11 @@ const mockSchedulePixExpiryMonitor = vi.hoisted(() => vi.fn());
 const mockGetConductor = vi.hoisted(() => vi.fn());
 const mockHandleTurn = vi.hoisted(() => vi.fn());
 const mockIsSessionPausedForHuman = vi.hoisted(() => vi.fn());
+// W1 Redis-outage fix: the webhook gate now reads the store via readPauseState
+// (real, kept below) → getEscalationStore().isPaused(), so it can DISTINGUISH a
+// genuine pause from a Redis read-error.
+const mockIsPaused = vi.hoisted(() => vi.fn());
+const mockGetEscalationStore = vi.hoisted(() => vi.fn());
 // W1 no-reply seam: keep the PURE classifiers real; mock only the side-effecting
 // collaborators (NATS emit + governed open) and the auto-close (M3/L10).
 const mockEmitNoDelivery = vi.hoisted(() => vi.fn());
@@ -89,6 +94,7 @@ vi.mock("../claustrum-bootstrap.js", () => ({
 
 vi.mock("../escalation/escalation-store.js", () => ({
   isSessionPausedForHuman: mockIsSessionPausedForHuman,
+  getEscalationStore: mockGetEscalationStore,
 }));
 
 vi.mock("../conversation/no-delivery.js", async (importOriginal) => {
@@ -234,6 +240,8 @@ beforeEach(() => {
   mockSendText.mockResolvedValue(undefined);
   mockSendMedia.mockResolvedValue(undefined);
   mockIsSessionPausedForHuman.mockResolvedValue(false);
+  mockIsPaused.mockResolvedValue(false);
+  mockGetEscalationStore.mockResolvedValue({ isPaused: mockIsPaused });
   mockGetConductor.mockReturnValue({
     openCapsule: vi.fn().mockResolvedValue({ id: "capsule-1" }),
     closeCapsule: vi.fn().mockResolvedValue(undefined),
@@ -541,7 +549,7 @@ describe("handleMessageAsync — conductor turn", () => {
   }, 15000);
 
   it("D2 bot-pause: a human takeover suppresses the bot reply but still confirms idempotency", async () => {
-    mockIsSessionPausedForHuman.mockResolvedValue(true);
+    mockIsPaused.mockResolvedValue(true);
 
     const app = await buildTestServer();
     const res = await post(app, "MessageSid=SM_PAUSE&From=whatsapp%3A%2B5511999999999&Body=oi");
@@ -556,6 +564,37 @@ describe("handleMessageAsync — conductor turn", () => {
     }, { timeout: 4000 });
 
     // Paused → the conductor is never opened and no reply text is sent.
+    expect(mockHandleTurn).not.toHaveBeenCalled();
+    expect(mockSendText).not.toHaveBeenCalled();
+    // A GENUINE pause is never a ghost → no incident opened.
+    expect(mockOpenIncidentInline).not.toHaveBeenCalled();
+  }, 15000);
+
+  it("#2: a pause-gate READ-ERROR opens ONE pause_read_error incident (Redis-free path) and sends nothing", async () => {
+    // The bot-pause gate is unreachable (Redis down). Fail-CLOSED (no reply), but
+    // this is a customer-impacted ghost WITHOUT a confirmed pause → a durable
+    // pause_read_error incident opens via the inline (Redis-free) path.
+    mockGetEscalationStore.mockRejectedValue(new Error("redis down"));
+
+    const app = await buildTestServer();
+    const res = await post(app, "MessageSid=SM_PAUSEERR&From=whatsapp%3A%2B5511999999999&Body=oi");
+    expect(res.statusCode).toBe(200);
+
+    await vi.waitFor(() => {
+      expect(mockOpenIncidentInline).toHaveBeenCalledWith(
+        expect.objectContaining({
+          cause: "pause_read_error",
+          customerImpacted: true,
+          channel: "whatsapp",
+        }),
+        expect.anything(),
+      );
+    }, { timeout: 4000 });
+
+    // Exactly one open (one incident per session; the storm digest — not a
+    // per-incident ping — aggregates cross-session via the notification subscriber).
+    expect(mockOpenIncidentInline).toHaveBeenCalledTimes(1);
+    // Fail-CLOSED: the conductor never ran and no reply text was sent.
     expect(mockHandleTurn).not.toHaveBeenCalled();
     expect(mockSendText).not.toHaveBeenCalled();
   }, 15000);
@@ -703,6 +742,57 @@ describe("handleMessageAsync — conductor turn", () => {
       expect(mockCloseIncidentOnDeliveredReply).toHaveBeenCalledWith(
         "sess-1",
         "turn-main",
+        expect.anything(),
+      );
+    }, { timeout: 4000 });
+  }, 15000);
+
+  it("#5: a PIX-only turn whose copia-e-cola send FAILS opens a send_failed incident (not turn_error)", async () => {
+    // Empty text (PIX-only) → the text send is skipped (sendEntered stays false).
+    // The copia-e-cola send is now tracked, so a throw there is classified
+    // send_failed (customerImpacted) instead of turn_error (which opened NO
+    // incident → a customer ghosted on a payment turn).
+    mockHandleTurn.mockResolvedValue({
+      response: { text: "" },
+      acted: {
+        kind: "executed",
+        result: { pixCopyPaste: "00020126PIX-ONLY-FAIL", orderId: "ord-fail" },
+      },
+      decision: { kind: "EXECUTE" },
+    });
+    mockSendText.mockRejectedValue(new Error("twilio 500")); // the only send is copia-e-cola
+
+    const app = await buildTestServer();
+    const res = await post(app, "MessageSid=SM_PIXFAIL&From=whatsapp%3A%2B5511999999999&Body=pagar");
+    expect(res.statusCode).toBe(200);
+
+    await vi.waitFor(() => {
+      expect(mockOpenIncidentInline).toHaveBeenCalledWith(
+        expect.objectContaining({ cause: "send_failed", channel: "whatsapp" }),
+        expect.anything(),
+      );
+    }, { timeout: 4000 });
+  }, 15000);
+
+  it("below-cap: a send_failed whose canned apology IS delivered opens the incident customerImpacted:false", async () => {
+    // The reply send fails (send_failed), but the canned apology send succeeds →
+    // the customer got the apology (degraded, not silence) → customerImpacted:false.
+    mockHandleTurn.mockResolvedValue({
+      response: { text: "Olá, tudo certo!" },
+      acted: null,
+      decision: { kind: "EXECUTE" },
+    });
+    mockSendText
+      .mockRejectedValueOnce(new Error("twilio 500")) // the reply send fails → send_failed
+      .mockResolvedValue(undefined); // the canned apology send succeeds
+
+    const app = await buildTestServer();
+    const res = await post(app, "MessageSid=SM_APOLOGY&From=whatsapp%3A%2B5511999999999&Body=oi");
+    expect(res.statusCode).toBe(200);
+
+    await vi.waitFor(() => {
+      expect(mockOpenIncidentInline).toHaveBeenCalledWith(
+        expect.objectContaining({ cause: "send_failed", customerImpacted: false }),
         expect.anything(),
       );
     }, { timeout: 4000 });

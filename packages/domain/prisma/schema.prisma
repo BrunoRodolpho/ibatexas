@@ -805,6 +805,7 @@ enum IncidentCause {
   send_failed
   retry_exhausted
   timeout
+  pause_read_error
 
   @@schema("ibx_domain")
 }

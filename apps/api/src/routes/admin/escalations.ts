@@ -25,7 +25,7 @@ import { createConversationService, prisma } from "@ibatexas/domain";
 import { getWhatsAppSender } from "@ibatexas/tools";
 import { requireManagerRole } from "../../middleware/staff-auth.js";
 import { getEscalationStore } from "../../escalation/escalation-store.js";
-import { closeIncidentOnDeliveredReply } from "../../incidents/incident-auto-close.js";
+import { closeIncidentOnStaffReply } from "../../incidents/incident-auto-close.js";
 
 const EscalationRecordSchema = z.object({
   sessionId: z.string(),
@@ -127,10 +127,14 @@ export async function escalationRoutes(server: FastifyInstance): Promise<void> {
 
       // P1-3: a delivered staff take-over reply IS a delivered assistant reply —
       // and is the ONLY thing that can close an incident on a session paused for
-      // human handoff (the bot can no longer auto-heal it). Fail-open, idempotent.
+      // human handoff (the bot can no longer auto-heal it). It is MANUAL work, so
+      // it closes as STAFF (resolvedBy the staff identity), NOT AUTO/system —
+      // otherwise the self-heal-rate metric credits the bot for a human's fix.
+      // Fail-open, idempotent.
       if (delivered) {
-        await closeIncidentOnDeliveredReply(
+        await closeIncidentOnStaffReply(
           sessionId,
+          staffId ? `staff:${staffId}` : "admin-key",
           `staff_takeover:${staffId ?? "admin-key"}:${Date.now()}`,
           {
             info: (...a) => request.log.info(a[0] as object, a[1] as string),

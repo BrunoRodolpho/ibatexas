@@ -16,6 +16,7 @@
 import { describe, expect, it } from "vitest";
 import type { ClaimDefinition } from "@adjudicate/core";
 import { CLAIM_REGISTRY } from "../claim-registry.js";
+import { STORE_OPEN_NOW_DEFINITION } from "../claimdefs/store-open-now.generated.js";
 import {
   assertClaimDefinitionRegistryValid,
   CLAIM_DEFINITIONS,
@@ -125,5 +126,29 @@ describe("claim-definition-registry — inv.18 v1 applied validator", () => {
     const result = validateClaimDefinitionRegistry(defs);
     expect(result.ok).toBe(false);
     expect(result.ok === false && result.code).toBe("PROVENANCE_DENY");
+  });
+});
+
+// ── inv.18 v2 — the dead-definition loophole is CLOSED: boot consumes the
+//    claimdef-compiler's generated ClaimDefinition VERBATIM (single source of
+//    truth) instead of hand-reassembling the same shape from a separately-
+//    maintained TRIAD_SCOPED_TYPES. ─────────────────────────────────────────────
+describe("claim-definition-registry — boot CONSUMES the generated definition", () => {
+  it("CLAIM_DEFINITIONS.STORE_OPEN_NOW IS the generated STORE_OPEN_NOW_DEFINITION (reference identity)", () => {
+    // Reference equality (not deep-equal): boot must wire the compiler's OUTPUT
+    // object through unchanged. If someone reverts to a hand-reassembly the
+    // reference diverges and this fails — the previously-DEAD generated definition
+    // is now the exact object the fail-closed validator runs over. This is what
+    // makes "sound-by-construction" a MECHANISM again, not a convention that two
+    // separately-maintained copies happen to agree.
+    expect(CLAIM_DEFINITIONS.STORE_OPEN_NOW).toBe(STORE_OPEN_NOW_DEFINITION);
+  });
+
+  it("the consumed definition's triadScoped is source-declared (survives without TRIAD_SCOPED_TYPES)", () => {
+    // STORE_OPEN_NOW's triadScoped now comes from its `.claim.ts` source (compiled
+    // into STORE_OPEN_NOW_DEFINITION), NOT from the hand-maintained TRIAD_SCOPED_TYPES
+    // set — proving the flag can no longer silently drift from the generated shape.
+    expect(STORE_OPEN_NOW_DEFINITION.triadScoped).toBe(true);
+    expect(CLAIM_DEFINITIONS.STORE_OPEN_NOW.triadScoped).toBe(true);
   });
 });

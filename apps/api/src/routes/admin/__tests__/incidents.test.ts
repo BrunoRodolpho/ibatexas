@@ -30,7 +30,7 @@ const mockGetTranscript = vi.hoisted(() => vi.fn());
 const mockAppendMessage = vi.hoisted(() => vi.fn());
 const mockCustomerFindUnique = vi.hoisted(() => vi.fn());
 const mockSendText = vi.hoisted(() => vi.fn());
-const mockCloseAuto = vi.hoisted(() => vi.fn());
+const mockCloseStaff = vi.hoisted(() => vi.fn());
 
 vi.mock("@ibatexas/domain", () => ({
   createIncidentService: () => ({
@@ -64,7 +64,7 @@ vi.mock("../../../subscribers/__shared__/system-actor-envelope.js", () => ({
 }));
 
 vi.mock("../../../incidents/incident-auto-close.js", () => ({
-  closeIncidentOnDeliveredReply: mockCloseAuto,
+  closeIncidentOnStaffReply: mockCloseStaff,
 }));
 
 interface StaffContext {
@@ -314,9 +314,11 @@ describe("POST /api/admin/incidents/:id/reply phone resolution", () => {
         "whatsapp:+5511988887777",
         mintRenderedReply("ola, desculpe a demora"),
       );
-      // A delivered staff reply closes the incident (P1-3).
-      expect(mockCloseAuto).toHaveBeenCalledTimes(1);
-      expect(mockCloseAuto.mock.calls[0]?.[0]).toBe("sess_1");
+      // A delivered staff reply closes the incident as STAFF (#7) — the staff
+      // identity, NOT AUTO/system, so the self-heal-rate metric stays honest.
+      expect(mockCloseStaff).toHaveBeenCalledTimes(1);
+      expect(mockCloseStaff.mock.calls[0]?.[0]).toBe("sess_1");
+      expect(mockCloseStaff.mock.calls[0]?.[1]).toBe("staff:staff_mgr_01");
     } finally {
       await server.close();
     }

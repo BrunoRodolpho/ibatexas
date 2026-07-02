@@ -34,7 +34,7 @@ import { getAuditSink } from "@ibatexas/audit-sink";
 import { getWhatsAppSender } from "@ibatexas/tools";
 import { requireManagerRole } from "../../middleware/staff-auth.js";
 import { buildSystemEnvelope } from "../../subscribers/__shared__/system-actor-envelope.js";
-import { closeIncidentOnDeliveredReply } from "../../incidents/incident-auto-close.js";
+import { closeIncidentOnStaffReply } from "../../incidents/incident-auto-close.js";
 
 // Re-declared module-local (the canonical copy is module-local at
 // conversations.ts:26 — not exported, so the detail route re-declares it).
@@ -327,10 +327,13 @@ export async function adminIncidentRoutes(server: FastifyInstance): Promise<void
 
       // P1-3: a delivered staff take-over reply IS a delivered assistant reply —
       // and is the ONLY thing that can close an incident on a session paused for
-      // human handoff. Fail-open; deliberately does NOT touch bot-pause state.
+      // human handoff. It is MANUAL work → closes as STAFF (resolvedBy the staff
+      // identity), NOT AUTO/system, so the self-heal-rate metric stays honest.
+      // Fail-open; deliberately does NOT touch bot-pause state.
       if (delivered) {
-        await closeIncidentOnDeliveredReply(
+        await closeIncidentOnStaffReply(
           incident.sessionId,
+          staffId ? `staff:${staffId}` : "admin-key",
           `staff_takeover:${staffId ?? "admin-key"}:${Date.now()}`,
           {
             info: (...a) => request.log.info(a[0] as object, a[1] as string),
