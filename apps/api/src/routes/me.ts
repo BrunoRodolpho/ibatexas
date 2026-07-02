@@ -66,6 +66,7 @@ import {
   customerOnboardingPolicyBundle,
   portugueseRefusalMessages,
   type CustomerAnonymizePayload,
+  type CustomerPreferencesUpdatePayload,
   type CustomerAnonymizeCancelPayload,
   type CustomerOnboardingState,
 } from "@ibatexas/pack-customer-onboarding";
@@ -262,6 +263,94 @@ export async function meRoutes(server: FastifyInstance): Promise<void> {
         stampsNeeded: balance.stampsNeeded,
         totalEarned: balance.totalEarned,
       });
+    },
+  );
+
+  // ── POST /api/me/preferences ───────────────────────────────────────────────
+  //
+  // CUS-062 (web surface) — the authenticated customer sets dietary flags +
+  // allergen exclusions. Routed through the conductor's customer-intent gateway:
+  // a `customer.preferences.update` envelope is adjudicated against the
+  // customer-onboarding pack (allergen-explicit-array guard, rate limit, audit),
+  // then the bare service executor persists it. Mirrors the LLM `update_prefs`
+  // path; same governed kind, HTTP entry point. Auth-gated by requireAuth.
+  const PreferencesUpdateResponse = z.object({ success: z.boolean() });
+
+  app.post(
+    "/api/me/preferences",
+    {
+      schema: {
+        tags: ["me"],
+        summary: "Atualizar preferências (restrições alimentares / alérgenos)",
+        body: z.object({
+          allergenExclusions: z.array(z.string()).default([]),
+          dietaryFlags: z.array(z.string()).optional(),
+          favoriteCategories: z.array(z.string()).optional(),
+        }),
+        response: { 200: PreferencesUpdateResponse },
+      },
+      preHandler: requireAuth,
+    },
+    async (request, reply) => {
+      const customerId = request.customerId!;
+      const body = request.body;
+      const idempotencyKey = resolveMeIdempotencyKey(
+        request.headers["idempotency-key"],
+        `${customerId}:preferences:update:${epochHour()}`,
+      );
+      const payload: CustomerPreferencesUpdatePayload = {
+        allergenExclusions: body.allergenExclusions,
+        ...(body.dietaryFlags ? { dietaryFlags: body.dietaryFlags } : {}),
+        ...(body.favoriteCategories ? { favoriteCategories: body.favoriteCategories } : {}),
+      };
+      const envelope = buildCustomerEnvelope<
+        "customer.preferences.update",
+        CustomerPreferencesUpdatePayload
+      >({
+        kind: "customer.preferences.update",
+        payload,
+        nonce: deriveMeNonce(idempotencyKey),
+        customerId,
+      });
+      const state = {
+        ctx: {
+          ...identityCtx(customerId, "web"),
+          customerExists: true,
+          isAuthenticated: true,
+          now: new Date(),
+        },
+      } as unknown as CustomerOnboardingState;
+
+      const out = await runCustomerIntent({
+        envelope,
+        state,
+        policy: customerOnboardingPolicyBundle as unknown as Parameters<typeof runCustomerIntent>[0]["policy"],
+        executor: async () => {
+          // EXECUTE: persist via the bare service method (the sanctioned executor
+          // for the envelope wrapper). Adjudication already ran in runCustomerIntent.
+          await createCustomerService().updatePreferences(customerId, {
+            allergenExclusions: [...body.allergenExclusions],
+            ...(body.dietaryFlags ? { dietaryRestrictions: [...body.dietaryFlags] } : {}),
+            ...(body.favoriteCategories ? { favoriteCategories: [...body.favoriteCategories] } : {}),
+          });
+          return { success: true };
+        },
+        ctx: {
+          customerId,
+          route: "me.preferences.update",
+          log: request.log,
+        },
+        auditSink: getAuditSink(),
+        refusalMessages: portugueseRefusalMessages,
+      });
+
+      if (out.statusCode === 200) {
+        return reply.code(200).send({ success: true });
+      }
+      void (reply as unknown as { status(code: number): typeof reply })
+        .status(out.statusCode)
+        .send(out.body as never);
+      return reply;
     },
   );
 

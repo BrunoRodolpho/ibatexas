@@ -27,6 +27,8 @@ const mockExportCustomerData = vi.hoisted(() => vi.fn());
 const mockAnonymizeCustomer = vi.hoisted(() => vi.fn());
 const mockAnonymizeCustomerFromEnvelope = vi.hoisted(() => vi.fn());
 const mockGetById = vi.hoisted(() => vi.fn());
+const mockUpdatePreferences = vi.hoisted(() => vi.fn());
+const mockGetBalance = vi.hoisted(() => vi.fn());
 const mockSendOtp = vi.hoisted(() =>
   vi.fn(async (_args: { to: string; channel: string }) => undefined),
 );
@@ -144,6 +146,10 @@ vi.mock("@ibatexas/domain", () => ({
   anonymizeCustomerFromEnvelope: mockAnonymizeCustomerFromEnvelope,
   createCustomerService: () => ({
     getById: mockGetById,
+    updatePreferences: mockUpdatePreferences,
+  }),
+  createLoyaltyService: () => ({
+    getBalance: mockGetBalance,
   }),
 }));
 
@@ -902,6 +908,97 @@ describe("POST /api/me/data/cancel-deletion — clear receipt", () => {
       const opts = acquireCall![2] as { EX: number; NX: boolean };
       expect(opts.EX).toBe(60);
       expect(opts.NX).toBe(true);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+// ── Tests: GET /api/me/loyalty (CUS-067 web view) ───────────────────────────────
+
+describe("GET /api/me/loyalty — stamp balance", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    redisStorage.clear();
+    setupEnv();
+  });
+
+  it("returns the customer's stamp balance", async () => {
+    mockGetBalance.mockResolvedValue({ stamps: 4, stampsNeeded: 6, totalEarned: 4 });
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "GET",
+        url: "/api/me/loyalty",
+        headers: { "x-customer-id": "cust_01" },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({ stamps: 4, stampsNeeded: 6, totalEarned: 4 });
+      expect(mockGetBalance).toHaveBeenCalledWith("cust_01");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("returns 401 when not authenticated", async () => {
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({ method: "GET", url: "/api/me/loyalty" });
+      expect(res.statusCode).toBe(401);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+// ── Tests: POST /api/me/preferences (CUS-062 — governed dispatch) ───────────────
+
+describe("POST /api/me/preferences — dietary preferences (governed)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    redisStorage.clear();
+    setupEnv();
+    mockGetById.mockResolvedValue({ id: "cust_01" });
+  });
+
+  it("adjudicates customer.preferences.update and persists via the service (EXECUTE)", async () => {
+    mockUpdatePreferences.mockResolvedValue({
+      allergenExclusions: ["gluten"],
+      dietaryRestrictions: ["vegetarian"],
+      favoriteCategories: [],
+    });
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/me/preferences",
+        headers: { "x-customer-id": "cust_01", "content-type": "application/json" },
+        payload: { allergenExclusions: ["gluten"], dietaryFlags: ["vegetarian"] },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({ success: true });
+      // The mutation ran through the executor (i.e. adjudication returned EXECUTE)
+      // and persisted the explicit allergen array (Hard Rule #1).
+      expect(mockUpdatePreferences).toHaveBeenCalledWith(
+        "cust_01",
+        expect.objectContaining({ allergenExclusions: ["gluten"], dietaryRestrictions: ["vegetarian"] }),
+      );
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("returns 401 when not authenticated", async () => {
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/me/preferences",
+        headers: { "content-type": "application/json" },
+        payload: { allergenExclusions: [] },
+      });
+      expect(res.statusCode).toBe(401);
+      expect(mockUpdatePreferences).not.toHaveBeenCalled();
     } finally {
       await app.close();
     }
