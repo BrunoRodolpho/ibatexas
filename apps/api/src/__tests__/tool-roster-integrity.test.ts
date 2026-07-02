@@ -58,6 +58,8 @@ const EXPECTED_CAPABILITIES = [
   "customer.pix.details.save",
   // pack-payments (1)
   "payment.pix.regenerate",
+  // pack-whatsapp (1) — BKL-030 customer-side escalation on-ramp
+  "whatsapp.handoff.request",
 ];
 
 // WS4 — pack-owned intents that ship NO `@ibatexas/tools` handler, so they are
@@ -103,7 +105,7 @@ describe("RC-A1 Phase A — tool roster integrity", () => {
       (t) => t.capability as unknown as string,
     );
     expect(caps).toHaveLength(EXPECTED_CAPABILITIES.length);
-    expect(caps).toHaveLength(17);
+    expect(caps).toHaveLength(18);
     expect(new Set(caps)).toEqual(new Set(EXPECTED_CAPABILITIES));
   });
 

@@ -73,6 +73,12 @@ export type WhatsAppIntentKind =
   // conversation-archiver subscriber emits this for archival; the LLM
   // never proposes it.
   | "conversation.message.append"
+  // F5/L3 (BKL-030): customer-side escalation on-ramp. UNLIKE the
+  // system-only `whatsapp.session.handover` (staff-driven takeover), THIS is
+  // the LLM-proposable "quero falar com um atendente" request — UNTRUSTED, so
+  // the customer can trigger a governed handoff. Executor = handoffToHuman
+  // (publishes support.handoff_requested → the existing handoff spine).
+  | "whatsapp.handoff.request"
 
 // ── Payloads ────────────────────────────────────────────────────────────
 
@@ -166,6 +172,18 @@ export interface ConversationMessageAppendPayload {
 }
 
 /**
+ * F5/L3 (BKL-030): customer-side escalation on-ramp payload. The LLM proposes
+ * this when a customer asks to talk to a human ("quero falar com um atendente").
+ * `sessionId` is supplied by the runtime (identity), NOT the LLM; `reason` is an
+ * optional free-text the LLM may extract. The executor is the existing
+ * handoffToHuman tool, which publishes support.handoff_requested.
+ */
+export interface WhatsAppHandoffRequestPayload {
+  readonly sessionId: string
+  readonly reason?: string
+}
+
+/**
  * Discriminated payload union — typed by `kind`. Guards narrow via
  * `envelope.kind` and may cast `envelope.payload` to the matching
  * member; payload contracts are validated by the guards in
@@ -176,6 +194,7 @@ export type WhatsAppPayload =
   | WhatsAppTemplateSendPayload
   | WhatsAppSessionHandoverPayload
   | ConversationMessageAppendPayload
+  | WhatsAppHandoffRequestPayload
 
 // ── Context (per-turn caller identity / channel surface) ────────────────
 

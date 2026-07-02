@@ -348,12 +348,12 @@ export const INTENT_KIND_FIELD_RULES: Readonly<Record<string, ReadonlyArray<stri
   // `to` is hashed via HASH_FIELDS if it ever lands as a phone; the rule
   // here covers the rendered variable values.
   "whatsapp.template.send": ["templateVariables", "variables"],
-  // F-5: the real WhatsApp handoff kind is `whatsapp.session.handover`,
-  // NOT `whatsapp.handoff.request` (the latter exists only in the
-  // taxonomy doc, not in the Pack's union). The fix here is the typo
-  // correction — without it, the rule was inert for the entire WhatsApp
-  // domain since the package's introduction.
+  // F-5: the staff-driven takeover kind. `reason`/`lastMessage` carry
+  // free-form text that often quotes the customer.
   "whatsapp.session.handover": ["reason", "lastMessage"],
+  // BKL-030: the customer-side escalation on-ramp (now a real Pack union
+  // member). Its `reason` is optional customer free-text — redact it.
+  "whatsapp.handoff.request": ["reason"],
   // F-6: persistence-side conversation append. The `body` field carries
   // the literal customer-typed text (often CPF/email/name fragments). The
   // wire-egress `whatsapp.message.send.body` was already covered; this is

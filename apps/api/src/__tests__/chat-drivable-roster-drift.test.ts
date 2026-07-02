@@ -34,8 +34,8 @@ describe("T1a-2 — chat-drivable roster drift", () => {
     expect(new Set(CHAT_DRIVABLE_TOOL_KINDS)).toEqual(new Set(live));
   });
 
-  it("pins the verified WS3 roster size (17)", () => {
-    expect(CHAT_DRIVABLE_TOOL_KINDS).toHaveLength(17);
+  it("pins the verified WS3 roster size (18)", () => {
+    expect(CHAT_DRIVABLE_TOOL_KINDS).toHaveLength(18);
   });
 
   it("every mirrored kind keys capability === intentKind on the live tool", () => {

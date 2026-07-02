@@ -405,6 +405,21 @@ const executeSessionHandover: WhatsAppGuard = (envelope) => {
 }
 
 /**
+ * F5/L3 (BKL-030): customer-side escalation on-ramp. A customer asking for a
+ * human is always allowed — no window/rate gate (the customer is initiating,
+ * not being messaged). The handoff spine downstream (pause, staff ping,
+ * incident) governs the actual takeover; here we only authorize the request.
+ */
+const executeHandoffRequest: WhatsAppGuard = (envelope) => {
+  if (envelope.kind !== "whatsapp.handoff.request") return null
+  return decisionExecute([
+    basis("business", BASIS_CODES.business.RULE_SATISFIED, {
+      kind: envelope.kind,
+    }),
+  ])
+}
+
+/**
  * W5-6: persistence-side append. SYSTEM-only (taint-gated) — the
  * conversation-archiver subscriber emits this for archival, not the LLM.
  * The Pack does not validate the body beyond non-empty — the archiver
@@ -470,6 +485,7 @@ export const whatsappPolicyBundle: PolicyBundle<
     executeTemplateSend,
     executeSessionHandover,
     executeConversationAppend,
+    executeHandoffRequest,
   ],
   /**
    * Fail-safe per master plan §"Governance principles" #4 — an intent
