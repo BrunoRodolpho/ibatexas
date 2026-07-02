@@ -9,6 +9,7 @@ import { Button, Container } from "@/components/atoms"
 import { Flame, Heart, Package, User } from 'lucide-react'
 import { LgpdDataExport } from './_components/LgpdDataExport'
 import { LoyaltyBalanceCard } from './_components/LoyaltyBalanceCard'
+import { DietaryPreferencesCard } from './_components/DietaryPreferencesCard'
 
 interface CustomerProfile {
   id: string
@@ -149,15 +150,8 @@ export default function AccountPage() {
           )}
         </div>
 
-        {/* Preferences */}
-        <div className="rounded-sm shadow-card border border-smoke-200/40 bg-smoke-50 p-5 hover:shadow-card-hover hover:-translate-y-0.5 transition-premium">
-          <h2 className="text-micro font-semibold uppercase tracking-editorial text-smoke-400">
-            {t("account.preferences")}
-          </h2>
-          <p className="mt-3 text-sm text-smoke-400">
-            {t("account.dietary_restrictions")} e {t("account.allergens")}
-          </p>
-        </div>
+        {/* Preferences (CUS-062 — dietary flags, governed save) */}
+        <DietaryPreferencesCard />
 
         {/* Wishlist */}
         <Link

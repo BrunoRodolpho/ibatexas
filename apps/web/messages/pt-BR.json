@@ -379,6 +379,19 @@
       "progress": "Você tem {stamps} de {total} selos — faltam {needed} para a recompensa.",
       "reward_ready": "Parabéns! Você tem uma recompensa disponível. 🏆"
     },
+    "dietary_prefs": {
+      "description": "Selecione suas restrições alimentares. Usamos isso para destacar o que serve para você.",
+      "save": "Salvar preferências",
+      "saving": "Salvando…",
+      "saved": "Preferências salvas!",
+      "error": "Não foi possível salvar agora. Tente novamente.",
+      "flags": {
+        "vegetariano": "Vegetariano",
+        "vegano": "Vegano",
+        "sem_gluten": "Sem glúten",
+        "sem_lactose": "Sem lactose"
+      }
+    },
     "payment_methods": "Métodos de Pagamento",
     "payment_description": "Seus métodos de pagamento",
     "wishlist": "Minha Lista de Desejos",
