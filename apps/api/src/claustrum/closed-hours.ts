@@ -65,14 +65,36 @@ export function closedHoursScheduledConfirmation(
 }
 
 /**
- * The SOFT layer: a pt-BR instruction appended to the planner + responder LLM
- * context when the store is closed. Returns "" when open (so the composed prompt
- * is byte-identical to today on the open path).
+ * The SOFT layer: a pt-BR store-state instruction appended to the planner +
+ * responder LLM context (BKL-026 grounding, store-hours slice).
+ *
+ * - `undefined` signal (state unknown, e.g. the scripted golden-fixture path) →
+ *   "" so the composed prompt stays byte-identical to the recorded fixtures.
+ * - OPEN → a positive grounding note so the 4B answers "estão abertos?" from the
+ *   real state instead of guessing (it must NOT say closed, and must not invent a
+ *   specific closing time — the signal carries the meal period, not the hour).
+ * - CLOSED → the closed instruction (never say open; scheduled pickup only).
+ *
+ * Both branches are the SOURCE OF TRUTH the model grounds on; the deterministic
+ * `closedHoursBackstop` still repairs a false "open" draft while closed.
  */
 export function closedHoursPromptNote(
   signal: ScheduleSignal | undefined,
 ): string {
-  if (signal === undefined || !signal.isClosed) return "";
+  if (signal === undefined) return "";
+  if (!signal.isClosed) {
+    const period =
+      signal.mealPeriod === "lunch"
+        ? " (período de almoço)"
+        : signal.mealPeriod === "dinner"
+          ? " (período de jantar)"
+          : "";
+    return (
+      `\n\nESTADO DA LOJA (fonte da verdade, não invente): a loja está ABERTA agora${period}. ` +
+      `NÃO diga que estamos fechados. Não invente um horário específico de fechamento — ` +
+      `se perguntarem o horário exato, ofereça verificar.`
+    );
+  }
   const reopen = signal.nextOpenDay ? ` Reabrimos ${signal.nextOpenDay}.` : "";
   return (
     `\n\nESTADO DA LOJA (fonte da verdade, não invente): a loja está FECHADA agora.${reopen} ` +
