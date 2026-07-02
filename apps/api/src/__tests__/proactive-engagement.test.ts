@@ -173,7 +173,7 @@ describe("proactive-engagement", () => {
 
     expect(mockSendText).toHaveBeenCalledWith(
       `whatsapp:${CUSTOMER_A.phone}`,
-      expect.any(String),
+      expect.objectContaining({ text: expect.any(String) }),
     );
   });
 
@@ -188,7 +188,7 @@ describe("proactive-engagement", () => {
 
     expect(mockSendText).toHaveBeenCalledWith(
       `whatsapp:${CUSTOMER_A.phone}`,
-      expect.any(String),
+      expect.objectContaining({ text: expect.any(String) }),
     );
     expect(mockRedis.set).toHaveBeenCalledWith(
       `test:outreach:last:${CUSTOMER_A.id}`,

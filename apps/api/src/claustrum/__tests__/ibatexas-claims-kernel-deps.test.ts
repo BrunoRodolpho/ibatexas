@@ -21,7 +21,13 @@ import {
   type CandidateClaim,
   type MinimalClaim,
 } from "@adjudicate/core";
-import { createIbatexasClaimsKernelDeps } from "../ibatexas-claims-kernel-deps.js";
+import {
+  actionOutcomeConfirmed,
+  buildOutcomeConfirmed,
+  buildOwns,
+  createIbatexasClaimsKernelDeps,
+  createPerTurnClaimsKernelDeps,
+} from "../ibatexas-claims-kernel-deps.js";
 
 // ── Fail-closed defaults ─────────────────────────────────────────────────────
 
@@ -101,5 +107,178 @@ describe("ibatexas-claims-kernel-deps — valid against published runClaimsKerne
     const result = runClaimsKernel(ledger, [claim], createIbatexasClaimsKernelDeps());
     expect(result.perClaim[0]?.verdict).not.toBe("VALIDATED");
     expect(result.renderable).toHaveLength(0);
+  });
+});
+
+// ── REAL per-turn predicates ──────────────────────────────────────────────────
+
+describe("ibatexas-claims-kernel-deps — REAL owns (Inv 2)", () => {
+  it("validates ONLY a resource in the principal-scoped owned set", () => {
+    const owns = buildOwns({
+      principal: "cust-1",
+      ownedResources: new Set(["order-42"]),
+    });
+    expect(owns("cust-1", "order-42")).toBe(true);
+    // A resource NOT in the owned set is refused (de-vacuumed; "no owner").
+    expect(owns("cust-1", "order-99")).toBe(false);
+    // A non-string resource is refused.
+    expect(owns("cust-1", undefined)).toBe(false);
+  });
+
+  it("fails closed on a DIFFERING concrete actor id (defense in depth)", () => {
+    const owns = buildOwns({
+      principal: "cust-1",
+      ownedResources: new Set(["order-42"]),
+    });
+    // A claim actor naming a DIFFERENT principal → refused even for an owned id.
+    expect(owns("cust-2", "order-42")).toBe(false);
+    expect(owns({ customerId: "cust-2" }, "order-42")).toBe(false);
+    // An actor with no embedded id relies on the principal-scoped owned set.
+    expect(owns(undefined, "order-42")).toBe(true);
+    expect(owns({ customerId: "cust-1" }, "order-42")).toBe(true);
+  });
+});
+
+describe("ibatexas-claims-kernel-deps — REAL outcomeConfirmed (Inv 4)", () => {
+  it("actionOutcomeConfirmed requires EXECUTE ∧ dispatched ∧ success ∧ settled≠false", () => {
+    expect(
+      actionOutcomeConfirmed({ resource: "o", verdict: "EXECUTE", dispatched: true, success: true }),
+    ).toBe(true);
+    expect(
+      actionOutcomeConfirmed({
+        resource: "o",
+        verdict: "EXECUTE",
+        dispatched: true,
+        success: true,
+        settled: true,
+      }),
+    ).toBe(true);
+    // Each conjunct is load-bearing.
+    expect(
+      actionOutcomeConfirmed({ resource: "o", verdict: "REFUSE", dispatched: true, success: true }),
+    ).toBe(false);
+    expect(
+      actionOutcomeConfirmed({ resource: "o", verdict: "EXECUTE", dispatched: false, success: true }),
+    ).toBe(false);
+    expect(
+      actionOutcomeConfirmed({ resource: "o", verdict: "EXECUTE", dispatched: true, success: false }),
+    ).toBe(false);
+    expect(
+      actionOutcomeConfirmed({
+        resource: "o",
+        verdict: "EXECUTE",
+        dispatched: true,
+        success: true,
+        settled: false,
+      }),
+    ).toBe(false);
+  });
+
+  it("confirms a claim only when a bound resource has a confirmed outcome", () => {
+    const outcomeConfirmed = buildOutcomeConfirmed([
+      { resource: "order-42", verdict: "EXECUTE", dispatched: true, success: true, settled: true },
+    ]);
+    const base = {
+      requiredEvidence: [],
+      minSourceIntegrity: "structured" as const,
+      kind: "action_claim" as const,
+      actor: "cust-1",
+    };
+    expect(outcomeConfirmed({ ...base, resources: { purchase_outcome: "order-42" } })).toBe(true);
+    // No bound resource → no confirmable outcome → false (fail closed).
+    expect(outcomeConfirmed({ ...base })).toBe(false);
+    // Bound to a DIFFERENT (unconfirmed) resource → false.
+    expect(outcomeConfirmed({ ...base, resources: { purchase_outcome: "order-99" } })).toBe(false);
+  });
+});
+
+describe("ibatexas-claims-kernel-deps — createPerTurnClaimsKernelDeps", () => {
+  function ownedReadClaim(resourceId: string): CandidateClaim {
+    return {
+      soundness: {
+        requiredEvidence: [
+          {
+            key: "payment_status",
+            ownershipPolicy: "required",
+            freshnessPolicy: "static",
+            sourceIntegrity: "structured",
+            provenancePolicy: "preserve",
+          },
+        ],
+        minSourceIntegrity: "structured",
+        kind: "read_claim",
+        actor: "cust-1",
+        resources: { payment_status: resourceId },
+        // W6 (linked kernel >= 1.8.0): a claim VALIDATEs only if its type is
+        // falsifier-complete. Declare a falsifier on a key that is NOT recorded
+        // in the test ledger, so the eligibility cap is satisfied and the runtime
+        // arm never fires — the verdict isolates the `owns` predicate under test.
+        falsifierComplete: true,
+        falsifiers: [
+          {
+            key: "_not_recorded_falsifier",
+            ownershipPolicy: "not_applicable",
+            freshnessPolicy: "static",
+            sourceIntegrity: "structured",
+            provenancePolicy: "preserve",
+          },
+        ],
+      },
+      subject: resourceId,
+      type: "PAYMENT_STATUS",
+      value: { status: "paid" },
+    };
+  }
+
+  function ledgerWithPaidStatus(): EvidenceLedger {
+    const l = new EvidenceLedger("t");
+    l.record({
+      key: "payment_status",
+      value: { status: "paid" },
+      source: "payment.getActiveByOrderId",
+      fetchedAt: 1_000,
+      sourceMode: "live",
+      taint: "TRUSTED",
+      // 3-value origin axis (the linked R1-led kernel): a first-party money read.
+      // ("TRUSTED" is the read-LAYER taint, NOT a valid OriginProvenance member —
+      // the W6 structural-provenance write guard normalizes an invalid origin to
+      // UNTRUSTED_DATA, which would REFUSE; use the real 3-value value here.)
+      originProvenance: "FIRST_PARTY",
+    });
+    return l;
+  }
+
+  it("VALIDATES an owned read_claim with present first-party evidence (real owns)", () => {
+    const deps = createPerTurnClaimsKernelDeps({
+      now: 5_000,
+      ownership: { principal: "cust-1", ownedResources: new Set(["order-42"]) },
+    });
+    expect(deps.soundness.now).toBe(5_000); // R2a — per-turn clock.
+    const result = runClaimsKernel(ledgerWithPaidStatus(), [ownedReadClaim("order-42")], deps);
+    expect(result.perClaim[0]?.verdict).toBe("VALIDATED");
+  });
+
+  it("REFUSES the SAME claim for a cross-owner resource (IDOR/owner gate)", () => {
+    const deps = createPerTurnClaimsKernelDeps({
+      now: 5_000,
+      // The attacker's owned set does NOT contain the victim's order.
+      ownership: { principal: "cust-1", ownedResources: new Set([]) },
+    });
+    const result = runClaimsKernel(ledgerWithPaidStatus(), [ownedReadClaim("order-42")], deps);
+    expect(result.perClaim[0]?.verdict).toBe("REFUSED");
+    expect(result.renderable).toHaveLength(0);
+  });
+
+  it("the per-turn now is the injected timestamp, not a module-load static", () => {
+    const a = createPerTurnClaimsKernelDeps({
+      now: 111,
+      ownership: { principal: "p", ownedResources: new Set() },
+    });
+    const b = createPerTurnClaimsKernelDeps({
+      now: 222,
+      ownership: { principal: "p", ownedResources: new Set() },
+    });
+    expect(a.soundness.now).toBe(111);
+    expect(b.soundness.now).toBe(222);
   });
 });

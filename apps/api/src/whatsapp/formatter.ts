@@ -3,6 +3,7 @@
 // Collects all text_delta chunks from the agent into a full response,
 // then provides metadata for logging and analytics.
 
+import { unwrapRendered } from "@adjudicate/core";
 import type { StreamChunk } from "@ibatexas/types";
 
 export interface AgentWhatsAppResponse {
@@ -67,7 +68,8 @@ export async function collectAgentResponse(
       }
       switch (chunk.type) {
         case "text_delta":
-          textParts.push(chunk.delta);
+          // EGRESS BRAND (E-1): extract the branded delta after proving provenance.
+          textParts.push(unwrapRendered(chunk.delta));
           break;
         case "tool_start":
           toolsUsed.push(chunk.toolName);

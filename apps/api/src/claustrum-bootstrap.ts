@@ -63,9 +63,9 @@ import {
   createPostgresMemoryProvider,
   PostgresAdvisorySessionLock,
   type PrismaClientLike,
-  type RedisClientLike,
 } from "@claustrum/memory-postgres";
 import { createPgVectorGroundingProvider } from "@claustrum/grounding-pgvector";
+import { toMemoryRedisClient } from "./claustrum/memory-redis-adapter.js";
 import { failSafeGrounding } from "./claustrum/fail-safe-grounding.js";
 import { failSafeMemory } from "./claustrum/fail-safe-memory.js";
 import { noopGroundingProvider, noopMemoryProvider } from "./claustrum/noop-memory-grounding.js";
@@ -104,9 +104,16 @@ import {
   type RedisPubSubClient,
 } from "@adjudicate/audit";
 
-import { prisma, createOrderQueryService, createPaymentQueryService } from "@ibatexas/domain";
+import { prisma, claustrumMemoryPrisma, createOrderQueryService, createPaymentQueryService } from "@ibatexas/domain";
 import { rehydratePaymentState } from "@ibatexas/pack-payments";
-import { emitLlmCall, getRedisClient, rk } from "@ibatexas/tools";
+import {
+  emitLlmCall,
+  getRedisClient,
+  getScheduleSignal,
+  loadSchedule,
+  rk,
+  type ScheduleSignal,
+} from "@ibatexas/tools";
 import { publishNatsEvent } from "@ibatexas/nats-client";
 import { AGENT_REGISTRY } from "@ibatexas/agents";
 // Managed-agent plane (T3-9) — composed + started behind IBX_AGENTS_ENABLED.
@@ -412,6 +419,19 @@ export interface ClaustrumBootstrapOptions {
    * the `@ibatexas/tools` singleton via `getRedisClient()` (`REDIS_URL`).
    */
   readonly redis?: Awaited<ReturnType<typeof getRedisClient>>;
+  /**
+   * Per-turn structured closed-hours signal source for the planner + responder
+   * (fix B, Stage 1). Default: the production resolver (Redis read-through
+   * `loadSchedule()` + env timezone → {@link getScheduleSignal}). Injectable so
+   * deterministic suites (e.g. the content-addressed golden-conversation
+   * pipeline) can PIN it — the production resolver depends on wall-clock time, so
+   * leaving it default would make the composed prompt non-deterministic. Return
+   * `undefined` to disable the closed-hours grounding/backstop entirely.
+   */
+  readonly resolveScheduleSignal?: () =>
+    | Promise<ScheduleSignal | undefined>
+    | ScheduleSignal
+    | undefined;
 }
 
 /**
@@ -1678,7 +1698,11 @@ function resolveMemoryPort(
   adjudicator: Adjudicator,
 ) {
   const memDelegates = ["episodic", "semantic", "procedural", "relational"] as const;
-  const prismaForMemory = prisma as unknown as Record<
+  // DEF-005: probe the DEDICATED claustrum-memory Prisma client (generate-only
+  // mirror of the @claustrum-owned public-schema tables), NOT the domain client.
+  // The domain client must not declare these models (doing so would bring the
+  // unmanaged public schema under Prisma management — `db reset`/migrate hazard).
+  const prismaForMemory = claustrumMemoryPrisma as unknown as Record<
     string,
     { findMany?: unknown } | undefined
   >;
@@ -1688,7 +1712,7 @@ function resolveMemoryPort(
   if (!memoryDelegatesPresent) {
     logger.info(
       { component: "memory" },
-      "claustrum_memory_* delegates absent/incomplete on the domain Prisma client — memory port runs as a designed no-op (empty recall); see DEF-005",
+      "claustrum_memory_* delegates absent/incomplete on the dedicated memory Prisma client — memory port runs as a designed no-op (empty recall); see DEF-005",
     );
   }
   // Finding 33: the no-op provider never throws BY DESIGN, so wrapping it in
@@ -1698,8 +1722,11 @@ function resolveMemoryPort(
   return memoryDelegatesPresent
     ? failSafeMemory(
         createPostgresMemoryProvider({
-          prisma: prisma as unknown as PrismaClientLike,
-          redis: redis as unknown as RedisClientLike,
+          prisma: claustrumMemoryPrisma as unknown as PrismaClientLike,
+          // node-redis v4 → ioredis-shaped surface the provider expects (setex /
+          // pipeline). Without this shim recall's write-through threw on every
+          // cache-cold turn and degraded to empty. See memory-redis-adapter.ts.
+          redis: toMemoryRedisClient(redis),
           adjudicator,
         }),
         {
@@ -2047,6 +2074,48 @@ export async function bootstrapClaustrum(
     turnTraceWriter,
     tokenUsageSink,
   );
+  // fix B (Stage 1) — the per-turn structured closed-hours signal. Sourced from
+  // the Redis read-through schedule cache (loadSchedule) + the env timezone, it
+  // grounds the planner + responder LLM context (soft layer) and arms the
+  // responder's deterministic closed-hours backstop (hard layer). Best-effort:
+  // it never throws out of the turn.
+  const resolveScheduleSignal =
+    options.resolveScheduleSignal ??
+    (async (): Promise<ScheduleSignal | undefined> => {
+      const tz = process.env.RESTAURANT_TIMEZONE ?? "America/Sao_Paulo";
+      try {
+        const schedule = await loadSchedule();
+        return getScheduleSignal(schedule, tz);
+      } catch (err) {
+        // Fail-open-vs-fail-closed (DECIDED): on a schedule-load failure (e.g. a
+        // Redis blip + a DB hiccup) do NOT blindly default to "closed" — a
+        // false-"closed" would harm EVERY customer for the duration of the blip.
+        // Instead align to the system-wide convention: getMealPeriodFromSchedule()
+        // already treats a missing/undefined schedule by falling back to the
+        // env-var hours (RESTAURANT_*_HOUR) — it does NOT treat unknown as closed.
+        // Deriving getScheduleSignal(undefined, tz) here keeps BOTH closed-hours
+        // layers (the soft prompt note + the deterministic backstop) ARMED on those
+        // env hours rather than reverting to pure-prompt (which would let the 4B
+        // falsely assert "open"). Returning a signal — not undefined — is the
+        // deliberate tradeoff. (No readily-available last-known-good cached signal:
+        // loadSchedule already consulted the Redis cache before this throw.)
+        // (b) Observability: WARN so this silent degrade is visible in logs/obs.
+        logger.warn(
+          {
+            component: "claustrum-bootstrap",
+            scope: "closed-hours",
+            err: (err as Error).message,
+          },
+          "schedule signal resolve failed; falling back to env-var hours (closed-hours layers stay armed)",
+        );
+        try {
+          return getScheduleSignal(undefined, tz);
+        } catch {
+          // Last resort: the resolver must never throw and break the turn.
+          return undefined;
+        }
+      }
+    });
   const buildPlanner = (model: ModelProvider): ClaimAwarePlannerPort =>
     createIbatexasPlanner({
       model,
@@ -2055,6 +2124,7 @@ export async function bootstrapClaustrum(
       deriveContext: deriveIbatexasPlannerContext,
       promptComposer,
       telemetry,
+      resolveScheduleSignal,
     });
   const buildResponder = (model: ModelProvider): ResponderPort =>
     createIbatexasResponder({
@@ -2063,6 +2133,7 @@ export async function bootstrapClaustrum(
       explainer: ibxExplainer,
       promptComposer,
       telemetry,
+      resolveScheduleSignal,
     });
 
   // B-PR1 — claims-runtime seams (SDD §M / §Q.6), FLAG DEFAULT-OFF. The planner
@@ -2074,7 +2145,13 @@ export async function bootstrapClaustrum(
   // (activation is a later PR). No `clock` is passed (not in the published
   // ConductorOptions; the per-turn clock is PENDING R2a).
   const planner = buildPlanner(modelProvider);
-  const claimsSeams = buildClaimsSeams({ planner });
+  // F2 observability (RCA 2026-06-29): when the claims pipeline is ENABLED but the
+  // LINKED kernels are below the egress-brand floor, log a loud warning so the
+  // kernel-version drop point (silent store-open → UNKNOWN) is visible at boot.
+  const claimsSeams = buildClaimsSeams({
+    planner,
+    warn: (message) => logger.warn(message),
+  });
   _conductor = createConductor({
     adjudicator,
     memory,

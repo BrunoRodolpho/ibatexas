@@ -19,6 +19,7 @@ vi.mock("../routes/admin/_shared.js", () => ({
 }))
 
 vi.mock("@ibatexas/domain", () => ({
+  FROZEN_CAUSES: ["empty_completion", "whitespace_only", "send_failed", "retry_exhausted", "timeout"],
   createReservationService: () => ({
     findAll: vi.fn(async () => []),
     findConfirmedForDate: vi.fn(async () => []),

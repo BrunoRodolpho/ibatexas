@@ -101,6 +101,8 @@ export {
   isAvailableFromSchedule,
   getNextOpenDay,
   getFrozenPickupMessage,
+  getScheduleSignal,
+  type ScheduleSignal,
 } from "./schedule/schedule-helpers.js"
 
 // ── Schedule cache ──────────────────────────────────────────────────────────

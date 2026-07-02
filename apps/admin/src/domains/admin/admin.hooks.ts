@@ -1,10 +1,15 @@
 "use client"
 
-import { useCallback, useEffect, useState, useMemo } from 'react'
+import { useCallback, useEffect, useRef, useState, useMemo } from 'react'
 import { apiFetch } from "@/lib/api"
 import { createAdminHook, createAdminListHook } from './admin.factory'
-import { buildAdminHooks } from '@ibatexas/ui'
-import type { AdminReservation, AdminReview } from '@ibatexas/ui'
+import {
+  buildAdminHooks,
+  useToast,
+  INCIDENT_TOASTS,
+  INCIDENT_CAUSE_LABELS,
+} from '@ibatexas/ui'
+import type { AdminReservation, AdminReview, AdminIncident } from '@ibatexas/ui'
 
 const hooks = buildAdminHooks(createAdminHook, createAdminListHook, apiFetch)
 
@@ -330,6 +335,34 @@ export function useAdminReviews() {
   return { reviews, loading, ratingFilter, setRatingFilter }
 }
 
+// ── Open incident count (sidebar badge) ──────────────────────────────────────
+
+/**
+ * Cheap 30s poll of the independent open-incident count that backs the
+ * persistent sidebar badge. Degrades to 0 (no pill) on any failure so the nav
+ * never breaks.
+ */
+export function useOpenIncidentCount(): number {
+  const [openCount, setOpenCount] = useState(0)
+
+  useEffect(() => {
+    let cancelled = false
+    const fetchCount = async () => {
+      try {
+        const data = await apiFetch('/api/admin/incidents?status=OPEN&limit=1')
+        if (!cancelled) setOpenCount(typeof data?.openCount === 'number' ? data.openCount : 0)
+      } catch {
+        if (!cancelled) setOpenCount(0)
+      }
+    }
+    fetchCount()
+    const interval = setInterval(fetchCount, 30_000)
+    return () => { cancelled = true; clearInterval(interval) }
+  }, [])
+
+  return openCount
+}
+
 // ── Analytics ──────────────────────────────────────────────────────────────
 
 export interface AnalyticsSummary {
@@ -355,4 +388,292 @@ export function useAdminAnalytics() {
   }, [])
 
   return { metrics, loading }
+}
+
+// ── Incidentes (no-reply incident inbox) ─────────────────────────────────────
+
+/**
+ * New-OPEN-ids per single poll above which we treat the wave as a STORM and
+ * suppress the per-incident beep/toast (one blip + one storm toast instead).
+ * Distinct from the StormDigestBanner headline, which keys off the rolling
+ * open-count window (§2 — "two distinct jobs, do not conflate").
+ */
+export const STORM_THRESHOLD = 5
+/** Rolling open-count window length (minutes) phrased in the storm copy. */
+export const STORM_WINDOW_MINUTES = 8
+/** Route max page size — the active OPEN/ACK queue is fetched UNPAGINATED (F1). */
+const INCIDENT_FETCH_LIMIT = 100
+const INCIDENT_POLL_MS = 30_000
+const INCIDENT_HISTORY_PAGE_SIZE = 20
+const TERMINAL_STATUSES: ReadonlySet<string> = new Set(['AUTO_RESOLVED', 'RESOLVED'])
+
+interface IncidentListResponse {
+  readonly incidents: AdminIncident[]
+  readonly openCount: number
+  readonly stats?: IncidentStats
+}
+
+export interface IncidentStats {
+  readonly open: number
+  readonly acknowledged: number
+  readonly resolvedToday: number
+  readonly resolvedAuto: number
+  readonly resolvedStaff: number
+  readonly avgMinutes: number
+}
+
+function startOfToday(now: Date = new Date()): Date {
+  const d = new Date(now)
+  d.setHours(0, 0, 0, 0)
+  return d
+}
+
+const EMPTY_STATS: IncidentStats = {
+  open: 0,
+  acknowledged: 0,
+  resolvedToday: 0,
+  resolvedAuto: 0,
+  resolvedStaff: 0,
+  avgMinutes: 0,
+}
+
+/**
+ * Adopt the INDEPENDENT server stat aggregate (M10): `open` (OPEN-only, distinct
+ * from the NON_TERMINAL sidebar openCount so the "Abertos" card never
+ * double-counts "Reconhecidos"), `acknowledged`, and resolvedToday/Auto/Staff/
+ * avgMinutes — all computed server-side over their own queries, NOT derived from
+ * the OPEN-first limit=100 row window (which during a storm holds zero resolved
+ * rows). Falls back to zeros if an older API omits `stats` so the cards never crash.
+ */
+function computeIncidentStats(serverStats: IncidentStats | undefined): IncidentStats {
+  return serverStats ?? EMPTY_STATS
+}
+
+/** Most common cause across the currently-OPEN incidents (drives the storm copy). */
+function dominantOpenCause(rows: readonly AdminIncident[]): string {
+  const tally = new Map<string, number>()
+  for (const r of rows) {
+    if (r.status !== 'OPEN') continue
+    tally.set(r.cause, (tally.get(r.cause) ?? 0) + 1)
+  }
+  let best = ''
+  let bestN = 0
+  for (const [cause, n] of tally) {
+    if (n > bestN) { best = cause; bestN = n }
+  }
+  return best
+}
+
+/**
+ * Backs the full two-pane Incidentes inbox. ONE fetch per 30s poll of the
+ * recent set (limit=100, route max) which the API pre-sorts by composite key
+ * (status-bucket → aged-first → severity desc). F1: the actionable OPEN/ACK
+ * queue is therefore GLOBALLY sorted and never split across pages; pagination
+ * (client-side, in the DataTable) applies ONLY to the Resolvidos/history view.
+ * Status/cause/severity filtering happens client-side on the severity-refreshed
+ * rows so it agrees with the read-time-derived severity the API returns.
+ */
+export function useAdminIncidentsPage() {
+  const [allIncidents, setAllIncidents] = useState<AdminIncident[]>([])
+  const [openCount, setOpenCount] = useState(0)
+  const [serverStats, setServerStats] = useState<IncidentStats | undefined>(undefined)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [refreshKey, setRefreshKey] = useState(0)
+  const [statusFilter, setStatusFilter] = useState('') // '' | OPEN | ACKNOWLEDGED | RESOLVED
+  const [causeFilter, setCauseFilter] = useState('')
+  const [severityFilter, setSeverityFilter] = useState('')
+
+  const hasLoadedRef = useRef(false)
+
+  useEffect(() => {
+    let cancelled = false
+    // Flash the skeleton ONLY on the initial load; the 30s poll refreshes rows in
+    // place (mirrors the catch-branch intent — never disrupt existing rows on a
+    // transient poll).
+    if (!hasLoadedRef.current) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- initial load only; loading flag drives the skeleton
+      setLoading(true)
+    }
+    // resolvedSince bounds the server's INDEPENDENT resolved-today aggregate to
+    // local midnight (M10) so "Resolvidos hoje"/"Tempo médio" stay correct even
+    // when a storm pushes all resolved rows out of the OPEN-first fetch window.
+    const resolvedSince = encodeURIComponent(startOfToday().toISOString())
+    apiFetch(`/api/admin/incidents?limit=${INCIDENT_FETCH_LIMIT}&resolvedSince=${resolvedSince}`)
+      .then((data: IncidentListResponse) => {
+        if (cancelled) return
+        setAllIncidents(Array.isArray(data?.incidents) ? data.incidents : [])
+        setOpenCount(typeof data?.openCount === 'number' ? data.openCount : 0)
+        setServerStats(data?.stats)
+        setError(null)
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return
+        // Do NOT clear existing rows on a transient poll failure; surface the
+        // error so the page can toast (we never silently swallow — escalações bug).
+        setError(err instanceof Error ? err.message : 'load_failed')
+      })
+      .finally(() => { if (!cancelled) { setLoading(false); hasLoadedRef.current = true } })
+    return () => { cancelled = true }
+  }, [refreshKey])
+
+  const refetch = useCallback(() => setRefreshKey((k) => k + 1), [])
+
+  // Canonical 30s poll.
+  useEffect(() => {
+    const interval = setInterval(refetch, INCIDENT_POLL_MS)
+    return () => clearInterval(interval)
+  }, [refetch])
+
+  const isHistoryView = statusFilter === 'RESOLVED'
+
+  const incidents = useMemo(
+    () =>
+      allIncidents.filter((inc) => {
+        if (statusFilter === '') {
+          if (TERMINAL_STATUSES.has(inc.status)) return false // default view hides resolved (§5)
+        } else if (statusFilter === 'RESOLVED') {
+          if (!TERMINAL_STATUSES.has(inc.status)) return false // history = AUTO_RESOLVED + RESOLVED
+        } else if (inc.status !== statusFilter) {
+          return false
+        }
+        if (causeFilter && inc.cause !== causeFilter) return false
+        if (severityFilter && inc.severity !== severityFilter) return false
+        return true
+      }),
+    [allIncidents, statusFilter, causeFilter, severityFilter],
+  )
+
+  // Adopt the INDEPENDENT server aggregate (M10) — see computeIncidentStats.
+  const stats = useMemo(() => computeIncidentStats(serverStats), [serverStats])
+
+  const counts = useMemo(() => {
+    const active = allIncidents.filter((i) => !TERMINAL_STATUSES.has(i.status))
+    return {
+      // OPEN-only / ACK-only server aggregates: the OPEN filter chip must NOT
+      // show the NON_TERMINAL openCount (which now includes ACKNOWLEDGED), and
+      // the chips must agree with the StatCards fed by the same aggregate.
+      open: stats.open,
+      acknowledged: stats.acknowledged,
+      high: active.filter((i) => i.severity === 'high').length,
+      medium: active.filter((i) => i.severity === 'medium').length,
+      low: active.filter((i) => i.severity === 'low').length,
+    }
+  }, [allIncidents, stats])
+  const dominantCause = useMemo(() => dominantOpenCause(allIncidents), [allIncidents])
+
+  const hasActiveFilters = statusFilter !== '' || causeFilter !== '' || severityFilter !== ''
+  const onClearFilters = useCallback(() => {
+    setStatusFilter('')
+    setCauseFilter('')
+    setSeverityFilter('')
+  }, [])
+
+  return {
+    incidents,
+    openCount,
+    loading,
+    error,
+    statusFilter,
+    causeFilter,
+    severityFilter,
+    counts,
+    stats,
+    dominantCause,
+    isHistoryView,
+    hasActiveFilters,
+    historyPageSize: INCIDENT_HISTORY_PAGE_SIZE,
+    onStatusFilter: setStatusFilter,
+    onCauseFilter: setCauseFilter,
+    onSeverityFilter: setSeverityFilter,
+    onClearFilters,
+    refetch,
+  }
+}
+
+/** Gesture-gated 800Hz blip — verbatim shape of pedidos/page.tsx:47-64. */
+function playIncidentBeep(enabled: boolean): void {
+  if (!enabled) return
+  try {
+    const ctx = new AudioContext()
+    const osc = ctx.createOscillator()
+    const gain = ctx.createGain()
+    osc.connect(gain)
+    gain.connect(ctx.destination)
+    osc.frequency.value = 800
+    gain.gain.value = 0.3
+    osc.start()
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.3)
+    osc.stop(ctx.currentTime + 0.3)
+  } catch {
+    // Audio not available
+  }
+}
+
+/**
+ * Mounted ONCE at the admin layout (never per-page) so the new-incident beep +
+ * toast fire wherever the manager is, and so the inbox page does NOT run its own
+ * diff and double-fire. Diffs an ID-SET (`prevOpenIds`) — fires on
+ * `newOpenIds = openIds \ prevOpenIds` — NOT the fragile count-delta the orders
+ * beep uses (which misfires across pagination/filters). Per-poll storm
+ * suppression when `newOpenIds.size >= STORM_THRESHOLD` (one blip + one storm
+ * toast). The first poll seeds `prevOpenIds` silently (no beep for pre-existing).
+ */
+export function useIncidentNewDetector(): void {
+  const { addToast } = useToast()
+  const prevOpenIdsRef = useRef<Set<string> | null>(null)
+  const hasInteractedRef = useRef(false)
+
+  // Gesture gate (verbatim pedidos/page.tsx:40-44) — unlock audio on first click.
+  useEffect(() => {
+    function markInteracted() { hasInteractedRef.current = true }
+    document.addEventListener('click', markInteracted, { once: true })
+    return () => document.removeEventListener('click', markInteracted)
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    const poll = async () => {
+      try {
+        const data: IncidentListResponse = await apiFetch(
+          `/api/admin/incidents?status=OPEN&limit=${INCIDENT_FETCH_LIMIT}`,
+        )
+        if (cancelled) return
+        const rows = Array.isArray(data?.incidents) ? data.incidents : []
+        const ids = rows.map((r) => r.id)
+        const current = new Set(ids)
+        const prev = prevOpenIdsRef.current
+        prevOpenIdsRef.current = current
+        if (prev === null) return // seed only — never beep for pre-existing incidents
+        const newOpenIds = ids.filter((id) => !prev.has(id))
+        if (newOpenIds.length === 0) return
+
+        if (newOpenIds.length >= STORM_THRESHOLD) {
+          playIncidentBeep(hasInteractedRef.current)
+          const causeLabel = INCIDENT_CAUSE_LABELS[dominantOpenCause(rows)] ?? '—'
+          addToast({
+            type: 'error',
+            title: INCIDENT_TOASTS.stormTitle,
+            message: INCIDENT_TOASTS.stormBody(current.size, STORM_WINDOW_MINUTES, causeLabel),
+            dedupeKey: 'incident-storm',
+            duration: 0,
+          })
+        } else {
+          playIncidentBeep(hasInteractedRef.current)
+          addToast({
+            type: 'warning',
+            title: INCIDENT_TOASTS.newTitle,
+            message: INCIDENT_TOASTS.newBody,
+            dedupeKey: 'incident-new',
+          })
+        }
+      } catch {
+        // Swallow detector poll errors — the badge/nav must never break; the
+        // inbox page surfaces its own load errors.
+      }
+    }
+    void poll()
+    const interval = setInterval(poll, INCIDENT_POLL_MS)
+    return () => { cancelled = true; clearInterval(interval) }
+  }, [addToast])
 }

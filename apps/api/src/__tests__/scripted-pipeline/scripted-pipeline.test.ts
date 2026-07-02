@@ -203,7 +203,16 @@ describe.skipIf(!RUN_BOOTSTRAP_HARNESS)(
         entries: await loadScriptedEntries(COMPLETIONS_DIR, substitutions),
       });
 
-      conductor = await bootstrapClaustrum({ modelProvider: provider });
+      // fix B (Stage 1): the production closed-hours resolver depends on
+      // wall-clock time, which would make the content-addressed planner/responder
+      // prompts non-deterministic (the golden fixtures were recorded WITHOUT the
+      // closed-hours note). PIN it OFF here so the digests stay stable; the
+      // closed-hours grounding + backstop have their own deterministic unit tests
+      // (closed-hours.test.ts, ibatexas-responder.test.ts).
+      conductor = await bootstrapClaustrum({
+        modelProvider: provider,
+        resolveScheduleSignal: () => undefined,
+      });
 
       // Drive every fixture ONCE up front (the check is the canonical
       // driver); individual tests assert different facets of the same run.

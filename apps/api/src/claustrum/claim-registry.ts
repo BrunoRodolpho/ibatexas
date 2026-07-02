@@ -46,6 +46,11 @@ import type {
   EvidenceRequirement,
   TurnTerminal,
 } from "@adjudicate/core";
+// inv.18 v2 — the STORE_OPEN_NOW registry spec is GENERATED from its ClaimDefinition
+// source by the claimdef-compiler (./claimdefs/store-open-now.generated.ts — DO NOT
+// EDIT). The ~30-line handwritten stanza collapsed into this one import; the runtime
+// got SMALLER for this type and can no longer drift from the slot grammar / closure.
+import { STORE_OPEN_NOW_REGISTRY_SPEC } from "./claimdefs/store-open-now.generated.js";
 
 /**
  * The REGISTRY enum — the closed, representative set of claim TYPE names the
@@ -59,10 +64,19 @@ import type {
  *     (floor `structured`; a free-text "sem alérgenos" must FAIL → UNKNOWN —
  *     SDD §E worked types).
  *   - `STORE_HOURS`         — a public, cacheable INFORM read.
+ *   - `STORE_OPEN_NOW`      — the OVERRIDE-AWARE "is it open right now" read
+ *     (public; W6-falsified by a present ScheduleOverride — Triad slice).
  *   - `ORDER_FULFILLMENT_STAGE` — a customer-scoped, live STATUS read
- *     (owner-scoped, `must_read_this_turn` — SDD §E / §N P1).
+ *     (owner-scoped, `must_read_this_turn` — SDD §E / §N P1). NOT full Triad
+ *     coverage yet: it degrades SAFE to UNKNOWN until per-resource ORDER key
+ *     namespacing + F3 per-turn `owns` (the conductor refactor) land; the
+ *     falsifier/valueBinding below are the kernel-side wiring, not end-to-end
+ *     activation.
  *   - `PAYMENT_STATUS`      — a customer-scoped, live, first-party money read
- *     (ownership required, `first_party_only` — SDD §E / §N P0).
+ *     (ownership required, `first_party_only` — SDD §E / §N P0). Same caveat:
+ *     degrades SAFE to UNKNOWN pending per-resource PAYMENT key namespacing +
+ *     F3 per-turn `owns`; the rows below declare the predicate, they do not by
+ *     themselves prove a VALIDATED render fires this turn.
  *   - `PURCHASE_COMPLETED`  — an ACTION claim (`action_outcome`; does NOT imply
  *     settlement — SDD §E / §K Cluster F).
  *
@@ -72,6 +86,7 @@ import type {
 export const CLAIM_REGISTRY = [
   "MENU_ITEM_ALLERGENS",
   "STORE_HOURS",
+  "STORE_OPEN_NOW",
   "ORDER_FULFILLMENT_STAGE",
   "PAYMENT_STATUS",
   "PURCHASE_COMPLETED",
@@ -94,6 +109,32 @@ export function isRegistryClaimType(value: unknown): value is RegistryClaimType 
 }
 
 /**
+ * CASING-ROBUST canonicalization (fix 3 — RCA 2026-06-29). The local 4B model
+ * emits a correctly-CLASSIFIED registry type with NON-CANONICAL casing
+ * (`ORDER_fulfillment_stage`, `PAYMENT_status`); the registry members are all
+ * UPPER_SNAKE, so a raw exact-case membership check ({@link isRegistryClaimType})
+ * DROPPED such a candidate → with the order/stage claim gone the candidate set
+ * went empty → the turn fell back to the lie-capable PROSE responder, which
+ * FABRICATED. This normalizes case (`raw.toUpperCase()` — registry members are
+ * UPPER_SNAKE) BEFORE the membership test, RESCUING a correctly-classified tag
+ * from being wrongly dropped into the prose path.
+ *
+ * Returns the CANONICAL `RegistryClaimType` when `raw` maps to a known type
+ * (case-insensitively), else `undefined`. A tag that does NOT match even after
+ * canonicalization still returns `undefined` → it is DROPPED by the constrained-
+ * generation wall (never free-generated) and the planner's P4/safety routing
+ * yields a proposition-free safe terminal (UNKNOWN/CLARIFY/ESCALATE) — NEVER
+ * fabricating prose. Pure; no allocation beyond the upper-case string.
+ */
+export function canonicalizeRegistryType(
+  raw: unknown,
+): RegistryClaimType | undefined {
+  if (typeof raw !== "string") return undefined;
+  const upper = raw.toUpperCase();
+  return REGISTRY_SET.has(upper) ? (upper as RegistryClaimType) : undefined;
+}
+
+/**
  * The per-registry-type evidence + claim SCHEMA the planner parameterizes into a
  * `CandidateClaim.soundness` (`MinimalClaim`). Transcribed from the SDD §E
  * worked types (the §5 conjuncts each field feeds): ownership, freshness,
@@ -103,7 +144,7 @@ export function isRegistryClaimType(value: unknown): value is RegistryClaimType 
  * it (SDD §O#3 "no model-authored …"; the soundness predicate quantifies over
  * THIS typed structure, never prose — §R topology condition 2).
  */
-interface RegistryClaimSpec {
+export interface RegistryClaimSpec {
   /** The §5 claim kind — drives C4 (`action_claim` ⟹ outcome-confirmed). */
   readonly kind: "read_claim" | "action_claim";
   /** The C2 source-integrity FLOOR this type's evidence must meet-or-exceed. */
@@ -112,6 +153,54 @@ interface RegistryClaimSpec {
   readonly requiredEvidence: readonly EvidenceRequirement[];
   /** The Q4 consistency partition key derivation: is this claim customer-scoped? */
   readonly customerScoped: boolean;
+  /**
+   * W6 falsifier-completeness (Plan 1 Phase 3; `@adjudicate/core` >= 1.8.0). When
+   * `true`, this type has ENUMERATED every evidence that — if PRESENT this turn —
+   * FALSIFIES the claim (the `falsifiers[]`), so the kernel's eligibility cap lets
+   * it reach VALIDATED and the runtime arm (`resolveAgainstFalsifiers`) demotes it
+   * to UNKNOWN when a falsifier actually fires. A type that cannot HONESTLY
+   * enumerate its falsifiers MUST omit this (defaults to `false` → UNKNOWN-only);
+   * declaring completeness without real falsifiers is the §R lying case (the kernel
+   * hard-throws). Omitted ⟹ the type stays UNKNOWN-only under the pipeline (the
+   * fail-safe default the SDD §Q scope guard prescribes for un-upgraded types).
+   */
+  readonly falsifierComplete?: boolean;
+  /**
+   * The W6 falsifiers (each an `EvidenceRequirement`): a DIFFERENT key whose
+   * PRESENCE this turn contradicts the claim (e.g. STORE_OPEN_NOW ← a present
+   * ScheduleOverride; PAYMENT_STATUS=paid ← a present refund/chargeback). Declared
+   * iff `falsifierComplete` is `true`.
+   */
+  readonly falsifiers?: readonly EvidenceRequirement[];
+  /**
+   * The W6 C6 value-binding: bind the RENDERED `value` to a specific evidence
+   * entry's value so the customer-visible number/string is LEDGER-SOURCED, never a
+   * model confabulation that rode the surplus channel. `key` MUST be one of
+   * {@link requiredEvidence} keys (the kernel hard-throws otherwise); `path`
+   * projects the bound field on BOTH sides before the canonical `sameValue`
+   * compare. Omitted ⟹ §5 stays value-agnostic for this type (no-op).
+   */
+  readonly valueBinding?: {
+    readonly key: string;
+    readonly path?: readonly (string | number)[];
+  };
+  /**
+   * Wall-2 groundwork (Track A on 4B; tag-then-derive plan STEP 3). When `true`,
+   * this type's reads are recorded by the investigator under PER-RESOURCE keys
+   * (`order_fulfillment_stage:{id}`, `payment_status:{id}` —
+   * `ibatexas-investigator.ts`), NOT a plain key. `selectCandidateClaim` therefore
+   * PARAMETERIZES this type's `requiredEvidence`/`falsifiers`/`valueBinding` keys
+   * by the candidate `subject` (`${baseKey}:${subject}`) so the kernel's
+   * `ledger.resolve(key)` finds the actual per-resource entry. STORE_OPEN_NOW (a
+   * public, single-key type whose `schedule:store_open_now` matches the
+   * investigator verbatim) leaves this OMITTED — its keys are never parameterized.
+   *
+   * NOTE: per-resource alignment is necessary-but-not-sufficient for these
+   * owner-scoped types to go LIVE; the per-turn `owns` threading is a conductor
+   * (`@claustrum/core`) republish (Wall 2, out of scope here). Until then
+   * ORDER/PAYMENT degrade SAFE to UNKNOWN (owns false / read-error / value-absent).
+   */
+  readonly perResourceKey?: boolean;
 }
 
 /**
@@ -120,7 +209,7 @@ interface RegistryClaimSpec {
  * compile error (`satisfies Record<RegistryClaimType, …>`) — the registry and
  * its evidence schema can never silently diverge.
  */
-const REGISTRY_SPECS = {
+export const REGISTRY_SPECS = {
   MENU_ITEM_ALLERGENS: {
     kind: "read_claim",
     // SDD §E: free-text "sem alérgenos" must fail → the floor is `structured`.
@@ -150,12 +239,22 @@ const REGISTRY_SPECS = {
     ],
     customerScoped: false,
   },
+  // Triad slice — STORE_OPEN_NOW is now GENERATED from its ClaimDefinition source
+  // (inv.18 v2). The override-aware evidence + W6 falsifier + C6 value-binding all
+  // come from `./claimdefs/store-open-now.generated.ts`, compiled from the single
+  // `store-open-now.claim.ts` source. This one line REPLACES the ~30-line handwritten
+  // stanza (and can never drift from the template / closure, which are generated too).
+  STORE_OPEN_NOW: STORE_OPEN_NOW_REGISTRY_SPEC,
   ORDER_FULFILLMENT_STAGE: {
     kind: "read_claim",
     minSourceIntegrity: "structured",
     requiredEvidence: [
       {
-        key: "fulfillment_stage",
+        // STEP 3 key-alignment: the BASE name now matches the investigator's
+        // `ORDER_FULFILLMENT_KEY` base (`order_fulfillment_stage`,
+        // ibatexas-investigator.ts:162); `selectCandidateClaim` appends `:{subject}`
+        // (perResourceKey) so the kernel resolves the actual per-order entry.
+        key: "order_fulfillment_stage",
         // Customer-scoped — owner-scoped `getById` (SDD §E / §N P1).
         ownershipPolicy: "required",
         freshnessPolicy: "must_read_this_turn",
@@ -164,6 +263,31 @@ const REGISTRY_SPECS = {
       },
     ],
     customerScoped: true,
+    // The investigator records the schedule-style PER-RESOURCE key — parameterize.
+    perResourceKey: true,
+    // W6 — a present order CANCELLATION falsifies any in-progress fulfillment stage.
+    falsifierComplete: true,
+    falsifiers: [
+      {
+        key: "order_cancelled",
+        ownershipPolicy: "required",
+        freshnessPolicy: "must_read_this_turn",
+        sourceIntegrity: "structured",
+        provenancePolicy: "preserve",
+      },
+    ],
+    // C6 — bind the rendered stage to the read's ACTUAL field (ledger-sourced).
+    // Wall-2 reconcile (fix 4a): the OrderFulfillmentRead shape field is
+    // `fulfillmentStatus` (turn-reads.ts), NOT `stage` — the old `["stage"]` path
+    // projected `undefined` on both sides → C6 ABSTAIN → the claim demoted UNKNOWN
+    // even for the legit owner. The path now matches the read field so C6 compares
+    // a real scalar (the claim-planner adapter, `ibatexas-claim-planner.ts`, binds
+    // the owner-scoped candidate value to the SAME present ledger entry →
+    // claimSide === evidenceSide → C6 PASSes by construction, without skipping any
+    // conjunct: ownership/freshness/falsifiers all still run). `valueBinding.key` stays a member of
+    // requiredEvidence (suffixed `:{subject}` in lockstep) so the kernel's C6
+    // structural guard never throws.
+    valueBinding: { key: "order_fulfillment_stage", path: ["fulfillmentStatus"] },
   },
   PAYMENT_STATUS: {
     kind: "read_claim",
@@ -179,6 +303,30 @@ const REGISTRY_SPECS = {
       },
     ],
     customerScoped: true,
+    // STEP 3 key-alignment: the investigator records `payment_status:{id}`
+    // (ibatexas-investigator.ts:164) — parameterize this type's keys by subject.
+    perResourceKey: true,
+    // W6 — a `paid` payment status is falsified by a present refund OR chargeback
+    // (opposite money direction). BOTH are enumerated (honest completeness).
+    falsifierComplete: true,
+    falsifiers: [
+      {
+        key: "payment_refund",
+        ownershipPolicy: "required",
+        freshnessPolicy: "must_read_this_turn",
+        sourceIntegrity: "first_party_verified",
+        provenancePolicy: "first_party_only",
+      },
+      {
+        key: "payment_chargeback",
+        ownershipPolicy: "required",
+        freshnessPolicy: "must_read_this_turn",
+        sourceIntegrity: "first_party_verified",
+        provenancePolicy: "first_party_only",
+      },
+    ],
+    // C6 — bind the rendered status to the read's `status` field (ledger-sourced).
+    valueBinding: { key: "payment_status", path: ["status"] },
   },
   PURCHASE_COMPLETED: {
     kind: "action_claim",
@@ -195,7 +343,30 @@ const REGISTRY_SPECS = {
     ],
     customerScoped: true,
   },
-} as const satisfies Record<RegistryClaimType, RegistryClaimSpec>;
+} satisfies Record<RegistryClaimType, RegistryClaimSpec>;
+
+/**
+ * The owner-scoped, per-resource BASE ledger key for a registry type (FIX 2 —
+ * owner-scoped subject resolution). It is the `order_fulfillment_stage` /
+ * `payment_status` prefix the investigator records the owner-scoped read under,
+ * BEFORE the `:{subject}` suffix (`parameterizeKeysBySubject`). `undefined` for a
+ * public, single-key type (STORE_OPEN_NOW / STORE_HOURS / MENU_ITEM_ALLERGENS):
+ * those carry no owner-scoped subject, so the claim planner never re-resolves
+ * their subject from owner-scoped reads. Pure.
+ *
+ * Used by the claim planner (`ibatexas-planner.ts`, FIX 2) to map a candidate's
+ * owner-scoped TYPE onto the base key whose PRESENT owner-scoped ledger ids are
+ * the ONLY admissible subjects — so the subject derives from the authenticated
+ * owner-scoped reads, never the 4B's (possibly empty/hallucinated) extraction.
+ */
+export function ownerScopedBaseKey(type: RegistryClaimType): string | undefined {
+  const spec: RegistryClaimSpec = REGISTRY_SPECS[type];
+  if (spec.perResourceKey !== true) return undefined;
+  const required = spec.requiredEvidence.find(
+    (e) => e.ownershipPolicy === "required",
+  );
+  return required?.key;
+}
 
 /**
  * A model PROPOSAL of a claim, BEFORE the constrained-generation wall (SDD §H).
@@ -233,28 +404,116 @@ export interface ProposedClaim {
 export function selectCandidateClaim(
   proposed: ProposedClaim,
 ): CandidateClaim | undefined {
-  if (!isRegistryClaimType(proposed.type)) {
-    // Defense in depth: a type outside the closed registry is NOT emitted as a
-    // candidate. This is the constrained-generation guard (SDD §H/§P3) — drop,
-    // never free-generate.
+  // fix 3 — CASING-ROBUST membership: canonicalize the (possibly miscased) model
+  // tag to its UPPER_SNAKE registry form BEFORE the membership test, so a
+  // correctly-classified-but-miscased type (`ORDER_fulfillment_stage`) is RESCUED
+  // rather than dropped into the lie-capable prose path. A tag that does not map
+  // even after canonicalization → `undefined` → DROPPED by the constrained-
+  // generation wall (degrade SAFE; the planner routes UNKNOWN/CLARIFY/ESCALATE).
+  const canonicalType = canonicalizeRegistryType(proposed.type);
+  if (canonicalType === undefined) {
     return undefined;
   }
-  const spec = REGISTRY_SPECS[proposed.type];
+  // Widen the `as const` literal member to the interface so the OPTIONAL W6
+  // fields (falsifierComplete / falsifiers / valueBinding) are readable on every
+  // member (a member that omits them is `undefined`, not a missing property).
+  // Keyed by the CANONICAL type so a miscased tag selects the right spec.
+  const baseSpec: RegistryClaimSpec = REGISTRY_SPECS[canonicalType];
+  // STEP 3 key-alignment: an owner-scoped, per-resource type (perResourceKey) has
+  // its evidence/falsifier/value-binding keys parameterized by the candidate
+  // `subject` so they match the investigator's `${base}:{id}` ledger keys. A
+  // single-key public type (STORE_OPEN_NOW) is untouched. PURE — the model never
+  // authors the key shape (it only supplies `subject`).
+  const spec: RegistryClaimSpec =
+    baseSpec.perResourceKey === true
+      ? parameterizeKeysBySubject(baseSpec, proposed.subject)
+      : baseSpec;
+  // fix 2 (owner-attribution C1 binding): the model authors ONLY `type` + `subject`
+  // (the propose_claim tool exposes no `resources`), so an owner-scoped per-resource
+  // claim would reach the kernel with NO C1 binding → `claim.resources?.[key]`
+  // undefined → ownership REFUSED even for the legit owner. DERIVE the binding from
+  // `subject` (the resource id), keyed by EACH suffixed requiredEvidence key so the
+  // kernel's `evaluateEvidence` ownership check finds it. IDOR stays closed: the
+  // per-turn `owns` (claims-pipeline.ts) gates `subject` against the owner-scoped
+  // reads that actually returned PRESENT this turn — a forged/cross-owner subject
+  // is never read → not owned → REFUSED ("no owner" ≠ "any owner", Inv 2). An
+  // explicitly-supplied `resources` (tests / non-per-resource types) is honored
+  // verbatim; a non-per-resource type with no resources stays unbound.
+  const resources: Readonly<Record<string, unknown>> | undefined =
+    proposed.resources !== undefined
+      ? proposed.resources
+      : baseSpec.perResourceKey === true
+        ? Object.fromEntries(
+            spec.requiredEvidence
+              .filter((e) => e.ownershipPolicy === "required")
+              .map((e) => [e.key, proposed.subject]),
+          )
+        : undefined;
   return {
     soundness: {
       requiredEvidence: spec.requiredEvidence,
       minSourceIntegrity: spec.minSourceIntegrity,
       kind: spec.kind,
       actor: proposed.actor,
-      ...(proposed.resources === undefined
+      ...(resources === undefined ? {} : { resources }),
+      // W6 falsifier-completeness (Plan 1 Phase 3) — threaded from the type's
+      // FIXED spec, NEVER model-authored: the eligibility cap + the runtime arm
+      // (resolveAgainstFalsifiers) live in the kernel. A type with no declared
+      // falsifiers stays UNKNOWN-only (the fail-safe default).
+      ...(spec.falsifierComplete === true
+        ? { falsifierComplete: true, falsifiers: spec.falsifiers ?? [] }
+        : {}),
+      // W6 C6 value-binding — bind the rendered value to its licensing ledger
+      // entry (also FIXED per type; the model never authors the binding).
+      ...(spec.valueBinding === undefined
         ? {}
-        : { resources: proposed.resources }),
+        : { valueBinding: spec.valueBinding }),
     },
     // Customer-scoped types partition by their owner-bound subject; the subject
     // is the Q4 same-subject consistency key (SDD §D).
     subject: proposed.subject,
-    type: proposed.type,
+    // The CANONICAL type so ALL downstream keying/rendering uses the UPPER_SNAKE
+    // form (never the raw miscased tag) — fix 3.
+    type: canonicalType,
     value: proposed.value,
+  };
+}
+
+/**
+ * STEP 3 — parameterize an owner-scoped, per-resource type's evidence/falsifier/
+ * value-binding keys by the candidate `subject` (`${baseKey}:${subject}`) so they
+ * match the investigator's per-resource ledger keys
+ * (`order_fulfillment_stage:{id}`, `payment_status:{id}`,
+ * `order_cancelled:{id}`, `payment_refund:{id}`, `payment_chargeback:{id}`). PURE.
+ *
+ * INVARIANT preserved: `valueBinding.key` is suffixed with the SAME `:{subject}`
+ * as its requiredEvidence member, so it stays a member of the requiredEvidence key
+ * set and the kernel's C6 structural guard (soundness.ts) never throws. The model
+ * authors NONE of this — only `subject`; the evidence/falsifier SHAPE is FIXED.
+ */
+function parameterizeKeysBySubject(
+  spec: RegistryClaimSpec,
+  subject: string,
+): RegistryClaimSpec {
+  const suffix = `:${subject}`;
+  const rekey = (e: EvidenceRequirement): EvidenceRequirement => ({
+    ...e,
+    key: `${e.key}${suffix}`,
+  });
+  return {
+    ...spec,
+    requiredEvidence: spec.requiredEvidence.map(rekey),
+    ...(spec.falsifiers === undefined
+      ? {}
+      : { falsifiers: spec.falsifiers.map(rekey) }),
+    ...(spec.valueBinding === undefined
+      ? {}
+      : {
+          valueBinding: {
+            ...spec.valueBinding,
+            key: `${spec.valueBinding.key}${suffix}`,
+          },
+        }),
   };
 }
 
@@ -279,6 +538,72 @@ export function constrainClaimGeneration(
     }
   }
   return { candidates, dropped };
+}
+
+/**
+ * The first-party reads the ibatexas claim planner has available to DERIVE a
+ * candidate's bound `value` from (tag-then-derive plan STEP 2). PUBLISH-FREE:
+ * these are re-reads from the SAME first-party source the investigator records,
+ * NOT the per-turn ledger (the planner has no ledger access — that ledger-exact
+ * derivation is the Wall-2 `claims-validate.ts` republish). For STORE_OPEN_NOW the
+ * re-read is byte-equal to the recorded `schedule:store_open_now` entry, so the
+ * kernel's C6 value-binding passes BY CONSTRUCTION — without skipping C6.
+ */
+export interface FirstPartyDerivationReads {
+  /** The schedule signal — the SAME `readSchedule()` the investigator records
+   *  (`ibatexas-investigator.ts` SCHEDULE_KEY). Only `mealPeriod` is bound (C6). */
+  readonly scheduleSignal?: { readonly mealPeriod?: unknown };
+}
+
+/**
+ * tag-then-derive (STEP 2) — for a SINGLE candidate, OVERWRITE `value` from a
+ * first-party read so the C6-bound field equals its licensing evidence value,
+ * making the model a value-AUTHOR no longer (it only emits the `type` tag). PURE.
+ *
+ * HARD CONSTRAINT (i): this NEVER sets `validated`, NEVER skips a conjunct. It only
+ * replaces `candidate.value` UPSTREAM of `runClaimsKernel`; the kernel then runs
+ * EVERY conjunct (C0/∀-evidence/C4/C6 + the falsifier CAP + the CE#3 runtime arm).
+ * A derived value that contradicts a present falsifier STILL demotes to UNKNOWN.
+ *
+ * Scope: only STORE_OPEN_NOW is derivable publish-free (its read is public,
+ * single-key, re-readable in the planner). A bound type with NO available
+ * first-party read here (ORDER_FULFILLMENT_STAGE / PAYMENT_STATUS — owner-scoped,
+ * per-resource, NOT re-read in the planner to avoid an IDOR re-open) is passed
+ * through UNCHANGED → its value stays as-proposed (undefined under the tag
+ * protocol) → C6 ABSTAINs / ownership fails → the honest UNKNOWN residual. A type
+ * with no `valueBinding` at all is also passed through unchanged.
+ */
+export function deriveBoundValue(
+  candidate: CandidateClaim,
+  reads: FirstPartyDerivationReads,
+): CandidateClaim {
+  // No binding ⟹ §5 is value-agnostic for this type — never re-author its value.
+  if (candidate.soundness.valueBinding === undefined) return candidate;
+
+  if (candidate.type === "STORE_OPEN_NOW") {
+    if (reads.scheduleSignal === undefined) return candidate;
+    // C6 binds path ["mealPeriod"] against `schedule:store_open_now`; project the
+    // SAME field from the first-party read so claimSide === evidenceSide (PASS).
+    return { ...candidate, value: { mealPeriod: reads.scheduleSignal.mealPeriod } };
+  }
+
+  // Owner-scoped per-resource types have no planner-available first-party read
+  // (deriving them would require an owner-scoped re-read — reserved for Wall 2 to
+  // keep the IDOR closed). Pass through → honest UNKNOWN residual.
+  return candidate;
+}
+
+/**
+ * tag-then-derive (STEP 2) — derive bound values across a candidate batch. PURE.
+ * The planner runs this AFTER `constrainClaimGeneration` and BEFORE returning the
+ * `ClaimPlan`, so the candidates the kernel validates carry first-party-derived
+ * (never model-authored) values for every publish-free-derivable bound type.
+ */
+export function deriveCandidateValues(
+  candidates: readonly CandidateClaim[],
+  reads: FirstPartyDerivationReads,
+): CandidateClaim[] {
+  return candidates.map((c) => deriveBoundValue(c, reads));
 }
 
 /**
@@ -339,11 +664,15 @@ export function checkCompleteness(
       // SDD §J.8 — an unmapped span is surfaced as CLARIFY, never dropped.
       return { text: span.text, disposition: "CLARIFY" };
     }
-    if (!isRegistryClaimType(span.mappedClaimType)) {
-      // Defense in depth: a mapped-but-out-of-enum type is not silently honored.
+    // fix 3 — canonicalize a correctly-mapped-but-miscased span so it is not
+    // needlessly forced to CLARIFY (mirrors selectCandidateClaim). A span that
+    // does not map even after canonicalization still → CLARIFY (defense in depth:
+    // a hallucinated/out-of-enum mapped type is not silently honored as a claim).
+    const canonical = canonicalizeRegistryType(span.mappedClaimType);
+    if (canonical === undefined) {
       return { text: span.text, disposition: "CLARIFY" };
     }
-    return { text: span.text, disposition: span.mappedClaimType };
+    return { text: span.text, disposition: canonical };
   });
 }
 

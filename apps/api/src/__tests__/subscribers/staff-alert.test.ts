@@ -3,6 +3,11 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { startCartIntelligenceSubscribers } from "../../subscribers/cart-intelligence.js";
 
+// EGRESS BRAND (E-1): sendText receives a branded RenderedReply (`{ text }` at
+// runtime) — match the body by its unwrapped text.
+const textContaining = (sub: string) =>
+  expect.objectContaining({ text: expect.stringContaining(sub) });
+
 // ── Hoisted mocks ──────────────────────────────────────────────────────────────
 
 const mockSubscribeNatsEvent = vi.hoisted(() => vi.fn());
@@ -168,11 +173,11 @@ describe("cart.abandoned — staff high-value cart alert", () => {
 
     expect(mockSendText).toHaveBeenCalledWith(
       "whatsapp:+5519900000099",
-      expect.stringContaining("250,00"),
+      textContaining("250,00"),
     );
     expect(mockSendText).toHaveBeenCalledWith(
       "whatsapp:+5519900000099",
-      expect.stringContaining("Cliente Teste"),
+      textContaining("Cliente Teste"),
     );
   });
 
@@ -211,7 +216,7 @@ describe("cart.abandoned — staff high-value cart alert", () => {
 
     expect(mockSendText).not.toHaveBeenCalledWith(
       "whatsapp:+5519900000099",
-      expect.stringContaining("🚨"),
+      textContaining("🚨"),
     );
   });
 
@@ -227,7 +232,7 @@ describe("cart.abandoned — staff high-value cart alert", () => {
 
     expect(mockSendText).not.toHaveBeenCalledWith(
       "whatsapp:+5519900000099",
-      expect.stringContaining("🚨"),
+      textContaining("🚨"),
     );
   });
 
@@ -244,7 +249,7 @@ describe("cart.abandoned — staff high-value cart alert", () => {
 
     expect(mockSendText).not.toHaveBeenCalledWith(
       "whatsapp:+5519900000099",
-      expect.stringContaining("🚨"),
+      textContaining("🚨"),
     );
   });
 
@@ -260,7 +265,7 @@ describe("cart.abandoned — staff high-value cart alert", () => {
 
     expect(mockSendText).toHaveBeenCalledWith(
       "whatsapp:+5519900000099",
-      expect.stringContaining("🚨"),
+      textContaining("🚨"),
     );
   });
 
@@ -274,7 +279,7 @@ describe("cart.abandoned — staff high-value cart alert", () => {
 
     expect(mockSendText).not.toHaveBeenCalledWith(
       expect.stringContaining("whatsapp:"),
-      expect.stringContaining("🚨"),
+      textContaining("🚨"),
     );
     expect(mockSentryCaptureException).not.toHaveBeenCalled();
   });

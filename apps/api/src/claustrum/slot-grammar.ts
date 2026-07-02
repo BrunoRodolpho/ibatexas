@@ -37,6 +37,10 @@
  * import beyond the `@adjudicate/core` claims types it consumes.
  */
 
+// inv.18 v2 — STORE_OPEN_NOW's validated template is GENERATED from its
+// ClaimDefinition source by the claimdef-compiler (DO NOT EDIT the generated file).
+import { STORE_OPEN_NOW_TEMPLATE } from "./claimdefs/store-open-now.generated.js";
+
 /**
  * A typed slot in a template.
  *
@@ -123,7 +127,8 @@ const prop = (claimType: string, field: string): TemplateSlot => ({
 /** The representative claim types this kernel-foundation grammar models. */
 export const ORDER_FULFILLMENT_STAGE = "ORDER_FULFILLMENT_STAGE";
 export const PAYMENT_STATUS = "PAYMENT_STATUS";
-export const ORDER_ESTIMATED_ARRIVAL = "ORDER_ESTIMATED_ARRIVAL";
+/** Triad slice (Plan 1 Phase 3) — the override-aware "is it open right now" type. */
+export const STORE_OPEN_NOW = "STORE_OPEN_NOW";
 
 /**
  * Per-type `validated` (asserting) templates, keyed by claim type. Each is the ONE
@@ -131,12 +136,25 @@ export const ORDER_ESTIMATED_ARRIVAL = "ORDER_ESTIMATED_ARRIVAL";
  * (Inv 6). Static pt-BR around the slots; no free text.
  */
 export const VALIDATED_TEMPLATES: Readonly<Record<string, Template>> = {
+  // inv.18 v2 — the STORE_OPEN_NOW template is GENERATED from its ClaimDefinition
+  // source (./claimdefs/store-open-now.generated.ts — DO NOT EDIT). The proposition
+  // slot prop(STORE_OPEN_NOW, "mealPeriod") is derived from the source's
+  // render.prop("mealPeriod") with claimType filled = self; the ~11-line handwritten
+  // entry collapsed into this single spliced import.
+  [STORE_OPEN_NOW]: STORE_OPEN_NOW_TEMPLATE,
   [ORDER_FULFILLMENT_STAGE]: {
     claimType: ORDER_FULFILLMENT_STAGE,
     posture: "validated",
     slots: [
       lit("Seu pedido está na etapa: "),
-      prop(ORDER_FULFILLMENT_STAGE, "stage"),
+      // F1 — bind 1:1 to the C6 value-binding FIELD. The kernel validates this
+      // claim's value at `valueBinding.path = ["fulfillmentStatus"]` (claim-
+      // registry.ts) against the ledger; the OrderFulfillmentRead shape's field is
+      // `fulfillmentStatus` (turn-reads.ts), NOT `stage`. The old `stage` slot read
+      // a field the validated value never carries → the proposition was UNFILLABLE
+      // and a legitimately-VALIDATED ORDER claim abstained to UNKNOWN. Reading the
+      // ACTUAL value field makes a VALIDATED ORDER claim render.
+      prop(ORDER_FULFILLMENT_STAGE, "fulfillmentStatus"),
       lit("."),
     ],
   },
@@ -149,15 +167,16 @@ export const VALIDATED_TEMPLATES: Readonly<Record<string, Template>> = {
       lit("."),
     ],
   },
-  [ORDER_ESTIMATED_ARRIVAL]: {
-    claimType: ORDER_ESTIMATED_ARRIVAL,
-    posture: "validated",
-    slots: [
-      lit("A previsão de chegada é de "),
-      prop(ORDER_ESTIMATED_ARRIVAL, "etaMinutes"),
-      lit(" minutos."),
-    ],
-  },
+  // NOTE: ORDER_ESTIMATED_ARRIVAL was REMOVED here (inv.18 validator wiring). It
+  // had a `validated` template (a PROPOSITION slot prop(…, "etaMinutes")) but NO
+  // registered ClaimDefinition — it is absent from CLAIM_REGISTRY/REGISTRY_SPECS
+  // (claim-registry.ts), so it carried no requiredEvidence, no valueBinding for
+  // `etaMinutes`, and no falsifiers. That is exactly the dangling-template
+  // alignment-convention violation the ClaimDefinition validator (INV-3:
+  // template → registered-definition) now REJECTS at registry load. Deleting the
+  // dangling entry is the cleanest hygiene fix; promote it to a real
+  // ClaimDefinition (registry row + eta read evidence + value-binding) if an ETA
+  // claim is ever genuinely needed.
 };
 
 /**

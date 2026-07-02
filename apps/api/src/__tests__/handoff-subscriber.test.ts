@@ -25,6 +25,13 @@ vi.mock("../escalation/escalation-store.js", () => ({
   getEscalationStore: vi.fn(async () => ({ recordHandoff: mockRecordHandoff })),
 }))
 
+// W1 Phase-2: a handoff opening on a session with an OPEN incident auto-resolves
+// it (HANDED_OFF). The seam is its own unit-tested module; stub it here so these
+// subscriber tests stay isolated from the incident store / DB.
+vi.mock("../incidents/incident-auto-close.js", () => ({
+  resolveIncidentOnHandoff: vi.fn(async () => undefined),
+}))
+
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
 /** Capture the NATS callback registered by startHandoffSubscriber */
@@ -130,7 +137,7 @@ describe("handoff-subscriber", () => {
     expect(mockSendText).toHaveBeenCalledOnce()
     expect(mockSendText).toHaveBeenCalledWith(
       "whatsapp:+5511999990001",
-      expect.stringContaining("sess_notify"),
+      expect.objectContaining({ text: expect.stringContaining("sess_notify") }),
     )
   })
 
@@ -146,8 +153,8 @@ describe("handoff-subscriber", () => {
 
     await callback({ sessionId: "sess_reason", reason: "problema no pedido" })
 
-    const [, message] = mockSendText.mock.calls[0] as [string, string]
-    expect(message).toContain("problema no pedido")
+    const [, message] = mockSendText.mock.calls[0] as [string, { text: string }]
+    expect(message.text).toContain("problema no pedido")
   })
 
   it("skips WhatsApp notification when STAFF_NOTIFICATION_PHONE is not set", async () => {

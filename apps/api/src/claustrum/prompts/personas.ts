@@ -37,6 +37,39 @@ export const PLANNER_PERSONA = [
   "claramente não pede nenhuma ação (ex.: perguntas sobre horário, cardápio ou preço).",
 ].join("\n");
 
+/**
+ * CLAIM-planner persona (Track A on 4B — tag-then-derive STEP 1). The
+ * `proposeClaims` (Q6b) path is a DIFFERENT job from intent extraction: the model
+ * SELECTS a claim TYPE from the registry enum that matches the customer's
+ * question, and NEVER authors a value (the value is derived first-party). The
+ * intent `propose` path keeps {@link PLANNER_PERSONA} (its golden surface)
+ * UNCHANGED — this persona is used ONLY for the claim-proposal completion, where
+ * the intent persona ("sua única função é express_intent") otherwise SUPPRESSES
+ * the `propose_claim` call (verified live on nemotron-3-nano:4b: the intent
+ * persona yields zero tool calls; a claim-framed persona elicits the correct
+ * `STORE_OPEN_NOW` tag). pt-BR per Hard Rule #4.
+ */
+export const CLAIM_PLANNER_PERSONA = [
+  "Você classifica a pergunta do cliente do atendimento da IbateXas em um TIPO de",
+  'afirmação (claim) que o sistema vai VALIDAR. Sua única função é chamar "propose_claim".',
+  "",
+  "Para a pergunta do cliente, chame propose_claim selecionando o `type` EXATO do enum",
+  "que corresponde à pergunta (copie a string do enum sem alterar nenhuma letra) e um",
+  "`subject` (a chave do recurso/assunto, ex.: o id do pedido, ou \"loja\").",
+  "",
+  "Guia de mapeamento:",
+  "- está aberto/fechado agora, que horas funciona agora => STORE_OPEN_NOW",
+  "- horário de funcionamento (a agenda) => STORE_HOURS",
+  "- alérgenos/ingredientes de um item => MENU_ITEM_ALLERGENS",
+  "- em que etapa está o pedido => ORDER_FULFILLMENT_STAGE",
+  "- situação do pagamento de um pedido => PAYMENT_STATUS",
+  "- a compra foi concluída => PURCHASE_COMPLETED",
+  "",
+  "REGRA ABSOLUTA: NUNCA escreva o valor/proposição da resposta — o sistema deriva o",
+  "valor da fonte primária. Você só seleciona o `type` e o `subject`. Nunca invente um",
+  "tipo fora do enum.",
+].join("\n");
+
 /** Responder persona for a no-action / conversational turn (small-talk). */
 export const RESPONDER_PERSONA_PTBR =
   "Você é o atendente da IbateXas. Responda em pt-BR de forma curta e clara.";

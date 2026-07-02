@@ -50,20 +50,31 @@ describe("claims-pipeline — buildClaimsSeams (byte-identical when OFF)", () =>
     expect(seams.investigator).toBeUndefined();
     expect(seams.claimPlanner).toBeUndefined();
     expect(seams.claimsKernel).toBeUndefined();
+    // W5b per-turn owner-attribution seam is ALSO gated OFF.
+    expect(seams.claimsKernelDepsForTurn).toBeUndefined();
+    // E-2 render-from-claims seam is ALSO gated OFF (no renderer wired).
+    expect(seams.claimsRenderer).toBeUndefined();
     // Spreading {} into the Conductor options adds no keys (byte-identical).
     expect(Object.keys(seams)).toHaveLength(0);
   });
 
-  it("ON → all three seams are injected (the host modules instantiate)", () => {
+  it("ON → all five seams are injected (the host modules instantiate)", () => {
     const seams = buildClaimsSeams({ planner: stubPlanner, env: ON_ENV });
     expect(seams.investigator).toBeDefined();
     expect(seams.claimPlanner).toBeDefined();
     expect(seams.claimsKernel).toBeDefined();
+    // W5b — the per-turn owner-attribution seam (Track-A) is wired too.
+    expect(seams.claimsKernelDepsForTurn).toBeDefined();
+    // E-2 — the render-from-claims seam activates ATOMICALLY with the pipeline.
+    expect(seams.claimsRenderer).toBeDefined();
     // The seams are the published shapes the Conductor consumes.
     expect(typeof seams.investigator?.investigate).toBe("function");
     expect(typeof seams.claimPlanner?.propose).toBe("function");
     expect(typeof seams.claimsKernel?.soundness.owns).toBe("function");
     expect(typeof seams.claimsKernel?.soundness.outcomeConfirmed).toBe("function");
     expect(typeof seams.claimsKernel?.soundness.now).toBe("number");
+    // claimsKernelDepsForTurn is the per-turn rebuild function the Conductor calls.
+    expect(typeof seams.claimsKernelDepsForTurn).toBe("function");
+    expect(typeof seams.claimsRenderer?.render).toBe("function");
   });
 });

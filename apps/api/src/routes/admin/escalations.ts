@@ -21,9 +21,10 @@ import type { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { createConversationService, prisma } from "@ibatexas/domain";
-import { getWhatsAppSender } from "@ibatexas/tools";
 import { requireManagerRole } from "../../middleware/staff-auth.js";
 import { getEscalationStore } from "../../escalation/escalation-store.js";
+import { toLogFn } from "../../utils/to-log-fn.js";
+import { staffTakeoverReply } from "./_shared-staff-reply.js";
 
 const EscalationRecordSchema = z.object({
   sessionId: z.string(),
@@ -88,40 +89,33 @@ export async function escalationRoutes(server: FastifyInstance): Promise<void> {
       }
 
       const staffId = request.staffId ?? null;
-      // Record the staff reply in the durable transcript (assistant-side).
-      await svc().appendMessage({
-        conversationId: convo.id,
-        role: "assistant",
-        content: text,
-        metadata: {
-          via: "staff_takeover",
-          ...(staffId ? { staffId } : {}),
-        },
-      });
 
-      // Deliver on the channel. WhatsApp delivers live; web is recorded-only
-      // (the customer's live SSE push from a separate route is a follow-up).
-      let delivered = false;
+      // Resolve the recipient + channel (WhatsApp delivers live; other channels
+      // are recorded-only). Phone lives on the customer row, keyed by the summary.
       const summary = (await svc().searchConversations({ sessionId }))[0];
       const channel = summary?.channel ?? null;
+      let to: string | null = null;
       if (channel === "whatsapp" && summary?.customerId) {
-        try {
-          const customer = await prisma.customer.findUnique({
-            where: { id: summary.customerId },
-            select: { phone: true },
-          });
-          const sender = getWhatsAppSender();
-          if (customer?.phone && sender) {
-            await sender.sendText(`whatsapp:${customer.phone}`, text);
-            delivered = true;
-          }
-        } catch (err) {
-          request.log.error(
-            { sessionId, error: String(err) },
-            "[escalations] WhatsApp delivery of staff reply failed (recorded in transcript regardless)",
-          );
-        }
+        const customer = await prisma.customer.findUnique({
+          where: { id: summary.customerId },
+          select: { phone: true },
+        });
+        if (customer?.phone) to = `whatsapp:${customer.phone}`;
       }
+
+      // Shared: record the reply + deliver + (on delivery) close the incident as
+      // STAFF (P1-3). See ./_shared-staff-reply.ts.
+      const delivered = await staffTakeoverReply({
+        service: svc(),
+        sessionId,
+        text,
+        channel,
+        to,
+        staffId,
+        conversation: convo,
+        logLabel: "escalations",
+        log: toLogFn(request),
+      });
 
       return reply.send({ ok: true, delivered, channel });
     },

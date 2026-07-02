@@ -694,20 +694,43 @@ function validateCheckoutComposition(args: {
   mealPeriod: string;
   paymentMethod: PaymentMethod;
   deliveryType: "delivery" | "shipping" | "pickup" | "dine_in" | undefined;
+  deliveryCep: string | undefined;
   items: Array<{ productType?: "food" | "frozen" | "merchandise" }> | undefined;
   customerId: string | undefined;
 }): CheckoutRejection | null {
-  const { mealPeriod, paymentMethod, deliveryType, customerId } = args;
+  const { mealPeriod, paymentMethod, deliveryType, deliveryCep, customerId } = args;
   const localItems = args.items ?? [];
 
-  // Block food orders when restaurant is closed — frozen/merch always allowed
-  if (mealPeriod === "closed" && localItems.some((i) => i.productType === "food")) {
+  // Closed-hours policy (DECIDED): a closed PICKUP food order is ACCEPTED as a
+  // *scheduled* pickup (the `scheduledPickup` tag is applied downstream by
+  // create-checkout.ts buildCheckoutMetadata); only IMMEDIATE-DELIVERY (local
+  // delivery / dine-in) food orders are still REFUSED while closed. Frozen/merch
+  // are always allowed. Pickup MUST be distinguished EXACTLY as create-checkout.ts
+  // does it: buildCheckoutMetadata keys pickup SOLELY on the ABSENCE of a
+  // deliveryCep (`deliveryType = deliveryCep ? "delivery" : "pickup"`; the
+  // scheduledPickup tag is applied only when !deliveryCep). So the accepted
+  // (scheduled-pickup) set here must be a SUBSET of create-checkout's `!deliveryCep`
+  // set — otherwise `closed + food + deliveryType="pickup" + deliveryCep present`
+  // would be accepted here yet treated as immediate DELIVERY downstream (the hole).
+  // We therefore require NO deliveryCep and an unset/pickup type; explicit
+  // delivery / shipping / dine_in remain immediate and are still REFUSED while closed.
+  const isScheduledPickup =
+    !deliveryCep &&
+    deliveryType !== "delivery" &&
+    deliveryType !== "shipping" &&
+    deliveryType !== "dine_in";
+  if (
+    mealPeriod === "closed" &&
+    !isScheduledPickup &&
+    localItems.some((i) => i.productType === "food")
+  ) {
     return {
       status: 422,
       body: {
         statusCode: 422,
         error: "Unprocessable Entity",
-        message: "A cozinha está fechada no momento. Itens de comida não podem ser pedidos agora.",
+        message:
+          "A cozinha está fechada no momento — não entregamos comida agora. Você pode agendar uma retirada (fechado para retirada agora — posso agendar).",
         code: "KITCHEN_CLOSED",
       },
     };
@@ -1509,12 +1532,13 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
       const schedule = await loadSchedule();
       const tz = process.env.RESTAURANT_TIMEZONE ?? "America/Sao_Paulo";
       const mealPeriod = getMealPeriodFromSchedule(schedule, tz);
-      const { paymentMethod, deliveryType: reqDeliveryType, items: localItems } = request.body;
+      const { paymentMethod, deliveryType: reqDeliveryType, deliveryCep: reqDeliveryCep, items: localItems } = request.body;
 
       const compositionRejection = validateCheckoutComposition({
         mealPeriod,
         paymentMethod,
         deliveryType: reqDeliveryType,
+        deliveryCep: reqDeliveryCep,
         items: localItems,
         customerId: request.customerId,
       });

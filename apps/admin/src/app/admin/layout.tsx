@@ -4,6 +4,18 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { AdminSidebar } from '@/components/molecules/AdminSidebar'
 import { LogOut, Shield, Search, Loader2 } from 'lucide-react'
 import { ToastContainer, AdminLayout as AdminLayoutShell, useToast, setupGlobalErrorCapture } from '@ibatexas/ui'
+import { useIncidentNewDetector } from '@/domains/admin/admin.hooks'
+
+/**
+ * Renders nothing — mounts the new-incident detector ONCE for the authenticated
+ * admin shell. Kept in a child so the hook only polls while authenticated and so
+ * the toast/beep diff runs in exactly one place (never per-page → no double-fire
+ * on /admin/incidentes).
+ */
+function IncidentNotifier(): null {
+  useIncidentNewDetector()
+  return null
+}
 
 /* ── Types ──────────────────────────────────────────────────────────── */
 
@@ -402,12 +414,15 @@ export default function AdminRootLayout({ children }: { readonly children: React
       )}
 
       {authStatus === 'authenticated' && (
-        <AdminLayoutShell
-          sidebar={<AdminSidebar />}
-          header={<AdminHeaderContent onLogout={handleLogout} />}
-        >
-          {children}
-        </AdminLayoutShell>
+        <>
+          <IncidentNotifier />
+          <AdminLayoutShell
+            sidebar={<AdminSidebar />}
+            header={<AdminHeaderContent onLogout={handleLogout} />}
+          >
+            {children}
+          </AdminLayoutShell>
+        </>
       )}
     </>
   )

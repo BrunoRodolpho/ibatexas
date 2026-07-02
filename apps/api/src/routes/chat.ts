@@ -35,6 +35,7 @@ import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { v4 as uuidv4 } from "uuid";
 import { handleTurn, type ChannelMessage } from "@claustrum/core";
+import { mintFallbackReply, wrapLegacyResponderText } from "@adjudicate/core";
 import { Channel, type StreamChunk } from "@ibatexas/types";
 import { getRedisClient, rk, createSessionToken, verifySessionToken } from "@ibatexas/tools";
 import { loadSession, appendMessages } from "../session/store.js";
@@ -45,10 +46,22 @@ import {
   getStream,
   subscribeToStream,
   cleanupStream,
+  chunkToWire,
 } from "../streaming/emitter.js";
 import { acquireWebAgentLock, releaseWebAgentLock } from "../streaming/execution-queue.js";
 import { getConductor } from "../claustrum-bootstrap.js";
-import { isSessionPausedForHuman } from "../escalation/escalation-store.js";
+import {
+  classifyTurnDelivery,
+  classifyCatchError,
+  emitNoDelivery,
+  openIncidentInline,
+  readPauseState,
+  type LogFn,
+  type NoDeliveryClassification,
+  type NoDeliverySignal,
+  type TurnDisposition,
+} from "../conversation/no-delivery.js";
+import { closeIncidentOnDeliveredReply } from "../incidents/incident-auto-close.js";
 
 const PostMessageBody = z.object({
   sessionId: z.uuid(),
@@ -212,6 +225,81 @@ async function resolveGuestSecret(
   return { rejected: false, secret };
 }
 
+// ── Web/chat no-reply seam (W1 no-reply incident, P1-9) ───────────────────────
+// The WEB analog of the WhatsApp empty/failure substitution (whatsapp-webhook.ts
+// classify→emit→open→holding). It REUSES the shared machinery in
+// ../conversation/no-delivery.ts (classifyTurnDelivery + emitNoDelivery +
+// openIncidentInline) — never a copy — so the web plane opens the SAME governed,
+// audited, deduped incident through the SAME kernel chokepoint as WhatsApp.
+//
+// `WEB_EMPTY_COMPLETION_HOLDING` is the web sibling of `WA_EMPTY_COMPLETION_HOLDING`:
+// when enabled, the bare `{type:"done"}` is preceded by ONE pt-BR holding chunk so
+// the customer never faces a pure void. Read at turn time (mirrors
+// resolveSseHeartbeatMs) so it stays env-driven (Hard Rule #3).
+function isWebEmptyHoldingEnabled(): boolean {
+  return process.env.WEB_EMPTY_COMPLETION_HOLDING === "true";
+}
+
+/** pt-BR holding copy (web variant of WA_HOLDING_MESSAGE_PTBR; `digite` not `responda`). */
+const WEB_HOLDING_MESSAGE_PTBR =
+  "Desculpe, não consegui montar uma resposta agora. Pode tentar de novo? Se preferir, digite *menu* para ver as opções ou *ajuda* para falar com a gente.";
+
+/**
+ * PURE. Map a web turn's assembled text to a {@link TurnDisposition}. The
+ * intentional bot-pause (`suppressed_paused`) is excluded by construction — it
+ * returns BEFORE openCapsule, so it never reaches this seam. Web has no PIX/
+ * media side-channel on this route, so disposition is derived from text alone.
+ */
+function webDisposition(text: string | null | undefined): TurnDisposition {
+  if (typeof text === "string" && text.trim().length > 0) return "deliverable";
+  if (typeof text === "string" && text.length > 0) return "whitespace_only";
+  return "empty_completion";
+}
+
+/**
+ * FAIL-OPEN. On a genuine web drop, fan out the notification + open the durable
+ * governed incident. Web has NO `messageSid`; the per-turn `turnId` (from the
+ * capsule) is the primary dedup key — `deriveEventId` prefers it — and the web
+ * `messageId` is carried as the messageSid-equivalent fallback (honoring "web has
+ * no messageSid"). NEVER throws: the SSE response must not break on an open
+ * failure (emitNoDelivery / openIncidentInline are already no-throw; the wrapper
+ * is defense in depth).
+ */
+async function openWebDrop(params: {
+  sessionId: string;
+  messageId: string;
+  customerId: string | undefined;
+  turnId: string | undefined;
+  decisionKind: string | undefined;
+  classification: NoDeliveryClassification;
+  log: LogFn;
+}): Promise<void> {
+  const { sessionId, messageId, customerId, turnId, decisionKind, classification, log } = params;
+  try {
+    const signal: NoDeliverySignal = {
+      sessionId,
+      cause: classification.cause,
+      customerImpacted: classification.customerImpacted,
+      channel: "web",
+      customerId: customerId ?? null,
+      // No phone on web — the session is the channel-addressable handle.
+      senderRef: `web:${sessionId}`,
+      phoneHash: null,
+      turnId: turnId ?? null,
+      decisionKind: decisionKind ?? null,
+      // Web has no Twilio MessageSid; carry the per-request messageId as the
+      // dedup fallback for the (rare) no-turnId path.
+      messageSid: messageId,
+    };
+    // Ordered emit → open. The customer-facing fallback chunk is pushed by the
+    // caller STRICTLY AFTER this, so a substitution can never mask emission.
+    await emitNoDelivery(signal, log);
+    await openIncidentInline(signal, log);
+  } catch (err) {
+    log.error(err, "[chat] web no-delivery open failed (fail-open; SSE continues)");
+  }
+}
+
 /**
  * Delegate one turn to the claustrum Conductor (fire-and-forget). Mirrors dev's
  * hardening: bot-pause gate, single assembled text chunk + terminal done,
@@ -227,13 +315,38 @@ async function runConductorTurn(params: {
   turnAbort: AbortController;
 }): Promise<void> {
   const { server, sessionId, message, messageId, customerId, isAuthenticated, turnAbort } = params;
+  // Hoisted so the outer catch (F2 — WhatsApp :899 parity) can tell a throw that
+  // happened BEFORE the conductor produced a result (a genuine drop the inner
+  // classify never saw) from a post-result throw (e.g. closeCapsule after the
+  // reply was already classified+delivered — the inner path owns that decision).
+  let turnHandled = false;
   try {
     // D2 bot-pause gate: once a human takes over this session (an open
     // escalation), the LLM must stop auto-replying. The user's inbound was
-    // already archived above (appendMessages(user)), so staff still see it;
-    // we just suppress the bot turn. Fail-open (a Redis hiccup keeps the
-    // bot replying — see isSessionPausedForHuman).
-    if (await isSessionPausedForHuman(sessionId)) {
+    // already archived above (appendMessages(user)), so staff still see it; we
+    // just suppress the bot turn. Fail-CLOSED, but a pause READ-ERROR is
+    // DISTINGUISHED from a genuine pause (W1 Redis-outage fix):
+    const pause = await readPauseState(sessionId);
+    if (pause === "paused") {
+      pushChunk(sessionId, { type: "done" });
+      return;
+    }
+    if (pause === "read_error") {
+      // Still fail-CLOSED (suppress — a human MIGHT be handling it), but the
+      // customer got silence without a confirmed pause → open a durable
+      // pause_read_error incident via the Redis-FREE inline path (openIncidentInline
+      // routes through the pure kernel + a DB-side replay guard, never the Redis
+      // dedup layer). Storm-bounded by the per-session partial unique index;
+      // notifications aggregate via the storm digest, never a per-incident ping.
+      await openWebDrop({
+        sessionId,
+        messageId,
+        customerId,
+        turnId: undefined,
+        decisionKind: undefined,
+        classification: { cause: "pause_read_error", customerImpacted: true },
+        log: server.log,
+      });
       pushChunk(sessionId, { type: "done" });
       return;
     }
@@ -260,14 +373,40 @@ async function runConductorTurn(params: {
 
     try {
       const turn = await handleTurn(capsule, inbound);
+      // The conductor produced a result — the inner classify below now owns the
+      // no-delivery decision, so a later (post-result) throw must not re-open in
+      // the catch (F2 gate).
+      turnHandled = true;
 
-      // Client disconnected mid-turn — skip delivery + persistence of a
-      // reply nobody is listening for.
-      if (turnAbort.signal.aborted) return;
+      // Client disconnected mid-turn — we must NOT deliver/persist a reply nobody
+      // is listening for.
+      const aborted = turnAbort.signal.aborted;
 
-      // Streaming Option A: a single assembled text chunk + terminal done.
-      if (turn.response.text) {
-        pushChunk(sessionId, { type: "text_delta", delta: turn.response.text });
+      // #6 — `turnAbort.signal.aborted` is set by BOTH:
+      //   (a) a genuine SSE client-disconnect (tab close / backgrounding via
+      //       abortTurnOnDisconnect), and
+      //   (b) a NEWER turn superseding this one (`previous?.abort()` in POST).
+      // NEITHER is a customer-facing delivery failure: in (a) the customer LEFT
+      // (routine user behavior — nobody is waiting), and in (b) a successor now
+      // owns the slot and WILL answer. A web SSE turn has no wall-clock deadline,
+      // so every abort is one of these two → suppress like a bot-pause
+      // (`suppressed_paused → null`), never opening a false timeout incident +
+      // staff ping (that noise storm was the old over-eager P0-2 web analog).
+      const disposition: TurnDisposition = aborted
+        ? "suppressed_paused"
+        : webDisposition(turn.response.text);
+      const decisionKind = turn.decision?.kind;
+      let deliveredText = false;
+
+      // Streaming Option A: a single assembled text chunk. Only delivered when
+      // the client is still listening (not aborted).
+      if (!aborted && disposition === "deliverable") {
+        // EGRESS BRAND (E-1): legacy prose responder text → branded via the
+        // transitional minter (W5 binds the claims pipeline value directly).
+        pushChunk(sessionId, {
+          type: "text_delta",
+          delta: wrapLegacyResponderText(turn.response.text),
+        });
 
         // Persist the assistant reply on dev's Redis session store AFTER
         // the turn (SessionPort.save is a stub — see the user-message note).
@@ -277,14 +416,113 @@ async function runConductorTurn(params: {
           isAuthenticated,
           { customerId, channel: "web" },
         );
+        deliveredText = true;
       }
-      pushChunk(sessionId, { type: "done" });
+
+      // Auto-close (M4): a successfully-delivered web reply self-heals an OPEN
+      // incident on this session → AUTO_RESOLVED, matching the WhatsApp seam
+      // (whatsapp-webhook.ts:1009). Gated on the SAME delivered predicate (web has
+      // no PIX side-channel, so `deliveredText` already implies a trimmed non-blank
+      // reply). Detached fire-and-forget (fail-open + idempotent) so it never gates
+      // the SSE turn.
+      if (deliveredText && capsule.turnId) {
+        void closeIncidentOnDeliveredReply(sessionId, capsule.turnId, server.log).catch(() => {});
+      }
+
+      // Classify on BOTH the normal and abort paths (pause is already excluded —
+      // it returned before openCapsule). `deliveredText` keys the genuine-drop
+      // decision on what actually reached the customer, so an aborted-with-text
+      // turn maps to `timeout` (P0-2 web analog) and a deliverable+delivered
+      // turn short-circuits to no incident.
+      const classification = classifyTurnDelivery({
+        disposition,
+        ...(decisionKind !== undefined ? { decisionKind } : {}),
+        deliveredText,
+      });
+
+      if (classification) {
+        await openWebDrop({
+          sessionId,
+          messageId,
+          customerId,
+          turnId: capsule.turnId,
+          decisionKind,
+          classification,
+          log: server.log,
+        });
+
+        // Customer-facing fallback — STRICTLY AFTER classify+emit+open so a
+        // substitution can never mask incident emission. Only when the client
+        // is still listening (not aborted) and only for an empty/whitespace
+        // completion (never the aborted-timeout path). Flag-gated, consistent
+        // with the WhatsApp WA_EMPTY_COMPLETION_HOLDING harm-reducer.
+        if (
+          !aborted &&
+          isWebEmptyHoldingEnabled() &&
+          (disposition === "empty_completion" || disposition === "whitespace_only")
+        ) {
+          pushChunk(sessionId, {
+            type: "text_delta",
+            delta: mintFallbackReply(WEB_HOLDING_MESSAGE_PTBR),
+          });
+        }
+      }
+
+      // Terminal — only when the client is still listening.
+      if (!aborted) pushChunk(sessionId, { type: "done" });
     } finally {
       await conductor.closeCapsule(capsule);
     }
   } catch (err) {
     server.log.error(err, "[chat] Conductor turn failed");
-    if (!turnAbort.signal.aborted) {
+    const aborted = turnAbort.signal.aborted;
+
+    // F2 — WhatsApp :899 parity. classify/emit/open lived only in the inner try,
+    // so a conductor/handleTurn throw (an explicit no-delivery class, P2-17) used
+    // to push {type:error} and open NO incident. Cover it here:
+    //   - `!turnHandled` ⇒ the throw preceded any conductor result, so the inner
+    //     classify never ran and the customer got only the degraded {type:error}.
+    //     (A post-result throw, e.g. closeCapsule, is already owned by the inner
+    //     path — do NOT double-open.)
+    //   - `!aborted` ⇒ #6: a client-disconnect (or a superseding newer turn) is
+    //     NOT a delivery failure — nobody is waiting for THIS reply — so never open
+    //     an incident (nor a staff ping) for it. Only a throw with the client STILL
+    //     connected reaches the classify below.
+    // Pause (returns before openCapsule) and ESCALATE (a throw carries no
+    // decision) are excluded by construction. Fail-open: openWebDrop never throws
+    // and the degraded {type:error} is pushed strictly AFTER emit+open so a
+    // substitution can never mask emission.
+    if (!turnHandled && !aborted) {
+      // The client is still connected (not aborted) and no conductor result reached
+      // delivery, so `sendEntered/sendCompleted` are false: classifyCatchError
+      // yields `timeout` (a provider "timed out" throw) or `turn_error` (a
+      // pre/internal throw). `turn_error` is OUTSIDE the frozen taxonomy → NO
+      // incident (WhatsApp M5 parity; the degraded {type:error} below is the web
+      // analog of the canned-apology-only path). `customerImpacted` is false — the
+      // degraded {type:error} reaches the still-connected client (not silence).
+      const catchCause = classifyCatchError({
+        aborted: false,
+        message: err instanceof Error ? err.message : String(err),
+        sendEntered: false,
+        sendCompleted: false,
+      });
+      if (catchCause === "timeout" || catchCause === "send_failed") {
+        await openWebDrop({
+          sessionId,
+          messageId,
+          customerId,
+          turnId: undefined,
+          decisionKind: undefined,
+          classification: {
+            cause: catchCause,
+            customerImpacted: false,
+          },
+          log: server.log,
+        });
+      }
+    }
+
+    if (!aborted) {
       pushChunk(sessionId, { type: "error", message: "Erro interno." });
     }
   } finally {
@@ -377,7 +615,7 @@ function serveFromLocalStream(
 
   // Replay buffered chunks for late clients
   for (const chunk of entry.buffer) {
-    reply.raw.write(`data: ${JSON.stringify(chunk)}\n\n`);
+    reply.raw.write(`data: ${JSON.stringify(chunkToWire(chunk))}\n\n`);
     if (chunk.type === "done" || chunk.type === "error") {
       stopHeartbeat();
       reply.raw.end();
@@ -387,7 +625,7 @@ function serveFromLocalStream(
 
   // Listen for new chunks
   const onChunk = (chunk: unknown): void => {
-    reply.raw.write(`data: ${JSON.stringify(chunk)}\n\n`);
+    reply.raw.write(`data: ${JSON.stringify(chunkToWire(chunk as StreamChunk))}\n\n`);
     const c = chunk as { type: string };
     if (c.type === "done" || c.type === "error") {
       terminated = true;
@@ -425,7 +663,7 @@ async function serveFromRedis(
 
   const writeChunk = (chunk: StreamChunk): void => {
     if (ended) return;
-    reply.raw.write(`data: ${JSON.stringify(chunk)}\n\n`);
+    reply.raw.write(`data: ${JSON.stringify(chunkToWire(chunk))}\n\n`);
     if (chunk.type === "done" || chunk.type === "error") {
       ended = true;
       stopHeartbeat();

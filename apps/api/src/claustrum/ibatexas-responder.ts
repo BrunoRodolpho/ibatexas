@@ -42,6 +42,13 @@ import {
   type IbatexasPromptComposer,
 } from "./prompts/ibatexas-prompts.js";
 import { emitModelCallTrace } from "./llm-trace.js";
+import {
+  closedHoursBackstop,
+  closedHoursDisclosure,
+  closedHoursPromptNote,
+  closedHoursScheduledConfirmation,
+  type ScheduleSignal,
+} from "./closed-hours.js";
 
 // Re-export so existing importers (tests) keep their import site.
 export {
@@ -66,6 +73,18 @@ export interface IbatexasResponderDeps {
   readonly promptComposer?: IbatexasPromptComposer;
   /** Telemetry sink for the per-model-call LLMTrace (C1). */
   readonly telemetry?: TelemetryPort;
+  /**
+   * Resolve the current structured open/closed signal for THIS turn (fix B,
+   * Stage 1). Called per `respond()` because the signal is time-dependent. When
+   * it reports `isClosed`, the closed-hours soft note is injected into the LLM
+   * context AND the deterministic backstop polices the draft so it can never
+   * falsely assert the store is open / confirm an immediate order while closed.
+   * Omitted in unit tests / when no schedule is wired → no closed-hours behavior.
+   */
+  readonly resolveScheduleSignal?: () =>
+    | Promise<ScheduleSignal | undefined>
+    | ScheduleSignal
+    | undefined;
 }
 
 /** Best-effort, BOUNDED summary of the dispatch result for model grounding.
@@ -258,6 +277,33 @@ function executedKinds(acted: unknown): ReadonlySet<string> {
   return out;
 }
 
+/**
+ * Whether the runtime ACCEPTED a scheduled-pickup order this turn (F6). True ONLY
+ * when a checkout genuinely COMMITTED (`order.checkout.create` ∈ executedKinds — an
+ * EXECUTE/REWRITE that actually ran, never a REFUSE/DEFER) AND the checkout output
+ * flagged `scheduledPickup === true`. That flag is set ONLY for pickup (no
+ * deliveryCep) placed while closed, so a delivery/immediate order accepted while
+ * closed (the kernel does NOT gate closed-hours) is `accepted === false` and keeps
+ * the SAFE closed-hours degrade — never a false pickup confirmation.
+ *
+ * `awaitingPixPayment` reflects the QR-first-then-confirm PIX flow: a scheduled PIX
+ * pickup EXECUTEs + generates the QR but payment is still pending. (A re-entry while
+ * a PIX is already pending is a kernel DEFER — the checkout does NOT run that turn,
+ * so there is no `acted.result` and `accepted` is correctly false.)
+ */
+function acceptedScheduledPickup(
+  acted: unknown,
+): { accepted: boolean; awaitingPixPayment: boolean } {
+  if (!executedKinds(acted).has("order.checkout.create")) {
+    return { accepted: false, awaitingPixPayment: false };
+  }
+  const result = summarizeActed(acted)?.result as
+    | { scheduledPickup?: unknown; paymentMethod?: unknown }
+    | undefined;
+  const accepted = result?.scheduledPickup === true;
+  return { accepted, awaitingPixPayment: accepted && result?.paymentMethod === "pix" };
+}
+
 // Clause-level mood gates — a success PREDICATE inside a question, a future/
 // conditional clause, or a pending-status clause is NOT a completed assertion.
 const QUESTION = /\?/;
@@ -371,6 +417,49 @@ function guardDraft(draft: DraftResponse, acted: unknown): DraftResponse {
       : { text: GROUNDED_SAFE_FALLBACK_PTBR, usage: draft.usage };
   }
   return draft;
+}
+
+/** Closed-hours delivery guard. Runs the deterministic `closedHoursBackstop`
+ *  (repairs a draft that falsely asserts open / confirms an immediate order), then
+ *  closes a SECOND gap: when the store isClosed and the post-guard text is the
+ *  neutral GROUNDED_SAFE_FALLBACK (because F1/F1b stripped a draft that bundled an
+ *  unearned success claim WITH the closed-disclosure), substitute the canonical
+ *  closedHoursDisclosure(). The fallback is audit-accurate but SILENT on closure —
+ *  this restores the closed/scheduling disclosure the guard dropped. Conservative:
+ *  fires only while closed and only for the neutral fallback (a draft that already
+ *  discloses closed, or any other text, is left untouched). The disclosure asserts
+ *  nothing open, preserving the NEVER-open / never-immediate guarantee. */
+function closedHoursDeliveryGuard(
+  draft: DraftResponse,
+  signal: ScheduleSignal | undefined,
+  scheduled: { accepted: boolean; awaitingPixPayment: boolean } = {
+    accepted: false,
+    awaitingPixPayment: false,
+  },
+): DraftResponse {
+  const repaired = closedHoursBackstop(draft, signal);
+  if (!signal?.isClosed) return repaired;
+
+  // F6: a scheduled-pickup order was ACCEPTED this turn. Neither the backstop's OFFER
+  // disclosure nor the neutral success-guard fallback acknowledges the order went
+  // through — both read as "I can register your order", telling a customer whose
+  // scheduled order WAS placed that it wasn't. Substitute a confirmation, but ONLY
+  // when the draft was ACTUALLY clobbered (repaired by the backstop, or replaced with
+  // the neutral fallback) — a clean scheduled-confirmation draft is left untouched.
+  // `scheduled.accepted` is true ONLY for a proven scheduled PICKUP (never a
+  // delivery/immediate order that also EXECUTEs while closed → those keep the degrade).
+  const clobbered =
+    repaired.text !== draft.text || repaired.text === GROUNDED_SAFE_FALLBACK_PTBR;
+  if (scheduled.accepted && clobbered) {
+    const text = closedHoursScheduledConfirmation(signal, scheduled.awaitingPixPayment);
+    return repaired.usage === undefined ? { text } : { text, usage: repaired.usage };
+  }
+
+  if (repaired.text === GROUNDED_SAFE_FALLBACK_PTBR) {
+    const text = closedHoursDisclosure(signal);
+    return repaired.usage === undefined ? { text } : { text, usage: repaired.usage };
+  }
+  return repaired;
 }
 
 /** When the kernel REWROTE the envelope with a USER-RELEVANT clamp (e.g. quantity
@@ -489,20 +578,38 @@ export function createIbatexasResponder(
         | undefined;
       const intentHash = firstEnvelope?.intentHash;
 
+      // fix B (Stage 1): resolve the structured closed-hours signal ONCE for the
+      // turn. `closedNote` is the soft layer (injected into every model-call
+      // branch's system prompt); `closedHoursBackstop(_, scheduleSignal)` is the
+      // deterministic hard layer wrapped around every model-authored draft.
+      const scheduleSignal = deps.resolveScheduleSignal
+        ? ((await deps.resolveScheduleSignal()) ?? undefined)
+        : undefined;
+      const closedNote = closedHoursPromptNote(scheduleSignal);
+      // F6: did the runtime accept a scheduled-pickup order this turn? Drives the
+      // closed-hours delivery guard's confirmation-vs-offer branch. Empty on the
+      // REFUSE/DEFER/no-checkout paths (executedKinds is empty there).
+      const scheduled = acceptedScheduledPickup(input.acted);
+
       switch (decision.kind) {
         case "REFUSE": {
           // A REFUSE on an EMPTY plan is the "nothing to authorize" sentinel
           // (small-talk / informational turn) — reply conversationally.
           if (input.plan.envelopes.length === 0) {
-            const { system, fragmentManifest } = await composeSystem(
+            const { system: base, fragmentManifest } = await composeSystem(
               RESPONDER_CONVERSATIONAL_SURFACE,
               RESPONDER_PERSONA_PTBR,
               input.cognition,
               [],
             );
-            return guardDraft(
-              await completeWith({ system, fragmentManifest, userText, turnId }),
-              input.acted,
+            const system = base + closedNote;
+            return closedHoursDeliveryGuard(
+              guardDraft(
+                await completeWith({ system, fragmentManifest, userText, turnId }),
+                input.acted,
+              ),
+              scheduleSignal,
+              scheduled,
             );
           }
           // A real action refusal: render the pt-BR refusal VERBATIM (model-free,
@@ -539,7 +646,8 @@ export function createIbatexasResponder(
           const system =
             `${baseSystem}\n\n` +
             `CONTEXTO DA DECISÃO (fonte da verdade, não inventar):\n` +
-            JSON.stringify(context);
+            JSON.stringify(context) +
+            closedNote;
           const draft = await completeWith({
             system,
             fragmentManifest,
@@ -552,7 +660,11 @@ export function createIbatexasResponder(
           // decision (no-authority claim) OR claims a success the runtime did not
           // grant (confabulation) reach the customer. Then surface any user-relevant
           // REWRITE clamp deterministically (the model can't be trusted to).
-          return surfaceRewriteClamp(guardDraft(draft, input.acted), decision);
+          return closedHoursDeliveryGuard(
+            surfaceRewriteClamp(guardDraft(draft, input.acted), decision),
+            scheduleSignal,
+            scheduled,
+          );
         }
 
         default: {
@@ -560,15 +672,20 @@ export function createIbatexasResponder(
           // `satisfies never` keeps the compile-time check (adding a kind without a
           // case errors) without the runtime fall-through changing.
           decision satisfies never;
-          const { system, fragmentManifest } = await composeSystem(
+          const { system: base, fragmentManifest } = await composeSystem(
             RESPONDER_CONVERSATIONAL_SURFACE,
             RESPONDER_PERSONA_PTBR,
             input.cognition,
             [],
           );
-          return guardDraft(
-            await completeWith({ system, fragmentManifest, userText, turnId }),
-            input.acted,
+          const system = base + closedNote;
+          return closedHoursDeliveryGuard(
+            guardDraft(
+              await completeWith({ system, fragmentManifest, userText, turnId }),
+              input.acted,
+            ),
+            scheduleSignal,
+            scheduled,
           );
         }
       }

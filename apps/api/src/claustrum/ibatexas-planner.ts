@@ -47,9 +47,12 @@ import { buildEnvelope } from "@adjudicate/core";
 import type { CandidateClaim, IntentEnvelope, TurnTerminal } from "@adjudicate/core";
 import {
   CLAIM_REGISTRY,
+  canonicalizeRegistryType,
   checkCompleteness,
   constrainClaimGeneration,
+  deriveCandidateValues,
   hasUnmappedSpan,
+  ownerScopedBaseKey,
   routeSafety,
   type ProposedClaim,
   type RequestSpan,
@@ -69,12 +72,20 @@ import type {
   PlannerPort,
   TelemetryPort,
 } from "@claustrum/core";
-import { EXPRESS_INTENT_TOOL, PLANNER_PERSONA } from "./prompts/personas.js";
+import {
+  CLAIM_PLANNER_PERSONA,
+  EXPRESS_INTENT_TOOL,
+  PLANNER_PERSONA,
+} from "./prompts/personas.js";
 import {
   PLANNER_SURFACE,
   type IbatexasPromptComposer,
 } from "./prompts/ibatexas-prompts.js";
 import { emitModelCallTrace } from "./llm-trace.js";
+import {
+  closedHoursPromptNote,
+  type ScheduleSignal,
+} from "./closed-hours.js";
 
 // Re-export so existing importers (tests, registry) keep their import site.
 export { EXPRESS_INTENT_TOOL };
@@ -156,6 +167,17 @@ export interface IbatexasPlannerDeps {
    * across redeliveries.
    */
   readonly deriveNonce?: (state: CognitiveState, envelopeIndex: number) => string;
+  /**
+   * Resolve the current structured open/closed signal for THIS turn (fix B,
+   * Stage 1). When it reports `isClosed`, a pt-BR closed-hours note is appended
+   * to the planner's LLM context so planning knows the store is closed (the soft
+   * layer; the deterministic backstop lives in the responder). Time-dependent, so
+   * it is invoked per `propose()`. Omitted in unit tests → no prompt change.
+   */
+  readonly resolveScheduleSignal?: () =>
+    | Promise<ScheduleSignal | undefined>
+    | ScheduleSignal
+    | undefined;
 }
 
 /**
@@ -198,16 +220,16 @@ function isExpressIntentInput(input: unknown): input is ExpressIntentInput {
 /**
  * The raw shape of a `propose_claim` tool call's `input` (Q6b — SDD §H). The
  * model proposes a `type` (a FREE string — it may hallucinate one outside the
- * registry; the constrained-generation wall constrains it), a same-subject
- * `subject` key, and the runtime params the registry type's evidence schema is
- * parameterized with. Validated structurally before it becomes a `ProposedClaim`.
+ * registry; the constrained-generation wall constrains it) and a same-subject
+ * `subject` key. tag-then-derive (STEP 1): there is NO `value` field — the model
+ * never authors a value; it is derived first-party downstream. Validated
+ * structurally before it becomes a `ProposedClaim`.
  */
 interface ProposeClaimInput {
   readonly type: string;
   readonly subject?: string;
   readonly actor?: unknown;
   readonly resources?: Readonly<Record<string, unknown>>;
-  readonly value?: unknown;
   /** Free-text safety markers the model flagged on the request (SDD §O#8/§O#9). */
   readonly safetyMarkers?: readonly string[];
   /**
@@ -395,6 +417,31 @@ function translateToolCalls(args: {
  * existing consumer that expects a `PlannerPort` keeps working (the extra
  * method is invisible to them).
  */
+/**
+ * The AUTHENTICATED, owner-scoped context the claim planner stamps an owner-scoped
+ * candidate's actor + subject FROM (FIX 1 + FIX 2; SDD §E C1, Inv 2). NEITHER
+ * field is ever model- or session-authored — both come from the conductor's
+ * authenticated identity + this turn's owner-scoped reads:
+ *
+ *  - `customerId`       — the AUTHENTICATED principal for this turn
+ *    (`capsule.customerId`, threaded by CLAIMS-VALIDATE). The planner stamps EVERY
+ *    candidate's `actor.principal` with this — never `"llm"`, never the model's
+ *    self-reported `actor` (FIX 1). `buildOwns` then PASSES for the legit owner and
+ *    still REFUSES a mismatch (the defense-in-depth check is NOT weakened).
+ *  - `ownedByBaseKey`   — the owner-scoped resource ids that resolved PRESENT this
+ *    turn, grouped by base key (`ownedResourceIdsByBaseKey`). The ONLY admissible
+ *    subjects for an owner-scoped candidate (FIX 2): exactly one → bind it; many →
+ *    CLARIFY; none → no resolution (degrade SAFE to UNKNOWN — never the model's id).
+ *
+ * Both OPTIONAL: absent (unit tests / a non-owner-scoped turn) ⟹ the planner keeps
+ * the model's subject and stamps an `"unauthenticated"` actor that owns nothing
+ * (fail-closed), so a missing auth context can never validate an owner-scoped claim.
+ */
+export interface ClaimAuthContext {
+  readonly customerId?: string;
+  readonly ownedByBaseKey?: ReadonlyMap<string, readonly string[]>;
+}
+
 export interface ClaimAwarePlannerPort extends PlannerPort {
   /**
    * Propose typed `CandidateClaim`s for the turn through the three deterministic
@@ -402,8 +449,14 @@ export interface ClaimAwarePlannerPort extends PlannerPort {
    * (pre-planning), P4 completeness (post-planning), and §O#9 closed-taxonomy
    * safety routing. Returns the {@link ClaimPlan} the Claims kernel + renderer
    * consume. Like `propose`, it only PROPOSES — the kernel disposes.
+   *
+   * `auth` (optional) carries the AUTHENTICATED owner-scoped context (FIX 1 + FIX
+   * 2): the candidate actor/subject derive from it, never from the model.
    */
-  proposeClaims(state: CognitiveState): Promise<ClaimPlan>;
+  proposeClaims(
+    state: CognitiveState,
+    auth?: ClaimAuthContext,
+  ): Promise<ClaimPlan>;
 }
 
 /**
@@ -464,6 +517,14 @@ export function createIbatexasPlanner(
         system = composed.system;
         fragmentManifest = composed.fragmentManifest;
       }
+
+      // fix B (Stage 1) — soft layer: when the store is closed, tell the planner
+      // so it does not propose immediate-fulfillment intents / so the model knows
+      // the real state. Empty string when open → prompt byte-identical to today.
+      const scheduleSignal = deps.resolveScheduleSignal
+        ? ((await deps.resolveScheduleSignal()) ?? undefined)
+        : undefined;
+      system += closedHoursPromptNote(scheduleSignal);
 
       const allowed = new Set(plan.allowedIntents);
       const startedAt = Date.now();
@@ -528,7 +589,10 @@ export function createIbatexasPlanner(
     // the `propose_claim` tool (its `type` constrained by `enum` to the registry
     // — the pre-planning wall), then the two deterministic post-walls. Mirrors
     // `propose`'s "model proposes, deterministic checks dispose" shape.
-    async proposeClaims(state: CognitiveState): Promise<ClaimPlan> {
+    async proposeClaims(
+      state: CognitiveState,
+      auth?: ClaimAuthContext,
+    ): Promise<ClaimPlan> {
       // PRE-planning wall, part 1 (SDD §H/§P3): the model's `propose_claim` tool
       // exposes `type` as an `enum` over the registry — the model can only
       // SELECT an in-enum type, never type a free string into the schema. The
@@ -536,10 +600,18 @@ export function createIbatexasPlanner(
       // backstop (a compromised prompt that bypasses the enum is still dropped).
       const claimTool = {
         name: PROPOSE_CLAIM_TOOL,
+        // tag-then-derive (STEP 1 — tag protocol): the model SELECTS only a claim
+        // `type` (enum-constrained) + its `subject`. It does NOT — and CANNOT —
+        // author a `value`: the value is DERIVED downstream from the first-party
+        // ledger read the type's `valueBinding` names (claim-registry.ts
+        // `deriveCandidateValues`), so the kernel's C6 value-binding is satisfied
+        // by a LEDGER-sourced value, never a 4B confabulation. A typed enum is a
+        // harder constraint than a free-text value — far more 4B-robust.
         description:
           "Propor uma afirmação (claim) para o kernel de claims validar. " +
-          "Use `type` (uma das opções do enum do registro), `subject` (a chave " +
-          "do recurso) e os parâmetros. Nunca invente um tipo fora do enum.",
+          "Selecione APENAS `type` (uma das opções do enum do registro) e " +
+          "`subject` (a chave do recurso). NÃO escreva o valor/proposição — o " +
+          "sistema deriva o valor da fonte primária. Nunca invente um tipo fora do enum.",
         inputSchema: {
           type: "object",
           properties: {
@@ -549,7 +621,6 @@ export function createIbatexasPlanner(
               description: "O tipo de claim do registro a ser proposto.",
             },
             subject: { type: "string", description: "Chave do recurso/assunto." },
-            value: { description: "A proposição que o renderer preencheria." },
             safetyMarkers: {
               type: "array",
               items: { type: "string" },
@@ -573,7 +644,14 @@ export function createIbatexasPlanner(
         },
       };
 
-      const system = deps.system ?? DEFAULT_SYSTEM_PROMPT;
+      // tag-then-derive (STEP 1): the CLAIM path uses a CLAIM-framed persona, NOT
+      // the intent persona (DEFAULT_SYSTEM_PROMPT) — the intent persona's "sua
+      // única função é express_intent" SUPPRESSES the propose_claim call on a 4B
+      // (verified live on nemotron-3-nano:4b). `deps.system` still overrides (tests).
+      const system = deps.system ?? CLAIM_PLANNER_PERSONA;
+      // F2 observability: time the claim-planner completion so its LLMTrace
+      // (emitted below) carries a real duration, like the intent `propose` path.
+      const claimStartedAt = Date.now();
       const completion = await deps.model.complete({
         model: deps.modelId,
         system,
@@ -582,24 +660,90 @@ export function createIbatexasPlanner(
         maxTokens,
       });
 
+      // FIX 1 (actor) — the AUTHENTICATED principal for this turn. The candidate
+      // actor is stamped from THIS (capsule.customerId, threaded by CLAIMS-VALIDATE),
+      // NEVER from `"llm"` and NEVER from the model's self-reported `input.actor`
+      // (SDD §E C1, Inv 2). `buildOwns` then passes for the legit owner and still
+      // refuses a mismatch (its actorId===principal check is NOT weakened). Absent
+      // auth ⟹ a fail-closed `"unauthenticated"` principal that owns nothing.
+      const authPrincipal =
+        auth?.customerId !== undefined && auth.customerId.trim() !== ""
+          ? auth.customerId
+          : "unauthenticated";
+
       // Collect the model's proposals + the safety/span inputs from the call(s).
       const proposals: ProposedClaim[] = [];
       const spans: RequestSpan[] = [];
+      // FIX 2 (subject) — tracks whether an owner-scoped claim could not be bound
+      // to a SINGLE owned resource because the authenticated customer owns ≥2
+      // relevant ones → CLARIFY (ask which), never a guess.
+      let ownerScopedAmbiguous = false;
       const safety: SafetyRoutingInput = { markers: collectSafetyMarkers(completion.toolCalls) };
       for (const call of completion.toolCalls ?? []) {
         if (call.name !== PROPOSE_CLAIM_TOOL || !isProposeClaimInput(call.input)) {
           continue;
         }
         const input = call.input;
+
+        // FIX 2 (subject) — for an owner-scoped, per-resource type the SUBJECT must
+        // come from the AUTHENTICATED owner-scoped reads (the 4B routinely fails to
+        // extract a correct orderId — BUG 2 — emitting empty/missing/hallucinated
+        // ids). `ownerScopedBaseKey` is `undefined` for a public single-key type
+        // (STORE_OPEN_NOW/STORE_HOURS/MENU_ITEM_ALLERGENS) → its subject is left
+        // as-is. For an owner-scoped type, `subject` is resolved ONLY from
+        // `auth.ownedByBaseKey` (the owner-scoped reads that resolved PRESENT this
+        // turn — IDOR-safe). A model-supplied id is honored ONLY if it is itself an
+        // OWNED resource; otherwise it is discarded.
+        const canonicalType = canonicalizeRegistryType(input.type);
+        const baseKey =
+          canonicalType !== undefined ? ownerScopedBaseKey(canonicalType) : undefined;
+        let subject = input.subject ?? "";
+        if (baseKey !== undefined) {
+          const owned = auth?.ownedByBaseKey?.get(baseKey) ?? [];
+          const modelSubject = (input.subject ?? "").trim();
+          if (modelSubject !== "" && owned.includes(modelSubject)) {
+            // The model named an OWNED resource — accept it (IDOR-safe: it is in
+            // the authenticated owner-scoped present set).
+            subject = modelSubject;
+          } else if (owned.length === 1) {
+            // The model's id was empty/missing/non-owned, but the authenticated
+            // customer owns exactly ONE relevant resource → bind it (FIX 2).
+            subject = owned[0] as string;
+          } else if (owned.length > 1) {
+            // ≥2 owned relevant resources and no unambiguous model match → CLARIFY,
+            // never guess. Drop this owner-scoped proposal (no candidate emitted).
+            ownerScopedAmbiguous = true;
+            continue;
+          } else {
+            // 0 owned → no admissible subject. Keep the model's id; the kernel's
+            // owner-scoped `owns` refuses it → honest UNKNOWN/REFUSED, never a leak.
+            subject = modelSubject;
+          }
+        }
+
         proposals.push({
           // `type` is carried VERBATIM (possibly out-of-enum) so the
           // constrained-generation wall — not this collection step — is the
           // single gate that drops a hallucinated type.
           type: input.type,
-          subject: input.subject ?? "",
-          actor: input.actor ?? { principal: "llm", sessionId: state.conversationId },
-          ...(input.resources === undefined ? {} : { resources: input.resources }),
-          value: input.value,
+          subject,
+          // FIX 1 — the AUTHENTICATED principal, never `input.actor` (model
+          // self-assertion) and never `"llm"`.
+          actor: { principal: authPrincipal, sessionId: state.conversationId },
+          // FIX 2 — DO NOT honor model-supplied `resources` for an owner-scoped
+          // type (it could re-introduce a non-owned id via the C1 binding); the
+          // per-resource binding is derived deterministically from the resolved
+          // `subject` in `selectCandidateClaim`. A non-owner-scoped type keeps any
+          // explicit resources (none from the 4B — the tool exposes no resources).
+          ...(baseKey === undefined && input.resources !== undefined
+            ? { resources: input.resources }
+            : {}),
+          // tag-then-derive (STEP 1): the model NEVER authors a value — the
+          // `value` field was removed from the tool schema. Seed it `undefined`;
+          // `deriveCandidateValues` (below) sets it from the first-party read for
+          // every publish-free-derivable bound type. A type with no deriver keeps
+          // `undefined` → C6 ABSTAIN / honest UNKNOWN (never a model confabulation).
+          value: undefined,
         });
         for (const span of input.spans ?? []) {
           spans.push(
@@ -614,6 +758,19 @@ export function createIbatexasPlanner(
       // types become typed `CandidateClaim`s; out-of-enum proposals are dropped.
       const { candidates, dropped } = constrainClaimGeneration(proposals);
 
+      // tag-then-derive (STEP 2 — value derivation, PRE-kernel): OVERWRITE each
+      // bound candidate's `value` from the SAME first-party read the investigator
+      // records (here: the schedule signal for STORE_OPEN_NOW). This replaces the
+      // value AUTHOR (the model) with a first-party deriver — it sets NO verdict
+      // and skips NO conjunct. `runClaimsValidate` then runs the full kernel
+      // (C6 + falsifier/CE#3 + provenance + freshness) over these candidates, so
+      // C6 passes BY CONSTRUCTION (derived value == the ledger value C6 compares)
+      // while a present falsifier STILL demotes the claim to UNKNOWN.
+      const scheduleSignal = deps.resolveScheduleSignal
+        ? ((await deps.resolveScheduleSignal()) ?? undefined)
+        : undefined;
+      const derivedCandidates = deriveCandidateValues(candidates, { scheduleSignal });
+
       // POST-planning wall (SDD §C P4 / §J.8): every span gets a disposition; an
       // unmapped span is surfaced as CLARIFY, never silently dropped.
       const completeness = checkCompleteness(spans);
@@ -622,11 +779,51 @@ export function createIbatexasPlanner(
       // forces ESCALATE (the generic safe terminal); ESCALATE outranks a P4
       // CLARIFY (a safety escalation is more conservative than a clarification).
       const safetyTerminal = routeSafety(safety);
+      // FIX 2 — an owner-scoped claim the authenticated customer owns ≥2 relevant
+      // resources for forces CLARIFY (ask which order), exactly like an unmapped P4
+      // span: never a guess. §O#9 ESCALATE still outranks it (safety > clarify).
       const forcedTerminal: Extract<TurnTerminal, "ESCALATE" | "CLARIFY"> | undefined =
-        safetyTerminal ?? (hasUnmappedSpan(completeness) ? "CLARIFY" : undefined);
+        safetyTerminal ??
+        (hasUnmappedSpan(completeness) || ownerScopedAmbiguous ? "CLARIFY" : undefined);
+
+      // F2 observability (claim-planner visibility): the Q6b `proposeClaims`
+      // model call was previously INVISIBLE in `turn_trace` (only the intent
+      // `propose` and the responder emitted an LLMTrace) — so the in-pipeline
+      // 4B tag and the first-party-derived candidate value could not be seen.
+      // Emit a bounded LLMTrace here so the claim-planner call lands as its own
+      // `turn_trace` row, carrying BOTH the raw model tag (toolCalls) AND the
+      // derived candidate {type,value} pairs. Best-effort, NON-throwing (the
+      // `emitModelCallTrace` sink swallows all errors — telemetry never breaks a
+      // turn). Uses a synthetic persona manifest tag (this path uses the static
+      // CLAIM_PLANNER_PERSONA, not the PromptComposer fragment graph).
+      if (deps.telemetry !== undefined) {
+        await emitModelCallTrace({
+          telemetry: deps.telemetry,
+          registry: deps.promptComposer?.registry,
+          turnId: state.turnId,
+          model: deps.modelId,
+          fragmentManifest: ["ibatexas/claim-planner.persona"],
+          completionText: JSON.stringify({
+            stage: "claims-validate/proposeClaims",
+            modelText: completion.text,
+            toolCalls: completion.toolCalls ?? [],
+            derivedCandidates: derivedCandidates.map((c) => ({
+              type: c.type,
+              subject: c.subject,
+              value: c.value,
+            })),
+            droppedClaimTypes: dropped,
+            ...(forcedTerminal === undefined ? {} : { forcedTerminal }),
+          }),
+          inputTokens: completion.inputTokens,
+          outputTokens: completion.outputTokens,
+          durationMs: Date.now() - claimStartedAt,
+          at: new Date().toISOString(),
+        });
+      }
 
       return {
-        candidates,
+        candidates: derivedCandidates,
         completeness,
         ...(forcedTerminal === undefined ? {} : { forcedTerminal }),
         droppedClaimTypes: dropped,

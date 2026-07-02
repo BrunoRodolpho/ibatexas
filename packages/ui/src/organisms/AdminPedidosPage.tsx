@@ -8,6 +8,7 @@ import { PageHeader } from '../atoms/PageHeader'
 import { PageShell } from '../layouts/PageShell'
 import { FilterChip } from '../molecules/FilterChip'
 import { FilterBar } from '../molecules/FilterBar'
+import { statusVariant, paymentVariant } from '../utils/status-variant'
 import type { OrderSummary, OrderFulfillmentStatus } from '@ibatexas/types'
 import { getNextStatus, formatOrderId } from '@ibatexas/types'
 import {
@@ -22,8 +23,6 @@ import {
   MISC_LABELS,
 } from '../constants/admin-labels'
 
-type BadgeVariant = 'success' | 'warning' | 'danger' | 'default'
-
 const col = createColumnHelper<OrderSummary>()
 
 function formatBRL(centavos: number) {
@@ -37,36 +36,6 @@ function maskPhone(email: string) {
 }
 
 const STATUS_LABELS = ORDER_STATUS_LABELS
-
-function statusVariant(status: string): BadgeVariant {
-  const map: Record<string, BadgeVariant> = {
-    completed: 'success',
-    delivered: 'success',
-    confirmed: 'success',
-    pending: 'warning',
-    preparing: 'warning',
-    ready: 'info' as 'warning',
-    requires_action: 'warning',
-    canceled: 'danger',
-  }
-  return map[status] ?? 'default'
-}
-
-function paymentVariant(status: string): BadgeVariant {
-  const map: Record<string, BadgeVariant> = {
-    paid: 'success',
-    captured: 'success',
-    awaiting_payment: 'warning',
-    payment_pending: 'warning',
-    cash_pending: 'warning',
-    switching_method: 'warning',
-    pending: 'warning',
-    payment_expired: 'danger',
-    payment_failed: 'danger',
-    canceled: 'danger',
-  }
-  return map[status] ?? 'default'
-}
 
 function statusBadge(status: string) {
   return (

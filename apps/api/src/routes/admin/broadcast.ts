@@ -13,6 +13,7 @@
 import type { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
+import { mintBroadcastReply } from "@adjudicate/core";
 import { requireManagerRole } from "../../middleware/staff-auth.js";
 import { sendText } from "../../whatsapp/client.js";
 import { runBroadcast } from "../../broadcast/broadcast.js";
@@ -57,7 +58,7 @@ export async function broadcastRoutes(server: FastifyInstance): Promise<void> {
         template,
         // The client adds the `whatsapp:` channel prefix expectations; mirror the
         // handoff-subscriber call shape. The client itself rate-limits + dedups.
-        send: (recipient, body) => sendText(`whatsapp:${recipient}`, body),
+        send: (recipient, body) => sendText(`whatsapp:${recipient}`, mintBroadcastReply(body)),
         isOptedOut: (recipient) => optOut.isOptedOut(recipient),
       });
       request.log.info(

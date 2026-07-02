@@ -24,7 +24,13 @@
 
 import { describe, it, expect, vi, beforeEach, afterAll } from "vitest";
 import Fastify from "fastify";
+import { mintRenderedReply } from "@adjudicate/core";
 import { whatsappWebhookRoutes } from "../routes/whatsapp-webhook.js";
+
+// EGRESS BRAND (E-1): sendText receives a branded RenderedReply (`{ text }` at
+// runtime); match the body by its unwrapped text.
+const textContaining = (sub: string) =>
+  expect.objectContaining({ text: expect.stringContaining(sub) });
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────────
 
@@ -57,6 +63,16 @@ const mockSchedulePixExpiryMonitor = vi.hoisted(() => vi.fn());
 const mockGetConductor = vi.hoisted(() => vi.fn());
 const mockHandleTurn = vi.hoisted(() => vi.fn());
 const mockIsSessionPausedForHuman = vi.hoisted(() => vi.fn());
+// W1 Redis-outage fix: the webhook gate now reads the store via readPauseState
+// (real, kept below) → getEscalationStore().isPaused(), so it can DISTINGUISH a
+// genuine pause from a Redis read-error.
+const mockIsPaused = vi.hoisted(() => vi.fn());
+const mockGetEscalationStore = vi.hoisted(() => vi.fn());
+// W1 no-reply seam: keep the PURE classifiers real; mock only the side-effecting
+// collaborators (NATS emit + governed open) and the auto-close (M3/L10).
+const mockEmitNoDelivery = vi.hoisted(() => vi.fn());
+const mockOpenIncidentInline = vi.hoisted(() => vi.fn());
+const mockCloseIncidentOnDeliveredReply = vi.hoisted(() => vi.fn());
 
 vi.mock("twilio", () => ({
   default: Object.assign(() => ({}), { validateRequest: mockValidateRequest }),
@@ -78,6 +94,20 @@ vi.mock("../claustrum-bootstrap.js", () => ({
 
 vi.mock("../escalation/escalation-store.js", () => ({
   isSessionPausedForHuman: mockIsSessionPausedForHuman,
+  getEscalationStore: mockGetEscalationStore,
+}));
+
+vi.mock("../conversation/no-delivery.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../conversation/no-delivery.js")>();
+  return {
+    ...actual, // keep classifyTurnDelivery + classifyCatchError (pure) + the types
+    emitNoDelivery: mockEmitNoDelivery,
+    openIncidentInline: mockOpenIncidentInline,
+  };
+});
+
+vi.mock("../incidents/incident-auto-close.js", () => ({
+  closeIncidentOnDeliveredReply: mockCloseIncidentOnDeliveredReply,
 }));
 
 vi.mock("../session/store.js", () => ({
@@ -210,11 +240,20 @@ beforeEach(() => {
   mockSendText.mockResolvedValue(undefined);
   mockSendMedia.mockResolvedValue(undefined);
   mockIsSessionPausedForHuman.mockResolvedValue(false);
+  mockIsPaused.mockResolvedValue(false);
+  mockGetEscalationStore.mockResolvedValue({ isPaused: mockIsPaused });
   mockGetConductor.mockReturnValue({
     openCapsule: vi.fn().mockResolvedValue({ id: "capsule-1" }),
     closeCapsule: vi.fn().mockResolvedValue(undefined),
   });
-  mockHandleTurn.mockResolvedValue({ response: { text: "Resposta padrão" }, acted: null });
+  mockHandleTurn.mockResolvedValue({
+    response: { text: "Resposta padrão" },
+    acted: null,
+    decision: { kind: "EXECUTE" },
+  });
+  mockEmitNoDelivery.mockResolvedValue(undefined);
+  mockOpenIncidentInline.mockResolvedValue({ kind: "opened", incidentId: "inc-1" });
+  mockCloseIncidentOnDeliveredReply.mockResolvedValue(undefined);
 });
 
 afterAll(() => {
@@ -239,7 +278,7 @@ describe("handleMessageAsync — media handling", () => {
     await vi.waitFor(() => {
       expect(mockSendText).toHaveBeenCalledWith(
         `whatsapp:${PHONE}`,
-        expect.stringContaining("Recebi sua mídia"),
+        textContaining("Recebi sua mídia"),
       );
     }, { timeout: 2000 });
 
@@ -287,7 +326,7 @@ describe("handleMessageAsync — new customer onboarding (debounce-skip path)", 
     );
 
     // LGPD opt-in disclosure sent + marked
-    expect(mockSendText).toHaveBeenCalledWith(`whatsapp:${PHONE}`, expect.stringContaining("LGPD"));
+    expect(mockSendText).toHaveBeenCalledWith(`whatsapp:${PHONE}`, textContaining("LGPD"));
     expect(mockMarkOptedIn).toHaveBeenCalledWith(HASH);
 
     // Inbound user message persisted to the session
@@ -391,6 +430,7 @@ describe("handleMessageAsync — conductor turn", () => {
     mockHandleTurn.mockResolvedValue({
       response: { text: "Olá! Como posso ajudar você hoje?" },
       acted: null,
+      decision: { kind: "EXECUTE" },
     });
 
     const app = await buildTestServer();
@@ -418,7 +458,7 @@ describe("handleMessageAsync — conductor turn", () => {
 
     expect(mockSendText).toHaveBeenCalledWith(
       `whatsapp:${PHONE}`,
-      "Olá! Como posso ajudar você hoje?",
+      mintRenderedReply("Olá! Como posso ajudar você hoje?"),
     );
     expect(mockAppendMessages).toHaveBeenCalledWith(
       "sess-1",
@@ -445,6 +485,7 @@ describe("handleMessageAsync — conductor turn", () => {
           orderId: "ord-42",
         },
       },
+      decision: { kind: "EXECUTE" },
     });
 
     const app = await buildTestServer();
@@ -460,21 +501,26 @@ describe("handleMessageAsync — conductor turn", () => {
     // Agent text was sent first, then the PIX copia-e-cola block (text omitted the code).
     expect(mockSendText).toHaveBeenCalledWith(
       `whatsapp:${PHONE}`,
-      "Pedido confirmado! Aqui está o pagamento.",
+      mintRenderedReply("Pedido confirmado! Aqui está o pagamento."),
     );
     expect(mockSendText).toHaveBeenCalledWith(
       `whatsapp:${PHONE}`,
-      expect.stringContaining("Código PIX (copia e cola)"),
+      textContaining("Código PIX (copia e cola)"),
     );
     const pixBlock = mockSendText.mock.calls.find((c) =>
-      String(c[1]).includes("Código PIX (copia e cola)"),
+      (c[1] as { text: string }).text.includes("Código PIX (copia e cola)"),
     );
-    expect(String(pixBlock?.[1])).toContain("00020126PIX-COPIA-E-COLA-CODE");
+    expect((pixBlock?.[1] as { text: string } | undefined)?.text).toContain(
+      "00020126PIX-COPIA-E-COLA-CODE",
+    );
     // QR sent as media
     expect(mockSendMedia).toHaveBeenCalledWith(
       `whatsapp:${PHONE}`,
       "data:image/png;base64,QR",
-      "QR Code PIX",
+      // F4: the caption is now minted at the producer (RenderedReply), not a
+      // bare string. The brand symbol is shared across minters, so a reply
+      // minted here deep-equals the webhook's `mintReceiptReply("QR Code PIX")`.
+      mintRenderedReply("QR Code PIX"),
     );
   }, 15000);
 
@@ -491,7 +537,7 @@ describe("handleMessageAsync — conductor turn", () => {
 
     expect(mockSendText).toHaveBeenCalledWith(
       `whatsapp:${PHONE}`,
-      expect.stringContaining("problema técnico"),
+      textContaining("problema técnico"),
     );
     // Failure path must NOT promote the claim to the 24h window.
     expect(mockRedis.set).not.toHaveBeenCalledWith(
@@ -503,7 +549,7 @@ describe("handleMessageAsync — conductor turn", () => {
   }, 15000);
 
   it("D2 bot-pause: a human takeover suppresses the bot reply but still confirms idempotency", async () => {
-    mockIsSessionPausedForHuman.mockResolvedValue(true);
+    mockIsPaused.mockResolvedValue(true);
 
     const app = await buildTestServer();
     const res = await post(app, "MessageSid=SM_PAUSE&From=whatsapp%3A%2B5511999999999&Body=oi");
@@ -520,6 +566,37 @@ describe("handleMessageAsync — conductor turn", () => {
     // Paused → the conductor is never opened and no reply text is sent.
     expect(mockHandleTurn).not.toHaveBeenCalled();
     expect(mockSendText).not.toHaveBeenCalled();
+    // A GENUINE pause is never a ghost → no incident opened.
+    expect(mockOpenIncidentInline).not.toHaveBeenCalled();
+  }, 15000);
+
+  it("#2: a pause-gate READ-ERROR opens ONE pause_read_error incident (Redis-free path) and sends nothing", async () => {
+    // The bot-pause gate is unreachable (Redis down). Fail-CLOSED (no reply), but
+    // this is a customer-impacted ghost WITHOUT a confirmed pause → a durable
+    // pause_read_error incident opens via the inline (Redis-free) path.
+    mockGetEscalationStore.mockRejectedValue(new Error("redis down"));
+
+    const app = await buildTestServer();
+    const res = await post(app, "MessageSid=SM_PAUSEERR&From=whatsapp%3A%2B5511999999999&Body=oi");
+    expect(res.statusCode).toBe(200);
+
+    await vi.waitFor(() => {
+      expect(mockOpenIncidentInline).toHaveBeenCalledWith(
+        expect.objectContaining({
+          cause: "pause_read_error",
+          customerImpacted: true,
+          channel: "whatsapp",
+        }),
+        expect.anything(),
+      );
+    }, { timeout: 4000 });
+
+    // Exactly one open (one incident per session; the storm digest — not a
+    // per-incident ping — aggregates cross-session via the notification subscriber).
+    expect(mockOpenIncidentInline).toHaveBeenCalledTimes(1);
+    // Fail-CLOSED: the conductor never ran and no reply text was sent.
+    expect(mockHandleTurn).not.toHaveBeenCalled();
+    expect(mockSendText).not.toHaveBeenCalled();
   }, 15000);
 
   it("shortcut (help) replies directly and bypasses the conductor; claim is released", async () => {
@@ -533,7 +610,7 @@ describe("handleMessageAsync — conductor turn", () => {
     await vi.waitFor(() => {
       expect(mockSendText).toHaveBeenCalledWith(
         `whatsapp:${PHONE}`,
-        "Comandos: cardápio, carrinho, ajuda.",
+        mintRenderedReply("Comandos: cardápio, carrinho, ajuda."),
       );
     }, { timeout: 4000 });
 
@@ -548,7 +625,11 @@ describe("handleMessageAsync — conductor turn", () => {
     // Every loadSession returns a user-last history → the post-lock re-check fires
     // and re-runs the conductor exactly once.
     mockLoadSession.mockResolvedValue([{ role: "user", content: "esqueci de adicionar a bebida" }]);
-    mockHandleTurn.mockResolvedValue({ response: { text: "Claro, vou adicionar." }, acted: null });
+    mockHandleTurn.mockResolvedValue({
+      response: { text: "Claro, vou adicionar." },
+      acted: null,
+      decision: { kind: "EXECUTE" },
+    });
 
     const app = await buildTestServer();
     const res = await post(app, "MessageSid=SM_RETRY&From=whatsapp%3A%2B5511999999999&Body=oi");
@@ -561,6 +642,159 @@ describe("handleMessageAsync — conductor turn", () => {
 
     // Lock acquired for the main turn AND re-acquired for the retry.
     expect(mockAcquireAgentLock.mock.calls.length).toBeGreaterThanOrEqual(2);
-    expect(mockSendText).toHaveBeenCalledWith(`whatsapp:${PHONE}`, "Claro, vou adicionar.");
+    expect(mockSendText).toHaveBeenCalledWith(`whatsapp:${PHONE}`, mintRenderedReply("Claro, vou adicionar."));
+  }, 15000);
+
+  it("M3: a whitespace-only retry reply is NOT sent, does NOT auto-close, and flags retry_exhausted", async () => {
+    // Post-lock re-check fires (user-last history); the retry produces a blank
+    // completion. A whitespace reply must NOT be delivered (raw truthiness would
+    // have sent "\n" and auto-resolved the incident) and the whitespace_only
+    // else-if must be reachable → a retry_exhausted incident, not a self-heal.
+    mockLoadSession.mockResolvedValue([{ role: "user", content: "cadê minha resposta?" }]);
+    mockHandleTurn
+      .mockResolvedValueOnce({ response: { text: "Perfeito!" }, acted: null, decision: { kind: "EXECUTE" } })
+      .mockResolvedValueOnce({ response: { text: "  \n " }, acted: null, decision: { kind: "EXECUTE" } });
+
+    const app = await buildTestServer();
+    const res = await post(app, "MessageSid=SM_WS_RETRY&From=whatsapp%3A%2B5511999999999&Body=oi");
+    expect(res.statusCode).toBe(200);
+
+    await vi.waitFor(() => {
+      expect(mockHandleTurn).toHaveBeenCalledTimes(2);
+    }, { timeout: 4000 });
+    await vi.waitFor(() => {
+      expect(mockOpenIncidentInline).toHaveBeenCalled();
+    }, { timeout: 4000 });
+
+    // Main deliverable reply WAS sent; the whitespace-only retry reply was NOT.
+    expect(mockSendText).toHaveBeenCalledWith(`whatsapp:${PHONE}`, mintRenderedReply("Perfeito!"));
+    expect(mockSendText).not.toHaveBeenCalledWith(`whatsapp:${PHONE}`, mintRenderedReply("  \n "));
+    // The blank retry did NOT auto-resolve an OPEN incident…
+    expect(mockCloseIncidentOnDeliveredReply).not.toHaveBeenCalled();
+    // …and the now-reachable whitespace_only branch flagged it as retry_exhausted.
+    expect(mockOpenIncidentInline).toHaveBeenCalledWith(
+      expect.objectContaining({ cause: "retry_exhausted", channel: "whatsapp" }),
+      expect.anything(),
+    );
+  }, 15000);
+
+  it("F5: a whitespace main reply that delivered PIX is NOT sent as text and opens NO incident", async () => {
+    // The model returned a blank completion but the turn DID deliver a PIX action
+    // (copia-e-cola + QR). Whitespace is NOT a delivered reply → not sent, but the
+    // PIX reached the customer, so deliveredText == hasPixData == true and the
+    // whitespace_only PIX-only guard (F5) must suppress the incident + holding msg.
+    mockHandleTurn.mockResolvedValue({
+      response: { text: "  \n " },
+      acted: {
+        kind: "executed",
+        result: {
+          pixCopyPaste: "00020126PIX-WHITESPACE-CASE",
+          pixQrCode: "data:image/png;base64,QR",
+          pixExpiresAt: "2026-06-28T23:59:00Z",
+          orderId: "ord-ws",
+        },
+      },
+      decision: { kind: "EXECUTE" },
+    });
+
+    const app = await buildTestServer();
+    const res = await post(app, "MessageSid=SM_WS_PIX&From=whatsapp%3A%2B5511999999999&Body=pagar");
+    expect(res.statusCode).toBe(200);
+
+    // The PIX copia-e-cola block confirms the turn was fully processed.
+    await vi.waitFor(() => {
+      expect(mockSendText).toHaveBeenCalledWith(
+        `whatsapp:${PHONE}`,
+        textContaining("Código PIX (copia e cola)"),
+      );
+    }, { timeout: 4000 });
+
+    // Whitespace text was NOT sent as a message…
+    expect(mockSendText).not.toHaveBeenCalledWith(`whatsapp:${PHONE}`, mintRenderedReply("  \n "));
+    // …no empty-completion holding message was pushed…
+    expect(mockSendText).not.toHaveBeenCalledWith(
+      `whatsapp:${PHONE}`,
+      textContaining("não consegui montar uma resposta"),
+    );
+    // …and NO no-delivery incident was opened (PIX reached the customer).
+    expect(mockOpenIncidentInline).not.toHaveBeenCalled();
+  }, 15000);
+
+  it("L10: a delivered reply still auto-closes an OPEN incident (detached fire-and-forget)", async () => {
+    // Default history ends with an assistant message → no post-lock retry. Give
+    // the main turn a turnId so the (now detached) close is observable.
+    mockGetConductor.mockReturnValue({
+      openCapsule: vi.fn().mockResolvedValue({ id: "capsule-1", turnId: "turn-main" }),
+      closeCapsule: vi.fn().mockResolvedValue(undefined),
+    });
+    mockHandleTurn.mockResolvedValue({
+      response: { text: "Tudo certo!" },
+      acted: null,
+      decision: { kind: "EXECUTE" },
+    });
+
+    const app = await buildTestServer();
+    const res = await post(app, "MessageSid=SM_CLOSE&From=whatsapp%3A%2B5511999999999&Body=oi");
+    expect(res.statusCode).toBe(200);
+
+    // Fire-and-forget: the close may settle after the reply path — wait for it.
+    await vi.waitFor(() => {
+      expect(mockCloseIncidentOnDeliveredReply).toHaveBeenCalledWith(
+        "sess-1",
+        "turn-main",
+        expect.anything(),
+      );
+    }, { timeout: 4000 });
+  }, 15000);
+
+  it("#5: a PIX-only turn whose copia-e-cola send FAILS opens a send_failed incident (not turn_error)", async () => {
+    // Empty text (PIX-only) → the text send is skipped (sendEntered stays false).
+    // The copia-e-cola send is now tracked, so a throw there is classified
+    // send_failed (customerImpacted) instead of turn_error (which opened NO
+    // incident → a customer ghosted on a payment turn).
+    mockHandleTurn.mockResolvedValue({
+      response: { text: "" },
+      acted: {
+        kind: "executed",
+        result: { pixCopyPaste: "00020126PIX-ONLY-FAIL", orderId: "ord-fail" },
+      },
+      decision: { kind: "EXECUTE" },
+    });
+    mockSendText.mockRejectedValue(new Error("twilio 500")); // the only send is copia-e-cola
+
+    const app = await buildTestServer();
+    const res = await post(app, "MessageSid=SM_PIXFAIL&From=whatsapp%3A%2B5511999999999&Body=pagar");
+    expect(res.statusCode).toBe(200);
+
+    await vi.waitFor(() => {
+      expect(mockOpenIncidentInline).toHaveBeenCalledWith(
+        expect.objectContaining({ cause: "send_failed", channel: "whatsapp" }),
+        expect.anything(),
+      );
+    }, { timeout: 4000 });
+  }, 15000);
+
+  it("below-cap: a send_failed whose canned apology IS delivered opens the incident customerImpacted:false", async () => {
+    // The reply send fails (send_failed), but the canned apology send succeeds →
+    // the customer got the apology (degraded, not silence) → customerImpacted:false.
+    mockHandleTurn.mockResolvedValue({
+      response: { text: "Olá, tudo certo!" },
+      acted: null,
+      decision: { kind: "EXECUTE" },
+    });
+    mockSendText
+      .mockRejectedValueOnce(new Error("twilio 500")) // the reply send fails → send_failed
+      .mockResolvedValue(undefined); // the canned apology send succeeds
+
+    const app = await buildTestServer();
+    const res = await post(app, "MessageSid=SM_APOLOGY&From=whatsapp%3A%2B5511999999999&Body=oi");
+    expect(res.statusCode).toBe(200);
+
+    await vi.waitFor(() => {
+      expect(mockOpenIncidentInline).toHaveBeenCalledWith(
+        expect.objectContaining({ cause: "send_failed", customerImpacted: false }),
+        expect.anything(),
+      );
+    }, { timeout: 4000 });
   }, 15000);
 });

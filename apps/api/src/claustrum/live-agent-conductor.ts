@@ -223,6 +223,15 @@ export function createLiveTriggerRunner(
 
     try {
       const result = await handleTurn(capsule, agentInbound);
+      // W1 no-reply incident — DEFERRED here (P2-16). The WhatsApp + web/chat
+      // seams (whatsapp-webhook.ts, routes/chat.ts via conversation/no-delivery.ts)
+      // detect "customer owed a reply" and open a governed incident on an
+      // empty/whitespace/aborted drop. The managed-agent plane does NOT map cleanly
+      // onto that: it is an autonomous loop with no `messageSid`, possibly no
+      // customer-facing delivery channel, and an empty rendered turn on a
+      // delivering decisionKind is not necessarily a drop. It needs a DISTINCT
+      // "owed a reply" definition + dedup key, NOT a copy of the WA/web seam.
+      // Do not wire classifyTurnDelivery/openIncidentInline here until that exists.
       return await processLiveTurnResult(deps, input, result, capped.calls());
     } finally {
       await conductor.closeCapsule(capsule);

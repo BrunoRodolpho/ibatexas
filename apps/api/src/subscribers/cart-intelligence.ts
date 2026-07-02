@@ -14,6 +14,7 @@
 //   ibatexas.order.status_changed    → sends WhatsApp notification on status transitions
 //   ibatexas.notification.send       → delivers WhatsApp notification to customer
 
+import { mintBroadcastReply } from "@adjudicate/core";
 import { subscribeNatsEvent } from "@ibatexas/nats-client";
 import { getRedisClient, rk, PROFILE_TTL_SECONDS, getWhatsAppSender, reaisToCentavos, atomicIncr } from "@ibatexas/tools";
 import * as Sentry from "@sentry/node";
@@ -359,7 +360,7 @@ async function sendHighValueCartAlert(
         const { sendText } = await import("../whatsapp/client.js");
         const valorFormatado = (totalCentavos / 100).toFixed(2).replace(".", ",");
         const alertMsg = `🚨 Carrinho de alto valor abandonado!\nValor: R$${valorFormatado}\nCliente: ${customerName ?? "Anonimo"}\nAcao: Ligue para recuperar.`;
-        await sendText(`whatsapp:${staffPhone}`, alertMsg);
+        await sendText(`whatsapp:${staffPhone}`, mintBroadcastReply(alertMsg));
         log?.info({ cart_id: cartId, total: totalCentavos, alert_count: alertCount }, "[cart-intelligence] staff alert sent for high-value cart");
       } else {
         log?.info({ cart_id: cartId, alert_count: alertCount }, "[cart-intelligence] Staff alert rate limit reached");
@@ -481,7 +482,9 @@ async function sendNewOrderStaffAlert(
       const valorFormatado = (totalCentavos / 100).toFixed(2).replace(".", ",");
       await sendText(
         `whatsapp:${staffPhone}`,
-        `🔔 *Novo pedido!*\nCliente: ${(payload as { customerName?: string }).customerName ?? "N/A"}\nItens: ${itemCount}\nTotal: R$${valorFormatado}`,
+        mintBroadcastReply(
+          `🔔 *Novo pedido!*\nCliente: ${(payload as { customerName?: string }).customerName ?? "N/A"}\nItens: ${itemCount}\nTotal: R$${valorFormatado}`,
+        ),
       );
       log?.info({ order_id: orderId }, "[cart-intelligence] staff new-order alert sent");
     }
@@ -736,7 +739,7 @@ async function sendStatusTransitionAlert(
       const { sendText } = await import("../whatsapp/client.js");
       await sendText(
         `whatsapp:${staffPhone}`,
-        `📋 Pedido ${formatOrderId(displayId)}: ${fromLabel} → ${toLabel}`,
+        mintBroadcastReply(`📋 Pedido ${formatOrderId(displayId)}: ${fromLabel} → ${toLabel}`),
       );
       hLog?.info({ order_id: orderId, newStatus }, "[cart-intelligence] staff transition alert sent");
     }
@@ -1118,7 +1121,7 @@ export async function startCartIntelligenceSubscribers(
 
       const sender = getWhatsAppSender();
       if (sender) {
-        await sender.sendText(`whatsapp:${customer.phone}`, text);
+        await sender.sendText(`whatsapp:${customer.phone}`, mintBroadcastReply(text));
         log?.info({ customerId, type }, "[cart-intelligence] notification.send delivered via WhatsApp");
       } else {
         log?.info({ customerId, type, text }, "[cart-intelligence] notification.send — WhatsApp sender not configured (stub)");
@@ -1218,7 +1221,7 @@ export async function startCartIntelligenceSubscribers(
 
       const sender = getWhatsAppSender();
       if (sender) {
-        await sender.sendText(`whatsapp:${customer.phone}`, message);
+        await sender.sendText(`whatsapp:${customer.phone}`, mintBroadcastReply(message));
         log?.info({ customer_id: customerId }, "[cart-intelligence] review.prompt delivered via WhatsApp");
       } else {
         log?.info({ customer_id: customerId, message }, "[cart-intelligence] review.prompt — WhatsApp sender not configured (stub)");
@@ -1296,7 +1299,9 @@ export async function startCartIntelligenceSubscribers(
         const valorFormatado = (amount / 100).toFixed(2).replace(".", ",");
         await sendText(
           `whatsapp:${staffPhone}`,
-          `⚠️ *Disputa aberta* — Pedido: ${orderId ?? "N/A"}, Motivo: ${reason}, Valor: R$${valorFormatado}`,
+          mintBroadcastReply(
+            `⚠️ *Disputa aberta* — Pedido: ${orderId ?? "N/A"}, Motivo: ${reason}, Valor: R$${valorFormatado}`,
+          ),
         );
         log?.info({ dispute_id: disputeId }, "[cart-intelligence] dispute staff alert sent");
       } else {

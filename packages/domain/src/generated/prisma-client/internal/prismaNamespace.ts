@@ -410,7 +410,8 @@ export const ModelName = {
   ScheduleOverride: 'ScheduleOverride',
   AgentRun: 'AgentRun',
   AgentRedTeamRun: 'AgentRedTeamRun',
-  LlmTokenUsage: 'LlmTokenUsage'
+  LlmTokenUsage: 'LlmTokenUsage',
+  ConversationIncident: 'ConversationIncident'
 } as const
 
 export type ModelName = (typeof ModelName)[keyof typeof ModelName]
@@ -426,7 +427,7 @@ export type TypeMap<ExtArgs extends runtime.Types.Extensions.InternalArgs = runt
     omit: GlobalOmitOptions
   }
   meta: {
-    modelProps: "table" | "timeSlot" | "reservation" | "reservationTable" | "waitlist" | "review" | "staff" | "customer" | "address" | "customerPreferences" | "customerOrderItem" | "orderProjection" | "orderStatusHistory" | "orderEventLog" | "payment" | "paymentStatusHistory" | "orderNote" | "loyaltyAccount" | "conversation" | "conversationMessage" | "deliveryZone" | "weeklySchedule" | "holiday" | "scheduleOverride" | "agentRun" | "agentRedTeamRun" | "llmTokenUsage"
+    modelProps: "table" | "timeSlot" | "reservation" | "reservationTable" | "waitlist" | "review" | "staff" | "customer" | "address" | "customerPreferences" | "customerOrderItem" | "orderProjection" | "orderStatusHistory" | "orderEventLog" | "payment" | "paymentStatusHistory" | "orderNote" | "loyaltyAccount" | "conversation" | "conversationMessage" | "deliveryZone" | "weeklySchedule" | "holiday" | "scheduleOverride" | "agentRun" | "agentRedTeamRun" | "llmTokenUsage" | "conversationIncident"
     txIsolationLevel: TransactionIsolationLevel
   }
   model: {
@@ -2428,6 +2429,80 @@ export type TypeMap<ExtArgs extends runtime.Types.Extensions.InternalArgs = runt
         }
       }
     }
+    ConversationIncident: {
+      payload: Prisma.$ConversationIncidentPayload<ExtArgs>
+      fields: Prisma.ConversationIncidentFieldRefs
+      operations: {
+        findUnique: {
+          args: Prisma.ConversationIncidentFindUniqueArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$ConversationIncidentPayload> | null
+        }
+        findUniqueOrThrow: {
+          args: Prisma.ConversationIncidentFindUniqueOrThrowArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$ConversationIncidentPayload>
+        }
+        findFirst: {
+          args: Prisma.ConversationIncidentFindFirstArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$ConversationIncidentPayload> | null
+        }
+        findFirstOrThrow: {
+          args: Prisma.ConversationIncidentFindFirstOrThrowArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$ConversationIncidentPayload>
+        }
+        findMany: {
+          args: Prisma.ConversationIncidentFindManyArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$ConversationIncidentPayload>[]
+        }
+        create: {
+          args: Prisma.ConversationIncidentCreateArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$ConversationIncidentPayload>
+        }
+        createMany: {
+          args: Prisma.ConversationIncidentCreateManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        createManyAndReturn: {
+          args: Prisma.ConversationIncidentCreateManyAndReturnArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$ConversationIncidentPayload>[]
+        }
+        delete: {
+          args: Prisma.ConversationIncidentDeleteArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$ConversationIncidentPayload>
+        }
+        update: {
+          args: Prisma.ConversationIncidentUpdateArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$ConversationIncidentPayload>
+        }
+        deleteMany: {
+          args: Prisma.ConversationIncidentDeleteManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        updateMany: {
+          args: Prisma.ConversationIncidentUpdateManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        updateManyAndReturn: {
+          args: Prisma.ConversationIncidentUpdateManyAndReturnArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$ConversationIncidentPayload>[]
+        }
+        upsert: {
+          args: Prisma.ConversationIncidentUpsertArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$ConversationIncidentPayload>
+        }
+        aggregate: {
+          args: Prisma.ConversationIncidentAggregateArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.AggregateConversationIncident>
+        }
+        groupBy: {
+          args: Prisma.ConversationIncidentGroupByArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.ConversationIncidentGroupByOutputType>[]
+        }
+        count: {
+          args: Prisma.ConversationIncidentCountArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.ConversationIncidentCountAggregateOutputType> | number
+        }
+      }
+    }
   }
 } & {
   other: {
@@ -2879,6 +2954,41 @@ export const LlmTokenUsageScalarFieldEnum = {
 export type LlmTokenUsageScalarFieldEnum = (typeof LlmTokenUsageScalarFieldEnum)[keyof typeof LlmTokenUsageScalarFieldEnum]
 
 
+export const ConversationIncidentScalarFieldEnum = {
+  id: 'id',
+  sessionId: 'sessionId',
+  conversationId: 'conversationId',
+  customerId: 'customerId',
+  channel: 'channel',
+  senderRef: 'senderRef',
+  kind: 'kind',
+  cause: 'cause',
+  lastCause: 'lastCause',
+  severity: 'severity',
+  status: 'status',
+  dropCount: 'dropCount',
+  customerImpacted: 'customerImpacted',
+  openedAt: 'openedAt',
+  lastDropAt: 'lastDropAt',
+  acknowledgedAt: 'acknowledgedAt',
+  acknowledgedBy: 'acknowledgedBy',
+  resolvedAt: 'resolvedAt',
+  resolvedBy: 'resolvedBy',
+  resolutionType: 'resolutionType',
+  priorIncidentId: 'priorIncidentId',
+  lastTurnId: 'lastTurnId',
+  lastDecisionKind: 'lastDecisionKind',
+  closingTurnId: 'closingTurnId',
+  externalId: 'externalId',
+  phoneHash: 'phoneHash',
+  detail: 'detail',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+} as const
+
+export type ConversationIncidentScalarFieldEnum = (typeof ConversationIncidentScalarFieldEnum)[keyof typeof ConversationIncidentScalarFieldEnum]
+
+
 export const SortOrder = {
   asc: 'asc',
   desc: 'desc'
@@ -3123,6 +3233,76 @@ export type ListDecimalFieldRefInput<$PrismaModel> = FieldRefInputType<$PrismaMo
 
 
 /**
+ * Reference to a field of type 'IncidentKind'
+ */
+export type EnumIncidentKindFieldRefInput<$PrismaModel> = FieldRefInputType<$PrismaModel, 'IncidentKind'>
+    
+
+
+/**
+ * Reference to a field of type 'IncidentKind[]'
+ */
+export type ListEnumIncidentKindFieldRefInput<$PrismaModel> = FieldRefInputType<$PrismaModel, 'IncidentKind[]'>
+    
+
+
+/**
+ * Reference to a field of type 'IncidentCause'
+ */
+export type EnumIncidentCauseFieldRefInput<$PrismaModel> = FieldRefInputType<$PrismaModel, 'IncidentCause'>
+    
+
+
+/**
+ * Reference to a field of type 'IncidentCause[]'
+ */
+export type ListEnumIncidentCauseFieldRefInput<$PrismaModel> = FieldRefInputType<$PrismaModel, 'IncidentCause[]'>
+    
+
+
+/**
+ * Reference to a field of type 'IncidentSeverity'
+ */
+export type EnumIncidentSeverityFieldRefInput<$PrismaModel> = FieldRefInputType<$PrismaModel, 'IncidentSeverity'>
+    
+
+
+/**
+ * Reference to a field of type 'IncidentSeverity[]'
+ */
+export type ListEnumIncidentSeverityFieldRefInput<$PrismaModel> = FieldRefInputType<$PrismaModel, 'IncidentSeverity[]'>
+    
+
+
+/**
+ * Reference to a field of type 'IncidentStatus'
+ */
+export type EnumIncidentStatusFieldRefInput<$PrismaModel> = FieldRefInputType<$PrismaModel, 'IncidentStatus'>
+    
+
+
+/**
+ * Reference to a field of type 'IncidentStatus[]'
+ */
+export type ListEnumIncidentStatusFieldRefInput<$PrismaModel> = FieldRefInputType<$PrismaModel, 'IncidentStatus[]'>
+    
+
+
+/**
+ * Reference to a field of type 'IncidentResolutionType'
+ */
+export type EnumIncidentResolutionTypeFieldRefInput<$PrismaModel> = FieldRefInputType<$PrismaModel, 'IncidentResolutionType'>
+    
+
+
+/**
+ * Reference to a field of type 'IncidentResolutionType[]'
+ */
+export type ListEnumIncidentResolutionTypeFieldRefInput<$PrismaModel> = FieldRefInputType<$PrismaModel, 'IncidentResolutionType[]'>
+    
+
+
+/**
  * Reference to a field of type 'Float'
  */
 export type FloatFieldRefInput<$PrismaModel> = FieldRefInputType<$PrismaModel, 'Float'>
@@ -3257,6 +3437,7 @@ export type GlobalOmitConfig = {
   agentRun?: Prisma.AgentRunOmit
   agentRedTeamRun?: Prisma.AgentRedTeamRunOmit
   llmTokenUsage?: Prisma.LlmTokenUsageOmit
+  conversationIncident?: Prisma.ConversationIncidentOmit
 }
 
 /* Types for Logging */
