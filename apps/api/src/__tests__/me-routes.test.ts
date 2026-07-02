@@ -29,6 +29,8 @@ const mockAnonymizeCustomerFromEnvelope = vi.hoisted(() => vi.fn());
 const mockGetById = vi.hoisted(() => vi.fn());
 const mockUpdatePreferences = vi.hoisted(() => vi.fn());
 const mockGetBalance = vi.hoisted(() => vi.fn());
+const mockOrderGetById = vi.hoisted(() => vi.fn());
+const mockSubmitReview = vi.hoisted(() => vi.fn());
 const mockSendOtp = vi.hoisted(() =>
   vi.fn(async (_args: { to: string; channel: string }) => undefined),
 );
@@ -151,9 +153,13 @@ vi.mock("@ibatexas/domain", () => ({
   createLoyaltyService: () => ({
     getBalance: mockGetBalance,
   }),
+  createOrderQueryService: () => ({
+    getById: mockOrderGetById,
+  }),
 }));
 
 vi.mock("@ibatexas/tools", () => ({
+  submitReview: mockSubmitReview,
   getRedisClient: vi.fn(async () => ({
     set: mockRedisSet,
     get: mockRedisGet,
@@ -999,6 +1005,152 @@ describe("POST /api/me/preferences — dietary preferences (governed)", () => {
       });
       expect(res.statusCode).toBe(401);
       expect(mockUpdatePreferences).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+// ── Tests: POST /api/me/reviews (CUS-049 — governed, owner-scoped) ──────────────
+
+describe("POST /api/me/reviews — submit product review (governed)", () => {
+  const deliveredOrder = {
+    id: "order_01",
+    fulfillmentStatus: "delivered",
+    itemsJson: [{ productId: "prod_A" }, { productId: "prod_B" }],
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    redisStorage.clear();
+    setupEnv();
+  });
+
+  it("submits a review for an owned, delivered order (EXECUTE)", async () => {
+    mockOrderGetById.mockResolvedValue(deliveredOrder);
+    mockSubmitReview.mockResolvedValue({ success: true, message: "Avaliação enviada! ⭐⭐⭐⭐⭐ Obrigado pelo seu feedback." });
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/me/reviews",
+        headers: { "x-customer-id": "cust_01", "content-type": "application/json" },
+        payload: { orderId: "order_01", productId: "prod_A", rating: 5, comment: "Ótimo" },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().success).toBe(true);
+      // Owner-scoped read used the authenticated customerId (IDOR gate).
+      expect(mockOrderGetById).toHaveBeenCalledWith("order_01", { customerId: "cust_01" });
+      // Governed write ran with the web channel + authenticated customerId.
+      expect(mockSubmitReview).toHaveBeenCalledWith(
+        expect.objectContaining({ orderId: "order_01", productId: "prod_A", rating: 5, comment: "Ótimo" }),
+        expect.objectContaining({ customerId: "cust_01" }),
+      );
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("[IDOR] returns 403 and never writes when the order is not the customer's", async () => {
+    // Owner-scoped getById returns null for a non-owner / unattributed order.
+    mockOrderGetById.mockResolvedValue(null);
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/me/reviews",
+        headers: { "x-customer-id": "attacker", "content-type": "application/json" },
+        payload: { orderId: "order_01", productId: "prod_A", rating: 5 },
+      });
+      expect(res.statusCode).toBe(403);
+      expect(mockSubmitReview).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("returns 403 when the order is not yet delivered", async () => {
+    mockOrderGetById.mockResolvedValue({ ...deliveredOrder, fulfillmentStatus: "preparing" });
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/me/reviews",
+        headers: { "x-customer-id": "cust_01", "content-type": "application/json" },
+        payload: { orderId: "order_01", productId: "prod_A", rating: 5 },
+      });
+      expect(res.statusCode).toBe(403);
+      expect(res.json().message).toContain("após a entrega");
+      expect(mockSubmitReview).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("returns 403 when the product is not part of the order", async () => {
+    mockOrderGetById.mockResolvedValue(deliveredOrder);
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/me/reviews",
+        headers: { "x-customer-id": "cust_01", "content-type": "application/json" },
+        payload: { orderId: "order_01", productId: "prod_NOT_IN_ORDER", rating: 4 },
+      });
+      expect(res.statusCode).toBe(403);
+      expect(mockSubmitReview).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("maps a kernel REFUSE (NonRetryableError) to 422", async () => {
+    mockOrderGetById.mockResolvedValue(deliveredOrder);
+    const err = new Error("Não foi possível enviar a avaliação.");
+    err.name = "NonRetryableError";
+    mockSubmitReview.mockRejectedValue(err);
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/me/reviews",
+        headers: { "x-customer-id": "cust_01", "content-type": "application/json" },
+        payload: { orderId: "order_01", productId: "prod_A", rating: 3 },
+      });
+      expect(res.statusCode).toBe(422);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("rejects an out-of-range rating at the schema boundary (400)", async () => {
+    mockOrderGetById.mockResolvedValue(deliveredOrder);
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/me/reviews",
+        headers: { "x-customer-id": "cust_01", "content-type": "application/json" },
+        payload: { orderId: "order_01", productId: "prod_A", rating: 9 },
+      });
+      expect(res.statusCode).toBe(400);
+      expect(mockSubmitReview).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("returns 401 when not authenticated", async () => {
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/me/reviews",
+        headers: { "content-type": "application/json" },
+        payload: { orderId: "order_01", productId: "prod_A", rating: 5 },
+      });
+      expect(res.statusCode).toBe(401);
+      expect(mockSubmitReview).not.toHaveBeenCalled();
     } finally {
       await app.close();
     }

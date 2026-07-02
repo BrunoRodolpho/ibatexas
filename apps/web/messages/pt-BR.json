@@ -392,6 +392,18 @@
         "sem_lactose": "Sem lactose"
       }
     },
+    "reviews": {
+      "title": "Avaliações",
+      "description": "Avalie os produtos dos seus pedidos entregues.",
+      "empty": "Nenhum produto para avaliar no momento.",
+      "order_label": "Pedido {id}",
+      "comment_placeholder": "Comentário (opcional)",
+      "submit": "Enviar avaliação",
+      "submitting": "Enviando…",
+      "submitted": "Avaliação enviada!",
+      "error": "Não foi possível enviar agora. Tente novamente.",
+      "rating_required": "Escolha de 1 a 5 estrelas."
+    },
     "payment_methods": "Métodos de Pagamento",
     "payment_description": "Seus métodos de pagamento",
     "wishlist": "Minha Lista de Desejos",

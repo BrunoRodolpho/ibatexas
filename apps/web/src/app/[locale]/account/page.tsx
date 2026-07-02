@@ -10,6 +10,7 @@ import { Flame, Heart, Package, User } from 'lucide-react'
 import { LgpdDataExport } from './_components/LgpdDataExport'
 import { LoyaltyBalanceCard } from './_components/LoyaltyBalanceCard'
 import { DietaryPreferencesCard } from './_components/DietaryPreferencesCard'
+import { ProductReviewsCard } from './_components/ProductReviewsCard'
 
 interface CustomerProfile {
   id: string
@@ -181,6 +182,9 @@ export default function AccountPage() {
 
         {/* Loyalty balance (CUS-067 web view) */}
         <LoyaltyBalanceCard />
+
+        {/* Product reviews for delivered orders (CUS-049 web view) */}
+        <ProductReviewsCard />
 
         {/* LGPD data export (CUS-064) */}
         <LgpdDataExport />

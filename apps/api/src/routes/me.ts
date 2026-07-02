@@ -46,7 +46,8 @@ import { createHash } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
-import { getRedisClient, rk, withLock } from "@ibatexas/tools";
+import { getRedisClient, rk, withLock, submitReview } from "@ibatexas/tools";
+import { Channel } from "@ibatexas/types";
 // WS5: park guard now lives in apps/api (the `park-deferred-intent-nx` seam
 // re-exports `apps/api/src/adapters/park-nx.ts`). me.ts's DEFER call sites
 // (LGPD-grace / PIX-pending parks) and the quota-metric hook must share the
@@ -57,6 +58,7 @@ import {
 } from "../adapters/park-deferred-intent-nx.js";
 import {
   createCustomerService,
+  createOrderQueryService,
   createLoyaltyService,
   exportCustomerData,
   anonymizeCustomer,
@@ -351,6 +353,90 @@ export async function meRoutes(server: FastifyInstance): Promise<void> {
         .status(out.statusCode)
         .send(out.body as never);
       return reply;
+    },
+  );
+
+  // ── POST /api/me/reviews ───────────────────────────────────────────────────
+  //
+  // CUS-049 (web surface) — the authenticated customer submits a product review
+  // for a delivered order. The write itself is governed: `submitReview` builds
+  // an `order.review.submit` IntentEnvelope adjudicated against the orders Pack
+  // (rating-range 1–5, orderId presence, audit) before any Prisma write, and
+  // scopes the row to the authenticated customerId (never the payload).
+  //
+  // Route-level ownership gate (defense in depth, closes IDOR): before we touch
+  // the governed path we owner-scope the order via `getById(orderId, {customerId})`
+  // — a non-owner or NULL-owner projection resolves to null (SDD §N P0-3, Inv 2),
+  // so a customer can only review an order that is theirs. We also require the
+  // order be DELIVERED and the product to appear in it, matching the "após a
+  // entrega" contract of the review tool.
+  const ReviewSubmitResponse = z.object({ success: z.boolean(), message: z.string() });
+
+  app.post(
+    "/api/me/reviews",
+    {
+      schema: {
+        tags: ["me"],
+        summary: "Enviar avaliação de um produto de um pedido entregue",
+        body: z.object({
+          orderId: z.string().min(1),
+          productId: z.string().min(1),
+          rating: z.number().int().min(1).max(5),
+          comment: z.string().max(1000).optional(),
+        }),
+        response: {
+          200: ReviewSubmitResponse,
+          403: z.object({ statusCode: z.number(), error: z.string(), message: z.string() }),
+          422: z.object({ error: z.string() }),
+          500: z.object({ error: z.string() }),
+        },
+      },
+      preHandler: requireAuth,
+    },
+    async (request, reply) => {
+      const customerId = request.customerId!;
+      const { orderId, productId, rating, comment } = request.body;
+
+      const refuse403 = (message: string) =>
+        reply.code(403).send({ statusCode: 403, error: "Forbidden", message });
+
+      // Owner-scoped read: null for a non-owner / unattributed order (Inv 2).
+      const order = await createOrderQueryService().getById(orderId, { customerId });
+      if (!order) {
+        return refuse403("Pedido não encontrado para esta conta.");
+      }
+      if (order.fulfillmentStatus !== "delivered") {
+        return refuse403("Só é possível avaliar um pedido após a entrega.");
+      }
+      const items = Array.isArray(order.itemsJson) ? order.itemsJson : [];
+      const productInOrder = items.some(
+        (it) => (it as { productId?: string } | null)?.productId === productId,
+      );
+      if (!productInOrder) {
+        return refuse403("Este produto não faz parte do pedido informado.");
+      }
+
+      // Governed write: submitReview adjudicates via the orders Pack and scopes
+      // the review row to this customerId. Re-asserts rating-range + orderId.
+      // A kernel REFUSE surfaces as NonRetryableError → 422 (repo idiom).
+      try {
+        const result = await submitReview(
+          { productId, orderId, rating, ...(comment === undefined ? {} : { comment }) },
+          {
+            channel: Channel.Web,
+            sessionId: request.id,
+            customerId,
+            userType: "customer",
+          },
+        );
+        return reply.code(200).send(result);
+      } catch (err) {
+        if (err instanceof Error && err.name === "NonRetryableError") {
+          return reply.code(422).send({ error: err.message });
+        }
+        request.log.error(err, "submitReview falhou");
+        return reply.code(500).send({ error: "Erro ao enviar avaliação." });
+      }
     },
   );
 
