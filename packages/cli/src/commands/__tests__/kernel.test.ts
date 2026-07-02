@@ -80,10 +80,11 @@ describe("ibx kernel status", () => {
     expect(parsed).toHaveProperty("audit")
     // claustrum-on-dev WS9: KNOWN_INTENT_KINDS is now sourced from the
     // `@ibatexas/intent-kinds` leaf package (post W5 Pack expansion), which
-    // composes 63 kinds across six first-party Packs + the PIX adopter Pack
-    // (orders 22, reservations 8, whatsapp 4, pix 3, payments 17,
-    // customer-onboarding 8, loyalty 1). The pre-cutover `32` was stale.
-    expect(parsed.knownIntentKinds.count).toBe(63)
+    // composes 64 kinds across six first-party Packs + the PIX adopter Pack
+    // (orders 22, reservations 8, whatsapp 5 incl. BKL-030
+    // whatsapp.handoff.request, pix 3, payments 17, customer-onboarding 8,
+    // loyalty 1). The pre-cutover `32` was stale.
+    expect(parsed.knownIntentKinds.count).toBe(64)
   })
 
   it("renders human-readable text when --json is absent", async () => {
@@ -106,13 +107,15 @@ describe("ibx kernel status", () => {
     expect(out).toMatch(/em\s+6\s+packs/)
   })
 
-  it("includes all 63 KNOWN_INTENT_KINDS in the JSON list", async () => {
+  it("includes all 64 KNOWN_INTENT_KINDS in the JSON list", async () => {
     await cmd.parseAsync(["status", "--json"], { from: "user" })
     const out = stdout.getOutput()
     const parsed = JSON.parse(out)
     expect(parsed.knownIntentKinds.kinds).toContain("order.checkout.create")
     expect(parsed.knownIntentKinds.kinds).toContain("reservation.create")
     expect(parsed.knownIntentKinds.kinds).toContain("whatsapp.message.send")
+    // BKL-030: the customer-side escalation on-ramp added by the PR.
+    expect(parsed.knownIntentKinds.kinds).toContain("whatsapp.handoff.request")
     expect(parsed.knownIntentKinds.kinds).toContain("customer.create")
     expect(parsed.knownIntentKinds.kinds).toContain("pix.charge.create")
   })
@@ -123,7 +126,10 @@ describe("ibx kernel status", () => {
     // Per-domain counts derived from @ibatexas/intent-kinds (post W5 expansion).
     expect(out).toMatch(/order \(22\)/)
     expect(out).toMatch(/reservation \(8\)/)
-    expect(out).toMatch(/whatsapp \(3\)/)
+    // whatsapp.* prefix group = 4 (message.send, template.send,
+    // session.handover, BKL-030 handoff.request); the pack's 5th kind
+    // (conversation.message.append) groups under the `conversation` prefix.
+    expect(out).toMatch(/whatsapp \(4\)/)
     expect(out).toMatch(/customer \(8\)/)
     expect(out).toMatch(/pix \(3\)/)
   })

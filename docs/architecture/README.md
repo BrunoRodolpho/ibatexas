@@ -24,7 +24,7 @@ graph TD
 
   COND["claustrum Conductor<br/>getConductor() — per-turn Capsule"]
   KERNEL["Kernel adjudicate()<br/>@adjudicate/core — every IntentEnvelope"]
-  PACKS["Pack tools<br/>17 LLM-callable intents"]
+  PACKS["Pack tools<br/>18 LLM-callable intents"]
   SHARED["packages/tools/<br/>shared logic"]
   MEDUSA["Medusa v2 :9000"]
 
@@ -348,7 +348,7 @@ agent-tool loop. Authority lives in the kernel, never in the LLM (CLAUDE.md rule
   mutation runs. The kernel is **always authoritative** — no env-var gating, no shadow mode, no
   kill switch. Wiring lives in `apps/api/src/claustrum-bootstrap.ts` (`adjudicateAndAudit`).
 - **Every decision is audited** — console + NATS + Postgres via `@adjudicate/audit-postgres`.
-- **The 17 LLM-callable tool definitions** are assembled by
+- **The 18 LLM-callable tool definitions** are assembled by
   `apps/api/src/tools/register-ibatexas-tool-packs.ts` (`listIbatexasToolPacks()`), keyed by
   `capability := intentKind`. `toolRosterDrift()` runs fail-closed at boot to keep that invariant.
 - **System-driven mutations** (subscribers, jobs, webhooks) build a system-actor envelope
@@ -360,7 +360,7 @@ See CLAUDE.md rule #9 and `docs/architecture/decisions.md` (ADR #9).
 |---------|-------|
 | Conductor wiring | `apps/api/src/claustrum-bootstrap.ts` (`getConductor`) |
 | LLM intent extraction | `apps/api/src/claustrum/ibatexas-planner.ts` (`createIbatexasPlanner`) |
-| Tool roster (17) | `apps/api/src/tools/register-ibatexas-tool-packs.ts` (`listIbatexasToolPacks`) |
+| Tool roster (18) | `apps/api/src/tools/register-ibatexas-tool-packs.ts` (`listIbatexasToolPacks`) |
 | Per-domain policy + visibility | `packages/pack-*/src/` (`*CapabilityPlanner`, `*PolicyBundle`) |
 | Decision audit (Postgres) | `@adjudicate/audit-postgres` |
 

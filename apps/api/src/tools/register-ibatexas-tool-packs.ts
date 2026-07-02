@@ -212,7 +212,7 @@ function makeReservationTool(opts: {
 // against its pack's `intents` array (pack-{orders,reservations,customer-
 // onboarding,payments}/src/index.ts) on the WS3 sweep.
 //
-// 17 LLM-callable mutating tools = the union of every pack CapabilityPlanner's
+// 18 LLM-callable mutating tools = the union of every pack CapabilityPlanner's
 // `allowedIntents` that has a `@ibatexas/tools` handler. The two payment kinds
 // that ship no handler were DE-ADVERTISED in pack-payments (P0-7) — the
 // context-aware leg of `toolRosterDrift()` below now fails the boot if a

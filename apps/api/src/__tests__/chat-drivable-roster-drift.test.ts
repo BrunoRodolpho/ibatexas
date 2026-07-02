@@ -2,7 +2,7 @@
  * T1a-2 — chat-drivable roster drift gate.
  *
  * `@ibatexas/packs-composed` exports `CHAT_DRIVABLE_TOOL_KINDS`: the data
- * mirror of the 17 LLM-callable mutating tool capability ids registered by
+ * mirror of the 18 LLM-callable mutating tool capability ids registered by
  * `listIbatexasToolPacks()` here in apps/api. The journey gates
  * (`ibx journey lint` / `coverage`, DR-5) consume the mirror because an
  * apps/api export is unreachable from packages/* by design.

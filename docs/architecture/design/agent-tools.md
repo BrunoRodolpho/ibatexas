@@ -11,7 +11,7 @@ The agent interacts with the Restaurant and Intelligence contexts through typed 
 
 **Tool access model:** the LLM has zero state-mutation authority. It reads facts via read-only tools and proposes mutations only through the single `express_intent` tool (`apps/api/src/claustrum/ibatexas-planner.ts`), which the kernel `adjudicate()`s. Per-tool classification (READ_ONLY vs MUTATING) and per-state visibility are owned by each Pack's `ToolClassification` + `*CapabilityPlanner` (`@adjudicate/core/llm`, e.g. `packages/pack-orders/src/capabilities.ts`); kernel `PolicyBundle` guards (`canCancelOrder`, `canAmendOrder`, `hasOrderId` in `packages/pack-orders/src/policies.ts`) gate invalid operations. The full rationale and contract is **ADR #9 — Intent-Gated Execution** in [docs/architecture/decisions.md](../decisions.md).
 
-The roster below is the **17 LLM-callable mutating tools** plus the read-only tools, assembled by `apps/api/src/tools/register-ibatexas-tool-packs.ts` (`listIbatexasToolPacks()`).
+The roster below is the **18 LLM-callable mutating tools** plus the read-only tools, assembled by `apps/api/src/tools/register-ibatexas-tool-packs.ts` (`listIbatexasToolPacks()`).
 
 ---
 
@@ -333,11 +333,13 @@ Return products historically ordered together with the current cart contents.
 
 ## Support Tools
 
-### `handoff_to_human`Escalate the conversation to a human staff member.
+### `handoff_to_human`
+
+Escalate the conversation to a human staff member.
 
 | | |
 |---|---|
 | **Auth** | guest |
 | **Input** | `sessionId: string`, `reason?: string` |
 | **Output** | `{ success: boolean, estimatedWaitMinutes?: number, message: string }` |
-| **Notes** | Notifies staff via internal WhatsApp. Preserves full conversation context for the staff member |
+| **Notes** | Governed: proposed as the `whatsapp.handoff.request` intent (pack-whatsapp, roster #18) and kernel-adjudicated; the free-text reason is audit-redacted; the executor publishes `support.handoff_requested` into the handoff spine. Notifies staff via internal WhatsApp. Preserves full conversation context for the staff member |
