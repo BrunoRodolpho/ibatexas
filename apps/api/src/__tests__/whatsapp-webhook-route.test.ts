@@ -3,7 +3,7 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import Fastify from "fastify";
-import { whatsappWebhookRoutes } from "../routes/whatsapp-webhook.js";
+import { whatsappWebhookRoutes, handleShortcut } from "../routes/whatsapp-webhook.js";
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────────
 
@@ -26,6 +26,7 @@ const mockCollectAgentResponse = vi.hoisted(() => vi.fn());
 const mockSendText = vi.hoisted(() => vi.fn());
 const mockMatchShortcut = vi.hoisted(() => vi.fn());
 const mockBuildHelpText = vi.hoisted(() => vi.fn());
+const mockGetLoyaltyBalance = vi.hoisted(() => vi.fn());
 const mockLoadSession = vi.hoisted(() => vi.fn());
 const mockAppendMessages = vi.hoisted(() => vi.fn());
 
@@ -37,6 +38,7 @@ vi.mock("@ibatexas/tools", () => ({
   getRedisClient: mockGetRedisClient,
   rk: mockRk,
   atomicIncr: mockAtomicIncr,
+  getLoyaltyBalance: mockGetLoyaltyBalance,
 }));
 
 vi.mock("@ibatexas/nats-client", () => ({
@@ -79,6 +81,7 @@ vi.mock("../whatsapp/shortcuts.js", () => ({
   matchShortcut: mockMatchShortcut,
   buildHelpText: mockBuildHelpText,
   buildWelcomeText: vi.fn().mockReturnValue("Bem-vindo!"),
+  buildLoyaltyText: vi.fn().mockReturnValue("Para ver seus selos, faça login."),
 }));
 
 vi.mock("../jobs/hesitation-nudge.js", () => ({
@@ -640,5 +643,42 @@ describe("Full POST /api/webhooks/whatsapp integration", () => {
       expect.stringContaining("rate"),
       60,
     );
+  });
+});
+
+// ── handleShortcut — loyalty balance (CUS-067) ───────────────────────────────
+// Direct unit tests of the exported dispatcher: the loyalty keyword now returns
+// the REAL stamp balance for an identified customer, and the login-prompt copy
+// for a guest — instead of deflecting to the (dead-tool) agent.
+describe("handleShortcut — loyalty (CUS-067)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns the fetched stamp-balance message for an identified customer", async () => {
+    mockGetLoyaltyBalance.mockResolvedValue({
+      stamps: 3,
+      stampsNeeded: 7,
+      totalEarned: 3,
+      message: "Voce tem 3 de 10 selos.",
+    });
+    const out = await handleShortcut("loyalty", { customerId: "cus_1", sessionId: "s1" });
+    expect(out).toBe("Voce tem 3 de 10 selos.");
+    expect(mockGetLoyaltyBalance).toHaveBeenCalledWith(
+      {},
+      expect.objectContaining({ customerId: "cus_1" }),
+    );
+  });
+
+  it("returns the login-prompt copy for a guest (no customerId), without hitting the service", async () => {
+    const out = await handleShortcut("loyalty", { sessionId: "s1" });
+    expect(out).toBe("Para ver seus selos, faça login.");
+    expect(mockGetLoyaltyBalance).not.toHaveBeenCalled();
+  });
+
+  it("falls through to the agent (null) when the loyalty service throws", async () => {
+    mockGetLoyaltyBalance.mockRejectedValue(new Error("loyalty down"));
+    const out = await handleShortcut("loyalty", { customerId: "cus_1", sessionId: "s1" });
+    expect(out).toBeNull();
   });
 });

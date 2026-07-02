@@ -39,7 +39,8 @@ import {
   mintReceiptReply,
   wrapLegacyResponderText,
 } from "@adjudicate/core";
-import { getRedisClient, rk, atomicIncr } from "@ibatexas/tools";
+import { getRedisClient, rk, atomicIncr, getLoyaltyBalance } from "@ibatexas/tools";
+import { Channel } from "@ibatexas/types";
 import { getConductor } from "../claustrum-bootstrap.js";
 import { loadSession, appendMessages } from "../session/store.js";
 import {
@@ -66,7 +67,7 @@ import {
   type TurnDisposition,
 } from "../conversation/no-delivery.js";
 import { closeIncidentOnDeliveredReply } from "../incidents/incident-auto-close.js";
-import { matchShortcut, buildHelpText, buildWelcomeText } from "../whatsapp/shortcuts.js";
+import { matchShortcut, buildHelpText, buildWelcomeText, buildLoyaltyText } from "../whatsapp/shortcuts.js";
 import { LGPD_OPTIN_MESSAGE } from "../whatsapp/constants.js";
 import { scheduleHesitationNudge, markCustomerReplied } from "../jobs/hesitation-nudge.js";
 import { schedulePixExpiryMonitor } from "../jobs/pix-expiry-monitor.js";
@@ -468,14 +469,32 @@ async function checkWebhookRateLimit(redis: Awaited<ReturnType<typeof getRedisCl
 
 // ── Shortcut dispatch ────────────────────────────────────────────────────────
 
-async function handleShortcut(
+export async function handleShortcut(
   shortcutType: string,
+  ctx?: { customerId?: string; sessionId: string },
 ): Promise<string | null> {
   switch (shortcutType) {
     case "help":
       return buildHelpText();
     case "welcome":
       return buildWelcomeText();
+    case "loyalty": {
+      // CUS-067: answer loyalty keywords (fidelidade/selos/pontos) with the
+      // REAL stamp balance instead of deflecting to the agent (a dead L2 read
+      // tool). Read-only. Guests (no customerId) get the login-prompt copy.
+      if (!ctx?.customerId) return buildLoyaltyText();
+      try {
+        const balance = await getLoyaltyBalance(
+          {},
+          { channel: Channel.WhatsApp, sessionId: ctx.sessionId, customerId: ctx.customerId, userType: "customer" },
+        );
+        return balance.message;
+      } catch {
+        // Loyalty service unavailable — fall through to the agent rather than
+        // ghosting or erroring the customer.
+        return null;
+      }
+    }
     case "menu":
       return null; // Fall through to agent (XState handles state)
     case "cart":
@@ -631,7 +650,10 @@ async function tryShortcutOrStateMachine(
   const shortcut = matchShortcut(messageBody);
   if (shortcut) {
     log.info({ phone_hash: hash, shortcut: shortcut.type }, "[whatsapp.shortcut]");
-    const response = await handleShortcut(shortcut.type);
+    const response = await handleShortcut(shortcut.type, {
+      customerId: session.customerId,
+      sessionId: session.sessionId,
+    });
     if (response) {
       await sendText(`whatsapp:${phone}`, mintBroadcastReply(response));
       await appendMessages(session.sessionId, [{ role: "assistant", content: response }], true, {
