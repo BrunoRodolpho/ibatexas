@@ -40,7 +40,7 @@ import {
   createOrderAccessToken,
   verifyOrderAccessToken,
 } from "@ibatexas/tools";
-import { Channel, type UserType } from "@ibatexas/types";
+import { Channel, COUPON_REJECTED_CODE, type UserType } from "@ibatexas/types";
 import { createCustomerService, createOrderCommandService, createPaymentQueryService, prisma } from "@ibatexas/domain";
 import { ordersPolicyBundle, type OrderCheckoutCreatePayload, type OrderNoteAddPayload, type OrderState } from "@ibatexas/pack-orders";
 import { portugueseRefusalMessages } from "@ibatexas/pack-orders";
@@ -330,6 +330,18 @@ async function finalizeCheckout(args: {
 
   if (!result.success) {
     if (onFixableFailure) await onFixableFailure();
+    // D1 — Medusa rejected the coupon: the tool aborted BEFORE any payment
+    // collection was created (fail-closed money path). Surface a 422 in the
+    // route's rejection shape; `error` carries the pt-BR copy because the
+    // web checkout renders `data.error ?? data.message`.
+    if (result.code === COUPON_REJECTED_CODE) {
+      return reply.status(422).send({
+        statusCode: 422,
+        error: result.message,
+        message: result.message,
+        code: COUPON_REJECTED_CODE,
+      });
+    }
     return reply.status(400).send(result);
   }
 

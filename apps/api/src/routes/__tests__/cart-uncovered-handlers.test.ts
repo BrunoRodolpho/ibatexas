@@ -735,6 +735,35 @@ describe("POST /api/cart/checkout — finalize side-effects", () => {
     );
   });
 
+  it("COUPON_REJECTED (D1 fail-closed coupon) → 422 with the typed code + pt-BR error, gate released", async () => {
+    const redis = createMockRedis();
+    mockGetRedisClient.mockResolvedValue(redis);
+    mockCreateCheckout.mockResolvedValue({
+      success: false,
+      code: "COUPON_REJECTED",
+      message: "O cupom não pôde ser aplicado (expirado ou esgotado). Remova o cupom e tente novamente.",
+    });
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/cart/checkout",
+      payload: { cartId: "cart_01", paymentMethod: "cash", couponCode: "SAVE10" },
+      headers: { "x-customer-id": "cus_01" },
+    });
+
+    expect(res.statusCode).toBe(422);
+    const body = res.json();
+    expect(body.code).toBe("COUPON_REJECTED");
+    // The web checkout renders data.error ?? data.message — both carry the pt-BR copy.
+    expect(body.error).toContain("cupom");
+    expect(body.message).toContain("cupom");
+    // The fixable-failure gate release ran so the customer can remove the coupon and retry.
+    expect(redis.del).toHaveBeenCalledWith(
+      expect.stringContaining("checkout:idem:"),
+    );
+  });
+
   it("success with notes + IBX order → persists the note via order.note.add envelope", async () => {
     const redis = createMockRedis();
     mockGetRedisClient.mockResolvedValue(redis);

@@ -8,7 +8,7 @@
 // never by client polling alone to avoid stuck-pending orders.
 
 import type Stripe from "stripe";
-import { CreateCheckoutInputSchema, NonRetryableError, formatOrderId, type CreateCheckoutInput, type AgentContext } from "@ibatexas/types";
+import { COUPON_REJECTED_CODE, CreateCheckoutInputSchema, NonRetryableError, formatOrderId, type CouponRejectedCode, type CreateCheckoutInput, type AgentContext } from "@ibatexas/types";
 import { publishNatsEvent } from "@ibatexas/nats-client";
 import { getAuditSink } from "@ibatexas/audit-sink";
 import { reaisToCentavos } from "../medusa/client.js";
@@ -46,6 +46,14 @@ export interface CreateCheckoutOutput {
    * Absent/false for delivery, immediate, or non-accepted checkouts.
    */
   scheduledPickup?: boolean;
+  /**
+   * Typed failure code for fail-closed aborts. Currently only
+   * `COUPON_REJECTED` (D1): Medusa rejected the coupon → checkout aborts
+   * BEFORE any payment collection is created, so the customer is never
+   * silently charged the undiscounted total. The API checkout route maps
+   * this onto a 422.
+   */
+  code?: CouponRejectedCode;
   message: string;
 }
 
@@ -223,8 +231,13 @@ async function applyWelcomeCredit(cartId: string, ctx: AgentContext): Promise<vo
   }
 }
 
-async function applyCouponCode(cartId: string, couponCode: string | undefined, ctx: AgentContext): Promise<void> {
-  if (!couponCode) return;
+async function applyCouponCode(
+  cartId: string,
+  couponCode: string | undefined,
+  paymentMethod: string,
+  ctx: AgentContext,
+): Promise<CreateCheckoutOutput | null> {
+  if (!couponCode) return null;
   try {
     // Apply the customer-validated coupon to the REAL Medusa cart so the
     // charged total reflects the discount the customer saw (CUS-016). Runs on
@@ -241,10 +254,18 @@ async function applyCouponCode(cartId: string, couponCode: string | undefined, c
       },
     );
     console.warn(`[checkout] Coupon ${couponCode} applied to cart ${cartId}`);
+    return null;
   } catch (err) {
-    // Medusa rejected the code (expired, already used, or not stackable) —
-    // continue without the discount rather than blocking the checkout.
+    // D1 fail-CLOSED: the customer confirmed a DISCOUNTED total — proceeding
+    // without the coupon would silently charge more. Abort the checkout
+    // (before any payment collection exists) with a typed, fixable failure.
     console.warn(`[checkout] Coupon application failed for cart ${cartId}: ${(err as Error).message}`);
+    return {
+      success: false,
+      paymentMethod,
+      code: COUPON_REJECTED_CODE,
+      message: "O cupom não pôde ser aplicado (expirado ou esgotado). Remova o cupom e tente novamente.",
+    };
   }
 }
 
@@ -496,8 +517,12 @@ export async function createCheckout(
   await applyWelcomeCredit(cartId, ctx);
 
   // Apply a customer-supplied coupon code to the real Medusa cart so the
-  // charged total reflects the validated discount (CUS-016). No-op when absent.
-  await applyCouponCode(cartId, couponCode, ctx);
+  // charged total reflects the validated discount (CUS-016). No-op when
+  // absent. A Medusa rejection ABORTS the checkout fail-closed (D1) —
+  // before any payment collection is created — so the customer is never
+  // charged an undiscounted total they did not confirm.
+  const couponFailure = await applyCouponCode(cartId, couponCode, paymentMethod, ctx);
+  if (couponFailure) return couponFailure;
 
   // 1. Update cart metadata with tip and delivery CEP
   const metadata = await buildCheckoutMetadata(paymentMethod, tipInCentavos, deliveryCep, ctx);
