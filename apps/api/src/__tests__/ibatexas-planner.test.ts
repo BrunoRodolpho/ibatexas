@@ -30,7 +30,12 @@ import {
   createIbatexasPlanner,
   EXPRESS_INTENT_TOOL,
 } from "../claustrum/ibatexas-planner.js";
-import { deriveIbatexasPlannerContext } from "../claustrum-bootstrap.js";
+import {
+  deriveIbatexasPlannerContext,
+  agentCtxFromState,
+  withAuthenticatedOwner,
+} from "../claustrum-bootstrap.js";
+import type { AgentContext } from "@ibatexas/types";
 
 // ── Doubles ──────────────────────────────────────────────────────────────────
 
@@ -393,5 +398,233 @@ describe("deriveIbatexasPlannerContext — real actor threading", () => {
     expect(authedIntents).toContain("order.cancel");
     expect(guestIntents).not.toContain("order.checkout.create");
     expect(guestIntents).toContain("order.item.add"); // always proposable
+  });
+});
+
+// ── BKL-027 (F2): one-hop read-tool enrichment loop ───────────────────────────
+
+/** A ModelProvider whose `complete` returns a DIFFERENT canned completion per
+ *  call (index-based), so a read-only first pass can be followed by an
+ *  intent-proposing second pass. Reports 1 in/1 out token per call. */
+function mockModelSequence(sequences: ToolCall[][]): {
+  model: ModelProvider;
+  complete: ReturnType<typeof vi.fn>;
+} {
+  let i = 0;
+  const complete = vi.fn(async (_req: CompletionRequest): Promise<Completion> => {
+    const toolCalls = sequences[Math.min(i, sequences.length - 1)] ?? [];
+    i += 1;
+    return {
+      model: "mock",
+      stopReason: toolCalls.length > 0 ? "tool_use" : "end_turn",
+      text: "",
+      toolCalls,
+      inputTokens: 1,
+      outputTokens: 1,
+    };
+  });
+  const model: ModelProvider = {
+    complete,
+    stream: () => {
+      throw new Error("stream not used by planner");
+    },
+    embed: async () => {
+      throw new Error("embed not used by planner");
+    },
+  };
+  return { model, complete };
+}
+
+function readCall(name: string, input: unknown = {}): ToolCall {
+  return { id: `rc-${name}`, name, input };
+}
+
+describe("createIbatexasPlanner — read-tool enrichment loop (BKL-027)", () => {
+  it("read-only first pass runs the reads then re-prompts ONCE → second-pass intent", async () => {
+    const { model, complete } = mockModelSequence([
+      [readCall("get_cart", { cartId: "c1" })], // pass 1: reads only, no intent
+      [expressIntent("order.item.add", { sku: "x" })], // pass 2: intent after results
+    ]);
+    const execCalls: Array<{ input: unknown; customerId: unknown }> = [];
+    const planner = createIbatexasPlanner({
+      model,
+      modelId: "claude-test",
+      capabilityPlanners: [capPlanner(ORDER_READS, ORDER_INTENTS)],
+      readToolExecutors: {
+        get_cart: async (input, state) => {
+          execCalls.push({
+            input,
+            customerId: (state.memory as { customerId?: unknown }).customerId,
+          });
+          return { cart: { items: [] } };
+        },
+      },
+    });
+
+    const plan = await planner.propose(mkStateWithCustomer("cus_1"));
+
+    expect(complete).toHaveBeenCalledTimes(2); // exactly one extra hop
+    expect(execCalls).toHaveLength(1);
+    expect(execCalls[0]!.input).toEqual({ cartId: "c1" });
+    // The executor receives the AUTHENTICATED turn state (identity ← state).
+    expect(execCalls[0]!.customerId).toBe("cus_1");
+    expect(plan.envelopes.map((e) => e.kind)).toEqual(["order.item.add"]);
+    // Read record carries both passes' read calls (here just pass 1's).
+    expect(plan.readToolCalls?.map((c) => c.name)).toContain("get_cart");
+  });
+
+  it("does NOT loop when no readToolExecutors are wired (single pass — byte-identical)", async () => {
+    const { model, complete } = mockModelSequence([[readCall("get_cart", { cartId: "c1" })]]);
+    const planner = createIbatexasPlanner({
+      model,
+      modelId: "claude-test",
+      capabilityPlanners: [capPlanner(ORDER_READS, ORDER_INTENTS)],
+    });
+
+    const plan = await planner.propose(mkStateWithCustomer("cus_1"));
+
+    expect(complete).toHaveBeenCalledTimes(1);
+    expect(plan.envelopes).toHaveLength(0);
+    expect(plan.readToolCalls).toEqual([{ name: "get_cart", input: { cartId: "c1" } }]);
+  });
+
+  it("does NOT loop when the first pass already proposed a mutating intent", async () => {
+    const { model, complete } = mockModelSequence([
+      [readCall("get_cart"), expressIntent("order.item.add")],
+    ]);
+    let execd = 0;
+    const planner = createIbatexasPlanner({
+      model,
+      modelId: "claude-test",
+      capabilityPlanners: [capPlanner(ORDER_READS, ORDER_INTENTS)],
+      readToolExecutors: {
+        get_cart: async () => {
+          execd += 1;
+          return {};
+        },
+      },
+    });
+
+    const plan = await planner.propose(mkStateWithCustomer("cus_1"));
+
+    expect(complete).toHaveBeenCalledTimes(1);
+    expect(execd).toBe(0);
+    expect(plan.envelopes.map((e) => e.kind)).toEqual(["order.item.add"]);
+  });
+
+  it("a read executor that throws never crashes the turn — best-effort, re-prompts anyway", async () => {
+    const { model, complete } = mockModelSequence([
+      [readCall("get_cart")],
+      [expressIntent("order.item.add")],
+    ]);
+    const planner = createIbatexasPlanner({
+      model,
+      modelId: "claude-test",
+      capabilityPlanners: [capPlanner(ORDER_READS, ORDER_INTENTS)],
+      readToolExecutors: {
+        get_cart: async () => {
+          throw new Error("boom");
+        },
+      },
+    });
+
+    const plan = await planner.propose(mkStateWithCustomer("cus_1"));
+
+    expect(complete).toHaveBeenCalledTimes(2);
+    expect(plan.envelopes.map((e) => e.kind)).toEqual(["order.item.add"]);
+  });
+
+  it("skips an advertised read with no executor (no_executor) and still re-prompts", async () => {
+    const { model, complete } = mockModelSequence([
+      [readCall("check_order_status")], // advertised but absent from the executor map
+      [expressIntent("order.item.add")],
+    ]);
+    const planner = createIbatexasPlanner({
+      model,
+      modelId: "claude-test",
+      capabilityPlanners: [capPlanner(ORDER_READS, ORDER_INTENTS)],
+      readToolExecutors: { get_cart: async () => ({}) },
+    });
+
+    const plan = await planner.propose(mkStateWithCustomer("cus_1"));
+
+    expect(complete).toHaveBeenCalledTimes(2);
+    expect(plan.envelopes.map((e) => e.kind)).toEqual(["order.item.add"]);
+  });
+
+  it("sums token usage across both completions", async () => {
+    const { model } = mockModelSequence([
+      [readCall("get_cart")],
+      [expressIntent("order.item.add")],
+    ]);
+    const planner = createIbatexasPlanner({
+      model,
+      modelId: "claude-test",
+      capabilityPlanners: [capPlanner(ORDER_READS, ORDER_INTENTS)],
+      readToolExecutors: { get_cart: async () => ({}) },
+    });
+
+    const plan = await planner.propose(mkStateWithCustomer("cus_1"));
+    expect(plan.usage).toEqual({ inputTokens: 2, outputTokens: 2 });
+  });
+});
+
+describe("agentCtxFromState — read-executor identity (BKL-027)", () => {
+  it("authenticated customer → customerId + userType 'customer'", () => {
+    const ctx = agentCtxFromState(mkStateWithCustomer("cus_7"));
+    expect(ctx.customerId).toBe("cus_7");
+    expect(ctx.userType).toBe("customer");
+    expect(ctx.sessionId).toBe("conv-1");
+    expect(ctx.channel).toBe("web");
+  });
+
+  it("guest marker → no customerId, userType 'guest'", () => {
+    const ctx = agentCtxFromState(mkStateWithCustomer("guest:abc"));
+    expect(ctx.customerId).toBeUndefined();
+    expect(ctx.userType).toBe("guest");
+  });
+
+  it("no recalled customer → no customerId, userType 'guest'", () => {
+    const ctx = agentCtxFromState(mkStateWithCustomer(undefined));
+    expect(ctx.customerId).toBeUndefined();
+    expect(ctx.userType).toBe("guest");
+  });
+
+  it("carries the perception channel through", () => {
+    expect(agentCtxFromState(mkStateWithCustomer("cus_1", "whatsapp")).channel).toBe("whatsapp");
+  });
+});
+
+describe("withAuthenticatedOwner — IDOR override (BKL-027)", () => {
+  const authed: AgentContext = {
+    channel: "web" as AgentContext["channel"],
+    sessionId: "s",
+    customerId: "cus_me",
+    userType: "customer",
+  };
+
+  it("overrides a model-forged customerId with the authenticated one", () => {
+    const out = withAuthenticatedOwner(
+      { customerId: "VICTIM", status: "confirmed" },
+      authed,
+    );
+    expect(out).toEqual({ customerId: "cus_me", status: "confirmed" });
+  });
+
+  it("injects undefined customerId for a guest (owned reads then reject)", () => {
+    const guest: AgentContext = {
+      channel: "web" as AgentContext["channel"],
+      sessionId: "s",
+      userType: "guest",
+    };
+    const out = withAuthenticatedOwner({ customerId: "VICTIM" }, guest) as {
+      customerId?: string;
+    };
+    expect(out.customerId).toBeUndefined();
+  });
+
+  it("is a no-op for null / non-object input", () => {
+    expect(withAuthenticatedOwner(null, authed)).toBeNull();
+    expect(withAuthenticatedOwner("x", authed)).toBe("x");
   });
 });

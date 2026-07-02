@@ -106,7 +106,7 @@ function isGuestCustomerId(id: string | undefined): boolean {
  *  The enum VALUES are byte-identical to ChannelKind, so this is a value lookup
  *  that defaults to web for any unexpected kind (fail-safe, not fail-loud — the
  *  channel only scopes a cart redis key, never an authorization decision). */
-function channelFromKind(kind: string): Channel {
+export function channelFromKind(kind: string): Channel {
   return kind === "whatsapp" ? Channel.WhatsApp : Channel.Web;
 }
 

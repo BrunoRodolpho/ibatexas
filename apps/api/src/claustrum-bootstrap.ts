@@ -113,7 +113,19 @@ import {
   loadSchedule,
   rk,
   type ScheduleSignal,
+  // BKL-027 read-tool executors (advertised read tools, run in the one-hop loop).
+  getCart,
+  checkOrderStatus,
+  checkPaymentStatus,
+  getOrderHistory,
+  getRecommendations,
+  getCustomerProfile,
+  getAlsoAdded,
+  getOrderedTogether,
+  checkTableAvailability,
+  getMyReservations,
 } from "@ibatexas/tools";
+import type { AgentContext, UserType } from "@ibatexas/types";
 import { publishNatsEvent } from "@ibatexas/nats-client";
 import { AGENT_REGISTRY } from "@ibatexas/agents";
 // Managed-agent plane (T3-9) — composed + started behind IBX_AGENTS_ENABLED.
@@ -232,6 +244,7 @@ import {
   type TokenUsageStore,
 } from "@adjudicate/adapter-core";
 import {
+  channelFromKind,
   listIbatexasToolPacks,
   registerIbatexasToolPacks,
   toolRosterDrift,
@@ -1227,6 +1240,96 @@ export function deriveIbatexasPlannerContext(state: CognitiveState): {
   };
 }
 
+// ── BKL-027 (F2) — read-tool executor registry ────────────────────────────────
+//
+// The chat planner advertises read tools but, single-pass, never runs them. The
+// one-hop read-loop in createIbatexasPlanner executes the model's read calls via
+// this map, OWNER-SCOPED to the turn's authenticated customer. Identity is
+// derived from the SAME CognitiveState the planner uses (agentCtxFromState),
+// mirroring deriveIbatexasPlannerContext: a guest/anon id yields customerId
+// undefined, so owner-scoped reads reject (never leak another customer's data).
+
+/**
+ * Per-turn AgentContext for a read executor, sourced from CognitiveState (NOT a
+ * Capsule — the planner is a process-wide singleton with no per-turn Capsule).
+ * Mirrors `agentCtxFromCapsule` but reads the recalled memory snapshot; staff is
+ * never inferred here (CognitiveState carries no actor role), matching the
+ * planner's `staffId: null`.
+ */
+export function agentCtxFromState(state: CognitiveState): AgentContext {
+  const customerId = plannerCustomerIdFromState(state);
+  return {
+    channel: channelFromKind(state.perception.channel),
+    sessionId: state.conversationId,
+    ...(customerId ? { customerId } : {}),
+    userType: (customerId ? "customer" : "guest") as UserType,
+  };
+}
+
+/**
+ * IDOR guard: override any model-supplied `customerId` on the read input with the
+ * AUTHENTICATED one. Read tools that scope by an input customerId
+ * (get_my_reservations) must never honor a model-forged id; ctx-scoped handlers
+ * already ignore input.customerId, so this is belt-and-suspenders for them and
+ * load-bearing for the input-scoped one. A no-op when input has no customerId.
+ */
+export function withAuthenticatedOwner(input: unknown, ctx: AgentContext): unknown {
+  if (input !== null && typeof input === "object") {
+    return { ...(input as Record<string, unknown>), customerId: ctx.customerId };
+  }
+  return input;
+}
+
+/**
+ * Advertised-read-tool NAME → owner-scoped executor. Keys are the 10 advertised
+ * read-tool names that have a backing @ibatexas/tools handler (3 are aliases:
+ * check_availability→checkTableAvailability, get_payment_status→checkPaymentStatus,
+ * get_my_profile→getCustomerProfile). The 2 remaining advertised reads
+ * (get_payment_history, get_my_preferences) have no handler yet — deliberately
+ * omitted so the loop records `no_executor` and skips them (tracked: BKL-071).
+ */
+const IBATEXAS_READ_TOOL_EXECUTORS: Readonly<
+  Record<string, (input: unknown, state: CognitiveState) => Promise<unknown>>
+> = {
+  get_cart: (input, state) => {
+    const ctx = agentCtxFromState(state);
+    return getCart(withAuthenticatedOwner(input, ctx) as never, ctx);
+  },
+  check_order_status: (input, state) => {
+    const ctx = agentCtxFromState(state);
+    return checkOrderStatus(withAuthenticatedOwner(input, ctx) as never, ctx);
+  },
+  get_payment_status: (input, state) => {
+    const ctx = agentCtxFromState(state);
+    return checkPaymentStatus(withAuthenticatedOwner(input, ctx) as never, ctx);
+  },
+  get_order_history: (input, state) => {
+    const ctx = agentCtxFromState(state);
+    return getOrderHistory(withAuthenticatedOwner(input, ctx) as never, ctx);
+  },
+  get_recommendations: (input, state) => {
+    const ctx = agentCtxFromState(state);
+    return getRecommendations(withAuthenticatedOwner(input, ctx) as never, ctx);
+  },
+  get_my_profile: (input, state) => {
+    const ctx = agentCtxFromState(state);
+    return getCustomerProfile(withAuthenticatedOwner(input, ctx) as never, ctx);
+  },
+  get_also_added: (input, state) => {
+    const ctx = agentCtxFromState(state);
+    return getAlsoAdded(withAuthenticatedOwner(input, ctx) as never, ctx);
+  },
+  get_ordered_together: (input, state) => {
+    const ctx = agentCtxFromState(state);
+    return getOrderedTogether(withAuthenticatedOwner(input, ctx) as never, ctx);
+  },
+  // Public read — no owner scope, no ctx param.
+  check_availability: (input) => checkTableAvailability(input as never),
+  // Owner-scoped by INPUT customerId (no ctx param) — override to authenticated.
+  get_my_reservations: (input, state) =>
+    getMyReservations(withAuthenticatedOwner(input, agentCtxFromState(state)) as never),
+};
+
 // The decision-aware responder lives in ./claustrum/ibatexas-responder.ts
 // (createIbatexasResponder). The previous decision-blind `naiveResponder` —
 // which rendered from the user's text alone and could contradict the audited
@@ -2169,6 +2272,8 @@ export async function bootstrapClaustrum(
       promptComposer,
       telemetry,
       resolveScheduleSignal,
+      // BKL-027 — activate the one-hop read-tool enrichment loop.
+      readToolExecutors: IBATEXAS_READ_TOOL_EXECUTORS,
     });
   const buildResponder = (model: ModelProvider): ResponderPort =>
     createIbatexasResponder({

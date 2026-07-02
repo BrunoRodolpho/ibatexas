@@ -179,6 +179,29 @@ export interface IbatexasPlannerDeps {
     | Promise<ScheduleSignal | undefined>
     | ScheduleSignal
     | undefined;
+  /**
+   * BKL-027 (F2) — one-hop read-tool executors. Map of advertised read-tool
+   * NAME → an executor that runs that read for THIS turn, OWNER-SCOPED to the
+   * turn's authenticated customer. The executor derives its identity from the
+   * `CognitiveState` (the adopter's closure reads `state.memory.customerId`),
+   * NEVER from the model-supplied `input` — `input` carries resource ids only
+   * (IDOR: a forged customerId in `input` can never widen the read).
+   *
+   * When present AND the model's first pass called read tool(s) with NO mutating
+   * `express_intent`, `propose()` runs the reads (best-effort — a failure never
+   * throws the turn), feeds the results back as a synthetic tool turn, and
+   * re-prompts the planner ONCE so it can propose the correct intent WITH the
+   * first-party context (the read→act path). Absent → single-pass (no loop), so
+   * every existing construction + golden fixture is byte-identical.
+   *
+   * NOT an INFORM-answer channel: the read results inform INTENT PROPOSAL only;
+   * customer-facing INFORM answers are authored by the claims pipeline
+   * (INVESTIGATE→validate→render), never by model prose over these results
+   * (claims-not-prose invariant).
+   */
+  readonly readToolExecutors?: Readonly<
+    Record<string, (input: unknown, state: CognitiveState) => Promise<unknown>>
+  >;
 }
 
 /**
@@ -564,7 +587,7 @@ export function createIbatexasPlanner(
         });
       }
 
-      const { envelopes, capabilities, readToolCalls, dropped } =
+      let { envelopes, capabilities, readToolCalls, dropped } =
         translateToolCalls({
           toolCalls: completion.toolCalls,
           allowed,
@@ -572,6 +595,115 @@ export function createIbatexasPlanner(
           state,
           deriveNonce,
         });
+
+      // ── BKL-027 (F2): one-hop read-tool enrichment loop ────────────────────
+      // Fires ONLY when the model called read tool(s) AND proposed NO mutating
+      // intent (envelopes empty) AND an executor map is wired. The read-tool-call
+      // precondition is load-bearing: without it a pure small-talk turn (0 reads,
+      // 0 intents) would loop. Bounded to exactly ONE extra completion; reads are
+      // OWNER-SCOPED (executor derives identity from `state`, not model input) and
+      // BEST-EFFORT (a read throw is captured, never crashes the turn). Gated on
+      // readToolExecutors so unit tests + golden fixtures without it are unchanged.
+      let readLoopUsage = { inputTokens: 0, outputTokens: 0 };
+      if (
+        deps.readToolExecutors !== undefined &&
+        readToolCalls.length > 0 &&
+        envelopes.length === 0
+      ) {
+        const executors = deps.readToolExecutors;
+        const readResults: Array<{ name: string; result: unknown; error?: string }> = [];
+        for (const call of readToolCalls) {
+          const exec = executors[call.name];
+          if (exec === undefined) {
+            readResults.push({ name: call.name, result: null, error: "no_executor" });
+            continue;
+          }
+          try {
+            // IDOR: `call.input` (model-controlled) supplies resource ids only;
+            // the executor closure takes the OWNER from `state`, never from input.
+            readResults.push({ name: call.name, result: await exec(call.input, state) });
+          } catch (err) {
+            readResults.push({ name: call.name, result: null, error: (err as Error).message });
+          }
+        }
+        logger.info(
+          {
+            component: "planner",
+            event: "read_loop.executed",
+            turnId: state.turnId,
+            reads: readResults.map((r) => (r.error ? `${r.name}:${r.error}` : r.name)),
+          },
+          `planner read-loop executed ${readResults.length} read(s); re-prompting once`,
+        );
+
+        // Synthetic re-prompt. Messages are plain strings (no tool_result blocks),
+        // roles must alternate (Anthropic): user(original) → assistant(what it
+        // looked up) → user(serialized results). The read results INFORM the next
+        // intent proposal; they are NOT rendered to the customer here.
+        const assistantTurn =
+          completion.text && completion.text.trim().length > 0
+            ? completion.text
+            : `Vou consultar: ${readToolCalls.map((c) => c.name).join(", ")}.`;
+        const resultsText = readResults
+          .map((r) =>
+            r.error
+              ? `${r.name} => (indisponível: ${r.error})`
+              : `${r.name} => ${JSON.stringify(r.result)}`,
+          )
+          .join("\n");
+        const startedAt2 = Date.now();
+        const completion2 = await deps.model.complete({
+          model: deps.modelId,
+          system,
+          messages: [
+            { role: "user", content: state.perception.text },
+            { role: "assistant", content: assistantTurn },
+            {
+              role: "user",
+              content: `Resultados das consultas:\n${resultsText}\n\nCom base nesses dados, proponha a ação apropriada ou apenas responda.`,
+            },
+          ],
+          tools,
+          maxTokens,
+        });
+        const durationMs2 = Date.now() - startedAt2;
+        readLoopUsage = {
+          inputTokens: completion2.inputTokens,
+          outputTokens: completion2.outputTokens,
+        };
+        if (deps.promptComposer !== undefined && deps.telemetry !== undefined) {
+          await emitModelCallTrace({
+            telemetry: deps.telemetry,
+            registry: deps.promptComposer.registry,
+            turnId: state.turnId,
+            model: deps.modelId,
+            fragmentManifest,
+            completionText: JSON.stringify({
+              text: completion2.text,
+              toolCalls: completion2.toolCalls ?? [],
+              readLoop: true,
+            }),
+            inputTokens: completion2.inputTokens,
+            outputTokens: completion2.outputTokens,
+            durationMs: durationMs2,
+            at: new Date().toISOString(),
+          });
+        }
+        // The second pass SUPERSEDES the first for envelopes/capabilities (the
+        // first pass proposed none by definition of the guard). Merge the read
+        // records + dropped for the trace. One hop only — we never loop again.
+        const second = translateToolCalls({
+          toolCalls: completion2.toolCalls,
+          allowed,
+          visibleReadTools: plan.visibleReadTools,
+          state,
+          deriveNonce,
+        });
+        envelopes = second.envelopes;
+        capabilities = second.capabilities;
+        dropped = [...dropped, ...second.dropped];
+        readToolCalls = [...readToolCalls, ...second.readToolCalls];
+      }
 
       const rationale =
         dropped.length > 0
@@ -603,8 +735,8 @@ export function createIbatexasPlanner(
         capabilities,
         readToolCalls,
         usage: {
-          inputTokens: completion.inputTokens,
-          outputTokens: completion.outputTokens,
+          inputTokens: completion.inputTokens + readLoopUsage.inputTokens,
+          outputTokens: completion.outputTokens + readLoopUsage.outputTokens,
         },
       };
     },
