@@ -349,7 +349,9 @@
     "payment_cash_unavailable": "Pagamento em dinheiro não disponível para envios.",
     "kitchen_closed_mixed_hint": "Congelados e produtos continuam disponíveis para entrega.",
     "notes_label": "Observações",
-    "notes_placeholder": "Ex: sem cebola, ponto da carne, interfone 42..."
+    "notes_placeholder": "Ex: sem cebola, ponto da carne, interfone 42...",
+    "notes_remaining": "{count} caracteres restantes (incluindo observações dos itens)",
+    "notes_too_long": "Observações muito longas — reduza o texto (máximo {max} caracteres no total)"
   },
   "account": {
     "title": "Minha Conta",
@@ -385,6 +387,8 @@
       "saving": "Salvando…",
       "saved": "Preferências salvas!",
       "error": "Não foi possível salvar agora. Tente novamente.",
+      "load_error": "Não foi possível carregar suas preferências agora.",
+      "retry": "Tentar novamente",
       "flags": {
         "vegetariano": "Vegetariano",
         "vegano": "Vegano",

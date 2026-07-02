@@ -6,7 +6,7 @@ import { useTranslations } from "next-intl"
 import { loadStripe } from "@stripe/stripe-js"
 import { Elements, CardElement, useStripe, useElements } from "@stripe/react-stripe-js"
 import { useCartStore, hasKitchenOnlyFood, getKitchenItems } from '@/domains/cart'
-import { mergeItemInstructionsIntoNotes } from '@/domains/checkout'
+import { mergeItemInstructionsIntoNotes, CHECKOUT_NOTES_MAX } from '@/domains/checkout'
 import { useSessionStore } from '@/domains/session'
 import { useKitchenStatus } from '@/domains/schedule'
 import { Link } from "@/i18n/navigation"
@@ -170,6 +170,12 @@ function CheckoutForm() {
   const deliveryFeeAmount = deliveryType === "delivery" ? (deliveryEstimate?.feeInCentavos ?? 0) : 0
   const tipAmount = Math.round(subtotal * tipPercent / 100)
   const total = subtotal + deliveryFeeAmount + tipAmount
+
+  // CUS-015 — merged order note (customer note + per-item instructions).
+  // Never truncated: on overflow submit is blocked so the kitchen never
+  // silently loses an instruction (e.g. an allergy note).
+  const mergedNotes = mergeItemInstructionsIntoNotes(notes, items)
+  const notesRemaining = CHECKOUT_NOTES_MAX - mergedNotes.notes.length
 
   useEffect(() => {
     if (!isAuthenticated()) {
@@ -498,8 +504,9 @@ function CheckoutForm() {
       deliveryCep: deliveryType === "delivery" ? cepInput : undefined,
       // Fold per-item special instructions into the order note so they reach
       // the kitchen via the OrderNote path (CUS-015). Falls back to the plain
-      // note when no item carries an instruction.
-      notes: mergeItemInstructionsIntoNotes(notes, items) || undefined,
+      // note when no item carries an instruction. Overflow is blocked before
+      // this point (handleCheckout guard + disabled submit) — never truncated.
+      notes: mergedNotes.notes || undefined,
       // Thread the validated coupon so the API applies it to the Medusa cart
       // and the charged total reflects the discount the customer saw (CUS-016).
       couponCode: couponCode || undefined,
@@ -540,6 +547,12 @@ function CheckoutForm() {
   }
 
   async function handleCheckout() {
+    // Merged notes above the server cap would be silently truncated by the
+    // API — refuse to submit; the customer must shorten the text instead.
+    if (mergedNotes.overflow) {
+      setError(t('notes_too_long', { max: CHECKOUT_NOTES_MAX }))
+      return
+    }
     setLoading(true)
     setError(null)
     try {
@@ -855,6 +868,12 @@ function CheckoutForm() {
             placeholder={t('notes_placeholder')}
             className="w-full rounded-sm border border-smoke-200/60 shadow-xs bg-smoke-50 px-3 py-3 text-sm focus:border-charcoal-900 focus:outline-none transition-[border-color] duration-[200ms] ease-luxury resize-none"
           />
+          {/* Live budget for the MERGED note (this field + per-item instructions). */}
+          <p aria-live="polite" className={`text-xs ${notesRemaining < 0 ? 'text-accent-red' : 'text-smoke-400'}`}>
+            {notesRemaining < 0
+              ? t('notes_too_long', { max: CHECKOUT_NOTES_MAX })
+              : t('notes_remaining', { count: notesRemaining })}
+          </p>
         </div>
 
         {/* Payment method */}
@@ -984,7 +1003,7 @@ function CheckoutForm() {
           size="lg"
           className="w-full min-h-[44px]"
           onClick={handleCheckout}
-          disabled={loading || !termsAccepted || (deliveryType === "delivery" && !deliveryEstimate) || !pixFieldsValid || (isKitchenClosed && cartHasKitchenFood)}
+          disabled={loading || !termsAccepted || (deliveryType === "delivery" && !deliveryEstimate) || !pixFieldsValid || (isKitchenClosed && cartHasKitchenFood) || mergedNotes.overflow}
         >
           {loading ? t('processing') : t('confirm_order', { total: formatBRL(total) })}
         </Button>

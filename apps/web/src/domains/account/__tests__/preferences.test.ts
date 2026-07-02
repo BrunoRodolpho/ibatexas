@@ -1,8 +1,10 @@
 /**
  * Dietary preferences (CUS-062 web view). fetchPreferences reads from the
- * portability export and defaults safely; savePreferences POSTs the FULL set
- * (dietaryFlags → dietaryRestrictions) so a dietary-only edit preserves the
- * allergen + favorite lists.
+ * portability export, defaulting to empty ONLY for a genuine no-preferences
+ * record — a read FAILURE returns null so the card renders a retry state
+ * (an empty-but-saveable form would wipe stored allergen exclusions);
+ * savePreferences POSTs the FULL set (dietaryFlags → dietaryRestrictions)
+ * so a dietary-only edit preserves the allergen + favorite lists.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
@@ -30,10 +32,11 @@ describe('preferences — fetchPreferences (CUS-062)', () => {
     })
   })
 
-  it('defaults (does not throw) on a read error so the form still renders', async () => {
+  it('returns null (NOT empty defaults) on a read error so the form is never submittable from a failed load', async () => {
+    // Empty defaults here would let one toggle+save POST allergenExclusions: []
+    // and permanently erase the customer's stored allergen exclusions.
     mockApiFetch.mockRejectedValue(new Error('500'))
-    const out = await fetchPreferences()
-    expect(out.dietaryRestrictions).toEqual([])
+    expect(await fetchPreferences()).toBeNull()
   })
 })
 

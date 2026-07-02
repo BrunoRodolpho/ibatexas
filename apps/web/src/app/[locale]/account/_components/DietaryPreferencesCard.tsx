@@ -20,16 +20,22 @@ export function DietaryPreferencesCard(): React.JSX.Element {
   const t = useTranslations('account')
   const [prefs, setPrefs] = useState<CustomerPreferences | null>(null)
   const [status, setStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
+  // Load failure ≠ empty preferences: saving from failure-empty defaults would
+  // wipe the stored allergen exclusions, so the form must stay unsubmittable.
+  const [loadFailed, setLoadFailed] = useState(false)
+  const [loadAttempt, setLoadAttempt] = useState(0)
 
   useEffect(() => {
     let alive = true
     fetchPreferences().then((p) => {
-      if (alive) setPrefs(p)
+      if (!alive) return
+      if (p === null) setLoadFailed(true)
+      else setPrefs(p)
     })
     return () => {
       alive = false
     }
-  }, [])
+  }, [loadAttempt])
 
   function toggleFlag(flag: string): void {
     setStatus('idle')
@@ -78,16 +84,34 @@ export function DietaryPreferencesCard(): React.JSX.Element {
           </label>
         ))}
       </div>
-      <button
-        type="button"
-        onClick={handleSave}
-        disabled={prefs === null || status === 'saving'}
-        className="mt-3 inline-block text-sm text-charcoal-700 hover:text-charcoal-900 font-medium transition-micro disabled:opacity-50"
-      >
-        {status === 'saving' ? t('dietary_prefs.saving') : `${t('dietary_prefs.save')} →`}
-      </button>
-      {status === 'saved' && <p className="mt-2 text-sm text-brand-600">{t('dietary_prefs.saved')}</p>}
-      {status === 'error' && <p className="mt-2 text-sm text-accent-red">{t('dietary_prefs.error')}</p>}
+      {loadFailed ? (
+        <div className="mt-3">
+          <p className="text-sm text-accent-red">{t('dietary_prefs.load_error')}</p>
+          <button
+            type="button"
+            onClick={() => {
+              setLoadFailed(false)
+              setLoadAttempt((n) => n + 1)
+            }}
+            className="mt-2 inline-block text-sm text-charcoal-700 hover:text-charcoal-900 font-medium transition-micro"
+          >
+            {t('dietary_prefs.retry')} →
+          </button>
+        </div>
+      ) : (
+        <>
+          <button
+            type="button"
+            onClick={handleSave}
+            disabled={prefs === null || status === 'saving'}
+            className="mt-3 inline-block text-sm text-charcoal-700 hover:text-charcoal-900 font-medium transition-micro disabled:opacity-50"
+          >
+            {status === 'saving' ? t('dietary_prefs.saving') : `${t('dietary_prefs.save')} →`}
+          </button>
+          {status === 'saved' && <p className="mt-2 text-sm text-brand-600">{t('dietary_prefs.saved')}</p>}
+          {status === 'error' && <p className="mt-2 text-sm text-accent-red">{t('dietary_prefs.error')}</p>}
+        </>
+      )}
     </div>
   )
 }
