@@ -7,6 +7,7 @@ import { useSessionStore } from '@/domains/session'
 import { apiFetch } from '@/lib/api'
 import { Button, Container } from "@/components/atoms"
 import { Flame, Heart, Package, User } from 'lucide-react'
+import { LgpdDataExport } from './_components/LgpdDataExport'
 
 interface CustomerProfile {
   id: string
@@ -182,6 +183,9 @@ export default function AccountPage() {
             {t("account.addresses_description")}
           </p>
         </div>
+
+        {/* LGPD data export (CUS-064) */}
+        <LgpdDataExport />
       </div>
     </Container>
   )

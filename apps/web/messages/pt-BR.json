@@ -366,6 +366,13 @@
     "allergens": "Alérgenos",
     "saved_addresses": "Endereços Salvos",
     "addresses_description": "Endereços salvos para entrega",
+    "data_export": {
+      "title": "Meus Dados (LGPD)",
+      "description": "Baixe uma cópia dos seus dados pessoais (LGPD Art. 18 — portabilidade).",
+      "button": "Baixar meus dados",
+      "loading": "Preparando…",
+      "error": "Não foi possível exportar agora. Tente novamente em instantes."
+    },
     "payment_methods": "Métodos de Pagamento",
     "payment_description": "Seus métodos de pagamento",
     "wishlist": "Minha Lista de Desejos",
