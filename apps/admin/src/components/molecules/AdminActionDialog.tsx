@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import { Modal, Button } from '@ibatexas/ui'
+import { reaisStringToCentavos, INVALID_AMOUNT_PT_BR } from '@/lib/money'
 
 /**
  * OPS-071 — shared confirm-step dialog for the two-phase destructive admin
@@ -56,8 +57,21 @@ export function AdminActionDialog({
   // — no reset effect needed.
   const [reason, setReason] = useState('')
   const [amount, setAmount] = useState('')
+  const [amountError, setAmountError] = useState<string | null>(null)
 
   const canSubmit = !reasonRequired || reason.trim().length > 0
+
+  // Blank amount is valid (full refund); anything typed must parse to
+  // integer centavos or step 1 is blocked with an inline pt-BR error.
+  function submitCollect() {
+    const trimmedAmount = amount.trim()
+    if (withAmount && trimmedAmount && reaisStringToCentavos(trimmedAmount) === null) {
+      setAmountError(INVALID_AMOUNT_PT_BR)
+      return
+    }
+    setAmountError(null)
+    onSubmitCollect(reason.trim(), trimmedAmount)
+  }
 
   const footer =
     phase === 'collect' ? (
@@ -70,7 +84,7 @@ export function AdminActionDialog({
           size="sm"
           isLoading={loading}
           disabled={!canSubmit}
-          onClick={() => onSubmitCollect(reason.trim(), amount.trim())}
+          onClick={submitCollect}
         >
           Continuar
         </Button>
@@ -97,10 +111,19 @@ export function AdminActionDialog({
                 type="text"
                 inputMode="decimal"
                 value={amount}
-                onChange={(e) => setAmount(e.target.value)}
+                onChange={(e) => {
+                  setAmount(e.target.value)
+                  if (amountError) setAmountError(null)
+                }}
                 placeholder="Ex.: 50,00"
-                className="rounded-sm border border-smoke-200 px-2 py-1 text-charcoal-900"
+                aria-invalid={amountError !== null}
+                className={`rounded-sm border px-2 py-1 text-charcoal-900 ${amountError ? 'border-[var(--color-accent-red)]' : 'border-smoke-200'}`}
               />
+              {amountError && (
+                <span role="alert" className="text-xs text-[var(--color-accent-red)]">
+                  {amountError}
+                </span>
+              )}
             </label>
           )}
           <label className="flex flex-col gap-1 text-sm">
