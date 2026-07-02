@@ -12,6 +12,7 @@ import { LoyaltyBalanceCard } from './_components/LoyaltyBalanceCard'
 import { DietaryPreferencesCard } from './_components/DietaryPreferencesCard'
 import { ProductReviewsCard } from './_components/ProductReviewsCard'
 import { EditProfileCard } from './_components/EditProfileCard'
+import { AccountDeletionCard } from './_components/AccountDeletionCard'
 
 interface CustomerProfile {
   id: string
@@ -192,6 +193,9 @@ export default function AccountPage() {
 
         {/* LGPD data export (CUS-064) */}
         <LgpdDataExport />
+
+        {/* LGPD account deletion (CUS-065 — OTP-gated, 24h grace) */}
+        <AccountDeletionCard />
       </div>
     </Container>
   )
