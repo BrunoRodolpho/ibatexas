@@ -1452,15 +1452,34 @@ function fastifyTelemetry(
   const MAX_PENDING_TURNS = 500;
   return {
     async emitTurn(record: TurnRecord) {
+      // SIGNAL-2: the conductor turn line is the one guaranteed stream-tagged
+      // per-turn record in VictoriaLogs — enrich it from fields ALREADY on the
+      // TurnRecord so a single `component:conductor turnId:<x>` query reconstructs
+      // the whole turn (channel, who, decision, intent, token cost, and the
+      // redacted inbound/outbound text). Free text is scrubbed through the SAME
+      // turn_trace PII redactor (BR-PII + CEP + 280-char cap); when no redactor
+      // is wired we OMIT the text rather than risk shipping raw PII to the store.
+      const clip = (t: string | undefined): string | undefined =>
+        t && turnTrace ? turnTrace.redactCompletion(t).slice(0, 280) : undefined;
       logger.info(
         {
           component: "conductor",
           event: "turn",
           correlationId: record.turnId,
           turnId: record.turnId,
+          conversationId: record.conversationId,
+          channel: record.channel,
+          customerId: record.customerId,
+          decisionKind: record.decisionKind,
+          intentHash: record.intentHash,
+          inputTokens: record.inputTokens,
+          outputTokens: record.outputTokens,
+          inbound: clip(record.inboundText),
+          response: clip(record.responseText),
+          ...(record.error ? { errorCode: record.error.code } : {}),
           durationMs: record.durationMs,
         },
-        `turn ${record.turnId} ${record.durationMs}ms`,
+        `turn ${record.decisionKind ?? "?"} ${record.channel} ${record.durationMs}ms`,
       );
       // Fold this turn's model token total (summed onto the TurnRecord by
       // claustrum's loop from plan.usage + draft.usage) into the per-session

@@ -40,6 +40,11 @@ export async function buildServer(): Promise<FastifyInstance> {
     keepAliveTimeout: 72_000,
     // OBS-001: Use client-provided x-request-id or generate a UUID for distributed tracing
     genReqId: genRequestId,
+    // SIGNAL-1: Fastify's per-request autolog ("incoming request"/"request
+    // completed") was ~66% of all VictoriaLogs volume — dominated by /metrics
+    // scrapes + /health probes that no human reads. Disable it and emit ONE
+    // signal-only access line per request via the onResponse hook below.
+    disableRequestLogging: true,
   };
   if (multistreamLogger) {
     // Obs stack up: log through the multistream (raw JSON → VictoriaLogs +
@@ -56,6 +61,39 @@ export async function buildServer(): Promise<FastifyInstance> {
   }
 
   const server = Fastify(serverOptions);
+
+  // SIGNAL-1: signal-only access log (replaces Fastify's disabled autolog).
+  // Emits ONE line per request, tagged `component:http` so VMUI can slice it,
+  // and DROPS the /metrics + /health scrape/probe noise unless it errored or
+  // was slow. Net effect: ~2/3 of prior VictoriaLogs volume disappears while
+  // every genuinely interesting request (4xx/5xx, or > SLOW_REQUEST_MS) stays.
+  const REQUEST_LOG_SKIP = new Set(["/metrics", "/health"]);
+  const SLOW_REQUEST_MS = Number(process.env.SLOW_REQUEST_MS ?? 1000);
+  server.addHook("onResponse", (req, reply, done) => {
+    const path = req.url.split("?")[0];
+    const status = reply.statusCode;
+    const ms = reply.elapsedTime; // Fastify v5 per-request wall time (ms)
+    if (REQUEST_LOG_SKIP.has(path) && status < 400 && ms < SLOW_REQUEST_MS) {
+      return done();
+    }
+    req.log.info(
+      {
+        component: "http",
+        event:
+          status >= 500
+            ? "request_error"
+            : status >= 400
+              ? "request_warn"
+              : "request",
+        method: req.method,
+        path,
+        statusCode: status,
+        durationMs: Math.round(ms),
+      },
+      `${req.method} ${path} ${status} ${Math.round(ms)}ms`,
+    );
+    done();
+  });
 
   // Zod schema validation/serialization (must be set before routes)
   server.setValidatorCompiler(validatorCompiler);
