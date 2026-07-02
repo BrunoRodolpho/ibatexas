@@ -293,6 +293,92 @@ describe("resolve-and-assemble — cart entity loads", () => {
   });
 });
 
+// ── F3/L1 (D-014) — thread resolved ids from ctx onto the executor payload ────
+// Without this the tool receives envelope.payload lacking cartId and throws a
+// ZodError after the kernel EXECUTEs — the "can't add an item by message" gap.
+describe("resolve-and-assemble — L1 payload threading (D-014)", () => {
+  const activeCart = () => {
+    redisGet = async (k) => (k === "cart:active:session:conv-1" ? "cart_abc" : null);
+    medusaStoreFetch = async () => ({
+      cart: { items: [{ variant_id: "var_1", quantity: 1, unit_price: 50 }], total: 50, completed_at: null },
+    });
+  };
+
+  it("injects the session-resolved cartId into a cart-op payload (order.item.add)", async () => {
+    activeCart();
+    const { payload } = await resolveAndAssemble({
+      kind: "order.item.add",
+      payload: { variantId: "var_1", quantity: 1 },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect((payload as { cartId?: string }).cartId).toBe("cart_abc");
+  });
+
+  it("injects cartId for order.checkout.create and order.coupon.apply", async () => {
+    for (const kind of ["order.checkout.create", "order.coupon.apply"]) {
+      activeCart();
+      const { payload } = await resolveAndAssemble({
+        kind,
+        payload: { paymentMethod: "pix", code: "SAVE10" },
+        customerId: "c1",
+        channel: "web",
+        sessionId: "conv-1",
+      });
+      expect((payload as { cartId?: string }).cartId).toBe("cart_abc");
+    }
+  });
+
+  it("never overrides an explicitly-supplied cartId", async () => {
+    activeCart();
+    const { payload } = await resolveAndAssemble({
+      kind: "order.item.add",
+      payload: { cartId: "cart_explicit", variantId: "var_1", quantity: 1 },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect((payload as { cartId?: string }).cartId).toBe("cart_explicit");
+  });
+
+  it("does not inject cartId when no active cart was resolved", async () => {
+    redisGet = async () => null;
+    const { payload } = await resolveAndAssemble({
+      kind: "order.item.add",
+      payload: { variantId: "var_1", quantity: 1 },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect((payload as { cartId?: string }).cartId).toBeUndefined();
+  });
+
+  it("does not inject cartId for an order-by-id kind (order.cancel routes through loadOrderCtx)", async () => {
+    activeCart(); // even with an active cart key present…
+    const { payload } = await resolveAndAssemble({
+      kind: "order.cancel",
+      payload: { orderId: "order_1" },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    // …order.cancel resolves by orderId (ctx.cartId is null), so no cartId leaks in.
+    expect((payload as { cartId?: string }).cartId).toBeUndefined();
+  });
+
+  it("injects the identity customerId into a reservation.create payload", async () => {
+    const { payload } = await resolveAndAssemble({
+      kind: "reservation.create",
+      payload: { timeSlotId: "slot_1", partySize: 2 },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect((payload as { customerId?: string }).customerId).toBe("c1");
+  });
+});
+
 describe("resolve-and-assemble — NL→id confirm-first (auto-resolve money intents)", () => {
   it("order.cancel with NO orderId auto-resolves the most-recent order + flags autoResolvedMoneyRef", async () => {
     orderListByCustomer = async () => ({

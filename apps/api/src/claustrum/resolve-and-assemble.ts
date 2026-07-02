@@ -636,6 +636,45 @@ async function bindRefundOwnership(kind: string, payload: Ctx): Promise<Ctx> {
 }
 
 /**
+ * F3/L1 (D-014) — thread resolved ids from ctx back onto the outgoing payload.
+ *
+ * The Conductor hands the executor tool `envelope.payload`, but the session
+ * cartId is resolved into ctx (not the payload), so a cart mutation EXECUTEs and
+ * then the tool throws a ZodError on the missing `cartId` — the customer can
+ * never add an item / apply a coupon / check out by message. Copy the resolved
+ * ids from ctx onto the payload for the kinds whose executor schema requires
+ * them, WITHOUT overriding an explicitly-supplied value.
+ *
+ * `ctx.cartId` is a string ONLY for the cart-op order.* kinds (they route
+ * through loadCartCtx); order-by-id kinds (cancel/amend) get `cartId: null` from
+ * loadOrderCtx, so this is self-scoping — it only fires when a cart was resolved.
+ * reservation.* executors require `customerId` (identity, never LLM-supplied).
+ */
+function threadResolvedIdsIntoPayload(
+  kind: string,
+  payload: Ctx,
+  ctx: Ctx,
+  customerId: string,
+): Ctx {
+  let out = payload;
+  if (
+    kind.startsWith("order.") &&
+    typeof ctx.cartId === "string" &&
+    typeof out.cartId !== "string"
+  ) {
+    out = { ...out, cartId: ctx.cartId };
+  }
+  if (
+    kind.startsWith("reservation.") &&
+    typeof out.customerId !== "string" &&
+    customerId
+  ) {
+    out = { ...out, customerId };
+  }
+  return out;
+}
+
+/**
  * Dispatch by kind to the right loader. Unknown / whatsapp kinds get the identity
  * base only (guards needing entity state see null → REFUSE cleanly, never panic).
  */
@@ -723,5 +762,15 @@ export async function resolveAndAssemble(args: ResolveArgs): Promise<AssembledRe
     (kind.startsWith("payment.") || ORDER_BY_ID_KINDS.has(kind)) &&
     ctx.resourceOwnerConfirmed === undefined;
 
-  return { payload: resolvedPayload, ctx, owned, ownershipIndeterminate };
+  // F3/L1 (D-014): thread the session-resolved cartId (and reservation
+  // customerId) from ctx onto the payload the executor tool receives, so cart
+  // mutations no longer EXECUTE-then-ZodError on a missing cartId.
+  const threadedPayload = threadResolvedIdsIntoPayload(
+    kind,
+    resolvedPayload,
+    ctx,
+    customerId,
+  );
+
+  return { payload: threadedPayload, ctx, owned, ownershipIndeterminate };
 }
