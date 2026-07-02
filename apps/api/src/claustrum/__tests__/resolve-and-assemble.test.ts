@@ -387,9 +387,9 @@ describe("resolve-and-assemble — L1 payload threading (D-014)", () => {
 // resolve it via searchProducts (a READ — resolve stays read-only) so the tool
 // schema {cartId,variantId,quantity} is satisfiable.
 describe("resolve-and-assemble — NL→variantId (BKL-061)", () => {
-  it("resolves a loose product name to a variantId + defaults quantity", async () => {
+  it("resolves a loose product name to variantId + explicit allergens + defaults quantity (BKL-061/067)", async () => {
     searchProductsMock = async () => ({
-      products: [{ id: "prod_1", variants: [{ id: "var_coke" }] }],
+      products: [{ id: "prod_1", variants: [{ id: "var_coke" }], allergens: ["gluten"] }],
     });
     const { payload } = await resolveAndAssemble({
       kind: "order.item.add",
@@ -398,9 +398,25 @@ describe("resolve-and-assemble — NL→variantId (BKL-061)", () => {
       channel: "web",
       sessionId: "conv-1",
     });
-    const p = payload as { variantId?: string; quantity?: number };
+    const p = payload as { variantId?: string; quantity?: number; allergens?: string[] };
     expect(p.variantId).toBe("var_coke");
     expect(p.quantity).toBe(1);
+    // BKL-067: the product's EXPLICIT allergen array is injected (Hard Rule #1).
+    expect(p.allergens).toEqual(["gluten"]);
+  });
+
+  it("injects an empty allergen array for a product with no allergens (still explicit)", async () => {
+    searchProductsMock = async () => ({
+      products: [{ id: "p2", variants: [{ id: "var_water" }], allergens: [] }],
+    });
+    const { payload } = await resolveAndAssemble({
+      kind: "order.item.add",
+      payload: { item: "agua" },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect((payload as { allergens?: string[] }).allergens).toEqual([]);
   });
 
   it("does not override an explicit variantId", async () => {

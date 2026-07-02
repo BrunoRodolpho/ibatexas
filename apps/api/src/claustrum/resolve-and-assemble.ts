@@ -667,12 +667,12 @@ function firstString(...vals: unknown[]): string | undefined {
  * variantId) is satisfiable. Returns undefined on no-match/error → the tool
  * REFUSEs honestly ("não encontrei esse item") rather than adding the wrong one.
  */
-async function resolveVariantIdFromName(
+async function resolveProductForItem(
   name: string,
   channel: string,
   sessionId: string | undefined,
   customerId: string,
-): Promise<string | undefined> {
+): Promise<{ variantId?: string; allergens?: string[] } | undefined> {
   try {
     const out = await searchProducts(
       { query: name },
@@ -683,7 +683,15 @@ async function resolveVariantIdFromName(
         userType: "customer",
       },
     );
-    return out.products?.[0]?.variants?.[0]?.id;
+    const product = out.products?.[0];
+    if (product === undefined) return undefined;
+    // allergens = the product's EXPLICIT stored array (Hard Rule #1: authoritative
+    // product data, NOT inferred from name/text). Same resolved product as the
+    // variant, so they can never disagree.
+    return {
+      variantId: product.variants?.[0]?.id,
+      ...(Array.isArray(product.allergens) ? { allergens: product.allergens } : {}),
+    };
   } catch {
     return undefined;
   }
@@ -712,19 +720,32 @@ async function threadResolvedIdsIntoPayload(
   ) {
     out = { ...out, customerId };
   }
-  // BKL-061: order.item.add — resolve a loose product name → variantId (READ)
-  // and default the quantity, so the executor schema {cartId,variantId,quantity}
-  // is satisfiable from the 4B's loose emission. cartId still comes from BKL-028
-  // (an existing session cart) — a fresh-session cart-ensure is BKL-066.
-  if (kind === "order.item.add" && typeof out.variantId !== "string") {
-    const name = firstString(out.item, out.product, out.productName, out.name, out.query);
-    if (name) {
-      const variantId = await resolveVariantIdFromName(name, channel, sessionId, customerId);
-      if (variantId !== undefined) out = { ...out, variantId };
+  // BKL-061 + BKL-067: order.item.add — resolve a loose product name to the
+  // product (READ) and inject variantId + the product's EXPLICIT allergens
+  // (pack-orders requireExplicitAllergens; Hard Rule #1) + default quantity, so
+  // the executor schema {cartId,variantId,quantity} AND the allergen guard are
+  // satisfiable from the 4B's loose emission. cartId comes from BKL-028 (session
+  // cart) which BKL-066 ensures exists.
+  if (kind === "order.item.add") {
+    const needsVariant = typeof out.variantId !== "string";
+    const needsAllergens = !Array.isArray(out.allergens);
+    if (needsVariant || needsAllergens) {
+      const name = firstString(out.item, out.product, out.productName, out.name, out.query);
+      if (name) {
+        const resolved = await resolveProductForItem(name, channel, sessionId, customerId);
+        if (resolved !== undefined) {
+          if (needsVariant && resolved.variantId !== undefined) {
+            out = { ...out, variantId: resolved.variantId };
+          }
+          if (needsAllergens && Array.isArray(resolved.allergens)) {
+            out = { ...out, allergens: resolved.allergens };
+          }
+        }
+      }
     }
-  }
-  if (kind === "order.item.add" && typeof out.quantity !== "number") {
-    out = { ...out, quantity: 1 };
+    if (typeof out.quantity !== "number") {
+      out = { ...out, quantity: 1 };
+    }
   }
   return out;
 }
