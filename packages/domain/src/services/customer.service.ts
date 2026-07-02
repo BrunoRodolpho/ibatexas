@@ -148,6 +148,19 @@ async function performUpdatePixDetails(
   })
 }
 
+async function performUpdateProfile(
+  customerId: string,
+  data: { name?: string; email?: string },
+) {
+  await prisma.customer.update({
+    where: { id: customerId },
+    data: {
+      ...(data.name ? { name: data.name } : {}),
+      ...(data.email ? { email: data.email } : {}),
+    },
+  })
+}
+
 export function createCustomerService(options?: CustomerServiceOptions) {
   const adjudicateOptions = {
     ...(options?.auditSink ? { auditSink: options.auditSink } : {}),
@@ -268,6 +281,17 @@ export function createCustomerService(options?: CustomerServiceOptions) {
      */
     async updatePixDetails(customerId: string, data: { name?: string; email?: string; cpf?: string }) {
       return performUpdatePixDetails(customerId, data)
+    },
+
+    /**
+     * Update the customer's profile (name / email). This is the sanctioned
+     * executor for the `customer.profile.update` envelope wrapper — the caller
+     * (apps/api me route) runs adjudication via `runCustomerIntent` against the
+     * customer-onboarding Pack (auth + rate-limit + PII guards) BEFORE invoking
+     * this. Never call it un-adjudicated for a customer-facing mutation.
+     */
+    async updateProfile(customerId: string, data: { name?: string; email?: string }) {
+      return performUpdateProfile(customerId, data)
     },
 
     /**

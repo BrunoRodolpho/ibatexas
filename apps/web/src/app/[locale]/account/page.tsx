@@ -11,6 +11,7 @@ import { LgpdDataExport } from './_components/LgpdDataExport'
 import { LoyaltyBalanceCard } from './_components/LoyaltyBalanceCard'
 import { DietaryPreferencesCard } from './_components/DietaryPreferencesCard'
 import { ProductReviewsCard } from './_components/ProductReviewsCard'
+import { EditProfileCard } from './_components/EditProfileCard'
 
 interface CustomerProfile {
   id: string
@@ -150,6 +151,9 @@ export default function AccountPage() {
             </Link>
           )}
         </div>
+
+        {/* Edit profile (CUS-061 — name/email, governed save) */}
+        <EditProfileCard />
 
         {/* Preferences (CUS-062 — dietary flags, governed save) */}
         <DietaryPreferencesCard />

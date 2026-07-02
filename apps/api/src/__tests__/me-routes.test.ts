@@ -31,6 +31,7 @@ const mockUpdatePreferences = vi.hoisted(() => vi.fn());
 const mockGetBalance = vi.hoisted(() => vi.fn());
 const mockOrderGetById = vi.hoisted(() => vi.fn());
 const mockSubmitReview = vi.hoisted(() => vi.fn());
+const mockUpdateProfile = vi.hoisted(() => vi.fn());
 const mockSendOtp = vi.hoisted(() =>
   vi.fn(async (_args: { to: string; channel: string }) => undefined),
 );
@@ -149,6 +150,7 @@ vi.mock("@ibatexas/domain", () => ({
   createCustomerService: () => ({
     getById: mockGetById,
     updatePreferences: mockUpdatePreferences,
+    updateProfile: mockUpdateProfile,
   }),
   createLoyaltyService: () => ({
     getBalance: mockGetBalance,
@@ -1151,6 +1153,111 @@ describe("POST /api/me/reviews — submit product review (governed)", () => {
       });
       expect(res.statusCode).toBe(401);
       expect(mockSubmitReview).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+// ── Tests: POST /api/me/profile (CUS-061 — governed edit name/email) ────────────
+
+describe("POST /api/me/profile — edit profile (governed)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    redisStorage.clear();
+    setupEnv();
+  });
+
+  it("adjudicates customer.profile.update and persists name+email (EXECUTE)", async () => {
+    mockUpdateProfile.mockResolvedValue(undefined);
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/me/profile",
+        headers: { "x-customer-id": "cust_01", "content-type": "application/json" },
+        payload: { name: "Maria Silva", email: "maria@example.com" },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({ success: true });
+      expect(mockUpdateProfile).toHaveBeenCalledWith(
+        "cust_01",
+        expect.objectContaining({ name: "Maria Silva", email: "maria@example.com" }),
+      );
+      // The rate-limit marker was refreshed after the EXECUTE (keeps the guard live).
+      const marker = mockRedisSet.mock.calls.find(
+        (c) => (c[0] as string).endsWith("customer:profile:last-update:cust_01"),
+      );
+      expect(marker).toBeTruthy();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("[rate-limit] REFUSES a second update within the cooldown and does not persist", async () => {
+    // Seed a fresh last-update marker → the pack's 1h rate-limit guard REFUSEs.
+    redisStorage.set(
+      "ibatexas:customer:profile:last-update:cust_01",
+      String(Date.now()),
+    );
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/me/profile",
+        headers: { "x-customer-id": "cust_01", "content-type": "application/json" },
+        payload: { name: "Novo Nome" },
+      });
+      expect(res.statusCode).not.toBe(200);
+      expect(mockUpdateProfile).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("returns 400 when neither name nor email is provided", async () => {
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/me/profile",
+        headers: { "x-customer-id": "cust_01", "content-type": "application/json" },
+        payload: {},
+      });
+      expect(res.statusCode).toBe(400);
+      expect(mockUpdateProfile).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("returns 400 on a malformed email", async () => {
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/me/profile",
+        headers: { "x-customer-id": "cust_01", "content-type": "application/json" },
+        payload: { email: "not-an-email" },
+      });
+      expect(res.statusCode).toBe(400);
+      expect(mockUpdateProfile).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("returns 401 when not authenticated", async () => {
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/me/profile",
+        headers: { "content-type": "application/json" },
+        payload: { name: "Maria" },
+      });
+      expect(res.statusCode).toBe(401);
+      expect(mockUpdateProfile).not.toHaveBeenCalled();
     } finally {
       await app.close();
     }

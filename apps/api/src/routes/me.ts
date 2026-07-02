@@ -67,8 +67,10 @@ import {
 import {
   customerOnboardingPolicyBundle,
   portugueseRefusalMessages,
+  CUSTOMER_PROFILE_RATE_LIMIT_HOURS,
   type CustomerAnonymizePayload,
   type CustomerPreferencesUpdatePayload,
+  type CustomerProfileUpdatePayload,
   type CustomerAnonymizeCancelPayload,
   type CustomerOnboardingState,
 } from "@ibatexas/pack-customer-onboarding";
@@ -437,6 +439,109 @@ export async function meRoutes(server: FastifyInstance): Promise<void> {
         request.log.error(err, "submitReview falhou");
         return reply.code(500).send({ error: "Erro ao enviar avaliação." });
       }
+    },
+  );
+
+  // ── POST /api/me/profile ────────────────────────────────────────────────────
+  //
+  // CUS-061 (web surface) — the authenticated customer edits their name / email.
+  // Routed through the customer-intent gateway: a `customer.profile.update`
+  // envelope is adjudicated against the customer-onboarding Pack (auth guard,
+  // PII/card-PAN scan on name+email, 1h rate-limit) before the bare service
+  // executor persists it. The rate-limit guard reads `state.ctx.lastProfileUpdateAt`
+  // — we keep it LIVE (not inert) via a per-customer Redis marker read before and
+  // refreshed after a successful EXECUTE.
+  const ProfileUpdateResponse = z.object({ success: z.boolean() });
+  const profileLastUpdateKey = (customerId: string) =>
+    rk(`customer:profile:last-update:${customerId}`);
+
+  app.post(
+    "/api/me/profile",
+    {
+      schema: {
+        tags: ["me"],
+        summary: "Editar perfil (nome / e-mail)",
+        body: z
+          .object({
+            name: z.string().trim().min(1).max(120).optional(),
+            email: z.string().trim().email().max(254).optional(),
+          })
+          .refine((b) => b.name !== undefined || b.email !== undefined, {
+            message: "Informe nome ou e-mail.",
+          }),
+        response: {
+          200: ProfileUpdateResponse,
+        },
+      },
+      preHandler: requireAuth,
+    },
+    async (request, reply) => {
+      const customerId = request.customerId!;
+      const body = request.body;
+      const idempotencyKey = resolveMeIdempotencyKey(
+        request.headers["idempotency-key"],
+        `${customerId}:profile:update:${epochHour()}`,
+      );
+
+      // Keep the rate-limit guard live: project the last-update epoch from Redis.
+      const redis = await getRedisClient();
+      const lastRaw = await redis.get(profileLastUpdateKey(customerId));
+      const lastProfileUpdateAt = lastRaw ? Number(lastRaw) : null;
+
+      const payload: CustomerProfileUpdatePayload = {
+        ...(body.name === undefined ? {} : { name: body.name }),
+        ...(body.email === undefined ? {} : { email: body.email }),
+      };
+      const envelope = buildCustomerEnvelope<
+        "customer.profile.update",
+        CustomerProfileUpdatePayload
+      >({
+        kind: "customer.profile.update",
+        payload,
+        nonce: deriveMeNonce(idempotencyKey),
+        customerId,
+      });
+      const state = {
+        ctx: {
+          ...identityCtx(customerId, "web"),
+          customerExists: true,
+          isAuthenticated: true,
+          now: new Date(),
+          lastProfileUpdateAt,
+        },
+      } as unknown as CustomerOnboardingState;
+
+      const out = await runCustomerIntent({
+        envelope,
+        state,
+        policy: customerOnboardingPolicyBundle as unknown as Parameters<typeof runCustomerIntent>[0]["policy"],
+        executor: async () => {
+          await createCustomerService().updateProfile(customerId, {
+            ...(body.name === undefined ? {} : { name: body.name }),
+            ...(body.email === undefined ? {} : { email: body.email }),
+          });
+          // Refresh the rate-limit marker; TTL covers the cooldown window + margin.
+          await redis.set(profileLastUpdateKey(customerId), String(Date.now()), {
+            EX: Math.ceil(CUSTOMER_PROFILE_RATE_LIMIT_HOURS * 3600) + 300,
+          });
+          return { success: true };
+        },
+        ctx: {
+          customerId,
+          route: "me.profile.update",
+          log: request.log,
+        },
+        auditSink: getAuditSink(),
+        refusalMessages: portugueseRefusalMessages,
+      });
+
+      if (out.statusCode === 200) {
+        return reply.code(200).send({ success: true });
+      }
+      void (reply as unknown as { status(code: number): typeof reply })
+        .status(out.statusCode)
+        .send(out.body as never);
+      return reply;
     },
   );
 

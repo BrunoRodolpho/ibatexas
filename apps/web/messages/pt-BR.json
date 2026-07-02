@@ -404,6 +404,17 @@
       "error": "Não foi possível enviar agora. Tente novamente.",
       "rating_required": "Escolha de 1 a 5 estrelas."
     },
+    "edit_profile": {
+      "title": "Editar perfil",
+      "description": "Atualize seu nome e e-mail.",
+      "name_label": "Nome",
+      "email_label": "E-mail",
+      "save": "Salvar",
+      "saving": "Salvando…",
+      "saved": "Perfil atualizado!",
+      "error": "Não foi possível salvar agora. Tente novamente.",
+      "invalid_email": "E-mail inválido."
+    },
     "payment_methods": "Métodos de Pagamento",
     "payment_description": "Seus métodos de pagamento",
     "wishlist": "Minha Lista de Desejos",
