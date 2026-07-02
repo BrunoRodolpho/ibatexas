@@ -1433,6 +1433,20 @@ async function flushTurnTraces(
 }
 
 /**
+ * FORMAT-7: the honest chat model id for cost/telemetry fallbacks. Under
+ * LLM_PROVIDER=ollama the runtime runs a LOCAL model (LLM_MODEL), NOT
+ * ANTHROPIC_MODEL — stamping the Anthropic id (and its price map) there
+ * mislabels the model and fabricates a USD cost for a free local model.
+ * Mirrors the `chatModelId` resolved in bootstrapClaustrum. The per-turn
+ * LLMTrace model (pendingTraces) is still preferred when present.
+ */
+function resolvedChatModelId(): string {
+  return process.env.LLM_PROVIDER === "ollama"
+    ? process.env.LLM_MODEL ?? process.env.ANTHROPIC_MODEL ?? "nemotron-3-nano:4b"
+    : process.env.ANTHROPIC_MODEL ?? "claude-sonnet-4-6";
+}
+
+/**
  * Minimal Telemetry — emits to console (pino is wired up at the Fastify
  * layer). The full implementation will fan out to prom-client metrics
  * and the existing audit-sink subscriber.
@@ -1472,6 +1486,7 @@ function fastifyTelemetry(
           customerId: record.customerId,
           decisionKind: record.decisionKind,
           intentHash: record.intentHash,
+          model: pendingTraces.get(record.turnId)?.[0]?.model ?? resolvedChatModelId(),
           inputTokens: record.inputTokens,
           outputTokens: record.outputTokens,
           inbound: clip(record.inboundText),
@@ -1519,7 +1534,7 @@ function fastifyTelemetry(
           emitLlmCall({
             inputTokens: record.inputTokens ?? 0,
             outputTokens: record.outputTokens ?? 0,
-            model: process.env.ANTHROPIC_MODEL,
+            model: pendingTraces.get(record.turnId)?.[0]?.model ?? resolvedChatModelId(),
             source: "sut",
             sessionId: record.conversationId,
             duration: record.durationMs,
@@ -1554,8 +1569,7 @@ function fastifyTelemetry(
               channel: record.channel,
               model:
                 pendingTraces.get(record.turnId)?.[0]?.model ??
-                process.env.ANTHROPIC_MODEL ??
-                "claude-sonnet-4-6",
+                resolvedChatModelId(),
               promptTokens,
               completionTokens,
               recordedAt: record.at,

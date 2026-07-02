@@ -226,6 +226,24 @@ async function runConductorTurn(args: {
         : rawText.trim() === ""
           ? "whitespace_only"
           : "deliverable";
+    if (disposition !== "deliverable") {
+      // PAYLOAD-1 / Defect C: the model returned an empty/whitespace completion,
+      // so without a holding message the customer is ghosted. Emit a queryable
+      // warn at the SOURCE (previously there were ZERO VictoriaLogs lines for
+      // this failure) — an operator can now find + RCA every ghost by turnId via
+      // `component:llm event:empty`. Token cost/model join via the turn line.
+      args.log.warn(
+        {
+          component: "llm",
+          event: "empty",
+          turnId: capsule.turnId,
+          session_id: args.sessionKey,
+          disposition,
+          decisionKind: turn.decision.kind,
+        },
+        `llm empty completion (${disposition})`,
+      );
+    }
     return {
       text: rawText,
       disposition,

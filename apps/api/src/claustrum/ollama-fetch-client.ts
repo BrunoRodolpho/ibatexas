@@ -20,6 +20,7 @@ import type {
   OpenAIEmbeddingResponse,
 } from "@claustrum/openai";
 import { CompletionError } from "@claustrum/core";
+import { logger } from "../lib/logger.js";
 
 export interface OllamaFetchClientOptions {
   baseUrl?: string;
@@ -85,7 +86,24 @@ export class OllamaFetchClient implements OpenAIClientLike {
           body: JSON.stringify(wire),
           ...(options?.signal ? { signal: options.signal } : {}),
         });
-        if (!res.ok) throw httpError(res.status, await res.text());
+        if (!res.ok) {
+          const errBody = await res.text();
+          // SIGNAL-5: the wire boundary was silent — surface local-model HTTP
+          // failures (nemotron box offline / 500 / auth) so they are queryable in
+          // VictoriaLogs (component:llm event:error) instead of only resurfacing
+          // downstream as an unexplained empty/failed turn.
+          logger.error(
+            {
+              component: "llm",
+              event: "error",
+              httpStatus: res.status,
+              model: wire.model,
+              body: errBody.slice(0, 300),
+            },
+            `llm HTTP ${res.status} from local model endpoint`,
+          );
+          throw httpError(res.status, errBody);
+        }
         return (await res.json()) as OpenAIChatCompletionResponse;
       }) as OpenAIClientLike["chat"]["completions"]["create"],
     },
