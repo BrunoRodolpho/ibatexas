@@ -103,10 +103,32 @@ export async function startConversationArchiver(
         }
       }
 
-      log?.info(
-        { session_id: sessionId, persisted: persistedCount, refused: refusedCount },
-        "[conversation-archiver] Messages processed",
-      );
+      // NOISE-6: the happy path (nothing refused) fired on EVERY archived
+      // message and was the single largest subscriber emitter — demote it to
+      // debug. Surface a warn only when the kernel refused a message (the
+      // per-message REFUSE detail is already logged in the loop above).
+      if (refusedCount > 0) {
+        log?.warn(
+          {
+            component: "subscriber.conversation-archiver",
+            event: "refused",
+            session_id: sessionId,
+            persisted: persistedCount,
+            refused: refusedCount,
+          },
+          "[conversation-archiver] some messages refused by the kernel",
+        );
+      } else {
+        log?.debug(
+          {
+            component: "subscriber.conversation-archiver",
+            event: "persist",
+            session_id: sessionId,
+            persisted: persistedCount,
+          },
+          "[conversation-archiver] Messages processed",
+        );
+      }
     } catch (err) {
       log?.error(err, "[conversation-archiver] Failed to persist conversation messages");
       await pushToDlq("conversation.message.appended", payload as Record<string, unknown>, err, log);

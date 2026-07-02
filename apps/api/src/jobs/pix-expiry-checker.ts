@@ -127,8 +127,8 @@ export async function checkPixExpiry(log?: FastifyBaseLogger | null): Promise<vo
 
         if (result === null) {
           // Lock not acquired — another process is handling this payment
-          effectiveLogger?.info(
-            { paymentId: payment.id },
+          effectiveLogger?.debug(
+            { component: "job.pix-expiry", event: "lock_skip", paymentId: payment.id },
             "[pix-expiry] Lock not acquired — skipping (will retry next run)",
           );
           continue;
@@ -141,22 +141,22 @@ export async function checkPixExpiry(log?: FastifyBaseLogger | null): Promise<vo
 
         expiredCount++;
         effectiveLogger?.info(
-          { paymentId: payment.id, orderId: payment.orderId },
+          { component: "job.pix-expiry", event: "expired", paymentId: payment.id, orderId: payment.orderId },
           "[pix-expiry] Payment expired — order preserved for retry/method switch",
         );
       } catch (err) {
         // InvalidPaymentTransitionError means it was already transitioned — safe to skip
         if ((err as Error).name === "InvalidPaymentTransitionError") {
-          effectiveLogger?.info(
-            { paymentId: payment.id },
+          effectiveLogger?.debug(
+            { component: "job.pix-expiry", event: "already_transitioned", paymentId: payment.id },
             "[pix-expiry] Payment already transitioned — skipping",
           );
           continue;
         }
         // PaymentConcurrencyError means version changed — will retry next run
         if ((err as Error).name === "PaymentConcurrencyError") {
-          effectiveLogger?.info(
-            { paymentId: payment.id },
+          effectiveLogger?.debug(
+            { component: "job.pix-expiry", event: "concurrency_conflict", paymentId: payment.id },
             "[pix-expiry] Concurrency conflict — will retry next run",
           );
           continue;
@@ -183,10 +183,13 @@ export async function checkPixExpiry(log?: FastifyBaseLogger | null): Promise<vo
     });
   }
 
-  effectiveLogger?.info(
-    { expired_count: expiredCount, run_at: new Date().toISOString() },
-    "PIX expiry check complete",
-  );
+  // NOISE-4: log only when payments actually expired (most sweeps expire 0).
+  if (expiredCount > 0) {
+    effectiveLogger?.info(
+      { component: "job.pix-expiry", event: "sweep", expired_count: expiredCount },
+      "PIX expiry sweep expired payments",
+    );
+  }
 }
 
 /** BullMQ processor — wraps the core logic. */

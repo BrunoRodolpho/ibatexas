@@ -143,7 +143,13 @@ export async function checkAbandonedCarts(log?: FastifyBaseLogger | null): Promi
     }
   } while (cursor !== 0);
 
-  effectiveLogger?.info({ abandoned_count: abandonedCount, run_at: new Date().toISOString() }, "Abandoned cart check complete");
+  // NOISE-5: log only when carts were actually abandoned (most runs are 0).
+  if (abandonedCount > 0) {
+    effectiveLogger?.info(
+      { component: "job.abandoned-cart", event: "sweep", abandoned_count: abandonedCount },
+      "abandoned-cart sweep flagged carts",
+    );
+  }
 }
 
 /** BullMQ processor — wraps the core logic with Sentry reporting. */

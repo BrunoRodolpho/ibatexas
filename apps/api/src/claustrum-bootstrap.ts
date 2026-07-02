@@ -1779,7 +1779,9 @@ async function resolveGroundingPort(
       "CLAUSTRUM_GROUNDING_ENABLED=true but the model provider cannot embed — running grounding as a designed no-op (empty retrieval); wire a working embedding proxy to enable it. See DEF-005",
     );
   } else if (!groundingEnabled) {
-    logger.info(
+    // NOISE-9: a DESIGNED, config-driven no-op — debug, not info (it fired on
+    // every boot). The grounding-enabled-but-can't-embed branch above stays warn.
+    logger.debug(
       { component: "grounding" },
       "embeddings unavailable (CLAUSTRUM_GROUNDING_ENABLED!=true) — grounding port runs as a designed no-op (empty retrieval); see DEF-005",
     );

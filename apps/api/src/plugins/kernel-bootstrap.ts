@@ -165,8 +165,13 @@ export function installKernelMetricsSink(
   // events to the structured logger so they surface in log-search +
   // can be aggregated by operators. The Sentry breadcrumb gives
   // incident responders timeline visibility.
+  // NOISE-7: dedup firing is the EXPECTED steady state of the always-on
+  // execution ledger — logging every drop at info was 535 lines of routine
+  // bookkeeping. Demote to debug (tagged component:kernel event:dedup); the
+  // Sentry breadcrumb keeps incident-timeline visibility, and the real home
+  // for the rate is the kernel_audit_dedup_total Prometheus counter noted above.
   setAuditDedupHook((path) => {
-    logger.info({ path }, "[audit-dedup] in-process sink dropped duplicate audit row")
+    logger.debug({ component: "kernel", event: "dedup", path }, "[audit-dedup] in-process sink dropped duplicate audit row")
     Sentry.addBreadcrumb({
       category: "audit-dedup",
       level: "info",
@@ -174,7 +179,7 @@ export function installKernelMetricsSink(
     })
   })
   setAuditConsumerDedupHook(() => {
-    logger.info({ path: "consumer" }, "[audit-dedup] NATS audit-consumer dropped duplicate audit row")
+    logger.debug({ component: "kernel", event: "dedup", path: "consumer" }, "[audit-dedup] NATS audit-consumer dropped duplicate audit row")
     Sentry.addBreadcrumb({
       category: "audit-dedup",
       level: "info",
