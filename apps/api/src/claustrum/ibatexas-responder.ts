@@ -43,6 +43,7 @@ import {
   type IbatexasPromptComposer,
 } from "./prompts/ibatexas-prompts.js";
 import { emitModelCallTrace } from "./llm-trace.js";
+import { completeWithEmptyRetry } from "./complete-with-retry.js";
 import {
   closedHoursBackstop,
   closedHoursDisclosure,
@@ -60,6 +61,14 @@ export {
 
 const DEFAULT_MAX_TOKENS = 1024;
 const PROMPT_BUDGET = { maxTokens: 100_000 } as const;
+
+// F6 (BKL-031) — total responder-completion attempts (incl. the first) before
+// giving up to the holding-message fallback. The 4B empties ~22% of the time;
+// 3 attempts leaves ~1% residual. Config from env (Hard Rule #3).
+const EMPTY_COMPLETION_MAX_ATTEMPTS = Math.max(
+  1,
+  Number.parseInt(process.env.EMPTY_COMPLETION_MAX_ATTEMPTS ?? "3", 10) || 3,
+);
 
 export interface IbatexasResponderDeps {
   /** Consumed surface is exactly the ModelProvider port (`.complete()`). */
@@ -562,13 +571,28 @@ export function createIbatexasResponder(
     intentHash?: string;
   }): Promise<DraftResponse> {
     const startedAt = Date.now();
-    const completion = await deps.model.complete({
-      model: deps.modelId,
-      maxTokens,
-      system: args.system,
-      messages: [{ role: "user", content: args.userText }],
-    });
+    // F6 (BKL-031): regenerate-on-empty — a single empty 4B completion ghosts
+    // the customer. Retry (bounded, jittered) until non-empty; the last (empty)
+    // completion still returns so the holding-message fallback fires.
+    const { completion, attempts, recovered } = await completeWithEmptyRetry(
+      () =>
+        deps.model.complete({
+          model: deps.modelId,
+          maxTokens,
+          system: args.system,
+          messages: [{ role: "user", content: args.userText }],
+        }),
+      { maxAttempts: EMPTY_COMPLETION_MAX_ATTEMPTS },
+    );
     const durationMs = Date.now() - startedAt;
+    if (attempts > 1) {
+      logger.warn(
+        { component: "responder", event: "empty_completion_retry", turnId: args.turnId, attempts, recovered },
+        recovered
+          ? "responder recovered from an empty completion after retry"
+          : "responder exhausted empty-completion retries — holding fallback applies",
+      );
+    }
 
     if (deps.promptComposer !== undefined && deps.telemetry !== undefined) {
       await emitModelCallTrace({
