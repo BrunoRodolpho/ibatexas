@@ -57,6 +57,7 @@ import {
 } from "../adapters/park-deferred-intent-nx.js";
 import {
   createCustomerService,
+  createLoyaltyService,
   exportCustomerData,
   anonymizeCustomer,
   anonymizeCustomerFromEnvelope,
@@ -229,6 +230,38 @@ export async function meRoutes(server: FastifyInstance): Promise<void> {
         });
       }
       return reply.send(data);
+    },
+  );
+
+  // ── GET /api/me/loyalty ────────────────────────────────────────────────────
+  //
+  // CUS-067 (web view) — the authenticated customer's punch-card stamp balance.
+  // Read-only; scoped to request.customerId (set by requireAuth). Mirrors the
+  // WhatsApp loyalty shortcut so the web account page can render the same balance.
+  app.get(
+    "/api/me/loyalty",
+    {
+      schema: {
+        tags: ["me"],
+        summary: "Saldo de fidelidade (selos)",
+        response: {
+          200: z.object({
+            stamps: z.number(),
+            stampsNeeded: z.number(),
+            totalEarned: z.number(),
+          }),
+        },
+      },
+      preHandler: requireAuth,
+    },
+    async (request, reply) => {
+      const customerId = request.customerId!;
+      const balance = await createLoyaltyService().getBalance(customerId);
+      return reply.send({
+        stamps: balance.stamps,
+        stampsNeeded: balance.stampsNeeded,
+        totalEarned: balance.totalEarned,
+      });
     },
   );
 

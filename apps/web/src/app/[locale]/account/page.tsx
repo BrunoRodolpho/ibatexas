@@ -8,6 +8,7 @@ import { apiFetch } from '@/lib/api'
 import { Button, Container } from "@/components/atoms"
 import { Flame, Heart, Package, User } from 'lucide-react'
 import { LgpdDataExport } from './_components/LgpdDataExport'
+import { LoyaltyBalanceCard } from './_components/LoyaltyBalanceCard'
 
 interface CustomerProfile {
   id: string
@@ -183,6 +184,9 @@ export default function AccountPage() {
             {t("account.addresses_description")}
           </p>
         </div>
+
+        {/* Loyalty balance (CUS-067 web view) */}
+        <LoyaltyBalanceCard />
 
         {/* LGPD data export (CUS-064) */}
         <LgpdDataExport />

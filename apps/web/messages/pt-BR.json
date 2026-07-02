@@ -373,6 +373,12 @@
       "loading": "Preparando…",
       "error": "Não foi possível exportar agora. Tente novamente em instantes."
     },
+    "loyalty": {
+      "title": "Fidelidade",
+      "description": "Acumule selos a cada pedido e ganhe recompensas.",
+      "progress": "Você tem {stamps} de {total} selos — faltam {needed} para a recompensa.",
+      "reward_ready": "Parabéns! Você tem uma recompensa disponível. 🏆"
+    },
     "payment_methods": "Métodos de Pagamento",
     "payment_description": "Seus métodos de pagamento",
     "wishlist": "Minha Lista de Desejos",
