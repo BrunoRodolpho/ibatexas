@@ -6,7 +6,13 @@ import type { OrderSummary } from '@ibatexas/types'
 import type { AdminOrderDetail } from '@ibatexas/ui'
 import { useAdminOrdersPage, useUpdateOrderStatus, useAdminOrderDetail } from '@/domains/admin/admin.hooks'
 import { apiFetch } from '@/lib/api'
+import { reaisStringToCentavos, INVALID_AMOUNT_PT_BR } from '@/lib/money'
 import { AdminActionDialog } from '@/components/molecules/AdminActionDialog'
+import {
+  PendingConfirmationsPanel,
+  confirmationRouteKey,
+  type PendingConfirmation,
+} from '@/components/molecules/PendingConfirmationsPanel'
 
 // OPS-071 — two-phase destructive admin actions. Each triggers a collect →
 // (optional) confirm flow: step 1 (`POST path`) either executes directly or
@@ -25,14 +31,31 @@ const ACTION_META: Record<TwoPhaseAction, {
   'waive': { title: 'Isentar pagamento', path: (id) => `/api/admin/orders/${id}/waive`, reasonRequired: true, withAmount: false },
 }
 
-// Parse a pt-BR reais string ("50,00" / "1.250,50") into integer centavos.
-// Returns null for blank/invalid so the caller can omit the field (full refund).
-function reaisStringToCentavos(raw: string): number | null {
-  if (!raw.trim()) return null
-  const cleaned = raw.replace(/\./g, '').replace(',', '.').replace(/[^0-9.]/g, '')
-  const n = Number.parseFloat(cleaned)
-  if (!Number.isFinite(n) || n <= 0) return null
-  return Math.round(n * 100)
+// Step-2 confirm path per receipt route key. The three dialog-driven actions
+// reuse ACTION_META; force-status has no collect dialog on this page but its
+// parked receipts must still be confirmable here.
+const CONFIRM_PATH_BY_ROUTE: Record<string, (orderId: string) => string> = {
+  'force-cancel': ACTION_META['force-cancel'].path,
+  'refund': ACTION_META['refund'].path,
+  'waive': ACTION_META['waive'].path,
+  'force-status': (id) => `/api/admin/orders/${id}/payment/status`,
+}
+
+// Step-2 POST shared by the dialog flow and the pending-confirmations panel.
+// Raw fetch (not apiFetch) so the server's pt-BR error body is surfaced
+// verbatim (e.g. the same-actor 403 "outro operador precisa confirmar").
+async function postConfirmStep(
+  path: string,
+  confirmationId: string,
+): Promise<{ ok: boolean; status: number; data: { error?: string; message?: string } }> {
+  const res = await fetch(`/api/proxy${path}/confirm`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ confirmationId }),
+  })
+  const data = (await res.json().catch(() => ({}))) as { error?: string; message?: string }
+  return { ok: res.ok, status: res.status, data }
 }
 
 export default function PedidosPage(): React.JSX.Element {
@@ -106,6 +129,57 @@ export default function PedidosPage(): React.JSX.Element {
   // Bumped on each new action so the dialog remounts with fresh inputs.
   const [dialogKey, setDialogKey] = useState(0)
 
+  // Receipts parked at step 1 and awaiting a second operator (OPS-071).
+  // Polled on the same 30s cadence as the orders auto-refresh.
+  const [confirmations, setConfirmations] = useState<PendingConfirmation[]>([])
+  const [confirmingId, setConfirmingId] = useState<string | null>(null)
+
+  const refetchConfirmations = useCallback(async () => {
+    try {
+      const data = (await apiFetch('/api/admin/confirmations')) as
+        | PendingConfirmation[]
+        | { confirmations?: PendingConfirmation[] }
+        | null
+      const list = Array.isArray(data) ? data : (data?.confirmations ?? [])
+      setConfirmations(
+        list.filter((c): c is PendingConfirmation => typeof c?.confirmationId === 'string' && c.confirmationId.length > 0),
+      )
+    } catch {
+      // Endpoint unavailable — hide the panel instead of toast-spamming a poll.
+      setConfirmations([])
+    }
+  }, [])
+
+  useEffect(() => {
+    void refetchConfirmations()
+    const interval = setInterval(() => { void refetchConfirmations() }, 30_000)
+    return () => clearInterval(interval)
+  }, [refetchConfirmations])
+
+  // Second-operator confirm fired from the panel (the initiator's own confirm
+  // attempt gets the server's same-actor 403, surfaced verbatim below).
+  const confirmFromPanel = useCallback(async (confirmation: PendingConfirmation) => {
+    const routeKey = confirmationRouteKey(confirmation)
+    const pathFor = routeKey ? CONFIRM_PATH_BY_ROUTE[routeKey] : undefined
+    if (!pathFor || !confirmation.orderId) return
+    setConfirmingId(confirmation.confirmationId)
+    try {
+      const { ok, status, data } = await postConfirmStep(pathFor(confirmation.orderId), confirmation.confirmationId)
+      if (!ok) {
+        addToast({ type: 'error', message: data.error ?? data.message ?? `Erro ao confirmar (${status})` })
+      } else {
+        addToast({ type: 'success', message: data.message ?? 'Ação confirmada e executada' })
+        refetch()
+        if (selectedOrderId === confirmation.orderId) refetchDetail()
+      }
+    } catch (err) {
+      addToast({ type: 'error', message: err instanceof Error ? err.message : 'Erro ao confirmar ação' })
+    } finally {
+      setConfirmingId(null)
+      void refetchConfirmations()
+    }
+  }, [addToast, refetch, refetchDetail, selectedOrderId, refetchConfirmations])
+
   const handleAdminAction = useCallback(async (orderId: string, action: string, body?: Record<string, unknown>) => {
     // confirm-cash is a direct (non-two-phase) action — execute immediately.
     if (action === 'confirm-cash') {
@@ -135,14 +209,20 @@ export default function PedidosPage(): React.JSX.Element {
   // it was PARKED pending a second operator; anything else means it executed.
   const submitCollectAction = useCallback(async (reason: string, amountReais: string) => {
     if (!pendingAction) return
+    const payload: Record<string, unknown> = {}
+    if (reason) payload.reason = reason
+    if (pendingAction.kind === 'refund' && amountReais.trim()) {
+      const cents = reaisStringToCentavos(amountReais)
+      if (cents === null) {
+        // The dialog validates client-side; this guard keeps an unparseable
+        // amount from ever silently degrading into a FULL refund.
+        addToast({ type: 'error', message: INVALID_AMOUNT_PT_BR })
+        return
+      }
+      payload.amountInCentavos = cents
+    }
     setActionLoading(true)
     try {
-      const payload: Record<string, unknown> = {}
-      if (reason) payload.reason = reason
-      if (pendingAction.kind === 'refund') {
-        const cents = reaisStringToCentavos(amountReais)
-        if (cents != null) payload.amountInCentavos = cents
-      }
       // Refund step 1 requires an Idempotency-Key header (400 otherwise).
       const headers: Record<string, string> =
         pendingAction.kind === 'refund' ? { 'Idempotency-Key': crypto.randomUUID() } : {}
@@ -155,6 +235,8 @@ export default function PedidosPage(): React.JSX.Element {
         setPendingAction((prev) =>
           prev ? { ...prev, phase: 'confirm', confirmationId: result.confirmationId, prompt: result.prompt ?? 'Confirmar esta ação?' } : prev,
         )
+        // The parked receipt is now visible to other operators' panels too.
+        void refetchConfirmations()
       } else {
         // Executed directly (e.g. a small refund below the confirmation threshold).
         addToast({ type: 'success', message: 'Ação realizada com sucesso' })
@@ -167,7 +249,7 @@ export default function PedidosPage(): React.JSX.Element {
     } finally {
       setActionLoading(false)
     }
-  }, [pendingAction, selectedOrderId, refetchDetail, addToast])
+  }, [pendingAction, selectedOrderId, refetchDetail, addToast, refetchConfirmations])
 
   // Step 2 — the second-operator confirmation. Raw fetch (not apiFetch) so we
   // can surface the server's pt-BR error body (e.g. the same-actor 403).
@@ -175,15 +257,9 @@ export default function PedidosPage(): React.JSX.Element {
     if (!pendingAction?.confirmationId) return
     setActionLoading(true)
     try {
-      const res = await fetch(`/api/proxy${pendingAction.path}/confirm`, {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ confirmationId: pendingAction.confirmationId }),
-      })
-      const data = (await res.json().catch(() => ({}))) as { error?: string; message?: string }
-      if (!res.ok) {
-        addToast({ type: 'error', message: data.error ?? data.message ?? `Erro ao confirmar (${res.status})` })
+      const { ok, status, data } = await postConfirmStep(pendingAction.path, pendingAction.confirmationId)
+      if (!ok) {
+        addToast({ type: 'error', message: data.error ?? data.message ?? `Erro ao confirmar (${status})` })
       } else {
         addToast({ type: 'success', message: data.message ?? 'Ação confirmada e executada' })
         if (selectedOrderId === pendingAction.orderId) refetchDetail()
@@ -194,8 +270,9 @@ export default function PedidosPage(): React.JSX.Element {
     } finally {
       setActionLoading(false)
       setPendingAction(null)
+      void refetchConfirmations()
     }
-  }, [pendingAction, selectedOrderId, refetchDetail, refetch, addToast])
+  }, [pendingAction, selectedOrderId, refetchDetail, refetch, addToast, refetchConfirmations])
 
   async function handleAdvanceStatus(orderId: string, newStatus: string, version?: number) {
     try {
@@ -214,6 +291,12 @@ export default function PedidosPage(): React.JSX.Element {
 
   return (
     <>
+      <PendingConfirmationsPanel
+        confirmations={confirmations}
+        confirmingId={confirmingId}
+        onConfirm={confirmFromPanel}
+      />
+
       <AdminPedidosPage
         orders={orders}
         loading={loading}

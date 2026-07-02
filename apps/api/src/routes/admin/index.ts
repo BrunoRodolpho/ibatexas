@@ -31,6 +31,7 @@ import { adminPaymentRoutes } from "./payments.js";
 import { adminOrderActionRoutes } from "./order-actions.js";
 import { adminBannerRoutes } from "./banner.js";
 import { adminAgentApprovalRoutes } from "./agent-approvals.js";
+import { adminConfirmationRoutes } from "./confirmations.js";
 import { conversationRoutes } from "./conversations.js";
 import { escalationRoutes } from "./escalations.js";
 import { adminIncidentRoutes } from "./incidents.js";
@@ -194,6 +195,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
   await server.register(adminOrderActionRoutes);
   await server.register(adminBannerRoutes);
   await server.register(adminAgentApprovalRoutes);
+  await server.register(adminConfirmationRoutes);
   await server.register(conversationRoutes);
   await server.register(escalationRoutes);
   await server.register(adminIncidentRoutes);

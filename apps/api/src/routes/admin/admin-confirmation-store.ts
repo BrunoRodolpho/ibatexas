@@ -127,6 +127,12 @@ export interface PendingAdminAction {
   readonly expectedVersion?: number;
 }
 
+/** A pending receipt paired with its id (the Redis key carries the id, the JSON doesn't). */
+export interface PendingConfirmation {
+  readonly confirmationId: string;
+  readonly pending: PendingAdminAction;
+}
+
 export interface AdminConfirmationStore {
   /**
    * Persist a pending action. Returns the receipt id (the operator
@@ -143,6 +149,22 @@ export interface AdminConfirmationStore {
    * 410 Gone to the operator).
    */
   consume(confirmationId: string): Promise<PendingAdminAction | null>;
+  /**
+   * Read a pending action WITHOUT consuming it — plain GET, no delete,
+   * TTL untouched. `consumeWithSameActorCheck` peeks first so a refused
+   * confirm attempt (same actor, null staff, actor-type mismatch) does
+   * NOT burn the receipt: a second operator can still confirm within
+   * the TTL.
+   */
+  peek(confirmationId: string): Promise<PendingAdminAction | null>;
+  /**
+   * List every pending (unconsumed, unexpired) receipt. Backed by a
+   * Redis SET index (SADD on create / SREM on consume) with a
+   * self-healing read: a member whose receipt key TTL-expired is
+   * removed from the index on read. Mirrors the escalation store's
+   * OPEN_SET pattern (apps/api/src/escalation/escalation-store.ts).
+   */
+  listPending(): Promise<ReadonlyArray<PendingConfirmation>>;
 }
 
 /**
@@ -159,16 +181,31 @@ export interface AdminConfirmationStore {
  *   403 with a pt-BR refusal.
  * - `null_staff_violation`: P0-5-TRUE — either step's staffId is null
  *   (or empty). API-key flow on either side means the operator cannot
- *   be identified; the two-person rule cannot be enforced. Receipt is
- *   drained; caller surfaces 403.
+ *   be identified; the two-person rule cannot be enforced. Caller
+ *   surfaces 403.
  * - `actor_type_mismatch`: P0-5-TRUE — both sides have a non-null
  *   staffId but the actor types differ (one JWT-user, one API-key
  *   system). The same human acting via two different credential paths
- *   defeats separation of duty. Receipt is drained; caller surfaces 403.
+ *   defeats separation of duty. Caller surfaces 403.
+ *
+ * - `target_mismatch`: the receipt exists but was parked for a DIFFERENT
+ *   route or order than the endpoint being confirmed (stale tab,
+ *   copy-paste, scripted tooling). Caller surfaces 410 — and because the
+ *   check runs BEFORE the consume, the receipt survives for a correctly
+ *   aimed confirm.
+ *
+ * B1 (review 2026-07-02): NO violation drains the receipt anymore. The
+ * helper peeks first and only consumes on the `ok` path — a refused
+ * confirm attempt leaves the receipt (and its TTL) intact so a second,
+ * different operator can still confirm the action.
  */
 export type ConsumeWithSameActorOutcome =
   | { readonly kind: "ok"; readonly pending: PendingAdminAction }
   | { readonly kind: "missing" }
+  | {
+      readonly kind: "target_mismatch";
+      readonly pending: PendingAdminAction;
+    }
   | {
       readonly kind: "same_actor_violation";
       readonly pending: PendingAdminAction;
@@ -218,12 +255,20 @@ function normalizeStaffId(raw: string | null | undefined): string | null {
  *     pending.actorPrincipal` → `actor_type_mismatch`. The same human
  *     cannot mix a JWT step with an API-key step.
  *   - If `requestStaffId === pending.staffId` (after both pass the
- *     null/empty checks) → `same_actor_violation`. The receipt is
- *     consumed (drained from Redis) regardless so the operator must
- *     restart from step 1.
+ *     null/empty checks) → `same_actor_violation`.
  *   - Otherwise → `ok` with the pending payload.
  *
- * Returning the consumed pending on every refusal lets the caller emit
+ * B1 (review 2026-07-02): the original implementation consume()d
+ * (atomic GET+DEL) BEFORE the identity checks, so a same-actor confirm
+ * attempt destroyed the receipt — the action could then never be
+ * confirmed by anyone. Now the record is PEEKed first; every refusal
+ * path returns WITHOUT deleting (receipt + TTL survive), and only when
+ * all identity checks pass does the atomic single-use consume run. If
+ * that consume comes back empty (a concurrent confirmer won the Lua
+ * race, or the TTL just expired), the outcome is `missing` — exactly
+ * one of two racing valid confirmers wins.
+ *
+ * Returning the peeked pending on every refusal lets the caller emit
  * an audit/event-log entry for the refusal.
  *
  * `requestActorPrincipal` is required (no longer defaults to "user")
@@ -236,8 +281,14 @@ export async function consumeWithSameActorCheck(
   confirmationId: string,
   requestStaffId: string | null,
   requestActorPrincipal?: "user" | "system",
+  expectedTarget?: {
+    readonly route: PendingAdminAction["route"];
+    readonly orderId: string;
+  },
 ): Promise<ConsumeWithSameActorOutcome> {
-  const pending = await store.consume(confirmationId);
+  // B1: PEEK (no delete) — the identity checks below must not burn the
+  // receipt on a refusal. The single-use consume runs only on the ok path.
+  const pending = await store.peek(confirmationId);
   if (!pending) {
     return { kind: "missing" };
   }
@@ -293,7 +344,28 @@ export async function consumeWithSameActorCheck(
   if (normalizedRequest === normalizedPending) {
     return { kind: "same_actor_violation", pending };
   }
-  return { kind: "ok", pending };
+
+  // Wrong-target gate BEFORE the consume (review 2026-07-02): a mis-aimed
+  // but otherwise-valid confirm (stale tab posting the receipt to another
+  // order's endpoint) must not burn the receipt — refuse and leave it for a
+  // correctly aimed confirm.
+  if (
+    expectedTarget !== undefined &&
+    (pending.route !== expectedTarget.route ||
+      pending.orderId !== expectedTarget.orderId)
+  ) {
+    return { kind: "target_mismatch", pending };
+  }
+
+  // All identity checks passed — NOW consume, atomically (Lua GET+DEL).
+  // A nil result means another confirmer won the race (or the receipt
+  // just expired): surface `missing` so exactly one confirm executes.
+  // The consumed value (not the peeked one) is authoritative for dispatch.
+  const consumed = await store.consume(confirmationId);
+  if (!consumed) {
+    return { kind: "missing" };
+  }
+  return { kind: "ok", pending: consumed };
 }
 
 /** pt-BR refusal text emitted on the same-actor violation path (P0-5). */
@@ -317,6 +389,34 @@ export const NULL_STAFF_REFUSAL_PT_BR =
 export const ACTOR_TYPE_MISMATCH_REFUSAL_PT_BR =
   "Confirmação rejeitada: a etapa 2 precisa usar o mesmo tipo de credencial da etapa 1 (JWT de equipe ou chave de API) e ser executada por um operador diferente.";
 
+/** SET index of pending confirmationIds (B2 — the OPS pending-confirmations queue). */
+const pendingIndexKey = (): string => rk("admin:confirmation:pending");
+
+const receiptKey = (confirmationId: string): string =>
+  rk(`admin:confirmation:${confirmationId}`);
+
+/**
+ * UUID-shape gate — keeps malformed input from creating spurious Redis
+ * lookups. randomUUID() always emits canonical v4.
+ */
+function isPlausibleConfirmationId(confirmationId: string): boolean {
+  return (
+    typeof confirmationId === "string" &&
+    confirmationId.length > 0 &&
+    confirmationId.length <= 64
+  );
+}
+
+function parsePending(raw: string | null | undefined): PendingAdminAction | null {
+  if (raw === null || raw === undefined) return null;
+  try {
+    return JSON.parse(raw) as PendingAdminAction;
+  } catch {
+    // Malformed JSON — treat as missing; the route surfaces 410.
+    return null;
+  }
+}
+
 /**
  * Build an admin confirmation store wired to the default Redis client.
  * One instance per route registration is fine — the store is stateless,
@@ -326,41 +426,60 @@ export function createAdminConfirmationStore(): AdminConfirmationStore {
   return {
     async create(pending) {
       const confirmationId = randomUUID();
-      const key = rk(`admin:confirmation:${confirmationId}`);
       const redis = await getRedisClient();
-      await redis.set(key, JSON.stringify(pending), {
+      await redis.set(receiptKey(confirmationId), JSON.stringify(pending), {
         EX: ADMIN_CONFIRMATION_TTL_SECONDS,
       });
+      // B2 index: the SET has no TTL — an expired receipt leaves a stale
+      // member that listPending self-heals on read (OPEN_SET pattern).
+      await redis.sAdd(pendingIndexKey(), confirmationId);
       return {
         confirmationId,
         ttlSeconds: ADMIN_CONFIRMATION_TTL_SECONDS,
       };
     },
 
+    async peek(confirmationId) {
+      if (!isPlausibleConfirmationId(confirmationId)) return null;
+      const redis = await getRedisClient();
+      return parsePending(await redis.get(receiptKey(confirmationId)));
+    },
+
     async consume(confirmationId) {
-      // UUID-shape gate keeps malformed input from creating spurious
-      // Redis lookups. randomUUID() always emits canonical v4.
-      if (
-        typeof confirmationId !== "string" ||
-        confirmationId.length === 0 ||
-        confirmationId.length > 64
-      ) {
-        return null;
-      }
-      const key = rk(`admin:confirmation:${confirmationId}`);
+      if (!isPlausibleConfirmationId(confirmationId)) return null;
       const redis = await getRedisClient();
       const raw = (await redis.eval(CONSUME_RECEIPT_SCRIPT, {
-        keys: [key],
+        keys: [receiptKey(confirmationId)],
         arguments: [],
       })) as string | null;
       if (raw === null || raw === undefined) return null;
+      // Receipt drained — drop it from the pending index. Best-effort: a
+      // leftover member self-heals on the next listPending read.
       try {
-        const parsed = JSON.parse(raw) as PendingAdminAction;
-        return parsed;
+        await redis.sRem(pendingIndexKey(), confirmationId);
       } catch {
-        // Malformed JSON — treat as missing; the route surfaces 410.
-        return null;
+        // self-heals on read
       }
+      return parsePending(raw);
+    },
+
+    async listPending() {
+      const redis = await getRedisClient();
+      const members = await redis.sMembers(pendingIndexKey());
+      const out: PendingConfirmation[] = [];
+      for (const confirmationId of members) {
+        const pending = parsePending(await redis.get(receiptKey(confirmationId)));
+        if (pending) {
+          out.push({ confirmationId, pending });
+        } else {
+          // Self-heal: the receipt expired (TTL) or was malformed — the
+          // index member is stale, remove it.
+          await redis.sRem(pendingIndexKey(), confirmationId);
+        }
+      }
+      // Newest first — stable display order for the operator queue.
+      out.sort((a, b) => (a.pending.createdAt < b.pending.createdAt ? 1 : -1));
+      return out;
     },
   };
 }
