@@ -40,7 +40,6 @@ import {
   setMetricsSink,
   type MetricsSink,
 } from "@adjudicate/core/kernel"
-import { createIbatexasMetricsSink } from "../observability/metrics-sink.js"
 import { customerOnboardingPack } from "@ibatexas/pack-customer-onboarding"
 import { ordersPack } from "@ibatexas/pack-orders"
 import { paymentsPack } from "@ibatexas/pack-payments"
@@ -54,7 +53,6 @@ import { KNOWN_INTENT_KINDS, LOYALTY_INTENT_KINDS } from "@ibatexas/intent-kinds
 // `@ibatexas/llm-provider` instead would set the hook on that package's
 // transition-shim copy of park-nx, leaving the apps/api copy's hook null and
 // silently dropping `kernel_defer_quota_exceeded_total{kind}`.
-import { setDeferQuotaExceededHook } from "../adapters/park-deferred-intent-nx.js"
 import {
   setAuditDedupHook,
   setAuditLagHook,
@@ -63,12 +61,14 @@ import {
   setAuditSinkFailureHook,
   setAuditSinkSpillSizeHook,
 } from "@ibatexas/audit-sink"
-import { setAuditConsumerDedupHook } from "../subscribers/audit-consumer.js"
 import { prisma } from "@ibatexas/domain"
 import * as Sentry from "@sentry/node"
 import { publishNatsEvent } from "@ibatexas/nats-client"
 import { Registry } from "prom-client"
 import type { FastifyInstance } from "fastify"
+import { setAuditConsumerDedupHook } from "../subscribers/audit-consumer.js"
+import { setDeferQuotaExceededHook } from "../adapters/park-deferred-intent-nx.js"
+import { createIbatexasMetricsSink } from "../observability/metrics-sink.js"
 import { logger } from "../lib/logger.js"
 import {
   createKernelMetricsRecorder,

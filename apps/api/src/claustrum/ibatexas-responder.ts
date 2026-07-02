@@ -31,6 +31,7 @@ import type {
   TelemetryPort,
 } from "@claustrum/core";
 import type { Decision } from "@adjudicate/core";
+import { logger } from "../lib/logger.js";
 import {
   RESPONDER_ESCALATE_PTBR,
   RESPONDER_GROUNDED_PERSONA_PTBR,
@@ -42,7 +43,6 @@ import {
   type IbatexasPromptComposer,
 } from "./prompts/ibatexas-prompts.js";
 import { emitModelCallTrace } from "./llm-trace.js";
-import { logger } from "../lib/logger.js";
 import {
   closedHoursBackstop,
   closedHoursDisclosure,

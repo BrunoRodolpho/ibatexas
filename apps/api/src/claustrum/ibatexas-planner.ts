@@ -45,6 +45,20 @@
 import { randomUUID } from "node:crypto";
 import { buildEnvelope } from "@adjudicate/core";
 import type { CandidateClaim, IntentEnvelope, TurnTerminal } from "@adjudicate/core";
+import type {
+  CapabilityPlanner,
+  Plan as CapabilityPlan,
+} from "@adjudicate/core/llm";
+import type {
+  CognitiveState,
+  Completion,
+  CompletionRequest,
+  ModelProvider,
+  Plan,
+  PlannerPort,
+  TelemetryPort,
+} from "@claustrum/core";
+import { logger } from "../lib/logger.js";
 import {
   CLAIM_REGISTRY,
   canonicalizeRegistryType,
@@ -59,19 +73,6 @@ import {
   type SafetyRoutingInput,
   type SpanCompleteness,
 } from "./claim-registry.js";
-import type {
-  CapabilityPlanner,
-  Plan as CapabilityPlan,
-} from "@adjudicate/core/llm";
-import type {
-  CognitiveState,
-  Completion,
-  CompletionRequest,
-  ModelProvider,
-  Plan,
-  PlannerPort,
-  TelemetryPort,
-} from "@claustrum/core";
 import {
   CLAIM_PLANNER_PERSONA,
   EXPRESS_INTENT_TOOL,
@@ -82,7 +83,6 @@ import {
   type IbatexasPromptComposer,
 } from "./prompts/ibatexas-prompts.js";
 import { emitModelCallTrace } from "./llm-trace.js";
-import { logger } from "../lib/logger.js";
 import {
   closedHoursPromptNote,
   type ScheduleSignal,
