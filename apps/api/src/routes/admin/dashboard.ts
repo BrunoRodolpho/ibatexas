@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { createReservationService } from "@ibatexas/domain";
 import { medusaAdmin } from "./_shared.js";
+import { getEscalationStore } from "../../escalation/escalation-store.js";
 
 export async function dashboardRoutes(server: FastifyInstance): Promise<void> {
   const app = server.withTypeProvider<ZodTypeProvider>();
@@ -48,11 +49,23 @@ export async function dashboardRoutes(server: FastifyInstance): Promise<void> {
           server.log.warn({ err }, "Dashboard: failed to fetch from Medusa — returning zeros")
         }
 
+        // Real open-escalation count (was hard-coded 0, masking the takeover
+        // queue on the dashboard). listOpen self-heals stale set members; the
+        // high limit keeps the count effectively exact. Fail-soft to 0 for the
+        // display metric, matching the orders/reservations handling above.
+        let pendingEscalations = 0
+        try {
+          const escalationStore = await getEscalationStore()
+          pendingEscalations = (await escalationStore.listOpen(1000)).length
+        } catch (err) {
+          server.log.warn({ err }, "Dashboard: failed to count open escalations — returning 0")
+        }
+
         return reply.send({
           ordersToday,
           revenueToday,
           activeReservations,
-          pendingEscalations: 0, // populated in Step 9
+          pendingEscalations,
         });
       } catch (err) {
         server.log.error(err, "Failed to load dashboard");
