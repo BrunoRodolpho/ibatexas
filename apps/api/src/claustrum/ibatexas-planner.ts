@@ -45,6 +45,20 @@
 import { randomUUID } from "node:crypto";
 import { buildEnvelope } from "@adjudicate/core";
 import type { CandidateClaim, IntentEnvelope, TurnTerminal } from "@adjudicate/core";
+import type {
+  CapabilityPlanner,
+  Plan as CapabilityPlan,
+} from "@adjudicate/core/llm";
+import type {
+  CognitiveState,
+  Completion,
+  CompletionRequest,
+  ModelProvider,
+  Plan,
+  PlannerPort,
+  TelemetryPort,
+} from "@claustrum/core";
+import { logger } from "../lib/logger.js";
 import {
   CLAIM_REGISTRY,
   canonicalizeRegistryType,
@@ -59,19 +73,6 @@ import {
   type SafetyRoutingInput,
   type SpanCompleteness,
 } from "./claim-registry.js";
-import type {
-  CapabilityPlanner,
-  Plan as CapabilityPlan,
-} from "@adjudicate/core/llm";
-import type {
-  CognitiveState,
-  Completion,
-  CompletionRequest,
-  ModelProvider,
-  Plan,
-  PlannerPort,
-  TelemetryPort,
-} from "@claustrum/core";
 import {
   CLAIM_PLANNER_PERSONA,
   EXPRESS_INTENT_TOOL,
@@ -495,6 +496,12 @@ export function createIbatexasPlanner(
       // response phase still runs (envelopes:[] is a valid "respond-only" plan).
       const tools = buildToolSurface(plan);
       if (tools === undefined || tools.length === 0) {
+        // SIGNAL-5: the "respond-only" (small-talk / informational) path — no
+        // proposable intents. debug (this fires on every small-talk turn).
+        logger.debug(
+          { component: "planner", event: "intents.proposed", turnId: state.turnId, envelopeCount: 0, emptyPlan: true },
+          "planner: no proposable intents (respond-only)",
+        );
         return {
           envelopes: [],
           rationale: "ibatexas-planner: no proposable intents for this state",
@@ -570,6 +577,23 @@ export function createIbatexasPlanner(
         dropped.length > 0
           ? `ibatexas-planner: ${envelopes.length} envelope(s); dropped out-of-plan [${dropped.join(", ")}]`
           : `ibatexas-planner: ${envelopes.length} envelope(s)`;
+
+      // SIGNAL-5: surface what the LLM parsed the message INTO — the capabilities
+      // selected, out-of-plan tool calls dropped (constrained-generation wall /
+      // hallucinations), and read-tool call names — so the planner (the semantic
+      // core) is no longer a black box in VictoriaLogs. Names only; no payloads.
+      logger.info(
+        {
+          component: "planner",
+          event: "intents.proposed",
+          turnId: state.turnId,
+          envelopeCount: envelopes.length,
+          capabilities,
+          droppedOutOfPlan: dropped,
+          readToolCalls: readToolCalls.map((c) => c.name),
+        },
+        `planner proposed ${envelopes.length} intent(s)`,
+      );
 
       // F4 / cost accounting: report this turn's planning-model token usage so
       // the loop folds it onto the TurnRecord (emitTurn → per-session counter).

@@ -27,7 +27,13 @@ export async function pollReviewPrompts(log?: FastifyBaseLogger | null): Promise
   // Fetch up to BATCH_CAP entries whose fire time has passed
   const due = await redis.zRangeByScore(scheduledKey, 0, now, { LIMIT: { offset: 0, count: BATCH_CAP } });
 
-  effectiveLogger?.info({ batch_size: due.length, tick_at: new Date().toISOString() }, "review-prompt poller tick");
+  // NOISE-3: log only when a batch was processed (idle 5-min ticks were noise).
+  if (due.length > 0) {
+    effectiveLogger?.info(
+      { component: "job.review-prompt", event: "tick", batch_size: due.length },
+      "review-prompt poller processed batch",
+    );
+  }
 
   if (due.length === BATCH_CAP) {
     effectiveLogger?.warn({ action: "review_prompt_batch_cap_reached", cap: BATCH_CAP }, "Poller hit batch cap — consider increasing frequency");

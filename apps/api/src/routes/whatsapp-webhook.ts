@@ -226,6 +226,24 @@ async function runConductorTurn(args: {
         : rawText.trim() === ""
           ? "whitespace_only"
           : "deliverable";
+    if (disposition !== "deliverable") {
+      // PAYLOAD-1 / Defect C: the model returned an empty/whitespace completion,
+      // so without a holding message the customer is ghosted. Emit a queryable
+      // warn at the SOURCE (previously there were ZERO VictoriaLogs lines for
+      // this failure) — an operator can now find + RCA every ghost by turnId via
+      // `component:llm event:empty`. Token cost/model join via the turn line.
+      args.log.warn(
+        {
+          component: "llm",
+          event: "empty",
+          turnId: capsule.turnId,
+          session_id: args.sessionKey,
+          disposition,
+          decisionKind: turn.decision.kind,
+        },
+        `llm empty completion (${disposition})`,
+      );
+    }
     return {
       text: rawText,
       disposition,
@@ -538,8 +556,19 @@ export async function whatsappWebhookRoutes(server: FastifyInstance): Promise<vo
         return reply.code(400).send({ error: "Invalid phone format" });
       }
 
+      // SIGNAL-3: tag the WhatsApp entry point so VMUI can slice it
+      // (component:whatsapp event:incoming). The customer's message TEXT is
+      // shipped — redacted + clipped — on the conductor turn line (see emitTurn),
+      // so here we log only its LENGTH to avoid duplicating PII into the store.
       server.log.info(
-        { phone_hash: hash, message_sid: messageSid, processing_ms: Date.now() - startMs },
+        {
+          component: "whatsapp",
+          event: "incoming",
+          phone_hash: hash,
+          message_sid: messageSid,
+          text_len: messageBody.length,
+          processing_ms: Date.now() - startMs,
+        },
         "[whatsapp.incoming] Message received",
       );
 
@@ -547,11 +576,11 @@ export async function whatsappWebhookRoutes(server: FastifyInstance): Promise<vo
       const redis = await getRedisClient();
       const claim = await claimIdempotency(redis, messageSid);
       if (claim === "unavailable") {
-        server.log.error({ message_sid: messageSid }, "[whatsapp] Idempotency claim unavailable — failing closed for Twilio retry");
+        server.log.error({ component: "whatsapp", event: "idempotency_unavailable", message_sid: messageSid }, "[whatsapp] Idempotency claim unavailable — failing closed for Twilio retry");
         return reply.code(503).send({ error: "Service unavailable" });
       }
       if (claim === "duplicate") {
-        server.log.info({ message_sid: messageSid }, "[whatsapp.duplicate] Already processed");
+        server.log.info({ component: "whatsapp", event: "duplicate", message_sid: messageSid }, "[whatsapp.duplicate] Already processed");
         return reply.code(200).type("text/xml").send("<Response/>");
       }
 
@@ -1103,6 +1132,29 @@ async function handleMessageAsync(
     // `deliveredText` keys the genuine-drop decision on what actually reached the
     // customer — driven by real send success (`pixDelivered`), not payload presence.
     const deliveredText = textSent || pixDelivered;
+
+    // SIGNAL-8: one queryable per-turn outbound line — did a reply actually
+    // reach the customer? Joinable to the conductor turn by turnId. warn when
+    // NOTHING was delivered (a ghost/degraded turn); info on the happy path AND
+    // on a designed human-takeover pause (suppressed_paused) — the bot is
+    // intentionally silent then, so it must NOT pollute the ghost-detection
+    // `event:reply.sent level:warn` query (it also has no turnId to join on).
+    const designedSilence = agentResponse.disposition === "suppressed_paused";
+    log[deliveredText || designedSilence ? "info" : "warn"](
+      {
+        component: "outbound",
+        event: "reply.sent",
+        turnId: agentResponse.turnId ?? null,
+        session_id: session.sessionId,
+        channel: "whatsapp",
+        disposition: agentResponse.disposition,
+        decisionKind: agentResponse.decisionKind ?? null,
+        deliveredText,
+        textSent,
+        pixDelivered,
+      },
+      `reply ${deliveredText ? "delivered" : "NOT delivered"} (${agentResponse.disposition})`,
+    );
 
     // ── Auto-close (Q2): a successfully-delivered reply self-heals an OPEN
     // incident on this session → AUTO_RESOLVED. Gated on the SAME delivered

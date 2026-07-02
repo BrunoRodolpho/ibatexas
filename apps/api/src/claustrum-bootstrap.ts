@@ -1433,6 +1433,20 @@ async function flushTurnTraces(
 }
 
 /**
+ * FORMAT-7: the honest chat model id for cost/telemetry fallbacks. Under
+ * LLM_PROVIDER=ollama the runtime runs a LOCAL model (LLM_MODEL), NOT
+ * ANTHROPIC_MODEL — stamping the Anthropic id (and its price map) there
+ * mislabels the model and fabricates a USD cost for a free local model.
+ * Mirrors the `chatModelId` resolved in bootstrapClaustrum. The per-turn
+ * LLMTrace model (pendingTraces) is still preferred when present.
+ */
+function resolvedChatModelId(): string {
+  return process.env.LLM_PROVIDER === "ollama"
+    ? process.env.LLM_MODEL ?? process.env.ANTHROPIC_MODEL ?? "nemotron-3-nano:4b"
+    : process.env.ANTHROPIC_MODEL ?? "claude-sonnet-4-6";
+}
+
+/**
  * Minimal Telemetry — emits to console (pino is wired up at the Fastify
  * layer). The full implementation will fan out to prom-client metrics
  * and the existing audit-sink subscriber.
@@ -1452,15 +1466,35 @@ function fastifyTelemetry(
   const MAX_PENDING_TURNS = 500;
   return {
     async emitTurn(record: TurnRecord) {
+      // SIGNAL-2: the conductor turn line is the one guaranteed stream-tagged
+      // per-turn record in VictoriaLogs — enrich it from fields ALREADY on the
+      // TurnRecord so a single `component:conductor turnId:<x>` query reconstructs
+      // the whole turn (channel, who, decision, intent, token cost, and the
+      // redacted inbound/outbound text). Free text is scrubbed through the SAME
+      // turn_trace PII redactor (BR-PII + CEP + 280-char cap); when no redactor
+      // is wired we OMIT the text rather than risk shipping raw PII to the store.
+      const clip = (t: string | undefined): string | undefined =>
+        t && turnTrace ? turnTrace.redactCompletion(t).slice(0, 280) : undefined;
       logger.info(
         {
           component: "conductor",
           event: "turn",
           correlationId: record.turnId,
           turnId: record.turnId,
+          conversationId: record.conversationId,
+          channel: record.channel,
+          customerId: record.customerId,
+          decisionKind: record.decisionKind,
+          intentHash: record.intentHash,
+          model: pendingTraces.get(record.turnId)?.[0]?.model ?? resolvedChatModelId(),
+          inputTokens: record.inputTokens,
+          outputTokens: record.outputTokens,
+          inbound: clip(record.inboundText),
+          response: clip(record.responseText),
+          ...(record.error ? { errorCode: record.error.code } : {}),
           durationMs: record.durationMs,
         },
-        `turn ${record.turnId} ${record.durationMs}ms`,
+        `turn ${record.decisionKind ?? "?"} ${record.channel} ${record.durationMs}ms`,
       );
       // Fold this turn's model token total (summed onto the TurnRecord by
       // claustrum's loop from plan.usage + draft.usage) into the per-session
@@ -1500,7 +1534,7 @@ function fastifyTelemetry(
           emitLlmCall({
             inputTokens: record.inputTokens ?? 0,
             outputTokens: record.outputTokens ?? 0,
-            model: process.env.ANTHROPIC_MODEL,
+            model: pendingTraces.get(record.turnId)?.[0]?.model ?? resolvedChatModelId(),
             source: "sut",
             sessionId: record.conversationId,
             duration: record.durationMs,
@@ -1535,8 +1569,7 @@ function fastifyTelemetry(
               channel: record.channel,
               model:
                 pendingTraces.get(record.turnId)?.[0]?.model ??
-                process.env.ANTHROPIC_MODEL ??
-                "claude-sonnet-4-6",
+                resolvedChatModelId(),
               promptTokens,
               completionTokens,
               recordedAt: record.at,
@@ -1760,8 +1793,10 @@ async function resolveGroundingPort(
       "CLAUSTRUM_GROUNDING_ENABLED=true but the model provider cannot embed — running grounding as a designed no-op (empty retrieval); wire a working embedding proxy to enable it. See DEF-005",
     );
   } else if (!groundingEnabled) {
-    logger.info(
-      { component: "grounding" },
+    // NOISE-9: a DESIGNED, config-driven no-op — debug, not info (it fired on
+    // every boot). The grounding-enabled-but-can't-embed branch above stays warn.
+    logger.debug(
+      { component: "grounding", event: "disabled" },
       "embeddings unavailable (CLAUSTRUM_GROUNDING_ENABLED!=true) — grounding port runs as a designed no-op (empty retrieval); see DEF-005",
     );
   }

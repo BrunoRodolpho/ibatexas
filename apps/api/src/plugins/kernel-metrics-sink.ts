@@ -663,13 +663,20 @@ export function createKernelMetricsRecorder(
   register: Registry,
   log: MetricsSinkLogger = DEFAULT_METRICS_RECORDER_LOGGER,
 ): KernelMetricsRecorder {
+  // NOISE-8: a metric name the Registry never registered warned on EVERY
+  // adjudicate() (82x in a week, all the same name) — memoize so each missing
+  // metric warns exactly once per process instead of flooding the WARN band.
+  const warnedMissing = new Set<string>()
   function get<T>(name: string): T | null {
     const m = register.getSingleMetric(name)
     if (m === undefined) {
-      log.warn(
-        { metric: name },
-        "kernel-metrics-recorder: metric not registered — recorder operation no-op",
-      )
+      if (!warnedMissing.has(name)) {
+        warnedMissing.add(name)
+        log.warn(
+          { component: "kernel", event: "metric_unregistered", metric: name },
+          "kernel-metrics-recorder: metric not registered — recorder operation no-op",
+        )
+      }
       return null
     }
     return m as unknown as T
