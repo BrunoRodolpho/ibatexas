@@ -131,6 +131,55 @@ describe("ibatexas-investigator — Inv 7 (read error ≠ absence)", () => {
   });
 });
 
+// ── Reads run CONCURRENTLY, ledger stays deterministic ───────────────────────
+
+describe("ibatexas-investigator — concurrent reads", () => {
+  it("executes the reads in parallel (a later-array read can unblock an earlier one)", async () => {
+    const ledger = new EvidenceLedger("t");
+    // `a` (FIRST in the array) blocks on a gate that only `b` (SECOND) releases.
+    // If the loop were SERIAL, `a` would await forever and the turn would hang;
+    // concurrency lets `b` run and release the gate — a timer-free concurrency proof.
+    let release!: () => void;
+    const gate = new Promise<void>((res) => {
+      release = res;
+    });
+    const reads: TurnRead[] = [
+      {
+        key: "a",
+        source: "sa",
+        origin: "TRUSTED",
+        read: async () => {
+          await gate;
+          return { v: "a" };
+        },
+      },
+      {
+        key: "b",
+        source: "sb",
+        origin: "TRUSTED",
+        read: async () => {
+          release();
+          return { v: "b" };
+        },
+      },
+    ];
+    const investigator = createIbatexasInvestigator({
+      gatherReads: () => reads,
+      now: () => 7,
+    });
+    await investigator.investigate(input(reads, ledger));
+
+    expect(ledger.resolve("a").entry?.value).toEqual({ v: "a" });
+    expect(ledger.resolve("b").entry?.value).toEqual({ v: "b" });
+    // fetchedAt is stamped at read completion from the injected clock.
+    expect(ledger.resolve("a").entry?.fetchedAt).toBe(7);
+    // DETERMINISM: `b` completed FIRST (it released the gate `a` was awaiting), yet
+    // ledger writes are applied in the ORIGINAL reads order — so the stable
+    // insertion order is ["a","b"], NOT the completion order ["b","a"].
+    expect(ledger.keys()).toEqual(["a", "b"]);
+  });
+});
+
 // ── Origin labelling at mint (published 2-value LedgerTaint) ──────────────────
 
 describe("ibatexas-investigator — origin labelling at mint", () => {

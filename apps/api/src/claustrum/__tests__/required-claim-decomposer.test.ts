@@ -83,7 +83,6 @@ describe("required-claim completeness — quantifies over the REQUIRED set (SDD 
       ]),
     );
     expect(r.complete).toBe(true);
-    expect(r.degrade).toBe(false);
     expect(r.unsatisfied).toEqual([]);
   });
 
@@ -94,7 +93,6 @@ describe("required-claim completeness — quantifies over the REQUIRED set (SDD 
       resolved([["STORE_OPEN_NOW", "VALIDATED"]]),
     );
     expect(r.complete).toBe(false);
-    expect(r.degrade).toBe(true);
     expect(r.unsatisfied).toEqual(["ORDER_FULFILLMENT_STAGE"]);
   });
 
@@ -106,7 +104,7 @@ describe("required-claim completeness — quantifies over the REQUIRED set (SDD 
         ["ORDER_FULFILLMENT_STAGE", "UNKNOWN"],
       ]),
     );
-    expect(unknownCase.degrade).toBe(true);
+    expect(unknownCase.complete).toBe(false);
     const refusedCase = checkRequiredClaimCompleteness(
       required,
       resolved([
@@ -114,14 +112,13 @@ describe("required-claim completeness — quantifies over the REQUIRED set (SDD 
         ["ORDER_FULFILLMENT_STAGE", "VALIDATED"],
       ]),
     );
-    expect(refusedCase.degrade).toBe(true);
+    expect(refusedCase.complete).toBe(false);
     expect(refusedCase.unsatisfied).toEqual(["STORE_OPEN_NOW"]);
   });
 
   it("an EMPTY required set is trivially complete (nothing to render incompletely)", () => {
     const r = checkRequiredClaimCompleteness(new Set(), new Map());
     expect(r.complete).toBe(true);
-    expect(r.degrade).toBe(false);
   });
 });
 
@@ -217,7 +214,6 @@ describe("required-claim decomposer — #8 ownership-aware companions", () => {
       required,
       new Map([["STORE_OPEN_NOW", "VALIDATED"]]),
     );
-    expect(completeness.degrade).toBe(false);
     expect(completeness.complete).toBe(true);
   });
 
@@ -239,7 +235,6 @@ describe("required-claim decomposer — #8 ownership-aware companions", () => {
       required,
       new Map([["ORDER_FULFILLMENT_STAGE", "VALIDATED"]]),
     );
-    expect(completeness.degrade).toBe(false);
     expect(completeness.complete).toBe(true);
   });
 

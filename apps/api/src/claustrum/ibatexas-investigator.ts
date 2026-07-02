@@ -207,9 +207,14 @@ export class OwnerScopedReadUnavailable extends Error {
  * triad evidence the downstream candidate claims are validated against.
  */
 export function createFirstPartyTurnReads(
-  backend: TriadReadBackend = createDomainTriadReadBackend(),
+  backend?: TriadReadBackend,
 ): TurnReadGatherer {
   return async (input: InvestigateInput): Promise<TurnRead[]> => {
+    // PER-TURN backend when using the default: its owner-scoped order read + the
+    // read-through schedule load memoize WITHIN this turn (single-flight, NO
+    // cross-turn cache — createDomainTriadReadBackend's memo lives on the instance).
+    // An injected backend (tests) is used as-is.
+    const b = backend ?? createDomainTriadReadBackend();
     const customerId = input.customerId;
     const reads: TurnRead[] = [];
 
@@ -221,7 +226,7 @@ export function createFirstPartyTurnReads(
       // First-party config-derived read (Plan 1 Phase 3) → 3-value FIRST_PARTY.
       originProvenance: "FIRST_PARTY",
       sourceMode: "live",
-      read: () => backend.readSchedule(),
+      read: () => b.readSchedule(),
     });
 
     // STORE_OPEN_NOW FALSIFIER (F1; W6 CE#3) — TODAY's ScheduleOverride. Recorded
@@ -240,7 +245,7 @@ export function createFirstPartyTurnReads(
       originProvenance: "FIRST_PARTY",
       // The registry falsifier declares `must_read_this_turn` → record it LIVE.
       sourceMode: "live",
-      read: async () => (await backend.readScheduleOverride()) ?? ABSENT_READ,
+      read: async () => (await b.readScheduleOverride()) ?? ABSENT_READ,
     });
 
     if (!isAuthenticatedCustomer(customerId)) return reads;
@@ -259,7 +264,7 @@ export function createFirstPartyTurnReads(
     // real orders regardless of the model's extraction. IDOR-safe: every id here is
     // the customer's own; the per-resource reads below stay owner-scoped too. A
     // best-effort failure degrades to the model-extracted ids (never throws the turn).
-    const ownedActiveOrderIds = await backend
+    const ownedActiveOrderIds = await b
       .listActiveOrderIds(customerId)
       .catch(() => [] as string[]);
     const allOrderIds: string[] = [...orderIds];
@@ -276,7 +281,7 @@ export function createFirstPartyTurnReads(
         originProvenance: "FIRST_PARTY",
         sourceMode: "live",
         read: async () => {
-          const v = await backend.readOrderFulfillment(orderId, customerId);
+          const v = await b.readOrderFulfillment(orderId, customerId);
           if (v === null) throw new OwnerScopedReadUnavailable("order_fulfillment_stage", orderId);
           return v;
         },
@@ -292,7 +297,7 @@ export function createFirstPartyTurnReads(
         read: async () => {
           // OWNER-SCOPED (IDOR close): a cross-owner orderId yields null → error,
           // never another customer's payment status.
-          const v = await backend.readPaymentStatus(orderId, customerId);
+          const v = await b.readPaymentStatus(orderId, customerId);
           if (v === null) throw new OwnerScopedReadUnavailable("payment_status", orderId);
           return v;
         },
@@ -308,7 +313,7 @@ export function createFirstPartyTurnReads(
         originProvenance: "FIRST_PARTY",
         sourceMode: "live",
         read: async () => {
-          const v = await backend.readReservation(reservationId, customerId);
+          const v = await b.readReservation(reservationId, customerId);
           if (v === null) throw new OwnerScopedReadUnavailable("reservation_status", reservationId);
           return v;
         },
@@ -338,14 +343,31 @@ export function createIbatexasInvestigator(
       const { ledger } = input;
       const reads = await gatherReads(input);
 
-      for (const r of reads) {
-        let value: unknown;
-        try {
-          value = await r.read();
-        } catch (err) {
+      // The reads are INDEPENDENT — each hits its own owner-scoped resource and
+      // none reads the ledger or another read's result (the shared order/schedule
+      // loads are single-flight-memoized in the per-turn backend), so execute them
+      // CONCURRENTLY rather than awaiting serially. Each read is isolated in its
+      // own try/catch and resolves to a settled OUTCOME: a rejected read becomes an
+      // error marker, so ONE failure never throws the turn (Inv 7 — this Promise.all
+      // never rejects). `fetchedAt` is stamped at read completion (the investigator
+      // owns the clock).
+      const outcomes = await Promise.all(
+        reads.map(async (r) => {
+          try {
+            return { r, ok: true as const, value: await r.read(), fetchedAt: now() };
+          } catch (err) {
+            return { r, ok: false as const, reason: reasonOf(err) };
+          }
+        }),
+      );
+
+      // Apply ledger writes AFTER settling, in the ORIGINAL `reads` order, so the
+      // ledger state is DETERMINISTIC regardless of read completion order.
+      for (const o of outcomes) {
+        if (!o.ok) {
           // Inv 7 — a read ERROR is a DISTINCT, recorded ledger state, never a
           // silent omission (which would be a read ABSENCE). Fail CLOSED.
-          ledger.recordError(r.key, reasonOf(err));
+          ledger.recordError(o.r.key, o.reason);
           continue;
         }
 
@@ -353,20 +375,21 @@ export function createIbatexasInvestigator(
         // genuine ledger ABSENCE: neither a recorded value nor an error (Inv 7).
         // Skip it so the key stays absent (e.g. no ScheduleOverride today → the
         // falsifier does not fire).
-        if (value === ABSENT_READ) continue;
+        if (o.value === ABSENT_READ) continue;
 
         const entry: EvidenceEntryInput = {
-          key: r.key,
-          value,
-          source: r.source,
-          // The investigator owns the clock; the ledger needs none.
-          fetchedAt: now(),
-          sourceMode: r.sourceMode ?? "live",
-          taint: r.origin,
+          key: o.r.key,
+          value: o.value,
+          source: o.r.source,
+          // The investigator owns the clock; the ledger needs none. Stamped at the
+          // moment this read completed (above).
+          fetchedAt: o.fetchedAt,
+          sourceMode: o.r.sourceMode ?? "live",
+          taint: o.r.origin,
           // 3-value originProvenance (R1-led kernel >= 1.7.0): the read's EXPLICIT
           // origin when declared (a genuine first-party read → FIRST_PARTY),
           // otherwise the fail-closed map (TRUSTED → TRUSTED_THIRD_PARTY).
-          originProvenance: r.originProvenance ?? originProvenanceOf(r.origin),
+          originProvenance: o.r.originProvenance ?? originProvenanceOf(o.r.origin),
         };
         ledger.record(entry);
       }

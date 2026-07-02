@@ -21,6 +21,12 @@
 
 import { mintBroadcastReply } from "@adjudicate/core";
 import { subscribeNatsEvent } from "@ibatexas/nats-client";
+import {
+  INCIDENT_CAUSE_LABELS_PT,
+  INCIDENT_SEVERITY_LABELS_PT,
+  type IncidentCause,
+  type IncidentSeverity,
+} from "@ibatexas/domain";
 import { getWhatsAppSender, getRedisClient, rk, atomicIncr } from "@ibatexas/tools";
 import type { FastifyBaseLogger } from "fastify";
 import { pushToDlq } from "./dlq.js";
@@ -32,19 +38,6 @@ const SPIKE_TTL = 5 * 60;
 function hourlyCap(): number {
   return Number.parseInt(process.env.INCIDENT_ALERT_HOURLY_CAP || "10", 10);
 }
-
-const CAUSE_PT: Record<string, string> = {
-  empty_completion: "resposta vazia do modelo",
-  whitespace_only: "resposta em branco do modelo",
-  send_failed: "falha no envio",
-  retry_exhausted: "tentativas esgotadas",
-  timeout: "tempo de resposta esgotado",
-};
-const SEVERITY_PT: Record<string, string> = {
-  low: "baixa",
-  medium: "média",
-  high: "alta",
-};
 
 interface IncidentOpenedPayload {
   incidentId?: string;
@@ -141,6 +134,38 @@ export async function startIncidentNotificationSubscriber(
 
 type SenderLike = NonNullable<ReturnType<typeof getWhatsAppSender>>;
 
+/**
+ * Shared idempotent staff-WhatsApp delivery. Both entrypoints (per-incident
+ * ping + storm digest) build a pt-BR line array then run this identical send:
+ * join → mint a broadcast reply → send → log success → DLQ the source event on
+ * failure. Only the message lines, the success log level/message, and the log
+ * context differ per entrypoint; the send + failure handling are behavior-
+ * identical (this was previously copy-pasted).
+ */
+async function deliverStaffMessage(
+  sender: SenderLike,
+  staffPhone: string,
+  payload: unknown,
+  spec: {
+    lines: string[];
+    logCtx: Record<string, unknown>;
+    successMsg: string;
+    failureMsg: string;
+    successLevel: "info" | "warn";
+  },
+  log?: FastifyBaseLogger,
+): Promise<void> {
+  const message = spec.lines.join("\n");
+  try {
+    await sender.sendText(`whatsapp:${staffPhone}`, mintBroadcastReply(message));
+    if (spec.successLevel === "warn") log?.warn(spec.logCtx, spec.successMsg);
+    else log?.info(spec.logCtx, spec.successMsg);
+  } catch (err) {
+    log?.error({ ...spec.logCtx, error: String(err) }, spec.failureMsg);
+    await pushToDlq("conversation.incident_opened", payload as Record<string, unknown>, err, log);
+  }
+}
+
 async function sendIncidentPing(
   sender: SenderLike,
   staffPhone: string,
@@ -148,24 +173,32 @@ async function sendIncidentPing(
   payload: unknown,
   log?: FastifyBaseLogger,
 ): Promise<void> {
-  const causeLine = fields.cause ? `\nCausa: ${CAUSE_PT[fields.cause] ?? fields.cause}` : "";
-  const sevLine = fields.severity ? `\nGravidade: ${SEVERITY_PT[fields.severity] ?? fields.severity}` : "";
-  const message = [
-    `🚨 *Incidente no atendimento*`,
-    ``,
-    `Uma falha de resposta automática impediu a entrega ao cliente.`,
-    `Sessão: ${fields.sessionId ?? "desconhecida"}${causeLine}${sevLine}`,
-    ``,
-    `Verifique o painel de Incidentes.`,
-  ].join("\n");
-
-  try {
-    await sender.sendText(`whatsapp:${staffPhone}`, mintBroadcastReply(message));
-    log?.info({ session_id: fields.sessionId }, "[incident-notification] staff notified via WhatsApp");
-  } catch (err) {
-    log?.error({ session_id: fields.sessionId, error: String(err) }, "[incident-notification] failed to send WhatsApp ping");
-    await pushToDlq("conversation.incident_opened", payload as Record<string, unknown>, err, log);
-  }
+  const causeLine = fields.cause
+    ? `\nCausa: ${INCIDENT_CAUSE_LABELS_PT[fields.cause as IncidentCause] ?? fields.cause}`
+    : "";
+  const sevLine = fields.severity
+    ? `\nGravidade: ${INCIDENT_SEVERITY_LABELS_PT[fields.severity as IncidentSeverity] ?? fields.severity}`
+    : "";
+  await deliverStaffMessage(
+    sender,
+    staffPhone,
+    payload,
+    {
+      lines: [
+        `🚨 *Incidente no atendimento*`,
+        ``,
+        `Uma falha de resposta automática impediu a entrega ao cliente.`,
+        `Sessão: ${fields.sessionId ?? "desconhecida"}${causeLine}${sevLine}`,
+        ``,
+        `Verifique o painel de Incidentes.`,
+      ],
+      logCtx: { session_id: fields.sessionId },
+      successMsg: "[incident-notification] staff notified via WhatsApp",
+      failureMsg: "[incident-notification] failed to send WhatsApp ping",
+      successLevel: "info",
+    },
+    log,
+  );
 }
 
 async function sendStormDigest(
@@ -175,19 +208,23 @@ async function sendStormDigest(
   payload: unknown,
   log?: FastifyBaseLogger,
 ): Promise<void> {
-  const message = [
-    `🚨 *Incidentes em massa no atendimento*`,
-    ``,
-    `${spikeCount} falhas de resposta automática nos últimos minutos — provável indisponibilidade do modelo.`,
-    ``,
-    `Verifique o painel de Incidentes e o status do modelo.`,
-  ].join("\n");
-
-  try {
-    await sender.sendText(`whatsapp:${staffPhone}`, mintBroadcastReply(message));
-    log?.warn({ spike_count: spikeCount }, "[incident-notification] storm digest sent (rate-spike)");
-  } catch (err) {
-    log?.error({ spike_count: spikeCount, error: String(err) }, "[incident-notification] failed to send storm digest");
-    await pushToDlq("conversation.incident_opened", payload as Record<string, unknown>, err, log);
-  }
+  await deliverStaffMessage(
+    sender,
+    staffPhone,
+    payload,
+    {
+      lines: [
+        `🚨 *Incidentes em massa no atendimento*`,
+        ``,
+        `${spikeCount} falhas de resposta automática nos últimos minutos — provável indisponibilidade do modelo.`,
+        ``,
+        `Verifique o painel de Incidentes e o status do modelo.`,
+      ],
+      logCtx: { spike_count: spikeCount },
+      successMsg: "[incident-notification] storm digest sent (rate-spike)",
+      failureMsg: "[incident-notification] failed to send storm digest",
+      successLevel: "warn",
+    },
+    log,
+  );
 }

@@ -37,6 +37,7 @@ import { createSystemTaintPolicy } from "@adjudicate/primitives"
 import type {
   IncidentCause,
   IncidentResolutionType,
+  IncidentSeverity,
 } from "../../generated/prisma-client/client.js"
 
 // ── Intent kinds + payloads ────────────────────────────────────────────────
@@ -62,6 +63,39 @@ export const FROZEN_CAUSES = [
   // customer — a genuine ghost distinct from an intentional handoff pause (W1).
   "pause_read_error",
 ] as const satisfies readonly IncidentCause[]
+
+/**
+ * CANONICAL pt-BR labels for the frozen no-reply cause taxonomy — the single
+ * server-side source of truth. Any server consumer that renders a cause label
+ * (the incident-notification staff ping, digests, future planes) MUST read
+ * from here rather than keep a private copy.
+ *
+ * Typed as an EXHAUSTIVE `Record<IncidentCause, string>`: adding a new member
+ * to the `IncidentCause` enum fails the BUILD until it is labeled here, so a
+ * cause can never silently fall back to its raw enum key (the `pause_read_error`
+ * gap this map closes). Mirrors the `satisfies` pin on `FROZEN_CAUSES`.
+ *
+ * NOTE ON BOUNDARY: the admin UI keeps its own shorter badge register in
+ * `@ibatexas/ui` (`INCIDENT_CAUSE_LABELS`) because that package is bundled into
+ * the browser and cannot depend on `@ibatexas/domain` (Prisma). These maps are
+ * two intentionally-distinct presentation registers over the SAME taxonomy;
+ * each is exhaustive over `IncidentCause`.
+ */
+export const INCIDENT_CAUSE_LABELS_PT: Record<IncidentCause, string> = {
+  empty_completion: "resposta vazia do modelo",
+  whitespace_only: "resposta em branco do modelo",
+  send_failed: "falha no envio",
+  retry_exhausted: "tentativas esgotadas",
+  timeout: "tempo de resposta esgotado",
+  pause_read_error: "falha ao ler pausa (Redis) — erro interno",
+}
+
+/** CANONICAL pt-BR severity labels — exhaustive over `IncidentSeverity`. */
+export const INCIDENT_SEVERITY_LABELS_PT: Record<IncidentSeverity, string> = {
+  low: "baixa",
+  medium: "média",
+  high: "alta",
+}
 
 export interface IncidentOpenPayload {
   /** Soft session correlation (no FK), matching `Conversation.sessionId`. */

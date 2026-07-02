@@ -23,7 +23,9 @@ const ConversationSummarySchema = z.object({
   lastMessageAt: z.string().nullable(),
 });
 
-const TranscriptMessageSchema = z.object({
+// The canonical rendered-transcript message shape. Exported as the single source
+// of truth so the incidents detail route reuses it instead of re-declaring it.
+export const TranscriptMessageSchema = z.object({
   role: z.string(),
   content: z.string(),
   sentAt: z.string(),

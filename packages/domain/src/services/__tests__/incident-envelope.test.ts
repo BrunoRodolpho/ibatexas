@@ -617,14 +617,16 @@ describe("list — openCount NON_TERMINAL (M11) + independent stats aggregate (M
     const out = await svc.list({ limit: 100 })
 
     // resolved-today reflects the independent set although the window has none.
-    expect(out.stats.resolvedToday).toBe(3)
+    // (stats is present on the first page — the default; optional-chained now that
+    // `list()` may skip the aggregate while paginating.)
+    expect(out.stats?.resolvedToday).toBe(3)
     // AUTO + HANDED_OFF are system-driven → resolvedAuto=2; only STAFF is "você".
-    expect(out.stats.resolvedAuto).toBe(2)
-    expect(out.stats.resolvedStaff).toBe(1)
-    expect(out.stats.avgMinutes).toBe(20) // mean(10, 30, 20) minutes
+    expect(out.stats?.resolvedAuto).toBe(2)
+    expect(out.stats?.resolvedStaff).toBe(1)
+    expect(out.stats?.avgMinutes).toBe(20) // mean(10, 30, 20) minutes
     // open is OPEN-only (NOT the NON_TERMINAL openCount); acknowledged is ACK-only.
-    expect(out.stats.open).toBe(100)
-    expect(out.stats.acknowledged).toBe(4)
+    expect(out.stats?.open).toBe(100)
+    expect(out.stats?.acknowledged).toBe(4)
     expect(out.openCount).toBe(104) // badge = NON_TERMINAL (100 + 4)
 
     // The resolved-since query filtered on TERMINAL status + a resolvedAt lower bound.
@@ -652,8 +654,8 @@ describe("list — openCount NON_TERMINAL (M11) + independent stats aggregate (M
     const svc = createIncidentService()
     const out = await svc.list()
 
-    expect(out.stats.resolvedToday).toBe(1) // still counted
-    expect(out.stats.avgMinutes).toBe(0) // negative duration ignored → no data → 0
+    expect(out.stats?.resolvedToday).toBe(1) // still counted
+    expect(out.stats?.avgMinutes).toBe(0) // negative duration ignored → no data → 0
   })
 
   it("[M10] defaults resolvedSince to server start-of-today and honors an explicit value", async () => {
@@ -684,5 +686,70 @@ describe("list — openCount NON_TERMINAL (M11) + independent stats aggregate (M
     expect(
       (expCall[0] as { where: { resolvedAt: { gte: Date } } }).where.resolvedAt.gte,
     ).toBe(since)
+  })
+
+  // ── Conditional stats aggregate (perf): compute on page 0, skip while paging ──
+
+  const resolvedFixture = () =>
+    makeRow({
+      id: "r_staff",
+      status: "RESOLVED",
+      resolutionType: "STAFF",
+      openedAt: new Date("2026-06-29T10:00:00.000Z"),
+      resolvedAt: new Date("2026-06-29T10:10:00.000Z"),
+    })
+
+  it("[perf] SKIPS the M10 stats aggregate when paginating (offset > 0) — stats undefined, no stat queries", async () => {
+    keyCounts(3, 2)
+    keyFindMany([resolvedFixture()], [makeRow({ id: "o1", status: "OPEN" })])
+
+    const svc = createIncidentService()
+    const out = await svc.list({ offset: 20 })
+
+    // No stats on a paginated page; the NON_TERMINAL badge count is still computed.
+    expect(out.stats).toBeUndefined()
+    expect(out.openCount).toBe(5)
+    // The expensive resolved-since findMany (the stats query) never ran.
+    expect(
+      mockFindMany.mock.calls.find(
+        (c) => (c[0] as { where: Record<string, unknown> }).where.resolvedAt,
+      ),
+    ).toBeUndefined()
+    // Only the NON_TERMINAL openCount ran — no OPEN/ACK string-status stat counts.
+    expect(
+      mockCount.mock.calls.filter(
+        (c) => typeof (c[0] as { where: { status: unknown } }).where.status === "string",
+      ),
+    ).toHaveLength(0)
+  })
+
+  it("[perf] COMPUTES stats on the first page (offset 0) by default", async () => {
+    keyCounts(1, 0)
+    keyFindMany([resolvedFixture()], [])
+
+    const svc = createIncidentService()
+    const out = await svc.list({ offset: 0 })
+
+    expect(out.stats?.resolvedToday).toBe(1)
+  })
+
+  it("includeStats:false force-skips even on the first page", async () => {
+    keyCounts(1, 0)
+    keyFindMany([resolvedFixture()], [])
+
+    const svc = createIncidentService()
+    const out = await svc.list({ includeStats: false })
+
+    expect(out.stats).toBeUndefined()
+  })
+
+  it("includeStats:true force-computes even while paginating (offset > 0)", async () => {
+    keyCounts(1, 1)
+    keyFindMany([resolvedFixture()], [])
+
+    const svc = createIncidentService()
+    const out = await svc.list({ offset: 40, includeStats: true })
+
+    expect(out.stats?.resolvedToday).toBe(1)
   })
 })

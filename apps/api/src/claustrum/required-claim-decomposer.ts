@@ -268,10 +268,13 @@ export type RequiredClaimResolution = ClaimVerdict | "ABSENT";
 
 /** The result of the §O#15 required-set completeness check. */
 export interface RequiredCompletenessResult {
-  /** Every required type RESOLVED to VALIDATED — the turn may render in full. */
+  /**
+   * Every required type RESOLVED to VALIDATED — the turn may render in full. The
+   * turn must DEGRADE (a required companion is not VALIDATED) exactly when this is
+   * `false` (equivalently `unsatisfied.length > 0`); callers derive "degrade" as
+   * `!complete` rather than reading a redundant second boolean.
+   */
   readonly complete: boolean;
-  /** The turn must DEGRADE (a required companion is not VALIDATED). */
-  readonly degrade: boolean;
   /** The required types that are NOT VALIDATED (ABSENT / UNKNOWN / REFUSED). */
   readonly unsatisfied: readonly RegistryClaimType[];
 }
@@ -296,9 +299,5 @@ export function checkRequiredClaimCompleteness(
     const verdict: RequiredClaimResolution = resolved.get(type) ?? "ABSENT";
     if (verdict !== "VALIDATED") unsatisfied.push(type);
   }
-  return {
-    complete: unsatisfied.length === 0,
-    degrade: unsatisfied.length > 0,
-    unsatisfied,
-  };
+  return { complete: unsatisfied.length === 0, unsatisfied };
 }

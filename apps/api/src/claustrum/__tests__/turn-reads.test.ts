@@ -38,6 +38,9 @@ let reservationGetById: (id: string, customerId: string) => Promise<unknown> = a
   if (customerId !== OWNER) throw new Error("forbidden");
   return { id, status: "confirmed", partySize: 4, customerId: OWNER };
 };
+// Per-turn schedule read-through call counter — proves the open/closed signal +
+// the override falsifier share ONE loadSchedule() per backend (turn).
+let loadScheduleCalls = 0;
 
 vi.mock("@ibatexas/domain", () => ({
   createOrderQueryService: () => ({
@@ -51,7 +54,10 @@ vi.mock("@ibatexas/domain", () => ({
   }),
 }));
 vi.mock("@ibatexas/tools", () => ({
-  loadSchedule: async () => ({}),
+  loadSchedule: async () => {
+    loadScheduleCalls++;
+    return { overrides: [] };
+  },
   getScheduleSignal: () => ({ isClosed: false, mealPeriod: "dinner" }),
 }));
 
@@ -70,6 +76,7 @@ beforeEach(() => {
     if (customerId !== OWNER) throw new Error("forbidden");
     return { id, status: "confirmed", partySize: 4, customerId: OWNER };
   };
+  loadScheduleCalls = 0;
 });
 
 // ── PAYMENT_STATUS IDOR close ────────────────────────────────────────────────
@@ -112,6 +119,67 @@ describe("turn-reads — PAYMENT_STATUS owner-scoping (IDOR close)", () => {
     paymentGetActive = async () => null;
     const backend = createDomainTriadReadBackend();
     expect(await backend.readPaymentStatus(ORDER_ID, OWNER)).toBeNull();
+  });
+});
+
+// ── Per-turn memoization (no cross-turn cache; owner-scoped) ──────────────────
+
+describe("turn-reads — per-turn memoization", () => {
+  it("shares ONE owner-scoped getById across fulfillment + payment (identical read runs once)", async () => {
+    let getByIdCalls = 0;
+    orderGetById = async (id, opts) => {
+      getByIdCalls++;
+      return opts?.customerId === OWNER
+        ? { id, customerId: OWNER, fulfillmentStatus: "preparing", paymentStatus: "paid" }
+        : null;
+    };
+    const backend = createDomainTriadReadBackend();
+    const [ful, pay] = await Promise.all([
+      backend.readOrderFulfillment(ORDER_ID, OWNER),
+      backend.readPaymentStatus(ORDER_ID, OWNER),
+    ]);
+    expect(ful).toEqual({ orderId: ORDER_ID, fulfillmentStatus: "preparing" });
+    expect(pay).toEqual({ orderId: ORDER_ID, status: "paid", method: "pix" });
+    // The identical owner-scoped getById ran ONCE this turn (memoized), not twice.
+    expect(getByIdCalls).toBe(1);
+  });
+
+  it("keeps owner-scoping: a cross-owner read does NOT reuse the owner's cached order", async () => {
+    let getByIdCalls = 0;
+    orderGetById = async (id, opts) => {
+      getByIdCalls++;
+      return opts?.customerId === OWNER
+        ? { id, customerId: OWNER, fulfillmentStatus: "preparing", paymentStatus: "paid" }
+        : null;
+    };
+    const backend = createDomainTriadReadBackend();
+    // Different owners → distinct cache keys → the attacker never sees the owner's row.
+    expect(await backend.readOrderFulfillment(ORDER_ID, OWNER)).not.toBeNull();
+    expect(await backend.readOrderFulfillment(ORDER_ID, ATTACKER)).toBeNull();
+    expect(getByIdCalls).toBe(2);
+  });
+
+  it("loads the schedule ONCE for both the open/closed signal and the override read", async () => {
+    const backend = createDomainTriadReadBackend();
+    const [sig, override] = await Promise.all([
+      backend.readSchedule(),
+      backend.readScheduleOverride(),
+    ]);
+    expect(sig).toEqual({ isClosed: false, mealPeriod: "dinner" });
+    expect(override).toBeNull(); // no override today → falsifier stays absent
+    // Single read-through this turn (memoized), not one per read.
+    expect(loadScheduleCalls).toBe(1);
+  });
+
+  it("a fresh backend (next turn) re-reads — the memo is per-turn, not cross-turn", async () => {
+    const first = createDomainTriadReadBackend();
+    await first.readSchedule();
+    await first.readScheduleOverride();
+    expect(loadScheduleCalls).toBe(1);
+    // A new backend instance == a new turn → a fresh read-through, no stale cache.
+    const second = createDomainTriadReadBackend();
+    await second.readSchedule();
+    expect(loadScheduleCalls).toBe(2);
   });
 });
 

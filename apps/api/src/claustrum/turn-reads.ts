@@ -135,51 +135,79 @@ const ACTIVE_FULFILLMENT_STAGES: ReadonlySet<string> = new Set<string>([
   "in_delivery",
 ]);
 
-/** Default first-party schedule read: the Redis read-through cache + env tz →
- *  the deterministic {@link getScheduleSignal} (mirrors claustrum-bootstrap's
- *  `resolveScheduleSignal`). Config-derived, so it is genuinely first-party. */
-async function defaultScheduleRead(): Promise<ScheduleRead> {
-  const tz = process.env.RESTAURANT_TIMEZONE ?? "America/Sao_Paulo";
-  const schedule = await loadSchedule();
-  return getScheduleSignal(schedule, tz);
-}
-
 /** Today's local date as "YYYY-MM-DD" in `tz` (mirrors schedule-helpers' private
  *  `getLocalDateStr`; en-CA yields YYYY-MM-DD). The override is keyed by date. */
 function localDateStr(tz: string): string {
   return new Intl.DateTimeFormat("en-CA", { timeZone: tz }).format(new Date());
 }
 
-/**
- * Default STORE_OPEN_NOW FALSIFIER read (F1): TODAY's ScheduleOverride from the
- * SAME read-through schedule the open/closed signal uses ({@link loadSchedule} —
- * cache + DB), matched on the turn's tz date. `null` when no override exists for
- * today (absence — the falsifier never fires). First-party config-derived.
- */
-async function defaultScheduleOverrideRead(): Promise<ScheduleOverrideRead | null> {
-  const tz = process.env.RESTAURANT_TIMEZONE ?? "America/Sao_Paulo";
-  const schedule = await loadSchedule();
-  const today = localDateStr(tz);
-  return schedule.overrides.find((o) => o.date === today) ?? null;
-}
-
 export interface DomainTriadReadBackendDeps {
-  /** Override the schedule read (testing). Defaults to {@link defaultScheduleRead}. */
+  /** Override the schedule read (testing). Defaults to the built-in first-party
+   *  read: the (per-turn memoized) read-through schedule + env tz →
+   *  {@link getScheduleSignal}. */
   readonly schedule?: () => Promise<ScheduleRead>;
-  /** Override the schedule-override read (testing). Defaults to
-   *  {@link defaultScheduleOverrideRead}. */
+  /** Override the schedule-override read (testing). Defaults to the built-in
+   *  first-party read: TODAY's ScheduleOverride matched on the turn's tz date. The
+   *  open/closed signal and this falsifier share ONE {@link loadSchedule} per turn
+   *  (see the factory's per-turn memo). `null` when no override exists today. */
   readonly scheduleOverride?: () => Promise<ScheduleOverrideRead | null>;
 }
 
 /**
  * Build the production {@link TriadReadBackend} over the `@ibatexas/domain` query
  * services. Owner-scoping is enforced on every resource read (see module header).
+ *
+ * PER-TURN by construction — a FRESH instance is built for each turn (see
+ * {@link createFirstPartyTurnReads}), so its in-turn memoization is NOT a
+ * cross-turn cache. Two identical reads that the same turn would otherwise run
+ * twice now run ONCE (single-flight — safe under the now-parallel investigator):
+ *   - the OWNER-SCOPED order `getById` shared by ORDER_FULFILLMENT_STAGE +
+ *     PAYMENT_STATUS (both gate on the identical `getById(orderId,{customerId})`);
+ *   - the read-through schedule load shared by the open/closed signal + the
+ *     STORE_OPEN_NOW override falsifier.
  */
 export function createDomainTriadReadBackend(
   deps: DomainTriadReadBackendDeps = {},
 ): TriadReadBackend {
-  const readSchedule = deps.schedule ?? defaultScheduleRead;
-  const readScheduleOverride = deps.scheduleOverride ?? defaultScheduleOverrideRead;
+  const tz = process.env.RESTAURANT_TIMEZONE ?? "America/Sao_Paulo";
+
+  // Per-turn memo: the Redis read-through schedule load runs ONCE even though BOTH
+  // the open/closed signal AND the STORE_OPEN_NOW override falsifier derive from
+  // it. Caches the in-flight PROMISE, so concurrent reads share a single load.
+  let scheduleP: ReturnType<typeof loadSchedule> | undefined;
+  const loadScheduleOnce = (): ReturnType<typeof loadSchedule> =>
+    (scheduleP ??= loadSchedule());
+
+  const readSchedule =
+    deps.schedule ?? (async () => getScheduleSignal(await loadScheduleOnce(), tz));
+  const readScheduleOverride =
+    deps.scheduleOverride ??
+    (async (): Promise<ScheduleOverrideRead | null> => {
+      const today = localDateStr(tz);
+      return (await loadScheduleOnce()).overrides.find((o) => o.date === today) ?? null;
+    });
+
+  // Per-turn memo of the OWNER-SCOPED order read: ORDER_FULFILLMENT_STAGE and
+  // PAYMENT_STATUS both gate on the IDENTICAL getById(orderId, { customerId }), so
+  // run it ONCE per (owner, order) this turn. The cache key is OWNER-SCOPED and
+  // encodes BOTH ids unambiguously (JSON tuple — no delimiter can be forged into a
+  // collision), so a cross-owner / forged orderId can NEVER reuse another
+  // customer's cached order: the IDOR close (Inv 2/13) is preserved. Caches the
+  // PROMISE (single in-flight read under the parallel investigator).
+  const orderReads = new Map<
+    string,
+    ReturnType<ReturnType<typeof createOrderQueryService>["getById"]>
+  >();
+  const readOwnerScopedOrderOnce = (orderId: string, customerId: string) => {
+    const cacheKey = JSON.stringify([customerId, orderId]);
+    let p = orderReads.get(cacheKey);
+    if (p === undefined) {
+      p = createOrderQueryService().getById(orderId, { customerId });
+      orderReads.set(cacheKey, p);
+    }
+    return p;
+  };
+
   return {
     readSchedule,
     readScheduleOverride,
@@ -187,8 +215,8 @@ export function createDomainTriadReadBackend(
     async readOrderFulfillment(orderId, customerId) {
       // Owner-scoped (SDD §N P0-3, Inv 2): getById with `{ customerId }` returns
       // the projection ONLY when the customer owns it; the post-check is
-      // defense-in-depth (mirrors loadOrderCtx).
-      const order = await createOrderQueryService().getById(orderId, { customerId });
+      // defense-in-depth (mirrors loadOrderCtx). Shares the per-turn order memo.
+      const order = await readOwnerScopedOrderOnce(orderId, customerId);
       if (order === null || order.customerId !== customerId) return null;
       return {
         orderId,
@@ -199,9 +227,10 @@ export function createDomainTriadReadBackend(
 
     async readPaymentStatus(orderId, customerId) {
       // IDOR close: gate the (orderId-only) payment read on the OWNER-SCOPED order
-      // read. Ownership flows through the order (same gate as loadPaymentCtx) — a
-      // cross-owner orderId never reaches getActiveByOrderId.
-      const order = await createOrderQueryService().getById(orderId, { customerId });
+      // read. Ownership flows through the order (same gate as loadPaymentCtx, and
+      // the SAME per-turn memoized read `readOrderFulfillment` uses) — a cross-owner
+      // orderId never reaches getActiveByOrderId.
+      const order = await readOwnerScopedOrderOnce(orderId, customerId);
       if (order === null || order.customerId !== customerId) return null;
       const active = await createPaymentQueryService().getActiveByOrderId(orderId);
       if (active === null || active.status === null) return null;

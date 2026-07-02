@@ -29,21 +29,14 @@ import {
   type IncidentSeverity,
   type IncidentStatus,
 } from "@ibatexas/domain";
-import { mintBroadcastReply } from "@adjudicate/core";
 import { getAuditSink } from "@ibatexas/audit-sink";
-import { getWhatsAppSender } from "@ibatexas/tools";
 import { requireManagerRole } from "../../middleware/staff-auth.js";
 import { buildSystemEnvelope } from "../../subscribers/__shared__/system-actor-envelope.js";
-import { closeIncidentOnStaffReply } from "../../incidents/incident-auto-close.js";
-
-// Re-declared module-local (the canonical copy is module-local at
-// conversations.ts:26 — not exported, so the detail route re-declares it).
-const TranscriptMessageSchema = z.object({
-  role: z.string(),
-  content: z.string(),
-  sentAt: z.string(),
-  metadata: z.unknown(),
-});
+import { toLogFn } from "../../utils/to-log-fn.js";
+// Canonical transcript schema (single source of truth) + the shared staff
+// take-over reply flow, both reused from the conversations / escalations routes.
+import { TranscriptMessageSchema } from "./conversations.js";
+import { staffTakeoverReply } from "./_shared-staff-reply.js";
 
 const STATUS_VALUES = [
   "OPEN",
@@ -273,26 +266,12 @@ export async function adminIncidentRoutes(server: FastifyInstance): Promise<void
       const staffId = request.staffId ?? null;
       const channel = incident.channel;
 
-      // Record the staff reply in the durable transcript (assistant-side),
-      // tagged via:staff_takeover (+incidentId). Best-effort: the Conversation
-      // row may not exist yet (guest / not-yet-archived) → skip the append but
-      // still deliver via senderRef.
+      // The Conversation row may not exist yet (guest / not-yet-archived) → the
+      // shared helper skips the transcript append but still delivers via senderRef.
       const convo =
         incident.conversationId != null
           ? { id: incident.conversationId }
           : await convoSvc().findBySessionId(incident.sessionId);
-      if (convo) {
-        await convoSvc().appendMessage({
-          conversationId: convo.id,
-          role: "assistant",
-          content: text,
-          metadata: {
-            via: "staff_takeover",
-            incidentId: id,
-            ...(staffId ? { staffId } : {}),
-          },
-        });
-      }
 
       // Phone resolution (P1-5): customerId → customer.phone; FALL BACK to the
       // incident's senderRef when customerId is null (guest / not-yet-archived),
@@ -309,39 +288,20 @@ export async function adminIncidentRoutes(server: FastifyInstance): Promise<void
       }
       if (!to && incident.senderRef) to = incident.senderRef;
 
-      let delivered = false;
-      if (channel === "whatsapp" && to) {
-        try {
-          const sender = getWhatsAppSender();
-          if (sender) {
-            await sender.sendText(to, mintBroadcastReply(text));
-            delivered = true;
-          }
-        } catch (err) {
-          request.log.error(
-            { incidentId: id, error: String(err) },
-            "[incidents] WhatsApp delivery of staff reply failed (recorded in transcript regardless)",
-          );
-        }
-      }
-
-      // P1-3: a delivered staff take-over reply IS a delivered assistant reply —
-      // and is the ONLY thing that can close an incident on a session paused for
-      // human handoff. It is MANUAL work → closes as STAFF (resolvedBy the staff
-      // identity), NOT AUTO/system, so the self-heal-rate metric stays honest.
-      // Fail-open; deliberately does NOT touch bot-pause state.
-      if (delivered) {
-        await closeIncidentOnStaffReply(
-          incident.sessionId,
-          staffId ? `staff:${staffId}` : "admin-key",
-          `staff_takeover:${staffId ?? "admin-key"}:${Date.now()}`,
-          {
-            info: (...a) => request.log.info(a[0] as object, a[1] as string),
-            warn: (...a) => request.log.warn(a[0] as object, a[1] as string),
-            error: (...a) => request.log.error(a[0] as object, a[1] as string),
-          },
-        );
-      }
+      // Shared: record the reply + deliver + (on delivery) close the incident as
+      // STAFF (P1-3). See ./_shared-staff-reply.ts.
+      const delivered = await staffTakeoverReply({
+        service: convoSvc(),
+        sessionId: incident.sessionId,
+        text,
+        channel,
+        to,
+        staffId,
+        conversation: convo,
+        metadata: { incidentId: id },
+        logLabel: "incidents",
+        log: toLogFn(request),
+      });
 
       return reply.send({ ok: true, delivered, channel });
     },

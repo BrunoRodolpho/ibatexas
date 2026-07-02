@@ -38,17 +38,6 @@ import {
 import { render } from "./renderer-from-claims.js";
 
 /**
- * Least-trusted → most-trusted ordering used to FOLD co-typed verdicts to the
- * WORST instance when one turn resolves MULTIPLE claims of the same type (see the
- * `resolved` fold below). `REFUSED ≺ UNKNOWN ≺ VALIDATED`.
- */
-const VERDICT_TRUST_RANK: Record<ClaimVerdict, number> = {
-  REFUSED: 0,
-  UNKNOWN: 1,
-  VALIDATED: 2,
-};
-
-/**
  * Build the ibatexas `ClaimsRendererPort` from the pure `renderer-from-claims`.
  * PURE/deterministic: same `(ClaimsKernelResult, context)` ⟹ same text (no
  * clock/RNG/IO). On a non-RENDER terminal it returns ONLY the proposition-free
@@ -82,22 +71,20 @@ export function createIbatexasClaimsRenderer(): ClaimsRendererPort {
       // VALIDATED instance must NOT MASK an earlier UNKNOWN/REFUSED one — a plain
       // last-entry-wins Map would report the type satisfied while the weaker
       // instance is silently dropped from `renderableCanonical` (the "render the
-      // easy half" collapse the gate exists to prevent). Fold co-typed verdicts to
-      // the WORST (least-trusted) instance: a type counts as VALIDATED here IFF
-      // EVERY instance of it validated.
+      // easy half" collapse the gate exists to prevent). The gate only distinguishes
+      // VALIDATED from not-VALIDATED, so we keep the FIRST non-VALIDATED verdict seen
+      // for a type and never let a later VALIDATED overwrite it: a type ends up
+      // VALIDATED here IFF EVERY instance of it validated (no verdict-rank table needed).
       const resolved = new Map<string, ClaimVerdict>();
       for (const c of claims.perClaim) {
         const prior = resolved.get(c.type);
-        if (
-          prior === undefined ||
-          VERDICT_TRUST_RANK[c.verdict] < VERDICT_TRUST_RANK[prior]
-        ) {
+        if (prior === undefined || (prior === "VALIDATED" && c.verdict !== "VALIDATED")) {
           resolved.set(c.type, c.verdict);
         }
       }
       const degrade =
         claims.terminal === "RENDER" &&
-        checkRequiredClaimCompleteness(required, resolved).degrade;
+        !checkRequiredClaimCompleteness(required, resolved).complete;
 
       const result = render(
         // inv.17 — the renderer's REQUIRED input is the kernel-MINTED CanonicalClaim

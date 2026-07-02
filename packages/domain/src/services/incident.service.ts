@@ -132,8 +132,14 @@ export interface IncidentListResult {
    * Independent StatCard aggregate (M10) — computed with its OWN queries, NOT
    * derived from the (paginated / OPEN-first) `rows` window, so resolved-today /
    * avg-time stay correct during a storm when zero resolved rows are in view.
+   *
+   * OPTIONAL: the aggregate is EXPENSIVE (two counts + a resolved-since findMany),
+   * so `list()` computes it only when the caller needs it — explicitly via
+   * `IncidentListParams.includeStats`, else only on the FIRST page (`offset` 0).
+   * `undefined` when skipped (a paginated request beyond page 0). Every current
+   * caller (the route + client fetch page 0) still receives it — see `list()`.
    */
-  readonly stats: IncidentStats
+  readonly stats?: IncidentStats
 }
 
 export interface IncidentListParams {
@@ -150,6 +156,13 @@ export interface IncidentListParams {
    * `resolvedAt >= resolvedSince`). Defaults to server start-of-today.
    */
   readonly resolvedSince?: Date
+  /**
+   * Force-compute (or force-skip) the expensive M10 StatCard aggregate. When
+   * omitted, `list()` computes stats only on the FIRST page (`offset` 0) and skips
+   * it while paginating — so a large-history page-turn no longer recomputes the
+   * whole-inbox aggregate. Set `true` to always include, `false` to always skip.
+   */
+  readonly includeStats?: boolean
 }
 
 export interface IncidentServiceOptions {
@@ -477,8 +490,16 @@ export function createIncidentService(options?: IncidentServiceOptions) {
       const openCountP = prisma.conversationIncident.count({
         where: { status: { in: [...NON_TERMINAL] } },
       })
-      // Independent stat aggregate (M10) — own queries, not the `rows` window.
-      const statsP = computeStats(params.resolvedSince ?? startOfServerDay(now))
+      // Independent stat aggregate (M10) — own queries, not the `rows` window. It
+      // is EXPENSIVE (two counts + a resolved-since findMany), so compute it ONLY
+      // when the caller needs it: explicitly via `includeStats`, else only on the
+      // FIRST page (offset 0). Paginating a large history no longer recomputes the
+      // whole-inbox aggregate. The default preserves every current caller — the
+      // route + client fetch page 0, so they still receive `stats`.
+      const wantStats = params.includeStats ?? offset === 0
+      const statsP = wantStats
+        ? computeStats(params.resolvedSince ?? startOfServerDay(now))
+        : undefined
 
       if (params.severity) {
         // Recompute-then-filter: the severity predicate can't be pushed into SQL

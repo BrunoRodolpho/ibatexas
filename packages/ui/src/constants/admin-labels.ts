@@ -331,6 +331,7 @@ export const INCIDENT_CAUSE_LABELS: Record<string, string> = {
   send_failed: 'falha no envio',
   retry_exhausted: 'envios esgotados',
   timeout: 'tempo esgotado',
+  pause_read_error: 'erro interno (pausa)',
 }
 
 export const INCIDENT_CAUSE_EXPLANATIONS: Record<string, string> = {
@@ -339,6 +340,7 @@ export const INCIDENT_CAUSE_EXPLANATIONS: Record<string, string> = {
   send_failed: 'A resposta foi gerada, mas o envio ao WhatsApp falhou.',
   retry_exhausted: 'Todas as tentativas de envio falharam.',
   timeout: 'A IA não respondeu dentro do tempo limite.',
+  pause_read_error: 'Falha ao verificar a pausa do atendimento (Redis indisponível) — o cliente ficou sem resposta.',
 }
 
 // Filter chips (id === '' means "all")
