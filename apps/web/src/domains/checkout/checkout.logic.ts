@@ -58,3 +58,40 @@ const STEP_VALIDATORS: Record<CheckoutStep, (ctx: StepContext) => boolean> = {
 export function canProceed(step: CheckoutStep, context: StepContext): boolean {
   return STEP_VALIDATORS[step](context)
 }
+
+/** Minimal cart-item shape needed to render per-item instructions (CUS-015). */
+export interface CheckoutInstructionItem {
+  title: string
+  quantity: number
+  variantTitle?: string
+  specialInstructions?: string
+}
+
+/** The checkout body `notes` field is capped at 500 chars server-side. */
+export const CHECKOUT_NOTES_MAX = 500
+
+/**
+ * Merge per-item special instructions into the order-level notes (CUS-015).
+ *
+ * Per-item instructions have no native line-item channel to the kitchen; the
+ * order-level OrderNote is the one working path (rendered in admin). So each
+ * item carrying a non-empty instruction becomes a line
+ * `"N× Title — Variant: instruction"`, appended after the customer's own note.
+ * The result is trimmed to {@link CHECKOUT_NOTES_MAX} so it never trips the
+ * server-side notes limit. Returns '' when there is nothing to send.
+ */
+export function mergeItemInstructionsIntoNotes(
+  baseNotes: string,
+  items: readonly CheckoutInstructionItem[],
+): string {
+  const lines: string[] = []
+  const base = baseNotes.trim()
+  if (base) lines.push(base)
+  for (const item of items) {
+    const instr = item.specialInstructions?.trim()
+    if (!instr) continue
+    const variant = item.variantTitle ? ` — ${item.variantTitle}` : ''
+    lines.push(`${item.quantity}× ${item.title}${variant}: ${instr}`)
+  }
+  return lines.join('\n').slice(0, CHECKOUT_NOTES_MAX)
+}

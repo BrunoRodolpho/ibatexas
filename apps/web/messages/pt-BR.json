@@ -271,7 +271,8 @@
     "you_might_like": "Combina com seu pedido",
     "add_suggestion": "Adicionar",
     "kitchen_closed_warning": "Cozinha fechada — alguns itens indisponíveis",
-    "item_unavailable": "Indisponível"
+    "item_unavailable": "Indisponível",
+    "item_instructions_placeholder": "Observação do item (ex.: sem cebola)"
   },
   "checkout": {
     "title": "Finalizar pedido",
