@@ -42,6 +42,7 @@ import {
   type IbatexasPromptComposer,
 } from "./prompts/ibatexas-prompts.js";
 import { emitModelCallTrace } from "./llm-trace.js";
+import { logger } from "../lib/logger.js";
 import {
   closedHoursBackstop,
   closedHoursDisclosure,
@@ -419,6 +420,34 @@ function guardDraft(draft: DraftResponse, acted: unknown): DraftResponse {
   return draft;
 }
 
+/** SIGNAL-6: behavior-preserving observability wrapper over `guardDraft`. When
+ *  the anti-confabulation guard SUBSTITUTES a model draft (the model tried to
+ *  contradict the audited decision or claim an unearned success), emit a warn so
+ *  the clamp — a load-bearing safety event that was previously silent — is
+ *  visible + countable in VictoriaLogs. Returns exactly what `guardDraft` returns. */
+function observedGuardDraft(
+  draft: DraftResponse,
+  acted: unknown,
+  turnId: string | undefined,
+): DraftResponse {
+  const guarded = guardDraft(draft, acted);
+  if (guarded.text !== draft.text) {
+    logger.warn(
+      {
+        component: "responder",
+        event: "success_guard.clamp",
+        turnId,
+        guard:
+          groundedReplyContradicts(draft.text) !== null
+            ? "contradiction"
+            : "unearned_success",
+      },
+      "success-guard clamped a model draft to the neutral fallback",
+    );
+  }
+  return guarded;
+}
+
 /** Closed-hours delivery guard. Runs the deterministic `closedHoursBackstop`
  *  (repairs a draft that falsely asserts open / confirms an immediate order), then
  *  closes a SECOND gap: when the store isClosed and the post-guard text is the
@@ -604,9 +633,10 @@ export function createIbatexasResponder(
             );
             const system = base + closedNote;
             return closedHoursDeliveryGuard(
-              guardDraft(
+              observedGuardDraft(
                 await completeWith({ system, fragmentManifest, userText, turnId }),
                 input.acted,
+                turnId,
               ),
               scheduleSignal,
               scheduled,
@@ -661,7 +691,7 @@ export function createIbatexasResponder(
           // grant (confabulation) reach the customer. Then surface any user-relevant
           // REWRITE clamp deterministically (the model can't be trusted to).
           return closedHoursDeliveryGuard(
-            surfaceRewriteClamp(guardDraft(draft, input.acted), decision),
+            surfaceRewriteClamp(observedGuardDraft(draft, input.acted, turnId), decision),
             scheduleSignal,
             scheduled,
           );
@@ -680,9 +710,10 @@ export function createIbatexasResponder(
           );
           const system = base + closedNote;
           return closedHoursDeliveryGuard(
-            guardDraft(
+            observedGuardDraft(
               await completeWith({ system, fragmentManifest, userText, turnId }),
               input.acted,
+              turnId,
             ),
             scheduleSignal,
             scheduled,

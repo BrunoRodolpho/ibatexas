@@ -35,7 +35,12 @@ import { installPack, PackConformanceError } from "@adjudicate/core"
 type InstalledPackLike = {
   readonly pack: { readonly intents: ReadonlyArray<string> }
 }
-import { recordSinkFailure, setMetricsSink } from "@adjudicate/core/kernel"
+import {
+  recordSinkFailure,
+  setMetricsSink,
+  type MetricsSink,
+} from "@adjudicate/core/kernel"
+import { createIbatexasMetricsSink } from "../observability/metrics-sink.js"
 import { customerOnboardingPack } from "@ibatexas/pack-customer-onboarding"
 import { ordersPack } from "@ibatexas/pack-orders"
 import { paymentsPack } from "@ibatexas/pack-payments"
@@ -107,17 +112,50 @@ const defaultTrackAnalytics: TrackAnalytics = (eventType, properties) => {
 
 // ── installKernelMetricsSink ─────────────────────────────────────────────────
 
+/**
+ * SIGNAL-4: fan one kernel observability event out to several MetricsSinks.
+ * Production needs BOTH the Prometheus/PostHog/Sentry sink AND the structured
+ * pino sink (component:kernel event:decision/refusal) so kernel decisions are
+ * visible + sliceable in VictoriaLogs — previously only the Prometheus sink was
+ * installed (first-wins), so decisions never reached the log stream. Each arm is
+ * fenced: an observer must NEVER break the kernel path.
+ */
+function composeMetricsSinks(a: MetricsSink, b: MetricsSink): MetricsSink {
+  const both = (fn: (s: MetricsSink) => void): void => {
+    for (const s of [a, b]) {
+      try {
+        fn(s)
+      } catch {
+        // observer isolation — swallow (the kernel path must not throw here)
+      }
+    }
+  }
+  return {
+    recordDecision: (e) => both((s) => s.recordDecision(e)),
+    recordRefusal: (e) => both((s) => s.recordRefusal(e)),
+    recordLedgerOp: (e) => both((s) => s.recordLedgerOp(e)),
+    recordSinkFailure: (e) => both((s) => s.recordSinkFailure(e)),
+    // recordResourceLimit + recordShadowDivergence are OPTIONAL on MetricsSink.
+    recordResourceLimit: (e) => both((s) => s.recordResourceLimit?.(e)),
+    recordShadowDivergence: (e) => both((s) => s.recordShadowDivergence?.(e)),
+  }
+}
+
 export function installKernelMetricsSink(
   overrides?: Partial<KernelMetricsSinkDeps>,
 ): Registry {
   const register = overrides?.register ?? getKernelRegistry()
-  const sink = createKernelMetricsSink({
+  const promSink = createKernelMetricsSink({
     trackAnalytics: overrides?.trackAnalytics ?? defaultTrackAnalytics,
     sentry: overrides?.sentry ?? Sentry,
     log: overrides?.log ?? logger,
     register,
     knownIntentKinds: overrides?.knownIntentKinds ?? KNOWN_INTENT_KINDS,
   })
+  // SIGNAL-4: compose the structured pino decision-logger alongside the
+  // Prometheus sink so EXECUTE (info) / REFUSE (warn) / ESCALATE decisions ship
+  // to VictoriaLogs, joinable to intent_audit rows by intentHash.
+  const sink = composeMetricsSinks(promSink, createIbatexasMetricsSink(logger))
   setMetricsSink(sink)
 
   const recorder = createKernelMetricsRecorder(

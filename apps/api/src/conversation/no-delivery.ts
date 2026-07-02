@@ -191,6 +191,23 @@ export async function emitNoDelivery(
   signal: NoDeliverySignal,
   log: LogFn,
 ): Promise<void> {
+  // SIGNAL-9: make every ghost/no-delivery directly queryable in VictoriaLogs
+  // (component:conversation event:no_delivery), joinable to the turn by turnId —
+  // previously this signal only went to NATS. warn when the customer was actually
+  // impacted (silence); info when a degraded-but-delivered path reached them.
+  log[signal.customerImpacted ? "warn" : "info"](
+    {
+      component: "conversation",
+      event: "no_delivery",
+      session_id: signal.sessionId,
+      turnId: signal.turnId ?? null,
+      channel: signal.channel,
+      cause: signal.cause,
+      customerImpacted: signal.customerImpacted,
+      decisionKind: signal.decisionKind ?? null,
+    },
+    `no_delivery ${signal.cause}${signal.customerImpacted ? " (customer impacted)" : ""}`,
+  );
   try {
     await publishNatsEvent("conversation.no_delivery", {
       sessionId: signal.sessionId,
