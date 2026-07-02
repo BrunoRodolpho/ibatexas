@@ -24,6 +24,7 @@ let reservationGetById: (id: string, customerId: string) => Promise<unknown> = a
 };
 let timeSlotFindUnique: (args: unknown) => Promise<unknown> = async () => null;
 let medusaStoreFetch: (path: string) => Promise<unknown> = async () => ({});
+let searchProductsMock: (input: unknown, ctx?: unknown) => Promise<unknown> = async () => ({ products: [] });
 let orderListByCustomer: (cid: string, input?: unknown) => Promise<{ orders: unknown[]; count: number }> =
   async () => ({ orders: [], count: 0 });
 let reservationListByCustomer: (cid: string, opts?: unknown) => Promise<{ reservations: unknown[]; total: number }> =
@@ -34,6 +35,7 @@ vi.mock("@ibatexas/tools", () => ({
   getRedisClient: async () => ({ get: (k: string) => redisGet(k) }),
   medusaStore: (path: string) => medusaStoreFetch(path),
   reaisToCentavos: (reais: number) => Math.round(reais * 100),
+  searchProducts: (input: unknown, ctx?: unknown) => searchProductsMock(input, ctx),
 }));
 vi.mock("@ibatexas/domain", () => ({
   createOrderQueryService: () => ({
@@ -83,6 +85,7 @@ beforeEach(() => {
   };
   timeSlotFindUnique = async () => null;
   medusaStoreFetch = async () => ({});
+  searchProductsMock = async () => ({ products: [] });
   orderListByCustomer = async () => ({ orders: [], count: 0 });
   reservationListByCustomer = async () => ({ reservations: [], total: 0 });
 });
@@ -376,6 +379,68 @@ describe("resolve-and-assemble — L1 payload threading (D-014)", () => {
       sessionId: "conv-1",
     });
     expect((payload as { customerId?: string }).customerId).toBe("c1");
+  });
+});
+
+// ── F3/L1 (BKL-061) — NL→variantId resolution for order.item.add ─────────────
+// The 4B emits a loose product name (e.g. {item:"coca cola"}) with no variantId;
+// resolve it via searchProducts (a READ — resolve stays read-only) so the tool
+// schema {cartId,variantId,quantity} is satisfiable.
+describe("resolve-and-assemble — NL→variantId (BKL-061)", () => {
+  it("resolves a loose product name to a variantId + defaults quantity", async () => {
+    searchProductsMock = async () => ({
+      products: [{ id: "prod_1", variants: [{ id: "var_coke" }] }],
+    });
+    const { payload } = await resolveAndAssemble({
+      kind: "order.item.add",
+      payload: { item: "coca cola" },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    const p = payload as { variantId?: string; quantity?: number };
+    expect(p.variantId).toBe("var_coke");
+    expect(p.quantity).toBe(1);
+  });
+
+  it("does not override an explicit variantId", async () => {
+    searchProductsMock = async () => ({ products: [{ variants: [{ id: "var_other" }] }] });
+    const { payload } = await resolveAndAssemble({
+      kind: "order.item.add",
+      payload: { variantId: "var_explicit", quantity: 3 },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    const p = payload as { variantId?: string; quantity?: number };
+    expect(p.variantId).toBe("var_explicit");
+    expect(p.quantity).toBe(3);
+  });
+
+  it("leaves variantId unset when no product matches (tool REFUSEs honestly)", async () => {
+    searchProductsMock = async () => ({ products: [] });
+    const { payload } = await resolveAndAssemble({
+      kind: "order.item.add",
+      payload: { item: "xyzzy nonexistent" },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect((payload as { variantId?: string }).variantId).toBeUndefined();
+  });
+
+  it("swallows a searchProducts error and leaves variantId unset", async () => {
+    searchProductsMock = async () => {
+      throw new Error("typesense down");
+    };
+    const { payload } = await resolveAndAssemble({
+      kind: "order.item.add",
+      payload: { item: "coca" },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect((payload as { variantId?: string }).variantId).toBeUndefined();
   });
 });
 

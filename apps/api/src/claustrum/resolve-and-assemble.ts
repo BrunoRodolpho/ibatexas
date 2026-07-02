@@ -22,7 +22,8 @@
  *    not-found → null ctx fields → the owning pack's stateGuards REFUSE cleanly.
  */
 
-import { getRedisClient, rk, medusaStore, reaisToCentavos } from "@ibatexas/tools";
+import { getRedisClient, rk, medusaStore, reaisToCentavos, searchProducts } from "@ibatexas/tools";
+import { Channel } from "@ibatexas/types";
 import {
   createOrderQueryService,
   createPaymentQueryService,
@@ -650,12 +651,52 @@ async function bindRefundOwnership(kind: string, payload: Ctx): Promise<Ctx> {
  * loadOrderCtx, so this is self-scoping — it only fires when a cart was resolved.
  * reservation.* executors require `customerId` (identity, never LLM-supplied).
  */
-function threadResolvedIdsIntoPayload(
+/** First non-empty trimmed string among the candidates, else undefined. */
+function firstString(...vals: unknown[]): string | undefined {
+  for (const v of vals) {
+    if (typeof v === "string" && v.trim().length > 0) return v.trim();
+  }
+  return undefined;
+}
+
+/**
+ * F3/L1 (BKL-061) — deterministic NL→variantId resolution (a READ; keeps this
+ * module's read-only invariant). The 4B emits order.item.add with a LOOSE
+ * product name (e.g. `{item:"coca cola"}`) — no variantId. Resolve it via
+ * Typesense (`searchProducts`) so the executor's schema (which requires
+ * variantId) is satisfiable. Returns undefined on no-match/error → the tool
+ * REFUSEs honestly ("não encontrei esse item") rather than adding the wrong one.
+ */
+async function resolveVariantIdFromName(
+  name: string,
+  channel: string,
+  sessionId: string | undefined,
+  customerId: string,
+): Promise<string | undefined> {
+  try {
+    const out = await searchProducts(
+      { query: name },
+      {
+        channel: channel === "whatsapp" ? Channel.WhatsApp : Channel.Web,
+        sessionId: sessionId ?? customerId,
+        ...(isGuestCustomerId(customerId) ? {} : { userId: customerId }),
+        userType: "customer",
+      },
+    );
+    return out.products?.[0]?.variants?.[0]?.id;
+  } catch {
+    return undefined;
+  }
+}
+
+async function threadResolvedIdsIntoPayload(
   kind: string,
   payload: Ctx,
   ctx: Ctx,
   customerId: string,
-): Ctx {
+  channel: string,
+  sessionId: string | undefined,
+): Promise<Ctx> {
   let out = payload;
   if (
     kind.startsWith("order.") &&
@@ -670,6 +711,20 @@ function threadResolvedIdsIntoPayload(
     customerId
   ) {
     out = { ...out, customerId };
+  }
+  // BKL-061: order.item.add — resolve a loose product name → variantId (READ)
+  // and default the quantity, so the executor schema {cartId,variantId,quantity}
+  // is satisfiable from the 4B's loose emission. cartId still comes from BKL-028
+  // (an existing session cart) — a fresh-session cart-ensure is BKL-066.
+  if (kind === "order.item.add" && typeof out.variantId !== "string") {
+    const name = firstString(out.item, out.product, out.productName, out.name, out.query);
+    if (name) {
+      const variantId = await resolveVariantIdFromName(name, channel, sessionId, customerId);
+      if (variantId !== undefined) out = { ...out, variantId };
+    }
+  }
+  if (kind === "order.item.add" && typeof out.quantity !== "number") {
+    out = { ...out, quantity: 1 };
   }
   return out;
 }
@@ -765,11 +820,13 @@ export async function resolveAndAssemble(args: ResolveArgs): Promise<AssembledRe
   // F3/L1 (D-014): thread the session-resolved cartId (and reservation
   // customerId) from ctx onto the payload the executor tool receives, so cart
   // mutations no longer EXECUTE-then-ZodError on a missing cartId.
-  const threadedPayload = threadResolvedIdsIntoPayload(
+  const threadedPayload = await threadResolvedIdsIntoPayload(
     kind,
     resolvedPayload,
     ctx,
     customerId,
+    channel,
+    sessionId,
   );
 
   return { payload: threadedPayload, ctx, owned, ownershipIndeterminate };
