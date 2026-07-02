@@ -71,6 +71,8 @@ import {
   type CustomerAnonymizePayload,
   type CustomerPreferencesUpdatePayload,
   type CustomerProfileUpdatePayload,
+  type CustomerAddressAddPayload,
+  type CustomerAddressRemovePayload,
   type CustomerAnonymizeCancelPayload,
   type CustomerOnboardingState,
 } from "@ibatexas/pack-customer-onboarding";
@@ -536,6 +538,187 @@ export async function meRoutes(server: FastifyInstance): Promise<void> {
       });
 
       if (out.statusCode === 200) {
+        return reply.code(200).send({ success: true });
+      }
+      void (reply as unknown as { status(code: number): typeof reply })
+        .status(out.statusCode)
+        .send(out.body as never);
+      return reply;
+    },
+  );
+
+  // ── Saved addresses (CUS-063) ───────────────────────────────────────────────
+  //
+  // Address book over the existing Prisma `Address` model + the customer-
+  // onboarding Pack's `customer.address.add` / `customer.address.remove` intents
+  // (auth-gated). Writes are governed via runCustomerIntent; removal is
+  // ownership-scoped in the executor (WHERE id AND customerId — IDOR-safe).
+  const AddressSchema = z.object({
+    id: z.string(),
+    street: z.string(),
+    number: z.string(),
+    complement: z.string().nullable(),
+    district: z.string(),
+    city: z.string(),
+    state: z.string(),
+    cep: z.string(),
+    isDefault: z.boolean(),
+  });
+  const buildCustomerAuthState = (customerId: string) =>
+    ({
+      ctx: {
+        ...identityCtx(customerId, "web"),
+        customerExists: true,
+        isAuthenticated: true,
+        now: new Date(),
+      },
+    }) as unknown as CustomerOnboardingState;
+
+  app.get(
+    "/api/me/addresses",
+    {
+      schema: {
+        tags: ["me"],
+        summary: "Listar endereços salvos",
+        response: { 200: z.object({ addresses: z.array(AddressSchema) }) },
+      },
+      preHandler: requireAuth,
+    },
+    async (request, reply) => {
+      const customerId = request.customerId!;
+      const addresses = await createCustomerService().listAddresses(customerId);
+      return reply.send({ addresses });
+    },
+  );
+
+  app.post(
+    "/api/me/addresses",
+    {
+      schema: {
+        tags: ["me"],
+        summary: "Adicionar endereço",
+        body: z.object({
+          street: z.string().trim().min(1).max(200),
+          number: z.string().trim().max(20).optional(),
+          complement: z.string().trim().max(100).optional(),
+          neighborhood: z.string().trim().max(120).optional(),
+          city: z.string().trim().min(1).max(120),
+          state: z.string().trim().length(2),
+          zip: z.string().trim().regex(/^\d{5}-?\d{3}$/, "CEP inválido"),
+          isDefault: z.boolean().optional(),
+        }),
+        response: { 200: z.object({ address: AddressSchema }) },
+      },
+      preHandler: requireAuth,
+    },
+    async (request, reply) => {
+      const customerId = request.customerId!;
+      const b = request.body;
+      const idempotencyKey = resolveMeIdempotencyKey(
+        request.headers["idempotency-key"],
+        `${customerId}:address:add:${epochHour()}`,
+      );
+      const payload: CustomerAddressAddPayload = {
+        address: {
+          street: b.street,
+          city: b.city,
+          state: b.state,
+          zip: b.zip,
+          ...(b.number === undefined ? {} : { number: b.number }),
+          ...(b.complement === undefined ? {} : { complement: b.complement }),
+          ...(b.neighborhood === undefined ? {} : { neighborhood: b.neighborhood }),
+        },
+      };
+      const envelope = buildCustomerEnvelope<"customer.address.add", CustomerAddressAddPayload>({
+        kind: "customer.address.add",
+        payload,
+        nonce: deriveMeNonce(idempotencyKey),
+        customerId,
+      });
+      const svc = createCustomerService();
+      let created: Awaited<ReturnType<typeof svc.addAddress>> | undefined;
+      const out = await runCustomerIntent({
+        envelope,
+        state: buildCustomerAuthState(customerId),
+        policy: customerOnboardingPolicyBundle as unknown as Parameters<typeof runCustomerIntent>[0]["policy"],
+        executor: async () => {
+          created = await svc.addAddress(customerId, {
+            street: b.street,
+            city: b.city,
+            state: b.state,
+            cep: b.zip,
+            ...(b.number === undefined ? {} : { number: b.number }),
+            ...(b.complement === undefined ? {} : { complement: b.complement }),
+            ...(b.neighborhood === undefined ? {} : { district: b.neighborhood }),
+            ...(b.isDefault === undefined ? {} : { isDefault: b.isDefault }),
+          });
+          return created;
+        },
+        ctx: { customerId, route: "me.address.add", log: request.log },
+        auditSink: getAuditSink(),
+        refusalMessages: portugueseRefusalMessages,
+      });
+      if (out.statusCode === 200 && created) {
+        return reply.code(200).send({ address: created });
+      }
+      void (reply as unknown as { status(code: number): typeof reply })
+        .status(out.statusCode)
+        .send(out.body as never);
+      return reply;
+    },
+  );
+
+  app.delete(
+    "/api/me/addresses/:addressId",
+    {
+      schema: {
+        tags: ["me"],
+        summary: "Remover endereço",
+        params: z.object({ addressId: z.string().min(1) }),
+        response: {
+          200: z.object({ success: z.boolean() }),
+          404: z.object({ statusCode: z.number(), error: z.string(), message: z.string() }),
+        },
+      },
+      preHandler: requireAuth,
+    },
+    async (request, reply) => {
+      const customerId = request.customerId!;
+      const { addressId } = request.params;
+      const idempotencyKey = resolveMeIdempotencyKey(
+        request.headers["idempotency-key"],
+        `${customerId}:address:remove:${addressId}`,
+      );
+      const payload: CustomerAddressRemovePayload = { addressId };
+      const envelope = buildCustomerEnvelope<"customer.address.remove", CustomerAddressRemovePayload>({
+        kind: "customer.address.remove",
+        payload,
+        nonce: deriveMeNonce(idempotencyKey),
+        customerId,
+      });
+      let removedCount = 0;
+      const out = await runCustomerIntent({
+        envelope,
+        state: buildCustomerAuthState(customerId),
+        policy: customerOnboardingPolicyBundle as unknown as Parameters<typeof runCustomerIntent>[0]["policy"],
+        executor: async () => {
+          const r = await createCustomerService().removeAddress(customerId, addressId);
+          removedCount = r.count;
+          return r;
+        },
+        ctx: { customerId, route: "me.address.remove", log: request.log },
+        auditSink: getAuditSink(),
+        refusalMessages: portugueseRefusalMessages,
+      });
+      if (out.statusCode === 200) {
+        // count 0 → the id was not the caller's (or does not exist): 404, never 200.
+        if (removedCount === 0) {
+          return reply.code(404).send({
+            statusCode: 404,
+            error: "Not Found",
+            message: "Endereço não encontrado.",
+          });
+        }
         return reply.code(200).send({ success: true });
       }
       void (reply as unknown as { status(code: number): typeof reply })

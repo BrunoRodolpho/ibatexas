@@ -415,6 +415,28 @@
       "error": "Não foi possível salvar agora. Tente novamente.",
       "invalid_email": "E-mail inválido."
     },
+    "address_book": {
+      "title": "Endereços salvos",
+      "description": "Gerencie seus endereços de entrega.",
+      "empty": "Nenhum endereço salvo.",
+      "add": "Adicionar endereço",
+      "adding": "Salvando…",
+      "street": "Rua",
+      "number": "Número",
+      "complement": "Complemento",
+      "neighborhood": "Bairro",
+      "city": "Cidade",
+      "state": "UF",
+      "zip": "CEP",
+      "set_default": "Definir como padrão",
+      "default_badge": "Padrão",
+      "save": "Salvar endereço",
+      "cancel": "Cancelar",
+      "remove": "Remover",
+      "removing": "Removendo…",
+      "incomplete": "Preencha rua, cidade, UF e CEP válidos.",
+      "error": "Não foi possível concluir agora. Tente novamente."
+    },
     "delete_account": {
       "title": "Excluir conta",
       "description": "Exclua permanentemente sua conta e seus dados (LGPD Art. 18).",

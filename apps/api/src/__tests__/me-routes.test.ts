@@ -32,6 +32,9 @@ const mockGetBalance = vi.hoisted(() => vi.fn());
 const mockOrderGetById = vi.hoisted(() => vi.fn());
 const mockSubmitReview = vi.hoisted(() => vi.fn());
 const mockUpdateProfile = vi.hoisted(() => vi.fn());
+const mockListAddresses = vi.hoisted(() => vi.fn());
+const mockAddAddress = vi.hoisted(() => vi.fn());
+const mockRemoveAddress = vi.hoisted(() => vi.fn());
 const mockSendOtp = vi.hoisted(() =>
   vi.fn(async (_args: { to: string; channel: string }) => undefined),
 );
@@ -151,6 +154,9 @@ vi.mock("@ibatexas/domain", () => ({
     getById: mockGetById,
     updatePreferences: mockUpdatePreferences,
     updateProfile: mockUpdateProfile,
+    listAddresses: mockListAddresses,
+    addAddress: mockAddAddress,
+    removeAddress: mockRemoveAddress,
   }),
   createLoyaltyService: () => ({
     getBalance: mockGetBalance,
@@ -1258,6 +1264,132 @@ describe("POST /api/me/profile — edit profile (governed)", () => {
       });
       expect(res.statusCode).toBe(401);
       expect(mockUpdateProfile).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+// ── Tests: /api/me/addresses (CUS-063 — governed address book) ──────────────────
+
+describe("Saved addresses — /api/me/addresses (governed)", () => {
+  const addressRow = {
+    id: "addr_01",
+    street: "Rua A",
+    number: "100",
+    complement: null,
+    district: "Centro",
+    city: "São Paulo",
+    state: "SP",
+    cep: "01001000",
+    isDefault: true,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    redisStorage.clear();
+    setupEnv();
+  });
+
+  it("GET lists the customer's addresses", async () => {
+    mockListAddresses.mockResolvedValue([addressRow]);
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "GET",
+        url: "/api/me/addresses",
+        headers: { "x-customer-id": "cust_01" },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().addresses).toHaveLength(1);
+      expect(res.json().addresses[0].id).toBe("addr_01");
+      expect(mockListAddresses).toHaveBeenCalledWith("cust_01");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("POST adds an address, mapping zip→cep and neighborhood→district (EXECUTE)", async () => {
+    mockAddAddress.mockResolvedValue(addressRow);
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/me/addresses",
+        headers: { "x-customer-id": "cust_01", "content-type": "application/json" },
+        payload: { street: "Rua A", number: "100", neighborhood: "Centro", city: "São Paulo", state: "SP", zip: "01001-000" },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().address.id).toBe("addr_01");
+      expect(mockAddAddress).toHaveBeenCalledWith(
+        "cust_01",
+        expect.objectContaining({ cep: "01001-000", district: "Centro", street: "Rua A", state: "SP" }),
+      );
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("POST rejects a malformed CEP at the schema boundary (400)", async () => {
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/me/addresses",
+        headers: { "x-customer-id": "cust_01", "content-type": "application/json" },
+        payload: { street: "Rua A", city: "SP", state: "SP", zip: "123" },
+      });
+      expect(res.statusCode).toBe(400);
+      expect(mockAddAddress).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("DELETE removes an owned address (count 1 → 200)", async () => {
+    mockRemoveAddress.mockResolvedValue({ count: 1 });
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "DELETE",
+        url: "/api/me/addresses/addr_01",
+        headers: { "x-customer-id": "cust_01" },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().success).toBe(true);
+      // Ownership-scoped delete: executor receives the authenticated customerId.
+      expect(mockRemoveAddress).toHaveBeenCalledWith("cust_01", "addr_01");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("[IDOR] DELETE of a foreign/nonexistent address returns 404 (count 0)", async () => {
+    mockRemoveAddress.mockResolvedValue({ count: 0 });
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "DELETE",
+        url: "/api/me/addresses/addr_other",
+        headers: { "x-customer-id": "cust_01" },
+      });
+      expect(res.statusCode).toBe(404);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("returns 401 when not authenticated", async () => {
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/me/addresses",
+        headers: { "content-type": "application/json" },
+        payload: { street: "Rua A", city: "SP", state: "SP", zip: "01001-000" },
+      });
+      expect(res.statusCode).toBe(401);
+      expect(mockAddAddress).not.toHaveBeenCalled();
     } finally {
       await app.close();
     }
