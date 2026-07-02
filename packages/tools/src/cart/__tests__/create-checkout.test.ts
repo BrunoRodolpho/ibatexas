@@ -241,6 +241,49 @@ describe("createCheckout", () => {
     })
   })
 
+  // ── Coupon application (CUS-016) ──────────────────────────────────────────
+  // A customer-validated coupon threaded via the checkout body must be applied
+  // to the REAL Medusa cart before the payment collection is created, so the
+  // charged total reflects the discount. Absent → no coupon promotion added.
+  describe("coupon application (CUS-016)", () => {
+    const couponAddCalls = () =>
+      mockCartsPromotionsAdd.mock.calls.filter(
+        ([, opts]) => (opts as { sourceSubject?: string })?.sourceSubject === "cart:create-checkout:apply-coupon",
+      )
+
+    it("applies a supplied couponCode to the Medusa cart via a governed promotion.add", async () => {
+      setupCashMocks()
+
+      await createCheckout({ ...BASE_INPUT, couponCode: "SAVE10" }, CTX)
+
+      const calls = couponAddCalls()
+      expect(calls).toHaveLength(1)
+      expect(calls[0][0]).toEqual(
+        expect.objectContaining({ cartId: "cart_01", promoCodes: ["SAVE10"] }),
+      )
+      expect(calls[0][1]).toEqual(
+        expect.objectContaining({ sourceSubject: "cart:create-checkout:apply-coupon", actorPrincipal: "llm" }),
+      )
+    })
+
+    it("does NOT add a coupon promotion when no couponCode is supplied", async () => {
+      setupCashMocks()
+
+      await createCheckout(BASE_INPUT, CTX)
+
+      expect(couponAddCalls()).toHaveLength(0)
+    })
+
+    it("swallows a Medusa rejection of the coupon and still completes checkout", async () => {
+      setupCashMocks()
+      mockCartsPromotionsAdd.mockRejectedValueOnce(new Error("promotion expired"))
+
+      const result = await createCheckout({ ...BASE_INPUT, couponCode: "EXPIRED" }, CTX)
+
+      expect(result.success).toBe(true)
+    })
+  })
+
   describe("cash payment", () => {
     const CART_ITEMS_RESPONSE = {
       cart: {

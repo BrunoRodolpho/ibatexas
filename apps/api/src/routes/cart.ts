@@ -1516,6 +1516,7 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
           pixEmail: z.email().optional(),
           pixCpf: z.string().optional(),
           notes: z.string().max(500).optional(),
+          couponCode: z.string().min(1).max(64).optional(),
         }),
       },
       preHandler: optionalAuth,

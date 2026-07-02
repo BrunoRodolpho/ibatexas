@@ -76,6 +76,10 @@ export const CreateCheckoutInputSchema = z.object({
     .string()
     .optional()
     .describe("CEP de entrega (obrigatório para delivery)"),
+  couponCode: z
+    .string()
+    .optional()
+    .describe("Código de cupom de desconto validado (opcional) — aplicado ao carrinho Medusa no checkout"),
 })
 
 export type CreateCheckoutInput = z.infer<typeof CreateCheckoutInputSchema>

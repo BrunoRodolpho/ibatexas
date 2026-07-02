@@ -223,6 +223,31 @@ async function applyWelcomeCredit(cartId: string, ctx: AgentContext): Promise<vo
   }
 }
 
+async function applyCouponCode(cartId: string, couponCode: string | undefined, ctx: AgentContext): Promise<void> {
+  if (!couponCode) return;
+  try {
+    // Apply the customer-validated coupon to the REAL Medusa cart so the
+    // charged total reflects the discount the customer saw (CUS-016). Runs on
+    // the final (possibly re-synced) cart, before the payment collection is
+    // created — mirrors applyWelcomeCredit's governed egress exactly.
+    await medusaStoreAdjudicated.carts.promotions.add(
+      { cartId, promoCodes: [couponCode] },
+      {
+        sourceSubject: "cart:create-checkout:apply-coupon",
+        actorPrincipal: "llm",
+        auditSink: getAuditSink(),
+        ...(ctx.customerId ? { customerId: ctx.customerId } : {}),
+        ...(ctx.sessionId ? { sessionId: ctx.sessionId } : {}),
+      },
+    );
+    console.warn(`[checkout] Coupon ${couponCode} applied to cart ${cartId}`);
+  } catch (err) {
+    // Medusa rejected the code (expired, already used, or not stackable) —
+    // continue without the discount rather than blocking the checkout.
+    console.warn(`[checkout] Coupon application failed for cart ${cartId}: ${(err as Error).message}`);
+  }
+}
+
 async function buildCheckoutMetadata(
   paymentMethod: string,
   tipInCentavos: number | undefined,
@@ -454,7 +479,7 @@ export async function createCheckout(
   extra?: { customerName?: string; customerEmail?: string; customerTaxId?: string },
 ): Promise<CreateCheckoutOutput> {
   const parsed = CreateCheckoutInputSchema.parse(input);
-  const { cartId, paymentMethod, tipInCentavos, deliveryCep } = parsed;
+  const { cartId, paymentMethod, tipInCentavos, deliveryCep, couponCode } = parsed;
 
   // Verify cart total > 0 before proceeding with checkout
   const cartData = await medusaStoreFetch(`/store/carts/${cartId}`) as {
@@ -469,6 +494,10 @@ export async function createCheckout(
 
   // Apply welcome credit if available (first-time customer coupon)
   await applyWelcomeCredit(cartId, ctx);
+
+  // Apply a customer-supplied coupon code to the real Medusa cart so the
+  // charged total reflects the validated discount (CUS-016). No-op when absent.
+  await applyCouponCode(cartId, couponCode, ctx);
 
   // 1. Update cart metadata with tip and delivery CEP
   const metadata = await buildCheckoutMetadata(paymentMethod, tipInCentavos, deliveryCep, ctx);

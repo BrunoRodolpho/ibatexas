@@ -133,7 +133,7 @@ function CheckoutForm() {
   const router = useRouter()
   const stripe = useStripe()
   const elements = useElements()
-  const { items, getTotal, cep, setCep, deliveryFee, estimatedDeliveryMinutes, setDeliveryEstimate: persistDeliveryEstimate, medusaCartId, setMedusaCartId, clearCart, termsAccepted, setTermsAccepted, removeItem } = useCartStore()
+  const { items, getTotal, cep, setCep, deliveryFee, estimatedDeliveryMinutes, setDeliveryEstimate: persistDeliveryEstimate, medusaCartId, setMedusaCartId, clearCart, termsAccepted, setTermsAccepted, removeItem, couponCode } = useCartStore()
   const { customerId, isAuthenticated } = useSessionStore()
   const { saveOrder } = useOrderHistory()
   const { data: kitchenStatus } = useKitchenStatus()
@@ -496,6 +496,9 @@ function CheckoutForm() {
       tipInCentavos: tipAmount > 0 ? tipAmount : undefined,
       deliveryCep: deliveryType === "delivery" ? cepInput : undefined,
       notes: notes.trim() || undefined,
+      // Thread the validated coupon so the API applies it to the Medusa cart
+      // and the charged total reflects the discount the customer saw (CUS-016).
+      couponCode: couponCode || undefined,
       items: items.filter((i) => i.variantId).map((i) => ({ variantId: i.variantId!, quantity: i.quantity, productType: i.productType })),
       ...(paymentMethod === "pix" ? {
         pixName: pixName.trim() || undefined,
