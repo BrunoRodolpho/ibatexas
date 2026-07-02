@@ -288,7 +288,7 @@ describe("review-prompt-poller", () => {
 
   // ── Logger info on every tick ─────────────────────────────────────────────
 
-  it("logs batch_size and tick timestamp on each poll", async () => {
+  it("logs a tagged batch_size line when a batch is processed", async () => {
     mockRedis.zRangeByScore.mockResolvedValue(["cust_01:order_01"]);
     mockRedis.get.mockResolvedValue("marker");
     mockPublishNatsEvent.mockResolvedValue(undefined);
@@ -307,9 +307,34 @@ describe("review-prompt-poller", () => {
 
     await pollReviewPrompts(mockLogger as unknown as import("fastify").FastifyBaseLogger);
 
+    // NOISE-3: tick logs only when work happened, tagged component/event.
     expect(mockLogger.info).toHaveBeenCalledWith(
-      expect.objectContaining({ batch_size: 1 }),
-      "review-prompt poller tick",
+      expect.objectContaining({ component: "job.review-prompt", event: "tick", batch_size: 1 }),
+      "review-prompt poller processed batch",
+    );
+  });
+
+  it("does NOT log a tick line when the batch is empty", async () => {
+    mockRedis.zRangeByScore.mockResolvedValue([]);
+    mockPublishNatsEvent.mockResolvedValue(undefined);
+
+    const mockLogger = {
+      info: vi.fn(),
+      error: vi.fn(),
+      warn: vi.fn(),
+      debug: vi.fn(),
+      fatal: vi.fn(),
+      trace: vi.fn(),
+      child: vi.fn(),
+      silent: vi.fn(),
+      level: "info",
+    };
+
+    await pollReviewPrompts(mockLogger as unknown as import("fastify").FastifyBaseLogger);
+
+    expect(mockLogger.info).not.toHaveBeenCalledWith(
+      expect.anything(),
+      "review-prompt poller processed batch",
     );
   });
 

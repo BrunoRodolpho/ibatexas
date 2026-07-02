@@ -268,8 +268,9 @@ describe("checkPixExpiry", () => {
     expect(mockCancelStalePaymentIntent).not.toHaveBeenCalled();
     expect(mockPublishNatsEvent).not.toHaveBeenCalled();
 
-    expect(log.info).toHaveBeenCalledWith(
-      expect.objectContaining({ paymentId: payment.id }),
+    // NOISE-4: contention skip demoted to debug + tagged.
+    expect(log.debug).toHaveBeenCalledWith(
+      expect.objectContaining({ component: "job.pix-expiry", event: "lock_skip", paymentId: payment.id }),
       "[pix-expiry] Lock not acquired — skipping (will retry next run)",
     );
   });
@@ -291,8 +292,9 @@ describe("checkPixExpiry", () => {
     expect(mockPublishNatsEvent).not.toHaveBeenCalled();
     expect(mockCancelStalePaymentIntent).not.toHaveBeenCalled();
 
-    expect(log.info).toHaveBeenCalledWith(
-      expect.objectContaining({ paymentId: payment.id }),
+    // NOISE-4: already-transitioned skip demoted to debug + tagged.
+    expect(log.debug).toHaveBeenCalledWith(
+      expect.objectContaining({ component: "job.pix-expiry", event: "already_transitioned", paymentId: payment.id }),
       "[pix-expiry] Payment already transitioned — skipping",
     );
   });
@@ -313,8 +315,9 @@ describe("checkPixExpiry", () => {
 
     expect(mockPublishNatsEvent).not.toHaveBeenCalled();
 
-    expect(log.info).toHaveBeenCalledWith(
-      expect.objectContaining({ paymentId: payment.id }),
+    // NOISE-4: concurrency-conflict skip demoted to debug + tagged.
+    expect(log.debug).toHaveBeenCalledWith(
+      expect.objectContaining({ component: "job.pix-expiry", event: "concurrency_conflict", paymentId: payment.id }),
       "[pix-expiry] Concurrency conflict — will retry next run",
     );
   });
@@ -442,21 +445,23 @@ describe("checkPixExpiry", () => {
     const log = buildMockLogger();
     await checkPixExpiry(log);
 
+    // NOISE-4: summary logs only when payments expired, tagged component/event.
     expect(log.info).toHaveBeenCalledWith(
-      expect.objectContaining({ expired_count: 1 }),
-      "PIX expiry check complete",
+      expect.objectContaining({ component: "job.pix-expiry", event: "sweep", expired_count: 1 }),
+      "PIX expiry sweep expired payments",
     );
   });
 
-  it("logs expired_count: 0 when no payments were processed", async () => {
+  it("does NOT log a sweep summary when no payments expired", async () => {
     mockPaymentFindMany.mockResolvedValue([]);
 
     const log = buildMockLogger();
     await checkPixExpiry(log);
 
-    expect(log.info).toHaveBeenCalledWith(
-      expect.objectContaining({ expired_count: 0 }),
-      "PIX expiry check complete",
+    // NOISE-4: an idle sweep (expired_count 0) is silent — no heartbeat line.
+    expect(log.info).not.toHaveBeenCalledWith(
+      expect.anything(),
+      "PIX expiry sweep expired payments",
     );
   });
 

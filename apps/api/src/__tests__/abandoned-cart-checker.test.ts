@@ -320,9 +320,10 @@ describe("abandoned-cart-checker", () => {
 
     await checkAbandonedCarts(mockLogger as unknown as import("fastify").FastifyBaseLogger);
 
+    // NOISE-5: summary logs only when carts were abandoned, tagged component/event.
     expect(mockLogger.info).toHaveBeenCalledWith(
-      expect.objectContaining({ abandoned_count: 1 }),
-      "Abandoned cart check complete",
+      expect.objectContaining({ component: "job.abandoned-cart", event: "sweep", abandoned_count: 1 }),
+      "abandoned-cart sweep flagged carts",
     );
   });
 
