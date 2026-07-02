@@ -1135,8 +1135,12 @@ async function handleMessageAsync(
 
     // SIGNAL-8: one queryable per-turn outbound line — did a reply actually
     // reach the customer? Joinable to the conductor turn by turnId. warn when
-    // NOTHING was delivered (a ghost/degraded turn); info on the happy path.
-    log[deliveredText ? "info" : "warn"](
+    // NOTHING was delivered (a ghost/degraded turn); info on the happy path AND
+    // on a designed human-takeover pause (suppressed_paused) — the bot is
+    // intentionally silent then, so it must NOT pollute the ghost-detection
+    // `event:reply.sent level:warn` query (it also has no turnId to join on).
+    const designedSilence = agentResponse.disposition === "suppressed_paused";
+    log[deliveredText || designedSilence ? "info" : "warn"](
       {
         component: "outbound",
         event: "reply.sent",

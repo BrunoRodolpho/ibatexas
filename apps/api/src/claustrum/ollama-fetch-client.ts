@@ -20,7 +20,25 @@ import type {
   OpenAIEmbeddingResponse,
 } from "@claustrum/openai";
 import { CompletionError } from "@claustrum/core";
+import { createAuditRedactor } from "@ibatexas/audit-sink";
 import { logger } from "../lib/logger.js";
+
+// An OpenAI-compatible error body (esp. from a proxy/gateway in front of the
+// local model) can echo a fragment of the REQUEST — system prompt + the
+// customer's raw message — so scrub cpf/email/phone/card before it reaches the
+// 7-day log store. Lazy singleton: errors are rare, so build on first use.
+let _errorBodyRedactor: ReturnType<typeof createAuditRedactor> | undefined;
+function scrubErrorBody(body: string): string {
+  _errorBodyRedactor ??= createAuditRedactor({
+    hashSecret: process.env.AUDIT_REDACT_SECRET ?? "",
+  });
+  try {
+    const scrubbed = _errorBodyRedactor.redactPayload(body);
+    return (typeof scrubbed === "string" ? scrubbed : JSON.stringify(scrubbed)).slice(0, 300);
+  } catch {
+    return "[REDACTED:unavailable]";
+  }
+}
 
 export interface OllamaFetchClientOptions {
   baseUrl?: string;
@@ -98,7 +116,7 @@ export class OllamaFetchClient implements OpenAIClientLike {
               event: "error",
               httpStatus: res.status,
               model: wire.model,
-              body: errBody.slice(0, 300),
+              body: scrubErrorBody(errBody),
             },
             `llm HTTP ${res.status} from local model endpoint`,
           );

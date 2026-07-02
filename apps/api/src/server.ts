@@ -76,7 +76,9 @@ export async function buildServer(): Promise<FastifyInstance> {
     if (REQUEST_LOG_SKIP.has(path) && status < 400 && ms < SLOW_REQUEST_MS) {
       return done();
     }
-    req.log.info(
+    // Level MIRRORS status so `level:error` / `level:warn` failure queries work
+    // (a 5xx tagged event:request_error at info would be invisible to them).
+    req.log[status >= 500 ? "error" : status >= 400 ? "warn" : "info"](
       {
         component: "http",
         event:

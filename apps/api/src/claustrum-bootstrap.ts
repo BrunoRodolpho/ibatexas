@@ -1796,7 +1796,7 @@ async function resolveGroundingPort(
     // NOISE-9: a DESIGNED, config-driven no-op — debug, not info (it fired on
     // every boot). The grounding-enabled-but-can't-embed branch above stays warn.
     logger.debug(
-      { component: "grounding" },
+      { component: "grounding", event: "disabled" },
       "embeddings unavailable (CLAUSTRUM_GROUNDING_ENABLED!=true) — grounding port runs as a designed no-op (empty retrieval); see DEF-005",
     );
   }
