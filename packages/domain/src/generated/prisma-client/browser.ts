@@ -210,3 +210,8 @@ export type LlmTokenUsage = Prisma.LlmTokenUsageModel
  * 
  */
 export type ConversationIncident = Prisma.ConversationIncidentModel
+/**
+ * Model OpsAlert
+ * 
+ */
+export type OpsAlert = Prisma.OpsAlertModel
