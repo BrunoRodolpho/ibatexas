@@ -67,14 +67,17 @@
 import { getRedisClient, rk } from "@ibatexas/tools";
 import { publishNatsEvent } from "@ibatexas/nats-client";
 import { deferResumeHash, type ParkedEnvelope } from "@adjudicate/runtime";
+import * as Sentry from "@sentry/node";
+import type { Queue, Worker } from "bullmq";
+import type { FastifyBaseLogger } from "fastify";
+import { createOpsAlertService, OPS_ALERT_CAUSE_LABELS_PT } from "@ibatexas/domain";
+import { getAuditSink } from "@ibatexas/audit-sink";
 import {
   acquireDeferResumingLock,
   releaseDeferResumingLock,
 } from "../lib/defer-resuming-lock.js";
-import * as Sentry from "@sentry/node";
-import type { Queue, Worker } from "bullmq";
-import type { FastifyBaseLogger } from "fastify";
 import { createQueue, createWorker, type Job } from "./queue.js";
+import { reconcileSweepOpsAlert, sweepCountSeverity } from "./ops-alert-reconcile.js";
 // W3-7: bump kernel_defer_timeout_total{kind} per published timeout.
 // Lazy `import()` so the sweeper's hot-path tests don't drag the entire
 // kernel-bootstrap module graph (Packs, llm-provider, tool-registry) into
@@ -514,6 +517,33 @@ export async function sweepDeferTimeouts(
     { published_count: publishedCount, run_at: new Date().toISOString() },
     "[defer-timeout-sweeper] sweep complete",
   );
+
+  // BKL-080 — surface a stale-defer SPIKE to the ops-alert plane (additive; wrapped
+  // so it can NEVER break the core sweep). A burst of defer timeouts in one sweep
+  // signals confirmations piling up unanswered (a stuck confirm-flow / notification
+  // gap). Only the periodic sweep drives this (the recovery scan is startup-only).
+  const deferThreshold = Number(process.env.OPS_STALE_DEFER_ALERT_THRESHOLD) || 10;
+  try {
+    await reconcileSweepOpsAlert({
+      svc: createOpsAlertService({ auditSink: getAuditSink(), log: effectiveLogger ?? undefined }),
+      over: publishedCount >= deferThreshold,
+      open: {
+        cause: "ops_stale_defer",
+        severity: sweepCountSeverity(publishedCount, deferThreshold),
+        source: "defer-timeout-sweeper",
+        scope: null,
+        title: `${OPS_ALERT_CAUSE_LABELS_PT.ops_stale_defer}: ${publishedCount} numa varredura`,
+        detail: `${publishedCount} confirmações pendentes venceram nesta varredura (limite ${deferThreshold}).`,
+        context: { publishedCount, threshold: deferThreshold },
+        dedupeKey: "ops_stale_defer",
+      },
+      sourceSubject: "defer-timeout-sweeper",
+      now: Date.now(),
+      log: effectiveLogger ?? undefined,
+    });
+  } catch (err) {
+    effectiveLogger?.warn({ error: String(err) }, "[defer-timeout-sweeper] ops-alert reconcile failed (non-fatal)");
+  }
   return publishedCount;
 }
 
