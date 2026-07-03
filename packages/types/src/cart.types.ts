@@ -144,6 +144,11 @@ export const GetOrderHistoryInputSchema = z.strictObject({})
 
 export type GetOrderHistoryInput = z.infer<typeof GetOrderHistoryInputSchema>
 
+// get_payment_history
+export const GetPaymentHistoryInputSchema = z.strictObject({})
+
+export type GetPaymentHistoryInput = z.infer<typeof GetPaymentHistoryInputSchema>
+
 // regenerate_pix
 export const RegeneratePixInputSchema = z.object({
   orderId: z.string().describe("ID do pedido"),

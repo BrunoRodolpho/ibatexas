@@ -25,6 +25,7 @@ import {
 import {
   agentCtxFromCapsule,
   listIbatexasToolPacks,
+  readToolRosterDrift,
   toolRosterDrift,
   ROSTER_DRIFT_CONTEXTS,
 } from "../tools/register-ibatexas-tool-packs.js";
@@ -259,6 +260,66 @@ describe("P0-7 — context-aware roster drift", () => {
           p.includes("tool_unresolved"),
       ),
     ).toBe(true);
+  });
+});
+
+// ── BKL-071 — read-side roster drift (readToolRosterDrift) ───────────────────
+//
+// The READ twin of toolRosterDrift: every read a planner advertises
+// (Plan.visibleReadTools, unioned over ROSTER_DRIFT_CONTEXTS) must have a
+// registered executor, else the one-hop enrichment loop offers a read the
+// runtime cannot execute. Fail-closed leg returns problems; the reverse leg
+// (executor keyed to an unadvertised read) is WARN-only. Tests exercise the
+// FUNCTION against synthetic executor-key sets derived from the REAL composed
+// planners — the live wiring (executor map ⊇ advertised reads) is separately
+// pinned by ibatexas-planner.test.ts, which imports the real executor map.
+
+/** The live advertised read surface, unioned across the named drift contexts. */
+const ADVERTISED_READS: readonly string[] = [
+  ...new Set(
+    IBATEXAS_COMPOSED_CAPABILITY_PLANNERS.flatMap((p) =>
+      ROSTER_DRIFT_CONTEXTS.flatMap((c) => [
+        ...p.plan(c.state, c.context).visibleReadTools,
+      ]),
+    ),
+  ),
+];
+
+describe("BKL-071 — read-tool roster drift", () => {
+  it("derives a non-vacuous advertised-read surface (guards a hollowed probe)", () => {
+    expect(ADVERTISED_READS.length).toBeGreaterThanOrEqual(12);
+    expect(ADVERTISED_READS).toContain("get_payment_history");
+    expect(ADVERTISED_READS).toContain("get_cart");
+  });
+
+  it("reports zero problems when every advertised read has a registered executor", () => {
+    expect(
+      readToolRosterDrift(IBATEXAS_COMPOSED_CAPABILITY_PLANNERS, ADVERTISED_READS),
+    ).toEqual([]);
+  });
+
+  it("FAILS (a problem) when an advertised read has no registered executor", () => {
+    // Drop the last-wired read from the executor key set → it now dangles.
+    const missingOne = ADVERTISED_READS.filter((r) => r !== "get_payment_history");
+    const problems = readToolRosterDrift(
+      IBATEXAS_COMPOSED_CAPABILITY_PLANNERS,
+      missingOne,
+    );
+    expect(problems.length).toBeGreaterThan(0);
+    expect(problems.some((p) => p.includes("get_payment_history"))).toBe(true);
+    expect(problems.every((p) => p.includes("no registered executor"))).toBe(true);
+  });
+
+  it("WARNs (never fails) when an executor is keyed to an UNadvertised read", () => {
+    const warnings: string[] = [];
+    const problems = readToolRosterDrift(
+      IBATEXAS_COMPOSED_CAPABILITY_PLANNERS,
+      [...ADVERTISED_READS, "get_ghost_read"],
+      { onWarn: (m) => warnings.push(m) },
+    );
+    expect(problems).toEqual([]);
+    expect(warnings.some((w) => w.includes("get_ghost_read"))).toBe(true);
+    expect(warnings.every((w) => w.includes("WARN only"))).toBe(true);
   });
 });
 
