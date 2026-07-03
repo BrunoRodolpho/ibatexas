@@ -954,39 +954,113 @@ describe("GET /api/cart/delivery-estimate", () => {
 
 // ── POST /api/coupons/validate ───────────────────────────────────────────────
 
-describe("POST /api/coupons/validate", () => {
-  it("valid active promotion → { valid: true, discount }", async () => {
-    mockMedusaAdmin.mockResolvedValue({
-      promotions: [{ id: "p1", code: "VIP10", is_disabled: false, application_method: { value: 1000, type: "percentage" } }],
-    });
+describe("POST /api/coupons/validate (BKL-070 display-parity)", () => {
+  const validate = async (code: string) => {
     const app = await buildTestServer();
-    const res = await app.inject({ method: "POST", url: "/api/coupons/validate", payload: { code: "VIP10" } });
+    return app.inject({ method: "POST", url: "/api/coupons/validate", payload: { code } });
+  };
+
+  it("active promotion, no campaign constraints → { valid: true, discount }", async () => {
+    mockMedusaAdmin.mockResolvedValue({
+      promotions: [{ id: "p1", code: "VIP10", status: "active", application_method: { value: 1000, type: "percentage" } }],
+    });
+    const res = await validate("VIP10");
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ valid: true, discount: 1000 });
   });
 
-  it("disabled promotion → { valid: false }", async () => {
+  it("status draft / inactive → { valid: false } (the v2 lifecycle flag — is_disabled was dead)", async () => {
+    for (const status of ["draft", "inactive"] as const) {
+      mockMedusaAdmin.mockResolvedValue({
+        promotions: [{ id: "p2", code: "OLD", status, application_method: { value: 500 } }],
+      });
+      const res = await validate("OLD");
+      expect(res.json()).toEqual({ valid: false });
+    }
+  });
+
+  it("status ABSENT → { valid: false } (display-side fail-closed, never a vacuous pass)", async () => {
     mockMedusaAdmin.mockResolvedValue({
-      promotions: [{ id: "p2", code: "OLD", is_disabled: true, application_method: { value: 500 } }],
+      promotions: [{ id: "p3", code: "GHOST", application_method: { value: 500 } }],
     });
-    const app = await buildTestServer();
-    const res = await app.inject({ method: "POST", url: "/api/coupons/validate", payload: { code: "OLD" } });
-    expect(res.statusCode).toBe(200);
+    const res = await validate("GHOST");
     expect(res.json()).toEqual({ valid: false });
+  });
+
+  it("campaign window: ends_at in the past → { valid: false }; starts_at in the future → { valid: false }", async () => {
+    mockMedusaAdmin.mockResolvedValue({
+      promotions: [{ id: "p4", code: "EXPIRED", status: "active", campaign: { ends_at: "2020-01-01T00:00:00.000Z" }, application_method: { value: 500 } }],
+    });
+    expect((await validate("EXPIRED")).json()).toEqual({ valid: false });
+    mockMedusaAdmin.mockResolvedValue({
+      promotions: [{ id: "p5", code: "SOON", status: "active", campaign: { starts_at: "2999-01-01T00:00:00.000Z" }, application_method: { value: 500 } }],
+    });
+    expect((await validate("SOON")).json()).toEqual({ valid: false });
+  });
+
+  it("campaign in-window (both bounds) → { valid: true }", async () => {
+    mockMedusaAdmin.mockResolvedValue({
+      promotions: [{
+        id: "p6", code: "NOW", status: "active",
+        campaign: { starts_at: "2020-01-01T00:00:00.000Z", ends_at: "2999-01-01T00:00:00.000Z" },
+        application_method: { value: 700 },
+      }],
+    });
+    expect((await validate("NOW")).json()).toEqual({ valid: true, discount: 700 });
+  });
+
+  it("promotion-level usage budget exhausted (used >= limit) → { valid: false }", async () => {
+    mockMedusaAdmin.mockResolvedValue({
+      promotions: [{ id: "p7", code: "USEDUP", status: "active", limit: 100, used: 100, application_method: { value: 500 } }],
+    });
+    expect((await validate("USEDUP")).json()).toEqual({ valid: false });
+  });
+
+  it("campaign usage/spend budget exhausted → { valid: false }", async () => {
+    for (const type of ["usage", "spend"] as const) {
+      mockMedusaAdmin.mockResolvedValue({
+        promotions: [{
+          id: "p8", code: "CAMPCAP", status: "active",
+          campaign: { budget: { type, limit: 50, used: 50 } },
+          application_method: { value: 500 },
+        }],
+      });
+      expect((await validate("CAMPCAP")).json()).toEqual({ valid: false });
+    }
+  });
+
+  it("per-attribute budget types are NOT evaluated (would over-reject without the attribute) → { valid: true }", async () => {
+    for (const type of ["use_by_attribute", "spend_by_attribute"] as const) {
+      mockMedusaAdmin.mockResolvedValue({
+        promotions: [{
+          id: "p9", code: "PERCUST", status: "active",
+          campaign: { budget: { type, limit: 1, used: 999 } },
+          application_method: { value: 300 },
+        }],
+      });
+      expect((await validate("PERCUST")).json()).toEqual({ valid: true, discount: 300 });
+    }
+  });
+
+  it("unlimited budgets (null limit) and under-budget usage stay valid", async () => {
+    mockMedusaAdmin.mockResolvedValue({
+      promotions: [{
+        id: "p10", code: "OK", status: "active", limit: null, used: 3,
+        campaign: { budget: { type: "usage", limit: 100, used: 3 } },
+        application_method: { value: 250 },
+      }],
+    });
+    expect((await validate("OK")).json()).toEqual({ valid: true, discount: 250 });
   });
 
   it("no matching promotion → { valid: false }", async () => {
     mockMedusaAdmin.mockResolvedValue({ promotions: [] });
-    const app = await buildTestServer();
-    const res = await app.inject({ method: "POST", url: "/api/coupons/validate", payload: { code: "NOPE" } });
-    expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ valid: false });
+    expect((await validate("NOPE")).json()).toEqual({ valid: false });
   });
 
-  it("Medusa error → { valid: false } (never 500)", async () => {
+  it("Medusa error → { valid: false } (never 500; display-side fail-closed)", async () => {
     mockMedusaAdmin.mockRejectedValue(new Error("medusa down"));
-    const app = await buildTestServer();
-    const res = await app.inject({ method: "POST", url: "/api/coupons/validate", payload: { code: "X" } });
+    const res = await validate("X");
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ valid: false });
   });

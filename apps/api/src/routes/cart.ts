@@ -2011,13 +2011,36 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
       preHandler: optionalAuth,
     },
     async (request, reply) => {
-      // Query Medusa for promotions matching the code
+      // BKL-070 — display-parity validation. Mirrors the REJECTION CLASSES the
+      // checkout's authoritative Medusa promotions.add gate enforces (D1 fail-closed
+      // 422 COUPON_REJECTED), so the UI rarely shows a discount that later dies at
+      // checkout. The default admin promotion fields already include status, limit,
+      // used, *campaign, *campaign.budget and *application_method (Medusa
+      // api/admin/promotions/query-config defaultAdminPromotionFields) — one GET,
+      // no fields= param. NOTE the old `is_disabled` check was DEAD in Medusa v2
+      // (no such field; `status` is the real flag) — it passed vacuously.
+      //
+      // Deliberately NOT mirrored (only Medusa's engine can evaluate them; the
+      // checkout 422 stays authoritative): target/buy rules, stackability, and the
+      // per-attribute budget types (use_by_attribute / spend_by_attribute — those
+      // need the customer attribute and MUST NOT over-reject here).
       try {
         const data = await medusaAdmin(`/admin/promotions?code=${encodeURIComponent(request.body.code)}&limit=1`) as {
           promotions?: Array<{
             id: string;
             code: string;
-            is_disabled: boolean;
+            status?: "draft" | "active" | "inactive";
+            limit?: number | null;
+            used?: number;
+            campaign?: {
+              starts_at?: string | null;
+              ends_at?: string | null;
+              budget?: {
+                type?: "spend" | "usage" | "use_by_attribute" | "spend_by_attribute";
+                limit?: number | null;
+                used?: number;
+              } | null;
+            } | null;
             application_method?: {
               value?: number;
               type?: string;
@@ -2026,13 +2049,50 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
         };
 
         const promo = data.promotions?.[0];
-        if (!promo || promo.is_disabled) {
+        if (!promo) return reply.send({ valid: false });
+
+        // status: the v2 lifecycle flag. Absent (unexpected) ⇒ treat as not active
+        // (display-side fail-closed: never show a discount we cannot substantiate).
+        if (promo.status !== "active") return reply.send({ valid: false });
+
+        // Campaign window (only when bounds are present — absent bound ⇒ no bound).
+        const now = Date.now();
+        const startsAt = promo.campaign?.starts_at ? Date.parse(promo.campaign.starts_at) : undefined;
+        const endsAt = promo.campaign?.ends_at ? Date.parse(promo.campaign.ends_at) : undefined;
+        if (startsAt !== undefined && Number.isFinite(startsAt) && startsAt > now) {
+          return reply.send({ valid: false });
+        }
+        if (endsAt !== undefined && Number.isFinite(endsAt) && endsAt < now) {
+          return reply.send({ valid: false });
+        }
+
+        // Promotion-level usage budget (limit/used on the promotion itself).
+        if (
+          typeof promo.limit === "number" &&
+          typeof promo.used === "number" &&
+          promo.used >= promo.limit
+        ) {
+          return reply.send({ valid: false });
+        }
+
+        // Campaign budget — ONLY the globally-evaluable types. Per-attribute types
+        // are skipped (evaluating them without the attribute would over-reject).
+        const budget = promo.campaign?.budget;
+        if (
+          budget &&
+          (budget.type === "usage" || budget.type === "spend") &&
+          typeof budget.limit === "number" &&
+          typeof budget.used === "number" &&
+          budget.used >= budget.limit
+        ) {
           return reply.send({ valid: false });
         }
 
         const discount = promo.application_method?.value ?? 0;
         return reply.send({ valid: true, discount });
       } catch {
+        // Display-side fail-closed (unchanged from the previous behavior): an
+        // errored validation never shows a discount that could die at checkout.
         return reply.send({ valid: false });
       }
     },
