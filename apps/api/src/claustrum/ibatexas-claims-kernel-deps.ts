@@ -46,7 +46,11 @@ import {
   type MinimalClaim,
   type SoundnessDeps,
 } from "@adjudicate/core";
-import type { ClaimsKernelDepsForTurn } from "@claustrum/core";
+import type {
+  ActiveResourceRef,
+  ActiveResourcesForTurn,
+  ClaimsKernelDepsForTurn,
+} from "@claustrum/core";
 
 export interface IbatexasClaimsKernelDepsConfig {
   /**
@@ -338,4 +342,46 @@ export const buildPerTurnOwnsFromLedger: ClaimsKernelDepsForTurn = ({
       owns: buildOwns({ principal: customerId, ownedResources }),
     },
   };
+};
+
+/** Adopter resource vocabulary for the {@link activeResourcesFromLedger} seam:
+ *  the owner-scoped ledger BASE key → the ActiveResourceRef.kind the ibatexas
+ *  required-claim decomposer speaks (OWNERSHIP_GATED_TYPES: order / payment). */
+const OWNER_SCOPED_BASE_TO_RESOURCE_KIND: Readonly<Record<string, string>> = {
+  order_fulfillment_stage: "order",
+  payment_status: "payment",
+  reservation_status: "reservation",
+};
+
+/**
+ * BKL-004 — the #8 decomposer ownership signal, as the @claustrum/core 0.5.0
+ * `ActiveResourcesForTurn` seam. `handleTurn` invokes it at RENDER-FROM-CLAIMS and
+ * threads the result as `ClaimsRenderContext.activeResources` (the resources the
+ * required-claim decomposer may demand companions FOR).
+ *
+ * Derived ONLY from PRESENT owner-scoped ledger reads — the SAME IDOR filter as
+ * `buildPerTurnOwnsFromLedger` (a forged / cross-owner read errored → absent →
+ * never an active resource; "no owner" ≠ "any owner", Inv 2). The authenticated
+ * `customerId` is what SCOPED those reads; no session/model id ever appears.
+ *
+ * POSITIVE-ONLY by construction: a ref is emitted for every present owner-scoped
+ * resource. The ABSENCE of a kind means "no present read this turn", NOT a
+ * provable "the customer has none" — the investigator's active-order enumeration
+ * is best-effort (degrades to [] on failure), so absence here is not a provable
+ * empty. The consuming decomposer therefore must NOT treat an absent kind as a
+ * DROP signal (that would reopen the §O#15 "render the easy half" hole); the
+ * sound negative-drop optimization needs a distinct provable-empty enumeration
+ * signal — see the BKL-004 residual note. PURE; byte-identical when unwired.
+ */
+export const activeResourcesFromLedger: ActiveResourcesForTurn = ({ ledger }) => {
+  const refs: ActiveResourceRef[] = [];
+  const seen = new Set<string>();
+  for (const { base, resourceId } of presentOwnerScopedResources(ledger)) {
+    const kind = OWNER_SCOPED_BASE_TO_RESOURCE_KIND[base] ?? base;
+    const dedupeKey = `${kind}:${resourceId}`;
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+    refs.push({ kind, id: resourceId });
+  }
+  return refs;
 };

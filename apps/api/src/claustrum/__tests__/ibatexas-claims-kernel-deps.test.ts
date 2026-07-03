@@ -23,6 +23,7 @@ import {
 } from "@adjudicate/core";
 import {
   actionOutcomeConfirmed,
+  activeResourcesFromLedger,
   buildOutcomeConfirmed,
   buildOwns,
   createIbatexasClaimsKernelDeps,
@@ -282,3 +283,46 @@ describe("ibatexas-claims-kernel-deps — createPerTurnClaimsKernelDeps", () => 
     expect(b.soundness.now).toBe(222);
   });
 });
+
+// ── BKL-004: activeResourcesFromLedger (#8 decomposer ownership seam) ──────────
+
+describe("activeResourcesFromLedger — @claustrum/core 0.5.0 ActiveResourcesForTurn seam", () => {
+  function recordPresent(l: EvidenceLedger, key: string): void {
+    l.record({
+      key,
+      value: { present: true },
+      source: "test",
+      fetchedAt: 1_000,
+      sourceMode: "live",
+      taint: "TRUSTED",
+      originProvenance: "FIRST_PARTY",
+    });
+  }
+
+  it("maps present owner-scoped reads to {kind,id} refs (order/payment/reservation)", () => {
+    const l = new EvidenceLedger("t");
+    recordPresent(l, "order_fulfillment_stage:o1");
+    recordPresent(l, "payment_status:o1");
+    recordPresent(l, "reservation_status:r7");
+    const refs = activeResourcesFromLedger({ ledger: l, customerId: "cust-1" });
+    expect([...refs].sort((a, b) => (a.kind + a.id).localeCompare(b.kind + b.id))).toEqual([
+      { kind: "order", id: "o1" },
+      { kind: "payment", id: "o1" },
+      { kind: "reservation", id: "r7" },
+    ]);
+  });
+
+  it("excludes public (non-owner-scoped) keys like schedule:*", () => {
+    const l = new EvidenceLedger("t");
+    recordPresent(l, "schedule:store_hours");
+    recordPresent(l, "order_fulfillment_stage:o9");
+    const refs = activeResourcesFromLedger({ ledger: l, customerId: "cust-1" });
+    expect(refs).toEqual([{ kind: "order", id: "o9" }]);
+  });
+
+  it("returns [] for a ledger with no present owner-scoped resource (absence is NOT a drop signal)", () => {
+    const l = new EvidenceLedger("t");
+    recordPresent(l, "schedule:store_hours");
+    expect(activeResourcesFromLedger({ ledger: l, customerId: "cust-1" })).toEqual([]);
+  });
+})
