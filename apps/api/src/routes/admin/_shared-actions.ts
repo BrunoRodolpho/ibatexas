@@ -29,7 +29,11 @@
 
 import { randomUUID } from "node:crypto";
 import type { FastifyReply } from "fastify";
-import { buildEnvelope, type IntentEnvelope } from "@adjudicate/core";
+import {
+  buildEnvelope,
+  type IntentActor,
+  type IntentEnvelope,
+} from "@adjudicate/core";
 import {
   createOrderCommandService,
   createOrderEventLogService,
@@ -51,8 +55,56 @@ import {
 } from "./admin-confirmation-store.js";
 
 /**
+ * Adopter role vocabulary threaded onto `IntentActor.role` (WS7 / BKL-069).
+ * This is the IbateXas edge type — the same closed union carried on
+ * `request.staffRole` (JWT) and a superset of `request.adminApiKeyRole`
+ * (registry-mapped API keys). The kernel treats `role` as an opaque string;
+ * this alias only constrains it at the ibatexas boundary.
+ */
+export type StaffActorRole = "OWNER" | "MANAGER" | "ATTENDANT";
+
+/**
+ * Resolve the authenticated caller's adopter role for `actor.role`:
+ * the JWT staff role when present, else the API-key registry role, else
+ * ABSENT. A bare unmapped API key carries no role (fail-closed — it never
+ * fabricates one). Never returns `""` — absent stays absent so the
+ * envelope is canonical-drop-safe (an envelope WITHOUT `role` hashes
+ * byte-identically to a pre-BKL-069 envelope).
+ */
+export function resolveActorRole(request: {
+  readonly staffRole?: StaffActorRole;
+  readonly adminApiKeyRole?: "OWNER" | "MANAGER";
+}): StaffActorRole | undefined {
+  return request.staffRole ?? request.adminApiKeyRole ?? undefined;
+}
+
+/**
+ * Build the kernel envelope `actor` from a derived principal + optional
+ * adopter role.
+ *
+ * The `role` spread is canonical-drop-safe: an absent (or falsy) role omits
+ * the `role` key entirely so the `intentHash` is byte-identical to a
+ * role-free envelope; a PRESENT role is bound into the hash by
+ * `buildEnvelope` (WS7 seam — `@adjudicate/core` 1.9.0 `IntentActor.role`).
+ * Every staff-plane envelope built under `routes/admin/` routes its actor
+ * through here so the drop-safe invariant lives in ONE place.
+ */
+export function actorFor(deps: {
+  readonly principal: "user" | "system";
+  readonly sessionId: string;
+  readonly role?: StaffActorRole;
+}): IntentActor {
+  return {
+    principal: deps.principal,
+    sessionId: deps.sessionId,
+    // Falsy role ⇒ key omitted (never `role: ""`) so absent stays absent.
+    ...(deps.role ? { role: deps.role } : {}),
+  };
+}
+
+/**
  * Derive envelope `actor` + `taint` from the authenticated request's
- * staffId.
+ * staffId (+ optional adopter role).
  *
  * `requireManager` / `requireStaff` ensure `request.staffId` is set on
  * JWT-authenticated routes; the outer admin guard accepts API-key
@@ -60,26 +112,35 @@ import {
  * the caller as `"system"` with `SYSTEM` taint — same convention as
  * the Stripe webhook and customer route migrations.
  *
- * Behavior-preserving extraction of the identical `principalFor`
- * previously defined in both `order-actions.ts` and `payments.ts`.
+ * `actorRole` (WS7 / BKL-069) is the caller's adopter role — orthogonal to
+ * the provenance `principal`: an API-key (`"system"`) caller mapped to a
+ * registry role still carries that role. It is returned only when present,
+ * so a bare-key (no role) or role-less caller yields no `actorRole` and the
+ * envelope stays canonical-drop-safe. Absent role stays ABSENT (never `""`).
  */
-export function principalFor(staffId: string | null): {
+export function principalFor(
+  staffId: string | null,
+  actorRole?: StaffActorRole | null,
+): {
   readonly actorPrincipal: "user" | "system";
   readonly taint: "TRUSTED" | "SYSTEM";
   readonly sessionId: string;
+  readonly actorRole?: StaffActorRole;
 } {
-  if (staffId) {
-    return {
-      actorPrincipal: "user",
-      taint: "TRUSTED",
-      sessionId: `admin:${staffId}`,
-    };
-  }
-  return {
-    actorPrincipal: "system",
-    taint: "SYSTEM",
-    sessionId: "admin:api-key",
-  };
+  // Normalize a falsy role to ABSENT (undefined) — never surface `""`.
+  const role = actorRole || undefined;
+  const base = staffId
+    ? {
+        actorPrincipal: "user" as const,
+        taint: "TRUSTED" as const,
+        sessionId: `admin:${staffId}`,
+      }
+    : {
+        actorPrincipal: "system" as const,
+        taint: "SYSTEM" as const,
+        sessionId: "admin:api-key",
+      };
+  return role ? { ...base, actorRole: role } : base;
 }
 
 /**
@@ -143,13 +204,23 @@ export function buildAdminTransitionEnvelope<
   readonly pending: PendingAdminAction;
   readonly staffId: string | null;
   readonly kind: K;
+  /**
+   * The CONFIRMING operator's adopter role (WS7 / BKL-069). Confirm-time
+   * role governs: this is the second-operator's role at step 2, NOT the
+   * step-1 requester's `pending.staffRole` (which stays an audit signal).
+   */
+  readonly actorRole?: StaffActorRole;
 }): {
   readonly envelope: IntentEnvelope<K, P>;
   readonly actorPrincipal: "user" | "system";
   readonly taint: "TRUSTED" | "SYSTEM";
   readonly sessionId: string;
+  readonly actorRole?: StaffActorRole;
 } {
-  const { actorPrincipal, taint, sessionId } = principalFor(deps.staffId);
+  const { actorPrincipal, taint, sessionId, actorRole } = principalFor(
+    deps.staffId,
+    deps.actorRole,
+  );
   const storedPayload = deps.pending.payload as unknown as P;
   const payload = {
     ...storedPayload,
@@ -161,10 +232,10 @@ export function buildAdminTransitionEnvelope<
     kind: deps.kind,
     payload,
     nonce: deps.pending.nonce,
-    actor: { principal: actorPrincipal, sessionId },
+    actor: actorFor({ principal: actorPrincipal, sessionId, role: actorRole }),
     taint,
   });
-  return { envelope, actorPrincipal, taint, sessionId };
+  return { envelope, actorPrincipal, taint, sessionId, actorRole };
 }
 
 /**
@@ -429,7 +500,13 @@ export async function adjudicateAdminNote(deps: {
   readonly staffId: string | null;
   readonly content: string;
   readonly isInternal?: boolean;
+  /** Note author's adopter role (WS7 / BKL-069) — absent stays absent. */
+  readonly actorRole?: StaffActorRole;
 }): Promise<AdminNoteResult> {
+  const { actorPrincipal, taint, sessionId, actorRole } = principalFor(
+    deps.staffId,
+    deps.actorRole,
+  );
   const noteEnvelope = buildEnvelope<"order.note.add", OrderNoteAddPayload>({
     kind: "order.note.add" as const,
     payload: {
@@ -438,10 +515,8 @@ export async function adjudicateAdminNote(deps: {
       ...(deps.isInternal ? { isInternal: true } : {}),
     },
     nonce: randomUUID(),
-    actor: deps.staffId
-      ? { principal: "user", sessionId: `admin:${deps.staffId}` }
-      : { principal: "system", sessionId: "admin:api-key" },
-    taint: deps.staffId ? "TRUSTED" : "SYSTEM",
+    actor: actorFor({ principal: actorPrincipal, sessionId, role: actorRole }),
+    taint,
   });
   const noteOrderState: OrderState = {
     ctx: {

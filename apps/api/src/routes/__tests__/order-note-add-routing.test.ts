@@ -102,10 +102,17 @@ describe("P4 — 4 orderNote.create sites wired to addNoteFromEnvelope", () => {
       orderActionsSrc.match(/taint:\s*"UNTRUSTED"/) ||
         orderActionsSrc.match(/buildCustomerEnvelope</),
     ).not.toBeNull()
-    // Admin note-add taint (TRUSTED for staffId, SYSTEM for null) now lives in
-    // the shared `adjudicateAdminNote` helper both admin routes delegate to.
+    // Admin note-add taint (TRUSTED for staffId, SYSTEM for null / API-key)
+    // now derives from `principalFor(deps.staffId, …)` inside the shared
+    // `adjudicateAdminNote` helper — BKL-069 threaded `actor.role` through the
+    // same seam, so the previous inline `taint: deps.staffId ? … : …` ternary
+    // was replaced by the (semantics-identical) principalFor derivation. The
+    // TRUSTED-for-staff / SYSTEM-for-null mapping now lives in principalFor.
     const shared = read("admin/_shared-actions.ts")
-    expect(shared).toMatch(/taint:\s*deps\.staffId\s*\?\s*"TRUSTED"\s*:\s*"SYSTEM"/)
+    expect(shared).toContain("adjudicateAdminNote")
+    expect(shared).toMatch(/principalFor\(\s*deps\.staffId/)
+    expect(shared).toMatch(/taint:\s*"TRUSTED"/)
+    expect(shared).toMatch(/taint:\s*"SYSTEM"/)
     expect(read("admin/order-actions.ts")).toContain("adjudicateAdminNote")
     expect(read("admin/payments.ts")).toContain("adjudicateAdminNote")
   })
