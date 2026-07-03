@@ -118,6 +118,7 @@ import {
   checkOrderStatus,
   checkPaymentStatus,
   getOrderHistory,
+  getPaymentHistory,
   getRecommendations,
   getCustomerProfile,
   getAlsoAdded,
@@ -247,6 +248,7 @@ import {
   channelFromKind,
   isGuestCustomerId,
   listIbatexasToolPacks,
+  readToolRosterDrift,
   registerIbatexasToolPacks,
   toolRosterDrift,
 } from "./tools/register-ibatexas-tool-packs.js";
@@ -1308,15 +1310,17 @@ export function stripModelOwner(input: unknown): unknown {
 }
 
 /**
- * Advertised-read-tool NAME → owner-scoped executor. Keys are the 11 advertised
- * read-tool names that have a backing @ibatexas/tools handler (4 are aliases:
+ * Advertised-read-tool NAME → owner-scoped executor. Keys are the 12 advertised
+ * read-tool names, each with a backing @ibatexas/tools handler (4 are aliases:
  * check_availability→checkTableAvailability, get_payment_status→checkPaymentStatus,
  * get_my_profile→getCustomerProfile, get_my_preferences→getCustomerProfile — the
- * profile is a superset incl. owner-scoped dietary/allergen prefs, BKL-071). The
- * one remaining advertised read (get_payment_history) has no handler yet — absent
- * from this map, so the enrichment loop simply does not execute it (it is recorded
- * in readToolCalls for telemetry, never fed back, never forces a second
- * completion). Residual tracked: BKL-071.
+ * profile is a superset incl. owner-scoped dietary/allergen prefs). BKL-071 wired
+ * the last dangling advertised read, get_payment_history (the get-payment-history
+ * handler, owner-scoped via ctx.customerId over paymentQueryService.listByCustomer),
+ * so the advertised read surface is now 12/12 covered and the one-hop enrichment
+ * loop can execute every advertised read. The fail-closed readToolRosterDrift boot
+ * gate (register-ibatexas-tool-packs.ts, run right after toolRosterDrift) keeps
+ * that invariant — a future pack-side read with no executor fails the boot.
  */
 export const IBATEXAS_READ_TOOL_EXECUTORS: Readonly<
   Record<string, (input: unknown, state: CognitiveState) => Promise<unknown>>
@@ -1351,6 +1355,15 @@ export const IBATEXAS_READ_TOOL_EXECUTORS: Readonly<
   get_order_history: (input, state) => {
     const ctx = agentCtxFromState(state);
     return getOrderHistory(stripModelOwner(input) as never, ctx);
+  },
+  // BKL-071 — the billing twin of get_order_history: the customer's whole payment
+  // history across all their orders, owner-scoped via ctx.customerId (the handler
+  // refuses an unauthenticated session BEFORE the join, closing the IDOR that a
+  // `customerId: undefined` no-op filter would open). strict-`{}` schema, so
+  // stripModelOwner must run (an injected customerId would make it throw).
+  get_payment_history: (input, state) => {
+    const ctx = agentCtxFromState(state);
+    return getPaymentHistory(stripModelOwner(input) as never, ctx);
   },
   get_recommendations: (input, state) => {
     const ctx = agentCtxFromState(state);
@@ -2201,6 +2214,29 @@ export async function bootstrapClaustrum(
     throw new Error(
       "[claustrum-bootstrap] tool roster integrity check failed (RC-A1 Phase A):\n  " +
         rosterDrift.join("\n  "),
+    );
+  }
+
+  // BKL-071 — the READ-side twin of the mutation gate above. Every read tool the
+  // composed planners ADVERTISE (Plan.visibleReadTools, unioned over the same
+  // named drift contexts) MUST have a registered executor in
+  // IBATEXAS_READ_TOOL_EXECUTORS, else the one-hop enrichment loop offers the LLM
+  // a read the runtime cannot execute — a dangling advertised read. Fail CLOSED
+  // at boot (mirrors the mutation gate): the executor was wired FIRST
+  // (get_payment_history — 12/12), so the strict gate carries no exemption. The
+  // reverse leg (an executor keyed to a read no planner advertises) is WARN-only.
+  const readRosterDrift = readToolRosterDrift(
+    IBATEXAS_COMPOSED_CAPABILITY_PLANNERS,
+    Object.keys(IBATEXAS_READ_TOOL_EXECUTORS),
+    {
+      onWarn: (message) =>
+        logger.warn({ component: "claustrum-bootstrap" }, message),
+    },
+  );
+  if (readRosterDrift.length > 0) {
+    throw new Error(
+      "[claustrum-bootstrap] read-tool roster integrity check failed (BKL-071):\n  " +
+        readRosterDrift.join("\n  "),
     );
   }
 

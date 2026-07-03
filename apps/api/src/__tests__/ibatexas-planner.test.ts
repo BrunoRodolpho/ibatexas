@@ -808,27 +808,22 @@ describe("IBATEXAS_READ_TOOL_EXECUTORS — advertised-read coverage (BKL-027/071
     ),
   ];
 
-  // Advertised reads with no backing executor yet (tracked: BKL-071 residual).
-  // get_payment_history needs a per-customer aggregation (payments are keyed by
-  // order, no listByCustomer) — deferred; the loop records it (telemetry) + skips
-  // it (no forced second completion — FIX B1).
-  const KNOWN_DANGLING = new Set(["get_payment_history"]);
+  // BKL-071 closed the last dangling advertised read: get_payment_history is now
+  // wired (get-payment-history handler over paymentQueryService.listByCustomer),
+  // so the advertised read surface is 12/12 covered. The fail-closed
+  // readToolRosterDrift boot gate keeps it that way.
 
-  it("derives a non-vacuous advertised-read surface incl. the dangling one", () => {
+  it("derives a non-vacuous advertised-read surface incl. get_payment_history", () => {
     // Guards the derivation from silently hollowing out (which would make the
-    // coverage assertions vacuously pass).
+    // coverage assertion vacuously pass).
     expect(ADVERTISED_READS.length).toBeGreaterThanOrEqual(12);
     expect(new Set(ADVERTISED_READS).has("get_payment_history")).toBe(true);
     expect(new Set(ADVERTISED_READS).has("get_cart")).toBe(true);
   });
 
-  it("wires every advertised read except the known-dangling get_payment_history", () => {
+  it("wires every advertised read to an executor (12/12 — BKL-071 closed get_payment_history)", () => {
     for (const name of ADVERTISED_READS) {
-      if (KNOWN_DANGLING.has(name)) {
-        expect(IBATEXAS_READ_TOOL_EXECUTORS[name]).toBeUndefined();
-      } else {
-        expect(typeof IBATEXAS_READ_TOOL_EXECUTORS[name]).toBe("function");
-      }
+      expect(typeof IBATEXAS_READ_TOOL_EXECUTORS[name]).toBe("function");
     }
   });
 

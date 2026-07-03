@@ -126,6 +126,60 @@ describe("PaymentQueryService", () => {
     })
   })
 
+  // ── listByCustomer (BKL-071 — owner-scoped billing history) ───────────
+
+  describe("listByCustomer", () => {
+    it("scopes by the OrderProjection owner join, desc, default take=20", async () => {
+      const rows = [makePayment(), makePayment({ id: "pay_02", status: "refunded" })]
+      mockPaymentFindMany.mockResolvedValue(rows)
+
+      const result = await svc.listByCustomer("cus_01")
+
+      expect(result).toEqual(rows)
+      const call = mockPaymentFindMany.mock.calls[0][0]
+      // Owner scope is the parent order's customerId (Payment carries none).
+      expect(call.where).toEqual({ order: { customerId: "cus_01" } })
+      expect(call.orderBy).toEqual({ createdAt: "desc" })
+      expect(call.take).toBe(20)
+    })
+
+    it("includes TERMINAL statuses — NO status filter (history, not active-only)", async () => {
+      mockPaymentFindMany.mockResolvedValue([])
+
+      await svc.listByCustomer("cus_01")
+
+      // The active-payment path excludes terminals; history must NOT — assert
+      // there is no `status` predicate at all so refunded/failed/settled rows show.
+      const call = mockPaymentFindMany.mock.calls[0][0]
+      expect(call.where.status).toBeUndefined()
+    })
+
+    it("respects a custom limit", async () => {
+      mockPaymentFindMany.mockResolvedValue([])
+
+      await svc.listByCustomer("cus_01", { limit: 5 })
+
+      expect(mockPaymentFindMany.mock.calls[0][0].take).toBe(5)
+    })
+  })
+
+  // ── countByCustomer (BKL-071 — honest total behind a page) ────────────
+
+  describe("countByCustomer", () => {
+    it("counts through the SAME owner-scoped order join (identical IDOR discipline)", async () => {
+      mockPaymentCount.mockResolvedValue(137)
+
+      const total = await svc.countByCustomer("cus_01")
+
+      expect(total).toBe(137)
+      // The join MUST match listByCustomer's exactly — a Payment carries no
+      // customerId, so ownership is only the parent order's customerId.
+      expect(mockPaymentCount).toHaveBeenCalledWith({
+        where: { order: { customerId: "cus_01" } },
+      })
+    })
+  })
+
   // ── getActiveByOrderId ────────────────────────────────────────────────
 
   describe("getActiveByOrderId", () => {

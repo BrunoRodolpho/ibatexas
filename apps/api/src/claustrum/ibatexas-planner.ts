@@ -644,16 +644,20 @@ export function createIbatexasPlanner(
 
       // ── BKL-027 (F2): one-hop read-tool enrichment loop ────────────────────
       // Fires ONLY when the model called ≥1 EXECUTABLE read tool (an executor is
-      // wired for it) AND proposed NO mutating intent (envelopes empty). A read
-      // call with no backing executor (e.g. a still-advertised get_payment_history)
-      // is recorded in readToolCalls for telemetry but drives NO enrichment hop:
-      // feeding a "no_executor" blob back would force a wasted second completion
-      // over zero data (FIX B1). If the ONLY reads are non-executable → single
-      // pass, exactly the pre-PR behavior. Bounded to exactly ONE extra completion;
-      // reads are OWNER-SCOPED (executor derives identity from `state`, not model
-      // input) and BEST-EFFORT (a read throw is captured, never crashes the turn).
-      // Gated on readToolExecutors so unit tests + golden fixtures without it are
-      // byte-identical.
+      // wired for it) AND proposed NO mutating intent (envelopes empty). Since
+      // BKL-071 every advertised read has a backing executor and the fail-closed
+      // readToolRosterDrift boot gate (register-ibatexas-tool-packs.ts) rejects any
+      // dangling advertised read at startup — so a no-executor read is a
+      // fail-closed-IMPOSSIBLE state in production. The executability filter below
+      // is kept as belt-and-suspenders for the states the boot gate cannot see: a
+      // model-hallucinated tool name, or a test/fixture that injects no executors
+      // map. A non-executable read drives NO enrichment hop (feeding a
+      // "no_executor" blob back would force a wasted second completion over zero
+      // data — FIX B1); if the ONLY reads are non-executable → single pass, exactly
+      // the pre-PR behavior. Bounded to exactly ONE extra completion; reads are
+      // OWNER-SCOPED (executor derives identity from `state`, not model input) and
+      // BEST-EFFORT (a read throw is captured, never crashes the turn). Gated on
+      // readToolExecutors so unit tests + golden fixtures without it are byte-identical.
       let readLoopUsage = { inputTokens: 0, outputTokens: 0 };
       const executors = deps.readToolExecutors;
       const executableReadCalls =

@@ -654,5 +654,81 @@ export function toolRosterDrift(
   return problems;
 }
 
+export interface ReadToolRosterDriftOptions {
+  /** Named contexts to probe; defaults to ROSTER_DRIFT_CONTEXTS. */
+  readonly contexts?: ReadonlyArray<RosterDriftContext>;
+  /**
+   * WARN-only sink for executors keyed to an unadvertised read. Never
+   * contributes to the returned problems. Defaults to console.warn.
+   */
+  readonly onWarn?: (message: string) => void;
+}
+
+/**
+ * Read-side roster drift (BKL-071) — the READ twin of {@link toolRosterDrift}.
+ *
+ * The mutation gate keeps `express_intent` from proposing a kind with no
+ * registered tool; this keeps the one-hop enrichment loop from advertising a
+ * READ the runtime cannot execute. Reads are context-gated exactly like intents
+ * (order history / profile / reservation reads appear only for an authenticated
+ * customer), so both legs probe the same named `contexts`.
+ *
+ * Fail-closed leg (`advertised ⊆ executor keys`): for every read a planner puts
+ * in `Plan.visibleReadTools` under any probed context, that name MUST be an
+ * executor key. A dangling advertised read → one problem per (context, read).
+ *
+ * WARN leg (`executor keyed to an unadvertised read`): an executor no planner
+ * advertises under any probed context is unreachable via chat — dead weight,
+ * never a dispatch failure. Emitted via `onWarn`, never a returned problem
+ * (mirrors toolRosterDrift's registered-but-unadvertised WARN).
+ *
+ * Pure: the caller supplies the planners AND the executor key set — the
+ * registrar stays dependency-light and never imports the bootstrap module where
+ * IBATEXAS_READ_TOOL_EXECUTORS lives. Returns human-readable problems; an empty
+ * array means the read roster is healthy.
+ */
+export function readToolRosterDrift(
+  planners: ReadonlyArray<CapabilityPlanner<unknown, unknown>>,
+  executorKeys: ReadonlyArray<string>,
+  options?: ReadToolRosterDriftOptions,
+): string[] {
+  const contexts = options?.contexts ?? ROSTER_DRIFT_CONTEXTS;
+  const onWarn = options?.onWarn ?? ((m: string) => console.warn(m));
+  const registered = new Set(executorKeys);
+
+  const problems: string[] = [];
+  const advertisedAnywhere = new Set<string>();
+  for (const probe of contexts) {
+    // Union the visible reads per context first (dedup), so a read two planners
+    // both advertise under one context yields at most one problem for it.
+    const advertised = new Set<string>();
+    for (const planner of planners) {
+      for (const read of planner.plan(probe.state, probe.context).visibleReadTools) {
+        advertised.add(read);
+      }
+    }
+    for (const read of advertised) {
+      advertisedAnywhere.add(read);
+      if (registered.has(read)) continue;
+      problems.push(
+        `context "${probe.name}": planner-advertised read "${read}" has no registered executor — ` +
+          `the one-hop enrichment loop would offer a read the runtime cannot execute`,
+      );
+    }
+  }
+  // Executor keyed to a read no planner advertises under any probed context —
+  // unreachable via chat, never a dispatch failure. WARN, never fail.
+  for (const key of registered) {
+    if (!advertisedAnywhere.has(key)) {
+      onWarn(
+        `readToolRosterDrift: executor "${key}" is not advertised by any planner under ` +
+          `the probed contexts (${contexts.map((c) => c.name).join(", ")}) — ` +
+          `unreachable via chat (WARN only)`,
+      );
+    }
+  }
+  return problems;
+}
+
 // Defensive re-export so the surface is import-friendly from routes.
 export type { TD as ToolDefinition, TR as ToolRegistry };
