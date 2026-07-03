@@ -16,15 +16,60 @@ vi.mock("../../claustrum-bootstrap.js", () => ({ getAgentApprovalGateway }));
 
 import { adminAgentApprovalRoutes } from "../admin/agent-approvals.js";
 
+// The resolve route's `requireManagerRole` preHandler reads request.staffId /
+// staffRole (JWT path) and request.adminApiKeyRole (registry-key path) — in
+// production those are populated by optionalAuth + the admin index guard
+// (routes/admin/index.ts) BEFORE the route preHandler runs. This isolated route
+// test registers only `adminAgentApprovalRoutes`, so we stand in for that outer
+// chain with an instance-level preHandler that maps test headers onto those
+// exact decorations. It sets nothing when the headers are absent (bare/unmapped
+// caller), so `requireManagerRole` sees the same request shape it would in prod.
+const AUTH_HEADERS = {
+  staffId: "x-test-staff-id",
+  staffRole: "x-test-staff-role",
+  apiKeyRole: "x-test-api-key-role",
+} as const;
+
 async function build(gateway: unknown) {
   getAgentApprovalGateway.mockReturnValue(gateway);
   const app = Fastify();
   app.setValidatorCompiler(validatorCompiler);
   app.setSerializerCompiler(serializerCompiler);
+  // Instance-level preHandler runs before the route-level requireManagerRole.
+  app.addHook("preHandler", async (request) => {
+    const h = request.headers;
+    const staffId = h[AUTH_HEADERS.staffId];
+    const staffRole = h[AUTH_HEADERS.staffRole];
+    const apiKeyRole = h[AUTH_HEADERS.apiKeyRole];
+    const r = request as unknown as {
+      staffId?: string;
+      staffRole?: string;
+      adminApiKeyRole?: string;
+    };
+    if (typeof staffId === "string") r.staffId = staffId;
+    if (typeof staffRole === "string") r.staffRole = staffRole;
+    if (typeof apiKeyRole === "string") r.adminApiKeyRole = apiKeyRole;
+  });
   await app.register(adminAgentApprovalRoutes);
   await app.ready();
   return app;
 }
+
+/** Header sets for the resolve-route role gate (see build() above). */
+const AS_MANAGER = {
+  [AUTH_HEADERS.staffId]: "staff_mgr",
+  [AUTH_HEADERS.staffRole]: "MANAGER",
+} as const;
+const AS_OWNER = {
+  [AUTH_HEADERS.staffId]: "staff_owner",
+  [AUTH_HEADERS.staffRole]: "OWNER",
+} as const;
+const AS_ATTENDANT = {
+  [AUTH_HEADERS.staffId]: "staff_att",
+  [AUTH_HEADERS.staffRole]: "ATTENDANT",
+} as const;
+const AS_API_KEY_OWNER = { [AUTH_HEADERS.apiKeyRole]: "OWNER" } as const;
+const AS_API_KEY_MANAGER = { [AUTH_HEADERS.apiKeyRole]: "MANAGER" } as const;
 
 function stubGateway() {
   return {
@@ -51,10 +96,13 @@ describe("admin agent-approvals route (WS-D1)", () => {
       const app = await build(null);
       expect((await app.inject({ method: "GET", url: "/api/admin/agent-approvals" })).statusCode).toBe(404);
       expect((await app.inject({ method: "GET", url: "/api/admin/agent-approvals/tok-1" })).statusCode).toBe(404);
+      // An AUTHORIZED (manager) caller still gets 404 when the plane is off —
+      // requireManagerRole passes, then the handler's null-gateway check 404s.
       const res = await app.inject({
         method: "POST",
         url: "/api/admin/agent-approvals/tok-1/resolve",
         payload: { accept: true },
+        headers: AS_MANAGER,
       });
       expect(res.statusCode).toBe(404);
       await app.close();
@@ -86,6 +134,7 @@ describe("admin agent-approvals route (WS-D1)", () => {
         method: "POST",
         url: "/api/admin/agent-approvals/tok-1/resolve",
         payload: { accept: true },
+        headers: AS_MANAGER,
       });
       expect(res.statusCode).toBe(200);
       expect(res.json().decision).toEqual({ kind: "EXECUTE" });
@@ -103,6 +152,7 @@ describe("admin agent-approvals route (WS-D1)", () => {
         method: "POST",
         url: "/api/admin/agent-approvals/stale/resolve",
         payload: { accept: false },
+        headers: AS_MANAGER,
       });
       expect(res.statusCode).toBe(400);
       expect(res.json().message).toContain("approval not found");
@@ -111,12 +161,84 @@ describe("admin agent-approvals route (WS-D1)", () => {
 
     it("rejects a malformed body (accept missing) via the zod schema", async () => {
       const app = await build(stubGateway());
+      // Schema validation (preValidation) runs BEFORE the requireManagerRole
+      // preHandler, so a malformed body 400s regardless of role — authorize the
+      // caller so the assertion isolates the schema rejection, not the gate.
       const res = await app.inject({
         method: "POST",
         url: "/api/admin/agent-approvals/tok-1/resolve",
         payload: {},
+        headers: AS_MANAGER,
       });
       expect(res.statusCode).toBe(400);
+      await app.close();
+    });
+  });
+
+  // ── BKL-069 Part D — resolve is a MANAGER+ act (SCN-120) ─────────────────────
+  describe("resolve role gate (requireManagerRole preHandler)", () => {
+    async function injectResolve(app: Awaited<ReturnType<typeof build>>, headers: Record<string, string>) {
+      return app.inject({
+        method: "POST",
+        url: "/api/admin/agent-approvals/tok-1/resolve",
+        payload: { accept: true },
+        headers,
+      });
+    }
+
+    it("ATTENDANT JWT ⇒ 403, gateway never consulted", async () => {
+      const gw = stubGateway();
+      const app = await build(gw);
+      const res = await injectResolve(app, AS_ATTENDANT);
+      expect(res.statusCode).toBe(403);
+      expect(gw.resolve).not.toHaveBeenCalled();
+      await app.close();
+    });
+
+    it("MANAGER JWT ⇒ resolve proceeds (200)", async () => {
+      const gw = stubGateway();
+      const app = await build(gw);
+      const res = await injectResolve(app, AS_MANAGER);
+      expect(res.statusCode).toBe(200);
+      expect(gw.resolve).toHaveBeenCalledWith(
+        expect.objectContaining({ token: "tok-1", accepted: true }),
+      );
+      await app.close();
+    });
+
+    it("OWNER JWT ⇒ resolve proceeds (200)", async () => {
+      const gw = stubGateway();
+      const app = await build(gw);
+      const res = await injectResolve(app, AS_OWNER);
+      expect(res.statusCode).toBe(200);
+      expect(gw.resolve).toHaveBeenCalledTimes(1);
+      await app.close();
+    });
+
+    it("registry OWNER API key ⇒ resolve proceeds (200)", async () => {
+      const gw = stubGateway();
+      const app = await build(gw);
+      const res = await injectResolve(app, AS_API_KEY_OWNER);
+      expect(res.statusCode).toBe(200);
+      expect(gw.resolve).toHaveBeenCalledTimes(1);
+      await app.close();
+    });
+
+    it("registry MANAGER API key ⇒ resolve proceeds (200)", async () => {
+      const gw = stubGateway();
+      const app = await build(gw);
+      const res = await injectResolve(app, AS_API_KEY_MANAGER);
+      expect(res.statusCode).toBe(200);
+      expect(gw.resolve).toHaveBeenCalledTimes(1);
+      await app.close();
+    });
+
+    it("unmapped / bare key (no staff role, no api-key role) ⇒ 403", async () => {
+      const gw = stubGateway();
+      const app = await build(gw);
+      const res = await injectResolve(app, {});
+      expect(res.statusCode).toBe(403);
+      expect(gw.resolve).not.toHaveBeenCalled();
       await app.close();
     });
   });

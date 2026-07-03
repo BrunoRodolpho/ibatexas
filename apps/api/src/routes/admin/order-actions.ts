@@ -76,6 +76,7 @@ import {
   type PendingAdminAction,
 } from "./admin-confirmation-store.js";
 import {
+  actorFor,
   adjudicateAdminNote,
   buildAdminTransitionEnvelope,
   consumeAndGateAdminAction,
@@ -83,6 +84,8 @@ import {
   logStaleVersionRefusal,
   principalFor,
   refuseTransitionWithLog,
+  resolveActorRole,
+  type StaffActorRole,
 } from "./_shared-actions.js";
 
 const OrderIdParams = z.object({ id: z.string().min(1) });
@@ -105,6 +108,8 @@ async function cancelActivePaymentBestEffort(deps: {
   readonly actorPrincipal: "user" | "system";
   readonly taint: "TRUSTED" | "SYSTEM";
   readonly sessionId: string;
+  /** Confirming operator's adopter role (WS7 / BKL-069) — absent stays absent. */
+  readonly actorRole?: StaffActorRole;
 }): Promise<void> {
   const {
     paymentQuerySvc,
@@ -114,6 +119,7 @@ async function cancelActivePaymentBestEffort(deps: {
     actorPrincipal,
     taint,
     sessionId,
+    actorRole,
   } = deps;
   const activePayment = await paymentQuerySvc
     .getActiveByOrderId(orderId)
@@ -136,7 +142,7 @@ async function cancelActivePaymentBestEffort(deps: {
       kind: "payment.status.transition" as const,
       payload: paymentPayload,
       nonce: randomUUID(),
-      actor: { principal: actorPrincipal, sessionId },
+      actor: actorFor({ principal: actorPrincipal, sessionId, role: actorRole }),
       taint,
     });
     await paymentCmdSvc.transitionStatusFromEnvelope(paymentEnvelope);
@@ -382,11 +388,19 @@ export async function adminOrderActionRoutes(server: FastifyInstance): Promise<v
       // envelope payload (inside buildAdminTransitionEnvelope) so the
       // executor's optimistic-concurrency check fires if another mutation
       // has bumped `order.version` between the two operator clicks.
+      // Confirm-time role governs: the CONFIRMING operator's role (step 2),
+      // not the step-1 requester's `pending.staffRole`.
+      const confirmActorRole = resolveActorRole(request);
       const { envelope, actorPrincipal, taint, sessionId } =
         buildAdminTransitionEnvelope<
           "order.status.transition",
           OrderStatusTransitionPayload
-        >({ pending, staffId, kind: "order.status.transition" });
+        >({
+          pending,
+          staffId,
+          kind: "order.status.transition",
+          actorRole: confirmActorRole,
+        });
 
       try {
         const outcome = await orderCmdSvc.transitionStatusFromEnvelope(envelope);
@@ -420,6 +434,7 @@ export async function adminOrderActionRoutes(server: FastifyInstance): Promise<v
           actorPrincipal,
           taint,
           sessionId,
+          actorRole: confirmActorRole,
         });
 
         await publishNatsEvent("order.canceled", {
@@ -511,7 +526,10 @@ export async function adminOrderActionRoutes(server: FastifyInstance): Promise<v
         });
       }
 
-      const { actorPrincipal, taint, sessionId } = principalFor(staffId);
+      const { actorPrincipal, taint, sessionId, actorRole } = principalFor(
+        staffId,
+        resolveActorRole(request),
+      );
       const payload: OrderStatusTransitionPayload = {
         orderId: id,
         newStatus: nextStatus,
@@ -526,7 +544,7 @@ export async function adminOrderActionRoutes(server: FastifyInstance): Promise<v
         kind: "order.status.transition",
         payload,
         nonce: randomUUID(),
-        actor: { principal: actorPrincipal, sessionId },
+        actor: actorFor({ principal: actorPrincipal, sessionId, role: actorRole }),
         taint,
       });
 
@@ -708,10 +726,16 @@ export async function adminOrderActionRoutes(server: FastifyInstance): Promise<v
       // envelope payload (inside buildAdminTransitionEnvelope). If the
       // payment has been mutated between step 1 and step 2 the executor
       // will throw ConcurrencyError.
+      // Confirm-time role governs — the confirming operator's role at step 2.
       const { envelope } = buildAdminTransitionEnvelope<
         "payment.status.transition",
         PaymentStatusTransitionPayload
-      >({ pending, staffId, kind: "payment.status.transition" });
+      >({
+        pending,
+        staffId,
+        kind: "payment.status.transition",
+        actorRole: resolveActorRole(request),
+      });
 
       let outcome;
       try {
@@ -820,6 +844,7 @@ export async function adminOrderActionRoutes(server: FastifyInstance): Promise<v
         staffId,
         content: request.body.content,
         isInternal: true,
+        actorRole: resolveActorRole(request),
       });
 
       if (note.kind === "refused") {

@@ -36,6 +36,7 @@ import type {
 import { getAuditSink } from "@ibatexas/audit-sink";
 import type { ReservationDTO } from "@ibatexas/types";
 import { requireManagerRole } from "../../middleware/staff-auth.js";
+import { actorFor, resolveActorRole } from "./_shared-actions.js";
 
 /** Map a ReservationDTO + customer data into the admin-friendly shape the UI expects. */
 function toAdminReservation(
@@ -173,6 +174,8 @@ export async function reservationRoutes(server: FastifyInstance): Promise<void> 
       const principal: "user" | "system" = staffId ? "user" : "system";
       const taint: "TRUSTED" | "SYSTEM" = staffId ? "TRUSTED" : "SYSTEM";
       const sessionId = staffId ? `admin:${staffId}` : "admin:api-key";
+      // WS7 / BKL-069 — thread the authenticated staff role (absent stays absent).
+      const role = resolveActorRole(request);
 
       const state = await snapshotReservationState(id, staffId);
       const payload: ReservationCheckinPayload = { reservationId: id };
@@ -183,7 +186,7 @@ export async function reservationRoutes(server: FastifyInstance): Promise<void> 
         kind: "reservation.checkin",
         payload,
         nonce: randomUUID(),
-        actor: { principal, sessionId },
+        actor: actorFor({ principal, sessionId, role }),
         taint,
       });
 
@@ -219,6 +222,8 @@ export async function reservationRoutes(server: FastifyInstance): Promise<void> 
       const principal: "user" | "system" = staffId ? "user" : "system";
       const taint: "TRUSTED" | "SYSTEM" = staffId ? "TRUSTED" : "SYSTEM";
       const sessionId = staffId ? `admin:${staffId}` : "admin:api-key";
+      // WS7 / BKL-069 — thread the authenticated staff role (absent stays absent).
+      const role = resolveActorRole(request);
 
       const state = await snapshotReservationState(id, staffId);
       const payload: ReservationCompletePayload = { reservationId: id };
@@ -229,7 +234,7 @@ export async function reservationRoutes(server: FastifyInstance): Promise<void> 
         kind: "reservation.complete",
         payload,
         nonce: randomUUID(),
-        actor: { principal, sessionId },
+        actor: actorFor({ principal, sessionId, role }),
         taint,
       });
 
@@ -274,6 +279,8 @@ export async function reservationRoutes(server: FastifyInstance): Promise<void> 
       const principal: "user" | "system" = staffId ? "user" : "system";
       const taint: "TRUSTED" | "SYSTEM" = staffId ? "TRUSTED" : "SYSTEM";
       const sessionId = staffId ? `admin:${staffId}` : "admin:api-key";
+      // WS7 / BKL-069 — thread the authenticated staff role (absent stays absent).
+      const role = resolveActorRole(request);
 
       const reservation = await prisma.reservation.findUnique({
         where: { id },
@@ -311,7 +318,7 @@ export async function reservationRoutes(server: FastifyInstance): Promise<void> 
         kind: "reservation.cancel",
         payload,
         nonce: randomUUID(),
-        actor: { principal, sessionId },
+        actor: actorFor({ principal, sessionId, role }),
         taint,
       });
 

@@ -10,10 +10,13 @@
  *
  *   auth phase (T3-4) — the managed-agent scope guard (REFUSE
  *   `agent_scope_violation` for `agent:`-namespaced envelopes outside the
- *   agent's declared kinds) and the per-agent over-budget ESCALATE guards.
- *   These MUST sit in AUTH, not business: the kernel evaluates
- *   state → taint → auth → business, and `confirmOnAutoResolveGuard` is
- *   prepended to business — a business-phase scope guard would let an
+ *   agent's declared kinds), the per-agent over-budget ESCALATE guards, and the
+ *   staff-plane per-role capability guard (BKL-069 Part C — REFUSE
+ *   `staff_role_violation` for `admin:`-namespaced envelopes whose role is
+ *   absent / unknown / not permitted for the kind, or whose kind is off the
+ *   staff verb surface). These MUST sit in AUTH, not business: the kernel
+ *   evaluates state → taint → auth → business, and `confirmOnAutoResolveGuard`
+ *   is prepended to business — a business-phase scope/role guard would let an
  *   out-of-scope money kind short-circuit into REQUEST_CONFIRMATION before
  *   it could REFUSE (plan-v2 §9, governance critic).
  *
@@ -36,6 +39,7 @@ import {
   createAgentKillSwitchGuard,
   createAgentScopeGuard,
 } from "./agent-guards.js";
+import { staffRoleGuard } from "./staff-role-guard.js";
 
 /** A first-party pack with its K/P/S/C generics erased for heterogeneous storage. */
 export type ErasedPack = PackV0<string, unknown, unknown, unknown>;
@@ -115,8 +119,10 @@ export const IBATEXAS_ADOPTER_BUSINESS_GUARDS: ReadonlyArray<
 // prepended to EVERY pack's auth phase, in evaluation order: KILL first (a
 // killed agent REFUSEs before scope/budget are even considered), then scope
 // (an out-of-scope envelope REFUSEs before its budget), then one over-budget
-// ESCALATE guard per agent that declares `budgets.tokensPerDay`. All are inert
-// (null) for non-agent traffic.
+// ESCALATE guard per agent that declares `budgets.tokensPerDay`, then the
+// staff-plane role guard (BKL-069 Part C). All the agent guards are inert for
+// non-`agent:` traffic and the staff-role guard is inert for non-`admin:`
+// traffic, so the two families never both fire on one envelope.
 //
 // The kill guard reads LIVE per-agent state from the runtime
 // AgentKillSwitchManager (T3-5). The guard list is a module-level const built
@@ -145,9 +151,30 @@ export const agentKillSwitchGuard = createAgentKillSwitchGuard((ns) =>
 export const agentScopeGuard = createAgentScopeGuard(AGENT_REGISTRY);
 export const agentBudgetGuards = createAgentBudgetGuards(AGENT_REGISTRY);
 
+// ── Staff-plane per-role capability guard (BKL-069 Part C) — AUTH phase ──────
+// REFUSE `staff_role_violation` for any `admin:`-namespaced envelope whose kind
+// is outside the staff-plane role matrix OR whose `actor.role` is absent /
+// unknown / not permitted for that kind. Inert (null) for non-staff traffic
+// (customer, LLM, `agent:`, system subscribers). It governs a DISJOINT
+// namespace from the agent guards (`admin:` vs `agent:`), so it is appended
+// after them; ordering among mutually-inert guards is not load-bearing.
+//
+// COVERAGE (no overstatement): this composition is consumed only by the
+// composed-router seam — `composePolicyRouter`/`policyForKind` (conductor +
+// agent-approvals gateway resume) and the policy-manifest exporter. So the
+// staff-role guard is a live AUTH gate ONLY for `admin:` envelopes routed
+// through `policyForKind`, which today is exclusively the future ops-actor
+// surface (WS6 / NEW-032). Today's admin HTTP routes do NOT reach this
+// composition: they adjudicate the seven staff kinds against the RAW pack
+// bundles via the domain command services, whose primary role gate is the
+// Fastify preHandler chain (staff-auth.ts). This guard is the kernel
+// defense-in-depth that MIRRORS those preHandlers; wiring it into the HTTP
+// command-service adjudication path is tracked as BKL-074. See the module
+// header in staff-role-guard.ts for the full seam-by-seam breakdown.
+
 export const IBATEXAS_ADOPTER_AUTH_GUARDS: ReadonlyArray<
   Guard<string, unknown, unknown>
-> = [agentKillSwitchGuard, agentScopeGuard, ...agentBudgetGuards];
+> = [agentKillSwitchGuard, agentScopeGuard, ...agentBudgetGuards, staffRoleGuard];
 
 /**
  * Build the production policy-pack list: each first-party pack with the

@@ -19,6 +19,7 @@ import type { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { getAgentApprovalGateway } from "../../claustrum-bootstrap.js";
+import { requireManagerRole } from "../../middleware/staff-auth.js";
 
 const PLANE_OFF = {
   statusCode: 404,
@@ -71,9 +72,17 @@ export async function adminAgentApprovalRoutes(server: FastifyInstance): Promise
   );
 
   // ── POST /api/admin/agent-approvals/:token/resolve ──────────────────────────
+  //
+  // BKL-069 Part D (SCN-120): resolving a parked agent intent is a MANAGER+ act.
+  // The outer admin guard (routes/admin/index.ts) already authenticated the
+  // caller and populated request.staffId/staffRole (JWT) or request.adminApiKeyRole
+  // (registry key); requireManagerRole gates on that — ATTENDANT JWTs and
+  // unmapped/bare API keys fail closed (403). The `list`/`get` reads above are
+  // intentionally NOT tightened. See docs/architecture/defer-resume-role-contract.md.
   app.post(
     "/api/admin/agent-approvals/:token/resolve",
     {
+      preHandler: [requireManagerRole],
       schema: {
         tags: ["admin"],
         summary: "Aprovar ou rejeitar uma aprovação de agente (Stage-1 confirm→EXECUTE)",

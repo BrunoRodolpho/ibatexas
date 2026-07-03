@@ -526,7 +526,7 @@ describe("POST /api/admin/orders/:id/force-cancel — two-step receipt protocol"
       expect(mockTransitionStatusFromEnvelopeOrder).toHaveBeenCalledTimes(1);
       const envelope = mockTransitionStatusFromEnvelopeOrder.mock.calls[0][0] as {
         kind: string;
-        actor: { principal: string; sessionId: string };
+        actor: { principal: string; sessionId: string; role?: string };
         taint: string;
         payload: { orderId: string; newStatus: string; actor: string };
       };
@@ -534,6 +534,10 @@ describe("POST /api/admin/orders/:id/force-cancel — two-step receipt protocol"
       expect(envelope.actor.principal).toBe("user");
       // Step 2 actor identity wins in the executed envelope.
       expect(envelope.actor.sessionId).toBe("admin:staff_mgr_02");
+      // WS7 / BKL-069 — confirm-time role governs: the CONFIRMING operator's
+      // role (MANAGER_2, "MANAGER") is threaded onto actor.role, NOT the
+      // step-1 requester's role.
+      expect(envelope.actor.role).toBe("MANAGER");
       expect(envelope.taint).toBe("TRUSTED");
       expect(envelope.payload.orderId).toBe("order_01");
       expect(envelope.payload.newStatus).toBe("canceled");

@@ -16,13 +16,18 @@ import {
   type OrderStatusTransitionPayload,
 } from "@ibatexas/domain";
 import { getAuditSink } from "@ibatexas/audit-sink";
+import { requireManagerRole } from "../../middleware/staff-auth.js";
+import { medusaAdmin } from "./_shared.js";
+import {
+  actorFor,
+  resolveActorRole,
+  type StaffActorRole,
+} from "./_shared-actions.js";
 
 /** Returns true when the projection table has not been migrated yet (P2021). */
 function isTableMissing(err: unknown): boolean {
   return typeof err === "object" && err !== null && "code" in err && (err as { code: string }).code === "P2021";
 }
-import { requireManagerRole } from "../../middleware/staff-auth.js";
-import { medusaAdmin } from "./_shared.js";
 
 const OrdersAdminQuery = z.object({
   status: z.string().optional(),
@@ -183,11 +188,13 @@ async function attemptKernelTransition(args: {
   clientVersion: number;
   requestId: string | undefined;
   staffId: string | null;
+  /** WS7 / BKL-069 — authenticated staff role threaded onto actor.role. */
+  staffRole: StaffActorRole | undefined;
   commandSvc: OrderCommandSvc;
   querySvc: OrderQuerySvc;
   log: FastifyInstance["log"];
 }): Promise<KernelAttemptResult> {
-  const { id, newStatus, clientVersion, requestId, staffId, commandSvc, querySvc, log } = args;
+  const { id, newStatus, clientVersion, requestId, staffId, staffRole, commandSvc, querySvc, log } = args;
   try {
     // ── Task 13/15 — kernel-gated transition via envelope ───────
     // Staff-authenticated path: principal=user, taint=TRUSTED.
@@ -207,7 +214,7 @@ async function attemptKernelTransition(args: {
       kind: "order.status.transition" as const,
       payload,
       nonce: requestId ?? randomUUID(),
-      actor: { principal, sessionId },
+      actor: actorFor({ principal, sessionId, role: staffRole }),
       taint,
     });
 
@@ -541,6 +548,7 @@ export async function orderRoutes(server: FastifyInstance): Promise<void> {
             clientVersion,
             requestId,
             staffId: request.staffId ?? null,
+            staffRole: resolveActorRole(request),
             commandSvc,
             querySvc,
             log: server.log,
