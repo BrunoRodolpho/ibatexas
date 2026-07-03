@@ -596,6 +596,74 @@ export type EnumIncidentResolutionTypeNullableWithAggregatesFilter<$PrismaModel 
   _max?: Prisma.NestedEnumIncidentResolutionTypeNullableFilter<$PrismaModel>
 }
 
+export type EnumOpsAlertCauseFilter<$PrismaModel = never> = {
+  equals?: $Enums.OpsAlertCause | Prisma.EnumOpsAlertCauseFieldRefInput<$PrismaModel>
+  in?: $Enums.OpsAlertCause[] | Prisma.ListEnumOpsAlertCauseFieldRefInput<$PrismaModel>
+  notIn?: $Enums.OpsAlertCause[] | Prisma.ListEnumOpsAlertCauseFieldRefInput<$PrismaModel>
+  not?: Prisma.NestedEnumOpsAlertCauseFilter<$PrismaModel> | $Enums.OpsAlertCause
+}
+
+export type EnumOpsAlertSeverityFilter<$PrismaModel = never> = {
+  equals?: $Enums.OpsAlertSeverity | Prisma.EnumOpsAlertSeverityFieldRefInput<$PrismaModel>
+  in?: $Enums.OpsAlertSeverity[] | Prisma.ListEnumOpsAlertSeverityFieldRefInput<$PrismaModel>
+  notIn?: $Enums.OpsAlertSeverity[] | Prisma.ListEnumOpsAlertSeverityFieldRefInput<$PrismaModel>
+  not?: Prisma.NestedEnumOpsAlertSeverityFilter<$PrismaModel> | $Enums.OpsAlertSeverity
+}
+
+export type EnumOpsAlertStatusFilter<$PrismaModel = never> = {
+  equals?: $Enums.OpsAlertStatus | Prisma.EnumOpsAlertStatusFieldRefInput<$PrismaModel>
+  in?: $Enums.OpsAlertStatus[] | Prisma.ListEnumOpsAlertStatusFieldRefInput<$PrismaModel>
+  notIn?: $Enums.OpsAlertStatus[] | Prisma.ListEnumOpsAlertStatusFieldRefInput<$PrismaModel>
+  not?: Prisma.NestedEnumOpsAlertStatusFilter<$PrismaModel> | $Enums.OpsAlertStatus
+}
+
+export type EnumOpsAlertResolutionTypeNullableFilter<$PrismaModel = never> = {
+  equals?: $Enums.OpsAlertResolutionType | Prisma.EnumOpsAlertResolutionTypeFieldRefInput<$PrismaModel> | null
+  in?: $Enums.OpsAlertResolutionType[] | Prisma.ListEnumOpsAlertResolutionTypeFieldRefInput<$PrismaModel> | null
+  notIn?: $Enums.OpsAlertResolutionType[] | Prisma.ListEnumOpsAlertResolutionTypeFieldRefInput<$PrismaModel> | null
+  not?: Prisma.NestedEnumOpsAlertResolutionTypeNullableFilter<$PrismaModel> | $Enums.OpsAlertResolutionType | null
+}
+
+export type EnumOpsAlertCauseWithAggregatesFilter<$PrismaModel = never> = {
+  equals?: $Enums.OpsAlertCause | Prisma.EnumOpsAlertCauseFieldRefInput<$PrismaModel>
+  in?: $Enums.OpsAlertCause[] | Prisma.ListEnumOpsAlertCauseFieldRefInput<$PrismaModel>
+  notIn?: $Enums.OpsAlertCause[] | Prisma.ListEnumOpsAlertCauseFieldRefInput<$PrismaModel>
+  not?: Prisma.NestedEnumOpsAlertCauseWithAggregatesFilter<$PrismaModel> | $Enums.OpsAlertCause
+  _count?: Prisma.NestedIntFilter<$PrismaModel>
+  _min?: Prisma.NestedEnumOpsAlertCauseFilter<$PrismaModel>
+  _max?: Prisma.NestedEnumOpsAlertCauseFilter<$PrismaModel>
+}
+
+export type EnumOpsAlertSeverityWithAggregatesFilter<$PrismaModel = never> = {
+  equals?: $Enums.OpsAlertSeverity | Prisma.EnumOpsAlertSeverityFieldRefInput<$PrismaModel>
+  in?: $Enums.OpsAlertSeverity[] | Prisma.ListEnumOpsAlertSeverityFieldRefInput<$PrismaModel>
+  notIn?: $Enums.OpsAlertSeverity[] | Prisma.ListEnumOpsAlertSeverityFieldRefInput<$PrismaModel>
+  not?: Prisma.NestedEnumOpsAlertSeverityWithAggregatesFilter<$PrismaModel> | $Enums.OpsAlertSeverity
+  _count?: Prisma.NestedIntFilter<$PrismaModel>
+  _min?: Prisma.NestedEnumOpsAlertSeverityFilter<$PrismaModel>
+  _max?: Prisma.NestedEnumOpsAlertSeverityFilter<$PrismaModel>
+}
+
+export type EnumOpsAlertStatusWithAggregatesFilter<$PrismaModel = never> = {
+  equals?: $Enums.OpsAlertStatus | Prisma.EnumOpsAlertStatusFieldRefInput<$PrismaModel>
+  in?: $Enums.OpsAlertStatus[] | Prisma.ListEnumOpsAlertStatusFieldRefInput<$PrismaModel>
+  notIn?: $Enums.OpsAlertStatus[] | Prisma.ListEnumOpsAlertStatusFieldRefInput<$PrismaModel>
+  not?: Prisma.NestedEnumOpsAlertStatusWithAggregatesFilter<$PrismaModel> | $Enums.OpsAlertStatus
+  _count?: Prisma.NestedIntFilter<$PrismaModel>
+  _min?: Prisma.NestedEnumOpsAlertStatusFilter<$PrismaModel>
+  _max?: Prisma.NestedEnumOpsAlertStatusFilter<$PrismaModel>
+}
+
+export type EnumOpsAlertResolutionTypeNullableWithAggregatesFilter<$PrismaModel = never> = {
+  equals?: $Enums.OpsAlertResolutionType | Prisma.EnumOpsAlertResolutionTypeFieldRefInput<$PrismaModel> | null
+  in?: $Enums.OpsAlertResolutionType[] | Prisma.ListEnumOpsAlertResolutionTypeFieldRefInput<$PrismaModel> | null
+  notIn?: $Enums.OpsAlertResolutionType[] | Prisma.ListEnumOpsAlertResolutionTypeFieldRefInput<$PrismaModel> | null
+  not?: Prisma.NestedEnumOpsAlertResolutionTypeNullableWithAggregatesFilter<$PrismaModel> | $Enums.OpsAlertResolutionType | null
+  _count?: Prisma.NestedIntNullableFilter<$PrismaModel>
+  _min?: Prisma.NestedEnumOpsAlertResolutionTypeNullableFilter<$PrismaModel>
+  _max?: Prisma.NestedEnumOpsAlertResolutionTypeNullableFilter<$PrismaModel>
+}
+
 export type NestedStringFilter<$PrismaModel = never> = {
   equals?: string | Prisma.StringFieldRefInput<$PrismaModel>
   in?: string[] | Prisma.ListStringFieldRefInput<$PrismaModel>
@@ -1135,6 +1203,74 @@ export type NestedEnumIncidentResolutionTypeNullableWithAggregatesFilter<$Prisma
   _count?: Prisma.NestedIntNullableFilter<$PrismaModel>
   _min?: Prisma.NestedEnumIncidentResolutionTypeNullableFilter<$PrismaModel>
   _max?: Prisma.NestedEnumIncidentResolutionTypeNullableFilter<$PrismaModel>
+}
+
+export type NestedEnumOpsAlertCauseFilter<$PrismaModel = never> = {
+  equals?: $Enums.OpsAlertCause | Prisma.EnumOpsAlertCauseFieldRefInput<$PrismaModel>
+  in?: $Enums.OpsAlertCause[] | Prisma.ListEnumOpsAlertCauseFieldRefInput<$PrismaModel>
+  notIn?: $Enums.OpsAlertCause[] | Prisma.ListEnumOpsAlertCauseFieldRefInput<$PrismaModel>
+  not?: Prisma.NestedEnumOpsAlertCauseFilter<$PrismaModel> | $Enums.OpsAlertCause
+}
+
+export type NestedEnumOpsAlertSeverityFilter<$PrismaModel = never> = {
+  equals?: $Enums.OpsAlertSeverity | Prisma.EnumOpsAlertSeverityFieldRefInput<$PrismaModel>
+  in?: $Enums.OpsAlertSeverity[] | Prisma.ListEnumOpsAlertSeverityFieldRefInput<$PrismaModel>
+  notIn?: $Enums.OpsAlertSeverity[] | Prisma.ListEnumOpsAlertSeverityFieldRefInput<$PrismaModel>
+  not?: Prisma.NestedEnumOpsAlertSeverityFilter<$PrismaModel> | $Enums.OpsAlertSeverity
+}
+
+export type NestedEnumOpsAlertStatusFilter<$PrismaModel = never> = {
+  equals?: $Enums.OpsAlertStatus | Prisma.EnumOpsAlertStatusFieldRefInput<$PrismaModel>
+  in?: $Enums.OpsAlertStatus[] | Prisma.ListEnumOpsAlertStatusFieldRefInput<$PrismaModel>
+  notIn?: $Enums.OpsAlertStatus[] | Prisma.ListEnumOpsAlertStatusFieldRefInput<$PrismaModel>
+  not?: Prisma.NestedEnumOpsAlertStatusFilter<$PrismaModel> | $Enums.OpsAlertStatus
+}
+
+export type NestedEnumOpsAlertResolutionTypeNullableFilter<$PrismaModel = never> = {
+  equals?: $Enums.OpsAlertResolutionType | Prisma.EnumOpsAlertResolutionTypeFieldRefInput<$PrismaModel> | null
+  in?: $Enums.OpsAlertResolutionType[] | Prisma.ListEnumOpsAlertResolutionTypeFieldRefInput<$PrismaModel> | null
+  notIn?: $Enums.OpsAlertResolutionType[] | Prisma.ListEnumOpsAlertResolutionTypeFieldRefInput<$PrismaModel> | null
+  not?: Prisma.NestedEnumOpsAlertResolutionTypeNullableFilter<$PrismaModel> | $Enums.OpsAlertResolutionType | null
+}
+
+export type NestedEnumOpsAlertCauseWithAggregatesFilter<$PrismaModel = never> = {
+  equals?: $Enums.OpsAlertCause | Prisma.EnumOpsAlertCauseFieldRefInput<$PrismaModel>
+  in?: $Enums.OpsAlertCause[] | Prisma.ListEnumOpsAlertCauseFieldRefInput<$PrismaModel>
+  notIn?: $Enums.OpsAlertCause[] | Prisma.ListEnumOpsAlertCauseFieldRefInput<$PrismaModel>
+  not?: Prisma.NestedEnumOpsAlertCauseWithAggregatesFilter<$PrismaModel> | $Enums.OpsAlertCause
+  _count?: Prisma.NestedIntFilter<$PrismaModel>
+  _min?: Prisma.NestedEnumOpsAlertCauseFilter<$PrismaModel>
+  _max?: Prisma.NestedEnumOpsAlertCauseFilter<$PrismaModel>
+}
+
+export type NestedEnumOpsAlertSeverityWithAggregatesFilter<$PrismaModel = never> = {
+  equals?: $Enums.OpsAlertSeverity | Prisma.EnumOpsAlertSeverityFieldRefInput<$PrismaModel>
+  in?: $Enums.OpsAlertSeverity[] | Prisma.ListEnumOpsAlertSeverityFieldRefInput<$PrismaModel>
+  notIn?: $Enums.OpsAlertSeverity[] | Prisma.ListEnumOpsAlertSeverityFieldRefInput<$PrismaModel>
+  not?: Prisma.NestedEnumOpsAlertSeverityWithAggregatesFilter<$PrismaModel> | $Enums.OpsAlertSeverity
+  _count?: Prisma.NestedIntFilter<$PrismaModel>
+  _min?: Prisma.NestedEnumOpsAlertSeverityFilter<$PrismaModel>
+  _max?: Prisma.NestedEnumOpsAlertSeverityFilter<$PrismaModel>
+}
+
+export type NestedEnumOpsAlertStatusWithAggregatesFilter<$PrismaModel = never> = {
+  equals?: $Enums.OpsAlertStatus | Prisma.EnumOpsAlertStatusFieldRefInput<$PrismaModel>
+  in?: $Enums.OpsAlertStatus[] | Prisma.ListEnumOpsAlertStatusFieldRefInput<$PrismaModel>
+  notIn?: $Enums.OpsAlertStatus[] | Prisma.ListEnumOpsAlertStatusFieldRefInput<$PrismaModel>
+  not?: Prisma.NestedEnumOpsAlertStatusWithAggregatesFilter<$PrismaModel> | $Enums.OpsAlertStatus
+  _count?: Prisma.NestedIntFilter<$PrismaModel>
+  _min?: Prisma.NestedEnumOpsAlertStatusFilter<$PrismaModel>
+  _max?: Prisma.NestedEnumOpsAlertStatusFilter<$PrismaModel>
+}
+
+export type NestedEnumOpsAlertResolutionTypeNullableWithAggregatesFilter<$PrismaModel = never> = {
+  equals?: $Enums.OpsAlertResolutionType | Prisma.EnumOpsAlertResolutionTypeFieldRefInput<$PrismaModel> | null
+  in?: $Enums.OpsAlertResolutionType[] | Prisma.ListEnumOpsAlertResolutionTypeFieldRefInput<$PrismaModel> | null
+  notIn?: $Enums.OpsAlertResolutionType[] | Prisma.ListEnumOpsAlertResolutionTypeFieldRefInput<$PrismaModel> | null
+  not?: Prisma.NestedEnumOpsAlertResolutionTypeNullableWithAggregatesFilter<$PrismaModel> | $Enums.OpsAlertResolutionType | null
+  _count?: Prisma.NestedIntNullableFilter<$PrismaModel>
+  _min?: Prisma.NestedEnumOpsAlertResolutionTypeNullableFilter<$PrismaModel>
+  _max?: Prisma.NestedEnumOpsAlertResolutionTypeNullableFilter<$PrismaModel>
 }
 
 

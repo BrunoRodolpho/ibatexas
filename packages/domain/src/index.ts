@@ -77,6 +77,28 @@ export {
   type IncidentClosePayload,
   type IncidentState,
 } from "./services/__shared__/incident-policy.js"
+// Ops-alert plane (NEW-025 detection half) — governed open/resolve + reads.
+export {
+  createOpsAlertService,
+  maxSeverity,
+  type OpsAlertService,
+  type OpsAlertServiceOptions,
+  type OpenOpsAlertResult,
+  type OpsAlertListResult,
+  type OpsAlertListParams,
+} from "./services/ops-alert.service.js"
+export {
+  opsAlertPolicyBundle,
+  opsAlertTaintPolicy,
+  FROZEN_OPS_CAUSES,
+  OPS_ALERT_CAUSE_LABELS_PT,
+  OPS_ALERT_SEVERITY_LABELS_PT,
+  type OpsAlertIntentKind,
+  type OpsAlertPayload,
+  type OpsAlertOpenPayload,
+  type OpsAlertResolvePayload,
+  type OpsAlertState,
+} from "./services/__shared__/ops-alert-policy.js"
 export { createTableService, type TableService } from "./services/table.service.js"
 export { createDeliveryZoneService, type DeliveryZoneService } from "./services/delivery-zone.service.js"
 export { createLoyaltyService, type LoyaltyService, type LoyaltyServiceOptions } from "./services/loyalty.service.js"

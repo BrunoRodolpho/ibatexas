@@ -834,3 +834,71 @@ enum IncidentResolutionType {
 
   @@schema("ibx_domain")
 }
+
+// ── Ops-alert plane (NEW-025 detection half) ─────────────────────────────────
+// A PARALLEL operational-alert journal, deliberately SEPARATE from the
+// conversation `ConversationIncident` plane (whose cause taxonomy is frozen to
+// no-reply causes and whose payload is session-shaped). Ops alerts are
+// restaurant-GLOBAL operational conditions raised by deterministic system
+// watchdogs (stuck orders, PIX-expiry backlog, stale defers, DLQ depth) — no
+// session, no customer. Governed by the SYSTEM-only `ops.alert.*` policy bundle
+// (ops-alert-policy.ts); consumed by the admin ops inbox + the future ops agent.
+model OpsAlert {
+  id             String                  @id @default(cuid())
+  cause          OpsAlertCause                                   // the frozen ops-cause taxonomy (guard-enforced)
+  severity       OpsAlertSeverity        @default(medium)
+  status         OpsAlertStatus          @default(OPEN)
+  source         String                                          // job/subsystem that raised it (e.g. "dlq-depth-checker")
+  scope          String?                                         // specific resource in scope (queue name, order id…), nullable
+  title          String                                          // pt-BR one-line summary
+  detail         String?                                         // non-PII diagnostic
+  context        Json?                                           // structured payload for the ops agent (thresholds, counts…)
+  occurrences    Int                     @default(1)             // repeat detections folded into this open alert
+  dedupeKey      String                  @map("dedupe_key")      // condition identity — partial-unique WHILE non-terminal (see migration)
+  firstSeenAt    DateTime                @map("first_seen_at")   // PASSED IN — no DB default
+  lastSeenAt     DateTime                @map("last_seen_at")    // PASSED IN — no DB default
+  acknowledgedAt DateTime?               @map("acknowledged_at")
+  acknowledgedBy String?                 @map("acknowledged_by")
+  resolvedAt     DateTime?               @map("resolved_at")
+  resolvedBy     String?                 @map("resolved_by")
+  resolutionType OpsAlertResolutionType? @map("resolution_type")
+  createdAt      DateTime                @default(now()) @map("created_at")
+  updatedAt      DateTime                @updatedAt      @map("updated_at")
+  @@index([status, lastSeenAt])
+  @@index([cause])
+  @@map("ops_alerts")
+  @@schema("ibx_domain")
+}
+
+enum OpsAlertCause {
+  ops_stuck_order
+  ops_pix_expiry_backlog
+  ops_stale_defer
+  ops_dlq_depth
+
+  @@schema("ibx_domain")
+}
+
+enum OpsAlertSeverity {
+  low
+  medium
+  high
+
+  @@schema("ibx_domain")
+}
+
+enum OpsAlertStatus {
+  OPEN
+  ACKNOWLEDGED
+  AUTO_RESOLVED
+  RESOLVED
+
+  @@schema("ibx_domain")
+}
+
+enum OpsAlertResolutionType {
+  AUTO
+  STAFF
+
+  @@schema("ibx_domain")
+}

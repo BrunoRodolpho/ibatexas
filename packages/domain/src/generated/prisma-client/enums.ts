@@ -143,3 +143,40 @@ export const IncidentResolutionType = {
 } as const
 
 export type IncidentResolutionType = (typeof IncidentResolutionType)[keyof typeof IncidentResolutionType]
+
+
+export const OpsAlertCause = {
+  ops_stuck_order: 'ops_stuck_order',
+  ops_pix_expiry_backlog: 'ops_pix_expiry_backlog',
+  ops_stale_defer: 'ops_stale_defer',
+  ops_dlq_depth: 'ops_dlq_depth'
+} as const
+
+export type OpsAlertCause = (typeof OpsAlertCause)[keyof typeof OpsAlertCause]
+
+
+export const OpsAlertSeverity = {
+  low: 'low',
+  medium: 'medium',
+  high: 'high'
+} as const
+
+export type OpsAlertSeverity = (typeof OpsAlertSeverity)[keyof typeof OpsAlertSeverity]
+
+
+export const OpsAlertStatus = {
+  OPEN: 'OPEN',
+  ACKNOWLEDGED: 'ACKNOWLEDGED',
+  AUTO_RESOLVED: 'AUTO_RESOLVED',
+  RESOLVED: 'RESOLVED'
+} as const
+
+export type OpsAlertStatus = (typeof OpsAlertStatus)[keyof typeof OpsAlertStatus]
+
+
+export const OpsAlertResolutionType = {
+  AUTO: 'AUTO',
+  STAFF: 'STAFF'
+} as const
+
+export type OpsAlertResolutionType = (typeof OpsAlertResolutionType)[keyof typeof OpsAlertResolutionType]

@@ -34,6 +34,9 @@ export const DOMAIN_DELETE_ORDER = [
   // W1 incident log (no FK to any domain table — soft sessionId/conversationId
   // correlations only). Incident/observability data, wiped by a default clean.
   "conversationIncident",
+  // NEW-025 ops-alert plane (no FK — restaurant-global operational alerts raised
+  // by deterministic watchdogs). Ops telemetry, wiped by a default clean.
+  "opsAlert",
   "orderProjection",
   // Observability/telemetry tables (no FK to other domain tables). Registered
   // here to close the pre-existing db-tables drift their models (AgentRedTeamRun,

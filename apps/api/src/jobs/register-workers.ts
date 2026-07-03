@@ -18,6 +18,7 @@ import { startAnonymizeMedusaRetry } from "./anonymize-medusa-retry.js";
 import { startRetentionCleaner } from "./retention-cleaner.js";
 import { startLlmTokenUsageRetention } from "./llm-token-usage-retention.js";
 import { startDriftEvaluate } from "./drift-evaluate.js";
+import { startDlqDepthChecker } from "./dlq-depth-checker.js";
 
 /**
  * Start all background job workers and their repeatable schedules.
@@ -53,6 +54,11 @@ export function registerWorkers(log: FastifyBaseLogger): void {
   // publishes ibx_behavioral_drift_* gauges/counter on the shared kernel
   // registry so GET /metrics exposes them. Fail-open; never blocks a turn.
   startDriftEvaluate(log);
+  // [NEW-025] Deterministic ops watchdog: SCANs the Redis DLQ lists every 5 min
+  // and raises a governed ops-alert (ops.alert.open / ops_dlq_depth) when a
+  // dead-letter queue crosses the alert threshold; AUTO-resolves when it drains.
+  // Surfaces DLQ backlog to the admin ops inbox + the ops agent (was Sentry-only).
+  startDlqDepthChecker(log);
 }
 
 /**
@@ -77,6 +83,7 @@ export async function shutdownWorkers(): Promise<void> {
     "./llm-token-usage-retention.js"
   );
   const { stopDriftEvaluate } = await import("./drift-evaluate.js");
+  const { stopDlqDepthChecker } = await import("./dlq-depth-checker.js");
 
   await Promise.all([
     stopAbandonedCartChecker(),
@@ -95,5 +102,6 @@ export async function shutdownWorkers(): Promise<void> {
     stopDeferTimeoutSweeper(),
     stopAnonymizeMedusaRetry(),
     stopDriftEvaluate(),
+    stopDlqDepthChecker(),
   ]);
 }

@@ -78,7 +78,8 @@ export const ModelName = {
   AgentRun: 'AgentRun',
   AgentRedTeamRun: 'AgentRedTeamRun',
   LlmTokenUsage: 'LlmTokenUsage',
-  ConversationIncident: 'ConversationIncident'
+  ConversationIncident: 'ConversationIncident',
+  OpsAlert: 'OpsAlert'
 } as const
 
 export type ModelName = (typeof ModelName)[keyof typeof ModelName]
@@ -542,6 +543,32 @@ export const ConversationIncidentScalarFieldEnum = {
 } as const
 
 export type ConversationIncidentScalarFieldEnum = (typeof ConversationIncidentScalarFieldEnum)[keyof typeof ConversationIncidentScalarFieldEnum]
+
+
+export const OpsAlertScalarFieldEnum = {
+  id: 'id',
+  cause: 'cause',
+  severity: 'severity',
+  status: 'status',
+  source: 'source',
+  scope: 'scope',
+  title: 'title',
+  detail: 'detail',
+  context: 'context',
+  occurrences: 'occurrences',
+  dedupeKey: 'dedupeKey',
+  firstSeenAt: 'firstSeenAt',
+  lastSeenAt: 'lastSeenAt',
+  acknowledgedAt: 'acknowledgedAt',
+  acknowledgedBy: 'acknowledgedBy',
+  resolvedAt: 'resolvedAt',
+  resolvedBy: 'resolvedBy',
+  resolutionType: 'resolutionType',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+} as const
+
+export type OpsAlertScalarFieldEnum = (typeof OpsAlertScalarFieldEnum)[keyof typeof OpsAlertScalarFieldEnum]
 
 
 export const SortOrder = {

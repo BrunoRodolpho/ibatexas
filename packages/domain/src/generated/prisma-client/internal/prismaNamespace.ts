@@ -411,7 +411,8 @@ export const ModelName = {
   AgentRun: 'AgentRun',
   AgentRedTeamRun: 'AgentRedTeamRun',
   LlmTokenUsage: 'LlmTokenUsage',
-  ConversationIncident: 'ConversationIncident'
+  ConversationIncident: 'ConversationIncident',
+  OpsAlert: 'OpsAlert'
 } as const
 
 export type ModelName = (typeof ModelName)[keyof typeof ModelName]
@@ -427,7 +428,7 @@ export type TypeMap<ExtArgs extends runtime.Types.Extensions.InternalArgs = runt
     omit: GlobalOmitOptions
   }
   meta: {
-    modelProps: "table" | "timeSlot" | "reservation" | "reservationTable" | "waitlist" | "review" | "staff" | "customer" | "address" | "customerPreferences" | "customerOrderItem" | "orderProjection" | "orderStatusHistory" | "orderEventLog" | "payment" | "paymentStatusHistory" | "orderNote" | "loyaltyAccount" | "conversation" | "conversationMessage" | "deliveryZone" | "weeklySchedule" | "holiday" | "scheduleOverride" | "agentRun" | "agentRedTeamRun" | "llmTokenUsage" | "conversationIncident"
+    modelProps: "table" | "timeSlot" | "reservation" | "reservationTable" | "waitlist" | "review" | "staff" | "customer" | "address" | "customerPreferences" | "customerOrderItem" | "orderProjection" | "orderStatusHistory" | "orderEventLog" | "payment" | "paymentStatusHistory" | "orderNote" | "loyaltyAccount" | "conversation" | "conversationMessage" | "deliveryZone" | "weeklySchedule" | "holiday" | "scheduleOverride" | "agentRun" | "agentRedTeamRun" | "llmTokenUsage" | "conversationIncident" | "opsAlert"
     txIsolationLevel: TransactionIsolationLevel
   }
   model: {
@@ -2503,6 +2504,80 @@ export type TypeMap<ExtArgs extends runtime.Types.Extensions.InternalArgs = runt
         }
       }
     }
+    OpsAlert: {
+      payload: Prisma.$OpsAlertPayload<ExtArgs>
+      fields: Prisma.OpsAlertFieldRefs
+      operations: {
+        findUnique: {
+          args: Prisma.OpsAlertFindUniqueArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$OpsAlertPayload> | null
+        }
+        findUniqueOrThrow: {
+          args: Prisma.OpsAlertFindUniqueOrThrowArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$OpsAlertPayload>
+        }
+        findFirst: {
+          args: Prisma.OpsAlertFindFirstArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$OpsAlertPayload> | null
+        }
+        findFirstOrThrow: {
+          args: Prisma.OpsAlertFindFirstOrThrowArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$OpsAlertPayload>
+        }
+        findMany: {
+          args: Prisma.OpsAlertFindManyArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$OpsAlertPayload>[]
+        }
+        create: {
+          args: Prisma.OpsAlertCreateArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$OpsAlertPayload>
+        }
+        createMany: {
+          args: Prisma.OpsAlertCreateManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        createManyAndReturn: {
+          args: Prisma.OpsAlertCreateManyAndReturnArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$OpsAlertPayload>[]
+        }
+        delete: {
+          args: Prisma.OpsAlertDeleteArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$OpsAlertPayload>
+        }
+        update: {
+          args: Prisma.OpsAlertUpdateArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$OpsAlertPayload>
+        }
+        deleteMany: {
+          args: Prisma.OpsAlertDeleteManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        updateMany: {
+          args: Prisma.OpsAlertUpdateManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        updateManyAndReturn: {
+          args: Prisma.OpsAlertUpdateManyAndReturnArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$OpsAlertPayload>[]
+        }
+        upsert: {
+          args: Prisma.OpsAlertUpsertArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$OpsAlertPayload>
+        }
+        aggregate: {
+          args: Prisma.OpsAlertAggregateArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.AggregateOpsAlert>
+        }
+        groupBy: {
+          args: Prisma.OpsAlertGroupByArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.OpsAlertGroupByOutputType>[]
+        }
+        count: {
+          args: Prisma.OpsAlertCountArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.OpsAlertCountAggregateOutputType> | number
+        }
+      }
+    }
   }
 } & {
   other: {
@@ -2989,6 +3064,32 @@ export const ConversationIncidentScalarFieldEnum = {
 export type ConversationIncidentScalarFieldEnum = (typeof ConversationIncidentScalarFieldEnum)[keyof typeof ConversationIncidentScalarFieldEnum]
 
 
+export const OpsAlertScalarFieldEnum = {
+  id: 'id',
+  cause: 'cause',
+  severity: 'severity',
+  status: 'status',
+  source: 'source',
+  scope: 'scope',
+  title: 'title',
+  detail: 'detail',
+  context: 'context',
+  occurrences: 'occurrences',
+  dedupeKey: 'dedupeKey',
+  firstSeenAt: 'firstSeenAt',
+  lastSeenAt: 'lastSeenAt',
+  acknowledgedAt: 'acknowledgedAt',
+  acknowledgedBy: 'acknowledgedBy',
+  resolvedAt: 'resolvedAt',
+  resolvedBy: 'resolvedBy',
+  resolutionType: 'resolutionType',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+} as const
+
+export type OpsAlertScalarFieldEnum = (typeof OpsAlertScalarFieldEnum)[keyof typeof OpsAlertScalarFieldEnum]
+
+
 export const SortOrder = {
   asc: 'asc',
   desc: 'desc'
@@ -3303,6 +3404,62 @@ export type ListEnumIncidentResolutionTypeFieldRefInput<$PrismaModel> = FieldRef
 
 
 /**
+ * Reference to a field of type 'OpsAlertCause'
+ */
+export type EnumOpsAlertCauseFieldRefInput<$PrismaModel> = FieldRefInputType<$PrismaModel, 'OpsAlertCause'>
+    
+
+
+/**
+ * Reference to a field of type 'OpsAlertCause[]'
+ */
+export type ListEnumOpsAlertCauseFieldRefInput<$PrismaModel> = FieldRefInputType<$PrismaModel, 'OpsAlertCause[]'>
+    
+
+
+/**
+ * Reference to a field of type 'OpsAlertSeverity'
+ */
+export type EnumOpsAlertSeverityFieldRefInput<$PrismaModel> = FieldRefInputType<$PrismaModel, 'OpsAlertSeverity'>
+    
+
+
+/**
+ * Reference to a field of type 'OpsAlertSeverity[]'
+ */
+export type ListEnumOpsAlertSeverityFieldRefInput<$PrismaModel> = FieldRefInputType<$PrismaModel, 'OpsAlertSeverity[]'>
+    
+
+
+/**
+ * Reference to a field of type 'OpsAlertStatus'
+ */
+export type EnumOpsAlertStatusFieldRefInput<$PrismaModel> = FieldRefInputType<$PrismaModel, 'OpsAlertStatus'>
+    
+
+
+/**
+ * Reference to a field of type 'OpsAlertStatus[]'
+ */
+export type ListEnumOpsAlertStatusFieldRefInput<$PrismaModel> = FieldRefInputType<$PrismaModel, 'OpsAlertStatus[]'>
+    
+
+
+/**
+ * Reference to a field of type 'OpsAlertResolutionType'
+ */
+export type EnumOpsAlertResolutionTypeFieldRefInput<$PrismaModel> = FieldRefInputType<$PrismaModel, 'OpsAlertResolutionType'>
+    
+
+
+/**
+ * Reference to a field of type 'OpsAlertResolutionType[]'
+ */
+export type ListEnumOpsAlertResolutionTypeFieldRefInput<$PrismaModel> = FieldRefInputType<$PrismaModel, 'OpsAlertResolutionType[]'>
+    
+
+
+/**
  * Reference to a field of type 'Float'
  */
 export type FloatFieldRefInput<$PrismaModel> = FieldRefInputType<$PrismaModel, 'Float'>
@@ -3438,6 +3595,7 @@ export type GlobalOmitConfig = {
   agentRedTeamRun?: Prisma.AgentRedTeamRunOmit
   llmTokenUsage?: Prisma.LlmTokenUsageOmit
   conversationIncident?: Prisma.ConversationIncidentOmit
+  opsAlert?: Prisma.OpsAlertOmit
 }
 
 /* Types for Logging */
