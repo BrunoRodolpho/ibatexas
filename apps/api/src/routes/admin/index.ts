@@ -35,6 +35,7 @@ import { adminConfirmationRoutes } from "./confirmations.js";
 import { conversationRoutes } from "./conversations.js";
 import { escalationRoutes } from "./escalations.js";
 import { adminIncidentRoutes } from "./incidents.js";
+import { adminOpsAlertRoutes } from "./ops-alerts.js";
 import { broadcastRoutes } from "./broadcast.js";
 
 // ── W4 P1-H — API-key role registry ─────────────────────────────────────
@@ -199,5 +200,6 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
   await server.register(conversationRoutes);
   await server.register(escalationRoutes);
   await server.register(adminIncidentRoutes);
+  await server.register(adminOpsAlertRoutes);
   await server.register(broadcastRoutes);
 }
