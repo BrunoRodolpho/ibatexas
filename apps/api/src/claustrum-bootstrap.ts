@@ -1288,7 +1288,7 @@ export function withAuthenticatedOwner(input: unknown, ctx: AgentContext): unkno
  * (get_payment_history, get_my_preferences) have no handler yet — deliberately
  * omitted so the loop records `no_executor` and skips them (tracked: BKL-071).
  */
-const IBATEXAS_READ_TOOL_EXECUTORS: Readonly<
+export const IBATEXAS_READ_TOOL_EXECUTORS: Readonly<
   Record<string, (input: unknown, state: CognitiveState) => Promise<unknown>>
 > = {
   get_cart: (input, state) => {
@@ -1312,6 +1312,14 @@ const IBATEXAS_READ_TOOL_EXECUTORS: Readonly<
     return getRecommendations(withAuthenticatedOwner(input, ctx) as never, ctx);
   },
   get_my_profile: (input, state) => {
+    const ctx = agentCtxFromState(state);
+    return getCustomerProfile(withAuthenticatedOwner(input, ctx) as never, ctx);
+  },
+  // BKL-071 — the customer-onboarding pack advertises get_my_preferences; there
+  // is no dedicated handler, but getCustomerProfile (getProfileData) already
+  // returns the owner-scoped customerPrefs, so this read resolves the profile
+  // (a superset incl. dietary/allergen prefs). Owner-scoped via ctx.customerId.
+  get_my_preferences: (input, state) => {
     const ctx = agentCtxFromState(state);
     return getCustomerProfile(withAuthenticatedOwner(input, ctx) as never, ctx);
   },

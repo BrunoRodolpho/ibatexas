@@ -34,6 +34,7 @@ import {
   deriveIbatexasPlannerContext,
   agentCtxFromState,
   withAuthenticatedOwner,
+  IBATEXAS_READ_TOOL_EXECUTORS,
 } from "../claustrum-bootstrap.js";
 import type { AgentContext } from "@ibatexas/types";
 
@@ -628,3 +629,44 @@ describe("withAuthenticatedOwner — IDOR override (BKL-027)", () => {
     expect(withAuthenticatedOwner("x", authed)).toBe("x");
   });
 });
+
+// ── BKL-071: read-tool executor registry coverage (read-drift check) ──────────
+describe("IBATEXAS_READ_TOOL_EXECUTORS — advertised-read coverage (BKL-027/071)", () => {
+  // The 12 advertised read tools unioned across the 5 pack CapabilityPlanners.
+  const ADVERTISED_READS = [
+    "get_cart",
+    "check_order_status",
+    "get_recommendations",
+    "get_order_history",
+    "get_also_added",
+    "get_ordered_together",
+    "check_availability",
+    "get_my_reservations",
+    "get_payment_status",
+    "get_payment_history",
+    "get_my_profile",
+    "get_my_preferences",
+  ] as const;
+
+  // Advertised reads with no backing executor yet (tracked: BKL-071 residual).
+  // get_payment_history needs a per-customer aggregation (payments are keyed by
+  // order, no listByCustomer) — deferred; the loop records `no_executor` + skips.
+  const KNOWN_DANGLING = new Set(["get_payment_history"]);
+
+  it("wires every advertised read except the known-dangling get_payment_history", () => {
+    for (const name of ADVERTISED_READS) {
+      if (KNOWN_DANGLING.has(name)) {
+        expect(IBATEXAS_READ_TOOL_EXECUTORS[name]).toBeUndefined();
+      } else {
+        expect(typeof IBATEXAS_READ_TOOL_EXECUTORS[name]).toBe("function");
+      }
+    }
+  });
+
+  it("has no executor keyed to an UNadvertised name (no drift the other way)", () => {
+    const advertised = new Set<string>(ADVERTISED_READS);
+    for (const name of Object.keys(IBATEXAS_READ_TOOL_EXECUTORS)) {
+      expect(advertised.has(name)).toBe(true);
+    }
+  });
+})
