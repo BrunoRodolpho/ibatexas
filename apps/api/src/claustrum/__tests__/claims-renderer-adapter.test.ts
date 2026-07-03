@@ -28,8 +28,14 @@ import {
   type RegistryClaimSpec,
   type RegistryClaimType,
 } from "../claim-registry.js";
-import { createIbatexasClaimsKernelDeps } from "../ibatexas-claims-kernel-deps.js";
-import { createIbatexasClaimsRenderer } from "../claims-renderer-adapter.js";
+import {
+  createIbatexasClaimsKernelDeps,
+  PROVABLY_EMPTY_KIND,
+} from "../ibatexas-claims-kernel-deps.js";
+import {
+  createIbatexasClaimsRenderer,
+  ownershipFromActiveResources,
+} from "../claims-renderer-adapter.js";
 
 const claim = (
   type: string,
@@ -243,5 +249,105 @@ describe("claims-renderer-adapter — F2 required-claim completeness gate (§O#1
     );
     // STORE_OPEN_NOW_Q requires only STORE_OPEN_NOW → complete → full render.
     expect(out.text).toBe("No momento, o período de funcionamento é: jantar.");
+  });
+});
+
+// ── BKL-073: the provable-empty ownership DROP in the live render path ─────────
+describe("claims-renderer-adapter — BKL-073 provable-empty ownership drop", () => {
+  const STORE_OPEN_NOW = "STORE_OPEN_NOW";
+  const UNKNOWN_TEMPLATE =
+    "Não localizei essa informação confirmada agora. Quer que eu verifique?";
+
+  /** A kernel result with explicit per-claim verdicts (so the gate can quantify). */
+  const resultWith = (
+    perClaim: ReadonlyArray<{ type: string; verdict: ConsistencyClaim["verdict"] }>,
+    renderable: readonly ConsistencyClaim[],
+  ): ClaimsKernelResult => ({
+    perClaim: perClaim.map((p) => ({ subject: "s", type: p.type, verdict: p.verdict })),
+    renderable,
+    renderableCanonical: mintRenderable(renderable),
+    terminal: "RENDER",
+    consistency: { renderable, terminal: "RENDER", suppressions: [] },
+  });
+
+  it("NO-DROP-ON-FAILURE (§O#15 falsifier): activeResources WITHOUT a sentinel keeps the ORDER companion → honest UNKNOWN", () => {
+    const renderer = createIbatexasClaimsRenderer();
+    // The customer HAS an active order but the enumeration ERRORED → the seam emits
+    // NO provably-empty sentinel (activeResources carries none). A pickup question
+    // requires BOTH STORE_OPEN_NOW + ORDER_FULFILLMENT_STAGE; the order companion
+    // resolved UNKNOWN → the turn MUST degrade — never render the store-open "easy
+    // half" while omitting the real order status. This is the drop-a-drop falsifier:
+    // even WITH the seam wired, an absent/errored marker keeps the companion.
+    const out = renderer.render(
+      resultWith(
+        [
+          { type: STORE_OPEN_NOW, verdict: "VALIDATED" },
+          { type: ORDER_FULFILLMENT_STAGE, verdict: "UNKNOWN" },
+        ],
+        [claim(STORE_OPEN_NOW, "VALIDATED", { mealPeriod: "jantar" })],
+      ),
+      { requestText: "posso retirar meu pedido agora?", activeResources: [] },
+    );
+    expect(out.text).toBe(UNKNOWN_TEMPLATE);
+    expect(out.text).not.toContain("funcionamento");
+    expect(out.text).not.toContain("jantar");
+  });
+
+  it("SOUND-DROP: the order PROVABLY_EMPTY sentinel drops the ORDER companion → the store-open easy half renders in full", () => {
+    const renderer = createIbatexasClaimsRenderer();
+    // The customer PROVABLY owns no active order (Rule B / guest sentinel) → the
+    // ORDER companion of a pickup question is DROPPED (a companion about a non-
+    // existent resource hides nothing), leaving only STORE_OPEN_NOW — VALIDATED —
+    // so the turn renders in full. Same inputs as the NO-DROP case EXCEPT the
+    // sentinel, isolating the drop.
+    const out = renderer.render(
+      resultWith(
+        [{ type: STORE_OPEN_NOW, verdict: "VALIDATED" }],
+        [claim(STORE_OPEN_NOW, "VALIDATED", { mealPeriod: "jantar" })],
+      ),
+      {
+        requestText: "posso retirar meu pedido agora?",
+        activeResources: [{ kind: PROVABLY_EMPTY_KIND, id: "order" }],
+      },
+    );
+    expect(out.text).toBe("No momento, o período de funcionamento é: jantar.");
+  });
+
+  describe("ownershipFromActiveResources", () => {
+    it("undefined (seam unwired) → undefined → decomposer called without ownership (byte-identical)", () => {
+      expect(ownershipFromActiveResources(undefined)).toBeUndefined();
+    });
+
+    it("no sentinels → {hasActiveOrder:true, hasActivePayment:true} (over-include; a positive ref is NOT a sentinel)", () => {
+      expect(ownershipFromActiveResources([])).toEqual({
+        hasActiveOrder: true,
+        hasActivePayment: true,
+      });
+      expect(ownershipFromActiveResources([{ kind: "order", id: "o1" }])).toEqual({
+        hasActiveOrder: true,
+        hasActivePayment: true,
+      });
+    });
+
+    it("the order sentinel → hasActiveOrder:false (ONLY order dropped)", () => {
+      expect(
+        ownershipFromActiveResources([{ kind: PROVABLY_EMPTY_KIND, id: "order" }]),
+      ).toEqual({ hasActiveOrder: false, hasActivePayment: true });
+    });
+
+    it("the payment sentinel → hasActivePayment:false (ONLY payment dropped)", () => {
+      expect(
+        ownershipFromActiveResources([{ kind: PROVABLY_EMPTY_KIND, id: "payment" }]),
+      ).toEqual({ hasActiveOrder: true, hasActivePayment: false });
+    });
+
+    it("both sentinels (the guest case) → {false, false}", () => {
+      expect(
+        ownershipFromActiveResources([
+          { kind: PROVABLY_EMPTY_KIND, id: "order" },
+          { kind: PROVABLY_EMPTY_KIND, id: "payment" },
+        ]),
+      ).toEqual({ hasActiveOrder: false, hasActivePayment: false });
+    });
   });
 });

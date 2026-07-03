@@ -167,8 +167,10 @@ const RESERVATION_KEY = (reservationId: string): string =>
 
 const GUEST_ID_RE = /^(guest|anon|anonymous):/i;
 
-/** A real customer id (not a guest/empty marker) — owner-scoped reads need one. */
-function isAuthenticatedCustomer(customerId: string): boolean {
+/** A real customer id (not a guest/empty marker) — owner-scoped reads need one.
+ *  Exported so the BKL-073 provable-empty seam (ibatexas-claims-kernel-deps.ts)
+ *  applies the SAME guest gate — a guest provably owns nothing. */
+export function isAuthenticatedCustomer(customerId: string): boolean {
   return customerId.trim() !== "" && !GUEST_ID_RE.test(customerId);
 }
 
@@ -262,15 +264,45 @@ export function createFirstPartyTurnReads(
     // enumerate the AUTHENTICATED customer's OWN active orders (owner-scoped — keyed
     // ONLY by `customerId`) and union them in, so the ledger carries the owner's
     // real orders regardless of the model's extraction. IDOR-safe: every id here is
-    // the customer's own; the per-resource reads below stay owner-scoped too. A
-    // best-effort failure degrades to the model-extracted ids (never throws the turn).
-    const ownedActiveOrderIds = await b
-      .listActiveOrderIds(customerId)
-      .catch(() => [] as string[]);
+    // the customer's own; the per-resource reads below stay owner-scoped too.
+    //
+    // BKL-073 — capture the enumeration's SUCCESS-vs-FAILURE (not just `.catch([])`)
+    // so a SUCCESSFUL empty enumeration (count 0 — a PROVABLE empty) is
+    // distinguishable from one that ERRORED ("could not check"). The union behavior
+    // is IDENTICAL on both paths: a failure degrades to the model-extracted ids
+    // (never throws the turn), exactly as the old `.catch(() => [])` did.
+    let activeOrders: { ok: true; ids: string[] } | { ok: false; reason: string };
+    try {
+      activeOrders = { ok: true, ids: await b.listActiveOrderIds(customerId) };
+    } catch (err) {
+      activeOrders = { ok: false, reason: reasonOf(err) };
+    }
+    const ownedActiveOrderIds = activeOrders.ok ? activeOrders.ids : [];
     const allOrderIds: string[] = [...orderIds];
     for (const id of ownedActiveOrderIds) {
       if (!allOrderIds.includes(id)) allOrderIds.push(id);
     }
+
+    // BKL-073 PROVABLE-EMPTY MARKER — a pure SIGNAL carrier, NOT an owner resource:
+    // its key `active_orders:{customerId}` matches NO OWNER_SCOPED_KEY_PREFIXES
+    // (`order_fulfillment_stage:` / `payment_status:` / `reservation_status:`), so no
+    // claim binds it and it never attributes ownership. On a SUCCESSFUL enumeration
+    // it records `{count}` PRESENT — INCLUDING count 0, the provable-empty witness
+    // the seam's Rule B consumes to DROP the order companion. On FAILURE it THROWS
+    // the reason → `recordError` → ledger state "error" (Inv 7 — "could not check"
+    // is NOT "provably empty"; the seam then emits NO sentinel and the order
+    // companion is KEPT → honest UNKNOWN, never "render the easy half").
+    reads.push({
+      key: `active_orders:${customerId}`,
+      source: "order.listActiveOrderIds",
+      origin: "TRUSTED",
+      originProvenance: "FIRST_PARTY",
+      sourceMode: "live",
+      read: () => {
+        if (!activeOrders.ok) throw new Error(activeOrders.reason);
+        return { count: activeOrders.ids.length };
+      },
+    });
 
     for (const orderId of allOrderIds) {
       reads.push({

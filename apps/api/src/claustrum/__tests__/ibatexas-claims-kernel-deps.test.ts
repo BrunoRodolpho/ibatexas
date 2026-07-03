@@ -28,6 +28,7 @@ import {
   buildOwns,
   createIbatexasClaimsKernelDeps,
   createPerTurnClaimsKernelDeps,
+  PROVABLY_EMPTY_KIND,
 } from "../ibatexas-claims-kernel-deps.js";
 
 // ── Fail-closed defaults ─────────────────────────────────────────────────────
@@ -346,4 +347,100 @@ describe("activeResourcesFromLedger — @claustrum/core 0.5.0 ActiveResourcesFor
     expect(refs.every((r) => r.kind !== "order_fulfillment_stage")).toBe(true);
     expect(refs.map((r) => r.kind).sort()).toEqual(["order", "payment", "reservation"]);
   });
-})
+});
+
+// ── BKL-073: the provable-empty ORDER sentinel (Rule B) + the guest path (#8a) ──
+
+describe("activeResourcesFromLedger — BKL-073 provable-empty sentinel", () => {
+  function recordPresent(l: EvidenceLedger, key: string, value: unknown = { present: true }): void {
+    l.record({
+      key,
+      value,
+      source: "test",
+      fetchedAt: 1_000,
+      sourceMode: "live",
+      taint: "TRUSTED",
+      originProvenance: "FIRST_PARTY",
+    });
+  }
+  /** The investigator's marker shape: read() returns `{count}` on enumeration success. */
+  function recordMarker(l: EvidenceLedger, customerId: string, count: number): void {
+    recordPresent(l, `active_orders:${customerId}`, { count });
+  }
+  const orderSentinel = { kind: PROVABLY_EMPTY_KIND, id: "order" };
+  const paymentSentinel = { kind: PROVABLY_EMPTY_KIND, id: "payment" };
+
+  it("Rule B′: marker PRESENT {count:0} + no positive order ref → emits the order sentinel", () => {
+    const l = new EvidenceLedger("t");
+    recordMarker(l, "cust-1", 0); // the count-0 provable-empty marker.
+    const refs = activeResourcesFromLedger({ ledger: l, customerId: "cust-1" });
+    expect(refs).toContainEqual(orderSentinel);
+    // No positive order ref, and (authed) NO payment sentinel (that mirror is BKL-079).
+    expect(refs).not.toContainEqual(paymentSentinel);
+    expect(refs.filter((r) => r.kind !== PROVABLY_EMPTY_KIND)).toEqual([]);
+  });
+
+  it("Rule B′ PARTIAL-LEDGER RACE pin: marker PRESENT {count:2} + NO positive order refs → NO sentinel (enumeration saw orders; per-order reads failed — count is the only witness)", () => {
+    const l = new EvidenceLedger("t");
+    recordMarker(l, "cust-1", 2); // enumeration SUCCEEDED and saw 2 active orders...
+    // ...but no order_fulfillment_stage:<id> read is present (all errored) → no
+    // positive ref exists to suppress a naive marker-present∧no-ref rule. The
+    // count>0 conjunct is what keeps the companion → honest UNKNOWN, not a drop.
+    const refs = activeResourcesFromLedger({ ledger: l, customerId: "cust-1" });
+    expect(refs.some((r) => r.kind === PROVABLY_EMPTY_KIND)).toBe(false);
+  });
+
+  it("Rule B′ malformed-marker pin: marker PRESENT without a numeric count → NO sentinel (fails toward keeping the companion)", () => {
+    const l = new EvidenceLedger("t");
+    recordPresent(l, "active_orders:cust-1"); // value {present:true} — no count field.
+    const refs = activeResourcesFromLedger({ ledger: l, customerId: "cust-1" });
+    expect(refs.some((r) => r.kind === PROVABLY_EMPTY_KIND)).toBe(false);
+  });
+
+  it("Rule B: marker in state \"error\" → NO sentinel (could-not-check keeps the companion → honest UNKNOWN)", () => {
+    const l = new EvidenceLedger("t");
+    l.recordError("active_orders:cust-1", "enumeration backend down");
+    const refs = activeResourcesFromLedger({ ledger: l, customerId: "cust-1" });
+    expect(refs.some((r) => r.kind === PROVABLY_EMPTY_KIND)).toBe(false);
+  });
+
+  it("Rule B: marker ABSENT (never recorded) → NO sentinel", () => {
+    const l = new EvidenceLedger("t");
+    recordPresent(l, "schedule:store_hours"); // an unrelated present read, no marker.
+    const refs = activeResourcesFromLedger({ ledger: l, customerId: "cust-1" });
+    expect(refs.some((r) => r.kind === PROVABLY_EMPTY_KIND)).toBe(false);
+    expect(refs).toEqual([]);
+  });
+
+  it("Rule B′ is conservative: marker PRESENT {count:0} but a positive order ref exists → NO sentinel (model-extracted terminal order)", () => {
+    const l = new EvidenceLedger("t");
+    recordMarker(l, "cust-1", 0);
+    recordPresent(l, "order_fulfillment_stage:o1"); // a model-extracted (present) order.
+    const refs = activeResourcesFromLedger({ ledger: l, customerId: "cust-1" });
+    expect(refs.some((r) => r.kind === PROVABLY_EMPTY_KIND)).toBe(false);
+    expect(refs).toEqual([{ kind: "order", id: "o1" }]);
+  });
+
+  it("positive refs are emitted UNCHANGED alongside the order sentinel (payment ref + order sentinel)", () => {
+    const l = new EvidenceLedger("t");
+    recordMarker(l, "cust-1", 0); // provably-empty ORDER.
+    recordPresent(l, "payment_status:o1"); // but a present payment read exists.
+    const refs = activeResourcesFromLedger({ ledger: l, customerId: "cust-1" });
+    expect(refs).toContainEqual({ kind: "payment", id: "o1" });
+    expect(refs).toContainEqual(orderSentinel);
+  });
+
+  it("GUEST (#8a): an unauthenticated turn emits BOTH sentinels unconditionally (a guest owns nothing)", () => {
+    const l = new EvidenceLedger("t"); // empty — a guest short-circuits before enumeration.
+    const refs = activeResourcesFromLedger({ ledger: l, customerId: "guest:abc" });
+    expect(refs).toContainEqual(orderSentinel);
+    expect(refs).toContainEqual(paymentSentinel);
+    expect(refs).toHaveLength(2);
+  });
+
+  it("an EMPTY customerId is treated as a guest (both sentinels)", () => {
+    const refs = activeResourcesFromLedger({ ledger: new EvidenceLedger("t"), customerId: "" });
+    expect(refs).toContainEqual(orderSentinel);
+    expect(refs).toContainEqual(paymentSentinel);
+  });
+});

@@ -51,6 +51,7 @@ import type {
   ActiveResourcesForTurn,
   ClaimsKernelDepsForTurn,
 } from "@claustrum/core";
+import { isAuthenticatedCustomer } from "./ibatexas-investigator.js";
 
 export interface IbatexasClaimsKernelDepsConfig {
   /**
@@ -354,41 +355,106 @@ const OWNER_SCOPED_BASE_TO_RESOURCE_KIND: Readonly<Record<string, string>> = {
 };
 
 /**
- * BKL-004 — the #8 decomposer ownership signal, as the @claustrum/core 0.5.0
- * `ActiveResourcesForTurn` seam. `handleTurn` invokes it at RENDER-FROM-CLAIMS and
- * threads the result as `ClaimsRenderContext.activeResources` (the resources the
- * required-claim decomposer may demand companions FOR).
- *
- * Derived ONLY from PRESENT owner-scoped ledger reads — the SAME IDOR filter as
- * `buildPerTurnOwnsFromLedger` (a forged / cross-owner read errored → absent →
- * never an active resource; "no owner" ≠ "any owner", Inv 2). The authenticated
- * `customerId` is what SCOPED those reads; no session/model id ever appears.
- *
- * POSITIVE-ONLY by construction: a ref is emitted for every present owner-scoped
- * resource whose base has a mapped decomposer kind. An owner-scoped base with NO
- * entry in {@link OWNER_SCOPED_BASE_TO_RESOURCE_KIND} is SKIPPED (omitted) — never
- * emitted under its raw base key — so a missing mapping surfaces as an ABSENT
- * signal, not a resource kind the decomposer's vocabulary can't speak (fail-safe
- * against a future 4th prefix added without a map entry). Today the prefix set and
- * the map are in lockstep, so nothing is ever skipped. The ABSENCE of a kind means
- * "no present read this turn", NOT a provable "the customer has none" — the
- * investigator's active-order enumeration is best-effort (degrades to [] on
- * failure), so absence here is not a provable empty. The consuming decomposer
- * therefore must NOT treat an absent kind as a DROP signal (that would reopen the
- * §O#15 "render the easy half" hole); the sound negative-drop optimization needs a
- * distinct provable-empty enumeration signal — see the BKL-004 residual note.
- * PURE; byte-identical when unwired.
+ * The reserved {@link ActiveResourceRef.kind} SENTINEL that carries a PROVABLE-EMPTY
+ * signal to the renderer's §O#15 decomposer (BKL-073). `kind` is contractually
+ * adopter-OPAQUE (claustrum assigns it no meaning; `handleTurn` threads the array
+ * through untouched), so the sentinel rides it WITHOUT a @claustrum/core change: a
+ * `{ kind: PROVABLY_EMPTY_KIND, id: "order" | "payment" }` ref means "this customer
+ * PROVABLY owns no active resource of that kind THIS turn." The renderer adapter
+ * (`ownershipFromActiveResources`) turns its presence into a `hasActive* = false` —
+ * the ONLY signal that DROPS an ownership-gated required companion.
  */
-export const activeResourcesFromLedger: ActiveResourcesForTurn = ({ ledger }) => {
+export const PROVABLY_EMPTY_KIND = "provably_empty";
+
+/**
+ * BKL-004 / BKL-073 — the #8 decomposer ownership signal, as the @claustrum/core
+ * 0.5.0 `ActiveResourcesForTurn` seam. `handleTurn` invokes it at RENDER-FROM-CLAIMS
+ * and threads the result as `ClaimsRenderContext.activeResources` (the resources the
+ * required-claim decomposer may demand companions FOR — and, via the PROVABLY_EMPTY
+ * sentinel, the ones it must STOP demanding).
+ *
+ * Derived ONLY from the threaded read-only Evidence Ledger + the AUTHENTICATED
+ * `customerId` — the SAME IDOR filter as `buildPerTurnOwnsFromLedger` (a forged /
+ * cross-owner read errored → absent → never an active resource; "no owner" ≠ "any
+ * owner", Inv 2). No session/model id ever appears.
+ *
+ * It emits TWO kinds of ref:
+ *
+ *   1. POSITIVE refs — one `{ kind: "order"|"payment"|"reservation", id }` for every
+ *      PRESENT owner-scoped read whose base has a mapped decomposer kind. A base with
+ *      NO entry in {@link OWNER_SCOPED_BASE_TO_RESOURCE_KIND} is SKIPPED (fail-safe
+ *      against a future 4th prefix added without a map entry; today the prefix set and
+ *      the map are in lockstep, so nothing is skipped). `presentOwnerScopedResources`
+ *      yields only the unique prefixes, so no (kind,id) can repeat — no dedupe needed.
+ *
+ *   2. PROVABLE-EMPTY sentinels ({@link PROVABLY_EMPTY_KIND}) — the SOUND
+ *      negative-drop signal (BKL-073), under TWO rules:
+ *      - GUEST (#8a): an unauthenticated turn short-circuits BEFORE the investigator's
+ *        owner-scoped enumeration (there is no per-customer marker), but a guest
+ *        PROVABLY owns nothing → emit BOTH sentinels (`order` + `payment`)
+ *        unconditionally.
+ *      - RULE B′ (authenticated): emit the `order` sentinel IFF the enumeration MARKER
+ *        (`active_orders:{customerId}`, written by the investigator) resolved PRESENT
+ *        this turn AND its `count === 0` AND no positive order ref exists this turn.
+ *        The full conjunction is load-bearing: marker ERRORED/ABSENT ("could not
+ *        check") emits NOTHING (companion KEPT → honest UNKNOWN, the §O#15 falsifier);
+ *        marker `count > 0` with no positive refs is the PARTIAL-LEDGER RACE (the
+ *        enumeration saw active orders but every per-order read errored — count is the
+ *        only witness) and emits NOTHING; a positive order ref (e.g. a model-extracted
+ *        TERMINAL order whose read is present) suppresses the sentinel even at count 0.
+ *        There is NO active-payment enumeration for an authenticated
+ *        customer yet, so no authed `payment` sentinel is emitted here — that mirror
+ *        (over `paymentQueryService.listByCustomer`, once "active payment" statuses are
+ *        defined) is the BKL-079 fast-follow.
+ *
+ * PURE; byte-identical when unwired (the seam is only threaded under the flag).
+ */
+export const activeResourcesFromLedger: ActiveResourcesForTurn = ({
+  ledger,
+  customerId,
+}) => {
   const refs: ActiveResourceRef[] = [];
-  // Straight map: `presentOwnerScopedResources` yields only the (unique) prefixes
-  // in OWNER_SCOPED_KEY_PREFIXES, so no (kind,id) can repeat — no dedupe needed.
-  // A base with no mapped kind is SKIPPED (not emitted under `base`), so future
-  // prefix drift surfaces as an absent signal rather than a wrong kind.
+
+  // POSITIVE refs (see rule 1 above). Track whether a positive ORDER ref exists this
+  // turn — Rule B's suppression key.
+  let hasPositiveOrderRef = false;
   for (const { base, resourceId } of presentOwnerScopedResources(ledger)) {
     const kind = OWNER_SCOPED_BASE_TO_RESOURCE_KIND[base];
     if (kind === undefined) continue;
+    if (kind === "order") hasPositiveOrderRef = true;
     refs.push({ kind, id: resourceId });
   }
+
+  // GUEST (#8a) — a guest provably owns nothing; emit BOTH provable-empty sentinels.
+  // (A genuine guest has no owner-scoped read in the ledger, so this never
+  // contradicts a positive ref.)
+  if (!isAuthenticatedCustomer(customerId)) {
+    refs.push({ kind: PROVABLY_EMPTY_KIND, id: "order" });
+    refs.push({ kind: PROVABLY_EMPTY_KIND, id: "payment" });
+    return refs;
+  }
+
+  // RULE B′ (authenticated) — the provable-empty ORDER sentinel fires ONLY on the
+  // full CONJUNCTION: marker PRESENT ∧ marker count === 0 ∧ no positive order ref
+  // this turn. Each conjunct closes a distinct wrong-drop hole:
+  //   - marker "error"/"absent" ("could not check") → NO sentinel → companion KEPT →
+  //     honest UNKNOWN (the §O#15 falsifier);
+  //   - count > 0 with NO positive order refs → the PARTIAL-LEDGER RACE: the
+  //     enumeration SUCCEEDED and saw active orders, but every per-order read errored,
+  //     so no positive ref exists to suppress the sentinel — count===0 is the only
+  //     witness distinguishing "provably none" from "has orders, reads failed";
+  //   - count === 0 WITH a positive order ref (a model-extracted TERMINAL order whose
+  //     read is present) → the positive ref suppresses the sentinel.
+  // A malformed/unexpected marker value fails toward KEEPING the companion.
+  const marker = ledger.resolve(`active_orders:${customerId}`);
+  const markerValue =
+    marker.state === "present"
+      ? (marker.entry?.value as { count?: unknown } | undefined)
+      : undefined;
+  const provablyZero = typeof markerValue?.count === "number" && markerValue.count === 0;
+  if (provablyZero && !hasPositiveOrderRef) {
+    refs.push({ kind: PROVABLY_EMPTY_KIND, id: "order" });
+  }
+
   return refs;
 };

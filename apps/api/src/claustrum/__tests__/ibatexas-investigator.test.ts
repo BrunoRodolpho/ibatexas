@@ -391,6 +391,84 @@ describe("ibatexas-investigator — first-party triad gatherer", () => {
   });
 });
 
+// ── BKL-073: the PROVABLE-EMPTY enumeration marker ────────────────────────────
+//
+// The investigator records a signal-only `active_orders:{customerId}` marker whose
+// 4-state ledger disposition is the provable-empty witness: a SUCCESSFUL empty
+// enumeration → PRESENT {count:0} (the seam's Rule B DROPS the order companion); an
+// ERRORED enumeration → state "error" ("could not check", NOT provably empty → the
+// companion is KEPT → honest UNKNOWN). The union behavior is unchanged on both paths.
+describe("ibatexas-investigator — BKL-073 provable-empty marker", () => {
+  it("a SUCCESSFUL empty enumeration records the marker PRESENT with {count:0}", async () => {
+    const ledger = new EvidenceLedger("t");
+    const investigator = createIbatexasInvestigator({
+      gatherReads: createFirstPartyTurnReads(stubBackend({ listActiveOrderIds: async () => [] })),
+      now: () => 999,
+    });
+    await investigator.investigate(triadInput({ envelopes: [] }, ledger));
+
+    const marker = ledger.resolve("active_orders:cust-1");
+    expect(marker.state).toBe("present"); // count 0 is a PRESENT provable-empty, not absence.
+    expect(marker.entry?.value).toEqual({ count: 0 });
+    expect(marker.entry?.taint).toBe("TRUSTED");
+    expect(marker.entry?.originProvenance).toBe("FIRST_PARTY");
+  });
+
+  it("N≥1 owned active orders records the marker PRESENT with the count, and reads each order", async () => {
+    const ledger = new EvidenceLedger("t");
+    const investigator = createIbatexasInvestigator({
+      gatherReads: createFirstPartyTurnReads(
+        stubBackend({ listActiveOrderIds: async () => ["o1", "o2"] }),
+      ),
+    });
+    await investigator.investigate(triadInput({ envelopes: [] }, ledger));
+
+    const marker = ledger.resolve("active_orders:cust-1");
+    expect(marker.state).toBe("present");
+    expect(marker.entry?.value).toEqual({ count: 2 });
+    // The union carried the owner's real orders into owner-scoped reads (unchanged).
+    expect(ledger.resolve("order_fulfillment_stage:o1").state).toBe("present");
+    expect(ledger.resolve("order_fulfillment_stage:o2").state).toBe("present");
+  });
+
+  it("an ERRORED enumeration records the marker as state \"error\" (Inv 7), and the union still reads the model-extracted order", async () => {
+    const ledger = new EvidenceLedger("t");
+    // The model DID extract a real orderId into the plan, but the owner-enumeration
+    // ERRORS — the union must degrade to the model-extracted ids exactly as before.
+    const plan: Plan = {
+      envelopes: [
+        { kind: "order.cancel", payload: { orderId: "order-42" } } as unknown as Plan["envelopes"][number],
+      ],
+    };
+    const investigator = createIbatexasInvestigator({
+      gatherReads: createFirstPartyTurnReads(
+        stubBackend({
+          listActiveOrderIds: async () => {
+            throw new Error("enumeration backend down");
+          },
+        }),
+      ),
+    });
+    await investigator.investigate(triadInput(plan, ledger));
+
+    const marker = ledger.resolve("active_orders:cust-1");
+    expect(marker.state).toBe("error"); // "could not check" — NOT a provable empty.
+    expect(marker.entry).toBeUndefined();
+    expect(ledger.errorReason("active_orders:cust-1")).toBe("enumeration backend down");
+    // Union unchanged: the model-extracted order was still read owner-scoped.
+    expect(ledger.resolve("order_fulfillment_stage:order-42").state).toBe("present");
+  });
+
+  it("a GUEST turn records NO marker (the enumeration short-circuits before it)", async () => {
+    const ledger = new EvidenceLedger("t");
+    const investigator = createIbatexasInvestigator({
+      gatherReads: createFirstPartyTurnReads(stubBackend()),
+    });
+    await investigator.investigate(triadInput({ envelopes: [] }, ledger, "guest:abc"));
+    expect(ledger.resolve("active_orders:guest:abc").state).toBe("absent");
+  });
+});
+
 // ── F1: the STORE_OPEN_NOW falsifier FIRES end-to-end (W6 CE#3) ────────────────
 //
 // The investigator records the day's ScheduleOverride under the registry-declared

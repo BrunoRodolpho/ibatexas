@@ -26,16 +26,53 @@
 
 import type { ClaimsKernelResult, ClaimVerdict } from "@adjudicate/core";
 import type {
+  ActiveResourceRef,
   ClaimsRenderContext,
   ClaimsRendererPort,
   ClaimsRenderResult,
 } from "@claustrum/core";
 import {
+  type ActiveResourceOwnership,
   checkRequiredClaimCompleteness,
   classifyRequestSpans,
   decomposeRequiredClaims,
 } from "./required-claim-decomposer.js";
+import { PROVABLY_EMPTY_KIND } from "./ibatexas-claims-kernel-deps.js";
 import { render } from "./renderer-from-claims.js";
+
+/**
+ * Derive the #8 {@link ActiveResourceOwnership} signal for the §O#15 decomposer from
+ * THIS turn's threaded active-resource refs (the `activeResourcesFromLedger` seam
+ * output on `ClaimsRenderContext.activeResources`). BKL-073.
+ *
+ * `undefined` input (the seam is UNWIRED / no ledger this turn) → `undefined`: the
+ * decomposer is then called WITHOUT ownership → nothing is ever dropped → BYTE-
+ * IDENTICAL to the pre-BKL-073 adapter.
+ *
+ * Otherwise a flag is `false` ONLY on a POSITIVE provable-empty determination — a
+ * `{ kind: PROVABLY_EMPTY_KIND, id }` sentinel present in the refs (Rule B in the
+ * seam: the enumeration marker resolved PRESENT ∧ no positive order ref; or the guest
+ * path — a guest owns nothing). The sentinel is the ONLY thing that yields `false`,
+ * so the decomposer's load-bearing "false ⟺ positive first-party determination"
+ * contract holds: any uncertainty (marker errored/absent → NO sentinel) leaves the
+ * flag `true` → the companion is KEPT → honest UNKNOWN, never "render the easy half."
+ *
+ * `hasActivePayment` can go `false` ONLY via the GUEST sentinel — there is no
+ * active-payment enumeration for an authenticated customer yet (that mirror is the
+ * BKL-079 fast-follow), so an authed turn always keeps `hasActivePayment` true
+ * (over-include, sound).
+ */
+export function ownershipFromActiveResources(
+  rs?: readonly ActiveResourceRef[],
+): ActiveResourceOwnership | undefined {
+  if (rs === undefined) return undefined;
+  const provablyEmpty = (id: string): boolean =>
+    rs.some((r) => r.kind === PROVABLY_EMPTY_KIND && r.id === id);
+  return {
+    hasActiveOrder: !provablyEmpty("order"),
+    hasActivePayment: !provablyEmpty("payment"),
+  };
+}
 
 /**
  * Build the ibatexas `ClaimsRendererPort` from the pure `renderer-from-claims`.
@@ -61,9 +98,13 @@ export function createIbatexasClaimsRenderer(): ClaimsRendererPort {
       claims: ClaimsKernelResult,
       context?: ClaimsRenderContext,
     ): ClaimsRenderResult {
-      // §O#15 required-completeness gate over THIS request's span-classes.
+      // §O#15 required-completeness gate over THIS request's span-classes. BKL-073:
+      // the #8 ownership signal (provable-empty sentinels on `activeResources`) drops
+      // an ownership-gated companion the customer PROVABLY cannot have; undefined
+      // (seam unwired) keeps the pre-#8 over-including behavior byte-identical.
       const required = decomposeRequiredClaims(
         classifyRequestSpans(context?.requestText ?? ""),
+        ownershipFromActiveResources(context?.activeResources),
       );
       // §O#15 completeness reads a per-TYPE verdict map. When one turn resolves
       // MULTIPLE claims of the SAME type (e.g. a multi-order request that binds two
