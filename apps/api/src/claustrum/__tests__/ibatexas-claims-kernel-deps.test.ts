@@ -325,4 +325,25 @@ describe("activeResourcesFromLedger — @claustrum/core 0.5.0 ActiveResourcesFor
     recordPresent(l, "schedule:store_hours");
     expect(activeResourcesFromLedger({ ledger: l, customerId: "cust-1" })).toEqual([]);
   });
+
+  // FIX D1 — an owner-scoped base with NO mapped decomposer kind is SKIPPED
+  // (omitted), never emitted under its raw base key. The skip branch is a fail-safe
+  // against a future 4th OWNER_SCOPED_KEY_PREFIXES prefix added without a
+  // OWNER_SCOPED_BASE_TO_RESOURCE_KIND entry. It cannot be exercised through the
+  // public seam today: `presentOwnerScopedResources` iterates ONLY the current 3
+  // prefixes, all of which are mapped, and the kind map is module-private (not
+  // exported for injection). We instead pin the invariant that keeps the skip
+  // inert — every present owner-scoped prefix DOES resolve to a kind, so none are
+  // dropped — which is exactly the property a new unmapped prefix would break.
+  it("emits a ref for every present owner-scoped prefix (none skipped today; skip is future-drift only)", () => {
+    const l = new EvidenceLedger("t");
+    recordPresent(l, "order_fulfillment_stage:o1");
+    recordPresent(l, "payment_status:o1");
+    recordPresent(l, "reservation_status:r7");
+    const refs = activeResourcesFromLedger({ ledger: l, customerId: "cust-1" });
+    // Zero skipped: three present owner-scoped reads → three emitted refs.
+    expect(refs).toHaveLength(3);
+    expect(refs.every((r) => r.kind !== "order_fulfillment_stage")).toBe(true);
+    expect(refs.map((r) => r.kind).sort()).toEqual(["order", "payment", "reservation"]);
+  });
 })

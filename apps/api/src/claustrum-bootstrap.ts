@@ -245,6 +245,7 @@ import {
 } from "@adjudicate/adapter-core";
 import {
   channelFromKind,
+  isGuestCustomerId,
   listIbatexasToolPacks,
   registerIbatexasToolPacks,
   toolRosterDrift,
@@ -1201,14 +1202,16 @@ export function policyForKind(
  * the chat planner (they are staff-route only) — a documented follow-up if a
  * staff chat surface is ever wired.
  */
-const PLANNER_GUEST_ID_PREFIXES = ["guest:", "anon:", "anonymous:"] as const;
-
 function plannerCustomerIdFromState(state: CognitiveState): string | null {
   const raw = (state.memory as { customerId?: unknown } | undefined)?.customerId;
   if (typeof raw !== "string") return null;
   const id = raw.trim();
-  if (id === "") return null;
-  if (PLANNER_GUEST_ID_PREFIXES.some((p) => id.startsWith(p))) return null;
+  // A guest/anon-marker or empty id is NOT a real customer → null. Reuses the
+  // exported guest-convention predicate from the tool registry (A3) so the
+  // planner's willingness-to-propose can never drift from the read-executor
+  // identity scope. `isGuestCustomerId` treats empty/whitespace as guest, so
+  // the prior explicit `id === ""` guard is subsumed.
+  if (isGuestCustomerId(id)) return null;
   return id;
 }
 
@@ -1267,11 +1270,16 @@ export function agentCtxFromState(state: CognitiveState): AgentContext {
 }
 
 /**
- * IDOR guard: override any model-supplied `customerId` on the read input with the
- * AUTHENTICATED one. Read tools that scope by an input customerId
- * (get_my_reservations) must never honor a model-forged id; ctx-scoped handlers
- * already ignore input.customerId, so this is belt-and-suspenders for them and
- * load-bearing for the input-scoped one. A no-op when input has no customerId.
+ * IDOR guard for the ONE input-scoped read (get_my_reservations): SET the input
+ * `customerId` to the AUTHENTICATED one, overriding any model-supplied value and
+ * ADDING the key when absent. get_my_reservations' schema REQUIRES customerId, so
+ * for a guest (ctx.customerId undefined) this writes `customerId: undefined` and
+ * the schema parse then throws → guests are correctly denied.
+ *
+ * NOT a no-op when input lacks customerId — it always writes the key on an object
+ * input. Never use this on the ctx-scoped reads (their schemas are strict `{}`
+ * and reject any extra key, incl. `customerId: undefined`); those use
+ * `stripModelOwner` instead. Non-object input passes through unchanged.
  */
 export function withAuthenticatedOwner(input: unknown, ctx: AgentContext): unknown {
   if (input !== null && typeof input === "object") {
@@ -1281,39 +1289,76 @@ export function withAuthenticatedOwner(input: unknown, ctx: AgentContext): unkno
 }
 
 /**
- * Advertised-read-tool NAME → owner-scoped executor. Keys are the 10 advertised
- * read-tool names that have a backing @ibatexas/tools handler (3 are aliases:
+ * IDOR defense for the ctx-scoped reads: REMOVE any model-supplied `customerId`
+ * own-key from the input, never adding one. These handlers scope ownership by
+ * `ctx.customerId` (the authenticated identity) and ignore input.customerId, so a
+ * model-forged id is defence-in-depth stripped here. Critically, several of these
+ * reads validate against a strict-empty schema (`z.strictObject({})` —
+ * get_order_history, get_my_profile/get_my_preferences via getCustomerProfile)
+ * that REJECTS any extra key, including `customerId: undefined`; stripping (rather
+ * than setting) the key is what lets those strict parses succeed. Non-object
+ * input passes through unchanged.
+ */
+export function stripModelOwner(input: unknown): unknown {
+  if (input !== null && typeof input === "object" && !Array.isArray(input)) {
+    const { customerId: _dropped, ...rest } = input as Record<string, unknown>;
+    return rest;
+  }
+  return input;
+}
+
+/**
+ * Advertised-read-tool NAME → owner-scoped executor. Keys are the 11 advertised
+ * read-tool names that have a backing @ibatexas/tools handler (4 are aliases:
  * check_availability→checkTableAvailability, get_payment_status→checkPaymentStatus,
- * get_my_profile→getCustomerProfile). The 2 remaining advertised reads
- * (get_payment_history, get_my_preferences) have no handler yet — deliberately
- * omitted so the loop records `no_executor` and skips them (tracked: BKL-071).
+ * get_my_profile→getCustomerProfile, get_my_preferences→getCustomerProfile — the
+ * profile is a superset incl. owner-scoped dietary/allergen prefs, BKL-071). The
+ * one remaining advertised read (get_payment_history) has no handler yet — absent
+ * from this map, so the enrichment loop simply does not execute it (it is recorded
+ * in readToolCalls for telemetry, never fed back, never forces a second
+ * completion). Residual tracked: BKL-071.
  */
 export const IBATEXAS_READ_TOOL_EXECUTORS: Readonly<
   Record<string, (input: unknown, state: CognitiveState) => Promise<unknown>>
 > = {
-  get_cart: (input, state) => {
+  // A2 (IDOR) — the cart is determined by the AUTHENTICATED session, NEVER by a
+  // model-supplied cartId. A relayed victim cartId (a null-owner guest cart passes
+  // assert-cart-ownership for ANY caller) would otherwise leak. Resolve the
+  // session's OWN active cart id from Redis (the SAME key resolve-and-assemble
+  // writes/reads) and fetch only that; the model's `input.cartId` is ignored.
+  get_cart: async (_input, state) => {
     const ctx = agentCtxFromState(state);
-    return getCart(withAuthenticatedOwner(input, ctx) as never, ctx);
+    const redis = await getRedisClient();
+    const cartId = await redis.get(rk(`cart:active:session:${state.conversationId}`));
+    if (!cartId) {
+      // No active cart for this session — never call Medusa on a model-chosen id.
+      return { cart: null, note: "nenhum carrinho ativo nesta sessão" };
+    }
+    return getCart({ cartId } as never, ctx);
   },
+  // The remaining ctx-scoped reads scope ownership by ctx.customerId and ignore
+  // input.customerId; stripModelOwner removes a model-forged id (defence-in-depth)
+  // AND lets the strict-`{}` schemas (get_order_history, get_my_profile/
+  // get_my_preferences) parse — injecting `customerId` would make them throw.
   check_order_status: (input, state) => {
     const ctx = agentCtxFromState(state);
-    return checkOrderStatus(withAuthenticatedOwner(input, ctx) as never, ctx);
+    return checkOrderStatus(stripModelOwner(input) as never, ctx);
   },
   get_payment_status: (input, state) => {
     const ctx = agentCtxFromState(state);
-    return checkPaymentStatus(withAuthenticatedOwner(input, ctx) as never, ctx);
+    return checkPaymentStatus(stripModelOwner(input) as never, ctx);
   },
   get_order_history: (input, state) => {
     const ctx = agentCtxFromState(state);
-    return getOrderHistory(withAuthenticatedOwner(input, ctx) as never, ctx);
+    return getOrderHistory(stripModelOwner(input) as never, ctx);
   },
   get_recommendations: (input, state) => {
     const ctx = agentCtxFromState(state);
-    return getRecommendations(withAuthenticatedOwner(input, ctx) as never, ctx);
+    return getRecommendations(stripModelOwner(input) as never, ctx);
   },
   get_my_profile: (input, state) => {
     const ctx = agentCtxFromState(state);
-    return getCustomerProfile(withAuthenticatedOwner(input, ctx) as never, ctx);
+    return getCustomerProfile(stripModelOwner(input) as never, ctx);
   },
   // BKL-071 — the customer-onboarding pack advertises get_my_preferences; there
   // is no dedicated handler, but getCustomerProfile (getProfileData) already
@@ -1321,19 +1366,20 @@ export const IBATEXAS_READ_TOOL_EXECUTORS: Readonly<
   // (a superset incl. dietary/allergen prefs). Owner-scoped via ctx.customerId.
   get_my_preferences: (input, state) => {
     const ctx = agentCtxFromState(state);
-    return getCustomerProfile(withAuthenticatedOwner(input, ctx) as never, ctx);
+    return getCustomerProfile(stripModelOwner(input) as never, ctx);
   },
   get_also_added: (input, state) => {
     const ctx = agentCtxFromState(state);
-    return getAlsoAdded(withAuthenticatedOwner(input, ctx) as never, ctx);
+    return getAlsoAdded(stripModelOwner(input) as never, ctx);
   },
   get_ordered_together: (input, state) => {
     const ctx = agentCtxFromState(state);
-    return getOrderedTogether(withAuthenticatedOwner(input, ctx) as never, ctx);
+    return getOrderedTogether(stripModelOwner(input) as never, ctx);
   },
   // Public read — no owner scope, no ctx param.
   check_availability: (input) => checkTableAvailability(input as never),
-  // Owner-scoped by INPUT customerId (no ctx param) — override to authenticated.
+  // The ONLY input-scoped read: its schema REQUIRES customerId. withAuthenticatedOwner
+  // SETS it to the authenticated id (guest → undefined → schema parse throws → denied).
   get_my_reservations: (input, state) =>
     getMyReservations(withAuthenticatedOwner(input, agentCtxFromState(state)) as never),
 };
@@ -1372,10 +1418,10 @@ function claustrumSessionKey(sessionId: string): string {
   return rk(`claustrum:session:${sessionId}`);
 }
 
-/** Guest-marker convention shared with the planner + tool registry. */
-function isGuestCustomerId(customerId: string): boolean {
-  return /^(guest|anon|anonymous):/i.test(customerId);
-}
+// Guest-marker convention (isGuestCustomerId) is imported from the tool registry
+// — the single source of truth shared with the planner + Capsule adapter (A3).
+// The session-TTL callers below (writeSession, emitTurn) pass a required-string
+// customerId; the imported predicate accepts `string | undefined` (a superset).
 
 // ── Per-session LLM token accounting (cost-cap seam, ADR-120 / F4) ──────────────
 // Both sides are now wired:

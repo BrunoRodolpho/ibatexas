@@ -365,22 +365,29 @@ const OWNER_SCOPED_BASE_TO_RESOURCE_KIND: Readonly<Record<string, string>> = {
  * `customerId` is what SCOPED those reads; no session/model id ever appears.
  *
  * POSITIVE-ONLY by construction: a ref is emitted for every present owner-scoped
- * resource. The ABSENCE of a kind means "no present read this turn", NOT a
- * provable "the customer has none" — the investigator's active-order enumeration
- * is best-effort (degrades to [] on failure), so absence here is not a provable
- * empty. The consuming decomposer therefore must NOT treat an absent kind as a
- * DROP signal (that would reopen the §O#15 "render the easy half" hole); the
- * sound negative-drop optimization needs a distinct provable-empty enumeration
- * signal — see the BKL-004 residual note. PURE; byte-identical when unwired.
+ * resource whose base has a mapped decomposer kind. An owner-scoped base with NO
+ * entry in {@link OWNER_SCOPED_BASE_TO_RESOURCE_KIND} is SKIPPED (omitted) — never
+ * emitted under its raw base key — so a missing mapping surfaces as an ABSENT
+ * signal, not a resource kind the decomposer's vocabulary can't speak (fail-safe
+ * against a future 4th prefix added without a map entry). Today the prefix set and
+ * the map are in lockstep, so nothing is ever skipped. The ABSENCE of a kind means
+ * "no present read this turn", NOT a provable "the customer has none" — the
+ * investigator's active-order enumeration is best-effort (degrades to [] on
+ * failure), so absence here is not a provable empty. The consuming decomposer
+ * therefore must NOT treat an absent kind as a DROP signal (that would reopen the
+ * §O#15 "render the easy half" hole); the sound negative-drop optimization needs a
+ * distinct provable-empty enumeration signal — see the BKL-004 residual note.
+ * PURE; byte-identical when unwired.
  */
 export const activeResourcesFromLedger: ActiveResourcesForTurn = ({ ledger }) => {
   const refs: ActiveResourceRef[] = [];
-  const seen = new Set<string>();
+  // Straight map: `presentOwnerScopedResources` yields only the (unique) prefixes
+  // in OWNER_SCOPED_KEY_PREFIXES, so no (kind,id) can repeat — no dedupe needed.
+  // A base with no mapped kind is SKIPPED (not emitted under `base`), so future
+  // prefix drift surfaces as an absent signal rather than a wrong kind.
   for (const { base, resourceId } of presentOwnerScopedResources(ledger)) {
-    const kind = OWNER_SCOPED_BASE_TO_RESOURCE_KIND[base] ?? base;
-    const dedupeKey = `${kind}:${resourceId}`;
-    if (seen.has(dedupeKey)) continue;
-    seen.add(dedupeKey);
+    const kind = OWNER_SCOPED_BASE_TO_RESOURCE_KIND[base];
+    if (kind === undefined) continue;
     refs.push({ kind, id: resourceId });
   }
   return refs;
