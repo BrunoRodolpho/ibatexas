@@ -157,8 +157,20 @@ export const agentBudgetGuards = createAgentBudgetGuards(AGENT_REGISTRY);
 // unknown / not permitted for that kind. Inert (null) for non-staff traffic
 // (customer, LLM, `agent:`, system subscribers). It governs a DISJOINT
 // namespace from the agent guards (`admin:` vs `agent:`), so it is appended
-// after them; ordering among mutually-inert guards is not load-bearing. This is
-// kernel defense-in-depth mirroring the HTTP route preHandlers (staff-auth.ts).
+// after them; ordering among mutually-inert guards is not load-bearing.
+//
+// COVERAGE (no overstatement): this composition is consumed only by the
+// composed-router seam — `composePolicyRouter`/`policyForKind` (conductor +
+// agent-approvals gateway resume) and the policy-manifest exporter. So the
+// staff-role guard is a live AUTH gate ONLY for `admin:` envelopes routed
+// through `policyForKind`, which today is exclusively the future ops-actor
+// surface (WS6 / NEW-032). Today's admin HTTP routes do NOT reach this
+// composition: they adjudicate the seven staff kinds against the RAW pack
+// bundles via the domain command services, whose primary role gate is the
+// Fastify preHandler chain (staff-auth.ts). This guard is the kernel
+// defense-in-depth that MIRRORS those preHandlers; wiring it into the HTTP
+// command-service adjudication path is tracked as BKL-074. See the module
+// header in staff-role-guard.ts for the full seam-by-seam breakdown.
 
 export const IBATEXAS_ADOPTER_AUTH_GUARDS: ReadonlyArray<
   Guard<string, unknown, unknown>

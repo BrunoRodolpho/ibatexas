@@ -80,57 +80,99 @@ adopter's HTTP + policy-composition layer.
 
 ## 3. Exact current coverage (no overstatement)
 
-There are two resume/resolve paths in ibatexas today. Neither currently re-runs
+There are **four** resume/resolve surfaces in ibatexas today (§3a). None re-runs
 `staffRoleGuard` over a role-gated **staff** envelope — and that is **sound**,
-because no staff-plane kind can be parked in the first place. The findings:
+because no staff-plane kind can be parked in the first place: every DEFER-able
+kind (§3b) is customer-plane / role-free. The findings:
 
-### 3a. Which bundle does each resume path re-adjudicate with?
+### 3a. The four resume/resolve surfaces, and which bundle (if any) each re-adjudicates with
 
-- **PIX defer-resolver** (`subscribers/defer-resolver.ts` →
-  `adjudicate(envelope, orderState, orderPolicyBundle)`, ~:964) re-adjudicates
-  against `ordersPolicyBundle` imported directly from `@ibatexas/pack-orders`
-  (aliased locally as `orderPolicyBundle`, widened to
-  `PolicyBundle<string, unknown, OrderState>`). This is the **raw pack-local
-  bundle** — its `authGuards` are `requireTenantBindingGuard`,
-  `requireAuthenticated`, `enforceOrderOwnership`, `requireCheckoutEligibility`.
-  It does **NOT** include `IBATEXAS_ADOPTER_AUTH_GUARDS`, and therefore **NOT**
-  `staffRoleGuard`. The resume path does not re-run the staff role guard.
-  (Contrast: the conductor's composed router `policyForKind()` **does** prepend
-  `staffRoleGuard`; the resolver bypasses the router and uses the pack bundle
-  directly.)
+1. **PIX defer-resolver** (`subscribers/defer-resolver.ts` →
+   `adjudicate(envelope, state, orderPolicyBundle)`) re-adjudicates the resumed
+   envelope against `ordersPolicyBundle` imported directly from
+   `@ibatexas/pack-orders` (aliased locally as `orderPolicyBundle`, widened to
+   `PolicyBundle<string, unknown, OrderState>`). This is the **raw pack-local
+   bundle** — its `authGuards` are `requireTenantBindingGuard`,
+   `requireAuthenticated`, `enforceOrderOwnership`, `requireCheckoutEligibility`.
+   It does **NOT** include `IBATEXAS_ADOPTER_AUTH_GUARDS`, and therefore **NOT**
+   `staffRoleGuard`. (Contrast: the conductor's composed router `policyForKind()`
+   **does** prepend `staffRoleGuard`; this resolver bypasses the router and uses
+   the pack bundle directly.)
 
-- **Agent-approvals gateway** (`getAgentApprovalGateway().resolve` in
-  `claustrum-bootstrap.ts`) re-adjudicates via `policyFor: (k) => policyForKind(k)`
-  — the **composed** per-kind bundle, which **does** carry `staffRoleGuard`.
-  However its only Stage-2 executing kind is the **agent-plane**
-  `payment.pix.regenerate` (session `agent:…`, not `admin:…`), for which
-  `staffRoleGuard` is **inert** by its `admin:` engagement predicate. So seam (i)
-  is present here but does not currently gate any staff role.
+2. **Agent-approvals gateway** (`getAgentApprovalGateway().resolve` in
+   `claustrum-bootstrap.ts`) re-adjudicates via `policyFor: (k) => policyForKind(k)`
+   — the **composed** per-kind bundle, which **does** carry `staffRoleGuard`.
+   However its only Stage-2 executing kind is the **agent-plane**
+   `payment.pix.regenerate` (session `agent:…`, not `admin:…`), for which
+   `staffRoleGuard` is **inert** by its `admin:` engagement predicate. So the
+   role-carrying re-adjudication seam is present here but does not currently gate
+   any staff role.
+
+3. **Anonymize-grace-resolver** (`subscribers/anonymize-grace-resolver.ts`)
+   resumes the parked `customer.anonymize` when its 24h grace elapses, by calling
+   `anonymizeCustomer(...)` at module level — it does **NOT** re-adjudicate
+   through any policy bundle at all. By design: the DEFER verdict was reached at
+   park time and "the grace window expired without a cancel" IS the resume
+   signal, so the destructive call does not re-enter the kernel (it emits a
+   system-actor `EXECUTE` audit record with a `supersedes` link instead). **This
+   is a live precedent of resume-WITHOUT-re-adjudication in ibatexas** — and it
+   is sound here only because `customer.anonymize` is a customer-plane, role-free
+   kind (no `actor.role`, never an `admin:` session).
+
+4. **PIX-defer-timeout-resolver** (`subscribers/pix-defer-timeout-resolver.ts`)
+   is audit/observability only: when a parked PIX checkout reaches its TTL
+   without confirmation it emits **one** system-actor audit record and performs
+   **no** re-adjudication and **no** state mutation (the DB-side
+   `payment.status.transition` is owned by the separate `pix-expiry-checker`
+   cron, which drives its own kernel-gated envelope). No role authority is
+   involved.
 
 ### 3b. Which intent kinds can DEFER — can any of the seven staff kinds?
 
-The **only** DEFER-producing guard anywhere in the pack set is
-`createPixPendingDeferGuard` (from `@adjudicate/pack-payments-pix`), composed in
-`pack-orders/policies.ts` as `deferOnPendingPix`, whose match predicate is:
+There are **three** DEFER-producing guards in the pack set (not one). All three
+match a **customer-plane, role-free** kind; none matches a staff-plane kind:
 
-```
-matchesIntent: (kind) => kind === "order.checkout.create"    // and only when
-                                                             // paymentStatus != null
-```
+1. **`createPixPendingDeferGuard`** (from `@adjudicate/pack-payments-pix`),
+   composed in `pack-orders/policies.ts` (`pixPendingDeferBase` ~:496 wrapped as
+   `deferOnPendingPix` ~:513). Matches **`order.checkout.create`**, and only when
+   `state.ctx.paymentStatus != null` (an in-flight, non-null unconfirmed PIX — a
+   fresh checkout with null status EXECUTEs). Proposed by customer / LLM; never
+   carries `actor.role`; never an `admin:` session.
 
-No other pack (payments, reservations, whatsapp, customer-onboarding) returns a
-`DEFER`. Therefore:
+2. **`anonymizeGraceDeferBase`** (`createStateDeferGuard`), composed in
+   `pack-customer-onboarding/policies.ts` (base ~:441, wrapped as
+   `deferAnonymizeForGrace` ~:464, in the bundle ~:608). Matches
+   **`customer.anonymize`** on the `CUSTOMER_ANONYMIZE_GRACE_SIGNAL` with a 24h
+   timeout (skipped when `state.ctx.immediateErasure === true`, the authenticated
+   immediate-erasure HTTP path). A customer-plane LGPD kind; role-free.
 
-> **The only DEFER-able kind is `order.checkout.create`** — a *customer-plane*
-> kind that never carries `actor.role` (Part B threads role onto staff kinds
-> only) and is never proposed with an `admin:` session. **None of the seven
-> staff-plane kinds can produce a `DEFER`** under any bundle used on the staff
-> plane.
+3. **`deferChargeCreate`** (`createStateDeferGuard`) in the installed
+   `@adjudicate/pack-payments-pix` `pixPolicyBundle.business`. Matches
+   **`pix.charge.create`** on `PIX_CONFIRMATION_SIGNAL` with a 15-min timeout —
+   verified present in `node_modules/.../pack-payments-pix/dist/policies.js`
+   (`paymentsPixPack` is installed into the kernel registry at boot via
+   `installFirstPartyPacks` → `installPack`). **But it is unreached by any live
+   ibatexas envelope today:** `paymentsPixPack` is NOT part of
+   `IBATEXAS_COMPOSED_PACKS`, so the conductor router `policyForKind` never routes
+   `pix.charge.create`; and no ibatexas surface ever constructs a
+   `pix.charge.create` envelope (the wire vocabulary uses `order.checkout.create`
+   plus the composed `createPixPendingDeferGuard` from producer #1 instead). It is
+   in any case a customer-plane / role-free kind (UNTRUSTED, proposed by the
+   customer/LLM, never `admin:`).
 
-**Consequence:** the PIX defer-resolver's use of a role-guard-free bundle is not
-a hole. The resolver only ever resumes `order.checkout.create` (customer, role-
-free), so there is no role authority to re-establish on that path. Enforcement
-seam (i) is *unreachable for staff kinds today*, not *broken*.
+> **Every DEFER-able kind is customer-plane / role-free** —
+> `order.checkout.create`, `customer.anonymize`, and the installed-but-unreached
+> `pix.charge.create`. None carries `actor.role` (Part B threads role onto the
+> seven staff kinds only) and none is proposed with an `admin:` session. **None
+> of the seven staff-plane kinds can produce a `DEFER`** under any bundle. The
+> census-intersection is provable: `{DEFER-able kinds} ∩ STAFF_PLANE_KINDS = ∅`
+> (asserted by `defer-resume-staff-role-contract.test.ts`, §3 of that file).
+
+**Consequence:** the PIX defer-resolver's use of a role-guard-free bundle (surface 1)
+and the anonymize-grace-resolver's resume-without-re-adjudication (surface 3) are
+not holes. Each only ever resumes a customer-plane, role-free kind, so there is no
+role authority to re-establish on those paths. The role-carrying re-adjudication
+seam (surface 2) is *unreachable for staff kinds today*, not *broken*.
 
 ---
 
@@ -176,15 +218,22 @@ The `GET` list/detail routes are unchanged (read-only, no tightening).
 
 Revisit (and likely adopt Option 2 or 3) when **either** becomes true:
 
-1. **The first staff-plane kind becomes DEFER-able.** If any of the seven staff
-   kinds (or any future `admin:`-session kind) can produce a `DEFER`, the PIX-
-   style resume path could resume a role-gated staff envelope through a bundle
-   that lacks `staffRoleGuard`. At that point seam (i) must be made real — route
-   the staff-kind resume through the composed router (`policyForKind`), or add
-   `staffRoleGuard` to the resume bundle, or move role re-elevation into the
-   kernel (Option 2). The drift-guard test
-   (`defer-resume-staff-role-contract.test.ts`) fails if this precondition is
-   introduced without revisiting this doc.
+1. **The first staff-plane kind becomes DEFER-able.** Today the DEFER-able set is
+   `{order.checkout.create, customer.anonymize, pix.charge.create}` (§3b — three
+   producers across `pack-orders`, `pack-customer-onboarding`, and the installed
+   `pixPolicyBundle`), all customer-plane / role-free. If any of the seven staff
+   kinds (or any future `admin:`-session kind) is added to that set, a
+   role-guard-free resume path could resume a role-gated staff envelope: the PIX
+   defer-resolver (§3a surface 1, raw `ordersPolicyBundle`) or the
+   anonymize-grace-style resume-without-re-adjudication (§3a surface 3). At that
+   point §4 seam 1 must be made real — route the staff-kind resume through the
+   composed router (`policyForKind`), or add `staffRoleGuard` to the resume
+   bundle, or move role re-elevation into the kernel (Option 2). The drift-guard
+   test (`defer-resume-staff-role-contract.test.ts`) fails if any staff kind
+   becomes DEFER-able through its OWNING production bundle, and its
+   census-intersection assertion fails if the maintained DEFER-able-kind const
+   ever intersects `STAFF_PLANE_KINDS` — either trips before this precondition can
+   ship silently.
 
 2. **AUT-017 approve-and-execute is built.** A resolver-identity-carrying resume
    (Option 3) changes the executor/lineage model and should be designed together
@@ -193,9 +242,10 @@ Revisit (and likely adopt Option 2 or 3) when **either** becomes true:
 ### Pre-deploy park note
 
 Because no staff-plane kind can DEFER (§3b), a park created before a deploy and
-resumed after it can only ever be an `order.checkout.create` (customer, role-
-free). A migration hazard — a pre-deploy park of a role-gated staff kind resumed
-by post-deploy code — is therefore **theoretical today**; it can only arise once
-trigger condition (1) is met. When staff kinds do become DEFER-able, treat
-in-flight parks across a role-model change as part of that deploy's migration
-plan.
+resumed after it can only ever be one of the customer-plane, role-free DEFER-able
+kinds (`order.checkout.create` or `customer.anonymize`; `pix.charge.create` is
+installed but unreached). A migration hazard — a pre-deploy park of a role-gated
+staff kind resumed by post-deploy code — is therefore **theoretical today**; it
+can only arise once trigger condition (1) is met. When staff kinds do become
+DEFER-able, treat in-flight parks across a role-model change as part of that
+deploy's migration plan.

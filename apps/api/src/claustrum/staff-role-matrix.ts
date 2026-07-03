@@ -8,12 +8,23 @@
  * This matrix is kernel DEFENSE-IN-DEPTH that MIRRORS the HTTP route layer. The
  * PRIMARY enforcement of staff authorization is the Fastify preHandler chain
  * (`requireStaff` / `requireManager` / `requireManagerRole` / `requireOwnerRole`
- * in middleware/staff-auth.ts); this matrix restates that same reachability so a
- * staff-plane envelope routed through the kernel is gated by role even if it
- * reaches the kernel by a path other than the HTTP route (e.g. a future
- * agent-reachable ops surface). It NEVER tightens below current route
- * reachability — every entry is the UNION of the gates over the routes that can
- * build that kind with an `admin:` (staff-plane) envelope.
+ * in middleware/staff-auth.ts); this matrix restates that same reachability.
+ *
+ * WHERE THE GUARD OVER THIS MATRIX ACTUALLY RUNS (no overstatement): the
+ * `createStaffRoleGuard` that consumes this matrix is prepended to the composed
+ * bundles and therefore fires ONLY when an `admin:` envelope is adjudicated
+ * through the composed-router seam (`composePolicyRouter`/`policyForKind`). That
+ * seam is reached by the conductor and the agent-approvals gateway (neither of
+ * which carries an `admin:` session today) and by any FUTURE agent-reachable /
+ * ops-actor surface (WS6 / NEW-032) — the case this matrix exists for. Today's
+ * admin HTTP routes do NOT use the composed router: they adjudicate these seven
+ * kinds against the RAW pack bundles via the domain command services, so on that
+ * path the role gate is the preHandler chain above, not this matrix. Threading
+ * the kernel-level backstop into the HTTP command-service path is BKL-074.
+ *
+ * It NEVER tightens below current route reachability — every entry is the UNION
+ * of the gates over the routes that can build that kind with an `admin:`
+ * (staff-plane) envelope.
  *
  * ── Code-truth derivation ────────────────────────────────────────────────────
  * `resolveActorRole` (Part B) threads the authenticated role onto

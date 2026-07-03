@@ -31,6 +31,19 @@ function read(file: string): string {
   return readFileSync(resolve(routesDir, file), "utf8")
 }
 
+// Extract a single top-level function's body: the substring from its
+// declaration `signature` to the next top-level `export ` declaration (or EOF).
+// Lets a source-grep be ANCHORED to one function instead of matching anywhere in
+// the file. Throws if the signature is absent (so a rename fails loudly rather
+// than silently passing). Bodies here contain no nested top-level exports.
+function extractFn(src: string, signature: string): string {
+  const start = src.indexOf(signature)
+  if (start === -1) throw new Error(`signature not found: ${signature}`)
+  const rest = src.slice(start + signature.length)
+  const nextExport = rest.search(/\nexport /)
+  return nextExport === -1 ? rest : rest.slice(0, nextExport)
+}
+
 describe("P4 — 4 orderNote.create sites wired to addNoteFromEnvelope", () => {
   it("apps/api/src/routes/cart.ts: checkout-note path uses addNoteFromEnvelope", () => {
     const src = read("cart.ts")
@@ -103,16 +116,30 @@ describe("P4 — 4 orderNote.create sites wired to addNoteFromEnvelope", () => {
         orderActionsSrc.match(/buildCustomerEnvelope</),
     ).not.toBeNull()
     // Admin note-add taint (TRUSTED for staffId, SYSTEM for null / API-key)
-    // now derives from `principalFor(deps.staffId, …)` inside the shared
+    // derives from `principalFor(deps.staffId, deps.actorRole)` INSIDE the shared
     // `adjudicateAdminNote` helper — BKL-069 threaded `actor.role` through the
-    // same seam, so the previous inline `taint: deps.staffId ? … : …` ternary
-    // was replaced by the (semantics-identical) principalFor derivation. The
-    // TRUSTED-for-staff / SYSTEM-for-null mapping now lives in principalFor.
-    const shared = read("admin/_shared-actions.ts")
-    expect(shared).toContain("adjudicateAdminNote")
-    expect(shared).toMatch(/principalFor\(\s*deps\.staffId/)
-    expect(shared).toMatch(/taint:\s*"TRUSTED"/)
-    expect(shared).toMatch(/taint:\s*"SYSTEM"/)
+    // same seam, replacing the previous inline `taint: deps.staffId ? … : …`
+    // ternary with the (semantics-identical) principalFor derivation. Pin the two
+    // halves to the FUNCTION BODIES that own them, not "anywhere in the file" —
+    // the return-type annotations `taint: "TRUSTED" | "SYSTEM"` would otherwise
+    // vacuously satisfy a whole-file grep.
+    const sharedSrc = read("admin/_shared-actions.ts")
+    // (a) inside adjudicateAdminNote: taint is DERIVED via principalFor(staffId,
+    //     actorRole) and threaded into the built envelope — not hardcoded here.
+    const adjudicateNoteBody = extractFn(
+      sharedSrc,
+      "export async function adjudicateAdminNote(deps: {",
+    )
+    expect(adjudicateNoteBody).toMatch(
+      /const\s*\{[^}]*\btaint\b[^}]*\}\s*=\s*principalFor\(\s*deps\.staffId,\s*deps\.actorRole/,
+    )
+    expect(adjudicateNoteBody).toMatch(/\btaint,/)
+    // (b) the TRUSTED-for-staff / SYSTEM-for-null VALUE mapping lives in
+    //     principalFor's body (the `as const` value assignments — distinct from
+    //     the union type annotation a whole-file match would have caught).
+    const principalForBody = extractFn(sharedSrc, "export function principalFor(")
+    expect(principalForBody).toMatch(/taint:\s*"TRUSTED"\s+as\s+const/)
+    expect(principalForBody).toMatch(/taint:\s*"SYSTEM"\s+as\s+const/)
     expect(read("admin/order-actions.ts")).toContain("adjudicateAdminNote")
     expect(read("admin/payments.ts")).toContain("adjudicateAdminNote")
   })

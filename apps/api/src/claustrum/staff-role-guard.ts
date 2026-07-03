@@ -1,9 +1,41 @@
 /**
  * Staff-plane per-role capability guard (WS7 / BKL-069 Part C) — the AUTH-phase
- * adopter guard that enforces {@link STAFF_ROLE_CAPABILITY_MATRIX} over every
- * staff-plane (`admin:`) envelope. Composed into every pack's AUTH phase by
- * `buildIbatexasPolicyPacks` (compose-policy-packs.ts), alongside the
- * managed-agent scope/kill/budget guards.
+ * adopter guard that enforces {@link STAFF_ROLE_CAPABILITY_MATRIX} over any
+ * staff-plane (`admin:`) envelope THAT REACHES IT. It is prepended to every
+ * pack's AUTH phase by `buildIbatexasPolicyPacks` (compose-policy-packs.ts),
+ * alongside the managed-agent scope/kill/budget guards.
+ *
+ * ── Exactly where this guard is LIVE (no overstatement) ──────────────────────
+ * `buildIbatexasPolicyPacks` feeds the COMPOSED bundles into exactly two seams:
+ * the conductor's per-kind router (`composePolicyRouter` → `policyForKind` in
+ * claustrum-bootstrap.ts) and the pure policy-manifest exporter. So this guard
+ * runs whenever an envelope is adjudicated through `policyForKind` /
+ * `composePolicyRouter`:
+ *   - the conductor turn (customer / LLM sessions — inert here, no `admin:`);
+ *   - the agent-approvals gateway resume (`getAgentApprovalGateway().resolve`,
+ *     `policyFor: policyForKind`), whose only executing kind today is the
+ *     agent-plane `payment.pix.regenerate` (`agent:` session — also inert);
+ *   - any FUTURE ops-actor surface that routes an `admin:` envelope through
+ *     `policyForKind`. The WS6 / NEW-032 governed ops plane this build unblocks
+ *     is exactly that seam, and is the case for which this guard exists.
+ * The guard is a REAL, active AUTH gate at the composed-router seam; it simply
+ * is not exercised yet because no `admin:`-session envelope reaches that seam
+ * today.
+ *
+ * ── Where this guard is NOT (today's HTTP admin routes) ──────────────────────
+ * The admin HTTP routes for the seven staff-plane kinds do NOT adjudicate
+ * through the composed router. Each builds its `admin:` envelope and calls a
+ * domain command service (`order-command` / `payment-command` / the reservation
+ * command service), which adjudicates against the RAW pack bundle directly
+ * (`ordersPolicyBundle` / `orderProjectionPolicyBundle` /
+ * `paymentProjectionPolicyBundle` / `reservationsPolicyBundle`). Those raw
+ * bundles do NOT carry the adopter auth guards, so this guard does NOT run on
+ * the HTTP admin adjudication path. There, role enforcement is the Fastify
+ * preHandler chain (`requireStaff` / `requireManager` / `requireManagerRole` /
+ * `requireOwnerRole` in middleware/staff-auth.ts) — the PRIMARY gate. Adding a
+ * kernel-level role backstop to the HTTP command-service path (so role is
+ * enforced in the adjudication itself, not only the preHandler) is tracked as
+ * follow-up BKL-074.
  *
  * ALTITUDE — AUTH, never business (same trap `agent-guards.ts` documents): the
  * kernel evaluates state → taint → auth → business, and
