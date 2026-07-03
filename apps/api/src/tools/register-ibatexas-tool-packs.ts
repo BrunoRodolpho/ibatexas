@@ -93,9 +93,13 @@ function asIntentKind(s: string): IntK {
 // role maps to userType "staff" (the only non-customer authenticated bucket
 // AgentContext models); everything else with a real id is "customer".
 
-const GUEST_ID_PREFIXES = ["guest:", "anon:", "anonymous:"] as const;
+// Exported as the single source of truth for the guest-marker convention:
+// claustrum-bootstrap imports these instead of re-declaring them (A3), so the
+// planner/read-executor identity derivation and the session-TTL selection can
+// never drift from the Capsule adapter's notion of "is this a real customer".
+export const GUEST_ID_PREFIXES = ["guest:", "anon:", "anonymous:"] as const;
 
-function isGuestCustomerId(id: string | undefined): boolean {
+export function isGuestCustomerId(id: string | undefined): boolean {
   if (id === undefined) return true;
   const trimmed = id.trim();
   if (trimmed === "") return true;
@@ -106,7 +110,7 @@ function isGuestCustomerId(id: string | undefined): boolean {
  *  The enum VALUES are byte-identical to ChannelKind, so this is a value lookup
  *  that defaults to web for any unexpected kind (fail-safe, not fail-loud — the
  *  channel only scopes a cart redis key, never an authorization decision). */
-function channelFromKind(kind: string): Channel {
+export function channelFromKind(kind: string): Channel {
   return kind === "whatsapp" ? Channel.WhatsApp : Channel.Web;
 }
 

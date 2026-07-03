@@ -23,6 +23,7 @@ import {
 } from "@adjudicate/core";
 import {
   actionOutcomeConfirmed,
+  activeResourcesFromLedger,
   buildOutcomeConfirmed,
   buildOwns,
   createIbatexasClaimsKernelDeps,
@@ -282,3 +283,67 @@ describe("ibatexas-claims-kernel-deps — createPerTurnClaimsKernelDeps", () => 
     expect(b.soundness.now).toBe(222);
   });
 });
+
+// ── BKL-004: activeResourcesFromLedger (#8 decomposer ownership seam) ──────────
+
+describe("activeResourcesFromLedger — @claustrum/core 0.5.0 ActiveResourcesForTurn seam", () => {
+  function recordPresent(l: EvidenceLedger, key: string): void {
+    l.record({
+      key,
+      value: { present: true },
+      source: "test",
+      fetchedAt: 1_000,
+      sourceMode: "live",
+      taint: "TRUSTED",
+      originProvenance: "FIRST_PARTY",
+    });
+  }
+
+  it("maps present owner-scoped reads to {kind,id} refs (order/payment/reservation)", () => {
+    const l = new EvidenceLedger("t");
+    recordPresent(l, "order_fulfillment_stage:o1");
+    recordPresent(l, "payment_status:o1");
+    recordPresent(l, "reservation_status:r7");
+    const refs = activeResourcesFromLedger({ ledger: l, customerId: "cust-1" });
+    expect([...refs].sort((a, b) => (a.kind + a.id).localeCompare(b.kind + b.id))).toEqual([
+      { kind: "order", id: "o1" },
+      { kind: "payment", id: "o1" },
+      { kind: "reservation", id: "r7" },
+    ]);
+  });
+
+  it("excludes public (non-owner-scoped) keys like schedule:*", () => {
+    const l = new EvidenceLedger("t");
+    recordPresent(l, "schedule:store_hours");
+    recordPresent(l, "order_fulfillment_stage:o9");
+    const refs = activeResourcesFromLedger({ ledger: l, customerId: "cust-1" });
+    expect(refs).toEqual([{ kind: "order", id: "o9" }]);
+  });
+
+  it("returns [] for a ledger with no present owner-scoped resource (absence is NOT a drop signal)", () => {
+    const l = new EvidenceLedger("t");
+    recordPresent(l, "schedule:store_hours");
+    expect(activeResourcesFromLedger({ ledger: l, customerId: "cust-1" })).toEqual([]);
+  });
+
+  // FIX D1 — an owner-scoped base with NO mapped decomposer kind is SKIPPED
+  // (omitted), never emitted under its raw base key. The skip branch is a fail-safe
+  // against a future 4th OWNER_SCOPED_KEY_PREFIXES prefix added without a
+  // OWNER_SCOPED_BASE_TO_RESOURCE_KIND entry. It cannot be exercised through the
+  // public seam today: `presentOwnerScopedResources` iterates ONLY the current 3
+  // prefixes, all of which are mapped, and the kind map is module-private (not
+  // exported for injection). We instead pin the invariant that keeps the skip
+  // inert — every present owner-scoped prefix DOES resolve to a kind, so none are
+  // dropped — which is exactly the property a new unmapped prefix would break.
+  it("emits a ref for every present owner-scoped prefix (none skipped today; skip is future-drift only)", () => {
+    const l = new EvidenceLedger("t");
+    recordPresent(l, "order_fulfillment_stage:o1");
+    recordPresent(l, "payment_status:o1");
+    recordPresent(l, "reservation_status:r7");
+    const refs = activeResourcesFromLedger({ ledger: l, customerId: "cust-1" });
+    // Zero skipped: three present owner-scoped reads → three emitted refs.
+    expect(refs).toHaveLength(3);
+    expect(refs.every((r) => r.kind !== "order_fulfillment_stage")).toBe(true);
+    expect(refs.map((r) => r.kind).sort()).toEqual(["order", "payment", "reservation"]);
+  });
+})

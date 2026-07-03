@@ -113,7 +113,19 @@ import {
   loadSchedule,
   rk,
   type ScheduleSignal,
+  // BKL-027 read-tool executors (advertised read tools, run in the one-hop loop).
+  getCart,
+  checkOrderStatus,
+  checkPaymentStatus,
+  getOrderHistory,
+  getRecommendations,
+  getCustomerProfile,
+  getAlsoAdded,
+  getOrderedTogether,
+  checkTableAvailability,
+  getMyReservations,
 } from "@ibatexas/tools";
+import type { AgentContext, UserType } from "@ibatexas/types";
 import { publishNatsEvent } from "@ibatexas/nats-client";
 import { AGENT_REGISTRY } from "@ibatexas/agents";
 // Managed-agent plane (T3-9) — composed + started behind IBX_AGENTS_ENABLED.
@@ -232,6 +244,8 @@ import {
   type TokenUsageStore,
 } from "@adjudicate/adapter-core";
 import {
+  channelFromKind,
+  isGuestCustomerId,
   listIbatexasToolPacks,
   registerIbatexasToolPacks,
   toolRosterDrift,
@@ -1188,14 +1202,16 @@ export function policyForKind(
  * the chat planner (they are staff-route only) — a documented follow-up if a
  * staff chat surface is ever wired.
  */
-const PLANNER_GUEST_ID_PREFIXES = ["guest:", "anon:", "anonymous:"] as const;
-
 function plannerCustomerIdFromState(state: CognitiveState): string | null {
   const raw = (state.memory as { customerId?: unknown } | undefined)?.customerId;
   if (typeof raw !== "string") return null;
   const id = raw.trim();
-  if (id === "") return null;
-  if (PLANNER_GUEST_ID_PREFIXES.some((p) => id.startsWith(p))) return null;
+  // A guest/anon-marker or empty id is NOT a real customer → null. Reuses the
+  // exported guest-convention predicate from the tool registry (A3) so the
+  // planner's willingness-to-propose can never drift from the read-executor
+  // identity scope. `isGuestCustomerId` treats empty/whitespace as guest, so
+  // the prior explicit `id === ""` guard is subsumed.
+  if (isGuestCustomerId(id)) return null;
   return id;
 }
 
@@ -1226,6 +1242,147 @@ export function deriveIbatexasPlannerContext(state: CognitiveState): {
     context: {},
   };
 }
+
+// ── BKL-027 (F2) — read-tool executor registry ────────────────────────────────
+//
+// The chat planner advertises read tools but, single-pass, never runs them. The
+// one-hop read-loop in createIbatexasPlanner executes the model's read calls via
+// this map, OWNER-SCOPED to the turn's authenticated customer. Identity is
+// derived from the SAME CognitiveState the planner uses (agentCtxFromState),
+// mirroring deriveIbatexasPlannerContext: a guest/anon id yields customerId
+// undefined, so owner-scoped reads reject (never leak another customer's data).
+
+/**
+ * Per-turn AgentContext for a read executor, sourced from CognitiveState (NOT a
+ * Capsule — the planner is a process-wide singleton with no per-turn Capsule).
+ * Mirrors `agentCtxFromCapsule` but reads the recalled memory snapshot; staff is
+ * never inferred here (CognitiveState carries no actor role), matching the
+ * planner's `staffId: null`.
+ */
+export function agentCtxFromState(state: CognitiveState): AgentContext {
+  const customerId = plannerCustomerIdFromState(state);
+  return {
+    channel: channelFromKind(state.perception.channel),
+    sessionId: state.conversationId,
+    ...(customerId ? { customerId } : {}),
+    userType: (customerId ? "customer" : "guest") as UserType,
+  };
+}
+
+/**
+ * IDOR guard for the ONE input-scoped read (get_my_reservations): SET the input
+ * `customerId` to the AUTHENTICATED one, overriding any model-supplied value and
+ * ADDING the key when absent. get_my_reservations' schema REQUIRES customerId, so
+ * for a guest (ctx.customerId undefined) this writes `customerId: undefined` and
+ * the schema parse then throws → guests are correctly denied.
+ *
+ * NOT a no-op when input lacks customerId — it always writes the key on an object
+ * input. Never use this on the ctx-scoped reads (their schemas are strict `{}`
+ * and reject any extra key, incl. `customerId: undefined`); those use
+ * `stripModelOwner` instead. Non-object input passes through unchanged.
+ */
+export function withAuthenticatedOwner(input: unknown, ctx: AgentContext): unknown {
+  if (input !== null && typeof input === "object") {
+    return { ...(input as Record<string, unknown>), customerId: ctx.customerId };
+  }
+  return input;
+}
+
+/**
+ * IDOR defense for the ctx-scoped reads: REMOVE any model-supplied `customerId`
+ * own-key from the input, never adding one. These handlers scope ownership by
+ * `ctx.customerId` (the authenticated identity) and ignore input.customerId, so a
+ * model-forged id is defence-in-depth stripped here. Critically, several of these
+ * reads validate against a strict-empty schema (`z.strictObject({})` —
+ * get_order_history, get_my_profile/get_my_preferences via getCustomerProfile)
+ * that REJECTS any extra key, including `customerId: undefined`; stripping (rather
+ * than setting) the key is what lets those strict parses succeed. Non-object
+ * input passes through unchanged.
+ */
+export function stripModelOwner(input: unknown): unknown {
+  if (input !== null && typeof input === "object" && !Array.isArray(input)) {
+    const { customerId: _dropped, ...rest } = input as Record<string, unknown>;
+    return rest;
+  }
+  return input;
+}
+
+/**
+ * Advertised-read-tool NAME → owner-scoped executor. Keys are the 11 advertised
+ * read-tool names that have a backing @ibatexas/tools handler (4 are aliases:
+ * check_availability→checkTableAvailability, get_payment_status→checkPaymentStatus,
+ * get_my_profile→getCustomerProfile, get_my_preferences→getCustomerProfile — the
+ * profile is a superset incl. owner-scoped dietary/allergen prefs, BKL-071). The
+ * one remaining advertised read (get_payment_history) has no handler yet — absent
+ * from this map, so the enrichment loop simply does not execute it (it is recorded
+ * in readToolCalls for telemetry, never fed back, never forces a second
+ * completion). Residual tracked: BKL-071.
+ */
+export const IBATEXAS_READ_TOOL_EXECUTORS: Readonly<
+  Record<string, (input: unknown, state: CognitiveState) => Promise<unknown>>
+> = {
+  // A2 (IDOR) — the cart is determined by the AUTHENTICATED session, NEVER by a
+  // model-supplied cartId. A relayed victim cartId (a null-owner guest cart passes
+  // assert-cart-ownership for ANY caller) would otherwise leak. Resolve the
+  // session's OWN active cart id from Redis (the SAME key resolve-and-assemble
+  // writes/reads) and fetch only that; the model's `input.cartId` is ignored.
+  get_cart: async (_input, state) => {
+    const ctx = agentCtxFromState(state);
+    const redis = await getRedisClient();
+    const cartId = await redis.get(rk(`cart:active:session:${state.conversationId}`));
+    if (!cartId) {
+      // No active cart for this session — never call Medusa on a model-chosen id.
+      return { cart: null, note: "nenhum carrinho ativo nesta sessão" };
+    }
+    return getCart({ cartId } as never, ctx);
+  },
+  // The remaining ctx-scoped reads scope ownership by ctx.customerId and ignore
+  // input.customerId; stripModelOwner removes a model-forged id (defence-in-depth)
+  // AND lets the strict-`{}` schemas (get_order_history, get_my_profile/
+  // get_my_preferences) parse — injecting `customerId` would make them throw.
+  check_order_status: (input, state) => {
+    const ctx = agentCtxFromState(state);
+    return checkOrderStatus(stripModelOwner(input) as never, ctx);
+  },
+  get_payment_status: (input, state) => {
+    const ctx = agentCtxFromState(state);
+    return checkPaymentStatus(stripModelOwner(input) as never, ctx);
+  },
+  get_order_history: (input, state) => {
+    const ctx = agentCtxFromState(state);
+    return getOrderHistory(stripModelOwner(input) as never, ctx);
+  },
+  get_recommendations: (input, state) => {
+    const ctx = agentCtxFromState(state);
+    return getRecommendations(stripModelOwner(input) as never, ctx);
+  },
+  get_my_profile: (input, state) => {
+    const ctx = agentCtxFromState(state);
+    return getCustomerProfile(stripModelOwner(input) as never, ctx);
+  },
+  // BKL-071 — the customer-onboarding pack advertises get_my_preferences; there
+  // is no dedicated handler, but getCustomerProfile (getProfileData) already
+  // returns the owner-scoped customerPrefs, so this read resolves the profile
+  // (a superset incl. dietary/allergen prefs). Owner-scoped via ctx.customerId.
+  get_my_preferences: (input, state) => {
+    const ctx = agentCtxFromState(state);
+    return getCustomerProfile(stripModelOwner(input) as never, ctx);
+  },
+  get_also_added: (input, state) => {
+    const ctx = agentCtxFromState(state);
+    return getAlsoAdded(stripModelOwner(input) as never, ctx);
+  },
+  get_ordered_together: (input, state) => {
+    const ctx = agentCtxFromState(state);
+    return getOrderedTogether(stripModelOwner(input) as never, ctx);
+  },
+  // Public read — no owner scope, no ctx param.
+  check_availability: (input) => checkTableAvailability(input as never),
+  // The ONLY input-scoped read: its schema REQUIRES customerId. withAuthenticatedOwner
+  // SETS it to the authenticated id (guest → undefined → schema parse throws → denied).
+  get_my_reservations: (input, state) =>
+    getMyReservations(withAuthenticatedOwner(input, agentCtxFromState(state)) as never),
+};
 
 // The decision-aware responder lives in ./claustrum/ibatexas-responder.ts
 // (createIbatexasResponder). The previous decision-blind `naiveResponder` —
@@ -1261,10 +1418,10 @@ function claustrumSessionKey(sessionId: string): string {
   return rk(`claustrum:session:${sessionId}`);
 }
 
-/** Guest-marker convention shared with the planner + tool registry. */
-function isGuestCustomerId(customerId: string): boolean {
-  return /^(guest|anon|anonymous):/i.test(customerId);
-}
+// Guest-marker convention (isGuestCustomerId) is imported from the tool registry
+// — the single source of truth shared with the planner + Capsule adapter (A3).
+// The session-TTL callers below (writeSession, emitTurn) pass a required-string
+// customerId; the imported predicate accepts `string | undefined` (a superset).
 
 // ── Per-session LLM token accounting (cost-cap seam, ADR-120 / F4) ──────────────
 // Both sides are now wired:
@@ -2169,6 +2326,8 @@ export async function bootstrapClaustrum(
       promptComposer,
       telemetry,
       resolveScheduleSignal,
+      // BKL-027 — activate the one-hop read-tool enrichment loop.
+      readToolExecutors: IBATEXAS_READ_TOOL_EXECUTORS,
     });
   const buildResponder = (model: ModelProvider): ResponderPort =>
     createIbatexasResponder({

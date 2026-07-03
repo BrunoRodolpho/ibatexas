@@ -30,6 +30,7 @@ import {
 } from "./claims-kernel-floor.js";
 import { createIbatexasClaimPlanner } from "./ibatexas-claim-planner.js";
 import {
+  activeResourcesFromLedger,
   buildPerTurnOwnsFromLedger,
   createPerTurnClaimsKernelDeps,
 } from "./ibatexas-claims-kernel-deps.js";
@@ -62,6 +63,7 @@ export type ClaimsSeams = Pick<
   | "claimsKernel"
   | "claimsKernelDepsForTurn"
   | "claimsRenderer"
+  | "activeResourcesForTurn"
 >;
 
 export interface BuildClaimsSeamsDeps {
@@ -162,6 +164,13 @@ export function buildClaimsSeams(deps: BuildClaimsSeamsDeps): ClaimsSeams {
     // Inv 2). `outcomeConfirmed` stays the fail-closed base (read_claims do not
     // trigger C4). NO session/model id ever feeds the owned set.
     claimsKernelDepsForTurn: buildPerTurnOwnsFromLedger satisfies ClaimsKernelDepsForTurn,
+    // BKL-004 (#8 decomposer ownership signal) — @claustrum/core 0.5.0
+    // `activeResourcesForTurn` seam. handleTurn threads the owner-scoped active
+    // resource set (present order/payment/reservation refs) into
+    // `ClaimsRenderContext.activeResources` at RENDER-FROM-CLAIMS. Same
+    // present-only IDOR filter as `buildPerTurnOwnsFromLedger`. Inert while the
+    // flag is OFF (this whole seam set is only wired when ENABLE_CLAIMS_PIPELINE).
+    activeResourcesForTurn: activeResourcesFromLedger,
     // E-2 render-from-claims (SDD §B / §Q.7) — the loop-level closure of the
     // "claims-not-prose" thesis. When ON, `handleTurn` stage 6a renders the reply
     // TEXT from the VALIDATED claim set via the pure `renderer-from-claims`
