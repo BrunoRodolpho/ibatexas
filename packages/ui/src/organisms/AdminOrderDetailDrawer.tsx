@@ -119,6 +119,16 @@ export interface AdminOrderDetailDrawerProps {
     createdAt: string
     version: number
   }>
+  // OPS-013 — pre-formatted, READ-ONLY staff-note rows (author label + date are
+  // mapped upstream in apps/admin's order-notes.mappers; this component only
+  // renders). Shape mirrored structurally since packages/ui cannot import from
+  // apps/admin.
+  readonly notes?: ReadonlyArray<{
+    readonly id: string
+    readonly authorLabel: string
+    readonly formattedDate: string
+    readonly content: string
+  }>
 }
 
 export function AdminOrderDetailDrawer({
@@ -128,6 +138,7 @@ export function AdminOrderDetailDrawer({
   onAdvanceStatus,
   onAction,
   paymentHistory,
+  notes,
 }: AdminOrderDetailDrawerProps) {
   const overlayRef = useRef<HTMLButtonElement>(null)
 
@@ -399,6 +410,24 @@ export function AdminOrderDetailDrawer({
                     <div className="text-smoke-500">
                       R$ {(p.amountInCentavos / 100).toFixed(2)}
                     </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Notas do pedido (OPS-013) — READ-ONLY staff-note list */}
+          {notes && notes.length > 0 && (
+            <div className="border-t pt-4 mt-4">
+              <h4 className="text-sm font-semibold text-smoke-700 mb-2">Notas do pedido</h4>
+              <div className="space-y-2">
+                {notes.map((n) => (
+                  <div key={n.id} className="rounded-sm bg-smoke-50 p-2 text-xs">
+                    <div className="flex items-center justify-between text-smoke-500">
+                      <span className="font-medium text-charcoal-700">{n.authorLabel}</span>
+                      <span>{n.formattedDate}</span>
+                    </div>
+                    <p className="mt-1 whitespace-pre-wrap text-charcoal-700">{n.content}</p>
                   </div>
                 ))}
               </div>
