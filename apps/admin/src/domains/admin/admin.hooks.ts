@@ -10,6 +10,7 @@ import {
   INCIDENT_CAUSE_LABELS,
 } from '@ibatexas/ui'
 import type { AdminReservation, AdminReview, AdminIncident } from '@ibatexas/ui'
+import { sortOpsAlerts, buildOpsAlertsQuery, type OpsAlert } from './ops-alerts.mappers'
 
 const hooks = buildAdminHooks(createAdminHook, createAdminListHook, apiFetch)
 
@@ -676,4 +677,102 @@ export function useIncidentNewDetector(): void {
     const interval = setInterval(poll, INCIDENT_POLL_MS)
     return () => { cancelled = true; clearInterval(interval) }
   }, [addToast])
+}
+
+// ── Alertas Operacionais (deterministic ops-watchdog inbox — BKL-082) ────────
+
+/** Route max page size — the ops inbox is fetched UNPAGINATED (server pre-sorts). */
+const OPS_ALERT_FETCH_LIMIT = 200
+const OPS_ALERT_POLL_MS = 30_000
+
+interface OpsAlertListResponse {
+  readonly alerts: OpsAlert[]
+  readonly openCount: number
+}
+
+/**
+ * Backs the Alertas Operacionais inbox (BKL-082). ONE fetch per 30s poll of the
+ * ops-alert list with the active status/cause filters passed to the API (the
+ * server filters + pre-sorts OPEN-first). `openCount` is the INDEPENDENT
+ * NON_TERMINAL count returned alongside the rows — it backs the badge and is
+ * unaffected by the list filters. Resolve is reload-after-write (not optimistic),
+ * mirroring `useAdminIncidentsPage`. Load failures are surfaced (never swallowed)
+ * so the page can toast; a transient poll failure does NOT clear existing rows.
+ */
+export function useAdminOpsAlertsPage() {
+  const [alerts, setAlerts] = useState<OpsAlert[]>([])
+  const [openCount, setOpenCount] = useState(0)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [refreshKey, setRefreshKey] = useState(0)
+  const [statusFilter, setStatusFilter] = useState('')
+  const [causeFilter, setCauseFilter] = useState('')
+
+  const hasLoadedRef = useRef(false)
+
+  useEffect(() => {
+    let cancelled = false
+    // Flash the skeleton ONLY on the initial load; the 30s poll refreshes rows in
+    // place (mirrors the incidentes catch-branch intent — never disrupt rows on a
+    // transient poll).
+    if (!hasLoadedRef.current) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- initial load only; loading flag drives the skeleton
+      setLoading(true)
+    }
+    const query = buildOpsAlertsQuery({
+      status: statusFilter || undefined,
+      cause: causeFilter || undefined,
+      limit: OPS_ALERT_FETCH_LIMIT,
+    })
+    apiFetch(`/api/admin/ops-alerts${query}`)
+      .then((data: OpsAlertListResponse) => {
+        if (cancelled) return
+        setAlerts(Array.isArray(data?.alerts) ? sortOpsAlerts(data.alerts) : [])
+        setOpenCount(typeof data?.openCount === 'number' ? data.openCount : 0)
+        setError(null)
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return
+        // Do NOT clear existing rows on a transient poll failure; surface the error.
+        setError(err instanceof Error ? err.message : 'load_failed')
+      })
+      .finally(() => { if (!cancelled) { setLoading(false); hasLoadedRef.current = true } })
+    return () => { cancelled = true }
+  }, [statusFilter, causeFilter, refreshKey])
+
+  const refetch = useCallback(() => setRefreshKey((k) => k + 1), [])
+
+  // Canonical 30s poll.
+  useEffect(() => {
+    const interval = setInterval(refetch, OPS_ALERT_POLL_MS)
+    return () => clearInterval(interval)
+  }, [refetch])
+
+  // Reload-after-write. Throws on failure (apiFetch throws on non-ok) so the page
+  // can discriminate the toast; a successful resolve triggers a refetch.
+  const resolveAlert = useCallback(async (id: string) => {
+    await apiFetch(`/api/admin/ops-alerts/${encodeURIComponent(id)}/resolve`, { method: 'POST' })
+    setRefreshKey((k) => k + 1)
+  }, [])
+
+  const hasActiveFilters = statusFilter !== '' || causeFilter !== ''
+  const onClearFilters = useCallback(() => {
+    setStatusFilter('')
+    setCauseFilter('')
+  }, [])
+
+  return {
+    alerts,
+    openCount,
+    loading,
+    error,
+    statusFilter,
+    causeFilter,
+    hasActiveFilters,
+    onStatusFilter: setStatusFilter,
+    onCauseFilter: setCauseFilter,
+    onClearFilters,
+    resolveAlert,
+    refetch,
+  }
 }

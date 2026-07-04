@@ -19,6 +19,7 @@ import {
   ArrowUpCircle,
   MessagesSquare,
   Megaphone,
+  Siren,
 } from 'lucide-react'
 import { AdminSidebarBase, INCIDENT_LABELS, type AdminSidebarNavGroup } from '@ibatexas/ui'
 import { useOpenIncidentCount } from '@/domains/admin/admin.hooks'
@@ -38,6 +39,7 @@ const baseGroups: AdminSidebarNavGroup[] = [
       { key: 'pedidos', label: 'Pedidos', href: '/admin/pedidos', icon: ClipboardList },
       { key: 'reservas', label: 'Reservas', href: '/admin/reservas', icon: CalendarDays },
       { key: 'incidentes', label: INCIDENT_LABELS.nav, href: '/admin/incidentes', icon: AlertTriangle },
+      { key: 'alertas-operacionais', label: 'Alertas Operacionais', href: '/admin/alertas-operacionais', icon: Siren },
       { key: 'escalacoes', label: 'Escalações', href: '/admin/escalacoes', icon: ArrowUpCircle },
       { key: 'conversas', label: 'Conversas', href: '/admin/conversas', icon: MessagesSquare },
       { key: 'horarios', label: 'Horários', href: '/admin/horarios', icon: Clock },
