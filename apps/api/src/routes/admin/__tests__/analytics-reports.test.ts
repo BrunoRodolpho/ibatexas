@@ -16,11 +16,13 @@ import {
 
 const mockGetTopItems = vi.hoisted(() => vi.fn());
 const mockGetRefundAnalytics = vi.hoisted(() => vi.fn());
+const mockGetMargins = vi.hoisted(() => vi.fn());
 
 vi.mock("@ibatexas/domain", () => ({
   createOrderAnalyticsService: () => ({
     getTopItems: mockGetTopItems,
     getRefundAnalytics: mockGetRefundAnalytics,
+    getMargins: mockGetMargins,
   }),
 }));
 
@@ -48,6 +50,42 @@ const SAMPLE_REFUNDS = {
     { date: "2026-07-01", refundedCentavos: 3500, count: 2 },
     { date: "2026-07-03", refundedCentavos: 5000, count: 1 },
   ],
+};
+
+const SAMPLE_MARGINS = {
+  range: { from: "2026-07-01", to: "2026-07-08" },
+  timezone: "America/Sao_Paulo",
+  windowStart: "2026-07-01T03:00:00.000Z",
+  windowEnd: "2026-07-08T03:00:00.000Z",
+  rows: [
+    {
+      productId: "prod_picanha",
+      title: "Picanha",
+      quantity: 2,
+      revenueCentavos: 10000,
+      cogsKnown: true,
+      cogsCentavos: 6000,
+      marginCentavos: 4000,
+      marginPermille: 400,
+    },
+    {
+      productId: "prod_norec",
+      title: "Sem receita",
+      quantity: 1,
+      revenueCentavos: 800,
+      cogsKnown: false,
+      cogsCentavos: null,
+      marginCentavos: null,
+      marginPermille: null,
+    },
+  ],
+  totals: {
+    revenueCentavos: 10000,
+    cogsCentavos: 6000,
+    marginCentavos: 4000,
+    productsWithKnownCogs: 1,
+    productsWithUnknownCogs: 1,
+  },
 };
 
 async function buildServer(staff: StaffContext): Promise<FastifyInstance> {
@@ -188,6 +226,77 @@ describe("GET /api/admin/analytics/refunds is manager-gated", () => {
       expect(range.from).toMatch(/^\d{4}-\d{2}-\d{2}$/);
       expect(range.to).toMatch(/^\d{4}-\d{2}-\d{2}$/);
       expect(range.to > range.from).toBe(true);
+    } finally {
+      await server.close();
+    }
+  });
+});
+
+describe("GET /api/admin/analytics/margins is manager-gated", () => {
+  it("rejects ATTENDANT with 403 and never queries the service", async () => {
+    const server = await buildServer(ATTENDANT);
+    try {
+      const res = await server.inject({
+        method: "GET",
+        url: "/api/admin/analytics/margins?from=2026-07-01&to=2026-07-08",
+      });
+      expect(res.statusCode).toBe(403);
+      expect(mockGetMargins).not.toHaveBeenCalled();
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("returns 200 with the MarginsReport for MANAGER and threads the range", async () => {
+    mockGetMargins.mockResolvedValue(SAMPLE_MARGINS);
+    const server = await buildServer(MANAGER);
+    try {
+      const res = await server.inject({
+        method: "GET",
+        url: "/api/admin/analytics/margins?from=2026-07-01&to=2026-07-08",
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json() as typeof SAMPLE_MARGINS;
+      expect(body.totals).toEqual({
+        revenueCentavos: 10000,
+        cogsCentavos: 6000,
+        marginCentavos: 4000,
+        productsWithKnownCogs: 1,
+        productsWithUnknownCogs: 1,
+      });
+      // Known row + UNKNOWN row (null cost/margin) both round-trip intact.
+      expect(body.rows[0]).toMatchObject({ productId: "prod_picanha", marginCentavos: 4000, marginPermille: 400 });
+      expect(body.rows[1]).toMatchObject({ productId: "prod_norec", cogsKnown: false, marginCentavos: null, marginPermille: null });
+      expect(mockGetMargins).toHaveBeenCalledWith({ from: "2026-07-01", to: "2026-07-08" });
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("defaults the range (RESTAURANT_TIMEZONE) when from/to are omitted", async () => {
+    mockGetMargins.mockResolvedValue(SAMPLE_MARGINS);
+    const server = await buildServer(MANAGER);
+    try {
+      const res = await server.inject({ method: "GET", url: "/api/admin/analytics/margins" });
+      expect(res.statusCode).toBe(200);
+      const range = mockGetMargins.mock.calls[0]?.[0] as { from: string; to: string };
+      expect(range.from).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+      expect(range.to).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+      expect(range.to > range.from).toBe(true);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("rejects a malformed date with 400 and never queries the service", async () => {
+    const server = await buildServer(MANAGER);
+    try {
+      const res = await server.inject({
+        method: "GET",
+        url: "/api/admin/analytics/margins?to=08-07-2026",
+      });
+      expect(res.statusCode).toBe(400);
+      expect(mockGetMargins).not.toHaveBeenCalled();
     } finally {
       await server.close();
     }
