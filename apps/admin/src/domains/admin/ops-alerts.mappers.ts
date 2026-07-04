@@ -22,6 +22,7 @@ export type OpsAlertCause =
   | 'ops_stale_defer'
   | 'ops_dlq_depth'
   | 'ops_ingredient_underflow'
+  | 'ops_staff_auth_infra'
 
 export type OpsAlertSeverity = 'low' | 'medium' | 'high'
 
@@ -65,6 +66,7 @@ export const OPS_ALERT_CAUSE_LABELS: Record<OpsAlertCause, string> = {
   ops_stale_defer: 'confirmações pendentes vencidas',
   ops_dlq_depth: 'fila de mensagens mortas acumulando (DLQ)',
   ops_ingredient_underflow: 'estoque de insumo abaixo do necessário (baixa de pedido)',
+  ops_staff_auth_infra: 'falha de infraestrutura na autenticação de funcionários (logins de staff caindo)',
 }
 
 /** Canonical pt-BR severity labels (mirror of OPS_ALERT_SEVERITY_LABELS_PT). */
@@ -115,6 +117,7 @@ export const OPS_ALERT_CAUSE_FILTERS: readonly FilterOption[] = [
   { id: 'ops_stale_defer', label: 'Confirmações vencidas' },
   { id: 'ops_dlq_depth', label: 'DLQ' },
   { id: 'ops_ingredient_underflow', label: 'Estoque de insumo' },
+  { id: 'ops_staff_auth_infra', label: 'Auth de staff' },
 ]
 
 // ── Badge variant mapping (maps to @ibatexas/ui Badge tiers) ─────────────────

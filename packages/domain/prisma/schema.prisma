@@ -1054,6 +1054,7 @@ enum OpsAlertCause {
   ops_stale_defer
   ops_dlq_depth
   ops_ingredient_underflow
+  ops_staff_auth_infra
 
   @@schema("ibx_domain")
 }

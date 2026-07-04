@@ -150,7 +150,8 @@ export const OpsAlertCause = {
   ops_pix_expiry_backlog: 'ops_pix_expiry_backlog',
   ops_stale_defer: 'ops_stale_defer',
   ops_dlq_depth: 'ops_dlq_depth',
-  ops_ingredient_underflow: 'ops_ingredient_underflow'
+  ops_ingredient_underflow: 'ops_ingredient_underflow',
+  ops_staff_auth_infra: 'ops_staff_auth_infra'
 } as const
 
 export type OpsAlertCause = (typeof OpsAlertCause)[keyof typeof OpsAlertCause]

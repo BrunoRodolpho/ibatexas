@@ -556,11 +556,57 @@ describe("extractAuth — staff active-check (STAFFREVOKE)", () => {
     expect(body.userType).toBeNull();
   });
 
-  it("does NOT attach staff identity when the staff row was deleted (getById throws)", async () => {
-    mockGetStaffById.mockRejectedValue(new Error("not found"));
+  it("does NOT attach staff identity when the staff row was deleted (getById throws P2025 record-not-found)", async () => {
+    // BKL-092: a genuine deleted/unknown staff surfaces as Prisma P2025 — the
+    // ONLY non-infra class. It fails closed SILENTLY (no infra signal), exactly
+    // as before. (The infra-error path is exercised in the byte-identity test
+    // below and in staff-auth-infra-alert.test.ts.)
+    mockGetStaffById.mockRejectedValue(
+      Object.assign(new Error("record not found"), { code: "P2025" }),
+    );
     const body = (await inject()).json();
     expect(body.staffId).toBeNull();
     expect(body.userType).toBeNull();
+  });
+
+  it("BKL-092: a staff-auth INFRA error (P2022 schema drift) fails closed with a byte-identical 401 to record-not-found (P2025)", async () => {
+    // Pin the 401 on a requireAuth-protected route (no staff identity → no
+    // customerId → 401 "Sessão inválida."). The staff_token cookie drives the
+    // staff path; the customer path already rejected (no `token` cookie).
+    const injectProtected = () =>
+      server.inject({
+        method: "GET",
+        url: "/protected",
+        headers: { cookie: "staff_token=tok" },
+      });
+
+    // Redis mock: revocation get() + the infra-alert window counter. incr=1 (<
+    // threshold) so the best-effort ops-alert never raises — we are pinning the
+    // 401 body/status here, not the signal (that is covered separately).
+    mockGetRedisClient.mockResolvedValue({
+      get: vi.fn().mockResolvedValue(null),
+      incr: vi.fn().mockResolvedValue(1),
+      expire: vi.fn().mockResolvedValue(1),
+    });
+
+    mockGetStaffById.mockReset();
+    // Baseline: genuine record-not-found (P2025) → silent fail-closed.
+    mockGetStaffById.mockRejectedValueOnce(
+      Object.assign(new Error("record not found"), { code: "P2025" }),
+    );
+    const notFound = await injectProtected();
+
+    // Infra: the live-validation schema drift (P2022) → SIGNAL, same authz outcome.
+    mockGetStaffById.mockRejectedValueOnce(
+      Object.assign(new Error("column staff.hourly_rate_centavos does not exist"), {
+        code: "P2022",
+      }),
+    );
+    const infra = await injectProtected();
+
+    expect(notFound.statusCode).toBe(401);
+    expect(infra.statusCode).toBe(notFound.statusCode); // same status
+    expect(infra.body).toBe(notFound.body); // exact byte-identity of the 401 body
   });
 
   it("JWTSPLIT: verifies staff_token via the dedicated staff instance, not the customer one", async () => {

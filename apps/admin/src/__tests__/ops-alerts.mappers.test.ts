@@ -30,6 +30,7 @@ const ALL_CAUSES: readonly OpsAlertCause[] = [
   'ops_stale_defer',
   'ops_dlq_depth',
   'ops_ingredient_underflow',
+  'ops_staff_auth_infra',
 ]
 const ALL_SEVERITIES: readonly OpsAlertSeverity[] = ['low', 'medium', 'high']
 const ALL_STATUSES: readonly OpsAlertStatus[] = [
