@@ -5,6 +5,9 @@
 //   GET    /api/admin/schedule/shifts?from=&to=&staffId=  → { range, shifts }
 //   POST   /api/admin/schedule/shifts                      → 201 { shift }
 //   DELETE /api/admin/schedule/shifts/:id                  → 200 { shift } | 404
+//   POST   /api/admin/schedule/shifts/:id/clock-in         → 200 { shift } | 404  (NEW-034)
+//   POST   /api/admin/schedule/shifts/:id/clock-out        → 200 { shift } | 404  (NEW-034)
+//   GET    /api/admin/schedule/labor-cost?from=&to=        → LaborCostReport      (NEW-034)
 //
 // Mirrors admin/tables.ts + admin/analytics-reports.ts: `withTypeProvider`,
 // zod schemas, a lazily-constructed service (so a test mounting the plugin with a
@@ -21,7 +24,7 @@
 import type { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
-import { createStaffScheduleService } from "@ibatexas/domain";
+import { createLaborCostService, createStaffScheduleService } from "@ibatexas/domain";
 import { requireManagerRole } from "../../middleware/staff-auth.js";
 import { shiftYmd, todayInRestaurantTz } from "./_date-defaults.js";
 
@@ -49,6 +52,19 @@ const CreateBody = z
     path: ["endsAt"],
   });
 
+// NEW-034 clock-in / clock-out — optional `at` (ISO 8601) lets a manager backdate a
+// correction; omitted → the service stamps `now`. `.nullish()` so a plain POST with
+// NO payload (Fastify sets body to `null`) validates and clocks at the current
+// instant — a bare `.optional()` would 400 on the null a bodyless POST produces.
+const ClockBody = z.object({ at: z.coerce.date().optional() }).nullish();
+
+// NEW-034 labor-cost — same [from, to) range shape as the shift list; both optional
+// and default to the trailing 7-day window in RESTAURANT_TIMEZONE (via resolveRange).
+const LaborCostQuery = z.object({
+  from: YMD.optional(),
+  to: YMD.optional(),
+});
+
 /**
  * Resolve the effective [from, to) range. `to` is EXCLUSIVE, so an omitted `to`
  * defaults to tomorrow (today + 1) to include today; an omitted `from` defaults
@@ -68,6 +84,8 @@ export async function scheduleShiftRoutes(server: FastifyInstance): Promise<void
   // factory at register time (mirrors analytics-reports.ts / ops-alerts.ts).
   let scheduleSvc: ReturnType<typeof createStaffScheduleService> | undefined;
   const svc = () => (scheduleSvc ??= createStaffScheduleService());
+  let laborSvc: ReturnType<typeof createLaborCostService> | undefined;
+  const labor = () => (laborSvc ??= createLaborCostService());
 
   // ── GET /api/admin/schedule/shifts — list the schedule over a range ──────────
   app.get(
@@ -135,6 +153,73 @@ export async function scheduleShiftRoutes(server: FastifyInstance): Promise<void
         return reply.code(404).send({ error: "staff_shift_not_found" });
       }
       return reply.send({ shift });
+    },
+  );
+
+  // ── POST /api/admin/schedule/shifts/:id/clock-in — stamp actualStart (NEW-034) ─
+  app.post(
+    "/api/admin/schedule/shifts/:id/clock-in",
+    {
+      preHandler: [requireManagerRole],
+      schema: {
+        tags: ["admin"],
+        summary: "Escala — registrar entrada (clock-in) de um turno (admin)",
+        params: z.object({ id: z.string().min(1).max(256) }),
+        body: ClockBody,
+      },
+    },
+    async (request, reply) => {
+      const { id } = request.params;
+      const body = request.body as z.infer<typeof ClockBody>;
+      const shift = await svc().clockIn(id, body?.at);
+      // 404 ONLY when the id does not exist (clockIn returns null).
+      if (!shift) {
+        return reply.code(404).send({ error: "staff_shift_not_found" });
+      }
+      return reply.send({ shift });
+    },
+  );
+
+  // ── POST /api/admin/schedule/shifts/:id/clock-out — stamp actualEnd (NEW-034) ──
+  app.post(
+    "/api/admin/schedule/shifts/:id/clock-out",
+    {
+      preHandler: [requireManagerRole],
+      schema: {
+        tags: ["admin"],
+        summary: "Escala — registrar saída (clock-out) de um turno (admin)",
+        params: z.object({ id: z.string().min(1).max(256) }),
+        body: ClockBody,
+      },
+    },
+    async (request, reply) => {
+      const { id } = request.params;
+      const body = request.body as z.infer<typeof ClockBody>;
+      const shift = await svc().clockOut(id, body?.at);
+      // 404 ONLY when the id does not exist (clockOut returns null).
+      if (!shift) {
+        return reply.code(404).send({ error: "staff_shift_not_found" });
+      }
+      return reply.send({ shift });
+    },
+  );
+
+  // ── GET /api/admin/schedule/labor-cost — scheduled/actual hours + cost (NEW-034)
+  app.get(
+    "/api/admin/schedule/labor-cost",
+    {
+      preHandler: [requireManagerRole],
+      schema: {
+        tags: ["admin"],
+        summary: "Escala — custo de mão de obra por período (admin)",
+        querystring: LaborCostQuery,
+      },
+    },
+    async (request, reply) => {
+      const q = request.query as z.infer<typeof LaborCostQuery>;
+      const range = resolveRange(q);
+      const report = await labor().getLaborCost({ from: range.from, to: range.to });
+      return reply.send(report);
     },
   );
 }

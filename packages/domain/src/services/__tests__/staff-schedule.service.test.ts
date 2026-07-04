@@ -6,6 +6,8 @@
 // - listShifts: resolves the [from, to) window to Sao Paulo (−03:00) local-day
 //   boundaries; threads the optional staffId filter; malformed date → throws
 // - deleteShift: returns the deleted row; returns null (no throw) when missing
+// - clockIn/clockOut (NEW-034): stamp actualStart/actualEnd (default now, or a
+//   passed `at`); return the updated row; return null (no throw) when missing
 
 import { describe, it, expect, beforeEach, vi } from "vitest"
 
@@ -15,6 +17,7 @@ const mockCreate = vi.hoisted(() => vi.fn())
 const mockFindMany = vi.hoisted(() => vi.fn())
 const mockFindUnique = vi.hoisted(() => vi.fn())
 const mockDeleteMany = vi.hoisted(() => vi.fn())
+const mockUpdateMany = vi.hoisted(() => vi.fn())
 
 vi.mock("../../client.js", () => ({
   prisma: {
@@ -23,6 +26,7 @@ vi.mock("../../client.js", () => ({
       findMany: mockFindMany,
       findUnique: mockFindUnique,
       deleteMany: mockDeleteMany,
+      updateMany: mockUpdateMany,
     },
   },
 }))
@@ -142,5 +146,85 @@ describe("StaffScheduleService.deleteShift", () => {
 
     expect(row).toBeNull()
     expect(mockDeleteMany).not.toHaveBeenCalled()
+  })
+})
+
+describe("StaffScheduleService.clockIn (NEW-034)", () => {
+  let svc: ReturnType<typeof createStaffScheduleService>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    svc = createStaffScheduleService()
+  })
+
+  it("stamps actualStart to the passed `at` and returns the merged row", async () => {
+    const at = new Date("2026-07-04T14:05:00.000Z")
+    mockFindUnique.mockResolvedValue({ id: "shift_1", staffId: "staff_1", actualStart: null })
+    mockUpdateMany.mockResolvedValue({ count: 1 })
+
+    const row = await svc.clockIn("shift_1", at)
+
+    expect(row).toMatchObject({ id: "shift_1", actualStart: at })
+    expect(mockUpdateMany).toHaveBeenCalledWith({
+      where: { id: "shift_1" },
+      data: { actualStart: at },
+    })
+  })
+
+  it("defaults actualStart to now (a Date) when `at` is omitted", async () => {
+    mockFindUnique.mockResolvedValue({ id: "shift_1", staffId: "staff_1" })
+    mockUpdateMany.mockResolvedValue({ count: 1 })
+
+    const before = Date.now()
+    const row = await svc.clockIn("shift_1")
+    const after = Date.now()
+
+    const stamped = (mockUpdateMany.mock.calls[0]?.[0] as { data: { actualStart: Date } }).data
+      .actualStart
+    expect(stamped).toBeInstanceOf(Date)
+    expect(stamped.getTime()).toBeGreaterThanOrEqual(before)
+    expect(stamped.getTime()).toBeLessThanOrEqual(after)
+    expect((row as { actualStart: Date }).actualStart).toBe(stamped)
+  })
+
+  it("returns null (no throw, no update) when the id does not exist", async () => {
+    mockFindUnique.mockResolvedValue(null)
+
+    const row = await svc.clockIn("missing")
+
+    expect(row).toBeNull()
+    expect(mockUpdateMany).not.toHaveBeenCalled()
+  })
+})
+
+describe("StaffScheduleService.clockOut (NEW-034)", () => {
+  let svc: ReturnType<typeof createStaffScheduleService>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    svc = createStaffScheduleService()
+  })
+
+  it("stamps actualEnd to the passed `at` and returns the merged row", async () => {
+    const at = new Date("2026-07-04T22:03:00.000Z")
+    mockFindUnique.mockResolvedValue({ id: "shift_1", staffId: "staff_1", actualEnd: null })
+    mockUpdateMany.mockResolvedValue({ count: 1 })
+
+    const row = await svc.clockOut("shift_1", at)
+
+    expect(row).toMatchObject({ id: "shift_1", actualEnd: at })
+    expect(mockUpdateMany).toHaveBeenCalledWith({
+      where: { id: "shift_1" },
+      data: { actualEnd: at },
+    })
+  })
+
+  it("returns null (no throw, no update) when the id does not exist", async () => {
+    mockFindUnique.mockResolvedValue(null)
+
+    const row = await svc.clockOut("missing")
+
+    expect(row).toBeNull()
+    expect(mockUpdateMany).not.toHaveBeenCalled()
   })
 })

@@ -90,6 +90,35 @@ export function createStaffScheduleService() {
       await prisma.staffShift.deleteMany({ where: { id } })
       return existing
     },
+
+    /**
+     * NEW-034 — clock IN a shift: stamp `actualStart` to `at` (defaults to now).
+     * Returns the updated row, or `null` when no shift with that id exists
+     * (row-or-null, mirrors deleteShift — findUnique existence check + updateMany,
+     * so a missing id is a no-op rather than a P2025 throw; the route 404s on null).
+     * Idempotent by design: a re-clock-in simply re-stamps the newer `at`.
+     */
+    async clockIn(shiftId: string, at?: Date) {
+      const existing = await prisma.staffShift.findUnique({ where: { id: shiftId } })
+      if (!existing) return null
+      const actualStart = at ?? new Date()
+      await prisma.staffShift.updateMany({ where: { id: shiftId }, data: { actualStart } })
+      return { ...existing, actualStart }
+    },
+
+    /**
+     * NEW-034 — clock OUT a shift: stamp `actualEnd` to `at` (defaults to now).
+     * Returns the updated row, or `null` when no shift with that id exists (same
+     * row-or-null contract as clockIn / deleteShift). Labor cost counts ACTUAL
+     * hours for this shift only once BOTH `actualStart` and `actualEnd` are set.
+     */
+    async clockOut(shiftId: string, at?: Date) {
+      const existing = await prisma.staffShift.findUnique({ where: { id: shiftId } })
+      if (!existing) return null
+      const actualEnd = at ?? new Date()
+      await prisma.staffShift.updateMany({ where: { id: shiftId }, data: { actualEnd } })
+      return { ...existing, actualEnd }
+    },
   }
 }
 
