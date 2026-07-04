@@ -183,3 +183,60 @@ export function createStaffRoleGuard(
 
 /** The production staff-role guard over the code-truth capability matrix. */
 export const staffRoleGuard = createStaffRoleGuard(STAFF_ROLE_CAPABILITY_MATRIX);
+
+// ── BKL-075: payload-aware banding for payment.status.transition ──────────────
+//
+// The matrix row for `payment.status.transition` is the UNION {OWNER,MANAGER,
+// ATTENDANT} because ONE kind carries two operations at different sensitivities:
+// cash-confirm (→ `paid`, any staff — routes/admin/payments.ts confirm-cash,
+// requireStaff) and force-status / waive (→ any OTHER terminal, OWNER-only —
+// force-status routes, requireOwnerRole). At kind granularity the matrix guard
+// cannot distinguish an ATTENDANT cash-confirm from an ATTENDANT-forged waive, so
+// this companion narrows the kernel gate by PAYLOAD: a `payment.status.transition`
+// to any status OTHER than `paid` requires OWNER — mirroring the route
+// requireOwnerRole preHandlers AT THE KERNEL, closing the kind-granularity gap.
+
+/** The one payment.status.transition target any staff may set: cash-confirm →
+ *  `paid`. Every OTHER target (waive / force to a terminal state) is an
+ *  OWNER-only force-status. String literal = the PaymentStatus `paid` DB value
+ *  (avoids a value import into this conductor-loaded module). */
+const CASH_CONFIRM_STATUS = "paid";
+
+/**
+ * AUTH-phase companion to {@link staffRoleGuard} (BKL-075). REFUSEs a
+ * `payment.status.transition` whose `newStatus` is NOT the any-staff cash-confirm
+ * (`paid`) unless the actor.role is OWNER. Composed ALONGSIDE `staffRoleGuard`
+ * (both in the adopter AUTH set + the command-service authGuards injection), so
+ * the banding runs on the composed conductor router AND the HTTP admin
+ * command-service path. INERT unless an `admin:` session — system/customer/LLM/
+ * managed-agent transitions (e.g. the pix-expiry job → `payment_expired`) are
+ * untouched. Pure (no I/O).
+ */
+export const paymentTransitionBandGuard: Guard<string, unknown, unknown> =
+  nameGuard("paymentTransitionBand", (envelope, _state) => {
+    const { sessionId, role } = envelope.actor;
+    // Staff-plane only — inert for system / customer / LLM / managed-agent.
+    if (!sessionId.startsWith(STAFF_SESSION_NAMESPACE)) return null;
+    if (envelope.kind !== "payment.status.transition") return null;
+
+    const newStatus = (envelope.payload as { newStatus?: unknown }).newStatus;
+    // Cash-confirm (→ `paid`) stays any-staff (the base matrix already allows it).
+    if (newStatus === CASH_CONFIRM_STATUS) return null;
+    // Every other target (waive / force to a terminal state) is OWNER-only.
+    if (role === "OWNER") return null;
+
+    return decisionRefuse(
+      refuseStaffRole(
+        `payment.status.transition to "${String(newStatus)}" (force/waive) requires OWNER; role "${String(role)}"`,
+      ),
+      [
+        basis("auth", BASIS_CODES.auth.SCOPE_INSUFFICIENT, {
+          sessionId,
+          kind: envelope.kind,
+          role,
+          newStatus,
+          reason: "payment_transition_owner_only",
+        }),
+      ],
+    );
+  });

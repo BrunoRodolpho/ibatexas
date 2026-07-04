@@ -71,7 +71,7 @@ import {
   type PaymentStatusChangedEvent,
 } from "@ibatexas/types";
 import { requireStaff, requireManager } from "../../middleware/staff-auth.js";
-import { staffRoleGuard } from "../../claustrum/staff-role-guard.js";
+import { paymentTransitionBandGuard, staffRoleGuard } from "../../claustrum/staff-role-guard.js";
 import {
   createAdminConfirmationStore,
   type PendingAdminAction,
@@ -170,7 +170,8 @@ export async function adminOrderActionRoutes(server: FastifyInstance): Promise<v
     });
     paymentCmdSvc = createPaymentCommandService(server.log, {
       auditSink: getAuditSink(),
-      authGuards: [staffRoleGuard],
+      // BKL-074 staffRoleGuard + BKL-075 payment banding (force/waive → OWNER).
+      authGuards: [staffRoleGuard, paymentTransitionBandGuard],
     });
   });
   const orderQuerySvc = createOrderQueryService();

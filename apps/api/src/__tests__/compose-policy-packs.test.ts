@@ -22,7 +22,7 @@ import {
   IBATEXAS_ADOPTER_AUTH_GUARDS,
   type ErasedPack,
 } from "../claustrum/compose-policy-packs.js";
-import { staffRoleGuard } from "../claustrum/staff-role-guard.js";
+import { paymentTransitionBandGuard, staffRoleGuard } from "../claustrum/staff-role-guard.js";
 
 const ownGuard: Guard<string, unknown, unknown> = function ownBusinessGuard() {
   return null;
@@ -65,7 +65,7 @@ describe("buildIbatexasPolicyPacks", () => {
     }
   });
 
-  it("prepends the adopter AUTH guards (kill switch, agent scope, per-agent budgets, then staff-role) to every pack's auth phase", () => {
+  it("prepends the adopter AUTH guards (kill switch, agent scope, per-agent budgets, staff-role, then payment banding) to every pack's auth phase", () => {
     for (const p of composed) {
       const auth = (p.policy as PolicyBundle<string, unknown, unknown>).authGuards;
       // T3-5: a killed agent REFUSEs before scope/budget are even considered.
@@ -77,8 +77,10 @@ describe("buildIbatexasPolicyPacks", () => {
       // BKL-069 Part C: the staff-plane role guard is appended after the agent
       // guards (disjoint namespace — `admin:` vs `agent:`).
       expect(auth[2 + agentBudgetGuards.length]).toBe(staffRoleGuard);
+      // BKL-075: the payment.status.transition banding companion follows staffRole.
+      expect(auth[2 + agentBudgetGuards.length + 1]).toBe(paymentTransitionBandGuard);
       // The pack's own auth guard follows, unmoved.
-      expect(auth[2 + agentBudgetGuards.length + 1]).toBe(ownAuthGuard);
+      expect(auth[2 + agentBudgetGuards.length + 2]).toBe(ownAuthGuard);
       expect(auth).toHaveLength(IBATEXAS_ADOPTER_AUTH_GUARDS.length + 1);
     }
   });
@@ -95,6 +97,9 @@ describe("buildIbatexasPolicyPacks", () => {
     expect(
       readGuardMetadata(bundle.authGuards[2 + agentBudgetGuards.length]!)?.name,
     ).toBe("staffRole");
+    expect(
+      readGuardMetadata(bundle.authGuards[2 + agentBudgetGuards.length + 1]!)?.name,
+    ).toBe("paymentTransitionBand");
   });
 
   it("preserves state/taint/default and pack identity untouched", () => {

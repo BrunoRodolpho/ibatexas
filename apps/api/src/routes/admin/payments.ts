@@ -56,7 +56,7 @@ import {
   type PaymentStatusChangedEvent,
 } from "@ibatexas/types";
 import { requireStaff, requireManagerRole } from "../../middleware/staff-auth.js";
-import { staffRoleGuard } from "../../claustrum/staff-role-guard.js";
+import { paymentTransitionBandGuard, staffRoleGuard } from "../../claustrum/staff-role-guard.js";
 import {
   createAdminConfirmationStore,
   type PendingAdminAction,
@@ -281,7 +281,8 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
     // at the kernel without touching system/customer/agent mutations.
     paymentCmdSvc = createPaymentCommandService(server.log, {
       auditSink: getAuditSink(),
-      authGuards: [staffRoleGuard],
+      // BKL-074 staffRoleGuard + BKL-075 payment banding (force/waive → OWNER).
+      authGuards: [staffRoleGuard, paymentTransitionBandGuard],
     });
     // W7-P4: addNoteFromEnvelope path needs an audit-wired OrderCommandService.
     orderCmdSvc = createOrderCommandService(server.log, {
