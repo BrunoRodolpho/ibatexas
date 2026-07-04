@@ -17,12 +17,20 @@ import {
 const mockList = vi.hoisted(() => vi.fn());
 const mockCreate = vi.hoisted(() => vi.fn());
 const mockDelete = vi.hoisted(() => vi.fn());
+const mockClockIn = vi.hoisted(() => vi.fn());
+const mockClockOut = vi.hoisted(() => vi.fn());
+const mockLaborCost = vi.hoisted(() => vi.fn());
 
 vi.mock("@ibatexas/domain", () => ({
   createStaffScheduleService: () => ({
     listShifts: mockList,
     createShift: mockCreate,
     deleteShift: mockDelete,
+    clockIn: mockClockIn,
+    clockOut: mockClockOut,
+  }),
+  createLaborCostService: () => ({
+    getLaborCost: mockLaborCost,
   }),
 }));
 
@@ -237,6 +245,196 @@ describe("DELETE /api/admin/schedule/shifts/:id — remove a shift", () => {
       });
       expect(res.statusCode).toBe(404);
       expect(res.json()).toMatchObject({ error: "staff_shift_not_found" });
+    } finally {
+      await server.close();
+    }
+  });
+});
+
+describe("POST /api/admin/schedule/shifts/:id/clock-in (NEW-034)", () => {
+  it("rejects ATTENDANT with 403 and never clocks in", async () => {
+    const server = await buildServer(ATTENDANT);
+    try {
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/admin/schedule/shifts/shift_1/clock-in",
+      });
+      expect(res.statusCode).toBe(403);
+      expect(mockClockIn).not.toHaveBeenCalled();
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("clocks in (200) with no body → service defaults `at` to now (undefined)", async () => {
+    mockClockIn.mockResolvedValue({ id: "shift_1", actualStart: "2026-07-04T14:00:00.000Z" });
+    const server = await buildServer(MANAGER);
+    try {
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/admin/schedule/shifts/shift_1/clock-in",
+      });
+      expect(res.statusCode).toBe(200);
+      expect((res.json() as { shift: { id: string } }).shift).toMatchObject({ id: "shift_1" });
+      expect(mockClockIn).toHaveBeenCalledWith("shift_1", undefined);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("threads a backdated `at` (coerced to a Date) from the body", async () => {
+    mockClockIn.mockResolvedValue({ id: "shift_1" });
+    const server = await buildServer(MANAGER);
+    try {
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/admin/schedule/shifts/shift_1/clock-in",
+        payload: { at: "2026-07-04T14:05:00.000Z" },
+      });
+      expect(res.statusCode).toBe(200);
+      const at = mockClockIn.mock.calls[0]?.[1] as Date;
+      expect(at).toBeInstanceOf(Date);
+      expect(at.toISOString()).toBe("2026-07-04T14:05:00.000Z");
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("404s ONLY when the id does not exist (clockIn returns null)", async () => {
+    mockClockIn.mockResolvedValue(null);
+    const server = await buildServer(MANAGER);
+    try {
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/admin/schedule/shifts/missing/clock-in",
+      });
+      expect(res.statusCode).toBe(404);
+      expect(res.json()).toMatchObject({ error: "staff_shift_not_found" });
+    } finally {
+      await server.close();
+    }
+  });
+});
+
+describe("POST /api/admin/schedule/shifts/:id/clock-out (NEW-034)", () => {
+  it("rejects ATTENDANT with 403 and never clocks out", async () => {
+    const server = await buildServer(ATTENDANT);
+    try {
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/admin/schedule/shifts/shift_1/clock-out",
+      });
+      expect(res.statusCode).toBe(403);
+      expect(mockClockOut).not.toHaveBeenCalled();
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("clocks out (200) and returns the row", async () => {
+    mockClockOut.mockResolvedValue({ id: "shift_1", actualEnd: "2026-07-04T22:00:00.000Z" });
+    const server = await buildServer(MANAGER);
+    try {
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/admin/schedule/shifts/shift_1/clock-out",
+      });
+      expect(res.statusCode).toBe(200);
+      expect((res.json() as { shift: { id: string } }).shift).toMatchObject({ id: "shift_1" });
+      expect(mockClockOut).toHaveBeenCalledWith("shift_1", undefined);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("404s ONLY when the id does not exist (clockOut returns null)", async () => {
+    mockClockOut.mockResolvedValue(null);
+    const server = await buildServer(MANAGER);
+    try {
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/admin/schedule/shifts/missing/clock-out",
+      });
+      expect(res.statusCode).toBe(404);
+      expect(res.json()).toMatchObject({ error: "staff_shift_not_found" });
+    } finally {
+      await server.close();
+    }
+  });
+});
+
+describe("GET /api/admin/schedule/labor-cost (NEW-034)", () => {
+  it("rejects ATTENDANT with 403 and never aggregates", async () => {
+    const server = await buildServer(ATTENDANT);
+    try {
+      const res = await server.inject({
+        method: "GET",
+        url: "/api/admin/schedule/labor-cost",
+      });
+      expect(res.statusCode).toBe(403);
+      expect(mockLaborCost).not.toHaveBeenCalled();
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("returns the labor-cost report and threads the [from, to) range", async () => {
+    const report = {
+      range: { from: "2026-07-04", to: "2026-07-06" },
+      timezone: "America/Sao_Paulo",
+      byStaff: [
+        { staffId: "staff_a", name: "Ana", scheduledHours: 8, actualHours: 7.5, costCentavos: 15000, rateMissing: false },
+      ],
+      totalCostCentavos: 15000,
+      totalScheduledHours: 8,
+      totalActualHours: 7.5,
+    };
+    mockLaborCost.mockResolvedValue(report);
+    const server = await buildServer(MANAGER);
+    try {
+      const res = await server.inject({
+        method: "GET",
+        url: "/api/admin/schedule/labor-cost?from=2026-07-04&to=2026-07-06",
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject({ totalCostCentavos: 15000, byStaff: [{ staffId: "staff_a" }] });
+      expect(mockLaborCost.mock.calls[0]?.[0]).toMatchObject({ from: "2026-07-04", to: "2026-07-06" });
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("defaults the range when from/to are omitted (7-day window, exclusive to)", async () => {
+    mockLaborCost.mockResolvedValue({
+      range: { from: "x", to: "y" },
+      timezone: "America/Sao_Paulo",
+      byStaff: [],
+      totalCostCentavos: 0,
+      totalScheduledHours: 0,
+      totalActualHours: 0,
+    });
+    const server = await buildServer(MANAGER);
+    try {
+      const res = await server.inject({ method: "GET", url: "/api/admin/schedule/labor-cost" });
+      expect(res.statusCode).toBe(200);
+      const arg = mockLaborCost.mock.calls[0]?.[0] as { from: string; to: string };
+      expect(arg.from).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+      expect(arg.to).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+      expect(arg.from < arg.to).toBe(true);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("rejects a malformed date with 400", async () => {
+    const server = await buildServer(MANAGER);
+    try {
+      const res = await server.inject({
+        method: "GET",
+        url: "/api/admin/schedule/labor-cost?from=2026-7-4&to=2026-07-06",
+      });
+      expect(res.statusCode).toBe(400);
+      expect(mockLaborCost).not.toHaveBeenCalled();
     } finally {
       await server.close();
     }

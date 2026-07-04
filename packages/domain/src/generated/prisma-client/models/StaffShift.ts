@@ -17,9 +17,10 @@ import type * as Prisma from "../internal/prismaNamespace.js"
  * One scheduled work shift (escala) for a staff member. NEW-016 core: assign
  * shifts to staff + list the schedule over a date range. Admin-ops data — not a
  * customer money/safety path — so it is plain CRUD, manager-gated at the route
- * (mirrors Table). Clock-in and labor-cost analytics are deliberately OUT of
- * scope. FK → staff(id) ON DELETE CASCADE: removing a staff member removes their
- * schedule (the same idiom Address/CustomerPreferences use for a real parent).
+ * (mirrors Table). NEW-034 EXTENDS this with clock-in/out (actualStart/actualEnd,
+ * both NULLABLE — null until the staff clocks in/out) which feed the read-only
+ * labor-cost analytics. FK → staff(id) ON DELETE CASCADE: removing a staff member
+ * removes their schedule (the same idiom Address/CustomerPreferences use).
  */
 export type StaffShiftModel = runtime.Types.Result.DefaultSelection<Prisma.$StaffShiftPayload>
 
@@ -34,6 +35,8 @@ export type StaffShiftMinAggregateOutputType = {
   staffId: string | null
   startsAt: Date | null
   endsAt: Date | null
+  actualStart: Date | null
+  actualEnd: Date | null
   role: string | null
   note: string | null
   createdAt: Date | null
@@ -45,6 +48,8 @@ export type StaffShiftMaxAggregateOutputType = {
   staffId: string | null
   startsAt: Date | null
   endsAt: Date | null
+  actualStart: Date | null
+  actualEnd: Date | null
   role: string | null
   note: string | null
   createdAt: Date | null
@@ -56,6 +61,8 @@ export type StaffShiftCountAggregateOutputType = {
   staffId: number
   startsAt: number
   endsAt: number
+  actualStart: number
+  actualEnd: number
   role: number
   note: number
   createdAt: number
@@ -69,6 +76,8 @@ export type StaffShiftMinAggregateInputType = {
   staffId?: true
   startsAt?: true
   endsAt?: true
+  actualStart?: true
+  actualEnd?: true
   role?: true
   note?: true
   createdAt?: true
@@ -80,6 +89,8 @@ export type StaffShiftMaxAggregateInputType = {
   staffId?: true
   startsAt?: true
   endsAt?: true
+  actualStart?: true
+  actualEnd?: true
   role?: true
   note?: true
   createdAt?: true
@@ -91,6 +102,8 @@ export type StaffShiftCountAggregateInputType = {
   staffId?: true
   startsAt?: true
   endsAt?: true
+  actualStart?: true
+  actualEnd?: true
   role?: true
   note?: true
   createdAt?: true
@@ -175,6 +188,8 @@ export type StaffShiftGroupByOutputType = {
   staffId: string
   startsAt: Date
   endsAt: Date
+  actualStart: Date | null
+  actualEnd: Date | null
   role: string | null
   note: string | null
   createdAt: Date
@@ -207,6 +222,8 @@ export type StaffShiftWhereInput = {
   staffId?: Prisma.StringFilter<"StaffShift"> | string
   startsAt?: Prisma.DateTimeFilter<"StaffShift"> | Date | string
   endsAt?: Prisma.DateTimeFilter<"StaffShift"> | Date | string
+  actualStart?: Prisma.DateTimeNullableFilter<"StaffShift"> | Date | string | null
+  actualEnd?: Prisma.DateTimeNullableFilter<"StaffShift"> | Date | string | null
   role?: Prisma.StringNullableFilter<"StaffShift"> | string | null
   note?: Prisma.StringNullableFilter<"StaffShift"> | string | null
   createdAt?: Prisma.DateTimeFilter<"StaffShift"> | Date | string
@@ -219,6 +236,8 @@ export type StaffShiftOrderByWithRelationInput = {
   staffId?: Prisma.SortOrder
   startsAt?: Prisma.SortOrder
   endsAt?: Prisma.SortOrder
+  actualStart?: Prisma.SortOrderInput | Prisma.SortOrder
+  actualEnd?: Prisma.SortOrderInput | Prisma.SortOrder
   role?: Prisma.SortOrderInput | Prisma.SortOrder
   note?: Prisma.SortOrderInput | Prisma.SortOrder
   createdAt?: Prisma.SortOrder
@@ -234,6 +253,8 @@ export type StaffShiftWhereUniqueInput = Prisma.AtLeast<{
   staffId?: Prisma.StringFilter<"StaffShift"> | string
   startsAt?: Prisma.DateTimeFilter<"StaffShift"> | Date | string
   endsAt?: Prisma.DateTimeFilter<"StaffShift"> | Date | string
+  actualStart?: Prisma.DateTimeNullableFilter<"StaffShift"> | Date | string | null
+  actualEnd?: Prisma.DateTimeNullableFilter<"StaffShift"> | Date | string | null
   role?: Prisma.StringNullableFilter<"StaffShift"> | string | null
   note?: Prisma.StringNullableFilter<"StaffShift"> | string | null
   createdAt?: Prisma.DateTimeFilter<"StaffShift"> | Date | string
@@ -246,6 +267,8 @@ export type StaffShiftOrderByWithAggregationInput = {
   staffId?: Prisma.SortOrder
   startsAt?: Prisma.SortOrder
   endsAt?: Prisma.SortOrder
+  actualStart?: Prisma.SortOrderInput | Prisma.SortOrder
+  actualEnd?: Prisma.SortOrderInput | Prisma.SortOrder
   role?: Prisma.SortOrderInput | Prisma.SortOrder
   note?: Prisma.SortOrderInput | Prisma.SortOrder
   createdAt?: Prisma.SortOrder
@@ -263,6 +286,8 @@ export type StaffShiftScalarWhereWithAggregatesInput = {
   staffId?: Prisma.StringWithAggregatesFilter<"StaffShift"> | string
   startsAt?: Prisma.DateTimeWithAggregatesFilter<"StaffShift"> | Date | string
   endsAt?: Prisma.DateTimeWithAggregatesFilter<"StaffShift"> | Date | string
+  actualStart?: Prisma.DateTimeNullableWithAggregatesFilter<"StaffShift"> | Date | string | null
+  actualEnd?: Prisma.DateTimeNullableWithAggregatesFilter<"StaffShift"> | Date | string | null
   role?: Prisma.StringNullableWithAggregatesFilter<"StaffShift"> | string | null
   note?: Prisma.StringNullableWithAggregatesFilter<"StaffShift"> | string | null
   createdAt?: Prisma.DateTimeWithAggregatesFilter<"StaffShift"> | Date | string
@@ -273,6 +298,8 @@ export type StaffShiftCreateInput = {
   id?: string
   startsAt: Date | string
   endsAt: Date | string
+  actualStart?: Date | string | null
+  actualEnd?: Date | string | null
   role?: string | null
   note?: string | null
   createdAt?: Date | string
@@ -285,6 +312,8 @@ export type StaffShiftUncheckedCreateInput = {
   staffId: string
   startsAt: Date | string
   endsAt: Date | string
+  actualStart?: Date | string | null
+  actualEnd?: Date | string | null
   role?: string | null
   note?: string | null
   createdAt?: Date | string
@@ -295,6 +324,8 @@ export type StaffShiftUpdateInput = {
   id?: Prisma.StringFieldUpdateOperationsInput | string
   startsAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   endsAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  actualStart?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+  actualEnd?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   role?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   note?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
@@ -307,6 +338,8 @@ export type StaffShiftUncheckedUpdateInput = {
   staffId?: Prisma.StringFieldUpdateOperationsInput | string
   startsAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   endsAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  actualStart?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+  actualEnd?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   role?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   note?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
@@ -318,6 +351,8 @@ export type StaffShiftCreateManyInput = {
   staffId: string
   startsAt: Date | string
   endsAt: Date | string
+  actualStart?: Date | string | null
+  actualEnd?: Date | string | null
   role?: string | null
   note?: string | null
   createdAt?: Date | string
@@ -328,6 +363,8 @@ export type StaffShiftUpdateManyMutationInput = {
   id?: Prisma.StringFieldUpdateOperationsInput | string
   startsAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   endsAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  actualStart?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+  actualEnd?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   role?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   note?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
@@ -339,6 +376,8 @@ export type StaffShiftUncheckedUpdateManyInput = {
   staffId?: Prisma.StringFieldUpdateOperationsInput | string
   startsAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   endsAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  actualStart?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+  actualEnd?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   role?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   note?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
@@ -360,6 +399,8 @@ export type StaffShiftCountOrderByAggregateInput = {
   staffId?: Prisma.SortOrder
   startsAt?: Prisma.SortOrder
   endsAt?: Prisma.SortOrder
+  actualStart?: Prisma.SortOrder
+  actualEnd?: Prisma.SortOrder
   role?: Prisma.SortOrder
   note?: Prisma.SortOrder
   createdAt?: Prisma.SortOrder
@@ -371,6 +412,8 @@ export type StaffShiftMaxOrderByAggregateInput = {
   staffId?: Prisma.SortOrder
   startsAt?: Prisma.SortOrder
   endsAt?: Prisma.SortOrder
+  actualStart?: Prisma.SortOrder
+  actualEnd?: Prisma.SortOrder
   role?: Prisma.SortOrder
   note?: Prisma.SortOrder
   createdAt?: Prisma.SortOrder
@@ -382,6 +425,8 @@ export type StaffShiftMinOrderByAggregateInput = {
   staffId?: Prisma.SortOrder
   startsAt?: Prisma.SortOrder
   endsAt?: Prisma.SortOrder
+  actualStart?: Prisma.SortOrder
+  actualEnd?: Prisma.SortOrder
   role?: Prisma.SortOrder
   note?: Prisma.SortOrder
   createdAt?: Prisma.SortOrder
@@ -434,6 +479,8 @@ export type StaffShiftCreateWithoutStaffInput = {
   id?: string
   startsAt: Date | string
   endsAt: Date | string
+  actualStart?: Date | string | null
+  actualEnd?: Date | string | null
   role?: string | null
   note?: string | null
   createdAt?: Date | string
@@ -444,6 +491,8 @@ export type StaffShiftUncheckedCreateWithoutStaffInput = {
   id?: string
   startsAt: Date | string
   endsAt: Date | string
+  actualStart?: Date | string | null
+  actualEnd?: Date | string | null
   role?: string | null
   note?: string | null
   createdAt?: Date | string
@@ -484,6 +533,8 @@ export type StaffShiftScalarWhereInput = {
   staffId?: Prisma.StringFilter<"StaffShift"> | string
   startsAt?: Prisma.DateTimeFilter<"StaffShift"> | Date | string
   endsAt?: Prisma.DateTimeFilter<"StaffShift"> | Date | string
+  actualStart?: Prisma.DateTimeNullableFilter<"StaffShift"> | Date | string | null
+  actualEnd?: Prisma.DateTimeNullableFilter<"StaffShift"> | Date | string | null
   role?: Prisma.StringNullableFilter<"StaffShift"> | string | null
   note?: Prisma.StringNullableFilter<"StaffShift"> | string | null
   createdAt?: Prisma.DateTimeFilter<"StaffShift"> | Date | string
@@ -494,6 +545,8 @@ export type StaffShiftCreateManyStaffInput = {
   id?: string
   startsAt: Date | string
   endsAt: Date | string
+  actualStart?: Date | string | null
+  actualEnd?: Date | string | null
   role?: string | null
   note?: string | null
   createdAt?: Date | string
@@ -504,6 +557,8 @@ export type StaffShiftUpdateWithoutStaffInput = {
   id?: Prisma.StringFieldUpdateOperationsInput | string
   startsAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   endsAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  actualStart?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+  actualEnd?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   role?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   note?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
@@ -514,6 +569,8 @@ export type StaffShiftUncheckedUpdateWithoutStaffInput = {
   id?: Prisma.StringFieldUpdateOperationsInput | string
   startsAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   endsAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  actualStart?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+  actualEnd?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   role?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   note?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
@@ -524,6 +581,8 @@ export type StaffShiftUncheckedUpdateManyWithoutStaffInput = {
   id?: Prisma.StringFieldUpdateOperationsInput | string
   startsAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   endsAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  actualStart?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+  actualEnd?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   role?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   note?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
@@ -537,6 +596,8 @@ export type StaffShiftSelect<ExtArgs extends runtime.Types.Extensions.InternalAr
   staffId?: boolean
   startsAt?: boolean
   endsAt?: boolean
+  actualStart?: boolean
+  actualEnd?: boolean
   role?: boolean
   note?: boolean
   createdAt?: boolean
@@ -549,6 +610,8 @@ export type StaffShiftSelectCreateManyAndReturn<ExtArgs extends runtime.Types.Ex
   staffId?: boolean
   startsAt?: boolean
   endsAt?: boolean
+  actualStart?: boolean
+  actualEnd?: boolean
   role?: boolean
   note?: boolean
   createdAt?: boolean
@@ -561,6 +624,8 @@ export type StaffShiftSelectUpdateManyAndReturn<ExtArgs extends runtime.Types.Ex
   staffId?: boolean
   startsAt?: boolean
   endsAt?: boolean
+  actualStart?: boolean
+  actualEnd?: boolean
   role?: boolean
   note?: boolean
   createdAt?: boolean
@@ -573,13 +638,15 @@ export type StaffShiftSelectScalar = {
   staffId?: boolean
   startsAt?: boolean
   endsAt?: boolean
+  actualStart?: boolean
+  actualEnd?: boolean
   role?: boolean
   note?: boolean
   createdAt?: boolean
   updatedAt?: boolean
 }
 
-export type StaffShiftOmit<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetOmit<"id" | "staffId" | "startsAt" | "endsAt" | "role" | "note" | "createdAt" | "updatedAt", ExtArgs["result"]["staffShift"]>
+export type StaffShiftOmit<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetOmit<"id" | "staffId" | "startsAt" | "endsAt" | "actualStart" | "actualEnd" | "role" | "note" | "createdAt" | "updatedAt", ExtArgs["result"]["staffShift"]>
 export type StaffShiftInclude<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
   staff?: boolean | Prisma.StaffDefaultArgs<ExtArgs>
 }
@@ -600,6 +667,14 @@ export type $StaffShiftPayload<ExtArgs extends runtime.Types.Extensions.Internal
     staffId: string
     startsAt: Date
     endsAt: Date
+    /**
+     * NEW-034 — clock-in wall stamp (null until the staff clocks in).
+     */
+    actualStart: Date | null
+    /**
+     * NEW-034 — clock-out wall stamp (null until the staff clocks out).
+     */
+    actualEnd: Date | null
     /**
      * The role worked this shift (defaults to the staff's role at the route)
      */
@@ -1035,6 +1110,8 @@ export interface StaffShiftFieldRefs {
   readonly staffId: Prisma.FieldRef<"StaffShift", 'String'>
   readonly startsAt: Prisma.FieldRef<"StaffShift", 'DateTime'>
   readonly endsAt: Prisma.FieldRef<"StaffShift", 'DateTime'>
+  readonly actualStart: Prisma.FieldRef<"StaffShift", 'DateTime'>
+  readonly actualEnd: Prisma.FieldRef<"StaffShift", 'DateTime'>
   readonly role: Prisma.FieldRef<"StaffShift", 'String'>
   readonly note: Prisma.FieldRef<"StaffShift", 'String'>
   readonly createdAt: Prisma.FieldRef<"StaffShift", 'DateTime'>

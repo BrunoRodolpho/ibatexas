@@ -41,6 +41,23 @@ export interface ListShiftsParams {
 
 // ── Service ─────────────────────────────────────────────────────────────────
 
+/**
+ * NEW-034 — stamp a clock field (`actualStart` / `actualEnd`) on a shift. Row-or-null
+ * (mirrors deleteShift): a `findUnique` existence check + `updateMany`, so a missing
+ * id is a no-op (the route 404s on null) rather than a P2025 throw. Idempotent — a
+ * re-clock simply re-stamps the newer instant. Shared by clockIn/clockOut so the two
+ * differ only in which field they set.
+ */
+async function stampClock(
+  shiftId: string,
+  patch: { actualStart: Date } | { actualEnd: Date },
+) {
+  const existing = await prisma.staffShift.findUnique({ where: { id: shiftId } })
+  if (!existing) return null
+  await prisma.staffShift.updateMany({ where: { id: shiftId }, data: patch })
+  return { ...existing, ...patch }
+}
+
 export function createStaffScheduleService() {
   return {
     /** Assign a shift to a staff member. */
@@ -89,6 +106,26 @@ export function createStaffScheduleService() {
       if (!existing) return null
       await prisma.staffShift.deleteMany({ where: { id } })
       return existing
+    },
+
+    /**
+     * NEW-034 — clock IN a shift: stamp `actualStart` to `at` (defaults to now).
+     * Returns the updated row, or `null` when no shift with that id exists
+     * (row-or-null, mirrors deleteShift — findUnique existence check + updateMany,
+     * so a missing id is a no-op rather than a P2025 throw; the route 404s on null).
+     * Idempotent by design: a re-clock-in simply re-stamps the newer `at`.
+     */
+    async clockIn(shiftId: string, at?: Date) {
+      return stampClock(shiftId, { actualStart: at ?? new Date() })
+    },
+
+    /**
+     * NEW-034 — clock OUT a shift: stamp `actualEnd` to `at` (defaults to now).
+     * Same row-or-null contract as clockIn / deleteShift. Labor cost counts ACTUAL
+     * hours for this shift only once BOTH `actualStart` and `actualEnd` are set.
+     */
+    async clockOut(shiftId: string, at?: Date) {
+      return stampClock(shiftId, { actualEnd: at ?? new Date() })
     },
   }
 }

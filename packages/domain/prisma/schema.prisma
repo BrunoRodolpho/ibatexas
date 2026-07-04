@@ -243,6 +243,9 @@ model Staff {
   name      String
   role      StaffRole @default(ATTENDANT)
   active    Boolean   @default(true)
+  /// NEW-034 — per-staff pay rate in integer centavos/hour (Hard Rule #2). NULLABLE:
+  /// a staff member with no rate set is EXCLUDED from labor cost (never guessed).
+  hourlyRateCentavos Int? @map("hourly_rate_centavos")
   createdAt DateTime  @default(now()) @map("created_at")
   updatedAt DateTime  @updatedAt @map("updated_at")
 
@@ -256,18 +259,23 @@ model Staff {
 /// One scheduled work shift (escala) for a staff member. NEW-016 core: assign
 /// shifts to staff + list the schedule over a date range. Admin-ops data — not a
 /// customer money/safety path — so it is plain CRUD, manager-gated at the route
-/// (mirrors Table). Clock-in and labor-cost analytics are deliberately OUT of
-/// scope. FK → staff(id) ON DELETE CASCADE: removing a staff member removes their
-/// schedule (the same idiom Address/CustomerPreferences use for a real parent).
+/// (mirrors Table). NEW-034 EXTENDS this with clock-in/out (actualStart/actualEnd,
+/// both NULLABLE — null until the staff clocks in/out) which feed the read-only
+/// labor-cost analytics. FK → staff(id) ON DELETE CASCADE: removing a staff member
+/// removes their schedule (the same idiom Address/CustomerPreferences use).
 model StaffShift {
-  id        String   @id @default(cuid())
-  staffId   String   @map("staff_id")
-  startsAt  DateTime @map("starts_at")
-  endsAt    DateTime @map("ends_at")
-  role      String? /// The role worked this shift (defaults to the staff's role at the route)
-  note      String?
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
+  id          String    @id @default(cuid())
+  staffId     String    @map("staff_id")
+  startsAt    DateTime  @map("starts_at")
+  endsAt      DateTime  @map("ends_at")
+  /// NEW-034 — clock-in wall stamp (null until the staff clocks in).
+  actualStart DateTime? @map("actual_start")
+  /// NEW-034 — clock-out wall stamp (null until the staff clocks out).
+  actualEnd   DateTime? @map("actual_end")
+  role        String? /// The role worked this shift (defaults to the staff's role at the route)
+  note        String?
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
 
   staff Staff @relation(fields: [staffId], references: [id], onDelete: Cascade)
 

@@ -100,13 +100,22 @@ export {
   type OpsAlertState,
 } from "./services/__shared__/ops-alert-policy.js"
 export { createTableService, type TableService } from "./services/table.service.js"
-// NEW-016 staff scheduling (escala) — plain-CRUD assign + list-by-range + delete.
+// NEW-016 staff scheduling (escala) — plain-CRUD assign + list-by-range + delete;
+// NEW-034 extends the service with clock-in / clock-out.
 export {
   createStaffScheduleService,
   type StaffScheduleService,
   type CreateShiftInput,
   type ListShiftsParams,
 } from "./services/staff-schedule.service.js"
+// NEW-034 labor-cost analytics — read-only scheduled/actual hours + cost aggregation.
+export {
+  createLaborCostService,
+  type LaborCostService,
+  type LaborCostParams,
+  type StaffLaborCost,
+  type LaborCostReport,
+} from "./services/labor-cost.service.js"
 export { createDeliveryZoneService, type DeliveryZoneService } from "./services/delivery-zone.service.js"
 export { createLoyaltyService, type LoyaltyService, type LoyaltyServiceOptions } from "./services/loyalty.service.js"
 export {

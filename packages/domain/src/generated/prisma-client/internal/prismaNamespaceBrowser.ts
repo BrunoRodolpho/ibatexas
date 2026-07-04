@@ -189,6 +189,7 @@ export const StaffScalarFieldEnum = {
   name: 'name',
   role: 'role',
   active: 'active',
+  hourlyRateCentavos: 'hourlyRateCentavos',
   createdAt: 'createdAt',
   updatedAt: 'updatedAt'
 } as const
@@ -201,6 +202,8 @@ export const StaffShiftScalarFieldEnum = {
   staffId: 'staffId',
   startsAt: 'startsAt',
   endsAt: 'endsAt',
+  actualStart: 'actualStart',
+  actualEnd: 'actualEnd',
   role: 'role',
   note: 'note',
   createdAt: 'createdAt',
