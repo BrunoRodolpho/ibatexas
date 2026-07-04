@@ -1,15 +1,19 @@
-// admin/analytics-reports.ts — manager-gated read-only order analytics (NEW-013).
+// admin/analytics-reports.ts — manager-gated read-only order analytics (NEW-013 + NEW-033).
 // A read-only surface over the OrderAnalyticsService: over a local-date range
-// [from, to) it aggregates the EXISTING projections (OrderProjection + Payment)
-// into best-sellers and refund activity. NO mutations.
+// [from, to) it aggregates the EXISTING projections (OrderProjection + Payment),
+// joined to recipe/BOM COGS, into best-sellers, refund activity and per-product
+// margins. NO mutations.
 //
 //   GET /api/admin/analytics/top-items?from=&to=&limit=  → TopItem[]
 //   GET /api/admin/analytics/refunds?from=&to=           → RefundAnalytics
+//   GET /api/admin/analytics/margins?from=&to=           → MarginsReport
 //
-// SCOPE: this ships the two NEW-013 parts derivable from existing data
-// (top-items + refunds) — NOT margins/COGS, for which there is no cost field in
-// the schema (that half depends on NEW-003). This file is separate from
-// analytics.ts (`/analytics/summary`) — it adds endpoints, never duplicates it.
+// SCOPE: top-items + refunds are the NEW-013 parts derivable from order data.
+// Margins/COGS now EXIST too (NEW-033): NEW-035 added the Recipe/BOM + per-
+// ingredient cost, so the margins endpoint joins in-window revenue to per-dish
+// COGS (UNKNOWN when a dish has no recipe or an incomplete one). This file is
+// separate from analytics.ts (`/analytics/summary`) — it adds endpoints, never
+// duplicates it.
 //
 // Mirrors admin/caixa.ts: `withTypeProvider<ZodTypeProvider>`, a zod
 // querystring, lazy service construction, and a `requireManagerRole` preHandler
@@ -39,6 +43,11 @@ const TopItemsQuery = z.object({
 });
 
 const RefundsQuery = z.object({
+  from: YMD.optional(),
+  to: YMD.optional(),
+});
+
+const MarginsQuery = z.object({
   from: YMD.optional(),
   to: YMD.optional(),
 });
@@ -98,6 +107,25 @@ export async function adminAnalyticsReportRoutes(server: FastifyInstance): Promi
       const range = resolveRange(q);
       const analytics = await svc().getRefundAnalytics(range);
       return reply.send(analytics);
+    },
+  );
+
+  // ── GET /api/admin/analytics/margins — per-product margin (revenue − COGS) ───
+  app.get(
+    "/api/admin/analytics/margins",
+    {
+      preHandler: [requireManagerRole],
+      schema: {
+        tags: ["admin"],
+        summary: "Margens por produto (receita − CMV, por período)",
+        querystring: MarginsQuery,
+      },
+    },
+    async (request, reply) => {
+      const q = request.query as z.infer<typeof MarginsQuery>;
+      const range = resolveRange(q);
+      const report = await svc().getMargins(range);
+      return reply.send(report);
     },
   );
 }
