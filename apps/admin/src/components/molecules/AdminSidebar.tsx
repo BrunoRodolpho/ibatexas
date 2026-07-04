@@ -22,6 +22,7 @@ import {
   Siren,
   Gauge,
   BotMessageSquare,
+  Users,
 } from 'lucide-react'
 import { AdminSidebarBase, INCIDENT_LABELS, type AdminSidebarNavGroup } from '@ibatexas/ui'
 import { useOpenIncidentCount } from '@/domains/admin/admin.hooks'
@@ -33,6 +34,7 @@ const baseGroups: AdminSidebarNavGroup[] = [
       { key: 'dashboard', label: 'Dashboard', href: '/admin', icon: LayoutDashboard },
       { key: 'cardapio', label: 'Cardápio', href: '/admin/cardapio', icon: UtensilsCrossed },
       { key: 'loja', label: 'Loja', href: '/admin/loja', icon: ShoppingBag },
+      { key: 'clientes', label: 'Clientes', href: '/admin/clientes', icon: Users },
     ],
   },
   {
