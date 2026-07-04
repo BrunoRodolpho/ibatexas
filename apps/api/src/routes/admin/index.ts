@@ -16,6 +16,12 @@
 // GET  /api/admin/schedule/shifts        — list the staff schedule (escala) over a range
 // POST /api/admin/schedule/shifts        — assign a shift to a staff member (manager)
 // DELETE /api/admin/schedule/shifts/:id  — remove a shift (manager)
+// GET  /api/admin/ingredients            — list raw ingredients (manager) — NEW-003 stock slice
+// GET  /api/admin/ingredients/low-stock  — ingredients at/below their threshold (manager)
+// POST /api/admin/ingredients            — create a raw ingredient (manager)
+// PATCH /api/admin/ingredients/:id       — update a raw ingredient (manager)
+// DELETE /api/admin/ingredients/:id      — remove a raw ingredient (manager)
+// POST /api/admin/ingredients/:id/adjust — add/subtract stock, clamp at 0 (manager)
 // GET  /api/admin/analytics/summary     — analytics summary (orders, revenue, AOV)
 // GET  /api/admin/analytics/top-items    — best-sellers over a date range (manager)
 // GET  /api/admin/analytics/refunds      — refund count/total/trend over a range (manager)
@@ -30,6 +36,7 @@ import { reservationRoutes } from "./reservations.js";
 import { reviewRoutes } from "./reviews.js";
 import { tableRoutes } from "./tables.js";
 import { scheduleShiftRoutes } from "./schedule-shifts.js";
+import { ingredientRoutes } from "./ingredients.js";
 import { deliveryZoneRoutes } from "./delivery-zones.js";
 import { analyticsRoutes } from "./analytics.js";
 import { adminAnalyticsReportRoutes } from "./analytics-reports.js";
@@ -198,6 +205,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
   await server.register(reviewRoutes);
   await server.register(tableRoutes);
   await server.register(scheduleShiftRoutes);
+  await server.register(ingredientRoutes);
   await server.register(deliveryZoneRoutes);
   await server.register(analyticsRoutes);
   await server.register(adminAnalyticsReportRoutes);

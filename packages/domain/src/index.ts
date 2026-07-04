@@ -117,6 +117,16 @@ export {
   type LaborCostReport,
 } from "./services/labor-cost.service.js"
 export { createDeliveryZoneService, type DeliveryZoneService } from "./services/delivery-zone.service.js"
+// NEW-003 raw-ingredient inventory (stock slice) — plain-CRUD + adjustStock +
+// listLowStock; manager-gated at the route. Recipe/BOM, per-dish depletion and
+// COGS are deferred (out of this slice).
+export {
+  createIngredientService,
+  type IngredientService,
+  type CreateIngredientInput,
+  type UpdateIngredientPatch,
+  type ListIngredientsParams,
+} from "./services/ingredient.service.js"
 export { createLoyaltyService, type LoyaltyService, type LoyaltyServiceOptions } from "./services/loyalty.service.js"
 export {
   loyaltyPolicyBundle,
@@ -269,6 +279,7 @@ export type {
   DeliveryZone,
   Staff,
   StaffShift,
+  Ingredient,
   LoyaltyAccount,
   Conversation,
   ConversationMessage,

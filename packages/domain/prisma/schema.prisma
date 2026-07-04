@@ -642,6 +642,41 @@ model DeliveryZone {
   @@schema("ibx_domain")
 }
 
+// ─── Inventory ────────────────────────────────────────────────────────────────
+
+/// NEW-003 (stock slice) — a RAW ingredient the kitchen holds in stock (flour,
+/// meat, etc. that go INTO dishes) — NOT a Medusa finished-good product (whose
+/// stock is Medusa's own `inventory_quantity`). Tracks on-hand stock + a low-stock
+/// threshold so the admin surface can raise a low-stock read.
+///
+/// QUANTITIES are stored as SCALED INTEGERS in THOUSANDTHS of `unit` (milli-units):
+/// 2.5 kg → `stockMilli = 2500`; 250 g (unit "g") → 250000. Arithmetic is always on
+/// the integer milli field — precise, never a float (the same "no floats for
+/// load-bearing quantities" discipline Hard-Rule-#2 applies to money). `unit` is a
+/// free-form label validated at the route against the known measure set.
+///
+/// Admin-ops reference/config data — manager-gated at the route, plain CRUD (NOT
+/// kernel-adjudicated; ingredient stock is not a customer money/safety path). No FK
+/// to any other domain table and no children. Recipe/BOM linkage to menu items,
+/// per-dish depletion and COGS/margins are DEFERRED — OUT of this slice.
+model Ingredient {
+  id            String   @id @default(cuid())
+  name          String   @unique
+  /// Free-form unit label (e.g. "kg", "g", "un", "L", "mL"); validated at the route.
+  unit          String
+  /// On-hand stock in THOUSANDTHS of `unit` (milli-units). Never negative — adjustStock clamps at 0.
+  stockMilli    Int      @default(0) @map("stock_milli")
+  /// Low-stock threshold in milli-units. `stockMilli <= lowStockMilli` ⇒ low-stock.
+  lowStockMilli Int      @default(0) @map("low_stock_milli")
+  active        Boolean  @default(true)
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  @@index([active])
+  @@map("ingredients")
+  @@schema("ibx_domain")
+}
+
 // ─── Restaurant Schedule ────────────────────────────────────────────────────
 
 model WeeklySchedule {
