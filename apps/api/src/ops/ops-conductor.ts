@@ -56,12 +56,23 @@ import {
   type ToolDefinition,
 } from "../tools/register-ibatexas-tool-packs.js";
 import { deriveOpsPlannerContext } from "./ops-planner-context.js";
+import { composeOpsPlannerSystem } from "./ops-history.js";
 
 /** A per-turn read-tool executor (mirrors the chat planner's map). */
 export type OpsReadToolExecutor = (
   input: unknown,
   state: CognitiveState,
 ) => Promise<unknown>;
+
+/**
+ * Per-request context threaded into a composition (BKL-084). `historyBlock` is a
+ * pre-rendered, DATA-fenced pt-BR conversation-history block appended to the
+ * planner system prompt so anaphora ("e o brisket?") can resolve. It is prompt
+ * CONTEXT only — never parsed into an envelope payload.
+ */
+export interface OpsConductorContext {
+  readonly historyBlock?: string;
+}
 
 /**
  * The shared production ports the ops plane reuses verbatim, PLUS the ingredients
@@ -106,6 +117,7 @@ export interface OpsConductorDeps {
 export function composeOpsConductor(
   deps: OpsConductorDeps,
   actor: StaffEnvelopeActor,
+  context: OpsConductorContext = {},
 ): Conductor {
   const planner = createIbatexasPlanner({
     model: deps.model,
@@ -115,8 +127,9 @@ export function composeOpsConductor(
     staffEnvelopeActor: { staffId: actor.staffId, role: actor.role },
     readToolExecutors: deps.opsReadToolExecutors,
     // The staff-facing ops persona is the WHOLE system prompt (bypasses the
-    // customer fragment graph); telemetry still emits the planner LLMTrace.
-    system: OPS_PLANNER_PERSONA,
+    // customer fragment graph); telemetry still emits the planner LLMTrace. The
+    // per-request history block (if any) trails the persona as fenced DATA.
+    system: composeOpsPlannerSystem(OPS_PLANNER_PERSONA, context.historyBlock),
     telemetry: deps.telemetry,
     ...(deps.promptComposer ? { promptComposer: deps.promptComposer } : {}),
     ...(deps.resolveScheduleSignal
