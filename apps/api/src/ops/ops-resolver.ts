@@ -248,6 +248,83 @@ const OPS_REFUNDABLE_STATUSES: ReadonlySet<string> = new Set([
 const OPS_REFUND_REASON_MAX = 500;
 
 /**
+ * BKL-094 — the ops-plane refund-amount aliases the models actually emit. The
+ * planner persona asks for `refundAmountCentavos` (integer centavos), but live
+ * proof shows both the 4B and Sonnet put the spoken figure under
+ * `amount`/`value`/`valor` in REAIS ("reembolsa 10 reais" → `{amount: 10}`). We
+ * accept those as a fallback, converting REAIS → integer centavos EXACTLY. Order
+ * is priority: the first alias that parses to a clean money value wins.
+ */
+const OPS_REFUND_REAIS_ALIASES = ["amount", "value", "valor"] as const;
+
+/**
+ * Parse a REAIS refund amount (from an alias field) into EXACT integer centavos,
+ * or `null` when it is not a clean positive money value. Money-safe by
+ * construction:
+ *   - accepts a number (10, 10.5, 10.55) or a string ("10", "10.50", pt-BR
+ *     "10,50", "R$ 10,50") — models emit numbers, strings are defensive;
+ *   - converts via integer arithmetic on the decimal STRING (whole×100 + frac),
+ *     NEVER `reais * 100` (IEEE-754: `10.55 * 100 === 1054.9999999999998`);
+ *   - rejects >2 fractional digits, NaN/Infinity, ≤0, signs, exponents, thousands
+ *     groupings, and any non-numeric text → `null`, so the caller keeps the
+ *     confirm-gated full-balance default rather than a silently wrong number.
+ * NEVER clamps to the balance: an over-balance amount passes through so the pack's
+ * over-balance guard REFUSEs honestly (never silently reduce what staff asked).
+ */
+function parseRefundReaisToCentavos(raw: unknown): number | null {
+  let text: string;
+  if (typeof raw === "number") {
+    // A finite decimal stringifies canonically ("10.55"); NaN/Infinity stringify
+    // to non-numeric text ("NaN"/"Infinity") that the regex below rejects anyway.
+    text = String(raw);
+  } else if (typeof raw === "string") {
+    text = raw.trim();
+  } else {
+    return null;
+  }
+  // Drop internal spaces + a leading currency marker the model may add.
+  text = text.replace(/\s+/g, "").replace(/^r\$/i, "");
+  // pt-BR decimal comma → dot, ONLY when there is no dot already (an ambiguous
+  // "1.000,50" thousands grouping keeps both separators and the regex rejects it).
+  if (text.includes(",") && !text.includes(".")) {
+    text = text.replace(",", ".");
+  }
+  // A single positive decimal with AT MOST two fractional digits.
+  const match = /^(\d+)(?:\.(\d{1,2}))?$/.exec(text);
+  if (match === null) return null;
+  const centavos =
+    Number(match[1]) * 100 + Number((match[2] ?? "").padEnd(2, "0"));
+  return Number.isSafeInteger(centavos) && centavos > 0 ? centavos : null;
+}
+
+/**
+ * BKL-094 — derive the REQUESTED refund amount (integer centavos) from the model
+ * payload, priority: schema-correct `refundAmountCentavos` (integer centavos) →
+ * the REAIS aliases `amount`/`value`/`valor` (×100, exact) → the confirm-gated
+ * FULL refundable balance when nothing usable is present (a bare "reembolsa o
+ * pedido X" is a full refund). The result is the amount the staff CONFIRMS; it is
+ * NEVER clamped — an over-balance figure passes through so the pack REFUSEs.
+ */
+function resolveRequestedRefundCentavos(
+  payload: Record<string, unknown>,
+  fullRefundableBalance: number,
+): number {
+  const rawCentavos = payload.refundAmountCentavos;
+  if (
+    typeof rawCentavos === "number" &&
+    Number.isInteger(rawCentavos) &&
+    rawCentavos > 0
+  ) {
+    return rawCentavos;
+  }
+  for (const key of OPS_REFUND_REAIS_ALIASES) {
+    const centavos = parseRefundReaisToCentavos(payload[key]);
+    if (centavos !== null) return centavos;
+  }
+  return fullRefundableBalance;
+}
+
+/**
  * The pack-payments `PaymentState` the refund guards adjudicate against, built
  * from a live payment row. SHARED by the plan-stage resolver (below) and the
  * BKL-085 resume re-projection ({@link buildOpsRefundResumeState}) so a parked
@@ -568,10 +645,13 @@ async function resolveOrderTarget(
  * The refund payload uses the model's `orderId` as the order REFERENCE (display
  * number / customer name / id — the same field the other order verbs use); the
  * resolver resolves it, locates the order's active refundable payment, and stamps
- * the canonical payload. `refundAmountCentavos` defaults to the FULL refundable
- * balance when the model omits it (a bare "reembolsa o pedido X" is a full
- * refund) — the UNTRUSTED taint overlay parks it for confirmation regardless, so
- * the staff still confirms the exact number.
+ * the canonical payload. The requested amount threads via
+ * {@link resolveRequestedRefundCentavos} (BKL-094): `refundAmountCentavos`
+ * (centavos) OR the REAIS aliases the models actually emit (`amount`/`value`/
+ * `valor` ×100, exact); it defaults to the FULL refundable balance when the model
+ * gives nothing usable (a bare "reembolsa o pedido X" is a full refund) — the
+ * UNTRUSTED taint overlay parks it for confirmation regardless, so the staff still
+ * confirms the exact number.
  */
 async function resolveRefundTarget(
   deps: OpsResolverDeps,
@@ -620,16 +700,14 @@ async function resolveRefundTarget(
   }
 
   // STOP-GATE B — STAMP the forgeable balance fields from the DB row. The model
-  // controls only the amount (defaulting to the full refundable balance) + reason.
+  // controls only the amount + reason. BKL-094: the requested amount threads from
+  // `refundAmountCentavos` (centavos) OR the REAIS aliases the models actually
+  // emit (amount/value/valor ×100, exact); an unusable value keeps the confirm-
+  // gated full-balance default; an over-balance figure is NOT clamped (the pack's
+  // over-balance guard REFUSEs it honestly on the true DB balance below).
   const refundableBalance =
     payment.amountInCentavos - payment.refundedAmountCentavos;
-  const rawAmount = payload.refundAmountCentavos;
-  const modelAmount =
-    typeof rawAmount === "number" &&
-    Number.isInteger(rawAmount) &&
-    rawAmount > 0
-      ? rawAmount
-      : refundableBalance;
+  const modelAmount = resolveRequestedRefundCentavos(payload, refundableBalance);
   const rawReason = payload.reason;
   const reason =
     typeof rawReason === "string" && rawReason.trim().length > 0

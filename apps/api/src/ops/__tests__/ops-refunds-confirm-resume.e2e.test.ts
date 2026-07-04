@@ -424,6 +424,17 @@ const REFUND_CALL = (orderRef: string, amount?: number) => ({
   },
 });
 
+/** BKL-094 — the shape the models ACTUALLY emit for "reembolsa N reais": the
+ *  figure under `amount` in REAIS (not `refundAmountCentavos` in centavos). */
+const REFUND_CALL_REAIS = (orderRef: string, reais: number) => ({
+  id: "tc-refund-reais",
+  name: "express_intent",
+  input: {
+    capability: "payment.refund.issue",
+    payload: { orderId: orderRef, amount: reais, reason: "cliente pediu" },
+  },
+});
+
 describe("BKL-085 refunds-by-message — end-to-end park → confirm-resume → EXECUTE", () => {
   it("OWNER: parks a CONFIRM with the amount prompt, then 'sim' EXECUTEs the refund ONCE", async () => {
     const { deps, session, spies } = buildHarness({
@@ -546,6 +557,47 @@ describe("BKL-085 refunds-by-message — end-to-end park → confirm-resume → 
     const t = await runTurn(deps, "OWNER", "owner5", "reembolsa 150 do pedido 4242");
     // The kernel decided on the TRUE (stamped) R$100 balance → over-balance REFUSE.
     expect(t.decision.kind).toBe("REFUSE");
+    expect(spies.writeAdjudicatedRefund).not.toHaveBeenCalled();
+  });
+
+  it("BKL-094: 'reembolsa 10 reais' ({amount:10}) parks R$ 10,00 (not the full balance) → 'sim' EXECUTEs 1000", async () => {
+    const { deps, session, spies } = buildHarness({
+      toolCalls: [REFUND_CALL_REAIS("4242", 10)], // reais, NOT centavos
+    });
+    const sessionId = "system:staff:owner8";
+
+    // Turn 1 — the reais amount threads to 1000 centavos and parks for confirmation.
+    const t1 = await runTurn(deps, "OWNER", "owner8", "reembolsa 10 reais do pedido 4242");
+    expect(t1.decision.kind).toBe("REQUEST_CONFIRMATION");
+    // The prompt shows the PARSED R$ 10,00 — NOT the full R$ 100,00 balance.
+    expect(t1.response).toContain("R$ 10,00");
+    expect(t1.response).not.toContain("R$ 100,00");
+    // The parked envelope carries the threaded centavos amount.
+    const parks = session.parksFor(sessionId);
+    expect(parks).toHaveLength(1);
+    const parkedPayload = parks[0]!.envelope.payload as Record<string, unknown>;
+    expect(parkedPayload.refundAmountCentavos).toBe(1_000);
+    // …with the balance still DB-stamped (the model only controls the amount).
+    expect(parkedPayload.refundableBalanceCentavos).toBe(10_000);
+    expect(spies.writeAdjudicatedRefund).not.toHaveBeenCalled();
+
+    // Turn 2 — "sim, confirma" resumes → EXECUTE → the write got the 1000.
+    const t2 = await runTurn(deps, "OWNER", "owner8", "sim, confirma");
+    expect(t2.decision.kind).toBe("EXECUTE");
+    expect(spies.writeAdjudicatedRefund).toHaveBeenCalledTimes(1);
+    const [writePayload] = spies.writeAdjudicatedRefund.mock.calls[0]!;
+    expect(writePayload.refundAmountCentavos).toBe(1_000);
+    expect(session.parksFor(sessionId)).toHaveLength(0);
+  });
+
+  it("BKL-094: an over-balance reais ask ({amount:150} on R$100) is NOT clamped → pack REFUSEs", async () => {
+    const { deps, session, spies } = buildHarness({
+      toolCalls: [REFUND_CALL_REAIS("4242", 150)], // R$150 > the R$100 DB balance
+    });
+    const t = await runTurn(deps, "OWNER", "owner9", "reembolsa 150 reais do pedido 4242");
+    // The threaded 15_000 exceeds the true (stamped) R$100 balance → honest REFUSE.
+    expect(t.decision.kind).toBe("REFUSE");
+    expect(session.parksFor("system:staff:owner9")).toHaveLength(0);
     expect(spies.writeAdjudicatedRefund).not.toHaveBeenCalled();
   });
 
