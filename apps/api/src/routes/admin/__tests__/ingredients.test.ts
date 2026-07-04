@@ -210,6 +210,30 @@ describe("POST /api/admin/ingredients — create", () => {
       await server.close();
     }
   });
+
+  it("threads costCentavosPerUnit (NEW-035) and rejects a negative cost with 400", async () => {
+    mockCreate.mockResolvedValue({ id: "ing_c", name: "Farinha" });
+    const server = await buildServer(MANAGER);
+    try {
+      const ok = await server.inject({
+        method: "POST",
+        url: "/api/admin/ingredients",
+        payload: { name: "Farinha", unit: "kg", costCentavosPerUnit: 450 },
+      });
+      expect(ok.statusCode).toBe(201);
+      expect(mockCreate.mock.calls[0]?.[0]).toMatchObject({ costCentavosPerUnit: 450 });
+
+      const bad = await server.inject({
+        method: "POST",
+        url: "/api/admin/ingredients",
+        payload: { name: "Farinha", unit: "kg", costCentavosPerUnit: -1 },
+      });
+      expect(bad.statusCode).toBe(400);
+      expect(mockCreate).toHaveBeenCalledTimes(1); // the bad one never reached the service
+    } finally {
+      await server.close();
+    }
+  });
 });
 
 describe("PATCH /api/admin/ingredients/:id — update", () => {
@@ -256,6 +280,23 @@ describe("PATCH /api/admin/ingredients/:id — update", () => {
       });
       expect(res.statusCode).toBe(404);
       expect(res.json()).toMatchObject({ error: "ingredient_not_found" });
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("accepts an explicit null costCentavosPerUnit to CLEAR the cost (NEW-035)", async () => {
+    mockUpdate.mockResolvedValue({ id: "ing_1", costCentavosPerUnit: null });
+    const server = await buildServer(MANAGER);
+    try {
+      const res = await server.inject({
+        method: "PATCH",
+        url: "/api/admin/ingredients/ing_1",
+        payload: { costCentavosPerUnit: null },
+      });
+      expect(res.statusCode).toBe(200);
+      // null passes validation (nullable) and threads through as a defined clear.
+      expect(mockUpdate).toHaveBeenCalledWith("ing_1", { costCentavosPerUnit: null });
     } finally {
       await server.close();
     }

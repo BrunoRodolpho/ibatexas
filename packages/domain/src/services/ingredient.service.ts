@@ -5,8 +5,10 @@
 // schedule.service.ts) — raw-ingredient inventory is admin-ops, NOT a customer
 // money/safety path, so it does NOT go through the adjudicate kernel; the
 // manager-gate lives at the route (requireManagerRole). Scope is deliberately
-// narrow: CRUD + adjustStock + listLowStock. Recipe/BOM linkage to menu items,
-// per-dish depletion and COGS/margins are OUT of scope (deferred).
+// narrow: CRUD + adjustStock + listLowStock. NEW-035 adds a per-unit COST field
+// (costCentavosPerUnit) so an ingredient can feed a recipe's COGS read; the
+// recipe/BOM + COGS math live in recipe.service.ts. Per-dish depletion (the
+// order.placed subscriber) is OUT of scope (deferred).
 //
 // QUANTITIES are SCALED INTEGERS in THOUSANDTHS of the unit (milli-units): 2.5 kg
 // → 2500. Arithmetic (adjustStock) is integer-precise — never a float.
@@ -28,6 +30,9 @@ export interface CreateIngredientInput {
   readonly unit: string
   readonly stockMilli?: number
   readonly lowStockMilli?: number
+  /** NEW-035 — per-unit purchase cost in INTEGER CENTAVOS (of one whole `unit`).
+   *  Omitted/null → no cost set (excluded from COGS, never guessed). */
+  readonly costCentavosPerUnit?: number | null
   readonly active?: boolean
 }
 
@@ -37,6 +42,9 @@ export interface UpdateIngredientPatch {
   readonly unit?: string
   readonly stockMilli?: number
   readonly lowStockMilli?: number
+  /** NEW-035 — per-unit cost in centavos. Explicit `null` CLEARS the cost (back to
+   *  "no cost set"); omitted leaves it untouched. */
+  readonly costCentavosPerUnit?: number | null
   readonly active?: boolean
 }
 
@@ -77,6 +85,7 @@ export function createIngredientService() {
           unit: input.unit,
           stockMilli: input.stockMilli ?? 0,
           lowStockMilli: input.lowStockMilli ?? 0,
+          ...(input.costCentavosPerUnit !== undefined ? { costCentavosPerUnit: input.costCentavosPerUnit } : {}),
           ...(input.active !== undefined ? { active: input.active } : {}),
         },
       })
@@ -94,6 +103,9 @@ export function createIngredientService() {
         ...(patch.unit !== undefined ? { unit: patch.unit } : {}),
         ...(patch.stockMilli !== undefined ? { stockMilli: patch.stockMilli } : {}),
         ...(patch.lowStockMilli !== undefined ? { lowStockMilli: patch.lowStockMilli } : {}),
+        // `null` is a DEFINED value here → writes null (clears the cost); only an
+        // omitted (undefined) field is left untouched.
+        ...(patch.costCentavosPerUnit !== undefined ? { costCentavosPerUnit: patch.costCentavosPerUnit } : {}),
         ...(patch.active !== undefined ? { active: patch.active } : {}),
       }
       return mutateOrNull(id, () => data)

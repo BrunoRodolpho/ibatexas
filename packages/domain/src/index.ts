@@ -127,6 +127,19 @@ export {
   type UpdateIngredientPatch,
   type ListIngredientsParams,
 } from "./services/ingredient.service.js"
+// NEW-035 recipe/BOM + per-dish COGS (extends NEW-003) — plain-CRUD recipe (header +
+// ingredient lines) + a COGS read; manager-gated at the route. The order-flow
+// depletion subscriber is deferred (out of this slice).
+export {
+  createRecipeService,
+  computeRecipeCogs,
+  type RecipeService,
+  type CreateRecipeInput,
+  type RecipeLineInput,
+  type RecipeWithLines,
+  type CogsLine,
+  type RecipeCogs,
+} from "./services/recipe.service.js"
 export { createLoyaltyService, type LoyaltyService, type LoyaltyServiceOptions } from "./services/loyalty.service.js"
 export {
   loyaltyPolicyBundle,
@@ -280,6 +293,8 @@ export type {
   Staff,
   StaffShift,
   Ingredient,
+  Recipe,
+  RecipeIngredient,
   LoyaltyAccount,
   Conversation,
   ConversationMessage,

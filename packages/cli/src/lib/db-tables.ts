@@ -65,14 +65,25 @@ export const DOMAIN_REFERENCE = [
   "weeklySchedule",
   "holiday",
   "scheduleOverride",
+  // NEW-035 recipe/BOM — a Recipe (bill-of-materials header, soft ref to a Medusa
+  // finished-good) + its RecipeIngredient join lines. Reference/config data (a dish's
+  // recipe is authored once, like the ingredient catalog): a routine `db clean` must
+  // NOT nuke it. FK-safe ordering (children → parents), and this whole group is
+  // deleted children-first: `recipeIngredient` (the join) is listed BEFORE its BOTH
+  // parents — `recipe` (FK onDelete Cascade) AND `ingredient` (FK onDelete Restrict,
+  // below) — so an explicit `--reference` wipe deletes the join rows before either
+  // parent and never trips the Restrict FK.
+  "recipeIngredient",
+  "recipe",
   // NEW-003 raw-ingredient inventory (stock slice) — the restaurant's catalog of
-  // raw ingredients + on-hand stock + low-stock thresholds. Operational
-  // reference/config data (like `staff` and the schedule templates): a routine
-  // `db clean` must NOT nuke the ingredient catalog and force re-entering every
-  // flour/meat row + threshold. No FK to any other domain table and no children,
-  // so its position within this group is FK-irrelevant. Mutable stock lives on the
-  // row, but the row's IDENTITY is reference data (staff rows likewise carry
-  // mutable fields) — so it belongs in REFERENCE, preserved unless `--reference`/`--all`.
+  // raw ingredients + on-hand stock + low-stock thresholds (NEW-035 adds a per-unit
+  // cost). Operational reference/config data (like `staff` and the schedule
+  // templates): a routine `db clean` must NOT nuke the ingredient catalog and force
+  // re-entering every flour/meat row + threshold. Now a parent of `recipeIngredient`
+  // (onDelete Restrict), so it is listed AFTER the join above for child-first
+  // FK-safety. Mutable stock/cost live on the row, but the row's IDENTITY is
+  // reference data (staff rows likewise carry mutable fields) — so it belongs in
+  // REFERENCE, preserved unless `--reference`/`--all`.
   "ingredient",
 ] as const
 

@@ -74,6 +74,8 @@ export const ModelName = {
   ConversationMessage: 'ConversationMessage',
   DeliveryZone: 'DeliveryZone',
   Ingredient: 'Ingredient',
+  Recipe: 'Recipe',
+  RecipeIngredient: 'RecipeIngredient',
   WeeklySchedule: 'WeeklySchedule',
   Holiday: 'Holiday',
   ScheduleOverride: 'ScheduleOverride',
@@ -441,12 +443,35 @@ export const IngredientScalarFieldEnum = {
   unit: 'unit',
   stockMilli: 'stockMilli',
   lowStockMilli: 'lowStockMilli',
+  costCentavosPerUnit: 'costCentavosPerUnit',
   active: 'active',
   createdAt: 'createdAt',
   updatedAt: 'updatedAt'
 } as const
 
 export type IngredientScalarFieldEnum = (typeof IngredientScalarFieldEnum)[keyof typeof IngredientScalarFieldEnum]
+
+
+export const RecipeScalarFieldEnum = {
+  id: 'id',
+  medusaProductId: 'medusaProductId',
+  yield: 'yield',
+  active: 'active',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+} as const
+
+export type RecipeScalarFieldEnum = (typeof RecipeScalarFieldEnum)[keyof typeof RecipeScalarFieldEnum]
+
+
+export const RecipeIngredientScalarFieldEnum = {
+  id: 'id',
+  recipeId: 'recipeId',
+  ingredientId: 'ingredientId',
+  qtyMilli: 'qtyMilli'
+} as const
+
+export type RecipeIngredientScalarFieldEnum = (typeof RecipeIngredientScalarFieldEnum)[keyof typeof RecipeIngredientScalarFieldEnum]
 
 
 export const WeeklyScheduleScalarFieldEnum = {
