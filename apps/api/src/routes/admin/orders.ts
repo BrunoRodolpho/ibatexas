@@ -17,6 +17,7 @@ import {
 } from "@ibatexas/domain";
 import { getAuditSink } from "@ibatexas/audit-sink";
 import { requireManagerRole } from "../../middleware/staff-auth.js";
+import { staffRoleGuard } from "../../claustrum/staff-role-guard.js";
 import { medusaAdmin } from "./_shared.js";
 import {
   actorFor,
@@ -355,6 +356,9 @@ export async function orderRoutes(server: FastifyInstance): Promise<void> {
   server.addHook("onReady", async () => {
     commandSvc = createOrderCommandService(server.log, {
       auditSink: getAuditSink(),
+      // BKL-074 — kernel role backstop: staffRoleGuard gates the admin
+      // order.status.transition path (inert unless an `admin:` envelope).
+      authGuards: [staffRoleGuard],
     });
   });
   const querySvc = createOrderQueryService();

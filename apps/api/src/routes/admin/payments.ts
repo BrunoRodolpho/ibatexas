@@ -56,6 +56,7 @@ import {
   type PaymentStatusChangedEvent,
 } from "@ibatexas/types";
 import { requireStaff, requireManagerRole } from "../../middleware/staff-auth.js";
+import { staffRoleGuard } from "../../claustrum/staff-role-guard.js";
 import {
   createAdminConfirmationStore,
   type PendingAdminAction,
@@ -274,12 +275,18 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
   let paymentCmdSvc!: ReturnType<typeof createPaymentCommandService>;
   let orderCmdSvc!: ReturnType<typeof createOrderCommandService>;
   server.addHook("onReady", async () => {
+    // BKL-074: inject the kernel-level staff-role backstop into both command
+    // services (payment + the note-path order service). `staffRoleGuard` is
+    // inert for non-`admin:` envelopes, so it REFUSES a mis-scoped staff role
+    // at the kernel without touching system/customer/agent mutations.
     paymentCmdSvc = createPaymentCommandService(server.log, {
       auditSink: getAuditSink(),
+      authGuards: [staffRoleGuard],
     });
     // W7-P4: addNoteFromEnvelope path needs an audit-wired OrderCommandService.
     orderCmdSvc = createOrderCommandService(server.log, {
       auditSink: getAuditSink(),
+      authGuards: [staffRoleGuard],
     });
   });
   const paymentQuerySvc = createPaymentQueryService();

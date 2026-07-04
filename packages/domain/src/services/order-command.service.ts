@@ -45,6 +45,7 @@ import {
 import { canTransition, type OrderFulfillmentStatus } from "@ibatexas/types"
 import type { CreateOrderProjectionInput } from "../mappers/medusa-order.mapper.js"
 import type { AuditSink, IntentEnvelope } from "@adjudicate/core"
+import type { Guard } from "@adjudicate/core/kernel"
 import {
   ordersPolicyBundle,
   type OrderState,
@@ -241,6 +242,17 @@ type Logger = { warn?: (...args: unknown[]) => void }
 export interface OrderCommandServiceOptions {
   readonly auditSink?: AuditSink
   readonly log?: Logger
+  /**
+   * WS7 / BKL-074 — adopter AUTH guards (e.g. `staffRoleGuard`) injected into
+   * EVERY `withAdjudicate` call this service makes. The HTTP admin routes pass
+   * `[staffRoleGuard]` so a mis-scoped staff role is REFUSED at the kernel on
+   * the command-service adjudication path (which uses RAW pack bundles), not
+   * only by the Fastify preHandler. Inert for non-`admin:` envelopes, so this
+   * is a no-op for the SYSTEM-actor create/reconcile and customer/LLM note
+   * paths. Threaded through `adjudicateOptions` so per-method calls are
+   * unchanged.
+   */
+  readonly authGuards?: readonly Guard<string, unknown, unknown>[]
 }
 
 /**
@@ -263,6 +275,7 @@ export function createOrderCommandService(
 ): OrderCommandService {
   const adjudicateOptions = {
     ...(options?.auditSink ? { auditSink: options.auditSink } : {}),
+    ...(options?.authGuards ? { authGuards: options.authGuards } : {}),
     log: log ?? options?.log,
   } as const
 

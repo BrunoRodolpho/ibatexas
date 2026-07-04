@@ -18,7 +18,15 @@
 //     the load-bearing key — same nonce = same intentHash).
 
 import { describe, it, expect, beforeEach, vi } from "vitest"
-import { buildEnvelope, type AuditSink } from "@adjudicate/core"
+import {
+  basis,
+  BASIS_CODES,
+  buildEnvelope,
+  decisionRefuse,
+  refuse,
+  type AuditSink,
+} from "@adjudicate/core"
+import { nameGuard, type Guard } from "@adjudicate/core/kernel"
 import { randomUUID } from "node:crypto"
 
 // ── Hoisted mocks ─────────────────────────────────────────────────────────
@@ -153,6 +161,81 @@ function makeAuditSink(): AuditSink & { emit: ReturnType<typeof vi.fn> } {
   return {
     emit: vi.fn().mockResolvedValue(undefined),
   } as never
+}
+
+// ── BKL-074 injected staff-role guard (locally built — domain tests must NOT
+//    import apps/api) ─────────────────────────────────────────────────────────
+//
+// A faithful equivalent of apps/api's `createStaffRoleGuard`: engages ONLY on
+// `admin:` sessionIds, REFUSEs `staff_role_violation` when the kind is off the
+// matrix / the role is absent / unknown / not permitted, and is otherwise inert
+// (null). Passed as the injected `authGuards` to prove the command-service
+// backstop THROUGH the real kernel + the raw orders pack bundle.
+const STAFF_ROLE_REFUSAL_CODE = "staff_role_violation"
+
+/** CODE-TRUTH mirror of STAFF_KIND_ALLOWED_ROLES (staff-role-matrix.ts). */
+const STAFF_KIND_ALLOWED_ROLES: Record<string, readonly string[]> = {
+  "order.status.transition": ["OWNER", "MANAGER", "ATTENDANT"],
+  "payment.status.transition": ["OWNER", "MANAGER", "ATTENDANT"],
+  "payment.refund.issue": ["OWNER", "MANAGER"],
+  "order.note.add": ["OWNER", "MANAGER", "ATTENDANT"],
+  "reservation.checkin": ["OWNER", "MANAGER"],
+  "reservation.complete": ["OWNER", "MANAGER"],
+  "reservation.cancel": ["OWNER", "MANAGER"],
+}
+
+function invertMatrix(): Record<string, ReadonlySet<string>> {
+  const acc: Record<string, Set<string>> = {
+    OWNER: new Set(),
+    MANAGER: new Set(),
+    ATTENDANT: new Set(),
+  }
+  for (const [kind, roles] of Object.entries(STAFF_KIND_ALLOWED_ROLES)) {
+    for (const role of roles) acc[role]!.add(kind)
+  }
+  return acc
+}
+
+function createTestStaffRoleGuard(): Guard<string, unknown, unknown> {
+  const matrix = invertMatrix()
+  const staffPlaneKinds = new Set<string>()
+  for (const kinds of Object.values(matrix)) {
+    for (const k of kinds) staffPlaneKinds.add(k)
+  }
+  const refuseStaffRole = (detail: string) =>
+    refuse(
+      "AUTH",
+      STAFF_ROLE_REFUSAL_CODE,
+      "Seu nível de acesso não permite executar esta ação.",
+      detail,
+    )
+  const guard: Guard<string, unknown, unknown> = (envelope, _state) => {
+    const { sessionId, role } = envelope.actor
+    if (!sessionId.startsWith("admin:")) return null
+    const kind = envelope.kind
+    if (!staffPlaneKinds.has(kind)) {
+      return decisionRefuse(refuseStaffRole(`kind "${kind}" off matrix`), [
+        basis("auth", BASIS_CODES.auth.SCOPE_INSUFFICIENT, { sessionId, kind }),
+      ])
+    }
+    if (role === undefined) {
+      return decisionRefuse(refuseStaffRole(`no role for "${kind}"`), [
+        basis("auth", BASIS_CODES.auth.IDENTITY_MISSING, { sessionId, kind }),
+      ])
+    }
+    const allowed = matrix[role]
+    if (allowed === undefined) {
+      return decisionRefuse(refuseStaffRole(`unknown role "${role}"`), [
+        basis("auth", BASIS_CODES.auth.IDENTITY_MISSING, { sessionId, kind, role }),
+      ])
+    }
+    if (allowed.has(kind)) return null
+    return decisionRefuse(
+      refuseStaffRole(`role "${role}" not permitted for "${kind}"`),
+      [basis("auth", BASIS_CODES.auth.SCOPE_INSUFFICIENT, { sessionId, kind, role })],
+    )
+  }
+  return nameGuard("staffRole", guard)
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────
@@ -631,6 +714,100 @@ describe("OrderCommandService — envelope-typed entry points", () => {
       const outcome = await svc.transitionStatusFromEnvelope(envelope)
       expect(outcome.decision.kind).toBe("EXECUTE")
       expect(outcome.result).toBeDefined()
+    })
+  })
+
+  // ── BKL-074 — kernel-level staff-role backstop on order.note.add ───────────
+  //
+  // Proves the injected `authGuards: [staffRoleGuard]` runs INSIDE the
+  // command-service adjudication (against the RAW orders pack bundle that
+  // carries NO adopter auth guards). ATTENDANT IS permitted for order.note.add
+  // (so the note still EXECUTEs), an admin envelope with NO role is REFUSED, and
+  // the guard is inert for non-`admin:` (customer/LLM) note traffic.
+  describe("BKL-074 — injected staffRoleGuard backstop on order.note.add", () => {
+    const guard = createTestStaffRoleGuard()
+
+    const noteState: OrderState = {
+      ctx: {
+        channel: "web",
+        customerId: "cust_01",
+        cartId: null,
+        orderId: "order_01",
+      },
+    }
+
+    it("EXECUTE: admin ATTENDANT order.note.add passes the injected guard (ATTENDANT is permitted for notes)", async () => {
+      const svc = createOrderCommandService(undefined, { authGuards: [guard] })
+      mockNoteCreate.mockResolvedValue({ id: "note_att" })
+
+      const envelope = buildEnvelope({
+        kind: "order.note.add" as const,
+        payload: { orderId: "order_01", body: "Mesa 5 chegou" },
+        nonce: randomUUID(),
+        actor: {
+          principal: "user" as const,
+          sessionId: "admin:att_1",
+          role: "ATTENDANT",
+        },
+        taint: "TRUSTED",
+      })
+
+      const outcome = await svc.addNoteFromEnvelope(envelope, noteState, {
+        author: "staff",
+        authorId: "att_1",
+      })
+
+      expect(outcome.decision.kind).toBe("EXECUTE")
+      expect(outcome.result).toEqual({ noteId: "note_att", orderId: "order_01" })
+      expect(mockNoteCreate).toHaveBeenCalledOnce()
+    })
+
+    it("REFUSE: admin order.note.add with NO actor.role is blocked at AUTH — executor NEVER runs", async () => {
+      const svc = createOrderCommandService(undefined, { authGuards: [guard] })
+
+      const envelope = buildEnvelope({
+        kind: "order.note.add" as const,
+        payload: { orderId: "order_01", body: "Sem cargo" },
+        nonce: randomUUID(),
+        // admin: session but NO role — fail-closed on the staff plane.
+        actor: { principal: "user" as const, sessionId: "admin:norole_1" },
+        taint: "TRUSTED",
+      })
+
+      const outcome = await svc.addNoteFromEnvelope(envelope, noteState, {
+        author: "staff",
+        authorId: "norole_1",
+      })
+
+      expect(outcome.decision.kind).toBe("REFUSE")
+      if (outcome.decision.kind === "REFUSE") {
+        expect(outcome.decision.refusal.code).toBe(STAFF_ROLE_REFUSAL_CODE)
+        expect(outcome.decision.refusal.kind).toBe("AUTH")
+      }
+      // Load-bearing: the note was never written.
+      expect(mockNoteCreate).not.toHaveBeenCalled()
+    })
+
+    it("EXECUTE (guard inert): a customer/LLM (non-admin) order.note.add still EXECUTEs with the guard injected — no regression", async () => {
+      const svc = createOrderCommandService(undefined, { authGuards: [guard] })
+      mockNoteCreate.mockResolvedValue({ id: "note_cust" })
+
+      const envelope = buildEnvelope({
+        kind: "order.note.add" as const,
+        payload: { orderId: "order_01", body: "Molho extra" },
+        nonce: randomUUID(),
+        // Non-`admin:` session — the staff-role guard must stay inert.
+        actor: { principal: "llm" as const, sessionId: "llm:test-suite" },
+        taint: "UNTRUSTED",
+      })
+
+      const outcome = await svc.addNoteFromEnvelope(envelope, noteState, {
+        author: "customer",
+        authorId: "cust_01",
+      })
+
+      expect(outcome.decision.kind).toBe("EXECUTE")
+      expect(mockNoteCreate).toHaveBeenCalledOnce()
     })
   })
 })
