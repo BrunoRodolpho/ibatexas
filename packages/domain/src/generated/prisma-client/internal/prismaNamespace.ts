@@ -391,6 +391,7 @@ export const ModelName = {
   Waitlist: 'Waitlist',
   Review: 'Review',
   Staff: 'Staff',
+  StaffShift: 'StaffShift',
   Customer: 'Customer',
   Address: 'Address',
   CustomerPreferences: 'CustomerPreferences',
@@ -428,7 +429,7 @@ export type TypeMap<ExtArgs extends runtime.Types.Extensions.InternalArgs = runt
     omit: GlobalOmitOptions
   }
   meta: {
-    modelProps: "table" | "timeSlot" | "reservation" | "reservationTable" | "waitlist" | "review" | "staff" | "customer" | "address" | "customerPreferences" | "customerOrderItem" | "orderProjection" | "orderStatusHistory" | "orderEventLog" | "payment" | "paymentStatusHistory" | "orderNote" | "loyaltyAccount" | "conversation" | "conversationMessage" | "deliveryZone" | "weeklySchedule" | "holiday" | "scheduleOverride" | "agentRun" | "agentRedTeamRun" | "llmTokenUsage" | "conversationIncident" | "opsAlert"
+    modelProps: "table" | "timeSlot" | "reservation" | "reservationTable" | "waitlist" | "review" | "staff" | "staffShift" | "customer" | "address" | "customerPreferences" | "customerOrderItem" | "orderProjection" | "orderStatusHistory" | "orderEventLog" | "payment" | "paymentStatusHistory" | "orderNote" | "loyaltyAccount" | "conversation" | "conversationMessage" | "deliveryZone" | "weeklySchedule" | "holiday" | "scheduleOverride" | "agentRun" | "agentRedTeamRun" | "llmTokenUsage" | "conversationIncident" | "opsAlert"
     txIsolationLevel: TransactionIsolationLevel
   }
   model: {
@@ -947,6 +948,80 @@ export type TypeMap<ExtArgs extends runtime.Types.Extensions.InternalArgs = runt
         count: {
           args: Prisma.StaffCountArgs<ExtArgs>
           result: runtime.Types.Utils.Optional<Prisma.StaffCountAggregateOutputType> | number
+        }
+      }
+    }
+    StaffShift: {
+      payload: Prisma.$StaffShiftPayload<ExtArgs>
+      fields: Prisma.StaffShiftFieldRefs
+      operations: {
+        findUnique: {
+          args: Prisma.StaffShiftFindUniqueArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$StaffShiftPayload> | null
+        }
+        findUniqueOrThrow: {
+          args: Prisma.StaffShiftFindUniqueOrThrowArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$StaffShiftPayload>
+        }
+        findFirst: {
+          args: Prisma.StaffShiftFindFirstArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$StaffShiftPayload> | null
+        }
+        findFirstOrThrow: {
+          args: Prisma.StaffShiftFindFirstOrThrowArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$StaffShiftPayload>
+        }
+        findMany: {
+          args: Prisma.StaffShiftFindManyArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$StaffShiftPayload>[]
+        }
+        create: {
+          args: Prisma.StaffShiftCreateArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$StaffShiftPayload>
+        }
+        createMany: {
+          args: Prisma.StaffShiftCreateManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        createManyAndReturn: {
+          args: Prisma.StaffShiftCreateManyAndReturnArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$StaffShiftPayload>[]
+        }
+        delete: {
+          args: Prisma.StaffShiftDeleteArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$StaffShiftPayload>
+        }
+        update: {
+          args: Prisma.StaffShiftUpdateArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$StaffShiftPayload>
+        }
+        deleteMany: {
+          args: Prisma.StaffShiftDeleteManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        updateMany: {
+          args: Prisma.StaffShiftUpdateManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        updateManyAndReturn: {
+          args: Prisma.StaffShiftUpdateManyAndReturnArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$StaffShiftPayload>[]
+        }
+        upsert: {
+          args: Prisma.StaffShiftUpsertArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$StaffShiftPayload>
+        }
+        aggregate: {
+          args: Prisma.StaffShiftAggregateArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.AggregateStaffShift>
+        }
+        groupBy: {
+          args: Prisma.StaffShiftGroupByArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.StaffShiftGroupByOutputType>[]
+        }
+        count: {
+          args: Prisma.StaffShiftCountArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.StaffShiftCountAggregateOutputType> | number
         }
       }
     }
@@ -2714,6 +2789,20 @@ export const StaffScalarFieldEnum = {
 export type StaffScalarFieldEnum = (typeof StaffScalarFieldEnum)[keyof typeof StaffScalarFieldEnum]
 
 
+export const StaffShiftScalarFieldEnum = {
+  id: 'id',
+  staffId: 'staffId',
+  startsAt: 'startsAt',
+  endsAt: 'endsAt',
+  role: 'role',
+  note: 'note',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+} as const
+
+export type StaffShiftScalarFieldEnum = (typeof StaffShiftScalarFieldEnum)[keyof typeof StaffShiftScalarFieldEnum]
+
+
 export const CustomerScalarFieldEnum = {
   id: 'id',
   phone: 'phone',
@@ -3574,6 +3663,7 @@ export type GlobalOmitConfig = {
   waitlist?: Prisma.WaitlistOmit
   review?: Prisma.ReviewOmit
   staff?: Prisma.StaffOmit
+  staffShift?: Prisma.StaffShiftOmit
   customer?: Prisma.CustomerOmit
   address?: Prisma.AddressOmit
   customerPreferences?: Prisma.CustomerPreferencesOmit
