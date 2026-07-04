@@ -59,6 +59,16 @@ export type Review = Prisma.ReviewModel
  */
 export type Staff = Prisma.StaffModel
 /**
+ * Model StaffShift
+ * One scheduled work shift (escala) for a staff member. NEW-016 core: assign
+ * shifts to staff + list the schedule over a date range. Admin-ops data — not a
+ * customer money/safety path — so it is plain CRUD, manager-gated at the route
+ * (mirrors Table). Clock-in and labor-cost analytics are deliberately OUT of
+ * scope. FK → staff(id) ON DELETE CASCADE: removing a staff member removes their
+ * schedule (the same idiom Address/CustomerPreferences use for a real parent).
+ */
+export type StaffShift = Prisma.StaffShiftModel
+/**
  * Model Customer
  * Twilio-verified customer profile. Phone is the primary identity.
  */

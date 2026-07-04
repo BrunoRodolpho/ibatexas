@@ -58,6 +58,7 @@ export const ModelName = {
   Waitlist: 'Waitlist',
   Review: 'Review',
   Staff: 'Staff',
+  StaffShift: 'StaffShift',
   Customer: 'Customer',
   Address: 'Address',
   CustomerPreferences: 'CustomerPreferences',
@@ -193,6 +194,20 @@ export const StaffScalarFieldEnum = {
 } as const
 
 export type StaffScalarFieldEnum = (typeof StaffScalarFieldEnum)[keyof typeof StaffScalarFieldEnum]
+
+
+export const StaffShiftScalarFieldEnum = {
+  id: 'id',
+  staffId: 'staffId',
+  startsAt: 'startsAt',
+  endsAt: 'endsAt',
+  role: 'role',
+  note: 'note',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+} as const
+
+export type StaffShiftScalarFieldEnum = (typeof StaffShiftScalarFieldEnum)[keyof typeof StaffShiftScalarFieldEnum]
 
 
 export const CustomerScalarFieldEnum = {

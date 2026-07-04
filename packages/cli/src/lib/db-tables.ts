@@ -37,6 +37,11 @@ export const DOMAIN_DELETE_ORDER = [
   // NEW-025 ops-alert plane (no FK — restaurant-global operational alerts raised
   // by deterministic watchdogs). Ops telemetry, wiped by a default clean.
   "opsAlert",
+  // NEW-016 staff scheduling (escala) — one row per assigned work shift. FK →
+  // staff(id) (a reference table, deleted later / ON DELETE CASCADE), no children
+  // of its own. Operational schedule data, wiped by a default clean; listed before
+  // its parent `staff` (in DOMAIN_REFERENCE) for child-first FK-safety.
+  "staffShift",
   "orderProjection",
   // Observability/telemetry tables (no FK to other domain tables). Registered
   // here to close the pre-existing db-tables drift their models (AgentRedTeamRun,
