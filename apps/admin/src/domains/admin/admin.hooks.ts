@@ -12,6 +12,15 @@ import {
 import type { AdminReservation, AdminReview, AdminIncident } from '@ibatexas/ui'
 import { sortOpsAlerts, buildOpsAlertsQuery, type OpsAlert } from './ops-alerts.mappers'
 import type { OpsSnapshot } from './ops-snapshot.mappers'
+import {
+  canSend,
+  entryFromResult,
+  errorEntry,
+  userEntry,
+  OPS_CHAT_NETWORK_ERROR,
+  type OpsChatResult,
+  type OpsThreadEntry,
+} from './ops-chat.mappers'
 
 const hooks = buildAdminHooks(createAdminHook, createAdminListHook, apiFetch)
 
@@ -829,4 +838,77 @@ export function useAdminOpsSnapshot() {
   }, [reload])
 
   return { snapshot, loading, error, reload }
+}
+
+// ── Canal Operacional (ops-actor chat — BKL-087) ─────────────────────────────
+
+const OPS_CHAT_ENDPOINT = '/api/proxy/api/admin/ops/chat'
+
+/**
+ * POST one ops command and return the SETTLED result WITHOUT throwing on a
+ * non-ok status. Unlike `apiFetch` (which throws and discards the body), this
+ * reads the response body on BOTH paths so a 403 / 502 / 503 can surface the
+ * server's own pt-BR error text honestly (same reason useUpdateOrderStatus does
+ * a raw fetch). `credentials: 'include'` rides the staff-JWT cookie, which the
+ * /api/proxy forwards upstream to the requireStaff route.
+ */
+async function postOpsChat(message: string): Promise<OpsChatResult> {
+  const res = await fetch(OPS_CHAT_ENDPOINT, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message }),
+  })
+  let body: unknown = null
+  try {
+    body = await res.json()
+  } catch {
+    // A non-JSON error body (e.g. a gateway 502) — fall through with null; the
+    // error mapper then uses the status-keyed pt-BR fallback.
+  }
+  return { ok: res.ok, status: res.status, body }
+}
+
+let opsChatEntrySeq = 0
+/** Monotonic client-only entry id (stable React key; v1 has no server id). */
+function nextOpsChatId(): string {
+  opsChatEntrySeq += 1
+  return `ops-chat-${opsChatEntrySeq}`
+}
+
+/**
+ * Backs the Canal Operacional chat (BKL-087) — the manager/owner ↔ ops-actor
+ * surface over POST /api/admin/ops/chat (NEW-032 slice B). The transcript is
+ * CLIENT-ONLY: v1 of the channel is STATELESS per turn (no server history), so
+ * this hook holds the thread in memory and sends one independent turn at a time.
+ * A failed turn appends an HONEST error bubble (the server's pt-BR text) and
+ * NEVER drops the existing thread — mirroring the "never swallow" discipline of
+ * useAdminOpsSnapshot. An in-flight lock (a ref, so the guard is closure-stable)
+ * prevents overlapping sends while the composer is disabled.
+ */
+export function useOpsChat() {
+  const [entries, setEntries] = useState<OpsThreadEntry[]>([])
+  const [inFlight, setInFlight] = useState(false)
+  const inFlightRef = useRef(false)
+
+  const send = useCallback(async (raw: string) => {
+    const text = raw.trim()
+    if (!canSend(text, inFlightRef.current)) return
+    inFlightRef.current = true
+    setInFlight(true)
+    setEntries((prev) => [...prev, userEntry(nextOpsChatId(), text)])
+    try {
+      const result = await postOpsChat(text)
+      setEntries((prev) => [...prev, entryFromResult(nextOpsChatId(), result)])
+    } catch {
+      // Transport failure (fetch rejected) — honest error bubble, never fake
+      // success; the thread is preserved.
+      setEntries((prev) => [...prev, errorEntry(nextOpsChatId(), OPS_CHAT_NETWORK_ERROR)])
+    } finally {
+      inFlightRef.current = false
+      setInFlight(false)
+    }
+  }, [])
+
+  return { entries, inFlight, send }
 }
