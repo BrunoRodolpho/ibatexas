@@ -7,6 +7,7 @@ import { HomeFavorites } from './HomeFavorites'
 import { ReorderCard } from '@/components/molecules/ReorderCard'
 import { StoryBlock } from '@/components/molecules/StoryBlock'
 import { HomeBanner } from './HomeBanner'
+import { HomeSpecials } from './HomeSpecials'
 import { WAVE_FILL } from '@/components/molecules/wave-paths'
 
 import { PersonalizationReviews, PersonalizationRecommendations, PersonalizationRecentlyViewed } from './PersonalizationIslands'
@@ -102,6 +103,10 @@ export default async function Home() {
       <div className="relative z-10 pt-0 pb-0">
         <HomeBanner />
       </div>
+
+      {/* ── Today's daily specials (NEW-038) — renders null until a manager
+             authors a special, so it is invisible on empty data ── */}
+      <HomeSpecials />
 
       {/* ── Personal nudges (only render for the right audience) ── */}
       <ReorderCard />
