@@ -406,6 +406,7 @@ export const ModelName = {
   Conversation: 'Conversation',
   ConversationMessage: 'ConversationMessage',
   DeliveryZone: 'DeliveryZone',
+  Ingredient: 'Ingredient',
   WeeklySchedule: 'WeeklySchedule',
   Holiday: 'Holiday',
   ScheduleOverride: 'ScheduleOverride',
@@ -429,7 +430,7 @@ export type TypeMap<ExtArgs extends runtime.Types.Extensions.InternalArgs = runt
     omit: GlobalOmitOptions
   }
   meta: {
-    modelProps: "table" | "timeSlot" | "reservation" | "reservationTable" | "waitlist" | "review" | "staff" | "staffShift" | "customer" | "address" | "customerPreferences" | "customerOrderItem" | "orderProjection" | "orderStatusHistory" | "orderEventLog" | "payment" | "paymentStatusHistory" | "orderNote" | "loyaltyAccount" | "conversation" | "conversationMessage" | "deliveryZone" | "weeklySchedule" | "holiday" | "scheduleOverride" | "agentRun" | "agentRedTeamRun" | "llmTokenUsage" | "conversationIncident" | "opsAlert"
+    modelProps: "table" | "timeSlot" | "reservation" | "reservationTable" | "waitlist" | "review" | "staff" | "staffShift" | "customer" | "address" | "customerPreferences" | "customerOrderItem" | "orderProjection" | "orderStatusHistory" | "orderEventLog" | "payment" | "paymentStatusHistory" | "orderNote" | "loyaltyAccount" | "conversation" | "conversationMessage" | "deliveryZone" | "ingredient" | "weeklySchedule" | "holiday" | "scheduleOverride" | "agentRun" | "agentRedTeamRun" | "llmTokenUsage" | "conversationIncident" | "opsAlert"
     txIsolationLevel: TransactionIsolationLevel
   }
   model: {
@@ -2061,6 +2062,80 @@ export type TypeMap<ExtArgs extends runtime.Types.Extensions.InternalArgs = runt
         }
       }
     }
+    Ingredient: {
+      payload: Prisma.$IngredientPayload<ExtArgs>
+      fields: Prisma.IngredientFieldRefs
+      operations: {
+        findUnique: {
+          args: Prisma.IngredientFindUniqueArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$IngredientPayload> | null
+        }
+        findUniqueOrThrow: {
+          args: Prisma.IngredientFindUniqueOrThrowArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$IngredientPayload>
+        }
+        findFirst: {
+          args: Prisma.IngredientFindFirstArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$IngredientPayload> | null
+        }
+        findFirstOrThrow: {
+          args: Prisma.IngredientFindFirstOrThrowArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$IngredientPayload>
+        }
+        findMany: {
+          args: Prisma.IngredientFindManyArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$IngredientPayload>[]
+        }
+        create: {
+          args: Prisma.IngredientCreateArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$IngredientPayload>
+        }
+        createMany: {
+          args: Prisma.IngredientCreateManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        createManyAndReturn: {
+          args: Prisma.IngredientCreateManyAndReturnArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$IngredientPayload>[]
+        }
+        delete: {
+          args: Prisma.IngredientDeleteArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$IngredientPayload>
+        }
+        update: {
+          args: Prisma.IngredientUpdateArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$IngredientPayload>
+        }
+        deleteMany: {
+          args: Prisma.IngredientDeleteManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        updateMany: {
+          args: Prisma.IngredientUpdateManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        updateManyAndReturn: {
+          args: Prisma.IngredientUpdateManyAndReturnArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$IngredientPayload>[]
+        }
+        upsert: {
+          args: Prisma.IngredientUpsertArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$IngredientPayload>
+        }
+        aggregate: {
+          args: Prisma.IngredientAggregateArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.AggregateIngredient>
+        }
+        groupBy: {
+          args: Prisma.IngredientGroupByArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.IngredientGroupByOutputType>[]
+        }
+        count: {
+          args: Prisma.IngredientCountArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.IngredientCountAggregateOutputType> | number
+        }
+      }
+    }
     WeeklySchedule: {
       payload: Prisma.$WeeklySchedulePayload<ExtArgs>
       fields: Prisma.WeeklyScheduleFieldRefs
@@ -3027,6 +3102,20 @@ export const DeliveryZoneScalarFieldEnum = {
 export type DeliveryZoneScalarFieldEnum = (typeof DeliveryZoneScalarFieldEnum)[keyof typeof DeliveryZoneScalarFieldEnum]
 
 
+export const IngredientScalarFieldEnum = {
+  id: 'id',
+  name: 'name',
+  unit: 'unit',
+  stockMilli: 'stockMilli',
+  lowStockMilli: 'lowStockMilli',
+  active: 'active',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+} as const
+
+export type IngredientScalarFieldEnum = (typeof IngredientScalarFieldEnum)[keyof typeof IngredientScalarFieldEnum]
+
+
 export const WeeklyScheduleScalarFieldEnum = {
   id: 'id',
   dayOfWeek: 'dayOfWeek',
@@ -3681,6 +3770,7 @@ export type GlobalOmitConfig = {
   conversation?: Prisma.ConversationOmit
   conversationMessage?: Prisma.ConversationMessageOmit
   deliveryZone?: Prisma.DeliveryZoneOmit
+  ingredient?: Prisma.IngredientOmit
   weeklySchedule?: Prisma.WeeklyScheduleOmit
   holiday?: Prisma.HolidayOmit
   scheduleOverride?: Prisma.ScheduleOverrideOmit

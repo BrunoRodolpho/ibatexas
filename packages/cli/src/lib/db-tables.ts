@@ -65,6 +65,15 @@ export const DOMAIN_REFERENCE = [
   "weeklySchedule",
   "holiday",
   "scheduleOverride",
+  // NEW-003 raw-ingredient inventory (stock slice) — the restaurant's catalog of
+  // raw ingredients + on-hand stock + low-stock thresholds. Operational
+  // reference/config data (like `staff` and the schedule templates): a routine
+  // `db clean` must NOT nuke the ingredient catalog and force re-entering every
+  // flour/meat row + threshold. No FK to any other domain table and no children,
+  // so its position within this group is FK-irrelevant. Mutable stock lives on the
+  // row, but the row's IDENTITY is reference data (staff rows likewise carry
+  // mutable fields) — so it belongs in REFERENCE, preserved unless `--reference`/`--all`.
+  "ingredient",
 ] as const
 
 /**

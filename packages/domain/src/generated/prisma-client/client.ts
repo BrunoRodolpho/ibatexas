@@ -197,6 +197,25 @@ export type ConversationMessage = Prisma.ConversationMessageModel
  */
 export type DeliveryZone = Prisma.DeliveryZoneModel
 /**
+ * Model Ingredient
+ * NEW-003 (stock slice) — a RAW ingredient the kitchen holds in stock (flour,
+ * meat, etc. that go INTO dishes) — NOT a Medusa finished-good product (whose
+ * stock is Medusa's own `inventory_quantity`). Tracks on-hand stock + a low-stock
+ * threshold so the admin surface can raise a low-stock read.
+ * 
+ * QUANTITIES are stored as SCALED INTEGERS in THOUSANDTHS of `unit` (milli-units):
+ * 2.5 kg → `stockMilli = 2500`; 250 g (unit "g") → 250000. Arithmetic is always on
+ * the integer milli field — precise, never a float (the same "no floats for
+ * load-bearing quantities" discipline Hard-Rule-#2 applies to money). `unit` is a
+ * free-form label validated at the route against the known measure set.
+ * 
+ * Admin-ops reference/config data — manager-gated at the route, plain CRUD (NOT
+ * kernel-adjudicated; ingredient stock is not a customer money/safety path). No FK
+ * to any other domain table and no children. Recipe/BOM linkage to menu items,
+ * per-dish depletion and COGS/margins are DEFERRED — OUT of this slice.
+ */
+export type Ingredient = Prisma.IngredientModel
+/**
  * Model WeeklySchedule
  * 
  */
