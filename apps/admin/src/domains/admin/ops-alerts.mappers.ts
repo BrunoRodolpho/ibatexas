@@ -21,6 +21,7 @@ export type OpsAlertCause =
   | 'ops_pix_expiry_backlog'
   | 'ops_stale_defer'
   | 'ops_dlq_depth'
+  | 'ops_ingredient_underflow'
 
 export type OpsAlertSeverity = 'low' | 'medium' | 'high'
 
@@ -63,6 +64,7 @@ export const OPS_ALERT_CAUSE_LABELS: Record<OpsAlertCause, string> = {
   ops_pix_expiry_backlog: 'acúmulo de PIX expirados',
   ops_stale_defer: 'confirmações pendentes vencidas',
   ops_dlq_depth: 'fila de mensagens mortas acumulando (DLQ)',
+  ops_ingredient_underflow: 'estoque de insumo abaixo do necessário (baixa de pedido)',
 }
 
 /** Canonical pt-BR severity labels (mirror of OPS_ALERT_SEVERITY_LABELS_PT). */
@@ -112,6 +114,7 @@ export const OPS_ALERT_CAUSE_FILTERS: readonly FilterOption[] = [
   { id: 'ops_pix_expiry_backlog', label: 'PIX expirados' },
   { id: 'ops_stale_defer', label: 'Confirmações vencidas' },
   { id: 'ops_dlq_depth', label: 'DLQ' },
+  { id: 'ops_ingredient_underflow', label: 'Estoque de insumo' },
 ]
 
 // ── Badge variant mapping (maps to @ibatexas/ui Badge tiers) ─────────────────

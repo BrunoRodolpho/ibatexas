@@ -29,6 +29,7 @@ const ALL_CAUSES: readonly OpsAlertCause[] = [
   'ops_pix_expiry_backlog',
   'ops_stale_defer',
   'ops_dlq_depth',
+  'ops_ingredient_underflow',
 ]
 const ALL_SEVERITIES: readonly OpsAlertSeverity[] = ['low', 'medium', 'high']
 const ALL_STATUSES: readonly OpsAlertStatus[] = [
@@ -84,6 +85,9 @@ describe('pt-BR label registers (exhaustive — no raw-key fallback)', () => {
   it('mirrors the canonical server pt-BR cause/severity values', () => {
     expect(OPS_ALERT_CAUSE_LABELS.ops_dlq_depth).toBe(
       'fila de mensagens mortas acumulando (DLQ)',
+    )
+    expect(OPS_ALERT_CAUSE_LABELS.ops_ingredient_underflow).toBe(
+      'estoque de insumo abaixo do necessário (baixa de pedido)',
     )
     expect(OPS_ALERT_SEVERITY_LABELS.high).toBe('alta')
     expect(OPS_ALERT_STATUS_LABELS.AUTO_RESOLVED).toBe('resolvido auto')

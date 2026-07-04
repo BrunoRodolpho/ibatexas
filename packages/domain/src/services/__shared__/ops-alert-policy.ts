@@ -56,6 +56,7 @@ export const FROZEN_OPS_CAUSES = [
   "ops_pix_expiry_backlog",
   "ops_stale_defer",
   "ops_dlq_depth",
+  "ops_ingredient_underflow",
 ] as const satisfies readonly OpsAlertCause[]
 
 /**
@@ -71,6 +72,7 @@ export const OPS_ALERT_CAUSE_LABELS_PT: Record<OpsAlertCause, string> = {
   ops_pix_expiry_backlog: "acúmulo de PIX expirados",
   ops_stale_defer: "confirmações pendentes vencidas",
   ops_dlq_depth: "fila de mensagens mortas acumulando (DLQ)",
+  ops_ingredient_underflow: "estoque de insumo abaixo do necessário (baixa de pedido)",
 }
 
 /** CANONICAL pt-BR severity labels — exhaustive over `OpsAlertSeverity`. */

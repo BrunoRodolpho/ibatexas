@@ -1009,6 +1009,7 @@ enum OpsAlertCause {
   ops_pix_expiry_backlog
   ops_stale_defer
   ops_dlq_depth
+  ops_ingredient_underflow
 
   @@schema("ibx_domain")
 }

@@ -20,6 +20,8 @@ const mockGetByProduct = vi.hoisted(() => vi.fn());
 const mockDepleteStock = vi.hoisted(() => vi.fn());
 const mockWithDedup = vi.hoisted(() => vi.fn());
 const mockPushToDlq = vi.hoisted(() => vi.fn());
+const mockOpenAlert = vi.hoisted(() => vi.fn());
+const mockGetAuditSink = vi.hoisted(() => vi.fn(() => ({})));
 
 // Store registered handlers so we can invoke them directly in tests.
 const natsHandlers: Record<string, (payload: unknown) => Promise<void>> = {};
@@ -35,6 +37,14 @@ vi.mock("@ibatexas/nats-client", () => ({
 vi.mock("@ibatexas/domain", () => ({
   createRecipeService: () => ({ getByProduct: mockGetByProduct }),
   createIngredientService: () => ({ depleteStock: mockDepleteStock }),
+  createOpsAlertService: () => ({ openAlertFromEnvelope: mockOpenAlert }),
+  OPS_ALERT_CAUSE_LABELS_PT: {
+    ops_ingredient_underflow: "estoque de insumo abaixo do necessário (baixa de pedido)",
+  },
+}));
+
+vi.mock("@ibatexas/audit-sink", () => ({
+  getAuditSink: mockGetAuditSink,
 }));
 
 vi.mock("../dedup.js", () => ({
@@ -83,6 +93,9 @@ beforeEach(() => {
   vi.clearAllMocks();
   // Default: depleteStock reports a healthy row (no shortfall).
   mockDepleteStock.mockResolvedValue({ id: "ing", stockMilli: 100, shortfallMilli: 0 });
+  // Default: the ops-alert chokepoint authorizes the open.
+  mockOpenAlert.mockResolvedValue({ decision: { kind: "EXECUTE" }, result: { opened: true } });
+  mockGetAuditSink.mockReturnValue({});
   // Default: withDedup runs the handler and reports "newly processed".
   mockWithDedup.mockImplementation(async (_key: string, handler: () => Promise<void>) => {
     await handler();
@@ -148,13 +161,20 @@ describe("ingredient-depletion subscriber", () => {
     expect(mockPushToDlq).not.toHaveBeenCalled();
   });
 
-  it("(d) shortfall > 0 → logs a structured warn", async () => {
+  it("(d) shortfall > 0 → logs a structured warn AND opens an ops_ingredient_underflow alert", async () => {
     mockGetByProduct.mockResolvedValue(recipeWith({ ingredientId: "ing_1", qtyMilli: 500 }));
-    mockDepleteStock.mockResolvedValue({ id: "ing_1", stockMilli: 0, shortfallMilli: 700 });
+    mockDepleteStock.mockResolvedValue({
+      id: "ing_1",
+      name: "Farinha",
+      unit: "kg",
+      stockMilli: 0,
+      shortfallMilli: 700,
+    });
     await register();
 
     await fire(makePayload([{ productId: "prod_1", quantity: 2 }]));
 
+    // (d.1) the existing NEW-036 structured warn.
     expect(log.warn).toHaveBeenCalledWith(
       {
         order_id: "order_1",
@@ -165,9 +185,32 @@ describe("ingredient-depletion subscriber", () => {
       },
       "[ingredient-depletion] ingredient depleted below zero — stock accuracy issue",
     );
+
+    // (d.2 / NEW-037) a first-class ops-alert on the ops-alert plane.
+    expect(mockOpenAlert).toHaveBeenCalledTimes(1);
+    const envelope = mockOpenAlert.mock.calls[0]![0] as {
+      kind: string;
+      payload: Record<string, unknown>;
+    };
+    expect(envelope.kind).toBe("ops.alert.open");
+    expect(envelope.payload).toMatchObject({
+      cause: "ops_ingredient_underflow",
+      severity: "medium",
+      source: "ingredient-depletion",
+      scope: "ing_1",
+      dedupeKey: "ops_ingredient_underflow:ing_1",
+    });
+    expect(envelope.payload.context).toMatchObject({
+      orderId: "order_1",
+      productId: "prod_1",
+      ingredientId: "ing_1",
+      consumeMilli: 1000,
+      shortfallMilli: 700,
+      unit: "kg",
+    });
   });
 
-  it("does NOT warn when there is no shortfall", async () => {
+  it("(c) does NOT warn NOR open an ops-alert when there is no shortfall", async () => {
     mockGetByProduct.mockResolvedValue(recipeWith({ ingredientId: "ing_1", qtyMilli: 100 }));
     mockDepleteStock.mockResolvedValue({ id: "ing_1", stockMilli: 900, shortfallMilli: 0 });
     await register();
@@ -175,6 +218,48 @@ describe("ingredient-depletion subscriber", () => {
     await fire(makePayload([{ productId: "prod_1", quantity: 1 }]));
 
     expect(log.warn).not.toHaveBeenCalled();
+    expect(mockOpenAlert).not.toHaveBeenCalled();
+  });
+
+  it("(b) ops-alert emission THROWS → remaining lines still deplete AND pushToDlq is NOT called (best-effort isolation)", async () => {
+    // A two-ingredient recipe; BOTH lines underflow. The ops-alert emit throws on
+    // every call — the loop must still deplete line 2 and never route to the DLQ.
+    mockGetByProduct.mockResolvedValue(
+      recipeWith(
+        { ingredientId: "ing_1", qtyMilli: 500 },
+        { ingredientId: "ing_2", qtyMilli: 300 },
+      ),
+    );
+    mockDepleteStock.mockImplementation(async (id: string) => ({
+      id,
+      name: id,
+      unit: "kg",
+      stockMilli: 0,
+      shortfallMilli: 100,
+    }));
+    mockOpenAlert.mockRejectedValue(new Error("kernel down"));
+    await register();
+
+    const payload = makePayload([{ productId: "prod_1", quantity: 1 }]);
+    // The handler must NOT reject — the order flow is never affected.
+    await expect(fire(payload)).resolves.toBeUndefined();
+
+    // Both lines were depleted despite the ops-alert failures on each.
+    expect(mockDepleteStock).toHaveBeenCalledTimes(2);
+    expect(mockDepleteStock).toHaveBeenCalledWith("ing_1", 500);
+    expect(mockDepleteStock).toHaveBeenCalledWith("ing_2", 300);
+    // Ops-alert failure is swallowed per-line: attempted twice, warned twice.
+    expect(mockOpenAlert).toHaveBeenCalledTimes(2);
+    // CRITICAL: an ops-alert failure never routes order.placed to the DLQ.
+    expect(mockPushToDlq).not.toHaveBeenCalled();
+    expect(log.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        order_id: "order_1",
+        ingredient_id: "ing_2",
+        error: expect.stringContaining("kernel down"),
+      }),
+      "[ingredient-depletion] ops-alert emission failed — depletion not affected",
+    );
   });
 
   it("(e) handler throw → routed to the DLQ, never rethrown into the order flow", async () => {
