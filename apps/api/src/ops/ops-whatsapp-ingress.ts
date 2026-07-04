@@ -118,7 +118,25 @@ export async function handleOpsWhatsAppMessage(
 
   // 1. Allowlist = the Staff table, re-read EVERY message (role + active). No row
   //    OR inactive ⇒ fall BACK to the customer path (never ghost a demoted staffer).
-  const staff = await deps.findStaffByPhone(phone);
+  //
+  //    The fall-back rule EXTENDS to a read ERROR: the fork runs for EVERY inbound
+  //    phone, so a Staff-table-specific read failure (with the rest of the stack
+  //    healthy) must NOT black out the customer channel with apologies. On a read
+  //    error we fail OPEN to the customer path — the phone gains no ops authority
+  //    (a genuine owner's command degrades once to the customer persona, which
+  //    refuses staff verbs — safe and self-evident). This ONLY covers the allowlist
+  //    read; a failure AFTER staff identity is established keeps consuming with the
+  //    honest ops apology (runOpsTurn below).
+  let staff: StaffAllowlistRow | null;
+  try {
+    staff = await deps.findStaffByPhone(phone);
+  } catch (err) {
+    log.warn(
+      { event: "ops_wa.allowlist_read_failed", phone_hash: hash, err },
+      "[ops-wa] staff allowlist read failed — falling back to the customer path",
+    );
+    return { consumed: false };
+  }
   if (staff === null || !staff.active) {
     return { consumed: false };
   }

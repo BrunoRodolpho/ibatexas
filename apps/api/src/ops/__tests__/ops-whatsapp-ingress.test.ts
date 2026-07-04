@@ -126,6 +126,27 @@ describe("allowlist gate (the Staff table, re-read every message)", () => {
     expect(spies.findStaffByPhone).toHaveBeenCalledTimes(2);
     expect(spies.findStaffByPhone).toHaveBeenCalledWith(ARGS.phone);
   });
+
+  it("an allowlist READ ERROR fails OPEN to the customer path ({consumed:false}) — never blacks out the channel", async () => {
+    const { deps, spies } = makeDeps({
+      findStaffByPhone: vi.fn(async () => {
+        throw new Error("staff table unreachable");
+      }),
+    });
+    const out = await handleOpsWhatsAppMessage(deps, ARGS);
+    // {consumed:false} ⇒ the webhook runs the customer path (proven byte-identically
+    // in whatsapp-webhook-async.test.ts). The phone gains NO ops authority.
+    expect(out).toEqual({ consumed: false });
+    expect(spies.composeConductor).not.toHaveBeenCalled();
+    expect(spies.acquireLock).not.toHaveBeenCalled();
+    expect(spies.sendReply).not.toHaveBeenCalled();
+    expect(spies.sendError).not.toHaveBeenCalled();
+    // The failure is queryable (event ops_wa.allowlist_read_failed).
+    expect(log.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ event: "ops_wa.allowlist_read_failed" }),
+      expect.stringContaining("allowlist read failed"),
+    );
+  });
 });
 
 describe("active staff → the ops turn", () => {

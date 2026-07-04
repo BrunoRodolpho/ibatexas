@@ -100,7 +100,12 @@ types "acabou a picanha" and the AI manager acts, without the HTTP dashboard.
 - **Allowlist = the Staff table.** `staffSvc.findByPhone(phone)` is re-read EVERY
   message (role + active — the STAFFREVOKE analog). No row OR `active:false` ⇒
   fall BACK to the customer path UNCHANGED (never ghost a demoted staffer, never
-  mint an ops actor for a stranger's phone).
+  mint an ops actor for a stranger's phone). The fall-back extends to a read
+  ERROR: the fork runs for every inbound phone, so a Staff-table read failure
+  fails OPEN to the customer path (`ops_wa.allowlist_read_failed`) rather than
+  blacking out the customer channel — the phone gains no ops authority. This is
+  scoped to the allowlist read only; a failure AFTER staff identity is
+  established consumes with the honest ops apology.
 - **Identity = the dashboard's.** conversationId `admin:{staffId}`, customerId
   `staff:{staffId}`, sessionKey `ops:{staffId}`, channel `"system"`, actor
   `{principal:"user", role:"staff", sessionId:"admin:{staffId}", staffId}` —
