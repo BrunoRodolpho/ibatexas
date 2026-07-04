@@ -44,6 +44,7 @@ import { readFile, readdir, writeFile } from "node:fs/promises"
 import { createRequire } from "node:module"
 import { join, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
+import { createPublicKey, verify as cryptoVerify } from "node:crypto"
 import type { Command } from "commander"
 import chalk from "chalk"
 import ora from "ora"
@@ -2073,6 +2074,306 @@ async function runAnalyze(opts: {
   if (anyError) process.exitCode = 1
 }
 
+// ── audit-verify (AUT-025) ──────────────────────────────────────────────────
+//
+// Read-only integrity + non-repudiation scan of the durable `intent_audit`
+// store. For each row in the window it re-derives the tamper-evidence
+// `audit_hash` (via `verifyAuditRecord`) AND verifies the ed25519 signature
+// using `AUDIT_SIGNING_PUBLIC_KEY`. The verifier commits to the SAME canonical
+// pre-image the signer minted — `auditSignaturePreimage(auditHash, keyId)` from
+// `@adjudicate/core` (the single source of truth for the pre-image; the mint
+// side lives in `@ibatexas/audit-sink`'s `buildEd25519AuditSigner`).
+
+interface AuditVerifyCounts {
+  scanned: number
+  // Signature axis (verified DIRECTLY over the persisted audit_hash, decoupled
+  // from the envelope/hash axes so it is correct for redacted rows).
+  signedValid: number
+  signedInvalid: number
+  unsigned: number
+  unverifiableNoHash: number
+  unverifiedNoPubkey: number
+  // Tamper/hash diagnostic axis (via verifyAuditRecord).
+  hashTampered: number
+  // envelope.intentHash no longer derives from the (redacted) content. This is
+  // EXPECTED for PII-bearing rows — the redactor rewrites payload/actor but
+  // never recomputes intentHash — so it is reported, NOT treated as a finding.
+  envelopeRedacted: number
+}
+
+/**
+ * Build the ed25519 `verifySignature` hook for `verifyAuditRecord` from the
+ * `AUDIT_SIGNING_PUBLIC_KEY` env value (base64 SPKI DER, or a PEM block).
+ * Throws on a malformed / non-ed25519 key (caught by the caller → run error).
+ */
+function buildAuditVerifier(
+  publicKeyRaw: string,
+  preimage: (auditHash: string, keyId: string) => string,
+): (auditHash: string, signature: { keyId: string; alg: string; value: string }) => boolean {
+  const trimmed = publicKeyRaw.trim()
+  const isPem = trimmed.includes("-----BEGIN")
+  const key = isPem
+    ? createPublicKey({
+        key: trimmed.includes("\\n") ? trimmed.replace(/\\n/g, "\n") : trimmed,
+        format: "pem",
+      })
+    : createPublicKey({ key: Buffer.from(trimmed, "base64"), format: "der", type: "spki" })
+  if (key.asymmetricKeyType !== "ed25519") {
+    throw new Error(
+      `AUDIT_SIGNING_PUBLIC_KEY não é uma chave ed25519 (tipo: ${String(key.asymmetricKeyType)})`,
+    )
+  }
+  return (auditHash, signature) => {
+    if (signature.alg !== "ed25519") return false
+    try {
+      return cryptoVerify(
+        null,
+        Buffer.from(preimage(auditHash, signature.keyId), "utf8"),
+        key,
+        Buffer.from(signature.value, "base64"),
+      )
+    } catch {
+      return false
+    }
+  }
+}
+
+/**
+ * Exit code for `ibx kernel audit-verify`:
+ *   0 — clean (no forged signature, no tampered hash; in --ci also fully signed).
+ *   1 — run unreliable (postgres disabled / no DATABASE_URL / no public key in
+ *       --ci / connection failure) — reported by the caller, not here.
+ *   2 — integrity findings: any invalid signature or tampered audit_hash, or
+ *       (in --ci) any unsigned / unverifiable row (a signing gate cannot certify
+ *       a partially-signed store). `envelopeRedacted` is NOT a finding.
+ */
+function auditVerifyExitCode(counts: AuditVerifyCounts, ci: boolean): 0 | 2 {
+  if (counts.signedInvalid > 0 || counts.hashTampered > 0) return 2
+  if (
+    ci &&
+    (counts.unsigned > 0 ||
+      counts.unverifiableNoHash > 0 ||
+      counts.unverifiedNoPubkey > 0)
+  ) {
+    return 2
+  }
+  return 0
+}
+
+function printAuditVerifyReport(
+  json: boolean,
+  counts: AuditVerifyCounts,
+  ctx: { sinceInput: string; fromIso: string; toIso: string; intentKind?: string; limit: number; hasPubKey: boolean; excludedAgentRows: number; exitCode: number },
+): void {
+  if (json) {
+    console.log(
+      JSON.stringify(
+        {
+          command: "kernel.audit-verify",
+          window: { since: ctx.sinceInput, fromIso: ctx.fromIso, toIso: ctx.toIso },
+          intentKind: ctx.intentKind ?? null,
+          limit: ctx.limit,
+          publicKeyLoaded: ctx.hasPubKey,
+          excludedAgentRows: ctx.excludedAgentRows,
+          counts,
+          exitCode: ctx.exitCode,
+        },
+        null,
+        2,
+      ),
+    )
+    return
+  }
+  console.log()
+  console.log(chalk.bold("ibx kernel audit-verify"))
+  console.log(
+    chalk.dim(
+      `Janela: últimos ${ctx.sinceInput}; kind: ${ctx.intentKind ?? "todos"}; chave pública: ${ctx.hasPubKey ? "carregada" : "AUSENTE"}`,
+    ),
+  )
+  console.log()
+  console.log(`  Escaneados:              ${counts.scanned}`)
+  console.log(chalk.green(`  Assinados válidos:       ${counts.signedValid}`))
+  console.log(
+    (counts.signedInvalid > 0 ? chalk.red.bold : chalk.dim)(
+      `  Assinados INVÁLIDOS:     ${counts.signedInvalid}`,
+    ),
+  )
+  console.log(
+    (counts.hashTampered > 0 ? chalk.red.bold : chalk.dim)(
+      `  Adulterados (hash):      ${counts.hashTampered}`,
+    ),
+  )
+  console.log(chalk.yellow(`  Não assinados:           ${counts.unsigned}`))
+  if (counts.unverifiedNoPubkey > 0) {
+    console.log(chalk.yellow(`  Sem verificação (chave ausente): ${counts.unverifiedNoPubkey}`))
+  }
+  if (counts.unverifiableNoHash > 0) {
+    console.log(chalk.dim(`  Sem audit_hash (pré-v4): ${counts.unverifiableNoHash}`))
+  }
+  if (counts.envelopeRedacted > 0) {
+    console.log(chalk.dim(`  Envelope redigido (esperado): ${counts.envelopeRedacted}`))
+  }
+  console.log()
+  if (ctx.exitCode === 0) {
+    console.log(chalk.green.bold("✓ Integridade verificada."))
+  } else {
+    console.log(chalk.red.bold(`✗ Achados de integridade (exit ${ctx.exitCode}).`))
+  }
+}
+
+async function runAuditVerify(opts: {
+  since?: string
+  intentKind?: string
+  limit?: string
+  json?: boolean
+  ci?: boolean
+}): Promise<void> {
+  const ci = opts.ci === true
+  const json = opts.json === true
+  const sinceInput = opts.since ?? "24h"
+  const sinceMs = parseReplaySince(sinceInput, json, ci)
+  if (sinceMs === null) return
+  const limit = Number.parseInt(opts.limit ?? "1000", 10)
+
+  const postgresEnabled = parseBoolEnv(process.env.IBX_AUDIT_POSTGRES_ENABLED, false)
+  if (!postgresEnabled) {
+    if (json) {
+      console.log(JSON.stringify({ command: "kernel.audit-verify", status: "audit-postgres-disabled", exitCode: 1 }, null, 2))
+    } else {
+      console.error(chalk.red("audit-postgres desabilitado (IBX_AUDIT_POSTGRES_ENABLED != true) — nada a verificar."))
+    }
+    process.exitCode = 1
+    return
+  }
+
+  const databaseUrl = process.env.DATABASE_URL
+  if (!databaseUrl) {
+    if (json) {
+      console.log(JSON.stringify({ command: "kernel.audit-verify", status: "no-database-url", exitCode: 1 }, null, 2))
+    } else {
+      console.error(chalk.red("DATABASE_URL não definido."))
+    }
+    process.exitCode = 1
+    return
+  }
+
+  // Lazy import — @adjudicate/core carries the verify + pre-image primitives.
+  const { verifyAuditRecord, auditSignaturePreimage } = await import("@adjudicate/core")
+
+  // Resolve the verifier from AUDIT_SIGNING_PUBLIC_KEY. Absent in --ci is a
+  // hard failure (a gate that cannot check signatures certifies nothing);
+  // absent otherwise still reports signed/unsigned coverage but cannot
+  // distinguish valid from forged (rows land in `unverifiedNoPubkey`).
+  const publicKeyRaw = process.env.AUDIT_SIGNING_PUBLIC_KEY?.trim()
+  let verifySignature:
+    | ((auditHash: string, signature: { keyId: string; alg: string; value: string }) => boolean)
+    | undefined
+  if (publicKeyRaw) {
+    try {
+      verifySignature = buildAuditVerifier(publicKeyRaw, auditSignaturePreimage)
+    } catch (err) {
+      if (json) {
+        console.log(JSON.stringify({ command: "kernel.audit-verify", status: "invalid-public-key", error: (err as Error).message, exitCode: 1 }, null, 2))
+      } else {
+        console.error(chalk.red((err as Error).message))
+      }
+      process.exitCode = 1
+      return
+    }
+  } else if (ci) {
+    if (json) {
+      console.log(JSON.stringify({ command: "kernel.audit-verify", status: "no-public-key", ci: true, exitCode: 1 }, null, 2))
+    } else {
+      console.error(chalk.red("AUDIT_SIGNING_PUBLIC_KEY ausente em modo --ci — não é possível verificar assinaturas (falha dura)."))
+    }
+    process.exitCode = 1
+    return
+  }
+
+  const spinner = json ? null : ora(`Verificando audit window dos últimos ${sinceInput}…`).start()
+  const { readAuditWindow } = await import("@adjudicate/audit-postgres")
+  const { default: pg } = await import("pg" as string).catch(() => {
+    throw new Error("módulo pg não encontrado — instale com `pnpm install`")
+  })
+  const client = new pg.Client({ connectionString: databaseUrl })
+  await client.connect()
+  try {
+    const toIso = new Date().toISOString()
+    const fromIso = new Date(Date.now() - sinceMs).toISOString()
+    const counter = { value: 0 }
+    const queryFn = buildAuditQueryFn(client, counter)
+    const records = await readAuditWindow(
+      // @ts-expect-error — the runtime cast matches AuditQueryFn shape (mirror of runReplay).
+      queryFn,
+      {
+        fromIso,
+        toIso,
+        ...(opts.intentKind === undefined ? {} : { intentKind: opts.intentKind }),
+        limit,
+      },
+    )
+    spinner?.succeed(`Lidos ${records.length} registros de audit.`)
+
+    const counts: AuditVerifyCounts = {
+      scanned: 0,
+      signedValid: 0,
+      signedInvalid: 0,
+      unsigned: 0,
+      unverifiableNoHash: 0,
+      unverifiedNoPubkey: 0,
+      hashTampered: 0,
+      envelopeRedacted: 0,
+    }
+    for (const record of records) {
+      counts.scanned += 1
+
+      // Signature axis — verify DIRECTLY over the persisted audit_hash. This is
+      // decoupled from verifyAuditRecord's envelope/hash short-circuit so a
+      // legitimately-redacted row (whose envelope.intentHash no longer derives)
+      // still has its SIGNATURE checked.
+      if (!record.signature) {
+        counts.unsigned += 1
+      } else if (!record.auditHash) {
+        counts.unverifiableNoHash += 1
+      } else if (!verifySignature) {
+        counts.unverifiedNoPubkey += 1
+      } else if (verifySignature(record.auditHash, record.signature)) {
+        counts.signedValid += 1
+      } else {
+        counts.signedInvalid += 1
+      }
+
+      // Tamper diagnostic axis — a `tampered` verdict is a real hash mismatch;
+      // an `envelope_intent_mismatch` is EXPECTED on redacted PII rows (the
+      // redactor rewrites content but never recomputes intentHash) and is
+      // reported, not failed.
+      const v = verifyAuditRecord(record)
+      if (v.verified === false) {
+        if (v.reason === "tampered") counts.hashTampered += 1
+        else if (v.reason === "envelope_intent_mismatch") counts.envelopeRedacted += 1
+      }
+    }
+
+    const exitCode = auditVerifyExitCode(counts, ci)
+    process.exitCode = exitCode
+    printAuditVerifyReport(json, counts, {
+      sinceInput,
+      fromIso,
+      toIso,
+      ...(opts.intentKind === undefined ? {} : { intentKind: opts.intentKind }),
+      limit,
+      hasPubKey: verifySignature !== undefined,
+      excludedAgentRows: counter.value,
+      exitCode,
+    })
+  } finally {
+    await client.end().catch(() => {
+      /* best-effort close */
+    })
+  }
+}
+
 export function registerKernelCommands(group: Command): void {
   group.description("Kernel — estado, replay e migrações do adjudicate kernel")
 
@@ -2122,6 +2423,32 @@ export function registerKernelCommands(group: Command): void {
           return
         }
         await runReplay(opts)
+      },
+    )
+
+  // ── audit-verify (AUT-025) ─────────────────────────────────────────────────
+  group
+    .command("audit-verify")
+    .description(
+      "Verifica a integridade + não-repúdio das linhas intent_audit: recomputa audit_hash e confere a assinatura ed25519 (AUDIT_SIGNING_PUBLIC_KEY). Read-only. Exit: 0 íntegro / 1 execução não confiável / 2 achados (assinatura inválida, adulteração ou, em --ci, linhas não assinadas).",
+    )
+    .option("--since <duration>", "Janela de tempo (ex: 24h, 7d, 30m)", "24h")
+    .option("--intent-kind <kind>", "Filtra por intent kind (ex: order.checkout.create)")
+    .option("--limit <n>", "Limite de registros (default 1000)", "1000")
+    .option("--json", "Emite o relatório estruturado em JSON")
+    .option(
+      "--ci",
+      "Modo CI fail-closed: exige AUDIT_SIGNING_PUBLIC_KEY e falha (exit 2) se houver linhas não assinadas/sem hash na janela",
+    )
+    .action(
+      async (opts: {
+        since?: string
+        intentKind?: string
+        limit?: string
+        json?: boolean
+        ci?: boolean
+      }) => {
+        await runAuditVerify(opts)
       },
     )
 

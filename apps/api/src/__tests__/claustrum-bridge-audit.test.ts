@@ -15,9 +15,22 @@
  * suite; this test covers only the bridge wiring.
  */
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import type { AuditRecord, AuditSink } from "@adjudicate/core";
 import { buildEnvelope } from "@adjudicate/core";
+import { createInMemorySpillStorage } from "@adjudicate/audit";
+import { generateKeyPairSync } from "node:crypto";
+import {
+  __resetAuditSink,
+  __resetAuditSigner,
+  __setAuditSigner,
+  __setAuditSinkDependencies,
+  buildEd25519AuditSigner,
+  createAuditRedactor,
+  getAuditSink,
+  makeEd25519SignatureVerifier,
+  type AuditSinkDependencies,
+} from "@ibatexas/audit-sink";
 import { buildAdjudicator } from "../claustrum-bootstrap.js";
 
 // A capturing sink — records every emit so we can assert audit emission.
@@ -117,6 +130,94 @@ describe("RC-A1 Stage 1 — audited Adjudicator bridge", () => {
     // A record with no auditHash → kernel returns {verified:null} → {ok:false}.
     const result = bridge.verifyAuditRecord({} as AuditRecord);
     expect(result.ok).toBe(false);
+  });
+});
+
+// ── AUT-025 — audit-record signing through the audited bridge ────────────────
+// The signer is composed into `getAuditSink()` post-redaction (the redactor
+// recomputes audit_hash + drops any earlier signature, so signing MUST happen
+// there). These tests drive a real EXECUTE through `buildAdjudicator` →
+// `adjudicateAndAudit` → `getAuditSink()` and prove (1) the emitted record
+// carries a signature verifiable over its persisted audit_hash, and (2) a
+// throwing signer degrades EXECUTE to REFUSE (the kernel fail-closed semantic
+// holds through our wiring; boot validation is what prevents it in practice).
+describe("AUT-025 — audit-record signing through the audited bridge", () => {
+  function signingSinkDeps(
+    capture: (r: AuditRecord) => void,
+  ): AuditSinkDependencies {
+    return {
+      spillStorage: createInMemorySpillStorage(),
+      postgresWriter: { async insertAudit() {} },
+      natsPublisher: { async publish() {} },
+      redactor: createAuditRedactor({ hashSecret: "test-salt" }),
+      logger: { warn() {}, error() {} },
+      onAuditRecord: capture,
+    };
+  }
+
+  // Managed-agent namespace ⇒ the redactor is a content no-op, so the recomputed
+  // audit_hash equals the original and the full record still verifies.
+  function agentProbeEnvelope() {
+    return buildEnvelope({
+      kind: "test.audit.probe",
+      payload: { hello: "world" },
+      actor: {
+        principal: "system",
+        sessionId: "agent:sig-bot@1.0.0:entity:probe-1",
+      },
+      taint: "UNTRUSTED",
+      nonce: "n-sig-probe",
+      createdAt: "2026-05-28T12:00:00.000Z",
+    });
+  }
+
+  afterEach(() => {
+    __resetAuditSink();
+    __resetAuditSigner();
+  });
+
+  it("a kernel EXECUTE emits a record carrying a VERIFIABLE ed25519 signature", async () => {
+    const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+    let captured: AuditRecord | undefined;
+    __setAuditSinkDependencies(signingSinkDeps((r) => (captured = r)));
+    __setAuditSigner(buildEd25519AuditSigner(privateKey, "ibx-audit"));
+    const bridge = buildAdjudicator({ sink: getAuditSink() });
+
+    const decision = await bridge.adjudicate(
+      agentProbeEnvelope(),
+      { channel: "web" } as never,
+      executeAllPolicy() as never,
+    );
+
+    expect(decision.kind).toBe("EXECUTE");
+    expect(captured?.signature?.alg).toBe("ed25519");
+    expect(captured?.signature?.keyId).toBe("ibx-audit");
+    expect(
+      makeEd25519SignatureVerifier(publicKey)(
+        captured!.auditHash!,
+        captured!.signature!,
+      ),
+    ).toBe(true);
+  });
+
+  it("fails CLOSED when the signer throws — EXECUTE degrades to REFUSE", async () => {
+    __setAuditSinkDependencies(signingSinkDeps(() => {}));
+    __setAuditSigner({
+      keyId: "boom",
+      sign() {
+        throw new Error("signer down");
+      },
+    });
+    const bridge = buildAdjudicator({ sink: getAuditSink() });
+
+    const decision = await bridge.adjudicate(
+      agentProbeEnvelope(),
+      { channel: "web" } as never,
+      executeAllPolicy() as never,
+    );
+
+    // An unsignable (and therefore unauditable) mutation must be refused.
+    expect(decision.kind).toBe("REFUSE");
   });
 });
 
