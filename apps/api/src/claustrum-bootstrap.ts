@@ -275,6 +275,7 @@ import {
   type OpsToolRegistryDeps,
 } from "./ops/ops-tool-registry.js";
 import { createOpsResolver } from "./ops/ops-resolver.js";
+import type { OrderCandidate } from "./ops/ops-order-resolution.js";
 import {
   createOpsSnapshotReadExecutor,
   OPS_SNAPSHOT_READ_TOOL,
@@ -2486,11 +2487,52 @@ export async function bootstrapClaustrum(
   // registry (governed ops verbs), the ops resolver (per-kind state), and the
   // system channel. No boot side effects run in the per-request path.
   const opsTenantId = process.env.KERNEL_TENANT_ID ?? "ibatexas";
+  // Map an order projection row (OrderQueryService reads) to the ops-order-
+  // resolution candidate shape — the matching keys plus the state-projection
+  // subset, so a resolved reference needs no re-fetch.
+  const toOpsOrderCandidate = (row: {
+    id: string;
+    displayId: number;
+    customerName: string | null;
+    fulfillmentStatus: string | null;
+    customerId: string | null;
+    paymentMethod: string | null;
+    paymentStatus: string | null;
+    totalInCentavos: number;
+  }): OrderCandidate => ({
+    id: row.id,
+    displayId: row.displayId,
+    customerName: row.customerName,
+    fulfillmentStatus: row.fulfillmentStatus,
+    customerId: row.customerId,
+    paymentMethod: row.paymentMethod,
+    paymentStatus: row.paymentStatus,
+    totalInCentavos: row.totalInCentavos,
+  });
   // BKL-089 — candidate page size for product NAME→id resolution. `q` narrows
   // server-side; the deterministic matching runs over the returned titles. A
   // single-tenant catalog is small, so the default comfortably covers it.
   const OPS_PRODUCT_RESOLUTION_LIMIT = Number.parseInt(
     process.env.OPS_PRODUCT_RESOLUTION_LIMIT ?? "50",
+    10,
+  );
+  // BKL-089 (orders scope) — deterministic order REFERENCE→id resolution knobs.
+  // displayId resolution is exact-equality (indexed) and requires exactly one
+  // match; the match limit only bounds the read and lets it DETECT a duplicate.
+  const OPS_ORDER_DISPLAYID_MATCH_LIMIT = Number.parseInt(
+    process.env.OPS_ORDER_DISPLAYID_MATCH_LIMIT ?? "5",
+    10,
+  );
+  // Customer-name resolution scans RECENT orders (a bounded window + page size)
+  // and matches only ACTIVE (non-terminal) ones. Active orders are inherently
+  // recent + few, so the window/limit comfortably cover the in-flight set;
+  // displayId (window-free) remains the path for older orders.
+  const OPS_ORDER_RECENT_WINDOW_HOURS = Number.parseInt(
+    process.env.OPS_ORDER_RECENT_WINDOW_HOURS ?? "168",
+    10,
+  );
+  const OPS_ORDER_RECENT_LIMIT = Number.parseInt(
+    process.env.OPS_ORDER_RECENT_LIMIT ?? "200",
     10,
   );
   // The ops registry's governed side-effect deps (injected for testability).
@@ -2613,6 +2655,29 @@ export async function bootstrapClaustrum(
                 fulfillmentStatus:
                   (order.fulfillmentStatus as string | null) ?? null,
               };
+        },
+        // BKL-089 (orders scope) — deterministic order REFERENCE→id resolution
+        // reads. Both reuse the SAME owner-path OrderQueryService the admin orders
+        // surface relies on (findByDisplayId is a new indexed read-only method;
+        // the name path reuses listAll — the admin list read — over a recent
+        // window). The deterministic matching lives in ops-order-resolution.ts.
+        orderReferenceReads: {
+          findByDisplayId: async (displayId) => {
+            const rows = await createOrderQueryService().findByDisplayId(
+              displayId,
+              { limit: OPS_ORDER_DISPLAYID_MATCH_LIMIT },
+            );
+            return rows.map(toOpsOrderCandidate);
+          },
+          listRecentActive: async () => {
+            const { orders } = await createOrderQueryService().listAll({
+              dateFrom: new Date(
+                Date.now() - OPS_ORDER_RECENT_WINDOW_HOURS * 60 * 60 * 1000,
+              ),
+              limit: OPS_ORDER_RECENT_LIMIT,
+            });
+            return orders.map(toOpsOrderCandidate);
+          },
         },
       }),
   };

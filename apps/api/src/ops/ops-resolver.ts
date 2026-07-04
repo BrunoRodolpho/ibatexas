@@ -13,10 +13,19 @@
 //       deterministically (ops-product-resolution.ts); a UNIQUE match REWRITES
 //       payload.productId to the resolved id (the rebuilt envelope's intentHash
 //       then covers the resolved payload) and projects `product` PRESENT.
-//   - order.note.add → the pack-orders `OrderState` (mirrors `adjudicateAdminNote`
-//       in routes/admin/_shared-actions.ts), projected from the order projection.
-//       A missing order yields a state with `ctx.orderId: null` so pack-orders'
-//       `requireOrderIdForMutation` REFUSEs `no_order` (never a thrown turn).
+//   - order.note.add / order.status.transition → the pack-orders `OrderState`
+//       (mirrors `adjudicateAdminNote` in routes/admin/_shared-actions.ts),
+//       projected from the order projection. A missing order yields a state with
+//       `ctx.orderId: null` so pack-orders' `requireOrderIdForMutation` REFUSEs
+//       `no_order` (never a thrown turn). BKL-089 (orders scope): when the direct
+//       id lookup MISSES and `orderReferenceReads` is wired, the orderId string is
+//       treated as a staff REFERENCE — the display number ("4242") or a customer
+//       name — and resolved deterministically (ops-order-resolution.ts); a UNIQUE
+//       match REWRITES payload.orderId to the resolved id (the rebuilt envelope's
+//       intentHash then covers the resolved payload) and projects the order state
+//       PRESENT. The strictness bar is higher than products: displayId resolves
+//       only on an exactly-one match, and a customer name only against a single
+//       ACTIVE (non-terminal) order.
 //
 // The envelope is REBUILT via `buildEnvelope` with the SAME kind/actor/taint/
 // nonce/createdAt (mirrors ibatexas-resolver.ts) and the FINAL payload (the
@@ -26,10 +35,10 @@
 // verbatim — the ops authority the composed `staffRoleGuard` gates on is
 // unchanged, and NL→id resolution never influences the actor.
 //
-// v1 posture: NL→id resolution covers PRODUCTS only (BKL-089 product scope). A
-// `payload.orderId` that is not a real id still resolves to null → an honest
-// REFUSE; NL→id ORDER resolution on the ops plane ("o pedido da Maria") is the
-// registered BKL-089 orders-scope follow-up.
+// Reference→id resolution covers PRODUCTS (name, BKL-089 product scope) and
+// ORDERS (display number / customer name, BKL-089 orders scope). Both are
+// deterministic, fail-closed, and OPTIONAL (absent dep ⇒ byte-identical
+// id-literal behaviour); neither ever influences the actor.
 //
 // The two lookups are INJECTED (testable with fakes) and FAIL-CLOSED: a lookup
 // throw is captured and treated as "not found" (never propagated), so a
@@ -42,6 +51,10 @@ import {
   resolveProductByName,
   type ListProductsByName,
 } from "./ops-product-resolution.js";
+import {
+  resolveOrderByReference,
+  type OrderReferenceReads,
+} from "./ops-order-resolution.js";
 
 /** The product snapshot the pack-ops `requireProductExists` guard reads. */
 export interface OpsResolverProduct {
@@ -95,6 +108,21 @@ export interface OpsResolverDeps {
    * is ABSENT the resolver is byte-identical to the id-literal v1 (no NL→id).
    */
   readonly listProductsByName?: ListProductsByName;
+  /**
+   * OPTIONAL deterministic order REFERENCE→id resolution (BKL-089, orders scope).
+   * When the direct `lookupOrder(payload.orderId)` MISSES (the model put a staff
+   * REFERENCE into `orderId` — the display number "4242" or a customer name, per
+   * the persona), the resolver treats that string as a reference and, on a UNIQUE
+   * deterministic match, REWRITES `payload.orderId` to the resolved order id and
+   * rebuilds the envelope — so the kernel adjudicates the RESOLVED payload against
+   * the PRESENT order state (the intentHash covers the final payload, the same
+   * BKL-028/061 posture as the product path). A none/ambiguous outcome leaves the
+   * payload untouched ⇒ `ctx.orderId` stays null ⇒ honest kernel REFUSE `no_order`.
+   * When this dep is ABSENT the order paths are byte-identical to the id-literal
+   * v1 (no reference resolution). Higher strictness bar than products — a
+   * wrong-order write is harmful — see ops-order-resolution.ts.
+   */
+  readonly orderReferenceReads?: OrderReferenceReads;
 }
 
 /**
@@ -182,6 +210,82 @@ async function resolveAvailabilityTarget(
 }
 
 /**
+ * Resolve the order target shared by `order.note.add` / `order.status.transition`
+ * (the resolution branch is IDENTICAL for both — only the per-kind ctx projection
+ * differs). Direct id lookup first; on a MISS, the BKL-089 deterministic
+ * REFERENCE→id resolution (when wired). Returns the projected order state (null ⇒
+ * REFUSE no_order), the EFFECTIVE order id for the ctx (the resolved id when a
+ * reference resolved, the original id on a direct hit, null on a miss), and — when
+ * a reference resolved — the rewritten payload (orderId ← resolved id; NOTHING
+ * else changes; actor/taint/nonce untouched by the caller's rebuild).
+ */
+async function resolveOrderTarget(
+  deps: OpsResolverDeps,
+  envelope: IntentEnvelope,
+  payload: Record<string, unknown>,
+): Promise<{
+  order: OpsResolverOrder | null;
+  orderId: string | null;
+  payload?: Record<string, unknown>;
+}> {
+  const orderId = typeof payload.orderId === "string" ? payload.orderId : "";
+  const direct =
+    orderId === ""
+      ? null
+      : await safeLookup(() => deps.lookupOrder(orderId), "order");
+  if (direct !== null) return { order: direct, orderId };
+  if (orderId === "" || deps.orderReferenceReads === undefined) {
+    return { order: null, orderId: null };
+  }
+
+  // Direct id lookup MISSED and reference reads are wired: treat the orderId
+  // string as a staff REFERENCE (display number or customer name). A UNIQUE
+  // deterministic match rewrites payload.orderId to the resolved id; none/
+  // ambiguous leaves the payload untouched (→ ctx.orderId null → honest REFUSE).
+  const resolution = await resolveOrderByReference(orderId, deps.orderReferenceReads);
+  if (resolution.kind === "resolved") {
+    logger.info(
+      {
+        component: "ops-resolver",
+        event: "order.ref_resolved",
+        kind: envelope.kind,
+        via: resolution.via,
+        from: orderId,
+        to: resolution.order.id,
+      },
+      "ops order reference resolved to id (payload orderId rewritten before adjudication)",
+    );
+    const o = resolution.order;
+    return {
+      order: {
+        customerId: o.customerId,
+        paymentMethod: o.paymentMethod,
+        paymentStatus: o.paymentStatus,
+        totalInCentavos: o.totalInCentavos,
+        fulfillmentStatus: o.fulfillmentStatus,
+      },
+      orderId: o.id,
+      payload: { ...payload, orderId: o.id },
+    };
+  }
+  logger.info(
+    {
+      component: "ops-resolver",
+      event: "order.ref_unresolved",
+      kind: envelope.kind,
+      ...(resolution.via ? { via: resolution.via } : {}),
+      from: orderId,
+      outcome: resolution.kind,
+      ...(resolution.kind === "ambiguous"
+        ? { candidateCount: resolution.candidates.length }
+        : {}),
+    },
+    "ops order reference did not resolve to a unique id (kernel will REFUSE no_order)",
+  );
+  return { order: null, orderId: null };
+}
+
+/**
  * Build the per-kind ops `SystemState` for one planned envelope, plus an
  * OPTIONAL rewritten payload (BKL-089 availability name-resolution). Returns
  * `state: undefined` for an unrecognized kind so the loop falls back to the
@@ -214,11 +318,11 @@ async function opsStateForEnvelope(
   }
 
   if (envelope.kind === "order.note.add") {
-    const orderId = typeof payload.orderId === "string" ? payload.orderId : "";
-    const order =
-      orderId === ""
-        ? null
-        : await safeLookup(() => deps.lookupOrder(orderId), "order");
+    const { order, orderId, payload: rewritten } = await resolveOrderTarget(
+      deps,
+      envelope,
+      payload,
+    );
     // Mirror adjudicateAdminNote's noteOrderState (the proven admin-note state).
     // Missing order ⇒ orderId:null ⇒ requireOrderIdForMutation REFUSEs no_order.
     return {
@@ -227,21 +331,22 @@ async function opsStateForEnvelope(
           channel: "web",
           customerId: order?.customerId ?? null,
           cartId: null,
-          orderId: order === null ? null : orderId,
+          orderId,
           paymentMethod: order?.paymentMethod ?? null,
           paymentStatus: order?.paymentStatus ?? null,
           totalInCentavos: order?.totalInCentavos ?? 0,
         },
       },
+      ...(rewritten ? { payload: rewritten } : {}),
     };
   }
 
   if (envelope.kind === "order.status.transition") {
-    const orderId = typeof payload.orderId === "string" ? payload.orderId : "";
-    const order =
-      orderId === ""
-        ? null
-        : await safeLookup(() => deps.lookupOrder(orderId), "order");
+    const { order, orderId, payload: rewritten } = await resolveOrderTarget(
+      deps,
+      envelope,
+      payload,
+    );
     // The pack-orders OrderState the BKL-090 `requireLegalStatusTransition`
     // guard reads: `ctx.orderId` (requireOrderIdForMutation) + the CURRENT
     // `ctx.fulfillmentStatus` (the legality guard). Missing order ⇒ orderId:null
@@ -253,10 +358,11 @@ async function opsStateForEnvelope(
           channel: "web",
           customerId: order?.customerId ?? null,
           cartId: null,
-          orderId: order === null ? null : orderId,
+          orderId,
           fulfillmentStatus: order?.fulfillmentStatus ?? null,
         },
       },
+      ...(rewritten ? { payload: rewritten } : {}),
     };
   }
 

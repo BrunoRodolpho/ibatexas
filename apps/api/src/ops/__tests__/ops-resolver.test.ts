@@ -8,6 +8,10 @@ import {
   type OpsResolverDeps,
 } from "../ops-resolver.js";
 import type { ProductCandidate } from "../ops-product-resolution.js";
+import type {
+  OrderCandidate,
+  OrderReferenceReads,
+} from "../ops-order-resolution.js";
 
 function opsEnvelope(
   kind: string,
@@ -360,6 +364,183 @@ describe("ops resolver — order.status.transition state (BKL-090)", () => {
     const ctx = (resolved!.state as { ctx: { orderId: unknown; fulfillmentStatus: unknown } }).ctx;
     expect(ctx.orderId).toBeNull();
     expect(ctx.fulfillmentStatus).toBeNull();
+  });
+});
+
+// ── BKL-089 — order REFERENCE→id resolution + payload rewrite ────────────────
+//
+// When the direct id lookup MISSES and `orderReferenceReads` is wired, the
+// resolver treats payload.orderId as a staff REFERENCE (display number "4242" or
+// a customer name), resolves it deterministically, and REWRITES orderId to the
+// resolved order id for BOTH order kinds — the rebuilt envelope's intentHash then
+// covers the RESOLVED payload. A none/ambiguous outcome leaves the payload
+// untouched (ctx.orderId stays null → honest REFUSE no_order). The resolution
+// NEVER touches the envelope actor.
+
+function orderCandidate(over: Partial<OrderCandidate> = {}): OrderCandidate {
+  return {
+    id: "order_99",
+    displayId: 4242,
+    customerName: "Maria Silva",
+    fulfillmentStatus: "preparing",
+    customerId: "cust_9",
+    paymentMethod: "pix",
+    paymentStatus: "confirmed",
+    totalInCentavos: 7000,
+    ...over,
+  };
+}
+
+function orderReads(opts: {
+  byDisplayId?: OrderCandidate[];
+  recentActive?: OrderCandidate[];
+}): OrderReferenceReads {
+  return {
+    findByDisplayId: vi.fn(async () => opts.byDisplayId ?? []),
+    listRecentActive: vi.fn(async () => opts.recentActive ?? []),
+  };
+}
+
+describe("ops resolver — order reference→id resolution (BKL-089, orders scope)", () => {
+  it("note.add: id MISS → displayId '4242' resolves → orderId rewritten + state PRESENT", async () => {
+    const deps = makeDeps({
+      lookupOrder: vi.fn(async () => null), // direct id lookup misses
+      orderReferenceReads: orderReads({
+        byDisplayId: [orderCandidate({ id: "order_99", displayId: 4242 })],
+      }),
+    });
+    const env = opsEnvelope("order.note.add", { orderId: "4242", body: "nota" });
+    const [resolved] = await createOpsResolver(deps).resolve(input(env));
+
+    // ctx.orderId is the RESOLVED id (not the spoken number) → guard passes.
+    expect(resolved!.state).toEqual({
+      ctx: {
+        channel: "web",
+        customerId: "cust_9",
+        cartId: null,
+        orderId: "order_99",
+        paymentMethod: "pix",
+        paymentStatus: "confirmed",
+        totalInCentavos: 7000,
+      },
+    });
+    // payload.orderId REWRITTEN; body preserved.
+    expect(resolved!.envelope.payload).toEqual({ orderId: "order_99", body: "nota" });
+  });
+
+  it("note.add: the rebuilt intentHash covers the REWRITTEN payload (not the reference)", async () => {
+    const deps = makeDeps({
+      lookupOrder: vi.fn(async () => null),
+      orderReferenceReads: orderReads({
+        byDisplayId: [orderCandidate({ id: "order_99", displayId: 4242 })],
+      }),
+    });
+    const env = opsEnvelope("order.note.add", { orderId: "4242", body: "nota" });
+    const [resolved] = await createOpsResolver(deps).resolve(input(env));
+
+    expect(resolved!.envelope.intentHash).toBe(
+      hashOver("order.note.add", { orderId: "order_99", body: "nota" }),
+    );
+    expect(resolved!.envelope.intentHash).not.toBe(env.intentHash);
+  });
+
+  it("resolution NEVER touches the envelope actor/taint/nonce (adversarial pin)", async () => {
+    const deps = makeDeps({
+      lookupOrder: vi.fn(async () => null),
+      orderReferenceReads: orderReads({
+        byDisplayId: [orderCandidate({ id: "order_99", displayId: 4242 })],
+      }),
+    });
+    const env = opsEnvelope("order.note.add", { orderId: "4242", body: "nota" });
+    const [resolved] = await createOpsResolver(deps).resolve(input(env));
+    expect(resolved!.envelope.actor).toEqual(env.actor);
+    expect(resolved!.envelope.taint).toBe("UNTRUSTED");
+    expect(resolved!.envelope.nonce).toBe("n-1");
+  });
+
+  it("status.transition: id MISS → customer name resolves → orderId rewritten + CURRENT status present", async () => {
+    const deps = makeDeps({
+      lookupOrder: vi.fn(async () => null),
+      orderReferenceReads: orderReads({
+        recentActive: [
+          orderCandidate({ id: "order_m", customerName: "Maria", fulfillmentStatus: "preparing" }),
+        ],
+      }),
+    });
+    const env = opsEnvelope("order.status.transition", { orderId: "Maria", newStatus: "ready" });
+    const [resolved] = await createOpsResolver(deps).resolve(input(env));
+
+    expect(resolved!.state).toEqual({
+      ctx: {
+        channel: "web",
+        customerId: "cust_9",
+        cartId: null,
+        orderId: "order_m",
+        fulfillmentStatus: "preparing",
+      },
+    });
+    expect(resolved!.envelope.payload).toEqual({ orderId: "order_m", newStatus: "ready" });
+    expect(resolved!.envelope.intentHash).toBe(
+      hashOver("order.status.transition", { orderId: "order_m", newStatus: "ready" }),
+    );
+  });
+
+  it("AMBIGUOUS reference → payload UNTOUCHED + ctx.orderId null (honest REFUSE no_order)", async () => {
+    const deps = makeDeps({
+      lookupOrder: vi.fn(async () => null),
+      orderReferenceReads: orderReads({
+        byDisplayId: [
+          orderCandidate({ id: "order_a", displayId: 4242 }),
+          orderCandidate({ id: "order_b", displayId: 4242 }),
+        ],
+      }),
+    });
+    const env = opsEnvelope("order.note.add", { orderId: "4242", body: "nota" });
+    const [resolved] = await createOpsResolver(deps).resolve(input(env));
+    expect((resolved!.state as { ctx: { orderId: unknown } }).ctx.orderId).toBeNull();
+    expect(resolved!.envelope.payload).toEqual({ orderId: "4242", body: "nota" });
+    expect(resolved!.envelope.intentHash).toBe(env.intentHash);
+  });
+
+  it("NONE (no match) → payload UNTOUCHED + ctx.orderId null", async () => {
+    const deps = makeDeps({
+      lookupOrder: vi.fn(async () => null),
+      orderReferenceReads: orderReads({ byDisplayId: [], recentActive: [] }),
+    });
+    const env = opsEnvelope("order.note.add", { orderId: "9999", body: "nota" });
+    const [resolved] = await createOpsResolver(deps).resolve(input(env));
+    expect((resolved!.state as { ctx: { orderId: unknown } }).ctx.orderId).toBeNull();
+    expect(resolved!.envelope.payload).toEqual({ orderId: "9999", body: "nota" });
+  });
+
+  it("direct id lookup HIT → reference reads NOT consulted (id-literal path intact)", async () => {
+    const reads = orderReads({ byDisplayId: [orderCandidate({ id: "order_other" })] });
+    const deps = makeDeps({
+      lookupOrder: vi.fn(async () => ({
+        customerId: "cust_1",
+        paymentMethod: "pix",
+        paymentStatus: "confirmed",
+        totalInCentavos: 5000,
+        fulfillmentStatus: "confirmed",
+      })),
+      orderReferenceReads: reads,
+    });
+    const env = opsEnvelope("order.note.add", { orderId: "order_1", body: "nota" });
+    const [resolved] = await createOpsResolver(deps).resolve(input(env));
+    expect((resolved!.state as { ctx: { orderId: unknown } }).ctx.orderId).toBe("order_1");
+    expect(resolved!.envelope.payload).toEqual({ orderId: "order_1", body: "nota" });
+    expect(reads.findByDisplayId).not.toHaveBeenCalled();
+    expect(reads.listRecentActive).not.toHaveBeenCalled();
+  });
+
+  it("no reference reads wired (v1) → MISS stays ctx.orderId null, payload untouched (parity)", async () => {
+    // makeDeps omits orderReferenceReads ⇒ byte-identical to the id-literal v1.
+    const deps = makeDeps({ lookupOrder: vi.fn(async () => null) });
+    const env = opsEnvelope("order.note.add", { orderId: "4242", body: "nota" });
+    const [resolved] = await createOpsResolver(deps).resolve(input(env));
+    expect((resolved!.state as { ctx: { orderId: unknown } }).ctx.orderId).toBeNull();
+    expect(resolved!.envelope.payload).toEqual({ orderId: "4242", body: "nota" });
+    expect(resolved!.envelope.intentHash).toBe(env.intentHash);
   });
 });
 
