@@ -16,6 +16,7 @@ import { customerOrderRoutes } from "./customer-orders.js";
 import { orderActionRoutes } from "./order-actions.js";
 import { scheduleStatusRoutes } from "./schedule-status.js";
 import { bannerRoutes } from "./banner.js";
+import { specialsRoutes } from "./specials.js";
 import { qaControlRoutes } from "./qa-control.js";
 import { envelopeIngressRoutes } from "./test-envelope-ingress.js";
 
@@ -39,6 +40,7 @@ export async function registerRoutes(server: FastifyInstance): Promise<void> {
   await server.register(orderActionRoutes);
   await server.register(scheduleStatusRoutes);
   await server.register(bannerRoutes);
+  await server.register(specialsRoutes);
 
   // DEV-ONLY harness control for the qa-viewer — self-disables in production
   // and without IBX_QA_CONTROL_ENABLED + IBX_QA_CONTROL_TOKEN (see qa-control.ts).
