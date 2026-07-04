@@ -5,12 +5,15 @@
  * MUTATING tools (CLAUDE.md rule #9); MUTATING calls are captured as
  * `IntentEnvelope`s and adjudicated by the kernel.
  *
- * `product.availability.set` is advertised as an `allowedIntent` ONLY on a
- * STAFF session (`ctx.staffId` present) — the ops persona. It is NEVER a
- * customer/LLM chat verb, so it is deliberately absent from
- * `CHAT_DRIVABLE_TOOL_KINDS` and has no registered chat tool (it shows up as
- * advertised-but-unregistered under the `staff` roster-drift probe, which the
- * `ADVERTISED_NOT_REGISTERED_WHITELIST` documents).
+ * `product.availability.set` and `product.price.set` (NEW-004) are advertised as
+ * `allowedIntent`s ONLY on a STAFF session (`ctx.staffId` present) — the ops
+ * persona. Neither is EVER a customer/LLM chat verb, so both are deliberately
+ * absent from `CHAT_DRIVABLE_TOOL_KINDS` and have no registered chat tool (they
+ * show up as advertised-but-unregistered under the `staff` roster-drift probe,
+ * which the `ADVERTISED_NOT_REGISTERED_WHITELIST` documents). `product.price.set`
+ * is REVERSIBLE, so it stays IN the WhatsApp verb scope (NOT in
+ * `WA_EXCLUDED_OPS_KINDS`); its UNTRUSTED-taint CONFIRM parks/resumes on both
+ * ingresses.
  *
  * `order.note.add` (NEW-032 verbs-v2) and `order.status.transition` (BKL-090,
  * the kitchen-advance verb) are ALSO advertised on a staff session, but those
@@ -143,16 +146,17 @@ export const OPS_INCIDENT_CLOSE_STAFF_KIND = "incident.ticket.close.staff"
 
 /**
  * Ops-domain tool classification. The OWNED mutating verbs
- * (`product.availability.set`, `ops.alert.resolve.staff`,
- * `incident.ticket.close.staff`) and the three foreign-owned kinds (advertised
- * to widen the ops allowlist) are MUTATING; `ops_snapshot` is the LLM-visible
- * READ tool (staff-only advertisement). `safePlan` asserts no MUTATING name
- * ever leaks into `visibleReadTools`.
+ * (`product.availability.set`, `product.price.set` (NEW-004),
+ * `ops.alert.resolve.staff`, `incident.ticket.close.staff`) and the three
+ * foreign-owned kinds (advertised to widen the ops allowlist) are MUTATING;
+ * `ops_snapshot` is the LLM-visible READ tool (staff-only advertisement).
+ * `safePlan` asserts no MUTATING name ever leaks into `visibleReadTools`.
  */
 export const OPS_TOOLS: ToolClassification = {
   READ_ONLY: new Set<string>([OPS_SNAPSHOT_READ_TOOL]),
   MUTATING: new Set<string>([
     "product.availability.set",
+    "product.price.set",
     OPS_ALERT_RESOLVE_STAFF_KIND,
     OPS_INCIDENT_CLOSE_STAFF_KIND,
     OPS_FOREIGN_ADVERTISED_KIND,
@@ -185,6 +189,7 @@ const rawOpsCapabilityPlanner: CapabilityPlanner<OpsState, OpsContext> = {
     const allowedIntents: string[] = isStaffSession
       ? [
           "product.availability.set",
+          "product.price.set",
           OPS_ALERT_RESOLVE_STAFF_KIND,
           OPS_INCIDENT_CLOSE_STAFF_KIND,
           OPS_FOREIGN_ADVERTISED_KIND,

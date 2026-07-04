@@ -184,6 +184,10 @@ const CUSTOMER_ONBOARDING_INTENT_KINDS = [
 
 const OPS_INTENT_KINDS = [
   "product.availability.set",
+  // NEW-004 — the OWNED price-change verb (confirm-gated on UNTRUSTED taint).
+  // Chat-INVISIBLE like the availability verb; its executor re-prices via the
+  // same `medusa.admin.product.update` egress the availability verb uses.
+  "product.price.set",
   // BKL-088 — the two OWNED staff-plane RESOLUTION verbs. DISTINCT from the
   // SYSTEM-only `ops.alert.resolve` / `incident.ticket.close` domain kinds
   // (which stay ABSENT from KNOWN_INTENT_KINDS by design); these `*.staff`
@@ -206,9 +210,9 @@ const OPS_INTENT_KINDS = [
 //  + 3 (pix-payments)
 //  + 17 (pack-payments, new W5-1)
 //  + 8 (customer-onboarding)
-//  + 3 (pack-ops — product.availability.set NEW-032 C1;
-//       ops.alert.resolve.staff + incident.ticket.close.staff BKL-088)
-//  = 66 distinct kinds, ≥60 target met.
+//  + 4 (pack-ops — product.availability.set NEW-032 C1; product.price.set
+//       NEW-004; ops.alert.resolve.staff + incident.ticket.close.staff BKL-088)
+//  = 67 distinct kinds (+1 loyalty = 68 KNOWN), ≥60 target met.
 //
 // Future Pack growth (`@ibatexas/pack-auth`, `@ibatexas/pack-loyalty`,
 // `@ibatexas/pack-ops`) extends this set from inside their own modules.

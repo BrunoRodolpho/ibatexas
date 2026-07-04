@@ -3,7 +3,7 @@
   "graph": "capability",
   "meta": {
     "dangling": [],
-    "intentKinds": 67,
+    "intentKinds": 68,
     "packs": 6,
     "personaContexts": [
       "authed-customer",
@@ -1260,6 +1260,28 @@
       }
     },
     {
+      "id": "intent:product.price.set",
+      "type": "intent",
+      "label": "product.price.set",
+      "meta": {
+        "advertisedContexts": [],
+        "chatDrivable": false,
+        "composedPack": "ibatexas/pack-ops",
+        "domain": "product",
+        "flags": [],
+        "knownKind": true,
+        "plausibleDecisions": [
+          "EXECUTE",
+          "REFUSE",
+          "ESCALATE",
+          "REQUEST_CONFIRMATION",
+          "DEFER",
+          "REWRITE"
+        ],
+        "staffRoute": false
+      }
+    },
+    {
       "id": "intent:reservation.cancel",
       "type": "intent",
       "label": "reservation.cancel",
@@ -1548,9 +1570,9 @@
       "type": "pack",
       "label": "ibatexas/pack-ops",
       "meta": {
-        "intentCount": 3,
+        "intentCount": 4,
         "policyDefault": "REFUSE",
-        "version": "1.1.0"
+        "version": "1.2.0"
       }
     },
     {
@@ -2048,6 +2070,11 @@
     {
       "from": "pack:ibatexas/pack-ops",
       "to": "intent:product.availability.set",
+      "type": "declares"
+    },
+    {
+      "from": "pack:ibatexas/pack-ops",
+      "to": "intent:product.price.set",
       "type": "declares"
     },
     {

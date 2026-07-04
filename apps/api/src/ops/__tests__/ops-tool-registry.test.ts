@@ -31,8 +31,11 @@ function makeDeps(over: Partial<OpsToolRegistryDeps> = {}): {
   appendRefundEventLog: ReturnType<typeof vi.fn>;
   resolveAlertFromEnvelope: ReturnType<typeof vi.fn>;
   closeIncidentFromEnvelope: ReturnType<typeof vi.fn>;
+  readProductBrlVariantIds: ReturnType<typeof vi.fn>;
 } {
   const medusaAdjudicated = vi.fn(async () => ({ product: { id: "prod_1" } }));
+  // NEW-004 — default: a single BRL-priced variant (the common uniform product).
+  const readProductBrlVariantIds = vi.fn(async () => ["variant_1"]);
   const writeAdjudicatedNote = vi.fn(async () => ({
     noteId: "note_1",
     orderId: "order_1",
@@ -74,6 +77,7 @@ function makeDeps(over: Partial<OpsToolRegistryDeps> = {}): {
   const deps: OpsToolRegistryDeps = {
     medusaAdjudicated: medusaAdjudicated as never,
     auditSink: AUDIT_SINK,
+    readProductBrlVariantIds: readProductBrlVariantIds as never,
     orderCmdSvc: { writeAdjudicatedNote, writeAdjudicatedStatusTransition },
     publishOrderStatusChanged,
     paymentCmdSvc: { writeAdjudicatedRefund },
@@ -94,6 +98,7 @@ function makeDeps(over: Partial<OpsToolRegistryDeps> = {}): {
     appendRefundEventLog,
     resolveAlertFromEnvelope,
     closeIncidentFromEnvelope,
+    readProductBrlVariantIds,
   };
 }
 
@@ -116,10 +121,12 @@ describe("ops tool registry — shape", () => {
     }
   });
 
-  it("registers exactly the six governed ops verbs", () => {
+  it("registers exactly the seven governed ops verbs", () => {
     const { deps } = makeDeps();
     const registry = createOpsToolRegistry(deps);
     expect(registry.hasCapability("product.availability.set")).toBe(true);
+    // NEW-004 — the price-change-by-message verb.
+    expect(registry.hasCapability("product.price.set")).toBe(true);
     expect(registry.hasCapability("order.note.add")).toBe(true);
     expect(registry.hasCapability("order.status.transition")).toBe(true);
     // BKL-085 — the refunds-by-message verb.
@@ -165,6 +172,63 @@ describe("product.availability.set executor — mirrors the products PATCH egres
     const args = medusaAdjudicated.mock.calls[0]![0] as Record<string, unknown>;
     expect(args.payload).toEqual({ metadata: { inStock: true } });
     expect(args.payload).not.toHaveProperty("status");
+  });
+});
+
+describe("product.price.set executor — re-prices every BRL variant (NEW-004)", () => {
+  it("sets each BRL-priced variant to the confirmed price in ONE update (centavos → reais)", async () => {
+    const { deps, medusaAdjudicated, readProductBrlVariantIds } = makeDeps();
+    // Uniform multi-variant product (P/M/G shirt): two BRL variants.
+    readProductBrlVariantIds.mockResolvedValue(["var_p", "var_m"]);
+    const tool = toolByKind(deps, "product.price.set");
+    const out = (await tool.execute(
+      { productId: "prod_1", priceCentavos: 9500, reason: "reajuste" },
+      capsule("staff_1"),
+    )) as { productId: string; priceCentavos: number; variantsUpdated: number };
+
+    expect(readProductBrlVariantIds).toHaveBeenCalledWith("prod_1");
+    expect(medusaAdjudicated).toHaveBeenCalledTimes(1);
+    const args = medusaAdjudicated.mock.calls[0]![0] as Record<string, unknown>;
+    expect(args.scope).toBe("admin");
+    expect(args.method).toBe("POST");
+    expect(args.path).toBe("/admin/products/prod_1");
+    expect(args.intentKind).toBe("medusa.admin.product.update");
+    // The EXACT egress: every BRL variant re-priced to 95 reais (9500 centavos / 100).
+    expect(args.payload).toEqual({
+      variants: [
+        { id: "var_p", prices: [{ currency_code: "brl", amount: 95 }] },
+        { id: "var_m", prices: [{ currency_code: "brl", amount: 95 }] },
+      ],
+    });
+    expect(args.sourceSubject).toBe("ops:product.price.set:admin:staff_1");
+    expect(args.auditSink).toBe(AUDIT_SINK);
+    expect(typeof args.idempotencyKey).toBe("string");
+    expect(out).toEqual({
+      productId: "prod_1",
+      priceCentavos: 9500,
+      variantsUpdated: 2,
+    });
+  });
+
+  it("converts fractional-real centavos exactly (9550 → 95.5 reais)", async () => {
+    const { deps, medusaAdjudicated, readProductBrlVariantIds } = makeDeps();
+    readProductBrlVariantIds.mockResolvedValue(["v1"]);
+    const tool = toolByKind(deps, "product.price.set");
+    await tool.execute({ productId: "p", priceCentavos: 9550 }, capsule("s"));
+    const args = medusaAdjudicated.mock.calls[0]![0] as Record<string, unknown>;
+    expect(args.payload).toEqual({
+      variants: [{ id: "v1", prices: [{ currency_code: "brl", amount: 95.5 }] }],
+    });
+  });
+
+  it("throws (never sends an empty update) when the product has no BRL-priced variant", async () => {
+    const { deps, medusaAdjudicated, readProductBrlVariantIds } = makeDeps();
+    readProductBrlVariantIds.mockResolvedValue([]);
+    const tool = toolByKind(deps, "product.price.set");
+    await expect(
+      tool.execute({ productId: "prod_x", priceCentavos: 9500 }, capsule("s")),
+    ).rejects.toThrow(/no BRL-priced variant/);
+    expect(medusaAdjudicated).not.toHaveBeenCalled();
   });
 });
 

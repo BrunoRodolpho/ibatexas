@@ -220,6 +220,7 @@ function buildDeps(opts: {
   const tools = createOpsToolRegistry({
     medusaAdjudicated: opts.medusaAdjudicated as never,
     auditSink: {} as never,
+    readProductBrlVariantIds: (async () => ["variant_1"]) as never,
     orderCmdSvc: {
       writeAdjudicatedNote: opts.writeAdjudicatedNote,
       writeAdjudicatedStatusTransition:

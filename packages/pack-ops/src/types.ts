@@ -33,6 +33,12 @@
  *
  *   - product.availability.set — staff. Toggle a product's availability
  *     (86 / un-86 an item). Matrix row {OWNER,MANAGER}. NEVER chat-drivable.
+ *   - product.price.set        — staff (NEW-004). Change a product's price by
+ *     message ("aumenta o preço da picanha pra 95 reais"). Matrix row
+ *     {OWNER,MANAGER}. NEVER chat-drivable. A model-parsed (UNTRUSTED) price
+ *     ALWAYS REQUEST_CONFIRMATIONs (a misparse sends the wrong price live); the
+ *     confirm prompt states the product name + old→new BRL. Reversible ⇒ no
+ *     ESCALATE band; a sanity REFUSE caps absurd values.
  *   - ops.alert.resolve.staff  — staff (BKL-088). Resolve an operational alert
  *     by message ("resolve o alerta X"). Matrix row {OWNER,MANAGER}.
  *   - incident.ticket.close.staff — staff (BKL-088). Close a no-reply incident
@@ -73,6 +79,7 @@ import { createSystemTaintPolicy } from "@adjudicate/primitives"
  */
 export type OpsIntentKind =
   | "product.availability.set"
+  | "product.price.set"
   | "ops.alert.resolve.staff"
   | "incident.ticket.close.staff"
 
@@ -89,6 +96,22 @@ export type OpsIntentKind =
 export interface ProductAvailabilitySetPayload {
   readonly productId: string
   readonly available: boolean
+  readonly reason?: string
+}
+
+/**
+ * `product.price.set` payload (NEW-004). Strict CLOSED contract — the
+ * business-phase `validatePricePayload` guard REFUSEs anything that is not
+ * EXACTLY `{ productId: <non-empty string>, priceCentavos: <integer > 0>,
+ * reason?: <string> }` (unknown keys rejected). `productId` is the Medusa
+ * product id the ops executor re-prices (the resolver rewrites a NAME to it,
+ * BKL-089); `priceCentavos` is the target price in INTEGER centavos (Hard Rule
+ * #2 — never floats/reais on the wire; the executor converts to reais at the
+ * Medusa egress); `reason` is an optional operator note carried into audit.
+ */
+export interface ProductPriceSetPayload {
+  readonly productId: string
+  readonly priceCentavos: number
   readonly reason?: string
 }
 
@@ -121,6 +144,7 @@ export interface IncidentCloseStaffPayload {
 /** The Pack's payload union. */
 export type OpsPayload =
   | ProductAvailabilitySetPayload
+  | ProductPriceSetPayload
   | OpsAlertResolveStaffPayload
   | IncidentCloseStaffPayload
 
@@ -128,6 +152,13 @@ export type OpsPayload =
 export const PRODUCT_AVAILABILITY_SET_KEYS: ReadonlySet<string> = new Set([
   "productId",
   "available",
+  "reason",
+])
+
+/** The keys the strict `product.price.set` validator admits (NEW-004). */
+export const PRODUCT_PRICE_SET_KEYS: ReadonlySet<string> = new Set([
+  "productId",
+  "priceCentavos",
   "reason",
 ])
 
@@ -171,6 +202,32 @@ export interface OpsProductSnapshot {
 }
 
 /**
+ * The product-pricing snapshot the pack's `product.price.set` guards read
+ * (NEW-004). Projected by the ops resolver from the admin catalog read (variant
+ * BRL prices) BEFORE adjudication:
+ *
+ *   - `id` / `status` prove existence (a null snapshot ⇒ REFUSE product_not_found);
+ *   - `name` is the product display title — the CONFIRM prompt states it so the
+ *     staff confirms WHICH product ("Confirmar novo preço de Picanha…");
+ *   - `currentPriceCentavos` is the CURRENT displayed price (the uniform BRL
+ *     variant price = min == max) so the prompt can show old→new;
+ *   - `divergentVariantPrices` is TRUE when the product's BRL-priced variants are
+ *     NOT all the same price (per-variation pricing, e.g. 500g vs 1kg) — the
+ *     `requireUniformVariantPricing` guard REFUSEs those (v1 does not disambiguate
+ *     which variation the owner meant; see `refusePricePerVariantUnsupported`).
+ *
+ * The resolver considers ONLY variants that carry a BRL price; a product with no
+ * BRL-priced variant is not priceable by message and projects `null`.
+ */
+export interface OpsPriceProductSnapshot {
+  readonly id: string
+  readonly status: string
+  readonly name: string
+  readonly currentPriceCentavos: number
+  readonly divergentVariantPrices: boolean
+}
+
+/**
  * The alert snapshot the pack's `requireAlertActionable` guard reads (BKL-088).
  * `id` proves existence and `status` lets the guard fail closed on a terminal
  * (already-resolved) alert. Projected by the ops resolver from the OpsAlert
@@ -196,6 +253,7 @@ export interface OpsIncidentSnapshot {
  * THE OPS RESOLVER MUST BUILD (one branch per kind):
  *
  *   product.availability.set  → { ctx, product:  {id,status} | null }
+ *   product.price.set         → { ctx, priceProduct: {id,status,name,…} | null }
  *   ops.alert.resolve.staff   → { ctx, alert:    {id,status} | null }
  *   incident.ticket.close.staff → { ctx, incident: {id,status} | null }
  *
@@ -210,6 +268,8 @@ export interface OpsState {
   }
   /** The product the in-flight `product.availability.set` targets. */
   readonly product?: OpsProductSnapshot | null
+  /** The product-pricing snapshot the in-flight `product.price.set` targets. */
+  readonly priceProduct?: OpsPriceProductSnapshot | null
   /** The alert the in-flight `ops.alert.resolve.staff` targets (BKL-088). */
   readonly alert?: OpsAlertSnapshot | null
   /** The incident the in-flight `incident.ticket.close.staff` targets (BKL-088). */
@@ -253,3 +313,32 @@ export const opsTaintPolicy = createSystemTaintPolicy({
   systemOnlyKinds: [],
   userMinimum: "UNTRUSTED",
 })
+
+// ── NEW-004 — price sanity bound (centavos — Hard Rule #2 / #3) ──────────────
+
+/**
+ * Read a non-negative integer centavos value from `process.env[name]`, falling
+ * back to `fallback` when unset / non-numeric / negative (Hard Rule #3: config
+ * from env, never hardcode). Mirrors pack-payments' `readEnvCentavos`.
+ */
+function readEnvCentavos(name: string, fallback: number): number {
+  const raw = process.env[name]
+  if (!raw) return fallback
+  const n = Number.parseInt(raw, 10)
+  if (Number.isNaN(n) || n < 0) return fallback
+  return n
+}
+
+/**
+ * The absurd-price sanity ceiling for `product.price.set`, in centavos. A
+ * parsed price ABOVE this REFUSEs (`refusePriceOutOfRange`) — a defensive cap
+ * against a gross misparse ("95 mil" → 9_500_000, or an extra zero) sending a
+ * nonsensical price live. Default R$100.000,00 (10_000_000 centavos), per the
+ * NEW-004 design; env-overridable via `OPS_PRICE_MAX_CENTAVOS`. Price is
+ * reversible, so this is a sanity floor/ceiling, NOT a money-governance band
+ * (there is no ESCALATE band for price v1); `priceCentavos <= 0` is already
+ * REFUSEd structurally by `validatePricePayload` (integer > 0).
+ */
+export function getPriceSanityMaxCentavos(): number {
+  return readEnvCentavos("OPS_PRICE_MAX_CENTAVOS", 10_000_000)
+}

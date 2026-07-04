@@ -4,7 +4,7 @@
   "ibatexas/pack-whatsapp": "a96900e0b7584d9994ebdade1d6f9de04ab749b071e3f61579cb6a349de6eb35",
   "ibatexas/pack-customer-onboarding": "203366b62ca1b7c438803ed5907e2ff43897b5b9e07d62c65246a49ab4e6b4fc",
   "ibatexas/pack-payments": "b508b35667e5ca69ed61d95a0e862e11657a6cc8f32b442b8d0dd1111ab7cea5",
-  "ibatexas/pack-ops": "61b65c063d4081824ad7535afeb01d93e44a4971c5795608bc2ff821c801c126",
+  "ibatexas/pack-ops": "19f6605e1788b2107b688915ab17bbbc0d1313d816695422052a042be19bf440",
   "pack-payments-pix": "d6a71ea6796ccada541ff88849bfdea8214918e982576278e9d9ed854f40a16b",
   "agent/pix-payment-failure-remediation": "966813a40cdbd77a4556ca80f2f8bb32654f6e36f32d34ed8ea637dda140bfcb"
 }

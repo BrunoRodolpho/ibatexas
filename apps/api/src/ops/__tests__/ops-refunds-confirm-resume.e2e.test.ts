@@ -279,6 +279,7 @@ function buildHarness(opts: {
   const tools = createOpsToolRegistry({
     medusaAdjudicated: (async () => ({})) as never,
     auditSink: noopSink as never,
+    readProductBrlVariantIds: (async () => ["variant_1"]) as never,
     orderCmdSvc: {
       writeAdjudicatedNote: vi.fn(),
       writeAdjudicatedStatusTransition: vi.fn(),

@@ -274,7 +274,15 @@ import {
   listOpsToolDefinitions,
   type OpsToolRegistryDeps,
 } from "./ops/ops-tool-registry.js";
-import { createOpsResolver, buildOpsRefundResumeState } from "./ops/ops-resolver.js";
+import {
+  createOpsResolver,
+  buildOpsRefundResumeState,
+  buildOpsPriceResumeState,
+} from "./ops/ops-resolver.js";
+import {
+  readOpsProductPricing,
+  computeOpsPricingSnapshot,
+} from "./ops/ops-price-read.js";
 import { OpsSystemChannel } from "./ops/ops-system-channel.js";
 import type { OrderCandidate } from "./ops/ops-order-resolution.js";
 import {
@@ -702,6 +710,39 @@ async function enrichResumeState(
       // Fail-closed: a read error re-projects a not-found state ⇒ REFUSE, never
       // a stale/authorized resume.
       return buildOpsRefundResumeState(null, (process.env.KERNEL_TENANT_ID ?? "ibatexas"));
+    }
+  }
+
+  // NEW-004 — the OPS-plane price confirm-resume (an `admin:`-session
+  // `product.price.set` parked by the UNTRUSTED-taint CONFIRM overlay)
+  // re-projects its own `{ ctx, priceProduct }` from a FRESH pricing read of the
+  // parked (resolver-rewritten, trusted) productId — NOT the customer-scoped
+  // `resolveAndAssemble` below (the ops plane's `staff:<id>` owns no products, so
+  // that path would project priceProduct absent and REFUSE a valid "sim"). The
+  // fresh read is safe: a since-parked change to differently-priced variants / a
+  // vanished product REFUSEs on resume via the uniform / existence guards.
+  if (
+    envelope.kind === "product.price.set" &&
+    envelope.actor.sessionId.startsWith("admin:")
+  ) {
+    const tenantId = process.env.KERNEL_TENANT_ID ?? "ibatexas";
+    // The parked envelope's actor.sessionId is `admin:<staffId>` (stamped by the
+    // planner from the authenticated JWT); the staffId is the suffix.
+    const staffId = envelope.actor.sessionId.slice("admin:".length);
+    const payload = (envelope.payload ?? {}) as Record<string, unknown>;
+    const productId =
+      typeof payload.productId === "string" ? payload.productId : "";
+    if (productId === "") {
+      return buildOpsPriceResumeState(null, { staffId, tenantId });
+    }
+    try {
+      const pricing = computeOpsPricingSnapshot(
+        await readOpsProductPricing(medusaAdmin, productId),
+      );
+      return buildOpsPriceResumeState(pricing, { staffId, tenantId });
+    } catch {
+      // Fail-closed: a read error re-projects a not-found state ⇒ REFUSE.
+      return buildOpsPriceResumeState(null, { staffId, tenantId });
     }
   }
 
@@ -2588,6 +2629,14 @@ export async function bootstrapClaustrum(
   const opsRegistryDeps: OpsToolRegistryDeps = {
     medusaAdjudicated,
     auditSink,
+    // NEW-004 — the BRL-priced variant ids the price executor re-prices (one
+    // read; the resolver already REFUSEd a no-BRL-variant product at SUBMIT).
+    readProductBrlVariantIds: async (productId) => {
+      const read = await readOpsProductPricing(medusaAdmin, productId);
+      return read === null || read.brlVariants.length === 0
+        ? null
+        : read.brlVariants.map((v) => v.variantId);
+    },
     orderCmdSvc: createOrderCommandService(),
     // BKL-085 — the ops refund POST-adjudication ledger write (writeAdjudicatedRefund
     // does NO adjudication; the composed router already produced the Decision).
@@ -2686,6 +2735,14 @@ export async function bootstrapClaustrum(
           const p = data.product;
           return p ? { id: p.id, status: p.status } : null;
         },
+        // NEW-004 — the pricing snapshot the `product.price.set` guards + CONFIRM
+        // prompt read (name + current uniform BRL price + divergent-variant flag).
+        // Reuses the shared `readOpsProductPricing` read + `computeOpsPricingSnapshot`;
+        // a product with no BRL-priced variant projects null → fail-closed REFUSE
+        // product_not_found. The SAME read + mapping backs the confirm-RESUME
+        // re-projection (enrichResumeState) so plan + resume see one shape.
+        lookupProductPricing: async (productId) =>
+          computeOpsPricingSnapshot(await readOpsProductPricing(medusaAdmin, productId)),
         // BKL-089 — deterministic product NAME→id resolution candidate read.
         // Reuses the SAME admin catalog list read the admin products surface
         // uses (GET /api/admin/products → medusaAdmin('/admin/products?q=...')),

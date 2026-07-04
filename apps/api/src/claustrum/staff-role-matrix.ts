@@ -39,15 +39,15 @@
  * block anything the route layer allows). Per-row `code-truth` comments cite the
  * exact routes + preHandlers below.
  *
- * The EIGHTH..TENTH kinds are the @ibatexas/pack-ops verbs the ops conductor
+ * The EIGHTH..ELEVENTH kinds are the @ibatexas/pack-ops verbs the ops conductor
  * adjudicates through the composed router (the exact seam this matrix exists
- * for): `product.availability.set` (NEW-032 slice C1) and the two BKL-088
- * RESOLUTION verbs `ops.alert.resolve.staff` / `incident.ticket.close.staff`.
- * No admin HTTP route builds these kinds directly; each band is derived the
- * same way — the UNION of the gates over the routes that govern the same
- * operation manually (all three are `requireManagerRole` ⇒ {OWNER,MANAGER}).
- * They are admitted here (not deferred) precisely because the composed-router
- * seam is where this matrix is live.
+ * for): `product.availability.set` (NEW-032 slice C1), `product.price.set`
+ * (NEW-004), and the two BKL-088 RESOLUTION verbs `ops.alert.resolve.staff` /
+ * `incident.ticket.close.staff`. No admin HTTP route builds these kinds
+ * directly; each band is derived the same way — the UNION of the gates over the
+ * routes that govern the same operation manually (all four are
+ * `requireManagerRole` ⇒ {OWNER,MANAGER}). They are admitted here (not deferred)
+ * precisely because the composed-router seam is where this matrix is live.
  *
  * ── Deliberately EXCLUDED ────────────────────────────────────────────────────
  * The SYSTEM-only `incident.ticket.open` / `incident.ticket.close` and
@@ -115,6 +115,18 @@ export const STAFF_KIND_ALLOWED_ROLES = {
   // (no requireStaff-reachable products route builds this kind).
   "product.availability.set": ["OWNER", "MANAGER"],
 
+  // code-truth (NEW-004 — the ops-plane governed price-change verb):
+  //   PATCH /api/admin/products/:id               products.ts     requireManagerRole ⇒ {OWNER,MANAGER}
+  // `product.price.set` is the @ibatexas/pack-ops verb the ops conductor
+  // adjudicates for "aumenta o preço da picanha pra 95"; its role band mirrors
+  // the admin products PATCH route's requireManagerRole preHandler (products.ts:112)
+  // — the SAME gate that governs a manual price edit today (a price change is a
+  // product mutation on that route's surface). ATTENDANT is excluded (no
+  // requireStaff-reachable products route builds this kind). Its executor then
+  // re-prices via the same `medusa.admin.product.update` egress the availability
+  // verb uses (D10 — the egress wrapper is a distinct governance layer).
+  "product.price.set": ["OWNER", "MANAGER"],
+
   // code-truth (BKL-088 — the ops-plane governed alert-resolution verb):
   //   POST /api/admin/ops-alerts/:id/resolve      admin/ops-alerts.ts requireManagerRole ⇒ {OWNER,MANAGER}
   // `ops.alert.resolve.staff` is the @ibatexas/pack-ops verb the ops conductor
@@ -136,11 +148,11 @@ export const STAFF_KIND_ALLOWED_ROLES = {
   "incident.ticket.close.staff": ["OWNER", "MANAGER"],
 } as const satisfies Record<string, readonly StaffActorRole[]>;
 
-/** The exact staff-plane verb surface (the ten kinds keyed above). */
+/** The exact staff-plane verb surface (the eleven kinds keyed above). */
 export type StaffPlaneKind = keyof typeof STAFF_KIND_ALLOWED_ROLES;
 
 /**
- * The authoritative staff-plane verb surface — EXACTLY the ten kinds. The
+ * The authoritative staff-plane verb surface — EXACTLY the eleven kinds. The
  * guard fails closed for any `admin:` envelope whose kind is outside this set
  * (de-vacuum: the matrix IS the staff-plane verb surface).
  */
@@ -161,7 +173,7 @@ export const STAFF_ROLES: readonly StaffActorRole[] = [
  * `createStaffRoleGuard` consumes: a staff-plane envelope is authorized iff its
  * `actor.role` is a known role AND the kind is in that role's set.
  *
- * Current contents (derived): OWNER + MANAGER may propose all ten; ATTENDANT
+ * Current contents (derived): OWNER + MANAGER may propose all eleven; ATTENDANT
  * may propose only the three requireStaff-reachable kinds
  * (order.status.transition, payment.status.transition, order.note.add).
  */
