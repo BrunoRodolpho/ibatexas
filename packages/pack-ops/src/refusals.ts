@@ -25,6 +25,26 @@ export const OPS_AVAILABILITY_PAYLOAD_INVALID_CODE =
 export const OPS_AVAILABILITY_PRODUCT_NOT_FOUND_CODE =
   "ops.availability.product_not_found"
 
+/** Refusal `code` for a malformed `product.price.set` payload (NEW-004). */
+export const OPS_PRICE_PAYLOAD_INVALID_CODE = "ops.price.payload_invalid"
+
+/** Refusal `code` for a `product.price.set` whose product is unknown (NEW-004). */
+export const OPS_PRICE_PRODUCT_NOT_FOUND_CODE = "ops.price.product_not_found"
+
+/**
+ * Refusal `code` for a `product.price.set` against a product with MULTIPLE
+ * differently-priced variants — per-variation pricing by message is not
+ * supported in v1 (the message does not disambiguate which variation). NEW-004.
+ */
+export const OPS_PRICE_PER_VARIANT_UNSUPPORTED_CODE =
+  "ops.price.per_variant_unsupported"
+
+/**
+ * Refusal `code` for a `product.price.set` whose parsed price is absurd (above
+ * the sanity ceiling — a defensive cap against a gross misparse). NEW-004.
+ */
+export const OPS_PRICE_OUT_OF_RANGE_CODE = "ops.price.out_of_range"
+
 /** Refusal `code` for a malformed `ops.alert.resolve.staff` payload (BKL-088). */
 export const OPS_ALERT_RESOLVE_PAYLOAD_INVALID_CODE =
   "ops.alert_resolve.payload_invalid"
@@ -54,6 +74,10 @@ export const OPS_REFUSAL_CODES: readonly string[] = [
   OPS_ADMIN_SESSION_REQUIRED_CODE,
   OPS_AVAILABILITY_PAYLOAD_INVALID_CODE,
   OPS_AVAILABILITY_PRODUCT_NOT_FOUND_CODE,
+  OPS_PRICE_PAYLOAD_INVALID_CODE,
+  OPS_PRICE_PRODUCT_NOT_FOUND_CODE,
+  OPS_PRICE_PER_VARIANT_UNSUPPORTED_CODE,
+  OPS_PRICE_OUT_OF_RANGE_CODE,
   OPS_ALERT_RESOLVE_PAYLOAD_INVALID_CODE,
   OPS_ALERT_RESOLVE_NOT_ACTIONABLE_CODE,
   OPS_INCIDENT_CLOSE_PAYLOAD_INVALID_CODE,
@@ -102,6 +126,63 @@ export function refuseAvailabilityProductNotFound(detail?: string): Refusal {
     "BUSINESS_RULE",
     OPS_AVAILABILITY_PRODUCT_NOT_FOUND_CODE,
     "Produto não encontrado.",
+    detail,
+  )
+}
+
+// ── NEW-004 price-change refusals ────────────────────────────────────────────
+
+/**
+ * `product.price.set` payload failed strict validation (missing/empty
+ * `productId`, non-integer / non-positive `priceCentavos`, non-string `reason`,
+ * or an unknown key). Generic user copy; `detail` names the offending field.
+ */
+export function refusePricePayloadInvalid(detail?: string): Refusal {
+  return refuse(
+    "BUSINESS_RULE",
+    OPS_PRICE_PAYLOAD_INVALID_CODE,
+    "Não foi possível processar esta operação.",
+    detail,
+  )
+}
+
+/**
+ * The target product does not exist in the projected ops state (or has no
+ * BRL-priced variant to re-price). Fail-closed — a price change against an
+ * unknown product is REFUSEd rather than silently no-op'd.
+ */
+export function refusePriceProductNotFound(detail?: string): Refusal {
+  return refuse(
+    "BUSINESS_RULE",
+    OPS_PRICE_PRODUCT_NOT_FOUND_CODE,
+    "Produto não encontrado.",
+    detail,
+  )
+}
+
+/**
+ * The target product has MULTIPLE differently-priced variants (per-variation
+ * pricing, e.g. 500g vs 1kg). v1 does not disambiguate which variation the
+ * owner meant, so it REFUSEs honestly rather than guess.
+ */
+export function refusePricePerVariantUnsupported(detail?: string): Refusal {
+  return refuse(
+    "BUSINESS_RULE",
+    OPS_PRICE_PER_VARIANT_UNSUPPORTED_CODE,
+    "Preço por variação ainda não é suportado por mensagem.",
+    detail,
+  )
+}
+
+/**
+ * The parsed price is absurd (above the sanity ceiling — see
+ * `getPriceSanityMaxCentavos`). A defensive REFUSE against a gross misparse.
+ */
+export function refusePriceOutOfRange(detail?: string): Refusal {
+  return refuse(
+    "BUSINESS_RULE",
+    OPS_PRICE_OUT_OF_RANGE_CODE,
+    "Esse valor de preço está fora do limite permitido.",
     detail,
   )
 }

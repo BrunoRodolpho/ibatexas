@@ -166,6 +166,7 @@ function buildPartADeps(opts: {
   const tools = createOpsToolRegistry({
     medusaAdjudicated: opts.medusaAdjudicated as never,
     auditSink: noopSink as never,
+    readProductBrlVariantIds: (async () => ["variant_1"]) as never,
     orderCmdSvc: {
       writeAdjudicatedNote: vi.fn(),
       writeAdjudicatedStatusTransition: vi.fn(),
@@ -447,6 +448,7 @@ function buildPartBDeps(model: ModelProvider, session: SessionPort) {
   const tools = createOpsToolRegistry({
     medusaAdjudicated: (async () => ({})) as never,
     auditSink: noopSink as never,
+    readProductBrlVariantIds: (async () => ["variant_1"]) as never,
     orderCmdSvc: { writeAdjudicatedNote: vi.fn(), writeAdjudicatedStatusTransition: vi.fn() },
     publishOrderStatusChanged: vi.fn(),
     paymentCmdSvc: { writeAdjudicatedRefund },

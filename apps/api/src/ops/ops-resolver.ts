@@ -13,6 +13,12 @@
 //       deterministically (ops-product-resolution.ts); a UNIQUE match REWRITES
 //       payload.productId to the resolved id (the rebuilt envelope's intentHash
 //       then covers the resolved payload) and projects `product` PRESENT.
+//   - product.price.set → { ctx (as above), priceProduct: <pricing snapshot by
+//       payload.productId> | null } (NEW-004). Reuses the SAME BKL-089 name→id
+//       resolution, then a pricing lookup projects name + current uniform BRL
+//       price + a divergent-variant flag so the pack guards can REFUSE a
+//       missing / per-variation product and the UNTRUSTED CONFIRM prompt can show
+//       name + old→new. null ⇒ REFUSE product_not_found.
 //   - order.note.add / order.status.transition → the pack-orders `OrderState`
 //       (mirrors `adjudicateAdminNote` in routes/admin/_shared-actions.ts),
 //       projected from the order projection. A missing order yields a state with
@@ -61,6 +67,22 @@ import {
 export interface OpsResolverProduct {
   readonly id: string;
   readonly status: string;
+}
+
+/**
+ * NEW-004 — the product-pricing snapshot the pack-ops `product.price.set` guards
+ * read (`OpsPriceProductSnapshot`). Projected from the admin catalog read: `name`
+ * for the CONFIRM prompt, `currentPriceCentavos` (the uniform BRL variant price)
+ * for the old→new prompt, and `divergentVariantPrices` so
+ * `requireUniformVariantPricing` REFUSEs a multi-variation product. `null` ⇒ the
+ * product does not exist OR has no BRL-priced variant ⇒ REFUSE product_not_found.
+ */
+export interface OpsResolverPriceProduct {
+  readonly id: string;
+  readonly status: string;
+  readonly name: string;
+  readonly currentPriceCentavos: number;
+  readonly divergentVariantPrices: boolean;
 }
 
 /**
@@ -131,6 +153,17 @@ export interface OpsResolverDeps {
   readonly lookupProduct: (
     productId: string,
   ) => Promise<OpsResolverProduct | null>;
+  /**
+   * NEW-004 — fetch a product's PRICING snapshot by id for the `product.price.set`
+   * guards. Reads the admin catalog (variant BRL prices) and projects
+   * `{id,status,name,currentPriceCentavos,divergentVariantPrices}`. Returns null
+   * when absent OR the product has no BRL-priced variant; a THROW is treated as
+   * null (fail-closed → REFUSE product_not_found). When ABSENT the price verb
+   * REFUSEs every request (priceProduct null) — inert until wired.
+   */
+  readonly lookupProductPricing?: (
+    productId: string,
+  ) => Promise<OpsResolverPriceProduct | null>;
   /**
    * Fetch an order projection by id for the note state. Returns null when absent;
    * a THROW is treated as null (fail-closed → REFUSE no_order).
@@ -368,6 +401,80 @@ async function resolveAvailabilityTarget(
 }
 
 /**
+ * NEW-004 — resolve the price target: direct id pricing-lookup first; on a MISS,
+ * the BKL-089 deterministic name→id resolution (when wired), then a pricing
+ * lookup by the resolved id. Returns the projected pricing snapshot (null ⇒
+ * REFUSE product_not_found) and, when a name resolved to a PRICEABLE product,
+ * the rewritten payload (productId ← resolved id; NOTHING else changes). The
+ * payload is rewritten ONLY when the resolved product is priceable (pricing
+ * present) — a name that resolves to a BRL-priceless product leaves the payload
+ * untouched (→ priceProduct null → honest REFUSE), same posture as availability.
+ */
+async function resolvePriceTarget(
+  deps: OpsResolverDeps,
+  payload: Record<string, unknown>,
+): Promise<{
+  priceProduct: OpsResolverPriceProduct | null;
+  payload?: Record<string, unknown>;
+}> {
+  if (deps.lookupProductPricing === undefined) {
+    return { priceProduct: null };
+  }
+  const lookupPricing = deps.lookupProductPricing;
+  const productId =
+    typeof payload.productId === "string" ? payload.productId : "";
+  const direct =
+    productId === ""
+      ? null
+      : await safeLookup(() => lookupPricing(productId), "product-pricing");
+  if (direct !== null || productId === "" || deps.listProductsByName === undefined) {
+    return { priceProduct: direct };
+  }
+
+  // Direct id lookup MISSED and a name-resolver is wired: treat productId as a
+  // NAME candidate (BKL-089, reusing the SAME catalog list read the availability
+  // path uses). A UNIQUE match → pricing lookup by the resolved id; a priceable
+  // result rewrites payload.productId to the resolved id. none/ambiguous, or a
+  // resolved-but-BRL-priceless product, leaves the payload untouched → null →
+  // honest REFUSE product_not_found.
+  const resolution = await resolveProductByName(productId, deps.listProductsByName);
+  if (resolution.kind === "resolved") {
+    const pricing = await safeLookup(
+      () => lookupPricing(resolution.product.id),
+      "product-pricing",
+    );
+    if (pricing !== null) {
+      logger.info(
+        {
+          component: "ops-resolver",
+          event: "product.price.name_resolved",
+          from: productId,
+          to: resolution.product.id,
+        },
+        "ops product name resolved to id (price payload productId rewritten before adjudication)",
+      );
+      return {
+        priceProduct: pricing,
+        payload: { ...payload, productId: resolution.product.id },
+      };
+    }
+  }
+  logger.info(
+    {
+      component: "ops-resolver",
+      event: "product.price.name_unresolved",
+      from: productId,
+      outcome: resolution.kind,
+      ...(resolution.kind === "ambiguous"
+        ? { candidateCount: resolution.candidates.length }
+        : {}),
+    },
+    "ops product name did not resolve to a priceable product (kernel will REFUSE product_not_found)",
+  );
+  return { priceProduct: null };
+}
+
+/**
  * Resolve the order target shared by `order.note.add` / `order.status.transition`
  * (the resolution branch is IDENTICAL for both — only the per-kind ctx projection
  * differs). Direct id lookup first; on a MISS, the BKL-089 deterministic
@@ -557,6 +664,33 @@ async function resolveRefundTarget(
 }
 
 /**
+ * NEW-004 — build the `product.price.set` ops SystemState for the RESUME path
+ * ("sim, confirma"). Like the refund resume ({@link buildOpsRefundResumeState}),
+ * the ops confirm-resume re-adjudicates the VERBATIM parked envelope, but the
+ * customer-plane resume enrichment (`resolveAndAssemble`) is scoped to a real
+ * customerId — the ops plane's `staff:<id>` owns no products, so it would project
+ * `priceProduct:undefined` and REFUSE a valid "sim". This builder re-projects the
+ * SAME `{ ctx, priceProduct }` shape the plan-stage resolver builds, from a FRESH
+ * pricing read of the parked (resolver-rewritten, trusted) productId — money-safe:
+ * a since-parked change to divergent variants / a vanished product REFUSEs on
+ * resume. `pricing === null` ⇒ `priceProduct:null` ⇒ clean product_not_found REFUSE.
+ */
+export function buildOpsPriceResumeState(
+  pricing: OpsResolverPriceProduct | null,
+  opts: { staffId: string; tenantId: string },
+): unknown {
+  return {
+    ctx: {
+      channel: "staff",
+      customerId: null,
+      staffId: opts.staffId,
+      tenantId: opts.tenantId,
+    },
+    priceProduct: pricing,
+  };
+}
+
+/**
  * Build the per-kind ops `SystemState` for one planned envelope, plus an
  * OPTIONAL rewritten payload (BKL-089 availability name-resolution). Returns
  * `state: undefined` for an unrecognized kind so the loop falls back to the
@@ -583,6 +717,30 @@ async function opsStateForEnvelope(
           tenantId: deps.tenantId,
         },
         product,
+      },
+      ...(rewritten ? { payload: rewritten } : {}),
+    };
+  }
+
+  if (envelope.kind === "product.price.set") {
+    // NEW-004 — project the pricing snapshot (name + current uniform price +
+    // divergent-variant flag) so the pack guards can REFUSE a
+    // missing/per-variation product and the UNTRUSTED CONFIRM prompt can show
+    // name + old→new. Reuses the SAME BKL-089 name→id resolution as availability
+    // (persona fills productId with the product name when it has no id).
+    const { priceProduct, payload: rewritten } = await resolvePriceTarget(
+      deps,
+      payload,
+    );
+    return {
+      state: {
+        ctx: {
+          channel: "staff",
+          customerId: null,
+          staffId: deps.staffId,
+          tenantId: deps.tenantId,
+        },
+        priceProduct,
       },
       ...(rewritten ? { payload: rewritten } : {}),
     };

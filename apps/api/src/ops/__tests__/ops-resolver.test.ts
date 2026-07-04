@@ -263,6 +263,118 @@ describe("ops resolver — product name→id resolution (BKL-089)", () => {
   });
 });
 
+// ── NEW-004 — product.price.set state projection + name resolution ────────────
+
+const PRICING = {
+  id: "prod_1",
+  status: "published",
+  name: "Picanha",
+  currentPriceCentavos: 8900,
+  divergentVariantPrices: false,
+};
+
+describe("ops resolver — product.price.set state (NEW-004)", () => {
+  it("projects { ctx, priceProduct } from the pricing lookup", async () => {
+    const deps = makeDeps({ lookupProductPricing: vi.fn(async () => PRICING) });
+    const [resolved] = await createOpsResolver(deps).resolve(
+      input(opsEnvelope("product.price.set", { productId: "prod_1", priceCentavos: 9500 })),
+    );
+    expect(resolved!.state).toEqual({
+      ctx: {
+        channel: "staff",
+        customerId: null,
+        staffId: "staff_1",
+        tenantId: "ibatexas",
+      },
+      priceProduct: PRICING,
+    });
+  });
+
+  it("carries the divergent-variant flag through (⇒ requireUniformVariantPricing REFUSEs)", async () => {
+    const deps = makeDeps({
+      lookupProductPricing: vi.fn(async () => ({ ...PRICING, divergentVariantPrices: true })),
+    });
+    const [resolved] = await createOpsResolver(deps).resolve(
+      input(opsEnvelope("product.price.set", { productId: "prod_1", priceCentavos: 9500 })),
+    );
+    expect(
+      (resolved!.state as { priceProduct: { divergentVariantPrices: boolean } }).priceProduct
+        .divergentVariantPrices,
+    ).toBe(true);
+  });
+
+  it("pricing missing ⇒ priceProduct:null (REFUSE product_not_found)", async () => {
+    const deps = makeDeps({ lookupProductPricing: vi.fn(async () => null) });
+    const [resolved] = await createOpsResolver(deps).resolve(
+      input(opsEnvelope("product.price.set", { productId: "ghost", priceCentavos: 9500 })),
+    );
+    expect((resolved!.state as { priceProduct: unknown }).priceProduct).toBeNull();
+  });
+
+  it("pricing lookup THROW is fail-closed to priceProduct:null (never crashes the turn)", async () => {
+    const deps = makeDeps({
+      lookupProductPricing: vi.fn(async () => {
+        throw new Error("medusa down");
+      }),
+    });
+    const [resolved] = await createOpsResolver(deps).resolve(
+      input(opsEnvelope("product.price.set", { productId: "prod_1", priceCentavos: 9500 })),
+    );
+    expect((resolved!.state as { priceProduct: unknown }).priceProduct).toBeNull();
+  });
+
+  it("no pricing lookup wired (inert) → priceProduct:null, payload untouched", async () => {
+    const deps = makeDeps(); // omits lookupProductPricing
+    const env = opsEnvelope("product.price.set", { productId: "prod_1", priceCentavos: 9500 });
+    const [resolved] = await createOpsResolver(deps).resolve(input(env));
+    expect((resolved!.state as { priceProduct: unknown }).priceProduct).toBeNull();
+    expect(resolved!.envelope.intentHash).toBe(env.intentHash);
+  });
+
+  it("id lookup MISS → name resolves → pricing by resolved id → priceProduct present + payload rewritten", async () => {
+    const listProductsByName = vi.fn(async () => [candidate("prod_42", "Picanha")]);
+    // Direct id lookup (by the name string) misses; the by-resolved-id lookup hits.
+    const lookupProductPricing = vi.fn(async (id: string) =>
+      id === "prod_42" ? { ...PRICING, id: "prod_42" } : null,
+    );
+    const deps = makeDeps({ listProductsByName, lookupProductPricing });
+    const env = opsEnvelope("product.price.set", {
+      productId: "picanha",
+      priceCentavos: 9500,
+      reason: "reajuste",
+    });
+    const [resolved] = await createOpsResolver(deps).resolve(input(env));
+
+    expect((resolved!.state as { priceProduct: { id: string } }).priceProduct.id).toBe("prod_42");
+    // productId REWRITTEN to the resolved id; every other field preserved.
+    expect(resolved!.envelope.payload).toEqual({
+      productId: "prod_42",
+      priceCentavos: 9500,
+      reason: "reajuste",
+    });
+    // The rebuilt intentHash covers the RESOLVED payload.
+    expect(resolved!.envelope.intentHash).toBe(
+      hashOver("product.price.set", {
+        productId: "prod_42",
+        priceCentavos: 9500,
+        reason: "reajuste",
+      }),
+    );
+  });
+
+  it("name resolves but the product is BRL-priceless (pricing null) → payload UNTOUCHED + priceProduct null", async () => {
+    const deps = makeDeps({
+      listProductsByName: vi.fn(async () => [candidate("prod_42", "Picanha")]),
+      lookupProductPricing: vi.fn(async () => null), // both the id AND the resolved-id lookup miss
+    });
+    const env = opsEnvelope("product.price.set", { productId: "picanha", priceCentavos: 9500 });
+    const [resolved] = await createOpsResolver(deps).resolve(input(env));
+    expect((resolved!.state as { priceProduct: unknown }).priceProduct).toBeNull();
+    expect(resolved!.envelope.payload).toEqual({ productId: "picanha", priceCentavos: 9500 });
+    expect(resolved!.envelope.intentHash).toBe(env.intentHash);
+  });
+});
+
 describe("ops resolver — order.note.add state", () => {
   it("projects the pack-orders OrderState from the order projection", async () => {
     const deps = makeDeps();

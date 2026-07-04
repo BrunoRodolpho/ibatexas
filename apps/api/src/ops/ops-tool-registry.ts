@@ -10,6 +10,12 @@
 //     products route uses (`metadata.inStock` ← payload.available). The egress
 //     wrapper is a DISTINCT governance layer by design (D10) — NOT a second
 //     intent adjudication of the ops verb. riskLevel "medium".
+//   - product.price.set → the SAME `medusaAdjudicated` admin egress
+//     (`medusa.admin.product.update`), re-reading the product's BRL-priced
+//     variant ids and setting each to the confirmed price (payload centavos →
+//     Medusa reais) in ONE call. The composed router already CONFIRM-gated the
+//     UNTRUSTED price at SUBMIT; this executor performs NO adjudication (D10).
+//     riskLevel "medium". NEW-004.
 //   - order.note.add → `orderCmdSvc.writeAdjudicatedNote` (the POST-adjudication
 //     write; the composed-router Decision was already produced by the conductor
 //     SUBMIT stage — this executor performs NO adjudication). Staff notes are
@@ -75,6 +81,7 @@ import type {
   IncidentCloseStaffPayload,
   OpsAlertResolveStaffPayload,
   ProductAvailabilitySetPayload,
+  ProductPriceSetPayload,
 } from "@ibatexas/pack-ops";
 import { buildSystemEnvelope } from "../subscribers/__shared__/system-actor-envelope.js";
 import type {
@@ -200,6 +207,21 @@ export interface OpsToolRegistryDeps {
   readonly medusaAdjudicated: MedusaAdjudicatedFn;
   /** Audit sink threaded into the egress call (getAuditSink() at boot). */
   readonly auditSink: AuditSink;
+  /**
+   * NEW-004 — read the variant ids that currently carry a BRL price for a
+   * product, so the `product.price.set` executor knows which variants to
+   * re-price (prices live per-variant in Medusa v2). The composed router already
+   * REFUSEd a missing / per-variation product at SUBMIT (the resolver's
+   * pricing snapshot), so at EXECUTE the product is a uniform-price one; the
+   * executor sets EVERY BRL-priced variant to the confirmed price (the confirmed
+   * intent is "this product now costs X"). Returns null / empty for a product
+   * with no BRL-priced variant (the executor throws — a should-never-happen
+   * post-adjudication). Injected for testability; bootstrap wires it to a
+   * medusaAdmin catalog read.
+   */
+  readonly readProductBrlVariantIds: (
+    productId: string,
+  ) => Promise<readonly string[] | null>;
   /** The order command service's POST-adjudication writers (note + transition). */
   readonly orderCmdSvc: OpsNoteWriter & OpsStatusWriter;
   /** BKL-085 — the payment command service's POST-adjudication refund writer. */
@@ -299,6 +321,70 @@ async function executeAvailability(
     ...(deps.log ? { log: deps.log } : {}),
   });
   return { productId: payload.productId, available: payload.available };
+}
+
+/**
+ * Executor for `product.price.set` (NEW-004) — re-prices a product via the SAME
+ * `medusaAdjudicated` admin egress the availability verb uses. Prices live
+ * PER-VARIANT in Medusa v2, so the executor re-reads the product's BRL-priced
+ * variant ids (`readProductBrlVariantIds`) and sets EVERY one to the confirmed
+ * price in ONE admin call (`medusa.admin.product.update` — the update endpoint
+ * accepts a `variants[].prices[]` array; verified against the installed v2.13.5
+ * validator). Hard Rule #2: the payload carries INTEGER centavos; Medusa v2
+ * stores amounts in REAIS, so the egress converts `priceCentavos / 100` (mirrors
+ * the seed's `amount / 100` + the admin read's `amount * 100`).
+ *
+ * The composed router already produced the Decision at SUBMIT (carrying
+ * `adminSessionOnlyGuard` + `staffRoleGuard` {OWNER,MANAGER} + the payload /
+ * existence / uniform-variant / sanity guards + the UNTRUSTED-taint CONFIRM
+ * overlay — a REQUEST_CONFIRMATION parks and resumes via the ops matchToParked
+ * driver); this executor performs NO adjudication of the ops verb. The egress
+ * wrapper (SYSTEM-tainted `medusa.admin.product.update`) is a separate
+ * governance layer (D10). No route-layer side effect exists to reproduce — the
+ * admin products PATCH route only touches status/metadata; a price edit has no
+ * NATS/event-log emission today (verified).
+ */
+async function executePriceSet(
+  deps: OpsToolRegistryDeps,
+  payload: ProductPriceSetPayload,
+  staffId: string | null,
+): Promise<{
+  productId: string;
+  priceCentavos: number;
+  variantsUpdated: number;
+}> {
+  const brlVariantIds = await deps.readProductBrlVariantIds(payload.productId);
+  if (brlVariantIds === null || brlVariantIds.length === 0) {
+    // Should never occur post-adjudication (the resolver REFUSEs a product with
+    // no BRL-priced variant). Fail LOUD rather than send an empty (no-op) update.
+    throw new Error(
+      `[ops] product.price.set: no BRL-priced variant for product ${payload.productId}`,
+    );
+  }
+  // Hard Rule #2: payload is integer centavos; Medusa v2 stores reais.
+  const amountReais = payload.priceCentavos / 100;
+  const body = {
+    variants: brlVariantIds.map((id) => ({
+      id,
+      prices: [{ currency_code: "brl", amount: amountReais }],
+    })),
+  };
+  await deps.medusaAdjudicated<typeof body, Record<string, unknown>>({
+    scope: "admin",
+    method: "POST",
+    path: `/admin/products/${payload.productId}`,
+    payload: body,
+    intentKind: "medusa.admin.product.update",
+    idempotencyKey: randomUUID(),
+    sourceSubject: `ops:product.price.set:admin:${staffId ?? "unknown"}`,
+    auditSink: deps.auditSink,
+    ...(deps.log ? { log: deps.log } : {}),
+  });
+  return {
+    productId: payload.productId,
+    priceCentavos: payload.priceCentavos,
+    variantsUpdated: brlVariantIds.length,
+  };
 }
 
 /**
@@ -542,7 +628,7 @@ async function executeIncidentCloseStaff(
   return { incidentId: payload.incidentId, status: out.result?.status ?? null };
 }
 
-/** The six governed ops MUTATING tools (capability === intentKind). */
+/** The seven governed ops MUTATING tools (capability === intentKind). */
 function opsToolDefinitions(
   deps: OpsToolRegistryDeps,
 ): ReadonlyArray<ToolDefinition<unknown, unknown>> {
@@ -560,6 +646,22 @@ function opsToolDefinitions(
         executeAvailability(
           deps,
           input as ProductAvailabilitySetPayload,
+          staffIdFromCapsule(ctx),
+        ),
+    },
+    {
+      id: "ibatexas.ops.productPrice.v1",
+      capability: asCapability("product.price.set"),
+      intentKind: asIntentKind("product.price.set"),
+      description:
+        "Alterar o preço de um produto (ex.: aumenta o preço da picanha pra 95 reais).",
+      inputSchema: {},
+      outputSchema: {},
+      riskLevel: "medium",
+      execute: (input, ctx) =>
+        executePriceSet(
+          deps,
+          input as ProductPriceSetPayload,
           staffIdFromCapsule(ctx),
         ),
     },

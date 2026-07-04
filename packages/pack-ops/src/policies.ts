@@ -28,6 +28,7 @@ import {
   BASIS_CODES,
   decisionExecute,
   decisionRefuse,
+  decisionRequestConfirmation,
 } from "@adjudicate/core"
 import {
   nameGuard,
@@ -42,19 +43,26 @@ import {
   refuseAvailabilityProductNotFound,
   refuseIncidentCloseNotActionable,
   refuseIncidentClosePayloadInvalid,
+  refusePriceOutOfRange,
+  refusePricePayloadInvalid,
+  refusePricePerVariantUnsupported,
+  refusePriceProductNotFound,
 } from "./refusals.js"
 import {
+  getPriceSanityMaxCentavos,
   INCIDENT_CLOSE_STAFF_KEYS,
   isOpsEntityActionable,
   OPS_ALERT_RESOLVE_STAFF_KEYS,
   opsTaintPolicy,
   PRODUCT_AVAILABILITY_SET_KEYS,
+  PRODUCT_PRICE_SET_KEYS,
   type IncidentCloseStaffPayload,
   type OpsAlertResolveStaffPayload,
   type OpsIntentKind,
   type OpsPayload,
   type OpsState,
   type ProductAvailabilitySetPayload,
+  type ProductPriceSetPayload,
 } from "./types.js"
 
 type OpsGuard = Guard<OpsIntentKind, OpsPayload, OpsState>
@@ -190,6 +198,214 @@ const executeAvailabilitySet: OpsGuard = (envelope) => {
   return decisionExecute([
     basis("business", BASIS_CODES.business.RULE_SATISFIED, {
       kind: envelope.kind,
+    }),
+  ])
+}
+
+// ── NEW-004: product.price.set guards ────────────────────────────────────────
+
+/** Format an integer centavos amount as pt-BR BRL ("9500" → "95,00"). Mirrors
+ *  the refund CONFIRM prompt's formatting (no thousands separator). */
+function formatBrlCentavos(centavos: number): string {
+  return (centavos / 100).toFixed(2).replace(".", ",")
+}
+
+/**
+ * Strict `product.price.set` payload validation. REFUSEs anything that is not
+ * EXACTLY `{ productId: <non-empty string>, priceCentavos: <integer > 0>,
+ * reason?: <string> }` — unknown keys rejected (closed contract). Hard Rule #2:
+ * `priceCentavos` MUST be a positive INTEGER (centavos on the wire, never a
+ * float/reais); this REFUSE also covers the `<= 0` sanity case structurally.
+ */
+const validatePricePayload: OpsGuard = (envelope) => {
+  if (envelope.kind !== "product.price.set") return null
+  const raw = envelope.payload as unknown as Record<string, unknown>
+
+  // Reject unknown keys first — the contract is closed.
+  for (const key of Object.keys(raw)) {
+    if (!PRODUCT_PRICE_SET_KEYS.has(key)) {
+      return decisionRefuse(
+        refusePricePayloadInvalid(`unknown payload key "${key}"`),
+        [
+          basis("schema", BASIS_CODES.schema.PAYLOAD_INVALID, {
+            field: key,
+            reason: "unknown_key",
+          }),
+        ],
+      )
+    }
+  }
+
+  if (typeof raw.productId !== "string" || raw.productId.length === 0) {
+    return decisionRefuse(
+      refusePricePayloadInvalid("productId must be a non-empty string"),
+      [
+        basis("schema", BASIS_CODES.schema.PAYLOAD_INVALID, {
+          field: "productId",
+          reason: "missing_or_empty",
+        }),
+      ],
+    )
+  }
+
+  if (
+    typeof raw.priceCentavos !== "number" ||
+    !Number.isInteger(raw.priceCentavos) ||
+    raw.priceCentavos <= 0
+  ) {
+    return decisionRefuse(
+      refusePricePayloadInvalid("priceCentavos must be a positive integer"),
+      [
+        basis("schema", BASIS_CODES.schema.PAYLOAD_INVALID, {
+          field: "priceCentavos",
+          reason: "not_positive_integer",
+        }),
+      ],
+    )
+  }
+
+  if (raw.reason !== undefined && typeof raw.reason !== "string") {
+    return decisionRefuse(
+      refusePricePayloadInvalid("reason must be a string when present"),
+      [
+        basis("schema", BASIS_CODES.schema.PAYLOAD_INVALID, {
+          field: "reason",
+          reason: "not_string",
+        }),
+      ],
+    )
+  }
+
+  return null
+}
+
+/**
+ * REFUSE `product.price.set` when the target product is absent from the
+ * projected state (`state.priceProduct` null/unprojected). Fail-closed: a price
+ * change against an unknown (or NO-BRL-priced) product is REFUSEd, never a
+ * silent no-op. The ops resolver projects `state.priceProduct` from the admin
+ * catalog read.
+ */
+const requirePriceProductExists: OpsGuard = (envelope, state) => {
+  if (envelope.kind !== "product.price.set") return null
+  const product = state.priceProduct
+  if (product && typeof product.id === "string" && product.id.length > 0) {
+    return null
+  }
+  const { productId } = envelope.payload as ProductPriceSetPayload
+  return decisionRefuse(
+    refusePriceProductNotFound(`no product projected for id "${productId}"`),
+    [
+      basis("business", BASIS_CODES.business.RULE_VIOLATED, {
+        rule: "price_product_must_exist",
+        productId,
+        reason: "product_not_found",
+      }),
+    ],
+  )
+}
+
+/**
+ * REFUSE `product.price.set` when the target product has MULTIPLE
+ * differently-priced BRL variants (per-variation pricing). v1 sets ONE uniform
+ * price across all a product's variants; it cannot disambiguate which variation
+ * "muda o preço da costela pra 95" means when 500g ≠ 1kg, so it REFUSEs
+ * honestly. Uniform-price products (single variant OR every variant the same
+ * BRL price) pass. Fires AFTER `requirePriceProductExists` (needs a projected
+ * product).
+ */
+const requireUniformVariantPricing: OpsGuard = (envelope, state) => {
+  if (envelope.kind !== "product.price.set") return null
+  const product = state.priceProduct
+  if (!product || product.divergentVariantPrices !== true) return null
+  const { productId } = envelope.payload as ProductPriceSetPayload
+  return decisionRefuse(
+    refusePricePerVariantUnsupported(
+      `product "${productId}" has differently-priced variants`,
+    ),
+    [
+      basis("business", BASIS_CODES.business.RULE_VIOLATED, {
+        rule: "price_variants_must_be_uniform",
+        productId,
+        reason: "per_variant_pricing_unsupported",
+      }),
+    ],
+  )
+}
+
+/**
+ * Sanity REFUSE for an absurd parsed price (above `getPriceSanityMaxCentavos()`,
+ * default R$100.000,00). A defensive cap against a gross misparse. `<= 0` is
+ * already REFUSEd by `validatePricePayload` (integer > 0), so this guards the
+ * upper bound only. Fires AFTER existence/uniformity so a real, uniform product
+ * with a nonsensical amount REFUSEs here rather than parking a CONFIRM.
+ */
+const sanityRefuseAbsurdPrice: OpsGuard = (envelope) => {
+  if (envelope.kind !== "product.price.set") return null
+  const { priceCentavos, productId } = envelope.payload as ProductPriceSetPayload
+  const max = getPriceSanityMaxCentavos()
+  if (priceCentavos <= max) return null
+  return decisionRefuse(
+    refusePriceOutOfRange(
+      `price ${priceCentavos} centavos exceeds sanity max ${max}`,
+    ),
+    [
+      basis("business", BASIS_CODES.business.RULE_VIOLATED, {
+        rule: "price_within_sanity_bound",
+        productId,
+        priceCentavos,
+        max,
+        reason: "price_out_of_range",
+      }),
+    ],
+  )
+}
+
+/**
+ * The terminal decision producer for `product.price.set` (fires AFTER every
+ * REFUSE guard above passed, and AFTER the AUTH-phase admin-session + adopter
+ * role gates authorized).
+ *
+ * ── NEW-004 UNTRUSTED-taint CONFIRM overlay (the PR #172 refund shape) ────────
+ * A model-PARSED price (`taint === "UNTRUSTED"` — the ops persona extracted the
+ * number from the owner's message) ALWAYS REQUEST_CONFIRMATIONs: a misparse
+ * ("noventa e cinco" → 9500 vs 95, or the wrong product) would send a REAL price
+ * live. The prompt states the product NAME + the old→new BRL so the staff
+ * confirms the NUMBERS, not just the intent. There is NO ESCALATE band (price is
+ * reversible; the sanity REFUSE above already capped absurd values). A
+ * TRUSTED/SYSTEM path (none exists for this kind yet) EXECUTEs directly — the
+ * overlay keys on `taint`, so a future trusted caller is untouched.
+ */
+const decidePriceSet: OpsGuard = (envelope, state) => {
+  if (envelope.kind !== "product.price.set") return null
+  const payload = envelope.payload as ProductPriceSetPayload
+
+  if (envelope.taint === "UNTRUSTED") {
+    const product = state.priceProduct
+    const newBrl = formatBrlCentavos(payload.priceCentavos)
+    // `product` is guaranteed present here (requirePriceProductExists ran); the
+    // old→new phrasing is used when the snapshot carries a current price.
+    const prompt =
+      product && typeof product.currentPriceCentavos === "number"
+        ? `Confirmar alteração de preço de ${product.name}: de R$ ${formatBrlCentavos(
+            product.currentPriceCentavos,
+          )} para R$ ${newBrl}? Responda "sim" para confirmar.`
+        : `Confirmar novo preço de R$ ${newBrl}${
+            product ? ` para ${product.name}` : ""
+          }? Responda "sim" para confirmar.`
+    return decisionRequestConfirmation(prompt, [
+      basis("business", BASIS_CODES.business.RULE_SATISFIED, {
+        reason: "price_untrusted_requires_confirmation",
+        priceCentavos: payload.priceCentavos,
+        taint: envelope.taint,
+      }),
+    ])
+  }
+
+  return decisionExecute([
+    basis("business", BASIS_CODES.business.RULE_SATISFIED, {
+      kind: envelope.kind,
+      priceCentavos: payload.priceCentavos,
     }),
   ])
 }
@@ -409,6 +625,14 @@ export const opsPolicyBundle: PolicyBundle<OpsIntentKind, OpsPayload, OpsState> 
       validateAvailabilityPayload,
       requireProductExists,
       executeAvailabilitySet,
+      // NEW-004 — product.price.set: strict validate → exists → uniform-variant
+      // → sanity → (UNTRUSTED CONFIRM overlay | EXECUTE). Each is a no-op for
+      // the other kinds, so ordering only matters WITHIN this triple-plus.
+      validatePricePayload,
+      requirePriceProductExists,
+      requireUniformVariantPricing,
+      sanityRefuseAbsurdPrice,
+      decidePriceSet,
       // BKL-088 — ops.alert.resolve.staff
       validateAlertResolvePayload,
       requireAlertActionable,

@@ -16,6 +16,7 @@ import {
 const REGISTRY_DEPS: OpsToolRegistryDeps = {
   medusaAdjudicated: (async () => ({})) as never,
   auditSink: {} as never,
+  readProductBrlVariantIds: async () => ["variant_1"],
   orderCmdSvc: {
     writeAdjudicatedNote: async () => ({ noteId: "n", orderId: "o" }),
     writeAdjudicatedStatusTransition: async () => ({

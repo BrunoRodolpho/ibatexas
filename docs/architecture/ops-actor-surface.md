@@ -133,6 +133,44 @@ types "acabou a picanha" and the AI manager acts, without the HTTP dashboard.
   number (`TWILIO_OPS_NUMBER`, to narrow the group/forward surface to a 1:1 line),
   the step-up PIN, and ops-channel media/interactive parsing.
 
+## NEW-004 — price change by message (follow-on ops verb)
+
+The owner types "aumenta o preço da picanha pra 95 reais" and the AI manager
+re-prices the item — a new `@ibatexas/pack-ops`-OWNED kind `product.price.set`
+(payload `{ productId, priceCentavos: integer, reason? }`, Hard Rule #2 integer
+centavos only). It rides the SAME conductor plane, envelope-actor stamping, and
+composed-router adjudication as `product.availability.set`; the deltas are:
+
+- **Confirm-gated on taint (the BKL-085/PR #172 overlay shape).** A model-parsed
+  price arrives `UNTRUSTED`, so the pack's business ladder ALWAYS
+  REQUEST_CONFIRMATIONs it — a misparse would send a real price live. The prompt
+  states the product NAME + old→new BRL ("Confirmar alteração de preço de
+  Picanha: de R$ 89,00 para R$ 95,00?"). A TRUSTED/SYSTEM path (none exists yet)
+  EXECUTEs per band — the overlay keys on `taint`. No ESCALATE band (price is
+  reversible); a sanity REFUSE caps absurd values (> R$100.000,00, env
+  `OPS_PRICE_MAX_CENTAVOS`; `<= 0` is caught structurally by the integer
+  validator).
+- **Matrix row `{OWNER, MANAGER}`** — the manager band, mirroring the admin
+  products PATCH `requireManagerRole` precedent (the eleventh staff-plane kind).
+- **REVERSIBLE ⇒ stays IN the WhatsApp verb scope** (NOT in
+  `WA_EXCLUDED_OPS_KINDS`); since it CONFIRMs, the park/"sim" resume loop applies
+  on BOTH ingresses (dashboard + WhatsApp), keyed by staffId — proven end-to-end
+  in `ops-price-confirm-resume.e2e.test.ts`.
+- **V1 variant contract.** Medusa v2 prices live per-variant; the shop DTO
+  displays the LOWEST BRL variant price. Products carry a material mix of
+  single-variant, multi-variant-uniform (P/M/G shirt all R$69), and
+  multi-variant-DIVERGENT (500g R$89 / 1kg R$165). v1 sets EVERY BRL-priced
+  variant to the confirmed price when they are UNIFORM (so the displayed price
+  becomes the new price); it REFUSEs a product with DIFFERENTLY-priced variants
+  ("preço por variação ainda não é suportado por mensagem") rather than guess
+  which variation the owner meant.
+- **Egress (D10).** The executor re-reads the product's BRL-priced variant ids
+  and re-prices them via the SAME `medusaAdjudicated` admin call
+  (`medusa.admin.product.update` → `POST /admin/products/:id` with a
+  `variants[].prices[]` body; payload centavos → Medusa reais). No new egress
+  kind; no route-layer side effect exists to reproduce (a price edit emits no
+  NATS/event-log event today).
+
 ## Standing invariants this doc pins
 
 - The ops plane's envelope actor is injected at composition from the authenticated JWT;

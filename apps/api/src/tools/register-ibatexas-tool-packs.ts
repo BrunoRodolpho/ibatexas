@@ -534,6 +534,15 @@ const ADVERTISED_NOT_REGISTERED_WHITELIST: ReadonlySet<string> = new Set([
   // so it has no registered chat tool. Advertised-but-unregistered here is
   // EXPECTED, not drift — same rationale as the reservation staff kinds above.
   "staff:product.availability.set",
+  // NEW-004: `product.price.set` (the price-change-by-message verb) — same
+  // posture as `product.availability.set`. Advertised by the ops planner under
+  // the staff probe, proposed through the OPS conductor + registered in the OPS
+  // tool registry, NEVER the customer/LLM chat surface (absent from
+  // CHAT_DRIVABLE_TOOL_KINDS), so it has no registered CHAT tool.
+  // Advertised-but-unregistered on the chat roster is EXPECTED, not drift.
+  // (`opsPlaneDriftProblems` separately verifies it IS registered on the OPS
+  // registry with capability===intentKind.)
+  "staff:product.price.set",
   // BKL-090: `order.status.transition` (the kitchen-advance verb) is now
   // advertised by the ops planner under the staff probe (owned by pack-orders,
   // routed via composition). Like `product.availability.set`, it is a

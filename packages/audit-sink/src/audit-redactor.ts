@@ -416,6 +416,11 @@ export const INTENT_KIND_FIELD_RULES: Readonly<Record<string, ReadonlyArray<stri
   // available boolean) EXCEPT the optional free-form `reason` operator note.
   // Over-redact `reason` — same posture as order/payment status-transition.
   "product.availability.set": ["reason"],
+  // NEW-004 — `ProductPriceSetPayload` is bounded (productId opaque id +
+  // priceCentavos integer) EXCEPT the optional free-form `reason` operator note,
+  // which an owner could type with a customer name / detail in it. Over-redact
+  // `reason` (same posture as product.availability.set).
+  "product.price.set": ["reason"],
   // BKL-088 — the two OWNED ops-plane RESOLUTION verbs. Bounded payloads
   // (`{alertId|incidentId}` opaque id) EXCEPT the optional free-form `reason`
   // operator note, which an owner could type with a customer name / detail in
