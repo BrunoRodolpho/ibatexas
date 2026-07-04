@@ -51,6 +51,7 @@ import {
 import { composeOpsConductor } from "../ops-conductor.js";
 import { createOpsToolRegistry } from "../ops-tool-registry.js";
 import { createOpsResolver } from "../ops-resolver.js";
+import type { OrderCandidate } from "../ops-order-resolution.js";
 
 // The EXACT composed router the conductor SUBMIT stage adjudicates against.
 const ROUTER: PolicyBundle<string, unknown, unknown> = composePolicyRouter(
@@ -183,8 +184,16 @@ function buildDeps(opts: {
    *  id lookup misses, i.e. `product` is null). Absent ⇒ no name resolver wired. */
   productsByName?: Array<{ id: string; title: string; status: string }>;
   /** The order the resolver projects for order.note.add / order.status.transition;
-   *  null ⇒ order-missing. */
+   *  null ⇒ order-missing (⇒ BKL-089 reference resolution engages when `orderRefs`
+   *  is set). */
   order?: FakeOpsOrder;
+  /** BKL-089 (orders scope) — the candidate sets the reference reads return when
+   *  the direct id lookup misses (i.e. `order` is null). Absent ⇒ no reference
+   *  reads wired (id-literal parity). */
+  orderRefs?: {
+    byDisplayId?: OrderCandidate[];
+    recentActive?: OrderCandidate[];
+  };
 }) {
   const tools = createOpsToolRegistry({
     medusaAdjudicated: opts.medusaAdjudicated as never,
@@ -222,6 +231,14 @@ function buildDeps(opts: {
         lookupOrder: async () => opts.order ?? null,
         ...(opts.productsByName
           ? { listProductsByName: async () => opts.productsByName! }
+          : {}),
+        ...(opts.orderRefs
+          ? {
+              orderReferenceReads: {
+                findByDisplayId: async () => opts.orderRefs!.byDisplayId ?? [],
+                listRecentActive: async () => opts.orderRefs!.recentActive ?? [],
+              },
+            }
           : {}),
       }),
   };
@@ -840,5 +857,137 @@ describe("ops conductor — history context threading (BKL-084)", () => {
       .find((r) => (r.tools?.length ?? 0) > 0);
     expect(plannerReq).toBeDefined();
     expect(plannerReq!.system ?? "").not.toContain("### HISTÓRICO DA CONVERSA");
+  });
+});
+
+// ── order REFERENCE→id resolution end-to-end (BKL-089, orders scope) ──────────
+//
+// The crown-jewel proof for order-reference resolution: the scripted model emits
+// orderId:"4242" (a DISPLAY NUMBER) or a customer name — per the persona — the
+// direct id lookup MISSES, the ops resolver resolves the reference to a real
+// order id via the injected reads and REWRITES the payload BEFORE adjudication,
+// and the write executor runs with the RESOLVED id. An ambiguous name resolves to
+// nothing ⇒ the kernel REFUSEs no_order (executor never runs). The BKL-090
+// legality guard stays LIVE on the resolved order — an illegal advance still
+// REFUSEs even though the reference resolved.
+
+/** A full order candidate the reference reads return. */
+function orderRefCandidate(over: Partial<OrderCandidate> = {}): OrderCandidate {
+  return {
+    id: "order_99",
+    displayId: 4242,
+    customerName: "Maria Silva",
+    fulfillmentStatus: "preparing",
+    customerId: "cust_1",
+    paymentMethod: "pix",
+    paymentStatus: "confirmed",
+    totalInCentavos: 5_000,
+    ...over,
+  };
+}
+
+const NOTE_BY_NUMBER_CALL = {
+  id: "tc-note-ref",
+  name: "express_intent",
+  input: {
+    capability: "order.note.add",
+    payload: { orderId: "4242", body: "cliente pediu sem cebola" },
+  },
+};
+
+const NOTE_BY_NAME_CALL = {
+  id: "tc-note-name",
+  name: "express_intent",
+  input: {
+    capability: "order.note.add",
+    payload: { orderId: "Maria", body: "cliente pediu sem cebola" },
+  },
+};
+
+describe("ops conductor — order reference resolution end-to-end (BKL-089)", () => {
+  it("OWNER 'avança/nota o 4242' (display number) → resolves → note EXECUTE with the RESOLVED orderId", async () => {
+    const writeAdjudicatedNote = noteWriterSpy();
+    const { model } = scriptedModel([NOTE_BY_NUMBER_CALL]);
+    const deps = buildDeps({
+      model,
+      medusaAdjudicated: vi.fn(),
+      writeAdjudicatedNote,
+      product: null,
+      order: null, // direct id lookup MISSES → reference resolution engages
+      orderRefs: { byDisplayId: [orderRefCandidate({ id: "order_99", displayId: 4242 })] },
+    });
+    const out = await runOpsTurn(deps, "OWNER", "staff_1", "anota no pedido 4242 que o cliente pediu sem cebola");
+    expect(out.kind).toBe("EXECUTE");
+    expect(writeAdjudicatedNote).toHaveBeenCalledTimes(1);
+    const [notePayload, extras] = writeAdjudicatedNote.mock.calls[0]!;
+    // The write targets the RESOLVED id, not the spoken number.
+    expect(notePayload.orderId).toBe("order_99");
+    expect(extras.authorId).toBe("staff_1");
+  });
+
+  it("ambiguous customer name → REFUSE no_order; the note write NEVER runs", async () => {
+    const writeAdjudicatedNote = noteWriterSpy();
+    const { model } = scriptedModel([NOTE_BY_NAME_CALL]);
+    const deps = buildDeps({
+      model,
+      medusaAdjudicated: vi.fn(),
+      writeAdjudicatedNote,
+      product: null,
+      order: null,
+      orderRefs: {
+        recentActive: [
+          orderRefCandidate({ id: "order_a", customerName: "Maria Silva", fulfillmentStatus: "preparing" }),
+          orderRefCandidate({ id: "order_b", customerName: "Maria Souza", fulfillmentStatus: "ready" }),
+        ],
+      },
+    });
+    const out = await runOpsTurn(deps, "OWNER", "staff_1", "anota no pedido da Maria");
+    expect(out.kind).toBe("REFUSE");
+    expect(writeAdjudicatedNote).not.toHaveBeenCalled();
+  });
+
+  it("ATTENDANT 'avança o 4242' → resolves → transition EXECUTE with the RESOLVED id (legal preparing→ready)", async () => {
+    const writeAdjudicatedStatusTransition = transitionWriterSpy();
+    const { model } = scriptedModel([transitionCall("4242", "ready")]);
+    const deps = buildDeps({
+      model,
+      medusaAdjudicated: vi.fn(),
+      writeAdjudicatedNote: vi.fn(),
+      writeAdjudicatedStatusTransition,
+      product: null,
+      order: null,
+      orderRefs: {
+        byDisplayId: [orderRefCandidate({ id: "order_99", displayId: 4242, fulfillmentStatus: "preparing" })],
+      },
+    });
+    const out = await runOpsTurn(deps, "ATTENDANT", "staff_9", "avança o 4242 pra pronto");
+    expect(out.kind).toBe("EXECUTE");
+    expect(writeAdjudicatedStatusTransition).toHaveBeenCalledTimes(1);
+    const [payload, extras] = writeAdjudicatedStatusTransition.mock.calls[0]!;
+    expect(payload).toEqual({ orderId: "order_99", newStatus: "ready" });
+    expect(extras.actor).toBe("admin");
+    expect(extras.actorId).toBe("staff_9");
+  });
+
+  it("legality guard stays LIVE post-resolution: '4242' resolves but confirmed→delivered still REFUSEs illegal", async () => {
+    const writeAdjudicatedStatusTransition = transitionWriterSpy();
+    const { model } = scriptedModel([transitionCall("4242", "delivered")]);
+    const deps = buildDeps({
+      model,
+      medusaAdjudicated: vi.fn(),
+      writeAdjudicatedNote: vi.fn(),
+      writeAdjudicatedStatusTransition,
+      product: null,
+      order: null,
+      orderRefs: {
+        byDisplayId: [orderRefCandidate({ id: "order_99", displayId: 4242, fulfillmentStatus: "confirmed" })],
+      },
+    });
+    const out = await runOpsTurn(deps, "OWNER", "staff_1", "marca o 4242 como entregue");
+    expect(out.kind).toBe("REFUSE");
+    if (out.kind === "REFUSE") {
+      expect(out.refusal.code).toBe("order.status.transition_illegal");
+    }
+    expect(writeAdjudicatedStatusTransition).not.toHaveBeenCalled();
   });
 });

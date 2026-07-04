@@ -55,6 +55,16 @@ export interface OrderQueryService {
   /** Admin: list all orders with optional filters, paginated. */
   listAll(input?: ListAllInput): Promise<ListResult>
 
+  /**
+   * Find order projections by their Medusa `displayId` (the number staff speak,
+   * "o 4242"). Uses the `@@index([displayId])`. `displayId` is NOT declared
+   * `@unique` in the schema, so this returns EVERY match ordered newest-first
+   * (bounded by `limit`) — callers that require a unique reference resolve ONLY
+   * when exactly one row comes back (BKL-089 ops order-reference resolution).
+   * Read-only; no owner scoping (the internal/staff/ops path).
+   */
+  findByDisplayId(displayId: number, opts?: { limit?: number }): Promise<OrderProjection[]>
+
   /** Get full status history for an order (paginated). */
   getStatusHistory(orderId: string, opts?: { limit?: number; offset?: number }): Promise<OrderStatusHistory[]>
 }
@@ -132,6 +142,14 @@ export function createOrderQueryService(): OrderQueryService {
       ])
 
       return { orders, count }
+    },
+
+    async findByDisplayId(displayId, opts) {
+      return prisma.orderProjection.findMany({
+        where: { displayId },
+        orderBy: { medusaCreatedAt: "desc" },
+        take: opts?.limit ?? 10,
+      })
     },
 
     async getStatusHistory(orderId, opts) {
