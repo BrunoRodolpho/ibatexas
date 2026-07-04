@@ -160,11 +160,21 @@ function scriptedModel(
   return { model, complete };
 }
 
+/** The order-projection subset the ops resolver feeds the note.add state. */
+type FakeOpsOrder = {
+  customerId: string | null;
+  paymentMethod: string | null;
+  paymentStatus: string | null;
+  totalInCentavos: number;
+} | null;
+
 function buildDeps(opts: {
   model: ModelProvider;
   medusaAdjudicated: ReturnType<typeof vi.fn>;
   writeAdjudicatedNote: ReturnType<typeof vi.fn>;
   product: { id: string; status: string } | null;
+  /** The order the resolver projects for order.note.add; null ⇒ order-missing. */
+  order?: FakeOpsOrder;
 }) {
   const tools = createOpsToolRegistry({
     medusaAdjudicated: opts.medusaAdjudicated as never,
@@ -194,7 +204,7 @@ function buildDeps(opts: {
         staffId,
         tenantId: "ibatexas",
         lookupProduct: async () => opts.product,
-        lookupOrder: async () => null,
+        lookupOrder: async () => opts.order ?? null,
       }),
   };
 }
@@ -311,5 +321,155 @@ describe("ops conductor — the end-to-end kernel proof (NEW-032)", () => {
     const out = await runOpsTurn(deps, "MANAGER", "staff_2", "acabou a picanha");
     expect(out.kind).toBe("EXECUTE");
     expect(medusaAdjudicated).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── order.note.add (NEW-032 verbs-v2) ────────────────────────────────────────
+//
+// Proves the newly-ADVERTISED foreign-owned verb is reachable end-to-end: the
+// scripted model proposes order.note.add, the ops planner (now advertising it)
+// lets it through translateToolCalls, and the composed pack-orders bundle
+// (carrying the prepended staffRoleGuard; matrix {OWNER,MANAGER,ATTENDANT})
+// adjudicates it. On EXECUTE the ops registry's writeAdjudicatedNote executor
+// runs with isInternal defaulted true + authorId = the Capsule staffId (never a
+// model field). A missing order ⇒ pack-orders no_order REFUSE (spy not called).
+
+const NOTE_CALL = {
+  id: "tc-note",
+  name: "express_intent",
+  input: {
+    capability: "order.note.add",
+    payload: { orderId: "order_1", body: "cliente pediu sem cebola" },
+  },
+};
+
+/** A typed note-writer spy so `mock.calls[i]` carries the [payload, extras]
+ *  tuple (an untyped `vi.fn()` infers a zero-arg signature). */
+function noteWriterSpy() {
+  return vi.fn(
+    async (
+      _payload: { orderId: string; body: string; isInternal?: boolean },
+      _extras: { author: string; authorId?: string },
+    ): Promise<{ noteId: string; orderId: string }> => ({
+      noteId: "note_x",
+      orderId: "order_1",
+    }),
+  );
+}
+
+/** An order the resolver projects (customerId non-null ⇒ requireAuthenticated
+ *  passes — mirrors adjudicateAdminNote's order.customerId-derived state). */
+const PRESENT_ORDER: FakeOpsOrder = {
+  customerId: "cust_1",
+  paymentMethod: "pix",
+  paymentStatus: "confirmed",
+  totalInCentavos: 5_000,
+};
+
+describe("ops conductor — order.note.add reachable end-to-end (NEW-032 verbs-v2)", () => {
+  it("OWNER 'adiciona uma nota' → EXECUTE; note write runs with isInternal:true default + Capsule authorId", async () => {
+    const writeAdjudicatedNote = noteWriterSpy();
+    const { model } = scriptedModel([NOTE_CALL]);
+    const deps = buildDeps({
+      model,
+      medusaAdjudicated: vi.fn(),
+      writeAdjudicatedNote,
+      product: null,
+      order: PRESENT_ORDER,
+    });
+    const out = await runOpsTurn(
+      deps,
+      "OWNER",
+      "staff_1",
+      "adiciona uma nota no pedido order_1",
+    );
+    expect(out.kind).toBe("EXECUTE");
+    expect(writeAdjudicatedNote).toHaveBeenCalledTimes(1);
+    const [notePayload, extras] = writeAdjudicatedNote.mock.calls[0]!;
+    expect(notePayload.orderId).toBe("order_1");
+    expect(notePayload.body).toBe("cliente pediu sem cebola");
+    // Staff notes default INTERNAL (set on the payload, not the envelope).
+    expect(notePayload.isInternal).toBe(true);
+    // authorId is the Capsule/JWT staffId — NEVER a model-parsed field.
+    expect(extras.author).toBe("staff");
+    expect(extras.authorId).toBe("staff_1");
+  });
+
+  it("ATTENDANT → EXECUTE (matrix permits all 3 roles for order.note.add)", async () => {
+    const writeAdjudicatedNote = noteWriterSpy();
+    const { model } = scriptedModel([NOTE_CALL]);
+    const deps = buildDeps({
+      model,
+      medusaAdjudicated: vi.fn(),
+      writeAdjudicatedNote,
+      product: null,
+      order: PRESENT_ORDER,
+    });
+    const out = await runOpsTurn(
+      deps,
+      "ATTENDANT",
+      "staff_9",
+      "anota que o cliente pediu sem cebola no pedido order_1",
+    );
+    expect(out.kind).toBe("EXECUTE");
+    expect(writeAdjudicatedNote).toHaveBeenCalledTimes(1);
+    expect(writeAdjudicatedNote.mock.calls[0]![1]).toMatchObject({
+      author: "staff",
+      authorId: "staff_9",
+    });
+  });
+
+  it("order missing → pack-orders no_order REFUSE; the note write NEVER runs", async () => {
+    const writeAdjudicatedNote = vi.fn();
+    const { model } = scriptedModel([NOTE_CALL]);
+    const deps = buildDeps({
+      model,
+      medusaAdjudicated: vi.fn(),
+      writeAdjudicatedNote,
+      product: null,
+      order: null, // resolver ⇒ ctx.orderId:null ⇒ requireOrderIdForMutation REFUSE
+    });
+    const out = await runOpsTurn(
+      deps,
+      "OWNER",
+      "staff_1",
+      "adiciona uma nota no pedido inexistente",
+    );
+    expect(out.kind).toBe("REFUSE");
+    expect(writeAdjudicatedNote).not.toHaveBeenCalled();
+  });
+
+  it("payload isInternal:false is respected (not force-defaulted to internal)", async () => {
+    const writeAdjudicatedNote = noteWriterSpy();
+    const { model } = scriptedModel([
+      {
+        id: "tc-note-public",
+        name: "express_intent",
+        input: {
+          capability: "order.note.add",
+          payload: {
+            orderId: "order_1",
+            body: "aviso ao cliente",
+            isInternal: false,
+          },
+        },
+      },
+    ]);
+    const deps = buildDeps({
+      model,
+      medusaAdjudicated: vi.fn(),
+      writeAdjudicatedNote,
+      product: null,
+      order: PRESENT_ORDER,
+    });
+    const out = await runOpsTurn(
+      deps,
+      "MANAGER",
+      "staff_2",
+      "adiciona um aviso público no pedido order_1",
+    );
+    expect(out.kind).toBe("EXECUTE");
+    expect(writeAdjudicatedNote).toHaveBeenCalledTimes(1);
+    expect(writeAdjudicatedNote.mock.calls[0]![0].isInternal).toBe(false);
   });
 });

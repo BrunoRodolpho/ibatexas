@@ -61,6 +61,7 @@ export { opsPolicyBundle } from "./policies.js"
 export {
   OPS_TOOLS,
   OPS_SNAPSHOT_READ_TOOL,
+  OPS_FOREIGN_ADVERTISED_KIND,
   opsCapabilityPlanner,
 } from "./capabilities.js"
 

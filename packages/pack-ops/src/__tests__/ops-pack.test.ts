@@ -245,19 +245,35 @@ describe("opsPack — policy coherence via analyzePolicy()", () => {
     },
   ]
 
-  it("planner proposes no phantom intents (report.passed, zero errors)", () => {
+  it("the ONLY coherence error is the intentional foreign advertisement of order.note.add", () => {
+    // `analyzePolicy`'s AJD-301 flags any advertised kind not in `pack.intents`
+    // as `phantom_intent` (error). The ops plane INTENTIONALLY advertises the
+    // foreign-owned `order.note.add` (owned by pack-orders) to widen the ops
+    // allowlist — composition routes it to pack-orders (indexByKind keys on
+    // OWNERSHIP, not advertisement). So exactly ONE phantom_intent is expected
+    // and correct; partition it out and assert NO OTHER errors slipped in (still
+    // catches a real phantom / coherence regression).
     const report = analyzePolicy({ pack: opsPack, plannerProbes: probes })
-    for (const d of report.diagnostics) {
-      if (d.severity === "error") console.error(`[${d.code}] ${d.message}`)
-    }
-    expect(report.passed).toBe(true)
-    expect(report.summary.error).toBe(0)
+    const isExpectedForeignAdvert = (d: (typeof report.diagnostics)[number]) =>
+      d.severity === "error" &&
+      d.detail?.rule === "phantom_intent" &&
+      d.detail?.intent === "order.note.add"
+    const unexpectedErrors = report.diagnostics.filter(
+      (d) => d.severity === "error" && !isExpectedForeignAdvert(d),
+    )
+    for (const d of unexpectedErrors) console.error(`[${d.code}] ${d.message}`)
+    expect(unexpectedErrors).toEqual([])
+    // Non-vacuous: the intentional foreign advertisement IS reported (proves the
+    // partition above is not silently passing a report with zero phantom rows).
+    expect(report.diagnostics.some(isExpectedForeignAdvert)).toBe(true)
   })
 
-  it("the ops verb is reachable (advertised under the staff probe)", () => {
-    // Non-vacuous: a probe with a staff session must actually advertise it.
+  it("both ops verbs are reachable (advertised under the staff probe)", () => {
+    // Non-vacuous: a probe with a staff session must actually advertise both —
+    // the owned `product.availability.set` AND the foreign-routed `order.note.add`.
     const staffPlan = opsPack.planner.plan(probes[1]!.state, probes[1]!.context)
     expect(staffPlan.allowedIntents).toContain("product.availability.set")
+    expect(staffPlan.allowedIntents).toContain("order.note.add")
     const guestPlan = opsPack.planner.plan(probes[0]!.state, probes[0]!.context)
     expect(guestPlan.allowedIntents).toEqual([])
   })
