@@ -11,6 +11,7 @@ import {
 } from '@ibatexas/ui'
 import type { AdminReservation, AdminReview, AdminIncident } from '@ibatexas/ui'
 import { sortOpsAlerts, buildOpsAlertsQuery, type OpsAlert } from './ops-alerts.mappers'
+import type { OpsSnapshot } from './ops-snapshot.mappers'
 
 const hooks = buildAdminHooks(createAdminHook, createAdminListHook, apiFetch)
 
@@ -775,4 +776,57 @@ export function useAdminOpsAlertsPage() {
     resolveAlert,
     refetch,
   }
+}
+
+// ── Painel Operacional (read-only ops situational snapshot — NEW-041) ─────────
+
+const OPS_SNAPSHOT_POLL_MS = 30_000
+
+/**
+ * Backs the Painel Operacional overview (NEW-041). ONE fetch per 30s poll of the
+ * READ-ONLY composed GET /api/admin/ops/snapshot (NEW-040) — alertas, incidentes,
+ * cozinha and caixa folded into one manager-awareness view. Mirrors
+ * useAdminOpsAlertsPage: skeleton only on the initial load; a transient poll
+ * failure surfaces the error (never swallowed, so the page can show an error
+ * state) WITHOUT clearing the last-good snapshot; `reload` bumps the refresh key.
+ */
+export function useAdminOpsSnapshot() {
+  const [snapshot, setSnapshot] = useState<OpsSnapshot | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [refreshKey, setRefreshKey] = useState(0)
+
+  const hasLoadedRef = useRef(false)
+
+  useEffect(() => {
+    let cancelled = false
+    if (!hasLoadedRef.current) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- initial load only; loading flag drives the skeleton
+      setLoading(true)
+    }
+    apiFetch('/api/admin/ops/snapshot')
+      .then((data: OpsSnapshot) => {
+        if (cancelled) return
+        setSnapshot(data)
+        setError(null)
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return
+        // Do NOT clear the last-good snapshot on a transient poll failure; surface
+        // the error so the page can render its error state / toast.
+        setError(err instanceof Error ? err.message : 'load_failed')
+      })
+      .finally(() => { if (!cancelled) { setLoading(false); hasLoadedRef.current = true } })
+    return () => { cancelled = true }
+  }, [refreshKey])
+
+  const reload = useCallback(() => setRefreshKey((k) => k + 1), [])
+
+  // Canonical 30s poll.
+  useEffect(() => {
+    const interval = setInterval(reload, OPS_SNAPSHOT_POLL_MS)
+    return () => clearInterval(interval)
+  }, [reload])
+
+  return { snapshot, loading, error, reload }
 }
