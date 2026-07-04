@@ -62,6 +62,48 @@ export const WA_EXCLUDED_OPS_KINDS: ReadonlySet<string> = new Set<string>([
   OPS_FOREIGN_ADVERTISED_REFUND_KIND,
 ]);
 
+/**
+ * BKL-096 — the two-person / separation-of-duty DESTRUCTIVE verbs the ops
+ * persona MUST NEVER advertise or emit on ANY ingress (dashboard OR whatsapp),
+ * until an owner ratifies a propose-path (the OPS-007/008/011 ratification gate).
+ * Unlike {@link WA_EXCLUDED_OPS_KINDS} — which is DASHBOARD-ONLY (a WhatsApp-scope
+ * subtraction of verbs the persona MAY still drive from the trusted dashboard) —
+ * this set is a NO-PLANE-EVER forbid: none of these kinds may enter the ops tool
+ * registry OR the ops planner's advertised surface on either scope.
+ *
+ * These are the pack-OWNED destructive verb kinds (what an ops PACK verb WOULD be
+ * named if someone added one), NOT the ops-advertised PROJECTION kinds:
+ *   - `order.cancel`          — force-cancel a placed order (pack-orders). The ops
+ *                               plane advertises the REVERSIBLE kitchen-advance
+ *                               PROJECTION kind `order.status.transition`, which is
+ *                               BKL-090-legality-gated to NON-terminal transitions
+ *                               (a canceled/delivered jump REFUSEs `order.status.
+ *                               terminal`) — it can never reach a force-cancel.
+ *   - `payment.waive`         — forgive an outstanding balance (pack-payments):
+ *                               irreversible debt write-off, OWNER-gated at the HTTP
+ *                               route (inline OWNER check), no reversing verb.
+ *   - `payment.status.force`  — force a payment into an arbitrary status
+ *                               (pack-payments), bypassing the lifecycle machine;
+ *                               the ops plane advertises no payment-status verb at
+ *                               all (the admin route builds the PROJECTION kind
+ *                               `payment.status.transition`, itself un-advertised).
+ *
+ * These verbs are unreachable by the ops persona TODAY via TWO independent
+ * fail-closed layers: (1) none is in the ops tool registry (`ops-tool-registry.ts`
+ * advertises 7 verbs); (2) none is in the staff-role matrix (`staff-role-matrix.ts`),
+ * so an `admin:` envelope carrying one REFUSEs `kind_not_in_staff_matrix` at the
+ * composed router. That posture is SOUND but IMPLICIT — a future PR that matrixed
+ * one of these for the dashboard could silently make it ops-advertisable. This set
+ * makes the exclusion EXPLICIT and drift-guarded (see `opsPlaneDriftProblems` in
+ * `ops-conductor.ts`, which fails boot closed if any of these enters the ops
+ * registry, and the BKL-096 drift test that pins the advertised surface). This
+ * does NOT build a propose-path — it LOCKS the current forbid-state as a tested
+ * contract; whether the persona may ever PROPOSE these is the separate, deferred
+ * owner-ratification question.
+ */
+export const FORBIDDEN_OPS_DESTRUCTIVE_KINDS: ReadonlySet<string> =
+  new Set<string>(["order.cancel", "payment.waive", "payment.status.force"]);
+
 /** The excluded kinds for an ingress scope (empty for `dashboard`). */
 export function excludedKindsForScope(scope: OpsVerbScope): ReadonlySet<string> {
   return scope === "whatsapp" ? WA_EXCLUDED_OPS_KINDS : EMPTY_EXCLUSION;

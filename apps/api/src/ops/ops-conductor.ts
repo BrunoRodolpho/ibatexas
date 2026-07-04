@@ -59,6 +59,7 @@ import { deriveOpsPlannerContext } from "./ops-planner-context.js";
 import { composeOpsPlannerSystem } from "./ops-history.js";
 import {
   excludedKindsForScope,
+  FORBIDDEN_OPS_DESTRUCTIVE_KINDS,
   scopeCapabilityPlanner,
   scopeResumeChannel,
   type OpsVerbScope,
@@ -242,5 +243,28 @@ export function opsPlaneDriftProblems(input: {
       onWarn,
     }),
   );
+  // BKL-096 — defense in depth: fail boot CLOSED if a FORBIDDEN two-person
+  // destructive verb (order.cancel / payment.waive / payment.status.force) ever
+  // enters the ops REGISTRY. Today none is registered here NOR matrixed (two
+  // independent fail-closed layers), so this loop is inert on the real 7-verb
+  // roster; it makes the exclusion EXPLICIT so a future PR that registers one as
+  // an ops tool trips this gate rather than silently exposing it. The persona's
+  // advertised SURFACE (planner allowlist, both ingress scopes) is pinned by the
+  // BKL-096 drift test — see FORBIDDEN_OPS_DESTRUCTIVE_KINDS.
+  for (const tool of input.opsTools) {
+    const capability = String(tool.capability);
+    const intentKind = String(tool.intentKind);
+    if (
+      FORBIDDEN_OPS_DESTRUCTIVE_KINDS.has(capability) ||
+      FORBIDDEN_OPS_DESTRUCTIVE_KINDS.has(intentKind)
+    ) {
+      problems.push(
+        `ops registry advertises FORBIDDEN two-person destructive verb ` +
+          `"${capability}" (tool ${tool.id}); these verbs must stay ops-unreachable ` +
+          `until an owner ratifies a propose-path (OPS-007/008/011). See ` +
+          `FORBIDDEN_OPS_DESTRUCTIVE_KINDS.`,
+      );
+    }
+  }
   return problems;
 }
