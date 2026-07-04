@@ -36,6 +36,9 @@
 // POST /api/admin/ops/chat                 — ops-actor channel (staff, JWT-only) — NEW-032 slice B
 // GET  /api/admin/customers                — read-only customer search (manager) — OPS-070
 // GET  /api/admin/customers/:id            — composed customer view (manager) — OPS-070
+// POST /api/admin/agents/:agentId/kill     — trip an agent's kill-switch (manager) — BKL-098
+// POST /api/admin/agents/:agentId/unkill   — clear an agent's kill-switch (manager) — BKL-098
+// GET  /api/admin/agents/kill-status       — current agent kill-switch state (manager) — BKL-098
 
 import { timingSafeEqual } from "node:crypto";
 import type { FastifyInstance } from "fastify";
@@ -58,6 +61,7 @@ import { adminPaymentRoutes } from "./payments.js";
 import { adminOrderActionRoutes } from "./order-actions.js";
 import { adminBannerRoutes } from "./banner.js";
 import { adminAgentApprovalRoutes } from "./agent-approvals.js";
+import { adminAgentKillSwitchRoutes } from "./agents-kill-switch.js";
 import { adminConfirmationRoutes } from "./confirmations.js";
 import { conversationRoutes } from "./conversations.js";
 import { escalationRoutes } from "./escalations.js";
@@ -233,6 +237,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
   await server.register(adminOrderActionRoutes);
   await server.register(adminBannerRoutes);
   await server.register(adminAgentApprovalRoutes);
+  await server.register(adminAgentKillSwitchRoutes);
   await server.register(adminConfirmationRoutes);
   await server.register(conversationRoutes);
   await server.register(escalationRoutes);

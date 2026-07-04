@@ -155,6 +155,7 @@ import {
   startManagedAgentPlane,
 } from "./claustrum/managed-agent-plane.js";
 import type { AgentPlane } from "./claustrum/agent-plane.js";
+import type { AgentKillSwitchManager } from "./claustrum/agent-kill-switch.js";
 import type { LiveAgentConductorDeps } from "./claustrum/live-agent-conductor.js";
 import { createPostgresAgentRunJournal } from "./claustrum/agent-run-journal.js";
 import { createRefundCircuitBreaker } from "./claustrum/agent-realmoney-safety.js";
@@ -440,6 +441,17 @@ export function getAgentApprovalGateway(): AgentApprovalGateway | null {
       return result;
     },
   };
+}
+
+/**
+ * The per-agent kill-switch manager, or null when the managed-agent plane is
+ * not enabled (IBX_AGENTS_ENABLED unset → no plane composed). The operator
+ * control routes (routes/admin/agents-kill-switch.ts) return 503 when it is
+ * null. Read lazily off the live plane so it always reflects the current
+ * wiring (same contract as {@link getAgentApprovalGateway}).
+ */
+export function getAgentKillSwitchManager(): AgentKillSwitchManager | null {
+  return _agentPlane?.killSwitch ?? null;
 }
 
 // ── Injectable seams (T2-6a — scripted-pipeline harness) ────────────────────
