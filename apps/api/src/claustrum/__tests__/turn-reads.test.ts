@@ -31,6 +31,9 @@ let paymentGetActive: (orderId: string) => Promise<unknown> = async () => ({
   status: "paid",
   method: "pix",
 });
+// Owner-scoped payment count (BKL-079): the real countByCustomer counts ALL of the
+// owner's payments via the `where: { order: { customerId } }` join.
+let paymentCountByCustomer: (customerId: string) => Promise<number> = async () => 0;
 let reservationGetById: (id: string, customerId: string) => Promise<unknown> = async (
   id,
   customerId,
@@ -48,6 +51,7 @@ vi.mock("@ibatexas/domain", () => ({
   }),
   createPaymentQueryService: () => ({
     getActiveByOrderId: (orderId: string) => paymentGetActive(orderId),
+    countByCustomer: (customerId: string) => paymentCountByCustomer(customerId),
   }),
   createReservationService: () => ({
     getById: (id: string, customerId: string) => reservationGetById(id, customerId),
@@ -72,6 +76,7 @@ beforeEach(() => {
       ? { id, customerId: OWNER, fulfillmentStatus: "preparing", paymentStatus: "paid" }
       : null;
   paymentGetActive = async () => ({ status: "paid", method: "pix" });
+  paymentCountByCustomer = async () => 0;
   reservationGetById = async (id, customerId) => {
     if (customerId !== OWNER) throw new Error("forbidden");
     return { id, status: "confirmed", partySize: 4, customerId: OWNER };
@@ -119,6 +124,24 @@ describe("turn-reads — PAYMENT_STATUS owner-scoping (IDOR close)", () => {
     paymentGetActive = async () => null;
     const backend = createDomainTriadReadBackend();
     expect(await backend.readPaymentStatus(ORDER_ID, OWNER)).toBeNull();
+  });
+});
+
+// ── countActivePayments (BKL-079 owner-scoped payment enumeration count) ───────
+
+describe("turn-reads — countActivePayments (BKL-079)", () => {
+  it("returns the owner-scoped payment count via countByCustomer", async () => {
+    paymentCountByCustomer = async (customerId) => (customerId === OWNER ? 3 : 0);
+    const backend = createDomainTriadReadBackend();
+    // Owner-scoped by construction — keyed ONLY by the passed customerId.
+    expect(await backend.countActivePayments(OWNER)).toBe(3);
+    expect(await backend.countActivePayments(ATTACKER)).toBe(0);
+  });
+
+  it("returns 0 for a customer with no payment rows (the provable-empty witness)", async () => {
+    paymentCountByCustomer = async () => 0;
+    const backend = createDomainTriadReadBackend();
+    expect(await backend.countActivePayments(OWNER)).toBe(0);
   });
 });
 

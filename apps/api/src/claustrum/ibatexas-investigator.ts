@@ -304,6 +304,38 @@ export function createFirstPartyTurnReads(
       },
     });
 
+    // BKL-079 PAYMENT PROVABLE-EMPTY MARKER — the EXACT MIRROR of the order marker
+    // above, for the PAYMENT dimension. A pure SIGNAL carrier, NOT an owner resource:
+    // its key `active_payments:{customerId}` matches NO OWNER_SCOPED_KEY_PREFIXES
+    // (`order_fulfillment_stage:` / `payment_status:` / `reservation_status:`), so no
+    // claim binds it and it never attributes ownership. On a SUCCESSFUL enumeration it
+    // records `{count}` PRESENT — INCLUDING count 0, the provable-empty witness the
+    // seam's Rule B′ consumes to DROP the payment companion. On FAILURE it THROWS the
+    // reason → `recordError` → ledger state "error" (Inv 7 — "could not check" is NOT
+    // "provably empty"; the seam then emits NO sentinel and the payment companion is
+    // KEPT → honest UNKNOWN, never "render the easy half"). Owner-scoped / IDOR-safe:
+    // keyed ONLY by the authenticated `customerId` (countActivePayments' customerId
+    // join), never a model/session id. (countActivePayments counts ALL of the
+    // customer's payments — so count===0 is a STRICTER, still-sound provable-empty
+    // witness than an active-only count; see turn-reads.ts.)
+    let activePayments: { ok: true; count: number } | { ok: false; reason: string };
+    try {
+      activePayments = { ok: true, count: await b.countActivePayments(customerId) };
+    } catch (err) {
+      activePayments = { ok: false, reason: reasonOf(err) };
+    }
+    reads.push({
+      key: `active_payments:${customerId}`,
+      source: "payment.countActivePayments",
+      origin: "TRUSTED",
+      originProvenance: "FIRST_PARTY",
+      sourceMode: "live",
+      read: () => {
+        if (!activePayments.ok) throw new Error(activePayments.reason);
+        return { count: activePayments.count };
+      },
+    });
+
     for (const orderId of allOrderIds) {
       reads.push({
         key: ORDER_FULFILLMENT_KEY(orderId),

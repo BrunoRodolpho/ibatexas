@@ -444,3 +444,97 @@ describe("activeResourcesFromLedger — BKL-073 provable-empty sentinel", () => 
     expect(refs).toContainEqual(paymentSentinel);
   });
 });
+
+// ── BKL-079: the provable-empty PAYMENT sentinel (Rule B′) — mirror of BKL-073 ─────
+
+describe("activeResourcesFromLedger — BKL-079 provable-empty PAYMENT sentinel", () => {
+  function recordPresent(l: EvidenceLedger, key: string, value: unknown = { present: true }): void {
+    l.record({
+      key,
+      value,
+      source: "test",
+      fetchedAt: 1_000,
+      sourceMode: "live",
+      taint: "TRUSTED",
+      originProvenance: "FIRST_PARTY",
+    });
+  }
+  /** The investigator's PAYMENT marker shape: read() returns `{count}` on enumeration success. */
+  function recordPaymentMarker(l: EvidenceLedger, customerId: string, count: number): void {
+    recordPresent(l, `active_payments:${customerId}`, { count });
+  }
+  const orderSentinel = { kind: PROVABLY_EMPTY_KIND, id: "order" };
+  const paymentSentinel = { kind: PROVABLY_EMPTY_KIND, id: "payment" };
+
+  it("Rule B′: payment marker PRESENT {count:0} + no positive payment ref → emits the payment sentinel", () => {
+    const l = new EvidenceLedger("t");
+    recordPaymentMarker(l, "cust-1", 0); // the count-0 provable-empty payment marker.
+    const refs = activeResourcesFromLedger({ ledger: l, customerId: "cust-1" });
+    expect(refs).toContainEqual(paymentSentinel);
+    // No order marker present → NO order sentinel (each dimension is independent).
+    expect(refs).not.toContainEqual(orderSentinel);
+    expect(refs.filter((r) => r.kind !== PROVABLY_EMPTY_KIND)).toEqual([]);
+  });
+
+  it("Rule B′ PARTIAL-LEDGER RACE pin: payment marker PRESENT {count:2} + NO positive payment refs → NO sentinel (enumeration saw payments; per-payment reads failed — count is the only witness)", () => {
+    const l = new EvidenceLedger("t");
+    recordPaymentMarker(l, "cust-1", 2); // enumeration SUCCEEDED and saw 2 payments...
+    // ...but no payment_status:<id> read is present → no positive ref to suppress a
+    // naive marker-present∧no-ref rule. The count>0 conjunct keeps the companion.
+    const refs = activeResourcesFromLedger({ ledger: l, customerId: "cust-1" });
+    expect(refs.some((r) => r.kind === PROVABLY_EMPTY_KIND)).toBe(false);
+  });
+
+  it("Rule B′ malformed-marker pin: payment marker PRESENT without a numeric count → NO sentinel (fails toward keeping the companion)", () => {
+    const l = new EvidenceLedger("t");
+    recordPresent(l, "active_payments:cust-1"); // value {present:true} — no count field.
+    const refs = activeResourcesFromLedger({ ledger: l, customerId: "cust-1" });
+    expect(refs.some((r) => r.kind === PROVABLY_EMPTY_KIND)).toBe(false);
+  });
+
+  it('Rule B′: payment marker in state "error" → NO sentinel (could-not-check keeps the companion → honest UNKNOWN)', () => {
+    const l = new EvidenceLedger("t");
+    l.recordError("active_payments:cust-1", "payment count backend down");
+    const refs = activeResourcesFromLedger({ ledger: l, customerId: "cust-1" });
+    expect(refs.some((r) => r.kind === PROVABLY_EMPTY_KIND)).toBe(false);
+  });
+
+  it("Rule B′: payment marker ABSENT (never recorded) → NO sentinel", () => {
+    const l = new EvidenceLedger("t");
+    recordPresent(l, "schedule:store_hours"); // an unrelated present read, no marker.
+    const refs = activeResourcesFromLedger({ ledger: l, customerId: "cust-1" });
+    expect(refs.some((r) => r.kind === PROVABLY_EMPTY_KIND)).toBe(false);
+    expect(refs).toEqual([]);
+  });
+
+  it("Rule B′ is conservative: payment marker PRESENT {count:0} but a positive payment ref exists → NO sentinel", () => {
+    const l = new EvidenceLedger("t");
+    recordPaymentMarker(l, "cust-1", 0);
+    recordPresent(l, "payment_status:o1"); // a present (model-extracted) payment read.
+    const refs = activeResourcesFromLedger({ ledger: l, customerId: "cust-1" });
+    expect(refs.some((r) => r.kind === PROVABLY_EMPTY_KIND)).toBe(false);
+    expect(refs).toEqual([{ kind: "payment", id: "o1" }]);
+  });
+
+  it("an ORDER positive ref does NOT suppress the payment sentinel (dimensions are independent)", () => {
+    const l = new EvidenceLedger("t");
+    recordPaymentMarker(l, "cust-1", 0); // provably-empty PAYMENT.
+    recordPresent(l, "order_fulfillment_stage:o1"); // but a present ORDER read exists.
+    const refs = activeResourcesFromLedger({ ledger: l, customerId: "cust-1" });
+    // The order ref is emitted unchanged, AND the payment sentinel still fires.
+    expect(refs).toContainEqual({ kind: "order", id: "o1" });
+    expect(refs).toContainEqual(paymentSentinel);
+    // No order sentinel (no order marker present).
+    expect(refs).not.toContainEqual(orderSentinel);
+  });
+
+  it("BOTH markers count-0 → BOTH sentinels (authed order + payment, symmetric)", () => {
+    const l = new EvidenceLedger("t");
+    recordPresent(l, "active_orders:cust-1", { count: 0 });
+    recordPaymentMarker(l, "cust-1", 0);
+    const refs = activeResourcesFromLedger({ ledger: l, customerId: "cust-1" });
+    expect(refs).toContainEqual(orderSentinel);
+    expect(refs).toContainEqual(paymentSentinel);
+    expect(refs).toHaveLength(2);
+  });
+});

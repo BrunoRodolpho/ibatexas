@@ -393,19 +393,21 @@ export const PROVABLY_EMPTY_KIND = "provably_empty";
  *        owner-scoped enumeration (there is no per-customer marker), but a guest
  *        PROVABLY owns nothing → emit BOTH sentinels (`order` + `payment`)
  *        unconditionally.
- *      - RULE B′ (authenticated): emit the `order` sentinel IFF the enumeration MARKER
- *        (`active_orders:{customerId}`, written by the investigator) resolved PRESENT
- *        this turn AND its `count === 0` AND no positive order ref exists this turn.
- *        The full conjunction is load-bearing: marker ERRORED/ABSENT ("could not
- *        check") emits NOTHING (companion KEPT → honest UNKNOWN, the §O#15 falsifier);
- *        marker `count > 0` with no positive refs is the PARTIAL-LEDGER RACE (the
- *        enumeration saw active orders but every per-order read errored — count is the
- *        only witness) and emits NOTHING; a positive order ref (e.g. a model-extracted
- *        TERMINAL order whose read is present) suppresses the sentinel even at count 0.
- *        There is NO active-payment enumeration for an authenticated
- *        customer yet, so no authed `payment` sentinel is emitted here — that mirror
- *        (over `paymentQueryService.listByCustomer`, once "active payment" statuses are
- *        defined) is the BKL-079 fast-follow.
+ *      - RULE B′ (authenticated): emit an `order` / `payment` sentinel IFF that
+ *        dimension's enumeration MARKER (`active_orders:{customerId}` /
+ *        `active_payments:{customerId}`, both written by the investigator) resolved
+ *        PRESENT this turn AND its `count === 0` AND no positive ref of that kind
+ *        exists this turn. The full conjunction is load-bearing per dimension: a
+ *        marker ERRORED/ABSENT ("could not check") emits NOTHING (companion KEPT →
+ *        honest UNKNOWN, the §O#15 falsifier); marker `count > 0` with no positive
+ *        refs is the PARTIAL-LEDGER RACE (the enumeration saw active resources but
+ *        every per-resource read errored — count is the only witness) and emits
+ *        NOTHING; a positive ref (e.g. a model-extracted TERMINAL order whose read is
+ *        present) suppresses that dimension's sentinel even at count 0. BKL-079 adds
+ *        the PAYMENT mirror: the `active_payments` marker counts the customer's total
+ *        payments (countByCustomer — see turn-reads.ts), so its `count === 0` is a
+ *        STRICTER (sound, conservative) provable-empty witness than an active-only
+ *        count.
  *
  * PURE; byte-identical when unwired (the seam is only threaded under the flag).
  */
@@ -415,13 +417,15 @@ export const activeResourcesFromLedger: ActiveResourcesForTurn = ({
 }) => {
   const refs: ActiveResourceRef[] = [];
 
-  // POSITIVE refs (see rule 1 above). Track whether a positive ORDER ref exists this
-  // turn — Rule B's suppression key.
+  // POSITIVE refs (see rule 1 above). Track whether a positive ORDER / PAYMENT ref
+  // exists this turn — each Rule B′'s per-dimension suppression key.
   let hasPositiveOrderRef = false;
+  let hasPositivePaymentRef = false;
   for (const { base, resourceId } of presentOwnerScopedResources(ledger)) {
     const kind = OWNER_SCOPED_BASE_TO_RESOURCE_KIND[base];
     if (kind === undefined) continue;
     if (kind === "order") hasPositiveOrderRef = true;
+    if (kind === "payment") hasPositivePaymentRef = true;
     refs.push({ kind, id: resourceId });
   }
 
@@ -454,6 +458,31 @@ export const activeResourcesFromLedger: ActiveResourcesForTurn = ({
   const provablyZero = typeof markerValue?.count === "number" && markerValue.count === 0;
   if (provablyZero && !hasPositiveOrderRef) {
     refs.push({ kind: PROVABLY_EMPTY_KIND, id: "order" });
+  }
+
+  // RULE B′ (PAYMENT — BKL-079) — the EXACT MIRROR of the order sentinel above, over
+  // the `active_payments:{customerId}` enumeration marker (written by the
+  // investigator's countActivePayments read). Emit the `payment` sentinel ONLY on the
+  // full CONJUNCTION: marker PRESENT ∧ marker count === 0 ∧ no positive `payment` ref
+  // (a present `payment_status:{orderId}` read) this turn. Each conjunct closes the
+  // same wrong-drop hole as the order mirror:
+  //   - marker "error"/"absent" ("could not check") → NO sentinel → payment companion
+  //     KEPT → honest UNKNOWN (the §O#15 falsifier);
+  //   - count > 0 with NO positive payment ref → the PARTIAL-LEDGER RACE → NO sentinel;
+  //   - count === 0 WITH a positive payment ref → the positive ref suppresses it.
+  // A malformed/unexpected marker value fails toward KEEPING the companion. NOTE: the
+  // count is the customer's TOTAL payment count (countByCustomer counts ALL, incl.
+  // terminal), so count===0 is a STRICTER (sound, conservative) provable-empty witness
+  // than an active-only count would be (see turn-reads.ts countActivePayments).
+  const paymentMarker = ledger.resolve(`active_payments:${customerId}`);
+  const paymentMarkerValue =
+    paymentMarker.state === "present"
+      ? (paymentMarker.entry?.value as { count?: unknown } | undefined)
+      : undefined;
+  const paymentProvablyZero =
+    typeof paymentMarkerValue?.count === "number" && paymentMarkerValue.count === 0;
+  if (paymentProvablyZero && !hasPositivePaymentRef) {
+    refs.push({ kind: PROVABLY_EMPTY_KIND, id: "payment" });
   }
 
   return refs;

@@ -50,17 +50,20 @@ import { render } from "./renderer-from-claims.js";
  * IDENTICAL to the pre-BKL-073 adapter.
  *
  * Otherwise a flag is `false` ONLY on a POSITIVE provable-empty determination — a
- * `{ kind: PROVABLY_EMPTY_KIND, id }` sentinel present in the refs (Rule B in the
- * seam: the enumeration marker resolved PRESENT ∧ no positive order ref; or the guest
- * path — a guest owns nothing). The sentinel is the ONLY thing that yields `false`,
- * so the decomposer's load-bearing "false ⟺ positive first-party determination"
- * contract holds: any uncertainty (marker errored/absent → NO sentinel) leaves the
- * flag `true` → the companion is KEPT → honest UNKNOWN, never "render the easy half."
+ * `{ kind: PROVABLY_EMPTY_KIND, id }` sentinel present in the refs (Rule B′ in the
+ * seam: that dimension's enumeration marker resolved PRESENT with count 0 ∧ no
+ * positive ref of that kind; or the guest path — a guest owns nothing). The sentinel
+ * is the ONLY thing that yields `false`, so the decomposer's load-bearing "false ⟺
+ * positive first-party determination" contract holds: any uncertainty (marker
+ * errored/absent → NO sentinel) leaves the flag `true` → the companion is KEPT →
+ * honest UNKNOWN, never "render the easy half."
  *
- * `hasActivePayment` can go `false` ONLY via the GUEST sentinel — there is no
- * active-payment enumeration for an authenticated customer yet (that mirror is the
- * BKL-079 fast-follow), so an authed turn always keeps `hasActivePayment` true
- * (over-include, sound).
+ * Both flags are now symmetric (BKL-073 order + BKL-079 payment): `hasActiveOrder`
+ * goes `false` via the order sentinel (the `active_orders` marker's count-0 Rule B′,
+ * or the guest path) and `hasActivePayment` via the payment sentinel (the
+ * `active_payments` marker's count-0 Rule B′, or the guest path). This adapter needs
+ * NO change for BKL-079 — it already consumes a `payment` sentinel; BKL-079 only
+ * adds the authed PRODUCER (investigator marker + seam Rule B′).
  */
 export function ownershipFromActiveResources(
   rs?: readonly ActiveResourceRef[],
