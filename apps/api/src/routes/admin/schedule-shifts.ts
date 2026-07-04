@@ -156,53 +156,37 @@ export async function scheduleShiftRoutes(server: FastifyInstance): Promise<void
     },
   );
 
-  // ── POST /api/admin/schedule/shifts/:id/clock-in — stamp actualStart (NEW-034) ─
-  app.post(
-    "/api/admin/schedule/shifts/:id/clock-in",
-    {
-      preHandler: [requireManagerRole],
-      schema: {
-        tags: ["admin"],
-        summary: "Escala — registrar entrada (clock-in) de um turno (admin)",
-        params: z.object({ id: z.string().min(1).max(256) }),
-        body: ClockBody,
+  // ── POST /api/admin/schedule/shifts/:id/{clock-in,clock-out} (NEW-034) ─────────
+  // The two clock stamps are identical but for which service method they call; a
+  // shared registration keeps them in lockstep (differ only in path + method).
+  const clockEndpoints = [
+    { suffix: "clock-in", method: "clockIn", summary: "Escala — registrar entrada (clock-in) de um turno (admin)" },
+    { suffix: "clock-out", method: "clockOut", summary: "Escala — registrar saída (clock-out) de um turno (admin)" },
+  ] as const;
+  for (const { suffix, method, summary } of clockEndpoints) {
+    app.post(
+      `/api/admin/schedule/shifts/:id/${suffix}`,
+      {
+        preHandler: [requireManagerRole],
+        schema: {
+          tags: ["admin"],
+          summary,
+          params: z.object({ id: z.string().min(1).max(256) }),
+          body: ClockBody,
+        },
       },
-    },
-    async (request, reply) => {
-      const { id } = request.params;
-      const body = request.body as z.infer<typeof ClockBody>;
-      const shift = await svc().clockIn(id, body?.at);
-      // 404 ONLY when the id does not exist (clockIn returns null).
-      if (!shift) {
-        return reply.code(404).send({ error: "staff_shift_not_found" });
-      }
-      return reply.send({ shift });
-    },
-  );
-
-  // ── POST /api/admin/schedule/shifts/:id/clock-out — stamp actualEnd (NEW-034) ──
-  app.post(
-    "/api/admin/schedule/shifts/:id/clock-out",
-    {
-      preHandler: [requireManagerRole],
-      schema: {
-        tags: ["admin"],
-        summary: "Escala — registrar saída (clock-out) de um turno (admin)",
-        params: z.object({ id: z.string().min(1).max(256) }),
-        body: ClockBody,
+      async (request, reply) => {
+        const { id } = request.params as { id: string };
+        const body = request.body as z.infer<typeof ClockBody>;
+        const shift = await svc()[method](id, body?.at);
+        // 404 ONLY when the id does not exist (the clock method returns null).
+        if (!shift) {
+          return reply.code(404).send({ error: "staff_shift_not_found" });
+        }
+        return reply.send({ shift });
       },
-    },
-    async (request, reply) => {
-      const { id } = request.params;
-      const body = request.body as z.infer<typeof ClockBody>;
-      const shift = await svc().clockOut(id, body?.at);
-      // 404 ONLY when the id does not exist (clockOut returns null).
-      if (!shift) {
-        return reply.code(404).send({ error: "staff_shift_not_found" });
-      }
-      return reply.send({ shift });
-    },
-  );
+    );
+  }
 
   // ── GET /api/admin/schedule/labor-cost — scheduled/actual hours + cost (NEW-034)
   app.get(
