@@ -29,6 +29,16 @@ const mockBuildHelpText = vi.hoisted(() => vi.fn());
 const mockGetLoyaltyBalance = vi.hoisted(() => vi.fn());
 const mockLoadSession = vi.hoisted(() => vi.fn());
 const mockAppendMessages = vi.hoisted(() => vi.fn());
+// BKL-086 ops-actor fork — default {consumed:false} (not a staff phone), so the
+// customer-path route tests below run byte-identically. The default impl survives
+// vi.clearAllMocks() (only history is cleared, not the implementation).
+const mockHandleOpsWhatsAppMessage = vi.hoisted(() => vi.fn(async () => ({ consumed: false })));
+const mockBuildOpsWhatsAppIngressDeps = vi.hoisted(() => vi.fn(() => ({})));
+
+vi.mock("../ops/ops-whatsapp-ingress.js", () => ({
+  handleOpsWhatsAppMessage: mockHandleOpsWhatsAppMessage,
+  buildOpsWhatsAppIngressDeps: mockBuildOpsWhatsAppIngressDeps,
+}));
 
 vi.mock("twilio", () => ({
   default: Object.assign(() => ({}), { validateRequest: mockValidateRequest }),

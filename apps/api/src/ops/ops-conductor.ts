@@ -57,6 +57,12 @@ import {
 } from "../tools/register-ibatexas-tool-packs.js";
 import { deriveOpsPlannerContext } from "./ops-planner-context.js";
 import { composeOpsPlannerSystem } from "./ops-history.js";
+import {
+  excludedKindsForScope,
+  scopeCapabilityPlanner,
+  scopeResumeChannel,
+  type OpsVerbScope,
+} from "./ops-verb-scope.js";
 
 /** A per-turn read-tool executor (mirrors the chat planner's map). */
 export type OpsReadToolExecutor = (
@@ -72,6 +78,15 @@ export type OpsReadToolExecutor = (
  */
 export interface OpsConductorContext {
   readonly historyBlock?: string;
+  /**
+   * The ingress that composed this conductor (BKL-086). Selects the verb scope:
+   * `"whatsapp"` deterministically excludes irreversible money / two-person verbs
+   * (the SIM-swap compensating control — see {@link OpsVerbScope} and
+   * `ops-verb-scope.ts`) from BOTH the advertised/allowlisted intents AND the
+   * confirm-resume matcher. Absent ⇒ `"dashboard"` (excludes nothing —
+   * byte-identical to the pre-BKL-086 composition).
+   */
+  readonly opsVerbScope?: OpsVerbScope;
 }
 
 /**
@@ -119,10 +134,21 @@ export function composeOpsConductor(
   actor: StaffEnvelopeActor,
   context: OpsConductorContext = {},
 ): Conductor {
+  // BKL-086 — the ingress verb scope. `dashboard` (the default) excludes
+  // nothing, so both filters below are identity and the composition is
+  // byte-identical to the pre-BKL-086 shape. `whatsapp` excludes the irreversible
+  // money / two-person verbs (the SIM-swap compensating control).
+  const excludedKinds = excludedKindsForScope(context.opsVerbScope ?? "dashboard");
+
   const planner = createIbatexasPlanner({
     model: deps.model,
     modelId: deps.modelId,
-    capabilityPlanners: [opsCapabilityPlanner as CapabilityPlanner<unknown, unknown>],
+    capabilityPlanners: [
+      scopeCapabilityPlanner(
+        opsCapabilityPlanner as CapabilityPlanner<unknown, unknown>,
+        excludedKinds,
+      ),
+    ],
     deriveContext: deriveOpsPlannerContext(actor.staffId),
     staffEnvelopeActor: { staffId: actor.staffId, role: actor.role },
     readToolExecutors: deps.opsReadToolExecutors,
@@ -165,7 +191,11 @@ export function composeOpsConductor(
     telemetry: deps.telemetry,
     session: deps.session,
     tools: deps.tools,
-    channels: [deps.systemChannel],
+    // BKL-086 defense in depth: on the WhatsApp scope, an out-of-scope parked
+    // envelope (e.g. a dashboard-parked refund) is invisible to matchToParked,
+    // so "sim" over WhatsApp can never resume it. `dashboard` ⇒ the driver
+    // unchanged.
+    channels: [scopeResumeChannel(deps.systemChannel, excludedKinds)],
     tenantResolver: deps.tenantResolver,
     sessionLock: deps.sessionLock,
     resolver: deps.buildResolver(actor.staffId),
