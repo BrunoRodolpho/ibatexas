@@ -160,26 +160,38 @@ function scriptedModel(
   return { model, complete };
 }
 
-/** The order-projection subset the ops resolver feeds the note.add state. */
+/** The order-projection subset the ops resolver feeds the note/transition state. */
 type FakeOpsOrder = {
   customerId: string | null;
   paymentMethod: string | null;
   paymentStatus: string | null;
   totalInCentavos: number;
+  /** Current status — the BKL-090 legality guard reads it for transitions. */
+  fulfillmentStatus: string | null;
 } | null;
 
 function buildDeps(opts: {
   model: ModelProvider;
   medusaAdjudicated: ReturnType<typeof vi.fn>;
   writeAdjudicatedNote: ReturnType<typeof vi.fn>;
+  /** POST-adjudication kitchen-advance writer (BKL-090). */
+  writeAdjudicatedStatusTransition?: ReturnType<typeof vi.fn>;
+  /** order.status_changed publisher spy (BKL-090). */
+  publishOrderStatusChanged?: ReturnType<typeof vi.fn>;
   product: { id: string; status: string } | null;
-  /** The order the resolver projects for order.note.add; null ⇒ order-missing. */
+  /** The order the resolver projects for order.note.add / order.status.transition;
+   *  null ⇒ order-missing. */
   order?: FakeOpsOrder;
 }) {
   const tools = createOpsToolRegistry({
     medusaAdjudicated: opts.medusaAdjudicated as never,
     auditSink: {} as never,
-    orderCmdSvc: { writeAdjudicatedNote: opts.writeAdjudicatedNote },
+    orderCmdSvc: {
+      writeAdjudicatedNote: opts.writeAdjudicatedNote,
+      writeAdjudicatedStatusTransition:
+        opts.writeAdjudicatedStatusTransition ?? vi.fn(),
+    },
+    publishOrderStatusChanged: opts.publishOrderStatusChanged ?? vi.fn(),
   });
   return {
     adjudicator: realKernelAdjudicator,
@@ -364,6 +376,7 @@ const PRESENT_ORDER: FakeOpsOrder = {
   paymentMethod: "pix",
   paymentStatus: "confirmed",
   totalInCentavos: 5_000,
+  fulfillmentStatus: "confirmed",
 };
 
 describe("ops conductor — order.note.add reachable end-to-end (NEW-032 verbs-v2)", () => {
@@ -471,6 +484,200 @@ describe("ops conductor — order.note.add reachable end-to-end (NEW-032 verbs-v
     expect(out.kind).toBe("EXECUTE");
     expect(writeAdjudicatedNote).toHaveBeenCalledTimes(1);
     expect(writeAdjudicatedNote.mock.calls[0]![0].isInternal).toBe(false);
+  });
+});
+
+// ── order.status.transition (BKL-090 kitchen-advance) ────────────────────────
+//
+// The crown-jewel proof for the newly-unblocked verb: a staff "avança o pedido X"
+// driven through composeOpsConductor + a full handleTurn against the REAL composed
+// router + REAL kernel. Proves the BKL-090 legality guard END-TO-END on the ops
+// plane — the ops resolver projects the CURRENT fulfillmentStatus, and the kernel
+// REFUSEs an illegal/terminal transition BEFORE the write executor runs (no
+// executor-throw reliance for the LLM-proposed surface). A legal advance EXECUTEs
+// with actor=admin + the Capsule staffId (never the model payload).
+
+/** Build an express_intent tool call proposing order.status.transition. */
+function transitionCall(orderId: string, newStatus: string) {
+  return {
+    id: "tc-transition",
+    name: "express_intent",
+    input: {
+      capability: "order.status.transition",
+      payload: { orderId, newStatus },
+    },
+  };
+}
+
+/** A typed transition-writer spy carrying the [payload, extras] tuple. Returns
+ *  the WIDE result (displayId/customerId from the projection row). */
+function transitionWriterSpy() {
+  return vi.fn(
+    async (
+      _payload: { orderId: string; newStatus: string; expectedVersion?: number },
+      _extras: { actor: string; actorId?: string; reason?: string },
+    ): Promise<{
+      version: number;
+      previousStatus: string;
+      newStatus: string;
+      displayId: number;
+      customerId: string | null;
+    }> => ({
+      version: 4,
+      previousStatus: "preparing",
+      newStatus: "ready",
+      displayId: 777,
+      customerId: "cust_1",
+    }),
+  );
+}
+
+/** An order projected at a given current status. */
+function orderAt(fulfillmentStatus: string): FakeOpsOrder {
+  return {
+    customerId: "cust_1",
+    paymentMethod: "pix",
+    paymentStatus: "confirmed",
+    totalInCentavos: 5_000,
+    fulfillmentStatus,
+  };
+}
+
+describe("ops conductor — order.status.transition reachable end-to-end (BKL-090)", () => {
+  it("ATTENDANT 'avança o pedido' legal (preparing→ready) → EXECUTE; write runs with actor=admin + Capsule staffId; order.status_changed emitted", async () => {
+    const writeAdjudicatedStatusTransition = transitionWriterSpy();
+    const publishOrderStatusChanged = vi.fn(
+      async (_event: import("@ibatexas/types").OrderStatusChangedEvent) => {},
+    );
+    const { model } = scriptedModel([transitionCall("order_1", "ready")]);
+    const deps = buildDeps({
+      model,
+      medusaAdjudicated: vi.fn(),
+      writeAdjudicatedNote: vi.fn(),
+      writeAdjudicatedStatusTransition,
+      publishOrderStatusChanged,
+      product: null,
+      order: orderAt("preparing"),
+    });
+    const out = await runOpsTurn(
+      deps,
+      "ATTENDANT",
+      "staff_9",
+      "avança o pedido order_1 pra pronto",
+    );
+    expect(out.kind).toBe("EXECUTE");
+    expect(writeAdjudicatedStatusTransition).toHaveBeenCalledTimes(1);
+    const [payload, extras] = writeAdjudicatedStatusTransition.mock.calls[0]!;
+    expect(payload).toEqual({ orderId: "order_1", newStatus: "ready" });
+    expect(extras.actor).toBe("admin");
+    expect(extras.actorId).toBe("staff_9");
+    // The downstream customer-notify/event-log/reconcile fan-out fires: the SAME
+    // order.status_changed the admin advance route emits, with projection-sourced
+    // displayId/customerId (never the model).
+    expect(publishOrderStatusChanged).toHaveBeenCalledTimes(1);
+    expect(publishOrderStatusChanged.mock.calls[0]![0]).toMatchObject({
+      orderId: "order_1",
+      displayId: 777,
+      customerId: "cust_1",
+      previousStatus: "preparing",
+      newStatus: "ready",
+      updatedBy: "admin",
+      version: 4,
+    });
+  });
+
+  it("OWNER legal advance → EXECUTE (matrix permits all 3 roles for order.status.transition)", async () => {
+    const writeAdjudicatedStatusTransition = transitionWriterSpy();
+    const { model } = scriptedModel([transitionCall("order_1", "ready")]);
+    const deps = buildDeps({
+      model,
+      medusaAdjudicated: vi.fn(),
+      writeAdjudicatedNote: vi.fn(),
+      writeAdjudicatedStatusTransition,
+      product: null,
+      order: orderAt("preparing"),
+    });
+    const out = await runOpsTurn(deps, "OWNER", "staff_1", "avança o pedido order_1");
+    expect(out.kind).toBe("EXECUTE");
+    expect(writeAdjudicatedStatusTransition).toHaveBeenCalledTimes(1);
+  });
+
+  it("ILLEGAL transition (confirmed→delivered) → REFUSE order.status.transition_illegal; write + emit NEVER run", async () => {
+    const writeAdjudicatedStatusTransition = transitionWriterSpy();
+    const publishOrderStatusChanged = vi.fn(async () => {});
+    const { model } = scriptedModel([transitionCall("order_1", "delivered")]);
+    const deps = buildDeps({
+      model,
+      medusaAdjudicated: vi.fn(),
+      writeAdjudicatedNote: vi.fn(),
+      writeAdjudicatedStatusTransition,
+      publishOrderStatusChanged,
+      product: null,
+      order: orderAt("confirmed"),
+    });
+    const out = await runOpsTurn(
+      deps,
+      "OWNER",
+      "staff_1",
+      "marca o pedido order_1 como entregue",
+    );
+    expect(out.kind).toBe("REFUSE");
+    if (out.kind === "REFUSE") {
+      expect(out.refusal.code).toBe("order.status.transition_illegal");
+    }
+    expect(writeAdjudicatedStatusTransition).not.toHaveBeenCalled();
+    expect(publishOrderStatusChanged).not.toHaveBeenCalled();
+  });
+
+  it("TERMINAL current state (delivered→preparing) → REFUSE order.status.terminal; write + emit NEVER run", async () => {
+    const writeAdjudicatedStatusTransition = transitionWriterSpy();
+    const publishOrderStatusChanged = vi.fn(async () => {});
+    const { model } = scriptedModel([transitionCall("order_1", "preparing")]);
+    const deps = buildDeps({
+      model,
+      medusaAdjudicated: vi.fn(),
+      writeAdjudicatedNote: vi.fn(),
+      writeAdjudicatedStatusTransition,
+      publishOrderStatusChanged,
+      product: null,
+      order: orderAt("delivered"),
+    });
+    const out = await runOpsTurn(
+      deps,
+      "OWNER",
+      "staff_1",
+      "volta o pedido order_1 pra preparando",
+    );
+    expect(out.kind).toBe("REFUSE");
+    if (out.kind === "REFUSE") {
+      expect(out.refusal.code).toBe("order.status.terminal");
+    }
+    expect(writeAdjudicatedStatusTransition).not.toHaveBeenCalled();
+    expect(publishOrderStatusChanged).not.toHaveBeenCalled();
+  });
+
+  it("order missing → REFUSE (no_order); write + emit NEVER run", async () => {
+    const writeAdjudicatedStatusTransition = transitionWriterSpy();
+    const publishOrderStatusChanged = vi.fn(async () => {});
+    const { model } = scriptedModel([transitionCall("ghost", "ready")]);
+    const deps = buildDeps({
+      model,
+      medusaAdjudicated: vi.fn(),
+      writeAdjudicatedNote: vi.fn(),
+      writeAdjudicatedStatusTransition,
+      publishOrderStatusChanged,
+      product: null,
+      order: null, // resolver ⇒ ctx.orderId:null ⇒ requireOrderIdForMutation REFUSE
+    });
+    const out = await runOpsTurn(
+      deps,
+      "OWNER",
+      "staff_1",
+      "avança o pedido inexistente",
+    );
+    expect(out.kind).toBe("REFUSE");
+    expect(writeAdjudicatedStatusTransition).not.toHaveBeenCalled();
+    expect(publishOrderStatusChanged).not.toHaveBeenCalled();
   });
 });
 

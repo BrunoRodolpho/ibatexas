@@ -7,6 +7,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 import type { AuditSink } from "@ibatexas/audit-sink";
+import type { OrderStatusChangedEvent } from "@ibatexas/types";
 import {
   createOpsToolRegistry,
   listOpsToolDefinitions,
@@ -20,19 +21,40 @@ function makeDeps(over: Partial<OpsToolRegistryDeps> = {}): {
   deps: OpsToolRegistryDeps;
   medusaAdjudicated: ReturnType<typeof vi.fn>;
   writeAdjudicatedNote: ReturnType<typeof vi.fn>;
+  writeAdjudicatedStatusTransition: ReturnType<typeof vi.fn>;
+  publishOrderStatusChanged: ReturnType<typeof vi.fn>;
 } {
   const medusaAdjudicated = vi.fn(async () => ({ product: { id: "prod_1" } }));
   const writeAdjudicatedNote = vi.fn(async () => ({
     noteId: "note_1",
     orderId: "order_1",
   }));
+  // Wide result: carries displayId + customerId from the projection row so the
+  // emit path never trusts the model payload for those identifiers.
+  const writeAdjudicatedStatusTransition = vi.fn(async () => ({
+    version: 3,
+    previousStatus: "preparing",
+    newStatus: "ready",
+    displayId: 4242,
+    customerId: "cust_proj",
+  }));
+  const publishOrderStatusChanged = vi.fn(
+    async (_event: OrderStatusChangedEvent) => {},
+  );
   const deps: OpsToolRegistryDeps = {
     medusaAdjudicated: medusaAdjudicated as never,
     auditSink: AUDIT_SINK,
-    orderCmdSvc: { writeAdjudicatedNote },
+    orderCmdSvc: { writeAdjudicatedNote, writeAdjudicatedStatusTransition },
+    publishOrderStatusChanged,
     ...over,
   };
-  return { deps, medusaAdjudicated, writeAdjudicatedNote };
+  return {
+    deps,
+    medusaAdjudicated,
+    writeAdjudicatedNote,
+    writeAdjudicatedStatusTransition,
+    publishOrderStatusChanged,
+  };
 }
 
 /** A Capsule stub carrying only the fields the ops executors read. */
@@ -54,11 +76,12 @@ describe("ops tool registry — shape", () => {
     }
   });
 
-  it("registers exactly the two governed ops verbs", () => {
+  it("registers exactly the three governed ops verbs", () => {
     const { deps } = makeDeps();
     const registry = createOpsToolRegistry(deps);
     expect(registry.hasCapability("product.availability.set")).toBe(true);
     expect(registry.hasCapability("order.note.add")).toBe(true);
+    expect(registry.hasCapability("order.status.transition")).toBe(true);
     expect(registry.hasCapability("payment.refund.issue")).toBe(false);
   });
 
@@ -136,5 +159,95 @@ describe("order.note.add executor — POST-adjudication note write", () => {
     await tool.execute({ orderId: "o1", body: "x" }, capsule(null));
     const [, extras] = writeAdjudicatedNote.mock.calls[0]!;
     expect(extras).toEqual({ author: "staff" });
+  });
+});
+
+describe("order.status.transition executor — POST-adjudication kitchen-advance (BKL-090)", () => {
+  it("calls writeAdjudicatedStatusTransition with actor=admin + Capsule staffId; never the model actor", async () => {
+    const { deps, writeAdjudicatedStatusTransition } = makeDeps();
+    const tool = toolByKind(deps, "order.status.transition");
+    await tool.execute(
+      // The model payload's actor/actorId/expectedVersion MUST be ignored.
+      {
+        orderId: "order_1",
+        newStatus: "ready",
+        actor: "customer",
+        actorId: "forged",
+        expectedVersion: 99,
+      },
+      capsule("staff_7"),
+    );
+    expect(writeAdjudicatedStatusTransition).toHaveBeenCalledTimes(1);
+    const [payload, extras] = writeAdjudicatedStatusTransition.mock.calls[0]!;
+    // Only orderId + newStatus are forwarded (no model expectedVersion).
+    expect(payload).toEqual({ orderId: "order_1", newStatus: "ready" });
+    // Authoritative provenance: admin + the Capsule staffId, never the payload.
+    expect(extras.actor).toBe("admin");
+    expect(extras.actorId).toBe("staff_7");
+    expect((extras as { reason?: string }).reason).toBe(
+      "Status avançado pela operação (ops).",
+    );
+  });
+
+  it("omits actorId when the Capsule carries no staffId (never fabricates one)", async () => {
+    const { deps, writeAdjudicatedStatusTransition } = makeDeps();
+    const tool = toolByKind(deps, "order.status.transition");
+    await tool.execute(
+      { orderId: "o1", newStatus: "ready" },
+      capsule(null),
+    );
+    const [, extras] = writeAdjudicatedStatusTransition.mock.calls[0]!;
+    expect(extras).toEqual({
+      actor: "admin",
+      reason: "Status avançado pela operação (ops).",
+    });
+  });
+
+  it("emits order.status_changed after the committed write, with displayId/customerId from the projection (never the model)", async () => {
+    const { deps, publishOrderStatusChanged } = makeDeps();
+    const tool = toolByKind(deps, "order.status.transition");
+    await tool.execute(
+      // Model payload carries a DIFFERENT customerId/displayId — must be ignored.
+      {
+        orderId: "order_1",
+        newStatus: "ready",
+        customerId: "model_forged",
+        displayId: 9999,
+      },
+      capsule("staff_7"),
+    );
+    expect(publishOrderStatusChanged).toHaveBeenCalledTimes(1);
+    const event = publishOrderStatusChanged.mock.calls[0]![0];
+    expect(event).toMatchObject({
+      orderId: "order_1",
+      // From the projection-row read (writeAdjudicatedStatusTransition result),
+      // NOT the model payload.
+      displayId: 4242,
+      customerId: "cust_proj",
+      previousStatus: "preparing",
+      newStatus: "ready",
+      updatedBy: "admin",
+      version: 3,
+    });
+    expect(typeof event.timestamp).toBe("string");
+  });
+
+  it("does NOT emit order.status_changed when the write throws (no event for an uncommitted transition)", async () => {
+    const publishOrderStatusChanged = vi.fn(async () => {});
+    const writeAdjudicatedStatusTransition = vi.fn(async () => {
+      throw new Error("InvalidTransitionError");
+    });
+    const { deps } = makeDeps({
+      orderCmdSvc: {
+        writeAdjudicatedNote: vi.fn(),
+        writeAdjudicatedStatusTransition,
+      } as never,
+      publishOrderStatusChanged,
+    });
+    const tool = toolByKind(deps, "order.status.transition");
+    await expect(
+      tool.execute({ orderId: "order_1", newStatus: "ready" }, capsule("staff_7")),
+    ).rejects.toThrow();
+    expect(publishOrderStatusChanged).not.toHaveBeenCalled();
   });
 });

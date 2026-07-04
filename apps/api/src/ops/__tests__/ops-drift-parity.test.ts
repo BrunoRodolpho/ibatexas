@@ -16,7 +16,17 @@ import {
 const REGISTRY_DEPS: OpsToolRegistryDeps = {
   medusaAdjudicated: (async () => ({})) as never,
   auditSink: {} as never,
-  orderCmdSvc: { writeAdjudicatedNote: async () => ({ noteId: "n", orderId: "o" }) },
+  orderCmdSvc: {
+    writeAdjudicatedNote: async () => ({ noteId: "n", orderId: "o" }),
+    writeAdjudicatedStatusTransition: async () => ({
+      version: 2,
+      previousStatus: "preparing",
+      newStatus: "ready",
+      displayId: 1,
+      customerId: null,
+    }),
+  },
+  publishOrderStatusChanged: async () => {},
 };
 
 const OPS_TOOLS = listOpsToolDefinitions(REGISTRY_DEPS);

@@ -153,6 +153,43 @@ export interface NoteAuthorExtras {
   readonly authorId?: string
 }
 
+/**
+ * The minimal transition target a caller passes to
+ * {@link OrderCommandService.writeAdjudicatedStatusTransition}. `expectedVersion`
+ * (when present) arms the executor-transactional optimistic-concurrency check.
+ */
+export interface StatusTransitionWrite {
+  readonly orderId: string
+  readonly newStatus: string
+  readonly expectedVersion?: number
+}
+
+/**
+ * Authoritative provenance for a status-transition write. On the ops plane the
+ * caller stamps `actor: "admin"` + `actorId: <Capsule staffId>` — NEVER a
+ * model-parsed payload field. Recorded on the `OrderStatusHistory` row.
+ */
+export interface StatusTransitionAttribution {
+  readonly actor: "admin" | "system" | "customer"
+  readonly actorId?: string
+  readonly reason?: string
+}
+
+/**
+ * Result of a committed status-transition write. `version`/`previousStatus`/
+ * `newStatus` are the historical shape; `displayId`/`customerId` are read from
+ * the SAME projection row inside the tx so a governed ops caller can publish an
+ * accurate `order.status_changed` event without a second read or trusting the
+ * model payload for those identifiers.
+ */
+export interface StatusTransitionResult {
+  readonly version: number
+  readonly previousStatus: string
+  readonly newStatus: string
+  readonly displayId: number
+  readonly customerId: string | null
+}
+
 // ── Service ─────────────────────────────────────────────────────────────────
 
 export interface OrderCommandService {
@@ -238,6 +275,32 @@ export interface OrderCommandService {
     payload: OrderNoteAddPayload,
     extras: NoteAuthorExtras,
   ): Promise<AddNoteResult>
+
+  /**
+   * Persist an `order.status.transition` the caller has ALREADY adjudicated
+   * through the COMPOSED policy router (the ops-plane kitchen-advance path,
+   * BKL-090). THE CALLER MUST HOLD A POSITIVE (EXECUTE/REWRITE) `Decision` —
+   * this performs NO adjudication; it is the post-decision persistence body
+   * extracted from `executeTransition` and shared, exactly like
+   * {@link OrderCommandService.writeAdjudicatedNote}.
+   *
+   * The ops path adjudicates through `composePolicyRouter` (carrying
+   * `staffRoleGuard` + the BKL-090 legality guard). Re-running
+   * `transitionStatusFromEnvelope` there would double-adjudicate against the
+   * DOMAIN `orderProjectionPolicyBundle` (which does NOT carry those adopter/
+   * legality guards), so a governed ops caller uses this method to persist
+   * without a second, weaker adjudication. The optimistic-concurrency version
+   * check + the `canTransition` throw REMAIN as the last transactional line
+   * (kernel = legality/terminality, executor = concurrency/atomicity).
+   * `actor`/`actorId` come from `extras` (ops stamps admin + Capsule staffId,
+   * NEVER a model payload field). The direct Prisma writes stay inside
+   * `packages/domain/src/services/` — the sanctioned owner path per the
+   * bypass-detection gate.
+   */
+  writeAdjudicatedStatusTransition(
+    payload: StatusTransitionWrite,
+    extras: StatusTransitionAttribution,
+  ): Promise<StatusTransitionResult>
 
   /**
    * Switch the projection's `deliveryType`. Replaces the rogue
@@ -329,6 +392,94 @@ async function writeAdjudicatedNote(
   return { noteId: note.id, orderId: payload.orderId }
 }
 
+/**
+ * The post-adjudication `order.status.transition` persistence body — the EXACT
+ * body previously inlined in the `executeTransition` closure, extracted so it
+ * can be shared with governed OPS callers that adjudicated the transition
+ * through the COMPOSED policy router (BKL-090; the ops kitchen-advance verb).
+ *
+ * PRECONDITION: the caller holds a positive (EXECUTE/REWRITE) `Decision` for
+ * `order.status.transition`. Performs NO adjudication. It PRESERVES, EXACTLY:
+ *   - the optimistic-CONCURRENCY check (`expectedVersion` vs the read version)
+ *     → `ConcurrencyError`;
+ *   - the state-machine `canTransition` throw as the LAST TRANSACTIONAL LINE
+ *     → `InvalidTransitionError` (defense-in-depth against a resolve→execute
+ *     race; the kernel legality guard is the primary gate, this is the backstop);
+ *   - the version bump + `OrderStatusHistory` audit row.
+ * Module-scoped (uses only the module `prisma` client + the shared error
+ * classes), referenced by BOTH the `executeTransition` closure (the
+ * `transitionStatusFromEnvelope` path) and the ops kitchen-advance executor.
+ *
+ * The return additionally carries `displayId` + `customerId` read from the SAME
+ * projection row (one read, inside the tx) so a governed ops caller can publish
+ * an accurate `order.status_changed` event WITHOUT a second read and WITHOUT
+ * trusting the model payload for those identifiers. The
+ * `transitionStatusFromEnvelope` path narrows the result back to its historical
+ * `{ version, previousStatus, newStatus }` shape (see `executeTransition`), so
+ * that public surface is unchanged.
+ */
+async function writeAdjudicatedStatusTransition(
+  payload: StatusTransitionWrite,
+  extras: StatusTransitionAttribution,
+): Promise<StatusTransitionResult> {
+  return prisma.$transaction(async (tx: TxClient) => {
+    const projection = await tx.orderProjection.findUnique({
+      where: { id: payload.orderId },
+    })
+
+    if (!projection) {
+      throw new ProjectionNotFoundError(payload.orderId)
+    }
+
+    if (
+      payload.expectedVersion !== undefined &&
+      projection.version !== payload.expectedVersion
+    ) {
+      throw new ConcurrencyError(
+        payload.orderId,
+        payload.expectedVersion,
+        projection.version,
+      )
+    }
+
+    const from = projection.fulfillmentStatus as OrderFulfillmentStatus
+    const to = payload.newStatus as OrderFulfillmentStatus
+    if (!canTransition(from, to)) {
+      throw new InvalidTransitionError(payload.orderId, from, to)
+    }
+
+    const newVersion = projection.version + 1
+
+    await tx.orderProjection.update({
+      where: { id: payload.orderId },
+      data: {
+        fulfillmentStatus: to as PrismaFulfillmentStatus,
+        version: newVersion,
+      },
+    })
+
+    await tx.orderStatusHistory.create({
+      data: {
+        orderId: payload.orderId,
+        fromStatus: from as PrismaFulfillmentStatus,
+        toStatus: to as PrismaFulfillmentStatus,
+        actor: extras.actor as PrismaActor,
+        actorId: extras.actorId,
+        reason: extras.reason,
+        version: newVersion,
+      },
+    })
+
+    return {
+      version: newVersion,
+      previousStatus: from,
+      newStatus: to,
+      displayId: projection.displayId,
+      customerId: projection.customerId,
+    }
+  })
+}
+
 export function createOrderCommandService(
   log?: Logger,
   options?: OrderCommandServiceOptions,
@@ -386,53 +537,32 @@ export function createOrderCommandService(
   }
 
   // ── Legacy executor: transition status ────────────────────────────────
+  // Behaviour-preserving delegation to the module-scoped
+  // `writeAdjudicatedStatusTransition` (BKL-090 extraction). The body is
+  // unchanged — the `transitionStatusFromEnvelope` path adjudicates via
+  // `orderProjectionPolicyBundle` FIRST, then this executor runs.
   const executeTransition = async (
     orderId: string,
     input: TransitionStatusInput,
   ): Promise<{ version: number; previousStatus: string; newStatus: string }> => {
-    return prisma.$transaction(async (tx: TxClient) => {
-      const projection = await tx.orderProjection.findUnique({
-        where: { id: orderId },
-      })
-
-      if (!projection) {
-        throw new ProjectionNotFoundError(orderId)
-      }
-
-      if (input.expectedVersion !== undefined && projection.version !== input.expectedVersion) {
-        throw new ConcurrencyError(orderId, input.expectedVersion, projection.version)
-      }
-
-      const from = projection.fulfillmentStatus as OrderFulfillmentStatus
-      const to = input.newStatus
-      if (!canTransition(from, to)) {
-        throw new InvalidTransitionError(orderId, from, to)
-      }
-
-      const newVersion = projection.version + 1
-
-      await tx.orderProjection.update({
-        where: { id: orderId },
-        data: {
-          fulfillmentStatus: to as PrismaFulfillmentStatus,
-          version: newVersion,
-        },
-      })
-
-      await tx.orderStatusHistory.create({
-        data: {
-          orderId,
-          fromStatus: from as PrismaFulfillmentStatus,
-          toStatus: to as PrismaFulfillmentStatus,
-          actor: input.actor as PrismaActor,
-          actorId: input.actorId,
-          reason: input.reason,
-          version: newVersion,
-        },
-      })
-
-      return { version: newVersion, previousStatus: from, newStatus: to }
-    })
+    // Narrow the shared result back to the historical shape so the
+    // `transitionStatusFromEnvelope` public surface is byte-identical (the
+    // extra displayId/customerId are only for the governed ops emit path).
+    const r = await writeAdjudicatedStatusTransition(
+      {
+        orderId,
+        newStatus: input.newStatus,
+        ...(input.expectedVersion === undefined
+          ? {}
+          : { expectedVersion: input.expectedVersion }),
+      },
+      { actor: input.actor, actorId: input.actorId, reason: input.reason },
+    )
+    return {
+      version: r.version,
+      previousStatus: r.previousStatus,
+      newStatus: r.newStatus,
+    }
   }
 
   // ── Legacy executor: reconcile status ────────────────────────────────
@@ -589,6 +719,8 @@ export function createOrderCommandService(
     },
 
     writeAdjudicatedNote,
+
+    writeAdjudicatedStatusTransition,
 
     async addNoteFromEnvelope(envelope, orderState, extras) {
       // Note-add goes through @ibatexas/pack-orders (the LLM-facing Pack).

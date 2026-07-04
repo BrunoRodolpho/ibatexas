@@ -62,6 +62,7 @@ export {
   OPS_TOOLS,
   OPS_SNAPSHOT_READ_TOOL,
   OPS_FOREIGN_ADVERTISED_KIND,
+  OPS_FOREIGN_ADVERTISED_TRANSITION_KIND,
   opsCapabilityPlanner,
 } from "./capabilities.js"
 

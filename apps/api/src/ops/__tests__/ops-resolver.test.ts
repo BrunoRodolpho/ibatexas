@@ -41,6 +41,7 @@ function makeDeps(over: Partial<OpsResolverDeps> = {}): OpsResolverDeps {
       paymentMethod: "pix",
       paymentStatus: "confirmed",
       totalInCentavos: 5000,
+      fulfillmentStatus: "confirmed",
     })),
     ...over,
   };
@@ -142,6 +143,71 @@ describe("ops resolver — order.note.add state", () => {
       input(opsEnvelope("order.note.add", { orderId: "order_1", body: "nota" })),
     );
     expect((resolved!.state as { ctx: { orderId: unknown } }).ctx.orderId).toBeNull();
+  });
+});
+
+describe("ops resolver — order.status.transition state (BKL-090)", () => {
+  it("projects the pack-orders OrderState with the CURRENT fulfillmentStatus", async () => {
+    const deps = makeDeps({
+      lookupOrder: vi.fn(async () => ({
+        customerId: "cust_1",
+        paymentMethod: "pix",
+        paymentStatus: "confirmed",
+        totalInCentavos: 5000,
+        fulfillmentStatus: "preparing",
+      })),
+    });
+    const [resolved] = await createOpsResolver(deps).resolve(
+      input(
+        opsEnvelope("order.status.transition", {
+          orderId: "order_1",
+          newStatus: "ready",
+        }),
+      ),
+    );
+    expect(resolved!.state).toEqual({
+      ctx: {
+        channel: "web",
+        customerId: "cust_1",
+        cartId: null,
+        orderId: "order_1",
+        fulfillmentStatus: "preparing",
+      },
+    });
+  });
+
+  it("order missing ⇒ ctx.orderId null AND fulfillmentStatus null (fail-closed)", async () => {
+    const deps = makeDeps({ lookupOrder: vi.fn(async () => null) });
+    const [resolved] = await createOpsResolver(deps).resolve(
+      input(
+        opsEnvelope("order.status.transition", {
+          orderId: "ghost",
+          newStatus: "ready",
+        }),
+      ),
+    );
+    const ctx = (resolved!.state as { ctx: { orderId: unknown; fulfillmentStatus: unknown } }).ctx;
+    expect(ctx.orderId).toBeNull();
+    expect(ctx.fulfillmentStatus).toBeNull();
+  });
+
+  it("order lookup THROW is fail-closed to orderId + fulfillmentStatus null", async () => {
+    const deps = makeDeps({
+      lookupOrder: vi.fn(async () => {
+        throw new Error("db down");
+      }),
+    });
+    const [resolved] = await createOpsResolver(deps).resolve(
+      input(
+        opsEnvelope("order.status.transition", {
+          orderId: "order_1",
+          newStatus: "ready",
+        }),
+      ),
+    );
+    const ctx = (resolved!.state as { ctx: { orderId: unknown; fulfillmentStatus: unknown } }).ctx;
+    expect(ctx.orderId).toBeNull();
+    expect(ctx.fulfillmentStatus).toBeNull();
   });
 });
 

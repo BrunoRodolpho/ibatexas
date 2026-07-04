@@ -34,7 +34,7 @@
           "kind": "SECURITY",
           "code": "guard_panic",
           "userFacing": "System is temporarily unavailable.",
-          "detail": "Guard panic in state phase[4] (requireCartItemsForCheckout): TypeError: Cannot read properties of undefined (reading 'items')"
+          "detail": "Guard panic in state phase[5] (requireCartItemsForCheckout): TypeError: Cannot read properties of undefined (reading 'items')"
         },
         "basis": [
           {
@@ -46,7 +46,7 @@
             "code": "guard_panic",
             "detail": {
               "phase": "state",
-              "index": 4,
+              "index": 5,
               "guardName": "requireCartItemsForCheckout",
               "errorName": "TypeError",
               "message": "Cannot read properties of undefined (reading 'items')"
@@ -80,7 +80,7 @@
           "kind": "SECURITY",
           "code": "guard_panic",
           "userFacing": "System is temporarily unavailable.",
-          "detail": "Guard panic in state phase[6] (deferOnPendingPix): TypeError: Cannot read properties of undefined (reading 'paymentStatus')"
+          "detail": "Guard panic in state phase[7] (deferOnPendingPix): TypeError: Cannot read properties of undefined (reading 'paymentStatus')"
         },
         "basis": [
           {
@@ -92,7 +92,7 @@
             "code": "guard_panic",
             "detail": {
               "phase": "state",
-              "index": 6,
+              "index": 7,
               "guardName": "deferOnPendingPix",
               "errorName": "TypeError",
               "message": "Cannot read properties of undefined (reading 'paymentStatus')"

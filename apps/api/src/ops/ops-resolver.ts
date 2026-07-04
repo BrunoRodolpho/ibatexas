@@ -44,6 +44,13 @@ export interface OpsResolverOrder {
   readonly paymentMethod: string | null;
   readonly paymentStatus: string | null;
   readonly totalInCentavos: number;
+  /**
+   * Current fulfillment status — the CURRENT state the BKL-090
+   * `requireLegalStatusTransition` guard reads for `order.status.transition`.
+   * `null` when the projection carries none (defensive; the guard fails closed
+   * on the `admin:` ops plane rather than trust an absent status).
+   */
+  readonly fulfillmentStatus: string | null;
 }
 
 export interface OpsResolverDeps {
@@ -129,6 +136,28 @@ async function opsStateForEnvelope(
         paymentMethod: order?.paymentMethod ?? null,
         paymentStatus: order?.paymentStatus ?? null,
         totalInCentavos: order?.totalInCentavos ?? 0,
+      },
+    };
+  }
+
+  if (envelope.kind === "order.status.transition") {
+    const orderId = typeof payload.orderId === "string" ? payload.orderId : "";
+    const order =
+      orderId === ""
+        ? null
+        : await safeLookup(() => deps.lookupOrder(orderId), "order");
+    // The pack-orders OrderState the BKL-090 `requireLegalStatusTransition`
+    // guard reads: `ctx.orderId` (requireOrderIdForMutation) + the CURRENT
+    // `ctx.fulfillmentStatus` (the legality guard). Missing order ⇒ orderId:null
+    // ⇒ requireOrderIdForMutation REFUSEs `no_order` BEFORE the legality guard;
+    // and an absent status on this `admin:` plane fails the legality guard closed.
+    return {
+      ctx: {
+        channel: "web",
+        customerId: order?.customerId ?? null,
+        cartId: null,
+        orderId: order === null ? null : orderId,
+        fulfillmentStatus: order?.fulfillmentStatus ?? null,
       },
     };
   }
