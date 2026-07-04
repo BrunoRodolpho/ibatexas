@@ -141,6 +141,16 @@ export {
   type CogsLine,
   type RecipeCogs,
 } from "./services/recipe.service.js"
+// NEW-005 daily specials / promo-of-the-day (ADMIN AUTHORING slice) — plain-CRUD
+// create/list/getForDate/update/remove; manager-gated at the route. The customer-facing
+// menu/web + chat surfacing (rides grounding/claims) is DEFERRED to NEW-038.
+export {
+  createDailySpecialService,
+  type DailySpecialService,
+  type CreateDailySpecialInput,
+  type UpdateDailySpecialPatch,
+  type ListDailySpecialsParams,
+} from "./services/daily-special.service.js"
 export { createLoyaltyService, type LoyaltyService, type LoyaltyServiceOptions } from "./services/loyalty.service.js"
 export {
   loyaltyPolicyBundle,
@@ -299,6 +309,7 @@ export type {
   Ingredient,
   Recipe,
   RecipeIngredient,
+  DailySpecial,
   LoyaltyAccount,
   Conversation,
   ConversationMessage,

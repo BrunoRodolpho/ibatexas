@@ -222,6 +222,28 @@ export type Recipe = Prisma.RecipeModel
  */
 export type RecipeIngredient = Prisma.RecipeIngredientModel
 /**
+ * Model DailySpecial
+ * NEW-005 — a Daily Special (promo-of-the-day): a Medusa finished-good FEATURED for
+ * one restaurant business-day, optionally at a promo price with a pt-BR headline.
+ * ADMIN AUTHORING SLICE — the customer-facing menu/web + chat surfacing (rides
+ * grounding/claims, the harder half) is DEFERRED to NEW-038; this slice is the
+ * manager-gated authoring surface only.
+ * 
+ * `medusaProductId` is a SOFT reference (String, NOT a Prisma relation): products are
+ * Medusa-managed and live in Medusa's own tables, so the domain DB holds only the id
+ * (same idiom as Recipe.medusaProductId). `date` is the local restaurant business-day
+ * this special applies (YYYY-MM-DD), resolved in RESTAURANT_TIMEZONE — a business-day
+ * LABEL, stored as a String (NOT a DateTime), validated at the route (same day-label
+ * idiom as the reporting routes' _date-defaults).
+ * 
+ * `promoPriceCentavos` is the special price in INTEGER CENTAVOS (Hard-Rule #2, never a
+ * float); NULL = featured without a discount. `headline` is an optional pt-BR promo
+ * blurb (Hard-Rule #4, e.g. "Feijoada da casa com 20% off"). Admin-ops authored config
+ * — manager-gated at the route, plain CRUD (NOT kernel-adjudicated). No FK to any other
+ * domain table (the product lives in Medusa).
+ */
+export type DailySpecial = Prisma.DailySpecialModel
+/**
  * Model WeeklySchedule
  * 
  */

@@ -44,6 +44,7 @@ import { tableRoutes } from "./tables.js";
 import { scheduleShiftRoutes } from "./schedule-shifts.js";
 import { ingredientRoutes } from "./ingredients.js";
 import { recipeRoutes } from "./recipes.js";
+import { specialRoutes } from "./specials.js";
 import { deliveryZoneRoutes } from "./delivery-zones.js";
 import { analyticsRoutes } from "./analytics.js";
 import { adminAnalyticsReportRoutes } from "./analytics-reports.js";
@@ -214,6 +215,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
   await server.register(scheduleShiftRoutes);
   await server.register(ingredientRoutes);
   await server.register(recipeRoutes);
+  await server.register(specialRoutes);
   await server.register(deliveryZoneRoutes);
   await server.register(analyticsRoutes);
   await server.register(adminAnalyticsReportRoutes);

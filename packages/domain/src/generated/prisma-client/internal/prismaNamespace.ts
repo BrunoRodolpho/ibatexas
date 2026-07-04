@@ -409,6 +409,7 @@ export const ModelName = {
   Ingredient: 'Ingredient',
   Recipe: 'Recipe',
   RecipeIngredient: 'RecipeIngredient',
+  DailySpecial: 'DailySpecial',
   WeeklySchedule: 'WeeklySchedule',
   Holiday: 'Holiday',
   ScheduleOverride: 'ScheduleOverride',
@@ -432,7 +433,7 @@ export type TypeMap<ExtArgs extends runtime.Types.Extensions.InternalArgs = runt
     omit: GlobalOmitOptions
   }
   meta: {
-    modelProps: "table" | "timeSlot" | "reservation" | "reservationTable" | "waitlist" | "review" | "staff" | "staffShift" | "customer" | "address" | "customerPreferences" | "customerOrderItem" | "orderProjection" | "orderStatusHistory" | "orderEventLog" | "payment" | "paymentStatusHistory" | "orderNote" | "loyaltyAccount" | "conversation" | "conversationMessage" | "deliveryZone" | "ingredient" | "recipe" | "recipeIngredient" | "weeklySchedule" | "holiday" | "scheduleOverride" | "agentRun" | "agentRedTeamRun" | "llmTokenUsage" | "conversationIncident" | "opsAlert"
+    modelProps: "table" | "timeSlot" | "reservation" | "reservationTable" | "waitlist" | "review" | "staff" | "staffShift" | "customer" | "address" | "customerPreferences" | "customerOrderItem" | "orderProjection" | "orderStatusHistory" | "orderEventLog" | "payment" | "paymentStatusHistory" | "orderNote" | "loyaltyAccount" | "conversation" | "conversationMessage" | "deliveryZone" | "ingredient" | "recipe" | "recipeIngredient" | "dailySpecial" | "weeklySchedule" | "holiday" | "scheduleOverride" | "agentRun" | "agentRedTeamRun" | "llmTokenUsage" | "conversationIncident" | "opsAlert"
     txIsolationLevel: TransactionIsolationLevel
   }
   model: {
@@ -2286,6 +2287,80 @@ export type TypeMap<ExtArgs extends runtime.Types.Extensions.InternalArgs = runt
         }
       }
     }
+    DailySpecial: {
+      payload: Prisma.$DailySpecialPayload<ExtArgs>
+      fields: Prisma.DailySpecialFieldRefs
+      operations: {
+        findUnique: {
+          args: Prisma.DailySpecialFindUniqueArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$DailySpecialPayload> | null
+        }
+        findUniqueOrThrow: {
+          args: Prisma.DailySpecialFindUniqueOrThrowArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$DailySpecialPayload>
+        }
+        findFirst: {
+          args: Prisma.DailySpecialFindFirstArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$DailySpecialPayload> | null
+        }
+        findFirstOrThrow: {
+          args: Prisma.DailySpecialFindFirstOrThrowArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$DailySpecialPayload>
+        }
+        findMany: {
+          args: Prisma.DailySpecialFindManyArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$DailySpecialPayload>[]
+        }
+        create: {
+          args: Prisma.DailySpecialCreateArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$DailySpecialPayload>
+        }
+        createMany: {
+          args: Prisma.DailySpecialCreateManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        createManyAndReturn: {
+          args: Prisma.DailySpecialCreateManyAndReturnArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$DailySpecialPayload>[]
+        }
+        delete: {
+          args: Prisma.DailySpecialDeleteArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$DailySpecialPayload>
+        }
+        update: {
+          args: Prisma.DailySpecialUpdateArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$DailySpecialPayload>
+        }
+        deleteMany: {
+          args: Prisma.DailySpecialDeleteManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        updateMany: {
+          args: Prisma.DailySpecialUpdateManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        updateManyAndReturn: {
+          args: Prisma.DailySpecialUpdateManyAndReturnArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$DailySpecialPayload>[]
+        }
+        upsert: {
+          args: Prisma.DailySpecialUpsertArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$DailySpecialPayload>
+        }
+        aggregate: {
+          args: Prisma.DailySpecialAggregateArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.AggregateDailySpecial>
+        }
+        groupBy: {
+          args: Prisma.DailySpecialGroupByArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.DailySpecialGroupByOutputType>[]
+        }
+        count: {
+          args: Prisma.DailySpecialCountArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.DailySpecialCountAggregateOutputType> | number
+        }
+      }
+    }
     WeeklySchedule: {
       payload: Prisma.$WeeklySchedulePayload<ExtArgs>
       fields: Prisma.WeeklyScheduleFieldRefs
@@ -3289,6 +3364,20 @@ export const RecipeIngredientScalarFieldEnum = {
 export type RecipeIngredientScalarFieldEnum = (typeof RecipeIngredientScalarFieldEnum)[keyof typeof RecipeIngredientScalarFieldEnum]
 
 
+export const DailySpecialScalarFieldEnum = {
+  id: 'id',
+  medusaProductId: 'medusaProductId',
+  date: 'date',
+  promoPriceCentavos: 'promoPriceCentavos',
+  headline: 'headline',
+  active: 'active',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+} as const
+
+export type DailySpecialScalarFieldEnum = (typeof DailySpecialScalarFieldEnum)[keyof typeof DailySpecialScalarFieldEnum]
+
+
 export const WeeklyScheduleScalarFieldEnum = {
   id: 'id',
   dayOfWeek: 'dayOfWeek',
@@ -3946,6 +4035,7 @@ export type GlobalOmitConfig = {
   ingredient?: Prisma.IngredientOmit
   recipe?: Prisma.RecipeOmit
   recipeIngredient?: Prisma.RecipeIngredientOmit
+  dailySpecial?: Prisma.DailySpecialOmit
   weeklySchedule?: Prisma.WeeklyScheduleOmit
   holiday?: Prisma.HolidayOmit
   scheduleOverride?: Prisma.ScheduleOverrideOmit
