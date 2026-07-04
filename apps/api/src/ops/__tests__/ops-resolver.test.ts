@@ -7,6 +7,7 @@ import {
   createOpsResolver,
   type OpsResolverDeps,
 } from "../ops-resolver.js";
+import type { ProductCandidate } from "../ops-product-resolution.js";
 
 function opsEnvelope(
   kind: string,
@@ -102,6 +103,157 @@ describe("ops resolver — product.availability.set state", () => {
     expect(resolved!.envelope.taint).toBe("UNTRUSTED");
     expect(resolved!.envelope.nonce).toBe("n-1");
     // Same canonical inputs ⇒ same intentHash.
+    expect(resolved!.envelope.intentHash).toBe(env.intentHash);
+  });
+});
+
+// ── BKL-089 — product NAME→id resolution + payload rewrite ───────────────────
+//
+// When the direct id lookup MISSES and `listProductsByName` is wired, the
+// resolver treats payload.productId as a NAME, resolves it deterministically,
+// and REWRITES productId to the resolved id — the rebuilt envelope's intentHash
+// then covers the RESOLVED payload (the chat-plane BKL-028/061 posture). A
+// none/ambiguous outcome leaves the payload untouched (product stays null).
+
+function candidate(id: string, title: string, status = "published"): ProductCandidate {
+  return { id, title, status };
+}
+
+/** The canonical hash a direct buildEnvelope over the FINAL payload produces —
+ *  same actor/taint/nonce/createdAt as `opsEnvelope`. */
+function hashOver(kind: string, payload: Record<string, unknown>): string {
+  return (
+    buildEnvelope({
+      kind,
+      payload,
+      actor: { principal: "user", sessionId: "admin:staff_1", role: "OWNER" },
+      taint: "UNTRUSTED",
+      nonce: "n-1",
+      createdAt: "2026-07-04T12:00:00.000Z",
+    }) as IntentEnvelope
+  ).intentHash;
+}
+
+describe("ops resolver — product name→id resolution (BKL-089)", () => {
+  it("id lookup MISS → name resolves → payload productId rewritten + product PRESENT", async () => {
+    const listProductsByName = vi.fn(async () => [candidate("prod_42", "Picanha")]);
+    const deps = makeDeps({
+      lookupProduct: vi.fn(async () => null), // direct id lookup misses
+      listProductsByName,
+    });
+    const env = opsEnvelope("product.availability.set", {
+      productId: "picanha",
+      available: false,
+      reason: "acabou",
+    });
+    const [resolved] = await createOpsResolver(deps).resolve(input(env));
+
+    // product PRESENT (from the name resolution) ⇒ requireProductExists passes.
+    expect((resolved!.state as { product: unknown }).product).toEqual({
+      id: "prod_42",
+      status: "published",
+    });
+    // productId REWRITTEN to the resolved id; every other field preserved.
+    expect(resolved!.envelope.payload).toEqual({
+      productId: "prod_42",
+      available: false,
+      reason: "acabou",
+    });
+    expect(listProductsByName).toHaveBeenCalledTimes(1);
+  });
+
+  it("the rebuilt intentHash covers the REWRITTEN payload (not the original name)", async () => {
+    const deps = makeDeps({
+      lookupProduct: vi.fn(async () => null),
+      listProductsByName: vi.fn(async () => [candidate("prod_42", "Picanha")]),
+    });
+    const env = opsEnvelope("product.availability.set", {
+      productId: "picanha",
+      available: false,
+      reason: "acabou",
+    });
+    const [resolved] = await createOpsResolver(deps).resolve(input(env));
+
+    // Equals a direct buildEnvelope over the FINAL (resolved) payload …
+    expect(resolved!.envelope.intentHash).toBe(
+      hashOver("product.availability.set", {
+        productId: "prod_42",
+        available: false,
+        reason: "acabou",
+      }),
+    );
+    // … and DIFFERS from the original name-payload hash (the payload changed).
+    expect(resolved!.envelope.intentHash).not.toBe(env.intentHash);
+  });
+
+  it("resolution NEVER touches the envelope actor/taint/nonce (adversarial pin)", async () => {
+    const deps = makeDeps({
+      lookupProduct: vi.fn(async () => null),
+      listProductsByName: vi.fn(async () => [candidate("prod_42", "Picanha")]),
+    });
+    const env = opsEnvelope("product.availability.set", {
+      productId: "picanha",
+      available: true,
+    });
+    const [resolved] = await createOpsResolver(deps).resolve(input(env));
+    expect(resolved!.envelope.actor).toEqual(env.actor);
+    expect(resolved!.envelope.taint).toBe("UNTRUSTED");
+    expect(resolved!.envelope.nonce).toBe("n-1");
+  });
+
+  it("AMBIGUOUS name → payload UNTOUCHED + product:null (honest REFUSE)", async () => {
+    const deps = makeDeps({
+      lookupProduct: vi.fn(async () => null),
+      listProductsByName: vi.fn(async () => [
+        candidate("prod_1", "Coca-Cola Lata"),
+        candidate("prod_2", "Coca-Cola Zero"),
+      ]),
+    });
+    const env = opsEnvelope("product.availability.set", {
+      productId: "coca-cola",
+      available: false,
+    });
+    const [resolved] = await createOpsResolver(deps).resolve(input(env));
+    expect((resolved!.state as { product: unknown }).product).toBeNull();
+    // Payload unchanged ⇒ same canonical hash as the original.
+    expect(resolved!.envelope.payload).toEqual({ productId: "coca-cola", available: false });
+    expect(resolved!.envelope.intentHash).toBe(env.intentHash);
+  });
+
+  it("NONE (no match) → payload UNTOUCHED + product:null", async () => {
+    const deps = makeDeps({
+      lookupProduct: vi.fn(async () => null),
+      listProductsByName: vi.fn(async () => [candidate("prod_1", "Picanha")]),
+    });
+    const env = opsEnvelope("product.availability.set", {
+      productId: "brisket",
+      available: false,
+    });
+    const [resolved] = await createOpsResolver(deps).resolve(input(env));
+    expect((resolved!.state as { product: unknown }).product).toBeNull();
+    expect(resolved!.envelope.payload).toEqual({ productId: "brisket", available: false });
+  });
+
+  it("direct id lookup HIT → name resolver NOT consulted (id-literal path intact)", async () => {
+    const listProductsByName = vi.fn(async () => [candidate("prod_x", "Other")]);
+    const deps = makeDeps({
+      lookupProduct: vi.fn(async () => ({ id: "prod_1", status: "published" })),
+      listProductsByName,
+    });
+    const env = opsEnvelope("product.availability.set", { productId: "prod_1", available: false });
+    const [resolved] = await createOpsResolver(deps).resolve(input(env));
+    expect((resolved!.state as { product: { id: string } }).product.id).toBe("prod_1");
+    expect(resolved!.envelope.payload).toEqual({ productId: "prod_1", available: false });
+    expect(listProductsByName).not.toHaveBeenCalled();
+  });
+
+  it("no name-resolver wired (v1) → MISS stays product:null, payload untouched", async () => {
+    // makeDeps omits listProductsByName ⇒ byte-identical to the id-literal v1.
+    const deps = makeDeps({ lookupProduct: vi.fn(async () => null) });
+    const env = opsEnvelope("product.availability.set", { productId: "picanha", available: false });
+    const [resolved] = await createOpsResolver(deps).resolve(input(env));
+    expect((resolved!.state as { product: unknown }).product).toBeNull();
+    expect(resolved!.envelope.payload).toEqual({ productId: "picanha", available: false });
     expect(resolved!.envelope.intentHash).toBe(env.intentHash);
   });
 });

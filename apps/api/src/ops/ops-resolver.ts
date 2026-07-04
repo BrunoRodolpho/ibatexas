@@ -8,21 +8,28 @@
 //   - product.availability.set → { ctx: {channel:"staff", customerId:null,
 //       staffId, tenantId}, product: <lookup by payload.productId> | null }.
 //       pack-ops `requireProductExists` REFUSEs `product_not_found` on null.
+//       BKL-089: when the direct id lookup MISSES and `listProductsByName` is
+//       wired, the productId string is treated as a NAME and resolved
+//       deterministically (ops-product-resolution.ts); a UNIQUE match REWRITES
+//       payload.productId to the resolved id (the rebuilt envelope's intentHash
+//       then covers the resolved payload) and projects `product` PRESENT.
 //   - order.note.add → the pack-orders `OrderState` (mirrors `adjudicateAdminNote`
 //       in routes/admin/_shared-actions.ts), projected from the order projection.
 //       A missing order yields a state with `ctx.orderId: null` so pack-orders'
 //       `requireOrderIdForMutation` REFUSEs `no_order` (never a thrown turn).
 //
-// The envelope is REBUILT via `buildEnvelope` with the SAME kind/payload/actor/
-// taint/nonce/createdAt (mirrors ibatexas-resolver.ts), so the kernel's
-// intentHash re-derivation passes and the actor/taint the planner stamped
-// (`admin:<staffId>` + role, UNTRUSTED) are preserved verbatim — the ops
-// authority the composed `staffRoleGuard` gates on is unchanged.
+// The envelope is REBUILT via `buildEnvelope` with the SAME kind/actor/taint/
+// nonce/createdAt (mirrors ibatexas-resolver.ts) and the FINAL payload (the
+// BKL-089 name-resolution rewrite when it fired, else the envelope's own payload
+// verbatim), so the kernel's intentHash re-derivation passes and the actor/taint
+// the planner stamped (`admin:<staffId>` + role, UNTRUSTED) are preserved
+// verbatim — the ops authority the composed `staffRoleGuard` gates on is
+// unchanged, and NL→id resolution never influences the actor.
 //
-// v1 posture: there is NO NL→id resolution for orders here (the chat plane's
-// resolve-and-assemble is customer-scoped and not reused). A `payload.orderId`
-// that is not a real id resolves to null → an honest REFUSE. NL→id order
-// resolution on the ops plane is a registered follow-up.
+// v1 posture: NL→id resolution covers PRODUCTS only (BKL-089 product scope). A
+// `payload.orderId` that is not a real id still resolves to null → an honest
+// REFUSE; NL→id ORDER resolution on the ops plane ("o pedido da Maria") is the
+// registered BKL-089 orders-scope follow-up.
 //
 // The two lookups are INJECTED (testable with fakes) and FAIL-CLOSED: a lookup
 // throw is captured and treated as "not found" (never propagated), so a
@@ -31,6 +38,10 @@
 import { buildEnvelope, type IntentEnvelope } from "@adjudicate/core";
 import type { ResolvedEnvelope, ResolverPort } from "@claustrum/core";
 import { logger } from "../lib/logger.js";
+import {
+  resolveProductByName,
+  type ListProductsByName,
+} from "./ops-product-resolution.js";
 
 /** The product snapshot the pack-ops `requireProductExists` guard reads. */
 export interface OpsResolverProduct {
@@ -71,6 +82,31 @@ export interface OpsResolverDeps {
    * a THROW is treated as null (fail-closed → REFUSE no_order).
    */
   readonly lookupOrder: (orderId: string) => Promise<OpsResolverOrder | null>;
+  /**
+   * OPTIONAL deterministic product NAME→id resolution (BKL-089, product scope).
+   * When the direct `lookupProduct(payload.productId)` MISSES (the model put a
+   * NAME into `productId`, not an id — the persona's guidance when it has no id),
+   * the resolver searches the first-party admin catalog by that name and, on a
+   * UNIQUE deterministic match, REWRITES `payload.productId` to the resolved id
+   * and rebuilds the envelope — so the kernel adjudicates the RESOLVED payload
+   * against the PRESENT product state (the intentHash covers the final payload,
+   * the chat-plane BKL-028/061 posture). A none/ambiguous outcome leaves the
+   * payload untouched ⇒ product stays null ⇒ honest kernel REFUSE. When this dep
+   * is ABSENT the resolver is byte-identical to the id-literal v1 (no NL→id).
+   */
+  readonly listProductsByName?: ListProductsByName;
+}
+
+/**
+ * The per-envelope resolution: the projected kernel `state` (undefined ⇒ no
+ * per-envelope state) plus an OPTIONAL rewritten `payload`. The payload is set
+ * ONLY when the availability name-resolution rewrote `productId` (BKL-089);
+ * every other kind leaves it unset so the rebuild uses `envelope.payload`
+ * verbatim (byte-identical hash).
+ */
+interface OpsEnvelopeResolution {
+  readonly state?: unknown;
+  readonly payload?: Record<string, unknown>;
 }
 
 /** Fail-closed lookup: a throw degrades to null (logged), never propagated. */
@@ -90,32 +126,90 @@ async function safeLookup<T>(
 }
 
 /**
- * Build the per-kind ops `SystemState` for one planned envelope. Returns
- * `undefined` for an unrecognized kind so the loop falls back to the turn's
- * `resolution.state` (the composed router still REFUSEs an off-surface kind via
- * `staffRoleGuard`'s de-vacuum, so this never widens authority).
+ * Resolve the availability target: direct id lookup first; on a MISS, the
+ * BKL-089 deterministic name→id resolution (when wired). Returns the resolved
+ * product snapshot (null ⇒ REFUSE product_not_found) and, when a name resolved,
+ * the rewritten payload (productId ← resolved id; NOTHING else changes).
+ */
+async function resolveAvailabilityTarget(
+  deps: OpsResolverDeps,
+  payload: Record<string, unknown>,
+): Promise<{ product: OpsResolverProduct | null; payload?: Record<string, unknown> }> {
+  const productId =
+    typeof payload.productId === "string" ? payload.productId : "";
+  const direct =
+    productId === ""
+      ? null
+      : await safeLookup(() => deps.lookupProduct(productId), "product");
+  if (direct !== null || productId === "" || deps.listProductsByName === undefined) {
+    return { product: direct };
+  }
+
+  // Direct id lookup MISSED and a name-resolver is wired: treat the productId
+  // string as a NAME candidate (the persona fills productId with the product
+  // name when it has no id). A UNIQUE deterministic match rewrites the payload's
+  // productId to the resolved id; none/ambiguous leaves the payload untouched
+  // (→ product stays null → honest REFUSE product_not_found).
+  const resolution = await resolveProductByName(productId, deps.listProductsByName);
+  if (resolution.kind === "resolved") {
+    logger.info(
+      {
+        component: "ops-resolver",
+        event: "product.availability.name_resolved",
+        from: productId,
+        to: resolution.product.id,
+      },
+      "ops product name resolved to id (payload productId rewritten before adjudication)",
+    );
+    return {
+      product: { id: resolution.product.id, status: resolution.product.status },
+      payload: { ...payload, productId: resolution.product.id },
+    };
+  }
+  logger.info(
+    {
+      component: "ops-resolver",
+      event: "product.availability.name_unresolved",
+      from: productId,
+      outcome: resolution.kind,
+      ...(resolution.kind === "ambiguous"
+        ? { candidateCount: resolution.candidates.length }
+        : {}),
+    },
+    "ops product name did not resolve to a unique id (kernel will REFUSE product_not_found)",
+  );
+  return { product: null };
+}
+
+/**
+ * Build the per-kind ops `SystemState` for one planned envelope, plus an
+ * OPTIONAL rewritten payload (BKL-089 availability name-resolution). Returns
+ * `state: undefined` for an unrecognized kind so the loop falls back to the
+ * turn's `resolution.state` (the composed router still REFUSEs an off-surface
+ * kind via `staffRoleGuard`'s de-vacuum, so this never widens authority).
  */
 async function opsStateForEnvelope(
   deps: OpsResolverDeps,
   envelope: IntentEnvelope,
-): Promise<unknown> {
+): Promise<OpsEnvelopeResolution> {
   const payload = (envelope.payload ?? {}) as Record<string, unknown>;
 
   if (envelope.kind === "product.availability.set") {
-    const productId =
-      typeof payload.productId === "string" ? payload.productId : "";
-    const product =
-      productId === ""
-        ? null
-        : await safeLookup(() => deps.lookupProduct(productId), "product");
+    const { product, payload: rewritten } = await resolveAvailabilityTarget(
+      deps,
+      payload,
+    );
     return {
-      ctx: {
-        channel: "staff",
-        customerId: null,
-        staffId: deps.staffId,
-        tenantId: deps.tenantId,
+      state: {
+        ctx: {
+          channel: "staff",
+          customerId: null,
+          staffId: deps.staffId,
+          tenantId: deps.tenantId,
+        },
+        product,
       },
-      product,
+      ...(rewritten ? { payload: rewritten } : {}),
     };
   }
 
@@ -128,14 +222,16 @@ async function opsStateForEnvelope(
     // Mirror adjudicateAdminNote's noteOrderState (the proven admin-note state).
     // Missing order ⇒ orderId:null ⇒ requireOrderIdForMutation REFUSEs no_order.
     return {
-      ctx: {
-        channel: "web",
-        customerId: order?.customerId ?? null,
-        cartId: null,
-        orderId: order === null ? null : orderId,
-        paymentMethod: order?.paymentMethod ?? null,
-        paymentStatus: order?.paymentStatus ?? null,
-        totalInCentavos: order?.totalInCentavos ?? 0,
+      state: {
+        ctx: {
+          channel: "web",
+          customerId: order?.customerId ?? null,
+          cartId: null,
+          orderId: order === null ? null : orderId,
+          paymentMethod: order?.paymentMethod ?? null,
+          paymentStatus: order?.paymentStatus ?? null,
+          totalInCentavos: order?.totalInCentavos ?? 0,
+        },
       },
     };
   }
@@ -152,19 +248,21 @@ async function opsStateForEnvelope(
     // ⇒ requireOrderIdForMutation REFUSEs `no_order` BEFORE the legality guard;
     // and an absent status on this `admin:` plane fails the legality guard closed.
     return {
-      ctx: {
-        channel: "web",
-        customerId: order?.customerId ?? null,
-        cartId: null,
-        orderId: order === null ? null : orderId,
-        fulfillmentStatus: order?.fulfillmentStatus ?? null,
+      state: {
+        ctx: {
+          channel: "web",
+          customerId: order?.customerId ?? null,
+          cartId: null,
+          orderId: order === null ? null : orderId,
+          fulfillmentStatus: order?.fulfillmentStatus ?? null,
+        },
       },
     };
   }
 
   // Unrecognized kind — no per-envelope state (falls back to resolution.state;
   // the composed router REFUSEs an off-surface staff kind regardless).
-  return undefined;
+  return {};
 }
 
 /**
@@ -177,12 +275,15 @@ export function createOpsResolver(deps: OpsResolverDeps): ResolverPort {
     async resolve({ plan }): Promise<ReadonlyArray<ResolvedEnvelope>> {
       const out: ResolvedEnvelope[] = [];
       for (const env of plan.envelopes) {
-        const state = await opsStateForEnvelope(deps, env);
+        const { state, payload } = await opsStateForEnvelope(deps, env);
         // Rebuild with the SAME actor/taint/nonce/createdAt so the intentHash is
         // canonical and the ops authority (admin:<staffId> + role) is preserved.
+        // `payload` is the BKL-089 name-resolution rewrite when it fired (the
+        // hash then covers the RESOLVED productId); otherwise the envelope's own
+        // payload is used verbatim (byte-identical rebuild, unchanged hash).
         const rebuilt = buildEnvelope({
           kind: env.kind,
-          payload: env.payload ?? {},
+          payload: payload ?? env.payload ?? {},
           actor: env.actor,
           taint: env.taint,
           nonce: env.nonce,
