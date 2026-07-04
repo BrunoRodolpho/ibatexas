@@ -19,6 +19,7 @@
   "dependencies": {
     "@adjudicate/pack-payments-pix": "^0.3.0",
     "@ibatexas/pack-customer-onboarding": "workspace:*",
+    "@ibatexas/pack-ops": "workspace:*",
     "@ibatexas/pack-orders": "workspace:*",
     "@ibatexas/pack-payments": "workspace:*",
     "@ibatexas/pack-reservations": "workspace:*",

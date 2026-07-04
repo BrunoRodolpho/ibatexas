@@ -15,7 +15,7 @@ import { describe, expect, it } from "vitest";
 import type { Capsule } from "@claustrum/core";
 import type { CapabilityPlanner } from "@adjudicate/core/llm";
 import { Channel } from "@ibatexas/types";
-// P0-8: the five first-party packs are named in exactly ONE site — the
+// P0-8: the six first-party packs are named in exactly ONE site — the
 // composed package. This test consumes the same composition boot does.
 import {
   IBATEXAS_COMPOSED_CAPABILITY_PLANNERS,
@@ -188,9 +188,9 @@ describe("P0-7 — context-aware roster drift", () => {
     expect(runBootDrift().problems).toEqual([]);
   });
 
-  it("composes the five first-party packs (guards a hollowed composition)", () => {
-    expect(IBATEXAS_COMPOSED_PACKS).toHaveLength(5);
-    expect(IBATEXAS_COMPOSED_CAPABILITY_PLANNERS).toHaveLength(5);
+  it("composes the six first-party packs (guards a hollowed composition)", () => {
+    expect(IBATEXAS_COMPOSED_PACKS).toHaveLength(6);
+    expect(IBATEXAS_COMPOSED_CAPABILITY_PLANNERS).toHaveLength(6);
   });
 
   // The staff-chat exception: reservation.checkin/complete are STAFF-ROUTE-ONLY
@@ -207,6 +207,9 @@ describe("P0-7 — context-aware roster drift", () => {
     );
     expect(advertised.has("reservation.checkin")).toBe(true);
     expect(advertised.has("reservation.complete")).toBe(true);
+    // NEW-032 slice C1: the ops planner advertises product.availability.set
+    // under the staff probe — proves the whitelist entry is non-vacuous.
+    expect(advertised.has("product.availability.set")).toBe(true);
   });
 
   it("whitelists reservation.checkin/complete under the staff context (no drift)", () => {

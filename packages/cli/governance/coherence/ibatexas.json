@@ -33,6 +33,17 @@
       ]
     },
     {
+      "packId": "ibatexas/pack-ops",
+      "packVersion": "1.0.0",
+      "passed": true,
+      "summary": {
+        "error": 0,
+        "warning": 0,
+        "note": 0
+      },
+      "diagnostics": []
+    },
+    {
       "packId": "ibatexas/pack-orders",
       "packVersion": "1.1.0",
       "passed": true,

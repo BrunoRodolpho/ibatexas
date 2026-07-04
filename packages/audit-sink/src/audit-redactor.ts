@@ -411,6 +411,12 @@ export const INTENT_KIND_FIELD_RULES: Readonly<Record<string, ReadonlyArray<stri
   "customer.anonymize": ["reason", "otpToken"],
   "customer.anonymize.cancel": ["reason", "otpToken"],
 
+  // ── Ops Pack free-form fields (NEW-032 slice C1) ───────────────────────
+  // `ProductAvailabilitySetPayload` is bounded (productId opaque id +
+  // available boolean) EXCEPT the optional free-form `reason` operator note.
+  // Over-redact `reason` — same posture as order/payment status-transition.
+  "product.availability.set": ["reason"],
+
   // ── Wrapper-level intent kinds (audit-2026-05-25 I3) ────────────────────
   // The 4 wrapper meta types (twilio/stripe/medusa/medusa-store) emit
   // intent kinds OUTSIDE KNOWN_INTENT_KINDS per the D10 policy

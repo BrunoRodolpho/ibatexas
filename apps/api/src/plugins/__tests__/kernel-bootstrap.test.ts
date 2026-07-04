@@ -1,7 +1,7 @@
 // kernel-bootstrap.test.ts — always-on kernel boot guarantees.
 //
 // Coverage:
-//   - bootstrapKernel installs all 5 first-party Packs
+//   - bootstrapKernel installs all 6 first-party Packs
 //   - assertPackCoverage throws when a KNOWN_INTENT_KINDS entry is
 //     not declared by any installed Pack
 //   - assertAuditPostgresReady throws cleanly when intent_audit is
@@ -9,6 +9,7 @@
 
 import { afterEach, describe, expect, it } from "vitest"
 import { customerOnboardingPack } from "@ibatexas/pack-customer-onboarding"
+import { opsPack } from "@ibatexas/pack-ops"
 import { ordersPack } from "@ibatexas/pack-orders"
 import { paymentsPack } from "@ibatexas/pack-payments"
 import { paymentsPixPack } from "@adjudicate/pack-payments-pix"
@@ -79,6 +80,7 @@ describe("assertPackCoverage — real boot roster", () => {
     { pack: whatsappPack },
     { pack: customerOnboardingPack },
     { pack: paymentsPack },
+    { pack: opsPack },
     { pack: paymentsPixPack },
   ]
 

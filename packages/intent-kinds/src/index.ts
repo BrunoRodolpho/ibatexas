@@ -44,6 +44,7 @@
 // D10 for rationale.
 
 import type { CustomerOnboardingIntentKind } from "@ibatexas/pack-customer-onboarding"
+import type { OpsIntentKind } from "@ibatexas/pack-ops"
 import type { OrderIntentKind } from "@ibatexas/pack-orders"
 import type { PaymentIntentKind } from "@ibatexas/pack-payments"
 import type { ReservationIntentKind } from "@ibatexas/pack-reservations"
@@ -174,6 +175,17 @@ const CUSTOMER_ONBOARDING_INTENT_KINDS = [
   "customer.anonymize.cancel",
 ] as const satisfies readonly CustomerOnboardingIntentKind[]
 
+// ── Pack-ops intent surface (NEW — NEW-032 slice C1) ────────────────────────
+//
+// Mirrors `OpsIntentKind` in `packages/pack-ops/src/types.ts`. First-party
+// staff-plane ops verb — belongs in KNOWN_INTENT_KINDS (unlike the `medusa.*`
+// egress kinds deliberately excluded above). Chat-INVISIBLE by construction
+// (advertised only to a staff session; never in CHAT_DRIVABLE_TOOL_KINDS).
+
+const OPS_INTENT_KINDS = [
+  "product.availability.set",
+] as const satisfies readonly OpsIntentKind[]
+
 // ── Combined set ─────────────────────────────────────────────────────────────
 //
 // `validateEnforceConfig` accepts any `ReadonlySet<string>` — widening to
@@ -187,7 +199,8 @@ const CUSTOMER_ONBOARDING_INTENT_KINDS = [
 //  + 3 (pix-payments)
 //  + 17 (pack-payments, new W5-1)
 //  + 8 (customer-onboarding)
-//  = 63 distinct kinds, ≥60 target met.
+//  + 1 (pack-ops, NEW-032 slice C1 — product.availability.set)
+//  = 64 distinct kinds, ≥60 target met.
 //
 // Future Pack growth (`@ibatexas/pack-auth`, `@ibatexas/pack-loyalty`,
 // `@ibatexas/pack-ops`) extends this set from inside their own modules.
@@ -212,5 +225,6 @@ export const KNOWN_INTENT_KINDS: ReadonlySet<string> = new Set<string>([
   ...PIX_INTENT_KINDS,
   ...PAYMENT_INTENT_KINDS,
   ...CUSTOMER_ONBOARDING_INTENT_KINDS,
+  ...OPS_INTENT_KINDS,
   ...LOYALTY_INTENT_KINDS,
 ])

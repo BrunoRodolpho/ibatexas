@@ -194,7 +194,7 @@ import {
 } from "@adjudicate/core/kernel";
 import { createIbatexasMetricsSink } from "./observability/metrics-sink.js";
 import { logger } from "./lib/logger.js";
-// The five first-party packs are named in exactly ONE site —
+// The six first-party packs are named in exactly ONE site —
 // @ibatexas/packs-composed (a workspace package, so the CLI/journeys gates
 // can consume the same composition; an apps/api export is unreachable from
 // packages/*). The pix lifecycle pack is the platform adopter pack (ADR #13),
@@ -889,7 +889,7 @@ function installFirstPartyPacks(): SealablePackInput[] {
   // installPack is the kernel-side variant; the runtime never reaches in to
   // mutate the registry — it's a one-time boot step.
   //
-  // The five first-party packs come from the single composition site
+  // The six first-party packs come from the single composition site
   // (@ibatexas/packs-composed) plus the platform pix adopter pack. A pack
   // that fails to install (conformance drift, double-install) is logged and
   // skipped — the F5 seal gate catches a pinned pack that did not install.

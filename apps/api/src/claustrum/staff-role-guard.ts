@@ -115,7 +115,7 @@ export function createStaffRoleGuard(
     const kind = envelope.kind;
 
     // De-vacuum: the matrix IS the authoritative staff-plane verb surface. An
-    // `admin:` envelope whose kind is outside the seven is a forged / drifted
+    // `admin:` envelope whose kind is outside the matrix is a forged / drifted
     // staff-plane verb — fail closed.
     if (!staffPlaneKinds.has(kind)) {
       return decisionRefuse(

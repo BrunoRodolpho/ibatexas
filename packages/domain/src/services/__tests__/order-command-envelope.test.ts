@@ -483,6 +483,95 @@ describe("OrderCommandService — envelope-typed entry points", () => {
     })
   })
 
+  // ── writeAdjudicatedNote (BKL-083 extraction) ─────────────────────────
+
+  describe("writeAdjudicatedNote — the post-adjudication write body (BKL-083 option b)", () => {
+    it("persists the note WITHOUT adjudicating (caller already holds a positive Decision)", async () => {
+      const svc = createOrderCommandService()
+      mockNoteCreate.mockResolvedValue({ id: "note_99" })
+
+      const result = await svc.writeAdjudicatedNote(
+        { orderId: "order_01", body: "86 na costela" },
+        { author: "staff", authorId: "staff_1" },
+      )
+
+      // Same result shape as the addNoteFromEnvelope EXECUTE branch.
+      expect(result).toEqual({ noteId: "note_99", orderId: "order_01" })
+      expect(mockNoteCreate).toHaveBeenCalledOnce()
+      // Author mapping preserved: staff → admin (Prisma OrderActor enum).
+      expect(mockNoteCreate.mock.calls[0]![0]).toEqual({
+        data: {
+          orderId: "order_01",
+          author: "admin",
+          authorId: "staff_1",
+          content: "86 na costela",
+        },
+      })
+    })
+
+    it("maps llm → system and threads isInternal through", async () => {
+      const svc = createOrderCommandService()
+      mockNoteCreate.mockResolvedValue({ id: "note_100" })
+
+      await svc.writeAdjudicatedNote(
+        { orderId: "order_02", body: "nota interna", isInternal: true },
+        { author: "llm" },
+      )
+
+      expect(mockNoteCreate.mock.calls[0]![0]).toEqual({
+        data: {
+          orderId: "order_02",
+          author: "system",
+          authorId: undefined,
+          content: "nota interna",
+          isInternal: true,
+        },
+      })
+    })
+
+    it("addNoteFromEnvelope delegates to the same write body on EXECUTE", async () => {
+      const svc = createOrderCommandService()
+      mockNoteCreate.mockResolvedValue({ id: "note_delegated" })
+
+      const orderState: OrderState = {
+        ctx: {
+          channel: "whatsapp",
+          customerId: "cust_01",
+          cartId: null,
+          orderId: "order_03",
+        },
+      }
+      const envelope = buildEnvelope({
+        kind: "order.note.add" as const,
+        payload: { orderId: "order_03", body: "via envelope" },
+        nonce: randomUUID(),
+        actor: llmActor(),
+        taint: "UNTRUSTED",
+      })
+
+      const outcome = await svc.addNoteFromEnvelope(envelope, orderState, {
+        author: "customer",
+        authorId: "cust_01",
+      })
+
+      expect(outcome.decision.kind).toBe("EXECUTE")
+      // Delegated to writeAdjudicatedNote → same result shape + single write.
+      expect(outcome.result).toEqual({
+        noteId: "note_delegated",
+        orderId: "order_03",
+      })
+      expect(mockNoteCreate).toHaveBeenCalledOnce()
+      expect(mockNoteCreate.mock.calls[0]![0]).toEqual({
+        data: {
+          orderId: "order_03",
+          author: "customer",
+          authorId: "cust_01",
+          content: "via envelope",
+        },
+      })
+    })
+  })
+
   // ── switchTypeFromEnvelope (consolidation #2) ─────────────────────────
 
   describe("switchTypeFromEnvelope — replaces packages/tools/src/cart/switch-order-type.ts direct write", () => {
