@@ -176,6 +176,8 @@ function buildDeps(opts: {
   writeAdjudicatedNote: ReturnType<typeof vi.fn>;
   /** POST-adjudication kitchen-advance writer (BKL-090). */
   writeAdjudicatedStatusTransition?: ReturnType<typeof vi.fn>;
+  /** order.status_changed publisher spy (BKL-090). */
+  publishOrderStatusChanged?: ReturnType<typeof vi.fn>;
   product: { id: string; status: string } | null;
   /** The order the resolver projects for order.note.add / order.status.transition;
    *  null ⇒ order-missing. */
@@ -189,6 +191,7 @@ function buildDeps(opts: {
       writeAdjudicatedStatusTransition:
         opts.writeAdjudicatedStatusTransition ?? vi.fn(),
     },
+    publishOrderStatusChanged: opts.publishOrderStatusChanged ?? vi.fn(),
   });
   return {
     adjudicator: realKernelAdjudicator,
@@ -506,16 +509,25 @@ function transitionCall(orderId: string, newStatus: string) {
   };
 }
 
-/** A typed transition-writer spy carrying the [payload, extras] tuple. */
+/** A typed transition-writer spy carrying the [payload, extras] tuple. Returns
+ *  the WIDE result (displayId/customerId from the projection row). */
 function transitionWriterSpy() {
   return vi.fn(
     async (
       _payload: { orderId: string; newStatus: string; expectedVersion?: number },
       _extras: { actor: string; actorId?: string; reason?: string },
-    ): Promise<{ version: number; previousStatus: string; newStatus: string }> => ({
+    ): Promise<{
+      version: number;
+      previousStatus: string;
+      newStatus: string;
+      displayId: number;
+      customerId: string | null;
+    }> => ({
       version: 4,
       previousStatus: "preparing",
       newStatus: "ready",
+      displayId: 777,
+      customerId: "cust_1",
     }),
   );
 }
@@ -532,14 +544,18 @@ function orderAt(fulfillmentStatus: string): FakeOpsOrder {
 }
 
 describe("ops conductor — order.status.transition reachable end-to-end (BKL-090)", () => {
-  it("ATTENDANT 'avança o pedido' legal (preparing→ready) → EXECUTE; write runs with actor=admin + Capsule staffId", async () => {
+  it("ATTENDANT 'avança o pedido' legal (preparing→ready) → EXECUTE; write runs with actor=admin + Capsule staffId; order.status_changed emitted", async () => {
     const writeAdjudicatedStatusTransition = transitionWriterSpy();
+    const publishOrderStatusChanged = vi.fn(
+      async (_event: import("@ibatexas/types").OrderStatusChangedEvent) => {},
+    );
     const { model } = scriptedModel([transitionCall("order_1", "ready")]);
     const deps = buildDeps({
       model,
       medusaAdjudicated: vi.fn(),
       writeAdjudicatedNote: vi.fn(),
       writeAdjudicatedStatusTransition,
+      publishOrderStatusChanged,
       product: null,
       order: orderAt("preparing"),
     });
@@ -555,6 +571,19 @@ describe("ops conductor — order.status.transition reachable end-to-end (BKL-09
     expect(payload).toEqual({ orderId: "order_1", newStatus: "ready" });
     expect(extras.actor).toBe("admin");
     expect(extras.actorId).toBe("staff_9");
+    // The downstream customer-notify/event-log/reconcile fan-out fires: the SAME
+    // order.status_changed the admin advance route emits, with projection-sourced
+    // displayId/customerId (never the model).
+    expect(publishOrderStatusChanged).toHaveBeenCalledTimes(1);
+    expect(publishOrderStatusChanged.mock.calls[0]![0]).toMatchObject({
+      orderId: "order_1",
+      displayId: 777,
+      customerId: "cust_1",
+      previousStatus: "preparing",
+      newStatus: "ready",
+      updatedBy: "admin",
+      version: 4,
+    });
   });
 
   it("OWNER legal advance → EXECUTE (matrix permits all 3 roles for order.status.transition)", async () => {
@@ -573,14 +602,16 @@ describe("ops conductor — order.status.transition reachable end-to-end (BKL-09
     expect(writeAdjudicatedStatusTransition).toHaveBeenCalledTimes(1);
   });
 
-  it("ILLEGAL transition (confirmed→delivered) → REFUSE order.status.transition_illegal; the write NEVER runs", async () => {
+  it("ILLEGAL transition (confirmed→delivered) → REFUSE order.status.transition_illegal; write + emit NEVER run", async () => {
     const writeAdjudicatedStatusTransition = transitionWriterSpy();
+    const publishOrderStatusChanged = vi.fn(async () => {});
     const { model } = scriptedModel([transitionCall("order_1", "delivered")]);
     const deps = buildDeps({
       model,
       medusaAdjudicated: vi.fn(),
       writeAdjudicatedNote: vi.fn(),
       writeAdjudicatedStatusTransition,
+      publishOrderStatusChanged,
       product: null,
       order: orderAt("confirmed"),
     });
@@ -595,16 +626,19 @@ describe("ops conductor — order.status.transition reachable end-to-end (BKL-09
       expect(out.refusal.code).toBe("order.status.transition_illegal");
     }
     expect(writeAdjudicatedStatusTransition).not.toHaveBeenCalled();
+    expect(publishOrderStatusChanged).not.toHaveBeenCalled();
   });
 
-  it("TERMINAL current state (delivered→preparing) → REFUSE order.status.terminal; the write NEVER runs", async () => {
+  it("TERMINAL current state (delivered→preparing) → REFUSE order.status.terminal; write + emit NEVER run", async () => {
     const writeAdjudicatedStatusTransition = transitionWriterSpy();
+    const publishOrderStatusChanged = vi.fn(async () => {});
     const { model } = scriptedModel([transitionCall("order_1", "preparing")]);
     const deps = buildDeps({
       model,
       medusaAdjudicated: vi.fn(),
       writeAdjudicatedNote: vi.fn(),
       writeAdjudicatedStatusTransition,
+      publishOrderStatusChanged,
       product: null,
       order: orderAt("delivered"),
     });
@@ -619,16 +653,19 @@ describe("ops conductor — order.status.transition reachable end-to-end (BKL-09
       expect(out.refusal.code).toBe("order.status.terminal");
     }
     expect(writeAdjudicatedStatusTransition).not.toHaveBeenCalled();
+    expect(publishOrderStatusChanged).not.toHaveBeenCalled();
   });
 
-  it("order missing → REFUSE (no_order); the write NEVER runs", async () => {
+  it("order missing → REFUSE (no_order); write + emit NEVER run", async () => {
     const writeAdjudicatedStatusTransition = transitionWriterSpy();
+    const publishOrderStatusChanged = vi.fn(async () => {});
     const { model } = scriptedModel([transitionCall("ghost", "ready")]);
     const deps = buildDeps({
       model,
       medusaAdjudicated: vi.fn(),
       writeAdjudicatedNote: vi.fn(),
       writeAdjudicatedStatusTransition,
+      publishOrderStatusChanged,
       product: null,
       order: null, // resolver ⇒ ctx.orderId:null ⇒ requireOrderIdForMutation REFUSE
     });
@@ -640,5 +677,6 @@ describe("ops conductor — order.status.transition reachable end-to-end (BKL-09
     );
     expect(out.kind).toBe("REFUSE");
     expect(writeAdjudicatedStatusTransition).not.toHaveBeenCalled();
+    expect(publishOrderStatusChanged).not.toHaveBeenCalled();
   });
 });

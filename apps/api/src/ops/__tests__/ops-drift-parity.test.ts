@@ -22,8 +22,11 @@ const REGISTRY_DEPS: OpsToolRegistryDeps = {
       version: 2,
       previousStatus: "preparing",
       newStatus: "ready",
+      displayId: 1,
+      customerId: null,
     }),
   },
+  publishOrderStatusChanged: async () => {},
 };
 
 const OPS_TOOLS = listOpsToolDefinitions(REGISTRY_DEPS);

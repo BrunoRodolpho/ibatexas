@@ -2487,6 +2487,19 @@ export async function bootstrapClaustrum(
     medusaAdjudicated,
     auditSink,
     orderCmdSvc: createOrderCommandService(),
+    // BKL-090 — the ops kitchen-advance emits order.status_changed after its
+    // committed write, exactly like the admin advance route, so the
+    // cart-intelligence subscriber runs the event-log/reconcile/customer-notify
+    // side effects. Bound to the same publisher the admin routes use.
+    publishOrderStatusChanged: (event) =>
+      // The typed event is JSON on the wire; publishNatsEvent's payload generic
+      // is constrained to Record<string, unknown> (interfaces lack an index
+      // signature), so cast at this composition boundary — same wire payload the
+      // admin advance route publishes.
+      publishNatsEvent(
+        "order.status_changed",
+        event as unknown as Record<string, unknown>,
+      ),
     log: logger,
   };
   const opsRegistry = createOpsToolRegistry(opsRegistryDeps);

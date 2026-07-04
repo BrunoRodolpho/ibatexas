@@ -175,6 +175,21 @@ export interface StatusTransitionAttribution {
   readonly reason?: string
 }
 
+/**
+ * Result of a committed status-transition write. `version`/`previousStatus`/
+ * `newStatus` are the historical shape; `displayId`/`customerId` are read from
+ * the SAME projection row inside the tx so a governed ops caller can publish an
+ * accurate `order.status_changed` event without a second read or trusting the
+ * model payload for those identifiers.
+ */
+export interface StatusTransitionResult {
+  readonly version: number
+  readonly previousStatus: string
+  readonly newStatus: string
+  readonly displayId: number
+  readonly customerId: string | null
+}
+
 // ── Service ─────────────────────────────────────────────────────────────────
 
 export interface OrderCommandService {
@@ -285,7 +300,7 @@ export interface OrderCommandService {
   writeAdjudicatedStatusTransition(
     payload: StatusTransitionWrite,
     extras: StatusTransitionAttribution,
-  ): Promise<{ version: number; previousStatus: string; newStatus: string }>
+  ): Promise<StatusTransitionResult>
 
   /**
    * Switch the projection's `deliveryType`. Replaces the rogue
@@ -394,11 +409,19 @@ async function writeAdjudicatedNote(
  * Module-scoped (uses only the module `prisma` client + the shared error
  * classes), referenced by BOTH the `executeTransition` closure (the
  * `transitionStatusFromEnvelope` path) and the ops kitchen-advance executor.
+ *
+ * The return additionally carries `displayId` + `customerId` read from the SAME
+ * projection row (one read, inside the tx) so a governed ops caller can publish
+ * an accurate `order.status_changed` event WITHOUT a second read and WITHOUT
+ * trusting the model payload for those identifiers. The
+ * `transitionStatusFromEnvelope` path narrows the result back to its historical
+ * `{ version, previousStatus, newStatus }` shape (see `executeTransition`), so
+ * that public surface is unchanged.
  */
 async function writeAdjudicatedStatusTransition(
   payload: StatusTransitionWrite,
   extras: StatusTransitionAttribution,
-): Promise<{ version: number; previousStatus: string; newStatus: string }> {
+): Promise<StatusTransitionResult> {
   return prisma.$transaction(async (tx: TxClient) => {
     const projection = await tx.orderProjection.findUnique({
       where: { id: payload.orderId },
@@ -447,7 +470,13 @@ async function writeAdjudicatedStatusTransition(
       },
     })
 
-    return { version: newVersion, previousStatus: from, newStatus: to }
+    return {
+      version: newVersion,
+      previousStatus: from,
+      newStatus: to,
+      displayId: projection.displayId,
+      customerId: projection.customerId,
+    }
   })
 }
 
@@ -515,8 +544,11 @@ export function createOrderCommandService(
   const executeTransition = async (
     orderId: string,
     input: TransitionStatusInput,
-  ): Promise<{ version: number; previousStatus: string; newStatus: string }> =>
-    writeAdjudicatedStatusTransition(
+  ): Promise<{ version: number; previousStatus: string; newStatus: string }> => {
+    // Narrow the shared result back to the historical shape so the
+    // `transitionStatusFromEnvelope` public surface is byte-identical (the
+    // extra displayId/customerId are only for the governed ops emit path).
+    const r = await writeAdjudicatedStatusTransition(
       {
         orderId,
         newStatus: input.newStatus,
@@ -526,6 +558,12 @@ export function createOrderCommandService(
       },
       { actor: input.actor, actorId: input.actorId, reason: input.reason },
     )
+    return {
+      version: r.version,
+      previousStatus: r.previousStatus,
+      newStatus: r.newStatus,
+    }
+  }
 
   // ── Legacy executor: reconcile status ────────────────────────────────
   const executeReconcile = async (

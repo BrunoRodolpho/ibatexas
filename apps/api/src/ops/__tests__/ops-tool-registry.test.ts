@@ -7,6 +7,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 import type { AuditSink } from "@ibatexas/audit-sink";
+import type { OrderStatusChangedEvent } from "@ibatexas/types";
 import {
   createOpsToolRegistry,
   listOpsToolDefinitions,
@@ -21,21 +22,30 @@ function makeDeps(over: Partial<OpsToolRegistryDeps> = {}): {
   medusaAdjudicated: ReturnType<typeof vi.fn>;
   writeAdjudicatedNote: ReturnType<typeof vi.fn>;
   writeAdjudicatedStatusTransition: ReturnType<typeof vi.fn>;
+  publishOrderStatusChanged: ReturnType<typeof vi.fn>;
 } {
   const medusaAdjudicated = vi.fn(async () => ({ product: { id: "prod_1" } }));
   const writeAdjudicatedNote = vi.fn(async () => ({
     noteId: "note_1",
     orderId: "order_1",
   }));
+  // Wide result: carries displayId + customerId from the projection row so the
+  // emit path never trusts the model payload for those identifiers.
   const writeAdjudicatedStatusTransition = vi.fn(async () => ({
     version: 3,
     previousStatus: "preparing",
     newStatus: "ready",
+    displayId: 4242,
+    customerId: "cust_proj",
   }));
+  const publishOrderStatusChanged = vi.fn(
+    async (_event: OrderStatusChangedEvent) => {},
+  );
   const deps: OpsToolRegistryDeps = {
     medusaAdjudicated: medusaAdjudicated as never,
     auditSink: AUDIT_SINK,
     orderCmdSvc: { writeAdjudicatedNote, writeAdjudicatedStatusTransition },
+    publishOrderStatusChanged,
     ...over,
   };
   return {
@@ -43,6 +53,7 @@ function makeDeps(over: Partial<OpsToolRegistryDeps> = {}): {
     medusaAdjudicated,
     writeAdjudicatedNote,
     writeAdjudicatedStatusTransition,
+    publishOrderStatusChanged,
   };
 }
 
@@ -190,5 +201,53 @@ describe("order.status.transition executor — POST-adjudication kitchen-advance
       actor: "admin",
       reason: "Status avançado pela operação (ops).",
     });
+  });
+
+  it("emits order.status_changed after the committed write, with displayId/customerId from the projection (never the model)", async () => {
+    const { deps, publishOrderStatusChanged } = makeDeps();
+    const tool = toolByKind(deps, "order.status.transition");
+    await tool.execute(
+      // Model payload carries a DIFFERENT customerId/displayId — must be ignored.
+      {
+        orderId: "order_1",
+        newStatus: "ready",
+        customerId: "model_forged",
+        displayId: 9999,
+      },
+      capsule("staff_7"),
+    );
+    expect(publishOrderStatusChanged).toHaveBeenCalledTimes(1);
+    const event = publishOrderStatusChanged.mock.calls[0]![0];
+    expect(event).toMatchObject({
+      orderId: "order_1",
+      // From the projection-row read (writeAdjudicatedStatusTransition result),
+      // NOT the model payload.
+      displayId: 4242,
+      customerId: "cust_proj",
+      previousStatus: "preparing",
+      newStatus: "ready",
+      updatedBy: "admin",
+      version: 3,
+    });
+    expect(typeof event.timestamp).toBe("string");
+  });
+
+  it("does NOT emit order.status_changed when the write throws (no event for an uncommitted transition)", async () => {
+    const publishOrderStatusChanged = vi.fn(async () => {});
+    const writeAdjudicatedStatusTransition = vi.fn(async () => {
+      throw new Error("InvalidTransitionError");
+    });
+    const { deps } = makeDeps({
+      orderCmdSvc: {
+        writeAdjudicatedNote: vi.fn(),
+        writeAdjudicatedStatusTransition,
+      } as never,
+      publishOrderStatusChanged,
+    });
+    const tool = toolByKind(deps, "order.status.transition");
+    await expect(
+      tool.execute({ orderId: "order_1", newStatus: "ready" }, capsule("staff_7")),
+    ).rejects.toThrow();
+    expect(publishOrderStatusChanged).not.toHaveBeenCalled();
   });
 });
