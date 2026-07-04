@@ -27,6 +27,7 @@ const OpsCause = z.enum([
   "ops_pix_expiry_backlog",
   "ops_stale_defer",
   "ops_dlq_depth",
+  "ops_ingredient_underflow",
 ]);
 const OpsStatus = z.enum(["OPEN", "ACKNOWLEDGED", "AUTO_RESOLVED", "RESOLVED"]);
 

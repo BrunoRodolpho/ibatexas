@@ -24,15 +24,32 @@
 // rethrown into the order flow. A product with no recipe (Recipe table empty
 // today) is a silent no-op — not every menu item is BOM-modeled.
 //
-// NOTE: emitting an ops-alert on a stock shortfall is split to NEW-037 — this
-// subscriber only logs a structured warn (it does NOT touch the ops-alert /
-// FROZEN_OPS_CAUSES plane).
+// NEW-037 — on a stock shortfall (shortfallMilli > 0) this subscriber now, IN
+// ADDITION to the structured warn, OPENS a first-class ops-alert on the NEW-025
+// ops-alert plane (cause `ops_ingredient_underflow`) so a manager SEES the
+// underflow in the ops-alerts inbox + admin UI instead of only a log line.
+//
+// The depletion itself stays NON-KERNEL (direct depleteStock); the ops-alert is a
+// GOVERNED kind (`ops.alert.open`) built via buildSystemEnvelope + adjudicated by
+// the SYSTEM-only ops-alert policy bundle (openAlertFromEnvelope) — that split is
+// intentional. The ops-alert emission is BEST-EFFORT: it runs inside its OWN
+// try/catch and NEVER rethrows, so a kernel/DB failure raising it can never abort
+// depletion of the remaining lines nor route the whole order.placed to the DLQ
+// (depletion is the critical path). Mirrors cart-intelligence's best-effort
+// awardLoyaltyStamp/updateCheckoutMetrics isolation.
 
 import { subscribeNatsEvent } from "@ibatexas/nats-client";
-import { createIngredientService, createRecipeService } from "@ibatexas/domain";
+import {
+  createIngredientService,
+  createRecipeService,
+  createOpsAlertService,
+  OPS_ALERT_CAUSE_LABELS_PT,
+} from "@ibatexas/domain";
+import { getAuditSink } from "@ibatexas/audit-sink";
 import type { FastifyBaseLogger } from "fastify";
 import { withDedup } from "./dedup.js";
 import { pushToDlq } from "./dlq.js";
+import { buildSystemEnvelope } from "./__shared__/system-actor-envelope.js";
 
 type OrderPlacedItem = {
   productId: string;
@@ -47,6 +64,8 @@ export async function startIngredientDepletionSubscriber(
   // Construct the domain services ONCE (closure scope) — not per event.
   const recipeSvc = createRecipeService();
   const ingredientSvc = createIngredientService();
+  // Audited ops-alert service (governed ops.alert.* chokepoint). NEW-037.
+  const opsAlertSvc = createOpsAlertService({ auditSink: getAuditSink(), log });
 
   await subscribeNatsEvent(
     "order.placed",
@@ -70,7 +89,7 @@ export async function startIngredientDepletionSubscriber(
               const res = await ingredientSvc.depleteStock(line.ingredientId, consumeMilli);
               if (res && res.shortfallMilli > 0) {
                 // Stock went below what the order required (write clamped at 0).
-                // Structured warn only — the ops-alert wiring is NEW-037.
+                // (1) Structured warn — the existing NEW-036 diagnostic signal.
                 log?.warn(
                   {
                     order_id: orderId,
@@ -81,6 +100,54 @@ export async function startIngredientDepletionSubscriber(
                   },
                   "[ingredient-depletion] ingredient depleted below zero — stock accuracy issue",
                 );
+
+                // (2) NEW-037 — promote the shortfall into a first-class ops-alert
+                // on the NEW-025 ops-alert plane so a manager SEES it. BEST-EFFORT:
+                // its OWN try/catch that logs a warn and NEVER rethrows — a kernel/DB
+                // failure emitting the alert must never abort depletion of the
+                // remaining lines nor route order.placed to the DLQ (mirrors
+                // cart-intelligence's awardLoyaltyStamp best-effort isolation).
+                try {
+                  const dedupeKey = `ops_ingredient_underflow:${line.ingredientId}`;
+                  const envelope = buildSystemEnvelope({
+                    kind: "ops.alert.open" as const,
+                    payload: {
+                      cause: "ops_ingredient_underflow" as const,
+                      severity: "medium" as const,
+                      source: "ingredient-depletion",
+                      scope: line.ingredientId,
+                      title: `${OPS_ALERT_CAUSE_LABELS_PT.ops_ingredient_underflow}: ${res.name}`,
+                      detail: `O insumo "${res.name}" ficou ${res.shortfallMilli} milésimos de ${res.unit} abaixo do necessário para o pedido ${orderId}.`,
+                      context: {
+                        orderId,
+                        productId: item.productId,
+                        ingredientId: line.ingredientId,
+                        consumeMilli,
+                        shortfallMilli: res.shortfallMilli,
+                        unit: res.unit,
+                      },
+                      dedupeKey,
+                    },
+                    sourceSubject: "ingredient-depletion",
+                    eventId: `ops_ingredient_underflow:${line.ingredientId}:${orderId}`,
+                  });
+                  const outcome = await opsAlertSvc.openAlertFromEnvelope(envelope, {});
+                  if (outcome.decision.kind !== "EXECUTE") {
+                    log?.warn(
+                      { ingredient_id: line.ingredientId, decision: outcome.decision.kind },
+                      "[ingredient-depletion] ops-alert open not authorized — skipping",
+                    );
+                  }
+                } catch (alertErr) {
+                  log?.warn(
+                    {
+                      order_id: orderId,
+                      ingredient_id: line.ingredientId,
+                      error: String(alertErr),
+                    },
+                    "[ingredient-depletion] ops-alert emission failed — depletion not affected",
+                  );
+                }
               }
             }
           }
