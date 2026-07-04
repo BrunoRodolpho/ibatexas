@@ -6,6 +6,11 @@ import type { OrderSummary } from '@ibatexas/types'
 import type { AdminOrderDetail } from '@ibatexas/ui'
 import { useAdminOrdersPage, useUpdateOrderStatus, useAdminOrderDetail } from '@/domains/admin/admin.hooks'
 import { apiFetch } from '@/lib/api'
+import {
+  mapOrderNotes,
+  type AdminOrderNotesResponse,
+  type AdminOrderNoteView,
+} from '@/domains/admin/order-notes.mappers'
 import { reaisStringToCentavos, INVALID_AMOUNT_PT_BR } from '@/lib/money'
 import { AdminActionDialog } from '@/components/molecules/AdminActionDialog'
 import {
@@ -81,6 +86,18 @@ export default function PedidosPage(): React.JSX.Element {
         setPaymentHistory(d?.payments ?? [])
       })
       .catch(() => setPaymentHistory([]))
+  }, [selectedOrderId])
+
+  // Staff notes for the selected order (OPS-013) — READ-ONLY list, mirroring the
+  // payment-history fetch. Mapped to pre-formatted pt-BR rows for the drawer.
+  const [notes, setNotes] = useState<AdminOrderNoteView[]>([])
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- reset notes when selection clears
+    if (!selectedOrderId) { setNotes([]); return }
+    apiFetch(`/api/admin/orders/${selectedOrderId}/notes`)
+      .then((data: unknown) => setNotes(mapOrderNotes(data as AdminOrderNotesResponse)))
+      .catch(() => setNotes([]))
   }, [selectedOrderId])
 
   // Track previous order count for sound alert
@@ -321,6 +338,7 @@ export default function PedidosPage(): React.JSX.Element {
         onAdvanceStatus={handleAdvanceStatus}
         onAction={handleAdminAction}
         paymentHistory={paymentHistory}
+        notes={notes}
       />
 
       <AdminActionDialog

@@ -4,8 +4,13 @@
 // recipient segment (one phone per line, E.164), a pre-approved template, send,
 // and see per-recipient status. Opted-out numbers are skipped server-side.
 
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { apiFetch } from '@/lib/api'
+import {
+  mapOptOutRecipients,
+  type BroadcastOptOutResponse,
+  type OptOutRecipientView,
+} from '@/domains/admin/broadcast.mappers'
 
 interface RecipientResult {
   recipient: string
@@ -34,6 +39,22 @@ export default function BroadcastPage(): React.JSX.Element {
   const [result, setResult] = useState<BroadcastResult | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [optOutPhone, setOptOutPhone] = useState('')
+  const [optOutList, setOptOutList] = useState<OptOutRecipientView[]>([])
+
+  // Load the READ-ONLY opted-out recipient list (OPS-032). Silent on failure —
+  // an unavailable read hides the section rather than toast-spamming a page load.
+  const loadOptOutList = useCallback(async () => {
+    try {
+      const res = (await apiFetch('/api/admin/broadcast/optout')) as BroadcastOptOutResponse
+      setOptOutList(mapOptOutRecipients(res))
+    } catch {
+      setOptOutList([])
+    }
+  }, [])
+
+  useEffect(() => {
+    void loadOptOutList()
+  }, [loadOptOutList])
 
   const send = useCallback(async () => {
     const recipients = recipientsText
@@ -66,10 +87,12 @@ export default function BroadcastPage(): React.JSX.Element {
         body: JSON.stringify({ recipient: optOutPhone.trim() }),
       })
       setOptOutPhone('')
+      // Keep the opted-out list in sync with the write that just landed.
+      await loadOptOutList()
     } finally {
       setBusy(false)
     }
-  }, [optOutPhone])
+  }, [optOutPhone, loadOptOutList])
 
   return (
     <div className="flex flex-col gap-4 p-4">
@@ -161,6 +184,27 @@ export default function BroadcastPage(): React.JSX.Element {
             Opt-out
           </button>
         </div>
+      </div>
+
+      {/* OPS-032 — READ-ONLY view of the opted-out recipients (manager-only). */}
+      <div className="mt-4 flex flex-col gap-2 border-t pt-4">
+        <div className="flex items-center justify-between">
+          <h2 className="text-sm font-medium">
+            Recipientes que optaram por não receber
+          </h2>
+          <span className="text-xs text-gray-500">{optOutList.length}</span>
+        </div>
+        {optOutList.length === 0 ? (
+          <p className="text-xs text-gray-500">Nenhum destinatário optou por não receber.</p>
+        ) : (
+          <ul className="flex max-h-64 flex-col gap-1 overflow-y-auto text-xs">
+            {optOutList.map((r) => (
+              <li key={r.recipient} className="rounded border px-2 py-1 font-mono">
+                {r.display}
+              </li>
+            ))}
+          </ul>
+        )}
       </div>
     </div>
   )
