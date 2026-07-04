@@ -75,6 +75,11 @@ const mockGetEscalationStore = vi.hoisted(() => vi.fn());
 const mockEmitNoDelivery = vi.hoisted(() => vi.fn());
 const mockOpenIncidentInline = vi.hoisted(() => vi.fn());
 const mockCloseIncidentOnDeliveredReply = vi.hoisted(() => vi.fn());
+// BKL-086 ops-actor fork — mocked so the CUSTOMER-path regression tests below run
+// byte-identically (default {consumed:false} ⇒ fall through). The fork's own logic
+// is proven in ops-whatsapp-ingress*.test.ts.
+const mockHandleOpsWhatsAppMessage = vi.hoisted(() => vi.fn());
+const mockBuildOpsWhatsAppIngressDeps = vi.hoisted(() => vi.fn());
 
 vi.mock("twilio", () => ({
   default: Object.assign(() => ({}), { validateRequest: mockValidateRequest }),
@@ -155,6 +160,11 @@ vi.mock("../jobs/hesitation-nudge.js", () => ({
 
 vi.mock("../jobs/pix-expiry-monitor.js", () => ({
   schedulePixExpiryMonitor: mockSchedulePixExpiryMonitor,
+}));
+
+vi.mock("../ops/ops-whatsapp-ingress.js", () => ({
+  handleOpsWhatsAppMessage: mockHandleOpsWhatsAppMessage,
+  buildOpsWhatsAppIngressDeps: mockBuildOpsWhatsAppIngressDeps,
 }));
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -263,6 +273,9 @@ beforeEach(() => {
   mockEmitNoDelivery.mockResolvedValue(undefined);
   mockOpenIncidentInline.mockResolvedValue({ kind: "opened", incidentId: "inc-1" });
   mockCloseIncidentOnDeliveredReply.mockResolvedValue(undefined);
+  // Default: not a staff phone → the ops fork falls through to the customer path.
+  mockBuildOpsWhatsAppIngressDeps.mockReturnValue({});
+  mockHandleOpsWhatsAppMessage.mockResolvedValue({ consumed: false });
 });
 
 afterAll(() => {
@@ -873,5 +886,64 @@ describe("handleMessageAsync — conductor turn", () => {
         expect.anything(),
       );
     }, { timeout: 4000 });
+  }, 15000);
+});
+
+// ── BKL-086 — the ops-actor fork (customer-path preservation) ─────────────────
+//
+// The ops fork runs at the TOP of handleMessageAsync, BEFORE resolveWhatsAppSession
+// (which auto-creates a Customer + welcome credit + LGPD opt-in). A consumed
+// (active-staff) message must NEVER touch the customer path; a non-staff /
+// inactive message must fall through BYTE-IDENTICALLY.
+describe("handleMessageAsync — ops-actor fork (BKL-086)", () => {
+  it("a CONSUMED staff message never runs the customer path (no session resolve, no customer conductor, no Customer-create side effects)", async () => {
+    mockHandleOpsWhatsAppMessage.mockResolvedValue({ consumed: true });
+
+    const app = await buildTestServer();
+    const res = await post(app, "MessageSid=SM_OPS&From=whatsapp%3A%2B5511999999999&Body=acabou+a+picanha");
+    expect(res.statusCode).toBe(200);
+
+    await vi.waitFor(() => {
+      // Consumed ⇒ the idempotency claim is promoted (a stray SID redelivery must
+      // never re-fire a mutating owner command).
+      expect(mockRedis.set).toHaveBeenCalledWith(
+        expect.stringContaining("SM_OPS"),
+        "1",
+        { EX: 86400 },
+      );
+    }, { timeout: 2000 });
+
+    // The customer path — and EVERY Customer-creating side effect — never ran.
+    expect(mockResolveWhatsAppSession).not.toHaveBeenCalled();
+    expect(mockGetConductor).not.toHaveBeenCalled();
+    expect(mockSetWelcomeCredit).not.toHaveBeenCalled();
+    expect(mockMarkOptedIn).not.toHaveBeenCalled();
+    expect(mockMarkCustomerReplied).not.toHaveBeenCalled();
+
+    // The fork was invoked with the trimmed body + phone/hash.
+    expect(mockHandleOpsWhatsAppMessage).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ phone: PHONE, hash: HASH, text: "acabou a picanha" }),
+    );
+  });
+
+  it("a NON-staff (consumed:false) message falls through to the customer path — the fork runs FIRST", async () => {
+    mockTryDebounce.mockResolvedValue(true); // become the runner → run the customer conductor
+    // default mock returns { consumed:false }
+
+    const app = await buildTestServer();
+    const res = await post(app, "MessageSid=SM_CUST&From=whatsapp%3A%2B5511999999999&Body=oi");
+    expect(res.statusCode).toBe(200);
+
+    await vi.waitFor(() => {
+      // The customer conductor ran, byte-identically to the pre-BKL-086 flow
+      // (after the real 2s debounce sleep).
+      expect(mockHandleTurn).toHaveBeenCalledTimes(1);
+    }, { timeout: 6000 });
+    expect(mockResolveWhatsAppSession).toHaveBeenCalled();
+    // The fork was consulted BEFORE session resolution (fork-first).
+    const forkOrder = mockHandleOpsWhatsAppMessage.mock.invocationCallOrder[0]!;
+    const resolveOrder = mockResolveWhatsAppSession.mock.invocationCallOrder[0]!;
+    expect(forkOrder).toBeLessThan(resolveOrder);
   }, 15000);
 });

@@ -87,6 +87,52 @@ Concretely:
   the LLM path). It also fragments the ops surface per verb instead of one governed
   plane.
 
+## WhatsApp ingress (BKL-086) — the owner runs the restaurant by message
+
+The ops conductor plane is **ingress-agnostic**: only the ingress + identity
+binding are per-channel. BKL-086 adds a SECOND ingress — WhatsApp — so the owner
+types "acabou a picanha" and the AI manager acts, without the HTTP dashboard.
+
+- **Fork placement.** In `handleMessageAsync` (the WhatsApp webhook async path),
+  BEFORE `resolveWhatsAppSession` — the customer path auto-creates a Customer +
+  welcome credit + LGPD opt-in, which an owner command must never trigger. The
+  fork reuses the MessageSid idempotency + the phoneHash agent lock unchanged.
+- **Allowlist = the Staff table.** `staffSvc.findByPhone(phone)` is re-read EVERY
+  message (role + active — the STAFFREVOKE analog). No row OR `active:false` ⇒
+  fall BACK to the customer path UNCHANGED (never ghost a demoted staffer, never
+  mint an ops actor for a stranger's phone). The fall-back extends to a read
+  ERROR: the fork runs for every inbound phone, so a Staff-table read failure
+  fails OPEN to the customer path (`ops_wa.allowlist_read_failed`) rather than
+  blacking out the customer channel — the phone gains no ops authority. This is
+  scoped to the allowlist read only; a failure AFTER staff identity is
+  established consumes with the honest ops apology.
+- **Identity = the dashboard's.** conversationId `admin:{staffId}`, customerId
+  `staff:{staffId}`, sessionKey `ops:{staffId}`, channel `"system"`, actor
+  `{principal:"user", role:"staff", sessionId:"admin:{staffId}", staffId}` —
+  IDENTICAL to `POST /api/admin/ops/chat`, so parks / history / confirm-resume are
+  SHARED across ingresses (the ops-history thread is keyed by staffId alone).
+- **The verb scope (the SIM-swap compensating control).** On WhatsApp the phone
+  IS the identity (AUT-003); a signed message from a STOLEN owner phone is
+  legitimate at every technical layer (Twilio signature, phone allowlist,
+  `staff.active` re-check) — there is no second factor. So the WhatsApp scope
+  keeps IRREVERSIBLE money / two-person verbs DASHBOARD-ONLY. `composeOpsConductor`
+  takes an `opsVerbScope` (`"dashboard"` default | `"whatsapp"`); the `"whatsapp"`
+  scope deterministically excludes a NAMED set (`WA_EXCLUDED_OPS_KINDS`, currently
+  `payment.refund.issue`) at composition, in TWO places (defense in depth):
+  1. `scopeCapabilityPlanner` removes the excluded kinds from the planner's
+     `allowedIntents` — so they are NOT advertised AND are DROPPED if the model
+     emits one anyway (the planner enforces the allowlist twice).
+  2. `scopeResumeChannel` hides an out-of-scope PARKED envelope from
+     `matchToParked` — so a money confirm parked from the dashboard can NEVER be
+     resumed by an "sim" typed over WhatsApp (the dashboard still resumes it; the
+     gate is scope-specific, not a blanket disable).
+  `"dashboard"` excludes nothing ⇒ both filters are identity (the pre-BKL-086
+  composition is byte-identical, pinned by tests). Money-over-WhatsApp is revisited
+  only with a step-up factor (a daily ops PIN via the staff Twilio Verify infra —
+  a registered v2 follow-up). Registered follow-ups: a dedicated ops WhatsApp
+  number (`TWILIO_OPS_NUMBER`, to narrow the group/forward surface to a 1:1 line),
+  the step-up PIN, and ops-channel media/interactive parsing.
+
 ## Standing invariants this doc pins
 
 - The ops plane's envelope actor is injected at composition from the authenticated JWT;

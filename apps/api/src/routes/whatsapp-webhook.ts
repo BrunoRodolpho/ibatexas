@@ -71,6 +71,10 @@ import { matchShortcut, buildHelpText, buildWelcomeText, buildLoyaltyText } from
 import { LGPD_OPTIN_MESSAGE } from "../whatsapp/constants.js";
 import { scheduleHesitationNudge, markCustomerReplied } from "../jobs/hesitation-nudge.js";
 import { schedulePixExpiryMonitor } from "../jobs/pix-expiry-monitor.js";
+import {
+  handleOpsWhatsAppMessage,
+  buildOpsWhatsAppIngressDeps,
+} from "../ops/ops-whatsapp-ingress.js";
 
 const MAX_RATE_PER_MINUTE = 20;
 const DEBOUNCE_MS = 2000;
@@ -982,6 +986,23 @@ async function handleMessageAsync(
   // Outer try/catch: early-stage crashes still send a fallback error message to the user
   try {
   const startMs = Date.now();
+
+  // ── Ops-actor fork (BKL-086) — BEFORE any customer-path work ───────────────
+  // An ACTIVE staff phone runs the ops manager plane (the owner commands the
+  // restaurant by message). This MUST precede resolveWhatsAppSession below,
+  // which auto-creates a Customer + welcome credit + LGPD opt-in — side effects
+  // an owner command must never trigger. A non-staff / inactive phone returns
+  // {consumed:false} and falls through to the customer path BYTE-IDENTICALLY.
+  // On success (consumed) we mark the idempotency claim as done so a stray SID
+  // redelivery never re-fires a mutating owner command, then return.
+  const opsOutcome = await handleOpsWhatsAppMessage(
+    buildOpsWhatsAppIngressDeps(phone, log),
+    { phone, hash, text: messageBody, log },
+  );
+  if (opsOutcome.consumed) {
+    succeeded = true;
+    return;
+  }
 
   // ── Cancel any pending hesitation nudge on incoming message ────────────────
   await markCustomerReplied(hash);
