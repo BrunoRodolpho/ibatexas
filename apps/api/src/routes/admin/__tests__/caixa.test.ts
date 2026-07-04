@@ -1,7 +1,7 @@
 // admin/caixa.ts — the manager-gated caixa / day-close reconciliation (NEW-011).
 // Locks: requireManagerRole fail-closed (403) for ATTENDANT (no service call);
 // 200 with the DaySummary for MANAGER; the `date` query param threaded to the
-// service; an omitted `date` defaults to today (server-local); a malformed date
+// service; an omitted `date` defaults to today in RESTAURANT_TIMEZONE; a malformed date
 // is rejected (400) by the zod querystring.
 //
 // Harness mirrors ops-alerts.test.ts: an instance-level preHandler injects the
@@ -98,7 +98,7 @@ describe("GET /api/admin/caixa/day-close is manager-gated", () => {
     }
   });
 
-  it("defaults to today (server-local YYYY-MM-DD) when date is omitted", async () => {
+  it("defaults to today in RESTAURANT_TIMEZONE (not server-local) when date is omitted", async () => {
     mockGetDaySummary.mockResolvedValue(SAMPLE_SUMMARY);
     const server = await buildServer(MANAGER);
     try {
@@ -106,7 +106,11 @@ describe("GET /api/admin/caixa/day-close is manager-gated", () => {
       expect(res.statusCode).toBe(200);
       const arg = mockGetDaySummary.mock.calls[0]?.[0] as string;
       expect(arg).toMatch(/^\d{4}-\d{2}-\d{2}$/);
-      expect(arg).toBe(new Date().toLocaleDateString("en-CA"));
+      // The route defaults to today in the restaurant's business timezone (the same
+      // zone the service resolves the window in) — CI-tz-independent, so this must
+      // compute the expected value the SAME way, never as server-local.
+      const tz = process.env.RESTAURANT_TIMEZONE ?? "America/Sao_Paulo";
+      expect(arg).toBe(new Date().toLocaleDateString("en-CA", { timeZone: tz }));
     } finally {
       await server.close();
     }
