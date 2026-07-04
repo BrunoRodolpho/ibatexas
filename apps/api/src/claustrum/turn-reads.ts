@@ -119,6 +119,25 @@ export interface TriadReadBackend {
    * active orders.
    */
   listActiveOrderIds(customerId: string): Promise<string[]>;
+  /**
+   * Count the AUTHENTICATED customer's OWN payments (BKL-079 — the PAYMENT mirror of
+   * {@link listActiveOrderIds}; the provable-empty enumeration count). OWNER-SCOPED
+   * by construction: the underlying `countByCustomer(customerId)` counts via the
+   * `where: { order: { customerId } }` join, so ONLY the customer's own payments are
+   * ever counted — no model/session id is involved. Returns `0` for a customer with
+   * no payment rows. The count is a pure SIGNAL for the provable-empty seam (Rule
+   * B′); it drives no read.
+   *
+   * SOUNDNESS NOTE (load-bearing): `countByCustomer` counts ALL of the customer's
+   * payments, INCLUDING terminal (settled/refunded/failed) rows — it is NOT
+   * active-only (see payment-query.service.ts `countByCustomer`). That makes
+   * `count === 0` a STRICTER provable-empty witness than an active-only count would
+   * be: zero payments TOTAL ⟹ certainly zero ACTIVE payments (active ⊆ all), so a
+   * count-0 DROP is conservative and SOUND — it can only UNDER-fire (a customer with
+   * only terminal payments keeps the companion → honest UNKNOWN), never over-drop.
+   * See `activeResourcesFromLedger` Rule B′ (ibatexas-claims-kernel-deps.ts).
+   */
+  countActivePayments(customerId: string): Promise<number>;
 }
 
 /**
@@ -265,6 +284,15 @@ export function createDomainTriadReadBackend(
       return orders
         .filter((o) => ACTIVE_FULFILLMENT_STAGES.has(String(o.fulfillmentStatus)))
         .map((o) => o.id);
+    },
+
+    async countActivePayments(customerId) {
+      // OWNER-SCOPED (BKL-079): countByCustomer counts via `where: { order: {
+      // customerId } }`, so this only ever counts the AUTHENTICATED customer's own
+      // payments — never a model/session id. See the interface SOUNDNESS NOTE: it
+      // counts ALL (incl. terminal) payments, which makes count===0 a STRICTER
+      // (conservative, sound) provable-empty witness for the seam's Rule B′.
+      return createPaymentQueryService().countByCustomer(customerId);
     },
   };
 }

@@ -313,6 +313,51 @@ describe("claims-renderer-adapter — BKL-073 provable-empty ownership drop", ()
     expect(out.text).toBe("No momento, o período de funcionamento é: jantar.");
   });
 
+  // BKL-079 — the PAYMENT mirror (#8b): a bare-"status" question classifies to BOTH
+  // ORDER_STATUS_Q + PAYMENT_STATUS_Q, so it requires ORDER_FULFILLMENT_STAGE AND
+  // PAYMENT_STATUS. A customer who PROVABLY owns no active payment must not lose the
+  // (VALIDATED) order-status answer to a forced, unresolvable PAYMENT companion.
+  it("NO-DROP-ON-FAILURE (payment §O#15 falsifier): activeResources WITHOUT a payment sentinel keeps the PAYMENT companion → honest UNKNOWN", () => {
+    const renderer = createIbatexasClaimsRenderer();
+    // The order resolved VALIDATED but the payment companion resolved UNKNOWN; with
+    // NO payment sentinel (enumeration errored/absent) the PAYMENT companion is KEPT →
+    // the turn degrades rather than render the order "easy half" while omitting payment.
+    const out = renderer.render(
+      resultWith(
+        [
+          { type: ORDER_FULFILLMENT_STAGE, verdict: "VALIDATED" },
+          { type: "PAYMENT_STATUS", verdict: "UNKNOWN" },
+        ],
+        [claim(ORDER_FULFILLMENT_STAGE, "VALIDATED", { fulfillmentStatus: "preparing" })],
+      ),
+      { requestText: "qual o status?", activeResources: [] },
+    );
+    expect(out.text).toBe(UNKNOWN_TEMPLATE);
+    expect(out.text).not.toContain("etapa");
+    expect(out.text).not.toContain("preparo");
+  });
+
+  it("SOUND-DROP (payment): the payment PROVABLY_EMPTY sentinel drops the PAYMENT companion → the order-status half renders in full", () => {
+    const renderer = createIbatexasClaimsRenderer();
+    // Same inputs EXCEPT the payment sentinel: the customer PROVABLY owns no active
+    // payment → PAYMENT_STATUS drops from the required set → only ORDER_FULFILLMENT_STAGE
+    // remains (VALIDATED) → the order status renders in full. Isolates the drop.
+    const out = renderer.render(
+      resultWith(
+        [
+          { type: ORDER_FULFILLMENT_STAGE, verdict: "VALIDATED" },
+          { type: "PAYMENT_STATUS", verdict: "UNKNOWN" },
+        ],
+        [claim(ORDER_FULFILLMENT_STAGE, "VALIDATED", { fulfillmentStatus: "preparing" })],
+      ),
+      {
+        requestText: "qual o status?",
+        activeResources: [{ kind: PROVABLY_EMPTY_KIND, id: "payment" }],
+      },
+    );
+    expect(out.text).toBe("Seu pedido está na etapa: em preparo.");
+  });
+
   describe("ownershipFromActiveResources", () => {
     it("undefined (seam unwired) → undefined → decomposer called without ownership (byte-identical)", () => {
       expect(ownershipFromActiveResources(undefined)).toBeUndefined();

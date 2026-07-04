@@ -275,6 +275,9 @@ function stubBackend(over: Partial<TriadReadBackend> = {}): TriadReadBackend {
     // FIX 2 — default: no auto-enumerated active orders (tests that exercise the
     // owner-order enumeration override this).
     listActiveOrderIds: async () => [],
+    // BKL-079 — default: 0 payments (a provable-empty payment; tests that exercise
+    // the payment marker override this).
+    countActivePayments: async () => 0,
     ...over,
   };
 }
@@ -466,6 +469,72 @@ describe("ibatexas-investigator — BKL-073 provable-empty marker", () => {
     });
     await investigator.investigate(triadInput({ envelopes: [] }, ledger, "guest:abc"));
     expect(ledger.resolve("active_orders:guest:abc").state).toBe("absent");
+  });
+});
+
+// ── BKL-079: the PROVABLE-EMPTY PAYMENT enumeration marker (mirror of BKL-073) ─────
+//
+// The EXACT MIRROR of the order marker for the PAYMENT dimension. The investigator
+// records a signal-only `active_payments:{customerId}` marker whose 4-state ledger
+// disposition is the provable-empty witness: a SUCCESSFUL count-0 enumeration →
+// PRESENT {count:0} (the seam's Rule B′ DROPS the payment companion); a count>0 →
+// PRESENT {count:N} (NOT provably empty); an ERRORED count → state "error" ("could
+// not check" → the companion is KEPT → honest UNKNOWN, NEVER a wrong drop).
+describe("ibatexas-investigator — BKL-079 provable-empty PAYMENT marker", () => {
+  it("a SUCCESSFUL count-0 enumeration records the marker PRESENT with {count:0}", async () => {
+    const ledger = new EvidenceLedger("t");
+    const investigator = createIbatexasInvestigator({
+      gatherReads: createFirstPartyTurnReads(stubBackend({ countActivePayments: async () => 0 })),
+      now: () => 999,
+    });
+    await investigator.investigate(triadInput({ envelopes: [] }, ledger));
+
+    const marker = ledger.resolve("active_payments:cust-1");
+    expect(marker.state).toBe("present"); // count 0 is a PRESENT provable-empty, not absence.
+    expect(marker.entry?.value).toEqual({ count: 0 });
+    expect(marker.entry?.taint).toBe("TRUSTED");
+    expect(marker.entry?.originProvenance).toBe("FIRST_PARTY");
+    expect(marker.entry?.fetchedAt).toBe(999);
+  });
+
+  it("count N≥1 records the marker PRESENT with the count (NOT provably empty)", async () => {
+    const ledger = new EvidenceLedger("t");
+    const investigator = createIbatexasInvestigator({
+      gatherReads: createFirstPartyTurnReads(stubBackend({ countActivePayments: async () => 3 })),
+    });
+    await investigator.investigate(triadInput({ envelopes: [] }, ledger));
+
+    const marker = ledger.resolve("active_payments:cust-1");
+    expect(marker.state).toBe("present");
+    expect(marker.entry?.value).toEqual({ count: 3 });
+  });
+
+  it('an ERRORED count records the marker as state "error" (Inv 7 — error ≠ absence)', async () => {
+    const ledger = new EvidenceLedger("t");
+    const investigator = createIbatexasInvestigator({
+      gatherReads: createFirstPartyTurnReads(
+        stubBackend({
+          countActivePayments: async () => {
+            throw new Error("payment count backend down");
+          },
+        }),
+      ),
+    });
+    await investigator.investigate(triadInput({ envelopes: [] }, ledger));
+
+    const marker = ledger.resolve("active_payments:cust-1");
+    expect(marker.state).toBe("error"); // "could not check" — NOT a provable empty.
+    expect(marker.entry).toBeUndefined();
+    expect(ledger.errorReason("active_payments:cust-1")).toBe("payment count backend down");
+  });
+
+  it("a GUEST turn records NO payment marker (the enumeration short-circuits before it)", async () => {
+    const ledger = new EvidenceLedger("t");
+    const investigator = createIbatexasInvestigator({
+      gatherReads: createFirstPartyTurnReads(stubBackend()),
+    });
+    await investigator.investigate(triadInput({ envelopes: [] }, ledger, "guest:abc"));
+    expect(ledger.resolve("active_payments:guest:abc").state).toBe("absent");
   });
 });
 
