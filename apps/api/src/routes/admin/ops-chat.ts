@@ -15,10 +15,17 @@
 // guards. A conductor throw returns an honest 502 with a pt-BR message — never a
 // fabricated success.
 //
-// v1 posture: STATELESS turns (the claustrum SessionPort save/load are stubs, no
-// history persists — a follow-up wires ops history); a REQUEST_CONFIRMATION
-// surfaces the kernel prompt honestly and resolution is out-of-band (no
-// conversational confirm-resume on this channel yet — a registered follow-up).
+// v1 posture: a REQUEST_CONFIRMATION surfaces the kernel prompt honestly and
+// resolution is out-of-band (no conversational confirm-resume on this channel
+// yet — a registered follow-up).
+//
+// BKL-084 — conversation history. This channel now persists a per-staff thread on
+// its OWN OPS-namespaced Redis list (never the customer chat store) and threads a
+// BOUNDED, DATA-fenced history block into the planner system prompt so anaphora
+// ("e o brisket?") resolves. History is prompt CONTEXT only — the envelope/actor/
+// adjudication path is untouched. Both appends are best-effort: a store failure
+// logs and continues (it must never break the turn).
+//   GET /api/admin/ops/chat/history  → the caller's persisted thread (UI hydrate).
 
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
@@ -27,6 +34,11 @@ import { z } from "zod";
 import { handleTurn, type ChannelMessage } from "@claustrum/core";
 import { requireStaff } from "../../middleware/staff-auth.js";
 import { getOpsConductorFactory } from "../../claustrum-bootstrap.js";
+import {
+  appendOpsMessages,
+  buildOpsHistoryBlock,
+  loadOpsHistory,
+} from "../../ops/ops-history.js";
 
 const OpsChatBody = z.object({
   message: z
@@ -80,12 +92,26 @@ export async function adminOpsChatRoutes(server: FastifyInstance): Promise<void>
         locale: "pt-BR",
       };
 
+      // Render the PRIOR-turns context block BEFORE appending the current message
+      // (so the live message is the inbound, not a duplicated history line). Then
+      // persist the user message. Both are best-effort — never break the turn.
+      const historyBlock = await buildOpsHistoryBlock(staffId);
+      try {
+        await appendOpsMessages(staffId, [{ role: "user", content: message }]);
+      } catch (err) {
+        request.log.warn(err, "[ops-chat] user-message history append failed (non-fatal)");
+      }
+
       // Compose the per-request ops conductor with the AUTHENTICATED identity
-      // (never model-derived). A missing factory (bootstrap not run) throws — a
-      // 500-class server error, surfaced honestly below.
+      // (never model-derived) and the per-request history context. A missing
+      // factory (bootstrap not run) throws — a 500-class server error, surfaced
+      // honestly below.
       let conductor;
       try {
-        conductor = getOpsConductorFactory()({ staffId, role: staffRole });
+        conductor = getOpsConductorFactory()(
+          { staffId, role: staffRole },
+          { ...(historyBlock ? { historyBlock } : {}) },
+        );
       } catch (err) {
         request.log.error(err, "[ops-chat] ops conductor factory unavailable");
         return reply.code(503).send({
@@ -110,6 +136,14 @@ export async function adminOpsChatRoutes(server: FastifyInstance): Promise<void>
 
       try {
         const turn = await handleTurn(capsule, inbound);
+        // Persist the assistant reply AFTER a successful turn (best-effort).
+        try {
+          await appendOpsMessages(staffId, [
+            { role: "assistant", content: turn.response.text },
+          ]);
+        } catch (err) {
+          request.log.warn(err, "[ops-chat] assistant-reply history append failed (non-fatal)");
+        }
         return reply.send({
           reply: turn.response.text,
           decision: turn.decision.kind,
@@ -125,6 +159,37 @@ export async function adminOpsChatRoutes(server: FastifyInstance): Promise<void>
       } finally {
         await conductor.closeCapsule(capsule);
       }
+    },
+  );
+
+  // GET /api/admin/ops/chat/history — the caller's persisted ops thread, so the
+  // admin UI can hydrate on reload. Scoped to the AUTHENTICATED staffId (never a
+  // query param) — a manager only ever reads their own thread. Read-only; a store
+  // failure yields an empty thread rather than a 5xx (best-effort hydrate).
+  app.get(
+    "/api/admin/ops/chat/history",
+    {
+      preHandler: [requireStaff],
+      schema: {
+        tags: ["admin"],
+        summary: "Histórico do canal operacional do agente (para o funcionário atual)",
+      },
+    },
+    async (request, reply) => {
+      const staffId = request.staffId;
+      if (!staffId) {
+        return reply.code(403).send({ error: "Acesso restrito a funcionários." });
+      }
+      let messages: Array<{ role: string; content: string }> = [];
+      try {
+        messages = (await loadOpsHistory(staffId)).map((m) => ({
+          role: m.role,
+          content: m.content,
+        }));
+      } catch (err) {
+        request.log.warn(err, "[ops-chat] history read failed (returning empty)");
+      }
+      return reply.send({ messages, count: messages.length });
     },
   );
 }

@@ -266,6 +266,7 @@ import type { StaffEnvelopeActor } from "./claustrum/ibatexas-planner.js";
 import {
   composeOpsConductor,
   opsPlaneDriftProblems,
+  type OpsConductorContext,
   type OpsConductorDeps,
 } from "./ops/ops-conductor.js";
 import {
@@ -284,7 +285,9 @@ import {
 let _conductor: Conductor | null = null;
 // NEW-032 ops-actor conductor factory (slice B). Null until bootstrapClaustrum()
 // composes it; `getOpsConductorFactory()` exposes it to the ops ingress route.
-let _opsConductorFactory: ((actor: StaffEnvelopeActor) => Conductor) | null = null;
+let _opsConductorFactory:
+  | ((actor: StaffEnvelopeActor, context?: OpsConductorContext) => Conductor)
+  | null = null;
 // Managed-agent plane singleton (T3-9). Null unless IBX_AGENTS_ENABLED started it.
 let _agentPlane: AgentPlane | null = null;
 // Stage-1 approval engine (T3-7). Hoisted so the staff HTTP approvals route
@@ -321,6 +324,7 @@ export function getConductor(): Conductor {
  */
 export function getOpsConductorFactory(): (
   actor: StaffEnvelopeActor,
+  context?: OpsConductorContext,
 ) => Conductor {
   if (!_opsConductorFactory) {
     throw new Error(
@@ -2566,8 +2570,10 @@ export async function bootstrapClaustrum(
         },
       }),
   };
-  _opsConductorFactory = (actor: StaffEnvelopeActor): Conductor =>
-    composeOpsConductor(opsConductorDeps, actor);
+  _opsConductorFactory = (
+    actor: StaffEnvelopeActor,
+    context?: OpsConductorContext,
+  ): Conductor => composeOpsConductor(opsConductorDeps, actor, context);
 
   // ── Managed-agent plane (T3-9) — OPT-IN via IBX_AGENTS_ENABLED ──────────────
   // Default OFF: a normal boot never subscribes the trigger bridge / boots kill
