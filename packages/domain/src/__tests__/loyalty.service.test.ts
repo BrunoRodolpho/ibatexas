@@ -14,12 +14,14 @@ import { describe, it, expect, beforeEach, vi } from "vitest"
 
 const mockUpsert = vi.hoisted(() => vi.fn())
 const mockUpdate = vi.hoisted(() => vi.fn())
+const mockFindUnique = vi.hoisted(() => vi.fn())
 
 vi.mock("../client.js", () => ({
   prisma: {
     loyaltyAccount: {
       upsert: mockUpsert,
       update: mockUpdate,
+      findUnique: mockFindUnique,
     },
   },
 }))
@@ -125,6 +127,44 @@ describe("LoyaltyService", () => {
         stampsNeeded: 10,
         totalEarned: 10,
         redeemed: 1,
+      })
+    })
+  })
+
+  // OPS-070 — the PURE read used by the admin customer view. Unlike getBalance,
+  // it MUST NOT upsert (viewing a customer must never write a row).
+  describe("peekBalance (pure read — never upserts)", () => {
+    it("reads via findUnique and NEVER upserts", async () => {
+      mockFindUnique.mockResolvedValue(makeAccount(3, 5, 1))
+
+      const svc = createLoyaltyService()
+      const result = await svc.peekBalance("cust_01")
+
+      expect(mockFindUnique).toHaveBeenCalledWith({ where: { customerId: "cust_01" } })
+      expect(mockUpsert).not.toHaveBeenCalled()
+      expect(mockUpdate).not.toHaveBeenCalled()
+      expect(result).toEqual({
+        stamps: 3,
+        stampsNeeded: 7,
+        totalEarned: 5,
+        redeemed: 1,
+        exists: true,
+      })
+    })
+
+    it("returns an all-zero, exists:false balance when no account exists", async () => {
+      mockFindUnique.mockResolvedValue(null)
+
+      const svc = createLoyaltyService()
+      const result = await svc.peekBalance("cust_missing")
+
+      expect(mockUpsert).not.toHaveBeenCalled()
+      expect(result).toEqual({
+        stamps: 0,
+        stampsNeeded: 10,
+        totalEarned: 0,
+        redeemed: 0,
+        exists: false,
       })
     })
   })

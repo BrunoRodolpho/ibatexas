@@ -22,6 +22,7 @@ import {
   type OpsChatResult,
   type OpsThreadEntry,
 } from './ops-chat.mappers'
+import type { AdminCustomerListResponse, AdminCustomerDetail } from './customers.mappers'
 
 const hooks = buildAdminHooks(createAdminHook, createAdminListHook, apiFetch)
 
@@ -839,6 +840,139 @@ export function useAdminOpsSnapshot() {
   }, [reload])
 
   return { snapshot, loading, error, reload }
+}
+
+// ── Clientes (read-only customer management — OPS-070) ───────────────────────
+
+const CUSTOMERS_PAGE_SIZE = 20
+const CUSTOMERS_SEARCH_DEBOUNCE_MS = 300
+
+/**
+ * Backs the Clientes search list (OPS-070). Debounces the free-text query, then
+ * fetches ONE page of the READ-ONLY GET /api/admin/customers[?q=&limit=&offset=]
+ * search. VIEW-FIRST — no mutation. Mirrors useAdminOpsSnapshot's discipline:
+ * the skeleton shows only on the initial load; a transient failure surfaces the
+ * error (never swallowed) WITHOUT clearing the last-good page; changing the
+ * debounced query resets to page 0.
+ */
+export function useAdminCustomers() {
+  const [query, setQuery] = useState('')
+  const [debouncedQuery, setDebouncedQuery] = useState('')
+  const [page, setPage] = useState(0)
+  const [data, setData] = useState<AdminCustomerListResponse | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [refreshKey, setRefreshKey] = useState(0)
+  const hasLoadedRef = useRef(false)
+
+  // Debounce the query; a new debounced value resets pagination to the first page.
+  useEffect(() => {
+    const t = setTimeout(() => {
+      setDebouncedQuery(query.trim())
+      setPage(0)
+    }, CUSTOMERS_SEARCH_DEBOUNCE_MS)
+    return () => clearTimeout(t)
+  }, [query])
+
+  useEffect(() => {
+    let cancelled = false
+    if (!hasLoadedRef.current) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- initial load only; loading flag drives the skeleton
+      setLoading(true)
+    }
+    const params = new URLSearchParams()
+    if (debouncedQuery) params.set('q', debouncedQuery)
+    params.set('limit', String(CUSTOMERS_PAGE_SIZE))
+    params.set('offset', String(page * CUSTOMERS_PAGE_SIZE))
+    apiFetch(`/api/admin/customers?${params.toString()}`)
+      .then((res: AdminCustomerListResponse) => {
+        if (cancelled) return
+        setData(res)
+        setError(null)
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return
+        setError(err instanceof Error ? err.message : 'load_failed')
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoading(false)
+          hasLoadedRef.current = true
+        }
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [debouncedQuery, page, refreshKey])
+
+  const reload = useCallback(() => setRefreshKey((k) => k + 1), [])
+  const totalPages = data ? Math.max(1, Math.ceil(data.count / CUSTOMERS_PAGE_SIZE)) : 1
+
+  return {
+    query,
+    setQuery,
+    customers: data?.customers ?? [],
+    count: data?.count ?? 0,
+    page,
+    setPage,
+    totalPages,
+    pageSize: CUSTOMERS_PAGE_SIZE,
+    loading,
+    error,
+    reload,
+  }
+}
+
+/**
+ * Backs the Clientes detail view (OPS-070). Fetches the composed READ-ONLY
+ * GET /api/admin/customers/:id when an id is selected; a null id clears the
+ * panel. A 404 (unknown id) is surfaced distinctly (`notFound`) so the page can
+ * render an honest "não encontrado" state instead of a generic error toast.
+ */
+export function useAdminCustomer(id: string | null) {
+  const [customer, setCustomer] = useState<AdminCustomerDetail | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [notFound, setNotFound] = useState(false)
+
+  useEffect(() => {
+    // No selection → nothing to fetch. State is NOT reset here (that would be a
+    // cascading set-state-in-effect); the "no selection" view is DERIVED below.
+    if (!id) return
+    let cancelled = false
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- load transition for the newly-selected id
+    setLoading(true)
+    setNotFound(false)
+    setError(null)
+    apiFetch(`/api/admin/customers/${encodeURIComponent(id)}`)
+      .then((data: AdminCustomerDetail) => {
+        if (cancelled) return
+        setCustomer(data)
+        setError(null)
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return
+        const msg = err instanceof Error ? err.message : 'load_failed'
+        if (msg.includes('404')) {
+          setNotFound(true)
+          setCustomer(null)
+        }
+        setError(msg)
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [id])
+
+  // Derive the empty state for "no selection" so deselecting never depends on a
+  // reset effect (and a stale customer never flashes when id is cleared).
+  if (!id) {
+    return { customer: null, loading: false, error: null, notFound: false }
+  }
+  return { customer, loading, error, notFound }
 }
 
 // ── Canal Operacional (ops-actor chat — BKL-087) ─────────────────────────────

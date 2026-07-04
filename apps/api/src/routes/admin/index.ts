@@ -34,6 +34,8 @@
 // GET  /api/admin/kitchen/tickets         — live kitchen ticket board (oldest-first) (manager)
 // GET  /api/admin/ops/snapshot            — composed ops situational snapshot (manager) — NEW-040
 // POST /api/admin/ops/chat                 — ops-actor channel (staff, JWT-only) — NEW-032 slice B
+// GET  /api/admin/customers                — read-only customer search (manager) — OPS-070
+// GET  /api/admin/customers/:id            — composed customer view (manager) — OPS-070
 
 import { timingSafeEqual } from "node:crypto";
 import type { FastifyInstance } from "fastify";
@@ -65,6 +67,7 @@ import { adminCaixaRoutes } from "./caixa.js";
 import { adminKitchenRoutes } from "./kitchen.js";
 import { adminOpsSnapshotRoutes } from "./ops-snapshot.js";
 import { adminOpsChatRoutes } from "./ops-chat.js";
+import { adminCustomerRoutes } from "./customers.js";
 import { broadcastRoutes } from "./broadcast.js";
 
 // ── W4 P1-H — API-key role registry ─────────────────────────────────────
@@ -239,5 +242,6 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
   await server.register(adminKitchenRoutes);
   await server.register(adminOpsSnapshotRoutes);
   await server.register(adminOpsChatRoutes);
+  await server.register(adminCustomerRoutes);
   await server.register(broadcastRoutes);
 }

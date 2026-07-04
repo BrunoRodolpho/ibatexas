@@ -440,6 +440,63 @@ export function createCustomerService(options?: CustomerServiceOptions) {
       })
     },
 
+    /**
+     * READ-ONLY single-customer read for the admin detail view (OPS-070).
+     * Unlike `getById` (which `findUniqueOrThrow`s — the /auth/me contract),
+     * this returns `null` when the id is unknown so the manager route can 404
+     * cleanly instead of surfacing a 500. Includes the customer's preferences
+     * (dietary / allergen exclusions) in the same query. Pure read.
+     */
+    async getByIdForAdmin(customerId: string) {
+      return prisma.customer.findUnique({
+        where: { id: customerId },
+        include: { preferences: true },
+      })
+    },
+
+    /**
+     * READ-ONLY admin customer search (OPS-070). Manager-gated at the route.
+     * Case-insensitive partial match on name / email, plus a raw substring on
+     * phone, ordered most-recent-first and paginated. Returns a compact list
+     * projection (never the CPF — that PII is only read on the single-customer
+     * detail path, and even there rendered masked). No write, no upsert.
+     */
+    async searchForAdmin(input?: { q?: string; limit?: number; offset?: number }) {
+      const limit = Math.min(Math.max(input?.limit ?? 20, 1), 50)
+      const offset = Math.max(input?.offset ?? 0, 0)
+      const q = input?.q?.trim()
+      const where =
+        q && q.length > 0
+          ? {
+              OR: [
+                { name: { contains: q, mode: "insensitive" as const } },
+                { email: { contains: q, mode: "insensitive" as const } },
+                { phone: { contains: q } },
+              ],
+            }
+          : {}
+
+      const [customers, count] = await prisma.$transaction([
+        prisma.customer.findMany({
+          where,
+          orderBy: { createdAt: "desc" },
+          take: limit,
+          skip: offset,
+          select: {
+            id: true,
+            name: true,
+            phone: true,
+            email: true,
+            source: true,
+            createdAt: true,
+          },
+        }),
+        prisma.customer.count({ where }),
+      ])
+
+      return { customers, count }
+    },
+
     // ── Task 15: envelope-typed entry points ────────────────────────────
 
     /**
