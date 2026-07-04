@@ -85,6 +85,13 @@ export const DOMAIN_REFERENCE = [
   // reference data (staff rows likewise carry mutable fields) — so it belongs in
   // REFERENCE, preserved unless `--reference`/`--all`.
   "ingredient",
+  // NEW-005 daily specials / promo-of-the-day — a Medusa finished-good featured for a
+  // given business-day, optionally at a promo price with a pt-BR headline. AUTHORED
+  // config/reference data (a manager curates the day's specials, like the ingredient
+  // and recipe catalogs): a routine `db clean` must NOT nuke it. No FK to any other
+  // domain table (the product is Medusa-managed, held as a soft id), so ordering within
+  // this group is free — placed next to ingredient/recipe as sibling authored config.
+  "dailySpecial",
 ] as const
 
 /**

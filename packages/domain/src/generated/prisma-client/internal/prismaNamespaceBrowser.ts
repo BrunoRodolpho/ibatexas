@@ -76,6 +76,7 @@ export const ModelName = {
   Ingredient: 'Ingredient',
   Recipe: 'Recipe',
   RecipeIngredient: 'RecipeIngredient',
+  DailySpecial: 'DailySpecial',
   WeeklySchedule: 'WeeklySchedule',
   Holiday: 'Holiday',
   ScheduleOverride: 'ScheduleOverride',
@@ -472,6 +473,20 @@ export const RecipeIngredientScalarFieldEnum = {
 } as const
 
 export type RecipeIngredientScalarFieldEnum = (typeof RecipeIngredientScalarFieldEnum)[keyof typeof RecipeIngredientScalarFieldEnum]
+
+
+export const DailySpecialScalarFieldEnum = {
+  id: 'id',
+  medusaProductId: 'medusaProductId',
+  date: 'date',
+  promoPriceCentavos: 'promoPriceCentavos',
+  headline: 'headline',
+  active: 'active',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+} as const
+
+export type DailySpecialScalarFieldEnum = (typeof DailySpecialScalarFieldEnum)[keyof typeof DailySpecialScalarFieldEnum]
 
 
 export const WeeklyScheduleScalarFieldEnum = {
