@@ -62,6 +62,7 @@ import {
 } from "@adjudicate/audit"
 import { createPostgresSink } from "@adjudicate/audit-postgres"
 import type { AuditRecord } from "@adjudicate/core"
+import { attachAuditSignature, getAuditSigner } from "./audit-signer.js"
 
 // Re-export `AuditSink` so wrapper-call sites can `import type { AuditSink }
 // from "@ibatexas/audit-sink"` without reaching into `@adjudicate/audit`
@@ -464,10 +465,21 @@ function buildSink(deps: AuditSinkDependencies): AuditSink {
   return {
     async emit(record: AuditRecord): Promise<void> {
       const redacted = deps.redactor.redact(record)
+      // AUT-025 — sign AFTER redaction (the redactor recomputed `auditHash`
+      // and dropped any earlier signature), so the signature commits to the
+      // FINAL persisted `audit_hash`. Deliberately OUTSIDE the fail-open
+      // `try` below: a signer failure is fail-CLOSED (it propagates so an
+      // awaited kernel-verb caller degrades to REFUSE rather than persisting an
+      // unsigned governance record), unlike a durable-sink I/O failure which
+      // fails open into spill. The boot self-test (`resolveAuditSignerFromEnv`)
+      // is what makes a runtime signer throw a can't-happen. No signer
+      // configured ⇒ records stay unsigned (dev / OSS posture).
+      const signer = getAuditSigner()
+      const toEmit = signer ? attachAuditSignature(redacted, signer) : redacted
       const emitStart = Date.now()
       const emittedAtIso = record.at
       try {
-        await buffered.emit(redacted)
+        await buffered.emit(toEmit)
         recordLag(deps, emittedAtIso, emitStart, "postgres")
       } catch (err) {
         recordLag(deps, emittedAtIso, emitStart, "spill")
@@ -590,3 +602,23 @@ export {
   type AuditRedactor,
   type AuditRedactorOptions,
 } from "./audit-redactor.js"
+
+// AUT-025 — ed25519 audit-record signing. The signer is composed into the
+// sink post-redaction (see `buildSink`); apps/api resolves it from env at boot
+// (`resolveAuditSignerFromEnv`, fail-closed) and registers it via
+// `__setAuditSigner`. The verifier + key parsers back the `ibx kernel
+// audit-verify` read path.
+export {
+  AUDIT_ED25519_ALG,
+  attachAuditSignature,
+  buildEd25519AuditSigner,
+  makeEd25519SignatureVerifier,
+  parseEd25519PrivateKey,
+  parseEd25519PublicKey,
+  resolveAuditSignerFromEnv,
+  getAuditSigner,
+  __setAuditSigner,
+  __auditSignerResolved,
+  __resetAuditSigner,
+  type ResolveAuditSignerInput,
+} from "./audit-signer.js"

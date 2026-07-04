@@ -28,8 +28,10 @@
 // for the pattern.
 
 import {
+  __setAuditSigner,
   __setAuditSinkDependencies,
   buildAuditSinkDependencies,
+  resolveAuditSignerFromEnv,
 } from "@ibatexas/audit-sink"
 import { getRedisClient } from "@ibatexas/tools"
 import { prisma } from "@ibatexas/domain"
@@ -58,6 +60,23 @@ export async function bootstrapAuditSinkDI(
     secret: process.env.AUDIT_REDACT_SECRET,
     log,
   });
+
+  // AUT-025 — resolve the ed25519 audit signer BEFORE any record is composed.
+  // Fail-closed in production (absent/invalid key throws here, so start()'s
+  // catch exits non-zero rather than serving traffic that persists unsigned
+  // rows). The boot self-test (sign+verify round-trip) means a bad key fails
+  // the boot, never a per-request EXECUTE. Registered on the audit-sink leaf so
+  // `getAuditSink()`'s post-redaction signing seam picks it up for EVERY emit
+  // path (kernel-verb bridge, `withAdjudicate` domain services, subscribers,
+  // jobs).
+  __setAuditSigner(
+    resolveAuditSignerFromEnv({
+      nodeEnv: process.env.NODE_ENV,
+      privateKey: process.env.AUDIT_SIGNING_PRIVATE_KEY,
+      keyId: process.env.AUDIT_SIGNING_KEY_ID,
+      log,
+    }),
+  );
 
   // Resolve Redis best-effort. If Redis is unreachable at boot, fall
   // back to the leaf's in-memory spill storage — production deployments
