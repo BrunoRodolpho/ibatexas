@@ -527,6 +527,13 @@ export const ROSTER_DRIFT_CONTEXTS: ReadonlyArray<RosterDriftContext> = [
 const ADVERTISED_NOT_REGISTERED_WHITELIST: ReadonlySet<string> = new Set([
   "staff:reservation.checkin",
   "staff:reservation.complete",
+  // NEW-032 slice C1: `product.availability.set` is the @ibatexas/pack-ops
+  // staff-plane verb. Its planner advertises it under the synthetic staff
+  // probe (staffId set), but it is NOT a chat tool — the ops persona proposes
+  // it through the future ops conductor, never the customer/LLM chat surface,
+  // so it has no registered chat tool. Advertised-but-unregistered here is
+  // EXPECTED, not drift — same rationale as the reservation staff kinds above.
+  "staff:product.availability.set",
 ]);
 
 export interface ToolRosterDriftOptions {

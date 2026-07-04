@@ -41,6 +41,7 @@ const FIRST_PARTY_PACK_SPECS = [
   ["@ibatexas/pack-whatsapp", "whatsappPack"],
   ["@ibatexas/pack-customer-onboarding", "customerOnboardingPack"],
   ["@ibatexas/pack-payments", "paymentsPack"],
+  ["@ibatexas/pack-ops", "opsPack"],
   ["@adjudicate/pack-payments-pix", "paymentsPixPack"],
 ] as const
 

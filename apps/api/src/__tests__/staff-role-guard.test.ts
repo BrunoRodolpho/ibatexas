@@ -5,9 +5,10 @@
  *   - engagement is by the `admin:` sessionId NAMESPACE, not by kind: customer /
  *     LLM / managed-agent (`agent:`) / system-subscriber
  *     (`${sourceSubject}:${eventId}`, incl. incident.ticket.open) traffic is
- *     inert (null), even for the seven staff-plane kinds;
- *   - per-role allow/deny for each of the seven kinds (ATTENDANT is refused on
- *     payment.refund.issue and the three reservation kinds; OWNER/MANAGER pass);
+ *     inert (null), even for the eight staff-plane kinds;
+ *   - per-role allow/deny for each of the eight kinds (ATTENDANT is refused on
+ *     payment.refund.issue, product.availability.set and the three reservation
+ *     kinds; OWNER/MANAGER pass);
  *   - fail-closed on the staff plane: absent role, unknown role value, and an
  *     unmatrixed kind all REFUSE with the stable `staff_role_violation` code and
  *     a role-opaque pt-BR message (SCN-125, zero info leak);
@@ -44,7 +45,7 @@ import {
 
 type Bundle = PolicyBundle<string, unknown, unknown>;
 
-const THE_SEVEN = [
+const THE_STAFF_KINDS = [
   "order.status.transition",
   "payment.status.transition",
   "payment.refund.issue",
@@ -52,6 +53,8 @@ const THE_SEVEN = [
   "reservation.checkin",
   "reservation.complete",
   "reservation.cancel",
+  // NEW-032 slice C1 — the ops-plane availability verb ({OWNER,MANAGER}).
+  "product.availability.set",
 ] as const;
 
 /** A minimal staff-plane envelope; the guard never inspects payload/taint. */
@@ -89,7 +92,7 @@ const guard = createStaffRoleGuard(STAFF_ROLE_CAPABILITY_MATRIX);
 // ── Engagement: `admin:` namespace only ─────────────────────────────────────
 
 describe("createStaffRoleGuard — engagement by `admin:` namespace", () => {
-  it("is inert (null) for every non-staff sessionId shape, even for the seven kinds", () => {
+  it("is inert (null) for every non-staff sessionId shape, even for the eight kinds", () => {
     const nonStaff = [
       "cust_001", // customer principal
       "hashed:ab12cd34", // redacted chat namespace
@@ -99,7 +102,7 @@ describe("createStaffRoleGuard — engagement by `admin:` namespace", () => {
       "administrator:staff_1", // near-miss prefix (NOT `admin:`)
     ];
     for (const sessionId of nonStaff) {
-      for (const kind of THE_SEVEN) {
+      for (const kind of THE_STAFF_KINDS) {
         // Even with a role present, a non-`admin:` sessionId is untouched.
         expect(guard(nonStaffEnv(kind, sessionId, "ATTENDANT"), {})).toBeNull();
       }
@@ -121,7 +124,7 @@ describe("createStaffRoleGuard — engagement by `admin:` namespace", () => {
 // ── Per-role × per-kind allow / deny (code-truth) ───────────────────────────
 
 describe("createStaffRoleGuard — per-role capability matrix (code-truth)", () => {
-  for (const kind of THE_SEVEN) {
+  for (const kind of THE_STAFF_KINDS) {
     const allowedRoles = new Set<string>(STAFF_KIND_ALLOWED_ROLES[kind]);
     for (const role of STAFF_ROLES) {
       const shouldAllow = allowedRoles.has(role);
@@ -151,9 +154,9 @@ describe("createStaffRoleGuard — per-role capability matrix (code-truth)", () 
     }
   });
 
-  it("MANAGER and OWNER pass every one of the seven kinds", () => {
+  it("MANAGER and OWNER pass every one of the eight kinds", () => {
     for (const role of ["OWNER", "MANAGER"] as const) {
-      for (const kind of THE_SEVEN) {
+      for (const kind of THE_STAFF_KINDS) {
         expect(guard(staffEnv(kind, role), {})).toBeNull();
       }
     }
@@ -244,16 +247,16 @@ describe("createStaffRoleGuard — determinism", () => {
 // ── Matrix structure (derivation is code-truth) ─────────────────────────────
 
 describe("STAFF_ROLE_CAPABILITY_MATRIX (derived structure)", () => {
-  it("the staff-plane surface is EXACTLY the seven kinds", () => {
-    expect([...STAFF_PLANE_KINDS].sort()).toEqual([...THE_SEVEN].sort());
+  it("the staff-plane surface is EXACTLY the eight staff kinds", () => {
+    expect([...STAFF_PLANE_KINDS].sort()).toEqual([...THE_STAFF_KINDS].sort());
   });
 
-  it("OWNER and MANAGER may propose all seven; ATTENDANT only the three requireStaff kinds", () => {
+  it("OWNER and MANAGER may propose all eight; ATTENDANT only the three requireStaff kinds", () => {
     expect([...STAFF_ROLE_CAPABILITY_MATRIX.OWNER].sort()).toEqual(
-      [...THE_SEVEN].sort(),
+      [...THE_STAFF_KINDS].sort(),
     );
     expect([...STAFF_ROLE_CAPABILITY_MATRIX.MANAGER].sort()).toEqual(
-      [...THE_SEVEN].sort(),
+      [...THE_STAFF_KINDS].sort(),
     );
     expect([...STAFF_ROLE_CAPABILITY_MATRIX.ATTENDANT].sort()).toEqual(
       [

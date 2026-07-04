@@ -44,7 +44,7 @@ import { AGENT_REGISTRY } from "./registry.js"
 
 /**
  * The kernel-adjudicable intent-kind universe an agent may declare against:
- * the five composed first-party packs (`composedIntentKinds()`, runtime-
+ * the six composed first-party packs (`composedIntentKinds()`, runtime-
  * derived so it can never drift from the pack objects) ∪ the platform
  * adopter pack `@adjudicate/pack-payments-pix` (`pix.charge.*` — composed
  * separately by the kernel boot roster, deliberately NOT in

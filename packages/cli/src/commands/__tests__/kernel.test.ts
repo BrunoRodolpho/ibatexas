@@ -80,11 +80,12 @@ describe("ibx kernel status", () => {
     expect(parsed).toHaveProperty("audit")
     // claustrum-on-dev WS9: KNOWN_INTENT_KINDS is now sourced from the
     // `@ibatexas/intent-kinds` leaf package (post W5 Pack expansion), which
-    // composes 64 kinds across six first-party Packs + the PIX adopter Pack
+    // composes 65 kinds across the first-party Packs + the PIX adopter Pack
     // (orders 22, reservations 8, whatsapp 5 incl. BKL-030
     // whatsapp.handoff.request, pix 3, payments 17, customer-onboarding 8,
-    // loyalty 1). The pre-cutover `32` was stale.
-    expect(parsed.knownIntentKinds.count).toBe(64)
+    // ops 1 (NEW-032 product.availability.set), loyalty 1). The pre-cutover
+    // `32` was stale.
+    expect(parsed.knownIntentKinds.count).toBe(65)
   })
 
   it("renders human-readable text when --json is absent", async () => {
@@ -98,16 +99,16 @@ describe("ibx kernel status", () => {
     expect(out).toContain("Audit sink")
   })
 
-  it("reports the full Pack roster count (6 packs) in text mode", async () => {
-    // The PIX adopter Pack lifts the canonical roster from 5 to 6. The count
-    // derives from FIRST_PARTY_PACK_SPECS, so it stays honest as Packs are
-    // added — regression guard for the previously-hardcoded stale "5".
+  it("reports the full Pack roster count (7 packs) in text mode", async () => {
+    // The PIX adopter Pack + the NEW-032 ops Pack lift the canonical roster to
+    // 7. The count derives from FIRST_PARTY_PACK_SPECS, so it stays honest as
+    // Packs are added — regression guard for the previously-hardcoded stale "5".
     await cmd.parseAsync(["status"], { from: "user" })
     const out = stdout.getOutput()
-    expect(out).toMatch(/em\s+6\s+packs/)
+    expect(out).toMatch(/em\s+7\s+packs/)
   })
 
-  it("includes all 64 KNOWN_INTENT_KINDS in the JSON list", async () => {
+  it("includes all 65 KNOWN_INTENT_KINDS in the JSON list", async () => {
     await cmd.parseAsync(["status", "--json"], { from: "user" })
     const out = stdout.getOutput()
     const parsed = JSON.parse(out)
@@ -118,6 +119,8 @@ describe("ibx kernel status", () => {
     expect(parsed.knownIntentKinds.kinds).toContain("whatsapp.handoff.request")
     expect(parsed.knownIntentKinds.kinds).toContain("customer.create")
     expect(parsed.knownIntentKinds.kinds).toContain("pix.charge.create")
+    // NEW-032 slice C1: the staff-plane ops verb.
+    expect(parsed.knownIntentKinds.kinds).toContain("product.availability.set")
   })
 
   it("groups intent kinds by domain prefix in text mode", async () => {

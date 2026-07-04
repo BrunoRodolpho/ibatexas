@@ -6,6 +6,7 @@
   "digests": {
     "agent/pix-payment-failure-remediation": "966813a40cdbd77a4556ca80f2f8bb32654f6e36f32d34ed8ea637dda140bfcb",
     "ibatexas/pack-customer-onboarding": "203366b62ca1b7c438803ed5907e2ff43897b5b9e07d62c65246a49ab4e6b4fc",
+    "ibatexas/pack-ops": "4686e5bd73447ec55106ed26c3bf63d4bc6074e404fdedfe2b0426d7d0a6afd5",
     "ibatexas/pack-orders": "8247ff2824556956a7fa7a1170cc2b04b1aaa2cc6bcabdcd0c8108632bd618f7",
     "ibatexas/pack-payments": "b508b35667e5ca69ed61d95a0e862e11657a6cc8f32b442b8d0dd1111ab7cea5",
     "ibatexas/pack-reservations": "c0b9c555e776c2b80a629ca9c0e655d5e46a3ab42cda852beac8cd560ff0a163",
@@ -179,6 +180,62 @@
         "nist-ai-rmf"
       ],
       "bomDigest": "203366b62ca1b7c438803ed5907e2ff43897b5b9e07d62c65246a49ab4e6b4fc"
+    },
+    {
+      "bomVersion": "1.0",
+      "packId": "ibatexas/pack-ops",
+      "packVersion": "1.0.0",
+      "contract": "v0",
+      "kernelMinVersion": "1.0.0",
+      "kernelVersion": "1.3.0",
+      "fingerprint": "d37b61fbe91a2bcc0dc33877fae7e2dc5ed3ac077f516058b6755ed3b5ec4958",
+      "intents": [
+        "product.availability.set"
+      ],
+      "signals": [],
+      "basisCodes": [
+        "ops.admin_session_required",
+        "ops.availability.payload_invalid",
+        "ops.availability.product_not_found"
+      ],
+      "tools": [
+        {
+          "name": "product.availability.set"
+        }
+      ],
+      "rag": [],
+      "promptHashes": [],
+      "guardrails": [
+        {
+          "basisCode": "ops.admin_session_required",
+          "category": "ops"
+        },
+        {
+          "basisCode": "ops.availability.payload_invalid",
+          "category": "ops"
+        },
+        {
+          "basisCode": "ops.availability.product_not_found",
+          "category": "ops"
+        }
+      ],
+      "conformance": {
+        "passed": true,
+        "total": 8,
+        "passedCount": 8,
+        "failedCount": 0,
+        "reportDigest": "4bc8e93e93cfb9d731aca48a0bfe40e53ad67499dd851a9c1367a9c0ae367d12"
+      },
+      "healthTier": "bronze",
+      "healthScore": {
+        "score": 9,
+        "maxScore": 15
+      },
+      "frameworks": [
+        "eu-ai-act",
+        "nist-ai-rmf"
+      ],
+      "bomDigest": "4686e5bd73447ec55106ed26c3bf63d4bc6074e404fdedfe2b0426d7d0a6afd5"
     },
     {
       "bomVersion": "1.0",

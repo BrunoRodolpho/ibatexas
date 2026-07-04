@@ -142,6 +142,17 @@ export interface ChangeAddressResult {
   readonly version: number
 }
 
+/**
+ * Author attribution for a note write. `author` is the service-facing actor
+ * surface (mapped to the narrower Prisma `OrderActor` enum); `authorId` is the
+ * optional staff/customer id recorded on the row. Shared by
+ * `addNoteFromEnvelope` and {@link OrderCommandService.writeAdjudicatedNote}.
+ */
+export interface NoteAuthorExtras {
+  readonly author: "customer" | "staff" | "system" | "llm"
+  readonly authorId?: string
+}
+
 // ── Service ─────────────────────────────────────────────────────────────────
 
 export interface OrderCommandService {
@@ -204,11 +215,29 @@ export interface OrderCommandService {
   addNoteFromEnvelope(
     envelope: IntentEnvelope<"order.note.add", OrderNoteAddPayload>,
     orderState: OrderState,
-    extras: {
-      readonly author: "customer" | "staff" | "system" | "llm"
-      readonly authorId?: string
-    },
+    extras: NoteAuthorExtras,
   ): Promise<AdjudicatedResult<AddNoteResult>>
+
+  /**
+   * Persist an OrderNote for an `order.note.add` the caller has ALREADY
+   * adjudicated. THE CALLER MUST HOLD A POSITIVE (EXECUTE/REWRITE) composed-
+   * router `Decision` for `order.note.add` — this method performs NO
+   * adjudication; it is the raw post-decision persistence body extracted from
+   * `addNoteFromEnvelope` (BKL-083 fork resolution, option b).
+   *
+   * The ops-plane note path adjudicates through the COMPOSED policy router
+   * (`policyForKind` — which carries `staffRoleGuard` + the staff-role
+   * matrix). Re-running `addNoteFromEnvelope` there would double-adjudicate
+   * against the RAW `ordersPolicyBundle` (which does NOT carry those adopter
+   * guards), so a governed ops caller uses this method to persist without a
+   * second, weaker adjudication. The direct `prisma.orderNote.create` stays
+   * inside `packages/domain/src/services/` — the sanctioned owner path per the
+   * bypass-detection gate.
+   */
+  writeAdjudicatedNote(
+    payload: OrderNoteAddPayload,
+    extras: NoteAuthorExtras,
+  ): Promise<AddNoteResult>
 
   /**
    * Switch the projection's `deliveryType`. Replaces the rogue
@@ -267,6 +296,37 @@ function mapNoteAuthorToActor(
   if (author === "staff") return "admin" as PrismaActor
   if (author === "llm") return "system" as PrismaActor
   return author as PrismaActor
+}
+
+/**
+ * The post-adjudication OrderNote persistence body — the author-mapping +
+ * `prisma.orderNote.create` extracted from `addNoteFromEnvelope` so it can be
+ * shared with governed ops callers that already adjudicated `order.note.add`
+ * through the composed router (BKL-083 option b).
+ *
+ * PRECONDITION: the caller holds a positive (EXECUTE/REWRITE) `Decision`.
+ * Performs NO adjudication. Pure persistence: same write, same result mapping
+ * as the previous inline executor. Module-scoped (uses only the module `prisma`
+ * client + `mapNoteAuthorToActor`), referenced by BOTH the exposed service
+ * method and `addNoteFromEnvelope`'s post-EXECUTE executor.
+ */
+async function writeAdjudicatedNote(
+  payload: OrderNoteAddPayload,
+  extras: NoteAuthorExtras,
+): Promise<AddNoteResult> {
+  const noteActor: PrismaActor = mapNoteAuthorToActor(extras.author)
+  const note = await prisma.orderNote.create({
+    data: {
+      orderId: payload.orderId,
+      author: noteActor,
+      authorId: extras.authorId,
+      content: payload.body,
+      ...(payload.isInternal === undefined
+        ? {}
+        : { isInternal: payload.isInternal }),
+    },
+  })
+  return { noteId: note.id, orderId: payload.orderId }
 }
 
 export function createOrderCommandService(
@@ -528,37 +588,23 @@ export function createOrderCommandService(
       )
     },
 
+    writeAdjudicatedNote,
+
     async addNoteFromEnvelope(envelope, orderState, extras) {
       // Note-add goes through @ibatexas/pack-orders (the LLM-facing Pack).
       // The orderState is the same shape the Pack's policies expect — the
       // caller (cart tool) projects it from the order projection.
       //
-      // Author mapping — the Prisma OrderActor enum is narrower than the
-      // service-facing actor surface (it has no `staff` or `llm` variant);
-      // we map `staff`→`admin` (staff acting via admin path) and
-      // `llm`→`system` (LLM proposals on behalf of system actions). The
-      // envelope's `actor.principal` is the authoritative provenance for
-      // audit / replay; the OrderActor enum value is the projection-row
-      // attribution.
-      const noteActor: PrismaActor = mapNoteAuthorToActor(extras.author)
+      // The POST-adjudication write (author mapping + prisma.orderNote.create)
+      // is `writeAdjudicatedNote` — shared with governed ops callers that
+      // adjudicated through the COMPOSED router (BKL-083 option b). Here the
+      // note is adjudicated against the RAW ordersPolicyBundle FIRST, then the
+      // executor persists via the same shared body — behavior-preserving.
       return withAdjudicate(
         envelope,
         orderState,
         ordersPolicyBundle,
-        async (payload) => {
-          const note = await prisma.orderNote.create({
-            data: {
-              orderId: payload.orderId,
-              author: noteActor,
-              authorId: extras.authorId,
-              content: payload.body,
-              ...(payload.isInternal === undefined
-                ? {}
-                : { isInternal: payload.isInternal }),
-            },
-          })
-          return { noteId: note.id, orderId: payload.orderId }
-        },
+        (payload) => writeAdjudicatedNote(payload, extras),
         adjudicateOptions,
       )
     },

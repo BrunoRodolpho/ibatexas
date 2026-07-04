@@ -28,8 +28,9 @@
  *
  * ── Code-truth derivation ────────────────────────────────────────────────────
  * `resolveActorRole` (Part B) threads the authenticated role onto
- * `IntentActor.role` for EXACTLY SEVEN staff-plane kinds. For each, the allowed
- * role set = UNION of the preHandler gates of every admin route that builds it:
+ * `IntentActor.role` for the SEVEN HTTP-route staff-plane kinds. For each, the
+ * allowed role set = UNION of the preHandler gates of every admin route that
+ * builds it:
  *   - requireStaff (JWT, any staff role)      ⇒ {OWNER, MANAGER, ATTENDANT}
  *   - requireManager / requireManagerRole     ⇒ {OWNER, MANAGER}
  *   - requireOwnerRole / inline OWNER check   ⇒ {OWNER}
@@ -37,6 +38,15 @@
  * their union (matches current reachability — a defense-in-depth mirror must not
  * block anything the route layer allows). Per-row `code-truth` comments cite the
  * exact routes + preHandlers below.
+ *
+ * The EIGHTH kind, `product.availability.set` (NEW-032 slice C1), is the one
+ * forward-looking row: no admin HTTP route builds it TODAY (it is the
+ * @ibatexas/pack-ops verb the future ops conductor will adjudicate through the
+ * composed router — the exact seam this matrix exists for). Its band is derived
+ * the same way — the UNION of the gates over the routes that govern the same
+ * operation manually — which today is the products PATCH `requireManagerRole`
+ * ⇒ {OWNER,MANAGER}. It is admitted here (not deferred) precisely because the
+ * composed-router seam is where this matrix is live.
  *
  * ── Deliberately EXCLUDED ────────────────────────────────────────────────────
  * `incident.ticket.open` / `incident.ticket.close` and every subscriber / job /
@@ -93,13 +103,22 @@ export const STAFF_KIND_ALLOWED_ROLES = {
   // code-truth:
   //   POST  /api/admin/reservations/:id/cancel    reservations.ts requireManagerRole ⇒ {OWNER,MANAGER}
   "reservation.cancel": ["OWNER", "MANAGER"],
+
+  // code-truth (NEW-032 slice C1 — the ops-plane governed availability verb):
+  //   PATCH /api/admin/products/:id               products.ts     requireManagerRole ⇒ {OWNER,MANAGER}
+  // `product.availability.set` is the @ibatexas/pack-ops verb the future ops
+  // conductor will adjudicate; its role band mirrors the admin products PATCH
+  // route's requireManagerRole preHandler (products.ts:112) — the same gate
+  // that governs a manual availability toggle today. ATTENDANT is excluded
+  // (no requireStaff-reachable products route builds this kind).
+  "product.availability.set": ["OWNER", "MANAGER"],
 } as const satisfies Record<string, readonly StaffActorRole[]>;
 
-/** The exact staff-plane verb surface (the seven kinds keyed above). */
+/** The exact staff-plane verb surface (the eight kinds keyed above). */
 export type StaffPlaneKind = keyof typeof STAFF_KIND_ALLOWED_ROLES;
 
 /**
- * The authoritative staff-plane verb surface — EXACTLY the seven kinds. The
+ * The authoritative staff-plane verb surface — EXACTLY the eight kinds. The
  * guard fails closed for any `admin:` envelope whose kind is outside this set
  * (de-vacuum: the matrix IS the staff-plane verb surface).
  */
@@ -120,7 +139,7 @@ export const STAFF_ROLES: readonly StaffActorRole[] = [
  * `createStaffRoleGuard` consumes: a staff-plane envelope is authorized iff its
  * `actor.role` is a known role AND the kind is in that role's set.
  *
- * Current contents (derived): OWNER + MANAGER may propose all seven; ATTENDANT
+ * Current contents (derived): OWNER + MANAGER may propose all eight; ATTENDANT
  * may propose only the three requireStaff-reachable kinds
  * (order.status.transition, payment.status.transition, order.note.add).
  */

@@ -1,8 +1,8 @@
 /**
- * @ibatexas/packs-composed — the SINGLE composition site for the five
+ * @ibatexas/packs-composed — the SINGLE composition site for the six
  * first-party Packs.
  *
- * This leaf package is the only place in the codebase that names the five
+ * This leaf package is the only place in the codebase that names the six
  * `@ibatexas/pack-*` packages together. The Conductor composition root
  * (`apps/api/src/claustrum-bootstrap.ts`) consumes the lists below instead of
  * inlining its own 5-pack arrays; the CLI / journeys gates import the same
@@ -11,7 +11,7 @@
  * package so both apps/api and packages/cli can import it without a
  * dependency cycle.
  *
- * Scope: the five FIRST-PARTY packs only. The platform adopter pack
+ * Scope: the six FIRST-PARTY packs only. The platform adopter pack
  * `@adjudicate/pack-payments-pix` (ADR #13) is a registry dep installed by
  * each composition root directly — it is not first-party and the kernel
  * `installPack` roster, not this list, is its source of truth.
@@ -26,6 +26,7 @@ import {
   customerOnboardingPack,
   customerOnboardingCapabilityPlanner,
 } from "@ibatexas/pack-customer-onboarding"
+import { opsPack, opsCapabilityPlanner } from "@ibatexas/pack-ops"
 import { ordersPack, ordersCapabilityPlanner } from "@ibatexas/pack-orders"
 import {
   paymentsPack,
@@ -43,11 +44,15 @@ import {
 // ── Composed pack list ───────────────────────────────────────────────────────
 
 /**
- * The five first-party Packs, in canonical order (mirrors the install order
+ * The six first-party Packs, in canonical order (mirrors the install order
  * of the kernel boot anchors). Kept as the literal tuple type — consumers
  * that need the heterogeneous-erased `PackV0<string, unknown, unknown,
  * unknown>` shape (e.g. `buildIbatexasPolicyPacks`) cast at their boundary,
  * where the erased type lives.
+ *
+ * `opsPack` (NEW-032 slice C1) is appended last — it owns the staff-plane ops
+ * verb surface (`product.availability.set`), disjoint from the five
+ * customer/egress packs, so ordering among them is not load-bearing.
  */
 export const IBATEXAS_COMPOSED_PACKS = [
   ordersPack,
@@ -55,9 +60,10 @@ export const IBATEXAS_COMPOSED_PACKS = [
   reservationsPack,
   customerOnboardingPack,
   whatsappPack,
+  opsPack,
 ] as const
 
-/** One of the five composed first-party pack objects. */
+/** One of the six composed first-party pack objects. */
 export type ComposedPack = (typeof IBATEXAS_COMPOSED_PACKS)[number]
 
 // ── Composed capability-planner list ─────────────────────────────────────────
@@ -76,6 +82,7 @@ export const IBATEXAS_COMPOSED_CAPABILITY_PLANNERS: ReadonlyArray<
   reservationsCapabilityPlanner,
   customerOnboardingCapabilityPlanner,
   whatsappCapabilityPlanner,
+  opsCapabilityPlanner,
 ]
 
 // ── Intent-kind union ────────────────────────────────────────────────────────

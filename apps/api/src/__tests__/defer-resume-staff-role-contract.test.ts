@@ -15,11 +15,11 @@
 //   actor.role. §3b of the ADR enumerates three DEFER producers —
 //   order.checkout.create (deferOnPendingPix), customer.anonymize
 //   (deferAnonymizeForGrace) and the installed pixPolicyBundle's pix.charge.create
-//   (deferChargeCreate) — and NONE of the seven staff-plane kinds can produce a
+//   (deferChargeCreate) — and NONE of the staff-plane kinds can produce a
 //   DEFER through the bundle that owns it.
 //
-// De-vacuified over the prior form of this test, which adjudicated all seven
-// staff kinds against a SINGLE bundle (`ordersPolicyBundle`): for the five kinds
+// De-vacuified over the prior form of this test, which adjudicated all staff
+// kinds against a SINGLE bundle (`ordersPolicyBundle`): for the kinds
 // that pack does not own, its guards kind-mismatch and the envelope falls through
 // to `default: REFUSE`, so a DEFER producer added to the payments/reservations
 // bundle would never have been exercised. This version routes EACH staff kind to
@@ -168,9 +168,13 @@ function neutralWorld(): unknown {
 
 /**
  * An `admin:`-session, role-carrying staff envelope — the shape Part B threads
- * for the seven staff kinds. Role MANAGER is permitted for all seven (so
+ * for the staff kinds. Role MANAGER is permitted for all of them (so
  * `staffRoleGuard` does not itself REFUSE, and the DEFER verdict is what is under
  * test). A superset payload keeps per-kind guards from reading `undefined`.
+ *
+ * NOTE: for `product.availability.set` this superset payload is not a valid
+ * ops payload (it carries no `productId`/`available`), so the ops pack REFUSEs
+ * it at the business phase — still not a DEFER, which is all this contract pins.
  */
 function staffEnvelope(kind: string): IntentEnvelope {
   return buildEnvelope({

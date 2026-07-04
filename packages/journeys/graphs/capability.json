@@ -3,13 +3,13 @@
   "graph": "capability",
   "meta": {
     "dangling": [],
-    "intentKinds": 64,
-    "packs": 5,
+    "intentKinds": 65,
+    "packs": 6,
     "personaContexts": [
       "authed-customer",
       "guest"
     ],
-    "planners": 5,
+    "planners": 6,
     "registeredTools": 18,
     "unadvertised": [
       "order.review.submit",
@@ -1194,6 +1194,28 @@
       }
     },
     {
+      "id": "intent:product.availability.set",
+      "type": "intent",
+      "label": "product.availability.set",
+      "meta": {
+        "advertisedContexts": [],
+        "chatDrivable": false,
+        "composedPack": "ibatexas/pack-ops",
+        "domain": "product",
+        "flags": [],
+        "knownKind": true,
+        "plausibleDecisions": [
+          "EXECUTE",
+          "REFUSE",
+          "ESCALATE",
+          "REQUEST_CONFIRMATION",
+          "DEFER",
+          "REWRITE"
+        ],
+        "staffRoute": false
+      }
+    },
+    {
       "id": "intent:reservation.cancel",
       "type": "intent",
       "label": "reservation.cancel",
@@ -1478,6 +1500,16 @@
       }
     },
     {
+      "id": "pack:ibatexas/pack-ops",
+      "type": "pack",
+      "label": "ibatexas/pack-ops",
+      "meta": {
+        "intentCount": 1,
+        "policyDefault": "REFUSE",
+        "version": "1.0.0"
+      }
+    },
+    {
       "id": "pack:ibatexas/pack-orders",
       "type": "pack",
       "label": "ibatexas/pack-orders",
@@ -1527,6 +1559,18 @@
           "guest": 0
         },
         "pack": "ibatexas/pack-customer-onboarding"
+      }
+    },
+    {
+      "id": "planner:ibatexas/pack-ops",
+      "type": "planner",
+      "label": "ibatexas/pack-ops capability planner",
+      "meta": {
+        "advertisedCounts": {
+          "authed-customer": 0,
+          "guest": 0
+        },
+        "pack": "ibatexas/pack-ops"
       }
     },
     {
@@ -1948,6 +1992,11 @@
       "type": "declares"
     },
     {
+      "from": "pack:ibatexas/pack-ops",
+      "to": "intent:product.availability.set",
+      "type": "declares"
+    },
+    {
       "from": "pack:ibatexas/pack-orders",
       "to": "intent:order.address.change",
       "type": "declares"
@@ -2210,6 +2259,11 @@
     {
       "from": "pack:ibatexas/pack-customer-onboarding",
       "to": "planner:ibatexas/pack-customer-onboarding",
+      "type": "plans"
+    },
+    {
+      "from": "pack:ibatexas/pack-ops",
+      "to": "planner:ibatexas/pack-ops",
       "type": "plans"
     },
     {

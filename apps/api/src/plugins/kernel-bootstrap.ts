@@ -41,6 +41,7 @@ import {
   type MetricsSink,
 } from "@adjudicate/core/kernel"
 import { customerOnboardingPack } from "@ibatexas/pack-customer-onboarding"
+import { opsPack } from "@ibatexas/pack-ops"
 import { ordersPack } from "@ibatexas/pack-orders"
 import { paymentsPack } from "@ibatexas/pack-payments"
 import { paymentsPixPack } from "@adjudicate/pack-payments-pix"
@@ -236,11 +237,17 @@ export function installFirstPartyPacks() {
   const whatsapp = installPack(whatsappPack)
   const customerOnboarding = installPack(customerOnboardingPack)
   const payments = installPack(paymentsPack)
+  // `@ibatexas/pack-ops` (NEW-032 slice C1) — the staff-plane ops verb pack.
+  // It declares `product.availability.set` (now in `KNOWN_INTENT_KINDS`);
+  // without installing it that kind resolves to no policy and
+  // `assertPackCoverage` refuses to boot. The pack's admin-session fence +
+  // the adopter staffRoleGuard (composed router) govern it.
+  const ops = installPack(opsPack)
   // `@adjudicate/pack-payments-pix` — the lighthouse PIX-charge-lifecycle Pack
   // (CLAUDE.md rule #9 / ADR #13). It declares the `pix.charge.*` wire-PSP
   // kinds carried in `KNOWN_INTENT_KINDS`; without installing it those kinds
   // resolve to no policy and `assertPackCoverage` refuses to boot. This
-  // mirrors the canonical six-pack roster in `ibx kernel` (cli loadPackIndex).
+  // mirrors the canonical pack roster in `ibx kernel` (cli loadPackIndex).
   const paymentsPix = installPack(paymentsPixPack)
 
   const recorder = getKernelMetricsRecorder()
@@ -249,9 +256,10 @@ export function installFirstPartyPacks() {
   recorder.recordPackInstall("whatsapp")
   recorder.recordPackInstall("customer-onboarding")
   recorder.recordPackInstall("payments")
+  recorder.recordPackInstall("ops")
   recorder.recordPackInstall("payments-pix")
 
-  return { orders, reservations, whatsapp, customerOnboarding, payments, paymentsPix }
+  return { orders, reservations, whatsapp, customerOnboarding, payments, ops, paymentsPix }
 }
 
 // ── Pack coverage assertion ──────────────────────────────────────────────────
@@ -376,6 +384,7 @@ export async function bootstrapKernel(server: FastifyInstance): Promise<void> {
           "whatsapp",
           "customer-onboarding",
           "payments",
+          "ops",
           "payments-pix",
         ],
       },
@@ -400,6 +409,7 @@ export async function bootstrapKernel(server: FastifyInstance): Promise<void> {
       installedPacks.whatsapp,
       installedPacks.customerOnboarding,
       installedPacks.payments,
+      installedPacks.ops,
       installedPacks.paymentsPix,
     ]
     assertPackCoverage(allPacks, PACK_REGISTERED_INTENT_KINDS)
