@@ -825,6 +825,9 @@ importers:
       '@anthropic-ai/sdk':
         specifier: ^0.82.0
         version: 0.82.0(zod@4.3.6)
+      '@ibatexas/domain':
+        specifier: workspace:*
+        version: link:../domain
       '@ibatexas/intent-kinds':
         specifier: workspace:*
         version: link:../intent-kinds

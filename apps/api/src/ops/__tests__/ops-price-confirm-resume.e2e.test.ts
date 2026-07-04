@@ -5,6 +5,11 @@
 // matchToParked driver. No DB/network — the model, the pricing reads, and the
 // Medusa price egress are fakes/spies.
 //
+// The fake-model + composed-router machinery is the SHARED WS9 harness
+// (./ops-e2e-harness.ts); this file supplies the price-specific resume projection
+// (buildOpsPriceResumeState) + resolver reads + tool spies, and asserts both the
+// egress AND the KERNEL facts (the captured AuditRecord) via the harness sink.
+//
 // Proves the whole confirm-gated flow:
 //   - OWNER "muda o preço da picanha pra 95": NAME resolved → pricing projected
 //     → UNTRUSTED taint CONFIRM overlay → REQUEST_CONFIRMATION → PARKED (asserted
@@ -18,54 +23,23 @@
 //   - an absurd price → REFUSE (out_of_range); nothing parks.
 
 import { describe, expect, it, vi } from "vitest";
-import { adjudicateAndAudit } from "@adjudicate/core/kernel";
-import {
-  buildEnvelope,
-  type AuditSink,
-  type Decision,
-  type IntentEnvelope,
-} from "@adjudicate/core";
-import {
-  handleTurn,
-  type Adjudicator,
-  type ChannelMessage,
-  type Completion,
-  type CompletionRequest,
-  type DeferredEnvelope,
-  type ModelProvider,
-  type ParkedEnvelope,
-  type Session,
-  type SessionLock,
-  type SessionPort,
-  type TelemetryPort,
-  type TenantResolver,
-} from "@claustrum/core";
-import { IBATEXAS_COMPOSED_PACKS } from "@ibatexas/packs-composed";
-import {
-  buildIbatexasPolicyPacks,
-  type ErasedPack,
-} from "../../claustrum/compose-policy-packs.js";
-import { composePolicyRouter } from "../../claustrum/capability-policy.js";
-import {
-  noopMemoryProvider,
-  noopGroundingProvider,
-} from "../../claustrum/noop-memory-grounding.js";
-import { composeOpsConductor } from "../ops-conductor.js";
-import { createOpsToolRegistry } from "../ops-tool-registry.js";
+import type { IntentEnvelope } from "@adjudicate/core";
 import {
   createOpsResolver,
   buildOpsPriceResumeState,
   type OpsResolverPriceProduct,
 } from "../ops-resolver.js";
-import { OpsSystemChannel } from "../ops-system-channel.js";
-
-const ROUTER = composePolicyRouter(
-  buildIbatexasPolicyPacks(
-    IBATEXAS_COMPOSED_PACKS as unknown as ReadonlyArray<ErasedPack>,
-  ) as never,
-);
-
-const noopSink = { emit: async () => {} } as unknown as AuditSink;
+import {
+  buildOpsTools,
+  composeOpsDeps,
+  makeAuditedAdjudicator,
+  makeCapturingAuditSink,
+  makeStatefulSession,
+  runOpsTurn,
+  scriptedModel,
+  type ScriptedToolCall,
+  type StaffRole,
+} from "./ops-e2e-harness.js";
 
 /** A single-variant, uniform-price product (the pricing snapshot the resolver +
  *  resume project, and whose variant the executor re-prices). Current R$89,00. */
@@ -81,232 +55,39 @@ const PICANHA: OpsResolverPriceProduct = {
 const pricingById = (id: string): OpsResolverPriceProduct | null =>
   id === "prod_picanha" ? PICANHA : null;
 
-// ── A REAL audited adjudicator over the composed router ──────────────────────
-function makeAdjudicator(): Adjudicator {
-  const adj: Adjudicator = {
-    adjudicate: async (envelope, state, policy) =>
-      (
-        await adjudicateAndAudit(
-          envelope as IntentEnvelope,
-          state as never,
-          policy as never,
-          { sink: noopSink },
-        )
-      ).decision,
-    adjudicatePlan: async (envelopes, state, policy, perStates) => {
-      const env = envelopes[0] as IntentEnvelope | undefined;
-      if (env === undefined) {
-        return (
-          await adjudicateAndAudit(
-            buildEnvelope({
-              kind: "noop",
-              payload: {},
-              actor: { principal: "system", sessionId: "system:x" },
-              taint: "SYSTEM",
-              nonce: "n",
-            }) as IntentEnvelope,
-            state as never,
-            policy as never,
-            { sink: noopSink },
-          )
-        ).decision;
-      }
-      return (
-        await adjudicateAndAudit(
-          env,
-          (perStates?.[0] ?? state) as never,
-          policy as never,
-          { sink: noopSink },
-        )
-      ).decision;
+function buildHarness(opts: { toolCalls: ReadonlyArray<ScriptedToolCall> }) {
+  const sink = makeCapturingAuditSink();
+  const session = makeStatefulSession();
+  const { tools, spies } = buildOpsTools(
+    {
+      medusaAdjudicated: vi.fn(async () => ({ product: { id: "prod_picanha" } })),
+      readProductBrlVariantIds: vi.fn(async (id: string) =>
+        id === "prod_picanha" ? ["var_picanha"] : null,
+      ),
     },
-    // The production resume path (buildAdjudicator.resume → enrichResumeState)
-    // for an admin: price change re-projects via buildOpsPriceResumeState. Mirror
-    // it here: FRESH pricing read by the parked (rewritten) productId + receipt.
-    resume: async (envelope, _state, policy, receipt) => {
-      const env = envelope as IntentEnvelope;
+    sink,
+  );
+  // The production resume path (buildAdjudicator.resume → enrichResumeState) for an
+  // admin price change re-projects via buildOpsPriceResumeState: FRESH pricing read
+  // by the parked (rewritten) productId + receipt.
+  const adjudicator = makeAuditedAdjudicator({
+    sink,
+    projectResumeState: (env: IntentEnvelope) => {
       const payload = (env.payload ?? {}) as Record<string, unknown>;
       const productId =
         typeof payload.productId === "string" ? payload.productId : "";
       const staffId = env.actor.sessionId.slice("admin:".length);
-      const opsState = buildOpsPriceResumeState(
+      return buildOpsPriceResumeState(
         productId === "" ? null : pricingById(productId),
         { staffId, tenantId: "ibatexas" },
       );
-      return (
-        await adjudicateAndAudit(env, opsState as never, policy as never, {
-          sink: noopSink,
-          ...(receipt ? { confirmationReceipt: receipt } : {}),
-        })
-      ).decision;
     },
-    replayEnvelopesByCustomerId: async () => [],
-    streamAuditByIntentHashPrefix: async function* () {},
-    getOutcomes: async () => [],
-    verifyAuditRecord: () => ({ ok: true }),
-  };
-  return adj;
-}
-
-// ── A STATEFUL in-memory session store (park/load/unpark/parkDeferred persist) ─
-function makeStatefulSession(): SessionPort & {
-  parksFor: (sessionId: string) => ParkedEnvelope[];
-  deferredFor: (sessionId: string) => DeferredEnvelope[];
-} {
-  const parks = new Map<string, ParkedEnvelope[]>();
-  const deferred = new Map<string, DeferredEnvelope[]>();
-  const sid = (customerId: string) => `system:${customerId}`;
-  return {
-    load: async (customerId) => {
-      const id = sid(customerId);
-      return {
-        id,
-        customerId,
-        channel: "system",
-        startedAt: "2026-07-04T00:00:00.000Z",
-        lastActivityAt: "2026-07-04T00:00:00.000Z",
-        pendingConfirmations: parks.get(id) ?? [],
-        deferredEnvelopes: deferred.get(id) ?? [],
-        activeGoals: [],
-        workingMemory: { summary: "", facts: [], updatedAt: "2026-07-04T00:00:00.000Z" },
-      } satisfies Session;
-    },
-    save: async () => {},
-    parkPendingConfirmation: async (sessionId, envelope, confirmationToken, userPrompt) => {
-      const list = parks.get(sessionId) ?? [];
-      list.push({
-        envelope: envelope as IntentEnvelope,
-        confirmationToken,
-        userPrompt,
-        parkedAt: "2026-07-04T12:00:00.000Z",
-      });
-      parks.set(sessionId, list);
-    },
-    parkDeferred: async (sessionId, envelope, signal, deferUntil, timeoutMs) => {
-      const list = deferred.get(sessionId) ?? [];
-      list.push({
-        envelope: envelope as IntentEnvelope,
-        signal,
-        deferUntil,
-        timeoutMs,
-        parkedAt: "2026-07-04T12:00:00.000Z",
-      });
-      deferred.set(sessionId, list);
-    },
-    unpark: async (sessionId, intentHash) => {
-      parks.set(
-        sessionId,
-        (parks.get(sessionId) ?? []).filter((p) => p.envelope.intentHash !== intentHash),
-      );
-      deferred.set(
-        sessionId,
-        (deferred.get(sessionId) ?? []).filter((d) => d.envelope.intentHash !== intentHash),
-      );
-    },
-    parksFor: (sessionId) => parks.get(sessionId) ?? [],
-    deferredFor: (sessionId) => deferred.get(sessionId) ?? [],
-  };
-}
-
-const noopTelemetry: TelemetryPort = {
-  emitTurn: async () => {},
-  emitLLMTrace: async () => {},
-  emitMemoryAccess: async () => {},
-};
-const inMemoryLock: SessionLock = {
-  acquire: async (key) => ({ key, release: async () => {} }),
-};
-
-/** Scripted model: planner call (tools present) → the express_intent tool call;
- *  responder call (no tools) → grounded text. Fires the tool call ONCE. */
-function scriptedModel(
-  plannerToolCalls: ReadonlyArray<{ id: string; name: string; input: unknown }>,
-): ModelProvider {
-  let planned = false;
-  const complete = vi.fn(async (req: CompletionRequest): Promise<Completion> => {
-    const isPlanner = (req.tools?.length ?? 0) > 0;
-    const emit = isPlanner && !planned;
-    if (emit) planned = true;
-    return {
-      model: "mock",
-      stopReason: "end_turn",
-      text: isPlanner ? "" : "Ok.",
-      toolCalls: emit ? [...plannerToolCalls] : [],
-      inputTokens: 5,
-      outputTokens: 4,
-    };
   });
-  return {
-    complete,
-    stream: () => {
-      throw new Error("stream unused");
-    },
-    embed: async () => {
-      throw new Error("embed unused");
-    },
-  };
-}
-
-interface HarnessSpies {
-  medusaAdjudicated: ReturnType<typeof vi.fn>;
-  readProductBrlVariantIds: ReturnType<typeof vi.fn>;
-}
-
-function buildHarness(opts: {
-  toolCalls: ReadonlyArray<{ id: string; name: string; input: unknown }>;
-}) {
-  const session = makeStatefulSession();
-  const spies: HarnessSpies = {
-    medusaAdjudicated: vi.fn(async () => ({ product: { id: "prod_picanha" } })),
-    readProductBrlVariantIds: vi.fn(async (id: string) =>
-      id === "prod_picanha" ? ["var_picanha"] : null,
-    ),
-  };
-  const tools = createOpsToolRegistry({
-    medusaAdjudicated: spies.medusaAdjudicated as never,
-    auditSink: noopSink as never,
-    readProductBrlVariantIds: spies.readProductBrlVariantIds as never,
-    orderCmdSvc: {
-      writeAdjudicatedNote: vi.fn(),
-      writeAdjudicatedStatusTransition: vi.fn(),
-    },
-    publishOrderStatusChanged: vi.fn(),
-    paymentCmdSvc: { writeAdjudicatedRefund: vi.fn() },
-    publishPaymentStatusChanged: vi.fn(),
-    appendRefundEventLog: vi.fn(),
-    opsAlertSvc: { resolveAlertFromEnvelope: vi.fn(async () => ({ result: { status: "RESOLVED" } })) },
-    incidentSvc: { closeIncidentFromEnvelope: vi.fn(async () => ({ result: { status: "RESOLVED" } })) },
-  });
-  const tenantResolver: TenantResolver = {
-    resolve: async ({ channel, customerId }) => ({
-      tenant: {
-        tenantId: "ibatexas",
-        displayName: "IbateXas",
-        locale: "pt-BR",
-        environment: "dev",
-      },
-      state: { channel, customerId },
-      policy: ROUTER,
-    }),
-  };
-  const deps = {
-    adjudicator: makeAdjudicator(),
-    memory: noopMemoryProvider(),
-    grounding: noopGroundingProvider("mock"),
-    explainer: { render: (r: { userFacing: string }) => r.userFacing },
-    handoff: { queue: async () => {} },
-    telemetry: noopTelemetry,
+  const deps = composeOpsDeps({
+    adjudicator,
     session,
-    tenantResolver,
-    sessionLock: inMemoryLock,
-    systemChannel: new OpsSystemChannel({
-      gatewaySigningKey: "test-ops-signing-key-abcdefghijklmnop",
-      gateway: "ibatexas-ops-test",
-    }),
     tools,
     model: scriptedModel(opts.toolCalls),
-    modelId: "mock",
-    opsReadToolExecutors: {},
     buildResolver: (staffId: string) =>
       createOpsResolver({
         staffId,
@@ -320,50 +101,19 @@ function buildHarness(opts: {
           { id: "prod_picanha", title: "Picanha", status: "published" },
         ],
       }),
-  };
-  return { deps, session, spies };
+  });
+  return { deps, session, spies, sink };
 }
 
-function inbound(staffId: string, text: string): ChannelMessage {
-  return {
-    channel: "system",
-    customerId: `staff:${staffId}`,
-    conversationId: `admin:${staffId}`,
-    externalId: `ops-${staffId}-${Math.random()}`,
-    text,
-    receivedAt: "2026-07-04T12:00:00.000Z",
-    locale: "pt-BR",
-  };
-}
-
-async function runTurn(
+/** Positional adapter so the scenario bodies stay behaviour-identical. */
+const runTurn = (
   deps: ReturnType<typeof buildHarness>["deps"],
-  role: "OWNER" | "MANAGER" | "ATTENDANT",
+  role: StaffRole,
   staffId: string,
   text: string,
-): Promise<{ decision: Decision; response: string; acted: unknown }> {
-  const conductor = composeOpsConductor(deps as never, { staffId, role });
-  const message = inbound(staffId, text);
-  const capsule = await conductor.openCapsule({
-    channel: "system",
-    customerId: `staff:${staffId}`,
-    sessionKey: `ops:${staffId}`,
-    actor: { principal: "user", role: "staff", sessionId: `admin:${staffId}`, staffId },
-    inbound: message,
-  });
-  try {
-    const turn = await handleTurn(capsule, message);
-    return {
-      decision: turn.decision as Decision,
-      response: turn.response.text,
-      acted: turn.acted,
-    };
-  } finally {
-    await conductor.closeCapsule(capsule);
-  }
-}
+) => runOpsTurn(deps, { role, staffId, text });
 
-const PRICE_CALL = (productRef: string, priceCentavos: number) => ({
+const PRICE_CALL = (productRef: string, priceCentavos: number): ScriptedToolCall => ({
   id: "tc-price",
   name: "express_intent",
   input: {
@@ -374,7 +124,7 @@ const PRICE_CALL = (productRef: string, priceCentavos: number) => ({
 
 describe("NEW-004 price-change-by-message — end-to-end park → confirm-resume → EXECUTE", () => {
   it("OWNER: name resolved → CONFIRM (name + old→new), then 'sim' EXECUTEs the egress ONCE", async () => {
-    const { deps, session, spies } = buildHarness({
+    const { deps, session, spies, sink } = buildHarness({
       toolCalls: [PRICE_CALL("picanha", 9500)],
     });
     const sessionId = "system:staff:owner1";
@@ -394,6 +144,11 @@ describe("NEW-004 price-change-by-message — end-to-end park → confirm-resume
     ).toBe("prod_picanha");
     // No egress yet.
     expect(spies.medusaAdjudicated).not.toHaveBeenCalled();
+    // KERNEL FACT — the audited CONFIRM record names the kind + OWNER identity.
+    const confirmRec = sink.lastDecision("REQUEST_CONFIRMATION");
+    expect(confirmRec).toBeDefined();
+    expect(String(confirmRec!.envelope.kind)).toBe("product.price.set");
+    expect(confirmRec!.envelope.actor.role).toBe("OWNER");
 
     // Turn 2 — "sim, confirma" resumes → EXECUTE → the egress runs ONCE.
     const t2 = await runTurn(deps, "OWNER", "owner1", "sim, confirma");
@@ -412,6 +167,9 @@ describe("NEW-004 price-change-by-message — end-to-end park → confirm-resume
     });
     // The park was cleared.
     expect(session.parksFor(sessionId)).toHaveLength(0);
+    // KERNEL FACT — the resumed EXECUTE carries the confirmation:received basis.
+    expect(sink.lastDecision("EXECUTE")).toBeDefined();
+    expect(sink.hasBasis("product.price.set", "received")).toBe(true);
   });
 
   it("'não' after a park → deny → unparked, the egress NEVER runs", async () => {

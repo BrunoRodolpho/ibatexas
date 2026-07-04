@@ -4,6 +4,12 @@
 // STATEFUL session store + the REAL OpsSystemChannel matchToParked driver. No
 // DB/network — the model, the payment reads, and the refund WRITE are fakes/spies.
 //
+// The fake-model + composed-router machinery is the SHARED WS9 harness
+// (./ops-e2e-harness.ts); this file supplies the refund-specific resume
+// projection (buildOpsRefundResumeState) + resolver reads + tool spies, and asserts
+// both the side effects AND the KERNEL facts (the captured AuditRecord's
+// decision + decision_basis) via the harness capturing sink.
+//
 // Proves the whole money-safe flow:
 //   - OWNER "reembolsa 50 do pedido 4242": order-ref → payment located → DB-stamped
 //     balance payload → UNTRUSTED taint overlay → REQUEST_CONFIRMATION → PARKED
@@ -19,54 +25,23 @@
 //   - forged payload balances → stamped from the DB; an over-balance refund REFUSEs.
 //   - a DIFFERENT staff session cannot see another's park (staff-session-scoped).
 
-import { describe, expect, it, vi } from "vitest";
-import { adjudicateAndAudit } from "@adjudicate/core/kernel";
-import {
-  buildEnvelope,
-  type AuditSink,
-  type Decision,
-  type IntentEnvelope,
-} from "@adjudicate/core";
-import {
-  handleTurn,
-  type Adjudicator,
-  type ChannelMessage,
-  type Completion,
-  type CompletionRequest,
-  type DeferredEnvelope,
-  type ModelProvider,
-  type ParkedEnvelope,
-  type Session,
-  type SessionLock,
-  type SessionPort,
-  type TelemetryPort,
-  type TenantResolver,
-} from "@claustrum/core";
-import { IBATEXAS_COMPOSED_PACKS } from "@ibatexas/packs-composed";
-import {
-  buildIbatexasPolicyPacks,
-  type ErasedPack,
-} from "../../claustrum/compose-policy-packs.js";
-import { composePolicyRouter } from "../../claustrum/capability-policy.js";
-import {
-  noopMemoryProvider,
-  noopGroundingProvider,
-} from "../../claustrum/noop-memory-grounding.js";
-import { composeOpsConductor } from "../ops-conductor.js";
-import { createOpsToolRegistry } from "../ops-tool-registry.js";
+import { describe, expect, it } from "vitest";
+import type { IntentEnvelope } from "@adjudicate/core";
 import {
   createOpsResolver,
   buildOpsRefundResumeState,
 } from "../ops-resolver.js";
-import { OpsSystemChannel } from "../ops-system-channel.js";
-
-const ROUTER = composePolicyRouter(
-  buildIbatexasPolicyPacks(
-    IBATEXAS_COMPOSED_PACKS as unknown as ReadonlyArray<ErasedPack>,
-  ) as never,
-);
-
-const noopSink = { emit: async () => {} } as unknown as AuditSink;
+import {
+  buildOpsTools,
+  composeOpsDeps,
+  makeAuditedAdjudicator,
+  makeCapturingAuditSink,
+  makeStatefulSession,
+  runOpsTurn,
+  scriptedModel,
+  type ScriptedToolCall,
+  type StaffRole,
+} from "./ops-e2e-harness.js";
 
 /** A refundable active payment (the fake DB row the resolver + resume read). */
 const ACTIVE_PAID = {
@@ -79,260 +54,36 @@ const ACTIVE_PAID = {
   orderId: "order_4242",
 };
 
-// ── A REAL audited adjudicator over the composed router ──────────────────────
-// adjudicate/adjudicatePlan run the audited kernel; resume RE-PROJECTS the ops
-// PaymentState (mirroring production's enrichResumeState → buildOpsRefundResumeState)
-// then re-adjudicates WITH the confirmation receipt (CONFIRM→EXECUTE).
-function makeAdjudicator(
-  paymentById: (id: string) => typeof ACTIVE_PAID | null,
-): Adjudicator {
-  const adj: Adjudicator = {
-    adjudicate: async (envelope, state, policy) =>
-      (
-        await adjudicateAndAudit(
-          envelope as IntentEnvelope,
-          state as never,
-          policy as never,
-          { sink: noopSink },
-        )
-      ).decision,
-    adjudicatePlan: async (envelopes, state, policy, perStates) => {
-      const env = envelopes[0] as IntentEnvelope | undefined;
-      if (env === undefined) {
-        return (
-          await adjudicateAndAudit(
-            buildEnvelope({
-              kind: "noop",
-              payload: {},
-              actor: { principal: "system", sessionId: "system:x" },
-              taint: "SYSTEM",
-              nonce: "n",
-            }) as IntentEnvelope,
-            state as never,
-            policy as never,
-            { sink: noopSink },
-          )
-        ).decision;
-      }
-      return (
-        await adjudicateAndAudit(
-          env,
-          (perStates?.[0] ?? state) as never,
-          policy as never,
-          { sink: noopSink },
-        )
-      ).decision;
-    },
-    // The production resume path (buildAdjudicator.resume → enrichResumeState) for
-    // an admin: refund re-projects via buildOpsRefundResumeState. Mirror it here.
-    resume: async (envelope, _state, policy, receipt) => {
-      const env = envelope as IntentEnvelope;
-      const payload = (env.payload ?? {}) as Record<string, unknown>;
-      const paymentId =
-        typeof payload.paymentId === "string" ? payload.paymentId : "";
-      const opsState = buildOpsRefundResumeState(
-        paymentId === "" ? null : paymentById(paymentId),
-        "ibatexas",
-      );
-      return (
-        await adjudicateAndAudit(env, opsState as never, policy as never, {
-          sink: noopSink,
-          ...(receipt ? { confirmationReceipt: receipt } : {}),
-        })
-      ).decision;
-    },
-    replayEnvelopesByCustomerId: async () => [],
-    streamAuditByIntentHashPrefix: async function* () {},
-    getOutcomes: async () => [],
-    verifyAuditRecord: () => ({ ok: true }),
-  };
-  return adj;
-}
-
-// ── A STATEFUL in-memory session store (park/load/unpark/parkDeferred persist) ─
-function makeStatefulSession(): SessionPort & {
-  parksFor: (sessionId: string) => ParkedEnvelope[];
-  deferredFor: (sessionId: string) => DeferredEnvelope[];
-} {
-  const parks = new Map<string, ParkedEnvelope[]>();
-  const deferred = new Map<string, DeferredEnvelope[]>();
-  const sid = (customerId: string) => `system:${customerId}`;
-  return {
-    load: async (customerId) => {
-      const id = sid(customerId);
-      return {
-        id,
-        customerId,
-        channel: "system",
-        startedAt: "2026-07-04T00:00:00.000Z",
-        lastActivityAt: "2026-07-04T00:00:00.000Z",
-        pendingConfirmations: parks.get(id) ?? [],
-        deferredEnvelopes: deferred.get(id) ?? [],
-        activeGoals: [],
-        workingMemory: { summary: "", facts: [], updatedAt: "2026-07-04T00:00:00.000Z" },
-      } satisfies Session;
-    },
-    save: async () => {},
-    parkPendingConfirmation: async (sessionId, envelope, confirmationToken, userPrompt) => {
-      const list = parks.get(sessionId) ?? [];
-      list.push({
-        envelope: envelope as IntentEnvelope,
-        confirmationToken,
-        userPrompt,
-        parkedAt: "2026-07-04T12:00:00.000Z",
-      });
-      parks.set(sessionId, list);
-    },
-    parkDeferred: async (sessionId, envelope, signal, deferUntil, timeoutMs) => {
-      const list = deferred.get(sessionId) ?? [];
-      list.push({
-        envelope: envelope as IntentEnvelope,
-        signal,
-        deferUntil,
-        timeoutMs,
-        parkedAt: "2026-07-04T12:00:00.000Z",
-      });
-      deferred.set(sessionId, list);
-    },
-    unpark: async (sessionId, intentHash) => {
-      parks.set(
-        sessionId,
-        (parks.get(sessionId) ?? []).filter((p) => p.envelope.intentHash !== intentHash),
-      );
-      deferred.set(
-        sessionId,
-        (deferred.get(sessionId) ?? []).filter((d) => d.envelope.intentHash !== intentHash),
-      );
-    },
-    parksFor: (sessionId) => parks.get(sessionId) ?? [],
-    deferredFor: (sessionId) => deferred.get(sessionId) ?? [],
-  };
-}
-
-const noopTelemetry: TelemetryPort = {
-  emitTurn: async () => {},
-  emitLLMTrace: async () => {},
-  emitMemoryAccess: async () => {},
-};
-const inMemoryLock: SessionLock = {
-  acquire: async (key) => ({ key, release: async () => {} }),
-};
-
-/** Scripted model: planner call (tools present) → the express_intent tool call;
- *  responder call (no tools) → grounded text. */
-function scriptedModel(
-  plannerToolCalls: ReadonlyArray<{ id: string; name: string; input: unknown }>,
-): ModelProvider {
-  // Fire the tool call ONCE — the staff's first message triggers the refund plan.
-  // A follow-up "sim"/"não"/"amanhã" turn does NOT re-propose a refund (the model
-  // reads it as a reply, not a fresh command), so the planner returns no tool call.
-  let planned = false;
-  const complete = vi.fn(async (req: CompletionRequest): Promise<Completion> => {
-    const isPlanner = (req.tools?.length ?? 0) > 0;
-    const emit = isPlanner && !planned;
-    if (emit) planned = true;
-    return {
-      model: "mock",
-      stopReason: "end_turn",
-      text: isPlanner ? "" : "Ok.",
-      toolCalls: emit ? [...plannerToolCalls] : [],
-      inputTokens: 5,
-      outputTokens: 4,
-    };
-  });
-  return {
-    complete,
-    stream: () => {
-      throw new Error("stream unused");
-    },
-    embed: async () => {
-      throw new Error("embed unused");
-    },
-  };
-}
-
-interface HarnessSpies {
-  writeAdjudicatedRefund: ReturnType<typeof vi.fn>;
-  publishPaymentStatusChanged: ReturnType<typeof vi.fn>;
-  appendRefundEventLog: ReturnType<typeof vi.fn>;
-}
-
 function buildHarness(opts: {
-  toolCalls: ReadonlyArray<{ id: string; name: string; input: unknown }>;
+  toolCalls: ReadonlyArray<ScriptedToolCall>;
   activePayment?: typeof ACTIVE_PAID | null;
   paymentById?: (id: string) => typeof ACTIVE_PAID | null;
 }) {
+  const sink = makeCapturingAuditSink();
   const session = makeStatefulSession();
-  const spies: HarnessSpies = {
-    writeAdjudicatedRefund: vi.fn(async () => ({
-      version: 4,
-      previousStatus: "paid",
-      newStatus: "refunded",
-      totalRefundedCentavos: 5_000,
-      refundAmountCentavos: 5_000,
-      orderId: "order_4242",
-      method: "pix",
-    })),
-    publishPaymentStatusChanged: vi.fn(async () => {}),
-    appendRefundEventLog: vi.fn(async () => {}),
-  };
-  const tools = createOpsToolRegistry({
-    medusaAdjudicated: (async () => ({})) as never,
-    auditSink: noopSink as never,
-    readProductBrlVariantIds: (async () => ["variant_1"]) as never,
-    orderCmdSvc: {
-      writeAdjudicatedNote: vi.fn(),
-      writeAdjudicatedStatusTransition: vi.fn(),
-    },
-    publishOrderStatusChanged: vi.fn(),
-    paymentCmdSvc: { writeAdjudicatedRefund: spies.writeAdjudicatedRefund },
-    publishPaymentStatusChanged: spies.publishPaymentStatusChanged,
-    appendRefundEventLog: spies.appendRefundEventLog,
-    // BKL-088 — unused by the refund flow; default no-op writers.
-    opsAlertSvc: {
-      resolveAlertFromEnvelope: vi.fn(async () => ({
-        result: { status: "RESOLVED" },
-      })),
-    },
-    incidentSvc: {
-      closeIncidentFromEnvelope: vi.fn(async () => ({
-        result: { status: "RESOLVED" },
-      })),
-    },
-  });
-  const tenantResolver: TenantResolver = {
-    resolve: async ({ channel, customerId }) => ({
-      tenant: {
-        tenantId: "ibatexas",
-        displayName: "IbateXas",
-        locale: "pt-BR",
-        environment: "dev",
-      },
-      state: { channel, customerId },
-      policy: ROUTER,
-    }),
-  };
+  const { tools, spies } = buildOpsTools({}, sink);
   const activePayment =
     opts.activePayment === undefined ? ACTIVE_PAID : opts.activePayment;
   const paymentById = opts.paymentById ?? (() => ACTIVE_PAID);
-  const deps = {
-    adjudicator: makeAdjudicator(paymentById),
-    memory: noopMemoryProvider(),
-    grounding: noopGroundingProvider("mock"),
-    explainer: { render: (r: { userFacing: string }) => r.userFacing },
-    handoff: { queue: async () => {} },
-    telemetry: noopTelemetry,
+  // The production resume path (buildAdjudicator.resume → enrichResumeState) for
+  // an admin refund re-projects the PaymentState via buildOpsRefundResumeState.
+  const adjudicator = makeAuditedAdjudicator({
+    sink,
+    projectResumeState: (env: IntentEnvelope) => {
+      const payload = (env.payload ?? {}) as Record<string, unknown>;
+      const paymentId =
+        typeof payload.paymentId === "string" ? payload.paymentId : "";
+      return buildOpsRefundResumeState(
+        paymentId === "" ? null : paymentById(paymentId),
+        "ibatexas",
+      );
+    },
+  });
+  const deps = composeOpsDeps({
+    adjudicator,
     session,
-    tenantResolver,
-    sessionLock: inMemoryLock,
-    systemChannel: new OpsSystemChannel({
-      gatewaySigningKey: "test-ops-signing-key-abcdefghijklmnop",
-      gateway: "ibatexas-ops-test",
-    }),
     tools,
     model: scriptedModel(opts.toolCalls),
-    modelId: "mock",
-    opsReadToolExecutors: {},
     buildResolver: (staffId: string) =>
       createOpsResolver({
         staffId,
@@ -368,50 +119,19 @@ function buildHarness(opts: {
         },
         lookupActivePayment: async () => activePayment,
       }),
-  };
-  return { deps, session, spies };
+  });
+  return { deps, session, spies, sink };
 }
 
-function inbound(staffId: string, text: string): ChannelMessage {
-  return {
-    channel: "system",
-    customerId: `staff:${staffId}`,
-    conversationId: `admin:${staffId}`,
-    externalId: `ops-${staffId}-${Math.random()}`,
-    text,
-    receivedAt: "2026-07-04T12:00:00.000Z",
-    locale: "pt-BR",
-  };
-}
-
-async function runTurn(
+/** Positional adapter so the scenario bodies stay behaviour-identical. */
+const runTurn = (
   deps: ReturnType<typeof buildHarness>["deps"],
-  role: "OWNER" | "MANAGER" | "ATTENDANT",
+  role: StaffRole,
   staffId: string,
   text: string,
-): Promise<{ decision: Decision; response: string; acted: unknown }> {
-  const conductor = composeOpsConductor(deps as never, { staffId, role });
-  const message = inbound(staffId, text);
-  const capsule = await conductor.openCapsule({
-    channel: "system",
-    customerId: `staff:${staffId}`,
-    sessionKey: `ops:${staffId}`,
-    actor: { principal: "user", role: "staff", sessionId: `admin:${staffId}`, staffId },
-    inbound: message,
-  });
-  try {
-    const turn = await handleTurn(capsule, message);
-    return {
-      decision: turn.decision as Decision,
-      response: turn.response.text,
-      acted: turn.acted,
-    };
-  } finally {
-    await conductor.closeCapsule(capsule);
-  }
-}
+) => runOpsTurn(deps, { role, staffId, text });
 
-const REFUND_CALL = (orderRef: string, amount?: number) => ({
+const REFUND_CALL = (orderRef: string, amount?: number): ScriptedToolCall => ({
   id: "tc-refund",
   name: "express_intent",
   input: {
@@ -426,7 +146,7 @@ const REFUND_CALL = (orderRef: string, amount?: number) => ({
 
 /** BKL-094 — the shape the models ACTUALLY emit for "reembolsa N reais": the
  *  figure under `amount` in REAIS (not `refundAmountCentavos` in centavos). */
-const REFUND_CALL_REAIS = (orderRef: string, reais: number) => ({
+const REFUND_CALL_REAIS = (orderRef: string, reais: number): ScriptedToolCall => ({
   id: "tc-refund-reais",
   name: "express_intent",
   input: {
@@ -437,7 +157,7 @@ const REFUND_CALL_REAIS = (orderRef: string, reais: number) => ({
 
 describe("BKL-085 refunds-by-message — end-to-end park → confirm-resume → EXECUTE", () => {
   it("OWNER: parks a CONFIRM with the amount prompt, then 'sim' EXECUTEs the refund ONCE", async () => {
-    const { deps, session, spies } = buildHarness({
+    const { deps, session, spies, sink } = buildHarness({
       toolCalls: [REFUND_CALL("4242", 5_000)],
     });
     const sessionId = "system:staff:owner1";
@@ -453,6 +173,13 @@ describe("BKL-085 refunds-by-message — end-to-end park → confirm-resume → 
     expect(t1.response).toContain("pay_db_1");
     // No write yet.
     expect(spies.writeAdjudicatedRefund).not.toHaveBeenCalled();
+    // KERNEL FACT — the audited CONFIRM record: right kind, OWNER role, and the
+    // taint-overlay basis is why a sub-R$500 refund still requires confirmation.
+    const confirmRec = sink.lastDecision("REQUEST_CONFIRMATION");
+    expect(confirmRec).toBeDefined();
+    expect(String(confirmRec!.envelope.kind)).toBe("payment.refund.issue");
+    expect(confirmRec!.envelope.actor.role).toBe("OWNER");
+    expect(confirmRec!.envelope.actor.sessionId).toBe("admin:owner1");
 
     // Turn 2 — "sim, confirma" resumes → EXECUTE → the write runs ONCE.
     const t2 = await runTurn(deps, "OWNER", "owner1", "sim, confirma");
@@ -469,6 +196,14 @@ describe("BKL-085 refunds-by-message — end-to-end park → confirm-resume → 
     expect(spies.publishPaymentStatusChanged).toHaveBeenCalledTimes(1);
     // The park was cleared.
     expect(session.parksFor(sessionId)).toHaveLength(0);
+    // KERNEL FACT — the resumed EXECUTE carries the confirmation:received basis.
+    const executeRec = sink.lastDecision("EXECUTE");
+    expect(executeRec).toBeDefined();
+    expect(String(executeRec!.envelope.kind)).toBe("payment.refund.issue");
+    // The confirmation:received basis (category `confirmation`, code `received`)
+    // is the audit proof that the EXECUTE came from a resolved park, not a fresh
+    // command — this is the live-proven governance link (see the WS9 live proof).
+    expect(sink.hasBasis("payment.refund.issue", "received")).toBe(true);
   });
 
   it("'não' after a park → deny → unparked, the write NEVER runs", async () => {
@@ -499,7 +234,7 @@ describe("BKL-085 refunds-by-message — end-to-end park → confirm-resume → 
   });
 
   it("ATTENDANT → REFUSE staff_role_violation; nothing parks; no write", async () => {
-    const { deps, session, spies } = buildHarness({
+    const { deps, session, spies, sink } = buildHarness({
       toolCalls: [REFUND_CALL("4242", 5_000)],
     });
     const t = await runTurn(deps, "ATTENDANT", "att1", "reembolsa 50 do pedido 4242");
@@ -509,6 +244,11 @@ describe("BKL-085 refunds-by-message — end-to-end park → confirm-resume → 
     }
     expect(session.parksFor("system:staff:att1")).toHaveLength(0);
     expect(spies.writeAdjudicatedRefund).not.toHaveBeenCalled();
+    // KERNEL FACT — the audited REFUSE record names the same kind + ATTENDANT role.
+    const refuseRec = sink.lastDecision("REFUSE");
+    expect(refuseRec).toBeDefined();
+    expect(String(refuseRec!.envelope.kind)).toBe("payment.refund.issue");
+    expect(refuseRec!.envelope.actor.role).toBe("ATTENDANT");
   });
 
   it(">R$1000 → ESCALATE (the taint overlay does NOT pre-empt); nothing parks", async () => {
