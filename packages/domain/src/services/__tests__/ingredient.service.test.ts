@@ -229,6 +229,55 @@ describe("IngredientService.adjustStock", () => {
   })
 })
 
+describe("IngredientService.depleteStock (NEW-036)", () => {
+  let svc: ReturnType<typeof createIngredientService>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    svc = createIngredientService()
+  })
+
+  it("consumes amountMilli from stock; shortfallMilli is 0 when covered", async () => {
+    mockFindUnique.mockResolvedValue({ id: "ing_1", stockMilli: 2000 })
+    mockUpdateMany.mockResolvedValue({ count: 1 })
+
+    const res = await svc.depleteStock("ing_1", 500)
+
+    expect(res).toMatchObject({ id: "ing_1", stockMilli: 1500, shortfallMilli: 0 })
+    expect(mockUpdateMany).toHaveBeenCalledWith({ where: { id: "ing_1" }, data: { stockMilli: 1500 } })
+  })
+
+  it("CLAMPS stock at 0 and reports the shortfall when demand exceeds on-hand", async () => {
+    mockFindUnique.mockResolvedValue({ id: "ing_1", stockMilli: 300 })
+    mockUpdateMany.mockResolvedValue({ count: 1 })
+
+    // Consume 1000 from 300 on hand → write clamps at 0, shortfall = 700.
+    const res = await svc.depleteStock("ing_1", 1000)
+
+    expect(res).toMatchObject({ id: "ing_1", stockMilli: 0, shortfallMilli: 700 })
+    expect(mockUpdateMany).toHaveBeenCalledWith({ where: { id: "ing_1" }, data: { stockMilli: 0 } })
+  })
+
+  it("exact-empty consume: writes 0 with no shortfall (boundary)", async () => {
+    mockFindUnique.mockResolvedValue({ id: "ing_1", stockMilli: 1000 })
+    mockUpdateMany.mockResolvedValue({ count: 1 })
+
+    const res = await svc.depleteStock("ing_1", 1000)
+
+    expect(res).toMatchObject({ stockMilli: 0, shortfallMilli: 0 })
+    expect(mockUpdateMany).toHaveBeenCalledWith({ where: { id: "ing_1" }, data: { stockMilli: 0 } })
+  })
+
+  it("returns null (no update) when the id does not exist", async () => {
+    mockFindUnique.mockResolvedValue(null)
+
+    const res = await svc.depleteStock("missing", 100)
+
+    expect(res).toBeNull()
+    expect(mockUpdateMany).not.toHaveBeenCalled()
+  })
+})
+
 describe("IngredientService.listLowStock", () => {
   let svc: ReturnType<typeof createIngredientService>
 

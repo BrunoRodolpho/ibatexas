@@ -4,11 +4,13 @@
 // Plain CRUD (mirrors table.service.ts / delivery-zone.service.ts / staff-
 // schedule.service.ts) — raw-ingredient inventory is admin-ops, NOT a customer
 // money/safety path, so it does NOT go through the adjudicate kernel; the
-// manager-gate lives at the route (requireManagerRole). Scope is deliberately
-// narrow: CRUD + adjustStock + listLowStock. NEW-035 adds a per-unit COST field
+// manager-gate lives at the route (requireManagerRole). Scope: CRUD + adjustStock
+// + listLowStock + depleteStock. NEW-035 adds a per-unit COST field
 // (costCentavosPerUnit) so an ingredient can feed a recipe's COGS read; the
-// recipe/BOM + COGS math live in recipe.service.ts. Per-dish depletion (the
-// order.placed subscriber) is OUT of scope (deferred).
+// recipe/BOM + COGS math live in recipe.service.ts. NEW-036 adds `depleteStock`
+// — the consume-with-shortfall-signal primitive the order.placed depletion
+// subscriber (in apps/api) calls DIRECTLY (non-kernel: stock is admin-ops, not a
+// customer money/safety path). The subscriber itself lives outside the domain.
 //
 // QUANTITIES are SCALED INTEGERS in THOUSANDTHS of the unit (milli-units): 2.5 kg
 // → 2500. Arithmetic (adjustStock) is integer-precise — never a float.
@@ -52,6 +54,17 @@ export interface UpdateIngredientPatch {
 export interface ListIngredientsParams {
   /** When true, return only active ingredients; otherwise return all. */
   readonly activeOnly?: boolean
+}
+
+/**
+ * NEW-036 — result of {@link IngredientService.depleteStock}: the clamped
+ * ingredient row plus `shortfallMilli`, the milli-units by which the requested
+ * consume exceeded on-hand stock. `shortfallMilli` is 0 when stock covered the
+ * consume; `> 0` means the write clamped `stockMilli` at 0 (the under-stock signal
+ * the depletion subscriber warns on — stock accuracy issue).
+ */
+export interface DepleteStockResult extends Ingredient {
+  readonly shortfallMilli: number
 }
 
 // ── Service ─────────────────────────────────────────────────────────────────
@@ -140,6 +153,30 @@ export function createIngredientService() {
       return mutateOrNull(id, (existing) => ({
         stockMilli: Math.max(0, existing.stockMilli + deltaMilli),
       }))
+    },
+
+    /**
+     * NEW-036 — CONSUME `amountMilli` (≥ 0) milli-units of stock: the purpose-built
+     * order-flow depletion primitive. Distinct from adjustStock (a SIGNED manual
+     * admin correction) — depleteStock takes an unsigned quantity-to-consume and
+     * also reports the SHORTFALL. From the ONE loaded row (via mutateOrNull — no
+     * second read) it:
+     *   • writes `stockMilli = Math.max(0, existing.stockMilli - amountMilli)` —
+     *     CLAMPED at 0, stock never goes negative;
+     *   • computes `shortfallMilli = Math.max(0, amountMilli - existing.stockMilli)`
+     *     — how much MORE was needed than on hand (0 when covered; `> 0` = the
+     *     write clamped, i.e. stock went below what the order required).
+     * Row-or-null: `null` when no ingredient with that id exists (mirrors
+     * adjustStock's existence check). Integer arithmetic — precise. Returns the
+     * clamped row merged with `shortfallMilli`, or `null`.
+     */
+    async depleteStock(id: string, amountMilli: number): Promise<DepleteStockResult | null> {
+      let shortfallMilli = 0
+      const row = await mutateOrNull(id, (existing) => {
+        shortfallMilli = Math.max(0, amountMilli - existing.stockMilli)
+        return { stockMilli: Math.max(0, existing.stockMilli - amountMilli) }
+      })
+      return row === null ? null : { ...row, shortfallMilli }
     },
 
     /**

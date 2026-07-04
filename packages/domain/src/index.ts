@@ -118,14 +118,15 @@ export {
 } from "./services/labor-cost.service.js"
 export { createDeliveryZoneService, type DeliveryZoneService } from "./services/delivery-zone.service.js"
 // NEW-003 raw-ingredient inventory (stock slice) — plain-CRUD + adjustStock +
-// listLowStock; manager-gated at the route. Recipe/BOM, per-dish depletion and
-// COGS are deferred (out of this slice).
+// listLowStock; manager-gated at the route. NEW-036 adds `depleteStock` (the
+// order-flow consume-with-shortfall primitive; the subscriber lives in apps/api).
 export {
   createIngredientService,
   type IngredientService,
   type CreateIngredientInput,
   type UpdateIngredientPatch,
   type ListIngredientsParams,
+  type DepleteStockResult,
 } from "./services/ingredient.service.js"
 // NEW-035 recipe/BOM + per-dish COGS (extends NEW-003) — plain-CRUD recipe (header +
 // ingredient lines) + a COGS read; manager-gated at the route. The order-flow
