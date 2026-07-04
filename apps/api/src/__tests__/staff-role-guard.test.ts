@@ -31,6 +31,7 @@ import {
 } from "../claustrum/compose-policy-packs.js";
 import {
   createStaffRoleGuard,
+  paymentTransitionBandGuard,
   staffRoleGuard,
   STAFF_ROLE_REFUSAL_CODE,
 } from "../claustrum/staff-role-guard.js";
@@ -383,5 +384,74 @@ describe("composition — staff-role guard vs the refund money band (real packs 
   it("the exported production guard is the one composed into the bundle", () => {
     const auth = composedBundle(paymentsPack).authGuards;
     expect(auth).toContain(staffRoleGuard);
+  });
+});
+
+// ── BKL-075 — payload-aware banding for payment.status.transition ─────────────
+describe("paymentTransitionBandGuard — force/waive requires OWNER (payload-aware)", () => {
+  const bandEnvelope = (
+    role: StaffActorRole | undefined,
+    newStatus: string,
+    sessionId = "admin:staff_1",
+  ) =>
+    buildEnvelope({
+      kind: "payment.status.transition" as const,
+      payload: { paymentId: "pay_1", newStatus, actor: "admin", expectedVersion: 1 },
+      actor: { principal: "user" as const, sessionId, ...(role ? { role } : {}) },
+      taint: "TRUSTED" as const,
+      nonce: "n-band",
+    });
+
+  const bandReason = (d: unknown): boolean =>
+    JSON.stringify((d as { basis?: unknown })?.basis ?? []).includes(
+      "payment_transition_owner_only",
+    );
+
+  it("ATTENDANT force to a non-paid status (waived) → REFUSE (staff_role_violation / owner-only band)", () => {
+    const d = paymentTransitionBandGuard(bandEnvelope("ATTENDANT", "waived"), {});
+    expect(d?.kind).toBe("REFUSE");
+    expect(d?.kind === "REFUSE" ? d.refusal.code : "").toBe(STAFF_ROLE_REFUSAL_CODE);
+    expect(bandReason(d)).toBe(true);
+  });
+
+  it("MANAGER force (waived) → REFUSE (only OWNER may force/waive)", () => {
+    const d = paymentTransitionBandGuard(bandEnvelope("MANAGER", "waived"), {});
+    expect(d?.kind).toBe("REFUSE");
+  });
+
+  it("OWNER force (waived) → null (allowed)", () => {
+    expect(paymentTransitionBandGuard(bandEnvelope("OWNER", "waived"), {})).toBeNull();
+  });
+
+  it("ATTENDANT cash-confirm (→ paid) → null (any-staff; defers to the base matrix)", () => {
+    expect(paymentTransitionBandGuard(bandEnvelope("ATTENDANT", "paid"), {})).toBeNull();
+  });
+
+  it("OWNER cash-confirm (→ paid) → null", () => {
+    expect(paymentTransitionBandGuard(bandEnvelope("OWNER", "paid"), {})).toBeNull();
+  });
+
+  it("SYSTEM (non-admin session) force to payment_expired → null (INERT — the pix-expiry job)", () => {
+    const d = paymentTransitionBandGuard(
+      bandEnvelope(undefined, "payment_expired", "payments.events:evt_1"),
+      {},
+    );
+    expect(d).toBeNull();
+  });
+
+  it("a non-payment kind is inert (returns null even for a non-OWNER admin)", () => {
+    const env = buildEnvelope({
+      kind: "order.note.add" as const,
+      payload: { orderId: "o_1", body: "nota" },
+      actor: { principal: "user" as const, sessionId: "admin:staff_1", role: "ATTENDANT" as const },
+      taint: "TRUSTED" as const,
+      nonce: "n-note",
+    });
+    expect(paymentTransitionBandGuard(env, {})).toBeNull();
+  });
+
+  it("is composed into the production adopter AUTH set (runs on the conductor router)", () => {
+    const auth = composedBundle(paymentsPack).authGuards;
+    expect(auth).toContain(paymentTransitionBandGuard);
   });
 });

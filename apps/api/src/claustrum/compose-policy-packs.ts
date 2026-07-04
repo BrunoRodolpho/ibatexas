@@ -39,7 +39,7 @@ import {
   createAgentKillSwitchGuard,
   createAgentScopeGuard,
 } from "./agent-guards.js";
-import { staffRoleGuard } from "./staff-role-guard.js";
+import { paymentTransitionBandGuard, staffRoleGuard } from "./staff-role-guard.js";
 
 /** A first-party pack with its K/P/S/C generics erased for heterogeneous storage. */
 export type ErasedPack = PackV0<string, unknown, unknown, unknown>;
@@ -174,7 +174,15 @@ export const agentBudgetGuards = createAgentBudgetGuards(AGENT_REGISTRY);
 
 export const IBATEXAS_ADOPTER_AUTH_GUARDS: ReadonlyArray<
   Guard<string, unknown, unknown>
-> = [agentKillSwitchGuard, agentScopeGuard, ...agentBudgetGuards, staffRoleGuard];
+> = [
+  agentKillSwitchGuard,
+  agentScopeGuard,
+  ...agentBudgetGuards,
+  staffRoleGuard,
+  // BKL-075 — payload-aware banding companion (payment.status.transition force/
+  // waive → OWNER); composed alongside staffRoleGuard on the conductor router.
+  paymentTransitionBandGuard,
+];
 
 /**
  * Build the production policy-pack list: each first-party pack with the
