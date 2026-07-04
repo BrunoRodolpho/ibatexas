@@ -2486,6 +2486,13 @@ export async function bootstrapClaustrum(
   // registry (governed ops verbs), the ops resolver (per-kind state), and the
   // system channel. No boot side effects run in the per-request path.
   const opsTenantId = process.env.KERNEL_TENANT_ID ?? "ibatexas";
+  // BKL-089 — candidate page size for product NAME→id resolution. `q` narrows
+  // server-side; the deterministic matching runs over the returned titles. A
+  // single-tenant catalog is small, so the default comfortably covers it.
+  const OPS_PRODUCT_RESOLUTION_LIMIT = Number.parseInt(
+    process.env.OPS_PRODUCT_RESOLUTION_LIMIT ?? "50",
+    10,
+  );
   // The ops registry's governed side-effect deps (injected for testability).
   const opsRegistryDeps: OpsToolRegistryDeps = {
     medusaAdjudicated,
@@ -2568,6 +2575,28 @@ export async function bootstrapClaustrum(
           )) as { product?: { id: string; status: string } };
           const p = data.product;
           return p ? { id: p.id, status: p.status } : null;
+        },
+        // BKL-089 — deterministic product NAME→id resolution candidate read.
+        // Reuses the SAME admin catalog list read the admin products surface
+        // uses (GET /api/admin/products → medusaAdmin('/admin/products?q=...')),
+        // which returns products regardless of stock/publish status (unlike the
+        // Typesense searchProducts tool, which hard-filters published+inStock and
+        // would make the RE-ENABLE case unresolvable). The deterministic matching
+        // over the returned titles lives in ops-product-resolution.ts.
+        listProductsByName: async (query) => {
+          const qs = new URLSearchParams({
+            q: query,
+            limit: String(OPS_PRODUCT_RESOLUTION_LIMIT),
+            fields: "id,title,status",
+          });
+          const data = (await medusaAdmin(`/admin/products?${qs}`)) as {
+            products?: Array<{ id: string; title: string; status: string }>;
+          };
+          return (data.products ?? []).map((p) => ({
+            id: p.id,
+            title: p.title,
+            status: p.status,
+          }));
         },
         lookupOrder: async (orderId) => {
           const order = await createOrderQueryService().getById(orderId);

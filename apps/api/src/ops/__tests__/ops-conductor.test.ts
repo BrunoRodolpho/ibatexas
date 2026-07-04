@@ -179,6 +179,9 @@ function buildDeps(opts: {
   /** order.status_changed publisher spy (BKL-090). */
   publishOrderStatusChanged?: ReturnType<typeof vi.fn>;
   product: { id: string; status: string } | null;
+  /** BKL-089 — the candidate set the name-resolver read returns (when the direct
+   *  id lookup misses, i.e. `product` is null). Absent ⇒ no name resolver wired. */
+  productsByName?: Array<{ id: string; title: string; status: string }>;
   /** The order the resolver projects for order.note.add / order.status.transition;
    *  null ⇒ order-missing. */
   order?: FakeOpsOrder;
@@ -217,6 +220,9 @@ function buildDeps(opts: {
         tenantId: "ibatexas",
         lookupProduct: async () => opts.product,
         lookupOrder: async () => opts.order ?? null,
+        ...(opts.productsByName
+          ? { listProductsByName: async () => opts.productsByName! }
+          : {}),
       }),
   };
 }
@@ -333,6 +339,87 @@ describe("ops conductor — the end-to-end kernel proof (NEW-032)", () => {
     const out = await runOpsTurn(deps, "MANAGER", "staff_2", "acabou a picanha");
     expect(out.kind).toBe("EXECUTE");
     expect(medusaAdjudicated).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── product.availability.set BY NAME (BKL-089) ───────────────────────────────
+//
+// The crown-jewel proof for name resolution: the scripted model emits
+// productId:"picanha" (a NAME, per the persona), the direct id lookup MISSES, the
+// ops resolver resolves the name to a real id via the injected catalog read and
+// REWRITES the payload BEFORE adjudication, and the availability executor runs the
+// SAME medusaAdjudicated egress with the RESOLVED id. An ambiguous name resolves
+// to nothing ⇒ the kernel REFUSEs product_not_found (executor never runs). The
+// adversarial pin: a resolvable name on a wrong-ROLE turn still REFUSEs — the
+// role the kernel gates on rode through resolution untouched.
+
+const AVAIL_BY_NAME_CALL = {
+  id: "tc-name",
+  name: "express_intent",
+  input: {
+    capability: "product.availability.set",
+    payload: { productId: "picanha", available: false },
+  },
+};
+
+describe("ops conductor — product.availability.set by NAME (BKL-089)", () => {
+  it("OWNER 'acabou a picanha' (name) → resolves → EXECUTE with the RESOLVED id", async () => {
+    const medusaAdjudicated = vi.fn(async (_args: unknown) => ({ product: { id: "prod_42" } }));
+    const { model } = scriptedModel([AVAIL_BY_NAME_CALL]);
+    const deps = buildDeps({
+      model,
+      medusaAdjudicated,
+      writeAdjudicatedNote: vi.fn(),
+      product: null, // direct id lookup MISSES → name resolution engages
+      productsByName: [{ id: "prod_42", title: "Picanha", status: "published" }],
+    });
+    const out = await runOpsTurn(deps, "OWNER", "staff_1", "acabou a picanha");
+    expect(out.kind).toBe("EXECUTE");
+    expect(medusaAdjudicated).toHaveBeenCalledTimes(1);
+    const args = medusaAdjudicated.mock.calls[0]![0] as Record<string, unknown>;
+    // The egress targets the RESOLVED id, not the spoken name.
+    expect(args.path).toBe("/admin/products/prod_42");
+    expect(args.payload).toEqual({ metadata: { inStock: false } });
+  });
+
+  it("ambiguous name → REFUSE product_not_found; the executor never runs", async () => {
+    const medusaAdjudicated = vi.fn(async (_args: unknown) => ({ product: {} }));
+    const { model } = scriptedModel([AVAIL_BY_NAME_CALL]);
+    const deps = buildDeps({
+      model,
+      medusaAdjudicated,
+      writeAdjudicatedNote: vi.fn(),
+      product: null,
+      productsByName: [
+        { id: "prod_1", title: "Picanha Fatiada", status: "published" },
+        { id: "prod_2", title: "Picanha Inteira", status: "published" },
+      ],
+    });
+    const out = await runOpsTurn(deps, "OWNER", "staff_1", "acabou a picanha");
+    expect(out.kind).toBe("REFUSE");
+    if (out.kind === "REFUSE") {
+      expect(out.refusal.code).toBe("ops.availability.product_not_found");
+    }
+    expect(medusaAdjudicated).not.toHaveBeenCalled();
+  });
+
+  it("adversarial: a resolvable name on an ATTENDANT turn still REFUSEs the role", async () => {
+    const medusaAdjudicated = vi.fn(async (_args: unknown) => ({ product: { id: "prod_42" } }));
+    const { model } = scriptedModel([AVAIL_BY_NAME_CALL]);
+    const deps = buildDeps({
+      model,
+      medusaAdjudicated,
+      writeAdjudicatedNote: vi.fn(),
+      product: null,
+      productsByName: [{ id: "prod_42", title: "Picanha", status: "published" }],
+    });
+    const out = await runOpsTurn(deps, "ATTENDANT", "staff_9", "acabou a picanha");
+    expect(out.kind).toBe("REFUSE");
+    if (out.kind === "REFUSE") {
+      // Role gate wins — resolution rewrote only the payload, never the actor.
+      expect(out.refusal.code).toBe("staff_role_violation");
+    }
+    expect(medusaAdjudicated).not.toHaveBeenCalled();
   });
 });
 
