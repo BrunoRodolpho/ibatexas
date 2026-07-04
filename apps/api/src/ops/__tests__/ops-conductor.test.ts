@@ -194,6 +194,20 @@ function buildDeps(opts: {
     byDisplayId?: OrderCandidate[];
     recentActive?: OrderCandidate[];
   };
+  /** BKL-085 — refund executor spies (defaults applied when absent). */
+  writeAdjudicatedRefund?: ReturnType<typeof vi.fn>;
+  publishPaymentStatusChanged?: ReturnType<typeof vi.fn>;
+  appendRefundEventLog?: ReturnType<typeof vi.fn>;
+  /** BKL-085 — the active payment the refund resolver projects; null ⇒ no active
+   *  refundable payment (⇒ refund REFUSEs payment_not_found). */
+  activePayment?: {
+    paymentId: string;
+    status: string;
+    amountInCentavos: number;
+    refundedAmountCentavos: number;
+    method: string;
+    version: number;
+  } | null;
 }) {
   const tools = createOpsToolRegistry({
     medusaAdjudicated: opts.medusaAdjudicated as never,
@@ -204,6 +218,23 @@ function buildDeps(opts: {
         opts.writeAdjudicatedStatusTransition ?? vi.fn(),
     },
     publishOrderStatusChanged: opts.publishOrderStatusChanged ?? vi.fn(),
+    // BKL-085 — refund deps (defaults; the dedicated refunds-by-message e2e in
+    // ops-refunds-confirm-resume.e2e.test.ts drives the full park→resume flow).
+    paymentCmdSvc: {
+      writeAdjudicatedRefund:
+        opts.writeAdjudicatedRefund ??
+        (vi.fn(async () => ({
+          version: 2,
+          previousStatus: "paid",
+          newStatus: "refunded",
+          totalRefundedCentavos: 100,
+          refundAmountCentavos: 100,
+          orderId: "o",
+          method: "pix",
+        })) as never),
+    },
+    publishPaymentStatusChanged: opts.publishPaymentStatusChanged ?? vi.fn(),
+    appendRefundEventLog: opts.appendRefundEventLog ?? vi.fn(),
   });
   return {
     adjudicator: realKernelAdjudicator,
@@ -229,6 +260,7 @@ function buildDeps(opts: {
         tenantId: "ibatexas",
         lookupProduct: async () => opts.product,
         lookupOrder: async () => opts.order ?? null,
+        lookupActivePayment: async () => opts.activePayment ?? null,
         ...(opts.productsByName
           ? { listProductsByName: async () => opts.productsByName! }
           : {}),

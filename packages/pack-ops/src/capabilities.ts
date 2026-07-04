@@ -14,14 +14,18 @@
  *
  * `order.note.add` (NEW-032 verbs-v2) and `order.status.transition` (BKL-090,
  * the kitchen-advance verb) are ALSO advertised on a staff session, but those
- * kinds are OWNED by `@ibatexas/pack-orders`, not this pack — advertising them
- * here only widens the ops-plane allowlist so the ops persona can propose them;
- * adjudication routes to pack-orders' composed bundle (which carries the
- * `staffRoleGuard` AND, for the transition, the BKL-090 legality guard). Unlike
- * `product.availability.set`, both are registered ops tools, so they need no
- * `ADVERTISED_NOT_REGISTERED_WHITELIST` entry (advertised ⊆ registered holds).
- * See {@link OPS_FOREIGN_ADVERTISED_KIND} and
- * {@link OPS_FOREIGN_ADVERTISED_TRANSITION_KIND}.
+ * kinds are OWNED by `@ibatexas/pack-orders`, not this pack; `payment.refund.issue`
+ * (BKL-085, the refunds-by-message verb) is likewise advertised here but OWNED by
+ * `@ibatexas/pack-payments` — advertising them here only widens the ops-plane
+ * allowlist so the ops persona can propose them; adjudication routes to the owning
+ * pack's composed bundle (which carries the `staffRoleGuard` AND, for the
+ * transition, the BKL-090 legality guard; for the refund, the magnitude ladder +
+ * BKL-085 UNTRUSTED-taint CONFIRM overlay). Unlike `product.availability.set`, all
+ * three are registered ops tools, so the ops-plane drift gate holds (advertised ⊆
+ * registered); on the CHAT roster they are advertised-but-unregistered (no chat
+ * tool), documented by `ADVERTISED_NOT_REGISTERED_WHITELIST` entries. See
+ * {@link OPS_FOREIGN_ADVERTISED_KIND}, {@link OPS_FOREIGN_ADVERTISED_TRANSITION_KIND},
+ * and {@link OPS_FOREIGN_ADVERTISED_REFUND_KIND}.
  *
  * `ops_snapshot` (NEW-032 slice B) is the ONE LLM-visible READ tool — the
  * situational snapshot (alerts + incidents + kitchen + caixa). It is advertised
@@ -100,6 +104,29 @@ export const OPS_FOREIGN_ADVERTISED_KIND = "order.note.add"
 export const OPS_FOREIGN_ADVERTISED_TRANSITION_KIND = "order.status.transition"
 
 /**
+ * The THIRD foreign-owned kind the ops plane advertises but `@ibatexas/pack-
+ * payments` OWNS: `payment.refund.issue` (the refunds-by-message verb "reembolsa
+ * 50 do pedido 4242"), unblocked by BKL-085's UNTRUSTED-taint refund CONFIRM
+ * overlay + the ops confirm-resume driver.
+ *
+ * Same decoupling as `order.note.add` / `order.status.transition`: advertising it
+ * here only widens the OPS-PLANE ALLOWLIST so the ops persona can propose it;
+ * adjudication routes to pack-payments' composed bundle (carrying the prepended
+ * `staffRoleGuard` — matrix row {OWNER,MANAGER} — AND the refund magnitude ladder
+ * with the BKL-085 overlay: a model-parsed UNTRUSTED refund ALWAYS parks for
+ * confirmation; a ≥R$1000 one ESCALATEs). The ops resolver STAMPS the balance
+ * fields + paymentId from the DB payment row so the model controls only {order
+ * ref, amount, reason}; the ops tool registry registers a
+ * `writeAdjudicatedRefund`-backed executor (the POST-adjudication ledger write +
+ * the `payment.status_changed` emission). Like the other two foreign kinds it is a
+ * STAFF/OPS-plane verb with NO registered CHAT tool — an
+ * `ADVERTISED_NOT_REGISTERED_WHITELIST` entry (`staff:payment.refund.issue`)
+ * documents the expected chat-roster gap; the ops-plane drift parity gate
+ * (`opsPlaneDriftProblems`) verifies it IS registered on the OPS registry.
+ */
+export const OPS_FOREIGN_ADVERTISED_REFUND_KIND = "payment.refund.issue"
+
+/**
  * Ops-domain tool classification. `product.availability.set` (owned) and
  * `order.note.add` (foreign-owned; advertised to widen the ops allowlist) are
  * MUTATING; `ops_snapshot` is the LLM-visible READ tool (staff-only
@@ -112,6 +139,7 @@ export const OPS_TOOLS: ToolClassification = {
     "product.availability.set",
     OPS_FOREIGN_ADVERTISED_KIND,
     OPS_FOREIGN_ADVERTISED_TRANSITION_KIND,
+    OPS_FOREIGN_ADVERTISED_REFUND_KIND,
   ]),
 }
 
@@ -141,6 +169,7 @@ const rawOpsCapabilityPlanner: CapabilityPlanner<OpsState, OpsContext> = {
           "product.availability.set",
           OPS_FOREIGN_ADVERTISED_KIND,
           OPS_FOREIGN_ADVERTISED_TRANSITION_KIND,
+          OPS_FOREIGN_ADVERTISED_REFUND_KIND,
         ]
       : []
     // `ops_snapshot` is advertised ONLY to a staff session; `filterReadOnly`

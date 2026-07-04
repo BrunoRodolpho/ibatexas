@@ -105,7 +105,7 @@ import {
   type RedisPubSubClient,
 } from "@adjudicate/audit";
 
-import { prisma, claustrumMemoryPrisma, createOrderCommandService, createOrderQueryService, createPaymentQueryService } from "@ibatexas/domain";
+import { prisma, claustrumMemoryPrisma, createOrderCommandService, createOrderQueryService, createOrderEventLogService, createPaymentCommandService, createPaymentQueryService } from "@ibatexas/domain";
 import { rehydratePaymentState } from "@ibatexas/pack-payments";
 import {
   emitLlmCall,
@@ -274,7 +274,8 @@ import {
   listOpsToolDefinitions,
   type OpsToolRegistryDeps,
 } from "./ops/ops-tool-registry.js";
-import { createOpsResolver } from "./ops/ops-resolver.js";
+import { createOpsResolver, buildOpsRefundResumeState } from "./ops/ops-resolver.js";
+import { OpsSystemChannel } from "./ops/ops-system-channel.js";
 import type { OrderCandidate } from "./ops/ops-order-resolution.js";
 import {
   createOpsSnapshotReadExecutor,
@@ -666,6 +667,44 @@ async function enrichResumeState(
   envelope: IntentEnvelope,
   state: unknown,
 ): Promise<unknown> {
+  // BKL-085 — the OPS-plane confirm-resume (an `admin:`-session `payment.refund.issue`
+  // parked by the UNTRUSTED-taint overlay) re-projects its own PaymentState from the
+  // payment row, NOT the customer-scoped `resolveAndAssemble` below (whose reads are
+  // scoped to a real `customerId`; the ops plane's `staff:<id>`/`admin:<id>` owns no
+  // customer resources, so that path would project `exists:false` and REFUSE a valid
+  // "sim"). The parked payload's `paymentId` was DB-stamped by the ops resolver
+  // (trusted); a FRESH read here is money-safe (a since-parked terminal / partial
+  // refund still REFUSEs via the terminal guard / the divergence check).
+  if (
+    envelope.kind === "payment.refund.issue" &&
+    envelope.actor.sessionId.startsWith("admin:")
+  ) {
+    const payload = (envelope.payload ?? {}) as Record<string, unknown>;
+    const paymentId =
+      typeof payload.paymentId === "string" ? payload.paymentId : "";
+    if (paymentId === "") return buildOpsRefundResumeState(null, (process.env.KERNEL_TENANT_ID ?? "ibatexas"));
+    try {
+      const p = await createPaymentQueryService().getById(paymentId);
+      return buildOpsRefundResumeState(
+        p === null
+          ? null
+          : {
+              status: p.status,
+              amountInCentavos: p.amountInCentavos,
+              refundedAmountCentavos: p.refundedAmountCentavos ?? 0,
+              method: p.method,
+              version: p.version,
+              orderId: p.orderId,
+            },
+        (process.env.KERNEL_TENANT_ID ?? "ibatexas"),
+      );
+    } catch {
+      // Fail-closed: a read error re-projects a not-found state ⇒ REFUSE, never
+      // a stale/authorized resume.
+      return buildOpsRefundResumeState(null, (process.env.KERNEL_TENANT_ID ?? "ibatexas"));
+    }
+  }
+
   const s = state as { channel?: string; customerId?: string };
   if (typeof s.customerId !== "string" || typeof s.channel !== "string") {
     return state;
@@ -2535,11 +2574,26 @@ export async function bootstrapClaustrum(
     process.env.OPS_ORDER_RECENT_LIMIT ?? "200",
     10,
   );
+  // BKL-085 — the ops-plane refund audit event log (parity with the admin
+  // route's admin.refund.executed row). Shared instance; append is best-effort.
+  const opsRefundEventLogSvc = createOrderEventLogService(logger);
   // The ops registry's governed side-effect deps (injected for testability).
   const opsRegistryDeps: OpsToolRegistryDeps = {
     medusaAdjudicated,
     auditSink,
     orderCmdSvc: createOrderCommandService(),
+    // BKL-085 — the ops refund POST-adjudication ledger write (writeAdjudicatedRefund
+    // does NO adjudication; the composed router already produced the Decision).
+    paymentCmdSvc: createPaymentCommandService(),
+    // BKL-085 — publish payment.status_changed after a committed refund write,
+    // exactly like the admin refund route (drives auto-cancel-on-full-refund).
+    publishPaymentStatusChanged: (event) =>
+      publishNatsEvent(
+        "payment.status_changed",
+        event as unknown as Record<string, unknown>,
+      ),
+    // BKL-085 — best-effort ops.refund.executed audit event.
+    appendRefundEventLog: (entry) => opsRefundEventLogSvc.append(entry),
     // BKL-090 — the ops kitchen-advance emits order.status_changed after its
     // committed write, exactly like the admin advance route, so the
     // cart-intelligence subscriber runs the event-log/reconcile/customer-notify
@@ -2586,14 +2640,16 @@ export async function bootstrapClaustrum(
     session: redisSessionStore(),
     tenantResolver: resolveIbatexasTenantPolicy,
     sessionLock: new PostgresAdvisorySessionLock(pgPool),
-    // The non-conversational "system"-kind driver. The ops plane NEVER invokes
-    // attest/perceive/render (the route hand-builds the ChannelMessage and reads
-    // turn.response.text directly; SystemChannel.matchToParked is null → no
-    // confirm-resume, the documented v1 posture), so the signing key is
+    // The ops "system"-kind driver. BKL-085: OpsSystemChannel is SystemChannel's
+    // behaviour PLUS a REAL pt-BR matchToParked, so a CONFIRM-band ops verb (the
+    // refunds-by-message flow) resumes conversationally ("sim, confirma" →
+    // re-adjudicate the parked envelope through the composed router). The ops
+    // plane still never invokes attest/perceive/render (the route hand-builds the
+    // ChannelMessage and reads turn.response.text directly), so the signing key is
     // construction-only — an ephemeral per-process key (never used to sign
     // anything) avoids adding a required boot secret and commits nothing. An
     // explicit OPS_GATEWAY_SIGNING_KEY overrides it if an operator wants one.
-    systemChannel: new SystemChannel({
+    systemChannel: new OpsSystemChannel({
       gatewaySigningKey:
         process.env.OPS_GATEWAY_SIGNING_KEY ?? randomBytes(32).toString("base64"),
       gateway: process.env.OPS_GATEWAY_NAME ?? "ibatexas-ops",
@@ -2654,6 +2710,25 @@ export async function bootstrapClaustrum(
                 // guard reads (projected into pack-orders' ctx.fulfillmentStatus).
                 fulfillmentStatus:
                   (order.fulfillmentStatus as string | null) ?? null,
+              };
+        },
+        // BKL-085 — the ACTIVE payment for the refunds-by-message path. Reuses the
+        // SAME deterministic read the admin refund route relies on
+        // (paymentQuerySvc.getActiveByOrderId). The resolver reads the balance /
+        // status / method / version from THIS row and stamps the forgeable payload
+        // fields from it (STOP-GATE B); a null (no active payment) or a
+        // non-refundable status fails closed to a kernel REFUSE.
+        lookupActivePayment: async (orderId) => {
+          const p = await createPaymentQueryService().getActiveByOrderId(orderId);
+          return p === null
+            ? null
+            : {
+                paymentId: p.id,
+                status: p.status,
+                amountInCentavos: p.amountInCentavos,
+                refundedAmountCentavos: p.refundedAmountCentavos ?? 0,
+                method: p.method,
+                version: p.version,
               };
         },
         // BKL-089 (orders scope) — deterministic order REFERENCE→id resolution

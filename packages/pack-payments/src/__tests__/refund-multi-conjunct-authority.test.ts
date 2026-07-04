@@ -50,6 +50,10 @@ function refundEnv(opts: {
   owner?: string
   resource?: string
   withRefs?: boolean
+  /** BKL-085: taint defaults to UNTRUSTED (the model-parsed customer/ops refund
+   *  this D1 suite models). A test that needs the RAW Inv-11 band (no taint
+   *  overlay) passes "TRUSTED" — the admin-HTTP provenance. */
+  taint?: "TRUSTED" | "UNTRUSTED" | "SYSTEM"
 }): IntentEnvelope<PaymentIntentKind, PaymentPayload> {
   const {
     amount,
@@ -60,6 +64,7 @@ function refundEnv(opts: {
     owner = CUST,
     resource = ORDER,
     withRefs = true,
+    taint = "UNTRUSTED",
   } = opts
   return buildEnvelope({
     kind: "payment.refund.issue",
@@ -72,8 +77,8 @@ function refundEnv(opts: {
       actor: "admin",
     } as unknown as PaymentPayload,
     actor: { principal: "user", sessionId },
-    taint: "UNTRUSTED",
-    nonce: `n-${sessionId}-${amount}-${resource}-${withRefs}`,
+    taint,
+    nonce: `n-${sessionId}-${amount}-${resource}-${withRefs}-${taint}`,
     createdAt: DET,
     ...(withRefs ? { resourceRefs: { owner, resource } } : {}),
   }) as IntentEnvelope<PaymentIntentKind, PaymentPayload>
@@ -158,13 +163,18 @@ describe("D1 — refund multi-conjunct authority (SDD Inv 11 strengthen)", () =>
     expect(d.kind).toBe("REFUSE")
     if (d.kind === "REFUSE") expect(d.refusal.code).toBe("payment.ownership_denied")
   })
-  it("(a non-vacuous) the SAME small cross-customer refund EXECUTEs with NO injected authority — so the guard, not the band, REFUSED", () => {
+  it("(a non-vacuous) the SAME small cross-customer refund reaches a POSITIVE terminal with NO injected authority — so the ownership guard, not the band, REFUSED", () => {
+    // Absent authority, the ownership REFUSE cannot fire; the refund reaches a
+    // positive terminal. Post-BKL-085 that terminal is REQUEST_CONFIRMATION (the
+    // envelope is UNTRUSTED, so the taint overlay confirms it) rather than the
+    // pre-overlay EXECUTE — still NOT a REFUSE, so the ownership guard's REFUSE in
+    // the paired test above was load-bearing.
     const d = adjudicate(
       refundEnv({ amount: 1_000, resource: "ord-OTHER", withRefs: false }),
       noAuthState(),
       paymentsPolicyBundle,
     )
-    expect(d.kind).toBe("EXECUTE")
+    expect(d.kind).toBe("REQUEST_CONFIRMATION")
   })
 
   // (b) eligibility conjunct — already-fully-refunded REFUSES (live state, not snapshot).
@@ -178,13 +188,17 @@ describe("D1 — refund multi-conjunct authority (SDD Inv 11 strengthen)", () =>
     expect(d.kind).toBe("REFUSE")
     if (d.kind === "REFUSE") expect(d.refusal.code).toBe("refund.already_refunded")
   })
-  it("(b non-vacuous) the SAME exhausted-balance refund EXECUTEs through the band path with NO authority — the magnitude ladder trusts the snapshot, the eligibility guard reads live state", () => {
+  it("(b non-vacuous) the SAME exhausted-balance refund reaches a POSITIVE terminal through the band path with NO authority — the magnitude ladder trusts the snapshot, the eligibility guard reads live state", () => {
+    // No authority ⇒ the eligibility guard is inert; the magnitude ladder trusts
+    // the (lying) snapshot and reaches a positive terminal — REQUEST_CONFIRMATION
+    // post-BKL-085 (UNTRUSTED taint overlay), not the pre-overlay EXECUTE. Still
+    // NOT a REFUSE, so the eligibility guard's REFUSE above was load-bearing.
     const d = adjudicate(
       refundEnv({ amount: 10_000, refundable: 50_000, currentRefunded: 30_000, amountInCentavos: 30_000, withRefs: false }),
       noAuthState({ currentStatus: "partially_refunded", refundedAmountCentavos: 30_000, amountInCentavos: 30_000 }),
       paymentsPolicyBundle,
     )
-    expect(d.kind).toBe("EXECUTE")
+    expect(d.kind).toBe("REQUEST_CONFIRMATION")
   })
 
   // (c) freshness conjunct — not-read-this-turn REFUSES.
@@ -197,13 +211,15 @@ describe("D1 — refund multi-conjunct authority (SDD Inv 11 strengthen)", () =>
     expect(d.kind).toBe("REFUSE")
     if (d.kind === "REFUSE") expect(d.refusal.code).toBe("refund.stale_read")
   })
-  it("(c non-vacuous) the SAME refund EXECUTEs once the payment is read LIVE this turn — so the freshness guard is what REFUSED", () => {
+  it("(c non-vacuous) the SAME refund reaches a POSITIVE terminal once the payment is read LIVE this turn — so the freshness guard is what REFUSED", () => {
+    // Freshness satisfied ⇒ the freshness REFUSE cannot fire; the refund reaches a
+    // positive terminal — REQUEST_CONFIRMATION post-BKL-085 (UNTRUSTED overlay).
     const d = adjudicate(
       refundEnv({ amount: 1_000 }),
       authState({ paymentReadThisTurn: true }),
       paymentsPolicyBundle,
     )
-    expect(d.kind).toBe("EXECUTE")
+    expect(d.kind).toBe("REQUEST_CONFIRMATION")
   })
 
   // (d) refundable-state conjunct — unsettled payment REFUSES.
@@ -216,32 +232,47 @@ describe("D1 — refund multi-conjunct authority (SDD Inv 11 strengthen)", () =>
     expect(d.kind).toBe("REFUSE")
     if (d.kind === "REFUSE") expect(d.refusal.code).toBe("refund.not_refundable_state")
   })
-  it("(d non-vacuous) the SAME refund EXECUTEs once the payment is settled (paid) — so the refundable-state guard is what REFUSED", () => {
+  it("(d non-vacuous) the SAME refund reaches a POSITIVE terminal once the payment is settled (paid) — so the refundable-state guard is what REFUSED", () => {
+    // Settled ⇒ the refundable-state REFUSE cannot fire; the refund reaches a
+    // positive terminal — REQUEST_CONFIRMATION post-BKL-085 (UNTRUSTED overlay).
     const d = adjudicate(
       refundEnv({ amount: 1_000 }),
       authState({ currentStatus: "paid" }),
       paymentsPolicyBundle,
     )
-    expect(d.kind).toBe("EXECUTE")
+    expect(d.kind).toBe("REQUEST_CONFIRMATION")
   })
 
-  // (e) legitimate small owner refund still EXECUTEs (Inv 11 build-error guard).
-  it("(e) legitimate owner refund < R$500 of a refundable, not-exhausted, freshly-read payment EXECUTEs — the 4 conjuncts do NOT force a confirm/refuse on a small refund", () => {
+  // (e) legitimate small owner refund: the 4 conjuncts do NOT REFUSE it (they all
+  //     pass); the CONFIRM comes from the BKL-085 UNTRUSTED taint overlay, NOT the
+  //     conjuncts. (A TRUSTED admin-HTTP refund of the same shape EXECUTEs — see
+  //     the taint matrix in refund-taint-confirm.test.ts.)
+  it("(e) legitimate owner refund < R$500 of a refundable, not-exhausted, freshly-read payment passes all 4 conjuncts (no conjunct REFUSE) — the UNTRUSTED taint overlay confirms it", () => {
     const d = adjudicate(refundEnv({ amount: 30_000 }), authState(), paymentsPolicyBundle)
-    expect(d.kind).toBe("EXECUTE")
+    expect(d.kind).toBe("REQUEST_CONFIRMATION")
+    // Prove it is the TAINT overlay (not a conjunct): the SAME refund on the
+    // TRUSTED admin-HTTP provenance EXECUTEs — the conjuncts are taint-agnostic.
+    const trusted = adjudicate(
+      refundEnv({ amount: 30_000, taint: "TRUSTED" }),
+      authState(),
+      paymentsPolicyBundle,
+    )
+    expect(trusted.kind).toBe("EXECUTE")
   })
 })
 
 describe("D1 — (f) Inv 11 amount bands preserved + B1 overlay honored", () => {
   // Interior band points (avoid the pre-existing strict-`>` boundary at the exact
   // thresholds, which is out of D1 scope — the magnitude ladder is untouched).
-  it("EXECUTE band: < R$500, with the 4 conjuncts engaged", () => {
-    expect(adjudicate(refundEnv({ amount: 30_000 }), authState(), paymentsPolicyBundle).kind).toBe("EXECUTE")
+  it("EXECUTE band: < R$500, with the 4 conjuncts engaged (TRUSTED — raw Inv-11 band, no taint overlay)", () => {
+    // TRUSTED provenance so the BKL-085 overlay does NOT apply — this pins the raw
+    // Inv-11 EXECUTE band is preserved with the 4 conjuncts engaged.
+    expect(adjudicate(refundEnv({ amount: 30_000, taint: "TRUSTED" }), authState(), paymentsPolicyBundle).kind).toBe("EXECUTE")
   })
   it("REQUEST_CONFIRMATION band: [R$500, R$1000), with the 4 conjuncts engaged", () => {
     expect(adjudicate(refundEnv({ amount: 60_000 }), authState(), paymentsPolicyBundle).kind).toBe("REQUEST_CONFIRMATION")
   })
-  it("ESCALATE band: ≥ R$1000, with the 4 conjuncts engaged", () => {
+  it("ESCALATE band: ≥ R$1000, with the 4 conjuncts engaged (overlay never pre-empts ESCALATE)", () => {
     expect(adjudicate(refundEnv({ amount: 150_000 }), authState(), paymentsPolicyBundle).kind).toBe("ESCALATE")
   })
 

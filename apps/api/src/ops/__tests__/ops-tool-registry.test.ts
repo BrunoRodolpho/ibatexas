@@ -7,7 +7,10 @@
 
 import { describe, expect, it, vi } from "vitest";
 import type { AuditSink } from "@ibatexas/audit-sink";
-import type { OrderStatusChangedEvent } from "@ibatexas/types";
+import type {
+  OrderStatusChangedEvent,
+  PaymentStatusChangedEvent,
+} from "@ibatexas/types";
 import {
   createOpsToolRegistry,
   listOpsToolDefinitions,
@@ -23,6 +26,9 @@ function makeDeps(over: Partial<OpsToolRegistryDeps> = {}): {
   writeAdjudicatedNote: ReturnType<typeof vi.fn>;
   writeAdjudicatedStatusTransition: ReturnType<typeof vi.fn>;
   publishOrderStatusChanged: ReturnType<typeof vi.fn>;
+  writeAdjudicatedRefund: ReturnType<typeof vi.fn>;
+  publishPaymentStatusChanged: ReturnType<typeof vi.fn>;
+  appendRefundEventLog: ReturnType<typeof vi.fn>;
 } {
   const medusaAdjudicated = vi.fn(async () => ({ product: { id: "prod_1" } }));
   const writeAdjudicatedNote = vi.fn(async () => ({
@@ -41,11 +47,29 @@ function makeDeps(over: Partial<OpsToolRegistryDeps> = {}): {
   const publishOrderStatusChanged = vi.fn(
     async (_event: OrderStatusChangedEvent) => {},
   );
+  // BKL-085 — the refund write returns orderId + method from the DB row so the
+  // ops emit path never trusts the model payload for them.
+  const writeAdjudicatedRefund = vi.fn(async () => ({
+    version: 5,
+    previousStatus: "paid",
+    newStatus: "refunded",
+    totalRefundedCentavos: 5_000,
+    refundAmountCentavos: 5_000,
+    orderId: "order_ref",
+    method: "pix",
+  }));
+  const publishPaymentStatusChanged = vi.fn(
+    async (_event: PaymentStatusChangedEvent) => {},
+  );
+  const appendRefundEventLog = vi.fn(async () => {});
   const deps: OpsToolRegistryDeps = {
     medusaAdjudicated: medusaAdjudicated as never,
     auditSink: AUDIT_SINK,
     orderCmdSvc: { writeAdjudicatedNote, writeAdjudicatedStatusTransition },
     publishOrderStatusChanged,
+    paymentCmdSvc: { writeAdjudicatedRefund },
+    publishPaymentStatusChanged,
+    appendRefundEventLog,
     ...over,
   };
   return {
@@ -54,6 +78,9 @@ function makeDeps(over: Partial<OpsToolRegistryDeps> = {}): {
     writeAdjudicatedNote,
     writeAdjudicatedStatusTransition,
     publishOrderStatusChanged,
+    writeAdjudicatedRefund,
+    publishPaymentStatusChanged,
+    appendRefundEventLog,
   };
 }
 
@@ -76,13 +103,14 @@ describe("ops tool registry — shape", () => {
     }
   });
 
-  it("registers exactly the three governed ops verbs", () => {
+  it("registers exactly the four governed ops verbs", () => {
     const { deps } = makeDeps();
     const registry = createOpsToolRegistry(deps);
     expect(registry.hasCapability("product.availability.set")).toBe(true);
     expect(registry.hasCapability("order.note.add")).toBe(true);
     expect(registry.hasCapability("order.status.transition")).toBe(true);
-    expect(registry.hasCapability("payment.refund.issue")).toBe(false);
+    // BKL-085 — the refunds-by-message verb is now the fourth governed ops tool.
+    expect(registry.hasCapability("payment.refund.issue")).toBe(true);
   });
 
   it("staffIdFromCapsule reads actor.staffId, never a model field", () => {
@@ -249,5 +277,124 @@ describe("order.status.transition executor — POST-adjudication kitchen-advance
       tool.execute({ orderId: "order_1", newStatus: "ready" }, capsule("staff_7")),
     ).rejects.toThrow();
     expect(publishOrderStatusChanged).not.toHaveBeenCalled();
+  });
+});
+
+describe("payment.refund.issue executor — POST-adjudication refund write (BKL-085)", () => {
+  it("calls writeAdjudicatedRefund with actor=admin + Capsule staffId; never the model actor/actorId", async () => {
+    const { deps, writeAdjudicatedRefund } = makeDeps();
+    const tool = toolByKind(deps, "payment.refund.issue");
+    await tool.execute(
+      // The model payload's actor/actorId MUST be overwritten from the Capsule.
+      {
+        paymentId: "pay_1",
+        refundAmountCentavos: 5_000,
+        refundableBalanceCentavos: 50_000,
+        amountInCentavos: 50_000,
+        currentRefundedCentavos: 0,
+        actor: "system",
+        actorId: "forged",
+        reason: "cliente pediu",
+      },
+      capsule("staff_9"),
+    );
+    expect(writeAdjudicatedRefund).toHaveBeenCalledTimes(1);
+    const [payload] = writeAdjudicatedRefund.mock.calls[0]!;
+    // Identity forced from the Capsule, never the model payload.
+    expect((payload as { actor: string }).actor).toBe("admin");
+    expect((payload as { actorId?: string }).actorId).toBe("staff_9");
+    // The balance/amount fields pass through (the resolver already stamped them).
+    expect((payload as { refundAmountCentavos: number }).refundAmountCentavos).toBe(5_000);
+    expect((payload as { paymentId: string }).paymentId).toBe("pay_1");
+  });
+
+  it("omits actorId when the Capsule carries no staffId (never fabricates one)", async () => {
+    const { deps, writeAdjudicatedRefund } = makeDeps();
+    const tool = toolByKind(deps, "payment.refund.issue");
+    await tool.execute(
+      {
+        paymentId: "pay_1",
+        refundAmountCentavos: 5_000,
+        refundableBalanceCentavos: 50_000,
+        amountInCentavos: 50_000,
+        currentRefundedCentavos: 0,
+        actor: "admin",
+      },
+      capsule(null),
+    );
+    const [payload] = writeAdjudicatedRefund.mock.calls[0]!;
+    expect((payload as { actorId?: string }).actorId).toBeUndefined();
+    expect((payload as { actor: string }).actor).toBe("admin");
+  });
+
+  it("emits payment.status_changed AND appends the ops.refund.executed audit event after the committed write, with orderId/method from the DB row (never the model)", async () => {
+    const { deps, publishPaymentStatusChanged, appendRefundEventLog } = makeDeps();
+    const tool = toolByKind(deps, "payment.refund.issue");
+    await tool.execute(
+      {
+        paymentId: "pay_1",
+        refundAmountCentavos: 5_000,
+        refundableBalanceCentavos: 50_000,
+        amountInCentavos: 50_000,
+        currentRefundedCentavos: 0,
+        actor: "admin",
+      },
+      capsule("staff_9"),
+    );
+    // payment.status_changed — drives auto-cancel-on-full-refund; orderId/method
+    // from the committed DB row (writeAdjudicatedRefund result), not the model.
+    expect(publishPaymentStatusChanged).toHaveBeenCalledTimes(1);
+    const event = publishPaymentStatusChanged.mock.calls[0]![0];
+    expect(event).toMatchObject({
+      orderId: "order_ref",
+      paymentId: "pay_1",
+      previousStatus: "paid",
+      newStatus: "refunded",
+      method: "pix",
+      version: 5,
+    });
+    expect(typeof event.timestamp).toBe("string");
+    // ops.refund.executed audit event appended.
+    expect(appendRefundEventLog).toHaveBeenCalledTimes(1);
+    const entry = appendRefundEventLog.mock.calls[0]![0];
+    expect(entry).toMatchObject({
+      orderId: "order_ref",
+      eventType: "ops.refund.executed",
+    });
+  });
+
+  it("a payment.status_changed publish failure NEVER fails the committed refund turn (best-effort emit)", async () => {
+    const writeAdjudicatedRefund = vi.fn(async () => ({
+      version: 5,
+      previousStatus: "paid",
+      newStatus: "refunded",
+      totalRefundedCentavos: 5_000,
+      refundAmountCentavos: 5_000,
+      orderId: "order_ref",
+      method: "pix",
+    }));
+    const publishPaymentStatusChanged = vi.fn(async () => {
+      throw new Error("NATS down");
+    });
+    const { deps } = makeDeps({
+      paymentCmdSvc: { writeAdjudicatedRefund } as never,
+      publishPaymentStatusChanged,
+    });
+    const tool = toolByKind(deps, "payment.refund.issue");
+    // Must resolve (not throw) despite the publish failure.
+    await expect(
+      tool.execute(
+        {
+          paymentId: "pay_1",
+          refundAmountCentavos: 5_000,
+          refundableBalanceCentavos: 50_000,
+          amountInCentavos: 50_000,
+          currentRefundedCentavos: 0,
+          actor: "admin",
+        },
+        capsule("staff_9"),
+      ),
+    ).resolves.toMatchObject({ paymentId: "pay_1", newStatus: "refunded" });
+    expect(writeAdjudicatedRefund).toHaveBeenCalledTimes(1);
   });
 });
