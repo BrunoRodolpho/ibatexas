@@ -811,10 +811,11 @@ describe("IBATEXAS_READ_TOOL_EXECUTORS — advertised-read coverage (BKL-027/071
     ),
   ];
 
-  // BKL-071 closed the last dangling advertised read: get_payment_history is now
-  // wired (get-payment-history handler over paymentQueryService.listByCustomer),
-  // so the advertised read surface is 12/12 covered. The fail-closed
-  // readToolRosterDrift boot gate keeps it that way.
+  // BKL-071 closed the last dangling customer-plane advertised read
+  // (get_payment_history). NEW-032 slice B adds the staff-plane `ops_snapshot`
+  // read (advertised by opsCapabilityPlanner under the staff drift probe), also
+  // wired in IBATEXAS_READ_TOOL_EXECUTORS — so the advertised read surface stays
+  // fully covered. The fail-closed readToolRosterDrift boot gate keeps it that way.
 
   it("derives a non-vacuous advertised-read surface incl. get_payment_history", () => {
     // Guards the derivation from silently hollowing out (which would make the
@@ -824,7 +825,7 @@ describe("IBATEXAS_READ_TOOL_EXECUTORS — advertised-read coverage (BKL-027/071
     expect(new Set(ADVERTISED_READS).has("get_cart")).toBe(true);
   });
 
-  it("wires every advertised read to an executor (12/12 — BKL-071 closed get_payment_history)", () => {
+  it("wires every advertised read to an executor (customer reads + the NEW-032 ops_snapshot)", () => {
     for (const name of ADVERTISED_READS) {
       expect(typeof IBATEXAS_READ_TOOL_EXECUTORS[name]).toBe("function");
     }
