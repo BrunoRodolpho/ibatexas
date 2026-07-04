@@ -9,6 +9,9 @@
 //   DELETE /api/admin/ingredients/:id                → 200 { ingredient } | 404
 //   POST   /api/admin/ingredients/:id/adjust         → 200 { ingredient } | 404  (body: { deltaMilli })
 //
+// NEW-035 adds an optional per-unit cost (costCentavosPerUnit, integer centavos) to
+// create/update — an ingredient's cost feeds a recipe's COGS read (recipe.service).
+//
 // Mirrors admin/tables.ts + admin/schedule-shifts.ts: `withTypeProvider`, zod
 // schemas, a lazily-constructed service (so a test mounting the plugin with a
 // partial `@ibatexas/domain` mock doesn't trip over a missing factory at register
@@ -38,6 +41,11 @@ const Unit = z.enum(UNITS);
 // Milli-unit quantity: a non-negative integer (thousandths of the unit).
 const MilliQty = z.number().int().min(0);
 
+// NEW-035 — per-unit cost in INTEGER CENTAVOS (of one whole `unit`): a non-negative
+// integer. Money is never a float. On create it's optional (omit = no cost set); on
+// update it's ALSO nullable so an explicit `null` clears a previously-set cost.
+const CostCentavos = z.number().int().min(0);
+
 const IdParam = z.object({ id: z.string().min(1).max(256) });
 
 // activeOnly is a query STRING — an explicit "true"/"false" enum (z.coerce.boolean
@@ -51,6 +59,7 @@ const CreateBody = z.object({
   unit: Unit,
   stockMilli: MilliQty.optional(),
   lowStockMilli: MilliQty.optional(),
+  costCentavosPerUnit: CostCentavos.optional(),
   active: z.boolean().optional(),
 });
 
@@ -59,6 +68,8 @@ const UpdateBody = z.object({
   unit: Unit.optional(),
   stockMilli: MilliQty.optional(),
   lowStockMilli: MilliQty.optional(),
+  // Nullable on update: an explicit `null` clears the cost (back to "no cost set").
+  costCentavosPerUnit: CostCentavos.nullable().optional(),
   active: z.boolean().optional(),
 });
 
@@ -136,6 +147,7 @@ export async function ingredientRoutes(server: FastifyInstance): Promise<void> {
         unit: body.unit,
         ...(body.stockMilli !== undefined ? { stockMilli: body.stockMilli } : {}),
         ...(body.lowStockMilli !== undefined ? { lowStockMilli: body.lowStockMilli } : {}),
+        ...(body.costCentavosPerUnit !== undefined ? { costCentavosPerUnit: body.costCentavosPerUnit } : {}),
         ...(body.active !== undefined ? { active: body.active } : {}),
       });
       return reply.status(201).send({ ingredient });

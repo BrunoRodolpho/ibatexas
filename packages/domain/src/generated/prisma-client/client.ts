@@ -211,10 +211,40 @@ export type DeliveryZone = Prisma.DeliveryZoneModel
  * 
  * Admin-ops reference/config data — manager-gated at the route, plain CRUD (NOT
  * kernel-adjudicated; ingredient stock is not a customer money/safety path). No FK
- * to any other domain table and no children. Recipe/BOM linkage to menu items,
- * per-dish depletion and COGS/margins are DEFERRED — OUT of this slice.
+ * to any other domain table. NEW-035 adds a per-unit cost + the recipe/BOM back-
+ * relation (recipeUses) so this ingredient can appear on a dish's bill-of-materials
+ * and feed COGS. Per-dish depletion (the order.placed subscriber) stays DEFERRED.
  */
 export type Ingredient = Prisma.IngredientModel
+/**
+ * Model Recipe
+ * NEW-035 — a Recipe (bill-of-materials) for ONE Medusa finished-good: the raw
+ * ingredients + per-batch quantities that go into producing it. Unblocks per-dish
+ * COGS (→ margins, NEW-033).
+ * 
+ * `medusaProductId` is a SOFT reference (String @unique, NOT a Prisma relation):
+ * products are Medusa-managed and live in Medusa's own tables, so the domain DB
+ * holds only the id — one recipe per finished-good. `yield` is how many servings/
+ * units one batch produces, so COGS can report both per-batch and per-serving.
+ * 
+ * Admin-ops reference/config data — manager-gated at the route, plain CRUD (NOT
+ * kernel-adjudicated). The order-flow depletion subscriber (consume ingredients on
+ * order.placed) is DEFERRED — out of this slice.
+ */
+export type Recipe = Prisma.RecipeModel
+/**
+ * Model RecipeIngredient
+ * NEW-035 — one BOM line: a Recipe consumes `qtyMilli` of an Ingredient per batch.
+ * 
+ * `qtyMilli` is a SCALED INTEGER in THOUSANDTHS of the ingredient's `unit` (milli-
+ * units) — the same idiom as Ingredient.stockMilli: 2.5 kg → 2500. COGS arithmetic
+ * runs on the integer field (never a float for the quantity).
+ * 
+ * FK → recipe onDelete Cascade (removing a recipe removes its BOM); FK → ingredient
+ * onDelete Restrict (can't delete an ingredient still used in a recipe). Unique
+ * [recipeId, ingredientId] — an ingredient appears at most once per recipe.
+ */
+export type RecipeIngredient = Prisma.RecipeIngredientModel
 /**
  * Model WeeklySchedule
  * 

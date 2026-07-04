@@ -22,6 +22,12 @@
 // PATCH /api/admin/ingredients/:id       — update a raw ingredient (manager)
 // DELETE /api/admin/ingredients/:id      — remove a raw ingredient (manager)
 // POST /api/admin/ingredients/:id/adjust — add/subtract stock, clamp at 0 (manager)
+// GET  /api/admin/recipes                — list recipes/BOMs (manager) — NEW-035 recipe + COGS
+// GET  /api/admin/recipes/:id            — one recipe + its COGS (manager)
+// POST /api/admin/recipes                — create a recipe/BOM (manager)
+// PUT  /api/admin/recipes/:id/ingredients — replace a recipe's BOM lines (manager)
+// DELETE /api/admin/recipes/:id          — remove a recipe (manager)
+// GET  /api/admin/recipes/:id/cogs       — per-dish COGS: batch + per-serving (manager)
 // GET  /api/admin/analytics/summary     — analytics summary (orders, revenue, AOV)
 // GET  /api/admin/analytics/top-items    — best-sellers over a date range (manager)
 // GET  /api/admin/analytics/refunds      — refund count/total/trend over a range (manager)
@@ -37,6 +43,7 @@ import { reviewRoutes } from "./reviews.js";
 import { tableRoutes } from "./tables.js";
 import { scheduleShiftRoutes } from "./schedule-shifts.js";
 import { ingredientRoutes } from "./ingredients.js";
+import { recipeRoutes } from "./recipes.js";
 import { deliveryZoneRoutes } from "./delivery-zones.js";
 import { analyticsRoutes } from "./analytics.js";
 import { adminAnalyticsReportRoutes } from "./analytics-reports.js";
@@ -206,6 +213,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
   await server.register(tableRoutes);
   await server.register(scheduleShiftRoutes);
   await server.register(ingredientRoutes);
+  await server.register(recipeRoutes);
   await server.register(deliveryZoneRoutes);
   await server.register(analyticsRoutes);
   await server.register(adminAnalyticsReportRoutes);

@@ -27,8 +27,9 @@ import type * as Prisma from "../internal/prismaNamespace.js"
  * 
  * Admin-ops reference/config data — manager-gated at the route, plain CRUD (NOT
  * kernel-adjudicated; ingredient stock is not a customer money/safety path). No FK
- * to any other domain table and no children. Recipe/BOM linkage to menu items,
- * per-dish depletion and COGS/margins are DEFERRED — OUT of this slice.
+ * to any other domain table. NEW-035 adds a per-unit cost + the recipe/BOM back-
+ * relation (recipeUses) so this ingredient can appear on a dish's bill-of-materials
+ * and feed COGS. Per-dish depletion (the order.placed subscriber) stays DEFERRED.
  */
 export type IngredientModel = runtime.Types.Result.DefaultSelection<Prisma.$IngredientPayload>
 
@@ -43,11 +44,13 @@ export type AggregateIngredient = {
 export type IngredientAvgAggregateOutputType = {
   stockMilli: number | null
   lowStockMilli: number | null
+  costCentavosPerUnit: number | null
 }
 
 export type IngredientSumAggregateOutputType = {
   stockMilli: number | null
   lowStockMilli: number | null
+  costCentavosPerUnit: number | null
 }
 
 export type IngredientMinAggregateOutputType = {
@@ -56,6 +59,7 @@ export type IngredientMinAggregateOutputType = {
   unit: string | null
   stockMilli: number | null
   lowStockMilli: number | null
+  costCentavosPerUnit: number | null
   active: boolean | null
   createdAt: Date | null
   updatedAt: Date | null
@@ -67,6 +71,7 @@ export type IngredientMaxAggregateOutputType = {
   unit: string | null
   stockMilli: number | null
   lowStockMilli: number | null
+  costCentavosPerUnit: number | null
   active: boolean | null
   createdAt: Date | null
   updatedAt: Date | null
@@ -78,6 +83,7 @@ export type IngredientCountAggregateOutputType = {
   unit: number
   stockMilli: number
   lowStockMilli: number
+  costCentavosPerUnit: number
   active: number
   createdAt: number
   updatedAt: number
@@ -88,11 +94,13 @@ export type IngredientCountAggregateOutputType = {
 export type IngredientAvgAggregateInputType = {
   stockMilli?: true
   lowStockMilli?: true
+  costCentavosPerUnit?: true
 }
 
 export type IngredientSumAggregateInputType = {
   stockMilli?: true
   lowStockMilli?: true
+  costCentavosPerUnit?: true
 }
 
 export type IngredientMinAggregateInputType = {
@@ -101,6 +109,7 @@ export type IngredientMinAggregateInputType = {
   unit?: true
   stockMilli?: true
   lowStockMilli?: true
+  costCentavosPerUnit?: true
   active?: true
   createdAt?: true
   updatedAt?: true
@@ -112,6 +121,7 @@ export type IngredientMaxAggregateInputType = {
   unit?: true
   stockMilli?: true
   lowStockMilli?: true
+  costCentavosPerUnit?: true
   active?: true
   createdAt?: true
   updatedAt?: true
@@ -123,6 +133,7 @@ export type IngredientCountAggregateInputType = {
   unit?: true
   stockMilli?: true
   lowStockMilli?: true
+  costCentavosPerUnit?: true
   active?: true
   createdAt?: true
   updatedAt?: true
@@ -221,6 +232,7 @@ export type IngredientGroupByOutputType = {
   unit: string
   stockMilli: number
   lowStockMilli: number
+  costCentavosPerUnit: number | null
   active: boolean
   createdAt: Date
   updatedAt: Date
@@ -255,9 +267,11 @@ export type IngredientWhereInput = {
   unit?: Prisma.StringFilter<"Ingredient"> | string
   stockMilli?: Prisma.IntFilter<"Ingredient"> | number
   lowStockMilli?: Prisma.IntFilter<"Ingredient"> | number
+  costCentavosPerUnit?: Prisma.IntNullableFilter<"Ingredient"> | number | null
   active?: Prisma.BoolFilter<"Ingredient"> | boolean
   createdAt?: Prisma.DateTimeFilter<"Ingredient"> | Date | string
   updatedAt?: Prisma.DateTimeFilter<"Ingredient"> | Date | string
+  recipeUses?: Prisma.RecipeIngredientListRelationFilter
 }
 
 export type IngredientOrderByWithRelationInput = {
@@ -266,9 +280,11 @@ export type IngredientOrderByWithRelationInput = {
   unit?: Prisma.SortOrder
   stockMilli?: Prisma.SortOrder
   lowStockMilli?: Prisma.SortOrder
+  costCentavosPerUnit?: Prisma.SortOrderInput | Prisma.SortOrder
   active?: Prisma.SortOrder
   createdAt?: Prisma.SortOrder
   updatedAt?: Prisma.SortOrder
+  recipeUses?: Prisma.RecipeIngredientOrderByRelationAggregateInput
 }
 
 export type IngredientWhereUniqueInput = Prisma.AtLeast<{
@@ -280,9 +296,11 @@ export type IngredientWhereUniqueInput = Prisma.AtLeast<{
   unit?: Prisma.StringFilter<"Ingredient"> | string
   stockMilli?: Prisma.IntFilter<"Ingredient"> | number
   lowStockMilli?: Prisma.IntFilter<"Ingredient"> | number
+  costCentavosPerUnit?: Prisma.IntNullableFilter<"Ingredient"> | number | null
   active?: Prisma.BoolFilter<"Ingredient"> | boolean
   createdAt?: Prisma.DateTimeFilter<"Ingredient"> | Date | string
   updatedAt?: Prisma.DateTimeFilter<"Ingredient"> | Date | string
+  recipeUses?: Prisma.RecipeIngredientListRelationFilter
 }, "id" | "name">
 
 export type IngredientOrderByWithAggregationInput = {
@@ -291,6 +309,7 @@ export type IngredientOrderByWithAggregationInput = {
   unit?: Prisma.SortOrder
   stockMilli?: Prisma.SortOrder
   lowStockMilli?: Prisma.SortOrder
+  costCentavosPerUnit?: Prisma.SortOrderInput | Prisma.SortOrder
   active?: Prisma.SortOrder
   createdAt?: Prisma.SortOrder
   updatedAt?: Prisma.SortOrder
@@ -310,6 +329,7 @@ export type IngredientScalarWhereWithAggregatesInput = {
   unit?: Prisma.StringWithAggregatesFilter<"Ingredient"> | string
   stockMilli?: Prisma.IntWithAggregatesFilter<"Ingredient"> | number
   lowStockMilli?: Prisma.IntWithAggregatesFilter<"Ingredient"> | number
+  costCentavosPerUnit?: Prisma.IntNullableWithAggregatesFilter<"Ingredient"> | number | null
   active?: Prisma.BoolWithAggregatesFilter<"Ingredient"> | boolean
   createdAt?: Prisma.DateTimeWithAggregatesFilter<"Ingredient"> | Date | string
   updatedAt?: Prisma.DateTimeWithAggregatesFilter<"Ingredient"> | Date | string
@@ -321,9 +341,11 @@ export type IngredientCreateInput = {
   unit: string
   stockMilli?: number
   lowStockMilli?: number
+  costCentavosPerUnit?: number | null
   active?: boolean
   createdAt?: Date | string
   updatedAt?: Date | string
+  recipeUses?: Prisma.RecipeIngredientCreateNestedManyWithoutIngredientInput
 }
 
 export type IngredientUncheckedCreateInput = {
@@ -332,9 +354,11 @@ export type IngredientUncheckedCreateInput = {
   unit: string
   stockMilli?: number
   lowStockMilli?: number
+  costCentavosPerUnit?: number | null
   active?: boolean
   createdAt?: Date | string
   updatedAt?: Date | string
+  recipeUses?: Prisma.RecipeIngredientUncheckedCreateNestedManyWithoutIngredientInput
 }
 
 export type IngredientUpdateInput = {
@@ -343,9 +367,11 @@ export type IngredientUpdateInput = {
   unit?: Prisma.StringFieldUpdateOperationsInput | string
   stockMilli?: Prisma.IntFieldUpdateOperationsInput | number
   lowStockMilli?: Prisma.IntFieldUpdateOperationsInput | number
+  costCentavosPerUnit?: Prisma.NullableIntFieldUpdateOperationsInput | number | null
   active?: Prisma.BoolFieldUpdateOperationsInput | boolean
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  recipeUses?: Prisma.RecipeIngredientUpdateManyWithoutIngredientNestedInput
 }
 
 export type IngredientUncheckedUpdateInput = {
@@ -354,9 +380,11 @@ export type IngredientUncheckedUpdateInput = {
   unit?: Prisma.StringFieldUpdateOperationsInput | string
   stockMilli?: Prisma.IntFieldUpdateOperationsInput | number
   lowStockMilli?: Prisma.IntFieldUpdateOperationsInput | number
+  costCentavosPerUnit?: Prisma.NullableIntFieldUpdateOperationsInput | number | null
   active?: Prisma.BoolFieldUpdateOperationsInput | boolean
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  recipeUses?: Prisma.RecipeIngredientUncheckedUpdateManyWithoutIngredientNestedInput
 }
 
 export type IngredientCreateManyInput = {
@@ -365,6 +393,7 @@ export type IngredientCreateManyInput = {
   unit: string
   stockMilli?: number
   lowStockMilli?: number
+  costCentavosPerUnit?: number | null
   active?: boolean
   createdAt?: Date | string
   updatedAt?: Date | string
@@ -376,6 +405,7 @@ export type IngredientUpdateManyMutationInput = {
   unit?: Prisma.StringFieldUpdateOperationsInput | string
   stockMilli?: Prisma.IntFieldUpdateOperationsInput | number
   lowStockMilli?: Prisma.IntFieldUpdateOperationsInput | number
+  costCentavosPerUnit?: Prisma.NullableIntFieldUpdateOperationsInput | number | null
   active?: Prisma.BoolFieldUpdateOperationsInput | boolean
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
@@ -387,6 +417,7 @@ export type IngredientUncheckedUpdateManyInput = {
   unit?: Prisma.StringFieldUpdateOperationsInput | string
   stockMilli?: Prisma.IntFieldUpdateOperationsInput | number
   lowStockMilli?: Prisma.IntFieldUpdateOperationsInput | number
+  costCentavosPerUnit?: Prisma.NullableIntFieldUpdateOperationsInput | number | null
   active?: Prisma.BoolFieldUpdateOperationsInput | boolean
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
@@ -398,6 +429,7 @@ export type IngredientCountOrderByAggregateInput = {
   unit?: Prisma.SortOrder
   stockMilli?: Prisma.SortOrder
   lowStockMilli?: Prisma.SortOrder
+  costCentavosPerUnit?: Prisma.SortOrder
   active?: Prisma.SortOrder
   createdAt?: Prisma.SortOrder
   updatedAt?: Prisma.SortOrder
@@ -406,6 +438,7 @@ export type IngredientCountOrderByAggregateInput = {
 export type IngredientAvgOrderByAggregateInput = {
   stockMilli?: Prisma.SortOrder
   lowStockMilli?: Prisma.SortOrder
+  costCentavosPerUnit?: Prisma.SortOrder
 }
 
 export type IngredientMaxOrderByAggregateInput = {
@@ -414,6 +447,7 @@ export type IngredientMaxOrderByAggregateInput = {
   unit?: Prisma.SortOrder
   stockMilli?: Prisma.SortOrder
   lowStockMilli?: Prisma.SortOrder
+  costCentavosPerUnit?: Prisma.SortOrder
   active?: Prisma.SortOrder
   createdAt?: Prisma.SortOrder
   updatedAt?: Prisma.SortOrder
@@ -425,6 +459,7 @@ export type IngredientMinOrderByAggregateInput = {
   unit?: Prisma.SortOrder
   stockMilli?: Prisma.SortOrder
   lowStockMilli?: Prisma.SortOrder
+  costCentavosPerUnit?: Prisma.SortOrder
   active?: Prisma.SortOrder
   createdAt?: Prisma.SortOrder
   updatedAt?: Prisma.SortOrder
@@ -433,8 +468,121 @@ export type IngredientMinOrderByAggregateInput = {
 export type IngredientSumOrderByAggregateInput = {
   stockMilli?: Prisma.SortOrder
   lowStockMilli?: Prisma.SortOrder
+  costCentavosPerUnit?: Prisma.SortOrder
 }
 
+export type IngredientScalarRelationFilter = {
+  is?: Prisma.IngredientWhereInput
+  isNot?: Prisma.IngredientWhereInput
+}
+
+export type IngredientCreateNestedOneWithoutRecipeUsesInput = {
+  create?: Prisma.XOR<Prisma.IngredientCreateWithoutRecipeUsesInput, Prisma.IngredientUncheckedCreateWithoutRecipeUsesInput>
+  connectOrCreate?: Prisma.IngredientCreateOrConnectWithoutRecipeUsesInput
+  connect?: Prisma.IngredientWhereUniqueInput
+}
+
+export type IngredientUpdateOneRequiredWithoutRecipeUsesNestedInput = {
+  create?: Prisma.XOR<Prisma.IngredientCreateWithoutRecipeUsesInput, Prisma.IngredientUncheckedCreateWithoutRecipeUsesInput>
+  connectOrCreate?: Prisma.IngredientCreateOrConnectWithoutRecipeUsesInput
+  upsert?: Prisma.IngredientUpsertWithoutRecipeUsesInput
+  connect?: Prisma.IngredientWhereUniqueInput
+  update?: Prisma.XOR<Prisma.XOR<Prisma.IngredientUpdateToOneWithWhereWithoutRecipeUsesInput, Prisma.IngredientUpdateWithoutRecipeUsesInput>, Prisma.IngredientUncheckedUpdateWithoutRecipeUsesInput>
+}
+
+export type IngredientCreateWithoutRecipeUsesInput = {
+  id?: string
+  name: string
+  unit: string
+  stockMilli?: number
+  lowStockMilli?: number
+  costCentavosPerUnit?: number | null
+  active?: boolean
+  createdAt?: Date | string
+  updatedAt?: Date | string
+}
+
+export type IngredientUncheckedCreateWithoutRecipeUsesInput = {
+  id?: string
+  name: string
+  unit: string
+  stockMilli?: number
+  lowStockMilli?: number
+  costCentavosPerUnit?: number | null
+  active?: boolean
+  createdAt?: Date | string
+  updatedAt?: Date | string
+}
+
+export type IngredientCreateOrConnectWithoutRecipeUsesInput = {
+  where: Prisma.IngredientWhereUniqueInput
+  create: Prisma.XOR<Prisma.IngredientCreateWithoutRecipeUsesInput, Prisma.IngredientUncheckedCreateWithoutRecipeUsesInput>
+}
+
+export type IngredientUpsertWithoutRecipeUsesInput = {
+  update: Prisma.XOR<Prisma.IngredientUpdateWithoutRecipeUsesInput, Prisma.IngredientUncheckedUpdateWithoutRecipeUsesInput>
+  create: Prisma.XOR<Prisma.IngredientCreateWithoutRecipeUsesInput, Prisma.IngredientUncheckedCreateWithoutRecipeUsesInput>
+  where?: Prisma.IngredientWhereInput
+}
+
+export type IngredientUpdateToOneWithWhereWithoutRecipeUsesInput = {
+  where?: Prisma.IngredientWhereInput
+  data: Prisma.XOR<Prisma.IngredientUpdateWithoutRecipeUsesInput, Prisma.IngredientUncheckedUpdateWithoutRecipeUsesInput>
+}
+
+export type IngredientUpdateWithoutRecipeUsesInput = {
+  id?: Prisma.StringFieldUpdateOperationsInput | string
+  name?: Prisma.StringFieldUpdateOperationsInput | string
+  unit?: Prisma.StringFieldUpdateOperationsInput | string
+  stockMilli?: Prisma.IntFieldUpdateOperationsInput | number
+  lowStockMilli?: Prisma.IntFieldUpdateOperationsInput | number
+  costCentavosPerUnit?: Prisma.NullableIntFieldUpdateOperationsInput | number | null
+  active?: Prisma.BoolFieldUpdateOperationsInput | boolean
+  createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+}
+
+export type IngredientUncheckedUpdateWithoutRecipeUsesInput = {
+  id?: Prisma.StringFieldUpdateOperationsInput | string
+  name?: Prisma.StringFieldUpdateOperationsInput | string
+  unit?: Prisma.StringFieldUpdateOperationsInput | string
+  stockMilli?: Prisma.IntFieldUpdateOperationsInput | number
+  lowStockMilli?: Prisma.IntFieldUpdateOperationsInput | number
+  costCentavosPerUnit?: Prisma.NullableIntFieldUpdateOperationsInput | number | null
+  active?: Prisma.BoolFieldUpdateOperationsInput | boolean
+  createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+}
+
+
+/**
+ * Count Type IngredientCountOutputType
+ */
+
+export type IngredientCountOutputType = {
+  recipeUses: number
+}
+
+export type IngredientCountOutputTypeSelect<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
+  recipeUses?: boolean | IngredientCountOutputTypeCountRecipeUsesArgs
+}
+
+/**
+ * IngredientCountOutputType without action
+ */
+export type IngredientCountOutputTypeDefaultArgs<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
+  /**
+   * Select specific fields to fetch from the IngredientCountOutputType
+   */
+  select?: Prisma.IngredientCountOutputTypeSelect<ExtArgs> | null
+}
+
+/**
+ * IngredientCountOutputType without action
+ */
+export type IngredientCountOutputTypeCountRecipeUsesArgs<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
+  where?: Prisma.RecipeIngredientWhereInput
+}
 
 
 export type IngredientSelect<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetSelect<{
@@ -443,9 +591,12 @@ export type IngredientSelect<ExtArgs extends runtime.Types.Extensions.InternalAr
   unit?: boolean
   stockMilli?: boolean
   lowStockMilli?: boolean
+  costCentavosPerUnit?: boolean
   active?: boolean
   createdAt?: boolean
   updatedAt?: boolean
+  recipeUses?: boolean | Prisma.Ingredient$recipeUsesArgs<ExtArgs>
+  _count?: boolean | Prisma.IngredientCountOutputTypeDefaultArgs<ExtArgs>
 }, ExtArgs["result"]["ingredient"]>
 
 export type IngredientSelectCreateManyAndReturn<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetSelect<{
@@ -454,6 +605,7 @@ export type IngredientSelectCreateManyAndReturn<ExtArgs extends runtime.Types.Ex
   unit?: boolean
   stockMilli?: boolean
   lowStockMilli?: boolean
+  costCentavosPerUnit?: boolean
   active?: boolean
   createdAt?: boolean
   updatedAt?: boolean
@@ -465,6 +617,7 @@ export type IngredientSelectUpdateManyAndReturn<ExtArgs extends runtime.Types.Ex
   unit?: boolean
   stockMilli?: boolean
   lowStockMilli?: boolean
+  costCentavosPerUnit?: boolean
   active?: boolean
   createdAt?: boolean
   updatedAt?: boolean
@@ -476,16 +629,29 @@ export type IngredientSelectScalar = {
   unit?: boolean
   stockMilli?: boolean
   lowStockMilli?: boolean
+  costCentavosPerUnit?: boolean
   active?: boolean
   createdAt?: boolean
   updatedAt?: boolean
 }
 
-export type IngredientOmit<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetOmit<"id" | "name" | "unit" | "stockMilli" | "lowStockMilli" | "active" | "createdAt" | "updatedAt", ExtArgs["result"]["ingredient"]>
+export type IngredientOmit<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetOmit<"id" | "name" | "unit" | "stockMilli" | "lowStockMilli" | "costCentavosPerUnit" | "active" | "createdAt" | "updatedAt", ExtArgs["result"]["ingredient"]>
+export type IngredientInclude<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
+  recipeUses?: boolean | Prisma.Ingredient$recipeUsesArgs<ExtArgs>
+  _count?: boolean | Prisma.IngredientCountOutputTypeDefaultArgs<ExtArgs>
+}
+export type IngredientIncludeCreateManyAndReturn<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {}
+export type IngredientIncludeUpdateManyAndReturn<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {}
 
 export type $IngredientPayload<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
   name: "Ingredient"
-  objects: {}
+  objects: {
+    /**
+     * NEW-035 — recipe lines that consume this ingredient (BOM). onDelete Restrict on
+     * the join blocks deleting an ingredient still used in a recipe.
+     */
+    recipeUses: Prisma.$RecipeIngredientPayload<ExtArgs>[]
+  }
   scalars: runtime.Types.Extensions.GetPayloadResult<{
     id: string
     name: string
@@ -501,6 +667,13 @@ export type $IngredientPayload<ExtArgs extends runtime.Types.Extensions.Internal
      * Low-stock threshold in milli-units. `stockMilli <= lowStockMilli` ⇒ low-stock.
      */
     lowStockMilli: number
+    /**
+     * NEW-035 — purchase cost, in INTEGER CENTAVOS, of ONE whole `unit` (e.g. cost of
+     * 1 kg). NULLABLE: an ingredient with no cost set is EXCLUDED from COGS (its recipe
+     * line is flagged `costMissing` and contributes 0) — COGS is never guessed. Money =
+     * integer centavos (Hard-Rule #2), never a float.
+     */
+    costCentavosPerUnit: number | null
     active: boolean
     createdAt: Date
     updatedAt: Date
@@ -898,6 +1071,7 @@ readonly fields: IngredientFieldRefs;
  */
 export interface Prisma__IngredientClient<T, Null = never, ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs, GlobalOmitOptions = {}> extends Prisma.PrismaPromise<T> {
   readonly [Symbol.toStringTag]: "PrismaPromise"
+  recipeUses<T extends Prisma.Ingredient$recipeUsesArgs<ExtArgs> = {}>(args?: Prisma.Subset<T, Prisma.Ingredient$recipeUsesArgs<ExtArgs>>): Prisma.PrismaPromise<runtime.Types.Result.GetResult<Prisma.$RecipeIngredientPayload<ExtArgs>, T, "findMany", GlobalOmitOptions> | Null>
   /**
    * Attaches callbacks for the resolution and/or rejection of the Promise.
    * @param onfulfilled The callback to execute when the Promise is resolved.
@@ -932,6 +1106,7 @@ export interface IngredientFieldRefs {
   readonly unit: Prisma.FieldRef<"Ingredient", 'String'>
   readonly stockMilli: Prisma.FieldRef<"Ingredient", 'Int'>
   readonly lowStockMilli: Prisma.FieldRef<"Ingredient", 'Int'>
+  readonly costCentavosPerUnit: Prisma.FieldRef<"Ingredient", 'Int'>
   readonly active: Prisma.FieldRef<"Ingredient", 'Boolean'>
   readonly createdAt: Prisma.FieldRef<"Ingredient", 'DateTime'>
   readonly updatedAt: Prisma.FieldRef<"Ingredient", 'DateTime'>
@@ -952,6 +1127,10 @@ export type IngredientFindUniqueArgs<ExtArgs extends runtime.Types.Extensions.In
    */
   omit?: Prisma.IngredientOmit<ExtArgs> | null
   /**
+   * Choose, which related nodes to fetch as well
+   */
+  include?: Prisma.IngredientInclude<ExtArgs> | null
+  /**
    * Filter, which Ingredient to fetch.
    */
   where: Prisma.IngredientWhereUniqueInput
@@ -970,6 +1149,10 @@ export type IngredientFindUniqueOrThrowArgs<ExtArgs extends runtime.Types.Extens
    */
   omit?: Prisma.IngredientOmit<ExtArgs> | null
   /**
+   * Choose, which related nodes to fetch as well
+   */
+  include?: Prisma.IngredientInclude<ExtArgs> | null
+  /**
    * Filter, which Ingredient to fetch.
    */
   where: Prisma.IngredientWhereUniqueInput
@@ -987,6 +1170,10 @@ export type IngredientFindFirstArgs<ExtArgs extends runtime.Types.Extensions.Int
    * Omit specific fields from the Ingredient
    */
   omit?: Prisma.IngredientOmit<ExtArgs> | null
+  /**
+   * Choose, which related nodes to fetch as well
+   */
+  include?: Prisma.IngredientInclude<ExtArgs> | null
   /**
    * Filter, which Ingredient to fetch.
    */
@@ -1036,6 +1223,10 @@ export type IngredientFindFirstOrThrowArgs<ExtArgs extends runtime.Types.Extensi
    */
   omit?: Prisma.IngredientOmit<ExtArgs> | null
   /**
+   * Choose, which related nodes to fetch as well
+   */
+  include?: Prisma.IngredientInclude<ExtArgs> | null
+  /**
    * Filter, which Ingredient to fetch.
    */
   where?: Prisma.IngredientWhereInput
@@ -1083,6 +1274,10 @@ export type IngredientFindManyArgs<ExtArgs extends runtime.Types.Extensions.Inte
    * Omit specific fields from the Ingredient
    */
   omit?: Prisma.IngredientOmit<ExtArgs> | null
+  /**
+   * Choose, which related nodes to fetch as well
+   */
+  include?: Prisma.IngredientInclude<ExtArgs> | null
   /**
    * Filter, which Ingredients to fetch.
    */
@@ -1132,6 +1327,10 @@ export type IngredientCreateArgs<ExtArgs extends runtime.Types.Extensions.Intern
    */
   omit?: Prisma.IngredientOmit<ExtArgs> | null
   /**
+   * Choose, which related nodes to fetch as well
+   */
+  include?: Prisma.IngredientInclude<ExtArgs> | null
+  /**
    * The data needed to create a Ingredient.
    */
   data: Prisma.XOR<Prisma.IngredientCreateInput, Prisma.IngredientUncheckedCreateInput>
@@ -1179,6 +1378,10 @@ export type IngredientUpdateArgs<ExtArgs extends runtime.Types.Extensions.Intern
    * Omit specific fields from the Ingredient
    */
   omit?: Prisma.IngredientOmit<ExtArgs> | null
+  /**
+   * Choose, which related nodes to fetch as well
+   */
+  include?: Prisma.IngredientInclude<ExtArgs> | null
   /**
    * The data needed to update a Ingredient.
    */
@@ -1246,6 +1449,10 @@ export type IngredientUpsertArgs<ExtArgs extends runtime.Types.Extensions.Intern
    */
   omit?: Prisma.IngredientOmit<ExtArgs> | null
   /**
+   * Choose, which related nodes to fetch as well
+   */
+  include?: Prisma.IngredientInclude<ExtArgs> | null
+  /**
    * The filter to search for the Ingredient to update in case it exists.
    */
   where: Prisma.IngredientWhereUniqueInput
@@ -1272,6 +1479,10 @@ export type IngredientDeleteArgs<ExtArgs extends runtime.Types.Extensions.Intern
    */
   omit?: Prisma.IngredientOmit<ExtArgs> | null
   /**
+   * Choose, which related nodes to fetch as well
+   */
+  include?: Prisma.IngredientInclude<ExtArgs> | null
+  /**
    * Filter which Ingredient to delete.
    */
   where: Prisma.IngredientWhereUniqueInput
@@ -1292,6 +1503,30 @@ export type IngredientDeleteManyArgs<ExtArgs extends runtime.Types.Extensions.In
 }
 
 /**
+ * Ingredient.recipeUses
+ */
+export type Ingredient$recipeUsesArgs<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
+  /**
+   * Select specific fields to fetch from the RecipeIngredient
+   */
+  select?: Prisma.RecipeIngredientSelect<ExtArgs> | null
+  /**
+   * Omit specific fields from the RecipeIngredient
+   */
+  omit?: Prisma.RecipeIngredientOmit<ExtArgs> | null
+  /**
+   * Choose, which related nodes to fetch as well
+   */
+  include?: Prisma.RecipeIngredientInclude<ExtArgs> | null
+  where?: Prisma.RecipeIngredientWhereInput
+  orderBy?: Prisma.RecipeIngredientOrderByWithRelationInput | Prisma.RecipeIngredientOrderByWithRelationInput[]
+  cursor?: Prisma.RecipeIngredientWhereUniqueInput
+  take?: number
+  skip?: number
+  distinct?: Prisma.RecipeIngredientScalarFieldEnum | Prisma.RecipeIngredientScalarFieldEnum[]
+}
+
+/**
  * Ingredient without action
  */
 export type IngredientDefaultArgs<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
@@ -1303,4 +1538,8 @@ export type IngredientDefaultArgs<ExtArgs extends runtime.Types.Extensions.Inter
    * Omit specific fields from the Ingredient
    */
   omit?: Prisma.IngredientOmit<ExtArgs> | null
+  /**
+   * Choose, which related nodes to fetch as well
+   */
+  include?: Prisma.IngredientInclude<ExtArgs> | null
 }

@@ -68,6 +68,17 @@ describe("IngredientService.create", () => {
       data: { name: "Carne", unit: "kg", stockMilli: 2500, lowStockMilli: 1000, active: false },
     })
   })
+
+  it("threads costCentavosPerUnit (NEW-035) when provided; omits it otherwise", async () => {
+    mockCreate.mockResolvedValue({ id: "ing_3" })
+
+    await svc.create({ name: "Farinha", unit: "kg", costCentavosPerUnit: 450 })
+    expect(mockCreate.mock.calls[0]?.[0]?.data).toMatchObject({ costCentavosPerUnit: 450 })
+
+    // Omitted → not sent (DB default NULL = "no cost set", excluded from COGS).
+    await svc.create({ name: "Sal", unit: "kg" })
+    expect(mockCreate.mock.calls[1]?.[0]?.data).not.toHaveProperty("costCentavosPerUnit")
+  })
 })
 
 describe("IngredientService.update", () => {
@@ -99,6 +110,20 @@ describe("IngredientService.update", () => {
 
     expect(row).toBeNull()
     expect(mockUpdateMany).not.toHaveBeenCalled()
+  })
+
+  it("sets a cost, and an explicit null CLEARS it (NEW-035)", async () => {
+    mockFindUnique.mockResolvedValue({ id: "ing_1", name: "Farinha", unit: "kg", stockMilli: 2000, lowStockMilli: 500, costCentavosPerUnit: 450, active: true })
+    mockUpdateMany.mockResolvedValue({ count: 1 })
+
+    // Explicit null is a DEFINED value → written (clears the cost); merged row reflects it.
+    const cleared = await svc.update("ing_1", { costCentavosPerUnit: null })
+    expect(mockUpdateMany).toHaveBeenCalledWith({ where: { id: "ing_1" }, data: { costCentavosPerUnit: null } })
+    expect(cleared).toMatchObject({ costCentavosPerUnit: null })
+
+    // A numeric cost is written through.
+    await svc.update("ing_1", { costCentavosPerUnit: 900 })
+    expect(mockUpdateMany).toHaveBeenLastCalledWith({ where: { id: "ing_1" }, data: { costCentavosPerUnit: 900 } })
   })
 })
 
