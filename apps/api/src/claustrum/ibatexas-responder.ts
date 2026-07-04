@@ -95,6 +95,28 @@ export interface IbatexasResponderDeps {
     | Promise<ScheduleSignal | undefined>
     | ScheduleSignal
     | undefined;
+  /**
+   * Per-decision-branch persona overrides (NEW-032 slice B). When a key is
+   * present it REPLACES the corresponding default constant for that branch —
+   * and WINS over the content-addressed `promptComposer` (an injected system is
+   * the whole point on the ops plane, so the customer fragment graph must not
+   * override it). When ABSENT (customer / WhatsApp planes) behavior is
+   * BYTE-IDENTICAL to today — pinned by a regression test. Each override is the
+   * FULL system prompt for its branch; all downstream anti-confabulation /
+   * closed-hours / pt-BR guards run UNCHANGED over the model draft.
+   *
+   *  - `conversational` → the REFUSE-empty-plan (small-talk) + fallback branch
+   *    (default {@link RESPONDER_PERSONA_PTBR}).
+   *  - `grounded`       → the EXECUTE/REWRITE/DEFER branch
+   *    (default {@link RESPONDER_GROUNDED_PERSONA_PTBR}).
+   *  - `escalate`       → the ESCALATE fixed line
+   *    (default {@link RESPONDER_ESCALATE_PTBR}).
+   */
+  readonly personas?: {
+    readonly conversational?: string;
+    readonly grounded?: string;
+    readonly escalate?: string;
+  };
 }
 
 /** Best-effort, BOUNDED summary of the dispatch result for model grounding.
@@ -594,13 +616,20 @@ export function createIbatexasResponder(
   const maxTokens = deps.maxTokens ?? DEFAULT_MAX_TOKENS;
 
   /** Compose the system for a model-call branch; falls back to the static
-   * persona when no composer is wired. Returns the (possibly empty) manifest. */
+   * persona when no composer is wired. Returns the (possibly empty) manifest.
+   * `override` (NEW-032) is an injected per-branch persona that WINS over BOTH
+   * the composer and the fallback — the ops plane supplies its own staff-facing
+   * system. Absent → the pre-NEW-032 path exactly (byte-identical). */
   async function composeSystem(
     surface: string,
     fallback: string,
     cognition: unknown,
     capabilities: ReadonlyArray<string>,
+    override?: string,
   ): Promise<{ system: string; fragmentManifest: ReadonlyArray<string> }> {
+    if (override !== undefined) {
+      return { system: override, fragmentManifest: [] };
+    }
     if (deps.promptComposer === undefined) {
       return { system: fallback, fragmentManifest: [] };
     }
@@ -709,6 +738,7 @@ export function createIbatexasResponder(
               RESPONDER_PERSONA_PTBR,
               input.cognition,
               [],
+              deps.personas?.conversational,
             );
             const system = base + closedNote;
             return closedHoursDeliveryGuard(
@@ -731,7 +761,7 @@ export function createIbatexasResponder(
           return { text: decision.prompt };
 
         case "ESCALATE":
-          return { text: RESPONDER_ESCALATE_PTBR };
+          return { text: deps.personas?.escalate ?? RESPONDER_ESCALATE_PTBR };
 
         case "EXECUTE":
         case "REWRITE":
@@ -746,6 +776,7 @@ export function createIbatexasResponder(
             RESPONDER_GROUNDED_PERSONA_PTBR,
             input.cognition,
             capabilities,
+            deps.personas?.grounded,
           );
           const context = {
             decision: decision.kind,
@@ -786,6 +817,7 @@ export function createIbatexasResponder(
             RESPONDER_PERSONA_PTBR,
             input.cognition,
             [],
+            deps.personas?.conversational,
           );
           const system = base + closedNote;
           return closedHoursDeliveryGuard(

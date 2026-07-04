@@ -1,0 +1,202 @@
+// ops-tool-registry.ts — the OPS-plane tool registry (NEW-032 slice B).
+//
+// A SEPARATE @claustrum/core ToolRegistry from the chat one (register-ibatexas-
+// tool-packs.ts) so the chat roster/drift gates are untouched. It holds the
+// governed OPS MUTATING verbs the conductor dispatches on a kernel EXECUTE —
+// `capability === intentKind` for each, so `dispatchDecision` resolves the tool
+// by `envelope.kind`:
+//
+//   - product.availability.set → the SAME `medusaAdjudicated` PATCH the admin
+//     products route uses (`metadata.inStock` ← payload.available). The egress
+//     wrapper is a DISTINCT governance layer by design (D10) — NOT a second
+//     intent adjudication of the ops verb. riskLevel "medium".
+//   - order.note.add → `orderCmdSvc.writeAdjudicatedNote` (the POST-adjudication
+//     write; the composed-router Decision was already produced by the conductor
+//     SUBMIT stage — this executor performs NO adjudication). Staff notes are
+//     internal by default. riskLevel "low".
+//
+// `staffId` (audit sourceSubject / note authorId) is read from the per-turn
+// `Capsule.actor.staffId` — the AUTHORITATIVE identity the ops route stamps from
+// the JWT at `openCapsule`, NEVER from the model-parsed payload. The registry is
+// built ONCE at boot and reused per request (the Capsule is the per-request
+// context); the injected side-effect deps make it unit-testable with spies.
+
+import { randomUUID } from "node:crypto";
+import {
+  createToolRegistry,
+  type CapabilityId,
+  type IntentKind,
+  type ToolDefinition,
+  type ToolRegistry,
+} from "@claustrum/core";
+import type { AuditSink } from "@ibatexas/audit-sink";
+import type { MedusaAdjudicatedArgs } from "@ibatexas/tools";
+import type { AddNoteResult } from "@ibatexas/domain";
+import type { OrderNoteAddPayload } from "@ibatexas/pack-orders";
+import type { ProductAvailabilitySetPayload } from "@ibatexas/pack-ops";
+
+/** The injected `medusaAdjudicated` shape (typeof `@ibatexas/tools`'s export). */
+export type MedusaAdjudicatedFn = <P, R = unknown>(
+  args: MedusaAdjudicatedArgs<P>,
+) => Promise<R>;
+
+/** Author attribution for a note write — structural mirror of the domain
+ *  `NoteAuthorExtras` (not re-exported from @ibatexas/domain). */
+export interface OpsNoteAuthorExtras {
+  readonly author: "customer" | "staff" | "system" | "llm";
+  readonly authorId?: string;
+}
+
+/** The single note-write method the ops registry needs (structural subset of
+ *  `OrderCommandService`). */
+export interface OpsNoteWriter {
+  writeAdjudicatedNote(
+    payload: OrderNoteAddPayload,
+    extras: OpsNoteAuthorExtras,
+  ): Promise<AddNoteResult>;
+}
+
+export interface OpsToolRegistryDeps {
+  /** `medusaAdjudicated` (injected for testability). */
+  readonly medusaAdjudicated: MedusaAdjudicatedFn;
+  /** Audit sink threaded into the egress call (getAuditSink() at boot). */
+  readonly auditSink: AuditSink;
+  /** The order command service's POST-adjudication note writer. */
+  readonly orderCmdSvc: OpsNoteWriter;
+  /** Best-effort logger forwarded to the egress wrapper. */
+  readonly log?: {
+    readonly warn?: (...args: unknown[]) => void;
+    readonly error?: (...args: unknown[]) => void;
+  };
+}
+
+function asCapability(s: string): CapabilityId {
+  return s as CapabilityId;
+}
+function asIntentKind(s: string): IntentKind {
+  return s as IntentKind;
+}
+
+/**
+ * The AUTHORITATIVE staff id for this turn, read from the Capsule actor the ops
+ * route stamped from the JWT at `openCapsule` (`{ ..., staffId }`). Returns
+ * `null` when absent (never the model payload) so callers fail-safe rather than
+ * fabricate an author.
+ */
+export function staffIdFromCapsule(ctx: unknown): string | null {
+  const actor = (ctx as { actor?: { staffId?: unknown } } | null)?.actor;
+  const staffId = actor?.staffId;
+  return typeof staffId === "string" && staffId.length > 0 ? staffId : null;
+}
+
+/**
+ * Executor for `product.availability.set` — mirrors the admin products PATCH
+ * route egress EXACTLY: a `medusaAdjudicated` admin POST that updates
+ * `metadata.inStock` from `payload.available` (does NOT touch status/published).
+ * The egress wrapper (SYSTEM-tainted `medusa.admin.product.update`) is a
+ * separate governance layer (D10) — the ops verb was already adjudicated by the
+ * composed router before this runs.
+ */
+async function executeAvailability(
+  deps: OpsToolRegistryDeps,
+  payload: ProductAvailabilitySetPayload,
+  staffId: string | null,
+): Promise<{ productId: string; available: boolean }> {
+  // Same body shape a client PATCH sends (products.ts:142-152): metadata only.
+  const body = { metadata: { inStock: payload.available } };
+  await deps.medusaAdjudicated<typeof body, Record<string, unknown>>({
+    scope: "admin",
+    method: "POST",
+    path: `/admin/products/${payload.productId}`,
+    payload: body,
+    intentKind: "medusa.admin.product.update",
+    idempotencyKey: randomUUID(),
+    sourceSubject: `ops:product.availability.set:admin:${staffId ?? "unknown"}`,
+    auditSink: deps.auditSink,
+    ...(deps.log ? { log: deps.log } : {}),
+  });
+  return { productId: payload.productId, available: payload.available };
+}
+
+/**
+ * Executor for `order.note.add` — the POST-adjudication write via
+ * `writeAdjudicatedNote`. Staff notes are INTERNAL by default: `isInternal` is
+ * defaulted true on the PAYLOAD passed to the writer (the envelope is untouched)
+ * when the model omitted it. `authorId` is the closure/Capsule staffId, never a
+ * model field.
+ */
+async function executeNote(
+  deps: OpsToolRegistryDeps,
+  payload: OrderNoteAddPayload,
+  staffId: string | null,
+): Promise<AddNoteResult> {
+  const notePayload: OrderNoteAddPayload = {
+    ...payload,
+    // Staff notes default to internal; set on the payload, not the envelope.
+    isInternal: payload.isInternal ?? true,
+  };
+  return deps.orderCmdSvc.writeAdjudicatedNote(notePayload, {
+    author: "staff",
+    ...(staffId ? { authorId: staffId } : {}),
+  });
+}
+
+/** The two governed ops MUTATING tools (capability === intentKind). */
+function opsToolDefinitions(
+  deps: OpsToolRegistryDeps,
+): ReadonlyArray<ToolDefinition<unknown, unknown>> {
+  return [
+    {
+      id: "ibatexas.ops.productAvailability.v1",
+      capability: asCapability("product.availability.set"),
+      intentKind: asIntentKind("product.availability.set"),
+      description:
+        "Marcar um produto como disponível/indisponível (86 / desfazer 86).",
+      inputSchema: {},
+      outputSchema: {},
+      riskLevel: "medium",
+      execute: (input, ctx) =>
+        executeAvailability(
+          deps,
+          input as ProductAvailabilitySetPayload,
+          staffIdFromCapsule(ctx),
+        ),
+    },
+    {
+      id: "ibatexas.ops.orderNoteAdd.v1",
+      capability: asCapability("order.note.add"),
+      intentKind: asIntentKind("order.note.add"),
+      description: "Adicionar uma observação (nota interna) a um pedido.",
+      inputSchema: {},
+      outputSchema: {},
+      riskLevel: "low",
+      execute: (input, ctx) =>
+        executeNote(
+          deps,
+          input as OrderNoteAddPayload,
+          staffIdFromCapsule(ctx),
+        ),
+    },
+  ];
+}
+
+/**
+ * Build the OPS-plane tool registry. SEPARATE from the chat registry
+ * (`createToolRegistry()` + `registerIbatexasToolPacks`) so the chat roster /
+ * drift gates never see these tools. Built ONCE at boot; the executors read the
+ * per-request staffId from the Capsule.
+ */
+export function createOpsToolRegistry(deps: OpsToolRegistryDeps): ToolRegistry {
+  const registry = createToolRegistry();
+  for (const tool of opsToolDefinitions(deps)) {
+    registry.register(tool);
+  }
+  return registry;
+}
+
+/** For tests / the boot drift-parity gate: the ops tools without registering. */
+export function listOpsToolDefinitions(
+  deps: OpsToolRegistryDeps,
+): ReadonlyArray<ToolDefinition<unknown, unknown>> {
+  return opsToolDefinitions(deps);
+}

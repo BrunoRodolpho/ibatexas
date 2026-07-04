@@ -12,10 +12,13 @@
  * advertised-but-unregistered under the `staff` roster-drift probe, which the
  * `ADVERTISED_NOT_REGISTERED_WHITELIST` documents).
  *
- * `visibleReadTools` is empty for now: the ops-snapshot READ tool is wired in
- * the later conductor PR. Advertising a read with no executor would fail the
- * `readToolRosterDrift` boot gate closed, so it stays out until its executor
- * lands.
+ * `ops_snapshot` (NEW-032 slice B) is the ONE LLM-visible READ tool — the
+ * situational snapshot (alerts + incidents + kitchen + caixa). It is advertised
+ * ONLY on a STAFF session (`ctx.staffId` present); non-staff sessions get an
+ * empty `visibleReadTools`. Its executor is registered on BOTH the ops conductor
+ * plane (where it is reachable) AND the chat plane's read-tool map (never
+ * advertised there — the chat planner pins `staffId:null` — but registered so
+ * the fail-closed `readToolRosterDrift` boot gate's STAFF probe stays green).
  */
 
 import {
@@ -27,13 +30,16 @@ import {
 } from "@adjudicate/core/llm"
 import type { OpsContext, OpsIntentKind, OpsState } from "./types.js"
 
+/** The situational-snapshot READ tool name (NEW-032 slice B). */
+export const OPS_SNAPSHOT_READ_TOOL = "ops_snapshot"
+
 /**
  * Ops-domain tool classification. `product.availability.set` is MUTATING;
- * there are no LLM-visible read tools yet. `safePlan` asserts no MUTATING
- * name ever leaks into `visibleReadTools`.
+ * `ops_snapshot` is the LLM-visible READ tool (staff-only advertisement).
+ * `safePlan` asserts no MUTATING name ever leaks into `visibleReadTools`.
  */
 export const OPS_TOOLS: ToolClassification = {
-  READ_ONLY: new Set<string>([]),
+  READ_ONLY: new Set<string>([OPS_SNAPSHOT_READ_TOOL]),
   MUTATING: new Set<string>(["product.availability.set"]),
 }
 
@@ -56,8 +62,12 @@ const rawOpsCapabilityPlanner: CapabilityPlanner<OpsState, OpsContext> = {
     const allowedIntents: OpsIntentKind[] = isStaffSession
       ? ["product.availability.set"]
       : []
+    // `ops_snapshot` is advertised ONLY to a staff session; `filterReadOnly`
+    // re-asserts it is a READ_ONLY name (never a MUTATING leak). Non-staff → [].
     return {
-      visibleReadTools: filterReadOnly(OPS_TOOLS, []),
+      visibleReadTools: isStaffSession
+        ? filterReadOnly(OPS_TOOLS, [OPS_SNAPSHOT_READ_TOOL])
+        : filterReadOnly(OPS_TOOLS, []),
       allowedIntents,
     }
   },

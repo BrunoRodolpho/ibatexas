@@ -34,6 +34,7 @@
 //     any `ctx.adjudicate(...)` calls and verify `ctx` is a Capsule, not a kernel
 //     RuntimeContext.
 
+import { randomBytes } from "node:crypto";
 import Anthropic from "@anthropic-ai/sdk";
 import { Pool } from "pg";
 import {
@@ -104,7 +105,7 @@ import {
   type RedisPubSubClient,
 } from "@adjudicate/audit";
 
-import { prisma, claustrumMemoryPrisma, createOrderQueryService, createPaymentQueryService } from "@ibatexas/domain";
+import { prisma, claustrumMemoryPrisma, createOrderCommandService, createOrderQueryService, createPaymentQueryService } from "@ibatexas/domain";
 import { rehydratePaymentState } from "@ibatexas/pack-payments";
 import {
   emitLlmCall,
@@ -125,6 +126,9 @@ import {
   getOrderedTogether,
   checkTableAvailability,
   getMyReservations,
+  // NEW-032 ops plane — admin product read + kernel-gated egress.
+  medusaAdmin,
+  medusaAdjudicated,
 } from "@ibatexas/tools";
 import type { AgentContext, UserType } from "@ibatexas/types";
 import { publishNatsEvent } from "@ibatexas/nats-client";
@@ -257,10 +261,30 @@ import {
   postgresReaderFromPool,
   type AuditReadPaths,
 } from "./claustrum/audit-read-paths.js";
+// ── NEW-032 ops-actor conductor plane (slice B) ─────────────────────────────
+import type { StaffEnvelopeActor } from "./claustrum/ibatexas-planner.js";
+import {
+  composeOpsConductor,
+  opsPlaneDriftProblems,
+  type OpsConductorDeps,
+} from "./ops/ops-conductor.js";
+import {
+  createOpsToolRegistry,
+  listOpsToolDefinitions,
+  type OpsToolRegistryDeps,
+} from "./ops/ops-tool-registry.js";
+import { createOpsResolver } from "./ops/ops-resolver.js";
+import {
+  createOpsSnapshotReadExecutor,
+  OPS_SNAPSHOT_READ_TOOL,
+} from "./ops/ops-read-executor.js";
 
 // ── Singleton ────────────────────────────────────────────────────────────────
 
 let _conductor: Conductor | null = null;
+// NEW-032 ops-actor conductor factory (slice B). Null until bootstrapClaustrum()
+// composes it; `getOpsConductorFactory()` exposes it to the ops ingress route.
+let _opsConductorFactory: ((actor: StaffEnvelopeActor) => Conductor) | null = null;
 // Managed-agent plane singleton (T3-9). Null unless IBX_AGENTS_ENABLED started it.
 let _agentPlane: AgentPlane | null = null;
 // Stage-1 approval engine (T3-7). Hoisted so the staff HTTP approvals route
@@ -286,6 +310,24 @@ export function getConductor(): Conductor {
     );
   }
   return _conductor;
+}
+
+/**
+ * The NEW-032 ops-actor conductor factory: given the authenticated
+ * `{ staffId, role }` (captured from the JWT at ingress), compose the per-request
+ * OPS conductor (the H1 recomposition idiom). The ops ingress route
+ * (routes/admin/ops-chat.ts) calls this per turn. Throws if bootstrapClaustrum()
+ * has not run (same contract as {@link getConductor}).
+ */
+export function getOpsConductorFactory(): (
+  actor: StaffEnvelopeActor,
+) => Conductor {
+  if (!_opsConductorFactory) {
+    throw new Error(
+      "Ops conductor factory not initialized. Call bootstrapClaustrum() in server.ts before serving requests.",
+    );
+  }
+  return _opsConductorFactory;
 }
 
 // ── Stage-1 agent approvals — HTTP gateway (WS-D1) ───────────────────────────
@@ -535,6 +577,9 @@ export async function resetClaustrumForTests(): Promise<ClaustrumResetReport> {
 
   const conductorCleared = _conductor !== null;
   _conductor = null;
+  // NEW-032: the ops conductor factory closes over the same boot ports as the
+  // main conductor, so clear it on the same beat (a re-bootstrap rebuilds it).
+  _opsConductorFactory = null;
 
   let pgPoolEnded = false;
   if (_pgPool && _ownsPgPool && !_pgPool.ended) {
@@ -1395,6 +1440,15 @@ export const IBATEXAS_READ_TOOL_EXECUTORS: Readonly<
   // SETS it to the authenticated id (guest → undefined → schema parse throws → denied).
   get_my_reservations: (input, state) =>
     getMyReservations(withAuthenticatedOwner(input, agentCtxFromState(state)) as never),
+  // NEW-032 (slice B): the ops situational-snapshot read. NEVER advertised on the
+  // chat plane — deriveIbatexasPlannerContext pins staffId:null, so the chat
+  // planner never offers it. Registered here ONLY to keep the fail-closed
+  // readToolRosterDrift boot gate green: opsCapabilityPlanner is in
+  // IBATEXAS_COMPOSED_CAPABILITY_PLANNERS, so that gate's STAFF probe now sees
+  // `ops_snapshot` advertised and requires an executor key. The executor is
+  // staff-data read-only (no owner scope, no mutation), so registering it here is
+  // safe even though it is unreachable on this plane.
+  [OPS_SNAPSHOT_READ_TOOL]: createOpsSnapshotReadExecutor(),
 };
 
 // The decision-aware responder lives in ./claustrum/ibatexas-responder.ts
@@ -2418,6 +2472,102 @@ export async function bootstrapClaustrum(
     // optional claims seams (investigator / claimPlanner / claimsKernel).
     ...claimsSeams,
   });
+
+  // ── NEW-032 ops-actor conductor plane (slice B) — ALWAYS composed ───────────
+  // The ops plane is a SECOND conductor composition recomposed PER REQUEST by
+  // getOpsConductorFactory() over these boot-built ingredients (the H1 idiom).
+  // It shares every production port VERBATIM (adjudicator → the SAME composed
+  // router carrying staffRoleGuard; memory/grounding/session/telemetry/tenant),
+  // diverging only in the planner (staffEnvelopeActor stamping), the ops
+  // registry (governed ops verbs), the ops resolver (per-kind state), and the
+  // system channel. No boot side effects run in the per-request path.
+  const opsTenantId = process.env.KERNEL_TENANT_ID ?? "ibatexas";
+  // The ops registry's governed side-effect deps (injected for testability).
+  const opsRegistryDeps: OpsToolRegistryDeps = {
+    medusaAdjudicated,
+    auditSink,
+    orderCmdSvc: createOrderCommandService(),
+    log: logger,
+  };
+  const opsRegistry = createOpsToolRegistry(opsRegistryDeps);
+  // The ops planner's one-hop read executors — the situational snapshot.
+  const opsReadToolExecutors = {
+    [OPS_SNAPSHOT_READ_TOOL]: createOpsSnapshotReadExecutor(),
+  };
+  // Boot-time ops-plane drift parity (fail-closed, mirrors the chat roster/read
+  // gates): every ops tool routable through the composed router (kind ∈ installed
+  // packs ⇔ policyForKind non-null) with capability===intentKind, and every
+  // ops-advertised read (ops_snapshot) has a registered executor.
+  const opsDrift = opsPlaneDriftProblems({
+    opsTools: listOpsToolDefinitions(opsRegistryDeps),
+    composedIntentKinds: composedIntentKinds(),
+    readExecutorKeys: Object.keys(opsReadToolExecutors),
+    onWarn: (message) => logger.warn({ component: "claustrum-bootstrap" }, message),
+  });
+  if (opsDrift.length > 0) {
+    throw new Error(
+      "[claustrum-bootstrap] ops-plane drift parity check failed (NEW-032):\n  " +
+        opsDrift.join("\n  "),
+    );
+  }
+  const opsConductorDeps: OpsConductorDeps = {
+    adjudicator,
+    memory,
+    grounding,
+    explainer: ibxExplainer,
+    handoff: natsHandoff(),
+    telemetry,
+    session: redisSessionStore(),
+    tenantResolver: resolveIbatexasTenantPolicy,
+    sessionLock: new PostgresAdvisorySessionLock(pgPool),
+    // The non-conversational "system"-kind driver. The ops plane NEVER invokes
+    // attest/perceive/render (the route hand-builds the ChannelMessage and reads
+    // turn.response.text directly; SystemChannel.matchToParked is null → no
+    // confirm-resume, the documented v1 posture), so the signing key is
+    // construction-only — an ephemeral per-process key (never used to sign
+    // anything) avoids adding a required boot secret and commits nothing. An
+    // explicit OPS_GATEWAY_SIGNING_KEY overrides it if an operator wants one.
+    systemChannel: new SystemChannel({
+      gatewaySigningKey:
+        process.env.OPS_GATEWAY_SIGNING_KEY ?? randomBytes(32).toString("base64"),
+      gateway: process.env.OPS_GATEWAY_NAME ?? "ibatexas-ops",
+    }),
+    tools: opsRegistry,
+    model: modelProvider,
+    modelId: chatModelId,
+    promptComposer,
+    resolveScheduleSignal,
+    opsReadToolExecutors,
+    // Per-request resolver closes over the authenticated staffId; the product /
+    // order lookups reuse the SAME reads the admin routes rely on (medusaAdmin /
+    // createOrderQueryService), fail-closed to REFUSE on absence/error.
+    buildResolver: (staffId: string) =>
+      createOpsResolver({
+        staffId,
+        tenantId: opsTenantId,
+        lookupProduct: async (productId) => {
+          const data = (await medusaAdmin(
+            `/admin/products/${productId}`,
+          )) as { product?: { id: string; status: string } };
+          const p = data.product;
+          return p ? { id: p.id, status: p.status } : null;
+        },
+        lookupOrder: async (orderId) => {
+          const order = await createOrderQueryService().getById(orderId);
+          return order === null
+            ? null
+            : {
+                customerId: order.customerId,
+                paymentMethod:
+                  (order.paymentMethod as string | null) ?? null,
+                paymentStatus: order.paymentStatus,
+                totalInCentavos: order.totalInCentavos,
+              };
+        },
+      }),
+  };
+  _opsConductorFactory = (actor: StaffEnvelopeActor): Conductor =>
+    composeOpsConductor(opsConductorDeps, actor);
 
   // ── Managed-agent plane (T3-9) — OPT-IN via IBX_AGENTS_ENABLED ──────────────
   // Default OFF: a normal boot never subscribes the trigger bridge / boots kill

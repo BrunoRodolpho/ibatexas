@@ -58,7 +58,11 @@ export {
 
 export { opsPolicyBundle } from "./policies.js"
 
-export { OPS_TOOLS, opsCapabilityPlanner } from "./capabilities.js"
+export {
+  OPS_TOOLS,
+  OPS_SNAPSHOT_READ_TOOL,
+  opsCapabilityPlanner,
+} from "./capabilities.js"
 
 /**
  * The Pack as a `PackV0`-conformant value. The `satisfies` clause provides
