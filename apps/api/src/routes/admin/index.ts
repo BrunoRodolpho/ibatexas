@@ -31,6 +31,7 @@
 // GET  /api/admin/analytics/summary     — analytics summary (orders, revenue, AOV)
 // GET  /api/admin/analytics/top-items    — best-sellers over a date range (manager)
 // GET  /api/admin/analytics/refunds      — refund count/total/trend over a range (manager)
+// GET  /api/admin/kitchen/tickets         — live kitchen ticket board (oldest-first) (manager)
 
 import { timingSafeEqual } from "node:crypto";
 import type { FastifyInstance } from "fastify";
@@ -59,6 +60,7 @@ import { escalationRoutes } from "./escalations.js";
 import { adminIncidentRoutes } from "./incidents.js";
 import { adminOpsAlertRoutes } from "./ops-alerts.js";
 import { adminCaixaRoutes } from "./caixa.js";
+import { adminKitchenRoutes } from "./kitchen.js";
 import { broadcastRoutes } from "./broadcast.js";
 
 // ── W4 P1-H — API-key role registry ─────────────────────────────────────
@@ -230,5 +232,6 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
   await server.register(adminIncidentRoutes);
   await server.register(adminOpsAlertRoutes);
   await server.register(adminCaixaRoutes);
+  await server.register(adminKitchenRoutes);
   await server.register(broadcastRoutes);
 }

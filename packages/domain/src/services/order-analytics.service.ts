@@ -44,6 +44,9 @@ import {
   localDayStartUtc,
   resolveTimezone,
 } from "./__shared__/day-window.js"
+// The itemsJson narrow (LineItem + parseLineItems) is shared with the other
+// read-over-projection services (e.g. kitchen.service) — see __shared__/line-items.
+import { parseLineItems } from "./__shared__/line-items.js"
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -193,28 +196,10 @@ export interface OrderAnalyticsService {
 
 // ── Line-item shape (the OrderProjection.itemsJson element) ────────────────────
 
-/**
- * The narrow shape we read off each `itemsJson` element. Kept LOCAL (not a value
- * import of `@ibatexas/types`) — `itemsJson` is a Prisma `Json?` column, so it
- * arrives untyped and must be narrowed by hand regardless. Matches OrderEventItem
- * (packages/types/src/order-events.ts): { productId, variantId, title, quantity,
- * priceInCentavos }.
- */
-interface LineItem {
-  productId: string
-  title: string
-  quantity: number
-  priceInCentavos: number
-}
-
-// The DST day-window + settled-status helpers live in ./__shared__/day-window.ts
-// (shared with day-close.service.ts). Only the itemsJson-parse helper is local.
-
-/** Narrow a raw `itemsJson` value to a LineItem[] (non-array → []). */
-function parseLineItems(itemsJson: unknown): LineItem[] {
-  if (!Array.isArray(itemsJson)) return []
-  return itemsJson as LineItem[]
-}
+// The itemsJson narrow (LineItem + parseLineItems) now lives in
+// ./__shared__/line-items.ts (shared with kitchen.service). The DST day-window +
+// settled-status helpers live in ./__shared__/day-window.ts (shared with
+// day-close.service.ts).
 
 /** Per-product revenue aggregate over a set of in-window orders (the shared row). */
 interface ProductRevenueAgg {

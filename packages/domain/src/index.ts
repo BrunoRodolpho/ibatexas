@@ -276,6 +276,18 @@ export {
   type MarginsReport,
 } from "./services/order-analytics.service.js"
 
+// Kitchen ticket board (NEW-010, ticket-timing half) — read-only live board over
+// the active (pre-delivery) orders: ticket age + time-in-status + queue depth.
+// The pacing/throttle/capacity model is DEFERRED to NEW-039.
+export {
+  createKitchenService,
+  type KitchenService,
+  type KitchenBoard,
+  type KitchenTicket,
+  type QueueDepthEntry,
+  type ActiveKitchenStatus,
+} from "./services/kitchen.service.js"
+
 // Medusa → domain mapper
 export {
   toOrderProjectionData,
