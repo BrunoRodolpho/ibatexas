@@ -287,7 +287,9 @@ import { OpsSystemChannel } from "./ops/ops-system-channel.js";
 import type { OrderCandidate } from "./ops/ops-order-resolution.js";
 import {
   createOpsSnapshotReadExecutor,
+  createSalesAnalyticsReadExecutor,
   OPS_SNAPSHOT_READ_TOOL,
+  OPS_SALES_ANALYTICS_READ_TOOL,
 } from "./ops/ops-read-executor.js";
 
 // ── Singleton ────────────────────────────────────────────────────────────────
@@ -1534,6 +1536,12 @@ export const IBATEXAS_READ_TOOL_EXECUTORS: Readonly<
   // staff-data read-only (no owner scope, no mutation), so registering it here is
   // safe even though it is unreachable on this plane.
   [OPS_SNAPSHOT_READ_TOOL]: createOpsSnapshotReadExecutor(),
+  // NEW-012: the ops sales-analytics read — same posture as `ops_snapshot`. NEVER
+  // advertised on the chat plane (staffId:null); registered here ONLY so the
+  // STAFF probe of the fail-closed readToolRosterDrift boot gate stays green now
+  // that opsCapabilityPlanner advertises a SECOND staff read. Staff-data read-
+  // only (no owner scope, no mutation), so safe to register on this plane.
+  [OPS_SALES_ANALYTICS_READ_TOOL]: createSalesAnalyticsReadExecutor(),
 };
 
 // The decision-aware responder lives in ./claustrum/ibatexas-responder.ts
@@ -2671,9 +2679,13 @@ export async function bootstrapClaustrum(
     log: logger,
   };
   const opsRegistry = createOpsToolRegistry(opsRegistryDeps);
-  // The ops planner's one-hop read executors — the situational snapshot.
+  // The ops planner's one-hop read executors — the situational snapshot
+  // (NEW-032) + today's sales analytics (NEW-012). Both are advertised on a
+  // staff session, so both need a registered executor here (the ops-plane drift
+  // parity gate below enforces advertised ⊆ registered).
   const opsReadToolExecutors = {
     [OPS_SNAPSHOT_READ_TOOL]: createOpsSnapshotReadExecutor(),
+    [OPS_SALES_ANALYTICS_READ_TOOL]: createSalesAnalyticsReadExecutor(),
   };
   // Boot-time ops-plane drift parity (fail-closed, mirrors the chat roster/read
   // gates): every ops tool routable through the composed router (kind ∈ installed

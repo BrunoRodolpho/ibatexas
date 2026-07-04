@@ -30,13 +30,17 @@
  * {@link OPS_FOREIGN_ADVERTISED_KIND}, {@link OPS_FOREIGN_ADVERTISED_TRANSITION_KIND},
  * and {@link OPS_FOREIGN_ADVERTISED_REFUND_KIND}.
  *
- * `ops_snapshot` (NEW-032 slice B) is the ONE LLM-visible READ tool — the
- * situational snapshot (alerts + incidents + kitchen + caixa). It is advertised
- * ONLY on a STAFF session (`ctx.staffId` present); non-staff sessions get an
- * empty `visibleReadTools`. Its executor is registered on BOTH the ops conductor
- * plane (where it is reachable) AND the chat plane's read-tool map (never
- * advertised there — the chat planner pins `staffId:null` — but registered so
- * the fail-closed `readToolRosterDrift` boot gate's STAFF probe stays green).
+ * `ops_snapshot` (NEW-032 slice B) and `ops_sales_analytics` (NEW-012) are the
+ * LLM-visible READ tools — the situational snapshot (alerts + incidents +
+ * kitchen + caixa) and today's sales analytics (orders/revenue/AOV + carts + new
+ * customers + WA funnel). Both are advertised ONLY on a STAFF session
+ * (`ctx.staffId` present); non-staff sessions get an empty `visibleReadTools`.
+ * Each executor is registered on BOTH the ops conductor plane (where it is
+ * reachable) AND the chat plane's read-tool map (never advertised there — the
+ * chat planner pins `staffId:null` — but registered so the fail-closed
+ * `readToolRosterDrift` boot gate's STAFF probe stays green). Reading sales is
+ * reversible/read-only, so `ops_sales_analytics` stays in ALL ingress scopes
+ * (incl. WhatsApp — reading sales over WA is desirable).
  */
 
 import {
@@ -50,6 +54,9 @@ import type { OpsContext, OpsState } from "./types.js"
 
 /** The situational-snapshot READ tool name (NEW-032 slice B). */
 export const OPS_SNAPSHOT_READ_TOOL = "ops_snapshot"
+
+/** The sales-analytics READ tool name (NEW-012). */
+export const OPS_SALES_ANALYTICS_READ_TOOL = "ops_sales_analytics"
 
 /**
  * The foreign-owned kind the ops plane ADVERTISES but pack-orders OWNS.
@@ -149,11 +156,15 @@ export const OPS_INCIDENT_CLOSE_STAFF_KIND = "incident.ticket.close.staff"
  * (`product.availability.set`, `product.price.set` (NEW-004),
  * `ops.alert.resolve.staff`, `incident.ticket.close.staff`) and the three
  * foreign-owned kinds (advertised to widen the ops allowlist) are MUTATING;
- * `ops_snapshot` is the LLM-visible READ tool (staff-only advertisement).
- * `safePlan` asserts no MUTATING name ever leaks into `visibleReadTools`.
+ * `ops_snapshot` + `ops_sales_analytics` are the LLM-visible READ tools (staff-
+ * only advertisement). `safePlan` asserts no MUTATING name ever leaks into
+ * `visibleReadTools`.
  */
 export const OPS_TOOLS: ToolClassification = {
-  READ_ONLY: new Set<string>([OPS_SNAPSHOT_READ_TOOL]),
+  READ_ONLY: new Set<string>([
+    OPS_SNAPSHOT_READ_TOOL,
+    OPS_SALES_ANALYTICS_READ_TOOL,
+  ]),
   MUTATING: new Set<string>([
     "product.availability.set",
     "product.price.set",
@@ -197,11 +208,15 @@ const rawOpsCapabilityPlanner: CapabilityPlanner<OpsState, OpsContext> = {
           OPS_FOREIGN_ADVERTISED_REFUND_KIND,
         ]
       : []
-    // `ops_snapshot` is advertised ONLY to a staff session; `filterReadOnly`
-    // re-asserts it is a READ_ONLY name (never a MUTATING leak). Non-staff → [].
+    // The two READ tools (`ops_snapshot` + `ops_sales_analytics`) are advertised
+    // ONLY to a staff session; `filterReadOnly` re-asserts each is a READ_ONLY
+    // name (never a MUTATING leak). Non-staff → [].
     return {
       visibleReadTools: isStaffSession
-        ? filterReadOnly(OPS_TOOLS, [OPS_SNAPSHOT_READ_TOOL])
+        ? filterReadOnly(OPS_TOOLS, [
+            OPS_SNAPSHOT_READ_TOOL,
+            OPS_SALES_ANALYTICS_READ_TOOL,
+          ])
         : filterReadOnly(OPS_TOOLS, []),
       allowedIntents,
     }

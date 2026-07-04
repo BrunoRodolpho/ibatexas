@@ -2,7 +2,8 @@ import type { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { prisma } from "@ibatexas/domain";
-import { getRedisClient, rk } from "@ibatexas/tools";
+import { getRedisClient } from "@ibatexas/tools";
+import { composeSalesAnalytics } from "../../ops/sales-analytics-compose.js";
 import { medusaAdmin } from "./_shared.js";
 
 const AnalyticsSummaryResponse = z.object({
@@ -20,6 +21,12 @@ export async function analyticsRoutes(server: FastifyInstance): Promise<void> {
   const app = server.withTypeProvider<ZodTypeProvider>();
 
   // ── GET /api/admin/analytics/summary ──────────────────────────────────────
+  // Thin HTTP shell over the shared `composeSalesAnalytics` (NEW-012): ONE
+  // implementation now backs BOTH this route AND the ops-actor `ops_sales_
+  // analytics` READ tool. The per-signal-zeros resilience the inline handler had
+  // (a try/catch per read) is preserved by the composer's Promise.allSettled +
+  // fallback; the flat response contract below is unchanged (the admin panel's
+  // `formatBRL` reads revenue/aov as integer centavos).
   app.get(
     "/api/admin/analytics/summary",
     {
@@ -30,86 +37,25 @@ export async function analyticsRoutes(server: FastifyInstance): Promise<void> {
       },
     },
     async (_request, reply) => {
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-      const todayIso = today.toISOString();
-
-      const qs = new URLSearchParams({
-        "created_at[gte]": todayIso,
-        limit: "500",
-        offset: "0",
-        fields: "id,total,status",
+      const view = await composeSalesAnalytics({
+        medusaAdmin: (path) => medusaAdmin(path),
+        countNewCustomers: (since) =>
+          prisma.customer.count({ where: { createdAt: { gte: since } } }),
+        redisGet: async (key) => (await getRedisClient()).get(key),
+        now: new Date(),
+        log: server.log,
       });
 
-      let ordersToday = 0;
-      let revenueToday = 0;
-      let aov = 0;
-
-      try {
-        const data = (await medusaAdmin(
-          `/admin/orders?${qs}`,
-        )) as Record<string, unknown>;
-        const orders = (data.orders ?? []) as {
-          id: string;
-          total: number;
-          status: string;
-        }[];
-        ordersToday = orders.length;
-        revenueToday = orders.reduce(
-          (sum: number, o) => sum + (o.total ?? 0),
-          0,
-        );
-        aov = ordersToday > 0 ? Math.round(revenueToday / ordersToday) : 0;
-      } catch (err) {
-        server.log.warn({ err }, "Dashboard: failed to fetch from Medusa — returning zeros")
-      }
-
-      // Active carts: count carts created today
-      let activeCarts = 0;
-      try {
-        const cartData = (await medusaAdmin(
-          `/admin/orders?status[]=pending&limit=1&offset=0&fields=id`,
-        )) as Record<string, unknown>;
-        activeCarts = (cartData.count as number) ?? 0;
-      } catch (err) {
-        server.log.warn({ err }, "Dashboard: failed to fetch from Medusa — returning zeros")
-      }
-
-      // New customers in last 30 days
-      const thirtyDaysAgo = new Date();
-      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-      let newCustomers30d = 0;
-      try {
-        newCustomers30d = await prisma.customer.count({
-          where: { createdAt: { gte: thirtyDaysAgo } },
-        });
-      } catch (err) {
-        server.log.warn({ err }, "Dashboard: failed to fetch from Medusa — returning zeros")
-      }
-
-      // Weekly outreach count + WA conversion metrics from Redis
-      let outreachWeekly = 0;
-      let waConversionRate = 0;
-      let avgMessagesToCheckout = 0;
-      try {
-        const redis = await getRedisClient();
-        const todayDateStr = new Date().toISOString().slice(0, 10);
-        const [outreachVal, convsVal, waOrdersVal, avgMsgsVal] = await Promise.all([
-          redis.get(rk("outreach:weekly:count")),
-          redis.get(rk(`metrics:conversations:daily:${todayDateStr}`)),
-          redis.get(rk(`metrics:wa_orders:daily:${todayDateStr}`)),
-          redis.get(rk("metrics:avg_messages_to_checkout")),
-        ]);
-        outreachWeekly = outreachVal ? Number.parseInt(outreachVal, 10) : 0;
-        const conversations = convsVal ? Number.parseInt(convsVal, 10) : 0;
-        const waOrders = waOrdersVal ? Number.parseInt(waOrdersVal, 10) : 0;
-        waConversionRate = conversations > 0 ? Math.round((waOrders / conversations) * 100) : 0;
-        avgMessagesToCheckout = avgMsgsVal ? Math.round(Number.parseFloat(avgMsgsVal)) : 0;
-      } catch (err) {
-        server.log.warn({ err }, "Dashboard: failed to fetch from Medusa — returning zeros")
-      }
-
-      return reply.send({ ordersToday, revenueToday, aov, activeCarts, newCustomers30d, outreachWeekly, waConversionRate, avgMessagesToCheckout });
+      return reply.send({
+        ordersToday: view.orders.ordersCount,
+        revenueToday: view.orders.revenueCentavos,
+        aov: view.orders.aovCentavos,
+        activeCarts: view.activeCarts,
+        newCustomers30d: view.newCustomers30d,
+        outreachWeekly: view.whatsapp.outreachWeekly,
+        waConversionRate: view.whatsapp.conversionRatePct,
+        avgMessagesToCheckout: view.whatsapp.avgMessagesToCheckout,
+      });
     },
   );
 }

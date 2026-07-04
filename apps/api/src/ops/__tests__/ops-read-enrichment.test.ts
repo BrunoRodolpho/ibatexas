@@ -28,9 +28,12 @@ function opsState(text: string): CognitiveState {
   } as unknown as CognitiveState;
 }
 
-/** Model: pass 1 (1 message) → an ops_snapshot READ call; pass 2 (3 messages,
+/** Model: pass 1 (1 message) → a READ call for `readTool`; pass 2 (3 messages,
  *  the enrichment re-prompt) → plain text, no intent. */
-function readThenNoIntentModel(): {
+function readThenNoIntentModel(
+  readTool = "ops_snapshot",
+  reply = "Hoje o caixa fechou positivo.",
+): {
   model: ModelProvider;
   complete: ReturnType<typeof vi.fn>;
 } {
@@ -39,8 +42,8 @@ function readThenNoIntentModel(): {
     return {
       model: "mock",
       stopReason: "end_turn",
-      text: firstPass ? "" : "Hoje o caixa fechou positivo.",
-      toolCalls: firstPass ? [{ id: "r-1", name: "ops_snapshot", input: {} }] : [],
+      text: firstPass ? "" : reply,
+      toolCalls: firstPass ? [{ id: "r-1", name: readTool, input: {} }] : [],
       inputTokens: 2,
       outputTokens: 2,
     };
@@ -83,5 +86,36 @@ describe("ops planner — ops_snapshot enrichment", () => {
     const firstReq = complete.mock.calls[0]![0] as CompletionRequest;
     const toolNames = (firstReq.tools ?? []).map((t) => t.name);
     expect(toolNames).toContain("ops_snapshot");
+  });
+
+  it("advertises ops_sales_analytics and executes it for a sales question, proposing no mutation (NEW-012)", async () => {
+    const salesAnalytics = vi.fn(async () => ({
+      orders: { ordersCount: 12, revenueCentavos: 144_000, aovCentavos: 12_000 },
+    }));
+    const { model, complete } = readThenNoIntentModel(
+      "ops_sales_analytics",
+      "Hoje foram 12 pedidos, R$ 1.440,00 em vendas.",
+    );
+    const planner = createIbatexasPlanner({
+      model,
+      modelId: "mock",
+      capabilityPlanners: [opsCapabilityPlanner as never],
+      deriveContext: deriveOpsPlannerContext("staff_1"),
+      staffEnvelopeActor: { staffId: "staff_1", role: "OWNER" },
+      readToolExecutors: { ops_sales_analytics: salesAnalytics },
+      system: OPS_PLANNER_PERSONA,
+    });
+
+    const plan = await planner.propose(opsState("como foram as vendas hoje?"));
+
+    // The sales read executor ran exactly once, and the read-only turn proposed
+    // no mutating envelope.
+    expect(salesAnalytics).toHaveBeenCalledTimes(1);
+    expect(plan.envelopes).toHaveLength(0);
+    expect(complete).toHaveBeenCalledTimes(2);
+    // The first pass advertised ops_sales_analytics as a visible read tool.
+    const firstReq = complete.mock.calls[0]![0] as CompletionRequest;
+    const toolNames = (firstReq.tools ?? []).map((t) => t.name);
+    expect(toolNames).toContain("ops_sales_analytics");
   });
 });

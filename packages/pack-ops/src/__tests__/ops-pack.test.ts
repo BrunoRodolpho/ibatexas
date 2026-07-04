@@ -437,9 +437,10 @@ describe("opsPack — policy coherence via analyzePolicy()", () => {
     expect(guestPlan.allowedIntents).toEqual([])
   })
 
-  it("the ops_snapshot READ tool is advertised ONLY to a staff session (NEW-032 slice B)", () => {
+  it("the READ tools (ops_snapshot + ops_sales_analytics) are advertised ONLY to a staff session (NEW-032 / NEW-012)", () => {
     const staffPlan = opsPack.planner.plan(probes[1]!.state, probes[1]!.context)
     expect(staffPlan.visibleReadTools).toContain("ops_snapshot")
+    expect(staffPlan.visibleReadTools).toContain("ops_sales_analytics")
     const guestPlan = opsPack.planner.plan(probes[0]!.state, probes[0]!.context)
     expect(guestPlan.visibleReadTools).toEqual([])
   })
