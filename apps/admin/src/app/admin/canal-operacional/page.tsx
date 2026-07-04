@@ -10,8 +10,11 @@
 // composer gate) lives in the PURE ops-chat.mappers module; thread state lives in
 // the useOpsChat hook. pt-BR throughout (Hard Rule #4).
 //
-// v1 is STATELESS server-side (no conversation memory persists) — the caption
-// under the header states that plainly so the manager isn't misled.
+// The thread PERSISTS server-side (BKL-084) and rehydrates on reload (BKL-091):
+// useOpsChat fetches GET /api/admin/ops/chat/history on mount and seeds the
+// transcript. Rehydrated assistant turns are badge-less (the persisted thread
+// kept no kernel decision metadata) and a "histórico carregado" divider marks the
+// boundary with the live session.
 
 import { useEffect, useRef, useState } from 'react'
 import { BotMessageSquare, Send } from 'lucide-react'
@@ -27,7 +30,7 @@ import {
 } from '@/domains/admin/ops-chat.mappers'
 
 const STATELESS_CAPTION =
-  'Histórico apenas nesta tela — nesta versão cada mensagem é processada de forma independente (o servidor ainda não guarda memória da conversa).'
+  'O histórico desta conversa fica salvo e é recarregado quando você reabre a tela.'
 
 const EMPTY_HINT = 'Envie um comando para começar. Ex.: “Qual a situação da cozinha agora?”'
 
@@ -81,6 +84,32 @@ function ErrorBubble({ text }: Readonly<{ text: string }>): React.JSX.Element {
   )
 }
 
+/**
+ * A REHYDRATED assistant turn (BKL-091) — same bubble as a live one but WITHOUT
+ * the badge row: the persisted thread kept no kernel decision metadata, so we
+ * never fabricate a badge for it.
+ */
+function HistoryAssistantBubble({ text }: Readonly<{ text: string }>): React.JSX.Element {
+  return (
+    <div className="flex justify-start">
+      <div className="max-w-[80%] whitespace-pre-wrap break-words rounded-sm border border-smoke-200 bg-white px-3 py-2 text-sm text-charcoal-900">
+        {text || '(sem texto)'}
+      </div>
+    </div>
+  )
+}
+
+/** Subtle "histórico carregado" separator between the reloaded thread and the live session. */
+function HistoryDivider(): React.JSX.Element {
+  return (
+    <div className="flex items-center gap-2 py-1" role="separator" aria-label="Histórico carregado">
+      <span className="h-px flex-1 bg-smoke-200" />
+      <span className="text-[11px] uppercase tracking-wide text-smoke-400">histórico carregado</span>
+      <span className="h-px flex-1 bg-smoke-200" />
+    </div>
+  )
+}
+
 function ThreadEntryView({ entry }: Readonly<{ entry: OpsThreadEntry }>): React.JSX.Element | null {
   switch (entry.role) {
     case 'user':
@@ -89,6 +118,10 @@ function ThreadEntryView({ entry }: Readonly<{ entry: OpsThreadEntry }>): React.
       return <AssistantBubble entry={entry} />
     case 'error':
       return <ErrorBubble text={entry.text} />
+    case 'history-assistant':
+      return <HistoryAssistantBubble text={entry.reply} />
+    case 'history-divider':
+      return <HistoryDivider />
     default:
       return null
   }

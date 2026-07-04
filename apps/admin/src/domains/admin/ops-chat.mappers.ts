@@ -107,7 +107,36 @@ export interface ErrorEntry {
   readonly text: string
 }
 
-export type OpsThreadEntry = UserEntry | AssistantEntry | ErrorEntry
+/**
+ * A REHYDRATED assistant turn (BKL-091). The persisted thread stores only
+ * { role, content } per message — the kernel decision / executed / proposedKinds
+ * metadata was NOT retained — so a reloaded assistant turn is a distinct,
+ * badge-LESS variant. Kept separate from `AssistantEntry` on purpose: the live
+ * turn's exhaustive badge rendering stays intact and a hydrated turn never fakes
+ * a blank/neutral badge for metadata it doesn't have.
+ */
+export interface HistoryAssistantEntry {
+  readonly id: string
+  readonly role: 'history-assistant'
+  readonly reply: string
+}
+
+/**
+ * A one-shot "histórico carregado" separator (BKL-091) placed after the last
+ * rehydrated turn, so the manager can tell the reloaded thread from the live
+ * session below it. Carries no content — it is a pure render marker.
+ */
+export interface HistoryDividerEntry {
+  readonly id: string
+  readonly role: 'history-divider'
+}
+
+export type OpsThreadEntry =
+  | UserEntry
+  | AssistantEntry
+  | ErrorEntry
+  | HistoryAssistantEntry
+  | HistoryDividerEntry
 
 /** The staff message the manager typed. */
 export function userEntry(id: string, text: string): UserEntry {
@@ -129,6 +158,73 @@ export function assistantEntry(id: string, res: OpsChatResponse): AssistantEntry
 /** An honest error turn (never fabricated success). */
 export function errorEntry(id: string, text: string): ErrorEntry {
   return { id, role: 'error', text }
+}
+
+/** A rehydrated (badge-less) assistant turn from the persisted thread. */
+export function historyAssistantEntry(id: string, reply: string): HistoryAssistantEntry {
+  return { id, role: 'history-assistant', reply }
+}
+
+/** The "histórico carregado" separator between hydrated history and the live session. */
+export function historyDividerEntry(id: string): HistoryDividerEntry {
+  return { id, role: 'history-divider' }
+}
+
+// ── Persisted-thread hydrate (GET /api/admin/ops/chat/history → entries) ──────
+
+/** One stored message as it crosses the JSON boundary (client mirror). */
+export interface OpsHistoryMessage {
+  readonly role: string
+  readonly content: string
+}
+
+/**
+ * Defensively pull the message list out of an unknown history-response body. A
+ * missing / non-array `messages`, or an entry with a non-string role/content, is
+ * dropped rather than crashing the hydrate — best-effort, mirroring
+ * `coerceResponse`. `count` is ignored (the array length is authoritative).
+ */
+export function coerceHistoryMessages(body: unknown): OpsHistoryMessage[] {
+  const rec = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>
+  const raw = Array.isArray(rec.messages) ? rec.messages : []
+  const out: OpsHistoryMessage[] = []
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue
+    const m = item as Record<string, unknown>
+    if (typeof m.role === 'string' && typeof m.content === 'string') {
+      out.push({ role: m.role, content: m.content })
+    }
+  }
+  return out
+}
+
+/**
+ * Map an unknown history-response body into thread entries for the initial
+ * hydrate (BKL-091). `user` → UserEntry, `assistant` → a badge-LESS
+ * HistoryAssistantEntry (the persisted thread kept no decision metadata); any
+ * other role (e.g. `system`) is dropped. A single "histórico carregado" divider
+ * is appended iff at least one message survived, so the manager can tell the
+ * reloaded thread from the live session that follows. Ids are namespaced
+ * `ops-hist-*` so they never collide with the live `ops-chat-*` keys.
+ */
+export function historyEntries(body: unknown): OpsThreadEntry[] {
+  const messages = coerceHistoryMessages(body)
+  const entries: OpsThreadEntry[] = []
+  let seq = 0
+  for (const msg of messages) {
+    if (msg.role === 'user') {
+      entries.push(userEntry(`ops-hist-${seq}`, msg.content))
+      seq += 1
+    } else if (msg.role === 'assistant') {
+      entries.push(historyAssistantEntry(`ops-hist-${seq}`, msg.content))
+      seq += 1
+    }
+    // Any other role (system/unknown) is dropped — it never belongs in the thread.
+  }
+  if (entries.length > 0) {
+    entries.push(historyDividerEntry('ops-hist-divider'))
+  }
+  return entries
 }
 
 // ── Fetch-result → thread entry (pure so the hook's branch is tested) ────────

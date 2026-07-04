@@ -16,6 +16,7 @@ import {
   canSend,
   entryFromResult,
   errorEntry,
+  historyEntries,
   userEntry,
   OPS_CHAT_NETWORK_ERROR,
   type OpsChatResult,
@@ -843,6 +844,24 @@ export function useAdminOpsSnapshot() {
 // ── Canal Operacional (ops-actor chat — BKL-087) ─────────────────────────────
 
 const OPS_CHAT_ENDPOINT = '/api/proxy/api/admin/ops/chat'
+const OPS_CHAT_HISTORY_ENDPOINT = '/api/proxy/api/admin/ops/chat/history'
+
+/**
+ * GET the caller's persisted ops thread for the initial UI hydrate (BKL-091).
+ * Raw fetch (not apiFetch, which discards the body) so the `messages` array can
+ * be read; `credentials: 'include'` rides the staff-JWT cookie that /api/proxy
+ * forwards upstream to the requireStaff route. Throws on a non-ok status so the
+ * caller treats hydrate as best-effort (a silent empty start).
+ */
+async function fetchOpsHistory(): Promise<unknown> {
+  const res = await fetch(OPS_CHAT_HISTORY_ENDPOINT, {
+    method: 'GET',
+    credentials: 'include',
+    headers: { Accept: 'application/json' },
+  })
+  if (!res.ok) throw new Error(`ops-chat history HTTP ${res.status}`)
+  return res.json()
+}
 
 /**
  * POST one ops command and return the SETTLED result WITHOUT throwing on a
@@ -890,6 +909,26 @@ export function useOpsChat() {
   const [entries, setEntries] = useState<OpsThreadEntry[]>([])
   const [inFlight, setInFlight] = useState(false)
   const inFlightRef = useRef(false)
+
+  // Hydrate the persisted thread once on mount (BKL-091). Best-effort: a fetch
+  // failure or an empty history is a SILENT empty start (logged, never an error
+  // bubble on mount). Hydrated turns are PREPENDED so they precede any live turn
+  // that raced ahead, and their `ops-hist-*` ids never collide with `ops-chat-*`.
+  useEffect(() => {
+    let cancelled = false
+    fetchOpsHistory()
+      .then((body) => {
+        if (cancelled) return
+        const hydrated = historyEntries(body)
+        if (hydrated.length === 0) return
+        setEntries((prev) => [...hydrated, ...prev])
+      })
+      .catch((err: unknown) => {
+        // Best-effort hydrate — start empty, never surface an error to the manager.
+        console.error('Failed to hydrate ops-chat history (starting empty)', err)
+      })
+    return () => { cancelled = true }
+  }, [])
 
   const send = useCallback(async (raw: string) => {
     const text = raw.trim()

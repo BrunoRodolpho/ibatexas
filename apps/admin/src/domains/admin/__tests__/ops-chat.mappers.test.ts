@@ -16,8 +16,12 @@ import {
   decisionLabel,
   decisionBadgeVariant,
   coerceResponse,
+  coerceHistoryMessages,
   entryFromResult,
   errorMessageFromBody,
+  historyEntries,
+  historyAssistantEntry,
+  historyDividerEntry,
   userEntry,
   assistantEntry,
   errorEntry,
@@ -183,6 +187,101 @@ describe('thread-entry builders', () => {
 
   it('builds an error entry', () => {
     expect(errorEntry('x1', 'ops')).toEqual({ id: 'x1', role: 'error', text: 'ops' })
+  })
+
+  it('builds a badge-less history assistant entry', () => {
+    expect(historyAssistantEntry('h1', 'oi')).toEqual({ id: 'h1', role: 'history-assistant', reply: 'oi' })
+  })
+
+  it('builds a history divider entry', () => {
+    expect(historyDividerEntry('d1')).toEqual({ id: 'd1', role: 'history-divider' })
+  })
+})
+
+describe('coerceHistoryMessages (defensive shaping of an unknown history body)', () => {
+  it('keeps well-formed { role, content } messages in order', () => {
+    const out = coerceHistoryMessages({
+      messages: [
+        { role: 'user', content: 'qual a situação?' },
+        { role: 'assistant', content: 'tudo certo.' },
+      ],
+      count: 2,
+    })
+    expect(out).toEqual([
+      { role: 'user', content: 'qual a situação?' },
+      { role: 'assistant', content: 'tudo certo.' },
+    ])
+  })
+
+  it('returns [] for a non-object body or a missing / non-array messages field', () => {
+    expect(coerceHistoryMessages(null)).toEqual([])
+    expect(coerceHistoryMessages('nope')).toEqual([])
+    expect(coerceHistoryMessages({})).toEqual([])
+    expect(coerceHistoryMessages({ messages: 'x' })).toEqual([])
+  })
+
+  it('drops entries with a non-string role or content (never crashes)', () => {
+    const out = coerceHistoryMessages({
+      messages: [
+        { role: 'user', content: 'ok' },
+        { role: 'user', content: 123 },
+        { role: 7, content: 'bad role' },
+        null,
+        'not-an-object',
+        { role: 'assistant', content: 'fim' },
+      ],
+    })
+    expect(out).toEqual([
+      { role: 'user', content: 'ok' },
+      { role: 'assistant', content: 'fim' },
+    ])
+  })
+})
+
+describe('historyEntries (persisted thread → hydrate entries)', () => {
+  it('returns [] (no divider) for an empty / absent history', () => {
+    expect(historyEntries({ messages: [], count: 0 })).toEqual([])
+    expect(historyEntries(null)).toEqual([])
+  })
+
+  it('maps user→UserEntry and assistant→badge-less HistoryAssistantEntry, then a single divider', () => {
+    const entries = historyEntries({
+      messages: [
+        { role: 'user', content: 'qual a situação da cozinha?' },
+        { role: 'assistant', content: 'Cozinha com 3 pedidos em preparo.' },
+        { role: 'user', content: 'e o brisket?' },
+      ],
+      count: 3,
+    })
+    expect(entries).toEqual([
+      { id: 'ops-hist-0', role: 'user', text: 'qual a situação da cozinha?' },
+      { id: 'ops-hist-1', role: 'history-assistant', reply: 'Cozinha com 3 pedidos em preparo.' },
+      { id: 'ops-hist-2', role: 'user', text: 'e o brisket?' },
+      { id: 'ops-hist-divider', role: 'history-divider' },
+    ])
+  })
+
+  it('drops a non user/assistant role (e.g. system) but still emits kept turns + divider', () => {
+    const entries = historyEntries({
+      messages: [
+        { role: 'system', content: 'contexto interno' },
+        { role: 'user', content: 'oi' },
+      ],
+    })
+    expect(entries).toEqual([
+      { id: 'ops-hist-0', role: 'user', text: 'oi' },
+      { id: 'ops-hist-divider', role: 'history-divider' },
+    ])
+  })
+
+  it('never emits a divider when every message is dropped', () => {
+    expect(historyEntries({ messages: [{ role: 'system', content: 'x' }] })).toEqual([])
+  })
+
+  it('gives hydrated entries ops-hist ids (no collision with live ops-chat keys)', () => {
+    const entries = historyEntries({ messages: [{ role: 'user', content: 'oi' }] })
+    expect(entries[0].id.startsWith('ops-hist-')).toBe(true)
+    expect(entries.every((e) => !e.id.startsWith('ops-chat-'))).toBe(true)
   })
 })
 
