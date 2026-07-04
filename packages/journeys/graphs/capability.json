@@ -3,7 +3,7 @@
   "graph": "capability",
   "meta": {
     "dangling": [],
-    "intentKinds": 65,
+    "intentKinds": 67,
     "packs": 6,
     "personaContexts": [
       "authed-customer",
@@ -220,6 +220,28 @@
       }
     },
     {
+      "id": "intent:incident.ticket.close.staff",
+      "type": "intent",
+      "label": "incident.ticket.close.staff",
+      "meta": {
+        "advertisedContexts": [],
+        "chatDrivable": false,
+        "composedPack": "ibatexas/pack-ops",
+        "domain": "incident",
+        "flags": [],
+        "knownKind": true,
+        "plausibleDecisions": [
+          "EXECUTE",
+          "REFUSE",
+          "ESCALATE",
+          "REQUEST_CONFIRMATION",
+          "DEFER",
+          "REWRITE"
+        ],
+        "staffRoute": false
+      }
+    },
+    {
       "id": "intent:loyalty.stamp.add",
       "type": "intent",
       "label": "loyalty.stamp.add",
@@ -228,6 +250,28 @@
         "chatDrivable": false,
         "composedPack": null,
         "domain": "loyalty",
+        "flags": [],
+        "knownKind": true,
+        "plausibleDecisions": [
+          "EXECUTE",
+          "REFUSE",
+          "ESCALATE",
+          "REQUEST_CONFIRMATION",
+          "DEFER",
+          "REWRITE"
+        ],
+        "staffRoute": false
+      }
+    },
+    {
+      "id": "intent:ops.alert.resolve.staff",
+      "type": "intent",
+      "label": "ops.alert.resolve.staff",
+      "meta": {
+        "advertisedContexts": [],
+        "chatDrivable": false,
+        "composedPack": "ibatexas/pack-ops",
+        "domain": "ops",
         "flags": [],
         "knownKind": true,
         "plausibleDecisions": [
@@ -1504,9 +1548,9 @@
       "type": "pack",
       "label": "ibatexas/pack-ops",
       "meta": {
-        "intentCount": 1,
+        "intentCount": 3,
         "policyDefault": "REFUSE",
-        "version": "1.0.0"
+        "version": "1.1.0"
       }
     },
     {
@@ -1989,6 +2033,16 @@
     {
       "from": "pack:ibatexas/pack-customer-onboarding",
       "to": "intent:customer.profile.update",
+      "type": "declares"
+    },
+    {
+      "from": "pack:ibatexas/pack-ops",
+      "to": "intent:incident.ticket.close.staff",
+      "type": "declares"
+    },
+    {
+      "from": "pack:ibatexas/pack-ops",
+      "to": "intent:ops.alert.resolve.staff",
       "type": "declares"
     },
     {
