@@ -36,6 +36,7 @@ import { prisma } from "@ibatexas/domain"
 import { publishNatsEvent } from "@ibatexas/nats-client"
 import type { FastifyBaseLogger } from "fastify"
 import { observeDriftRecord } from "./observability/drift-detector.js"
+import { assertAuditRedactSecretPosture } from "./audit-redact-secret-posture.js"
 
 /**
  * Bootstrap the audit-sink dependency injection. Idempotent — safe to
@@ -49,6 +50,15 @@ import { observeDriftRecord } from "./observability/drift-detector.js"
 export async function bootstrapAuditSinkDI(
   log: FastifyBaseLogger,
 ): Promise<void> {
+  // BKL-093 — fail closed at boot in production when the redaction salt is empty
+  // (before any audit record is composed). Runs first so a misconfigured prod
+  // deploy exits non-zero via start()'s catch rather than serving traffic.
+  assertAuditRedactSecretPosture({
+    nodeEnv: process.env.NODE_ENV,
+    secret: process.env.AUDIT_REDACT_SECRET,
+    log,
+  });
+
   // Resolve Redis best-effort. If Redis is unreachable at boot, fall
   // back to the leaf's in-memory spill storage — production deployments
   // need Redis up for spill durability, but the boot must not wedge on
