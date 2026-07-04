@@ -23,6 +23,7 @@ import {
   type OpsThreadEntry,
 } from './ops-chat.mappers'
 import type { AdminCustomerListResponse, AdminCustomerDetail } from './customers.mappers'
+import { planOptOutToggle, optOutResultMessage } from './customers.mappers'
 
 const hooks = buildAdminHooks(createAdminHook, createAdminListHook, apiFetch)
 
@@ -973,6 +974,82 @@ export function useAdminCustomer(id: string | null) {
     return { customer: null, loading: false, error: null, notFound: false }
   }
   return { customer, loading, error, notFound }
+}
+
+/**
+ * Backs the broadcast opt-out TOGGLE on the Clientes detail (BKL-097). The only
+ * governed customer-data write on this surface — it REUSES the existing
+ * manager-gated opt-out/opt-in admin endpoints VERBATIM (no new mutation
+ * authority), posting `{ recipient: phone }` (the same key the detail-compose
+ * reads back). All transition logic is the PURE `planOptOutToggle`; this hook is
+ * the optimistic/rollback wrapper around it.
+ *
+ * Seeded ONCE from the detail's `initialOptedOut`; the caller keys the control
+ * on the customer id so a new selection re-seeds fresh (no reset effect). A click
+ * to re-enable marketing (opt-in) is a re-consent decision → it opens a confirm
+ * step first; stopping sends (opt-out) is direct. The badge flips optimistically
+ * and rolls back on a failed write, always with an HONEST pt-BR toast — a failed
+ * write NEVER reads as success. An in-flight ref makes the guard closure-stable
+ * so overlapping toggles can't double-fire.
+ */
+export function useCustomerOptOut(phone: string, initialOptedOut: boolean) {
+  const { addToast } = useToast()
+  const [optedOut, setOptedOut] = useState(initialOptedOut)
+  const [pending, setPending] = useState(false)
+  const [confirmOpen, setConfirmOpen] = useState(false)
+  const inFlightRef = useRef(false)
+
+  // Perform the governed write for the CURRENT state's plan: flip optimistically,
+  // POST to the reused endpoint, roll back + toast honestly on failure.
+  const perform = useCallback(async () => {
+    if (inFlightRef.current) return
+    const plan = planOptOutToggle(optedOut)
+    inFlightRef.current = true
+    setPending(true)
+    setOptedOut(plan.optimistic)
+    try {
+      await apiFetch(plan.endpoint, {
+        method: 'POST',
+        body: JSON.stringify({ recipient: phone }),
+      })
+      addToast({
+        type: 'success',
+        message: optOutResultMessage(plan.action, true),
+        dedupeKey: 'customer-optout-toggle',
+      })
+    } catch {
+      // Roll back the optimistic flip — the write did not land.
+      setOptedOut(plan.previous)
+      addToast({
+        type: 'error',
+        message: optOutResultMessage(plan.action, false),
+        dedupeKey: 'customer-optout-toggle',
+      })
+    } finally {
+      inFlightRef.current = false
+      setPending(false)
+    }
+  }, [optedOut, phone, addToast])
+
+  // A click routes through the plan: re-consent (opt-in) opens the confirm step;
+  // stopping sends (opt-out) fires directly.
+  const requestToggle = useCallback(() => {
+    if (inFlightRef.current) return
+    if (planOptOutToggle(optedOut).requiresConfirm) {
+      setConfirmOpen(true)
+      return
+    }
+    void perform()
+  }, [optedOut, perform])
+
+  const confirmToggle = useCallback(() => {
+    setConfirmOpen(false)
+    void perform()
+  }, [perform])
+
+  const cancelConfirm = useCallback(() => setConfirmOpen(false), [])
+
+  return { optedOut, pending, confirmOpen, requestToggle, confirmToggle, cancelConfirm }
 }
 
 // ── Canal Operacional (ops-actor chat — BKL-087) ─────────────────────────────

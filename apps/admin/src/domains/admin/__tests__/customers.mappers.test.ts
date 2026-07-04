@@ -17,6 +17,11 @@ import {
   deliveryTypeLabel,
   paymentMethodLabel,
   optOutBadge,
+  planOptOutToggle,
+  optOutActionLabel,
+  optOutResultMessage,
+  BROADCAST_OPTOUT_ENDPOINT,
+  BROADCAST_OPTIN_ENDPOINT,
   formatAddressLine,
   formatDateBR,
   type AdminCustomerAddress,
@@ -119,6 +124,68 @@ describe('optOutBadge', () => {
   })
   it('is a neutral default when opted-in', () => {
     expect(optOutBadge(false)).toEqual({ label: 'Recebe marketing', variant: 'default' })
+  })
+})
+
+describe('planOptOutToggle (BKL-097 — reuses the existing opt-out/opt-in endpoints)', () => {
+  it('from receiving → opt-OUT: direct (no confirm), optimistic true, rolls back to false', () => {
+    expect(planOptOutToggle(false)).toEqual({
+      action: 'opt-out',
+      optimistic: true,
+      previous: false,
+      endpoint: BROADCAST_OPTOUT_ENDPOINT,
+      requiresConfirm: false,
+    })
+  })
+
+  it('from opted-out → opt-IN: requires a re-consent confirm, optimistic false, rolls back to true', () => {
+    expect(planOptOutToggle(true)).toEqual({
+      action: 'opt-in',
+      optimistic: false,
+      previous: true,
+      endpoint: BROADCAST_OPTIN_ENDPOINT,
+      requiresConfirm: true,
+    })
+  })
+
+  it('optimistic value always flips the current state; previous restores it (rollback contract)', () => {
+    for (const current of [true, false]) {
+      const plan = planOptOutToggle(current)
+      expect(plan.optimistic).toBe(!current) // the flipped value shown immediately
+      expect(plan.previous).toBe(current) // the exact value to restore on failure
+    }
+  })
+
+  it('gates re-consent (opt-in) but never gates stopping sends (opt-out)', () => {
+    expect(planOptOutToggle(true).requiresConfirm).toBe(true)
+    expect(planOptOutToggle(false).requiresConfirm).toBe(false)
+  })
+
+  it('targets the existing governed endpoints verbatim (no new write path)', () => {
+    expect(BROADCAST_OPTOUT_ENDPOINT).toBe('/api/admin/broadcast/optout')
+    expect(BROADCAST_OPTIN_ENDPOINT).toBe('/api/admin/broadcast/optin')
+  })
+})
+
+describe('optOutActionLabel', () => {
+  it('names the action a click will perform (not the current state)', () => {
+    expect(optOutActionLabel(true)).toBe('Reativar marketing')
+    expect(optOutActionLabel(false)).toBe('Desativar marketing')
+  })
+})
+
+describe('optOutResultMessage (honest, action-specific pt-BR toast copy)', () => {
+  it('confirms the persisted write on success', () => {
+    expect(optOutResultMessage('opt-out', true)).toBe('Cliente removido dos envios de marketing.')
+    expect(optOutResultMessage('opt-in', true)).toBe('Cliente reativado para envios de marketing.')
+  })
+  it('never reads as success on failure', () => {
+    expect(optOutResultMessage('opt-out', false)).toBe(
+      'Não foi possível remover o cliente dos envios. Tente novamente.',
+    )
+    expect(optOutResultMessage('opt-in', false)).toBe(
+      'Não foi possível reativar os envios. Tente novamente.',
+    )
   })
 })
 

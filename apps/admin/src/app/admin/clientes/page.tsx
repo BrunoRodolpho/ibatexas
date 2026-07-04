@@ -1,19 +1,21 @@
 'use client'
 
-// Clientes — a READ-ONLY manager customer surface (OPS-070). A searchable list
+// Clientes — a manager customer surface (OPS-070). A searchable list
 // (GET /api/admin/customers) → a composed detail view (GET /api/admin/customers/
-// :id): perfil, endereços, pedidos recentes, fidelidade, preferências e o status
-// de opt-out de marketing. VIEW-FIRST — there is NO edit control here: the only
-// governed customer-data write that exists today is broadcast opt-out/opt-in,
-// surfaced here as a read-only badge; wiring it as a toggle is a separate PR.
-// All non-trivial logic (money/phone/CPF/label formatting) lives in the PURE
-// customers.mappers module. pt-BR throughout (Hard Rule #4); money in integer
-// centavos (Hard Rule #2). CPF is masked at the render boundary (LGPD).
+// :id): perfil, endereços, pedidos recentes, fidelidade, preferências e o opt-out
+// de marketing. VIEW-FIRST — the ONLY governed customer-data write on this page
+// is the broadcast opt-out/opt-in TOGGLE (BKL-097), which REUSES the existing
+// manager-gated opt-out/opt-in admin endpoints verbatim (no new mutation
+// authority); re-enabling marketing (opt-in) is gated behind a re-consent
+// confirm. All non-trivial logic (money/phone/CPF/label formatting + the
+// optimistic toggle plan) lives in the PURE customers.mappers module. pt-BR
+// throughout (Hard Rule #4); money in integer centavos (Hard Rule #2). CPF is
+// masked at the render boundary (LGPD).
 
 import { useEffect, useState } from 'react'
 import { Users, Search, ChevronLeft, ChevronRight, MapPin, Award, ShoppingBag, Info } from 'lucide-react'
-import { Badge, useToast } from '@ibatexas/ui'
-import { useAdminCustomers, useAdminCustomer } from '@/domains/admin/admin.hooks'
+import { Badge, Button, Modal, useToast } from '@ibatexas/ui'
+import { useAdminCustomers, useAdminCustomer, useCustomerOptOut } from '@/domains/admin/admin.hooks'
 import {
   formatCentavosBRL,
   formatPhoneBR,
@@ -26,6 +28,8 @@ import {
   deliveryTypeLabel,
   paymentMethodLabel,
   optOutBadge,
+  optOutActionLabel,
+  OPT_IN_CONFIRM,
   orDash,
   statusVariant,
   paymentVariant,
@@ -185,15 +189,82 @@ function OrdersCard({
   )
 }
 
+// Broadcast opt-out TOGGLE (BKL-097). Replaces the read-only opt-out badge with
+// a governed switch that reuses the existing opt-out/opt-in admin endpoints. The
+// switch is "on" when the customer RECEIVES marketing (opted-in). Turning it off
+// (opt-out) fires directly; turning it on (opt-in) is a re-consent decision and
+// opens a confirm dialog first. State flips optimistically and rolls back on a
+// failed write (see useCustomerOptOut). Keyed on the customer id by the caller so
+// a new selection re-seeds fresh.
+function OptOutToggle({
+  phone,
+  initialOptedOut,
+}: Readonly<{ phone: string; initialOptedOut: boolean }>): React.JSX.Element {
+  const { optedOut, pending, confirmOpen, requestToggle, confirmToggle, cancelConfirm } =
+    useCustomerOptOut(phone, initialOptedOut)
+  const badge = optOutBadge(optedOut)
+  const receivesMarketing = !optedOut
+
+  return (
+    <>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={receivesMarketing}
+        aria-label={optOutActionLabel(optedOut)}
+        disabled={pending}
+        onClick={requestToggle}
+        className="group flex shrink-0 items-center gap-2 rounded-sm disabled:cursor-not-allowed disabled:opacity-60"
+      >
+        <Badge variant={badge.variant}>{badge.label}</Badge>
+        <span
+          aria-hidden
+          className={`relative inline-flex h-4 w-7 items-center rounded-full transition-colors ${
+            receivesMarketing ? 'bg-charcoal-700' : 'bg-smoke-300'
+          }`}
+        >
+          <span
+            className={`inline-block h-3 w-3 transform rounded-full bg-white transition-transform ${
+              receivesMarketing ? 'translate-x-3.5' : 'translate-x-0.5'
+            }`}
+          />
+        </span>
+      </button>
+
+      <Modal
+        isOpen={confirmOpen}
+        onClose={cancelConfirm}
+        title={OPT_IN_CONFIRM.title}
+        size="sm"
+        footer={
+          <div className="flex justify-end gap-2">
+            <Button variant="secondary" size="sm" onClick={cancelConfirm} disabled={pending}>
+              Cancelar
+            </Button>
+            <Button variant="primary" size="sm" isLoading={pending} onClick={confirmToggle}>
+              {OPT_IN_CONFIRM.confirmLabel}
+            </Button>
+          </div>
+        }
+      >
+        <p className="text-sm text-charcoal-700">{OPT_IN_CONFIRM.body}</p>
+      </Modal>
+    </>
+  )
+}
+
 function CustomerDetail({ customer }: Readonly<{ customer: AdminCustomerDetail }>): React.JSX.Element {
-  const optOut = optOutBadge(customer.optedOutOfBroadcast)
   return (
     <div className="flex flex-col gap-3">
       {/* Perfil */}
       <Card title="Perfil" icon={<Users className="h-3 w-3" aria-hidden />}>
         <div className="flex items-start justify-between gap-3">
           <h3 className="text-base font-semibold text-charcoal-900">{orDash(customer.name)}</h3>
-          <Badge variant={optOut.variant}>{optOut.label}</Badge>
+          <OptOutToggle
+            key={customer.id}
+            phone={customer.phone}
+            initialOptedOut={customer.optedOutOfBroadcast}
+          />
         </div>
         <div className="flex flex-col gap-1 border-t border-smoke-100 pt-2">
           <Field label="Telefone" value={formatPhoneBR(customer.phone)} />

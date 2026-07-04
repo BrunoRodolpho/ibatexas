@@ -226,6 +226,96 @@ export function optOutBadge(optedOut: boolean): OptOutBadge {
     : { label: 'Recebe marketing', variant: 'default' }
 }
 
+// ── Broadcast opt-out toggle (BKL-097) ───────────────────────────────────────
+//
+// The toggle REUSES the existing governed admin endpoints VERBATIM — no new
+// write path. The store keys by the customer's phone as `recipient`, the SAME
+// string the detail-compose reads back as `optedOutOfBroadcast`, so posting
+// `{ recipient: customer.phone }` is round-trip consistent.
+//
+//   opt-OUT  (stop sending) → POST /api/admin/broadcast/optout  — direct
+//   opt-IN   (re-enable)     → POST /api/admin/broadcast/optin   — CONFIRM first
+//
+// Re-consent (opt-in) carries compliance weight, so re-enabling marketing is
+// gated behind an explicit confirm; stopping sends is direct.
+
+export const BROADCAST_OPTOUT_ENDPOINT = '/api/admin/broadcast/optout'
+export const BROADCAST_OPTIN_ENDPOINT = '/api/admin/broadcast/optin'
+
+export type OptOutAction = 'opt-out' | 'opt-in'
+
+/**
+ * The optimistic-mutation plan for one toggle click, derived PURELY from the
+ * current opt-out state. `optimistic` is the value to show immediately;
+ * `previous` is the value to roll back to if the governed write fails; `endpoint`
+ * is the existing manager-gated route to POST `{ recipient }` to; `requiresConfirm`
+ * gates re-consent (opt-in) behind an explicit confirm step.
+ */
+export interface OptOutMutationPlan {
+  readonly action: OptOutAction
+  readonly optimistic: boolean
+  readonly previous: boolean
+  readonly endpoint: string
+  readonly requiresConfirm: boolean
+}
+
+/**
+ * Plan the next toggle transition from the current opt-out state. Currently
+ * opted-out → toggling re-enables marketing (opt-in): a re-consent decision, so
+ * `requiresConfirm`. Currently receiving → toggling stops sends (opt-out):
+ * direct. Pure — the hook is a thin optimistic/rollback wrapper around this.
+ */
+export function planOptOutToggle(currentOptedOut: boolean): OptOutMutationPlan {
+  if (currentOptedOut) {
+    return {
+      action: 'opt-in',
+      optimistic: false,
+      previous: true,
+      endpoint: BROADCAST_OPTIN_ENDPOINT,
+      requiresConfirm: true,
+    }
+  }
+  return {
+    action: 'opt-out',
+    optimistic: true,
+    previous: false,
+    endpoint: BROADCAST_OPTOUT_ENDPOINT,
+    requiresConfirm: false,
+  }
+}
+
+/**
+ * pt-BR action label for the toggle control — what a click will DO (distinct
+ * from `optOutBadge`, which names the current state). Opted-out → "Reativar
+ * marketing"; receiving → "Desativar marketing".
+ */
+export function optOutActionLabel(optedOut: boolean): string {
+  return optedOut ? 'Reativar marketing' : 'Desativar marketing'
+}
+
+/** Re-consent confirm-dialog copy (opt-in only — the compliance-weighted path). */
+export const OPT_IN_CONFIRM = {
+  title: 'Reativar marketing',
+  body: 'Confirme que este cliente consentiu em voltar a receber mensagens de marketing. A reativação retoma os envios promocionais.',
+  confirmLabel: 'Reativar',
+} as const
+
+/**
+ * pt-BR toast copy for a settled toggle. Exhaustive over the action × outcome
+ * grid so the manager always gets honest, action-specific feedback — a failed
+ * write NEVER reads as success (the badge also rolls back).
+ */
+export function optOutResultMessage(action: OptOutAction, ok: boolean): string {
+  if (ok) {
+    return action === 'opt-out'
+      ? 'Cliente removido dos envios de marketing.'
+      : 'Cliente reativado para envios de marketing.'
+  }
+  return action === 'opt-out'
+    ? 'Não foi possível remover o cliente dos envios. Tente novamente.'
+    : 'Não foi possível reativar os envios. Tente novamente.'
+}
+
 // ── Address one-liner ────────────────────────────────────────────────────────
 
 /**
