@@ -46,6 +46,7 @@
 
 import { buildEnvelope, type IntentEnvelope } from "@adjudicate/core";
 import type { ResolvedEnvelope, ResolverPort } from "@claustrum/core";
+import { isTerminalPaymentStatus, type PaymentStatus } from "@ibatexas/types";
 import { logger } from "../lib/logger.js";
 import {
   resolveProductByName,
@@ -60,6 +61,25 @@ import {
 export interface OpsResolverProduct {
   readonly id: string;
   readonly status: string;
+}
+
+/**
+ * The active-payment row the BKL-085 refund path reads. Mirrors the fields the
+ * admin refund route reads from `paymentQuerySvc.getActiveByOrderId` — the
+ * AUTHORITATIVE balance/status/version the ops resolver STAMPS into the refund
+ * payload so the kernel adjudicates against DB truth, never a model-forgeable
+ * balance (STOP-GATE B). Production wires it to that same query.
+ */
+export interface OpsResolverPayment {
+  readonly paymentId: string;
+  /** Current wire status — only `paid` / `partially_refunded` are refundable. */
+  readonly status: string;
+  /** Original payment amount (centavos). */
+  readonly amountInCentavos: number;
+  /** Sum already refunded (centavos). */
+  readonly refundedAmountCentavos: number;
+  readonly method: string;
+  readonly version: number;
 }
 
 /** The order projection subset the pack-orders `OrderState` is built from. */
@@ -123,6 +143,105 @@ export interface OpsResolverDeps {
    * wrong-order write is harmful — see ops-order-resolution.ts.
    */
   readonly orderReferenceReads?: OrderReferenceReads;
+  /**
+   * BKL-085 — fetch the ACTIVE payment for an order id (the SAME deterministic
+   * read the admin refund route uses: `paymentQuerySvc.getActiveByOrderId`).
+   * Returns null when the order has no active (non-terminal) payment; a THROW is
+   * treated as null (fail-closed → REFUSE). The resolver reads
+   * amountInCentavos/refundedAmountCentavos/status/method/version from THIS row
+   * (never the model payload) and stamps the forgeable balance fields from it.
+   * When this dep is ABSENT the refund path REFUSEs every request (exists:false)
+   * — the refund verb is inert until wired.
+   */
+  readonly lookupActivePayment?: (
+    orderId: string,
+  ) => Promise<OpsResolverPayment | null>;
+}
+
+/**
+ * The payment statuses money can legitimately be refunded from (mirrors the
+ * admin route's `refundableStatuses` gate + pack-payments'
+ * `REFUNDABLE_PAYMENT_STATUSES`). Every other active status (awaiting_payment /
+ * cash_pending / switching_method / …) is NOT refundable — the resolver
+ * fails closed (exists:false ⇒ kernel REFUSE) rather than surface it and risk an
+ * executor `canTransition` throw on the resumed EXECUTE.
+ */
+const OPS_REFUNDABLE_STATUSES: ReadonlySet<string> = new Set([
+  "paid",
+  "partially_refunded",
+]);
+
+/** Cap a model-supplied refund reason (defensive; mirrors the admin route's
+ *  500-char zod bound). Recorded on the status-history row, never executed. */
+const OPS_REFUND_REASON_MAX = 500;
+
+/**
+ * The pack-payments `PaymentState` the refund guards adjudicate against, built
+ * from a live payment row. SHARED by the plan-stage resolver (below) and the
+ * BKL-085 resume re-projection ({@link buildOpsRefundResumeState}) so a parked
+ * refund is re-adjudicated on "sim" against the SAME state shape it parked with.
+ * `isTerminal` is DERIVED from the (fresh) status — a payment that reached a
+ * terminal status since parking (e.g. already fully refunded) then REFUSEs via
+ * `refuseTerminalTransition` on resume (money-safety).
+ */
+function buildRefundPaymentState(opts: {
+  status: string;
+  amountInCentavos: number;
+  refundedAmountCentavos: number;
+  method: string;
+  version: number;
+  orderId: string | null;
+  tenantId: string;
+}): unknown {
+  return {
+    ctx: {
+      actor: { principal: "admin" },
+      tenantId: opts.tenantId,
+      exists: true,
+      currentStatus: opts.status,
+      currentMethod: opts.method,
+      version: opts.version,
+      orderId: opts.orderId,
+      isTerminal: isTerminalPaymentStatus(opts.status as PaymentStatus),
+      refundedAmountCentavos: opts.refundedAmountCentavos,
+      amountInCentavos: opts.amountInCentavos,
+    },
+  };
+}
+
+/**
+ * BKL-085 — re-project the pack-payments `PaymentState` for a parked refund on
+ * the RESUME path ("sim, confirma"). The claustrum resume path re-adjudicates the
+ * VERBATIM parked envelope, but the SHARED customer-plane resume-state enrichment
+ * (`resolveAndAssemble`) is scoped to a real `customerId` — the ops plane's
+ * `staff:<id>` owns no customer resources, so it would project `exists:false` and
+ * REFUSE a legitimate confirm-resume. This builder re-projects from the payment
+ * row read by the parked (DB-stamped, trusted) `paymentId` instead. A FRESH read
+ * ⇒ money-safe: a since-parked terminal / partial refund REFUSEs (terminal guard /
+ * the magnitude guard's divergence check reads THIS live `refundedAmountCentavos`).
+ * `payment === null` ⇒ `exists:false` ⇒ clean `payment_not_found` REFUSE.
+ */
+export function buildOpsRefundResumeState(
+  payment: {
+    status: string;
+    amountInCentavos: number;
+    refundedAmountCentavos: number;
+    method: string;
+    version: number;
+    orderId?: string | null;
+  } | null,
+  tenantId: string,
+): unknown {
+  if (payment === null) return { ctx: { exists: false } };
+  return buildRefundPaymentState({
+    status: payment.status,
+    amountInCentavos: payment.amountInCentavos,
+    refundedAmountCentavos: payment.refundedAmountCentavos,
+    method: payment.method,
+    version: payment.version,
+    orderId: payment.orderId ?? null,
+    tenantId,
+  });
 }
 
 /**
@@ -286,6 +405,119 @@ async function resolveOrderTarget(
 }
 
 /**
+ * BKL-085 — resolve a refunds-by-message envelope into (a) the pack-payments
+ * `PaymentState` the refund guards adjudicate against and (b) a fully-STAMPED
+ * `PaymentRefundIssuePayload`. The model controls ONLY the order reference, the
+ * amount, and the reason; EVERYTHING security-critical (paymentId, the three
+ * balance fields, actor, actorId) is STAMPED from the DB payment row + the
+ * authenticated Capsule staffId (STOP-GATE B — the model-forgeable
+ * refundableBalanceCentavos / currentRefundedCentavos / amountInCentavos are
+ * OVERWRITTEN from live DB truth so the kernel decides on the real balance).
+ *
+ * Fail-closed to `exists:false` (⇒ pack `requirePaymentExists` REFUSEs
+ * `payment_not_found`, a clean kernel REFUSE, never an executor throw) when: the
+ * order reference does not resolve; the order has no active payment; the active
+ * payment is not in a refundable state; or the lookup dep is absent.
+ *
+ * The refund payload uses the model's `orderId` as the order REFERENCE (display
+ * number / customer name / id — the same field the other order verbs use); the
+ * resolver resolves it, locates the order's active refundable payment, and stamps
+ * the canonical payload. `refundAmountCentavos` defaults to the FULL refundable
+ * balance when the model omits it (a bare "reembolsa o pedido X" is a full
+ * refund) — the UNTRUSTED taint overlay parks it for confirmation regardless, so
+ * the staff still confirms the exact number.
+ */
+async function resolveRefundTarget(
+  deps: OpsResolverDeps,
+  envelope: IntentEnvelope,
+  payload: Record<string, unknown>,
+): Promise<OpsEnvelopeResolution> {
+  // A payment-not-found state ⇒ pack requirePaymentExists REFUSEs cleanly.
+  const refuseNotFound: OpsEnvelopeResolution = {
+    state: { ctx: { exists: false } },
+  };
+
+  if (deps.lookupActivePayment === undefined) {
+    logger.info(
+      { component: "ops-resolver", event: "refund.lookup_unwired", kind: envelope.kind },
+      "ops refund lookup dep absent — refund REFUSEs (verb inert until wired)",
+    );
+    return refuseNotFound;
+  }
+
+  // Resolve the order REFERENCE → real order id (reuses the BKL-089 order
+  // resolution: direct id, then displayId / customer-name). We need only the id.
+  const { orderId } = await resolveOrderTarget(deps, envelope, payload);
+  if (orderId === null) {
+    logger.info(
+      { component: "ops-resolver", event: "refund.order_unresolved" },
+      "ops refund: order reference did not resolve — REFUSE payment_not_found",
+    );
+    return refuseNotFound;
+  }
+
+  const payment = await safeLookup(
+    () => deps.lookupActivePayment!(orderId),
+    "active-payment",
+  );
+  if (payment === null || !OPS_REFUNDABLE_STATUSES.has(payment.status)) {
+    logger.info(
+      {
+        component: "ops-resolver",
+        event: "refund.not_refundable",
+        orderId,
+        status: payment?.status ?? null,
+      },
+      "ops refund: no active refundable payment — REFUSE payment_not_found",
+    );
+    return refuseNotFound;
+  }
+
+  // STOP-GATE B — STAMP the forgeable balance fields from the DB row. The model
+  // controls only the amount (defaulting to the full refundable balance) + reason.
+  const refundableBalance =
+    payment.amountInCentavos - payment.refundedAmountCentavos;
+  const rawAmount = payload.refundAmountCentavos;
+  const modelAmount =
+    typeof rawAmount === "number" &&
+    Number.isInteger(rawAmount) &&
+    rawAmount > 0
+      ? rawAmount
+      : refundableBalance;
+  const rawReason = payload.reason;
+  const reason =
+    typeof rawReason === "string" && rawReason.trim().length > 0
+      ? rawReason.slice(0, OPS_REFUND_REASON_MAX)
+      : "Reembolso solicitado pela operação (ops).";
+
+  const stampedPayload: Record<string, unknown> = {
+    // Model controls: the amount (numbers the staff confirms) + reason.
+    refundAmountCentavos: modelAmount,
+    reason,
+    // STAMPED from DB / Capsule — never the model:
+    paymentId: payment.paymentId,
+    refundableBalanceCentavos: refundableBalance,
+    amountInCentavos: payment.amountInCentavos,
+    currentRefundedCentavos: payment.refundedAmountCentavos,
+    actor: "admin",
+    actorId: deps.staffId,
+  };
+
+  return {
+    state: buildRefundPaymentState({
+      status: payment.status,
+      amountInCentavos: payment.amountInCentavos,
+      refundedAmountCentavos: payment.refundedAmountCentavos,
+      method: payment.method,
+      version: payment.version,
+      orderId,
+      tenantId: deps.tenantId,
+    }),
+    payload: stampedPayload,
+  };
+}
+
+/**
  * Build the per-kind ops `SystemState` for one planned envelope, plus an
  * OPTIONAL rewritten payload (BKL-089 availability name-resolution). Returns
  * `state: undefined` for an unrecognized kind so the loop falls back to the
@@ -364,6 +596,13 @@ async function opsStateForEnvelope(
       },
       ...(rewritten ? { payload: rewritten } : {}),
     };
+  }
+
+  if (envelope.kind === "payment.refund.issue") {
+    // BKL-085 refunds-by-message — order-ref → active refundable payment →
+    // DB-stamped balance payload (STOP-GATE B). The stamped payload is the FINAL
+    // payload the envelope is rebuilt with (intentHash covers it).
+    return resolveRefundTarget(deps, envelope, payload);
   }
 
   // Unrecognized kind — no per-envelope state (falls back to resolution.state;

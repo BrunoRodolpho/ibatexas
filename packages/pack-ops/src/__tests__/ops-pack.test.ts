@@ -245,15 +245,20 @@ describe("opsPack — policy coherence via analyzePolicy()", () => {
     },
   ]
 
-  it("the ONLY coherence errors are the intentional foreign advertisements (order.note.add + order.status.transition)", () => {
+  it("the ONLY coherence errors are the intentional foreign advertisements (order.note.add + order.status.transition + payment.refund.issue)", () => {
     // `analyzePolicy`'s AJD-301 flags any advertised kind not in `pack.intents`
     // as `phantom_intent` (error). The ops plane INTENTIONALLY advertises the
-    // foreign-owned `order.note.add` AND `order.status.transition` (both owned by
-    // pack-orders) to widen the ops allowlist — composition routes them to
-    // pack-orders (indexByKind keys on OWNERSHIP, not advertisement). So exactly
-    // TWO phantom_intent rows are expected and correct; partition them out and
-    // assert NO OTHER errors slipped in (still catches a real coherence regression).
-    const EXPECTED_FOREIGN = new Set(["order.note.add", "order.status.transition"])
+    // foreign-owned `order.note.add` + `order.status.transition` (owned by
+    // pack-orders) AND `payment.refund.issue` (BKL-085, owned by pack-payments) to
+    // widen the ops allowlist — composition routes them to the owning pack
+    // (indexByKind keys on OWNERSHIP, not advertisement). So exactly THREE
+    // phantom_intent rows are expected and correct; partition them out and assert
+    // NO OTHER errors slipped in (still catches a real coherence regression).
+    const EXPECTED_FOREIGN = new Set([
+      "order.note.add",
+      "order.status.transition",
+      "payment.refund.issue",
+    ])
     const report = analyzePolicy({ pack: opsPack, plannerProbes: probes })
     const isExpectedForeignAdvert = (d: (typeof report.diagnostics)[number]) =>
       d.severity === "error" &&
@@ -265,7 +270,7 @@ describe("opsPack — policy coherence via analyzePolicy()", () => {
     )
     for (const d of unexpectedErrors) console.error(`[${d.code}] ${d.message}`)
     expect(unexpectedErrors).toEqual([])
-    // Non-vacuous: BOTH intentional foreign advertisements ARE reported (proves
+    // Non-vacuous: ALL intentional foreign advertisements ARE reported (proves
     // the partition above is not silently passing a report with zero phantom rows).
     const reportedForeign = new Set(
       report.diagnostics
@@ -274,16 +279,18 @@ describe("opsPack — policy coherence via analyzePolicy()", () => {
     )
     expect(reportedForeign.has("order.note.add")).toBe(true)
     expect(reportedForeign.has("order.status.transition")).toBe(true)
+    expect(reportedForeign.has("payment.refund.issue")).toBe(true)
   })
 
-  it("all three ops verbs are reachable (advertised under the staff probe)", () => {
-    // Non-vacuous: a probe with a staff session must actually advertise all three
+  it("all four ops verbs are reachable (advertised under the staff probe)", () => {
+    // Non-vacuous: a probe with a staff session must actually advertise all four
     // — the owned `product.availability.set` AND the foreign-routed
-    // `order.note.add` + `order.status.transition`.
+    // `order.note.add` + `order.status.transition` + `payment.refund.issue`.
     const staffPlan = opsPack.planner.plan(probes[1]!.state, probes[1]!.context)
     expect(staffPlan.allowedIntents).toContain("product.availability.set")
     expect(staffPlan.allowedIntents).toContain("order.note.add")
     expect(staffPlan.allowedIntents).toContain("order.status.transition")
+    expect(staffPlan.allowedIntents).toContain("payment.refund.issue")
     const guestPlan = opsPack.planner.plan(probes[0]!.state, probes[0]!.context)
     expect(guestPlan.allowedIntents).toEqual([])
   })

@@ -5,6 +5,7 @@ import { buildEnvelope, type IntentEnvelope } from "@adjudicate/core";
 import type { ResolverInput } from "@claustrum/core";
 import {
   createOpsResolver,
+  buildOpsRefundResumeState,
   type OpsResolverDeps,
 } from "../ops-resolver.js";
 import type { ProductCandidate } from "../ops-product-resolution.js";
@@ -551,5 +552,214 @@ describe("ops resolver — unknown kind", () => {
       input(opsEnvelope("some.other.kind", {})),
     );
     expect(resolved!.state).toBeUndefined();
+  });
+});
+
+// ── BKL-085 — payment.refund.issue resolution + STOP-GATE B balance stamping ──
+
+/** An active refundable payment fake (the shape lookupActivePayment returns). */
+const ACTIVE_PAID = {
+  paymentId: "pay_db_1",
+  status: "paid",
+  amountInCentavos: 10_000,
+  refundedAmountCentavos: 0,
+  method: "pix",
+  version: 3,
+};
+
+function refundDeps(over: Partial<OpsResolverDeps> = {}): OpsResolverDeps {
+  return makeDeps({
+    lookupActivePayment: vi.fn(async () => ACTIVE_PAID),
+    ...over,
+  });
+}
+
+async function resolveRefund(
+  deps: OpsResolverDeps,
+  payload: Record<string, unknown>,
+) {
+  const [resolved] = await createOpsResolver(deps).resolve(
+    input(opsEnvelope("payment.refund.issue", payload)),
+  );
+  return resolved!;
+}
+
+describe("ops resolver — payment.refund.issue (BKL-085)", () => {
+  it("stamps paymentId + balance fields from the DB row; model controls only amount + reason", async () => {
+    const resolved = await resolveRefund(refundDeps(), {
+      orderId: "order_direct",
+      refundAmountCentavos: 3_000,
+      reason: "cliente reclamou",
+    });
+    const p = resolved.envelope.payload as Record<string, unknown>;
+    // Model-controlled:
+    expect(p.refundAmountCentavos).toBe(3_000);
+    expect(p.reason).toBe("cliente reclamou");
+    // STAMPED from the DB row (never the model):
+    expect(p.paymentId).toBe("pay_db_1");
+    expect(p.refundableBalanceCentavos).toBe(10_000); // amount - refunded
+    expect(p.amountInCentavos).toBe(10_000);
+    expect(p.currentRefundedCentavos).toBe(0);
+    // Identity stamped from the authenticated staffId:
+    expect(p.actor).toBe("admin");
+    expect(p.actorId).toBe("staff_1");
+    // The pack PaymentState carries the DB status/balance the guards read.
+    const state = resolved.state as { ctx: Record<string, unknown> };
+    expect(state.ctx.exists).toBe(true);
+    expect(state.ctx.currentStatus).toBe("paid");
+    expect(state.ctx.amountInCentavos).toBe(10_000);
+    expect(state.ctx.isTerminal).toBe(false);
+  });
+
+  it("STOP-GATE B: a model-forged high balance is OVERWRITTEN from the DB row", async () => {
+    const resolved = await resolveRefund(refundDeps(), {
+      orderId: "order_direct",
+      refundAmountCentavos: 9_000,
+      // Model tries to forge a huge refundable balance to defeat the over-balance guard.
+      refundableBalanceCentavos: 999_999_999,
+      amountInCentavos: 999_999_999,
+      currentRefundedCentavos: 0,
+      actor: "system",
+      actorId: "forged_staff",
+    });
+    const p = resolved.envelope.payload as Record<string, unknown>;
+    // Every forgeable field reflects DB truth, not the model's inflated values.
+    expect(p.refundableBalanceCentavos).toBe(10_000);
+    expect(p.amountInCentavos).toBe(10_000);
+    expect(p.actor).toBe("admin");
+    expect(p.actorId).toBe("staff_1");
+  });
+
+  it("defaults refundAmountCentavos to the FULL refundable balance when the model omits it", async () => {
+    const resolved = await resolveRefund(refundDeps({
+      lookupActivePayment: vi.fn(async () => ({
+        ...ACTIVE_PAID,
+        status: "partially_refunded",
+        refundedAmountCentavos: 4_000,
+      })),
+    }), { orderId: "order_direct" });
+    const p = resolved.envelope.payload as Record<string, unknown>;
+    // Full remaining balance = 10_000 - 4_000.
+    expect(p.refundAmountCentavos).toBe(6_000);
+    expect(p.refundableBalanceCentavos).toBe(6_000);
+    expect(p.currentRefundedCentavos).toBe(4_000);
+  });
+
+  it("no active payment ⇒ exists:false (REFUSE payment_not_found, never an executor throw)", async () => {
+    const resolved = await resolveRefund(
+      refundDeps({ lookupActivePayment: vi.fn(async () => null) }),
+      { orderId: "order_direct", refundAmountCentavos: 1_000 },
+    );
+    expect((resolved.state as { ctx: { exists: boolean } }).ctx.exists).toBe(false);
+  });
+
+  it("a non-refundable active status (awaiting_payment) fails closed to exists:false", async () => {
+    const resolved = await resolveRefund(
+      refundDeps({
+        lookupActivePayment: vi.fn(async () => ({
+          ...ACTIVE_PAID,
+          status: "awaiting_payment",
+        })),
+      }),
+      { orderId: "order_direct", refundAmountCentavos: 1_000 },
+    );
+    expect((resolved.state as { ctx: { exists: boolean } }).ctx.exists).toBe(false);
+  });
+
+  it("order reference that does not resolve ⇒ exists:false", async () => {
+    const resolved = await resolveRefund(
+      refundDeps({ lookupOrder: vi.fn(async () => null) }),
+      { orderId: "não-existe", refundAmountCentavos: 1_000 },
+    );
+    expect((resolved.state as { ctx: { exists: boolean } }).ctx.exists).toBe(false);
+  });
+
+  it("lookupActivePayment ABSENT ⇒ refund inert (exists:false)", async () => {
+    // makeDeps() has no lookupActivePayment wired.
+    const resolved = await resolveRefund(makeDeps(), {
+      orderId: "order_direct",
+      refundAmountCentavos: 1_000,
+    });
+    expect((resolved.state as { ctx: { exists: boolean } }).ctx.exists).toBe(false);
+  });
+
+  it("resolves the order via displayId reference before locating the payment", async () => {
+    const candidate: OrderCandidate = {
+      id: "order_resolved",
+      displayId: 4242,
+      customerName: "Maria",
+      fulfillmentStatus: "confirmed",
+      customerId: "cust_1",
+      paymentMethod: "pix",
+      paymentStatus: "paid",
+      totalInCentavos: 10_000,
+    };
+    const lookupActivePayment = vi.fn(async (orderId: string) =>
+      orderId === "order_resolved" ? ACTIVE_PAID : null,
+    );
+    const refs: OrderReferenceReads = {
+      findByDisplayId: async (d) => (d === 4242 ? [candidate] : []),
+      listRecentActive: async () => [],
+    };
+    const resolved = await resolveRefund(
+      refundDeps({
+        lookupOrder: vi.fn(async () => null), // direct id miss ⇒ reference resolution
+        orderReferenceReads: refs,
+        lookupActivePayment,
+      }),
+      { orderId: "4242", refundAmountCentavos: 5_000 },
+    );
+    // The payment was located against the RESOLVED order id.
+    expect(lookupActivePayment).toHaveBeenCalledWith("order_resolved");
+    const p = resolved.envelope.payload as Record<string, unknown>;
+    expect(p.paymentId).toBe("pay_db_1");
+    expect((resolved.state as { ctx: { exists: boolean } }).ctx.exists).toBe(true);
+  });
+});
+
+// ── BKL-085 — buildOpsRefundResumeState (the resume-path re-projection) ────────
+
+describe("buildOpsRefundResumeState — money-safe resume re-projection", () => {
+  it("null payment ⇒ exists:false (clean payment_not_found REFUSE on resume)", () => {
+    const state = buildOpsRefundResumeState(null, "ibatexas") as {
+      ctx: { exists: boolean };
+    };
+    expect(state.ctx.exists).toBe(false);
+  });
+
+  it("a paid payment ⇒ exists:true, non-terminal, live balance", () => {
+    const state = buildOpsRefundResumeState(
+      {
+        status: "paid",
+        amountInCentavos: 10_000,
+        refundedAmountCentavos: 2_000,
+        method: "pix",
+        version: 7,
+        orderId: "order_1",
+      },
+      "ibatexas",
+    ) as { ctx: Record<string, unknown> };
+    expect(state.ctx.exists).toBe(true);
+    expect(state.ctx.isTerminal).toBe(false);
+    expect(state.ctx.currentStatus).toBe("paid");
+    // The LIVE refunded amount the magnitude guard's divergence check reads.
+    expect(state.ctx.refundedAmountCentavos).toBe(2_000);
+    expect(state.ctx.amountInCentavos).toBe(10_000);
+    expect(state.ctx.tenantId).toBe("ibatexas");
+  });
+
+  it("a since-parked REFUNDED (terminal) payment ⇒ isTerminal:true (resume REFUSEs terminal)", () => {
+    const state = buildOpsRefundResumeState(
+      {
+        status: "refunded",
+        amountInCentavos: 10_000,
+        refundedAmountCentavos: 10_000,
+        method: "pix",
+        version: 8,
+      },
+      "ibatexas",
+    ) as { ctx: { exists: boolean; isTerminal: boolean } };
+    expect(state.ctx.exists).toBe(true);
+    expect(state.ctx.isTerminal).toBe(true);
   });
 });

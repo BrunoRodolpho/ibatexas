@@ -21,6 +21,16 @@
 //     After the committed write it emits `order.status_changed` (the SAME event
 //     the admin advance route publishes) so the cart-intelligence subscriber runs
 //     the event-log/reconcile/customer-notify side effects. riskLevel "medium".
+//   - payment.refund.issue → `paymentCmdSvc.writeAdjudicatedRefund` (BKL-085
+//     refunds-by-message; the POST-adjudication ledger write). The composed router
+//     already ran the refund magnitude ladder + the BKL-085 UNTRUSTED-taint
+//     CONFIRM overlay + staffRoleGuard {OWNER,MANAGER} at SUBMIT (a REQUEST_CONFIRMATION
+//     parks and resumes via the ops matchToParked driver); this executor performs
+//     NO adjudication and forces actor=admin + Capsule staffId. The refund WRITE is
+//     ledger-only (no Stripe/PIX egress in-repo); after the committed write it emits
+//     `payment.status_changed` (the SAME event the admin refund route publishes —
+//     drives auto-cancel-on-full-refund) + an `ops.refund.executed` audit event.
+//     riskLevel "high".
 //
 // `staffId` (audit sourceSubject / note authorId) is read from the per-turn
 // `Capsule.actor.staffId` — the AUTHORITATIVE identity the ops route stamps from
@@ -38,7 +48,7 @@ import {
 } from "@claustrum/core";
 import type { AuditSink } from "@ibatexas/audit-sink";
 import type { MedusaAdjudicatedArgs } from "@ibatexas/tools";
-import type { AddNoteResult } from "@ibatexas/domain";
+import type { AddNoteResult, PaymentRefundIssuePayload } from "@ibatexas/domain";
 import type {
   OrderNoteAddPayload,
   OrderStatusTransitionPayload,
@@ -47,6 +57,7 @@ import type { ProductAvailabilitySetPayload } from "@ibatexas/pack-ops";
 import type {
   OrderFulfillmentStatus,
   OrderStatusChangedEvent,
+  PaymentStatusChangedEvent,
 } from "@ibatexas/types";
 
 /** The injected `medusaAdjudicated` shape (typeof `@ibatexas/tools`'s export). */
@@ -99,6 +110,41 @@ export interface OpsStatusWriter {
   ): Promise<OpsStatusTransitionResult>;
 }
 
+/** The committed refund write result (structural mirror of
+ *  `PaymentCommandService.writeAdjudicatedRefund`, BKL-085). `orderId`/`method`
+ *  are read from the DB row inside the tx so the ops emit path never trusts the
+ *  model for them. */
+export interface OpsRefundResult {
+  readonly version: number;
+  readonly previousStatus: string;
+  readonly newStatus: string;
+  readonly totalRefundedCentavos: number;
+  readonly refundAmountCentavos: number;
+  readonly orderId: string;
+  readonly method: string;
+}
+
+/** The single refund-write method the ops registry needs (structural subset of
+ *  `PaymentCommandService.writeAdjudicatedRefund`, BKL-085). The caller MUST hold
+ *  a positive composed-router Decision; this performs NO adjudication. */
+export interface OpsRefundWriter {
+  writeAdjudicatedRefund(
+    payload: PaymentRefundIssuePayload,
+  ): Promise<OpsRefundResult>;
+}
+
+/** A best-effort refund audit-event append (structural subset of the order
+ *  event-log service). Mirrors the admin route's `admin.refund.executed` row so
+ *  an ops-plane refund leaves the same audit trail; a failure never fails the
+ *  turn (the ledger write already committed). */
+export interface OpsRefundEventLogEntry {
+  readonly orderId: string;
+  readonly eventType: string;
+  readonly discriminator: string;
+  readonly payload: Record<string, unknown>;
+  readonly timestamp: Date;
+}
+
 export interface OpsToolRegistryDeps {
   /** `medusaAdjudicated` (injected for testability). */
   readonly medusaAdjudicated: MedusaAdjudicatedFn;
@@ -106,6 +152,26 @@ export interface OpsToolRegistryDeps {
   readonly auditSink: AuditSink;
   /** The order command service's POST-adjudication writers (note + transition). */
   readonly orderCmdSvc: OpsNoteWriter & OpsStatusWriter;
+  /** BKL-085 — the payment command service's POST-adjudication refund writer. */
+  readonly paymentCmdSvc: OpsRefundWriter;
+  /**
+   * BKL-085 — publish `payment.status_changed` after a committed refund write,
+   * exactly like the admin refund route (payments.ts:523-532). Its subscriber
+   * (payment-lifecycle.ts) auto-cancels the order on a FULL refund; omitting it
+   * would make an ops-plane refund skip that downstream side effect an identical
+   * admin-HTTP refund triggers. The refund write is ledger-only (no Stripe/PIX
+   * egress in this path), so this event IS the full downstream chain. Injected
+   * for testability; bootstrap wires it to `publishNatsEvent`.
+   */
+  readonly publishPaymentStatusChanged: (
+    event: PaymentStatusChangedEvent,
+  ) => Promise<void>;
+  /** BKL-085 — best-effort refund audit-event append (parity with the admin
+   *  route's `admin.refund.executed` row). Bootstrap wires it to the order
+   *  event-log service; a failure is swallowed (the write already committed). */
+  readonly appendRefundEventLog: (
+    entry: OpsRefundEventLogEntry,
+  ) => Promise<void>;
   /**
    * Publish `order.status_changed` after a committed kitchen-advance write —
    * the SAME NATS event the admin advance route emits (order-actions.ts:570 /
@@ -249,7 +315,99 @@ async function executeStatusTransition(
   return result;
 }
 
-/** The three governed ops MUTATING tools (capability === intentKind). */
+/**
+ * Executor for `payment.refund.issue` (BKL-085 refunds-by-message) — the
+ * POST-adjudication ledger write via `writeAdjudicatedRefund` PLUS the FULL
+ * side-effect chain an admin-HTTP refund produces. The composed router already
+ * produced the Decision (carrying `staffRoleGuard` + the matrix + the BKL-085
+ * UNTRUSTED-taint CONFIRM overlay) at the conductor SUBMIT stage; this executor
+ * performs NO adjudication.
+ *
+ * Identity is forced from the Capsule (`actor: "admin"` + Capsule staffId) —
+ * NEVER the model-parsed `payload.actor`/`payload.actorId`. The balance fields in
+ * the payload were already STAMPED from the DB row by the ops resolver
+ * (STOP-GATE B); the write additionally re-derives balance from the LIVE DB row
+ * inside its tx (the last transactional line).
+ *
+ * The refund WRITE is ledger-only (no Stripe/PIX egress — verified: the only
+ * Stripe refund code is the inbound `charge.refunded` webhook reconcile). The
+ * full chain = write + `payment.status_changed` (drives the auto-cancel-on-full-
+ * refund lifecycle subscriber) + the `ops.refund.executed` audit event. The
+ * emissions are best-effort AFTER the committed write (a publish failure must
+ * not undo or fail the committed refund — same posture as the admin route +
+ * the ops kitchen-advance).
+ */
+async function executeRefund(
+  deps: OpsToolRegistryDeps,
+  payload: PaymentRefundIssuePayload,
+  staffId: string | null,
+): Promise<{
+  paymentId: string;
+  refundAmountCentavos: number;
+  newStatus: string;
+  version: number;
+}> {
+  // Force identity from the Capsule, never the payload (defense in depth — the
+  // ops resolver already stamped these from the authenticated staffId).
+  const writePayload: PaymentRefundIssuePayload = {
+    ...payload,
+    actor: "admin",
+    ...(staffId ? { actorId: staffId } : {}),
+  };
+  const result = await deps.paymentCmdSvc.writeAdjudicatedRefund(writePayload);
+
+  // 1) payment.status_changed — the SAME event the admin refund route publishes
+  //    (drives payment-lifecycle.ts's auto-cancel on a full refund). orderId +
+  //    method come from the committed DB row, never the model payload.
+  try {
+    await deps.publishPaymentStatusChanged({
+      orderId: result.orderId,
+      paymentId: writePayload.paymentId,
+      previousStatus: result.previousStatus,
+      newStatus: result.newStatus,
+      method: result.method,
+      version: result.version,
+      timestamp: new Date().toISOString(),
+    } as PaymentStatusChangedEvent);
+  } catch (err) {
+    deps.log?.error?.(
+      "[ops] payment.status_changed publish failed after committed refund:",
+      (err as Error).message ?? String(err),
+    );
+  }
+
+  // 2) ops.refund.executed audit event — parity with admin.refund.executed.
+  try {
+    await deps.appendRefundEventLog({
+      orderId: result.orderId,
+      eventType: "ops.refund.executed",
+      discriminator: `ops:${writePayload.paymentId}:${result.version}`,
+      payload: {
+        staffId,
+        paymentId: writePayload.paymentId,
+        refundAmountCentavos: result.refundAmountCentavos,
+        totalRefunded: result.totalRefundedCentavos,
+        newStatus: result.newStatus,
+        version: result.version,
+      },
+      timestamp: new Date(),
+    });
+  } catch (err) {
+    deps.log?.warn?.(
+      "[ops] ops.refund.executed audit append failed after committed refund:",
+      (err as Error).message ?? String(err),
+    );
+  }
+
+  return {
+    paymentId: writePayload.paymentId,
+    refundAmountCentavos: result.refundAmountCentavos,
+    newStatus: result.newStatus,
+    version: result.version,
+  };
+}
+
+/** The four governed ops MUTATING tools (capability === intentKind). */
 function opsToolDefinitions(
   deps: OpsToolRegistryDeps,
 ): ReadonlyArray<ToolDefinition<unknown, unknown>> {
@@ -298,6 +456,22 @@ function opsToolDefinitions(
         executeStatusTransition(
           deps,
           input as OrderStatusTransitionPayload,
+          staffIdFromCapsule(ctx),
+        ),
+    },
+    {
+      id: "ibatexas.ops.paymentRefundIssue.v1",
+      capability: asCapability("payment.refund.issue"),
+      intentKind: asIntentKind("payment.refund.issue"),
+      description:
+        "Emitir um reembolso de um pedido (envia dinheiro de volta ao cliente).",
+      inputSchema: {},
+      outputSchema: {},
+      riskLevel: "high",
+      execute: (input, ctx) =>
+        executeRefund(
+          deps,
+          input as PaymentRefundIssuePayload,
           staffIdFromCapsule(ctx),
         ),
     },

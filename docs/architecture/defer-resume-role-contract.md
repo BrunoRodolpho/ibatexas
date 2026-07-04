@@ -174,6 +174,53 @@ not holes. Each only ever resumes a customer-plane, role-free kind, so there is 
 role authority to re-establish on those paths. The role-carrying re-adjudication
 seam (surface 2) is *unreachable for staff kinds today*, not *broken*.
 
+### 3c. BKL-085 — the FIFTH surface: the ops-plane CONFIRM-resume (seam 1 made real)
+
+> **Added by BKL-085 (2026-07-04).** The refunds-by-message verb introduces the
+> first **CONFIRM-parkable staff-plane kind** — and it is resumed through a
+> role-carrying bundle, so **§4 seam 1 is now LIVE**, not latent. This is a
+> deliberate, documented activation; it does NOT loosen any assertion.
+
+**Confirm-parking is not DEFER-parking.** The trigger-condition census (§3b, §6) and
+`defer-resume-staff-role-contract.test.ts` track kernel **`DEFER`** decisions
+(`decisionDefer` from a bundle's DEFER guard). BKL-085 adds an
+**UNTRUSTED-taint refund CONFIRM overlay** to `pack-payments`' `refundMagnitudeGuard`
+(`REQUEST_CONFIRMATION`, not `DEFER`), so `payment.refund.issue` becomes
+**confirm-parkable** on the ops plane while `{DEFER-able kinds} ∩ STAFF_PLANE_KINDS`
+stays **∅** (the drift test remains green — verified). Trigger condition (1) is about
+DEFER and is **not** met.
+
+**The resume surface + why it is sound.** A REQUEST_CONFIRMATION parked on the ops
+conductor resumes via the `OpsSystemChannel.matchToParked` driver ("sim, confirma"
+→ `capsule.resume`). `capsule.resume` re-adjudicates the VERBATIM parked envelope
+(admin:`+role preserved) through the SAME composed router (`resolution.policy` =
+`IBATEXAS_POLICY_ROUTER`) the ops turn used — which **carries `staffRoleGuard` + the
+staff-role matrix** (prepended by `buildIbatexasPolicyPacks`). So on resume:
+`staffRoleGuard` **re-runs against the parked `actor.role`** (an ATTENDANT-forged
+refund REFUSEs on resume exactly as at first adjudication), the taint overlay
+re-fires REQUEST_CONFIRMATION, and only the matching `confirmationReceipt`
+(`intentHash`) flips it to EXECUTE. **This is exactly §4 seam 1 (verbatim
+re-adjudication with a role-carrying bundle) — activated for the first time.**
+
+**Resume-state note (BKL-085).** The shared adjudicator's resume-state enrichment
+(`buildAdjudicator.resume` → `enrichResumeState`) re-projects per-envelope state via
+the customer-scoped `resolveAndAssemble`, which is scoped to a real `customerId` —
+the ops plane's `staff:<id>` owns no customer resources, so it would project
+`exists:false` and REFUSE a legitimate confirm-resume. BKL-085 adds an **ops branch**
+to `enrichResumeState`: an `admin:`-session `payment.refund.issue` re-projects its
+`PaymentState` from the payment row read by the parked, DB-stamped `paymentId`
+(`buildOpsRefundResumeState`). A FRESH read keeps it money-safe: a since-parked
+terminal / partial refund still REFUSEs (terminal guard / the magnitude guard's
+divergence check reads the live `refundedAmountCentavos`). The kernel re-runs every
+guard; the receipt only satisfies the "ask first" threshold.
+
+**Defer of a confirm-park.** `matchToParked` also accepts a pt-BR defer phrase
+("amanhã"): the conductor re-parks the confirm envelope as **deferred**. The ops
+plane has **no** background defer resolver (the four surfaces above are all
+customer-plane), so a deferred ops refund **never auto-resumes** — it simply lapses
+at TTL and the staff re-issues the command. No unauthorized EXECUTE path exists;
+this is safe by construction (not a hole).
+
 ---
 
 ## 4. The two adopter-side enforcement seams
@@ -185,7 +232,11 @@ seam (surface 2) is *unreachable for staff kinds today*, not *broken*.
    or unpermitted role REFUSEs on resume exactly as at first adjudication. This
    seam is **latent-correct** — it activates automatically the first time a
    role-gated staff kind becomes DEFER-able **and** is resumed through the
-   composed router.
+   composed router. **As of BKL-085 (2026-07-04) this seam is LIVE** — the
+   ops-plane `payment.refund.issue` CONFIRM-resume re-adjudicates through the
+   composed router carrying `staffRoleGuard` (§3c). (It activated via
+   CONFIRM-parking, not DEFER — the same seam, one turn earlier than the DEFER
+   trigger in §6 anticipated.)
 
 2. **Resolver-role gating at the resolve surface.** The staff HTTP resolve
    surface requires a sufficient role to trigger a resume at all. As of Part D,

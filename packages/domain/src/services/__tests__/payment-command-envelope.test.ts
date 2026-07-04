@@ -765,4 +765,77 @@ describe("PaymentCommandService — envelope-typed entry points", () => {
       expect(mockPaymentUpdate).not.toHaveBeenCalled()
     })
   })
+
+  // BKL-085 — the POST-adjudication refund write shared with governed ops callers.
+  describe("writeAdjudicatedRefund — no re-adjudication, DB write + orderId/method", () => {
+    it("performs the ledger write and returns orderId + method from the DB row (no kernel call)", async () => {
+      const svc = createPaymentCommandService()
+      mockPaymentFindUnique.mockResolvedValue(
+        makePaymentRow({
+          status: "paid",
+          version: 1,
+          amountInCentavos: 10_000,
+          refundedAmountCentavos: 0,
+          orderId: "order_ops",
+          method: "pix",
+        }),
+      )
+      mockPaymentUpdate.mockResolvedValue({})
+      mockHistoryCreate.mockResolvedValue({})
+
+      const result = await svc.writeAdjudicatedRefund({
+        paymentId: "pay_01",
+        refundAmountCentavos: 3_000,
+        refundableBalanceCentavos: 10_000,
+        amountInCentavos: 10_000,
+        currentRefundedCentavos: 0,
+        actor: "admin",
+        actorId: "staff_ops",
+        reason: "ops refund",
+      })
+
+      // Ledger-only write (status + refundedAmountCentavos + version), no egress.
+      expect(mockPaymentUpdate).toHaveBeenCalledTimes(1)
+      expect(result).toMatchObject({
+        previousStatus: "paid",
+        newStatus: "partially_refunded",
+        refundAmountCentavos: 3_000,
+        totalRefundedCentavos: 3_000,
+        version: 2,
+        // Read from the DB row so the ops emit path never trusts the model for them.
+        orderId: "order_ops",
+        method: "pix",
+      })
+    })
+
+    it("a full refund transitions to refunded and returns the DB orderId/method", async () => {
+      const svc = createPaymentCommandService()
+      mockPaymentFindUnique.mockResolvedValue(
+        makePaymentRow({
+          status: "paid",
+          version: 4,
+          amountInCentavos: 5_000,
+          refundedAmountCentavos: 0,
+          orderId: "order_full",
+          method: "card",
+        }),
+      )
+      mockPaymentUpdate.mockResolvedValue({})
+      mockHistoryCreate.mockResolvedValue({})
+
+      const result = await svc.writeAdjudicatedRefund({
+        paymentId: "pay_01",
+        refundAmountCentavos: 5_000,
+        refundableBalanceCentavos: 5_000,
+        amountInCentavos: 5_000,
+        currentRefundedCentavos: 0,
+        actor: "admin",
+        actorId: "staff_ops",
+      })
+
+      expect(result.newStatus).toBe("refunded")
+      expect(result.orderId).toBe("order_full")
+      expect(result.method).toBe("card")
+    })
+  })
 })

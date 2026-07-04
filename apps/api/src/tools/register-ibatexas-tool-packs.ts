@@ -544,6 +544,14 @@ const ADVERTISED_NOT_REGISTERED_WHITELIST: ReadonlySet<string> = new Set([
   // `opsPlaneDriftProblems`, separately verifies it IS registered on the OPS
   // registry with capability===intentKind.)
   "staff:order.status.transition",
+  // BKL-085: `payment.refund.issue` (the refunds-by-message verb) is advertised
+  // by the ops planner under the staff probe (owned by pack-payments, routed via
+  // composition). Like the two order kinds above, it is a STAFF/OPS-plane money
+  // verb proposed through the OPS conductor + registered in the OPS tool registry
+  // — NEVER the customer/LLM chat surface (it is deliberately absent from
+  // CHAT_DRIVABLE_TOOL_KINDS), so it has no registered CHAT tool.
+  // Advertised-but-unregistered on the chat roster is EXPECTED, not drift.
+  "staff:payment.refund.issue",
 ]);
 
 export interface ToolRosterDriftOptions {

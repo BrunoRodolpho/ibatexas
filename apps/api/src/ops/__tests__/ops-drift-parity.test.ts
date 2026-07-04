@@ -27,6 +27,19 @@ const REGISTRY_DEPS: OpsToolRegistryDeps = {
     }),
   },
   publishOrderStatusChanged: async () => {},
+  paymentCmdSvc: {
+    writeAdjudicatedRefund: async () => ({
+      version: 2,
+      previousStatus: "paid",
+      newStatus: "refunded",
+      totalRefundedCentavos: 100,
+      refundAmountCentavos: 100,
+      orderId: "o",
+      method: "pix",
+    }),
+  },
+  publishPaymentStatusChanged: async () => {},
+  appendRefundEventLog: async () => {},
 };
 
 const OPS_TOOLS = listOpsToolDefinitions(REGISTRY_DEPS);
