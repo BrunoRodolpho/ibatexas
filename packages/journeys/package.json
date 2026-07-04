@@ -23,6 +23,7 @@
     "@anthropic-ai/sdk": "^0.82.0",
     "@adjudicate/audit-postgres": "^4.0.0",
     "@adjudicate/core": "^1.6.0",
+    "@ibatexas/domain": "workspace:*",
     "@ibatexas/intent-kinds": "workspace:*",
     "@ibatexas/nats-client": "workspace:*",
     "@ibatexas/packs-composed": "workspace:*",
