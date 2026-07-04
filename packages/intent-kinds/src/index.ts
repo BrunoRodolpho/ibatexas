@@ -184,6 +184,13 @@ const CUSTOMER_ONBOARDING_INTENT_KINDS = [
 
 const OPS_INTENT_KINDS = [
   "product.availability.set",
+  // BKL-088 — the two OWNED staff-plane RESOLUTION verbs. DISTINCT from the
+  // SYSTEM-only `ops.alert.resolve` / `incident.ticket.close` domain kinds
+  // (which stay ABSENT from KNOWN_INTENT_KINDS by design); these `*.staff`
+  // pack verbs are the composed-router-adjudicated STAFF layer whose executors
+  // then drive that SYSTEM write layer (the D10 two-layer posture).
+  "ops.alert.resolve.staff",
+  "incident.ticket.close.staff",
 ] as const satisfies readonly OpsIntentKind[]
 
 // ── Combined set ─────────────────────────────────────────────────────────────
@@ -199,8 +206,9 @@ const OPS_INTENT_KINDS = [
 //  + 3 (pix-payments)
 //  + 17 (pack-payments, new W5-1)
 //  + 8 (customer-onboarding)
-//  + 1 (pack-ops, NEW-032 slice C1 — product.availability.set)
-//  = 64 distinct kinds, ≥60 target met.
+//  + 3 (pack-ops — product.availability.set NEW-032 C1;
+//       ops.alert.resolve.staff + incident.ticket.close.staff BKL-088)
+//  = 66 distinct kinds, ≥60 target met.
 //
 // Future Pack growth (`@ibatexas/pack-auth`, `@ibatexas/pack-loyalty`,
 // `@ibatexas/pack-ops`) extends this set from inside their own modules.

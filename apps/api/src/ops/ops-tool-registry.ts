@@ -31,6 +31,16 @@
 //     `payment.status_changed` (the SAME event the admin refund route publishes —
 //     drives auto-cancel-on-full-refund) + an `ops.refund.executed` audit event.
 //     riskLevel "high".
+//   - ops.alert.resolve.staff → `opsAlertSvc.resolveAlertFromEnvelope` (BKL-088;
+//     the D10 SECOND governed layer). The executor BUILDS a SYSTEM
+//     `ops.alert.resolve` envelope (staff identity on the payload: `resolvedBy:
+//     "staff:<id>"`, `resolutionType: STAFF`, FORCED from the Capsule) and calls
+//     the SAME service the admin ops-alerts resolve route calls (which
+//     adjudicates + audits that SYSTEM kind internally). No route-layer NATS/
+//     event-log side effect exists to reproduce. riskLevel "low".
+//   - incident.ticket.close.staff → `incidentSvc.closeIncidentFromEnvelope`
+//     (BKL-088; same D10 posture over the SYSTEM `incident.ticket.close` kind,
+//     the admin incidents resolve route's path). riskLevel "low".
 //
 // `staffId` (audit sourceSubject / note authorId) is read from the per-turn
 // `Capsule.actor.staffId` — the AUTHORITATIVE identity the ops route stamps from
@@ -39,6 +49,7 @@
 // context); the injected side-effect deps make it unit-testable with spies.
 
 import { randomUUID } from "node:crypto";
+import type { IntentEnvelope } from "@adjudicate/core";
 import {
   createToolRegistry,
   type CapabilityId,
@@ -48,12 +59,24 @@ import {
 } from "@claustrum/core";
 import type { AuditSink } from "@ibatexas/audit-sink";
 import type { MedusaAdjudicatedArgs } from "@ibatexas/tools";
-import type { AddNoteResult, PaymentRefundIssuePayload } from "@ibatexas/domain";
+import type {
+  AddNoteResult,
+  IncidentClosePayload,
+  IncidentState,
+  OpsAlertResolvePayload,
+  OpsAlertState,
+  PaymentRefundIssuePayload,
+} from "@ibatexas/domain";
 import type {
   OrderNoteAddPayload,
   OrderStatusTransitionPayload,
 } from "@ibatexas/pack-orders";
-import type { ProductAvailabilitySetPayload } from "@ibatexas/pack-ops";
+import type {
+  IncidentCloseStaffPayload,
+  OpsAlertResolveStaffPayload,
+  ProductAvailabilitySetPayload,
+} from "@ibatexas/pack-ops";
+import { buildSystemEnvelope } from "../subscribers/__shared__/system-actor-envelope.js";
 import type {
   OrderFulfillmentStatus,
   OrderStatusChangedEvent,
@@ -145,6 +168,33 @@ export interface OpsRefundEventLogEntry {
   readonly timestamp: Date;
 }
 
+/**
+ * BKL-088 — the SYSTEM-write layer the `ops.alert.resolve.staff` executor
+ * drives (the D10 second governed layer). Structural subset of `OpsAlertService`
+ * — the SAME method the admin ops-alerts resolve route calls. It adjudicates a
+ * SYSTEM `ops.alert.resolve` envelope internally (`withAdjudicate`), so the
+ * executor performs NO adjudication of the SYSTEM kind itself; it only BUILDS
+ * the SYSTEM envelope (staff identity on the payload) and calls this.
+ */
+export interface OpsAlertResolveWriter {
+  resolveAlertFromEnvelope(
+    envelope: IntentEnvelope<"ops.alert.resolve", OpsAlertResolvePayload>,
+    state: OpsAlertState,
+  ): Promise<{ readonly result?: { readonly status: string } | null }>;
+}
+
+/**
+ * BKL-088 — the SYSTEM-write layer the `incident.ticket.close.staff` executor
+ * drives. Structural subset of `IncidentService.closeIncidentFromEnvelope` (the
+ * SAME method the admin incidents resolve route calls).
+ */
+export interface IncidentCloseWriter {
+  closeIncidentFromEnvelope(
+    envelope: IntentEnvelope<"incident.ticket.close", IncidentClosePayload>,
+    state: IncidentState,
+  ): Promise<{ readonly result?: { readonly status: string } | null }>;
+}
+
 export interface OpsToolRegistryDeps {
   /** `medusaAdjudicated` (injected for testability). */
   readonly medusaAdjudicated: MedusaAdjudicatedFn;
@@ -154,6 +204,18 @@ export interface OpsToolRegistryDeps {
   readonly orderCmdSvc: OpsNoteWriter & OpsStatusWriter;
   /** BKL-085 — the payment command service's POST-adjudication refund writer. */
   readonly paymentCmdSvc: OpsRefundWriter;
+  /**
+   * BKL-088 — the ops-alert resolve SYSTEM-write layer (the SAME service the
+   * admin ops-alerts resolve route calls). Bootstrap wires it to
+   * `createOpsAlertService({ auditSink })` so the SYSTEM adjudication is audited.
+   */
+  readonly opsAlertSvc: OpsAlertResolveWriter;
+  /**
+   * BKL-088 — the incident close SYSTEM-write layer (the SAME service the admin
+   * incidents resolve route calls). Bootstrap wires it to
+   * `createIncidentService({ auditSink })`.
+   */
+  readonly incidentSvc: IncidentCloseWriter;
   /**
    * BKL-085 — publish `payment.status_changed` after a committed refund write,
    * exactly like the admin refund route (payments.ts:523-532). Its subscriber
@@ -407,7 +469,80 @@ async function executeRefund(
   };
 }
 
-/** The four governed ops MUTATING tools (capability === intentKind). */
+/**
+ * BKL-088 — the staff identity token stamped onto the SYSTEM-write payload's
+ * `resolvedBy`, derived from the Capsule staffId (NEVER the model). Mirrors the
+ * admin routes' `staff:${staffId}` idiom; a null staffId (should not occur on
+ * the JWT-authenticated ops plane) degrades to a traceable non-staff marker.
+ */
+function opsResolvedBy(staffId: string | null): string {
+  return staffId ? `staff:${staffId}` : "ops:unknown";
+}
+
+/**
+ * Executor for `ops.alert.resolve.staff` (BKL-088) — the D10 SECOND governed
+ * layer. The composed router already produced the STAFF-verb Decision (carrying
+ * `adminSessionOnlyGuard` + `staffRoleGuard` {OWNER,MANAGER} + the actionability
+ * guard) at the conductor SUBMIT stage; this executor performs NO adjudication
+ * of the staff kind. It BUILDS a SYSTEM `ops.alert.resolve` envelope — staff
+ * identity on the payload (`resolvedBy: "staff:<id>"`, `resolutionType: STAFF`,
+ * FORCED, never the model) — and calls `resolveAlertFromEnvelope`, EXACTLY the
+ * admin ops-alerts resolve route's path (which adjudicates that SYSTEM kind
+ * internally + audits it). The admin resolve route emits no NATS/event-log side
+ * effect, so there is none to reproduce (verified). The model-supplied `reason`
+ * (an operator note) rides the audited STAFF-verb envelope only; the SYSTEM
+ * `OpsAlertResolvePayload` has no reason slot to persist.
+ */
+async function executeAlertResolveStaff(
+  deps: OpsToolRegistryDeps,
+  payload: OpsAlertResolveStaffPayload,
+  staffId: string | null,
+): Promise<{ alertId: string; status: string | null }> {
+  const systemPayload: OpsAlertResolvePayload = {
+    id: payload.alertId,
+    resolvedBy: opsResolvedBy(staffId),
+    resolutionType: "STAFF",
+  };
+  const envelope = buildSystemEnvelope({
+    kind: "ops.alert.resolve" as const,
+    payload: systemPayload,
+    sourceSubject: "ops.alert.ops_staff_resolve",
+    eventId: `${payload.alertId}:resolve:${Date.now()}`,
+  });
+  const out = await deps.opsAlertSvc.resolveAlertFromEnvelope(envelope, {});
+  return { alertId: payload.alertId, status: out.result?.status ?? null };
+}
+
+/**
+ * Executor for `incident.ticket.close.staff` (BKL-088) — the D10 SECOND
+ * governed layer. Same posture as {@link executeAlertResolveStaff}: builds a
+ * SYSTEM `incident.ticket.close` envelope with FORCED `resolvedBy` +
+ * `resolutionType: STAFF` (never AUTO/HANDED_OFF — those are system-driven) and
+ * calls `closeIncidentFromEnvelope`, exactly the admin incidents resolve route's
+ * path (no NATS/event-log side effect to reproduce).
+ */
+async function executeIncidentCloseStaff(
+  deps: OpsToolRegistryDeps,
+  payload: IncidentCloseStaffPayload,
+  staffId: string | null,
+): Promise<{ incidentId: string; status: string | null }> {
+  const systemPayload: IncidentClosePayload = {
+    id: payload.incidentId,
+    resolvedBy: opsResolvedBy(staffId),
+    resolutionType: "STAFF",
+    closingTurnId: null,
+  };
+  const envelope = buildSystemEnvelope({
+    kind: "incident.ticket.close" as const,
+    payload: systemPayload,
+    sourceSubject: "incident.ops_staff_resolve",
+    eventId: `${payload.incidentId}:resolve:${Date.now()}`,
+  });
+  const out = await deps.incidentSvc.closeIncidentFromEnvelope(envelope, {});
+  return { incidentId: payload.incidentId, status: out.result?.status ?? null };
+}
+
+/** The six governed ops MUTATING tools (capability === intentKind). */
 function opsToolDefinitions(
   deps: OpsToolRegistryDeps,
 ): ReadonlyArray<ToolDefinition<unknown, unknown>> {
@@ -472,6 +607,38 @@ function opsToolDefinitions(
         executeRefund(
           deps,
           input as PaymentRefundIssuePayload,
+          staffIdFromCapsule(ctx),
+        ),
+    },
+    {
+      id: "ibatexas.ops.alertResolveStaff.v1",
+      capability: asCapability("ops.alert.resolve.staff"),
+      intentKind: asIntentKind("ops.alert.resolve.staff"),
+      description:
+        "Resolver (fechar) um alerta operacional pela mensagem (ex.: resolve o alerta X).",
+      inputSchema: {},
+      outputSchema: {},
+      riskLevel: "low",
+      execute: (input, ctx) =>
+        executeAlertResolveStaff(
+          deps,
+          input as OpsAlertResolveStaffPayload,
+          staffIdFromCapsule(ctx),
+        ),
+    },
+    {
+      id: "ibatexas.ops.incidentCloseStaff.v1",
+      capability: asCapability("incident.ticket.close.staff"),
+      intentKind: asIntentKind("incident.ticket.close.staff"),
+      description:
+        "Fechar (resolver) um incidente de não-resposta pela mensagem (ex.: fecha o incidente Y).",
+      inputSchema: {},
+      outputSchema: {},
+      riskLevel: "low",
+      execute: (input, ctx) =>
+        executeIncidentCloseStaff(
+          deps,
+          input as IncidentCloseStaffPayload,
           staffIdFromCapsule(ctx),
         ),
     },

@@ -172,3 +172,143 @@ describe("product.availability.set through the composed router — the pack's ow
     expect(d.kind).toBe("EXECUTE");
   });
 });
+
+// ── BKL-088: the two OWNED resolution verbs through the composed router ───────
+//
+// Same authority stack as product.availability.set, proven on the resolution
+// verbs: staffRoleGuard {OWNER,MANAGER} + the pack's adminSessionOnlyGuard fence
+// + the pack's actionability guard (absent / terminal entity → REFUSE). This
+// exercises the FULL composition (buildIbatexasPolicyPacks over the packs
+// INCLUDING opsPack owning the new kinds) + the REAL kernel.
+
+/** Resolve the composed bundle that owns an arbitrary pack-ops kind. */
+function bundleForKind(kind: string): PolicyBundle<string, unknown, unknown> {
+  const bundle = resolveCapabilityPolicy(
+    IBATEXAS_POLICY_PACKS as unknown as ReadonlyArray<CapabilityPolicyPack>,
+    kind,
+  );
+  if (!bundle) throw new Error(`no composed pack owns ${kind}`);
+  return bundle;
+}
+
+/** Build a resolution-verb envelope for an arbitrary owned kind. */
+function resolveEnvelope(
+  kind: string,
+  payload: Record<string, unknown>,
+  opts: { sessionId?: string; role?: string; principal?: "user" | "llm"; taint?: "SYSTEM" | "TRUSTED" | "UNTRUSTED" } = {},
+): IntentEnvelope {
+  const {
+    sessionId = "admin:staff_1",
+    role = "OWNER",
+    principal = "user",
+    taint = "UNTRUSTED",
+  } = opts;
+  return buildEnvelope({
+    kind,
+    payload,
+    actor: { principal, sessionId, ...(role ? { role } : {}) },
+    taint,
+    nonce: `n-${kind}-${role || "none"}-${sessionId}`,
+    createdAt: DET_TIME,
+  }) as IntentEnvelope;
+}
+
+describe("ops.alert.resolve.staff through the composed router (BKL-088)", () => {
+  const bundle = () => bundleForKind("ops.alert.resolve.staff");
+  const world = (alert: { id: string; status: string } | null = { id: "alert_1", status: "OPEN" }) => ({
+    ctx: { channel: "staff", customerId: null, staffId: "staff_1", tenantId: "ibatexas" },
+    alert,
+  });
+  const runAlert = async (env: IntentEnvelope, state: unknown): Promise<Decision> =>
+    adjudicate(env, state as never, bundle());
+  const P = { alertId: "alert_1", reason: "condição normalizada" };
+
+  it("OWNER + open alert → EXECUTE", async () => {
+    const d = await runAlert(resolveEnvelope("ops.alert.resolve.staff", P, { role: "OWNER" }), world());
+    expect(d.kind).toBe("EXECUTE");
+  });
+  it("MANAGER + open alert → EXECUTE", async () => {
+    const d = await runAlert(resolveEnvelope("ops.alert.resolve.staff", P, { role: "MANAGER" }), world());
+    expect(d.kind).toBe("EXECUTE");
+  });
+  it("ATTENDANT → REFUSE staff_role_violation (matrix {OWNER,MANAGER})", async () => {
+    const d = await runAlert(resolveEnvelope("ops.alert.resolve.staff", P, { role: "ATTENDANT" }), world());
+    expect(d.kind).toBe("REFUSE");
+    if (d.kind === "REFUSE") expect(d.refusal.code).toBe("staff_role_violation");
+    expect(basisMentions(d, "staff_role_not_permitted")).toBe(true);
+  });
+  it("non-admin session (LLM, UNTRUSTED) → REFUSE by adminSessionOnlyGuard", async () => {
+    const d = await runAlert(
+      resolveEnvelope("ops.alert.resolve.staff", P, { principal: "llm", sessionId: "web:conv-1", role: "" }),
+      world(),
+    );
+    expect(d.kind).toBe("REFUSE");
+    if (d.kind === "REFUSE") expect(d.refusal.code).toBe("ops.admin_session_required");
+  });
+  it("absent alert → REFUSE not_actionable (fail-closed)", async () => {
+    const d = await runAlert(resolveEnvelope("ops.alert.resolve.staff", P, { role: "OWNER" }), world(null));
+    expect(d.kind).toBe("REFUSE");
+    if (d.kind === "REFUSE") expect(d.refusal.code).toBe("ops.alert_resolve.not_actionable");
+    expect(basisMentions(d, "not_found")).toBe(true);
+  });
+  it("terminal alert → REFUSE not_actionable (already resolved)", async () => {
+    const d = await runAlert(
+      resolveEnvelope("ops.alert.resolve.staff", P, { role: "OWNER" }),
+      world({ id: "alert_1", status: "RESOLVED" }),
+    );
+    expect(d.kind).toBe("REFUSE");
+    if (d.kind === "REFUSE") expect(d.refusal.code).toBe("ops.alert_resolve.not_actionable");
+    expect(basisMentions(d, "already_resolved")).toBe(true);
+  });
+  it("unknown payload key → REFUSE payload_invalid (closed contract)", async () => {
+    const d = await runAlert(
+      resolveEnvelope("ops.alert.resolve.staff", { alertId: "alert_1", sneaky: 1 }, { role: "OWNER" }),
+      world(),
+    );
+    expect(d.kind).toBe("REFUSE");
+    if (d.kind === "REFUSE") expect(d.refusal.code).toBe("ops.alert_resolve.payload_invalid");
+  });
+});
+
+describe("incident.ticket.close.staff through the composed router (BKL-088)", () => {
+  const bundle = () => bundleForKind("incident.ticket.close.staff");
+  const world = (incident: { id: string; status: string } | null = { id: "inc_1", status: "OPEN" }) => ({
+    ctx: { channel: "staff", customerId: null, staffId: "staff_1", tenantId: "ibatexas" },
+    incident,
+  });
+  const runInc = async (env: IntentEnvelope, state: unknown): Promise<Decision> =>
+    adjudicate(env, state as never, bundle());
+  const P = { incidentId: "inc_1" };
+
+  it("OWNER + open incident → EXECUTE", async () => {
+    const d = await runInc(resolveEnvelope("incident.ticket.close.staff", P, { role: "OWNER" }), world());
+    expect(d.kind).toBe("EXECUTE");
+  });
+  it("ATTENDANT → REFUSE staff_role_violation (matrix {OWNER,MANAGER})", async () => {
+    const d = await runInc(resolveEnvelope("incident.ticket.close.staff", P, { role: "ATTENDANT" }), world());
+    expect(d.kind).toBe("REFUSE");
+    if (d.kind === "REFUSE") expect(d.refusal.code).toBe("staff_role_violation");
+  });
+  it("non-admin session → REFUSE by adminSessionOnlyGuard", async () => {
+    const d = await runInc(
+      resolveEnvelope("incident.ticket.close.staff", P, { principal: "llm", sessionId: "web:conv-1", role: "" }),
+      world(),
+    );
+    expect(d.kind).toBe("REFUSE");
+    if (d.kind === "REFUSE") expect(d.refusal.code).toBe("ops.admin_session_required");
+  });
+  it("absent incident → REFUSE not_actionable", async () => {
+    const d = await runInc(resolveEnvelope("incident.ticket.close.staff", P, { role: "OWNER" }), world(null));
+    expect(d.kind).toBe("REFUSE");
+    if (d.kind === "REFUSE") expect(d.refusal.code).toBe("ops.incident_close.not_actionable");
+  });
+  it("terminal incident → REFUSE not_actionable (already closed)", async () => {
+    const d = await runInc(
+      resolveEnvelope("incident.ticket.close.staff", P, { role: "OWNER" }),
+      world({ id: "inc_1", status: "AUTO_RESOLVED" }),
+    );
+    expect(d.kind).toBe("REFUSE");
+    if (d.kind === "REFUSE") expect(d.refusal.code).toBe("ops.incident_close.not_actionable");
+    expect(basisMentions(d, "already_closed")).toBe(true);
+  });
+});

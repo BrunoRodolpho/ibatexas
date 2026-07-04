@@ -127,16 +127,34 @@ export const OPS_FOREIGN_ADVERTISED_TRANSITION_KIND = "order.status.transition"
 export const OPS_FOREIGN_ADVERTISED_REFUND_KIND = "payment.refund.issue"
 
 /**
- * Ops-domain tool classification. `product.availability.set` (owned) and
- * `order.note.add` (foreign-owned; advertised to widen the ops allowlist) are
- * MUTATING; `ops_snapshot` is the LLM-visible READ tool (staff-only
- * advertisement). `safePlan` asserts no MUTATING name ever leaks into
- * `visibleReadTools`.
+ * BKL-088 — the two OWNED staff-plane RESOLUTION verbs. Unlike the three
+ * foreign-owned kinds above (owned by pack-orders / pack-payments, advertised
+ * here only to widen the allowlist), these are OWNED by `@ibatexas/pack-ops`
+ * (in `opsPack.intents`) and adjudicated by THIS pack's bundle. Their executors
+ * then drive the SAME-named SYSTEM domain write layer
+ * (`ops.alert.resolve` / `incident.ticket.close`) — the D10 two-layer posture,
+ * hence the DISTINCT `*.staff` names (see types.ts header). Both are STAFF/OPS-
+ * plane verbs with NO registered CHAT tool, so under the chat "staff" roster
+ * probe they are advertised-but-unregistered — `ADVERTISED_NOT_REGISTERED_WHITELIST`
+ * documents that (staff:ops.alert.resolve.staff / staff:incident.ticket.close.staff).
+ */
+export const OPS_ALERT_RESOLVE_STAFF_KIND = "ops.alert.resolve.staff"
+export const OPS_INCIDENT_CLOSE_STAFF_KIND = "incident.ticket.close.staff"
+
+/**
+ * Ops-domain tool classification. The OWNED mutating verbs
+ * (`product.availability.set`, `ops.alert.resolve.staff`,
+ * `incident.ticket.close.staff`) and the three foreign-owned kinds (advertised
+ * to widen the ops allowlist) are MUTATING; `ops_snapshot` is the LLM-visible
+ * READ tool (staff-only advertisement). `safePlan` asserts no MUTATING name
+ * ever leaks into `visibleReadTools`.
  */
 export const OPS_TOOLS: ToolClassification = {
   READ_ONLY: new Set<string>([OPS_SNAPSHOT_READ_TOOL]),
   MUTATING: new Set<string>([
     "product.availability.set",
+    OPS_ALERT_RESOLVE_STAFF_KIND,
+    OPS_INCIDENT_CLOSE_STAFF_KIND,
     OPS_FOREIGN_ADVERTISED_KIND,
     OPS_FOREIGN_ADVERTISED_TRANSITION_KIND,
     OPS_FOREIGN_ADVERTISED_REFUND_KIND,
@@ -160,13 +178,15 @@ const rawOpsCapabilityPlanner: CapabilityPlanner<OpsState, OpsContext> = {
     const staffId = state.ctx.staffId ?? null
     const isStaffSession = staffId !== null
     // `string[]` (not `OpsIntentKind[]`) because the allowlist deliberately
-    // spans this pack's OWNED kind (`product.availability.set`) AND two
-    // foreign-owned ones (`order.note.add` + `order.status.transition`, owned by
-    // pack-orders — advertised here only to widen the ops-plane allowlist; see
-    // OPS_FOREIGN_ADVERTISED_KIND / OPS_FOREIGN_ADVERTISED_TRANSITION_KIND).
+    // spans this pack's OWNED kinds (`product.availability.set` +
+    // `ops.alert.resolve.staff` + `incident.ticket.close.staff`, BKL-088) AND
+    // three foreign-owned ones (owned by pack-orders / pack-payments —
+    // advertised here only to widen the ops-plane allowlist).
     const allowedIntents: string[] = isStaffSession
       ? [
           "product.availability.set",
+          OPS_ALERT_RESOLVE_STAFF_KIND,
+          OPS_INCIDENT_CLOSE_STAFF_KIND,
           OPS_FOREIGN_ADVERTISED_KIND,
           OPS_FOREIGN_ADVERTISED_TRANSITION_KIND,
           OPS_FOREIGN_ADVERTISED_REFUND_KIND,

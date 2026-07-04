@@ -25,11 +25,39 @@ export const OPS_AVAILABILITY_PAYLOAD_INVALID_CODE =
 export const OPS_AVAILABILITY_PRODUCT_NOT_FOUND_CODE =
   "ops.availability.product_not_found"
 
+/** Refusal `code` for a malformed `ops.alert.resolve.staff` payload (BKL-088). */
+export const OPS_ALERT_RESOLVE_PAYLOAD_INVALID_CODE =
+  "ops.alert_resolve.payload_invalid"
+
+/**
+ * Refusal `code` for an `ops.alert.resolve.staff` whose alert is unknown OR
+ * already terminal (fail-closed; the basis `reason` distinguishes
+ * `not_found` vs `already_resolved`). BKL-088.
+ */
+export const OPS_ALERT_RESOLVE_NOT_ACTIONABLE_CODE =
+  "ops.alert_resolve.not_actionable"
+
+/** Refusal `code` for a malformed `incident.ticket.close.staff` payload (BKL-088). */
+export const OPS_INCIDENT_CLOSE_PAYLOAD_INVALID_CODE =
+  "ops.incident_close.payload_invalid"
+
+/**
+ * Refusal `code` for an `incident.ticket.close.staff` whose incident is unknown
+ * OR already terminal (fail-closed; the basis `reason` distinguishes
+ * `not_found` vs `already_closed`). BKL-088.
+ */
+export const OPS_INCIDENT_CLOSE_NOT_ACTIONABLE_CODE =
+  "ops.incident_close.not_actionable"
+
 /** Every ops refusal code — mirrored into `opsPack.basisCodes`. */
 export const OPS_REFUSAL_CODES: readonly string[] = [
   OPS_ADMIN_SESSION_REQUIRED_CODE,
   OPS_AVAILABILITY_PAYLOAD_INVALID_CODE,
   OPS_AVAILABILITY_PRODUCT_NOT_FOUND_CODE,
+  OPS_ALERT_RESOLVE_PAYLOAD_INVALID_CODE,
+  OPS_ALERT_RESOLVE_NOT_ACTIONABLE_CODE,
+  OPS_INCIDENT_CLOSE_PAYLOAD_INVALID_CODE,
+  OPS_INCIDENT_CLOSE_NOT_ACTIONABLE_CODE,
 ]
 
 // ── Auth refusals (AUTH) ────────────────────────────────────────────────────
@@ -74,6 +102,65 @@ export function refuseAvailabilityProductNotFound(detail?: string): Refusal {
     "BUSINESS_RULE",
     OPS_AVAILABILITY_PRODUCT_NOT_FOUND_CODE,
     "Produto não encontrado.",
+    detail,
+  )
+}
+
+// ── BKL-088 alert-resolve refusals ──────────────────────────────────────────
+
+/**
+ * `ops.alert.resolve.staff` payload failed strict validation (missing/empty
+ * `alertId`, non-string `reason`, or an unknown key). Generic user copy;
+ * `detail` names the offending field for audit.
+ */
+export function refuseAlertResolvePayloadInvalid(detail?: string): Refusal {
+  return refuse(
+    "BUSINESS_RULE",
+    OPS_ALERT_RESOLVE_PAYLOAD_INVALID_CODE,
+    "Não foi possível processar esta operação.",
+    detail,
+  )
+}
+
+/**
+ * The target alert does not exist in the projected ops state, or is already
+ * terminal (resolved/auto-resolved). Fail-closed — resolving an unknown or
+ * already-closed alert is REFUSEd rather than silently no-op'd.
+ */
+export function refuseAlertResolveNotActionable(detail?: string): Refusal {
+  return refuse(
+    "BUSINESS_RULE",
+    OPS_ALERT_RESOLVE_NOT_ACTIONABLE_CODE,
+    "Alerta não encontrado ou já resolvido.",
+    detail,
+  )
+}
+
+// ── BKL-088 incident-close refusals ─────────────────────────────────────────
+
+/**
+ * `incident.ticket.close.staff` payload failed strict validation (missing/empty
+ * `incidentId`, non-string `reason`, or an unknown key).
+ */
+export function refuseIncidentClosePayloadInvalid(detail?: string): Refusal {
+  return refuse(
+    "BUSINESS_RULE",
+    OPS_INCIDENT_CLOSE_PAYLOAD_INVALID_CODE,
+    "Não foi possível processar esta operação.",
+    detail,
+  )
+}
+
+/**
+ * The target incident does not exist in the projected ops state, or is already
+ * terminal (resolved/auto-resolved). Fail-closed — closing an unknown or
+ * already-closed incident is REFUSEd rather than silently no-op'd.
+ */
+export function refuseIncidentCloseNotActionable(detail?: string): Refusal {
+  return refuse(
+    "BUSINESS_RULE",
+    OPS_INCIDENT_CLOSE_NOT_ACTIONABLE_CODE,
+    "Incidente não encontrado ou já fechado.",
     detail,
   )
 }

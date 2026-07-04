@@ -2,7 +2,7 @@
  * @ibatexas/pack-ops — domain types.
  *
  * IbateXas's SIXTH first-party Pack: the governed OPS (owner/staff
- * operations) plane — NEW-032 slice C1. Where `pack-orders` /
+ * operations) plane — NEW-032 slice C1 + BKL-088. Where `pack-orders` /
  * `pack-reservations` / `pack-whatsapp` govern CUSTOMER-facing and egress
  * mutations, this Pack governs STAFF-plane operational mutations proposed by
  * the ops-actor persona (the restaurant owner/manager talking to the agent).
@@ -11,19 +11,18 @@
  *
  * The ops plane's envelopes are model-parsed payloads carried on an
  * `admin:${staffId}` session with `actor.role ∈ {OWNER,MANAGER,ATTENDANT}`
- * (stamped by the planner seam in a sibling PR). Authority is NOT the taint
- * level — it is the composition of THREE independent gates:
+ * (stamped by the planner seam). Authority is NOT the taint level — it is the
+ * composition of THREE independent gates:
  *
  *   1. the pack's own `adminSessionOnlyGuard` (AUTH) — REFUSE unless the
- *      session is `admin:`-namespaced, so the kind is staff-plane-only at the
- *      KERNEL regardless of surface (mandatory: the adopter `staffRoleGuard`
- *      is INERT for non-`admin:` sessions, so without this a customer/LLM
- *      session could otherwise reach the pack's business guards);
+ *      session is `admin:`-namespaced, so every kind this pack OWNS is
+ *      staff-plane-only at the KERNEL regardless of surface (mandatory: the
+ *      adopter `staffRoleGuard` is INERT for non-`admin:` sessions);
  *   2. the adopter `staffRoleGuard` + the staff-role matrix (AUTH, prepended
  *      by `buildIbatexasPolicyPacks`) — REFUSE unless `actor.role` is
- *      permitted for the kind (`product.availability.set` → {OWNER,MANAGER});
- *   3. the pack's business guards (strict payload validation + product
- *      existence).
+ *      permitted for the kind;
+ *   3. the pack's business guards (strict payload validation + entity
+ *      existence / actionability).
  *
  * Because authority rides on (2)+(1)+the matrix, the taint FLOOR is
  * `UNTRUSTED` — the model-parsed payload is allowed to be untrusted; it is the
@@ -33,15 +32,49 @@
  * # Intent surface (this Pack)
  *
  *   - product.availability.set — staff. Toggle a product's availability
- *     (86 / un-86 an item). Mirrors the admin products PATCH route's
- *     `requireManagerRole` band → matrix row {OWNER,MANAGER}. NEVER
- *     chat-drivable (no customer/LLM surface proposes it).
+ *     (86 / un-86 an item). Matrix row {OWNER,MANAGER}. NEVER chat-drivable.
+ *   - ops.alert.resolve.staff  — staff (BKL-088). Resolve an operational alert
+ *     by message ("resolve o alerta X"). Matrix row {OWNER,MANAGER}.
+ *   - incident.ticket.close.staff — staff (BKL-088). Close a no-reply incident
+ *     by message ("fecha o incidente Y"). Matrix row {OWNER,MANAGER}.
+ *
+ * # BKL-088 — the LAYERED (D10) posture, and why the pack names are DISTINCT
+ *
+ * The domain `ops.alert.resolve` / `incident.ticket.close` kinds stay
+ * SYSTEM-only (`buildSystemEnvelope`, staff identity on the payload as
+ * `resolvedBy: "staff:<id>"` + `resolutionType: STAFF`; they are DELIBERATELY
+ * absent from `KNOWN_INTENT_KINDS` and are NOT installed as Packs — see
+ * ops-alert-policy.ts / incident-policy.ts). This pack's verbs are the
+ * STAFF-PLANE half of a TWO-LAYER governed path (exactly the D10 posture
+ * `product.availability.set` → `medusa.admin.product.update` already ships):
+ *
+ *   ops.alert.resolve.staff  (composed router, admin:+role, UNTRUSTED taint)
+ *        └── executor → opsAlertService.resolveAlertFromEnvelope(
+ *                          buildSystemEnvelope({kind:"ops.alert.resolve", …}))
+ *                        (SYSTEM router, system:, SYSTEM taint)
+ *
+ * The names MUST be DISTINCT (`*.staff`, not the bare system kind) so the two
+ * adjudications a single staff turn produces never CONFLATE: reusing the bare
+ * name would (a) double-count the two seams in `intent_audit` (both rows carry
+ * the same `kind`), and (b) inject the deliberately-off-`KNOWN` system kind
+ * INTO `KNOWN_INTENT_KINDS`/`PACK_REGISTERED` via `pack.intents`, breaking the
+ * documented "absent from KNOWN" invariant. Distinct names keep the STAFF verb
+ * (composed/known/matrixed/BOM'd) cleanly separable from the SYSTEM write
+ * (off-KNOWN, domain-internal) everywhere.
  */
 
 import { createSystemTaintPolicy } from "@adjudicate/primitives"
 
-/** The Pack's intent-kind surface — one governed staff-plane verb for now. */
-export type OpsIntentKind = "product.availability.set"
+/**
+ * The Pack's intent-kind surface. `product.availability.set` (NEW-032 slice C1)
+ * plus the two BKL-088 staff-plane resolution verbs. All three are OWNED by
+ * this pack (composed-router routable, matrixed) — the `*.staff` suffix marks
+ * the two whose EXECUTOR then drives the same-named SYSTEM domain write layer.
+ */
+export type OpsIntentKind =
+  | "product.availability.set"
+  | "ops.alert.resolve.staff"
+  | "incident.ticket.close.staff"
 
 // ── Payloads ────────────────────────────────────────────────────────────────
 
@@ -59,13 +92,54 @@ export interface ProductAvailabilitySetPayload {
   readonly reason?: string
 }
 
-/** The Pack's payload union (single member today). */
-export type OpsPayload = ProductAvailabilitySetPayload
+/**
+ * `ops.alert.resolve.staff` payload (BKL-088). The model controls ONLY the
+ * alert reference + an optional free-form reason note. The executor stamps the
+ * SYSTEM-write payload's `resolvedBy` from the authenticated Capsule staffId
+ * (`staff:<id>`) and FORCES `resolutionType: STAFF` — a message-driven resolve
+ * is always a manual STAFF action, never AUTO — so neither is ever
+ * model-controlled. `reason` is an operator note carried into the audit trail
+ * only (the SYSTEM `OpsAlertResolvePayload` has no reason slot to persist).
+ */
+export interface OpsAlertResolveStaffPayload {
+  readonly alertId: string
+  readonly reason?: string
+}
 
-/** The keys the strict payload validator admits — anything else is rejected. */
+/**
+ * `incident.ticket.close.staff` payload (BKL-088). Same posture as
+ * {@link OpsAlertResolveStaffPayload}: the model controls only the incident
+ * reference + an optional reason note; the executor forces
+ * `resolvedBy: "staff:<id>"` + `resolutionType: STAFF` (never AUTO/HANDED_OFF,
+ * which are system-driven). `reason` is audit-only.
+ */
+export interface IncidentCloseStaffPayload {
+  readonly incidentId: string
+  readonly reason?: string
+}
+
+/** The Pack's payload union. */
+export type OpsPayload =
+  | ProductAvailabilitySetPayload
+  | OpsAlertResolveStaffPayload
+  | IncidentCloseStaffPayload
+
+/** The keys the strict `product.availability.set` validator admits. */
 export const PRODUCT_AVAILABILITY_SET_KEYS: ReadonlySet<string> = new Set([
   "productId",
   "available",
+  "reason",
+])
+
+/** The keys the strict `ops.alert.resolve.staff` validator admits (BKL-088). */
+export const OPS_ALERT_RESOLVE_STAFF_KEYS: ReadonlySet<string> = new Set([
+  "alertId",
+  "reason",
+])
+
+/** The keys the strict `incident.ticket.close.staff` validator admits (BKL-088). */
+export const INCIDENT_CLOSE_STAFF_KEYS: ReadonlySet<string> = new Set([
+  "incidentId",
   "reason",
 ])
 
@@ -75,7 +149,7 @@ export const PRODUCT_AVAILABILITY_SET_KEYS: ReadonlySet<string> = new Set([
  * Per-turn context the planner consumes. Structurally independent from the
  * `OrderContext` / `WhatsAppContext` so the ops planner does not accidentally
  * couple to those domains. `staffId` gates the planner's `allowedIntents`:
- * the ops verb is advertised ONLY on a staff session.
+ * the ops verbs are advertised ONLY on a staff session.
  */
 export interface OpsContext {
   readonly channel: "web" | "whatsapp" | "staff"
@@ -88,13 +162,8 @@ export interface OpsContext {
 
 /**
  * The product snapshot the pack's `requireProductExists` guard reads. The
- * later ops-conductor resolver (a subsequent PR) projects this from the
- * products read-model BEFORE adjudication; the Pack never reads a store
- * directly (same adopter-projects-state convention as `pack-whatsapp`).
- *
- * Minimal on purpose — `id` proves existence and `status` lets a later
- * business rule reason about the current lifecycle state (e.g. refuse
- * toggling a discontinued product) without a schema break.
+ * ops-conductor resolver projects this from the products read-model BEFORE
+ * adjudication; the Pack never reads a store directly.
  */
 export interface OpsProductSnapshot {
   readonly id: string
@@ -102,27 +171,69 @@ export interface OpsProductSnapshot {
 }
 
 /**
+ * The alert snapshot the pack's `requireAlertActionable` guard reads (BKL-088).
+ * `id` proves existence and `status` lets the guard fail closed on a terminal
+ * (already-resolved) alert. Projected by the ops resolver from the OpsAlert
+ * read-model; `null` ⇒ the alert id does not exist ⇒ REFUSE.
+ */
+export interface OpsAlertSnapshot {
+  readonly id: string
+  readonly status: string
+}
+
+/**
+ * The incident snapshot the pack's `requireIncidentActionable` guard reads
+ * (BKL-088). Same shape/semantics as {@link OpsAlertSnapshot} over the
+ * ConversationIncident read-model.
+ */
+export interface OpsIncidentSnapshot {
+  readonly id: string
+  readonly status: string
+}
+
+/**
  * Per-kind SystemState the ops pack's guards adjudicate against. THE CONTRACT
- * THE LATER OPS RESOLVER MUST BUILD:
+ * THE OPS RESOLVER MUST BUILD (one branch per kind):
  *
- *   {
- *     ctx: { channel, customerId, staffId, tenantId? },
- *     product: { id, status } | null   // null ⇒ product-not-found REFUSE
- *   }
+ *   product.availability.set  → { ctx, product:  {id,status} | null }
+ *   ops.alert.resolve.staff   → { ctx, alert:    {id,status} | null }
+ *   incident.ticket.close.staff → { ctx, incident: {id,status} | null }
  *
- * `product` is `null` when no product matches `payload.productId` — the
- * business-phase `requireProductExists` guard turns that into a REFUSE. When
- * the resolver has not projected a product at all (`undefined`), the guard
- * treats it as not-found too (fail-closed).
+ * Each entity field is `null` when no row matches the payload reference — the
+ * corresponding business guard turns that into a REFUSE (fail-closed; an
+ * unprojected `undefined` is treated as not-found too).
  */
 export interface OpsState {
   readonly ctx: OpsContext & {
-    /** Tenant this request operates on (single-tenant today). Carried for
-     *  symmetry with the other packs' state; not gated here. */
+    /** Tenant this request operates on (single-tenant today). */
     readonly tenantId?: string
   }
   /** The product the in-flight `product.availability.set` targets. */
   readonly product?: OpsProductSnapshot | null
+  /** The alert the in-flight `ops.alert.resolve.staff` targets (BKL-088). */
+  readonly alert?: OpsAlertSnapshot | null
+  /** The incident the in-flight `incident.ticket.close.staff` targets (BKL-088). */
+  readonly incident?: OpsIncidentSnapshot | null
+}
+
+// ── Entity lifecycle ────────────────────────────────────────────────────────
+
+/**
+ * The NON-TERMINAL statuses shared by the OpsAlert + ConversationIncident
+ * lifecycles (both Prisma enums are OPEN | ACKNOWLEDGED | AUTO_RESOLVED |
+ * RESOLVED; the first two are non-terminal). A staff resolve/close is
+ * actionable ONLY against a non-terminal row — a terminal one is already
+ * resolved. Kept as plain string literals so the leaf pack takes no Prisma
+ * dependency (the resolver projects `status` as a plain string).
+ */
+export const OPS_ENTITY_NON_TERMINAL_STATUSES: ReadonlySet<string> = new Set([
+  "OPEN",
+  "ACKNOWLEDGED",
+])
+
+/** True when an alert/incident status is non-terminal (actionable). */
+export function isOpsEntityActionable(status: string): boolean {
+  return OPS_ENTITY_NON_TERMINAL_STATUSES.has(status)
 }
 
 // ── Taint policy ────────────────────────────────────────────────────────────
@@ -131,7 +242,7 @@ export interface OpsState {
  * The ops taint floor is `UNTRUSTED` for every kind (no system-only kinds).
  *
  * This is deliberate and load-bearing: the ops persona's payloads are
- * model-parsed (an LLM extracted `productId` / `available` from the owner's
+ * model-parsed (an LLM extracted the reference / fields from the owner's
  * message), so they arrive UNTRUSTED. Authority is NOT the taint — it is the
  * `admin:` session (`adminSessionOnlyGuard`) + `actor.role` (the adopter
  * `staffRoleGuard` + matrix). A `TRUSTED`/`SYSTEM` envelope also clears an

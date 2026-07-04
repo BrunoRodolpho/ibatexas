@@ -105,7 +105,7 @@ import {
   type RedisPubSubClient,
 } from "@adjudicate/audit";
 
-import { prisma, claustrumMemoryPrisma, createOrderCommandService, createOrderQueryService, createOrderEventLogService, createPaymentCommandService, createPaymentQueryService } from "@ibatexas/domain";
+import { prisma, claustrumMemoryPrisma, createOrderCommandService, createOrderQueryService, createOrderEventLogService, createPaymentCommandService, createPaymentQueryService, createOpsAlertService, createIncidentService } from "@ibatexas/domain";
 import { rehydratePaymentState } from "@ibatexas/pack-payments";
 import {
   emitLlmCall,
@@ -2577,6 +2577,13 @@ export async function bootstrapClaustrum(
   // BKL-085 — the ops-plane refund audit event log (parity with the admin
   // route's admin.refund.executed row). Shared instance; append is best-effort.
   const opsRefundEventLogSvc = createOrderEventLogService(logger);
+  // BKL-088 — the ops-alert + incident SYSTEM-write services, constructed WITH
+  // the audit sink (exactly like the admin ops-alerts / incidents resolve
+  // routes) so the SECOND (SYSTEM) governed layer's adjudication is audited.
+  // Shared singletons reused per turn (the resolver's by-id reads AND the tool
+  // executors' resolve/close writes both go through these).
+  const opsAlertSvc = createOpsAlertService({ auditSink });
+  const opsIncidentSvc = createIncidentService({ auditSink });
   // The ops registry's governed side-effect deps (injected for testability).
   const opsRegistryDeps: OpsToolRegistryDeps = {
     medusaAdjudicated,
@@ -2585,6 +2592,11 @@ export async function bootstrapClaustrum(
     // BKL-085 — the ops refund POST-adjudication ledger write (writeAdjudicatedRefund
     // does NO adjudication; the composed router already produced the Decision).
     paymentCmdSvc: createPaymentCommandService(),
+    // BKL-088 — the alert-resolve + incident-close SYSTEM-write layers (the D10
+    // second governed layer). The executors build the SYSTEM envelope + call
+    // these, exactly like the admin ops-alerts / incidents resolve routes.
+    opsAlertSvc,
+    incidentSvc: opsIncidentSvc,
     // BKL-085 — publish payment.status_changed after a committed refund write,
     // exactly like the admin refund route (drives auto-cancel-on-full-refund).
     publishPaymentStatusChanged: (event) =>
@@ -2730,6 +2742,19 @@ export async function bootstrapClaustrum(
                 method: p.method,
                 version: p.version,
               };
+        },
+        // BKL-088 — the ops-alert + incident by-id reads for the resolution
+        // verbs. id-literal (the persona quotes ids from ops_snapshot); a null
+        // (unknown id) or terminal status fails closed to a kernel REFUSE
+        // not_actionable. Reuse the SAME service singletons the executors write
+        // through (shared above), so the read + write see one service instance.
+        lookupAlert: async (alertId) => {
+          const a = await opsAlertSvc.get(alertId);
+          return a === null ? null : { id: a.id, status: a.status };
+        },
+        lookupIncident: async (incidentId) => {
+          const i = await opsIncidentSvc.get(incidentId);
+          return i === null ? null : { id: i.id, status: i.status };
         },
         // BKL-089 (orders scope) — deterministic order REFERENCE→id resolution
         // reads. Both reuse the SAME owner-path OrderQueryService the admin orders

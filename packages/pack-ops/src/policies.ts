@@ -36,12 +36,21 @@ import {
 } from "@adjudicate/core/kernel"
 import {
   refuseAdminSessionRequired,
+  refuseAlertResolveNotActionable,
+  refuseAlertResolvePayloadInvalid,
   refuseAvailabilityPayloadInvalid,
   refuseAvailabilityProductNotFound,
+  refuseIncidentCloseNotActionable,
+  refuseIncidentClosePayloadInvalid,
 } from "./refusals.js"
 import {
+  INCIDENT_CLOSE_STAFF_KEYS,
+  isOpsEntityActionable,
+  OPS_ALERT_RESOLVE_STAFF_KEYS,
   opsTaintPolicy,
   PRODUCT_AVAILABILITY_SET_KEYS,
+  type IncidentCloseStaffPayload,
+  type OpsAlertResolveStaffPayload,
   type OpsIntentKind,
   type OpsPayload,
   type OpsState,
@@ -185,6 +194,199 @@ const executeAvailabilitySet: OpsGuard = (envelope) => {
   ])
 }
 
+// ── BKL-088: shared closed-payload `{<idField>, reason?}` validator ──────────
+
+/**
+ * Validate a strict `{ <idField>: <non-empty string>, reason?: <string> }`
+ * payload against `allowedKeys` (closed contract — unknown keys REFUSE).
+ * Returns a `Refusal` on the first violation (the caller wraps it in the
+ * per-kind refusal builder + basis), or `null` when the payload is well-formed.
+ * SHARED by the alert-resolve + incident-close validators (identical shape).
+ */
+function idAndReasonPayloadViolation(
+  raw: Record<string, unknown>,
+  idField: string,
+  allowedKeys: ReadonlySet<string>,
+): { field: string; reason: string } | null {
+  // Reject unknown keys first — the contract is closed.
+  for (const key of Object.keys(raw)) {
+    if (!allowedKeys.has(key)) {
+      return { field: key, reason: "unknown_key" }
+    }
+  }
+  if (typeof raw[idField] !== "string" || (raw[idField] as string).length === 0) {
+    return { field: idField, reason: "missing_or_empty" }
+  }
+  if (raw.reason !== undefined && typeof raw.reason !== "string") {
+    return { field: "reason", reason: "not_string" }
+  }
+  return null
+}
+
+// ── BKL-088: ops.alert.resolve.staff guards ─────────────────────────────────
+
+/**
+ * Strict `ops.alert.resolve.staff` payload validation. REFUSEs anything that is
+ * not EXACTLY `{ alertId: <non-empty string>, reason?: <string> }` (unknown
+ * keys rejected). `resolvedBy` / `resolutionType` are DELIBERATELY not payload
+ * fields — the executor stamps them from the Capsule staffId (never the model).
+ */
+const validateAlertResolvePayload: OpsGuard = (envelope) => {
+  if (envelope.kind !== "ops.alert.resolve.staff") return null
+  const raw = envelope.payload as unknown as Record<string, unknown>
+  const violation = idAndReasonPayloadViolation(
+    raw,
+    "alertId",
+    OPS_ALERT_RESOLVE_STAFF_KEYS,
+  )
+  if (violation === null) return null
+  return decisionRefuse(
+    refuseAlertResolvePayloadInvalid(
+      `alert-resolve payload ${violation.field}: ${violation.reason}`,
+    ),
+    [
+      basis("schema", BASIS_CODES.schema.PAYLOAD_INVALID, {
+        field: violation.field,
+        reason: violation.reason,
+      }),
+    ],
+  )
+}
+
+/**
+ * REFUSE `ops.alert.resolve.staff` when the target alert is absent from the
+ * projected state (`state.alert` null/unprojected) OR already terminal
+ * (already resolved). Fail-closed: resolving an unknown or already-closed alert
+ * is REFUSEd, never a silent no-op. The ops resolver projects `state.alert`
+ * (`{id,status}`) from the OpsAlert read-model.
+ */
+const requireAlertActionable: OpsGuard = (envelope, state) => {
+  if (envelope.kind !== "ops.alert.resolve.staff") return null
+  const { alertId } = envelope.payload as OpsAlertResolveStaffPayload
+  const alert = state.alert
+  if (!alert || typeof alert.id !== "string" || alert.id.length === 0) {
+    return decisionRefuse(
+      refuseAlertResolveNotActionable(`no alert projected for id "${alertId}"`),
+      [
+        basis("business", BASIS_CODES.business.RULE_VIOLATED, {
+          rule: "alert_must_be_actionable",
+          alertId,
+          reason: "not_found",
+        }),
+      ],
+    )
+  }
+  if (!isOpsEntityActionable(alert.status)) {
+    return decisionRefuse(
+      refuseAlertResolveNotActionable(
+        `alert "${alertId}" is terminal (status "${alert.status}")`,
+      ),
+      [
+        basis("business", BASIS_CODES.business.RULE_VIOLATED, {
+          rule: "alert_must_be_actionable",
+          alertId,
+          status: alert.status,
+          reason: "already_resolved",
+        }),
+      ],
+    )
+  }
+  return null
+}
+
+/** EXECUTE producer for `ops.alert.resolve.staff` (fires after validation +
+ *  actionability REFUSE the failing cases, and after the AUTH gates authorized). */
+const executeAlertResolve: OpsGuard = (envelope) => {
+  if (envelope.kind !== "ops.alert.resolve.staff") return null
+  return decisionExecute([
+    basis("business", BASIS_CODES.business.RULE_SATISFIED, {
+      kind: envelope.kind,
+    }),
+  ])
+}
+
+// ── BKL-088: incident.ticket.close.staff guards ─────────────────────────────
+
+/**
+ * Strict `incident.ticket.close.staff` payload validation. REFUSEs anything
+ * that is not EXACTLY `{ incidentId: <non-empty string>, reason?: <string> }`
+ * (unknown keys rejected). `resolvedBy` / `resolutionType` are stamped by the
+ * executor from the Capsule staffId (never the model).
+ */
+const validateIncidentClosePayload: OpsGuard = (envelope) => {
+  if (envelope.kind !== "incident.ticket.close.staff") return null
+  const raw = envelope.payload as unknown as Record<string, unknown>
+  const violation = idAndReasonPayloadViolation(
+    raw,
+    "incidentId",
+    INCIDENT_CLOSE_STAFF_KEYS,
+  )
+  if (violation === null) return null
+  return decisionRefuse(
+    refuseIncidentClosePayloadInvalid(
+      `incident-close payload ${violation.field}: ${violation.reason}`,
+    ),
+    [
+      basis("schema", BASIS_CODES.schema.PAYLOAD_INVALID, {
+        field: violation.field,
+        reason: violation.reason,
+      }),
+    ],
+  )
+}
+
+/**
+ * REFUSE `incident.ticket.close.staff` when the target incident is absent from
+ * the projected state OR already terminal (already closed). Fail-closed. The
+ * ops resolver projects `state.incident` (`{id,status}`) from the
+ * ConversationIncident read-model.
+ */
+const requireIncidentActionable: OpsGuard = (envelope, state) => {
+  if (envelope.kind !== "incident.ticket.close.staff") return null
+  const { incidentId } = envelope.payload as IncidentCloseStaffPayload
+  const incident = state.incident
+  if (!incident || typeof incident.id !== "string" || incident.id.length === 0) {
+    return decisionRefuse(
+      refuseIncidentCloseNotActionable(
+        `no incident projected for id "${incidentId}"`,
+      ),
+      [
+        basis("business", BASIS_CODES.business.RULE_VIOLATED, {
+          rule: "incident_must_be_actionable",
+          incidentId,
+          reason: "not_found",
+        }),
+      ],
+    )
+  }
+  if (!isOpsEntityActionable(incident.status)) {
+    return decisionRefuse(
+      refuseIncidentCloseNotActionable(
+        `incident "${incidentId}" is terminal (status "${incident.status}")`,
+      ),
+      [
+        basis("business", BASIS_CODES.business.RULE_VIOLATED, {
+          rule: "incident_must_be_actionable",
+          incidentId,
+          status: incident.status,
+          reason: "already_closed",
+        }),
+      ],
+    )
+  }
+  return null
+}
+
+/** EXECUTE producer for `incident.ticket.close.staff`. */
+const executeIncidentClose: OpsGuard = (envelope) => {
+  if (envelope.kind !== "incident.ticket.close.staff") return null
+  return decisionExecute([
+    basis("business", BASIS_CODES.business.RULE_SATISFIED, {
+      kind: envelope.kind,
+    }),
+  ])
+}
+
 // ── PolicyBundle ────────────────────────────────────────────────────────────
 
 /**
@@ -192,10 +394,11 @@ const executeAvailabilitySet: OpsGuard = (envelope) => {
  * `@adjudicate/core/kernel`. Default is REFUSE — any kind not covered by an
  * explicit EXECUTE producer is denied by construction.
  *
- * Guard ordering within business matters: `validateAvailabilityPayload` →
- * `requireProductExists` (both REFUSE producers) run BEFORE
- * `executeAvailabilitySet` so a malformed payload / missing product REFUSEs
- * rather than reaching the EXECUTE producer.
+ * Guard ordering within business matters: each kind's `validate*` →
+ * `require*` (both REFUSE producers) run BEFORE its `execute*` producer so a
+ * malformed payload / missing-or-terminal entity REFUSEs rather than reaching
+ * the EXECUTE producer. Each guard is a no-op (`null`) for the other kinds, so
+ * the three kinds' guard triples are order-independent between kinds.
  */
 export const opsPolicyBundle: PolicyBundle<OpsIntentKind, OpsPayload, OpsState> =
   {
@@ -206,6 +409,14 @@ export const opsPolicyBundle: PolicyBundle<OpsIntentKind, OpsPayload, OpsState> 
       validateAvailabilityPayload,
       requireProductExists,
       executeAvailabilitySet,
+      // BKL-088 — ops.alert.resolve.staff
+      validateAlertResolvePayload,
+      requireAlertActionable,
+      executeAlertResolve,
+      // BKL-088 — incident.ticket.close.staff
+      validateIncidentClosePayload,
+      requireIncidentActionable,
+      executeIncidentClose,
     ],
     default: "REFUSE",
   }

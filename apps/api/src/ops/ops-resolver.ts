@@ -64,6 +64,27 @@ export interface OpsResolverProduct {
 }
 
 /**
+ * BKL-088 — the alert snapshot the pack-ops `requireAlertActionable` guard
+ * reads for `ops.alert.resolve.staff`. `status` lets the guard fail closed on a
+ * terminal (already-resolved) alert. Projected from the OpsAlert read-model
+ * (`opsAlertService.get(id)`); `null` ⇒ the alert id does not exist.
+ */
+export interface OpsResolverAlert {
+  readonly id: string;
+  readonly status: string;
+}
+
+/**
+ * BKL-088 — the incident snapshot the pack-ops `requireIncidentActionable`
+ * guard reads for `incident.ticket.close.staff`. Same shape/semantics as
+ * {@link OpsResolverAlert} over the ConversationIncident read-model.
+ */
+export interface OpsResolverIncident {
+  readonly id: string;
+  readonly status: string;
+}
+
+/**
  * The active-payment row the BKL-085 refund path reads. Mirrors the fields the
  * admin refund route reads from `paymentQuerySvc.getActiveByOrderId` — the
  * AUTHORITATIVE balance/status/version the ops resolver STAMPS into the refund
@@ -156,6 +177,24 @@ export interface OpsResolverDeps {
   readonly lookupActivePayment?: (
     orderId: string,
   ) => Promise<OpsResolverPayment | null>;
+  /**
+   * BKL-088 — fetch an ops-alert by id for `ops.alert.resolve.staff`. Returns
+   * null when absent; a THROW is treated as null (fail-closed → REFUSE
+   * not_actionable). The resolver projects `{id,status}` so the pack guard fails
+   * closed on an absent / terminal alert. When this dep is ABSENT the alert
+   * verb REFUSEs every request (alert null) — inert until wired. NO NL→id
+   * resolution: alerts are referred by the id the ops_snapshot lists (id-literal
+   * v1, per BKL-088 deliverable 4).
+   */
+  readonly lookupAlert?: (alertId: string) => Promise<OpsResolverAlert | null>;
+  /**
+   * BKL-088 — fetch a conversation-incident by id for
+   * `incident.ticket.close.staff`. Same fail-closed / id-literal contract as
+   * {@link lookupAlert}.
+   */
+  readonly lookupIncident?: (
+    incidentId: string,
+  ) => Promise<OpsResolverIncident | null>;
 }
 
 /**
@@ -603,6 +642,57 @@ async function opsStateForEnvelope(
     // DB-stamped balance payload (STOP-GATE B). The stamped payload is the FINAL
     // payload the envelope is rebuilt with (intentHash covers it).
     return resolveRefundTarget(deps, envelope, payload);
+  }
+
+  if (envelope.kind === "ops.alert.resolve.staff") {
+    // BKL-088 — project the alert `{id,status}` from the OpsAlert read-model so
+    // pack-ops' `requireAlertActionable` fails closed on an absent / terminal
+    // alert BEFORE the staff-verb EXECUTE. id-literal (no NL→id): the persona
+    // quotes the alert id from ops_snapshot. Absent dep / absent id ⇒ null ⇒
+    // honest REFUSE not_actionable.
+    const alertId = typeof payload.alertId === "string" ? payload.alertId : "";
+    const alert =
+      alertId === "" || deps.lookupAlert === undefined
+        ? null
+        : await safeLookup(() => deps.lookupAlert!(alertId), "alert");
+    return {
+      state: {
+        ctx: {
+          channel: "staff",
+          customerId: null,
+          staffId: deps.staffId,
+          tenantId: deps.tenantId,
+        },
+        alert,
+      },
+    };
+  }
+
+  if (envelope.kind === "incident.ticket.close.staff") {
+    // BKL-088 — project the incident `{id,status}` from the ConversationIncident
+    // read-model so pack-ops' `requireIncidentActionable` fails closed on an
+    // absent / terminal incident. Same id-literal / fail-closed contract as the
+    // alert branch above.
+    const incidentId =
+      typeof payload.incidentId === "string" ? payload.incidentId : "";
+    const incident =
+      incidentId === "" || deps.lookupIncident === undefined
+        ? null
+        : await safeLookup(
+            () => deps.lookupIncident!(incidentId),
+            "incident",
+          );
+    return {
+      state: {
+        ctx: {
+          channel: "staff",
+          customerId: null,
+          staffId: deps.staffId,
+          tenantId: deps.tenantId,
+        },
+        incident,
+      },
+    };
   }
 
   // Unrecognized kind — no per-envelope state (falls back to resolution.state;

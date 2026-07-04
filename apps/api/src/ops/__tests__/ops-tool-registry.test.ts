@@ -29,6 +29,8 @@ function makeDeps(over: Partial<OpsToolRegistryDeps> = {}): {
   writeAdjudicatedRefund: ReturnType<typeof vi.fn>;
   publishPaymentStatusChanged: ReturnType<typeof vi.fn>;
   appendRefundEventLog: ReturnType<typeof vi.fn>;
+  resolveAlertFromEnvelope: ReturnType<typeof vi.fn>;
+  closeIncidentFromEnvelope: ReturnType<typeof vi.fn>;
 } {
   const medusaAdjudicated = vi.fn(async () => ({ product: { id: "prod_1" } }));
   const writeAdjudicatedNote = vi.fn(async () => ({
@@ -62,6 +64,13 @@ function makeDeps(over: Partial<OpsToolRegistryDeps> = {}): {
     async (_event: PaymentStatusChangedEvent) => {},
   );
   const appendRefundEventLog = vi.fn(async () => {});
+  // BKL-088 — the alert-resolve + incident-close SYSTEM-write layer spies.
+  const resolveAlertFromEnvelope = vi.fn(async () => ({
+    result: { status: "RESOLVED" },
+  }));
+  const closeIncidentFromEnvelope = vi.fn(async () => ({
+    result: { status: "RESOLVED" },
+  }));
   const deps: OpsToolRegistryDeps = {
     medusaAdjudicated: medusaAdjudicated as never,
     auditSink: AUDIT_SINK,
@@ -70,6 +79,8 @@ function makeDeps(over: Partial<OpsToolRegistryDeps> = {}): {
     paymentCmdSvc: { writeAdjudicatedRefund },
     publishPaymentStatusChanged,
     appendRefundEventLog,
+    opsAlertSvc: { resolveAlertFromEnvelope },
+    incidentSvc: { closeIncidentFromEnvelope },
     ...over,
   };
   return {
@@ -81,6 +92,8 @@ function makeDeps(over: Partial<OpsToolRegistryDeps> = {}): {
     writeAdjudicatedRefund,
     publishPaymentStatusChanged,
     appendRefundEventLog,
+    resolveAlertFromEnvelope,
+    closeIncidentFromEnvelope,
   };
 }
 
@@ -103,14 +116,17 @@ describe("ops tool registry — shape", () => {
     }
   });
 
-  it("registers exactly the four governed ops verbs", () => {
+  it("registers exactly the six governed ops verbs", () => {
     const { deps } = makeDeps();
     const registry = createOpsToolRegistry(deps);
     expect(registry.hasCapability("product.availability.set")).toBe(true);
     expect(registry.hasCapability("order.note.add")).toBe(true);
     expect(registry.hasCapability("order.status.transition")).toBe(true);
-    // BKL-085 — the refunds-by-message verb is now the fourth governed ops tool.
+    // BKL-085 — the refunds-by-message verb.
     expect(registry.hasCapability("payment.refund.issue")).toBe(true);
+    // BKL-088 — the two OWNED resolution verbs.
+    expect(registry.hasCapability("ops.alert.resolve.staff")).toBe(true);
+    expect(registry.hasCapability("incident.ticket.close.staff")).toBe(true);
   });
 
   it("staffIdFromCapsule reads actor.staffId, never a model field", () => {
@@ -396,5 +412,67 @@ describe("payment.refund.issue executor — POST-adjudication refund write (BKL-
       ),
     ).resolves.toMatchObject({ paymentId: "pay_1", newStatus: "refunded" });
     expect(writeAdjudicatedRefund).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("ops.alert.resolve.staff executor — D10 SYSTEM-write layer (BKL-088)", () => {
+  it("builds a SYSTEM ops.alert.resolve envelope: FORCED resolvedBy=staff:<id> + resolutionType=STAFF, principal=system, taint=SYSTEM", async () => {
+    const { deps, resolveAlertFromEnvelope } = makeDeps();
+    const tool = toolByKind(deps, "ops.alert.resolve.staff");
+    // The `reason` rides the staff-verb envelope (audited) — it is NOT forwarded
+    // to the SYSTEM payload (which has no reason slot).
+    const out = await tool.execute(
+      { alertId: "alert_1", reason: "condição normalizada" },
+      capsule("staff_9"),
+    );
+    expect(resolveAlertFromEnvelope).toHaveBeenCalledTimes(1);
+    const [envelope, state] = resolveAlertFromEnvelope.mock.calls[0]!;
+    expect(envelope.kind).toBe("ops.alert.resolve");
+    expect(envelope.actor.principal).toBe("system");
+    // A SYSTEM write is role-free by contract (never admin:+role).
+    expect(envelope.actor.role).toBeUndefined();
+    expect(envelope.taint).toBe("SYSTEM");
+    expect(envelope.payload).toEqual({
+      id: "alert_1",
+      resolvedBy: "staff:staff_9", // FROM the Capsule, never the model
+      resolutionType: "STAFF",
+    });
+    // No reason leaked into the SYSTEM payload.
+    expect(envelope.payload).not.toHaveProperty("reason");
+    expect(state).toEqual({});
+    expect(out).toMatchObject({ alertId: "alert_1", status: "RESOLVED" });
+  });
+
+  it("degrades resolvedBy to a traceable marker when the Capsule carries no staffId (never fabricates a staff id)", async () => {
+    const { deps, resolveAlertFromEnvelope } = makeDeps();
+    const tool = toolByKind(deps, "ops.alert.resolve.staff");
+    await tool.execute({ alertId: "alert_1" }, capsule(null));
+    const [envelope] = resolveAlertFromEnvelope.mock.calls[0]!;
+    expect((envelope.payload as { resolvedBy: string }).resolvedBy).toBe(
+      "ops:unknown",
+    );
+  });
+});
+
+describe("incident.ticket.close.staff executor — D10 SYSTEM-write layer (BKL-088)", () => {
+  it("builds a SYSTEM incident.ticket.close envelope: FORCED resolvedBy=staff:<id> + resolutionType=STAFF + closingTurnId null", async () => {
+    const { deps, closeIncidentFromEnvelope } = makeDeps();
+    const tool = toolByKind(deps, "incident.ticket.close.staff");
+    const out = await tool.execute(
+      { incidentId: "inc_1" },
+      capsule("staff_3"),
+    );
+    expect(closeIncidentFromEnvelope).toHaveBeenCalledTimes(1);
+    const [envelope] = closeIncidentFromEnvelope.mock.calls[0]!;
+    expect(envelope.kind).toBe("incident.ticket.close");
+    expect(envelope.actor.principal).toBe("system");
+    expect(envelope.taint).toBe("SYSTEM");
+    expect(envelope.payload).toEqual({
+      id: "inc_1",
+      resolvedBy: "staff:staff_3",
+      resolutionType: "STAFF",
+      closingTurnId: null,
+    });
+    expect(out).toMatchObject({ incidentId: "inc_1", status: "RESOLVED" });
   });
 });

@@ -411,11 +411,22 @@ export const INTENT_KIND_FIELD_RULES: Readonly<Record<string, ReadonlyArray<stri
   "customer.anonymize": ["reason", "otpToken"],
   "customer.anonymize.cancel": ["reason", "otpToken"],
 
-  // ── Ops Pack free-form fields (NEW-032 slice C1) ───────────────────────
+  // ── Ops Pack free-form fields (NEW-032 slice C1 + BKL-088) ─────────────
   // `ProductAvailabilitySetPayload` is bounded (productId opaque id +
   // available boolean) EXCEPT the optional free-form `reason` operator note.
   // Over-redact `reason` — same posture as order/payment status-transition.
   "product.availability.set": ["reason"],
+  // BKL-088 — the two OWNED ops-plane RESOLUTION verbs. Bounded payloads
+  // (`{alertId|incidentId}` opaque id) EXCEPT the optional free-form `reason`
+  // operator note, which an owner could type with a customer name / detail in
+  // it. Over-redact `reason` (same posture as product.availability.set). The
+  // SAME-named SYSTEM write layer (`ops.alert.resolve` / `incident.ticket.close`)
+  // carries only `{id, resolvedBy:"staff:<id>", resolutionType}` — opaque ids +
+  // a role-free staff token — so it needs no rule (id-only, PII-free) and is
+  // deliberately off KNOWN_INTENT_KINDS, hence not iterated by the conformance
+  // corpus; the reason never reaches it.
+  "ops.alert.resolve.staff": ["reason"],
+  "incident.ticket.close.staff": ["reason"],
 
   // ── Wrapper-level intent kinds (audit-2026-05-25 I3) ────────────────────
   // The 4 wrapper meta types (twilio/stripe/medusa/medusa-store) emit

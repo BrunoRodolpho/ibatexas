@@ -552,6 +552,17 @@ const ADVERTISED_NOT_REGISTERED_WHITELIST: ReadonlySet<string> = new Set([
   // CHAT_DRIVABLE_TOOL_KINDS), so it has no registered CHAT tool.
   // Advertised-but-unregistered on the chat roster is EXPECTED, not drift.
   "staff:payment.refund.issue",
+  // BKL-088: `ops.alert.resolve.staff` + `incident.ticket.close.staff` (the
+  // two OWNED ops-plane RESOLUTION verbs) are advertised by the ops planner
+  // under the staff probe. Like `product.availability.set`, they are OPS-plane
+  // verbs proposed through the OPS conductor + registered in the OPS tool
+  // registry — NEVER the customer/LLM chat surface (absent from
+  // CHAT_DRIVABLE_TOOL_KINDS), so they have no registered CHAT tool.
+  // Advertised-but-unregistered on the chat roster is EXPECTED, not drift.
+  // (`opsPlaneDriftProblems` separately verifies they ARE registered on the OPS
+  // registry with capability===intentKind.)
+  "staff:ops.alert.resolve.staff",
+  "staff:incident.ticket.close.staff",
 ]);
 
 export interface ToolRosterDriftOptions {

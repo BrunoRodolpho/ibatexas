@@ -238,6 +238,16 @@ export function createOpsAlertService(options?: OpsAlertServiceOptions) {
     },
 
     /**
+     * By-id read. Returns the alert row or `null` when the id does not exist.
+     * Backs the BKL-088 ops-plane resolver: it projects `{id,status}` into the
+     * pack-ops `OpsState.alert` so `requireAlertActionable` can fail closed on
+     * an absent / already-terminal alert BEFORE the staff-verb adjudication.
+     */
+    async get(id: string): Promise<OpsAlert | null> {
+      return prisma.opsAlert.findUnique({ where: { id } })
+    },
+
+    /**
      * Filtered alert list + an INDEPENDENT open count. `openCount` is a
      * standalone COUNT of NON_TERMINAL (OPEN + ACKNOWLEDGED) — never `rows.length`
      * and never affected by the list filters (it backs the inbox badge, so an
