@@ -26,26 +26,17 @@
 // with `refundedAmountCentavos > 0`, and the magnitude is `refundedAmountCentavos`.
 
 import { prisma } from "../client.js"
-import type { PaymentStatus as PrismaPaymentStatus } from "../generated/prisma-client/client.js"
+import {
+  SETTLED_PAYMENT_STATUSES_IN,
+  assertYmd,
+  localDateStr,
+  localDayStartUtc,
+  resolveTimezone,
+} from "./__shared__/day-window.js"
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const DEFAULT_TIMEZONE = "America/Sao_Paulo"
 const DEFAULT_TOP_ITEMS_LIMIT = 10
-
-/**
- * The capture set — statuses whose row had its `amountInCentavos` collected and
- * so is eligible to carry a refund. `satisfies`-checked against the Prisma
- * `PaymentStatus` enum (a typo'd status is a COMPILE error), WITHOUT a value
- * import of the `@ibatexas/types` PaymentStatus enum (that value import, eagerly
- * loaded via `@ibatexas/domain`'s index, breaks any test that partial-mocks
- * `@ibatexas/types`). Kept identical to day-close.service.ts.
- */
-const SETTLED_PAYMENT_STATUSES = [
-  "paid",
-  "partially_refunded",
-  "refunded",
-] as const satisfies readonly PrismaPaymentStatus[]
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -133,55 +124,8 @@ interface LineItem {
   priceInCentavos: number
 }
 
-// ── Day-boundary helpers (DST-safe, host-TZ independent) ───────────────────────
-
-/**
- * Offset (ms) to ADD to a UTC instant to read its wall clock in `tz`
- * (i.e. `wallClockAsUtc − instant`). Derived from Intl.formatToParts at the
- * actual instant, so it reflects the correct offset across DST. Uses only Date.UTC
- * and `…Z` literals, so it never depends on the host machine's local timezone.
- * (Identical to day-close.service.ts.)
- */
-function tzOffsetMs(instant: Date, tz: string): number {
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: tz,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  }).formatToParts(instant)
-  const get = (t: string): number =>
-    Number.parseInt(parts.find((p) => p.type === t)?.value ?? "0", 10)
-  let hour = get("hour")
-  if (hour === 24) hour = 0 // some engines emit 24 for midnight
-  const asUtc = Date.UTC(get("year"), get("month") - 1, get("day"), hour, get("minute"), get("second"))
-  return asUtc - instant.getTime()
-}
-
-/**
- * The UTC instant of local midnight (00:00:00.000) for `dateStr` (YYYY-MM-DD)
- * in `tz`. Sao Paulo is a fixed −03:00 offset (Brazil dropped DST in 2019), so a
- * single offset resolution is exact; for DST zones it is correct except within
- * the ≤1h transition window around local midnight.
- */
-function localDayStartUtc(dateStr: string, tz: string): Date {
-  const approx = new Date(`${dateStr}T00:00:00.000Z`)
-  return new Date(approx.getTime() - tzOffsetMs(approx, tz))
-}
-
-/** The local calendar day (YYYY-MM-DD, en-CA) of a UTC instant in `tz`. */
-function localDateStr(instant: Date, tz: string): string {
-  return instant.toLocaleDateString("en-CA", { timeZone: tz })
-}
-
-function assertYmd(label: string, value: string): void {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
-    throw new RangeError(`${label} must be YYYY-MM-DD, got "${value}"`)
-  }
-}
+// The DST day-window + settled-status helpers live in ./__shared__/day-window.ts
+// (shared with day-close.service.ts). Only the itemsJson-parse helper is local.
 
 /** Narrow a raw `itemsJson` value to a LineItem[] (non-array → []). */
 function parseLineItems(itemsJson: unknown): LineItem[] {
@@ -196,7 +140,7 @@ export function createOrderAnalyticsService(): OrderAnalyticsService {
     async getTopItems(range, opts) {
       assertYmd("getTopItems: range.from", range.from)
       assertYmd("getTopItems: range.to", range.to)
-      const timezone = opts?.timezone ?? process.env.RESTAURANT_TIMEZONE ?? DEFAULT_TIMEZONE
+      const timezone = resolveTimezone(opts)
       const limit = opts?.limit ?? DEFAULT_TOP_ITEMS_LIMIT
       const windowStart = localDayStartUtc(range.from, timezone)
       const windowEnd = localDayStartUtc(range.to, timezone)
@@ -251,7 +195,7 @@ export function createOrderAnalyticsService(): OrderAnalyticsService {
     async getRefundAnalytics(range, opts) {
       assertYmd("getRefundAnalytics: range.from", range.from)
       assertYmd("getRefundAnalytics: range.to", range.to)
-      const timezone = opts?.timezone ?? process.env.RESTAURANT_TIMEZONE ?? DEFAULT_TIMEZONE
+      const timezone = resolveTimezone(opts)
       const windowStart = localDayStartUtc(range.from, timezone)
       const windowEnd = localDayStartUtc(range.to, timezone)
 
@@ -261,7 +205,7 @@ export function createOrderAnalyticsService(): OrderAnalyticsService {
       const payments = await prisma.payment.findMany({
         where: {
           order: { medusaCreatedAt: { gte: windowStart, lt: windowEnd } },
-          status: { in: SETTLED_PAYMENT_STATUSES as unknown as PrismaPaymentStatus[] },
+          status: { in: SETTLED_PAYMENT_STATUSES_IN },
           refundedAmountCentavos: { gt: 0 },
         },
         select: {
