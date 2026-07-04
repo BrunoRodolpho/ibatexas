@@ -20,6 +20,7 @@ import {
   MessagesSquare,
   Megaphone,
   Siren,
+  Gauge,
 } from 'lucide-react'
 import { AdminSidebarBase, INCIDENT_LABELS, type AdminSidebarNavGroup } from '@ibatexas/ui'
 import { useOpenIncidentCount } from '@/domains/admin/admin.hooks'
@@ -36,6 +37,7 @@ const baseGroups: AdminSidebarNavGroup[] = [
   {
     label: 'Operações',
     items: [
+      { key: 'painel-operacional', label: 'Painel Operacional', href: '/admin/painel-operacional', icon: Gauge },
       { key: 'pedidos', label: 'Pedidos', href: '/admin/pedidos', icon: ClipboardList },
       { key: 'reservas', label: 'Reservas', href: '/admin/reservas', icon: CalendarDays },
       { key: 'incidentes', label: INCIDENT_LABELS.nav, href: '/admin/incidentes', icon: AlertTriangle },
