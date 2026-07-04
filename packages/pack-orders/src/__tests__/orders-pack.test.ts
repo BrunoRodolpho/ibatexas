@@ -1068,6 +1068,124 @@ describe("ordersPolicyBundle — order.review.submit", () => {
   })
 })
 
+// ── BKL-090 — kernel transition-legality guard ────────────────────────────
+
+/**
+ * Envelope for `order.status.transition`. `sessionId` defaults to the ops/staff
+ * `admin:` namespace (the live path this guard exists for); pass a non-`admin:`
+ * id to exercise the lenient-on-absent generic contract.
+ */
+function transitionEnv(
+  newStatus: string,
+  opts: { orderId?: string; sessionId?: string } = {},
+): IntentEnvelope<OrderIntentKind, OrderPayload> {
+  return buildEnvelope({
+    kind: "order.status.transition",
+    payload: {
+      orderId: opts.orderId ?? "o-1",
+      newStatus,
+      actor: "admin",
+    } as OrderPayload,
+    actor: {
+      principal: "user",
+      sessionId: opts.sessionId ?? "admin:staff-1",
+      role: "OWNER",
+    },
+    taint: "TRUSTED",
+    nonce: "n-test",
+    createdAt: DET_TIME,
+  })
+}
+
+describe("ordersPolicyBundle — transition legality (BKL-090)", () => {
+  it("EXECUTE a legal advance (preparing → ready)", () => {
+    const decision = adjudicate(
+      transitionEnv("ready"),
+      state({ orderId: "o-1", fulfillmentStatus: "preparing" }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("EXECUTE")
+  })
+
+  it("REFUSE an illegal target (confirmed → delivered)", () => {
+    const decision = adjudicate(
+      transitionEnv("delivered"),
+      state({ orderId: "o-1", fulfillmentStatus: "confirmed" }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REFUSE")
+    if (decision.kind !== "REFUSE") return
+    expect(decision.refusal.code).toBe("order.status.transition_illegal")
+  })
+
+  it("REFUSE from a terminal current state (delivered → preparing)", () => {
+    const decision = adjudicate(
+      transitionEnv("preparing"),
+      state({ orderId: "o-1", fulfillmentStatus: "delivered" }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REFUSE")
+    if (decision.kind !== "REFUSE") return
+    expect(decision.refusal.code).toBe("order.status.terminal")
+  })
+
+  it("REFUSE an unknown CURRENT status (fail-closed)", () => {
+    const decision = adjudicate(
+      transitionEnv("ready"),
+      state({ orderId: "o-1", fulfillmentStatus: "bogus" }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REFUSE")
+    if (decision.kind !== "REFUSE") return
+    expect(decision.refusal.code).toBe("order.status.unknown")
+  })
+
+  it("REFUSE an unknown TARGET status", () => {
+    const decision = adjudicate(
+      transitionEnv("teleported"),
+      state({ orderId: "o-1", fulfillmentStatus: "preparing" }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REFUSE")
+    if (decision.kind !== "REFUSE") return
+    expect(decision.refusal.code).toBe("order.status.unknown")
+  })
+
+  it("REFUSE an ABSENT current status on the admin: ops plane (fail-closed)", () => {
+    const decision = adjudicate(
+      transitionEnv("ready"),
+      // No fulfillmentStatus projected — an admin: envelope MUST carry one.
+      state({ orderId: "o-1" }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REFUSE")
+    if (decision.kind !== "REFUSE") return
+    expect(decision.refusal.code).toBe("order.status.unknown")
+  })
+
+  it("lenient on an ABSENT status for a NON-admin session (no live caller; keeps generic contract EXECUTE)", () => {
+    const decision = adjudicate(
+      transitionEnv("ready", { sessionId: "s-1" }),
+      state({ orderId: "o-1" }),
+      ordersPolicyBundle,
+    )
+    // Non-admin + absent status → the legality guard SKIPS; executeW5Kinds runs.
+    expect(decision.kind).toBe("EXECUTE")
+  })
+
+  it("REFUSE no_order BEFORE the legality guard when the order is missing", () => {
+    const decision = adjudicate(
+      transitionEnv("ready"),
+      state({ orderId: null }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REFUSE")
+    if (decision.kind !== "REFUSE") return
+    // requireOrderIdForMutation precedes requireLegalStatusTransition.
+    expect(decision.refusal.code).toBe("order.not_found")
+  })
+})
+
 // ── Rehydrator ──────────────────────────────────────────────────────────
 
 describe("rehydrateOrderState", () => {

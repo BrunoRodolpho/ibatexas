@@ -48,6 +48,11 @@ import {
 import { createPixPendingDeferGuard } from "@adjudicate/pack-payments-pix"
 import { PII_PATTERNS } from "@ibatexas/pii"
 import {
+  canTransition,
+  isKnownOrderStatus,
+  isTerminalOrderStatus,
+} from "@ibatexas/types"
+import {
   refuseAllergensNotExplicit,
   refuseAmountExceedsLimit,
   refuseCartEmpty,
@@ -65,6 +70,9 @@ import {
   refuseOrderPastPonr,
   refuseOwnershipDenied,
   refuseSlotsIncomplete,
+  refuseTransitionIllegal,
+  refuseTransitionStatusUnknown,
+  refuseTransitionTerminal,
 } from "./refusals.js"
 import { resolveOwnership } from "@adjudicate/core"
 import {
@@ -384,6 +392,115 @@ const requireOrderIdForMutation: OrderGuard = (envelope, state) => {
       reason: "no_order",
     }),
   ])
+}
+
+// ── Kernel transition-legality guard (BKL-090) ──────────────────────────────
+//
+// The SECURITY-critical gate that makes an LLM-proposed kitchen-advance
+// (`order.status.transition`) safe to reach EXECUTE on the ops/staff plane.
+//
+// Before this guard, NEITHER this pack's bundle NOR the domain
+// `orderProjectionPolicyBundle` gated transition LEGALITY / TERMINAL state at
+// the kernel — BOTH deferred validity to the imperative executor
+// `executeTransition` (order-command.service.ts), which THROWS
+// `InvalidTransitionError` INSIDE the DB transaction. A throw is not a kernel
+// Decision: an illegal transition (e.g. delivered→preparing) reached kernel
+// EXECUTE and relied on an executor exception for safety. That is acceptable
+// for the TRUSTED system/admin executor path, but NOT for an LLM-proposed ops
+// verb. This guard closes the gap at the kernel for the composed (ops) path.
+//
+// DIVISION OF RESPONSIBILITY (kept crisp, do not blur):
+//   • KERNEL (this guard): LEGALITY (target ∈ legal-next(current)) + TERMINALITY
+//     (current has no legal next) + fail-closed on an unknown/absent status.
+//     REUSES `canTransition` / `isTerminalOrderStatus` / `isKnownOrderStatus`
+//     from `@ibatexas/types` — the SINGLE source of truth the executor imports
+//     too. It NEVER re-declares the transition graph.
+//   • EXECUTOR (order-command.service.ts): optimistic-CONCURRENCY (version race)
+//     + ATOMICITY. A version race is inherently executor-transactional — the
+//     kernel adjudicates a pre-read snapshot and cannot see a concurrent bump —
+//     so the executor's version check AND its `canTransition` throw REMAIN as
+//     the last transactional line (defense-in-depth against a resolve→execute
+//     race). This guard does NOT attempt optimistic concurrency.
+//
+// STATE-SHAPE / FAIL-CLOSED posture (investigated per live path):
+//   • This pack's bundle for `order.status.transition` is reached LIVE only by
+//     the ops/staff plane (`composePolicyRouter` → this pack; `admin:<staffId>`
+//     session). The ops resolver projects the CURRENT status into
+//     `state.ctx.fulfillmentStatus`; a missing order yields `orderId:null` ⇒
+//     `requireOrderIdForMutation` REFUSEs `no_order` BEFORE this guard runs.
+//   • The admin HTTP command-service / subscriber / job paths adjudicate the
+//     kind against the DOMAIN `orderProjectionPolicyBundle` (NOT this bundle),
+//     whose executor-throw contract their tests assert. This guard neither runs
+//     nor changes anything there.
+//   • Fail-closed on an ABSENT status is scoped to `admin:` sessions ONLY. A
+//     non-`admin:` envelope that projects no status (the pack's generic
+//     conformance contract — it has no live caller for this kind) keeps its
+//     existing verdict, so no green path/test flips. An `admin:` envelope MUST
+//     carry a projected status; its absence is a resolver defect → REFUSE.
+const requireLegalStatusTransition: OrderGuard = (envelope, state) => {
+  if (envelope.kind !== "order.status.transition") return null
+  const current = state.ctx.fulfillmentStatus
+  const target = (envelope.payload as { newStatus?: unknown }).newStatus
+  const isStaffPlane = envelope.actor.sessionId.startsWith("admin:")
+
+  // (1) Absent / non-string current status.
+  if (typeof current !== "string") {
+    // Non-admin generic contract projects no status here (no live caller) —
+    // leave its verdict untouched. The admin: ops path MUST project a status;
+    // its absence fails closed.
+    if (!isStaffPlane) return null
+    return decisionRefuse(
+      refuseTransitionStatusUnknown("current_status_absent"),
+      [
+        basis("state", BASIS_CODES.state.TRANSITION_ILLEGAL, {
+          reason: "current_status_absent",
+        }),
+      ],
+    )
+  }
+  // (2) Current status is not one of the seven known statuses — fail closed.
+  if (!isKnownOrderStatus(current)) {
+    return decisionRefuse(refuseTransitionStatusUnknown(`current=${current}`), [
+      basis("state", BASIS_CODES.state.TRANSITION_ILLEGAL, {
+        reason: "current_status_unknown",
+        current,
+      }),
+    ])
+  }
+  // (3) Target must be one of the seven known statuses.
+  if (typeof target !== "string" || !isKnownOrderStatus(target)) {
+    return decisionRefuse(
+      refuseTransitionStatusUnknown(`target=${String(target)}`),
+      [
+        basis("state", BASIS_CODES.state.TRANSITION_ILLEGAL, {
+          reason: "target_status_unknown",
+          target: typeof target === "string" ? target : null,
+        }),
+      ],
+    )
+  }
+  // (4) Terminal current state — a distinct refusal from a merely illegal
+  //     target (delivered / canceled have no legal next state).
+  if (isTerminalOrderStatus(current)) {
+    return decisionRefuse(refuseTransitionTerminal(current), [
+      basis("state", BASIS_CODES.state.TERMINAL_STATE, {
+        reason: "current_status_terminal",
+        current,
+      }),
+    ])
+  }
+  // (5) Target is not a legal next state from the current status.
+  if (!canTransition(current, target)) {
+    return decisionRefuse(refuseTransitionIllegal(current, target), [
+      basis("state", BASIS_CODES.state.TRANSITION_ILLEGAL, {
+        reason: "transition_not_legal",
+        from: current,
+        to: target,
+      }),
+    ])
+  }
+  // Legal transition — fall through to `executeW5Kinds` (business EXECUTE).
+  return null
 }
 
 const requireCancellable: OrderGuard = (envelope, state) => {
@@ -921,6 +1038,9 @@ export const ordersPolicyBundle: PolicyBundle<
   stateGuards: [
     requireCartIdForCartOps,
     requireOrderIdForMutation,
+    // BKL-090 — after requireOrderIdForMutation so a missing order REFUSEs
+    // `no_order` first; this guard then gates transition LEGALITY/terminality.
+    requireLegalStatusTransition,
     requireCancellable,
     requireAmendable,
     requireCartItemsForCheckout,

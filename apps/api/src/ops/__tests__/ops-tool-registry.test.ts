@@ -20,19 +20,30 @@ function makeDeps(over: Partial<OpsToolRegistryDeps> = {}): {
   deps: OpsToolRegistryDeps;
   medusaAdjudicated: ReturnType<typeof vi.fn>;
   writeAdjudicatedNote: ReturnType<typeof vi.fn>;
+  writeAdjudicatedStatusTransition: ReturnType<typeof vi.fn>;
 } {
   const medusaAdjudicated = vi.fn(async () => ({ product: { id: "prod_1" } }));
   const writeAdjudicatedNote = vi.fn(async () => ({
     noteId: "note_1",
     orderId: "order_1",
   }));
+  const writeAdjudicatedStatusTransition = vi.fn(async () => ({
+    version: 3,
+    previousStatus: "preparing",
+    newStatus: "ready",
+  }));
   const deps: OpsToolRegistryDeps = {
     medusaAdjudicated: medusaAdjudicated as never,
     auditSink: AUDIT_SINK,
-    orderCmdSvc: { writeAdjudicatedNote },
+    orderCmdSvc: { writeAdjudicatedNote, writeAdjudicatedStatusTransition },
     ...over,
   };
-  return { deps, medusaAdjudicated, writeAdjudicatedNote };
+  return {
+    deps,
+    medusaAdjudicated,
+    writeAdjudicatedNote,
+    writeAdjudicatedStatusTransition,
+  };
 }
 
 /** A Capsule stub carrying only the fields the ops executors read. */
@@ -54,11 +65,12 @@ describe("ops tool registry — shape", () => {
     }
   });
 
-  it("registers exactly the two governed ops verbs", () => {
+  it("registers exactly the three governed ops verbs", () => {
     const { deps } = makeDeps();
     const registry = createOpsToolRegistry(deps);
     expect(registry.hasCapability("product.availability.set")).toBe(true);
     expect(registry.hasCapability("order.note.add")).toBe(true);
+    expect(registry.hasCapability("order.status.transition")).toBe(true);
     expect(registry.hasCapability("payment.refund.issue")).toBe(false);
   });
 
@@ -136,5 +148,47 @@ describe("order.note.add executor — POST-adjudication note write", () => {
     await tool.execute({ orderId: "o1", body: "x" }, capsule(null));
     const [, extras] = writeAdjudicatedNote.mock.calls[0]!;
     expect(extras).toEqual({ author: "staff" });
+  });
+});
+
+describe("order.status.transition executor — POST-adjudication kitchen-advance (BKL-090)", () => {
+  it("calls writeAdjudicatedStatusTransition with actor=admin + Capsule staffId; never the model actor", async () => {
+    const { deps, writeAdjudicatedStatusTransition } = makeDeps();
+    const tool = toolByKind(deps, "order.status.transition");
+    await tool.execute(
+      // The model payload's actor/actorId/expectedVersion MUST be ignored.
+      {
+        orderId: "order_1",
+        newStatus: "ready",
+        actor: "customer",
+        actorId: "forged",
+        expectedVersion: 99,
+      },
+      capsule("staff_7"),
+    );
+    expect(writeAdjudicatedStatusTransition).toHaveBeenCalledTimes(1);
+    const [payload, extras] = writeAdjudicatedStatusTransition.mock.calls[0]!;
+    // Only orderId + newStatus are forwarded (no model expectedVersion).
+    expect(payload).toEqual({ orderId: "order_1", newStatus: "ready" });
+    // Authoritative provenance: admin + the Capsule staffId, never the payload.
+    expect(extras.actor).toBe("admin");
+    expect(extras.actorId).toBe("staff_7");
+    expect((extras as { reason?: string }).reason).toBe(
+      "Status avançado pela operação (ops).",
+    );
+  });
+
+  it("omits actorId when the Capsule carries no staffId (never fabricates one)", async () => {
+    const { deps, writeAdjudicatedStatusTransition } = makeDeps();
+    const tool = toolByKind(deps, "order.status.transition");
+    await tool.execute(
+      { orderId: "o1", newStatus: "ready" },
+      capsule(null),
+    );
+    const [, extras] = writeAdjudicatedStatusTransition.mock.calls[0]!;
+    expect(extras).toEqual({
+      actor: "admin",
+      reason: "Status avançado pela operação (ops).",
+    });
   });
 });

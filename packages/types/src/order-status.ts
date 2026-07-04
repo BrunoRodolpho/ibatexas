@@ -29,6 +29,27 @@ export function canTransition(from: OrderFulfillmentStatus, to: OrderFulfillment
   return VALID_TRANSITIONS[from]?.includes(to) ?? false
 }
 
+/**
+ * Type-guard: is `s` one of the seven known fulfillment statuses? Reads the
+ * same `VALID_TRANSITIONS` table (its keys ARE the status universe), so it can
+ * never drift from the state machine. Used by the kernel transition-legality
+ * guard (`@ibatexas/pack-orders`) to fail closed on an unknown current/target
+ * status rather than trust an arbitrary string.
+ */
+export function isKnownOrderStatus(s: string): s is OrderFulfillmentStatus {
+  return Object.prototype.hasOwnProperty.call(VALID_TRANSITIONS, s)
+}
+
+/**
+ * Is `status` terminal — i.e. has NO legal next state? Derived from the SAME
+ * `VALID_TRANSITIONS` table (`delivered` / `canceled` map to `[]`), so terminal
+ * membership is defined in exactly one place. The kernel legality guard emits a
+ * distinct `TERMINAL_STATE` refusal for this case (vs. a merely illegal target).
+ */
+export function isTerminalOrderStatus(status: OrderFulfillmentStatus): boolean {
+  return (VALID_TRANSITIONS[status]?.length ?? 0) === 0
+}
+
 /** Get the primary "advance" target for a given status (first non-cancel transition). */
 export function getNextStatus(current: OrderFulfillmentStatus): OrderFulfillmentStatus | null {
   const targets = VALID_TRANSITIONS[current]

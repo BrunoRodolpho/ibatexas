@@ -113,6 +113,8 @@ export {
   OrderFulfillmentStatus,
   canTransition,
   getNextStatus,
+  isKnownOrderStatus,
+  isTerminalOrderStatus,
   ORDER_STATUS_LABELS_PT,
 } from "./order-status.js"
 

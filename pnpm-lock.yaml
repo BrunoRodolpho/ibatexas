@@ -976,6 +976,9 @@ importers:
       '@ibatexas/pii':
         specifier: workspace:*
         version: link:../pii
+      '@ibatexas/types':
+        specifier: workspace:*
+        version: link:../types
     devDependencies:
       '@adjudicate/analyze':
         specifier: ^0.4.2

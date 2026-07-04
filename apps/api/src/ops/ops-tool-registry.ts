@@ -14,6 +14,11 @@
 //     write; the composed-router Decision was already produced by the conductor
 //     SUBMIT stage — this executor performs NO adjudication). Staff notes are
 //     internal by default. riskLevel "low".
+//   - order.status.transition → `orderCmdSvc.writeAdjudicatedStatusTransition`
+//     (BKL-090 kitchen-advance; the POST-adjudication write). The composed router
+//     already ran the BKL-090 legality guard + staffRoleGuard at SUBMIT; this
+//     executor performs NO adjudication and forces actor=admin + Capsule staffId.
+//     riskLevel "medium".
 //
 // `staffId` (audit sourceSubject / note authorId) is read from the per-turn
 // `Capsule.actor.staffId` — the AUTHORITATIVE identity the ops route stamps from
@@ -32,7 +37,10 @@ import {
 import type { AuditSink } from "@ibatexas/audit-sink";
 import type { MedusaAdjudicatedArgs } from "@ibatexas/tools";
 import type { AddNoteResult } from "@ibatexas/domain";
-import type { OrderNoteAddPayload } from "@ibatexas/pack-orders";
+import type {
+  OrderNoteAddPayload,
+  OrderStatusTransitionPayload,
+} from "@ibatexas/pack-orders";
 import type { ProductAvailabilitySetPayload } from "@ibatexas/pack-ops";
 
 /** The injected `medusaAdjudicated` shape (typeof `@ibatexas/tools`'s export). */
@@ -56,13 +64,31 @@ export interface OpsNoteWriter {
   ): Promise<AddNoteResult>;
 }
 
+/** Authoritative provenance for a status-transition write — structural mirror
+ *  of the domain `StatusTransitionAttribution` (not re-exported here). On the
+ *  ops plane the executor stamps `actor: "admin"` + the Capsule staffId. */
+export interface OpsStatusTransitionAttribution {
+  readonly actor: "admin" | "system" | "customer";
+  readonly actorId?: string;
+  readonly reason?: string;
+}
+
+/** The single status-transition-write method the ops registry needs (structural
+ *  subset of `OrderCommandService.writeAdjudicatedStatusTransition`, BKL-090). */
+export interface OpsStatusWriter {
+  writeAdjudicatedStatusTransition(
+    payload: { orderId: string; newStatus: string; expectedVersion?: number },
+    extras: OpsStatusTransitionAttribution,
+  ): Promise<{ version: number; previousStatus: string; newStatus: string }>;
+}
+
 export interface OpsToolRegistryDeps {
   /** `medusaAdjudicated` (injected for testability). */
   readonly medusaAdjudicated: MedusaAdjudicatedFn;
   /** Audit sink threaded into the egress call (getAuditSink() at boot). */
   readonly auditSink: AuditSink;
-  /** The order command service's POST-adjudication note writer. */
-  readonly orderCmdSvc: OpsNoteWriter;
+  /** The order command service's POST-adjudication writers (note + transition). */
+  readonly orderCmdSvc: OpsNoteWriter & OpsStatusWriter;
   /** Best-effort logger forwarded to the egress wrapper. */
   readonly log?: {
     readonly warn?: (...args: unknown[]) => void;
@@ -141,7 +167,33 @@ async function executeNote(
   });
 }
 
-/** The two governed ops MUTATING tools (capability === intentKind). */
+/**
+ * Executor for `order.status.transition` (BKL-090 kitchen-advance) — the
+ * POST-adjudication write via `writeAdjudicatedStatusTransition`. The composed
+ * router already produced the Decision (carrying the BKL-090 legality guard +
+ * `staffRoleGuard`) at the conductor SUBMIT stage; this executor performs NO
+ * adjudication. `actor` is forced to `"admin"` and `actorId` is the Capsule
+ * staffId — NEVER the model-parsed `payload.actor`/`payload.actorId`. The model
+ * payload's `expectedVersion` is deliberately NOT forwarded (a kitchen-advance
+ * is a fresh operator command, not a version-snapshotted two-step confirm); the
+ * executor's `canTransition` re-read throw remains the last transactional line.
+ */
+async function executeStatusTransition(
+  deps: OpsToolRegistryDeps,
+  payload: OrderStatusTransitionPayload,
+  staffId: string | null,
+): Promise<{ version: number; previousStatus: string; newStatus: string }> {
+  return deps.orderCmdSvc.writeAdjudicatedStatusTransition(
+    { orderId: payload.orderId, newStatus: payload.newStatus },
+    {
+      actor: "admin",
+      ...(staffId ? { actorId: staffId } : {}),
+      reason: "Status avançado pela operação (ops).",
+    },
+  );
+}
+
+/** The three governed ops MUTATING tools (capability === intentKind). */
 function opsToolDefinitions(
   deps: OpsToolRegistryDeps,
 ): ReadonlyArray<ToolDefinition<unknown, unknown>> {
@@ -174,6 +226,22 @@ function opsToolDefinitions(
         executeNote(
           deps,
           input as OrderNoteAddPayload,
+          staffIdFromCapsule(ctx),
+        ),
+    },
+    {
+      id: "ibatexas.ops.orderStatusTransition.v1",
+      capability: asCapability("order.status.transition"),
+      intentKind: asIntentKind("order.status.transition"),
+      description:
+        "Avançar um pedido para o próximo status da cozinha/entrega (ex.: preparando → pronto).",
+      inputSchema: {},
+      outputSchema: {},
+      riskLevel: "medium",
+      execute: (input, ctx) =>
+        executeStatusTransition(
+          deps,
+          input as OrderStatusTransitionPayload,
           staffIdFromCapsule(ctx),
         ),
     },

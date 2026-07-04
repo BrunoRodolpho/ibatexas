@@ -133,6 +133,9 @@ export {
   refuseOrderPastPonr,
   refuseQuantityOverLimit,
   refuseSlotsIncomplete,
+  refuseTransitionIllegal,
+  refuseTransitionStatusUnknown,
+  refuseTransitionTerminal,
   portugueseRefusalMessages,
 } from "./refusals.js"
 
@@ -207,6 +210,10 @@ export const ordersPack = {
     "order.item.quantity_invalid",
     "order.item.quantity_over_limit",
     "order.review.rating_invalid",
+    // BKL-090 — kernel transition-legality guard refusal codes.
+    "order.status.transition_illegal",
+    "order.status.terminal",
+    "order.status.unknown",
     "order.default.deny",
   ],
   /**

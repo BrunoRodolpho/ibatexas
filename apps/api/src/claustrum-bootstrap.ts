@@ -2562,6 +2562,10 @@ export async function bootstrapClaustrum(
                   (order.paymentMethod as string | null) ?? null,
                 paymentStatus: order.paymentStatus,
                 totalInCentavos: order.totalInCentavos,
+                // BKL-090 — the CURRENT status the kitchen-advance legality
+                // guard reads (projected into pack-orders' ctx.fulfillmentStatus).
+                fulfillmentStatus:
+                  (order.fulfillmentStatus as string | null) ?? null,
               };
         },
       }),
