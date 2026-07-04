@@ -53,11 +53,13 @@ const REGISTRY_DEPS: OpsToolRegistryDeps = {
 const OPS_TOOLS = listOpsToolDefinitions(REGISTRY_DEPS);
 
 describe("opsPlaneDriftProblems", () => {
-  it("is GREEN for the real ops registry + ops_snapshot executor", () => {
+  it("is GREEN for the real ops registry + both advertised read executors", () => {
     const problems = opsPlaneDriftProblems({
       opsTools: OPS_TOOLS,
       composedIntentKinds: composedIntentKinds(),
-      readExecutorKeys: ["ops_snapshot"],
+      // Both staff-advertised reads (NEW-032 ops_snapshot + NEW-012
+      // ops_sales_analytics) must have a registered executor.
+      readExecutorKeys: ["ops_snapshot", "ops_sales_analytics"],
     });
     expect(problems).toEqual([]);
   });
@@ -100,7 +102,7 @@ describe("opsPlaneDriftProblems", () => {
     const problems = opsPlaneDriftProblems({
       opsTools: [...OPS_TOOLS, danglingTool],
       composedIntentKinds: composedIntentKinds(),
-      readExecutorKeys: ["ops_snapshot"],
+      readExecutorKeys: ["ops_snapshot", "ops_sales_analytics"],
     });
     expect(problems.length).toBeGreaterThan(0);
     expect(problems.join("\n")).toContain("ops.bogus.kind");

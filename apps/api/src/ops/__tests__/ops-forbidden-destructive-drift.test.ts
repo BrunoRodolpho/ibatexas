@@ -189,7 +189,8 @@ describe("BKL-096 — opsPlaneDriftProblems fails closed on a forbidden ops tool
     const problems = opsPlaneDriftProblems({
       opsTools: OPS_TOOLS,
       composedIntentKinds: composedIntentKinds(),
-      readExecutorKeys: ["ops_snapshot"],
+      // Both staff-advertised reads (NEW-032 + NEW-012) have registered executors.
+      readExecutorKeys: ["ops_snapshot", "ops_sales_analytics"],
     });
     expect(problems).toEqual([]);
   });
@@ -212,7 +213,7 @@ describe("BKL-096 — opsPlaneDriftProblems fails closed on a forbidden ops tool
     const problems = opsPlaneDriftProblems({
       opsTools: [...OPS_TOOLS, forbiddenTool],
       composedIntentKinds: composedIntentKinds(),
-      readExecutorKeys: ["ops_snapshot"],
+      readExecutorKeys: ["ops_snapshot", "ops_sales_analytics"],
     });
     expect(problems.length).toBeGreaterThan(0);
     const joined = problems.join("\n");

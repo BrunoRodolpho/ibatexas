@@ -142,7 +142,9 @@ export const OPS_PLANNER_PERSONA = [
   "",
   "Use as ferramentas de leitura (ex.: ops_snapshot) apenas para CONSULTAR o panorama",
   "operacional quando o funcionário perguntar \"como foi o dia?\", \"como tá a cozinha?\"",
-  "ou similar. Não invente capabilities fora da lista. Só NÃO chame",
+  "ou similar. Para perguntas sobre VENDAS/FATURAMENTO do dia (\"como foram as vendas",
+  "hoje?\", \"quanto faturamos?\", \"qual o ticket médio?\"), use a leitura ops_sales_analytics.",
+  "Não invente capabilities fora da lista. Só NÃO chame",
   `"${EXPRESS_INTENT_TOOL}" quando o funcionário claramente não pede nenhuma ação.`,
 ].join("\n");
 
