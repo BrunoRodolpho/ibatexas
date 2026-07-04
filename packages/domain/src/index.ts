@@ -213,6 +213,16 @@ export {
   type DayCloseMethodTotals,
 } from "./services/day-close.service.js"
 
+// Order analytics (NEW-013 slice) — read-only top-items + refund aggregation.
+export {
+  createOrderAnalyticsService,
+  type OrderAnalyticsService,
+  type AnalyticsRange,
+  type TopItem,
+  type RefundAnalytics,
+  type RefundTrendPoint,
+} from "./services/order-analytics.service.js"
+
 // Medusa → domain mapper
 export {
   toOrderProjectionData,

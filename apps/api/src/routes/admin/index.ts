@@ -14,6 +14,8 @@
 // POST /api/admin/tables                — create/update table
 // POST /api/admin/timeslots             — generate time slots for a date range
 // GET  /api/admin/analytics/summary     — analytics summary (orders, revenue, AOV)
+// GET  /api/admin/analytics/top-items    — best-sellers over a date range (manager)
+// GET  /api/admin/analytics/refunds      — refund count/total/trend over a range (manager)
 
 import { timingSafeEqual } from "node:crypto";
 import type { FastifyInstance } from "fastify";
@@ -26,6 +28,7 @@ import { reviewRoutes } from "./reviews.js";
 import { tableRoutes } from "./tables.js";
 import { deliveryZoneRoutes } from "./delivery-zones.js";
 import { analyticsRoutes } from "./analytics.js";
+import { adminAnalyticsReportRoutes } from "./analytics-reports.js";
 import { scheduleRoutes } from "./schedule.js";
 import { adminPaymentRoutes } from "./payments.js";
 import { adminOrderActionRoutes } from "./order-actions.js";
@@ -192,6 +195,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
   await server.register(tableRoutes);
   await server.register(deliveryZoneRoutes);
   await server.register(analyticsRoutes);
+  await server.register(adminAnalyticsReportRoutes);
   await server.register(scheduleRoutes);
   await server.register(adminPaymentRoutes);
   await server.register(adminOrderActionRoutes);

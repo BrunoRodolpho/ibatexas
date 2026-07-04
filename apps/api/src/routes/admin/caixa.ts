@@ -15,6 +15,7 @@ import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { createDayCloseService } from "@ibatexas/domain";
 import { requireManagerRole } from "../../middleware/staff-auth.js";
+import { todayInRestaurantTz } from "./_date-defaults.js";
 
 const DayCloseQuery = z.object({
   // Local calendar day. Optional — defaults to today in RESTAURANT_TIMEZONE.
@@ -23,13 +24,6 @@ const DayCloseQuery = z.object({
     .regex(/^\d{4}-\d{2}-\d{2}$/, "date must be YYYY-MM-DD")
     .optional(),
 });
-
-/** Today's YYYY-MM-DD in the restaurant's business timezone (matches the
- *  DayCloseService day boundary — en-CA yields YYYY-MM-DD). */
-function todayInRestaurantTz(): string {
-  const tz = process.env.RESTAURANT_TIMEZONE ?? "America/Sao_Paulo";
-  return new Date().toLocaleDateString("en-CA", { timeZone: tz });
-}
 
 export async function adminCaixaRoutes(server: FastifyInstance): Promise<void> {
   const app = server.withTypeProvider<ZodTypeProvider>();
