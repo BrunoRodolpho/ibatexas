@@ -25,11 +25,12 @@
 // unavailable), never a 500. An unknown agentId (not in AGENT_REGISTRY) is a
 // 404 and never trips a phantom switch.
 
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { AGENT_REGISTRY, type AgentDefinition } from "@ibatexas/agents";
 import { getAgentKillSwitchManager } from "../../claustrum-bootstrap.js";
+import type { AgentKillSwitchManager } from "../../claustrum/agent-kill-switch.js";
 import { requireManagerRole } from "../../middleware/staff-auth.js";
 import { logger } from "../../lib/logger.js";
 
@@ -82,6 +83,28 @@ function actorOf(request: {
     : `admin-api-key:${request.adminApiKeyRole ?? "unknown"}`;
 }
 
+/**
+ * Shared preamble for the two mutations: validate the id against the real
+ * registry FIRST (unknown → 404, never reaching the manager, so no phantom
+ * trip), then resolve the live manager (plane opt-in-off → 503). Returns the
+ * manager, or null after having sent the terminal error response.
+ */
+function resolveManagerOrRespond(
+  agentId: string,
+  reply: FastifyReply,
+): AgentKillSwitchManager | null {
+  if (findAgent(agentId) === null) {
+    void reply.code(404).send(unknownAgent(agentId));
+    return null;
+  }
+  const manager = getAgentKillSwitchManager();
+  if (manager === null) {
+    void reply.code(503).send(PLANE_OFF);
+    return null;
+  }
+  return manager;
+}
+
 export async function adminAgentKillSwitchRoutes(server: FastifyInstance): Promise<void> {
   const app = server.withTypeProvider<ZodTypeProvider>();
 
@@ -98,13 +121,8 @@ export async function adminAgentKillSwitchRoutes(server: FastifyInstance): Promi
     },
     async (request, reply) => {
       const { agentId } = request.params;
-      // Validate against the real registry FIRST — an unknown id must 404 and
-      // never reach the manager (no phantom trip), independent of plane state.
-      if (findAgent(agentId) === null) {
-        return reply.code(404).send(unknownAgent(agentId));
-      }
-      const manager = getAgentKillSwitchManager();
-      if (manager === null) return reply.code(503).send(PLANE_OFF);
+      const manager = resolveManagerOrRespond(agentId, reply);
+      if (manager === null) return reply;
 
       const reason = tripReasonOf(request.body);
       const actor = actorOf(request);
@@ -132,11 +150,8 @@ export async function adminAgentKillSwitchRoutes(server: FastifyInstance): Promi
     },
     async (request, reply) => {
       const { agentId } = request.params;
-      if (findAgent(agentId) === null) {
-        return reply.code(404).send(unknownAgent(agentId));
-      }
-      const manager = getAgentKillSwitchManager();
-      if (manager === null) return reply.code(503).send(PLANE_OFF);
+      const manager = resolveManagerOrRespond(agentId, reply);
+      if (manager === null) return reply;
 
       const actor = actorOf(request);
       // clear() is idempotent — clearing an already-live agent stays live.
