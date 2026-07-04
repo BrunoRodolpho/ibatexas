@@ -205,6 +205,14 @@ export {
   type PaymentWithHistory,
 } from "./services/payment-query.service.js"
 
+// Caixa / day-close reconciliation (NEW-011) — read-only aggregation service.
+export {
+  createDayCloseService,
+  type DayCloseService,
+  type DaySummary,
+  type DayCloseMethodTotals,
+} from "./services/day-close.service.js"
+
 // Medusa → domain mapper
 export {
   toOrderProjectionData,
