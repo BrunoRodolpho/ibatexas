@@ -34,6 +34,12 @@ maintained (and drift-guarded by tests) next to the code they govern:
   DEFER-resume × staff-role contract (BKL-069, Option 1: resume stays
   system-elevated / role-free at the kernel; role authority is re-established
   adopter-side). Pinned by `apps/api/src/__tests__/defer-resume-staff-role-contract.test.ts`.
+- [`ops-actor-surface.md`](ops-actor-surface.md) — the NEW-032 ops-actor surface
+  (the LLM ops surface IS the claustrum Conductor; `createIbatexasPlanner` gains a
+  composition-time `staffEnvelopeActor` that stamps `admin:`+role envelopes, arming
+  the dormant staff-role guards on the LLM path; the customer plane stays byte-
+  identical with the seam absent). Slice A (the envelope-actor stamping seam) is
+  pinned by the staff-actor stamping tests in `apps/api/src/__tests__/ibatexas-planner.test.ts`.
 - [`design/bounded-contexts.md`](design/bounded-contexts.md) — bounded contexts +
   entity ownership.
 - [`design/domain-model.md`](design/domain-model.md) — Prisma schema, entities,

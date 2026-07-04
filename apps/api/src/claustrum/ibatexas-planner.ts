@@ -26,10 +26,16 @@
  * depth against a hallucinated capability).
  *
  * Every proposed envelope is built via `@adjudicate/core`'s `buildEnvelope`
- * (canonical v2 hash) with `actor.principal = "llm"` and `taint = "UNTRUSTED"`
- * — the kernel's tamper-evidence + taint gate then apply. The composition root
- * pairs this with `composePolicyRouter` (capability-policy.ts) so a proposed
- * envelope is adjudicated against its owning pack's PolicyBundle.
+ * (canonical v2 hash) with `taint = "UNTRUSTED"` — the kernel's tamper-evidence
+ * + taint gate then apply. The envelope `actor` is `{ principal: "llm",
+ * sessionId: conversationId }` on the customer / WhatsApp planes; when an OPS
+ * conductor injects `staffEnvelopeActor` at composition (NEW-032 slice A) it is
+ * `{ principal: "user", sessionId: "admin:<staffId>", role }` instead, so the
+ * dormant staff-role guards become live, asserted gates on the LLM path. The
+ * actor is a per-planner-instance constant — NEVER derived from model output —
+ * so nothing the model emits can influence `envelope.actor`. The composition
+ * root pairs this with `composePolicyRouter` (capability-policy.ts) so a
+ * proposed envelope is adjudicated against its owning pack's PolicyBundle.
  *
  * v1 scope — SINGLE LLM pass. The model may, in one turn, call read tools
  * (recorded in `readToolCalls` for telemetry) and/or `express_intent` (→
@@ -44,7 +50,12 @@
 
 import { randomUUID } from "node:crypto";
 import { buildEnvelope } from "@adjudicate/core";
-import type { CandidateClaim, IntentEnvelope, TurnTerminal } from "@adjudicate/core";
+import type {
+  CandidateClaim,
+  IntentActor,
+  IntentEnvelope,
+  TurnTerminal,
+} from "@adjudicate/core";
 import type {
   CapabilityPlanner,
   Plan as CapabilityPlan,
@@ -126,6 +137,33 @@ const PROMPT_BUDGET = { maxTokens: 100_000 } as const;
 // kept byte-identical to the recorded golden surface.
 const DEFAULT_SYSTEM_PROMPT = PLANNER_PERSONA;
 
+/**
+ * The role vocabulary an OPS-plane envelope-actor carries (NEW-032 slice A).
+ *
+ * Declared LOCALLY here — NOT imported from `routes/admin/_shared-actions.ts` —
+ * so this security-critical planner never takes a `claustrum → routes` import
+ * (the repo's import-direction idiom; `staff-role-matrix.ts` is the ONE seam
+ * that crosses it). It MIRRORS the canonical `StaffActorRole` union
+ * byte-for-byte; a compile-time drift guard in the planner tests pins the two
+ * together so they can never diverge silently.
+ */
+export type StaffEnvelopeRole = "OWNER" | "MANAGER" | "ATTENDANT";
+
+/**
+ * OPS-plane staff envelope-actor (NEW-032 slice A — the security crux).
+ *
+ * A COMPOSITION-TIME constant captured from the authenticated JWT at ops
+ * ingress and injected when the conductor is composed for a staff ops turn (see
+ * `docs/architecture/ops-actor-surface.md`). It is NEVER derived from model
+ * output, payload, tool-call fields, or `CognitiveState` text — the model
+ * cannot influence `envelope.actor`. `role` is REQUIRED: there is no
+ * "ops plane without a role".
+ */
+export interface StaffEnvelopeActor {
+  readonly staffId: string;
+  readonly role: StaffEnvelopeRole;
+}
+
 export interface IbatexasPlannerDeps {
   /** LLM port (claustrum ModelProvider — AnthropicProvider in production). */
   readonly model: ModelProvider;
@@ -159,6 +197,21 @@ export interface IbatexasPlannerDeps {
     readonly state: unknown;
     readonly context: unknown;
   };
+  /**
+   * OPS-plane staff envelope-actor (NEW-032 slice A — the security crux). When
+   * PRESENT, every envelope this planner proposes is stamped
+   * `actor: { principal: "user", sessionId: "admin:<staffId>", role }` so the
+   * dormant `staffRoleGuard` + matrix gates become LIVE on the LLM path (the
+   * ops-conductor plane). When ABSENT (customer / WhatsApp planes), envelope
+   * construction is BYTE-IDENTICAL to today (`principal: "llm"`, conversation
+   * sessionId) — a hard regression bar pinned by envelope-hash tests.
+   *
+   * This is a COMPOSITION-TIME constant, captured from the authenticated JWT at
+   * ops ingress; it is NEVER derived from model output, so no payload/tool-call
+   * field or `CognitiveState` text can influence `envelope.actor`. See
+   * {@link StaffEnvelopeActor} and `docs/architecture/ops-actor-surface.md`.
+   */
+  readonly staffEnvelopeActor?: StaffEnvelopeActor;
   /** Override the system prompt (defaults to the pt-BR semantic-parser prompt). */
   readonly system?: string;
   readonly maxTokens?: number;
@@ -420,6 +473,41 @@ function capEnrichmentResults(
 }
 
 /**
+ * The per-turn envelope `actor` the planner stamps on EVERY proposed envelope
+ * (NEW-032 slice A). A per-planner-instance CONSTANT — computed once from the
+ * injected {@link StaffEnvelopeActor} option, NEVER from model output — so no
+ * payload/tool-call field or `CognitiveState` text can influence it.
+ *
+ *  - option ABSENT (customer / WhatsApp planes): `{ principal: "llm",
+ *    sessionId: conversationId }` — BYTE-IDENTICAL to the pre-NEW-032 inline
+ *    actor, so the customer path's `intentHash` is unchanged (hash-pinned).
+ *  - option PRESENT (OPS plane): `{ principal: "user", sessionId:
+ *    "admin:<staffId>", role }`. Staff AUTHORITY rides `actor.role` + the
+ *    `admin:` namespace (which arms the `staffRoleGuard`), NOT taint — the
+ *    payload is model-parsed, so its provenance `taint` stays `UNTRUSTED` at the
+ *    build site. The shape mirrors the canonical `actorFor` in
+ *    `routes/admin/_shared-actions.ts` (role-key spread; same field order +
+ *    omission semantics), replicated inline rather than imported to keep the
+ *    planner off a `claustrum → routes` edge.
+ */
+function plannerEnvelopeActor(
+  staffEnvelopeActor: StaffEnvelopeActor | undefined,
+  state: CognitiveState,
+): IntentActor {
+  if (staffEnvelopeActor === undefined) {
+    return { principal: "llm", sessionId: state.conversationId };
+  }
+  return {
+    principal: "user",
+    sessionId: `admin:${staffEnvelopeActor.staffId}`,
+    // Role-key spread mirrors `actorFor`; `role` is required in the option type
+    // so it is always present here (a falsy role would be omitted and then
+    // fail-closed at the staffRoleGuard's de-vacuum — never widen authority).
+    ...(staffEnvelopeActor.role ? { role: staffEnvelopeActor.role } : {}),
+  };
+}
+
+/**
  * Translate the model's tool calls into the planner's outputs (RC-A1): each
  * in-plan `express_intent` becomes an `IntentEnvelope`; a visible read tool is
  * recorded in `readToolCalls`; a malformed/out-of-plan/unknown call is dropped
@@ -432,6 +520,15 @@ function translateToolCalls(args: {
   readonly allowed: ReadonlySet<string>;
   readonly visibleReadTools: ReadonlyArray<string>;
   readonly state: CognitiveState;
+  /**
+   * The per-turn envelope actor (NEW-032 slice A) — a CONSTANT for the whole
+   * turn, built by {@link plannerEnvelopeActor} from the injected
+   * `staffEnvelopeActor` option. Passed in (not derived here) so the "the actor
+   * never comes from a tool call" invariant is structural: this function reads
+   * only `call.name` / `call.input.capability` / `call.input.payload`, never any
+   * actor-shaped field.
+   */
+  readonly actor: IntentActor;
   readonly deriveNonce: (state: CognitiveState, envelopeIndex: number) => string;
 }): {
   envelopes: IntentEnvelope[];
@@ -462,7 +559,10 @@ function translateToolCalls(args: {
         buildEnvelope({
           kind: capability,
           payload: payload ?? {},
-          actor: { principal: "llm", sessionId: args.state.conversationId },
+          // Per-turn constant (customer plane: llm/conversation; ops plane:
+          // user/admin:<staffId>/role). `payload` above is the ONLY thing the
+          // model influences — never `actor`.
+          actor: args.actor,
           taint: "UNTRUSTED",
           nonce: args.deriveNonce(args.state, envelopes.length),
         }),
@@ -603,6 +703,12 @@ export function createIbatexasPlanner(
       system += closedHoursPromptNote(scheduleSignal);
 
       const allowed = new Set(plan.allowedIntents);
+      // NEW-032 slice A — the per-turn envelope actor. Computed ONCE from the
+      // composition-time `staffEnvelopeActor` option (absent ⇒ the llm/
+      // conversation actor, byte-identical to today), reused for every envelope
+      // in BOTH passes so it is a genuine per-turn constant the model can never
+      // touch.
+      const envelopeActor = plannerEnvelopeActor(deps.staffEnvelopeActor, state);
       const startedAt = Date.now();
       const completion = await deps.model.complete({
         model: deps.modelId,
@@ -639,6 +745,7 @@ export function createIbatexasPlanner(
           allowed,
           visibleReadTools: plan.visibleReadTools,
           state,
+          actor: envelopeActor,
           deriveNonce,
         });
 
@@ -769,6 +876,7 @@ export function createIbatexasPlanner(
           allowed,
           visibleReadTools: plan.visibleReadTools,
           state,
+          actor: envelopeActor,
           deriveNonce,
         });
         envelopes = second.envelopes;
