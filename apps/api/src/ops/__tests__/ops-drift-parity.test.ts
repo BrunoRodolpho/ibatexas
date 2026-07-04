@@ -40,6 +40,13 @@ const REGISTRY_DEPS: OpsToolRegistryDeps = {
   },
   publishPaymentStatusChanged: async () => {},
   appendRefundEventLog: async () => {},
+  // BKL-088 — the alert-resolve + incident-close SYSTEM-write layers.
+  opsAlertSvc: {
+    resolveAlertFromEnvelope: async () => ({ result: { status: "RESOLVED" } }),
+  },
+  incidentSvc: {
+    closeIncidentFromEnvelope: async () => ({ result: { status: "RESOLVED" } }),
+  },
 };
 
 const OPS_TOOLS = listOpsToolDefinitions(REGISTRY_DEPS);
@@ -52,6 +59,20 @@ describe("opsPlaneDriftProblems", () => {
       readExecutorKeys: ["ops_snapshot"],
     });
     expect(problems).toEqual([]);
+  });
+
+  it("registers the six governed ops verbs incl. the BKL-088 resolution verbs (capability===intentKind, all pack-owned)", () => {
+    const caps = OPS_TOOLS.map((t) => t.capability as unknown as string);
+    // The two OWNED BKL-088 verbs are present AND composed-router-routable.
+    expect(caps).toContain("ops.alert.resolve.staff");
+    expect(caps).toContain("incident.ticket.close.staff");
+    const kinds = new Set(composedIntentKinds());
+    expect(kinds.has("ops.alert.resolve.staff")).toBe(true);
+    expect(kinds.has("incident.ticket.close.staff")).toBe(true);
+    // The SYSTEM-write kinds stay OFF the composed surface (D10 — a distinct
+    // domain-internal layer, deliberately absent from KNOWN/composed).
+    expect(kinds.has("ops.alert.resolve")).toBe(false);
+    expect(kinds.has("incident.ticket.close")).toBe(false);
   });
 
   it("FAILS when the ops_snapshot read has no registered executor", () => {

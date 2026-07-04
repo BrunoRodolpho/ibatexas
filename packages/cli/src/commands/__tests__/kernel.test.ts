@@ -80,12 +80,13 @@ describe("ibx kernel status", () => {
     expect(parsed).toHaveProperty("audit")
     // claustrum-on-dev WS9: KNOWN_INTENT_KINDS is now sourced from the
     // `@ibatexas/intent-kinds` leaf package (post W5 Pack expansion), which
-    // composes 65 kinds across the first-party Packs + the PIX adopter Pack
+    // composes 67 kinds across the first-party Packs + the PIX adopter Pack
     // (orders 22, reservations 8, whatsapp 5 incl. BKL-030
     // whatsapp.handoff.request, pix 3, payments 17, customer-onboarding 8,
-    // ops 1 (NEW-032 product.availability.set), loyalty 1). The pre-cutover
-    // `32` was stale.
-    expect(parsed.knownIntentKinds.count).toBe(65)
+    // ops 3 (NEW-032 product.availability.set + BKL-088
+    // ops.alert.resolve.staff / incident.ticket.close.staff), loyalty 1). The
+    // pre-cutover `32` was stale.
+    expect(parsed.knownIntentKinds.count).toBe(67)
   })
 
   it("renders human-readable text when --json is absent", async () => {
@@ -108,7 +109,7 @@ describe("ibx kernel status", () => {
     expect(out).toMatch(/em\s+7\s+packs/)
   })
 
-  it("includes all 65 KNOWN_INTENT_KINDS in the JSON list", async () => {
+  it("includes all 67 KNOWN_INTENT_KINDS in the JSON list", async () => {
     await cmd.parseAsync(["status", "--json"], { from: "user" })
     const out = stdout.getOutput()
     const parsed = JSON.parse(out)
@@ -121,6 +122,11 @@ describe("ibx kernel status", () => {
     expect(parsed.knownIntentKinds.kinds).toContain("pix.charge.create")
     // NEW-032 slice C1: the staff-plane ops verb.
     expect(parsed.knownIntentKinds.kinds).toContain("product.availability.set")
+    // BKL-088: the two OWNED ops-plane resolution verbs (DISTINCT from the
+    // SYSTEM-only ops.alert.resolve / incident.ticket.close domain kinds, which
+    // are deliberately absent from KNOWN_INTENT_KINDS).
+    expect(parsed.knownIntentKinds.kinds).toContain("ops.alert.resolve.staff")
+    expect(parsed.knownIntentKinds.kinds).toContain("incident.ticket.close.staff")
   })
 
   it("groups intent kinds by domain prefix in text mode", async () => {

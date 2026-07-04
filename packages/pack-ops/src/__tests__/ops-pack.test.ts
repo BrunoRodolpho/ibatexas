@@ -208,6 +208,144 @@ describe("opsPolicyBundle — taint floor is UNTRUSTED (authority is namespace+r
   })
 })
 
+// ── BKL-088: ops.alert.resolve.staff + incident.ticket.close.staff raw-bundle ─
+
+/** A resolution-verb envelope for an arbitrary owned kind (BKL-088). */
+function resolveEnv(
+  kind: "ops.alert.resolve.staff" | "incident.ticket.close.staff",
+  payload: Record<string, unknown>,
+  opts: { sessionId?: string; role?: string; principal?: "user" | "llm" } = {},
+): IntentEnvelope<OpsIntentKind, OpsPayload> {
+  const { sessionId = "admin:staff_1", role = "OWNER", principal = "user" } = opts
+  return buildEnvelope({
+    kind,
+    payload: payload as unknown as OpsPayload,
+    actor: { principal, sessionId, ...(role ? { role } : {}) },
+    taint: "UNTRUSTED",
+    nonce: `n-${kind}`,
+    createdAt: DET_TIME,
+  })
+}
+
+/** A state projecting the alert (or absent when null). */
+function alertState(
+  alert: OpsState["alert"] = { id: "alert_1", status: "OPEN" },
+): OpsState {
+  return { ctx: { channel: "staff", customerId: null, staffId: "staff_1" }, alert }
+}
+/** A state projecting the incident (or absent when null). */
+function incidentState(
+  incident: OpsState["incident"] = { id: "inc_1", status: "OPEN" },
+): OpsState {
+  return { ctx: { channel: "staff", customerId: null, staffId: "staff_1" }, incident }
+}
+
+describe("opsPolicyBundle — ops.alert.resolve.staff (BKL-088)", () => {
+  it("EXECUTE: admin: + open alert + valid payload", () => {
+    const d = adjudicate(
+      resolveEnv("ops.alert.resolve.staff", { alertId: "alert_1", reason: "ok" }),
+      alertState(),
+      opsPolicyBundle,
+    )
+    expect(d.kind).toBe("EXECUTE")
+  })
+  it("EXECUTE: without the optional reason", () => {
+    const d = adjudicate(
+      resolveEnv("ops.alert.resolve.staff", { alertId: "alert_1" }),
+      alertState(),
+      opsPolicyBundle,
+    )
+    expect(d.kind).toBe("EXECUTE")
+  })
+  it("REFUSE (AUTH): non-admin session — the pack fail-closes without staffRoleGuard", () => {
+    const d = adjudicate(
+      resolveEnv("ops.alert.resolve.staff", { alertId: "alert_1" }, {
+        principal: "llm",
+        sessionId: "web:c1",
+        role: "",
+      }),
+      alertState(),
+      opsPolicyBundle,
+    )
+    expect(d.kind).toBe("REFUSE")
+    if (d.kind === "REFUSE") expect(d.refusal.code).toBe("ops.admin_session_required")
+  })
+  it("REFUSE: missing alertId (payload_invalid)", () => {
+    const d = adjudicate(
+      resolveEnv("ops.alert.resolve.staff", { reason: "x" }),
+      alertState(),
+      opsPolicyBundle,
+    )
+    expect(d.kind).toBe("REFUSE")
+    if (d.kind === "REFUSE") expect(d.refusal.code).toBe("ops.alert_resolve.payload_invalid")
+  })
+  it("REFUSE: unknown key (closed contract)", () => {
+    const d = adjudicate(
+      resolveEnv("ops.alert.resolve.staff", { alertId: "alert_1", sneaky: 1 }),
+      alertState(),
+      opsPolicyBundle,
+    )
+    expect(d.kind).toBe("REFUSE")
+    if (d.kind === "REFUSE") expect(d.refusal.code).toBe("ops.alert_resolve.payload_invalid")
+  })
+  it("REFUSE: absent alert (not_actionable / not_found)", () => {
+    const d = adjudicate(
+      resolveEnv("ops.alert.resolve.staff", { alertId: "alert_1" }),
+      alertState(null),
+      opsPolicyBundle,
+    )
+    expect(d.kind).toBe("REFUSE")
+    if (d.kind === "REFUSE") expect(d.refusal.code).toBe("ops.alert_resolve.not_actionable")
+  })
+  it("REFUSE: terminal alert (not_actionable / already_resolved)", () => {
+    const d = adjudicate(
+      resolveEnv("ops.alert.resolve.staff", { alertId: "alert_1" }),
+      alertState({ id: "alert_1", status: "RESOLVED" }),
+      opsPolicyBundle,
+    )
+    expect(d.kind).toBe("REFUSE")
+    if (d.kind === "REFUSE") expect(d.refusal.code).toBe("ops.alert_resolve.not_actionable")
+  })
+})
+
+describe("opsPolicyBundle — incident.ticket.close.staff (BKL-088)", () => {
+  it("EXECUTE: admin: + open incident + valid payload", () => {
+    const d = adjudicate(
+      resolveEnv("incident.ticket.close.staff", { incidentId: "inc_1" }),
+      incidentState(),
+      opsPolicyBundle,
+    )
+    expect(d.kind).toBe("EXECUTE")
+  })
+  it("REFUSE: missing incidentId (payload_invalid)", () => {
+    const d = adjudicate(
+      resolveEnv("incident.ticket.close.staff", {}),
+      incidentState(),
+      opsPolicyBundle,
+    )
+    expect(d.kind).toBe("REFUSE")
+    if (d.kind === "REFUSE") expect(d.refusal.code).toBe("ops.incident_close.payload_invalid")
+  })
+  it("REFUSE: absent incident (not_actionable)", () => {
+    const d = adjudicate(
+      resolveEnv("incident.ticket.close.staff", { incidentId: "inc_1" }),
+      incidentState(null),
+      opsPolicyBundle,
+    )
+    expect(d.kind).toBe("REFUSE")
+    if (d.kind === "REFUSE") expect(d.refusal.code).toBe("ops.incident_close.not_actionable")
+  })
+  it("REFUSE: terminal incident (not_actionable)", () => {
+    const d = adjudicate(
+      resolveEnv("incident.ticket.close.staff", { incidentId: "inc_1" }),
+      incidentState({ id: "inc_1", status: "AUTO_RESOLVED" }),
+      opsPolicyBundle,
+    )
+    expect(d.kind).toBe("REFUSE")
+    if (d.kind === "REFUSE") expect(d.refusal.code).toBe("ops.incident_close.not_actionable")
+  })
+})
+
 describe("opsPolicyBundle — structure", () => {
   it("default polarity is REFUSE (Refusal-by-Design)", () => {
     expect(opsPolicyBundle.default).toBe("REFUSE")
@@ -282,12 +420,16 @@ describe("opsPack — policy coherence via analyzePolicy()", () => {
     expect(reportedForeign.has("payment.refund.issue")).toBe(true)
   })
 
-  it("all four ops verbs are reachable (advertised under the staff probe)", () => {
-    // Non-vacuous: a probe with a staff session must actually advertise all four
-    // — the owned `product.availability.set` AND the foreign-routed
-    // `order.note.add` + `order.status.transition` + `payment.refund.issue`.
+  it("all six ops verbs are reachable (advertised under the staff probe)", () => {
+    // Non-vacuous: a probe with a staff session must advertise all six — the
+    // three OWNED verbs (`product.availability.set` + the BKL-088
+    // `ops.alert.resolve.staff` / `incident.ticket.close.staff`) AND the three
+    // foreign-routed (`order.note.add` + `order.status.transition` +
+    // `payment.refund.issue`).
     const staffPlan = opsPack.planner.plan(probes[1]!.state, probes[1]!.context)
     expect(staffPlan.allowedIntents).toContain("product.availability.set")
+    expect(staffPlan.allowedIntents).toContain("ops.alert.resolve.staff")
+    expect(staffPlan.allowedIntents).toContain("incident.ticket.close.staff")
     expect(staffPlan.allowedIntents).toContain("order.note.add")
     expect(staffPlan.allowedIntents).toContain("order.status.transition")
     expect(staffPlan.allowedIntents).toContain("payment.refund.issue")

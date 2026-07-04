@@ -287,6 +287,17 @@ function buildHarness(opts: {
     paymentCmdSvc: { writeAdjudicatedRefund: spies.writeAdjudicatedRefund },
     publishPaymentStatusChanged: spies.publishPaymentStatusChanged,
     appendRefundEventLog: spies.appendRefundEventLog,
+    // BKL-088 — unused by the refund flow; default no-op writers.
+    opsAlertSvc: {
+      resolveAlertFromEnvelope: vi.fn(async () => ({
+        result: { status: "RESOLVED" },
+      })),
+    },
+    incidentSvc: {
+      closeIncidentFromEnvelope: vi.fn(async () => ({
+        result: { status: "RESOLVED" },
+      })),
+    },
   });
   const tenantResolver: TenantResolver = {
     resolve: async ({ channel, customerId }) => ({

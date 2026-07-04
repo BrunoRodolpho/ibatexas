@@ -208,6 +208,14 @@ function buildDeps(opts: {
     method: string;
     version: number;
   } | null;
+  /** BKL-088 — the alert the resolver projects for ops.alert.resolve.staff;
+   *  null ⇒ absent (⇒ REFUSE not_actionable). */
+  alert?: { id: string; status: string } | null;
+  /** BKL-088 — the incident the resolver projects for incident.ticket.close.staff. */
+  incident?: { id: string; status: string } | null;
+  /** BKL-088 — SYSTEM-write layer spies (defaults applied when absent). */
+  resolveAlertFromEnvelope?: ReturnType<typeof vi.fn>;
+  closeIncidentFromEnvelope?: ReturnType<typeof vi.fn>;
 }) {
   const tools = createOpsToolRegistry({
     medusaAdjudicated: opts.medusaAdjudicated as never,
@@ -235,6 +243,19 @@ function buildDeps(opts: {
     },
     publishPaymentStatusChanged: opts.publishPaymentStatusChanged ?? vi.fn(),
     appendRefundEventLog: opts.appendRefundEventLog ?? vi.fn(),
+    // BKL-088 — the SYSTEM-write layers the resolution executors drive. Default
+    // spies return a resolved/closed row; a dedicated BKL-088 describe drives
+    // the full staff-verb → SYSTEM-write flow with typed spies.
+    opsAlertSvc: {
+      resolveAlertFromEnvelope:
+        opts.resolveAlertFromEnvelope ??
+        (vi.fn(async () => ({ result: { status: "RESOLVED" } })) as never),
+    },
+    incidentSvc: {
+      closeIncidentFromEnvelope:
+        opts.closeIncidentFromEnvelope ??
+        (vi.fn(async () => ({ result: { status: "RESOLVED" } })) as never),
+    },
   });
   return {
     adjudicator: realKernelAdjudicator,
@@ -261,6 +282,9 @@ function buildDeps(opts: {
         lookupProduct: async () => opts.product,
         lookupOrder: async () => opts.order ?? null,
         lookupActivePayment: async () => opts.activePayment ?? null,
+        // BKL-088 — the alert/incident by-id reads (id-literal); null ⇒ REFUSE.
+        lookupAlert: async () => opts.alert ?? null,
+        lookupIncident: async () => opts.incident ?? null,
         ...(opts.productsByName
           ? { listProductsByName: async () => opts.productsByName! }
           : {}),
@@ -1021,5 +1045,205 @@ describe("ops conductor — order reference resolution end-to-end (BKL-089)", ()
       expect(out.refusal.code).toBe("order.status.transition_illegal");
     }
     expect(writeAdjudicatedStatusTransition).not.toHaveBeenCalled();
+  });
+});
+
+// ── BKL-088 — ops.alert.resolve.staff + incident.ticket.close.staff ──────────
+//
+// The crown-jewel proof for the two OWNED resolution verbs, driven through
+// composeOpsConductor + a full handleTurn against the REAL composed router +
+// REAL kernel. Proves the LAYERED (D10) posture END-TO-END: a MANAGER "resolve
+// o alerta X" adjudicates the STAFF verb (adminSessionOnlyGuard + staffRoleGuard
+// {OWNER,MANAGER} + the actionability guard) and, on EXECUTE, the executor drives
+// the SYSTEM-write layer — building a SYSTEM `ops.alert.resolve` envelope whose
+// identity (`resolvedBy: "staff:<id>"`, `resolutionType: STAFF`, `principal:
+// "system"`, `taint: "SYSTEM"`) is stamped from the Capsule staffId, NEVER the
+// model. ATTENDANT → REFUSE staff_role_violation; absent/terminal entity → REFUSE
+// not_actionable; the SYSTEM-write spy never runs in the REFUSE cases.
+
+const ALERT_RESOLVE_CALL = {
+  id: "tc-alert",
+  name: "express_intent",
+  input: {
+    capability: "ops.alert.resolve.staff",
+    payload: { alertId: "alert_1", reason: "condição normalizada" },
+  },
+};
+
+const INCIDENT_CLOSE_CALL = {
+  id: "tc-incident",
+  name: "express_intent",
+  input: {
+    capability: "incident.ticket.close.staff",
+    payload: { incidentId: "inc_1" },
+  },
+};
+
+/** A typed resolve/close writer spy whose `mock.calls[i][0]` is the SYSTEM
+ *  envelope (an untyped vi.fn() infers a zero-arg signature). */
+function systemWriterSpy() {
+  return vi.fn(
+    async (
+      _envelope: IntentEnvelope,
+      _state: unknown,
+    ): Promise<{ result: { status: string } | null }> => ({
+      result: { status: "RESOLVED" },
+    }),
+  );
+}
+
+describe("ops conductor — ops.alert.resolve.staff reachable end-to-end (BKL-088)", () => {
+  it("MANAGER 'resolve o alerta' → EXECUTE; SYSTEM write runs with staff:<id> identity + SYSTEM taint", async () => {
+    const resolveAlertFromEnvelope = systemWriterSpy();
+    const { model } = scriptedModel([ALERT_RESOLVE_CALL]);
+    const deps = buildDeps({
+      model,
+      medusaAdjudicated: vi.fn(),
+      writeAdjudicatedNote: vi.fn(),
+      product: null,
+      alert: { id: "alert_1", status: "OPEN" },
+      resolveAlertFromEnvelope,
+    });
+    const out = await runOpsTurn(deps, "MANAGER", "staff_2", "resolve o alerta alert_1");
+    expect(out.kind).toBe("EXECUTE");
+    expect(resolveAlertFromEnvelope).toHaveBeenCalledTimes(1);
+    const [envelope] = resolveAlertFromEnvelope.mock.calls[0]!;
+    // The D10 SYSTEM-write layer: role-free system envelope, identity stamped.
+    expect(envelope.kind).toBe("ops.alert.resolve");
+    expect(envelope.actor.principal).toBe("system");
+    expect(envelope.taint).toBe("SYSTEM");
+    const p = envelope.payload as {
+      id: string;
+      resolvedBy: string;
+      resolutionType: string;
+    };
+    expect(p.id).toBe("alert_1");
+    // Identity is the Capsule/JWT staffId — NEVER a model-parsed field.
+    expect(p.resolvedBy).toBe("staff:staff_2");
+    expect(p.resolutionType).toBe("STAFF");
+  });
+
+  it("ATTENDANT → REFUSE staff_role_violation; the SYSTEM write NEVER runs", async () => {
+    const resolveAlertFromEnvelope = systemWriterSpy();
+    const { model } = scriptedModel([ALERT_RESOLVE_CALL]);
+    const deps = buildDeps({
+      model,
+      medusaAdjudicated: vi.fn(),
+      writeAdjudicatedNote: vi.fn(),
+      product: null,
+      alert: { id: "alert_1", status: "OPEN" },
+      resolveAlertFromEnvelope,
+    });
+    const out = await runOpsTurn(deps, "ATTENDANT", "staff_9", "resolve o alerta alert_1");
+    expect(out.kind).toBe("REFUSE");
+    if (out.kind === "REFUSE") {
+      expect(out.refusal.code).toBe("staff_role_violation");
+    }
+    expect(resolveAlertFromEnvelope).not.toHaveBeenCalled();
+  });
+
+  it("absent alert → REFUSE not_actionable; the SYSTEM write NEVER runs", async () => {
+    const resolveAlertFromEnvelope = systemWriterSpy();
+    const { model } = scriptedModel([ALERT_RESOLVE_CALL]);
+    const deps = buildDeps({
+      model,
+      medusaAdjudicated: vi.fn(),
+      writeAdjudicatedNote: vi.fn(),
+      product: null,
+      alert: null, // resolver ⇒ state.alert null ⇒ requireAlertActionable REFUSE
+      resolveAlertFromEnvelope,
+    });
+    const out = await runOpsTurn(deps, "MANAGER", "staff_2", "resolve o alerta inexistente");
+    expect(out.kind).toBe("REFUSE");
+    if (out.kind === "REFUSE") {
+      expect(out.refusal.code).toBe("ops.alert_resolve.not_actionable");
+    }
+    expect(resolveAlertFromEnvelope).not.toHaveBeenCalled();
+  });
+
+  it("already-terminal alert → REFUSE not_actionable; the SYSTEM write NEVER runs", async () => {
+    const resolveAlertFromEnvelope = systemWriterSpy();
+    const { model } = scriptedModel([ALERT_RESOLVE_CALL]);
+    const deps = buildDeps({
+      model,
+      medusaAdjudicated: vi.fn(),
+      writeAdjudicatedNote: vi.fn(),
+      product: null,
+      alert: { id: "alert_1", status: "RESOLVED" }, // terminal ⇒ not actionable
+      resolveAlertFromEnvelope,
+    });
+    const out = await runOpsTurn(deps, "OWNER", "staff_1", "resolve o alerta alert_1");
+    expect(out.kind).toBe("REFUSE");
+    if (out.kind === "REFUSE") {
+      expect(out.refusal.code).toBe("ops.alert_resolve.not_actionable");
+    }
+    expect(resolveAlertFromEnvelope).not.toHaveBeenCalled();
+  });
+});
+
+describe("ops conductor — incident.ticket.close.staff reachable end-to-end (BKL-088)", () => {
+  it("OWNER 'fecha o incidente' → EXECUTE; SYSTEM write runs with staff:<id> identity", async () => {
+    const closeIncidentFromEnvelope = systemWriterSpy();
+    const { model } = scriptedModel([INCIDENT_CLOSE_CALL]);
+    const deps = buildDeps({
+      model,
+      medusaAdjudicated: vi.fn(),
+      writeAdjudicatedNote: vi.fn(),
+      product: null,
+      incident: { id: "inc_1", status: "OPEN" },
+      closeIncidentFromEnvelope,
+    });
+    const out = await runOpsTurn(deps, "OWNER", "staff_1", "fecha o incidente inc_1");
+    expect(out.kind).toBe("EXECUTE");
+    expect(closeIncidentFromEnvelope).toHaveBeenCalledTimes(1);
+    const [envelope] = closeIncidentFromEnvelope.mock.calls[0]!;
+    expect(envelope.kind).toBe("incident.ticket.close");
+    expect(envelope.actor.principal).toBe("system");
+    const p = envelope.payload as {
+      id: string;
+      resolvedBy: string;
+      resolutionType: string;
+    };
+    expect(p.id).toBe("inc_1");
+    expect(p.resolvedBy).toBe("staff:staff_1");
+    expect(p.resolutionType).toBe("STAFF");
+  });
+
+  it("ATTENDANT → REFUSE staff_role_violation; the SYSTEM write NEVER runs", async () => {
+    const closeIncidentFromEnvelope = systemWriterSpy();
+    const { model } = scriptedModel([INCIDENT_CLOSE_CALL]);
+    const deps = buildDeps({
+      model,
+      medusaAdjudicated: vi.fn(),
+      writeAdjudicatedNote: vi.fn(),
+      product: null,
+      incident: { id: "inc_1", status: "OPEN" },
+      closeIncidentFromEnvelope,
+    });
+    const out = await runOpsTurn(deps, "ATTENDANT", "staff_9", "fecha o incidente inc_1");
+    expect(out.kind).toBe("REFUSE");
+    if (out.kind === "REFUSE") {
+      expect(out.refusal.code).toBe("staff_role_violation");
+    }
+    expect(closeIncidentFromEnvelope).not.toHaveBeenCalled();
+  });
+
+  it("absent incident → REFUSE not_actionable; the SYSTEM write NEVER runs", async () => {
+    const closeIncidentFromEnvelope = systemWriterSpy();
+    const { model } = scriptedModel([INCIDENT_CLOSE_CALL]);
+    const deps = buildDeps({
+      model,
+      medusaAdjudicated: vi.fn(),
+      writeAdjudicatedNote: vi.fn(),
+      product: null,
+      incident: null,
+      closeIncidentFromEnvelope,
+    });
+    const out = await runOpsTurn(deps, "MANAGER", "staff_2", "fecha o incidente inexistente");
+    expect(out.kind).toBe("REFUSE");
+    if (out.kind === "REFUSE") {
+      expect(out.refusal.code).toBe("ops.incident_close.not_actionable");
+    }
+    expect(closeIncidentFromEnvelope).not.toHaveBeenCalled();
   });
 });
