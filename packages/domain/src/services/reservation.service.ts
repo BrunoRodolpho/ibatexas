@@ -30,6 +30,7 @@ import type {
   TableLocation,
 } from "@ibatexas/types"
 import type { AuditSink, IntentEnvelope } from "@adjudicate/core"
+import type { Guard } from "@adjudicate/core/kernel"
 import {
   reservationsPolicyBundle,
   type ReservationCancelPayload,
@@ -147,12 +148,24 @@ async function assignTables(timeSlotId: string, partySize: number, db: TxClient 
 export interface ReservationServiceOptions {
   readonly auditSink?: AuditSink
   readonly log?: { readonly warn?: (...args: unknown[]) => void; readonly error?: (...args: unknown[]) => void }
+  /**
+   * WS7 / BKL-074 — adopter AUTH guards (e.g. `staffRoleGuard`) injected into
+   * EVERY `withAdjudicate` call this service makes. The HTTP admin reservation
+   * routes pass `[staffRoleGuard]` so a mis-scoped staff role is REFUSED at the
+   * kernel on the command-service adjudication path (which uses the RAW
+   * reservations pack bundle), not only by the Fastify preHandler. Inert for
+   * non-`admin:` envelopes, so this is a no-op for the customer-facing
+   * create/modify/cancel/waitlist paths. Threaded through `adjudicateOptions`
+   * so per-method calls are unchanged.
+   */
+  readonly authGuards?: readonly Guard<string, unknown, unknown>[]
 }
 
 export function createReservationService(options?: ReservationServiceOptions) {
   const adjudicateOptions = {
     ...(options?.auditSink ? { auditSink: options.auditSink } : {}),
     ...(options?.log ? { log: options.log } : {}),
+    ...(options?.authGuards ? { authGuards: options.authGuards } : {}),
   } as const
 
   return {

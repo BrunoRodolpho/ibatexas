@@ -38,6 +38,7 @@ import {
 } from "@adjudicate/core"
 import {
   adjudicate,
+  type Guard,
   type PolicyBundle,
 } from "@adjudicate/core/kernel"
 
@@ -74,6 +75,23 @@ export interface WithAdjudicateOptions {
     readonly warn?: (...args: unknown[]) => void
     readonly error?: (...args: unknown[]) => void
   }
+  /**
+   * WS7 / BKL-074 — adopter AUTH guards injected into the adjudication at the
+   * command-service seam. They are PREPENDED to the pack's own `authGuards`
+   * so they run BEFORE the pack's auth guards, matching the composition order
+   * of `buildIbatexasPolicyPacks` (compose-policy-packs.ts).
+   *
+   * The HTTP admin mutation routes inject `[staffRoleGuard]` here so a
+   * mis-scoped staff role is REFUSED at the kernel even when a route
+   * preHandler is wrong or missing — closing the gap where the RAW pack
+   * bundles adjudicated by the command services carry no adopter auth guards.
+   *
+   * LOAD-BEARING INVARIANT: `staffRoleGuard` is inert (returns `null`) unless
+   * `envelope.actor.sessionId` starts with `admin:`, so injecting it here is a
+   * NO-OP for system-actor (jobs/subscribers), customer, LLM, and managed-agent
+   * envelopes. It may therefore be injected universally.
+   */
+  readonly authGuards?: readonly Guard<string, unknown, unknown>[]
 }
 
 /**
@@ -126,8 +144,24 @@ export async function withAdjudicate<K extends string, P, S, R>(
 ): Promise<AdjudicatedResult<R>> {
   const startedAt = Date.now()
 
+  // WS7 / BKL-074 — inject the adopter AUTH guards (e.g. `staffRoleGuard`)
+  // AHEAD of the pack's own auth guards, so a kernel-level role backstop runs
+  // on the HTTP admin command-service path (which adjudicates against RAW pack
+  // bundles that lack the adopter guards). Prepend matches the composition
+  // order in `buildIbatexasPolicyPacks`. Injected guards are inert unless they
+  // engage — `staffRoleGuard` only fires on `admin:` sessions — so this is a
+  // no-op for system / customer / LLM / managed-agent envelopes. The envelope
+  // is untouched, so `intentHash` (and audit dedup) is unaffected.
+  const effectivePolicy =
+    options?.authGuards && options.authGuards.length > 0
+      ? {
+          ...policy,
+          authGuards: [...options.authGuards, ...policy.authGuards],
+        }
+      : policy
+
   // Run the kernel. adjudicate() is pure + deterministic — no I/O.
-  const decision = adjudicate(envelope, state, policy)
+  const decision = adjudicate(envelope, state, effectivePolicy)
 
   // Emit audit record — best effort. We build the record synchronously
   // (deterministic), but the sink's emit() is fire-and-forget by

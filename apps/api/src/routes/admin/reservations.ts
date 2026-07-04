@@ -36,6 +36,7 @@ import type {
 import { getAuditSink } from "@ibatexas/audit-sink";
 import type { ReservationDTO } from "@ibatexas/types";
 import { requireManagerRole } from "../../middleware/staff-auth.js";
+import { staffRoleGuard } from "../../claustrum/staff-role-guard.js";
 import { actorFor, resolveActorRole } from "./_shared-actions.js";
 
 /** Map a ReservationDTO + customer data into the admin-friendly shape the UI expects. */
@@ -91,9 +92,14 @@ export async function reservationRoutes(server: FastifyInstance): Promise<void> 
   // during buildServer() and bootstrapAuditSinkDI() in index.ts).
   let svc!: ReturnType<typeof createReservationService>;
   server.addHook("onReady", async () => {
+    // BKL-074: inject the kernel-level staff-role backstop. `staffRoleGuard` is
+    // inert for non-`admin:` envelopes, so it REFUSES a mis-scoped staff role
+    // on the admin reservation path without touching customer-facing
+    // reservation mutations (which build a separate service instance).
     svc = createReservationService({
       auditSink: getAuditSink(),
       log: server.log,
+      authGuards: [staffRoleGuard],
     });
   });
 
