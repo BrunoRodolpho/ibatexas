@@ -829,6 +829,90 @@ describe("ops resolver — payment.refund.issue (BKL-085)", () => {
   });
 });
 
+// ── BKL-094 — refund amount threading (reais aliases → exact centavos) ─────────
+// Live proof: both the 4B and Sonnet emit the spoken figure under
+// `amount`/`value`/`valor` in REAIS ("reembolsa 10 reais" → {amount:10}); the
+// resolver threads that to `refundAmountCentavos` in EXACT centavos. Priority:
+// centavos field → reais aliases → the confirm-gated full-balance default.
+// ACTIVE_PAID balance = R$100 (10_000 centavos).
+
+/** Read the requested amount the resolver stamped onto the rebuilt payload. */
+async function requestedRefundCentavos(
+  payload: Record<string, unknown>,
+): Promise<number> {
+  const resolved = await resolveRefund(refundDeps(), {
+    orderId: "order_direct",
+    ...payload,
+  });
+  const p = resolved.envelope.payload as Record<string, unknown>;
+  return p.refundAmountCentavos as number;
+}
+
+describe("ops resolver — BKL-094 refund amount threading", () => {
+  it("prefers refundAmountCentavos (centavos) over a reais alias", async () => {
+    // Schema-correct centavos wins even when a reais alias is also present.
+    expect(await requestedRefundCentavos({ refundAmountCentavos: 2_500, amount: 10 })).toBe(2_500);
+  });
+
+  it("amount/value/valor are interpreted as REAIS → ×100 centavos", async () => {
+    expect(await requestedRefundCentavos({ amount: 10 })).toBe(1_000);
+    expect(await requestedRefundCentavos({ value: 10 })).toBe(1_000);
+    expect(await requestedRefundCentavos({ valor: 10 })).toBe(1_000);
+  });
+
+  it("alias priority is amount → value → valor", async () => {
+    expect(await requestedRefundCentavos({ amount: 10, value: 20, valor: 30 })).toBe(1_000);
+    expect(await requestedRefundCentavos({ value: 20, valor: 30 })).toBe(2_000);
+  });
+
+  it("converts decimals EXACTLY (no float multiply-and-round hazard)", async () => {
+    expect(await requestedRefundCentavos({ amount: 10.5 })).toBe(1_050);
+    expect(await requestedRefundCentavos({ amount: 10.55 })).toBe(1_055); // 10.55*100 === 1054.999… in float
+    expect(await requestedRefundCentavos({ amount: 0.5 })).toBe(50);
+  });
+
+  it("accepts pt-BR string forms defensively ('10,50', 'R$ 10,50', '10.50')", async () => {
+    expect(await requestedRefundCentavos({ amount: "10,50" })).toBe(1_050);
+    expect(await requestedRefundCentavos({ amount: "R$ 10,50" })).toBe(1_050);
+    expect(await requestedRefundCentavos({ amount: "10.50" })).toBe(1_050);
+    expect(await requestedRefundCentavos({ amount: "10" })).toBe(1_000);
+  });
+
+  it(">2 decimal places is rejected → confirm-gated FULL balance", async () => {
+    // 10.555 is not a representable centavos amount → keep the honest full-balance default.
+    expect(await requestedRefundCentavos({ amount: 10.555 })).toBe(10_000);
+    expect(await requestedRefundCentavos({ amount: "10,555" })).toBe(10_000);
+  });
+
+  it("≤0 / non-numeric / null fall back to the FULL balance (never a silent wrong number)", async () => {
+    // NB: a real NaN/Infinity can never arrive — a model tool call is JSON, which
+    // has no such literals (buildEnvelope's canonical hash even rejects them). The
+    // parser guards them defensively; here we exercise the JSON-representable forms.
+    expect(await requestedRefundCentavos({ amount: 0 })).toBe(10_000);
+    expect(await requestedRefundCentavos({ amount: -5 })).toBe(10_000);
+    expect(await requestedRefundCentavos({ amount: "abc" })).toBe(10_000);
+    expect(await requestedRefundCentavos({ amount: "NaN" })).toBe(10_000);
+    expect(await requestedRefundCentavos({ amount: null })).toBe(10_000);
+    expect(await requestedRefundCentavos({ amount: "1.000,50" })).toBe(10_000); // ambiguous thousands grouping → reject
+    expect(await requestedRefundCentavos({})).toBe(10_000); // nothing supplied
+  });
+
+  it("an over-balance amount passes through UN-CLAMPED (pack REFUSEs honestly)", async () => {
+    // R$150 > the R$100 DB balance — the request is threaded verbatim (15_000),
+    // NOT reduced to the balance; the stamped balance stays the true DB value so
+    // the pack's over-balance guard REFUSEs on truth.
+    const resolved = await resolveRefund(refundDeps(), { orderId: "order_direct", amount: 150 });
+    const p = resolved.envelope.payload as Record<string, unknown>;
+    expect(p.refundAmountCentavos).toBe(15_000);
+    expect(p.refundableBalanceCentavos).toBe(10_000);
+  });
+
+  it("a non-integer refundAmountCentavos (centavos schema violated) falls through to reais aliases", async () => {
+    // 10.5 is not integer centavos → NOT trusted as centavos; the reais alias wins.
+    expect(await requestedRefundCentavos({ refundAmountCentavos: 10.5, amount: 25 })).toBe(2_500);
+  });
+});
+
 // ── BKL-085 — buildOpsRefundResumeState (the resume-path re-projection) ────────
 
 describe("buildOpsRefundResumeState — money-safe resume re-projection", () => {
