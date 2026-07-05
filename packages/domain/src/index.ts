@@ -109,6 +109,7 @@ export {
   DuplicatePhoneError,
   LastOwnerError,
   SelfMutationError,
+  StaffMutationConflictError,
   InvalidStaffPhoneError,
   InvalidStaffRoleError,
   InvalidHourlyRateError,

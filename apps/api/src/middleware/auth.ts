@@ -147,7 +147,15 @@ async function extractStaffAuth(request: FastifyRequest): Promise<void> {
 
     request.userType = "staff";
     request.staffId = payload.sub;
-    request.staffRole = payload.role as "OWNER" | "MANAGER" | "ATTENDANT";
+    // AUT-007 (adversarial-review FIX 1): source the role from the FRESH staff
+    // row, never from the JWT claim baked at login. The row is already fetched
+    // unconditionally above (STAFFREVOKE), which is exactly why deactivation is
+    // live-enforced — but the role previously came from `payload.role`, so a
+    // `staff.role.assign` demotion was a no-op for up to the 8h token TTL: a
+    // demoted OWNER kept OWNER power (and could re-promote themselves or
+    // deactivate the demoter). Role changes are now live-enforced symmetrically
+    // with deactivation; the JWT claim is only login-time provenance.
+    request.staffRole = staff.role;
   } catch (err) {
     if (err instanceof RedisUnavailableError) throw err;
     // Invalid staff_token — treat as unauthenticated

@@ -40,7 +40,9 @@ import {
   LastOwnerError,
   RoleUpdateForbiddenError,
   SelfMutationError,
+  StaffMutationConflictError,
   StaffNotFoundError,
+  toE164BR,
   type StaffCreatePayload,
   type StaffDeactivatePayload,
   type StaffRoleAssignPayload,
@@ -53,6 +55,27 @@ import { actorFor, kernelRefusalText, resolveActorRole } from "./_shared-actions
 
 const StaffRoleEnum = z.enum(["OWNER", "MANAGER", "ATTENDANT"])
 const StaffIdParams = z.object({ id: z.string().min(1) })
+
+/**
+ * CANONICAL E.164 at the zod layer (FIX 3): normalizes formatted input
+ * ("+55 11 99999-9999" → "+5511999999999") via the SAME `toE164BR` the login
+ * lookup path relies on, and 400s anything unnormalizable. The service
+ * re-normalizes defensively; this schema makes the route contract canonical.
+ */
+const CanonicalPhoneSchema = z
+  .string()
+  .min(1)
+  .transform((value, ctx) => {
+    try {
+      return toE164BR(value)
+    } catch {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Telefone inválido — use formato internacional: +5511999999999",
+      })
+      return z.NEVER
+    }
+  })
 
 const ListStaffQuery = z.object({
   role: StaffRoleEnum.optional(),
@@ -67,7 +90,7 @@ const ListStaffQuery = z.object({
 })
 
 const CreateStaffBody = z.object({
-  phone: z.string().min(1),
+  phone: CanonicalPhoneSchema,
   name: z.string().min(1),
   role: StaffRoleEnum.optional().default("ATTENDANT"),
   hourlyRateCentavos: z.number().int().min(0).nullable().optional(),
@@ -78,7 +101,7 @@ const CreateStaffBody = z.object({
 const UpdateStaffBody = z
   .object({
     name: z.string().min(1).optional(),
-    phone: z.string().min(1).optional(),
+    phone: CanonicalPhoneSchema.optional(),
     hourlyRateCentavos: z.number().int().min(0).nullable().optional(),
   })
   .strict()
@@ -96,9 +119,10 @@ function staffErrorReply(
     return { code: 404, error: "Funcionário não encontrado." }
   }
   if (err instanceof DuplicatePhoneError) {
+    // FIX 6a: on UPDATE the colliding row may be INACTIVE — never assert "ativo".
     return {
       code: 409,
-      error: `Já existe um funcionário ativo com o telefone "${err.phone}".`,
+      error: `Já existe um funcionário com o telefone "${err.phone}".`,
     }
   }
   if (err instanceof LastOwnerError) {
@@ -106,6 +130,14 @@ function staffErrorReply(
       code: 409,
       error:
         "Não é possível desativar ou rebaixar o último proprietário ativo. Promova outro proprietário antes.",
+    }
+  }
+  if (err instanceof StaffMutationConflictError) {
+    // FIX 2: Serializable write-conflict persisted past the retry — safe to re-issue.
+    return {
+      code: 409,
+      error:
+        "Outra alteração de funcionários foi aplicada ao mesmo tempo. Tente novamente.",
     }
   }
   if (err instanceof SelfMutationError) {

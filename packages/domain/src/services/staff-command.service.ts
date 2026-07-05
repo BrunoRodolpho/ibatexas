@@ -13,11 +13,15 @@
 //   - LastOwnerError     — a demote (role.assign away from OWNER) or a
 //                          deactivate may NEVER drop the count of ACTIVE OWNERs
 //                          to zero. Unconditional — every caller, incl. API key.
+//                          Enforced ATOMICALLY (FIX 2): count precondition +
+//                          write run in ONE Serializable transaction, so racing
+//                          mutations of the two last OWNERs cannot both commit.
 //   - SelfMutationError  — a staff member (envelope carries a staffId) may not
 //                          deactivate themselves or change their own role.
 //                          SKIPPED for API-key callers (no staffId); safe
-//                          because the unconditional last-owner guard makes an
-//                          org-wide lockout impossible either way.
+//                          because the last-owner guard is unconditional AND
+//                          transactionally race-free (above), so an org-wide
+//                          lockout is impossible either way.
 //   - DuplicatePhoneError — phone is `@unique`. Create on an ACTIVE phone
 //                          REFUSEs; create on an INACTIVE phone REACTIVATES that
 //                          row (CLI create-staff idiom, auth.ts) updating
@@ -32,9 +36,21 @@
 // FK is ON DELETE CASCADE, so a hard delete would orphan the escala.
 
 import { prisma } from "../client.js"
+import { toE164BR } from "../phone.js"
 import type { AuditSink, IntentEnvelope } from "@adjudicate/core"
 import type { Guard } from "@adjudicate/core/kernel"
-import type { Staff, StaffRole } from "../generated/prisma-client/client.js"
+import type {
+  PrismaClient,
+  Staff,
+  StaffRole,
+} from "../generated/prisma-client/client.js"
+
+// Transaction client type (interactive-transaction idiom — order-command /
+// payment-command / reservation services).
+type TxClient = Omit<
+  PrismaClient,
+  "$connect" | "$disconnect" | "$on" | "$transaction" | "$extends"
+>
 import {
   STAFF_ROLE_VALUES,
   staffCommandPolicyBundle,
@@ -60,10 +76,15 @@ export class StaffNotFoundError extends Error {
   }
 }
 
-/** An ACTIVE staff member already holds the requested phone (`@unique`). */
+/**
+ * Another staff row already holds the requested phone (`@unique`). On CREATE
+ * this means an ACTIVE holder (an INACTIVE holder reactivates instead); on
+ * UPDATE the collision may be with ANY row, active or not — the message
+ * therefore does not assert activity (FIX 6a).
+ */
 export class DuplicatePhoneError extends Error {
   constructor(public readonly phone: string) {
-    super(`Active staff already exists for phone: ${phone}`)
+    super(`Staff already exists for phone: ${phone}`)
     this.name = "DuplicatePhoneError"
   }
 }
@@ -72,11 +93,30 @@ export class DuplicatePhoneError extends Error {
  * The mutation would reduce the count of ACTIVE OWNERs to zero (deactivating or
  * demoting the last active owner). Unconditional — blocks every caller so the
  * organization can never be locked out of owner-level administration.
+ *
+ * FIX 2 (adversarial review): enforced ATOMICALLY — the count precondition and
+ * the write run inside ONE Serializable interactive transaction, so two racing
+ * mutations of the two last OWNERs cannot both read count=2 and both commit
+ * (the read-committed count-then-update TOCTOU that would have produced ZERO
+ * active OWNERs). One P2034 write-conflict retry; a second conflict surfaces as
+ * {@link StaffMutationConflictError} (route → 409, operator retries).
  */
 export class LastOwnerError extends Error {
   constructor(public readonly staffId: string) {
     super(`Refusing to remove the last active OWNER: ${staffId}`)
     this.name = "LastOwnerError"
+  }
+}
+
+/**
+ * A Serializable write-conflict (Prisma P2034) persisted after the single
+ * retry — a concurrent staff mutation touched the same rows. Route maps to 409;
+ * the operation is safe to re-issue.
+ */
+export class StaffMutationConflictError extends Error {
+  constructor(public readonly staffId: string) {
+    super(`Concurrent staff mutation conflict for: ${staffId}`)
+    this.name = "StaffMutationConflictError"
   }
 }
 
@@ -163,9 +203,19 @@ export function actorStaffIdFromEnvelope(envelope: {
   return null
 }
 
-/** E.164 validation — mirrors the CLI create-staff guard (auth.ts). */
-function assertValidPhone(phone: string): void {
-  if (!phone.startsWith("+") || phone.replace(/\D/g, "").length < 10) {
+/**
+ * Normalize to CANONICAL E.164 via the SAME normalizer the login path relies on
+ * (FIX 3 — adversarial review): `toE164BR` strips formatting and validates the
+ * exact `/^\+[1-9]\d{7,14}$/` shape the staff-OTP `PhoneSchema` (routes/auth.ts)
+ * enforces. Pre-fix, a lax check stored the input VERBATIM, so a staff row
+ * created as "+55 11 99999-9999" could NEVER log in (login matches the @unique
+ * column by exact canonical string) and duplicate-phone was defeated by format
+ * variants. Unnormalizable input → {@link InvalidStaffPhoneError} (route → 400).
+ */
+function normalizeStaffPhone(phone: string): string {
+  try {
+    return toE164BR(phone)
+  } catch {
     throw new InvalidStaffPhoneError(phone)
   }
 }
@@ -217,9 +267,39 @@ export interface StaffListResult {
 
 // ── Service ─────────────────────────────────────────────────────────────────
 
-/** ACTIVE-owner headcount — the last-owner invariant reads this. */
-async function activeOwnerCount(): Promise<number> {
-  return prisma.staff.count({ where: { role: "OWNER", active: true } })
+/** ACTIVE-owner headcount ON THE TRANSACTION — the last-owner invariant reads
+ *  this inside the Serializable tx so the count and the write are atomic. */
+async function activeOwnerCount(tx: TxClient): Promise<number> {
+  return tx.staff.count({ where: { role: "OWNER", active: true } })
+}
+
+/**
+ * FIX 2 (adversarial review) — run a last-owner-guarded mutation inside a
+ * SERIALIZABLE interactive transaction. READ COMMITTED count-then-update is a
+ * TOCTOU: two concurrent deactivates/demotes of the two last OWNERs would both
+ * read activeOwnerCount()=2, both pass `<= 1`, both commit → zero active
+ * OWNERs → permanent org lockout. Serializable makes the racing pair conflict;
+ * the loser's P2034 gets ONE retry (the retry then correctly sees count=1 and
+ * throws LastOwnerError) and a persistent conflict surfaces as
+ * {@link StaffMutationConflictError} (route → 409).
+ */
+async function runLastOwnerGuardedTx(
+  staffId: string,
+  fn: (tx: TxClient) => Promise<Staff>,
+): Promise<Staff> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await prisma.$transaction(fn, { isolationLevel: "Serializable" })
+    } catch (err) {
+      if (prismaErrorCode(err) === "P2034" && attempt === 0) {
+        continue // one retry — re-runs count + write against committed state
+      }
+      if (prismaErrorCode(err) === "P2034") {
+        throw new StaffMutationConflictError(staffId)
+      }
+      throw err
+    }
+  }
 }
 
 export function createStaffCommandService(options?: StaffCommandServiceOptions) {
@@ -232,16 +312,18 @@ export function createStaffCommandService(options?: StaffCommandServiceOptions) 
   // ── Executors ──────────────────────────────────────────────────────────────
 
   async function createExecutor(payload: StaffCreatePayload): Promise<Staff> {
-    assertValidPhone(payload.phone)
+    // FIX 3: canonical E.164 is what gets LOOKED UP and STORED — a formatted
+    // variant can neither dodge the duplicate check nor create an unloginable row.
+    const phone = normalizeStaffPhone(payload.phone)
     assertValidRole(payload.role)
     assertValidHourlyRate(payload.hourlyRateCentavos)
 
     const existing = await prisma.staff.findUnique({
-      where: { phone: payload.phone },
+      where: { phone },
     })
     if (existing) {
       if (existing.active) {
-        throw new DuplicatePhoneError(payload.phone)
+        throw new DuplicatePhoneError(phone)
       }
       // Reactivate the inactive row (CLI create-staff idiom) — refresh
       // name / role and, when provided, the hourly rate.
@@ -261,7 +343,7 @@ export function createStaffCommandService(options?: StaffCommandServiceOptions) 
     try {
       return await prisma.staff.create({
         data: {
-          phone: payload.phone,
+          phone,
           name: payload.name,
           role: payload.role,
           hourlyRateCentavos: payload.hourlyRateCentavos ?? null,
@@ -271,7 +353,7 @@ export function createStaffCommandService(options?: StaffCommandServiceOptions) 
       // `withAdjudicate` does NOT swallow executor errors — map the unique-race
       // P2002 to the typed error (a concurrent create won the phone).
       if (prismaErrorCode(err) === "P2002") {
-        throw new DuplicatePhoneError(payload.phone)
+        throw new DuplicatePhoneError(phone)
       }
       throw err
     }
@@ -283,7 +365,9 @@ export function createStaffCommandService(options?: StaffCommandServiceOptions) 
     if ("role" in payload) {
       throw new RoleUpdateForbiddenError()
     }
-    if (payload.phone !== undefined) assertValidPhone(payload.phone)
+    // FIX 3: canonical E.164 stored on update too (same normalizer as create).
+    const phone =
+      payload.phone !== undefined ? normalizeStaffPhone(payload.phone) : undefined
     assertValidHourlyRate(payload.hourlyRateCentavos)
 
     try {
@@ -291,7 +375,7 @@ export function createStaffCommandService(options?: StaffCommandServiceOptions) 
         where: { id: payload.staffId },
         data: {
           ...(payload.name !== undefined ? { name: payload.name } : {}),
-          ...(payload.phone !== undefined ? { phone: payload.phone } : {}),
+          ...(phone !== undefined ? { phone } : {}),
           ...(payload.hourlyRateCentavos !== undefined
             ? { hourlyRateCentavos: payload.hourlyRateCentavos }
             : {}),
@@ -300,33 +384,39 @@ export function createStaffCommandService(options?: StaffCommandServiceOptions) 
     } catch (err) {
       const code = prismaErrorCode(err)
       if (code === "P2025") throw new StaffNotFoundError(payload.staffId)
-      if (code === "P2002") throw new DuplicatePhoneError(payload.phone ?? "")
+      if (code === "P2002") throw new DuplicatePhoneError(phone ?? "")
       throw err
     }
   }
 
   function deactivateExecutor(actorStaffId: string | null) {
     return async (payload: StaffDeactivatePayload): Promise<Staff> => {
-      // Self-mutation — only for JWT callers (actorStaffId present).
+      // Self-mutation — only for JWT callers (actorStaffId present). Pure
+      // identity check, no DB — stays outside the transaction.
       if (actorStaffId !== null && actorStaffId === payload.staffId) {
         throw new SelfMutationError(payload.staffId)
       }
-      const target = await prisma.staff.findUnique({
-        where: { id: payload.staffId },
-      })
-      if (!target) throw new StaffNotFoundError(payload.staffId)
+      // FIX 2: read target + count + write are ONE Serializable transaction —
+      // the last-owner precondition cannot be raced past (see
+      // runLastOwnerGuardedTx for the TOCTOU this closes).
+      return runLastOwnerGuardedTx(payload.staffId, async (tx) => {
+        const target = await tx.staff.findUnique({
+          where: { id: payload.staffId },
+        })
+        if (!target) throw new StaffNotFoundError(payload.staffId)
 
-      // Last-owner (unconditional): count precondition inside the mutation
-      // (table.service idiom). Only an ACTIVE owner reduces the headcount.
-      if (target.role === "OWNER" && target.active) {
-        if ((await activeOwnerCount()) <= 1) {
-          throw new LastOwnerError(payload.staffId)
+        // Last-owner (unconditional): count precondition inside the mutation
+        // (table.service idiom). Only an ACTIVE owner reduces the headcount.
+        if (target.role === "OWNER" && target.active) {
+          if ((await activeOwnerCount(tx)) <= 1) {
+            throw new LastOwnerError(payload.staffId)
+          }
         }
-      }
 
-      return prisma.staff.update({
-        where: { id: payload.staffId },
-        data: { active: false },
+        return tx.staff.update({
+          where: { id: payload.staffId },
+          data: { active: false },
+        })
       })
     }
   }
@@ -334,30 +424,35 @@ export function createStaffCommandService(options?: StaffCommandServiceOptions) 
   function assignRoleExecutor(actorStaffId: string | null) {
     return async (payload: StaffRoleAssignPayload): Promise<Staff> => {
       assertValidRole(payload.role)
-      // Self-mutation — only for JWT callers (actorStaffId present).
+      // Self-mutation — only for JWT callers (actorStaffId present). Pure
+      // identity check, no DB — stays outside the transaction.
       if (actorStaffId !== null && actorStaffId === payload.staffId) {
         throw new SelfMutationError(payload.staffId)
       }
-      const target = await prisma.staff.findUnique({
-        where: { id: payload.staffId },
-      })
-      if (!target) throw new StaffNotFoundError(payload.staffId)
+      // FIX 2: read target + count + write are ONE Serializable transaction —
+      // two racing demotes of the two last OWNERs cannot both commit.
+      return runLastOwnerGuardedTx(payload.staffId, async (tx) => {
+        const target = await tx.staff.findUnique({
+          where: { id: payload.staffId },
+        })
+        if (!target) throw new StaffNotFoundError(payload.staffId)
 
-      // Last-owner (unconditional): demoting the last ACTIVE owner away from
-      // OWNER is refused. Count precondition inside the mutation.
-      if (
-        target.role === "OWNER" &&
-        target.active &&
-        payload.role !== "OWNER"
-      ) {
-        if ((await activeOwnerCount()) <= 1) {
-          throw new LastOwnerError(payload.staffId)
+        // Last-owner (unconditional): demoting the last ACTIVE owner away from
+        // OWNER is refused. Count precondition inside the mutation.
+        if (
+          target.role === "OWNER" &&
+          target.active &&
+          payload.role !== "OWNER"
+        ) {
+          if ((await activeOwnerCount(tx)) <= 1) {
+            throw new LastOwnerError(payload.staffId)
+          }
         }
-      }
 
-      return prisma.staff.update({
-        where: { id: payload.staffId },
-        data: { role: payload.role },
+        return tx.staff.update({
+          where: { id: payload.staffId },
+          data: { role: payload.role },
+        })
       })
     }
   }
@@ -456,7 +551,9 @@ export function createStaffCommandService(options?: StaffCommandServiceOptions) 
       const [staff, total] = await Promise.all([
         prisma.staff.findMany({
           where,
-          orderBy: [{ active: "desc" }, { name: "asc" }],
+          // `id` tiebreaker (FIX 6b): equal-name rows would otherwise have no
+          // deterministic order, so pagination pages could overlap/skip.
+          orderBy: [{ active: "desc" }, { name: "asc" }, { id: "asc" }],
           take: limit,
           skip: offset,
         }),

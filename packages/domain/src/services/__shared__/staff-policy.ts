@@ -69,15 +69,22 @@ export type StaffCommandIntentKind =
   | "staff.role.assign"
 
 /**
- * The closed set of staff roles, pinned to the Prisma `StaffRole` enum via
- * `satisfies` — adding an enum member without listing it here is a compile
- * error. The single runtime source of truth for the service's role validation.
+ * The closed set of staff roles — GENUINELY exhaustive over the Prisma
+ * `StaffRole` enum (FIX 6c): the `Record<StaffRole, true>` key set must cover
+ * every enum member, so ADDING a member to the schema enum fails the BUILD here
+ * until it is listed. (The previous `satisfies readonly StaffRole[]` pin did
+ * NOT guarantee that — a SUBSET of the enum also satisfies an array-of-enum
+ * type.) The single runtime source of truth for the service's role validation.
  */
-export const STAFF_ROLE_VALUES = [
-  "OWNER",
-  "MANAGER",
-  "ATTENDANT",
-] as const satisfies readonly StaffRole[]
+const STAFF_ROLE_EXHAUSTIVE: Record<StaffRole, true> = {
+  OWNER: true,
+  MANAGER: true,
+  ATTENDANT: true,
+}
+
+export const STAFF_ROLE_VALUES = Object.keys(
+  STAFF_ROLE_EXHAUSTIVE,
+) as readonly StaffRole[]
 
 export interface StaffCreatePayload {
   /** E.164 phone (`@unique`). Reactivates an existing INACTIVE row (CLI idiom). */

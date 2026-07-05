@@ -545,7 +545,7 @@ describe("extractAuth — staff active-check (STAFFREVOKE)", () => {
     server.inject({ method: "GET", url: "/staff-check", headers: { cookie: "staff_token=tok" } });
 
   it("attaches staff identity when the staff member is still active", async () => {
-    mockGetStaffById.mockResolvedValue({ id: "staff_1", active: true });
+    mockGetStaffById.mockResolvedValue({ id: "staff_1", active: true, role: "OWNER" });
     const body = (await inject()).json();
     expect(mockGetStaffById).toHaveBeenCalledWith("staff_1");
     expect(body.staffId).toBe("staff_1");
@@ -613,7 +613,7 @@ describe("extractAuth — staff active-check (STAFFREVOKE)", () => {
   });
 
   it("JWTSPLIT: verifies staff_token via the dedicated staff instance, not the customer one", async () => {
-    mockGetStaffById.mockResolvedValue({ id: "staff_1", active: true });
+    mockGetStaffById.mockResolvedValue({ id: "staff_1", active: true, role: "OWNER" });
     mockCustomerInstanceVerify.mockImplementation(() => {
       throw new Error("customer instance must not verify staff tokens");
     });

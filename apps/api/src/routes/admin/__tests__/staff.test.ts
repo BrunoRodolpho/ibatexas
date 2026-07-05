@@ -32,20 +32,32 @@ const errs = vi.hoisted(() => {
     }
   }
   class LastOwnerError extends Error {}
+  class StaffMutationConflictError extends Error {}
   class SelfMutationError extends Error {}
   class RoleUpdateForbiddenError extends Error {}
   class InvalidStaffPhoneError extends Error {}
   class InvalidStaffRoleError extends Error {}
   class InvalidHourlyRateError extends Error {}
+  // Stand-in with the REAL contract (packages/domain/src/phone.ts) — the route's
+  // CanonicalPhoneSchema normalizes through this at the zod layer.
+  const toE164BR = (input: string): string => {
+    const stripped = input.replace(/^whatsapp:/, "").replace(/[\s\-().]/g, "");
+    if (!/^\+[1-9]\d{7,14}$/.test(stripped)) {
+      throw new Error(`Invalid phone format: ${input}`);
+    }
+    return stripped;
+  };
   return {
     StaffNotFoundError,
     DuplicatePhoneError,
     LastOwnerError,
+    StaffMutationConflictError,
     SelfMutationError,
     RoleUpdateForbiddenError,
     InvalidStaffPhoneError,
     InvalidStaffRoleError,
     InvalidHourlyRateError,
+    toE164BR,
   };
 });
 
@@ -242,6 +254,40 @@ describe("POST /api/admin/staff — create", () => {
       await server.close();
     }
   });
+
+  it("OWNER: formatted phone input is CANONICALIZED at the zod layer (FIX 3)", async () => {
+    mockCreate.mockResolvedValue({ decision: EXECUTE, result: { id: "staff_new", name: "Ana" } });
+    const server = await buildServer(OWNER);
+    try {
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/admin/staff",
+        payload: { phone: "+55 11 99999-0001", name: "Ana" },
+      });
+      expect(res.statusCode).toBe(201);
+      const env = mockCreate.mock.calls[0]?.[0] as { payload: Record<string, unknown> };
+      // The envelope (what gets hashed + adjudicated + stored) carries the
+      // canonical form — never the formatted variant.
+      expect(env.payload.phone).toBe("+5511999990001");
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("OWNER: an unnormalizable phone is a zod 400 — service never called", async () => {
+    const server = await buildServer(OWNER);
+    try {
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/admin/staff",
+        payload: { phone: "99999-0001", name: "Ana" },
+      });
+      expect(res.statusCode).toBe(400);
+      expect(mockCreate).not.toHaveBeenCalled();
+    } finally {
+      await server.close();
+    }
+  });
 });
 
 // ── PATCH /api/admin/staff/:id ───────────────────────────────────────────────
@@ -385,6 +431,21 @@ describe("POST /api/admin/staff/:id/deactivate", () => {
         url: "/api/admin/staff/staff_owner_01/deactivate",
       });
       expect(res.statusCode).toBe(403);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("OWNER: a persistent Serializable write-conflict maps to 409 (FIX 2)", async () => {
+    mockDeactivate.mockRejectedValue(new errs.StaffMutationConflictError());
+    const server = await buildServer(OWNER);
+    try {
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/admin/staff/staff_1/deactivate",
+      });
+      expect(res.statusCode).toBe(409);
+      expect((res.json() as { error: string }).error).toContain("Tente novamente");
     } finally {
       await server.close();
     }

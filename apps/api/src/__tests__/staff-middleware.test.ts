@@ -25,8 +25,26 @@ vi.mock("@ibatexas/tools", () => ({
 // A fresh getById is created per call (post-clearAllMocks-safe) returning an active staff so
 // the valid-staff cases here authenticate; the deactivated/deleted paths are covered in
 // auth-middleware.test.ts.
+//
+// AUT-007 (FIX 1): request.staffRole is now sourced from the FRESH staff row,
+// NOT the JWT claim — so this mock is the ROLE AUTHORITY. Each test sub maps to
+// the row role its assertions expect (matching the JWT it mints — the aligned
+// case; the divergent demotion case is pinned in staff-role-demotion-live.test.ts).
+const STAFF_ROW_ROLES = vi.hoisted(
+  (): Record<string, "OWNER" | "MANAGER" | "ATTENDANT"> => ({
+    staff_01: "MANAGER",
+    staff_02: "OWNER",
+    staff_03: "ATTENDANT",
+    staff_owner: "OWNER",
+    staff_mgr: "MANAGER",
+    staff_att: "ATTENDANT",
+  }),
+);
 vi.mock("@ibatexas/domain", () => ({
-  createStaffService: () => ({ getById: () => Promise.resolve({ active: true }) }),
+  createStaffService: () => ({
+    getById: (id: string) =>
+      Promise.resolve({ id, active: true, role: STAFF_ROW_ROLES[id] ?? "ATTENDANT" }),
+  }),
 }));
 
 // ── Staff-token helper ─────────────────────────────────────────────────────────

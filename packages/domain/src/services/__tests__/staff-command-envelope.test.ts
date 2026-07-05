@@ -6,12 +6,16 @@
 //   - the injected `authGuards` (BKL-074) running INSIDE the adjudication;
 //   - create: fresh create / duplicate-ACTIVE-phone reject / reactivate an
 //     INACTIVE phone / P2002 unique race → typed error / field validation;
+//   - FIX 3: canonical E.164 normalization on create AND update (formatted
+//     input stored canonical + findable by the login lookup; format variants
+//     collide as DuplicatePhone);
 //   - update: partial patch / P2025 not-found / P2002 dup / role-field reject;
-//   - deactivate: soft-deactivate / not-found / last-active-OWNER guard /
-//     self-mutation (JWT) + api-key skip;
-//   - assignRole: promote / demote-last-owner guard / self-re-role / not-found;
+//   - deactivate + assignRole: FIX 2 — the last-owner invariant runs INSIDE a
+//     Serializable interactive transaction (count+write on the tx client, one
+//     P2034 retry, persistent conflict → StaffMutationConflictError), plus
+//     not-found / self-mutation (JWT) + api-key skip;
 //   - the pure `actorStaffIdFromEnvelope` sessionId parse;
-//   - the paginated `list` read.
+//   - the paginated `list` read (id tiebreaker — FIX 6b).
 
 import { describe, it, expect, beforeEach, vi } from "vitest"
 import { randomUUID } from "node:crypto"
@@ -23,6 +27,14 @@ const mockCreate = vi.hoisted(() => vi.fn())
 const mockUpdate = vi.hoisted(() => vi.fn())
 const mockCount = vi.hoisted(() => vi.fn())
 const mockFindMany = vi.hoisted(() => vi.fn())
+// FIX 2 — the Serializable-transaction seam. `$transaction` is a spy whose
+// default impl (set in beforeEach) runs the callback against a DISTINCT tx
+// client, so tests can prove deactivate/assignRole read+check+write ON THE TX
+// (atomic) and never on the root client (the TOCTOU shape the fix closes).
+const mockTransaction = vi.hoisted(() => vi.fn())
+const mockTxFindUnique = vi.hoisted(() => vi.fn())
+const mockTxCount = vi.hoisted(() => vi.fn())
+const mockTxUpdate = vi.hoisted(() => vi.fn())
 
 vi.mock("../../client.js", () => ({
   prisma: {
@@ -33,6 +45,7 @@ vi.mock("../../client.js", () => ({
       count: mockCount,
       findMany: mockFindMany,
     },
+    $transaction: (...a: unknown[]) => mockTransaction(...a),
   },
 }))
 
@@ -46,6 +59,7 @@ import {
   LastOwnerError,
   RoleUpdateForbiddenError,
   SelfMutationError,
+  StaffMutationConflictError,
   StaffNotFoundError,
 } from "../staff-command.service.js"
 import type {
@@ -56,6 +70,22 @@ import type {
 
 const state: StaffCommandState = { ctx: {} }
 const SEEN_AT = new Date("2026-07-05T12:00:00.000Z")
+
+/** The distinct tx client handed to the $transaction callback. */
+const TX_CLIENT = {
+  staff: {
+    findUnique: (...a: unknown[]) => mockTxFindUnique(...a),
+    count: (...a: unknown[]) => mockTxCount(...a),
+    update: (...a: unknown[]) => mockTxUpdate(...a),
+  },
+}
+
+type TxFn = (tx: typeof TX_CLIENT) => Promise<unknown>
+
+/** Default: run the callback against TX_CLIENT (a committing transaction). */
+function txRuns(fn: TxFn): Promise<unknown> {
+  return fn(TX_CLIENT)
+}
 
 /** Minimal Staff-shaped row (only the fields the service reads/returns). */
 function makeRow(over: Partial<Record<string, unknown>> = {}) {
@@ -72,7 +102,7 @@ function makeRow(over: Partial<Record<string, unknown>> = {}) {
   } as never
 }
 
-/** P2002/P2025-coded Prisma-like error (the service reads `err.code`). */
+/** P2002/P2025/P2034-coded Prisma-like error (the service reads `err.code`). */
 function prismaError(code: string) {
   return Object.assign(new Error(`prisma ${code}`), { code })
 }
@@ -119,7 +149,12 @@ function createPayload(over: Partial<StaffCreatePayload> = {}): StaffCreatePaylo
   }
 }
 
-beforeEach(() => vi.clearAllMocks())
+beforeEach(() => {
+  vi.clearAllMocks()
+  // Default committing transaction — individual tests override to inject
+  // P2034 serialization conflicts.
+  mockTransaction.mockImplementation((fn: TxFn) => txRuns(fn))
+})
 
 // ── actorStaffIdFromEnvelope (pure) ─────────────────────────────────────────
 
@@ -273,6 +308,54 @@ describe("createFromEnvelope", () => {
   })
 })
 
+// ── FIX 3 — canonical E.164 normalization (create + update) ─────────────────
+
+describe("phone canonicalization (FIX 3 — same normalizer as the login path)", () => {
+  it("create with formatted input LOOKS UP and STORES canonical E.164 (login-findable)", async () => {
+    mockFindUnique.mockResolvedValue(null)
+    mockCreate.mockResolvedValue(makeRow())
+    const svc = createStaffCommandService()
+    await svc.createFromEnvelope(
+      adminEnv("staff.create", createPayload({ phone: "+55 11 99999-0001" })),
+      state,
+    )
+    // Duplicate lookup runs against the canonical form…
+    expect(mockFindUnique).toHaveBeenCalledWith({ where: { phone: "+5511999990001" } })
+    // …and the stored value is canonical AND matches the staff-OTP login
+    // PhoneSchema regex (routes/auth.ts) — the row can actually log in.
+    const stored = (mockCreate.mock.calls[0]?.[0] as { data: { phone: string } }).data.phone
+    expect(stored).toBe("+5511999990001")
+    expect(/^\+[1-9]\d{7,14}$/.test(stored)).toBe(true)
+  })
+
+  it("two format variants of the same number COLLIDE as DuplicatePhone", async () => {
+    // The row was created canonical; a formatted variant must find it.
+    mockFindUnique.mockResolvedValue(makeRow({ phone: "+5511999990001", active: true }))
+    const svc = createStaffCommandService()
+    await expect(
+      svc.createFromEnvelope(
+        adminEnv("staff.create", createPayload({ phone: "+55 (11) 99999.0001" })),
+        state,
+      ),
+    ).rejects.toBeInstanceOf(DuplicatePhoneError)
+    expect(mockFindUnique).toHaveBeenCalledWith({ where: { phone: "+5511999990001" } })
+    expect(mockCreate).not.toHaveBeenCalled()
+  })
+
+  it("update with formatted input stores canonical E.164", async () => {
+    mockUpdate.mockResolvedValue(makeRow({ phone: "+5511988887777" }))
+    const svc = createStaffCommandService()
+    await svc.updateFromEnvelope(
+      adminEnv("staff.update", { staffId: "staff_01", phone: "+55 11 98888-7777" }),
+      state,
+    )
+    expect(mockUpdate).toHaveBeenCalledWith({
+      where: { id: "staff_01" },
+      data: { phone: "+5511988887777" },
+    })
+  })
+})
+
 // ── update ────────────────────────────────────────────────────────────────────
 
 describe("updateFromEnvelope", () => {
@@ -326,52 +409,140 @@ describe("updateFromEnvelope", () => {
   })
 })
 
-// ── deactivate ────────────────────────────────────────────────────────────────
+// ── FIX 2 — Serializable last-owner transaction ──────────────────────────────
 
-describe("deactivateFromEnvelope", () => {
-  it("soft-deactivates a non-owner (active=false); owner-count NOT read", async () => {
-    mockFindUnique.mockResolvedValue(makeRow({ id: "staff_2", role: "ATTENDANT", active: true }))
-    mockUpdate.mockResolvedValue(makeRow({ id: "staff_2", active: false }))
-    const svc = createStaffCommandService()
-    const out = await svc.deactivateFromEnvelope(
-      adminEnv("staff.deactivate", { staffId: "staff_2" }),
-      state,
-    )
-    expect(out.decision.kind).toBe("EXECUTE")
-    expect(mockUpdate).toHaveBeenCalledWith({ where: { id: "staff_2" }, data: { active: false } })
-    expect(mockCount).not.toHaveBeenCalled()
-  })
-
-  it("404s an unknown target (StaffNotFoundError)", async () => {
-    mockFindUnique.mockResolvedValue(null)
-    const svc = createStaffCommandService()
-    await expect(
-      svc.deactivateFromEnvelope(adminEnv("staff.deactivate", { staffId: "ghost" }), state),
-    ).rejects.toBeInstanceOf(StaffNotFoundError)
-    expect(mockUpdate).not.toHaveBeenCalled()
-  })
-
-  it("REFUSES deactivating the LAST active OWNER (LastOwnerError, no update)", async () => {
-    mockFindUnique.mockResolvedValue(makeRow({ id: "owner_1", role: "OWNER", active: true }))
-    mockCount.mockResolvedValue(1)
-    const svc = createStaffCommandService()
-    await expect(
-      svc.deactivateFromEnvelope(adminEnv("staff.deactivate", { staffId: "owner_1" }, "owner_2"), state),
-    ).rejects.toBeInstanceOf(LastOwnerError)
-    expect(mockUpdate).not.toHaveBeenCalled()
-  })
-
-  it("allows deactivating an OWNER when another active OWNER remains", async () => {
-    mockFindUnique.mockResolvedValue(makeRow({ id: "owner_1", role: "OWNER", active: true }))
-    mockCount.mockResolvedValue(2)
-    mockUpdate.mockResolvedValue(makeRow({ id: "owner_1", active: false }))
+describe("last-owner invariant is TRANSACTIONAL (FIX 2 — Serializable, on-tx, P2034 retry)", () => {
+  it("deactivate wraps read+count+write in ONE Serializable transaction ON THE TX CLIENT", async () => {
+    mockTxFindUnique.mockResolvedValue(makeRow({ id: "owner_1", role: "OWNER", active: true }))
+    mockTxCount.mockResolvedValue(2)
+    mockTxUpdate.mockResolvedValue(makeRow({ id: "owner_1", active: false }))
     const svc = createStaffCommandService()
     const out = await svc.deactivateFromEnvelope(
       adminEnv("staff.deactivate", { staffId: "owner_1" }, "owner_2"),
       state,
     )
     expect(out.decision.kind).toBe("EXECUTE")
-    expect(mockUpdate).toHaveBeenCalledWith({ where: { id: "owner_1" }, data: { active: false } })
+    // The transaction is Serializable — READ COMMITTED would leave the
+    // count-then-update TOCTOU open (two racing last-owner mutations both
+    // reading count=2 and both committing → zero active OWNERs).
+    expect(mockTransaction).toHaveBeenCalledTimes(1)
+    expect(mockTransaction.mock.calls[0]?.[1]).toEqual({ isolationLevel: "Serializable" })
+    // Read + count + write all ran on the TX client…
+    expect(mockTxFindUnique).toHaveBeenCalledTimes(1)
+    expect(mockTxCount).toHaveBeenCalledWith({ where: { role: "OWNER", active: true } })
+    expect(mockTxUpdate).toHaveBeenCalledWith({ where: { id: "owner_1" }, data: { active: false } })
+    // …and NEVER on the root client (that would be outside the atomic scope).
+    expect(mockFindUnique).not.toHaveBeenCalled()
+    expect(mockCount).not.toHaveBeenCalled()
+    expect(mockUpdate).not.toHaveBeenCalled()
+  })
+
+  it("assignRole demote wraps in the same Serializable transaction on the tx client", async () => {
+    mockTxFindUnique.mockResolvedValue(makeRow({ id: "owner_1", role: "OWNER", active: true }))
+    mockTxCount.mockResolvedValue(2)
+    mockTxUpdate.mockResolvedValue(makeRow({ id: "owner_1", role: "MANAGER" }))
+    const svc = createStaffCommandService()
+    const out = await svc.assignRoleFromEnvelope(
+      adminEnv("staff.role.assign", { staffId: "owner_1", role: "MANAGER" }, "owner_2"),
+      state,
+    )
+    expect(out.decision.kind).toBe("EXECUTE")
+    expect(mockTransaction.mock.calls[0]?.[1]).toEqual({ isolationLevel: "Serializable" })
+    expect(mockTxUpdate).toHaveBeenCalledWith({ where: { id: "owner_1" }, data: { role: "MANAGER" } })
+    expect(mockUpdate).not.toHaveBeenCalled()
+  })
+
+  it("racing pair: the serialization LOSER retries once and correctly sees count=1 → LastOwnerError (both cannot commit)", async () => {
+    // Simulates the two-last-OWNERs race: the winner committed first, so this
+    // caller's Serializable tx aborts with P2034. The single retry re-runs
+    // against COMMITTED state — count is now 1 — and the invariant refuses.
+    // This is exactly the pair-cannot-both-commit guarantee.
+    mockTransaction
+      .mockRejectedValueOnce(prismaError("P2034")) // attempt 1: serialization conflict
+      .mockImplementationOnce((fn: TxFn) => txRuns(fn)) // attempt 2: re-runs and sees truth
+    mockTxFindUnique.mockResolvedValue(makeRow({ id: "owner_2", role: "OWNER", active: true }))
+    mockTxCount.mockResolvedValue(1) // the winner already removed the other OWNER
+    const svc = createStaffCommandService()
+    await expect(
+      svc.deactivateFromEnvelope(
+        adminEnv("staff.deactivate", { staffId: "owner_2" }, "owner_9"),
+        state,
+      ),
+    ).rejects.toBeInstanceOf(LastOwnerError)
+    expect(mockTransaction).toHaveBeenCalledTimes(2) // one retry, then the typed refusal
+    expect(mockTxUpdate).not.toHaveBeenCalled() // the loser never writes
+  })
+
+  it("a P2034 that persists past the single retry → StaffMutationConflictError (route 409)", async () => {
+    mockTransaction
+      .mockRejectedValueOnce(prismaError("P2034"))
+      .mockRejectedValueOnce(prismaError("P2034"))
+    const svc = createStaffCommandService()
+    await expect(
+      svc.assignRoleFromEnvelope(
+        adminEnv("staff.role.assign", { staffId: "owner_1", role: "MANAGER" }, "owner_2"),
+        state,
+      ),
+    ).rejects.toBeInstanceOf(StaffMutationConflictError)
+    expect(mockTransaction).toHaveBeenCalledTimes(2) // exactly one retry
+  })
+
+  it("a non-P2034 transaction error propagates untouched (no retry loop)", async () => {
+    mockTransaction.mockRejectedValueOnce(prismaError("P1001"))
+    const svc = createStaffCommandService()
+    await expect(
+      svc.deactivateFromEnvelope(adminEnv("staff.deactivate", { staffId: "s1" }), state),
+    ).rejects.toMatchObject({ code: "P1001" })
+    expect(mockTransaction).toHaveBeenCalledTimes(1)
+  })
+})
+
+// ── deactivate ────────────────────────────────────────────────────────────────
+
+describe("deactivateFromEnvelope", () => {
+  it("soft-deactivates a non-owner (active=false); owner-count NOT read", async () => {
+    mockTxFindUnique.mockResolvedValue(makeRow({ id: "staff_2", role: "ATTENDANT", active: true }))
+    mockTxUpdate.mockResolvedValue(makeRow({ id: "staff_2", active: false }))
+    const svc = createStaffCommandService()
+    const out = await svc.deactivateFromEnvelope(
+      adminEnv("staff.deactivate", { staffId: "staff_2" }),
+      state,
+    )
+    expect(out.decision.kind).toBe("EXECUTE")
+    expect(mockTxUpdate).toHaveBeenCalledWith({ where: { id: "staff_2" }, data: { active: false } })
+    expect(mockTxCount).not.toHaveBeenCalled()
+  })
+
+  it("404s an unknown target (StaffNotFoundError)", async () => {
+    mockTxFindUnique.mockResolvedValue(null)
+    const svc = createStaffCommandService()
+    await expect(
+      svc.deactivateFromEnvelope(adminEnv("staff.deactivate", { staffId: "ghost" }), state),
+    ).rejects.toBeInstanceOf(StaffNotFoundError)
+    expect(mockTxUpdate).not.toHaveBeenCalled()
+  })
+
+  it("REFUSES deactivating the LAST active OWNER (LastOwnerError, no update)", async () => {
+    mockTxFindUnique.mockResolvedValue(makeRow({ id: "owner_1", role: "OWNER", active: true }))
+    mockTxCount.mockResolvedValue(1)
+    const svc = createStaffCommandService()
+    await expect(
+      svc.deactivateFromEnvelope(adminEnv("staff.deactivate", { staffId: "owner_1" }, "owner_2"), state),
+    ).rejects.toBeInstanceOf(LastOwnerError)
+    expect(mockTxUpdate).not.toHaveBeenCalled()
+  })
+
+  it("allows deactivating an OWNER when another active OWNER remains", async () => {
+    mockTxFindUnique.mockResolvedValue(makeRow({ id: "owner_1", role: "OWNER", active: true }))
+    mockTxCount.mockResolvedValue(2)
+    mockTxUpdate.mockResolvedValue(makeRow({ id: "owner_1", active: false }))
+    const svc = createStaffCommandService()
+    const out = await svc.deactivateFromEnvelope(
+      adminEnv("staff.deactivate", { staffId: "owner_1" }, "owner_2"),
+      state,
+    )
+    expect(out.decision.kind).toBe("EXECUTE")
+    expect(mockTxUpdate).toHaveBeenCalledWith({ where: { id: "owner_1" }, data: { active: false } })
   })
 
   it("REFUSES self-deactivation for a JWT caller (SelfMutationError)", async () => {
@@ -382,19 +553,19 @@ describe("deactivateFromEnvelope", () => {
         state,
       ),
     ).rejects.toBeInstanceOf(SelfMutationError)
-    expect(mockFindUnique).not.toHaveBeenCalled()
+    expect(mockTransaction).not.toHaveBeenCalled()
   })
 
   it("SKIPS the self-mutation check for an api-key caller (no staffId)", async () => {
-    mockFindUnique.mockResolvedValue(makeRow({ id: "staff_self", role: "ATTENDANT", active: true }))
-    mockUpdate.mockResolvedValue(makeRow({ id: "staff_self", active: false }))
+    mockTxFindUnique.mockResolvedValue(makeRow({ id: "staff_self", role: "ATTENDANT", active: true }))
+    mockTxUpdate.mockResolvedValue(makeRow({ id: "staff_self", active: false }))
     const svc = createStaffCommandService()
     const out = await svc.deactivateFromEnvelope(
       apiKeyEnv("staff.deactivate", { staffId: "staff_self" }),
       state,
     )
     expect(out.decision.kind).toBe("EXECUTE")
-    expect(mockUpdate).toHaveBeenCalledTimes(1)
+    expect(mockTxUpdate).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -402,21 +573,21 @@ describe("deactivateFromEnvelope", () => {
 
 describe("assignRoleFromEnvelope", () => {
   it("promotes an ATTENDANT to MANAGER (owner-count NOT read)", async () => {
-    mockFindUnique.mockResolvedValue(makeRow({ id: "staff_2", role: "ATTENDANT", active: true }))
-    mockUpdate.mockResolvedValue(makeRow({ id: "staff_2", role: "MANAGER" }))
+    mockTxFindUnique.mockResolvedValue(makeRow({ id: "staff_2", role: "ATTENDANT", active: true }))
+    mockTxUpdate.mockResolvedValue(makeRow({ id: "staff_2", role: "MANAGER" }))
     const svc = createStaffCommandService()
     const out = await svc.assignRoleFromEnvelope(
       adminEnv("staff.role.assign", { staffId: "staff_2", role: "MANAGER" }),
       state,
     )
     expect(out.decision.kind).toBe("EXECUTE")
-    expect(mockUpdate).toHaveBeenCalledWith({ where: { id: "staff_2" }, data: { role: "MANAGER" } })
-    expect(mockCount).not.toHaveBeenCalled()
+    expect(mockTxUpdate).toHaveBeenCalledWith({ where: { id: "staff_2" }, data: { role: "MANAGER" } })
+    expect(mockTxCount).not.toHaveBeenCalled()
   })
 
   it("REFUSES demoting the LAST active OWNER (LastOwnerError, no update)", async () => {
-    mockFindUnique.mockResolvedValue(makeRow({ id: "owner_1", role: "OWNER", active: true }))
-    mockCount.mockResolvedValue(1)
+    mockTxFindUnique.mockResolvedValue(makeRow({ id: "owner_1", role: "OWNER", active: true }))
+    mockTxCount.mockResolvedValue(1)
     const svc = createStaffCommandService()
     await expect(
       svc.assignRoleFromEnvelope(
@@ -424,32 +595,32 @@ describe("assignRoleFromEnvelope", () => {
         state,
       ),
     ).rejects.toBeInstanceOf(LastOwnerError)
-    expect(mockUpdate).not.toHaveBeenCalled()
+    expect(mockTxUpdate).not.toHaveBeenCalled()
   })
 
   it("allows demoting an OWNER when another active OWNER remains", async () => {
-    mockFindUnique.mockResolvedValue(makeRow({ id: "owner_1", role: "OWNER", active: true }))
-    mockCount.mockResolvedValue(2)
-    mockUpdate.mockResolvedValue(makeRow({ id: "owner_1", role: "MANAGER" }))
+    mockTxFindUnique.mockResolvedValue(makeRow({ id: "owner_1", role: "OWNER", active: true }))
+    mockTxCount.mockResolvedValue(2)
+    mockTxUpdate.mockResolvedValue(makeRow({ id: "owner_1", role: "MANAGER" }))
     const svc = createStaffCommandService()
     const out = await svc.assignRoleFromEnvelope(
       adminEnv("staff.role.assign", { staffId: "owner_1", role: "MANAGER" }, "owner_2"),
       state,
     )
     expect(out.decision.kind).toBe("EXECUTE")
-    expect(mockUpdate).toHaveBeenCalledWith({ where: { id: "owner_1" }, data: { role: "MANAGER" } })
+    expect(mockTxUpdate).toHaveBeenCalledWith({ where: { id: "owner_1" }, data: { role: "MANAGER" } })
   })
 
   it("promoting TO owner never trips the last-owner guard (owner-count NOT read)", async () => {
-    mockFindUnique.mockResolvedValue(makeRow({ id: "staff_2", role: "MANAGER", active: true }))
-    mockUpdate.mockResolvedValue(makeRow({ id: "staff_2", role: "OWNER" }))
+    mockTxFindUnique.mockResolvedValue(makeRow({ id: "staff_2", role: "MANAGER", active: true }))
+    mockTxUpdate.mockResolvedValue(makeRow({ id: "staff_2", role: "OWNER" }))
     const svc = createStaffCommandService()
     const out = await svc.assignRoleFromEnvelope(
       adminEnv("staff.role.assign", { staffId: "staff_2", role: "OWNER" }),
       state,
     )
     expect(out.decision.kind).toBe("EXECUTE")
-    expect(mockCount).not.toHaveBeenCalled()
+    expect(mockTxCount).not.toHaveBeenCalled()
   })
 
   it("REFUSES self-re-role for a JWT caller (SelfMutationError)", async () => {
@@ -460,11 +631,11 @@ describe("assignRoleFromEnvelope", () => {
         state,
       ),
     ).rejects.toBeInstanceOf(SelfMutationError)
-    expect(mockFindUnique).not.toHaveBeenCalled()
+    expect(mockTransaction).not.toHaveBeenCalled()
   })
 
   it("404s an unknown target (StaffNotFoundError)", async () => {
-    mockFindUnique.mockResolvedValue(null)
+    mockTxFindUnique.mockResolvedValue(null)
     const svc = createStaffCommandService()
     await expect(
       svc.assignRoleFromEnvelope(
@@ -491,7 +662,7 @@ describe("assignRoleFromEnvelope", () => {
 // ── list ──────────────────────────────────────────────────────────────────────
 
 describe("list", () => {
-  it("returns { staff, total } and threads role/active/limit/offset", async () => {
+  it("returns { staff, total }, threads role/active/limit/offset, and orders with the id tiebreaker (FIX 6b)", async () => {
     mockFindMany.mockResolvedValue([makeRow()])
     mockCount.mockResolvedValue(1)
     const svc = createStaffCommandService()
@@ -499,7 +670,13 @@ describe("list", () => {
     expect(out.total).toBe(1)
     expect(out.staff).toHaveLength(1)
     expect(mockFindMany).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { role: "OWNER", active: true }, take: 10, skip: 5 }),
+      expect.objectContaining({
+        where: { role: "OWNER", active: true },
+        take: 10,
+        skip: 5,
+        // Deterministic pagination: `id` is the final unique tiebreaker.
+        orderBy: [{ active: "desc" }, { name: "asc" }, { id: "asc" }],
+      }),
     )
   })
 })
