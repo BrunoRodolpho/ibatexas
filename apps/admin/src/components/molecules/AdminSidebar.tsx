@@ -24,9 +24,14 @@ import {
   BotMessageSquare,
   Users,
   ShieldCheck,
+  Power,
 } from 'lucide-react'
 import { AdminSidebarBase, INCIDENT_LABELS, type AdminSidebarNavGroup } from '@ibatexas/ui'
-import { useOpenIncidentCount, useAgentApprovalPendingCount } from '@/domains/admin/admin.hooks'
+import {
+  useOpenIncidentCount,
+  useAgentApprovalPendingCount,
+  useAgentKilledCount,
+} from '@/domains/admin/admin.hooks'
 
 const baseGroups: AdminSidebarNavGroup[] = [
   {
@@ -47,6 +52,7 @@ const baseGroups: AdminSidebarNavGroup[] = [
       { key: 'reservas', label: 'Reservas', href: '/admin/reservas', icon: CalendarDays },
       { key: 'incidentes', label: INCIDENT_LABELS.nav, href: '/admin/incidentes', icon: AlertTriangle },
       { key: 'aprovacoes', label: 'Aprovações', href: '/admin/aprovacoes', icon: ShieldCheck },
+      { key: 'agentes', label: 'Agentes', href: '/admin/agentes', icon: Power },
       { key: 'alertas-operacionais', label: 'Alertas Operacionais', href: '/admin/alertas-operacionais', icon: Siren },
       { key: 'escalacoes', label: 'Escalações', href: '/admin/escalacoes', icon: ArrowUpCircle },
       { key: 'conversas', label: 'Conversas', href: '/admin/conversas', icon: MessagesSquare },
@@ -69,6 +75,7 @@ export function AdminSidebar() {
   const pathname = usePathname()
   const openIncidentCount = useOpenIncidentCount()
   const pendingApprovalCount = useAgentApprovalPendingCount()
+  const killedAgentCount = useAgentKilledCount()
 
   const groups = useMemo<AdminSidebarNavGroup[]>(
     () =>
@@ -77,10 +84,11 @@ export function AdminSidebar() {
         items: group.items.map((item) => {
           if (item.key === 'incidentes') return { ...item, count: openIncidentCount }
           if (item.key === 'aprovacoes') return { ...item, count: pendingApprovalCount }
+          if (item.key === 'agentes') return { ...item, count: killedAgentCount }
           return item
         }),
       })),
-    [openIncidentCount, pendingApprovalCount],
+    [openIncidentCount, pendingApprovalCount, killedAgentCount],
   )
 
   return (
