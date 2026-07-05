@@ -19,6 +19,7 @@ import { startRetentionCleaner } from "./retention-cleaner.js";
 import { startLlmTokenUsageRetention } from "./llm-token-usage-retention.js";
 import { startDriftEvaluate } from "./drift-evaluate.js";
 import { startDlqDepthChecker } from "./dlq-depth-checker.js";
+import { startEscalationParkExpirySweeper } from "./escalation-park-expiry-sweeper.js";
 
 /**
  * Start all background job workers and their repeatable schedules.
@@ -59,6 +60,12 @@ export function registerWorkers(log: FastifyBaseLogger): void {
   // dead-letter queue crosses the alert threshold; AUTO-resolves when it drains.
   // Surfaces DLQ backlog to the admin ops inbox + the ops agent (was Sentry-only).
   startDlqDepthChecker(log);
+  // [BKL-114] SCANs the full escalation:rec:* namespace every 5 min and flips
+  // pendingIntents[] rows from "pending" → "expired" when their backing park
+  // token has TTL-lapsed (queue hygiene — money is unaffected; a lapsed token
+  // already 404s on resolve). CAS-guarded so a since-resolved row is never
+  // clobbered; runs a startup recovery sweep for parks that lapsed while down.
+  startEscalationParkExpirySweeper(log);
 }
 
 /**
@@ -84,6 +91,9 @@ export async function shutdownWorkers(): Promise<void> {
   );
   const { stopDriftEvaluate } = await import("./drift-evaluate.js");
   const { stopDlqDepthChecker } = await import("./dlq-depth-checker.js");
+  const { stopEscalationParkExpirySweeper } = await import(
+    "./escalation-park-expiry-sweeper.js"
+  );
 
   await Promise.all([
     stopAbandonedCartChecker(),
@@ -103,5 +113,6 @@ export async function shutdownWorkers(): Promise<void> {
     stopAnonymizeMedusaRetry(),
     stopDriftEvaluate(),
     stopDlqDepthChecker(),
+    stopEscalationParkExpirySweeper(),
   ]);
 }

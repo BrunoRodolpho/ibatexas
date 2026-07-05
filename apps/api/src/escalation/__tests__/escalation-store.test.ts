@@ -174,4 +174,55 @@ describe("escalation store (D2)", () => {
       await store.markIntentResolved("s1", "sha256:missing", "approved", "x", "t"),
     ).toBeNull();
   });
+
+  // ── BKL-114 — markIntentExpired (CAS-on-pending) ───────────────────────────
+
+  it("markIntentExpired flips a pending intent → expired, stamping system provenance", async () => {
+    const store = createEscalationStore(redis);
+    await store.recordHandoff({ sessionId: "s1", at: "2026-07-04T12:00:00.000Z" });
+    await store.appendPendingIntent("s1", PENDING);
+    const rec = await store.markIntentExpired(
+      "s1",
+      "sha256:abc",
+      "2026-07-04T13:00:00.000Z",
+    );
+    const intent = rec?.pendingIntents?.[0];
+    expect(intent?.status).toBe("expired");
+    expect(intent?.resolvedBy).toBe("system");
+    expect(intent?.resolvedAt).toBe("2026-07-04T13:00:00.000Z");
+    // Round-trips through the store.
+    expect((await store.get("s1"))?.pendingIntents?.[0]?.status).toBe("expired");
+  });
+
+  it("markIntentExpired is a NO-OP (null) when the intent is no longer pending — the CAS guard", async () => {
+    const store = createEscalationStore(redis);
+    await store.recordHandoff({ sessionId: "s1", at: "2026-07-04T12:00:00.000Z" });
+    // The intent raced to `approved` (a successful resolve — which also DEL'd the
+    // park, so the sweeper would see the park "gone"). markIntentExpired MUST NOT
+    // clobber it back to expired.
+    await store.appendPendingIntent("s1", { ...PENDING, status: "approved" });
+    const rec = await store.markIntentExpired(
+      "s1",
+      "sha256:abc",
+      "2026-07-04T13:00:00.000Z",
+    );
+    expect(rec).toBeNull();
+    // Status is untouched — still approved.
+    expect((await store.get("s1"))?.pendingIntents?.[0]?.status).toBe("approved");
+  });
+
+  it("markIntentExpired is a no-op (null) when the intent is absent", async () => {
+    const store = createEscalationStore(redis);
+    await store.recordHandoff({ sessionId: "s1", at: "2026-07-04T12:00:00.000Z" });
+    expect(
+      await store.markIntentExpired("s1", "sha256:missing", "2026-07-04T13:00:00.000Z"),
+    ).toBeNull();
+  });
+
+  it("markIntentExpired is a no-op (null) when the record is absent", async () => {
+    const store = createEscalationStore(redis);
+    expect(
+      await store.markIntentExpired("nope", "sha256:abc", "2026-07-04T13:00:00.000Z"),
+    ).toBeNull();
+  });
 });

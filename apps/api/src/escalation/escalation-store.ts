@@ -122,6 +122,25 @@ export interface EscalationStore {
     resolvedBy: string,
     at: string,
   ): Promise<EscalationRecord | null>;
+  /**
+   * BKL-114 — COMPARE-AND-SET a parked intent from `pending` → `expired` when its
+   * backing park token has TTL-lapsed (queue hygiene; money is unaffected — a
+   * lapsed token already 404s on resolve). The `status === "pending"` guard is
+   * LOAD-BEARING: a consumed park (a successful resolve) and a lapsed park both
+   * read as "gone" to the sweeper, so this flip must NEVER clobber an intent that
+   * has since moved to `approved`/`rejected`/`denied_by_kernel`/`execute_failed`.
+   * Re-reads the record so the compare is against CURRENT state, not the
+   * sweeper's scan snapshot. Stamps `resolvedBy = "system"` for provenance.
+   *
+   * No-op returning null when the record or the intent is absent, OR when the
+   * intent's current status is no longer `pending`. Deliberately NOT
+   * `markIntentResolved` (which overwrites status unconditionally — unsafe here).
+   */
+  markIntentExpired(
+    sessionId: string,
+    intentHash: string,
+    at: string,
+  ): Promise<EscalationRecord | null>;
 }
 
 const OPEN_SET = (): string => rk("escalation:open");
@@ -220,6 +239,30 @@ export function createEscalationStore(redis: EscalationRedis): EscalationStore {
       if (idx === -1) return null;
       const next = [...existing];
       next[idx] = { ...existing[idx]!, status, resolvedBy, resolvedAt: at };
+      const updated: EscalationRecord = { ...rec, pendingIntents: next };
+      await redis.set(recKey(sessionId), JSON.stringify(updated));
+      return updated;
+    },
+
+    async markIntentExpired(sessionId, intentHash, at) {
+      // Re-read CURRENT state — the compare-and-set is against live Redis, not
+      // the sweeper's scan snapshot (which may be stale by the time we mark).
+      const rec = parse(await redis.get(recKey(sessionId)));
+      if (!rec) return null;
+      const existing = rec.pendingIntents ?? [];
+      const idx = existing.findIndex((p) => p.intentHash === intentHash);
+      if (idx === -1) return null;
+      // THE CAS GUARD — only a still-"pending" intent may lapse to "expired". A
+      // row that raced to approved/rejected/denied_by_kernel/execute_failed since
+      // the scan is left untouched (its park is legitimately gone via consume()).
+      if (existing[idx]!.status !== "pending") return null;
+      const next = [...existing];
+      next[idx] = {
+        ...existing[idx]!,
+        status: "expired",
+        resolvedBy: "system",
+        resolvedAt: at,
+      };
       const updated: EscalationRecord = { ...rec, pendingIntents: next };
       await redis.set(recKey(sessionId), JSON.stringify(updated));
       return updated;
