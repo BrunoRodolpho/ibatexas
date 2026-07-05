@@ -80,6 +80,27 @@ export function resolvePath(token: string): string {
   return `${AGENT_APPROVALS_ENDPOINT}/${encodeURIComponent(token)}/resolve`
 }
 
+/** Single-approval detail path (backs the BKL-105 deep-link route). Encode defensively. */
+export function detailPath(token: string): string {
+  return `${AGENT_APPROVALS_ENDPOINT}/${encodeURIComponent(token)}`
+}
+
+// ── 404 disambiguation for the detail fetch (BKL-105) ─────────────────────────
+//
+// The detail endpoint (GET …/:token) returns 404 for BOTH a disabled managed-agent
+// plane AND an unknown/expired token, distinguishable only by the body `message`:
+// the plane-off body carries the `IBX_AGENTS_ENABLED` marker (server constant
+// PLANE_OFF), the not-found body carries "approval not found". This pure predicate
+// centralizes that read so the deep-link route can render the honest state (plane-
+// off banner vs. "aprovação não encontrada") instead of collapsing both to one.
+
+const PLANE_OFF_MARKER = 'IBX_AGENTS_ENABLED'
+
+/** True when a 404 detail body denotes the plane being disabled (not a bad token). */
+export function isPlaneOffMessage(message: string | undefined): boolean {
+  return typeof message === 'string' && message.includes(PLANE_OFF_MARKER)
+}
+
 // ── intentKind → pt-BR label ─────────────────────────────────────────────────
 //
 // A best-effort, NON-exhaustive register: the kinds a managed agent can park into
@@ -320,4 +341,8 @@ export const AGENT_APPROVALS_COPY = {
   resolvedAt: 'Resolvida em',
   resolvedBy: 'Resolvida por',
   agent: 'Agente',
+  // BKL-105 — deep-link detail route copy.
+  detailSubtitle: 'Ação de agente pausada aguardando aprovação de um gerente.',
+  notFound: 'Aprovação não encontrada (expirada ou já resolvida).',
+  backToList: 'Voltar para aprovações',
 } as const

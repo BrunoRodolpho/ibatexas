@@ -26,8 +26,10 @@ import type { AdminCustomerListResponse, AdminCustomerDetail } from './customers
 import { planOptOutToggle, optOutResultMessage } from './customers.mappers'
 import {
   listPath as agentApprovalsListPath,
+  detailPath as agentApprovalDetailPath,
   planResolve as planAgentApprovalResolve,
   sortByResolvedAtDesc,
+  isPlaneOffMessage,
   type AgentApprovalRequest,
   type AgentApprovalStatus,
   type AgentApprovalOutcome,
@@ -1203,6 +1205,63 @@ async function fetchAgentApprovals(status?: AgentApprovalStatus): Promise<AgentA
   return { planeOff: false, approvals: Array.isArray(data.approvals) ? data.approvals : [] }
 }
 
+/** Settled-resolve shape: HTTP status + the BKL-104 structured outcome (+ back-compat decisionKind). */
+export interface ResolveApprovalResult {
+  readonly ok: boolean
+  readonly status: number
+  readonly outcome?: AgentApprovalOutcome
+  readonly decisionKind?: string
+}
+
+/**
+ * One-tap resolve POST, shared by the list inbox and the BKL-105 detail route.
+ * Raw fetch (not apiFetch) so the caller reads the EXACT status code AND the
+ * STRUCTURED resolved outcome (BKL-104) from the 200 body — `outcome` explains WHY
+ * a parked action was (or was not) executed; `decisionKind` is the pre-BKL-104
+ * fallback. No side effects (no toast, no refetch) — the caller owns those.
+ */
+async function postAgentApprovalResolve(token: string, accept: boolean): Promise<ResolveApprovalResult> {
+  const plan = planAgentApprovalResolve(token, accept)
+  const res = await fetch(`/api/proxy${plan.path}`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(plan.body),
+  })
+  const data = (await res.json().catch(() => ({}))) as {
+    outcome?: AgentApprovalOutcome
+    decision?: { kind?: string }
+  }
+  return { ok: res.ok, status: res.status, outcome: data.outcome, decisionKind: data.decision?.kind }
+}
+
+/** Distinct detail-fetch state: a token resolves to a single projection, a disabled
+ *  plane (404 + IBX_AGENTS_ENABLED marker), or an unknown/expired token (404). */
+export type AgentApprovalDetailState =
+  | { readonly kind: 'found'; readonly approval: AgentApprovalRequest }
+  | { readonly kind: 'planeOff' }
+  | { readonly kind: 'notFound' }
+
+/**
+ * Tolerant single-approval fetch (BKL-105 deep-link). GET …/:token returns the
+ * projection DIRECTLY (not `{ approval }`). A 404 is disambiguated by the body
+ * message (`isPlaneOffMessage`): the disabled plane vs. an unknown/expired token —
+ * two honestly-distinct empty states. Throws on a non-404 non-OK so the caller
+ * surfaces the error (never a silent swallow).
+ */
+async function fetchAgentApproval(token: string): Promise<AgentApprovalDetailState> {
+  const res = await fetch(`/api/proxy${agentApprovalDetailPath(token)}`, { credentials: 'include' })
+  if (res.ok) {
+    const approval = (await res.json()) as AgentApprovalRequest
+    return { kind: 'found', approval }
+  }
+  if (res.status === 404) {
+    const body = (await res.json().catch(() => ({}))) as { message?: string }
+    return { kind: isPlaneOffMessage(body.message) ? 'planeOff' : 'notFound' }
+  }
+  throw new Error(`API error: ${res.status} ${res.statusText}`)
+}
+
 /**
  * Backs the pending-approvals inbox. ONE fetch per 30s poll of `?status=pending`;
  * skeleton flashes only on the initial load (the poll refreshes rows in place). A
@@ -1253,29 +1312,10 @@ export function useAgentApprovals() {
     return () => clearInterval(interval)
   }, [refetch])
 
-  // Raw fetch (not apiFetch) so we read the exact status code AND the STRUCTURED
-  // resolved outcome (BKL-104) from the 200 body — `outcome` explains WHY a
-  // parked action was (or was not) executed. `decisionKind` is still surfaced as
-  // a back-compat fallback for a pre-BKL-104 server. No implicit refetch — the
-  // page decides.
+  // The one-tap resolve is the SHARED postAgentApprovalResolve (see above) — no
+  // implicit refetch, the page owns the toast + reload decision.
   const resolveApproval = useCallback(
-    async (
-      token: string,
-      accept: boolean,
-    ): Promise<{ ok: boolean; status: number; outcome?: AgentApprovalOutcome; decisionKind?: string }> => {
-      const plan = planAgentApprovalResolve(token, accept)
-      const res = await fetch(`/api/proxy${plan.path}`, {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(plan.body),
-      })
-      const data = (await res.json().catch(() => ({}))) as {
-        outcome?: AgentApprovalOutcome
-        decision?: { kind?: string }
-      }
-      return { ok: res.ok, status: res.status, outcome: data.outcome, decisionKind: data.decision?.kind }
-    },
+    (token: string, accept: boolean) => postAgentApprovalResolve(token, accept),
     [],
   )
 
@@ -1323,6 +1363,59 @@ export function useAgentApprovalHistory(enabled: boolean) {
   const refetch = useCallback(() => setRefreshKey((k) => k + 1), [])
 
   return { history, planeOff, loading, error, refetch }
+}
+
+/**
+ * Backs the BKL-105 deep-link detail route (/admin/aprovacoes/[token]) — the
+ * one-tap landing the parked-approval NATS notification points at. Fetches the
+ * single projection (GET …/:token) and exposes the same SHARED resolve the inbox
+ * uses, so the detail view resolves via the IDENTICAL manager-gated POST with the
+ * BKL-104 structured outcome. Three honest terminal states are distinguished:
+ * `found` (render the card), `planeOff` (disabled-plane banner), `notFound`
+ * (expired / already-resolved / bad token). A transient non-404 failure surfaces
+ * `error` WITHOUT clearing an already-loaded approval (mirrors useAgentApprovals).
+ */
+export function useAgentApproval(token: string) {
+  const [approval, setApproval] = useState<AgentApprovalRequest | null>(null)
+  const [planeOff, setPlaneOff] = useState(false)
+  const [notFound, setNotFound] = useState(false)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [refreshKey, setRefreshKey] = useState(0)
+
+  const hasLoadedRef = useRef(false)
+
+  useEffect(() => {
+    let cancelled = false
+    if (!hasLoadedRef.current) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- initial load only; loading flag drives the skeleton
+      setLoading(true)
+    }
+    fetchAgentApproval(token)
+      .then((state) => {
+        if (cancelled) return
+        setPlaneOff(state.kind === 'planeOff')
+        setNotFound(state.kind === 'notFound')
+        setApproval(state.kind === 'found' ? state.approval : null)
+        setError(null)
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return
+        // Do NOT clear an already-loaded approval on a transient failure.
+        setError(err instanceof Error ? err.message : 'load_failed')
+      })
+      .finally(() => { if (!cancelled) { setLoading(false); hasLoadedRef.current = true } })
+    return () => { cancelled = true }
+  }, [token, refreshKey])
+
+  const refetch = useCallback(() => setRefreshKey((k) => k + 1), [])
+
+  const resolveApproval = useCallback(
+    (accept: boolean) => postAgentApprovalResolve(token, accept),
+    [token],
+  )
+
+  return { approval, planeOff, notFound, loading, error, resolveApproval, refetch }
 }
 
 /**
