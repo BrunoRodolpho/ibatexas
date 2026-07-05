@@ -151,7 +151,8 @@ export const OpsAlertCause = {
   ops_stale_defer: 'ops_stale_defer',
   ops_dlq_depth: 'ops_dlq_depth',
   ops_ingredient_underflow: 'ops_ingredient_underflow',
-  ops_staff_auth_infra: 'ops_staff_auth_infra'
+  ops_staff_auth_infra: 'ops_staff_auth_infra',
+  ops_observability_down: 'ops_observability_down'
 } as const
 
 export type OpsAlertCause = (typeof OpsAlertCause)[keyof typeof OpsAlertCause]

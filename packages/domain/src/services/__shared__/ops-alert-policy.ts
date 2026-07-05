@@ -58,6 +58,7 @@ export const FROZEN_OPS_CAUSES = [
   "ops_dlq_depth",
   "ops_ingredient_underflow",
   "ops_staff_auth_infra",
+  "ops_observability_down",
 ] as const satisfies readonly OpsAlertCause[]
 
 /**
@@ -75,6 +76,7 @@ export const OPS_ALERT_CAUSE_LABELS_PT: Record<OpsAlertCause, string> = {
   ops_dlq_depth: "fila de mensagens mortas acumulando (DLQ)",
   ops_ingredient_underflow: "estoque de insumo abaixo do necessário (baixa de pedido)",
   ops_staff_auth_infra: "falha de infraestrutura na autenticação de funcionários (logins de staff caindo)",
+  ops_observability_down: "serviço de observabilidade fora do ar (risco de perda de logs/métricas)",
 }
 
 /** CANONICAL pt-BR severity labels — exhaustive over `OpsAlertSeverity`. */
