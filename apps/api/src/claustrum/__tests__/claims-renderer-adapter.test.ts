@@ -13,15 +13,17 @@
  *
  * Against the LINKED `@adjudicate/core` claims types — not a stub. No model, no DB.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type {
   CandidateClaim,
   CanonicalClaim,
   ClaimsKernelResult,
   ConsistencyClaim,
+  SuppressionRecord,
   TurnTerminal,
 } from "@adjudicate/core";
 import { EvidenceLedger, runClaimsKernel } from "@adjudicate/core";
+import { logger } from "../../lib/logger.js";
 import { ORDER_FULFILLMENT_STAGE } from "../slot-grammar.js";
 import {
   REGISTRY_SPECS,
@@ -394,5 +396,191 @@ describe("claims-renderer-adapter — BKL-073 provable-empty ownership drop", ()
         ]),
       ).toEqual({ hasActiveOrder: false, hasActivePayment: false });
     });
+  });
+});
+
+// ── BKL-111: the render-path `claims.terminal` observability signal ────────────
+//
+// The renderer is the terminal/render supersession point: `handleTurn` 6a calls it
+// EXACTLY when CLAIMS-VALIDATE produced a kernel result. These tests pin that ONE
+// structured `claims.terminal` is emitted per RENDER-path render, carrying the
+// FINAL rendered posture + the candidate/validated/dropped registry TYPE names —
+// so "which terminal fired" is one log query, not template byte-matching — while
+// asserting it is observe-only (no text change), signal-only (one line), and
+// PII-free (never a claim value / rendered text). The `prose_preserved` collapse
+// is emitted at the PLANNER seam (ibatexas-claim-planner.test.ts), not here — the
+// renderer is never called on an empty candidate set.
+describe("claims-renderer-adapter — BKL-111 claims.terminal signal", () => {
+  const STORE_OPEN_NOW = "STORE_OPEN_NOW";
+
+  const resultOf = (args: {
+    perClaim: ReadonlyArray<{ type: string; verdict: ConsistencyClaim["verdict"] }>;
+    renderable?: readonly ConsistencyClaim[];
+    terminal?: TurnTerminal;
+    suppressions?: readonly SuppressionRecord[];
+  }): ClaimsKernelResult => {
+    const renderable = args.renderable ?? [];
+    const terminal = args.terminal ?? "RENDER";
+    return {
+      perClaim: args.perClaim.map((p) => ({
+        subject: "s",
+        type: p.type,
+        verdict: p.verdict,
+      })),
+      renderable,
+      renderableCanonical: mintRenderable(renderable),
+      terminal,
+      consistency: { renderable, terminal, suppressions: args.suppressions ?? [] },
+    };
+  };
+
+  /** The `claims.terminal` info payloads emitted during a spied render. */
+  function terminalPayloads(
+    spy: ReturnType<typeof vi.spyOn>,
+  ): Array<Record<string, unknown>> {
+    return spy.mock.calls
+      .map((c) => c[0] as Record<string, unknown>)
+      .filter((o) => o?.event === "claims.terminal");
+  }
+
+  function renderSpied(
+    result: ClaimsKernelResult,
+    context?: Parameters<ReturnType<typeof createIbatexasClaimsRenderer>["render"]>[1],
+  ): { text: string; payloads: Array<Record<string, unknown>> } {
+    const infoSpy = vi.spyOn(logger, "info").mockImplementation(() => logger);
+    try {
+      const text = createIbatexasClaimsRenderer().render(result, context).text;
+      return { text, payloads: terminalPayloads(infoSpy) };
+    } finally {
+      infoSpy.mockRestore();
+    }
+  }
+
+  it("a VALIDATED RENDER → ONE claims.terminal posture=VALIDATED_RENDER + the candidate types", () => {
+    const { text, payloads } = renderSpied(
+      resultOf({
+        perClaim: [{ type: ORDER_FULFILLMENT_STAGE, verdict: "VALIDATED" }],
+        renderable: [
+          claim(ORDER_FULFILLMENT_STAGE, "VALIDATED", { fulfillmentStatus: "preparing" }),
+        ],
+        terminal: "RENDER",
+      }),
+    );
+    // The render itself is UNAFFECTED (observe-only) — the bound field still renders.
+    expect(text).toBe("Seu pedido está na etapa: em preparo.");
+    // EXACTLY ONE claims.terminal (signal-only; not per-stage).
+    expect(payloads).toHaveLength(1);
+    expect(payloads[0]).toMatchObject({
+      component: "claims",
+      event: "claims.terminal",
+      posture: "VALIDATED_RENDER",
+      kernelTerminal: "RENDER",
+      degradedFromRender: false,
+      candidateTypes: [ORDER_FULFILLMENT_STAGE],
+      validatedTypes: [ORDER_FULFILLMENT_STAGE],
+      droppedClaimTypes: [],
+      renderedCount: 1,
+    });
+    // PII-free: no claim VALUE / rendered text leaked into the structured payload.
+    const dump = JSON.stringify(payloads[0]);
+    expect(dump).not.toContain("preparing");
+    expect(dump).not.toContain("preparo");
+    expect(payloads[0]).not.toHaveProperty("text");
+  });
+
+  it("an intrinsic UNKNOWN terminal → posture=UNKNOWN, renderedCount 0, the UNKNOWN type dropped", () => {
+    const { payloads } = renderSpied(
+      resultOf({
+        perClaim: [{ type: ORDER_FULFILLMENT_STAGE, verdict: "UNKNOWN" }],
+        renderable: [],
+        terminal: "UNKNOWN",
+      }),
+    );
+    expect(payloads).toHaveLength(1);
+    expect(payloads[0]).toMatchObject({
+      posture: "UNKNOWN",
+      kernelTerminal: "UNKNOWN",
+      degradedFromRender: false,
+      candidateTypes: [ORDER_FULFILLMENT_STAGE],
+      validatedTypes: [],
+      droppedClaimTypes: [ORDER_FULFILLMENT_STAGE],
+      renderedCount: 0,
+    });
+  });
+
+  it("a §O#15 completeness DEGRADE → posture=UNKNOWN but kernelTerminal=RENDER + degradedFromRender=true", () => {
+    // The kernel said RENDER (STORE_OPEN_NOW validated), but a pickup question
+    // requires the ORDER_FULFILLMENT_STAGE companion, which resolved UNKNOWN → the
+    // adapter degrades. The signal separates this from an intrinsic kernel UNKNOWN.
+    const { text, payloads } = renderSpied(
+      resultOf({
+        perClaim: [
+          { type: STORE_OPEN_NOW, verdict: "VALIDATED" },
+          { type: ORDER_FULFILLMENT_STAGE, verdict: "UNKNOWN" },
+        ],
+        renderable: [claim(STORE_OPEN_NOW, "VALIDATED", { mealPeriod: "jantar" })],
+        terminal: "RENDER",
+      }),
+      { requestText: "posso retirar meu pedido agora?" },
+    );
+    // Degraded to the proposition-free UNKNOWN template (control flow unchanged).
+    expect(text).toBe(
+      "Não localizei essa informação confirmada agora. Quer que eu verifique?",
+    );
+    expect(payloads).toHaveLength(1);
+    expect(payloads[0]).toMatchObject({
+      posture: "UNKNOWN",
+      kernelTerminal: "RENDER",
+      degradedFromRender: true,
+      candidateTypes: [STORE_OPEN_NOW, ORDER_FULFILLMENT_STAGE],
+      validatedTypes: [STORE_OPEN_NOW],
+      droppedClaimTypes: [ORDER_FULFILLMENT_STAGE],
+      // The kernel minted a canonical claim, but the DEGRADE renders none.
+      renderedCount: 0,
+    });
+    expect(JSON.stringify(payloads[0])).not.toContain("jantar");
+  });
+
+  it("an ESCALATE with suppressions → posture=ESCALATE + suppressedTypes (conflict TYPE names only)", () => {
+    const { payloads } = renderSpied(
+      resultOf({
+        perClaim: [
+          { type: ORDER_FULFILLMENT_STAGE, verdict: "VALIDATED" },
+          { type: "PAYMENT_STATUS", verdict: "VALIDATED" },
+        ],
+        renderable: [],
+        terminal: "ESCALATE",
+        suppressions: [
+          {
+            subject: "s",
+            conflictTypes: [ORDER_FULFILLMENT_STAGE, "PAYMENT_STATUS"],
+            reason: "UNMODELLED_SAME_SUBJECT",
+            terminal: "ESCALATE",
+          },
+        ],
+      }),
+    );
+    expect(payloads).toHaveLength(1);
+    expect(payloads[0]).toMatchObject({
+      posture: "ESCALATE",
+      kernelTerminal: "ESCALATE",
+      degradedFromRender: false,
+      suppressedTypes: [ORDER_FULFILLMENT_STAGE, "PAYMENT_STATUS"],
+      renderedCount: 0,
+    });
+  });
+
+  it("a CLARIFY terminal → posture=CLARIFY (no suppressedTypes key when none)", () => {
+    const { payloads } = renderSpied(
+      resultOf({
+        perClaim: [{ type: ORDER_FULFILLMENT_STAGE, verdict: "UNKNOWN" }],
+        renderable: [],
+        terminal: "CLARIFY",
+      }),
+    );
+    expect(payloads).toHaveLength(1);
+    expect(payloads[0]).toMatchObject({ posture: "CLARIFY", degradedFromRender: false });
+    // suppressedTypes is omitted (not `[]`) when there are no suppressions.
+    expect(payloads[0]).not.toHaveProperty("suppressedTypes");
   });
 });

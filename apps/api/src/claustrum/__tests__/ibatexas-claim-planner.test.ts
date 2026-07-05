@@ -550,3 +550,90 @@ describe("ibatexas-claim-planner — BKL-110 demote-only relevance filter", () =
     expect(r2).toHaveLength(0);
   });
 });
+
+// ── BKL-111: the PROSE-PRESERVED `claims.terminal` signal (empty candidate set) ──
+//
+// When the returned candidate set is EMPTY, CLAIMS-VALIDATE returns undefined and
+// the model's prose draft stands — the render-path `claims.terminal` emitter in
+// claims-renderer-adapter.ts never fires. The planner adapter emits the single
+// `claims.terminal` (posture=prose_preserved) HERE instead, carrying turnId + the
+// collapse reason + the types that collapsed. These tests pin: ONE event per
+// collapse (signal-only), the reason discriminator (demoted / none / flake), and —
+// critically — NO event when the candidate set is NON-empty (the renderer owns
+// that turn; a double-emit would violate one-per-turn).
+
+describe("ibatexas-claim-planner — BKL-111 prose-preserved claims.terminal", () => {
+  /** The `claims.terminal` info payloads emitted during a spied propose. */
+  function terminalPayloads(
+    spy: ReturnType<typeof vi.spyOn>,
+  ): Array<Record<string, unknown>> {
+    return spy.mock.calls
+      .map((c) => c[0] as Record<string, unknown>)
+      .filter((o) => o?.event === "claims.terminal");
+  }
+
+  async function proposeSpied(
+    adapter: ReturnType<typeof createIbatexasClaimPlanner>,
+    text: string,
+  ): Promise<Array<Record<string, unknown>>> {
+    const infoSpy = vi.spyOn(logger, "info").mockImplementation(() => logger);
+    try {
+      await adapter.propose(adapterInput(text));
+      return terminalPayloads(infoSpy);
+    } finally {
+      infoSpy.mockRestore();
+    }
+  }
+
+  it("a demote-to-empty greeting → ONE prose_preserved event with turnId + reason demoted_to_empty", async () => {
+    const adapter = createIbatexasClaimPlanner(
+      plannerOver([claimCall({ type: "STORE_HOURS", subject: "loja" })]),
+    );
+    const payloads = await proposeSpied(adapter, "oi, tudo bem?");
+    expect(payloads).toHaveLength(1);
+    expect(payloads[0]).toMatchObject({
+      component: "claims",
+      event: "claims.terminal",
+      turnId: "turn-1",
+      posture: "prose_preserved",
+      reason: "demoted_to_empty",
+      candidateTypes: ["STORE_HOURS"],
+      droppedClaimTypes: ["STORE_HOURS"],
+    });
+  });
+
+  it("a proposal of nothing → ONE prose_preserved event, reason no_candidates (no droppedClaimTypes key)", async () => {
+    const adapter = createIbatexasClaimPlanner(plannerOver([]));
+    const payloads = await proposeSpied(adapter, "oi");
+    expect(payloads).toHaveLength(1);
+    expect(payloads[0]).toMatchObject({
+      posture: "prose_preserved",
+      reason: "no_candidates",
+      candidateTypes: [],
+    });
+    // No demote happened → the optional droppedClaimTypes key is omitted.
+    expect(payloads[0]).not.toHaveProperty("droppedClaimTypes");
+  });
+
+  it("a planner FLAKE on smalltalk (required empty) → ONE prose_preserved event, reason planner_flake", async () => {
+    const adapter = createIbatexasClaimPlanner(throwingClaimPlanner());
+    const payloads = await proposeSpied(adapter, "oi, tudo bem?");
+    expect(payloads).toHaveLength(1);
+    expect(payloads[0]).toMatchObject({
+      posture: "prose_preserved",
+      reason: "planner_flake",
+      candidateTypes: [],
+    });
+  });
+
+  it("NO prose_preserved event when the candidate set is NON-empty (the renderer owns that turn)", async () => {
+    // A genuine hours question keeps STORE_OPEN_NOW → all non-empty → the planner
+    // does NOT emit; the render-path emitter fires downstream instead. This is the
+    // mutual-exclusion guarantee (exactly one claims.terminal per engaged turn).
+    const adapter = createIbatexasClaimPlanner(
+      plannerOver([claimCall({ type: "STORE_OPEN_NOW", subject: "loja" })]),
+    );
+    const payloads = await proposeSpied(adapter, "vocês estão abertos agora?");
+    expect(payloads).toHaveLength(0);
+  });
+});
