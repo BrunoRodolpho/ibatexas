@@ -24,6 +24,13 @@ import {
 } from './ops-chat.mappers'
 import type { AdminCustomerListResponse, AdminCustomerDetail } from './customers.mappers'
 import { planOptOutToggle, optOutResultMessage } from './customers.mappers'
+import {
+  listPath as agentApprovalsListPath,
+  planResolve as planAgentApprovalResolve,
+  sortByResolvedAtDesc,
+  type AgentApprovalRequest,
+  type AgentApprovalStatus,
+} from './agent-approvals.mappers'
 
 const hooks = buildAdminHooks(createAdminHook, createAdminListHook, apiFetch)
 
@@ -1161,4 +1168,168 @@ export function useOpsChat() {
   }, [])
 
   return { entries, inFlight, send }
+}
+
+// ── Aprovações (managed-agent one-tap approvals inbox — AUT-024) ───────────────
+
+const AGENT_APPROVAL_POLL_MS = 30_000
+
+/** Distinct plane-off state: ALL agent-approval routes 404 when the managed-agent
+ *  plane is disabled (IBX_AGENTS_ENABLED unset) — an honest empty/disabled state,
+ *  not an error crash. */
+export type AgentApprovalsListState =
+  | { readonly planeOff: false; readonly approvals: AgentApprovalRequest[] }
+  | { readonly planeOff: true; readonly approvals: [] }
+
+/**
+ * Tolerant raw fetch (not apiFetch, which throws away the status code) so the
+ * plane-off 404 can be told apart from a real failure. Mirrors the pedidos
+ * postConfirmStep raw-fetch idiom (credentials-included proxy fetch). Throws on a
+ * non-404 non-OK so the caller surfaces the error (never a silent swallow).
+ */
+async function fetchAgentApprovals(status?: AgentApprovalStatus): Promise<AgentApprovalsListState> {
+  const res = await fetch(`/api/proxy${agentApprovalsListPath(status)}`, { credentials: 'include' })
+  if (res.status === 404) return { planeOff: true, approvals: [] }
+  if (!res.ok) throw new Error(`API error: ${res.status} ${res.statusText}`)
+  const data = (await res.json().catch(() => ({}))) as { approvals?: AgentApprovalRequest[] }
+  return { planeOff: false, approvals: Array.isArray(data.approvals) ? data.approvals : [] }
+}
+
+/**
+ * Backs the pending-approvals inbox. ONE fetch per 30s poll of `?status=pending`;
+ * skeleton flashes only on the initial load (the poll refreshes rows in place). A
+ * transient poll failure surfaces the error WITHOUT clearing existing rows
+ * (never swallowed — mirrors useAdminIncidentsPage). `planeOff` renders the honest
+ * disabled state. `resolveApproval` POSTs the single-use resolve WITHOUT side
+ * effects (the page owns the toast + the reload decision, honoring the mapper's
+ * per-status reload intent); it returns the HTTP status + the kernel decision kind
+ * so the page can report the OUTCOME honestly (a 200 can carry a non-EXECUTE
+ * decision).
+ */
+export function useAgentApprovals() {
+  const [approvals, setApprovals] = useState<AgentApprovalRequest[]>([])
+  const [planeOff, setPlaneOff] = useState(false)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [refreshKey, setRefreshKey] = useState(0)
+
+  const hasLoadedRef = useRef(false)
+
+  useEffect(() => {
+    let cancelled = false
+    if (!hasLoadedRef.current) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- initial load only; loading flag drives the skeleton
+      setLoading(true)
+    }
+    fetchAgentApprovals('pending')
+      .then((state) => {
+        if (cancelled) return
+        setPlaneOff(state.planeOff)
+        setApprovals(state.approvals)
+        setError(null)
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return
+        // Do NOT clear existing rows on a transient poll failure; surface the error.
+        setError(err instanceof Error ? err.message : 'load_failed')
+      })
+      .finally(() => { if (!cancelled) { setLoading(false); hasLoadedRef.current = true } })
+    return () => { cancelled = true }
+  }, [refreshKey])
+
+  const refetch = useCallback(() => setRefreshKey((k) => k + 1), [])
+
+  // Canonical 30s poll.
+  useEffect(() => {
+    const interval = setInterval(refetch, AGENT_APPROVAL_POLL_MS)
+    return () => clearInterval(interval)
+  }, [refetch])
+
+  // Raw fetch (not apiFetch) so we read the exact status code AND the kernel
+  // decision kind from the 200 body. No implicit refetch — the page decides.
+  const resolveApproval = useCallback(
+    async (token: string, accept: boolean): Promise<{ ok: boolean; status: number; decisionKind?: string }> => {
+      const plan = planAgentApprovalResolve(token, accept)
+      const res = await fetch(`/api/proxy${plan.path}`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(plan.body),
+      })
+      const data = (await res.json().catch(() => ({}))) as { decision?: { kind?: string } }
+      return { ok: res.ok, status: res.status, decisionKind: data.decision?.kind }
+    },
+    [],
+  )
+
+  return { approvals, planeOff, loading, error, resolveApproval, refetch }
+}
+
+/**
+ * Backs the toggleable resolved-history section. Lazy: fetches ONLY while
+ * `enabled` (the section is open). Merges `?status=approved` + `?status=rejected`
+ * and orders most-recently-resolved first. No poll (history is not time-critical);
+ * `refetch` reloads after a resolve settles.
+ */
+export function useAgentApprovalHistory(enabled: boolean) {
+  const [history, setHistory] = useState<AgentApprovalRequest[]>([])
+  const [planeOff, setPlaneOff] = useState(false)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [refreshKey, setRefreshKey] = useState(0)
+
+  useEffect(() => {
+    if (!enabled) return
+    let cancelled = false
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch-on-open drives the skeleton
+    setLoading(true)
+    Promise.all([fetchAgentApprovals('approved'), fetchAgentApprovals('rejected')])
+      .then(([approved, rejected]) => {
+        if (cancelled) return
+        if (approved.planeOff || rejected.planeOff) {
+          setPlaneOff(true)
+          setHistory([])
+          return
+        }
+        setPlaneOff(false)
+        setHistory(sortByResolvedAtDesc([...approved.approvals, ...rejected.approvals]))
+        setError(null)
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return
+        setError(err instanceof Error ? err.message : 'load_failed')
+      })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [enabled, refreshKey])
+
+  const refetch = useCallback(() => setRefreshKey((k) => k + 1), [])
+
+  return { history, planeOff, loading, error, refetch }
+}
+
+/**
+ * Cheap 30s poll of the pending-approval count that backs the sidebar badge.
+ * Degrades to 0 (no pill) on any failure OR when the plane is off, so the nav
+ * never breaks. Mirrors useOpenIncidentCount.
+ */
+export function useAgentApprovalPendingCount(): number {
+  const [count, setCount] = useState(0)
+
+  useEffect(() => {
+    let cancelled = false
+    const fetchCount = async () => {
+      try {
+        const state = await fetchAgentApprovals('pending')
+        if (!cancelled) setCount(state.planeOff ? 0 : state.approvals.length)
+      } catch {
+        if (!cancelled) setCount(0)
+      }
+    }
+    void fetchCount()
+    const interval = setInterval(() => { void fetchCount() }, AGENT_APPROVAL_POLL_MS)
+    return () => { cancelled = true; clearInterval(interval) }
+  }, [])
+
+  return count
 }

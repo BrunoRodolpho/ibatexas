@@ -23,9 +23,10 @@ import {
   Gauge,
   BotMessageSquare,
   Users,
+  ShieldCheck,
 } from 'lucide-react'
 import { AdminSidebarBase, INCIDENT_LABELS, type AdminSidebarNavGroup } from '@ibatexas/ui'
-import { useOpenIncidentCount } from '@/domains/admin/admin.hooks'
+import { useOpenIncidentCount, useAgentApprovalPendingCount } from '@/domains/admin/admin.hooks'
 
 const baseGroups: AdminSidebarNavGroup[] = [
   {
@@ -45,6 +46,7 @@ const baseGroups: AdminSidebarNavGroup[] = [
       { key: 'pedidos', label: 'Pedidos', href: '/admin/pedidos', icon: ClipboardList },
       { key: 'reservas', label: 'Reservas', href: '/admin/reservas', icon: CalendarDays },
       { key: 'incidentes', label: INCIDENT_LABELS.nav, href: '/admin/incidentes', icon: AlertTriangle },
+      { key: 'aprovacoes', label: 'Aprovações', href: '/admin/aprovacoes', icon: ShieldCheck },
       { key: 'alertas-operacionais', label: 'Alertas Operacionais', href: '/admin/alertas-operacionais', icon: Siren },
       { key: 'escalacoes', label: 'Escalações', href: '/admin/escalacoes', icon: ArrowUpCircle },
       { key: 'conversas', label: 'Conversas', href: '/admin/conversas', icon: MessagesSquare },
@@ -66,16 +68,19 @@ const baseGroups: AdminSidebarNavGroup[] = [
 export function AdminSidebar() {
   const pathname = usePathname()
   const openIncidentCount = useOpenIncidentCount()
+  const pendingApprovalCount = useAgentApprovalPendingCount()
 
   const groups = useMemo<AdminSidebarNavGroup[]>(
     () =>
       baseGroups.map((group) => ({
         ...group,
-        items: group.items.map((item) =>
-          item.key === 'incidentes' ? { ...item, count: openIncidentCount } : item,
-        ),
+        items: group.items.map((item) => {
+          if (item.key === 'incidentes') return { ...item, count: openIncidentCount }
+          if (item.key === 'aprovacoes') return { ...item, count: pendingApprovalCount }
+          return item
+        }),
       })),
-    [openIncidentCount],
+    [openIncidentCount, pendingApprovalCount],
   )
 
   return (
