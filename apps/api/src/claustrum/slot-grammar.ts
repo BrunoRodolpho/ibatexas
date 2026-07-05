@@ -179,6 +179,28 @@ export const VALIDATED_TEMPLATES: Readonly<Record<string, Template>> = {
   // claim is ever genuinely needed.
 };
 
+// PROPOSABLE-BUT-UNRENDERABLE COVERAGE (BKL-112; the pin lives in
+// __tests__/proposable-renderable-drift.test.ts). The keys of VALIDATED_TEMPLATES
+// (STORE_OPEN_NOW, ORDER_FULFILLMENT_STAGE, PAYMENT_STATUS) are a STRICT SUBSET of
+// the proposable CLAIM_REGISTRY enum (claim-registry.ts). Three registered
+// proposable types have NO validated template today, so a genuinely-VALIDATED
+// claim of one of them can only SAFE-DEGRADE to the UNKNOWN template
+// (renderer-from-claims.ts abstains an untemplated VALIDATED claim — §O#3, never
+// free-authored prose). They split into two DISTINCT reasons — see the by-design
+// partition note at claim-definition-registry.ts:68-70:
+//
+//   · MENU_ITEM_ALLERGENS, STORE_HOURS — read_claims that degrade to UNKNOWN
+//     PENDING their validated read-templates (tracker BKL-121). Adding these is
+//     soundness-sensitive registry growth (allergens are Hard-Rule-1 safety-
+//     critical) and is a separate focused effort — not a template edit here.
+//   · PURCHASE_COMPLETED — an action_claim rendered via the responder's
+//     SUCCESS_CLAIM_CLASSES path (ibatexas-responder.ts), NOT the read-template
+//     grammar. It is DELIBERATELY + PERMANENTLY not in VALIDATED_TEMPLATES; it is
+//     NOT pending any template and must NOT be filed under BKL-121.
+//
+// The drift test pins this exact gap so a future proposable type added without a
+// template (or a template added/removed for a pinned type) trips CI.
+
 /**
  * The SAFE-POSTURE templates (registry §5 "permitted"; §O#5 render-half). These
  * are proposition-free BY CONSTRUCTION — pure epistemic self-report + offer; they
