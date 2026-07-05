@@ -66,6 +66,8 @@ describe("composeSalesAnalytics", () => {
       avgMessagesToCheckout: 6, // round(5.6)
     });
     expect(typeof view.now).toBe("string");
+    // BKL-100 — no signal failed, so nothing is flagged degraded.
+    expect(view.degraded).toEqual([]);
   });
 
   it("reuses the exact reads: today-boundary orders window + rk-prefixed funnel keys", async () => {
@@ -114,6 +116,8 @@ describe("composeSalesAnalytics", () => {
     expect(view.orders.ordersCount).toBe(2); // intact
     expect(view.activeCarts).toBe(3);
     expect(view.whatsapp.outreachWeekly).toBe(12);
+    // BKL-100 — the failed signal is flagged so a renderer never shows its zero.
+    expect(view.degraded).toEqual(["newCustomers30d"]);
   });
 
   it("degrades the orders signal alone; carts + funnel survive", async () => {
@@ -132,6 +136,8 @@ describe("composeSalesAnalytics", () => {
     });
     expect(view.activeCarts).toBe(3);
     expect(view.whatsapp.conversionRatePct).toBe(40);
+    // BKL-100 — only the orders signal degraded.
+    expect(view.degraded).toEqual(["orders"]);
   });
 
   it("AOV is 0 with no orders; conversion is 0 with no conversations; absent funnel keys → 0", async () => {

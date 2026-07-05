@@ -71,6 +71,8 @@ describe("composeOpsSnapshot", () => {
       netCentavos: 95_000,
     });
     expect(typeof snap.now).toBe("string");
+    // BKL-100 — no signal failed, so nothing is flagged degraded.
+    expect(snap.degraded).toEqual([]);
   });
 
   it("degrades ONE failing signal to its fallback; the others survive", async () => {
@@ -94,5 +96,7 @@ describe("composeOpsSnapshot", () => {
     expect(snap.opsAlerts.open).toBe(2);
     expect(snap.incidents.open).toBe(1);
     expect(snap.caixa.ordersCount).toBe(12);
+    // BKL-100 — the failed signal is flagged so a renderer never shows its zeros.
+    expect(snap.degraded).toEqual(["kitchen"]);
   });
 });

@@ -54,6 +54,16 @@ export interface SalesAnalytics {
   /** Customers created in the last 30 days. */
   readonly newCustomers30d: number;
   readonly whatsapp: WhatsappFunnelSummary;
+  /**
+   * BKL-100 — the signal names that FAILED to read this turn and degraded to
+   * their zero fallback (a subset of `"orders" | "activeCarts" |
+   * "newCustomers30d" | "whatsapp"`). A renderer MUST render a degraded signal
+   * as "indisponível", NEVER as its fallback ZEROS (a silent "R$ 0 / 0 pedidos"
+   * lies to the operator). Empty ⇒ every signal read cleanly. The flat /api/
+   * admin/analytics/summary route maps specific fields, so it does NOT surface
+   * this field (its response schema is unchanged).
+   */
+  readonly degraded: readonly string[];
 }
 
 // ── Injected dependencies ────────────────────────────────────────────────────
@@ -87,13 +97,16 @@ export interface SalesAnalyticsComposeDeps {
 /**
  * Map a settled read to its value, or LOG + substitute the fallback on
  * rejection. A single signal's failure degrades to its zero sub-summary, never
- * a throw — the whole resilience contract in one helper.
+ * a throw — the whole resilience contract in one helper. On rejection it ALSO
+ * records the signal name in `degraded` (BKL-100) so the renderer can
+ * distinguish a real zero from an unavailable read.
  */
 function unwrap<T>(
   settled: PromiseSettledResult<T>,
   fallback: T,
   signal: string,
   log: SalesAnalyticsLog,
+  degraded: string[],
 ): T {
   if (settled.status === "fulfilled") {
     return settled.value;
@@ -102,6 +115,7 @@ function unwrap<T>(
     { err: settled.reason, signal },
     "sales-analytics: signal read failed — degrading to zero fallback",
   );
+  degraded.push(signal);
   return fallback;
 }
 
@@ -192,6 +206,10 @@ export async function composeSalesAnalytics(
     })(),
   ]);
 
+  // Populated by the `unwrap` calls below (object properties evaluate top-to-
+  // bottom, and `degraded` is read LAST) — so by the time it is spread it holds
+  // every signal that fell back.
+  const degraded: string[] = [];
   return {
     now: new Date().toISOString(),
     orders: unwrap(
@@ -199,14 +217,17 @@ export async function composeSalesAnalytics(
       { ordersCount: 0, revenueCentavos: 0, aovCentavos: 0 },
       "orders",
       log,
+      degraded,
     ),
-    activeCarts: unwrap(cartsR, 0, "activeCarts", log),
-    newCustomers30d: unwrap(customersR, 0, "newCustomers30d", log),
+    activeCarts: unwrap(cartsR, 0, "activeCarts", log, degraded),
+    newCustomers30d: unwrap(customersR, 0, "newCustomers30d", log, degraded),
     whatsapp: unwrap(
       waR,
       { conversionRatePct: 0, avgMessagesToCheckout: 0, outreachWeekly: 0 },
       "whatsapp",
       log,
+      degraded,
     ),
+    degraded,
   };
 }
