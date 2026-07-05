@@ -179,6 +179,52 @@ describe("BKL-121 — tag→derive→VALIDATED for STORE_HOURS (through the real
     const out = render(result.renderableCanonical, result.terminal);
     expect(out.text).toBe("Hoje nosso horário de funcionamento é: fechado.");
   });
+
+  // TTL UNITS regression (adversarial-review pin): the kernel enforces the
+  // cacheable ttl in epoch-MILLISECONDS (soundness.js: age = now - fetchedAt,
+  // no conversion) even though the published doc says seconds. With the old
+  // `ttl: 3600` this test FAILS — 15s of model latency between the investigator
+  // read and validation exceeded a 3.6s window and demoted every real turn to
+  // UNKNOWN. The registry now declares 3_600_000 (1 hour in ms).
+  it("VALIDATEs with realistic model latency between the read and validation (ttl is enforced in ms)", async () => {
+    const planner = createIbatexasPlanner({
+      model: mockModel([claimCall({ type: "STORE_HOURS", subject: "loja" })]),
+      modelId: "mock",
+      capabilityPlanners: [],
+      resolveStoreHours: () => HOURS_READ,
+    });
+    const plan = await planner.proposeClaims(state("qual o horário de hoje?"));
+
+    const ledger = new EvidenceLedger("turn-latency");
+    recordStoreHours(ledger, HOURS_READ); // fetchedAt = NOW
+    const result = runClaimsKernel(
+      ledger,
+      plan.candidates,
+      // Validation runs 15 SECONDS after the read — normal 4B claims latency.
+      createIbatexasClaimsKernelDeps({ now: () => NOW + 15_000 }),
+    );
+    expect(result.perClaim[0]?.verdict).toBe("VALIDATED");
+  });
+
+  it("demotes to UNKNOWN when the evidence is GENUINELY stale (older than the 1h bound)", async () => {
+    const planner = createIbatexasPlanner({
+      model: mockModel([claimCall({ type: "STORE_HOURS", subject: "loja" })]),
+      modelId: "mock",
+      capabilityPlanners: [],
+      resolveStoreHours: () => HOURS_READ,
+    });
+    const plan = await planner.proposeClaims(state("qual o horário de hoje?"));
+
+    const ledger = new EvidenceLedger("turn-stale");
+    recordStoreHours(ledger, HOURS_READ); // fetchedAt = NOW
+    const result = runClaimsKernel(
+      ledger,
+      plan.candidates,
+      createIbatexasClaimsKernelDeps({ now: () => NOW + 2 * 3_600_000 }), // 2h later
+    );
+    expect(result.perClaim[0]?.verdict).toBe("UNKNOWN"); // stale, never a render
+    expect(result.terminal).not.toBe("RENDER");
+  });
 });
 
 // ── (2) FALSIFIER STILL DEMOTES — derivation did NOT bypass the conjunct ────────

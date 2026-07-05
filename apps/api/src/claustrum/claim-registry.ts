@@ -238,7 +238,17 @@ export const REGISTRY_SPECS = {
       {
         key: "schedule:store_hours",
         ownershipPolicy: "not_applicable",
-        freshnessPolicy: { kind: "cacheable", ttl: 3600 },
+        // UNITS (adversarial-review pin): the kernel enforces this in epoch-
+        // MILLISECONDS — @adjudicate/core soundness.js freshnessVerdict computes
+        // `age = now - entry.fetchedAt` (both Date.now-derived) with NO unit
+        // conversion, even though evidence-requirement.d.ts documents ttl as
+        // "seconds". A bare `3600` is therefore a 3.6-SECOND window, which a
+        // normal claims turn (model latency 5-20s between the investigator read
+        // and validation) exceeds — demoting every STORE_HOURS turn to UNKNOWN.
+        // 3_600_000 ms = the intended 1-hour staleness bound (vacuous within a
+        // per-turn ledger, but honest if entries ever outlive a turn). The
+        // doc/enforcement mismatch is upstream (tracker BKL-125).
+        freshnessPolicy: { kind: "cacheable", ttl: 3_600_000 },
         sourceIntegrity: "trusted_service",
         provenancePolicy: "preserve",
       },
