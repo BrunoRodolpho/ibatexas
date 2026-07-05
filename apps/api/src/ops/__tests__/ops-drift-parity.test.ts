@@ -88,6 +88,30 @@ describe("opsPlaneDriftProblems", () => {
     expect(problems.join("\n")).toContain("ops_snapshot");
   });
 
+  it("is GREEN for advertised⊆renderable with the real render-template keys (BKL-100)", () => {
+    // No renderableReadKeys override → the real OPS_READ_RENDER_TEMPLATE_KEYS,
+    // which has a template for both advertised reads.
+    const problems = opsPlaneDriftProblems({
+      opsTools: OPS_TOOLS,
+      composedIntentKinds: composedIntentKinds(),
+      readExecutorKeys: ["ops_snapshot", "ops_sales_analytics"],
+    });
+    expect(problems).toEqual([]);
+  });
+
+  it("FAILS advertised⊆renderable when an advertised read has NO render template (BKL-100)", () => {
+    const problems = opsPlaneDriftProblems({
+      opsTools: OPS_TOOLS,
+      composedIntentKinds: composedIntentKinds(),
+      readExecutorKeys: ["ops_snapshot", "ops_sales_analytics"],
+      // ops_sales_analytics is advertised but has no render template here.
+      renderableReadKeys: ["ops_snapshot"],
+    });
+    expect(problems.length).toBeGreaterThan(0);
+    expect(problems.join("\n")).toContain("ops_sales_analytics");
+    expect(problems.join("\n")).toContain("render template");
+  });
+
   it("FAILS on a synthetic dangling tool whose kind no installed pack owns", () => {
     const danglingTool = {
       id: "ibatexas.ops.bogus.v1",

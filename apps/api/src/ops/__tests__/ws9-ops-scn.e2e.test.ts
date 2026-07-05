@@ -198,12 +198,28 @@ function buildSnapshotHarness() {
   const session = makeStatefulSession();
   const { tools } = buildOpsTools({}, sink);
   const adjudicator = makeAuditedAdjudicator({ sink });
+  // BKL-100 — a SHAPE-COMPLETE OpsSnapshot so the responder renders the full
+  // panorama deterministically from the read (the fix is to complete the fixture,
+  // never to weaken the assert). A partial shape would now exercise the honest
+  // "couldn't check" degrade line instead.
   const snapshotExecutor = vi.fn(async () => ({
-    now: "2026-07-04T18:00:00.000Z",
-    opsAlerts: { open: 2 },
+    now: "2026-07-04T21:00:00.000Z",
+    opsAlerts: { open: 2, bySeverity: { low: 0, medium: 1, high: 1 } },
     incidents: { open: 1 },
-    kitchen: { activeTickets: 3 },
-    caixa: { ordersCount: 12, grossCentavos: 120_000, netCentavos: 110_000 },
+    kitchen: {
+      activeTickets: 3,
+      oldestTicketAgeMs: 90_000,
+      queueDepth: [{ status: "preparing", count: 3 }],
+    },
+    caixa: {
+      date: "2026-07-04",
+      ordersCount: 12,
+      grossCentavos: 120_000,
+      settledCentavos: 110_000,
+      refundedCentavos: 0,
+      netCentavos: 110_000,
+    },
+    degraded: [],
   }));
   const deps = composeOpsDeps({
     adjudicator,
@@ -241,7 +257,10 @@ describe("WS9 ops snapshot read — reachable end-to-end, authorizes no mutation
     expect(sink.records.every((r) => String(r.envelope.kind) === "noop")).toBe(true);
     // The turn did not EXECUTE any mutation.
     expect(out.decision.kind).not.toBe("EXECUTE");
-    // The responder rendered a grounded reply (not empty).
+    // BKL-100 — the reply is the DETERMINISTIC panorama rendered from the read
+    // (not the scripted model prose): its header + the true caixa figure appear.
     expect(out.response.length).toBeGreaterThan(0);
+    expect(out.response).toContain("Panorama operacional");
+    expect(out.response).toContain("12 pedidos");
   });
 });

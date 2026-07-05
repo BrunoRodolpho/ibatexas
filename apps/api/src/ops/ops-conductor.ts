@@ -52,9 +52,16 @@ import {
 import {
   readToolRosterDrift,
   toolRosterDrift,
+  ROSTER_DRIFT_CONTEXTS,
   type RosterDriftContext,
   type ToolDefinition,
 } from "../tools/register-ibatexas-tool-packs.js";
+import {
+  clampUngroundedOpsFact,
+  renderOpsReadAnswer,
+  OPS_READ_RENDER_TEMPLATE_KEYS,
+  type CapturedOpsRead,
+} from "./ops-read-render.js";
 import { deriveOpsPlannerContext } from "./ops-planner-context.js";
 import { composeOpsPlannerSystem } from "./ops-history.js";
 import {
@@ -141,6 +148,18 @@ export function composeOpsConductor(
   // money / two-person verbs (the SIM-swap compensating control).
   const excludedKinds = excludedKindsForScope(context.opsVerbScope ?? "dashboard");
 
+  // BKL-100 — the per-request read-capture buffer. `composeOpsConductor` runs once
+  // per staff turn, so this buffer is turn-scoped; the wrapped executors record
+  // each read's result/error keyed on the executor's `state.turnId`, and the
+  // responder's `readAnswer.render(turnId)` reads it back for the SAME turn. The
+  // wrapper RETHROWS on failure so the planner's `Promise.allSettled` enrichment
+  // behaviour is byte-unchanged (the capture is a pure side-record).
+  const captures: CapturedOpsRead[] = [];
+  const capturingReadExecutors = wrapOpsReadExecutorsWithCapture(
+    deps.opsReadToolExecutors,
+    captures,
+  );
+
   const planner = createIbatexasPlanner({
     model: deps.model,
     modelId: deps.modelId,
@@ -152,7 +171,7 @@ export function composeOpsConductor(
     ],
     deriveContext: deriveOpsPlannerContext(actor.staffId),
     staffEnvelopeActor: { staffId: actor.staffId, role: actor.role },
-    readToolExecutors: deps.opsReadToolExecutors,
+    readToolExecutors: capturingReadExecutors,
     // The staff-facing ops persona is the WHOLE system prompt (bypasses the
     // customer fragment graph); telemetry still emits the planner LLMTrace. The
     // per-request history block (if any) trails the persona as fenced DATA.
@@ -179,6 +198,15 @@ export function composeOpsConductor(
       conversational: OPS_RESPONDER_PERSONA_PTBR,
       grounded: OPS_RESPONDER_GROUNDED_PERSONA_PTBR,
     },
+    // BKL-100 — the ops read-answer governor. `render` deterministically renders a
+    // captured staff read (no model call, no authored number); `clampUngrounded`
+    // demotes an ungrounded domain number in the conversational fallback. Keyed on
+    // the turnId shared by the planner's read executors and this responder's
+    // `input.cognition.turnId`.
+    readAnswer: {
+      render: (turnId: string) => renderOpsReadAnswer(captures, turnId),
+      clampUngrounded: clampUngroundedOpsFact,
+    },
   });
 
   return createConductor({
@@ -204,6 +232,36 @@ export function composeOpsConductor(
 }
 
 /**
+ * Wrap each ops read executor so a run records a {@link CapturedOpsRead} into the
+ * per-request buffer, keyed on the executor's `state.turnId` (BKL-100). A success
+ * records `{name, turnId, result}`; a throw records `{name, turnId, error}` and
+ * RETHROWS — so the planner's one-hop enrichment `Promise.allSettled` sees the
+ * EXACT same fulfilled/rejected outcome it did before (the capture is a pure side
+ * record). The wrapped map preserves the executor KEYS exactly (and therefore the
+ * advertised-read set the drift gate probes).
+ */
+function wrapOpsReadExecutorsWithCapture(
+  executors: Readonly<Record<string, OpsReadToolExecutor>>,
+  captures: CapturedOpsRead[],
+): Readonly<Record<string, OpsReadToolExecutor>> {
+  const wrapped: Record<string, OpsReadToolExecutor> = {};
+  for (const [name, execute] of Object.entries(executors)) {
+    wrapped[name] = async (input, state) => {
+      const turnId = state.turnId;
+      try {
+        const result = await execute(input, state);
+        captures.push({ name, turnId, result });
+        return result;
+      } catch (error) {
+        captures.push({ name, turnId, error });
+        throw error; // planner allSettled behaviour unchanged
+      }
+    };
+  }
+  return wrapped;
+}
+
+/**
  * Boot-time ops-plane drift parity (fail-closed like toolRosterDrift /
  * readToolRosterDrift): assert every ops-registry tool is composed-router-
  * routable (its intentKind is owned by an installed pack ⇔ policyForKind
@@ -218,6 +276,12 @@ export function opsPlaneDriftProblems(input: {
   readonly composedIntentKinds: ReadonlyArray<string>;
   /** The ops read-executor keys (Object.keys(opsReadToolExecutors)). */
   readonly readExecutorKeys: ReadonlyArray<string>;
+  /**
+   * The read names that have a deterministic render template (BKL-100). Defaults
+   * to the real `OPS_READ_RENDER_TEMPLATE_KEYS`; overridable so a test can prove
+   * the advertised⊆renderable gate fails on a missing template.
+   */
+  readonly renderableReadKeys?: ReadonlyArray<string>;
   /** Probe contexts (defaults to the shared ROSTER_DRIFT_CONTEXTS). */
   readonly contexts?: ReadonlyArray<RosterDriftContext>;
   readonly onWarn?: (message: string) => void;
@@ -263,6 +327,34 @@ export function opsPlaneDriftProblems(input: {
           `"${capability}" (tool ${tool.id}); these verbs must stay ops-unreachable ` +
           `until an owner ratifies a propose-path (OPS-007/008/011). See ` +
           `FORBIDDEN_OPS_DESTRUCTIVE_KINDS.`,
+      );
+    }
+  }
+  // BKL-100 — advertised ⊆ renderable: every ops read the planner advertises MUST
+  // have a deterministic render template (ops-read-render.ts), else a staff read
+  // turn would fall back to model-authored prose — the exact confabulation this
+  // work removes. Probe the ops planner under the shared drift contexts (the
+  // `staff` probe is where both reads are advertised) and assert each advertised
+  // read name is a renderable template key.
+  const renderable = new Set(
+    input.renderableReadKeys ?? OPS_READ_RENDER_TEMPLATE_KEYS,
+  );
+  const driftContexts = input.contexts ?? ROSTER_DRIFT_CONTEXTS;
+  const advertisedReads = new Set<string>();
+  for (const probe of driftContexts) {
+    for (const planner of opsPlanners) {
+      for (const read of planner.plan(probe.state, probe.context).visibleReadTools) {
+        advertisedReads.add(read);
+      }
+    }
+  }
+  for (const read of advertisedReads) {
+    if (!renderable.has(read)) {
+      problems.push(
+        `ops-advertised read "${read}" has no deterministic render template ` +
+          `(ops-read-render.ts) — a staff read turn would fall back to ` +
+          `model-authored prose (BKL-100). Add a template + its key to ` +
+          `OPS_READ_RENDER_TEMPLATE_KEYS.`,
       );
     }
   }
