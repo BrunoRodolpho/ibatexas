@@ -2832,6 +2832,14 @@ export async function bootstrapClaustrum(
       const store = await getEscalationStore();
       await store.markIntentResolved(sessionId, intentHash, status, resolvedBy, at);
     },
+    // FIX 5 — the always-on execution ledger (Hard Rule 9): the SAME ledger the
+    // conductor resume path wires, so an approved refund's intentHash is
+    // REPLAY_SUPPRESSED on any duplicate — the atomic park-consume is no longer
+    // the sole double-execute guard.
+    ledger,
+    // FIX 4 — structured log for the honesty paths (executor throw; a projection
+    // write that fails AFTER a committed refund).
+    log: logger,
     now: () => new Date().toISOString(),
   });
   // The ops planner's one-hop read executors — the situational snapshot

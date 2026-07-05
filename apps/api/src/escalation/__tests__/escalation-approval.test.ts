@@ -29,6 +29,26 @@ function makeCapturingSink(): AuditSink & { records: AuditRecord[] } {
   return { emit: async (r: AuditRecord) => void records.push(r), records };
 }
 
+const REFUND_PAYLOAD = {
+  paymentId: "pay_1",
+  refundAmountCentavos: 150_000,
+  refundableBalanceCentavos: 500_000,
+  amountInCentavos: 500_000,
+  currentRefundedCentavos: 0,
+  actor: "admin",
+  actorId: PROPOSER,
+};
+
+// The intentHash the engine's rebuild MUST reproduce (FIX 3 integrity gate). Built
+// from the EXACT inputs the engine rebuilds with (kind/payload/actor/role/taint/nonce).
+const REBUILT_INTENT_HASH = buildEnvelope({
+  kind: "payment.refund.issue",
+  payload: REFUND_PAYLOAD,
+  actor: { principal: "user", sessionId: "admin:owner_proposer", role: "OWNER" },
+  taint: "UNTRUSTED",
+  nonce: "n-escalate-approve",
+}).intentHash;
+
 /** The parked escalated (>R$1000) refund proposed by PROPOSER. */
 function parkedRefund(
   overrides: Partial<ParkedEscalationIntent> = {},
@@ -37,19 +57,11 @@ function parkedRefund(
     token: "tok-1",
     sessionId: "admin:owner_proposer",
     intentKind: "payment.refund.issue",
-    intentHash: "sha256:placeholder",
+    intentHash: REBUILT_INTENT_HASH,
     summaryPtBr: "reembolso de R$ 1.500,00",
     proposerId: PROPOSER,
     envelopeKind: "payment.refund.issue",
-    payload: {
-      paymentId: "pay_1",
-      refundAmountCentavos: 150_000,
-      refundableBalanceCentavos: 500_000,
-      amountInCentavos: 500_000,
-      currentRefundedCentavos: 0,
-      actor: "admin",
-      actorId: PROPOSER,
-    },
+    payload: REFUND_PAYLOAD,
     nonce: "n-escalate-approve",
     actorSessionId: "admin:owner_proposer",
     actorPrincipal: "user",
@@ -226,7 +238,7 @@ describe("AUT-017 escalation-approval engine — resolve()", () => {
     expect(refundExec).not.toHaveBeenCalled();
   });
 
-  it("executor throw AFTER the audited EXECUTE → execute_failed (honest 502, never fabricated success)", async () => {
+  it("executor throw AFTER the audited EXECUTE → execute_failed; projection marked execute_failed, NOT approved (FIX 4)", async () => {
     const { engine, sink, marks } = makeEngine(parkedRefund(), {
       executors: {
         "payment.refund.issue": vi.fn(async () => {
@@ -241,10 +253,118 @@ describe("AUT-017 escalation-approval engine — resolve()", () => {
     });
     expect(result.status).toBe("execute_failed");
     expect(result.refusalPtBr).toBeTruthy();
-    // The EXECUTE was still audited (the governance decision happened); the
-    // failure is downstream — the projection is marked approved (not denied).
+    // The EXECUTE was still audited (the governance decision happened), but NO
+    // money moved → the projection is marked execute_failed (honest), never approved.
     expect(sink.records.at(-1)?.decision.kind).toBe("EXECUTE");
-    expect(marks.at(-1)?.status).toBe("approved");
+    expect(marks.at(-1)?.status).toBe("execute_failed");
+  });
+
+  it("no executor registered for the kind → execute_failed, projection execute_failed (FIX 4)", async () => {
+    const { engine, marks } = makeEngine(parkedRefund(), { executors: {} });
+    const result = await engine.resolve({
+      token: "tok-1",
+      accept: true,
+      approver: { id: APPROVER, role: "OWNER" },
+    });
+    expect(result.status).toBe("execute_failed");
+    expect(marks.at(-1)?.status).toBe("execute_failed");
+  });
+
+  it("projection-write failure AFTER a committed refund → still approved (success-with-warning), never a bare error (FIX 4b)", async () => {
+    const refundExec = vi.fn(async (_p: unknown, _s: string) => {});
+    let calls = 0;
+    const engine = makeEngine(parkedRefund(), {
+      executors: { "payment.refund.issue": refundExec },
+      // The post-commit "approved" projection write throws (Redis blip); the
+      // committed refund must NOT become a bare failure with a re-runnable button.
+      markIntentResolved: async () => {
+        calls += 1;
+        throw new Error("redis unavailable");
+      },
+    }).engine;
+    const result = await engine.resolve({
+      token: "tok-1",
+      accept: true,
+      approver: { id: APPROVER, role: "OWNER" },
+    });
+    expect(result.status).toBe("approved"); // money moved → success
+    expect(refundExec).toHaveBeenCalledTimes(1);
+    expect(calls).toBe(1); // the projection write was attempted (and swallowed)
+  });
+
+  it("FIX 3 — a parked record whose stored intentHash diverges from the rebuild → denied_by_kernel, token consumed, NO execute", async () => {
+    let consumeCalls = 0;
+    const parked = parkedRefund({ intentHash: "sha256:tampered-does-not-match" });
+    const { engine, refundExec } = makeEngine(parked, {
+      consume: async () => {
+        consumeCalls += 1;
+        return parked;
+      },
+    });
+    const result = await engine.resolve({
+      token: "tok-1",
+      accept: true,
+      approver: { id: APPROVER, role: "OWNER" },
+    });
+    expect(result.status).toBe("denied_by_kernel");
+    expect(result.decision).toBeUndefined(); // never reached adjudication
+    expect(refundExec).not.toHaveBeenCalled();
+    expect(consumeCalls).toBe(1); // token WAS consumed (single-use burned on the integrity failure)
+  });
+
+  it("FIX 5 — the execution ledger is threaded: a ledger HIT (duplicate intentHash) → REPLAY_SUPPRESSED, no refund", async () => {
+    const hitLedger = {
+      checkLedger: async () => ({
+        resourceVersion: "",
+        at: AT,
+        sessionId: "admin:owner_proposer",
+        kind: "payment.refund.issue",
+      }),
+      recordExecution: async () => "acquired" as const,
+    };
+    const { engine, refundExec } = makeEngine(parkedRefund(), {
+      ledger: hitLedger,
+    });
+    const result = await engine.resolve({
+      token: "tok-1",
+      accept: true,
+      approver: { id: APPROVER, role: "OWNER" },
+    });
+    // The kernel short-circuited to REPLAY_SUPPRESSED (a REFUSE) → non-EXECUTE.
+    expect(result.status).toBe("denied_by_kernel");
+    expect(result.decision?.kind).not.toBe("EXECUTE");
+    expect(refundExec).not.toHaveBeenCalled();
+  });
+
+  it("FIX 6 — a token used against the WRONG session path → missing, token NOT consumed (IDOR hardening)", async () => {
+    let consumeCalls = 0;
+    const parked = parkedRefund(); // sessionId "admin:owner_proposer"
+    const { engine, refundExec } = makeEngine(parked, {
+      consume: async () => {
+        consumeCalls += 1;
+        return parked;
+      },
+    });
+    const result = await engine.resolve({
+      token: "tok-1",
+      accept: true,
+      approver: { id: APPROVER, role: "OWNER" },
+      expectedSessionId: "admin:someone_else", // mismatched session
+    });
+    expect(result.status).toBe("missing");
+    expect(consumeCalls).toBe(0); // NOT burned
+    expect(refundExec).not.toHaveBeenCalled();
+  });
+
+  it("FIX 6 — a matching session path passes the binding check (approves)", async () => {
+    const { engine } = makeEngine(parkedRefund());
+    const result = await engine.resolve({
+      token: "tok-1",
+      accept: true,
+      approver: { id: APPROVER, role: "OWNER" },
+      expectedSessionId: "admin:owner_proposer", // matches parked.sessionId
+    });
+    expect(result.status).toBe("approved");
   });
 });
 
@@ -334,6 +454,19 @@ describe("AUT-017 — verifyEscalationApprovalLineage", () => {
     });
     expect(res.ok).toBe(false);
     expect(res.reasons.join(" ")).toContain("resolvedBy");
+  });
+
+  it("FIX 4 — fails when the projection is execute_failed (money never moved), even with a resumed EXECUTE row", async () => {
+    // The kernel EXECUTEd (the audit row exists) but the executor failed → the
+    // projection is execute_failed. Lineage must NOT bless it as an approved refund.
+    const { records, intentHash } = await escalateThenResume();
+    const res = verifyEscalationApprovalLineage(records, intentHash, {
+      ...approvedProjection,
+      intentHash,
+      status: "execute_failed",
+    });
+    expect(res.ok).toBe(false);
+    expect(res.reasons.join(" ")).toContain("not approved");
   });
 
   it("fails when there is no resumed EXECUTE record (approve never executed)", async () => {

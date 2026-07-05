@@ -13,7 +13,13 @@ interface PendingIntent {
   intentHash: string
   summaryPtBr: string
   requestedAt: string
-  status: 'pending' | 'approved' | 'rejected' | 'denied_by_kernel' | 'expired'
+  status:
+    | 'pending'
+    | 'approved'
+    | 'rejected'
+    | 'denied_by_kernel'
+    | 'execute_failed'
+    | 'expired'
   resolvedBy?: string
 }
 
@@ -116,8 +122,16 @@ export default function EscalacoesPage(): React.JSX.Element {
         if (res.status === 'approved') setNotice('Ação aprovada e executada.')
         else if (res.status === 'rejected') setNotice('Ação recusada.')
         else setNotice(res.refusalPtBr ?? 'Aprovação não pôde ser aplicada.')
-      } catch {
-        setNotice('Falha ao processar a aprovação.')
+      } catch (e) {
+        // AUT-017 FIX 4 — the API returns 502 when the OWNER approval was
+        // authorized but the executor failed (NO money moved). apiFetch throws on
+        // non-2xx, so distinguish that honest-failure case with its own toast.
+        const msg = e instanceof Error ? e.message : ''
+        setNotice(
+          msg.includes('502')
+            ? 'A execução falhou após a aprovação — nenhum valor foi movido. Verifique e tente novamente.'
+            : 'Falha ao processar a aprovação.',
+        )
       } finally {
         setBusy(false)
         await loadQueue()
@@ -129,6 +143,11 @@ export default function EscalacoesPage(): React.JSX.Element {
   const selectedRec = queue.find((e) => e.sessionId === selected)
   const pendingIntents = (selectedRec?.pendingIntents ?? []).filter(
     (p) => p.status === 'pending',
+  )
+  // AUT-017 FIX 4 — an approved-but-not-executed intent (executor missing/threw)
+  // is surfaced distinctly so the operator knows the money did NOT move.
+  const failedIntents = (selectedRec?.pendingIntents ?? []).filter(
+    (p) => p.status === 'execute_failed',
   )
 
   return (
@@ -213,6 +232,24 @@ export default function EscalacoesPage(): React.JSX.Element {
                       >
                         Recusar
                       </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            {failedIntents.length > 0 ? (
+              <div className="flex flex-col gap-2">
+                {failedIntents.map((p) => (
+                  <div
+                    key={p.token}
+                    className="rounded border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-900"
+                  >
+                    <div className="mb-1 font-semibold">
+                      ❌ Falha na execução após aprovação
+                    </div>
+                    <div>
+                      {p.summaryPtBr} — aprovada, mas a execução falhou; nenhum
+                      valor foi movido. Reemita o comando para tentar novamente.
                     </div>
                   </div>
                 ))}

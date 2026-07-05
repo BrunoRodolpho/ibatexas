@@ -22,11 +22,17 @@ import { getRedisClient, rk } from "@ibatexas/tools";
  * the escalation park store keyed by `token`; this is the read-model the
  * escalações UI renders + the OWNER resolves against. Lifecycle statuses:
  *   - `pending`         parked, awaiting an OWNER decision.
- *   - `approved`        OWNER approved AND the resumed kernel verdict was EXECUTE.
+ *   - `approved`        OWNER approved, the resumed kernel verdict was EXECUTE,
+ *                        AND the executor ran (money moved).
  *   - `rejected`        OWNER declined (accept=false) — nothing executed.
  *   - `denied_by_kernel` OWNER approved but the re-adjudication was NON-EXECUTE
- *                        (e.g. the payment moved to a terminal/partial state
- *                        since parking) — the kernel refused; nothing executed.
+ *                        (e.g. the payment moved to a terminal/partial/non-refundable
+ *                        state since parking, or an integrity check failed) — the
+ *                        kernel refused; nothing executed.
+ *   - `execute_failed`  OWNER approved + the kernel EXECUTEd, but the executor was
+ *                        missing or THREW — NO money moved. Distinct from `approved`
+ *                        so the projection + `verifyEscalationApprovalLineage` never
+ *                        bless a refund that did not run (AUT-017 FIX 4).
  *   - `expired`         the park TTL lapsed before a decision (advisory).
  */
 export interface PendingEscalationIntent {
@@ -41,6 +47,7 @@ export interface PendingEscalationIntent {
     | "approved"
     | "rejected"
     | "denied_by_kernel"
+    | "execute_failed"
     | "expired";
   readonly resolvedAt?: string;
   readonly resolvedBy?: string;

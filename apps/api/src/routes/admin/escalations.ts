@@ -37,7 +37,14 @@ const PendingIntentSchema = z.object({
   intentHash: z.string(),
   summaryPtBr: z.string(),
   requestedAt: z.string(),
-  status: z.enum(["pending", "approved", "rejected", "denied_by_kernel", "expired"]),
+  status: z.enum([
+    "pending",
+    "approved",
+    "rejected",
+    "denied_by_kernel",
+    "execute_failed",
+    "expired",
+  ]),
   resolvedAt: z.string().optional(),
   resolvedBy: z.string().optional(),
 });
@@ -203,6 +210,7 @@ export async function escalationRoutes(server: FastifyInstance): Promise<void> {
             decision: z.object({ kind: z.string() }).optional(),
             refusalPtBr: z.string().optional(),
           }),
+          403: z.object({ error: z.string() }),
           404: z.object({ error: z.string() }),
           409: z.object({ error: z.string() }),
           502: z.object({ ok: z.boolean(), status: z.string(), refusalPtBr: z.string() }),
@@ -211,7 +219,7 @@ export async function escalationRoutes(server: FastifyInstance): Promise<void> {
       },
     },
     async (request, reply) => {
-      const { token } = request.params;
+      const { sessionId, token } = request.params;
       const { accept } = request.body;
       const gateway = getEscalationApprovalGateway();
       if (gateway === null) {
@@ -220,12 +228,28 @@ export async function escalationRoutes(server: FastifyInstance): Promise<void> {
           .code(503)
           .send({ error: "aprovações de escalação indisponíveis no momento" });
       }
-      // requireOwnerRole guarantees OWNER (JWT staffRole or API-key adminApiKeyRole).
-      const approver = {
-        id: request.staffId ?? "admin-key",
-        role: request.staffRole ?? request.adminApiKeyRole ?? "OWNER",
-      };
-      const result = await gateway.resolve({ token, accept, approver });
+      // AUT-017 FIX 1 — separation of duty is a TWO-PERSON money control, so the
+      // approver MUST be a JWT-authenticated OWNER (a real, identifiable person).
+      // `requireOwnerRole` (preHandler) also admits an OWNER-mapped x-admin-key, but
+      // an API-key caller has no `staffId` — the approver id would collapse to a
+      // constant and defeat BOTH self-approve gates (proposerId vs a fixed value
+      // never matches), letting a proposer holding the OWNER key self-approve their
+      // own refund while provenance reads anonymous. Narrow to JWT here; NO id/role
+      // fallbacks (a weakened gate must never silently mint an OWNER).
+      if (!request.staffId || request.staffRole !== "OWNER") {
+        return reply.code(403).send({
+          error:
+            "Aprovação de escalação exige um usuário (OWNER) autenticado via JWT, não uma chave de API.",
+        });
+      }
+      const approver = { id: request.staffId, role: request.staffRole };
+      // FIX 6 — bind the token to its escalação session (IDOR hardening; forensic).
+      const result = await gateway.resolve({
+        token,
+        accept,
+        approver,
+        expectedSessionId: sessionId,
+      });
       switch (result.status) {
         case "missing":
           return reply

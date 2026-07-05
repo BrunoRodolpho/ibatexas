@@ -302,6 +302,28 @@ describe("AUT-017 refunds-escalate-approve — end-to-end ESCALATE → OWNER app
     expect(parkStore.size()).toBe(0); // consumed
   });
 
+  it("FIX 2 — a charge DISPUTED since parking → REFUSE on resume (refundability re-applied); no write; park consumed", async () => {
+    // Park while `paid`; by resume the charge is `disputed` (non-terminal, and
+    // canTransition("disputed","refunded")===true, so the terminal guard alone
+    // would MISS it). buildOpsRefundResumeState must re-apply OPS_REFUNDABLE_STATUSES
+    // → exists:false → REFUSE → no refund-on-chargeback double-payment.
+    const { deps, spies, parkStore, engine } = buildHarness({
+      toolCalls: [REFUND_CALL("4242", 1500)],
+      paymentById: () => ({ ...BIG_PAID, status: "disputed" }),
+    });
+    await runTurn(deps, "OWNER", "owner1", "reembolsa 1500 reais do pedido 4242");
+    const token = parkStore.lastToken()!;
+    const result = await engine.resolve({
+      token,
+      accept: true,
+      approver: { id: "owner2", role: "OWNER" },
+    });
+    expect(result.status).toBe("denied_by_kernel");
+    expect(result.decision?.kind).toBe("REFUSE");
+    expect(spies.writeAdjudicatedRefund).not.toHaveBeenCalled();
+    expect(parkStore.size()).toBe(0); // consumed even on a denied resume
+  });
+
   it("a partial refund SINCE parking (live divergence) → REFUSE on resume; no write; park consumed", async () => {
     // At park time the payload snapshot said currentRefunded=0; by resume the live
     // payment shows R$1000 already refunded → the magnitude guard's divergence check

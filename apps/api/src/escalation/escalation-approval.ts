@@ -36,6 +36,7 @@ import {
   type AuditRecord,
   type Decision,
   type IntentEnvelope,
+  type Ledger,
 } from "@adjudicate/core";
 import { adjudicateAndAudit, type PolicyBundle } from "@adjudicate/core/kernel";
 import { buildSupersessionChains } from "@adjudicate/audit";
@@ -91,7 +92,7 @@ export interface EscalationApprovalEngineDeps {
   readonly sink: ApprovalAuditSink;
   /** Per-kind POST-EXECUTE executors (`payment.refund.issue` → the BKL-085 trio). */
   readonly executors: Record<string, EscalationExecutor>;
-  /** Update the escalation record projection (approved / rejected / denied_by_kernel). */
+  /** Update the escalation record projection (approved / rejected / denied_by_kernel / execute_failed). */
   readonly markIntentResolved: (
     sessionId: string,
     intentHash: string,
@@ -99,10 +100,27 @@ export interface EscalationApprovalEngineDeps {
     resolvedBy: string,
     at: string,
   ) => Promise<unknown>;
+  /**
+   * FIX 5 — the always-on execution ledger (Hard Rule 9). Threaded into
+   * `adjudicateAndAudit` so a duplicate `intentHash` is REPLAY_SUPPRESSED even if
+   * the atomic park-consume is somehow bypassed (defense-in-depth: the ledger is
+   * NOT the sole guard, but Hard Rule 9 requires it always-on). Production wires
+   * the same `createRedisLedger` the conductor resume path uses.
+   */
+  readonly ledger?: Ledger;
   /** ISO clock — injected, never read here. */
   readonly now: () => string;
   /** The channel recorded in the confirmation binding (default "admin-dashboard"). */
   readonly channelLabel?: string;
+  /**
+   * FIX 4 — structured log for the honesty paths (executor throw error binding;
+   * a projection-write failure AFTER a committed refund). Optional; production
+   * wires the shared `logger`, tests may omit it.
+   */
+  readonly log?: {
+    error: (obj: Record<string, unknown>, msg: string) => void;
+    warn?: (obj: Record<string, unknown>, msg: string) => void;
+  };
 }
 
 export interface EscalationApprovalGateway {
@@ -110,6 +128,14 @@ export interface EscalationApprovalGateway {
     token: string;
     accept: boolean;
     approver: { id: string; role: string };
+    /**
+     * FIX 6 — the escalação session the resolve route nests under
+     * (`/escalations/:sessionId/intents/:token/resolve`). When supplied, the
+     * parked record's `sessionId` MUST match it — a token used against the wrong
+     * session path is an IDOR probe (404, no token burn). Optional for callers
+     * (unit tests) that address the token directly.
+     */
+    expectedSessionId?: string;
   }): Promise<EscalationApprovalResult>;
 }
 
@@ -147,11 +173,30 @@ export function createEscalationApprovalEngine(
 ): EscalationApprovalGateway {
   const channelLabel = deps.channelLabel ?? "admin-dashboard";
   return {
-    async resolve({ token, accept, approver }) {
-      // 1) Peek — the self-approve refusal must NOT burn the token (a different
-      //    owner can still approve within the TTL).
+    async resolve({ token, accept, approver, expectedSessionId }) {
+      // 1) Peek — the self-approve refusal + the session-binding check must NOT
+      //    burn the token (a different owner / the right session can still act).
       const peeked = await deps.get(token);
       if (peeked === null) return { status: "missing" };
+
+      // FIX 6 — session binding (IDOR hardening): the token is the capability, but
+      // the resolve route nests it under a session path; a token used against the
+      // WRONG session's path is a probe. Refuse as `missing` (do not leak that the
+      // token exists for another session) WITHOUT consuming, and log for forensics.
+      if (
+        expectedSessionId !== undefined &&
+        peeked.sessionId !== expectedSessionId
+      ) {
+        deps.log?.warn?.(
+          {
+            component: "escalation-approval",
+            expectedSessionId,
+            parkedSessionId: peeked.sessionId,
+          },
+          "escalation resolve: token/session mismatch (possible IDOR probe) — refused as missing, token not consumed",
+        );
+        return { status: "missing" };
+      }
 
       // Separation of duty: the approver may not be the proposer. This is a fast
       // early refusal; the pack overlay is the deepest structural gate (an
@@ -167,13 +212,7 @@ export function createEscalationApprovalEngine(
       const resolvedBy = `staff:${approver.id}`;
 
       if (!accept) {
-        await deps.markIntentResolved(
-          parked.sessionId,
-          parked.intentHash,
-          "rejected",
-          resolvedBy,
-          at,
-        );
+        await markResolvedSafe(deps, parked, "rejected", resolvedBy, at);
         return {
           status: "rejected",
           intentKind: parked.intentKind,
@@ -195,6 +234,32 @@ export function createEscalationApprovalEngine(
         nonce: parked.nonce,
       }) as IntentEnvelope;
 
+      // FIX 3 — ENFORCE the core integrity claim: the rebuilt envelope MUST hash
+      // to the parked `intentHash`. The marker + receipt are self-referential to
+      // this rebuilt envelope, so without this check "identical envelope" is
+      // assumed, not proven — a park record whose stored payload/nonce/actor no
+      // longer hashes to its own `intentHash` (corruption / tamper) would resume a
+      // DIFFERENT intent that its receipt happens to authorize. Fail closed:
+      // REFUSE, never execute (the token was already consumed above).
+      if (envelope.intentHash !== parked.intentHash) {
+        deps.log?.error(
+          {
+            component: "escalation-approval",
+            parkedIntentHash: parked.intentHash,
+            rebuiltIntentHash: envelope.intentHash,
+          },
+          "escalation resolve: rebuilt intentHash != parked intentHash (integrity failure) — REFUSE, no execute",
+        );
+        await markResolvedSafe(deps, parked, "denied_by_kernel", resolvedBy, at);
+        return {
+          status: "denied_by_kernel",
+          intentKind: parked.intentKind,
+          intentHash: parked.intentHash,
+          refusalPtBr:
+            "Falha de integridade: a solicitação não pôde ser verificada e não foi executada.",
+        };
+      }
+
       // 4) FRESH state (null ⇒ REFUSE fail-closed) + the escalationApproval marker.
       const baseState = await deps.rebuildState(envelope);
       const state = injectMarker(baseState, {
@@ -206,9 +271,13 @@ export function createEscalationApprovalEngine(
 
       // 5) AUDITED resume. The receipt flips the marker-induced REQUEST_CONFIRMATION
       //    to EXECUTE; every state/taint/auth guard still runs on the fresh state.
+      //    FIX 5 — the execution ledger rides along (Hard Rule 9, always-on): a
+      //    duplicate intentHash is REPLAY_SUPPRESSED even if the park-consume is
+      //    bypassed (defense-in-depth, not the sole double-execute guard).
       const policy = deps.policyFor(parked.intentKind);
       const { decision } = await adjudicateAndAudit(envelope, state, policy, {
         sink: deps.sink,
+        ...(deps.ledger ? { ledger: deps.ledger } : {}),
         confirmationReceipt: {
           intentHash: envelope.intentHash,
           at,
@@ -221,15 +290,10 @@ export function createEscalationApprovalEngine(
       });
 
       if (decision.kind !== "EXECUTE") {
-        // Non-EXECUTE ⇒ NOTHING executes. A since-parked terminal/partial state or
-        // a role failure surfaced honestly; the approval is recorded as denied.
-        await deps.markIntentResolved(
-          parked.sessionId,
-          parked.intentHash,
-          "denied_by_kernel",
-          resolvedBy,
-          at,
-        );
+        // Non-EXECUTE ⇒ NOTHING executes. A since-parked terminal/partial state, a
+        // role failure, or a REPLAY_SUPPRESSED duplicate surfaced honestly; the
+        // approval is recorded as denied.
+        await markResolvedSafe(deps, parked, "denied_by_kernel", resolvedBy, at);
         return {
           status: "denied_by_kernel",
           decision,
@@ -239,17 +303,17 @@ export function createEscalationApprovalEngine(
         };
       }
 
-      // 6) EXECUTE → run the per-kind executor (author = approver). A throw AFTER
-      //    the audited EXECUTE is HONEST failure: 502, never fabricated success.
+      // 6) EXECUTE → run the per-kind executor (author = approver). FIX 4 — a
+      //    missing executor or an executor THROW means NO money moved: record
+      //    `execute_failed` (NOT `approved`), so the projection + the lineage
+      //    invariant never bless a refund that did not run.
       const executor = deps.executors[parked.intentKind];
       if (executor === undefined) {
-        await deps.markIntentResolved(
-          parked.sessionId,
-          parked.intentHash,
-          "approved",
-          resolvedBy,
-          at,
+        deps.log?.error(
+          { component: "escalation-approval", intentKind: parked.intentKind },
+          "escalation approval: no executor registered for kind — audited EXECUTE but nothing ran (execute_failed)",
         );
+        await markResolvedSafe(deps, parked, "execute_failed", resolvedBy, at);
         return {
           status: "execute_failed",
           decision,
@@ -261,14 +325,18 @@ export function createEscalationApprovalEngine(
       }
       try {
         await executor(parked.payload, approver.id);
-      } catch {
-        await deps.markIntentResolved(
-          parked.sessionId,
-          parked.intentHash,
-          "approved",
-          resolvedBy,
-          at,
+      } catch (err) {
+        // FIX 4c — bind + log the executor error (was silently discarded).
+        deps.log?.error(
+          {
+            component: "escalation-approval",
+            intentKind: parked.intentKind,
+            intentHash: parked.intentHash,
+            err: err instanceof Error ? err.message : String(err),
+          },
+          "escalation approval: executor threw AFTER the audited EXECUTE — NO money moved (execute_failed)",
         );
+        await markResolvedSafe(deps, parked, "execute_failed", resolvedBy, at);
         return {
           status: "execute_failed",
           decision,
@@ -279,13 +347,28 @@ export function createEscalationApprovalEngine(
         };
       }
 
-      await deps.markIntentResolved(
-        parked.sessionId,
-        parked.intentHash,
-        "approved",
-        resolvedBy,
-        at,
-      );
+      // SUCCESS — the money MOVED. FIX 4b — a projection-write failure now must NOT
+      // turn a committed refund into a bare error with a re-runnable button: the
+      // refund committed + the token is consumed (+ the ledger claimed the key), so
+      // a re-click can only 404. Report success-with-warning (log loudly), 200.
+      try {
+        await deps.markIntentResolved(
+          parked.sessionId,
+          parked.intentHash,
+          "approved",
+          resolvedBy,
+          at,
+        );
+      } catch (projErr) {
+        deps.log?.error(
+          {
+            component: "escalation-approval",
+            intentHash: parked.intentHash,
+            err: projErr instanceof Error ? projErr.message : String(projErr),
+          },
+          "escalation approval: refund COMMITTED but the projection write failed — success-with-warning (money moved; the pending row reads stale until reconciled)",
+        );
+      }
       return {
         status: "approved",
         decision,
@@ -294,6 +377,39 @@ export function createEscalationApprovalEngine(
       };
     },
   };
+}
+
+/**
+ * FIX 4 — mark a resolution status, swallowing a projection-write failure (the
+ * governance decision already happened; a Redis blip on the read-model must not
+ * mask the real outcome). Logs loudly so the stale projection is visible.
+ */
+async function markResolvedSafe(
+  deps: EscalationApprovalEngineDeps,
+  parked: ParkedEscalationIntent,
+  status: PendingEscalationIntent["status"],
+  resolvedBy: string,
+  at: string,
+): Promise<void> {
+  try {
+    await deps.markIntentResolved(
+      parked.sessionId,
+      parked.intentHash,
+      status,
+      resolvedBy,
+      at,
+    );
+  } catch (err) {
+    deps.log?.error(
+      {
+        component: "escalation-approval",
+        intentHash: parked.intentHash,
+        status,
+        err: err instanceof Error ? err.message : String(err),
+      },
+      "escalation approval: projection write failed while recording resolution status",
+    );
+  }
 }
 
 // ── INV-ESCALATION-APPROVAL-LINEAGE ──────────────────────────────────────────

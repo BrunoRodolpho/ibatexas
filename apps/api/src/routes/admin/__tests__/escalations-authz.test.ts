@@ -236,13 +236,15 @@ describe("AUT-017: POST /api/admin/escalations/:sessionId/intents/:token/resolve
     }
   });
 
-  it("lets a registry-mapped OWNER api-key through → 200", async () => {
-    mockGatewayResolve.mockResolvedValue({ status: "rejected" });
+  it("FIX 1 — rejects a registry-mapped OWNER api-key WITHOUT a JWT with 403 (two-person control needs a real person; NEVER calls the gateway)", async () => {
     const server = await buildServer(API_KEY_OWNER);
     try {
-      const res = await server.inject({ method: "POST", url, payload: { accept: false } });
-      expect(res.statusCode).toBe(200);
-      expect(res.json()).toMatchObject({ ok: true, status: "rejected" });
+      const res = await server.inject({ method: "POST", url, payload: { accept: true } });
+      expect(res.statusCode).toBe(403);
+      expect((res.json() as { error: string }).error).toContain("JWT");
+      // The self-approve gates would collapse against a constant "admin-key" id —
+      // so the handler MUST refuse before ever reaching the gateway.
+      expect(mockGatewayResolve).not.toHaveBeenCalled();
     } finally {
       await server.close();
     }
