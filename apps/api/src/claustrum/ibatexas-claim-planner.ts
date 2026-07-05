@@ -280,6 +280,11 @@ export function createIbatexasClaimPlanner(
       // below — acceptable for now (still proposition-free, never prose); restoring
       // ESCALATE/CLARIFY fidelity needs a port widening, tracked as BKL-077.
 
+      // BKL-111 — the model's proposal (constrained-generation survivors) BEFORE the
+      // demote filter reassigns `candidates`, so the prose-preserved signal below can
+      // report WHAT collapsed. Empty on the flake path (candidates = []).
+      const proposedTypes = candidates.map((c) => c.type);
+
       // The §O#15 required-claim set for THIS turn — the SAME pure keyword scan
       // BKL-005 uses. Computed ONCE and shared by the BKL-110 demote-only relevance
       // filter (successful path) and the F1 safe-terminal synthesis (flake path).
@@ -296,6 +301,9 @@ export function createIbatexasClaimPlanner(
       // here. When something drops, reassign to the kept set; when nothing drops,
       // leave `candidates` untouched so its reference (and byte-identity) is
       // preserved for the "surfaced unchanged" contract.
+      // BKL-111 — the demoted types, hoisted so the prose-preserved signal below can
+      // attribute a demote-to-empty collapse. Empty unless the demote filter fires.
+      let demotedTypes: readonly string[] = [];
       if (!flaked && candidates.length > 0) {
         const kept: CandidateClaim[] = [];
         const droppedClaimTypes: string[] = [];
@@ -318,6 +326,7 @@ export function createIbatexasClaimPlanner(
             "claim-planner demoted over-proposed candidate(s) not indicated by the request span",
           );
           candidates = kept;
+          demotedTypes = droppedClaimTypes;
         }
       }
 
@@ -348,6 +357,38 @@ export function createIbatexasClaimPlanner(
         : [];
       const all: ReadonlyArray<CandidateClaim> =
         synthetic.length === 0 ? candidates : [...candidates, ...synthetic];
+
+      // BKL-111 — the COMPLEMENTARY `claims.terminal` signal for the PROSE-PRESERVED
+      // collapse. When the returned candidate set is EMPTY, CLAIMS-VALIDATE returns
+      // undefined (handle-turn 6a is skipped) and the model's prose draft stands, so
+      // the RENDER-path emitter in claims-renderer-adapter.ts never fires for this
+      // turn. Emit the single `claims.terminal` HERE instead — carrying `turnId`
+      // (available at this seam, unlike the renderer), the collapse reason, and the
+      // types that collapsed. MUTUALLY EXCLUSIVE with the render-path emit (`all`
+      // non-empty ⟺ the renderer runs), so exactly ONE `claims.terminal` is logged
+      // per claims-engaged turn. OBSERVE-ONLY + PII-free: registry type names +
+      // turnId only, never a claim value or request text. Byte-identical when the
+      // flag is off (this adapter is only wired when ENABLE_CLAIMS_PIPELINE).
+      if (all.length === 0) {
+        logger.info(
+          {
+            component: "claims",
+            event: "claims.terminal",
+            turnId: input.cognition.turnId,
+            posture: "prose_preserved",
+            reason: flaked
+              ? "planner_flake"
+              : demotedTypes.length > 0
+                ? "demoted_to_empty"
+                : "no_candidates",
+            candidateTypes: [...new Set(proposedTypes)],
+            ...(demotedTypes.length > 0
+              ? { droppedClaimTypes: [...new Set(demotedTypes)] }
+              : {}),
+          },
+          "claims terminal finalized (prose preserved — empty candidate set)",
+        );
+      }
 
       // OWNER-POSITIVE close (tag-then-derive STEP 2 for owner-scoped types) + the F1
       // synthetic value-bind: bind each candidate's value from the AUTHENTICATED

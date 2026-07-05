@@ -31,6 +31,7 @@ import type {
   ClaimsRendererPort,
   ClaimsRenderResult,
 } from "@claustrum/core";
+import { logger } from "../lib/logger.js";
 import {
   type ActiveResourceOwnership,
   checkRequiredClaimCompleteness,
@@ -39,6 +40,86 @@ import {
 } from "./required-claim-decomposer.js";
 import { PROVABLY_EMPTY_KIND } from "./ibatexas-claims-kernel-deps.js";
 import { render } from "./renderer-from-claims.js";
+
+/** De-dupe a type-name list, preserving first-seen order (deterministic). */
+function distinctTypes(types: readonly string[]): string[] {
+  return [...new Set(types)];
+}
+
+/**
+ * BKL-111 — emit the ONE structured `claims.terminal` signal for a claims-ENGAGED
+ * RENDER-path turn (the render/terminal supersession point). This fires EXACTLY
+ * when `handleTurn` stage 6a calls the renderer — i.e. when CLAIMS-VALIDATE
+ * produced a kernel result (a NON-empty candidate set survived to the kernel).
+ * The COMPLEMENTARY empty-candidate collapse ("prose_preserved") is emitted
+ * upstream in `ibatexas-claim-planner.ts` (the renderer is never called then), so
+ * across the two mutually-exclusive seams there is exactly ONE `claims.terminal`
+ * per claims-engaged turn. No-op when `ENABLE_CLAIMS_PIPELINE` is off: the whole
+ * renderer seam is only constructed by `buildClaimsSeams` when the flag is on, so
+ * a flag-off boot never reaches this code (byte-identical).
+ *
+ * OBSERVE-ONLY: a best-effort telemetry side-channel that reads ONLY the kernel
+ * result's structural identity (posture + registry TYPE names + verdicts +
+ * counts). It changes NO control flow and NO rendered text — the render contract
+ * (pure deterministic TEXT of `(claims, context)`) is preserved (the text is a
+ * function of the SAME inputs, unaffected by this log). SIGNAL-ONLY (one line per
+ * turn) and PII-FREE by construction: it emits registry type names, three-valued
+ * verdicts, the terminal posture and counts — NEVER a claim VALUE, the request
+ * text, or the rendered text.
+ *
+ * `posture` is the FINAL rendered posture (the terminal the adapter actually
+ * renders): `VALIDATED_RENDER` (kernel RENDER, not degraded), `UNKNOWN`,
+ * `ESCALATE`, or `CLARIFY`. `degradedFromRender` separates the §O#15 completeness
+ * DOWNGRADE (kernel said RENDER, the adapter degraded it to UNKNOWN) from an
+ * intrinsic kernel UNKNOWN — the exact distinction the two live-validation rounds
+ * had to reconstruct by byte-matching delivered text against slot templates.
+ *
+ * NOT observable at THIS ibatexas seam (published `ClaimsRenderContext` carries
+ * only `requestText` + `activeResources`, never the turn id): the `turnId`. So a
+ * RENDER-path `claims.terminal` cannot be joined to `turn_trace` / the BKL-110
+ * `claim_planner.candidate_demoted` event by id — closing that needs a claustrum
+ * change to thread `turnId` into `ClaimsRenderContext` (or `handleTurn` to pass
+ * it). Registered as a follow-up; the published package is NOT widened here. The
+ * `prose_preserved` companion (planner seam) DOES carry `turnId`.
+ */
+function emitClaimsTerminal(claims: ClaimsKernelResult, degraded: boolean): void {
+  const finalTerminal = degraded ? "UNKNOWN" : claims.terminal;
+  const posture =
+    finalTerminal === "RENDER" ? "VALIDATED_RENDER" : finalTerminal;
+  const suppressedTypes = distinctTypes(
+    claims.consistency.suppressions.flatMap((s) => s.conflictTypes),
+  );
+  logger.info(
+    {
+      component: "claims",
+      event: "claims.terminal",
+      posture,
+      // The RAW kernel terminal, so `kernelTerminal: RENDER` + `posture: UNKNOWN`
+      // uniquely identifies a §O#15 completeness-gate degrade.
+      kernelTerminal: claims.terminal,
+      degradedFromRender: degraded,
+      // The candidate types that reached the kernel (post-BKL-110-demote input
+      // set), each with its three-valued §5 verdict split out.
+      candidateTypes: distinctTypes(claims.perClaim.map((c) => c.type)),
+      validatedTypes: distinctTypes(
+        claims.perClaim.filter((c) => c.verdict === "VALIDATED").map((c) => c.type),
+      ),
+      // Kernel-DROPPED candidate types (non-VALIDATED — UNKNOWN/REFUSED). This is
+      // DISTINCT from the planner-side BKL-110 demote (pre-kernel), which is
+      // separately observable as `claim_planner.candidate_demoted`.
+      droppedClaimTypes: distinctTypes(
+        claims.perClaim.filter((c) => c.verdict !== "VALIDATED").map((c) => c.type),
+      ),
+      // How many canonical claims actually render (0 on any non-VALIDATED_RENDER
+      // posture, including a degrade — the kernel mints `renderableCanonical` under
+      // RENDER, but the adapter renders the safe terminal when it degrades).
+      renderedCount:
+        posture === "VALIDATED_RENDER" ? claims.renderableCanonical.length : 0,
+      ...(suppressedTypes.length > 0 ? { suppressedTypes } : {}),
+    },
+    "claims terminal finalized (render path)",
+  );
+}
 
 /**
  * Derive the #8 {@link ActiveResourceOwnership} signal for the §O#15 decomposer from
@@ -129,6 +210,12 @@ export function createIbatexasClaimsRenderer(): ClaimsRendererPort {
       const degrade =
         claims.terminal === "RENDER" &&
         !checkRequiredClaimCompleteness(required, resolved).complete;
+
+      // BKL-111 — one structured `claims.terminal` signal per RENDER-path turn
+      // (observe-only; see {@link emitClaimsTerminal}). Emitted BEFORE the pure
+      // `render` call so the log reflects the same terminal the render uses; it
+      // reads only structural identity and never the rendered text.
+      emitClaimsTerminal(claims, degrade);
 
       const result = render(
         // inv.17 — the renderer's REQUIRED input is the kernel-MINTED CanonicalClaim
