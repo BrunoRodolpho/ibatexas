@@ -235,6 +235,7 @@ describe("AUT-017 refunds-escalate-approve — end-to-end ESCALATE → OWNER app
 
     // The proposer is owner1; a DIFFERENT owner (owner2) approves.
     const token = parkStore.lastToken()!;
+    const parkedBefore = await parkStore.get(token); // peek escalatedAt before consume
     const result = await engine.resolve({
       token,
       accept: true,
@@ -263,6 +264,14 @@ describe("AUT-017 refunds-escalate-approve — end-to-end ESCALATE → OWNER app
     expect(executeRec!.envelope.intentHash).toBe(intentHash);
     expect(executeRec!.supersedes?.reason).toBe("confirmation_resolved");
     expect(executeRec!.supersedes?.binding).toMatchObject({ approver: "staff:owner2" });
+    // BKL-115 — the supersedes predecessor is bound to the parked ESCALATE-time
+    // timestamp (receipt.originalAt = the park's escalatedAt), NOT the resume `at`
+    // — so the audit chain JOINS the resumed EXECUTE back to its ESCALATE row.
+    expect(parkedBefore?.escalatedAt).toBeTruthy();
+    expect(executeRec!.supersedes?.predecessorAt).toBe(parkedBefore!.escalatedAt);
+    expect(executeRec!.supersedes?.predecessorAt).not.toBe(
+      "2026-07-04T13:00:00.000Z", // the engine's resume now()
+    );
 
     // The lineage invariant holds over the captured trail (ESCALATE + resumed EXECUTE).
     const lineage = verifyEscalationApprovalLineage(sink.records, intentHash, {

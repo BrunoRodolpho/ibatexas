@@ -3,7 +3,8 @@
 // (adjudicateAndAudit) with injected fakes for the park store / executors /
 // projection, so the marker→CONFIRM→receipt→EXECUTE bridge is exercised for real.
 
-import { describe, it, expect, vi } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
+import { buildSupersessionChains } from "@adjudicate/audit";
 import {
   buildEnvelope,
   type AuditRecord,
@@ -118,6 +119,10 @@ function makeEngine(
 }
 
 describe("AUT-017 escalation-approval engine — resolve()", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs(); // BKL-116 drift test stubs REFUND_ESCALATE_THRESHOLD_CENTAVOS
+  });
+
   it("OWNER approve (approver ≠ proposer) → EXECUTE, runs the refund executor once with the approver as author", async () => {
     const { engine, refundExec, sink, marks } = makeEngine(parkedRefund());
     const result = await engine.resolve({
@@ -366,6 +371,81 @@ describe("AUT-017 escalation-approval engine — resolve()", () => {
     });
     expect(result.status).toBe("approved");
   });
+
+  it("BKL-115 — the resume receipt binds supersedes.predecessorAt to the parked escalatedAt (the ESCALATE row), not the resume `at`", async () => {
+    const escalatedAt = "2026-07-04T11:59:00.000Z"; // distinct from the engine's now() (AT)
+    const { engine, sink } = makeEngine(parkedRefund({ escalatedAt }));
+    const result = await engine.resolve({
+      token: "tok-1",
+      accept: true,
+      approver: { id: APPROVER, role: "OWNER" },
+    });
+    expect(result.status).toBe("approved");
+    const exec = sink.records.at(-1)!;
+    expect(exec.decision.kind).toBe("EXECUTE");
+    expect(exec.supersedes?.reason).toBe("confirmation_resolved");
+    // The predecessor points at the ESCALATE-time timestamp, NOT the resume `at` (AT).
+    expect(exec.supersedes?.predecessorAt).toBe(escalatedAt);
+    expect(exec.supersedes?.predecessorAt).not.toBe(AT);
+  });
+
+  it("BKL-115 — an absent escalatedAt leaves the receipt byte-identical (predecessorAt falls back to the resume `at`)", async () => {
+    const { engine, sink } = makeEngine(parkedRefund()); // no escalatedAt
+    const result = await engine.resolve({
+      token: "tok-1",
+      accept: true,
+      approver: { id: APPROVER, role: "OWNER" },
+    });
+    expect(result.status).toBe("approved");
+    const exec = sink.records.at(-1)!;
+    expect(exec.supersedes?.predecessorAt).toBe(AT); // the receipt `at` (engine now())
+  });
+
+  it("BKL-116 — escalate-threshold DRIFT (parked amount now ≤ a raised threshold) → the taint-CONFIRM EXECUTE is REFUSED (no marker basis); no refund", async () => {
+    // Raise the escalate threshold ABOVE the parked R$1500 so the escalate band
+    // (and its OWNER-role marker gate) is skipped at resume; the BKL-085
+    // UNTRUSTED-taint band fires REQUEST_CONFIRMATION, which the unconditional
+    // receipt WOULD flip to EXECUTE — but the marker basis is absent, so the
+    // engine must REFUSE without moving money.
+    vi.stubEnv("REFUND_ESCALATE_THRESHOLD_CENTAVOS", "200000"); // R$2000 > R$1500 parked
+    const { engine, refundExec, sink, marks } = makeEngine(parkedRefund());
+    const result = await engine.resolve({
+      token: "tok-1",
+      accept: true,
+      approver: { id: APPROVER, role: "OWNER" },
+    });
+    expect(result.status).toBe("denied_by_kernel");
+    // The kernel DID return EXECUTE (via the taint-CONFIRM band + receipt flip) —
+    // proving the vulnerability — but the engine's basis assertion caught it.
+    expect(result.decision?.kind).toBe("EXECUTE");
+    expect(sink.records.at(-1)?.decision.kind).toBe("EXECUTE");
+    expect(refundExec).not.toHaveBeenCalled(); // NO money moved
+    expect(marks.at(-1)?.status).toBe("denied_by_kernel");
+    expect(result.refusalPtBr).toBeTruthy();
+  });
+
+  it("BKL-116 — the normal case (parked amount > threshold, marker present) carries the marker basis → EXECUTE unchanged", async () => {
+    // Default threshold R$1000; parked R$1500 > threshold → the escalate marker
+    // branch fires → `refund_escalation_approved` basis rides the EXECUTE → the
+    // engine executes exactly as before.
+    const { engine, refundExec, sink } = makeEngine(parkedRefund());
+    const result = await engine.resolve({
+      token: "tok-1",
+      accept: true,
+      approver: { id: APPROVER, role: "OWNER" },
+    });
+    expect(result.status).toBe("approved");
+    expect(refundExec).toHaveBeenCalledTimes(1);
+    const exec = sink.records.at(-1)!;
+    expect(
+      exec.decision.basis.some(
+        (b) =>
+          b.category === "business" &&
+          (b.detail as { reason?: string } | undefined)?.reason ===
+            "refund_escalation_approved",
+      ),
+    ).toBe(true);
+  });
 });
 
 describe("AUT-017 — verifyEscalationApprovalLineage", () => {
@@ -484,5 +564,54 @@ describe("AUT-017 — verifyEscalationApprovalLineage", () => {
     const { records, intentHash } = await escalateThenResume();
     const res = verifyEscalationApprovalLineage(records, intentHash, null);
     expect(res.ok).toBe(false);
+  });
+
+  it("BKL-115 — buildSupersessionChains JOINS the resumed EXECUTE back to the ESCALATE row (chain length 2, confirmation_resolved)", async () => {
+    const { records, intentHash } = await escalateThenResume();
+    const report = buildSupersessionChains([...records]);
+    // The EXECUTE is the head; its tail reaches the ESCALATE row — no false cycle/singleton.
+    const chain = report.chains.find(
+      (c) =>
+        c.head.intentHash === intentHash && c.head.decisionKind === "EXECUTE",
+    );
+    expect(chain).toBeDefined();
+    expect(chain!.head.reason).toBe("confirmation_resolved");
+    expect(chain!.length).toBe(2);
+    expect(
+      chain!.tail.some(
+        (t) => t.intentHash === intentHash && t.decisionKind === "ESCALATE",
+      ),
+    ).toBe(true);
+    // And no cycle was emitted for this intentHash.
+    expect(
+      report.cycles.some((c) => c.head.intentHash === intentHash),
+    ).toBe(false);
+  });
+
+  it("BKL-115 — the lineage FAILS when the resumed EXECUTE does not join back to the ESCALATE (no confirmation_resolved link)", () => {
+    // An ESCALATE row + an EXECUTE row for the same intentHash but WITHOUT the
+    // confirmation_resolved supersession — the exact false-singleton the pre-BKL-115
+    // dropped-`originalAt` chain produced. hasEscalate + hasResume both hold, so only
+    // the new join assertion can catch it.
+    const H = "sha256:no-join";
+    const escalateRec = {
+      intentHash: H,
+      at: "2026-07-04T11:59:00.000Z",
+      envelope: { intentHash: H },
+      decision: { kind: "ESCALATE" },
+    } as unknown as AuditRecord;
+    const executeNoJoin = {
+      intentHash: H,
+      at: "2026-07-04T12:00:00.000Z",
+      envelope: { intentHash: H },
+      decision: { kind: "EXECUTE" },
+    } as unknown as AuditRecord;
+    const res = verifyEscalationApprovalLineage(
+      [escalateRec, executeNoJoin],
+      H,
+      { ...approvedProjection, intentHash: H },
+    );
+    expect(res.ok).toBe(false);
+    expect(res.reasons.join(" ")).toContain("does not join");
   });
 });
