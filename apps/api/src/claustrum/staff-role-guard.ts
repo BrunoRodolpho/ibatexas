@@ -34,8 +34,15 @@
  * preHandler chain (`requireStaff` / `requireManager` / `requireManagerRole` /
  * `requireOwnerRole` in middleware/staff-auth.ts) — the PRIMARY gate. Adding a
  * kernel-level role backstop to the HTTP command-service path (so role is
- * enforced in the adjudication itself, not only the preHandler) is tracked as
- * follow-up BKL-074.
+ * enforced in the adjudication itself, not only the preHandler) is BKL-074.
+ *
+ * BKL-074 is now LIVE for the command services that inject `[staffRoleGuard]`
+ * into their `withAdjudicate` calls: the admin reservation routes
+ * (`createReservationService({ authGuards: [staffRoleGuard] })`) and the AUT-038
+ * + AUT-007 admin staff routes (`createStaffCommandService({ authGuards:
+ * [staffRoleGuard] })`, the four OWNER-only `staff.*` kinds). On those paths this
+ * guard DOES run in the adjudication, as the kernel-level backstop behind
+ * `requireOwnerRole` / `requireManagerRole`.
  *
  * ALTITUDE — AUTH, never business (same trap `agent-guards.ts` documents): the
  * kernel evaluates state → taint → auth → business, and

@@ -27,6 +27,9 @@ const mockStaffJwtVerify = vi.hoisted(() => vi.fn());
 // JWTSPLIT: the customer (default) jwt instance — staff tokens must NOT verify here.
 const mockCustomerInstanceVerify = vi.hoisted(() => vi.fn());
 vi.mock("@ibatexas/domain", () => ({
+  // AUT-038 + AUT-007 — the OWNER-gated admin staff routes construct this at
+  // server onReady; the full-admin-server build needs it present in the mock.
+  createStaffCommandService: () => ({}),
   createStaffService: () => ({ getById: mockGetStaffById }),
 }));
 

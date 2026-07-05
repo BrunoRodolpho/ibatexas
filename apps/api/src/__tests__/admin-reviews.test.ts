@@ -16,6 +16,9 @@ const mockReviewCount = vi.hoisted(() => vi.fn())
 
 vi.mock("@ibatexas/domain", () => ({
   FROZEN_CAUSES: ["empty_completion", "whitespace_only", "send_failed", "retry_exhausted", "timeout"],
+  // AUT-038 + AUT-007 — the OWNER-gated admin staff routes construct this at
+  // server onReady; the full-admin-server build needs it present in the mock.
+  createStaffCommandService: () => ({}),
   createReservationService: () => ({
     findAll: vi.fn(async () => []),
     findConfirmedForDate: vi.fn(async () => []),

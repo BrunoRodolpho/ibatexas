@@ -39,6 +39,7 @@ import {
   type IntentEnvelope,
 } from "@adjudicate/core";
 import { IBATEXAS_COMPOSED_PACKS } from "@ibatexas/packs-composed";
+import { staffCommandPolicyBundle } from "@ibatexas/domain";
 import {
   buildIbatexasPolicyPacks,
   type ErasedPack,
@@ -65,8 +66,32 @@ const IBATEXAS_POLICY_PACKS = buildIbatexasPolicyPacks(
   IBATEXAS_COMPOSED_PACKS as unknown as ReadonlyArray<ErasedPack>,
 );
 
-/** The composed production bundle that owns `kind` (throws if unrouted). */
+/**
+ * The four AUT-038 + AUT-007 staff-CRUD verbs are the domain-internal
+ * `StaffCommandService` plane (staff-command.service.ts), NOT composed Packs —
+ * exactly like the `ops.alert.*` / `incident.ticket.*` domain-internal kinds.
+ * Their OWNING bundle is `staffCommandPolicyBundle`, adjudicated by the HTTP
+ * admin staff routes via the command service (not `policyForKind`). The contract
+ * this test pins — no staff-plane kind is DEFER-able — holds for them too:
+ * `staffCommandPolicyBundle` has a TRUSTED taint floor and a single `executeAll`
+ * business guard, no DEFER producer.
+ */
+const STAFF_COMMAND_KINDS: ReadonlySet<string> = new Set([
+  "staff.create",
+  "staff.update",
+  "staff.deactivate",
+  "staff.role.assign",
+]);
+
+/** The production bundle that owns `kind` (throws if unrouted). */
 function owningBundle(kind: string): PolicyBundle<string, unknown, unknown> {
+  if (STAFF_COMMAND_KINDS.has(kind)) {
+    return staffCommandPolicyBundle as unknown as PolicyBundle<
+      string,
+      unknown,
+      unknown
+    >;
+  }
   const bundle = resolveCapabilityPolicy(
     IBATEXAS_POLICY_PACKS as unknown as ReadonlyArray<CapabilityPolicyPack>,
     kind,
