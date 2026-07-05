@@ -114,6 +114,7 @@ export {
   invalidateScheduleCache,
   loadSchedule,
 } from "./cache/schedule-cache.js"
+export type { ScheduleCacheInvalidation } from "./cache/schedule-cache.js"
 
 // ── Banner cache ──────────────────────────────────────────────────────────────
 export {
