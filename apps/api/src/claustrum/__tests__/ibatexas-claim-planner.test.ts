@@ -367,3 +367,186 @@ describe("ibatexas-claim-planner — F1 safe terminal (BKL-005)", () => {
     }
   });
 });
+
+// ── BKL-110 DEMOTE-ONLY candidate-relevance filter ───────────────────────────
+//
+// Live-proven defect (round-2, turn 157bbfff): "oi, tudo bem?" got the SAFE_UNKNOWN
+// template because the 4B claim-planner OVER-PROPOSED a schedule claim on smalltalk,
+// and a non-empty candidate set defeats the @claustrum/core prose-preservation
+// (emptiness) gate. The filter DROPS a model-proposed candidate the §O#15 decomposer
+// GOVERNS but did NOT require this turn, so the set collapses back to empty and the
+// greeting prose is preserved. Strictly DEMOTE-ONLY (never adds a candidate) and
+// scoped to the decomposer's marker-covered types — a type it has no marker for
+// (MENU_ITEM_ALLERGENS, PURCHASE_COMPLETED) is never demoted (unchanged-from-today).
+// These tests drive the REAL registry-constrained planner + the adapter filter.
+
+/** A minimal typed CandidateClaim — the filter reads only `.type`. */
+function candidateOf(type: string, subject: string): CandidateClaim {
+  return {
+    soundness: {
+      requiredEvidence: [],
+      minSourceIntegrity: "structured",
+      kind: "read_claim",
+      actor: null,
+    },
+    subject,
+    type,
+    value: undefined,
+  };
+}
+
+describe("ibatexas-claim-planner — BKL-110 demote-only relevance filter", () => {
+  it("drops a schedule over-proposal on a greeting → empty set (prose preserved)", async () => {
+    // The whole greeting corpus: each maps to an EMPTY required set, so a
+    // model-proposed STORE_HOURS/STORE_OPEN_NOW is demoted → [] (the emptiness gate
+    // then preserves the conversational prose instead of the UNKNOWN non-sequitur).
+    for (const greeting of ["oi, tudo bem?", "boa noite!", "obrigado!", "valeu"]) {
+      const adapter = createIbatexasClaimPlanner(
+        plannerOver([claimCall({ type: "STORE_HOURS", subject: "loja" })]),
+      );
+      expect(await adapter.propose(adapterInput(greeting))).toHaveLength(0);
+    }
+    // Both schedule-cluster types over-proposed at once → both demoted.
+    const adapter = createIbatexasClaimPlanner(
+      plannerOver([
+        claimCall({ type: "STORE_HOURS", subject: "loja" }),
+        claimCall({ type: "STORE_OPEN_NOW", subject: "loja" }),
+      ]),
+    );
+    expect(await adapter.propose(adapterInput("oi, tudo bem?"))).toHaveLength(0);
+  });
+
+  it("records the demoted types in structured telemetry (reason not_required_for_span)", async () => {
+    const infoSpy = vi.spyOn(logger, "info").mockImplementation(() => {});
+    try {
+      const adapter = createIbatexasClaimPlanner(
+        plannerOver([
+          claimCall({ type: "STORE_HOURS", subject: "loja" }),
+          claimCall({ type: "STORE_OPEN_NOW", subject: "loja" }),
+        ]),
+      );
+      expect(await adapter.propose(adapterInput("oi, tudo bem?"))).toHaveLength(0);
+      // The demotion is OBSERVABLE (a distinct reason keeps it separable from the
+      // constrained-generation out-of-enum drops).
+      expect(infoSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          component: "claim-planner",
+          event: "claim_planner.candidate_demoted",
+          reason: "not_required_for_span",
+          droppedClaimTypes: expect.arrayContaining(["STORE_HOURS", "STORE_OPEN_NOW"]),
+        }),
+        expect.any(String),
+      );
+    } finally {
+      infoSpy.mockRestore();
+    }
+  });
+
+  it("keeps a required candidate — byte-identical (reference-preserved) result vs no-filter", async () => {
+    // A genuine hours question → required contains STORE_OPEN_NOW → the candidate is
+    // KEPT and, because nothing dropped, the planner's exact array reference is
+    // surfaced unchanged (the "surfaced unchanged" contract; no reshape).
+    const sentinel: CandidateClaim[] = [candidateOf("STORE_OPEN_NOW", "loja")];
+    const stub: ClaimAwarePlannerPort = {
+      async propose() {
+        return emptyPlan;
+      },
+      async proposeClaims(): Promise<ClaimPlan> {
+        return { candidates: sentinel, completeness: [], droppedClaimTypes: [] };
+      },
+    };
+    const adapter = createIbatexasClaimPlanner(stub);
+    const result = await adapter.propose(adapterInput("vocês estão abertos agora?"));
+    expect(result).toBe(sentinel);
+  });
+
+  it("drops the off-span companion of a MIXED proposal, keeps the required one", async () => {
+    // Hours question; the model over-proposes PAYMENT_STATUS alongside STORE_OPEN_NOW.
+    // required = {STORE_OPEN_NOW} → PAYMENT_STATUS demoted, STORE_OPEN_NOW kept.
+    const adapter = createIbatexasClaimPlanner(
+      plannerOver([
+        claimCall({ type: "STORE_OPEN_NOW", subject: "loja" }),
+        claimCall({ type: "PAYMENT_STATUS", subject: "order-7" }),
+      ]),
+    );
+    const candidates = await adapter.propose(
+      adapterInput("vocês estão abertos agora?"),
+    );
+    expect(candidates.map((c) => c.type)).toEqual(["STORE_OPEN_NOW"]);
+  });
+
+  it("NEVER demotes a type the decomposer has no marker for (MENU_ITEM_ALLERGENS preserved)", async () => {
+    // The regression guard for the demote-only scope: an allergens question maps to
+    // an EMPTY required set (the decomposer is Triad-scoped), but MENU_ITEM_ALLERGENS
+    // is OUTSIDE the filter's governed domain, so the safety-critical answer is kept.
+    const adapter = createIbatexasClaimPlanner(
+      plannerOver([claimCall({ type: "MENU_ITEM_ALLERGENS", subject: "burger" })]),
+    );
+    const candidates = await adapter.propose(
+      adapterInput("o hamburguer tem glúten?"),
+    );
+    expect(candidates.map((c) => c.type)).toEqual(["MENU_ITEM_ALLERGENS"]);
+  });
+
+  it("keeps a STORE_HOURS answer on a legitimate hours question (schedule-cluster alias)", async () => {
+    // "que horas fecham?" maps to STORE_OPEN_NOW_Q (required = {STORE_OPEN_NOW}); the
+    // Triad closure names only STORE_OPEN_NOW, so the alias keeps a STORE_HOURS
+    // candidate on this turn — a legit hours answer is never demoted (no regression).
+    const adapter = createIbatexasClaimPlanner(
+      plannerOver([claimCall({ type: "STORE_HOURS", subject: "loja" })]),
+    );
+    const candidates = await adapter.propose(
+      adapterInput("que horas vocês fecham?"),
+    );
+    expect(candidates.map((c) => c.type)).toEqual(["STORE_HOURS"]);
+  });
+
+  it("keeps a net-matching STATEMENT's over-proposal — the bounded residual (BKL-078, not worsened)", async () => {
+    // "meu pedido chegou, obrigado!" is a THANKS statement, but the keyword net
+    // matches ORDER_STATUS_Q (it cannot tell a statement from a question). required
+    // contains ORDER_FULFILLMENT_STAGE → the over-proposed claim is KEPT. This pins
+    // the documented residual: worst case is unchanged-from-today (the demote-only
+    // filter never worsens it), never a newly-introduced demotion.
+    const adapter = createIbatexasClaimPlanner(
+      plannerOver([claimCall({ type: "ORDER_FULFILLMENT_STAGE", subject: "order-9" })]),
+    );
+    const candidates = await adapter.propose(
+      adapterInput("meu pedido chegou, obrigado!"),
+    );
+    expect(candidates.map((c) => c.type)).toContain("ORDER_FULFILLMENT_STAGE");
+  });
+
+  it("does NOT run on the BKL-005 throw path — synthesis still fires (throw path byte-identical)", async () => {
+    // The filter is gated to the SUCCESSFUL path. On a flake (throw) the candidate
+    // set is [] before the filter, so nothing is filtered and the required-non-empty
+    // safe-terminal synthesis is unchanged: a hours flake still synthesizes STORE_OPEN_NOW.
+    const adapter = createIbatexasClaimPlanner(throwingClaimPlanner());
+    const candidates = await adapter.propose(adapterInput("vocês estão abertos agora?"));
+    expect(candidates.find((c) => c.type === "STORE_OPEN_NOW")).toBeDefined();
+  });
+
+  it("is pure — the filter adds no model call and is deterministic across turns", async () => {
+    // The sole model hop is `proposeClaims`; the filter (decompose + membership) is
+    // pure. So proposeClaims is invoked EXACTLY once per turn (no extra call), and a
+    // greeting over-proposal demotes to [] identically on repeat.
+    const proposeClaims = vi.fn(
+      async (): Promise<ClaimPlan> => ({
+        candidates: [candidateOf("PAYMENT_STATUS", "order-7")],
+        completeness: [],
+        droppedClaimTypes: [],
+      }),
+    );
+    const stub: ClaimAwarePlannerPort = {
+      async propose() {
+        return emptyPlan;
+      },
+      proposeClaims,
+    };
+    const adapter = createIbatexasClaimPlanner(stub);
+    const r1 = await adapter.propose(adapterInput("oi, tudo bem?"));
+    const r2 = await adapter.propose(adapterInput("oi, tudo bem?"));
+    expect(proposeClaims).toHaveBeenCalledTimes(2);
+    expect(r1).toHaveLength(0);
+    expect(r2).toHaveLength(0);
+  });
+});
