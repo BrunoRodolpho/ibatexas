@@ -38,6 +38,34 @@ export interface AgentApprovalRequest {
   readonly resolvedBy?: AgentApprovalResolvedBy
 }
 
+// ── Client mirror of the server resolved-outcome contract (BKL-104) ───────────
+//
+// A resolve(accept:true) re-adjudicates the IDENTICAL parked envelope through the
+// kernel, so an HTTP 200 can carry a NON-EXECUTE decision (the state moved). The
+// server now returns a STRUCTURED outcome that explains WHY it wasn't executed;
+// this mirrors it so the UI reports the precise, honest reason instead of the old
+// generic "o estado mudou". Mirrors AgentApprovalOutcome in
+// apps/api/src/claustrum/agent-approvals.ts (do NOT invent statuses).
+
+export type AgentApprovalOutcomeStatus =
+  | 'executed'
+  | 'rejected'
+  | 'refused'
+  | 'reparked'
+  | 'escalated'
+  | 'denied_by_kernel'
+
+/** The structured resolved outcome from POST …/:token/resolve (200 body). */
+export interface AgentApprovalOutcome {
+  readonly status: AgentApprovalOutcomeStatus
+  /** Raw kernel Decision.kind (absent only for `rejected`). */
+  readonly decisionKind?: string
+  /** Machine-readable kernel reason (refusal.code / decision basis code). */
+  readonly reasonCode?: string
+  /** Operator-facing pt-BR reason for a non-executed outcome. */
+  readonly refusalPtBr?: string
+}
+
 // ── Endpoints ─────────────────────────────────────────────────────────────────
 
 export const AGENT_APPROVALS_ENDPOINT = '/api/admin/agent-approvals'
@@ -185,6 +213,63 @@ export function resolveResultToast(accept: boolean, decisionKind?: string): Reso
     type: 'info',
     message: 'Aprovação registrada, mas a ação não foi executada (o estado mudou). Verifique o pedido.',
   }
+}
+
+// ── Resolve OUTCOME toast — STRUCTURED (BKL-104) ──────────────────────────────
+//
+// The value-add over `resolveResultToast`: when the server returns a structured
+// `outcome`, the toast reports the PRECISE reason a parked action was not
+// executed (refused with the kernel refusal text; needs re-confirmation; needs
+// escalation) instead of the generic "o estado mudou". The anti-confabulation
+// invariant is preserved MECHANICALLY: ONLY `status: "executed"` yields the
+// positive-execution copy; every other status contains "não foi executada" and
+// never "aprovada e executada".
+
+const NOT_EXECUTED_PREFIX = 'Aprovação registrada, mas a ação não foi executada'
+
+/** Honest "not executed" line, appending the kernel reason when present. */
+function notExecutedMessage(reason?: string): string {
+  const r = reason?.trim()
+  return r && r.length > 0
+    ? `${NOT_EXECUTED_PREFIX}: ${r}`
+    : `${NOT_EXECUTED_PREFIX} (o estado mudou). Verifique o pedido.`
+}
+
+function outcomeToast(outcome: AgentApprovalOutcome): ResolveToast {
+  switch (outcome.status) {
+    case 'executed':
+      return { type: 'success', message: 'Ação do agente aprovada e executada.' }
+    case 'rejected':
+      return { type: 'success', message: 'Solicitação do agente rejeitada.' }
+    case 'refused':
+    case 'denied_by_kernel':
+      return { type: 'info', message: notExecutedMessage(outcome.refusalPtBr) }
+    case 'reparked':
+      return {
+        type: 'info',
+        message: `${NOT_EXECUTED_PREFIX} — requer nova confirmação (o estado mudou). Verifique o pedido.`,
+      }
+    case 'escalated':
+      return {
+        type: 'info',
+        message: `${NOT_EXECUTED_PREFIX} — requer escalação para um responsável.`,
+      }
+  }
+}
+
+/**
+ * pt-BR toast for a settled (HTTP 200) resolve. PREFERS the structured `outcome`
+ * (BKL-104 server, precise reason); falls back to the decision-kind inference
+ * (`resolveResultToast`) when a pre-BKL-104 server omits it. Honest in every
+ * branch — a non-executed outcome never reads as executed.
+ */
+export function resolveOutcomeToast(
+  accept: boolean,
+  outcome?: AgentApprovalOutcome,
+  decisionKind?: string,
+): ResolveToast {
+  if (outcome) return outcomeToast(outcome)
+  return resolveResultToast(accept, decisionKind)
 }
 
 // ── Resolve ERROR toast (status → pt-BR copy + reload intent) ─────────────────

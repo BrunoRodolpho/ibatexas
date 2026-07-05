@@ -79,10 +79,20 @@ function stubGateway() {
     get: vi.fn((token: string) =>
       token === "tok-1" ? { token: "tok-1", status: "pending" } : null,
     ),
-    resolve: vi.fn(async ({ token, accepted }: { token: string; accepted: boolean }) => ({
-      request: { token, status: accepted ? "approved" : "rejected" },
-      decision: { kind: "EXECUTE" },
-    })),
+    // `decision` is typed `unknown` so a test can override with any kernel
+    // decision (a REFUSE carrying refusal/basis) or omit it (a reject).
+    resolve: vi.fn(
+      async ({
+        token,
+        accepted,
+      }: {
+        token: string;
+        accepted: boolean;
+      }): Promise<{ request: { token: string; status: string }; decision?: unknown }> => ({
+        request: { token, status: accepted ? "approved" : "rejected" },
+        decision: { kind: "EXECUTE" },
+      }),
+    ),
   };
 }
 
@@ -141,6 +151,69 @@ describe("admin agent-approvals route (WS-D1)", () => {
       expect(gw.resolve).toHaveBeenCalledWith(
         expect.objectContaining({ token: "tok-1", accepted: true }),
       );
+      await app.close();
+    });
+
+    // ── BKL-104 — structured resolved-outcome on the resolve response ──────────
+    it("resolve(accept) surfaces the structured outcome (EXECUTE → executed)", async () => {
+      const gw = stubGateway();
+      const app = await build(gw);
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/admin/agent-approvals/tok-1/resolve",
+        payload: { accept: true },
+        headers: AS_MANAGER,
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().outcome).toEqual({ status: "executed", decisionKind: "EXECUTE" });
+      await app.close();
+    });
+
+    it("resolve that re-adjudicates NON-EXECUTE → outcome explains WHY (refused + kernel reason, never 'executed')", async () => {
+      const gw = stubGateway();
+      gw.resolve.mockResolvedValueOnce({
+        request: { token: "tok-1", status: "approved" },
+        decision: {
+          kind: "REFUSE",
+          refusal: {
+            kind: "STATE",
+            code: "payment.already_terminal",
+            userFacing: "Este pagamento já foi finalizado.",
+          },
+          basis: [],
+        },
+      });
+      const app = await build(gw);
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/admin/agent-approvals/tok-1/resolve",
+        payload: { accept: true },
+        headers: AS_MANAGER,
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.outcome.status).toBe("refused");
+      expect(body.outcome.reasonCode).toBe("payment.already_terminal");
+      expect(body.outcome.refusalPtBr).toBe("Este pagamento já foi finalizado.");
+      // Anti-confabulation: a refused re-adjudication is NEVER reported executed.
+      expect(body.outcome.status).not.toBe("executed");
+      // Back-compat field still carries the raw kind.
+      expect(body.decision).toEqual({ kind: "REFUSE" });
+      await app.close();
+    });
+
+    it("resolve(reject) → outcome.status 'rejected' (no decision, never executed)", async () => {
+      const gw = stubGateway();
+      gw.resolve.mockResolvedValueOnce({ request: { token: "tok-1", status: "rejected" } });
+      const app = await build(gw);
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/admin/agent-approvals/tok-1/resolve",
+        payload: { accept: false },
+        headers: AS_MANAGER,
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().outcome).toEqual({ status: "rejected" });
       await app.close();
     });
 

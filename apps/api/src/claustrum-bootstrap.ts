@@ -137,6 +137,7 @@ import { AGENT_REGISTRY } from "@ibatexas/agents";
 import { SystemChannel } from "./claustrum/system-channel.js";
 import {
   createAgentApprovalEngine,
+  deriveAgentApprovalOutcome,
   type AgentApprovalEngine,
   type AgentApprovalRequest,
   type AgentApprovalStatus,
@@ -452,11 +453,17 @@ export function getAgentApprovalGateway(): AgentApprovalGateway | null {
         },
         sink: getAuditSink(),
       });
-      // P4: reflect the resolution in the remediation_proposal so the adjutant
-      // projection shows executed/declined (best-effort; never blocks resolve).
+      // P4 + BKL-104: reflect the resolution in the remediation_proposal so the
+      // adjutant projection shows executed/declined — but HONESTLY. A prior
+      // `accepted ? "executed" : "declined"` marked "executed" on ANY accept even
+      // when the kernel re-adjudicated to REFUSE/re-park/ESCALATE (a confabulation
+      // in the projection). Derive the true outcome from the SAME decision the
+      // route surfaces; only a genuine EXECUTE/REWRITE is "executed". Best-effort;
+      // never blocks resolve.
+      const proposalOutcome = deriveAgentApprovalOutcome(accepted, result.decision);
       await _proposalWriter?.markResolvedByToken(
         token,
-        accepted ? "executed" : "declined",
+        proposalOutcome.status === "executed" ? "executed" : "declined",
         new Date().toISOString(),
       );
       return result;
