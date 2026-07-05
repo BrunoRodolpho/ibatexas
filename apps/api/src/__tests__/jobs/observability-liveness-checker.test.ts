@@ -73,24 +73,69 @@ describe("requiredDownSweeps — env parse with a safe default", () => {
   });
 });
 
-describe("resolveProbeTargets — env gate + target shape", () => {
+describe("resolveProbeTargets — env gate, normalization, VM host policy", () => {
   it("returns [] (disabled) when VICTORIALOGS_URL is unset", () => {
     expect(resolveProbeTargets({})).toEqual([]);
     expect(resolveProbeTargets({ VICTORIAMETRICS_URL: "http://vm:8428" })).toEqual([]);
   });
-  it("probes VL + VM /health when VICTORIALOGS_URL is set (VM defaults to :8428)", () => {
-    const targets = resolveProbeTargets({ VICTORIALOGS_URL: "http://vl:9428" });
-    expect(targets).toEqual([
-      { scope: "victorialogs", url: "http://vl:9428/health" },
+
+  // Defect B — trailing slash / whitespace must be normalized. A "//health" probe
+  // path is answered HTTP 400 by BOTH VL and VM = a permanent false DOWN on a
+  // healthy stack, while the (normalizing) log shipper works fine.
+  it("trims whitespace and strips trailing slashes on both vars (Defect B)", () => {
+    expect(resolveProbeTargets({ VICTORIALOGS_URL: "  http://localhost:9428/  " })).toEqual([
+      { scope: "victorialogs", url: "http://localhost:9428/health" },
+      { scope: "victoriametrics", url: "http://localhost:8428/health" },
+    ]);
+    expect(
+      resolveProbeTargets({
+        VICTORIALOGS_URL: "http://localhost:9428///",
+        VICTORIAMETRICS_URL: "  http://vm:8428/ ",
+      }),
+    ).toEqual([
+      { scope: "victorialogs", url: "http://localhost:9428/health" },
+      { scope: "victoriametrics", url: "http://vm:8428/health" },
+    ]);
+    // A whitespace-only VM URL is treated as unset (falls through to the host policy).
+    expect(
+      resolveProbeTargets({ VICTORIALOGS_URL: "http://localhost:9428", VICTORIAMETRICS_URL: "   " }),
+    ).toEqual([
+      { scope: "victorialogs", url: "http://localhost:9428/health" },
       { scope: "victoriametrics", url: "http://localhost:8428/health" },
     ]);
   });
-  it("honors a VICTORIAMETRICS_URL override", () => {
-    const targets = resolveProbeTargets({
-      VICTORIALOGS_URL: "http://vl:9428",
-      VICTORIAMETRICS_URL: "http://vm:8428",
-    });
-    expect(targets[1]).toEqual({ scope: "victoriametrics", url: "http://vm:8428/health" });
+
+  // Defect C — VM probe host policy.
+  it("probes VM when VICTORIAMETRICS_URL is explicitly set, on ANY host (Defect C)", () => {
+    expect(
+      resolveProbeTargets({
+        VICTORIALOGS_URL: "http://vl.remote:9428",
+        VICTORIAMETRICS_URL: "http://vm.remote:8428",
+      }),
+    ).toEqual([
+      { scope: "victorialogs", url: "http://vl.remote:9428/health" },
+      { scope: "victoriametrics", url: "http://vm.remote:8428/health" },
+    ]);
+  });
+
+  it("defaults VM to :8428 ONLY when VL is localhost/127.0.0.1 and no VM URL (Defect C)", () => {
+    for (const vl of ["http://localhost:9428", "http://127.0.0.1:9428"]) {
+      const targets = resolveProbeTargets({ VICTORIALOGS_URL: vl });
+      expect(targets.map((t) => t.scope)).toEqual(["victorialogs", "victoriametrics"]);
+      expect(targets[1]).toEqual({ scope: "victoriametrics", url: "http://localhost:8428/health" });
+    }
+  });
+
+  it("probes ONLY VL when VL is a REMOTE host and no VM URL is set (Defect C)", () => {
+    expect(resolveProbeTargets({ VICTORIALOGS_URL: "http://logs.internal:9428" })).toEqual([
+      { scope: "victorialogs", url: "http://logs.internal:9428/health" },
+    ]);
+  });
+
+  it("probes VL as given and SKIPS VM when VICTORIALOGS_URL does not parse as a URL (Defect C)", () => {
+    expect(resolveProbeTargets({ VICTORIALOGS_URL: "not-a-url" })).toEqual([
+      { scope: "victorialogs", url: "not-a-url/health" },
+    ]);
   });
 });
 
@@ -217,7 +262,7 @@ describe("checkObservabilityLiveness — injected-deps integration", () => {
     expect(redis.incr).not.toHaveBeenCalled();
   });
 
-  it("1st DOWN sweep → counter=1, no raise (below threshold)", async () => {
+  it("1st DOWN sweep → counter=1, no raise; TTL pinned; probe carries an AbortSignal", async () => {
     const fetchImpl = makeFetch({ "http://vl:9428/health": new Error("ECONNREFUSED") });
     const { svc, open, resolve } = makeSvc();
     const redis = makeRedis(); // fresh → incr returns 1
@@ -230,10 +275,41 @@ describe("checkObservabilityLiveness — injected-deps integration", () => {
       requiredSweeps: 2,
     });
 
+    // Defect D.3 — the probe MUST carry the abort timeout (dropping it can't pass).
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "http://vl:9428/health",
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
     expect(redis.incr).toHaveBeenCalledWith(counterKey("victorialogs"));
-    expect(redis.expire).toHaveBeenCalledTimes(1);
+    // Defect D.1 — pin the TTL (900s = 3× the 5-min sweep). A 0/negative or
+    // ms-for-seconds regression silently disables the watchdog while staying green.
+    expect(redis.expire).toHaveBeenCalledWith(counterKey("victorialogs"), 900);
     expect(open).not.toHaveBeenCalled(); // 1 < 2
     expect(resolve).not.toHaveBeenCalled(); // no open alert to auto-resolve
+  });
+
+  it("DOWN under threshold with an OPEN alert seeded → NEITHER resolves NOR raises (Defect A)", async () => {
+    // Counter was reset (TTL lapse across api downtime / Redis eviction) so this
+    // DOWN sweep is under threshold again — but the alert from the ongoing outage
+    // is still OPEN/ACKNOWLEDGED. It must survive: no false AUTO-resolve, no read.
+    const fetchImpl = makeFetch({ "http://vl:9428/health": new Error("still down") });
+    const { svc, open, resolve, list } = makeSvc([
+      { id: "ops_vl", status: "ACKNOWLEDGED", dedupeKey: "ops_observability_down:victorialogs" },
+    ]);
+    const redis = makeRedis(); // fresh → incr returns 1 (< 2)
+
+    await checkObservabilityLiveness(makeLog() as never, {
+      fetchImpl,
+      redis,
+      svc,
+      targets: VL,
+      requiredSweeps: 2,
+    });
+
+    expect(redis.incr).toHaveBeenCalledWith(counterKey("victorialogs"));
+    expect(open).not.toHaveBeenCalled();
+    expect(resolve).not.toHaveBeenCalled(); // the live incident is NOT false-resolved
+    expect(list).not.toHaveBeenCalled(); // reconcile skipped entirely (no plane read)
   });
 
   it("2nd consecutive DOWN → RAISES with exact cause/scope/dedupeKey/severity/pt-BR title", async () => {
@@ -363,19 +439,38 @@ describe("checkObservabilityLiveness — injected-deps integration", () => {
     );
   });
 
-  it("a sweep-level IO error → Sentry, never thrown (per-scope isolation)", async () => {
-    const fetchImpl = makeFetch({ "http://vl:9428/health": new Error("down") });
+  it("a sweep-level IO error is isolated to its scope → Sentry, next scope still probes (Defect D.2)", async () => {
+    const fetchImpl = makeFetch({
+      "http://vl:9428/health": new Error("down"),
+      "http://vm:8428/health": new Error("down"),
+    });
     const { svc } = makeSvc();
     const redis = makeRedis();
+    // The FIRST scope's counter INCR explodes; the SECOND scope must be unaffected.
     redis.incr.mockRejectedValueOnce(new Error("redis exploded"));
     const log = makeLog();
 
     await expect(
-      checkObservabilityLiveness(log as never, { fetchImpl, redis, svc, targets: VL, requiredSweeps: 2 }),
+      checkObservabilityLiveness(log as never, {
+        fetchImpl,
+        redis,
+        svc,
+        targets: [
+          { scope: "victorialogs", url: "http://vl:9428/health" },
+          { scope: "victoriametrics", url: "http://vm:8428/health" },
+        ],
+        requiredSweeps: 2,
+      }),
     ).resolves.toBeUndefined();
 
     expect(log.error).toHaveBeenCalled();
     expect(Sentry.captureException as unknown as Mock).toHaveBeenCalled();
+    // Per-scope isolation: the second scope still probed AND counted despite the first throwing.
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "http://vm:8428/health",
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+    expect(redis.incr).toHaveBeenCalledWith(counterKey("victoriametrics"));
   });
 });
 

@@ -22,6 +22,19 @@
 // asymmetric on purpose. The counter carries a TTL (~3× the sweep interval) so a
 // dead job self-heals the count rather than leaving a stale raise armed.
 //
+// THREE-STATE reconcile gate (this is the crux for a DEBOUNCED detector). Unlike
+// dlq-depth — where `over` is a direct depth observation, so `!over` genuinely
+// means "drained" — here `!over` covers TWO different worlds: (a) an UP probe
+// (condition cleared) AND (b) a DOWN probe still under threshold (counter TTL
+// lapsed across >15-min api downtime, Redis restart/eviction, or the threshold
+// raised mid-outage). Handing `over=false` to the reconcile helper AUTO-resolves
+// the open row, so world (b) would fabricate an audited "condition cleared",
+// destroy any ACKNOWLEDGED state, then re-raise as a fresh row. So the reconcile
+// call is gated on the PROBE, not the counter:
+//   - UP                     → reconcile(over=false)  → resolve-if-open (real clear)
+//   - DOWN & over threshold  → reconcile(over=true)   → raise / fold
+//   - DOWN & under threshold → SKIP reconcile          → warm-up (neither)
+//
 // GATE: unset VICTORIALOGS_URL ⇒ the obs stack is not configured (logs go
 // stdout-only, see .env.example), so probing localhost would be pure noise. The
 // watchdog disables itself entirely in that case (logs one INFO line, registers
@@ -105,21 +118,67 @@ export function requiredDownSweeps(env: NodeJS.ProcessEnv = process.env): number
 }
 
 /**
+ * Normalize a URL-base env value: trim surrounding whitespace and strip trailing
+ * slashes. A configured `http://host:9428/` would otherwise build a `//health`
+ * probe path — which BOTH VL and VM answer with HTTP 400 (empirically), i.e. a
+ * permanent false DOWN on a HEALTHY stack, while the log shipper (which
+ * normalizes) works fine. Mirrors the strip-trailing-slash idiom in
+ * apps/api/src/observability/victorialogs-stream.ts. Empty after trim ⇒ unset.
+ */
+function normalizeBase(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  let s = value.trim();
+  while (s.endsWith("/")) s = s.slice(0, -1);
+  return s.length > 0 ? s : undefined;
+}
+
+/**
+ * True when a normalized URL-base points at the local host — the only topology
+ * where "VL and VM ship together" holds (local docker-compose.observability.yml).
+ * A parse failure is treated as NOT-local (fail-safe: do not default a VM probe).
+ */
+function isLocalObsHost(base: string): boolean {
+  try {
+    const { hostname } = new URL(base);
+    return hostname === "localhost" || hostname === "127.0.0.1";
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Resolve the probe targets from env. Returns `[]` (watchdog disabled) when
  * VICTORIALOGS_URL is unset — the obs stack is not configured, so there is
- * nothing to probe. When set, VL and VM are probed together (they ship in the
- * same docker-compose.observability.yml). VICTORIAMETRICS_URL defaults to the
- * conventional local port; note `packages/tools endpoints.observabilityEndpoints()`
- * deliberately hardcodes VM elsewhere and is intentionally left alone.
+ * nothing to probe. Env bases are normalized (trim + strip trailing slash) so a
+ * trailing `/` cannot degrade a probe into a false-positive `//health` (400).
+ *
+ * VictoriaMetrics is probed:
+ *   - ALWAYS when VICTORIAMETRICS_URL is explicitly set (any host); else
+ *   - at the conventional local default (:8428) ONLY when the normalized
+ *     VICTORIALOGS_URL points at localhost/127.0.0.1 — the local compose topology
+ *     where VL + VM ship together; else
+ *   - NOT AT ALL. A REMOTE VL with no explicit VM URL must not fabricate a
+ *     localhost VM probe: a host running no VM (the staging compose template has
+ *     no victoriametrics service) would emit a permanent false medium alert plus
+ *     ~288 audited fold envelopes/day. An unparseable VICTORIALOGS_URL still
+ *     probes VL as given and skips VM.
+ *
+ * Note: `packages/tools endpoints.observabilityEndpoints()` deliberately hardcodes
+ * VM elsewhere and is intentionally left alone.
  */
 export function resolveProbeTargets(env: NodeJS.ProcessEnv = process.env): ScopeProbe[] {
-  const vlBase = env.VICTORIALOGS_URL;
+  const vlBase = normalizeBase(env.VICTORIALOGS_URL);
   if (!vlBase) return [];
-  const vmBase = env.VICTORIAMETRICS_URL ?? "http://localhost:8428";
-  return [
-    { scope: "victorialogs", url: `${vlBase}/health` },
-    { scope: "victoriametrics", url: `${vmBase}/health` },
-  ];
+
+  const targets: ScopeProbe[] = [{ scope: "victorialogs", url: `${vlBase}/health` }];
+
+  const vmExplicit = normalizeBase(env.VICTORIAMETRICS_URL);
+  if (vmExplicit) {
+    targets.push({ scope: "victoriametrics", url: `${vmExplicit}/health` });
+  } else if (isLocalObsHost(vlBase)) {
+    targets.push({ scope: "victoriametrics", url: "http://localhost:8428/health" });
+  }
+  return targets;
 }
 
 /** Redis debounce-counter key for a scope (rk() — Hard Rule #7). */
@@ -220,28 +279,34 @@ export async function checkObservabilityLiveness(
 
       const over = shouldRaise(consecutiveDown, requiredSweeps);
 
-      // Wrapped per the reconcile contract: an ops-alert failure NEVER breaks the
-      // sweep (the alert is observability; the probe already did its job).
-      try {
-        await reconcileSweepOpsAlert({
-          svc,
-          over,
-          open: buildObservabilityOpenPayload({
-            scope: target.scope,
-            url: target.url,
-            consecutiveDown,
-            requiredSweeps,
-            probeError,
-          }),
-          sourceSubject: "observability-liveness-checker",
-          now: Date.now(),
-          log: effectiveLogger ?? undefined,
-        });
-      } catch (err) {
-        effectiveLogger?.warn(
-          { scope: target.scope, error: String(err) },
-          "[obs-liveness] ops-alert reconcile failed (non-fatal)",
-        );
+      // Three-state reconcile gate (see the DEBOUNCE header): only an UP probe or
+      // a DOWN-over-threshold probe touches the ops-alert plane. A DOWN sweep
+      // still under threshold is warm-up — it must NOT reconcile, or a TTL-lapsed
+      // / evicted counter would false-resolve a live incident (Defect A).
+      if (up || over) {
+        // Wrapped per the reconcile contract: an ops-alert failure NEVER breaks
+        // the sweep (the alert is observability; the probe already did its job).
+        try {
+          await reconcileSweepOpsAlert({
+            svc,
+            over, // false on the UP path (counter zeroed) → resolve-if-open; true → raise
+            open: buildObservabilityOpenPayload({
+              scope: target.scope,
+              url: target.url,
+              consecutiveDown,
+              requiredSweeps,
+              probeError,
+            }),
+            sourceSubject: "observability-liveness-checker",
+            now: Date.now(),
+            log: effectiveLogger ?? undefined,
+          });
+        } catch (err) {
+          effectiveLogger?.warn(
+            { scope: target.scope, error: String(err) },
+            "[obs-liveness] ops-alert reconcile failed (non-fatal)",
+          );
+        }
       }
 
       if (!up && over) {
