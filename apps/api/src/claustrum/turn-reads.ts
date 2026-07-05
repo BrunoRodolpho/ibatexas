@@ -35,10 +35,11 @@ import {
 } from "@ibatexas/domain";
 import {
   getScheduleSignal,
+  getTodayHoursText,
   loadSchedule,
   type ScheduleSignal,
 } from "@ibatexas/tools";
-import type { ScheduleOverrideEntry } from "@ibatexas/types";
+import type { HolidayEntry, ScheduleOverrideEntry } from "@ibatexas/types";
 
 // ── Read value shapes (concrete; the renderer fills 1:1 from validated claims) ─
 
@@ -56,6 +57,28 @@ export type ScheduleRead = ScheduleSignal;
  * (the falsifier does not fire) — never a fabricated "no override" present value.
  */
 export type ScheduleOverrideRead = ScheduleOverrideEntry;
+
+/**
+ * STORE_HOURS — TODAY's operating-hours as ONE scalar pt-BR string (BKL-121 / D2).
+ * Config-derived from the REAL weekly `days[today]` window (via `getTodayHoursText`);
+ * NEVER an invented/hardcoded hour (BKL-026). The renderer fills its `hoursText`
+ * proposition 1:1 from this (Inv 6). A schedule-load failure is a read ERROR (Inv 7),
+ * never a fabricated value — see {@link TriadReadBackend.readStoreHours}.
+ */
+export interface StoreHoursRead {
+  readonly hoursText: string;
+}
+
+/**
+ * STORE_HOURS FALSIFIER (BKL-121 / D1) — TODAY's {@link HolidayEntry}. The
+ * weekly-schedule-derived {@link StoreHoursRead} does NOT account for a per-date
+ * holiday, so a present holiday CONTRADICTS today's regular hours → the kernel's
+ * `resolveAgainstFalsifiers` demotes STORE_HOURS to UNKNOWN. Read ONLY for TODAY;
+ * a day with NO holiday resolves to absence (the falsifier does not fire) — never a
+ * fabricated "no holiday" present value. (The other STORE_HOURS falsifier, a present
+ * ScheduleOverride, REUSES {@link ScheduleOverrideRead} verbatim.)
+ */
+export type HolidayRead = HolidayEntry;
 
 /** ORDER_FULFILLMENT_STAGE — the owner-scoped order's current fulfillment stage. */
 export interface OrderFulfillmentRead {
@@ -93,6 +116,19 @@ export interface TriadReadBackend {
    * does NOT fire). Public first-party config; no owner.
    */
   readScheduleOverride(): Promise<ScheduleOverrideRead | null>;
+  /**
+   * First-party STORE_HOURS read (BKL-121): TODAY's operating-hours
+   * {@link StoreHoursRead}. Public first-party config; no owner. THROWS (rejects)
+   * when the schedule is unavailable, so the investigator records a fail-closed read
+   * ERROR (Inv 7) — never a fabricated hours string.
+   */
+  readStoreHours(): Promise<StoreHoursRead>;
+  /**
+   * STORE_HOURS FALSIFIER read (BKL-121 / D1): TODAY's {@link HolidayRead}, or `null`
+   * when no holiday falls on the turn's date (absence — the falsifier does NOT fire).
+   * Public first-party config; no owner.
+   */
+  readHoliday(): Promise<HolidayRead | null>;
   /** Owner-scoped ORDER_FULFILLMENT_STAGE read; `null` when not owned / absent. */
   readOrderFulfillment(
     orderId: string,
@@ -170,6 +206,14 @@ export interface DomainTriadReadBackendDeps {
    *  open/closed signal and this falsifier share ONE {@link loadSchedule} per turn
    *  (see the factory's per-turn memo). `null` when no override exists today. */
   readonly scheduleOverride?: () => Promise<ScheduleOverrideRead | null>;
+  /** Override the STORE_HOURS read (testing). Defaults to the built-in first-party
+   *  read: today's operating-hours string from the (per-turn memoized) schedule via
+   *  {@link getTodayHoursText}. Rejects when the schedule is unavailable (Inv 7). */
+  readonly storeHours?: () => Promise<StoreHoursRead>;
+  /** Override the holiday-falsifier read (testing). Defaults to the built-in
+   *  first-party read: TODAY's holiday matched on the turn's tz date; `null` when
+   *  none. Shares the SAME per-turn {@link loadSchedule} memo. */
+  readonly holiday?: () => Promise<HolidayRead | null>;
 }
 
 /**
@@ -206,6 +250,31 @@ export function createDomainTriadReadBackend(
       return (await loadScheduleOnce()).overrides.find((o) => o.date === today) ?? null;
     });
 
+  // STORE_HOURS (BKL-121) — today's operating-hours string, derived from the SAME
+  // per-turn schedule memo. `getTodayHoursText` reads ONLY the real weekly window
+  // fields (never invents an hour, BKL-026). A `null` result (schedule unavailable)
+  // THROWS → the investigator records a fail-closed read ERROR (Inv 7), never a
+  // fabricated hours string.
+  const readStoreHours =
+    deps.storeHours ??
+    (async (): Promise<StoreHoursRead> => {
+      const hoursText = getTodayHoursText(await loadScheduleOnce(), tz);
+      if (hoursText === null) {
+        throw new Error("store_hours unavailable: schedule not loaded this turn");
+      }
+      return { hoursText };
+    });
+
+  // STORE_HOURS FALSIFIER (BKL-121 / D1) — TODAY's holiday (present iff today is a
+  // holiday), matched on the turn's tz date from the SAME per-turn schedule memo.
+  // `null` (absence) → the falsifier does NOT fire.
+  const readHoliday =
+    deps.holiday ??
+    (async (): Promise<HolidayRead | null> => {
+      const today = localDateStr(tz);
+      return (await loadScheduleOnce()).holidays.find((h) => h.date === today) ?? null;
+    });
+
   // Per-turn memo of the OWNER-SCOPED order read: ORDER_FULFILLMENT_STAGE and
   // PAYMENT_STATUS both gate on the IDENTICAL getById(orderId, { customerId }), so
   // run it ONCE per (owner, order) this turn. The cache key is OWNER-SCOPED and
@@ -230,6 +299,8 @@ export function createDomainTriadReadBackend(
   return {
     readSchedule,
     readScheduleOverride,
+    readStoreHours,
+    readHoliday,
 
     async readOrderFulfillment(orderId, customerId) {
       // Owner-scoped (SDD §N P0-3, Inv 2): getById with `{ customerId }` returns

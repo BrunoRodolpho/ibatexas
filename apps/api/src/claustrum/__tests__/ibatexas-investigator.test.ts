@@ -265,6 +265,9 @@ function stubBackend(over: Partial<TriadReadBackend> = {}): TriadReadBackend {
     readSchedule: async () => ({ isClosed: false, mealPeriod: "dinner" }),
     // Default: no ScheduleOverride today (the falsifier does not fire).
     readScheduleOverride: async () => null,
+    // BKL-121 — default: today's hours present; no holiday today (falsifier inert).
+    readStoreHours: async () => ({ hoursText: "11h–15h / 18h–23h" }),
+    readHoliday: async () => null,
     readOrderFulfillment: async (orderId) => ({ orderId, fulfillmentStatus: "preparing" }),
     readPaymentStatus: async (orderId) => ({ orderId, status: "paid", method: "pix" }),
     readReservation: async (reservationId) => ({
@@ -626,5 +629,88 @@ describe("F1 — STORE_OPEN_NOW falsifier fires end-to-end (investigator → ker
     const { verdict, terminal } = await runStoreOpenNow(null);
     expect(verdict).toBe("VALIDATED");
     expect(terminal).toBe("RENDER");
+  });
+});
+
+// ── BKL-121 — STORE_HOURS evidence + holiday falsifier recording ───────────────
+//
+// The investigator records TODAY's operating-hours under `schedule:store_hours`
+// (first-party, present) and TODAY's holiday under `schedule:holiday` (present ONLY
+// on a holiday; ABSENT otherwise). A schedule-load failure (readStoreHours throws) is
+// a fail-closed read ERROR (Inv 7), NEVER a fabricated hours string.
+describe("BKL-121 — investigator records STORE_HOURS + the holiday falsifier", () => {
+  const HOLIDAY_TODAY = {
+    id: "hol-1",
+    date: "2026-12-25",
+    label: "Natal",
+    allDay: true,
+    startTime: null,
+    endTime: null,
+  };
+
+  it("records today's hours under schedule:store_hours as a FIRST_PARTY present value", async () => {
+    const ledger = new EvidenceLedger("t");
+    const investigator = createIbatexasInvestigator({
+      gatherReads: createFirstPartyTurnReads(
+        stubBackend({ readStoreHours: async () => ({ hoursText: "11h–15h / 18h–23h" }) }),
+      ),
+      now: () => 999,
+    });
+    // Public config — recorded even for a guest (before the authenticated gate).
+    await investigator.investigate(triadInput({ envelopes: [] }, ledger, "guest:abc"));
+
+    const hours = ledger.resolve("schedule:store_hours");
+    expect(hours.state).toBe("present");
+    expect(hours.entry?.value).toEqual({ hoursText: "11h–15h / 18h–23h" });
+    expect(hours.entry?.taint).toBe("TRUSTED");
+    expect(hours.entry?.originProvenance).toBe("FIRST_PARTY");
+  });
+
+  it("Inv 7 — a schedule-load failure records schedule:store_hours as an ERROR, never a fabricated value", async () => {
+    const ledger = new EvidenceLedger("t");
+    const investigator = createIbatexasInvestigator({
+      gatherReads: createFirstPartyTurnReads(
+        stubBackend({
+          readStoreHours: async () => {
+            throw new Error("store_hours unavailable: schedule not loaded this turn");
+          },
+        }),
+      ),
+      now: () => 999,
+    });
+    await investigator.investigate(triadInput({ envelopes: [] }, ledger, "guest:abc"));
+
+    const hours = ledger.resolve("schedule:store_hours");
+    expect(hours.state).toBe("error"); // "não consegui conferir" — distinct from absence
+    expect(hours.entry).toBeUndefined();
+    expect(ledger.errorReason("schedule:store_hours")).toContain("unavailable");
+  });
+
+  it("a PRESENT holiday is recorded under schedule:holiday (the falsifier can fire)", async () => {
+    const ledger = new EvidenceLedger("t");
+    const investigator = createIbatexasInvestigator({
+      gatherReads: createFirstPartyTurnReads(
+        stubBackend({ readHoliday: async () => HOLIDAY_TODAY }),
+      ),
+      now: () => 999,
+    });
+    await investigator.investigate(triadInput({ envelopes: [] }, ledger, "guest:abc"));
+
+    const holiday = ledger.resolve("schedule:holiday");
+    expect(holiday.state).toBe("present");
+    expect(holiday.entry?.originProvenance).toBe("FIRST_PARTY");
+  });
+
+  it("NON-VACUITY: with NO holiday today the schedule:holiday key is ABSENT (falsifier inert)", async () => {
+    const ledger = new EvidenceLedger("t");
+    const investigator = createIbatexasInvestigator({
+      gatherReads: createFirstPartyTurnReads(stubBackend({ readHoliday: async () => null })),
+      now: () => 999,
+    });
+    await investigator.investigate(triadInput({ envelopes: [] }, ledger, "guest:abc"));
+
+    // ABSENCE (sentinel skip), not error — the key was never recorded.
+    expect(ledger.resolve("schedule:holiday").state).toBe("absent");
+    expect(ledger.errorReason("schedule:holiday")).toBeUndefined();
   });
 });

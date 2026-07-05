@@ -57,12 +57,18 @@ vi.mock("@ibatexas/domain", () => ({
     getById: (id: string, customerId: string) => reservationGetById(id, customerId),
   }),
 }));
+// BKL-121 default-backend controls: today's-hours value + the holiday table the
+// (mocked) schedule carries. `null` hours = schedule unavailable (must THROW).
+let todayHoursText: string | null = "11h\u201315h / 18h\u201323h";
+let scheduleHolidays: Array<{ date: string; name: string }> = [];
+
 vi.mock("@ibatexas/tools", () => ({
   loadSchedule: async () => {
     loadScheduleCalls++;
-    return { overrides: [] };
+    return { overrides: [], holidays: scheduleHolidays };
   },
   getScheduleSignal: () => ({ isClosed: false, mealPeriod: "dinner" }),
+  getTodayHoursText: () => todayHoursText,
 }));
 
 const {
@@ -82,6 +88,8 @@ beforeEach(() => {
     return { id, status: "confirmed", partySize: 4, customerId: OWNER };
   };
   loadScheduleCalls = 0;
+  todayHoursText = "11h\u201315h / 18h\u201323h";
+  scheduleHolidays = [];
 });
 
 // ── PAYMENT_STATUS IDOR close ────────────────────────────────────────────────
@@ -267,5 +275,54 @@ describe("turn-reads — extractTurnResourceIds", () => {
     });
     expect(ids.orderIds).toEqual([]);
     expect(ids.reservationIds).toEqual([]);
+  });
+});
+
+// ── STORE_HOURS + holiday default reads (BKL-121 backend wiring) ───────────────
+
+describe("turn-reads — STORE_HOURS / holiday default backend (BKL-121)", () => {
+  it("readStoreHours returns today's hours from the per-turn schedule memo", async () => {
+    const backend = createDomainTriadReadBackend();
+    await expect(backend.readStoreHours()).resolves.toEqual({
+      hoursText: "11h\u201315h / 18h\u201323h",
+    });
+  });
+
+  it("readStoreHours THROWS (Inv 7 read error) when the schedule is unavailable — never fabricates", async () => {
+    todayHoursText = null;
+    const backend = createDomainTriadReadBackend();
+    await expect(backend.readStoreHours()).rejects.toThrow(/store_hours unavailable/);
+  });
+
+  it("readHoliday resolves TODAY's holiday (tz-local date match)", async () => {
+    const today = new Intl.DateTimeFormat("en-CA", {
+      timeZone: process.env.RESTAURANT_TIMEZONE ?? "America/Sao_Paulo",
+    }).format(new Date());
+    scheduleHolidays = [
+      { date: "1999-01-01", name: "Ano antigo" },
+      { date: today, name: "Feriado de hoje" },
+    ];
+    const backend = createDomainTriadReadBackend();
+    await expect(backend.readHoliday()).resolves.toEqual({
+      date: today,
+      name: "Feriado de hoje",
+    });
+  });
+
+  it("readHoliday resolves null on a non-holiday (falsifier absence, never a fabricated present)", async () => {
+    scheduleHolidays = [{ date: "1999-01-01", name: "Ano antigo" }];
+    const backend = createDomainTriadReadBackend();
+    await expect(backend.readHoliday()).resolves.toBeNull();
+  });
+
+  it("hours + holiday + signal + override share ONE schedule load per turn", async () => {
+    const backend = createDomainTriadReadBackend();
+    await Promise.all([
+      backend.readSchedule(),
+      backend.readScheduleOverride(),
+      backend.readStoreHours(),
+      backend.readHoliday(),
+    ]);
+    expect(loadScheduleCalls).toBe(1);
   });
 });

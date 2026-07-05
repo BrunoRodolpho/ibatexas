@@ -159,6 +159,14 @@ const SCHEDULE_KEY = "schedule:store_open_now";
 // `resolveAgainstFalsifiers` finds the recorded override and demotes a present-
 // override turn to UNKNOWN. Recorded ONLY when an override actually exists today.
 const SCHEDULE_OVERRIDE_KEY = "schedule:schedule_override";
+// STORE_HOURS evidence key (BKL-121). Aligned VERBATIM with the registry's
+// STORE_HOURS `requiredEvidence[0].key` + `valueBinding.key` (claim-registry.ts) so
+// the kernel validates today's-hours value against the recorded ledger entry.
+const STORE_HOURS_KEY = "schedule:store_hours";
+// STORE_HOURS FALSIFIER key (BKL-121 / D1) — TODAY's holiday. Aligned VERBATIM with
+// the registry's STORE_HOURS `falsifiers[].key`. Recorded ONLY when today IS a
+// holiday; a non-holiday leaves the key ABSENT so the falsifier does not fire.
+const HOLIDAY_KEY = "schedule:holiday";
 const ORDER_FULFILLMENT_KEY = (orderId: string): string =>
   `order_fulfillment_stage:${orderId}`;
 const PAYMENT_STATUS_KEY = (orderId: string): string => `payment_status:${orderId}`;
@@ -248,6 +256,38 @@ export function createFirstPartyTurnReads(
       // The registry falsifier declares `must_read_this_turn` → record it LIVE.
       sourceMode: "live",
       read: async () => (await b.readScheduleOverride()) ?? ABSENT_READ,
+    });
+
+    // STORE_HOURS (BKL-121) — TODAY's operating-hours string. Public first-party
+    // config; always relevant, no owner needed (runs for guests too). A schedule-load
+    // failure THROWS in `readStoreHours` → recorded as a fail-closed read ERROR (Inv 7:
+    // "não consegui conferir o horário"), NEVER a fabricated hours string. On success
+    // the recorded entry is the base the kernel's STORE_HOURS value-binding validates
+    // against, and the base `resolveAgainstFalsifiers` demotes when a falsifier fires.
+    reads.push({
+      key: STORE_HOURS_KEY,
+      source: "schedule.getTodayHoursText",
+      origin: "TRUSTED",
+      originProvenance: "FIRST_PARTY",
+      sourceMode: "live",
+      read: () => b.readStoreHours(),
+    });
+
+    // STORE_HOURS FALSIFIER (BKL-121 / D1) — TODAY's holiday. Recorded PRESENT ONLY
+    // when today is a holiday (the weekly hours cannot be trusted on a holiday);
+    // otherwise ABSENT_READ → the investigator SKIPS it → the key stays ABSENT → the
+    // holiday falsifier does NOT fire. A present holiday → `schedule:holiday` present
+    // → the kernel demotes STORE_HOURS to UNKNOWN. Public first-party config; no owner
+    // — placed BEFORE the authenticated-customer gate. (The OTHER STORE_HOURS
+    // falsifier, a present ScheduleOverride, is ALREADY recorded above under
+    // `schedule:schedule_override` — reused, not re-read.)
+    reads.push({
+      key: HOLIDAY_KEY,
+      source: "schedule.readHoliday",
+      origin: "TRUSTED",
+      originProvenance: "FIRST_PARTY",
+      sourceMode: "live",
+      read: async () => (await b.readHoliday()) ?? ABSENT_READ,
     });
 
     if (!isAuthenticatedCustomer(customerId)) return reads;

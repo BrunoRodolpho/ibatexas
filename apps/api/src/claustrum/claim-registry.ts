@@ -225,19 +225,63 @@ export const REGISTRY_SPECS = {
     ],
     customerScoped: false,
   },
+  // BKL-121 — the full STORE_HOURS validated render chain. The evidence key is
+  // aligned VERBATIM with the investigator's STORE_HOURS_KEY ("schedule:store_hours")
+  // so the candidate validates against the actual recorded ledger entry; the
+  // deriveBoundValue branch (below) + slot-grammar template (slot-grammar.ts) bind the
+  // rendered `hoursText` proposition 1:1 to it (Inv 6). Public, single-key type — NOT
+  // owner-scoped (no perResourceKey; keys are never `:{subject}`-parameterized).
   STORE_HOURS: {
     kind: "read_claim",
     minSourceIntegrity: "trusted_service",
     requiredEvidence: [
       {
-        key: "store_hours",
+        key: "schedule:store_hours",
         ownershipPolicy: "not_applicable",
-        freshnessPolicy: { kind: "cacheable", ttl: 3600 },
+        // UNITS (adversarial-review pin): the kernel enforces this in epoch-
+        // MILLISECONDS — @adjudicate/core soundness.js freshnessVerdict computes
+        // `age = now - entry.fetchedAt` (both Date.now-derived) with NO unit
+        // conversion, even though evidence-requirement.d.ts documents ttl as
+        // "seconds". A bare `3600` is therefore a 3.6-SECOND window, which a
+        // normal claims turn (model latency 5-20s between the investigator read
+        // and validation) exceeds — demoting every STORE_HOURS turn to UNKNOWN.
+        // 3_600_000 ms = the intended 1-hour staleness bound (vacuous within a
+        // per-turn ledger, but honest if entries ever outlive a turn). The
+        // doc/enforcement mismatch is upstream (tracker BKL-125).
+        freshnessPolicy: { kind: "cacheable", ttl: 3_600_000 },
         sourceIntegrity: "trusted_service",
         provenancePolicy: "preserve",
       },
     ],
     customerScoped: false,
+    // W6 — a TODAY'S-hours claim (BKL-121 / D1) has TWO honest falsifiers: a present
+    // per-date ScheduleOverride OR a present holiday, either of which makes the
+    // weekly-schedule-derived hours untrustworthy for today. BOTH are enumerated
+    // (honest completeness), so the eligibility cap lets STORE_HOURS reach VALIDATED
+    // and the runtime arm demotes it to UNKNOWN when either actually fires this turn.
+    // (`schedule:schedule_override` is the SAME key STORE_OPEN_NOW declares — one
+    // investigator read serves both.)
+    falsifierComplete: true,
+    falsifiers: [
+      {
+        key: "schedule:schedule_override",
+        ownershipPolicy: "not_applicable",
+        freshnessPolicy: "must_read_this_turn",
+        sourceIntegrity: "trusted_service",
+        provenancePolicy: "preserve",
+      },
+      {
+        key: "schedule:holiday",
+        ownershipPolicy: "not_applicable",
+        freshnessPolicy: "must_read_this_turn",
+        sourceIntegrity: "trusted_service",
+        provenancePolicy: "preserve",
+      },
+    ],
+    // C6 — bind the rendered value to the read's ACTUAL `hoursText` field
+    // (ledger-sourced, never model-authored). `valueBinding.key` stays a member of
+    // requiredEvidence so the kernel's C6 structural guard never throws.
+    valueBinding: { key: "schedule:store_hours", path: ["hoursText"] },
   },
   // Triad slice — STORE_OPEN_NOW is now GENERATED from its ClaimDefinition source
   // (inv.18 v2). The override-aware evidence + W6 falsifier + C6 value-binding all
@@ -553,6 +597,11 @@ export interface FirstPartyDerivationReads {
   /** The schedule signal — the SAME `readSchedule()` the investigator records
    *  (`ibatexas-investigator.ts` SCHEDULE_KEY). Only `mealPeriod` is bound (C6). */
   readonly scheduleSignal?: { readonly mealPeriod?: unknown };
+  /** BKL-121 — today's operating-hours read (the SAME `readStoreHours()` the
+   *  investigator records under `schedule:store_hours`). Only `hoursText` is bound
+   *  (C6); the re-read is byte-equal to the recorded entry so C6 passes BY
+   *  CONSTRUCTION (a present override/holiday falsifier STILL demotes to UNKNOWN). */
+  readonly storeHours?: { readonly hoursText?: unknown };
 }
 
 /**
@@ -565,9 +614,9 @@ export interface FirstPartyDerivationReads {
  * EVERY conjunct (C0/∀-evidence/C4/C6 + the falsifier CAP + the CE#3 runtime arm).
  * A derived value that contradicts a present falsifier STILL demotes to UNKNOWN.
  *
- * Scope: only STORE_OPEN_NOW is derivable publish-free (its read is public,
- * single-key, re-readable in the planner). A bound type with NO available
- * first-party read here (ORDER_FULFILLMENT_STAGE / PAYMENT_STATUS — owner-scoped,
+ * Scope: STORE_OPEN_NOW and STORE_HOURS (BKL-121) are derivable publish-free (their
+ * reads are public, single-key, re-readable in the planner). A bound type with NO
+ * available first-party read here (ORDER_FULFILLMENT_STAGE / PAYMENT_STATUS — owner-scoped,
  * per-resource, NOT re-read in the planner to avoid an IDOR re-open) is passed
  * through UNCHANGED → its value stays as-proposed (undefined under the tag
  * protocol) → C6 ABSTAINs / ownership fails → the honest UNKNOWN residual. A type
@@ -585,6 +634,16 @@ export function deriveBoundValue(
     // C6 binds path ["mealPeriod"] against `schedule:store_open_now`; project the
     // SAME field from the first-party read so claimSide === evidenceSide (PASS).
     return { ...candidate, value: { mealPeriod: reads.scheduleSignal.mealPeriod } };
+  }
+
+  if (candidate.type === "STORE_HOURS") {
+    if (reads.storeHours === undefined) return candidate;
+    // BKL-121 — C6 binds path ["hoursText"] against `schedule:store_hours`; project
+    // the SAME field from the first-party read so claimSide === evidenceSide (PASS).
+    // Public, single-key, re-readable in the planner (like STORE_OPEN_NOW). A present
+    // override/holiday falsifier STILL demotes the derived claim to UNKNOWN (the
+    // runtime arm is NOT skipped by derivation).
+    return { ...candidate, value: { hoursText: reads.storeHours.hoursText } };
   }
 
   // Owner-scoped per-resource types have no planner-available first-party read
