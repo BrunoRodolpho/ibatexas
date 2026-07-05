@@ -199,7 +199,7 @@ resumes them on a signal. Implemented in `@adjudicate/runtime`, driven by IbateX
 | `metrics:wa_orders:daily:{date}` | String (counter) | 48 h | Daily WhatsApp order count. | `apps/api/src/subscribers/cart-intelligence.ts` |
 | `metrics:messages:{sessionId}` | String (counter) | 48 h | Message count per WhatsApp session. | `apps/api/src/routes/whatsapp-webhook.ts` |
 | `metrics:avg_messages_to_checkout` | String (number) | none | EMA of messages-to-checkout (0.9 old + 0.1 new). | `apps/api/src/subscribers/cart-intelligence.ts` |
-| `restaurant:schedule` | String (JSON) | none | Cached weekly schedule + holidays. Invalidated on every admin write. | `packages/tools/src/cache/schedule-cache.ts` |
+| `restaurant:schedule` | String (JSON) | 5 min (`SCHEDULE_CACHE_TTL_SECONDS`) | Cached weekly schedule + holidays. Invalidated on every admin write; the TTL bounds staleness if that invalidation DEL is swallowed (BKL-124). | `packages/tools/src/cache/schedule-cache.ts` |
 | `site:banner:text` | String | none | Site banner text. Lives until overwritten or cleared. | `packages/tools/src/cache/banner-cache.ts` |
 | `weather:current` | String (JSON) | 1 h | Cached current weather. | `apps/api/src/jobs/weather-helper.ts` |
 | `delivery:cep:{cep}` | String (JSON) | 1 h (`DELIVERY_CACHE_TTL`) | Cached delivery estimate per CEP. | `packages/tools/src/catalog/estimate-delivery.ts` |
@@ -275,7 +275,7 @@ ibx intel global-score-rebuild --reset
 - Agent locks and payment/anonymize mutexes use UUID values with Lua conditional release — no cascading lock breaches.
 - `welcome:credit:{customerId}` uses atomic `GETDEL` to prevent double-apply.
 - Metrics counters use the `atomicIncr()` Lua script — no immortal keys from INCR/EXPIRE races.
-- All keys have TTLs except a small set of intentional caches/markers: `wa:optin:*` (residual — should be 365 d), `restaurant:schedule`, `site:banner:text`, and single keys like `metrics:avg_messages_to_checkout`.
+- All keys have TTLs except a small set of intentional caches/markers: `wa:optin:*` (residual — should be 365 d), `site:banner:text`, and single keys like `metrics:avg_messages_to_checkout`. (`restaurant:schedule` gained a bounded TTL in BKL-124.)
 
 ---
 
