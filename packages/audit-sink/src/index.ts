@@ -599,6 +599,7 @@ export {
   createAuditRedactor,
   INTENT_KIND_FIELD_RULES,
   PII_FREE_KIND_ALLOWLIST,
+  HTTP_PLANE_GOVERNED_KINDS,
   type AuditRedactor,
   type AuditRedactorOptions,
 } from "./audit-redactor.js"

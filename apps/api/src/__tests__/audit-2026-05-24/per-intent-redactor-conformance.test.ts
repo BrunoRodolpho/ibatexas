@@ -52,6 +52,7 @@
 import { describe, it, expect } from "vitest"
 import { KNOWN_INTENT_KINDS } from "@ibatexas/intent-kinds"
 import {
+  HTTP_PLANE_GOVERNED_KINDS,
   INTENT_KIND_FIELD_RULES,
   PII_FREE_KIND_ALLOWLIST,
 } from "@ibatexas/audit-sink"
@@ -106,7 +107,10 @@ describe("audit-2026-05-24 T3 — per-intent-kind redactor conformance", () => {
   it("every KNOWN_INTENT_KINDS entry is in INTENT_KIND_FIELD_RULES OR PII_FREE_KIND_ALLOWLIST OR KNOWN_REDACTOR_GAPS", () => {
     const ruleKinds = new Set<string>(Object.keys(INTENT_KIND_FIELD_RULES))
     const violations: string[] = []
-    for (const kind of KNOWN_INTENT_KINDS) {
+    // KNOWN_INTENT_KINDS ∪ HTTP_PLANE_GOVERNED_KINDS: the HTTP-plane staff
+    // kinds are off the Pack union BY DESIGN (no planner surface) but still
+    // reach every audit sink via withAdjudicate — they need classification too.
+    for (const kind of [...KNOWN_INTENT_KINDS, ...HTTP_PLANE_GOVERNED_KINDS]) {
       if (ruleKinds.has(kind)) continue
       if (PII_FREE_KIND_ALLOWLIST.has(kind)) continue
       if (KNOWN_REDACTOR_GAPS.has(kind)) continue
@@ -143,7 +147,11 @@ describe("audit-2026-05-24 T3 — per-intent-kind redactor conformance", () => {
     // looks classified, but the union actually no longer contains it.
     const stale: string[] = []
     for (const kind of PII_FREE_KIND_ALLOWLIST) {
-      if (!KNOWN_INTENT_KINDS.has(kind)) stale.push(kind)
+      if (KNOWN_INTENT_KINDS.has(kind)) continue
+      // HTTP-plane governed kinds (declared set — not a prefix waiver, so a
+      // typo'd allowlist entry still lands in `stale`).
+      if (HTTP_PLANE_GOVERNED_KINDS.has(kind)) continue
+      stale.push(kind)
     }
     if (stale.length > 0) {
       throw new Error(
@@ -191,6 +199,9 @@ describe("audit-2026-05-24 T3 — per-intent-kind redactor conformance", () => {
     for (const ruleKey of Object.keys(INTENT_KIND_FIELD_RULES)) {
       if (EXEMPT_RULE_KEY_PREFIXES.some((p) => ruleKey.startsWith(p))) continue
       if (KNOWN_INTENT_KINDS.has(ruleKey)) continue
+      // HTTP-plane governed kinds: an exact-membership check (never a `staff.`
+      // prefix waiver — a typo'd rule key must still trip this F-5 sentinel).
+      if (HTTP_PLANE_GOVERNED_KINDS.has(ruleKey)) continue
       orphanRuleKeys.push(ruleKey)
     }
     if (orphanRuleKeys.length > 0) {

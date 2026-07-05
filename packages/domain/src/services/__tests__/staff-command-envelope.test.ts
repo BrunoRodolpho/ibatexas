@@ -35,6 +35,7 @@ const mockTransaction = vi.hoisted(() => vi.fn())
 const mockTxFindUnique = vi.hoisted(() => vi.fn())
 const mockTxCount = vi.hoisted(() => vi.fn())
 const mockTxUpdate = vi.hoisted(() => vi.fn())
+const mockTxCreate = vi.hoisted(() => vi.fn())
 
 vi.mock("../../client.js", () => ({
   prisma: {
@@ -77,6 +78,7 @@ const TX_CLIENT = {
     findUnique: (...a: unknown[]) => mockTxFindUnique(...a),
     count: (...a: unknown[]) => mockTxCount(...a),
     update: (...a: unknown[]) => mockTxUpdate(...a),
+    create: (...a: unknown[]) => mockTxCreate(...a),
   },
 }
 
@@ -171,21 +173,21 @@ describe("actorStaffIdFromEnvelope", () => {
 
 describe("staff-policy — TRUSTED taint floor", () => {
   it("EXECUTEs a TRUSTED admin create (executor runs)", async () => {
-    mockFindUnique.mockResolvedValue(null)
-    mockCreate.mockResolvedValue(makeRow())
+    mockTxFindUnique.mockResolvedValue(null)
+    mockTxCreate.mockResolvedValue(makeRow())
     const svc = createStaffCommandService()
     const out = await svc.createFromEnvelope(adminEnv("staff.create", createPayload()), state)
     expect(out.decision.kind).toBe("EXECUTE")
-    expect(mockCreate).toHaveBeenCalledTimes(1)
+    expect(mockTxCreate).toHaveBeenCalledTimes(1)
   })
 
   it("EXECUTEs a SYSTEM api-key create too", async () => {
-    mockFindUnique.mockResolvedValue(null)
-    mockCreate.mockResolvedValue(makeRow())
+    mockTxFindUnique.mockResolvedValue(null)
+    mockTxCreate.mockResolvedValue(makeRow())
     const svc = createStaffCommandService()
     const out = await svc.createFromEnvelope(apiKeyEnv("staff.create", createPayload()), state)
     expect(out.decision.kind).toBe("EXECUTE")
-    expect(mockCreate).toHaveBeenCalledTimes(1)
+    expect(mockTxCreate).toHaveBeenCalledTimes(1)
   })
 
   it("REFUSEs an UNTRUSTED (LLM) create — executor never runs, no prisma calls", async () => {
@@ -193,8 +195,9 @@ describe("staff-policy — TRUSTED taint floor", () => {
     const out = await svc.createFromEnvelope(untrustedEnv("staff.create", createPayload()), state)
     expect(out.decision.kind).toBe("REFUSE")
     expect(out.result).toBeUndefined()
-    expect(mockFindUnique).not.toHaveBeenCalled()
-    expect(mockCreate).not.toHaveBeenCalled()
+    expect(mockTransaction).not.toHaveBeenCalled()
+    expect(mockTxFindUnique).not.toHaveBeenCalled()
+    expect(mockTxCreate).not.toHaveBeenCalled()
   })
 })
 
@@ -211,12 +214,13 @@ describe("staff-command — injected authGuards run inside the adjudication (BKL
     const svc = createStaffCommandService({ authGuards: [alwaysRefuse] })
     const out = await svc.createFromEnvelope(adminEnv("staff.create", createPayload()), state)
     expect(out.decision.kind).toBe("REFUSE")
-    expect(mockCreate).not.toHaveBeenCalled()
+    expect(mockTransaction).not.toHaveBeenCalled()
+    expect(mockTxCreate).not.toHaveBeenCalled()
   })
 
   it("EXECUTEs with no injected guard (proves the refusal above was the injection)", async () => {
-    mockFindUnique.mockResolvedValue(null)
-    mockCreate.mockResolvedValue(makeRow())
+    mockTxFindUnique.mockResolvedValue(null)
+    mockTxCreate.mockResolvedValue(makeRow())
     const svc = createStaffCommandService()
     const out = await svc.createFromEnvelope(adminEnv("staff.create", createPayload()), state)
     expect(out.decision.kind).toBe("EXECUTE")
@@ -227,15 +231,15 @@ describe("staff-command — injected authGuards run inside the adjudication (BKL
 
 describe("createFromEnvelope", () => {
   it("creates a fresh staff row with integer-centavos rate", async () => {
-    mockFindUnique.mockResolvedValue(null)
-    mockCreate.mockResolvedValue(makeRow({ id: "staff_new" }))
+    mockTxFindUnique.mockResolvedValue(null)
+    mockTxCreate.mockResolvedValue(makeRow({ id: "staff_new" }))
     const svc = createStaffCommandService()
     const out = await svc.createFromEnvelope(
       adminEnv("staff.create", createPayload({ role: "MANAGER", hourlyRateCentavos: 5000 })),
       state,
     )
     expect(out.decision.kind).toBe("EXECUTE")
-    expect(mockCreate).toHaveBeenCalledWith({
+    expect(mockTxCreate).toHaveBeenCalledWith({
       data: {
         phone: "+5511999990001",
         name: "Ana",
@@ -246,33 +250,33 @@ describe("createFromEnvelope", () => {
   })
 
   it("REFUSEs a duplicate ACTIVE phone (DuplicatePhoneError, no create)", async () => {
-    mockFindUnique.mockResolvedValue(makeRow({ active: true }))
+    mockTxFindUnique.mockResolvedValue(makeRow({ active: true }))
     const svc = createStaffCommandService()
     await expect(
       svc.createFromEnvelope(adminEnv("staff.create", createPayload()), state),
     ).rejects.toBeInstanceOf(DuplicatePhoneError)
-    expect(mockCreate).not.toHaveBeenCalled()
+    expect(mockTxCreate).not.toHaveBeenCalled()
   })
 
   it("REACTIVATES an existing INACTIVE phone (updates active/name/role, no create)", async () => {
-    mockFindUnique.mockResolvedValue(makeRow({ id: "staff_old", active: false, name: "Old", role: "ATTENDANT" }))
-    mockUpdate.mockResolvedValue(makeRow({ id: "staff_old", active: true, name: "Ana", role: "MANAGER" }))
+    mockTxFindUnique.mockResolvedValue(makeRow({ id: "staff_old", active: false, name: "Old", role: "ATTENDANT" }))
+    mockTxUpdate.mockResolvedValue(makeRow({ id: "staff_old", active: true, name: "Ana", role: "MANAGER" }))
     const svc = createStaffCommandService()
     const out = await svc.createFromEnvelope(
       adminEnv("staff.create", createPayload({ name: "Ana", role: "MANAGER", hourlyRateCentavos: 7000 })),
       state,
     )
     expect(out.decision.kind).toBe("EXECUTE")
-    expect(mockCreate).not.toHaveBeenCalled()
-    expect(mockUpdate).toHaveBeenCalledWith({
+    expect(mockTxCreate).not.toHaveBeenCalled()
+    expect(mockTxUpdate).toHaveBeenCalledWith({
       where: { id: "staff_old" },
       data: { active: true, name: "Ana", role: "MANAGER", hourlyRateCentavos: 7000 },
     })
   })
 
   it("maps a P2002 unique race on create → DuplicatePhoneError", async () => {
-    mockFindUnique.mockResolvedValue(null)
-    mockCreate.mockRejectedValue(prismaError("P2002"))
+    mockTxFindUnique.mockResolvedValue(null)
+    mockTxCreate.mockRejectedValue(prismaError("P2002"))
     const svc = createStaffCommandService()
     await expect(
       svc.createFromEnvelope(adminEnv("staff.create", createPayload()), state),
@@ -284,7 +288,8 @@ describe("createFromEnvelope", () => {
     await expect(
       svc.createFromEnvelope(adminEnv("staff.create", createPayload({ phone: "11999" })), state),
     ).rejects.toBeInstanceOf(InvalidStaffPhoneError)
-    expect(mockFindUnique).not.toHaveBeenCalled()
+    expect(mockTransaction).not.toHaveBeenCalled()
+    expect(mockTxFindUnique).not.toHaveBeenCalled()
   })
 
   it("rejects an out-of-set role (InvalidStaffRoleError)", async () => {
@@ -306,31 +311,75 @@ describe("createFromEnvelope", () => {
       svc.createFromEnvelope(adminEnv("staff.create", createPayload({ hourlyRateCentavos: 12.5 })), state),
     ).rejects.toBeInstanceOf(InvalidHourlyRateError)
   })
+
+  // FIX 7 (adversarial review round 2) — the reactivate branch is the THIRD
+  // writer of the guarded role/active columns; lookup + write must be atomic.
+  it("FIX 7: lookup + reactivate-or-create run ON THE TX inside ONE Serializable transaction — never the root client", async () => {
+    mockTxFindUnique.mockResolvedValue(null)
+    mockTxCreate.mockResolvedValue(makeRow())
+    const svc = createStaffCommandService()
+    await svc.createFromEnvelope(adminEnv("staff.create", createPayload()), state)
+    expect(mockTransaction).toHaveBeenCalledTimes(1)
+    expect(mockTransaction).toHaveBeenCalledWith(expect.any(Function), {
+      isolationLevel: "Serializable",
+    })
+    // Everything rode the tx client; the root client saw NOTHING.
+    expect(mockTxFindUnique).toHaveBeenCalledTimes(1)
+    expect(mockTxCreate).toHaveBeenCalledTimes(1)
+    expect(mockFindUnique).not.toHaveBeenCalled()
+    expect(mockCreate).not.toHaveBeenCalled()
+    expect(mockUpdate).not.toHaveBeenCalled()
+  })
+
+  it("FIX 7: a raced reactivation loses the serialization conflict, retries, and takes the honest branch (row now ACTIVE → DuplicatePhoneError)", async () => {
+    // Attempt 1: the row reads INACTIVE, but a concurrent reactivate-as-OWNER
+    // commits first → the write conflicts (P2034). Attempt 2 (the single retry)
+    // re-reads committed state: the row is ACTIVE → DuplicatePhoneError. The
+    // pre-fix read-committed path would have committed the demotion instead.
+    mockTxFindUnique
+      .mockResolvedValueOnce(makeRow({ id: "staff_x", active: false, role: "ATTENDANT" }))
+      .mockResolvedValueOnce(makeRow({ id: "staff_x", active: true, role: "OWNER" }))
+    mockTxUpdate.mockRejectedValueOnce(prismaError("P2034"))
+    mockTransaction.mockImplementation(async (fn: TxFn) => {
+      try {
+        return await fn(TX_CLIENT)
+      } catch (err) {
+        throw err
+      }
+    })
+    const svc = createStaffCommandService()
+    await expect(
+      svc.createFromEnvelope(adminEnv("staff.create", createPayload({ role: "ATTENDANT" })), state),
+    ).rejects.toBeInstanceOf(DuplicatePhoneError)
+    expect(mockTransaction).toHaveBeenCalledTimes(2) // one retry
+    expect(mockTxUpdate).toHaveBeenCalledTimes(1) // the losing write only
+    expect(mockTxCreate).not.toHaveBeenCalled()
+  })
 })
 
 // ── FIX 3 — canonical E.164 normalization (create + update) ─────────────────
 
 describe("phone canonicalization (FIX 3 — same normalizer as the login path)", () => {
   it("create with formatted input LOOKS UP and STORES canonical E.164 (login-findable)", async () => {
-    mockFindUnique.mockResolvedValue(null)
-    mockCreate.mockResolvedValue(makeRow())
+    mockTxFindUnique.mockResolvedValue(null)
+    mockTxCreate.mockResolvedValue(makeRow())
     const svc = createStaffCommandService()
     await svc.createFromEnvelope(
       adminEnv("staff.create", createPayload({ phone: "+55 11 99999-0001" })),
       state,
     )
     // Duplicate lookup runs against the canonical form…
-    expect(mockFindUnique).toHaveBeenCalledWith({ where: { phone: "+5511999990001" } })
+    expect(mockTxFindUnique).toHaveBeenCalledWith({ where: { phone: "+5511999990001" } })
     // …and the stored value is canonical AND matches the staff-OTP login
     // PhoneSchema regex (routes/auth.ts) — the row can actually log in.
-    const stored = (mockCreate.mock.calls[0]?.[0] as { data: { phone: string } }).data.phone
+    const stored = (mockTxCreate.mock.calls[0]?.[0] as { data: { phone: string } }).data.phone
     expect(stored).toBe("+5511999990001")
     expect(/^\+[1-9]\d{7,14}$/.test(stored)).toBe(true)
   })
 
   it("two format variants of the same number COLLIDE as DuplicatePhone", async () => {
     // The row was created canonical; a formatted variant must find it.
-    mockFindUnique.mockResolvedValue(makeRow({ phone: "+5511999990001", active: true }))
+    mockTxFindUnique.mockResolvedValue(makeRow({ phone: "+5511999990001", active: true }))
     const svc = createStaffCommandService()
     await expect(
       svc.createFromEnvelope(
@@ -338,8 +387,8 @@ describe("phone canonicalization (FIX 3 — same normalizer as the login path)",
         state,
       ),
     ).rejects.toBeInstanceOf(DuplicatePhoneError)
-    expect(mockFindUnique).toHaveBeenCalledWith({ where: { phone: "+5511999990001" } })
-    expect(mockCreate).not.toHaveBeenCalled()
+    expect(mockTxFindUnique).toHaveBeenCalledWith({ where: { phone: "+5511999990001" } })
+    expect(mockTxCreate).not.toHaveBeenCalled()
   })
 
   it("update with formatted input stores canonical E.164", async () => {

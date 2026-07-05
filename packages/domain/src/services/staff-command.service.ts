@@ -274,17 +274,25 @@ async function activeOwnerCount(tx: TxClient): Promise<number> {
 }
 
 /**
- * FIX 2 (adversarial review) — run a last-owner-guarded mutation inside a
- * SERIALIZABLE interactive transaction. READ COMMITTED count-then-update is a
- * TOCTOU: two concurrent deactivates/demotes of the two last OWNERs would both
- * read activeOwnerCount()=2, both pass `<= 1`, both commit → zero active
- * OWNERs → permanent org lockout. Serializable makes the racing pair conflict;
- * the loser's P2034 gets ONE retry (the retry then correctly sees count=1 and
- * throws LastOwnerError) and a persistent conflict surfaces as
- * {@link StaffMutationConflictError} (route → 409).
+ * FIX 2 + FIX 7 (adversarial review) — run a staff mutation whose precondition
+ * READS must be atomic with its WRITE inside a SERIALIZABLE interactive
+ * transaction. READ COMMITTED read-then-write is a TOCTOU on the `role`/`active`
+ * columns:
+ *   - two concurrent deactivates/demotes of the two last OWNERs would both read
+ *     activeOwnerCount()=2, both pass `<= 1`, both commit → zero active OWNERs →
+ *     permanent org lockout (FIX 2: deactivate/assignRole);
+ *   - a reactivate-as-non-OWNER (create on an inactive phone) delayed past a
+ *     concurrent reactivate-as-OWNER + deactivate-of-the-other-OWNER would
+ *     commit a demotion of the LAST active OWNER with no guard firing (FIX 7:
+ *     create/reactivate — the third writer of the same columns).
+ * Serializable makes the racing pair conflict; the loser's P2034 gets ONE retry
+ * (which re-reads committed state and takes the honest branch — LastOwnerError /
+ * DuplicatePhoneError) and a persistent conflict surfaces as
+ * {@link StaffMutationConflictError} (route → 409). `subject` only labels the
+ * conflict error (staffId or phone).
  */
-async function runLastOwnerGuardedTx(
-  staffId: string,
+async function runStaffSerializableTx(
+  subject: string,
   fn: (tx: TxClient) => Promise<Staff>,
 ): Promise<Staff> {
   for (let attempt = 0; ; attempt += 1) {
@@ -292,10 +300,10 @@ async function runLastOwnerGuardedTx(
       return await prisma.$transaction(fn, { isolationLevel: "Serializable" })
     } catch (err) {
       if (prismaErrorCode(err) === "P2034" && attempt === 0) {
-        continue // one retry — re-runs count + write against committed state
+        continue // one retry — re-runs the reads + write against committed state
       }
       if (prismaErrorCode(err) === "P2034") {
-        throw new StaffMutationConflictError(staffId)
+        throw new StaffMutationConflictError(subject)
       }
       throw err
     }
@@ -318,45 +326,54 @@ export function createStaffCommandService(options?: StaffCommandServiceOptions) 
     assertValidRole(payload.role)
     assertValidHourlyRate(payload.hourlyRateCentavos)
 
-    const existing = await prisma.staff.findUnique({
-      where: { phone },
-    })
-    if (existing) {
-      if (existing.active) {
-        throw new DuplicatePhoneError(phone)
-      }
-      // Reactivate the inactive row (CLI create-staff idiom) — refresh
-      // name / role and, when provided, the hourly rate.
-      return prisma.staff.update({
-        where: { id: existing.id },
-        data: {
-          active: true,
-          name: payload.name,
-          role: payload.role,
-          ...(payload.hourlyRateCentavos !== undefined
-            ? { hourlyRateCentavos: payload.hourlyRateCentavos }
-            : {}),
-        },
+    // FIX 7 (adversarial review round 2): the phone lookup + reactivate-or-create
+    // write run in ONE Serializable transaction. The reactivate branch rewrites
+    // BOTH `role` and `active` on an existing row — the third writer of the
+    // guarded columns — and a read-committed lookup-then-write was a TOCTOU (see
+    // runStaffSerializableTx for the raced last-OWNER-demotion this closes).
+    return runStaffSerializableTx(phone, async (tx) => {
+      const existing = await tx.staff.findUnique({
+        where: { phone },
       })
-    }
+      if (existing) {
+        if (existing.active) {
+          throw new DuplicatePhoneError(phone)
+        }
+        // Reactivate the inactive row (CLI create-staff idiom) — refresh
+        // name / role and, when provided, the hourly rate.
+        return tx.staff.update({
+          where: { id: existing.id },
+          data: {
+            active: true,
+            name: payload.name,
+            role: payload.role,
+            ...(payload.hourlyRateCentavos !== undefined
+              ? { hourlyRateCentavos: payload.hourlyRateCentavos }
+              : {}),
+          },
+        })
+      }
 
-    try {
-      return await prisma.staff.create({
-        data: {
-          phone,
-          name: payload.name,
-          role: payload.role,
-          hourlyRateCentavos: payload.hourlyRateCentavos ?? null,
-        },
-      })
-    } catch (err) {
-      // `withAdjudicate` does NOT swallow executor errors — map the unique-race
-      // P2002 to the typed error (a concurrent create won the phone).
-      if (prismaErrorCode(err) === "P2002") {
-        throw new DuplicatePhoneError(phone)
+      try {
+        return await tx.staff.create({
+          data: {
+            phone,
+            name: payload.name,
+            role: payload.role,
+            hourlyRateCentavos: payload.hourlyRateCentavos ?? null,
+          },
+        })
+      } catch (err) {
+        // `withAdjudicate` does NOT swallow executor errors — map the unique-race
+        // P2002 to the typed error (a concurrent create won the phone; belt for
+        // engines that surface the unique violation before the serialization
+        // conflict does).
+        if (prismaErrorCode(err) === "P2002") {
+          throw new DuplicatePhoneError(phone)
+        }
+        throw err
       }
-      throw err
-    }
+    })
   }
 
   async function updateExecutor(payload: StaffUpdatePayload): Promise<Staff> {
@@ -398,8 +415,8 @@ export function createStaffCommandService(options?: StaffCommandServiceOptions) 
       }
       // FIX 2: read target + count + write are ONE Serializable transaction —
       // the last-owner precondition cannot be raced past (see
-      // runLastOwnerGuardedTx for the TOCTOU this closes).
-      return runLastOwnerGuardedTx(payload.staffId, async (tx) => {
+      // runStaffSerializableTx for the TOCTOU this closes).
+      return runStaffSerializableTx(payload.staffId, async (tx) => {
         const target = await tx.staff.findUnique({
           where: { id: payload.staffId },
         })
@@ -431,7 +448,7 @@ export function createStaffCommandService(options?: StaffCommandServiceOptions) 
       }
       // FIX 2: read target + count + write are ONE Serializable transaction —
       // two racing demotes of the two last OWNERs cannot both commit.
-      return runLastOwnerGuardedTx(payload.staffId, async (tx) => {
+      return runStaffSerializableTx(payload.staffId, async (tx) => {
         const target = await tx.staff.findUnique({
           where: { id: payload.staffId },
         })
