@@ -15,6 +15,11 @@ const AnalyticsSummaryResponse = z.object({
   outreachWeekly: z.number(),
   waConversionRate: z.number(),
   avgMessagesToCheckout: z.number(),
+  // BKL-128 — the composer signals that FAILED and fell back to zeros
+  // ("orders" | "activeCarts" | "newCustomers30d" | "whatsapp"). The dashboard
+  // renders a degraded signal's tiles as "indisponível", never as confident
+  // zeros (the BKL-100 posture; the flat DTO previously DROPPED this field).
+  degraded: z.array(z.string()),
 });
 
 export async function analyticsRoutes(server: FastifyInstance): Promise<void> {
@@ -55,6 +60,7 @@ export async function analyticsRoutes(server: FastifyInstance): Promise<void> {
         outreachWeekly: view.whatsapp.outreachWeekly,
         waConversionRate: view.whatsapp.conversionRatePct,
         avgMessagesToCheckout: view.whatsapp.avgMessagesToCheckout,
+        degraded: [...view.degraded],
       });
     },
   );
