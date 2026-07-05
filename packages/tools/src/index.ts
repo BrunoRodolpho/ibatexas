@@ -103,6 +103,7 @@ export {
   getNextOpenDay,
   getFrozenPickupMessage,
   getScheduleSignal,
+  getTodayHoursText,
   type ScheduleSignal,
 } from "./schedule/schedule-helpers.js"
 

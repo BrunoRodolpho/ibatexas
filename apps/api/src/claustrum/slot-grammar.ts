@@ -129,6 +129,8 @@ export const ORDER_FULFILLMENT_STAGE = "ORDER_FULFILLMENT_STAGE";
 export const PAYMENT_STATUS = "PAYMENT_STATUS";
 /** Triad slice (Plan 1 Phase 3) — the override-aware "is it open right now" type. */
 export const STORE_OPEN_NOW = "STORE_OPEN_NOW";
+/** BKL-121 — the today's-hours read (public, non-Triad; override/holiday falsified). */
+export const STORE_HOURS = "STORE_HOURS";
 
 /**
  * Per-type `validated` (asserting) templates, keyed by claim type. Each is the ONE
@@ -142,6 +144,21 @@ export const VALIDATED_TEMPLATES: Readonly<Record<string, Template>> = {
   // render.prop("mealPeriod") with claimType filled = self; the ~11-line handwritten
   // entry collapsed into this single spliced import.
   [STORE_OPEN_NOW]: STORE_OPEN_NOW_TEMPLATE,
+  // BKL-121 — the STORE_HOURS validated template. Static pt-BR around the single
+  // ledger-bound proposition prop(STORE_HOURS, "hoursText"), bound 1:1 to the C6
+  // value-binding FIELD (claim-registry.ts `valueBinding.path = ["hoursText"]`); the
+  // StoreHoursRead shape's field is `hoursText` (turn-reads.ts). The value is a
+  // FREE-FORM pt-BR hours string ("11h–15h / 18h–23h" | "fechado"), evidence-bound
+  // from the real weekly schedule (never an enum, so no claims-labels localization).
+  [STORE_HOURS]: {
+    claimType: STORE_HOURS,
+    posture: "validated",
+    slots: [
+      lit("Hoje nosso horário de funcionamento é: "),
+      prop(STORE_HOURS, "hoursText"),
+      lit("."),
+    ],
+  },
   [ORDER_FULFILLMENT_STAGE]: {
     claimType: ORDER_FULFILLMENT_STAGE,
     posture: "validated",
@@ -181,22 +198,30 @@ export const VALIDATED_TEMPLATES: Readonly<Record<string, Template>> = {
 
 // PROPOSABLE-BUT-UNRENDERABLE COVERAGE (BKL-112; the pin lives in
 // __tests__/proposable-renderable-drift.test.ts). The keys of VALIDATED_TEMPLATES
-// (STORE_OPEN_NOW, ORDER_FULFILLMENT_STAGE, PAYMENT_STATUS) are a STRICT SUBSET of
-// the proposable CLAIM_REGISTRY enum (claim-registry.ts). Three registered
-// proposable types have NO validated template today, so a genuinely-VALIDATED
-// claim of one of them can only SAFE-DEGRADE to the UNKNOWN template
-// (renderer-from-claims.ts abstains an untemplated VALIDATED claim — §O#3, never
-// free-authored prose). They split into two DISTINCT reasons — see the by-design
-// partition note at claim-definition-registry.ts:68-70:
+// (STORE_OPEN_NOW, STORE_HOURS, ORDER_FULFILLMENT_STAGE, PAYMENT_STATUS) are a
+// STRICT SUBSET of the proposable CLAIM_REGISTRY enum (claim-registry.ts). TWO
+// registered proposable types still have NO validated template, so a
+// genuinely-VALIDATED claim of one of them can only SAFE-DEGRADE to the UNKNOWN
+// template (renderer-from-claims.ts abstains an untemplated VALIDATED claim — §O#3,
+// never free-authored prose). They split into two DISTINCT reasons — see the
+// by-design partition note at claim-definition-registry.ts:68-70:
 //
-//   · MENU_ITEM_ALLERGENS, STORE_HOURS — read_claims that degrade to UNKNOWN
-//     PENDING their validated read-templates (tracker BKL-121). Adding these is
-//     soundness-sensitive registry growth (allergens are Hard-Rule-1 safety-
-//     critical) and is a separate focused effort — not a template edit here.
+//   · MENU_ITEM_ALLERGENS — a read_claim that degrades to UNKNOWN PENDING its
+//     validated read-template (tracker BKL-123). Adding it is soundness-sensitive +
+//     decision-gated (allergens are Hard-Rule-1 safety-critical; a renderer
+//     list-slot capability + an owner liability policy are prerequisites) — a
+//     separate focused effort, not a template edit here.
 //   · PURCHASE_COMPLETED — an action_claim rendered via the responder's
 //     SUCCESS_CLAIM_CLASSES path (ibatexas-responder.ts), NOT the read-template
 //     grammar. It is DELIBERATELY + PERMANENTLY not in VALIDATED_TEMPLATES; it is
-//     NOT pending any template and must NOT be filed under BKL-121.
+//     NOT pending any template and must NOT be filed under BKL-121/-123.
+//
+// STORE_HOURS GRADUATED (BKL-121): it now has the validated template above (the full
+// read→evidence→falsifier→derive→template chain), so it is NO LONGER in the gap — a
+// today's-hours question renders today's real hours instead of dead-ending at
+// SAFE_UNKNOWN. The drift test pin was shrunk to {MENU_ITEM_ALLERGENS,
+// PURCHASE_COMPLETED} to match, and its RENDERABLE==triadScoped block was updated to
+// allow STORE_HOURS as the ONE deliberate non-Triad renderable (see that test).
 //
 // The drift test pins this exact gap so a future proposable type added without a
 // template (or a template added/removed for a pinned type) trips CI.

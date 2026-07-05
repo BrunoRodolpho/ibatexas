@@ -80,11 +80,22 @@ import {
  * ORDER_FULFILLMENT_STAGE, PAYMENT_STATUS) plus STORE_HOURS — the schedule-cluster
  * SIBLING of STORE_OPEN_NOW (both are covered by the STORE_OPEN_NOW_Q markers
  * `/abert|fechad|que horas|funciona|hor[áa]rio/`; the decomposer's Triad closure
- * only NAMES STORE_OPEN_NOW, so STORE_HOURS is spliced in here to catch the
- * live-proven smalltalk over-proposal). A type OUTSIDE this set is one the net has
- * no marker for (MENU_ITEM_ALLERGENS, PURCHASE_COMPLETED) — it is NEVER demoted, so
- * a legitimate allergens/purchase claim is surfaced byte-identically to today
- * (demote-only-safe). If the closure grows a Triad row, this domain auto-expands.
+ * only NAMES STORE_OPEN_NOW, so STORE_HOURS is spliced in here). A type OUTSIDE this
+ * set is one the net has no marker for (MENU_ITEM_ALLERGENS, PURCHASE_COMPLETED) — it
+ * is NEVER demoted, so a legitimate allergens/purchase claim is surfaced
+ * byte-identically to today (demote-only-safe). If the closure grows a Triad row,
+ * this domain auto-expands.
+ *
+ * BKL-121 (why STORE_HOURS is spliced HERE, not added to the required closure): a
+ * TODAY'S-hours claim has honest override/holiday FALSIFIERS, so it degrades to
+ * UNKNOWN on an exception day. Adding STORE_HOURS to the STORE_OPEN_NOW_Q REQUIRED
+ * set would couple it to STORE_OPEN_NOW's completeness — a required-but-UNKNOWN (or,
+ * on the common turn where the model proposes only STORE_OPEN_NOW, required-but-
+ * ABSENT) STORE_HOURS would DEGRADE the whole turn and LOSE the live-proven
+ * STORE_OPEN_NOW answer. So STORE_HOURS stays ADDITIVE at the PROPOSAL layer (per
+ * BKL-121 D3): the persona proposes it, this filter KEEPS it on a schedule turn, and
+ * it renders its own line independently — never re-routing the STORE_OPEN_NOW_Q span
+ * and never coupling completeness.
  */
 const RELEVANCE_GOVERNED_TYPES: ReadonlySet<string> = new Set<string>([
   ...Object.values(REQUIRED_CLAIM_CLOSURE).flat(),
@@ -101,8 +112,8 @@ const RELEVANCE_GOVERNED_TYPES: ReadonlySet<string> = new Set<string>([
  *   - it is STORE_HOURS on a turn the schedule span-class fired (STORE_OPEN_NOW is
  *     required) — the two share the STORE_OPEN_NOW_Q markers, so a legitimate hours
  *     question that maps to STORE_OPEN_NOW must never demote a STORE_HOURS answer
- *     (the alias the Triad-scoped closure lacks; BKL-112 is the proper decomposer
- *     STORE_HOURS row).
+ *     (the additive schedule-cluster companion; BKL-121 D3 keeps it at the proposal
+ *     layer rather than the required-completeness closure — see the module note).
  * Otherwise the type is governed but its span was NOT detected → DEMOTE. Pure.
  */
 function isCandidateRelevant(

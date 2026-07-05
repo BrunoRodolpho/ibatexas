@@ -13,29 +13,31 @@
 // FUTURE proposable type added without a template — or a template added/removed
 // for a pinned type — TRIPS CI and forces an explicit decision.
 //
-// The gap today is THREE types, and the partition is BY DESIGN, not a bug —
-// claim-definition-registry.ts:68-70 names exactly this group: "the non-Triad
-// public/action types (MENU_ITEM_ALLERGENS, STORE_HOURS, PURCHASE_COMPLETED) are
-// deliberately NOT marked [triadScoped]". They split into TWO kinds of gap:
+// The gap today is TWO types, and the partition is BY DESIGN, not a bug —
+// claim-definition-registry.ts:68-70 names the non-Triad public/action group. After
+// BKL-121 graduated STORE_HOURS (it now carries a validated today's-hours template),
+// the remaining gap splits into TWO kinds:
 //
-//   (i)  MENU_ITEM_ALLERGENS + STORE_HOURS — `read_claim`s. A validated allergen/
-//        hours read HAS a real answer but no template, so it degrades to UNKNOWN.
-//        This is a TEMPORARY correctness-fidelity gap PENDING their validated
-//        read-templates (tracker BKL-121). Adding those templates is soundness-
-//        sensitive registry growth (allergens are Hard-Rule-1 safety-critical),
-//        so it is a separate focused effort — NOT done here.
+//   (i)  MENU_ITEM_ALLERGENS — a `read_claim`. A validated allergen read HAS a real
+//        answer but no template, so it degrades to UNKNOWN. This is a correctness-
+//        fidelity gap DECISION-GATED as BKL-123 (a renderer list-slot capability + an
+//        owner liability policy are prerequisites; allergens are Hard-Rule-1 safety-
+//        critical) — a separate focused effort, NOT done here.
 //   (ii) PURCHASE_COMPLETED — an `action_claim`. Its customer-facing surface is
 //        NOT the read-template grammar at all: action outcomes render via the
 //        responder's SUCCESS_CLAIM_CLASSES path (ibatexas-responder.ts, the
 //        `purchase-completed` class, justifiedBy ["order.checkout.create"]). It is
 //        therefore DELIBERATELY + PERMANENTLY absent from VALIDATED_TEMPLATES —
-//        it is NOT pending any read-template and must NOT be filed under BKL-121.
+//        it is NOT pending any read-template and must NOT be filed under BKL-121/-123.
+//
+// STORE_HOURS (graduated, BKL-121) is NOW renderable but is the ONE deliberate
+// NON-Triad renderable type — see the RENDERABLE==triadScoped∪{STORE_HOURS} block.
 //
 // A FAILURE of the pin below is a DELIBERATE DECISION POINT, never a flake:
 //   · gap GREW  → a new proposable type has no template. Either add its validated
 //     template, or consciously extend the pin with a linked tracker id.
-//   · gap SHRANK → a pinned type got a template (e.g. BKL-121 landed for
-//     STORE_HOURS). Good — update the pin to remove it.
+//   · gap SHRANK → a pinned type got a template (as BKL-121 did for STORE_HOURS).
+//     Good — update the pin to remove it (and, if non-Triad, the triadScoped block).
 // Adjust the pin as a conscious act; do not just re-sort it green.
 
 import { describe, expect, it } from "vitest";
@@ -62,10 +64,16 @@ const sortedDiff = (a: readonly string[], b: ReadonlySet<string>): string[] =>
  * A literal on purpose: it is what pins reality so any drift in the computed
  * `PROPOSABLE \ RENDERABLE` breaks CI.
  */
-const KNOWN_UNRENDERABLE = ["MENU_ITEM_ALLERGENS", "PURCHASE_COMPLETED", "STORE_HOURS"];
+// BKL-121 SHRUNK this pin: STORE_HOURS graduated (it now has a validated template —
+// the full read→evidence→falsifier→derive→template chain), so it is no longer in the
+// gap. The remaining two are the by-design partition: MENU_ITEM_ALLERGENS (a
+// read_claim pending BKL-123 — decision-gated on a renderer list-slot capability + an
+// owner liability policy) and PURCHASE_COMPLETED (an action_claim rendered via the
+// responder's SUCCESS_CLAIM_CLASSES path, DELIBERATELY + PERMANENTLY untemplated).
+const KNOWN_UNRENDERABLE = ["MENU_ITEM_ALLERGENS", "PURCHASE_COMPLETED"];
 
 describe("BKL-112 — proposable ⊇ renderable: the known-unrenderable gap is pinned", () => {
-  it("pins PROPOSABLE \\ RENDERABLE to exactly {MENU_ITEM_ALLERGENS, PURCHASE_COMPLETED, STORE_HOURS}", () => {
+  it("pins PROPOSABLE \\ RENDERABLE to exactly {MENU_ITEM_ALLERGENS, PURCHASE_COMPLETED}", () => {
     // If this fails the gap MOVED — a deliberate decision point, not a flake:
     //   grew → a new proposable type lacks a template (add one, or extend the pin
     //     with a linked tracker id);
@@ -101,19 +109,32 @@ describe("BKL-112 — RENDERABLE ⊆ PROPOSABLE: no dangling template", () => {
   });
 });
 
-describe("BKL-112 — context: RENDERABLE coincides with the triadScoped definitions today", () => {
-  it("the renderable set equals exactly the triadScoped claim definitions", () => {
-    // By-design partition (NOT a bug): the types that carry a validated template are
-    // precisely the Trustworthiness-Triad live reads (STORE_OPEN_NOW,
-    // ORDER_FULFILLMENT_STAGE, PAYMENT_STATUS); the non-Triad public/action types
-    // carry none (claim-definition-registry.ts:68-70). Derived from the real
-    // exported CLAIM_DEFINITIONS.triadScoped flags, not hardcoded — so if the two
-    // sets ever diverge (a Triad type loses its template, or a non-Triad type gains
-    // one) this documents that as the same deliberate decision point.
-    const triadScoped = [...CLAIM_REGISTRY]
-      .filter((type) => CLAIM_DEFINITIONS[type].triadScoped)
-      .sort();
-    expect([...RENDERABLE].sort()).toEqual(triadScoped);
+// BKL-121 — STORE_HOURS is the ONE deliberate NON-Triad renderable type. It carries a
+// validated template (a today's-hours read) but is NOT Trustworthiness-Triad-scoped:
+// it is PUBLIC (owned by nobody, like STORE_OPEN_NOW) yet it is intentionally left out
+// of TRIAD_SCOPED_TYPES / the required-completeness closure so its honest
+// override/holiday UNKNOWN can never DEGRADE the live-proven STORE_OPEN_NOW answer
+// (coupling it into STORE_OPEN_NOW_Q's required set would regress that path — see
+// ibatexas-claim-planner.ts). So RENDERABLE == triadScoped ∪ {STORE_HOURS}: the guard
+// is EXTENDED (not deleted) to allow exactly this one deliberate addition; any OTHER
+// divergence (a Triad type losing its template, or a second non-Triad type gaining
+// one) still trips CI as a decision point.
+const NON_TRIAD_RENDERABLE = ["STORE_HOURS"] as const;
+
+describe("BKL-112 — context: RENDERABLE == the triadScoped definitions ∪ {STORE_HOURS}", () => {
+  it("the renderable set equals exactly triadScoped ∪ the one deliberate non-Triad type", () => {
+    // Derived from the real exported CLAIM_DEFINITIONS.triadScoped flags, not
+    // hardcoded — plus the single BKL-121 non-Triad allowance. If any OTHER type
+    // diverges, this documents it as the same deliberate decision point.
+    const triadScoped = [...CLAIM_REGISTRY].filter(
+      (type) => CLAIM_DEFINITIONS[type].triadScoped,
+    );
+    const expected = [...triadScoped, ...NON_TRIAD_RENDERABLE].sort();
+    expect([...RENDERABLE].sort()).toEqual(expected);
+    // POSITIVE controls: STORE_HOURS is genuinely renderable AND genuinely NON-Triad
+    // (so the extension is not vacuously masking a Triad-flag flip).
+    expect(RENDERABLE.has("STORE_HOURS")).toBe(true);
+    expect(CLAIM_DEFINITIONS.STORE_HOURS.triadScoped).toBe(false);
   });
 });
 
@@ -133,10 +154,11 @@ describe("BKL-112 — the drift guard catches gap growth and shrink", () => {
   });
 
   it("FLAGS shrink: giving a pinned type a template removes it from the gap", () => {
-    // Simulate BKL-121 landing a template for STORE_HOURS.
-    const withTemplate = new Set<string>([...RENDERABLE, "STORE_HOURS"]);
+    // Simulate a FUTURE row (e.g. BKL-123) landing a template for MENU_ITEM_ALLERGENS
+    // (a STILL-pinned type — STORE_HOURS already graduated under BKL-121).
+    const withTemplate = new Set<string>([...RENDERABLE, "MENU_ITEM_ALLERGENS"]);
     const drifted = sortedDiff(CLAIM_REGISTRY, withTemplate);
-    expect(drifted).not.toContain("STORE_HOURS");
+    expect(drifted).not.toContain("MENU_ITEM_ALLERGENS");
     // The pin would FAIL (CI trips) → forces updating the pin.
     expect(drifted).not.toEqual(KNOWN_UNRENDERABLE);
   });

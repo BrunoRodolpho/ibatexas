@@ -98,6 +98,7 @@ import {
   closedHoursPromptNote,
   type ScheduleSignal,
 } from "./closed-hours.js";
+import type { StoreHoursRead } from "./turn-reads.js";
 
 // Re-export so existing importers (tests, registry) keep their import site.
 export { EXPRESS_INTENT_TOOL };
@@ -239,6 +240,19 @@ export interface IbatexasPlannerDeps {
   readonly resolveScheduleSignal?: () =>
     | Promise<ScheduleSignal | undefined>
     | ScheduleSignal
+    | undefined;
+  /**
+   * BKL-121 — resolve TODAY's operating-hours read for THIS turn (tag-then-derive
+   * STEP 2 for STORE_HOURS). The SAME first-party `readStoreHours()` the investigator
+   * records under `schedule:store_hours`, so the derived `hoursText` value is
+   * byte-equal to the recorded ledger entry and the kernel's C6 value-binding passes
+   * BY CONSTRUCTION (a present override/holiday falsifier STILL demotes to UNKNOWN).
+   * Time-dependent, so it is invoked per `proposeClaims()`. Omitted in unit tests →
+   * a STORE_HOURS candidate keeps `value: undefined` (C6 ABSTAIN → honest UNKNOWN).
+   */
+  readonly resolveStoreHours?: () =>
+    | Promise<StoreHoursRead | undefined>
+    | StoreHoursRead
     | undefined;
   /**
    * BKL-027 (F2) — one-hop read-tool executors. Map of advertised read-tool
@@ -1105,7 +1119,16 @@ export function createIbatexasPlanner(
       const scheduleSignal = deps.resolveScheduleSignal
         ? ((await deps.resolveScheduleSignal()) ?? undefined)
         : undefined;
-      const derivedCandidates = deriveCandidateValues(candidates, { scheduleSignal });
+      // BKL-121 — the SAME first-party today's-hours read the investigator records,
+      // so STORE_HOURS's derived `hoursText` is byte-equal to the ledger entry (C6
+      // passes by construction; a present override/holiday falsifier still demotes).
+      const storeHours = deps.resolveStoreHours
+        ? ((await deps.resolveStoreHours()) ?? undefined)
+        : undefined;
+      const derivedCandidates = deriveCandidateValues(candidates, {
+        scheduleSignal,
+        storeHours,
+      });
 
       // POST-planning wall (SDD §C P4 / §J.8): every span gets a disposition; an
       // unmapped span is surfaced as CLARIFY, never silently dropped.
