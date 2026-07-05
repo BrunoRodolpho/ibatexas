@@ -31,6 +31,13 @@ import {
   type AgentApprovalRequest,
   type AgentApprovalStatus,
 } from './agent-approvals.mappers'
+import {
+  AGENT_KILL_STATUS_PATH,
+  killPath as agentKillPath,
+  unkillPath as agentUnkillPath,
+  type AgentKillStatus,
+  type KillIntent,
+} from './agent-killswitch.mappers'
 
 const hooks = buildAdminHooks(createAdminHook, createAdminListHook, apiFetch)
 
@@ -1328,6 +1335,131 @@ export function useAgentApprovalPendingCount(): number {
     }
     void fetchCount()
     const interval = setInterval(() => { void fetchCount() }, AGENT_APPROVAL_POLL_MS)
+    return () => { cancelled = true; clearInterval(interval) }
+  }, [])
+
+  return count
+}
+
+// ── Agentes (per-agent kill-switch control — BKL-099) ──────────────────────────
+
+const AGENT_KILL_STATUS_POLL_MS = 30_000
+
+/**
+ * The kill-status roster read is MANAGER-gated (requireManagerRole), so unlike the
+ * approvals list it distinguishes THREE non-OK terminals: the plane-off 503, the
+ * non-manager 403, and a real transport failure. A tolerant raw fetch (not
+ * apiFetch, which discards the status) tells them apart so the page renders the
+ * honest banner for each. Throws on any other non-OK so the caller surfaces it.
+ */
+export type AgentKillListState =
+  | { readonly kind: 'ok'; readonly agents: AgentKillStatus[] }
+  | { readonly kind: 'planeOff' }
+  | { readonly kind: 'forbidden' }
+
+async function fetchAgentKillStatus(): Promise<AgentKillListState> {
+  const res = await fetch(`/api/proxy${AGENT_KILL_STATUS_PATH}`, { credentials: 'include' })
+  if (res.status === 503) return { kind: 'planeOff' }
+  if (res.status === 403) return { kind: 'forbidden' }
+  if (!res.ok) throw new Error(`API error: ${res.status} ${res.statusText}`)
+  const data = (await res.json().catch(() => ({}))) as { agents?: AgentKillStatus[] }
+  return { kind: 'ok', agents: Array.isArray(data.agents) ? data.agents : [] }
+}
+
+/**
+ * Backs the "Agentes" kill-switch control. ONE fetch per 30s poll of the roster +
+ * kill-status; skeleton flashes only on the initial load (the poll refreshes rows
+ * in place). A transient poll failure surfaces the error WITHOUT clearing existing
+ * rows. `planeOff` / `forbidden` render the honest disabled banners. `toggleAgent`
+ * POSTs the trip/clear WITHOUT side effects (the page owns the toast + the reload
+ * decision) and returns the HTTP status + the AUTHORITATIVE written `killed` flag
+ * off the 200 body, so the page reports the OUTCOME honestly (reload-after-write,
+ * never optimistic — a killed:true that comes back still-live is reported, not
+ * faked).
+ */
+export function useAgentKillSwitch() {
+  const [agents, setAgents] = useState<AgentKillStatus[]>([])
+  const [planeOff, setPlaneOff] = useState(false)
+  const [forbidden, setForbidden] = useState(false)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [refreshKey, setRefreshKey] = useState(0)
+
+  const hasLoadedRef = useRef(false)
+
+  useEffect(() => {
+    let cancelled = false
+    if (!hasLoadedRef.current) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- initial load only; loading flag drives the skeleton
+      setLoading(true)
+    }
+    fetchAgentKillStatus()
+      .then((state) => {
+        if (cancelled) return
+        setPlaneOff(state.kind === 'planeOff')
+        setForbidden(state.kind === 'forbidden')
+        setAgents(state.kind === 'ok' ? state.agents : [])
+        setError(null)
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return
+        // Do NOT clear existing rows on a transient poll failure; surface the error.
+        setError(err instanceof Error ? err.message : 'load_failed')
+      })
+      .finally(() => { if (!cancelled) { setLoading(false); hasLoadedRef.current = true } })
+    return () => { cancelled = true }
+  }, [refreshKey])
+
+  const refetch = useCallback(() => setRefreshKey((k) => k + 1), [])
+
+  // Canonical 30s poll.
+  useEffect(() => {
+    const interval = setInterval(refetch, AGENT_KILL_STATUS_POLL_MS)
+    return () => clearInterval(interval)
+  }, [refetch])
+
+  // Raw fetch (not apiFetch) so we read the exact status code AND the written
+  // `killed` flag off the 200 body. No implicit refetch — the page decides.
+  const toggleAgent = useCallback(
+    async (agentId: string, intent: KillIntent): Promise<{ ok: boolean; status: number; killed?: boolean }> => {
+      const path = intent === 'kill' ? agentKillPath(agentId) : agentUnkillPath(agentId)
+      const res = await fetch(`/api/proxy${path}`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+      })
+      const data = (await res.json().catch(() => ({}))) as { killed?: boolean }
+      return { ok: res.ok, status: res.status, killed: data.killed }
+    },
+    [],
+  )
+
+  return { agents, planeOff, forbidden, loading, error, toggleAgent, refetch }
+}
+
+/**
+ * Cheap 30s poll of the KILLED-agent count that backs the sidebar badge — a
+ * tripped kill switch is an incident-level signal an operator wants surfaced in
+ * the nav. Degrades to 0 (no pill) on any failure, when the plane is off, OR when
+ * the viewer is not a manager (the roster read 403s → 0). Mirrors
+ * useAgentApprovalPendingCount.
+ */
+export function useAgentKilledCount(): number {
+  const [count, setCount] = useState(0)
+
+  useEffect(() => {
+    let cancelled = false
+    const fetchCount = async () => {
+      try {
+        const state = await fetchAgentKillStatus()
+        if (cancelled) return
+        setCount(state.kind === 'ok' ? state.agents.filter((a) => a.killed).length : 0)
+      } catch {
+        if (!cancelled) setCount(0)
+      }
+    }
+    void fetchCount()
+    const interval = setInterval(() => { void fetchCount() }, AGENT_KILL_STATUS_POLL_MS)
     return () => { cancelled = true; clearInterval(interval) }
   }, [])
 
