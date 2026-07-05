@@ -2,19 +2,38 @@
 // journal + intentKind derivation), tested with synthetic TurnResults so no
 // real conductor/handleTurn is needed.
 
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { AgentDefinition } from "@ibatexas/agents";
 import type { IntentEnvelope } from "@adjudicate/core";
-import type { TurnResult } from "@claustrum/core";
+import type { ModelProvider, TurnResult } from "@claustrum/core";
 import {
+  composeLiveAgentConductor,
   deriveIntentKind,
   processLiveTurnResult,
+  type LiveAgentConductorDeps,
   type LiveTriggerRunnerDeps,
 } from "../claustrum/live-agent-conductor.js";
 import type { TriggerTurnInput } from "../claustrum/agent-trigger-bridge.js";
 import type { AgentRunRecord } from "../claustrum/agent-run-journal.js";
 import type { RefundCircuitBreaker } from "../claustrum/agent-realmoney-safety.js";
 import type { LearningEvent } from "../learning-sink-bootstrap.js";
+import type { ClaimsSeams } from "../claustrum/claims-pipeline.js";
+import type { ClaimAwarePlannerPort } from "../claustrum/ibatexas-planner.js";
+
+// composeLiveAgentConductor delegates to @claustrum/core's createConductor; spy
+// on it (keeping every other export real, e.g. sessionKeyAwareLockKey) so a test
+// can inspect the composed ConductorOptions — the only way to observe that the
+// claims-seam factory wraps the SAME planner the conductor plans with (Q6b).
+const { createConductorSpy } = vi.hoisted(() => ({
+  createConductorSpy: vi.fn((_opts: unknown) => ({
+    openCapsule: async () => ({}),
+    closeCapsule: async () => {},
+  })),
+}));
+vi.mock("@claustrum/core", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@claustrum/core")>();
+  return { ...actual, createConductor: createConductorSpy };
+});
 
 const AGENT: AgentDefinition = {
   id: "pix-payment-failure-remediation",
@@ -218,5 +237,102 @@ describe("processLiveTurnResult", () => {
     );
     expect(result.decisionKind).toBe("EXECUTE");
     expect(records).toHaveLength(1); // journaled despite the learning emit failure
+  });
+});
+
+// BKL-003 — the per-trigger claims-seam wiring. createConductor is spied (above),
+// so a test can read the composed ConductorOptions the compose call produced.
+describe("composeLiveAgentConductor — claims-seam wiring (BKL-003)", () => {
+  const MODEL = {} as ModelProvider;
+
+  /** Minimal deps for a compose — every port is inert because createConductor is
+   *  mocked; only buildPlanner + the optional seam factory matter here. */
+  function conductorDeps(
+    over: Partial<LiveAgentConductorDeps> = {},
+  ): LiveAgentConductorDeps {
+    const base = {
+      adjudicator: {},
+      memory: {},
+      grounding: {},
+      explainer: {},
+      handoff: {},
+      telemetry: {},
+      session: {},
+      tenantResolver: {},
+      sessionLock: {},
+      tools: {},
+      systemChannel: {},
+      modelProvider: {},
+      buildPlanner: () => ({}) as ClaimAwarePlannerPort,
+      buildResponder: () => ({}),
+    } as unknown as LiveAgentConductorDeps;
+    return { ...base, ...over };
+  }
+
+  /** The last ConductorOptions createConductor was composed with. */
+  function lastComposedOptions(): Record<string, unknown> {
+    const call = createConductorSpy.mock.calls.at(-1);
+    return (call?.[0] ?? {}) as Record<string, unknown>;
+  }
+
+  beforeEach(() => createConductorSpy.mockClear());
+
+  it("passes the SAME planner instance to BOTH createConductor and the seam factory (Q6b)", () => {
+    const planner = { proposeClaims() {} } as unknown as ClaimAwarePlannerPort;
+    const seenByFactory: ClaimAwarePlannerPort[] = [];
+    const d = conductorDeps({
+      buildPlanner: () => planner,
+      buildClaimsSeamsForPlanner: (p) => {
+        seenByFactory.push(p);
+        return { investigator: {} } as unknown as ClaimsSeams;
+      },
+    });
+    composeLiveAgentConductor(d, MODEL);
+    const opts = lastComposedOptions();
+    expect(seenByFactory).toEqual([planner]); // the factory saw the planner
+    expect(opts.planner).toBe(planner); // the conductor got the same instance
+    expect(seenByFactory[0]).toBe(opts.planner); // identity across both surfaces
+  });
+
+  it("spreads the factory's seams into the conductor composition", () => {
+    const investigator = { tag: "inv" };
+    const d = conductorDeps({
+      buildClaimsSeamsForPlanner: () =>
+        ({ investigator }) as unknown as ClaimsSeams,
+    });
+    composeLiveAgentConductor(d, MODEL);
+    expect(lastComposedOptions().investigator).toBe(investigator);
+  });
+
+  it("adds NO claims-seam keys when the factory is ABSENT (byte-identical)", () => {
+    composeLiveAgentConductor(conductorDeps(), MODEL);
+    const opts = lastComposedOptions();
+    expect("investigator" in opts).toBe(false);
+    expect("claimPlanner" in opts).toBe(false);
+    expect("claimsKernel" in opts).toBe(false);
+    expect("claimsRenderer" in opts).toBe(false);
+  });
+
+  it("adds NO keys when the factory returns {} (pipeline OFF path)", () => {
+    const d = conductorDeps({
+      buildClaimsSeamsForPlanner: () => ({}) as ClaimsSeams,
+    });
+    composeLiveAgentConductor(d, MODEL);
+    const opts = lastComposedOptions();
+    expect("investigator" in opts).toBe(false);
+    expect("claimPlanner" in opts).toBe(false);
+  });
+
+  it("propagates a seam-factory throw (fail-closed: a broken registry refuses agent turns too)", () => {
+    const d = conductorDeps({
+      buildClaimsSeamsForPlanner: () => {
+        throw new Error("claim registry invalid");
+      },
+    });
+    expect(() => composeLiveAgentConductor(d, MODEL)).toThrow(
+      "claim registry invalid",
+    );
+    // The throw happens BEFORE createConductor — no half-composed conductor.
+    expect(createConductorSpy).not.toHaveBeenCalled();
   });
 });

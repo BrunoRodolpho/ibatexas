@@ -13,13 +13,14 @@
  * Pure unit tests — a tiny `ClaimAwarePlannerPort` stub; no DB / model / boot.
  */
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { CognitiveState, Plan } from "@claustrum/core";
 import type { ClaimAwarePlannerPort, ClaimPlan } from "../ibatexas-planner.js";
 import {
   buildClaimsSeams,
   claimsPipelineEnabled,
   CLAIMS_PIPELINE_ENABLED_ENV,
+  warnOncePerMessage,
 } from "../claims-pipeline.js";
 
 const stubPlanner: ClaimAwarePlannerPort = {
@@ -76,5 +77,30 @@ describe("claims-pipeline — buildClaimsSeams (byte-identical when OFF)", () =>
     // claimsKernelDepsForTurn is the per-turn rebuild function the Conductor calls.
     expect(typeof seams.claimsKernelDepsForTurn).toBe("function");
     expect(typeof seams.claimsRenderer?.render).toBe("function");
+  });
+});
+
+describe("claims-pipeline — warnOncePerMessage (BKL-003 per-trigger dedup)", () => {
+  it("emits each DISTINCT message once, collapsing repeats across invocations", () => {
+    const emitted: string[] = [];
+    // Built ONCE (the dedup set lives in the closure); reused across triggers.
+    const warn = warnOncePerMessage((m) => emitted.push(m));
+    // Two below-floor kernels → two distinct messages, re-seen every trigger.
+    warn("adjudicate below floor");
+    warn("claustrum below floor");
+    warn("adjudicate below floor"); // trigger 2 — repeat
+    warn("claustrum below floor"); // trigger 2 — repeat
+    warn("adjudicate below floor"); // trigger 3 — repeat
+    expect(emitted).toEqual(["adjudicate below floor", "claustrum below floor"]);
+  });
+
+  it("does not truncate: BOTH package warnings on the first pass survive", () => {
+    const sink = vi.fn();
+    const warn = warnOncePerMessage(sink);
+    warn("msg-A");
+    warn("msg-B");
+    expect(sink).toHaveBeenCalledTimes(2);
+    expect(sink).toHaveBeenNthCalledWith(1, "msg-A");
+    expect(sink).toHaveBeenNthCalledWith(2, "msg-B");
   });
 });

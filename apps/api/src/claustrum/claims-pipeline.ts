@@ -108,6 +108,31 @@ export function warnOnBelowFloorKernel(deps: BuildClaimsSeamsDeps): void {
 }
 
 /**
+ * Wrap a `warn` sink so each DISTINCT message is emitted AT MOST ONCE per
+ * process. The managed-agent plane rebuilds the claims seams PER TRIGGER
+ * (`buildClaimsSeamsForPlanner`), so `warnOnBelowFloorKernel` would otherwise
+ * re-emit the SAME boot-class floor warning on every trigger — the linked kernel
+ * versions do not change between triggers, so those repeats are pure log noise
+ * (this repo ran a whole logging signal-quality program). De-duping BY MESSAGE
+ * keeps every distinct warning (there is one per below-floor kernel package)
+ * while collapsing the per-trigger repeats to a single line — a blunt
+ * suppress-after-first-call boolean would instead drop the second package's
+ * warning on the first trigger. Non-throwing, to preserve
+ * {@link warnOnBelowFloorKernel}'s best-effort contract. Construct it ONCE and
+ * reuse across trigger invocations (the dedup set lives in the closure).
+ */
+export function warnOncePerMessage(
+  warn: (message: string) => void,
+): (message: string) => void {
+  const seen = new Set<string>();
+  return (message) => {
+    if (seen.has(message)) return;
+    seen.add(message);
+    warn(message);
+  };
+}
+
+/**
  * Assemble the claims seams for the composition root. Returns `{}` (constructing
  * nothing) when the flag is OFF; otherwise the three injected seams. The Claims
  * kernel deps use the fail-closed process-wide defaults (PENDING the per-turn
