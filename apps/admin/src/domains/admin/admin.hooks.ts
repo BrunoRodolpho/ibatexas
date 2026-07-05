@@ -417,6 +417,8 @@ export interface AnalyticsSummary {
   outreachWeekly: number
   waConversionRate: number
   avgMessagesToCheckout: number
+  /** BKL-128 — composer signals that fell back to zeros; their tiles render "indisponível". */
+  degraded: string[]
 }
 
 export function useAdminAnalytics() {
