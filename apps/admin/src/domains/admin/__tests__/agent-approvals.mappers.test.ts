@@ -9,6 +9,8 @@ import { describe, it, expect } from 'vitest'
 import {
   listPath,
   resolvePath,
+  detailPath,
+  isPlaneOffMessage,
   AGENT_APPROVALS_ENDPOINT,
   intentKindLabel,
   statusBadge,
@@ -46,6 +48,22 @@ describe('listPath / resolvePath', () => {
     expect(resolvePath('abc-123')).toBe('/api/admin/agent-approvals/abc-123/resolve')
     expect(resolvePath('a/b')).toBe('/api/admin/agent-approvals/a%2Fb/resolve')
     expect(AGENT_APPROVALS_ENDPOINT).toBe('/api/admin/agent-approvals')
+  })
+  it('detail path (BKL-105 deep-link) targets the single-token projection (encoded, no /resolve)', () => {
+    expect(detailPath('abc-123')).toBe('/api/admin/agent-approvals/abc-123')
+    expect(detailPath('a/b')).toBe('/api/admin/agent-approvals/a%2Fb')
+  })
+})
+
+describe('isPlaneOffMessage (BKL-105 — disambiguate the detail 404)', () => {
+  it('true only when the body carries the plane-off marker', () => {
+    // The server PLANE_OFF constant carries the IBX_AGENTS_ENABLED marker.
+    expect(isPlaneOffMessage('managed-agent plane not enabled (IBX_AGENTS_ENABLED)')).toBe(true)
+  })
+  it('false for the not-found body and for missing/blank messages', () => {
+    expect(isPlaneOffMessage('approval not found')).toBe(false)
+    expect(isPlaneOffMessage(undefined)).toBe(false)
+    expect(isPlaneOffMessage('')).toBe(false)
   })
 })
 

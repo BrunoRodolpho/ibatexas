@@ -14,18 +14,14 @@
 // #4); NO amount/money display is invented — only the server-authored `prompt`.
 
 import { useEffect, useState } from 'react'
-import { ShieldCheck, Bot, Clock, User, RefreshCw } from 'lucide-react'
-import { Badge, Button, SectionHeader, useToast } from '@ibatexas/ui'
+import { ShieldCheck, RefreshCw } from 'lucide-react'
+import { Badge, SectionHeader, useToast } from '@ibatexas/ui'
+import { AgentApprovalCard } from '@/components/molecules'
 import { useAgentApprovals, useAgentApprovalHistory } from '@/domains/admin/admin.hooks'
 import {
-  intentKindLabel,
-  statusBadge,
-  resolvedByLabel,
-  formatApprovalDate,
   resolveOutcomeToast,
   resolveErrorToast,
   AGENT_APPROVALS_COPY as COPY,
-  type AgentApprovalRequest,
 } from '@/domains/admin/agent-approvals.mappers'
 
 // ── Plane-off / empty banners ─────────────────────────────────────────────────
@@ -34,87 +30,6 @@ function Banner({ children }: Readonly<{ children: React.ReactNode }>): React.JS
   return (
     <div className="rounded-sm border border-dashed border-smoke-200 bg-smoke-50 px-4 py-12 text-center text-sm text-smoke-400">
       {children}
-    </div>
-  )
-}
-
-// ── Approval card (shared by pending + history) ───────────────────────────────
-
-function ApprovalCard({
-  approval,
-  busy,
-  onApprove,
-  onReject,
-}: Readonly<{
-  approval: AgentApprovalRequest
-  busy?: boolean
-  onApprove?: (token: string) => void
-  onReject?: (token: string) => void
-}>): React.JSX.Element {
-  const badge = statusBadge(approval.status)
-  const isPending = approval.status === 'pending'
-  return (
-    <div className="flex flex-col gap-3 rounded-sm border border-smoke-200 bg-smoke-50 p-4">
-      <div className="flex items-start justify-between gap-3">
-        <h3 className="text-sm font-semibold text-charcoal-900">{intentKindLabel(approval.intentKind)}</h3>
-        <Badge variant={badge.variant} className="shrink-0">
-          {badge.label}
-        </Badge>
-      </div>
-
-      <p className="text-sm text-charcoal-700">{approval.prompt}</p>
-
-      <div className="flex flex-col gap-1 border-t border-smoke-100 pt-2 text-xs text-smoke-500">
-        <div className="flex items-center gap-1.5">
-          <Bot className="h-3 w-3 shrink-0" aria-hidden />
-          <span className="truncate">
-            {COPY.agent}: {approval.agentNamespace}
-          </span>
-        </div>
-        <div className="flex items-center gap-1.5">
-          <Clock className="h-3 w-3 shrink-0" aria-hidden />
-          <span className="tabular-nums">
-            {COPY.requestedAt}: {formatApprovalDate(approval.requestedAt)}
-          </span>
-        </div>
-        {!isPending ? (
-          <>
-            <div className="flex items-center gap-1.5">
-              <Clock className="h-3 w-3 shrink-0" aria-hidden />
-              <span className="tabular-nums">
-                {COPY.resolvedAt}: {formatApprovalDate(approval.resolvedAt)}
-              </span>
-            </div>
-            <div className="flex items-center gap-1.5">
-              <User className="h-3 w-3 shrink-0" aria-hidden />
-              <span className="truncate">
-                {COPY.resolvedBy}: {resolvedByLabel(approval.resolvedBy)}
-              </span>
-            </div>
-          </>
-        ) : null}
-      </div>
-
-      {isPending && onApprove && onReject ? (
-        <div className="flex justify-end gap-2 border-t border-smoke-100 pt-3">
-          <Button
-            variant="secondary"
-            size="sm"
-            disabled={busy}
-            onClick={() => onReject(approval.token)}
-          >
-            {COPY.reject}
-          </Button>
-          <Button
-            variant="primary"
-            size="sm"
-            isLoading={busy}
-            onClick={() => onApprove(approval.token)}
-          >
-            {COPY.approve}
-          </Button>
-        </div>
-      ) : null}
     </div>
   )
 }
@@ -153,7 +68,7 @@ function ResolvedHistory({
         ) : (
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
             {history.map((a) => (
-              <ApprovalCard key={a.token} approval={a} />
+              <AgentApprovalCard key={a.token} approval={a} />
             ))}
           </div>
         )
@@ -250,7 +165,7 @@ export default function AprovacoesPage(): React.JSX.Element {
           ) : (
             <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
               {approvals.map((a) => (
-                <ApprovalCard
+                <AgentApprovalCard
                   key={a.token}
                   approval={a}
                   busy={busyToken === a.token}
