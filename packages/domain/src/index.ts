@@ -99,6 +99,38 @@ export {
   type OpsAlertResolvePayload,
   type OpsAlertState,
 } from "./services/__shared__/ops-alert-policy.js"
+// AUT-038 + AUT-007 — OWNER-gated, kernel-governed staff-CRUD command plane
+// (create / update / deactivate / role.assign). Read-only StaffService above is
+// separate. HTTP-plane-only kinds — never LLM-proposable.
+export {
+  createStaffCommandService,
+  actorStaffIdFromEnvelope,
+  StaffNotFoundError,
+  DuplicatePhoneError,
+  LastOwnerError,
+  SelfMutationError,
+  StaffMutationConflictError,
+  InvalidStaffPhoneError,
+  InvalidStaffRoleError,
+  InvalidHourlyRateError,
+  RoleUpdateForbiddenError,
+  type StaffCommandService,
+  type StaffCommandServiceOptions,
+  type StaffListParams,
+  type StaffListResult,
+} from "./services/staff-command.service.js"
+export {
+  staffCommandPolicyBundle,
+  staffCommandTaintPolicy,
+  STAFF_ROLE_VALUES,
+  type StaffCommandIntentKind,
+  type StaffCommandPayload,
+  type StaffCreatePayload,
+  type StaffUpdatePayload,
+  type StaffDeactivatePayload,
+  type StaffRoleAssignPayload,
+  type StaffCommandState,
+} from "./services/__shared__/staff-policy.js"
 export {
   createTableService,
   type TableService,

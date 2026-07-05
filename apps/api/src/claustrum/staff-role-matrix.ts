@@ -49,6 +49,18 @@
  * `requireManagerRole` ⇒ {OWNER,MANAGER}). They are admitted here (not deferred)
  * precisely because the composed-router seam is where this matrix is live.
  *
+ * The TWELFTH..FIFTEENTH kinds are the AUT-038 + AUT-007 staff-CRUD verbs
+ * (`staff.create` / `staff.update` / `staff.deactivate` / `staff.role.assign`),
+ * the domain-internal `StaffCommandService` plane. Unlike the ops verbs they DO
+ * have admin HTTP routes today (routes/admin/staff.ts), and unlike the first
+ * seven those routes adjudicate through the domain command service with the
+ * injected `staffRoleGuard` (BKL-074) — so this matrix is LIVE for them on that
+ * path. Each is born WITH its OWNER-gated route in the same change, so the
+ * union doctrine still holds: every route that builds the kind is
+ * `requireOwnerRole` ⇒ {OWNER}. They are OWNER-ONLY (MANAGER + ATTENDANT
+ * excluded), which is the FIRST divergence between the OWNER and MANAGER rows of
+ * the derived per-role matrix.
+ *
  * ── Deliberately EXCLUDED ────────────────────────────────────────────────────
  * The SYSTEM-only `incident.ticket.open` / `incident.ticket.close` and
  * `ops.alert.open` / `ops.alert.resolve` domain kinds, plus every subscriber /
@@ -146,13 +158,35 @@ export const STAFF_KIND_ALLOWED_ROLES = {
   // (incidents.ts:200). Its EXECUTOR then drives the SYSTEM-only
   // `incident.ticket.close` domain write (buildSystemEnvelope), off this matrix.
   "incident.ticket.close.staff": ["OWNER", "MANAGER"],
+
+  // ── AUT-038 + AUT-007 — the OWNER-only staff-CRUD command plane ────────────
+  // These four `staff.*` kinds are the domain-internal `StaffCommandService`
+  // verbs (staff-command.service.ts), adjudicated against `staffCommandPolicyBundle`
+  // with the injected `staffRoleGuard` at the command-service seam (BKL-074) —
+  // the same LIVE path the admin reservation routes use, NOT the composed
+  // conductor router. Each is born WITH its OWNER-gated route in this same
+  // change, so the UNION-of-route-gates doctrine holds: every route that builds
+  // the kind is `requireOwnerRole` ⇒ {OWNER}. Staff records are PII +
+  // privilege-granting, so ATTENDANT and MANAGER are both excluded.
+  //
+  // code-truth:
+  //   POST /api/admin/staff                       admin/staff.ts requireOwnerRole ⇒ {OWNER}
+  "staff.create": ["OWNER"],
+  //   PATCH /api/admin/staff/:id                  admin/staff.ts requireOwnerRole ⇒ {OWNER}
+  "staff.update": ["OWNER"],
+  //   POST /api/admin/staff/:id/deactivate        admin/staff.ts requireOwnerRole ⇒ {OWNER}
+  "staff.deactivate": ["OWNER"],
+  //   POST /api/admin/staff/:id/role              admin/staff.ts requireOwnerRole ⇒ {OWNER}
+  // Role assignment is privilege escalation ⇒ its own audit kind (split from
+  // staff.update, which REFUSEs a `role` field).
+  "staff.role.assign": ["OWNER"],
 } as const satisfies Record<string, readonly StaffActorRole[]>;
 
-/** The exact staff-plane verb surface (the eleven kinds keyed above). */
+/** The exact staff-plane verb surface (the fifteen kinds keyed above). */
 export type StaffPlaneKind = keyof typeof STAFF_KIND_ALLOWED_ROLES;
 
 /**
- * The authoritative staff-plane verb surface — EXACTLY the eleven kinds. The
+ * The authoritative staff-plane verb surface — EXACTLY the fifteen kinds. The
  * guard fails closed for any `admin:` envelope whose kind is outside this set
  * (de-vacuum: the matrix IS the staff-plane verb surface).
  */
@@ -173,8 +207,10 @@ export const STAFF_ROLES: readonly StaffActorRole[] = [
  * `createStaffRoleGuard` consumes: a staff-plane envelope is authorized iff its
  * `actor.role` is a known role AND the kind is in that role's set.
  *
- * Current contents (derived): OWNER + MANAGER may propose all eleven; ATTENDANT
- * may propose only the three requireStaff-reachable kinds
+ * Current contents (derived): OWNER may propose all fifteen; MANAGER may propose
+ * the eleven shared kinds but NOT the four OWNER-only staff-CRUD verbs
+ * (staff.create / staff.update / staff.deactivate / staff.role.assign — AUT-038 +
+ * AUT-007); ATTENDANT may propose only the three requireStaff-reachable kinds
  * (order.status.transition, payment.status.transition, order.note.add).
  */
 export const STAFF_ROLE_CAPABILITY_MATRIX: Record<

@@ -45,7 +45,8 @@ import {
 
 type Bundle = PolicyBundle<string, unknown, unknown>;
 
-const THE_STAFF_KINDS = [
+/** The eleven OWNER+MANAGER-shared kinds (ATTENDANT reaches only three). */
+const THE_SHARED_STAFF_KINDS = [
   "order.status.transition",
   "payment.status.transition",
   "payment.refund.issue",
@@ -60,6 +61,20 @@ const THE_STAFF_KINDS = [
   // BKL-088 — the two ops-plane RESOLUTION verbs ({OWNER,MANAGER}).
   "ops.alert.resolve.staff",
   "incident.ticket.close.staff",
+] as const;
+
+/** AUT-038 + AUT-007 — the four OWNER-ONLY staff-CRUD command verbs (MANAGER +
+ *  ATTENDANT excluded; the first OWNER/MANAGER divergence in the matrix). */
+const THE_STAFF_COMMAND_KINDS = [
+  "staff.create",
+  "staff.update",
+  "staff.deactivate",
+  "staff.role.assign",
+] as const;
+
+const THE_STAFF_KINDS = [
+  ...THE_SHARED_STAFF_KINDS,
+  ...THE_STAFF_COMMAND_KINDS,
 ] as const;
 
 /** A minimal staff-plane envelope; the guard never inspects payload/taint. */
@@ -97,7 +112,7 @@ const guard = createStaffRoleGuard(STAFF_ROLE_CAPABILITY_MATRIX);
 // ── Engagement: `admin:` namespace only ─────────────────────────────────────
 
 describe("createStaffRoleGuard — engagement by `admin:` namespace", () => {
-  it("is inert (null) for every non-staff sessionId shape, even for the eleven kinds", () => {
+  it("is inert (null) for every non-staff sessionId shape, even for the fifteen kinds", () => {
     const nonStaff = [
       "cust_001", // customer principal
       "hashed:ab12cd34", // redacted chat namespace
@@ -159,13 +174,46 @@ describe("createStaffRoleGuard — per-role capability matrix (code-truth)", () 
     }
   });
 
-  it("MANAGER and OWNER pass every one of the eleven kinds", () => {
-    for (const role of ["OWNER", "MANAGER"] as const) {
-      for (const kind of THE_STAFF_KINDS) {
-        expect(guard(staffEnv(kind, role), {})).toBeNull();
+  it("OWNER passes every one of the fifteen kinds", () => {
+    for (const kind of THE_STAFF_KINDS) {
+      expect(guard(staffEnv(kind, "OWNER"), {})).toBeNull();
+    }
+  });
+
+  it("MANAGER passes the eleven shared kinds but is REFUSED on the four OWNER-only staff-CRUD kinds", () => {
+    for (const kind of THE_SHARED_STAFF_KINDS) {
+      expect(guard(staffEnv(kind, "MANAGER"), {})).toBeNull();
+    }
+    for (const kind of THE_STAFF_COMMAND_KINDS) {
+      const decision = guard(staffEnv(kind, "MANAGER"), {});
+      expect(decision?.kind).toBe("REFUSE");
+      if (decision?.kind === "REFUSE") {
+        expect(decision.refusal.code).toBe(STAFF_ROLE_REFUSAL_CODE);
+        expect(decision.refusal.kind).toBe("AUTH");
       }
     }
   });
+});
+
+// ── AUT-038 + AUT-007 — the OWNER-only staff-CRUD command plane ──────────────
+
+describe("createStaffRoleGuard — staff-CRUD kinds are OWNER-only (AUT-038 + AUT-007)", () => {
+  for (const kind of THE_STAFF_COMMAND_KINDS) {
+    it(`OWNER → null (allowed) for ${kind}`, () => {
+      expect(guard(staffEnv(kind, "OWNER"), {})).toBeNull();
+    });
+    for (const role of ["MANAGER", "ATTENDANT"] as const) {
+      it(`${role} → REFUSE (staff_role_violation, scope_insufficient) for ${kind}`, () => {
+        const decision = guard(staffEnv(kind, role), {});
+        expect(decision?.kind).toBe("REFUSE");
+        if (decision?.kind === "REFUSE") {
+          expect(decision.refusal.code).toBe(STAFF_ROLE_REFUSAL_CODE);
+          expect(decision.refusal.kind).toBe("AUTH");
+          expect(decision.basis[0]?.code).toBe("scope_insufficient");
+        }
+      });
+    }
+  }
 });
 
 // ── Fail-closed on the staff plane ──────────────────────────────────────────
@@ -252,16 +300,18 @@ describe("createStaffRoleGuard — determinism", () => {
 // ── Matrix structure (derivation is code-truth) ─────────────────────────────
 
 describe("STAFF_ROLE_CAPABILITY_MATRIX (derived structure)", () => {
-  it("the staff-plane surface is EXACTLY the eleven staff kinds", () => {
+  it("the staff-plane surface is EXACTLY the fifteen staff kinds", () => {
     expect([...STAFF_PLANE_KINDS].sort()).toEqual([...THE_STAFF_KINDS].sort());
   });
 
-  it("OWNER and MANAGER may propose all eleven; ATTENDANT only the three requireStaff kinds", () => {
+  it("OWNER may propose all fifteen; MANAGER the eleven shared; ATTENDANT only the three requireStaff kinds", () => {
     expect([...STAFF_ROLE_CAPABILITY_MATRIX.OWNER].sort()).toEqual(
       [...THE_STAFF_KINDS].sort(),
     );
+    // MANAGER diverges from OWNER: it does NOT carry the four OWNER-only
+    // staff-CRUD verbs (AUT-038 + AUT-007).
     expect([...STAFF_ROLE_CAPABILITY_MATRIX.MANAGER].sort()).toEqual(
-      [...THE_STAFF_KINDS].sort(),
+      [...THE_SHARED_STAFF_KINDS].sort(),
     );
     expect([...STAFF_ROLE_CAPABILITY_MATRIX.ATTENDANT].sort()).toEqual(
       [
@@ -280,6 +330,14 @@ describe("STAFF_ROLE_CAPABILITY_MATRIX (derived structure)", () => {
       "reservation.cancel",
     ]) {
       expect(STAFF_ROLE_CAPABILITY_MATRIX.ATTENDANT.has(kind)).toBe(false);
+    }
+  });
+
+  it("MANAGER (and ATTENDANT) can never reach the four staff-CRUD kinds", () => {
+    for (const kind of THE_STAFF_COMMAND_KINDS) {
+      expect(STAFF_ROLE_CAPABILITY_MATRIX.MANAGER.has(kind)).toBe(false);
+      expect(STAFF_ROLE_CAPABILITY_MATRIX.ATTENDANT.has(kind)).toBe(false);
+      expect(STAFF_ROLE_CAPABILITY_MATRIX.OWNER.has(kind)).toBe(true);
     }
   });
 });
