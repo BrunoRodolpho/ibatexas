@@ -231,7 +231,7 @@ import {
   createIbatexasPlanner,
   type ClaimAwarePlannerPort,
 } from "./claustrum/ibatexas-planner.js";
-import { buildClaimsSeams } from "./claustrum/claims-pipeline.js";
+import { buildClaimsSeams, warnOncePerMessage } from "./claustrum/claims-pipeline.js";
 import { createIbatexasResponder } from "./claustrum/ibatexas-responder.js";
 import { createIbatexasPromptComposer } from "./claustrum/prompts/ibatexas-prompts.js";
 import {
@@ -2949,6 +2949,13 @@ export async function bootstrapClaustrum(
         }
       }
       _agentApprovals = agentApprovals;
+      // BKL-003 — the managed-agent plane's claims-seam floor warning is a
+      // boot-class fact, but `buildClaimsSeamsForPlanner` runs PER TRIGGER, so
+      // de-dup the below-floor kernel warn to at-most-once-per-process. Built
+      // ONCE here so the dedup set persists across trigger invocations.
+      const warnClaimsFloorOnce = warnOncePerMessage((message) =>
+        logger.warn(message),
+      );
       // Live conductor ingredients — H1 recomposes per trigger over a capped
       // model, so the planner/responder are passed as factories (over the
       // capped model) rather than pre-built ports. Tools are the REAL registry.
@@ -2979,6 +2986,17 @@ export async function bootstrapClaustrum(
         // passed in by the live runner (H1). Wiring BOTH points is now one call.
         buildPlanner,
         buildResponder,
+        // BKL-003 — B-PR1 claims seams for the managed-agent plane, FLAG
+        // DEFAULT-OFF. Per-trigger factory (NOT a boot singleton): the live
+        // conductor is recomposed per trigger with a fresh planner, and the
+        // claim-planner seam must wrap THAT planner (Q6b). `buildClaimsSeams`
+        // returns {} while ENABLE_CLAIMS_PIPELINE is OFF (the committed default),
+        // so the agent plane composes byte-identically; ON runs the same
+        // fail-closed registry assertion the main conductor does. The below-floor
+        // kernel warn is de-duped to once-per-process (this factory runs every
+        // trigger).
+        buildClaimsSeamsForPlanner: (p) =>
+          buildClaimsSeams({ planner: p, warn: warnClaimsFloorOnce }),
       };
       // P4 producer seam: ensure the shared remediation_proposals table exists,
       // then write a proposal whenever the live runner parks a confirm-gated

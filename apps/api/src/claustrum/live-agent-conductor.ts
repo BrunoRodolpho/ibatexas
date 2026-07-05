@@ -38,7 +38,6 @@ import {
   type HandoffPort,
   type MemoryPort,
   type ModelProvider,
-  type PlannerPort,
   type ResolverPort,
   type ResponderPort,
   type SessionLock,
@@ -52,6 +51,8 @@ import type { IntentEnvelope } from "@adjudicate/core";
 import { logger } from "../lib/logger.js";
 import { isSessionPausedForHuman } from "../escalation/escalation-store.js";
 import { triggerExternalId, type SystemChannel } from "./system-channel.js";
+import type { ClaimsSeams } from "./claims-pipeline.js";
+import type { ClaimAwarePlannerPort } from "./ibatexas-planner.js";
 import {
   createModelCallCap,
   type TriggerTurnInput,
@@ -89,10 +90,33 @@ export interface LiveAgentConductorDeps {
   readonly systemChannel: SystemChannel;
   /** Base (uncapped) model provider; wrapped per-trigger by createModelCallCap. */
   readonly modelProvider: ModelProvider;
-  /** Build the planner over a (capped) model. */
-  readonly buildPlanner: (model: ModelProvider) => PlannerPort;
+  /**
+   * Build the planner over a (capped) model. Returns the CLAIM-AWARE planner (not
+   * the bare `PlannerPort`) so the per-trigger claims-seam factory below can wrap
+   * this exact instance (Q6b); `createConductor` still accepts it via the
+   * `PlannerPort` base it extends. Mirrors the main conductor's `buildPlanner`
+   * (claustrum-bootstrap.ts), which is typed `ClaimAwarePlannerPort` for the same
+   * reason.
+   */
+  readonly buildPlanner: (model: ModelProvider) => ClaimAwarePlannerPort;
   /** Build the responder over a (capped) model. */
   readonly buildResponder: (model: ModelProvider) => ResponderPort;
+  /**
+   * B-PR1 claims-runtime seams for the managed-agent plane (BKL-003), FLAG
+   * DEFAULT-OFF. A PER-PLANNER FACTORY on purpose — NOT a boot-time singleton:
+   * {@link composeLiveAgentConductor} is recomposed PER TRIGGER over a capped
+   * model with a FRESH planner (H1), and the claim-planner seam must wrap THAT
+   * SAME planner instance (Q6b). A seams object assembled once at boot would bind
+   * the wrong (stale) planner, silently breaking the intent-path/claim-path
+   * "one planner, two surfaces" invariant. Given the trigger's planner, returns
+   * the seams to spread into `createConductor`; `buildClaimsSeams` returns `{}`
+   * while `ENABLE_CLAIMS_PIPELINE` is OFF (the committed default), so the spread
+   * is a no-op and the agent-plane composition stays BYTE-IDENTICAL. Omit to
+   * disable (the seams default to `{}`).
+   */
+  readonly buildClaimsSeamsForPlanner?: (
+    planner: ClaimAwarePlannerPort,
+  ) => ClaimsSeams;
 }
 
 /**
@@ -104,11 +128,22 @@ export function composeLiveAgentConductor(
   deps: LiveAgentConductorDeps,
   model: ModelProvider,
 ): Conductor {
+  // Hoist the planner so the claim-planner seam wraps the SAME instance the
+  // conductor plans with (Q6b) — mirrors the main conductor's hoist in
+  // claustrum-bootstrap.ts. Fresh per trigger over the capped model (H1).
+  const planner = deps.buildPlanner(model);
+  // B-PR1 claims seams (BKL-003), FLAG DEFAULT-OFF. `{}` when the factory is
+  // absent OR the pipeline is OFF (buildClaimsSeams returns {}), so the spread
+  // below is a no-op → byte-identical composition. ON → the claims seams
+  // (investigator / claimPlanner over THIS planner / claimsKernel / renderer)
+  // are injected. A factory throw (e.g. the fail-closed registry assertion when
+  // ON) propagates out of compose and is isolated per-trigger by the runner.
+  const claimsSeams = deps.buildClaimsSeamsForPlanner?.(planner) ?? {};
   return createConductor({
     adjudicator: deps.adjudicator,
     memory: deps.memory,
     grounding: deps.grounding,
-    planner: deps.buildPlanner(model),
+    planner,
     responder: deps.buildResponder(model),
     explainer: deps.explainer,
     handoff: deps.handoff,
@@ -122,6 +157,9 @@ export function composeLiveAgentConductor(
     // agent turn serializes against the customer's chat turns.
     lockKeyStrategy: sessionKeyAwareLockKey,
     ...(deps.resolver === undefined ? {} : { resolver: deps.resolver }),
+    // B-PR1 — OFF by default → {} (no-op spread, byte-identical). ON → the
+    // optional claims seams bound to THIS trigger's planner.
+    ...claimsSeams,
   });
 }
 
