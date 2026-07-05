@@ -11,8 +11,10 @@
 // POST /api/admin/reservations/:id/complete   — mark completed
 // GET  /api/admin/reviews               — list all reviews
 // GET  /api/admin/tables                — list all tables
-// POST /api/admin/tables                — create/update table
-// POST /api/admin/timeslots             — generate time slots for a date range
+// POST /api/admin/tables                — create a table (manager)
+// PATCH /api/admin/tables/:id           — partially update a table (manager)
+// DELETE /api/admin/tables/:id          — soft-deactivate a table (manager)
+// POST /api/admin/timeslots             — generate reservation time slots for a date range (manager)
 // GET  /api/admin/schedule/shifts        — list the staff schedule (escala) over a range
 // POST /api/admin/schedule/shifts        — assign a shift to a staff member (manager)
 // DELETE /api/admin/schedule/shifts/:id  — remove a shift (manager)

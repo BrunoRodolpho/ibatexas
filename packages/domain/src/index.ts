@@ -99,7 +99,15 @@ export {
   type OpsAlertResolvePayload,
   type OpsAlertState,
 } from "./services/__shared__/ops-alert-policy.js"
-export { createTableService, type TableService } from "./services/table.service.js"
+export {
+  createTableService,
+  type TableService,
+  type TableServiceDeps,
+  slotStartTimesFromHours,
+  DuplicateTableNumberError,
+  TableNotFoundError,
+  TableHasFutureReservationsError,
+} from "./services/table.service.js"
 // NEW-016 staff scheduling (escala) — plain-CRUD assign + list-by-range + delete;
 // NEW-034 extends the service with clock-in / clock-out.
 export {
