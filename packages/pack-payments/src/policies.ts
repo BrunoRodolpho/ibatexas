@@ -428,6 +428,53 @@ const refundMagnitudeGuard: PaymentGuard = (envelope, state) => {
 
   const escalateThreshold = getRefundEscalateThresholdCentavos()
   if (payload.refundAmountCentavos > escalateThreshold) {
+    // ── AUT-017 — ESCALATE→OWNER-approve→executable-resume overlay ──────────
+    //
+    // When (and ONLY when) an OWNER has approved THIS exact escalated refund
+    // out-of-band, the resume path re-projects the fresh PaymentState and stamps
+    // `state.ctx.escalationApproval`. The marker converts the escalate band's OWN
+    // ESCALATE into a REQUEST_CONFIRMATION, which the paired `confirmationReceipt`
+    // (same `intentHash`) then flips to EXECUTE via the kernel's 2a override. The
+    // conditions are ALL structural:
+    //   - `intentHash === envelope.intentHash` — the approval is for THIS envelope,
+    //     not a replay onto a different one (the marker rides state, but this ties
+    //     it to the exact adjudicated intent).
+    //   - `approverRole === "OWNER"` — only the owner approves an escalated refund
+    //     (a MANAGER-approver marker leaves the ESCALATE intact).
+    //   - `approverId !== payload.actorId` — SEPARATION OF DUTY: the approver may
+    //     NOT be the staff member who PROPOSED the refund (the ops resolver stamps
+    //     the proposer's staffId onto `payload.actorId`). A self-approval marker
+    //     leaves the ESCALATE intact. This is the deepest self-approve gate (the
+    //     resolve route + module refuse a self-approval earlier, but even a slipped
+    //     one cannot convert the verdict here).
+    // The marker is ABSENT on every ordinary turn ⟹ byte-identical ESCALATE. This
+    // overlay is MONOTONIC — it converts only the escalate band's own ESCALATE, and
+    // only DOWN to REQUEST_CONFIRMATION (friction), never rescuing a REFUSE. A
+    // receipt-less conversion stops at REQUEST_CONFIRMATION (the operator still
+    // confirms) — friction, never a bypass.
+    const approval = state.ctx.escalationApproval
+    if (
+      approval !== undefined &&
+      approval.intentHash === envelope.intentHash &&
+      approval.approverRole === "OWNER" &&
+      approval.approverId !== payload.actorId
+    ) {
+      const reais = (payload.refundAmountCentavos / 100)
+        .toFixed(2)
+        .replace(".", ",")
+      return decisionRequestConfirmation(
+        `Reembolso de R$ ${reais} aprovado por ${approval.approverId}. Confirmar execução?`,
+        [
+          basis("business", BASIS_CODES.business.RULE_SATISFIED, {
+            reason: "refund_escalation_approved",
+            approvedBy: approval.approverId,
+            approverRole: approval.approverRole,
+            escalateThreshold,
+            amount: payload.refundAmountCentavos,
+          }),
+        ],
+      )
+    }
     return decisionEscalate("human", "refund_above_escalate_threshold", [
       basis("business", BASIS_CODES.business.RULE_VIOLATED, {
         reason: "refund_above_escalate_threshold",

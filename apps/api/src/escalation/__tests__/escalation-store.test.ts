@@ -115,4 +115,63 @@ describe("escalation store (D2)", () => {
     const setKey = [...redis._sets.keys()][0]!;
     expect(redis._sets.get(setKey)!.has("ghost")).toBe(false);
   });
+
+  // ── AUT-017 — pending-intent projection ────────────────────────────────────
+
+  const PENDING = {
+    token: "tok-1",
+    intentKind: "payment.refund.issue",
+    intentHash: "sha256:abc",
+    summaryPtBr: "reembolso de R$ 1.500,00",
+    requestedAt: "2026-07-04T12:00:00.000Z",
+    status: "pending" as const,
+  };
+
+  it("appendPendingIntent adds a pending intent to an OPEN escalation record", async () => {
+    const store = createEscalationStore(redis);
+    await store.recordHandoff({ sessionId: "s1", at: "2026-07-04T12:00:00.000Z" });
+    const rec = await store.appendPendingIntent("s1", PENDING);
+    expect(rec?.pendingIntents).toHaveLength(1);
+    expect(rec?.pendingIntents?.[0]?.intentHash).toBe("sha256:abc");
+    // Round-trips through the store.
+    expect((await store.get("s1"))?.pendingIntents?.[0]?.status).toBe("pending");
+  });
+
+  it("appendPendingIntent is idempotent on intentHash (NATS redelivery does not duplicate)", async () => {
+    const store = createEscalationStore(redis);
+    await store.recordHandoff({ sessionId: "s1", at: "2026-07-04T12:00:00.000Z" });
+    await store.appendPendingIntent("s1", PENDING);
+    const rec = await store.appendPendingIntent("s1", { ...PENDING, token: "tok-2" });
+    expect(rec?.pendingIntents).toHaveLength(1); // same intentHash → not duplicated
+  });
+
+  it("appendPendingIntent is a no-op (null) when the record is absent", async () => {
+    const store = createEscalationStore(redis);
+    expect(await store.appendPendingIntent("nope", PENDING)).toBeNull();
+  });
+
+  it("markIntentResolved flips a pending intent's status (idempotent on intentHash)", async () => {
+    const store = createEscalationStore(redis);
+    await store.recordHandoff({ sessionId: "s1", at: "2026-07-04T12:00:00.000Z" });
+    await store.appendPendingIntent("s1", PENDING);
+    const rec = await store.markIntentResolved(
+      "s1",
+      "sha256:abc",
+      "approved",
+      "staff:owner2",
+      "2026-07-04T12:05:00.000Z",
+    );
+    const intent = rec?.pendingIntents?.[0];
+    expect(intent?.status).toBe("approved");
+    expect(intent?.resolvedBy).toBe("staff:owner2");
+    expect(intent?.resolvedAt).toBe("2026-07-04T12:05:00.000Z");
+  });
+
+  it("markIntentResolved is a no-op (null) when the intent is absent", async () => {
+    const store = createEscalationStore(redis);
+    await store.recordHandoff({ sessionId: "s1", at: "2026-07-04T12:00:00.000Z" });
+    expect(
+      await store.markIntentResolved("s1", "sha256:missing", "approved", "x", "t"),
+    ).toBeNull();
+  });
 });

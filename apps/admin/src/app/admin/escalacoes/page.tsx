@@ -7,6 +7,16 @@
 import { useCallback, useEffect, useState } from 'react'
 import { apiFetch } from '@/lib/api'
 
+interface PendingIntent {
+  token: string
+  intentKind: string
+  intentHash: string
+  summaryPtBr: string
+  requestedAt: string
+  status: 'pending' | 'approved' | 'rejected' | 'denied_by_kernel' | 'expired'
+  resolvedBy?: string
+}
+
 interface Escalation {
   sessionId: string
   customerId: string | null
@@ -14,6 +24,7 @@ interface Escalation {
   channel: string | null
   handoffAt: string
   status: 'open' | 'resolved'
+  pendingIntents?: PendingIntent[]
 }
 
 interface TranscriptMessage {
@@ -90,6 +101,36 @@ export default function EscalacoesPage(): React.JSX.Element {
     }
   }, [selected, loadQueue])
 
+  // AUT-017 — OWNER approves/rejects a parked escalated money intent. On approval
+  // the API re-adjudicates the parked envelope and, on EXECUTE, runs the refund.
+  const resolveIntent = useCallback(
+    async (token: string, accept: boolean) => {
+      if (!selected) return
+      setBusy(true)
+      setNotice(null)
+      try {
+        const res = (await apiFetch(
+          `/api/admin/escalations/${encodeURIComponent(selected)}/intents/${encodeURIComponent(token)}/resolve`,
+          { method: 'POST', body: JSON.stringify({ accept }) },
+        )) as { status?: string; refusalPtBr?: string }
+        if (res.status === 'approved') setNotice('Ação aprovada e executada.')
+        else if (res.status === 'rejected') setNotice('Ação recusada.')
+        else setNotice(res.refusalPtBr ?? 'Aprovação não pôde ser aplicada.')
+      } catch {
+        setNotice('Falha ao processar a aprovação.')
+      } finally {
+        setBusy(false)
+        await loadQueue()
+      }
+    },
+    [selected, loadQueue],
+  )
+
+  const selectedRec = queue.find((e) => e.sessionId === selected)
+  const pendingIntents = (selectedRec?.pendingIntents ?? []).filter(
+    (p) => p.status === 'pending',
+  )
+
   return (
     <div className="flex h-full gap-4 p-4">
       <div className="flex w-1/2 flex-col gap-3">
@@ -144,6 +185,39 @@ export default function EscalacoesPage(): React.JSX.Element {
                 Resolver (reativar bot)
               </button>
             </div>
+            {pendingIntents.length > 0 ? (
+              <div className="flex flex-col gap-2">
+                {pendingIntents.map((p) => (
+                  <div
+                    key={p.token}
+                    className="rounded border border-amber-300 bg-amber-50 px-3 py-2 text-sm"
+                  >
+                    <div className="mb-1 font-semibold text-amber-900">
+                      ⚠️ Pendente de aprovação (OWNER)
+                    </div>
+                    <div className="mb-2 text-amber-900">{p.summaryPtBr}</div>
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void resolveIntent(p.token, true)}
+                        disabled={busy}
+                        className="rounded bg-green-700 px-3 py-1 text-xs text-white disabled:opacity-50"
+                      >
+                        Aprovar e executar
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void resolveIntent(p.token, false)}
+                        disabled={busy}
+                        className="rounded border border-gray-400 px-3 py-1 text-xs disabled:opacity-50"
+                      >
+                        Recusar
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : null}
             <div className="flex flex-1 flex-col gap-2">
               {messages.map((m, i) => (
                 <div

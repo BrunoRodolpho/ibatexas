@@ -337,6 +337,29 @@ export interface PaymentState {
      * REFUSE, so stale authority can never authorize a refund off a cached view.
      */
     readonly paymentReadThisTurn?: boolean
+    /**
+     * AUT-017 — the ESCALATE→OWNER-approve→executable-resume marker. Present ONLY
+     * on the adopter-side escalation-approval RESUME path (never on an ordinary
+     * turn): the resolve module re-projects the fresh PaymentState and stamps this
+     * marker so the escalate band converts its own ESCALATE verdict into a
+     * REQUEST_CONFIRMATION (which the paired `confirmationReceipt` then flips to
+     * EXECUTE via the kernel's 2a override). The marker rides STATE, never the
+     * payload — so `intentHash` is unchanged and it is unforgeable from the wire.
+     * Absent ⟹ the escalate band is BYTE-IDENTICAL to its pre-AUT-017 behaviour
+     * (a >escalate-threshold refund ESCALATEs). See
+     * `apps/api/src/escalation/escalation-approval.ts` +
+     * `docs/architecture/defer-resume-role-contract.md` §3d.
+     */
+    readonly escalationApproval?: {
+      /** The parked envelope's `intentHash` — MUST equal `envelope.intentHash`. */
+      readonly intentHash: string
+      /** The approving staff id (raw staffId — NOT the proposer, checked below). */
+      readonly approverId: string
+      /** The approving staff role — the overlay fires ONLY for `"OWNER"`. */
+      readonly approverRole: string
+      /** ISO-8601 wall-clock of the OWNER approval. */
+      readonly at: string
+    }
   }
 }
 

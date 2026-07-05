@@ -485,7 +485,7 @@ async function executeStatusTransition(
  * not undo or fail the committed refund — same posture as the admin route +
  * the ops kitchen-advance).
  */
-async function executeRefund(
+export async function executeRefund(
   deps: OpsToolRegistryDeps,
   payload: PaymentRefundIssuePayload,
   staffId: string | null,

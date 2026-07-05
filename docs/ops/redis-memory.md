@@ -135,6 +135,16 @@ resumes them on a signal. Implemented in `@adjudicate/runtime`, driven by IbateX
 
 ---
 
+## Escalations & take-over
+
+| Pattern | Type | TTL | Description | Source |
+|---------|------|-----|-------------|--------|
+| `escalation:rec:{sessionId}` | String (JSON) | — | Escalation record: open/resolved lifecycle + bot-pause + the AUT-017 `pendingIntents` projection (parked money intents awaiting OWNER approval). | `apps/api/src/escalation/escalation-store.ts` |
+| `escalation:open` | Set | — | Index of sessionIds with an OPEN escalation (self-healing on read). | `apps/api/src/escalation/escalation-store.ts` |
+| `escalation:park:{token}` | String (JSON) | 24 h (`ESCALATION_PARK_TTL_SECONDS`) | **AUT-017** — the FULL parked envelope (rebuild inputs) for an escalated, resumable money intent (today: an above-threshold `payment.refund.issue`). Single-use: consumed atomically via Lua GET+DEL when an OWNER approves; the resume rebuilds the identical `intentHash` and re-adjudicates through the audited kernel. | `apps/api/src/escalation/escalation-park-store.ts` |
+
+---
+
 ## NATS, jobs & DLQ
 
 | Pattern | Type | TTL | Description | Source |
