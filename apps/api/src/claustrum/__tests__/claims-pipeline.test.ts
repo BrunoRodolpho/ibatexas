@@ -80,6 +80,33 @@ describe("claims-pipeline — buildClaimsSeams (byte-identical when OFF)", () =>
   });
 });
 
+describe("claims-pipeline — BKL-108 unconditional boot marker", () => {
+  it("OFF → the info sink still gets ONE 'disabled' line (state is never log-silent)", () => {
+    const info = vi.fn();
+    buildClaimsSeams({ planner: stubPlanner, env: OFF_ENV, info });
+    expect(info).toHaveBeenCalledTimes(1);
+    const line = info.mock.calls[0]![0] as string;
+    expect(line).toContain("[claims-pipeline] disabled");
+    expect(line).toContain(CLAIMS_PIPELINE_ENABLED_ENV);
+  });
+
+  it("ON → the info sink gets ONE 'ENABLED' line naming the flag", () => {
+    const info = vi.fn();
+    buildClaimsSeams({ planner: stubPlanner, env: ON_ENV, info });
+    expect(info).toHaveBeenCalledTimes(1);
+    const line = info.mock.calls[0]![0] as string;
+    expect(line).toContain("[claims-pipeline] ENABLED");
+    expect(line).toContain(`${CLAIMS_PIPELINE_ENABLED_ENV}=true`);
+  });
+
+  it("no info sink (the per-trigger factory path) → both states still assemble fine", () => {
+    // The per-trigger factory deliberately omits `info` (boot-class marker must
+    // not repeat per trigger) — assembly must be unaffected in both states.
+    expect(buildClaimsSeams({ planner: stubPlanner, env: OFF_ENV })).toEqual({});
+    expect(buildClaimsSeams({ planner: stubPlanner, env: ON_ENV }).investigator).toBeDefined();
+  });
+});
+
 describe("claims-pipeline — warnOncePerMessage (BKL-003 per-trigger dedup)", () => {
   it("emits each DISTINCT message once, collapsing repeats across invocations", () => {
     const emitted: string[] = [];

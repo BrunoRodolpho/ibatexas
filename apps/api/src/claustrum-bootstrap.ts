@@ -2705,6 +2705,10 @@ export async function bootstrapClaustrum(
   const claimsSeams = buildClaimsSeams({
     planner,
     warn: (message) => logger.warn(message),
+    // BKL-108 — unconditional boot marker (ENABLED/disabled), so the RUNNING
+    // process's claims-pipeline state is readable from the boot log (a stale-env
+    // tsx respawn is otherwise indistinguishable from an enabled boot).
+    info: (message) => logger.info({ component: "startup" }, message),
   });
   // AUT-017 — the ESCALATE PARK deps shared by the customer + ops conductors.
   // On a resumable money-intent ESCALATE the HandoffPort parks the FULL envelope
@@ -3220,7 +3224,9 @@ export async function bootstrapClaustrum(
         // so the agent plane composes byte-identically; ON runs the same
         // fail-closed registry assertion the main conductor does. The below-floor
         // kernel warn is de-duped to once-per-process (this factory runs every
-        // trigger).
+        // trigger). Deliberately NO `info` sink here: the BKL-108 boot marker is
+        // emitted once by the main composition root; a per-trigger repeat of a
+        // boot-class fact would be pure log noise.
         buildClaimsSeamsForPlanner: (p) =>
           buildClaimsSeams({ planner: p, warn: warnClaimsFloorOnce }),
       };
