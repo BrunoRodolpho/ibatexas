@@ -112,6 +112,21 @@ function kitchenStatusLabel(status: string): string {
   return KITCHEN_STATUS_LABELS_PTBR[status] ?? status;
 }
 
+/** pt-BR labels for reservation statuses (BKL-127); raw fallback otherwise. */
+const RESERVATION_STATUS_LABELS_PTBR: Readonly<Record<string, string>> = {
+  pending: "pendente",
+  confirmed: "confirmada",
+  seated: "na mesa",
+  completed: "concluída",
+  cancelled: "cancelada",
+  no_show: "não compareceu",
+};
+
+/** Map a reservation status to its pt-BR label, or the raw status if unmapped. */
+function reservationStatusLabel(status: string): string {
+  return RESERVATION_STATUS_LABELS_PTBR[status] ?? status;
+}
+
 // ── Structural validators (narrow the captured `unknown` composer return) ─────
 
 function isRecord(x: unknown): x is Record<string, unknown> {
@@ -143,6 +158,14 @@ function isOpsSnapshot(x: unknown): x is OpsSnapshot {
   if (!Array.isArray(k.queueDepth)) return false;
   for (const q of k.queueDepth) {
     if (!isRecord(q) || typeof q.status !== "string" || !isNum(q.count)) {
+      return false;
+    }
+  }
+  const r = x.reservations;
+  if (!isRecord(r) || typeof r.date !== "string" || !isNum(r.total)) return false;
+  if (!Array.isArray(r.byStatus)) return false;
+  for (const b of r.byStatus) {
+    if (!isRecord(b) || typeof b.status !== "string" || !isNum(b.count)) {
       return false;
     }
   }
@@ -225,6 +248,20 @@ function renderSnapshot(result: unknown): string {
   } else {
     lines.push(
       `- Caixa (${result.caixa.date}): ${result.caixa.ordersCount} pedidos, bruto ${brl(result.caixa.grossCentavos)}, líquido ${brl(result.caixa.netCentavos)} (recebido ${brl(result.caixa.settledCentavos)}, reembolsado ${brl(result.caixa.refundedCentavos)}).`,
+    );
+  }
+
+  // BKL-127 — today's reservations ("quantas reservas hoje?").
+  if (degraded.has("reservations")) {
+    lines.push(`- Reservas de hoje: ${INDISPONIVEL}.`);
+  } else if (result.reservations.total === 0) {
+    lines.push(`- Reservas de hoje: nenhuma.`);
+  } else {
+    const tally = result.reservations.byStatus
+      .map((b) => `${reservationStatusLabel(b.status)} ${b.count}`)
+      .join(", ");
+    lines.push(
+      `- Reservas de hoje: ${result.reservations.total}${tally.length > 0 ? ` (${tally})` : ""}.`,
     );
   }
 

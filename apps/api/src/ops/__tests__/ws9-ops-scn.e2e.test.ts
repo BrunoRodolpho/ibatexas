@@ -219,6 +219,11 @@ function buildSnapshotHarness() {
       refundedCentavos: 0,
       netCentavos: 110_000,
     },
+    reservations: {
+      date: "2026-07-04",
+      total: 4,
+      byStatus: [{ status: "confirmed", count: 4 }],
+    },
     degraded: [],
   }));
   const deps = composeOpsDeps({

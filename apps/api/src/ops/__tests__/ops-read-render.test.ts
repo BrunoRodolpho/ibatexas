@@ -61,6 +61,14 @@ function snapshotFixture(over: Record<string, unknown> = {}): unknown {
       refundedCentavos: 5_000,
       netCentavos: 105_000,
     },
+    reservations: {
+      date: "2026-07-04",
+      total: 5,
+      byStatus: [
+        { status: "confirmed", count: 4 },
+        { status: "pending", count: 1 },
+      ],
+    },
     degraded: [],
     ...over,
   };
@@ -96,6 +104,7 @@ describe("renderOpsReadAnswer — byte-pinned templates", () => {
         "- Incidentes abertos: 2.",
         "- Cozinha: 4 tickets ativos, mais antigo há 5 min (fila: pendente 1, preparando 2, pronto 1).",
         "- Caixa (2026-07-04): 12 pedidos, bruto R$ 1.200,00, líquido R$ 1.050,00 (recebido R$ 1.100,00, reembolsado R$ 50,00).",
+        "- Reservas de hoje: 5 (confirmada 4, pendente 1).",
       ].join("\n"),
     );
   });
@@ -403,5 +412,56 @@ describe("renderOpsReadAnswer — template throw degrades to the honest line (ne
     const out = renderOpsReadAnswer(captures, TURN);
     expect(out).toBe(OPS_SNAPSHOT_UNAVAILABLE_PTBR);
     expect(out).not.toMatch(/\d/);
+  });
+});
+
+describe("renderOpsReadAnswer — reservations line (BKL-127)", () => {
+  it("renders 'nenhuma' for a zero-reservation day (a real zero, not a degrade)", () => {
+    const out = renderOpsReadAnswer(
+      [
+        capture(OPS_SNAPSHOT_READ_TOOL, {
+          result: snapshotFixture({
+            reservations: { date: "2026-07-04", total: 0, byStatus: [] },
+          }),
+        }),
+      ],
+      TURN,
+    );
+    expect(out).toContain("- Reservas de hoje: nenhuma.");
+  });
+
+  it("renders a DEGRADED reservations signal as indisponível, never zeros", () => {
+    const out = renderOpsReadAnswer(
+      [
+        capture(OPS_SNAPSHOT_READ_TOOL, {
+          result: snapshotFixture({
+            reservations: { date: "2026-07-04", total: 0, byStatus: [] },
+            degraded: ["reservations"],
+          }),
+        }),
+      ],
+      TURN,
+    );
+    expect(out).toContain("- Reservas de hoje: indisponível no momento.");
+    expect(out).not.toContain("Reservas de hoje: 0");
+    expect(out).not.toContain("nenhuma");
+  });
+
+  it("maps an unmapped reservation status to the RAW status (fallback)", () => {
+    const out = renderOpsReadAnswer(
+      [
+        capture(OPS_SNAPSHOT_READ_TOOL, {
+          result: snapshotFixture({
+            reservations: {
+              date: "2026-07-04",
+              total: 1,
+              byStatus: [{ status: "weird_status", count: 1 }],
+            },
+          }),
+        }),
+      ],
+      TURN,
+    );
+    expect(out).toContain("- Reservas de hoje: 1 (weird_status 1).");
   });
 });

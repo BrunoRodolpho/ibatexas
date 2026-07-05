@@ -22,6 +22,7 @@ import {
   createIncidentService,
   createKitchenService,
   createDayCloseService,
+  createReservationService,
 } from "@ibatexas/domain";
 import { getAuditSink } from "@ibatexas/audit-sink";
 import { requireManagerRole } from "../../middleware/staff-auth.js";
@@ -38,10 +39,12 @@ export async function adminOpsSnapshotRoutes(server: FastifyInstance): Promise<v
   let incidentSvc: ReturnType<typeof createIncidentService> | undefined;
   let kitchenSvc: ReturnType<typeof createKitchenService> | undefined;
   let dayCloseSvc: ReturnType<typeof createDayCloseService> | undefined;
+  let reservationSvc: ReturnType<typeof createReservationService> | undefined;
   const opsAlerts = () => (opsAlertSvc ??= createOpsAlertService({ auditSink: getAuditSink() }));
   const incidents = () => (incidentSvc ??= createIncidentService());
   const kitchen = () => (kitchenSvc ??= createKitchenService());
   const dayClose = () => (dayCloseSvc ??= createDayCloseService());
+  const reservations = () => (reservationSvc ??= createReservationService());
 
   // ── GET /api/admin/ops/snapshot — the composed situational overview ─────────
   app.get(
@@ -50,7 +53,7 @@ export async function adminOpsSnapshotRoutes(server: FastifyInstance): Promise<v
       preHandler: [requireManagerRole],
       schema: {
         tags: ["admin"],
-        summary: "Panorama operacional (alertas, incidentes, cozinha, caixa)",
+        summary: "Panorama operacional (alertas, incidentes, cozinha, caixa, reservas)",
       },
     },
     async (request, reply) => {
@@ -59,6 +62,7 @@ export async function adminOpsSnapshotRoutes(server: FastifyInstance): Promise<v
         incidents,
         kitchen,
         dayClose,
+        reservations,
         today: todayInRestaurantTz(),
         log: request.log,
       });

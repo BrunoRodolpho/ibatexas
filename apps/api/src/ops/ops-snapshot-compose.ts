@@ -24,6 +24,7 @@ import type {
   createIncidentService,
   createKitchenService,
   createDayCloseService,
+  createReservationService,
 } from "@ibatexas/domain";
 
 // ── View-composition types (NOT domain state) ───────────────────────────────
@@ -69,6 +70,15 @@ export interface CaixaSummary {
   readonly netCentavos: number;
 }
 
+/** Today's reservations — total + a compact per-status tally (BKL-127: the
+ *  'quantas reservas hoje?' signal; statuses reuse the {status,count} bucket
+ *  shape the kitchen queue renders). */
+export interface ReservationsSummary {
+  readonly date: string;
+  readonly total: number;
+  readonly byStatus: readonly OpsQueueDepthEntry[];
+}
+
 /** The composed manager situational snapshot. */
 export interface OpsSnapshot {
   /** The instant the snapshot was assembled (ISO). */
@@ -77,10 +87,12 @@ export interface OpsSnapshot {
   readonly incidents: IncidentsSummary;
   readonly kitchen: KitchenSummary;
   readonly caixa: CaixaSummary;
+  /** BKL-127 — today's reservations tally. */
+  readonly reservations: ReservationsSummary;
   /**
    * BKL-100 — the signal names that FAILED to read this turn and degraded to
    * their zero/empty fallback (a subset of `"opsAlerts" | "incidents" |
-   * "kitchen" | "caixa"`). A renderer MUST render a degraded signal as
+   * "kitchen" | "caixa" | "reservations"`). A renderer MUST render a degraded signal as
    * "indisponível", NEVER as its fallback ZEROS: a silent zero is
    * indistinguishable from a real "0 pedidos / caixa zerado" and lies to the
    * operator. Empty ⇒ every signal read cleanly. Additive: the /api/admin/ops/
@@ -108,6 +120,8 @@ export interface OpsSnapshotComposeDeps {
   readonly incidents: () => ReturnType<typeof createIncidentService>;
   readonly kitchen: () => ReturnType<typeof createKitchenService>;
   readonly dayClose: () => ReturnType<typeof createDayCloseService>;
+  /** BKL-127 — the reservations read service (today's tally). */
+  readonly reservations: () => ReturnType<typeof createReservationService>;
   /** Today in the restaurant timezone (YYYY-MM-DD). */
   readonly today: string;
   readonly log: OpsSnapshotLog;
@@ -166,7 +180,8 @@ export async function composeOpsSnapshot(
   // Four INDEPENDENT reads, concurrent. Each async IIFE both reads AND folds its
   // result into the compact summary, so `allSettled` captures a read OR a
   // mapping failure and `unwrap` degrades exactly that one signal.
-  const [alertsR, incidentsR, kitchenR, caixaR] = await Promise.allSettled([
+  const [alertsR, incidentsR, kitchenR, caixaR, reservationsR] =
+    await Promise.allSettled([
     // 1. Open ops-alerts — openCount is the INDEPENDENT NON_TERMINAL badge.
     (async (): Promise<OpsAlertsSummary> => {
       const { alerts, openCount } = await deps.opsAlerts().list({});
@@ -198,6 +213,24 @@ export async function composeOpsSnapshot(
         settledCentavos: s.settled.totalCentavos,
         refundedCentavos: s.refunds.totalCentavos,
         netCentavos: s.netCentavos,
+      };
+    })(),
+    // 5. Today's reservations (BKL-127) — total + per-status tally. `total`
+    //    comes from the service's own count (authoritative even past the page
+    //    bound); the tally folds the page (500 comfortably covers a day).
+    (async (): Promise<ReservationsSummary> => {
+      const { reservations, total } = await deps
+        .reservations()
+        .listAll({ date: today }, { limit: 500, offset: 0 });
+      const tally = new Map<string, number>();
+      for (const r of reservations) {
+        const status = String(r.status);
+        tally.set(status, (tally.get(status) ?? 0) + 1);
+      }
+      return {
+        date: today,
+        total,
+        byStatus: [...tally.entries()].map(([status, count]) => ({ status, count })),
       };
     })(),
   ]);
@@ -234,6 +267,13 @@ export async function composeOpsSnapshot(
         netCentavos: 0,
       },
       "caixa",
+      log,
+      degraded,
+    ),
+    reservations: unwrap(
+      reservationsR,
+      { date: today, total: 0, byStatus: [] },
+      "reservations",
       log,
       degraded,
     ),
