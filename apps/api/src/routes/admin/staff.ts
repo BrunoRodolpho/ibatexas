@@ -208,6 +208,45 @@ export async function adminStaffRoutes(server: FastifyInstance): Promise<void> {
     return reply.code(403).send({ error: kernelRefusalText(decision) })
   }
 
+  /**
+   * Shared adjudicate→reply tail for the four mutations: EXECUTE/REWRITE →
+   * `{ staff: result }` (201 on create, 200 otherwise); any other kernel
+   * decision → the kernel's own refusal copy (403); a typed service error →
+   * its mapped pt-BR reply; anything else → logged 500 with the route's
+   * failure copy.
+   */
+  async function runStaffMutation(
+    reply: FastifyReply,
+    run: () => Promise<{
+      readonly decision: {
+        readonly kind: string
+        readonly refusal?: { readonly userFacing: string }
+      }
+      readonly result?: unknown
+    }>,
+    opts: {
+      readonly successCode?: number
+      readonly logMessage: string
+      readonly failureText: string
+    },
+  ) {
+    try {
+      const outcome = await run()
+      if (
+        outcome.decision.kind !== "EXECUTE" &&
+        outcome.decision.kind !== "REWRITE"
+      ) {
+        return kernelRefusal(reply, outcome.decision)
+      }
+      return reply.code(opts.successCode ?? 200).send({ staff: outcome.result })
+    } catch (err) {
+      const mapped = staffErrorReply(err)
+      if (mapped) return reply.code(mapped.code).send({ error: mapped.error })
+      server.log.error(err, opts.logMessage)
+      return reply.code(500).send({ error: opts.failureText })
+    }
+  }
+
   // GET /api/admin/staff — list (OWNER-only; carries pay data)
   app.get(
     "/api/admin/staff",
@@ -267,21 +306,15 @@ export async function adminStaffRoutes(server: FastifyInstance): Promise<void> {
         actor: actorFor({ principal, sessionId, role }),
         taint,
       })
-      try {
-        const outcome = await svc.createFromEnvelope(envelope, { ctx: {} })
-        if (
-          outcome.decision.kind !== "EXECUTE" &&
-          outcome.decision.kind !== "REWRITE"
-        ) {
-          return kernelRefusal(reply, outcome.decision)
-        }
-        return reply.code(201).send({ staff: outcome.result })
-      } catch (err) {
-        const mapped = staffErrorReply(err)
-        if (mapped) return reply.code(mapped.code).send({ error: mapped.error })
-        server.log.error(err, "Failed to create staff")
-        return reply.code(500).send({ error: "Falha ao criar o funcionário." })
-      }
+      return runStaffMutation(
+        reply,
+        () => svc.createFromEnvelope(envelope, { ctx: {} }),
+        {
+          successCode: 201,
+          logMessage: "Failed to create staff",
+          failureText: "Falha ao criar o funcionário.",
+        },
+      )
     },
   )
 
@@ -316,21 +349,14 @@ export async function adminStaffRoutes(server: FastifyInstance): Promise<void> {
         actor: actorFor({ principal, sessionId, role }),
         taint,
       })
-      try {
-        const outcome = await svc.updateFromEnvelope(envelope, { ctx: {} })
-        if (
-          outcome.decision.kind !== "EXECUTE" &&
-          outcome.decision.kind !== "REWRITE"
-        ) {
-          return kernelRefusal(reply, outcome.decision)
-        }
-        return reply.send({ staff: outcome.result })
-      } catch (err) {
-        const mapped = staffErrorReply(err)
-        if (mapped) return reply.code(mapped.code).send({ error: mapped.error })
-        server.log.error(err, "Failed to update staff")
-        return reply.code(500).send({ error: "Falha ao atualizar o funcionário." })
-      }
+      return runStaffMutation(
+        reply,
+        () => svc.updateFromEnvelope(envelope, { ctx: {} }),
+        {
+          logMessage: "Failed to update staff",
+          failureText: "Falha ao atualizar o funcionário.",
+        },
+      )
     },
   )
 
@@ -356,21 +382,14 @@ export async function adminStaffRoutes(server: FastifyInstance): Promise<void> {
         actor: actorFor({ principal, sessionId, role }),
         taint,
       })
-      try {
-        const outcome = await svc.deactivateFromEnvelope(envelope, { ctx: {} })
-        if (
-          outcome.decision.kind !== "EXECUTE" &&
-          outcome.decision.kind !== "REWRITE"
-        ) {
-          return kernelRefusal(reply, outcome.decision)
-        }
-        return reply.send({ staff: outcome.result })
-      } catch (err) {
-        const mapped = staffErrorReply(err)
-        if (mapped) return reply.code(mapped.code).send({ error: mapped.error })
-        server.log.error(err, "Failed to deactivate staff")
-        return reply.code(500).send({ error: "Falha ao desativar o funcionário." })
-      }
+      return runStaffMutation(
+        reply,
+        () => svc.deactivateFromEnvelope(envelope, { ctx: {} }),
+        {
+          logMessage: "Failed to deactivate staff",
+          failureText: "Falha ao desativar o funcionário.",
+        },
+      )
     },
   )
 
@@ -398,21 +417,14 @@ export async function adminStaffRoutes(server: FastifyInstance): Promise<void> {
         actor: actorFor({ principal, sessionId, role }),
         taint,
       })
-      try {
-        const outcome = await svc.assignRoleFromEnvelope(envelope, { ctx: {} })
-        if (
-          outcome.decision.kind !== "EXECUTE" &&
-          outcome.decision.kind !== "REWRITE"
-        ) {
-          return kernelRefusal(reply, outcome.decision)
-        }
-        return reply.send({ staff: outcome.result })
-      } catch (err) {
-        const mapped = staffErrorReply(err)
-        if (mapped) return reply.code(mapped.code).send({ error: mapped.error })
-        server.log.error(err, "Failed to assign staff role")
-        return reply.code(500).send({ error: "Falha ao atribuir o cargo." })
-      }
+      return runStaffMutation(
+        reply,
+        () => svc.assignRoleFromEnvelope(envelope, { ctx: {} }),
+        {
+          logMessage: "Failed to assign staff role",
+          failureText: "Falha ao atribuir o cargo.",
+        },
+      )
     },
   )
 }
