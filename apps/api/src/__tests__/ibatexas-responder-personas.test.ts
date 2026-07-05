@@ -180,3 +180,79 @@ describe("responder persona injection — PRESENT selects the injected text per 
     expect(draft.text).toBe(OPS_ESCALATE);
   });
 });
+
+// ── BKL-100 — the ops-plane readAnswer dep (render short-circuit + clamp) ──────
+describe("responder readAnswer dep (BKL-100)", () => {
+  const emptyPlanRefuse = {
+    kind: "REFUSE",
+    refusal: { kind: "BUSINESS_RULE", code: "empty_plan", userFacing: "x" },
+    basis: [],
+  } as unknown as Decision;
+
+  it("dep + a captured read on REFUSE-empty-plan → the rendered text IS the reply, model called ZERO times", async () => {
+    const { model, complete } = mockModel("7 pedidos (model prose)");
+    const responder = createIbatexasResponder({
+      model,
+      modelId: "m",
+      explainer,
+      readAnswer: { render: () => "PANORAMA DETERMINÍSTICO" },
+    });
+    const draft = await responder.respond(
+      mkInput({ decision: emptyPlanRefuse, envelopeKinds: [] }),
+    );
+    expect(draft.text).toBe("PANORAMA DETERMINÍSTICO");
+    // The responder authored NOTHING — no model call on the read turn.
+    expect(complete).not.toHaveBeenCalled();
+  });
+
+  it("dep present but NO read captured (render → undefined) → conversational model path runs", async () => {
+    const { model, complete } = mockModel("Olá colega!");
+    const responder = createIbatexasResponder({
+      model,
+      modelId: "m",
+      explainer,
+      readAnswer: { render: () => undefined },
+    });
+    const draft = await responder.respond(
+      mkInput({ decision: emptyPlanRefuse, envelopeKinds: [] }),
+    );
+    expect(complete).toHaveBeenCalledTimes(1);
+    expect(draft.text).toBe("Olá colega!");
+  });
+
+  it("dep ABSENT → REFUSE-empty-plan still calls the model (regression bar: byte-identical)", async () => {
+    const { model, complete } = mockModel("Olá!");
+    const responder = createIbatexasResponder({ model, modelId: "m", explainer });
+    const draft = await responder.respond(
+      mkInput({ decision: emptyPlanRefuse, envelopeKinds: [] }),
+    );
+    expect(complete).toHaveBeenCalledTimes(1);
+    expect(draft.text).toBe("Olá!");
+  });
+
+  it("clampUngrounded demotes an ungrounded numeric draft on the conversational fallback", async () => {
+    const { model } = mockModel("temos 7 reservas hoje");
+    const responder = createIbatexasResponder({
+      model,
+      modelId: "m",
+      explainer,
+      readAnswer: {
+        render: () => undefined,
+        clampUngrounded: (t) => (/\d/.test(t) ? "NUDGE HONESTO" : null),
+      },
+    });
+    const draft = await responder.respond(
+      mkInput({ decision: emptyPlanRefuse, envelopeKinds: [] }),
+    );
+    expect(draft.text).toBe("NUDGE HONESTO");
+  });
+
+  it("customer plane (dep absent) leaves the SAME numeric draft untouched", async () => {
+    const { model } = mockModel("temos 7 reservas hoje");
+    const responder = createIbatexasResponder({ model, modelId: "m", explainer });
+    const draft = await responder.respond(
+      mkInput({ decision: emptyPlanRefuse, envelopeKinds: [] }),
+    );
+    expect(draft.text).toBe("temos 7 reservas hoje");
+  });
+});

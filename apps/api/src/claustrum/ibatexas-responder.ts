@@ -117,6 +117,46 @@ export interface IbatexasResponderDeps {
     readonly grounded?: string;
     readonly escalate?: string;
   };
+  /**
+   * BKL-100 — the ops-plane read-answer governor. Injected ONLY on the ops
+   * conductor (the customer / WhatsApp planes never pass it, so their behavior is
+   * BYTE-IDENTICAL — pinned by the responder-personas regression bar). It gives
+   * the responder two model-free hooks on the CONVERSATIONAL (REFUSE-empty-plan +
+   * fallback) branch:
+   *
+   *  - `render(turnId)` — when a staff read (ops_snapshot / ops_sales_analytics)
+   *    was captured THIS turn, returns the deterministic pt-BR answer rendered
+   *    from the ACTUAL read result (or an honest "couldn't check" line). That IS
+   *    the reply — the responder makes NO model call, so a read answer can never
+   *    be a model-authored number. Returns `undefined` when no read was captured
+   *    (the responder then does its normal conversational completion).
+   *  - `clampUngrounded(text)` — a demote-only clamp applied to the model draft
+   *    AFTER the existing guards, on the conversational fallback (reached only when
+   *    `render` returned `undefined`, i.e. NO read this turn). A draft stating a
+   *    domain number it could not have grounded is replaced by an honest nudge; it
+   *    never PROMOTES a draft. Returns `null` to leave the draft untouched.
+   */
+  readonly readAnswer?: {
+    render(turnId: string): string | undefined;
+    clampUngrounded?(
+      text: string,
+      allowedSources?: readonly string[],
+    ): string | null;
+    /**
+     * Adversarial-review fix — govern the GROUNDED (EXECUTE/REWRITE/DEFER) draft:
+     * appends the deterministic render of any read captured this turn (the read
+     * half of a mixed read+act turn must come from the ACTUAL read, never model
+     * memory) and digit-run clamps model-authored domain numbers not grounded in
+     * an allowed source (acted summary / staff message / schedule note / the
+     * appended render). Deterministic + demote-only; absent → grounded branch
+     * byte-identical.
+     */
+    governGrounded?(
+      text: string,
+      turnId: string,
+      allowedSources: readonly string[],
+    ): string;
+  };
 }
 
 /** Best-effort, BOUNDED summary of the dispatch result for model grounding.
@@ -705,6 +745,43 @@ export function createIbatexasResponder(
     };
   }
 
+  /** BKL-100 — demote-only ungrounded-fact clamp for the conversational fallback.
+   *  Runs only when the ops-plane `readAnswer.clampUngrounded` dep is present AND
+   *  the draft states a domain number it could not have grounded (no read was
+   *  captured this turn — else `render` short-circuited before any model call). It
+   *  REPLACES the draft with the honest nudge (preserving usage for cost
+   *  accounting); it never promotes. Absent dep → the draft is returned unchanged
+   *  (customer / WhatsApp planes are byte-identical). */
+  function clampUngroundedConversational(
+    draft: DraftResponse,
+    allowedSources: readonly string[],
+  ): DraftResponse {
+    const clamp = deps.readAnswer?.clampUngrounded;
+    if (clamp === undefined) return draft;
+    const nudge = clamp(draft.text, allowedSources);
+    if (nudge === null) return draft;
+    return draft.usage === undefined
+      ? { text: nudge }
+      : { text: nudge, usage: draft.usage };
+  }
+
+  /** Adversarial-review fix — apply `readAnswer.governGrounded` (ops plane only)
+   *  to a grounded draft; absent dep → the draft is returned unchanged (customer /
+   *  WhatsApp planes byte-identical). */
+  function governGroundedDraft(
+    draft: DraftResponse,
+    turnId: string,
+    allowedSources: readonly string[],
+  ): DraftResponse {
+    const govern = deps.readAnswer?.governGrounded;
+    if (govern === undefined) return draft;
+    const governed = govern(draft.text, turnId, allowedSources);
+    if (governed === draft.text) return draft;
+    return draft.usage === undefined
+      ? { text: governed }
+      : { text: governed, usage: draft.usage };
+  }
+
   return {
     async respond(input): Promise<DraftResponse> {
       const decision = input.decision as Decision;
@@ -733,6 +810,15 @@ export function createIbatexasResponder(
           // A REFUSE on an EMPTY plan is the "nothing to authorize" sentinel
           // (small-talk / informational turn) — reply conversationally.
           if (input.plan.envelopes.length === 0) {
+            // BKL-100: on the ops plane, a staff read captured this turn renders
+            // the answer DETERMINISTICALLY from the actual read result — no model
+            // call, so a read answer can never be an authored number. Absent dep
+            // (customer / WhatsApp) or no read captured → undefined → the normal
+            // conversational completion below.
+            const rendered = deps.readAnswer?.render(turnId);
+            if (rendered !== undefined) {
+              return { text: rendered };
+            }
             const { system: base, fragmentManifest } = await composeSystem(
               RESPONDER_CONVERSATIONAL_SURFACE,
               RESPONDER_PERSONA_PTBR,
@@ -741,14 +827,19 @@ export function createIbatexasResponder(
               deps.personas?.conversational,
             );
             const system = base + closedNote;
-            return closedHoursDeliveryGuard(
-              observedGuardDraft(
-                await completeWith({ system, fragmentManifest, userText, turnId }),
-                input.acted,
-                turnId,
+            return clampUngroundedConversational(
+              closedHoursDeliveryGuard(
+                observedGuardDraft(
+                  await completeWith({ system, fragmentManifest, userText, turnId }),
+                  input.acted,
+                  turnId,
+                ),
+                scheduleSignal,
+                scheduled,
               ),
-              scheduleSignal,
-              scheduled,
+              // Numbers the model legitimately saw: the staff's own message + the
+              // schedule note (echoing them back must not nudge).
+              [userText, closedNote],
             );
           }
           // A real action refusal: render the pt-BR refusal VERBATIM (model-free,
@@ -800,10 +891,22 @@ export function createIbatexasResponder(
           // decision (no-authority claim) OR claims a success the runtime did not
           // grant (confabulation) reach the customer. Then surface any user-relevant
           // REWRITE clamp deterministically (the model can't be trusted to).
-          return closedHoursDeliveryGuard(
-            surfaceRewriteClamp(observedGuardDraft(draft, input.acted, turnId), decision),
-            scheduleSignal,
-            scheduled,
+          // BKL-100 (adversarial-review fix): on the ops plane, governGroundedDraft
+          // then appends the deterministic render of any read captured this turn
+          // (the read half of a mixed read+act turn) and digit-run clamps model
+          // numbers not grounded in the acted summary / staff message / schedule
+          // note. Dep absent (customer / WhatsApp) → byte-identical.
+          return governGroundedDraft(
+            closedHoursDeliveryGuard(
+              surfaceRewriteClamp(observedGuardDraft(draft, input.acted, turnId), decision),
+              scheduleSignal,
+              scheduled,
+            ),
+            turnId,
+            // The acted summary is what the model was PROMPTED with (the grounded
+            // source of truth) — serialize it the same way the prompt does so its
+            // digit runs (e.g. a real refund amount) are allowed verbatim.
+            [userText, JSON.stringify(context), closedNote],
           );
         }
 
@@ -820,14 +923,17 @@ export function createIbatexasResponder(
             deps.personas?.conversational,
           );
           const system = base + closedNote;
-          return closedHoursDeliveryGuard(
-            observedGuardDraft(
-              await completeWith({ system, fragmentManifest, userText, turnId }),
-              input.acted,
-              turnId,
+          return clampUngroundedConversational(
+            closedHoursDeliveryGuard(
+              observedGuardDraft(
+                await completeWith({ system, fragmentManifest, userText, turnId }),
+                input.acted,
+                turnId,
+              ),
+              scheduleSignal,
+              scheduled,
             ),
-            scheduleSignal,
-            scheduled,
+            [userText, closedNote],
           );
         }
       }

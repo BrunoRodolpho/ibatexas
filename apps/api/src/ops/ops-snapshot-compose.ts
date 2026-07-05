@@ -77,6 +77,17 @@ export interface OpsSnapshot {
   readonly incidents: IncidentsSummary;
   readonly kitchen: KitchenSummary;
   readonly caixa: CaixaSummary;
+  /**
+   * BKL-100 — the signal names that FAILED to read this turn and degraded to
+   * their zero/empty fallback (a subset of `"opsAlerts" | "incidents" |
+   * "kitchen" | "caixa"`). A renderer MUST render a degraded signal as
+   * "indisponível", NEVER as its fallback ZEROS: a silent zero is
+   * indistinguishable from a real "0 pedidos / caixa zerado" and lies to the
+   * operator. Empty ⇒ every signal read cleanly. Additive: the /api/admin/ops/
+   * snapshot route sends the whole object (no response schema), so it now also
+   * carries this field.
+   */
+  readonly degraded: readonly string[];
 }
 
 // ── Injected dependencies ────────────────────────────────────────────────────
@@ -107,13 +118,16 @@ export interface OpsSnapshotComposeDeps {
 /**
  * Map a settled read to its value, or LOG + substitute the fallback on
  * rejection. This is the whole resilience contract in one helper: a single
- * signal's failure degrades to a zero/empty sub-summary, never a throw.
+ * signal's failure degrades to a zero/empty sub-summary, never a throw. On
+ * rejection it ALSO records the signal name in `degraded` (BKL-100) so the
+ * renderer can distinguish a real zero from an unavailable read.
  */
 function unwrap<T>(
   settled: PromiseSettledResult<T>,
   fallback: T,
   signal: string,
   log: OpsSnapshotLog,
+  degraded: string[],
 ): T {
   if (settled.status === "fulfilled") {
     return settled.value;
@@ -122,6 +136,7 @@ function unwrap<T>(
     { err: settled.reason, signal },
     "ops-snapshot: signal read failed — degrading to fallback sub-summary",
   );
+  degraded.push(signal);
   return fallback;
 }
 
@@ -187,6 +202,10 @@ export async function composeOpsSnapshot(
     })(),
   ]);
 
+  // Populated by the `unwrap` calls below (object properties evaluate top-to-
+  // bottom, and `degraded` is read LAST) — so by the time it is spread it holds
+  // every signal that fell back.
+  const degraded: string[] = [];
   return {
     now: new Date().toISOString(),
     opsAlerts: unwrap(
@@ -194,13 +213,15 @@ export async function composeOpsSnapshot(
       { open: 0, bySeverity: { low: 0, medium: 0, high: 0 } },
       "opsAlerts",
       log,
+      degraded,
     ),
-    incidents: unwrap(incidentsR, { open: 0 }, "incidents", log),
+    incidents: unwrap(incidentsR, { open: 0 }, "incidents", log, degraded),
     kitchen: unwrap(
       kitchenR,
       { activeTickets: 0, oldestTicketAgeMs: 0, queueDepth: [] },
       "kitchen",
       log,
+      degraded,
     ),
     caixa: unwrap(
       caixaR,
@@ -214,6 +235,8 @@ export async function composeOpsSnapshot(
       },
       "caixa",
       log,
+      degraded,
     ),
+    degraded,
   };
 }
