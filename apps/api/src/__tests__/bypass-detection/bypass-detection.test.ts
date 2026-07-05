@@ -1097,13 +1097,24 @@ const DEFERRED_ADMIN_LOW_RISK: readonly DeferredAdminLowRiskEntry[] = [
   },
   // ── apps/api/src/routes/admin/tables.ts ────────────────────────────
   //
-  // 6. POST /api/admin/tables — table CRUD upsert.
-  //    Manager-role-only, low-frequency, no LLM caller, no PII.
+  // 6. POST /api/admin/tables — table create (OPS-018).
+  //    Manager-role-only, low-frequency, no LLM caller, no PII. Route
+  //    layer rejects a duplicate table number with a 409.
   {
     file: "apps/api/src/routes/admin/tables.ts",
-    pattern: /\btableSvc\.upsert\s*\(/,
+    pattern: /\btableSvc\.create\s*\(/,
     rationale:
-      "table.upsert — operator-only table CRUD, manager-role gated, no LLM caller",
+      "table.create — operator-only table CRUD, manager-role gated, no LLM caller",
+  },
+  // 6b. PATCH /api/admin/tables/:id (partial update) + DELETE
+  //     /api/admin/tables/:id (soft-deactivate via active:false) both
+  //     route through `tableSvc.update` (OPS-018). Same operator-only,
+  //     low-blast risk profile as the create above.
+  {
+    file: "apps/api/src/routes/admin/tables.ts",
+    pattern: /\btableSvc\.update\s*\(/,
+    rationale:
+      "table.update — operator-only partial-update + soft-deactivate, manager-role gated, no LLM caller",
   },
   // 7. POST /api/admin/timeslots — bulk-create reservation slots.
   //    Idempotent (skipDuplicates), manager-role-only.
@@ -1275,7 +1286,7 @@ describe("Bypass detection — W7-P2: admin scheduler/tables/zones DEFERRED_ADMI
     expect(stale).toEqual([])
   })
 
-  it("DEFERRED_ADMIN_LOW_RISK size matches the W7-P2 baseline (10 entries — promotion sentinel)", () => {
+  it("DEFERRED_ADMIN_LOW_RISK size matches the W7-P2 baseline (11 entries — promotion sentinel)", () => {
     // W7-P2 baseline: 10 bare-call sites — the 6 P0/P1 sites enumerated
     // in `wave6-governance-coverage.md` §"10 — New bypasses discovered"
     // rows 6–11, PLUS 4 additional delete/holiday-add/holiday-remove
@@ -1298,9 +1309,15 @@ describe("Bypass detection — W7-P2: admin scheduler/tables/zones DEFERRED_ADMI
     //     in the new baseline. Drop the size to the new count and
     //     update W7-DECISIONS-admin.md with a "migration progress" note.
     //
-    // The sentinel is intentionally strict (equality, not "≤ 10") to
+    // The sentinel is intentionally strict (equality, not "≤ 11") to
     // catch silent additions.
-    expect(DEFERRED_ADMIN_LOW_RISK).toHaveLength(10)
+    //
+    // OPS-018 (2026-07): the single POST /api/admin/tables `tableSvc.upsert`
+    // site was split into `tableSvc.create` (POST) + `tableSvc.update`
+    // (PATCH partial-update AND DELETE soft-deactivate), taking the baseline
+    // 10 → 11. Same operator-only, manager-gated, no-LLM-caller risk profile
+    // as the site it replaced — no new risk class introduced.
+    expect(DEFERRED_ADMIN_LOW_RISK).toHaveLength(11)
   })
 })
 
