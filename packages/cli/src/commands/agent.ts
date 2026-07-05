@@ -14,9 +14,10 @@
 //
 // The kill-switch MANAGER is an in-process API singleton (claustrum-bootstrap),
 // so the CLI cannot reach it directly — status/kill/restore call the BKL-098
-// manager-gated admin HTTP routes with the admin API key (x-admin-key). This is
-// the FIRST CLI command to call an admin route; the tiny helper below (base-URL
-// + x-admin-key resolution) is intentionally minimal, not a generic HTTP layer.
+// manager-gated admin HTTP routes with the admin API key (x-admin-key). The
+// transport (base-URL + x-admin-key resolution + never-throws fetch) now lives in
+// the shared `lib/admin-http.js` (promoted there when `ibx staff` became the
+// second admin-route caller); the agent-specific status→message mapping stays here.
 //   Routes (apps/api/src/routes/admin/agents-kill-switch.ts):
 //     GET  /api/admin/agents/kill-status[?agentId=]
 //     POST /api/admin/agents/:agentId/kill      { reason? }
@@ -27,33 +28,14 @@ import { confirm } from "@inquirer/prompts"
 import chalk from "chalk"
 import { AGENT_REGISTRY } from "@ibatexas/agents"
 import { injectPixFailureTrigger } from "@ibatexas/journeys"
+import { callAdmin, resolveAdminKey, getAdminApiUrl, type AdminOutcome } from "../lib/admin-http.js"
 
-// ── Admin HTTP helper (minimal — first CLI caller of an admin route) ─────────
+// Re-export the shared transport so existing importers (and the BKL-120 test that
+// imports `resolveAdminKey` from this module) keep working after the extraction.
+export { callAdmin, resolveAdminKey, getAdminApiUrl }
+export type { AdminOutcome }
 
-/** API base URL. Default port 3001 per packages/cli/src/services.ts. */
-export function getAgentApiUrl(): string {
-  return process.env.API_URL ?? process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001"
-}
-
-/**
- * The admin API key sent as `x-admin-key`. `ADMIN_API_KEY` may be a
- * comma-separated rotation list (routes/admin/index.ts treats every listed key
- * as valid), so send the first non-empty entry. Returns null when unset —
- * callers refuse rather than call the route unauthenticated.
- */
-export function resolveAdminKey(): string | null {
-  const raw = process.env.ADMIN_API_KEY ?? ""
-  return (
-    raw
-      .split(",")
-      .map((k) => k.trim())
-      .find((k) => k.length > 0) ?? null
-  )
-}
-
-type AdminOutcome =
-  | { ok: true; status: number; body: unknown }
-  | { ok: false; error: string }
+// ── Agent-specific status → operator-message mapping ─────────────────────────
 
 /** Extract the server's `message` field (pt-BR) when present. */
 export function serverMessage(body: unknown): string | undefined {
@@ -75,51 +57,6 @@ export function httpErrorMessage(status: number, body: unknown): string {
       return msg ?? "Agent plane unavailable (IBX_AGENTS_ENABLED)."
     default:
       return `Request failed (HTTP ${status})${msg ? ` — ${msg}` : ""}`
-  }
-}
-
-/**
- * Call an admin route with the admin key. Never throws: a missing key or an
- * unreachable API is returned as `{ ok: false }`. On a reachable API the raw
- * status + parsed body are returned (including non-2xx) for the caller to map.
- * A POST body is only attached when supplied — the kill/unkill routes carry NO
- * body schema, and sending `content-type: application/json` with an empty body
- * would make Fastify 400 on an unparseable body.
- */
-export async function callAdmin(
-  method: "GET" | "POST",
-  path: string,
-  body?: Record<string, unknown>,
-): Promise<AdminOutcome> {
-  const key = resolveAdminKey()
-  if (key === null) {
-    return {
-      ok: false,
-      error:
-        "ADMIN_API_KEY is not set — set the admin API key in your environment (.env) to reach the agent admin routes.",
-    }
-  }
-  const url = `${getAgentApiUrl()}${path}`
-  const headers: Record<string, string> = { "x-admin-key": key }
-  const init: RequestInit = { method, headers }
-  if (body !== undefined) {
-    headers["content-type"] = "application/json"
-    init.body = JSON.stringify(body)
-  }
-  try {
-    const res = await fetch(url, init)
-    let parsed: unknown = null
-    try {
-      parsed = await res.json()
-    } catch {
-      parsed = null
-    }
-    return { ok: true, status: res.status, body: parsed }
-  } catch (err) {
-    return {
-      ok: false,
-      error: `Could not reach the API at ${getAgentApiUrl()} — is it running? (ibx dev)  [${(err as Error).message}]`,
-    }
   }
 }
 

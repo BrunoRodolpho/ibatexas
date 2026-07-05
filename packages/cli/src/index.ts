@@ -18,6 +18,7 @@ import { registerScenarioCommands } from "./commands/scenario.js"
 import { registerJourneyCommands } from "./commands/journey.js"
 import { registerGraphCommands } from "./commands/graph.js"
 import { registerAgentCommands } from "./commands/agent.js"
+import { registerStaffCommands } from "./commands/staff.js"
 import { registerDebugCommands } from "./commands/debug.js"
 import { registerInspectCommands } from "./commands/inspect.js"
 import { registerDoctorCommands } from "./commands/doctor.js"
@@ -204,6 +205,15 @@ function buildHelpText(): string {
       ],
     },
     {
+      title: "Staff",
+      commands: [
+        { usage: "staff list",               desc: "List staff — name, phone, role, active, hourly rate (--role, --active, --inactive)" },
+        { usage: "staff update <id>",        desc: "Update name / phone / hourly rate (--name, --phone, --rate, --clear-rate)" },
+        { usage: "staff deactivate <id>",    desc: "⚠  Soft-deactivate a staff member (confirm-gated, -y)" },
+        { usage: "staff assign-role <id> <role>", desc: "⚠  Change a staff member's role (confirm-gated, -y)" },
+      ],
+    },
+    {
       title: "Rate Limits",
       commands: [
         { usage: "rate flush [id]",        desc: "Delete rate-limit keys (--wa, --tokens, --dry-run)" },
@@ -377,6 +387,7 @@ const groupedCommands: { name: string; register: (cmd: Command) => void; descrip
   { name: "journey",  register: registerJourneyCommands,  description: "Journeys — LLM-driven journey registry gates (test plane)" },
   { name: "graph",    register: registerGraphCommands,    description: "Graphs — derived capability/journeys/run/impact graphs + drift gate (test plane)" },
   { name: "agent",    register: registerAgentCommands,    description: "Agents — managed-agent registry, kill-switch operator controls, and test-plane trigger injection" },
+  { name: "staff",    register: registerStaffCommands,    description: "Staff — OWNER-only staff administration (list, update, deactivate, assign role)" },
   { name: "debug",    register: registerDebugCommands },
   { name: "inspect",  register: registerInspectCommands },
   { name: "matrix",   register: registerMatrixCommands },

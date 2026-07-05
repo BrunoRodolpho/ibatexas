@@ -23,6 +23,7 @@ import {
   Gauge,
   BotMessageSquare,
   Users,
+  UserCog,
   ShieldCheck,
   Power,
 } from 'lucide-react'
@@ -41,6 +42,7 @@ const baseGroups: AdminSidebarNavGroup[] = [
       { key: 'cardapio', label: 'Cardápio', href: '/admin/cardapio', icon: UtensilsCrossed },
       { key: 'loja', label: 'Loja', href: '/admin/loja', icon: ShoppingBag },
       { key: 'clientes', label: 'Clientes', href: '/admin/clientes', icon: Users },
+      { key: 'funcionarios', label: 'Funcionários', href: '/admin/funcionarios', icon: UserCog },
     ],
   },
   {
