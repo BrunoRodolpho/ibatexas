@@ -27,6 +27,11 @@ export async function startHandoffSubscriber(
       intentHash,
       intentKind,
       summaryPtBr,
+      // BKL-122 — present when a managed-agent approval was parked: the BKL-105
+      // one-tap deep-link (/admin/aprovacoes/:token) built by the publisher from
+      // ADMIN_BASE_URL. Absent when the admin base URL is unavailable (prod +
+      // unset), in which case no link line is rendered.
+      approvalUrl,
     } = payload as {
       sessionId: string;
       reason?: string;
@@ -34,6 +39,7 @@ export async function startHandoffSubscriber(
       intentHash?: string;
       intentKind?: string;
       summaryPtBr?: string;
+      approvalUrl?: string;
     };
 
     // Idempotency guard — prevent duplicate staff alerts on NATS redelivery
@@ -108,12 +114,15 @@ export async function startHandoffSubscriber(
       parkToken && summaryPtBr
         ? `\n\n⚠️ Ação pendente de aprovação (OWNER): ${summaryPtBr} — aprove no painel, em Escalações.`
         : "";
+    // BKL-122 — one-tap link to the exact approval (BKL-105 deep-link route). Only
+    // when the publisher supplied it (ADMIN_BASE_URL available). One clean line.
+    const approvalLinkLine = approvalUrl ? `\n\nAprovar/recusar: ${approvalUrl}` : "";
     const message = [
       `📞 *Solicitação de atendimento humano*`,
       ``,
       `Sessão: ${sessionId}${reasonLine}`,
       ``,
-      `Um cliente solicitou falar com um atendente.${pendingLine}`,
+      `Um cliente solicitou falar com um atendente.${pendingLine}${approvalLinkLine}`,
     ].join("\n");
 
     try {

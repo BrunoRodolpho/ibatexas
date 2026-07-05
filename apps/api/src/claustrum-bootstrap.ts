@@ -227,6 +227,7 @@ import {
 import { paymentsPixPack } from "@adjudicate/pack-payments-pix";
 import { requireSecret } from "./utils/require-secret.js";
 import { requireEnv } from "./utils/require-env.js";
+import { approvalDeepLink } from "./utils/admin-base-url.js";
 import {
   composePolicyRouter,
   resolveCapabilityPolicy,
@@ -3110,11 +3111,17 @@ export async function bootstrapClaustrum(
       const inMemoryApprovals = createAgentApprovalEngine({
         notify: async (req) => {
           // Stage-1 approval pending → page staff via the existing handoff surface.
+          // BKL-122 — attach the BKL-105 one-tap deep-link to the exact approval
+          // (/admin/aprovacoes/:token), built from ADMIN_BASE_URL. Omitted when the
+          // admin base URL is unavailable (prod + unset) so we never ship a
+          // localhost link in production; the subscriber renders it when present.
+          const approvalUrl = approvalDeepLink(req.token);
           await publishNatsEvent("support.handoff_requested", {
             sessionId: req.agentNamespace,
             reason: `Aprovação de agente pendente: ${req.intentKind}`,
             intentKind: req.intentKind,
             approvalToken: req.token,
+            ...(approvalUrl ? { approvalUrl } : {}),
           });
         },
         now: () => new Date().toISOString(),

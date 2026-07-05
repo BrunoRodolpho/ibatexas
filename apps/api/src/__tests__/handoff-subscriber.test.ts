@@ -286,4 +286,50 @@ describe("handoff-subscriber", () => {
     expect(message.text).toContain("reembolso de R$ 1.500,00")
     expect(message.text).toContain("Escalações")
   })
+
+  // ── BKL-122 — approval deep-link line in the staff WhatsApp message ──────────
+
+  it("appends the one-tap approval deep-link line when approvalUrl rides the event", async () => {
+    process.env.STAFF_NOTIFICATION_PHONE = "+5511999990006"
+    const mockSendText = vi.fn().mockResolvedValue(undefined)
+    mockGetWhatsAppSender.mockReturnValue({ sendText: mockSendText })
+
+    const log = makeLogger()
+    await startHandoffSubscriber(log as never)
+    const [, callback] = mockSubscribeNatsEvent.mock.calls[0] as [
+      string,
+      (payload: unknown) => Promise<void>,
+    ]
+
+    await callback({
+      sessionId: "agent:ns1",
+      reason: "Aprovação de agente pendente: payment.refund.issue",
+      intentKind: "payment.refund.issue",
+      approvalToken: "tok-abc123",
+      approvalUrl: "https://admin.ibatexas.com.br/admin/aprovacoes/tok-abc123",
+    })
+
+    const [, message] = mockSendText.mock.calls[0] as [string, { text: string }]
+    expect(message.text).toContain(
+      "Aprovar/recusar: https://admin.ibatexas.com.br/admin/aprovacoes/tok-abc123",
+    )
+  })
+
+  it("omits the approval deep-link line when no approvalUrl rides the event", async () => {
+    process.env.STAFF_NOTIFICATION_PHONE = "+5511999990007"
+    const mockSendText = vi.fn().mockResolvedValue(undefined)
+    mockGetWhatsAppSender.mockReturnValue({ sendText: mockSendText })
+
+    const log = makeLogger()
+    await startHandoffSubscriber(log as never)
+    const [, callback] = mockSubscribeNatsEvent.mock.calls[0] as [
+      string,
+      (payload: unknown) => Promise<void>,
+    ]
+
+    await callback({ sessionId: "sess_plain", reason: "dúvida" })
+
+    const [, message] = mockSendText.mock.calls[0] as [string, { text: string }]
+    expect(message.text).not.toContain("Aprovar/recusar:")
+  })
 })
