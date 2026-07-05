@@ -30,14 +30,36 @@
 //
 // NARROW BY DESIGN — synthesis fires ONLY on the throw path. A SUCCESSFUL
 // `proposeClaims` (empty or not) is the planner's HONEST signal and is surfaced
-// UNCHANGED: the §O#15 decomposer is a DEMOTE-ONLY completeness net whose keyword
-// markers also match STATEMENTS ("pagode", "meu pedido chegou, obrigado!", "vou
-// pagar com pix" mid-checkout), so promoting a successful-empty proposal into the
-// claims path would override the prose draft with a non-sequitur "não localizei…".
-// KNOWN GAP (BKL-078): a successful-but-empty proposal on a genuinely
-// claim-requiring question therefore still falls through to prose (pre-existing
-// behavior); closing it needs an interrogative/imperative span signal the keyword
-// decomposer does not provide.
+// UNCHANGED except for the BKL-110 demote-only relevance filter (below): the §O#15
+// decomposer is a DEMOTE-ONLY completeness net whose keyword markers also match
+// STATEMENTS ("pagode", "meu pedido chegou, obrigado!", "vou pagar com pix"
+// mid-checkout), so promoting a successful-empty proposal into the claims path
+// would override the prose draft with a non-sequitur "não localizei…". KNOWN GAP
+// (BKL-078): a successful-but-empty proposal on a genuinely claim-requiring
+// question therefore still falls through to prose (pre-existing behavior); closing
+// it needs an interrogative/imperative span signal the keyword decomposer does not
+// provide.
+//
+// BKL-110 DEMOTE-ONLY RELEVANCE FILTER (successful path only). Live-proven defect
+// (round-2, turn 157bbfff): with the claims pipeline on, "oi, tudo bem?" got the
+// SAFE_UNKNOWN template because the 4B claim-planner OVER-PROPOSED a schedule claim
+// on smalltalk — a non-empty candidate set defeats @claustrum/core's
+// emptiness/prose-preservation gate, and the over-proposed claim could not
+// validate → UNKNOWN terminal clobbered the greeting. The filter DROPS a
+// model-proposed candidate whose type is within the decomposer's demote-authority
+// (its span-class markers scan for it) but whose span was NOT detected this turn,
+// so the candidate set collapses back to empty → the prose gate is preserved. It
+// is strictly DEMOTE-ONLY (never adds/synthesizes a candidate here) and scoped to
+// {@link RELEVANCE_GOVERNED_TYPES}: a type the decomposer has no marker for
+// (MENU_ITEM_ALLERGENS, PURCHASE_COMPLETED) is NEVER demoted — the net has no
+// authority to call it irrelevant, so its behavior is byte-identical to today
+// (this is why the filter cannot be the literal "keep iff type ∈ required set":
+// the Triad-scoped decomposer required-set is empty for a legitimate allergens
+// question, which would wrongly demote the answer). BOUNDED RESIDUAL (BKL-078
+// territory, not worsened): a STATEMENT whose keywords net-match a governed type
+// (e.g. "meu pedido chegou, obrigado!") keeps its over-proposed claim (the net
+// cannot tell a statement from a question), so it can still render the UNKNOWN
+// non-sequitur — the worst case is unchanged-from-today, never worse.
 
 import type { CandidateClaim, EvidenceLedger } from "@adjudicate/core";
 import type { ClaimPlannerInput, ClaimPlannerPort } from "@claustrum/core";
@@ -48,7 +70,49 @@ import { ownedResourceIdsByBaseKey } from "./ibatexas-claims-kernel-deps.js";
 import {
   classifyRequestSpans,
   decomposeRequiredClaims,
+  REQUIRED_CLAIM_CLOSURE,
 } from "./required-claim-decomposer.js";
+
+/**
+ * BKL-110 — the claim types the §O#15 decomposer has DEMOTE-AUTHORITY over: the
+ * ones whose span-class markers it actually scans for. Derived from the single
+ * source of truth (`REQUIRED_CLAIM_CLOSURE`'s Triad value-union: STORE_OPEN_NOW,
+ * ORDER_FULFILLMENT_STAGE, PAYMENT_STATUS) plus STORE_HOURS — the schedule-cluster
+ * SIBLING of STORE_OPEN_NOW (both are covered by the STORE_OPEN_NOW_Q markers
+ * `/abert|fechad|que horas|funciona|hor[áa]rio/`; the decomposer's Triad closure
+ * only NAMES STORE_OPEN_NOW, so STORE_HOURS is spliced in here to catch the
+ * live-proven smalltalk over-proposal). A type OUTSIDE this set is one the net has
+ * no marker for (MENU_ITEM_ALLERGENS, PURCHASE_COMPLETED) — it is NEVER demoted, so
+ * a legitimate allergens/purchase claim is surfaced byte-identically to today
+ * (demote-only-safe). If the closure grows a Triad row, this domain auto-expands.
+ */
+const RELEVANCE_GOVERNED_TYPES: ReadonlySet<string> = new Set<string>([
+  ...Object.values(REQUIRED_CLAIM_CLOSURE).flat(),
+  "STORE_HOURS",
+]);
+
+/**
+ * BKL-110 — the DEMOTE-ONLY relevance predicate for one model-proposed candidate.
+ * Returns whether the candidate stays; the caller drops it when this is `false`.
+ * KEEP (never demote) when:
+ *   - the type is OUTSIDE {@link RELEVANCE_GOVERNED_TYPES} — the decomposer has no
+ *     marker for it, so no authority to call it irrelevant (unchanged-from-today);
+ *   - the decomposer REQUIRED the type this turn (its span was detected);
+ *   - it is STORE_HOURS on a turn the schedule span-class fired (STORE_OPEN_NOW is
+ *     required) — the two share the STORE_OPEN_NOW_Q markers, so a legitimate hours
+ *     question that maps to STORE_OPEN_NOW must never demote a STORE_HOURS answer
+ *     (the alias the Triad-scoped closure lacks; BKL-112 is the proper decomposer
+ *     STORE_HOURS row).
+ * Otherwise the type is governed but its span was NOT detected → DEMOTE. Pure.
+ */
+function isCandidateRelevant(
+  type: string,
+  required: ReadonlySet<RegistryClaimType>,
+): boolean {
+  if (!RELEVANCE_GOVERNED_TYPES.has(type)) return true;
+  if ((required as ReadonlySet<string>).has(type)) return true;
+  return type === "STORE_HOURS" && required.has("STORE_OPEN_NOW");
+}
 
 /**
  * tag-then-derive STEP 2 for an OWNER-SCOPED, per-resource candidate (the
@@ -216,6 +280,47 @@ export function createIbatexasClaimPlanner(
       // below — acceptable for now (still proposition-free, never prose); restoring
       // ESCALATE/CLARIFY fidelity needs a port widening, tracked as BKL-077.
 
+      // The §O#15 required-claim set for THIS turn — the SAME pure keyword scan
+      // BKL-005 uses. Computed ONCE and shared by the BKL-110 demote-only relevance
+      // filter (successful path) and the F1 safe-terminal synthesis (flake path).
+      const required = decomposeRequiredClaims(
+        classifyRequestSpans(input.cognition.perception.text),
+      );
+
+      // BKL-110 DEMOTE-ONLY RELEVANCE FILTER — runs ONLY on the SUCCESSFUL propose
+      // path (the flake path leaves `candidates` = [] so this is a no-op and the F1
+      // synthesis below stays byte-identical; the BKL-005 throw path is untouched).
+      // Drop each model-proposed candidate the decomposer GOVERNS but did NOT
+      // require this turn (over-proposed on a span with no matching marker — the
+      // live smalltalk hijack). STRICTLY demote-only: no candidate is ever added
+      // here. When something drops, reassign to the kept set; when nothing drops,
+      // leave `candidates` untouched so its reference (and byte-identity) is
+      // preserved for the "surfaced unchanged" contract.
+      if (!flaked && candidates.length > 0) {
+        const kept: CandidateClaim[] = [];
+        const droppedClaimTypes: string[] = [];
+        for (const c of candidates) {
+          if (isCandidateRelevant(c.type, required)) kept.push(c);
+          else droppedClaimTypes.push(c.type);
+        }
+        if (droppedClaimTypes.length > 0) {
+          logger.info(
+            {
+              component: "claim-planner",
+              event: "claim_planner.candidate_demoted",
+              turnId: input.cognition.turnId,
+              // Ride the existing `droppedClaimTypes` telemetry vocabulary with a
+              // DISTINCT reason so the constrained-generation out-of-enum drops
+              // (planner-side) and these relevance demotions stay separable.
+              droppedClaimTypes,
+              reason: "not_required_for_span",
+            },
+            "claim-planner demoted over-proposed candidate(s) not indicated by the request span",
+          );
+          candidates = kept;
+        }
+      }
+
       // F1 SAFE TERMINAL — synthesize ONLY on the FLAKE path. The discriminator is
       // `flaked ∧ required non-empty`:
       //   - flaked + a claim-requiring question (required non-empty) → synthesize a
@@ -229,24 +334,17 @@ export function createIbatexasClaimPlanner(
       //     KNOWN GAP (BKL-078): a successful-but-empty proposal on a genuinely
       //     claim-requiring question thus still falls through to prose (pre-existing).
       // On the flake path `candidates` is [] (so `covered` is empty → the full
-      // required set is synthesized). The §O#15 decomposer runs ONLY here — a pure
-      // keyword scan skipped entirely on the common successful path.
+      // required set is synthesized).
       const authPrincipal =
         input.customerId !== undefined && input.customerId.trim() !== ""
           ? input.customerId
           : "unauthenticated";
       const covered = new Set(candidates.map((c) => c.type));
       const synthetic = flaked
-        ? synthesizeSafeTerminalCandidates(
-            decomposeRequiredClaims(
-              classifyRequestSpans(input.cognition.perception.text),
-            ),
-            covered,
-            {
-              principal: authPrincipal,
-              sessionId: input.cognition.conversationId,
-            },
-          )
+        ? synthesizeSafeTerminalCandidates(required, covered, {
+            principal: authPrincipal,
+            sessionId: input.cognition.conversationId,
+          })
         : [];
       const all: ReadonlyArray<CandidateClaim> =
         synthetic.length === 0 ? candidates : [...candidates, ...synthetic];
