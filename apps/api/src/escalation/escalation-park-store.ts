@@ -58,6 +58,25 @@ export interface ParkedEscalationIntent {
   readonly actorRole?: string;
   readonly taint: IntentEnvelope["taint"];
   readonly requestedAt: string;
+  /**
+   * BKL-115 — the ESCALATE audit row's timestamp, threaded onto the resume
+   * `confirmationReceipt.originalAt` so the kernel binds the resumed EXECUTE's
+   * `supersedes.predecessorAt` to the ESCALATE row (not the resume row's own
+   * `at`). `buildSupersessionChains` then joins the EXECUTE back to its ESCALATE
+   * instead of seeing a false cycle/singleton.
+   *
+   * LIMITATION: the TRUE ESCALATE audit `at` is stamped inside the kernel and is
+   * NOT reachable at the park seam — the published `@claustrum/core` dispatch
+   * calls `handoff.queue(envelope, reason)`, which does not carry the ESCALATE
+   * AuditRecord (threading it would be a publish-gated contract change). So this
+   * holds the park's own `requestedAt` as the documented best-available
+   * predecessor: it is generated a few ms AFTER the ESCALATE `at` in the same
+   * dispatch, so the chain join resolves to the ESCALATE record (the chain
+   * builder disambiguates a shared-hash bucket by `predecessorAt`, falling back
+   * to the chronologically-first record — the ESCALATE row). Additive/optional:
+   * an absent value leaves the receipt byte-identical to pre-BKL-115.
+   */
+  readonly escalatedAt?: string;
 }
 
 export interface EscalationParkStore {
@@ -218,6 +237,11 @@ export function buildEscalationParkInput(
       ? payload.actorId
       : stripStaffPrefix(envelope.actor.sessionId) || null;
   const role = (envelope.actor as { role?: string }).role;
+  // BKL-115 — the park-time instant. It is BOTH the projection `requestedAt` and
+  // the best-available ESCALATE-time predecessor (`escalatedAt`) threaded onto the
+  // resume receipt's `originalAt` (the true ESCALATE audit `at` is not reachable at
+  // the park seam — see ParkedEscalationIntent.escalatedAt). One coherent instant.
+  const parkedAt = new Date().toISOString();
   return {
     sessionId: envelope.actor.sessionId,
     intentKind: String(envelope.kind),
@@ -231,6 +255,7 @@ export function buildEscalationParkInput(
     actorPrincipal: envelope.actor.principal,
     ...(role !== undefined ? { actorRole: role } : {}),
     taint: envelope.taint,
-    requestedAt: new Date().toISOString(),
+    requestedAt: parkedAt,
+    escalatedAt: parkedAt,
   };
 }

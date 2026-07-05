@@ -163,6 +163,46 @@ function refusalTextFor(decision: Decision): string {
 }
 
 /**
+ * BKL-116 — per-resumable-kind, the `business` basis reason the marker branch
+ * emits when (and ONLY when) it converts THIS escalated intent's ESCALATE into a
+ * REQUEST_CONFIRMATION with the OWNER-role + separation-of-duty gate satisfied
+ * (pack-payments policies.ts: `refund_escalation_approved`). The engine's resume
+ * `confirmationReceipt` is UNCONDITIONAL — it flips ANY REQUEST_CONFIRMATION for
+ * the matching `intentHash` to EXECUTE — so we pin WHICH band was allowed to be
+ * the converting factor. A resumable kind ABSENT from this map fails the check
+ * below (fail-closed): adding a resumable money verb
+ * (escalation-park-store.ts `ESCALATION_RESUMABLE_KINDS`) is a deliberate
+ * governance decision and MUST name its intended marker basis here.
+ */
+const REQUIRED_ESCALATION_APPROVAL_BASIS: Readonly<Record<string, string>> = {
+  "payment.refund.issue": "refund_escalation_approved",
+};
+
+/**
+ * BKL-116 — defense-in-depth against escalate-threshold DRIFT. If the escalate
+ * threshold is RAISED across a deploy so a parked amount no longer exceeds it, the
+ * escalate band (and its OWNER-role marker gate) is SKIPPED at resume; the
+ * BKL-085 UNTRUSTED-taint band fires a REQUEST_CONFIRMATION instead — with NO
+ * owner/self-approve assertion — which the unconditional receipt would then flip
+ * to EXECUTE, side-stepping the pack's OWNER gate. Assert the EXECUTE actually
+ * carries the marker branch's OWN basis; if it was reached via any OTHER band,
+ * the caller REFUSEs (fail-closed). The route JWT-OWNER gate + the engine
+ * self-approve check still ran, so this is defense-in-depth, not the sole gate.
+ */
+function executeReachedViaEscalationMarker(
+  decision: Decision,
+  intentKind: string,
+): boolean {
+  const requiredReason = REQUIRED_ESCALATION_APPROVAL_BASIS[intentKind];
+  if (requiredReason === undefined) return false; // unmapped resumable kind → fail closed
+  return decision.basis.some(
+    (b) =>
+      b.category === "business" &&
+      (b.detail as { reason?: string } | undefined)?.reason === requiredReason,
+  );
+}
+
+/**
  * Adopter-side escalation-approval engine. Mirrors the agent-approvals resolve
  * mechanics (park-rebuild → identical intentHash → audited receipt override) but
  * (a) is backed by the RESTART-SURVIVING Redis park store (not in-memory), and
@@ -281,6 +321,15 @@ export function createEscalationApprovalEngine(
         confirmationReceipt: {
           intentHash: envelope.intentHash,
           at,
+          // BKL-115 — bind the resumed EXECUTE's `supersedes.predecessorAt` to the
+          // ESCALATE row (via the parked ESCALATE-time timestamp) instead of the
+          // resume row's OWN `at`. The kernel derives predecessorAt =
+          // `originalAt ?? at`, so `buildSupersessionChains` can JOIN the resumed
+          // EXECUTE back to its ESCALATE row (see verifyEscalationApprovalLineage).
+          // Additive: an absent `escalatedAt` leaves the receipt byte-identical.
+          ...(parked.escalatedAt !== undefined
+            ? { originalAt: parked.escalatedAt }
+            : {}),
           token,
           binding: {
             approver: { confirmed: resolvedBy },
@@ -300,6 +349,34 @@ export function createEscalationApprovalEngine(
           intentKind: parked.intentKind,
           intentHash: parked.intentHash,
           refusalPtBr: refusalTextFor(decision),
+        };
+      }
+
+      // BKL-116 — threshold-drift defense-in-depth. The receipt is unconditional,
+      // so a raised escalate threshold could route this EXECUTE through the
+      // BKL-085 taint-CONFIRM band (no OWNER gate) instead of the escalate marker
+      // branch. Require the EXECUTE to carry the marker branch's OWN basis; a
+      // conversion via any other band did NOT pass the pack's OWNER/self-approve
+      // gate → REFUSE, no money moves (the EXECUTE was audited above — the trail
+      // honestly records the kernel verdict; the executor simply never runs).
+      if (!executeReachedViaEscalationMarker(decision, parked.intentKind)) {
+        deps.log?.error(
+          {
+            component: "escalation-approval",
+            intentKind: parked.intentKind,
+            intentHash: parked.intentHash,
+            basisCategories: decision.basis.map((b) => b.category),
+          },
+          "escalation approval: EXECUTE reached WITHOUT the escalation-approval marker basis (escalate-threshold drift?) — REFUSE, no execute",
+        );
+        await markResolvedSafe(deps, parked, "denied_by_kernel", resolvedBy, at);
+        return {
+          status: "denied_by_kernel",
+          decision,
+          intentKind: parked.intentKind,
+          intentHash: parked.intentHash,
+          refusalPtBr:
+            "Esta aprovação não pôde ser aplicada com segurança e não foi executada.",
         };
       }
 
@@ -427,11 +504,18 @@ export interface EscalationApprovalLineageResult {
  * Requires, for the parked `intentHash`:
  *   - an ESCALATE record (the original above-threshold verdict) AND a later
  *     resumed EXECUTE record (the resume the receipt licensed);
+ *   - BKL-115: the two JOIN — `buildSupersessionChains` reconstructs a chain
+ *     whose head is the resumed EXECUTE (`confirmation_resolved`) and whose tail
+ *     reaches the ESCALATE row for this `intentHash`. Before BKL-115 the receipt
+ *     omitted `originalAt`, so `supersedes.predecessorAt` was the resume row's
+ *     OWN `at` and the chain builder produced a false cycle/singleton instead of
+ *     the join. This assertion (previously a discarded call) now makes the lineage
+ *     invariant actually check the ESCALATE→EXECUTE link. It expects records in
+ *     emission (chronological) order — how the audit sink captures them and how a
+ *     replay window is read.
  *   - the projection carries `status === "approved"` + `resolvedBy` (the kernel
  *     receipt records no approver — provenance is the adopter projection +
  *     `Supersession.binding.approver`).
- *
- * `buildSupersessionChains` is run to surface the narrative chain (informational).
  */
 export function verifyEscalationApprovalLineage(
   auditRecords: ReadonlyArray<AuditRecord>,
@@ -452,7 +536,26 @@ export function verifyEscalationApprovalLineage(
   else if (intent.resolvedBy === undefined)
     reasons.push("projection missing resolvedBy (approver)");
 
-  buildSupersessionChains([...auditRecords]);
+  // BKL-115 — ASSERT the ESCALATE→resumed-EXECUTE join (was a discarded call).
+  // Only meaningful once both rows exist; the head is the confirmation_resolved
+  // EXECUTE and its tail must reach the ESCALATE row for this intentHash.
+  if (hasEscalate && hasResume) {
+    const report = buildSupersessionChains([...auditRecords]);
+    const joined = report.chains.some(
+      (c) =>
+        c.head.intentHash === intentHash &&
+        c.head.decisionKind === "EXECUTE" &&
+        c.head.reason === "confirmation_resolved" &&
+        c.tail.some(
+          (t) =>
+            t.intentHash === intentHash && t.decisionKind === "ESCALATE",
+        ),
+    );
+    if (!joined)
+      reasons.push(
+        "resumed EXECUTE does not join to the ESCALATE row (supersession lineage broken)",
+      );
+  }
 
   return { ok: reasons.length === 0, reasons };
 }
