@@ -41,6 +41,18 @@ import {
   type AgentKillStatus,
   type KillIntent,
 } from './agent-killswitch.mappers'
+import {
+  STAFF_ENDPOINT,
+  staffUpdatePath,
+  staffDeactivatePath,
+  staffRolePath,
+  type StaffListResponse,
+  type StaffMember,
+  type StaffRole,
+  type StaffMutationResult,
+  type CreateStaffPayload,
+  type UpdateStaffPayload,
+} from './staff.mappers'
 
 const hooks = buildAdminHooks(createAdminHook, createAdminListHook, apiFetch)
 
@@ -1567,4 +1579,166 @@ export function useAgentKilledCount(): number {
   }, [])
 
   return count
+}
+
+// ── Funcionários (OWNER-only staff administration — AUT-038) ──────────────────
+
+const STAFF_POLL_MS = 30_000
+
+/** Distinct list terminals: the OWNER-gated read 403s for a non-owner (an honest
+ *  forbidden banner) vs. a real transport failure. A tolerant raw fetch (not
+ *  apiFetch, which discards the status) tells them apart. Throws on any other
+ *  non-OK so the caller surfaces it. */
+export type StaffListState =
+  | { readonly kind: 'ok'; readonly staff: StaffMember[]; readonly total: number }
+  | { readonly kind: 'forbidden' }
+
+interface StaffListQuery {
+  readonly role?: StaffRole
+  readonly active?: boolean
+}
+
+async function fetchStaffList(query: StaffListQuery): Promise<StaffListState> {
+  const params = new URLSearchParams()
+  if (query.role) params.set('role', query.role)
+  if (query.active !== undefined) params.set('active', String(query.active))
+  const qs = params.toString()
+  const res = await fetch(`/api/proxy${STAFF_ENDPOINT}${qs ? `?${qs}` : ''}`, {
+    credentials: 'include',
+  })
+  if (res.status === 403) return { kind: 'forbidden' }
+  if (!res.ok) throw new Error(`API error: ${res.status} ${res.statusText}`)
+  const data = (await res.json().catch(() => ({}))) as Partial<StaffListResponse>
+  return {
+    kind: 'ok',
+    staff: Array.isArray(data.staff) ? [...data.staff] : [],
+    total: typeof data.total === 'number' ? data.total : 0,
+  }
+}
+
+/**
+ * POST/PATCH one staff mutation and return the SETTLED result WITHOUT throwing on
+ * a non-ok status — reads the body on BOTH paths so the page can surface the
+ * server's pt-BR error honestly (`apiFetch` throws and discards it). credentials
+ * ride the staff-JWT cookie the proxy forwards; content-type is set ONLY when a
+ * body is sent — the deactivate route carries no body, and an empty JSON body
+ * would 400 Fastify (the proxy strips a trailing empty content-type either way).
+ */
+async function postStaffMutation(
+  path: string,
+  method: 'POST' | 'PATCH',
+  body?: Record<string, unknown>,
+): Promise<StaffMutationResult> {
+  const init: RequestInit = { method, credentials: 'include' }
+  if (body !== undefined) {
+    init.headers = { 'Content-Type': 'application/json' }
+    init.body = JSON.stringify(body)
+  }
+  const res = await fetch(`/api/proxy${path}`, init)
+  let parsed: unknown = null
+  try {
+    parsed = await res.json()
+  } catch {
+    // A non-JSON error body (e.g. a gateway 502) — fall through with null; the
+    // page's staffErrorText then uses the status-keyed pt-BR fallback.
+  }
+  return { ok: res.ok, status: res.status, body: parsed }
+}
+
+/**
+ * Backs the "Funcionários" OWNER-only staff-administration surface. ONE fetch per
+ * 30s poll of the list (role/active filters passed to the server); the skeleton
+ * flashes only on the initial load (the poll refreshes rows in place). `forbidden`
+ * renders the honest non-owner banner. A transient poll failure surfaces the error
+ * WITHOUT clearing existing rows (never swallowed — mirrors useAgentKillSwitch).
+ * The four mutations POST/PATCH the PR1 routes WITHOUT side effects (the page owns
+ * the toast + the reload decision) and return the settled HTTP status + parsed
+ * body, so the page reports the OUTCOME honestly and surfaces the server's pt-BR
+ * error text (a failed write never reads as success).
+ */
+export function useAdminStaff() {
+  const [staff, setStaff] = useState<StaffMember[]>([])
+  const [total, setTotal] = useState(0)
+  const [forbidden, setForbidden] = useState(false)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [refreshKey, setRefreshKey] = useState(0)
+  const [roleFilter, setRoleFilter] = useState<StaffRole | ''>('')
+  // Default to the ACTIVE roster — the everyday administration view; the operator
+  // can switch to inactive/all to reactivate or audit.
+  const [activeFilter, setActiveFilter] = useState<'' | 'active' | 'inactive'>('active')
+
+  const hasLoadedRef = useRef(false)
+
+  useEffect(() => {
+    let cancelled = false
+    if (!hasLoadedRef.current) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- initial load only; loading flag drives the skeleton
+      setLoading(true)
+    }
+    const query: StaffListQuery = {
+      ...(roleFilter ? { role: roleFilter } : {}),
+      ...(activeFilter === '' ? {} : { active: activeFilter === 'active' }),
+    }
+    fetchStaffList(query)
+      .then((state) => {
+        if (cancelled) return
+        setForbidden(state.kind === 'forbidden')
+        setStaff(state.kind === 'ok' ? state.staff : [])
+        setTotal(state.kind === 'ok' ? state.total : 0)
+        setError(null)
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return
+        // Do NOT clear existing rows on a transient poll failure; surface the error.
+        setError(err instanceof Error ? err.message : 'load_failed')
+      })
+      .finally(() => { if (!cancelled) { setLoading(false); hasLoadedRef.current = true } })
+    return () => { cancelled = true }
+  }, [roleFilter, activeFilter, refreshKey])
+
+  const refetch = useCallback(() => setRefreshKey((k) => k + 1), [])
+
+  // Canonical 30s poll.
+  useEffect(() => {
+    const interval = setInterval(refetch, STAFF_POLL_MS)
+    return () => clearInterval(interval)
+  }, [refetch])
+
+  // The mutations are side-effect-free settled POSTs/PATCHes — the page owns the
+  // toast + the reload decision (reload-after-write, never optimistic).
+  const createStaff = useCallback(
+    (payload: CreateStaffPayload) => postStaffMutation(STAFF_ENDPOINT, 'POST', { ...payload }),
+    [],
+  )
+  const updateStaff = useCallback(
+    (id: string, payload: UpdateStaffPayload) =>
+      postStaffMutation(staffUpdatePath(id), 'PATCH', { ...payload }),
+    [],
+  )
+  const deactivateStaff = useCallback(
+    (id: string) => postStaffMutation(staffDeactivatePath(id), 'POST'),
+    [],
+  )
+  const assignRole = useCallback(
+    (id: string, role: StaffRole) => postStaffMutation(staffRolePath(id), 'POST', { role }),
+    [],
+  )
+
+  return {
+    staff,
+    total,
+    forbidden,
+    loading,
+    error,
+    roleFilter,
+    setRoleFilter,
+    activeFilter,
+    setActiveFilter,
+    createStaff,
+    updateStaff,
+    deactivateStaff,
+    assignRole,
+    refetch,
+  }
 }
