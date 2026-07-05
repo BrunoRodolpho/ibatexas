@@ -1550,7 +1550,10 @@ export function stripModelOwner(input: unknown): unknown {
  * one-hop read-loop then feeds back as an "(indisponível: …)" blob the planner
  * FABRICATES around (BKL-003 live: "O seu pedido continua sendo processado" with no
  * order in hand). Detecting the empty case up front lets the executor return a typed
- * empty fact the renderer can voice honestly. Pure.
+ * empty fact the renderer can voice honestly. Pure. BKL-118 reuses this same
+ * predicate for the sibling get_payment_status executor — checkPaymentStatus keys
+ * its read on the identical `orderId`, so "no order to resolve" ⇒ "no payment to
+ * resolve" without loosening the predicate's meaning.
  */
 function hasResolvableOrderId(input: unknown): input is { orderId: string } {
   return (
@@ -1616,9 +1619,30 @@ export const IBATEXAS_READ_TOOL_EXECUTORS: Readonly<
     }
     return checkOrderStatus(stripped as never, ctx);
   },
+  // BKL-118 — the billing twin of the BKL-107 check_order_status short-circuit.
+  // get_payment_status delegates to checkPaymentStatus, whose handler REQUIRES an
+  // authenticated owner (it throws NonRetryableError("Autenticação necessária.")
+  // when !ctx.customerId) and an orderId to key the payment read. A guest ("meu
+  // pagamento caiu?") reaches here with `{}`: pre-fix that threw the auth error, and
+  // the one-hop read-loop fed the thrown message back as an "(indisponível: …)" blob
+  // the planner FABRICATES a payment status around (same class as BKL-003). A session
+  // that cannot resolve an owner-scoped order owns no payment to report — a GUEST/
+  // unauthenticated turn (no ctx.customerId) OR an authenticated owner whose call
+  // carries no orderId — so return a TYPED empty fact instead. `payment: null`
+  // mirrors the sibling `order: null` null-with-marker shape and is an epistemic
+  // "nothing scoped to you", NEVER a world-fact assertion that no payment EXISTS (a
+  // guest may well have one they simply cannot see) — which keeps the read sound. The
+  // AUTHENTICATED-owner + orderId path is UNTOUCHED → real status byte-identical, and
+  // checkPaymentStatus's withOrderOwnership/assertOrderOwnership IDOR guard still runs
+  // there; a guest with a model-forged orderId is short-circuited to empty here, so it
+  // can never reach a foreign order.
   get_payment_status: (input, state) => {
     const ctx = agentCtxFromState(state);
-    return checkPaymentStatus(stripModelOwner(input) as never, ctx);
+    const stripped = stripModelOwner(input);
+    if (!ctx.customerId || !hasResolvableOrderId(stripped)) {
+      return Promise.resolve({ payment: null, reason: "no_payment_for_session" });
+    }
+    return checkPaymentStatus(stripped as never, ctx);
   },
   get_order_history: (input, state) => {
     const ctx = agentCtxFromState(state);
