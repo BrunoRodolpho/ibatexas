@@ -85,6 +85,18 @@ export interface BuildClaimsSeamsDeps {
    */
   readonly warn?: (message: string) => void;
   /**
+   * Sink for the UNCONDITIONAL boot marker stating the claims-pipeline state
+   * (BKL-108). Before this, an ENABLED pipeline was LOG-SILENT at boot unless a
+   * kernel was below floor — during the 2026-07-04 flip incident nothing in the
+   * boot log said whether the RUNNING process actually carried the flag, and a
+   * stale-env respawn passed for an enabled one. Emitted exactly once per call,
+   * for BOTH states (ENABLED and disabled). Inject it ONLY from the boot-time
+   * composition root — the per-trigger factory (`buildClaimsSeamsForPlanner`)
+   * must omit it, or the boot-class marker would repeat on every trigger.
+   * Optional + best-effort like `warn`; omitting it changes nothing else.
+   */
+  readonly info?: (message: string) => void;
+  /**
    * Resolve the linked kernel versions (testing seam). Defaults to the
    * best-effort runtime resolver; tests inject a fixed map.
    */
@@ -139,7 +151,18 @@ export function warnOncePerMessage(
  * deps seam — see ibatexas-claims-kernel-deps.ts).
  */
 export function buildClaimsSeams(deps: BuildClaimsSeamsDeps): ClaimsSeams {
-  if (!claimsPipelineEnabled(deps.env)) {
+  const enabled = claimsPipelineEnabled(deps.env);
+  // BKL-108 — unconditional boot marker, BOTH states. An ENABLED pipeline used
+  // to be log-silent unless a kernel was below floor, so a stale-env respawn
+  // (flag true on disk, absent in the process) was indistinguishable from an
+  // enabled boot. One line, always, so `process env vs .env` disputes are
+  // settled by the boot log itself.
+  deps.info?.(
+    enabled
+      ? `[claims-pipeline] ENABLED (${CLAIMS_PIPELINE_ENABLED_ENV}=true) — INVESTIGATE / CLAIMS-VALIDATE / render-from-claims seams active`
+      : `[claims-pipeline] disabled (${CLAIMS_PIPELINE_ENABLED_ENV} unset/false) — prose-only composition, no claims seams`,
+  );
+  if (!enabled) {
     // OFF (default): no seams — byte-identical to today.
     return {};
   }
