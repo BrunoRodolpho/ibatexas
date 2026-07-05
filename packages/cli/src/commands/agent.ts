@@ -1,20 +1,174 @@
-// ibx agent — managed-agent registry + test-plane trigger injection (T3-9).
+// ibx agent — managed-agent registry, kill-switch operator controls, and
+// test-plane trigger injection.
 //
-// `agent list`     prints the composed AGENT_REGISTRY.
-// `agent trigger`  injects a wake (trigger) event for an agent via the SINGLE
-//                  allowlisted publish helper (`injectPixFailureTrigger`),
-//                  which REFUSES without IBX_TEST_FINGERPRINT. For the agent to
-//                  actually run, the SUT must have IBX_AGENTS_ENABLED=true; the
-//                  agent's decision is observed in the adjudicate console
-//                  /agents view (intent_audit session_id LIKE 'agent:%').
+// `agent list`            prints the composed AGENT_REGISTRY.
+// `agent status [id]`     shows each agent's kill-switch state (killed vs live).
+// `agent kill <id>`       trips an agent's kill-switch (emergency brake). Confirm-gated.
+// `agent restore <id>`    clears an agent's kill-switch (restore operation). Make-safe.
+// `agent trigger`         injects a wake (trigger) event for an agent via the SINGLE
+//                         allowlisted publish helper (`injectPixFailureTrigger`),
+//                         which REFUSES without IBX_TEST_FINGERPRINT. For the agent to
+//                         actually run, the SUT must have IBX_AGENTS_ENABLED=true; the
+//                         agent's decision is observed in the adjudicate console
+//                         /agents view (intent_audit session_id LIKE 'agent:%').
+//
+// The kill-switch MANAGER is an in-process API singleton (claustrum-bootstrap),
+// so the CLI cannot reach it directly — status/kill/restore call the BKL-098
+// manager-gated admin HTTP routes with the admin API key (x-admin-key). This is
+// the FIRST CLI command to call an admin route; the tiny helper below (base-URL
+// + x-admin-key resolution) is intentionally minimal, not a generic HTTP layer.
+//   Routes (apps/api/src/routes/admin/agents-kill-switch.ts):
+//     GET  /api/admin/agents/kill-status[?agentId=]
+//     POST /api/admin/agents/:agentId/kill      { reason? }
+//     POST /api/admin/agents/:agentId/unkill
 
 import type { Command } from "commander"
+import { confirm } from "@inquirer/prompts"
 import chalk from "chalk"
 import { AGENT_REGISTRY } from "@ibatexas/agents"
 import { injectPixFailureTrigger } from "@ibatexas/journeys"
 
+// ── Admin HTTP helper (minimal — first CLI caller of an admin route) ─────────
+
+/** API base URL. Default port 3001 per packages/cli/src/services.ts. */
+export function getAgentApiUrl(): string {
+  return process.env.API_URL ?? process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001"
+}
+
+/**
+ * The admin API key sent as `x-admin-key`. `ADMIN_API_KEY` may be a
+ * comma-separated rotation list (routes/admin/index.ts treats every listed key
+ * as valid), so send the first non-empty entry. Returns null when unset —
+ * callers refuse rather than call the route unauthenticated.
+ */
+export function resolveAdminKey(): string | null {
+  const raw = process.env.ADMIN_API_KEY ?? ""
+  return (
+    raw
+      .split(",")
+      .map((k) => k.trim())
+      .find((k) => k.length > 0) ?? null
+  )
+}
+
+type AdminOutcome =
+  | { ok: true; status: number; body: unknown }
+  | { ok: false; error: string }
+
+/** Extract the server's `message` field (pt-BR) when present. */
+export function serverMessage(body: unknown): string | undefined {
+  const m = (body as { message?: unknown } | null | undefined)?.message
+  return typeof m === "string" && m.length > 0 ? m : undefined
+}
+
+/** Map a non-2xx admin response to an operator message (server pt-BR passed through). */
+export function httpErrorMessage(status: number, body: unknown): string {
+  const msg = serverMessage(body)
+  switch (status) {
+    case 401:
+      return "Unauthorized — the ADMIN_API_KEY was rejected by the API (check the key value)."
+    case 403:
+      return msg ?? "Forbidden — the admin key needs an OWNER/MANAGER role (ADMIN_API_KEY_ROLES_JSON)."
+    case 404:
+      return msg ?? "Unknown agent."
+    case 503:
+      return msg ?? "Agent plane unavailable (IBX_AGENTS_ENABLED)."
+    default:
+      return `Request failed (HTTP ${status})${msg ? ` — ${msg}` : ""}`
+  }
+}
+
+/**
+ * Call an admin route with the admin key. Never throws: a missing key or an
+ * unreachable API is returned as `{ ok: false }`. On a reachable API the raw
+ * status + parsed body are returned (including non-2xx) for the caller to map.
+ * A POST body is only attached when supplied — the kill/unkill routes carry NO
+ * body schema, and sending `content-type: application/json` with an empty body
+ * would make Fastify 400 on an unparseable body.
+ */
+export async function callAdmin(
+  method: "GET" | "POST",
+  path: string,
+  body?: Record<string, unknown>,
+): Promise<AdminOutcome> {
+  const key = resolveAdminKey()
+  if (key === null) {
+    return {
+      ok: false,
+      error:
+        "ADMIN_API_KEY is not set — set the admin API key in your environment (.env) to reach the agent admin routes.",
+    }
+  }
+  const url = `${getAgentApiUrl()}${path}`
+  const headers: Record<string, string> = { "x-admin-key": key }
+  const init: RequestInit = { method, headers }
+  if (body !== undefined) {
+    headers["content-type"] = "application/json"
+    init.body = JSON.stringify(body)
+  }
+  try {
+    const res = await fetch(url, init)
+    let parsed: unknown = null
+    try {
+      parsed = await res.json()
+    } catch {
+      parsed = null
+    }
+    return { ok: true, status: res.status, body: parsed }
+  } catch (err) {
+    return {
+      ok: false,
+      error: `Could not reach the API at ${getAgentApiUrl()} — is it running? (ibx dev)  [${(err as Error).message}]`,
+    }
+  }
+}
+
+/**
+ * Print the failure and set a non-zero exit code, or return the success body.
+ * Returns null on any failure (our routes never return a null 2xx body).
+ */
+function unwrap(outcome: AdminOutcome): unknown | null {
+  if (!outcome.ok) {
+    console.error(chalk.red(`  ✗ ${outcome.error}`))
+    process.exitCode = 1
+    return null
+  }
+  if (outcome.status < 200 || outcome.status >= 300) {
+    console.error(chalk.red(`  ✗ ${httpErrorMessage(outcome.status, outcome.body)}`))
+    process.exitCode = 1
+    return null
+  }
+  return outcome.body
+}
+
+interface KillStatusRow {
+  agentId: string
+  killed: boolean
+}
+
+export function printKillStatus(agents: KillStatusRow[]): void {
+  if (agents.length === 0) {
+    console.log(chalk.dim("\n  No managed agents registered.\n"))
+    return
+  }
+  console.log(chalk.bold("\n  Agent kill-switch state\n"))
+  for (const a of agents) {
+    const badge = a.killed ? chalk.red("● KILLED") : chalk.green("● live  ")
+    console.log(`  ${badge}  ${chalk.cyan(a.agentId)}`)
+  }
+  console.log()
+}
+
+function printKillResult(agentId: string, body: unknown, clearedAction: string): void {
+  const killed = (body as { killed?: boolean }).killed === true
+  const badge = killed ? chalk.red("● KILLED") : chalk.green("● live  ")
+  console.log(`  ${badge}  ${chalk.cyan(agentId)} — ${clearedAction}`)
+}
+
 export function registerAgentCommands(group: Command): void {
-  group.description("Agents — managed-agent registry + test-plane trigger injection (test plane)")
+  group.description(
+    "Agents — managed-agent registry, kill-switch operator controls, and test-plane trigger injection",
+  )
 
   // ─── agent list ───────────────────────────────────────────────────────────
   group
@@ -32,6 +186,62 @@ export function registerAgentCommands(group: Command): void {
         )
       }
       console.log()
+    })
+
+  // ─── agent status ─────────────────────────────────────────────────────────
+  group
+    .command("status [agentId]")
+    .description("Show each managed agent's kill-switch state (killed vs live); pass an id for one")
+    .action(async (agentId?: string) => {
+      const path = agentId
+        ? `/api/admin/agents/kill-status?agentId=${encodeURIComponent(agentId)}`
+        : "/api/admin/agents/kill-status"
+      const body = unwrap(await callAdmin("GET", path))
+      if (body === null) return
+      const agents = (body as { agents?: KillStatusRow[] }).agents ?? []
+      printKillStatus(agents)
+    })
+
+  // ─── agent kill ───────────────────────────────────────────────────────────
+  group
+    .command("kill <agentId>")
+    .description("Trip an agent's kill-switch — the emergency brake that stops the agent (confirm-gated)")
+    .option("--reason <reason>", "Optional ops note stored with the trip")
+    .option("-y, --yes", "Skip the confirmation prompt")
+    .action(async (agentId: string, opts: { reason?: string; yes?: boolean }) => {
+      if (!opts.yes) {
+        const confirmed = await confirm({
+          message: chalk.yellow(
+            `⚠️  Trip the kill-switch for "${agentId}"? This immediately stops the agent.`,
+          ),
+          default: false,
+        })
+        if (!confirmed) {
+          console.log(chalk.gray("Aborted."))
+          return
+        }
+      }
+      const body = unwrap(
+        await callAdmin(
+          "POST",
+          `/api/admin/agents/${encodeURIComponent(agentId)}/kill`,
+          opts.reason ? { reason: opts.reason } : undefined,
+        ),
+      )
+      if (body === null) return
+      printKillResult(agentId, body, "kill-switch tripped")
+    })
+
+  // ─── agent restore ────────────────────────────────────────────────────────
+  group
+    .command("restore <agentId>")
+    .description("Clear an agent's kill-switch and restore its operation (make-safe — no confirmation)")
+    .action(async (agentId: string) => {
+      const body = unwrap(
+        await callAdmin("POST", `/api/admin/agents/${encodeURIComponent(agentId)}/unkill`),
+      )
+      if (body === null) return
+      printKillResult(agentId, body, "kill-switch cleared")
     })
 
   // ─── agent trigger ────────────────────────────────────────────────────────

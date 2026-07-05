@@ -277,6 +277,15 @@ function buildHelpText(): string {
       ],
     },
     {
+      title: "Agents",
+      commands: [
+        { usage: "agent list",             desc: "List the registered managed agents (AGENT_REGISTRY)" },
+        { usage: "agent status [id]",      desc: "Show each agent's kill-switch state — killed vs live" },
+        { usage: "agent kill <id>",        desc: "⚠  Trip an agent's kill-switch (emergency brake) — confirm-gated (-y)" },
+        { usage: "agent restore <id>",     desc: "Clear an agent's kill-switch (restore operation)" },
+      ],
+    },
+    {
       title: "Observability",
       commands: [
         { usage: "obs decisions",          desc: "Watch kernel decisions + refusals (-f to follow)" },
@@ -367,7 +376,7 @@ const groupedCommands: { name: string; register: (cmd: Command) => void; descrip
   { name: "scenario", register: registerScenarioCommands },
   { name: "journey",  register: registerJourneyCommands,  description: "Journeys — LLM-driven journey registry gates (test plane)" },
   { name: "graph",    register: registerGraphCommands,    description: "Graphs — derived capability/journeys/run/impact graphs + drift gate (test plane)" },
-  { name: "agent",    register: registerAgentCommands,    description: "Agents — managed-agent registry + test-plane trigger injection (test plane)" },
+  { name: "agent",    register: registerAgentCommands,    description: "Agents — managed-agent registry, kill-switch operator controls, and test-plane trigger injection" },
   { name: "debug",    register: registerDebugCommands },
   { name: "inspect",  register: registerInspectCommands },
   { name: "matrix",   register: registerMatrixCommands },
