@@ -12,6 +12,8 @@ const mockGetWhatsAppSender = vi.hoisted(() => vi.fn())
 // boundary so it's a silent no-op here, leaving the dedup/notification paths
 // (which is what these tests assert) byte-identical to before.
 const mockRecordHandoff = vi.hoisted(() => vi.fn(async () => undefined))
+// AUT-017 — the subscriber also projects a parked money intent onto the record.
+const mockAppendPendingIntent = vi.hoisted(() => vi.fn(async () => undefined))
 
 vi.mock("@ibatexas/nats-client", () => ({
   subscribeNatsEvent: mockSubscribeNatsEvent,
@@ -22,7 +24,10 @@ vi.mock("@ibatexas/tools", () => ({
 }))
 
 vi.mock("../escalation/escalation-store.js", () => ({
-  getEscalationStore: vi.fn(async () => ({ recordHandoff: mockRecordHandoff })),
+  getEscalationStore: vi.fn(async () => ({
+    recordHandoff: mockRecordHandoff,
+    appendPendingIntent: mockAppendPendingIntent,
+  })),
 }))
 
 // W1 Phase-2: a handoff opening on a session with an OPEN incident auto-resolves
@@ -220,5 +225,65 @@ describe("handoff-subscriber", () => {
       expect.any(Function),
       { queueGroup: "handoff-subscriber" },
     )
+  })
+
+  // ── AUT-017 — parked-money-intent projection + staff message enrichment ──────
+
+  it("projects a parked money intent onto the record when parkToken/intentHash/intentKind are present", async () => {
+    delete process.env.STAFF_NOTIFICATION_PHONE
+    const callback = await getRegisteredCallback()
+    await callback({
+      sessionId: "admin:owner1",
+      reason: "acima do limite",
+      parkToken: "park-tok-1",
+      intentHash: "sha256:abc",
+      intentKind: "payment.refund.issue",
+      summaryPtBr: "reembolso de R$ 1.500,00",
+    })
+
+    expect(mockAppendPendingIntent).toHaveBeenCalledWith(
+      "admin:owner1",
+      expect.objectContaining({
+        token: "park-tok-1",
+        intentHash: "sha256:abc",
+        intentKind: "payment.refund.issue",
+        summaryPtBr: "reembolso de R$ 1.500,00",
+        status: "pending",
+      }),
+    )
+  })
+
+  it("does NOT project (or append) when no parkToken rides the event", async () => {
+    delete process.env.STAFF_NOTIFICATION_PHONE
+    const callback = await getRegisteredCallback()
+    await callback({ sessionId: "sess_plain", reason: "dúvida" })
+    expect(mockAppendPendingIntent).not.toHaveBeenCalled()
+  })
+
+  it("enriches the staff WhatsApp message with the pending-approval (OWNER) line", async () => {
+    process.env.STAFF_NOTIFICATION_PHONE = "+5511999990005"
+    const mockSendText = vi.fn().mockResolvedValue(undefined)
+    mockGetWhatsAppSender.mockReturnValue({ sendText: mockSendText })
+
+    const log = makeLogger()
+    await startHandoffSubscriber(log as never)
+    const [, callback] = mockSubscribeNatsEvent.mock.calls[0] as [
+      string,
+      (payload: unknown) => Promise<void>,
+    ]
+
+    await callback({
+      sessionId: "admin:owner1",
+      reason: "acima do limite",
+      parkToken: "park-tok-1",
+      intentHash: "sha256:abc",
+      intentKind: "payment.refund.issue",
+      summaryPtBr: "reembolso de R$ 1.500,00",
+    })
+
+    const [, message] = mockSendText.mock.calls[0] as [string, { text: string }]
+    expect(message.text).toContain("Ação pendente de aprovação (OWNER)")
+    expect(message.text).toContain("reembolso de R$ 1.500,00")
+    expect(message.text).toContain("Escalações")
   })
 })

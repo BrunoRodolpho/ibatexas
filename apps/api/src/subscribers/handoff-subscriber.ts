@@ -17,7 +17,24 @@ export async function startHandoffSubscriber(
   log?: FastifyBaseLogger,
 ): Promise<void> {
   await subscribeNatsEvent("support.handoff_requested", async (payload) => {
-    const { sessionId, reason } = payload as { sessionId: string; reason?: string };
+    const {
+      sessionId,
+      reason,
+      // AUT-017 — present ONLY when the ESCALATE parked a resumable money intent.
+      // The FULL envelope stays in the escalation park store; only these opaque
+      // fields ride NATS (the payload itself NEVER does).
+      parkToken,
+      intentHash,
+      intentKind,
+      summaryPtBr,
+    } = payload as {
+      sessionId: string;
+      reason?: string;
+      parkToken?: string;
+      intentHash?: string;
+      intentKind?: string;
+      summaryPtBr?: string;
+    };
 
     // Idempotency guard — prevent duplicate staff alerts on NATS redelivery
     try {
@@ -43,6 +60,19 @@ export async function startHandoffSubscriber(
         reason: reason ?? null,
         at: handoffAt,
       });
+      // AUT-017 — record the parked money intent's projection on the record so
+      // the escalações UI shows it as "Pendente de aprovação" and the OWNER can
+      // resolve it. Idempotent on intentHash (NATS redelivery does not duplicate).
+      if (parkToken && intentHash && intentKind) {
+        await store.appendPendingIntent(sessionId, {
+          token: parkToken,
+          intentKind,
+          intentHash,
+          summaryPtBr: summaryPtBr ?? intentKind,
+          requestedAt: handoffAt,
+          status: "pending",
+        });
+      }
     } catch (err) {
       log?.error(
         { session_id: sessionId, error: String(err) },
@@ -72,12 +102,18 @@ export async function startHandoffSubscriber(
     }
 
     const reasonLine = reason ? `\nMotivo: ${reason}` : "";
+    // AUT-017 — when a resumable money intent was parked, tell staff an OWNER
+    // approval is pending and where to act (the escalações panel).
+    const pendingLine =
+      parkToken && summaryPtBr
+        ? `\n\n⚠️ Ação pendente de aprovação (OWNER): ${summaryPtBr} — aprove no painel, em Escalações.`
+        : "";
     const message = [
       `📞 *Solicitação de atendimento humano*`,
       ``,
       `Sessão: ${sessionId}${reasonLine}`,
       ``,
-      `Um cliente solicitou falar com um atendente.`,
+      `Um cliente solicitou falar com um atendente.${pendingLine}`,
     ].join("\n");
 
     try {

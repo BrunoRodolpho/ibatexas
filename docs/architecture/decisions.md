@@ -33,7 +33,14 @@ maintained (and drift-guarded by tests) next to the code they govern:
 - [`defer-resume-role-contract.md`](defer-resume-role-contract.md) — the WS7
   DEFER-resume × staff-role contract (BKL-069, Option 1: resume stays
   system-elevated / role-free at the kernel; role authority is re-established
-  adopter-side). Pinned by `apps/api/src/__tests__/defer-resume-staff-role-contract.test.ts`.
+  adopter-side). §3d extends it with **AUT-017** (2026-07-04) — the
+  ESCALATE→OWNER-approve→executable-resume loop for escalated money intents, built
+  as Option 1 (verbatim re-adjudication through the composed router + a resolver-role
+  gate + approver-as-provenance; a Redis single-use escalation park backs it, so it
+  works with the agent plane OFF and survives restarts). Pinned by
+  `apps/api/src/__tests__/defer-resume-staff-role-contract.test.ts` (census stays ∅),
+  `apps/api/src/escalation/__tests__/escalation-approval.test.ts`, and
+  `apps/api/src/ops/__tests__/ops-refunds-escalate-approve.e2e.test.ts`.
 - [`ops-actor-surface.md`](ops-actor-surface.md) — the NEW-032 ops-actor surface
   (the LLM ops surface IS the claustrum Conductor; `createIbatexasPlanner` gains a
   composition-time `staffEnvelopeActor` that stamps `admin:`+role envelopes, arming

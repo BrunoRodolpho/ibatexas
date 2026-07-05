@@ -141,6 +141,20 @@ import {
   type AgentApprovalRequest,
   type AgentApprovalStatus,
 } from "./claustrum/agent-approvals.js";
+// AUT-017 — the ESCALATE→OWNER-approve→resume loop for money intents. The park
+// store backs the HandoffPort's ESCALATE park; the approval module + gateway
+// resume it through the audited kernel. NOT gated by IBX_AGENTS_ENABLED (works
+// with the agent plane OFF; Redis-backed so a park survives a restart).
+import {
+  getEscalationParkStore,
+  buildEscalationParkInput,
+  ESCALATION_RESUMABLE_KINDS,
+} from "./escalation/escalation-park-store.js";
+import {
+  createEscalationApprovalEngine,
+  type EscalationApprovalGateway,
+} from "./escalation/escalation-approval.js";
+import { getEscalationStore } from "./escalation/escalation-store.js";
 // H2 (ERDS-061/062) — mirror the agent-approval registry into the adjudicate
 // Redis registry (shared keyPrefix adjudicate:approval) so the adjudicate
 // console/adjutant operator UIs read agent approvals. Best-effort, fail-open.
@@ -273,8 +287,10 @@ import {
 import {
   createOpsToolRegistry,
   listOpsToolDefinitions,
+  executeRefund,
   type OpsToolRegistryDeps,
 } from "./ops/ops-tool-registry.js";
+import type { PaymentRefundIssuePayload } from "@ibatexas/pack-payments";
 import {
   createOpsResolver,
   buildOpsRefundResumeState,
@@ -307,6 +323,11 @@ let _agentPlane: AgentPlane | null = null;
 // (routes/admin/agent-approvals.ts, WS-D1) can reach the SAME in-memory parked
 // store the plane uses. Null unless IBX_AGENTS_ENABLED created it.
 let _agentApprovals: AgentApprovalEngine | null = null;
+// AUT-017 — the ESCALATE→OWNER-approve→resume gateway. Built once at bootstrap
+// (below), NOT gated by IBX_AGENTS_ENABLED: it must work with the agent plane OFF
+// and survive restarts (Redis-backed park). The staff resolve route reaches it
+// via getEscalationApprovalGateway(). Null only before bootstrapClaustrum() runs.
+let _escalationApprovalGateway: EscalationApprovalGateway | null = null;
 // P4 proposal writer (set when the plane boots). The gateway's resolve updates
 // the remediation_proposal status so the adjutant projection reflects it.
 let _proposalWriter: ReturnType<typeof createRemediationProposalWriter> | null = null;
@@ -441,6 +462,17 @@ export function getAgentApprovalGateway(): AgentApprovalGateway | null {
       return result;
     },
   };
+}
+
+/**
+ * The staff escalation-approval gateway (AUT-017), or null before
+ * `bootstrapClaustrum()` has wired it. Unlike the agent gateway this is NOT
+ * gated by IBX_AGENTS_ENABLED — the ESCALATE→approve→resume loop works with the
+ * agent plane OFF (the park is Redis-backed and survives restarts). The staff
+ * resolve route (routes/admin/escalations.ts) calls this.
+ */
+export function getEscalationApprovalGateway(): EscalationApprovalGateway | null {
+  return _escalationApprovalGateway;
 }
 
 /**
@@ -608,6 +640,9 @@ export async function resetClaustrumForTests(): Promise<ClaustrumResetReport> {
   // NEW-032: the ops conductor factory closes over the same boot ports as the
   // main conductor, so clear it on the same beat (a re-bootstrap rebuilds it).
   _opsConductorFactory = null;
+  // AUT-017: the escalation-approval gateway closes over the same boot deps; clear
+  // it on the same beat (a re-bootstrap rebuilds it after opsRegistryDeps).
+  _escalationApprovalGateway = null;
 
   let pgPoolEnded = false;
   if (_pgPool && _ownsPgPool && !_pgPool.ended) {
@@ -1231,21 +1266,75 @@ export function ibatexasExplainer(): ExplainerPort {
  * without a broker. NOTE: JOURNEY-003 (checkout-failure-recovery) stays blocked
  * on `chat-confirmation-resume` — T3-8 closes only `handoff-port-noop`; no phase
  * closes the web confirmation-resume product gap.
+ *
+ * AUT-017 — the ESCALATE PARK seam. When `parkDeps` is wired AND the escalated
+ * kind is resumable (`ESCALATION_RESUMABLE_KINDS`, today only the above-threshold
+ * staff refund), the FULL envelope is parked BEFORE the publish; only the opaque
+ * `parkToken` + `intentHash` + a pt-BR summary ride the NATS event (the payload
+ * itself NEVER does). An OWNER can then approve-and-execute it from the escalações
+ * surface. A park FAILURE degrades to today's park-less escalation (logged) —
+ * `queue()` still MUST NOT throw (a throw surfaces as `handoff_threw` instead of
+ * the intended ESCALATE).
  */
+export interface HandoffParkDeps {
+  park: (envelope: IntentEnvelope) => Promise<{
+    readonly token: string;
+    readonly intentHash: string;
+    readonly summaryPtBr: string;
+  }>;
+}
+
 export function natsHandoff(
   publish: (
     event: string,
     payload: Record<string, unknown>,
   ) => Promise<void> = publishNatsEvent,
+  parkDeps?: HandoffParkDeps,
 ): HandoffPort {
   return {
     async queue(envelope: IntentEnvelope, reason: string): Promise<void> {
       const sessionId = envelope.actor.sessionId;
+      // AUT-017 — park the resumable money intent BEFORE the publish (fail-soft).
+      let parkInfo:
+        | { token: string; intentHash: string; summaryPtBr: string }
+        | undefined;
+      if (parkDeps && ESCALATION_RESUMABLE_KINDS.has(String(envelope.kind))) {
+        try {
+          parkInfo = await parkDeps.park(envelope);
+          logger.info(
+            {
+              component: "handoff",
+              sessionId,
+              intentKind: envelope.kind,
+              parkToken: parkInfo.token,
+            },
+            "ESCALATE → resumable money intent parked for OWNER approval (AUT-017)",
+          );
+        } catch (err) {
+          // Degrade to a park-less escalation — never block/queue-throw the ESCALATE.
+          logger.error(
+            {
+              component: "handoff",
+              sessionId,
+              intentKind: envelope.kind,
+              err: String(err),
+            },
+            "escalation park failed (degrading to park-less escalation — queue() must not throw)",
+          );
+        }
+      }
       try {
         await publish("support.handoff_requested", {
           sessionId,
           reason,
           intentKind: envelope.kind,
+          ...(parkInfo
+            ? {
+                parkToken: parkInfo.token,
+                intentHash: parkInfo.intentHash,
+                summaryPtBr: parkInfo.summaryPtBr,
+              }
+            : {}),
         });
         logger.info(
           { component: "handoff", sessionId, intentKind: envelope.kind, reason },
@@ -2550,6 +2639,22 @@ export async function bootstrapClaustrum(
     planner,
     warn: (message) => logger.warn(message),
   });
+  // AUT-017 — the ESCALATE PARK deps shared by the customer + ops conductors.
+  // On a resumable money-intent ESCALATE the HandoffPort parks the FULL envelope
+  // (single-use, Redis-backed) so an OWNER can approve-and-execute it later. The
+  // agent-plane conductor (below, IBX_AGENTS_ENABLED) is deliberately NOT wired —
+  // its only Stage-2 kind is `payment.pix.regenerate`, not a resumable refund.
+  const escalationHandoffParkDeps: HandoffParkDeps = {
+    park: async (envelope) => {
+      const input = buildEscalationParkInput(envelope);
+      const { token } = await getEscalationParkStore().park(input);
+      return {
+        token,
+        intentHash: envelope.intentHash,
+        summaryPtBr: input.summaryPtBr,
+      };
+    },
+  };
   _conductor = createConductor({
     adjudicator,
     memory,
@@ -2557,7 +2662,7 @@ export async function bootstrapClaustrum(
     planner,
     responder: buildResponder(modelProvider),
     explainer: ibxExplainer,
-    handoff: natsHandoff(),
+    handoff: natsHandoff(publishNatsEvent, escalationHandoffParkDeps),
     telemetry,
     session: redisSessionStore(),
     tools: toolRegistry,
@@ -2691,6 +2796,52 @@ export async function bootstrapClaustrum(
     log: logger,
   };
   const opsRegistry = createOpsToolRegistry(opsRegistryDeps);
+  // AUT-017 — wire the ESCALATE→OWNER-approve→resume gateway. It reuses the SAME
+  // refund executor deps (`opsRegistryDeps`) the ops registry receives so an
+  // approved escalated refund runs the EXACT BKL-085 trio (writeAdjudicatedRefund
+  // + publish payment.status_changed + appendRefundEventLog), with the APPROVER as
+  // author (Option 1 provenance). `rebuildState` reuses the production ops-refund
+  // re-projection (`enrichResumeState` → `buildOpsRefundResumeState`, a live DB
+  // read, fail-closed on null). The audit sink is read LAZILY (live wiring). NO env
+  // flag gates the resolve path (Hard Rule 9 — the kernel is always authoritative).
+  _escalationApprovalGateway = createEscalationApprovalEngine({
+    get: (token) => getEscalationParkStore().get(token),
+    consume: (token) => getEscalationParkStore().consume(token),
+    rebuildState: (envelope) =>
+      enrichResumeState(envelope, { ctx: { exists: false } }),
+    policyFor: (kind) => {
+      const policy = policyForKind(kind);
+      if (policy === null) {
+        throw new Error(
+          `escalation approval: no installed pack owns kind "${kind}"`,
+        );
+      }
+      return policy;
+    },
+    sink: { emit: (record) => getAuditSink().emit(record) },
+    executors: {
+      "payment.refund.issue": async (payload, approverStaffId) => {
+        await executeRefund(
+          opsRegistryDeps,
+          payload as PaymentRefundIssuePayload,
+          approverStaffId,
+        );
+      },
+    },
+    markIntentResolved: async (sessionId, intentHash, status, resolvedBy, at) => {
+      const store = await getEscalationStore();
+      await store.markIntentResolved(sessionId, intentHash, status, resolvedBy, at);
+    },
+    // FIX 5 — the always-on execution ledger (Hard Rule 9): the SAME ledger the
+    // conductor resume path wires, so an approved refund's intentHash is
+    // REPLAY_SUPPRESSED on any duplicate — the atomic park-consume is no longer
+    // the sole double-execute guard.
+    ledger,
+    // FIX 4 — structured log for the honesty paths (executor throw; a projection
+    // write that fails AFTER a committed refund).
+    log: logger,
+    now: () => new Date().toISOString(),
+  });
   // The ops planner's one-hop read executors — the situational snapshot
   // (NEW-032) + today's sales analytics (NEW-012). Both are advertised on a
   // staff session, so both need a registered executor here (the ops-plane drift
@@ -2720,7 +2871,9 @@ export async function bootstrapClaustrum(
     memory,
     grounding,
     explainer: ibxExplainer,
-    handoff: natsHandoff(),
+    // AUT-017 — the ops plane is where staff refunds ESCALATE; park the resumable
+    // money intent so an OWNER can approve-and-execute it from the escalações UI.
+    handoff: natsHandoff(publishNatsEvent, escalationHandoffParkDeps),
     telemetry,
     session: redisSessionStore(),
     tenantResolver: resolveIbatexasTenantPolicy,

@@ -31,6 +31,7 @@ import {
   createOpsResolver,
   buildOpsRefundResumeState,
 } from "../ops-resolver.js";
+import { ESCALATION_RESUMABLE_KINDS } from "../../escalation/escalation-park-store.js";
 import {
   buildOpsTools,
   composeOpsDeps,
@@ -58,6 +59,7 @@ function buildHarness(opts: {
   toolCalls: ReadonlyArray<ScriptedToolCall>;
   activePayment?: typeof ACTIVE_PAID | null;
   paymentById?: (id: string) => typeof ACTIVE_PAID | null;
+  handoff?: { queue: (envelope: IntentEnvelope, reason: string) => Promise<void> };
 }) {
   const sink = makeCapturingAuditSink();
   const session = makeStatefulSession();
@@ -119,6 +121,7 @@ function buildHarness(opts: {
         },
         lookupActivePayment: async () => activePayment,
       }),
+    ...(opts.handoff ? { handoff: opts.handoff } : {}),
   });
   return { deps, session, spies, sink };
 }
@@ -251,7 +254,18 @@ describe("BKL-085 refunds-by-message — end-to-end park → confirm-resume → 
     expect(refuseRec!.envelope.actor.role).toBe("ATTENDANT");
   });
 
-  it(">R$1000 → ESCALATE (the taint overlay does NOT pre-empt); nothing parks", async () => {
+  it(">R$1000 → ESCALATE (the taint overlay does NOT pre-empt) + an escalation park is created (AUT-017)", async () => {
+    // AUT-017 — a resumable money-intent ESCALATE now PARKS the envelope (for OWNER
+    // approve-and-execute) via the HandoffPort, instead of dropping it. It still does
+    // NOT enter the CONFIRM session park (that is the sub-escalate taint path).
+    const escalationParks: IntentEnvelope[] = [];
+    const parkingHandoff = {
+      queue: async (envelope: IntentEnvelope) => {
+        if (ESCALATION_RESUMABLE_KINDS.has(String(envelope.kind))) {
+          escalationParks.push(envelope);
+        }
+      },
+    };
     const { deps, session } = buildHarness({
       toolCalls: [REFUND_CALL("4242", 150_000)], // R$1500, but balance is only R$100…
       // …so give a big-balance payment so ESCALATE (not over-balance) is exercised.
@@ -265,9 +279,14 @@ describe("BKL-085 refunds-by-message — end-to-end park → confirm-resume → 
         amountInCentavos: 500_000,
         refundedAmountCentavos: 0,
       }),
+      handoff: parkingHandoff,
     });
     const t = await runTurn(deps, "OWNER", "owner4", "reembolsa 1500 reais do pedido 4242");
     expect(t.decision.kind).toBe("ESCALATE");
+    // The resumable refund was parked for OWNER approval (AUT-017)…
+    expect(escalationParks).toHaveLength(1);
+    expect(String(escalationParks[0]!.kind)).toBe("payment.refund.issue");
+    // …but it did NOT enter the CONFIRM session-park (that is the taint overlay path).
     expect(session.parksFor("system:staff:owner4")).toHaveLength(0);
   });
 

@@ -369,6 +369,16 @@ function buildRefundPaymentState(opts: {
  * ⇒ money-safe: a since-parked terminal / partial refund REFUSEs (terminal guard /
  * the magnitude guard's divergence check reads THIS live `refundedAmountCentavos`).
  * `payment === null` ⇒ `exists:false` ⇒ clean `payment_not_found` REFUSE.
+ *
+ * FIX 2 (AUT-017 review) — RE-APPLY `OPS_REFUNDABLE_STATUSES` on resume, exactly
+ * like the plan-stage resolver (`resolveOpsRefund` ~:689). A resume projects the
+ * LIVE status; if the payment left a refundable state since parking (e.g. a charge
+ * that went `disputed` via the Stripe webhook — non-terminal + `canTransition
+ * ("disputed","refunded") === true`, so the terminal guard alone would NOT catch
+ * it), returning `exists:true` here would leave the refundability gate inert and
+ * EXECUTE a refund on a chargeback (double-payment). We fail closed to
+ * `exists:false` (⇒ kernel REFUSE ⇒ `denied_by_kernel`) for any non-refundable
+ * status — the resume can only refund a payment that is refundable RIGHT NOW.
  */
 export function buildOpsRefundResumeState(
   payment: {
@@ -381,7 +391,9 @@ export function buildOpsRefundResumeState(
   } | null,
   tenantId: string,
 ): unknown {
-  if (payment === null) return { ctx: { exists: false } };
+  if (payment === null || !OPS_REFUNDABLE_STATUSES.has(payment.status)) {
+    return { ctx: { exists: false } };
+  }
   return buildRefundPaymentState({
     status: payment.status,
     amountInCentavos: payment.amountInCentavos,

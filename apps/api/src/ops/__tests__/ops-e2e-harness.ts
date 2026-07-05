@@ -404,6 +404,12 @@ export interface OpsDepsScenario {
   buildResolver: (staffId: string) => unknown;
   /** Read-tool executors (e.g. { ops_snapshot }); default none. */
   opsReadToolExecutors?: Record<string, unknown>;
+  /**
+   * AUT-017 — the HandoffPort. Default is the inert no-op. The escalate-approve
+   * e2e injects a PARKING handoff so an ESCALATE parks the resumable money intent
+   * (the seam the real `natsHandoff(publish, parkDeps)` drives in production).
+   */
+  handoff?: { queue: (envelope: IntentEnvelope, reason: string) => Promise<void> };
 }
 
 /** Assemble the full conductor deps around the scenario-specific pieces. */
@@ -413,7 +419,7 @@ export function composeOpsDeps(scenario: OpsDepsScenario) {
     memory: noopMemoryProvider(),
     grounding: noopGroundingProvider("mock"),
     explainer: { render: (r: { userFacing: string }) => r.userFacing },
-    handoff: { queue: async () => {} },
+    handoff: scenario.handoff ?? { queue: async () => {} },
     telemetry: noopTelemetry,
     session: scenario.session,
     tenantResolver: opsTenantResolver,

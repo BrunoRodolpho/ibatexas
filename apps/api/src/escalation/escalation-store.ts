@@ -16,6 +16,43 @@
 
 import { getRedisClient, rk } from "@ibatexas/tools";
 
+/**
+ * AUT-017 — the operator-facing projection of ONE parked, approval-pending money
+ * intent riding on an escalation record. The FULL envelope lives (single-use) in
+ * the escalation park store keyed by `token`; this is the read-model the
+ * escalações UI renders + the OWNER resolves against. Lifecycle statuses:
+ *   - `pending`         parked, awaiting an OWNER decision.
+ *   - `approved`        OWNER approved, the resumed kernel verdict was EXECUTE,
+ *                        AND the executor ran (money moved).
+ *   - `rejected`        OWNER declined (accept=false) — nothing executed.
+ *   - `denied_by_kernel` OWNER approved but the re-adjudication was NON-EXECUTE
+ *                        (e.g. the payment moved to a terminal/partial/non-refundable
+ *                        state since parking, or an integrity check failed) — the
+ *                        kernel refused; nothing executed.
+ *   - `execute_failed`  OWNER approved + the kernel EXECUTEd, but the executor was
+ *                        missing or THREW — NO money moved. Distinct from `approved`
+ *                        so the projection + `verifyEscalationApprovalLineage` never
+ *                        bless a refund that did not run (AUT-017 FIX 4).
+ *   - `expired`         the park TTL lapsed before a decision (advisory).
+ */
+export interface PendingEscalationIntent {
+  readonly token: string;
+  readonly intentKind: string;
+  readonly intentHash: string;
+  /** pt-BR one-liner (e.g. "reembolso de R$ 1.500,00"). */
+  readonly summaryPtBr: string;
+  readonly requestedAt: string;
+  readonly status:
+    | "pending"
+    | "approved"
+    | "rejected"
+    | "denied_by_kernel"
+    | "execute_failed"
+    | "expired";
+  readonly resolvedAt?: string;
+  readonly resolvedBy?: string;
+}
+
 export interface EscalationRecord {
   readonly sessionId: string;
   readonly customerId: string | null;
@@ -25,6 +62,13 @@ export interface EscalationRecord {
   readonly status: "open" | "resolved";
   readonly resolvedAt?: string;
   readonly resolvedBy?: string;
+  /**
+   * AUT-017 — parked money intents awaiting OWNER approval on this session. Kept
+   * ADDITIVE + optional so a record written before AUT-017 (no field) round-trips
+   * unchanged. Per-envelope by intentHash (BKL-063: a future claustrum
+   * multi-envelope handoff appends multiple rows — no ibatexas change needed).
+   */
+  readonly pendingIntents?: ReadonlyArray<PendingEscalationIntent>;
 }
 
 /** Minimal node-redis v4 surface the store uses (injectable for tests). */
@@ -57,6 +101,27 @@ export interface EscalationStore {
   ): Promise<EscalationRecord | null>;
   /** The open-escalation queue (newest handoff first). */
   listOpen(limit?: number): Promise<EscalationRecord[]>;
+  /**
+   * AUT-017 — append a parked money intent's projection to a session's record
+   * (idempotent on `intentHash`: a NATS redelivery of the same handoff does not
+   * duplicate the row). The record must already exist (the subscriber calls
+   * `recordHandoff` first); a missing record is a no-op returning null.
+   */
+  appendPendingIntent(
+    sessionId: string,
+    intent: PendingEscalationIntent,
+  ): Promise<EscalationRecord | null>;
+  /**
+   * AUT-017 — set the lifecycle status of a parked intent (idempotent on
+   * `intentHash`). No-op returning null when the record or the intent is absent.
+   */
+  markIntentResolved(
+    sessionId: string,
+    intentHash: string,
+    status: PendingEscalationIntent["status"],
+    resolvedBy: string,
+    at: string,
+  ): Promise<EscalationRecord | null>;
 }
 
 const OPEN_SET = (): string => rk("escalation:open");
@@ -131,6 +196,33 @@ export function createEscalationStore(redis: EscalationRedis): EscalationStore {
       }
       open.sort((a, b) => (a.handoffAt < b.handoffAt ? 1 : -1));
       return open.slice(0, Math.max(0, limit));
+    },
+
+    async appendPendingIntent(sessionId, intent) {
+      const rec = parse(await redis.get(recKey(sessionId)));
+      if (!rec) return null;
+      const existing = rec.pendingIntents ?? [];
+      // Idempotent on intentHash — a NATS redelivery must not duplicate the row.
+      if (existing.some((p) => p.intentHash === intent.intentHash)) return rec;
+      const updated: EscalationRecord = {
+        ...rec,
+        pendingIntents: [...existing, intent],
+      };
+      await redis.set(recKey(sessionId), JSON.stringify(updated));
+      return updated;
+    },
+
+    async markIntentResolved(sessionId, intentHash, status, resolvedBy, at) {
+      const rec = parse(await redis.get(recKey(sessionId)));
+      if (!rec) return null;
+      const existing = rec.pendingIntents ?? [];
+      const idx = existing.findIndex((p) => p.intentHash === intentHash);
+      if (idx === -1) return null;
+      const next = [...existing];
+      next[idx] = { ...existing[idx]!, status, resolvedBy, resolvedAt: at };
+      const updated: EscalationRecord = { ...rec, pendingIntents: next };
+      await redis.set(recKey(sessionId), JSON.stringify(updated));
+      return updated;
     },
   };
   return store;

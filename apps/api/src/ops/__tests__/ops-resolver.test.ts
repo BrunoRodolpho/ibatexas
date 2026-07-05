@@ -944,7 +944,11 @@ describe("buildOpsRefundResumeState — money-safe resume re-projection", () => 
     expect(state.ctx.tenantId).toBe("ibatexas");
   });
 
-  it("a since-parked REFUNDED (terminal) payment ⇒ isTerminal:true (resume REFUSEs terminal)", () => {
+  it("a since-parked REFUNDED (terminal, non-refundable) payment ⇒ exists:false (FIX 2 — refundability re-applied on resume)", () => {
+    // AUT-017 FIX 2: buildOpsRefundResumeState re-applies OPS_REFUNDABLE_STATUSES,
+    // so a payment that left a refundable state since parking projects exists:false
+    // (⇒ kernel REFUSE) rather than exists:true + isTerminal — a stronger,
+    // status-explicit gate than relying on the terminal check alone.
     const state = buildOpsRefundResumeState(
       {
         status: "refunded",
@@ -954,8 +958,24 @@ describe("buildOpsRefundResumeState — money-safe resume re-projection", () => 
         version: 8,
       },
       "ibatexas",
-    ) as { ctx: { exists: boolean; isTerminal: boolean } };
-    expect(state.ctx.exists).toBe(true);
-    expect(state.ctx.isTerminal).toBe(true);
+    ) as { ctx: { exists: boolean } };
+    expect(state.ctx.exists).toBe(false);
+  });
+
+  it("a since-parked DISPUTED (non-terminal, NON-refundable) payment ⇒ exists:false (FIX 2 — no refund-on-chargeback)", () => {
+    // DISPUTED is non-terminal AND canTransition("disputed","refunded")===true, so
+    // the terminal guard alone would MISS it; re-applying refundability is what
+    // stops a refund-on-chargeback double-payment.
+    const state = buildOpsRefundResumeState(
+      {
+        status: "disputed",
+        amountInCentavos: 10_000,
+        refundedAmountCentavos: 0,
+        method: "pix",
+        version: 9,
+      },
+      "ibatexas",
+    ) as { ctx: { exists: boolean } };
+    expect(state.ctx.exists).toBe(false);
   });
 });

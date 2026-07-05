@@ -74,7 +74,7 @@ adopter's HTTP + policy-composition layer.
 |---|--------|---------|
 | **1** | Resume role-free at kernel/adapter; re-establish role **adopter-side** (verbatim re-adjudication with a role-carrying bundle, and/or resolver-role gating). | **Chosen.** No kernel change; matches the existing adapter precedent; honest about current coverage (§3). |
 | 2 | **In-kernel role re-elevation at resume** — the runtime re-derives and re-asserts `actor.role` from the parked blob and re-runs the role guard as part of `resume()`. | Deferred (future kernel work). Would make role enforcement intrinsic to resume rather than bundle-dependent, but requires an upstream `@adjudicate/runtime` + adapter-core change and a role-authority contract at the kernel boundary. |
-| 3 | **Resolver-identity-carrying resume** — resume executes under the *resolver's* freshly-authenticated identity/role rather than the parked actor's, tying resume to an approve-and-execute step. | Deferred. Couples to **AUT-017** (approve-and-execute); changes the audit/lineage model (executor ≠ original proposer). Revisit when AUT-017 is built. |
+| 3 | **Resolver-identity-carrying resume** — resume executes under the *resolver's* freshly-authenticated identity/role rather than the parked actor's, tying resume to an approve-and-execute step. | **Still deferred.** **AUT-017 (2026-07-04) shipped as Option 1, NOT Option 3** (§3d): the approve-and-execute loop keeps the parked PROPOSER as the envelope actor and records the approver as PROVENANCE (`Supersession.binding.approver` + the projection's `resolvedBy`), so it did NOT need the executor≠proposer actor-substitution Option 3 describes. Option 3 remains a future choice only if the audit/lineage model must change so the executor identity *replaces* the actor. |
 
 ---
 
@@ -221,6 +221,60 @@ customer-plane), so a deferred ops refund **never auto-resumes** — it simply l
 at TTL and the staff re-issues the command. No unauthorized EXECUTE path exists;
 this is safe by construction (not a hole).
 
+### 3d. AUT-017 — the SIXTH surface: the ESCALATE→OWNER-approve→executable-resume loop
+
+> **Added by AUT-017 (2026-07-04).** The first surface that resumes an
+> **ESCALATE**-parked staff-plane money intent. Built as **Option 1** (below), it
+> re-adjudicates the VERBATIM parked envelope through the composed router — so
+> **§4 seam 1 is exercised for ESCALATE too** — and adds a resolver-role gate
+> (seam 2). Option 3 (resolver-identity-carrying resume) stays **deferred**: the
+> parked PROPOSER remains the envelope actor; the approver is PROVENANCE only.
+
+**Escalation-park is neither DEFER-park nor CONFIRM-park.** When an above-threshold
+`payment.refund.issue` ESCALATEs, the adopter HandoffPort (`natsHandoff`, wired with
+`parkDeps`) parks the FULL envelope in a NEW single-use Redis store
+(`escalation:park:<token>`, `apps/api/src/escalation/escalation-park-store.ts`)
+BEFORE the `support.handoff_requested` publish — the envelope payload itself NEVER
+rides NATS (only an opaque `parkToken` + `intentHash` + a pt-BR summary do). This is
+a THIRD park flavour alongside kernel DEFER and the taint-overlay CONFIRM; it does
+**not** touch the kernel DEFER census, so `{DEFER-able kinds} ∩ STAFF_PLANE_KINDS`
+stays **∅** and `defer-resume-staff-role-contract.test.ts` remains green (verified).
+
+**The resume surface + why it is sound.** An OWNER approves from the escalações
+surface (`POST /api/admin/escalations/:sessionId/intents/:token/resolve`,
+`requireOwnerRole`). The approval engine
+(`apps/api/src/escalation/escalation-approval.ts`) single-use CONSUMEs the park,
+rebuilds the IDENTICAL envelope (same kind/payload/**actor.role**/taint/nonce → same
+`intentHash`), re-projects the FRESH `PaymentState` (`enrichResumeState` →
+`buildOpsRefundResumeState`, a live DB read; null ⇒ REFUSE), stamps a
+`state.ctx.escalationApproval` marker (STATE, never payload → `intentHash` unchanged,
+unforgeable from the wire), and re-adjudicates through the SAME composed router
+(`policyForKind`, carrying `staffRoleGuard` + the staff-role matrix) with a
+`confirmationReceipt`. On resume: `staffRoleGuard` **re-runs against the parked
+`actor.role`** (an ATTENDANT-forged park REFUSEs); the pack's escalate-band overlay
+sees the marker and returns REQUEST_CONFIRMATION; and only the matching receipt
+(`intentHash`) flips THAT to EXECUTE (`confirmation_resolved` supersession with the
+bound `approver`). Every state/taint/auth guard re-runs on the fresh state — a
+since-parked terminal/partial refund REFUSEs (the magnitude guard's divergence check
+reads the live `refundedAmountCentavos`). A receipt-less conversion stops at
+REQUEST_CONFIRMATION — friction, never bypass; the overlay is MONOTONIC (it converts
+only the escalate band's OWN ESCALATE, never rescues a REFUSE).
+
+**Separation of duty (three gates).** (1) `requireOwnerRole` on the resolve route —
+only an OWNER may resume; (2) the approval module refuses a self-approval
+(`proposerId === approver.id`) WITHOUT burning the token (a different owner can still
+approve); (3) the pack overlay's deepest structural gate — the escalate band converts
+ONLY when `escalationApproval.approverId !== payload.actorId` (the DB-stamped proposer),
+so even a slipped self-approval marker cannot flip the verdict.
+
+**Provenance (Option 1).** The kernel receipt records no approver; provenance is the
+`Supersession.binding.approver` (the confirmed `staff:<approverId>`, forensic) + the
+escalation record's `pendingIntents[].resolvedBy` projection. The write's author is
+the approver (the refund trio runs with `actorId = approver`). The envelope actor
+stays the parked proposer — the kernel never substitutes a new actor.
+`verifyEscalationApprovalLineage` ties it: an ESCALATE row + a resumed EXECUTE row for
+the `intentHash` + an approved projection carrying `resolvedBy`.
+
 ---
 
 ## 4. The two adopter-side enforcement seams
@@ -286,9 +340,11 @@ Revisit (and likely adopt Option 2 or 3) when **either** becomes true:
    ever intersects `STAFF_PLANE_KINDS` — either trips before this precondition can
    ship silently.
 
-2. **AUT-017 approve-and-execute is built.** A resolver-identity-carrying resume
-   (Option 3) changes the executor/lineage model and should be designed together
-   with the approve-and-execute flow.
+2. ~~**AUT-017 approve-and-execute is built.**~~ **DONE (2026-07-04, §3d)** — built
+   as **Option 1** (verbatim re-adjudication through the composed router + a
+   resolver-role gate + approver-as-provenance), NOT the resolver-identity-carrying
+   Option 3. Revisit Option 3 only if a future requirement makes the executor
+   identity *replace* the parked actor in the audit/lineage model.
 
 ### Pre-deploy park note
 
