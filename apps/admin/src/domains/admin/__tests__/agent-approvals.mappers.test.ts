@@ -17,8 +17,11 @@ import {
   sortByResolvedAtDesc,
   planResolve,
   resolveResultToast,
+  resolveOutcomeToast,
   resolveErrorToast,
   type AgentApprovalRequest,
+  type AgentApprovalOutcome,
+  type AgentApprovalOutcomeStatus,
 } from '../agent-approvals.mappers'
 
 const req = (over: Partial<AgentApprovalRequest>): AgentApprovalRequest => ({
@@ -140,6 +143,85 @@ describe('resolveResultToast (decision-aware, anti-confabulation)', () => {
       expect(toast.message).not.toContain('aprovada e executada')
       expect(toast.message).toContain('não foi executada')
     }
+  })
+})
+
+describe('resolveOutcomeToast (structured outcome, anti-confabulation)', () => {
+  const out = (over: Partial<AgentApprovalOutcome> & { status: AgentApprovalOutcomeStatus }): AgentApprovalOutcome => over
+
+  it('executed is the ONLY status that reads as executed', () => {
+    expect(resolveOutcomeToast(true, out({ status: 'executed', decisionKind: 'EXECUTE' }))).toEqual({
+      type: 'success',
+      message: 'Ação do agente aprovada e executada.',
+    })
+  })
+
+  it('rejected is an honest success', () => {
+    expect(resolveOutcomeToast(false, out({ status: 'rejected' }))).toEqual({
+      type: 'success',
+      message: 'Solicitação do agente rejeitada.',
+    })
+  })
+
+  it('refused reports WHY — the kernel refusal text — and never reads as executed', () => {
+    const toast = resolveOutcomeToast(
+      true,
+      out({
+        status: 'refused',
+        decisionKind: 'REFUSE',
+        reasonCode: 'payment.already_terminal',
+        refusalPtBr: 'Este pagamento já foi finalizado.',
+      }),
+    )
+    expect(toast.type).toBe('info')
+    expect(toast.message).toContain('não foi executada')
+    expect(toast.message).toContain('Este pagamento já foi finalizado.')
+    expect(toast.message).not.toContain('aprovada e executada')
+  })
+
+  it('reparked reports the need for a fresh confirmation', () => {
+    const toast = resolveOutcomeToast(true, out({ status: 'reparked', decisionKind: 'REQUEST_CONFIRMATION' }))
+    expect(toast.type).toBe('info')
+    expect(toast.message).toContain('não foi executada')
+    expect(toast.message).toMatch(/confirmação/i)
+  })
+
+  it('escalated reports the need for escalation', () => {
+    const toast = resolveOutcomeToast(true, out({ status: 'escalated', decisionKind: 'ESCALATE' }))
+    expect(toast.type).toBe('info')
+    expect(toast.message).toContain('não foi executada')
+    expect(toast.message).toMatch(/escalação/i)
+  })
+
+  it('denied_by_kernel fails honestly (not executed)', () => {
+    const toast = resolveOutcomeToast(true, out({ status: 'denied_by_kernel' }))
+    expect(toast.type).toBe('info')
+    expect(toast.message).toContain('não foi executada')
+  })
+
+  it('ANTI-CONFABULATION: no non-executed status ever reads as "aprovada e executada"', () => {
+    const statuses: AgentApprovalOutcomeStatus[] = [
+      'rejected',
+      'refused',
+      'reparked',
+      'escalated',
+      'denied_by_kernel',
+    ]
+    for (const status of statuses) {
+      const toast = resolveOutcomeToast(status !== 'rejected', out({ status }))
+      expect(toast.message).not.toContain('aprovada e executada')
+    }
+  })
+
+  it('back-compat: no structured outcome → falls back to decision-kind inference (still honest)', () => {
+    expect(resolveOutcomeToast(true, undefined, 'EXECUTE')).toEqual({
+      type: 'success',
+      message: 'Ação do agente aprovada e executada.',
+    })
+    const fallback = resolveOutcomeToast(true, undefined, 'REFUSE')
+    expect(fallback.type).toBe('info')
+    expect(fallback.message).toContain('não foi executada')
+    expect(fallback.message).not.toContain('aprovada e executada')
   })
 })
 

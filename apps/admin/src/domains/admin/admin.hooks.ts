@@ -30,6 +30,7 @@ import {
   sortByResolvedAtDesc,
   type AgentApprovalRequest,
   type AgentApprovalStatus,
+  type AgentApprovalOutcome,
 } from './agent-approvals.mappers'
 import {
   AGENT_KILL_STATUS_PATH,
@@ -1252,10 +1253,16 @@ export function useAgentApprovals() {
     return () => clearInterval(interval)
   }, [refetch])
 
-  // Raw fetch (not apiFetch) so we read the exact status code AND the kernel
-  // decision kind from the 200 body. No implicit refetch — the page decides.
+  // Raw fetch (not apiFetch) so we read the exact status code AND the STRUCTURED
+  // resolved outcome (BKL-104) from the 200 body — `outcome` explains WHY a
+  // parked action was (or was not) executed. `decisionKind` is still surfaced as
+  // a back-compat fallback for a pre-BKL-104 server. No implicit refetch — the
+  // page decides.
   const resolveApproval = useCallback(
-    async (token: string, accept: boolean): Promise<{ ok: boolean; status: number; decisionKind?: string }> => {
+    async (
+      token: string,
+      accept: boolean,
+    ): Promise<{ ok: boolean; status: number; outcome?: AgentApprovalOutcome; decisionKind?: string }> => {
       const plan = planAgentApprovalResolve(token, accept)
       const res = await fetch(`/api/proxy${plan.path}`, {
         method: 'POST',
@@ -1263,8 +1270,11 @@ export function useAgentApprovals() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(plan.body),
       })
-      const data = (await res.json().catch(() => ({}))) as { decision?: { kind?: string } }
-      return { ok: res.ok, status: res.status, decisionKind: data.decision?.kind }
+      const data = (await res.json().catch(() => ({}))) as {
+        outcome?: AgentApprovalOutcome
+        decision?: { kind?: string }
+      }
+      return { ok: res.ok, status: res.status, outcome: data.outcome, decisionKind: data.decision?.kind }
     },
     [],
   )

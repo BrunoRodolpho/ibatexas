@@ -22,7 +22,7 @@ import {
   statusBadge,
   resolvedByLabel,
   formatApprovalDate,
-  resolveResultToast,
+  resolveOutcomeToast,
   resolveErrorToast,
   AGENT_APPROVALS_COPY as COPY,
   type AgentApprovalRequest,
@@ -183,10 +183,11 @@ export default function AprovacoesPage(): React.JSX.Element {
   async function handleResolve(token: string, accept: boolean): Promise<void> {
     setBusyToken(token)
     try {
-      const { ok, status, decisionKind } = await resolveApproval(token, accept)
+      const { ok, status, outcome, decisionKind } = await resolveApproval(token, accept)
       if (ok) {
-        // Decision-aware, anti-confabulation: a 200 can carry a non-EXECUTE kind.
-        const toast = resolveResultToast(accept, decisionKind)
+        // Outcome-aware, anti-confabulation: a 200 can carry a non-EXECUTE
+        // decision; the structured `outcome` explains WHY it was not executed.
+        const toast = resolveOutcomeToast(accept, outcome, decisionKind)
         addToast({ type: toast.type, message: toast.message })
         refetch()
         setReloadSignal((s) => s + 1)

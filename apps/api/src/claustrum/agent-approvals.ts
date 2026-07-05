@@ -115,6 +115,121 @@ export class ApprovalNotAgentEnvelopeError extends Error {
   }
 }
 
+// ── BKL-104 — structured resolved-outcome contract ───────────────────────────
+//
+// A `resolve(accept:true)` re-adjudicates the IDENTICAL parked envelope through
+// the AUDITED kernel, so an HTTP 200 is NOT proof the action ran: the kernel can
+// legitimately return a NON-EXECUTE decision on stale/moved state (REFUSE / a
+// fresh REQUEST_CONFIRMATION / ESCALATE). The AUT-024 inbox used to INFER the
+// outcome from `decision.kind` + generic honest copy and could not say WHY it
+// was not executed. This derives a structured, honest outcome so the UI can.
+//
+// The states below are exactly the ones THIS engine can DISTINGUISH — nothing
+// invented. Note the asymmetry with the escalation-approval engine
+// (escalation-approval.ts), which OWNS a post-EXECUTE executor and can therefore
+// tell `approved` (money moved) from `execute_failed` (the audited EXECUTE
+// happened but the executor threw / was missing). The agent-approvals engine, by
+// design, adjudicates+audits and carries NO executor — the downstream side
+// effect is the agent runner's concern (see getAgentApprovalGateway) — so there
+// is no post-audit step that can fail here, and `execute_failed` is NOT a state
+// this engine can produce. We do not fabricate it. What IS guaranteed (the
+// anti-confabulation mirror): ONLY an EXECUTE/REWRITE decision earns `executed`;
+// every non-EXECUTE re-adjudication is reported honestly with its kernel reason.
+
+export type AgentApprovalOutcomeStatus =
+  /** EXECUTE / REWRITE — the kernel authorized + AUDITED the resume. */
+  | "executed"
+  /** accept:false — the manager declined; nothing was re-adjudicated. */
+  | "rejected"
+  /** REFUSE — the kernel refused on the fresh (re-adjudicated) state. */
+  | "refused"
+  /** REQUEST_CONFIRMATION — the fresh state needs a NEW confirmation (state moved). */
+  | "reparked"
+  /** ESCALATE — the fresh state is above-threshold; needs escalation now. */
+  | "escalated"
+  /** DEFER / any other non-EXECUTE kind — not executed (honest umbrella, fail-closed). */
+  | "denied_by_kernel";
+
+/**
+ * The structured resolved outcome the resolve route surfaces. `decisionKind` is
+ * the raw kernel `Decision.kind` (absent only for `rejected` — no adjudication
+ * ran). `reasonCode`/`refusalPtBr` are sourced from the KERNEL decision (the
+ * refusal code/text or a decision basis code), NEVER from model output.
+ */
+export interface AgentApprovalOutcome {
+  readonly status: AgentApprovalOutcomeStatus;
+  readonly decisionKind?: Decision["kind"];
+  /** Machine-readable kernel reason (refusal.code / first decision basis code). */
+  readonly reasonCode?: string;
+  /** Operator-facing pt-BR reason for a non-executed outcome (kernel refusal or fixed copy). */
+  readonly refusalPtBr?: string;
+}
+
+// pt-BR reasons for the non-REFUSE non-executed outcomes (the kernel authors no
+// user-facing text for those kinds; REFUSE carries its own `refusal.userFacing`).
+const REPARKED_PT_BR =
+  "Requer nova confirmação — o estado do pedido mudou desde a solicitação.";
+const ESCALATED_PT_BR =
+  "Requer escalação para um responsável — o estado mudou desde a solicitação.";
+const NOT_EXECUTED_PT_BR = "A ação não pôde ser executada com segurança.";
+
+function firstBasisCode(basis: Decision["basis"]): string | undefined {
+  return basis.length > 0 ? basis[0]!.code : undefined;
+}
+
+/**
+ * Pure map from `(accepted, decision)` to the honest structured outcome. Shared
+ * by the resolve route (HTTP response) and the gateway (the remediation-proposal
+ * mark), so both report the SAME truth. Total over `Decision["kind"]`; an
+ * unexpected/`accepted`-but-undefined decision fails CLOSED to `denied_by_kernel`
+ * (never `executed`).
+ */
+export function deriveAgentApprovalOutcome(
+  accepted: boolean,
+  decision: Decision | undefined,
+): AgentApprovalOutcome {
+  if (!accepted) return { status: "rejected" };
+  if (decision === undefined) {
+    // accept:true always yields a decision in the engine; a missing one is an
+    // invariant break — report NOT executed, never a fabricated success.
+    return { status: "denied_by_kernel", refusalPtBr: NOT_EXECUTED_PT_BR };
+  }
+  switch (decision.kind) {
+    case "EXECUTE":
+    case "REWRITE":
+      return { status: "executed", decisionKind: decision.kind };
+    case "REFUSE":
+      return {
+        status: "refused",
+        decisionKind: decision.kind,
+        reasonCode: decision.refusal.code,
+        refusalPtBr: decision.refusal.userFacing,
+      };
+    case "REQUEST_CONFIRMATION":
+      return {
+        status: "reparked",
+        decisionKind: decision.kind,
+        reasonCode: firstBasisCode(decision.basis),
+        refusalPtBr: REPARKED_PT_BR,
+      };
+    case "ESCALATE":
+      return {
+        status: "escalated",
+        decisionKind: decision.kind,
+        reasonCode: firstBasisCode(decision.basis),
+        refusalPtBr: ESCALATED_PT_BR,
+      };
+    default:
+      // DEFER or any future kind — not an authorization; fail closed to honest.
+      return {
+        status: "denied_by_kernel",
+        decisionKind: decision.kind,
+        reasonCode: firstBasisCode(decision.basis),
+        refusalPtBr: NOT_EXECUTED_PT_BR,
+      };
+  }
+}
+
 /**
  * Adopter-side agent approval engine. In-memory parked store + projection
  * (single producer); production backs both with Redis. `notify` + the resolve
