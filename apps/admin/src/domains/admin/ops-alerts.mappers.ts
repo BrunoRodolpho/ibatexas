@@ -23,6 +23,7 @@ export type OpsAlertCause =
   | 'ops_dlq_depth'
   | 'ops_ingredient_underflow'
   | 'ops_staff_auth_infra'
+  | 'ops_observability_down'
 
 export type OpsAlertSeverity = 'low' | 'medium' | 'high'
 
@@ -67,6 +68,7 @@ export const OPS_ALERT_CAUSE_LABELS: Record<OpsAlertCause, string> = {
   ops_dlq_depth: 'fila de mensagens mortas acumulando (DLQ)',
   ops_ingredient_underflow: 'estoque de insumo abaixo do necessário (baixa de pedido)',
   ops_staff_auth_infra: 'falha de infraestrutura na autenticação de funcionários (logins de staff caindo)',
+  ops_observability_down: 'serviço de observabilidade fora do ar (risco de perda de logs/métricas)',
 }
 
 /** Canonical pt-BR severity labels (mirror of OPS_ALERT_SEVERITY_LABELS_PT). */
@@ -118,6 +120,7 @@ export const OPS_ALERT_CAUSE_FILTERS: readonly FilterOption[] = [
   { id: 'ops_dlq_depth', label: 'DLQ' },
   { id: 'ops_ingredient_underflow', label: 'Estoque de insumo' },
   { id: 'ops_staff_auth_infra', label: 'Auth de staff' },
+  { id: 'ops_observability_down', label: 'Observabilidade' },
 ]
 
 // ── Badge variant mapping (maps to @ibatexas/ui Badge tiers) ─────────────────

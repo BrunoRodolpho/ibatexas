@@ -20,6 +20,7 @@ import { startLlmTokenUsageRetention } from "./llm-token-usage-retention.js";
 import { startDriftEvaluate } from "./drift-evaluate.js";
 import { startDlqDepthChecker } from "./dlq-depth-checker.js";
 import { startEscalationParkExpirySweeper } from "./escalation-park-expiry-sweeper.js";
+import { startObservabilityLivenessChecker } from "./observability-liveness-checker.js";
 
 /**
  * Start all background job workers and their repeatable schedules.
@@ -66,6 +67,12 @@ export function registerWorkers(log: FastifyBaseLogger): void {
   // already 404s on resolve). CAS-guarded so a since-resolved row is never
   // clobbered; runs a startup recovery sweep for parks that lapsed while down.
   startEscalationParkExpirySweeper(log);
+  // [BKL-109] Probes VictoriaLogs + VictoriaMetrics /health every 5 min and raises
+  // a governed ops-alert (ops_observability_down) when the obs plane is DOWN while
+  // the api is UP — the 2026-07-04 log-unrecoverable window that surfaced nowhere.
+  // Debounced (N consecutive DOWN sweeps); AUTO-resolves on the first UP sweep.
+  // Self-disables when VICTORIALOGS_URL is unset (obs stack not configured).
+  startObservabilityLivenessChecker(log);
 }
 
 /**
@@ -94,6 +101,9 @@ export async function shutdownWorkers(): Promise<void> {
   const { stopEscalationParkExpirySweeper } = await import(
     "./escalation-park-expiry-sweeper.js"
   );
+  const { stopObservabilityLivenessChecker } = await import(
+    "./observability-liveness-checker.js"
+  );
 
   await Promise.all([
     stopAbandonedCartChecker(),
@@ -114,5 +124,6 @@ export async function shutdownWorkers(): Promise<void> {
     stopDriftEvaluate(),
     stopDlqDepthChecker(),
     stopEscalationParkExpirySweeper(),
+    stopObservabilityLivenessChecker(),
   ]);
 }

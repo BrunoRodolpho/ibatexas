@@ -1,0 +1,13 @@
+-- AlterEnum: extend the ops-alert cause taxonomy (BKL-109).
+-- Promotes an observability-plane liveness failure (VictoriaLogs / VictoriaMetrics
+-- Exited while the api keeps running — the 2026-07-04 incident where the obs
+-- containers sat Exited(0) for ~6h and every turn in that window became
+-- log-unrecoverable) into a first-class ops-alert cause so a manager SEES the
+-- condition in the admin ops-alerts inbox + the ops agent, instead of the outage
+-- being invisible until someone notices the logs stopped.
+--
+-- Postgres enum add-value: appended AFTER 'ops_staff_auth_infra' (the enum is
+-- unordered for filtering; append keeps the frozen taxonomy stable). IF NOT EXISTS
+-- makes the statement idempotent so a re-apply / provision is a no-op. Mirrors the
+-- taxonomy add-value idiom (see 20260704020000_add_ops_staff_auth_infra_cause).
+ALTER TYPE "ibx_domain"."OpsAlertCause" ADD VALUE IF NOT EXISTS 'ops_observability_down';

@@ -1055,6 +1055,7 @@ enum OpsAlertCause {
   ops_dlq_depth
   ops_ingredient_underflow
   ops_staff_auth_infra
+  ops_observability_down
 
   @@schema("ibx_domain")
 }
