@@ -293,12 +293,21 @@ function honestLineFor(name: string): string {
 }
 
 /** Render ONE capture: honest line on a throw / unknown name, else the template
- *  (which itself degrades to the honest line on a bad shape). */
+ *  (which itself degrades to the honest line on a bad shape). The template call
+ *  is try/caught (adversarial-review fix): a bad-but-plausible shape that slips
+ *  the structural narrowing (e.g. an unparseable `now` making
+ *  Intl.DateTimeFormat.format throw RangeError) must DEGRADE to the honest line,
+ *  never crash the turn — a render throw would propagate out of respond() and
+ *  ghost the staff turn entirely. */
 function renderCapture(capture: CapturedOpsRead): string {
   if (capture.error !== undefined) return honestLineFor(capture.name);
   const template = OPS_READ_TEMPLATES[capture.name];
   if (template === undefined) return honestLineFor(capture.name);
-  return template(capture.result);
+  try {
+    return template(capture.result);
+  } catch {
+    return honestLineFor(capture.name);
+  }
 }
 
 /**
@@ -347,37 +356,105 @@ const NOUN_NEAR_NUMBER = new RegExp(
   String.raw`\b(?:${OPS_DOMAIN_NOUN})\b[^.!?]{0,20}${OPS_NUMBER}`,
 );
 
-/** Split normalized text into sentences, tagging each with whether it is a question. */
-function sentencesOf(
-  normalized: string,
-): ReadonlyArray<{ text: string; question: boolean }> {
-  const out: Array<{ text: string; question: boolean }> = [];
+/** Split normalized text into sentences (window boundaries for noun adjacency). */
+function sentencesOf(normalized: string): readonly string[] {
+  const out: string[] = [];
   const re = /([^.!?\n;]+)[.!?\n;]*/g;
   let m: RegExpExecArray | null;
   while ((m = re.exec(normalized)) !== null) {
     const body = m[1].trim();
-    if (body.length > 0) out.push({ text: body, question: /\?/.test(m[0]) });
+    if (body.length > 0) out.push(body);
   }
   return out;
 }
 
 /**
- * Demote-only clamp for the ops conversational fallback. Returns the honest nudge
- * {@link OPS_UNGROUNDED_CLAMP_PTBR} when the draft has a DECLARATIVE (non-question)
- * sentence stating a domain number (a digit or R$ adjacent to a domain noun) it
- * could not have grounded — else null (the draft passes through). Conservative by
- * design: it fires only on a clear number-adjacent-noun assertion, so ordinary
- * conversational glue is untouched. Applied by the responder ONLY on the ops plane
- * (the dep is present) and ONLY when no read was captured this turn.
+ * CANONICAL number tokens in a text: contiguous digit groups possibly separated
+ * by `.`/`,` collapse to their bare digits — so the model's pt-BR money format
+ * ("R$ 50,00" / "R$ 4.350,00") and the acted summary's integer centavos
+ * (5000 / 435000) canonicalize to the SAME token and grounded amounts are not
+ * false-clamped by formatting.
  */
-export function clampUngroundedOpsFact(text: string): string | null {
+function numberTokens(text: string): string[] {
+  return (text.match(/\d(?:[\d.,]*\d)?/g) ?? []).map((t) => t.replace(/\D/g, ""));
+}
+
+/** All canonical number tokens present in the given texts, diacritic-normalized. */
+function allowedNumberTokens(sources: readonly string[]): ReadonlySet<string> {
+  const tokens = new Set<string>();
+  for (const source of sources) {
+    if (typeof source !== "string") continue;
+    for (const token of numberTokens(normalizePtBr(source))) tokens.add(token);
+  }
+  return tokens;
+}
+
+/** Every number token in `sentence` appears in `allowed` (grounded-by-source). */
+function sentenceDigitsGrounded(
+  sentence: string,
+  allowed: ReadonlySet<string>,
+): boolean {
+  return numberTokens(sentence).every((token) => allowed.has(token));
+}
+
+/**
+ * Demote-only clamp for the ops conversational fallback. Returns the honest nudge
+ * {@link OPS_UNGROUNDED_CLAMP_PTBR} when the draft states a domain number (a digit
+ * or R$ adjacent to a domain noun) it could not have grounded — else null (the
+ * draft passes through). Two adversarial-review fixes baked in:
+ *
+ *  - NO question exemption: on a no-read turn EVERY domain number in the draft is
+ *    ungrounded regardless of phrasing — the model's habitual trailing-engagement
+ *    register ("Hoje tivemos 12 pedidos, quer que eu detalhe?") was one comma away
+ *    from bypassing the whole clamp when questions were exempt.
+ *  - `allowedSources` (the staff's own message, the schedule note, the acted
+ *    summary on the grounded path): a sentence whose digit runs ALL appear in a
+ *    source the model legitimately saw is NOT ungrounded (echoing "pedido 4242"
+ *    back to the staff member must not nudge). Digit-run membership — demote-safe.
+ *
+ * Applied by the responder ONLY on the ops plane (the dep is present).
+ */
+export function clampUngroundedOpsFact(
+  text: string,
+  allowedSources: readonly string[] = [],
+): string | null {
   if (typeof text !== "string") return null;
   const normalized = normalizePtBr(text);
+  const allowed = allowedNumberTokens(allowedSources);
   for (const sentence of sentencesOf(normalized)) {
-    if (sentence.question) continue; // a question is not a stated fact
-    if (NUMBER_NEAR_NOUN.test(sentence.text) || NOUN_NEAR_NUMBER.test(sentence.text)) {
-      return OPS_UNGROUNDED_CLAMP_PTBR;
+    if (!NUMBER_NEAR_NOUN.test(sentence) && !NOUN_NEAR_NUMBER.test(sentence)) {
+      continue;
     }
+    if (sentenceDigitsGrounded(sentence, allowed)) continue;
+    return OPS_UNGROUNDED_CLAMP_PTBR;
   }
   return null;
+}
+
+/**
+ * Govern a GROUNDED (EXECUTE/REWRITE/DEFER) ops draft (adversarial-review fix —
+ * the grounded branch previously delivered model-authored staff numbers with
+ * neither render nor clamp, and a mixed read+act turn dropped its captured read
+ * entirely). Deterministic, demote-only:
+ *
+ *  1. When a read WAS captured this turn, the deterministic render is APPENDED to
+ *     the draft — the read half of a mixed turn is answered from the ACTUAL read,
+ *     never from model memory.
+ *  2. The model half is digit-run clamped: a domain number not grounded in an
+ *     allowed source (the acted dispatch summary, the staff's own message, the
+ *     schedule note) or in the appended render replaces the model half with the
+ *     honest nudge — the render half (when present) is preserved, and the
+ *     dashboard's decision/executado chips carry the action outcome regardless.
+ */
+export function governGroundedOpsDraft(
+  text: string,
+  captures: readonly CapturedOpsRead[],
+  turnId: string,
+  allowedSources: readonly string[],
+): string {
+  const rendered = renderOpsReadAnswer(captures, turnId);
+  const sources = rendered === undefined ? allowedSources : [...allowedSources, rendered];
+  const clamped = clampUngroundedOpsFact(text, sources);
+  const modelHalf = clamped ?? text;
+  return rendered === undefined ? modelHalf : `${modelHalf}\n\n${rendered}`;
 }

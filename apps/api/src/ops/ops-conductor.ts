@@ -58,8 +58,10 @@ import {
 } from "../tools/register-ibatexas-tool-packs.js";
 import {
   clampUngroundedOpsFact,
+  governGroundedOpsDraft,
   renderOpsReadAnswer,
   OPS_READ_RENDER_TEMPLATE_KEYS,
+  OPS_UNGROUNDED_CLAMP_PTBR,
   type CapturedOpsRead,
 } from "./ops-read-render.js";
 import { deriveOpsPlannerContext } from "./ops-planner-context.js";
@@ -206,6 +208,22 @@ export function composeOpsConductor(
     readAnswer: {
       render: (turnId: string) => renderOpsReadAnswer(captures, turnId),
       clampUngrounded: clampUngroundedOpsFact,
+      // Adversarial-review fix — the grounded (EXECUTE/REWRITE/DEFER) branch:
+      // append the deterministic render of any read captured this turn + digit-run
+      // clamp ungrounded model numbers. Fail-HONEST: an internal throw yields the
+      // nudge, never the ungoverned model draft (fail-open would silently restore
+      // the exact hole this closes).
+      governGrounded: (
+        text: string,
+        turnId: string,
+        allowedSources: readonly string[],
+      ) => {
+        try {
+          return governGroundedOpsDraft(text, captures, turnId, allowedSources);
+        } catch {
+          return OPS_UNGROUNDED_CLAMP_PTBR;
+        }
+      },
     },
   });
 

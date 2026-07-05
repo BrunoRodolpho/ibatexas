@@ -14,6 +14,7 @@ import {
 } from "@ibatexas/pack-ops";
 import {
   clampUngroundedOpsFact,
+  governGroundedOpsDraft,
   renderOpsReadAnswer,
   OPS_READ_RENDER_TEMPLATE_KEYS,
   OPS_SNAPSHOT_UNAVAILABLE_PTBR,
@@ -293,5 +294,114 @@ describe("clampUngroundedOpsFact — demote-only, conservative", () => {
 
   it("does NOT clamp a number that is NOT near a domain noun", () => {
     expect(clampUngroundedOpsFact("Te aviso em 5 minutos.")).toBeNull();
+  });
+
+  // ── Adversarial-review fixes ────────────────────────────────────────────────
+
+  it("FIX: clamps the trailing-engagement-question register (declarative number + comma + question tail)", () => {
+    // Pre-fix, whole-sentence question tagging exempted this — the model's
+    // habitual shape for a confabulated count.
+    expect(
+      clampUngroundedOpsFact("Hoje tivemos 12 pedidos, quer que eu detalhe?"),
+    ).toBe(OPS_UNGROUNDED_CLAMP_PTBR);
+    expect(clampUngroundedOpsFact("Foram 12 pedidos, certo?")).toBe(
+      OPS_UNGROUNDED_CLAMP_PTBR,
+    );
+  });
+
+  it("FIX: clamps a QUESTION that itself states an ungrounded domain number", () => {
+    // Any digit the model emits on a no-read turn is ungrounded — phrasing it as
+    // a question does not ground it.
+    expect(clampUngroundedOpsFact("Você quer ver os 12 pedidos de hoje?")).toBe(
+      OPS_UNGROUNDED_CLAMP_PTBR,
+    );
+  });
+
+  it("FIX: does NOT clamp a number echoed from an allowed source (the staff's own message)", () => {
+    expect(
+      clampUngroundedOpsFact("Vou verificar o pedido 4242 pra você.", [
+        "como está o pedido 4242?",
+      ]),
+    ).toBeNull();
+  });
+
+  it("FIX: an allowed echo does NOT launder a SECOND ungrounded number in the same sentence", () => {
+    expect(
+      clampUngroundedOpsFact("O pedido 4242 é um dos 23 pedidos de hoje.", [
+        "como está o pedido 4242?",
+      ]),
+    ).toBe(OPS_UNGROUNDED_CLAMP_PTBR);
+  });
+});
+
+describe("governGroundedOpsDraft — the grounded (read+act) governor", () => {
+  const CLEAN_DRAFT = "Alerta resolvido com sucesso.";
+
+  it("appends the deterministic render when a read was captured this turn", () => {
+    const captures = [
+      capture(OPS_SNAPSHOT_READ_TOOL, { result: snapshotFixture() }),
+    ];
+    const out = governGroundedOpsDraft(CLEAN_DRAFT, captures, TURN, []);
+    expect(out.startsWith(CLEAN_DRAFT)).toBe(true);
+    expect(out).toContain("Panorama operacional");
+    expect(out).toContain("12 pedidos"); // the TRUE caixa count, from the capture
+  });
+
+  it("clamps an ungrounded model number and PRESERVES the appended render", () => {
+    const captures = [
+      capture(OPS_SNAPSHOT_READ_TOOL, { result: snapshotFixture() }),
+    ];
+    const out = governGroundedOpsDraft(
+      "Alerta resolvido! Hoje já foram 23 pedidos.",
+      captures,
+      TURN,
+      [],
+    );
+    expect(out).not.toContain("23 pedidos"); // the model's fabrication is gone
+    expect(out).toContain(OPS_UNGROUNDED_CLAMP_PTBR);
+    expect(out).toContain("Panorama operacional"); // the true answer survives
+  });
+
+  it("a model number matching the RENDER is grounded (no clamp)", () => {
+    const captures = [
+      capture(OPS_SNAPSHOT_READ_TOOL, { result: snapshotFixture() }),
+    ];
+    const out = governGroundedOpsDraft(
+      "Feito! O caixa registra 12 pedidos hoje.",
+      captures,
+      TURN,
+      [],
+    );
+    expect(out.startsWith("Feito! O caixa registra 12 pedidos hoje.")).toBe(true);
+    expect(out).toContain("Panorama operacional");
+  });
+
+  it("no captures + ungrounded number → the honest nudge (hop-1 mixed turn, read never ran)", () => {
+    expect(governGroundedOpsDraft("Costela desativada! Hoje já foram 23 pedidos.", [], TURN, []))
+      .toBe(OPS_UNGROUNDED_CLAMP_PTBR);
+  });
+
+  it("no captures + acted-summary-grounded number → untouched (a real refund amount)", () => {
+    const acted = JSON.stringify({ dispatch: "payment.refund.issue", amountCentavos: 5000 });
+    const draft = "Reembolso de R$ 50,00 emitido no pedido 4242.";
+    expect(governGroundedOpsDraft(draft, [], TURN, [acted, "reembolsa o pedido 4242"]))
+      .toBe(draft);
+  });
+
+  it("no captures + clean draft → byte-identical", () => {
+    expect(governGroundedOpsDraft(CLEAN_DRAFT, [], TURN, [])).toBe(CLEAN_DRAFT);
+  });
+});
+
+describe("renderOpsReadAnswer — template throw degrades to the honest line (never crashes the turn)", () => {
+  it("an unparseable `now` (RangeError inside Intl) renders the honest line, not a throw", () => {
+    const captures = [
+      capture(OPS_SNAPSHOT_READ_TOOL, {
+        result: snapshotFixture({ now: "not-a-date" }),
+      }),
+    ];
+    const out = renderOpsReadAnswer(captures, TURN);
+    expect(out).toBe(OPS_SNAPSHOT_UNAVAILABLE_PTBR);
+    expect(out).not.toMatch(/\d/);
   });
 });

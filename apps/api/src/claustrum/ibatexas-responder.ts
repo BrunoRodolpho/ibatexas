@@ -138,7 +138,24 @@ export interface IbatexasResponderDeps {
    */
   readonly readAnswer?: {
     render(turnId: string): string | undefined;
-    clampUngrounded?(text: string): string | null;
+    clampUngrounded?(
+      text: string,
+      allowedSources?: readonly string[],
+    ): string | null;
+    /**
+     * Adversarial-review fix — govern the GROUNDED (EXECUTE/REWRITE/DEFER) draft:
+     * appends the deterministic render of any read captured this turn (the read
+     * half of a mixed read+act turn must come from the ACTUAL read, never model
+     * memory) and digit-run clamps model-authored domain numbers not grounded in
+     * an allowed source (acted summary / staff message / schedule note / the
+     * appended render). Deterministic + demote-only; absent → grounded branch
+     * byte-identical.
+     */
+    governGrounded?(
+      text: string,
+      turnId: string,
+      allowedSources: readonly string[],
+    ): string;
   };
 }
 
@@ -735,14 +752,34 @@ export function createIbatexasResponder(
    *  REPLACES the draft with the honest nudge (preserving usage for cost
    *  accounting); it never promotes. Absent dep → the draft is returned unchanged
    *  (customer / WhatsApp planes are byte-identical). */
-  function clampUngroundedConversational(draft: DraftResponse): DraftResponse {
+  function clampUngroundedConversational(
+    draft: DraftResponse,
+    allowedSources: readonly string[],
+  ): DraftResponse {
     const clamp = deps.readAnswer?.clampUngrounded;
     if (clamp === undefined) return draft;
-    const nudge = clamp(draft.text);
+    const nudge = clamp(draft.text, allowedSources);
     if (nudge === null) return draft;
     return draft.usage === undefined
       ? { text: nudge }
       : { text: nudge, usage: draft.usage };
+  }
+
+  /** Adversarial-review fix — apply `readAnswer.governGrounded` (ops plane only)
+   *  to a grounded draft; absent dep → the draft is returned unchanged (customer /
+   *  WhatsApp planes byte-identical). */
+  function governGroundedDraft(
+    draft: DraftResponse,
+    turnId: string,
+    allowedSources: readonly string[],
+  ): DraftResponse {
+    const govern = deps.readAnswer?.governGrounded;
+    if (govern === undefined) return draft;
+    const governed = govern(draft.text, turnId, allowedSources);
+    if (governed === draft.text) return draft;
+    return draft.usage === undefined
+      ? { text: governed }
+      : { text: governed, usage: draft.usage };
   }
 
   return {
@@ -800,6 +837,9 @@ export function createIbatexasResponder(
                 scheduleSignal,
                 scheduled,
               ),
+              // Numbers the model legitimately saw: the staff's own message + the
+              // schedule note (echoing them back must not nudge).
+              [userText, closedNote],
             );
           }
           // A real action refusal: render the pt-BR refusal VERBATIM (model-free,
@@ -851,10 +891,22 @@ export function createIbatexasResponder(
           // decision (no-authority claim) OR claims a success the runtime did not
           // grant (confabulation) reach the customer. Then surface any user-relevant
           // REWRITE clamp deterministically (the model can't be trusted to).
-          return closedHoursDeliveryGuard(
-            surfaceRewriteClamp(observedGuardDraft(draft, input.acted, turnId), decision),
-            scheduleSignal,
-            scheduled,
+          // BKL-100 (adversarial-review fix): on the ops plane, governGroundedDraft
+          // then appends the deterministic render of any read captured this turn
+          // (the read half of a mixed read+act turn) and digit-run clamps model
+          // numbers not grounded in the acted summary / staff message / schedule
+          // note. Dep absent (customer / WhatsApp) → byte-identical.
+          return governGroundedDraft(
+            closedHoursDeliveryGuard(
+              surfaceRewriteClamp(observedGuardDraft(draft, input.acted, turnId), decision),
+              scheduleSignal,
+              scheduled,
+            ),
+            turnId,
+            // The acted summary is what the model was PROMPTED with (the grounded
+            // source of truth) — serialize it the same way the prompt does so its
+            // digit runs (e.g. a real refund amount) are allowed verbatim.
+            [userText, JSON.stringify(context), closedNote],
           );
         }
 
@@ -881,6 +933,7 @@ export function createIbatexasResponder(
               scheduleSignal,
               scheduled,
             ),
+            [userText, closedNote],
           );
         }
       }

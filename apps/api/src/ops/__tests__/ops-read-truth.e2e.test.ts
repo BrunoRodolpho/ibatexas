@@ -13,7 +13,7 @@
 //               the ops plane demotes it, while the customer plane (dep absent)
 //               leaves the identical draft untouched.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { Decision } from "@adjudicate/core";
 import type {
   CognitiveState,
@@ -36,6 +36,7 @@ import {
   makeStatefulSession,
   runOpsTurn,
   scriptedModel,
+  type ScriptedToolCall,
 } from "./ops-e2e-harness.js";
 
 /** A shape-complete snapshot whose ONLY notable figure is caixa.ordersCount = 5;
@@ -198,5 +199,124 @@ describe("BKL-100 e2e — the ungrounded-fact clamp is ops-plane only", () => {
       .then((draft) => {
         expect(draft.text).toBe("temos 7 reservas hoje");
       });
+  });
+});
+
+// ── Adversarial-review fix: the MIXED read+act turn (grounded branch governed) ──
+
+/** A model that scripts hop 1 (read call) and hop 2 (the enrichment re-prompt's
+ *  envelope proposal) separately — the mixed read+act shape the single-shot
+ *  scriptedModel cannot express. Non-planner calls (the grounded responder)
+ *  return `responderText`. */
+function twoHopModel(
+  hop1: ReadonlyArray<ScriptedToolCall>,
+  hop2: ReadonlyArray<ScriptedToolCall>,
+  responderText: string,
+): ModelProvider {
+  let plannerCalls = 0;
+  const complete = vi.fn(async (req: { tools?: readonly unknown[] }) => {
+    const isPlanner = (req.tools?.length ?? 0) > 0;
+    if (isPlanner) {
+      plannerCalls += 1;
+      const calls = plannerCalls === 1 ? hop1 : plannerCalls === 2 ? hop2 : [];
+      return {
+        model: "mock",
+        stopReason: "end_turn" as const,
+        text: "",
+        toolCalls: [...calls],
+        inputTokens: 5,
+        outputTokens: 4,
+      };
+    }
+    return {
+      model: "mock",
+      stopReason: "end_turn" as const,
+      text: responderText,
+      toolCalls: [],
+      inputTokens: 5,
+      outputTokens: 4,
+    };
+  });
+  return {
+    complete,
+    stream: () => {
+      throw new Error("stream unused");
+    },
+    embed: async () => {
+      throw new Error("embed unused");
+    },
+  } as unknown as ModelProvider;
+}
+
+function buildMixedHarness(responderText: string) {
+  const sink = makeCapturingAuditSink();
+  const session = makeStatefulSession();
+  const { tools } = buildOpsTools(
+    { medusaAdjudicated: vi.fn(async () => ({ product: { id: "prod_1" } })) },
+    sink,
+  );
+  const adjudicator = makeAuditedAdjudicator({ sink });
+  const model = twoHopModel(
+    [{ id: "r-1", name: OPS_SNAPSHOT_READ_TOOL, input: {} }],
+    [
+      {
+        id: "tc-avail",
+        name: "express_intent",
+        input: {
+          capability: "product.availability.set",
+          payload: { productId: "prod_1", available: false },
+        },
+      },
+    ],
+    responderText,
+  );
+  const deps = composeOpsDeps({
+    adjudicator,
+    session,
+    tools,
+    model,
+    buildResolver: (staffId: string) =>
+      createOpsResolver({
+        staffId,
+        tenantId: "ibatexas",
+        lookupProduct: async () => ({ id: "prod_1", status: "published" }),
+        lookupOrder: async () => null,
+      }),
+    opsReadToolExecutors: {
+      [OPS_SNAPSHOT_READ_TOOL]: async () => TRUTH_SNAPSHOT,
+    },
+  });
+  return { deps, model };
+}
+
+describe("BKL-100 e2e — MIXED read+act turn: the grounded branch is governed too", () => {
+  it("hop-1 read captured + hop-2 EXECUTE: the render is APPENDED and a fabricated model number is clamped", async () => {
+    const { deps, model } = buildMixedHarness(
+      "Picanha desativada! Hoje já foram 23 pedidos.", // 23 = pure fabrication
+    );
+    const out = await runOpsTurn(deps, {
+      role: "OWNER",
+      staffId: "owner1",
+      text: "desativa a picanha e me diz como está o dia",
+    });
+    // The read half is answered from the ACTUAL capture, deterministically…
+    expect(out.response).toContain("Panorama operacional");
+    expect(out.response).toContain("5 pedidos");
+    // …and the model's fabricated count never reaches the operator.
+    expect(out.response).not.toContain("23");
+    // plan + enrichment + grounded responder = 3 model calls on this path.
+    expect(model.complete).toHaveBeenCalledTimes(3);
+  });
+
+  it("hop-1 read captured + hop-2 EXECUTE + a CLEAN grounded draft: draft kept, render appended", async () => {
+    const { deps } = buildMixedHarness("Pronto, picanha desativada.");
+    const out = await runOpsTurn(deps, {
+      role: "OWNER",
+      staffId: "owner1",
+      text: "desativa a picanha e me diz como está o dia",
+    });
+    expect(out.response.startsWith("Pronto, picanha desativada.")).toBe(true);
+    expect(out.response).toContain("Panorama operacional");
+    expect(out.response).toContain("5 pedidos");
   });
 });
