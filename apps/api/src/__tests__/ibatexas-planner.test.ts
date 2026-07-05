@@ -641,6 +641,39 @@ describe("createIbatexasPlanner — read-tool enrichment loop (BKL-027)", () => 
     expect(msg).not.toMatch(/invalid_type|received undefined/);
   });
 
+  it("BKL-118 — a GUEST get_payment_status read feeds a TYPED empty fact, not the auth-error blob the model fabricates a payment status around", async () => {
+    // Sibling of the BKL-107 case, billing plane. The pre-fix path threw
+    // NonRetryableError("Autenticação necessária.") inside checkPaymentStatus and
+    // fed that back as an "(indisponível: …)" blob the planner completed around
+    // (same class as BKL-003). Now the executor short-circuits to a typed empty fact
+    // → the enrichment carries an honest "no payment for this session" the renderer
+    // can voice, never a fabricated status.
+    const { model, complete } = mockModel([
+      [readCall("get_payment_status")], // pass 1: guest asks "meu pagamento caiu?"
+      [], // pass 2: model just responds — no payment to act on
+    ]);
+    const planner = createIbatexasPlanner({
+      model,
+      modelId: "claude-test",
+      // Advertise the billing read so the loop offers + executes it.
+      capabilityPlanners: [capPlanner(["get_payment_status"], ORDER_INTENTS)],
+      // The read executor under test — production wiring, not a stub.
+      readToolExecutors: {
+        get_payment_status: IBATEXAS_READ_TOOL_EXECUTORS.get_payment_status!,
+      },
+    });
+
+    await planner.propose(mkStateWithCustomer(undefined)); // GUEST (no customer)
+
+    expect(complete).toHaveBeenCalledTimes(2); // executable read → one enrichment hop
+    const msg = pass2UserMessage(complete);
+    // The enrichment carries the TYPED empty fact verbatim…
+    expect(msg).toContain('get_payment_status => {"payment":null,"reason":"no_payment_for_session"}');
+    // …NOT the pre-fix auth-error blob (no "(indisponível: …)", no auth text).
+    expect(msg).not.toContain("indisponível");
+    expect(msg).not.toContain("Autenticação necessária");
+  });
+
   it("FIX B1 — a read with NO executor drives NO second completion (single pass)", async () => {
     // check_order_status is advertised but absent from the executor map. Pre-fix
     // this pushed a `no_executor` blob and forced a wasted second completion over
