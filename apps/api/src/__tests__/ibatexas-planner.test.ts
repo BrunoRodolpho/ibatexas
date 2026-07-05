@@ -609,6 +609,38 @@ describe("createIbatexasPlanner — read-tool enrichment loop (BKL-027)", () => 
     expect(msg).not.toContain("no_executor");
   });
 
+  it("BKL-107 — a GUEST check_order_status read feeds a TYPED empty fact, not the zod-error blob the model fabricated around", async () => {
+    // Drive the REAL executor (from IBATEXAS_READ_TOOL_EXECUTORS) through the loop
+    // with a GUEST turn. The pre-fix path threw `invalid_type: orderId …` and fed
+    // that back as an "(indisponível: …)" blob the planner completed around
+    // (BKL-003 live: "O seu pedido continua sendo processado" with no order). Now
+    // the executor short-circuits to a typed empty fact → the enrichment carries an
+    // honest "no orders for this session" the renderer can voice.
+    const { model, complete } = mockModel([
+      [readCall("check_order_status")], // pass 1: guest asks "cadê meu pedido?"
+      [], // pass 2: model just responds — no order to act on
+    ]);
+    const planner = createIbatexasPlanner({
+      model,
+      modelId: "claude-test",
+      capabilityPlanners: [capPlanner(ORDER_READS, ORDER_INTENTS)],
+      // The read executor under test — production wiring, not a stub.
+      readToolExecutors: {
+        check_order_status: IBATEXAS_READ_TOOL_EXECUTORS.check_order_status!,
+      },
+    });
+
+    await planner.propose(mkStateWithCustomer(undefined)); // GUEST (no customer)
+
+    expect(complete).toHaveBeenCalledTimes(2); // executable read → one enrichment hop
+    const msg = pass2UserMessage(complete);
+    // The enrichment carries the TYPED empty fact verbatim…
+    expect(msg).toContain('check_order_status => {"order":null,"reason":"no_orders_for_session"}');
+    // …NOT the pre-fix zod-error blob (no "(indisponível: …)", no schema text).
+    expect(msg).not.toContain("indisponível");
+    expect(msg).not.toMatch(/invalid_type|received undefined/);
+  });
+
   it("FIX B1 — a read with NO executor drives NO second completion (single pass)", async () => {
     // check_order_status is advertised but absent from the executor map. Pre-fix
     // this pushed a `no_executor` blob and forced a wasted second completion over

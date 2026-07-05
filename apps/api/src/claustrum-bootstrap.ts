@@ -1543,6 +1543,25 @@ export function stripModelOwner(input: unknown): unknown {
 }
 
 /**
+ * BKL-107 — does this (owner-stripped) read input name a concrete order to
+ * resolve? A guest "cadê meu pedido?" reaches the check_order_status executor with
+ * `{}` (no orderId); the underlying handler's schema REQUIRES orderId, so it would
+ * THROW `invalid_type: orderId expected string, received undefined` — a message the
+ * one-hop read-loop then feeds back as an "(indisponível: …)" blob the planner
+ * FABRICATES around (BKL-003 live: "O seu pedido continua sendo processado" with no
+ * order in hand). Detecting the empty case up front lets the executor return a typed
+ * empty fact the renderer can voice honestly. Pure.
+ */
+function hasResolvableOrderId(input: unknown): input is { orderId: string } {
+  return (
+    input !== null &&
+    typeof input === "object" &&
+    typeof (input as { orderId?: unknown }).orderId === "string" &&
+    (input as { orderId: string }).orderId.trim().length > 0
+  );
+}
+
+/**
  * Advertised-read-tool NAME → owner-scoped executor. Keys are the 12 advertised
  * read-tool names, each with a backing @ibatexas/tools handler (4 are aliases:
  * check_availability→checkTableAvailability, get_payment_status→checkPaymentStatus,
@@ -1577,9 +1596,25 @@ export const IBATEXAS_READ_TOOL_EXECUTORS: Readonly<
   // input.customerId; stripModelOwner removes a model-forged id (defence-in-depth)
   // AND lets the strict-`{}` schemas (get_order_history, get_my_profile/
   // get_my_preferences) parse — injecting `customerId` would make them throw.
+  // BKL-107 — a session that cannot resolve an owner-scoped order owns nothing to
+  // report: a GUEST/unauthenticated turn (no ctx.customerId — a guest owns no
+  // order) OR an authenticated owner whose call carries no orderId. Both would
+  // otherwise THROW inside checkOrderStatus (the schema parse rejects a missing
+  // orderId; the auth check rejects the guest) and the one-hop read-loop feeds that
+  // thrown message back as an "(indisponível: …)" error blob the planner fabricates
+  // around. Return a TYPED empty fact instead so the enrichment carries an honest
+  // "no orders for this session" (mirrors get_cart's null-with-marker shape). The
+  // AUTHENTICATED-owner + orderId path is UNTOUCHED → real status byte-identical,
+  // and checkOrderStatus's assertOrderOwnership IDOR guard still runs there; a guest
+  // with a model-forged orderId is short-circuited to empty here, so it can never
+  // reach a foreign order.
   check_order_status: (input, state) => {
     const ctx = agentCtxFromState(state);
-    return checkOrderStatus(stripModelOwner(input) as never, ctx);
+    const stripped = stripModelOwner(input);
+    if (!ctx.customerId || !hasResolvableOrderId(stripped)) {
+      return Promise.resolve({ order: null, reason: "no_orders_for_session" });
+    }
+    return checkOrderStatus(stripped as never, ctx);
   },
   get_payment_status: (input, state) => {
     const ctx = agentCtxFromState(state);
