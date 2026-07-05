@@ -59,6 +59,13 @@ const TRUTH_SNAPSHOT = {
     refundedCentavos: 0,
     netCentavos: 50_000,
   },
+  // BKL-127 — counts deliberately avoid 7 (the fabrication probe) and 5 (the
+  // caixa truth probe stays unique to "5 pedidos").
+  reservations: {
+    date: "2026-07-04",
+    total: 2,
+    byStatus: [{ status: "confirmed", count: 2 }],
+  },
   degraded: [],
 };
 

@@ -43,6 +43,17 @@ function makeDeps(over: Partial<OpsSnapshotComposeDeps> = {}): OpsSnapshotCompos
           netCentavos: 95_000,
         }),
       }) as never,
+    reservations: () =>
+      ({
+        listAll: async () => ({
+          reservations: [
+            { status: "confirmed" },
+            { status: "confirmed" },
+            { status: "pending" },
+          ],
+          total: 3,
+        }),
+      }) as never,
     today: "2026-07-04",
     log: LOG,
     ...over,
@@ -69,6 +80,14 @@ describe("composeOpsSnapshot", () => {
       settledCentavos: 100_000,
       refundedCentavos: 5_000,
       netCentavos: 95_000,
+    });
+    expect(snap.reservations).toEqual({
+      date: "2026-07-04",
+      total: 3,
+      byStatus: [
+        { status: "confirmed", count: 2 },
+        { status: "pending", count: 1 },
+      ],
     });
     expect(typeof snap.now).toBe("string");
     // BKL-100 — no signal failed, so nothing is flagged degraded.
@@ -98,5 +117,25 @@ describe("composeOpsSnapshot", () => {
     expect(snap.caixa.ordersCount).toBe(12);
     // BKL-100 — the failed signal is flagged so a renderer never shows its zeros.
     expect(snap.degraded).toEqual(["kitchen"]);
+  });
+});
+
+describe("composeOpsSnapshot — reservations resilience (BKL-127)", () => {
+  it("a reservations read failure degrades ONLY that signal (and records it)", async () => {
+    const snap = await composeOpsSnapshot(
+      makeDeps({
+        reservations: () =>
+          ({
+            listAll: async () => {
+              throw new Error("reservations projection down");
+            },
+          }) as never,
+      }),
+    );
+    expect(snap.reservations).toEqual({ date: "2026-07-04", total: 0, byStatus: [] });
+    expect(snap.degraded).toEqual(["reservations"]);
+    // The other signals are intact.
+    expect(snap.caixa.ordersCount).toBe(12);
+    expect(snap.opsAlerts.open).toBe(2);
   });
 });

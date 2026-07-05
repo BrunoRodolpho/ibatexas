@@ -28,6 +28,7 @@ import {
   createIncidentService,
   createKitchenService,
   createDayCloseService,
+  createReservationService,
   prisma,
 } from "@ibatexas/domain";
 import { getAuditSink } from "@ibatexas/audit-sink";
@@ -63,6 +64,7 @@ export function createOpsSnapshotReadExecutor(): (
       incidents: () => createIncidentService(),
       kitchen: () => createKitchenService(),
       dayClose: () => createDayCloseService(),
+      reservations: () => createReservationService(),
       today: todayInRestaurantTz(),
       log: logger,
     });
