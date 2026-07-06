@@ -153,4 +153,93 @@ export async function broadcastRoutes(server: FastifyInstance): Promise<void> {
       return reply.send({ ok: true });
     },
   );
+
+  // ── POST /api/admin/broadcast/audience/preview — resolve a segment (WS3D) ────
+  // A CONSTRAINED, whitelisted audience spec (never free SQL — Rule 9: the LLM,
+  // if it builds this spec from natural language, has zero data authority; it
+  // only fills these named fields, which compile to a parameterized Prisma query).
+  // Returns the opted-out-filtered recipient phones + a sample, so the manager
+  // reviews the count before sending. "Ordered in a range" and "created in a
+  // range" both resolve to canonical E.164 phones the blast endpoint accepts.
+  const YMD = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+  const startOf = (ymd: string): Date => new Date(`${ymd}T00:00:00`);
+  app.post(
+    "/api/admin/broadcast/audience/preview",
+    {
+      preHandler: [requireManagerRole],
+      schema: {
+        tags: ["admin"],
+        summary: "Prever o público de um disparo a partir de filtros",
+        body: z.object({
+          orderedFrom: YMD.optional(),
+          orderedTo: YMD.optional(),
+          createdFrom: YMD.optional(),
+          createdTo: YMD.optional(),
+          source: z.string().max(40).optional(),
+        }),
+        response: {
+          200: z.object({
+            count: z.number().int(),
+            recipients: z.array(z.string()),
+            sample: z.array(z.string()),
+          }),
+        },
+      },
+    },
+    async (request, reply) => {
+      const spec = request.body;
+      const empty = { count: 0, recipients: [], sample: [] };
+
+      // 1) If an order-date window is given, resolve the customers who ordered in it.
+      let orderCustomerIds: string[] | null = null;
+      if (spec.orderedFrom || spec.orderedTo) {
+        const range: Prisma.DateTimeFilter = {};
+        if (spec.orderedFrom) range.gte = startOf(spec.orderedFrom);
+        if (spec.orderedTo) range.lt = startOf(spec.orderedTo); // exclusive upper bound
+        const orders = await prisma.orderProjection.findMany({
+          where: { medusaCreatedAt: range, customerId: { not: null } },
+          select: { customerId: true },
+          distinct: ["customerId"],
+        });
+        orderCustomerIds = orders
+          .map((o) => o.customerId)
+          .filter((v): v is string => Boolean(v));
+        if (orderCustomerIds.length === 0) return reply.send(empty);
+      }
+
+      // 2) Compile the customer filter (parameterized — whitelisted fields only).
+      const where: Prisma.CustomerWhereInput = {};
+      if (orderCustomerIds) where.id = { in: orderCustomerIds };
+      if (spec.source) where.source = spec.source;
+      if (spec.createdFrom || spec.createdTo) {
+        const cr: Prisma.DateTimeFilter = {};
+        if (spec.createdFrom) cr.gte = startOf(spec.createdFrom);
+        if (spec.createdTo) cr.lt = startOf(spec.createdTo);
+        where.createdAt = cr;
+      }
+      const customers = await prisma.customer.findMany({
+        where,
+        select: { phone: true },
+        take: 5000, // the blast hard cap
+      });
+      const phones = customers.map((c) => c.phone);
+      if (phones.length === 0) return reply.send(empty);
+
+      // 3) Consent filter — never include an opted-out customer in the segment.
+      const optedOut = new Set(
+        (
+          await prisma.customerBroadcastConsent.findMany({
+            where: { optedOut: true, phone: { in: phones } },
+            select: { phone: true },
+          })
+        ).map((r) => r.phone),
+      );
+      const recipients = phones.filter((p) => !optedOut.has(p));
+      return reply.send({
+        count: recipients.length,
+        recipients,
+        sample: recipients.slice(0, 20),
+      });
+    },
+  );
 }

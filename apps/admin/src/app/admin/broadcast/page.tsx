@@ -40,6 +40,11 @@ export default function BroadcastPage(): React.JSX.Element {
   const [error, setError] = useState<string | null>(null)
   const [optOutPhone, setOptOutPhone] = useState('')
   const [optOutList, setOptOutList] = useState<OptOutRecipientView[]>([])
+  // WS3D — audience builder
+  const [audienceQuery, setAudienceQuery] = useState('')
+  const [audienceSource, setAudienceSource] = useState('')
+  const [preview, setPreview] = useState<{ count: number; recipients: string[]; sample: string[] } | null>(null)
+  const [previewing, setPreviewing] = useState(false)
 
   // Load the READ-ONLY opted-out recipient list (OPS-032). Silent on failure —
   // an unavailable read hides the section rather than toast-spamming a page load.
@@ -78,6 +83,49 @@ export default function BroadcastPage(): React.JSX.Element {
     }
   }, [recipientsText, template])
 
+  // WS3D — compile the (whitelisted) audience spec. The NL box is parsed for a
+  // few common Portuguese windows for v1; a full LLM NL→spec layer can replace
+  // this parser and POST the SAME structured spec to the same safe endpoint.
+  const buildSpec = useCallback((): Record<string, string> => {
+    const q = audienceQuery.toLowerCase()
+    const spec: Record<string, string> = {}
+    const ymd = (d: Date): string => d.toISOString().slice(0, 10)
+    const now = new Date()
+    if (q.includes('mês passado') || q.includes('mes passado')) {
+      spec.orderedFrom = ymd(new Date(now.getFullYear(), now.getMonth() - 1, 1))
+      spec.orderedTo = ymd(new Date(now.getFullYear(), now.getMonth(), 1)) // exclusive
+    } else if (q.includes('30 dias') || q.includes('último mês') || q.includes('ultimo mes')) {
+      const from = new Date(now)
+      from.setDate(now.getDate() - 30)
+      const to = new Date(now)
+      to.setDate(now.getDate() + 1)
+      spec.orderedFrom = ymd(from)
+      spec.orderedTo = ymd(to)
+    }
+    if (audienceSource) spec.source = audienceSource
+    return spec
+  }, [audienceQuery, audienceSource])
+
+  const previewAudience = useCallback(async () => {
+    setPreviewing(true)
+    setError(null)
+    try {
+      const res = (await apiFetch('/api/admin/broadcast/audience/preview', {
+        method: 'POST',
+        body: JSON.stringify(buildSpec()),
+      })) as { count: number; recipients: string[]; sample: string[] }
+      setPreview(res)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Falha ao prever o público')
+    } finally {
+      setPreviewing(false)
+    }
+  }, [buildSpec])
+
+  const useAudience = useCallback(() => {
+    if (preview) setRecipientsText(preview.recipients.join('\n'))
+  }, [preview])
+
   const addOptOut = useCallback(async () => {
     if (!optOutPhone.trim()) return
     setBusy(true)
@@ -101,6 +149,62 @@ export default function BroadcastPage(): React.JSX.Element {
         Use apenas templates aprovados / dentro da janela de 24h. Destinatários que
         optaram por não receber são ignorados automaticamente.
       </p>
+
+      {/* WS3D — audience builder: describe or filter a segment, preview the
+          consent-filtered count, then load it as recipients. */}
+      <div className="flex flex-col gap-2 rounded border border-blue-200 bg-blue-50/40 p-3">
+        <label htmlFor="audience-query" className="text-sm font-medium">
+          Montar público
+        </label>
+        <div className="flex flex-wrap items-center gap-2">
+          <input
+            id="audience-query"
+            value={audienceQuery}
+            onChange={(e) => setAudienceQuery(e.target.value)}
+            placeholder="descreva (ex.: clientes que pediram mês passado)"
+            className="min-w-[16rem] flex-1 rounded border px-2 py-1 text-sm"
+          />
+          <select
+            value={audienceSource}
+            onChange={(e) => setAudienceSource(e.target.value)}
+            className="rounded border px-2 py-1 text-sm"
+            aria-label="Origem do cliente"
+          >
+            <option value="">Qualquer origem</option>
+            <option value="whatsapp">WhatsApp</option>
+            <option value="web">Web</option>
+          </select>
+          <button
+            type="button"
+            onClick={() => void previewAudience()}
+            disabled={previewing}
+            className="rounded bg-blue-700 px-3 py-1 text-sm text-white disabled:opacity-50"
+          >
+            {previewing ? 'Prevendo…' : 'Prever público'}
+          </button>
+        </div>
+        {preview ? (
+          <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-gray-700">
+            <span>
+              {preview.count} destinatário(s) — opt-outs já excluídos
+              {preview.sample.length > 0 ? ` · ex.: ${preview.sample.slice(0, 3).join(', ')}` : ''}
+            </span>
+            <button
+              type="button"
+              onClick={useAudience}
+              disabled={preview.count === 0}
+              className="rounded border border-blue-300 px-2 py-1 font-medium text-blue-700 disabled:opacity-50"
+            >
+              Usar como destinatários →
+            </button>
+          </div>
+        ) : (
+          <p className="text-xs text-gray-500">
+            Entende “mês passado” e “últimos 30 dias” (por data do pedido) + origem. Consulta
+            estruturada e parametrizada — nunca SQL livre; opt-outs são sempre removidos.
+          </p>
+        )}
+      </div>
 
       <div className="flex gap-4">
         <div className="flex w-1/2 flex-col gap-2">
