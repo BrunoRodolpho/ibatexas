@@ -37,6 +37,7 @@ import {
   RESPONDER_GROUNDED_PERSONA_PTBR,
   RESPONDER_PERSONA_PTBR,
 } from "./prompts/personas.js";
+import { resolvePrompt } from "./prompts/prompt-overrides.js";
 import {
   RESPONDER_CONVERSATIONAL_SURFACE,
   RESPONDER_GROUNDED_SURFACE,
@@ -852,7 +853,11 @@ export function createIbatexasResponder(
           return { text: decision.prompt };
 
         case "ESCALATE":
-          return { text: deps.personas?.escalate ?? RESPONDER_ESCALATE_PTBR };
+          return {
+            text:
+              deps.personas?.escalate ??
+              resolvePrompt("ibatexas/responder.escalate", RESPONDER_ESCALATE_PTBR),
+          };
 
         case "EXECUTE":
         case "REWRITE":

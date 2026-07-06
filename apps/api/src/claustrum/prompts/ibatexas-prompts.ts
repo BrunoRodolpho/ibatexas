@@ -25,6 +25,7 @@ import {
   type PromptFragment,
 } from "@claustrum/core";
 import { IBATEXAS_CAPABILITY_DESCRIPTIONS } from "../../tools/register-ibatexas-tool-packs.js";
+import { resolvePrompt } from "./prompt-overrides.js";
 import {
   PLANNER_PERSONA,
   RESPONDER_GROUNDED_PERSONA_PTBR,
@@ -61,10 +62,13 @@ function staticFragment(
 ): PromptFragment {
   return {
     id,
+    // Hash pins the compiled-in DEFAULT (registration-time), so the golden
+    // surface + prompt-drift guard stay green. content() resolves any live
+    // override, fail-safe to the default when none exists.
     hash: hashFragmentContent(content),
     priority: 0, // personas are inviolable (never evicted under budget pressure)
     tokens: estimateTokens(content),
-    content: () => content,
+    content: () => resolvePrompt(id, content),
     applies: (ctx) => surfaceOf(ctx) === surface,
   };
 }
@@ -72,13 +76,15 @@ function staticFragment(
 /** A capability-description fragment: applies on the grounded responder surface
  * when its capability was acted this turn (ctx.capabilities). */
 function capabilityFragment(kind: string, description: string): PromptFragment {
+  const id = `ibatexas/capability.${kind}`;
   const content = `- ${kind}: ${description}`;
   return {
-    id: `ibatexas/capability.${kind}`,
+    id,
     hash: hashFragmentContent(content),
     priority: 10, // lower priority than personas; evictable under budget pressure
     tokens: estimateTokens(content),
-    content: () => content,
+    // Override replaces the DESCRIPTION; the `- kind:` framing is preserved.
+    content: () => `- ${kind}: ${resolvePrompt(id, description)}`,
     applies: (ctx) =>
       surfaceOf(ctx) === RESPONDER_GROUNDED_SURFACE &&
       (ctx.capabilities ?? []).includes(kind),

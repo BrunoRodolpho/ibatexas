@@ -253,6 +253,10 @@ import { buildClaimsSeams, warnOncePerMessage } from "./claustrum/claims-pipelin
 import { createIbatexasResponder } from "./claustrum/ibatexas-responder.js";
 import { createIbatexasPromptComposer } from "./claustrum/prompts/ibatexas-prompts.js";
 import {
+  ensurePromptOverrideTable,
+  loadPromptOverrides,
+} from "./claustrum/prompts/prompt-overrides.js";
+import {
   createTurnTraceWriter,
   type TurnTraceWriter,
 } from "./claustrum/turn-trace-writer.js";
@@ -2465,6 +2469,13 @@ export async function bootstrapClaustrum(
   _pgPool = pgPool;
   _ownsPgPool = !options.pgPool;
   await assertAuditPostgresReady(pgPool);
+
+  // Prompt-override store (qa-viewer Prompts editor): create the table + warm
+  // the in-memory snapshot so resolvePrompt() serves any edited prompts. Both
+  // are best-effort and fail-safe — on error the runtime uses the compiled-in
+  // personas unchanged (byte-identical to today; golden + drift guards green).
+  await ensurePromptOverrideTable();
+  await loadPromptOverrides();
 
   const modelProvider = resolveModelProvider(options);
 

@@ -27,6 +27,8 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { parseBoolEnv } from "@ibatexas/types";
 import { AGENT_REGISTRY } from "@ibatexas/agents";
+import { registerRcaReadRoutes } from "./qa-rca.js";
+import { registerPromptRoutes } from "./qa-prompts.js";
 
 /** Streaming routes hijack the reply (bypassing the CORS plugin); they reflect
  *  a localhost Origin themselves. This matches `http://localhost[:port]` only. */
@@ -263,6 +265,10 @@ export async function qaControlRoutes(server: FastifyInstance): Promise<void> {
   server.get("/internal/qa/journeys", RL, async () => ({ journeys: await listJourneys() }));
   server.get("/internal/qa/scenarios", RL, async () => ({ scenarios: await listScenarios() }));
   server.get("/internal/qa/agents", RL, async () => ({ agents: listAgents() }));
+
+  // ── RCA turn-forensics reads + Prompt navigate/edit (share this gate+bearer) ─
+  registerRcaReadRoutes(server, RL);
+  registerPromptRoutes(server, RL);
 
   // ── Run list + trace serving ────────────────────────────────────────────────
   server.get("/internal/qa/runs", RL, async () => {

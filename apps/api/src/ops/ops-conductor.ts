@@ -49,6 +49,7 @@ import {
   OPS_RESPONDER_GROUNDED_PERSONA_PTBR,
   OPS_RESPONDER_PERSONA_PTBR,
 } from "../claustrum/prompts/personas.js";
+import { resolvePrompt } from "../claustrum/prompts/prompt-overrides.js";
 import {
   readToolRosterDrift,
   toolRosterDrift,
@@ -177,7 +178,10 @@ export function composeOpsConductor(
     // The staff-facing ops persona is the WHOLE system prompt (bypasses the
     // customer fragment graph); telemetry still emits the planner LLMTrace. The
     // per-request history block (if any) trails the persona as fenced DATA.
-    system: composeOpsPlannerSystem(OPS_PLANNER_PERSONA, context.historyBlock),
+    system: composeOpsPlannerSystem(
+      resolvePrompt("ops/planner.persona", OPS_PLANNER_PERSONA),
+      context.historyBlock,
+    ),
     telemetry: deps.telemetry,
     ...(deps.promptComposer ? { promptComposer: deps.promptComposer } : {}),
     ...(deps.resolveScheduleSignal
@@ -197,8 +201,8 @@ export function composeOpsConductor(
     // Staff-facing personas WIN over the composer (see IbatexasResponderDeps);
     // ESCALATE reuses the default handoff line (no ops override).
     personas: {
-      conversational: OPS_RESPONDER_PERSONA_PTBR,
-      grounded: OPS_RESPONDER_GROUNDED_PERSONA_PTBR,
+      conversational: resolvePrompt("ops/responder.persona", OPS_RESPONDER_PERSONA_PTBR),
+      grounded: resolvePrompt("ops/responder.grounded", OPS_RESPONDER_GROUNDED_PERSONA_PTBR),
     },
     // BKL-100 — the ops read-answer governor. `render` deterministically renders a
     // captured staff read (no model call, no authored number); `clampUngrounded`
