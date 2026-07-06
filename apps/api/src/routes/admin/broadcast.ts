@@ -18,6 +18,7 @@ import { requireManagerRole } from "../../middleware/staff-auth.js";
 import { sendText } from "../../whatsapp/client.js";
 import { runBroadcast } from "../../broadcast/broadcast.js";
 import { getBroadcastOptOutStore, normalizeRecipient } from "../../broadcast/broadcast-optout.js";
+import { prisma, Prisma } from "@ibatexas/domain";
 
 const RecipientResultSchema = z.object({
   recipient: z.string(),
@@ -66,6 +67,27 @@ export async function broadcastRoutes(server: FastifyInstance): Promise<void> {
         send: (recipient, body) => sendText(`whatsapp:${recipient}`, mintBroadcastReply(body)),
         isOptedOut: (recipient) => optOut.isOptedOut(recipient),
       });
+      // WS3C — persist a durable audit of the blast (compliance: prove what was
+      // sent to whom, by whom, when). Best-effort: the sends already happened, so
+      // an audit-write failure is logged but never fails the response.
+      try {
+        await prisma.broadcastSend.create({
+          data: {
+            senderStaffId: request.staffId ?? null,
+            template,
+            totalCount: result.total,
+            sentCount: result.sent,
+            skippedCount: result.skipped,
+            failedCount: result.failed,
+            results: result.results as unknown as Prisma.InputJsonValue,
+          },
+        });
+      } catch (err) {
+        request.log.error(
+          { component: "broadcast", err },
+          "[broadcast] audit persist failed (blast already sent)",
+        );
+      }
       request.log.info(
         {
           component: "broadcast",
