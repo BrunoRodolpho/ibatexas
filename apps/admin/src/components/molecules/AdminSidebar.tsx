@@ -57,7 +57,7 @@ const baseGroups: AdminSidebarNavGroup[] = [
       { key: 'agentes', label: 'Agentes', href: '/admin/agentes', icon: Power, minRole: 'MANAGER' },
       { key: 'alertas-operacionais', label: 'Alertas Operacionais', href: '/admin/alertas-operacionais', icon: Siren },
       { key: 'escalacoes', label: 'Escalações', href: '/admin/escalacoes', icon: ArrowUpCircle },
-      { key: 'conversas', label: 'Conversas', href: '/admin/conversas', icon: MessagesSquare },
+      { key: 'conversas', label: 'Conversas', href: '/admin/conversas', icon: MessagesSquare, minRole: 'MANAGER' },
       { key: 'horarios', label: 'Horários', href: '/admin/horarios', icon: Clock },
       { key: 'zonas', label: 'Zonas de Entrega', href: '/admin/zonas', icon: MapPin },
       { key: 'avaliacoes', label: 'Avaliações', href: '/admin/avaliacoes', icon: Star },

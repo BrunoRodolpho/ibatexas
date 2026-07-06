@@ -240,6 +240,69 @@ export function createConversationService(options?: ConversationServiceOptions) 
     },
 
     /**
+     * WS4B — admin browse with a date-range filter (on startedAt) + offset
+     * pagination + a total count for page controls. `customerId` scopes it (the
+     * order-id search resolves an order's displayId to its customer first). Sorted
+     * startedAt desc with an id tiebreaker so pages don't drift under inserts.
+     */
+    async listForAdmin(opts: {
+      customerId?: string
+      dateFrom?: Date
+      dateTo?: Date
+      limit?: number
+      offset?: number
+    }): Promise<{
+      rows: Array<{
+        id: string
+        sessionId: string
+        customerId: string | null
+        channel: string
+        messageCount: number
+        lastMessageAt: Date | null
+      }>
+      count: number
+    }> {
+      const limit = opts.limit ?? 20
+      const offset = opts.offset ?? 0
+      const where: Prisma.ConversationWhereInput = {}
+      if (opts.customerId) where.customerId = opts.customerId
+      if (opts.dateFrom || opts.dateTo) {
+        const range: Prisma.DateTimeFilter = {}
+        if (opts.dateFrom) range.gte = opts.dateFrom
+        if (opts.dateTo) range.lte = opts.dateTo
+        where.startedAt = range
+      }
+      const [rows, count] = await prisma.$transaction([
+        prisma.conversation.findMany({
+          where,
+          take: limit,
+          skip: offset,
+          orderBy: [{ startedAt: "desc" }, { id: "desc" }],
+          select: {
+            id: true,
+            sessionId: true,
+            customerId: true,
+            channel: true,
+            _count: { select: { messages: true } },
+            messages: { take: 1, orderBy: { sentAt: "desc" }, select: { sentAt: true } },
+          },
+        }),
+        prisma.conversation.count({ where }),
+      ])
+      return {
+        rows: rows.map((row) => ({
+          id: row.id,
+          sessionId: row.sessionId,
+          customerId: row.customerId,
+          channel: row.channel,
+          messageCount: row._count.messages,
+          lastMessageAt: row.messages[0]?.sentAt ?? null,
+        })),
+        count,
+      }
+    },
+
+    /**
      * List a single customer's conversations (newest first), with message count
      * + last-message timestamp. NET-NEW for the admin conversation surface (D1):
      * `listActive` has no per-customer filter. Same summary shape as listActive.
