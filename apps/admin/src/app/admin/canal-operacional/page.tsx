@@ -16,7 +16,7 @@
 // kept no kernel decision metadata) and a "histórico carregado" divider marks the
 // boundary with the live session.
 
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { BotMessageSquare, Send } from 'lucide-react'
 import { Badge } from '@ibatexas/ui'
 import { useOpsChat } from '@/domains/admin/admin.hooks'
@@ -32,7 +32,41 @@ import {
 const STATELESS_CAPTION =
   'O histórico desta conversa fica salvo e é recarregado quando você reabre a tela.'
 
-const EMPTY_HINT = 'Envie um comando para começar. Ex.: “Qual a situação da cozinha agora?”'
+// WS6 — guided examples so an operator SEES what the channel can do (the command
+// grammar otherwise lives only in the server persona). Clicking one drafts it.
+const EXAMPLE_COMMANDS: readonly string[] = [
+  '86 a picanha',
+  'muda o preço da costela para R$ 89',
+  'avança o pedido 4242 para pronto',
+  'reembolsa o pedido 4242',
+  'como tá a cozinha agora?',
+  'quanto faturamos hoje?',
+]
+
+function GuidedEmptyState({ onPick }: Readonly<{ onPick: (text: string) => void }>): React.JSX.Element {
+  return (
+    <div className="m-auto max-w-md">
+      <p className="mb-1 text-center text-sm font-medium text-charcoal-700">O que você pode fazer aqui</p>
+      <p className="mb-3 text-center text-xs text-smoke-400">
+        Comande a operação em linguagem natural — o agente entende e o kernel aprova antes de executar.
+        Exemplos (toque para usar):
+      </p>
+      <ul className="flex flex-col gap-1.5">
+        {EXAMPLE_COMMANDS.map((ex) => (
+          <li key={ex}>
+            <button
+              type="button"
+              onClick={() => onPick(ex)}
+              className="w-full rounded-sm border border-smoke-200 bg-white px-3 py-1.5 text-left text-xs text-charcoal-700 hover:bg-smoke-50"
+            >
+              {ex}
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
 
 // ── Bubbles ──────────────────────────────────────────────────────────────────
 
@@ -55,7 +89,19 @@ function KindChip({ kind }: Readonly<{ kind: string }>): React.JSX.Element {
   )
 }
 
-function AssistantBubble({ entry }: Readonly<{ entry: AssistantEntry }>): React.JSX.Element {
+function AssistantBubble({
+  entry,
+  canConfirm,
+  onConfirm,
+}: Readonly<{
+  entry: AssistantEntry
+  canConfirm: boolean
+  onConfirm: (text: string) => void
+}>): React.JSX.Element {
+  // WS6 — a parked REQUEST_CONFIRMATION resolves conversationally on the ops
+  // channel; offer it as an in-chat action on the LATEST such turn (posting
+  // "sim"/"não" resumes the parked envelope via matchToParked). No new API.
+  const needsConfirm = entry.decision === 'REQUEST_CONFIRMATION' && canConfirm
   return (
     <div className="flex justify-start">
       <div className="flex max-w-[80%] flex-col gap-2 rounded-sm border border-smoke-200 bg-white px-3 py-2">
@@ -69,6 +115,24 @@ function AssistantBubble({ entry }: Readonly<{ entry: AssistantEntry }>): React.
             <KindChip key={`${kind}-${i}`} kind={kind} />
           ))}
         </div>
+        {needsConfirm ? (
+          <div className="flex gap-2 pt-1">
+            <button
+              type="button"
+              onClick={() => onConfirm('sim')}
+              className="rounded-sm bg-green-700 px-3 py-1 text-xs font-medium text-white hover:bg-green-800"
+            >
+              Confirmar
+            </button>
+            <button
+              type="button"
+              onClick={() => onConfirm('não')}
+              className="rounded-sm border border-smoke-300 px-3 py-1 text-xs font-medium text-charcoal-700 hover:bg-smoke-50"
+            >
+              Cancelar
+            </button>
+          </div>
+        ) : null}
       </div>
     </div>
   )
@@ -110,12 +174,20 @@ function HistoryDivider(): React.JSX.Element {
   )
 }
 
-function ThreadEntryView({ entry }: Readonly<{ entry: OpsThreadEntry }>): React.JSX.Element | null {
+function ThreadEntryView({
+  entry,
+  canConfirm,
+  onConfirm,
+}: Readonly<{
+  entry: OpsThreadEntry
+  canConfirm: boolean
+  onConfirm: (text: string) => void
+}>): React.JSX.Element | null {
   switch (entry.role) {
     case 'user':
       return <UserBubble text={entry.text} />
     case 'assistant':
-      return <AssistantBubble entry={entry} />
+      return <AssistantBubble entry={entry} canConfirm={canConfirm} onConfirm={onConfirm} />
     case 'error':
       return <ErrorBubble text={entry.text} />
     case 'history-assistant':
@@ -141,6 +213,22 @@ export default function CanalOperacionalPage(): React.JSX.Element {
 
   const sendable = canSend(draft, inFlight)
 
+  // WS6 — only the LATEST assistant turn may show the in-chat Confirmar/Cancelar
+  // (a parked confirmation resumes on a fresh "sim"; older turns are settled).
+  const lastAssistantId = useMemo(() => {
+    for (let i = entries.length - 1; i >= 0; i -= 1) {
+      if (entries[i].role === 'assistant') return entries[i].id
+    }
+    return null
+  }, [entries])
+
+  const onConfirm = useCallback(
+    (text: string) => {
+      void send(text)
+    },
+    [send],
+  )
+
   async function submit(): Promise<void> {
     if (!sendable) return
     const text = draft
@@ -165,9 +253,16 @@ export default function CanalOperacionalPage(): React.JSX.Element {
       {/* ── Thread ──────────────────────────────────────────────────────────── */}
       <div className="flex flex-1 flex-col gap-2 overflow-y-auto rounded-sm border border-smoke-200 bg-smoke-100/40 p-4">
         {entries.length === 0 ? (
-          <div className="m-auto max-w-sm text-center text-sm text-smoke-400">{EMPTY_HINT}</div>
+          <GuidedEmptyState onPick={setDraft} />
         ) : (
-          entries.map((entry) => <ThreadEntryView key={entry.id} entry={entry} />)
+          entries.map((entry) => (
+            <ThreadEntryView
+              key={entry.id}
+              entry={entry}
+              canConfirm={entry.id === lastAssistantId && !inFlight}
+              onConfirm={onConfirm}
+            />
+          ))
         )}
         {inFlight ? (
           <div className="flex justify-start">

@@ -13,10 +13,12 @@
 // kind union — a new member is a COMPILE error until mapped, Hard Rule #4 — with
 // a defensive fallback for an unrecognized value, never blank, never a crash).
 //
-// v1 posture: the channel is STATELESS server-side (no history persists), so
-// this module only shapes a SINGLE turn — the transcript lives in client state
-// (see useOpsChat). A failed turn is rendered as an honest error bubble carrying
-// the server's own pt-BR text; success is never fabricated.
+// Posture (WS6 — corrected): the thread PERSISTS server-side (BKL-084) and
+// rehydrates on reload, and a REQUEST_CONFIRMATION parks conversationally — the
+// user resolves it by replying "sim" (matchToParked on the ops channel), which
+// the page now offers as an in-chat Confirmar/Cancelar action. This module still
+// shapes a SINGLE turn's view; a failed turn renders an honest error bubble with
+// the server's own pt-BR text — success is never fabricated.
 
 // ── Kernel decision kinds (client mirror of @adjudicate DecisionKind) ─────────
 
