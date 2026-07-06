@@ -9,7 +9,9 @@ export type ShortcutAction =
   | { type: "reservation" }
   | { type: "help" }
   | { type: "welcome" }
-  | { type: "loyalty" };
+  | { type: "loyalty" }
+  | { type: "optout" }
+  | { type: "optin" };
 
 /**
  * Normalize input for matching: lowercase, trim, remove accents.
@@ -61,6 +63,23 @@ const SHORTCUT_MAP: Record<string, ShortcutAction> = {
   "primeira vez": { type: "welcome" },
   "quero meu credito": { type: "welcome" },
   "r$15": { type: "welcome" },
+
+  // WS3A — customer-initiated marketing opt-out (STOP). Whole-message exact
+  // match only (matchShortcut normalizes+exact-lookups), so these never fire
+  // mid-sentence. Bare "cancelar" is intentionally OMITTED — it collides with
+  // order cancellation; opt-out uses the unambiguous unsubscribe words.
+  parar: { type: "optout" },
+  stop: { type: "optout" },
+  sair: { type: "optout" },
+  descadastrar: { type: "optout" },
+  "cancelar inscricao": { type: "optout" },
+  "parar de receber": { type: "optout" },
+  "nao quero receber": { type: "optout" },
+
+  // Re-subscribe (opt back in) — the opt-out confirmation invites "voltar".
+  voltar: { type: "optin" },
+  "quero receber": { type: "optin" },
+  "receber promocoes": { type: "optin" },
 };
 
 /**
@@ -92,6 +111,24 @@ export function buildWelcomeText(): string {
  */
 export function buildLoyaltyText(): string {
   return "Para ver seus selos, pergunte ao nosso assistente: 'quantos selos eu tenho?'";
+}
+
+/**
+ * Build the pt-BR confirmation sent after a customer-initiated marketing opt-out.
+ */
+export function buildOptOutConfirmationText(): string {
+  return [
+    "Pronto! Você não receberá mais mensagens promocionais. ✅",
+    "",
+    "Se quiser voltar a receber, é só responder *voltar*. Você continua podendo fazer pedidos e falar com a gente normalmente.",
+  ].join("\n");
+}
+
+/**
+ * Build the pt-BR confirmation sent after a customer re-subscribes (opt-in).
+ */
+export function buildOptInConfirmationText(): string {
+  return "Feito! Você voltou a receber nossas novidades e promoções. 🥩";
 }
 
 /**

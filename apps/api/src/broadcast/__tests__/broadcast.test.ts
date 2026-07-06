@@ -4,7 +4,7 @@ import { describe, it, expect, vi } from "vitest";
 import { runBroadcast } from "../broadcast.js";
 import {
   createBroadcastOptOutStore,
-  type OptOutRedis,
+  type BroadcastConsentDb,
 } from "../broadcast-optout.js";
 
 describe("runBroadcast (D3)", () => {
@@ -53,29 +53,24 @@ describe("runBroadcast (D3)", () => {
   });
 });
 
-function fakeOptOutRedis(): OptOutRedis {
-  const sets = new Map<string, Set<string>>();
+function fakeConsentDb(): BroadcastConsentDb {
+  const opted = new Map<string, boolean>();
   return {
-    async sAdd(k, m) {
-      const s = sets.get(k) ?? new Set<string>();
-      s.add(m);
-      sets.set(k, s);
+    async getOptedOut(phone) {
+      return opted.get(phone) ?? false;
     },
-    async sRem(k, m) {
-      sets.get(k)?.delete(m);
+    async setOptedOut(phone, optedOut) {
+      opted.set(phone, optedOut);
     },
-    async sIsMember(k, m) {
-      return sets.get(k)?.has(m) ?? false;
-    },
-    async sMembers(k) {
-      return [...(sets.get(k) ?? [])];
+    async listOptedOut() {
+      return [...opted.entries()].filter(([, v]) => v).map(([k]) => k);
     },
   };
 }
 
 describe("broadcast opt-out store (D3)", () => {
   it("opt-out then isOptedOut is true; opt-in clears it", async () => {
-    const store = createBroadcastOptOutStore(fakeOptOutRedis());
+    const store = createBroadcastOptOutStore(fakeConsentDb());
     expect(await store.isOptedOut("+551")).toBe(false);
     await store.optOut("+551");
     expect(await store.isOptedOut("+551")).toBe(true);
@@ -86,7 +81,7 @@ describe("broadcast opt-out store (D3)", () => {
   });
 
   it("matches opt-out across phone FORMATS (WS3B — closes the silent bypass)", async () => {
-    const store = createBroadcastOptOutStore(fakeOptOutRedis());
+    const store = createBroadcastOptOutStore(fakeConsentDb());
     // Opt out using a spaced/dashed form…
     await store.optOut("+55 11 99999-0000");
     // …a blast listing the bare E.164 form must STILL be skipped (both canonicalize).

@@ -33,6 +33,33 @@ describe("matchShortcut", () => {
     });
   });
 
+  // ── Opt-out / opt-in shortcuts (WS3A) ─────────────────────────────────────
+
+  describe("marketing opt-out / opt-in shortcuts", () => {
+    it.each(["parar", "stop", "sair", "descadastrar", "cancelar inscricao", "PARAR"])(
+      "matches '%s' as optout",
+      (input) => {
+        expect(matchShortcut(input)).toEqual({ type: "optout" });
+      },
+    );
+
+    it.each(["voltar", "quero receber", "receber promocoes"])(
+      "matches '%s' as optin",
+      (input) => {
+        expect(matchShortcut(input)).toEqual({ type: "optin" });
+      },
+    );
+
+    it("does NOT treat a bare 'cancelar' as opt-out (order-cancel ambiguity)", () => {
+      // 'cancelar' must fall through to the agent, never silently opt the customer out.
+      expect(matchShortcut("cancelar")).toBeNull();
+    });
+
+    it("only matches whole-message STOP words, not mid-sentence", () => {
+      expect(matchShortcut("quero parar meu pedido")).toBeNull();
+    });
+  });
+
   // ── Cart shortcuts ────────────────────────────────────────────────────────
 
   describe("cart shortcuts", () => {
