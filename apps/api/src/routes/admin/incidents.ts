@@ -23,6 +23,7 @@ import {
   createIncidentService,
   createConversationService,
   prisma,
+  Prisma,
   FROZEN_CAUSES,
   type ConversationIncident,
   type IncidentClosePayload,
@@ -37,6 +38,77 @@ import { toLogFn } from "../../utils/to-log-fn.js";
 // take-over reply flow, both reused from the conversations / escalations routes.
 import { TranscriptMessageSchema } from "./conversations.js";
 import { staffTakeoverReply } from "./_shared-staff-reply.js";
+
+// WS4A — non-terminal fulfillment states = "order in progress" for the badge.
+const NON_TERMINAL_FULFILLMENT = ["pending", "confirmed", "preparing", "ready", "in_delivery"];
+
+/** Mask a phone to its last 4 digits for the manager-band incident list. */
+function maskPhone(phone: string | null | undefined): string | null {
+  if (!phone) return null;
+  const digits = phone.replace(/\D/g, "");
+  return digits.length >= 4 ? `••••${digits.slice(-4)}` : "••••";
+}
+
+type EnrichedIncident = ConversationIncident & {
+  customerName: string | null;
+  customerPhoneMasked: string | null;
+  hasActiveOrder: boolean;
+  activeOrderDisplayId: number | null;
+};
+
+/**
+ * WS4A — enrich incident rows with the customer's name + masked phone and an
+ * "order in progress" flag, so a manager sees WHO an incident is about. TWO
+ * BATCHED reads (customers + active orders) keyed on the distinct non-null
+ * customerIds — never per-row (the OPEN queue is fetched unpaginated). Guests
+ * (customerId null) keep null name/phone; the UI falls back to the masked
+ * senderRef handle for them (never a fuzzy phone match — privacy + correctness).
+ */
+async function enrichIncidents(
+  rows: readonly ConversationIncident[],
+): Promise<EnrichedIncident[]> {
+  const ids = [...new Set(rows.map((r) => r.customerId).filter((v): v is string => Boolean(v)))];
+  if (ids.length === 0) {
+    return rows.map((r) => ({
+      ...r,
+      customerName: null,
+      customerPhoneMasked: null,
+      hasActiveOrder: false,
+      activeOrderDisplayId: null,
+    }));
+  }
+  const [customers, activeOrders] = await Promise.all([
+    prisma.customer.findMany({
+      where: { id: { in: ids } },
+      select: { id: true, name: true, phone: true },
+    }),
+    prisma.orderProjection.findMany({
+      where: {
+        customerId: { in: ids },
+        fulfillmentStatus: { in: NON_TERMINAL_FULFILLMENT } as Prisma.OrderProjectionWhereInput["fulfillmentStatus"],
+      },
+      select: { customerId: true, displayId: true },
+      orderBy: { medusaCreatedAt: "desc" },
+    }),
+  ]);
+  const custById = new Map(customers.map((c) => [c.id, c]));
+  const activeByCustomer = new Map<string, number>();
+  for (const o of activeOrders) {
+    if (o.customerId && !activeByCustomer.has(o.customerId)) {
+      activeByCustomer.set(o.customerId, o.displayId);
+    }
+  }
+  return rows.map((r) => {
+    const c = r.customerId ? custById.get(r.customerId) : undefined;
+    return {
+      ...r,
+      customerName: c?.name ?? null,
+      customerPhoneMasked: maskPhone(c?.phone),
+      hasActiveOrder: r.customerId ? activeByCustomer.has(r.customerId) : false,
+      activeOrderDisplayId: r.customerId ? activeByCustomer.get(r.customerId) ?? null : null,
+    };
+  });
+}
 
 const STATUS_VALUES = [
   "OPEN",
@@ -148,7 +220,7 @@ export async function adminIncidentRoutes(server: FastifyInstance): Promise<void
       // Pre-sort here (severity already refreshed read-time by the service).
       // openCount is the INDEPENDENT NON_TERMINAL count, never rows.length; stats
       // is the INDEPENDENT StatCard aggregate (M10), never derived from rows.
-      const incidents = [...rows].sort(defaultIncidentSort);
+      const incidents = await enrichIncidents([...rows].sort(defaultIncidentSort));
       return reply.send({ incidents, openCount, stats });
     },
   );
