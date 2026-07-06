@@ -19,6 +19,7 @@ const mockRk = vi.hoisted(() => vi.fn());
 const mockUpsertFromPhone = vi.hoisted(() => vi.fn());
 const mockGetById = vi.hoisted(() => vi.fn());
 const mockFindByPhone = vi.hoisted(() => vi.fn());
+const mockStaffGetById = vi.hoisted(() => vi.fn());
 
 const mockVerificationCreate = vi.hoisted(() => vi.fn());
 const mockVerificationCheckCreate = vi.hoisted(() => vi.fn());
@@ -51,6 +52,7 @@ vi.mock("@ibatexas/domain", () => ({
   }),
   createStaffService: () => ({
     findByPhone: mockFindByPhone,
+    getById: mockStaffGetById,
   }),
 }));
 
@@ -66,7 +68,15 @@ vi.mock("../middleware/auth.js", () => ({
     }
     done();
   },
-  optionalAuth: (_request: FastifyRequest, _reply: FastifyReply, done: (err?: Error) => void) => {
+  // WS2 — the real optionalAuth verifies the staff_token JWT and sets
+  // staffId/staffRole; here we inject them from test headers so the new
+  // GET /api/auth/staff/me (optionalAuth + requireStaff) is exercisable.
+  // Absent headers → nothing set → requireStaff 403s (the logged-out case).
+  optionalAuth: (request: FastifyRequest, _reply: FastifyReply, done: (err?: Error) => void) => {
+    const staffId = request.headers["x-staff-id"] as string | undefined;
+    const staffRole = request.headers["x-staff-role"] as string | undefined;
+    if (staffId) (request as unknown as { staffId?: string }).staffId = staffId;
+    if (staffRole) (request as unknown as { staffRole?: string }).staffRole = staffRole;
     done();
   },
 }));
@@ -391,5 +401,33 @@ describe("POST /api/auth/staff/verify-otp", () => {
 
     expect(res.statusCode).toBe(429);
     expect(mockVerificationCheckCreate).not.toHaveBeenCalled();
+  });
+});
+
+describe("GET /api/auth/staff/me", () => {
+  beforeEach(() => {
+    setupEnv();
+    mockStaffGetById.mockReset();
+    mockStaffGetById.mockResolvedValue(ACTIVE_STAFF);
+  });
+
+  it("returns the authenticated staff (id, role, name)", async () => {
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/auth/staff/me",
+      headers: { "x-staff-id": "staff_01", "x-staff-role": "MANAGER" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ staffId: "staff_01", role: "MANAGER", name: "João Gerente" });
+  });
+
+  it("403s when there is no staff session (logged-out)", async () => {
+    const app = await buildTestServer();
+    const res = await app.inject({ method: "GET", url: "/api/auth/staff/me" });
+
+    expect(res.statusCode).toBe(403);
+    expect(mockStaffGetById).not.toHaveBeenCalled();
   });
 });

@@ -20,6 +20,7 @@ import type {
   CustomerOnboardingState,
 } from "@ibatexas/pack-customer-onboarding";
 import { requireAuth, optionalAuth } from "../middleware/auth.js";
+import { requireStaff } from "../middleware/staff-auth.js";
 
 // ── Twilio client ─────────────────────────────────────────────────────────────
 
@@ -753,6 +754,33 @@ export async function authRoutes(server: FastifyInstance): Promise<void> {
   // ══════════════════════════════════════════════════════════════════════════════
   // DOM-001: Staff OTP Authentication
   // ══════════════════════════════════════════════════════════════════════════════
+
+  // ── GET /api/auth/staff/me ──────────────────────────────────────────────────
+  // WS2 — the admin client's authoritative session + role source. `optionalAuth`
+  // verifies the httpOnly `staff_token` JWT (fresh-row role + STAFFREVOKE), then
+  // `requireStaff` 403s a logged-out / non-staff caller. The admin app fetches
+  // this once to gate the shell (replacing the forgeable `admin-session` flag)
+  // and to render role-aware navigation. Nav is UX only; the server guards
+  // remain the authorization boundary.
+  app.get(
+    "/api/auth/staff/me",
+    {
+      schema: {
+        tags: ["auth"],
+        summary: "Retornar o funcionário autenticado (id, papel, nome)",
+      },
+      preHandler: [optionalAuth, requireStaff],
+    },
+    async (request, reply) => {
+      const staffSvc = createStaffService();
+      const staff = await staffSvc.getById(request.staffId!);
+      return reply.send({
+        staffId: request.staffId,
+        role: request.staffRole,
+        name: staff?.name ?? null,
+      });
+    },
+  );
 
   // ── POST /api/auth/staff/send-otp ─────────────────────────────────────────
 

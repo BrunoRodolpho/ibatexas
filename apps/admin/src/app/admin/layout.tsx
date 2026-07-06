@@ -24,11 +24,6 @@ type LoginStep = 'phone' | 'otp'
 
 /* ── Cookie helpers ─────────────────────────────────────────────────── */
 
-function getCookie(name: string): string | undefined {
-  const match = new RegExp(`(?:^|; )${name}=([^;]*)`).exec(document.cookie)
-  return match ? decodeURIComponent(match[1]) : undefined
-}
-
 function setCookie(name: string, value: string, maxAge: number): void {
   document.cookie = `${name}=${encodeURIComponent(value)}; path=/; max-age=${maxAge}; SameSite=Lax`
 }
@@ -39,8 +34,35 @@ function deleteCookie(name: string): void {
 
 /* ── Session check ──────────────────────────────────────────────────── */
 
-function checkSession(): AuthStatus {
-  return getCookie('admin-session') ? 'authenticated' : 'unauthenticated'
+type StaffRole = 'OWNER' | 'MANAGER' | 'ATTENDANT'
+
+interface StaffMe {
+  staffId: string
+  role: StaffRole
+  name: string | null
+}
+
+const ROLE_LABEL_PTBR: Record<StaffRole, string> = {
+  OWNER: 'Proprietário',
+  MANAGER: 'Gerente',
+  ATTENDANT: 'Atendente',
+}
+
+/**
+ * WS2 — the AUTHORITATIVE session check. The httpOnly `staff_token` JWT can't be
+ * read from JS, so the client asks the API who it is. A 200 = a real, live staff
+ * session (fresh-row role + STAFFREVOKE re-checked server-side); any non-2xx
+ * (expired/absent token) = "log in". This replaces the forgeable `admin-session`
+ * flag as the source of truth — the flag is kept only as a cross-tab sync hint.
+ */
+async function fetchStaffMe(): Promise<StaffMe | null> {
+  try {
+    const res = await fetch('/api/proxy/auth/staff/me', { credentials: 'include' })
+    if (!res.ok) return null
+    return (await res.json()) as StaffMe
+  } catch {
+    return null
+  }
 }
 
 /* ── Phone formatting helpers ───────────────────────────────────────── */
@@ -316,7 +338,15 @@ function LoginForm({ onSuccess }: { readonly onSuccess: () => void }) {
 
 /* ── Header content ─────────────────────────────────────────────────── */
 
-function AdminHeaderContent({ onLogout }: { readonly onLogout: () => void }) {
+function AdminHeaderContent({
+  onLogout,
+  staff,
+}: {
+  readonly onLogout: () => void
+  readonly staff: StaffMe | null
+}) {
+  const roleLabel = staff ? ROLE_LABEL_PTBR[staff.role] : 'Staff'
+  const display = staff?.name ? `${staff.name} · ${roleLabel}` : roleLabel
   return (
     <>
       <div className="flex items-center gap-2 rounded-sm border border-smoke-200 bg-smoke-100 px-3 py-1.5">
@@ -328,7 +358,7 @@ function AdminHeaderContent({ onLogout }: { readonly onLogout: () => void }) {
       </div>
 
       <div className="flex items-center gap-3">
-        <span className="text-[13px] text-[var(--color-text-secondary)]">Staff</span>
+        <span className="text-[13px] text-[var(--color-text-secondary)]">{display}</span>
         <div className="h-4 w-px bg-smoke-200" />
         <button
           type="button"
@@ -352,22 +382,40 @@ function AdminHeaderContent({ onLogout }: { readonly onLogout: () => void }) {
 export default function AdminRootLayout({ children }: { readonly children: React.ReactNode }): React.JSX.Element {
   const { toasts, removeToast, addToast } = useToast()
   const [authStatus, setAuthStatus] = useState<AuthStatus>('loading')
+  const [staff, setStaff] = useState<StaffMe | null>(null)
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  /* ── Session check on mount ─────────────────────────────────────── */
-  // eslint-disable-next-line react-hooks/set-state-in-effect -- SSR requires initial 'loading' state; cookie check must run client-side only
-  useEffect(() => { setAuthStatus(checkSession()) }, [])
+  /* ── Authoritative session check via /api/auth/staff/me ─────────── */
+  const refreshSession = useCallback(async () => {
+    const me = await fetchStaffMe()
+    if (me) {
+      setStaff(me)
+      // `admin-session` is now only a cross-tab sync hint, not the auth source.
+      setCookie('admin-session', '1', 8 * 60 * 60)
+      setAuthStatus('authenticated')
+    } else {
+      setStaff(null)
+      setAuthStatus('unauthenticated')
+    }
+  }, [])
 
-  /* ── Session refresh interval (every 5 min) ─────────────────────── */
+  /* ── Session check on mount ─────────────────────────────────────── */
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- on-mount session fetch legitimately sets state after the async /me response
+  useEffect(() => { void refreshSession() }, [refreshSession])
+
+  /* ── Re-validate the REAL session every 5 min (now detects httpOnly
+       staff_token expiry, which the old cookie-only check could not) ── */
   useEffect(() => {
     if (authStatus !== 'authenticated') return
 
     intervalRef.current = setInterval(() => {
-      const status = checkSession()
-      if (status === 'unauthenticated') {
-        setAuthStatus('unauthenticated')
-        addToast({ type: 'warning', message: 'Sessão expirada. Faça login novamente.' })
-      }
+      void fetchStaffMe().then((me) => {
+        if (!me) {
+          setStaff(null)
+          setAuthStatus('unauthenticated')
+          addToast({ type: 'warning', message: 'Sessão expirada. Faça login novamente.' })
+        }
+      })
     }, 5 * 60 * 1000)
 
     return () => {
@@ -379,13 +427,13 @@ export default function AdminRootLayout({ children }: { readonly children: React
   useEffect(() => {
     const handler = (e: StorageEvent) => {
       if (e.key !== 'admin-session-sync') return
-      // Another tab logged in or out — re-check cookie
-      setAuthStatus(checkSession())
+      // Another tab logged in or out — re-validate against the server.
+      void refreshSession()
     }
 
     globalThis.addEventListener('storage', handler)
     return () => globalThis.removeEventListener('storage', handler)
-  }, [])
+  }, [refreshSession])
 
   /* ── Global error capture ───────────────────────────────────────── */
   useEffect(() => {
@@ -398,6 +446,7 @@ export default function AdminRootLayout({ children }: { readonly children: React
     deleteCookie('admin-session')
     // Signal cross-tab logout
     localStorage.setItem('admin-session-sync', Date.now().toString())
+    setStaff(null)
     setAuthStatus('unauthenticated')
   }, [])
 
@@ -410,15 +459,15 @@ export default function AdminRootLayout({ children }: { readonly children: React
       {authStatus === 'loading' && <AdminSkeleton />}
 
       {authStatus === 'unauthenticated' && (
-        <LoginForm onSuccess={() => setAuthStatus('authenticated')} />
+        <LoginForm onSuccess={() => { void refreshSession() }} />
       )}
 
       {authStatus === 'authenticated' && (
         <>
           <IncidentNotifier />
           <AdminLayoutShell
-            sidebar={<AdminSidebar />}
-            header={<AdminHeaderContent onLogout={handleLogout} />}
+            sidebar={<AdminSidebar staffRole={staff?.role ?? null} />}
+            header={<AdminHeaderContent onLogout={handleLogout} staff={staff} />}
           >
             {children}
           </AdminLayoutShell>
