@@ -34,35 +34,51 @@ import {
   useAgentKilledCount,
 } from '@/domains/admin/admin.hooks'
 
+// WS5A — Information architecture retiered by the owner's axis: everyday ops
+// (fast access) vs. attention-needed vs. analysis/support vs. config, instead of
+// one flat 15-item "Operações" bucket. Item `key`s are preserved so the badge
+// mapping (incidentes/aprovacoes/agentes) and active-route highlighting keep
+// working; role gates (minRole) are unchanged. Role filtering + the tablet/mobile
+// collapse behavior are handled downstream (WS2 + AdminSidebarBase).
 const baseGroups: AdminSidebarNavGroup[] = [
   {
-    label: 'Principal',
+    label: 'Operação diária',
     items: [
-      { key: 'dashboard', label: 'Dashboard', href: '/admin', icon: LayoutDashboard },
+      { key: 'dashboard', label: 'Visão Geral', href: '/admin', icon: LayoutDashboard },
+      { key: 'pedidos', label: 'Pedidos', href: '/admin/pedidos', icon: ClipboardList },
+      { key: 'reservas', label: 'Reservas', href: '/admin/reservas', icon: CalendarDays },
+      { key: 'painel-operacional', label: 'Painel Operacional', href: '/admin/painel-operacional', icon: Gauge },
       { key: 'cardapio', label: 'Cardápio', href: '/admin/cardapio', icon: UtensilsCrossed },
       { key: 'loja', label: 'Loja', href: '/admin/loja', icon: ShoppingBag },
-      { key: 'clientes', label: 'Clientes', href: '/admin/clientes', icon: Users },
-      { key: 'funcionarios', label: 'Funcionários', href: '/admin/funcionarios', icon: UserCog, minRole: 'OWNER' },
     ],
   },
   {
-    label: 'Operações',
+    label: 'Precisa de atenção',
     items: [
-      { key: 'painel-operacional', label: 'Painel Operacional', href: '/admin/painel-operacional', icon: Gauge },
-      { key: 'canal-operacional', label: 'Canal Operacional', href: '/admin/canal-operacional', icon: BotMessageSquare },
-      { key: 'pedidos', label: 'Pedidos', href: '/admin/pedidos', icon: ClipboardList },
-      { key: 'reservas', label: 'Reservas', href: '/admin/reservas', icon: CalendarDays },
       { key: 'incidentes', label: INCIDENT_LABELS.nav, href: '/admin/incidentes', icon: AlertTriangle },
       { key: 'aprovacoes', label: 'Aprovações', href: '/admin/aprovacoes', icon: ShieldCheck, minRole: 'MANAGER' },
-      { key: 'agentes', label: 'Agentes', href: '/admin/agentes', icon: Power, minRole: 'MANAGER' },
-      { key: 'alertas-operacionais', label: 'Alertas Operacionais', href: '/admin/alertas-operacionais', icon: Siren },
       { key: 'escalacoes', label: 'Escalações', href: '/admin/escalacoes', icon: ArrowUpCircle },
+      { key: 'alertas-operacionais', label: 'Alertas Operacionais', href: '/admin/alertas-operacionais', icon: Siren },
+      { key: 'agentes', label: 'Agentes', href: '/admin/agentes', icon: Power, minRole: 'MANAGER' },
+    ],
+  },
+  {
+    label: 'Análise & suporte',
+    items: [
+      { key: 'analises', label: 'Análises', href: '/admin/analises', icon: BarChart2 },
+      { key: 'avaliacoes', label: 'Avaliações', href: '/admin/avaliacoes', icon: Star },
       { key: 'conversas', label: 'Conversas', href: '/admin/conversas', icon: MessagesSquare, minRole: 'MANAGER' },
+      { key: 'canal-operacional', label: 'Canal Operacional', href: '/admin/canal-operacional', icon: BotMessageSquare, minRole: 'MANAGER' },
+      { key: 'clientes', label: 'Clientes', href: '/admin/clientes', icon: Users, minRole: 'MANAGER' },
+    ],
+  },
+  {
+    label: 'Configurações',
+    items: [
       { key: 'horarios', label: 'Horários', href: '/admin/horarios', icon: Clock },
       { key: 'zonas', label: 'Zonas de Entrega', href: '/admin/zonas', icon: MapPin },
-      { key: 'avaliacoes', label: 'Avaliações', href: '/admin/avaliacoes', icon: Star },
-      { key: 'analises', label: 'Análises', href: '/admin/analises', icon: BarChart2 },
       { key: 'banner', label: 'Banner', href: '/admin/banner', icon: Type },
+      { key: 'funcionarios', label: 'Funcionários', href: '/admin/funcionarios', icon: UserCog, minRole: 'OWNER' },
     ],
   },
   {
