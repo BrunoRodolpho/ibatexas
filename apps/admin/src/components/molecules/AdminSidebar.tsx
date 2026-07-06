@@ -12,7 +12,6 @@ import {
   CalendarDays,
   MapPin,
   Star,
-  BarChart2,
   Clock,
   Type,
   AlertTriangle,
@@ -65,7 +64,6 @@ const baseGroups: AdminSidebarNavGroup[] = [
   {
     label: 'Análise & suporte',
     items: [
-      { key: 'analises', label: 'Análises', href: '/admin/analises', icon: BarChart2 },
       { key: 'avaliacoes', label: 'Avaliações', href: '/admin/avaliacoes', icon: Star },
       { key: 'conversas', label: 'Conversas', href: '/admin/conversas', icon: MessagesSquare, minRole: 'MANAGER' },
       { key: 'canal-operacional', label: 'Canal Operacional', href: '/admin/canal-operacional', icon: BotMessageSquare, minRole: 'MANAGER' },
