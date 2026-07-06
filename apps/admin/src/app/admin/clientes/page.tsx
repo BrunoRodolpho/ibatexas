@@ -13,6 +13,7 @@
 // masked at the render boundary (LGPD).
 
 import { useEffect, useState } from 'react'
+import Link from 'next/link'
 import { Users, Search, ChevronLeft, ChevronRight, MapPin, Award, ShoppingBag, Info } from 'lucide-react'
 import { Badge, Button, Modal, useToast } from '@ibatexas/ui'
 import { useAdminCustomers, useAdminCustomer, useCustomerOptOut } from '@/domains/admin/admin.hooks'
@@ -328,6 +329,23 @@ function CustomerDetail({ customer }: Readonly<{ customer: AdminCustomerDetail }
 
       <LoyaltyCard loyalty={customer.loyalty} />
       <OrdersCard recentOrders={customer.recentOrders} />
+
+      {/* WS4C — client summary cross-links: the customer's full order history and
+          their conversations (both filtered by this customer id). */}
+      <div className="flex flex-wrap gap-2 pt-1">
+        <Link
+          href={`/admin/pedidos?customerId=${encodeURIComponent(customer.id)}`}
+          className="rounded-sm border border-smoke-200 bg-white px-3 py-1.5 text-[13px] font-medium text-blue-700 hover:bg-smoke-50"
+        >
+          Ver todos os pedidos →
+        </Link>
+        <Link
+          href={`/admin/conversas?customerId=${encodeURIComponent(customer.id)}`}
+          className="rounded-sm border border-smoke-200 bg-white px-3 py-1.5 text-[13px] font-medium text-blue-700 hover:bg-smoke-50"
+        >
+          Ver conversas →
+        </Link>
+      </div>
     </div>
   )
 }

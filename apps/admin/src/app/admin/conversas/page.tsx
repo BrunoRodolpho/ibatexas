@@ -8,6 +8,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import Link from 'next/link'
+import { useSearchParams } from 'next/navigation'
 import { apiFetch } from '@/lib/api'
 
 interface ConversationSummary {
@@ -38,8 +39,11 @@ type SearchField = 'customerId' | 'phone' | 'sessionId' | 'orderId'
 const PAGE_SIZE = 20
 
 export default function ConversasPage(): React.JSX.Element {
+  // WS4C — deep-link from the Clientes ficha ("Ver conversas"): pre-fill the
+  // customer-id search so the link lands on that customer's conversations.
+  const searchParams = useSearchParams()
   const [field, setField] = useState<SearchField>('customerId')
-  const [value, setValue] = useState('')
+  const [value, setValue] = useState(() => searchParams.get('customerId') ?? '')
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
   const [page, setPage] = useState(1)
