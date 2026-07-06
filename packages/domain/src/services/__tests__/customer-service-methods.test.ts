@@ -374,7 +374,15 @@ describe("getOrderedTogether", () => {
 
 describe("updatePreferences (bare-arg executor)", () => {
   it("defaults every list to [] and emits an EMPTY update clause when the input omits all fields", async () => {
-    h.customerPreferences.upsert.mockResolvedValue({})
+    // Real Prisma upsert resolves the stored row; the return value is the
+    // AUTHORITATIVE row (a partial update must not report coerced-empty
+    // arrays for fields the DB preserved — callers cache the return).
+    h.customerPreferences.upsert.mockResolvedValue({
+      customerId: "cus_01",
+      allergenExclusions: [],
+      dietaryRestrictions: [],
+      favoriteCategories: [],
+    })
     const svc = createCustomerService()
 
     const out = await svc.updatePreferences("cus_01", {})

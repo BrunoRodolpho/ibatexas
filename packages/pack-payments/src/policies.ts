@@ -354,11 +354,16 @@ const refundFreshnessGuard: PaymentGuard = (envelope, state) => {
  *   - amount ≤ 0                                    → REFUSE (invalid)
  *   - amount > refundable balance                   → REFUSE (over-refund)
  *   - amount > ESCALATE_REFUND_THRESHOLD_CENTAVOS   → ESCALATE
+ *   - taint === "UNTRUSTED" (BKL-085 overlay)       → REQUEST_CONFIRMATION
  *   - amount > CONFIRM_REFUND_THRESHOLD_CENTAVOS    → REQUEST_CONFIRMATION
  *   - else                                          → EXECUTE
  *
- * The route layer's two-step receipt is a separate UX gate stacked on
- * top of this structural ladder.
+ * The BKL-085 UNTRUSTED overlay sits BETWEEN the ESCALATE band and the
+ * medium-CONFIRM band: a model-parsed (ops-plane) refund always confirms —
+ * but a ≥ escalate-threshold one still ESCALATEs (escalate pre-empts), and
+ * the TRUSTED admin-HTTP path is untouched (see the guard body). The route
+ * layer's two-step receipt is a separate UX gate stacked on top of this
+ * structural ladder.
  */
 const refundMagnitudeGuard: PaymentGuard = (envelope, state) => {
   if (envelope.kind !== "payment.refund.issue") return null
@@ -423,6 +428,53 @@ const refundMagnitudeGuard: PaymentGuard = (envelope, state) => {
 
   const escalateThreshold = getRefundEscalateThresholdCentavos()
   if (payload.refundAmountCentavos > escalateThreshold) {
+    // ── AUT-017 — ESCALATE→OWNER-approve→executable-resume overlay ──────────
+    //
+    // When (and ONLY when) an OWNER has approved THIS exact escalated refund
+    // out-of-band, the resume path re-projects the fresh PaymentState and stamps
+    // `state.ctx.escalationApproval`. The marker converts the escalate band's OWN
+    // ESCALATE into a REQUEST_CONFIRMATION, which the paired `confirmationReceipt`
+    // (same `intentHash`) then flips to EXECUTE via the kernel's 2a override. The
+    // conditions are ALL structural:
+    //   - `intentHash === envelope.intentHash` — the approval is for THIS envelope,
+    //     not a replay onto a different one (the marker rides state, but this ties
+    //     it to the exact adjudicated intent).
+    //   - `approverRole === "OWNER"` — only the owner approves an escalated refund
+    //     (a MANAGER-approver marker leaves the ESCALATE intact).
+    //   - `approverId !== payload.actorId` — SEPARATION OF DUTY: the approver may
+    //     NOT be the staff member who PROPOSED the refund (the ops resolver stamps
+    //     the proposer's staffId onto `payload.actorId`). A self-approval marker
+    //     leaves the ESCALATE intact. This is the deepest self-approve gate (the
+    //     resolve route + module refuse a self-approval earlier, but even a slipped
+    //     one cannot convert the verdict here).
+    // The marker is ABSENT on every ordinary turn ⟹ byte-identical ESCALATE. This
+    // overlay is MONOTONIC — it converts only the escalate band's own ESCALATE, and
+    // only DOWN to REQUEST_CONFIRMATION (friction), never rescuing a REFUSE. A
+    // receipt-less conversion stops at REQUEST_CONFIRMATION (the operator still
+    // confirms) — friction, never a bypass.
+    const approval = state.ctx.escalationApproval
+    if (
+      approval !== undefined &&
+      approval.intentHash === envelope.intentHash &&
+      approval.approverRole === "OWNER" &&
+      approval.approverId !== payload.actorId
+    ) {
+      const reais = (payload.refundAmountCentavos / 100)
+        .toFixed(2)
+        .replace(".", ",")
+      return decisionRequestConfirmation(
+        `Reembolso de R$ ${reais} aprovado por ${approval.approverId}. Confirmar execução?`,
+        [
+          basis("business", BASIS_CODES.business.RULE_SATISFIED, {
+            reason: "refund_escalation_approved",
+            approvedBy: approval.approverId,
+            approverRole: approval.approverRole,
+            escalateThreshold,
+            amount: payload.refundAmountCentavos,
+          }),
+        ],
+      )
+    }
     return decisionEscalate("human", "refund_above_escalate_threshold", [
       basis("business", BASIS_CODES.business.RULE_VIOLATED, {
         reason: "refund_above_escalate_threshold",
@@ -430,6 +482,46 @@ const refundMagnitudeGuard: PaymentGuard = (envelope, state) => {
         escalateThreshold,
       }),
     ])
+  }
+
+  // ── BKL-085 — UNTRUSTED-taint refund CONFIRM overlay ────────────────────
+  //
+  // A model-PARSED refund (`taint === "UNTRUSTED"` — the ops-actor persona
+  // extracted the amount from a staff message) must ALWAYS be human-confirmed
+  // regardless of the amount band, because a misparse ("cinquenta" → 5000 vs
+  // 50000, or a wrong order) sends REAL money the wrong way. This overlay fires
+  // for exactly the model-authored refunds:
+  //
+  //   - It is ORDERED AFTER the ESCALATE band above so a ≥ escalate-threshold
+  //     LLM refund still ESCALATEs (escalate pre-empts — the overlay NEVER
+  //     downgrades a >R$1000 model refund to a self-confirmable one).
+  //   - It is ORDERED BEFORE the medium-CONFIRM/EXECUTE bands below so an
+  //     UNTRUSTED refund at ANY sub-escalate amount (including ≤ the confirm
+  //     threshold, which the TRUSTED path EXECUTEs directly) parks for
+  //     confirmation instead.
+  //   - It keys on `taint`, so the TRUSTED admin-HTTP refund path
+  //     (`principalFor` stamps `taint: "TRUSTED"` after `requireManagerRole`)
+  //     is UNTOUCHED — honest taint provenance semantics, no band weakened. A
+  //     SYSTEM-tainted refund (webhook/reconcile) is likewise untouched.
+  //
+  // The over-balance / amount-invalid / state-divergent REFUSEs above still
+  // pre-empt this overlay (a forgeable-balance or nonsensical refund REFUSEs
+  // before it could ever park). The prompt states the parsed amount + the
+  // payment reference so the staff confirms the NUMBERS, not just the intent.
+  if (envelope.taint === "UNTRUSTED") {
+    const reais = (payload.refundAmountCentavos / 100)
+      .toFixed(2)
+      .replace(".", ",")
+    return decisionRequestConfirmation(
+      `Confirmar reembolso de R$ ${reais} do pagamento ${payload.paymentId}? Responda "sim" para confirmar.`,
+      [
+        basis("business", BASIS_CODES.business.RULE_SATISFIED, {
+          reason: "refund_untrusted_requires_confirmation",
+          amount: payload.refundAmountCentavos,
+          taint: envelope.taint,
+        }),
+      ],
+    )
   }
 
   const confirmThreshold = getRefundConfirmThresholdCentavos()

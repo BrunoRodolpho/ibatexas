@@ -9,6 +9,8 @@ export interface AdminSidebarNavItem {
   label: string
   href: string
   icon: ComponentType<{ className?: string }>
+  /** Optional live count rendered as a danger-tinted pill (expanded) / dot (collapsed). 0/undefined → nothing. */
+  count?: number
 }
 
 export interface AdminSidebarNavGroup {
@@ -70,6 +72,9 @@ export function AdminSidebarBase({
               {group.items.map((item) => {
                 const active = isActive(pathname, item.href)
                 const Icon = item.icon
+                const count = item.count ?? 0
+                const hasCount = count > 0
+                const countLabel = count > 99 ? '99+' : String(count)
                 return (
                   <li key={item.key}>
                     <LinkComponent
@@ -83,8 +88,18 @@ export function AdminSidebarBase({
                       )}
                       {...(collapsed ? { title: item.label } : {})}
                     >
-                      <Icon className={clsx('h-4 w-4 shrink-0', active ? 'text-charcoal-900' : 'text-[var(--color-text-muted)]')} />
+                      <span className="relative shrink-0">
+                        <Icon className={clsx('h-4 w-4 shrink-0', active ? 'text-charcoal-900' : 'text-[var(--color-text-muted)]')} />
+                        {collapsed && hasCount && (
+                          <span className="absolute -right-1 -top-1 h-2 w-2 rounded-full bg-accent-red ring-2 ring-smoke-50" />
+                        )}
+                      </span>
                       {!collapsed && <span>{item.label}</span>}
+                      {!collapsed && hasCount && (
+                        <span className="ml-auto min-w-[1.5rem] rounded-full bg-accent-red/10 px-1.5 py-0.5 text-center text-[10px] font-semibold tabular-nums text-accent-red">
+                          {countLabel}
+                        </span>
+                      )}
                     </LinkComponent>
                   </li>
                 )

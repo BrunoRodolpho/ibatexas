@@ -25,6 +25,7 @@
 //   connections, and sets the same TTL on the Redis replay list.
 
 import { EventEmitter } from "node:events";
+import { mintRenderedReply, unwrapRendered } from "@adjudicate/core";
 import type { StreamChunk } from "@ibatexas/types";
 import { getRedisClient, rk } from "@ibatexas/tools";
 import logger from "../lib/logger.js";
@@ -33,6 +34,51 @@ import logger from "../lib/logger.js";
 interface SeqChunk {
   seq: number;
   chunk: StreamChunk;
+}
+
+// ── EGRESS BRAND (Plan 1 / Theorem E-1) ──────────────────────────────────────
+//
+// In memory, a `text_delta` chunk carries a runtime-non-forgeable `RenderedReply`
+// (an object that cannot survive JSON). Any wire (the SSE response AND the Redis
+// fan-out) carries the plain string instead, extracted via `unwrapRendered` which
+// asserts the value was genuinely minted. The reverse boundary (reading off
+// Redis on another replica) re-mints so every chunk reaching a consumer is again
+// branded and the single SSE-serialization chokepoint (`chunkToWire`) is uniform.
+
+/** The shape a {@link StreamChunk} takes on a wire: branded deltas unwrapped. */
+export type WireChunk =
+  | { type: "text_delta"; delta: string }
+  | Exclude<StreamChunk, { type: "text_delta" }>;
+
+/**
+ * Convert an in-memory {@link StreamChunk} to its wire form, extracting the
+ * branded `text_delta` payload to a string after proving provenance. This is the
+ * sole serialization chokepoint for SSE writes and the Redis fan-out.
+ */
+export function chunkToWire(chunk: StreamChunk): WireChunk {
+  if (chunk.type === "text_delta") {
+    return { type: "text_delta", delta: unwrapRendered(chunk.delta) };
+  }
+  return chunk;
+}
+
+/** Re-hydrate a wire chunk read off Redis, re-minting the (already-validated)
+ *  customer string so downstream egress again receives a branded value. */
+function chunkFromWire(wire: WireChunk): StreamChunk {
+  if (wire.type === "text_delta") {
+    return { type: "text_delta", delta: mintRenderedReply(wire.delta) };
+  }
+  return wire;
+}
+
+/** Parse a Redis fan-out message back into a branded {@link SeqChunk}. */
+function parseSeqChunk(raw: string): SeqChunk | null {
+  try {
+    const wire = JSON.parse(raw) as { seq: number; chunk: WireChunk };
+    return { seq: wire.seq, chunk: chunkFromWire(wire.chunk) };
+  } catch {
+    return null;
+  }
 }
 
 interface StreamEntry {
@@ -112,7 +158,8 @@ export function pushChunk(sessionId: string, chunk: StreamChunk): void {
 async function publishChunk(sessionId: string, payload: SeqChunk): Promise<void> {
   try {
     const redis = await getRedisClient();
-    const message = JSON.stringify(payload);
+    // Serialize through the wire chokepoint: branded deltas become strings.
+    const message = JSON.stringify({ seq: payload.seq, chunk: chunkToWire(payload.chunk) });
     const key = replayKey(sessionId);
     // Append to replay history, cap its length, and refresh its TTL.
     await redis.rPush(key, message);
@@ -180,12 +227,8 @@ export async function subscribeToStream(
   };
 
   const listener = (raw: string): void => {
-    let payload: SeqChunk;
-    try {
-      payload = JSON.parse(raw) as SeqChunk;
-    } catch {
-      return;
-    }
+    const payload = parseSeqChunk(raw);
+    if (!payload) return;
     // Buffer until the replay catch-up has run, then deliver in order.
     if (!replayed) {
       pending.push(payload);
@@ -212,12 +255,8 @@ export async function subscribeToStream(
   }
 
   for (const raw of history) {
-    let payload: SeqChunk;
-    try {
-      payload = JSON.parse(raw) as SeqChunk;
-    } catch {
-      continue;
-    }
+    const payload = parseSeqChunk(raw);
+    if (!payload) continue;
     deliver(payload);
   }
 

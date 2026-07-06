@@ -44,6 +44,7 @@
 // D10 for rationale.
 
 import type { CustomerOnboardingIntentKind } from "@ibatexas/pack-customer-onboarding"
+import type { OpsIntentKind } from "@ibatexas/pack-ops"
 import type { OrderIntentKind } from "@ibatexas/pack-orders"
 import type { PaymentIntentKind } from "@ibatexas/pack-payments"
 import type { ReservationIntentKind } from "@ibatexas/pack-reservations"
@@ -110,6 +111,8 @@ const WHATSAPP_INTENT_KINDS = [
   "whatsapp.template.send",
   "whatsapp.session.handover",
   "conversation.message.append",
+  // BKL-030: customer-side escalation on-ramp (LLM-proposable).
+  "whatsapp.handoff.request",
 ] as const satisfies readonly WhatsAppIntentKind[]
 
 // ── Pack-payments-pix intent surface ─────────────────────────────────────────
@@ -172,6 +175,28 @@ const CUSTOMER_ONBOARDING_INTENT_KINDS = [
   "customer.anonymize.cancel",
 ] as const satisfies readonly CustomerOnboardingIntentKind[]
 
+// ── Pack-ops intent surface (NEW — NEW-032 slice C1) ────────────────────────
+//
+// Mirrors `OpsIntentKind` in `packages/pack-ops/src/types.ts`. First-party
+// staff-plane ops verb — belongs in KNOWN_INTENT_KINDS (unlike the `medusa.*`
+// egress kinds deliberately excluded above). Chat-INVISIBLE by construction
+// (advertised only to a staff session; never in CHAT_DRIVABLE_TOOL_KINDS).
+
+const OPS_INTENT_KINDS = [
+  "product.availability.set",
+  // NEW-004 — the OWNED price-change verb (confirm-gated on UNTRUSTED taint).
+  // Chat-INVISIBLE like the availability verb; its executor re-prices via the
+  // same `medusa.admin.product.update` egress the availability verb uses.
+  "product.price.set",
+  // BKL-088 — the two OWNED staff-plane RESOLUTION verbs. DISTINCT from the
+  // SYSTEM-only `ops.alert.resolve` / `incident.ticket.close` domain kinds
+  // (which stay ABSENT from KNOWN_INTENT_KINDS by design); these `*.staff`
+  // pack verbs are the composed-router-adjudicated STAFF layer whose executors
+  // then drive that SYSTEM write layer (the D10 two-layer posture).
+  "ops.alert.resolve.staff",
+  "incident.ticket.close.staff",
+] as const satisfies readonly OpsIntentKind[]
+
 // ── Combined set ─────────────────────────────────────────────────────────────
 //
 // `validateEnforceConfig` accepts any `ReadonlySet<string>` — widening to
@@ -181,11 +206,13 @@ const CUSTOMER_ONBOARDING_INTENT_KINDS = [
 // W5-4 target: ≥60 kinds total. Current count:
 //   22 (orders, post W5-2)
 //  + 8 (reservations)
-//  + 4 (whatsapp, post W5-6)
+//  + 5 (whatsapp, post W5-6 + BKL-030 whatsapp.handoff.request)
 //  + 3 (pix-payments)
 //  + 17 (pack-payments, new W5-1)
 //  + 8 (customer-onboarding)
-//  = 62 distinct kinds, ≥60 target met.
+//  + 4 (pack-ops — product.availability.set NEW-032 C1; product.price.set
+//       NEW-004; ops.alert.resolve.staff + incident.ticket.close.staff BKL-088)
+//  = 67 distinct kinds (+1 loyalty = 68 KNOWN), ≥60 target met.
 //
 // Future Pack growth (`@ibatexas/pack-auth`, `@ibatexas/pack-loyalty`,
 // `@ibatexas/pack-ops`) extends this set from inside their own modules.
@@ -210,5 +237,6 @@ export const KNOWN_INTENT_KINDS: ReadonlySet<string> = new Set<string>([
   ...PIX_INTENT_KINDS,
   ...PAYMENT_INTENT_KINDS,
   ...CUSTOMER_ONBOARDING_INTENT_KINDS,
+  ...OPS_INTENT_KINDS,
   ...LOYALTY_INTENT_KINDS,
 ])

@@ -11,9 +11,36 @@
 // POST /api/admin/reservations/:id/complete   — mark completed
 // GET  /api/admin/reviews               — list all reviews
 // GET  /api/admin/tables                — list all tables
-// POST /api/admin/tables                — create/update table
-// POST /api/admin/timeslots             — generate time slots for a date range
+// POST /api/admin/tables                — create a table (manager)
+// PATCH /api/admin/tables/:id           — partially update a table (manager)
+// DELETE /api/admin/tables/:id          — soft-deactivate a table (manager)
+// POST /api/admin/timeslots             — generate reservation time slots for a date range (manager)
+// GET  /api/admin/schedule/shifts        — list the staff schedule (escala) over a range
+// POST /api/admin/schedule/shifts        — assign a shift to a staff member (manager)
+// DELETE /api/admin/schedule/shifts/:id  — remove a shift (manager)
+// GET  /api/admin/ingredients            — list raw ingredients (manager) — NEW-003 stock slice
+// GET  /api/admin/ingredients/low-stock  — ingredients at/below their threshold (manager)
+// POST /api/admin/ingredients            — create a raw ingredient (manager)
+// PATCH /api/admin/ingredients/:id       — update a raw ingredient (manager)
+// DELETE /api/admin/ingredients/:id      — remove a raw ingredient (manager)
+// POST /api/admin/ingredients/:id/adjust — add/subtract stock, clamp at 0 (manager)
+// GET  /api/admin/recipes                — list recipes/BOMs (manager) — NEW-035 recipe + COGS
+// GET  /api/admin/recipes/:id            — one recipe + its COGS (manager)
+// POST /api/admin/recipes                — create a recipe/BOM (manager)
+// PUT  /api/admin/recipes/:id/ingredients — replace a recipe's BOM lines (manager)
+// DELETE /api/admin/recipes/:id          — remove a recipe (manager)
+// GET  /api/admin/recipes/:id/cogs       — per-dish COGS: batch + per-serving (manager)
 // GET  /api/admin/analytics/summary     — analytics summary (orders, revenue, AOV)
+// GET  /api/admin/analytics/top-items    — best-sellers over a date range (manager)
+// GET  /api/admin/analytics/refunds      — refund count/total/trend over a range (manager)
+// GET  /api/admin/kitchen/tickets         — live kitchen ticket board (oldest-first) (manager)
+// GET  /api/admin/ops/snapshot            — composed ops situational snapshot (manager) — NEW-040
+// POST /api/admin/ops/chat                 — ops-actor channel (staff, JWT-only) — NEW-032 slice B
+// GET  /api/admin/customers                — read-only customer search (manager) — OPS-070
+// GET  /api/admin/customers/:id            — composed customer view (manager) — OPS-070
+// POST /api/admin/agents/:agentId/kill     — trip an agent's kill-switch (manager) — BKL-098
+// POST /api/admin/agents/:agentId/unkill   — clear an agent's kill-switch (manager) — BKL-098
+// GET  /api/admin/agents/kill-status       — current agent kill-switch state (manager) — BKL-098
 
 import { timingSafeEqual } from "node:crypto";
 import type { FastifyInstance } from "fastify";
@@ -24,15 +51,30 @@ import { orderRoutes } from "./orders.js";
 import { reservationRoutes } from "./reservations.js";
 import { reviewRoutes } from "./reviews.js";
 import { tableRoutes } from "./tables.js";
+import { scheduleShiftRoutes } from "./schedule-shifts.js";
+import { adminStaffRoutes } from "./staff.js";
+import { ingredientRoutes } from "./ingredients.js";
+import { recipeRoutes } from "./recipes.js";
+import { specialRoutes } from "./specials.js";
 import { deliveryZoneRoutes } from "./delivery-zones.js";
 import { analyticsRoutes } from "./analytics.js";
+import { adminAnalyticsReportRoutes } from "./analytics-reports.js";
 import { scheduleRoutes } from "./schedule.js";
 import { adminPaymentRoutes } from "./payments.js";
 import { adminOrderActionRoutes } from "./order-actions.js";
 import { adminBannerRoutes } from "./banner.js";
 import { adminAgentApprovalRoutes } from "./agent-approvals.js";
+import { adminAgentKillSwitchRoutes } from "./agents-kill-switch.js";
+import { adminConfirmationRoutes } from "./confirmations.js";
 import { conversationRoutes } from "./conversations.js";
 import { escalationRoutes } from "./escalations.js";
+import { adminIncidentRoutes } from "./incidents.js";
+import { adminOpsAlertRoutes } from "./ops-alerts.js";
+import { adminCaixaRoutes } from "./caixa.js";
+import { adminKitchenRoutes } from "./kitchen.js";
+import { adminOpsSnapshotRoutes } from "./ops-snapshot.js";
+import { adminOpsChatRoutes } from "./ops-chat.js";
+import { adminCustomerRoutes } from "./customers.js";
 import { broadcastRoutes } from "./broadcast.js";
 
 // ── W4 P1-H — API-key role registry ─────────────────────────────────────
@@ -186,14 +228,29 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
   await server.register(reservationRoutes);
   await server.register(reviewRoutes);
   await server.register(tableRoutes);
+  await server.register(scheduleShiftRoutes);
+  await server.register(adminStaffRoutes);
+  await server.register(ingredientRoutes);
+  await server.register(recipeRoutes);
+  await server.register(specialRoutes);
   await server.register(deliveryZoneRoutes);
   await server.register(analyticsRoutes);
+  await server.register(adminAnalyticsReportRoutes);
   await server.register(scheduleRoutes);
   await server.register(adminPaymentRoutes);
   await server.register(adminOrderActionRoutes);
   await server.register(adminBannerRoutes);
   await server.register(adminAgentApprovalRoutes);
+  await server.register(adminAgentKillSwitchRoutes);
+  await server.register(adminConfirmationRoutes);
   await server.register(conversationRoutes);
   await server.register(escalationRoutes);
+  await server.register(adminIncidentRoutes);
+  await server.register(adminOpsAlertRoutes);
+  await server.register(adminCaixaRoutes);
+  await server.register(adminKitchenRoutes);
+  await server.register(adminOpsSnapshotRoutes);
+  await server.register(adminOpsChatRoutes);
+  await server.register(adminCustomerRoutes);
   await server.register(broadcastRoutes);
 }

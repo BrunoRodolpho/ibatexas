@@ -22,6 +22,7 @@ import {
   isAvailableFromSchedule,
   getNextOpenDay,
   getFrozenPickupMessage,
+  getTodayHoursText,
 } from "../schedule-helpers.js"
 
 const TZ = "America/Sao_Paulo"
@@ -318,5 +319,68 @@ describe("getFrozenPickupMessage", () => {
     expect(getFrozenPickupMessage(allClosed, TZ)).toBe(
       "Retirada: em breve, durante horário de funcionamento.",
     )
+  })
+})
+
+// ── getTodayHoursText (BKL-121 — the STORE_HOURS claim value) ────────────────
+
+describe("getTodayHoursText", () => {
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => vi.useRealTimers())
+
+  it("renders both meal periods of TODAY's real window as one scalar string", () => {
+    vi.setSystemTime(new Date(MON_LUNCH))
+    const sched = mkSchedule([mkDay(1, STANDARD_OPEN)])
+    expect(getTodayHoursText(sched, TZ)).toBe("11h–15h / 18h–23h")
+  })
+
+  it("renders a lunch-only day without a dinner segment", () => {
+    vi.setSystemTime(new Date(MON_LUNCH))
+    const sched = mkSchedule([
+      mkDay(1, { isOpen: true, lunchStart: "09:30", lunchEnd: "14:00" }),
+    ])
+    expect(getTodayHoursText(sched, TZ)).toBe("9h30–14h")
+  })
+
+  it("renders a dinner-only day without a lunch segment", () => {
+    vi.setSystemTime(new Date(MON_DINNER))
+    const sched = mkSchedule([
+      mkDay(1, { isOpen: true, dinnerStart: "18:00", dinnerEnd: "23:30" }),
+    ])
+    expect(getTodayHoursText(sched, TZ)).toBe("18h–23h30")
+  })
+
+  it("returns 'fechado' on a regular closed weekday (evidence-bound fact, not absence)", () => {
+    vi.setSystemTime(new Date(MON_LUNCH))
+    const sched = mkSchedule([mkDay(1, { isOpen: false })])
+    expect(getTodayHoursText(sched, TZ)).toBe("fechado")
+  })
+
+  it("returns 'fechado' when the day is nominally open but has NO window bounds", () => {
+    vi.setSystemTime(new Date(MON_LUNCH))
+    const sched = mkSchedule([mkDay(1, { isOpen: true })]) // all bounds null
+    expect(getTodayHoursText(sched, TZ)).toBe("fechado")
+  })
+
+  it("returns 'fechado' when today's dayOfWeek has no schedule row at all", () => {
+    vi.setSystemTime(new Date(MON_LUNCH))
+    const sched = mkSchedule([mkDay(2, STANDARD_OPEN)]) // only Tuesday defined
+    expect(getTodayHoursText(sched, TZ)).toBe("fechado")
+  })
+
+  it("returns null (→ Inv 7 read error upstream) when the schedule is unavailable", () => {
+    vi.setSystemTime(new Date(MON_LUNCH))
+    expect(getTodayHoursText(undefined, TZ)).toBeNull()
+  })
+
+  it("resolves 'today' in the RESTAURANT timezone, not UTC", () => {
+    // 2026-06-30T01:00:00Z = Mon 22:00 in São Paulo while UTC is already Tuesday —
+    // the helper must pick MONDAY's window.
+    vi.setSystemTime(new Date("2026-06-30T01:00:00Z"))
+    const sched = mkSchedule([
+      mkDay(1, STANDARD_OPEN), // Monday: open
+      mkDay(2, { isOpen: false }), // Tuesday: closed
+    ])
+    expect(getTodayHoursText(sched, TZ)).toBe("11h–15h / 18h–23h")
   })
 })

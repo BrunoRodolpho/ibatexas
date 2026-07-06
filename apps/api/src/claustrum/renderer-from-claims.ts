@@ -42,11 +42,14 @@
  * kernel-downstream import.
  */
 import type {
+  CanonicalClaim,
   ClaimVerdict,
   ConsistencyClaim,
   SuppressionRecord,
   TurnTerminal,
 } from "@adjudicate/core";
+import { unwrapCanonical } from "@adjudicate/core";
+import { localizeClaimEnum } from "./claims-labels.js";
 import {
   isPropositionFree,
   SAFE_TEMPLATES,
@@ -69,6 +72,21 @@ export type RenderableClaim = ConsistencyClaim;
  * otherwise `null` — the slot is UNFILLABLE (no backing) and the caller must
  * abstain, never fabricate.
  *
+ * Inv 6 1:1 binding — WHICH claim instance backs the slot:
+ *   · When the slot names the LINE claim's OWN type (`slot.claimType === self.type`
+ *     — the overwhelmingly common case; every `validated` template in the grammar
+ *     self-references its own type), the slot resolves to THIS `self` claim's value.
+ *     This is the fix for the literal falsehood: two VALIDATED claims of the SAME
+ *     type on DISTINCT owned subjects (order A "preparing", order B "in_delivery")
+ *     must each render THEIR OWN value — never the first-of-type from `byType`.
+ *   · When the slot names a DIFFERENT (genuinely cross-referenced) type, it falls
+ *     back to the by-type index (`byType.get`). Cross-type references are absent
+ *     from the current representative grammar, but the fallback preserves the
+ *     designed cross-type behavior for when one is added.
+ *
+ * `self` is optional so the proposition-free safe/terminal templates (which never
+ * reach this function — they carry no PROPOSITION slot) can render without a claim.
+ *
  * "non-empty" mirrors registry §5: an empty / default value resolves to absence,
  * never to a confident assertion (so an empty field cannot smuggle in a blank
  * proposition).
@@ -76,8 +94,10 @@ export type RenderableClaim = ConsistencyClaim;
 function fillProposition(
   slot: Extract<TemplateSlot, { kind: "PROPOSITION" }>,
   byType: ReadonlyMap<string, RenderableClaim>,
+  self?: RenderableClaim,
 ): string | null {
-  const backing = byType.get(slot.claimType);
+  const backing =
+    self !== undefined && slot.claimType === self.type ? self : byType.get(slot.claimType);
   // Inv 6: the backing claim must EXIST, be VALIDATED, and carry the exact field.
   if (backing?.verdict !== "VALIDATED") return null;
   const value = backing.value;
@@ -86,13 +106,37 @@ function fillProposition(
   if (!Object.hasOwn(record, slot.field)) return null;
   const fieldValue = record[slot.field];
   if (fieldValue === null || fieldValue === undefined) return null;
-  // Field values are primitive per registry §5 / the slot grammar; assert the
-  // primitive shape so the deterministic String() coercion is total. The cast is
-  // erased at runtime — the coercion is byte-identical to String(fieldValue).
-  const text = String(fieldValue as string | number | boolean | bigint);
+  // CLOSED VALUE-GRAMMAR (Plan 1 Phase 3 / W6 C6) — the rendered proposition is
+  // restricted to the SAME closed scalar grammar the kernel's C6 value-binding
+  // compares over (`string | number | boolean`; `@adjudicate/core` soundness
+  // `withinValueGrammar`). The previous `as string | number | boolean | bigint`
+  // cast was a soft "any non-empty primitive" gap — it would coerce a `bigint`,
+  // and (because the cast is erased) ANY value, to a string. We now NARROW at
+  // runtime: a field outside the closed scalar grammar (object / array / bigint /
+  // symbol / function) is NOT a single proposition value we may assert → the slot
+  // is UNFILLABLE (abstain), never a coerced blob. This pairs with C6: a rendered
+  // value is only ever the ledger-bound scalar the kernel licensed (value-from-
+  // ledger), so the renderer cannot widen what soundness already narrowed.
+  if (
+    typeof fieldValue !== "string" &&
+    typeof fieldValue !== "number" &&
+    typeof fieldValue !== "boolean"
+  ) {
+    return null;
+  }
+  const text = String(fieldValue);
   // Empty/blank ⟹ absence (registry §5), not a blank proposition.
   if (text.trim() === "") return null;
-  return text;
+  // F3 — PRESENTATION-ONLY pt-BR localization (Hard Rule #4). C6 has ALREADY
+  // validated the BOUND value against the ledger upstream (the kernel's
+  // valueBindingVerdict); the claim's `value` here is the raw ledger enum and is
+  // NOT mutated — we localize ONLY the displayed string we emit. This is keyed by
+  // the slot's exact `(claimType, field)` binding, so the same enum string can
+  // localize differently per slot. An unmapped enum/member degrades SAFE to the
+  // raw value (never crash, never fabricate). Because we localize the DISPLAY and
+  // leave the bound value untouched, C6 keeps matching the ledger entry (the value
+  // binding never sees this string).
+  return localizeClaimEnum(slot.claimType, slot.field, text);
 }
 
 /**
@@ -102,10 +146,16 @@ function fillProposition(
  * template abstains rather than emit a partial/half-asserted sentence (Inv 6: no
  * unbacked assertion). A proposition-free template (no PROPOSITION slots) can never
  * be unfillable, so it always renders.
+ *
+ * `self` is the specific claim this template is rendering FOR (the line claim). It
+ * is threaded to `fillProposition` so a self-type proposition slot binds 1:1 to
+ * THIS instance's value (Inv 6), not the first-of-type index. Proposition-free
+ * templates ignore it.
  */
 function renderTemplate(
   template: Template,
   byType: ReadonlyMap<string, RenderableClaim>,
+  self?: RenderableClaim,
 ): string | null {
   const parts: string[] = [];
   for (const slot of template.slots) {
@@ -113,7 +163,7 @@ function renderTemplate(
       parts.push(slot.text);
       continue;
     }
-    const filled = fillProposition(slot, byType);
+    const filled = fillProposition(slot, byType, self);
     if (filled === null) return null; // unbacked proposition ⟹ abstain (Inv 6)
     parts.push(filled);
   }
@@ -183,6 +233,33 @@ export interface RenderedLine {
  * output byte is a static template literal or a VALIDATED field value.
  */
 export function render(
+  canonicalClaims: readonly CanonicalClaim[],
+  terminal: TurnTerminal,
+  suppressions: readonly SuppressionRecord[] = [],
+): RenderResult {
+  // ── inv.17 ENTRY BRAND: the renderer's REQUIRED input is the kernel-minted
+  // CanonicalClaim. `unwrapCanonical` asserts WeakSet provenance and THROWS on a
+  // forged literal cast `as CanonicalClaim`, so the renderer CANNOT author prose from
+  // a raw claim + model value — only from a claim that fully VALIDATED (incl. C6
+  // value-binding) AND survived P2 into the renderable set. Each minted claim is, by
+  // construction, VALIDATED, so we tag the unwrapped carrier accordingly. This closes
+  // the egress loop's ENTRY (CanonicalClaim) opposite RenderedReply's EXIT brand.
+  const renderableClaims: readonly RenderableClaim[] = canonicalClaims.map((c) => {
+    const { subject, type, value } = unwrapCanonical(c);
+    return { subject, type, value, verdict: "VALIDATED" as const };
+  });
+  return renderRenderables(renderableClaims, terminal, suppressions);
+}
+
+/**
+ * The PURE template-filler CORE (the §Q.7 algorithm). It is the implementation
+ * `render` delegates to AFTER the inv.17 provenance unwrap; it is exported for the
+ * UNIT tests of the deterministic filler logic (which exercise UNKNOWN/REFUSED
+ * postures the kernel-minted renderable set never carries). PRODUCTION egress goes
+ * exclusively through `render` (canonical-gated) — never call this from the egress
+ * path with un-minted claims.
+ */
+export function renderRenderables(
   renderableClaims: readonly RenderableClaim[],
   terminal: TurnTerminal,
   suppressions: readonly SuppressionRecord[] = [],
@@ -234,9 +311,13 @@ function renderTerminalResult(
 }
 
 /**
- * Index the renderable claims by type for the Inv 6 1:1 proposition lookup. Only
- * VALIDATED claims back a proposition (Inv 6); a non-validated duplicate type must
- * never become the backing of a slot, so we index VALIDATED only (first wins).
+ * Index the renderable claims by type — the CROSS-TYPE fallback for a proposition
+ * slot that references a type OTHER than its line claim's own (a self-type slot
+ * resolves directly from the line claim instance in `fillProposition`, NOT from
+ * this index, so same-type duplicates on distinct subjects each render their own
+ * value — Inv 6 1:1). Only VALIDATED claims back a proposition (Inv 6); a
+ * non-validated duplicate type must never become the backing of a slot, so we index
+ * VALIDATED only (first wins — this ambiguity is why self-type slots bypass it).
  */
 function indexValidatedClaims(
   renderableClaims: readonly RenderableClaim[],
@@ -281,7 +362,10 @@ function renderClaimLine(
       text: renderTemplate(SAFE_TEMPLATES.unknown, byType) ?? "",
     };
   }
-  const filled = renderTemplate(template, byType);
+  // Inv 6 1:1: render THIS claim instance's own value — pass `claim` so a self-type
+  // proposition slot resolves from it, not the first-of-type `byType` index (two
+  // VALIDATED claims of the same type on distinct subjects each render their own).
+  const filled = renderTemplate(template, byType, claim);
   if (filled === null) {
     // Inv 6 fail-safe: a proposition slot had no backing → abstain, no fact.
     return {

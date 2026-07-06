@@ -13,7 +13,7 @@ import {
   it,
   vi,
 } from "vitest"
-import type { AuditRecord, AuditSink } from "@adjudicate/core"
+import { mintRenderedReply, type AuditRecord, type AuditSink } from "@adjudicate/core"
 import {
   TWILIO_INTENT_KINDS,
   TwilioAdjudicateNeedsReviewError,
@@ -102,7 +102,7 @@ describe("twilioAdjudicated.messages.create — EXECUTE", () => {
       {
         from: "whatsapp:+5511999990000",
         to: "whatsapp:+5511988887777",
-        body: "Olá! Pedido confirmado.",
+        body: mintRenderedReply("Olá! Pedido confirmado."),
       },
       { sourceSubject: "test:send-text", auditSink: sink },
     )
@@ -165,7 +165,7 @@ describe("twilioAdjudicated.messages.create — EXECUTE", () => {
       {
         from: "whatsapp:+5511999990000",
         to: "whatsapp:+5511988887777",
-        body: "Seu recibo:",
+        body: mintRenderedReply("Seu recibo:"),
         mediaUrl: ["https://example.com/receipt.pdf"],
       },
       { sourceSubject: "test:send-both", auditSink: noopAuditSink },
@@ -192,7 +192,7 @@ describe("twilioAdjudicated.messages.create — EXECUTE", () => {
       {
         from: "whatsapp:+1",
         to: "whatsapp:+2",
-        body: "x",
+        body: mintRenderedReply("x"),
       },
       { sourceSubject: "test:passthrough", auditSink: noopAuditSink },
     )
@@ -218,7 +218,7 @@ describe("twilioAdjudicated — idempotency key", () => {
     const { sink, records } = createMemoryAuditSink()
 
     await twilioAdjudicated.messages.create(
-      { from: "whatsapp:+1", to: "whatsapp:+2", body: "x" },
+      { from: "whatsapp:+1", to: "whatsapp:+2", body: mintRenderedReply("x") },
       {
         sourceSubject: "test:idem",
         auditSink: sink,
@@ -243,11 +243,11 @@ describe("twilioAdjudicated — idempotency key", () => {
     } as const
 
     await twilioAdjudicated.messages.create(
-      { from: "whatsapp:+1", to: "whatsapp:+2", body: "x" },
+      { from: "whatsapp:+1", to: "whatsapp:+2", body: mintRenderedReply("x") },
       meta,
     )
     await twilioAdjudicated.messages.create(
-      { from: "whatsapp:+1", to: "whatsapp:+2", body: "x" },
+      { from: "whatsapp:+1", to: "whatsapp:+2", body: mintRenderedReply("x") },
       meta,
     )
     await Promise.resolve()
@@ -262,7 +262,7 @@ describe("twilioAdjudicated — idempotency key", () => {
     const { sink, records } = createMemoryAuditSink()
 
     await twilioAdjudicated.messages.create(
-      { from: "whatsapp:+1", to: "whatsapp:+2", body: "x" },
+      { from: "whatsapp:+1", to: "whatsapp:+2", body: mintRenderedReply("x") },
       { sourceSubject: "test:no-idem", auditSink: sink },
     )
 
@@ -283,7 +283,7 @@ describe("twilioAdjudicated — REFUSE on invalid payload", () => {
 
     await expect(
       twilioAdjudicated.messages.create(
-        { from: "", to: "whatsapp:+2", body: "x" },
+        { from: "", to: "whatsapp:+2", body: mintRenderedReply("x") },
         { sourceSubject: "test:empty-from", auditSink: sink },
       ),
     ).rejects.toBeInstanceOf(TwilioAdjudicateRefusedError)
@@ -301,7 +301,7 @@ describe("twilioAdjudicated — REFUSE on invalid payload", () => {
 
     await expect(
       twilioAdjudicated.messages.create(
-        { from: "whatsapp:+1", to: "   ", body: "x" },
+        { from: "whatsapp:+1", to: "   ", body: mintRenderedReply("x") },
         { sourceSubject: "test:empty-to", auditSink: sink },
       ),
     ).rejects.toBeInstanceOf(TwilioAdjudicateRefusedError)
@@ -368,7 +368,7 @@ describe("twilioAdjudicated — audit fail-open", () => {
     const errorLog = vi.fn()
 
     const result = await twilioAdjudicated.messages.create(
-      { from: "whatsapp:+1", to: "whatsapp:+2", body: "x" },
+      { from: "whatsapp:+1", to: "whatsapp:+2", body: mintRenderedReply("x") },
       {
         sourceSubject: "test:audit-fail",
         auditSink: failingSink,
@@ -390,7 +390,7 @@ describe("twilioAdjudicated — audit fail-open", () => {
     __setTwilioClientForTests(fake)
 
     const result = await twilioAdjudicated.messages.create(
-      { from: "whatsapp:+1", to: "whatsapp:+2", body: "x" },
+      { from: "whatsapp:+1", to: "whatsapp:+2", body: mintRenderedReply("x") },
       // Renamed from "test:no-sink" — post audit-2026-05-24 H2 (A1) the
       // sink is required at the type level; tests that don't care about
       // emit behaviour pass an explicit no-op sink.
@@ -441,7 +441,7 @@ describe("twilioAdjudicated — REFUSE refusal copy", () => {
     let captured: TwilioAdjudicateRefusedError | null = null
     try {
       await twilioAdjudicated.messages.create(
-        { from: "", to: "whatsapp:+2", body: "x" },
+        { from: "", to: "whatsapp:+2", body: mintRenderedReply("x") },
         { sourceSubject: "test:refuse-msg", auditSink: noopAuditSink },
       )
     } catch (err) {
@@ -462,7 +462,7 @@ describe("twilioAdjudicated — meta.reason in sessionId", () => {
     const { sink, records } = createMemoryAuditSink()
 
     await twilioAdjudicated.messages.create(
-      { from: "whatsapp:+1", to: "whatsapp:+2", body: "x" },
+      { from: "whatsapp:+1", to: "whatsapp:+2", body: mintRenderedReply("x") },
       {
         sourceSubject: "whatsapp:sendText",
         reason: "send-text",
@@ -483,7 +483,7 @@ describe("twilioAdjudicated — meta.reason in sessionId", () => {
     const { sink, records } = createMemoryAuditSink()
 
     await twilioAdjudicated.messages.create(
-      { from: "whatsapp:+1", to: "whatsapp:+2", body: "x" },
+      { from: "whatsapp:+1", to: "whatsapp:+2", body: mintRenderedReply("x") },
       { sourceSubject: "whatsapp:sendText", auditSink: sink },
     )
 

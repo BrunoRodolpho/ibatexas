@@ -7,21 +7,22 @@ import {
 } from "../index.js"
 
 describe("@ibatexas/packs-composed", () => {
-  it("composes exactly the five first-party packs, with distinct ids", () => {
-    expect(IBATEXAS_COMPOSED_PACKS).toHaveLength(5)
+  it("composes exactly the six first-party packs, with distinct ids", () => {
+    expect(IBATEXAS_COMPOSED_PACKS).toHaveLength(6)
     const ids = IBATEXAS_COMPOSED_PACKS.map((p) => p.id)
-    expect(new Set(ids).size).toBe(5)
+    expect(new Set(ids).size).toBe(6)
     expect(ids).toEqual([
       "ibatexas/pack-orders",
       "ibatexas/pack-payments",
       "ibatexas/pack-reservations",
       "ibatexas/pack-customer-onboarding",
       "ibatexas/pack-whatsapp",
+      "ibatexas/pack-ops",
     ])
   })
 
   it("composes one capability planner per pack", () => {
-    expect(IBATEXAS_COMPOSED_CAPABILITY_PLANNERS).toHaveLength(5)
+    expect(IBATEXAS_COMPOSED_CAPABILITY_PLANNERS).toHaveLength(6)
     for (const planner of IBATEXAS_COMPOSED_CAPABILITY_PLANNERS) {
       expect(typeof planner.plan).toBe("function")
     }
@@ -44,6 +45,7 @@ describe("@ibatexas/packs-composed", () => {
         "reservation.create",
         "customer.create",
         "whatsapp.message.send",
+        "product.availability.set",
       ]),
     )
   })

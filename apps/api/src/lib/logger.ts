@@ -2,19 +2,18 @@
 // Request handlers should use request.log (Fastify's child logger with reqId).
 
 import pino from "pino";
-import { buildLogStreams } from "../observability/log-streams.js";
+import {
+  buildLogStreams,
+  MULTISTREAM_PINO_OPTIONS,
+} from "../observability/log-streams.js";
 
 // When the obs stack is up (VICTORIALOGS_URL set), fan logs out to VictoriaLogs
-// + stdout via a multistream; otherwise keep the single pretty/raw transport.
+// + stdout via a multistream (shared MULTISTREAM_PINO_OPTIONS gives every line a
+// `component` base stream + level names + redaction); otherwise keep the single
+// pretty/raw transport.
 const logStreams = buildLogStreams();
 const logger = logStreams
-  ? pino(
-      {
-        level: process.env.LOG_LEVEL || "info",
-        timestamp: pino.stdTimeFunctions.isoTime,
-      },
-      logStreams,
-    )
+  ? pino(MULTISTREAM_PINO_OPTIONS, logStreams)
   : pino({
       level: process.env.LOG_LEVEL || "info",
       timestamp: pino.stdTimeFunctions.isoTime,

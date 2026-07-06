@@ -27,6 +27,14 @@ const mockExportCustomerData = vi.hoisted(() => vi.fn());
 const mockAnonymizeCustomer = vi.hoisted(() => vi.fn());
 const mockAnonymizeCustomerFromEnvelope = vi.hoisted(() => vi.fn());
 const mockGetById = vi.hoisted(() => vi.fn());
+const mockUpdatePreferences = vi.hoisted(() => vi.fn());
+const mockGetBalance = vi.hoisted(() => vi.fn());
+const mockOrderGetById = vi.hoisted(() => vi.fn());
+const mockSubmitReview = vi.hoisted(() => vi.fn());
+const mockUpdateProfile = vi.hoisted(() => vi.fn());
+const mockListAddresses = vi.hoisted(() => vi.fn());
+const mockAddAddress = vi.hoisted(() => vi.fn());
+const mockRemoveAddress = vi.hoisted(() => vi.fn());
 const mockSendOtp = vi.hoisted(() =>
   vi.fn(async (_args: { to: string; channel: string }) => undefined),
 );
@@ -88,6 +96,14 @@ const mockRedisDecr = vi.hoisted(() =>
   }),
 );
 const mockRedisExpire = vi.hoisted(() => vi.fn(async (_key: string, _seconds: number) => 1));
+// B5 — the preferences route refreshes the personalization profile hash
+// (customer:profile:<id> field "preferences") after a successful EXECUTE.
+const mockRedisHSet = vi.hoisted(() =>
+  vi.fn(async (key: string, field: string, value: string) => {
+    redisStorage.set(`hash:${key}:${field}`, value);
+    return 1;
+  }),
+);
 
 // P0-X-OTP — Atomic Lua script for acquireOtpAttempt. Emulates the
 // OTP_ACQUIRE_ATTEMPT_LUA script defined in anonymize-otp-gate.ts.
@@ -144,10 +160,22 @@ vi.mock("@ibatexas/domain", () => ({
   anonymizeCustomerFromEnvelope: mockAnonymizeCustomerFromEnvelope,
   createCustomerService: () => ({
     getById: mockGetById,
+    updatePreferences: mockUpdatePreferences,
+    updateProfile: mockUpdateProfile,
+    listAddresses: mockListAddresses,
+    addAddress: mockAddAddress,
+    removeAddress: mockRemoveAddress,
+  }),
+  createLoyaltyService: () => ({
+    getBalance: mockGetBalance,
+  }),
+  createOrderQueryService: () => ({
+    getById: mockOrderGetById,
   }),
 }));
 
 vi.mock("@ibatexas/tools", () => ({
+  submitReview: mockSubmitReview,
   getRedisClient: vi.fn(async () => ({
     set: mockRedisSet,
     get: mockRedisGet,
@@ -156,8 +184,12 @@ vi.mock("@ibatexas/tools", () => ({
     decr: mockRedisDecr,
     expire: mockRedisExpire,
     eval: mockRedisEval,
+    hSet: mockRedisHSet,
   })),
   rk: (k: string) => `ibatexas:${k}`,
+  // B5 — mirror the real export (30 days) so the route's TTL refresh is
+  // assertable without importing the real (redis-connecting) module.
+  PROFILE_TTL_SECONDS: 30 * 24 * 60 * 60,
   // WS7: the immediate-erasure DELETE runs anonymizeCustomer under a
   // per-customer lock. The hermetic stub just invokes the critical section.
   withLock: vi.fn(async (_key: string, fn: () => Promise<unknown>) => fn()),
@@ -902,6 +934,555 @@ describe("POST /api/me/data/cancel-deletion — clear receipt", () => {
       const opts = acquireCall![2] as { EX: number; NX: boolean };
       expect(opts.EX).toBe(60);
       expect(opts.NX).toBe(true);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+// ── Tests: GET /api/me/loyalty (CUS-067 web view) ───────────────────────────────
+
+describe("GET /api/me/loyalty — stamp balance", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    redisStorage.clear();
+    setupEnv();
+  });
+
+  it("returns the customer's stamp balance", async () => {
+    mockGetBalance.mockResolvedValue({ stamps: 4, stampsNeeded: 6, totalEarned: 4 });
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "GET",
+        url: "/api/me/loyalty",
+        headers: { "x-customer-id": "cust_01" },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({ stamps: 4, stampsNeeded: 6, totalEarned: 4 });
+      expect(mockGetBalance).toHaveBeenCalledWith("cust_01");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("returns 401 when not authenticated", async () => {
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({ method: "GET", url: "/api/me/loyalty" });
+      expect(res.statusCode).toBe(401);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+// ── Tests: POST /api/me/preferences (CUS-062 — governed dispatch) ───────────────
+
+describe("POST /api/me/preferences — dietary preferences (governed)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    redisStorage.clear();
+    setupEnv();
+    mockGetById.mockResolvedValue({ id: "cust_01" });
+  });
+
+  it("adjudicates customer.preferences.update and persists via the service (EXECUTE)", async () => {
+    mockUpdatePreferences.mockResolvedValue({
+      allergenExclusions: ["gluten"],
+      dietaryRestrictions: ["vegetarian"],
+      favoriteCategories: [],
+    });
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/me/preferences",
+        headers: { "x-customer-id": "cust_01", "content-type": "application/json" },
+        payload: { allergenExclusions: ["gluten"], dietaryFlags: ["vegetarian"] },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({ success: true });
+      // The mutation ran through the executor (i.e. adjudication returned EXECUTE)
+      // and persisted the explicit allergen array (Hard Rule #1).
+      expect(mockUpdatePreferences).toHaveBeenCalledWith(
+        "cust_01",
+        expect.objectContaining({ allergenExclusions: ["gluten"], dietaryRestrictions: ["vegetarian"] }),
+      );
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("[B5] refreshes the Redis personalization profile hash after a successful EXECUTE", async () => {
+    // The persisted prefs the service returns — the SAME object must land
+    // serialized in customer:profile:<id> field "preferences" (the shape the
+    // update_preferences tool writes), so the agent plane stops serving stale
+    // preferences after a web save.
+    const persisted = {
+      allergenExclusions: ["gluten"],
+      dietaryRestrictions: ["vegetarian"],
+      favoriteCategories: ["churrasco"],
+    };
+    mockUpdatePreferences.mockResolvedValue(persisted);
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/me/preferences",
+        headers: { "x-customer-id": "cust_01", "content-type": "application/json" },
+        payload: { allergenExclusions: ["gluten"], dietaryFlags: ["vegetarian"], favoriteCategories: ["churrasco"] },
+      });
+      expect(res.statusCode).toBe(200);
+
+      // Same key + field + serialized shape as the tool's pipeline.hSet.
+      expect(mockRedisHSet).toHaveBeenCalledWith(
+        "ibatexas:customer:profile:cust_01",
+        "preferences",
+        JSON.stringify(persisted),
+      );
+      // TTL reset to the profile TTL (30 days), mirroring the tool.
+      expect(mockRedisExpire).toHaveBeenCalledWith(
+        "ibatexas:customer:profile:cust_01",
+        30 * 24 * 60 * 60,
+      );
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("[B5] does NOT touch the profile hash when adjudication refuses (no EXECUTE)", async () => {
+    // An empty-but-explicit allergen array is fine; force a refusal via the
+    // pack's PII scan instead: the profile-hash refresh must not run when the
+    // executor never persisted. Simplest deterministic refusal here: make the
+    // service throw so runCustomerIntent surfaces a non-200.
+    mockUpdatePreferences.mockRejectedValue(new Error("db down"));
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/me/preferences",
+        headers: { "x-customer-id": "cust_01", "content-type": "application/json" },
+        payload: { allergenExclusions: [] },
+      });
+      expect(res.statusCode).not.toBe(200);
+      expect(mockRedisHSet).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("[B5] a Redis refresh failure is non-fatal — the save still returns 200", async () => {
+    mockUpdatePreferences.mockResolvedValue({
+      allergenExclusions: [],
+      dietaryRestrictions: [],
+      favoriteCategories: [],
+    });
+    mockRedisHSet.mockRejectedValueOnce(new Error("redis down"));
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/me/preferences",
+        headers: { "x-customer-id": "cust_01", "content-type": "application/json" },
+        payload: { allergenExclusions: [] },
+      });
+      // The mutation persisted; the cache refresh failing must not 500.
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({ success: true });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("returns 401 when not authenticated", async () => {
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/me/preferences",
+        headers: { "content-type": "application/json" },
+        payload: { allergenExclusions: [] },
+      });
+      expect(res.statusCode).toBe(401);
+      expect(mockUpdatePreferences).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+// ── Tests: POST /api/me/reviews (CUS-049 — governed, owner-scoped) ──────────────
+
+describe("POST /api/me/reviews — submit product review (governed)", () => {
+  const deliveredOrder = {
+    id: "order_01",
+    fulfillmentStatus: "delivered",
+    itemsJson: [{ productId: "prod_A" }, { productId: "prod_B" }],
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    redisStorage.clear();
+    setupEnv();
+  });
+
+  it("submits a review for an owned, delivered order (EXECUTE)", async () => {
+    mockOrderGetById.mockResolvedValue(deliveredOrder);
+    mockSubmitReview.mockResolvedValue({ success: true, message: "Avaliação enviada! ⭐⭐⭐⭐⭐ Obrigado pelo seu feedback." });
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/me/reviews",
+        headers: { "x-customer-id": "cust_01", "content-type": "application/json" },
+        payload: { orderId: "order_01", productId: "prod_A", rating: 5, comment: "Ótimo" },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().success).toBe(true);
+      // Owner-scoped read used the authenticated customerId (IDOR gate).
+      expect(mockOrderGetById).toHaveBeenCalledWith("order_01", { customerId: "cust_01" });
+      // Governed write ran with the web channel + authenticated customerId.
+      expect(mockSubmitReview).toHaveBeenCalledWith(
+        expect.objectContaining({ orderId: "order_01", productId: "prod_A", rating: 5, comment: "Ótimo" }),
+        expect.objectContaining({ customerId: "cust_01" }),
+      );
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("[IDOR] returns 403 and never writes when the order is not the customer's", async () => {
+    // Owner-scoped getById returns null for a non-owner / unattributed order.
+    mockOrderGetById.mockResolvedValue(null);
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/me/reviews",
+        headers: { "x-customer-id": "attacker", "content-type": "application/json" },
+        payload: { orderId: "order_01", productId: "prod_A", rating: 5 },
+      });
+      expect(res.statusCode).toBe(403);
+      expect(mockSubmitReview).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("returns 403 when the order is not yet delivered", async () => {
+    mockOrderGetById.mockResolvedValue({ ...deliveredOrder, fulfillmentStatus: "preparing" });
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/me/reviews",
+        headers: { "x-customer-id": "cust_01", "content-type": "application/json" },
+        payload: { orderId: "order_01", productId: "prod_A", rating: 5 },
+      });
+      expect(res.statusCode).toBe(403);
+      expect(res.json().message).toContain("após a entrega");
+      expect(mockSubmitReview).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("returns 403 when the product is not part of the order", async () => {
+    mockOrderGetById.mockResolvedValue(deliveredOrder);
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/me/reviews",
+        headers: { "x-customer-id": "cust_01", "content-type": "application/json" },
+        payload: { orderId: "order_01", productId: "prod_NOT_IN_ORDER", rating: 4 },
+      });
+      expect(res.statusCode).toBe(403);
+      expect(mockSubmitReview).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("maps a kernel REFUSE (NonRetryableError) to 422", async () => {
+    mockOrderGetById.mockResolvedValue(deliveredOrder);
+    const err = new Error("Não foi possível enviar a avaliação.");
+    err.name = "NonRetryableError";
+    mockSubmitReview.mockRejectedValue(err);
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/me/reviews",
+        headers: { "x-customer-id": "cust_01", "content-type": "application/json" },
+        payload: { orderId: "order_01", productId: "prod_A", rating: 3 },
+      });
+      expect(res.statusCode).toBe(422);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("rejects an out-of-range rating at the schema boundary (400)", async () => {
+    mockOrderGetById.mockResolvedValue(deliveredOrder);
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/me/reviews",
+        headers: { "x-customer-id": "cust_01", "content-type": "application/json" },
+        payload: { orderId: "order_01", productId: "prod_A", rating: 9 },
+      });
+      expect(res.statusCode).toBe(400);
+      expect(mockSubmitReview).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("returns 401 when not authenticated", async () => {
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/me/reviews",
+        headers: { "content-type": "application/json" },
+        payload: { orderId: "order_01", productId: "prod_A", rating: 5 },
+      });
+      expect(res.statusCode).toBe(401);
+      expect(mockSubmitReview).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+// ── Tests: POST /api/me/profile (CUS-061 — governed edit name/email) ────────────
+
+describe("POST /api/me/profile — edit profile (governed)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    redisStorage.clear();
+    setupEnv();
+  });
+
+  it("adjudicates customer.profile.update and persists name+email (EXECUTE)", async () => {
+    mockUpdateProfile.mockResolvedValue(undefined);
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/me/profile",
+        headers: { "x-customer-id": "cust_01", "content-type": "application/json" },
+        payload: { name: "Maria Silva", email: "maria@example.com" },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({ success: true });
+      expect(mockUpdateProfile).toHaveBeenCalledWith(
+        "cust_01",
+        expect.objectContaining({ name: "Maria Silva", email: "maria@example.com" }),
+      );
+      // The rate-limit marker was refreshed after the EXECUTE (keeps the guard live).
+      const marker = mockRedisSet.mock.calls.find(
+        (c) => (c[0] as string).endsWith("customer:profile:last-update:cust_01"),
+      );
+      expect(marker).toBeTruthy();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("[rate-limit] REFUSES a second update within the cooldown and does not persist", async () => {
+    // Seed a fresh last-update marker → the pack's 1h rate-limit guard REFUSEs.
+    redisStorage.set(
+      "ibatexas:customer:profile:last-update:cust_01",
+      String(Date.now()),
+    );
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/me/profile",
+        headers: { "x-customer-id": "cust_01", "content-type": "application/json" },
+        payload: { name: "Novo Nome" },
+      });
+      expect(res.statusCode).not.toBe(200);
+      expect(mockUpdateProfile).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("returns 400 when neither name nor email is provided", async () => {
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/me/profile",
+        headers: { "x-customer-id": "cust_01", "content-type": "application/json" },
+        payload: {},
+      });
+      expect(res.statusCode).toBe(400);
+      expect(mockUpdateProfile).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("returns 400 on a malformed email", async () => {
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/me/profile",
+        headers: { "x-customer-id": "cust_01", "content-type": "application/json" },
+        payload: { email: "not-an-email" },
+      });
+      expect(res.statusCode).toBe(400);
+      expect(mockUpdateProfile).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("returns 401 when not authenticated", async () => {
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/me/profile",
+        headers: { "content-type": "application/json" },
+        payload: { name: "Maria" },
+      });
+      expect(res.statusCode).toBe(401);
+      expect(mockUpdateProfile).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+// ── Tests: /api/me/addresses (CUS-063 — governed address book) ──────────────────
+
+describe("Saved addresses — /api/me/addresses (governed)", () => {
+  const addressRow = {
+    id: "addr_01",
+    street: "Rua A",
+    number: "100",
+    complement: null,
+    district: "Centro",
+    city: "São Paulo",
+    state: "SP",
+    cep: "01001000",
+    isDefault: true,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    redisStorage.clear();
+    setupEnv();
+  });
+
+  it("GET lists the customer's addresses", async () => {
+    mockListAddresses.mockResolvedValue([addressRow]);
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "GET",
+        url: "/api/me/addresses",
+        headers: { "x-customer-id": "cust_01" },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().addresses).toHaveLength(1);
+      expect(res.json().addresses[0].id).toBe("addr_01");
+      expect(mockListAddresses).toHaveBeenCalledWith("cust_01");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("POST adds an address, mapping zip→cep and neighborhood→district (EXECUTE)", async () => {
+    mockAddAddress.mockResolvedValue(addressRow);
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/me/addresses",
+        headers: { "x-customer-id": "cust_01", "content-type": "application/json" },
+        payload: { street: "Rua A", number: "100", neighborhood: "Centro", city: "São Paulo", state: "SP", zip: "01001-000" },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().address.id).toBe("addr_01");
+      expect(mockAddAddress).toHaveBeenCalledWith(
+        "cust_01",
+        expect.objectContaining({ cep: "01001-000", district: "Centro", street: "Rua A", state: "SP" }),
+      );
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("POST rejects a malformed CEP at the schema boundary (400)", async () => {
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/me/addresses",
+        headers: { "x-customer-id": "cust_01", "content-type": "application/json" },
+        payload: { street: "Rua A", city: "SP", state: "SP", zip: "123" },
+      });
+      expect(res.statusCode).toBe(400);
+      expect(mockAddAddress).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("DELETE removes an owned address (count 1 → 200)", async () => {
+    mockRemoveAddress.mockResolvedValue({ count: 1 });
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "DELETE",
+        url: "/api/me/addresses/addr_01",
+        headers: { "x-customer-id": "cust_01" },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().success).toBe(true);
+      // Ownership-scoped delete: executor receives the authenticated customerId.
+      expect(mockRemoveAddress).toHaveBeenCalledWith("cust_01", "addr_01");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("[IDOR] DELETE of a foreign/nonexistent address returns 404 (count 0)", async () => {
+    mockRemoveAddress.mockResolvedValue({ count: 0 });
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "DELETE",
+        url: "/api/me/addresses/addr_other",
+        headers: { "x-customer-id": "cust_01" },
+      });
+      expect(res.statusCode).toBe(404);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("returns 401 when not authenticated", async () => {
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/me/addresses",
+        headers: { "content-type": "application/json" },
+        payload: { street: "Rua A", city: "SP", state: "SP", zip: "01001-000" },
+      });
+      expect(res.statusCode).toBe(401);
+      expect(mockAddAddress).not.toHaveBeenCalled();
     } finally {
       await app.close();
     }

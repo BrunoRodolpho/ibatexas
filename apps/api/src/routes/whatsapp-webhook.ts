@@ -33,9 +33,15 @@ import { parse as parseQuerystring } from "node:querystring";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import twilio from "twilio";
 import { handleTurn, type ChannelMessage } from "@claustrum/core";
-import { getRedisClient, rk, atomicIncr } from "@ibatexas/tools";
+import {
+  mintBroadcastReply,
+  mintFallbackReply,
+  mintReceiptReply,
+  wrapLegacyResponderText,
+} from "@adjudicate/core";
+import { getRedisClient, rk, atomicIncr, getLoyaltyBalance, getOrCreateCart } from "@ibatexas/tools";
+import { Channel } from "@ibatexas/types";
 import { getConductor } from "../claustrum-bootstrap.js";
-import { isSessionPausedForHuman } from "../escalation/escalation-store.js";
 import { loadSession, appendMessages } from "../session/store.js";
 import {
   normalizePhone,
@@ -52,10 +58,23 @@ import {
   getLastLocation,
 } from "../whatsapp/session.js";
 import { sendText, sendMedia } from "../whatsapp/client.js";
-import { matchShortcut, buildHelpText, buildWelcomeText } from "../whatsapp/shortcuts.js";
+import {
+  classifyTurnDelivery,
+  classifyCatchError,
+  emitNoDelivery,
+  openIncidentInline,
+  readPauseState,
+  type TurnDisposition,
+} from "../conversation/no-delivery.js";
+import { closeIncidentOnDeliveredReply } from "../incidents/incident-auto-close.js";
+import { matchShortcut, buildHelpText, buildWelcomeText, buildLoyaltyText } from "../whatsapp/shortcuts.js";
 import { LGPD_OPTIN_MESSAGE } from "../whatsapp/constants.js";
 import { scheduleHesitationNudge, markCustomerReplied } from "../jobs/hesitation-nudge.js";
 import { schedulePixExpiryMonitor } from "../jobs/pix-expiry-monitor.js";
+import {
+  handleOpsWhatsAppMessage,
+  buildOpsWhatsAppIngressDeps,
+} from "../ops/ops-whatsapp-ingress.js";
 
 const MAX_RATE_PER_MINUTE = 20;
 const DEBOUNCE_MS = 2000;
@@ -72,6 +91,23 @@ type LogFn = { info: (...args: unknown[]) => void; error: (...args: unknown[]) =
 // stay identical to the pre-cutover `collectAgentResponse` consumer.
 interface WhatsAppTurn {
   readonly text: string;
+  /**
+   * REQUIRED — the compile-time guard forcing every return path to classify its
+   * delivery outcome. Distinguishes the intentional bot-pause `{text:""}` from a
+   * byte-identical empty model completion (the no-reply incident discriminator).
+   */
+  readonly disposition: TurnDisposition;
+  /**
+   * True when the bot-pause gate could NOT be read (Redis/store unreachable). The
+   * turn was fail-CLOSED suppressed (byte-identical to a genuine pause), but the
+   * customer got silence without a confirmed pause → the caller opens a durable
+   * `pause_read_error` incident via the Redis-free inline path (W1).
+   */
+  readonly pauseReadError?: boolean;
+  /** `capsule.turnId` — dedup + audit correlation (absent on the pause path). */
+  readonly turnId?: string;
+  /** `turn.decision.kind` — an `ESCALATE` handoff is never a drop. */
+  readonly decisionKind?: string;
   readonly pixData?: {
     pixCopyPaste?: string;
     pixQrCode?: string;
@@ -145,13 +181,49 @@ async function runConductorTurn(args: {
 }): Promise<WhatsAppTurn> {
   // D2 bot-pause gate: when a human has taken over this session (open
   // escalation), suppress the bot reply. Empty text → the caller sends nothing
-  // (every WhatsApp send is guarded by `if (response.text)`). Fail-open.
-  if (await isSessionPausedForHuman(args.sessionKey)) {
+  // (every WhatsApp send is guarded by `if (response.text)`). Fail-CLOSED, but a
+  // pause READ-ERROR is DISTINGUISHED from a genuine pause (W1 Redis-outage fix):
+  const pause = await readPauseState(args.sessionKey);
+  if (pause === "paused") {
     args.log.info(
       { session: args.sessionKey },
       "[whatsapp] session paused for human takeover — bot reply suppressed",
     );
-    return { text: "" };
+    return { text: "", disposition: "suppressed_paused" };
+  }
+  if (pause === "read_error") {
+    // Still fail-CLOSED (suppress — a human MIGHT be handling it), but the customer
+    // got silence and we could NOT confirm a genuine pause → flag it so the caller
+    // opens a pause_read_error incident via the Redis-free inline path. Byte-identical
+    // suppressed_paused text so no reply is ever sent.
+    args.log.warn(
+      { session: args.sessionKey },
+      "[whatsapp] bot-pause gate unreachable (Redis?) — suppressing reply + flagging pause_read_error",
+    );
+    return { text: "", disposition: "suppressed_paused", pauseReadError: true };
+  }
+
+  // BKL-066 (review B4 — the WhatsApp plane): ensure a Medusa cart exists for
+  // this session BEFORE the turn, mirroring chat.ts. The resolver threads
+  // cartId from rk(`cart:active:session:${sessionId}`) with sessionId =
+  // cognition.conversationId (ibatexas-resolver.ts), and conversationId here
+  // IS args.sessionKey — so the pre-ensure MUST use the same sessionKey or a
+  // fresh session's order.item.add still REFUSEs on requireCartIdForCartOps.
+  // Idempotent (reuses the session cart after the first turn); the guard is
+  // NOT weakened. Never fatal.
+  try {
+    const realCustomerId = isGuestCustomerId(args.customerId) ? null : args.customerId;
+    await getOrCreateCart(
+      {},
+      {
+        channel: Channel.WhatsApp,
+        sessionId: args.sessionKey,
+        ...(realCustomerId ? { customerId: realCustomerId } : {}),
+        userType: realCustomerId ? "customer" : "guest",
+      },
+    );
+  } catch (err) {
+    args.log.warn({ err }, "[whatsapp] cart pre-ensure failed (non-fatal)");
   }
 
   const conductor = getConductor();
@@ -172,7 +244,41 @@ async function runConductorTurn(args: {
   try {
     const turn = await handleTurn(capsule, inbound);
     const pixData = extractPixData(turn.acted);
-    return { text: turn.response.text ?? "", ...(pixData ? { pixData } : {}) };
+    // Classify the delivery outcome at the source (the only place that can tell
+    // an empty completion from a whitespace-only one). The pause early-return
+    // above is the only `suppressed_paused`; everything here is a real turn.
+    const rawText = turn.response.text ?? "";
+    const disposition: TurnDisposition =
+      rawText.length === 0
+        ? "empty_completion"
+        : rawText.trim() === ""
+          ? "whitespace_only"
+          : "deliverable";
+    if (disposition !== "deliverable") {
+      // PAYLOAD-1 / Defect C: the model returned an empty/whitespace completion,
+      // so without a holding message the customer is ghosted. Emit a queryable
+      // warn at the SOURCE (previously there were ZERO VictoriaLogs lines for
+      // this failure) — an operator can now find + RCA every ghost by turnId via
+      // `component:llm event:empty`. Token cost/model join via the turn line.
+      args.log.warn(
+        {
+          component: "llm",
+          event: "empty",
+          turnId: capsule.turnId,
+          session_id: args.sessionKey,
+          disposition,
+          decisionKind: turn.decision.kind,
+        },
+        `llm empty completion (${disposition})`,
+      );
+    }
+    return {
+      text: rawText,
+      disposition,
+      turnId: capsule.turnId,
+      decisionKind: turn.decision.kind,
+      ...(pixData ? { pixData } : {}),
+    };
   } finally {
     await conductor.closeCapsule(capsule);
   }
@@ -212,11 +318,42 @@ async function retryForMissedMessages(
       log,
     });
 
-    if (retryResponse.text) {
-      await sendText(`whatsapp:${phone}`, retryResponse.text);
+    // Gate on a TRIMMED non-blank reply (M3) — mirrors classifyTurnDelivery's
+    // notion of a real delivered reply. A whitespace-only completion ("\n") is
+    // NOT a delivered reply: it must not be sent and must not auto-resolve the
+    // OPEN incident; instead it falls through to the whitespace_only branch below.
+    if (retryResponse.text && retryResponse.text.trim().length > 0) {
+      await sendText(`whatsapp:${phone}`, wrapLegacyResponderText(retryResponse.text));
       await appendMessages(session.sessionId, [
         { role: "assistant", content: retryResponse.text },
       ], true, { customerId: session.customerId, channel: "whatsapp" });
+      // Same-invocation self-heal: this best-effort second attempt delivered →
+      // AUTO_RESOLVE any OPEN incident on the session (same delivered predicate;
+      // this branch never sends PIX, so text-delivered is the predicate here).
+      if (retryResponse.turnId) {
+        await closeIncidentOnDeliveredReply(session.sessionId, retryResponse.turnId, log);
+      }
+    } else if (
+      retryResponse.disposition === "empty_completion" ||
+      retryResponse.disposition === "whitespace_only"
+    ) {
+      // Second-pass empty/whitespace (not paused, not ESCALATE) → retry_exhausted.
+      // No `body.MessageSid` is in scope here; dedup on `retryResponse.turnId`.
+      if (retryResponse.decisionKind !== "ESCALATE") {
+        const signal = {
+          sessionId: session.sessionId,
+          cause: "retry_exhausted" as const,
+          customerImpacted: true,
+          channel: "whatsapp",
+          customerId: session.customerId,
+          senderRef: `whatsapp:${phone}`,
+          phoneHash: hash,
+          turnId: retryResponse.turnId ?? null,
+          decisionKind: retryResponse.decisionKind ?? null,
+        };
+        await emitNoDelivery(signal, log);
+        await openIncidentInline(signal, log);
+      }
     }
   } catch (retryErr) {
     log.error(retryErr, "[whatsapp.agent.retry.error] Retry agent processing failed");
@@ -359,14 +496,32 @@ async function checkWebhookRateLimit(redis: Awaited<ReturnType<typeof getRedisCl
 
 // ── Shortcut dispatch ────────────────────────────────────────────────────────
 
-async function handleShortcut(
+export async function handleShortcut(
   shortcutType: string,
+  ctx?: { customerId?: string; sessionId: string },
 ): Promise<string | null> {
   switch (shortcutType) {
     case "help":
       return buildHelpText();
     case "welcome":
       return buildWelcomeText();
+    case "loyalty": {
+      // CUS-067: answer loyalty keywords (fidelidade/selos/pontos) with the
+      // REAL stamp balance instead of deflecting to the agent (a dead L2 read
+      // tool). Read-only. Guests (no customerId) get the login-prompt copy.
+      if (!ctx?.customerId) return buildLoyaltyText();
+      try {
+        const balance = await getLoyaltyBalance(
+          {},
+          { channel: Channel.WhatsApp, sessionId: ctx.sessionId, customerId: ctx.customerId, userType: "customer" },
+        );
+        return balance.message;
+      } catch {
+        // Loyalty service unavailable — fall through to the agent rather than
+        // ghosting or erroring the customer.
+        return null;
+      }
+    }
     case "menu":
       return null; // Fall through to agent (XState handles state)
     case "cart":
@@ -447,8 +602,19 @@ export async function whatsappWebhookRoutes(server: FastifyInstance): Promise<vo
         return reply.code(400).send({ error: "Invalid phone format" });
       }
 
+      // SIGNAL-3: tag the WhatsApp entry point so VMUI can slice it
+      // (component:whatsapp event:incoming). The customer's message TEXT is
+      // shipped — redacted + clipped — on the conductor turn line (see emitTurn),
+      // so here we log only its LENGTH to avoid duplicating PII into the store.
       server.log.info(
-        { phone_hash: hash, message_sid: messageSid, processing_ms: Date.now() - startMs },
+        {
+          component: "whatsapp",
+          event: "incoming",
+          phone_hash: hash,
+          message_sid: messageSid,
+          text_len: messageBody.length,
+          processing_ms: Date.now() - startMs,
+        },
         "[whatsapp.incoming] Message received",
       );
 
@@ -456,11 +622,11 @@ export async function whatsappWebhookRoutes(server: FastifyInstance): Promise<vo
       const redis = await getRedisClient();
       const claim = await claimIdempotency(redis, messageSid);
       if (claim === "unavailable") {
-        server.log.error({ message_sid: messageSid }, "[whatsapp] Idempotency claim unavailable — failing closed for Twilio retry");
+        server.log.error({ component: "whatsapp", event: "idempotency_unavailable", message_sid: messageSid }, "[whatsapp] Idempotency claim unavailable — failing closed for Twilio retry");
         return reply.code(503).send({ error: "Service unavailable" });
       }
       if (claim === "duplicate") {
-        server.log.info({ message_sid: messageSid }, "[whatsapp.duplicate] Already processed");
+        server.log.info({ component: "whatsapp", event: "duplicate", message_sid: messageSid }, "[whatsapp.duplicate] Already processed");
         return reply.code(200).type("text/xml").send("<Response/>");
       }
 
@@ -480,7 +646,7 @@ export async function whatsappWebhookRoutes(server: FastifyInstance): Promise<vo
         const rateMsg = ratePhone
           ? `Você está enviando mensagens rápido demais! 😅 Aguarde um momento ou acesse ${rateSite} / ligue ${ratePhone}`
           : `Você está enviando mensagens rápido demais! 😅 Aguarde um momento ou acesse ${rateSite}`;
-        await sendText(`whatsapp:${phone}`, rateMsg).catch(() => {});
+        await sendText(`whatsapp:${phone}`, mintFallbackReply(rateMsg)).catch(() => {});
         return reply.code(429).type("text/xml").send("<Response/>");
       }
 
@@ -511,9 +677,12 @@ async function tryShortcutOrStateMachine(
   const shortcut = matchShortcut(messageBody);
   if (shortcut) {
     log.info({ phone_hash: hash, shortcut: shortcut.type }, "[whatsapp.shortcut]");
-    const response = await handleShortcut(shortcut.type);
+    const response = await handleShortcut(shortcut.type, {
+      customerId: session.customerId,
+      sessionId: session.sessionId,
+    });
     if (response) {
-      await sendText(`whatsapp:${phone}`, response);
+      await sendText(`whatsapp:${phone}`, mintBroadcastReply(response));
       await appendMessages(session.sessionId, [{ role: "assistant", content: response }], true, {
         customerId: session.customerId,
         channel: "whatsapp",
@@ -531,13 +700,23 @@ async function tryShortcutOrStateMachine(
 // (CLAUDE.md hard rule #3; documented in .env.example).
 const WA_TURN_TIMEOUT_MS = Number.parseInt(process.env.WA_TURN_TIMEOUT_MS ?? "60000", 10);
 
+// Flag-gated customer-facing holding message — the harm reducer when the bot
+// produces no usable text (empty / whitespace completion). Sent STRICTLY AFTER
+// classify+emit+open so a substitution bug can never mask incident emission.
+// This is THE single empty/failure substitution at the send site (the merged
+// "fix C"); the kernel-layer GROUNDED_SAFE_FALLBACK is a separate, earlier seam.
+const WA_EMPTY_COMPLETION_HOLDING = process.env.WA_EMPTY_COMPLETION_HOLDING === "true";
+const WA_HOLDING_MESSAGE_PTBR =
+  "Desculpe, não consegui montar uma resposta agora. Pode tentar de novo? Se preferir, responda *menu* para ver as opções ou *ajuda* para falar com a gente.";
+
 // ── Session shape resolved by resolveWhatsAppSession (shared by the helpers below) ──
 type WaSession = Awaited<ReturnType<typeof resolveWhatsAppSession>>;
 
 /** Send a WhatsApp message, swallowing failures (Twilio may be down). Best-effort only. */
 async function sendBestEffort(to: string, message: string): Promise<void> {
   try {
-    await sendText(to, message);
+    // Best-effort fallback/holding messages → branded via the fallback minter.
+    await sendText(to, mintFallbackReply(message));
   } catch {
     // Best-effort — can't do more (e.g. Twilio is down)
   }
@@ -613,7 +792,19 @@ function buildAgentInput(
   return inputSuffixes.length > 0 ? `${baseInput}\n${inputSuffixes.join("\n")}` : baseInput;
 }
 
-/** PIX follow-up: send copia-e-cola + QR code if the LLM omitted them, then schedule expiry reminders. */
+/**
+ * PIX follow-up: send copia-e-cola + QR code if the LLM omitted them, then schedule
+ * expiry reminders. Returns whether a PIX artifact actually REACHED the customer
+ * (send success) — NOT merely whether the payload was present — so `deliveredText`
+ * reflects reality when a PIX-only send fails (below-cap d).
+ *
+ * `track` wires the copia-e-cola send into the caller's sendEntered/sendCompleted
+ * flags (#5): on a PIX-only turn (no text was sent, `sendEntered` still false) a
+ * THROW here would otherwise land in the outer catch as `turn_error` and open NO
+ * incident — a customer ghosted on a payment turn. Marking the send as entered
+ * (but not completed) makes the catch classify it `send_failed` (customerImpacted,
+ * opens an incident).
+ */
 async function sendPixFollowUp(
   pixData: NonNullable<WhatsAppTurn["pixData"]>,
   agentText: string,
@@ -621,21 +812,35 @@ async function sendPixFollowUp(
   hash: string,
   session: WaSession,
   log: LogFn,
-): Promise<void> {
+  track?: { readonly onEnter: () => void; readonly onComplete: () => void },
+): Promise<boolean> {
   const { pixCopyPaste, pixQrCode } = pixData;
   const textHasPixCode = pixCopyPaste && agentText.includes(pixCopyPaste);
+  // The code already rode along in the (delivered) agent text → already delivered.
+  let pixDelivered = Boolean(textHasPixCode);
 
   if (pixCopyPaste && !textHasPixCode) {
+    track?.onEnter();
     await sendText(
       `whatsapp:${phone}`,
-      `*Código PIX (copia e cola):*\n\n${pixCopyPaste}\n\n☝️ Copie e cole no app do seu banco.\nNÃO clique — cole no app.`,
+      mintReceiptReply(
+        `*Código PIX (copia e cola):*\n\n${pixCopyPaste}\n\n☝️ Copie e cole no app do seu banco.\nNÃO clique — cole no app.`,
+      ),
     );
+    track?.onComplete();
+    pixDelivered = true;
   }
 
   if (pixQrCode) {
-    await sendMedia(`whatsapp:${phone}`, pixQrCode, "QR Code PIX").catch((err) => {
-      log.warn({ error: String(err) }, "[whatsapp.pix.qr_send_failed] Falling back to text-only PIX");
-    });
+    // EGRESS BRAND (Plan 1 / F4): mint the customer-facing caption at the
+    // producer; sendMedia no longer mints prose internally.
+    await sendMedia(`whatsapp:${phone}`, pixQrCode, mintReceiptReply("QR Code PIX"))
+      .then(() => {
+        pixDelivered = true;
+      })
+      .catch((err) => {
+        log.warn({ error: String(err) }, "[whatsapp.pix.qr_send_failed] Falling back to text-only PIX");
+      });
   }
 
   // Schedule PIX expiry reminders (25min reminder + 30min expired)
@@ -649,6 +854,8 @@ async function sendPixFollowUp(
       log.warn({ error: String(err) }, "[whatsapp.pix.expiry_schedule_failed]");
     });
   }
+
+  return pixDelivered;
 }
 
 type AgentTurnOutcome =
@@ -780,6 +987,23 @@ async function handleMessageAsync(
   try {
   const startMs = Date.now();
 
+  // ── Ops-actor fork (BKL-086) — BEFORE any customer-path work ───────────────
+  // An ACTIVE staff phone runs the ops manager plane (the owner commands the
+  // restaurant by message). This MUST precede resolveWhatsAppSession below,
+  // which auto-creates a Customer + welcome credit + LGPD opt-in — side effects
+  // an owner command must never trigger. A non-staff / inactive phone returns
+  // {consumed:false} and falls through to the customer path BYTE-IDENTICALLY.
+  // On success (consumed) we mark the idempotency claim as done so a stray SID
+  // redelivery never re-fires a mutating owner command, then return.
+  const opsOutcome = await handleOpsWhatsAppMessage(
+    buildOpsWhatsAppIngressDeps(phone, log),
+    { phone, hash, text: messageBody, log },
+  );
+  if (opsOutcome.consumed) {
+    succeeded = true;
+    return;
+  }
+
   // ── Cancel any pending hesitation nudge on incoming message ────────────────
   await markCustomerReplied(hash);
 
@@ -787,7 +1011,9 @@ async function handleMessageAsync(
   if (numMedia > 0 && !messageBody) {
     await sendText(
       `whatsapp:${phone}`,
-      "Recebi sua mídia 👍\n\nAinda não consigo analisar imagens ou áudio.\nPode me explicar em palavras?",
+      mintFallbackReply(
+        "Recebi sua mídia 👍\n\nAinda não consigo analisar imagens ou áudio.\nPode me explicar em palavras?",
+      ),
     );
     return;
   }
@@ -823,7 +1049,7 @@ async function handleMessageAsync(
   // ── LGPD opt-in disclosure (once per phone) ─────────────────────────────────
   const lgpdJustSent = !(await hasOptedIn(hash));
   if (lgpdJustSent) {
-    await sendText(`whatsapp:${phone}`, LGPD_OPTIN_MESSAGE);
+    await sendText(`whatsapp:${phone}`, mintFallbackReply(LGPD_OPTIN_MESSAGE));
     await markOptedIn(hash);
   }
 
@@ -859,6 +1085,20 @@ async function handleMessageAsync(
     return;
   }
 
+  // `sendEntered` is flipped true immediately BEFORE `sendText` (never by
+  // wrapping+swallowing it — that breaks Twilio retry/idempotency). The `:899`
+  // catch reads it to discriminate a thrown send (`send_failed`) from a pre-send
+  // turn exception (`turn_error`).
+  let sendEntered = false;
+  // `sendCompleted` is flipped true immediately AFTER `sendText` returns. The
+  // catch reads BOTH flags so a POST-send throw (e.g. a later `appendMessages`
+  // failure) is classified `turn_error`, not a spurious `send_failed` incident +
+  // duplicate "problema técnico" message to an already-served customer (F2).
+  let sendCompleted = false;
+  // Detached auto-close promise (L10) — CAPTURED so the inner finally can await it
+  // before the post-lock retry, so a stale delivered-reply close cannot race a NEW
+  // incident the retry opens.
+  let closePromise: Promise<void> | undefined;
   try {
     // ── Shortcut / state machine + conductor turn (raced against the deadline) ──
     const outcome = await runConductorAgentTurn({
@@ -876,10 +1116,47 @@ async function handleMessageAsync(
     if (outcome.handled) return;
     const agentResponse = outcome.response;
 
+    // ── Pause-gate READ-ERROR (W1 Redis-outage fix) ────────────────────────
+    // The bot-pause gate was unreachable, so the reply was fail-CLOSED suppressed
+    // WITHOUT a confirmed pause → the customer got silence. Open a durable
+    // `pause_read_error` incident via the Redis-FREE inline path (openIncidentInline
+    // routes through the pure kernel + a DB-side replay guard, never the Redis dedup
+    // layer — so it does NOT no-op in the very outage it exists for). Storm-bounded
+    // by the per-session open-incident partial unique index (a second message on the
+    // same session increments, never re-opens); notifications aggregate via the storm
+    // digest (conversation.incident_opened → the notification subscriber), NOT a
+    // bespoke per-incident ping here.
+    if (agentResponse.pauseReadError) {
+      succeeded = true; // intentional suppression — do not trigger a Twilio retry
+      const signal = {
+        sessionId: session.sessionId,
+        cause: "pause_read_error" as const,
+        customerImpacted: true,
+        channel: "whatsapp",
+        customerId: session.customerId,
+        senderRef: `whatsapp:${phone}`,
+        phoneHash: hash,
+        turnId: null,
+        messageSid: body.MessageSid ?? null,
+      };
+      await emitNoDelivery(signal, log);
+      await openIncidentInline(signal, log);
+      return;
+    }
+
     // ── Send response ─────────────────────────────────────────────────────
     // Skip a stale reply if the turn raced past the deadline (P2-CONC-ABORT).
-    if (agentResponse.text && !turnAbort.signal.aborted) {
-      await sendText(`whatsapp:${phone}`, agentResponse.text);
+    // Gate on a TRIMMED non-blank reply (mirrors the retry M3 gate + classifyTurnDelivery):
+    // a whitespace-only completion is NOT a delivered reply — sending it would push a
+    // blank bubble AND make `deliveredText` (below) true, wrongly auto-resolving an
+    // incident and masking the whitespace_only PIX-only guard (F5). Left unsent, so
+    // `deliveredText == hasPixData` for a whitespace turn, exactly like empty_completion.
+    let textSent = false;
+    if (agentResponse.text && agentResponse.text.trim().length > 0 && !turnAbort.signal.aborted) {
+      sendEntered = true;
+      await sendText(`whatsapp:${phone}`, wrapLegacyResponderText(agentResponse.text));
+      sendCompleted = true;
+      textSent = true;
 
       // Save assistant response to session
       await appendMessages(session.sessionId, [
@@ -892,19 +1169,166 @@ async function handleMessageAsync(
     succeeded = true;
 
     // ── PIX follow-up: send copia-e-cola + QR code if LLM omitted them ──
+    // Track the copia-e-cola send (#5) so a failed PIX-only delivery is classified
+    // send_failed in the outer catch; capture whether a PIX artifact actually
+    // reached the customer (below-cap d) rather than trusting payload presence.
+    let pixDelivered = false;
     if (agentResponse.pixData) {
-      await sendPixFollowUp(agentResponse.pixData, agentResponse.text, phone, hash, session, log);
+      pixDelivered = await sendPixFollowUp(
+        agentResponse.pixData,
+        agentResponse.text,
+        phone,
+        hash,
+        session,
+        log,
+        {
+          onEnter: () => {
+            sendEntered = true;
+          },
+          onComplete: () => {
+            sendCompleted = true;
+          },
+        },
+      );
+    }
+
+    // ── No-delivery reconcile (AFTER the PIX block — false-positive fix) ──
+    // PIX copia-e-cola + QR is delivered regardless of text, so a turn with empty
+    // text but a SUCCESSFULLY-SENT PIX artifact DID reach the customer.
+    // `deliveredText` keys the genuine-drop decision on what actually reached the
+    // customer — driven by real send success (`pixDelivered`), not payload presence.
+    const deliveredText = textSent || pixDelivered;
+
+    // SIGNAL-8: one queryable per-turn outbound line — did a reply actually
+    // reach the customer? Joinable to the conductor turn by turnId. warn when
+    // NOTHING was delivered (a ghost/degraded turn); info on the happy path AND
+    // on a designed human-takeover pause (suppressed_paused) — the bot is
+    // intentionally silent then, so it must NOT pollute the ghost-detection
+    // `event:reply.sent level:warn` query (it also has no turnId to join on).
+    const designedSilence = agentResponse.disposition === "suppressed_paused";
+    log[deliveredText || designedSilence ? "info" : "warn"](
+      {
+        component: "outbound",
+        event: "reply.sent",
+        turnId: agentResponse.turnId ?? null,
+        session_id: session.sessionId,
+        channel: "whatsapp",
+        disposition: agentResponse.disposition,
+        decisionKind: agentResponse.decisionKind ?? null,
+        deliveredText,
+        textSent,
+        pixDelivered,
+      },
+      `reply ${deliveredText ? "delivered" : "NOT delivered"} (${agentResponse.disposition})`,
+    );
+
+    // ── Auto-close (Q2): a successfully-delivered reply self-heals an OPEN
+    // incident on this session → AUTO_RESOLVED. Gated on the SAME delivered
+    // predicate as detection (REVIEW-v2: a PIX-only recovery must close too, so
+    // this sits OUT of the `if (agentResponse.text…)` text gate). Fail-open,
+    // idempotent, fast-null on the happy path. ──
+    if (deliveredText && agentResponse.turnId) {
+      // Detached (L10): the close is fail-open + idempotent, so it must NOT be
+      // awaited on the hot path — awaiting a DB lookup on every delivered reply
+      // extends the lock-hold and gates finally/lock-release/finalizeIdempotency.
+      // CAPTURED (not fully fire-and-forget): the inner finally awaits it AFTER the
+      // lock is released but BEFORE the post-lock retry, so it can't race (and
+      // wrongly auto-resolve) a NEW incident the retry opens. `.catch` keeps it
+      // non-throwing so the awaiting finally never breaks.
+      closePromise = closeIncidentOnDeliveredReply(session.sessionId, agentResponse.turnId, log).catch(
+        () => {},
+      );
+    }
+
+    const classification = classifyTurnDelivery({
+      disposition: agentResponse.disposition,
+      ...(agentResponse.decisionKind !== undefined ? { decisionKind: agentResponse.decisionKind } : {}),
+      deliveredText,
+    });
+    if (classification) {
+      // Ordered classify → emit → open → (holding). Emission can never be masked
+      // by a substitution bug because the holding send is strictly last.
+      const signal = {
+        sessionId: session.sessionId,
+        cause: classification.cause,
+        customerImpacted: classification.customerImpacted,
+        channel: "whatsapp",
+        customerId: session.customerId,
+        senderRef: `whatsapp:${phone}`,
+        phoneHash: hash,
+        turnId: agentResponse.turnId ?? null,
+        decisionKind: agentResponse.decisionKind ?? null,
+      };
+      await emitNoDelivery(signal, log);
+      await openIncidentInline(signal, log);
+
+      // Customer-facing holding message — ONLY for an empty/whitespace
+      // completion (NOT the abort-with-text timeout path, NOT the pause).
+      if (
+        WA_EMPTY_COMPLETION_HOLDING &&
+        (agentResponse.disposition === "empty_completion" ||
+          agentResponse.disposition === "whitespace_only")
+      ) {
+        await sendBestEffort(`whatsapp:${phone}`, WA_HOLDING_MESSAGE_PTBR);
+      }
     }
 
   } catch (err) {
     log.error(err, "[whatsapp.agent.error] Agent processing failed");
-    // Send fallback error message (best-effort)
-    await sendBestEffort(
-      `whatsapp:${phone}`,
-      "Desculpe, estou com um problema técnico. Tente novamente em alguns instantes.",
-    );
+    // Discriminate the throw into a cause (no `turnId` is in scope here — the
+    // capsule opened+closed inside `runConductorTurn`; dedup on `MessageSid`).
+    const cause = classifyCatchError({
+      aborted: turnAbort.signal.aborted,
+      message: (err as Error).message,
+      sendEntered,
+      sendCompleted,
+    });
+    // `turn_error` is OUT of the frozen taxonomy → canned apology only, no
+    // incident. `timeout` / `send_failed` open a governed incident.
+    if (cause === "timeout" || cause === "send_failed") {
+      // Send the canned apology FIRST and track whether it actually reached the
+      // customer: a delivered apology means this is NOT a full ghost (degraded, not
+      // silence) → customerImpacted:false (mirrors the delivered-holding case). The
+      // send is fully guarded, so it can never mask the governed open below.
+      let apologyDelivered = false;
+      try {
+        await sendText(
+          `whatsapp:${phone}`,
+          mintFallbackReply(
+            "Desculpe, estou com um problema técnico. Tente novamente em alguns instantes.",
+          ),
+        );
+        apologyDelivered = true;
+      } catch {
+        // Twilio down — the customer got silence (a full ghost).
+      }
+      const signal = {
+        sessionId: session.sessionId,
+        cause,
+        customerImpacted: !apologyDelivered,
+        channel: "whatsapp",
+        customerId: session.customerId,
+        senderRef: `whatsapp:${phone}`,
+        phoneHash: hash,
+        turnId: null,
+        messageSid: body.MessageSid ?? null,
+      };
+      await emitNoDelivery(signal, log);
+      await openIncidentInline(signal, log);
+    } else {
+      // turn_error (already-served or pre-send exception) → canned apology only.
+      await sendBestEffort(
+        `whatsapp:${phone}`,
+        "Desculpe, estou com um problema técnico. Tente novamente em alguns instantes.",
+      );
+    }
   } finally {
     await releaseAgentLock(hash, lockValue);
+    // L10 race guard: await the detached delivered-reply auto-close AFTER the lock
+    // is released (so it never extended lock-hold) but BEFORE the post-lock retry —
+    // otherwise a stale close could race and wrongly auto-resolve a NEW incident the
+    // retry opens (below-cap: the L10 detach could escape the lock/finalize).
+    if (closePromise) await closePromise;
     // Re-check for unprocessed messages after lock release (best-effort)
     await safeRetryForMissedMessages(session, hash, phone, log);
   }

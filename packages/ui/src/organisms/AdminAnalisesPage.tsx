@@ -20,6 +20,14 @@ export interface AdminAnalyticsMetrics {
   outreachWeekly: number
   waConversionRate: number
   avgMessagesToCheckout: number
+  /**
+   * BKL-128 — composer signals that FAILED and fell back to zeros ("orders" |
+   * "activeCarts" | "newCustomers30d" | "whatsapp"). A degraded signal's tiles
+   * render "indisponível" — a silent zero is indistinguishable from a real
+   * "0 pedidos / R$ 0,00" and lies to the operator. Optional so older payloads
+   * (no field) keep today's behavior.
+   */
+  degraded?: string[]
 }
 
 export interface AdminAnalisesPageProps {
@@ -27,10 +35,18 @@ export interface AdminAnalisesPageProps {
   loading: boolean
 }
 
+const INDISPONIVEL = 'indisponível'
+
 export function AdminAnalisesPage({
   metrics,
   loading,
 }: Readonly<AdminAnalisesPageProps>) {
+  // BKL-128 — a degraded signal's tiles show "indisponível", never its zeros.
+  const isDegraded = (signal: string): boolean =>
+    metrics?.degraded?.includes(signal) ?? false
+  const unless = (signal: string, value: string | number): string | number =>
+    isDegraded(signal) ? INDISPONIVEL : value
+
   return (
     <PageShell>
       <PageHeader icon={BarChart2} title={PAGE_TITLES.analytics} subtitle={PAGE_TITLES.analyticsSubtitle} />
@@ -42,56 +58,56 @@ export function AdminAnalisesPage({
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4 xl:grid-cols-8">
         <StatCard
           label="Pedidos Hoje"
-          value={metrics?.ordersToday ?? 0}
+          value={unless('orders', metrics?.ordersToday ?? 0)}
           icon={ShoppingCart}
           variant="info"
           isLoading={loading}
         />
         <StatCard
           label="Receita Hoje"
-          value={metrics ? formatBRL(metrics.revenueToday) : 'R$ 0,00'}
+          value={unless('orders', metrics ? formatBRL(metrics.revenueToday) : 'R$ 0,00')}
           icon={DollarSign}
           variant="success"
           isLoading={loading}
         />
         <StatCard
           label="Ticket Médio"
-          value={metrics ? formatBRL(metrics.aov) : 'R$ 0,00'}
+          value={unless('orders', metrics ? formatBRL(metrics.aov) : 'R$ 0,00')}
           icon={TrendingUp}
           variant="warning"
           isLoading={loading}
         />
         <StatCard
           label="Carrinhos Ativos"
-          value={metrics?.activeCarts ?? 0}
+          value={unless('activeCarts', metrics?.activeCarts ?? 0)}
           icon={ShoppingBag}
           variant="default"
           isLoading={loading}
         />
         <StatCard
           label="Novos Clientes (30d)"
-          value={metrics?.newCustomers30d ?? 0}
+          value={unless('newCustomers30d', metrics?.newCustomers30d ?? 0)}
           icon={UserPlus}
           variant="success"
           isLoading={loading}
         />
         <StatCard
           label="Outreach Semanal"
-          value={metrics?.outreachWeekly ?? 0}
+          value={unless('whatsapp', metrics?.outreachWeekly ?? 0)}
           icon={MessageCircle}
           variant="info"
           isLoading={loading}
         />
         <StatCard
           label="Conversao WA"
-          value={`${metrics?.waConversionRate ?? 0}%`}
+          value={unless('whatsapp', `${metrics?.waConversionRate ?? 0}%`)}
           icon={Percent}
           variant="success"
           isLoading={loading}
         />
         <StatCard
           label="Msgs/Pedido"
-          value={metrics?.avgMessagesToCheckout ?? 0}
+          value={unless('whatsapp', metrics?.avgMessagesToCheckout ?? 0)}
           icon={MessageSquare}
           variant="info"
           isLoading={loading}

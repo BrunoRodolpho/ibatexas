@@ -99,6 +99,14 @@ describe("updatePreferencesFromEnvelope", () => {
   })
 
   it("EXECUTE: forwards favoriteCategories from the payload to Prisma upsert", async () => {
+    // The service returns the AUTHORITATIVE stored row from the upsert (not
+    // the coerced inputs) — mock what real Prisma resolves.
+    mockPrefsUpsert.mockResolvedValue({
+      customerId: "cus_01",
+      allergenExclusions: ["lactose"],
+      dietaryRestrictions: ["vegetariano"],
+      favoriteCategories: ["churrasco", "grelhados"],
+    })
     const svc = createCustomerService()
     const outcome = await svc.updatePreferencesFromEnvelope(
       preferencesEnvelope({

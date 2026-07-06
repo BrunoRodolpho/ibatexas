@@ -8,6 +8,7 @@ import * as Sentry from "@sentry/node";
 import { createCustomerService } from "@ibatexas/domain";
 import type { Queue, Worker } from "bullmq";
 import type { FastifyBaseLogger } from "fastify";
+import { mintCronReply } from "@adjudicate/core";
 import { sendText } from "../whatsapp/client.js";
 import { createQueue, createWorker, type Job } from "./queue.js";
 import { buildOutreachMessage } from "./outreach-messages.js";
@@ -139,7 +140,7 @@ async function processCustomerOutreach(
   );
 
   // Send WhatsApp message
-  await sendText(`whatsapp:${customer.phone}`, message);
+  await sendText(`whatsapp:${customer.phone}`, mintCronReply(message));
 
   // Set cooldown key
   await redis.set(cooldownKey, "1", { EX: COOLDOWN_DAYS * 86400 });

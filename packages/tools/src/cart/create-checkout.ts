@@ -8,7 +8,7 @@
 // never by client polling alone to avoid stuck-pending orders.
 
 import type Stripe from "stripe";
-import { CreateCheckoutInputSchema, NonRetryableError, formatOrderId, type CreateCheckoutInput, type AgentContext } from "@ibatexas/types";
+import { COUPON_REJECTED_CODE, CreateCheckoutInputSchema, NonRetryableError, formatOrderId, type CouponRejectedCode, type CreateCheckoutInput, type AgentContext } from "@ibatexas/types";
 import { publishNatsEvent } from "@ibatexas/nats-client";
 import { getAuditSink } from "@ibatexas/audit-sink";
 import { reaisToCentavos } from "../medusa/client.js";
@@ -37,6 +37,23 @@ export interface CreateCheckoutOutput {
   paymentIntentId?: string;
   // Cash
   orderId?: string;
+  /**
+   * True when this checkout was accepted as a SCHEDULED PICKUP — pickup (no
+   * `deliveryCep`) placed while the restaurant is closed (see `buildCheckoutMetadata`).
+   * Surfaced from the cart metadata onto the tool output so the dispatch `result`
+   * (→ responder `input.acted.result`) can distinguish an accepted scheduled-pickup
+   * order from a delivery/immediate order when rendering the closed-hours reply (F6).
+   * Absent/false for delivery, immediate, or non-accepted checkouts.
+   */
+  scheduledPickup?: boolean;
+  /**
+   * Typed failure code for fail-closed aborts. Currently only
+   * `COUPON_REJECTED` (D1): Medusa rejected the coupon → checkout aborts
+   * BEFORE any payment collection is created, so the customer is never
+   * silently charged the undiscounted total. The API checkout route maps
+   * this onto a 422.
+   */
+  code?: CouponRejectedCode;
   message: string;
 }
 
@@ -211,6 +228,44 @@ async function applyWelcomeCredit(cartId: string, ctx: AgentContext): Promise<vo
   } catch (err) {
     // Medusa rejected the code (expired, already used, or not configured) — continue without discount
     console.warn(`[checkout] Welcome credit application failed for customer ${ctx.customerId}: ${(err as Error).message}`);
+  }
+}
+
+async function applyCouponCode(
+  cartId: string,
+  couponCode: string | undefined,
+  paymentMethod: string,
+  ctx: AgentContext,
+): Promise<CreateCheckoutOutput | null> {
+  if (!couponCode) return null;
+  try {
+    // Apply the customer-validated coupon to the REAL Medusa cart so the
+    // charged total reflects the discount the customer saw (CUS-016). Runs on
+    // the final (possibly re-synced) cart, before the payment collection is
+    // created — mirrors applyWelcomeCredit's governed egress exactly.
+    await medusaStoreAdjudicated.carts.promotions.add(
+      { cartId, promoCodes: [couponCode] },
+      {
+        sourceSubject: "cart:create-checkout:apply-coupon",
+        actorPrincipal: "llm",
+        auditSink: getAuditSink(),
+        ...(ctx.customerId ? { customerId: ctx.customerId } : {}),
+        ...(ctx.sessionId ? { sessionId: ctx.sessionId } : {}),
+      },
+    );
+    console.warn(`[checkout] Coupon ${couponCode} applied to cart ${cartId}`);
+    return null;
+  } catch (err) {
+    // D1 fail-CLOSED: the customer confirmed a DISCOUNTED total — proceeding
+    // without the coupon would silently charge more. Abort the checkout
+    // (before any payment collection exists) with a typed, fixable failure.
+    console.warn(`[checkout] Coupon application failed for cart ${cartId}: ${(err as Error).message}`);
+    return {
+      success: false,
+      paymentMethod,
+      code: COUPON_REJECTED_CODE,
+      message: "O cupom não pôde ser aplicado (expirado ou esgotado). Remova o cupom e tente novamente.",
+    };
   }
 }
 
@@ -445,7 +500,7 @@ export async function createCheckout(
   extra?: { customerName?: string; customerEmail?: string; customerTaxId?: string },
 ): Promise<CreateCheckoutOutput> {
   const parsed = CreateCheckoutInputSchema.parse(input);
-  const { cartId, paymentMethod, tipInCentavos, deliveryCep } = parsed;
+  const { cartId, paymentMethod, tipInCentavos, deliveryCep, couponCode } = parsed;
 
   // Verify cart total > 0 before proceeding with checkout
   const cartData = await medusaStoreFetch(`/store/carts/${cartId}`) as {
@@ -461,9 +516,20 @@ export async function createCheckout(
   // Apply welcome credit if available (first-time customer coupon)
   await applyWelcomeCredit(cartId, ctx);
 
+  // Apply a customer-supplied coupon code to the real Medusa cart so the
+  // charged total reflects the validated discount (CUS-016). No-op when
+  // absent. A Medusa rejection ABORTS the checkout fail-closed (D1) —
+  // before any payment collection is created — so the customer is never
+  // charged an undiscounted total they did not confirm.
+  const couponFailure = await applyCouponCode(cartId, couponCode, paymentMethod, ctx);
+  if (couponFailure) return couponFailure;
+
   // 1. Update cart metadata with tip and delivery CEP
   const metadata = await buildCheckoutMetadata(paymentMethod, tipInCentavos, deliveryCep, ctx);
   await updateCartMetadata(cartId, metadata, ctx);
+  // Surfaced onto every accepted-checkout return below so the responder can tell an
+  // accepted scheduled-pickup order from a delivery/immediate one (F6).
+  const scheduledPickup = metadata["scheduledPickup"] === "true";
 
   // 2. Get or create payment collection (Medusa v2 flow)
   const cartForPC = await medusaStoreFetch(`/store/carts/${cartId}`) as {
@@ -499,7 +565,7 @@ export async function createCheckout(
   const { clientSecret, paymentIntentId } = extractStripeSessionData(rawSessionData);
 
   if (paymentMethod === "cash") {
-    return completeCashOrder(cartId, cartForPC.cart?.items, metadata, tipInCentavos, ctx);
+    return { ...(await completeCashOrder(cartId, cartForPC.cart?.items, metadata, tipInCentavos, ctx)), scheduledPickup };
   }
 
   // 5. For PIX/card: use extracted Stripe PaymentIntent data
@@ -522,6 +588,7 @@ export async function createCheckout(
       // per-order access token bound to it (the guest tracks via
       // `/pedido/<paymentIntentId>` until the webhook creates the order).
       paymentIntentId,
+      scheduledPickup,
       message:
         "Sessão de pagamento com cartão iniciada. Use o client_secret para finalizar no frontend.",
     };
@@ -536,11 +603,12 @@ export async function createCheckout(
         message: "Nome e email são obrigatórios para pagamento PIX.",
       };
     }
-    return confirmPixAndGetQrCode(paymentIntentId, {
+    const pixResult = await confirmPixAndGetQrCode(paymentIntentId, {
       name: extra?.customerName,
       email: extra?.customerEmail,
       taxId: extra?.customerTaxId,
     }, cartId, ctx.customerId);
+    return { ...pixResult, scheduledPickup };
   }
 
   return {

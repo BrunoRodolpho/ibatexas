@@ -153,6 +153,17 @@ vi.mock("@ibatexas/tools", () => ({
       async expire(key: string, seconds: number): Promise<boolean | number> {
         return (await redis.expire(key, seconds)) as boolean | number;
       },
+      // B2 pending-confirmations index (SADD on create / SREM on consume /
+      // SMEMBERS + self-heal on listPending).
+      async sAdd(key: string, member: string): Promise<number> {
+        return (await redis.sAdd(key, member)) as number;
+      },
+      async sRem(key: string, member: string): Promise<number> {
+        return (await redis.sRem(key, member)) as number;
+      },
+      async sMembers(key: string): Promise<string[]> {
+        return (await redis.sMembers(key)) as string[];
+      },
     };
   }),
   rk: (k: string) => `ibatexas:${k}`,
@@ -515,7 +526,7 @@ describe("POST /api/admin/orders/:id/force-cancel — two-step receipt protocol"
       expect(mockTransitionStatusFromEnvelopeOrder).toHaveBeenCalledTimes(1);
       const envelope = mockTransitionStatusFromEnvelopeOrder.mock.calls[0][0] as {
         kind: string;
-        actor: { principal: string; sessionId: string };
+        actor: { principal: string; sessionId: string; role?: string };
         taint: string;
         payload: { orderId: string; newStatus: string; actor: string };
       };
@@ -523,6 +534,10 @@ describe("POST /api/admin/orders/:id/force-cancel — two-step receipt protocol"
       expect(envelope.actor.principal).toBe("user");
       // Step 2 actor identity wins in the executed envelope.
       expect(envelope.actor.sessionId).toBe("admin:staff_mgr_02");
+      // WS7 / BKL-069 — confirm-time role governs: the CONFIRMING operator's
+      // role (MANAGER_2, "MANAGER") is threaded onto actor.role, NOT the
+      // step-1 requester's role.
+      expect(envelope.actor.role).toBe("MANAGER");
       expect(envelope.taint).toBe("TRUSTED");
       expect(envelope.payload.orderId).toBe("order_01");
       expect(envelope.payload.newStatus).toBe("canceled");
@@ -561,7 +576,20 @@ describe("POST /api/admin/orders/:id/force-cancel — two-step receipt protocol"
       // The kernel envelope path MUST NOT have fired.
       expect(mockTransitionStatusFromEnvelopeOrder).not.toHaveBeenCalled();
 
-      // Receipt was drained — a retry returns 410 (audit trail visible).
+      // B1: the same-actor refusal must NOT burn the receipt — a SECOND,
+      // different operator can still confirm the pending action. (The old
+      // behavior consumed before the identity check, so the action could
+      // never be confirmed by anyone.)
+      const secondOperator = await server.inject({
+        method: "POST",
+        url: "/api/admin/orders/order_01/force-cancel/confirm",
+        payload: { confirmationId },
+        headers: MANAGER_2_HEADERS,
+      });
+      expect(secondOperator.statusCode).toBe(200);
+      expect(mockTransitionStatusFromEnvelopeOrder).toHaveBeenCalledTimes(1);
+
+      // Single-use still holds: a replay after the successful confirm → 410.
       const replay = await server.inject({
         method: "POST",
         url: "/api/admin/orders/order_01/force-cancel/confirm",
@@ -1933,5 +1961,242 @@ describe("consumeWithSameActorCheck — P0-5-TRUE null-edge fail-closed", () => 
     expect(mod.ACTOR_TYPE_MISMATCH_REFUSAL_PT_BR).toMatch(
       /tipo de credencial|credencial da etapa 1/i,
     );
+  });
+});
+
+// ── B1 — refusals must NOT burn the receipt ────────────────────────────────
+//
+// Review 2026-07-02: `consumeWithSameActorCheck` consumed (atomic GET+DEL)
+// BEFORE the identity checks, so a same-actor confirm attempt destroyed the
+// receipt and the action could never be confirmed by anyone. The fix peeks
+// first, refuses without deleting, and only consumes on the ok path.
+describe("consumeWithSameActorCheck — B1 refusals preserve the receipt", () => {
+  async function makePending(overrides?: {
+    staffId?: string | null;
+    actorPrincipal?: "user" | "system";
+  }) {
+    const { createAdminConfirmationStore } = await import(
+      "../admin-confirmation-store.js"
+    );
+    const store = createAdminConfirmationStore();
+    const { confirmationId } = await store.create({
+      kind: "order.status.transition",
+      payload: { orderId: "order_b1", newStatus: "canceled" },
+      nonce: `n-${Math.random()}`,
+      staffId: overrides?.staffId === undefined ? "staff:A" : overrides.staffId,
+      staffRole: "MANAGER",
+      actorPrincipal: overrides?.actorPrincipal ?? "user",
+      requestorIp: null,
+      prompt: "t",
+      route: "force-cancel",
+      createdAt: new Date().toISOString(),
+      orderId: "order_b1",
+    });
+    return { store, confirmationId };
+  }
+
+  it("same-actor refusal leaves the receipt intact — a DIFFERENT actor can then confirm", async () => {
+    const { consumeWithSameActorCheck } = await import(
+      "../admin-confirmation-store.js"
+    );
+    const { store, confirmationId } = await makePending();
+
+    const sameActor = await consumeWithSameActorCheck(
+      store,
+      confirmationId,
+      "staff:A",
+      "user",
+    );
+    expect(sameActor.kind).toBe("same_actor_violation");
+
+    // The receipt survived (peek still sees it, TTL untouched).
+    expect(await store.peek(confirmationId)).not.toBeNull();
+
+    // A second, different operator can still confirm.
+    const differentActor = await consumeWithSameActorCheck(
+      store,
+      confirmationId,
+      "staff:B",
+      "user",
+    );
+    expect(differentActor.kind).toBe("ok");
+
+    // Single-use held on the ok path — the receipt is now consumed.
+    expect(await store.peek(confirmationId)).toBeNull();
+    const replay = await consumeWithSameActorCheck(
+      store,
+      confirmationId,
+      "staff:C",
+      "user",
+    );
+    expect(replay.kind).toBe("missing");
+  });
+
+  it("repeated same-actor attempts keep refusing without draining the receipt", async () => {
+    const { consumeWithSameActorCheck } = await import(
+      "../admin-confirmation-store.js"
+    );
+    const { store, confirmationId } = await makePending();
+    for (let i = 0; i < 3; i++) {
+      const outcome = await consumeWithSameActorCheck(
+        store,
+        confirmationId,
+        "staff:A",
+        "user",
+      );
+      expect(outcome.kind).toBe("same_actor_violation");
+    }
+    expect(await store.peek(confirmationId)).not.toBeNull();
+  });
+
+  it("null-staff refusal (API-key step 2) also preserves the receipt for a valid confirmer", async () => {
+    const { consumeWithSameActorCheck } = await import(
+      "../admin-confirmation-store.js"
+    );
+    const { store, confirmationId } = await makePending();
+
+    const apiKeyAttempt = await consumeWithSameActorCheck(
+      store,
+      confirmationId,
+      null,
+      "system",
+    );
+    expect(apiKeyAttempt.kind).toBe("null_staff_violation");
+    expect(await store.peek(confirmationId)).not.toBeNull();
+
+    const valid = await consumeWithSameActorCheck(
+      store,
+      confirmationId,
+      "staff:B",
+      "user",
+    );
+    expect(valid.kind).toBe("ok");
+  });
+
+  it("double-confirm race by TWO different valid actors → exactly one wins", async () => {
+    const { consumeWithSameActorCheck } = await import(
+      "../admin-confirmation-store.js"
+    );
+    const { store, confirmationId } = await makePending();
+
+    const [a, b] = await Promise.all([
+      consumeWithSameActorCheck(store, confirmationId, "staff:B", "user"),
+      consumeWithSameActorCheck(store, confirmationId, "staff:C", "user"),
+    ]);
+
+    // Both pass the identity checks; the Lua GET+DEL race admits exactly one.
+    const oks = [a, b].filter((v) => v.kind === "ok");
+    const misses = [a, b].filter((v) => v.kind === "missing");
+    expect(oks).toHaveLength(1);
+    expect(misses).toHaveLength(1);
+  });
+
+  it("peek does not consume: repeated peeks keep returning the pending action", async () => {
+    const { store, confirmationId } = await makePending();
+    expect(await store.peek(confirmationId)).not.toBeNull();
+    expect(await store.peek(confirmationId)).not.toBeNull();
+    expect(await store.consume(confirmationId)).not.toBeNull();
+    expect(await store.peek(confirmationId)).toBeNull();
+  });
+
+  it("mis-aimed confirm (wrong route or orderId) refuses BEFORE the consume — the receipt survives for a correctly aimed confirm", async () => {
+    const { consumeWithSameActorCheck } = await import(
+      "../admin-confirmation-store.js"
+    );
+    const { store, confirmationId } = await makePending();
+
+    // Valid second operator, but the receipt was parked for force-cancel on
+    // order_b1 — a stale tab posts it to another order's endpoint.
+    const wrongOrder = await consumeWithSameActorCheck(
+      store,
+      confirmationId,
+      "staff:B",
+      "user",
+      { route: "force-cancel", orderId: "order_OTHER" },
+    );
+    expect(wrongOrder.kind).toBe("target_mismatch");
+    expect(await store.peek(confirmationId)).not.toBeNull();
+
+    const wrongRoute = await consumeWithSameActorCheck(
+      store,
+      confirmationId,
+      "staff:B",
+      "user",
+      { route: "waive", orderId: "order_b1" },
+    );
+    expect(wrongRoute.kind).toBe("target_mismatch");
+    expect(await store.peek(confirmationId)).not.toBeNull();
+
+    // Correctly aimed confirm still works afterwards.
+    const aimed = await consumeWithSameActorCheck(
+      store,
+      confirmationId,
+      "staff:B",
+      "user",
+      { route: "force-cancel", orderId: "order_b1" },
+    );
+    expect(aimed.kind).toBe("ok");
+  });
+});
+
+// ── B2 — pending-confirmations index (listPending) ────────────────────────
+describe("AdminConfirmationStore — listPending (B2 pending queue)", () => {
+  async function createReceipt(orderId: string, createdAt: string) {
+    const { createAdminConfirmationStore } = await import(
+      "../admin-confirmation-store.js"
+    );
+    const store = createAdminConfirmationStore();
+    const { confirmationId } = await store.create({
+      kind: "order.status.transition",
+      payload: { orderId, newStatus: "canceled" },
+      nonce: `n-${Math.random()}`,
+      staffId: "staff:A",
+      staffRole: "MANAGER",
+      actorPrincipal: "user",
+      requestorIp: null,
+      prompt: "confirmar?",
+      route: "force-cancel",
+      createdAt,
+      orderId,
+    });
+    return { store, confirmationId };
+  }
+
+  it("lists created receipts (newest first) and drops consumed ones", async () => {
+    const older = await createReceipt("order_b2_1", "2026-07-01T10:00:00.000Z");
+    const newer = await createReceipt("order_b2_2", "2026-07-02T10:00:00.000Z");
+    const store = newer.store;
+
+    const both = await store.listPending();
+    expect(both).toHaveLength(2);
+    expect(both.map((p) => p.confirmationId)).toEqual([
+      newer.confirmationId,
+      older.confirmationId,
+    ]);
+    expect(both[0]!.pending.orderId).toBe("order_b2_2");
+
+    await store.consume(older.confirmationId);
+    const remaining = await store.listPending();
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0]!.confirmationId).toBe(newer.confirmationId);
+  });
+
+  it("self-heals a stale index member whose receipt key expired", async () => {
+    const { store, confirmationId } = await createReceipt(
+      "order_b2_stale",
+      new Date().toISOString(),
+    );
+    // Simulate TTL expiry: the receipt key vanishes but the SET member stays.
+    const redis = requireRuntimeRedis();
+    await redis.del(`ibatexas:admin:confirmation:${confirmationId}`);
+    expect(
+      await redis.sIsMember("ibatexas:admin:confirmation:pending", confirmationId),
+    ).toBe(true);
+
+    expect(await store.listPending()).toHaveLength(0);
+    // The stale member was removed on read (OPEN_SET self-heal).
+    expect(
+      await redis.sIsMember("ibatexas:admin:confirmation:pending", confirmationId),
+    ).toBe(false);
   });
 });

@@ -348,12 +348,12 @@ export const INTENT_KIND_FIELD_RULES: Readonly<Record<string, ReadonlyArray<stri
   // `to` is hashed via HASH_FIELDS if it ever lands as a phone; the rule
   // here covers the rendered variable values.
   "whatsapp.template.send": ["templateVariables", "variables"],
-  // F-5: the real WhatsApp handoff kind is `whatsapp.session.handover`,
-  // NOT `whatsapp.handoff.request` (the latter exists only in the
-  // taxonomy doc, not in the Pack's union). The fix here is the typo
-  // correction — without it, the rule was inert for the entire WhatsApp
-  // domain since the package's introduction.
+  // F-5: the staff-driven takeover kind. `reason`/`lastMessage` carry
+  // free-form text that often quotes the customer.
   "whatsapp.session.handover": ["reason", "lastMessage"],
+  // BKL-030: the customer-side escalation on-ramp (now a real Pack union
+  // member). Its `reason` is optional customer free-text — redact it.
+  "whatsapp.handoff.request": ["reason"],
   // F-6: persistence-side conversation append. The `body` field carries
   // the literal customer-typed text (often CPF/email/name fragments). The
   // wire-egress `whatsapp.message.send.body` was already covered; this is
@@ -410,6 +410,43 @@ export const INTENT_KIND_FIELD_RULES: Readonly<Record<string, ReadonlyArray<stri
   // future intent kind that carries it.
   "customer.anonymize": ["reason", "otpToken"],
   "customer.anonymize.cancel": ["reason", "otpToken"],
+
+  // ── Ops Pack free-form fields (NEW-032 slice C1 + BKL-088) ─────────────
+  // `ProductAvailabilitySetPayload` is bounded (productId opaque id +
+  // available boolean) EXCEPT the optional free-form `reason` operator note.
+  // Over-redact `reason` — same posture as order/payment status-transition.
+  "product.availability.set": ["reason"],
+  // NEW-004 — `ProductPriceSetPayload` is bounded (productId opaque id +
+  // priceCentavos integer) EXCEPT the optional free-form `reason` operator note,
+  // which an owner could type with a customer name / detail in it. Over-redact
+  // `reason` (same posture as product.availability.set).
+  "product.price.set": ["reason"],
+  // BKL-088 — the two OWNED ops-plane RESOLUTION verbs. Bounded payloads
+  // (`{alertId|incidentId}` opaque id) EXCEPT the optional free-form `reason`
+  // operator note, which an owner could type with a customer name / detail in
+  // it. Over-redact `reason` (same posture as product.availability.set). The
+  // SAME-named SYSTEM write layer (`ops.alert.resolve` / `incident.ticket.close`)
+  // carries only `{id, resolvedBy:"staff:<id>", resolutionType}` — opaque ids +
+  // a role-free staff token — so it needs no rule (id-only, PII-free) and is
+  // deliberately off KNOWN_INTENT_KINDS, hence not iterated by the conformance
+  // corpus; the reason never reaches it.
+  "ops.alert.resolve.staff": ["reason"],
+  "incident.ticket.close.staff": ["reason"],
+
+  // ── AUT-038 staff-CRUD plane (HTTP-only, off KNOWN_INTENT_KINDS) ─────────
+  // staff.create / staff.update payloads carry `hourlyRateCentavos` — employee
+  // pay data (the staff routes OWNER-gate even the GET list for exactly this
+  // field; LGPD employee-remuneration class). Phone is covered by the global
+  // REDACT_FIELDS and name by the global HASH_FIELDS, but the rate is a NUMBER,
+  // which the walker passes by identity — so it needs this per-kind rule
+  // (redactFieldValue coerces numeric values to the sentinel). Like the
+  // ops-plane staff verbs above, these kinds are deliberately off
+  // KNOWN_INTENT_KINDS, so the conformance corpus never forces a
+  // classification — the rule must be added here, not discovered by the gate.
+  // staff.deactivate / staff.role.assign are id-only + closed-enum → see
+  // PII_FREE_KIND_ALLOWLIST.
+  "staff.create": ["hourlyRateCentavos"],
+  "staff.update": ["hourlyRateCentavos"],
 
   // ── Wrapper-level intent kinds (audit-2026-05-25 I3) ────────────────────
   // The 4 wrapper meta types (twilio/stripe/medusa/medusa-store) emit
@@ -478,6 +515,24 @@ export const INTENT_KIND_FIELD_RULES: Readonly<Record<string, ReadonlyArray<stri
 // Adding a new entry requires a 1-line WHY comment naming the payload's
 // PII surface (or explicit "no PII fields"). Catch-all comments
 // ("looks fine") are rejected by code review.
+/**
+ * Kernel-governed HTTP-plane intent kinds that are DELIBERATELY absent from
+ * KNOWN_INTENT_KINDS (they are not Pack kinds — no planner/roster/claim
+ * surface; the ops-alert-policy idiom). They still ride `withAdjudicate` and
+ * therefore reach every audit sink, so the per-intent conformance corpus
+ * validates their redactor classification against THIS set instead of the
+ * Pack union. Every entry here MUST be classified in INTENT_KIND_FIELD_RULES
+ * or PII_FREE_KIND_ALLOWLIST (the conformance test enforces it), and a typo'd
+ * rule key still trips the F-5 sentinel because it matches neither set.
+ */
+export const HTTP_PLANE_GOVERNED_KINDS: ReadonlySet<string> = new Set<string>([
+  // AUT-038 staff-CRUD plane (routes/admin/staff.ts → StaffCommandService)
+  "staff.create",
+  "staff.update",
+  "staff.deactivate",
+  "staff.role.assign",
+])
+
 export const PII_FREE_KIND_ALLOWLIST: ReadonlySet<string> = new Set<string>([
   // ── Order Pack — opaque-id-only payloads ────────────────────────────
   "order.cart.ensure", // cartId only
@@ -505,6 +560,12 @@ export const PII_FREE_KIND_ALLOWLIST: ReadonlySet<string> = new Set<string>([
   "reservation.no_show.mark", // reservationId only
   "reservation.waitlist.join", // timeSlotId/partySize
   "reservation.waitlist.notify", // waitlistId only
+
+  // ── AUT-038 staff-CRUD plane — id-only / closed-enum payloads ────────
+  // (staff.create / staff.update are NOT here — they carry hourlyRateCentavos
+  // pay data and are classified in INTENT_KIND_FIELD_RULES above.)
+  "staff.deactivate", // staffId only
+  "staff.role.assign", // staffId + role: closed {OWNER,MANAGER,ATTENDANT} enum
 
   // ── WhatsApp Pack — phone fields are pre-hashed ─────────────────────
   // `WhatsAppSessionHandoverPayload.fromHashedPhone` is SHA-256 of the

@@ -15,7 +15,7 @@
     "build": "rm -rf dist && tsc --outDir dist",
     "lint": "tsc --noEmit",
     "test": "vitest run",
-    "db:generate": "prisma generate",
+    "db:generate": "prisma generate && prisma generate --schema=prisma/claustrum-memory.prisma",
     "db:migrate": "prisma migrate dev",
     "db:migrate:deploy": "prisma migrate deploy",
     "db:push": "prisma db push",

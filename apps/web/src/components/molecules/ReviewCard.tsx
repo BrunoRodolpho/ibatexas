@@ -66,7 +66,9 @@ export const ReviewCard: React.FC<ReviewCardProps> = ({
               {formattedDate}
             </Text>
             <div className="flex items-center gap-2">
-              <Badge variant="info">{statusLabels[status]}</Badge>
+              {/* P0-1: was variant="info" (rendered grey); repointed to default
+                  to preserve the grey rendering after `info` was recolored blue. */}
+              <Badge variant="default">{statusLabels[status]}</Badge>
               {onRespond && (
                 <button
                   onClick={() => onRespond(id)}

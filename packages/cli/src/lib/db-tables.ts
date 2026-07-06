@@ -31,6 +31,17 @@ export const DOMAIN_DELETE_ORDER = [
   "agentRun",
   "conversationMessage",
   "conversation",
+  // W1 incident log (no FK to any domain table — soft sessionId/conversationId
+  // correlations only). Incident/observability data, wiped by a default clean.
+  "conversationIncident",
+  // NEW-025 ops-alert plane (no FK — restaurant-global operational alerts raised
+  // by deterministic watchdogs). Ops telemetry, wiped by a default clean.
+  "opsAlert",
+  // NEW-016 staff scheduling (escala) — one row per assigned work shift. FK →
+  // staff(id) (a reference table, deleted later / ON DELETE CASCADE), no children
+  // of its own. Operational schedule data, wiped by a default clean; listed before
+  // its parent `staff` (in DOMAIN_REFERENCE) for child-first FK-safety.
+  "staffShift",
   "orderProjection",
   // Observability/telemetry tables (no FK to other domain tables). Registered
   // here to close the pre-existing db-tables drift their models (AgentRedTeamRun,
@@ -54,6 +65,33 @@ export const DOMAIN_REFERENCE = [
   "weeklySchedule",
   "holiday",
   "scheduleOverride",
+  // NEW-035 recipe/BOM — a Recipe (bill-of-materials header, soft ref to a Medusa
+  // finished-good) + its RecipeIngredient join lines. Reference/config data (a dish's
+  // recipe is authored once, like the ingredient catalog): a routine `db clean` must
+  // NOT nuke it. FK-safe ordering (children → parents), and this whole group is
+  // deleted children-first: `recipeIngredient` (the join) is listed BEFORE its BOTH
+  // parents — `recipe` (FK onDelete Cascade) AND `ingredient` (FK onDelete Restrict,
+  // below) — so an explicit `--reference` wipe deletes the join rows before either
+  // parent and never trips the Restrict FK.
+  "recipeIngredient",
+  "recipe",
+  // NEW-003 raw-ingredient inventory (stock slice) — the restaurant's catalog of
+  // raw ingredients + on-hand stock + low-stock thresholds (NEW-035 adds a per-unit
+  // cost). Operational reference/config data (like `staff` and the schedule
+  // templates): a routine `db clean` must NOT nuke the ingredient catalog and force
+  // re-entering every flour/meat row + threshold. Now a parent of `recipeIngredient`
+  // (onDelete Restrict), so it is listed AFTER the join above for child-first
+  // FK-safety. Mutable stock/cost live on the row, but the row's IDENTITY is
+  // reference data (staff rows likewise carry mutable fields) — so it belongs in
+  // REFERENCE, preserved unless `--reference`/`--all`.
+  "ingredient",
+  // NEW-005 daily specials / promo-of-the-day — a Medusa finished-good featured for a
+  // given business-day, optionally at a promo price with a pt-BR headline. AUTHORED
+  // config/reference data (a manager curates the day's specials, like the ingredient
+  // and recipe catalogs): a routine `db clean` must NOT nuke it. No FK to any other
+  // domain table (the product is Medusa-managed, held as a soft id), so ordering within
+  // this group is free — placed next to ingredient/recipe as sibling authored config.
+  "dailySpecial",
 ] as const
 
 /**

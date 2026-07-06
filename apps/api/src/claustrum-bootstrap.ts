@@ -34,6 +34,7 @@
 //     any `ctx.adjudicate(...)` calls and verify `ctx` is a Capsule, not a kernel
 //     RuntimeContext.
 
+import { randomBytes } from "node:crypto";
 import Anthropic from "@anthropic-ai/sdk";
 import { Pool } from "pg";
 import {
@@ -63,14 +64,15 @@ import {
   createPostgresMemoryProvider,
   PostgresAdvisorySessionLock,
   type PrismaClientLike,
-  type RedisClientLike,
 } from "@claustrum/memory-postgres";
 import { createPgVectorGroundingProvider } from "@claustrum/grounding-pgvector";
+import { toMemoryRedisClient } from "./claustrum/memory-redis-adapter.js";
 import { failSafeGrounding } from "./claustrum/fail-safe-grounding.js";
 import { failSafeMemory } from "./claustrum/fail-safe-memory.js";
 import { noopGroundingProvider, noopMemoryProvider } from "./claustrum/noop-memory-grounding.js";
 import { OllamaFetchClient } from "./claustrum/ollama-fetch-client.js";
 import { providerCanEmbed } from "./claustrum/provider-embed-capability.js";
+import type { StoreHoursRead } from "./claustrum/turn-reads.js";
 import { WhatsAppChannel } from "@claustrum/channel-whatsapp";
 import { WebChannel } from "@claustrum/channel-web";
 
@@ -104,19 +106,58 @@ import {
   type RedisPubSubClient,
 } from "@adjudicate/audit";
 
-import { prisma, createOrderQueryService, createPaymentQueryService } from "@ibatexas/domain";
+import { prisma, claustrumMemoryPrisma, createOrderCommandService, createOrderQueryService, createOrderEventLogService, createPaymentCommandService, createPaymentQueryService, createOpsAlertService, createIncidentService } from "@ibatexas/domain";
 import { rehydratePaymentState } from "@ibatexas/pack-payments";
-import { emitLlmCall, getRedisClient, rk } from "@ibatexas/tools";
+import {
+  emitLlmCall,
+  getRedisClient,
+  getScheduleSignal,
+  getTodayHoursText,
+  loadSchedule,
+  rk,
+  type ScheduleSignal,
+  // BKL-027 read-tool executors (advertised read tools, run in the one-hop loop).
+  getCart,
+  checkOrderStatus,
+  checkPaymentStatus,
+  getOrderHistory,
+  getPaymentHistory,
+  getRecommendations,
+  getCustomerProfile,
+  getAlsoAdded,
+  getOrderedTogether,
+  checkTableAvailability,
+  getMyReservations,
+  // NEW-032 ops plane — admin product read + kernel-gated egress.
+  medusaAdmin,
+  medusaAdjudicated,
+} from "@ibatexas/tools";
+import type { AgentContext, UserType } from "@ibatexas/types";
 import { publishNatsEvent } from "@ibatexas/nats-client";
 import { AGENT_REGISTRY } from "@ibatexas/agents";
 // Managed-agent plane (T3-9) — composed + started behind IBX_AGENTS_ENABLED.
 import { SystemChannel } from "./claustrum/system-channel.js";
 import {
   createAgentApprovalEngine,
+  deriveAgentApprovalOutcome,
   type AgentApprovalEngine,
   type AgentApprovalRequest,
   type AgentApprovalStatus,
 } from "./claustrum/agent-approvals.js";
+// AUT-017 — the ESCALATE→OWNER-approve→resume loop for money intents. The park
+// store backs the HandoffPort's ESCALATE park; the approval module + gateway
+// resume it through the audited kernel. NOT gated by IBX_AGENTS_ENABLED (works
+// with the agent plane OFF; Redis-backed so a park survives a restart).
+import {
+  getEscalationParkStore,
+  buildEscalationParkInput,
+  ESCALATION_RESUMABLE_KINDS,
+} from "./escalation/escalation-park-store.js";
+import {
+  createEscalationApprovalEngine,
+  type EscalationApprovalGateway,
+} from "./escalation/escalation-approval.js";
+import { getEscalationStore } from "./escalation/escalation-store.js";
 // H2 (ERDS-061/062) — mirror the agent-approval registry into the adjudicate
 // Redis registry (shared keyPrefix adjudicate:approval) so the adjudicate
 // console/adjutant operator UIs read agent approvals. Best-effort, fail-open.
@@ -131,6 +172,7 @@ import {
   startManagedAgentPlane,
 } from "./claustrum/managed-agent-plane.js";
 import type { AgentPlane } from "./claustrum/agent-plane.js";
+import type { AgentKillSwitchManager } from "./claustrum/agent-kill-switch.js";
 import type { LiveAgentConductorDeps } from "./claustrum/live-agent-conductor.js";
 import { createPostgresAgentRunJournal } from "./claustrum/agent-run-journal.js";
 import { createRefundCircuitBreaker } from "./claustrum/agent-realmoney-safety.js";
@@ -174,7 +216,7 @@ import {
 } from "@adjudicate/core/kernel";
 import { createIbatexasMetricsSink } from "./observability/metrics-sink.js";
 import { logger } from "./lib/logger.js";
-// The five first-party packs are named in exactly ONE site —
+// The six first-party packs are named in exactly ONE site —
 // @ibatexas/packs-composed (a workspace package, so the CLI/journeys gates
 // can consume the same composition; an apps/api export is unreachable from
 // packages/*). The pix lifecycle pack is the platform adopter pack (ADR #13),
@@ -187,6 +229,7 @@ import {
 import { paymentsPixPack } from "@adjudicate/pack-payments-pix";
 import { requireSecret } from "./utils/require-secret.js";
 import { requireEnv } from "./utils/require-env.js";
+import { approvalDeepLink } from "./utils/admin-base-url.js";
 import {
   composePolicyRouter,
   resolveCapabilityPolicy,
@@ -206,7 +249,7 @@ import {
   createIbatexasPlanner,
   type ClaimAwarePlannerPort,
 } from "./claustrum/ibatexas-planner.js";
-import { buildClaimsSeams } from "./claustrum/claims-pipeline.js";
+import { buildClaimsSeams, warnOncePerMessage } from "./claustrum/claims-pipeline.js";
 import { createIbatexasResponder } from "./claustrum/ibatexas-responder.js";
 import { createIbatexasPromptComposer } from "./claustrum/prompts/ibatexas-prompts.js";
 import {
@@ -225,7 +268,10 @@ import {
   type TokenUsageStore,
 } from "@adjudicate/adapter-core";
 import {
+  channelFromKind,
+  isGuestCustomerId,
   listIbatexasToolPacks,
+  readToolRosterDrift,
   registerIbatexasToolPacks,
   toolRosterDrift,
 } from "./tools/register-ibatexas-tool-packs.js";
@@ -234,16 +280,58 @@ import {
   postgresReaderFromPool,
   type AuditReadPaths,
 } from "./claustrum/audit-read-paths.js";
+// ── NEW-032 ops-actor conductor plane (slice B) ─────────────────────────────
+import type { StaffEnvelopeActor } from "./claustrum/ibatexas-planner.js";
+import {
+  composeOpsConductor,
+  opsPlaneDriftProblems,
+  type OpsConductorContext,
+  type OpsConductorDeps,
+} from "./ops/ops-conductor.js";
+import {
+  createOpsToolRegistry,
+  listOpsToolDefinitions,
+  executeRefund,
+  type OpsToolRegistryDeps,
+} from "./ops/ops-tool-registry.js";
+import type { PaymentRefundIssuePayload } from "@ibatexas/pack-payments";
+import {
+  createOpsResolver,
+  buildOpsRefundResumeState,
+  buildOpsPriceResumeState,
+} from "./ops/ops-resolver.js";
+import {
+  readOpsProductPricing,
+  computeOpsPricingSnapshot,
+} from "./ops/ops-price-read.js";
+import { OpsSystemChannel } from "./ops/ops-system-channel.js";
+import type { OrderCandidate } from "./ops/ops-order-resolution.js";
+import {
+  createOpsSnapshotReadExecutor,
+  createSalesAnalyticsReadExecutor,
+  OPS_SNAPSHOT_READ_TOOL,
+  OPS_SALES_ANALYTICS_READ_TOOL,
+} from "./ops/ops-read-executor.js";
 
 // ── Singleton ────────────────────────────────────────────────────────────────
 
 let _conductor: Conductor | null = null;
+// NEW-032 ops-actor conductor factory (slice B). Null until bootstrapClaustrum()
+// composes it; `getOpsConductorFactory()` exposes it to the ops ingress route.
+let _opsConductorFactory:
+  | ((actor: StaffEnvelopeActor, context?: OpsConductorContext) => Conductor)
+  | null = null;
 // Managed-agent plane singleton (T3-9). Null unless IBX_AGENTS_ENABLED started it.
 let _agentPlane: AgentPlane | null = null;
 // Stage-1 approval engine (T3-7). Hoisted so the staff HTTP approvals route
 // (routes/admin/agent-approvals.ts, WS-D1) can reach the SAME in-memory parked
 // store the plane uses. Null unless IBX_AGENTS_ENABLED created it.
 let _agentApprovals: AgentApprovalEngine | null = null;
+// AUT-017 — the ESCALATE→OWNER-approve→resume gateway. Built once at bootstrap
+// (below), NOT gated by IBX_AGENTS_ENABLED: it must work with the agent plane OFF
+// and survive restarts (Redis-backed park). The staff resolve route reaches it
+// via getEscalationApprovalGateway(). Null only before bootstrapClaustrum() runs.
+let _escalationApprovalGateway: EscalationApprovalGateway | null = null;
 // P4 proposal writer (set when the plane boots). The gateway's resolve updates
 // the remediation_proposal status so the adjutant projection reflects it.
 let _proposalWriter: ReturnType<typeof createRemediationProposalWriter> | null = null;
@@ -263,6 +351,25 @@ export function getConductor(): Conductor {
     );
   }
   return _conductor;
+}
+
+/**
+ * The NEW-032 ops-actor conductor factory: given the authenticated
+ * `{ staffId, role }` (captured from the JWT at ingress), compose the per-request
+ * OPS conductor (the H1 recomposition idiom). The ops ingress route
+ * (routes/admin/ops-chat.ts) calls this per turn. Throws if bootstrapClaustrum()
+ * has not run (same contract as {@link getConductor}).
+ */
+export function getOpsConductorFactory(): (
+  actor: StaffEnvelopeActor,
+  context?: OpsConductorContext,
+) => Conductor {
+  if (!_opsConductorFactory) {
+    throw new Error(
+      "Ops conductor factory not initialized. Call bootstrapClaustrum() in server.ts before serving requests.",
+    );
+  }
+  return _opsConductorFactory;
 }
 
 // ── Stage-1 agent approvals — HTTP gateway (WS-D1) ───────────────────────────
@@ -349,16 +456,44 @@ export function getAgentApprovalGateway(): AgentApprovalGateway | null {
         },
         sink: getAuditSink(),
       });
-      // P4: reflect the resolution in the remediation_proposal so the adjutant
-      // projection shows executed/declined (best-effort; never blocks resolve).
+      // P4 + BKL-104: reflect the resolution in the remediation_proposal so the
+      // adjutant projection shows executed/declined — but HONESTLY. A prior
+      // `accepted ? "executed" : "declined"` marked "executed" on ANY accept even
+      // when the kernel re-adjudicated to REFUSE/re-park/ESCALATE (a confabulation
+      // in the projection). Derive the true outcome from the SAME decision the
+      // route surfaces; only a genuine EXECUTE/REWRITE is "executed". Best-effort;
+      // never blocks resolve.
+      const proposalOutcome = deriveAgentApprovalOutcome(accepted, result.decision);
       await _proposalWriter?.markResolvedByToken(
         token,
-        accepted ? "executed" : "declined",
+        proposalOutcome.status === "executed" ? "executed" : "declined",
         new Date().toISOString(),
       );
       return result;
     },
   };
+}
+
+/**
+ * The staff escalation-approval gateway (AUT-017), or null before
+ * `bootstrapClaustrum()` has wired it. Unlike the agent gateway this is NOT
+ * gated by IBX_AGENTS_ENABLED — the ESCALATE→approve→resume loop works with the
+ * agent plane OFF (the park is Redis-backed and survives restarts). The staff
+ * resolve route (routes/admin/escalations.ts) calls this.
+ */
+export function getEscalationApprovalGateway(): EscalationApprovalGateway | null {
+  return _escalationApprovalGateway;
+}
+
+/**
+ * The per-agent kill-switch manager, or null when the managed-agent plane is
+ * not enabled (IBX_AGENTS_ENABLED unset → no plane composed). The operator
+ * control routes (routes/admin/agents-kill-switch.ts) return 503 when it is
+ * null. Read lazily off the live plane so it always reflects the current
+ * wiring (same contract as {@link getAgentApprovalGateway}).
+ */
+export function getAgentKillSwitchManager(): AgentKillSwitchManager | null {
+  return _agentPlane?.killSwitch ?? null;
 }
 
 // ── Injectable seams (T2-6a — scripted-pipeline harness) ────────────────────
@@ -412,6 +547,31 @@ export interface ClaustrumBootstrapOptions {
    * the `@ibatexas/tools` singleton via `getRedisClient()` (`REDIS_URL`).
    */
   readonly redis?: Awaited<ReturnType<typeof getRedisClient>>;
+  /**
+   * Per-turn structured closed-hours signal source for the planner + responder
+   * (fix B, Stage 1). Default: the production resolver (Redis read-through
+   * `loadSchedule()` + env timezone → {@link getScheduleSignal}). Injectable so
+   * deterministic suites (e.g. the content-addressed golden-conversation
+   * pipeline) can PIN it — the production resolver depends on wall-clock time, so
+   * leaving it default would make the composed prompt non-deterministic. Return
+   * `undefined` to disable the closed-hours grounding/backstop entirely.
+   */
+  readonly resolveScheduleSignal?: () =>
+    | Promise<ScheduleSignal | undefined>
+    | ScheduleSignal
+    | undefined;
+  /**
+   * BKL-121 — per-turn TODAY's operating-hours source for the claim planner's
+   * STORE_HOURS tag-then-derive. Default: the production resolver (Redis read-through
+   * `loadSchedule()` + env timezone → {@link getTodayHoursText}). Injectable so
+   * deterministic suites can PIN it (the production resolver depends on wall-clock
+   * time). Return `undefined` to leave a STORE_HOURS candidate value-undefined (C6
+   * ABSTAIN → honest UNKNOWN).
+   */
+  readonly resolveStoreHours?: () =>
+    | Promise<StoreHoursRead | undefined>
+    | StoreHoursRead
+    | undefined;
 }
 
 /**
@@ -499,6 +659,12 @@ export async function resetClaustrumForTests(): Promise<ClaustrumResetReport> {
 
   const conductorCleared = _conductor !== null;
   _conductor = null;
+  // NEW-032: the ops conductor factory closes over the same boot ports as the
+  // main conductor, so clear it on the same beat (a re-bootstrap rebuilds it).
+  _opsConductorFactory = null;
+  // AUT-017: the escalation-approval gateway closes over the same boot deps; clear
+  // it on the same beat (a re-bootstrap rebuilds it after opsRegistryDeps).
+  _escalationApprovalGateway = null;
 
   let pgPoolEnded = false;
   if (_pgPool && _ownsPgPool && !_pgPool.ended) {
@@ -580,6 +746,77 @@ async function enrichResumeState(
   envelope: IntentEnvelope,
   state: unknown,
 ): Promise<unknown> {
+  // BKL-085 — the OPS-plane confirm-resume (an `admin:`-session `payment.refund.issue`
+  // parked by the UNTRUSTED-taint overlay) re-projects its own PaymentState from the
+  // payment row, NOT the customer-scoped `resolveAndAssemble` below (whose reads are
+  // scoped to a real `customerId`; the ops plane's `staff:<id>`/`admin:<id>` owns no
+  // customer resources, so that path would project `exists:false` and REFUSE a valid
+  // "sim"). The parked payload's `paymentId` was DB-stamped by the ops resolver
+  // (trusted); a FRESH read here is money-safe (a since-parked terminal / partial
+  // refund still REFUSEs via the terminal guard / the divergence check).
+  if (
+    envelope.kind === "payment.refund.issue" &&
+    envelope.actor.sessionId.startsWith("admin:")
+  ) {
+    const payload = (envelope.payload ?? {}) as Record<string, unknown>;
+    const paymentId =
+      typeof payload.paymentId === "string" ? payload.paymentId : "";
+    if (paymentId === "") return buildOpsRefundResumeState(null, (process.env.KERNEL_TENANT_ID ?? "ibatexas"));
+    try {
+      const p = await createPaymentQueryService().getById(paymentId);
+      return buildOpsRefundResumeState(
+        p === null
+          ? null
+          : {
+              status: p.status,
+              amountInCentavos: p.amountInCentavos,
+              refundedAmountCentavos: p.refundedAmountCentavos ?? 0,
+              method: p.method,
+              version: p.version,
+              orderId: p.orderId,
+            },
+        (process.env.KERNEL_TENANT_ID ?? "ibatexas"),
+      );
+    } catch {
+      // Fail-closed: a read error re-projects a not-found state ⇒ REFUSE, never
+      // a stale/authorized resume.
+      return buildOpsRefundResumeState(null, (process.env.KERNEL_TENANT_ID ?? "ibatexas"));
+    }
+  }
+
+  // NEW-004 — the OPS-plane price confirm-resume (an `admin:`-session
+  // `product.price.set` parked by the UNTRUSTED-taint CONFIRM overlay)
+  // re-projects its own `{ ctx, priceProduct }` from a FRESH pricing read of the
+  // parked (resolver-rewritten, trusted) productId — NOT the customer-scoped
+  // `resolveAndAssemble` below (the ops plane's `staff:<id>` owns no products, so
+  // that path would project priceProduct absent and REFUSE a valid "sim"). The
+  // fresh read is safe: a since-parked change to differently-priced variants / a
+  // vanished product REFUSEs on resume via the uniform / existence guards.
+  if (
+    envelope.kind === "product.price.set" &&
+    envelope.actor.sessionId.startsWith("admin:")
+  ) {
+    const tenantId = process.env.KERNEL_TENANT_ID ?? "ibatexas";
+    // The parked envelope's actor.sessionId is `admin:<staffId>` (stamped by the
+    // planner from the authenticated JWT); the staffId is the suffix.
+    const staffId = envelope.actor.sessionId.slice("admin:".length);
+    const payload = (envelope.payload ?? {}) as Record<string, unknown>;
+    const productId =
+      typeof payload.productId === "string" ? payload.productId : "";
+    if (productId === "") {
+      return buildOpsPriceResumeState(null, { staffId, tenantId });
+    }
+    try {
+      const pricing = computeOpsPricingSnapshot(
+        await readOpsProductPricing(medusaAdmin, productId),
+      );
+      return buildOpsPriceResumeState(pricing, { staffId, tenantId });
+    } catch {
+      // Fail-closed: a read error re-projects a not-found state ⇒ REFUSE.
+      return buildOpsPriceResumeState(null, { staffId, tenantId });
+    }
+  }
+
   const s = state as { channel?: string; customerId?: string };
   if (typeof s.customerId !== "string" || typeof s.channel !== "string") {
     return state;
@@ -672,16 +909,25 @@ export function buildAdjudicator(deps: AdjudicatorBridgeDeps): Adjudicator {
         receipt,
       );
     },
-    async adjudicatePlan(envelopes, state, policy): Promise<Decision> {
+    async adjudicatePlan(envelopes, state, policy, perEnvelopeStates): Promise<Decision> {
       // @adjudicate/core 1.x exposes only the single-envelope verb; serialize
       // multi-envelope plans (kill-all-or-execute-all). When 2.x ships
       // `adjudicatePlan` natively, swap this out.
+      //
+      // F4/L4 (BKL-029): the conductor resolves a distinct SystemState per
+      // envelope (order-aligned `perEnvelopeStates`) and passes it as the 4th
+      // arg per the Adjudicator port contract. Adjudicate `envelopes[i]`
+      // against `perEnvelopeStates[i] ?? state` — so a genuinely decomposed
+      // compound message ("add 2 tacos e vocês abrem até 22h?") no longer
+      // adjudicates every envelope against one shared ctx (which made any
+      // friction-verb envelope panic-REFUSE on the wrong resolved state).
+      // Omitted (the common single-state case) → every envelope uses `state`.
       let last: Decision | undefined;
-      for (const env of envelopes) {
+      for (let i = 0; i < envelopes.length; i++) {
         last = await safeAuditedAdjudicate(
           deps,
-          env as IntentEnvelope,
-          state,
+          envelopes[i] as IntentEnvelope,
+          perEnvelopeStates?.[i] ?? state,
           policy,
         );
         const d = last as { kind?: string };
@@ -844,7 +1090,7 @@ function installFirstPartyPacks(): SealablePackInput[] {
   // installPack is the kernel-side variant; the runtime never reaches in to
   // mutate the registry — it's a one-time boot step.
   //
-  // The five first-party packs come from the single composition site
+  // The six first-party packs come from the single composition site
   // (@ibatexas/packs-composed) plus the platform pix adopter pack. A pack
   // that fails to install (conformance drift, double-install) is logged and
   // skipped — the F5 seal gate catches a pinned pack that did not install.
@@ -1042,21 +1288,75 @@ export function ibatexasExplainer(): ExplainerPort {
  * without a broker. NOTE: JOURNEY-003 (checkout-failure-recovery) stays blocked
  * on `chat-confirmation-resume` — T3-8 closes only `handoff-port-noop`; no phase
  * closes the web confirmation-resume product gap.
+ *
+ * AUT-017 — the ESCALATE PARK seam. When `parkDeps` is wired AND the escalated
+ * kind is resumable (`ESCALATION_RESUMABLE_KINDS`, today only the above-threshold
+ * staff refund), the FULL envelope is parked BEFORE the publish; only the opaque
+ * `parkToken` + `intentHash` + a pt-BR summary ride the NATS event (the payload
+ * itself NEVER does). An OWNER can then approve-and-execute it from the escalações
+ * surface. A park FAILURE degrades to today's park-less escalation (logged) —
+ * `queue()` still MUST NOT throw (a throw surfaces as `handoff_threw` instead of
+ * the intended ESCALATE).
  */
+export interface HandoffParkDeps {
+  park: (envelope: IntentEnvelope) => Promise<{
+    readonly token: string;
+    readonly intentHash: string;
+    readonly summaryPtBr: string;
+  }>;
+}
+
 export function natsHandoff(
   publish: (
     event: string,
     payload: Record<string, unknown>,
   ) => Promise<void> = publishNatsEvent,
+  parkDeps?: HandoffParkDeps,
 ): HandoffPort {
   return {
     async queue(envelope: IntentEnvelope, reason: string): Promise<void> {
       const sessionId = envelope.actor.sessionId;
+      // AUT-017 — park the resumable money intent BEFORE the publish (fail-soft).
+      let parkInfo:
+        | { token: string; intentHash: string; summaryPtBr: string }
+        | undefined;
+      if (parkDeps && ESCALATION_RESUMABLE_KINDS.has(String(envelope.kind))) {
+        try {
+          parkInfo = await parkDeps.park(envelope);
+          logger.info(
+            {
+              component: "handoff",
+              sessionId,
+              intentKind: envelope.kind,
+              parkToken: parkInfo.token,
+            },
+            "ESCALATE → resumable money intent parked for OWNER approval (AUT-017)",
+          );
+        } catch (err) {
+          // Degrade to a park-less escalation — never block/queue-throw the ESCALATE.
+          logger.error(
+            {
+              component: "handoff",
+              sessionId,
+              intentKind: envelope.kind,
+              err: String(err),
+            },
+            "escalation park failed (degrading to park-less escalation — queue() must not throw)",
+          );
+        }
+      }
       try {
         await publish("support.handoff_requested", {
           sessionId,
           reason,
           intentKind: envelope.kind,
+          ...(parkInfo
+            ? {
+                parkToken: parkInfo.token,
+                intentHash: parkInfo.intentHash,
+                summaryPtBr: parkInfo.summaryPtBr,
+              }
+            : {}),
         });
         logger.info(
           { component: "handoff", sessionId, intentKind: envelope.kind, reason },
@@ -1159,14 +1459,16 @@ export function policyForKind(
  * the chat planner (they are staff-route only) — a documented follow-up if a
  * staff chat surface is ever wired.
  */
-const PLANNER_GUEST_ID_PREFIXES = ["guest:", "anon:", "anonymous:"] as const;
-
 function plannerCustomerIdFromState(state: CognitiveState): string | null {
   const raw = (state.memory as { customerId?: unknown } | undefined)?.customerId;
   if (typeof raw !== "string") return null;
   const id = raw.trim();
-  if (id === "") return null;
-  if (PLANNER_GUEST_ID_PREFIXES.some((p) => id.startsWith(p))) return null;
+  // A guest/anon-marker or empty id is NOT a real customer → null. Reuses the
+  // exported guest-convention predicate from the tool registry (A3) so the
+  // planner's willingness-to-propose can never drift from the read-executor
+  // identity scope. `isGuestCustomerId` treats empty/whitespace as guest, so
+  // the prior explicit `id === ""` guard is subsumed.
+  if (isGuestCustomerId(id)) return null;
   return id;
 }
 
@@ -1197,6 +1499,232 @@ export function deriveIbatexasPlannerContext(state: CognitiveState): {
     context: {},
   };
 }
+
+// ── BKL-027 (F2) — read-tool executor registry ────────────────────────────────
+//
+// The chat planner advertises read tools but, single-pass, never runs them. The
+// one-hop read-loop in createIbatexasPlanner executes the model's read calls via
+// this map, OWNER-SCOPED to the turn's authenticated customer. Identity is
+// derived from the SAME CognitiveState the planner uses (agentCtxFromState),
+// mirroring deriveIbatexasPlannerContext: a guest/anon id yields customerId
+// undefined, so owner-scoped reads reject (never leak another customer's data).
+
+/**
+ * Per-turn AgentContext for a read executor, sourced from CognitiveState (NOT a
+ * Capsule — the planner is a process-wide singleton with no per-turn Capsule).
+ * Mirrors `agentCtxFromCapsule` but reads the recalled memory snapshot; staff is
+ * never inferred here (CognitiveState carries no actor role), matching the
+ * planner's `staffId: null`.
+ */
+export function agentCtxFromState(state: CognitiveState): AgentContext {
+  const customerId = plannerCustomerIdFromState(state);
+  return {
+    channel: channelFromKind(state.perception.channel),
+    sessionId: state.conversationId,
+    ...(customerId ? { customerId } : {}),
+    userType: (customerId ? "customer" : "guest") as UserType,
+  };
+}
+
+/**
+ * IDOR guard for the ONE input-scoped read (get_my_reservations): SET the input
+ * `customerId` to the AUTHENTICATED one, overriding any model-supplied value and
+ * ADDING the key when absent. get_my_reservations' schema REQUIRES customerId, so
+ * for a guest (ctx.customerId undefined) this writes `customerId: undefined` and
+ * the schema parse then throws → guests are correctly denied.
+ *
+ * NOT a no-op when input lacks customerId — it always writes the key on an object
+ * input. Never use this on the ctx-scoped reads (their schemas are strict `{}`
+ * and reject any extra key, incl. `customerId: undefined`); those use
+ * `stripModelOwner` instead. Non-object input passes through unchanged.
+ */
+export function withAuthenticatedOwner(input: unknown, ctx: AgentContext): unknown {
+  if (input !== null && typeof input === "object") {
+    return { ...(input as Record<string, unknown>), customerId: ctx.customerId };
+  }
+  return input;
+}
+
+/**
+ * IDOR defense for the ctx-scoped reads: REMOVE any model-supplied `customerId`
+ * own-key from the input, never adding one. These handlers scope ownership by
+ * `ctx.customerId` (the authenticated identity) and ignore input.customerId, so a
+ * model-forged id is defence-in-depth stripped here. Critically, several of these
+ * reads validate against a strict-empty schema (`z.strictObject({})` —
+ * get_order_history, get_my_profile/get_my_preferences via getCustomerProfile)
+ * that REJECTS any extra key, including `customerId: undefined`; stripping (rather
+ * than setting) the key is what lets those strict parses succeed. Non-object
+ * input passes through unchanged.
+ */
+export function stripModelOwner(input: unknown): unknown {
+  if (input !== null && typeof input === "object" && !Array.isArray(input)) {
+    const { customerId: _dropped, ...rest } = input as Record<string, unknown>;
+    return rest;
+  }
+  return input;
+}
+
+/**
+ * BKL-107 — does this (owner-stripped) read input name a concrete order to
+ * resolve? A guest "cadê meu pedido?" reaches the check_order_status executor with
+ * `{}` (no orderId); the underlying handler's schema REQUIRES orderId, so it would
+ * THROW `invalid_type: orderId expected string, received undefined` — a message the
+ * one-hop read-loop then feeds back as an "(indisponível: …)" blob the planner
+ * FABRICATES around (BKL-003 live: "O seu pedido continua sendo processado" with no
+ * order in hand). Detecting the empty case up front lets the executor return a typed
+ * empty fact the renderer can voice honestly. Pure. BKL-118 reuses this same
+ * predicate for the sibling get_payment_status executor — checkPaymentStatus keys
+ * its read on the identical `orderId`, so "no order to resolve" ⇒ "no payment to
+ * resolve" without loosening the predicate's meaning.
+ */
+function hasResolvableOrderId(input: unknown): input is { orderId: string } {
+  return (
+    input !== null &&
+    typeof input === "object" &&
+    typeof (input as { orderId?: unknown }).orderId === "string" &&
+    (input as { orderId: string }).orderId.trim().length > 0
+  );
+}
+
+/**
+ * Advertised-read-tool NAME → owner-scoped executor. Keys are the 12 advertised
+ * read-tool names, each with a backing @ibatexas/tools handler (4 are aliases:
+ * check_availability→checkTableAvailability, get_payment_status→checkPaymentStatus,
+ * get_my_profile→getCustomerProfile, get_my_preferences→getCustomerProfile — the
+ * profile is a superset incl. owner-scoped dietary/allergen prefs). BKL-071 wired
+ * the last dangling advertised read, get_payment_history (the get-payment-history
+ * handler, owner-scoped via ctx.customerId over paymentQueryService.listByCustomer),
+ * so the advertised read surface is now 12/12 covered and the one-hop enrichment
+ * loop can execute every advertised read. The fail-closed readToolRosterDrift boot
+ * gate (register-ibatexas-tool-packs.ts, run right after toolRosterDrift) keeps
+ * that invariant — a future pack-side read with no executor fails the boot.
+ */
+export const IBATEXAS_READ_TOOL_EXECUTORS: Readonly<
+  Record<string, (input: unknown, state: CognitiveState) => Promise<unknown>>
+> = {
+  // A2 (IDOR) — the cart is determined by the AUTHENTICATED session, NEVER by a
+  // model-supplied cartId. A relayed victim cartId (a null-owner guest cart passes
+  // assert-cart-ownership for ANY caller) would otherwise leak. Resolve the
+  // session's OWN active cart id from Redis (the SAME key resolve-and-assemble
+  // writes/reads) and fetch only that; the model's `input.cartId` is ignored.
+  get_cart: async (_input, state) => {
+    const ctx = agentCtxFromState(state);
+    const redis = await getRedisClient();
+    const cartId = await redis.get(rk(`cart:active:session:${state.conversationId}`));
+    if (!cartId) {
+      // No active cart for this session — never call Medusa on a model-chosen id.
+      return { cart: null, note: "nenhum carrinho ativo nesta sessão" };
+    }
+    return getCart({ cartId } as never, ctx);
+  },
+  // The remaining ctx-scoped reads scope ownership by ctx.customerId and ignore
+  // input.customerId; stripModelOwner removes a model-forged id (defence-in-depth)
+  // AND lets the strict-`{}` schemas (get_order_history, get_my_profile/
+  // get_my_preferences) parse — injecting `customerId` would make them throw.
+  // BKL-107 — a session that cannot resolve an owner-scoped order owns nothing to
+  // report: a GUEST/unauthenticated turn (no ctx.customerId — a guest owns no
+  // order) OR an authenticated owner whose call carries no orderId. Both would
+  // otherwise THROW inside checkOrderStatus (the schema parse rejects a missing
+  // orderId; the auth check rejects the guest) and the one-hop read-loop feeds that
+  // thrown message back as an "(indisponível: …)" error blob the planner fabricates
+  // around. Return a TYPED empty fact instead so the enrichment carries an honest
+  // "no orders for this session" (mirrors get_cart's null-with-marker shape). The
+  // AUTHENTICATED-owner + orderId path is UNTOUCHED → real status byte-identical,
+  // and checkOrderStatus's assertOrderOwnership IDOR guard still runs there; a guest
+  // with a model-forged orderId is short-circuited to empty here, so it can never
+  // reach a foreign order.
+  check_order_status: (input, state) => {
+    const ctx = agentCtxFromState(state);
+    const stripped = stripModelOwner(input);
+    if (!ctx.customerId || !hasResolvableOrderId(stripped)) {
+      return Promise.resolve({ order: null, reason: "no_orders_for_session" });
+    }
+    return checkOrderStatus(stripped as never, ctx);
+  },
+  // BKL-118 — the billing twin of the BKL-107 check_order_status short-circuit.
+  // get_payment_status delegates to checkPaymentStatus, whose handler REQUIRES an
+  // authenticated owner (it throws NonRetryableError("Autenticação necessária.")
+  // when !ctx.customerId) and an orderId to key the payment read. A guest ("meu
+  // pagamento caiu?") reaches here with `{}`: pre-fix that threw the auth error, and
+  // the one-hop read-loop fed the thrown message back as an "(indisponível: …)" blob
+  // the planner FABRICATES a payment status around (same class as BKL-003). A session
+  // that cannot resolve an owner-scoped order owns no payment to report — a GUEST/
+  // unauthenticated turn (no ctx.customerId) OR an authenticated owner whose call
+  // carries no orderId — so return a TYPED empty fact instead. `payment: null`
+  // mirrors the sibling `order: null` null-with-marker shape and is an epistemic
+  // "nothing scoped to you", NEVER a world-fact assertion that no payment EXISTS (a
+  // guest may well have one they simply cannot see) — which keeps the read sound. The
+  // AUTHENTICATED-owner + orderId path is UNTOUCHED → real status byte-identical, and
+  // checkPaymentStatus's withOrderOwnership/assertOrderOwnership IDOR guard still runs
+  // there; a guest with a model-forged orderId is short-circuited to empty here, so it
+  // can never reach a foreign order.
+  get_payment_status: (input, state) => {
+    const ctx = agentCtxFromState(state);
+    const stripped = stripModelOwner(input);
+    if (!ctx.customerId || !hasResolvableOrderId(stripped)) {
+      return Promise.resolve({ payment: null, reason: "no_payment_for_session" });
+    }
+    return checkPaymentStatus(stripped as never, ctx);
+  },
+  get_order_history: (input, state) => {
+    const ctx = agentCtxFromState(state);
+    return getOrderHistory(stripModelOwner(input) as never, ctx);
+  },
+  // BKL-071 — the billing twin of get_order_history: the customer's whole payment
+  // history across all their orders, owner-scoped via ctx.customerId (the handler
+  // refuses an unauthenticated session BEFORE the join, closing the IDOR that a
+  // `customerId: undefined` no-op filter would open). strict-`{}` schema, so
+  // stripModelOwner must run (an injected customerId would make it throw).
+  get_payment_history: (input, state) => {
+    const ctx = agentCtxFromState(state);
+    return getPaymentHistory(stripModelOwner(input) as never, ctx);
+  },
+  get_recommendations: (input, state) => {
+    const ctx = agentCtxFromState(state);
+    return getRecommendations(stripModelOwner(input) as never, ctx);
+  },
+  get_my_profile: (input, state) => {
+    const ctx = agentCtxFromState(state);
+    return getCustomerProfile(stripModelOwner(input) as never, ctx);
+  },
+  // BKL-071 — the customer-onboarding pack advertises get_my_preferences; there
+  // is no dedicated handler, but getCustomerProfile (getProfileData) already
+  // returns the owner-scoped customerPrefs, so this read resolves the profile
+  // (a superset incl. dietary/allergen prefs). Owner-scoped via ctx.customerId.
+  get_my_preferences: (input, state) => {
+    const ctx = agentCtxFromState(state);
+    return getCustomerProfile(stripModelOwner(input) as never, ctx);
+  },
+  get_also_added: (input, state) => {
+    const ctx = agentCtxFromState(state);
+    return getAlsoAdded(stripModelOwner(input) as never, ctx);
+  },
+  get_ordered_together: (input, state) => {
+    const ctx = agentCtxFromState(state);
+    return getOrderedTogether(stripModelOwner(input) as never, ctx);
+  },
+  // Public read — no owner scope, no ctx param.
+  check_availability: (input) => checkTableAvailability(input as never),
+  // The ONLY input-scoped read: its schema REQUIRES customerId. withAuthenticatedOwner
+  // SETS it to the authenticated id (guest → undefined → schema parse throws → denied).
+  get_my_reservations: (input, state) =>
+    getMyReservations(withAuthenticatedOwner(input, agentCtxFromState(state)) as never),
+  // NEW-032 (slice B): the ops situational-snapshot read. NEVER advertised on the
+  // chat plane — deriveIbatexasPlannerContext pins staffId:null, so the chat
+  // planner never offers it. Registered here ONLY to keep the fail-closed
+  // readToolRosterDrift boot gate green: opsCapabilityPlanner is in
+  // IBATEXAS_COMPOSED_CAPABILITY_PLANNERS, so that gate's STAFF probe now sees
+  // `ops_snapshot` advertised and requires an executor key. The executor is
+  // staff-data read-only (no owner scope, no mutation), so registering it here is
+  // safe even though it is unreachable on this plane.
+  [OPS_SNAPSHOT_READ_TOOL]: createOpsSnapshotReadExecutor(),
+  // NEW-012: the ops sales-analytics read — same posture as `ops_snapshot`. NEVER
+  // advertised on the chat plane (staffId:null); registered here ONLY so the
+  // STAFF probe of the fail-closed readToolRosterDrift boot gate stays green now
+  // that opsCapabilityPlanner advertises a SECOND staff read. Staff-data read-
+  // only (no owner scope, no mutation), so safe to register on this plane.
+  [OPS_SALES_ANALYTICS_READ_TOOL]: createSalesAnalyticsReadExecutor(),
+};
 
 // The decision-aware responder lives in ./claustrum/ibatexas-responder.ts
 // (createIbatexasResponder). The previous decision-blind `naiveResponder` —
@@ -1232,10 +1760,10 @@ function claustrumSessionKey(sessionId: string): string {
   return rk(`claustrum:session:${sessionId}`);
 }
 
-/** Guest-marker convention shared with the planner + tool registry. */
-function isGuestCustomerId(customerId: string): boolean {
-  return /^(guest|anon|anonymous):/i.test(customerId);
-}
+// Guest-marker convention (isGuestCustomerId) is imported from the tool registry
+// — the single source of truth shared with the planner + Capsule adapter (A3).
+// The session-TTL callers below (writeSession, emitTurn) pass a required-string
+// customerId; the imported predicate accepts `string | undefined` (a superset).
 
 // ── Per-session LLM token accounting (cost-cap seam, ADR-120 / F4) ──────────────
 // Both sides are now wired:
@@ -1413,6 +1941,20 @@ async function flushTurnTraces(
 }
 
 /**
+ * FORMAT-7: the honest chat model id for cost/telemetry fallbacks. Under
+ * LLM_PROVIDER=ollama the runtime runs a LOCAL model (LLM_MODEL), NOT
+ * ANTHROPIC_MODEL — stamping the Anthropic id (and its price map) there
+ * mislabels the model and fabricates a USD cost for a free local model.
+ * Mirrors the `chatModelId` resolved in bootstrapClaustrum. The per-turn
+ * LLMTrace model (pendingTraces) is still preferred when present.
+ */
+function resolvedChatModelId(): string {
+  return process.env.LLM_PROVIDER === "ollama"
+    ? process.env.LLM_MODEL ?? process.env.ANTHROPIC_MODEL ?? "nemotron-3-nano:4b"
+    : process.env.ANTHROPIC_MODEL ?? "claude-sonnet-4-6";
+}
+
+/**
  * Minimal Telemetry — emits to console (pino is wired up at the Fastify
  * layer). The full implementation will fan out to prom-client metrics
  * and the existing audit-sink subscriber.
@@ -1432,15 +1974,35 @@ function fastifyTelemetry(
   const MAX_PENDING_TURNS = 500;
   return {
     async emitTurn(record: TurnRecord) {
+      // SIGNAL-2: the conductor turn line is the one guaranteed stream-tagged
+      // per-turn record in VictoriaLogs — enrich it from fields ALREADY on the
+      // TurnRecord so a single `component:conductor turnId:<x>` query reconstructs
+      // the whole turn (channel, who, decision, intent, token cost, and the
+      // redacted inbound/outbound text). Free text is scrubbed through the SAME
+      // turn_trace PII redactor (BR-PII + CEP + 280-char cap); when no redactor
+      // is wired we OMIT the text rather than risk shipping raw PII to the store.
+      const clip = (t: string | undefined): string | undefined =>
+        t && turnTrace ? turnTrace.redactCompletion(t).slice(0, 280) : undefined;
       logger.info(
         {
           component: "conductor",
           event: "turn",
           correlationId: record.turnId,
           turnId: record.turnId,
+          conversationId: record.conversationId,
+          channel: record.channel,
+          customerId: record.customerId,
+          decisionKind: record.decisionKind,
+          intentHash: record.intentHash,
+          model: pendingTraces.get(record.turnId)?.[0]?.model ?? resolvedChatModelId(),
+          inputTokens: record.inputTokens,
+          outputTokens: record.outputTokens,
+          inbound: clip(record.inboundText),
+          response: clip(record.responseText),
+          ...(record.error ? { errorCode: record.error.code } : {}),
           durationMs: record.durationMs,
         },
-        `turn ${record.turnId} ${record.durationMs}ms`,
+        `turn ${record.decisionKind ?? "?"} ${record.channel} ${record.durationMs}ms`,
       );
       // Fold this turn's model token total (summed onto the TurnRecord by
       // claustrum's loop from plan.usage + draft.usage) into the per-session
@@ -1480,7 +2042,7 @@ function fastifyTelemetry(
           emitLlmCall({
             inputTokens: record.inputTokens ?? 0,
             outputTokens: record.outputTokens ?? 0,
-            model: process.env.ANTHROPIC_MODEL,
+            model: pendingTraces.get(record.turnId)?.[0]?.model ?? resolvedChatModelId(),
             source: "sut",
             sessionId: record.conversationId,
             duration: record.durationMs,
@@ -1515,8 +2077,7 @@ function fastifyTelemetry(
               channel: record.channel,
               model:
                 pendingTraces.get(record.turnId)?.[0]?.model ??
-                process.env.ANTHROPIC_MODEL ??
-                "claude-sonnet-4-6",
+                resolvedChatModelId(),
               promptTokens,
               completionTokens,
               recordedAt: record.at,
@@ -1678,7 +2239,11 @@ function resolveMemoryPort(
   adjudicator: Adjudicator,
 ) {
   const memDelegates = ["episodic", "semantic", "procedural", "relational"] as const;
-  const prismaForMemory = prisma as unknown as Record<
+  // DEF-005: probe the DEDICATED claustrum-memory Prisma client (generate-only
+  // mirror of the @claustrum-owned public-schema tables), NOT the domain client.
+  // The domain client must not declare these models (doing so would bring the
+  // unmanaged public schema under Prisma management — `db reset`/migrate hazard).
+  const prismaForMemory = claustrumMemoryPrisma as unknown as Record<
     string,
     { findMany?: unknown } | undefined
   >;
@@ -1688,7 +2253,7 @@ function resolveMemoryPort(
   if (!memoryDelegatesPresent) {
     logger.info(
       { component: "memory" },
-      "claustrum_memory_* delegates absent/incomplete on the domain Prisma client — memory port runs as a designed no-op (empty recall); see DEF-005",
+      "claustrum_memory_* delegates absent/incomplete on the dedicated memory Prisma client — memory port runs as a designed no-op (empty recall); see DEF-005",
     );
   }
   // Finding 33: the no-op provider never throws BY DESIGN, so wrapping it in
@@ -1698,8 +2263,11 @@ function resolveMemoryPort(
   return memoryDelegatesPresent
     ? failSafeMemory(
         createPostgresMemoryProvider({
-          prisma: prisma as unknown as PrismaClientLike,
-          redis: redis as unknown as RedisClientLike,
+          prisma: claustrumMemoryPrisma as unknown as PrismaClientLike,
+          // node-redis v4 → ioredis-shaped surface the provider expects (setex /
+          // pipeline). Without this shim recall's write-through threw on every
+          // cache-cold turn and degraded to empty. See memory-redis-adapter.ts.
+          redis: toMemoryRedisClient(redis),
           adjudicator,
         }),
         {
@@ -1733,8 +2301,10 @@ async function resolveGroundingPort(
       "CLAUSTRUM_GROUNDING_ENABLED=true but the model provider cannot embed — running grounding as a designed no-op (empty retrieval); wire a working embedding proxy to enable it. See DEF-005",
     );
   } else if (!groundingEnabled) {
-    logger.info(
-      { component: "grounding" },
+    // NOISE-9: a DESIGNED, config-driven no-op — debug, not info (it fired on
+    // every boot). The grounding-enabled-but-can't-embed branch above stays warn.
+    logger.debug(
+      { component: "grounding", event: "disabled" },
       "embeddings unavailable (CLAUSTRUM_GROUNDING_ENABLED!=true) — grounding port runs as a designed no-op (empty retrieval); see DEF-005",
     );
   }
@@ -1976,6 +2546,29 @@ export async function bootstrapClaustrum(
     );
   }
 
+  // BKL-071 — the READ-side twin of the mutation gate above. Every read tool the
+  // composed planners ADVERTISE (Plan.visibleReadTools, unioned over the same
+  // named drift contexts) MUST have a registered executor in
+  // IBATEXAS_READ_TOOL_EXECUTORS, else the one-hop enrichment loop offers the LLM
+  // a read the runtime cannot execute — a dangling advertised read. Fail CLOSED
+  // at boot (mirrors the mutation gate): the executor was wired FIRST
+  // (get_payment_history — 12/12), so the strict gate carries no exemption. The
+  // reverse leg (an executor keyed to a read no planner advertises) is WARN-only.
+  const readRosterDrift = readToolRosterDrift(
+    IBATEXAS_COMPOSED_CAPABILITY_PLANNERS,
+    Object.keys(IBATEXAS_READ_TOOL_EXECUTORS),
+    {
+      onWarn: (message) =>
+        logger.warn({ component: "claustrum-bootstrap" }, message),
+    },
+  );
+  if (readRosterDrift.length > 0) {
+    throw new Error(
+      "[claustrum-bootstrap] read-tool roster integrity check failed (BKL-071):\n  " +
+        readRosterDrift.join("\n  "),
+    );
+  }
+
   // The ibx prisma/redis are real clients that legitimately lack the memory
   // adapter's structural slices (the claustrum_memory_* delegates / setex+pipeline),
   // so the cast is irreducible — but name the exact contracts the adapter consumes
@@ -2047,6 +2640,67 @@ export async function bootstrapClaustrum(
     turnTraceWriter,
     tokenUsageSink,
   );
+  // fix B (Stage 1) — the per-turn structured closed-hours signal. Sourced from
+  // the Redis read-through schedule cache (loadSchedule) + the env timezone, it
+  // grounds the planner + responder LLM context (soft layer) and arms the
+  // responder's deterministic closed-hours backstop (hard layer). Best-effort:
+  // it never throws out of the turn.
+  const resolveScheduleSignal =
+    options.resolveScheduleSignal ??
+    (async (): Promise<ScheduleSignal | undefined> => {
+      const tz = process.env.RESTAURANT_TIMEZONE ?? "America/Sao_Paulo";
+      try {
+        const schedule = await loadSchedule();
+        return getScheduleSignal(schedule, tz);
+      } catch (err) {
+        // Fail-open-vs-fail-closed (DECIDED): on a schedule-load failure (e.g. a
+        // Redis blip + a DB hiccup) do NOT blindly default to "closed" — a
+        // false-"closed" would harm EVERY customer for the duration of the blip.
+        // Instead align to the system-wide convention: getMealPeriodFromSchedule()
+        // already treats a missing/undefined schedule by falling back to the
+        // env-var hours (RESTAURANT_*_HOUR) — it does NOT treat unknown as closed.
+        // Deriving getScheduleSignal(undefined, tz) here keeps BOTH closed-hours
+        // layers (the soft prompt note + the deterministic backstop) ARMED on those
+        // env hours rather than reverting to pure-prompt (which would let the 4B
+        // falsely assert "open"). Returning a signal — not undefined — is the
+        // deliberate tradeoff. (No readily-available last-known-good cached signal:
+        // loadSchedule already consulted the Redis cache before this throw.)
+        // (b) Observability: WARN so this silent degrade is visible in logs/obs.
+        logger.warn(
+          {
+            component: "claustrum-bootstrap",
+            scope: "closed-hours",
+            err: (err as Error).message,
+          },
+          "schedule signal resolve failed; falling back to env-var hours (closed-hours layers stay armed)",
+        );
+        try {
+          return getScheduleSignal(undefined, tz);
+        } catch {
+          // Last resort: the resolver must never throw and break the turn.
+          return undefined;
+        }
+      }
+    });
+  // BKL-121 — the per-turn TODAY's-hours source the claim planner derives a STORE_HOURS
+  // candidate's `hoursText` from (the SAME first-party read the investigator records).
+  // Sourced from the Redis read-through schedule cache + env timezone via
+  // `getTodayHoursText`. Returns `undefined` on a schedule-load failure (never a
+  // fabricated hours string, BKL-026) so the derived STORE_HOURS value stays undefined
+  // → the kernel's C6 ABSTAINs → honest UNKNOWN (the investigator separately records the
+  // fail-closed read ERROR, Inv 7). Best-effort: never throws out of the turn.
+  const resolveStoreHours =
+    options.resolveStoreHours ??
+    (async (): Promise<StoreHoursRead | undefined> => {
+      const tz = process.env.RESTAURANT_TIMEZONE ?? "America/Sao_Paulo";
+      try {
+        const hoursText = getTodayHoursText(await loadSchedule(), tz);
+        return hoursText === null ? undefined : { hoursText };
+      } catch {
+        // Schedule unavailable → no derived value; the claim degrades SAFE to UNKNOWN.
+        return undefined;
+      }
+    });
   const buildPlanner = (model: ModelProvider): ClaimAwarePlannerPort =>
     createIbatexasPlanner({
       model,
@@ -2055,6 +2709,11 @@ export async function bootstrapClaustrum(
       deriveContext: deriveIbatexasPlannerContext,
       promptComposer,
       telemetry,
+      resolveScheduleSignal,
+      // BKL-121 — the STORE_HOURS tag-then-derive first-party read source.
+      resolveStoreHours,
+      // BKL-027 — activate the one-hop read-tool enrichment loop.
+      readToolExecutors: IBATEXAS_READ_TOOL_EXECUTORS,
     });
   const buildResponder = (model: ModelProvider): ResponderPort =>
     createIbatexasResponder({
@@ -2063,6 +2722,7 @@ export async function bootstrapClaustrum(
       explainer: ibxExplainer,
       promptComposer,
       telemetry,
+      resolveScheduleSignal,
     });
 
   // B-PR1 — claims-runtime seams (SDD §M / §Q.6), FLAG DEFAULT-OFF. The planner
@@ -2074,7 +2734,33 @@ export async function bootstrapClaustrum(
   // (activation is a later PR). No `clock` is passed (not in the published
   // ConductorOptions; the per-turn clock is PENDING R2a).
   const planner = buildPlanner(modelProvider);
-  const claimsSeams = buildClaimsSeams({ planner });
+  // F2 observability (RCA 2026-06-29): when the claims pipeline is ENABLED but the
+  // LINKED kernels are below the egress-brand floor, log a loud warning so the
+  // kernel-version drop point (silent store-open → UNKNOWN) is visible at boot.
+  const claimsSeams = buildClaimsSeams({
+    planner,
+    warn: (message) => logger.warn(message),
+    // BKL-108 — unconditional boot marker (ENABLED/disabled), so the RUNNING
+    // process's claims-pipeline state is readable from the boot log (a stale-env
+    // tsx respawn is otherwise indistinguishable from an enabled boot).
+    info: (message) => logger.info({ component: "startup" }, message),
+  });
+  // AUT-017 — the ESCALATE PARK deps shared by the customer + ops conductors.
+  // On a resumable money-intent ESCALATE the HandoffPort parks the FULL envelope
+  // (single-use, Redis-backed) so an OWNER can approve-and-execute it later. The
+  // agent-plane conductor (below, IBX_AGENTS_ENABLED) is deliberately NOT wired —
+  // its only Stage-2 kind is `payment.pix.regenerate`, not a resumable refund.
+  const escalationHandoffParkDeps: HandoffParkDeps = {
+    park: async (envelope) => {
+      const input = buildEscalationParkInput(envelope);
+      const { token } = await getEscalationParkStore().park(input);
+      return {
+        token,
+        intentHash: envelope.intentHash,
+        summaryPtBr: input.summaryPtBr,
+      };
+    },
+  };
   _conductor = createConductor({
     adjudicator,
     memory,
@@ -2082,7 +2768,7 @@ export async function bootstrapClaustrum(
     planner,
     responder: buildResponder(modelProvider),
     explainer: ibxExplainer,
-    handoff: natsHandoff(),
+    handoff: natsHandoff(publishNatsEvent, escalationHandoffParkDeps),
     telemetry,
     session: redisSessionStore(),
     tools: toolRegistry,
@@ -2102,6 +2788,343 @@ export async function bootstrapClaustrum(
     // optional claims seams (investigator / claimPlanner / claimsKernel).
     ...claimsSeams,
   });
+
+  // ── NEW-032 ops-actor conductor plane (slice B) — ALWAYS composed ───────────
+  // The ops plane is a SECOND conductor composition recomposed PER REQUEST by
+  // getOpsConductorFactory() over these boot-built ingredients (the H1 idiom).
+  // It shares every production port VERBATIM (adjudicator → the SAME composed
+  // router carrying staffRoleGuard; memory/grounding/session/telemetry/tenant),
+  // diverging only in the planner (staffEnvelopeActor stamping), the ops
+  // registry (governed ops verbs), the ops resolver (per-kind state), and the
+  // system channel. No boot side effects run in the per-request path.
+  const opsTenantId = process.env.KERNEL_TENANT_ID ?? "ibatexas";
+  // Map an order projection row (OrderQueryService reads) to the ops-order-
+  // resolution candidate shape — the matching keys plus the state-projection
+  // subset, so a resolved reference needs no re-fetch.
+  const toOpsOrderCandidate = (row: {
+    id: string;
+    displayId: number;
+    customerName: string | null;
+    fulfillmentStatus: string | null;
+    customerId: string | null;
+    paymentMethod: string | null;
+    paymentStatus: string | null;
+    totalInCentavos: number;
+  }): OrderCandidate => ({
+    id: row.id,
+    displayId: row.displayId,
+    customerName: row.customerName,
+    fulfillmentStatus: row.fulfillmentStatus,
+    customerId: row.customerId,
+    paymentMethod: row.paymentMethod,
+    paymentStatus: row.paymentStatus,
+    totalInCentavos: row.totalInCentavos,
+  });
+  // BKL-089 — candidate page size for product NAME→id resolution. `q` narrows
+  // server-side; the deterministic matching runs over the returned titles. A
+  // single-tenant catalog is small, so the default comfortably covers it.
+  const OPS_PRODUCT_RESOLUTION_LIMIT = Number.parseInt(
+    process.env.OPS_PRODUCT_RESOLUTION_LIMIT ?? "50",
+    10,
+  );
+  // BKL-089 (orders scope) — deterministic order REFERENCE→id resolution knobs.
+  // displayId resolution is exact-equality (indexed) and requires exactly one
+  // match; the match limit only bounds the read and lets it DETECT a duplicate.
+  const OPS_ORDER_DISPLAYID_MATCH_LIMIT = Number.parseInt(
+    process.env.OPS_ORDER_DISPLAYID_MATCH_LIMIT ?? "5",
+    10,
+  );
+  // Customer-name resolution scans RECENT orders (a bounded window + page size)
+  // and matches only ACTIVE (non-terminal) ones. Active orders are inherently
+  // recent + few, so the window/limit comfortably cover the in-flight set;
+  // displayId (window-free) remains the path for older orders.
+  const OPS_ORDER_RECENT_WINDOW_HOURS = Number.parseInt(
+    process.env.OPS_ORDER_RECENT_WINDOW_HOURS ?? "168",
+    10,
+  );
+  const OPS_ORDER_RECENT_LIMIT = Number.parseInt(
+    process.env.OPS_ORDER_RECENT_LIMIT ?? "200",
+    10,
+  );
+  // BKL-085 — the ops-plane refund audit event log (parity with the admin
+  // route's admin.refund.executed row). Shared instance; append is best-effort.
+  const opsRefundEventLogSvc = createOrderEventLogService(logger);
+  // BKL-088 — the ops-alert + incident SYSTEM-write services, constructed WITH
+  // the audit sink (exactly like the admin ops-alerts / incidents resolve
+  // routes) so the SECOND (SYSTEM) governed layer's adjudication is audited.
+  // Shared singletons reused per turn (the resolver's by-id reads AND the tool
+  // executors' resolve/close writes both go through these).
+  const opsAlertSvc = createOpsAlertService({ auditSink });
+  const opsIncidentSvc = createIncidentService({ auditSink });
+  // The ops registry's governed side-effect deps (injected for testability).
+  const opsRegistryDeps: OpsToolRegistryDeps = {
+    medusaAdjudicated,
+    auditSink,
+    // NEW-004 — the BRL-priced variant ids the price executor re-prices (one
+    // read; the resolver already REFUSEd a no-BRL-variant product at SUBMIT).
+    readProductBrlVariantIds: async (productId) => {
+      const read = await readOpsProductPricing(medusaAdmin, productId);
+      return read === null || read.brlVariants.length === 0
+        ? null
+        : read.brlVariants.map((v) => v.variantId);
+    },
+    orderCmdSvc: createOrderCommandService(),
+    // BKL-085 — the ops refund POST-adjudication ledger write (writeAdjudicatedRefund
+    // does NO adjudication; the composed router already produced the Decision).
+    paymentCmdSvc: createPaymentCommandService(),
+    // BKL-088 — the alert-resolve + incident-close SYSTEM-write layers (the D10
+    // second governed layer). The executors build the SYSTEM envelope + call
+    // these, exactly like the admin ops-alerts / incidents resolve routes.
+    opsAlertSvc,
+    incidentSvc: opsIncidentSvc,
+    // BKL-085 — publish payment.status_changed after a committed refund write,
+    // exactly like the admin refund route (drives auto-cancel-on-full-refund).
+    publishPaymentStatusChanged: (event) =>
+      publishNatsEvent(
+        "payment.status_changed",
+        event as unknown as Record<string, unknown>,
+      ),
+    // BKL-085 — best-effort ops.refund.executed audit event.
+    appendRefundEventLog: (entry) => opsRefundEventLogSvc.append(entry),
+    // BKL-090 — the ops kitchen-advance emits order.status_changed after its
+    // committed write, exactly like the admin advance route, so the
+    // cart-intelligence subscriber runs the event-log/reconcile/customer-notify
+    // side effects. Bound to the same publisher the admin routes use.
+    publishOrderStatusChanged: (event) =>
+      // The typed event is JSON on the wire; publishNatsEvent's payload generic
+      // is constrained to Record<string, unknown> (interfaces lack an index
+      // signature), so cast at this composition boundary — same wire payload the
+      // admin advance route publishes.
+      publishNatsEvent(
+        "order.status_changed",
+        event as unknown as Record<string, unknown>,
+      ),
+    log: logger,
+  };
+  const opsRegistry = createOpsToolRegistry(opsRegistryDeps);
+  // AUT-017 — wire the ESCALATE→OWNER-approve→resume gateway. It reuses the SAME
+  // refund executor deps (`opsRegistryDeps`) the ops registry receives so an
+  // approved escalated refund runs the EXACT BKL-085 trio (writeAdjudicatedRefund
+  // + publish payment.status_changed + appendRefundEventLog), with the APPROVER as
+  // author (Option 1 provenance). `rebuildState` reuses the production ops-refund
+  // re-projection (`enrichResumeState` → `buildOpsRefundResumeState`, a live DB
+  // read, fail-closed on null). The audit sink is read LAZILY (live wiring). NO env
+  // flag gates the resolve path (Hard Rule 9 — the kernel is always authoritative).
+  _escalationApprovalGateway = createEscalationApprovalEngine({
+    get: (token) => getEscalationParkStore().get(token),
+    consume: (token) => getEscalationParkStore().consume(token),
+    rebuildState: (envelope) =>
+      enrichResumeState(envelope, { ctx: { exists: false } }),
+    policyFor: (kind) => {
+      const policy = policyForKind(kind);
+      if (policy === null) {
+        throw new Error(
+          `escalation approval: no installed pack owns kind "${kind}"`,
+        );
+      }
+      return policy;
+    },
+    sink: { emit: (record) => getAuditSink().emit(record) },
+    executors: {
+      "payment.refund.issue": async (payload, approverStaffId) => {
+        await executeRefund(
+          opsRegistryDeps,
+          payload as PaymentRefundIssuePayload,
+          approverStaffId,
+        );
+      },
+    },
+    markIntentResolved: async (sessionId, intentHash, status, resolvedBy, at) => {
+      const store = await getEscalationStore();
+      await store.markIntentResolved(sessionId, intentHash, status, resolvedBy, at);
+    },
+    // FIX 5 — the always-on execution ledger (Hard Rule 9): the SAME ledger the
+    // conductor resume path wires, so an approved refund's intentHash is
+    // REPLAY_SUPPRESSED on any duplicate — the atomic park-consume is no longer
+    // the sole double-execute guard.
+    ledger,
+    // FIX 4 — structured log for the honesty paths (executor throw; a projection
+    // write that fails AFTER a committed refund).
+    log: logger,
+    now: () => new Date().toISOString(),
+  });
+  // The ops planner's one-hop read executors — the situational snapshot
+  // (NEW-032) + today's sales analytics (NEW-012). Both are advertised on a
+  // staff session, so both need a registered executor here (the ops-plane drift
+  // parity gate below enforces advertised ⊆ registered).
+  const opsReadToolExecutors = {
+    [OPS_SNAPSHOT_READ_TOOL]: createOpsSnapshotReadExecutor(),
+    [OPS_SALES_ANALYTICS_READ_TOOL]: createSalesAnalyticsReadExecutor(),
+  };
+  // Boot-time ops-plane drift parity (fail-closed, mirrors the chat roster/read
+  // gates): every ops tool routable through the composed router (kind ∈ installed
+  // packs ⇔ policyForKind non-null) with capability===intentKind, and every
+  // ops-advertised read (ops_snapshot) has a registered executor.
+  const opsDrift = opsPlaneDriftProblems({
+    opsTools: listOpsToolDefinitions(opsRegistryDeps),
+    composedIntentKinds: composedIntentKinds(),
+    readExecutorKeys: Object.keys(opsReadToolExecutors),
+    onWarn: (message) => logger.warn({ component: "claustrum-bootstrap" }, message),
+  });
+  if (opsDrift.length > 0) {
+    throw new Error(
+      "[claustrum-bootstrap] ops-plane drift parity check failed (NEW-032):\n  " +
+        opsDrift.join("\n  "),
+    );
+  }
+  const opsConductorDeps: OpsConductorDeps = {
+    adjudicator,
+    memory,
+    grounding,
+    explainer: ibxExplainer,
+    // AUT-017 — the ops plane is where staff refunds ESCALATE; park the resumable
+    // money intent so an OWNER can approve-and-execute it from the escalações UI.
+    handoff: natsHandoff(publishNatsEvent, escalationHandoffParkDeps),
+    telemetry,
+    session: redisSessionStore(),
+    tenantResolver: resolveIbatexasTenantPolicy,
+    sessionLock: new PostgresAdvisorySessionLock(pgPool),
+    // The ops "system"-kind driver. BKL-085: OpsSystemChannel is SystemChannel's
+    // behaviour PLUS a REAL pt-BR matchToParked, so a CONFIRM-band ops verb (the
+    // refunds-by-message flow) resumes conversationally ("sim, confirma" →
+    // re-adjudicate the parked envelope through the composed router). The ops
+    // plane still never invokes attest/perceive/render (the route hand-builds the
+    // ChannelMessage and reads turn.response.text directly), so the signing key is
+    // construction-only — an ephemeral per-process key (never used to sign
+    // anything) avoids adding a required boot secret and commits nothing. An
+    // explicit OPS_GATEWAY_SIGNING_KEY overrides it if an operator wants one.
+    systemChannel: new OpsSystemChannel({
+      gatewaySigningKey:
+        process.env.OPS_GATEWAY_SIGNING_KEY ?? randomBytes(32).toString("base64"),
+      gateway: process.env.OPS_GATEWAY_NAME ?? "ibatexas-ops",
+    }),
+    tools: opsRegistry,
+    model: modelProvider,
+    modelId: chatModelId,
+    promptComposer,
+    resolveScheduleSignal,
+    opsReadToolExecutors,
+    // Per-request resolver closes over the authenticated staffId; the product /
+    // order lookups reuse the SAME reads the admin routes rely on (medusaAdmin /
+    // createOrderQueryService), fail-closed to REFUSE on absence/error.
+    buildResolver: (staffId: string) =>
+      createOpsResolver({
+        staffId,
+        tenantId: opsTenantId,
+        lookupProduct: async (productId) => {
+          const data = (await medusaAdmin(
+            `/admin/products/${productId}`,
+          )) as { product?: { id: string; status: string } };
+          const p = data.product;
+          return p ? { id: p.id, status: p.status } : null;
+        },
+        // NEW-004 — the pricing snapshot the `product.price.set` guards + CONFIRM
+        // prompt read (name + current uniform BRL price + divergent-variant flag).
+        // Reuses the shared `readOpsProductPricing` read + `computeOpsPricingSnapshot`;
+        // a product with no BRL-priced variant projects null → fail-closed REFUSE
+        // product_not_found. The SAME read + mapping backs the confirm-RESUME
+        // re-projection (enrichResumeState) so plan + resume see one shape.
+        lookupProductPricing: async (productId) =>
+          computeOpsPricingSnapshot(await readOpsProductPricing(medusaAdmin, productId)),
+        // BKL-089 — deterministic product NAME→id resolution candidate read.
+        // Reuses the SAME admin catalog list read the admin products surface
+        // uses (GET /api/admin/products → medusaAdmin('/admin/products?q=...')),
+        // which returns products regardless of stock/publish status (unlike the
+        // Typesense searchProducts tool, which hard-filters published+inStock and
+        // would make the RE-ENABLE case unresolvable). The deterministic matching
+        // over the returned titles lives in ops-product-resolution.ts.
+        listProductsByName: async (query) => {
+          const qs = new URLSearchParams({
+            q: query,
+            limit: String(OPS_PRODUCT_RESOLUTION_LIMIT),
+            fields: "id,title,status",
+          });
+          const data = (await medusaAdmin(`/admin/products?${qs}`)) as {
+            products?: Array<{ id: string; title: string; status: string }>;
+          };
+          return (data.products ?? []).map((p) => ({
+            id: p.id,
+            title: p.title,
+            status: p.status,
+          }));
+        },
+        lookupOrder: async (orderId) => {
+          const order = await createOrderQueryService().getById(orderId);
+          return order === null
+            ? null
+            : {
+                customerId: order.customerId,
+                paymentMethod:
+                  (order.paymentMethod as string | null) ?? null,
+                paymentStatus: order.paymentStatus,
+                totalInCentavos: order.totalInCentavos,
+                // BKL-090 — the CURRENT status the kitchen-advance legality
+                // guard reads (projected into pack-orders' ctx.fulfillmentStatus).
+                fulfillmentStatus:
+                  (order.fulfillmentStatus as string | null) ?? null,
+              };
+        },
+        // BKL-085 — the ACTIVE payment for the refunds-by-message path. Reuses the
+        // SAME deterministic read the admin refund route relies on
+        // (paymentQuerySvc.getActiveByOrderId). The resolver reads the balance /
+        // status / method / version from THIS row and stamps the forgeable payload
+        // fields from it (STOP-GATE B); a null (no active payment) or a
+        // non-refundable status fails closed to a kernel REFUSE.
+        lookupActivePayment: async (orderId) => {
+          const p = await createPaymentQueryService().getActiveByOrderId(orderId);
+          return p === null
+            ? null
+            : {
+                paymentId: p.id,
+                status: p.status,
+                amountInCentavos: p.amountInCentavos,
+                refundedAmountCentavos: p.refundedAmountCentavos ?? 0,
+                method: p.method,
+                version: p.version,
+              };
+        },
+        // BKL-088 — the ops-alert + incident by-id reads for the resolution
+        // verbs. id-literal (the persona quotes ids from ops_snapshot); a null
+        // (unknown id) or terminal status fails closed to a kernel REFUSE
+        // not_actionable. Reuse the SAME service singletons the executors write
+        // through (shared above), so the read + write see one service instance.
+        lookupAlert: async (alertId) => {
+          const a = await opsAlertSvc.get(alertId);
+          return a === null ? null : { id: a.id, status: a.status };
+        },
+        lookupIncident: async (incidentId) => {
+          const i = await opsIncidentSvc.get(incidentId);
+          return i === null ? null : { id: i.id, status: i.status };
+        },
+        // BKL-089 (orders scope) — deterministic order REFERENCE→id resolution
+        // reads. Both reuse the SAME owner-path OrderQueryService the admin orders
+        // surface relies on (findByDisplayId is a new indexed read-only method;
+        // the name path reuses listAll — the admin list read — over a recent
+        // window). The deterministic matching lives in ops-order-resolution.ts.
+        orderReferenceReads: {
+          findByDisplayId: async (displayId) => {
+            const rows = await createOrderQueryService().findByDisplayId(
+              displayId,
+              { limit: OPS_ORDER_DISPLAYID_MATCH_LIMIT },
+            );
+            return rows.map(toOpsOrderCandidate);
+          },
+          listRecentActive: async () => {
+            const { orders } = await createOrderQueryService().listAll({
+              dateFrom: new Date(
+                Date.now() - OPS_ORDER_RECENT_WINDOW_HOURS * 60 * 60 * 1000,
+              ),
+              limit: OPS_ORDER_RECENT_LIMIT,
+            });
+            return orders.map(toOpsOrderCandidate);
+          },
+        },
+      }),
+  };
+  _opsConductorFactory = (
+    actor: StaffEnvelopeActor,
+    context?: OpsConductorContext,
+  ): Conductor => composeOpsConductor(opsConductorDeps, actor, context);
 
   // ── Managed-agent plane (T3-9) — OPT-IN via IBX_AGENTS_ENABLED ──────────────
   // Default OFF: a normal boot never subscribes the trigger bridge / boots kill
@@ -2127,11 +3150,17 @@ export async function bootstrapClaustrum(
       const inMemoryApprovals = createAgentApprovalEngine({
         notify: async (req) => {
           // Stage-1 approval pending → page staff via the existing handoff surface.
+          // BKL-122 — attach the BKL-105 one-tap deep-link to the exact approval
+          // (/admin/aprovacoes/:token), built from ADMIN_BASE_URL. Omitted when the
+          // admin base URL is unavailable (prod + unset) so we never ship a
+          // localhost link in production; the subscriber renders it when present.
+          const approvalUrl = approvalDeepLink(req.token);
           await publishNatsEvent("support.handoff_requested", {
             sessionId: req.agentNamespace,
             reason: `Aprovação de agente pendente: ${req.intentKind}`,
             intentKind: req.intentKind,
             approvalToken: req.token,
+            ...(approvalUrl ? { approvalUrl } : {}),
           });
         },
         now: () => new Date().toISOString(),
@@ -2185,6 +3214,13 @@ export async function bootstrapClaustrum(
         }
       }
       _agentApprovals = agentApprovals;
+      // BKL-003 — the managed-agent plane's claims-seam floor warning is a
+      // boot-class fact, but `buildClaimsSeamsForPlanner` runs PER TRIGGER, so
+      // de-dup the below-floor kernel warn to at-most-once-per-process. Built
+      // ONCE here so the dedup set persists across trigger invocations.
+      const warnClaimsFloorOnce = warnOncePerMessage((message) =>
+        logger.warn(message),
+      );
       // Live conductor ingredients — H1 recomposes per trigger over a capped
       // model, so the planner/responder are passed as factories (over the
       // capped model) rather than pre-built ports. Tools are the REAL registry.
@@ -2215,6 +3251,19 @@ export async function bootstrapClaustrum(
         // passed in by the live runner (H1). Wiring BOTH points is now one call.
         buildPlanner,
         buildResponder,
+        // BKL-003 — B-PR1 claims seams for the managed-agent plane, FLAG
+        // DEFAULT-OFF. Per-trigger factory (NOT a boot singleton): the live
+        // conductor is recomposed per trigger with a fresh planner, and the
+        // claim-planner seam must wrap THAT planner (Q6b). `buildClaimsSeams`
+        // returns {} while ENABLE_CLAIMS_PIPELINE is OFF (the committed default),
+        // so the agent plane composes byte-identically; ON runs the same
+        // fail-closed registry assertion the main conductor does. The below-floor
+        // kernel warn is de-duped to once-per-process (this factory runs every
+        // trigger). Deliberately NO `info` sink here: the BKL-108 boot marker is
+        // emitted once by the main composition root; a per-trigger repeat of a
+        // boot-class fact would be pure log noise.
+        buildClaimsSeamsForPlanner: (p) =>
+          buildClaimsSeams({ planner: p, warn: warnClaimsFloorOnce }),
       };
       // P4 producer seam: ensure the shared remediation_proposals table exists,
       // then write a proposal whenever the live runner parks a confirm-gated

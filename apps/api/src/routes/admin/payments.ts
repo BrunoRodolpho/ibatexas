@@ -56,11 +56,13 @@ import {
   type PaymentStatusChangedEvent,
 } from "@ibatexas/types";
 import { requireStaff, requireManagerRole } from "../../middleware/staff-auth.js";
+import { paymentTransitionBandGuard, staffRoleGuard } from "../../claustrum/staff-role-guard.js";
 import {
   createAdminConfirmationStore,
   type PendingAdminAction,
 } from "./admin-confirmation-store.js";
 import {
+  actorFor,
   adjudicateAdminNote,
   buildAdminTransitionEnvelope,
   consumeAndGateAdminAction,
@@ -68,6 +70,8 @@ import {
   logStaleVersionRefusal,
   principalFor,
   refuseTransitionWithLog,
+  resolveActorRole,
+  type StaffActorRole,
 } from "./_shared-actions.js";
 
 const OrderIdParams = z.object({ id: z.string().min(1) });
@@ -271,12 +275,19 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
   let paymentCmdSvc!: ReturnType<typeof createPaymentCommandService>;
   let orderCmdSvc!: ReturnType<typeof createOrderCommandService>;
   server.addHook("onReady", async () => {
+    // BKL-074: inject the kernel-level staff-role backstop into both command
+    // services (payment + the note-path order service). `staffRoleGuard` is
+    // inert for non-`admin:` envelopes, so it REFUSES a mis-scoped staff role
+    // at the kernel without touching system/customer/agent mutations.
     paymentCmdSvc = createPaymentCommandService(server.log, {
       auditSink: getAuditSink(),
+      // BKL-074 staffRoleGuard + BKL-075 payment banding (force/waive → OWNER).
+      authGuards: [staffRoleGuard, paymentTransitionBandGuard],
     });
     // W7-P4: addNoteFromEnvelope path needs an audit-wired OrderCommandService.
     orderCmdSvc = createOrderCommandService(server.log, {
       auditSink: getAuditSink(),
+      authGuards: [staffRoleGuard],
     });
   });
   const paymentQuerySvc = createPaymentQueryService();
@@ -357,7 +368,10 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
         });
       }
 
-      const { actorPrincipal, taint, sessionId } = principalFor(staffId);
+      const { actorPrincipal, taint, sessionId, actorRole } = principalFor(
+        staffId,
+        resolveActorRole(request),
+      );
       const payload: PaymentStatusTransitionPayload = {
         paymentId: payment.id,
         newStatus: PaymentStatus.PAID,
@@ -378,7 +392,7 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
         kind: "payment.status.transition",
         payload,
         nonce: randomUUID(),
-        actor: { principal: actorPrincipal, sessionId },
+        actor: actorFor({ principal: actorPrincipal, sessionId, role: actorRole }),
         taint,
       });
 
@@ -449,6 +463,8 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
     readonly actorPrincipal: "user" | "system";
     readonly taint: "TRUSTED" | "SYSTEM";
     readonly sessionId: string;
+    /** Executing operator's adopter role (WS7 / BKL-069) — absent stays absent. */
+    readonly actorRole?: StaffActorRole;
     readonly confirmationId?: string;
   }) {
     const refundableBalance =
@@ -476,7 +492,11 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
       kind: "payment.refund.issue",
       payload,
       nonce: args.nonce,
-      actor: { principal: args.actorPrincipal, sessionId: args.sessionId },
+      actor: actorFor({
+        principal: args.actorPrincipal,
+        sessionId: args.sessionId,
+        role: args.actorRole,
+      }),
       taint: args.taint,
     });
 
@@ -812,6 +832,7 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
           actorPrincipal,
           taint,
           sessionId,
+          actorRole: resolveActorRole(request),
         });
         if (result.kind === "refused") {
           // Rollback the atomic reservation since the refund didn't
@@ -1016,7 +1037,10 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
         });
       }
 
-      const { actorPrincipal, taint, sessionId } = principalFor(staffId);
+      const { actorPrincipal, taint, sessionId, actorRole } = principalFor(
+        staffId,
+        resolveActorRole(request),
+      );
       const result = await executeRefund({
         orderId: id,
         paymentId: payment.id,
@@ -1032,6 +1056,8 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
         actorPrincipal,
         taint,
         sessionId,
+        // Confirm-time role governs — the confirming operator's role at step 2.
+        actorRole,
         confirmationId,
       });
       if (result.kind === "refused") {
@@ -1234,10 +1260,16 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
       // envelope payload (inside buildAdminTransitionEnvelope). The executor
       // REFUSEs (PaymentConcurrencyError) if the payment was mutated between
       // the two operator clicks.
+      // Confirm-time role governs — the confirming operator's role at step 2.
       const { envelope } = buildAdminTransitionEnvelope<
         "payment.status.transition",
         PaymentStatusTransitionPayload
-      >({ pending, staffId, kind: "payment.status.transition" });
+      >({
+        pending,
+        staffId,
+        kind: "payment.status.transition",
+        actorRole: resolveActorRole(request),
+      });
 
       let outcome;
       try {
@@ -1337,6 +1369,7 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
         orderId: id,
         staffId,
         content: request.body.content,
+        actorRole: resolveActorRole(request),
       });
 
       if (note.kind === "refused") {

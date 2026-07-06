@@ -159,7 +159,7 @@ describe("coverage domain (DR-5)", () => {
     const report = await compute()
     const chatCells = report.cells.filter((c) => c.surface === "chat")
     const staffCells = report.cells.filter((c) => c.surface === "staff-http")
-    // All five first-party packs attach no guard metadata today → the
+    // All six first-party packs attach no guard metadata today → the
     // plausible set falls back to the full 6-decision set per kind.
     expect(chatCells).toHaveLength(CHAT_DRIVABLE_TOOL_KINDS.length * 6)
     expect(staffCells).toHaveLength(STAFF_ROUTE_KINDS.size * 6)

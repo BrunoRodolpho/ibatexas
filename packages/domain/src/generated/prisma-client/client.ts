@@ -83,6 +83,17 @@ export type Review = Prisma.ReviewModel
  */
 export type Staff = Prisma.StaffModel
 /**
+ * Model StaffShift
+ * One scheduled work shift (escala) for a staff member. NEW-016 core: assign
+ * shifts to staff + list the schedule over a date range. Admin-ops data — not a
+ * customer money/safety path — so it is plain CRUD, manager-gated at the route
+ * (mirrors Table). NEW-034 EXTENDS this with clock-in/out (actualStart/actualEnd,
+ * both NULLABLE — null until the staff clocks in/out) which feed the read-only
+ * labor-cost analytics. FK → staff(id) ON DELETE CASCADE: removing a staff member
+ * removes their schedule (the same idiom Address/CustomerPreferences use).
+ */
+export type StaffShift = Prisma.StaffShiftModel
+/**
  * Model Customer
  * Twilio-verified customer profile. Phone is the primary identity.
  */
@@ -186,6 +197,77 @@ export type ConversationMessage = Prisma.ConversationMessageModel
  */
 export type DeliveryZone = Prisma.DeliveryZoneModel
 /**
+ * Model Ingredient
+ * NEW-003 (stock slice) — a RAW ingredient the kitchen holds in stock (flour,
+ * meat, etc. that go INTO dishes) — NOT a Medusa finished-good product (whose
+ * stock is Medusa's own `inventory_quantity`). Tracks on-hand stock + a low-stock
+ * threshold so the admin surface can raise a low-stock read.
+ * 
+ * QUANTITIES are stored as SCALED INTEGERS in THOUSANDTHS of `unit` (milli-units):
+ * 2.5 kg → `stockMilli = 2500`; 250 g (unit "g") → 250000. Arithmetic is always on
+ * the integer milli field — precise, never a float (the same "no floats for
+ * load-bearing quantities" discipline Hard-Rule-#2 applies to money). `unit` is a
+ * free-form label validated at the route against the known measure set.
+ * 
+ * Admin-ops reference/config data — manager-gated at the route, plain CRUD (NOT
+ * kernel-adjudicated; ingredient stock is not a customer money/safety path). No FK
+ * to any other domain table. NEW-035 adds a per-unit cost + the recipe/BOM back-
+ * relation (recipeUses) so this ingredient can appear on a dish's bill-of-materials
+ * and feed COGS. Per-dish depletion (the order.placed subscriber) stays DEFERRED.
+ */
+export type Ingredient = Prisma.IngredientModel
+/**
+ * Model Recipe
+ * NEW-035 — a Recipe (bill-of-materials) for ONE Medusa finished-good: the raw
+ * ingredients + per-batch quantities that go into producing it. Unblocks per-dish
+ * COGS (→ margins, NEW-033).
+ * 
+ * `medusaProductId` is a SOFT reference (String @unique, NOT a Prisma relation):
+ * products are Medusa-managed and live in Medusa's own tables, so the domain DB
+ * holds only the id — one recipe per finished-good. `yield` is how many servings/
+ * units one batch produces, so COGS can report both per-batch and per-serving.
+ * 
+ * Admin-ops reference/config data — manager-gated at the route, plain CRUD (NOT
+ * kernel-adjudicated). The order-flow depletion subscriber (consume ingredients on
+ * order.placed) is DEFERRED — out of this slice.
+ */
+export type Recipe = Prisma.RecipeModel
+/**
+ * Model RecipeIngredient
+ * NEW-035 — one BOM line: a Recipe consumes `qtyMilli` of an Ingredient per batch.
+ * 
+ * `qtyMilli` is a SCALED INTEGER in THOUSANDTHS of the ingredient's `unit` (milli-
+ * units) — the same idiom as Ingredient.stockMilli: 2.5 kg → 2500. COGS arithmetic
+ * runs on the integer field (never a float for the quantity).
+ * 
+ * FK → recipe onDelete Cascade (removing a recipe removes its BOM); FK → ingredient
+ * onDelete Restrict (can't delete an ingredient still used in a recipe). Unique
+ * [recipeId, ingredientId] — an ingredient appears at most once per recipe.
+ */
+export type RecipeIngredient = Prisma.RecipeIngredientModel
+/**
+ * Model DailySpecial
+ * NEW-005 — a Daily Special (promo-of-the-day): a Medusa finished-good FEATURED for
+ * one restaurant business-day, optionally at a promo price with a pt-BR headline.
+ * ADMIN AUTHORING SLICE — the customer-facing menu/web + chat surfacing (rides
+ * grounding/claims, the harder half) is DEFERRED to NEW-038; this slice is the
+ * manager-gated authoring surface only.
+ * 
+ * `medusaProductId` is a SOFT reference (String, NOT a Prisma relation): products are
+ * Medusa-managed and live in Medusa's own tables, so the domain DB holds only the id
+ * (same idiom as Recipe.medusaProductId). `date` is the local restaurant business-day
+ * this special applies (YYYY-MM-DD), resolved in RESTAURANT_TIMEZONE — a business-day
+ * LABEL, stored as a String (NOT a DateTime), validated at the route (same day-label
+ * idiom as the reporting routes' _date-defaults).
+ * 
+ * `promoPriceCentavos` is the special price in INTEGER CENTAVOS (Hard-Rule #2, never a
+ * float); NULL = featured without a discount. `headline` is an optional pt-BR promo
+ * blurb (Hard-Rule #4, e.g. "Feijoada da casa com 20% off"). Admin-ops authored config
+ * — manager-gated at the route, plain CRUD (NOT kernel-adjudicated). No FK to any other
+ * domain table (the product lives in Medusa).
+ */
+export type DailySpecial = Prisma.DailySpecialModel
+/**
  * Model WeeklySchedule
  * 
  */
@@ -229,3 +311,13 @@ export type AgentRedTeamRun = Prisma.AgentRedTeamRunModel
  * affects a turn). The cost dashboards aggregate by session and by customer.
  */
 export type LlmTokenUsage = Prisma.LlmTokenUsageModel
+/**
+ * Model ConversationIncident
+ * 
+ */
+export type ConversationIncident = Prisma.ConversationIncidentModel
+/**
+ * Model OpsAlert
+ * 
+ */
+export type OpsAlert = Prisma.OpsAlertModel

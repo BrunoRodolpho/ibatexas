@@ -13,6 +13,7 @@ import {
   buildAuditRecord,
   buildEnvelope,
   type AuditRecord,
+  type Decision,
 } from "@adjudicate/core";
 import type { PolicyBundle } from "@adjudicate/core/kernel";
 import { paymentsPack } from "@ibatexas/pack-payments";
@@ -24,6 +25,7 @@ import {
 import {
   ApprovalNotAgentEnvelopeError,
   createAgentApprovalEngine,
+  deriveAgentApprovalOutcome,
   verifyAgentConfirmLineage,
   type ApprovalAuditSink,
 } from "../claustrum/agent-approvals.js";
@@ -192,5 +194,125 @@ describe("T3-7 acceptance — parked agent envelope → approval → resolve →
     expect(resolved.status).toBe("rejected");
     expect(resolved.resolvedBy).toEqual({ id: "staff_7" });
     expect(sink.records).toHaveLength(0); // never adjudicated/executed
+  });
+});
+
+// ── BKL-104 — structured resolved-outcome contract ───────────────────────────
+//
+// deriveAgentApprovalOutcome is the shared honesty map (route response + the
+// remediation-proposal mark read it). The anti-confabulation guarantee: ONLY an
+// EXECUTE/REWRITE decision earns `executed`; every non-EXECUTE re-adjudication is
+// reported with its kernel reason and NEVER as executed. `execute_failed` is
+// deliberately NOT modeled — this engine carries no post-EXECUTE executor (that
+// is the escalation-approval engine's concern), so it cannot produce that state.
+
+describe("deriveAgentApprovalOutcome — honest map (BKL-104)", () => {
+  const refuseDecision = (): Decision =>
+    ({
+      kind: "REFUSE",
+      refusal: {
+        kind: "STATE",
+        code: "payment.already_terminal",
+        userFacing: "Este pagamento já foi finalizado.",
+      },
+      basis: [],
+    }) as Decision;
+
+  it("accept:false → rejected (no decision, no reason)", () => {
+    expect(deriveAgentApprovalOutcome(false, undefined)).toEqual({ status: "rejected" });
+  });
+
+  it("EXECUTE and REWRITE are the ONLY statuses that earn 'executed'", () => {
+    expect(deriveAgentApprovalOutcome(true, { kind: "EXECUTE", basis: [] } as Decision)).toEqual({
+      status: "executed",
+      decisionKind: "EXECUTE",
+    });
+    const rewrite = {
+      kind: "REWRITE",
+      rewritten: agentRegenerateEnvelope(),
+      reason: "normalized",
+      basis: [],
+    } as Decision;
+    expect(deriveAgentApprovalOutcome(true, rewrite)).toEqual({
+      status: "executed",
+      decisionKind: "REWRITE",
+    });
+  });
+
+  it("REFUSE → refused, sourcing reasonCode + pt-BR from the KERNEL refusal (not model output)", () => {
+    expect(deriveAgentApprovalOutcome(true, refuseDecision())).toEqual({
+      status: "refused",
+      decisionKind: "REFUSE",
+      reasonCode: "payment.already_terminal",
+      refusalPtBr: "Este pagamento já foi finalizado.",
+    });
+  });
+
+  it("REQUEST_CONFIRMATION → reparked (needs a fresh confirmation); reasonCode from the decision basis", () => {
+    const dec = {
+      kind: "REQUEST_CONFIRMATION",
+      prompt: "Confirmar?",
+      basis: [{ category: "business", code: "confirm_required" }],
+    } as unknown as Decision;
+    const out = deriveAgentApprovalOutcome(true, dec);
+    expect(out.status).toBe("reparked");
+    expect(out.decisionKind).toBe("REQUEST_CONFIRMATION");
+    expect(out.reasonCode).toBe("confirm_required");
+    expect(out.refusalPtBr).toMatch(/nova confirmação/i);
+  });
+
+  it("ESCALATE → escalated", () => {
+    const dec = { kind: "ESCALATE", to: "human", reason: "acima do limite", basis: [] } as Decision;
+    const out = deriveAgentApprovalOutcome(true, dec);
+    expect(out.status).toBe("escalated");
+    expect(out.decisionKind).toBe("ESCALATE");
+    expect(out.refusalPtBr).toMatch(/escalação/i);
+  });
+
+  it("DEFER / a missing decision fail CLOSED to denied_by_kernel (never executed)", () => {
+    const defer = { kind: "DEFER", signal: "payment.webhook", timeoutMs: 1000, basis: [] } as Decision;
+    expect(deriveAgentApprovalOutcome(true, defer).status).toBe("denied_by_kernel");
+    // accept:true always yields a decision in the engine; a missing one is an
+    // invariant break and must NOT read as executed.
+    expect(deriveAgentApprovalOutcome(true, undefined).status).toBe("denied_by_kernel");
+  });
+
+  it("ANTI-CONFABULATION: no non-EXECUTE/REWRITE decision ever earns 'executed'", () => {
+    const nonExec: Decision[] = [
+      refuseDecision(),
+      { kind: "REQUEST_CONFIRMATION", prompt: "p", basis: [] } as Decision,
+      { kind: "ESCALATE", to: "human", reason: "r", basis: [] } as Decision,
+      { kind: "DEFER", signal: "s", timeoutMs: 1, basis: [] } as Decision,
+    ];
+    for (const d of nonExec) {
+      expect(deriveAgentApprovalOutcome(true, d).status).not.toBe("executed");
+    }
+  });
+
+  it("LIVE KERNEL: an accepted resolve on a since-moved state re-adjudicates NON-EXECUTE → derive reports honestly (not executed)", async () => {
+    const sink = capturingSink();
+    const engine = createAgentApprovalEngine({
+      notify: async () => {},
+      now: () => NOW,
+      tokenFactory: () => "tok-stale",
+    });
+    await engine.request({ envelope: agentRegenerateEnvelope(), prompt: "?" });
+
+    // The payment moved to a terminal/non-existent state since the agent parked
+    // it — the kernel re-adjudication must NOT authorize EXECUTE.
+    const movedState = () => ({ ctx: { ...regenerateState().ctx, exists: false } });
+    const { decision } = await engine.resolve({
+      token: "tok-stale",
+      accepted: true,
+      resolvedBy: { id: "staff_9" },
+      rebuildState: movedState,
+      policyFor: () => paymentsBundle,
+      sink,
+    });
+
+    expect(decision?.kind).not.toBe("EXECUTE");
+    const outcome = deriveAgentApprovalOutcome(true, decision);
+    expect(outcome.status).not.toBe("executed");
+    expect(["refused", "reparked", "escalated", "denied_by_kernel"]).toContain(outcome.status);
   });
 });

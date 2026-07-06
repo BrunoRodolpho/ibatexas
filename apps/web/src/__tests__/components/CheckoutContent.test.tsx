@@ -294,6 +294,31 @@ describe("CheckoutContent — submit gating", () => {
     })
     expect(findSubmit(form).props.disabled).toBe(false)
   })
+
+  it("renders the live merged-notes character budget near the notes field", () => {
+    const form = renderForm()
+    expect(textOf(form)).toContain("notes_remaining")
+  })
+
+  it("disables submit and blocks the POST when merged notes overflow the cap (CUS-015: never truncate)", async () => {
+    h.cart.termsAccepted = true
+    // Per-item instruction alone exceeds the 500-char merged cap.
+    h.cart.items = [{ ...FOOD_ITEM, specialInstructions: "a".repeat(600) }]
+    const form = renderForm({
+      [S.deliveryEstimate]: { feeInCentavos: 0, estimatedMinutes: 60, message: "", isLocalZone: true },
+      [S.pixName]: "Maria Silva",
+      [S.pixEmail]: "maria@example.com",
+      [S.pixCpf]: "529.982.247-25",
+    })
+    const submit = findSubmit(form)
+    expect(submit.props.disabled).toBe(true)
+    // The overflow warning replaces the remaining-count budget line.
+    expect(textOf(form)).toContain("notes_too_long")
+    // Defense in depth: invoking the handler anyway must refuse before fetching.
+    await (submit.props.onClick as () => Promise<void>)()
+    expect(h.fetch).not.toHaveBeenCalled()
+    expect(h.setters[S.error]).toHaveBeenCalledWith("notes_too_long")
+  })
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -321,6 +346,15 @@ describe("CheckoutContent — handleCheckout (pix)", () => {
     expect(h.setters[S.stage]).toHaveBeenCalledWith("pix_waiting")
     // Per-order access token persisted (keyed by orderId).
     expect(h.sessionSetItem).toHaveBeenCalledWith("order-access-token:ord-1", "tok")
+  })
+
+  it("folds per-item instructions into the checkout body notes, untruncated", async () => {
+    h.fetch.mockResolvedValue(okJson({ paymentMethod: "pix", orderId: "o", message: "" }))
+    h.cart.items = [{ ...FOOD_ITEM, specialInstructions: "sem cebola" }]
+    const form = renderForm()
+    await (findSubmit(form).props.onClick as () => Promise<void>)()
+    const body = JSON.parse((h.fetch.mock.calls[0] as [string, RequestInit])[1].body as string)
+    expect(body.notes).toBe("1× Costela — G: sem cebola")
   })
 
   it("maps an outside-zone (shipping) cart to deliveryType=shipping in the body", async () => {

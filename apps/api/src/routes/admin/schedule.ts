@@ -10,12 +10,31 @@
 //
 // Every mutation invalidates the Redis cache so the bot picks up changes immediately.
 
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyBaseLogger } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { createScheduleService } from "@ibatexas/domain";
 import { invalidateScheduleCache } from "@ibatexas/tools";
 import { requireManagerRole } from "../../middleware/staff-auth.js";
+
+/**
+ * Invalidate the schedule cache after an admin write and, if the DEL was
+ * ultimately swallowed (circuit-open / transient Redis error, even after the
+ * built-in retry), log a structured WARN so operators know the edit may take up
+ * to the schedule-cache TTL to propagate. The admin write already succeeded, so
+ * we NEVER fail the mutation on a failed invalidation — the TTL
+ * (SCHEDULE_CACHE_TTL_SECONDS, default 300s) bounds how long the stale snapshot
+ * can survive before the next read re-reads the DB.
+ */
+async function invalidateScheduleOrWarn(log: FastifyBaseLogger): Promise<void> {
+  const { ok } = await invalidateScheduleCache();
+  if (!ok) {
+    log.warn(
+      { event: "schedule_cache_invalidation_failed", cacheKey: "restaurant:schedule" },
+      "Schedule cache invalidation failed after retry — schedule edit may take up to SCHEDULE_CACHE_TTL_SECONDS (default 300s) to propagate to the bot.",
+    );
+  }
+}
 
 const HolidayIdParams = z.object({ id: z.string().min(1) });
 
@@ -88,7 +107,7 @@ export async function scheduleRoutes(server: FastifyInstance): Promise<void> {
         const { dayOfWeek, ...data } = day;
         await svc.upsertDay(dayOfWeek, data);
       }
-      await invalidateScheduleCache();
+      await invalidateScheduleOrWarn(request.log);
       return reply.send({ ok: true });
     },
   );
@@ -107,7 +126,7 @@ export async function scheduleRoutes(server: FastifyInstance): Promise<void> {
     async (request, reply) => {
       const svc = createScheduleService();
       const holiday = await svc.addHoliday(request.body);
-      await invalidateScheduleCache();
+      await invalidateScheduleOrWarn(request.log);
       return reply.code(201).send({ holiday });
     },
   );
@@ -126,7 +145,7 @@ export async function scheduleRoutes(server: FastifyInstance): Promise<void> {
     async (request, reply) => {
       const svc = createScheduleService();
       await svc.removeHoliday(request.params.id);
-      await invalidateScheduleCache();
+      await invalidateScheduleOrWarn(request.log);
       return reply.send({ ok: true });
     },
   );
@@ -169,7 +188,7 @@ export async function scheduleRoutes(server: FastifyInstance): Promise<void> {
       const { date } = request.params as { date: string };
       const svc = createScheduleService();
       const override = await svc.upsertOverride(date, request.body);
-      await invalidateScheduleCache();
+      await invalidateScheduleOrWarn(request.log);
       return reply.send({ override });
     },
   );
@@ -189,7 +208,7 @@ export async function scheduleRoutes(server: FastifyInstance): Promise<void> {
       const { date } = request.params as { date: string };
       const svc = createScheduleService();
       await svc.removeOverride(date);
-      await invalidateScheduleCache();
+      await invalidateScheduleOrWarn(request.log);
       return reply.send({ ok: true });
     },
   );

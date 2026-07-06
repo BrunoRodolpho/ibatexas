@@ -26,8 +26,10 @@ import type {
 import {
   createIbatexasResponder,
   GROUNDED_SAFE_FALLBACK_PTBR,
+  PT_BR_LANGUAGE_FALLBACK_PTBR,
   RESPONDER_ESCALATE_PTBR,
   RESPONDER_PERSONA_PTBR,
+  replyLeaksSpanish,
 } from "../claustrum/ibatexas-responder.js";
 
 function mockModel(text = "RESPOSTA_DO_MODELO"): {
@@ -506,5 +508,290 @@ describe("createIbatexasResponder", () => {
     const acted = { kind: "rewritten_and_executed", envelope: { kind: "order.item.update" }, result: {} };
     const draft = await responder.respond(mkInput({ decision, envelopeKinds: ["order.item.update"], acted }));
     expect(draft.text).toBe("Ajustei a quantidade pra você.");
+  });
+
+  // ── fix B (Stage 1): deterministic closed-hours backstop ────────────────────
+
+  const closedSignal = { isClosed: true as const, mealPeriod: "closed" as const, nextOpenDay: "amanhã" };
+  const openSignal = { isClosed: false as const, mealPeriod: "lunch" as const };
+  const CLOSED_DISCLOSURE =
+    "No momento estamos fechados (reabrimos amanhã). Posso registrar seu pedido para retirada agendada.";
+  // F6: the confirmation for an ACCEPTED scheduled-pickup order (not the generic offer).
+  const SCHEDULED_CONFIRMATION =
+    "Seu pedido foi registrado para retirada agendada (retirada a partir de amanhã).";
+  const SCHEDULED_CONFIRMATION_PIX =
+    "Seu pedido foi registrado para retirada agendada (retirada a partir de amanhã). Falta só concluir o pagamento via PIX para confirmar.";
+
+  it("F6(a): an ACCEPTED scheduled-pickup order + a false-immediate draft → CONFIRMATION, not the offer", async () => {
+    // Store closed; the 4B falsely says the accepted scheduled order is "em preparo".
+    // guardDraft (fulfillment-claimed) neutralizes that to the fallback, and the
+    // closed-hours guard would normally upgrade the fallback to the generic OFFER —
+    // but because a scheduled PICKUP was genuinely accepted this turn, it must instead
+    // acknowledge the order (F6). Was previously CODIFIED as the buggy OFFER output.
+    const { model } = mockModel("Seu pedido já está em preparo e sai em 20 minutos!");
+    const responder = createIbatexasResponder({
+      model,
+      modelId: "m",
+      explainer,
+      resolveScheduleSignal: () => closedSignal,
+    });
+    const decision = { kind: "EXECUTE", basis: [] } as unknown as Decision;
+    const acted = {
+      kind: "executed",
+      envelope: { kind: "order.checkout.create" },
+      result: { orderId: "IBX-1", scheduledPickup: true, paymentMethod: "cash" },
+    };
+    const draft = await responder.respond(
+      mkInput({ decision, envelopeKinds: ["order.checkout.create"], acted, text: "quero retirar amanhã" }),
+    );
+    expect(draft.text).toBe(SCHEDULED_CONFIRMATION);
+  });
+
+  it("F6(b): a DELIVERY order accepted while closed → SAFE degrade (never a false pickup confirmation)", async () => {
+    // CRITICAL correctness trap: the kernel does NOT gate closed-hours, so a delivery/
+    // immediate order can also EXECUTE while closed. `scheduledPickup` is absent here →
+    // the closed-hours guard must keep the SAFE degrade (offer/disclosure) and MUST NOT
+    // convert it into a pickup confirmation. (This is the delivery variant that the old
+    // :518 test asserted — preserved verbatim as the safe-degrade proof.)
+    const { model } = mockModel("Estamos abertos! Seu pedido sairá para entrega agora.");
+    const responder = createIbatexasResponder({
+      model,
+      modelId: "m",
+      explainer,
+      resolveScheduleSignal: () => closedSignal,
+    });
+    const decision = { kind: "EXECUTE", basis: [] } as unknown as Decision;
+    // Delivery order → NO scheduledPickup marker on the result.
+    const acted = {
+      kind: "executed",
+      envelope: { kind: "order.checkout.create" },
+      result: { orderId: "IBX-1", paymentMethod: "pix" },
+    };
+    const draft = await responder.respond(
+      mkInput({ decision, envelopeKinds: ["order.checkout.create"], acted, text: "quero pedido pra entrega agora" }),
+    );
+    expect(draft.text).toBe(CLOSED_DISCLOSURE);
+  });
+
+  it("F6(c): an accepted scheduled PIX pickup → CONFIRMATION reflecting awaiting-payment", async () => {
+    // A scheduled PIX pickup EXECUTEs + generates the QR (QR-first-then-confirm), so the
+    // order IS registered but payment is still pending. The confirmation says so.
+    const { model } = mockModel("Seu pedido está a caminho!");
+    const responder = createIbatexasResponder({
+      model,
+      modelId: "m",
+      explainer,
+      resolveScheduleSignal: () => closedSignal,
+    });
+    const decision = { kind: "EXECUTE", basis: [] } as unknown as Decision;
+    const acted = {
+      kind: "executed",
+      envelope: { kind: "order.checkout.create" },
+      result: {
+        orderId: "IBX-2",
+        scheduledPickup: true,
+        paymentMethod: "pix",
+        pixCopyPaste: "00020126PIX",
+      },
+    };
+    const draft = await responder.respond(
+      mkInput({ decision, envelopeKinds: ["order.checkout.create"], acted, text: "quero retirar amanhã, pago no pix" }),
+    );
+    expect(draft.text).toBe(SCHEDULED_CONFIRMATION_PIX);
+  });
+
+  it("F6(d): a CLEAN scheduled-pickup confirmation draft is left untouched", async () => {
+    // The model already produced an accurate confirmation (no false-immediate claim):
+    // nothing was clobbered, so the guard must NOT substitute its own string.
+    const clean = "Perfeito! Seu pedido para retirada agendada está registrado.";
+    const { model } = mockModel(clean);
+    const responder = createIbatexasResponder({
+      model,
+      modelId: "m",
+      explainer,
+      resolveScheduleSignal: () => closedSignal,
+    });
+    const decision = { kind: "EXECUTE", basis: [] } as unknown as Decision;
+    const acted = {
+      kind: "executed",
+      envelope: { kind: "order.checkout.create" },
+      result: { orderId: "IBX-3", scheduledPickup: true, paymentMethod: "cash" },
+    };
+    const draft = await responder.respond(
+      mkInput({ decision, envelopeKinds: ["order.checkout.create"], acted, text: "quero retirar amanhã" }),
+    );
+    expect(draft.text).toBe(clean);
+  });
+
+  it("closed: repairs a conversational reply that falsely says 'estamos abertos'", async () => {
+    const { model } = mockModel("Sim, estamos abertos! Pode fazer seu pedido.");
+    const responder = createIbatexasResponder({
+      model,
+      modelId: "m",
+      explainer,
+      resolveScheduleSignal: async () => closedSignal,
+    });
+    const decision = { kind: "REFUSE", refusal: { code: "empty_plan" } } as unknown as Decision;
+    const draft = await responder.respond(
+      mkInput({ decision, envelopeKinds: [], text: "vocês estão abertos?" }),
+    );
+    expect(draft.text).toBe(CLOSED_DISCLOSURE);
+  });
+
+  it("closed: injects the closed-hours note into the model system prompt", async () => {
+    const { model, complete } = mockModel("Posso agendar sua retirada.");
+    const responder = createIbatexasResponder({
+      model,
+      modelId: "m",
+      explainer,
+      resolveScheduleSignal: () => closedSignal,
+    });
+    const decision = { kind: "REFUSE", refusal: { code: "empty_plan" } } as unknown as Decision;
+    await responder.respond(mkInput({ decision, envelopeKinds: [], text: "oi" }));
+    const req = complete.mock.calls[0]![0] as CompletionRequest;
+    expect(req.system).toContain("FECHADA");
+    expect(req.system).toContain("retirada agendada");
+  });
+
+  it("closed: passes a correct closed-disclosure reply through unchanged", async () => {
+    const { model } = mockModel("No momento estamos fechados, posso agendar sua retirada.");
+    const responder = createIbatexasResponder({
+      model,
+      modelId: "m",
+      explainer,
+      resolveScheduleSignal: () => closedSignal,
+    });
+    const decision = { kind: "REFUSE", refusal: { code: "empty_plan" } } as unknown as Decision;
+    const draft = await responder.respond(mkInput({ decision, envelopeKinds: [], text: "tão abertos?" }));
+    expect(draft.text).toBe("No momento estamos fechados, posso agendar sua retirada.");
+  });
+
+  it("open: a reply that says 'estamos abertos' is NOT repaired", async () => {
+    const { model, complete } = mockModel("Sim, estamos abertos! Pode fazer seu pedido.");
+    const responder = createIbatexasResponder({
+      model,
+      modelId: "m",
+      explainer,
+      resolveScheduleSignal: () => openSignal,
+    });
+    const decision = { kind: "REFUSE", refusal: { code: "empty_plan" } } as unknown as Decision;
+    const draft = await responder.respond(mkInput({ decision, envelopeKinds: [], text: "abertos?" }));
+    expect(draft.text).toBe("Sim, estamos abertos! Pode fazer seu pedido.");
+    // No closed note injected on the open path.
+    const req = complete.mock.calls[0]![0] as CompletionRequest;
+    expect(req.system).not.toContain("FECHADA");
+  });
+
+  // ── closed + F1/F1b neutral fallback → restore closed-disclosure ────────────
+  // guardDraft (F1/F1b) full-replaces a draft that bundled an UNEARNED success
+  // claim WITH the closed-disclosure → the neutral GROUNDED_SAFE_FALLBACK, which is
+  // SILENT on closure. While closed, that drops a correct closed-disclosure, so the
+  // delivery guard substitutes closedHoursDisclosure() (asserts nothing open).
+
+  it("closed: a draft stripped to the neutral fallback (false success) discloses closed instead", async () => {
+    const { model } = mockModel("Seu pedido já foi registrado com sucesso!");
+    const responder = createIbatexasResponder({
+      model,
+      modelId: "m",
+      explainer,
+      resolveScheduleSignal: () => closedSignal,
+    });
+    const decision = { kind: "EXECUTE", basis: [] } as unknown as Decision;
+    const acted = { kind: "executed", envelope: { kind: "order.cart.ensure" }, result: { cartId: "cart_1" } };
+    const draft = await responder.respond(
+      mkInput({ decision, envelopeKinds: ["order.cart.ensure"], acted, text: "finaliza meu pedido" }),
+    );
+    expect(draft.text).toBe(CLOSED_DISCLOSURE);
+    // Token usage from the (still-traced) model call survives the substitution.
+    expect(draft.usage).toEqual({ inputTokens: 11, outputTokens: 7 });
+  });
+
+  it("open: the same false-success draft stays the neutral fallback (no disclosure)", async () => {
+    const { model } = mockModel("Seu pedido já foi registrado com sucesso!");
+    const responder = createIbatexasResponder({
+      model,
+      modelId: "m",
+      explainer,
+      resolveScheduleSignal: () => openSignal,
+    });
+    const decision = { kind: "EXECUTE", basis: [] } as unknown as Decision;
+    const acted = { kind: "executed", envelope: { kind: "order.cart.ensure" }, result: { cartId: "cart_1" } };
+    const draft = await responder.respond(
+      mkInput({ decision, envelopeKinds: ["order.cart.ensure"], acted, text: "finaliza meu pedido" }),
+    );
+    expect(draft.text).toBe(GROUNDED_SAFE_FALLBACK_PTBR);
+  });
+
+  it("closed: an already-correct closed-disclosure reply (no fallback) is untouched", async () => {
+    // The model already discloses closed + offers scheduling and makes NO false
+    // success claim, so neither guardDraft nor the closed-hours delivery guard
+    // should touch it — the substitution fires ONLY for the neutral fallback.
+    const { model } = mockModel("No momento estamos fechados, posso agendar sua retirada amanhã.");
+    const responder = createIbatexasResponder({
+      model,
+      modelId: "m",
+      explainer,
+      resolveScheduleSignal: () => closedSignal,
+    });
+    const decision = { kind: "REFUSE", refusal: { code: "empty_plan" } } as unknown as Decision;
+    const draft = await responder.respond(mkInput({ decision, envelopeKinds: [], text: "tão abertos?" }));
+    expect(draft.text).toBe("No momento estamos fechados, posso agendar sua retirada amanhã.");
+  });
+});
+
+// ── F6 (BKL-064): pt-BR-only output guard (Spanish leak) ──────────────────────
+describe("replyLeaksSpanish — conservative Spanish detector (BKL-064)", () => {
+  it("does NOT flag valid pt-BR (no false positives)", () => {
+    for (const ptbr of [
+      "Recebi sua solicitação e ela foi registrada.",
+      "Olá! Seu pedido foi confirmado com sucesso, muito obrigado!",
+      "No momento estamos fechados, posso agendar sua retirada amanhã.",
+      "Também temos opções sem glúten aqui. Como posso ajudar?",
+      "O pagamento via PIX está pendente; assim que cair, avisamos.",
+    ]) {
+      expect(replyLeaksSpanish(ptbr)).toBeNull();
+    }
+  });
+
+  it("flags Spanish inverted punctuation (zero-FP trigger)", () => {
+    expect(replyLeaksSpanish("¡Hola! ¿En qué puedo ayudarte?")).not.toBeNull();
+    expect(replyLeaksSpanish("Su pedido está listo ¿algo más?")).not.toBeNull();
+  });
+
+  it("flags ≥2 distinct Spanish-exclusive tokens", () => {
+    expect(replyLeaksSpanish("Gracias, su pedido estará listo ahora.")).not.toBeNull();
+    expect(replyLeaksSpanish("Hola, muy bien, nosotros entregamos rápido.")).not.toBeNull();
+    expect(replyLeaksSpanish("El niño de la mañana llegó.")).not.toBeNull(); // ñ + manana
+  });
+
+  it("does NOT flag a single lone token (below the confidence bar)", () => {
+    // A lone 'pero'/'bien' could be a fluke/brand — 2 signals required.
+    expect(replyLeaksSpanish("Tudo pero certo com seu pedido.")).toBeNull();
+  });
+});
+
+describe("guardDraft — Spanish leak clamps to the pt-BR language fallback (BKL-064)", () => {
+  it("clamps a Spanish EXECUTE draft the pt-BR guards would miss", async () => {
+    // Spanish, ≥2 exclusive tokens (hola/muy/gracias), NO success-claim words —
+    // so it slips past the pt-BR F1/F1b lexicons and must hit the language guard.
+    const { model } = mockModel("Hola, su pedido llegará muy pronto. Gracias.");
+    const responder = createIbatexasResponder({ model, modelId: "m", explainer });
+    const decision = { kind: "EXECUTE", basis: [] } as unknown as Decision;
+    const acted = {
+      kind: "executed",
+      toolId: "orders.cancel.v1",
+      envelope: { kind: "order.cancel" },
+      result: { status: "cancelled" },
+    };
+    const draft = await responder.respond(
+      mkInput({
+        decision,
+        envelopeKinds: ["order.cancel"],
+        capabilities: ["order.cancel"],
+        acted,
+        text: "cancela meu pedido",
+      }),
+    );
+    expect(draft.text).toBe(PT_BR_LANGUAGE_FALLBACK_PTBR);
   });
 });

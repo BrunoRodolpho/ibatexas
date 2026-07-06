@@ -10,6 +10,7 @@
 import * as Sentry from "@sentry/node";
 import { getRedisClient, rk } from "@ibatexas/tools";
 import type { Queue, Worker } from "bullmq";
+import { mintBroadcastReply } from "@adjudicate/core";
 import { sendText } from "../whatsapp/client.js";
 import logger from "../lib/logger.js";
 import { createQueue, createWorker, type Job } from "./queue.js";
@@ -51,7 +52,7 @@ async function processNudge(job: Job<NudgeJobData>): Promise<void> {
     return;
   }
 
-  await sendText(`whatsapp:${phone}`, buildHesitationNudgeMessage());
+  await sendText(`whatsapp:${phone}`, mintBroadcastReply(buildHesitationNudgeMessage()));
 }
 
 /** Schedule a nudge for a new customer (called from whatsapp-webhook). */

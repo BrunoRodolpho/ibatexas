@@ -22,7 +22,8 @@
  *    not-found → null ctx fields → the owning pack's stateGuards REFUSE cleanly.
  */
 
-import { getRedisClient, rk, medusaStore, reaisToCentavos } from "@ibatexas/tools";
+import { getRedisClient, rk, medusaStore, reaisToCentavos, searchProducts } from "@ibatexas/tools";
+import { Channel } from "@ibatexas/types";
 import {
   createOrderQueryService,
   createPaymentQueryService,
@@ -636,6 +637,137 @@ async function bindRefundOwnership(kind: string, payload: Ctx): Promise<Ctx> {
 }
 
 /**
+ * F3/L1 (D-014) — thread resolved ids from ctx back onto the outgoing payload.
+ *
+ * The Conductor hands the executor tool `envelope.payload`, but the session
+ * cartId is resolved into ctx (not the payload), so a cart mutation EXECUTEs and
+ * then the tool throws a ZodError on the missing `cartId` — the customer can
+ * never add an item / apply a coupon / check out by message. Copy the resolved
+ * ids from ctx onto the payload for the kinds whose executor schema requires
+ * them, WITHOUT overriding an explicitly-supplied value.
+ *
+ * `ctx.cartId` is a string ONLY for the cart-op order.* kinds (they route
+ * through loadCartCtx); order-by-id kinds (cancel/amend) get `cartId: null` from
+ * loadOrderCtx, so this is self-scoping — it only fires when a cart was resolved.
+ * reservation.* executors require `customerId` (identity, never LLM-supplied).
+ */
+/** First non-empty trimmed string among the candidates, else undefined. */
+function firstString(...vals: unknown[]): string | undefined {
+  for (const v of vals) {
+    if (typeof v === "string" && v.trim().length > 0) return v.trim();
+  }
+  return undefined;
+}
+
+/**
+ * F3/L1 (BKL-061) — deterministic NL→variantId resolution (a READ; keeps this
+ * module's read-only invariant). The 4B emits order.item.add with a LOOSE
+ * product name (e.g. `{item:"coca cola"}`) — no variantId. Resolve it via
+ * Typesense (`searchProducts`) so the executor's schema (which requires
+ * variantId) is satisfiable. Returns undefined on no-match/error → the tool
+ * REFUSEs honestly ("não encontrei esse item") rather than adding the wrong one.
+ */
+async function resolveProductForItem(
+  name: string,
+  channel: string,
+  sessionId: string | undefined,
+  customerId: string,
+): Promise<{ variantId?: string; allergens?: string[] } | undefined> {
+  try {
+    const out = await searchProducts(
+      { query: name },
+      {
+        channel: channel === "whatsapp" ? Channel.WhatsApp : Channel.Web,
+        sessionId: sessionId ?? customerId,
+        ...(isGuestCustomerId(customerId) ? {} : { userId: customerId }),
+        userType: "customer",
+      },
+    );
+    const product = out.products?.[0];
+    if (product === undefined) return undefined;
+    // allergens = the product's EXPLICIT stored array (Hard Rule #1: authoritative
+    // product data, NOT inferred from name/text). Same resolved product as the
+    // variant, so they can never disagree.
+    return {
+      variantId: product.variants?.[0]?.id,
+      ...(Array.isArray(product.allergens) ? { allergens: product.allergens } : {}),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+async function threadResolvedIdsIntoPayload(
+  kind: string,
+  payload: Ctx,
+  ctx: Ctx,
+  customerId: string,
+  channel: string,
+  sessionId: string | undefined,
+): Promise<Ctx> {
+  let out = payload;
+  if (
+    kind.startsWith("order.") &&
+    typeof ctx.cartId === "string" &&
+    typeof out.cartId !== "string"
+  ) {
+    out = { ...out, cartId: ctx.cartId };
+  }
+  if (
+    kind.startsWith("reservation.") &&
+    typeof out.customerId !== "string" &&
+    customerId
+  ) {
+    out = { ...out, customerId };
+  }
+  // BKL-061 + BKL-067: order.item.add — resolve a loose product name to the
+  // product (READ) and inject variantId + the product's EXPLICIT allergens
+  // (pack-orders requireExplicitAllergens; Hard Rule #1) + default quantity, so
+  // the executor schema {cartId,variantId,quantity} AND the allergen guard are
+  // satisfiable from the 4B's loose emission. cartId comes from BKL-028 (session
+  // cart) which BKL-066 ensures exists.
+  if (kind === "order.item.add") {
+    const needsVariant = typeof out.variantId !== "string";
+    const needsAllergens = !Array.isArray(out.allergens);
+    if (needsVariant || needsAllergens) {
+      const name = firstString(out.item, out.product, out.productName, out.name, out.query);
+      if (name) {
+        const resolved = await resolveProductForItem(name, channel, sessionId, customerId);
+        if (resolved !== undefined) {
+          if (needsVariant && resolved.variantId !== undefined) {
+            out = { ...out, variantId: resolved.variantId };
+          }
+          if (needsAllergens && Array.isArray(resolved.allergens)) {
+            out = { ...out, allergens: resolved.allergens };
+          }
+        }
+      }
+    }
+    // Review B3: the 4B often emits quantity as a STRING ("2") — the old
+    // `typeof !== "number" → 1` silently rewrote "2 costelas" to quantity 1.
+    // Coerce a positive-integer string; default only when ABSENT. A present
+    // but invalid value (0, negatives, fractions, junk) is left untouched so
+    // AddToCartInputSchema refuses loudly and the customer gets a clarify —
+    // never a silently different quantity.
+    out = { ...out, quantity: coerceQuantity(out.quantity) };
+  }
+  return out;
+}
+
+/** Positive-integer coercion for order.item.add quantity (review B3). */
+function coerceQuantity(raw: unknown): unknown {
+  if (raw === undefined || raw === null) return 1;
+  if (typeof raw === "string") {
+    const trimmed = raw.trim();
+    if (/^\d+$/.test(trimmed)) {
+      const parsed = Number.parseInt(trimmed, 10);
+      if (parsed > 0) return parsed;
+    }
+  }
+  return raw;
+}
+
+/**
  * Dispatch by kind to the right loader. Unknown / whatsapp kinds get the identity
  * base only (guards needing entity state see null → REFUSE cleanly, never panic).
  */
@@ -723,5 +855,17 @@ export async function resolveAndAssemble(args: ResolveArgs): Promise<AssembledRe
     (kind.startsWith("payment.") || ORDER_BY_ID_KINDS.has(kind)) &&
     ctx.resourceOwnerConfirmed === undefined;
 
-  return { payload: resolvedPayload, ctx, owned, ownershipIndeterminate };
+  // F3/L1 (D-014): thread the session-resolved cartId (and reservation
+  // customerId) from ctx onto the payload the executor tool receives, so cart
+  // mutations no longer EXECUTE-then-ZodError on a missing cartId.
+  const threadedPayload = await threadResolvedIdsIntoPayload(
+    kind,
+    resolvedPayload,
+    ctx,
+    customerId,
+    channel,
+    sessionId,
+  );
+
+  return { payload: threadedPayload, ctx, owned, ownershipIndeterminate };
 }

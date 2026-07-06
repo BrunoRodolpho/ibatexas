@@ -36,6 +36,8 @@ import {
   prisma,
   createOrderCommandService,
   createPaymentCommandService,
+  createOpsAlertService,
+  OPS_ALERT_CAUSE_LABELS_PT,
   type OrderStatusTransitionPayload,
   type PaymentStatusTransitionPayload,
 } from "@ibatexas/domain";
@@ -49,8 +51,9 @@ import {
 import * as Sentry from "@sentry/node";
 import type { Queue, Worker } from "bullmq";
 import type { FastifyBaseLogger } from "fastify";
-import { createQueue, createWorker, type Job } from "./queue.js";
 import { buildSystemEnvelope } from "../subscribers/__shared__/system-actor-envelope.js";
+import { createQueue, createWorker, type Job } from "./queue.js";
+import { reconcileSweepOpsAlert, sweepCountSeverity } from "./ops-alert-reconcile.js";
 
 const REPEAT_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
 
@@ -259,6 +262,33 @@ export async function checkStaleOrders(log?: FastifyBaseLogger | null): Promise<
     { canceled_count: canceledCount, dry_run: isDryRun(), run_at: new Date().toISOString() },
     "Stale order check complete",
   );
+
+  // BKL-080 — surface a stuck-order SPIKE to the ops-alert plane (additive; wrapped
+  // so it can NEVER break the core cancellation job). A burst of stale-unpaid
+  // cancellations in one sweep signals a systemic payment-completion failure (PIX
+  // provider down, checkout broken). Not raised in dry-run (nothing was acted on).
+  const stuckThreshold = Number(process.env.OPS_STUCK_ORDER_ALERT_THRESHOLD) || 10;
+  try {
+    await reconcileSweepOpsAlert({
+      svc: createOpsAlertService({ auditSink: getAuditSink(), log: effectiveLogger ?? undefined }),
+      over: !isDryRun() && canceledCount >= stuckThreshold,
+      open: {
+        cause: "ops_stuck_order",
+        severity: sweepCountSeverity(canceledCount, stuckThreshold),
+        source: "stale-order-checker",
+        scope: null,
+        title: `${OPS_ALERT_CAUSE_LABELS_PT.ops_stuck_order}: ${canceledCount} numa varredura`,
+        detail: `${canceledCount} pedidos não pagos foram cancelados nesta varredura (limite ${stuckThreshold}).`,
+        context: { canceledCount, threshold: stuckThreshold },
+        dedupeKey: "ops_stuck_order",
+      },
+      sourceSubject: "stale-order-checker",
+      now: Date.now(),
+      log: effectiveLogger ?? undefined,
+    });
+  } catch (err) {
+    effectiveLogger?.warn({ error: String(err) }, "[stale-order] ops-alert reconcile failed (non-fatal)");
+  }
 }
 
 /** BullMQ processor. */

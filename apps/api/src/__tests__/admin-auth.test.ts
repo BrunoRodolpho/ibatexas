@@ -13,6 +13,10 @@ import type { FastifyInstance } from "fastify"
 // ── Mock dependencies for admin routes ────────────────────────────────────────
 
 vi.mock("@ibatexas/domain", () => ({
+  // AUT-038 + AUT-007 — the OWNER-gated admin staff routes construct this at
+  // server onReady; the full-admin-server build needs it present in the mock.
+  createStaffCommandService: () => ({}),
+  FROZEN_CAUSES: ["empty_completion", "whitespace_only", "send_failed", "retry_exhausted", "timeout"],
   createReservationService: () => ({
     findAll: vi.fn(async () => []),
     findConfirmedForDate: vi.fn(async () => []),

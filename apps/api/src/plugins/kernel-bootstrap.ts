@@ -35,8 +35,13 @@ import { installPack, PackConformanceError } from "@adjudicate/core"
 type InstalledPackLike = {
   readonly pack: { readonly intents: ReadonlyArray<string> }
 }
-import { recordSinkFailure, setMetricsSink } from "@adjudicate/core/kernel"
+import {
+  recordSinkFailure,
+  setMetricsSink,
+  type MetricsSink,
+} from "@adjudicate/core/kernel"
 import { customerOnboardingPack } from "@ibatexas/pack-customer-onboarding"
+import { opsPack } from "@ibatexas/pack-ops"
 import { ordersPack } from "@ibatexas/pack-orders"
 import { paymentsPack } from "@ibatexas/pack-payments"
 import { paymentsPixPack } from "@adjudicate/pack-payments-pix"
@@ -49,7 +54,6 @@ import { KNOWN_INTENT_KINDS, LOYALTY_INTENT_KINDS } from "@ibatexas/intent-kinds
 // `@ibatexas/llm-provider` instead would set the hook on that package's
 // transition-shim copy of park-nx, leaving the apps/api copy's hook null and
 // silently dropping `kernel_defer_quota_exceeded_total{kind}`.
-import { setDeferQuotaExceededHook } from "../adapters/park-deferred-intent-nx.js"
 import {
   setAuditDedupHook,
   setAuditLagHook,
@@ -58,12 +62,14 @@ import {
   setAuditSinkFailureHook,
   setAuditSinkSpillSizeHook,
 } from "@ibatexas/audit-sink"
-import { setAuditConsumerDedupHook } from "../subscribers/audit-consumer.js"
 import { prisma } from "@ibatexas/domain"
 import * as Sentry from "@sentry/node"
 import { publishNatsEvent } from "@ibatexas/nats-client"
 import { Registry } from "prom-client"
 import type { FastifyInstance } from "fastify"
+import { setAuditConsumerDedupHook } from "../subscribers/audit-consumer.js"
+import { setDeferQuotaExceededHook } from "../adapters/park-deferred-intent-nx.js"
+import { createIbatexasMetricsSink } from "../observability/metrics-sink.js"
 import { logger } from "../lib/logger.js"
 import {
   createKernelMetricsRecorder,
@@ -107,17 +113,50 @@ const defaultTrackAnalytics: TrackAnalytics = (eventType, properties) => {
 
 // ── installKernelMetricsSink ─────────────────────────────────────────────────
 
+/**
+ * SIGNAL-4: fan one kernel observability event out to several MetricsSinks.
+ * Production needs BOTH the Prometheus/PostHog/Sentry sink AND the structured
+ * pino sink (component:kernel event:decision/refusal) so kernel decisions are
+ * visible + sliceable in VictoriaLogs — previously only the Prometheus sink was
+ * installed (first-wins), so decisions never reached the log stream. Each arm is
+ * fenced: an observer must NEVER break the kernel path.
+ */
+function composeMetricsSinks(a: MetricsSink, b: MetricsSink): MetricsSink {
+  const both = (fn: (s: MetricsSink) => void): void => {
+    for (const s of [a, b]) {
+      try {
+        fn(s)
+      } catch {
+        // observer isolation — swallow (the kernel path must not throw here)
+      }
+    }
+  }
+  return {
+    recordDecision: (e) => both((s) => s.recordDecision(e)),
+    recordRefusal: (e) => both((s) => s.recordRefusal(e)),
+    recordLedgerOp: (e) => both((s) => s.recordLedgerOp(e)),
+    recordSinkFailure: (e) => both((s) => s.recordSinkFailure(e)),
+    // recordResourceLimit + recordShadowDivergence are OPTIONAL on MetricsSink.
+    recordResourceLimit: (e) => both((s) => s.recordResourceLimit?.(e)),
+    recordShadowDivergence: (e) => both((s) => s.recordShadowDivergence?.(e)),
+  }
+}
+
 export function installKernelMetricsSink(
   overrides?: Partial<KernelMetricsSinkDeps>,
 ): Registry {
   const register = overrides?.register ?? getKernelRegistry()
-  const sink = createKernelMetricsSink({
+  const promSink = createKernelMetricsSink({
     trackAnalytics: overrides?.trackAnalytics ?? defaultTrackAnalytics,
     sentry: overrides?.sentry ?? Sentry,
     log: overrides?.log ?? logger,
     register,
     knownIntentKinds: overrides?.knownIntentKinds ?? KNOWN_INTENT_KINDS,
   })
+  // SIGNAL-4: compose the structured pino decision-logger alongside the
+  // Prometheus sink so EXECUTE (info) / REFUSE (warn) / ESCALATE decisions ship
+  // to VictoriaLogs, joinable to intent_audit rows by intentHash.
+  const sink = composeMetricsSinks(promSink, createIbatexasMetricsSink(logger))
   setMetricsSink(sink)
 
   const recorder = createKernelMetricsRecorder(
@@ -165,8 +204,13 @@ export function installKernelMetricsSink(
   // events to the structured logger so they surface in log-search +
   // can be aggregated by operators. The Sentry breadcrumb gives
   // incident responders timeline visibility.
+  // NOISE-7: dedup firing is the EXPECTED steady state of the always-on
+  // execution ledger — logging every drop at info was 535 lines of routine
+  // bookkeeping. Demote to debug (tagged component:kernel event:dedup); the
+  // Sentry breadcrumb keeps incident-timeline visibility, and the real home
+  // for the rate is the kernel_audit_dedup_total Prometheus counter noted above.
   setAuditDedupHook((path) => {
-    logger.info({ path }, "[audit-dedup] in-process sink dropped duplicate audit row")
+    logger.debug({ component: "kernel", event: "dedup", path }, "[audit-dedup] in-process sink dropped duplicate audit row")
     Sentry.addBreadcrumb({
       category: "audit-dedup",
       level: "info",
@@ -174,7 +218,7 @@ export function installKernelMetricsSink(
     })
   })
   setAuditConsumerDedupHook(() => {
-    logger.info({ path: "consumer" }, "[audit-dedup] NATS audit-consumer dropped duplicate audit row")
+    logger.debug({ component: "kernel", event: "dedup", path: "consumer" }, "[audit-dedup] NATS audit-consumer dropped duplicate audit row")
     Sentry.addBreadcrumb({
       category: "audit-dedup",
       level: "info",
@@ -193,11 +237,17 @@ export function installFirstPartyPacks() {
   const whatsapp = installPack(whatsappPack)
   const customerOnboarding = installPack(customerOnboardingPack)
   const payments = installPack(paymentsPack)
+  // `@ibatexas/pack-ops` (NEW-032 slice C1) — the staff-plane ops verb pack.
+  // It declares `product.availability.set` (now in `KNOWN_INTENT_KINDS`);
+  // without installing it that kind resolves to no policy and
+  // `assertPackCoverage` refuses to boot. The pack's admin-session fence +
+  // the adopter staffRoleGuard (composed router) govern it.
+  const ops = installPack(opsPack)
   // `@adjudicate/pack-payments-pix` — the lighthouse PIX-charge-lifecycle Pack
   // (CLAUDE.md rule #9 / ADR #13). It declares the `pix.charge.*` wire-PSP
   // kinds carried in `KNOWN_INTENT_KINDS`; without installing it those kinds
   // resolve to no policy and `assertPackCoverage` refuses to boot. This
-  // mirrors the canonical six-pack roster in `ibx kernel` (cli loadPackIndex).
+  // mirrors the canonical pack roster in `ibx kernel` (cli loadPackIndex).
   const paymentsPix = installPack(paymentsPixPack)
 
   const recorder = getKernelMetricsRecorder()
@@ -206,9 +256,10 @@ export function installFirstPartyPacks() {
   recorder.recordPackInstall("whatsapp")
   recorder.recordPackInstall("customer-onboarding")
   recorder.recordPackInstall("payments")
+  recorder.recordPackInstall("ops")
   recorder.recordPackInstall("payments-pix")
 
-  return { orders, reservations, whatsapp, customerOnboarding, payments, paymentsPix }
+  return { orders, reservations, whatsapp, customerOnboarding, payments, ops, paymentsPix }
 }
 
 // ── Pack coverage assertion ──────────────────────────────────────────────────
@@ -333,6 +384,7 @@ export async function bootstrapKernel(server: FastifyInstance): Promise<void> {
           "whatsapp",
           "customer-onboarding",
           "payments",
+          "ops",
           "payments-pix",
         ],
       },
@@ -357,6 +409,7 @@ export async function bootstrapKernel(server: FastifyInstance): Promise<void> {
       installedPacks.whatsapp,
       installedPacks.customerOnboarding,
       installedPacks.payments,
+      installedPacks.ops,
       installedPacks.paymentsPix,
     ]
     assertPackCoverage(allPacks, PACK_REGISTERED_INTENT_KINDS)

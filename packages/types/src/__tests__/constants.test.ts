@@ -8,6 +8,7 @@ import {
   SHIPPING_RATES,
   SHIPPING_RATE_DEFAULT,
 } from "../constants.js"
+import { COUPON_REJECTED_CODE } from "../cart.types.js"
 
 describe("Business Constants", () => {
   it("MAX_PARTY_SIZE is a positive integer", () => {
@@ -66,5 +67,12 @@ describe("Business Constants", () => {
         expect(Number.isInteger(rate.sedex.price)).toBe(true)
       }
     })
+  })
+
+  // D1 — the checkout coupon fail-closed abort code is a WIRE value: the
+  // create_checkout tool returns it and the API checkout route keys the 422
+  // mapping on it. Pin the literal so neither side drifts.
+  it("COUPON_REJECTED_CODE is the pinned wire literal", () => {
+    expect(COUPON_REJECTED_CODE).toBe("COUPON_REJECTED")
   })
 })

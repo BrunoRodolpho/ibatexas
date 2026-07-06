@@ -1,4 +1,6 @@
 export { AdminSidebar } from './AdminSidebar'
+export { AgentApprovalCard } from './AgentApprovalCard'
+export { PendingConfirmationsPanel, type PendingConfirmation } from './PendingConfirmationsPanel'
 export { SearchInput } from './SearchInput'
 export { FilterChip } from '@ibatexas/ui/molecules'
 export { Sheet } from './Sheet'

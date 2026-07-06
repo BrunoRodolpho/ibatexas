@@ -1,0 +1,73 @@
+// GENERATE-ONLY mirror of @claustrum-owned memory tables (public schema).
+//
+// These four models MIRROR physical tables that are owned + provisioned by the
+// @claustrum memory-postgres SQL migrations (claustrum/packages/memory-postgres/
+// migrations/001-004), NOT by Prisma. They live in the `public` Postgres schema
+// (the claustrum runner issues unqualified DDL on the default search_path).
+//
+// This schema generates a DEDICATED client (separate output dir) whose sole job
+// is to expose the delegates `claustrum_memory_{episodic,semantic,procedural,
+// relational}` that resolveMemoryPort() (apps/api/src/claustrum-bootstrap.ts)
+// probes and that createPostgresMemoryProvider() drives. It has NO multiSchema /
+// NO `schemas` list, so models resolve to the default schema (public) via the
+// runtime search_path — and crucially this client never brings the unmanaged
+// public schema (Medusa, kernel intent_audit, claustrum tables) under Prisma
+// management. That is what avoids the `ibx db reset` / migrate-dev hazard.
+//
+// NEVER run `prisma db push` / `prisma migrate` against this schema:
+//   • claustrum_memory_episodic is RANGE-PARTITIONED by recorded_at — Prisma's
+//     DSL cannot express partitioning, so a generated migration would emit a
+//     NON-partitioned table that destructively diverges from claustrum's parent.
+//   • Field names are snake_case to MATCH the physical columns exactly (the
+//     provider queries by column-equal field names, e.g. `where: { customer_id }`),
+//     so no @map is needed.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/claustrum-memory-client"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model claustrum_memory_episodic {
+  id              BigInt   @default(autoincrement())
+  customer_id     String
+  turn_id         String
+  conversation_id String
+  user_text       String?
+  response_text   String?
+  decision_kind   String?
+  intent_hash     String?
+  recorded_at     DateTime @db.Timestamptz(6)
+
+  @@id([id, recorded_at])
+}
+
+model claustrum_memory_semantic {
+  customer_id String
+  key         String
+  value       String
+  confidence  Float
+  tags        String[] @default([])
+  recorded_at DateTime @db.Timestamptz(6)
+
+  @@id([customer_id, key])
+}
+
+model claustrum_memory_procedural {
+  id            BigInt    @id @default(autoincrement())
+  customer_id   String
+  workflow_kind String
+  description   String
+  last_used_at  DateTime? @db.Timestamptz(6)
+}
+
+model claustrum_memory_relational {
+  id          BigInt   @id @default(autoincrement())
+  customer_id String
+  signal_kind String
+  content     String
+  observed_at DateTime @db.Timestamptz(6)
+}

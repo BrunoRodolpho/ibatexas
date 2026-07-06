@@ -51,6 +51,18 @@ vi.mock("@ibatexas/nats-client", () => ({
   publishNatsEvent: mockPublishNatsEvent,
 }))
 
+// Schedule lookup drives the scheduled-pickup tagging (closed + no deliveryCep).
+const mockLoadSchedule = vi.hoisted(() => vi.fn())
+const mockGetMealPeriod = vi.hoisted(() => vi.fn())
+
+vi.mock("../../cache/schedule-cache.js", () => ({
+  loadSchedule: mockLoadSchedule,
+}))
+
+vi.mock("../../schedule/schedule-helpers.js", () => ({
+  getMealPeriodFromSchedule: mockGetMealPeriod,
+}))
+
 vi.mock("stripe", () => {
   return {
     default: vi.fn().mockImplementation(() => ({
@@ -148,6 +160,8 @@ describe("createCheckout", () => {
     mockPublishNatsEvent.mockResolvedValue(undefined)
     mockStripeConfirm.mockResolvedValue({})
     mockStripeUpdate.mockResolvedValue({})
+    mockLoadSchedule.mockResolvedValue({ days: {} })
+    mockGetMealPeriod.mockReturnValue("lunch")
     process.env.STRIPE_SECRET_KEY = "sk_test_123"
   })
 
@@ -188,6 +202,113 @@ describe("createCheckout", () => {
 
       const [payload] = mockCartsUpdate.mock.calls[0]
       expect(payload.body.metadata.deliveryCep).toBe("12345-678")
+    })
+
+    // ── Closed-hours policy: scheduled-pickup tagging ───────────────────────
+    // Mirrors the cart.ts checkout gate — a closed PICKUP order (no deliveryCep)
+    // is ACCEPTED and tagged `scheduledPickup`, while an immediate-delivery
+    // order (deliveryCep present) is never tagged.
+    it("tags scheduledPickup=true for a PICKUP order while the kitchen is closed", async () => {
+      setupCashMocks()
+      mockGetMealPeriod.mockReturnValue("closed")
+
+      await createCheckout(BASE_INPUT, CTX) // no deliveryCep → pickup
+
+      const [payload] = mockCartsUpdate.mock.calls[0]
+      expect(payload.body.metadata.scheduledPickup).toBe("true")
+      expect(payload.body.metadata.deliveryType).toBe("pickup")
+    })
+
+    it("does NOT tag scheduledPickup for an immediate DELIVERY order while closed", async () => {
+      setupCashMocks()
+      mockGetMealPeriod.mockReturnValue("closed")
+
+      await createCheckout({ ...BASE_INPUT, deliveryCep: "12345-678" }, CTX)
+
+      const [payload] = mockCartsUpdate.mock.calls[0]
+      expect(payload.body.metadata.scheduledPickup).toBeUndefined()
+      expect(payload.body.metadata.deliveryType).toBe("delivery")
+    })
+
+    it("does NOT tag scheduledPickup for a PICKUP order while OPEN", async () => {
+      setupCashMocks()
+      mockGetMealPeriod.mockReturnValue("lunch")
+
+      await createCheckout(BASE_INPUT, CTX)
+
+      const [payload] = mockCartsUpdate.mock.calls[0]
+      expect(payload.body.metadata.scheduledPickup).toBeUndefined()
+    })
+  })
+
+  // ── Coupon application (CUS-016 / D1) ─────────────────────────────────────
+  // A customer-validated coupon threaded via the checkout body must be applied
+  // to the REAL Medusa cart before the payment collection is created, so the
+  // charged total reflects the discount. Absent → no coupon promotion added.
+  // Medusa rejecting the coupon → the money path fails CLOSED: checkout
+  // aborts BEFORE any payment collection is created (never a silent
+  // full-price charge).
+  describe("coupon application (CUS-016 / D1)", () => {
+    const couponAddCalls = () =>
+      mockCartsPromotionsAdd.mock.calls.filter(
+        ([, opts]) => (opts as { sourceSubject?: string })?.sourceSubject === "cart:create-checkout:apply-coupon",
+      )
+
+    it("applies a supplied couponCode to the Medusa cart via a governed promotion.add and proceeds with checkout", async () => {
+      setupCashMocks()
+
+      const result = await createCheckout({ ...BASE_INPUT, couponCode: "SAVE10" }, CTX)
+
+      const calls = couponAddCalls()
+      expect(calls).toHaveLength(1)
+      expect(calls[0][0]).toEqual(
+        expect.objectContaining({ cartId: "cart_01", promoCodes: ["SAVE10"] }),
+      )
+      expect(calls[0][1]).toEqual(
+        expect.objectContaining({ sourceSubject: "cart:create-checkout:apply-coupon", actorPrincipal: "llm" }),
+      )
+      // Clean apply → checkout proceeds on the discounted cart.
+      expect(result.success).toBe(true)
+      expect(result.code).toBeUndefined()
+      expect(mockPaymentCollectionsCreate).toHaveBeenCalledTimes(1)
+      expect(mockCartsComplete).toHaveBeenCalledTimes(1)
+    })
+
+    it("does NOT add a coupon promotion when no couponCode is supplied — checkout unchanged", async () => {
+      setupCashMocks()
+
+      const result = await createCheckout(BASE_INPUT, CTX)
+
+      expect(couponAddCalls()).toHaveLength(0)
+      expect(result.success).toBe(true)
+      expect(result.code).toBeUndefined()
+      expect(mockPaymentCollectionsCreate).toHaveBeenCalledTimes(1)
+    })
+
+    it("aborts checkout fail-CLOSED when Medusa rejects the coupon — no payment collection created", async () => {
+      // Queue ONLY what the abort path consumes (the total-check read + the
+      // coupon rejection) — `vi.clearAllMocks()` does not flush unconsumed
+      // `mockResolvedValueOnce` queues, so setupCashMocks() here would leak
+      // stale once-values into subsequent tests.
+      mockMedusaStoreFetch.mockResolvedValueOnce(CART_WITH_TOTAL)
+      mockCartsPromotionsAdd.mockRejectedValueOnce(new Error("promotion expired"))
+
+      const result = await createCheckout({ ...BASE_INPUT, couponCode: "EXPIRED" }, CTX)
+
+      // Typed failure the route maps to a 422 — never a silent full-price charge.
+      expect(result.success).toBe(false)
+      expect(result.code).toBe("COUPON_REJECTED")
+      expect(result.paymentMethod).toBe("cash")
+      expect(result.message).toContain("cupom")
+      expect(result.message).toContain("Remova o cupom")
+
+      // Abort happens BEFORE any payment-side effect: no metadata update, no
+      // payment collection, no payment session, no cart completion, no event.
+      expect(mockCartsUpdate).not.toHaveBeenCalled()
+      expect(mockPaymentCollectionsCreate).not.toHaveBeenCalled()
+      expect(mockPaymentSessionsCreate).not.toHaveBeenCalled()
+      expect(mockCartsComplete).not.toHaveBeenCalled()
+      expect(mockPublishNatsEvent).not.toHaveBeenCalled()
     })
   })
 

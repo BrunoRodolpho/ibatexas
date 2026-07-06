@@ -237,6 +237,12 @@ export const ACTION_LABELS = {
   markDelivered: 'Entregue',
   cancelOrder: 'Cancelar',
   advanceStatus: 'Avançar',
+  refresh: 'Atualizar',
+  // Incidentes action bar
+  acknowledge: 'Reconhecer',
+  resolve: 'Resolver',
+  escalateIncident: 'Escalar (pausar bot)',
+  sendReply: 'Enviar',
 } as const
 
 // ---------------------------------------------------------------------------
@@ -263,6 +269,167 @@ export const EMPTY_STATES = {
   hoursFiltered: 'Nenhum item encontrado para o filtro selecionado.',
   zones: 'Nenhuma zona de entrega cadastrada.',
   zonesFiltered: 'Nenhuma zona encontrada para o filtro selecionado.',
+  incidents: 'Nenhum incidente aberto.',
+  incidentsFiltered: 'Nenhum incidente com esses filtros.',
+} as const
+
+// ---------------------------------------------------------------------------
+// Incidents (falhas de resposta automática)
+// ---------------------------------------------------------------------------
+
+export const INCIDENT_LABELS = {
+  nav: 'Incidentes',
+  navTitle: 'Falhas de resposta automática',
+  pageTitle: 'Incidentes',
+  pageSubtitle: 'Atendimentos sem resposta',
+  // right-pane / drawer section heads + prompts
+  selectPrompt: 'Selecione um incidente para ver os detalhes.',
+  transcriptHeading: 'Transcrição',
+  technicalDetails: 'Detalhes técnicos',
+  historyHeading: 'Histórico',
+  gapLine: '— sem resposta enviada —',
+  gapDetail: 'IA não gerou resposta · cliente ficou no silêncio',
+  gapCollapsed: (n: number) => `— sem resposta enviada — (${n} quedas)`,
+  dropOfTotal: (n: number, total: number) => `queda ${n} de ${total}`,
+  reopenedFrom: (ref: string, age: string) => `Reaberto de ${ref} (resolvido auto ${age})`,
+  reopenedTag: 'reaberto',
+  replyPlaceholder: 'responder ao cliente…',
+  neverReturned: 'nunca retornou',
+  autoResolvedDivider: (age: string) => `incidente resolvido automaticamente · ${age}`,
+  deliveredMarker: '✓ entregue',
+  // customerImpacted glance (§6)
+  impactedSilence: '·silêncio',
+  impactedNotice: '·aviso enviado',
+  // drawer technical field labels
+  fieldTurn: 'Turno',
+  fieldDecision: 'Decisão',
+  fieldDrops: 'Quedas',
+  fieldChannel: 'Canal',
+  fieldCustomer: 'Cliente',
+  fieldSession: 'Sessão',
+  fieldOpenedAt: 'Aberto em',
+} as const
+
+// Incident enum → pt-BR (status keyed by IncidentStatus, severity by IncidentSeverity)
+export const INCIDENT_STATUS_LABELS: Record<string, string> = {
+  OPEN: 'aberto',
+  ACKNOWLEDGED: 'em atendimento',
+  AUTO_RESOLVED: 'resolvido auto',
+  RESOLVED: 'resolvido',
+}
+
+export const INCIDENT_SEVERITY_LABELS: Record<string, string> = {
+  high: 'alta',
+  medium: 'média',
+  low: 'baixa',
+}
+
+// Cause: short Badge rótulo (§6) + the drawer explanation line
+export const INCIDENT_CAUSE_LABELS: Record<string, string> = {
+  empty_completion: 'sem resposta da IA',
+  whitespace_only: 'resposta em branco',
+  send_failed: 'falha no envio',
+  retry_exhausted: 'envios esgotados',
+  timeout: 'tempo esgotado',
+  pause_read_error: 'erro interno (pausa)',
+}
+
+export const INCIDENT_CAUSE_EXPLANATIONS: Record<string, string> = {
+  empty_completion: 'A IA não gerou nenhum texto para enviar.',
+  whitespace_only: 'A IA gerou apenas espaços em branco.',
+  send_failed: 'A resposta foi gerada, mas o envio ao WhatsApp falhou.',
+  retry_exhausted: 'Todas as tentativas de envio falharam.',
+  timeout: 'A IA não respondeu dentro do tempo limite.',
+  pause_read_error: 'Falha ao verificar a pausa do atendimento (Redis indisponível) — o cliente ficou sem resposta.',
+}
+
+// Filter chips (id === '' means "all")
+export const INCIDENT_STATUS_FILTERS = [
+  { id: '', label: 'Todos' },
+  { id: 'OPEN', label: 'Abertos' },
+  { id: 'ACKNOWLEDGED', label: 'Em atendimento' },
+  { id: 'RESOLVED', label: 'Resolvidos' },
+] as const
+
+export const INCIDENT_CAUSE_FILTERS = [
+  { id: '', label: 'Todas' },
+  { id: 'empty_completion', label: 'Sem resposta' },
+  { id: 'whitespace_only', label: 'Em branco' },
+  { id: 'send_failed', label: 'Falha no envio' },
+  { id: 'timeout', label: 'Tempo' },
+] as const
+
+export const INCIDENT_SEVERITY_FILTERS = [
+  { id: '', label: 'Todas' },
+  { id: 'high', label: 'Alta' },
+  { id: 'medium', label: 'Média' },
+  { id: 'low', label: 'Baixa' },
+] as const
+
+export const INCIDENT_COLUMN_HEADERS = {
+  severity: 'Gravidade',
+  cause: 'Causa',
+  customer: 'Cliente',
+  channel: 'Canal',
+  drops: 'Quedas',
+  status: 'Status',
+  age: 'Idade',
+} as const
+
+// Empty state (zero incidents, healthy default)
+export const INCIDENT_EMPTY = {
+  title: 'Nenhum incidente aberto.',
+  subtitle: 'Todos os clientes estão recebendo resposta.',
+} as const
+
+// StatCard strip (§3)
+export const INCIDENT_STAT_LABELS = {
+  open: 'Abertos',
+  openSub: 'agora',
+  acknowledged: 'Em atendimento',
+  acknowledgedSub: 'atribuídos',
+  resolvedToday: 'Resolvidos hoje',
+  resolvedSub: (auto: number, staff: number) => `auto: ${auto} · você: ${staff}`,
+  avgTime: 'Tempo médio',
+  avgTimeSub: 'últimas 24h',
+} as const
+
+// Storm digest banner (§5) — keyed off the rolling open-count window
+export const INCIDENT_STORM = {
+  headline: 'Possível instabilidade da IA',
+  summary: (count: number, minutes: number, cause: string) =>
+    `${count} incidentes abertos nos últimos ${minutes} min · causa principal: ${cause}`,
+  acknowledgeAll: (n: number) => `Reconhecer todos (${n})`,
+  filterByCause: 'Filtrar por esta causa',
+  details: 'detalhes',
+} as const
+
+// Toasts (§2 / §4). The reply toasts are reused from the escalações flow.
+export const INCIDENT_TOASTS = {
+  newTitle: 'Incidente aberto',
+  newBody: 'Cliente sem resposta no WhatsApp',
+  stormTitle: 'Possível instabilidade da IA',
+  stormBody: (count: number, minutes: number, cause: string) =>
+    `${count} incidentes abertos em ${minutes} min · causa principal: ${cause}`,
+  acknowledged: 'Incidente reconhecido',
+  resolved: 'Incidente resolvido',
+  autoResolvedRace: 'Este incidente já foi resolvido automaticamente.',
+  changedByOther: 'Incidente atualizado por outro atendente. Atualize a página.',
+  invalidTransition: 'Transição de status inválida.',
+  replyDelivered: 'Enviado ao cliente.',
+  replyRecorded: 'Registrado (não entregue ao vivo).',
+  replyFailed: 'Falha ao enviar a resposta.',
+  loadFailed: 'Falha ao carregar os incidentes.',
+} as const
+
+// Resolver / Escalar confirmation copy (§4)
+export const INCIDENT_CONFIRM = {
+  resolveTitle: 'Marcar como resolvido?',
+  resolveBody: 'Confirme que o cliente já foi atendido.',
+  escalateTitle: 'Escalar e pausar o bot?',
+  escalateBody: 'O atendimento passa para uma pessoa e o bot para de responder nesta conversa.',
+  confirm: 'Confirmar',
+  cancel: 'Cancelar',
 } as const
 
 // ---------------------------------------------------------------------------

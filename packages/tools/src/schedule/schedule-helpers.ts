@@ -98,6 +98,39 @@ function mealPeriodFromEnv(hour: number): "lunch" | "dinner" | "closed" {
   return "closed"
 }
 
+// ── Structured open/closed signal ────────────────────────────────────────────
+
+/**
+ * A STRUCTURED (not free-text) open/closed signal for the conversational loop.
+ * The planner + responder consume `isClosed` deterministically — the agent must
+ * never assert "estamos abertos" while this says the store is closed. Sourced
+ * from {@link getMealPeriodFromSchedule}; when closed, `nextOpenDay` carries the
+ * human-readable reopen day from {@link getNextOpenDay}.
+ */
+export interface ScheduleSignal {
+  readonly isClosed: boolean
+  readonly mealPeriod: "lunch" | "dinner" | "closed"
+  /** Human-readable next opening (e.g. "amanhã") — present only when closed. */
+  readonly nextOpenDay?: string
+}
+
+/**
+ * Build the deterministic {@link ScheduleSignal} for "now" in the given tz. This
+ * is the single source of the closed-hours fact the agent loop grounds on (the
+ * soft prompt note + the deterministic backstop both read `isClosed`).
+ */
+export function getScheduleSignal(
+  schedule: RestaurantSchedule | undefined,
+  tz: string,
+): ScheduleSignal {
+  const mealPeriod = getMealPeriodFromSchedule(schedule, tz)
+  const isClosed = mealPeriod === "closed"
+  if (isClosed && schedule) {
+    return { isClosed, mealPeriod, nextOpenDay: getNextOpenDay(schedule, tz) }
+  }
+  return { isClosed, mealPeriod }
+}
+
 // ── Schedule-aware availability check ────────────────────────────────────────
 
 /**
@@ -193,6 +226,49 @@ export function getFrozenPickupMessage(
   }
 
   return `Retirada: ${nextDay}, durante horário de funcionamento.`
+}
+
+// ── Today's operating-hours string (BKL-121 — the STORE_HOURS claim value) ─────
+
+/**
+ * Format TODAY's regular operating-hours as ONE scalar pt-BR string (BKL-121 / D2:
+ * the renderer's proposition grammar is scalar-only). Reads ONLY the REAL weekly
+ * `days[today]` window fields (lunch/dinner Start/End) via the SAME
+ * {@link stripLeadingZero} idiom {@link getFrozenPickupMessage} uses — NEVER an
+ * invented or hardcoded hour (Hard Rule #3 + the BKL-026 "Não invente um horário"
+ * rule: the value is evidence-bound). Returns:
+ *
+ *   - `"11h–15h / 18h–23h"` — the day's open window(s), one or both meal periods;
+ *   - `"fechado"`           — a regular CLOSED weekday (`isOpen=false`, or no
+ *                             window) per the weekly schedule — an evidence-bound
+ *                             fact, not an absence;
+ *   - `null`                — the schedule is UNAVAILABLE (`undefined`). The caller
+ *                             MUST record a fail-closed read ERROR (Inv 7), NEVER a
+ *                             fabricated hours string.
+ *
+ * This is the WEEKLY-schedule fact ONLY. A per-date holiday or override is
+ * deliberately NOT applied here — those are the STORE_HOURS claim's honest
+ * FALSIFIERS (BKL-121 D1): the investigator records them separately and the kernel
+ * demotes the claim to UNKNOWN when either fires (the weekly hours cannot be
+ * trusted on an exception day). Pure: no clock beyond {@link getLocalTime}, no IO.
+ */
+export function getTodayHoursText(
+  schedule: RestaurantSchedule | undefined,
+  tz: string,
+): string | null {
+  if (!schedule) return null
+  const { dayOfWeek } = getLocalTime(tz)
+  const day = schedule.days.find((d) => d.dayOfWeek === dayOfWeek)
+  if (!day?.isOpen) return "fechado"
+
+  const periods: string[] = []
+  if (day.lunchStart && day.lunchEnd) {
+    periods.push(`${stripLeadingZero(day.lunchStart)}–${stripLeadingZero(day.lunchEnd)}`)
+  }
+  if (day.dinnerStart && day.dinnerEnd) {
+    periods.push(`${stripLeadingZero(day.dinnerStart)}–${stripLeadingZero(day.dinnerEnd)}`)
+  }
+  return periods.length > 0 ? periods.join(" / ") : "fechado"
 }
 
 // ── Internal helpers ─────────────────────────────────────────────────────────

@@ -12,8 +12,10 @@ const badgeVariants = cva('inline-flex items-center px-2 py-0.5 rounded-sm text-
       hero: 'bg-white/70 backdrop-blur-sm text-charcoal-900 ring-1 ring-smoke-200/50',
       // Tier 2: Feature (brand-tinted — promotional)
       feature: 'bg-brand-50/80 backdrop-blur-sm text-brand-700 ring-1 ring-brand-200/40',
-      // Tier 3: Informational (neutral — dietary, metadata)
-      info: 'bg-smoke-100 text-smoke-600',
+      // Tier 3: Informational (blue — system self-heal / "resolvido auto")
+      // P0-1: landed AFTER `ready` was repointed off this cast (status-variant.ts)
+      // and grey-meaning `info` consumers were moved to `default`.
+      info: 'bg-blue-50 text-blue-700',
 
       // ── Semantic mappings (map to tiers) ──────────────────
       // Hero tier

@@ -26,6 +26,7 @@ import {
   TERMINAL_PAYMENT_STATUSES,
 } from "@ibatexas/types"
 import type { AuditSink, IntentEnvelope } from "@adjudicate/core"
+import type { Guard } from "@adjudicate/core/kernel"
 import {
   withAdjudicate,
   type AdjudicatedResult,
@@ -205,8 +206,46 @@ export interface PaymentCommandService {
       newStatus: string
       totalRefundedCentavos: number
       refundAmountCentavos: number
+      orderId: string
+      method: string
     }>
   >
+
+  /**
+   * BKL-085 — persist a `payment.refund.issue` the caller has ALREADY
+   * adjudicated through the COMPOSED policy router (the ops-plane refunds-by-
+   * message path). THE CALLER MUST HOLD A POSITIVE (EXECUTE/REWRITE) `Decision`
+   * — this performs NO adjudication; it is the post-decision persistence body
+   * extracted from `executeRefundIssue` and shared, exactly like
+   * `writeAdjudicatedNote` / `writeAdjudicatedStatusTransition` on the order
+   * command service.
+   *
+   * The ops path adjudicates through `composePolicyRouter` (carrying
+   * `staffRoleGuard` + the staff-role matrix + the BKL-085 UNTRUSTED-taint
+   * refund overlay). Re-running `issueRefundFromEnvelope` there would double-
+   * adjudicate against the DOMAIN `paymentProjectionPolicyBundle` (which does
+   * NOT carry those adopter guards), so a governed ops caller uses this method
+   * to persist without a second, weaker adjudication. The refund WRITE is
+   * ledger-only (status → partially_refunded/refunded + refundedAmountCentavos
+   * + a status-history row, in one $transaction) — there is NO Stripe/PIX egress
+   * in this path (the only Stripe refund code is the inbound `charge.refunded`
+   * webhook reconcile). The `refundAmountCentavos`/`actor`/`actorId` come from
+   * the (stamped) payload; balance is re-derived from the LIVE DB row inside the
+   * tx (the over-balance / terminal / canTransition throws REMAIN the last
+   * transactional line). The returned `orderId`/`method` let the caller emit the
+   * SAME `payment.status_changed` event the admin route publishes.
+   */
+  writeAdjudicatedRefund(
+    payload: PaymentRefundIssuePayload,
+  ): Promise<{
+    version: number
+    previousStatus: string
+    newStatus: string
+    totalRefundedCentavos: number
+    refundAmountCentavos: number
+    orderId: string
+    method: string
+  }>
 
   /**
    * W3 P0-2 — envelope-typed entry point for
@@ -238,6 +277,16 @@ type Logger = {
 export interface PaymentCommandServiceOptions {
   readonly auditSink?: AuditSink
   readonly log?: Logger
+  /**
+   * WS7 / BKL-074 — adopter AUTH guards (e.g. `staffRoleGuard`) injected into
+   * EVERY `withAdjudicate` call this service makes. The HTTP admin routes pass
+   * `[staffRoleGuard]` so a mis-scoped staff role is REFUSED at the kernel on
+   * the command-service adjudication path (which uses RAW pack bundles), not
+   * only by the Fastify preHandler. Inert for non-`admin:` envelopes, so this
+   * is a no-op for SYSTEM-actor create/reconcile/webhook paths. Threaded
+   * through `adjudicateOptions` so per-method calls are unchanged.
+   */
+  readonly authGuards?: readonly Guard<string, unknown, unknown>[]
 }
 
 export function createPaymentCommandService(
@@ -249,6 +298,7 @@ export function createPaymentCommandService(
 
   const adjudicateOptions = {
     ...(options?.auditSink ? { auditSink: options.auditSink } : {}),
+    ...(options?.authGuards ? { authGuards: options.authGuards } : {}),
     log: log ?? options?.log,
   } as const
 
@@ -529,6 +579,13 @@ export function createPaymentCommandService(
     newStatus: string
     totalRefundedCentavos: number
     refundAmountCentavos: number
+    // BKL-085 — the order id + method read from the SAME DB row inside the tx,
+    // so a governed ops caller can publish an accurate `payment.status_changed`
+    // event (driving the auto-cancel-on-full-refund lifecycle subscriber) without
+    // a second read or trusting the model payload for them. The admin-HTTP caller
+    // already holds both from its own reads and simply ignores these.
+    orderId: string
+    method: string
   }> => {
     return prisma.$transaction(async (tx: TxClient) => {
       const payment = await tx.payment.findUnique({
@@ -618,6 +675,8 @@ export function createPaymentCommandService(
         newStatus: targetStatus,
         totalRefundedCentavos: newTotalRefunded,
         refundAmountCentavos: payload.refundAmountCentavos,
+        orderId: payment.orderId,
+        method: payment.method,
       }
     })
   }
@@ -735,6 +794,12 @@ export function createPaymentCommandService(
         async (payload) => executeRefundIssue(payload),
         adjudicateOptions,
       )
+    },
+
+    // BKL-085 — the raw post-decision refund write, shared with governed ops
+    // callers that already hold a composed-router Decision (no re-adjudication).
+    async writeAdjudicatedRefund(payload) {
+      return executeRefundIssue(payload)
     },
 
     async bumpRegenerationCountFromEnvelope(envelope) {

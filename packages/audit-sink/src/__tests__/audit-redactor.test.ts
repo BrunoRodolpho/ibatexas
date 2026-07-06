@@ -328,6 +328,35 @@ describe("audit-redactor — per-intent-kind field rules", () => {
     expect(payload.reason).toBe("[REDACTED]")
     expect(payload.lastMessage).toBe("[REDACTED]")
   })
+
+  // AUT-038 — staff pay data. hourlyRateCentavos is a NUMBER (the deep walk
+  // passes numbers by identity), so ONLY the kind-scoped rule protects it;
+  // phone/name ride the global field rules. staff.* is deliberately off
+  // KNOWN_INTENT_KINDS, so the per-intent conformance corpus never checks
+  // these kinds — this pin is the guard.
+  it("redacts staff.create / staff.update hourlyRateCentavos (pay data); phone REDACTED, name hashed, role preserved", () => {
+    const r = createAuditRedactor({ hashSecret: "salt", warn: vi.fn() })
+    const out = r.redact(
+      makeRecord("staff.create", {
+        phone: "+5511999990001",
+        name: "Ana Souza",
+        role: "MANAGER",
+        hourlyRateCentavos: 2500,
+      }),
+    )
+    const payload = out.envelope.payload as Record<string, unknown>
+    expect(payload.hourlyRateCentavos).toBe("[REDACTED]")
+    expect(payload.phone).toBe("[REDACTED]")
+    expect(payload.name).not.toBe("Ana Souza") // hashed by global HASH_FIELDS
+    expect(payload.role).toBe("MANAGER") // closed enum — operator needs it
+
+    const upd = r.redact(
+      makeRecord("staff.update", { staffId: "staff_1", hourlyRateCentavos: 9900 }),
+    )
+    const updPayload = upd.envelope.payload as Record<string, unknown>
+    expect(updPayload.hourlyRateCentavos).toBe("[REDACTED]")
+    expect(updPayload.staffId).toBe("staff_1") // opaque id preserved
+  })
 })
 
 // ── Deep walk ────────────────────────────────────────────────────────────────

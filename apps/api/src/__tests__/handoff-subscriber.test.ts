@@ -12,6 +12,8 @@ const mockGetWhatsAppSender = vi.hoisted(() => vi.fn())
 // boundary so it's a silent no-op here, leaving the dedup/notification paths
 // (which is what these tests assert) byte-identical to before.
 const mockRecordHandoff = vi.hoisted(() => vi.fn(async () => undefined))
+// AUT-017 — the subscriber also projects a parked money intent onto the record.
+const mockAppendPendingIntent = vi.hoisted(() => vi.fn(async () => undefined))
 
 vi.mock("@ibatexas/nats-client", () => ({
   subscribeNatsEvent: mockSubscribeNatsEvent,
@@ -22,7 +24,17 @@ vi.mock("@ibatexas/tools", () => ({
 }))
 
 vi.mock("../escalation/escalation-store.js", () => ({
-  getEscalationStore: vi.fn(async () => ({ recordHandoff: mockRecordHandoff })),
+  getEscalationStore: vi.fn(async () => ({
+    recordHandoff: mockRecordHandoff,
+    appendPendingIntent: mockAppendPendingIntent,
+  })),
+}))
+
+// W1 Phase-2: a handoff opening on a session with an OPEN incident auto-resolves
+// it (HANDED_OFF). The seam is its own unit-tested module; stub it here so these
+// subscriber tests stay isolated from the incident store / DB.
+vi.mock("../incidents/incident-auto-close.js", () => ({
+  resolveIncidentOnHandoff: vi.fn(async () => undefined),
 }))
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -130,7 +142,7 @@ describe("handoff-subscriber", () => {
     expect(mockSendText).toHaveBeenCalledOnce()
     expect(mockSendText).toHaveBeenCalledWith(
       "whatsapp:+5511999990001",
-      expect.stringContaining("sess_notify"),
+      expect.objectContaining({ text: expect.stringContaining("sess_notify") }),
     )
   })
 
@@ -146,8 +158,8 @@ describe("handoff-subscriber", () => {
 
     await callback({ sessionId: "sess_reason", reason: "problema no pedido" })
 
-    const [, message] = mockSendText.mock.calls[0] as [string, string]
-    expect(message).toContain("problema no pedido")
+    const [, message] = mockSendText.mock.calls[0] as [string, { text: string }]
+    expect(message.text).toContain("problema no pedido")
   })
 
   it("skips WhatsApp notification when STAFF_NOTIFICATION_PHONE is not set", async () => {
@@ -213,5 +225,111 @@ describe("handoff-subscriber", () => {
       expect.any(Function),
       { queueGroup: "handoff-subscriber" },
     )
+  })
+
+  // ── AUT-017 — parked-money-intent projection + staff message enrichment ──────
+
+  it("projects a parked money intent onto the record when parkToken/intentHash/intentKind are present", async () => {
+    delete process.env.STAFF_NOTIFICATION_PHONE
+    const callback = await getRegisteredCallback()
+    await callback({
+      sessionId: "admin:owner1",
+      reason: "acima do limite",
+      parkToken: "park-tok-1",
+      intentHash: "sha256:abc",
+      intentKind: "payment.refund.issue",
+      summaryPtBr: "reembolso de R$ 1.500,00",
+    })
+
+    expect(mockAppendPendingIntent).toHaveBeenCalledWith(
+      "admin:owner1",
+      expect.objectContaining({
+        token: "park-tok-1",
+        intentHash: "sha256:abc",
+        intentKind: "payment.refund.issue",
+        summaryPtBr: "reembolso de R$ 1.500,00",
+        status: "pending",
+      }),
+    )
+  })
+
+  it("does NOT project (or append) when no parkToken rides the event", async () => {
+    delete process.env.STAFF_NOTIFICATION_PHONE
+    const callback = await getRegisteredCallback()
+    await callback({ sessionId: "sess_plain", reason: "dúvida" })
+    expect(mockAppendPendingIntent).not.toHaveBeenCalled()
+  })
+
+  it("enriches the staff WhatsApp message with the pending-approval (OWNER) line", async () => {
+    process.env.STAFF_NOTIFICATION_PHONE = "+5511999990005"
+    const mockSendText = vi.fn().mockResolvedValue(undefined)
+    mockGetWhatsAppSender.mockReturnValue({ sendText: mockSendText })
+
+    const log = makeLogger()
+    await startHandoffSubscriber(log as never)
+    const [, callback] = mockSubscribeNatsEvent.mock.calls[0] as [
+      string,
+      (payload: unknown) => Promise<void>,
+    ]
+
+    await callback({
+      sessionId: "admin:owner1",
+      reason: "acima do limite",
+      parkToken: "park-tok-1",
+      intentHash: "sha256:abc",
+      intentKind: "payment.refund.issue",
+      summaryPtBr: "reembolso de R$ 1.500,00",
+    })
+
+    const [, message] = mockSendText.mock.calls[0] as [string, { text: string }]
+    expect(message.text).toContain("Ação pendente de aprovação (OWNER)")
+    expect(message.text).toContain("reembolso de R$ 1.500,00")
+    expect(message.text).toContain("Escalações")
+  })
+
+  // ── BKL-122 — approval deep-link line in the staff WhatsApp message ──────────
+
+  it("appends the one-tap approval deep-link line when approvalUrl rides the event", async () => {
+    process.env.STAFF_NOTIFICATION_PHONE = "+5511999990006"
+    const mockSendText = vi.fn().mockResolvedValue(undefined)
+    mockGetWhatsAppSender.mockReturnValue({ sendText: mockSendText })
+
+    const log = makeLogger()
+    await startHandoffSubscriber(log as never)
+    const [, callback] = mockSubscribeNatsEvent.mock.calls[0] as [
+      string,
+      (payload: unknown) => Promise<void>,
+    ]
+
+    await callback({
+      sessionId: "agent:ns1",
+      reason: "Aprovação de agente pendente: payment.refund.issue",
+      intentKind: "payment.refund.issue",
+      approvalToken: "tok-abc123",
+      approvalUrl: "https://admin.ibatexas.com.br/admin/aprovacoes/tok-abc123",
+    })
+
+    const [, message] = mockSendText.mock.calls[0] as [string, { text: string }]
+    expect(message.text).toContain(
+      "Aprovar/recusar: https://admin.ibatexas.com.br/admin/aprovacoes/tok-abc123",
+    )
+  })
+
+  it("omits the approval deep-link line when no approvalUrl rides the event", async () => {
+    process.env.STAFF_NOTIFICATION_PHONE = "+5511999990007"
+    const mockSendText = vi.fn().mockResolvedValue(undefined)
+    mockGetWhatsAppSender.mockReturnValue({ sendText: mockSendText })
+
+    const log = makeLogger()
+    await startHandoffSubscriber(log as never)
+    const [, callback] = mockSubscribeNatsEvent.mock.calls[0] as [
+      string,
+      (payload: unknown) => Promise<void>,
+    ]
+
+    await callback({ sessionId: "sess_plain", reason: "dúvida" })
+
+    const [, message] = mockSendText.mock.calls[0] as [string, { text: string }]
+    expect(message.text).not.toContain("Aprovar/recusar:")
   })
 })

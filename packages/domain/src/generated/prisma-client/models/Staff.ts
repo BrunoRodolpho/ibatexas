@@ -21,8 +21,18 @@ export type StaffModel = runtime.Types.Result.DefaultSelection<Prisma.$StaffPayl
 
 export type AggregateStaff = {
   _count: StaffCountAggregateOutputType | null
+  _avg: StaffAvgAggregateOutputType | null
+  _sum: StaffSumAggregateOutputType | null
   _min: StaffMinAggregateOutputType | null
   _max: StaffMaxAggregateOutputType | null
+}
+
+export type StaffAvgAggregateOutputType = {
+  hourlyRateCentavos: number | null
+}
+
+export type StaffSumAggregateOutputType = {
+  hourlyRateCentavos: number | null
 }
 
 export type StaffMinAggregateOutputType = {
@@ -31,6 +41,7 @@ export type StaffMinAggregateOutputType = {
   name: string | null
   role: $Enums.StaffRole | null
   active: boolean | null
+  hourlyRateCentavos: number | null
   createdAt: Date | null
   updatedAt: Date | null
 }
@@ -41,6 +52,7 @@ export type StaffMaxAggregateOutputType = {
   name: string | null
   role: $Enums.StaffRole | null
   active: boolean | null
+  hourlyRateCentavos: number | null
   createdAt: Date | null
   updatedAt: Date | null
 }
@@ -51,11 +63,20 @@ export type StaffCountAggregateOutputType = {
   name: number
   role: number
   active: number
+  hourlyRateCentavos: number
   createdAt: number
   updatedAt: number
   _all: number
 }
 
+
+export type StaffAvgAggregateInputType = {
+  hourlyRateCentavos?: true
+}
+
+export type StaffSumAggregateInputType = {
+  hourlyRateCentavos?: true
+}
 
 export type StaffMinAggregateInputType = {
   id?: true
@@ -63,6 +84,7 @@ export type StaffMinAggregateInputType = {
   name?: true
   role?: true
   active?: true
+  hourlyRateCentavos?: true
   createdAt?: true
   updatedAt?: true
 }
@@ -73,6 +95,7 @@ export type StaffMaxAggregateInputType = {
   name?: true
   role?: true
   active?: true
+  hourlyRateCentavos?: true
   createdAt?: true
   updatedAt?: true
 }
@@ -83,6 +106,7 @@ export type StaffCountAggregateInputType = {
   name?: true
   role?: true
   active?: true
+  hourlyRateCentavos?: true
   createdAt?: true
   updatedAt?: true
   _all?: true
@@ -126,6 +150,18 @@ export type StaffAggregateArgs<ExtArgs extends runtime.Types.Extensions.Internal
   /**
    * {@link https://www.prisma.io/docs/concepts/components/prisma-client/aggregations Aggregation Docs}
    * 
+   * Select which fields to average
+  **/
+  _avg?: StaffAvgAggregateInputType
+  /**
+   * {@link https://www.prisma.io/docs/concepts/components/prisma-client/aggregations Aggregation Docs}
+   * 
+   * Select which fields to sum
+  **/
+  _sum?: StaffSumAggregateInputType
+  /**
+   * {@link https://www.prisma.io/docs/concepts/components/prisma-client/aggregations Aggregation Docs}
+   * 
    * Select which fields to find the minimum value
   **/
   _min?: StaffMinAggregateInputType
@@ -156,6 +192,8 @@ export type StaffGroupByArgs<ExtArgs extends runtime.Types.Extensions.InternalAr
   take?: number
   skip?: number
   _count?: StaffCountAggregateInputType | true
+  _avg?: StaffAvgAggregateInputType
+  _sum?: StaffSumAggregateInputType
   _min?: StaffMinAggregateInputType
   _max?: StaffMaxAggregateInputType
 }
@@ -166,9 +204,12 @@ export type StaffGroupByOutputType = {
   name: string
   role: $Enums.StaffRole
   active: boolean
+  hourlyRateCentavos: number | null
   createdAt: Date
   updatedAt: Date
   _count: StaffCountAggregateOutputType | null
+  _avg: StaffAvgAggregateOutputType | null
+  _sum: StaffSumAggregateOutputType | null
   _min: StaffMinAggregateOutputType | null
   _max: StaffMaxAggregateOutputType | null
 }
@@ -197,8 +238,10 @@ export type StaffWhereInput = {
   name?: Prisma.StringFilter<"Staff"> | string
   role?: Prisma.EnumStaffRoleFilter<"Staff"> | $Enums.StaffRole
   active?: Prisma.BoolFilter<"Staff"> | boolean
+  hourlyRateCentavos?: Prisma.IntNullableFilter<"Staff"> | number | null
   createdAt?: Prisma.DateTimeFilter<"Staff"> | Date | string
   updatedAt?: Prisma.DateTimeFilter<"Staff"> | Date | string
+  shifts?: Prisma.StaffShiftListRelationFilter
 }
 
 export type StaffOrderByWithRelationInput = {
@@ -207,8 +250,10 @@ export type StaffOrderByWithRelationInput = {
   name?: Prisma.SortOrder
   role?: Prisma.SortOrder
   active?: Prisma.SortOrder
+  hourlyRateCentavos?: Prisma.SortOrderInput | Prisma.SortOrder
   createdAt?: Prisma.SortOrder
   updatedAt?: Prisma.SortOrder
+  shifts?: Prisma.StaffShiftOrderByRelationAggregateInput
 }
 
 export type StaffWhereUniqueInput = Prisma.AtLeast<{
@@ -220,8 +265,10 @@ export type StaffWhereUniqueInput = Prisma.AtLeast<{
   name?: Prisma.StringFilter<"Staff"> | string
   role?: Prisma.EnumStaffRoleFilter<"Staff"> | $Enums.StaffRole
   active?: Prisma.BoolFilter<"Staff"> | boolean
+  hourlyRateCentavos?: Prisma.IntNullableFilter<"Staff"> | number | null
   createdAt?: Prisma.DateTimeFilter<"Staff"> | Date | string
   updatedAt?: Prisma.DateTimeFilter<"Staff"> | Date | string
+  shifts?: Prisma.StaffShiftListRelationFilter
 }, "id" | "phone">
 
 export type StaffOrderByWithAggregationInput = {
@@ -230,11 +277,14 @@ export type StaffOrderByWithAggregationInput = {
   name?: Prisma.SortOrder
   role?: Prisma.SortOrder
   active?: Prisma.SortOrder
+  hourlyRateCentavos?: Prisma.SortOrderInput | Prisma.SortOrder
   createdAt?: Prisma.SortOrder
   updatedAt?: Prisma.SortOrder
   _count?: Prisma.StaffCountOrderByAggregateInput
+  _avg?: Prisma.StaffAvgOrderByAggregateInput
   _max?: Prisma.StaffMaxOrderByAggregateInput
   _min?: Prisma.StaffMinOrderByAggregateInput
+  _sum?: Prisma.StaffSumOrderByAggregateInput
 }
 
 export type StaffScalarWhereWithAggregatesInput = {
@@ -246,6 +296,7 @@ export type StaffScalarWhereWithAggregatesInput = {
   name?: Prisma.StringWithAggregatesFilter<"Staff"> | string
   role?: Prisma.EnumStaffRoleWithAggregatesFilter<"Staff"> | $Enums.StaffRole
   active?: Prisma.BoolWithAggregatesFilter<"Staff"> | boolean
+  hourlyRateCentavos?: Prisma.IntNullableWithAggregatesFilter<"Staff"> | number | null
   createdAt?: Prisma.DateTimeWithAggregatesFilter<"Staff"> | Date | string
   updatedAt?: Prisma.DateTimeWithAggregatesFilter<"Staff"> | Date | string
 }
@@ -256,8 +307,10 @@ export type StaffCreateInput = {
   name: string
   role?: $Enums.StaffRole
   active?: boolean
+  hourlyRateCentavos?: number | null
   createdAt?: Date | string
   updatedAt?: Date | string
+  shifts?: Prisma.StaffShiftCreateNestedManyWithoutStaffInput
 }
 
 export type StaffUncheckedCreateInput = {
@@ -266,8 +319,10 @@ export type StaffUncheckedCreateInput = {
   name: string
   role?: $Enums.StaffRole
   active?: boolean
+  hourlyRateCentavos?: number | null
   createdAt?: Date | string
   updatedAt?: Date | string
+  shifts?: Prisma.StaffShiftUncheckedCreateNestedManyWithoutStaffInput
 }
 
 export type StaffUpdateInput = {
@@ -276,8 +331,10 @@ export type StaffUpdateInput = {
   name?: Prisma.StringFieldUpdateOperationsInput | string
   role?: Prisma.EnumStaffRoleFieldUpdateOperationsInput | $Enums.StaffRole
   active?: Prisma.BoolFieldUpdateOperationsInput | boolean
+  hourlyRateCentavos?: Prisma.NullableIntFieldUpdateOperationsInput | number | null
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  shifts?: Prisma.StaffShiftUpdateManyWithoutStaffNestedInput
 }
 
 export type StaffUncheckedUpdateInput = {
@@ -286,8 +343,10 @@ export type StaffUncheckedUpdateInput = {
   name?: Prisma.StringFieldUpdateOperationsInput | string
   role?: Prisma.EnumStaffRoleFieldUpdateOperationsInput | $Enums.StaffRole
   active?: Prisma.BoolFieldUpdateOperationsInput | boolean
+  hourlyRateCentavos?: Prisma.NullableIntFieldUpdateOperationsInput | number | null
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  shifts?: Prisma.StaffShiftUncheckedUpdateManyWithoutStaffNestedInput
 }
 
 export type StaffCreateManyInput = {
@@ -296,6 +355,7 @@ export type StaffCreateManyInput = {
   name: string
   role?: $Enums.StaffRole
   active?: boolean
+  hourlyRateCentavos?: number | null
   createdAt?: Date | string
   updatedAt?: Date | string
 }
@@ -306,6 +366,7 @@ export type StaffUpdateManyMutationInput = {
   name?: Prisma.StringFieldUpdateOperationsInput | string
   role?: Prisma.EnumStaffRoleFieldUpdateOperationsInput | $Enums.StaffRole
   active?: Prisma.BoolFieldUpdateOperationsInput | boolean
+  hourlyRateCentavos?: Prisma.NullableIntFieldUpdateOperationsInput | number | null
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
 }
@@ -316,6 +377,7 @@ export type StaffUncheckedUpdateManyInput = {
   name?: Prisma.StringFieldUpdateOperationsInput | string
   role?: Prisma.EnumStaffRoleFieldUpdateOperationsInput | $Enums.StaffRole
   active?: Prisma.BoolFieldUpdateOperationsInput | boolean
+  hourlyRateCentavos?: Prisma.NullableIntFieldUpdateOperationsInput | number | null
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
 }
@@ -326,8 +388,13 @@ export type StaffCountOrderByAggregateInput = {
   name?: Prisma.SortOrder
   role?: Prisma.SortOrder
   active?: Prisma.SortOrder
+  hourlyRateCentavos?: Prisma.SortOrder
   createdAt?: Prisma.SortOrder
   updatedAt?: Prisma.SortOrder
+}
+
+export type StaffAvgOrderByAggregateInput = {
+  hourlyRateCentavos?: Prisma.SortOrder
 }
 
 export type StaffMaxOrderByAggregateInput = {
@@ -336,6 +403,7 @@ export type StaffMaxOrderByAggregateInput = {
   name?: Prisma.SortOrder
   role?: Prisma.SortOrder
   active?: Prisma.SortOrder
+  hourlyRateCentavos?: Prisma.SortOrder
   createdAt?: Prisma.SortOrder
   updatedAt?: Prisma.SortOrder
 }
@@ -346,14 +414,135 @@ export type StaffMinOrderByAggregateInput = {
   name?: Prisma.SortOrder
   role?: Prisma.SortOrder
   active?: Prisma.SortOrder
+  hourlyRateCentavos?: Prisma.SortOrder
   createdAt?: Prisma.SortOrder
   updatedAt?: Prisma.SortOrder
+}
+
+export type StaffSumOrderByAggregateInput = {
+  hourlyRateCentavos?: Prisma.SortOrder
+}
+
+export type StaffScalarRelationFilter = {
+  is?: Prisma.StaffWhereInput
+  isNot?: Prisma.StaffWhereInput
 }
 
 export type EnumStaffRoleFieldUpdateOperationsInput = {
   set?: $Enums.StaffRole
 }
 
+export type NullableIntFieldUpdateOperationsInput = {
+  set?: number | null
+  increment?: number
+  decrement?: number
+  multiply?: number
+  divide?: number
+}
+
+export type StaffCreateNestedOneWithoutShiftsInput = {
+  create?: Prisma.XOR<Prisma.StaffCreateWithoutShiftsInput, Prisma.StaffUncheckedCreateWithoutShiftsInput>
+  connectOrCreate?: Prisma.StaffCreateOrConnectWithoutShiftsInput
+  connect?: Prisma.StaffWhereUniqueInput
+}
+
+export type StaffUpdateOneRequiredWithoutShiftsNestedInput = {
+  create?: Prisma.XOR<Prisma.StaffCreateWithoutShiftsInput, Prisma.StaffUncheckedCreateWithoutShiftsInput>
+  connectOrCreate?: Prisma.StaffCreateOrConnectWithoutShiftsInput
+  upsert?: Prisma.StaffUpsertWithoutShiftsInput
+  connect?: Prisma.StaffWhereUniqueInput
+  update?: Prisma.XOR<Prisma.XOR<Prisma.StaffUpdateToOneWithWhereWithoutShiftsInput, Prisma.StaffUpdateWithoutShiftsInput>, Prisma.StaffUncheckedUpdateWithoutShiftsInput>
+}
+
+export type StaffCreateWithoutShiftsInput = {
+  id?: string
+  phone: string
+  name: string
+  role?: $Enums.StaffRole
+  active?: boolean
+  hourlyRateCentavos?: number | null
+  createdAt?: Date | string
+  updatedAt?: Date | string
+}
+
+export type StaffUncheckedCreateWithoutShiftsInput = {
+  id?: string
+  phone: string
+  name: string
+  role?: $Enums.StaffRole
+  active?: boolean
+  hourlyRateCentavos?: number | null
+  createdAt?: Date | string
+  updatedAt?: Date | string
+}
+
+export type StaffCreateOrConnectWithoutShiftsInput = {
+  where: Prisma.StaffWhereUniqueInput
+  create: Prisma.XOR<Prisma.StaffCreateWithoutShiftsInput, Prisma.StaffUncheckedCreateWithoutShiftsInput>
+}
+
+export type StaffUpsertWithoutShiftsInput = {
+  update: Prisma.XOR<Prisma.StaffUpdateWithoutShiftsInput, Prisma.StaffUncheckedUpdateWithoutShiftsInput>
+  create: Prisma.XOR<Prisma.StaffCreateWithoutShiftsInput, Prisma.StaffUncheckedCreateWithoutShiftsInput>
+  where?: Prisma.StaffWhereInput
+}
+
+export type StaffUpdateToOneWithWhereWithoutShiftsInput = {
+  where?: Prisma.StaffWhereInput
+  data: Prisma.XOR<Prisma.StaffUpdateWithoutShiftsInput, Prisma.StaffUncheckedUpdateWithoutShiftsInput>
+}
+
+export type StaffUpdateWithoutShiftsInput = {
+  id?: Prisma.StringFieldUpdateOperationsInput | string
+  phone?: Prisma.StringFieldUpdateOperationsInput | string
+  name?: Prisma.StringFieldUpdateOperationsInput | string
+  role?: Prisma.EnumStaffRoleFieldUpdateOperationsInput | $Enums.StaffRole
+  active?: Prisma.BoolFieldUpdateOperationsInput | boolean
+  hourlyRateCentavos?: Prisma.NullableIntFieldUpdateOperationsInput | number | null
+  createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+}
+
+export type StaffUncheckedUpdateWithoutShiftsInput = {
+  id?: Prisma.StringFieldUpdateOperationsInput | string
+  phone?: Prisma.StringFieldUpdateOperationsInput | string
+  name?: Prisma.StringFieldUpdateOperationsInput | string
+  role?: Prisma.EnumStaffRoleFieldUpdateOperationsInput | $Enums.StaffRole
+  active?: Prisma.BoolFieldUpdateOperationsInput | boolean
+  hourlyRateCentavos?: Prisma.NullableIntFieldUpdateOperationsInput | number | null
+  createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+}
+
+
+/**
+ * Count Type StaffCountOutputType
+ */
+
+export type StaffCountOutputType = {
+  shifts: number
+}
+
+export type StaffCountOutputTypeSelect<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
+  shifts?: boolean | StaffCountOutputTypeCountShiftsArgs
+}
+
+/**
+ * StaffCountOutputType without action
+ */
+export type StaffCountOutputTypeDefaultArgs<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
+  /**
+   * Select specific fields to fetch from the StaffCountOutputType
+   */
+  select?: Prisma.StaffCountOutputTypeSelect<ExtArgs> | null
+}
+
+/**
+ * StaffCountOutputType without action
+ */
+export type StaffCountOutputTypeCountShiftsArgs<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
+  where?: Prisma.StaffShiftWhereInput
+}
 
 
 export type StaffSelect<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetSelect<{
@@ -362,8 +551,11 @@ export type StaffSelect<ExtArgs extends runtime.Types.Extensions.InternalArgs = 
   name?: boolean
   role?: boolean
   active?: boolean
+  hourlyRateCentavos?: boolean
   createdAt?: boolean
   updatedAt?: boolean
+  shifts?: boolean | Prisma.Staff$shiftsArgs<ExtArgs>
+  _count?: boolean | Prisma.StaffCountOutputTypeDefaultArgs<ExtArgs>
 }, ExtArgs["result"]["staff"]>
 
 export type StaffSelectCreateManyAndReturn<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetSelect<{
@@ -372,6 +564,7 @@ export type StaffSelectCreateManyAndReturn<ExtArgs extends runtime.Types.Extensi
   name?: boolean
   role?: boolean
   active?: boolean
+  hourlyRateCentavos?: boolean
   createdAt?: boolean
   updatedAt?: boolean
 }, ExtArgs["result"]["staff"]>
@@ -382,6 +575,7 @@ export type StaffSelectUpdateManyAndReturn<ExtArgs extends runtime.Types.Extensi
   name?: boolean
   role?: boolean
   active?: boolean
+  hourlyRateCentavos?: boolean
   createdAt?: boolean
   updatedAt?: boolean
 }, ExtArgs["result"]["staff"]>
@@ -392,21 +586,35 @@ export type StaffSelectScalar = {
   name?: boolean
   role?: boolean
   active?: boolean
+  hourlyRateCentavos?: boolean
   createdAt?: boolean
   updatedAt?: boolean
 }
 
-export type StaffOmit<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetOmit<"id" | "phone" | "name" | "role" | "active" | "createdAt" | "updatedAt", ExtArgs["result"]["staff"]>
+export type StaffOmit<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetOmit<"id" | "phone" | "name" | "role" | "active" | "hourlyRateCentavos" | "createdAt" | "updatedAt", ExtArgs["result"]["staff"]>
+export type StaffInclude<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
+  shifts?: boolean | Prisma.Staff$shiftsArgs<ExtArgs>
+  _count?: boolean | Prisma.StaffCountOutputTypeDefaultArgs<ExtArgs>
+}
+export type StaffIncludeCreateManyAndReturn<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {}
+export type StaffIncludeUpdateManyAndReturn<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {}
 
 export type $StaffPayload<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
   name: "Staff"
-  objects: {}
+  objects: {
+    shifts: Prisma.$StaffShiftPayload<ExtArgs>[]
+  }
   scalars: runtime.Types.Extensions.GetPayloadResult<{
     id: string
     phone: string
     name: string
     role: $Enums.StaffRole
     active: boolean
+    /**
+     * NEW-034 — per-staff pay rate in integer centavos/hour (Hard Rule #2). NULLABLE:
+     * a staff member with no rate set is EXCLUDED from labor cost (never guessed).
+     */
+    hourlyRateCentavos: number | null
     createdAt: Date
     updatedAt: Date
   }, ExtArgs["result"]["staff"]>
@@ -803,6 +1011,7 @@ readonly fields: StaffFieldRefs;
  */
 export interface Prisma__StaffClient<T, Null = never, ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs, GlobalOmitOptions = {}> extends Prisma.PrismaPromise<T> {
   readonly [Symbol.toStringTag]: "PrismaPromise"
+  shifts<T extends Prisma.Staff$shiftsArgs<ExtArgs> = {}>(args?: Prisma.Subset<T, Prisma.Staff$shiftsArgs<ExtArgs>>): Prisma.PrismaPromise<runtime.Types.Result.GetResult<Prisma.$StaffShiftPayload<ExtArgs>, T, "findMany", GlobalOmitOptions> | Null>
   /**
    * Attaches callbacks for the resolution and/or rejection of the Promise.
    * @param onfulfilled The callback to execute when the Promise is resolved.
@@ -837,6 +1046,7 @@ export interface StaffFieldRefs {
   readonly name: Prisma.FieldRef<"Staff", 'String'>
   readonly role: Prisma.FieldRef<"Staff", 'StaffRole'>
   readonly active: Prisma.FieldRef<"Staff", 'Boolean'>
+  readonly hourlyRateCentavos: Prisma.FieldRef<"Staff", 'Int'>
   readonly createdAt: Prisma.FieldRef<"Staff", 'DateTime'>
   readonly updatedAt: Prisma.FieldRef<"Staff", 'DateTime'>
 }
@@ -856,6 +1066,10 @@ export type StaffFindUniqueArgs<ExtArgs extends runtime.Types.Extensions.Interna
    */
   omit?: Prisma.StaffOmit<ExtArgs> | null
   /**
+   * Choose, which related nodes to fetch as well
+   */
+  include?: Prisma.StaffInclude<ExtArgs> | null
+  /**
    * Filter, which Staff to fetch.
    */
   where: Prisma.StaffWhereUniqueInput
@@ -874,6 +1088,10 @@ export type StaffFindUniqueOrThrowArgs<ExtArgs extends runtime.Types.Extensions.
    */
   omit?: Prisma.StaffOmit<ExtArgs> | null
   /**
+   * Choose, which related nodes to fetch as well
+   */
+  include?: Prisma.StaffInclude<ExtArgs> | null
+  /**
    * Filter, which Staff to fetch.
    */
   where: Prisma.StaffWhereUniqueInput
@@ -891,6 +1109,10 @@ export type StaffFindFirstArgs<ExtArgs extends runtime.Types.Extensions.Internal
    * Omit specific fields from the Staff
    */
   omit?: Prisma.StaffOmit<ExtArgs> | null
+  /**
+   * Choose, which related nodes to fetch as well
+   */
+  include?: Prisma.StaffInclude<ExtArgs> | null
   /**
    * Filter, which Staff to fetch.
    */
@@ -940,6 +1162,10 @@ export type StaffFindFirstOrThrowArgs<ExtArgs extends runtime.Types.Extensions.I
    */
   omit?: Prisma.StaffOmit<ExtArgs> | null
   /**
+   * Choose, which related nodes to fetch as well
+   */
+  include?: Prisma.StaffInclude<ExtArgs> | null
+  /**
    * Filter, which Staff to fetch.
    */
   where?: Prisma.StaffWhereInput
@@ -987,6 +1213,10 @@ export type StaffFindManyArgs<ExtArgs extends runtime.Types.Extensions.InternalA
    * Omit specific fields from the Staff
    */
   omit?: Prisma.StaffOmit<ExtArgs> | null
+  /**
+   * Choose, which related nodes to fetch as well
+   */
+  include?: Prisma.StaffInclude<ExtArgs> | null
   /**
    * Filter, which Staff to fetch.
    */
@@ -1036,6 +1266,10 @@ export type StaffCreateArgs<ExtArgs extends runtime.Types.Extensions.InternalArg
    */
   omit?: Prisma.StaffOmit<ExtArgs> | null
   /**
+   * Choose, which related nodes to fetch as well
+   */
+  include?: Prisma.StaffInclude<ExtArgs> | null
+  /**
    * The data needed to create a Staff.
    */
   data: Prisma.XOR<Prisma.StaffCreateInput, Prisma.StaffUncheckedCreateInput>
@@ -1083,6 +1317,10 @@ export type StaffUpdateArgs<ExtArgs extends runtime.Types.Extensions.InternalArg
    * Omit specific fields from the Staff
    */
   omit?: Prisma.StaffOmit<ExtArgs> | null
+  /**
+   * Choose, which related nodes to fetch as well
+   */
+  include?: Prisma.StaffInclude<ExtArgs> | null
   /**
    * The data needed to update a Staff.
    */
@@ -1150,6 +1388,10 @@ export type StaffUpsertArgs<ExtArgs extends runtime.Types.Extensions.InternalArg
    */
   omit?: Prisma.StaffOmit<ExtArgs> | null
   /**
+   * Choose, which related nodes to fetch as well
+   */
+  include?: Prisma.StaffInclude<ExtArgs> | null
+  /**
    * The filter to search for the Staff to update in case it exists.
    */
   where: Prisma.StaffWhereUniqueInput
@@ -1176,6 +1418,10 @@ export type StaffDeleteArgs<ExtArgs extends runtime.Types.Extensions.InternalArg
    */
   omit?: Prisma.StaffOmit<ExtArgs> | null
   /**
+   * Choose, which related nodes to fetch as well
+   */
+  include?: Prisma.StaffInclude<ExtArgs> | null
+  /**
    * Filter which Staff to delete.
    */
   where: Prisma.StaffWhereUniqueInput
@@ -1196,6 +1442,30 @@ export type StaffDeleteManyArgs<ExtArgs extends runtime.Types.Extensions.Interna
 }
 
 /**
+ * Staff.shifts
+ */
+export type Staff$shiftsArgs<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
+  /**
+   * Select specific fields to fetch from the StaffShift
+   */
+  select?: Prisma.StaffShiftSelect<ExtArgs> | null
+  /**
+   * Omit specific fields from the StaffShift
+   */
+  omit?: Prisma.StaffShiftOmit<ExtArgs> | null
+  /**
+   * Choose, which related nodes to fetch as well
+   */
+  include?: Prisma.StaffShiftInclude<ExtArgs> | null
+  where?: Prisma.StaffShiftWhereInput
+  orderBy?: Prisma.StaffShiftOrderByWithRelationInput | Prisma.StaffShiftOrderByWithRelationInput[]
+  cursor?: Prisma.StaffShiftWhereUniqueInput
+  take?: number
+  skip?: number
+  distinct?: Prisma.StaffShiftScalarFieldEnum | Prisma.StaffShiftScalarFieldEnum[]
+}
+
+/**
  * Staff without action
  */
 export type StaffDefaultArgs<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
@@ -1207,4 +1477,8 @@ export type StaffDefaultArgs<ExtArgs extends runtime.Types.Extensions.InternalAr
    * Omit specific fields from the Staff
    */
   omit?: Prisma.StaffOmit<ExtArgs> | null
+  /**
+   * Choose, which related nodes to fetch as well
+   */
+  include?: Prisma.StaffInclude<ExtArgs> | null
 }

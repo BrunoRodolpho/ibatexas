@@ -76,9 +76,24 @@ export const CreateCheckoutInputSchema = z.object({
     .string()
     .optional()
     .describe("CEP de entrega (obrigatório para delivery)"),
+  couponCode: z
+    .string()
+    .optional()
+    .describe("Código de cupom de desconto validado (opcional) — aplicado ao carrinho Medusa no checkout"),
 })
 
 export type CreateCheckoutInput = z.infer<typeof CreateCheckoutInputSchema>
+
+/**
+ * Typed failure code: Medusa rejected the coupon at checkout time (expired /
+ * exhausted / not stackable). The money path fails CLOSED — checkout aborts
+ * BEFORE any payment collection is created, instead of silently charging the
+ * undiscounted total the customer never confirmed (D1). Shared by the
+ * create_checkout tool (which returns it) and the API checkout route (which
+ * maps it onto a 422).
+ */
+export const COUPON_REJECTED_CODE = "COUPON_REJECTED" as const
+export type CouponRejectedCode = typeof COUPON_REJECTED_CODE
 
 // get_cart
 export const GetCartInputSchema = z.object({
@@ -128,6 +143,11 @@ export type ApplyCouponInput = z.infer<typeof ApplyCouponInputSchema>
 export const GetOrderHistoryInputSchema = z.strictObject({})
 
 export type GetOrderHistoryInput = z.infer<typeof GetOrderHistoryInputSchema>
+
+// get_payment_history
+export const GetPaymentHistoryInputSchema = z.strictObject({})
+
+export type GetPaymentHistoryInput = z.infer<typeof GetPaymentHistoryInputSchema>
 
 // regenerate_pix
 export const RegeneratePixInputSchema = z.object({

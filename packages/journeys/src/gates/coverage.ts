@@ -8,7 +8,7 @@
 // The plausible-decision set per kind is derived from the owning composed
 // Pack's policy metadata (`readGuardMetadata` over the bundle's guards) when
 // EVERY guard declares a determinable emit axis; otherwise — and this is the
-// state of all five first-party packs today, which attach no GuardMetadata —
+// state of all six first-party packs today, which attach no GuardMetadata —
 // the full 6-decision set (`JOURNEY_EXPECT_DECISIONS`) is the per-kind
 // domain. The introspection seam is real code, so packs that adopt
 // `withMetadata` narrow their cells without changes here.

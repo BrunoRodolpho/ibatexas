@@ -22,11 +22,40 @@ interface ListByOrderResult {
   count: number
 }
 
+interface ListByCustomerInput {
+  limit?: number
+}
+
 // ── Service ─────────────────────────────────────────────────────────────────
 
 export interface PaymentQueryService {
   /** Get a single payment with its audit history. */
   getById(paymentId: string, opts?: { historyLimit?: number }): Promise<PaymentWithHistory | null>
+
+  /**
+   * List a customer's payments across ALL their orders, most-recent first.
+   *
+   * Owner-scoping (SDD §N, Inv 2/13): a `Payment` carries no `customerId` — the
+   * owner is the parent order's `customerId`, so the read is scoped by the
+   * `where: { order: { customerId } }` join. This is billing HISTORY, so it
+   * includes TERMINAL statuses (settled/refunded/failed) — it deliberately does
+   * NOT reuse the terminal-EXCLUDING getActiveByOrder* path (that would drop
+   * exactly the settled payments a history must show). Single indexed query,
+   * `take` bounded (default 20). The caller is responsible for asserting an
+   * authenticated `customerId` before calling — `customerId: undefined` in the
+   * join is a NO-OP filter (Inv 2: "no owner" ≠ "any owner").
+   */
+  listByCustomer(customerId: string, opts?: ListByCustomerInput): Promise<Payment[]>
+
+  /**
+   * Count a customer's payments across ALL their orders — the honest total `N`
+   * behind a bounded {@link listByCustomer} page (so a caller can say "showing
+   * the most recent K of N"). Uses the IDENTICAL owner-scoping join
+   * (`where: { order: { customerId } }`), so the same IDOR discipline applies:
+   * `customerId: undefined` is a NO-OP filter (Inv 2) — the caller MUST assert an
+   * authenticated customerId first.
+   */
+  countByCustomer(customerId: string): Promise<number>
 
   /** Get the active (non-terminal) payment for an order, with history. */
   getActiveByOrderId(orderId: string, opts?: { historyLimit?: number }): Promise<PaymentWithHistory | null>
@@ -63,6 +92,25 @@ export function createPaymentQueryService(): PaymentQueryService {
             take: opts?.historyLimit ?? 200,
           },
         },
+      })
+    },
+
+    async listByCustomer(customerId, opts) {
+      const limit = opts?.limit ?? 20
+      return prisma.payment.findMany({
+        // Owner scope via the OrderProjection join — a Payment has no customerId.
+        // ALL statuses: history must include terminal (settled/refunded/failed)
+        // rows, so there is intentionally NO `status.notIn` terminal filter here.
+        where: { order: { customerId } },
+        orderBy: { createdAt: "desc" },
+        take: limit,
+      })
+    },
+
+    async countByCustomer(customerId) {
+      // SAME owner-scoping join as listByCustomer — the honest total behind a page.
+      return prisma.payment.count({
+        where: { order: { customerId } },
       })
     },
 

@@ -15,11 +15,13 @@ import { describe, it, expect, beforeEach, vi } from "vitest"
 // ── Hoisted mocks ────────────────────────────────────────────────────────────
 
 const mockOrderFindUnique = vi.hoisted(() => vi.fn())
+const mockOrderFindMany = vi.hoisted(() => vi.fn())
 
 vi.mock("../../client.js", () => ({
   prisma: {
     orderProjection: {
       findUnique: mockOrderFindUnique,
+      findMany: mockOrderFindMany,
     },
   },
 }))
@@ -159,4 +161,59 @@ describe("OrderQueryService.getById — owner-scoping (SDD §N P0-3, Inv 2/13)",
   // (`toBeNull`) would fail. The filter is the sole thing that makes them pass.
   // Verified transiently by deleting the `if (opts?.customerId ...)` guard, then
   // restored.
+})
+
+describe("OrderQueryService.findByDisplayId — BKL-089 order-reference read", () => {
+  let svc: ReturnType<typeof createOrderQueryService>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    svc = createOrderQueryService()
+  })
+
+  it("queries by displayId, newest-first, bounded by the default take", async () => {
+    const rows = [makeOrder({ displayId: 4242 })]
+    mockOrderFindMany.mockResolvedValue(rows)
+
+    const result = await svc.findByDisplayId(4242)
+
+    expect(result).toEqual(rows)
+    expect(mockOrderFindMany).toHaveBeenCalledWith({
+      where: { displayId: 4242 },
+      orderBy: { medusaCreatedAt: "desc" },
+      take: 10,
+    })
+  })
+
+  it("honours an explicit limit", async () => {
+    mockOrderFindMany.mockResolvedValue([])
+
+    await svc.findByDisplayId(4242, { limit: 5 })
+
+    expect(mockOrderFindMany).toHaveBeenCalledWith({
+      where: { displayId: 4242 },
+      orderBy: { medusaCreatedAt: "desc" },
+      take: 5,
+    })
+  })
+
+  it("returns EVERY matching row (no @unique on displayId) so callers can detect a duplicate", async () => {
+    const dupes = [
+      makeOrder({ id: "order_a", displayId: 4242 }),
+      makeOrder({ id: "order_b", displayId: 4242 }),
+    ]
+    mockOrderFindMany.mockResolvedValue(dupes)
+
+    const result = await svc.findByDisplayId(4242)
+
+    expect(result).toHaveLength(2)
+  })
+
+  it("returns an empty array when no order carries that displayId", async () => {
+    mockOrderFindMany.mockResolvedValue([])
+
+    const result = await svc.findByDisplayId(999999)
+
+    expect(result).toEqual([])
+  })
 })

@@ -19,6 +19,8 @@ import { cancelStalePaymentIntent, withLock } from "@ibatexas/tools";
 import { publishNatsEvent } from "@ibatexas/nats-client";
 import {
   createPaymentCommandService,
+  createOpsAlertService,
+  OPS_ALERT_CAUSE_LABELS_PT,
   prisma,
   type PaymentStatusTransitionPayload,
 } from "@ibatexas/domain";
@@ -27,8 +29,9 @@ import { PaymentStatus, type PaymentStatusChangedEvent } from "@ibatexas/types";
 import * as Sentry from "@sentry/node";
 import type { Queue, Worker } from "bullmq";
 import type { FastifyBaseLogger } from "fastify";
-import { createQueue, createWorker, type Job } from "./queue.js";
 import { buildSystemEnvelope } from "../subscribers/__shared__/system-actor-envelope.js";
+import { createQueue, createWorker, type Job } from "./queue.js";
+import { reconcileSweepOpsAlert, sweepCountSeverity } from "./ops-alert-reconcile.js";
 
 const REPEAT_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 
@@ -127,8 +130,8 @@ export async function checkPixExpiry(log?: FastifyBaseLogger | null): Promise<vo
 
         if (result === null) {
           // Lock not acquired — another process is handling this payment
-          effectiveLogger?.info(
-            { paymentId: payment.id },
+          effectiveLogger?.debug(
+            { component: "job.pix-expiry", event: "lock_skip", paymentId: payment.id },
             "[pix-expiry] Lock not acquired — skipping (will retry next run)",
           );
           continue;
@@ -141,22 +144,22 @@ export async function checkPixExpiry(log?: FastifyBaseLogger | null): Promise<vo
 
         expiredCount++;
         effectiveLogger?.info(
-          { paymentId: payment.id, orderId: payment.orderId },
+          { component: "job.pix-expiry", event: "expired", paymentId: payment.id, orderId: payment.orderId },
           "[pix-expiry] Payment expired — order preserved for retry/method switch",
         );
       } catch (err) {
         // InvalidPaymentTransitionError means it was already transitioned — safe to skip
         if ((err as Error).name === "InvalidPaymentTransitionError") {
-          effectiveLogger?.info(
-            { paymentId: payment.id },
+          effectiveLogger?.debug(
+            { component: "job.pix-expiry", event: "already_transitioned", paymentId: payment.id },
             "[pix-expiry] Payment already transitioned — skipping",
           );
           continue;
         }
         // PaymentConcurrencyError means version changed — will retry next run
         if ((err as Error).name === "PaymentConcurrencyError") {
-          effectiveLogger?.info(
-            { paymentId: payment.id },
+          effectiveLogger?.debug(
+            { component: "job.pix-expiry", event: "concurrency_conflict", paymentId: payment.id },
             "[pix-expiry] Concurrency conflict — will retry next run",
           );
           continue;
@@ -183,10 +186,39 @@ export async function checkPixExpiry(log?: FastifyBaseLogger | null): Promise<vo
     });
   }
 
-  effectiveLogger?.info(
-    { expired_count: expiredCount, run_at: new Date().toISOString() },
-    "PIX expiry check complete",
-  );
+  // NOISE-4: log only when payments actually expired (most sweeps expire 0).
+  if (expiredCount > 0) {
+    effectiveLogger?.info(
+      { component: "job.pix-expiry", event: "sweep", expired_count: expiredCount },
+      "PIX expiry sweep expired payments",
+    );
+  }
+
+  // BKL-080 — surface a PIX-expiry BACKLOG spike to the ops-alert plane (additive;
+  // wrapped so it can NEVER break the core expiry job). A burst of expiries in one
+  // sweep signals customers not completing PIX (provider/QR issue, checkout gap).
+  const pixThreshold = Number(process.env.OPS_PIX_EXPIRY_ALERT_THRESHOLD) || 10;
+  try {
+    await reconcileSweepOpsAlert({
+      svc: createOpsAlertService({ auditSink: getAuditSink(), log: effectiveLogger ?? undefined }),
+      over: expiredCount >= pixThreshold,
+      open: {
+        cause: "ops_pix_expiry_backlog",
+        severity: sweepCountSeverity(expiredCount, pixThreshold),
+        source: "pix-expiry-checker",
+        scope: null,
+        title: `${OPS_ALERT_CAUSE_LABELS_PT.ops_pix_expiry_backlog}: ${expiredCount} numa varredura`,
+        detail: `${expiredCount} pagamentos PIX expiraram nesta varredura (limite ${pixThreshold}).`,
+        context: { expiredCount, threshold: pixThreshold },
+        dedupeKey: "ops_pix_expiry_backlog",
+      },
+      sourceSubject: "pix-expiry-checker",
+      now: Date.now(),
+      log: effectiveLogger ?? undefined,
+    });
+  } catch (err) {
+    effectiveLogger?.warn({ error: String(err) }, "[pix-expiry] ops-alert reconcile failed (non-fatal)");
+  }
 }
 
 /** BullMQ processor — wraps the core logic. */

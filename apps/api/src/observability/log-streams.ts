@@ -23,6 +23,48 @@ export function victoriaLogsUrl(): string | undefined {
   return u || undefined;
 }
 
+/**
+ * Shared root pino options for the multistream (→ VictoriaLogs) path. The single
+ * place both the standalone logger (lib/logger.ts) and the Fastify server logger
+ * configure signal quality, so they stay in lockstep:
+ *  - `base: { component: "api" }` — the VL insert pins `_stream_fields=component,event`,
+ *    so a line with no `component` lands in the shared empty `{}` stream and VMUI
+ *    can't slice it. A base binding gives EVERY line a default stream; per-log
+ *    `{ component: "..." }` objects (conductor/kernel/whatsapp/job.*) still override
+ *    it via pino's last-key-wins. This also drops pino's default `{pid,hostname}`.
+ *  - `formatters.level` — ship the level NAME ("info"/"warn"/"error") not the raw
+ *    number, so `level:error` LogsQL filters work. Safe here because these are
+ *    main-thread streams, NOT a worker `transport` (pino forbids `formatters`
+ *    alongside `transport` — never add this to the transport-fallback branch).
+ *  - `redact` — defense-in-depth for secret-named fields. Free-text PII (message
+ *    bodies, completions) is scrubbed at the call site via the turn_trace redactor,
+ *    NOT here (path-based redact can't reach free prose). `token` is deliberately
+ *    NOT redacted — it is a non-secret approval idempotency handle in this codebase.
+ */
+export const MULTISTREAM_PINO_OPTIONS = {
+  level: process.env.LOG_LEVEL ?? "info",
+  timestamp: pino.stdTimeFunctions.isoTime,
+  base: { component: "api" },
+  formatters: { level: (label: string) => ({ level: label }) },
+  redact: {
+    paths: [
+      "req.headers.authorization",
+      "req.headers.cookie",
+      "headers.authorization",
+      "headers.cookie",
+      "password",
+      "*.password",
+      "otp",
+      "*.otp",
+      "secret",
+      "*.secret",
+      "phone",
+      "*.phone",
+    ],
+    censor: "[REDACTED]",
+  },
+} satisfies pino.LoggerOptions;
+
 /** Build a pino multistream fanning raw JSON → VictoriaLogs and human-readable
  *  → stdout. Returns null when VICTORIALOGS_URL is unset (callers fall back to
  *  their existing single-stream config). The VictoriaLogs stream is
@@ -45,11 +87,5 @@ export function buildLogStreams(): pino.MultiStreamRes | null {
 export function buildMultistreamLogger(): pino.Logger | null {
   const streams = buildLogStreams();
   if (!streams) return null;
-  return pino(
-    {
-      level: process.env.LOG_LEVEL ?? "info",
-      timestamp: pino.stdTimeFunctions.isoTime,
-    },
-    streams,
-  );
+  return pino(MULTISTREAM_PINO_OPTIONS, streams);
 }

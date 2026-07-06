@@ -61,6 +61,7 @@ export {
   ReorderInputSchema,
   ApplyCouponInputSchema,
   GetOrderHistoryInputSchema,
+  GetPaymentHistoryInputSchema,
   type AddToCartInput,
   type CancelOrderInput,
   CancelItemInputSchema,
@@ -76,8 +77,11 @@ export {
   type ReorderInput,
   type ApplyCouponInput,
   type GetOrderHistoryInput,
+  type GetPaymentHistoryInput,
   RegeneratePixInputSchema,
   type RegeneratePixInput,
+  COUPON_REJECTED_CODE,
+  type CouponRejectedCode,
 } from "./cart.types.js"
 
 // Intelligence types
@@ -109,6 +113,8 @@ export {
   OrderFulfillmentStatus,
   canTransition,
   getNextStatus,
+  isKnownOrderStatus,
+  isTerminalOrderStatus,
   ORDER_STATUS_LABELS_PT,
 } from "./order-status.js"
 

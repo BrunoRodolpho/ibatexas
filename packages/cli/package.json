@@ -46,6 +46,7 @@
     "@eslint/eslintrc": "^3.0.0",
     "@ibatexas/eslint-config": "workspace:*",
     "@ibatexas/pack-customer-onboarding": "workspace:*",
+    "@ibatexas/pack-ops": "workspace:*",
     "@ibatexas/pack-orders": "workspace:*",
     "@ibatexas/pack-payments": "workspace:*",
     "@ibatexas/pack-reservations": "workspace:*",

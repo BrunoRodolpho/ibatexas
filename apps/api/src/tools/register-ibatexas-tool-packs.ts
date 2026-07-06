@@ -39,6 +39,7 @@ import {
   createCheckout,
   createReservation,
   getOrCreateCart,
+  handoffToHuman,
   joinWaitlist,
   modifyReservation,
   regeneratePix,
@@ -92,9 +93,13 @@ function asIntentKind(s: string): IntK {
 // role maps to userType "staff" (the only non-customer authenticated bucket
 // AgentContext models); everything else with a real id is "customer".
 
-const GUEST_ID_PREFIXES = ["guest:", "anon:", "anonymous:"] as const;
+// Exported as the single source of truth for the guest-marker convention:
+// claustrum-bootstrap imports these instead of re-declaring them (A3), so the
+// planner/read-executor identity derivation and the session-TTL selection can
+// never drift from the Capsule adapter's notion of "is this a real customer".
+export const GUEST_ID_PREFIXES = ["guest:", "anon:", "anonymous:"] as const;
 
-function isGuestCustomerId(id: string | undefined): boolean {
+export function isGuestCustomerId(id: string | undefined): boolean {
   if (id === undefined) return true;
   const trimmed = id.trim();
   if (trimmed === "") return true;
@@ -105,7 +110,7 @@ function isGuestCustomerId(id: string | undefined): boolean {
  *  The enum VALUES are byte-identical to ChannelKind, so this is a value lookup
  *  that defaults to web for any unexpected kind (fail-safe, not fail-loud — the
  *  channel only scopes a cart redis key, never an authorization decision). */
-function channelFromKind(kind: string): Channel {
+export function channelFromKind(kind: string): Channel {
   return kind === "whatsapp" ? Channel.WhatsApp : Channel.Web;
 }
 
@@ -211,7 +216,7 @@ function makeReservationTool(opts: {
 // against its pack's `intents` array (pack-{orders,reservations,customer-
 // onboarding,payments}/src/index.ts) on the WS3 sweep.
 //
-// 17 LLM-callable mutating tools = the union of every pack CapabilityPlanner's
+// 18 LLM-callable mutating tools = the union of every pack CapabilityPlanner's
 // `allowedIntents` that has a `@ibatexas/tools` handler. The two payment kinds
 // that ship no handler were DE-ADVERTISED in pack-payments (P0-7) — the
 // context-aware leg of `toolRosterDrift()` below now fails the boot if a
@@ -368,6 +373,21 @@ const IBATEXAS_TOOLS: ReadonlyArray<TD<unknown, unknown>> = [
     requiresConfirmation: true,
     execute: (input, ctx) => regeneratePix(input as never, ctx),
   }),
+  // F5/L3 (BKL-030) — customer-side escalation on-ramp. sessionId is threaded
+  // from the runtime ctx (identity), NOT the LLM payload; the LLM may extract
+  // an optional reason. Executor publishes support.handoff_requested.
+  makeTool({
+    id: "ibatexas.support.handoffToHuman.v1",
+    capability: "whatsapp.handoff.request",
+    intentKind: "whatsapp.handoff.request",
+    description: "Transferir o atendimento para um atendente humano quando o cliente pedir para falar com uma pessoa.",
+    riskLevel: "low",
+    execute: (input, ctx) =>
+      handoffToHuman({
+        sessionId: ctx.sessionId,
+        reason: (input as { reason?: string }).reason,
+      }),
+  }),
 ];
 
 /**
@@ -507,6 +527,51 @@ export const ROSTER_DRIFT_CONTEXTS: ReadonlyArray<RosterDriftContext> = [
 const ADVERTISED_NOT_REGISTERED_WHITELIST: ReadonlySet<string> = new Set([
   "staff:reservation.checkin",
   "staff:reservation.complete",
+  // NEW-032 slice C1: `product.availability.set` is the @ibatexas/pack-ops
+  // staff-plane verb. Its planner advertises it under the synthetic staff
+  // probe (staffId set), but it is NOT a chat tool — the ops persona proposes
+  // it through the future ops conductor, never the customer/LLM chat surface,
+  // so it has no registered chat tool. Advertised-but-unregistered here is
+  // EXPECTED, not drift — same rationale as the reservation staff kinds above.
+  "staff:product.availability.set",
+  // NEW-004: `product.price.set` (the price-change-by-message verb) — same
+  // posture as `product.availability.set`. Advertised by the ops planner under
+  // the staff probe, proposed through the OPS conductor + registered in the OPS
+  // tool registry, NEVER the customer/LLM chat surface (absent from
+  // CHAT_DRIVABLE_TOOL_KINDS), so it has no registered CHAT tool.
+  // Advertised-but-unregistered on the chat roster is EXPECTED, not drift.
+  // (`opsPlaneDriftProblems` separately verifies it IS registered on the OPS
+  // registry with capability===intentKind.)
+  "staff:product.price.set",
+  // BKL-090: `order.status.transition` (the kitchen-advance verb) is now
+  // advertised by the ops planner under the staff probe (owned by pack-orders,
+  // routed via composition). Like `product.availability.set`, it is a
+  // STAFF/OPS-plane verb proposed through the OPS conductor + registered in the
+  // OPS tool registry — NEVER the customer/LLM chat surface, so it has no
+  // registered CHAT tool. Advertised-but-unregistered on the chat roster is
+  // EXPECTED, not drift. (The ops-plane drift parity gate,
+  // `opsPlaneDriftProblems`, separately verifies it IS registered on the OPS
+  // registry with capability===intentKind.)
+  "staff:order.status.transition",
+  // BKL-085: `payment.refund.issue` (the refunds-by-message verb) is advertised
+  // by the ops planner under the staff probe (owned by pack-payments, routed via
+  // composition). Like the two order kinds above, it is a STAFF/OPS-plane money
+  // verb proposed through the OPS conductor + registered in the OPS tool registry
+  // — NEVER the customer/LLM chat surface (it is deliberately absent from
+  // CHAT_DRIVABLE_TOOL_KINDS), so it has no registered CHAT tool.
+  // Advertised-but-unregistered on the chat roster is EXPECTED, not drift.
+  "staff:payment.refund.issue",
+  // BKL-088: `ops.alert.resolve.staff` + `incident.ticket.close.staff` (the
+  // two OWNED ops-plane RESOLUTION verbs) are advertised by the ops planner
+  // under the staff probe. Like `product.availability.set`, they are OPS-plane
+  // verbs proposed through the OPS conductor + registered in the OPS tool
+  // registry — NEVER the customer/LLM chat surface (absent from
+  // CHAT_DRIVABLE_TOOL_KINDS), so they have no registered CHAT tool.
+  // Advertised-but-unregistered on the chat roster is EXPECTED, not drift.
+  // (`opsPlaneDriftProblems` separately verifies they ARE registered on the OPS
+  // registry with capability===intentKind.)
+  "staff:ops.alert.resolve.staff",
+  "staff:incident.ticket.close.staff",
 ]);
 
 export interface ToolRosterDriftOptions {
@@ -631,6 +696,82 @@ export function toolRosterDrift(
     );
   }
 
+  return problems;
+}
+
+export interface ReadToolRosterDriftOptions {
+  /** Named contexts to probe; defaults to ROSTER_DRIFT_CONTEXTS. */
+  readonly contexts?: ReadonlyArray<RosterDriftContext>;
+  /**
+   * WARN-only sink for executors keyed to an unadvertised read. Never
+   * contributes to the returned problems. Defaults to console.warn.
+   */
+  readonly onWarn?: (message: string) => void;
+}
+
+/**
+ * Read-side roster drift (BKL-071) — the READ twin of {@link toolRosterDrift}.
+ *
+ * The mutation gate keeps `express_intent` from proposing a kind with no
+ * registered tool; this keeps the one-hop enrichment loop from advertising a
+ * READ the runtime cannot execute. Reads are context-gated exactly like intents
+ * (order history / profile / reservation reads appear only for an authenticated
+ * customer), so both legs probe the same named `contexts`.
+ *
+ * Fail-closed leg (`advertised ⊆ executor keys`): for every read a planner puts
+ * in `Plan.visibleReadTools` under any probed context, that name MUST be an
+ * executor key. A dangling advertised read → one problem per (context, read).
+ *
+ * WARN leg (`executor keyed to an unadvertised read`): an executor no planner
+ * advertises under any probed context is unreachable via chat — dead weight,
+ * never a dispatch failure. Emitted via `onWarn`, never a returned problem
+ * (mirrors toolRosterDrift's registered-but-unadvertised WARN).
+ *
+ * Pure: the caller supplies the planners AND the executor key set — the
+ * registrar stays dependency-light and never imports the bootstrap module where
+ * IBATEXAS_READ_TOOL_EXECUTORS lives. Returns human-readable problems; an empty
+ * array means the read roster is healthy.
+ */
+export function readToolRosterDrift(
+  planners: ReadonlyArray<CapabilityPlanner<unknown, unknown>>,
+  executorKeys: ReadonlyArray<string>,
+  options?: ReadToolRosterDriftOptions,
+): string[] {
+  const contexts = options?.contexts ?? ROSTER_DRIFT_CONTEXTS;
+  const onWarn = options?.onWarn ?? ((m: string) => console.warn(m));
+  const registered = new Set(executorKeys);
+
+  const problems: string[] = [];
+  const advertisedAnywhere = new Set<string>();
+  for (const probe of contexts) {
+    // Union the visible reads per context first (dedup), so a read two planners
+    // both advertise under one context yields at most one problem for it.
+    const advertised = new Set<string>();
+    for (const planner of planners) {
+      for (const read of planner.plan(probe.state, probe.context).visibleReadTools) {
+        advertised.add(read);
+      }
+    }
+    for (const read of advertised) {
+      advertisedAnywhere.add(read);
+      if (registered.has(read)) continue;
+      problems.push(
+        `context "${probe.name}": planner-advertised read "${read}" has no registered executor — ` +
+          `the one-hop enrichment loop would offer a read the runtime cannot execute`,
+      );
+    }
+  }
+  // Executor keyed to a read no planner advertises under any probed context —
+  // unreachable via chat, never a dispatch failure. WARN, never fail.
+  for (const key of registered) {
+    if (!advertisedAnywhere.has(key)) {
+      onWarn(
+        `readToolRosterDrift: executor "${key}" is not advertised by any planner under ` +
+          `the probed contexts (${contexts.map((c) => c.name).join(", ")}) — ` +
+          `unreachable via chat (WARN only)`,
+      );
+    }
+  }
   return problems;
 }
 

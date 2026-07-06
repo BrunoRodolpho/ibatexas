@@ -80,10 +80,13 @@ describe("ibx kernel status", () => {
     expect(parsed).toHaveProperty("audit")
     // claustrum-on-dev WS9: KNOWN_INTENT_KINDS is now sourced from the
     // `@ibatexas/intent-kinds` leaf package (post W5 Pack expansion), which
-    // composes 63 kinds across six first-party Packs + the PIX adopter Pack
-    // (orders 22, reservations 8, whatsapp 4, pix 3, payments 17,
-    // customer-onboarding 8, loyalty 1). The pre-cutover `32` was stale.
-    expect(parsed.knownIntentKinds.count).toBe(63)
+    // composes 68 kinds across the first-party Packs + the PIX adopter Pack
+    // (orders 22, reservations 8, whatsapp 5 incl. BKL-030
+    // whatsapp.handoff.request, pix 3, payments 17, customer-onboarding 8,
+    // ops 4 (NEW-032 product.availability.set + NEW-004 product.price.set +
+    // BKL-088 ops.alert.resolve.staff / incident.ticket.close.staff),
+    // loyalty 1). The pre-cutover `32` was stale.
+    expect(parsed.knownIntentKinds.count).toBe(68)
   })
 
   it("renders human-readable text when --json is absent", async () => {
@@ -97,24 +100,35 @@ describe("ibx kernel status", () => {
     expect(out).toContain("Audit sink")
   })
 
-  it("reports the full Pack roster count (6 packs) in text mode", async () => {
-    // The PIX adopter Pack lifts the canonical roster from 5 to 6. The count
-    // derives from FIRST_PARTY_PACK_SPECS, so it stays honest as Packs are
-    // added — regression guard for the previously-hardcoded stale "5".
+  it("reports the full Pack roster count (7 packs) in text mode", async () => {
+    // The PIX adopter Pack + the NEW-032 ops Pack lift the canonical roster to
+    // 7. The count derives from FIRST_PARTY_PACK_SPECS, so it stays honest as
+    // Packs are added — regression guard for the previously-hardcoded stale "5".
     await cmd.parseAsync(["status"], { from: "user" })
     const out = stdout.getOutput()
-    expect(out).toMatch(/em\s+6\s+packs/)
+    expect(out).toMatch(/em\s+7\s+packs/)
   })
 
-  it("includes all 63 KNOWN_INTENT_KINDS in the JSON list", async () => {
+  it("includes all 68 KNOWN_INTENT_KINDS in the JSON list", async () => {
     await cmd.parseAsync(["status", "--json"], { from: "user" })
     const out = stdout.getOutput()
     const parsed = JSON.parse(out)
     expect(parsed.knownIntentKinds.kinds).toContain("order.checkout.create")
     expect(parsed.knownIntentKinds.kinds).toContain("reservation.create")
     expect(parsed.knownIntentKinds.kinds).toContain("whatsapp.message.send")
+    // BKL-030: the customer-side escalation on-ramp added by the PR.
+    expect(parsed.knownIntentKinds.kinds).toContain("whatsapp.handoff.request")
     expect(parsed.knownIntentKinds.kinds).toContain("customer.create")
     expect(parsed.knownIntentKinds.kinds).toContain("pix.charge.create")
+    // NEW-032 slice C1: the staff-plane ops verb.
+    expect(parsed.knownIntentKinds.kinds).toContain("product.availability.set")
+    // NEW-004: the price-change-by-message ops verb.
+    expect(parsed.knownIntentKinds.kinds).toContain("product.price.set")
+    // BKL-088: the two OWNED ops-plane resolution verbs (DISTINCT from the
+    // SYSTEM-only ops.alert.resolve / incident.ticket.close domain kinds, which
+    // are deliberately absent from KNOWN_INTENT_KINDS).
+    expect(parsed.knownIntentKinds.kinds).toContain("ops.alert.resolve.staff")
+    expect(parsed.knownIntentKinds.kinds).toContain("incident.ticket.close.staff")
   })
 
   it("groups intent kinds by domain prefix in text mode", async () => {
@@ -123,7 +137,10 @@ describe("ibx kernel status", () => {
     // Per-domain counts derived from @ibatexas/intent-kinds (post W5 expansion).
     expect(out).toMatch(/order \(22\)/)
     expect(out).toMatch(/reservation \(8\)/)
-    expect(out).toMatch(/whatsapp \(3\)/)
+    // whatsapp.* prefix group = 4 (message.send, template.send,
+    // session.handover, BKL-030 handoff.request); the pack's 5th kind
+    // (conversation.message.append) groups under the `conversation` prefix.
+    expect(out).toMatch(/whatsapp \(4\)/)
     expect(out).toMatch(/customer \(8\)/)
     expect(out).toMatch(/pix \(3\)/)
   })

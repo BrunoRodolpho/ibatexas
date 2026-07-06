@@ -10,6 +10,11 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
 import { getRedisClient, rk } from "@ibatexas/tools";
 import { createStaffService } from "@ibatexas/domain";
+import {
+  classifyStaffLookupError,
+  isStaffAuthInfraError,
+  reportStaffAuthInfraError,
+} from "./staff-auth-infra-alert.js";
 
 // Extend Fastify's request type with our custom fields
 declare module "fastify" {
@@ -117,14 +122,40 @@ async function extractStaffAuth(request: FastifyRequest): Promise<void> {
     // Deactivation is a DB change (admin panel / seed) with NO token-revocation
     // event, so otherwise a deactivated staff's staff_token would keep working
     // until its expiry. Staff traffic is admin-panel volume (not the customer
-    // hot path), so this per-request PK lookup is negligible. getById throws if
-    // the row was deleted → caught below → treated as unauthenticated (fail-closed).
-    const staff = await createStaffService().getById(payload.sub);
+    // hot path), so this per-request PK lookup is negligible.
+    //
+    // BKL-092: wrap ONLY this lookup so a DB failure is CLASSIFIED distinctly
+    // from a JWT/revocation error. A genuine "record not found" (P2025 — the
+    // deleted/deactivated staff this check exists to reject) fails closed
+    // SILENTLY as before. A DB INFRASTRUCTURE error (schema drift P2022 /
+    // connectivity P1xxx / any other DB error) fails closed IDENTICALLY (same
+    // 401, no staff identity attached) but becomes SIGNAL — a structured ERROR
+    // log + a repeat-counted ops-alert — instead of being swallowed as
+    // unknown-staff. This is purely observability; authz behavior is unchanged.
+    let staff: Awaited<ReturnType<ReturnType<typeof createStaffService>["getById"]>>;
+    try {
+      staff = await createStaffService().getById(payload.sub);
+    } catch (dbErr) {
+      const classification = classifyStaffLookupError(dbErr);
+      if (isStaffAuthInfraError(classification)) {
+        // Best-effort SIGNAL — never throws, never changes the fail-closed outcome.
+        await reportStaffAuthInfraError(dbErr, classification, request.log);
+      }
+      return; // fail closed — unauthenticated (byte-identical to today's 401)
+    }
     if (!staff.active) return; // deactivated → do not attach staff identity
 
     request.userType = "staff";
     request.staffId = payload.sub;
-    request.staffRole = payload.role as "OWNER" | "MANAGER" | "ATTENDANT";
+    // AUT-007 (adversarial-review FIX 1): source the role from the FRESH staff
+    // row, never from the JWT claim baked at login. The row is already fetched
+    // unconditionally above (STAFFREVOKE), which is exactly why deactivation is
+    // live-enforced — but the role previously came from `payload.role`, so a
+    // `staff.role.assign` demotion was a no-op for up to the 8h token TTL: a
+    // demoted OWNER kept OWNER power (and could re-promote themselves or
+    // deactivate the demoter). Role changes are now live-enforced symmetrically
+    // with deactivation; the JWT claim is only login-time provenance.
+    request.staffRole = staff.role;
   } catch (err) {
     if (err instanceof RedisUnavailableError) throw err;
     // Invalid staff_token — treat as unauthenticated

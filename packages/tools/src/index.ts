@@ -27,6 +27,7 @@ export { removeFromCart, RemoveFromCartTool } from "./cart/remove-from-cart.js"
 export { applyCoupon, ApplyCouponTool } from "./cart/apply-coupon.js"
 export { createCheckout, CreateCheckoutTool } from "./cart/create-checkout.js"
 export { getOrderHistory, GetOrderHistoryTool } from "./cart/get-order-history.js"
+export { getPaymentHistory, GetPaymentHistoryTool } from "./cart/get-payment-history.js"
 export { checkOrderStatus, CheckOrderStatusTool } from "./cart/check-order-status.js"
 export { checkPaymentStatus, CheckPaymentStatusTool } from "./cart/check-payment-status.js"
 export { cancelOrder, CancelOrderTool } from "./cart/cancel-order.js"
@@ -101,6 +102,9 @@ export {
   isAvailableFromSchedule,
   getNextOpenDay,
   getFrozenPickupMessage,
+  getScheduleSignal,
+  getTodayHoursText,
+  type ScheduleSignal,
 } from "./schedule/schedule-helpers.js"
 
 // ── Schedule cache ──────────────────────────────────────────────────────────
@@ -110,6 +114,7 @@ export {
   invalidateScheduleCache,
   loadSchedule,
 } from "./cache/schedule-cache.js"
+export type { ScheduleCacheInvalidation } from "./cache/schedule-cache.js"
 
 // ── Banner cache ──────────────────────────────────────────────────────────────
 export {

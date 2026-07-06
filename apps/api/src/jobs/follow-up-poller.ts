@@ -26,7 +26,13 @@ export async function processFollowUps(log?: FastifyBaseLogger | null): Promise<
   // Fetch all entries whose fire time has passed
   const due = await redis.zRangeByScore(scheduledKey, 0, now);
 
-  effectiveLogger?.info({ batch_size: due.length, tick_at: new Date().toISOString() }, "follow-up poller tick");
+  // NOISE-2: log only when there is work (idle ticks were pure heartbeat noise).
+  if (due.length > 0) {
+    effectiveLogger?.info(
+      { component: "job.follow-up", event: "tick", batch_size: due.length },
+      "follow-up poller processed batch",
+    );
+  }
 
   for (const member of due) {
     let parsed: { customerId: string; reason: string; scheduledAt: string };
@@ -55,8 +61,8 @@ export async function processFollowUps(log?: FastifyBaseLogger | null): Promise<
 
     await redis.zRem(scheduledKey, member);
   }
-
-  effectiveLogger?.info({ processed: due.length }, "[follow-up-poller] tick complete");
+  // NOISE-2: removed the duplicate "[follow-up-poller] tick complete" line —
+  // it carried the same due.length as the tick log above.
 }
 
 /** BullMQ processor. */

@@ -96,3 +96,90 @@ export const MessageRole = {
 } as const
 
 export type MessageRole = (typeof MessageRole)[keyof typeof MessageRole]
+
+
+export const IncidentKind = {
+  no_reply: 'no_reply'
+} as const
+
+export type IncidentKind = (typeof IncidentKind)[keyof typeof IncidentKind]
+
+
+export const IncidentCause = {
+  empty_completion: 'empty_completion',
+  whitespace_only: 'whitespace_only',
+  send_failed: 'send_failed',
+  retry_exhausted: 'retry_exhausted',
+  timeout: 'timeout',
+  pause_read_error: 'pause_read_error'
+} as const
+
+export type IncidentCause = (typeof IncidentCause)[keyof typeof IncidentCause]
+
+
+export const IncidentSeverity = {
+  low: 'low',
+  medium: 'medium',
+  high: 'high'
+} as const
+
+export type IncidentSeverity = (typeof IncidentSeverity)[keyof typeof IncidentSeverity]
+
+
+export const IncidentStatus = {
+  OPEN: 'OPEN',
+  ACKNOWLEDGED: 'ACKNOWLEDGED',
+  AUTO_RESOLVED: 'AUTO_RESOLVED',
+  RESOLVED: 'RESOLVED'
+} as const
+
+export type IncidentStatus = (typeof IncidentStatus)[keyof typeof IncidentStatus]
+
+
+export const IncidentResolutionType = {
+  AUTO: 'AUTO',
+  STAFF: 'STAFF',
+  HANDED_OFF: 'HANDED_OFF'
+} as const
+
+export type IncidentResolutionType = (typeof IncidentResolutionType)[keyof typeof IncidentResolutionType]
+
+
+export const OpsAlertCause = {
+  ops_stuck_order: 'ops_stuck_order',
+  ops_pix_expiry_backlog: 'ops_pix_expiry_backlog',
+  ops_stale_defer: 'ops_stale_defer',
+  ops_dlq_depth: 'ops_dlq_depth',
+  ops_ingredient_underflow: 'ops_ingredient_underflow',
+  ops_staff_auth_infra: 'ops_staff_auth_infra',
+  ops_observability_down: 'ops_observability_down'
+} as const
+
+export type OpsAlertCause = (typeof OpsAlertCause)[keyof typeof OpsAlertCause]
+
+
+export const OpsAlertSeverity = {
+  low: 'low',
+  medium: 'medium',
+  high: 'high'
+} as const
+
+export type OpsAlertSeverity = (typeof OpsAlertSeverity)[keyof typeof OpsAlertSeverity]
+
+
+export const OpsAlertStatus = {
+  OPEN: 'OPEN',
+  ACKNOWLEDGED: 'ACKNOWLEDGED',
+  AUTO_RESOLVED: 'AUTO_RESOLVED',
+  RESOLVED: 'RESOLVED'
+} as const
+
+export type OpsAlertStatus = (typeof OpsAlertStatus)[keyof typeof OpsAlertStatus]
+
+
+export const OpsAlertResolutionType = {
+  AUTO: 'AUTO',
+  STAFF: 'STAFF'
+} as const
+
+export type OpsAlertResolutionType = (typeof OpsAlertResolutionType)[keyof typeof OpsAlertResolutionType]

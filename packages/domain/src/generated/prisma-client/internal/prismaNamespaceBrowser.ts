@@ -58,6 +58,7 @@ export const ModelName = {
   Waitlist: 'Waitlist',
   Review: 'Review',
   Staff: 'Staff',
+  StaffShift: 'StaffShift',
   Customer: 'Customer',
   Address: 'Address',
   CustomerPreferences: 'CustomerPreferences',
@@ -72,12 +73,18 @@ export const ModelName = {
   Conversation: 'Conversation',
   ConversationMessage: 'ConversationMessage',
   DeliveryZone: 'DeliveryZone',
+  Ingredient: 'Ingredient',
+  Recipe: 'Recipe',
+  RecipeIngredient: 'RecipeIngredient',
+  DailySpecial: 'DailySpecial',
   WeeklySchedule: 'WeeklySchedule',
   Holiday: 'Holiday',
   ScheduleOverride: 'ScheduleOverride',
   AgentRun: 'AgentRun',
   AgentRedTeamRun: 'AgentRedTeamRun',
-  LlmTokenUsage: 'LlmTokenUsage'
+  LlmTokenUsage: 'LlmTokenUsage',
+  ConversationIncident: 'ConversationIncident',
+  OpsAlert: 'OpsAlert'
 } as const
 
 export type ModelName = (typeof ModelName)[keyof typeof ModelName]
@@ -186,11 +193,28 @@ export const StaffScalarFieldEnum = {
   name: 'name',
   role: 'role',
   active: 'active',
+  hourlyRateCentavos: 'hourlyRateCentavos',
   createdAt: 'createdAt',
   updatedAt: 'updatedAt'
 } as const
 
 export type StaffScalarFieldEnum = (typeof StaffScalarFieldEnum)[keyof typeof StaffScalarFieldEnum]
+
+
+export const StaffShiftScalarFieldEnum = {
+  id: 'id',
+  staffId: 'staffId',
+  startsAt: 'startsAt',
+  endsAt: 'endsAt',
+  actualStart: 'actualStart',
+  actualEnd: 'actualEnd',
+  role: 'role',
+  note: 'note',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+} as const
+
+export type StaffShiftScalarFieldEnum = (typeof StaffShiftScalarFieldEnum)[keyof typeof StaffShiftScalarFieldEnum]
 
 
 export const CustomerScalarFieldEnum = {
@@ -414,6 +438,57 @@ export const DeliveryZoneScalarFieldEnum = {
 export type DeliveryZoneScalarFieldEnum = (typeof DeliveryZoneScalarFieldEnum)[keyof typeof DeliveryZoneScalarFieldEnum]
 
 
+export const IngredientScalarFieldEnum = {
+  id: 'id',
+  name: 'name',
+  unit: 'unit',
+  stockMilli: 'stockMilli',
+  lowStockMilli: 'lowStockMilli',
+  costCentavosPerUnit: 'costCentavosPerUnit',
+  active: 'active',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+} as const
+
+export type IngredientScalarFieldEnum = (typeof IngredientScalarFieldEnum)[keyof typeof IngredientScalarFieldEnum]
+
+
+export const RecipeScalarFieldEnum = {
+  id: 'id',
+  medusaProductId: 'medusaProductId',
+  yield: 'yield',
+  active: 'active',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+} as const
+
+export type RecipeScalarFieldEnum = (typeof RecipeScalarFieldEnum)[keyof typeof RecipeScalarFieldEnum]
+
+
+export const RecipeIngredientScalarFieldEnum = {
+  id: 'id',
+  recipeId: 'recipeId',
+  ingredientId: 'ingredientId',
+  qtyMilli: 'qtyMilli'
+} as const
+
+export type RecipeIngredientScalarFieldEnum = (typeof RecipeIngredientScalarFieldEnum)[keyof typeof RecipeIngredientScalarFieldEnum]
+
+
+export const DailySpecialScalarFieldEnum = {
+  id: 'id',
+  medusaProductId: 'medusaProductId',
+  date: 'date',
+  promoPriceCentavos: 'promoPriceCentavos',
+  headline: 'headline',
+  active: 'active',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+} as const
+
+export type DailySpecialScalarFieldEnum = (typeof DailySpecialScalarFieldEnum)[keyof typeof DailySpecialScalarFieldEnum]
+
+
 export const WeeklyScheduleScalarFieldEnum = {
   id: 'id',
   dayOfWeek: 'dayOfWeek',
@@ -506,6 +581,67 @@ export const LlmTokenUsageScalarFieldEnum = {
 } as const
 
 export type LlmTokenUsageScalarFieldEnum = (typeof LlmTokenUsageScalarFieldEnum)[keyof typeof LlmTokenUsageScalarFieldEnum]
+
+
+export const ConversationIncidentScalarFieldEnum = {
+  id: 'id',
+  sessionId: 'sessionId',
+  conversationId: 'conversationId',
+  customerId: 'customerId',
+  channel: 'channel',
+  senderRef: 'senderRef',
+  kind: 'kind',
+  cause: 'cause',
+  lastCause: 'lastCause',
+  severity: 'severity',
+  status: 'status',
+  dropCount: 'dropCount',
+  customerImpacted: 'customerImpacted',
+  openedAt: 'openedAt',
+  lastDropAt: 'lastDropAt',
+  acknowledgedAt: 'acknowledgedAt',
+  acknowledgedBy: 'acknowledgedBy',
+  resolvedAt: 'resolvedAt',
+  resolvedBy: 'resolvedBy',
+  resolutionType: 'resolutionType',
+  priorIncidentId: 'priorIncidentId',
+  lastTurnId: 'lastTurnId',
+  lastDecisionKind: 'lastDecisionKind',
+  closingTurnId: 'closingTurnId',
+  externalId: 'externalId',
+  phoneHash: 'phoneHash',
+  detail: 'detail',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+} as const
+
+export type ConversationIncidentScalarFieldEnum = (typeof ConversationIncidentScalarFieldEnum)[keyof typeof ConversationIncidentScalarFieldEnum]
+
+
+export const OpsAlertScalarFieldEnum = {
+  id: 'id',
+  cause: 'cause',
+  severity: 'severity',
+  status: 'status',
+  source: 'source',
+  scope: 'scope',
+  title: 'title',
+  detail: 'detail',
+  context: 'context',
+  occurrences: 'occurrences',
+  dedupeKey: 'dedupeKey',
+  firstSeenAt: 'firstSeenAt',
+  lastSeenAt: 'lastSeenAt',
+  acknowledgedAt: 'acknowledgedAt',
+  acknowledgedBy: 'acknowledgedBy',
+  resolvedAt: 'resolvedAt',
+  resolvedBy: 'resolvedBy',
+  resolutionType: 'resolutionType',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+} as const
+
+export type OpsAlertScalarFieldEnum = (typeof OpsAlertScalarFieldEnum)[keyof typeof OpsAlertScalarFieldEnum]
 
 
 export const SortOrder = {

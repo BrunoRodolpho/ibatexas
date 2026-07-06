@@ -1,0 +1,12 @@
+-- AlterEnum: extend the ops-alert cause taxonomy (BKL-092).
+-- Promotes staff-auth INFRASTRUCTURE failures (a Prisma schema-drift P2022 /
+-- connectivity P1xxx thrown by the per-request staff active-recheck in
+-- middleware/auth.ts) into a first-class ops-alert cause so a manager SEES the
+-- condition in the admin ops-alerts inbox + the ops agent, instead of every
+-- staff login silently dying as a generic 401 with zero operator signal.
+--
+-- Postgres enum add-value: appended AFTER 'ops_ingredient_underflow' (the enum is
+-- unordered for filtering; append keeps the frozen taxonomy stable). IF NOT EXISTS
+-- makes the statement idempotent so a re-apply / provision is a no-op. Mirrors the
+-- taxonomy add-value idiom (see 20260704000000_add_ops_ingredient_underflow_cause).
+ALTER TYPE "ibx_domain"."OpsAlertCause" ADD VALUE IF NOT EXISTS 'ops_staff_auth_infra';

@@ -106,6 +106,50 @@ export function refuseSlotsIncomplete(): Refusal {
   )
 }
 
+// ── Status-transition legality refusals (STATE) ─────────────────────────
+//
+// Emitted by `requireLegalStatusTransition` (policies.ts) — the kernel-level
+// transition-legality guard (BKL-090) that gates `order.status.transition`
+// BEFORE it can reach EXECUTE on the ops/staff plane. These are the KERNEL
+// analogue of the imperative `InvalidTransitionError` the executor throws
+// inside the DB transaction (the throw remains the last transactional line;
+// see the kernel/executor division documented in policies.ts). The
+// user-facing copy is operator-facing pt-BR (the ops persona surface).
+
+/** Target status is not a legal next state from the current status. */
+export function refuseTransitionIllegal(from: string, to: string): Refusal {
+  return refuse(
+    "STATE",
+    "order.status.transition_illegal",
+    "Esse pedido não pode avançar para esse status a partir do estado atual.",
+    `from=${from} to=${to}`,
+  )
+}
+
+/** Current status is terminal (delivered / canceled) — nothing to advance. */
+export function refuseTransitionTerminal(from: string): Refusal {
+  return refuse(
+    "STATE",
+    "order.status.terminal",
+    "Esse pedido já está em um status final e não pode mais mudar.",
+    `from=${from}`,
+  )
+}
+
+/**
+ * The current status is missing or unrecognized — the guard fails CLOSED on
+ * the ops/staff (`admin:`) plane rather than trusting an unknown state. Also
+ * covers a target `newStatus` that is not one of the seven known statuses.
+ */
+export function refuseTransitionStatusUnknown(detail?: string): Refusal {
+  return refuse(
+    "STATE",
+    "order.status.unknown",
+    "Não consegui confirmar o status atual do pedido — verifique o pedido e tente de novo.",
+    detail,
+  )
+}
+
 export function refuseCheckoutMissingPaymentMethod(): Refusal {
   return refuse(
     "STATE",

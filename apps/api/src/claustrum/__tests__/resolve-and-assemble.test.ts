@@ -24,6 +24,7 @@ let reservationGetById: (id: string, customerId: string) => Promise<unknown> = a
 };
 let timeSlotFindUnique: (args: unknown) => Promise<unknown> = async () => null;
 let medusaStoreFetch: (path: string) => Promise<unknown> = async () => ({});
+let searchProductsMock: (input: unknown, ctx?: unknown) => Promise<unknown> = async () => ({ products: [] });
 let orderListByCustomer: (cid: string, input?: unknown) => Promise<{ orders: unknown[]; count: number }> =
   async () => ({ orders: [], count: 0 });
 let reservationListByCustomer: (cid: string, opts?: unknown) => Promise<{ reservations: unknown[]; total: number }> =
@@ -34,6 +35,7 @@ vi.mock("@ibatexas/tools", () => ({
   getRedisClient: async () => ({ get: (k: string) => redisGet(k) }),
   medusaStore: (path: string) => medusaStoreFetch(path),
   reaisToCentavos: (reais: number) => Math.round(reais * 100),
+  searchProducts: (input: unknown, ctx?: unknown) => searchProductsMock(input, ctx),
 }));
 vi.mock("@ibatexas/domain", () => ({
   createOrderQueryService: () => ({
@@ -83,6 +85,7 @@ beforeEach(() => {
   };
   timeSlotFindUnique = async () => null;
   medusaStoreFetch = async () => ({});
+  searchProductsMock = async () => ({ products: [] });
   orderListByCustomer = async () => ({ orders: [], count: 0 });
   reservationListByCustomer = async () => ({ reservations: [], total: 0 });
 });
@@ -290,6 +293,230 @@ describe("resolve-and-assemble — cart entity loads", () => {
     });
     expect(ctx.cartId).toBeNull();
     expect(ctx.items).toBeUndefined();
+  });
+});
+
+// ── F3/L1 (D-014) — thread resolved ids from ctx onto the executor payload ────
+// Without this the tool receives envelope.payload lacking cartId and throws a
+// ZodError after the kernel EXECUTEs — the "can't add an item by message" gap.
+describe("resolve-and-assemble — L1 payload threading (D-014)", () => {
+  const activeCart = () => {
+    redisGet = async (k) => (k === "cart:active:session:conv-1" ? "cart_abc" : null);
+    medusaStoreFetch = async () => ({
+      cart: { items: [{ variant_id: "var_1", quantity: 1, unit_price: 50 }], total: 50, completed_at: null },
+    });
+  };
+
+  it("injects the session-resolved cartId into a cart-op payload (order.item.add)", async () => {
+    activeCart();
+    const { payload } = await resolveAndAssemble({
+      kind: "order.item.add",
+      payload: { variantId: "var_1", quantity: 1 },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect((payload as { cartId?: string }).cartId).toBe("cart_abc");
+  });
+
+  it("injects cartId for order.checkout.create and order.coupon.apply", async () => {
+    for (const kind of ["order.checkout.create", "order.coupon.apply"]) {
+      activeCart();
+      const { payload } = await resolveAndAssemble({
+        kind,
+        payload: { paymentMethod: "pix", code: "SAVE10" },
+        customerId: "c1",
+        channel: "web",
+        sessionId: "conv-1",
+      });
+      expect((payload as { cartId?: string }).cartId).toBe("cart_abc");
+    }
+  });
+
+  it("never overrides an explicitly-supplied cartId", async () => {
+    activeCart();
+    const { payload } = await resolveAndAssemble({
+      kind: "order.item.add",
+      payload: { cartId: "cart_explicit", variantId: "var_1", quantity: 1 },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect((payload as { cartId?: string }).cartId).toBe("cart_explicit");
+  });
+
+  it("does not inject cartId when no active cart was resolved", async () => {
+    redisGet = async () => null;
+    const { payload } = await resolveAndAssemble({
+      kind: "order.item.add",
+      payload: { variantId: "var_1", quantity: 1 },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect((payload as { cartId?: string }).cartId).toBeUndefined();
+  });
+
+  it("does not inject cartId for an order-by-id kind (order.cancel routes through loadOrderCtx)", async () => {
+    activeCart(); // even with an active cart key present…
+    const { payload } = await resolveAndAssemble({
+      kind: "order.cancel",
+      payload: { orderId: "order_1" },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    // …order.cancel resolves by orderId (ctx.cartId is null), so no cartId leaks in.
+    expect((payload as { cartId?: string }).cartId).toBeUndefined();
+  });
+
+  it("injects the identity customerId into a reservation.create payload", async () => {
+    const { payload } = await resolveAndAssemble({
+      kind: "reservation.create",
+      payload: { timeSlotId: "slot_1", partySize: 2 },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect((payload as { customerId?: string }).customerId).toBe("c1");
+  });
+});
+
+// ── F3/L1 (BKL-061) — NL→variantId resolution for order.item.add ─────────────
+// The 4B emits a loose product name (e.g. {item:"coca cola"}) with no variantId;
+// resolve it via searchProducts (a READ — resolve stays read-only) so the tool
+// schema {cartId,variantId,quantity} is satisfiable.
+describe("resolve-and-assemble — NL→variantId (BKL-061)", () => {
+  it("resolves a loose product name to variantId + explicit allergens + defaults quantity (BKL-061/067)", async () => {
+    searchProductsMock = async () => ({
+      products: [{ id: "prod_1", variants: [{ id: "var_coke" }], allergens: ["gluten"] }],
+    });
+    const { payload } = await resolveAndAssemble({
+      kind: "order.item.add",
+      payload: { item: "coca cola" },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    const p = payload as { variantId?: string; quantity?: number; allergens?: string[] };
+    expect(p.variantId).toBe("var_coke");
+    expect(p.quantity).toBe(1);
+    // BKL-067: the product's EXPLICIT allergen array is injected (Hard Rule #1).
+    expect(p.allergens).toEqual(["gluten"]);
+  });
+
+  it("injects an empty allergen array for a product with no allergens (still explicit)", async () => {
+    searchProductsMock = async () => ({
+      products: [{ id: "p2", variants: [{ id: "var_water" }], allergens: [] }],
+    });
+    const { payload } = await resolveAndAssemble({
+      kind: "order.item.add",
+      payload: { item: "agua" },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect((payload as { allergens?: string[] }).allergens).toEqual([]);
+  });
+
+  it("does not override an explicit variantId", async () => {
+    searchProductsMock = async () => ({ products: [{ variants: [{ id: "var_other" }] }] });
+    const { payload } = await resolveAndAssemble({
+      kind: "order.item.add",
+      payload: { variantId: "var_explicit", quantity: 3 },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    const p = payload as { variantId?: string; quantity?: number };
+    expect(p.variantId).toBe("var_explicit");
+    expect(p.quantity).toBe(3);
+  });
+
+  it("leaves variantId unset when no product matches (tool REFUSEs honestly)", async () => {
+    searchProductsMock = async () => ({ products: [] });
+    const { payload } = await resolveAndAssemble({
+      kind: "order.item.add",
+      payload: { item: "xyzzy nonexistent" },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect((payload as { variantId?: string }).variantId).toBeUndefined();
+  });
+
+  it("swallows a searchProducts error and leaves variantId unset", async () => {
+    searchProductsMock = async () => {
+      throw new Error("typesense down");
+    };
+    const { payload } = await resolveAndAssemble({
+      kind: "order.item.add",
+      payload: { item: "coca" },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect((payload as { variantId?: string }).variantId).toBeUndefined();
+  });
+});
+
+// ── Review B3 — order.item.add quantity coercion ─────────────────────────────
+// The old `typeof quantity !== "number" → 1` silently rewrote the 4B's string
+// emission ("2") to 1 — a customer asking for 2 items got 1. Positive-integer
+// strings coerce; positive-integer numbers are kept; a MISSING quantity
+// defaults to 1; a present-but-invalid value passes through untouched so the
+// tool schema refuses loudly (never a silently different quantity).
+describe("resolve-and-assemble — order.item.add quantity coercion (B3)", () => {
+  async function quantityFor(raw: unknown): Promise<unknown> {
+    const { payload } = await resolveAndAssemble({
+      kind: "order.item.add",
+      payload: {
+        variantId: "var_explicit",
+        allergens: [],
+        ...(raw === undefined ? {} : { quantity: raw }),
+      },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    return (payload as { quantity?: unknown }).quantity;
+  }
+
+  it('coerces a positive-integer string: "2" → 2', async () => {
+    expect(await quantityFor("2")).toBe(2);
+  });
+
+  it('coerces a padded positive-integer string: " 4 " → 4', async () => {
+    expect(await quantityFor(" 4 ")).toBe(4);
+  });
+
+  it("keeps a positive-integer number: 3 → 3", async () => {
+    expect(await quantityFor(3)).toBe(3);
+  });
+
+  it("defaults a missing quantity to 1", async () => {
+    expect(await quantityFor(undefined)).toBe(1);
+  });
+
+  // A PRESENT but invalid quantity is passed through untouched so
+  // AddToCartInputSchema (z.number().int().min(1)) refuses LOUDLY and the
+  // customer gets a clarify — a silent rewrite to 1 would put a quantity in
+  // the cart the customer never asked for.
+  it('passes junk string through for a loud refusal: "abc" stays "abc"', async () => {
+    expect(await quantityFor("abc")).toBe("abc");
+  });
+
+  it("passes zero through for a loud refusal (never a silent 1)", async () => {
+    expect(await quantityFor(0)).toBe(0);
+    expect(await quantityFor("0")).toBe("0");
+  });
+
+  it("passes a negative quantity through for a loud refusal: -1 stays -1", async () => {
+    expect(await quantityFor(-1)).toBe(-1);
+  });
+
+  it("passes a fractional quantity through for a loud refusal: 2.5 stays 2.5", async () => {
+    expect(await quantityFor(2.5)).toBe(2.5);
   });
 });
 

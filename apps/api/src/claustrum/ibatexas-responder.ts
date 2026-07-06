@@ -31,6 +31,7 @@ import type {
   TelemetryPort,
 } from "@claustrum/core";
 import type { Decision } from "@adjudicate/core";
+import { logger } from "../lib/logger.js";
 import {
   RESPONDER_ESCALATE_PTBR,
   RESPONDER_GROUNDED_PERSONA_PTBR,
@@ -42,6 +43,14 @@ import {
   type IbatexasPromptComposer,
 } from "./prompts/ibatexas-prompts.js";
 import { emitModelCallTrace } from "./llm-trace.js";
+import { completeWithEmptyRetry } from "./complete-with-retry.js";
+import {
+  closedHoursBackstop,
+  closedHoursDisclosure,
+  closedHoursPromptNote,
+  closedHoursScheduledConfirmation,
+  type ScheduleSignal,
+} from "./closed-hours.js";
 
 // Re-export so existing importers (tests) keep their import site.
 export {
@@ -52,6 +61,14 @@ export {
 
 const DEFAULT_MAX_TOKENS = 1024;
 const PROMPT_BUDGET = { maxTokens: 100_000 } as const;
+
+// F6 (BKL-031) — total responder-completion attempts (incl. the first) before
+// giving up to the holding-message fallback. The 4B empties ~22% of the time;
+// 3 attempts leaves ~1% residual. Config from env (Hard Rule #3).
+const EMPTY_COMPLETION_MAX_ATTEMPTS = Math.max(
+  1,
+  Number.parseInt(process.env.EMPTY_COMPLETION_MAX_ATTEMPTS ?? "3", 10) || 3,
+);
 
 export interface IbatexasResponderDeps {
   /** Consumed surface is exactly the ModelProvider port (`.complete()`). */
@@ -66,6 +83,80 @@ export interface IbatexasResponderDeps {
   readonly promptComposer?: IbatexasPromptComposer;
   /** Telemetry sink for the per-model-call LLMTrace (C1). */
   readonly telemetry?: TelemetryPort;
+  /**
+   * Resolve the current structured open/closed signal for THIS turn (fix B,
+   * Stage 1). Called per `respond()` because the signal is time-dependent. When
+   * it reports `isClosed`, the closed-hours soft note is injected into the LLM
+   * context AND the deterministic backstop polices the draft so it can never
+   * falsely assert the store is open / confirm an immediate order while closed.
+   * Omitted in unit tests / when no schedule is wired → no closed-hours behavior.
+   */
+  readonly resolveScheduleSignal?: () =>
+    | Promise<ScheduleSignal | undefined>
+    | ScheduleSignal
+    | undefined;
+  /**
+   * Per-decision-branch persona overrides (NEW-032 slice B). When a key is
+   * present it REPLACES the corresponding default constant for that branch —
+   * and WINS over the content-addressed `promptComposer` (an injected system is
+   * the whole point on the ops plane, so the customer fragment graph must not
+   * override it). When ABSENT (customer / WhatsApp planes) behavior is
+   * BYTE-IDENTICAL to today — pinned by a regression test. Each override is the
+   * FULL system prompt for its branch; all downstream anti-confabulation /
+   * closed-hours / pt-BR guards run UNCHANGED over the model draft.
+   *
+   *  - `conversational` → the REFUSE-empty-plan (small-talk) + fallback branch
+   *    (default {@link RESPONDER_PERSONA_PTBR}).
+   *  - `grounded`       → the EXECUTE/REWRITE/DEFER branch
+   *    (default {@link RESPONDER_GROUNDED_PERSONA_PTBR}).
+   *  - `escalate`       → the ESCALATE fixed line
+   *    (default {@link RESPONDER_ESCALATE_PTBR}).
+   */
+  readonly personas?: {
+    readonly conversational?: string;
+    readonly grounded?: string;
+    readonly escalate?: string;
+  };
+  /**
+   * BKL-100 — the ops-plane read-answer governor. Injected ONLY on the ops
+   * conductor (the customer / WhatsApp planes never pass it, so their behavior is
+   * BYTE-IDENTICAL — pinned by the responder-personas regression bar). It gives
+   * the responder two model-free hooks on the CONVERSATIONAL (REFUSE-empty-plan +
+   * fallback) branch:
+   *
+   *  - `render(turnId)` — when a staff read (ops_snapshot / ops_sales_analytics)
+   *    was captured THIS turn, returns the deterministic pt-BR answer rendered
+   *    from the ACTUAL read result (or an honest "couldn't check" line). That IS
+   *    the reply — the responder makes NO model call, so a read answer can never
+   *    be a model-authored number. Returns `undefined` when no read was captured
+   *    (the responder then does its normal conversational completion).
+   *  - `clampUngrounded(text)` — a demote-only clamp applied to the model draft
+   *    AFTER the existing guards, on the conversational fallback (reached only when
+   *    `render` returned `undefined`, i.e. NO read this turn). A draft stating a
+   *    domain number it could not have grounded is replaced by an honest nudge; it
+   *    never PROMOTES a draft. Returns `null` to leave the draft untouched.
+   */
+  readonly readAnswer?: {
+    render(turnId: string): string | undefined;
+    clampUngrounded?(
+      text: string,
+      allowedSources?: readonly string[],
+    ): string | null;
+    /**
+     * Adversarial-review fix — govern the GROUNDED (EXECUTE/REWRITE/DEFER) draft:
+     * appends the deterministic render of any read captured this turn (the read
+     * half of a mixed read+act turn must come from the ACTUAL read, never model
+     * memory) and digit-run clamps model-authored domain numbers not grounded in
+     * an allowed source (acted summary / staff message / schedule note / the
+     * appended render). Deterministic + demote-only; absent → grounded branch
+     * byte-identical.
+     */
+    governGrounded?(
+      text: string,
+      turnId: string,
+      allowedSources: readonly string[],
+    ): string;
+  };
 }
 
 /** Best-effort, BOUNDED summary of the dispatch result for model grounding.
@@ -258,6 +349,33 @@ function executedKinds(acted: unknown): ReadonlySet<string> {
   return out;
 }
 
+/**
+ * Whether the runtime ACCEPTED a scheduled-pickup order this turn (F6). True ONLY
+ * when a checkout genuinely COMMITTED (`order.checkout.create` ∈ executedKinds — an
+ * EXECUTE/REWRITE that actually ran, never a REFUSE/DEFER) AND the checkout output
+ * flagged `scheduledPickup === true`. That flag is set ONLY for pickup (no
+ * deliveryCep) placed while closed, so a delivery/immediate order accepted while
+ * closed (the kernel does NOT gate closed-hours) is `accepted === false` and keeps
+ * the SAFE closed-hours degrade — never a false pickup confirmation.
+ *
+ * `awaitingPixPayment` reflects the QR-first-then-confirm PIX flow: a scheduled PIX
+ * pickup EXECUTEs + generates the QR but payment is still pending. (A re-entry while
+ * a PIX is already pending is a kernel DEFER — the checkout does NOT run that turn,
+ * so there is no `acted.result` and `accepted` is correctly false.)
+ */
+function acceptedScheduledPickup(
+  acted: unknown,
+): { accepted: boolean; awaitingPixPayment: boolean } {
+  if (!executedKinds(acted).has("order.checkout.create")) {
+    return { accepted: false, awaitingPixPayment: false };
+  }
+  const result = summarizeActed(acted)?.result as
+    | { scheduledPickup?: unknown; paymentMethod?: unknown }
+    | undefined;
+  const accepted = result?.scheduledPickup === true;
+  return { accepted, awaitingPixPayment: accepted && result?.paymentMethod === "pix" };
+}
+
 // Clause-level mood gates — a success PREDICATE inside a question, a future/
 // conditional clause, or a pending-status clause is NOT a completed assertion.
 const QUESTION = /\?/;
@@ -355,6 +473,49 @@ function withText(draft: DraftResponse, text: string): DraftResponse {
   return { ...draft, text };
 }
 
+// ── F6 (BKL-064): pt-BR-only output guard (Spanish leak) ──────────────────────
+//
+// The 4B occasionally answers in Spanish (a known nemotron failure — the model
+// drifts to the nearest high-resource Romance language). Hard Rule #4: every
+// customer-facing sentence is pt-BR only. The F1/F1b guards above are pt-BR
+// lexicons, so a Spanish draft slips past them unclamped — this closes that gap.
+//
+// DELIBERATELY CONSERVATIVE (false-positive on valid pt-BR is worse than a
+// missed leak): only two triggers, each chosen to never fire on Portuguese —
+//   (1) Spanish inverted punctuation ¿ / ¡ — orthographically impossible in pt-BR;
+//   (2) ≥2 distinct Spanish-EXCLUSIVE tokens — each word below is not a valid
+//       Portuguese word AND does not collapse onto one after diacritic-stripping
+//       (so "muy"≠"muito", "pero"≠"mas", "bien"≠"bem", "gracias"≠"obrigado";
+//       "olá"/"também"/"aqui"/"como" are Portuguese and are intentionally absent).
+// The ñ character (never pt-BR) counts as one token-signal. A single lone token
+// is NOT enough (a proper noun / brand could be a fluke), so the bar is 2.
+//
+// On a hit the draft is clamped to a neutral pt-BR line that asserts NO domain
+// fact (never leaks a Spanish success claim); the original stays forensically
+// visible in the LLMTrace from completeWith().
+export const PT_BR_LANGUAGE_FALLBACK_PTBR =
+  "Desculpe, tive um problema ao gerar a resposta. Pode repetir, por favor?";
+
+const SPANISH_EXCLUSIVE_PUNCT = /[¿¡]/;
+const SPANISH_ONLY_TOKENS: ReadonlyArray<string> = [
+  "gracias", "hola", "usted", "ustedes", "nosotros", "ellos", "ellas",
+  "muy", "ahora", "pero", "bien", "buenos", "buenas", "espanol", "manana",
+];
+
+/** Returns a signal string (for telemetry) when the draft looks like Spanish, else null. */
+export function replyLeaksSpanish(text: string): string | null {
+  if (SPANISH_EXCLUSIVE_PUNCT.test(text)) return "spanish_punct";
+  const hasEnye = /ñ/.test(text.toLowerCase());
+  // Diacritic-strip + lowercase so "español"/"mañana" match despite accents/ñ.
+  const normalized = normalizePtBr(text).replace(/ñ/g, "n");
+  const hits = SPANISH_ONLY_TOKENS.filter((w) =>
+    new RegExp(`(^|[^\\p{L}])${w}([^\\p{L}]|$)`, "u").test(normalized),
+  );
+  const signals = hits.length + (hasEnye ? 1 : 0);
+  if (signals >= 2) return `spanish_tokens:${hits.join(",")}${hasEnye ? ",ñ" : ""}`;
+  return null;
+}
+
 /** Apply the deterministic post-completion guards to a model-produced draft:
  *  substitute the neutral, audit-accurate line if the reply makes a no-authority
  *  claim (F1) or claims a success the runtime did not grant (F1b). Preserves the
@@ -370,7 +531,90 @@ function guardDraft(draft: DraftResponse, acted: unknown): DraftResponse {
       ? { text: GROUNDED_SAFE_FALLBACK_PTBR }
       : { text: GROUNDED_SAFE_FALLBACK_PTBR, usage: draft.usage };
   }
+  // F6 (BKL-064): a Spanish-leaked draft slips past the pt-BR lexicons above —
+  // clamp it to a neutral pt-BR line that asserts no domain fact.
+  if (replyLeaksSpanish(draft.text) !== null) {
+    return draft.usage === undefined
+      ? { text: PT_BR_LANGUAGE_FALLBACK_PTBR }
+      : { text: PT_BR_LANGUAGE_FALLBACK_PTBR, usage: draft.usage };
+  }
   return draft;
+}
+
+/** SIGNAL-6: behavior-preserving observability wrapper over `guardDraft`. When
+ *  the anti-confabulation guard SUBSTITUTES a model draft (the model tried to
+ *  contradict the audited decision or claim an unearned success), emit a warn so
+ *  the clamp — a load-bearing safety event that was previously silent — is
+ *  visible + countable in VictoriaLogs. Returns exactly what `guardDraft` returns. */
+function observedGuardDraft(
+  draft: DraftResponse,
+  acted: unknown,
+  turnId: string | undefined,
+): DraftResponse {
+  const guarded = guardDraft(draft, acted);
+  if (guarded.text !== draft.text) {
+    let guard: string;
+    if (groundedReplyContradicts(draft.text) !== null) {
+      guard = "contradiction";
+    } else if (replyClaimsUnearnedSuccess(draft.text, acted) !== null) {
+      guard = "unearned_success";
+    } else {
+      guard = "spanish_leak";
+    }
+    logger.warn(
+      {
+        component: "responder",
+        event: "success_guard.clamp",
+        turnId,
+        guard,
+      },
+      "success-guard clamped a model draft to the neutral fallback",
+    );
+  }
+  return guarded;
+}
+
+/** Closed-hours delivery guard. Runs the deterministic `closedHoursBackstop`
+ *  (repairs a draft that falsely asserts open / confirms an immediate order), then
+ *  closes a SECOND gap: when the store isClosed and the post-guard text is the
+ *  neutral GROUNDED_SAFE_FALLBACK (because F1/F1b stripped a draft that bundled an
+ *  unearned success claim WITH the closed-disclosure), substitute the canonical
+ *  closedHoursDisclosure(). The fallback is audit-accurate but SILENT on closure —
+ *  this restores the closed/scheduling disclosure the guard dropped. Conservative:
+ *  fires only while closed and only for the neutral fallback (a draft that already
+ *  discloses closed, or any other text, is left untouched). The disclosure asserts
+ *  nothing open, preserving the NEVER-open / never-immediate guarantee. */
+function closedHoursDeliveryGuard(
+  draft: DraftResponse,
+  signal: ScheduleSignal | undefined,
+  scheduled: { accepted: boolean; awaitingPixPayment: boolean } = {
+    accepted: false,
+    awaitingPixPayment: false,
+  },
+): DraftResponse {
+  const repaired = closedHoursBackstop(draft, signal);
+  if (!signal?.isClosed) return repaired;
+
+  // F6: a scheduled-pickup order was ACCEPTED this turn. Neither the backstop's OFFER
+  // disclosure nor the neutral success-guard fallback acknowledges the order went
+  // through — both read as "I can register your order", telling a customer whose
+  // scheduled order WAS placed that it wasn't. Substitute a confirmation, but ONLY
+  // when the draft was ACTUALLY clobbered (repaired by the backstop, or replaced with
+  // the neutral fallback) — a clean scheduled-confirmation draft is left untouched.
+  // `scheduled.accepted` is true ONLY for a proven scheduled PICKUP (never a
+  // delivery/immediate order that also EXECUTEs while closed → those keep the degrade).
+  const clobbered =
+    repaired.text !== draft.text || repaired.text === GROUNDED_SAFE_FALLBACK_PTBR;
+  if (scheduled.accepted && clobbered) {
+    const text = closedHoursScheduledConfirmation(signal, scheduled.awaitingPixPayment);
+    return repaired.usage === undefined ? { text } : { text, usage: repaired.usage };
+  }
+
+  if (repaired.text === GROUNDED_SAFE_FALLBACK_PTBR) {
+    const text = closedHoursDisclosure(signal);
+    return repaired.usage === undefined ? { text } : { text, usage: repaired.usage };
+  }
+  return repaired;
 }
 
 /** When the kernel REWROTE the envelope with a USER-RELEVANT clamp (e.g. quantity
@@ -412,13 +656,20 @@ export function createIbatexasResponder(
   const maxTokens = deps.maxTokens ?? DEFAULT_MAX_TOKENS;
 
   /** Compose the system for a model-call branch; falls back to the static
-   * persona when no composer is wired. Returns the (possibly empty) manifest. */
+   * persona when no composer is wired. Returns the (possibly empty) manifest.
+   * `override` (NEW-032) is an injected per-branch persona that WINS over BOTH
+   * the composer and the fallback — the ops plane supplies its own staff-facing
+   * system. Absent → the pre-NEW-032 path exactly (byte-identical). */
   async function composeSystem(
     surface: string,
     fallback: string,
     cognition: unknown,
     capabilities: ReadonlyArray<string>,
+    override?: string,
   ): Promise<{ system: string; fragmentManifest: ReadonlyArray<string> }> {
+    if (override !== undefined) {
+      return { system: override, fragmentManifest: [] };
+    }
     if (deps.promptComposer === undefined) {
       return { system: fallback, fragmentManifest: [] };
     }
@@ -444,13 +695,28 @@ export function createIbatexasResponder(
     intentHash?: string;
   }): Promise<DraftResponse> {
     const startedAt = Date.now();
-    const completion = await deps.model.complete({
-      model: deps.modelId,
-      maxTokens,
-      system: args.system,
-      messages: [{ role: "user", content: args.userText }],
-    });
+    // F6 (BKL-031): regenerate-on-empty — a single empty 4B completion ghosts
+    // the customer. Retry (bounded, jittered) until non-empty; the last (empty)
+    // completion still returns so the holding-message fallback fires.
+    const { completion, attempts, recovered } = await completeWithEmptyRetry(
+      () =>
+        deps.model.complete({
+          model: deps.modelId,
+          maxTokens,
+          system: args.system,
+          messages: [{ role: "user", content: args.userText }],
+        }),
+      { maxAttempts: EMPTY_COMPLETION_MAX_ATTEMPTS },
+    );
     const durationMs = Date.now() - startedAt;
+    if (attempts > 1) {
+      logger.warn(
+        { component: "responder", event: "empty_completion_retry", turnId: args.turnId, attempts, recovered },
+        recovered
+          ? "responder recovered from an empty completion after retry"
+          : "responder exhausted empty-completion retries — holding fallback applies",
+      );
+    }
 
     if (deps.promptComposer !== undefined && deps.telemetry !== undefined) {
       await emitModelCallTrace({
@@ -479,6 +745,43 @@ export function createIbatexasResponder(
     };
   }
 
+  /** BKL-100 — demote-only ungrounded-fact clamp for the conversational fallback.
+   *  Runs only when the ops-plane `readAnswer.clampUngrounded` dep is present AND
+   *  the draft states a domain number it could not have grounded (no read was
+   *  captured this turn — else `render` short-circuited before any model call). It
+   *  REPLACES the draft with the honest nudge (preserving usage for cost
+   *  accounting); it never promotes. Absent dep → the draft is returned unchanged
+   *  (customer / WhatsApp planes are byte-identical). */
+  function clampUngroundedConversational(
+    draft: DraftResponse,
+    allowedSources: readonly string[],
+  ): DraftResponse {
+    const clamp = deps.readAnswer?.clampUngrounded;
+    if (clamp === undefined) return draft;
+    const nudge = clamp(draft.text, allowedSources);
+    if (nudge === null) return draft;
+    return draft.usage === undefined
+      ? { text: nudge }
+      : { text: nudge, usage: draft.usage };
+  }
+
+  /** Adversarial-review fix — apply `readAnswer.governGrounded` (ops plane only)
+   *  to a grounded draft; absent dep → the draft is returned unchanged (customer /
+   *  WhatsApp planes byte-identical). */
+  function governGroundedDraft(
+    draft: DraftResponse,
+    turnId: string,
+    allowedSources: readonly string[],
+  ): DraftResponse {
+    const govern = deps.readAnswer?.governGrounded;
+    if (govern === undefined) return draft;
+    const governed = govern(draft.text, turnId, allowedSources);
+    if (governed === draft.text) return draft;
+    return draft.usage === undefined
+      ? { text: governed }
+      : { text: governed, usage: draft.usage };
+  }
+
   return {
     async respond(input): Promise<DraftResponse> {
       const decision = input.decision as Decision;
@@ -489,20 +792,54 @@ export function createIbatexasResponder(
         | undefined;
       const intentHash = firstEnvelope?.intentHash;
 
+      // fix B (Stage 1): resolve the structured closed-hours signal ONCE for the
+      // turn. `closedNote` is the soft layer (injected into every model-call
+      // branch's system prompt); `closedHoursBackstop(_, scheduleSignal)` is the
+      // deterministic hard layer wrapped around every model-authored draft.
+      const scheduleSignal = deps.resolveScheduleSignal
+        ? ((await deps.resolveScheduleSignal()) ?? undefined)
+        : undefined;
+      const closedNote = closedHoursPromptNote(scheduleSignal);
+      // F6: did the runtime accept a scheduled-pickup order this turn? Drives the
+      // closed-hours delivery guard's confirmation-vs-offer branch. Empty on the
+      // REFUSE/DEFER/no-checkout paths (executedKinds is empty there).
+      const scheduled = acceptedScheduledPickup(input.acted);
+
       switch (decision.kind) {
         case "REFUSE": {
           // A REFUSE on an EMPTY plan is the "nothing to authorize" sentinel
           // (small-talk / informational turn) — reply conversationally.
           if (input.plan.envelopes.length === 0) {
-            const { system, fragmentManifest } = await composeSystem(
+            // BKL-100: on the ops plane, a staff read captured this turn renders
+            // the answer DETERMINISTICALLY from the actual read result — no model
+            // call, so a read answer can never be an authored number. Absent dep
+            // (customer / WhatsApp) or no read captured → undefined → the normal
+            // conversational completion below.
+            const rendered = deps.readAnswer?.render(turnId);
+            if (rendered !== undefined) {
+              return { text: rendered };
+            }
+            const { system: base, fragmentManifest } = await composeSystem(
               RESPONDER_CONVERSATIONAL_SURFACE,
               RESPONDER_PERSONA_PTBR,
               input.cognition,
               [],
+              deps.personas?.conversational,
             );
-            return guardDraft(
-              await completeWith({ system, fragmentManifest, userText, turnId }),
-              input.acted,
+            const system = base + closedNote;
+            return clampUngroundedConversational(
+              closedHoursDeliveryGuard(
+                observedGuardDraft(
+                  await completeWith({ system, fragmentManifest, userText, turnId }),
+                  input.acted,
+                  turnId,
+                ),
+                scheduleSignal,
+                scheduled,
+              ),
+              // Numbers the model legitimately saw: the staff's own message + the
+              // schedule note (echoing them back must not nudge).
+              [userText, closedNote],
             );
           }
           // A real action refusal: render the pt-BR refusal VERBATIM (model-free,
@@ -515,7 +852,7 @@ export function createIbatexasResponder(
           return { text: decision.prompt };
 
         case "ESCALATE":
-          return { text: RESPONDER_ESCALATE_PTBR };
+          return { text: deps.personas?.escalate ?? RESPONDER_ESCALATE_PTBR };
 
         case "EXECUTE":
         case "REWRITE":
@@ -530,6 +867,7 @@ export function createIbatexasResponder(
             RESPONDER_GROUNDED_PERSONA_PTBR,
             input.cognition,
             capabilities,
+            deps.personas?.grounded,
           );
           const context = {
             decision: decision.kind,
@@ -539,7 +877,8 @@ export function createIbatexasResponder(
           const system =
             `${baseSystem}\n\n` +
             `CONTEXTO DA DECISÃO (fonte da verdade, não inventar):\n` +
-            JSON.stringify(context);
+            JSON.stringify(context) +
+            closedNote;
           const draft = await completeWith({
             system,
             fragmentManifest,
@@ -552,7 +891,23 @@ export function createIbatexasResponder(
           // decision (no-authority claim) OR claims a success the runtime did not
           // grant (confabulation) reach the customer. Then surface any user-relevant
           // REWRITE clamp deterministically (the model can't be trusted to).
-          return surfaceRewriteClamp(guardDraft(draft, input.acted), decision);
+          // BKL-100 (adversarial-review fix): on the ops plane, governGroundedDraft
+          // then appends the deterministic render of any read captured this turn
+          // (the read half of a mixed read+act turn) and digit-run clamps model
+          // numbers not grounded in the acted summary / staff message / schedule
+          // note. Dep absent (customer / WhatsApp) → byte-identical.
+          return governGroundedDraft(
+            closedHoursDeliveryGuard(
+              surfaceRewriteClamp(observedGuardDraft(draft, input.acted, turnId), decision),
+              scheduleSignal,
+              scheduled,
+            ),
+            turnId,
+            // The acted summary is what the model was PROMPTED with (the grounded
+            // source of truth) — serialize it the same way the prompt does so its
+            // digit runs (e.g. a real refund amount) are allowed verbatim.
+            [userText, JSON.stringify(context), closedNote],
+          );
         }
 
         default: {
@@ -560,15 +915,25 @@ export function createIbatexasResponder(
           // `satisfies never` keeps the compile-time check (adding a kind without a
           // case errors) without the runtime fall-through changing.
           decision satisfies never;
-          const { system, fragmentManifest } = await composeSystem(
+          const { system: base, fragmentManifest } = await composeSystem(
             RESPONDER_CONVERSATIONAL_SURFACE,
             RESPONDER_PERSONA_PTBR,
             input.cognition,
             [],
+            deps.personas?.conversational,
           );
-          return guardDraft(
-            await completeWith({ system, fragmentManifest, userText, turnId }),
-            input.acted,
+          const system = base + closedNote;
+          return clampUngroundedConversational(
+            closedHoursDeliveryGuard(
+              observedGuardDraft(
+                await completeWith({ system, fragmentManifest, userText, turnId }),
+                input.acted,
+                turnId,
+              ),
+              scheduleSignal,
+              scheduled,
+            ),
+            [userText, closedNote],
           );
         }
       }

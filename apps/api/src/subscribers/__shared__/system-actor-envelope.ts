@@ -73,6 +73,14 @@ export interface BuildSystemEnvelopeArgs<K extends string, P> {
  *   - `taint = "SYSTEM"`
  *   - `nonce = eventId`
  *
+ * **Role-free by contract (WS7 / BKL-069).** System envelopes carry NO
+ * `actor.role`: a subscriber/job/webhook mutation has no authenticated staff
+ * behind it, so there is no adopter role to thread. The `role` axis
+ * (`@adjudicate/core` 1.9.0 `IntentActor.role`) is a STAFF-plane seam only —
+ * omitting it here keeps every system envelope canonical-drop-safe (its
+ * `intentHash` is byte-identical to a pre-BKL-069 system envelope) and makes
+ * "no role ⇒ not staff-authorized" an unambiguous audit signal.
+ *
  * @example
  *   // Subscriber: payment-lifecycle auto-confirm
  *   const envelope = buildSystemEnvelope({

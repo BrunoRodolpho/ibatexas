@@ -29,6 +29,13 @@ async function proxyRequest(request: NextRequest, params: { path: string[] }): P
     headers.set("content-type", contentType);
   }
 
+  // Forward Idempotency-Key — refund step 1 (and other idempotent POSTs)
+  // require it; the fresh Headers() above would otherwise strip it.
+  const idempotencyKey = request.headers.get("idempotency-key");
+  if (idempotencyKey) {
+    headers.set("idempotency-key", idempotencyKey);
+  }
+
   // Forward cookies for staff JWT auth
   const cookie = request.headers.get("cookie");
   if (cookie) {

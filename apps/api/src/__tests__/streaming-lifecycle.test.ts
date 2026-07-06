@@ -2,6 +2,7 @@
 // Tests the flow: createStream → pushChunk → getStream → replay buffer → cleanupStream
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
+import { mintRenderedReply } from "@adjudicate/core"
 import type { StreamChunk } from "@ibatexas/types"
 import {
   createStream,
@@ -33,13 +34,13 @@ describe("Streaming emitter lifecycle integration", () => {
     expect(getStream(SESSION)).toBeDefined()
 
     // 3. Push chunks → buffer grows
-    pushChunk(SESSION, { type: "text_delta", delta: "Olá" })
-    pushChunk(SESSION, { type: "text_delta", delta: " mundo!" })
+    pushChunk(SESSION, { type: "text_delta", delta: mintRenderedReply("Olá") })
+    pushChunk(SESSION, { type: "text_delta", delta: mintRenderedReply(" mundo!") })
     pushChunk(SESSION, { type: "done" })
 
     const entry = getStream(SESSION)!
     expect(entry.buffer).toHaveLength(3)
-    expect(entry.buffer[0]).toEqual({ type: "text_delta", delta: "Olá" })
+    expect(entry.buffer[0]).toEqual({ type: "text_delta", delta: mintRenderedReply("Olá") })
     expect(entry.buffer[2]).toEqual({ type: "done" })
 
     // 4. Late subscriber replays buffer
@@ -72,7 +73,7 @@ describe("Streaming emitter lifecycle integration", () => {
 
     pushChunk(SID, { type: "tool_start", toolName: "search_products", toolUseId: "tu_1" })
     pushChunk(SID, { type: "tool_result", toolName: "search_products", toolUseId: "tu_1", success: true })
-    pushChunk(SID, { type: "text_delta", delta: "Encontrei 3 produtos." })
+    pushChunk(SID, { type: "text_delta", delta: mintRenderedReply("Encontrei 3 produtos.") })
     pushChunk(SID, { type: "done" })
 
     expect(received).toHaveLength(4)
@@ -88,7 +89,7 @@ describe("Streaming emitter lifecycle integration", () => {
 
   it("pushChunk is a no-op for non-existent streams", () => {
     // Should not throw
-    pushChunk("no-such-session", { type: "text_delta", delta: "ignored" })
+    pushChunk("no-such-session", { type: "text_delta", delta: mintRenderedReply("ignored") })
     expect(getStream("no-such-session")).toBeUndefined()
   })
 })

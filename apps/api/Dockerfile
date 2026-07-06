@@ -54,13 +54,23 @@ COPY packages/ packages/
 # Install production dependencies only
 RUN pnpm install --frozen-lockfile --prod
 
-# Copy built artifacts from build stage
+# Copy built artifacts from build stage — every workspace dep of @ibatexas/api
+# (transitive) must have its dist here or the api crashes at import time.
 COPY --from=build /app/apps/api/dist apps/api/dist
+COPY --from=build /app/packages/agents/dist packages/agents/dist
+COPY --from=build /app/packages/audit-sink/dist packages/audit-sink/dist
 COPY --from=build /app/packages/domain/dist packages/domain/dist
+COPY --from=build /app/packages/intent-kinds/dist packages/intent-kinds/dist
+COPY --from=build /app/packages/nats-client/dist packages/nats-client/dist
+COPY --from=build /app/packages/pack-customer-onboarding/dist packages/pack-customer-onboarding/dist
+COPY --from=build /app/packages/pack-orders/dist packages/pack-orders/dist
+COPY --from=build /app/packages/pack-payments/dist packages/pack-payments/dist
+COPY --from=build /app/packages/pack-reservations/dist packages/pack-reservations/dist
+COPY --from=build /app/packages/pack-whatsapp/dist packages/pack-whatsapp/dist
+COPY --from=build /app/packages/packs-composed/dist packages/packs-composed/dist
+COPY --from=build /app/packages/pii/dist packages/pii/dist
 COPY --from=build /app/packages/tools/dist packages/tools/dist
 COPY --from=build /app/packages/types/dist packages/types/dist
-COPY --from=build /app/packages/nats-client/dist packages/nats-client/dist
-COPY --from=build /app/packages/llm-provider/dist packages/llm-provider/dist
 
 # Prisma 7: generated client is compiled by tsc into dist/ (no more engine binaries).
 # The src/generated copy is no longer needed — dist/ has the compiled JS.

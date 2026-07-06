@@ -22,6 +22,9 @@ const mockSearchConversations = vi.hoisted(() => vi.fn());
 const mockAppendMessage = vi.hoisted(() => vi.fn());
 const mockListOpen = vi.hoisted(() => vi.fn());
 const mockResolve = vi.hoisted(() => vi.fn());
+// AUT-017 — the escalation-approval gateway (getEscalationApprovalGateway) is
+// mocked so the resolve-route authz matrix drives its outcome directly.
+const mockGatewayResolve = vi.hoisted(() => vi.fn());
 
 vi.mock("@ibatexas/domain", () => ({
   createConversationService: () => ({
@@ -43,12 +46,17 @@ vi.mock("../../../escalation/escalation-store.js", () => ({
   })),
 }));
 
+vi.mock("../../../claustrum-bootstrap.js", () => ({
+  getEscalationApprovalGateway: () => ({ resolve: mockGatewayResolve }),
+}));
+
 interface StaffContext {
   readonly staffId: string | null;
   readonly staffRole: "OWNER" | "MANAGER" | "ATTENDANT" | null;
   readonly adminApiKeyRole?: "OWNER" | "MANAGER";
 }
 
+const OWNER: StaffContext = { staffId: "staff_owner_01", staffRole: "OWNER" };
 const MANAGER: StaffContext = { staffId: "staff_mgr_01", staffRole: "MANAGER" };
 const ATTENDANT: StaffContext = { staffId: "staff_att_01", staffRole: "ATTENDANT" };
 const API_KEY_NO_ROLE: StaffContext = { staffId: null, staffRole: null };
@@ -56,6 +64,11 @@ const API_KEY_MANAGER: StaffContext = {
   staffId: null,
   staffRole: null,
   adminApiKeyRole: "MANAGER",
+};
+const API_KEY_OWNER: StaffContext = {
+  staffId: null,
+  staffRole: null,
+  adminApiKeyRole: "OWNER",
 };
 
 async function buildServer(staff: StaffContext): Promise<FastifyInstance> {
@@ -193,6 +206,149 @@ describe("F2: GET /api/admin/escalations queue is manager-gated", () => {
       });
       expect(res.statusCode).toBe(200);
       expect(mockListOpen).toHaveBeenCalledTimes(1);
+    } finally {
+      await server.close();
+    }
+  });
+});
+
+// AUT-017 — the OWNER-gated approve/reject route + its outcome mapping.
+describe("AUT-017: POST /api/admin/escalations/:sessionId/intents/:token/resolve is OWNER-gated", () => {
+  const url = "/api/admin/escalations/sess_1/intents/tok_1/resolve";
+
+  it("lets an OWNER through → 200 approved (gateway EXECUTE)", async () => {
+    mockGatewayResolve.mockResolvedValue({
+      status: "approved",
+      decision: { kind: "EXECUTE" },
+    });
+    const server = await buildServer(OWNER);
+    try {
+      const res = await server.inject({ method: "POST", url, payload: { accept: true } });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject({
+        ok: true,
+        status: "approved",
+        decision: { kind: "EXECUTE" },
+      });
+      expect(mockGatewayResolve).toHaveBeenCalledTimes(1);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("FIX 1 — rejects a registry-mapped OWNER api-key WITHOUT a JWT with 403 (two-person control needs a real person; NEVER calls the gateway)", async () => {
+    const server = await buildServer(API_KEY_OWNER);
+    try {
+      const res = await server.inject({ method: "POST", url, payload: { accept: true } });
+      expect(res.statusCode).toBe(403);
+      expect((res.json() as { error: string }).error).toContain("JWT");
+      // The self-approve gates would collapse against a constant "admin-key" id —
+      // so the handler MUST refuse before ever reaching the gateway.
+      expect(mockGatewayResolve).not.toHaveBeenCalled();
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("rejects a MANAGER with 403 and NEVER calls the gateway", async () => {
+    const server = await buildServer(MANAGER);
+    try {
+      const res = await server.inject({ method: "POST", url, payload: { accept: true } });
+      expect(res.statusCode).toBe(403);
+      expect(mockGatewayResolve).not.toHaveBeenCalled();
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("rejects an ATTENDANT with 403 and NEVER calls the gateway", async () => {
+    const server = await buildServer(ATTENDANT);
+    try {
+      const res = await server.inject({ method: "POST", url, payload: { accept: true } });
+      expect(res.statusCode).toBe(403);
+      expect(mockGatewayResolve).not.toHaveBeenCalled();
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("rejects a registry-mapped MANAGER api-key with 403 (OWNER required, not MANAGER)", async () => {
+    const server = await buildServer(API_KEY_MANAGER);
+    try {
+      const res = await server.inject({ method: "POST", url, payload: { accept: true } });
+      expect(res.statusCode).toBe(403);
+      expect(mockGatewayResolve).not.toHaveBeenCalled();
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("rejects a bare/unmapped x-admin-key with 403 (fail-closed)", async () => {
+    const server = await buildServer(API_KEY_NO_ROLE);
+    try {
+      const res = await server.inject({ method: "POST", url, payload: { accept: true } });
+      expect(res.statusCode).toBe(403);
+      expect(mockGatewayResolve).not.toHaveBeenCalled();
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("maps a self-approval outcome to 409", async () => {
+    mockGatewayResolve.mockResolvedValue({ status: "self_approve" });
+    const server = await buildServer(OWNER);
+    try {
+      const res = await server.inject({ method: "POST", url, payload: { accept: true } });
+      expect(res.statusCode).toBe(409);
+      expect((res.json() as { error: string }).error).toContain("autor da solicitação");
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("maps a replayed/expired token (missing) to 404", async () => {
+    mockGatewayResolve.mockResolvedValue({ status: "missing" });
+    const server = await buildServer(OWNER);
+    try {
+      const res = await server.inject({ method: "POST", url, payload: { accept: true } });
+      expect(res.statusCode).toBe(404);
+      expect((res.json() as { error: string }).error).toContain("expirada ou já utilizada");
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("maps an executor failure after audited EXECUTE to 502 (honest, no fabricated success)", async () => {
+    mockGatewayResolve.mockResolvedValue({
+      status: "execute_failed",
+      decision: { kind: "EXECUTE" },
+      refusalPtBr: "A aprovação foi autorizada, mas a execução falhou. Tente novamente.",
+    });
+    const server = await buildServer(OWNER);
+    try {
+      const res = await server.inject({ method: "POST", url, payload: { accept: true } });
+      expect(res.statusCode).toBe(502);
+      expect(res.json()).toMatchObject({ ok: false, status: "execute_failed" });
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("maps a since-parked terminal/partial state (denied_by_kernel) to 200 with refusalPtBr", async () => {
+    mockGatewayResolve.mockResolvedValue({
+      status: "denied_by_kernel",
+      decision: { kind: "REFUSE" },
+      refusalPtBr: "Não foi possível concluir esta ação.",
+    });
+    const server = await buildServer(OWNER);
+    try {
+      const res = await server.inject({ method: "POST", url, payload: { accept: true } });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject({
+        ok: true,
+        status: "denied_by_kernel",
+        decision: { kind: "REFUSE" },
+      });
     } finally {
       await server.close();
     }

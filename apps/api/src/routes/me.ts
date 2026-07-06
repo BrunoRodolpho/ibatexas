@@ -46,7 +46,8 @@ import { createHash } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
-import { getRedisClient, rk, withLock } from "@ibatexas/tools";
+import { getRedisClient, rk, withLock, submitReview, PROFILE_TTL_SECONDS } from "@ibatexas/tools";
+import { Channel } from "@ibatexas/types";
 // WS5: park guard now lives in apps/api (the `park-deferred-intent-nx` seam
 // re-exports `apps/api/src/adapters/park-nx.ts`). me.ts's DEFER call sites
 // (LGPD-grace / PIX-pending parks) and the quota-metric hook must share the
@@ -57,6 +58,8 @@ import {
 } from "../adapters/park-deferred-intent-nx.js";
 import {
   createCustomerService,
+  createOrderQueryService,
+  createLoyaltyService,
   exportCustomerData,
   anonymizeCustomer,
   anonymizeCustomerFromEnvelope,
@@ -64,7 +67,12 @@ import {
 import {
   customerOnboardingPolicyBundle,
   portugueseRefusalMessages,
+  CUSTOMER_PROFILE_RATE_LIMIT_HOURS,
   type CustomerAnonymizePayload,
+  type CustomerPreferencesUpdatePayload,
+  type CustomerProfileUpdatePayload,
+  type CustomerAddressAddPayload,
+  type CustomerAddressRemovePayload,
   type CustomerAnonymizeCancelPayload,
   type CustomerOnboardingState,
 } from "@ibatexas/pack-customer-onboarding";
@@ -229,6 +237,516 @@ export async function meRoutes(server: FastifyInstance): Promise<void> {
         });
       }
       return reply.send(data);
+    },
+  );
+
+  // ── GET /api/me/loyalty ────────────────────────────────────────────────────
+  //
+  // CUS-067 (web view) — the authenticated customer's punch-card stamp balance.
+  // Read-only; scoped to request.customerId (set by requireAuth). Mirrors the
+  // WhatsApp loyalty shortcut so the web account page can render the same balance.
+  app.get(
+    "/api/me/loyalty",
+    {
+      schema: {
+        tags: ["me"],
+        summary: "Saldo de fidelidade (selos)",
+        response: {
+          200: z.object({
+            stamps: z.number(),
+            stampsNeeded: z.number(),
+            totalEarned: z.number(),
+          }),
+        },
+      },
+      preHandler: requireAuth,
+    },
+    async (request, reply) => {
+      const customerId = request.customerId!;
+      const balance = await createLoyaltyService().getBalance(customerId);
+      return reply.send({
+        stamps: balance.stamps,
+        stampsNeeded: balance.stampsNeeded,
+        totalEarned: balance.totalEarned,
+      });
+    },
+  );
+
+  // ── POST /api/me/preferences ───────────────────────────────────────────────
+  //
+  // CUS-062 (web surface) — the authenticated customer sets dietary flags +
+  // allergen exclusions. Routed through the conductor's customer-intent gateway:
+  // a `customer.preferences.update` envelope is adjudicated against the
+  // customer-onboarding pack (allergen-explicit-array guard, rate limit, audit),
+  // then the bare service executor persists it. Mirrors the LLM `update_prefs`
+  // path; same governed kind, HTTP entry point. Auth-gated by requireAuth.
+  const PreferencesUpdateResponse = z.object({ success: z.boolean() });
+
+  app.post(
+    "/api/me/preferences",
+    {
+      schema: {
+        tags: ["me"],
+        summary: "Atualizar preferências (restrições alimentares / alérgenos)",
+        body: z.object({
+          allergenExclusions: z.array(z.string()).default([]),
+          dietaryFlags: z.array(z.string()).optional(),
+          favoriteCategories: z.array(z.string()).optional(),
+        }),
+        response: { 200: PreferencesUpdateResponse },
+      },
+      preHandler: requireAuth,
+    },
+    async (request, reply) => {
+      const customerId = request.customerId!;
+      const body = request.body;
+      const idempotencyKey = resolveMeIdempotencyKey(
+        request.headers["idempotency-key"],
+        `${customerId}:preferences:update:${epochHour()}`,
+      );
+      const payload: CustomerPreferencesUpdatePayload = {
+        allergenExclusions: body.allergenExclusions,
+        ...(body.dietaryFlags ? { dietaryFlags: body.dietaryFlags } : {}),
+        ...(body.favoriteCategories ? { favoriteCategories: body.favoriteCategories } : {}),
+      };
+      const envelope = buildCustomerEnvelope<
+        "customer.preferences.update",
+        CustomerPreferencesUpdatePayload
+      >({
+        kind: "customer.preferences.update",
+        payload,
+        nonce: deriveMeNonce(idempotencyKey),
+        customerId,
+      });
+      const state = {
+        ctx: {
+          ...identityCtx(customerId, "web"),
+          customerExists: true,
+          isAuthenticated: true,
+          now: new Date(),
+        },
+      } as unknown as CustomerOnboardingState;
+
+      // Review B5: captured from the executor so the post-EXECUTE cache
+      // refresh serializes the SAME persisted shape the update_preferences
+      // tool writes (packages/tools/src/intelligence/update-preferences.ts).
+      let persistedPrefs: unknown = null;
+      const out = await runCustomerIntent({
+        envelope,
+        state,
+        policy: customerOnboardingPolicyBundle as unknown as Parameters<typeof runCustomerIntent>[0]["policy"],
+        executor: async () => {
+          // EXECUTE: persist via the bare service method (the sanctioned executor
+          // for the envelope wrapper). Adjudication already ran in runCustomerIntent.
+          persistedPrefs = await createCustomerService().updatePreferences(customerId, {
+            allergenExclusions: [...body.allergenExclusions],
+            ...(body.dietaryFlags ? { dietaryRestrictions: [...body.dietaryFlags] } : {}),
+            ...(body.favoriteCategories ? { favoriteCategories: [...body.favoriteCategories] } : {}),
+          });
+          return { success: true };
+        },
+        ctx: {
+          customerId,
+          route: "me.preferences.update",
+          log: request.log,
+        },
+        auditSink: getAuditSink(),
+        refusalMessages: portugueseRefusalMessages,
+      });
+
+      if (out.statusCode === 200) {
+        // Review B5: refresh the Redis personalization profile hash — same
+        // key + field + serialized shape as the update_preferences tool —
+        // so the agent plane stops serving stale preferences after a web
+        // save. Best-effort: the mutation already persisted; a cache
+        // refresh failure must not fail the request (TTL bounds staleness).
+        if (persistedPrefs !== null) {
+          try {
+            const redis = await getRedisClient();
+            const profileKey = rk(`customer:profile:${customerId}`);
+            await redis.hSet(profileKey, "preferences", JSON.stringify(persistedPrefs));
+            await redis.expire(profileKey, PROFILE_TTL_SECONDS);
+          } catch (err) {
+            request.log.warn(
+              { err },
+              "[me.preferences] falha ao atualizar o cache de perfil no Redis (não-fatal)",
+            );
+          }
+        }
+        return reply.code(200).send({ success: true });
+      }
+      void (reply as unknown as { status(code: number): typeof reply })
+        .status(out.statusCode)
+        .send(out.body as never);
+      return reply;
+    },
+  );
+
+  // ── POST /api/me/reviews ───────────────────────────────────────────────────
+  //
+  // CUS-049 (web surface) — the authenticated customer submits a product review
+  // for a delivered order. The write itself is governed: `submitReview` builds
+  // an `order.review.submit` IntentEnvelope adjudicated against the orders Pack
+  // (rating-range 1–5, orderId presence, audit) before any Prisma write, and
+  // scopes the row to the authenticated customerId (never the payload).
+  //
+  // Route-level ownership gate (defense in depth, closes IDOR): before we touch
+  // the governed path we owner-scope the order via `getById(orderId, {customerId})`
+  // — a non-owner or NULL-owner projection resolves to null (SDD §N P0-3, Inv 2),
+  // so a customer can only review an order that is theirs. We also require the
+  // order be DELIVERED and the product to appear in it, matching the "após a
+  // entrega" contract of the review tool.
+  const ReviewSubmitResponse = z.object({ success: z.boolean(), message: z.string() });
+
+  app.post(
+    "/api/me/reviews",
+    {
+      schema: {
+        tags: ["me"],
+        summary: "Enviar avaliação de um produto de um pedido entregue",
+        body: z.object({
+          orderId: z.string().min(1),
+          productId: z.string().min(1),
+          rating: z.number().int().min(1).max(5),
+          comment: z.string().max(1000).optional(),
+        }),
+        response: {
+          200: ReviewSubmitResponse,
+          403: z.object({ statusCode: z.number(), error: z.string(), message: z.string() }),
+          422: z.object({ error: z.string() }),
+          500: z.object({ error: z.string() }),
+        },
+      },
+      preHandler: requireAuth,
+    },
+    async (request, reply) => {
+      const customerId = request.customerId!;
+      const { orderId, productId, rating, comment } = request.body;
+
+      const refuse403 = (message: string) =>
+        reply.code(403).send({ statusCode: 403, error: "Forbidden", message });
+
+      // Owner-scoped read: null for a non-owner / unattributed order (Inv 2).
+      const order = await createOrderQueryService().getById(orderId, { customerId });
+      if (!order) {
+        return refuse403("Pedido não encontrado para esta conta.");
+      }
+      if (order.fulfillmentStatus !== "delivered") {
+        return refuse403("Só é possível avaliar um pedido após a entrega.");
+      }
+      const items = Array.isArray(order.itemsJson) ? order.itemsJson : [];
+      const productInOrder = items.some(
+        (it) => (it as { productId?: string } | null)?.productId === productId,
+      );
+      if (!productInOrder) {
+        return refuse403("Este produto não faz parte do pedido informado.");
+      }
+
+      // Governed write: submitReview adjudicates via the orders Pack and scopes
+      // the review row to this customerId. Re-asserts rating-range + orderId.
+      // A kernel REFUSE surfaces as NonRetryableError → 422 (repo idiom).
+      try {
+        const result = await submitReview(
+          { productId, orderId, rating, ...(comment === undefined ? {} : { comment }) },
+          {
+            channel: Channel.Web,
+            sessionId: request.id,
+            customerId,
+            userType: "customer",
+          },
+        );
+        return reply.code(200).send(result);
+      } catch (err) {
+        if (err instanceof Error && err.name === "NonRetryableError") {
+          return reply.code(422).send({ error: err.message });
+        }
+        request.log.error(err, "submitReview falhou");
+        return reply.code(500).send({ error: "Erro ao enviar avaliação." });
+      }
+    },
+  );
+
+  // ── POST /api/me/profile ────────────────────────────────────────────────────
+  //
+  // CUS-061 (web surface) — the authenticated customer edits their name / email.
+  // Routed through the customer-intent gateway: a `customer.profile.update`
+  // envelope is adjudicated against the customer-onboarding Pack (auth guard,
+  // PII/card-PAN scan on name+email, 1h rate-limit) before the bare service
+  // executor persists it. The rate-limit guard reads `state.ctx.lastProfileUpdateAt`
+  // — we keep it LIVE (not inert) via a per-customer Redis marker read before and
+  // refreshed after a successful EXECUTE.
+  const ProfileUpdateResponse = z.object({ success: z.boolean() });
+  const profileLastUpdateKey = (customerId: string) =>
+    rk(`customer:profile:last-update:${customerId}`);
+
+  app.post(
+    "/api/me/profile",
+    {
+      schema: {
+        tags: ["me"],
+        summary: "Editar perfil (nome / e-mail)",
+        body: z
+          .object({
+            name: z.string().trim().min(1).max(120).optional(),
+            email: z.string().trim().email().max(254).optional(),
+          })
+          .refine((b) => b.name !== undefined || b.email !== undefined, {
+            message: "Informe nome ou e-mail.",
+          }),
+        response: {
+          200: ProfileUpdateResponse,
+        },
+      },
+      preHandler: requireAuth,
+    },
+    async (request, reply) => {
+      const customerId = request.customerId!;
+      const body = request.body;
+      const idempotencyKey = resolveMeIdempotencyKey(
+        request.headers["idempotency-key"],
+        `${customerId}:profile:update:${epochHour()}`,
+      );
+
+      // Keep the rate-limit guard live: project the last-update epoch from Redis.
+      const redis = await getRedisClient();
+      const lastRaw = await redis.get(profileLastUpdateKey(customerId));
+      const lastProfileUpdateAt = lastRaw ? Number(lastRaw) : null;
+
+      const payload: CustomerProfileUpdatePayload = {
+        ...(body.name === undefined ? {} : { name: body.name }),
+        ...(body.email === undefined ? {} : { email: body.email }),
+      };
+      const envelope = buildCustomerEnvelope<
+        "customer.profile.update",
+        CustomerProfileUpdatePayload
+      >({
+        kind: "customer.profile.update",
+        payload,
+        nonce: deriveMeNonce(idempotencyKey),
+        customerId,
+      });
+      const state = {
+        ctx: {
+          ...identityCtx(customerId, "web"),
+          customerExists: true,
+          isAuthenticated: true,
+          now: new Date(),
+          lastProfileUpdateAt,
+        },
+      } as unknown as CustomerOnboardingState;
+
+      const out = await runCustomerIntent({
+        envelope,
+        state,
+        policy: customerOnboardingPolicyBundle as unknown as Parameters<typeof runCustomerIntent>[0]["policy"],
+        executor: async () => {
+          await createCustomerService().updateProfile(customerId, {
+            ...(body.name === undefined ? {} : { name: body.name }),
+            ...(body.email === undefined ? {} : { email: body.email }),
+          });
+          // Refresh the rate-limit marker; TTL covers the cooldown window + margin.
+          await redis.set(profileLastUpdateKey(customerId), String(Date.now()), {
+            EX: Math.ceil(CUSTOMER_PROFILE_RATE_LIMIT_HOURS * 3600) + 300,
+          });
+          return { success: true };
+        },
+        ctx: {
+          customerId,
+          route: "me.profile.update",
+          log: request.log,
+        },
+        auditSink: getAuditSink(),
+        refusalMessages: portugueseRefusalMessages,
+      });
+
+      if (out.statusCode === 200) {
+        return reply.code(200).send({ success: true });
+      }
+      void (reply as unknown as { status(code: number): typeof reply })
+        .status(out.statusCode)
+        .send(out.body as never);
+      return reply;
+    },
+  );
+
+  // ── Saved addresses (CUS-063) ───────────────────────────────────────────────
+  //
+  // Address book over the existing Prisma `Address` model + the customer-
+  // onboarding Pack's `customer.address.add` / `customer.address.remove` intents
+  // (auth-gated). Writes are governed via runCustomerIntent; removal is
+  // ownership-scoped in the executor (WHERE id AND customerId — IDOR-safe).
+  const AddressSchema = z.object({
+    id: z.string(),
+    street: z.string(),
+    number: z.string(),
+    complement: z.string().nullable(),
+    district: z.string(),
+    city: z.string(),
+    state: z.string(),
+    cep: z.string(),
+    isDefault: z.boolean(),
+  });
+  const buildCustomerAuthState = (customerId: string) =>
+    ({
+      ctx: {
+        ...identityCtx(customerId, "web"),
+        customerExists: true,
+        isAuthenticated: true,
+        now: new Date(),
+      },
+    }) as unknown as CustomerOnboardingState;
+
+  app.get(
+    "/api/me/addresses",
+    {
+      schema: {
+        tags: ["me"],
+        summary: "Listar endereços salvos",
+        response: { 200: z.object({ addresses: z.array(AddressSchema) }) },
+      },
+      preHandler: requireAuth,
+    },
+    async (request, reply) => {
+      const customerId = request.customerId!;
+      const addresses = await createCustomerService().listAddresses(customerId);
+      return reply.send({ addresses });
+    },
+  );
+
+  app.post(
+    "/api/me/addresses",
+    {
+      schema: {
+        tags: ["me"],
+        summary: "Adicionar endereço",
+        body: z.object({
+          street: z.string().trim().min(1).max(200),
+          number: z.string().trim().max(20).optional(),
+          complement: z.string().trim().max(100).optional(),
+          neighborhood: z.string().trim().max(120).optional(),
+          city: z.string().trim().min(1).max(120),
+          state: z.string().trim().length(2),
+          zip: z.string().trim().regex(/^\d{5}-?\d{3}$/, "CEP inválido"),
+          isDefault: z.boolean().optional(),
+        }),
+        response: { 200: z.object({ address: AddressSchema }) },
+      },
+      preHandler: requireAuth,
+    },
+    async (request, reply) => {
+      const customerId = request.customerId!;
+      const b = request.body;
+      const idempotencyKey = resolveMeIdempotencyKey(
+        request.headers["idempotency-key"],
+        `${customerId}:address:add:${epochHour()}`,
+      );
+      const payload: CustomerAddressAddPayload = {
+        address: {
+          street: b.street,
+          city: b.city,
+          state: b.state,
+          zip: b.zip,
+          ...(b.number === undefined ? {} : { number: b.number }),
+          ...(b.complement === undefined ? {} : { complement: b.complement }),
+          ...(b.neighborhood === undefined ? {} : { neighborhood: b.neighborhood }),
+        },
+      };
+      const envelope = buildCustomerEnvelope<"customer.address.add", CustomerAddressAddPayload>({
+        kind: "customer.address.add",
+        payload,
+        nonce: deriveMeNonce(idempotencyKey),
+        customerId,
+      });
+      const svc = createCustomerService();
+      let created: Awaited<ReturnType<typeof svc.addAddress>> | undefined;
+      const out = await runCustomerIntent({
+        envelope,
+        state: buildCustomerAuthState(customerId),
+        policy: customerOnboardingPolicyBundle as unknown as Parameters<typeof runCustomerIntent>[0]["policy"],
+        executor: async () => {
+          created = await svc.addAddress(customerId, {
+            street: b.street,
+            city: b.city,
+            state: b.state,
+            cep: b.zip,
+            ...(b.number === undefined ? {} : { number: b.number }),
+            ...(b.complement === undefined ? {} : { complement: b.complement }),
+            ...(b.neighborhood === undefined ? {} : { district: b.neighborhood }),
+            ...(b.isDefault === undefined ? {} : { isDefault: b.isDefault }),
+          });
+          return created;
+        },
+        ctx: { customerId, route: "me.address.add", log: request.log },
+        auditSink: getAuditSink(),
+        refusalMessages: portugueseRefusalMessages,
+      });
+      if (out.statusCode === 200 && created) {
+        return reply.code(200).send({ address: created });
+      }
+      void (reply as unknown as { status(code: number): typeof reply })
+        .status(out.statusCode)
+        .send(out.body as never);
+      return reply;
+    },
+  );
+
+  app.delete(
+    "/api/me/addresses/:addressId",
+    {
+      schema: {
+        tags: ["me"],
+        summary: "Remover endereço",
+        params: z.object({ addressId: z.string().min(1) }),
+        response: {
+          200: z.object({ success: z.boolean() }),
+          404: z.object({ statusCode: z.number(), error: z.string(), message: z.string() }),
+        },
+      },
+      preHandler: requireAuth,
+    },
+    async (request, reply) => {
+      const customerId = request.customerId!;
+      const { addressId } = request.params;
+      const idempotencyKey = resolveMeIdempotencyKey(
+        request.headers["idempotency-key"],
+        `${customerId}:address:remove:${addressId}`,
+      );
+      const payload: CustomerAddressRemovePayload = { addressId };
+      const envelope = buildCustomerEnvelope<"customer.address.remove", CustomerAddressRemovePayload>({
+        kind: "customer.address.remove",
+        payload,
+        nonce: deriveMeNonce(idempotencyKey),
+        customerId,
+      });
+      let removedCount = 0;
+      const out = await runCustomerIntent({
+        envelope,
+        state: buildCustomerAuthState(customerId),
+        policy: customerOnboardingPolicyBundle as unknown as Parameters<typeof runCustomerIntent>[0]["policy"],
+        executor: async () => {
+          const r = await createCustomerService().removeAddress(customerId, addressId);
+          removedCount = r.count;
+          return r;
+        },
+        ctx: { customerId, route: "me.address.remove", log: request.log },
+        auditSink: getAuditSink(),
+        refusalMessages: portugueseRefusalMessages,
+      });
+      if (out.statusCode === 200) {
+        // count 0 → the id was not the caller's (or does not exist): 404, never 200.
+        if (removedCount === 0) {
+          return reply.code(404).send({
+            statusCode: 404,
+            error: "Not Found",
+            message: "Endereço não encontrado.",
+          });
+        }
+        return reply.code(200).send({ success: true });
+      }
+      void (reply as unknown as { status(code: number): typeof reply })
+        .status(out.statusCode)
+        .send(out.body as never);
+      return reply;
     },
   );
 

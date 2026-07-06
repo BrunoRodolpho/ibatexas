@@ -10,13 +10,18 @@ const API_BASE = "/api/proxy"
 
 export const apiFetch = async (endpoint: string, options?: RequestInit) => {
   const url = `${API_BASE}${endpoint}`
+  // Pull headers out of options so caller-supplied headers MERGE with the
+  // default Content-Type — spreading `...options` after the headers object
+  // would replace the whole merged headers block whenever a caller passes any
+  // header (e.g. Idempotency-Key), dropping Content-Type and 415-ing Fastify.
+  const { headers: customHeaders, ...rest } = options ?? {}
   const response = await fetch(url, {
     credentials: 'include',
+    ...rest,
     headers: {
       'Content-Type': 'application/json',
-      ...options?.headers,
+      ...customHeaders,
     },
-    ...options,
   })
 
   if (!response.ok) {

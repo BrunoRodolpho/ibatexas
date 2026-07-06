@@ -13,7 +13,15 @@
 //   - Audit emit best-effort.
 
 import { describe, it, expect, beforeEach, vi } from "vitest"
-import { buildEnvelope, type AuditSink } from "@adjudicate/core"
+import {
+  basis,
+  BASIS_CODES,
+  buildEnvelope,
+  decisionRefuse,
+  refuse,
+  type AuditSink,
+} from "@adjudicate/core"
+import { nameGuard, type Guard } from "@adjudicate/core/kernel"
 import { randomUUID } from "node:crypto"
 
 // ── Hoisted mocks ─────────────────────────────────────────────────────────
@@ -99,6 +107,81 @@ function makeAuditSink(): AuditSink & { emit: ReturnType<typeof vi.fn> } {
   return {
     emit: vi.fn().mockResolvedValue(undefined),
   } as never
+}
+
+// ── BKL-074 injected staff-role guard (locally built — domain tests must NOT
+//    import apps/api) ─────────────────────────────────────────────────────────
+//
+// A faithful equivalent of apps/api's `createStaffRoleGuard`: engages ONLY on
+// `admin:` sessionIds, REFUSEs `staff_role_violation` when the kind is off the
+// matrix / the role is absent / unknown / not permitted, and is otherwise inert
+// (null). Passed as the injected `authGuards` so we prove the command-service
+// backstop THROUGH the real kernel + the raw payment-projection pack bundle.
+const STAFF_ROLE_REFUSAL_CODE = "staff_role_violation"
+
+/** CODE-TRUTH mirror of STAFF_KIND_ALLOWED_ROLES (staff-role-matrix.ts). */
+const STAFF_KIND_ALLOWED_ROLES: Record<string, readonly string[]> = {
+  "order.status.transition": ["OWNER", "MANAGER", "ATTENDANT"],
+  "payment.status.transition": ["OWNER", "MANAGER", "ATTENDANT"],
+  "payment.refund.issue": ["OWNER", "MANAGER"],
+  "order.note.add": ["OWNER", "MANAGER", "ATTENDANT"],
+  "reservation.checkin": ["OWNER", "MANAGER"],
+  "reservation.complete": ["OWNER", "MANAGER"],
+  "reservation.cancel": ["OWNER", "MANAGER"],
+}
+
+function invertMatrix(): Record<string, ReadonlySet<string>> {
+  const acc: Record<string, Set<string>> = {
+    OWNER: new Set(),
+    MANAGER: new Set(),
+    ATTENDANT: new Set(),
+  }
+  for (const [kind, roles] of Object.entries(STAFF_KIND_ALLOWED_ROLES)) {
+    for (const role of roles) acc[role]!.add(kind)
+  }
+  return acc
+}
+
+function createTestStaffRoleGuard(): Guard<string, unknown, unknown> {
+  const matrix = invertMatrix()
+  const staffPlaneKinds = new Set<string>()
+  for (const kinds of Object.values(matrix)) {
+    for (const k of kinds) staffPlaneKinds.add(k)
+  }
+  const refuseStaffRole = (detail: string) =>
+    refuse(
+      "AUTH",
+      STAFF_ROLE_REFUSAL_CODE,
+      "Seu nível de acesso não permite executar esta ação.",
+      detail,
+    )
+  const guard: Guard<string, unknown, unknown> = (envelope, _state) => {
+    const { sessionId, role } = envelope.actor
+    if (!sessionId.startsWith("admin:")) return null
+    const kind = envelope.kind
+    if (!staffPlaneKinds.has(kind)) {
+      return decisionRefuse(refuseStaffRole(`kind "${kind}" off matrix`), [
+        basis("auth", BASIS_CODES.auth.SCOPE_INSUFFICIENT, { sessionId, kind }),
+      ])
+    }
+    if (role === undefined) {
+      return decisionRefuse(refuseStaffRole(`no role for "${kind}"`), [
+        basis("auth", BASIS_CODES.auth.IDENTITY_MISSING, { sessionId, kind }),
+      ])
+    }
+    const allowed = matrix[role]
+    if (allowed === undefined) {
+      return decisionRefuse(refuseStaffRole(`unknown role "${role}"`), [
+        basis("auth", BASIS_CODES.auth.IDENTITY_MISSING, { sessionId, kind, role }),
+      ])
+    }
+    if (allowed.has(kind)) return null
+    return decisionRefuse(
+      refuseStaffRole(`role "${role}" not permitted for "${kind}"`),
+      [basis("auth", BASIS_CODES.auth.SCOPE_INSUFFICIENT, { sessionId, kind, role })],
+    )
+  }
+  return nameGuard("staffRole", guard)
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────
@@ -557,6 +640,202 @@ describe("PaymentCommandService — envelope-typed entry points", () => {
 
       // Terminal-state guard from existing policy bundle still applies.
       expect(outcome.decision.kind).toBe("REFUSE")
+    })
+  })
+
+  // ── BKL-074 — kernel-level staff-role backstop on the command-service path ──
+  //
+  // Proves the injected `authGuards: [staffRoleGuard]` runs INSIDE the
+  // command-service adjudication (against the RAW paymentProjectionPolicyBundle
+  // that carries NO adopter auth guards). A mis-scoped staff role is REFUSED at
+  // the kernel BEFORE the executor runs, even though the pack bundle alone would
+  // EXECUTE the refund. The guard is inert for non-`admin:` envelopes, so the
+  // universal-inject is a no-op for system/customer/agent traffic.
+  describe("BKL-074 — injected staffRoleGuard backstop on payment.refund.issue", () => {
+    const guard = createTestStaffRoleGuard()
+
+    function refundRow(overrides: Record<string, unknown> = {}) {
+      return makePaymentRow({
+        status: "paid",
+        version: 1,
+        amountInCentavos: 200_000,
+        refundedAmountCentavos: 0,
+        regenerationCount: 0,
+        ...overrides,
+      })
+    }
+
+    function refundEnvelope(
+      actor: { principal: "user" | "system"; sessionId: string; role?: string },
+      taint: "TRUSTED" | "SYSTEM",
+      amountCentavos = 40_000, // R$400 — EXECUTE band (≤ R$500) by the money ladder
+    ) {
+      return buildEnvelope({
+        kind: "payment.refund.issue" as const,
+        payload: {
+          paymentId: "pay_01",
+          refundAmountCentavos: amountCentavos,
+          refundableBalanceCentavos: 200_000,
+          amountInCentavos: 200_000,
+          currentRefundedCentavos: 0,
+          actor: actor.principal === "system" ? ("system" as const) : ("admin" as const),
+          actorId: "staff_1",
+          reason: "bkl074-test",
+        },
+        nonce: randomUUID(),
+        actor,
+        taint,
+      })
+    }
+
+    it("REFUSE: admin ATTENDANT refund is blocked at AUTH by the injected guard — executor NEVER runs", async () => {
+      const svc = createPaymentCommandService(undefined, { authGuards: [guard] })
+      mockPaymentFindUnique.mockResolvedValue(refundRow())
+      mockPaymentUpdate.mockResolvedValue({})
+      mockHistoryCreate.mockResolvedValue({})
+
+      const envelope = refundEnvelope(
+        { principal: "user", sessionId: "admin:staff_1", role: "ATTENDANT" },
+        "TRUSTED",
+      )
+      const outcome = await svc.issueRefundFromEnvelope(envelope)
+
+      expect(outcome.decision.kind).toBe("REFUSE")
+      if (outcome.decision.kind === "REFUSE") {
+        // The refund would EXECUTE by the money band — REFUSE proves the AUTH
+        // backstop short-circuited before the business phase.
+        expect(outcome.decision.refusal.code).toBe(STAFF_ROLE_REFUSAL_CODE)
+        expect(outcome.decision.refusal.kind).toBe("AUTH")
+      }
+      // Load-bearing: the executor's DB writes never happened.
+      expect(mockPaymentUpdate).not.toHaveBeenCalled()
+      expect(mockHistoryCreate).not.toHaveBeenCalled()
+    })
+
+    it("EXECUTE: admin OWNER refund passes the injected guard (refund is OWNER/MANAGER)", async () => {
+      const svc = createPaymentCommandService(undefined, { authGuards: [guard] })
+      mockPaymentFindUnique.mockResolvedValue(refundRow())
+      mockPaymentUpdate.mockResolvedValue({})
+      mockHistoryCreate.mockResolvedValue({})
+
+      const envelope = refundEnvelope(
+        { principal: "user", sessionId: "admin:owner_1", role: "OWNER" },
+        "TRUSTED",
+      )
+      const outcome = await svc.issueRefundFromEnvelope(envelope)
+
+      expect(outcome.decision.kind).toBe("EXECUTE")
+      expect(mockPaymentUpdate).toHaveBeenCalledOnce()
+    })
+
+    it("EXECUTE (guard inert): a SYSTEM-actor refund (non-admin sessionId) still EXECUTEs with the guard injected — no regression", async () => {
+      const svc = createPaymentCommandService(undefined, { authGuards: [guard] })
+      mockPaymentFindUnique.mockResolvedValue(refundRow())
+      mockPaymentUpdate.mockResolvedValue({})
+      mockHistoryCreate.mockResolvedValue({})
+
+      // sessionId does NOT start with "admin:" — the staff-role guard must not
+      // engage (it is a subscriber/job-shaped system actor).
+      const envelope = refundEnvelope(
+        { principal: "system", sessionId: "payments.events:evt_1" },
+        "SYSTEM",
+      )
+      const outcome = await svc.issueRefundFromEnvelope(envelope)
+
+      expect(outcome.decision.kind).toBe("EXECUTE")
+      expect(mockPaymentUpdate).toHaveBeenCalledOnce()
+    })
+
+    it("REFUSE: admin refund with NO actor.role is blocked at AUTH — executor NEVER runs", async () => {
+      const svc = createPaymentCommandService(undefined, { authGuards: [guard] })
+      mockPaymentFindUnique.mockResolvedValue(refundRow())
+      mockPaymentUpdate.mockResolvedValue({})
+      mockHistoryCreate.mockResolvedValue({})
+
+      const envelope = refundEnvelope(
+        { principal: "user", sessionId: "admin:staff_norole" },
+        "TRUSTED",
+      )
+      const outcome = await svc.issueRefundFromEnvelope(envelope)
+
+      expect(outcome.decision.kind).toBe("REFUSE")
+      if (outcome.decision.kind === "REFUSE") {
+        expect(outcome.decision.refusal.code).toBe(STAFF_ROLE_REFUSAL_CODE)
+      }
+      expect(mockPaymentUpdate).not.toHaveBeenCalled()
+    })
+  })
+
+  // BKL-085 — the POST-adjudication refund write shared with governed ops callers.
+  describe("writeAdjudicatedRefund — no re-adjudication, DB write + orderId/method", () => {
+    it("performs the ledger write and returns orderId + method from the DB row (no kernel call)", async () => {
+      const svc = createPaymentCommandService()
+      mockPaymentFindUnique.mockResolvedValue(
+        makePaymentRow({
+          status: "paid",
+          version: 1,
+          amountInCentavos: 10_000,
+          refundedAmountCentavos: 0,
+          orderId: "order_ops",
+          method: "pix",
+        }),
+      )
+      mockPaymentUpdate.mockResolvedValue({})
+      mockHistoryCreate.mockResolvedValue({})
+
+      const result = await svc.writeAdjudicatedRefund({
+        paymentId: "pay_01",
+        refundAmountCentavos: 3_000,
+        refundableBalanceCentavos: 10_000,
+        amountInCentavos: 10_000,
+        currentRefundedCentavos: 0,
+        actor: "admin",
+        actorId: "staff_ops",
+        reason: "ops refund",
+      })
+
+      // Ledger-only write (status + refundedAmountCentavos + version), no egress.
+      expect(mockPaymentUpdate).toHaveBeenCalledTimes(1)
+      expect(result).toMatchObject({
+        previousStatus: "paid",
+        newStatus: "partially_refunded",
+        refundAmountCentavos: 3_000,
+        totalRefundedCentavos: 3_000,
+        version: 2,
+        // Read from the DB row so the ops emit path never trusts the model for them.
+        orderId: "order_ops",
+        method: "pix",
+      })
+    })
+
+    it("a full refund transitions to refunded and returns the DB orderId/method", async () => {
+      const svc = createPaymentCommandService()
+      mockPaymentFindUnique.mockResolvedValue(
+        makePaymentRow({
+          status: "paid",
+          version: 4,
+          amountInCentavos: 5_000,
+          refundedAmountCentavos: 0,
+          orderId: "order_full",
+          method: "card",
+        }),
+      )
+      mockPaymentUpdate.mockResolvedValue({})
+      mockHistoryCreate.mockResolvedValue({})
+
+      const result = await svc.writeAdjudicatedRefund({
+        paymentId: "pay_01",
+        refundAmountCentavos: 5_000,
+        refundableBalanceCentavos: 5_000,
+        amountInCentavos: 5_000,
+        currentRefundedCentavos: 0,
+        actor: "admin",
+        actorId: "staff_ops",
+      })
+
+      expect(result.newStatus).toBe("refunded")
+      expect(result.orderId).toBe("order_full")
+      expect(result.method).toBe("card")
     })
   })
 })

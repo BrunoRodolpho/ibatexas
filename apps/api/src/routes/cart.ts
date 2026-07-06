@@ -40,7 +40,7 @@ import {
   createOrderAccessToken,
   verifyOrderAccessToken,
 } from "@ibatexas/tools";
-import { Channel, type UserType } from "@ibatexas/types";
+import { Channel, COUPON_REJECTED_CODE, type UserType } from "@ibatexas/types";
 import { createCustomerService, createOrderCommandService, createPaymentQueryService, prisma } from "@ibatexas/domain";
 import { ordersPolicyBundle, type OrderCheckoutCreatePayload, type OrderNoteAddPayload, type OrderState } from "@ibatexas/pack-orders";
 import { portugueseRefusalMessages } from "@ibatexas/pack-orders";
@@ -330,6 +330,18 @@ async function finalizeCheckout(args: {
 
   if (!result.success) {
     if (onFixableFailure) await onFixableFailure();
+    // D1 — Medusa rejected the coupon: the tool aborted BEFORE any payment
+    // collection was created (fail-closed money path). Surface a 422 in the
+    // route's rejection shape; `error` carries the pt-BR copy because the
+    // web checkout renders `data.error ?? data.message`.
+    if (result.code === COUPON_REJECTED_CODE) {
+      return reply.status(422).send({
+        statusCode: 422,
+        error: result.message,
+        message: result.message,
+        code: COUPON_REJECTED_CODE,
+      });
+    }
     return reply.status(400).send(result);
   }
 
@@ -694,20 +706,43 @@ function validateCheckoutComposition(args: {
   mealPeriod: string;
   paymentMethod: PaymentMethod;
   deliveryType: "delivery" | "shipping" | "pickup" | "dine_in" | undefined;
+  deliveryCep: string | undefined;
   items: Array<{ productType?: "food" | "frozen" | "merchandise" }> | undefined;
   customerId: string | undefined;
 }): CheckoutRejection | null {
-  const { mealPeriod, paymentMethod, deliveryType, customerId } = args;
+  const { mealPeriod, paymentMethod, deliveryType, deliveryCep, customerId } = args;
   const localItems = args.items ?? [];
 
-  // Block food orders when restaurant is closed — frozen/merch always allowed
-  if (mealPeriod === "closed" && localItems.some((i) => i.productType === "food")) {
+  // Closed-hours policy (DECIDED): a closed PICKUP food order is ACCEPTED as a
+  // *scheduled* pickup (the `scheduledPickup` tag is applied downstream by
+  // create-checkout.ts buildCheckoutMetadata); only IMMEDIATE-DELIVERY (local
+  // delivery / dine-in) food orders are still REFUSED while closed. Frozen/merch
+  // are always allowed. Pickup MUST be distinguished EXACTLY as create-checkout.ts
+  // does it: buildCheckoutMetadata keys pickup SOLELY on the ABSENCE of a
+  // deliveryCep (`deliveryType = deliveryCep ? "delivery" : "pickup"`; the
+  // scheduledPickup tag is applied only when !deliveryCep). So the accepted
+  // (scheduled-pickup) set here must be a SUBSET of create-checkout's `!deliveryCep`
+  // set — otherwise `closed + food + deliveryType="pickup" + deliveryCep present`
+  // would be accepted here yet treated as immediate DELIVERY downstream (the hole).
+  // We therefore require NO deliveryCep and an unset/pickup type; explicit
+  // delivery / shipping / dine_in remain immediate and are still REFUSED while closed.
+  const isScheduledPickup =
+    !deliveryCep &&
+    deliveryType !== "delivery" &&
+    deliveryType !== "shipping" &&
+    deliveryType !== "dine_in";
+  if (
+    mealPeriod === "closed" &&
+    !isScheduledPickup &&
+    localItems.some((i) => i.productType === "food")
+  ) {
     return {
       status: 422,
       body: {
         statusCode: 422,
         error: "Unprocessable Entity",
-        message: "A cozinha está fechada no momento. Itens de comida não podem ser pedidos agora.",
+        message:
+          "A cozinha está fechada no momento — não entregamos comida agora. Você pode agendar uma retirada (fechado para retirada agora — posso agendar).",
         code: "KITCHEN_CLOSED",
       },
     };
@@ -1493,6 +1528,7 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
           pixEmail: z.email().optional(),
           pixCpf: z.string().optional(),
           notes: z.string().max(500).optional(),
+          couponCode: z.string().min(1).max(64).optional(),
         }),
       },
       preHandler: optionalAuth,
@@ -1509,12 +1545,13 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
       const schedule = await loadSchedule();
       const tz = process.env.RESTAURANT_TIMEZONE ?? "America/Sao_Paulo";
       const mealPeriod = getMealPeriodFromSchedule(schedule, tz);
-      const { paymentMethod, deliveryType: reqDeliveryType, items: localItems } = request.body;
+      const { paymentMethod, deliveryType: reqDeliveryType, deliveryCep: reqDeliveryCep, items: localItems } = request.body;
 
       const compositionRejection = validateCheckoutComposition({
         mealPeriod,
         paymentMethod,
         deliveryType: reqDeliveryType,
+        deliveryCep: reqDeliveryCep,
         items: localItems,
         customerId: request.customerId,
       });
@@ -1974,13 +2011,36 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
       preHandler: optionalAuth,
     },
     async (request, reply) => {
-      // Query Medusa for promotions matching the code
+      // BKL-070 — display-parity validation. Mirrors the REJECTION CLASSES the
+      // checkout's authoritative Medusa promotions.add gate enforces (D1 fail-closed
+      // 422 COUPON_REJECTED), so the UI rarely shows a discount that later dies at
+      // checkout. The default admin promotion fields already include status, limit,
+      // used, *campaign, *campaign.budget and *application_method (Medusa
+      // api/admin/promotions/query-config defaultAdminPromotionFields) — one GET,
+      // no fields= param. NOTE the old `is_disabled` check was DEAD in Medusa v2
+      // (no such field; `status` is the real flag) — it passed vacuously.
+      //
+      // Deliberately NOT mirrored (only Medusa's engine can evaluate them; the
+      // checkout 422 stays authoritative): target/buy rules, stackability, and the
+      // per-attribute budget types (use_by_attribute / spend_by_attribute — those
+      // need the customer attribute and MUST NOT over-reject here).
       try {
         const data = await medusaAdmin(`/admin/promotions?code=${encodeURIComponent(request.body.code)}&limit=1`) as {
           promotions?: Array<{
             id: string;
             code: string;
-            is_disabled: boolean;
+            status?: "draft" | "active" | "inactive";
+            limit?: number | null;
+            used?: number;
+            campaign?: {
+              starts_at?: string | null;
+              ends_at?: string | null;
+              budget?: {
+                type?: "spend" | "usage" | "use_by_attribute" | "spend_by_attribute";
+                limit?: number | null;
+                used?: number;
+              } | null;
+            } | null;
             application_method?: {
               value?: number;
               type?: string;
@@ -1989,13 +2049,50 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
         };
 
         const promo = data.promotions?.[0];
-        if (!promo || promo.is_disabled) {
+        if (!promo) return reply.send({ valid: false });
+
+        // status: the v2 lifecycle flag. Absent (unexpected) ⇒ treat as not active
+        // (display-side fail-closed: never show a discount we cannot substantiate).
+        if (promo.status !== "active") return reply.send({ valid: false });
+
+        // Campaign window (only when bounds are present — absent bound ⇒ no bound).
+        const now = Date.now();
+        const startsAt = promo.campaign?.starts_at ? Date.parse(promo.campaign.starts_at) : undefined;
+        const endsAt = promo.campaign?.ends_at ? Date.parse(promo.campaign.ends_at) : undefined;
+        if (startsAt !== undefined && Number.isFinite(startsAt) && startsAt > now) {
+          return reply.send({ valid: false });
+        }
+        if (endsAt !== undefined && Number.isFinite(endsAt) && endsAt < now) {
+          return reply.send({ valid: false });
+        }
+
+        // Promotion-level usage budget (limit/used on the promotion itself).
+        if (
+          typeof promo.limit === "number" &&
+          typeof promo.used === "number" &&
+          promo.used >= promo.limit
+        ) {
+          return reply.send({ valid: false });
+        }
+
+        // Campaign budget — ONLY the globally-evaluable types. Per-attribute types
+        // are skipped (evaluating them without the attribute would over-reject).
+        const budget = promo.campaign?.budget;
+        if (
+          budget &&
+          (budget.type === "usage" || budget.type === "spend") &&
+          typeof budget.limit === "number" &&
+          typeof budget.used === "number" &&
+          budget.used >= budget.limit
+        ) {
           return reply.send({ valid: false });
         }
 
         const discount = promo.application_method?.value ?? 0;
         return reply.send({ valid: true, discount });
       } catch {
+        // Display-side fail-closed (unchanged from the previous behavior): an
+        // errored validation never shows a discount that could die at checkout.
         return reply.send({ valid: false });
       }
     },

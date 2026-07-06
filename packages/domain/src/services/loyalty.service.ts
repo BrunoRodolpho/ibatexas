@@ -81,6 +81,33 @@ export function createLoyaltyService(options?: LoyaltyServiceOptions) {
       }
     },
 
+    /**
+     * PURE read of a customer's loyalty balance (OPS-070 admin view). Unlike
+     * `getBalance`, this NEVER upserts — a customer with no account yet reads
+     * back as an all-zero, `exists: false` balance rather than lazily creating
+     * a row. Safe to call from a read-only manager view (viewing a customer
+     * must not write).
+     */
+    async peekBalance(customerId: string) {
+      const account = await prisma.loyaltyAccount.findUnique({ where: { customerId } })
+      if (!account) {
+        return {
+          stamps: 0,
+          stampsNeeded: STAMPS_FOR_REWARD,
+          totalEarned: 0,
+          redeemed: 0,
+          exists: false,
+        }
+      }
+      return {
+        stamps: account.stamps,
+        stampsNeeded: STAMPS_FOR_REWARD - account.stamps,
+        totalEarned: account.totalEarned,
+        redeemed: account.redeemed,
+        exists: true,
+      }
+    },
+
     // ── Audit 2026-05-23 NEW-W9-V4: envelope-typed entry point ────────
 
     /**
