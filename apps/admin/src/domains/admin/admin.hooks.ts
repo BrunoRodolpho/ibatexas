@@ -61,6 +61,30 @@ export const useAdminProducts = hooks.useAdminProducts
 export const useAdminProduct = hooks.useAdminProduct
 export const useAdminOrders = hooks.useAdminOrders
 
+/**
+ * WS5B — the current staff role, for client-side section gating (Visão Geral).
+ * Authoritative source is GET /api/auth/staff/me (server guards remain the real
+ * boundary). Returns null while loading / when unauthenticated.
+ */
+export function useStaffRole(): 'OWNER' | 'MANAGER' | 'ATTENDANT' | null {
+  const [role, setRole] = useState<'OWNER' | 'MANAGER' | 'ATTENDANT' | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    fetch('/api/proxy/auth/staff/me', { credentials: 'include' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((me: { role?: 'OWNER' | 'MANAGER' | 'ATTENDANT' } | null) => {
+        if (!cancelled && me?.role) setRole(me.role)
+      })
+      .catch(() => {
+        /* unauthenticated / offline — leave null (sections stay hidden) */
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+  return role
+}
+
 const PAGE_SIZE = 20
 
 /** Compute ISO date_from/date_to for a given date-range preset. */
