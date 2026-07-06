@@ -5,11 +5,11 @@
 // the live-poll Painel Operacional. Section gating uses the client role (WS2);
 // the server guards remain the authorization boundary.
 
-import { useState } from 'react'
+import { useCallback, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { ChevronDown, ChevronRight, Gauge } from 'lucide-react'
-import { MEDUSA_ADMIN_URL } from '@/lib/api'
+import { MEDUSA_ADMIN_URL, apiFetch } from '@/lib/api'
 import {
   useAdminDashboard,
   useAdminOrders,
@@ -43,6 +43,84 @@ function Section({
   )
 }
 
+interface TopItem {
+  productId: string
+  title: string
+  quantity: number
+  orderCount: number
+}
+
+/**
+ * WS5C — "Relatórios": the dormant manager-gated report endpoints, wired at last.
+ * LAZY — best-sellers (top-items) are fetched only on first expand (never on the
+ * landing's initial load), keeping the page light. Refunds/margins reuse the
+ * same pattern and can be added as sibling tabs.
+ */
+function RelatoriosSection(): React.JSX.Element {
+  const [open, setOpen] = useState(false)
+  const [items, setItems] = useState<TopItem[] | null>(null)
+  const [loading, setLoading] = useState(false)
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      const data = (await apiFetch('/api/admin/analytics/top-items?limit=10')) as { items: TopItem[] }
+      setItems(data.items ?? [])
+    } catch {
+      setItems([])
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  const toggle = (): void => {
+    const next = !open
+    setOpen(next)
+    if (next && items === null) void load()
+  }
+
+  return (
+    <section className="border-b border-smoke-200">
+      <button
+        type="button"
+        onClick={toggle}
+        className="flex w-full items-center gap-2 px-4 py-3 text-left text-sm font-semibold text-charcoal-800 hover:bg-smoke-50"
+      >
+        {open ? <ChevronDown className="h-4 w-4" aria-hidden /> : <ChevronRight className="h-4 w-4" aria-hidden />}
+        Relatórios · Mais vendidos (30 dias)
+      </button>
+      {open ? (
+        <div className="px-4 pb-4">
+          {loading ? (
+            <p className="text-sm text-smoke-500">Carregando…</p>
+          ) : items && items.length > 0 ? (
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left text-xs text-smoke-500">
+                  <th className="py-1">Produto</th>
+                  <th className="py-1 text-right">Qtd</th>
+                  <th className="py-1 text-right">Pedidos</th>
+                </tr>
+              </thead>
+              <tbody>
+                {items.map((it) => (
+                  <tr key={it.productId} className="border-t border-smoke-100">
+                    <td className="py-1.5">{it.title}</td>
+                    <td className="py-1.5 text-right tabular-nums">{it.quantity}</td>
+                    <td className="py-1.5 text-right tabular-nums">{it.orderCount}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <p className="text-sm text-smoke-500">Nenhum dado no período.</p>
+          )}
+        </div>
+      ) : null}
+    </section>
+  )
+}
+
 export default function VisaoGeral(): React.JSX.Element {
   const router = useRouter()
   const role = useStaffRole()
@@ -69,6 +147,8 @@ export default function VisaoGeral(): React.JSX.Element {
           <AdminAnalisesPage metrics={analytics} loading={analyticsLoading} />
         </Section>
       ) : null}
+
+      {isManager ? <RelatoriosSection /> : null}
 
       {isManager ? (
         <div className="px-4 py-3">
