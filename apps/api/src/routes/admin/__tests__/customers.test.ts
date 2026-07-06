@@ -47,6 +47,7 @@ interface StaffContext {
   readonly staffRole: "OWNER" | "MANAGER" | "ATTENDANT" | null;
 }
 
+const OWNER: StaffContext = { staffId: "staff_own_01", staffRole: "OWNER" };
 const MANAGER: StaffContext = { staffId: "staff_mgr_01", staffRole: "MANAGER" };
 const ATTENDANT: StaffContext = { staffId: "staff_att_01", staffRole: "ATTENDANT" };
 
@@ -156,6 +157,33 @@ async function buildServer(staff: StaffContext): Promise<FastifyInstance> {
 beforeEach(() => vi.clearAllMocks());
 afterEach(() => vi.resetModules());
 
+// ── (c) X4 — OWNER-gated, audited CPF reveal ───────────────────────────────────
+
+describe("GET /api/admin/customers/:id/cpf — OWNER-only CPF reveal (X4)", () => {
+  it("returns the FULL cpf to an OWNER", async () => {
+    primeDetailHappy();
+    const server = await buildServer(OWNER);
+    try {
+      const res = await server.inject({ method: "GET", url: "/api/admin/customers/cust_01/cpf" });
+      expect(res.statusCode).toBe(200);
+      expect((res.json() as { cpf: string }).cpf).toBe("123.456.789-00");
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("rejects a MANAGER with 403 (fail-closed) and never reads the CPF", async () => {
+    const server = await buildServer(MANAGER);
+    try {
+      const res = await server.inject({ method: "GET", url: "/api/admin/customers/cust_01/cpf" });
+      expect(res.statusCode).toBe(403);
+      expect(mockGetByIdForAdmin).not.toHaveBeenCalled();
+    } finally {
+      await server.close();
+    }
+  });
+});
+
 // ── (a) gate ─────────────────────────────────────────────────────────────────
 
 describe("customer reads are manager-gated", () => {
@@ -264,7 +292,10 @@ describe("GET /api/admin/customers/:id (composed view)", () => {
       const body = res.json() as Record<string, unknown>;
 
       expect(body.id).toBe("cust_01");
-      expect(body.cpf).toBe("123.456.789-00"); // unmasked at the boundary (masked in UI)
+      // X4 — CPF is now masked SERVER-SIDE (last 2 digits only). The raw value
+      // never leaves the API on a routine detail read; it is disclosed only via
+      // the OWNER-gated GET /api/admin/customers/:id/cpf reveal route.
+      expect(body.cpf).toBe("•••.•••.•••-00");
       expect(body.preferences).toEqual({
         dietaryRestrictions: ["vegetariano"],
         allergenExclusions: ["amendoim"],

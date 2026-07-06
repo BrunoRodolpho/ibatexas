@@ -140,6 +140,21 @@ function toIso(value: Date | string): string {
 }
 
 /**
+ * X4 — CPF is LGPD-sensitive (tax ID). The default detail payload ships it
+ * MASKED (`•••.•••.•••-NN`, last two digits only) so the raw value never leaves
+ * the API on a routine profile read. The full CPF is available ONLY via the
+ * OWNER-gated `GET /api/admin/customers/:id/cpf` reveal route, which audit-logs
+ * the access. (Previously the raw CPF was in this payload and masked only in the
+ * browser — readable via devtools or a direct call.)
+ */
+function maskCpf(cpf: string | null | undefined): string | null {
+  if (!cpf) return null;
+  const digits = cpf.replace(/\D/g, "");
+  const last2 = digits.length >= 2 ? digits.slice(-2) : "••";
+  return `•••.•••.•••-${last2}`;
+}
+
+/**
  * Compose the single-customer manager view. Returns `null` when the id is
  * unknown (→ the route 404s). A satellite read failing degrades that section to
  * its empty/zero fallback; it never fails the whole view.
@@ -213,7 +228,7 @@ export async function composeAdminCustomerDetail(
     name: customer.name ?? null,
     phone: customer.phone,
     email: customer.email ?? null,
-    cpf: customer.cpf ?? null,
+    cpf: maskCpf(customer.cpf),
     source: customer.source ?? null,
     firstContactAt: customer.firstContactAt ? toIso(customer.firstContactAt) : null,
     createdAt: toIso(customer.createdAt),

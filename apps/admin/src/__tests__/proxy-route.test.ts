@@ -47,6 +47,8 @@ describe("admin proxy route", () => {
       headers: {
         "content-type": "application/json",
         "idempotency-key": "idem-123",
+        // S1 — admin proxying now requires an authenticated staff session cookie.
+        cookie: "staff_token=t",
       },
       body: JSON.stringify({ reason: "teste" }),
     })
@@ -68,7 +70,7 @@ describe("admin proxy route", () => {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        cookie: "staff_jwt=abc",
+        cookie: "staff_token=abc",
         "x-evil": "nope",
       },
       body: JSON.stringify({}),
@@ -79,7 +81,7 @@ describe("admin proxy route", () => {
     const [, init] = upstreamFetch.mock.calls[0] as [string, RequestInit]
     const headers = init.headers as Headers
     expect(headers.get("content-type")).toBe("application/json")
-    expect(headers.get("cookie")).toBe("staff_jwt=abc")
+    expect(headers.get("cookie")).toBe("staff_token=abc")
     expect(headers.get("x-evil")).toBeNull()
   })
 
@@ -87,7 +89,7 @@ describe("admin proxy route", () => {
     const path = "api/admin/orders/o1/force-cancel"
     const request = makeRequest(path, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", cookie: "staff_token=t" },
       body: JSON.stringify({}),
     })
 
@@ -96,6 +98,18 @@ describe("admin proxy route", () => {
     const [, init] = upstreamFetch.mock.calls[0] as [string, RequestInit]
     const headers = init.headers as Headers
     expect(headers.get("idempotency-key")).toBeNull()
+  })
+
+  it("401s an admin path without a staff session (S1 defense-in-depth)", async () => {
+    // No staff_token cookie → the proxy must refuse to attach the shared key and
+    // forward. Belt-and-suspenders in front of the API's DOM-001 guard.
+    const path = "api/admin/orders"
+    const request = makeRequest(path, { method: "GET" })
+
+    const response = await GET(request, contextFor(path))
+
+    expect(response.status).toBe(401)
+    expect(upstreamFetch).not.toHaveBeenCalled()
   })
 
   it("still 403s non-admin paths", async () => {

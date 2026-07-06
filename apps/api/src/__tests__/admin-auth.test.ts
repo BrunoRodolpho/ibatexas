@@ -139,13 +139,29 @@ describe("admin auth guard", () => {
     expect(response.statusCode).toBe(401)
   })
 
-  it("accepts requests with correct x-admin-key", async () => {
+  // S1 — the shared x-admin-key is a CLI-only credential. On browser-facing
+  // admin routes it is IGNORED, so a key-only request (the admin proxy injects
+  // the key with no staff JWT) is DENIED. This is the reproduced-exploit closure:
+  // previously this returned a customer-PII 200.
+  it("DENIES a browser route (tables) to a key-only caller — S1 closure", async () => {
     const response = await server.inject({
       method: "GET",
       url: "/api/admin/tables",
       headers: { "x-admin-key": "test-admin-key-12345" },
     })
-    // Should not be 401 (might be 200 or other status depending on route logic)
+    expect(response.statusCode).toBe(401)
+  })
+
+  // The key IS still honored on the two CLI-driven route groups (`ibx staff`,
+  // `ibx agent`). The DOM-001 guard admits the request there; any non-401 status
+  // (a downstream role gate / handler result) proves the guard did not reject it
+  // as unauthenticated.
+  it("ADMITS a CLI route (agents/kill-status) for a key-only caller", async () => {
+    const response = await server.inject({
+      method: "GET",
+      url: "/api/admin/agents/kill-status",
+      headers: { "x-admin-key": "test-admin-key-12345" },
+    })
     expect(response.statusCode).not.toBe(401)
   })
 })
@@ -224,10 +240,12 @@ describe("admin auth guard — no key configured", () => {
     await server.close()
   })
 
-  it("returns 503 when ADMIN_API_KEY is not configured", async () => {
+  it("returns 503 when ADMIN_API_KEY is not configured (CLI route)", async () => {
+    // Use a CLI-eligible route (staff) so the guard reaches the key branch —
+    // a browser route would 401 before the no-key-configured 503 check.
     const response = await server.inject({
       method: "GET",
-      url: "/api/admin/tables",
+      url: "/api/admin/staff",
       headers: { "x-admin-key": "" },
     })
     expect(response.statusCode).toBe(503)

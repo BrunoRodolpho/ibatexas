@@ -166,9 +166,26 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     }
   }
 
-  // DOM-001: Auth guard — accept EITHER x-admin-key header OR valid staff JWT cookie.
-  // The staff JWT path runs optionalAuth first (populates request.staffId/staffRole),
-  // then checks for staff credentials. Falls back to API key if no staff JWT.
+  // DOM-001 / S1 — Authentication Matrix (canonical contract):
+  //   Browser (admin app → proxy): valid staff JWT REQUIRED; the proxy-injected
+  //     x-admin-key is IGNORED for authz. Allowed iff JWT valid.
+  //   CLI (`ibx staff`, `ibx agent`): no JWT; x-admin-key REQUIRED + role-mapped;
+  //     allowed ONLY on the `staff/*` + `agents/*` route groups.
+  //   Anonymous: denied (401).
+  //
+  // WHY the key is scoped: the admin Next proxy injects the shared x-admin-key on
+  // EVERY browser call with no session check, and the Next "login" is a forgeable
+  // client-only flag — so trusting the key on browser-facing routes let an
+  // unauthenticated caller read customer PII (reproduced). The key is therefore a
+  // CLI-only credential; everything browser-facing requires a real staff JWT.
+  const KEY_ELIGIBLE = (url: string): boolean => {
+    const path = url.split("?")[0] ?? "";
+    return (
+      path === "/api/admin/staff" ||
+      path.startsWith("/api/admin/staff/") ||
+      path.startsWith("/api/admin/agents/")
+    );
+  };
   server.addHook("preHandler", async (request, reply) => {
     // Try staff JWT first (optionalAuth sets staffId/staffRole if present)
     await new Promise<void>((resolve) => {
@@ -182,7 +199,14 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       return;
     }
 
-    // Fall back to API key auth
+    // S1 — no valid staff JWT: the x-admin-key path is available ONLY for the
+    // CLI-driven route groups. Browser-facing routes are denied outright, so the
+    // proxy-injected key can never stand in for a logged-in staff session.
+    if (!KEY_ELIGIBLE(request.url)) {
+      return reply.code(401).send({ error: "Unauthorized" });
+    }
+
+    // Fall back to API key auth (CLI-eligible routes only)
     if (ADMIN_API_KEYS.length === 0) {
       return reply.code(503).send({ error: "Service unavailable" });
     }

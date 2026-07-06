@@ -18,6 +18,22 @@ async function proxyRequest(request: NextRequest, params: { path: string[] }): P
     return new NextResponse("Forbidden", { status: 403 });
   }
 
+  // S1 defense-in-depth: a browser call to an admin route must carry an
+  // authenticated staff session (the httpOnly `staff_token` cookie) before we
+  // attach the shared key and forward — so the proxy never lends the shared key
+  // to a logged-out caller. The API's DOM-001 guard remains the real boundary
+  // (it now ignores the key on browser routes); this bounces the request earlier.
+  // `/api/auth/staff/*` (OTP login) is exempt — no token exists yet at login time.
+  if (targetPath.startsWith("/api/admin/")) {
+    const cookieHeader = request.headers.get("cookie") ?? "";
+    if (!/(?:^|;\s*)staff_token=/.test(cookieHeader)) {
+      return NextResponse.json(
+        { message: "Sessão expirada. Faça login novamente." },
+        { status: 401 },
+      );
+    }
+  }
+
   const url = new URL(targetPath, API_URL);
   url.search = request.nextUrl.search;
 
