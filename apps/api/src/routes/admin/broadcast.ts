@@ -17,7 +17,7 @@ import { mintBroadcastReply } from "@adjudicate/core";
 import { requireManagerRole } from "../../middleware/staff-auth.js";
 import { sendText } from "../../whatsapp/client.js";
 import { runBroadcast } from "../../broadcast/broadcast.js";
-import { getBroadcastOptOutStore } from "../../broadcast/broadcast-optout.js";
+import { getBroadcastOptOutStore, normalizeRecipient } from "../../broadcast/broadcast-optout.js";
 
 const RecipientResultSchema = z.object({
   recipient: z.string(),
@@ -53,8 +53,13 @@ export async function broadcastRoutes(server: FastifyInstance): Promise<void> {
     async (request, reply) => {
       const { recipients, template } = request.body;
       const optOut = await getBroadcastOptOutStore();
+      // WS3B — canonicalize BEFORE runBroadcast so its dedup collapses
+      // format-variants of the same number (no double-send), the opt-out check
+      // matches the (also-normalized) registry, and the actual WhatsApp send
+      // targets a canonical E.164 number.
+      const normalized = recipients.map(normalizeRecipient);
       const result = await runBroadcast({
-        recipients,
+        recipients: normalized,
         template,
         // The client adds the `whatsapp:` channel prefix expectations; mirror the
         // handoff-subscriber call shape. The client itself rate-limits + dedups.

@@ -84,4 +84,17 @@ describe("broadcast opt-out store (D3)", () => {
     expect(await store.isOptedOut("+551")).toBe(false);
     expect(await store.list()).toEqual([]);
   });
+
+  it("matches opt-out across phone FORMATS (WS3B — closes the silent bypass)", async () => {
+    const store = createBroadcastOptOutStore(fakeOptOutRedis());
+    // Opt out using a spaced/dashed form…
+    await store.optOut("+55 11 99999-0000");
+    // …a blast listing the bare E.164 form must STILL be skipped (both canonicalize).
+    expect(await store.isOptedOut("+5511999990000")).toBe(true);
+    // The 'whatsapp:' channel prefix is normalized away too.
+    expect(await store.isOptedOut("whatsapp:+5511999990000")).toBe(true);
+    // Stored canonically, so opt-in with a formatted variant clears it.
+    await store.optIn("+55 (11) 99999-0000");
+    expect(await store.isOptedOut("+5511999990000")).toBe(false);
+  });
 });
