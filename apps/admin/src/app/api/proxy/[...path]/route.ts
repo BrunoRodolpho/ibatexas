@@ -57,7 +57,20 @@ async function proxyRequest(request: NextRequest, params: { path: string[] }): P
     }
   }
 
-  const upstream = await fetch(url.toString(), init);
+  let upstream: Response;
+  try {
+    upstream = await fetch(url.toString(), init);
+  } catch (err) {
+    // The upstream API is unreachable (down, crash-looping, or not yet booted).
+    // Surface a legible 502 instead of letting the throw bubble up as a raw 500
+    // stack trace — the login form reads `message`, and admin hooks see a clean
+    // status code. pt-BR per Hard Rule #4 (user-facing text).
+    console.error(`[admin-proxy] upstream fetch failed for ${targetPath}:`, err);
+    return NextResponse.json(
+      { message: "Serviço de API indisponível no momento. Tente novamente em instantes." },
+      { status: 502 },
+    );
+  }
 
   const responseHeaders = new Headers();
   const upstreamContentType = upstream.headers.get("content-type");
