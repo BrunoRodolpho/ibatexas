@@ -118,7 +118,7 @@ export const SERVICES: Record<string, ServiceDef> = {
 
   "qa-viewer": {
     key: "qa-viewer",
-    name: "QA Viewer",
+    name: "Investigation Workbench",
     filter: "@ibatexas/qa-viewer",
     script: "dev",
     port: 3010,
@@ -127,7 +127,8 @@ export const SERVICES: Record<string, ServiceDef> = {
     logPrefix: "qa-viewer",
     available: true,
     step: 5,
-    urls: [{ label: "QA Viewer", url: "http://localhost:3010" }],
+    urls: [{ label: "Investigation Workbench", url: "http://localhost:3010" }],
+    notes: ["QA graphs/coverage · RCA turn forensics · Prompts navigate/edit"],
     group: "ops",
   },
 
