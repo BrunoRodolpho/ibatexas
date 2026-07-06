@@ -36,6 +36,7 @@ const OrdersAdminQuery = z.object({
   fulfillment_status: z.string().optional(),
   date_from: z.string().optional(),
   date_to: z.string().optional(),
+  customer_id: z.string().optional(),
   limit: z.coerce.number().int().min(1).max(100).default(20),
   offset: z.coerce.number().int().min(0).default(0),
 });
@@ -375,7 +376,7 @@ export async function orderRoutes(server: FastifyInstance): Promise<void> {
       },
     },
     async (request, reply) => {
-      const { fulfillment_status, payment_status, date_from, date_to, limit, offset } = request.query;
+      const { fulfillment_status, payment_status, date_from, date_to, customer_id, limit, offset } = request.query;
 
       try {
         // Primary: read from projection
@@ -385,6 +386,7 @@ export async function orderRoutes(server: FastifyInstance): Promise<void> {
             paymentStatus: payment_status,
             dateFrom: date_from ? new Date(date_from) : undefined,
             dateTo: date_to ? new Date(date_to) : undefined,
+            customerId: customer_id,
             limit,
             offset,
           });
@@ -455,6 +457,9 @@ export async function orderRoutes(server: FastifyInstance): Promise<void> {
         if (payment_status) qs.set("payment_status[]", payment_status);
         if (date_from) qs.set("created_at[gte]", date_from);
         if (date_to) qs.set("created_at[lte]", date_to);
+        // Keep the customer filter honored in the degraded Medusa path — otherwise
+        // a `?customer_id=` request would silently return EVERY order.
+        if (customer_id) qs.set("customer_id", customer_id);
 
         const data = await medusaAdmin(`/admin/orders?${qs}`) as Record<string, unknown>;
         const rawOrders = (data.orders ?? []) as Array<Record<string, unknown>>;

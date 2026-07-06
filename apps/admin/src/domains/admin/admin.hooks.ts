@@ -103,7 +103,7 @@ function computeDateRange(preset: string): { date_from?: string; date_to?: strin
   }
 }
 
-export function useAdminOrdersPage() {
+export function useAdminOrdersPage(customerId?: string) {
   const [page, setPage] = useState(1)
   const [statusFilter, setStatusFilter] = useState('')
   const [dateFilter, setDateFilter] = useState('')
@@ -115,10 +115,11 @@ export function useAdminOrdersPage() {
     status: statusFilter || undefined,
     date_from: dateRange.date_from,
     date_to: dateRange.date_to,
+    customer_id: customerId || undefined,
     limit: PAGE_SIZE,
     offset: (page - 1) * PAGE_SIZE,
     _refresh: refreshKey,
-  }), [page, statusFilter, dateRange, refreshKey])
+  }), [page, statusFilter, dateRange, customerId, refreshKey])
 
   const { data: orders, count, loading, error } = useAdminOrders(filters)
   const totalPages = Math.max(1, Math.ceil(count / PAGE_SIZE))
