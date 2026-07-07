@@ -7,7 +7,7 @@
 // the prompt_override table and take effect on the next turn (fail-safe to the
 // compiled-in default when absent).
 
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useState, type KeyboardEvent } from "react"
 import {
   fetchPrompt,
   fetchPrompts,
@@ -19,6 +19,17 @@ import {
   type PromptSummary,
 } from "../lib/promptsClient"
 import { RailSearch, RailSection, Workbench } from "./FilterRail"
+
+/** S13 — make a non-semantic clickable row keyboard-operable (Enter/Space) so the
+ *  prompt rail is navigable without a mouse and announces as a button to AT. */
+function keyActivate(fn: () => void): (e: KeyboardEvent) => void {
+  return (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault()
+      fn()
+    }
+  }
+}
 
 const STAGE_ORDER: PromptStage[] = ["planner", "claims", "responder", "ops", "capability"]
 const STAGE_LABEL: Record<PromptStage, string> = {
@@ -136,7 +147,10 @@ export function PromptsWorkbench() {
                 <div
                   key={p.id}
                   className={`prompt-list__item ${selId === p.id ? "prompt-list__item--sel" : ""}`}
+                  role="button"
+                  tabIndex={0}
                   onClick={() => setSelId(p.id)}
+                  onKeyDown={keyActivate(() => setSelId(p.id))}
                 >
                   <span className="prompt-list__name" title={p.id}>
                     {p.name}

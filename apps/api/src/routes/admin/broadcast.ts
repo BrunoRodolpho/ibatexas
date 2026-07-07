@@ -10,7 +10,7 @@
 //   POST /api/admin/broadcast/optout          { recipient } → opt a number out
 //   POST /api/admin/broadcast/optin           { recipient } → re-subscribe
 
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { mintBroadcastReply } from "@adjudicate/core";
@@ -18,7 +18,7 @@ import { requireManagerRole } from "../../middleware/staff-auth.js";
 import { sendText } from "../../whatsapp/client.js";
 import { runBroadcast } from "../../broadcast/broadcast.js";
 import { getBroadcastOptOutStore, normalizeRecipient } from "../../broadcast/broadcast-optout.js";
-import { prisma, Prisma } from "@ibatexas/domain";
+import { prisma, Prisma, toE164BR } from "@ibatexas/domain";
 
 const RecipientResultSchema = z.object({
   recipient: z.string(),
@@ -28,6 +28,26 @@ const RecipientResultSchema = z.object({
 
 export async function broadcastRoutes(server: FastifyInstance): Promise<void> {
   const app = server.withTypeProvider<ZodTypeProvider>();
+
+  // S2 — reject an opt-out/opt-in recipient that does not canonicalize to E.164.
+  // `normalizeRecipient` falls back to the raw string on a non-E.164 input, so a
+  // manager typing a BR-local format (`5511999990000`, `011 99999-0000`) would
+  // otherwise store an UN-MATCHABLE consent key while we returned `{ok:true}`: the
+  // send-time gate normalizes recipients to `+55…` and would never match the raw
+  // key, so the "opted-out" customer keeps getting blasts (LGPD exposure). Fail
+  // the request with a clear message instead of recording an ineffective opt-out.
+  const canonicalizeOrReject = (recipient: string, reply: FastifyReply): string | null => {
+    try {
+      return toE164BR(recipient);
+    } catch {
+      void reply.code(400).send({
+        statusCode: 400,
+        error: "Bad Request",
+        message: "Telefone inválido. Use o formato internacional, ex.: +55 11 99999-0000.",
+      });
+      return null;
+    }
+  };
 
   app.post(
     "/api/admin/broadcast",
@@ -83,9 +103,19 @@ export async function broadcastRoutes(server: FastifyInstance): Promise<void> {
           },
         });
       } catch (err) {
+        // S6/S10 — the sends already happened, so we never fail the response
+        // (a client retry could re-blast). But log the FULL payload at error
+        // level so the compliance record ("what was sent to whom, by whom") is
+        // reconstructable from logs when the durable DB write is lost.
         request.log.error(
-          { component: "broadcast", err },
-          "[broadcast] audit persist failed (blast already sent)",
+          {
+            component: "broadcast",
+            err,
+            senderStaffId: request.staffId ?? null,
+            template,
+            broadcastResult: result,
+          },
+          "[broadcast] audit persist failed (blast already sent) — full payload logged for reconstruction",
         );
       }
       request.log.info(
@@ -130,8 +160,10 @@ export async function broadcastRoutes(server: FastifyInstance): Promise<void> {
       },
     },
     async (request, reply) => {
+      const canonical = canonicalizeOrReject(request.body.recipient, reply);
+      if (canonical === null) return reply;
       const optOut = await getBroadcastOptOutStore();
-      await optOut.optOut(request.body.recipient);
+      await optOut.optOut(canonical);
       return reply.send({ ok: true });
     },
   );
@@ -148,8 +180,10 @@ export async function broadcastRoutes(server: FastifyInstance): Promise<void> {
       },
     },
     async (request, reply) => {
+      const canonical = canonicalizeOrReject(request.body.recipient, reply);
+      if (canonical === null) return reply;
       const optOut = await getBroadcastOptOutStore();
-      await optOut.optIn(request.body.recipient);
+      await optOut.optIn(canonical);
       return reply.send({ ok: true });
     },
   );
@@ -161,8 +195,20 @@ export async function broadcastRoutes(server: FastifyInstance): Promise<void> {
   // Returns the opted-out-filtered recipient phones + a sample, so the manager
   // reviews the count before sending. "Ordered in a range" and "created in a
   // range" both resolve to canonical E.164 phones the blast endpoint accepts.
-  const YMD = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
-  const startOf = (ymd: string): Date => new Date(`${ymd}T00:00:00`);
+  // S7 — the bare regex admitted impossible dates (`2026-13-40` → Invalid Date →
+  // the preview throws). `.refine` rejects any non-calendar date (month>12, day
+  // overflow) by requiring the parsed instant to round-trip to the same YMD. And
+  // the boundary is pinned to `…T00:00:00Z` (UTC) — a suffix-less datetime parses
+  // in the SERVER's local timezone while the columns are UTC, so window edges were
+  // off by the server's offset; the explicit `Z` makes the segment deterministic.
+  const YMD = z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .refine((s) => {
+      const d = new Date(`${s}T00:00:00Z`);
+      return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
+    }, "data inválida");
+  const startOf = (ymd: string): Date => new Date(`${ymd}T00:00:00Z`);
   app.post(
     "/api/admin/broadcast/audience/preview",
     {
@@ -183,12 +229,37 @@ export async function broadcastRoutes(server: FastifyInstance): Promise<void> {
             recipients: z.array(z.string()),
             sample: z.array(z.string()),
           }),
+          400: z.object({
+            statusCode: z.number().int(),
+            error: z.string(),
+            message: z.string(),
+          }),
         },
       },
     },
     async (request, reply) => {
       const spec = request.body;
       const empty = { count: 0, recipients: [], sample: [] };
+
+      // S5 — refuse an empty spec. With no filter fields the compiled `where` is
+      // `{}`, resolving to the ENTIRE non-opted-out customer base — a mass-send
+      // footgun where an unrecognized/partial NL segment silently targets everyone.
+      // Require at least one explicit filter so the whole base is never previewed
+      // (or loaded into the send box) by accident.
+      if (
+        !spec.orderedFrom &&
+        !spec.orderedTo &&
+        !spec.createdFrom &&
+        !spec.createdTo &&
+        !spec.source
+      ) {
+        return reply.code(400).send({
+          statusCode: 400,
+          error: "Bad Request",
+          message:
+            "Especifique ao menos um filtro de segmento (período de pedido, período de cadastro ou origem). Não é possível pré-visualizar a base inteira.",
+        });
+      }
 
       // 1) If an order-date window is given, resolve the customers who ordered in it.
       let orderCustomerIds: string[] | null = null;

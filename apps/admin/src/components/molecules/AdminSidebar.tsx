@@ -82,7 +82,9 @@ const baseGroups: AdminSidebarNavGroup[] = [
   {
     label: 'Marketing',
     items: [
-      { key: 'broadcast', label: 'Broadcast', href: '/admin/broadcast', icon: Megaphone },
+      // S12 — every broadcast route is requireManagerRole server-side; gate the nav
+      // entry to match so an ATTENDANT isn't shown a link that dead-ends in a 403.
+      { key: 'broadcast', label: 'Broadcast', href: '/admin/broadcast', icon: Megaphone, minRole: 'MANAGER' },
     ],
   },
 ]

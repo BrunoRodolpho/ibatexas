@@ -5,9 +5,9 @@
 // the live-poll Painel Operacional. Section gating uses the client role (WS2);
 // the server guards remain the authorization boundary.
 
-import { useCallback, useState } from 'react'
+import { Suspense, useCallback, useState } from 'react'
 import Link from 'next/link'
-import { useRouter } from 'next/navigation'
+import { useRouter, useSearchParams } from 'next/navigation'
 import { ChevronDown, ChevronRight, Gauge } from 'lucide-react'
 import { MEDUSA_ADMIN_URL, apiFetch } from '@/lib/api'
 import {
@@ -121,8 +121,12 @@ function RelatoriosSection(): React.JSX.Element {
   )
 }
 
-export default function VisaoGeral(): React.JSX.Element {
+function VisaoGeralContent(): React.JSX.Element {
   const router = useRouter()
+  const searchParams = useSearchParams()
+  // S14 — a deep link to /admin/analises redirects here with ?section=analises;
+  // open the Análises section on arrival so the analytics land visible.
+  const analisesDeepLink = searchParams.get('section') === 'analises'
   const role = useStaffRole()
   const isManager = role === 'MANAGER' || role === 'OWNER'
   const { data: metrics, loading: metricsLoading } = useAdminDashboard()
@@ -143,7 +147,7 @@ export default function VisaoGeral(): React.JSX.Element {
       </Section>
 
       {isManager ? (
-        <Section title="Análises" defaultOpen={false}>
+        <Section title="Análises" defaultOpen={analisesDeepLink}>
           <AdminAnalisesPage metrics={analytics} loading={analyticsLoading} />
         </Section>
       ) : null}
@@ -161,5 +165,14 @@ export default function VisaoGeral(): React.JSX.Element {
         </div>
       ) : null}
     </div>
+  )
+}
+
+export default function VisaoGeral(): React.JSX.Element {
+  // useSearchParams() requires a Suspense boundary (Next App Router).
+  return (
+    <Suspense fallback={null}>
+      <VisaoGeralContent />
+    </Suspense>
   )
 }

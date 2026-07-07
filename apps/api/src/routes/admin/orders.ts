@@ -13,6 +13,7 @@ import {
   ConcurrencyError,
   ProjectionNotFoundError,
   InvalidTransitionError,
+  prisma,
   type OrderStatusTransitionPayload,
 } from "@ibatexas/domain";
 import { getAuditSink } from "@ibatexas/audit-sink";
@@ -457,9 +458,22 @@ export async function orderRoutes(server: FastifyInstance): Promise<void> {
         if (payment_status) qs.set("payment_status[]", payment_status);
         if (date_from) qs.set("created_at[gte]", date_from);
         if (date_to) qs.set("created_at[lte]", date_to);
-        // Keep the customer filter honored in the degraded Medusa path — otherwise
-        // a `?customer_id=` request would silently return EVERY order.
-        if (customer_id) qs.set("customer_id", customer_id);
+        // S11 — the incoming customer_id is a DOMAIN Customer.id (cuid), but Medusa's
+        // ?customer_id expects the Medusa customer id (cus_*). Forwarding the cuid
+        // verbatim matched nothing (silent wrong-empty). Translate via
+        // Customer.medusaId; a customer with no Medusa mapping (or none at all) can
+        // have no Medusa orders, so return an empty page honestly rather than
+        // forwarding an id from the wrong space.
+        if (customer_id) {
+          const customer = await prisma.customer.findUnique({
+            where: { id: customer_id },
+            select: { medusaId: true },
+          });
+          if (!customer?.medusaId) {
+            return reply.send({ orders: [], count: 0 });
+          }
+          qs.set("customer_id", customer.medusaId);
+        }
 
         const data = await medusaAdmin(`/admin/orders?${qs}`) as Record<string, unknown>;
         const rawOrders = (data.orders ?? []) as Array<Record<string, unknown>>;

@@ -206,6 +206,18 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       return reply.code(401).send({ error: "Unauthorized" });
     }
 
+    // S1 defense-in-depth: the x-admin-key path is EXCLUSIVELY for the CLI, which
+    // authenticates with the key alone and never carries a staff session cookie. A
+    // request that reaches here (no valid JWT) while presenting a `staff_token`
+    // cookie is a browser-origin call whose token failed to validate — treat it as
+    // a forged session and refuse the key path outright. This closes the S1 class
+    // at the boundary even if a proxy ever (re-)injects the shared key: a forged
+    // presence-only cookie can no longer be ridden into the staff/agents groups.
+    const cookieHeader = request.headers.cookie ?? "";
+    if (/(?:^|;\s*)staff_token=/.test(cookieHeader)) {
+      return reply.code(401).send({ error: "Unauthorized" });
+    }
+
     // Fall back to API key auth (CLI-eligible routes only)
     if (ADMIN_API_KEYS.length === 0) {
       return reply.code(503).send({ error: "Service unavailable" });

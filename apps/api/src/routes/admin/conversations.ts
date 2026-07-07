@@ -97,13 +97,13 @@ export async function conversationRoutes(server: FastifyInstance): Promise<void>
       const { sessionId, customerId, phone, orderId, date_from, date_to, limit, offset } =
         request.query;
 
-      // Specific-lookup modes keep the existing dispatch (no pagination needed).
-      if (sessionId || phone) {
-        const rows = await svc().searchConversations({
-          ...(sessionId ? { sessionId } : {}),
-          ...(phone ? { phone } : {}),
-          limit,
-        });
+      // sessionId is a UNIQUE exact lookup — date/offset are meaningless for it, so
+      // it keeps the direct fast-path. Every other mode (customerId / phone /
+      // orderId / default) routes through listForAdmin below so the date window +
+      // offset pagination the UI always sends are honored consistently. (S4: the
+      // phone branch previously dropped both filters silently.)
+      if (sessionId) {
+        const rows = await svc().searchConversations({ sessionId, limit });
         return reply.send({ conversations: rows.map(mapSummary), count: rows.length });
       }
 
@@ -128,6 +128,7 @@ export async function conversationRoutes(server: FastifyInstance): Promise<void>
 
       const { rows, count } = await svc().listForAdmin({
         ...(effectiveCustomerId ? { customerId: effectiveCustomerId } : {}),
+        ...(phone ? { phone } : {}),
         ...(parseDate(date_from) ? { dateFrom: parseDate(date_from) } : {}),
         ...(parseDate(date_to) ? { dateTo: parseDate(date_to) } : {}),
         limit,

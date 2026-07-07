@@ -5,7 +5,7 @@
 // Requires the dev bridge (VITE_QA_CONTROL_BASE/_TOKEN); without it the section
 // shows a configuration hint and the viewer stays a pure artifact browser.
 
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useState, type KeyboardEvent } from "react"
 import {
   buildLinks,
   derivePipeline,
@@ -20,6 +20,17 @@ import {
   type StageState,
 } from "../lib/rcaClient"
 import { RailSearch, RailSection, Workbench } from "./FilterRail"
+
+/** S13 — make a non-semantic clickable row keyboard-operable (Enter/Space) so the
+ *  RCA rail is navigable without a mouse and announces as a button to AT. */
+function keyActivate(fn: () => void): (e: KeyboardEvent) => void {
+  return (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault()
+      fn()
+    }
+  }
+}
 
 const STAGE_GLYPH: Record<StageState, string> = {
   ok: "✓",
@@ -127,11 +138,18 @@ export function RcaWorkbench() {
             <div key={c.sessionId}>
               <div
                 className="conv-tree__conv"
+                role="button"
+                tabIndex={0}
                 onClick={() => {
                   setSelConv(c.sessionId)
                   setSelTurn(null)
                   setDetail(null)
                 }}
+                onKeyDown={keyActivate(() => {
+                  setSelConv(c.sessionId)
+                  setSelTurn(null)
+                  setDetail(null)
+                })}
                 style={{ cursor: "pointer" }}
               >
                 <b>{c.channel}</b> · {c.turnCount} turn(s)
@@ -144,7 +162,10 @@ export function RcaWorkbench() {
                   <div
                     key={t.turnId}
                     className={`conv-tree__turn ${selTurn === t.turnId ? "conv-tree__turn--sel" : ""}`}
+                    role="button"
+                    tabIndex={0}
                     onClick={() => setSelTurn(t.turnId)}
+                    onKeyDown={keyActivate(() => setSelTurn(t.turnId))}
                   >
                     <span
                       className="conv-tree__dot"

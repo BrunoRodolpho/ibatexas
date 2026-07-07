@@ -85,6 +85,26 @@ describe("admin proxy route", () => {
     expect(headers.get("x-evil")).toBeNull()
   })
 
+  it("never forwards a shared x-admin-key upstream (S1 — key is CLI-only)", async () => {
+    // The proxy previously injected the shared key on every forward, which let a
+    // forged, presence-only staff_token cookie ride it into the key-eligible
+    // staff/agents groups. Browser calls must authenticate with a real staff JWT
+    // (forwarded as the cookie); the key is never attached here.
+    const path = "api/admin/staff"
+    const request = makeRequest(path, {
+      method: "GET",
+      headers: { cookie: "staff_token=abc" },
+    })
+
+    await GET(request, contextFor(path))
+
+    const [, init] = upstreamFetch.mock.calls[0] as [string, RequestInit]
+    const headers = init.headers as Headers
+    expect(headers.get("x-admin-key")).toBeNull()
+    // The staff JWT cookie is still forwarded so the API's DOM-001 guard can auth it.
+    expect(headers.get("cookie")).toBe("staff_token=abc")
+  })
+
   it("omits idempotency-key upstream when the client sent none", async () => {
     const path = "api/admin/orders/o1/force-cancel"
     const request = makeRequest(path, {
@@ -101,8 +121,9 @@ describe("admin proxy route", () => {
   })
 
   it("401s an admin path without a staff session (S1 defense-in-depth)", async () => {
-    // No staff_token cookie → the proxy must refuse to attach the shared key and
-    // forward. Belt-and-suspenders in front of the API's DOM-001 guard.
+    // No staff_token cookie → the proxy early-bounces the logged-out browser
+    // rather than forwarding to a raw upstream 401. The API's DOM-001 guard (which
+    // validates the JWT) is the real boundary; this is only a UX belt.
     const path = "api/admin/orders"
     const request = makeRequest(path, { method: "GET" })
 

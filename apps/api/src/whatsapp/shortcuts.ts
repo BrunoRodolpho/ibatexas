@@ -21,7 +21,14 @@ function normalize(input: string): string {
     .toLowerCase()
     .trim()
     .normalize("NFD")
-    .replaceAll(/[\u0300-\u036f]/g, "");
+    .replaceAll(/[\u0300-\u036f]/g, "")
+    // S3 \u2014 collapse inner whitespace and strip leading/trailing punctuation so an
+    // opt-out like `Parar.` / `stop!` / `  parar  ` still matches its keyword. We
+    // strip only Unicode punctuation (\p{P}) + spaces, never symbols (so the `r$15`
+    // key survives), and keep WHOLE-MESSAGE exact matching (never substring) so a
+    // message like `n\u00e3o quero parar` can never be mis-read as an opt-out.
+    .replaceAll(/\s+/g, " ")
+    .replace(/^[\p{P}\s]+|[\p{P}\s]+$/gu, "");
 }
 
 const SHORTCUT_MAP: Record<string, ShortcutAction> = {
@@ -69,12 +76,21 @@ const SHORTCUT_MAP: Record<string, ShortcutAction> = {
   // mid-sentence. Bare "cancelar" is intentionally OMITTED — it collides with
   // order cancellation; opt-out uses the unambiguous unsubscribe words.
   parar: { type: "optout" },
+  pare: { type: "optout" },
   stop: { type: "optout" },
   sair: { type: "optout" },
   descadastrar: { type: "optout" },
+  "me descadastrar": { type: "optout" },
   "cancelar inscricao": { type: "optout" },
+  "cancelar promocoes": { type: "optout" },
   "parar de receber": { type: "optout" },
+  "parar promocoes": { type: "optout" },
+  "quero parar": { type: "optout" },
+  "parar por favor": { type: "optout" },
   "nao quero receber": { type: "optout" },
+  "nao quero mais receber": { type: "optout" },
+  "nao quero mais mensagens": { type: "optout" },
+  "remover meu numero": { type: "optout" },
 
   // Re-subscribe (opt back in) — the opt-out confirmation invites "voltar".
   voltar: { type: "optin" },

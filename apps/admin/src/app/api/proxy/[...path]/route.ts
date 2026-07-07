@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
-const ADMIN_API_KEY = process.env.ADMIN_API_KEY ?? "";
 
 const ALLOWED_PREFIXES = ["/api/admin/", "/api/auth/staff/"];
 
@@ -18,11 +17,14 @@ async function proxyRequest(request: NextRequest, params: { path: string[] }): P
     return new NextResponse("Forbidden", { status: 403 });
   }
 
-  // S1 defense-in-depth: a browser call to an admin route must carry an
-  // authenticated staff session (the httpOnly `staff_token` cookie) before we
-  // attach the shared key and forward — so the proxy never lends the shared key
-  // to a logged-out caller. The API's DOM-001 guard remains the real boundary
-  // (it now ignores the key on browser routes); this bounces the request earlier.
+  // S1 — the proxy NO LONGER injects the shared `x-admin-key`. That injection is
+  // what let a forged, presence-only `staff_token` cookie ride the CLI key into
+  // the key-eligible `staff/*` + `agents/*` groups (staff PII/pay + OWNER-account
+  // creation) — a browser call must authenticate with a real staff JWT, which is
+  // the API's DOM-001 boundary; the CLI reaches the API directly, not through this
+  // proxy, so it is unaffected. This cookie check is now only an early UX bounce
+  // for a logged-out browser (nicer than a raw upstream 401); it is presence-only
+  // and NOT a security boundary — the API validates the JWT signature/expiry.
   // `/api/auth/staff/*` (OTP login) is exempt — no token exists yet at login time.
   if (targetPath.startsWith("/api/admin/")) {
     const cookieHeader = request.headers.get("cookie") ?? "";
@@ -38,7 +40,6 @@ async function proxyRequest(request: NextRequest, params: { path: string[] }): P
   url.search = request.nextUrl.search;
 
   const headers = new Headers();
-  headers.set("x-admin-key", ADMIN_API_KEY);
 
   const contentType = request.headers.get("content-type");
   if (contentType) {

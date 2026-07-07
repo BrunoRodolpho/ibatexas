@@ -5,5 +5,7 @@
 import { redirect } from 'next/navigation'
 
 export default function AnalisesRedirect(): never {
-  redirect('/admin')
+  // S14 — carry a section marker so the landing OPENS the Análises section on
+  // arrival, instead of dropping the deep-link on a collapsed/hidden section.
+  redirect('/admin?section=analises')
 }

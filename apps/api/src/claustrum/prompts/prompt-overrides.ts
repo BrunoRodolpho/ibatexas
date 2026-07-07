@@ -95,6 +95,17 @@ export async function loadPromptOverrides(): Promise<void> {
       { component: "prompt-overrides", count: snapshot.size },
       "prompt overrides loaded",
     );
+    // S9 — provenance in production. The ONLY in-band writer is the dev-gated
+    // qa-viewer editor, so a prompt_override row present in a PROD process (a
+    // stray/promoted row, or direct DB write) silently reshapes the live
+    // planner/responder personas with no prod-side authz. WARN with the affected
+    // ids so it is noticed instead of invisible — the load stays fail-safe.
+    if (process.env.NODE_ENV === "production" && snapshot.size > 0) {
+      logger.warn(
+        { component: "prompt-overrides", count: snapshot.size, ids: [...snapshot.keys()] },
+        "prompt overrides ACTIVE in production — verify these are intended (the dev-only editor is the sole in-band writer)",
+      );
+    }
   } catch (err) {
     logger.warn(
       { component: "prompt-overrides", err: (err as Error).message },

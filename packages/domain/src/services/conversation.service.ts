@@ -247,6 +247,7 @@ export function createConversationService(options?: ConversationServiceOptions) 
      */
     async listForAdmin(opts: {
       customerId?: string
+      phone?: string
       dateFrom?: Date
       dateTo?: Date
       limit?: number
@@ -264,8 +265,28 @@ export function createConversationService(options?: ConversationServiceOptions) 
     }> {
       const limit = opts.limit ?? 20
       const offset = opts.offset ?? 0
+      // S4 — resolve a phone search to its customerId at the same canonical
+      // @unique boundary as searchConversations, so the phone path ALSO honors the
+      // date window + offset pagination (previously it routed through a method that
+      // dropped both). A malformed phone or unknown customer degrades to an empty
+      // page (never all, never 500).
+      let scopedCustomerId = opts.customerId
+      if (opts.phone) {
+        let canonical: string
+        try {
+          canonical = toE164BR(opts.phone)
+        } catch {
+          return { rows: [], count: 0 }
+        }
+        const customer = await prisma.customer.findUnique({
+          where: { phone: canonical },
+          select: { id: true },
+        })
+        if (!customer) return { rows: [], count: 0 }
+        scopedCustomerId = customer.id
+      }
       const where: Prisma.ConversationWhereInput = {}
-      if (opts.customerId) where.customerId = opts.customerId
+      if (scopedCustomerId) where.customerId = scopedCustomerId
       if (opts.dateFrom || opts.dateTo) {
         const range: Prisma.DateTimeFilter = {}
         if (opts.dateFrom) range.gte = opts.dateFrom

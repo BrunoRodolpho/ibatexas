@@ -32,6 +32,19 @@ function statusColor(status: RecipientResult['status']): string {
   return 'text-gray-500'
 }
 
+// S5 — a human summary of the filters that were ACTUALLY applied, so the manager
+// can confirm the segment matches intent (and notice when a described clause the
+// keyword parser doesn't understand was silently dropped).
+function specSummary(spec: Record<string, string>): string {
+  const parts: string[] = []
+  if (spec.orderedFrom || spec.orderedTo)
+    parts.push(`pedidos de ${spec.orderedFrom ?? '…'} a ${spec.orderedTo ?? '…'}`)
+  if (spec.createdFrom || spec.createdTo)
+    parts.push(`cadastro de ${spec.createdFrom ?? '…'} a ${spec.createdTo ?? '…'}`)
+  if (spec.source) parts.push(`origem ${spec.source}`)
+  return parts.join(' · ')
+}
+
 export default function BroadcastPage(): React.JSX.Element {
   const [recipientsText, setRecipientsText] = useState('')
   const [template, setTemplate] = useState('')
@@ -45,6 +58,8 @@ export default function BroadcastPage(): React.JSX.Element {
   const [audienceSource, setAudienceSource] = useState('')
   const [preview, setPreview] = useState<{ count: number; recipients: string[]; sample: string[] } | null>(null)
   const [previewing, setPreviewing] = useState(false)
+  // S5 — the spec that produced the current preview (for the applied-filters line).
+  const [appliedSpec, setAppliedSpec] = useState<Record<string, string> | null>(null)
 
   // Load the READ-ONLY opted-out recipient list (OPS-032). Silent on failure —
   // an unavailable read hides the section rather than toast-spamming a page load.
@@ -107,20 +122,35 @@ export default function BroadcastPage(): React.JSX.Element {
   }, [audienceQuery, audienceSource])
 
   const previewAudience = useCallback(async () => {
+    const spec = buildSpec()
+    // S5 — never preview (or load) the ENTIRE base by accident. An empty spec means
+    // the described filter wasn't understood (or nothing was specified); tell the
+    // manager instead of silently querying everyone.
+    if (Object.keys(spec).length === 0) {
+      setPreview(null)
+      setAppliedSpec(null)
+      setError(
+        audienceQuery.trim()
+          ? 'Não entendi esse filtro. Use “mês passado” ou “últimos 30 dias” (por data do pedido) e/ou selecione uma origem.'
+          : 'Descreva um período (ex.: “mês passado”) ou selecione uma origem para montar o público.',
+      )
+      return
+    }
     setPreviewing(true)
     setError(null)
     try {
       const res = (await apiFetch('/api/admin/broadcast/audience/preview', {
         method: 'POST',
-        body: JSON.stringify(buildSpec()),
+        body: JSON.stringify(spec),
       })) as { count: number; recipients: string[]; sample: string[] }
       setPreview(res)
+      setAppliedSpec(spec)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Falha ao prever o público')
     } finally {
       setPreviewing(false)
     }
-  }, [buildSpec])
+  }, [buildSpec, audienceQuery])
 
   const useAudience = useCallback(() => {
     if (preview) setRecipientsText(preview.recipients.join('\n'))
@@ -184,19 +214,24 @@ export default function BroadcastPage(): React.JSX.Element {
           </button>
         </div>
         {preview ? (
-          <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-gray-700">
-            <span>
-              {preview.count} destinatário(s) — opt-outs já excluídos
-              {preview.sample.length > 0 ? ` · ex.: ${preview.sample.slice(0, 3).join(', ')}` : ''}
-            </span>
-            <button
-              type="button"
-              onClick={useAudience}
-              disabled={preview.count === 0}
-              className="rounded border border-blue-300 px-2 py-1 font-medium text-blue-700 disabled:opacity-50"
-            >
-              Usar como destinatários →
-            </button>
+          <div className="flex flex-col gap-1 text-xs text-gray-700">
+            {appliedSpec ? (
+              <span className="text-gray-500">Filtros aplicados: {specSummary(appliedSpec)}</span>
+            ) : null}
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span>
+                {preview.count} destinatário(s) — opt-outs já excluídos
+                {preview.sample.length > 0 ? ` · ex.: ${preview.sample.slice(0, 3).join(', ')}` : ''}
+              </span>
+              <button
+                type="button"
+                onClick={useAudience}
+                disabled={preview.count === 0}
+                className="rounded border border-blue-300 px-2 py-1 font-medium text-blue-700 disabled:opacity-50"
+              >
+                Usar como destinatários →
+              </button>
+            </div>
           </div>
         ) : (
           <p className="text-xs text-gray-500">

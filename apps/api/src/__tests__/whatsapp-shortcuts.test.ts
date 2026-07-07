@@ -58,6 +58,37 @@ describe("matchShortcut", () => {
     it("only matches whole-message STOP words, not mid-sentence", () => {
       expect(matchShortcut("quero parar meu pedido")).toBeNull();
     });
+
+    // S3 — trailing/leading punctuation must not defeat an opt-out. `Parar.` is a
+    // completely ordinary way to type it and previously fell through, leaving the
+    // customer subscribed with no durable consent recorded (LGPD).
+    it.each(["Parar.", "parar!", "STOP.", "  parar  ", "sair.", "descadastrar!"])(
+      "matches punctuated/padded '%s' as optout",
+      (input) => {
+        expect(matchShortcut(input)).toEqual({ type: "optout" });
+      },
+    );
+
+    it.each([
+      "quero parar",
+      "parar por favor",
+      "nao quero mais receber",
+      "remover meu numero",
+      "pare",
+    ])("matches common opt-out phrasing '%s'", (input) => {
+      expect(matchShortcut(input)).toEqual({ type: "optout" });
+    });
+
+    it("still does NOT treat 'nao quero parar' as opt-out (whole-message exact only)", () => {
+      // Punctuation stripping must not turn a negated phrase into a false opt-out.
+      expect(matchShortcut("nao quero parar")).toBeNull();
+    });
+
+    it("preserves the '$' symbol so the r$15 welcome key still matches", () => {
+      // Punctuation stripping targets \p{P} only — currency symbols survive.
+      expect(matchShortcut("r$15")).toEqual({ type: "welcome" });
+      expect(matchShortcut("r$15.")).toEqual({ type: "welcome" });
+    });
   });
 
   // ── Cart shortcuts ────────────────────────────────────────────────────────
