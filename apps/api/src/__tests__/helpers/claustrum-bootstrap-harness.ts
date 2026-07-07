@@ -107,6 +107,28 @@ async function loadKernelMigrateLib(): Promise<KernelMigrateLib> {
   return (await import(modulePath)) as KernelMigrateLib;
 }
 
+interface ClaustrumMigrateLib {
+  resolveClaustrumMigrationsDirs(root: string, override?: string): string[];
+  runClaustrumMigrations(
+    client: PgClientLike,
+    opts: {
+      migrationsDirs: string[];
+      now: Date;
+      partitionsBack?: number;
+      partitionsForward?: number;
+      log?: (msg: string) => void;
+    },
+  ): Promise<unknown>;
+}
+
+async function loadClaustrumMigrateLib(): Promise<ClaustrumMigrateLib> {
+  const modulePath = path.join(
+    REPO_ROOT,
+    "packages/cli/src/lib/claustrum-migrate.ts",
+  );
+  return (await import(modulePath)) as ClaustrumMigrateLib;
+}
+
 // ── Harness ──────────────────────────────────────────────────────────────────
 
 export interface ClaustrumBootstrapHarnessOptions {
@@ -182,6 +204,8 @@ export async function setupClaustrumBootstrapHarness(
   try {
     const { resolveAuditMigrationsDir, runAuditMigrations } =
       await loadKernelMigrateLib();
+    const { resolveClaustrumMigrationsDirs, runClaustrumMigrations } =
+      await loadClaustrumMigrateLib();
     const migrationClient = new pg.Client({ connectionString: pgUrl });
     await migrationClient.connect();
     try {
@@ -189,6 +213,25 @@ export async function setupClaustrumBootstrapHarness(
         migrationsDir: resolveAuditMigrationsDir(REPO_ROOT),
         now: new Date(),
       });
+
+      // Claustrum MEMORY schema layer (episodic/semantic/procedural/relational + episodic partitions).
+      // Without it, a conductor turn's episodic/procedural memory write — now bound to the REAL postgres
+      // provider (DEF-005) — rejects with "relation claustrum_memory_* does not exist" as an UNHANDLED
+      // promise rejection that fails the whole vitest run (both the scripted-pipeline and claims-seam
+      // harness suites). Uses the additive raw-SQL runner (`IF NOT EXISTS`, the same as
+      // `ibx claustrum migrate`), so it coexists with the audit tables above — unlike `prisma db push`,
+      // which would demand `--accept-data-loss` and drop out-of-schema tables. Restricted to
+      // @claustrum/memory-postgres; the grounding-pgvector layer is intentionally omitted so the default
+      // postgres:15-alpine image needs no `vector` extension (the memory tables have no vector columns).
+      const memoryMigrationsDirs = resolveClaustrumMigrationsDirs(
+        REPO_ROOT,
+      ).filter((dir) => dir.includes("memory-postgres"));
+      if (memoryMigrationsDirs.length > 0) {
+        await runClaustrumMigrations(migrationClient, {
+          migrationsDirs: memoryMigrationsDirs,
+          now: new Date(),
+        });
+      }
     } finally {
       await migrationClient.end();
     }

@@ -267,7 +267,7 @@ export async function qaControlRoutes(server: FastifyInstance): Promise<void> {
   server.get("/internal/qa/agents", RL, async () => ({ agents: listAgents() }));
 
   // ── RCA turn-forensics reads + Prompt navigate/edit (share this gate+bearer) ─
-  registerRcaReadRoutes(server, RL);
+  registerRcaReadRoutes(server);
   registerPromptRoutes(server, RL);
 
   // ── Run list + trace serving ────────────────────────────────────────────────

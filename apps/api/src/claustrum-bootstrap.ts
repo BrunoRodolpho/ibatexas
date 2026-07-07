@@ -253,6 +253,7 @@ import { buildClaimsSeams, warnOncePerMessage } from "./claustrum/claims-pipelin
 import { createIbatexasResponder } from "./claustrum/ibatexas-responder.js";
 import { createIbatexasPromptComposer } from "./claustrum/prompts/ibatexas-prompts.js";
 import {
+  closePromptOverridePool,
   ensurePromptOverrideTable,
   loadPromptOverrides,
 } from "./claustrum/prompts/prompt-overrides.js";
@@ -684,6 +685,12 @@ export async function resetClaustrumForTests(): Promise<ClaustrumResetReport> {
   }
   _pgPool = null;
   _ownsPgPool = false;
+
+  // End the prompt-override store's module-singleton pool too (warmed at boot,
+  // not owned by _pgPool) so a bootstrap-harness leaves no open pg handle when it
+  // stops its postgres container — otherwise its idle connection raises an
+  // unhandled 57P01 at teardown. Re-creates lazily on the next store call.
+  await closePromptOverridePool();
 
   __resetAuditSink();
   _resetMetricsSink();
@@ -2463,6 +2470,22 @@ export async function bootstrapClaustrum(
     new Pool({
       connectionString: process.env.DATABASE_URL,
     });
+  // A pg Pool emits 'error' when an IDLE client's backend dies (a transient
+  // network blip / server restart in prod, or the bootstrap-harness stopping its
+  // postgres container mid-run in tests). With no listener, node-pg re-throws it
+  // as an UNHANDLED error that crashes the process / fails the vitest run — the
+  // 57P01 "terminating connection due to administrator command" teardown race.
+  // Idle-connection loss is recoverable: the pool reconnects on the next acquire.
+  // Only attach to a bootstrap-CREATED pool (an injected one is caller-owned and
+  // would accumulate a listener per boot across a test file's repeated bootstraps).
+  if (!options.pgPool) {
+    pgPool.on("error", (err) => {
+      logger.warn(
+        { component: "bootstrap", error: String(err) },
+        "pg pool idle-client error (recoverable; pool reconnects on next use)",
+      );
+    });
+  }
   // Track for resetClaustrumForTests(): only a bootstrap-created pool is
   // OWNED (and therefore ended) by the reset hook; an injected pool stays
   // caller-owned.

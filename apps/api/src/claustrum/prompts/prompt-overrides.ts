@@ -49,8 +49,35 @@ export function overriddenIds(): string[] {
 
 let pool: Pool | null = null;
 function getPool(): Pool {
-  if (pool === null) pool = new Pool({ connectionString: process.env.DATABASE_URL });
+  if (pool === null) {
+    pool = new Pool({ connectionString: process.env.DATABASE_URL });
+    // A pg Pool emits 'error' when an IDLE client's backend dies (a server restart
+    // in prod, or the bootstrap-harness stopping its postgres container mid-run in
+    // tests). With no listener node-pg re-throws it as an UNHANDLED error that fails
+    // the vitest run — the 57P01 "terminating connection due to administrator
+    // command" teardown race (this module-singleton pool, warmed at boot by
+    // ensurePromptOverrideTable(), is not owned by resetClaustrumForTests()). This
+    // store is best-effort ("no overrides" on outage); an idle-connection loss is
+    // recoverable — the pool reconnects on next use.
+    pool.on("error", (err) => {
+      logger.warn(
+        { component: "prompt-overrides", err: (err as Error).message },
+        "prompt_override pool idle-client error (recoverable; ignored)",
+      );
+    });
+  }
   return pool;
+}
+
+/** End the module-singleton pool (test cleanup: `resetClaustrumForTests()` calls
+ *  this so a bootstrap-harness leaves no open pg handle when its container stops).
+ *  Best-effort + idempotent; the pool re-creates lazily on the next store call. */
+export async function closePromptOverridePool(): Promise<void> {
+  if (pool !== null) {
+    const p = pool;
+    pool = null;
+    await p.end().catch(() => undefined);
+  }
 }
 
 const DDL = `

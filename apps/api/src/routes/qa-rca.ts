@@ -91,11 +91,18 @@ async function queryVl(query: string, limit: number): Promise<VlRaw[]> {
 // ── routes ──────────────────────────────────────────────────────────────────
 
 /** Register the read-only RCA routes. Call from inside qaControlRoutes, after
- *  the gate early-return + Bearer preHandler, passing the shared rate-limit. */
-export function registerRcaReadRoutes(
-  server: FastifyInstance,
-  RL: { config: { rateLimit: { max: number; timeWindow: string } } },
-): void {
+ *  the gate early-return + Bearer preHandler. */
+export function registerRcaReadRoutes(server: FastifyInstance): void {
+  // Rate-limit binding for every route below (global @fastify/rate-limit honours
+  // this per-route `config.rateLimit`; registerRateLimit in server.ts). Declared
+  // as a LOCAL literal — not a passed parameter — so CodeQL's js/missing-rate-limiting
+  // can resolve `config.rateLimit` through dataflow and credit the guard (a param
+  // is opaque to it, which is why only these DB-read routes alerted while the
+  // sibling qa-control/qa-prompts routes, fed a local const, did not). Same window
+  // as qa-control.ts's shared RL — a generous single-operator dev surface.
+  const RL = {
+    config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
+  } as const;
   // ── conversations picker ──────────────────────────────────────────────────
   server.get<{ Querystring: { limit?: string; q?: string } }>(
     "/internal/qa/rca/conversations",
@@ -165,7 +172,7 @@ export function registerRcaReadRoutes(
       if (!SAFE_ID.test(conv)) return reply.code(400).send({ error: "invalid conversation id" });
       const { rows } = await pool().query(
         `SELECT turn_id, min(recorded_at) AS started_at, count(*) AS calls,
-                bool_or(call_index = 1 AND output_tokens = 0) AS responder_empty
+                bool_or(prompt_manifest->>0 LIKE 'ibatexas/responder%' AND output_tokens = 0) AS responder_empty
          FROM turn_trace WHERE conversation_id = $1
          GROUP BY turn_id ORDER BY started_at DESC LIMIT 200`,
         [conv],
