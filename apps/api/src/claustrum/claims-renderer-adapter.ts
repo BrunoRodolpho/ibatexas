@@ -28,10 +28,15 @@ import type { ClaimsKernelResult, ClaimVerdict } from "@adjudicate/core";
 import type {
   ActiveResourceRef,
   ClaimsRenderContext,
+  ClaimsRenderPrecedence,
   ClaimsRendererPort,
   ClaimsRenderResult,
 } from "@claustrum/core";
 import { logger } from "../lib/logger.js";
+import {
+  decideRenderPrecedence,
+  type RenderPrecedenceContext,
+} from "./claims-render-precedence.js";
 import {
   type ActiveResourceOwnership,
   checkRequiredClaimCompleteness,
@@ -230,5 +235,63 @@ export function createIbatexasClaimsRenderer(): ClaimsRendererPort {
       );
       return { text: result.text };
     },
+  };
+}
+
+/**
+ * BKL-155/153 — emit the ONE structured `claims.render_precedence` signal per turn
+ * the 0.7.0 precedence seam is consulted (i.e. a claims result exists AND
+ * `claimsRenderer` is wired — the exact `handleTurn` 6a gate that also emits the
+ * companion `claims.terminal`). The two lines fire adjacently for the SAME turn, so
+ * `kernelTerminal` is the practical JOIN KEY across them (the published seam ctx
+ * carries no turnId — same limitation `claims.terminal` documents; closing it needs
+ * a claustrum change to thread turnId into the seam context).
+ *
+ * OBSERVE-ONLY + PII-FREE (same contract as {@link emitClaimsTerminal}): it reads
+ * only the turn's STRUCTURAL identity — the seam decision, the deciding rule
+ * (`mechanism`), the Decision kind, the kernel terminal, the suppression/envelope
+ * counts — NEVER the request text, a claim value, or the rendered text. It changes
+ * no control flow; the caller acts on the returned `decision`.
+ */
+function emitRenderPrecedence(
+  ctx: RenderPrecedenceContext,
+  verdict: ReturnType<typeof decideRenderPrecedence>,
+): void {
+  logger.info(
+    {
+      component: "claims",
+      event: "claims.render_precedence",
+      // The seam outcome + WHICH lattice rule produced it (rules 1-4).
+      decision: verdict.decision,
+      mechanism: verdict.mechanism,
+      // Join/diagnosis fields — the inputs the lattice branched on.
+      decisionKind: ctx.decision.kind,
+      kernelTerminal: ctx.claims.terminal,
+      suppressionCount: ctx.claims.consistency.suppressions.length,
+      envelopeCount: ctx.plan.envelopes.length,
+    },
+    "claims render precedence decided (render vs draft)",
+  );
+}
+
+/**
+ * Build the ibatexas `ClaimsRenderPrecedence` seam (@claustrum/core 0.7.0). PAIRED
+ * with {@link createIbatexasClaimsRenderer}: `buildClaimsSeams` wires the two
+ * together so the RENDER-vs-DRAFT decision is only ever consulted on the claims-ON
+ * customer plane where the renderer also runs. handleTurn calls this AFTER invoking
+ * the render (so `claims.terminal` telemetry + observability side-effects already
+ * fired); the seam gates ONLY whether that render OVERWRITES the responder draft.
+ *
+ * Thin bridge: it evaluates the PURE {@link decideRenderPrecedence} lattice, emits
+ * the observe-only `claims.render_precedence` telemetry, and returns the seam
+ * `"render" | "keep_draft"`. All policy lives in the pure lattice; this adds only
+ * the side-channel log. Absent seam (flag OFF) → core defaults to "render" →
+ * byte-identical to 0.6.0's unconditional supersession.
+ */
+export function createIbatexasClaimsRenderPrecedence(): ClaimsRenderPrecedence {
+  return (ctx) => {
+    const verdict = decideRenderPrecedence(ctx);
+    emitRenderPrecedence(ctx, verdict);
+    return verdict.decision;
   };
 }

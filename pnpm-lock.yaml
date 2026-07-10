@@ -178,8 +178,8 @@ importers:
         specifier: ^0.3.0
         version: 0.3.0(@adjudicate/core@1.9.0)(@adjudicate/runtime@0.4.0)
       '@claustrum/core':
-        specifier: ^0.6.0
-        version: 0.6.0(@adjudicate/core@1.9.0)(@adjudicate/runtime@0.4.0)
+        specifier: ^0.7.0
+        version: 0.7.0(@adjudicate/core@1.9.0)(@adjudicate/runtime@0.4.0)
       '@claustrum/grounding-pgvector':
         specifier: ^0.1.4
         version: 0.1.4(@adjudicate/core@1.9.0)(@adjudicate/runtime@0.4.0)
@@ -1693,8 +1693,8 @@ packages:
       '@adjudicate/core': 1.9.0
       '@adjudicate/runtime': ^0.2.0
 
-  '@claustrum/core@0.6.0':
-    resolution: {integrity: sha512-RWHeoUZmsWu3uTAy1l5AWFLYmAuCWaZdrbNWS5yfzrxO6ZnOTFWgcvbIrK+74oOdhjxTiGityVtR+r0Bd58P4g==}
+  '@claustrum/core@0.7.0':
+    resolution: {integrity: sha512-nf5mtUFH0aKwb1TFlrztWBJwiYF239BqekGdVFkoszLMoRoFkO8xGGBZI69g7dYFzVSIgJdqlSZx0ykVNYJ17w==}
     engines: {node: '>=20.0.0'}
     peerDependencies:
       '@adjudicate/core': 1.9.0
@@ -12284,7 +12284,7 @@ snapshots:
       '@adjudicate/core': 1.9.0
       '@adjudicate/runtime': 0.4.0
 
-  '@claustrum/core@0.6.0(@adjudicate/core@1.9.0)(@adjudicate/runtime@0.4.0)':
+  '@claustrum/core@0.7.0(@adjudicate/core@1.9.0)(@adjudicate/runtime@0.4.0)':
     dependencies:
       '@adjudicate/core': 1.9.0
       '@adjudicate/runtime': 0.4.0
@@ -19693,7 +19693,7 @@ snapshots:
       '@next/eslint-plugin-next': 16.2.2
       eslint: 9.39.4(jiti@2.6.1)
       eslint-import-resolver-node: 0.3.10
-      eslint-import-resolver-typescript: 3.10.1(eslint-plugin-import@2.32.0)(eslint@9.39.4(jiti@2.6.1))
+      eslint-import-resolver-typescript: 3.10.1(eslint-plugin-import@2.32.0(eslint@9.39.4(jiti@2.6.1)))(eslint@9.39.4(jiti@2.6.1))
       eslint-plugin-import: 2.32.0(eslint-import-resolver-typescript@3.10.1)(eslint@9.39.4(jiti@2.6.1))
       eslint-plugin-jsx-a11y: 6.10.2(eslint@9.39.4(jiti@2.6.1))
       eslint-plugin-react: 7.37.5(eslint@9.39.4(jiti@2.6.1))
@@ -19716,7 +19716,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  eslint-import-resolver-typescript@3.10.1(eslint-plugin-import@2.32.0)(eslint@9.39.4(jiti@2.6.1)):
+  eslint-import-resolver-typescript@3.10.1(eslint-plugin-import@2.32.0(eslint@9.39.4(jiti@2.6.1)))(eslint@9.39.4(jiti@2.6.1)):
     dependencies:
       '@nolyfill/is-core-module': 1.0.39
       debug: 4.4.3(supports-color@8.1.1)
@@ -19741,13 +19741,13 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  eslint-module-utils@2.12.1(eslint-import-resolver-node@0.3.10)(eslint-import-resolver-typescript@3.10.1)(eslint@9.39.4(jiti@2.6.1)):
+  eslint-module-utils@2.12.1(eslint-import-resolver-node@0.3.10)(eslint-import-resolver-typescript@3.10.1(eslint-plugin-import@2.32.0(eslint@9.39.4(jiti@2.6.1)))(eslint@9.39.4(jiti@2.6.1)))(eslint@9.39.4(jiti@2.6.1)):
     dependencies:
       debug: 3.2.7
     optionalDependencies:
       eslint: 9.39.4(jiti@2.6.1)
       eslint-import-resolver-node: 0.3.10
-      eslint-import-resolver-typescript: 3.10.1(eslint-plugin-import@2.32.0)(eslint@9.39.4(jiti@2.6.1))
+      eslint-import-resolver-typescript: 3.10.1(eslint-plugin-import@2.32.0(eslint@9.39.4(jiti@2.6.1)))(eslint@9.39.4(jiti@2.6.1))
     transitivePeerDependencies:
       - supports-color
 
@@ -19791,7 +19791,7 @@ snapshots:
       doctrine: 2.1.0
       eslint: 9.39.4(jiti@2.6.1)
       eslint-import-resolver-node: 0.3.10
-      eslint-module-utils: 2.12.1(eslint-import-resolver-node@0.3.10)(eslint-import-resolver-typescript@3.10.1)(eslint@9.39.4(jiti@2.6.1))
+      eslint-module-utils: 2.12.1(eslint-import-resolver-node@0.3.10)(eslint-import-resolver-typescript@3.10.1(eslint-plugin-import@2.32.0(eslint@9.39.4(jiti@2.6.1)))(eslint@9.39.4(jiti@2.6.1)))(eslint@9.39.4(jiti@2.6.1))
       hasown: 2.0.2
       is-core-module: 2.16.1
       is-glob: 4.0.3
