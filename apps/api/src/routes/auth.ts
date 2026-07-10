@@ -978,4 +978,48 @@ export async function authRoutes(server: FastifyInstance): Promise<void> {
         });
     },
   );
+
+  // ── POST /api/auth/staff/logout ───────────────────────────────────────────
+  // Revoke the httpOnly `staff_token` JWT and clear the cookie so the admin
+  // shell's "Sair" actually ends the server session (STAFFREVOKE). Lives under
+  // the `/api/auth/staff/*` prefix so the admin proxy (ALLOWED_PREFIXES) reaches
+  // it without weakening the S1 boundary. No auth preHandler: logout is
+  // best-effort and idempotent — it must succeed even for an expired/near-expiry
+  // token so the browser never gets stuck "logged in".
+  app.post(
+    "/api/auth/staff/logout",
+    {
+      schema: {
+        tags: ["auth"],
+        summary: "Logout de funcionário — limpar cookie e revogar JWT",
+      },
+    },
+    async (request, reply) => {
+      // Revoke the staff JWT via the shared `jwt:revoked:<jti>` key that
+      // middleware/auth.ts checkRevocation consults on the staff path. Mirrors
+      // the customer/staff revoke in POST /api/auth/logout. Best-effort.
+      try {
+        const raw = request.cookies?.["staff_token"];
+        if (raw) {
+          const jwt = server as unknown as { jwt: { decode: (t: string) => { jti?: string; exp?: number } | null } };
+          const payload = jwt.jwt.decode(raw);
+          if (payload?.jti && payload.exp) {
+            const nowSec = Math.floor(Date.now() / 1000);
+            const remainingTtl = payload.exp - nowSec;
+            if (remainingTtl > 0) {
+              const redis = await getRedisClient();
+              await redis.set(rk(`jwt:revoked:${payload.jti}`), "1", { EX: remainingTtl });
+            }
+          }
+        }
+      } catch {
+        // Best-effort revocation — logout must always succeed
+      }
+
+      return reply
+        .clearCookie("staff_token", { path: "/" })
+        .code(200)
+        .send({ ok: true });
+    },
+  );
 }

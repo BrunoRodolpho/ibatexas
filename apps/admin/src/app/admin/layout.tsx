@@ -442,7 +442,16 @@ export default function AdminRootLayout({ children }: { readonly children: React
   }, [])
 
   /* ── Logout handler ─────────────────────────────────────────────── */
-  const handleLogout = useCallback(() => {
+  const handleLogout = useCallback(async () => {
+    // Revoke the httpOnly `staff_token` on the server (STAFFREVOKE) so the
+    // authoritative /auth/staff/me check can't silently re-authenticate on the
+    // next refresh. Best-effort — clear local state even if the call fails so
+    // the UI never gets stuck logged in.
+    try {
+      await fetch('/api/proxy/auth/staff/logout', { method: 'POST', credentials: 'include' })
+    } catch {
+      // Best-effort — proceed to clear local state regardless.
+    }
     deleteCookie('admin-session')
     // Signal cross-tab logout
     localStorage.setItem('admin-session-sync', Date.now().toString())
