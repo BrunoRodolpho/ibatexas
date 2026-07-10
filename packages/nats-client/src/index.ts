@@ -63,6 +63,35 @@ import { streamForSubject } from "./streams.js"
 let natsConn: NatsConnection | null = null
 let pendingConnection: Promise<NatsConnection> | null = null
 
+// BKL-129: process-compose's env-file parser hands a trailing `# comment` through
+// as the VALUE whenever the value is EMPTY (`KEY=   # comment`). For env vars that
+// name a FILE PATH (NATS_CREDS_PATH, NATS_TLS_CA) that poisoned value is never a
+// real path — fail CLOSED with a message that names the var + the gotcha instead
+// of a bare ENOENT on a nonsense path. (NATS_TLS_REQUIRED is a boolean parse that
+// safely degrades to its `false` default on a `#…` value, so it needs no guard.)
+const INLINE_COMMENT_GOTCHA =
+  "Did you leave an inline comment on an empty env value? process-compose hands a " +
+  "trailing '# comment' through as the VALUE when the value is empty — move the " +
+  "comment to its own line above the key."
+
+function assertFilePathEnvNotPoisoned(name: string, value: string): void {
+  if (value.startsWith("#")) {
+    throw new Error(
+      `[nats][config] ${name} is not a file path — it starts with '#': ` +
+        `'${value}'. ${INLINE_COMMENT_GOTCHA}`,
+    )
+  }
+}
+
+function fileReadEnvError(name: string, path: string, err: unknown): Error {
+  const code = (err as NodeJS.ErrnoException | undefined)?.code
+  return new Error(
+    `[nats][config] ${name} points at a file that could not be read: '${path}'` +
+      `${code ? ` (${code})` : ""}. Provision the file or unset ${name}. ` +
+      `${INLINE_COMMENT_GOTCHA}`,
+  )
+}
+
 /**
  * Resolve NATS authenticator from env. Returns `undefined` when no
  * credentials are configured (the default for dev / shadow runs).
@@ -72,9 +101,15 @@ let pendingConnection: Promise<NatsConnection> | null = null
  *   - NATS_NKEY_SEED   — nkey seed (string)
  */
 async function resolveAuthenticator(): Promise<Authenticator | undefined> {
-  const credsPath = process.env.NATS_CREDS_PATH
+  const credsPath = process.env.NATS_CREDS_PATH?.trim()
   if (credsPath && credsPath.length > 0) {
-    const buf = await readFile(credsPath)
+    assertFilePathEnvNotPoisoned("NATS_CREDS_PATH", credsPath)
+    let buf: Awaited<ReturnType<typeof readFile>>
+    try {
+      buf = await readFile(credsPath)
+    } catch (err) {
+      throw fileReadEnvError("NATS_CREDS_PATH", credsPath, err)
+    }
     return credsAuthenticator(buf)
   }
   const nkeySeed = process.env.NATS_NKEY_SEED
@@ -108,13 +143,21 @@ function parseBoolEnv(
  * server does not offer TLS.
  */
 async function resolveTls(): Promise<TlsOptions | undefined> {
-  const caPath = process.env.NATS_TLS_CA
+  const caPath = process.env.NATS_TLS_CA?.trim()
   // NEW-P1-ENV: was `=== "true"` — accepted only the exact string and
   // silently fell through for "TRUE", "1", "yes". A security-critical
   // gate (transport encryption) MUST honour the canonical truthy lexicon.
+  // BKL-129: a comment-poisoned NATS_TLS_REQUIRED (`#…`) is not in the truthy
+  // lexicon, so parseBoolEnv safely returns its `false` default — no guard needed.
   const required = parseBoolEnv(process.env.NATS_TLS_REQUIRED, false)
   if (caPath && caPath.length > 0) {
-    const ca = await readFile(caPath, "utf8")
+    assertFilePathEnvNotPoisoned("NATS_TLS_CA", caPath)
+    let ca: string
+    try {
+      ca = await readFile(caPath, "utf8")
+    } catch (err) {
+      throw fileReadEnvError("NATS_TLS_CA", caPath, err)
+    }
     return { ca }
   }
   if (required) {

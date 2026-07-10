@@ -1140,12 +1140,36 @@ function installFirstPartyPacks(): SealablePackInput[] {
 // minimum — NOT guard function BODIES (describePolicyBundle emits only metadata).
 // It is a config-DRIFT tripwire complementary to golden vectors, not behavioral
 // attestation.
-function parseSealDigests(raw: string | undefined): Map<string, string> {
+// Exported for unit testing (config-seal.test.ts). BKL-129: hardened to FAIL
+// CLOSED on a malformed entry instead of silently skipping it — process-compose's
+// env-file parser hands a trailing `# comment` through as the VALUE whenever the
+// value is EMPTY (`CONFIG_SEAL_DIGESTS=   # e.g. …=<64hex>`). Left unchecked, the
+// comment parsed as a pinned pack id (`# e.g. ibatexas/pack-orders`) with a bogus
+// `<64hex>` digest and boot refused with a MISLEADING "pack config drift" error.
+export function parseSealDigests(raw: string | undefined): Map<string, string> {
   const map = new Map<string, string>();
-  if (!raw) return map;
+  // Genuinely empty/unset (incl. all-whitespace) ⇒ no enforcement (safe default).
+  if (!raw || raw.trim().length === 0) return map;
   for (const entry of raw.split(";")) {
-    const [id, hex] = entry.split("=").map((s) => s.trim());
-    if (id && hex) map.set(id, hex.toLowerCase());
+    const trimmed = entry.trim();
+    if (trimmed.length === 0) continue; // tolerate trailing/duplicate ';'
+    const [id, hex] = trimmed.split("=").map((s) => s.trim());
+    const malformed =
+      !id ||
+      !hex ||
+      id.startsWith("#") ||
+      !/^[0-9a-f]{64}$/.test(hex.toLowerCase());
+    if (malformed) {
+      throw new Error(
+        `[config-seal] CONFIG_SEAL_DIGESTS is malformed — refusing to boot. ` +
+          `Expected '<packId>=<64-hex-digest>[;<packId>=<64-hex-digest>…]' ` +
+          `(mint with \`ibx kernel seal\`). Offending entry: '${entry}'. ` +
+          `Did you leave an inline comment on an empty env value? process-compose ` +
+          `hands a trailing '# comment' through as the VALUE when the value is ` +
+          `empty — move the comment to its own line above the key.`,
+      );
+    }
+    map.set(id, hex.toLowerCase());
   }
   return map;
 }
