@@ -597,11 +597,14 @@ describe("ordersPolicyBundle — REQUEST_CONFIRMATION for large checkout", () =>
 // ── Business: ESCALATE for large-ticket cancel ──────────────────────────
 
 describe("ordersPolicyBundle — ESCALATE for large cancel", () => {
-  it("ESCALATE order.cancel when total >= R$ 1.000", () => {
+  it("ESCALATE order.cancel when total >= R$ 1.000 (unpaid — escalateLargeCancel)", () => {
     const decision = adjudicate(
       env("order.cancel", { orderId: "o-1", reason: "changed_mind" }),
       state({
         orderId: "o-1",
+        // paymentStatus null ⇒ gatePaidCancel is inert; this exercises
+        // escalateLargeCancel (the UNPAID large-cancel escalation).
+        paymentStatus: null,
         totalInCentavos: 200_000,
         lastAction: null,
       }),
@@ -612,16 +615,174 @@ describe("ordersPolicyBundle — ESCALATE for large cancel", () => {
     expect(decision.to).toBe("human")
   })
 
-  it("EXECUTE small-ticket cancel", () => {
+  it("EXECUTE small-ticket cancel (unpaid — no paid-cancel park, no large-cancel escalate)", () => {
     const decision = adjudicate(
       env("order.cancel", { orderId: "o-1", reason: "changed_mind" }),
       state({
         orderId: "o-1",
+        // paymentStatus null ⇒ an unpaid small cancel EXECUTEs (a PAID small
+        // cancel instead parks — see the BKL-036 paid-cancel block below).
+        paymentStatus: null,
         totalInCentavos: 5_000,
       }),
       ordersPolicyBundle,
     )
     expect(decision.kind).toBe("EXECUTE")
+  })
+})
+
+// ── Business: BKL-036 paid-state cancel gating (J015) ───────────────────
+//
+// A customer order.cancel on a SETTLED order implies a refund of the total, so
+// it must never silently EXECUTE: it parks (REQUEST_CONFIRMATION) below the
+// escalate band and ESCALATEs at/above it. The refund-equivalent magnitude is
+// the order total. gatePaidCancel is ordered BEFORE escalateLargeCancel, so it
+// owns the PAID cancel path in both bands.
+
+describe("ordersPolicyBundle — BKL-036 paid-state cancel (J015)", () => {
+  it("PAID sub-escalate cancel → REQUEST_CONFIRMATION (never silent EXECUTE)", () => {
+    const decision = adjudicate(
+      env("order.cancel", { orderId: "o-1", reason: "changed_mind" }),
+      // default state() is paymentStatus "paid"; small total (< R$1.000).
+      state({ orderId: "o-1", fulfillmentStatus: "confirmed", totalInCentavos: 5_000 }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REQUEST_CONFIRMATION")
+  })
+
+  it("PAID high-band cancel (total >= R$1.000) → ESCALATE to human", () => {
+    const decision = adjudicate(
+      env("order.cancel", { orderId: "o-1", reason: "changed_mind" }),
+      state({ orderId: "o-1", fulfillmentStatus: "confirmed", paymentStatus: "paid", totalInCentavos: 150_000 }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("ESCALATE")
+    if (decision.kind !== "ESCALATE") return
+    expect(decision.to).toBe("human")
+  })
+
+  it("PAID cancel with an UNKNOWN total still parks (never EXECUTEs)", () => {
+    const decision = adjudicate(
+      env("order.cancel", { orderId: "o-1", reason: "changed_mind" }),
+      state({ orderId: "o-1", fulfillmentStatus: "confirmed", paymentStatus: "paid", totalInCentavos: undefined }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REQUEST_CONFIRMATION")
+  })
+
+  it("partially_refunded / disputed count as settled → REQUEST_CONFIRMATION", () => {
+    for (const paymentStatus of ["partially_refunded", "disputed"]) {
+      const decision = adjudicate(
+        env("order.cancel", { orderId: "o-1", reason: "changed_mind" }),
+        state({ orderId: "o-1", fulfillmentStatus: "confirmed", paymentStatus, totalInCentavos: 5_000 }),
+        ordersPolicyBundle,
+      )
+      expect(decision.kind).toBe("REQUEST_CONFIRMATION")
+    }
+  })
+
+  it("UNPAID small cancel is NOT parked by gatePaidCancel → EXECUTE", () => {
+    for (const paymentStatus of ["awaiting_payment", "payment_pending", "cash_pending", null]) {
+      const decision = adjudicate(
+        env("order.cancel", { orderId: "o-1", reason: "changed_mind" }),
+        state({ orderId: "o-1", fulfillmentStatus: "confirmed", paymentStatus, totalInCentavos: 5_000 }),
+        ordersPolicyBundle,
+      )
+      expect(decision.kind).toBe("EXECUTE")
+    }
+  })
+
+  it("gatePaidCancel does NOT touch order.cancel.system (system compensation)", () => {
+    const sysEnv = buildEnvelope({
+      kind: "order.cancel.system",
+      payload: { orderId: "o-1" } as OrderPayload,
+      actor: { principal: "system", sessionId: "stale-order-checker:evt-1" },
+      taint: "SYSTEM",
+      nonce: "n-sys",
+      createdAt: DET_TIME,
+    })
+    const decision = adjudicate(
+      sysEnv,
+      state({ orderId: "o-1", fulfillmentStatus: "confirmed", paymentStatus: "paid", totalInCentavos: 5_000 }),
+      ordersPolicyBundle,
+    )
+    // A paid state must not turn a system auto-cancel into a customer confirm.
+    expect(decision.kind).not.toBe("REQUEST_CONFIRMATION")
+  })
+
+  it("CONFIRM-RESUME: the identical paid-cancel envelope + confirmationReceipt re-adjudicates to EXECUTE", async () => {
+    const { adjudicateAndAudit } = await import("@adjudicate/core")
+    const cancelEnvelope = env("order.cancel", { orderId: "o-1", reason: "changed_mind" })
+    const paidState = state({ orderId: "o-1", fulfillmentStatus: "confirmed", paymentStatus: "paid", totalInCentavos: 5_000 })
+
+    // Without a receipt the paid cancel parks.
+    const parked = adjudicate(cancelEnvelope, paidState, ordersPolicyBundle)
+    expect(parked.kind).toBe("REQUEST_CONFIRMATION")
+
+    // The confirm leg re-adjudicates the SAME envelope carrying a matching
+    // receipt; the kernel's 2a override substitutes EXECUTE while every
+    // state/taint/auth/business guard is still evaluated (the paid guard would
+    // still park a receipt-less re-ask). A no-op audit sink keeps this a pure
+    // kernel-seam check.
+    const sink = { emit: async () => {} }
+    const resumed = await adjudicateAndAudit(cancelEnvelope, paidState, ordersPolicyBundle, {
+      sink,
+      confirmationReceipt: {
+        intentHash: cancelEnvelope.intentHash,
+        at: DET_TIME,
+      },
+    })
+    expect(resumed.decision.kind).toBe("EXECUTE")
+  })
+})
+
+// ── State: BKL-036 amend point-of-no-return (tier a) ────────────────────
+//
+// canAmendOrder now gates fulfillmentStatus against the cancel PONR floor:
+// once ready / out-for-delivery / delivered (or already cancelled), a customer
+// amend is REFUSEd at the kernel (was: "order exists" only, so the gate never
+// reached the kernel). A still-`preparing` order stays amendable (add-item is
+// allowed while preparing, mirroring the route validator's checkAddItem).
+
+describe("ordersPolicyBundle — BKL-036 amend PONR (requireAmendable)", () => {
+  it("REFUSE order.amend.request past the PONR (ready / in_delivery / delivered) — order.already_shipped", () => {
+    for (const fs of ["ready", "in_delivery", "delivered"]) {
+      const decision = adjudicate(
+        env("order.amend.request", { orderId: "o-1", changes: [{ op: "remove", itemId: "i-1" }] }),
+        state({ orderId: "o-1", fulfillmentStatus: fs }),
+        ordersPolicyBundle,
+      )
+      expect(decision.kind).toBe("REFUSE")
+      if (decision.kind !== "REFUSE") return
+      expect(decision.refusal.code).toBe("order.already_shipped")
+    }
+  })
+
+  it("REFUSE order.amend.request on a canceled fulfillment status — order.already_cancelled", () => {
+    const decision = adjudicate(
+      env("order.amend.request", { orderId: "o-1", changes: [{ op: "remove", itemId: "i-1" }] }),
+      state({ orderId: "o-1", fulfillmentStatus: "canceled" }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REFUSE")
+    if (decision.kind !== "REFUSE") return
+    expect(decision.refusal.code).toBe("order.already_cancelled")
+  })
+
+  it("ALLOW order.amend.request while still amendable (pending / preparing not blocked by PONR)", () => {
+    for (const fs of ["pending", "confirmed", "preparing"]) {
+      const decision = adjudicate(
+        env("order.amend.request", { orderId: "o-1", changes: [{ op: "remove", itemId: "i-1" }] }),
+        state({ orderId: "o-1", fulfillmentStatus: fs }),
+        ordersPolicyBundle,
+      )
+      // Not REFUSEd by the amendability PONR guard (reaches EXECUTE via
+      // executeAmend). preparing stays amendable per the route validator parity.
+      if (decision.kind === "REFUSE") {
+        expect(decision.refusal.code).not.toBe("order.already_shipped")
+        expect(decision.refusal.code).not.toBe("order.already_cancelled")
+      }
+    }
   })
 })
 

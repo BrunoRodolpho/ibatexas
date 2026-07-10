@@ -44,6 +44,10 @@ export function OrderActions({ orderId, fulfillmentStatus, currentPayment, order
   const [typeOpen, setTypeOpen] = useState(false)
   const [activeAction, setActiveAction] = useState<ActiveAction>(null)
   const [errorMsg, setErrorMsg] = useState('')
+  // BKL-036: a PAID order does not cancel synchronously — the kernel PARKS it
+  // (HTTP 202 { confirmationRequired }). This holds the honest "needs
+  // confirmation" notice shown inside the still-open cancel modal.
+  const [cancelNotice, setCancelNotice] = useState('')
 
   const isBusy = activeAction !== null
 
@@ -80,14 +84,25 @@ export function OrderActions({ orderId, fulfillmentStatus, currentPayment, order
   }
 
   const handleCancel = useCallback(async () => {
-    // Keep modal open during request — close only on success/failure
+    // Keep modal open during request — close only on a real (executed) cancel
     setActiveAction('cancel')
     setErrorMsg('')
+    setCancelNotice('')
     try {
-      await apiFetch(`/api/orders/${orderId}/cancel`, {
+      const result = await apiFetch<{ confirmationRequired?: boolean }>(`/api/orders/${orderId}/cancel`, {
         method: 'POST',
         body: JSON.stringify({}),
       })
+      // BKL-036 — a paid cancel is PARKED, not executed: the route returns
+      // HTTP 202 { confirmationRequired } (a 2xx, so apiFetch does NOT throw).
+      // There is no customer-facing step-2 confirm endpoint yet, so treating
+      // this as success would be a false confirmation (the order is NOT
+      // cancelled). Keep the modal open with an honest notice and skip the
+      // success path (no onMutate, no close). Full web two-phase is a follow-up.
+      if (result?.confirmationRequired) {
+        setCancelNotice(t('cancel_needs_confirmation'))
+        return
+      }
       setCancelOpen(false)
       onMutate()
     } catch {
@@ -132,7 +147,7 @@ export function OrderActions({ orderId, fulfillmentStatus, currentPayment, order
   // Cancel modal footer
   const cancelFooter = (
     <div className="flex gap-2 justify-end">
-      <Button variant="secondary" size="sm" disabled={activeAction === 'cancel'} onClick={() => setCancelOpen(false)}>
+      <Button variant="secondary" size="sm" disabled={activeAction === 'cancel'} onClick={() => { setCancelOpen(false); setCancelNotice('') }}>
         {t('cancel_confirm_no')}
       </Button>
       <Button variant="danger" size="sm" isLoading={activeAction === 'cancel'} onClick={handleCancel}>
@@ -194,7 +209,7 @@ export function OrderActions({ orderId, fulfillmentStatus, currentPayment, order
         {/* Cancel — visually separated with spacing */}
         {canCancel && (
           <div className="mt-6">
-            <Button variant="danger" size="md" className="w-full" disabled={isBusy} isLoading={activeAction === 'cancel'} onClick={() => setCancelOpen(true)}>
+            <Button variant="danger" size="md" className="w-full" disabled={isBusy} isLoading={activeAction === 'cancel'} onClick={() => { setCancelNotice(''); setCancelOpen(true) }}>
               {t('cancel_action')}
             </Button>
           </div>
@@ -202,9 +217,12 @@ export function OrderActions({ orderId, fulfillmentStatus, currentPayment, order
       </div>
 
       {/* Cancel confirmation modal */}
-      <Modal isOpen={cancelOpen} onClose={() => setCancelOpen(false)} title={t('cancel_confirm_title')} footer={cancelFooter}>
+      <Modal isOpen={cancelOpen} onClose={() => { setCancelOpen(false); setCancelNotice('') }} title={t('cancel_confirm_title')} footer={cancelFooter}>
         <p className="text-sm text-smoke-600 mb-2">{t('cancel_confirm_body')}</p>
         <p className="text-xs text-smoke-400">{t('cancel_refund_note')}</p>
+        {cancelNotice && (
+          <p className="text-xs text-accent-red mt-3" role="status">{cancelNotice}</p>
+        )}
       </Modal>
 
       {/* Amendment dialog */}

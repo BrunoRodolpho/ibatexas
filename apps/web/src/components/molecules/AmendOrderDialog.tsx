@@ -134,10 +134,20 @@ export function AmendOrderDialog({ orderId, items, fulfillmentStatus, isOpen, on
     try {
       if (isFullCancellation) {
         // All items removed — cancel the order instead of amending
-        await apiFetch(`/api/orders/${orderId}/cancel`, {
+        const result = await apiFetch<{ confirmationRequired?: boolean }>(`/api/orders/${orderId}/cancel`, {
           method: 'POST',
           body: JSON.stringify({ reason: 'Todos os itens removidos pelo cliente' }),
         })
+        // BKL-036 — a paid cancel is PARKED, not executed: HTTP 202
+        // { confirmationRequired } (a 2xx, so apiFetch does NOT throw). Treating
+        // it as success here would be a false confirmation (the order is NOT
+        // cancelled). There is no customer step-2 confirm endpoint yet, so keep
+        // the dialog open with an honest notice and skip the success path.
+        if (result?.confirmationRequired) {
+          setErrorMsg(t('cancel_needs_confirmation'))
+          setSubmitState('idle')
+          return
+        }
       } else {
         // Atomic batch — all changes validated and applied together
         const batchChanges = changes.map((c) => ({

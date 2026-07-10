@@ -761,6 +761,7 @@
     "cancel_confirm_no": "Voltar",
     "cancel_success": "Pedido cancelado com sucesso.",
     "cancel_error": "Não foi possível cancelar o pedido.",
+    "cancel_needs_confirmation": "Seu pedido já está pago — o cancelamento precisa de confirmação e ainda NÃO foi feito. Continue pelo chat para confirmar o cancelamento e o estorno.",
     "ponr_passed": "O prazo para cancelamento já passou.",
     "notes_title": "Observações",
     "notes_placeholder": "Adicionar observação…",

@@ -45,7 +45,11 @@ import {
   createRewriteGuard,
   requireTenantBinding,
 } from "@adjudicate/primitives"
-import { createPixPendingDeferGuard } from "@adjudicate/pack-payments-pix"
+import {
+  createPixPendingDeferGuard,
+  CONFIRM_REFUND_THRESHOLD_CENTAVOS,
+  ESCALATE_REFUND_THRESHOLD_CENTAVOS,
+} from "@adjudicate/pack-payments-pix"
 import { PII_PATTERNS } from "@ibatexas/pii"
 import {
   canTransition,
@@ -193,6 +197,20 @@ const CUSTOMER_POST_PONR_FULFILLMENT: ReadonlySet<string> = new Set([
   "preparing",
 ])
 
+// BKL-036 (J015) — payment statuses in which the customer's money is already
+// SETTLED (captured), so a customer `order.cancel` implies a REFUND of the
+// order total. Reuses the confirmed-payment set (`paid`/`captured`/`confirmed`,
+// the same vocabulary the PIX-defer guard treats as settled) and adds the two
+// further money-held statuses a paid order can be in (`partially_refunded`,
+// `disputed`). NOT settled: awaiting_payment / payment_pending / cash_pending
+// (nothing captured yet) and refunded / canceled / waived (money already
+// returned or the order already terminal). Drives `gatePaidCancel`.
+const CANCEL_REFUND_IMPLYING_PAYMENT_STATUSES: ReadonlySet<string> = new Set([
+  ...ORDER_PIX_CONFIRMED_STATUSES,
+  "partially_refunded",
+  "disputed",
+])
+
 function orderAlreadyCancelled(state: OrderState): boolean {
   return state.ctx.lastAction === "cancelled" || state.ctx.fulfillmentStatus === "canceled"
 }
@@ -206,8 +224,23 @@ function canCancelOrder(state: OrderState, isSystem: boolean): boolean {
   return !ponr.has(fs)
 }
 
+// BKL-036 finding 3 (tier a) — amend point-of-no-return. Mirrors the cancel
+// PONR floor (`canCancelOrder`, above): once the order is out of the kitchen's
+// control (ready / out-for-delivery / delivered) OR already cancelled, a
+// customer amend is past the point of no return. Uses `POST_PONR_FULFILLMENT`
+// (the hard floor) rather than the CUSTOMER set so an add-item to a still-
+// `preparing` order stays allowed — the route validator's `checkAddItem`
+// permits preparing adds, and blocking it here would regress that flow.
+// Tier (a) is fulfillment-state gating ONLY; the order-age time-window
+// (createdAt / amendPonrMinutes) is tier (b), out of scope. Lenient when the
+// host has not projected a status (`fs` absent) so a caller that does not carry
+// order state is unaffected — same posture as `canCancelOrder`.
 function canAmendOrder(state: OrderState): boolean {
-  return hasOrderId(state) && state.ctx.lastAction !== "cancelled"
+  if (!hasOrderId(state)) return false
+  if (orderAlreadyCancelled(state)) return false
+  const fs = state.ctx.fulfillmentStatus
+  if (typeof fs !== "string") return true
+  return !POST_PONR_FULFILLMENT.has(fs)
 }
 
 function allSlotsFilled(state: OrderState): boolean {
@@ -585,6 +618,15 @@ const AMEND_KINDS: ReadonlySet<string> = new Set([
 const requireAmendable: OrderGuard = (envelope, state) => {
   if (!AMEND_KINDS.has(envelope.kind)) return null
   if (canAmendOrder(state)) return null
+  // Distinguish an already-cancelled order from one past the amend PONR so the
+  // audit basis is accurate (mirrors requireCancellable's two-case split).
+  if (orderAlreadyCancelled(state)) {
+    return decisionRefuse(refuseOrderAlreadyCancelled(), [
+      basis("state", BASIS_CODES.state.TERMINAL_STATE, {
+        reason: "already_cancelled",
+      }),
+    ])
+  }
   return decisionRefuse(refuseOrderAlreadyShipped(), [
     basis("state", BASIS_CODES.state.TERMINAL_STATE, {
       reason: "already_shipped",
@@ -780,6 +822,97 @@ const confirmLargeTicket = nameGuard(
       `Esse pedido soma R$ ${(value / 100).toFixed(2).replace(".", ",")}. Confirma a finalização?`,
   }),
 ) as OrderGuard
+
+/**
+ * BKL-036 finding 2 (J015) — PAID-state cancel gating.
+ *
+ * A customer `order.cancel` on an order whose payment is already SETTLED
+ * (money captured — `state.ctx.paymentStatus` ∈
+ * `CANCEL_REFUND_IMPLYING_PAYMENT_STATUSES`) implies a REFUND of the order
+ * total. Before this guard NO pack-orders guard read the paid state for
+ * `order.cancel`: a paid cancel reached kernel EXECUTE, the executor then
+ * attempted an ILLEGAL `paid → canceled` payment transition, 409'd
+ * (P2-LOGIC-CANCELPAY), and left a CANCELED order with a live PAID payment —
+ * the JOURNEY-015 header's documented gap and the reachability half of the
+ * BKL-130 half-applied-state defect. This guard moves the paid-state decision
+ * INTO the kernel, following the refund-magnitude band idiom and reusing the
+ * CANONICAL band thresholds from `@adjudicate/pack-payments-pix` (the source
+ * `@ibatexas/pack-payments` itself mirrors):
+ *
+ *   unpaid (no settled payment)                       → null  (unchanged — the
+ *                                                        fulfillment-state PONR
+ *                                                        guards govern)
+ *   paid + refund-equivalent ≥ ESCALATE threshold      → ESCALATE (human)
+ *   paid + refund-equivalent  < ESCALATE threshold      → REQUEST_CONFIRMATION
+ *
+ * A paid cancel therefore NEVER silently EXECUTEs — it parks in the low/medium
+ * band and escalates in the high band. The refund-equivalent magnitude is the
+ * order total (`state.ctx.totalInCentavos`, the amount that would be returned),
+ * read exactly as `escalateLargeCancel` reads it; when the host has not
+ * projected a total the guard still parks (never EXECUTEs). Placed BEFORE
+ * `escalateLargeCancel` so the PAID path is owned here in full (both bands
+ * reachable + audited with a paid-specific basis) while `escalateLargeCancel`
+ * continues to govern the UNPAID large-cancel escalation unchanged. The
+ * REQUEST_CONFIRMATION is resolved exactly like the large-ticket checkout
+ * confirm — the identical envelope re-adjudicated with a matching
+ * `confirmationReceipt`, which the kernel's 2a override flips to EXECUTE while
+ * still re-running every state/taint/auth guard. `order.cancel.system` (cron /
+ * subscriber compensation) is not matched — a system auto-cancel never asks the
+ * customer to confirm a refund. The `CONFIRM_REFUND_THRESHOLD_CENTAVOS` band
+ * boundary is carried on the audit basis for provenance; because even a
+ * sub-confirm-threshold paid cancel parks, it does not change the two-band
+ * verdict (a paid cancel below the escalate threshold always confirms).
+ */
+const gatePaidCancel: OrderGuard = (envelope, state) => {
+  if (envelope.kind !== "order.cancel") return null
+  const ps = state.ctx.paymentStatus
+  if (
+    typeof ps !== "string" ||
+    !CANCEL_REFUND_IMPLYING_PAYMENT_STATUSES.has(ps)
+  ) {
+    return null // no settled payment ⇒ a cancel implies no refund ⇒ unchanged
+  }
+  const refundEquivalentCentavos = state.ctx.totalInCentavos ?? null
+  const reais =
+    typeof refundEquivalentCentavos === "number"
+      ? (refundEquivalentCentavos / 100).toFixed(2).replace(".", ",")
+      : null
+  // High band: a large paid cancel escalates to a human (mirrors the refund
+  // ESCALATE band + escalateLargeCancel's >= comparator/threshold).
+  if (
+    typeof refundEquivalentCentavos === "number" &&
+    refundEquivalentCentavos >= ESCALATE_REFUND_THRESHOLD_CENTAVOS
+  ) {
+    return decisionEscalate(
+      "human",
+      "paid_cancel_refund_above_escalate_threshold",
+      [
+        basis("business", BASIS_CODES.business.RULE_VIOLATED, {
+          reason: "paid_cancel_refund_above_escalate_threshold",
+          refundEquivalentCentavos,
+          escalateThreshold: ESCALATE_REFUND_THRESHOLD_CENTAVOS,
+          paymentStatus: ps,
+        }),
+      ],
+    )
+  }
+  // Low / medium band: park for explicit confirmation — a paid cancel is a
+  // real-money refund and must never silently EXECUTE.
+  return decisionRequestConfirmation(
+    reais === null
+      ? "Esse pedido já foi pago. Cancelar implica reembolso — confirma o cancelamento?"
+      : `Esse pedido já foi pago (R$ ${reais}). Cancelar implica reembolso ao cliente — confirma o cancelamento?`,
+    [
+      basis("business", BASIS_CODES.business.RULE_SATISFIED, {
+        reason: "paid_cancel_requires_confirmation",
+        refundEquivalentCentavos,
+        confirmThreshold: CONFIRM_REFUND_THRESHOLD_CENTAVOS,
+        escalateThreshold: ESCALATE_REFUND_THRESHOLD_CENTAVOS,
+        paymentStatus: ps,
+      }),
+    ],
+  )
+}
 
 /**
  * Refund-equivalent ESCALATION: customer-initiated `order.cancel` on a
@@ -1055,6 +1188,11 @@ export const ordersPolicyBundle: PolicyBundle<
     clampUpdateToStockCap,
     validatePaymentMethod,
     refuseAmountAboveCap,
+    // BKL-036 (J015) — paid-state cancel gating BEFORE escalateLargeCancel so
+    // the PAID cancel path is owned by gatePaidCancel in full (ESCALATE high /
+    // REQUEST_CONFIRMATION low); escalateLargeCancel then governs the UNPAID
+    // large-cancel escalation unchanged.
+    gatePaidCancel,
     escalateLargeCancel,
     confirmLargeTicket,
     validateReviewRating,
