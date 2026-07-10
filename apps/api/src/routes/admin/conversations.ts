@@ -113,7 +113,11 @@ export async function conversationRoutes(server: FastifyInstance): Promise<void>
       let effectiveCustomerId = customerId;
       if (orderId) {
         const displayId = Number(orderId);
-        if (!Number.isInteger(displayId)) {
+        // displayId is a Prisma Int (INT4): a non-positive or above-INT4 value
+        // (Number.isInteger is true for it) would throw in orderProjection
+        // findMany and 500 a route whose contract is to degrade to an empty
+        // page, never 500. Treat out-of-range the same as a non-integer id.
+        if (!Number.isInteger(displayId) || displayId < 1 || displayId > 2147483647) {
           return reply.send({ conversations: [], count: 0 });
         }
         // displayId is NOT @unique in the schema (@default(autoincrement()) +

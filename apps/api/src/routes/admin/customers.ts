@@ -26,9 +26,12 @@ import {
   createOrderQueryService,
   createLoyaltyService,
 } from "@ibatexas/domain";
+import { buildAuditRecord, BASIS_CODES } from "@adjudicate/core";
+import { getAuditSink } from "@ibatexas/audit-sink";
 import { requireManagerRole, requireOwnerRole } from "../../middleware/staff-auth.js";
 import { getBroadcastOptOutStore } from "../../broadcast/broadcast-optout.js";
 import { composeAdminCustomerDetail } from "../../ops/admin-customer-compose.js";
+import { buildSystemEnvelope } from "../../subscribers/__shared__/system-actor-envelope.js";
 
 const ListQuery = z.object({
   q: z.string().trim().max(120).optional(),
@@ -143,6 +146,53 @@ export async function adminCustomerRoutes(server: FastifyInstance): Promise<void
         },
         "OWNER revealed a customer CPF",
       );
+
+      // Durable audit of the sensitive-PII access — the pino warn above is
+      // transient. Best-effort: an audit-sink failure / pre-boot state must NOT
+      // break the reveal (the warn above is the fallback signal). NO raw CPF in
+      // the record — only the customerId (UUID) + the acting staff identity.
+      try {
+        const auditEnvelope = buildSystemEnvelope({
+          kind: "customer.cpf.reveal" as const,
+          payload: {
+            customerId: request.params.id,
+            staffId: request.staffId ?? null,
+            staffRole: request.staffRole ?? null,
+          },
+          sourceSubject: "admin.customers.cpf_reveal",
+          eventId: `${request.params.id}:cpf_reveal:${Date.now()}`,
+        });
+        const record = buildAuditRecord({
+          envelope: auditEnvelope,
+          decision: {
+            kind: "EXECUTE",
+            basis: [
+              {
+                category: "business",
+                code: BASIS_CODES.business.RULE_SATISFIED,
+                detail: {
+                  event: "cpf_reveal",
+                  customerId: request.params.id,
+                  staffId: request.staffId ?? null,
+                  staffRole: request.staffRole ?? null,
+                },
+              },
+            ],
+          },
+          durationMs: 0,
+        });
+        await getAuditSink().emit(record);
+      } catch (err) {
+        request.log.warn(
+          {
+            event: "cpf_reveal_audit_failed",
+            customerId: request.params.id,
+            err: (err as Error).message,
+          },
+          "durable CPF-reveal audit emit failed — reveal not blocked",
+        );
+      }
+
       return reply.send({ cpf: customer.cpf ?? null });
     },
   );

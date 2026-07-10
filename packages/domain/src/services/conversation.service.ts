@@ -283,6 +283,13 @@ export function createConversationService(options?: ConversationServiceOptions) 
           select: { id: true },
         })
         if (!customer) return { rows: [], count: 0 }
+        // Explicit customerId is AUTHORITATIVE: when both are supplied, phone may
+        // only CONFIRM it, never silently substitute a different customer. A
+        // phone resolving to a different customerId than the one explicitly
+        // asked for degrades to an empty page (never a wrong-customer disclosure).
+        if (opts.customerId && opts.customerId !== customer.id) {
+          return { rows: [], count: 0 }
+        }
         scopedCustomerId = customer.id
       }
       const where: Prisma.ConversationWhereInput = {}
