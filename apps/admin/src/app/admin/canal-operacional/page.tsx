@@ -24,10 +24,19 @@ import {
   canSend,
   decisionBadgeVariant,
   decisionLabel,
+  markPendingConfirmation,
   MAX_OPS_CHAT_MESSAGE,
   type AssistantEntry,
   type OpsThreadEntry,
 } from '@/domains/admin/ops-chat.mappers'
+
+// Per-tab marker recording whether the thread's NEWEST turn parked awaiting money
+// confirmation. The persisted server thread keeps only { role, content }, so this
+// client marker is the only way a reload can tell the last turn was a still-open
+// REQUEST_CONFIRMATION park and re-surface the Confirmar/Cancelar affordance.
+// sessionStorage (not localStorage) so it is scoped to the tab/session and never
+// leaks a stale pending state into a later, unrelated session.
+const OPS_CHAT_PENDING_KEY = 'ibx.opsChat.pendingConfirmation'
 
 const STATELESS_CAPTION =
   'O histórico desta conversa fica salvo e é recarregado quando você reabre a tela.'
@@ -151,13 +160,54 @@ function ErrorBubble({ text }: Readonly<{ text: string }>): React.JSX.Element {
 /**
  * A REHYDRATED assistant turn (BKL-091) — same bubble as a live one but WITHOUT
  * the badge row: the persisted thread kept no kernel decision metadata, so we
- * never fabricate a badge for it.
+ * never fabricate a badge for it. The ONE exception is a still-open money park:
+ * when the client marker says this (newest) rehydrated turn is a pending
+ * REQUEST_CONFIRMATION, we surface a pt-BR "ação pendente de confirmação"
+ * indicator and re-expose the Confirmar/Cancelar affordance so the operator can
+ * resume it after a reload (posting "sim"/"não" resumes the real park server-side).
  */
-function HistoryAssistantBubble({ text }: Readonly<{ text: string }>): React.JSX.Element {
+function HistoryAssistantBubble({
+  text,
+  pendingConfirmation,
+  canConfirm,
+  onConfirm,
+}: Readonly<{
+  text: string
+  pendingConfirmation: boolean
+  canConfirm: boolean
+  onConfirm: (text: string) => void
+}>): React.JSX.Element {
   return (
     <div className="flex justify-start">
-      <div className="max-w-[80%] whitespace-pre-wrap break-words rounded-sm border border-smoke-200 bg-white px-3 py-2 text-sm text-charcoal-900">
-        {text || '(sem texto)'}
+      <div className="flex max-w-[80%] flex-col gap-2 rounded-sm border border-smoke-200 bg-white px-3 py-2">
+        <p className="whitespace-pre-wrap break-words text-sm text-charcoal-900">
+          {text || '(sem texto)'}
+        </p>
+        {pendingConfirmation ? (
+          <>
+            <div className="flex flex-wrap items-center gap-1.5">
+              <Badge variant="warning">ação pendente de confirmação</Badge>
+            </div>
+            {canConfirm ? (
+              <div className="flex gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => onConfirm('sim')}
+                  className="rounded-sm bg-green-700 px-3 py-1 text-xs font-medium text-white hover:bg-green-800"
+                >
+                  Confirmar
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onConfirm('não')}
+                  className="rounded-sm border border-smoke-300 px-3 py-1 text-xs font-medium text-charcoal-700 hover:bg-smoke-50"
+                >
+                  Cancelar
+                </button>
+              </div>
+            ) : null}
+          </>
+        ) : null}
       </div>
     </div>
   )
@@ -191,7 +241,14 @@ function ThreadEntryView({
     case 'error':
       return <ErrorBubble text={entry.text} />
     case 'history-assistant':
-      return <HistoryAssistantBubble text={entry.reply} />
+      return (
+        <HistoryAssistantBubble
+          text={entry.reply}
+          pendingConfirmation={entry.pendingConfirmation === true}
+          canConfirm={canConfirm}
+          onConfirm={onConfirm}
+        />
+      )
     case 'history-divider':
       return <HistoryDivider />
     default:
@@ -204,6 +261,9 @@ function ThreadEntryView({
 export default function CanalOperacionalPage(): React.JSX.Element {
   const { entries, inFlight, send } = useOpsChat()
   const [draft, setDraft] = useState('')
+  // Restored once on mount: was the thread's newest turn a still-open money park
+  // before this reload? Drives the reloaded-history pending indicator/affordance.
+  const [pendingMarker, setPendingMarker] = useState(false)
   const threadEndRef = useRef<HTMLDivElement | null>(null)
 
   // Keep the newest turn (and the in-flight indicator) in view.
@@ -211,16 +271,60 @@ export default function CanalOperacionalPage(): React.JSX.Element {
     threadEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [entries, inFlight])
 
+  // Read the persisted pending-park marker once on mount (before/while the server
+  // history hydrates), so a reloaded thread can re-surface an open confirmation.
+  useEffect(() => {
+    try {
+      setPendingMarker(sessionStorage.getItem(OPS_CHAT_PENDING_KEY) === '1')
+    } catch {
+      // Storage unavailable (private mode / SSR guard) — degrade to no indicator.
+    }
+  }, [])
+
+  // Persist the marker from the newest LIVE assistant turn: set it when that turn
+  // parked (REQUEST_CONFIRMATION), clear it once any later live turn settles the
+  // park. When there is no live assistant yet (fresh mount / just-hydrated reload)
+  // the marker is PRESERVED — the reload path must not erase the pre-reload state.
+  useEffect(() => {
+    let lastLiveDecision: string | null = null
+    for (let i = entries.length - 1; i >= 0; i -= 1) {
+      if (entries[i].role === 'assistant') {
+        lastLiveDecision = (entries[i] as AssistantEntry).decision
+        break
+      }
+    }
+    if (lastLiveDecision === null) return
+    try {
+      if (lastLiveDecision === 'REQUEST_CONFIRMATION') {
+        sessionStorage.setItem(OPS_CHAT_PENDING_KEY, '1')
+      } else {
+        sessionStorage.removeItem(OPS_CHAT_PENDING_KEY)
+      }
+    } catch {
+      // Best-effort persistence — never break the render on a storage failure.
+    }
+  }, [entries])
+
   const sendable = canSend(draft, inFlight)
+
+  // Decorate the newest rehydrated turn as a still-open park ONLY on a pure reload
+  // (no live turn yet): once the operator sends anything, the live AssistantBubble
+  // owns the affordance and the history indicator is suppressed to avoid two.
+  const displayEntries = useMemo(() => {
+    const hasLiveTurn = entries.some(
+      (e) => e.role === 'user' || e.role === 'assistant' || e.role === 'error',
+    )
+    return markPendingConfirmation(entries, pendingMarker && !hasLiveTurn)
+  }, [entries, pendingMarker])
 
   // WS6 — only the LATEST assistant turn may show the in-chat Confirmar/Cancelar
   // (a parked confirmation resumes on a fresh "sim"; older turns are settled).
   const lastAssistantId = useMemo(() => {
-    for (let i = entries.length - 1; i >= 0; i -= 1) {
-      if (entries[i].role === 'assistant') return entries[i].id
+    for (let i = displayEntries.length - 1; i >= 0; i -= 1) {
+      if (displayEntries[i].role === 'assistant') return displayEntries[i].id
     }
     return null
-  }, [entries])
+  }, [displayEntries])
 
   const onConfirm = useCallback(
     (text: string) => {
@@ -252,14 +356,19 @@ export default function CanalOperacionalPage(): React.JSX.Element {
 
       {/* ── Thread ──────────────────────────────────────────────────────────── */}
       <div className="flex flex-1 flex-col gap-2 overflow-y-auto rounded-sm border border-smoke-200 bg-smoke-100/40 p-4">
-        {entries.length === 0 ? (
+        {displayEntries.length === 0 ? (
           <GuidedEmptyState onPick={setDraft} />
         ) : (
-          entries.map((entry) => (
+          displayEntries.map((entry) => (
             <ThreadEntryView
               key={entry.id}
               entry={entry}
-              canConfirm={entry.id === lastAssistantId && !inFlight}
+              // Live: only the latest assistant turn is resumable. A rehydrated
+              // pending park (history-assistant flagged pendingConfirmation) is
+              // likewise resumable while not in flight.
+              canConfirm={
+                (entry.id === lastAssistantId || entry.role === 'history-assistant') && !inFlight
+              }
               onConfirm={onConfirm}
             />
           ))
