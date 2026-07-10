@@ -367,6 +367,15 @@ export async function orderRoutes(server: FastifyInstance): Promise<void> {
   const paymentQuerySvc = createPaymentQueryService();
 
   // ── GET /api/admin/orders ──────────────────────────────────────────────────
+  // INTENTIONALLY open to any authenticated staff (no requireManagerRole),
+  // UNLIKE the sibling Conversas surface which is gated to MANAGER+. Orders are
+  // an ATTENDANT-facing fulfillment flow: the /admin/pedidos page is deliberately
+  // left ungated in AdminSidebar (Conversas/Clientes carry minRole:'MANAGER',
+  // Pedidos does not) and the ATTENDANT+ action routes it drives — advance /
+  // staff-notes / confirm-cash (order-actions.ts + payments.ts, requireStaff) —
+  // require first reading the order list/detail. Gating these GETs to MANAGER+
+  // would 403 the attendant workflow. The DOM-001 staff-JWT guard on the parent
+  // adminRoutes plugin still applies (authenticated staff only).
   app.get(
     "/api/admin/orders",
     {
@@ -494,6 +503,11 @@ export async function orderRoutes(server: FastifyInstance): Promise<void> {
   );
 
   // ── GET /api/admin/orders/:id ─────────────────────────────────────────────
+  // INTENTIONALLY open to any authenticated staff (no requireManagerRole) — see
+  // the rationale on GET /api/admin/orders above: this detail read backs the
+  // ATTENDANT-facing /admin/pedidos fulfillment flow (advance / staff-notes /
+  // confirm-cash are all ATTENDANT+ and read the order first). DOM-001 staff-JWT
+  // guard on the parent plugin still applies.
   app.get(
     "/api/admin/orders/:id",
     {

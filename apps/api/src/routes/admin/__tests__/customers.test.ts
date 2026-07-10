@@ -138,7 +138,10 @@ function primeDetailHappy(): void {
   mockIsOptedOut.mockResolvedValue(true);
 }
 
-async function buildServer(staff: StaffContext): Promise<FastifyInstance> {
+async function buildServer(
+  staff: StaffContext,
+  opts?: { logWarn?: (...args: unknown[]) => void },
+): Promise<FastifyInstance> {
   const { adminCustomerRoutes } = await import("../customers.js");
   const app = Fastify({ logger: false });
   app.setValidatorCompiler(validatorCompiler);
@@ -147,6 +150,15 @@ async function buildServer(staff: StaffContext): Promise<FastifyInstance> {
     if (staff.staffId) {
       (req as unknown as { staffId: string | null }).staffId = staff.staffId;
       (req as unknown as { staffRole: string | null }).staffRole = staff.staffRole;
+    }
+    // Optional per-request logger whose `warn` is spyable, so the audit event
+    // the CPF-reveal handler emits can be asserted (it inherits the real
+    // logger's other methods via the prototype).
+    if (opts?.logWarn) {
+      (req as unknown as { log: Record<string, unknown> }).log = Object.assign(
+        Object.create((req as unknown as { log: object }).log),
+        { warn: opts.logWarn },
+      );
     }
   });
   await app.register(adminCustomerRoutes);
@@ -167,6 +179,29 @@ describe("GET /api/admin/customers/:id/cpf — OWNER-only CPF reveal (X4)", () =
       const res = await server.inject({ method: "GET", url: "/api/admin/customers/cust_01/cpf" });
       expect(res.statusCode).toBe(200);
       expect((res.json() as { cpf: string }).cpf).toBe("123.456.789-00");
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("emits a dedicated 'cpf_reveal' audit event with the staff identity", async () => {
+    // The reveal MUST leave a forensic trail naming WHO revealed WHICH CPF — this
+    // dedicated audit event cannot be removed without failing CI.
+    primeDetailHappy();
+    const warn = vi.fn();
+    const server = await buildServer(OWNER, { logWarn: warn });
+    try {
+      const res = await server.inject({ method: "GET", url: "/api/admin/customers/cust_01/cpf" });
+      expect(res.statusCode).toBe(200);
+      expect(warn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: "cpf_reveal",
+          customerId: "cust_01",
+          staffId: OWNER.staffId,
+          staffRole: "OWNER",
+        }),
+        expect.stringContaining("CPF"),
+      );
     } finally {
       await server.close();
     }

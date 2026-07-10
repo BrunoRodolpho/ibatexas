@@ -116,14 +116,23 @@ export async function conversationRoutes(server: FastifyInstance): Promise<void>
         if (!Number.isInteger(displayId)) {
           return reply.send({ conversations: [], count: 0 });
         }
-        const order = await prisma.orderProjection.findFirst({
+        // displayId is NOT @unique in the schema (@default(autoincrement()) +
+        // @@index, no @unique constraint), so a collision could cross-link this
+        // manager to the WRONG customer's transcripts. Resolve deterministically
+        // (orderBy) AND fail safe on ANY collision: fetch up to two matches and
+        // refuse to guess when more than one order shares this displayId.
+        const matches = await prisma.orderProjection.findMany({
           where: { displayId },
           select: { customerId: true },
+          orderBy: { id: "asc" },
+          take: 2,
         });
-        if (!order?.customerId) {
+        if (matches.length !== 1 || !matches[0].customerId) {
+          // 0 matches, no linked customer, or an ambiguous multi-order
+          // collision → empty (never a wrong-customer disclosure).
           return reply.send({ conversations: [], count: 0 });
         }
-        effectiveCustomerId = order.customerId;
+        effectiveCustomerId = matches[0].customerId;
       }
 
       const { rows, count } = await svc().listForAdmin({
