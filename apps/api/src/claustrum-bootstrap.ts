@@ -257,6 +257,7 @@ import {
   ensurePromptOverrideTable,
   loadPromptOverrides,
 } from "./claustrum/prompts/prompt-overrides.js";
+import { closeRcaReadPool } from "./routes/qa-rca.js";
 import {
   createTurnTraceWriter,
   type TurnTraceWriter,
@@ -691,6 +692,10 @@ export async function resetClaustrumForTests(): Promise<ClaustrumResetReport> {
   // stops its postgres container — otherwise its idle connection raises an
   // unhandled 57P01 at teardown. Re-creates lazily on the next store call.
   await closePromptOverridePool();
+
+  // Same class of leak for the dev-only RCA read routes' module-singleton pool
+  // (lazily warmed on first /internal/qa/rca/* read, not owned by _pgPool).
+  await closeRcaReadPool();
 
   __resetAuditSink();
   _resetMetricsSink();

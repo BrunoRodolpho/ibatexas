@@ -355,8 +355,24 @@ interface BatchUnit {
   label: string;
 }
 
-/** After a journey run, the freshly-created runs/<id>/ dir holds its trace.
- *  Returns the newest dir absent from `before`, or undefined when none appeared. */
+// `ibx journey run` prints `runId=<id>` per attempt (renderSingleReport in
+// packages/cli/src/commands/journey.ts); the trace dir is runs/<runId>/ (== the
+// randomUUID the runner emits, run-journey-cli.ts). Capturing the id from THIS
+// child's own stdout attributes the trace to exactly this invocation — a
+// before/after directory diff cross-attributes concurrent /internal/qa/run
+// requests (both see each other's fresh dirs). Matches the run-id charset the
+// trace-serving route accepts. Last match wins (the newest --k attempt).
+const RUN_ID_LINE_RE = /\brunId=([A-Za-z0-9_-]+)/g;
+function extractRunId(line: string): string | undefined {
+  let runId: string | undefined;
+  for (const m of line.matchAll(RUN_ID_LINE_RE)) runId = m[1];
+  return runId;
+}
+
+/** Fallback only: after a journey run, the freshly-created runs/<id>/ dir holds
+ *  its trace. Returns the newest dir absent from `before`, or undefined when none
+ *  appeared. NOTE: not concurrency-safe (a sibling run's dir can leak in) — used
+ *  solely when stdout `runId=` capture found nothing. */
 async function freshestRunId(before: Set<string>): Promise<string | undefined> {
   const after = await listRunDirs();
   const fresh = [...after].filter((d) => !before.has(d));
@@ -396,13 +412,23 @@ async function streamBatch(
     frame(reply, { type: "item.start", index, kind: unit.kind, id: unit.id, label: unit.label });
 
     const before = unit.kind === "journey" ? await listRunDirs() : new Set<string>();
-    const exitCode = await spawnIbx(unit.args, (line) =>
-      frame(reply, { type: "log", index, line }),
-    );
+    // Capture the runId straight from THIS child's stdout so concurrent runs
+    // never cross-attribute each other's traces (a directory diff would).
+    let capturedRunId: string | undefined;
+    const exitCode = await spawnIbx(unit.args, (line) => {
+      if (unit.kind === "journey") {
+        const id = extractRunId(line);
+        if (id !== undefined) capturedRunId = id;
+      }
+      frame(reply, { type: "log", index, line });
+    });
 
-    // For a journey, the new runs/<id>/ dir created during this run is the trace.
+    // Prefer the id this run printed; fall back to the (non-concurrency-safe)
+    // directory diff only if the run emitted no runId line.
     const runId =
-      unit.kind === "journey" ? await freshestRunId(before) : undefined;
+      unit.kind === "journey"
+        ? (capturedRunId ?? (await freshestRunId(before)))
+        : undefined;
 
     frame(reply, {
       type: "item.end",

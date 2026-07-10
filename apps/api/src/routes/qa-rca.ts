@@ -24,8 +24,32 @@ let readPool: Pool | null = null;
 function pool(): Pool {
   if (readPool === null) {
     readPool = new Pool({ connectionString: process.env.DATABASE_URL });
+    // A pg Pool emits 'error' when an IDLE client's backend dies (a server restart
+    // in prod, or the bootstrap-harness stopping its postgres container mid-run in
+    // tests). With no listener node-pg re-throws it as an UNHANDLED error that fails
+    // the vitest run — the 57P01 "terminating connection due to administrator
+    // command" teardown race (same class fixed for prompt-overrides.ts's twin pool).
+    // This RCA surface is dev-only + read-only; an idle-connection loss is
+    // recoverable — the pool reconnects on next use.
+    readPool.on("error", (err) => {
+      logger.warn(
+        { component: "qa-rca", err: (err as Error).message },
+        "qa-rca read pool idle-client error (recoverable; ignored)",
+      );
+    });
   }
   return readPool;
+}
+
+/** End the module-singleton read pool (test cleanup: `resetClaustrumForTests()`
+ *  calls this so a bootstrap-harness leaves no open pg handle when its container
+ *  stops). Best-effort + idempotent; the pool re-creates lazily on next use. */
+export async function closeRcaReadPool(): Promise<void> {
+  if (readPool !== null) {
+    const p = readPool;
+    readPool = null;
+    await p.end().catch(() => undefined);
+  }
 }
 
 const VICTORIALOGS_URL = process.env.VICTORIALOGS_URL ?? "http://localhost:9428";
