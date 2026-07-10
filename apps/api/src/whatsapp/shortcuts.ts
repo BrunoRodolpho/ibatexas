@@ -92,10 +92,15 @@ const SHORTCUT_MAP: Record<string, ShortcutAction> = {
   "nao quero mais mensagens": { type: "optout" },
   "remover meu numero": { type: "optout" },
 
-  // Re-subscribe (opt back in) — the opt-out confirmation invites "voltar".
-  voltar: { type: "optin" },
+  // Re-subscribe (opt back in). Consent CHANGE requires an unambiguous token —
+  // bare "voltar" is intentionally OMITTED (it is one of the most common pt-BR
+  // navigation words: "go back"), so a customer typing "voltar" mid-flow can
+  // never silently re-subscribe after opting out. Re-subscription uses the
+  // explicit unsubscribe-reversing phrases below.
   "quero receber": { type: "optin" },
+  "quero voltar a receber": { type: "optin" },
   "receber promocoes": { type: "optin" },
+  "voltar a receber": { type: "optin" },
 };
 
 /**
@@ -136,7 +141,7 @@ export function buildOptOutConfirmationText(): string {
   return [
     "Pronto! Você não receberá mais mensagens promocionais. ✅",
     "",
-    "Se quiser voltar a receber, é só responder *voltar*. Você continua podendo fazer pedidos e falar com a gente normalmente.",
+    "Se quiser voltar a receber, é só responder *quero voltar a receber*. Você continua podendo fazer pedidos e falar com a gente normalmente.",
   ].join("\n");
 }
 

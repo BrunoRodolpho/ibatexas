@@ -43,12 +43,19 @@ describe("matchShortcut", () => {
       },
     );
 
-    it.each(["voltar", "quero receber", "receber promocoes"])(
+    it.each(["quero receber", "quero voltar a receber", "receber promocoes", "voltar a receber"])(
       "matches '%s' as optin",
       (input) => {
         expect(matchShortcut(input)).toEqual({ type: "optin" });
       },
     );
+
+    it("does NOT treat a bare 'voltar' as opt-in (navigation-word consent ambiguity)", () => {
+      // LGPD: bare 'voltar' ("go back") is a common navigation word — it must
+      // never silently re-subscribe an opted-out customer. Re-subscription
+      // requires an unambiguous token.
+      expect(matchShortcut("voltar")).toBeNull();
+    });
 
     it("does NOT treat a bare 'cancelar' as opt-out (order-cancel ambiguity)", () => {
       // 'cancelar' must fall through to the agent, never silently opt the customer out.

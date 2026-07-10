@@ -506,7 +506,7 @@ async function checkWebhookRateLimit(redis: Awaited<ReturnType<typeof getRedisCl
 
 export async function handleShortcut(
   shortcutType: string,
-  ctx?: { customerId?: string; sessionId: string; phone?: string },
+  ctx?: { customerId?: string; sessionId: string; phone?: string; log?: LogFn },
 ): Promise<string | null> {
   switch (shortcutType) {
     case "help":
@@ -527,7 +527,21 @@ export async function handleShortcut(
         }
         await store.optIn(ctx.phone, "inbound_stop");
         return buildOptInConfirmationText();
-      } catch {
+      } catch (consentErr) {
+        // LGPD: a dropped inbound consent write (opt-OUT is legally significant)
+        // must never be swallowed silently — emit a structured error so it is
+        // visible in logs/alerting and reconstructable (phone hash + direction).
+        // We still fall through to the agent so the customer is never ghosted.
+        ctx.log?.error(
+          {
+            component: "whatsapp",
+            event: "consent_write_failed",
+            direction: shortcutType, // "optout" | "optin"
+            phone_hash: hashPhone(ctx.phone),
+            error: String(consentErr),
+          },
+          "[whatsapp.consent] Inbound consent write failed — LGPD opt-out/opt-in may be dropped",
+        );
         return null;
       }
     }
@@ -707,6 +721,7 @@ async function tryShortcutOrStateMachine(
       customerId: session.customerId,
       sessionId: session.sessionId,
       phone,
+      log,
     });
     if (response) {
       await sendText(`whatsapp:${phone}`, mintBroadcastReply(response));
