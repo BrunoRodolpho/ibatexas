@@ -47,6 +47,8 @@ import {
   refusePricePayloadInvalid,
   refusePricePerVariantUnsupported,
   refusePriceProductNotFound,
+  refuseScheduleOverrideDateNotActionable,
+  refuseScheduleOverridePayloadInvalid,
 } from "./refusals.js"
 import {
   getPriceSanityMaxCentavos,
@@ -56,6 +58,7 @@ import {
   opsTaintPolicy,
   PRODUCT_AVAILABILITY_SET_KEYS,
   PRODUCT_PRICE_SET_KEYS,
+  SCHEDULE_OVERRIDE_SET_KEYS,
   type IncidentCloseStaffPayload,
   type OpsAlertResolveStaffPayload,
   type OpsIntentKind,
@@ -63,6 +66,7 @@ import {
   type OpsState,
   type ProductAvailabilitySetPayload,
   type ProductPriceSetPayload,
+  type ScheduleOverrideSetPayload,
 } from "./types.js"
 
 type OpsGuard = Guard<OpsIntentKind, OpsPayload, OpsState>
@@ -603,6 +607,235 @@ const executeIncidentClose: OpsGuard = (envelope) => {
   ])
 }
 
+// ── SCN-127: schedule.override.set guards ────────────────────────────────────
+
+/** Well-formed AND real `YYYY-MM-DD` calendar date (rejects "2026-13-40"). */
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/
+/** 24h `HH:MM` wall-clock (00:00–23:59). */
+const HHMM_RE = /^([01]\d|2[0-3]):[0-5]\d$/
+
+function isValidIsoDate(s: string): boolean {
+  if (!ISO_DATE_RE.test(s)) return false
+  // Round-trip through UTC noon so an impossible date fails to reproduce itself.
+  const d = new Date(`${s}T12:00:00Z`)
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s
+}
+
+/**
+ * Validate ONE `blocks[]` entry against the closed `{ label, start, end }`
+ * contract: unknown keys rejected, non-empty `label`, `HH:MM` `start`/`end`, and
+ * `start < end` (a zero/negative window is incoherent). Returns the offending
+ * `{ field, reason }` or `null` when the block is well-formed.
+ */
+function scheduleBlockViolation(
+  block: unknown,
+): { field: string; reason: string } | null {
+  if (typeof block !== "object" || block === null) {
+    return { field: "blocks", reason: "block_not_object" }
+  }
+  const raw = block as Record<string, unknown>
+  for (const key of Object.keys(raw)) {
+    if (key !== "label" && key !== "start" && key !== "end") {
+      return { field: `blocks.${key}`, reason: "unknown_key" }
+    }
+  }
+  if (typeof raw.label !== "string" || raw.label.length === 0) {
+    return { field: "blocks.label", reason: "missing_or_empty" }
+  }
+  if (typeof raw.start !== "string" || !HHMM_RE.test(raw.start)) {
+    return { field: "blocks.start", reason: "not_hhmm" }
+  }
+  if (typeof raw.end !== "string" || !HHMM_RE.test(raw.end)) {
+    return { field: "blocks.end", reason: "not_hhmm" }
+  }
+  // Zero-padded HH:MM compares chronologically as strings.
+  if (raw.start >= raw.end) {
+    return { field: "blocks", reason: "start_not_before_end" }
+  }
+  return null
+}
+
+/**
+ * Strict `schedule.override.set` payload validation. REFUSEs anything that is not
+ * EXACTLY `{ date: <YYYY-MM-DD>, isOpen: <boolean>, blocks?: {label,start,end}[],
+ * note?: <string> }` (unknown keys rejected). `date` MUST be a CONCRETE ISO date —
+ * the resolver stamped it; a relative word the resolver could not resolve fails
+ * here (fail-closed). The `isOpen` ⇔ `blocks` coherence is enforced: an OPEN day
+ * requires a non-empty list of coherent windows ("abrimos só às 18h"); a CLOSED
+ * day forbids windows ("fecha amanhã"). NL-date normalization + today-or-future
+ * are NOT here (the resolver + `requireScheduleDateActionable` own those).
+ */
+const validateScheduleOverridePayload: OpsGuard = (envelope) => {
+  if (envelope.kind !== "schedule.override.set") return null
+  const raw = envelope.payload as unknown as Record<string, unknown>
+
+  // Reject unknown keys first — the contract is closed.
+  for (const key of Object.keys(raw)) {
+    if (!SCHEDULE_OVERRIDE_SET_KEYS.has(key)) {
+      return decisionRefuse(
+        refuseScheduleOverridePayloadInvalid(`unknown payload key "${key}"`),
+        [
+          basis("schema", BASIS_CODES.schema.PAYLOAD_INVALID, {
+            field: key,
+            reason: "unknown_key",
+          }),
+        ],
+      )
+    }
+  }
+
+  if (typeof raw.date !== "string" || !isValidIsoDate(raw.date)) {
+    return decisionRefuse(
+      refuseScheduleOverridePayloadInvalid("date must be a YYYY-MM-DD calendar date"),
+      [
+        basis("schema", BASIS_CODES.schema.PAYLOAD_INVALID, {
+          field: "date",
+          reason: "not_iso_date",
+        }),
+      ],
+    )
+  }
+
+  if (typeof raw.isOpen !== "boolean") {
+    return decisionRefuse(
+      refuseScheduleOverridePayloadInvalid("isOpen must be a boolean"),
+      [
+        basis("schema", BASIS_CODES.schema.PAYLOAD_INVALID, {
+          field: "isOpen",
+          reason: "not_boolean",
+        }),
+      ],
+    )
+  }
+
+  const hasBlocks = raw.blocks !== undefined
+  if (hasBlocks && !Array.isArray(raw.blocks)) {
+    return decisionRefuse(
+      refuseScheduleOverridePayloadInvalid("blocks must be an array when present"),
+      [
+        basis("schema", BASIS_CODES.schema.PAYLOAD_INVALID, {
+          field: "blocks",
+          reason: "not_array",
+        }),
+      ],
+    )
+  }
+  const blocks = (hasBlocks ? (raw.blocks as unknown[]) : [])
+
+  if (raw.isOpen === true) {
+    // An OPEN override MUST carry at least one coherent window (else it is
+    // indistinguishable from "revert to normal" — a separate, unshipped verb).
+    if (blocks.length === 0) {
+      return decisionRefuse(
+        refuseScheduleOverridePayloadInvalid("an open override requires at least one time block"),
+        [
+          basis("schema", BASIS_CODES.schema.PAYLOAD_INVALID, {
+            field: "blocks",
+            reason: "open_requires_blocks",
+          }),
+        ],
+      )
+    }
+    for (const block of blocks) {
+      const violation = scheduleBlockViolation(block)
+      if (violation !== null) {
+        return decisionRefuse(
+          refuseScheduleOverridePayloadInvalid(
+            `block ${violation.field}: ${violation.reason}`,
+          ),
+          [
+            basis("schema", BASIS_CODES.schema.PAYLOAD_INVALID, {
+              field: violation.field,
+              reason: violation.reason,
+            }),
+          ],
+        )
+      }
+    }
+  } else if (blocks.length > 0) {
+    // A CLOSED day must not carry windows — reject the contradiction.
+    return decisionRefuse(
+      refuseScheduleOverridePayloadInvalid("a closed override must not carry time blocks"),
+      [
+        basis("schema", BASIS_CODES.schema.PAYLOAD_INVALID, {
+          field: "blocks",
+          reason: "closed_forbids_blocks",
+        }),
+      ],
+    )
+  }
+
+  if (raw.note !== undefined && typeof raw.note !== "string") {
+    return decisionRefuse(
+      refuseScheduleOverridePayloadInvalid("note must be a string when present"),
+      [
+        basis("schema", BASIS_CODES.schema.PAYLOAD_INVALID, {
+          field: "note",
+          reason: "not_string",
+        }),
+      ],
+    )
+  }
+
+  return null
+}
+
+/**
+ * REFUSE `schedule.override.set` when the override date is NOT actionable — a
+ * business day already in the PAST, or the today-or-future reference could not be
+ * projected (`state.schedule` null/unprojected). Fail-closed: never write an
+ * override for a past day, and never write blind without the reference. The ops
+ * resolver projects `state.schedule.today` (today `YYYY-MM-DD` in
+ * RESTAURANT_TIMEZONE); zero-padded ISO dates compare chronologically as strings.
+ */
+const requireScheduleDateActionable: OpsGuard = (envelope, state) => {
+  if (envelope.kind !== "schedule.override.set") return null
+  const { date } = envelope.payload as ScheduleOverrideSetPayload
+  const today = state.schedule?.today
+  if (typeof today !== "string" || !isValidIsoDate(today)) {
+    return decisionRefuse(
+      refuseScheduleOverrideDateNotActionable(
+        "no today-or-future reference projected for the schedule override",
+      ),
+      [
+        basis("business", BASIS_CODES.business.RULE_VIOLATED, {
+          rule: "schedule_date_must_be_today_or_future",
+          date,
+          reason: "reference_unavailable",
+        }),
+      ],
+    )
+  }
+  if (date < today) {
+    return decisionRefuse(
+      refuseScheduleOverrideDateNotActionable(
+        `date "${date}" is before today "${today}"`,
+      ),
+      [
+        basis("business", BASIS_CODES.business.RULE_VIOLATED, {
+          rule: "schedule_date_must_be_today_or_future",
+          date,
+          today,
+          reason: "past_date",
+        }),
+      ],
+    )
+  }
+  return null
+}
+
+/** EXECUTE producer for `schedule.override.set` (fires after validation +
+ *  date-actionability REFUSE the failing cases, and after the AUTH gates
+ *  authorized). Reversible, non-money ⇒ no CONFIRM overlay (direct EXECUTE). */
+const executeScheduleOverrideSet: OpsGuard = (envelope) => {
+  if (envelope.kind !== "schedule.override.set") return null
+  return decisionExecute([
+    basis("business", BASIS_CODES.business.RULE_SATISFIED, {
+      kind: envelope.kind,
+    }),
+  ])
+}
+
 // ── PolicyBundle ────────────────────────────────────────────────────────────
 
 /**
@@ -641,6 +874,12 @@ export const opsPolicyBundle: PolicyBundle<OpsIntentKind, OpsPayload, OpsState> 
       validateIncidentClosePayload,
       requireIncidentActionable,
       executeIncidentClose,
+      // SCN-127 — schedule.override.set: strict validate → date-actionable
+      // (today-or-future) → EXECUTE (reversible, no CONFIRM overlay). Each is a
+      // no-op for the other kinds, so ordering only matters WITHIN this triple.
+      validateScheduleOverridePayload,
+      requireScheduleDateActionable,
+      executeScheduleOverrideSet,
     ],
     default: "REFUSE",
   }

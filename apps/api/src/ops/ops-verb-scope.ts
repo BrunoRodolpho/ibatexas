@@ -90,7 +90,7 @@ export const WA_EXCLUDED_OPS_KINDS: ReadonlySet<string> = new Set<string>([
  *
  * These verbs are unreachable by the ops persona TODAY via TWO independent
  * fail-closed layers: (1) none is in the ops tool registry (`ops-tool-registry.ts`
- * advertises 7 verbs); (2) none is in the staff-role matrix (`staff-role-matrix.ts`),
+ * advertises 8 verbs); (2) none is in the staff-role matrix (`staff-role-matrix.ts`),
  * so an `admin:` envelope carrying one REFUSEs `kind_not_in_staff_matrix` at the
  * composed router. That posture is SOUND but IMPLICIT — a future PR that matrixed
  * one of these for the dashboard could silently make it ops-advertisable. This set

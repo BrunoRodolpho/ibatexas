@@ -47,6 +47,12 @@
 //   - incident.ticket.close.staff → `incidentSvc.closeIncidentFromEnvelope`
 //     (BKL-088; same D10 posture over the SYSTEM `incident.ticket.close` kind,
 //     the admin incidents resolve route's path). riskLevel "low".
+//   - schedule.override.set → `scheduleSvc.upsertOverride` (SCN-127; the SAME
+//     domain-service call the admin schedule override route uses — NO Medusa
+//     egress, NO second adjudication). The resolver already stamped a concrete
+//     ISO date; after the committed write it invalidates the Redis schedule cache
+//     (exactly like the admin route) so the customer-facing hours/closed-notice
+//     reads pick the override up immediately. riskLevel "low" (reversible).
 //
 // `staffId` (audit sourceSubject / note authorId) is read from the per-turn
 // `Capsule.actor.staffId` — the AUTHORITATIVE identity the ops route stamps from
@@ -82,12 +88,14 @@ import type {
   OpsAlertResolveStaffPayload,
   ProductAvailabilitySetPayload,
   ProductPriceSetPayload,
+  ScheduleOverrideSetPayload,
 } from "@ibatexas/pack-ops";
 import { buildSystemEnvelope } from "../subscribers/__shared__/system-actor-envelope.js";
 import type {
   OrderFulfillmentStatus,
   OrderStatusChangedEvent,
   PaymentStatusChangedEvent,
+  TimeBlock,
 } from "@ibatexas/types";
 
 /** The injected `medusaAdjudicated` shape (typeof `@ibatexas/tools`'s export). */
@@ -202,6 +210,21 @@ export interface IncidentCloseWriter {
   ): Promise<{ readonly result?: { readonly status: string } | null }>;
 }
 
+/**
+ * SCN-127 — the single schedule-override write method the ops registry needs
+ * (structural subset of `ScheduleService.upsertOverride`, `@ibatexas/domain`).
+ * The `schedule.override.set` executor calls the SAME method the admin schedule
+ * override route (PUT /api/admin/schedule/overrides/:date) uses — a domain-service
+ * verb, NO Medusa egress. The caller MUST hold a positive composed-router
+ * Decision; this performs NO adjudication.
+ */
+export interface OpsScheduleOverrideWriter {
+  upsertOverride(
+    date: string,
+    data: { isOpen: boolean; blocks: TimeBlock[]; note?: string | null },
+  ): Promise<{ readonly date: string; readonly isOpen: boolean }>;
+}
+
 export interface OpsToolRegistryDeps {
   /** `medusaAdjudicated` (injected for testability). */
   readonly medusaAdjudicated: MedusaAdjudicatedFn;
@@ -238,6 +261,25 @@ export interface OpsToolRegistryDeps {
    * `createIncidentService({ auditSink })`.
    */
   readonly incidentSvc: IncidentCloseWriter;
+  /**
+   * SCN-127 — the schedule-override write layer (the SAME service the admin
+   * schedule override route calls). Bootstrap wires it to
+   * `createScheduleService()`. The executor performs NO adjudication (the
+   * composed router already produced the Decision at SUBMIT).
+   */
+  readonly scheduleSvc: OpsScheduleOverrideWriter;
+  /**
+   * SCN-127 — invalidate the Redis schedule cache after a committed override
+   * write, EXACTLY like the admin schedule route (invalidateScheduleOrWarn). The
+   * customer-facing hours/closed-notice reads go through the read-through cache
+   * (`loadSchedule`, TTL SCHEDULE_CACHE_TTL_SECONDS default 300s), so without this
+   * an override could take up to the TTL to propagate. Returns `{ ok }` — `false`
+   * when the DEL was swallowed (circuit-open) even after a retry, so the executor
+   * can WARN that propagation may lag up to the TTL. Never throws (a failed
+   * invalidation must not fail the write — the TTL bounds staleness). Bootstrap
+   * wires it to `@ibatexas/tools`' `invalidateScheduleCache`.
+   */
+  readonly invalidateScheduleCache: () => Promise<{ readonly ok: boolean }>;
   /**
    * BKL-085 — publish `payment.status_changed` after a committed refund write,
    * exactly like the admin refund route (payments.ts:523-532). Its subscriber
@@ -628,7 +670,45 @@ async function executeIncidentCloseStaff(
   return { incidentId: payload.incidentId, status: out.result?.status ?? null };
 }
 
-/** The seven governed ops MUTATING tools (capability === intentKind). */
+/**
+ * Executor for `schedule.override.set` (SCN-127) — writes a per-date schedule
+ * override via the SAME `scheduleService.upsertOverride` the admin schedule
+ * override route uses (a domain-service verb; NO Medusa egress, NO second
+ * adjudication — the composed router already produced the Decision at SUBMIT). The
+ * resolver already normalized `payload.date` to a CONCRETE ISO date; the pack
+ * validator guaranteed `blocks` are coherent with `isOpen` (open ⇒ non-empty,
+ * closed ⇒ none). After the committed write it invalidates the Redis schedule
+ * cache EXACTLY like the admin route, so the customer-facing hours/closed-notice
+ * reads pick the override up immediately; a swallowed invalidation is WARN-logged
+ * (with the Capsule staffId — never the payload) and the cache TTL bounds
+ * staleness. A failed invalidation NEVER fails the write (the override committed).
+ */
+async function executeScheduleOverrideSet(
+  deps: OpsToolRegistryDeps,
+  payload: ScheduleOverrideSetPayload,
+  staffId: string | null,
+): Promise<{ date: string; isOpen: boolean }> {
+  await deps.scheduleSvc.upsertOverride(payload.date, {
+    isOpen: payload.isOpen,
+    // A CLOSED day carries no windows; an OPEN day carries the validated blocks.
+    blocks: payload.isOpen ? (payload.blocks ?? []) : [],
+    note: payload.note ?? null,
+  });
+  const { ok } = await deps.invalidateScheduleCache();
+  if (!ok) {
+    deps.log?.warn?.(
+      {
+        event: "ops_schedule_override_cache_invalidation_failed",
+        date: payload.date,
+        staffId,
+      },
+      "Ops schedule override written but cache invalidation was swallowed — the edit may take up to SCHEDULE_CACHE_TTL_SECONDS (default 300s) to propagate to the bot.",
+    );
+  }
+  return { date: payload.date, isOpen: payload.isOpen };
+}
+
+/** The eight governed ops MUTATING tools (capability === intentKind). */
 function opsToolDefinitions(
   deps: OpsToolRegistryDeps,
 ): ReadonlyArray<ToolDefinition<unknown, unknown>> {
@@ -741,6 +821,23 @@ function opsToolDefinitions(
         executeIncidentCloseStaff(
           deps,
           input as IncidentCloseStaffPayload,
+          staffIdFromCapsule(ctx),
+        ),
+    },
+    {
+      id: "ibatexas.ops.scheduleOverrideSet.v1",
+      capability: asCapability("schedule.override.set"),
+      intentKind: asIntentKind("schedule.override.set"),
+      description:
+        "Definir uma exceção de horário para uma data (ex.: fecha amanhã / amanhã abrimos só às 18h).",
+      inputSchema: {},
+      outputSchema: {},
+      // Reversible, non-money (a per-date override the admin UI can correct/remove).
+      riskLevel: "low",
+      execute: (input, ctx) =>
+        executeScheduleOverrideSet(
+          deps,
+          input as ScheduleOverrideSetPayload,
           staffIdFromCapsule(ctx),
         ),
     },

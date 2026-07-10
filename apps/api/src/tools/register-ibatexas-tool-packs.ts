@@ -572,6 +572,15 @@ const ADVERTISED_NOT_REGISTERED_WHITELIST: ReadonlySet<string> = new Set([
   // registry with capability===intentKind.)
   "staff:ops.alert.resolve.staff",
   "staff:incident.ticket.close.staff",
+  // SCN-127: `schedule.override.set` (the schedule-override-by-message verb) is
+  // advertised by the ops planner under the staff probe. Like the other OWNED
+  // ops verbs it is a STAFF/OPS-plane verb proposed through the OPS conductor +
+  // registered in the OPS tool registry — NEVER the customer/LLM chat surface
+  // (absent from CHAT_DRIVABLE_TOOL_KINDS), so it has no registered CHAT tool.
+  // Advertised-but-unregistered on the chat roster is EXPECTED, not drift.
+  // (`opsPlaneDriftProblems` separately verifies it IS registered on the OPS
+  // registry with capability===intentKind.)
+  "staff:schedule.override.set",
 ]);
 
 export interface ToolRosterDriftOptions {

@@ -48,6 +48,9 @@ const REGISTRY_DEPS: OpsToolRegistryDeps = {
   incidentSvc: {
     closeIncidentFromEnvelope: async () => ({ result: { status: "RESOLVED" } }),
   },
+  // SCN-127 — the schedule-override write layer + cache invalidation.
+  scheduleSvc: { upsertOverride: async () => ({ date: "2026-07-10", isOpen: false }) },
+  invalidateScheduleCache: async () => ({ ok: true }),
 };
 
 const OPS_TOOLS = listOpsToolDefinitions(REGISTRY_DEPS);

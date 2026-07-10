@@ -332,7 +332,7 @@ export function opsPlaneDriftProblems(input: {
   // BKL-096 — defense in depth: fail boot CLOSED if a FORBIDDEN two-person
   // destructive verb (order.cancel / payment.waive / payment.status.force) ever
   // enters the ops REGISTRY. Today none is registered here NOR matrixed (two
-  // independent fail-closed layers), so this loop is inert on the real 7-verb
+  // independent fail-closed layers), so this loop is inert on the real 8-verb
   // roster; it makes the exclusion EXPLICIT so a future PR that registers one as
   // an ops tool trips this gate rather than silently exposing it. The persona's
   // advertised SURFACE (planner allowlist, both ingress scopes) is pinned by the
