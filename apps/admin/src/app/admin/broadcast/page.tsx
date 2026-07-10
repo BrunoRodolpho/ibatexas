@@ -45,6 +45,37 @@ function specSummary(spec: Record<string, string>): string {
   return parts.join(' · ')
 }
 
+// S5 — the date windows the keyword parser understands. Anything in the manager's
+// free text OTHER than these phrases (and pure connector words) is NOT applied as
+// a filter, so we surface it instead of letting the audience silently broaden.
+const RECOGNIZED_QUERY_PHRASES = [
+  'últimos 30 dias', 'ultimos 30 dias', 'mês passado', 'mes passado',
+  '30 dias', 'último mês', 'ultimo mes',
+] as const
+
+// Connector / descriptive words that carry no filter intent — a residual made
+// only of these is not flagged as "unrecognized".
+const QUERY_FILLER_WORDS = new Set([
+  'clientes', 'cliente', 'que', 'quem', 'pediram', 'pedido', 'pedidos', 'comprou',
+  'compraram', 'os', 'as', 'de', 'do', 'da', 'dos', 'das', 'em', 'no', 'na',
+  'todos', 'todas', 'quero', 'enviar', 'para', 'com',
+])
+
+/**
+ * Returns the meaningful part of the manager's description that the keyword
+ * parser did NOT understand (and therefore did not apply), or null when every
+ * word was either a recognized window or a filler connector.
+ */
+function unrecognizedQueryText(query: string): string | null {
+  let residual = query.toLowerCase()
+  for (const phrase of RECOGNIZED_QUERY_PHRASES) residual = residual.split(phrase).join(' ')
+  const leftover = residual
+    .split(/[\s,;.]+/)
+    .map((w) => w.trim())
+    .filter((w) => w.length > 1 && !QUERY_FILLER_WORDS.has(w))
+  return leftover.length > 0 ? leftover.join(' ') : null
+}
+
 export default function BroadcastPage(): React.JSX.Element {
   const [recipientsText, setRecipientsText] = useState('')
   const [template, setTemplate] = useState('')
@@ -63,6 +94,9 @@ export default function BroadcastPage(): React.JSX.Element {
   const [previewing, setPreviewing] = useState(false)
   // S5 — the spec that produced the current preview (for the applied-filters line).
   const [appliedSpec, setAppliedSpec] = useState<Record<string, string> | null>(null)
+  // S5 — the part of the description that was NOT understood (and thus dropped),
+  // so the manager confirms the real audience instead of a silently broader one.
+  const [audienceWarning, setAudienceWarning] = useState<string | null>(null)
 
   // Load the READ-ONLY opted-out recipient list (OPS-032). Silent on failure —
   // an unavailable read hides the section rather than toast-spamming a page load.
@@ -132,6 +166,7 @@ export default function BroadcastPage(): React.JSX.Element {
     if (Object.keys(spec).length === 0) {
       setPreview(null)
       setAppliedSpec(null)
+      setAudienceWarning(null)
       setError(
         audienceQuery.trim()
           ? 'Não entendi esse filtro. Use “mês passado” ou “últimos 30 dias” (por data do pedido) e/ou selecione uma origem.'
@@ -139,6 +174,10 @@ export default function BroadcastPage(): React.JSX.Element {
       )
       return
     }
+    // Some clauses matched but the manager may have described more than the parser
+    // understands (e.g. "VIPs em Ibaté que pediram mês passado" → only the date is
+    // applied). Surface the dropped part so the audience is never silently broader.
+    setAudienceWarning(unrecognizedQueryText(audienceQuery))
     setPreviewing(true)
     setError(null)
     try {
@@ -252,6 +291,12 @@ export default function BroadcastPage(): React.JSX.Element {
             estruturada e parametrizada — nunca SQL livre; opt-outs são sempre removidos.
           </p>
         )}
+        {audienceWarning ? (
+          <p className="rounded border border-amber-300 bg-amber-50 px-2 py-1 text-xs text-amber-800">
+            Parte da sua descrição não foi reconhecida e foi ignorada: “{audienceWarning}”.
+            Confirme os filtros aplicados acima antes de enviar.
+          </p>
+        ) : null}
       </div>
 
       <div className="flex gap-4">
