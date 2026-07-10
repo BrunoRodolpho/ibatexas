@@ -11,6 +11,7 @@ import type {
   OrderStatusChangedEvent,
   PaymentStatusChangedEvent,
 } from "@ibatexas/types";
+import { isKnownOrderStatus } from "@ibatexas/types";
 import {
   createOpsToolRegistry,
   listOpsToolDefinitions,
@@ -371,6 +372,46 @@ describe("order.status.transition executor — POST-adjudication kitchen-advance
       tool.execute({ orderId: "order_1", newStatus: "ready" }, capsule("staff_7")),
     ).rejects.toThrow();
     expect(publishOrderStatusChanged).not.toHaveBeenCalled();
+  });
+
+  // BKL-144 — the ToolDefinition now declares the REAL model-facing contract so
+  // the closed shape is documented (the live probe's empty inputSchema left the
+  // planner guessing field names + pt-BR values). This asserts the contract, NOT
+  // any runtime normalization — the guard still reads `newStatus` verbatim.
+  it("declares the closed contract in inputSchema: orderId + the six English newStatus targets, no pt/alias values", () => {
+    const { deps } = makeDeps();
+    const tool = toolByKind(deps, "order.status.transition");
+    const schema = tool.inputSchema as {
+      type: string;
+      properties: {
+        orderId: { type: string };
+        newStatus: { type: string; enum: string[] };
+      };
+      required: readonly string[];
+      additionalProperties: boolean;
+    };
+    expect(schema.type).toBe("object");
+    // Only orderId + newStatus are model-emitted; actor/actorId/reason are
+    // Capsule-forced by the executor, so the contract is closed to extras.
+    expect(schema.required).toEqual(["orderId", "newStatus"]);
+    expect(schema.additionalProperties).toBe(false);
+    expect(schema.properties.orderId.type).toBe("string");
+    // Exactly the six English fulfillment targets, verbatim — the enum the live
+    // probe's wrong field names + pt-BR values (confirmado/cancel) never reached.
+    const enumValues = schema.properties.newStatus.enum;
+    expect(enumValues).toEqual([
+      "confirmed",
+      "preparing",
+      "ready",
+      "in_delivery",
+      "delivered",
+      "canceled",
+    ]);
+    // Every advertised value is a real order status (no drift from the state
+    // machine), and none is a pt-BR word or the initial `pending` (never a target).
+    for (const v of enumValues) expect(isKnownOrderStatus(v)).toBe(true);
+    expect(enumValues).not.toContain("pending");
+    expect(enumValues).not.toContain("confirmado");
   });
 });
 

@@ -766,7 +766,40 @@ function opsToolDefinitions(
       intentKind: asIntentKind("order.status.transition"),
       description:
         "Avançar um pedido para o próximo status da cozinha/entrega (ex.: preparando → pronto).",
-      inputSchema: {},
+      // BKL-144 — the REAL model-facing shape. The runtime treats inputSchema
+      // opaquely (it is NOT surfaced to the LLM — the planner advertises only
+      // `capability` + a generic `payload`), so this documents the CLOSED contract
+      // the guard enforces rather than driving generation: the planner emits ONLY
+      // `orderId` + `newStatus`; `actor`/`actorId`/`reason` are Capsule-forced by
+      // the executor, never model-parsed. `newStatus` is one of the six English
+      // enum values VERBATIM — the BKL-090 guard reads `payload.newStatus`
+      // literally with NO pt→en / alias normalization (the fix teaches the planner,
+      // it does NOT loosen the guard).
+      inputSchema: {
+        type: "object",
+        properties: {
+          orderId: {
+            type: "string",
+            description:
+              "Pedido a transicionar — id, número de exibição ou nome do cliente (o resolver mapeia para o id real).",
+          },
+          newStatus: {
+            type: "string",
+            enum: [
+              "confirmed",
+              "preparing",
+              "ready",
+              "in_delivery",
+              "delivered",
+              "canceled",
+            ],
+            description:
+              "Status alvo — EXATAMENTE um destes valores em inglês (contrato fechado; o guard não normaliza).",
+          },
+        },
+        required: ["orderId", "newStatus"],
+        additionalProperties: false,
+      },
       outputSchema: {},
       riskLevel: "medium",
       execute: (input, ctx) =>

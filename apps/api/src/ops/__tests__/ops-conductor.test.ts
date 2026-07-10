@@ -972,6 +972,104 @@ describe("ops conductor — order.status.transition reachable end-to-end (BKL-09
   });
 });
 
+// ── BKL-144 — planner reachability regression (the fix teaches, doesn't loosen) ─
+//
+// A live probe (ops115prove, 2026-07-10) proved `order.status.transition` was
+// UNREACHABLE from staff speech on the 4B: the OPS persona had no mapping example
+// and the ToolDefinition an EMPTY inputSchema, so the model invented wrong field
+// names (status/transition/omitted) and pt-BR values (confirmado/cancel) across 5
+// drives — the guard read `payload.newStatus` verbatim and REFUSEd every one, so
+// ZERO valid transitions reached EXECUTE. The fix is planner-only (persona example
+// + documented inputSchema). These are the SCRIPTED-model kernel proofs that the
+// taught contract now (a) reaches EXECUTE, (b) still REFUSEs a pt-BR value — the
+// closed guard is NOT normalized — and (c) exercises the BKL-090 legality branch
+// the adversarial live leg short-circuited before reaching.
+
+describe("ops conductor — BKL-144 planner reachability regression", () => {
+  it("the taught 'accept' contract reaches EXECUTE: display-number + newStatus:'confirmed' (pending→confirmed) → write gets the RESOLVED id", async () => {
+    const writeAdjudicatedStatusTransition = transitionWriterSpy();
+    const { model } = scriptedModel([transitionCall("123", "confirmed")]);
+    const deps = buildDeps({
+      model,
+      medusaAdjudicated: vi.fn(),
+      writeAdjudicatedNote: vi.fn(),
+      writeAdjudicatedStatusTransition,
+      product: null,
+      order: null, // direct id lookup MISSES → display-number resolution engages
+      orderRefs: {
+        byDisplayId: [
+          orderRefCandidate({ id: "order_99", displayId: 123, fulfillmentStatus: "pending" }),
+        ],
+      },
+    });
+    const out = await runOpsTurn(deps, "OWNER", "staff_1", "aceita o pedido 123");
+    expect(out.kind).toBe("EXECUTE");
+    expect(writeAdjudicatedStatusTransition).toHaveBeenCalledTimes(1);
+    const [payload, extras] = writeAdjudicatedStatusTransition.mock.calls[0]!;
+    // The write targets the RESOLVED id + the English enum value, verbatim.
+    expect(payload).toEqual({ orderId: "order_99", newStatus: "confirmed" });
+    expect(extras.actor).toBe("admin");
+    expect(extras.actorId).toBe("staff_1");
+  });
+
+  it("a pt-BR value ('confirmado') is NOT normalized → REFUSE order.status.unknown; the write NEVER runs", async () => {
+    const writeAdjudicatedStatusTransition = transitionWriterSpy();
+    const publishOrderStatusChanged = vi.fn(async () => {});
+    const { model } = scriptedModel([transitionCall("order_1", "confirmado")]);
+    const deps = buildDeps({
+      model,
+      medusaAdjudicated: vi.fn(),
+      writeAdjudicatedNote: vi.fn(),
+      writeAdjudicatedStatusTransition,
+      publishOrderStatusChanged,
+      product: null,
+      order: orderAt("pending"), // a real order that COULD legally go to confirmed
+    });
+    const out = await runOpsTurn(
+      deps,
+      "OWNER",
+      "staff_1",
+      "avança o pedido order_1 para confirmado",
+    );
+    expect(out.kind).toBe("REFUSE");
+    if (out.kind === "REFUSE") {
+      // The pt-BR word is not one of the six known statuses → target unknown. This
+      // pins that NO pt→en normalization slipped into the closed contract: the
+      // planner must emit the English enum; the guard does not translate.
+      expect(out.refusal.code).toBe("order.status.unknown");
+    }
+    expect(writeAdjudicatedStatusTransition).not.toHaveBeenCalled();
+    expect(publishOrderStatusChanged).not.toHaveBeenCalled();
+  });
+
+  it("exercises the BKL-090 legality branch the live leg couldn't reach: illegal pending→delivered → REFUSE transition_illegal; the write NEVER runs", async () => {
+    const writeAdjudicatedStatusTransition = transitionWriterSpy();
+    const publishOrderStatusChanged = vi.fn(async () => {});
+    const { model } = scriptedModel([transitionCall("order_1", "delivered")]);
+    const deps = buildDeps({
+      model,
+      medusaAdjudicated: vi.fn(),
+      writeAdjudicatedNote: vi.fn(),
+      writeAdjudicatedStatusTransition,
+      publishOrderStatusChanged,
+      product: null,
+      order: orderAt("pending"), // pending → delivered is not a legal next state
+    });
+    const out = await runOpsTurn(
+      deps,
+      "OWNER",
+      "staff_1",
+      "marca o pedido order_1 como entregue",
+    );
+    expect(out.kind).toBe("REFUSE");
+    if (out.kind === "REFUSE") {
+      expect(out.refusal.code).toBe("order.status.transition_illegal");
+    }
+    expect(writeAdjudicatedStatusTransition).not.toHaveBeenCalled();
+    expect(publishOrderStatusChanged).not.toHaveBeenCalled();
+  });
+});
+
 // ── BKL-084 — history context threaded into the planner system ────────────────
 //
 // The per-request `historyBlock` (a pre-rendered, DATA-fenced pt-BR block) must
