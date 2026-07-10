@@ -158,6 +158,32 @@ export interface IbatexasResponderDeps {
       allowedSources: readonly string[],
     ): string;
   };
+  /**
+   * BKL-078 — the customer-plane QUESTION-SHAPE SAFE-UNKNOWN gate. Injected ONLY on
+   * the CUSTOMER conductor when ENABLE_CLAIMS_PIPELINE is on (the ops conductor
+   * NEVER passes it — pinned by a composition test; customer / WhatsApp with the
+   * flag OFF never construct it → BYTE-IDENTICAL, pinned by the personas regression
+   * bar). It closes the `prose_preserved` hallucination leak on the conversational
+   * (REFUSE-empty-plan) branch — reached only when NO claim survived to render
+   * (runClaimsValidate returned undefined ⟺ empty candidate set; loop §6a therefore
+   * cannot supersede this text). An ungrounded INFO-QUESTION that produced no
+   * validated claim would otherwise fall through to a model-authored prose draft
+   * that can state a delivered falsehood. When `gate(userText)` fires the branch
+   * returns the deterministic proposition-free SAFE_UNKNOWN text (no model call — no
+   * prose can leak), SOUNDNESS-MONOTONIC: it only moves a turn prose→SAFE_UNKNOWN,
+   * never the reverse, and never touches the render / claim-proposal paths.
+   *
+   *  - `gate(text)` — TRUE iff the message is a non-smalltalk info-question
+   *    (interrogative-discriminator.shouldDegradeToSafeUnknown). Smalltalk WINS
+   *    (never degrades — the BKL-110 0/15 bar). Absent dep → the normal
+   *    conversational completion runs.
+   *  - `render(schedule)` — the deterministic pt-BR SAFE_UNKNOWN reply, with the
+   *    closed-hours disclosure appended when the schedule signal says closed.
+   */
+  readonly safeUnknown?: {
+    gate(text: string): boolean;
+    render(schedule: ScheduleSignal | undefined): string;
+  };
 }
 
 /** Best-effort, BOUNDED summary of the dispatch result for model grounding.
@@ -819,6 +845,32 @@ export function createIbatexasResponder(
             const rendered = deps.readAnswer?.render(turnId);
             if (rendered !== undefined) {
               return { text: rendered };
+            }
+            // BKL-078 — the customer-plane QUESTION-SHAPE gate. This branch is the
+            // `prose_preserved` seam: it is reached only when NO claim survived to
+            // render (runClaimsValidate returned undefined ⟺ empty candidate set, so
+            // handle-turn §6a cannot supersede this text — see the PR body's BKL-111
+            // cite). On a NON-smalltalk info-question that produced no validated
+            // claim, the model draft below can ship a delivered falsehood (tonight's
+            // two live lies). When the gate fires we return the deterministic,
+            // proposition-free SAFE_UNKNOWN text BEFORE any model call — guaranteeing
+            // no prose leaks — and emit ONE PII-free `claims.terminal` (posture
+            // safe_degraded). SOUNDNESS-MONOTONIC: it only moves a turn
+            // prose→SAFE_UNKNOWN, never the reverse, and never touches the render or
+            // claim-proposal paths. Absent dep (ops plane / flag-OFF) → this whole
+            // block is skipped → byte-identical to the model completion below.
+            if (deps.safeUnknown?.gate(userText) === true) {
+              logger.info(
+                {
+                  component: "claims",
+                  event: "claims.terminal",
+                  turnId,
+                  posture: "safe_degraded",
+                  reason: "ungrounded_question",
+                },
+                "claims terminal finalized (safe-degraded — ungrounded question shape)",
+              );
+              return { text: deps.safeUnknown.render(scheduleSignal) };
             }
             const { system: base, fragmentManifest } = await composeSystem(
               RESPONDER_CONVERSATIONAL_SURFACE,
