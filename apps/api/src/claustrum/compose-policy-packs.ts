@@ -74,19 +74,28 @@ export const sessionTokenBudgetGuard = nameGuard(
 );
 
 // Confirm-on-autoresolve (NL→id confirm-first): when the conductor resolve stage
-// auto-resolved an ambiguous target for an IRREVERSIBLE money/booking intent
-// ("cancelar meu pedido" → most-recent order; "cancelar minha reserva" → the only
-// active booking; PIX regenerate → most-recent order), it sets
+// auto-resolved a target the customer left implicit ("cancelar meu pedido" →
+// most-recent order; "cancelar minha reserva" → the only active booking; PIX
+// regenerate → most-recent order; BKL-038 in-flight modify "adiciona uma coca no
+// meu pedido" / "muda o endereço do meu pedido" → most-recent order), it sets
 // `state.ctx.autoResolvedMoneyRef`. This guard then REQUEST_CONFIRMATIONs so a
 // wrong guess can never auto-execute — the user sees the target and confirms.
 // On resume (after confirm) the parked envelope carries the EXPLICIT resolved id,
 // so the flag is absent → this guard passes → the kernel re-adjudicates against
 // fresh entity state. Boolean-as-threshold (1 = flagged). Composed at the
-// adopter level (no pack-source change), like the F4 guard.
+// adopter level (no pack-source change), like the F4 guard. This set MUST mirror
+// ORDER_AUTORESOLVE_KINDS + RESERVATION_AUTORESOLVE_KINDS (resolve-and-assemble.ts):
+// every kind that auto-resolves an implicit target must confirm it here.
 const AUTORESOLVE_CONFIRM_KINDS = new Set([
   "order.cancel",
   "payment.pix.regenerate",
   "reservation.cancel",
+  // BKL-038 — same NL→id targeting → same confirm gate, so an auto-resolved
+  // "meu pedido" is surfaced before the in-flight modify executes.
+  "order.amend.request",
+  "order.note.add",
+  "order.address.change",
+  "order.type.switch",
 ]);
 export const confirmOnAutoResolveGuard = nameGuard(
   "confirmOnAutoResolvedRef",
