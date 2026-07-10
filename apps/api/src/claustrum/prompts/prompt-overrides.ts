@@ -16,8 +16,15 @@
 //
 // COHERENCE: the snapshot Map is process-global — the write endpoint and the
 // composer import the SAME module, so an edit is visible to the next turn in
-// this process immediately. (Multi-instance prod needs cross-process
-// invalidation — e.g. a Redis pubsub bump — noted for the prod admin route.)
+// this process immediately. (Multi-instance prod would need cross-process
+// invalidation — e.g. a Redis pubsub bump — a known gap.)
+//
+// PRODUCTION GOVERNANCE: the ONLY in-band writer is the dev-gated qa-viewer
+// editor (self-disabled in prod); there is NO owner-authenticated prod write
+// route. So production FAILS CLOSED — `loadPromptOverrides()` ignores every
+// prompt_override row unless `ENABLE_PROMPT_OVERRIDES=true` explicitly opts in.
+// That env flag IS the documented governance gate; a row reaching prod without
+// it never reshapes the live prompt (compiled-in constants are used unchanged).
 
 import { createHash } from "node:crypto";
 import { Pool } from "pg";
@@ -108,11 +115,42 @@ export async function ensurePromptOverrideTable(): Promise<void> {
 }
 
 /** Load all overrides into the in-memory snapshot. Call once at boot (after
- *  ensureTable). Best-effort: on failure the snapshot stays empty (source-only). */
+ *  ensureTable). Best-effort: on failure the snapshot stays empty (source-only).
+ *
+ *  S9 — PRODUCTION GOVERNANCE GATE (fail-closed). A prompt_override row reshapes
+ *  the live planner/responder personas, and the ONLY in-band writer is the
+ *  dev-gated qa-viewer editor (self-disabled in prod). So in production a row is
+ *  applied ONLY when `ENABLE_PROMPT_OVERRIDES=true` explicitly enables governed
+ *  overrides; otherwise every row is SKIPPED and the compiled-in constants are
+ *  used unchanged. A log line is detection, not a guard — the flag is the guard.
+ *  Outside production (dev/test) overrides always apply so the editor works
+ *  locally. The decision is logged either way. */
 export async function loadPromptOverrides(): Promise<void> {
+  const isProduction = process.env.NODE_ENV === "production";
+  const overridesEnabled =
+    !isProduction || process.env.ENABLE_PROMPT_OVERRIDES === "true";
   try {
     const { rows } = await getPool().query(`SELECT prompt_id, content FROM prompt_override`);
     snapshot.clear();
+    if (!overridesEnabled) {
+      // Fail-closed: leave the snapshot empty so the runtime is byte-identical
+      // to the compiled-in prompts. Log the decision (loudly if rows exist).
+      const ids = (rows as Array<{ prompt_id: string }>)
+        .map((r) => r.prompt_id)
+        .filter((id): id is string => typeof id === "string");
+      if (ids.length > 0) {
+        logger.warn(
+          { component: "prompt-overrides", count: ids.length, ids },
+          "prompt overrides present in production but ENABLE_PROMPT_OVERRIDES is not set — SKIPPED (fail-closed; using compiled-in prompts)",
+        );
+      } else {
+        logger.info(
+          { component: "prompt-overrides", count: 0 },
+          "prompt overrides disabled in production (ENABLE_PROMPT_OVERRIDES unset); none applied",
+        );
+      }
+      return;
+    }
     for (const r of rows as Array<{ prompt_id: string; content: string }>) {
       if (typeof r.prompt_id === "string" && typeof r.content === "string") {
         snapshot.set(r.prompt_id, r.content);
@@ -122,15 +160,12 @@ export async function loadPromptOverrides(): Promise<void> {
       { component: "prompt-overrides", count: snapshot.size },
       "prompt overrides loaded",
     );
-    // S9 — provenance in production. The ONLY in-band writer is the dev-gated
-    // qa-viewer editor, so a prompt_override row present in a PROD process (a
-    // stray/promoted row, or direct DB write) silently reshapes the live
-    // planner/responder personas with no prod-side authz. WARN with the affected
-    // ids so it is noticed instead of invisible — the load stays fail-safe.
-    if (process.env.NODE_ENV === "production" && snapshot.size > 0) {
+    // In production, overrides are active only behind the explicit governance
+    // flag; surface the affected ids so a governed change stays auditable.
+    if (isProduction && snapshot.size > 0) {
       logger.warn(
         { component: "prompt-overrides", count: snapshot.size, ids: [...snapshot.keys()] },
-        "prompt overrides ACTIVE in production — verify these are intended (the dev-only editor is the sole in-band writer)",
+        "prompt overrides ACTIVE in production via ENABLE_PROMPT_OVERRIDES — verify these are the intended governed edits",
       );
     }
   } catch (err) {

@@ -54,21 +54,26 @@ function surfaceOf(ctx: PromptContext): string | undefined {
   return typeof extra?.surface === "string" ? extra.surface : undefined;
 }
 
-/** A static fragment whose content + hash are fixed at registration. */
+/** A static fragment whose content resolves a live override (default fallback). */
 function staticFragment(
   id: string,
   surface: string,
   content: string,
 ): PromptFragment {
+  const resolved = (): string => resolvePrompt(id, content);
   return {
     id,
-    // Hash pins the compiled-in DEFAULT (registration-time), so the golden
-    // surface + prompt-drift guard stay green. content() resolves any live
-    // override, fail-safe to the default when none exists.
-    hash: hashFragmentContent(content),
+    // Hash is content-addressed to the CONTENT ACTUALLY USED, not the
+    // compiled-in default: a getter over the resolved text (a live override when
+    // active, else the default) so the turn_trace `id@hash` manifest is honest
+    // in both cases. With no override, resolved === default, so the recorded
+    // hash is unchanged and the golden surface + prompt-drift guard stay green.
+    get hash() {
+      return hashFragmentContent(resolved());
+    },
     priority: 0, // personas are inviolable (never evicted under budget pressure)
     tokens: estimateTokens(content),
-    content: () => resolvePrompt(id, content),
+    content: () => resolved(),
     applies: (ctx) => surfaceOf(ctx) === surface,
   };
 }
@@ -78,13 +83,18 @@ function staticFragment(
 function capabilityFragment(kind: string, description: string): PromptFragment {
   const id = `ibatexas/capability.${kind}`;
   const content = `- ${kind}: ${description}`;
+  // Override replaces the DESCRIPTION; the `- kind:` framing is preserved.
+  const resolved = (): string => `- ${kind}: ${resolvePrompt(id, description)}`;
   return {
     id,
-    hash: hashFragmentContent(content),
+    // Content-addressed to the resolved text (override or default) so the
+    // recorded hash matches what was actually sent — see staticFragment.
+    get hash() {
+      return hashFragmentContent(resolved());
+    },
     priority: 10, // lower priority than personas; evictable under budget pressure
     tokens: estimateTokens(content),
-    // Override replaces the DESCRIPTION; the `- kind:` framing is preserved.
-    content: () => `- ${kind}: ${resolvePrompt(id, description)}`,
+    content: () => resolved(),
     applies: (ctx) =>
       surfaceOf(ctx) === RESPONDER_GROUNDED_SURFACE &&
       (ctx.capabilities ?? []).includes(kind),
