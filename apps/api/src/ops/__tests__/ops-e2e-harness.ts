@@ -320,6 +320,8 @@ export interface OpsToolSpies {
   appendRefundEventLog: ReturnType<typeof vi.fn>;
   resolveAlertFromEnvelope: ReturnType<typeof vi.fn>;
   closeIncidentFromEnvelope: ReturnType<typeof vi.fn>;
+  upsertOverride: ReturnType<typeof vi.fn>;
+  invalidateScheduleCache: ReturnType<typeof vi.fn>;
 }
 
 /**
@@ -361,6 +363,14 @@ export function buildOpsTools(
     closeIncidentFromEnvelope:
       overrides.closeIncidentFromEnvelope ??
       vi.fn(async () => ({ result: { status: "RESOLVED" } })),
+    upsertOverride:
+      overrides.upsertOverride ??
+      vi.fn(async (date: string, data: { isOpen: boolean }) => ({
+        date,
+        isOpen: data.isOpen,
+      })),
+    invalidateScheduleCache:
+      overrides.invalidateScheduleCache ?? vi.fn(async () => ({ ok: true })),
   };
   const tools = createOpsToolRegistry({
     medusaAdjudicated: spies.medusaAdjudicated as never,
@@ -376,6 +386,8 @@ export function buildOpsTools(
     appendRefundEventLog: spies.appendRefundEventLog,
     opsAlertSvc: { resolveAlertFromEnvelope: spies.resolveAlertFromEnvelope },
     incidentSvc: { closeIncidentFromEnvelope: spies.closeIncidentFromEnvelope },
+    scheduleSvc: { upsertOverride: spies.upsertOverride as never },
+    invalidateScheduleCache: spies.invalidateScheduleCache as never,
   });
   return { tools, spies };
 }

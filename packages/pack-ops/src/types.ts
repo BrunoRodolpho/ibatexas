@@ -43,6 +43,15 @@
  *     by message ("resolve o alerta X"). Matrix row {OWNER,MANAGER}.
  *   - incident.ticket.close.staff — staff (BKL-088). Close a no-reply incident
  *     by message ("fecha o incidente Y"). Matrix row {OWNER,MANAGER}.
+ *   - schedule.override.set    — staff (SCN-127). Set a per-date schedule
+ *     override by message ("fecha amanhã" / "amanhã abrimos só às 18h"). Matrix
+ *     row {OWNER,MANAGER}. REVERSIBLE, non-money ⇒ WhatsApp-drivable (NOT in
+ *     WA_EXCLUDED_OPS_KINDS). An UPSERT — no entity-existence lookup; the ops
+ *     resolver normalizes the NL date to a concrete ISO date in
+ *     RESTAURANT_TIMEZONE and stamps it into the payload so the kernel
+ *     adjudicates a concrete date, never a relative word. The executor drives
+ *     the SAME `scheduleService.upsertOverride` the admin schedule route uses
+ *     (domain-service verb, like BKL-088 — NO Medusa egress).
  *
  * # BKL-088 — the LAYERED (D10) posture, and why the pack names are DISTINCT
  *
@@ -82,6 +91,7 @@ export type OpsIntentKind =
   | "product.price.set"
   | "ops.alert.resolve.staff"
   | "incident.ticket.close.staff"
+  | "schedule.override.set"
 
 // ── Payloads ────────────────────────────────────────────────────────────────
 
@@ -141,12 +151,49 @@ export interface IncidentCloseStaffPayload {
   readonly reason?: string
 }
 
+/**
+ * One time window in a `schedule.override.set` open-day payload (SCN-127). A
+ * structural mirror of the domain `TimeBlock` (`@ibatexas/types`) — pack-ops is a
+ * dependency-free leaf, so the shape is redeclared here rather than imported.
+ * `start`/`end` are `"HH:MM"` 24h wall-clock in RESTAURANT_TIMEZONE; `label` is
+ * the human window name ("Jantar"). The strict validator REFUSEs a malformed
+ * block (bad `HH:MM`, empty `label`, or `start >= end`).
+ */
+export interface OpsScheduleBlock {
+  readonly label: string
+  readonly start: string
+  readonly end: string
+}
+
+/**
+ * `schedule.override.set` payload (SCN-127). Strict CLOSED contract — the
+ * business-phase `validateScheduleOverridePayload` guard REFUSEs anything that is
+ * not EXACTLY `{ date: <YYYY-MM-DD>, isOpen: <boolean>, blocks?: OpsScheduleBlock[],
+ * note?: <string> }` (unknown keys rejected).
+ *
+ * `date` is a CONCRETE ISO calendar date — the ops resolver normalizes the owner's
+ * relative word ("amanhã", "sexta") to a concrete date in RESTAURANT_TIMEZONE and
+ * stamps it here BEFORE adjudication, so the kernel never sees a relative word (a
+ * word the resolver could not resolve stays verbatim and REFUSEs at the validator,
+ * fail-closed). `isOpen` is the target day state: `false` closes the whole day
+ * (`blocks` MUST be empty/absent — "fecha amanhã"); `true` opens with the given
+ * `blocks` (which MUST be a non-empty list of coherent windows — "amanhã abrimos só
+ * às 18h"). `note` is an optional operator note persisted to the override row.
+ */
+export interface ScheduleOverrideSetPayload {
+  readonly date: string
+  readonly isOpen: boolean
+  readonly blocks?: OpsScheduleBlock[]
+  readonly note?: string
+}
+
 /** The Pack's payload union. */
 export type OpsPayload =
   | ProductAvailabilitySetPayload
   | ProductPriceSetPayload
   | OpsAlertResolveStaffPayload
   | IncidentCloseStaffPayload
+  | ScheduleOverrideSetPayload
 
 /** The keys the strict `product.availability.set` validator admits. */
 export const PRODUCT_AVAILABILITY_SET_KEYS: ReadonlySet<string> = new Set([
@@ -172,6 +219,14 @@ export const OPS_ALERT_RESOLVE_STAFF_KEYS: ReadonlySet<string> = new Set([
 export const INCIDENT_CLOSE_STAFF_KEYS: ReadonlySet<string> = new Set([
   "incidentId",
   "reason",
+])
+
+/** The keys the strict `schedule.override.set` validator admits (SCN-127). */
+export const SCHEDULE_OVERRIDE_SET_KEYS: ReadonlySet<string> = new Set([
+  "date",
+  "isOpen",
+  "blocks",
+  "note",
 ])
 
 // ── Context (per-turn caller identity / channel surface) ────────────────────
@@ -249,6 +304,19 @@ export interface OpsIncidentSnapshot {
 }
 
 /**
+ * The schedule reference the pack's `requireScheduleDateActionable` guard reads
+ * (SCN-127). Unlike the other kinds' snapshots this is NOT an entity read —
+ * `schedule.override.set` is an UPSERT with no row to look up. The ops resolver
+ * projects the CURRENT business-day date (`today`, `YYYY-MM-DD` in
+ * RESTAURANT_TIMEZONE) so the guard can fail closed on a PAST date deterministically
+ * (never reading the clock itself). A null snapshot ⇒ the reference is unavailable
+ * ⇒ REFUSE (fail-closed — the guard cannot prove today-or-future without it).
+ */
+export interface OpsScheduleSnapshot {
+  readonly today: string
+}
+
+/**
  * Per-kind SystemState the ops pack's guards adjudicate against. THE CONTRACT
  * THE OPS RESOLVER MUST BUILD (one branch per kind):
  *
@@ -256,10 +324,12 @@ export interface OpsIncidentSnapshot {
  *   product.price.set         → { ctx, priceProduct: {id,status,name,…} | null }
  *   ops.alert.resolve.staff   → { ctx, alert:    {id,status} | null }
  *   incident.ticket.close.staff → { ctx, incident: {id,status} | null }
+ *   schedule.override.set     → { ctx, schedule: {today} | null }
  *
  * Each entity field is `null` when no row matches the payload reference — the
  * corresponding business guard turns that into a REFUSE (fail-closed; an
- * unprojected `undefined` is treated as not-found too).
+ * unprojected `undefined` is treated as not-found too). `schedule` carries no
+ * entity (the verb is an UPSERT); it projects the today-or-future reference only.
  */
 export interface OpsState {
   readonly ctx: OpsContext & {
@@ -274,6 +344,8 @@ export interface OpsState {
   readonly alert?: OpsAlertSnapshot | null
   /** The incident the in-flight `incident.ticket.close.staff` targets (BKL-088). */
   readonly incident?: OpsIncidentSnapshot | null
+  /** The today-or-future reference the in-flight `schedule.override.set` reads (SCN-127). */
+  readonly schedule?: OpsScheduleSnapshot | null
 }
 
 // ── Entity lifecycle ────────────────────────────────────────────────────────

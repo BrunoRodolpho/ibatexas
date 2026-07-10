@@ -152,6 +152,20 @@ export const OPS_ALERT_RESOLVE_STAFF_KIND = "ops.alert.resolve.staff"
 export const OPS_INCIDENT_CLOSE_STAFF_KIND = "incident.ticket.close.staff"
 
 /**
+ * SCN-127 — the OWNED schedule-override verb ("fecha amanhã" / "amanhã abrimos só
+ * às 18h"). OWNED by this pack (in `opsPack.intents`) and adjudicated by THIS
+ * pack's bundle; its executor drives the SAME `scheduleService.upsertOverride` the
+ * admin schedule route uses (a domain-service verb, like the BKL-088 resolution
+ * verbs — NO Medusa egress). REVERSIBLE + non-money, so it stays IN the WhatsApp
+ * verb scope (NOT in `WA_EXCLUDED_OPS_KINDS`). Like the other OWNED ops verbs it is
+ * a STAFF/OPS-plane verb with NO registered CHAT tool — an
+ * `ADVERTISED_NOT_REGISTERED_WHITELIST` entry (`staff:schedule.override.set`)
+ * documents that; the ops-plane drift gate verifies it IS registered on the OPS
+ * registry.
+ */
+export const OPS_SCHEDULE_OVERRIDE_SET_KIND = "schedule.override.set"
+
+/**
  * Ops-domain tool classification. The OWNED mutating verbs
  * (`product.availability.set`, `product.price.set` (NEW-004),
  * `ops.alert.resolve.staff`, `incident.ticket.close.staff`) and the three
@@ -170,6 +184,7 @@ export const OPS_TOOLS: ToolClassification = {
     "product.price.set",
     OPS_ALERT_RESOLVE_STAFF_KIND,
     OPS_INCIDENT_CLOSE_STAFF_KIND,
+    OPS_SCHEDULE_OVERRIDE_SET_KIND,
     OPS_FOREIGN_ADVERTISED_KIND,
     OPS_FOREIGN_ADVERTISED_TRANSITION_KIND,
     OPS_FOREIGN_ADVERTISED_REFUND_KIND,
@@ -203,6 +218,7 @@ const rawOpsCapabilityPlanner: CapabilityPlanner<OpsState, OpsContext> = {
           "product.price.set",
           OPS_ALERT_RESOLVE_STAFF_KIND,
           OPS_INCIDENT_CLOSE_STAFF_KIND,
+          OPS_SCHEDULE_OVERRIDE_SET_KIND,
           OPS_FOREIGN_ADVERTISED_KIND,
           OPS_FOREIGN_ADVERTISED_TRANSITION_KIND,
           OPS_FOREIGN_ADVERTISED_REFUND_KIND,

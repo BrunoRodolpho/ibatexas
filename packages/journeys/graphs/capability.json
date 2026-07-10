@@ -3,7 +3,7 @@
   "graph": "capability",
   "meta": {
     "dangling": [],
-    "intentKinds": 68,
+    "intentKinds": 69,
     "packs": 6,
     "personaContexts": [
       "authed-customer",
@@ -1466,6 +1466,28 @@
       }
     },
     {
+      "id": "intent:schedule.override.set",
+      "type": "intent",
+      "label": "schedule.override.set",
+      "meta": {
+        "advertisedContexts": [],
+        "chatDrivable": false,
+        "composedPack": "ibatexas/pack-ops",
+        "domain": "schedule",
+        "flags": [],
+        "knownKind": true,
+        "plausibleDecisions": [
+          "EXECUTE",
+          "REFUSE",
+          "ESCALATE",
+          "REQUEST_CONFIRMATION",
+          "DEFER",
+          "REWRITE"
+        ],
+        "staffRoute": false
+      }
+    },
+    {
       "id": "intent:whatsapp.handoff.request",
       "type": "intent",
       "label": "whatsapp.handoff.request",
@@ -1570,9 +1592,9 @@
       "type": "pack",
       "label": "ibatexas/pack-ops",
       "meta": {
-        "intentCount": 4,
+        "intentCount": 5,
         "policyDefault": "REFUSE",
-        "version": "1.2.0"
+        "version": "1.3.0"
       }
     },
     {
@@ -2075,6 +2097,11 @@
     {
       "from": "pack:ibatexas/pack-ops",
       "to": "intent:product.price.set",
+      "type": "declares"
+    },
+    {
+      "from": "pack:ibatexas/pack-ops",
+      "to": "intent:schedule.override.set",
       "type": "declares"
     },
     {

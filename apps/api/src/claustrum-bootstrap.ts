@@ -106,13 +106,14 @@ import {
   type RedisPubSubClient,
 } from "@adjudicate/audit";
 
-import { prisma, claustrumMemoryPrisma, createOrderCommandService, createOrderQueryService, createOrderEventLogService, createPaymentCommandService, createPaymentQueryService, createOpsAlertService, createIncidentService } from "@ibatexas/domain";
+import { prisma, claustrumMemoryPrisma, createOrderCommandService, createOrderQueryService, createOrderEventLogService, createPaymentCommandService, createPaymentQueryService, createOpsAlertService, createIncidentService, createScheduleService } from "@ibatexas/domain";
 import { rehydratePaymentState } from "@ibatexas/pack-payments";
 import {
   emitLlmCall,
   getRedisClient,
   getScheduleSignal,
   getTodayHoursText,
+  invalidateScheduleCache,
   loadSchedule,
   rk,
   type ScheduleSignal,
@@ -2940,6 +2941,13 @@ export async function bootstrapClaustrum(
     // these, exactly like the admin ops-alerts / incidents resolve routes.
     opsAlertSvc,
     incidentSvc: opsIncidentSvc,
+    // SCN-127 — the schedule-override write path. Reuses the SAME
+    // createScheduleService().upsertOverride the admin schedule override route
+    // uses (a domain-service verb; NO Medusa egress), then invalidates the Redis
+    // schedule cache exactly like that route so the customer-facing hours/closed-
+    // notice reads pick the override up immediately (TTL bounds any lag).
+    scheduleSvc: createScheduleService(),
+    invalidateScheduleCache,
     // BKL-085 — publish payment.status_changed after a committed refund write,
     // exactly like the admin refund route (drives auto-cancel-on-full-refund).
     publishPaymentStatusChanged: (event) =>

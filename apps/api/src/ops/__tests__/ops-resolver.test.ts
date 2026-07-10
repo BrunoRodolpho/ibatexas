@@ -979,3 +979,77 @@ describe("buildOpsRefundResumeState — money-safe resume re-projection", () => 
     expect(state.ctx.exists).toBe(false);
   });
 });
+
+// ── schedule.override.set state + NL-date normalization (SCN-127) ─────────────
+//
+// The resolver normalizes the owner's relative date word to a CONCRETE ISO date
+// in RESTAURANT_TIMEZONE and STAMPS it into the payload BEFORE adjudication (the
+// intentHash then covers the resolved date), and projects the today-or-future
+// reference into `state.schedule.today`. The clock is injected (`now`) so the
+// normalization is deterministic — frozen to the 2026-07-04 business day here.
+
+const FIXED_NOW = () => new Date("2026-07-04T12:00:00.000Z");
+
+function scheduleDeps(over: Partial<OpsResolverDeps> = {}): OpsResolverDeps {
+  return makeDeps({ now: FIXED_NOW, ...over });
+}
+
+describe("ops resolver — schedule.override.set state (SCN-127)", () => {
+  it('normalizes "amanhã" → the concrete next business day + projects today', async () => {
+    const [resolved] = await createOpsResolver(scheduleDeps()).resolve(
+      input(opsEnvelope("schedule.override.set", { date: "amanhã", isOpen: false })),
+    );
+    // 2026-07-04 (SP business day) + 1 = 2026-07-05, stamped into the payload.
+    expect((resolved!.envelope.payload as { date: string }).date).toBe("2026-07-05");
+    expect(resolved!.state).toEqual({
+      ctx: {
+        channel: "staff",
+        customerId: null,
+        staffId: "staff_1",
+        tenantId: "ibatexas",
+      },
+      schedule: { today: "2026-07-04" },
+    });
+  });
+
+  it('normalizes "hoje" → today (today-or-future is inclusive)', async () => {
+    const [resolved] = await createOpsResolver(scheduleDeps()).resolve(
+      input(opsEnvelope("schedule.override.set", { date: "hoje", isOpen: false })),
+    );
+    expect((resolved!.envelope.payload as { date: string }).date).toBe("2026-07-04");
+  });
+
+  it("passes an explicit ISO date through unchanged (no rewrite)", async () => {
+    const [resolved] = await createOpsResolver(scheduleDeps()).resolve(
+      input(opsEnvelope("schedule.override.set", { date: "2026-07-20", isOpen: false })),
+    );
+    expect((resolved!.envelope.payload as { date: string }).date).toBe("2026-07-20");
+  });
+
+  it("normalizes a weekday name to the nearest upcoming such day", async () => {
+    // 2026-07-04 is a Saturday; the next Wednesday ("quarta") is 2026-07-08.
+    const [resolved] = await createOpsResolver(scheduleDeps()).resolve(
+      input(opsEnvelope("schedule.override.set", { date: "quarta", isOpen: false })),
+    );
+    expect((resolved!.envelope.payload as { date: string }).date).toBe("2026-07-08");
+  });
+
+  it("leaves an UNRESOLVABLE word VERBATIM (⇒ pack validator REFUSEs, fail-closed)", async () => {
+    const [resolved] = await createOpsResolver(scheduleDeps()).resolve(
+      input(opsEnvelope("schedule.override.set", { date: "qualquer dia", isOpen: false })),
+    );
+    // Untouched — the pack `validateScheduleOverridePayload` REFUSEs (not ISO).
+    expect((resolved!.envelope.payload as { date: string }).date).toBe("qualquer dia");
+    expect((resolved!.state as { schedule: { today: string } }).schedule.today).toBe(
+      "2026-07-04",
+    );
+  });
+
+  it("preserves the envelope actor/taint/nonce on the date rewrite (adversarial pin)", async () => {
+    const env = opsEnvelope("schedule.override.set", { date: "amanhã", isOpen: false });
+    const [resolved] = await createOpsResolver(scheduleDeps()).resolve(input(env));
+    expect(resolved!.envelope.actor).toEqual(env.actor);
+    expect(resolved!.envelope.taint).toBe(env.taint);
+    expect(resolved!.envelope.nonce).toBe(env.nonce);
+  });
+});

@@ -69,6 +69,19 @@ export const OPS_INCIDENT_CLOSE_PAYLOAD_INVALID_CODE =
 export const OPS_INCIDENT_CLOSE_NOT_ACTIONABLE_CODE =
   "ops.incident_close.not_actionable"
 
+/** Refusal `code` for a malformed `schedule.override.set` payload (SCN-127). */
+export const OPS_SCHEDULE_OVERRIDE_PAYLOAD_INVALID_CODE =
+  "ops.schedule_override.payload_invalid"
+
+/**
+ * Refusal `code` for a `schedule.override.set` whose date is not actionable — a
+ * PAST business day, or the today-or-future reference could not be projected
+ * (fail-closed; the basis `reason` distinguishes `past_date` vs
+ * `reference_unavailable`). SCN-127.
+ */
+export const OPS_SCHEDULE_OVERRIDE_DATE_NOT_ACTIONABLE_CODE =
+  "ops.schedule_override.date_not_actionable"
+
 /** Every ops refusal code — mirrored into `opsPack.basisCodes`. */
 export const OPS_REFUSAL_CODES: readonly string[] = [
   OPS_ADMIN_SESSION_REQUIRED_CODE,
@@ -82,6 +95,8 @@ export const OPS_REFUSAL_CODES: readonly string[] = [
   OPS_ALERT_RESOLVE_NOT_ACTIONABLE_CODE,
   OPS_INCIDENT_CLOSE_PAYLOAD_INVALID_CODE,
   OPS_INCIDENT_CLOSE_NOT_ACTIONABLE_CODE,
+  OPS_SCHEDULE_OVERRIDE_PAYLOAD_INVALID_CODE,
+  OPS_SCHEDULE_OVERRIDE_DATE_NOT_ACTIONABLE_CODE,
 ]
 
 // ── Auth refusals (AUTH) ────────────────────────────────────────────────────
@@ -242,6 +257,38 @@ export function refuseIncidentCloseNotActionable(detail?: string): Refusal {
     "BUSINESS_RULE",
     OPS_INCIDENT_CLOSE_NOT_ACTIONABLE_CODE,
     "Incidente não encontrado ou já fechado.",
+    detail,
+  )
+}
+
+// ── SCN-127 schedule-override refusals ──────────────────────────────────────
+
+/**
+ * `schedule.override.set` payload failed strict validation (missing/malformed
+ * `date`, non-boolean `isOpen`, incoherent `blocks` for the `isOpen` state, a
+ * malformed time window, or an unknown key). Generic user copy; `detail` names
+ * the offending field for audit.
+ */
+export function refuseScheduleOverridePayloadInvalid(detail?: string): Refusal {
+  return refuse(
+    "BUSINESS_RULE",
+    OPS_SCHEDULE_OVERRIDE_PAYLOAD_INVALID_CODE,
+    "Não foi possível processar esta operação.",
+    detail,
+  )
+}
+
+/**
+ * The `schedule.override.set` date is not actionable — a business day already in
+ * the past, or the today-or-future reference could not be projected. Fail-closed:
+ * an override is never written for a past day, and never written blind when the
+ * reference date is missing.
+ */
+export function refuseScheduleOverrideDateNotActionable(detail?: string): Refusal {
+  return refuse(
+    "BUSINESS_RULE",
+    OPS_SCHEDULE_OVERRIDE_DATE_NOT_ACTIONABLE_CODE,
+    "Só é possível alterar o horário de hoje em diante.",
     detail,
   )
 }

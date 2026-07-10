@@ -216,6 +216,12 @@ function buildDeps(opts: {
   /** BKL-088 — SYSTEM-write layer spies (defaults applied when absent). */
   resolveAlertFromEnvelope?: ReturnType<typeof vi.fn>;
   closeIncidentFromEnvelope?: ReturnType<typeof vi.fn>;
+  /** SCN-127 — schedule-override write + cache spies (defaults applied when absent). */
+  upsertOverride?: ReturnType<typeof vi.fn>;
+  invalidateScheduleCache?: ReturnType<typeof vi.fn>;
+  /** SCN-127 — the injected clock the resolver reads for NL-date normalization
+   *  + the today-or-future reference (defaults to the DET business day). */
+  now?: () => Date;
 }) {
   const tools = createOpsToolRegistry({
     medusaAdjudicated: opts.medusaAdjudicated as never,
@@ -257,6 +263,17 @@ function buildDeps(opts: {
         opts.closeIncidentFromEnvelope ??
         (vi.fn(async () => ({ result: { status: "RESOLVED" } })) as never),
     },
+    // SCN-127 — the schedule-override write + cache invalidation.
+    scheduleSvc: {
+      upsertOverride:
+        opts.upsertOverride ??
+        (vi.fn(async (date: string, data: { isOpen: boolean }) => ({
+          date,
+          isOpen: data.isOpen,
+        })) as never),
+    },
+    invalidateScheduleCache:
+      opts.invalidateScheduleCache ?? (vi.fn(async () => ({ ok: true })) as never),
   });
   return {
     adjudicator: realKernelAdjudicator,
@@ -280,6 +297,9 @@ function buildDeps(opts: {
       createOpsResolver({
         staffId,
         tenantId: "ibatexas",
+        // SCN-127 — a FIXED clock so "amanhã" normalizes deterministically to
+        // 2026-07-05 and the today-or-future reference is 2026-07-04.
+        now: opts.now ?? (() => new Date("2026-07-04T12:00:00.000Z")),
         lookupProduct: async () => opts.product,
         lookupOrder: async () => opts.order ?? null,
         lookupActivePayment: async () => opts.activePayment ?? null,
@@ -413,6 +433,116 @@ describe("ops conductor — the end-to-end kernel proof (NEW-032)", () => {
     const out = await runOpsTurn(deps, "MANAGER", "staff_2", "acabou a picanha");
     expect(out.kind).toBe("EXECUTE");
     expect(medusaAdjudicated).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── schedule.override.set — the SCN-127 end-to-end kernel proof ───────────────
+//
+// The scripted planner emits the owner's RELATIVE date word ("amanhã", per the
+// persona); the resolver normalizes it to a CONCRETE ISO date (2026-07-05, from
+// the fixed 2026-07-04 clock in RESTAURANT_TIMEZONE) BEFORE adjudication, so the
+// kernel adjudicates a concrete date and the executor's upsertOverride is called
+// with it. The layered role enforcement is proven the same way as availability.
+
+const SCHEDULE_CLOSE_CALL = {
+  id: "tc-sched",
+  name: "express_intent",
+  input: {
+    capability: "schedule.override.set",
+    payload: { date: "amanhã", isOpen: false, note: "feriado" },
+  },
+};
+
+describe("ops conductor — schedule.override.set end-to-end (SCN-127)", () => {
+  it("OWNER → EXECUTE; upsertOverride runs ONCE with the RESOLVED concrete date + cache invalidated", async () => {
+    const upsertOverride = vi.fn(async (date: string, data: { isOpen: boolean }) => ({
+      date,
+      isOpen: data.isOpen,
+    }));
+    const invalidateScheduleCache = vi.fn(async () => ({ ok: true }));
+    const { model } = scriptedModel([SCHEDULE_CLOSE_CALL]);
+    const deps = buildDeps({
+      model,
+      medusaAdjudicated: vi.fn(),
+      writeAdjudicatedNote: vi.fn(),
+      product: null,
+      upsertOverride,
+      invalidateScheduleCache,
+    });
+    const out = await runOpsTurn(deps, "OWNER", "staff_1", "fecha amanhã");
+    expect(out.kind).toBe("EXECUTE");
+    expect(upsertOverride).toHaveBeenCalledTimes(1);
+    const [date, data] = upsertOverride.mock.calls[0]!;
+    // "amanhã" normalized to the concrete next business day (fixed clock).
+    expect(date).toBe("2026-07-05");
+    expect(data).toEqual({ isOpen: false, blocks: [], note: "feriado" });
+    expect(invalidateScheduleCache).toHaveBeenCalledTimes(1);
+  });
+
+  it("ATTENDANT → REFUSE staff_role_violation; upsertOverride NEVER runs; reply is role-opaque", async () => {
+    const upsertOverride = vi.fn();
+    const { model } = scriptedModel([SCHEDULE_CLOSE_CALL]);
+    const deps = buildDeps({
+      model,
+      medusaAdjudicated: vi.fn(),
+      writeAdjudicatedNote: vi.fn(),
+      product: null,
+      upsertOverride,
+    });
+    const out = await runOpsTurn(deps, "ATTENDANT", "staff_9", "fecha amanhã");
+    expect(out.kind).toBe("REFUSE");
+    if (out.kind === "REFUSE") {
+      expect(out.refusal.code).toBe("staff_role_violation");
+      expect(out.response).toBe(out.refusal.userFacing);
+      expect(out.response.toLowerCase()).not.toContain("attendant");
+    }
+    expect(upsertOverride).not.toHaveBeenCalled();
+  });
+
+  it("MANAGER → EXECUTE (matrix permits OWNER+MANAGER)", async () => {
+    const upsertOverride = vi.fn(async (date: string, data: { isOpen: boolean }) => ({
+      date,
+      isOpen: data.isOpen,
+    }));
+    const { model } = scriptedModel([SCHEDULE_CLOSE_CALL]);
+    const deps = buildDeps({
+      model,
+      medusaAdjudicated: vi.fn(),
+      writeAdjudicatedNote: vi.fn(),
+      product: null,
+      upsertOverride,
+    });
+    const out = await runOpsTurn(deps, "MANAGER", "staff_2", "fecha amanhã");
+    expect(out.kind).toBe("EXECUTE");
+    expect(upsertOverride).toHaveBeenCalledTimes(1);
+  });
+
+  it("OWNER but an UNRESOLVABLE date → REFUSE payload_invalid; upsertOverride never runs", async () => {
+    const upsertOverride = vi.fn();
+    const { model } = scriptedModel([
+      {
+        id: "tc-sched-bad",
+        name: "express_intent",
+        input: {
+          capability: "schedule.override.set",
+          // A word the resolver can't normalize stays verbatim ⇒ not an ISO date.
+          payload: { date: "qualquer dia", isOpen: false },
+        },
+      },
+    ]);
+    const deps = buildDeps({
+      model,
+      medusaAdjudicated: vi.fn(),
+      writeAdjudicatedNote: vi.fn(),
+      product: null,
+      upsertOverride,
+    });
+    const out = await runOpsTurn(deps, "OWNER", "staff_1", "fecha algum dia");
+    expect(out.kind).toBe("REFUSE");
+    if (out.kind === "REFUSE") {
+      expect(out.refusal.code).toBe("ops.schedule_override.payload_invalid");
+    }
+    expect(upsertOverride).not.toHaveBeenCalled();
   });
 });
 

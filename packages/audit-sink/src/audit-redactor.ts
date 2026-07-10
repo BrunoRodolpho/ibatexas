@@ -432,6 +432,11 @@ export const INTENT_KIND_FIELD_RULES: Readonly<Record<string, ReadonlyArray<stri
   // corpus; the reason never reaches it.
   "ops.alert.resolve.staff": ["reason"],
   "incident.ticket.close.staff": ["reason"],
+  // SCN-127 — `ScheduleOverrideSetPayload` is bounded (date + isOpen + blocks of
+  // {label,start,end} HH:MM windows) EXCEPT the optional free-form `note`
+  // operator note, which an owner could type with a customer name / detail in it.
+  // Over-redact `note` (same posture as the other ops verbs' `reason`).
+  "schedule.override.set": ["note"],
 
   // ── AUT-038 staff-CRUD plane (HTTP-only, off KNOWN_INTENT_KINDS) ─────────
   // staff.create / staff.update payloads carry `hourlyRateCentavos` — employee

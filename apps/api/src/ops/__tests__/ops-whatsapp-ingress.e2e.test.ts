@@ -177,6 +177,8 @@ function buildPartADeps(opts: {
     appendRefundEventLog: vi.fn(),
     opsAlertSvc: { resolveAlertFromEnvelope: vi.fn(async () => ({ result: { status: "RESOLVED" } })) },
     incidentSvc: { closeIncidentFromEnvelope: vi.fn(async () => ({ result: { status: "RESOLVED" } })) },
+    scheduleSvc: { upsertOverride: vi.fn(async () => ({ date: "2026-07-10", isOpen: false })) },
+    invalidateScheduleCache: vi.fn(async () => ({ ok: true })),
   });
   return {
     adjudicator: realKernelAdjudicator,
@@ -456,6 +458,8 @@ function buildPartBDeps(model: ModelProvider, session: SessionPort) {
     appendRefundEventLog: vi.fn(),
     opsAlertSvc: { resolveAlertFromEnvelope: vi.fn(async () => ({ result: { status: "RESOLVED" } })) },
     incidentSvc: { closeIncidentFromEnvelope: vi.fn(async () => ({ result: { status: "RESOLVED" } })) },
+    scheduleSvc: { upsertOverride: vi.fn(async () => ({ date: "2026-07-10", isOpen: false })) },
+    invalidateScheduleCache: vi.fn(async () => ({ ok: true })),
   });
   const deps = {
     adjudicator: auditedResumeAdjudicator(),

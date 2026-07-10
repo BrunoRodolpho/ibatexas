@@ -62,6 +62,18 @@ import {
   resolveOrderByReference,
   type OrderReferenceReads,
 } from "./ops-order-resolution.js";
+import {
+  localDateStr,
+  resolveOverrideDate,
+} from "./ops-schedule-resolution.js";
+
+/** The business timezone the ops schedule-override date normalization uses —
+ *  the SAME `RESTAURANT_TIMEZONE` env the customer-facing schedule reads resolve
+ *  their local business day against (Hard Rule #3 — never server-local). Read
+ *  per-call (not module-load) so a test can set the env before invoking. */
+function restaurantTz(): string {
+  return process.env.RESTAURANT_TIMEZONE ?? "America/Sao_Paulo";
+}
 
 /** The product snapshot the pack-ops `requireProductExists` guard reads. */
 export interface OpsResolverProduct {
@@ -228,6 +240,13 @@ export interface OpsResolverDeps {
   readonly lookupIncident?: (
     incidentId: string,
   ) => Promise<OpsResolverIncident | null>;
+  /**
+   * SCN-127 — the clock the `schedule.override.set` branch reads for NL-date
+   * normalization ("amanhã" → concrete ISO in RESTAURANT_TIMEZONE) AND the
+   * today-or-future reference it projects into `state.schedule.today`. Injected
+   * so date resolution is frozen-clock testable; defaults to `() => new Date()`.
+   */
+  readonly now?: () => Date;
 }
 
 /**
@@ -940,6 +959,38 @@ async function opsStateForEnvelope(
         },
         incident,
       },
+    };
+  }
+
+  if (envelope.kind === "schedule.override.set") {
+    // SCN-127 — an UPSERT: no entity lookup. Normalize the owner's day reference
+    // ("amanhã"/"sexta"/an ISO date) to a CONCRETE ISO date in RESTAURANT_TIMEZONE
+    // and STAMP it into the payload (rebuilt below with the SAME actor/taint/
+    // nonce/createdAt, so the intentHash covers the resolved date) — the kernel
+    // adjudicates a concrete date, never a relative word. A word we cannot resolve
+    // is left VERBATIM ⇒ pack `validateScheduleOverridePayload` REFUSEs it (not an
+    // ISO date) — fail-closed, never a guessed date. Project `schedule.today` so
+    // pack `requireScheduleDateActionable` fails closed on a PAST date
+    // deterministically (the SAME `now`/tz used to normalize the date).
+    const tz = restaurantTz();
+    const now = deps.now?.() ?? new Date();
+    const today = localDateStr(now, tz);
+    const resolvedDate = resolveOverrideDate(payload.date, tz, now);
+    const rewritten =
+      resolvedDate !== null && resolvedDate !== payload.date
+        ? { ...payload, date: resolvedDate }
+        : undefined;
+    return {
+      state: {
+        ctx: {
+          channel: "staff",
+          customerId: null,
+          staffId: deps.staffId,
+          tenantId: deps.tenantId,
+        },
+        schedule: { today },
+      },
+      ...(rewritten ? { payload: rewritten } : {}),
     };
   }
 
