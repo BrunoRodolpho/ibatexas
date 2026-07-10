@@ -87,7 +87,6 @@ function staticFragment(
  * when its capability was acted this turn (ctx.capabilities). */
 function capabilityFragment(kind: string, description: string): PromptFragment {
   const id = `ibatexas/capability.${kind}`;
-  const content = `- ${kind}: ${description}`;
   // Override replaces the DESCRIPTION; the `- kind:` framing is preserved.
   const resolved = (): string => `- ${kind}: ${resolvePrompt(id, description)}`;
   return {
