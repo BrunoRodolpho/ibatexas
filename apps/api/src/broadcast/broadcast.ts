@@ -54,7 +54,25 @@ export async function runBroadcast(
   let failed = 0;
 
   for (const recipient of recipients) {
-    if (await opts.isOptedOut(recipient)) {
+    // Consent gate. A transient consent-read rejection must NOT abort the whole
+    // blast (that would discard the tally for every already-sent recipient and
+    // provoke a full retry — a double-send past the WhatsApp idempotency TTL).
+    // Fail-closed for compliance: if we cannot confirm consent we do NOT send,
+    // and record the recipient as `failed` so the manager can re-target just
+    // those numbers instead of re-blasting everyone.
+    let optedOut: boolean;
+    try {
+      optedOut = await opts.isOptedOut(recipient);
+    } catch (err) {
+      results.push({
+        recipient,
+        status: "failed",
+        error: err instanceof Error ? err.message : String(err),
+      });
+      failed++;
+      continue;
+    }
+    if (optedOut) {
       results.push({ recipient, status: "skipped_opted_out" });
       skipped++;
       continue;
