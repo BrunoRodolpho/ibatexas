@@ -498,11 +498,26 @@ export const ORDER_BY_ID_KINDS = new Set([
   "order.type.switch",
 ]);
 
-// Irreversible money/booking intents that, when their target was NOT given
-// explicitly, auto-resolve to the customer's most-recent target and FORCE a
-// REQUEST_CONFIRMATION (via the confirm-on-autoresolve guard) so a wrong guess
-// can never auto-execute. The user sees the resolved target and confirms/denies.
-const ORDER_AUTORESOLVE_KINDS = new Set(["order.cancel", "payment.pix.regenerate"]);
+// Order/booking intents whose target ("meu pedido" / "minha reserva") the
+// customer may leave implicit: when it was NOT given explicitly, auto-resolve to
+// the customer's most-recent target and FORCE a REQUEST_CONFIRMATION (via the
+// confirm-on-autoresolve guard) so a wrong guess can never auto-execute — the
+// user sees the resolved target and confirms/denies. BKL-038 adds the in-flight
+// modify kinds (amend/note/address/type) so "adiciona uma coca no meu pedido" /
+// "muda o endereço do meu pedido" resolve to the most-recent order instead of
+// dead-ending. MUST stay in lockstep with AUTORESOLVE_CONFIRM_KINDS
+// (compose-policy-packs.ts): a kind auto-resolved here but not confirmed there
+// would EXECUTE against a silently-guessed target. The granular amend kinds
+// (add_item/update_qty/remove_item) are deliberately absent — they carry an
+// explicit orderId from the amend flow, so there is nothing to auto-resolve.
+const ORDER_AUTORESOLVE_KINDS = new Set([
+  "order.cancel",
+  "payment.pix.regenerate",
+  "order.amend.request",
+  "order.note.add",
+  "order.address.change",
+  "order.type.switch",
+]);
 const RESERVATION_AUTORESOLVE_KINDS = new Set(["reservation.cancel"]);
 
 // 034-F1 (review finding 6/7): refund payloads (PaymentRefundIssuePayload /
