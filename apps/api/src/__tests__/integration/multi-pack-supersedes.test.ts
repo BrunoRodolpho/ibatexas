@@ -23,8 +23,10 @@
 import { describe, expect, it } from "vitest";
 import { adjudicate } from "@adjudicate/core/kernel";
 import {
+  adjudicateAndAudit,
   buildAuditRecord,
   buildEnvelope,
+  type Decision,
   type IntentEnvelope,
 } from "@adjudicate/core";
 import {
@@ -94,6 +96,31 @@ function paidOrderState(amount: number): OrderState {
   };
 }
 
+// BKL-036 finding 2: a paid `order.cancel` NEVER silently EXECUTEs — it parks
+// (REQUEST_CONFIRMATION). The realistic chain that reaches a refund is
+// park → customer-confirm → cancel EXECUTE → refund. This helper asserts the
+// park, then resumes the IDENTICAL envelope with a matching confirmationReceipt
+// (the kernel's 2a override flips REQUEST_CONFIRMATION → EXECUTE while still
+// re-running every guard), returning the EXECUTE decision that triggers the
+// downstream refund.
+async function confirmedPaidCancelDecision(
+  cancelEnvelope: IntentEnvelope<OrderIntentKind, OrderPayload>,
+  state: OrderState,
+): Promise<Decision> {
+  const parked = adjudicate(cancelEnvelope, state, ordersPolicyBundle);
+  expect(parked.kind).toBe("REQUEST_CONFIRMATION");
+  const { decision } = await adjudicateAndAudit(
+    cancelEnvelope,
+    state,
+    ordersPolicyBundle,
+    {
+      sink: { emit: async () => {} },
+      confirmationReceipt: { intentHash: cancelEnvelope.intentHash, at: DET_AT },
+    },
+  );
+  return decision;
+}
+
 function refundPaymentState(
   amountInCentavos: number,
   refundedAmountCentavos: number,
@@ -113,7 +140,7 @@ function refundPaymentState(
 // ── Tests ─────────────────────────────────────────────────────────────────
 
 describe("Multi-pack supersedes chain (W6-2): order.cancel → payment.refund.issue", () => {
-  it("small refund (< R$500): order.cancel EXECUTE → refund EXECUTE — audit chain linked", () => {
+  it("small refund (< R$500): confirmed paid cancel EXECUTE → refund EXECUTE — audit chain linked", async () => {
     const orderAmount = 30_000; // R$300
 
     // ── Step 1: customer cancels paid order ──
@@ -122,10 +149,10 @@ describe("Multi-pack supersedes chain (W6-2): order.cancel → payment.refund.is
       { orderId: "ord_chain_01" },
       "n-cancel-small",
     );
-    const orderDecision = adjudicate(
+    // BKL-036: the paid cancel parks, then EXECUTEs on confirm (helper).
+    const orderDecision = await confirmedPaidCancelDecision(
       cancelEnv,
       paidOrderState(orderAmount),
-      ordersPolicyBundle,
     );
     expect(orderDecision.kind).toBe("EXECUTE");
 
@@ -180,7 +207,7 @@ describe("Multi-pack supersedes chain (W6-2): order.cancel → payment.refund.is
     expect(refundRecord.supersedes!.reason).toBe("rewrite_executed");
   });
 
-  it("mid refund (R$500-R$1000): refund REQUEST_CONFIRMATION", () => {
+  it("mid refund (R$500-R$1000): refund REQUEST_CONFIRMATION", async () => {
     const orderAmount = 70_000; // R$700 — above R$500 confirm threshold.
 
     const cancelEnv = orderEnv(
@@ -188,10 +215,10 @@ describe("Multi-pack supersedes chain (W6-2): order.cancel → payment.refund.is
       { orderId: "ord_mid_01" },
       "n-cancel-mid",
     );
-    const orderDecision = adjudicate(
+    // BKL-036: the paid cancel parks, then EXECUTEs on confirm (helper).
+    const orderDecision = await confirmedPaidCancelDecision(
       cancelEnv,
       paidOrderState(orderAmount),
-      ordersPolicyBundle,
     );
     expect(orderDecision.kind).toBe("EXECUTE");
 
@@ -227,7 +254,7 @@ describe("Multi-pack supersedes chain (W6-2): order.cancel → payment.refund.is
     expect(refundRecord.supersedes!.predecessorIntentHash).toBe(cancelEnv.intentHash);
   });
 
-  it("large refund (> R$1000): refund ESCALATE", () => {
+  it("large refund (> R$1000): refund ESCALATE", async () => {
     // pack-orders ESCALATEs cancels >= R$1000 (CONFIRM_LARGE_TICKET_THRESHOLD).
     // We stage the cancel at a small amount (R$500) to keep that EXECUTE,
     // while the *refund magnitude* is large (R$1500) — modelling a
@@ -242,10 +269,10 @@ describe("Multi-pack supersedes chain (W6-2): order.cancel → payment.refund.is
       { orderId: "ord_big_01" },
       "n-cancel-big",
     );
-    const orderDecision = adjudicate(
+    // BKL-036: the paid cancel parks, then EXECUTEs on confirm (helper).
+    const orderDecision = await confirmedPaidCancelDecision(
       cancelEnv,
       paidOrderState(orderAmount),
-      ordersPolicyBundle,
     );
     expect(orderDecision.kind).toBe("EXECUTE");
 
@@ -283,7 +310,7 @@ describe("Multi-pack supersedes chain (W6-2): order.cancel → payment.refund.is
     expect(refundRecord.supersedes!.predecessorIntentHash).toBe(cancelEnv.intentHash);
   });
 
-  it("audit chain genealogy: two records share a linked intentHash", () => {
+  it("audit chain genealogy: two records share a linked intentHash", async () => {
     // Pins the structural invariant the audit-postgres redundancy consumer
     // relies on: a refund row's `supersedes.predecessor_intent_hash`
     // points back to the parent cancel's intentHash, so a query like
@@ -296,10 +323,10 @@ describe("Multi-pack supersedes chain (W6-2): order.cancel → payment.refund.is
       { orderId: "ord_gen_01" },
       "n-cancel-gen",
     );
-    const orderDecision = adjudicate(
+    // BKL-036: the paid cancel parks, then EXECUTEs on confirm (helper).
+    const orderDecision = await confirmedPaidCancelDecision(
       cancelEnv,
       paidOrderState(15_000),
-      ordersPolicyBundle,
     );
     expect(orderDecision.kind).toBe("EXECUTE");
 

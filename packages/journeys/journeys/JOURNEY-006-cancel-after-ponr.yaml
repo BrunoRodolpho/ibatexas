@@ -8,22 +8,26 @@
 # requireCancellable + BASIS_CODES.state.TERMINAL_STATE), never as a
 # tool-level apology with an EXECUTE on the books.
 #
-# blocked_by: order-cancel-kernel-ponr — DISCOVERED GAP (T1a-12 code read):
-# no public web surface can produce that REFUSE today:
-#   * conductor path — resolve-and-assemble.ts buildOrderCtx pins
-#     `ctx.lastAction: null`, so requireCancellable (`lastAction !==
-#     "cancelled"`) can never fire; the kernel EXECUTEs and only the
-#     cancel_order TOOL fails post-hoc (packages/tools cart/cancel-order.ts
-#     PONR check → escalation event, no kernel REFUSE).
-#   * HTTP path — POST /api/orders/:id/cancel 422s (PAST_PONR) at the route
-#     layer BEFORE the kernel, so nothing is audited; and the gateway's
-#     `adjudicate()` is ledger-less (P0-1 wired the execution ledger into
-#     the conductor's buildAdjudicator only), so the deterministic-nonce
-#     replay REFUSE (`ledger_replay_suppressed`) cannot stand in either.
-# Unblocking = mapping the projection's terminal status into the ctx the
-# kernel sees (e.g. lastAction) or moving the route PONR check behind the
-# kernel. Until then this journey is the pinned spec of the intended
-# behaviour and claims no coverage cells.
+# blocked_by: order-cancel-kernel-ponr — the `order-cancel-kernel-ponr` KERNEL
+# gap is now CLOSED (both unblock paths this header named have landed):
+#   * conductor path — requireCancellable now reads the projected terminal
+#     status (`orderAlreadyCancelled` = `lastAction === "cancelled" ||
+#     ctx.fulfillmentStatus === "canceled"`, pack-orders policies.ts) AND the
+#     fulfillment-state PONR (POST_PONR / CUSTOMER_POST_PONR sets, PR #107), so
+#     the audited REFUSE (`order.already_cancelled` / `order.past_ponr`, basis
+#     state/terminal_state) is now producible from the projected ctx — the old
+#     `lastAction: null` pin is no longer the only signal.
+#   * HTTP path — POST /api/orders/:id/cancel no longer 422s BEFORE the kernel
+#     (BKL-036 finding 1): the fulfillment-state / already-cancelled cancel now
+#     reaches the kernel (adjudicated + AUDITED), and the route translates the
+#     kernel REFUSE back to the identical legacy 422 + code
+#     (PAST_PONR / PONR_EXPIRED). Only the order-age time-window stays pre-kernel.
+# RESIDUAL (why status is still `blocked`, out of THIS scope): the run is a CHAT
+# journey whose expects need the first cancel to EXECUTE via a parked
+# REQUEST_CONFIRMATION resumed on the chat channel — the `chat-confirmation-resume`
+# gap (see JOURNEY-015 header correction 3) is unrelated to the kernel PONR gate
+# and is unblocked/live-proven separately (WS9). This journey remains the pinned
+# spec until that live-proof run flips it.
 id: JOURNEY-006
 title: Cancelling past the point of no return is kernel-REFUSED
 businessCase: >-

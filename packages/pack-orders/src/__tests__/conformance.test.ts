@@ -212,7 +212,7 @@ const corpus: ReadonlyArray<Fixture> = [
     expect: { kind: "EXECUTE" },
   },
 
-  // ── REFUSE (12 cases) ────────────────────────────────────────────────
+  // ── REFUSE (13 cases) ────────────────────────────────────────────────
   {
     // RC-A1 cutover Chunk 0 (D-20.4): a guest (customerId:null) web visitor
     // may BUILD a cart — the kernel mirrors the HTTP cart route (optionalAuth),
@@ -355,6 +355,17 @@ const corpus: ReadonlyArray<Fixture> = [
     expect: { kind: "REFUSE", refusalCode: "order.already_cancelled" },
   },
   {
+    // BKL-036 finding 3 (tier a): amend past the PONR floor (ready / out-for-
+    // delivery / delivered) is now a kernel REFUSE, not a route-only check.
+    name: "REFUSE: order.amend.request past the amend PONR (delivered)",
+    envelope: env("order.amend.request", {
+      orderId: "o-1",
+      changes: [{ op: "remove", itemId: "i-1" }],
+    }),
+    state: authenticatedState({ orderId: "o-1", fulfillmentStatus: "delivered" }),
+    expect: { kind: "REFUSE", refusalCode: "order.already_shipped" },
+  },
+  {
     name: "REFUSE: UNTRUSTED order.cancel.system (taint gate)",
     envelope: env(
       "order.cancel.system",
@@ -463,7 +474,21 @@ const corpus: ReadonlyArray<Fixture> = [
     expect: { kind: "REWRITE" },
   },
 
-  // ── REQUEST_CONFIRMATION (3 cases) ───────────────────────────────────
+  // ── REQUEST_CONFIRMATION (4 cases) ───────────────────────────────────
+  {
+    // BKL-036 (J015): a customer cancel of a SETTLED order implies a refund of
+    // the total, so it parks for confirmation below the escalate band (never a
+    // silent EXECUTE). Sub-R$1.000 total ⇒ REQUEST_CONFIRMATION, not ESCALATE.
+    name: "REQUEST_CONFIRMATION: paid order.cancel (settled ⇒ refund-implied, sub-escalate)",
+    envelope: env("order.cancel", { orderId: "o-1", reason: "changed_mind" }),
+    state: authenticatedState({
+      orderId: "o-1",
+      fulfillmentStatus: "confirmed",
+      paymentStatus: "paid",
+      totalInCentavos: 5_000,
+    }),
+    expect: { kind: "REQUEST_CONFIRMATION" },
+  },
   {
     name: "REQUEST_CONFIRMATION: large-ticket checkout (>= R$ 1.000)",
     envelope: env("order.checkout.create", {
