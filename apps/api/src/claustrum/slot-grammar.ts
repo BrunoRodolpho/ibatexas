@@ -101,6 +101,25 @@ export function isPropositionFree(template: Template): boolean {
   return template.slots.every((slot) => slot.kind !== "PROPOSITION");
 }
 
+/**
+ * Render a PROPOSITION-FREE template (a safe posture — unknown / refused / escalate)
+ * to its pt-BR text by concatenating its LITERAL slots. THROWS if handed a template
+ * carrying a PROPOSITION slot (those require a VALIDATED-claim binding — use the
+ * claims renderer, not this). Pure. Exists so a caller that needs the safe text
+ * WITHOUT the full renderer (the BKL-078 responder gate) reuses the ONE canonical
+ * template string instead of re-typing the literal (no drift from SAFE_TEMPLATES).
+ */
+export function renderPropositionFreeText(template: Template): string {
+  if (!isPropositionFree(template)) {
+    throw new Error(
+      `[slot-grammar] renderPropositionFreeText requires a proposition-free template; '${template.claimType}' carries a PROPOSITION slot`,
+    );
+  }
+  return template.slots
+    .map((slot) => (slot.kind === "LITERAL" ? slot.text : ""))
+    .join("");
+}
+
 /** Convenience constructors — keep the table below readable; pure, no behaviour. */
 const lit = (text: string): TemplateSlot => ({ kind: "LITERAL", text });
 const prop = (claimType: string, field: string): TemplateSlot => ({

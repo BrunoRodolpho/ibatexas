@@ -250,8 +250,20 @@ import {
   createIbatexasPlanner,
   type ClaimAwarePlannerPort,
 } from "./claustrum/ibatexas-planner.js";
-import { buildClaimsSeams, warnOncePerMessage } from "./claustrum/claims-pipeline.js";
+import {
+  buildClaimsSeams,
+  claimsPipelineEnabled,
+  warnOncePerMessage,
+} from "./claustrum/claims-pipeline.js";
 import { createIbatexasResponder } from "./claustrum/ibatexas-responder.js";
+// BKL-078 — the customer-plane question-shape SAFE-UNKNOWN gate (flag-gated in
+// buildResponder): the pure discriminator + the safe template render source.
+import { shouldDegradeToSafeUnknown } from "./claustrum/interrogative-discriminator.js";
+import {
+  renderPropositionFreeText,
+  SAFE_TEMPLATES,
+} from "./claustrum/slot-grammar.js";
+import { closedHoursDisclosure } from "./claustrum/closed-hours.js";
 import { createIbatexasPromptComposer } from "./claustrum/prompts/ibatexas-prompts.js";
 import {
   closePromptOverridePool,
@@ -2787,6 +2799,29 @@ export async function bootstrapClaustrum(
       promptComposer,
       telemetry,
       resolveScheduleSignal,
+      // BKL-078 — the customer-plane question-shape SAFE-UNKNOWN gate, wired ONLY
+      // when ENABLE_CLAIMS_PIPELINE is on (the SAME flag buildClaimsSeams reads).
+      // Closes the `prose_preserved` hallucination leak on the conversational
+      // fallback: a non-smalltalk info-question that produced no validated claim
+      // degrades to the deterministic proposition-free SAFE_UNKNOWN reply instead of
+      // a model-authored prose draft. The ops conductor NEVER wires this (D5,
+      // ops-conductor.ts). Flag-OFF → omitted → byte-identical.
+      ...(claimsPipelineEnabled()
+        ? {
+            safeUnknown: {
+              gate: (text: string) => shouldDegradeToSafeUnknown(text),
+              render: (schedule: ScheduleSignal | undefined): string => {
+                const base = renderPropositionFreeText(SAFE_TEMPLATES.unknown);
+                // D3 — when the store is closed, append the canonical closed-hours
+                // disclosure (the SAME text the deterministic closed backstop uses)
+                // so a degraded question still carries the scheduled-pickup offer.
+                return schedule?.isClosed
+                  ? `${base} ${closedHoursDisclosure(schedule)}`
+                  : base;
+              },
+            },
+          }
+        : {}),
     });
 
   // B-PR1 — claims-runtime seams (SDD §M / §Q.6), FLAG DEFAULT-OFF. The planner
