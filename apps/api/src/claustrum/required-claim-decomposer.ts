@@ -48,6 +48,13 @@ import { STORE_OPEN_NOW_CLOSURE } from "./claimdefs/store-open-now.generated.js"
  *
  * Triad scope:
  *   - `STORE_OPEN_NOW_Q` — "estão abertos?" / "que horas fecham?" → STORE_OPEN_NOW.
+ *   - `STORE_HOURS_FOR_DATE_Q` — a DAY-SPECIFIC hours question ("qual o horário de
+ *     domingo?", "vocês abrem amanhã no feriado?") → STORE_HOURS_FOR_DATE (BKL-138 /
+ *     SCN-002/003). Fired ONLY when a DATE ANCHOR (a named weekday / "amanhã" /
+ *     "feriado") co-occurs with schedule phrasing, so an ordinary "que horas
+ *     funciona?" (no date) stays STORE_OPEN_NOW_Q. DEMOTE-ONLY safe: this only ADDS
+ *     the date-hours companion (the today STORE_HOURS/STORE_OPEN_NOW answers are
+ *     unaffected).
  *   - `ORDER_STATUS_Q`   — "cadê meu pedido?" → ORDER_FULFILLMENT_STAGE.
  *   - `PAYMENT_STATUS_Q` — "meu pagamento foi aprovado?" → PAYMENT_STATUS.
  *   - `PICKUP_Q`         — a PICKUP / "posso retirar agora?" question logically
@@ -58,6 +65,7 @@ import { STORE_OPEN_NOW_CLOSURE } from "./claimdefs/store-open-now.generated.js"
  */
 export type SpanClass =
   | "STORE_OPEN_NOW_Q"
+  | "STORE_HOURS_FOR_DATE_Q"
   | "ORDER_STATUS_Q"
   | "PAYMENT_STATUS_Q"
   | "PICKUP_Q";
@@ -73,6 +81,12 @@ export type SpanClass =
 export const REQUIRED_CLAIM_CLOSURE = {
   // inv.18 v2 — STORE_OPEN_NOW_Q's row is GENERATED (span class + required set).
   [STORE_OPEN_NOW_CLOSURE.spanClass]: STORE_OPEN_NOW_CLOSURE.requires,
+  // BKL-138 — a day-specific hours question requires the date-hours claim. This row
+  // ALSO auto-enrols STORE_HOURS_FOR_DATE into the claim-planner's
+  // RELEVANCE_GOVERNED_TYPES (ibatexas-claim-planner.ts) via the closure-value union,
+  // so an over-proposed date-hours claim is DEMOTED on a turn whose date-hours span did
+  // not fire (the smalltalk-hijack guard) yet KEPT when it did.
+  STORE_HOURS_FOR_DATE_Q: ["STORE_HOURS_FOR_DATE"],
   ORDER_STATUS_Q: ["ORDER_FULFILLMENT_STAGE"],
   PAYMENT_STATUS_Q: ["PAYMENT_STATUS"],
   // §O#15 worked example — a pickup question requires BOTH companions.
@@ -130,6 +144,18 @@ export function classifyRequestSpans(text: string): SpanClass[] {
   if (STORE_OPEN_NOW_CLOSURE.markers.some((m) => m.test(t))) {
     classes.push(STORE_OPEN_NOW_CLOSURE.spanClass);
   }
+
+  // BKL-138 — a DAY-SPECIFIC hours question (SCN-002/003). Fires ONLY on the
+  // CONJUNCTION of a DATE ANCHOR (a named weekday / "amanhã" / "feriado") AND schedule
+  // phrasing, so a bare "que horas funciona?" stays STORE_OPEN_NOW_Q-only and a greeting
+  // that merely names a day ("bom domingo!") is NOT swept in. DEMOTE-ONLY safe:
+  // over-inclusion only forces the STORE_HOURS_FOR_DATE companion; the resolver then
+  // degrades honestly if no date is truly resolvable (a bare "feriado" with no anchor).
+  const dateAnchor =
+    /\b(domingo|segunda|ter[çc]a|quarta|quinta|sexta|s[áa]bado|amanh[ãa]|feriado)/.test(t);
+  const scheduleContext =
+    /hor[áa]rio|que horas|abre|abrem|abert|fecha|funciona|expediente|atend/.test(t);
+  if (dateAnchor && scheduleContext) classes.push("STORE_HOURS_FOR_DATE_Q");
 
   // Precise discriminators that DISAMBIGUATE the polysemous "status" (A's F2 fix —
   // do NOT regress to a coarse `/pedido|cad[êe]|status/` rule that misroutes a

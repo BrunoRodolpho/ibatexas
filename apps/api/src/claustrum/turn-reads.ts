@@ -36,6 +36,7 @@ import {
 import {
   getScheduleSignal,
   getTodayHoursText,
+  getHoursTextForDate,
   loadSchedule,
   type ScheduleSignal,
 } from "@ibatexas/tools";
@@ -68,6 +69,17 @@ export type ScheduleOverrideRead = ScheduleOverrideEntry;
 export interface StoreHoursRead {
   readonly hoursText: string;
 }
+
+/**
+ * STORE_HOURS_FOR_DATE — the QUERIED calendar day's operating-hours as ONE scalar
+ * pt-BR string (BKL-138; the day-parameterized twin of {@link StoreHoursRead}).
+ * Config-derived from the REAL weekly `days[dowOf(isoDate)]` window via
+ * {@link getHoursTextForDate}; NEVER an invented hour (BKL-026). Recorded under the
+ * date-suffixed key `schedule:store_hours:{isoDate}`. A schedule-load failure is a
+ * read ERROR (Inv 7), never a fabricated value — see
+ * {@link TriadReadBackend.readHoursForDate}.
+ */
+export type StoreHoursForDateRead = StoreHoursRead;
 
 /**
  * STORE_HOURS FALSIFIER (BKL-121 / D1) — TODAY's {@link HolidayEntry}. The
@@ -129,6 +141,25 @@ export interface TriadReadBackend {
    * Public first-party config; no owner.
    */
   readHoliday(): Promise<HolidayRead | null>;
+  /**
+   * BKL-138 — the DAY-SPECIFIC hours read for a SPECIFIC ISO date (STORE_HOURS_FOR_DATE):
+   * the QUERIED day's {@link StoreHoursForDateRead}. Public first-party config; no owner.
+   * THROWS (rejects) when the schedule is unavailable, so the investigator records a
+   * fail-closed read ERROR (Inv 7) — never a fabricated hours string.
+   */
+  readHoursForDate(isoDate: string): Promise<StoreHoursForDateRead>;
+  /**
+   * BKL-138 STORE_HOURS_FOR_DATE FALSIFIER read — the holiday ON the QUERIED date, or
+   * `null` when none (absence → the falsifier does NOT fire). Read for the SPECIFIC
+   * `isoDate`, NOT today, so TODAY's holiday can never poison a future-date answer.
+   */
+  readHolidayForDate(isoDate: string): Promise<HolidayRead | null>;
+  /**
+   * BKL-138 STORE_HOURS_FOR_DATE FALSIFIER read — the ScheduleOverride ON the QUERIED
+   * date, or `null` when none (absence → the falsifier does NOT fire). Read for the
+   * SPECIFIC `isoDate`, NOT today.
+   */
+  readScheduleOverrideForDate(isoDate: string): Promise<ScheduleOverrideRead | null>;
   /** Owner-scoped ORDER_FULFILLMENT_STAGE read; `null` when not owned / absent. */
   readOrderFulfillment(
     orderId: string,
@@ -214,6 +245,18 @@ export interface DomainTriadReadBackendDeps {
    *  first-party read: TODAY's holiday matched on the turn's tz date; `null` when
    *  none. Shares the SAME per-turn {@link loadSchedule} memo. */
   readonly holiday?: () => Promise<HolidayRead | null>;
+  /** BKL-138 — override the DAY-SPECIFIC hours read (testing). Defaults to the built-in
+   *  first-party read: the queried date's hours from the (per-turn memoized) schedule
+   *  via {@link getHoursTextForDate}. Rejects when the schedule is unavailable (Inv 7). */
+  readonly hoursForDate?: (isoDate: string) => Promise<StoreHoursForDateRead>;
+  /** BKL-138 — override the DAY-SPECIFIC holiday-falsifier read (testing). Defaults to
+   *  the built-in first-party read: the holiday ON `isoDate`; `null` when none. */
+  readonly holidayForDate?: (isoDate: string) => Promise<HolidayRead | null>;
+  /** BKL-138 — override the DAY-SPECIFIC override-falsifier read (testing). Defaults to
+   *  the built-in first-party read: the ScheduleOverride ON `isoDate`; `null` when none. */
+  readonly scheduleOverrideForDate?: (
+    isoDate: string,
+  ) => Promise<ScheduleOverrideRead | null>;
 }
 
 /**
@@ -275,6 +318,33 @@ export function createDomainTriadReadBackend(
       return (await loadScheduleOnce()).holidays.find((h) => h.date === today) ?? null;
     });
 
+  // BKL-138 STORE_HOURS_FOR_DATE — the QUERIED date's hours + its per-date falsifiers,
+  // all derived from the SAME per-turn schedule memo and matched on the EXPLICIT
+  // `isoDate` (never today). `getHoursTextForDate` reads ONLY the real weekly window
+  // (never invents an hour, BKL-026); a `null` (schedule unavailable) THROWS → the
+  // investigator records a fail-closed read ERROR (Inv 7). The holiday/override reads
+  // resolve to `null` (absence → the falsifier does not fire) when the queried date
+  // carries none — so TODAY's holiday can never demote a clean future-date answer.
+  const readHoursForDate =
+    deps.hoursForDate ??
+    (async (isoDate: string): Promise<StoreHoursForDateRead> => {
+      const hoursText = getHoursTextForDate(await loadScheduleOnce(), tz, isoDate);
+      if (hoursText === null) {
+        throw new Error(
+          `store_hours_for_date unavailable: schedule not loaded this turn (${isoDate})`,
+        );
+      }
+      return { hoursText };
+    });
+  const readHolidayForDate =
+    deps.holidayForDate ??
+    (async (isoDate: string): Promise<HolidayRead | null> =>
+      (await loadScheduleOnce()).holidays.find((h) => h.date === isoDate) ?? null);
+  const readScheduleOverrideForDate =
+    deps.scheduleOverrideForDate ??
+    (async (isoDate: string): Promise<ScheduleOverrideRead | null> =>
+      (await loadScheduleOnce()).overrides.find((o) => o.date === isoDate) ?? null);
+
   // Per-turn memo of the OWNER-SCOPED order read: ORDER_FULFILLMENT_STAGE and
   // PAYMENT_STATUS both gate on the IDENTICAL getById(orderId, { customerId }), so
   // run it ONCE per (owner, order) this turn. The cache key is OWNER-SCOPED and
@@ -301,6 +371,9 @@ export function createDomainTriadReadBackend(
     readScheduleOverride,
     readStoreHours,
     readHoliday,
+    readHoursForDate,
+    readHolidayForDate,
+    readScheduleOverrideForDate,
 
     async readOrderFulfillment(orderId, customerId) {
       // Owner-scoped (SDD §N P0-3, Inv 2): getById with `{ customerId }` returns

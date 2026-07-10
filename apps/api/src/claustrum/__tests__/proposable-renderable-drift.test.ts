@@ -109,32 +109,34 @@ describe("BKL-112 — RENDERABLE ⊆ PROPOSABLE: no dangling template", () => {
   });
 });
 
-// BKL-121 — STORE_HOURS is the ONE deliberate NON-Triad renderable type. It carries a
-// validated template (a today's-hours read) but is NOT Trustworthiness-Triad-scoped:
-// it is PUBLIC (owned by nobody, like STORE_OPEN_NOW) yet it is intentionally left out
-// of TRIAD_SCOPED_TYPES / the required-completeness closure so its honest
-// override/holiday UNKNOWN can never DEGRADE the live-proven STORE_OPEN_NOW answer
-// (coupling it into STORE_OPEN_NOW_Q's required set would regress that path — see
-// ibatexas-claim-planner.ts). So RENDERABLE == triadScoped ∪ {STORE_HOURS}: the guard
-// is EXTENDED (not deleted) to allow exactly this one deliberate addition; any OTHER
-// divergence (a Triad type losing its template, or a second non-Triad type gaining
-// one) still trips CI as a decision point.
-const NON_TRIAD_RENDERABLE = ["STORE_HOURS"] as const;
+// BKL-121 / BKL-138 — the schedule-cluster public reads STORE_HOURS and
+// STORE_HOURS_FOR_DATE are the TWO deliberate NON-Triad renderable types. Each carries a
+// validated hours template but is NOT Trustworthiness-Triad-scoped: both are PUBLIC
+// (owned by nobody, like STORE_OPEN_NOW) yet intentionally left out of
+// TRIAD_SCOPED_TYPES so their honest override/holiday UNKNOWN can never DEGRADE the
+// live-proven STORE_OPEN_NOW answer (coupling them into STORE_OPEN_NOW_Q's required set
+// would regress that path — see ibatexas-claim-planner.ts). So RENDERABLE == triadScoped
+// ∪ {STORE_HOURS, STORE_HOURS_FOR_DATE}: the guard is EXTENDED (not deleted) to allow
+// exactly these two deliberate additions; any OTHER divergence (a Triad type losing its
+// template, or a THIRD non-Triad type gaining one) still trips CI as a decision point.
+const NON_TRIAD_RENDERABLE = ["STORE_HOURS", "STORE_HOURS_FOR_DATE"] as const;
 
-describe("BKL-112 — context: RENDERABLE == the triadScoped definitions ∪ {STORE_HOURS}", () => {
-  it("the renderable set equals exactly triadScoped ∪ the one deliberate non-Triad type", () => {
+describe("BKL-112 — context: RENDERABLE == the triadScoped definitions ∪ {STORE_HOURS, STORE_HOURS_FOR_DATE}", () => {
+  it("the renderable set equals exactly triadScoped ∪ the deliberate non-Triad types", () => {
     // Derived from the real exported CLAIM_DEFINITIONS.triadScoped flags, not
-    // hardcoded — plus the single BKL-121 non-Triad allowance. If any OTHER type
+    // hardcoded — plus the BKL-121/-138 non-Triad allowances. If any OTHER type
     // diverges, this documents it as the same deliberate decision point.
     const triadScoped = [...CLAIM_REGISTRY].filter(
       (type) => CLAIM_DEFINITIONS[type].triadScoped,
     );
     const expected = [...triadScoped, ...NON_TRIAD_RENDERABLE].sort();
     expect([...RENDERABLE].sort()).toEqual(expected);
-    // POSITIVE controls: STORE_HOURS is genuinely renderable AND genuinely NON-Triad
-    // (so the extension is not vacuously masking a Triad-flag flip).
+    // POSITIVE controls: both are genuinely renderable AND genuinely NON-Triad (so the
+    // extension is not vacuously masking a Triad-flag flip).
     expect(RENDERABLE.has("STORE_HOURS")).toBe(true);
     expect(CLAIM_DEFINITIONS.STORE_HOURS.triadScoped).toBe(false);
+    expect(RENDERABLE.has("STORE_HOURS_FOR_DATE")).toBe(true);
+    expect(CLAIM_DEFINITIONS.STORE_HOURS_FOR_DATE.triadScoped).toBe(false);
   });
 });
 
