@@ -13,12 +13,23 @@ import { joinWaitlist } from "../join-waitlist.js"
 // ── Hoisted mocks ──────────────────────────────────────────────────────────────
 
 const mockJoinWaitlistFromEnvelope = vi.hoisted(() => vi.fn())
+// BKL-046: sentinel audit sink returned by the mocked `getAuditSink()`; the
+// factory-spy below asserts the tool threads it into `createReservationService`.
+const mockAuditSink = vi.hoisted(() => ({ emit: vi.fn() }))
+const mockGetAuditSink = vi.hoisted(() => vi.fn(() => mockAuditSink))
+const mockCreateReservationService = vi.hoisted(() =>
+  vi.fn((_options?: { auditSink?: unknown }) => ({
+    joinWaitlistFromEnvelope: mockJoinWaitlistFromEnvelope,
+  })),
+)
 
 vi.mock("@ibatexas/domain", () => ({
   prisma: {},
-  createReservationService: () => ({
-    joinWaitlistFromEnvelope: mockJoinWaitlistFromEnvelope,
-  }),
+  createReservationService: mockCreateReservationService,
+}))
+
+vi.mock("@ibatexas/audit-sink", () => ({
+  getAuditSink: mockGetAuditSink,
 }))
 
 // ── Fixtures ───────────────────────────────────────────────────────────────────
@@ -105,5 +116,23 @@ describe("joinWaitlist", () => {
     expect(state.ctx.staffId).toBeNull()
 
     expect(extras.customerId).toBe("cus_01")
+  })
+
+  // BKL-046: `createReservationService()` silently drops audit emission when no
+  // sink is supplied, so the kernel EXECUTE for `reservation.waitlist.join`
+  // produced no intent_audit record. Regression: assert the factory receives the
+  // sink resolved via `getAuditSink()`.
+  it("constructs the reservation service with the configured audit sink", async () => {
+    mockJoinWaitlistFromEnvelope.mockResolvedValue({
+      decision: { kind: "EXECUTE" },
+      result: { waitlistId: "wl_01", position: 1 },
+    })
+
+    await joinWaitlist(BASE_INPUT)
+
+    expect(mockGetAuditSink).toHaveBeenCalled()
+    expect(mockCreateReservationService).toHaveBeenCalledOnce()
+    const options = mockCreateReservationService.mock.calls[0]?.[0]
+    expect(options?.auditSink).toBe(mockAuditSink)
   })
 })

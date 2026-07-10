@@ -22,6 +22,7 @@
 
 import { randomUUID } from "node:crypto"
 import { createReservationService } from "@ibatexas/domain"
+import { getAuditSink } from "@ibatexas/audit-sink"
 import { JoinWaitlistInputSchema, type JoinWaitlistInput, type JoinWaitlistOutput } from "@ibatexas/types"
 import { buildEnvelope } from "@adjudicate/core"
 import type {
@@ -60,7 +61,10 @@ export async function joinWaitlist(input: JoinWaitlistInput): Promise<JoinWaitli
     taint: "UNTRUSTED",
   })
 
-  const svc = createReservationService()
+  // BKL-046: thread the configured AuditSink so the kernel EXECUTE persists a
+  // governance audit record — `createReservationService()` silently drops audit
+  // emission when no sink is supplied (same idiom as create-reservation.ts).
+  const svc = createReservationService({ auditSink: getAuditSink() })
   const outcome = await svc.joinWaitlistFromEnvelope(envelope, state, {
     customerId: parsed.customerId,
   })
