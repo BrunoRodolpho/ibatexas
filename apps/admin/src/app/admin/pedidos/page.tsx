@@ -85,7 +85,6 @@ export default function PedidosPage(): React.JSX.Element {
   const [paymentHistory, setPaymentHistory] = useState<Array<{id: string; method: string; status: string; amountInCentavos: number; createdAt: string; version: number}>>([])
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- reset history when selection clears
     if (!selectedOrderId) { setPaymentHistory([]); return }
     apiFetch(`/api/admin/orders/${selectedOrderId}/payments`)
       .then((data: unknown) => {
@@ -100,7 +99,6 @@ export default function PedidosPage(): React.JSX.Element {
   const [notes, setNotes] = useState<AdminOrderNoteView[]>([])
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- reset notes when selection clears
     if (!selectedOrderId) { setNotes([]); return }
     apiFetch(`/api/admin/orders/${selectedOrderId}/notes`)
       .then((data: unknown) => setNotes(mapOrderNotes(data as AdminOrderNotesResponse)))

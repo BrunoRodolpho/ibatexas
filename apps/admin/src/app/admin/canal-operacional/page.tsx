@@ -275,6 +275,7 @@ export default function CanalOperacionalPage(): React.JSX.Element {
   // history hydrates), so a reloaded thread can re-surface an open confirmation.
   useEffect(() => {
     try {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- client-only on-mount sessionStorage read (cannot use lazy useState init: sessionStorage is unavailable during SSR); sets the indicator once.
       setPendingMarker(sessionStorage.getItem(OPS_CHAT_PENDING_KEY) === '1')
     } catch {
       // Storage unavailable (private mode / SSR guard) — degrade to no indicator.
