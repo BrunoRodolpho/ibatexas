@@ -99,7 +99,8 @@ import {
   closedHoursPromptNote,
   type ScheduleSignal,
 } from "./closed-hours.js";
-import type { StoreHoursRead } from "./turn-reads.js";
+import type { StoreHoursRead, StoreHoursForDateRead } from "./turn-reads.js";
+import { resolveQueriedScheduleDate } from "./schedule-date-resolver.js";
 
 // Re-export so existing importers (tests, registry) keep their import site.
 export { EXPRESS_INTENT_TOOL };
@@ -255,6 +256,26 @@ export interface IbatexasPlannerDeps {
     | Promise<StoreHoursRead | undefined>
     | StoreHoursRead
     | undefined;
+  /**
+   * BKL-138 — resolve the QUERIED date's operating-hours read for THIS turn
+   * (tag-then-derive STEP 2 for STORE_HOURS_FOR_DATE). The SAME per-date
+   * `readHoursForDate(isoDate)` the investigator records under
+   * `schedule:store_hours:{isoDate}`, so the derived `hoursText` is byte-equal to the
+   * recorded ledger entry and C6 passes BY CONSTRUCTION (a present holiday/override
+   * falsifier on that date STILL demotes to UNKNOWN). Invoked per `proposeClaims()`
+   * with the resolved ISO date (the candidate subject). Omitted in unit tests →
+   * a STORE_HOURS_FOR_DATE candidate keeps `value: undefined` (C6 ABSTAIN → honest UNKNOWN).
+   */
+  readonly resolveHoursForDate?: (
+    isoDate: string,
+  ) => Promise<StoreHoursForDateRead | undefined> | StoreHoursForDateRead | undefined;
+  /**
+   * BKL-138 — the clock the day-specific date resolver reads "today" from (default
+   * `Date.now`). Injectable so a deterministic suite can FREEZE the resolved date (a
+   * named-weekday / "amanhã" question resolves relative to `now`). NOT the kernel
+   * clock (that stays downstream) — only the request-side NL date resolution.
+   */
+  readonly now?: () => number;
   /**
    * BKL-027 (F2) — one-hop read-tool executors. Map of advertised read-tool
    * NAME → an executor that runs that read for THIS turn, OWNER-SCOPED to the
@@ -1022,6 +1043,12 @@ export function createIbatexasPlanner(
           ? auth.customerId
           : "unauthenticated";
 
+      // BKL-138 — the request-side clock + tz for the deterministic NL date resolver
+      // (the SAME resolver the investigator drives its date-keyed reads off, so the
+      // candidate subject and the ledger key resolve to the IDENTICAL ISO date).
+      const dateTz = process.env.RESTAURANT_TIMEZONE ?? "America/Sao_Paulo";
+      const dateNow = new Date((deps.now ?? (() => Date.now()))());
+
       // Collect the model's proposals + the safety/span inputs from the call(s).
       const proposals: ProposedClaim[] = [];
       const spans: RequestSpan[] = [];
@@ -1070,6 +1097,18 @@ export function createIbatexasPlanner(
             // owner-scoped `owns` refuses it → honest UNKNOWN/REFUSED, never a leak.
             subject = modelSubject;
           }
+        } else if (canonicalType === "STORE_HOURS_FOR_DATE") {
+          // BKL-138 (subject) — the date-hours claim's SUBJECT is the QUERIED ISO date,
+          // resolved DETERMINISTICALLY from the request text (never the 4B's unreliable
+          // date arithmetic — the model only CLASSIFIES; the resolver disposes). This is
+          // the schedule twin of FIX 2: the subject derives from a first-party pure
+          // function over `perception.text`, the SAME one the investigator uses, so the
+          // candidate subject == the ledger key `:date` suffix by construction. No
+          // resolvable date anchor (a bare "feriado", or a mis-tagged proposal) → DROP
+          // the proposal (no candidate) → honest degrade/CLARIFY, never a guessed day.
+          const resolved = resolveQueriedScheduleDate(state.perception.text, dateTz, dateNow);
+          if (resolved === null) continue;
+          subject = resolved.isoDate;
         }
 
         proposals.push({
@@ -1126,9 +1165,27 @@ export function createIbatexasPlanner(
       const storeHours = deps.resolveStoreHours
         ? ((await deps.resolveStoreHours()) ?? undefined)
         : undefined;
+      // BKL-138 — the SAME per-date hours read the investigator records under
+      // `schedule:store_hours:{date}`, keyed by each STORE_HOURS_FOR_DATE candidate's
+      // resolved subject (the ISO date). Read ONCE per distinct queried date this turn;
+      // a read that fails/returns undefined leaves that date's value undefined → C6
+      // ABSTAIN → honest UNKNOWN (never a fabricated hours string).
+      const storeHoursForDate: Record<string, StoreHoursForDateRead> = {};
+      if (deps.resolveHoursForDate !== undefined) {
+        const dates = new Set(
+          candidates
+            .filter((c) => c.type === "STORE_HOURS_FOR_DATE")
+            .map((c) => c.subject),
+        );
+        for (const isoDate of dates) {
+          const read = await deps.resolveHoursForDate(isoDate);
+          if (read !== undefined) storeHoursForDate[isoDate] = read;
+        }
+      }
       const derivedCandidates = deriveCandidateValues(candidates, {
         scheduleSignal,
         storeHours,
+        storeHoursForDate,
       });
 
       // POST-planning wall (SDD §C P4 / §J.8): every span gets a disposition; an

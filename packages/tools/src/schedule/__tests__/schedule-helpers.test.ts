@@ -23,6 +23,7 @@ import {
   getNextOpenDay,
   getFrozenPickupMessage,
   getTodayHoursText,
+  getHoursTextForDate,
 } from "../schedule-helpers.js"
 
 const TZ = "America/Sao_Paulo"
@@ -382,5 +383,62 @@ describe("getTodayHoursText", () => {
       mkDay(2, { isOpen: false }), // Tuesday: closed
     ])
     expect(getTodayHoursText(sched, TZ)).toBe("11h–15h / 18h–23h")
+  })
+})
+
+// ── getHoursTextForDate (BKL-138 — the STORE_HOURS_FOR_DATE claim value) ─────────
+// Reference calendar dates: 2026-07-12 = Sunday (dow 0), 2026-07-13 = Monday (dow 1),
+// 2026-07-11 = Saturday (dow 6). CLOCK-INDEPENDENT — the day-of-week comes from the
+// ISO date, not the system time (no fake timers needed).
+
+describe("getHoursTextForDate", () => {
+  it("renders the QUERIED date's real window off its calendar day-of-week", () => {
+    // Sunday (dow 0) open with a lunch-only window; Monday closed.
+    const sched = mkSchedule([
+      mkDay(0, { isOpen: true, lunchStart: "11:00", lunchEnd: "15:00" }),
+      mkDay(1, { isOpen: false }),
+    ])
+    expect(getHoursTextForDate(sched, TZ, "2026-07-12")).toBe("11h–15h") // Sunday
+    expect(getHoursTextForDate(sched, TZ, "2026-07-13")).toBe("fechado") // Monday
+  })
+
+  it("renders both meal periods of a fully-open queried day", () => {
+    const sched = mkSchedule([mkDay(0, STANDARD_OPEN)]) // Sunday
+    expect(getHoursTextForDate(sched, TZ, "2026-07-12")).toBe("11h–15h / 18h–23h")
+  })
+
+  it("returns 'fechado' on a regular closed weekday (evidence-bound, not absence)", () => {
+    const sched = mkSchedule([mkDay(6, { isOpen: false })]) // Saturday closed
+    expect(getHoursTextForDate(sched, TZ, "2026-07-11")).toBe("fechado")
+  })
+
+  it("returns 'fechado' when the queried date's dayOfWeek has no schedule row", () => {
+    const sched = mkSchedule([mkDay(1, STANDARD_OPEN)]) // only Monday defined
+    expect(getHoursTextForDate(sched, TZ, "2026-07-12")).toBe("fechado") // Sunday absent
+  })
+
+  it("returns null (→ Inv 7 read error upstream) when the schedule is unavailable", () => {
+    expect(getHoursTextForDate(undefined, TZ, "2026-07-12")).toBeNull()
+  })
+
+  it("does NOT apply a per-date holiday/override — that is the claim's FALSIFIER (BKL-138 D1)", () => {
+    // Even if 2026-07-12 were a holiday, THIS helper reports the weekly window; the
+    // date-keyed holiday/override are the STORE_HOURS_FOR_DATE falsifiers, read + keyed
+    // separately, and demote the claim to UNKNOWN in the kernel — not here.
+    const sched: RestaurantSchedule = {
+      days: [mkDay(0, STANDARD_OPEN)],
+      holidays: [holiday("2026-07-12")],
+      overrides: [{ id: "o1", date: "2026-07-12", isOpen: false, blocks: [], note: null }],
+    }
+    expect(getHoursTextForDate(sched, TZ, "2026-07-12")).toBe("11h–15h / 18h–23h")
+  })
+
+  it("the day-of-week is timezone-independent for a fixed calendar date", () => {
+    // A calendar date IS a given weekday everywhere — a different tz does not shift it.
+    const sched = mkSchedule([mkDay(0, STANDARD_OPEN)]) // Sunday
+    expect(getHoursTextForDate(sched, "Asia/Tokyo", "2026-07-12")).toBe("11h–15h / 18h–23h")
+    expect(getHoursTextForDate(sched, "America/Los_Angeles", "2026-07-12")).toBe(
+      "11h–15h / 18h–23h",
+    )
   })
 })

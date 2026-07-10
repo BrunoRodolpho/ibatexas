@@ -72,7 +72,7 @@ import { failSafeMemory } from "./claustrum/fail-safe-memory.js";
 import { noopGroundingProvider, noopMemoryProvider } from "./claustrum/noop-memory-grounding.js";
 import { OllamaFetchClient } from "./claustrum/ollama-fetch-client.js";
 import { providerCanEmbed } from "./claustrum/provider-embed-capability.js";
-import type { StoreHoursRead } from "./claustrum/turn-reads.js";
+import type { StoreHoursRead, StoreHoursForDateRead } from "./claustrum/turn-reads.js";
 import { WhatsAppChannel } from "@claustrum/channel-whatsapp";
 import { WebChannel } from "@claustrum/channel-web";
 
@@ -113,6 +113,7 @@ import {
   getRedisClient,
   getScheduleSignal,
   getTodayHoursText,
+  getHoursTextForDate,
   invalidateScheduleCache,
   loadSchedule,
   rk,
@@ -579,6 +580,17 @@ export interface ClaustrumBootstrapOptions {
     | Promise<StoreHoursRead | undefined>
     | StoreHoursRead
     | undefined;
+  /**
+   * BKL-138 — per-turn DAY-SPECIFIC operating-hours source for the claim planner's
+   * STORE_HOURS_FOR_DATE tag-then-derive (SCN-002/003). Default: the production
+   * resolver (Redis read-through `loadSchedule()` + env timezone →
+   * {@link getHoursTextForDate} for the QUERIED `isoDate`). Injectable so
+   * deterministic suites can PIN it. Return `undefined` to leave a
+   * STORE_HOURS_FOR_DATE candidate value-undefined (C6 ABSTAIN → honest UNKNOWN).
+   */
+  readonly resolveHoursForDate?: (
+    isoDate: string,
+  ) => Promise<StoreHoursForDateRead | undefined> | StoreHoursForDateRead | undefined;
 }
 
 /**
@@ -2765,6 +2777,23 @@ export async function bootstrapClaustrum(
         return undefined;
       }
     });
+  // BKL-138 — the per-turn DAY-SPECIFIC hours source the claim planner derives a
+  // STORE_HOURS_FOR_DATE candidate's `hoursText` from for a QUERIED ISO date (the SAME
+  // first-party read the investigator records under `schedule:store_hours:{date}`).
+  // Redis read-through schedule + env tz via `getHoursTextForDate`. Returns `undefined`
+  // on a schedule-load failure (never a fabricated string, BKL-026) → C6 ABSTAIN →
+  // honest UNKNOWN. Best-effort: never throws out of the turn.
+  const resolveHoursForDate =
+    options.resolveHoursForDate ??
+    (async (isoDate: string): Promise<StoreHoursForDateRead | undefined> => {
+      const tz = process.env.RESTAURANT_TIMEZONE ?? "America/Sao_Paulo";
+      try {
+        const hoursText = getHoursTextForDate(await loadSchedule(), tz, isoDate);
+        return hoursText === null ? undefined : { hoursText };
+      } catch {
+        return undefined;
+      }
+    });
   const buildPlanner = (model: ModelProvider): ClaimAwarePlannerPort =>
     createIbatexasPlanner({
       model,
@@ -2776,6 +2805,8 @@ export async function bootstrapClaustrum(
       resolveScheduleSignal,
       // BKL-121 — the STORE_HOURS tag-then-derive first-party read source.
       resolveStoreHours,
+      // BKL-138 — the STORE_HOURS_FOR_DATE per-date tag-then-derive read source.
+      resolveHoursForDate,
       // BKL-027 — activate the one-hop read-tool enrichment loop.
       readToolExecutors: IBATEXAS_READ_TOOL_EXECUTORS,
     });

@@ -271,6 +271,62 @@ export function getTodayHoursText(
   return periods.length > 0 ? periods.join(" / ") : "fechado"
 }
 
+// ── A SPECIFIC DATE's operating-hours string (BKL-138 — STORE_HOURS_FOR_DATE) ───
+
+/**
+ * Format the operating-hours for a SPECIFIC ISO date (`"YYYY-MM-DD"`) as ONE
+ * scalar pt-BR string — the day-parameterized twin of {@link getTodayHoursText}
+ * (BKL-138 / SCN-002/003). A thin wrapper over the SAME weekly
+ * `schedule.days.find(dayOfWeek)` lookup + `stripLeadingZero` window formatting;
+ * the ONLY difference is that the `dayOfWeek` comes from the CALENDAR date rather
+ * than from the clock, so a named-weekday / "amanhã" question can be answered off
+ * the exact day the customer asked about. Returns the SAME value grammar as
+ * {@link getTodayHoursText}:
+ *
+ *   - `"11h–15h / 18h–23h"` — the day's open window(s);
+ *   - `"fechado"`           — a regular CLOSED weekday per the weekly schedule;
+ *   - `null`                — the schedule is UNAVAILABLE (`undefined`). The caller
+ *                             MUST record a fail-closed read ERROR (Inv 7).
+ *
+ * Like {@link getTodayHoursText}, this is the WEEKLY-schedule fact ONLY: a per-date
+ * holiday or override on `isoDate` is deliberately NOT applied here — those are the
+ * STORE_HOURS_FOR_DATE claim's honest FALSIFIERS (BKL-121 D1 / BKL-138), read + keyed
+ * by the SAME `isoDate` so a holiday ON the queried date demotes the claim to UNKNOWN
+ * while TODAY's holiday can never poison a future-date answer.
+ *
+ * The `dayOfWeek` of a calendar date is timezone-INDEPENDENT (a date IS a given
+ * weekday everywhere), so `tz` is accepted for signature parity with
+ * {@link getTodayHoursText} (and so a future tz-sensitive refinement has a seam) but
+ * is not consulted for the lookup — the caller already resolved `isoDate` in `tz`.
+ * Pure: no clock, no IO.
+ */
+export function getHoursTextForDate(
+  schedule: RestaurantSchedule | undefined,
+  tz: string,
+  isoDate: string,
+): string | null {
+  void tz // see doc: the DOW of a fixed calendar date is tz-independent.
+  if (!schedule) return null
+  const dayOfWeek = dayOfWeekForIsoDate(isoDate)
+  const day = schedule.days.find((d) => d.dayOfWeek === dayOfWeek)
+  if (!day?.isOpen) return "fechado"
+
+  const periods: string[] = []
+  if (day.lunchStart && day.lunchEnd) {
+    periods.push(`${stripLeadingZero(day.lunchStart)}–${stripLeadingZero(day.lunchEnd)}`)
+  }
+  if (day.dinnerStart && day.dinnerEnd) {
+    periods.push(`${stripLeadingZero(day.dinnerStart)}–${stripLeadingZero(day.dinnerEnd)}`)
+  }
+  return periods.length > 0 ? periods.join(" / ") : "fechado"
+}
+
+/** Day-of-week (0=Sun … 6=Sat) for a `"YYYY-MM-DD"` ISO date. Noon-UTC anchors it
+ *  away from any date-shift edge (mirrors the `addDays` idiom below). */
+function dayOfWeekForIsoDate(isoDate: string): number {
+  return new Date(`${isoDate}T12:00:00Z`).getUTCDay()
+}
+
 // ── Internal helpers ─────────────────────────────────────────────────────────
 
 function parseTimeToMinutes(time: string): number {
