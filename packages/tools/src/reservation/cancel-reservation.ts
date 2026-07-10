@@ -28,6 +28,7 @@
 
 import { randomUUID } from "node:crypto"
 import { createReservationService, prisma } from "@ibatexas/domain"
+import { getAuditSink } from "@ibatexas/audit-sink"
 import { CancelReservationInputSchema, type CancelReservationInput, type CancelReservationOutput } from "@ibatexas/types"
 import { publishNatsEvent } from "@ibatexas/nats-client"
 import { buildEnvelope } from "@adjudicate/core"
@@ -46,7 +47,10 @@ async function cancelReservationImpl(
 ): Promise<CancelReservationOutput> {
   const parsed = CancelReservationInputSchema.parse(input)
 
-  const svc = createReservationService()
+  // BKL-046: thread the configured AuditSink so the kernel EXECUTE persists a
+  // governance audit record — `createReservationService()` silently drops audit
+  // emission when no sink is supplied (same idiom as create-reservation.ts).
+  const svc = createReservationService({ auditSink: getAuditSink() })
 
   try {
     // Fetch reservation details before cancelling (for notification + state projection).
