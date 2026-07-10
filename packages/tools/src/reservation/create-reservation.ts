@@ -24,6 +24,7 @@
 
 import { randomUUID } from "node:crypto"
 import { createReservationService, prisma } from "@ibatexas/domain"
+import { getAuditSink } from "@ibatexas/audit-sink"
 import { CreateReservationInputSchema, ReservationStatus, type CreateReservationInput, type CreateReservationOutput } from "@ibatexas/types"
 import { publishNatsEvent } from "@ibatexas/nats-client"
 import { buildEnvelope } from "@adjudicate/core"
@@ -93,7 +94,12 @@ export async function createReservation(
     taint: "UNTRUSTED",
   })
 
-  const svc = createReservationService()
+  // BKL-046: pass the configured AuditSink so the kernel's `reservation.create`
+  // EXECUTE persists a governance audit record. `createReservationService()`
+  // silently drops audit emission when no sink is supplied, so the sink must be
+  // wired here — mirroring the cart-tool wrapper-call sites, which read the
+  // singleton via `getAuditSink()` at request time (after boot DI is in place).
+  const svc = createReservationService({ auditSink: getAuditSink() })
   const outcome = await svc.createFromEnvelope(envelope, state, {
     customerId: parsed.customerId,
   })
