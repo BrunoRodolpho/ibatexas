@@ -1001,6 +1001,10 @@ export function useAdminCustomer(id: string | null) {
     setLoading(true)
     setNotFound(false)
     setError(null)
+    // Clear the previously-selected customer so their PII/orders/opt-out never
+    // linger in the pane while the new id fetches — and never remain if the
+    // fetch fails with a non-404 error.
+    setCustomer(null)
     apiFetch(`/api/admin/customers/${encodeURIComponent(id)}`)
       .then((data: AdminCustomerDetail) => {
         if (cancelled) return
@@ -1012,8 +1016,10 @@ export function useAdminCustomer(id: string | null) {
         const msg = err instanceof Error ? err.message : 'load_failed'
         if (msg.includes('404')) {
           setNotFound(true)
-          setCustomer(null)
         }
+        // Stale prior-customer data is already cleared above; keep it cleared on
+        // any error path so a failed load never shows the wrong customer.
+        setCustomer(null)
         setError(msg)
       })
       .finally(() => {
