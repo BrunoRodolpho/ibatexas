@@ -22,7 +22,10 @@ import type {
   ConductorOptions,
 } from "@claustrum/core";
 import { assertClaimDefinitionRegistryValid } from "./claim-definition-registry.js";
-import { createIbatexasClaimsRenderer } from "./claims-renderer-adapter.js";
+import {
+  createIbatexasClaimsRenderer,
+  createIbatexasClaimsRenderPrecedence,
+} from "./claims-renderer-adapter.js";
 import {
   claimsKernelFloorWarnings,
   resolveKernelVersions,
@@ -63,6 +66,7 @@ export type ClaimsSeams = Pick<
   | "claimsKernel"
   | "claimsKernelDepsForTurn"
   | "claimsRenderer"
+  | "claimsRenderPrecedence"
   | "activeResourcesForTurn"
 >;
 
@@ -227,5 +231,14 @@ export function buildClaimsSeams(deps: BuildClaimsSeamsDeps): ClaimsSeams {
     // falls back to the operational responder draft (never raw model prose as a
     // confident fact; never silence). Inert while the flag is COMMITTED OFF.
     claimsRenderer: createIbatexasClaimsRenderer(),
+    // BKL-155/153 (@claustrum/core 0.7.0) — the RENDER-vs-DRAFT precedence seam,
+    // PAIRED with `claimsRenderer` above so it is only consulted on the SAME
+    // claims-ON customer plane where the render runs (the OPS conductor keeps its
+    // own render path — BKL-149 — and is deliberately NOT given this seam). When
+    // wired, handleTurn 6a asks the pure ibatexas lattice whether the claims render
+    // supersedes the responder draft this turn (a spurious safe-degrade must not
+    // hide a kernel REQUEST_CONFIRMATION prompt, nor a friendly statement reply).
+    // Absent (flag OFF) → core defaults to "render" → byte-identical to 0.6.0.
+    claimsRenderPrecedence: createIbatexasClaimsRenderPrecedence(),
   };
 }

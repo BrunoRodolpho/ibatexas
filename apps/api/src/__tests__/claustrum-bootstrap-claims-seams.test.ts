@@ -157,7 +157,7 @@ describe.skipIf(!RUN_BOOTSTRAP_HARNESS)(
       await harness?.teardown();
     }, 60_000);
 
-    it("sanity: buildClaimsSeams(ON) yields exactly the six documented claims seams", () => {
+    it("sanity: buildClaimsSeams(ON) yields exactly the seven documented claims seams", () => {
       // Anchors the derived SEAM_KEYS to the named contract — if a seam is
       // renamed/dropped in buildClaimsSeams, this fails loudly here first.
       expect([...SEAM_KEYS].sort()).toEqual(
@@ -167,6 +167,8 @@ describe.skipIf(!RUN_BOOTSTRAP_HARNESS)(
           "claimsKernel",
           "claimsKernelDepsForTurn",
           "claimsRenderer",
+          // BKL-155/153 — the render-vs-draft precedence seam, PAIRED with claimsRenderer.
+          "claimsRenderPrecedence",
           "investigator",
         ].sort(),
       );
