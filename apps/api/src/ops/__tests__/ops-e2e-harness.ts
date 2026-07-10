@@ -315,6 +315,10 @@ export interface OpsToolSpies {
   writeAdjudicatedNote: ReturnType<typeof vi.fn>;
   writeAdjudicatedStatusTransition: ReturnType<typeof vi.fn>;
   publishOrderStatusChanged: ReturnType<typeof vi.fn>;
+  // SCN-114 — the daily-special upsert service spies (list/create/update).
+  dailySpecialList: ReturnType<typeof vi.fn>;
+  dailySpecialCreate: ReturnType<typeof vi.fn>;
+  dailySpecialUpdate: ReturnType<typeof vi.fn>;
   writeAdjudicatedRefund: ReturnType<typeof vi.fn>;
   publishPaymentStatusChanged: ReturnType<typeof vi.fn>;
   appendRefundEventLog: ReturnType<typeof vi.fn>;
@@ -343,6 +347,13 @@ export function buildOpsTools(
     writeAdjudicatedStatusTransition:
       overrides.writeAdjudicatedStatusTransition ?? vi.fn(),
     publishOrderStatusChanged: overrides.publishOrderStatusChanged ?? vi.fn(),
+    // SCN-114 — default: no existing special for the day (list empty), so the
+    // upsert CREATEs; a dedicated e2e overrides these to assert the upsert path.
+    dailySpecialList: overrides.dailySpecialList ?? vi.fn(async () => []),
+    dailySpecialCreate:
+      overrides.dailySpecialCreate ?? vi.fn(async () => ({ id: "special_1" })),
+    dailySpecialUpdate:
+      overrides.dailySpecialUpdate ?? vi.fn(async () => ({ id: "special_1" })),
     writeAdjudicatedRefund:
       overrides.writeAdjudicatedRefund ??
       vi.fn(async () => ({
@@ -379,6 +390,11 @@ export function buildOpsTools(
     orderCmdSvc: {
       writeAdjudicatedNote: spies.writeAdjudicatedNote,
       writeAdjudicatedStatusTransition: spies.writeAdjudicatedStatusTransition,
+    },
+    dailySpecialSvc: {
+      list: spies.dailySpecialList as never,
+      create: spies.dailySpecialCreate as never,
+      update: spies.dailySpecialUpdate as never,
     },
     publishOrderStatusChanged: spies.publishOrderStatusChanged,
     paymentCmdSvc: { writeAdjudicatedRefund: spies.writeAdjudicatedRefund },

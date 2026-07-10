@@ -85,6 +85,7 @@ import type {
 } from "@ibatexas/pack-orders";
 import type {
   IncidentCloseStaffPayload,
+  MenuSpecialSetPayload,
   OpsAlertResolveStaffPayload,
   ProductAvailabilitySetPayload,
   ProductPriceSetPayload,
@@ -225,6 +226,31 @@ export interface OpsScheduleOverrideWriter {
   ): Promise<{ readonly date: string; readonly isOpen: boolean }>;
 }
 
+/**
+ * SCN-114 — the structural subset of `DailySpecialService` the `menu.special.set`
+ * executor drives. `list` finds an existing row for the (product, business-day)
+ * so the upsert can UPDATE rather than hit the `@@unique([medusaProductId,date])`
+ * on a re-run; `create`/`update` write the row. This is the SAME domain service
+ * the NEW-005 admin route (`routes/admin/specials.ts`) uses — NO Medusa egress
+ * (BKL-088 domain-service pattern). The composed router already produced the
+ * Decision at SUBMIT; this performs NO adjudication.
+ */
+export interface OpsDailySpecialWriter {
+  list(params: {
+    date?: string;
+    activeOnly?: boolean;
+  }): Promise<ReadonlyArray<{ id: string; medusaProductId: string }>>;
+  create(input: {
+    medusaProductId: string;
+    date: string;
+    promoPriceCentavos?: number | null;
+  }): Promise<{ id: string }>;
+  update(
+    id: string,
+    patch: { promoPriceCentavos?: number | null; active?: boolean },
+  ): Promise<{ id: string } | null>;
+}
+
 export interface OpsToolRegistryDeps {
   /** `medusaAdjudicated` (injected for testability). */
   readonly medusaAdjudicated: MedusaAdjudicatedFn;
@@ -247,6 +273,9 @@ export interface OpsToolRegistryDeps {
   ) => Promise<readonly string[] | null>;
   /** The order command service's POST-adjudication writers (note + transition). */
   readonly orderCmdSvc: OpsNoteWriter & OpsStatusWriter;
+  /** SCN-114 — the daily-special upsert service (the SAME service the NEW-005
+   *  admin route uses). The `menu.special.set` executor upserts through it. */
+  readonly dailySpecialSvc: OpsDailySpecialWriter;
   /** BKL-085 — the payment command service's POST-adjudication refund writer. */
   readonly paymentCmdSvc: OpsRefundWriter;
   /**
@@ -426,6 +455,64 @@ async function executePriceSet(
     productId: payload.productId,
     priceCentavos: payload.priceCentavos,
     variantsUpdated: brlVariantIds.length,
+  };
+}
+
+/**
+ * Executor for `menu.special.set` (SCN-114) — the POST-adjudication UPSERT of a
+ * DailySpecial via the domain service (NO Medusa egress — the same service the
+ * NEW-005 admin route uses). The composed router already produced the Decision at
+ * SUBMIT (carrying `adminSessionOnlyGuard` + `staffRoleGuard` {OWNER,MANAGER} +
+ * the payload / not-past / existence guards + the UNTRUSTED-taint CONFIRM overlay
+ * — a REQUEST_CONFIRMATION parks and resumes via the ops matchToParked driver);
+ * this executor performs NO adjudication.
+ *
+ * Upsert keyed on the DB `@@unique([medusaProductId, date])`: it LISTS the day's
+ * specials (all, not active-only, so a paused row is found rather than colliding
+ * on create) and, if the product already has a row for that day, UPDATEs it
+ * (`active: true` re-affirms a paused one) — otherwise CREATEs a fresh one. An
+ * OMITTED `promoPriceCentavos` is left untouched on update (never silently
+ * cleared) and defaults to NULL (featured without a discount) on create.
+ */
+async function executeMenuSpecialSet(
+  deps: OpsToolRegistryDeps,
+  payload: MenuSpecialSetPayload,
+): Promise<{
+  specialId: string;
+  productId: string;
+  date: string;
+  created: boolean;
+}> {
+  const promoFields =
+    payload.promoPriceCentavos !== undefined
+      ? { promoPriceCentavos: payload.promoPriceCentavos }
+      : {};
+  const daySpecials = await deps.dailySpecialSvc.list({ date: payload.date });
+  const existing =
+    daySpecials.find((s) => s.medusaProductId === payload.productId) ?? null;
+
+  if (existing) {
+    await deps.dailySpecialSvc.update(existing.id, {
+      ...promoFields,
+      active: true,
+    });
+    return {
+      specialId: existing.id,
+      productId: payload.productId,
+      date: payload.date,
+      created: false,
+    };
+  }
+  const created = await deps.dailySpecialSvc.create({
+    medusaProductId: payload.productId,
+    date: payload.date,
+    ...promoFields,
+  });
+  return {
+    specialId: created.id,
+    productId: payload.productId,
+    date: payload.date,
+    created: true,
   };
 }
 
@@ -708,7 +795,7 @@ async function executeScheduleOverrideSet(
   return { date: payload.date, isOpen: payload.isOpen };
 }
 
-/** The eight governed ops MUTATING tools (capability === intentKind). */
+/** The nine governed ops MUTATING tools (capability === intentKind). */
 function opsToolDefinitions(
   deps: OpsToolRegistryDeps,
 ): ReadonlyArray<ToolDefinition<unknown, unknown>> {
@@ -744,6 +831,18 @@ function opsToolDefinitions(
           input as ProductPriceSetPayload,
           staffIdFromCapsule(ctx),
         ),
+    },
+    {
+      id: "ibatexas.ops.menuSpecialSet.v1",
+      capability: asCapability("menu.special.set"),
+      intentKind: asIntentKind("menu.special.set"),
+      description:
+        "Definir o especial do dia (ex.: o especial de hoje é feijoada por 45 reais).",
+      inputSchema: {},
+      outputSchema: {},
+      riskLevel: "low",
+      execute: (input) =>
+        executeMenuSpecialSet(deps, input as MenuSpecialSetPayload),
     },
     {
       id: "ibatexas.ops.orderNoteAdd.v1",

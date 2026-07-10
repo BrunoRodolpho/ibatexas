@@ -35,6 +35,9 @@ function makeDeps(over: Partial<OpsToolRegistryDeps> = {}): {
   readProductBrlVariantIds: ReturnType<typeof vi.fn>;
   upsertOverride: ReturnType<typeof vi.fn>;
   invalidateScheduleCache: ReturnType<typeof vi.fn>;
+  dailySpecialList: ReturnType<typeof vi.fn>;
+  dailySpecialCreate: ReturnType<typeof vi.fn>;
+  dailySpecialUpdate: ReturnType<typeof vi.fn>;
 } {
   const medusaAdjudicated = vi.fn(async () => ({ product: { id: "prod_1" } }));
   // NEW-004 — default: a single BRL-priced variant (the common uniform product).
@@ -83,11 +86,22 @@ function makeDeps(over: Partial<OpsToolRegistryDeps> = {}): {
     isOpen: data.isOpen,
   }));
   const invalidateScheduleCache = vi.fn(async () => ({ ok: true }));
+  // SCN-114 — daily-special upsert spies (default: no existing row ⇒ CREATE path).
+  const dailySpecialList = vi.fn(
+    async (): Promise<ReadonlyArray<{ id: string; medusaProductId: string }>> => [],
+  );
+  const dailySpecialCreate = vi.fn(async () => ({ id: "special_1" }));
+  const dailySpecialUpdate = vi.fn(async () => ({ id: "special_1" }));
   const deps: OpsToolRegistryDeps = {
     medusaAdjudicated: medusaAdjudicated as never,
     auditSink: AUDIT_SINK,
     readProductBrlVariantIds: readProductBrlVariantIds as never,
     orderCmdSvc: { writeAdjudicatedNote, writeAdjudicatedStatusTransition },
+    dailySpecialSvc: {
+      list: dailySpecialList,
+      create: dailySpecialCreate,
+      update: dailySpecialUpdate,
+    },
     publishOrderStatusChanged,
     paymentCmdSvc: { writeAdjudicatedRefund },
     publishPaymentStatusChanged,
@@ -112,6 +126,9 @@ function makeDeps(over: Partial<OpsToolRegistryDeps> = {}): {
     readProductBrlVariantIds,
     upsertOverride,
     invalidateScheduleCache,
+    dailySpecialList,
+    dailySpecialCreate,
+    dailySpecialUpdate,
   };
 }
 
@@ -134,12 +151,14 @@ describe("ops tool registry — shape", () => {
     }
   });
 
-  it("registers exactly the eight governed ops verbs", () => {
+  it("registers exactly the nine governed ops verbs", () => {
     const { deps } = makeDeps();
     const registry = createOpsToolRegistry(deps);
     expect(registry.hasCapability("product.availability.set")).toBe(true);
     // NEW-004 — the price-change-by-message verb.
     expect(registry.hasCapability("product.price.set")).toBe(true);
+    // SCN-114 — the daily-special-by-message verb.
+    expect(registry.hasCapability("menu.special.set")).toBe(true);
     expect(registry.hasCapability("order.note.add")).toBe(true);
     expect(registry.hasCapability("order.status.transition")).toBe(true);
     // BKL-085 — the refunds-by-message verb.

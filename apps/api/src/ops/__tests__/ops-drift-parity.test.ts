@@ -27,6 +27,11 @@ const REGISTRY_DEPS: OpsToolRegistryDeps = {
       customerId: null,
     }),
   },
+  dailySpecialSvc: {
+    list: async () => [],
+    create: async () => ({ id: "special_1" }),
+    update: async () => ({ id: "special_1" }),
+  },
   publishOrderStatusChanged: async () => {},
   paymentCmdSvc: {
     writeAdjudicatedRefund: async () => ({

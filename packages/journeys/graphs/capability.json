@@ -3,7 +3,7 @@
   "graph": "capability",
   "meta": {
     "dangling": [],
-    "intentKinds": 69,
+    "intentKinds": 70,
     "packs": 6,
     "personaContexts": [
       "authed-customer",
@@ -250,6 +250,28 @@
         "chatDrivable": false,
         "composedPack": null,
         "domain": "loyalty",
+        "flags": [],
+        "knownKind": true,
+        "plausibleDecisions": [
+          "EXECUTE",
+          "REFUSE",
+          "ESCALATE",
+          "REQUEST_CONFIRMATION",
+          "DEFER",
+          "REWRITE"
+        ],
+        "staffRoute": false
+      }
+    },
+    {
+      "id": "intent:menu.special.set",
+      "type": "intent",
+      "label": "menu.special.set",
+      "meta": {
+        "advertisedContexts": [],
+        "chatDrivable": false,
+        "composedPack": "ibatexas/pack-ops",
+        "domain": "menu",
         "flags": [],
         "knownKind": true,
         "plausibleDecisions": [
@@ -1592,9 +1614,9 @@
       "type": "pack",
       "label": "ibatexas/pack-ops",
       "meta": {
-        "intentCount": 5,
+        "intentCount": 6,
         "policyDefault": "REFUSE",
-        "version": "1.3.0"
+        "version": "1.4.0"
       }
     },
     {
@@ -2082,6 +2104,11 @@
     {
       "from": "pack:ibatexas/pack-ops",
       "to": "intent:incident.ticket.close.staff",
+      "type": "declares"
+    },
+    {
+      "from": "pack:ibatexas/pack-ops",
+      "to": "intent:menu.special.set",
       "type": "declares"
     },
     {
