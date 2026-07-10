@@ -296,33 +296,41 @@ function buildMixedHarness(responderText: string) {
   return { deps, model };
 }
 
-describe("BKL-100 e2e — MIXED read+act turn: the grounded branch is governed too", () => {
-  it("hop-1 read captured + hop-2 EXECUTE: the render is APPENDED and a fabricated model number is clamped", async () => {
+describe("BKL-100 + BKL-149 e2e — MIXED read+act turn: BOTH halves render deterministically", () => {
+  it("hop-1 read captured + hop-2 EXECUTE: action half is the deterministic template, read half is appended, and the model authors NEITHER (no responder call)", async () => {
     const { deps, model } = buildMixedHarness(
-      "Picanha desativada! Hoje já foram 23 pedidos.", // 23 = pure fabrication
+      "Picanha desativada! Hoje já foram 23 pedidos.", // a draft the responder never even asks for
     );
     const out = await runOpsTurn(deps, {
       role: "OWNER",
       staffId: "owner1",
       text: "desativa a picanha e me diz como está o dia",
     });
-    // The read half is answered from the ACTUAL capture, deterministically…
+    // BKL-149: the ACTION half states what the verb did DETERMINISTICALLY (from the
+    // executed envelope), never the model draft…
+    expect(out.response).toContain("Pronto — produto marcado como esgotado (86).");
+    // …BKL-100: the READ half is answered from the ACTUAL capture, deterministically…
     expect(out.response).toContain("Panorama operacional");
     expect(out.response).toContain("5 pedidos");
-    // …and the model's fabricated count never reaches the operator.
+    // …and the model's fabricated count never reaches the operator (there is no
+    // model draft on this path at all).
     expect(out.response).not.toContain("23");
-    // plan + enrichment + grounded responder = 3 model calls on this path.
-    expect(model.complete).toHaveBeenCalledTimes(3);
+    // The responder made ZERO model calls: complete = plan propose + enrichment
+    // re-plan only (2), NOT a third responder synthesis — the render short-circuit.
+    expect(model.complete).toHaveBeenCalledTimes(2);
   });
 
-  it("hop-1 read captured + hop-2 EXECUTE + a CLEAN grounded draft: draft kept, render appended", async () => {
+  it("the model draft is DISCARDED for a committed mutation (BKL-149) — the deterministic action+read render wins", async () => {
     const { deps } = buildMixedHarness("Pronto, picanha desativada.");
     const out = await runOpsTurn(deps, {
       role: "OWNER",
       staffId: "owner1",
       text: "desativa a picanha e me diz como está o dia",
     });
-    expect(out.response.startsWith("Pronto, picanha desativada.")).toBe(true);
+    // The reply is the deterministic action render (NOT the model's phrasing) + the
+    // deterministic read render — the model-authored sentence never appears.
+    expect(out.response.startsWith("Pronto — produto marcado como esgotado (86).")).toBe(true);
+    expect(out.response).not.toContain("picanha desativada");
     expect(out.response).toContain("Panorama operacional");
     expect(out.response).toContain("5 pedidos");
   });

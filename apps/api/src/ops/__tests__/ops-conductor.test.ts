@@ -400,6 +400,9 @@ describe("ops conductor — the end-to-end kernel proof (NEW-032)", () => {
     const args = medusaAdjudicated.mock.calls[0]![0] as Record<string, unknown>;
     expect(args.payload).toEqual({ metadata: { inStock: false } });
     expect(args.sourceSubject).toBe("ops:product.availability.set:admin:staff_1");
+    // BKL-149 — the reply states what the verb DID deterministically (from the
+    // executed envelope's `available:false`), not model prose.
+    expect(out.response).toBe("Pronto — produto marcado como esgotado (86).");
   });
 
   it("ATTENDANT → REFUSE staff_role_violation; the executor NEVER runs; reply is the role-opaque refusal", async () => {
@@ -495,6 +498,43 @@ describe("ops conductor — schedule.override.set end-to-end (SCN-127)", () => {
     expect(date).toBe("2026-07-05");
     expect(data).toEqual({ isOpen: false, blocks: [], note: "feriado" });
     expect(invalidateScheduleCache).toHaveBeenCalledTimes(1);
+  });
+
+  it("BKL-149 — the EXECUTE reply is the DETERMINISTIC 'fechei em <date>', NOT the model's store-OPEN falsehood (turn 377ca7a1)", async () => {
+    const upsertOverride = vi.fn(async (date: string, data: { isOpen: boolean }) => ({
+      date,
+      isOpen: data.isOpen,
+    }));
+    // The scripted model would author the EXACT live falsehood — a store-OPEN
+    // sentence, wrong day, decoupled from the CLOSE the verb just committed. It must
+    // never reach the operator.
+    const { model, complete } = scriptedModel(
+      [SCHEDULE_CLOSE_CALL],
+      "Hoje, a loja estará aberta o dia inteiro, incluindo o intervalo de almoço.",
+    );
+    const deps = buildDeps({
+      model,
+      medusaAdjudicated: vi.fn(),
+      writeAdjudicatedNote: vi.fn(),
+      product: null,
+      upsertOverride,
+      invalidateScheduleCache: vi.fn(async () => ({ ok: true })),
+    });
+    const out = await runOpsTurn(deps, "OWNER", "staff_1", "fecha amanhã");
+    expect(out.kind).toBe("EXECUTE");
+    expect(upsertOverride).toHaveBeenCalledTimes(1);
+    // The reply states what the verb DID, rendered from the adjudicated envelope
+    // (isOpen:false + the RESOLVED 2026-07-05), never the model draft.
+    expect(out.response).toBe("Pronto — fechei a loja em 05/07/2026.");
+    // The exact falsehood is impossible: no OPEN state, no "hoje", no "dia inteiro".
+    const lower = out.response.toLowerCase();
+    expect(lower).not.toContain("aberta");
+    expect(lower).not.toContain("dia inteiro");
+    expect(lower).not.toContain("almoço");
+    expect(lower).not.toContain("hoje");
+    // Proof it was not a model completion: complete ran for the planner only (the
+    // responder synthesis was short-circuited by the deterministic render).
+    expect(complete).toHaveBeenCalledTimes(1);
   });
 
   it("ATTENDANT → REFUSE staff_role_violation; upsertOverride NEVER runs; reply is role-opaque", async () => {

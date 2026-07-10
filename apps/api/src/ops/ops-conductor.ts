@@ -65,6 +65,7 @@ import {
   OPS_UNGROUNDED_CLAMP_PTBR,
   type CapturedOpsRead,
 } from "./ops-read-render.js";
+import { renderOpsActionAnswer } from "./ops-action-render.js";
 import { deriveOpsPlannerContext } from "./ops-planner-context.js";
 import { composeOpsPlannerSystem } from "./ops-history.js";
 import {
@@ -211,6 +212,21 @@ export function composeOpsConductor(
     // `input.cognition.turnId`.
     readAnswer: {
       render: (turnId: string) => renderOpsReadAnswer(captures, turnId),
+      // BKL-149 — the deterministic mutation-success render. On a COMMITTED ops
+      // EXECUTE/REWRITE turn the statement of WHAT THE VERB DID is rendered from
+      // the adjudicated envelope (kind + resolved payload) + dispatch result, never
+      // authored by the model (closes the 377ca7a1 falsehood class on the action
+      // plane — the ACTION analog of `render` for reads). `undefined` when nothing
+      // committed (deferred / failed) → the responder keeps its honest grounded
+      // path. A MIXED read+act turn appends the deterministic read render (the read
+      // half must come from the ACTUAL captured read, never the model), mirroring
+      // `governGrounded`.
+      renderAction: (acted: unknown, turnId: string) => {
+        const action = renderOpsActionAnswer(acted);
+        if (action === undefined) return undefined;
+        const read = renderOpsReadAnswer(captures, turnId);
+        return read === undefined ? action : `${action}\n\n${read}`;
+      },
       clampUngrounded: clampUngroundedOpsFact,
       // Adversarial-review fix — the grounded (EXECUTE/REWRITE/DEFER) branch:
       // append the deterministic render of any read captured this turn + digit-run

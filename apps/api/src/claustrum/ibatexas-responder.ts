@@ -139,6 +139,18 @@ export interface IbatexasResponderDeps {
    */
   readonly readAnswer?: {
     render(turnId: string): string | undefined;
+    /**
+     * BKL-149 — the ops-plane ACTION governor. On an EXECUTE/REWRITE turn that
+     * COMMITTED a mutation, returns the deterministic pt-BR statement of WHAT THE
+     * VERB DID, rendered from the adjudicated envelope (kind + resolved payload) +
+     * dispatch result — the model authors NONE of it. That IS the reply (no model
+     * call), the ACTION-plane analog of `render`. Returns `undefined` when nothing
+     * committed (deferred / failed dispatch) so the responder falls through to its
+     * existing grounded model path (a failed EXECUTE must never read as a success).
+     * A mixed read+act turn gets the read render appended by the conductor's
+     * wiring. Absent dep (customer / WhatsApp) → the grounded branch is byte-identical.
+     */
+    renderAction?(acted: unknown, turnId: string): string | undefined;
     clampUngrounded?(
       text: string,
       allowedSources?: readonly string[],
@@ -914,6 +926,21 @@ export function createIbatexasResponder(
         case "EXECUTE":
         case "REWRITE":
         case "DEFER": {
+          // BKL-149 — on the ops plane, a COMMITTED mutation's reply states WHAT
+          // THE VERB DID DETERMINISTICALLY, rendered from the adjudicated envelope
+          // (kind + resolved payload) + dispatch result — the model NEVER authors
+          // the fact of the mutation (the exact 377ca7a1 falsehood class: a store
+          // CLOSED tomorrow drew a model reply asserting the store was OPEN today).
+          // Returns undefined when nothing committed (deferred / failed dispatch) →
+          // the existing grounded model path below handles it honestly. Absent dep
+          // (customer / WhatsApp) → undefined → byte-identical to today.
+          const actionRendered = deps.readAnswer?.renderAction?.(
+            input.acted,
+            turnId,
+          );
+          if (actionRendered !== undefined) {
+            return { text: actionRendered };
+          }
           // The kernel decided + the runtime acted — ground the reply in what
           // happened so it can never contradict the audited action.
           const capabilities =
