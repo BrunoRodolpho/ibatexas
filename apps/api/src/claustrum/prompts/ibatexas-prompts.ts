@@ -72,7 +72,12 @@ function staticFragment(
       return hashFragmentContent(resolved());
     },
     priority: 0, // personas are inviolable (never evicted under budget pressure)
-    tokens: estimateTokens(content),
+    // Token estimate mirrors the hash: a getter over the resolved text so a large
+    // active override reports its real size to the synthesizer's budget/eviction
+    // logic (with no override, resolved === default, so the estimate is unchanged).
+    get tokens() {
+      return estimateTokens(resolved());
+    },
     content: () => resolved(),
     applies: (ctx) => surfaceOf(ctx) === surface,
   };
@@ -93,7 +98,11 @@ function capabilityFragment(kind: string, description: string): PromptFragment {
       return hashFragmentContent(resolved());
     },
     priority: 10, // lower priority than personas; evictable under budget pressure
-    tokens: estimateTokens(content),
+    // Token estimate mirrors the hash — a getter over the resolved text so an
+    // active override reports its real size (see staticFragment).
+    get tokens() {
+      return estimateTokens(resolved());
+    },
     content: () => resolved(),
     applies: (ctx) =>
       surfaceOf(ctx) === RESPONDER_GROUNDED_SURFACE &&

@@ -80,6 +80,10 @@ function getPool(): Pool {
  *  this so a bootstrap-harness leaves no open pg handle when its container stops).
  *  Best-effort + idempotent; the pool re-creates lazily on the next store call. */
 export async function closePromptOverridePool(): Promise<void> {
+  // Clear the module-global snapshot too so `resetClaustrumForTests()` leaves no
+  // stale overrides in the process between test runs (the snapshot is a
+  // module-singleton, like the pool).
+  snapshot.clear();
   if (pool !== null) {
     const p = pool;
     pool = null;
@@ -129,9 +133,11 @@ export async function loadPromptOverrides(): Promise<void> {
   const isProduction = process.env.NODE_ENV === "production";
   const overridesEnabled =
     !isProduction || process.env.ENABLE_PROMPT_OVERRIDES === "true";
+  // Clear BEFORE the query so a load FAILURE leaves the snapshot empty
+  // (source-only), never stale rows from a prior successful load.
+  snapshot.clear();
   try {
     const { rows } = await getPool().query(`SELECT prompt_id, content FROM prompt_override`);
-    snapshot.clear();
     if (!overridesEnabled) {
       // Fail-closed: leave the snapshot empty so the runtime is byte-identical
       // to the compiled-in prompts. Log the decision (loudly if rows exist).
