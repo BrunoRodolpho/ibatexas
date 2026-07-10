@@ -57,6 +57,9 @@ function stubExecutors(log: string[]): ActExecutors {
     http: async (act) => {
       log.push(`http:${act.name ?? ""}`)
     },
+    rawEnvelope: async (act) => {
+      log.push(`raw-envelope:${act.name ?? ""}`)
+    },
     fixture: async (act) => {
       log.push(`fixture:${act.name ?? ""}`)
     },
@@ -172,6 +175,29 @@ describe("runJourney — sequential execution", () => {
     const blocked = makeJourney({ status: "blocked", blocked_by: ["ws4"] })
     const result = await run(blocked, stubExecutors([]), { allowBlocked: true })
     expect(result.ok).toBe(true)
+  })
+
+  it("dispatches a raw-envelope act to the rawEnvelope executor", async () => {
+    const log: string[] = []
+    const journey = makeJourney({
+      acts: [
+        {
+          kind: "raw-envelope",
+          name: "forged-probe",
+          envelope: {
+            kind: "order.cancel",
+            actor: { principal: "system", sessionId: "forged" },
+            taint: "TRUSTED",
+          },
+          expectStatus: 400,
+        },
+      ],
+    })
+    const result = await run(journey, stubExecutors(log))
+
+    expect(log).toEqual(["raw-envelope:forged-probe"])
+    expect(result.ok).toBe(true)
+    expect(result.acts[0]).toMatchObject({ kind: "raw-envelope", outcome: "pass" })
   })
 
   it("labels unnamed acts act-<n>:<kind>", async () => {

@@ -69,7 +69,7 @@ export type JourneyEventType =
 export type IbxEventType = ScenarioEventType | JourneyEventType
 
 /** Journey act kinds (mirrors the JourneyFileSchema act discriminator). */
-export type ActKindName = "chat" | "http" | "fixture"
+export type ActKindName = "chat" | "http" | "raw-envelope" | "fixture"
 
 /** Terminal outcome of a journey / act / chat-turn. */
 export type EventOutcome = "pass" | "fail" | "error"

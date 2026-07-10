@@ -14,7 +14,12 @@
 // edge but are flagged — they claim no coverage.
 
 import { journeyPersonaContext } from "../gates/lint.js"
-import type { Journey, JourneyAct, JsonValue } from "../schema/index.js"
+import {
+  RAW_ENVELOPE_FORGERY_STATUS,
+  type Journey,
+  type JourneyAct,
+  type JsonValue,
+} from "../schema/index.js"
 import {
   finalizeGraph,
   type GraphDocument,
@@ -49,6 +54,14 @@ function actMeta(act: JourneyAct, index: number): Record<string, JsonValue> {
         mode = "goal"
       }
       return { ...base, mode }
+    }
+    case "raw-envelope": {
+      const envKind = act.envelope["kind"]
+      return {
+        ...base,
+        envelopeKind: typeof envKind === "string" ? envKind : null,
+        expectStatus: act.expectStatus ?? RAW_ENVELOPE_FORGERY_STATUS,
+      }
     }
     case "fixture":
       return { ...base, seed: act.seed }

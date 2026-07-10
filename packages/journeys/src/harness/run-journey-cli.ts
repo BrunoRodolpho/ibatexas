@@ -53,14 +53,17 @@ import {
 
 import {
   loadJourneys,
+  RAW_ENVELOPE_FORGERY_STATUS,
   type ChatAct,
   type FixtureAct,
   type HttpAct,
   type Journey,
+  type RawEnvelopeAct,
 } from "../schema/index.js"
 import {
   runJourney,
   type ActExecutionResult,
+  type ActExecutor,
   type ActExecutors,
   type JourneyRunContext,
 } from "../runner/run-journey.js"
@@ -433,6 +436,69 @@ function mintStaffCookie(ctx: JourneyRunContext): string {
   return cookieHeader(
     mintStaffToken({ staffId, role: staffRole as StaffRole, staffJwtSecret }),
   )
+}
+
+// ── raw-envelope executor (JOURNEY-008 forged-actor probe) ───────────────────
+
+/**
+ * The TEST-PLANE forged-envelope ingress the `raw-envelope` act drives
+ * (apps/api `routes/test-envelope-ingress.ts`,
+ * `POST /api/test/envelope-ingress`, hard-gated by IBX_TEST_FINGERPRINT).
+ */
+export const TEST_ENVELOPE_INGRESS_PATH = "/api/test/envelope-ingress"
+
+/** Minimal fetch surface the raw-envelope executor needs — injectable for unit tests. */
+export type RawEnvelopeFetch = (
+  url: string,
+  init: { method: string; headers: Record<string, string>; body: string },
+) => Promise<{ status: number; text: () => Promise<string> }>
+
+export interface RawEnvelopeExecutorDeps {
+  apiBaseUrl: string
+  onProgress: (line: string) => void
+  /** Injectable for unit tests; defaults to the global `fetch`. */
+  fetchImpl?: RawEnvelopeFetch
+}
+
+/**
+ * Build the `raw-envelope` act executor: POST a raw, caller-controlled
+ * `IntentEnvelope` (under `{ envelope }`) to the test-plane forged-envelope
+ * ingress so a forged `actor`/`taint` reaches the runtime forgery guard that
+ * production customer routes structurally prevent reaching (P2-6/P2-7). The
+ * ingress posts the envelope VERBATIM, so the forged fields ARE the probe.
+ * `:name` string leaves in the envelope resolve from ctx.vars (the http-body
+ * convention, {@link resolveBodyVars}); the act passes iff the ingress status
+ * equals `expectStatus` (default {@link RAW_ENVELOPE_FORGERY_STATUS} — the
+ * forgery rejection). Never loosens the ingress guard — it only drives it.
+ */
+export function createRawEnvelopeExecutor(
+  deps: RawEnvelopeExecutorDeps,
+): ActExecutor<RawEnvelopeAct> {
+  const fetchImpl = deps.fetchImpl ?? (globalThis.fetch as unknown as RawEnvelopeFetch)
+  return async (act, ctx) => {
+    const envelope = resolveBodyVars(act.envelope, ctx.vars)
+    const response = await fetchImpl(`${deps.apiBaseUrl}${TEST_ENVELOPE_INGRESS_PATH}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ envelope }),
+    })
+    let bodyText = ""
+    try {
+      bodyText = await response.text()
+    } catch {
+      /* body read best-effort */
+    }
+    const expectStatus = act.expectStatus ?? RAW_ENVELOPE_FORGERY_STATUS
+    const ok = response.status === expectStatus
+    deps.onProgress(
+      `  raw-envelope POST ${TEST_ENVELOPE_INGRESS_PATH} -> ${response.status} (want ${expectStatus})`,
+    )
+    const okSuffix = ok ? "" : ` ${truncate(bodyText)}`
+    return {
+      ok,
+      detail: `raw-envelope ${TEST_ENVELOPE_INGRESS_PATH} -> ${response.status}${okSuffix}`,
+    }
+  }
 }
 
 /**
@@ -1053,8 +1119,10 @@ function buildExecutors(args: {
     }
   }
 
+  const rawEnvelope = createRawEnvelopeExecutor({ apiBaseUrl, onProgress })
+
   return {
-    executors: { chat, http, fixture },
+    executors: { chat, http, rawEnvelope, fixture },
     preAttemptLatestOrderId: () => orderIdState.value,
   }
 }
