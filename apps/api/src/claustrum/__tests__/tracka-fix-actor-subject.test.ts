@@ -45,6 +45,7 @@ import type {
   ModelProvider,
   Plan,
 } from "@claustrum/core";
+import { normalizeClaimPlannerResult } from "@claustrum/core";
 import {
   createIbatexasPlanner,
   PROPOSE_CLAIM_TOOL,
@@ -141,7 +142,10 @@ describe("Track A FIX 1+2 — owner candidate (empty model subject) → actor+su
       ledger,
     };
 
-    const candidates = await adapter.propose(input);
+    // Post-BKL-077 `propose` returns the widened `ClaimPlannerResult`; this is a
+    // no-forced-terminal turn, so normalize to the candidate array (a bare array is
+    // passed through by reference).
+    const candidates = normalizeClaimPlannerResult(await adapter.propose(input)).candidates;
 
     // FIX 1 — actor is the AUTHENTICATED principal, NOT "llm" / a model actor.
     expect(candidates).toHaveLength(1);
