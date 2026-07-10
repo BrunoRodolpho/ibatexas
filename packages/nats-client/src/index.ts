@@ -72,9 +72,34 @@ let pendingConnection: Promise<NatsConnection> | null = null
  *   - NATS_NKEY_SEED   — nkey seed (string)
  */
 async function resolveAuthenticator(): Promise<Authenticator | undefined> {
-  const credsPath = process.env.NATS_CREDS_PATH
+  const credsPath = process.env.NATS_CREDS_PATH?.trim()
   if (credsPath && credsPath.length > 0) {
-    const buf = await readFile(credsPath)
+    // BKL-129: process-compose hands a trailing `# comment` through as the VALUE
+    // when the value is EMPTY (`NATS_CREDS_PATH=   # path to a .creds file…`). A
+    // value starting with '#' is never a real path — fail CLOSED with a message
+    // that names the var + the gotcha instead of a bare ENOENT on a nonsense path.
+    if (credsPath.startsWith("#")) {
+      throw new Error(
+        `[nats][config] NATS_CREDS_PATH is not a file path — it starts with '#': ` +
+          `'${credsPath}'. Did you leave an inline comment on an empty env value? ` +
+          `process-compose hands a trailing '# comment' through as the VALUE when ` +
+          `the value is empty — move the comment to its own line above the key, or ` +
+          `unset NATS_CREDS_PATH.`,
+      )
+    }
+    let buf: Awaited<ReturnType<typeof readFile>>
+    try {
+      buf = await readFile(credsPath)
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException | undefined)?.code
+      throw new Error(
+        `[nats][config] NATS_CREDS_PATH points at a .creds file that could not ` +
+          `be read: '${credsPath}'${code ? ` (${code})` : ""}. Provision the ` +
+          `.creds file or unset NATS_CREDS_PATH. Did you leave an inline comment ` +
+          `on an empty env value? process-compose hands a trailing '# comment' ` +
+          `through as the VALUE when the value is empty.`,
+      )
+    }
     return credsAuthenticator(buf)
   }
   const nkeySeed = process.env.NATS_NKEY_SEED

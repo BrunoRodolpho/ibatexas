@@ -16,6 +16,7 @@ import {
   extractSealableSurface,
   verifyConfigSeal,
 } from "@adjudicate/conformance";
+import { parseSealDigests } from "../claustrum-bootstrap.js";
 
 const pack = ordersPack as unknown as Parameters<
   typeof extractSealableSurface
@@ -48,5 +49,54 @@ describe("F5 config seal", () => {
     );
     expect(report.verified).toBe(false);
     expect(report.digestMatch).toBe("mismatch");
+  });
+});
+
+// BKL-129 — CONFIG_SEAL_DIGESTS env parsing must fail CLOSED (not silently skip)
+// on a comment-poisoned value. process-compose hands a trailing `# comment`
+// through as the VALUE when the value is empty, which used to parse as a pinned
+// pack id + bogus digest and surface a MISLEADING "pack config drift" boot error.
+describe("F5 parseSealDigests (BKL-129 fail-closed)", () => {
+  const HEX = "a".repeat(64);
+
+  it("returns an empty map for unset / empty / whitespace-only (no enforcement)", () => {
+    expect(parseSealDigests(undefined).size).toBe(0);
+    expect(parseSealDigests("").size).toBe(0);
+    expect(parseSealDigests("   ").size).toBe(0);
+  });
+
+  it("parses valid digests (single, multi, uppercase, trailing ';')", () => {
+    const single = parseSealDigests(`ibatexas/pack-orders=${HEX}`);
+    expect(single.get("ibatexas/pack-orders")).toBe(HEX);
+
+    const multi = parseSealDigests(
+      `ibatexas/pack-orders=${HEX};ibatexas/pack-payments=${"b".repeat(64)};`,
+    );
+    expect(multi.size).toBe(2);
+    expect(multi.get("ibatexas/pack-payments")).toBe("b".repeat(64));
+
+    // digest is canonicalised to lowercase
+    expect(
+      parseSealDigests(`ibatexas/pack-orders=${"A".repeat(64)}`).get(
+        "ibatexas/pack-orders",
+      ),
+    ).toBe("a".repeat(64));
+  });
+
+  it("THROWS on a comment-poisoned value, naming the var + the inline-comment gotcha", () => {
+    const poisoned =
+      "# e.g. ibatexas/pack-orders=<64hex>;ibatexas/pack-payments=<64hex>";
+    expect(() => parseSealDigests(poisoned)).toThrow(/CONFIG_SEAL_DIGESTS/);
+    expect(() => parseSealDigests(poisoned)).toThrow(/inline comment/i);
+  });
+
+  it("THROWS on a non-64-hex digest instead of silently skipping it", () => {
+    expect(() => parseSealDigests("ibatexas/pack-orders=deadbeef")).toThrow(
+      /CONFIG_SEAL_DIGESTS/,
+    );
+    // a valid entry followed by a malformed one still fails CLOSED
+    expect(() =>
+      parseSealDigests(`ibatexas/pack-orders=${HEX};ibatexas/pack-payments=nope`),
+    ).toThrow(/malformed/);
   });
 });
