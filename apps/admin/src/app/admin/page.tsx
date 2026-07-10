@@ -60,14 +60,20 @@ function RelatoriosSection(): React.JSX.Element {
   const [open, setOpen] = useState(false)
   const [items, setItems] = useState<TopItem[] | null>(null)
   const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
+    setError(null)
     try {
       const data = (await apiFetch('/api/admin/analytics/top-items?limit=10')) as { items: TopItem[] }
       setItems(data.items ?? [])
     } catch {
-      setItems([])
+      // A 403/500/network failure is NOT "no sales" — never render the empty
+      // "Nenhum dado no período." on a broken call. Keep items null so a
+      // re-expand retries, and surface a distinct, retryable error.
+      setItems(null)
+      setError('Não foi possível carregar o relatório. Tente novamente.')
     } finally {
       setLoading(false)
     }
@@ -93,6 +99,17 @@ function RelatoriosSection(): React.JSX.Element {
         <div className="px-4 pb-4">
           {loading ? (
             <p className="text-sm text-smoke-500">Carregando…</p>
+          ) : error ? (
+            <div className="flex flex-col items-start gap-2">
+              <p className="text-sm text-red-600">{error}</p>
+              <button
+                type="button"
+                onClick={() => void load()}
+                className="rounded-sm border border-smoke-200 bg-smoke-50 px-3 py-1 text-xs font-medium text-charcoal-700 hover:bg-smoke-100"
+              >
+                Tentar novamente
+              </button>
+            </div>
           ) : items && items.length > 0 ? (
             <table className="w-full text-sm">
               <thead>

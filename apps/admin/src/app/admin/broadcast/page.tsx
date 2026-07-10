@@ -53,6 +53,9 @@ export default function BroadcastPage(): React.JSX.Element {
   const [error, setError] = useState<string | null>(null)
   const [optOutPhone, setOptOutPhone] = useState('')
   const [optOutList, setOptOutList] = useState<OptOutRecipientView[]>([])
+  // LGPD consent revocation — the write must never fail silently, or the manager
+  // believes a customer was opted out when they were not.
+  const [optOutNotice, setOptOutNotice] = useState<{ ok: boolean; text: string } | null>(null)
   // WS3D — audience builder
   const [audienceQuery, setAudienceQuery] = useState('')
   const [audienceSource, setAudienceSource] = useState('')
@@ -159,14 +162,24 @@ export default function BroadcastPage(): React.JSX.Element {
   const addOptOut = useCallback(async () => {
     if (!optOutPhone.trim()) return
     setBusy(true)
+    setOptOutNotice(null)
     try {
+      const registered = optOutPhone.trim()
       await apiFetch('/api/admin/broadcast/optout', {
         method: 'POST',
-        body: JSON.stringify({ recipient: optOutPhone.trim() }),
+        body: JSON.stringify({ recipient: registered }),
       })
       setOptOutPhone('')
       // Keep the opted-out list in sync with the write that just landed.
       await loadOptOutList()
+      setOptOutNotice({ ok: true, text: `Opt-out registrado para ${registered}.` })
+    } catch {
+      // The consent revocation did NOT land — surface it explicitly so the
+      // manager does not assume the customer was opted out.
+      setOptOutNotice({
+        ok: false,
+        text: 'Falha ao registrar o opt-out. O cliente NÃO foi removido — tente novamente.',
+      })
     } finally {
       setBusy(false)
     }
@@ -322,6 +335,13 @@ export default function BroadcastPage(): React.JSX.Element {
           >
             Opt-out
           </button>
+          {optOutNotice ? (
+            <span
+              className={`text-sm ${optOutNotice.ok ? 'text-green-700' : 'text-red-600'}`}
+            >
+              {optOutNotice.text}
+            </span>
+          ) : null}
         </div>
       </div>
 
