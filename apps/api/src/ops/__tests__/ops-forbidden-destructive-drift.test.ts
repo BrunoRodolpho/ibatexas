@@ -60,6 +60,8 @@ const FORBIDDEN = [...FORBIDDEN_OPS_DESTRUCTIVE_KINDS];
 const ALLOWED_OPS_VERBS = [
   "product.availability.set",
   "product.price.set",
+  // SCN-114 — the daily-special-by-message verb.
+  "menu.special.set",
   OPS_ALERT_RESOLVE_STAFF_KIND,
   OPS_INCIDENT_CLOSE_STAFF_KIND,
   OPS_SCHEDULE_OVERRIDE_SET_KIND,
@@ -78,7 +80,7 @@ const STAFF_CTX: OpsContext = {
 };
 
 /** Minimal registry deps (mirrors ops-drift-parity.test.ts) — only the SHAPE of
- *  the 7 tool definitions matters here, never the executor bodies. */
+ *  the 8 tool definitions matters here, never the executor bodies. */
 const REGISTRY_DEPS: OpsToolRegistryDeps = {
   medusaAdjudicated: (async () => ({})) as never,
   auditSink: {} as never,
@@ -92,6 +94,11 @@ const REGISTRY_DEPS: OpsToolRegistryDeps = {
       displayId: 1,
       customerId: null,
     }),
+  },
+  dailySpecialSvc: {
+    list: async () => [],
+    create: async () => ({ id: "special_1" }),
+    update: async () => ({ id: "special_1" }),
   },
   publishOrderStatusChanged: async () => {},
   paymentCmdSvc: {

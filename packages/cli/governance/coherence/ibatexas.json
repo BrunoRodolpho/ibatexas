@@ -34,7 +34,7 @@
     },
     {
       "packId": "ibatexas/pack-ops",
-      "packVersion": "1.3.0",
+      "packVersion": "1.4.0",
       "passed": true,
       "summary": {
         "error": 0,

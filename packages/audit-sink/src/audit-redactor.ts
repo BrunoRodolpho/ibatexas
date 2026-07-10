@@ -572,6 +572,9 @@ export const PII_FREE_KIND_ALLOWLIST: ReadonlySet<string> = new Set<string>([
   "staff.deactivate", // staffId only
   "staff.role.assign", // staffId + role: closed {OWNER,MANAGER,ATTENDANT} enum
 
+  // ── Ops Pack (SCN-114) — id/date/centavos, no PII, no free-form field ──
+  "menu.special.set", // productId (opaque)/date (YYYY-MM-DD)/promoPriceCentavos (int)
+
   // ── WhatsApp Pack — phone fields are pre-hashed ─────────────────────
   // `WhatsAppSessionHandoverPayload.fromHashedPhone` is SHA-256 of the
   // customer's number (per pack-whatsapp). The kind ALSO carries a free-

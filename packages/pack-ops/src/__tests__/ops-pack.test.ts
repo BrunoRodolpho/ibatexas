@@ -208,6 +208,164 @@ describe("opsPolicyBundle — taint floor is UNTRUSTED (authority is namespace+r
   })
 })
 
+// ── SCN-114: menu.special.set raw-bundle ─────────────────────────────────────
+
+/** The frozen "today" the special-state projects (matches DET_TIME's day). */
+const SPECIAL_TODAY = "2026-07-04"
+
+function specialEnv(
+  payload: Record<string, unknown>,
+  opts: {
+    taint?: "UNTRUSTED" | "TRUSTED"
+    sessionId?: string
+    role?: string
+    principal?: "user" | "llm"
+  } = {},
+): IntentEnvelope<OpsIntentKind, OpsPayload> {
+  const {
+    taint = "UNTRUSTED",
+    sessionId = "admin:staff_1",
+    role = "OWNER",
+    principal = "user",
+  } = opts
+  return buildEnvelope({
+    kind: "menu.special.set",
+    payload: payload as unknown as OpsPayload,
+    actor: { principal, sessionId, ...(role ? { role } : {}) },
+    taint,
+    nonce: "n-menu-special",
+    createdAt: DET_TIME,
+  })
+}
+
+/** A state projecting the special product (absent when product null) + today. */
+function specialState(
+  product: { id: string; status: string; name: string } | null = {
+    id: "prod_1",
+    status: "published",
+    name: "Feijoada",
+  },
+  todayYmd = SPECIAL_TODAY,
+): OpsState {
+  return {
+    ctx: { channel: "staff", customerId: null, staffId: "staff_1" },
+    special: { product, todayYmd },
+  }
+}
+
+const VALID_SPECIAL = {
+  productId: "prod_1",
+  date: "2026-07-10",
+  promoPriceCentavos: 4500,
+}
+
+describe("opsPolicyBundle — menu.special.set (SCN-114)", () => {
+  it("REQUEST_CONFIRMATION: UNTRUSTED + product present + future date + price (prompt names product + date + R$)", () => {
+    const d = adjudicate(specialEnv(VALID_SPECIAL), specialState(), opsPolicyBundle)
+    expect(d.kind).toBe("REQUEST_CONFIRMATION")
+    if (d.kind === "REQUEST_CONFIRMATION") {
+      expect(d.prompt).toContain("Feijoada")
+      expect(d.prompt).toContain("10/07/2026")
+      expect(d.prompt).toContain("R$ 45,00")
+    }
+  })
+
+  it("REQUEST_CONFIRMATION without a price → prompt says 'sem desconto'", () => {
+    const d = adjudicate(
+      specialEnv({ productId: "prod_1", date: "2026-07-10" }),
+      specialState(),
+      opsPolicyBundle,
+    )
+    expect(d.kind).toBe("REQUEST_CONFIRMATION")
+    if (d.kind === "REQUEST_CONFIRMATION")
+      expect(d.prompt).toContain("sem desconto")
+  })
+
+  it("EXECUTE: a TRUSTED envelope (no misparse risk) executes directly", () => {
+    const d = adjudicate(
+      specialEnv(VALID_SPECIAL, { taint: "TRUSTED" }),
+      specialState(),
+      opsPolicyBundle,
+    )
+    expect(d.kind).toBe("EXECUTE")
+  })
+
+  it("REFUSE: unknown payload key (closed contract)", () => {
+    const d = adjudicate(
+      specialEnv({ ...VALID_SPECIAL, foo: 1 }),
+      specialState(),
+      opsPolicyBundle,
+    )
+    expect(d.kind).toBe("REFUSE")
+    if (d.kind === "REFUSE")
+      expect(d.refusal.code).toBe("menu.special.payload_invalid")
+  })
+
+  it("REFUSE: a still-relative / non-YYYY-MM-DD date", () => {
+    const d = adjudicate(
+      specialEnv({ productId: "prod_1", date: "amanhã" }),
+      specialState(),
+      opsPolicyBundle,
+    )
+    expect(d.kind).toBe("REFUSE")
+    if (d.kind === "REFUSE")
+      expect(d.refusal.code).toBe("menu.special.payload_invalid")
+  })
+
+  it("REFUSE: promoPriceCentavos not a positive integer (0 / negative / float)", () => {
+    for (const bad of [0, -100, 45.5]) {
+      const d = adjudicate(
+        specialEnv({ productId: "prod_1", date: "2026-07-10", promoPriceCentavos: bad }),
+        specialState(),
+        opsPolicyBundle,
+      )
+      expect(d.kind).toBe("REFUSE")
+      if (d.kind === "REFUSE")
+        expect(d.refusal.code).toBe("menu.special.payload_invalid")
+    }
+  })
+
+  it("REFUSE: product absent → product_not_found", () => {
+    const d = adjudicate(specialEnv(VALID_SPECIAL), specialState(null), opsPolicyBundle)
+    expect(d.kind).toBe("REFUSE")
+    if (d.kind === "REFUSE")
+      expect(d.refusal.code).toBe("menu.special.product_not_found")
+  })
+
+  it("REFUSE: a past date → date_past", () => {
+    const d = adjudicate(
+      specialEnv({ productId: "prod_1", date: "2026-07-01", promoPriceCentavos: 4500 }),
+      specialState(),
+      opsPolicyBundle,
+    )
+    expect(d.kind).toBe("REFUSE")
+    if (d.kind === "REFUSE") expect(d.refusal.code).toBe("menu.special.date_past")
+  })
+
+  it("EXECUTE-band: today's date is NOT past (a TRUSTED same-day special executes)", () => {
+    const d = adjudicate(
+      specialEnv(
+        { productId: "prod_1", date: SPECIAL_TODAY, promoPriceCentavos: 4500 },
+        { taint: "TRUSTED" },
+      ),
+      specialState(),
+      opsPolicyBundle,
+    )
+    expect(d.kind).toBe("EXECUTE")
+  })
+
+  it("REFUSE: a non-admin session (the pack fence, AUTH) — before any special detail", () => {
+    const d = adjudicate(
+      specialEnv(VALID_SPECIAL, { principal: "llm", sessionId: "web:conv-1", role: "" }),
+      specialState(),
+      opsPolicyBundle,
+    )
+    expect(d.kind).toBe("REFUSE")
+    if (d.kind === "REFUSE")
+      expect(d.refusal.code).toBe("ops.admin_session_required")
+  })
+})
+
 // ── BKL-088: ops.alert.resolve.staff + incident.ticket.close.staff raw-bundle ─
 
 /** A resolution-verb envelope for an arbitrary owned kind (BKL-088). */

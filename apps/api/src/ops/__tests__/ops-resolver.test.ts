@@ -6,6 +6,7 @@ import type { ResolverInput } from "@claustrum/core";
 import {
   createOpsResolver,
   buildOpsRefundResumeState,
+  buildOpsSpecialResumeState,
   type OpsResolverDeps,
 } from "../ops-resolver.js";
 import type { ProductCandidate } from "../ops-product-resolution.js";
@@ -1051,5 +1052,170 @@ describe("ops resolver — schedule.override.set state (SCN-127)", () => {
     expect(resolved!.envelope.actor).toEqual(env.actor);
     expect(resolved!.envelope.taint).toBe(env.taint);
     expect(resolved!.envelope.nonce).toBe(env.nonce);
+  });
+});
+
+// ── menu.special.set state + date/price normalization (SCN-114) ──────────────
+
+describe("ops resolver — menu.special.set state (SCN-114)", () => {
+  const specialProduct = { id: "prod_1", status: "published", name: "Feijoada" };
+  const specialDeps = (over: Partial<OpsResolverDeps> = {}) =>
+    makeDeps({
+      lookupSpecialProduct: vi.fn(async (id: string) =>
+        id === "prod_1" ? specialProduct : null,
+      ),
+      ...over,
+    });
+  const resolveSpecial = (deps: OpsResolverDeps, payload: Record<string, unknown>) =>
+    createOpsResolver(deps).resolve(input(opsEnvelope("menu.special.set", payload)));
+
+  const withFrozenClock = async (run: () => Promise<void>) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-04T12:00:00.000Z")); // 09:00 in America/Sao_Paulo
+    const prev = process.env.RESTAURANT_TIMEZONE;
+    process.env.RESTAURANT_TIMEZONE = "America/Sao_Paulo";
+    try {
+      await run();
+    } finally {
+      if (prev === undefined) delete process.env.RESTAURANT_TIMEZONE;
+      else process.env.RESTAURANT_TIMEZONE = prev;
+      vi.useRealTimers();
+    }
+  };
+
+  it("projects { ctx, special:{product,todayYmd} } and stamps a concrete date + centavos", async () => {
+    await withFrozenClock(async () => {
+      const [resolved] = await resolveSpecial(specialDeps(), {
+        productId: "prod_1",
+        date: "hoje",
+        promoPriceCentavos: 4500,
+      });
+      expect(resolved!.state).toEqual({
+        ctx: {
+          channel: "staff",
+          customerId: null,
+          staffId: "staff_1",
+          tenantId: "ibatexas",
+        },
+        special: { product: specialProduct, todayYmd: "2026-07-04" },
+      });
+      // Canonical payload: concrete date + integer centavos, nothing else.
+      expect(resolved!.envelope.payload).toEqual({
+        productId: "prod_1",
+        date: "2026-07-04",
+        promoPriceCentavos: 4500,
+      });
+    });
+  });
+
+  it.each([
+    ["hoje", "2026-07-04"],
+    ["amanhã", "2026-07-05"],
+    ["amanha", "2026-07-05"],
+    ["depois de amanhã", "2026-07-06"],
+    ["2026-08-01", "2026-08-01"],
+  ])("resolves date %s → %s (RESTAURANT_TIMEZONE, frozen clock)", async (raw, expected) => {
+    await withFrozenClock(async () => {
+      const [resolved] = await resolveSpecial(specialDeps(), {
+        productId: "prod_1",
+        date: raw,
+        promoPriceCentavos: 4500,
+      });
+      expect((resolved!.envelope.payload as { date: string }).date).toBe(expected);
+    });
+  });
+
+  it.each([
+    [{ promoPriceCentavos: 4500 }, 4500],
+    [{ promoPrice: 45 }, 4500],
+    [{ promoPrice: "45,50" }, 4550],
+    [{ preco: "R$ 45,50" }, 4550],
+    [{ valor: 45.5 }, 4550],
+  ])("normalizes a spoken promo price %o → %i centavos", async (priceField, expected) => {
+    const [resolved] = await resolveSpecial(specialDeps(), {
+      productId: "prod_1",
+      date: "2026-07-10",
+      ...priceField,
+    });
+    const p = resolved!.envelope.payload as Record<string, unknown>;
+    expect(p.promoPriceCentavos).toBe(expected);
+    // The reais alias keys are STRIPPED from the canonical payload (closed contract).
+    expect(p.promoPrice).toBeUndefined();
+    expect(p.valor).toBeUndefined();
+    expect(p.preco).toBeUndefined();
+  });
+
+  it("omits promoPriceCentavos when no usable price is present (featured without discount)", async () => {
+    const [resolved] = await resolveSpecial(specialDeps(), {
+      productId: "prod_1",
+      date: "2026-07-10",
+    });
+    expect(
+      (resolved!.envelope.payload as Record<string, unknown>).promoPriceCentavos,
+    ).toBeUndefined();
+  });
+
+  it("name → id: 'feijoada' resolves via listProductsByName; payload productId rewritten", async () => {
+    const deps = specialDeps({
+      lookupSpecialProduct: vi.fn(async (id: string) =>
+        id === "prod_42"
+          ? { id: "prod_42", status: "published", name: "Feijoada Completa" }
+          : null,
+      ),
+      listProductsByName: vi.fn(async () => [
+        candidate("prod_42", "Feijoada Completa"),
+      ]),
+    });
+    const [resolved] = await resolveSpecial(deps, {
+      productId: "feijoada",
+      date: "2026-07-10",
+      promoPriceCentavos: 4500,
+    });
+    expect((resolved!.envelope.payload as { productId: string }).productId).toBe(
+      "prod_42",
+    );
+    expect(
+      (resolved!.state as { special: { product: { id: string } } }).special.product
+        .id,
+    ).toBe("prod_42");
+  });
+
+  it("product missing ⇒ special.product null (REFUSE product_not_found)", async () => {
+    const deps = specialDeps({ lookupSpecialProduct: vi.fn(async () => null) });
+    const [resolved] = await resolveSpecial(deps, {
+      productId: "ghost",
+      date: "2026-07-10",
+    });
+    expect(
+      (resolved!.state as { special: { product: unknown } }).special.product,
+    ).toBeNull();
+  });
+
+  it("lookupSpecialProduct dep ABSENT ⇒ special.product null (verb inert until wired)", async () => {
+    const [resolved] = await resolveSpecial(makeDeps(), {
+      productId: "prod_1",
+      date: "2026-07-10",
+    });
+    expect(
+      (resolved!.state as { special: { product: unknown } }).special.product,
+    ).toBeNull();
+  });
+
+  it("buildOpsSpecialResumeState re-projects { ctx, special } from a fresh product read", async () => {
+    await withFrozenClock(async () => {
+      const state = buildOpsSpecialResumeState(specialProduct, {
+        staffId: "staff_9",
+        tenantId: "ibatexas",
+      }) as { ctx: { staffId: string }; special: { product: unknown; todayYmd: string } };
+      expect(state.ctx.staffId).toBe("staff_9");
+      expect(state.special.product).toEqual(specialProduct);
+      expect(state.special.todayYmd).toBe("2026-07-04");
+    });
+    // A vanished product ⇒ product null ⇒ product_not_found on resume.
+    const gone = buildOpsSpecialResumeState(null, {
+      staffId: "staff_9",
+      tenantId: "ibatexas",
+    }) as { special: { product: unknown } };
+    expect(gone.special.product).toBeNull();
   });
 });

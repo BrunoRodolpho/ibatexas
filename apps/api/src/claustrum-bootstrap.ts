@@ -106,7 +106,7 @@ import {
   type RedisPubSubClient,
 } from "@adjudicate/audit";
 
-import { prisma, claustrumMemoryPrisma, createOrderCommandService, createOrderQueryService, createOrderEventLogService, createPaymentCommandService, createPaymentQueryService, createOpsAlertService, createIncidentService, createScheduleService } from "@ibatexas/domain";
+import { prisma, claustrumMemoryPrisma, createOrderCommandService, createOrderQueryService, createOrderEventLogService, createPaymentCommandService, createPaymentQueryService, createOpsAlertService, createIncidentService, createScheduleService, createDailySpecialService } from "@ibatexas/domain";
 import { rehydratePaymentState } from "@ibatexas/pack-payments";
 import {
   emitLlmCall,
@@ -306,6 +306,7 @@ import {
   createOpsResolver,
   buildOpsRefundResumeState,
   buildOpsPriceResumeState,
+  buildOpsSpecialResumeState,
 } from "./ops/ops-resolver.js";
 import {
   readOpsProductPricing,
@@ -752,6 +753,23 @@ export interface AdjudicatorBridgeDeps {
 }
 
 /**
+ * SCN-114 — read a product's `{id,status,name}` snapshot by id via the admin
+ * catalog (the SAME `/admin/products/:id` read `menu.special.set`'s plan-stage
+ * `lookupSpecialProduct` uses). `null` when the product is absent. Shared by the
+ * plan-stage resolver AND the confirm-RESUME re-projection so plan + resume see
+ * one shape.
+ */
+async function readSpecialProductViaMedusa(
+  productId: string,
+): Promise<{ id: string; status: string; name: string } | null> {
+  const data = (await medusaAdmin(`/admin/products/${productId}`)) as {
+    product?: { id: string; status: string; title: string };
+  };
+  const p = data.product;
+  return p ? { id: p.id, status: p.status, name: p.title } : null;
+}
+
+/**
  * Re-assemble the per-envelope SystemState ctx for a parked (already-resolved)
  * envelope on the resume path. The claustrum resume path adjudicates against
  * `resolution.state` (channel + customerId), not the plan-stage resolver's
@@ -831,6 +849,35 @@ async function enrichResumeState(
     } catch {
       // Fail-closed: a read error re-projects a not-found state ⇒ REFUSE.
       return buildOpsPriceResumeState(null, { staffId, tenantId });
+    }
+  }
+
+  // SCN-114 — the OPS-plane daily-special confirm-resume (an `admin:`-session
+  // `menu.special.set` parked by the UNTRUSTED-taint CONFIRM overlay) re-projects
+  // its own `{ ctx, special }` from a FRESH product read of the parked (resolver-
+  // rewritten, trusted) productId + a FRESH today reading — NOT the customer-
+  // scoped `resolveAndAssemble` below (the ops plane's `staff:<id>` owns no
+  // products, so that path would project `special` absent and REFUSE a valid
+  // "sim"). The fresh reads are safe: a vanished product / a now-past date REFUSE
+  // on resume via the existence / not-past guards.
+  if (
+    envelope.kind === "menu.special.set" &&
+    envelope.actor.sessionId.startsWith("admin:")
+  ) {
+    const tenantId = process.env.KERNEL_TENANT_ID ?? "ibatexas";
+    const staffId = envelope.actor.sessionId.slice("admin:".length);
+    const payload = (envelope.payload ?? {}) as Record<string, unknown>;
+    const productId =
+      typeof payload.productId === "string" ? payload.productId : "";
+    if (productId === "") {
+      return buildOpsSpecialResumeState(null, { staffId, tenantId });
+    }
+    try {
+      const product = await readSpecialProductViaMedusa(productId);
+      return buildOpsSpecialResumeState(product, { staffId, tenantId });
+    } catch {
+      // Fail-closed: a read error re-projects a not-found state ⇒ REFUSE.
+      return buildOpsSpecialResumeState(null, { staffId, tenantId });
     }
   }
 
@@ -2933,6 +2980,12 @@ export async function bootstrapClaustrum(
         : read.brlVariants.map((v) => v.variantId);
     },
     orderCmdSvc: createOrderCommandService(),
+    // SCN-114 — the daily-special upsert service (the SAME service the NEW-005
+    // admin route uses). The menu.special.set executor upserts through it; no
+    // Medusa egress. The customer-facing read (GET /api/specials/today) reads the
+    // same rows fresh, so a set surfaces with zero extra wiring (bar the route's
+    // 30s HTTP Cache-Control).
+    dailySpecialSvc: createDailySpecialService(),
     // BKL-085 — the ops refund POST-adjudication ledger write (writeAdjudicatedRefund
     // does NO adjudication; the composed router already produced the Decision).
     paymentCmdSvc: createPaymentCommandService(),
@@ -3097,6 +3150,13 @@ export async function bootstrapClaustrum(
         // re-projection (enrichResumeState) so plan + resume see one shape.
         lookupProductPricing: async (productId) =>
           computeOpsPricingSnapshot(await readOpsProductPricing(medusaAdmin, productId)),
+        // SCN-114 — the `{id,status,name}` snapshot the menu.special.set guards +
+        // CONFIRM prompt read. Reuses the SAME admin product read the availability
+        // verb uses (via the shared readSpecialProductViaMedusa, which also backs
+        // the confirm-RESUME re-projection); a missing product ⇒ null ⇒ fail-closed
+        // REFUSE product_not_found. Name→id resolution reuses listProductsByName.
+        lookupSpecialProduct: async (productId) =>
+          readSpecialProductViaMedusa(productId),
         // BKL-089 — deterministic product NAME→id resolution candidate read.
         // Reuses the SAME admin catalog list read the admin products surface
         // uses (GET /api/admin/products → medusaAdmin('/admin/products?q=...')),

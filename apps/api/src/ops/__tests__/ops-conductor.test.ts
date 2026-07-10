@@ -213,6 +213,13 @@ function buildDeps(opts: {
   alert?: { id: string; status: string } | null;
   /** BKL-088 — the incident the resolver projects for incident.ticket.close.staff. */
   incident?: { id: string; status: string } | null;
+  /** SCN-114 — the product snapshot the resolver projects for menu.special.set;
+   *  null ⇒ absent (⇒ REFUSE product_not_found). */
+  special?: { id: string; status: string; name: string } | null;
+  /** SCN-114 — daily-special upsert service spies (defaults applied when absent). */
+  dailySpecialList?: ReturnType<typeof vi.fn>;
+  dailySpecialCreate?: ReturnType<typeof vi.fn>;
+  dailySpecialUpdate?: ReturnType<typeof vi.fn>;
   /** BKL-088 — SYSTEM-write layer spies (defaults applied when absent). */
   resolveAlertFromEnvelope?: ReturnType<typeof vi.fn>;
   closeIncidentFromEnvelope?: ReturnType<typeof vi.fn>;
@@ -231,6 +238,15 @@ function buildDeps(opts: {
       writeAdjudicatedNote: opts.writeAdjudicatedNote,
       writeAdjudicatedStatusTransition:
         opts.writeAdjudicatedStatusTransition ?? vi.fn(),
+    },
+    // SCN-114 — the daily-special upsert service (default: no existing row for
+    // the day ⇒ the upsert CREATEs).
+    dailySpecialSvc: {
+      list: (opts.dailySpecialList ?? vi.fn(async () => [])) as never,
+      create: (opts.dailySpecialCreate ??
+        vi.fn(async () => ({ id: "special_1" }))) as never,
+      update: (opts.dailySpecialUpdate ??
+        vi.fn(async () => ({ id: "special_1" }))) as never,
     },
     publishOrderStatusChanged: opts.publishOrderStatusChanged ?? vi.fn(),
     // BKL-085 — refund deps (defaults; the dedicated refunds-by-message e2e in
@@ -303,6 +319,8 @@ function buildDeps(opts: {
         lookupProduct: async () => opts.product,
         lookupOrder: async () => opts.order ?? null,
         lookupActivePayment: async () => opts.activePayment ?? null,
+        // SCN-114 — the menu.special.set product snapshot; null ⇒ REFUSE.
+        lookupSpecialProduct: async () => opts.special ?? null,
         // BKL-088 — the alert/incident by-id reads (id-literal); null ⇒ REFUSE.
         lookupAlert: async () => opts.alert ?? null,
         lookupIncident: async () => opts.incident ?? null,
@@ -1376,5 +1394,174 @@ describe("ops conductor — incident.ticket.close.staff reachable end-to-end (BK
       expect(out.refusal.code).toBe("ops.incident_close.not_actionable");
     }
     expect(closeIncidentFromEnvelope).not.toHaveBeenCalled();
+  });
+});
+
+// ── menu.special.set (SCN-114) ───────────────────────────────────────────────
+//
+// The daily-special-by-message verb driven through composeOpsConductor + a full
+// handleTurn against the REAL composed router + REAL kernel. Proves the layered
+// posture END-TO-END: the model-parsed (UNTRUSTED) payload ALWAYS parks for
+// confirmation (nothing is written on the first turn); ATTENDANT → REFUSE
+// staff_role_violation; a missing product / a past date REFUSE before any write;
+// a garbage price degrades to a no-discount CONFIRM (never a silent wrong price).
+// The park→confirm-resume→upsert flow is proven in ops-special-confirm-resume.e2e.
+
+const SPECIAL_PRODUCT = { id: "prod_1", status: "published", name: "Feijoada" };
+
+function specialCall(payload: Record<string, unknown>) {
+  return {
+    id: "tc-special",
+    name: "express_intent",
+    input: { capability: "menu.special.set", payload },
+  };
+}
+
+describe("ops conductor — menu.special.set reachable end-to-end (SCN-114)", () => {
+  it("OWNER 'especial de hoje é feijoada por 45' → REQUEST_CONFIRMATION; nothing written yet", async () => {
+    const dailySpecialCreate = vi.fn(async () => ({ id: "special_1" }));
+    const dailySpecialUpdate = vi.fn(async () => ({ id: "special_1" }));
+    const { model } = scriptedModel([
+      specialCall({ productId: "feijoada", date: "hoje", promoPriceCentavos: 4500 }),
+    ]);
+    const deps = buildDeps({
+      model,
+      medusaAdjudicated: vi.fn(),
+      writeAdjudicatedNote: vi.fn(),
+      product: null,
+      special: SPECIAL_PRODUCT,
+      dailySpecialCreate,
+      dailySpecialUpdate,
+    });
+    const out = await runOpsTurn(
+      deps,
+      "OWNER",
+      "staff_1",
+      "o especial de hoje é feijoada por 45 reais",
+    );
+    expect(out.kind).toBe("REQUEST_CONFIRMATION");
+    // No write until the operator confirms.
+    expect(dailySpecialCreate).not.toHaveBeenCalled();
+    expect(dailySpecialUpdate).not.toHaveBeenCalled();
+  });
+
+  it("ATTENDANT → REFUSE staff_role_violation; the special service NEVER runs", async () => {
+    const dailySpecialCreate = vi.fn(async () => ({ id: "special_1" }));
+    const { model } = scriptedModel([
+      specialCall({ productId: "feijoada", date: "hoje", promoPriceCentavos: 4500 }),
+    ]);
+    const deps = buildDeps({
+      model,
+      medusaAdjudicated: vi.fn(),
+      writeAdjudicatedNote: vi.fn(),
+      product: null,
+      special: SPECIAL_PRODUCT,
+      dailySpecialCreate,
+    });
+    const out = await runOpsTurn(
+      deps,
+      "ATTENDANT",
+      "staff_9",
+      "o especial de hoje é feijoada por 45 reais",
+    );
+    expect(out.kind).toBe("REFUSE");
+    if (out.kind === "REFUSE") {
+      expect(out.refusal.code).toBe("staff_role_violation");
+    }
+    expect(dailySpecialCreate).not.toHaveBeenCalled();
+  });
+
+  it("MANAGER → REQUEST_CONFIRMATION (matrix permits OWNER+MANAGER)", async () => {
+    const { model } = scriptedModel([
+      specialCall({ productId: "feijoada", date: "amanhã", promoPriceCentavos: 4500 }),
+    ]);
+    const deps = buildDeps({
+      model,
+      medusaAdjudicated: vi.fn(),
+      writeAdjudicatedNote: vi.fn(),
+      product: null,
+      special: SPECIAL_PRODUCT,
+    });
+    const out = await runOpsTurn(
+      deps,
+      "MANAGER",
+      "staff_2",
+      "muda o especial de amanhã pra feijoada por 45",
+    );
+    expect(out.kind).toBe("REQUEST_CONFIRMATION");
+  });
+
+  it("product missing → REFUSE menu.special.product_not_found; nothing written", async () => {
+    const dailySpecialCreate = vi.fn(async () => ({ id: "special_1" }));
+    const { model } = scriptedModel([
+      specialCall({ productId: "inexistente", date: "hoje", promoPriceCentavos: 4500 }),
+    ]);
+    const deps = buildDeps({
+      model,
+      medusaAdjudicated: vi.fn(),
+      writeAdjudicatedNote: vi.fn(),
+      product: null,
+      special: null, // resolver ⇒ special.product null ⇒ REFUSE product_not_found
+      dailySpecialCreate,
+    });
+    const out = await runOpsTurn(
+      deps,
+      "OWNER",
+      "staff_1",
+      "o especial de hoje é inexistente",
+    );
+    expect(out.kind).toBe("REFUSE");
+    if (out.kind === "REFUSE") {
+      expect(out.refusal.code).toBe("menu.special.product_not_found");
+    }
+    expect(dailySpecialCreate).not.toHaveBeenCalled();
+  });
+
+  it("a PAST date → REFUSE menu.special.date_past; nothing written", async () => {
+    const dailySpecialCreate = vi.fn(async () => ({ id: "special_1" }));
+    const { model } = scriptedModel([
+      specialCall({ productId: "feijoada", date: "2020-01-01", promoPriceCentavos: 4500 }),
+    ]);
+    const deps = buildDeps({
+      model,
+      medusaAdjudicated: vi.fn(),
+      writeAdjudicatedNote: vi.fn(),
+      product: null,
+      special: SPECIAL_PRODUCT,
+      dailySpecialCreate,
+    });
+    const out = await runOpsTurn(
+      deps,
+      "OWNER",
+      "staff_1",
+      "põe feijoada como especial de 2020",
+    );
+    expect(out.kind).toBe("REFUSE");
+    if (out.kind === "REFUSE") {
+      expect(out.refusal.code).toBe("menu.special.date_past");
+    }
+    expect(dailySpecialCreate).not.toHaveBeenCalled();
+  });
+
+  it("a garbage/unparseable price degrades to a no-discount CONFIRM (never a silent wrong price)", async () => {
+    const { model } = scriptedModel([
+      specialCall({ productId: "feijoada", date: "hoje", promoPrice: "abacaxi" }),
+    ]);
+    const deps = buildDeps({
+      model,
+      medusaAdjudicated: vi.fn(),
+      writeAdjudicatedNote: vi.fn(),
+      product: null,
+      special: SPECIAL_PRODUCT,
+    });
+    const out = await runOpsTurn(
+      deps,
+      "OWNER",
+      "staff_1",
+      "o especial de hoje é feijoada",
+    );
+    // The unparseable price is DROPPED (not written as a wrong number); the verb
+    // still parks for confirmation (which shows "sem desconto").
+    expect(out.kind).toBe("REQUEST_CONFIRMATION");
   });
 });

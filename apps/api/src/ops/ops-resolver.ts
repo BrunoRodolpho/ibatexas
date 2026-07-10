@@ -54,6 +54,7 @@ import { buildEnvelope, type IntentEnvelope } from "@adjudicate/core";
 import type { ResolvedEnvelope, ResolverPort } from "@claustrum/core";
 import { isTerminalPaymentStatus, type PaymentStatus } from "@ibatexas/types";
 import { logger } from "../lib/logger.js";
+import { shiftYmd, todayInRestaurantTz } from "../routes/admin/_date-defaults.js";
 import {
   resolveProductByName,
   type ListProductsByName,
@@ -95,6 +96,20 @@ export interface OpsResolverPriceProduct {
   readonly name: string;
   readonly currentPriceCentavos: number;
   readonly divergentVariantPrices: boolean;
+}
+
+/**
+ * SCN-114 — the product snapshot the pack-ops `menu.special.set` guards read
+ * (`OpsSpecialProductSnapshot`). Projected from the admin product read: `id` /
+ * `status` prove existence and `name` is the display title the CONFIRM prompt
+ * states. `null` ⇒ the product does not exist ⇒ REFUSE product_not_found. NO
+ * price field — a daily special's promo price is independent of the product's
+ * own price (an item may be featured WITHOUT a discount).
+ */
+export interface OpsResolverSpecialProduct {
+  readonly id: string;
+  readonly status: string;
+  readonly name: string;
 }
 
 /**
@@ -176,6 +191,17 @@ export interface OpsResolverDeps {
   readonly lookupProductPricing?: (
     productId: string,
   ) => Promise<OpsResolverPriceProduct | null>;
+  /**
+   * SCN-114 — fetch a product's `{id,status,name}` snapshot by id for the
+   * `menu.special.set` guards. Reads the admin catalog; returns null when absent
+   * (a THROW is treated as null, fail-closed → REFUSE product_not_found). When
+   * ABSENT the special verb REFUSEs every request (special product null) — inert
+   * until wired. Reuses the SAME name→id resolution (`listProductsByName`) as
+   * availability/price when the direct id lookup misses.
+   */
+  readonly lookupSpecialProduct?: (
+    productId: string,
+  ) => Promise<OpsResolverSpecialProduct | null>;
   /**
    * Fetch an order projection by id for the note state. Returns null when absent;
    * a THROW is treated as null (fail-closed → REFUSE no_order).
@@ -583,6 +609,123 @@ async function resolvePriceTarget(
 }
 
 /**
+ * SCN-114 — the reais aliases the models emit for a daily-special PROMO price.
+ * The persona asks for `promoPriceCentavos` (integer centavos), but — like the
+ * BKL-094 refund path — live models also put the spoken figure under
+ * `promoPrice`/`price`/`preco`/`valor`/`amount` in REAIS. Priority order; the
+ * first that parses to a clean money value wins.
+ */
+const OPS_SPECIAL_PRICE_REAIS_ALIASES = [
+  "promoPrice",
+  "price",
+  "preco",
+  "valor",
+  "amount",
+] as const;
+
+/**
+ * Derive the promo price (integer centavos) from a `menu.special.set` payload, or
+ * `undefined` when the owner gave no usable price (⇒ the special is featured
+ * WITHOUT a discount). Priority: schema-correct `promoPriceCentavos` (positive
+ * integer centavos) → the REAIS aliases (×100, EXACT via the shared
+ * {@link parseRefundReaisToCentavos} integer-string arithmetic, NEVER `reais *
+ * 100`). NEVER a float; an unparseable value degrades to `undefined` (no discount)
+ * — the UNTRUSTED confirm prompt shows the parsed price (or "sem desconto"), so a
+ * misparse is caught by the operator before it writes.
+ */
+function resolveSpecialPromoCentavos(
+  payload: Record<string, unknown>,
+): number | undefined {
+  const raw = payload.promoPriceCentavos;
+  if (typeof raw === "number" && Number.isInteger(raw) && raw > 0) return raw;
+  for (const key of OPS_SPECIAL_PRICE_REAIS_ALIASES) {
+    const centavos = parseRefundReaisToCentavos(payload[key]);
+    if (centavos !== null) return centavos;
+  }
+  return undefined;
+}
+
+/**
+ * Resolve a spoken business-day reference into a concrete `YYYY-MM-DD` in
+ * RESTAURANT_TIMEZONE, relative to `todayYmd`. Accepts the relative tokens the
+ * persona emits ("hoje"/"amanhã"/"depois de amanhã", accent-insensitive) and
+ * passes an already-concrete `YYYY-MM-DD` through verbatim. Anything else is
+ * returned UNCHANGED (the pack's `validateMenuSpecialPayload` then REFUSEs it as a
+ * non-YYYY-MM-DD date — fail-closed, never a silent guess).
+ */
+function resolveSpecialDateYmd(raw: string, todayYmd: string): string {
+  const norm = raw
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, ""); // strip accents: "amanhã" → "amanha"
+  if (norm === "hoje" || norm === "hj") return todayYmd;
+  if (norm === "amanha") return shiftYmd(todayYmd, 1);
+  if (norm === "depois de amanha") return shiftYmd(todayYmd, 2);
+  return raw.trim();
+}
+
+/**
+ * Resolve the `menu.special.set` target: direct id lookup first; on a MISS, the
+ * BKL-089 deterministic name→id resolution (when `listProductsByName` is wired),
+ * reusing the SAME catalog list read availability/price use. Returns the projected
+ * `{id,status,name}` snapshot (null ⇒ REFUSE product_not_found). The caller
+ * rewrites `payload.productId` to `product.id` when a product resolved (a name →
+ * its id; a direct id hit is a no-op rewrite), else leaves the raw string (→ null
+ * → honest REFUSE).
+ */
+async function resolveSpecialTarget(
+  deps: OpsResolverDeps,
+  productIdRaw: string,
+): Promise<{ product: OpsResolverSpecialProduct | null }> {
+  if (deps.lookupSpecialProduct === undefined) return { product: null };
+  const lookup = deps.lookupSpecialProduct;
+  const direct =
+    productIdRaw === ""
+      ? null
+      : await safeLookup(() => lookup(productIdRaw), "special-product");
+  if (direct !== null) return { product: direct };
+  if (productIdRaw === "" || deps.listProductsByName === undefined) {
+    return { product: null };
+  }
+  const resolution = await resolveProductByName(
+    productIdRaw,
+    deps.listProductsByName,
+  );
+  if (resolution.kind === "resolved") {
+    const snap = await safeLookup(
+      () => lookup(resolution.product.id),
+      "special-product",
+    );
+    if (snap !== null) {
+      logger.info(
+        {
+          component: "ops-resolver",
+          event: "menu.special.name_resolved",
+          from: productIdRaw,
+          to: resolution.product.id,
+        },
+        "ops special product name resolved to id (payload productId rewritten before adjudication)",
+      );
+      return { product: snap };
+    }
+  }
+  logger.info(
+    {
+      component: "ops-resolver",
+      event: "menu.special.name_unresolved",
+      from: productIdRaw,
+      outcome: resolution.kind,
+      ...(resolution.kind === "ambiguous"
+        ? { candidateCount: resolution.candidates.length }
+        : {}),
+    },
+    "ops special product name did not resolve to a unique id (kernel will REFUSE product_not_found)",
+  );
+  return { product: null };
+}
+
+/**
  * Resolve the order target shared by `order.note.add` / `order.status.transition`
  * (the resolution branch is IDENTICAL for both — only the per-kind ctx projection
  * differs). Direct id lookup first; on a MISS, the BKL-089 deterministic
@@ -800,6 +943,33 @@ export function buildOpsPriceResumeState(
 }
 
 /**
+ * SCN-114 — build the `menu.special.set` ops SystemState for the RESUME path
+ * ("sim"). Like the price resume ({@link buildOpsPriceResumeState}), the ops
+ * confirm-resume re-adjudicates the VERBATIM parked envelope, but the shared
+ * customer-plane resume enrichment is scoped to a real `customerId` — the ops
+ * plane's `staff:<id>` owns no products, so it would project `special:undefined`
+ * and REFUSE a valid "sim". This builder re-projects the SAME `{ ctx, special }`
+ * shape from a FRESH product read of the parked (resolver-rewritten, trusted)
+ * productId + a FRESH `todayYmd` — date-safe: a special parked for a day that is
+ * now in the past REFUSEs on resume via `requireSpecialDateNotPast`.
+ * `product === null` ⇒ clean product_not_found REFUSE.
+ */
+export function buildOpsSpecialResumeState(
+  product: OpsResolverSpecialProduct | null,
+  opts: { staffId: string; tenantId: string },
+): unknown {
+  return {
+    ctx: {
+      channel: "staff",
+      customerId: null,
+      staffId: opts.staffId,
+      tenantId: opts.tenantId,
+    },
+    special: { product, todayYmd: todayInRestaurantTz() },
+  };
+}
+
+/**
  * Build the per-kind ops `SystemState` for one planned envelope, plus an
  * OPTIONAL rewritten payload (BKL-089 availability name-resolution). Returns
  * `state: undefined` for an unrecognized kind so the loop falls back to the
@@ -852,6 +1022,41 @@ async function opsStateForEnvelope(
         priceProduct,
       },
       ...(rewritten ? { payload: rewritten } : {}),
+    };
+  }
+
+  if (envelope.kind === "menu.special.set") {
+    // SCN-114 — resolve product (name→id), date ("hoje"/"amanhã" → concrete
+    // YYYY-MM-DD in RESTAURANT_TIMEZONE) and the promo price (reais → integer
+    // centavos, BKL-094 shape). Build a CANONICAL payload so the closed-key guard
+    // sees ONLY {productId, date, promoPriceCentavos?} and the kernel adjudicates
+    // + the executor writes the RESOLVED values (the rebuilt intentHash covers
+    // them). Project today's date so `requireSpecialDateNotPast` reads an
+    // auditable clock reading, never its own.
+    const productIdRaw =
+      typeof payload.productId === "string" ? payload.productId : "";
+    const dateRaw = typeof payload.date === "string" ? payload.date : "";
+    const todayYmd = todayInRestaurantTz();
+    const { product } = await resolveSpecialTarget(deps, productIdRaw);
+    const promoCentavos = resolveSpecialPromoCentavos(payload);
+    const canonical: Record<string, unknown> = {
+      productId: product ? product.id : productIdRaw,
+      date: resolveSpecialDateYmd(dateRaw, todayYmd),
+      ...(promoCentavos !== undefined
+        ? { promoPriceCentavos: promoCentavos }
+        : {}),
+    };
+    return {
+      state: {
+        ctx: {
+          channel: "staff",
+          customerId: null,
+          staffId: deps.staffId,
+          tenantId: deps.tenantId,
+        },
+        special: { product, todayYmd },
+      },
+      payload: canonical,
     };
   }
 

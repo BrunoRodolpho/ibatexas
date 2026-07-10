@@ -45,6 +45,21 @@ export const OPS_PRICE_PER_VARIANT_UNSUPPORTED_CODE =
  */
 export const OPS_PRICE_OUT_OF_RANGE_CODE = "ops.price.out_of_range"
 
+/** Refusal `code` for a malformed `menu.special.set` payload (SCN-114). */
+export const OPS_MENU_SPECIAL_PAYLOAD_INVALID_CODE =
+  "menu.special.payload_invalid"
+
+/** Refusal `code` for a `menu.special.set` whose product is unknown (SCN-114). */
+export const OPS_MENU_SPECIAL_PRODUCT_NOT_FOUND_CODE =
+  "menu.special.product_not_found"
+
+/**
+ * Refusal `code` for a `menu.special.set` whose (resolved) business-day is in
+ * the PAST — you cannot feature something for a day that has already passed
+ * (fail-closed against a mis-resolved date). SCN-114.
+ */
+export const OPS_MENU_SPECIAL_DATE_PAST_CODE = "menu.special.date_past"
+
 /** Refusal `code` for a malformed `ops.alert.resolve.staff` payload (BKL-088). */
 export const OPS_ALERT_RESOLVE_PAYLOAD_INVALID_CODE =
   "ops.alert_resolve.payload_invalid"
@@ -91,6 +106,9 @@ export const OPS_REFUSAL_CODES: readonly string[] = [
   OPS_PRICE_PRODUCT_NOT_FOUND_CODE,
   OPS_PRICE_PER_VARIANT_UNSUPPORTED_CODE,
   OPS_PRICE_OUT_OF_RANGE_CODE,
+  OPS_MENU_SPECIAL_PAYLOAD_INVALID_CODE,
+  OPS_MENU_SPECIAL_PRODUCT_NOT_FOUND_CODE,
+  OPS_MENU_SPECIAL_DATE_PAST_CODE,
   OPS_ALERT_RESOLVE_PAYLOAD_INVALID_CODE,
   OPS_ALERT_RESOLVE_NOT_ACTIONABLE_CODE,
   OPS_INCIDENT_CLOSE_PAYLOAD_INVALID_CODE,
@@ -198,6 +216,50 @@ export function refusePriceOutOfRange(detail?: string): Refusal {
     "BUSINESS_RULE",
     OPS_PRICE_OUT_OF_RANGE_CODE,
     "Esse valor de preço está fora do limite permitido.",
+    detail,
+  )
+}
+
+// ── SCN-114 daily-special refusals ───────────────────────────────────────────
+
+/**
+ * `menu.special.set` payload failed strict validation (missing/empty `productId`,
+ * a `date` not in `YYYY-MM-DD` form, a non-integer / non-positive
+ * `promoPriceCentavos`, or an unknown key). Generic user copy; `detail` names the
+ * offending field for audit.
+ */
+export function refuseMenuSpecialPayloadInvalid(detail?: string): Refusal {
+  return refuse(
+    "BUSINESS_RULE",
+    OPS_MENU_SPECIAL_PAYLOAD_INVALID_CODE,
+    "Não foi possível processar esta operação.",
+    detail,
+  )
+}
+
+/**
+ * The target product does not exist in the projected ops state (or was not
+ * projected at all). Fail-closed — setting a special for an unknown product is
+ * REFUSEd rather than silently no-op'd.
+ */
+export function refuseMenuSpecialProductNotFound(detail?: string): Refusal {
+  return refuse(
+    "BUSINESS_RULE",
+    OPS_MENU_SPECIAL_PRODUCT_NOT_FOUND_CODE,
+    "Produto não encontrado.",
+    detail,
+  )
+}
+
+/**
+ * The (resolved) business-day is in the past — a special can only be set for
+ * today or a future day. Fail-closed against a mis-resolved date.
+ */
+export function refuseMenuSpecialDatePast(detail?: string): Refusal {
+  return refuse(
+    "BUSINESS_RULE",
+    OPS_MENU_SPECIAL_DATE_PAST_CODE,
+    "Não é possível definir o especial para uma data que já passou.",
     detail,
   )
 }

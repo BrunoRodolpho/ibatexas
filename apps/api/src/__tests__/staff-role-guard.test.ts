@@ -5,8 +5,8 @@
  *   - engagement is by the `admin:` sessionId NAMESPACE, not by kind: customer /
  *     LLM / managed-agent (`agent:`) / system-subscriber
  *     (`${sourceSubject}:${eventId}`, incl. incident.ticket.open) traffic is
- *     inert (null), even for the eleven staff-plane kinds;
- *   - per-role allow/deny for each of the eleven kinds (ATTENDANT is refused on
+ *     inert (null), even for the sixteen staff-plane kinds;
+ *   - per-role allow/deny for each of the sixteen kinds (ATTENDANT is refused on
  *     payment.refund.issue, product.availability.set and the three reservation
  *     kinds; OWNER/MANAGER pass);
  *   - fail-closed on the staff plane: absent role, unknown role value, and an
@@ -58,6 +58,8 @@ const THE_SHARED_STAFF_KINDS = [
   "product.availability.set",
   // NEW-004 — the ops-plane price-change verb ({OWNER,MANAGER}).
   "product.price.set",
+  // SCN-114 — the ops-plane daily-special verb ({OWNER,MANAGER}).
+  "menu.special.set",
   // BKL-088 — the two ops-plane RESOLUTION verbs ({OWNER,MANAGER}).
   "ops.alert.resolve.staff",
   "incident.ticket.close.staff",

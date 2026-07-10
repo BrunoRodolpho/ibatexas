@@ -45,6 +45,7 @@ export {
   getPriceSanityMaxCentavos,
   INCIDENT_CLOSE_STAFF_KEYS,
   isOpsEntityActionable,
+  MENU_SPECIAL_SET_KEYS,
   OPS_ALERT_RESOLVE_STAFF_KEYS,
   OPS_ENTITY_NON_TERMINAL_STATUSES,
   opsTaintPolicy,
@@ -52,6 +53,7 @@ export {
   PRODUCT_PRICE_SET_KEYS,
   SCHEDULE_OVERRIDE_SET_KEYS,
   type IncidentCloseStaffPayload,
+  type MenuSpecialSetPayload,
   type OpsAlertResolveStaffPayload,
   type OpsAlertSnapshot,
   type OpsContext,
@@ -62,6 +64,8 @@ export {
   type OpsProductSnapshot,
   type OpsScheduleBlock,
   type OpsScheduleSnapshot,
+  type OpsSpecialProductSnapshot,
+  type OpsSpecialState,
   type OpsState,
   type ProductAvailabilitySetPayload,
   type ProductPriceSetPayload,
@@ -76,6 +80,9 @@ export {
   OPS_AVAILABILITY_PRODUCT_NOT_FOUND_CODE,
   OPS_INCIDENT_CLOSE_NOT_ACTIONABLE_CODE,
   OPS_INCIDENT_CLOSE_PAYLOAD_INVALID_CODE,
+  OPS_MENU_SPECIAL_DATE_PAST_CODE,
+  OPS_MENU_SPECIAL_PAYLOAD_INVALID_CODE,
+  OPS_MENU_SPECIAL_PRODUCT_NOT_FOUND_CODE,
   OPS_PRICE_OUT_OF_RANGE_CODE,
   OPS_PRICE_PAYLOAD_INVALID_CODE,
   OPS_PRICE_PER_VARIANT_UNSUPPORTED_CODE,
@@ -90,6 +97,9 @@ export {
   refuseAvailabilityProductNotFound,
   refuseIncidentCloseNotActionable,
   refuseIncidentClosePayloadInvalid,
+  refuseMenuSpecialDatePast,
+  refuseMenuSpecialPayloadInvalid,
+  refuseMenuSpecialProductNotFound,
   refusePriceOutOfRange,
   refusePricePayloadInvalid,
   refusePricePerVariantUnsupported,
@@ -130,13 +140,17 @@ export {
  */
 export const opsPack = {
   id: "ibatexas/pack-ops",
-  version: "1.3.0",
+  version: "1.4.0",
   contract: "v0",
   intents: [
     "product.availability.set",
     // NEW-004 — the OWNED price-change verb (confirm-gated on UNTRUSTED taint;
     // executor re-prices via the same medusaAdjudicated admin egress).
     "product.price.set",
+    // SCN-114 — the OWNED daily-special-by-message verb (confirm-gated on
+    // UNTRUSTED taint; executor upserts a DailySpecial via the domain service,
+    // NO Medusa egress — the same service the NEW-005 admin route uses).
+    "menu.special.set",
     // BKL-088 — the two OWNED staff-plane RESOLUTION verbs (their executors
     // drive the SAME-named SYSTEM domain write layer; see types.ts header).
     "ops.alert.resolve.staff",

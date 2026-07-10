@@ -89,6 +89,7 @@ import { createSystemTaintPolicy } from "@adjudicate/primitives"
 export type OpsIntentKind =
   | "product.availability.set"
   | "product.price.set"
+  | "menu.special.set"
   | "ops.alert.resolve.staff"
   | "incident.ticket.close.staff"
   | "schedule.override.set"
@@ -123,6 +124,37 @@ export interface ProductPriceSetPayload {
   readonly productId: string
   readonly priceCentavos: number
   readonly reason?: string
+}
+
+/**
+ * `menu.special.set` payload (SCN-114). The governed daily-special-by-message
+ * verb — "o especial de hoje é feijoada por 45 reais". Strict CLOSED contract —
+ * the business-phase `validateMenuSpecialPayload` guard REFUSEs anything that is
+ * not EXACTLY `{ productId: <non-empty string>, date: <YYYY-MM-DD>,
+ * promoPriceCentavos?: <integer > 0> }` (unknown keys rejected). Fields:
+ *   - `productId` is the Medusa product featured this business-day (the resolver
+ *     rewrites a spoken NAME → id, the same BKL-089 path `product.price.set`
+ *     uses; a null projection ⇒ REFUSE product_not_found);
+ *   - `date` is the concrete restaurant business-day LABEL `YYYY-MM-DD` — the
+ *     resolver resolves "hoje"/"amanhã" in RESTAURANT_TIMEZONE and STAMPS the
+ *     concrete date here BEFORE adjudication (a past date REFUSEs);
+ *   - `promoPriceCentavos` is the OPTIONAL promo price in INTEGER centavos (Hard
+ *     Rule #2 — never floats/reais on the wire; the resolver normalizes a spoken
+ *     reais amount → centavos, mirroring the BKL-094 refund path). OMITTED ⇒ the
+ *     item is FEATURED WITHOUT a discount (the DailySpecial `promoPriceCentavos`
+ *     column is NULL). Because the price is model-parsed it is UNTRUSTED, so the
+ *     verb ALWAYS REQUEST_CONFIRMATIONs (a misparse would set the wrong promo
+ *     live) — the confirm prompt states the product + date + parsed R$.
+ *
+ * Clearing/removing a special is DELIBERATELY out of this v1 slice (both SCN-114
+ * utterances are SET operations; pause/remove is already covered by the
+ * DailySpecial `active` flag + the NEW-005 admin route). A `menu.special.clear`
+ * verb is deferred until a message-driven removal case exists.
+ */
+export interface MenuSpecialSetPayload {
+  readonly productId: string
+  readonly date: string
+  readonly promoPriceCentavos?: number
 }
 
 /**
@@ -191,6 +223,7 @@ export interface ScheduleOverrideSetPayload {
 export type OpsPayload =
   | ProductAvailabilitySetPayload
   | ProductPriceSetPayload
+  | MenuSpecialSetPayload
   | OpsAlertResolveStaffPayload
   | IncidentCloseStaffPayload
   | ScheduleOverrideSetPayload
@@ -207,6 +240,13 @@ export const PRODUCT_PRICE_SET_KEYS: ReadonlySet<string> = new Set([
   "productId",
   "priceCentavos",
   "reason",
+])
+
+/** The keys the strict `menu.special.set` validator admits (SCN-114). */
+export const MENU_SPECIAL_SET_KEYS: ReadonlySet<string> = new Set([
+  "productId",
+  "date",
+  "promoPriceCentavos",
 ])
 
 /** The keys the strict `ops.alert.resolve.staff` validator admits (BKL-088). */
@@ -283,6 +323,35 @@ export interface OpsPriceProductSnapshot {
 }
 
 /**
+ * The product snapshot the pack's `menu.special.set` guards read (SCN-114).
+ * Projected by the ops resolver from the admin catalog read BEFORE adjudication:
+ * `id`/`status` prove existence (a null ⇒ REFUSE product_not_found) and `name`
+ * is the product display title the CONFIRM prompt states ("Confirmar especial …
+ * <Produto> …"). No price fields — a daily special's promo price is independent
+ * of the product's own price (it may feature an item WITHOUT a discount).
+ */
+export interface OpsSpecialProductSnapshot {
+  readonly id: string
+  readonly status: string
+  readonly name: string
+}
+
+/**
+ * The `menu.special.set` per-kind state (SCN-114). ONE field on {@link OpsState}
+ * carrying BOTH the projected product (`product`, null ⇒ REFUSE
+ * product_not_found) AND the resolver's clock reading (`todayYmd`, today's
+ * `YYYY-MM-DD` in RESTAURANT_TIMEZONE). Projecting "today" into the adjudicated
+ * state — rather than reading a clock inside the leaf guard — keeps the pack pure
+ * and makes the past-date decision an AUDITABLE function of the captured state
+ * (the same discipline the refund path uses for the DB balance): the
+ * `requireSpecialDateNotPast` guard REFUSEs when `payload.date < todayYmd`.
+ */
+export interface OpsSpecialState {
+  readonly product: OpsSpecialProductSnapshot | null
+  readonly todayYmd: string
+}
+
+/**
  * The alert snapshot the pack's `requireAlertActionable` guard reads (BKL-088).
  * `id` proves existence and `status` lets the guard fail closed on a terminal
  * (already-resolved) alert. Projected by the ops resolver from the OpsAlert
@@ -322,6 +391,7 @@ export interface OpsScheduleSnapshot {
  *
  *   product.availability.set  → { ctx, product:  {id,status} | null }
  *   product.price.set         → { ctx, priceProduct: {id,status,name,…} | null }
+ *   menu.special.set          → { ctx, special: {product:{id,status,name}|null, todayYmd} | null }
  *   ops.alert.resolve.staff   → { ctx, alert:    {id,status} | null }
  *   incident.ticket.close.staff → { ctx, incident: {id,status} | null }
  *   schedule.override.set     → { ctx, schedule: {today} | null }
@@ -340,6 +410,8 @@ export interface OpsState {
   readonly product?: OpsProductSnapshot | null
   /** The product-pricing snapshot the in-flight `product.price.set` targets. */
   readonly priceProduct?: OpsPriceProductSnapshot | null
+  /** The product + clock the in-flight `menu.special.set` targets (SCN-114). */
+  readonly special?: OpsSpecialState | null
   /** The alert the in-flight `ops.alert.resolve.staff` targets (BKL-088). */
   readonly alert?: OpsAlertSnapshot | null
   /** The incident the in-flight `incident.ticket.close.staff` targets (BKL-088). */

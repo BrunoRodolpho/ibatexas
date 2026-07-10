@@ -182,6 +182,7 @@ export const OPS_TOOLS: ToolClassification = {
   MUTATING: new Set<string>([
     "product.availability.set",
     "product.price.set",
+    "menu.special.set",
     OPS_ALERT_RESOLVE_STAFF_KIND,
     OPS_INCIDENT_CLOSE_STAFF_KIND,
     OPS_SCHEDULE_OVERRIDE_SET_KIND,
@@ -216,6 +217,7 @@ const rawOpsCapabilityPlanner: CapabilityPlanner<OpsState, OpsContext> = {
       ? [
           "product.availability.set",
           "product.price.set",
+          "menu.special.set",
           OPS_ALERT_RESOLVE_STAFF_KIND,
           OPS_INCIDENT_CLOSE_STAFF_KIND,
           OPS_SCHEDULE_OVERRIDE_SET_KIND,
