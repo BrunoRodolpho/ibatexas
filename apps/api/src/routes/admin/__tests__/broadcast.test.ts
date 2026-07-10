@@ -158,6 +158,61 @@ describe("POST /api/admin/broadcast/audience/preview (S5 whole-base guard)", () 
       await server.close();
     }
   });
+
+  it("S7 — rejects an impossible calendar date (2026-13-40) with 400 and never reads", async () => {
+    const server = await buildServer(MANAGER);
+    try {
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/admin/broadcast/audience/preview",
+        payload: { orderedFrom: "2026-13-40" },
+      });
+      // The `.refine` on YMD rejects the non-round-tripping date at validation.
+      expect(res.statusCode).toBe(400);
+      expect(mockOrderFindMany).not.toHaveBeenCalled();
+      expect(mockCustomerFindMany).not.toHaveBeenCalled();
+    } finally {
+      await server.close();
+    }
+  });
+});
+
+// ── consent filter — opted-out phones are excluded from recipients AND count ────
+
+describe("POST /api/admin/broadcast/audience/preview (consent filter)", () => {
+  it("EXCLUDES an opted-out phone from both recipients and count", async () => {
+    // Two customers match the segment; the second has opted out of broadcasts.
+    mockCustomerFindMany.mockResolvedValueOnce([
+      { phone: "+5511111111111" },
+      { phone: "+5522222222222" },
+    ]);
+    mockConsentFindMany.mockResolvedValueOnce([{ phone: "+5522222222222" }]);
+    const server = await buildServer(MANAGER);
+    try {
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/admin/broadcast/audience/preview",
+        payload: { source: "whatsapp" },
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json() as {
+        count: number;
+        recipients: string[];
+        sample: string[];
+      };
+      // The opted-out number is gone from BOTH the recipient list and the count.
+      expect(body.recipients).toEqual(["+5511111111111"]);
+      expect(body.count).toBe(1);
+      expect(body.recipients).not.toContain("+5522222222222");
+      // The consent read is scoped to the segment's phones (parameterized `in`).
+      expect(mockConsentFindMany).toHaveBeenCalledWith({
+        where: { optedOut: true, phone: { in: ["+5511111111111", "+5522222222222"] } },
+        select: { phone: true },
+      });
+    } finally {
+      await server.close();
+    }
+  });
 });
 
 // ── requireManagerRole gating + consent enforcement on the blast ───────────────

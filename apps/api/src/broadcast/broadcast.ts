@@ -41,6 +41,16 @@ export interface RunBroadcastOptions {
 
 const DEFAULT_MAX_RECIPIENTS = 5000;
 
+// A consent/send error message can embed the send target (`whatsapp:${recipient}`),
+// which carries the raw phone. Redact the recipient before storing it in the
+// durable `broadcast_send.results[].error` ledger: the LGPD erasure scrub
+// (scrubBroadcastPII) rewrites the `recipient` field but NOT `error`, so a phone
+// left here would survive anonymization. Preserve the rest of the error signal.
+function sanitizeBroadcastError(err: unknown, recipient: string): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  return recipient ? raw.split(recipient).join("[redacted]") : raw;
+}
+
 export async function runBroadcast(
   opts: RunBroadcastOptions,
 ): Promise<BroadcastResult> {
@@ -67,7 +77,7 @@ export async function runBroadcast(
       results.push({
         recipient,
         status: "failed",
-        error: err instanceof Error ? err.message : String(err),
+        error: sanitizeBroadcastError(err, recipient),
       });
       failed++;
       continue;
@@ -85,7 +95,7 @@ export async function runBroadcast(
       results.push({
         recipient,
         status: "failed",
-        error: err instanceof Error ? err.message : String(err),
+        error: sanitizeBroadcastError(err, recipient),
       });
       failed++;
     }

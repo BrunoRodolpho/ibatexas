@@ -104,18 +104,22 @@ export async function broadcastRoutes(server: FastifyInstance): Promise<void> {
         });
       } catch (err) {
         // S6/S10 — the sends already happened, so we never fail the response
-        // (a client retry could re-blast). But log the FULL payload at error
-        // level so the compliance record ("what was sent to whom, by whom") is
-        // reconstructable from logs when the durable DB write is lost.
+        // (a client retry could re-blast). Log the AGGREGATE counts (not the
+        // per-recipient `result.results` ledger, which holds up to 5000 RAW
+        // phones — that raw ledger is the durable DB write's job, and a log copy
+        // would be an erasure-resistant PII store violating the hash-only rule).
         request.log.error(
           {
             component: "broadcast",
             err,
             senderStaffId: request.staffId ?? null,
             template,
-            broadcastResult: result,
+            total: result.total,
+            sent: result.sent,
+            skipped: result.skipped,
+            failed: result.failed,
           },
-          "[broadcast] audit persist failed (blast already sent) — full payload logged for reconstruction",
+          "[broadcast] audit persist failed (blast already sent) — counts logged; per-recipient ledger omitted (PII)",
         );
       }
       request.log.info(
@@ -197,18 +201,21 @@ export async function broadcastRoutes(server: FastifyInstance): Promise<void> {
   // range" both resolve to canonical E.164 phones the blast endpoint accepts.
   // S7 — the bare regex admitted impossible dates (`2026-13-40` → Invalid Date →
   // the preview throws). `.refine` rejects any non-calendar date (month>12, day
-  // overflow) by requiring the parsed instant to round-trip to the same YMD. And
-  // the boundary is pinned to `…T00:00:00Z` (UTC) — a suffix-less datetime parses
-  // in the SERVER's local timezone while the columns are UTC, so window edges were
-  // off by the server's offset; the explicit `Z` makes the segment deterministic.
+  // overflow) by requiring the parsed instant to round-trip to the same YMD. The
+  // boundary is anchored to America/Sao_Paulo (UTC-03:00, no DST in this era) —
+  // the restaurant's local business day. A `…T00:00:00Z` (UTC) boundary shifted
+  // every window edge ~3h forward, excluding the last day's dinner peak from an
+  // "ordered between" segment; the explicit offset makes the day boundary local.
+  const SAO_PAULO_UTC_OFFSET = "-03:00";
+  const startOf = (ymd: string): Date =>
+    new Date(`${ymd}T00:00:00${SAO_PAULO_UTC_OFFSET}`);
   const YMD = z
     .string()
     .regex(/^\d{4}-\d{2}-\d{2}$/)
     .refine((s) => {
-      const d = new Date(`${s}T00:00:00Z`);
+      const d = startOf(s);
       return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
     }, "data inválida");
-  const startOf = (ymd: string): Date => new Date(`${ymd}T00:00:00Z`);
   app.post(
     "/api/admin/broadcast/audience/preview",
     {
@@ -293,7 +300,13 @@ export async function broadcastRoutes(server: FastifyInstance): Promise<void> {
         select: { phone: true },
         take: 5000, // the blast hard cap
       });
-      const phones = customers.map((c) => c.phone);
+      // Canonicalize to E.164 so BOTH sides of the consent match are canonical:
+      // the consent keys are always E.164, but a legacy/non-canonical
+      // `customer.phone` would otherwise evade the opt-out filter (and be
+      // returned as a non-canonical recipient the blast can't match). Normalizing
+      // here makes the `phone: { in: [...] }` query and the returned recipients
+      // canonical on both sides.
+      const phones = customers.map((c) => normalizeRecipient(c.phone));
       if (phones.length === 0) return reply.send(empty);
 
       // 3) Consent filter — never include an opted-out customer in the segment.
