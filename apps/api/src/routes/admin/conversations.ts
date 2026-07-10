@@ -12,7 +12,8 @@
 import type { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
-import { createConversationService } from "@ibatexas/domain";
+import { createConversationService, prisma } from "@ibatexas/domain";
+import { requireManagerRole } from "../../middleware/staff-auth.js";
 
 const ConversationSummarySchema = z.object({
   id: z.string(),
@@ -42,9 +43,34 @@ export async function conversationRoutes(server: FastifyInstance): Promise<void>
   let cached: ReturnType<typeof createConversationService> | undefined;
   const svc = () => (cached ??= createConversationService());
 
+  const mapSummary = (c: {
+    id: string;
+    sessionId: string;
+    customerId: string | null;
+    channel: string;
+    messageCount: number;
+    lastMessageAt: Date | null;
+  }) => ({
+    id: c.id,
+    sessionId: c.sessionId,
+    customerId: c.customerId,
+    channel: c.channel,
+    messageCount: c.messageCount,
+    lastMessageAt: c.lastMessageAt ? c.lastMessageAt.toISOString() : null,
+  });
+
+  const parseDate = (s?: string): Date | undefined => {
+    if (!s) return undefined;
+    const d = new Date(s);
+    return Number.isNaN(d.getTime()) ? undefined : d;
+  };
+
   app.get(
     "/api/admin/conversations",
     {
+      // WS4B — Conversas exposes un-redacted customer PII; owner decision: gate
+      // it (and the order-id lookup) to MANAGER/OWNER, not any staff.
+      preHandler: [requireManagerRole],
       schema: {
         tags: ["admin"],
         summary: "Listar/buscar conversas (admin)",
@@ -52,37 +78,83 @@ export async function conversationRoutes(server: FastifyInstance): Promise<void>
           sessionId: z.string().min(1).max(256).optional(),
           customerId: z.string().min(1).max(256).optional(),
           phone: z.string().min(1).max(40).optional(),
-          limit: z.coerce.number().int().min(1).max(200).optional().default(50),
+          /** WS4B — human order displayId; resolved INDIRECTLY to the customer. */
+          orderId: z.string().min(1).max(40).optional(),
+          date_from: z.string().optional(),
+          date_to: z.string().optional(),
+          limit: z.coerce.number().int().min(1).max(200).optional().default(20),
+          offset: z.coerce.number().int().min(0).optional().default(0),
         }),
         response: {
-          200: z.object({ conversations: z.array(ConversationSummarySchema) }),
+          200: z.object({
+            conversations: z.array(ConversationSummarySchema),
+            count: z.number().int(),
+          }),
         },
       },
     },
     async (request, reply) => {
-      const { sessionId, customerId, phone, limit } = request.query;
-      const rows = await svc().searchConversations({
-        ...(sessionId ? { sessionId } : {}),
-        ...(customerId ? { customerId } : {}),
+      const { sessionId, customerId, phone, orderId, date_from, date_to, limit, offset } =
+        request.query;
+
+      // sessionId is a UNIQUE exact lookup — date/offset are meaningless for it, so
+      // it keeps the direct fast-path. Every other mode (customerId / phone /
+      // orderId / default) routes through listForAdmin below so the date window +
+      // offset pagination the UI always sends are honored consistently. (S4: the
+      // phone branch previously dropped both filters silently.)
+      if (sessionId) {
+        const rows = await svc().searchConversations({ sessionId, limit });
+        return reply.send({ conversations: rows.map(mapSummary), count: rows.length });
+      }
+
+      // Order-id search = INDIRECT via customer: resolve the human displayId to
+      // its customer, then list that customer's conversations. An unknown / non-
+      // numeric order id → empty (never all, never 500) — the honest degrade.
+      let effectiveCustomerId = customerId;
+      if (orderId) {
+        const displayId = Number(orderId);
+        // displayId is a Prisma Int (INT4): a non-positive or above-INT4 value
+        // (Number.isInteger is true for it) would throw in orderProjection
+        // findMany and 500 a route whose contract is to degrade to an empty
+        // page, never 500. Treat out-of-range the same as a non-integer id.
+        if (!Number.isInteger(displayId) || displayId < 1 || displayId > 2147483647) {
+          return reply.send({ conversations: [], count: 0 });
+        }
+        // displayId is NOT @unique in the schema (@default(autoincrement()) +
+        // @@index, no @unique constraint), so a collision could cross-link this
+        // manager to the WRONG customer's transcripts. Resolve deterministically
+        // (orderBy) AND fail safe on ANY collision: fetch up to two matches and
+        // refuse to guess when more than one order shares this displayId.
+        const matches = await prisma.orderProjection.findMany({
+          where: { displayId },
+          select: { customerId: true },
+          orderBy: { id: "asc" },
+          take: 2,
+        });
+        if (matches.length !== 1 || !matches[0].customerId) {
+          // 0 matches, no linked customer, or an ambiguous multi-order
+          // collision → empty (never a wrong-customer disclosure).
+          return reply.send({ conversations: [], count: 0 });
+        }
+        effectiveCustomerId = matches[0].customerId;
+      }
+
+      const { rows, count } = await svc().listForAdmin({
+        ...(effectiveCustomerId ? { customerId: effectiveCustomerId } : {}),
         ...(phone ? { phone } : {}),
+        ...(parseDate(date_from) ? { dateFrom: parseDate(date_from) } : {}),
+        ...(parseDate(date_to) ? { dateTo: parseDate(date_to) } : {}),
         limit,
+        offset,
       });
-      return reply.send({
-        conversations: rows.map((c) => ({
-          id: c.id,
-          sessionId: c.sessionId,
-          customerId: c.customerId,
-          channel: c.channel,
-          messageCount: c.messageCount,
-          lastMessageAt: c.lastMessageAt ? c.lastMessageAt.toISOString() : null,
-        })),
-      });
+      return reply.send({ conversations: rows.map(mapSummary), count });
     },
   );
 
   app.get(
     "/api/admin/conversations/:sessionId",
     {
+      preHandler: [requireManagerRole],
       schema: {
         tags: ["admin"],
         summary: "Transcrição de uma conversa (admin)",

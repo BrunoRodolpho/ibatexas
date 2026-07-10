@@ -20,6 +20,7 @@ import type {
   CustomerOnboardingState,
 } from "@ibatexas/pack-customer-onboarding";
 import { requireAuth, optionalAuth } from "../middleware/auth.js";
+import { requireStaff } from "../middleware/staff-auth.js";
 
 // ── Twilio client ─────────────────────────────────────────────────────────────
 
@@ -754,6 +755,33 @@ export async function authRoutes(server: FastifyInstance): Promise<void> {
   // DOM-001: Staff OTP Authentication
   // ══════════════════════════════════════════════════════════════════════════════
 
+  // ── GET /api/auth/staff/me ──────────────────────────────────────────────────
+  // WS2 — the admin client's authoritative session + role source. `optionalAuth`
+  // verifies the httpOnly `staff_token` JWT (fresh-row role + STAFFREVOKE), then
+  // `requireStaff` 403s a logged-out / non-staff caller. The admin app fetches
+  // this once to gate the shell (replacing the forgeable `admin-session` flag)
+  // and to render role-aware navigation. Nav is UX only; the server guards
+  // remain the authorization boundary.
+  app.get(
+    "/api/auth/staff/me",
+    {
+      schema: {
+        tags: ["auth"],
+        summary: "Retornar o funcionário autenticado (id, papel, nome)",
+      },
+      preHandler: [optionalAuth, requireStaff],
+    },
+    async (request, reply) => {
+      const staffSvc = createStaffService();
+      const staff = await staffSvc.getById(request.staffId!);
+      return reply.send({
+        staffId: request.staffId,
+        role: request.staffRole,
+        name: staff?.name ?? null,
+      });
+    },
+  );
+
   // ── POST /api/auth/staff/send-otp ─────────────────────────────────────────
 
   app.post(
@@ -948,6 +976,50 @@ export async function authRoutes(server: FastifyInstance): Promise<void> {
           name: staff.name,
           role: staff.role,
         });
+    },
+  );
+
+  // ── POST /api/auth/staff/logout ───────────────────────────────────────────
+  // Revoke the httpOnly `staff_token` JWT and clear the cookie so the admin
+  // shell's "Sair" actually ends the server session (STAFFREVOKE). Lives under
+  // the `/api/auth/staff/*` prefix so the admin proxy (ALLOWED_PREFIXES) reaches
+  // it without weakening the S1 boundary. No auth preHandler: logout is
+  // best-effort and idempotent — it must succeed even for an expired/near-expiry
+  // token so the browser never gets stuck "logged in".
+  app.post(
+    "/api/auth/staff/logout",
+    {
+      schema: {
+        tags: ["auth"],
+        summary: "Logout de funcionário — limpar cookie e revogar JWT",
+      },
+    },
+    async (request, reply) => {
+      // Revoke the staff JWT via the shared `jwt:revoked:<jti>` key that
+      // middleware/auth.ts checkRevocation consults on the staff path. Mirrors
+      // the customer/staff revoke in POST /api/auth/logout. Best-effort.
+      try {
+        const raw = request.cookies?.["staff_token"];
+        if (raw) {
+          const jwt = server as unknown as { jwt: { decode: (t: string) => { jti?: string; exp?: number } | null } };
+          const payload = jwt.jwt.decode(raw);
+          if (payload?.jti && payload.exp) {
+            const nowSec = Math.floor(Date.now() / 1000);
+            const remainingTtl = payload.exp - nowSec;
+            if (remainingTtl > 0) {
+              const redis = await getRedisClient();
+              await redis.set(rk(`jwt:revoked:${payload.jti}`), "1", { EX: remainingTtl });
+            }
+          }
+        }
+      } catch {
+        // Best-effort revocation — logout must always succeed
+      }
+
+      return reply
+        .clearCookie("staff_token", { path: "/" })
+        .code(200)
+        .send({ ok: true });
     },
   );
 }

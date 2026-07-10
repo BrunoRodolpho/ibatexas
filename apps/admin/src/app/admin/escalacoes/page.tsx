@@ -47,12 +47,23 @@ export default function EscalacoesPage(): React.JSX.Element {
   const [reply, setReply] = useState('')
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
+  const [transcriptUnavailable, setTranscriptUnavailable] = useState(false)
+  // Transient (500/network) transcript failure — distinct from the expected 404
+  // "not archived" case so we never disable a live escalation's reply composer.
+  const [transcriptError, setTranscriptError] = useState(false)
+  const [queueError, setQueueError] = useState<string | null>(null)
 
   const loadQueue = useCallback(async () => {
     setLoading(true)
+    setQueueError(null)
     try {
       const data = (await apiFetch('/api/admin/escalations')) as { escalations: Escalation[] }
       setQueue(data.escalations ?? [])
+    } catch {
+      // A failed load must NOT render the celebratory "no escalations" empty
+      // state — the operator has to know the queue is unknown, not empty.
+      setQueue([])
+      setQueueError('Falha ao carregar a fila de escalações. Tente novamente.')
     } finally {
       setLoading(false)
     }
@@ -63,15 +74,37 @@ export default function EscalacoesPage(): React.JSX.Element {
   }, [loadQueue])
 
   const loadTranscript = useCallback(async (sessionId: string) => {
-    const data = (await apiFetch(
-      `/api/admin/conversations/${encodeURIComponent(sessionId)}`,
-    )) as { messages: TranscriptMessage[] }
-    setMessages(data.messages ?? [])
+    try {
+      const data = (await apiFetch(
+        `/api/admin/conversations/${encodeURIComponent(sessionId)}`,
+      )) as { messages: TranscriptMessage[] }
+      setMessages(data.messages ?? [])
+      setTranscriptUnavailable(false)
+      setTranscriptError(false)
+    } catch (e) {
+      // The escalation queue (Redis) and the conversation archive (Postgres) have
+      // no referential integrity: archiver lag, a first-turn escalation, or an
+      // agent-namespace handoff (sessionId is not a conversation) all 404 here.
+      // A 404 legitimately has no transcript — degrade gracefully (Resolver still
+      // works, and there is no conversation to reply to). But a transient
+      // 500/network error must NOT masquerade as "not archived": it would falsely
+      // disable the reply composer for a LIVE escalation. Surface it as a
+      // retryable error and keep the composer usable.
+      const msg = e instanceof Error ? e.message : ''
+      const notArchived = msg.includes('404')
+      setMessages([])
+      setTranscriptUnavailable(notArchived)
+      setTranscriptError(!notArchived)
+    }
   }, [])
 
   useEffect(() => {
     if (selected) void loadTranscript(selected)
-    else setMessages([])
+    else {
+      setMessages([])
+      setTranscriptUnavailable(false)
+      setTranscriptError(false)
+    }
   }, [selected, loadTranscript])
 
   const sendReply = useCallback(async () => {
@@ -96,12 +129,17 @@ export default function EscalacoesPage(): React.JSX.Element {
   const resolve = useCallback(async () => {
     if (!selected) return
     setBusy(true)
+    setNotice(null)
     try {
       await apiFetch(`/api/admin/escalations/${encodeURIComponent(selected)}/resolve`, {
         method: 'POST',
       })
       setSelected(null)
       await loadQueue()
+    } catch {
+      // The resolve failed — the bot is still paused. Never let the operator
+      // walk away thinking it was reactivated.
+      setNotice('Falha ao resolver a escalação. O bot continua pausado — tente novamente.')
     } finally {
       setBusy(false)
     }
@@ -184,7 +222,9 @@ export default function EscalacoesPage(): React.JSX.Element {
               </button>
             </li>
           ))}
-          {!loading && queue.length === 0 ? (
+          {queueError ? (
+            <li className="text-sm text-red-600">{queueError}</li>
+          ) : !loading && queue.length === 0 ? (
             <li className="text-sm text-gray-500">Nenhuma escalação aberta. 🎉</li>
           ) : null}
         </ul>
@@ -255,22 +295,48 @@ export default function EscalacoesPage(): React.JSX.Element {
                 ))}
               </div>
             ) : null}
-            <div className="flex flex-1 flex-col gap-2">
-              {messages.map((m, i) => (
-                <div
-                  key={i}
-                  className={`rounded border px-3 py-2 text-sm ${
-                    m.role === 'user' ? 'bg-blue-50' : 'bg-gray-50'
-                  }`}
+            {transcriptError ? (
+              <div className="flex flex-1 flex-col items-center justify-center gap-2">
+                <p className="max-w-sm text-center text-sm text-red-600">
+                  Não foi possível carregar a transcrição (erro temporário). Você ainda pode
+                  responder ao cliente e resolver a escalação.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (selected) void loadTranscript(selected)
+                  }}
+                  className="rounded border px-3 py-1 text-xs"
                 >
-                  <div className="mb-1 flex justify-between text-xs text-gray-500">
-                    <span>{m.role}</span>
-                    <span>{new Date(m.sentAt).toLocaleString('pt-BR')}</span>
+                  Tentar novamente
+                </button>
+              </div>
+            ) : transcriptUnavailable ? (
+              <div className="flex flex-1 items-center justify-center">
+                <p className="max-w-sm text-center text-sm text-gray-500">
+                  Transcrição indisponível — a conversa ainda não foi arquivada, ou esta
+                  escalação não tem uma conversa associada. Você ainda pode resolver e
+                  reativar o bot.
+                </p>
+              </div>
+            ) : (
+              <div className="flex flex-1 flex-col gap-2">
+                {messages.map((m, i) => (
+                  <div
+                    key={i}
+                    className={`rounded border px-3 py-2 text-sm ${
+                      m.role === 'user' ? 'bg-blue-50' : 'bg-gray-50'
+                    }`}
+                  >
+                    <div className="mb-1 flex justify-between text-xs text-gray-500">
+                      <span>{m.role}</span>
+                      <span>{new Date(m.sentAt).toLocaleString('pt-BR')}</span>
+                    </div>
+                    <div className="whitespace-pre-wrap break-words">{m.content}</div>
                   </div>
-                  <div className="whitespace-pre-wrap break-words">{m.content}</div>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            )}
             {notice ? <p className="text-xs text-gray-600">{notice}</p> : null}
             <form
               className="flex items-center gap-2"
@@ -282,13 +348,17 @@ export default function EscalacoesPage(): React.JSX.Element {
               <input
                 value={reply}
                 onChange={(e) => setReply(e.target.value)}
-                placeholder="responder ao cliente…"
+                placeholder={
+                  transcriptUnavailable
+                    ? 'resposta indisponível sem transcrição'
+                    : 'responder ao cliente…'
+                }
                 className="flex-1 rounded border px-2 py-1 text-sm"
-                disabled={busy}
+                disabled={busy || transcriptUnavailable}
               />
               <button
                 type="submit"
-                disabled={busy || !reply.trim()}
+                disabled={busy || !reply.trim() || transcriptUnavailable}
                 className="rounded bg-gray-800 px-3 py-1 text-sm text-white disabled:opacity-50"
               >
                 Enviar

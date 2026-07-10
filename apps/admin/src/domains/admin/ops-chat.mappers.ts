@@ -13,10 +13,12 @@
 // kind union — a new member is a COMPILE error until mapped, Hard Rule #4 — with
 // a defensive fallback for an unrecognized value, never blank, never a crash).
 //
-// v1 posture: the channel is STATELESS server-side (no history persists), so
-// this module only shapes a SINGLE turn — the transcript lives in client state
-// (see useOpsChat). A failed turn is rendered as an honest error bubble carrying
-// the server's own pt-BR text; success is never fabricated.
+// Posture (WS6 — corrected): the thread PERSISTS server-side (BKL-084) and
+// rehydrates on reload, and a REQUEST_CONFIRMATION parks conversationally — the
+// user resolves it by replying "sim" (matchToParked on the ops channel), which
+// the page now offers as an in-chat Confirmar/Cancelar action. This module still
+// shapes a SINGLE turn's view; a failed turn renders an honest error bubble with
+// the server's own pt-BR text — success is never fabricated.
 
 // ── Kernel decision kinds (client mirror of @adjudicate DecisionKind) ─────────
 
@@ -119,6 +121,16 @@ export interface HistoryAssistantEntry {
   readonly id: string
   readonly role: 'history-assistant'
   readonly reply: string
+  /**
+   * This rehydrated turn is a still-OPEN money park (a REQUEST_CONFIRMATION
+   * awaiting confirm/cancel) — the persisted thread keeps no decision metadata,
+   * so the flag is reconstructed on the CLIENT from a per-session marker and set
+   * ONLY on the newest history-assistant entry (a park is always the last turn).
+   * When true the bubble shows a pt-BR "ação pendente de confirmação" indicator
+   * and re-exposes the Confirmar/Cancelar affordance so the operator can resume
+   * the park (posting "sim"/"não" resumes it server-side via matchToParked).
+   */
+  readonly pendingConfirmation?: boolean
 }
 
 /**
@@ -225,6 +237,34 @@ export function historyEntries(body: unknown): OpsThreadEntry[] {
     entries.push(historyDividerEntry('ops-hist-divider'))
   }
   return entries
+}
+
+/**
+ * Decorate the NEWEST rehydrated assistant turn as a still-open money park so a
+ * reloaded thread makes a pending confirmation VISIBLE and RESUMABLE again (the
+ * live Confirmar/Cancelar affordance is lost on reload because the persisted
+ * thread carries no decision metadata). Pure + non-mutating: returns a new list
+ * only when it changes anything. A no-op when `pending` is false or there is no
+ * history-assistant entry. Only the LAST such entry can be open — a park is
+ * always the newest turn — so exactly one entry is ever marked.
+ */
+export function markPendingConfirmation(
+  entries: readonly OpsThreadEntry[],
+  pending: boolean,
+): OpsThreadEntry[] {
+  const list = entries as OpsThreadEntry[]
+  if (!pending) return list
+  let lastIdx = -1
+  for (let i = entries.length - 1; i >= 0; i -= 1) {
+    if (entries[i].role === 'history-assistant') {
+      lastIdx = i
+      break
+    }
+  }
+  if (lastIdx === -1) return list
+  return entries.map((e, i) =>
+    i === lastIdx ? { ...(e as HistoryAssistantEntry), pendingConfirmation: true } : e,
+  )
 }
 
 // ── Fetch-result → thread entry (pure so the hook's branch is tested) ────────

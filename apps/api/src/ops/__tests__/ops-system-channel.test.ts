@@ -7,7 +7,9 @@
 import { describe, expect, it } from "vitest";
 import type { ChannelMessage, ParkedEnvelope, Session } from "@claustrum/core";
 import {
+  isAmbiguousOpsReply,
   matchOpsReplyToParked,
+  OPS_AMBIGUOUS_REPLY_CLARIFY_PTBR,
   OpsSystemChannel,
 } from "../ops-system-channel.js";
 
@@ -41,7 +43,7 @@ describe("matchOpsReplyToParked — pt-BR ops confirm-resume matcher", () => {
     },
   );
 
-  it.each(["não", "nao", "cancela", "para", "deixa", "negativo"])(
+  it.each(["não", "nao", "cancela", "cancelar", "pare", "negativo", "nega"])(
     "negative lexicon: %s → deny",
     (word) => {
       expect(matchOpsReplyToParked(word, [P1])?.userResolution).toBe("deny");
@@ -106,6 +108,90 @@ describe("matchOpsReplyToParked — pt-BR ops confirm-resume matcher", () => {
     // P2 (valid, most recent) must still win over the malformed entry.
     const m = matchOpsReplyToParked("sim", [bad, P2]);
     expect(m?.parked).toBe(P2);
+  });
+});
+
+// ── Money-execution safety (BKL-085 hardening) ───────────────────────────────
+// A parked money action (e.g. a CONFIRM-band refund) may ONLY execute on a clear,
+// unambiguous yes; an unrelated fresh command must never abandon the park.
+describe("matchOpsReplyToParked — money-execution safety", () => {
+  it.each([
+    "não confirmo", // "I do not confirm" — refusal that contains "confirmo"
+    "não, pode deixar", // "no, you can leave it" — refusal that contains "pode"
+    "ok, cancela", // affirmative "ok" alongside the refusal "cancela"
+    "sim, mas não", // yes-but-no
+  ])(
+    "an explicit refusal containing an affirmative token is NEVER a confirm: %s",
+    (text) => {
+      const m = matchOpsReplyToParked(text, [P1]);
+      // Money must not execute on a refusal: resolves to NEITHER (null), which
+      // preserves the park (the conductor unparks only on deny/defer).
+      expect(m).toBeNull();
+      expect(m?.userResolution).not.toBe("confirm");
+    },
+  );
+
+  it.each([
+    "muda o preço da costela para R$ 89", // WS6 guided example (contains "para")
+    "avança o pedido 4242 para pronto", // WS6 guided example (contains "para")
+    "reserva a mesa 5 para hoje", // fresh command with the preposition "para"
+  ])(
+    "an unrelated fresh command containing 'para' is NOT a denial: %s",
+    (text) => {
+      // "para" the preposition must not eat the command as a deny → null (fresh
+      // utterance; the normal loop runs and the park is untouched).
+      expect(matchOpsReplyToParked(text, [P1])).toBeNull();
+    },
+  );
+
+  it.each(["sim", "sim, confirma", "confirmo", "pode confirmar", "ok", "beleza"])(
+    "a clean unambiguous confirm still resolves to confirm: %s",
+    (text) => {
+      expect(matchOpsReplyToParked(text, [P1])?.userResolution).toBe("confirm");
+    },
+  );
+
+  it("ambiguous (mixed affirmative + negative) input resolves to NEITHER, park preserved", () => {
+    const parkList = [P1];
+    const m = matchOpsReplyToParked("sim, mas não sei", parkList);
+    expect(m).toBeNull(); // neither confirm nor deny
+    // Pure matcher: the park list it was handed is never mutated (the durable
+    // park is untouched — only the conductor unparks, and only on deny/defer).
+    expect(parkList).toEqual([P1]);
+  });
+
+  it("keeps deny for a clean refusal with no affirmative token", () => {
+    expect(matchOpsReplyToParked("não", [P1])?.userResolution).toBe("deny");
+    expect(matchOpsReplyToParked("cancela o reembolso", [P1])?.userResolution).toBe(
+      "deny",
+    );
+  });
+});
+
+describe("isAmbiguousOpsReply + OPS_AMBIGUOUS_REPLY_CLARIFY_PTBR", () => {
+  it.each(["não confirmo", "ok, cancela", "sim, mas não"])(
+    "flags a mixed affirmative+negative reply as ambiguous: %s",
+    (text) => {
+      expect(isAmbiguousOpsReply(text)).toBe(true);
+    },
+  );
+
+  it.each(["sim", "confirma", "não", "cancela", "muda o preço para R$ 89", ""])(
+    "does NOT flag a clean confirm / clean deny / fresh command / empty as ambiguous: %s",
+    (text) => {
+      expect(isAmbiguousOpsReply(text)).toBe(false);
+    },
+  );
+
+  it("a defer phrase is a valid resolution, not ambiguous", () => {
+    // "sim, amanhã, não" carries a defer → matcher resolves to defer, not ambiguous.
+    expect(isAmbiguousOpsReply("sim, amanhã, não")).toBe(false);
+  });
+
+  it("the clarification is a non-empty pt-BR line offering confirm/cancel", () => {
+    expect(OPS_AMBIGUOUS_REPLY_CLARIFY_PTBR.length).toBeGreaterThan(0);
+    expect(OPS_AMBIGUOUS_REPLY_CLARIFY_PTBR).toMatch(/confirmar/i);
+    expect(OPS_AMBIGUOUS_REPLY_CLARIFY_PTBR).toMatch(/cancelar/i);
   });
 });
 

@@ -315,6 +315,44 @@ model Customer {
   @@schema("ibx_domain")
 }
 
+/// Marketing (broadcast) consent per phone (WS3A). DURABLE opt-out — replaces the
+/// volatile Redis-only registry so a cache flush can never silently lose consent
+/// (LGPD). Keyed by canonical E.164 phone (toE164BR); intentionally NOT a FK to
+/// Customer so it can also hold opt-outs for non-customer recipients.
+/// optedOut = true means "do not include in a broadcast".
+model CustomerBroadcastConsent {
+  id        String   @id @default(cuid())
+  phone     String   @unique
+  optedOut  Boolean  @default(false) @map("opted_out")
+  source    String? /// 'admin' | 'inbound_stop' | 'clientes_toggle'
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([optedOut])
+  @@map("customer_broadcast_consent")
+  @@schema("ibx_domain")
+}
+
+/// Persisted audit of every broadcast blast (WS3C). Today the blast result was
+/// only logged, so there was no durable record of what was sent to whom — a
+/// compliance blind spot. One row per POST /api/admin/broadcast: the template,
+/// the sender, aggregate per-status counts, and the full per-recipient ledger.
+model BroadcastSend {
+  id            String   @id @default(cuid())
+  senderStaffId String?  @map("sender_staff_id")
+  template      String
+  totalCount    Int      @map("total_count")
+  sentCount     Int      @map("sent_count")
+  skippedCount  Int      @map("skipped_count")
+  failedCount   Int      @map("failed_count")
+  results       Json /// per-recipient ledger: [{ recipient, status, error? }]
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  @@index([createdAt])
+  @@map("broadcast_send")
+  @@schema("ibx_domain")
+}
+
 /// Delivery address for a customer.
 model Address {
   id         String  @id @default(cuid())

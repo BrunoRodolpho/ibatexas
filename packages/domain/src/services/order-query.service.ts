@@ -22,6 +22,7 @@ interface ListAllInput {
   paymentStatus?: string
   dateFrom?: Date
   dateTo?: Date
+  customerId?: string
   limit?: number
   offset?: number
 }
@@ -123,6 +124,9 @@ export function createOrderQueryService(): OrderQueryService {
       }
       if (input?.paymentStatus) {
         where.paymentStatus = input.paymentStatus
+      }
+      if (input?.customerId) {
+        where.customerId = input.customerId
       }
       if (input?.dateFrom || input?.dateTo) {
         const dateFilter: Record<string, Date> = {}

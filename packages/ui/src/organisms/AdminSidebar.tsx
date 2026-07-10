@@ -11,6 +11,13 @@ export interface AdminSidebarNavItem {
   icon: ComponentType<{ className?: string }>
   /** Optional live count rendered as a danger-tinted pill (expanded) / dot (collapsed). 0/undefined → nothing. */
   count?: number
+  /**
+   * Minimum staff role required to SEE this entry (WS2 role-aware nav). Purely a
+   * UX affordance — the server guards remain the authorization boundary. Absent
+   * → visible to every authenticated staff role. Filtered by the app-side
+   * consumer (which knows the current role from /api/auth/staff/me).
+   */
+  minRole?: 'OWNER' | 'MANAGER' | 'ATTENDANT'
 }
 
 export interface AdminSidebarNavGroup {

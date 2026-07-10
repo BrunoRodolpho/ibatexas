@@ -1,20 +1,32 @@
-// QA viewer shell — six tabs (the four T2-4 graphs, the DR-5 coverage
-// matrix, the run explorer) over statically served committed artifacts.
-// No router, no state library, no write path. Internal QA tool: English UI
-// (the pt-BR hard rule covers user-facing product surfaces; recorded in
-// the T2-5 decision notes).
+// Investigation Workbench shell — three sections in a grouped top nav:
+//   · QA       the original six views (graphs, coverage, run explorer)
+//   · RCA      live turn forensics (turn_trace + intent_audit + VictoriaLogs)
+//   · Prompts  navigate + edit every ibatexas prompt (override store)
+// Internal QA tool: English UI (the pt-BR hard rule covers product surfaces).
+// Read-only by default; RCA reads + prompt writes go through the dev-only
+// bearer bridge (qaControl.ts) and self-disable when it is unconfigured.
 
 import { useEffect, useRef, useState, type ReactNode } from "react"
 import { CoverageMatrixView } from "./components/CoverageMatrixView"
 import { GraphView } from "./components/GraphView"
+import { PromptsWorkbench } from "./components/PromptsWorkbench"
+import { RcaWorkbench } from "./components/RcaWorkbench"
 import { RunControls } from "./components/RunControls"
 import { RunExplorer } from "./components/RunExplorer"
 import { artifactsBase, fetchArtifactJson, fetchArtifactText, type ArtifactState } from "./lib/artifacts"
 import { qaConfig } from "./lib/qaControl"
+import { applyTheme, isDark, type ThemeChoice } from "./lib/theme"
 import { parseTraceJsonl, type ParsedTrace } from "./lib/trace"
 import type { CoverageBaseline, CoverageMatrix, GraphDocument, PriceTable } from "./types"
 
-const TABS = [
+const SECTIONS = [
+  { id: "qa", label: "QA" },
+  { id: "rca", label: "RCA · Turns" },
+  { id: "prompts", label: "Prompts" },
+] as const
+type SectionId = (typeof SECTIONS)[number]["id"]
+
+const QA_TABS = [
   { id: "capability", label: "Capability graph" },
   { id: "journeys", label: "Journey graph" },
   { id: "run", label: "Run graph" },
@@ -22,8 +34,7 @@ const TABS = [
   { id: "coverage", label: "Coverage matrix" },
   { id: "run-explorer", label: "Run explorer" },
 ] as const
-
-type TabId = (typeof TABS)[number]["id"]
+type QaTabId = (typeof QA_TABS)[number]["id"]
 
 const GRAPH_PATHS: Record<string, string> = {
   capability: "graphs/capability.json",
@@ -64,17 +75,17 @@ function Pending<T>({ state, children }: { state: ArtifactState<T>; children: (d
 }
 
 export default function App() {
-  const [tab, setTab] = useState<TabId>("capability")
+  const [section, setSection] = useState<SectionId>("qa")
+  const [qaTab, setQaTab] = useState<QaTabId>("capability")
+  const [theme, setTheme] = useState<ThemeChoice>("system")
+  useEffect(() => applyTheme(theme), [theme])
+  const dark = isDark(theme)
 
   // WS-B: when QA-control is configured, the run-explorer rail gains RunControls.
-  // The loader ref lets RunControls (in the rail) push a completed run's trace
-  // into the RunExplorer view (sibling, both under the same Workbench).
   const qa = qaConfig()
   const loaderRef = useRef<((trace: ParsedTrace, source: string) => void) | null>(null)
 
-  const capability = useArtifact(() =>
-    fetchArtifactJson<GraphDocument>(GRAPH_PATHS["capability"]!),
-  )
+  const capability = useArtifact(() => fetchArtifactJson<GraphDocument>(GRAPH_PATHS["capability"]!))
   const journeys = useArtifact(() => fetchArtifactJson<GraphDocument>(GRAPH_PATHS["journeys"]!))
   const run = useArtifact(() => fetchArtifactJson<GraphDocument>(GRAPH_PATHS["run"]!))
   const impact = useArtifact(() => fetchArtifactJson<GraphDocument>(GRAPH_PATHS["impact"]!))
@@ -82,9 +93,7 @@ export default function App() {
   const baseline = useArtifact(() =>
     fetchArtifactJson<CoverageBaseline>("governance/journey-coverage-baseline.json"),
   )
-  const priceTable = useArtifact(() =>
-    fetchArtifactJson<PriceTable>("governance/price-table.json"),
-  )
+  const priceTable = useArtifact(() => fetchArtifactJson<PriceTable>("governance/price-table.json"))
   const traceFixture = useArtifact<ParsedTrace>(async () =>
     parseTraceJsonl(await fetchArtifactText("runs/run-trace.jsonl")),
   )
@@ -98,60 +107,99 @@ export default function App() {
 
   return (
     <div className="app">
-      <header className="app__header">
-        <h1>IbateXas QA Viewer</h1>
-        <span className="app__subtitle">
-          read-only · derived artifacts (T2-4 graphs · DR-5 coverage · run traces)
+      <header className="app__bar">
+        <div className="brand">
+          <span className="brand__lens" aria-hidden="true">
+            ◉
+          </span>
+          Investigation Workbench
+          <small>ibatexas · qa-viewer</small>
+        </div>
+        <nav className="primary-nav" aria-label="section">
+          {SECTIONS.map((s) => (
+            <button
+              key={s.id}
+              type="button"
+              className={`nav-tab ${section === s.id ? "nav-tab--active" : ""}`}
+              onClick={() => setSection(s.id)}
+            >
+              {s.label}
+            </button>
+          ))}
+        </nav>
+        <span className="app__bar-spacer" />
+        <span className={`conn-dot ${qa !== null ? "conn-dot--live" : "conn-dot--off"}`}>
+          bridge {qa !== null ? "on" : "off"}
         </span>
-        <nav className="tabs" aria-label="views">
-          {TABS.map((t) => (
+        <span className="env-pill">DEV · :3010</span>
+        <button
+          type="button"
+          className="theme-toggle"
+          onClick={() => setTheme(dark ? "light" : "dark")}
+          aria-label="Toggle theme"
+        >
+          {dark ? "☀ Light" : "☾ Dark"}
+        </button>
+      </header>
+
+      {section === "qa" && (
+        <div className="subnav" role="tablist" aria-label="QA views">
+          {QA_TABS.map((t) => (
             <button
               key={t.id}
               type="button"
-              className={`tabs__tab ${tab === t.id ? "tabs__tab--active" : ""}`}
-              onClick={() => setTab(t.id)}
+              role="tab"
+              aria-selected={qaTab === t.id}
+              className={`subnav__tab ${qaTab === t.id ? "subnav__tab--active" : ""}`}
+              onClick={() => setQaTab(t.id)}
             >
               {t.label}
             </button>
           ))}
-        </nav>
-      </header>
+        </div>
+      )}
 
       <main className="app__main">
-        {(tab === "capability" || tab === "journeys" || tab === "run" || tab === "impact") && (
-          <Pending state={graphState[tab]!}>{(doc) => <GraphView doc={doc} />}</Pending>
-        )}
-        {tab === "coverage" && (
-          <Pending state={matrix}>
-            {(m) => (
-              <CoverageMatrixView
-                matrix={m}
-                baseline={baseline.status === "ready" ? baseline.data : null}
-              />
+        {section === "rca" && <RcaWorkbench />}
+        {section === "prompts" && <PromptsWorkbench />}
+        {section === "qa" && (
+          <>
+            {(qaTab === "capability" ||
+              qaTab === "journeys" ||
+              qaTab === "run" ||
+              qaTab === "impact") && (
+              <Pending state={graphState[qaTab]!}>{(doc) => <GraphView doc={doc} />}</Pending>
             )}
-          </Pending>
-        )}
-        {tab === "run-explorer" && (
-          <Pending state={traceFixture}>
-            {(parsed) => (
-              <RunExplorer
-                initialTrace={parsed}
-                initialSource="committed fixture (packages/journeys/graphs/fixtures/run-trace.jsonl)"
-                priceTable={priceTable.status === "ready" ? priceTable.data : null}
-                registerLoader={(fn) => {
-                  loaderRef.current = fn
-                }}
-                controls={
-                  qa !== null ? (
-                    <RunControls
-                      config={qa}
-                      onTrace={(t, s) => loaderRef.current?.(t, s)}
-                    />
-                  ) : undefined
-                }
-              />
+            {qaTab === "coverage" && (
+              <Pending state={matrix}>
+                {(m) => (
+                  <CoverageMatrixView
+                    matrix={m}
+                    baseline={baseline.status === "ready" ? baseline.data : null}
+                  />
+                )}
+              </Pending>
             )}
-          </Pending>
+            {qaTab === "run-explorer" && (
+              <Pending state={traceFixture}>
+                {(parsed) => (
+                  <RunExplorer
+                    initialTrace={parsed}
+                    initialSource="committed fixture (packages/journeys/graphs/fixtures/run-trace.jsonl)"
+                    priceTable={priceTable.status === "ready" ? priceTable.data : null}
+                    registerLoader={(fn) => {
+                      loaderRef.current = fn
+                    }}
+                    controls={
+                      qa !== null ? (
+                        <RunControls config={qa} onTrace={(t, s) => loaderRef.current?.(t, s)} />
+                      ) : undefined
+                    }
+                  />
+                )}
+              </Pending>
+            )}
+          </>
         )}
       </main>
     </div>

@@ -61,6 +61,30 @@ export const useAdminProducts = hooks.useAdminProducts
 export const useAdminProduct = hooks.useAdminProduct
 export const useAdminOrders = hooks.useAdminOrders
 
+/**
+ * WS5B — the current staff role, for client-side section gating (Visão Geral).
+ * Authoritative source is GET /api/auth/staff/me (server guards remain the real
+ * boundary). Returns null while loading / when unauthenticated.
+ */
+export function useStaffRole(): 'OWNER' | 'MANAGER' | 'ATTENDANT' | null {
+  const [role, setRole] = useState<'OWNER' | 'MANAGER' | 'ATTENDANT' | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    fetch('/api/proxy/auth/staff/me', { credentials: 'include' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((me: { role?: 'OWNER' | 'MANAGER' | 'ATTENDANT' } | null) => {
+        if (!cancelled && me?.role) setRole(me.role)
+      })
+      .catch(() => {
+        /* unauthenticated / offline — leave null (sections stay hidden) */
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+  return role
+}
+
 const PAGE_SIZE = 20
 
 /** Compute ISO date_from/date_to for a given date-range preset. */
@@ -103,7 +127,7 @@ function computeDateRange(preset: string): { date_from?: string; date_to?: strin
   }
 }
 
-export function useAdminOrdersPage() {
+export function useAdminOrdersPage(customerId?: string) {
   const [page, setPage] = useState(1)
   const [statusFilter, setStatusFilter] = useState('')
   const [dateFilter, setDateFilter] = useState('')
@@ -115,10 +139,11 @@ export function useAdminOrdersPage() {
     status: statusFilter || undefined,
     date_from: dateRange.date_from,
     date_to: dateRange.date_to,
+    customer_id: customerId || undefined,
     limit: PAGE_SIZE,
     offset: (page - 1) * PAGE_SIZE,
     _refresh: refreshKey,
-  }), [page, statusFilter, dateRange, refreshKey])
+  }), [page, statusFilter, dateRange, customerId, refreshKey])
 
   const { data: orders, count, loading, error } = useAdminOrders(filters)
   const totalPages = Math.max(1, Math.ceil(count / PAGE_SIZE))
@@ -976,6 +1001,10 @@ export function useAdminCustomer(id: string | null) {
     setLoading(true)
     setNotFound(false)
     setError(null)
+    // Clear the previously-selected customer so their PII/orders/opt-out never
+    // linger in the pane while the new id fetches — and never remain if the
+    // fetch fails with a non-404 error.
+    setCustomer(null)
     apiFetch(`/api/admin/customers/${encodeURIComponent(id)}`)
       .then((data: AdminCustomerDetail) => {
         if (cancelled) return
@@ -987,8 +1016,10 @@ export function useAdminCustomer(id: string | null) {
         const msg = err instanceof Error ? err.message : 'load_failed'
         if (msg.includes('404')) {
           setNotFound(true)
-          setCustomer(null)
         }
+        // Stale prior-customer data is already cleared above; keep it cleared on
+        // any error path so a failed load never shows the wrong customer.
+        setCustomer(null)
         setError(msg)
       })
       .finally(() => {

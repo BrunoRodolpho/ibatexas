@@ -89,6 +89,7 @@ import {
   EXPRESS_INTENT_TOOL,
   PLANNER_PERSONA,
 } from "./prompts/personas.js";
+import { resolvePrompt } from "./prompts/prompt-overrides.js";
 import {
   PLANNER_SURFACE,
   type IbatexasPromptComposer,
@@ -998,7 +999,7 @@ export function createIbatexasPlanner(
       // the intent persona (DEFAULT_SYSTEM_PROMPT) — the intent persona's "sua
       // única função é express_intent" SUPPRESSES the propose_claim call on a 4B
       // (verified live on nemotron-3-nano:4b). `deps.system` still overrides (tests).
-      const system = deps.system ?? CLAIM_PLANNER_PERSONA;
+      const system = deps.system ?? resolvePrompt("ibatexas/claim-planner.persona", CLAIM_PLANNER_PERSONA);
       // F2 observability: time the claim-planner completion so its LLMTrace
       // (emitted below) carries a real duration, like the intent `propose` path.
       const claimStartedAt = Date.now();

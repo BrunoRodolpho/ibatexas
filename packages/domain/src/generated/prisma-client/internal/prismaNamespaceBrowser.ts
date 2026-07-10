@@ -60,6 +60,8 @@ export const ModelName = {
   Staff: 'Staff',
   StaffShift: 'StaffShift',
   Customer: 'Customer',
+  CustomerBroadcastConsent: 'CustomerBroadcastConsent',
+  BroadcastSend: 'BroadcastSend',
   Address: 'Address',
   CustomerPreferences: 'CustomerPreferences',
   CustomerOrderItem: 'CustomerOrderItem',
@@ -231,6 +233,33 @@ export const CustomerScalarFieldEnum = {
 } as const
 
 export type CustomerScalarFieldEnum = (typeof CustomerScalarFieldEnum)[keyof typeof CustomerScalarFieldEnum]
+
+
+export const CustomerBroadcastConsentScalarFieldEnum = {
+  id: 'id',
+  phone: 'phone',
+  optedOut: 'optedOut',
+  source: 'source',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+} as const
+
+export type CustomerBroadcastConsentScalarFieldEnum = (typeof CustomerBroadcastConsentScalarFieldEnum)[keyof typeof CustomerBroadcastConsentScalarFieldEnum]
+
+
+export const BroadcastSendScalarFieldEnum = {
+  id: 'id',
+  senderStaffId: 'senderStaffId',
+  template: 'template',
+  totalCount: 'totalCount',
+  sentCount: 'sentCount',
+  skippedCount: 'skippedCount',
+  failedCount: 'failedCount',
+  results: 'results',
+  createdAt: 'createdAt'
+} as const
+
+export type BroadcastSendScalarFieldEnum = (typeof BroadcastSendScalarFieldEnum)[keyof typeof BroadcastSendScalarFieldEnum]
 
 
 export const AddressScalarFieldEnum = {

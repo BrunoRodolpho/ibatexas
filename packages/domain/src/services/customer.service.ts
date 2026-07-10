@@ -901,9 +901,26 @@ export async function anonymizeCustomer(
   // Medusa side.
   const customerForCompensation = await prisma.customer.findUnique({
     where: { id: customerId },
-    select: { medusaId: true },
+    select: { medusaId: true, phone: true },
   })
   const medusaIdForCompensation = customerForCompensation?.medusaId ?? null
+
+  // WS3 broadcast-PII key. The two WS3 broadcast tables
+  // (customer_broadcast_consent + broadcast_send.results) key on the
+  // customer's CANONICAL E.164 phone — NOT customerId — so we resolve it here,
+  // BEFORE the core tx overwrites Customer.phone with the sentinel. toE164BR
+  // throws on a non-E.164 value; an already-anonymized ("anonymized:…") or
+  // otherwise-unparseable phone yields null and the broadcast scrub no-ops
+  // (nothing to key on) rather than aborting the legally-mandated erasure.
+  const rawPhoneForBroadcast = customerForCompensation?.phone ?? null
+  let canonicalBroadcastPhone: string | null = null
+  if (rawPhoneForBroadcast && !rawPhoneForBroadcast.startsWith("anonymized:")) {
+    try {
+      canonicalBroadcastPhone = toE164BR(rawPhoneForBroadcast)
+    } catch {
+      canonicalBroadcastPhone = null
+    }
+  }
 
   // Scrub review comments in batches OUTSIDE the main tx when the customer
   // has enough reviews to risk a long-held lock (heavy-customer path).
@@ -1155,6 +1172,16 @@ export async function anonymizeCustomer(
     },
   )
 
+  // ── WS3: broadcast-PII erasure (two phone-keyed tables) ────────
+  //
+  // The WS3 broadcast feature added two tables that store the customer's raw
+  // phone OUTSIDE the Customer record — customer_broadcast_consent (opt-out
+  // registry, keyed by phone) and broadcast_send.results (per-blast recipient
+  // ledger). The core tx above never touches them (no customerId link). Scrub
+  // them now, best-effort (mirrors the turn_trace erasure): the core tx has
+  // committed, so a failure here is logged, not fatal.
+  await scrubBroadcastPII(canonicalBroadcastPhone, customerId, options)
+
   // ── H3 wave-a1: per-surface audit emit ─────────────────────────
   //
   // Emit one AuditRecord per scrubbed surface. The records carry the
@@ -1330,6 +1357,86 @@ async function eraseTurnTraces(
   } catch (err) {
     options?.log?.warn?.(
       "[anonymize] turn_trace erasure skipped (best-effort)",
+      { customerId, error: String(err) },
+    )
+  }
+}
+
+/**
+ * WS3 broadcast-PII redaction token. Written over a customer's phone inside a
+ * `broadcast_send.results` ledger during anonymize. Generic + non-PII (NOT the
+ * per-customer sentinel) so no re-identifiable token survives in the audit row.
+ */
+const BROADCAST_RECIPIENT_REDACTED = "[anonymized]"
+
+/**
+ * WS3 broadcast-PII erasure (LGPD right-to-erasure). Two phone-keyed tables the
+ * WS3 broadcast feature added retain the customer's raw E.164 phone OUTSIDE the
+ * Customer record, so the core anonymize tx never scrubs them:
+ *
+ *   - `customer_broadcast_consent` — the durable marketing opt-out registry,
+ *     one row per canonical phone (the raw phone IS the key). We DELETE the
+ *     row(s) for this phone: there is no way to keep an effective opt-out
+ *     without retaining the raw phone, and the customer is being erased
+ *     (terminal), so a customer-derived segment can no longer contain the
+ *     number anyway.
+ *
+ *   - `broadcast_send.results` — an AGGREGATE audit row PER BLAST whose JSONB
+ *     ledger stores each recipient's raw phone ([{ recipient, status, error? }]).
+ *     We do NOT delete the row (it spans many other recipients + carries the
+ *     compliance counts); we surgically redact ONLY this customer's `recipient`
+ *     value within the JSONB, leaving every other element + the aggregate counts
+ *     (total/sent/skipped/failed) intact.
+ *
+ * No-op when `canonicalPhone` is null (an already-anonymized or unparseable
+ * phone — nothing to key on). Best-effort like `eraseTurnTraces`: the core scrub
+ * already committed, so a failure here is logged (not fatal) — the LGPD clock is
+ * satisfied by the core tx.
+ */
+async function scrubBroadcastPII(
+  canonicalPhone: string | null,
+  customerId: string,
+  options?: AnonymizeCustomerOptions,
+): Promise<void> {
+  if (!canonicalPhone) return
+
+  // (a) Opt-out registry: the raw phone is the key — delete the row(s).
+  try {
+    await prisma.customerBroadcastConsent.deleteMany({
+      where: { phone: canonicalPhone },
+    })
+  } catch (err) {
+    options?.log?.warn?.(
+      "[anonymize] broadcast-consent scrub skipped (best-effort)",
+      { customerId, error: String(err) },
+    )
+  }
+
+  // (b) Blast audit ledger: surgical JSONB redaction. For every blast row whose
+  // `results` array references this phone, rewrite ONLY the matching elements'
+  // `recipient` to the redaction token — status/error and the aggregate counts
+  // are untouched. The `@>` containment predicate limits the rewrite to rows
+  // that actually reference the number; WITH ORDINALITY + ORDER BY preserves the
+  // ledger's original element order.
+  const containmentFilter = JSON.stringify([{ recipient: canonicalPhone }])
+  try {
+    await prisma.$executeRaw`
+        UPDATE ibx_domain.broadcast_send
+        SET results = (
+          SELECT jsonb_agg(
+            CASE
+              WHEN elem->>'recipient' = ${canonicalPhone}
+                THEN jsonb_set(elem, '{recipient}', to_jsonb(${BROADCAST_RECIPIENT_REDACTED}::text))
+              ELSE elem
+            END
+            ORDER BY ord
+          )
+          FROM jsonb_array_elements(results) WITH ORDINALITY AS t(elem, ord)
+        )
+        WHERE results @> ${containmentFilter}::jsonb`
+  } catch (err) {
+    options?.log?.warn?.(
+      "[anonymize] broadcast-send results redaction skipped (best-effort)",
       { customerId, error: String(err) },
     )
   }

@@ -25,6 +25,7 @@ import {
   type PromptFragment,
 } from "@claustrum/core";
 import { IBATEXAS_CAPABILITY_DESCRIPTIONS } from "../../tools/register-ibatexas-tool-packs.js";
+import { resolvePrompt } from "./prompt-overrides.js";
 import {
   PLANNER_PERSONA,
   RESPONDER_GROUNDED_PERSONA_PTBR,
@@ -53,18 +54,31 @@ function surfaceOf(ctx: PromptContext): string | undefined {
   return typeof extra?.surface === "string" ? extra.surface : undefined;
 }
 
-/** A static fragment whose content + hash are fixed at registration. */
+/** A static fragment whose content resolves a live override (default fallback). */
 function staticFragment(
   id: string,
   surface: string,
   content: string,
 ): PromptFragment {
+  const resolved = (): string => resolvePrompt(id, content);
   return {
     id,
-    hash: hashFragmentContent(content),
+    // Hash is content-addressed to the CONTENT ACTUALLY USED, not the
+    // compiled-in default: a getter over the resolved text (a live override when
+    // active, else the default) so the turn_trace `id@hash` manifest is honest
+    // in both cases. With no override, resolved === default, so the recorded
+    // hash is unchanged and the golden surface + prompt-drift guard stay green.
+    get hash() {
+      return hashFragmentContent(resolved());
+    },
     priority: 0, // personas are inviolable (never evicted under budget pressure)
-    tokens: estimateTokens(content),
-    content: () => content,
+    // Token estimate mirrors the hash: a getter over the resolved text so a large
+    // active override reports its real size to the synthesizer's budget/eviction
+    // logic (with no override, resolved === default, so the estimate is unchanged).
+    get tokens() {
+      return estimateTokens(resolved());
+    },
+    content: () => resolved(),
     applies: (ctx) => surfaceOf(ctx) === surface,
   };
 }
@@ -72,13 +86,23 @@ function staticFragment(
 /** A capability-description fragment: applies on the grounded responder surface
  * when its capability was acted this turn (ctx.capabilities). */
 function capabilityFragment(kind: string, description: string): PromptFragment {
-  const content = `- ${kind}: ${description}`;
+  const id = `ibatexas/capability.${kind}`;
+  // Override replaces the DESCRIPTION; the `- kind:` framing is preserved.
+  const resolved = (): string => `- ${kind}: ${resolvePrompt(id, description)}`;
   return {
-    id: `ibatexas/capability.${kind}`,
-    hash: hashFragmentContent(content),
+    id,
+    // Content-addressed to the resolved text (override or default) so the
+    // recorded hash matches what was actually sent — see staticFragment.
+    get hash() {
+      return hashFragmentContent(resolved());
+    },
     priority: 10, // lower priority than personas; evictable under budget pressure
-    tokens: estimateTokens(content),
-    content: () => content,
+    // Token estimate mirrors the hash — a getter over the resolved text so an
+    // active override reports its real size (see staticFragment).
+    get tokens() {
+      return estimateTokens(resolved());
+    },
+    content: () => resolved(),
     applies: (ctx) =>
       surfaceOf(ctx) === RESPONDER_GROUNDED_SURFACE &&
       (ctx.capabilities ?? []).includes(kind),

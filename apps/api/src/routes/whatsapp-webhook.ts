@@ -67,7 +67,15 @@ import {
   type TurnDisposition,
 } from "../conversation/no-delivery.js";
 import { closeIncidentOnDeliveredReply } from "../incidents/incident-auto-close.js";
-import { matchShortcut, buildHelpText, buildWelcomeText, buildLoyaltyText } from "../whatsapp/shortcuts.js";
+import {
+  matchShortcut,
+  buildHelpText,
+  buildWelcomeText,
+  buildLoyaltyText,
+  buildOptOutConfirmationText,
+  buildOptInConfirmationText,
+} from "../whatsapp/shortcuts.js";
+import { getBroadcastOptOutStore } from "../broadcast/broadcast-optout.js";
 import { LGPD_OPTIN_MESSAGE } from "../whatsapp/constants.js";
 import { scheduleHesitationNudge, markCustomerReplied } from "../jobs/hesitation-nudge.js";
 import { schedulePixExpiryMonitor } from "../jobs/pix-expiry-monitor.js";
@@ -498,13 +506,45 @@ async function checkWebhookRateLimit(redis: Awaited<ReturnType<typeof getRedisCl
 
 export async function handleShortcut(
   shortcutType: string,
-  ctx?: { customerId?: string; sessionId: string },
+  ctx?: { customerId?: string; sessionId: string; phone?: string; log?: LogFn },
 ): Promise<string | null> {
   switch (shortcutType) {
     case "help":
       return buildHelpText();
     case "welcome":
       return buildWelcomeText();
+    case "optout":
+    case "optin": {
+      // WS3A — customer-initiated marketing opt-out/opt-in (STOP/voltar). Write
+      // durable consent keyed by the canonical phone, then confirm in pt-BR. On a
+      // write failure, fall through to the agent rather than ghosting/erroring.
+      if (!ctx?.phone) return null;
+      try {
+        const store = await getBroadcastOptOutStore();
+        if (shortcutType === "optout") {
+          await store.optOut(ctx.phone, "inbound_stop");
+          return buildOptOutConfirmationText();
+        }
+        await store.optIn(ctx.phone, "inbound_stop");
+        return buildOptInConfirmationText();
+      } catch (consentErr) {
+        // LGPD: a dropped inbound consent write (opt-OUT is legally significant)
+        // must never be swallowed silently — emit a structured error so it is
+        // visible in logs/alerting and reconstructable (phone hash + direction).
+        // We still fall through to the agent so the customer is never ghosted.
+        ctx.log?.error(
+          {
+            component: "whatsapp",
+            event: "consent_write_failed",
+            direction: shortcutType, // "optout" | "optin"
+            phone_hash: hashPhone(ctx.phone),
+            error: String(consentErr),
+          },
+          "[whatsapp.consent] Inbound consent write failed — LGPD opt-out/opt-in may be dropped",
+        );
+        return null;
+      }
+    }
     case "loyalty": {
       // CUS-067: answer loyalty keywords (fidelidade/selos/pontos) with the
       // REAL stamp balance instead of deflecting to the agent (a dead L2 read
@@ -680,6 +720,8 @@ async function tryShortcutOrStateMachine(
     const response = await handleShortcut(shortcut.type, {
       customerId: session.customerId,
       sessionId: session.sessionId,
+      phone,
+      log,
     });
     if (response) {
       await sendText(`whatsapp:${phone}`, mintBroadcastReply(response));
