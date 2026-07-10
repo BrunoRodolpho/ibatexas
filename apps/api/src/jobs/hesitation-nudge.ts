@@ -13,6 +13,7 @@ import type { Queue, Worker } from "bullmq";
 import { mintBroadcastReply } from "@adjudicate/core";
 import { sendText } from "../whatsapp/client.js";
 import logger from "../lib/logger.js";
+import { shouldSuppressPromotionalSend } from "../broadcast/broadcast-optout.js";
 import { createQueue, createWorker, type Job } from "./queue.js";
 
 const NUDGE_DELAY_MS = Number.parseInt(
@@ -49,6 +50,15 @@ async function processNudge(job: Job<NudgeJobData>): Promise<void> {
   if (replied) {
     // Customer already replied — skip nudge
     await redis.del(repliedKey);
+    return;
+  }
+
+  // WS3 / LGPD — the hesitation nudge is promotional; honor the opt-out.
+  if (await shouldSuppressPromotionalSend(phone, logger)) {
+    logger.info(
+      { phone_hash: phoneHash },
+      "[hesitation-nudge] suppressed (customer opted out of promotional messages)",
+    );
     return;
   }
 

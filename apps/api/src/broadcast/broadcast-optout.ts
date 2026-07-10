@@ -95,3 +95,42 @@ function prismaConsentDb(): BroadcastConsentDb {
 export async function getBroadcastOptOutStore(): Promise<BroadcastOptOutStore> {
   return createBroadcastOptOutStore(prismaConsentDb());
 }
+
+/** Loose logger shape — pino.Logger and FastifyBaseLogger both satisfy it. */
+export type OptOutGateLogger = { warn: (...args: unknown[]) => void };
+
+/**
+ * Send-time consent gate for PROMOTIONAL / marketing WhatsApp sends (WS3 / LGPD).
+ *
+ * Returns `true` when the recipient has opted out of promotional messages and the
+ * send MUST be suppressed. Reuses the SAME durable consent store
+ * (`customer_broadcast_consent`) honored by the manager-triggered blast path, so
+ * a customer who texted PARAR is respected on the AUTOMATED promo paths too
+ * (cart-recovery, hesitation nudge, loyalty_reward, review prompts). The recipient
+ * is canonicalized to E.164 by the store, so matching is format-independent.
+ *
+ * Call this ONLY for promotional categories. Transactional / operational messages
+ * (OTP, payment confirmations/receipts, order-status updates, incident/staff
+ * alerts) MUST NEVER be gated through here — suppressing one is a regression.
+ *
+ * FAIL-OPEN: a transient consent-read error must never block or crash a send. On
+ * error we log a warning and return `false` (the send proceeds), so a DB blip
+ * never costs a legitimate message. The `store` param is a test seam; production
+ * callers pass only `(recipient, log)`.
+ */
+export async function shouldSuppressPromotionalSend(
+  recipient: string,
+  log?: OptOutGateLogger,
+  store?: BroadcastOptOutStore,
+): Promise<boolean> {
+  try {
+    const optOutStore = store ?? (await getBroadcastOptOutStore());
+    return await optOutStore.isOptedOut(recipient);
+  } catch (err) {
+    log?.warn(
+      { error: String(err) },
+      "[broadcast-optout] promotional consent read failed — failing open (send proceeds)",
+    );
+    return false;
+  }
+}
