@@ -111,6 +111,72 @@ describe("matchOpsReplyToParked — pt-BR ops confirm-resume matcher", () => {
   });
 });
 
+// ── BKL-063: compound (multi-envelope) park → SEQUENTIAL, one-at-a-time resume ──
+//
+// claustrum 0.6.0 dispatch parks EVERY envelope of a compound REQUEST_CONFIRMATION
+// plan into `session.pendingConfirmations` (the adopter SessionStore appends each,
+// de-duped by intentHash — claustrum-bootstrap.ts:parkPendingConfirmation), so NO
+// envelope silently vanishes the way pre-0.6.0 dropped everything but envelopes[0].
+//
+// The RESUME is single-match by design and OWNED UPSTREAM: `matchToParked` returns
+// ONE `ParkedMatch` (the most-recently-parked on a bare "sim") and claustrum's
+// `resolveResume` (handle-turn.ts) re-adjudicates + audits exactly that one, then
+// unparks it. So a compound park is confirmed ONE ENVELOPE PER "sim", most-recent-
+// first — the MONEY-SAFE semantics: a single "sim" can never fire N money actions,
+// and each resumed EXECUTE is backed by its own fresh audited Decision. A specific
+// envelope can be targeted out-of-order by its `#hash` prefix. This test pins that
+// sequential behavior as PRODUCT behavior (unpark modeled as the store's pure
+// intentHash filter, mirroring redisSessionStore.unpark + resolveResume).
+describe("matchOpsReplyToParked — BKL-063 compound multi-park sequential resume", () => {
+  // The conductor's unpark-on-confirm, as a pure filter (redisSessionStore.unpark).
+  const unpark = (
+    list: ReadonlyArray<ParkedEnvelope>,
+    intentHash: string,
+  ): ParkedEnvelope[] => list.filter((p) => p.envelope.intentHash !== intentHash);
+
+  it("a single 'sim' resolves EXACTLY ONE envelope (most-recent), never both", () => {
+    const both = [P1, P2];
+    const m = matchOpsReplyToParked("sim", both);
+    expect(m?.userResolution).toBe("confirm");
+    expect(m?.parked).toBe(P2); // most recent only — P1 stays parked
+    // Money-safety: the matcher is pure — the park list is never mutated, so P1
+    // remains pending (the conductor unparks only the one it re-adjudicates).
+    expect(both).toEqual([P1, P2]);
+  });
+
+  it("both parked envelopes replay across TWO confirms (most-recent-first), none lost", () => {
+    // Turn 1: compound plan parked both → "sim" confirms the most recent (P2).
+    let pending: ParkedEnvelope[] = [P1, P2];
+    const first = matchOpsReplyToParked("sim", pending);
+    expect(first?.userResolution).toBe("confirm");
+    expect(first?.parked).toBe(P2);
+    // Conductor re-adjudicates + unparks P2.
+    pending = unpark(pending, P2.envelope.intentHash);
+    expect(pending).toEqual([P1]);
+    // Turn 2: the remaining envelope is still pending → the next "sim" confirms it.
+    const second = matchOpsReplyToParked("sim", pending);
+    expect(second?.userResolution).toBe("confirm");
+    expect(second?.parked).toBe(P1);
+    pending = unpark(pending, P1.envelope.intentHash);
+    expect(pending).toEqual([]); // both replayed — nothing silently vanished
+  });
+
+  it("a #hash prefix targets a SPECIFIC parked envelope out of the compound set", () => {
+    // Staff can confirm the older P1 first by addressing its hash — order-independent.
+    const m = matchOpsReplyToParked("#a4b8c1 confirma", [P1, P2]);
+    expect(m?.parked).toBe(P1);
+    expect(m?.userResolution).toBe("confirm");
+  });
+
+  it("a single 'não' denies EXACTLY ONE envelope (most-recent) — the rest stay parked", () => {
+    // Symmetry with confirm: a compound park is abandoned one envelope per reply, so
+    // a customer/staff never blanket-denies a whole compound plan with one word.
+    const m = matchOpsReplyToParked("não", [P1, P2]);
+    expect(m?.userResolution).toBe("deny");
+    expect(m?.parked).toBe(P2);
+  });
+});
+
 // ── Money-execution safety (BKL-085 hardening) ───────────────────────────────
 // A parked money action (e.g. a CONFIRM-band refund) may ONLY execute on a clear,
 // unambiguous yes; an unrelated fresh command must never abandon the park.
