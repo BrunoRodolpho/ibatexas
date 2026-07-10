@@ -265,7 +265,7 @@ export function registerRcaReadRoutes(server: FastifyInstance): void {
       if (conv !== null) {
         try {
           const adjRes = await pool().query(
-            `SELECT recorded_at, kind, decision_kind, refusal_code, taint
+            `SELECT recorded_at, kind, decision_kind, refusal_code, taint, session_id
              FROM intent_audit WHERE nonce LIKE $1 ORDER BY recorded_at`,
             [`${conv}:%`],
           );
