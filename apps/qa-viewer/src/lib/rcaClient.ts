@@ -157,6 +157,69 @@ export const fetchTurn = (cfg: QaConfig, turnId: string, window?: string | null)
     `/internal/qa/rca/turns/${encodeURIComponent(turnId)}${window ? `?window=${encodeURIComponent(window)}` : ""}`,
   ).then((r) => r.turn)
 
+/** One find-by-text hit from the audit ledger (ibx-find-msg.sh as a route).
+ *  Carries BOTH roles — a hit may be an assistant/store message. */
+export interface RcaFindHit {
+  recordedAt: string | null
+  role: string | null
+  decisionKind: string | null
+  text: string | null // matched content (server-redacted, 160ch)
+  sessionId: string | null // conversation id candidate from the nonce prefix
+  chatCuid: string | null
+  turnId: string | null // resolved turn — null when no trace matched
+}
+
+export const findMessages = (
+  cfg: QaConfig,
+  text: string,
+  range?: { from?: string | null; to?: string | null },
+): Promise<RcaFindHit[]> => {
+  const p = new URLSearchParams({ text })
+  if (range?.from) p.set("from", range.from)
+  if (range?.to) p.set("to", range.to)
+  return authedGetJson<{ hits: RcaFindHit[] }>(cfg, `/internal/qa/rca/find?${p.toString()}`).then(
+    (r) => r.hits,
+  )
+}
+
+export interface RcaMessage {
+  role: string | null
+  sentAt: string | null
+  text: string | null // server-redacted
+}
+
+export interface RcaTranscript {
+  messages: RcaMessage[]
+  /** true = the domain schema was unreachable (empty is NOT "no messages"). */
+  degraded: boolean
+}
+
+export const fetchTranscript = (cfg: QaConfig, sessionId: string): Promise<RcaTranscript> =>
+  authedGetJson<RcaTranscript>(
+    cfg,
+    `/internal/qa/rca/conversations/${encodeURIComponent(sessionId)}/messages`,
+  )
+
+export interface StoreProbe {
+  ok: boolean
+  latencyMs: number
+  error: string | null
+}
+
+/** Preflight: one reachability probe per store the workbench joins across,
+ *  plus the env facts that silently reshape the lanes (redact secret → ADJ
+ *  bridge arm 2; claims flag → 3-call vs 2-call turn shape). */
+export interface RcaStatus {
+  turnTrace: StoreProbe
+  intentAudit: StoreProbe
+  domain: StoreProbe
+  victoriaLogs: StoreProbe
+  flags: { redactSecretSet: boolean; claimsPipeline: boolean }
+}
+
+export const fetchStatus = (cfg: QaConfig): Promise<RcaStatus> =>
+  authedGetJson<{ status: RcaStatus }>(cfg, "/internal/qa/rca/status").then((r) => r.status)
+
 // ── Derived: LLM call classification (persona-based, NOT positional) ────────
 // With ENABLE_CLAIMS_PIPELINE on (the dev default) a turn runs THREE calls:
 // 0=planner, 1=claim-planner, 2=responder — so callIndex is not a role.
@@ -165,10 +228,24 @@ export type LlmPhase = "planner" | "claim-planner" | "responder" | null
 
 export function personaPhase(persona: string | null): LlmPhase {
   if (persona === null) return null
-  if (persona.startsWith("ibatexas/claim-planner")) return "claim-planner"
-  if (persona.startsWith("ibatexas/planner")) return "planner"
-  if (persona.startsWith("ibatexas/responder")) return "responder"
+  // The ops plane runs the same loop under ops/* personas (ops/planner.persona,
+  // ops/responder.grounded, …) — normalize so ops turns classify too instead
+  // of rendering every stage as "no call".
+  const p = persona.startsWith("ops/") ? `ibatexas/${persona.slice(4)}` : persona
+  if (p.startsWith("ibatexas/claim-planner")) return "claim-planner"
+  if (p.startsWith("ibatexas/planner")) return "planner"
+  if (p.startsWith("ibatexas/responder")) return "responder"
   return null
+}
+
+/** The persona manifest entry is content-addressed (`<catalogId>@<hash>`,
+ *  llm-trace.ts manifestWithHashes) — the id before the `@` IS the prompt
+ *  catalog id the Prompts editor navigates by. Null when the entry doesn't
+ *  look like a catalog id (defensive: never build a dead prompts link). */
+export function promptIdForPersona(persona: string | null): string | null {
+  if (persona === null) return null
+  const id = persona.split("@")[0] ?? ""
+  return id.includes("/") ? id : null
 }
 
 const callEmpty = (c: LlmCall): boolean => (c.outputTokens ?? 0) === 0 || (c.completion ?? "").trim() === ""
@@ -216,6 +293,9 @@ export interface TimelineEvent {
   detail?: string
   empty?: boolean
   gap?: boolean
+  /** LLM rows only: the prompt-catalog id of the call's persona — the
+   *  cross-tab jump target for the Prompts editor. */
+  promptId?: string
 }
 
 function ms(iso: string | null): number {
@@ -237,6 +317,7 @@ export function mergeTimeline(d: RcaTurnDetail): TimelineEvent[] {
     const empty = callEmpty(c)
     const phase = personaPhase(c.persona) ?? `call ${c.callIndex}`
     const head = empty ? "<EMPTY>" : (c.completion ?? "").slice(0, 120)
+    const promptId = promptIdForPersona(c.persona)
     out.push({
       tMs: ms(c.recordedAt),
       ts: c.recordedAt ?? "",
@@ -246,6 +327,7 @@ export function mergeTimeline(d: RcaTurnDetail): TimelineEvent[] {
         ? { detail: c.completion }
         : {}),
       ...(empty ? { empty: true } : {}),
+      ...(promptId !== null ? { promptId } : {}),
     })
   }
 

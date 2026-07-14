@@ -1,21 +1,32 @@
 // RCA "Turn forensics" workbench — the live-data view. Navigate conversations →
-// turns (filterable by time range + channel), then render one turn as a
-// tri-state pipeline + the ID-bridge dock + deep-links + the merged
-// [ADJ]/[LLM]/[VL] timeline with lane toggles and expandable rows. Read-only.
+// turns (filterable by time range + channel, or found by message text), then
+// render one turn as a preflight strip + tri-state pipeline + the ID-bridge
+// dock + deep-links + the merged [ADJ]/[LLM]/[VL] timeline with lane toggles
+// and expandable rows + a redacted transcript pane. Read-only.
+//
+// Deep-linkable: the selection lives in the URL hash (#rca/conv/…/turn/…,
+// lib/nav.ts) so investigations are shareable and other surfaces can jump in.
 //
 // Requires the dev bridge (VITE_QA_CONTROL_BASE/_TOKEN); without it the section
 // shows a configuration hint and the viewer stays a pure artifact browser.
 
 import { Fragment, useEffect, useMemo, useState, type KeyboardEvent } from "react"
+import { currentRoute, navigate, replaceRoute } from "../lib/nav"
 import {
   buildLinks,
   derivePipeline,
   fetchConversations,
+  fetchStatus,
+  fetchTranscript,
   fetchTurn,
   fetchTurns,
+  findMessages,
   mergeTimeline,
   rcaConfigured,
   type RcaConversation,
+  type RcaFindHit,
+  type RcaStatus,
+  type RcaTranscript,
   type RcaTurnDetail,
   type RcaTurnSummary,
   type StageState,
@@ -112,6 +123,14 @@ function loadPersisted(): PersistedState {
 export function RcaWorkbench() {
   const cfg = useMemo(() => rcaConfigured(), [])
   const saved = useMemo(loadPersisted, [])
+  // A deep link (#rca/conv/…/turn/…) outranks the sessionStorage restore —
+  // and when the hash carries ANY selection it is authoritative for BOTH
+  // fields (a jump to conv X must not inherit a stale saved turn of conv Y).
+  const hashRoute = useMemo(() => {
+    const r = currentRoute()
+    return r?.section === "rca" ? r : null
+  }, [])
+  const hashHasSel = hashRoute !== null && (hashRoute.conv !== undefined || hashRoute.turn !== undefined)
 
   // rail filters
   const [q, setQ] = useState(saved.q ?? "")
@@ -123,10 +142,14 @@ export function RcaWorkbench() {
   // navigation
   const [convs, setConvs] = useState<RcaConversation[]>([])
   const [convErr, setConvErr] = useState<string | null>(null)
-  const [selConv, setSelConv] = useState<string | null>(saved.selConv ?? null)
+  const [selConv, setSelConv] = useState<string | null>(
+    hashHasSel ? (hashRoute.conv ?? null) : (saved.selConv ?? null),
+  )
   const [turns, setTurns] = useState<RcaTurnSummary[]>([])
   const [turnsErr, setTurnsErr] = useState<string | null>(null)
-  const [selTurn, setSelTurn] = useState<string | null>(saved.selTurn ?? null)
+  const [selTurn, setSelTurn] = useState<string | null>(
+    hashHasSel ? (hashRoute.turn ?? null) : (saved.selTurn ?? null),
+  )
 
   // turn detail
   const [detail, setDetail] = useState<RcaTurnDetail | null>(null)
@@ -140,6 +163,20 @@ export function RcaWorkbench() {
   const [evFilter, setEvFilter] = useState("")
   const [absTime, setAbsTime] = useState(false)
   const [expanded, setExpanded] = useState<ReadonlySet<number>>(new Set())
+
+  // preflight store probes (re-run on manual refresh)
+  const [status, setStatus] = useState<RcaStatus | null>(null)
+
+  // find-by-text over the audit ledger
+  const [findQ, setFindQ] = useState("")
+  const [findHits, setFindHits] = useState<RcaFindHit[] | null>(null)
+  const [findErr, setFindErr] = useState<string | null>(null)
+  const [findBusy, setFindBusy] = useState(false)
+
+  // redacted transcript of the selected conversation (lazy: fetched on open)
+  const [transcript, setTranscript] = useState<RcaTranscript | null>(null)
+  const [transcriptOpen, setTranscriptOpen] = useState(false)
+  const [transcriptErr, setTranscriptErr] = useState<string | null>(null)
 
   useEffect(() => {
     const s: PersistedState = {
@@ -157,6 +194,33 @@ export function RcaWorkbench() {
       /* storage full/blocked — persistence is best-effort */
     }
   }, [q, fromLocal, toLocal, preset, channelSel, selConv, selTurn])
+
+  // Deep-link plumbing: reflect the selection into the URL (replace — no
+  // history spam; replaceState never fires hashchange, so no listener loop),
+  // and follow cross-surface jumps that land while this section is mounted.
+  useEffect(() => {
+    replaceRoute({
+      section: "rca",
+      ...(selConv !== null ? { conv: selConv } : {}),
+      ...(selTurn !== null ? { turn: selTurn } : {}),
+    })
+  }, [selConv, selTurn])
+
+  useEffect(() => {
+    const onHash = () => {
+      const r = currentRoute()
+      if (r === null || r.section !== "rca") return
+      if (r.conv !== undefined) setSelConv(r.conv)
+      if (r.turn !== undefined) {
+        setSelTurn(r.turn)
+      } else if (r.conv !== undefined) {
+        setSelTurn(null)
+        setDetail(null)
+      }
+    }
+    window.addEventListener("hashchange", onHash)
+    return () => window.removeEventListener("hashchange", onHash)
+  }, [])
 
   const fromIso = useMemo(() => {
     if (preset !== "custom") {
@@ -209,6 +273,55 @@ export function RcaWorkbench() {
       })
       .finally(() => setLoading(false))
   }, [cfg, selTurn, vlWindow, refreshTick])
+
+  // A bare #rca/turn/<id> deep link resolves its conversation from the loaded
+  // detail — adopt it so the rail highlights and loads the turn list.
+  useEffect(() => {
+    if (detail === null) return
+    const conv = detail.context.conversationId
+    if (conv !== null) setSelConv((prev) => (prev === conv ? prev : conv))
+  }, [detail])
+
+  // preflight probes — on mount and on every manual refresh
+  useEffect(() => {
+    if (cfg === null) return
+    fetchStatus(cfg)
+      .then(setStatus)
+      .catch(() => setStatus(null))
+  }, [cfg, refreshTick])
+
+  // transcript resets with the conversation; fetched lazily when opened
+  useEffect(() => {
+    setTranscript(null)
+    setTranscriptErr(null)
+  }, [selConv])
+  useEffect(() => {
+    if (cfg === null || selConv === null || !transcriptOpen || transcript !== null) return
+    fetchTranscript(cfg, selConv)
+      .then(setTranscript)
+      .catch((e: unknown) => setTranscriptErr((e as Error).message))
+  }, [cfg, selConv, transcriptOpen, transcript])
+
+  const runFind = () => {
+    if (cfg === null || findQ.trim().length < 2) return
+    setFindBusy(true)
+    setFindErr(null)
+    findMessages(cfg, findQ.trim(), { from: fromIso, to: toIso })
+      .then(setFindHits)
+      .catch((e: unknown) => {
+        setFindHits([])
+        setFindErr((e as Error).message)
+      })
+      .finally(() => setFindBusy(false))
+  }
+
+  const jumpToHit = (h: RcaFindHit) => {
+    if (h.sessionId === null) return
+    setSelConv(h.sessionId)
+    setTurnsErr(null)
+    setSelTurn(h.turnId)
+    setDetail(null)
+  }
 
   if (cfg === null) {
     return (
@@ -303,6 +416,58 @@ export function RcaWorkbench() {
         onNone={() => setChannelSel(new Set())}
         emptyHint="no conversations loaded"
       />
+      <RailSection title="Find message">
+        <div className="find">
+          <input
+            className="rail__search"
+            type="search"
+            value={findQ}
+            placeholder="text in any message…"
+            onChange={(e) => setFindQ(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") runFind()
+            }}
+          />
+          <button
+            type="button"
+            className="chip"
+            onClick={runFind}
+            disabled={findBusy || findQ.trim().length < 2}
+          >
+            {findBusy ? "…" : "find"}
+          </button>
+        </div>
+        {findErr !== null && <div className="rail__empty">error: {findErr}</div>}
+        {findHits !== null && findErr === null && (
+          <div className="find__hits">
+            {findHits.map((h, i) => (
+              <div
+                key={i}
+                className={`find__hit ${h.turnId === null ? "find__hit--dead" : ""}`}
+                role="button"
+                tabIndex={0}
+                onClick={() => jumpToHit(h)}
+                onKeyDown={keyActivate(() => jumpToHit(h))}
+                title={
+                  h.turnId === null
+                    ? "no turn matched this message's conversation"
+                    : "jump to this turn"
+                }
+              >
+                <span className="find__meta">
+                  {shortDateTime(h.recordedAt)} · {h.role ?? "?"}
+                  {h.turnId === null ? " · no turn" : ""}
+                </span>
+                <span className="find__text">{h.text}</span>
+              </div>
+            ))}
+            {findHits.length === 0 && <div className="rail__empty">no matches in the ledger</div>}
+          </div>
+        )}
+        <p className="rail__note">
+          searches archived message content, both roles · honors the time range above
+        </p>
+      </RailSection>
       <RailSection title="Conversations">
         {convErr !== null && <div className="rail__empty">error: {convErr}</div>}
         <div className="conv-tree">
@@ -373,9 +538,53 @@ export function RcaWorkbench() {
     </>
   )
 
+  const turnSpan =
+    detail !== null && detail.context.startedAt !== null
+      ? {
+          s: Date.parse(detail.context.startedAt) - 5_000,
+          e: Date.parse(detail.context.endedAt ?? detail.context.startedAt) + 20_000,
+        }
+      : null
+
   return (
     <Workbench rail={rail}>
       <div className="rca">
+        {status !== null && (
+          <div className="preflight">
+            <span className="preflight__title">preflight</span>
+            {(
+              [
+                ["turnTrace", "turn_trace"],
+                ["intentAudit", "intent_audit"],
+                ["domain", "domain"],
+                ["victoriaLogs", "VictoriaLogs"],
+              ] as const
+            ).map(([key, label]) => (
+              <span
+                key={key}
+                className={`preflight__item ${
+                  status[key].ok ? "preflight__item--ok" : "preflight__item--down"
+                }`}
+                title={status[key].error ?? `${status[key].latencyMs}ms`}
+              >
+                <span className="preflight__dot" />
+                {label}
+              </span>
+            ))}
+            <span className="preflight__item">
+              claims {status.flags.claimsPipeline ? "on (3-call turns)" : "off"}
+            </span>
+            {!status.flags.redactSecretSet && (
+              <span
+                className="preflight__item preflight__item--warn"
+                title="AUDIT_REDACT_SECRET unset — ADJ bridge arm 2 (session hash) may mismatch the writer"
+              >
+                ⚠ redact secret unset
+              </span>
+            )}
+          </div>
+        )}
+
         {detail === null && !loading && (
           <div className="rca__empty">Select a conversation, then a turn to inspect.</div>
         )}
@@ -629,6 +838,20 @@ export function RcaWorkbench() {
                         <td className="trace-table__detail">
                           {e.text}
                           {e.empty === true && <span className="empty-chip">empty</span>}
+                          {e.promptId !== undefined && (
+                            <button
+                              type="button"
+                              className="chip chip--mini"
+                              onClick={(ev) => {
+                                ev.stopPropagation()
+                                const pid = e.promptId
+                                if (pid !== undefined) navigate({ section: "prompts", promptId: pid })
+                              }}
+                              title="Open this persona in the Prompts editor"
+                            >
+                              prompt ▸
+                            </button>
+                          )}
                           {e.detail !== undefined && (
                             <span className="expand-hint">{expanded.has(i) ? "▾" : "▸"}</span>
                           )}
@@ -654,6 +877,67 @@ export function RcaWorkbench() {
               </table>
             </div>
           </>
+        )}
+
+        {/* redacted transcript — per conversation, lazy-fetched on open */}
+        {selConv !== null && (
+          <div className="card">
+            <div className="card__hd">
+              <h2>Transcript</h2>
+              <button
+                type="button"
+                className="chip"
+                onClick={() => setTranscriptOpen((v) => !v)}
+              >
+                {transcriptOpen ? "hide" : "show"}
+              </button>
+              <span className="hint">
+                archived messages · server-redacted
+                {transcript !== null && !transcript.degraded
+                  ? ` · ${transcript.messages.length}`
+                  : ""}
+                {detail !== null ? " · selected turn highlighted" : ""}
+              </span>
+            </div>
+            {transcriptOpen && (
+              <div className="transcript">
+                {transcriptErr !== null && <div className="rail__empty">error: {transcriptErr}</div>}
+                {transcript?.degraded === true && (
+                  <div className="callout callout--warn">
+                    domain schema unreachable — an empty transcript is <b>not</b> evidence of no
+                    messages here.
+                  </div>
+                )}
+                {(transcript?.messages ?? []).map((m, i) => {
+                  const at = m.sentAt !== null ? Date.parse(m.sentAt) : Number.NaN
+                  const inTurn =
+                    turnSpan !== null && Number.isFinite(at) && at >= turnSpan.s && at <= turnSpan.e
+                  return (
+                    <div
+                      key={i}
+                      className={`tr-msg ${m.role === "user" ? "tr-msg--user" : "tr-msg--bot"} ${
+                        inTurn ? "tr-msg--turn" : ""
+                      }`}
+                    >
+                      <span className="tr-msg__meta">
+                        {shortDateTime(m.sentAt)} · {m.role ?? "?"}
+                        {inTurn ? " · this turn" : ""}
+                      </span>
+                      <div className="tr-msg__text">{m.text}</div>
+                    </div>
+                  )
+                })}
+                {transcript !== null && !transcript.degraded && transcript.messages.length === 0 && (
+                  <div className="rail__empty">
+                    no archived messages (ops-plane conversations have no domain row)
+                  </div>
+                )}
+                {transcript === null && transcriptErr === null && (
+                  <div className="rail__empty">loading…</div>
+                )}
+              </div>
+            )}
+          </div>
         )}
       </div>
     </Workbench>

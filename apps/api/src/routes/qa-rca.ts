@@ -2,6 +2,10 @@
 // "Turn forensics" workbench. Server-side reimplementation of the ibx-rca
 // skill's ibx-trace-turn.sh: merge [LLM] turn_trace + [ADJ] intent_audit +
 // [VL] VictoriaLogs for one turn, and list conversations/turns to navigate to.
+// Plus: find-by-text over the audit ledger's archived messages (the skill's
+// ibx-find-msg.sh as a route, resolved to jumpable turns), a redacted
+// per-conversation transcript, and a preflight status probe of all three
+// stores (the skill's step-0 discipline as an endpoint).
 //
 // READ-ONLY + DEV-ONLY: these routes are registered INSIDE qaControlRoutes,
 // AFTER its qaControlGate() early-return + timing-safe Bearer preHandler, so
@@ -249,6 +253,24 @@ function vlFields(l: VlRaw): Record<string, string> | null {
   return out;
 }
 
+// ── preflight probe ─────────────────────────────────────────────────────────
+
+interface StoreProbe {
+  ok: boolean;
+  latencyMs: number;
+  error: string | null;
+}
+
+async function probeStore(fn: () => Promise<unknown>): Promise<StoreProbe> {
+  const t0 = Date.now();
+  try {
+    await fn();
+    return { ok: true, latencyMs: Date.now() - t0, error: null };
+  } catch (err) {
+    return { ok: false, latencyMs: Date.now() - t0, error: (err as Error).message };
+  }
+}
+
 // ── routes ──────────────────────────────────────────────────────────────────
 
 /** Register the read-only RCA routes. Call from inside qaControlRoutes, after
@@ -292,18 +314,55 @@ export function registerRcaReadRoutes(server: FastifyInstance): void {
       params.push(to);
       where.push(`t.recorded_at <= $${params.length}`);
     }
-    // Channel filtering happens post-enrichment (turn_trace has no channel), so
-    // over-fetch the shortlist when a channel filter narrows it afterwards.
-    params.push(channels !== null ? 200 : limit);
-    const { rows } = await pool().query(
-      `SELECT t.conversation_id AS session_id, min(t.recorded_at) AS started_at,
-              max(t.recorded_at) AS last_at, count(DISTINCT t.turn_id) AS turns
-       FROM turn_trace t ${where.length > 0 ? `WHERE ${where.join(" AND ")}` : ""}
-       GROUP BY t.conversation_id
-       ORDER BY last_at DESC
-       LIMIT $${params.length}`,
-      params,
-    );
+    // Channel pushdown: filter in SQL on the SAME expression channelFor()
+    // computes client-side (domain row's channel; synthetic 'ops' for admin:*;
+    // 'unknown' when no row) so LIMIT means "N matching conversations", not
+    // "whatever survived an over-fetched shortlist". Falls back to the old
+    // join-free query + post-enrichment filter if the domain schema is
+    // unavailable (the LEFT JOIN itself would then error).
+    let rows: unknown[] | undefined;
+    let pushedDown = false;
+    if (channels !== null) {
+      try {
+        const p2: unknown[] = [...params, [...channels]];
+        const chCond = `COALESCE(c.channel, CASE WHEN t.conversation_id LIKE 'admin:%' THEN 'ops' ELSE 'unknown' END) = ANY($${p2.length})`;
+        p2.push(limit);
+        rows = (
+          await pool().query(
+            `SELECT t.conversation_id AS session_id, min(t.recorded_at) AS started_at,
+                    max(t.recorded_at) AS last_at, count(DISTINCT t.turn_id) AS turns
+             FROM turn_trace t
+             LEFT JOIN ibx_domain.conversations c ON c.session_id = t.conversation_id
+             WHERE ${[...where, chCond].join(" AND ")}
+             GROUP BY t.conversation_id
+             ORDER BY last_at DESC
+             LIMIT $${p2.length}`,
+            p2,
+          )
+        ).rows;
+        pushedDown = true;
+      } catch (err) {
+        logger.warn(
+          { component: "qa-rca", err: (err as Error).message },
+          "channel pushdown unavailable — falling back to post-enrichment filter",
+        );
+      }
+    }
+    if (rows === undefined) {
+      // Over-fetch the shortlist when a channel filter narrows it afterwards.
+      params.push(channels !== null ? 200 : limit);
+      rows = (
+        await pool().query(
+          `SELECT t.conversation_id AS session_id, min(t.recorded_at) AS started_at,
+                  max(t.recorded_at) AS last_at, count(DISTINCT t.turn_id) AS turns
+           FROM turn_trace t ${where.length > 0 ? `WHERE ${where.join(" AND ")}` : ""}
+           GROUP BY t.conversation_id
+           ORDER BY last_at DESC
+           LIMIT $${params.length}`,
+          params,
+        )
+      ).rows;
+    }
 
     // Best-effort enrichment: channel + chat cuid + last archived message from
     // the domain schema. Message content is redacted server-side (see header).
@@ -359,7 +418,7 @@ export function registerRcaReadRoutes(server: FastifyInstance): void {
           turnCount: num(row.turns) ?? 0,
         };
       })
-      .filter((c) => channels === null || channels.has(c.channel))
+      .filter((c) => pushedDown || channels === null || channels.has(c.channel))
       .slice(0, limit);
 
     return { conversations };
@@ -388,7 +447,8 @@ export function registerRcaReadRoutes(server: FastifyInstance): void {
       const { rows } = await pool().query(
         `SELECT turn_id, min(recorded_at) AS started_at, max(recorded_at) AS ended_at,
                 count(*) AS calls,
-                bool_or(prompt_manifest->>0 LIKE 'ibatexas/responder%'
+                bool_or((prompt_manifest->>0 LIKE 'ibatexas/responder%'
+                         OR prompt_manifest->>0 LIKE 'ops/responder%')
                         AND (output_tokens = 0 OR length(btrim(coalesce(completion, ''))) = 0)) AS responder_empty
          FROM turn_trace WHERE conversation_id = $1${range}
          GROUP BY turn_id ORDER BY started_at DESC LIMIT 200`,
@@ -666,4 +726,188 @@ export function registerRcaReadRoutes(server: FastifyInstance): void {
       };
     },
   );
+
+  // ── find a message by text (ibx-find-msg.sh as a route) ───────────────────
+  // Searches the audit ledger's archived message content (populated on
+  // conversation.message.append envelopes; carries BOTH roles — a hit may be
+  // an assistant/store message, not the user's text), then resolves each hit
+  // to the turn whose span the message landed in so the rail can jump straight
+  // to it. Content is server-redacted like every other string served here.
+  server.get<{ Querystring: { text?: string; limit?: string; from?: string; to?: string } }>(
+    "/internal/qa/rca/find",
+    RL,
+    async (request, reply) => {
+      const text =
+        typeof request.query.text === "string" ? request.query.text.trim().slice(0, 120) : "";
+      if (text.length < 2) return reply.code(400).send({ error: "text must be at least 2 characters" });
+      const limit = Math.min(Math.max(num(request.query.limit) ?? 20, 1), 50);
+      const from = isoParam(request.query.from);
+      const to = isoParam(request.query.to);
+
+      // Escape LIKE wildcards so the user's text is a literal substring match.
+      const needle = `%${text.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+      const params: unknown[] = [needle];
+      let range = "";
+      if (from !== null) {
+        params.push(from);
+        range += ` AND recorded_at >= $${params.length}`;
+      }
+      if (to !== null) {
+        params.push(to);
+        range += ` AND recorded_at <= $${params.length}`;
+      }
+      params.push(limit);
+      const { rows } = await pool().query(
+        `SELECT recorded_at, decision_kind, nonce,
+                envelope_jsonb->'payload'->>'role' AS role,
+                envelope_jsonb->'payload'->>'content' AS content,
+                envelope_jsonb->'payload'->>'conversationId' AS chat_cuid
+         FROM intent_audit
+         WHERE envelope_jsonb->'payload'->>'content' ILIKE $1${range}
+         ORDER BY recorded_at DESC LIMIT $${params.length}`,
+        params,
+      );
+
+      // Archiver nonces are `<sessionId>:<sentAt>:<idx>` — but the ops plane's
+      // sessionId is itself `admin:<staffId>`, so the conversation-id candidate
+      // is the first segment OR the first two joined. Try both against
+      // turn_trace; whichever exists there is the real conversation_id.
+      const hits = rows.map((r) => {
+        const row = r as Record<string, unknown>;
+        const content = str(row.content);
+        const nonceParts = (str(row.nonce) ?? "").split(":");
+        const candidates = [nonceParts[0] ?? ""];
+        if (nonceParts.length > 2) candidates.push(`${nonceParts[0]}:${nonceParts[1]}`);
+        return {
+          recordedAt: iso(row.recorded_at),
+          atMs:
+            row.recorded_at instanceof Date
+              ? row.recorded_at.getTime()
+              : Date.parse(str(row.recorded_at) ?? ""),
+          candidates: candidates.filter((c) => c.length > 0),
+          role: str(row.role),
+          decisionKind: str(row.decision_kind),
+          text: content !== null ? redactText(content).slice(0, 160) : null,
+          sessionId: nonceParts[0] ?? null,
+          chatCuid: str(row.chat_cuid),
+          turnId: null as string | null,
+        };
+      });
+
+      // Resolve each hit to the latest turn of its conversation that started
+      // before the message landed (+15s slack: the archiver's assistant append
+      // is recorded just after the turn's last trace row). Best-effort.
+      const ids = [...new Set(hits.flatMap((h) => h.candidates))];
+      if (ids.length > 0) {
+        try {
+          const t = await pool().query(
+            `SELECT conversation_id, turn_id, min(recorded_at) AS started_at
+             FROM turn_trace WHERE conversation_id = ANY($1)
+             GROUP BY conversation_id, turn_id ORDER BY started_at`,
+            [ids],
+          );
+          const byConv = new Map<string, Array<{ turnId: string; startMs: number }>>();
+          for (const r of t.rows as Array<Record<string, unknown>>) {
+            const conv = str(r.conversation_id) ?? "";
+            const turnId = str(r.turn_id) ?? "";
+            const startMs =
+              r.started_at instanceof Date ? r.started_at.getTime() : Date.parse(str(r.started_at) ?? "");
+            if (!Number.isFinite(startMs) || turnId.length === 0) continue;
+            const list = byConv.get(conv) ?? [];
+            list.push({ turnId, startMs });
+            byConv.set(conv, list);
+          }
+          for (const h of hits) {
+            const conv = h.candidates.find((c) => byConv.has(c));
+            if (conv === undefined || !Number.isFinite(h.atMs)) continue;
+            h.sessionId = conv;
+            let best: string | null = null;
+            for (const tr of byConv.get(conv)!) {
+              if (tr.startMs <= h.atMs + 15_000) best = tr.turnId;
+              else break;
+            }
+            h.turnId = best;
+          }
+        } catch (err) {
+          logger.warn({ component: "qa-rca", err: (err as Error).message }, "find turn resolution skipped");
+        }
+      }
+
+      return { hits: hits.map(({ atMs: _a, candidates: _c, ...h }) => h) };
+    },
+  );
+
+  // ── redacted transcript of one conversation ────────────────────────────────
+  // The archived domain messages (both roles, sent order) — content is NOT
+  // redacted at write, so every string passes the audit redactor here. The
+  // ops plane has no domain row → empty transcript, degraded:false. A domain
+  // schema outage degrades to empty WITH the flag (absence-is-signal rule).
+  server.get<{ Params: { conv: string }; Querystring: { limit?: string } }>(
+    "/internal/qa/rca/conversations/:conv/messages",
+    RL,
+    async (request, reply) => {
+      const conv = request.params.conv;
+      if (!SAFE_ID.test(conv)) return reply.code(400).send({ error: "invalid conversation id" });
+      const limit = Math.min(Math.max(num(request.query.limit) ?? 200, 1), 500);
+      try {
+        const { rows } = await pool().query(
+          `SELECT m.role, m.content, m.sent_at
+           FROM ibx_domain.conversations c
+           JOIN ibx_domain.conversation_messages m ON m.conversation_id = c.id
+           WHERE c.session_id = $1 ORDER BY m.sent_at LIMIT $2`,
+          [conv, limit],
+        );
+        return {
+          messages: rows.map((r) => {
+            const row = r as Record<string, unknown>;
+            const content = str(row.content);
+            return {
+              role: str(row.role),
+              sentAt: iso(row.sent_at),
+              text: content !== null ? redactText(content).slice(0, 2000) : null,
+            };
+          }),
+          degraded: false,
+        };
+      } catch (err) {
+        logger.warn({ component: "qa-rca", err: (err as Error).message }, "transcript degraded to empty");
+        return { messages: [], degraded: true };
+      }
+    },
+  );
+
+  // ── preflight status (the skill's step-0 discipline as an endpoint) ───────
+  // One cheap reachability probe per store the workbench joins across, plus
+  // the two env facts that silently reshape what the lanes can show: the
+  // audit-redact secret (arm 2 of the ADJ bridge recomputes its hash — unset
+  // here while set on the writer means arm 2 misses everything) and the
+  // claims-pipeline flag (claims-ON turns run 3 LLM calls, not 2).
+  server.get("/internal/qa/rca/status", RL, async () => {
+    const [turnTrace, intentAudit, domain, victoriaLogs] = await Promise.all([
+      probeStore(() => pool().query("SELECT 1 FROM turn_trace LIMIT 1")),
+      probeStore(() => pool().query("SELECT 1 FROM intent_audit LIMIT 1")),
+      probeStore(() => pool().query("SELECT 1 FROM ibx_domain.conversation_messages LIMIT 1")),
+      probeStore(async () => {
+        const res = await fetch(`${stripTrailingSlashes(VICTORIALOGS_URL)}/health`, {
+          signal: AbortSignal.timeout(3_000),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      }),
+    ]);
+    return {
+      status: {
+        turnTrace,
+        intentAudit,
+        domain,
+        victoriaLogs,
+        flags: {
+          redactSecretSet: (process.env.AUDIT_REDACT_SECRET ?? "") !== "",
+          // Same check as claimsPipelineEnabled() (claustrum/claims-pipeline.ts)
+          // — read directly so this dev-only route doesn't import the claims
+          // pipeline wiring just for one env flag.
+          claimsPipeline: process.env.ENABLE_CLAIMS_PIPELINE === "true",
+        },
+      },
+    };
+  });
 }
