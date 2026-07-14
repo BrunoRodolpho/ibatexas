@@ -414,6 +414,10 @@ export interface PipelineStage {
 
 const ARCHIVER_KIND = "conversation.message.append"
 
+/** Most-governance-significant decision first (mirrors the API route's
+ *  DECISION_SEVERITY): a REFUSE outranks the EXECUTEs around it. */
+const DECISION_SEVERITY = ["REFUSE", "ESCALATE", "REQUEST_CONFIRMATION", "DEFER", "REWRITE", "EXECUTE"] as const
+
 /** Tri-state, never a bare ✓/✗ — because half the stages fail silently (no row,
  *  no log). Derived from presence/absence, honoring absence-is-signal — and
  *  honoring lane degradation: a degraded lane reads "silent", never "ok"/"off". */
@@ -436,9 +440,7 @@ export function derivePipeline(d: RcaTurnDetail): PipelineStage[] {
   const mutations = d.adj.filter((a) => a.kind !== ARCHIVER_KIND)
   const decided = mutations.filter((a) => a.decisionKind !== null)
   const kernelPick =
-    ["REFUSE", "ESCALATE", "REQUEST_CONFIRMATION", "DEFER", "REWRITE", "EXECUTE"].find((k) =>
-      decided.some((a) => a.decisionKind === k),
-    ) ?? decided[0]?.decisionKind
+    DECISION_SEVERITY.find((k) => decided.some((a) => a.decisionKind === k)) ?? decided[0]?.decisionKind
   const kernel: PipelineStage = degraded.adj
     ? { key: "kernel", label: "Kernel", state: "silent", sub: "ADJ degraded" }
     : mutations.length === 0

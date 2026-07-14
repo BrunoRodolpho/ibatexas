@@ -450,7 +450,7 @@ export function RcaWorkbench() {
                 onKeyDown={keyActivate(() => jumpToHit(h))}
                 title={
                   h.turnId === null
-                    ? "no turn matched this message's conversation"
+                    ? "no matching turn — open the conversation"
                     : "jump to this turn"
                 }
               >

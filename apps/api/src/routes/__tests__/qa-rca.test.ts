@@ -318,6 +318,36 @@ describe("qa-rca — find message by text", () => {
     expect(res.json().hits[0]).toMatchObject({ sessionId: "orphan-uuid", turnId: null });
     await app.close();
   });
+
+  it("defaults an unresolved ops hit to admin:<staffId>, never the bare 'admin' segment", async () => {
+    db.query = async (sql: string) => {
+      if (sql.includes("envelope_jsonb->'payload'->>'content' ILIKE")) {
+        return {
+          rows: [
+            {
+              recorded_at: "2026-07-09T11:00:03.000Z",
+              decision_kind: "EXECUTE",
+              nonce: "admin:staff1:2026-07-09T11:00:02.000Z:0",
+              role: "assistant",
+              content: "pedido cancelado",
+              chat_cuid: null,
+            },
+          ],
+        };
+      }
+      // no turn_trace match → resolution can't override the default.
+      return { rows: [] };
+    };
+    const app = await build();
+    const res = await app.inject({
+      method: "GET",
+      url: "/internal/qa/rca/find?text=cancelado",
+      headers: AUTH,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().hits[0]).toMatchObject({ sessionId: "admin:staff1", turnId: null });
+    await app.close();
+  });
 });
 
 // ── transcript ────────────────────────────────────────────────────────────────

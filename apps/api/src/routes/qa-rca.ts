@@ -229,6 +229,7 @@ const VL_FIELD_ALLOWLIST = [
   "validatedTypes",
   "droppedClaimTypes",
   "candidateTypes",
+  "deliveredText", // reply.sent's canonical delivered boolean (== textSent || pixDelivered)
   "textSent",
   "pixDelivered",
   "channel",
@@ -612,14 +613,14 @@ export function registerRcaReadRoutes(server: FastifyInstance): void {
               `SELECT recorded_at, kind, decision_kind, refusal_kind, refusal_code,
                       taint, principal, decision_basis, duration_ms, nonce, session_id,
                       intent_hash, supersedes_jsonb,
-                      CASE WHEN intent_hash = ANY($5) THEN 'turn'
+                      CASE WHEN intent_hash = ANY($5::text[]) THEN 'turn'
                            WHEN nonce LIKE $1 THEN 'system'
                            ELSE 'session' END AS scope
                FROM intent_audit
                WHERE ((nonce LIKE $1 OR session_id = $2)
                       AND recorded_at BETWEEN $3::timestamptz - interval '${ADJ_SLACK_BEFORE}'
                                           AND $4::timestamptz + interval '${ADJ_SLACK_AFTER}')
-                  OR intent_hash = ANY($5)
+                  OR intent_hash = ANY($5::text[])
                ORDER BY recorded_at`,
               [`${conv}:%`, auditSessionHash(conv), startedAt, endedAt, hashes],
             );
@@ -778,6 +779,14 @@ export function registerRcaReadRoutes(server: FastifyInstance): void {
         const nonceParts = (str(row.nonce) ?? "").split(":");
         const candidates = [nonceParts[0] ?? ""];
         if (nonceParts.length > 2) candidates.push(`${nonceParts[0]}:${nonceParts[1]}`);
+        // Best pre-resolution guess for the conversation id: the ops plane's
+        // sessionId is itself `admin:<staffId>` (two segments), so single-segment
+        // `admin` is never a real conversation id. Resolution below overrides this
+        // once a candidate matches turn_trace; this only shapes the unresolved row.
+        const defaultConv =
+          nonceParts[0] === "admin" && nonceParts.length > 2
+            ? `${nonceParts[0]}:${nonceParts[1]}`
+            : (nonceParts[0] ?? null);
         return {
           recordedAt: iso(row.recorded_at),
           atMs:
@@ -788,7 +797,7 @@ export function registerRcaReadRoutes(server: FastifyInstance): void {
           role: str(row.role),
           decisionKind: str(row.decision_kind),
           text: content !== null ? redactText(content).slice(0, 160) : null,
-          sessionId: nonceParts[0] ?? null,
+          sessionId: defaultConv,
           chatCuid: str(row.chat_cuid),
           turnId: null as string | null,
         };

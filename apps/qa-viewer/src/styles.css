@@ -707,7 +707,8 @@ code, pre { font-family: var(--mono); font-size: 12px; }
 .find__hits { margin-top: 7px; display: flex; flex-direction: column; gap: 4px; max-height: 230px; overflow-y: auto; }
 .find__hit { border: 1px solid var(--line); border-radius: 7px; padding: 4px 7px; cursor: pointer; }
 .find__hit:hover { background: var(--panel-2); border-color: var(--accent-line); }
-.find__hit--dead { opacity: 0.55; cursor: default; }
+/* no resolved turn, but still navigable to its conversation — dimmed, not disabled */
+.find__hit--dead { opacity: 0.6; }
 .find__meta { display: block; font-family: var(--mono); font-size: 9.5px; color: var(--ink-3); }
 .find__text { display: block; font-size: 10.5px; color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rail__note { margin: 7px 0 0; font-size: 9.5px; color: var(--ink-3); line-height: 1.4; }

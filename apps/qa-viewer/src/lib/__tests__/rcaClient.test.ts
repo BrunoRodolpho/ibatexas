@@ -186,6 +186,11 @@ describe("derivePipeline — send stage (reply.sent is the verdict)", () => {
     expect(stage(d, "send")).toMatchObject({ state: "ok", sub: "delivered" })
   })
 
+  it("delivered via the canonical deliveredText boolean (server now carries it)", () => {
+    const d = D({ vl: [vl({ fields: { event: "reply.sent", disposition: "deliverable", deliveredText: "true" } })] })
+    expect(stage(d, "send")).toMatchObject({ state: "ok", sub: "delivered" })
+  })
+
   it("paused suppression is designed silence, not a failure", () => {
     const d = D({ vl: [vl({ fields: { event: "reply.sent", disposition: "suppressed_paused" } })] })
     expect(stage(d, "send")).toMatchObject({ state: "ok", sub: "paused · designed silence" })
