@@ -133,16 +133,26 @@ describe("qa-rca — merged turn view", () => {
               recorded_at: "2026-07-09T10:00:01.000Z",
               kind: "read.store.open_now",
               decision_kind: "VALIDATED",
+              refusal_kind: null,
               refusal_code: null,
               taint: null,
+              principal: "llm",
+              decision_basis: ["schema:version_supported"],
+              duration_ms: 3,
+              nonce: "conv-abc:2026-07-09T10:00:00.000Z:0",
               session_id: "sess-hash-xyz",
+              intent_hash: null,
+              supersedes_jsonb: null,
+              scope: "system",
             },
           ],
         };
       }
-      // domain enrichment (conversations).
+      // domain enrichment (conversations). NOTE: no phone_hash column exists on
+      // this table — the route must not select it (the pre-scan version did and
+      // silently nulled channel/chatCuid on every turn).
       if (sql.includes("ibx_domain.conversations")) {
-        return { rows: [{ chat_cuid: "chat_1", channel: "web", phone_hash: "ph_1" }] };
+        return { rows: [{ chat_cuid: "chat_1", channel: "web" }] };
       }
       return { rows: [] };
     };
@@ -158,16 +168,28 @@ describe("qa-rca — merged turn view", () => {
     expect(ctx.sessionHashed).toBe("sess-hash-xyz");
     expect(ctx.conversationId).toBe("conv-abc");
     expect(ctx.noncePrefix).toBe("conv-abc:");
-    // [ADJ] lane surfaced the kernel decision row.
+    expect(ctx.channel).toBe("web");
+    expect(ctx.chatCuid).toBe("chat_1");
+    // [ADJ] lane surfaced the kernel decision row, with the forensic columns.
     expect(res.json().turn.adj).toEqual([
       {
         recordedAt: "2026-07-09T10:00:01.000Z",
         kind: "read.store.open_now",
         decisionKind: "VALIDATED",
+        refusalKind: null,
         refusalCode: null,
         taint: null,
+        principal: "llm",
+        decisionBasis: ["schema:version_supported"],
+        durationMs: 3,
+        nonce: "conv-abc:2026-07-09T10:00:00.000Z:0",
+        intentHash: null,
+        scope: "system",
+        supersedes: null,
       },
     ]);
+    // VL is stubbed unreachable in tests → the lane degrades AND is flagged.
+    expect(res.json().turn.degraded).toEqual({ adj: false, vl: true });
     await app.close();
   });
 

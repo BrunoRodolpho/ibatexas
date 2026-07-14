@@ -649,4 +649,42 @@ code, pre { font-family: var(--mono); font-size: 12px; }
 .callout--warn { border-left-color: var(--warn); background: var(--warn-wash); }
 .callout code { color: var(--ink); }
 
+/* ── RCA deepening: toggle chips, filters, expandable timeline ─────────── */
+
+.chips { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
+.chip { font-family: var(--mono); font-size: 10.5px; font-weight: 600; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); background: var(--panel-2); color: var(--ink-2); cursor: pointer; }
+.chip:hover { border-color: var(--accent-line); }
+.chip--on { background: var(--accent-wash); border-color: var(--accent-line); color: var(--accent); }
+.chip--dim { opacity: 0.35; }
+.chip--select { appearance: none; padding-right: 8px; }
+
+.rail__dt { display: flex; flex-direction: column; gap: 6px; margin-top: 7px; }
+.rail__dt label { display: flex; flex-direction: column; gap: 2px; font-size: 10.5px; color: var(--ink-3); }
+.rail__dt input { border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; font-size: 11px; background: var(--panel-2); color: var(--ink); font-family: var(--mono); }
+
+/* decision chip on turn rows — reuses the decision palette tokens */
+.dec-chip { font-family: var(--mono); font-size: 9px; font-weight: 700; padding: 0 5px; border-radius: 5px; margin-left: 6px; vertical-align: 1px; background: var(--nt-neutral); color: var(--ink-2); }
+.dec-chip--EXECUTE { background: var(--dec-execute-bg); color: var(--dec-execute); }
+.dec-chip--REFUSE { background: var(--dec-refuse-bg); color: var(--dec-refuse); }
+.dec-chip--ESCALATE { background: var(--dec-escalate-bg); color: var(--dec-escalate); }
+.dec-chip--REQUEST_CONFIRMATION { background: var(--dec-confirm-bg); color: var(--dec-confirm); }
+.dec-chip--DEFER { background: var(--dec-defer-bg); color: var(--dec-defer); }
+.dec-chip--REWRITE { background: var(--dec-rewrite-bg); color: var(--dec-rewrite); }
+
+.conv-tree__conv--sel { background: var(--accent-wash); border-radius: var(--r-sm); }
+.conv-tree__head { display: flex; align-items: baseline; gap: 6px; }
+.conv-tree__head .conv-tree__time { margin-left: auto; }
+.conv-tree__preview { font-size: 10.5px; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; font-style: italic; }
+
+.degraded-chip { font-family: var(--mono); font-size: 10px; font-weight: 700; padding: 1px 7px; border-radius: 5px; background: var(--warn-wash); color: var(--warn); border: 1px dashed var(--warn); }
+
+.card__hd--wrap { flex-wrap: wrap; row-gap: 7px; }
+.rail__search--inline { width: auto; flex: 0 1 180px; }
+
+.trace-row--expandable { cursor: pointer; }
+.trace-row--expandable:hover td { background: var(--panel-2); }
+.expand-hint { color: var(--ink-3); margin-left: 6px; font-size: 10px; }
+.trace-row--detail td { background: var(--panel-3); padding: 0; }
+.tl-detail { margin: 0; padding: 10px 14px 10px 46px; font-family: var(--mono); font-size: 11px; line-height: 1.55; color: var(--ink-2); white-space: pre-wrap; word-break: break-word; max-height: 320px; overflow-y: auto; }
+
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
