@@ -213,7 +213,10 @@ describe("createIbatexasResponder", () => {
     const req = complete.mock.calls[0]![0] as CompletionRequest;
     expect(req.system).toContain("CONTEXTO DA DECISÃO");
     expect(req.system).toContain("EXECUTE");
-    expect(req.system).toContain("order.cancel");
+    // ② capability-id leak fix: the RAW internal capability KIND must NOT be
+    // serialized into the model-visible grounding context (Hard Rule #9) — the weak
+    // 4B parrots dotted ids to the customer. The coarse decision kind + result stay.
+    expect(req.system).not.toContain("order.cancel");
     expect(req.system).toContain("cancelled");
     expect(draft.usage).toEqual({ inputTokens: 11, outputTokens: 7 });
   });
@@ -638,8 +641,27 @@ describe("createIbatexasResponder", () => {
     expect(draft.text).toBe(CLOSED_DISCLOSURE);
   });
 
-  it("closed: injects the closed-hours note into the model system prompt", async () => {
+  it("closed: injects the closed-hours note on a non-small-talk turn (order/info)", async () => {
     const { model, complete } = mockModel("Posso agendar sua retirada.");
+    const responder = createIbatexasResponder({
+      model,
+      modelId: "m",
+      explainer,
+      resolveScheduleSignal: () => closedSignal,
+    });
+    const decision = { kind: "REFUSE", refusal: { code: "empty_plan" } } as unknown as Decision;
+    // A non-small-talk turn while closed MUST carry the safety note (never confirm an
+    // immediate order).
+    await responder.respond(
+      mkInput({ decision, envelopeKinds: [], text: "quero fazer um pedido" }),
+    );
+    const req = complete.mock.calls[0]![0] as CompletionRequest;
+    expect(req.system).toContain("FECHADA");
+    expect(req.system).toContain("retirada agendada");
+  });
+
+  it("closed: does NOT inject the note on a bare greeting (greeting-blurt fix ⑤)", async () => {
+    const { model, complete } = mockModel("Oi! Como posso ajudar?");
     const responder = createIbatexasResponder({
       model,
       modelId: "m",
@@ -649,8 +671,10 @@ describe("createIbatexasResponder", () => {
     const decision = { kind: "REFUSE", refusal: { code: "empty_plan" } } as unknown as Decision;
     await responder.respond(mkInput({ decision, envelopeKinds: [], text: "oi" }));
     const req = complete.mock.calls[0]![0] as CompletionRequest;
-    expect(req.system).toContain("FECHADA");
-    expect(req.system).toContain("retirada agendada");
+    // The 4B must not be handed the store-status note on a phatic greeting (it blurts
+    // it). Closed-path safety is still enforced by the deterministic backstop.
+    expect(req.system).not.toContain("FECHADA");
+    expect(req.system).not.toContain("ESTADO DA LOJA");
   });
 
   it("closed: passes a correct closed-disclosure reply through unchanged", async () => {

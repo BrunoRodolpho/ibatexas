@@ -730,13 +730,17 @@ export function createIbatexasPlanner(
         fragmentManifest = composed.fragmentManifest;
       }
 
-      // fix B (Stage 1) — soft layer: when the store is closed, tell the planner
-      // so it does not propose immediate-fulfillment intents / so the model knows
-      // the real state. Empty string when open → prompt byte-identical to today.
+      // fix B (Stage 1) — soft layer: a GATED pt-BR store-state note
+      // (closedHoursPromptNote). Tells the planner the real state so it does not
+      // propose immediate-fulfillment intents while closed. Relevance-gated on the
+      // turn text: "" on a small-talk greeting, and on the OPEN path "" unless the
+      // customer asks about open-state/hours — so the weak 4B does not over-weight an
+      // always-on note and blurt store status on unrelated turns. Absent text → note
+      // is byte-identical to the pre-gate behavior.
       const scheduleSignal = deps.resolveScheduleSignal
         ? ((await deps.resolveScheduleSignal()) ?? undefined)
         : undefined;
-      system += closedHoursPromptNote(scheduleSignal);
+      system += closedHoursPromptNote(scheduleSignal, state.perception.text);
 
       const allowed = new Set(plan.allowedIntents);
       // NEW-032 slice A — the per-turn envelope actor. Computed ONCE from the

@@ -194,7 +194,7 @@ export interface IbatexasResponderDeps {
    */
   readonly safeUnknown?: {
     gate(text: string): boolean;
-    render(schedule: ScheduleSignal | undefined): string;
+    render(schedule: ScheduleSignal | undefined, userText: string): string;
   };
 }
 
@@ -230,6 +230,42 @@ function summarizeActed(acted: unknown): Record<string, unknown> | undefined {
   // at the source (restores the #89 "no operator-message leak" hardening that the
   // dev claims-runtime lineage didn't carry forward).
   return out;
+}
+
+// ── ② Capability-id leak guard (INPUT redaction + OUTPUT scrub) ───────────────
+//
+// The grounded EXECUTE/REWRITE/DEFER prompt serialized the raw internal capability
+// KIND strings (`executed`, and the plan's `capabilities` list — e.g.
+// "order.item.add", "payment.refund.issue") under a "fonte da verdade, não inventar"
+// label. The weak 4B parrots those dotted identifiers into the customer reply, a Hard
+// Rule #9 violation. The `dispatch` FIELD is the DispatchResult STATUS enum
+// ("executed"/"failed"/"deferred") — not a capability id — and is kept.
+
+/** Customer-safe view of the acted summary for the model prompt: drops the raw
+ *  capability KIND(s) (`executed`) so they can never be echoed to the customer. The
+ *  un-redacted summary is still used by executedKinds() for the F1b guard — only the
+ *  model-visible copy is stripped (mirrors the `acted.message` input-drop above). */
+function redactActedForPrompt(
+  summary: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  if (summary === undefined) return undefined;
+  const { executed: _executed, ...safe } = summary;
+  return safe;
+}
+
+/** Defense-in-depth output scrub: TRUE iff the draft echoes one of the raw capability
+ *  KIND ids that were in scope this turn (a dotted internal identifier the customer
+ *  must never see). Keyed on the EXACT kinds, so it can never false-fire on ordinary
+ *  pt-BR text or a decimal price. */
+function draftLeaksCapabilityId(
+  text: string,
+  kinds: ReadonlyArray<string>,
+): boolean {
+  if (typeof text !== "string") return false;
+  const lower = text.toLowerCase();
+  return kinds.some(
+    (k) => typeof k === "string" && k.includes(".") && lower.includes(k.toLowerCase()),
+  );
 }
 
 // ── F1: post-completion consistency guard ────────────────────────────────────
@@ -316,6 +352,9 @@ export interface SuccessClaimClass {
   readonly negated: ReadonlyArray<RegExp>;
   /** Executed envelope kinds that make the claim TRUTHFUL. */
   readonly justifiedBy: ReadonlyArray<string>;
+  /** The class's domain noun (a regex fragment). Guards the F1b FALSE-FAILURE mirror
+   *  so a shared verb root does not cross-flag a different-noun honest failure. */
+  readonly noun?: string;
 }
 
 /** Build a claim class from a domain noun + a verb-root alternation. Matches BOTH
@@ -347,6 +386,7 @@ function claimClass(
     ],
     negated: [new RegExp(String.raw`\b(?:nao|nunca|jamais)\b[^.!?]{0,${negationWindow}}\b${V}\b`)],
     justifiedBy,
+    noun,
   };
 }
 
@@ -367,7 +407,7 @@ export const SUCCESS_CLAIM_CLASSES: ReadonlyArray<SuccessClaimClass> = [
   claimClass("order-amended", "pedido", "alter|atualiz", ["order.amend.request", "order.amend.add_item", "order.amend.update_qty", "order.amend.remove_item"], [/\badicionad\w*\b[^.!?]{0,15}\bao pedido\b/, /\baltera\w*\b[^.!?]{0,22}\b(?:registrad|realizad)\w*/]),
   claimClass("reservation-confirmed", "reserva", "confirm|garant|realiz|efetu|conclu", ["reservation.create", "reservation.modify", "reservation.checkin", "reservation.complete"], [/\breserva\b[^.!?]{0,20}\bfeita\b/, /\bmesa\b[^.!?]{0,20}\b(?:reservad|garantid|confirmad)\w*/, /\bcheck-?in\b[^.!?]{0,15}\b(?:feito|confirmad|realizad)\w*/, /\b(?:agendad\w*|agendamento)\b[^.!?]{0,25}\b(?:confirmad|realizad|feito|concluid)\w*/]),
   // PIX code/QR generation — justified by a checkout (PIX) or a regenerate.
-  { id: "pix-generated", claim: [/\b(?:codigo )?pix\b[^.!?]{0,18}\b(?:gerad|criad|criei|gerei)\w*/, /\bgerei\b[^.!?]{0,15}\bpix\b/], negated: [/\b(?:nao|nunca|jamais)\b[^.!?]{0,14}\b(?:gerad|criad|gerei)\w*/], justifiedBy: ["order.checkout.create", "payment.pix.regenerate"] },
+  { id: "pix-generated", claim: [/\b(?:codigo )?pix\b[^.!?]{0,18}\b(?:gerad|criad|criei|gerei)\w*/, /\bgerei\b[^.!?]{0,15}\bpix\b/], negated: [/\b(?:nao|nunca|jamais)\b[^.!?]{0,14}\b(?:gerad|criad|gerei)\w*/], justifiedBy: ["order.checkout.create", "payment.pix.regenerate"], noun: "pix" },
   // Fulfillment is NEVER performed by the chat responder — any such claim is unearned.
   { id: "fulfillment-claimed", claim: [/\b(?:a caminho|saiu pra entrega|saiu para entrega|em preparo|no preparo|mandei pro preparo|ja separei|esta sendo preparad|pronto pra retirar|pronto para retirar|pode (?:vir )?(?:retirar|buscar))\b/], negated: [/\bnao\b[^.!?]{0,10}\b(?:a caminho|saiu|pronto)\b/], justifiedBy: [] },
 ];
@@ -481,7 +521,24 @@ function unearnedClaimInSentence(
   executed: ReadonlySet<string>,
 ): string | null {
   for (const cls of SUCCESS_CLAIM_CLASSES) {
-    if (cls.negated.some((re) => re.test(sentenceText))) continue; // honest failure
+    if (cls.negated.some((re) => re.test(sentenceText))) {
+      // F1b MIRROR (false-failure): a negated success form is normally an HONEST
+      // failure and passes through — UNLESS the runtime actually COMMITTED a
+      // justifying mutation this turn AND the sentence names this class's domain
+      // noun. Then it is a FALSE FAILURE (a committed action reported as not done —
+      // e.g. "seu pedido não foi cancelado" after order.cancel EXECUTEd), which is as
+      // harmful as a false success, so it is clamped too. The noun guard keeps a
+      // shared verb root (e.g. "registr") from cross-flagging a different-noun honest
+      // failure that happens to share the root.
+      if (
+        cls.justifiedBy.some((k) => executed.has(k)) &&
+        (cls.noun === undefined ||
+          new RegExp(String.raw`\b${cls.noun}\b`).test(sentenceText))
+      ) {
+        return `false-failure:${cls.id}`;
+      }
+      continue; // honest failure
+    }
     // Find the specific claim pattern that matched so the mood gate can be scoped
     // to ITS clause (not the whole sentence) — a future/conditional/pending word
     // elsewhere in the sentence no longer blanket-suppresses a completed claim.
@@ -593,10 +650,13 @@ function observedGuardDraft(
   const guarded = guardDraft(draft, acted);
   if (guarded.text !== draft.text) {
     let guard: string;
+    const unearned = replyClaimsUnearnedSuccess(draft.text, acted);
     if (groundedReplyContradicts(draft.text) !== null) {
       guard = "contradiction";
-    } else if (replyClaimsUnearnedSuccess(draft.text, acted) !== null) {
-      guard = "unearned_success";
+    } else if (unearned !== null) {
+      guard = unearned.startsWith("false-failure:")
+        ? "false_failure"
+        : "unearned_success";
     } else {
       guard = "spanish_leak";
     }
@@ -611,6 +671,22 @@ function observedGuardDraft(
     );
   }
   return guarded;
+}
+
+/** ② Clamp a grounded draft that echoed a raw capability KIND id to the neutral,
+ *  audit-accurate fallback (the internal identifier must never reach the customer —
+ *  Hard Rule #9). Preserves token usage; emits a warn so the clamp is countable. */
+function clampCapabilityIdLeak(
+  draft: DraftResponse,
+  turnId: string | undefined,
+): DraftResponse {
+  logger.warn(
+    { component: "responder", event: "success_guard.clamp", turnId, guard: "capability_id_leak" },
+    "responder clamped a draft that echoed a raw capability id",
+  );
+  return draft.usage === undefined
+    ? { text: GROUNDED_SAFE_FALLBACK_PTBR }
+    : { text: GROUNDED_SAFE_FALLBACK_PTBR, usage: draft.usage };
 }
 
 /** Closed-hours delivery guard. Runs the deterministic `closedHoursBackstop`
@@ -688,6 +764,48 @@ function surfaceRewriteClamp(
   const text = `${draft.text.trim()} ${reason}`.trim();
   return withText(draft, text);
 }
+
+// ── ⑦ Customer-plane ungrounded-MONEY clamp ──────────────────────────────────
+//
+// The ops digit-run clamp (clampUngroundedOpsFact / governGroundedOpsDraft) is wired
+// ONLY on the ops plane (via the readAnswer deps), so a customer/WhatsApp draft got
+// NO number guard — the 4B could volunteer an invented price. We add the customer-
+// plane mirror, deliberately MONEY-ANCHORED (an R$ amount): money is where a
+// fabricated figure actually harms a customer, and the `R$` prefix is unambiguous, so
+// this never false-clamps an innocuous number. (Non-money ungrounded numbers on the
+// customer plane remain a documented follow-up — they need a customer-domain-noun
+// lexicon, not the ops one.) Demote-only; preserves usage.
+
+/** Canonical digit token of every number in a text ("R$ 89,00" / centavos 8900 →
+ *  "8900") so grounded amounts are not false-clamped by pt-BR money formatting. */
+function moneyDigitTokens(text: string): string[] {
+  return (text.match(/\d(?:[\d.,]*\d)?/g) ?? []).map((t) => t.replace(/\D/g, ""));
+}
+
+/** TRUE iff the draft states an R$ money amount whose digits are not grounded in any
+ *  allowed source (the user's own message, the acted/context summary, the schedule
+ *  note) — an invented price the responder must not volunteer to a customer. */
+export function statesUngroundedMoney(
+  text: string,
+  allowedSources: readonly string[],
+): boolean {
+  if (typeof text !== "string") return false;
+  const allowed = new Set<string>();
+  for (const s of allowedSources) {
+    if (typeof s === "string") for (const t of moneyDigitTokens(s)) allowed.add(t);
+  }
+  const amounts = normalizePtBr(text).match(/r\$\s*\d[\d.,]*/g) ?? [];
+  for (const amt of amounts) {
+    const tok = amt.replace(/\D/g, "");
+    if (tok.length > 0 && !allowed.has(tok)) return true;
+  }
+  return false;
+}
+
+/** Neutral, customer-facing line substituted when a draft states an ungrounded R$
+ *  amount — asserts NO figure, offers to confirm. */
+export const CUSTOMER_UNGROUNDED_MONEY_FALLBACK_PTBR =
+  "Prefiro confirmar esse valor antes de te passar um número. Posso verificar para você?";
 
 export function createIbatexasResponder(
   deps: IbatexasResponderDeps,
@@ -796,8 +914,14 @@ export function createIbatexasResponder(
     allowedSources: readonly string[],
   ): DraftResponse {
     const clamp = deps.readAnswer?.clampUngrounded;
-    if (clamp === undefined) return draft;
-    const nudge = clamp(draft.text, allowedSources);
+    // Ops plane (dep present): the full digit-run clamp. Customer/WhatsApp plane (dep
+    // absent, ⑦): the money-anchored clamp — an invented R$ amount must not ship.
+    const nudge =
+      clamp !== undefined
+        ? clamp(draft.text, allowedSources)
+        : statesUngroundedMoney(draft.text, allowedSources)
+          ? CUSTOMER_UNGROUNDED_MONEY_FALLBACK_PTBR
+          : null;
     if (nudge === null) return draft;
     return draft.usage === undefined
       ? { text: nudge }
@@ -813,12 +937,19 @@ export function createIbatexasResponder(
     allowedSources: readonly string[],
   ): DraftResponse {
     const govern = deps.readAnswer?.governGrounded;
-    if (govern === undefined) return draft;
-    const governed = govern(draft.text, turnId, allowedSources);
-    if (governed === draft.text) return draft;
+    if (govern !== undefined) {
+      const governed = govern(draft.text, turnId, allowedSources); // ops plane
+      if (governed === draft.text) return draft;
+      return draft.usage === undefined
+        ? { text: governed }
+        : { text: governed, usage: draft.usage };
+    }
+    // Customer/WhatsApp plane (⑦): no captured-read render to append, but still clamp
+    // an ungrounded model-authored R$ amount against the grounded sources.
+    if (!statesUngroundedMoney(draft.text, allowedSources)) return draft;
     return draft.usage === undefined
-      ? { text: governed }
-      : { text: governed, usage: draft.usage };
+      ? { text: CUSTOMER_UNGROUNDED_MONEY_FALLBACK_PTBR }
+      : { text: CUSTOMER_UNGROUNDED_MONEY_FALLBACK_PTBR, usage: draft.usage };
   }
 
   return {
@@ -838,7 +969,7 @@ export function createIbatexasResponder(
       const scheduleSignal = deps.resolveScheduleSignal
         ? ((await deps.resolveScheduleSignal()) ?? undefined)
         : undefined;
-      const closedNote = closedHoursPromptNote(scheduleSignal);
+      const closedNote = closedHoursPromptNote(scheduleSignal, userText);
       // F6: did the runtime accept a scheduled-pickup order this turn? Drives the
       // closed-hours delivery guard's confirmation-vs-offer branch. Empty on the
       // REFUSE/DEFER/no-checkout paths (executedKinds is empty there).
@@ -882,7 +1013,7 @@ export function createIbatexasResponder(
                 },
                 "claims terminal finalized (safe-degraded — ungrounded question shape)",
               );
-              return { text: deps.safeUnknown.render(scheduleSignal) };
+              return { text: deps.safeUnknown.render(scheduleSignal, userText) };
             }
             const { system: base, fragmentManifest } = await composeSystem(
               RESPONDER_CONVERSATIONAL_SURFACE,
@@ -953,23 +1084,33 @@ export function createIbatexasResponder(
             capabilities,
             deps.personas?.grounded,
           );
+          // ② capability-id leak: the model-visible grounding context must NOT carry
+          // raw internal capability KIND strings — the weak 4B parrots them into the
+          // customer reply (Hard Rule #9). Serialize a customer-safe view (decision
+          // kind + acted result/status, raw kinds stripped). `capabilities` is still
+          // passed to composeSystem (its per-capability fragments are gated) but is NO
+          // LONGER serialized into the prompt JSON.
           const context = {
             decision: decision.kind,
-            capabilities,
-            acted: summarizeActed(input.acted),
+            acted: redactActedForPrompt(summarizeActed(input.acted)),
           };
           const system =
             `${baseSystem}\n\n` +
             `CONTEXTO DA DECISÃO (fonte da verdade, não inventar):\n` +
             JSON.stringify(context) +
             closedNote;
-          const draft = await completeWith({
+          const rawDraft = await completeWith({
             system,
             fragmentManifest,
             userText,
             turnId,
             ...(intentHash === undefined ? {} : { intentHash }),
           });
+          // ② defense-in-depth: if the model still echoed a raw capability id, clamp
+          // it to the neutral fallback before it can reach the customer.
+          const draft = draftLeaksCapabilityId(rawDraft.text, capabilities)
+            ? clampCapabilityIdLeak(rawDraft, turnId)
+            : rawDraft;
           // F1 + F1b: post-completion guards. The grounded prompt is only a soft
           // instruction — never let a model reply that contradicts the audited
           // decision (no-authority claim) OR claims a success the runtime did not

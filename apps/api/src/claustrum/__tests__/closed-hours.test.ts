@@ -10,10 +10,13 @@ import { describe, expect, it } from "vitest";
 import type { DraftResponse } from "@claustrum/core";
 import type { ScheduleSignal } from "@ibatexas/tools";
 import {
+  asksAboutStoreState,
+  assertsClosedNow,
   assertsOpenOrImmediate,
   closedHoursBackstop,
   closedHoursDisclosure,
   closedHoursPromptNote,
+  OPEN_HOURS_CORRECTION_PTBR,
 } from "../closed-hours.js";
 
 const CLOSED: ScheduleSignal = {
@@ -157,5 +160,87 @@ describe("closedHoursPromptNote", () => {
     expect(note).toContain("FECHADA");
     expect(note).toContain("amanhã");
     expect(note).toContain("retirada agendada");
+  });
+
+  // ── Relevance gating (greeting-blurt fix + ① + ⑤) ──────────────────────────
+  it("is EMPTY on a small-talk greeting, whether OPEN or CLOSED (no unsolicited blurt)", () => {
+    for (const greeting of ["oi", "Bom dia", "Olá, tudo bem?", "boa noite"]) {
+      expect(closedHoursPromptNote(OPEN, greeting)).toBe("");
+      expect(closedHoursPromptNote(CLOSED, greeting)).toBe("");
+    }
+  });
+
+  it("is EMPTY on the OPEN path when the customer did NOT ask about hours (①)", () => {
+    expect(closedHoursPromptNote(OPEN, "adiciona uma costela ao meu pedido")).toBe("");
+    expect(closedHoursPromptNote(OPEN, "quanto custa a picanha?")).toBe("");
+  });
+
+  it("EMITS the OPEN note only when the customer asks about open-state/hours", () => {
+    for (const q of ["vocês estão abertos?", "que horas fecha?", "qual o horário de funcionamento?"]) {
+      const note = closedHoursPromptNote(OPEN, q);
+      expect(note).toContain("ABERTA");
+    }
+  });
+
+  it("KEEPS the CLOSED safety note on a non-small-talk turn while closed (order/info)", () => {
+    const note = closedHoursPromptNote(CLOSED, "quero uma picanha entregue agora");
+    expect(note).toContain("FECHADA");
+    expect(note).toContain("retirada agendada");
+  });
+
+  it("keeps scripted callers (no userText) byte-identical (backward-compat)", () => {
+    expect(closedHoursPromptNote(OPEN)).toContain("ABERTA");
+    expect(closedHoursPromptNote(CLOSED)).toContain("FECHADA");
+  });
+});
+
+describe("asksAboutStoreState", () => {
+  it("matches open-state / hours questions", () => {
+    for (const q of ["vocês estão abertos?", "tá aberto agora?", "que horas fecha?", "qual o horário?", "vocês funcionam hoje?"]) {
+      expect(asksAboutStoreState(q)).toBe(true);
+    }
+  });
+  it("does NOT match ordering / unrelated turns (nor the checkout verb 'fechar')", () => {
+    for (const s of ["adiciona uma costela", "quero fechar o pedido", "quanto custa a picanha?", "oi"]) {
+      expect(asksAboutStoreState(s)).toBe(false);
+    }
+  });
+});
+
+// ── OPEN-mirror backstop (③): a false 'estamos fechados' while open is repaired ──
+describe("assertsClosedNow", () => {
+  it("flags a present-tense closed assertion", () => {
+    expect(assertsClosedNow("No momento estamos fechados.")).toBe(true);
+    expect(assertsClosedNow("A loja está fechada agora.")).toBe(true);
+  });
+  it("does NOT flag a negated form or a general day-of-week closure", () => {
+    expect(assertsClosedNow("Não estamos fechados.")).toBe(false);
+    expect(assertsClosedNow("Estamos abertos!")).toBe(false);
+    expect(assertsClosedNow("Normalmente estamos fechados aos domingos.")).toBe(false);
+  });
+});
+
+describe("closedHoursBackstop — OPEN mirror", () => {
+  it("repairs a false 'estamos fechados' when the store is OPEN", () => {
+    const out = closedHoursBackstop(draft("Infelizmente estamos fechados agora."), OPEN);
+    expect(out.text).toBe(OPEN_HOURS_CORRECTION_PTBR);
+  });
+  it("preserves token usage when repairing the open mirror", () => {
+    const out = closedHoursBackstop(
+      { text: "No momento estamos fechados.", usage: { inputTokens: 2, outputTokens: 4 } },
+      OPEN,
+    );
+    expect(out.text).toBe(OPEN_HOURS_CORRECTION_PTBR);
+    expect(out.usage).toEqual({ inputTokens: 2, outputTokens: 4 });
+  });
+  it("leaves an OPEN-asserting or neutral draft untouched while open", () => {
+    const d1 = draft("Estamos abertos! Pode pedir.");
+    expect(closedHoursBackstop(d1, OPEN)).toBe(d1);
+    const d2 = draft("Claro, posso te ajudar com o cardápio.");
+    expect(closedHoursBackstop(d2, OPEN)).toBe(d2);
+  });
+  it("does NOT repair a general day-of-week closure while open", () => {
+    const d = draft("Normalmente estamos fechados aos domingos, mas hoje pode pedir.");
+    expect(closedHoursBackstop(d, OPEN)).toBe(d);
   });
 });

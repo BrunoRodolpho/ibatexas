@@ -115,12 +115,25 @@ describe.skipIf(!RUN_BOOTSTRAP_HARNESS)(
         false,
       );
       // The real wired render: open → the proposition-free SAFE_UNKNOWN text;
-      // closed → also carries the canonical closed-hours disclosure (D3).
-      const render = safeUnknown.render as (s: unknown) => string;
-      expect(render(undefined)).toContain("Não localizei essa informação");
-      const closed = render({ isClosed: true, nextOpenDay: "amanhã" });
-      expect(closed).toContain("Não localizei essa informação");
-      expect(closed).toContain("fechados");
+      // closed → the disclosure is appended ONLY when the degraded question is about
+      // ordering/hours (⑥ — relevance-gated so it is not unsolicited on an unrelated
+      // question).
+      const render = safeUnknown.render as (s: unknown, t: string) => string;
+      expect(render(undefined, "posso fazer um pedido?")).toContain(
+        "Não localizei essa informação",
+      );
+      const closedOrder = render(
+        { isClosed: true, nextOpenDay: "amanhã" },
+        "posso fazer um pedido?",
+      );
+      expect(closedOrder).toContain("Não localizei essa informação");
+      expect(closedOrder).toContain("fechados");
+      // Topically-unrelated question while closed → NO unsolicited pickup offer.
+      const closedUnrelated = render(
+        { isClosed: true, nextOpenDay: "amanhã" },
+        "vocês têm estacionamento?",
+      );
+      expect(closedUnrelated).not.toContain("fechados");
     }, 60_000);
 
     it("flag OFF (unset): the customer responder has NO safeUnknown dep (byte-identical)", async () => {
