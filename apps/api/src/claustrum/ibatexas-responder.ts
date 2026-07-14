@@ -488,6 +488,16 @@ function sentencesOf(normalized: string): ReadonlyArray<{ text: string; question
 // (review finding 8).
 const DEFINITE_SUCCESS = /\bcom (?:sucesso|exito)\b/;
 
+/** The comma/colon-delimited clause of `sentence` containing offset `start`. Scoping a
+ *  mood gate to ITS clause keeps a courtesy/pending clause elsewhere in the sentence
+ *  from suppressing (or exempting) a claim in a DIFFERENT clause (review finding 5). */
+function clauseAround(sentence: string, start: number): string {
+  const before = Math.max(sentence.lastIndexOf(",", start), sentence.lastIndexOf(":", start));
+  const afters = [sentence.indexOf(",", start), sentence.indexOf(":", start)].filter((i) => i >= 0);
+  const after = afters.length > 0 ? Math.min(...afters) : sentence.length;
+  return sentence.slice(before + 1, after);
+}
+
 /** Whether a matched success predicate is mood-exempt (future/conditional/pending)
  *  — but evaluated CLAUSE-LOCALLY (comma/colon-delimited), so a trailing courtesy
  *  clause ("…, se precisar de algo avise") no longer suppresses a completed claim
@@ -496,15 +506,28 @@ const DEFINITE_SUCCESS = /\bcom (?:sucesso|exito)\b/;
 function claimIsMoodExempt(sentence: string, claimRe: RegExp): boolean {
   const m = claimRe.exec(sentence);
   if (m === null) return false;
-  const start = m.index;
-  // The comma/colon-delimited clause containing the match.
-  const before = Math.max(sentence.lastIndexOf(",", start), sentence.lastIndexOf(":", start));
-  const afters = [sentence.indexOf(",", start), sentence.indexOf(":", start)].filter((i) => i >= 0);
-  const after = afters.length > 0 ? Math.min(...afters) : sentence.length;
-  const clause = sentence.slice(before + 1, after);
+  const clause = clauseAround(sentence, m.index);
   if (FUTURE_OR_CONDITIONAL.test(clause) || FUTURE_OR_CONDITIONAL_SE.test(clause)) return true;
   if (PENDING_STATUS.test(clause) && !DEFINITE_SUCCESS.test(clause)) return true;
   return false;
+}
+
+// "Not yet" pending markers for a NEGATED success. The forward PENDING_STATUS lexicon
+// covers status nouns ("aguardando", "pendente"); a negated form more often carries a
+// temporal "not done YET" adverb ("ainda não foi confirmado"). Kept separate so the
+// forward-direction mood gate is byte-identical.
+const NEGATED_PENDING_MARKER = /\b(?:ainda|por enquanto|neste momento|no momento)\b/;
+
+/** Whether the NEGATED clause that matched is an HONEST "not done yet" / future /
+ *  conditional report rather than a FALSE FAILURE — evaluated CLAUSE-LOCALLY (same
+ *  scope as {@link claimIsMoodExempt}). Keeps a committed-but-still-settling action
+ *  ("ainda não foi confirmado, aguardando o PIX") from being clamped, while a flat
+ *  false failure whose only pending word sits in an unrelated trailing clause still is. */
+function negatedClaimIsHonestPending(sentence: string, negatedRe: RegExp): boolean {
+  if (claimIsMoodExempt(sentence, negatedRe)) return true;
+  const m = negatedRe.exec(sentence);
+  if (m === null) return false;
+  return NEGATED_PENDING_MARKER.test(clauseAround(sentence, m.index));
 }
 
 /** Returns the matched success-claim class id (for telemetry/debug) when the reply
@@ -521,19 +544,24 @@ function unearnedClaimInSentence(
   executed: ReadonlySet<string>,
 ): string | null {
   for (const cls of SUCCESS_CLAIM_CLASSES) {
-    if (cls.negated.some((re) => re.test(sentenceText))) {
+    const negatedRe = cls.negated.find((re) => re.test(sentenceText));
+    if (negatedRe !== undefined) {
       // F1b MIRROR (false-failure): a negated success form is normally an HONEST
       // failure and passes through — UNLESS the runtime actually COMMITTED a
-      // justifying mutation this turn AND the sentence names this class's domain
-      // noun. Then it is a FALSE FAILURE (a committed action reported as not done —
-      // e.g. "seu pedido não foi cancelado" after order.cancel EXECUTEd), which is as
-      // harmful as a false success, so it is clamped too. The noun guard keeps a
-      // shared verb root (e.g. "registr") from cross-flagging a different-noun honest
-      // failure that happens to share the root.
+      // justifying mutation this turn, the sentence names this class's domain noun,
+      // AND the negated clause is not an honest "not yet"/future/conditional report.
+      // Then it is a FALSE FAILURE (a committed action reported as not done — e.g.
+      // "seu pedido não foi cancelado" after order.cancel EXECUTEd), as harmful as a
+      // false success, so it is clamped too. The noun guard keeps a shared verb root
+      // (e.g. "registr") from cross-flagging a different-noun honest failure; the mood
+      // gate keeps a committed-but-still-settling PIX checkout ("ainda não foi
+      // confirmado, aguardando o pagamento") from being clamped (mirrors the forward
+      // direction's clause-local mood exemption).
       if (
         cls.justifiedBy.some((k) => executed.has(k)) &&
         (cls.noun === undefined ||
-          new RegExp(String.raw`\b${cls.noun}\b`).test(sentenceText))
+          new RegExp(String.raw`\b${cls.noun}\b`).test(sentenceText)) &&
+        !negatedClaimIsHonestPending(sentenceText, negatedRe)
       ) {
         return `false-failure:${cls.id}`;
       }
@@ -782,9 +810,35 @@ function moneyDigitTokens(text: string): string[] {
   return (text.match(/\d(?:[\d.,]*\d)?/g) ?? []).map((t) => t.replace(/\D/g, ""));
 }
 
-/** TRUE iff the draft states an R$ money amount whose digits are not grounded in any
+/** The digit forms an `R$` mention can ground against, tolerant of the reais⇄centavos
+ *  representation gap: a whole-reais draft ("R$ 89") and the grounded integer-centavos
+ *  amount (8900, Hard Rule #2) are the SAME value. Returns the as-written digit run AND
+ *  its centavos-normalized form so EITHER grounds it — a correctly-abbreviated "R$ 89"
+ *  reply is no longer false-clamped against a grounded 8900. `amount` is the text after
+ *  the "r$" prefix (pt-BR: "." thousands, "," decimal). */
+function moneyCanonicalForms(amount: string): string[] {
+  const asWritten = amount.replace(/\D/g, "");
+  if (asWritten.length === 0) return [];
+  const forms = new Set<string>([asWritten]);
+  const comma = amount.lastIndexOf(",");
+  if (comma < 0) {
+    // Whole-reais mention → centavos = reais × 100 ("R$ 89" ⇒ 8900).
+    forms.add(`${asWritten}00`);
+  } else {
+    // Decimal mention → centavos = <inteiros><2 casas> ("R$ 1.234,5" ⇒ 123450).
+    const intPart = amount.slice(0, comma).replace(/\D/g, "");
+    const frac = `${amount.slice(comma + 1).replace(/\D/g, "")}00`.slice(0, 2);
+    const centavos = `${intPart}${frac}`.replace(/^0+(?=\d)/, "");
+    if (centavos.length > 0) forms.add(centavos);
+  }
+  return [...forms];
+}
+
+/** TRUE iff the draft states an R$ money amount whose value is not grounded in any
  *  allowed source (the user's own message, the acted/context summary, the schedule
- *  note) — an invented price the responder must not volunteer to a customer. */
+ *  note) — an invented price the responder must not volunteer to a customer. Compares
+ *  reais⇄centavos-tolerantly (via moneyCanonicalForms) so a correctly-abbreviated
+ *  grounded amount ("R$ 89" against a grounded 8900) is NOT false-clamped. */
 export function statesUngroundedMoney(
   text: string,
   allowedSources: readonly string[],
@@ -796,8 +850,8 @@ export function statesUngroundedMoney(
   }
   const amounts = normalizePtBr(text).match(/r\$\s*\d[\d.,]*/g) ?? [];
   for (const amt of amounts) {
-    const tok = amt.replace(/\D/g, "");
-    if (tok.length > 0 && !allowed.has(tok)) return true;
+    const forms = moneyCanonicalForms(amt.replace(/^r\$\s*/, ""));
+    if (forms.length > 0 && !forms.some((f) => allowed.has(f))) return true;
   }
   return false;
 }

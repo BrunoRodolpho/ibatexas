@@ -51,6 +51,28 @@ describe("④ F1b false-FAILURE mirror", () => {
     );
     expect(hit).toBe("order-canceled");
   });
+
+  // Mood gate (review fix): a committed-but-still-settling checkout reported as "not
+  // yet confirmed" is an HONEST pending report, not a false failure — do NOT clamp it.
+  it("does NOT clamp an honest 'ainda não foi confirmado' pending PIX checkout", () => {
+    expect(
+      replyClaimsUnearnedSuccess(
+        "Seu pedido ainda não foi confirmado, aguardando o pagamento via PIX.",
+        committed("order.checkout.create"),
+      ),
+    ).toBeNull();
+  });
+
+  // …but the mood gate is CLAUSE-LOCAL: a pending word in an unrelated trailing clause
+  // must not shield a flat false failure in a different clause.
+  it("clause-local: a trailing 'ainda' courtesy clause does NOT shield a flat false failure", () => {
+    expect(
+      replyClaimsUnearnedSuccess(
+        "Seu pedido não foi cancelado, mas ainda posso ajudar.",
+        committed("order.cancel"),
+      ),
+    ).toBe("false-failure:order-canceled");
+  });
 });
 
 describe("⑦ customer-plane ungrounded-money clamp", () => {
@@ -64,6 +86,18 @@ describe("⑦ customer-plane ungrounded-money clamp", () => {
     expect(
       statesUngroundedMoney("O total ficou em R$ 89,00.", ['{"result":{"total":8900}}']),
     ).toBe(false);
+  });
+
+  // Review fix: a WHOLE-reais reply ("R$ 89", no cents) is the SAME value as a grounded
+  // integer-centavos 8900 (Hard Rule #2) — it must NOT be false-clamped for dropping ",00".
+  it("does NOT flag an abbreviated whole-reais amount grounded as centavos ('R$ 89' vs 8900)", () => {
+    expect(
+      statesUngroundedMoney("Seu pedido saiu por R$ 89.", ['{"result":{"total":8900}}']),
+    ).toBe(false);
+  });
+
+  it("still flags an invented whole-reais amount with no grounding ('R$ 89' vs nothing)", () => {
+    expect(statesUngroundedMoney("Custa R$ 89 no total.", [])).toBe(true);
   });
 
   it("does NOT flag a reply with no money figure", () => {
