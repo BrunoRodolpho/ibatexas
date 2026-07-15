@@ -177,7 +177,9 @@ describe("createIbatexasResponder — BKL-078 safeUnknown gate", () => {
     await responder.respond(
       mkInput({ decision: emptyPlanRefuse, text: "vocês fazem entrega?" }),
     );
-    expect(render).toHaveBeenCalledWith(scheduleSignal);
+    // render now also receives the user text (⑥ — so it can gate the closed-hours
+    // disclosure on ordering/hours relevance).
+    expect(render).toHaveBeenCalledWith(scheduleSignal, "vocês fazem entrega?");
   });
 
   it("gate does NOT fire on smalltalk → the model runs (no hijack of a greeting)", async () => {

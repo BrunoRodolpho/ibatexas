@@ -264,7 +264,7 @@ import {
   renderPropositionFreeText,
   SAFE_TEMPLATES,
 } from "./claustrum/slot-grammar.js";
-import { closedHoursDisclosure } from "./claustrum/closed-hours.js";
+import { asksAboutStoreState, closedHoursDisclosure } from "./claustrum/closed-hours.js";
 import { createIbatexasPromptComposer } from "./claustrum/prompts/ibatexas-prompts.js";
 import {
   closePromptOverridePool,
@@ -2888,12 +2888,21 @@ export async function bootstrapClaustrum(
         ? {
             safeUnknown: {
               gate: (text: string) => shouldDegradeToSafeUnknown(text),
-              render: (schedule: ScheduleSignal | undefined): string => {
+              render: (
+                schedule: ScheduleSignal | undefined,
+                userText: string,
+              ): string => {
                 const base = renderPropositionFreeText(SAFE_TEMPLATES.unknown);
-                // D3 — when the store is closed, append the canonical closed-hours
-                // disclosure (the SAME text the deterministic closed backstop uses)
-                // so a degraded question still carries the scheduled-pickup offer.
-                return schedule?.isClosed
+                // D3 (relevance-gated) — append the closed-hours disclosure ONLY when
+                // the degraded question is about ordering / hours / availability. On a
+                // topically-unrelated question the scheduled-pickup offer is
+                // unsolicited noise, so the bare epistemic SAFE_UNKNOWN ships alone.
+                const orderingOrHours =
+                  asksAboutStoreState(userText) ||
+                  /\b(pedid|pedir|encomend|entreg|retirad|agend|compr|reserv|cardapio|card[aá]pio|menu)/i.test(
+                    userText,
+                  );
+                return schedule?.isClosed && orderingOrHours
                   ? `${base} ${closedHoursDisclosure(schedule)}`
                   : base;
               },
