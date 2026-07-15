@@ -14,6 +14,7 @@ import { RcaWorkbench } from "./components/RcaWorkbench"
 import { RunControls } from "./components/RunControls"
 import { RunExplorer } from "./components/RunExplorer"
 import { artifactsBase, fetchArtifactJson, fetchArtifactText, type ArtifactState } from "./lib/artifacts"
+import { currentRoute, navigate } from "./lib/nav"
 import { qaConfig } from "./lib/qaControl"
 import { applyTheme, isDark, type ThemeChoice } from "./lib/theme"
 import { parseTraceJsonl, type ParsedTrace } from "./lib/trace"
@@ -74,9 +75,29 @@ function Pending<T>({ state, children }: { state: ArtifactState<T>; children: (d
   return <>{children(state.data)}</>
 }
 
+const isQaTab = (tab: string | undefined): tab is QaTabId =>
+  QA_TABS.some((t) => t.id === tab)
+
 export default function App() {
-  const [section, setSection] = useState<SectionId>("qa")
-  const [qaTab, setQaTab] = useState<QaTabId>("capability")
+  // The URL hash is the shared address space (lib/nav.ts): it picks the
+  // initial section/tab, and cross-tab jumps from inside a section (run
+  // trace → RCA, LLM call → Prompts) land here through hashchange.
+  const [section, setSection] = useState<SectionId>(() => currentRoute()?.section ?? "qa")
+  const [qaTab, setQaTab] = useState<QaTabId>(() => {
+    const r = currentRoute()
+    return r?.section === "qa" && isQaTab(r.tab) ? r.tab : "capability"
+  })
+  useEffect(() => {
+    const onHash = () => {
+      const r = currentRoute()
+      if (r === null) return
+      setSection(r.section)
+      if (r.section === "qa" && isQaTab(r.tab)) setQaTab(r.tab)
+    }
+    window.addEventListener("hashchange", onHash)
+    return () => window.removeEventListener("hashchange", onHash)
+  }, [])
+
   const [theme, setTheme] = useState<ThemeChoice>("system")
   useEffect(() => applyTheme(theme), [theme])
   const dark = isDark(theme)
@@ -121,7 +142,10 @@ export default function App() {
               key={s.id}
               type="button"
               className={`nav-tab ${section === s.id ? "nav-tab--active" : ""}`}
-              onClick={() => setSection(s.id)}
+              onClick={() => {
+                setSection(s.id)
+                navigate({ section: s.id })
+              }}
             >
               {s.label}
             </button>
@@ -151,7 +175,10 @@ export default function App() {
               role="tab"
               aria-selected={qaTab === t.id}
               className={`subnav__tab ${qaTab === t.id ? "subnav__tab--active" : ""}`}
-              onClick={() => setQaTab(t.id)}
+              onClick={() => {
+                setQaTab(t.id)
+                navigate({ section: "qa", tab: t.id })
+              }}
             >
               {t.label}
             </button>

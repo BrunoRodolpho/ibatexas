@@ -2,6 +2,10 @@
 // "Turn forensics" workbench. Server-side reimplementation of the ibx-rca
 // skill's ibx-trace-turn.sh: merge [LLM] turn_trace + [ADJ] intent_audit +
 // [VL] VictoriaLogs for one turn, and list conversations/turns to navigate to.
+// Plus: find-by-text over the audit ledger's archived messages (the skill's
+// ibx-find-msg.sh as a route, resolved to jumpable turns), a redacted
+// per-conversation transcript, and a preflight status probe of all three
+// stores (the skill's step-0 discipline as an endpoint).
 //
 // READ-ONLY + DEV-ONLY: these routes are registered INSIDE qaControlRoutes,
 // AFTER its qaControlGate() early-return + timing-safe Bearer preHandler, so
@@ -9,12 +13,30 @@
 // of /internal/qa/*. They only SELECT; no mutation, no write path.
 //
 // The completion column is already redacted at write (turn-trace-writer.ts), so
-// serving it to the viewer is safe. VictoriaLogs / intent_audit reads are
-// fail-safe: an outage degrades the affected lane to empty rather than 500-ing
-// the whole turn view.
+// serving it to the viewer is safe. Message text from ibx_domain.conversation_
+// messages is NOT redacted at write — every content string served here passes
+// through the SAME audit redactor (redactText below) before it leaves the API.
+// VictoriaLogs / intent_audit reads are fail-safe: an outage degrades the
+// affected lane to empty rather than 500-ing the whole turn view.
+//
+// THE ADJ BRIDGE (two arms, both needed — live-proven against dev data):
+//   arm 1  nonce LIKE '<conversationUuid>:%'   — catches SYSTEM envelopes whose
+//          deterministic nonce is conversation-prefixed (e.g. the archiver's
+//          `${sessionId}:${sentAt}:${idx}` conversation.message.append rows).
+//   arm 2  session_id = 'hashed:' + sha256(conversationId + AUDIT_REDACT_SECRET)[0..8]
+//          — the audit redactor's own hash (audit-redactor.ts hashValue),
+//          recomputed here server-side. This catches the envelopes that MATTER
+//          (order.item.add / payment.refund.issue / order.cancel …): customer-
+//          plane envelopes stamp actor.sessionId = conversationId and ops-plane
+//          envelopes stamp `admin:<staffId>` (== turn_trace.conversation_id),
+//          but their nonces are bare messageIds/UUIDs the LIKE arm never sees.
+// Both arms are additionally scoped to the turn's [start-10s, end+45s] span so
+// a multi-turn conversation no longer bleeds every decision into every turn.
 
+import { createHash } from "node:crypto";
 import { Pool } from "pg";
 import type { FastifyInstance } from "fastify";
+import { createAuditRedactor } from "@ibatexas/audit-sink";
 import { logger } from "../lib/logger.js";
 
 // Dedicated lazy read pool (own connection, not the bootstrap writer pool — the
@@ -60,6 +82,34 @@ function stripTrailingSlashes(s: string): string {
   return s.slice(0, end);
 }
 
+// ── redaction + the ADJ session-hash bridge ─────────────────────────────────
+
+// Lazy singleton — same construction as turn-trace-writer.ts (hashSecret only
+// matters for hashed:* fields; free prose gets the BR-PII scrub + truncation).
+let redactor: ReturnType<typeof createAuditRedactor> | null = null;
+function redactText(text: string): string {
+  if (redactor === null) {
+    redactor = createAuditRedactor({
+      hashSecret: process.env.AUDIT_REDACT_SECRET ?? "",
+    });
+  }
+  try {
+    const scrubbed = redactor.redactPayload(text);
+    return typeof scrubbed === "string" ? scrubbed : JSON.stringify(scrubbed);
+  } catch {
+    return "[REDACTED:unavailable]";
+  }
+}
+
+/** Recompute the audit redactor's session hash (audit-redactor.ts hashValue:
+ *  `"hashed:" + sha256(value + secret).hex[0..8]`) for the ADJ bridge arm 2. */
+function auditSessionHash(sessionId: string): string {
+  const h = createHash("sha256");
+  h.update(sessionId);
+  h.update(process.env.AUDIT_REDACT_SECRET ?? "");
+  return `hashed:${h.digest("hex").slice(0, 8)}`;
+}
+
 // ── coercers ────────────────────────────────────────────────────────────────
 
 function iso(v: unknown): string | null {
@@ -77,12 +127,47 @@ function num(v: unknown): number | null {
 function str(v: unknown): string | null {
   return typeof v === "string" ? v : v == null ? null : String(v);
 }
+function strArr(v: unknown): string[] {
+  return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+}
+
+/** Parse a `from`/`to` query value to a validated ISO string (else null). */
+function isoParam(v: string | undefined): string | null {
+  if (typeof v !== "string" || v.length === 0 || v.length > 40) return null;
+  const t = Date.parse(v);
+  return Number.isFinite(t) ? new Date(t).toISOString() : null;
+}
 
 // Safe id charset for path params (UUID / nonce forms: alnum, dash, underscore,
 // colon, dot). Bound params make injection impossible regardless; this just
 // rejects obviously-hostile shapes early and keeps LIKE clean.
 const SAFE_ID = /^[A-Za-z0-9:._-]{1,200}$/;
 const WINDOW_RE = /^\d+[smhd]$/;
+const CHANNEL_RE = /^[a-z_,-]{1,60}$/;
+
+/** Channel for display/filtering. The ops plane has no ibx_domain.conversations
+ *  row — its turn_trace.conversation_id is `admin:<staffId>` — so synthesize
+ *  "ops" instead of leaving it "unknown". */
+function channelFor(sessionId: string, enriched: string | null): string {
+  if (enriched !== null) return enriched;
+  return sessionId.startsWith("admin:") ? "ops" : "unknown";
+}
+
+/** Most-governance-significant decision of a turn (for the turn-row chip):
+ *  a REFUSE outranks the EXECUTEs around it. Archiver appends are excluded by
+ *  the caller (kind = conversation.message.append is bookkeeping noise). */
+const DECISION_SEVERITY = ["REFUSE", "ESCALATE", "REQUEST_CONFIRMATION", "DEFER", "REWRITE", "EXECUTE"] as const;
+function pickDecision(kinds: ReadonlyArray<string>): string | null {
+  for (const d of DECISION_SEVERITY) if (kinds.includes(d)) return d;
+  return kinds.length > 0 ? kinds[kinds.length - 1]! : null;
+}
+
+// The ADJ span slack: a decision is recorded between the planner call and the
+// responder call, but a turn whose LAST trace row is the planner (no responder)
+// records its decision AFTER max(recorded_at) — hence the asymmetric window.
+// Kept tight so back-to-back turns don't bleed decisions into each other.
+const ADJ_SLACK_BEFORE = "5 seconds";
+const ADJ_SLACK_AFTER = "20 seconds";
 
 // ── VictoriaLogs mirror (apps/api cannot import @ibatexas/cli) ──────────────
 
@@ -112,6 +197,81 @@ async function queryVl(query: string, limit: number): Promise<VlRaw[]> {
     .reverse(); // VictoriaLogs returns newest-first; show oldest-first
 }
 
+/** The turn's VL filter. Two fixes over the original `_time:24h correlationId:=`:
+ *  (1) match `turnId` too — claims.terminal / claim_planner.* / reply.sent /
+ *  empty_completion_retry bind `turnId`, only conductor lines bind
+ *  `correlationId` (live-verified census); (2) anchor `_time` to the turn's own
+ *  span (absolute range, ±5m) instead of a now-relative window, so a turn older
+ *  than 24h no longer renders a silently-empty lane (which also fabricated
+ *  false GAP ghosts). An explicit ?window= still overrides as a widener. */
+function vlTurnQuery(turnId: string, startedAt: string | null, endedAt: string | null, window: string | null): string {
+  const match = `(correlationId:=${JSON.stringify(turnId)} OR turnId:=${JSON.stringify(turnId)})`;
+  if (window !== null) return `_time:${window} ${match}`;
+  if (startedAt !== null) {
+    const s = new Date(Date.parse(startedAt) - 5 * 60_000).toISOString();
+    const e = new Date(Date.parse(endedAt ?? startedAt) + 5 * 60_000).toISOString();
+    return `_time:[${s}, ${e}] ${match}`;
+  }
+  return `_time:24h ${match}`;
+}
+
+/** Structured VL fields worth carrying to the viewer beyond time/level/
+ *  component/msg — the claims + delivery verdict fields (all emitted by our
+ *  own signal-only telemetry; the msg text itself is already served raw). */
+const VL_FIELD_ALLOWLIST = [
+  "event",
+  "decisionKind",
+  "disposition",
+  "posture",
+  "kernelTerminal",
+  "degradedFromRender",
+  "renderedCount",
+  "validatedTypes",
+  "droppedClaimTypes",
+  "candidateTypes",
+  "deliveredText", // reply.sent's canonical delivered boolean (== textSent || pixDelivered)
+  "textSent",
+  "pixDelivered",
+  "channel",
+  "intentHash",
+  "reason",
+  "inbound", // conductor's 280-char REDACTED inbound text
+  "response", // conductor's 280-char REDACTED reply text
+  "errorCode",
+] as const;
+function vlFields(l: VlRaw): Record<string, string> | null {
+  let out: Record<string, string> | null = null;
+  for (const k of VL_FIELD_ALLOWLIST) {
+    const v = l[k];
+    if (typeof v === "string" && v.length > 0) {
+      out = out ?? {};
+      out[k] = v;
+    } else if (typeof v === "number" || typeof v === "boolean") {
+      out = out ?? {};
+      out[k] = String(v);
+    }
+  }
+  return out;
+}
+
+// ── preflight probe ─────────────────────────────────────────────────────────
+
+interface StoreProbe {
+  ok: boolean;
+  latencyMs: number;
+  error: string | null;
+}
+
+async function probeStore(fn: () => Promise<unknown>): Promise<StoreProbe> {
+  const t0 = Date.now();
+  try {
+    await fn();
+    return { ok: true, latencyMs: Date.now() - t0, error: null };
+  } catch (err) {
+    return { ok: false, latencyMs: Date.now() - t0, error: (err as Error).message };
+  }
+}
+
 // ── routes ──────────────────────────────────────────────────────────────────
 
 /** Register the read-only RCA routes. Call from inside qaControlRoutes, after
@@ -128,93 +288,263 @@ export function registerRcaReadRoutes(server: FastifyInstance): void {
     config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
   } as const;
   // ── conversations picker ──────────────────────────────────────────────────
-  server.get<{ Querystring: { limit?: string; q?: string } }>(
-    "/internal/qa/rca/conversations",
-    RL,
-    async (request) => {
-      const limit = Math.min(Math.max(num(request.query.limit) ?? 40, 1), 200);
-      const q = typeof request.query.q === "string" ? request.query.q.slice(0, 120) : "";
-      const params: unknown[] = [];
-      let where = "";
-      if (q.length > 0) {
-        params.push(`%${q}%`);
-        where = `WHERE t.conversation_id ILIKE $1`;
-      }
-      params.push(limit);
-      const { rows } = await pool().query(
-        `SELECT t.conversation_id AS session_id, max(t.recorded_at) AS last_at,
-                count(DISTINCT t.turn_id) AS turns
-         FROM turn_trace t ${where}
-         GROUP BY t.conversation_id
-         ORDER BY last_at DESC
-         LIMIT $${params.length}`,
-        params,
-      );
+  server.get<{
+    Querystring: { limit?: string; q?: string; from?: string; to?: string; channel?: string };
+  }>("/internal/qa/rca/conversations", RL, async (request) => {
+    const limit = Math.min(Math.max(num(request.query.limit) ?? 40, 1), 200);
+    const q = typeof request.query.q === "string" ? request.query.q.slice(0, 120) : "";
+    const from = isoParam(request.query.from);
+    const to = isoParam(request.query.to);
+    const channels =
+      typeof request.query.channel === "string" && CHANNEL_RE.test(request.query.channel)
+        ? new Set(request.query.channel.split(",").filter((c) => c.length > 0))
+        : null;
 
-      // Best-effort enrichment: channel + chat cuid from the domain schema.
-      const meta = new Map<string, { channel: string | null; chatCuid: string | null }>();
-      const ids = rows.map((r) => str((r as Record<string, unknown>).session_id)).filter((v): v is string => v !== null);
-      if (ids.length > 0) {
-        try {
-          const enr = await pool().query(
-            `SELECT session_id, id AS chat_cuid, channel FROM ibx_domain.conversations WHERE session_id = ANY($1)`,
-            [ids],
-          );
-          for (const r of enr.rows as Array<Record<string, unknown>>) {
-            const sid = str(r.session_id);
-            if (sid !== null) meta.set(sid, { channel: str(r.channel), chatCuid: str(r.chat_cuid) });
+    const params: unknown[] = [];
+    const where: string[] = [];
+    if (q.length > 0) {
+      params.push(`%${q}%`);
+      where.push(`t.conversation_id ILIKE $${params.length}`);
+    }
+    // from/to bound the conversation's ACTIVITY window (any turn in range).
+    if (from !== null) {
+      params.push(from);
+      where.push(`t.recorded_at >= $${params.length}`);
+    }
+    if (to !== null) {
+      params.push(to);
+      where.push(`t.recorded_at <= $${params.length}`);
+    }
+    // Channel pushdown: filter in SQL on the SAME expression channelFor()
+    // computes client-side (domain row's channel; synthetic 'ops' for admin:*;
+    // 'unknown' when no row) so LIMIT means "N matching conversations", not
+    // "whatever survived an over-fetched shortlist". Falls back to the old
+    // join-free query + post-enrichment filter if the domain schema is
+    // unavailable (the LEFT JOIN itself would then error).
+    let rows: unknown[] | undefined;
+    let pushedDown = false;
+    if (channels !== null) {
+      try {
+        const p2: unknown[] = [...params, [...channels]];
+        const chCond = `COALESCE(c.channel, CASE WHEN t.conversation_id LIKE 'admin:%' THEN 'ops' ELSE 'unknown' END) = ANY($${p2.length})`;
+        p2.push(limit);
+        rows = (
+          await pool().query(
+            `SELECT t.conversation_id AS session_id, min(t.recorded_at) AS started_at,
+                    max(t.recorded_at) AS last_at, count(DISTINCT t.turn_id) AS turns
+             FROM turn_trace t
+             LEFT JOIN ibx_domain.conversations c ON c.session_id = t.conversation_id
+             WHERE ${[...where, chCond].join(" AND ")}
+             GROUP BY t.conversation_id
+             ORDER BY last_at DESC
+             LIMIT $${p2.length}`,
+            p2,
+          )
+        ).rows;
+        pushedDown = true;
+      } catch (err) {
+        logger.warn(
+          { component: "qa-rca", err: (err as Error).message },
+          "channel pushdown unavailable — falling back to post-enrichment filter",
+        );
+      }
+    }
+    if (rows === undefined) {
+      // Over-fetch the shortlist when a channel filter narrows it afterwards.
+      params.push(channels !== null ? 200 : limit);
+      rows = (
+        await pool().query(
+          `SELECT t.conversation_id AS session_id, min(t.recorded_at) AS started_at,
+                  max(t.recorded_at) AS last_at, count(DISTINCT t.turn_id) AS turns
+           FROM turn_trace t ${where.length > 0 ? `WHERE ${where.join(" AND ")}` : ""}
+           GROUP BY t.conversation_id
+           ORDER BY last_at DESC
+           LIMIT $${params.length}`,
+          params,
+        )
+      ).rows;
+    }
+
+    // Best-effort enrichment: channel + chat cuid + last archived message from
+    // the domain schema. Message content is redacted server-side (see header).
+    const meta = new Map<
+      string,
+      { channel: string | null; chatCuid: string | null; lastText: string | null; lastRole: string | null }
+    >();
+    const ids = rows
+      .map((r) => str((r as Record<string, unknown>).session_id))
+      .filter((v): v is string => v !== null);
+    if (ids.length > 0) {
+      try {
+        const enr = await pool().query(
+          `SELECT c.session_id, c.id AS chat_cuid, c.channel, m.content, m.role
+           FROM ibx_domain.conversations c
+           LEFT JOIN LATERAL (
+             SELECT content, role FROM ibx_domain.conversation_messages
+             WHERE conversation_id = c.id ORDER BY sent_at DESC LIMIT 1
+           ) m ON TRUE
+           WHERE c.session_id = ANY($1)`,
+          [ids],
+        );
+        for (const r of enr.rows as Array<Record<string, unknown>>) {
+          const sid = str(r.session_id);
+          const content = str(r.content);
+          if (sid !== null) {
+            meta.set(sid, {
+              channel: str(r.channel),
+              chatCuid: str(r.chat_cuid),
+              lastText: content !== null ? redactText(content).slice(0, 160) : null,
+              lastRole: str(r.role),
+            });
           }
-        } catch (err) {
-          logger.warn({ component: "qa-rca", err: (err as Error).message }, "conversation enrichment skipped");
         }
+      } catch (err) {
+        logger.warn({ component: "qa-rca", err: (err as Error).message }, "conversation enrichment skipped");
       }
+    }
 
-      return {
-        conversations: rows.map((r) => {
-          const row = r as Record<string, unknown>;
-          const sid = str(row.session_id) ?? "";
-          const m = meta.get(sid);
-          return {
-            sessionId: sid,
-            chatCuid: m?.chatCuid ?? null,
-            channel: m?.channel ?? "unknown",
-            startedAt: iso(row.last_at),
-            lastText: null,
-            turnCount: num(row.turns) ?? 0,
-          };
-        }),
-      };
-    },
-  );
+    const conversations = rows
+      .map((r) => {
+        const row = r as Record<string, unknown>;
+        const sid = str(row.session_id) ?? "";
+        const m = meta.get(sid);
+        return {
+          sessionId: sid,
+          chatCuid: m?.chatCuid ?? null,
+          channel: channelFor(sid, m?.channel ?? null),
+          startedAt: iso(row.started_at),
+          lastAt: iso(row.last_at),
+          lastText: m?.lastText ?? null,
+          lastRole: m?.lastRole ?? null,
+          turnCount: num(row.turns) ?? 0,
+        };
+      })
+      .filter((c) => pushedDown || channels === null || channels.has(c.channel))
+      .slice(0, limit);
+
+    return { conversations };
+  });
 
   // ── turns of one conversation ─────────────────────────────────────────────
-  server.get<{ Params: { conv: string } }>(
+  server.get<{ Params: { conv: string }; Querystring: { from?: string; to?: string } }>(
     "/internal/qa/rca/conversations/:conv/turns",
     RL,
     async (request, reply) => {
       const conv = request.params.conv;
       if (!SAFE_ID.test(conv)) return reply.code(400).send({ error: "invalid conversation id" });
+      const from = isoParam(request.query.from);
+      const to = isoParam(request.query.to);
+
+      const params: unknown[] = [conv];
+      let range = "";
+      if (from !== null) {
+        params.push(from);
+        range += ` AND recorded_at >= $${params.length}`;
+      }
+      if (to !== null) {
+        params.push(to);
+        range += ` AND recorded_at <= $${params.length}`;
+      }
       const { rows } = await pool().query(
-        `SELECT turn_id, min(recorded_at) AS started_at, count(*) AS calls,
-                bool_or(prompt_manifest->>0 LIKE 'ibatexas/responder%' AND output_tokens = 0) AS responder_empty
-         FROM turn_trace WHERE conversation_id = $1
+        `SELECT turn_id, min(recorded_at) AS started_at, max(recorded_at) AS ended_at,
+                count(*) AS calls,
+                bool_or((prompt_manifest->>0 LIKE 'ibatexas/responder%'
+                         OR prompt_manifest->>0 LIKE 'ops/responder%')
+                        AND (output_tokens = 0 OR length(btrim(coalesce(completion, ''))) = 0)) AS responder_empty
+         FROM turn_trace WHERE conversation_id = $1${range}
          GROUP BY turn_id ORDER BY started_at DESC LIMIT 200`,
-        [conv],
+        params,
       );
-      return {
-        turns: rows.map((r) => {
-          const row = r as Record<string, unknown>;
-          return {
-            turnId: str(row.turn_id) ?? "",
-            startedAt: iso(row.started_at),
-            callCount: num(row.calls) ?? 0,
-            decision: null as string | null,
-            userText: null as string | null,
-            hadSend: false,
-            responderEmpty: row.responder_empty === true,
-          };
-        }),
-      };
+
+      const turns = rows.map((r) => {
+        const row = r as Record<string, unknown>;
+        return {
+          turnId: str(row.turn_id) ?? "",
+          startedAt: iso(row.started_at),
+          endedAt: iso(row.ended_at),
+          startMs: row.started_at instanceof Date ? row.started_at.getTime() : Date.parse(str(row.started_at) ?? ""),
+          callCount: num(row.calls) ?? 0,
+          decision: null as string | null,
+          adjCount: 0,
+          userText: null as string | null,
+          hadSend: false,
+          responderEmpty: row.responder_empty === true,
+        };
+      });
+
+      // Populate decision/adjCount (one ADJ query over the listed span, bucketed
+      // to turns in JS) + userText (nearest preceding archived user message).
+      // Both lanes are best-effort — a failure leaves the fields null as before.
+      if (turns.length > 0) {
+        const spanStart = turns[turns.length - 1]!.startedAt;
+        const spanEnd = turns[0]!.endedAt ?? turns[0]!.startedAt;
+        try {
+          const adjRes = await pool().query(
+            `SELECT recorded_at, kind, decision_kind FROM intent_audit
+             WHERE (nonce LIKE $1 OR session_id = $2)
+               AND recorded_at BETWEEN $3::timestamptz - interval '${ADJ_SLACK_BEFORE}'
+                                   AND $4::timestamptz + interval '${ADJ_SLACK_AFTER}'
+             ORDER BY recorded_at`,
+            [`${conv}:%`, auditSessionHash(conv), spanStart, spanEnd],
+          );
+          // Bucket each decision onto the latest turn that started before it.
+          const byStart = [...turns].sort((a, b) => a.startMs - b.startMs);
+          const kindsPerTurn = new Map<string, string[]>();
+          for (const r of adjRes.rows as Array<Record<string, unknown>>) {
+            const kind = str(r.kind) ?? "";
+            if (kind === "conversation.message.append") continue; // archiver bookkeeping
+            const at = r.recorded_at instanceof Date ? r.recorded_at.getTime() : Date.parse(str(r.recorded_at) ?? "");
+            if (!Number.isFinite(at)) continue;
+            let target: (typeof byStart)[number] | undefined;
+            for (const t of byStart) {
+              if (t.startMs - 10_000 <= at) target = t;
+              else break;
+            }
+            if (target === undefined) continue;
+            const list = kindsPerTurn.get(target.turnId) ?? [];
+            list.push(str(r.decision_kind) ?? "");
+            kindsPerTurn.set(target.turnId, list);
+          }
+          for (const t of turns) {
+            const kinds = kindsPerTurn.get(t.turnId) ?? [];
+            t.adjCount = kinds.length;
+            t.decision = pickDecision(kinds);
+          }
+        } catch (err) {
+          logger.warn({ component: "qa-rca", err: (err as Error).message }, "turn decisions degraded to null");
+        }
+
+        try {
+          const msgRes = await pool().query(
+            `SELECT m.content, m.sent_at FROM ibx_domain.conversations c
+             JOIN ibx_domain.conversation_messages m ON m.conversation_id = c.id
+             WHERE c.session_id = $1 AND m.role = 'user'
+             ORDER BY m.sent_at`,
+            [conv],
+          );
+          const msgs = (msgRes.rows as Array<Record<string, unknown>>)
+            .map((r) => ({
+              at: r.sent_at instanceof Date ? r.sent_at.getTime() : Date.parse(str(r.sent_at) ?? ""),
+              content: str(r.content) ?? "",
+            }))
+            .filter((m) => Number.isFinite(m.at));
+          for (const t of turns) {
+            // The user message that triggered a turn is archived with a sent_at
+            // at/just before the turn's first LLM call — take the latest one in
+            // [start-5min, start+15s]. Heuristic (no turn id on messages).
+            let best: { at: number; content: string } | null = null;
+            for (const m of msgs) {
+              if (m.at > t.startMs + 15_000) break;
+              if (m.at >= t.startMs - 300_000) best = m;
+            }
+            if (best !== null) t.userText = redactText(best.content).slice(0, 120);
+          }
+        } catch {
+          /* domain schema optional — userText stays null */
+        }
+      }
+
+      return { turns: turns.map(({ startMs: _drop, ...t }) => t) };
     },
   );
 
@@ -225,7 +555,7 @@ export function registerRcaReadRoutes(server: FastifyInstance): void {
     async (request, reply) => {
       const turnId = request.params.turnId;
       if (!SAFE_ID.test(turnId)) return reply.code(400).send({ error: "invalid turn id" });
-      const window = WINDOW_RE.test(request.query.window ?? "") ? (request.query.window as string) : "24h";
+      const window = WINDOW_RE.test(request.query.window ?? "") ? (request.query.window as string) : null;
 
       // 1) resolve conversation + span from turn_trace (the only plaintext key).
       const head = await pool().query(
@@ -238,69 +568,108 @@ export function registerRcaReadRoutes(server: FastifyInstance): void {
       const startedAt = iso(h.started_at);
       const endedAt = iso(h.ended_at);
 
-      // 2) [LLM] the model calls of this turn.
-      const llmRes = await pool().query(
-        `SELECT call_index, prompt_manifest->>0 AS prompt0, model, input_tokens,
-                output_tokens, completion, duration_ms, recorded_at
-         FROM turn_trace WHERE turn_id = $1 ORDER BY call_index, recorded_at`,
-        [turnId],
-      );
-      const llm = llmRes.rows.map((r) => {
-        const row = r as Record<string, unknown>;
-        return {
-          callIndex: num(row.call_index) ?? 0,
-          persona: str(row.prompt0),
-          model: str(row.model),
-          inputTokens: num(row.input_tokens),
-          outputTokens: num(row.output_tokens),
-          durationMs: num(row.duration_ms),
-          completion: str(row.completion),
-          recordedAt: iso(row.recorded_at),
-        };
-      });
+      const degraded = { adj: false, vl: false };
 
-      // 3) [ADJ] kernel decisions — bridge by nonce prefix, NOT session_id
-      //    (session_id is hashed by the audit redactor). Fail-safe to empty.
-      let adj: Array<Record<string, unknown>> = [];
-      if (conv !== null) {
-        try {
-          const adjRes = await pool().query(
-            `SELECT recorded_at, kind, decision_kind, refusal_code, taint, session_id
-             FROM intent_audit WHERE nonce LIKE $1 ORDER BY recorded_at`,
-            [`${conv}:%`],
-          );
-          adj = adjRes.rows as Array<Record<string, unknown>>;
-        } catch (err) {
-          logger.warn({ component: "qa-rca", err: (err as Error).message }, "[ADJ] read degraded to empty");
+      // 2) [LLM] the model calls, then [ADJ] via this turn's intent hashes —
+      //    the [LLM]→[ADJ] chain, the [VL] fetch, and the context enrichment
+      //    run as three independent branches (the VL leg carries an 8s timeout
+      //    that previously serialized after every pg read).
+      const llmAdjBranch = (async () => {
+        const llmRes = await pool().query(
+          `SELECT call_index, prompt_manifest->>0 AS prompt0, model, temperature, intent_hash,
+                  input_tokens, output_tokens, completion, duration_ms, recorded_at
+           FROM turn_trace WHERE turn_id = $1 ORDER BY call_index, recorded_at`,
+          [turnId],
+        );
+        const llm = llmRes.rows.map((r) => {
+          const row = r as Record<string, unknown>;
+          return {
+            callIndex: num(row.call_index) ?? 0,
+            persona: str(row.prompt0),
+            model: str(row.model),
+            temperature: num(row.temperature),
+            intentHash: str(row.intent_hash),
+            inputTokens: num(row.input_tokens),
+            outputTokens: num(row.output_tokens),
+            durationMs: num(row.duration_ms),
+            completion: str(row.completion),
+            recordedAt: iso(row.recorded_at),
+          };
+        });
+
+        // [ADJ] — the three-arm bridge (see file header): conversation-prefixed
+        // nonces + the recomputed session hash, both scoped to the turn span,
+        // UNION an exact intent_hash match that is deliberately NOT time-scoped
+        // — a parked envelope's confirm/defer RESUME re-adjudication happens in
+        // a later turn but is still THIS envelope's story (the supersedes chain
+        // ties them together). session_id is hashed by the audit redactor, so
+        // arm 2 recomputes that hash; it never round-trips a plaintext id.
+        // Fail-safe to empty.
+        let adj: Array<Record<string, unknown>> = [];
+        const hashes = [...new Set(llm.map((c) => c.intentHash).filter((x): x is string => x !== null))];
+        if (conv !== null && startedAt !== null && endedAt !== null) {
+          try {
+            const adjRes = await pool().query(
+              `SELECT recorded_at, kind, decision_kind, refusal_kind, refusal_code,
+                      taint, principal, decision_basis, duration_ms, nonce, session_id,
+                      intent_hash, supersedes_jsonb,
+                      CASE WHEN intent_hash = ANY($5::text[]) THEN 'turn'
+                           WHEN nonce LIKE $1 THEN 'system'
+                           ELSE 'session' END AS scope
+               FROM intent_audit
+               WHERE ((nonce LIKE $1 OR session_id = $2)
+                      AND recorded_at BETWEEN $3::timestamptz - interval '${ADJ_SLACK_BEFORE}'
+                                          AND $4::timestamptz + interval '${ADJ_SLACK_AFTER}')
+                  OR intent_hash = ANY($5::text[])
+               ORDER BY recorded_at`,
+              [`${conv}:%`, auditSessionHash(conv), startedAt, endedAt, hashes],
+            );
+            adj = adjRes.rows as Array<Record<string, unknown>>;
+          } catch (err) {
+            degraded.adj = true;
+            logger.warn({ component: "qa-rca", err: (err as Error).message }, "[ADJ] read degraded to empty");
+          }
         }
-      }
+        return { llm, adj };
+      })();
 
-      // 4) [VL] pino logs by correlationId (== turnId). Fail-safe to empty.
-      let vl: VlRaw[] = [];
-      try {
-        vl = await queryVl(`_time:${window} correlationId:=${JSON.stringify(turnId)}`, 500);
-      } catch (err) {
-        logger.warn({ component: "qa-rca", err: (err as Error).message }, "[VL] read degraded to empty");
-      }
+      // [VL] pino logs by correlationId OR turnId, time-anchored to the turn.
+      // Fail-safe to empty — but flagged, so the viewer can distinguish
+      // "no logs" (absence-is-signal) from "the log store was unreachable".
+      const vlBranch = (async () => {
+        try {
+          return await queryVl(vlTurnQuery(turnId, startedAt, endedAt, window), 500);
+        } catch (err) {
+          degraded.vl = true;
+          logger.warn({ component: "qa-rca", err: (err as Error).message }, "[VL] read degraded to empty");
+          return [] as VlRaw[];
+        }
+      })();
 
-      // context enrichment (display-only; hashed ids never join)
-      let channel: string | null = null;
-      let chatCuid: string | null = null;
-      let phoneHash: string | null = null;
-      if (conv !== null) {
+      // context enrichment (display-only; hashed ids never join).
+      // NOTE: conversations has NO phone_hash column (that lives on
+      // conversation_incidents) — selecting it here errored on EVERY turn and
+      // the catch silently nulled channel/chatCuid too (found in the 2026-07-13
+      // deepening scan). phoneHash stays on the wire as null for now.
+      const enrichBranch = (async () => {
+        if (conv === null) return { channel: null as string | null, chatCuid: null as string | null };
         try {
           const c = await pool().query(
-            `SELECT id AS chat_cuid, channel, phone_hash FROM ibx_domain.conversations WHERE session_id = $1 LIMIT 1`,
+            `SELECT id AS chat_cuid, channel FROM ibx_domain.conversations WHERE session_id = $1 LIMIT 1`,
             [conv],
           );
           const cr = (c.rows[0] ?? {}) as Record<string, unknown>;
-          channel = str(cr.channel);
-          chatCuid = str(cr.chat_cuid);
-          phoneHash = str(cr.phone_hash);
+          return { channel: str(cr.channel), chatCuid: str(cr.chat_cuid) };
         } catch {
           /* domain schema optional — display fields stay null */
+          return { channel: null, chatCuid: null };
         }
-      }
+      })();
+
+      const [{ llm, adj }, vl, enrich] = await Promise.all([llmAdjBranch, vlBranch, enrichBranch]);
+      const channel = enrich.channel;
+      const chatCuid = enrich.chatCuid;
+      const phoneHash: string | null = null;
       const sessionHashed = str((adj[0] ?? {}).session_id) ?? null;
 
       const startMs = startedAt ? Date.parse(startedAt) : Number.NaN;
@@ -315,27 +684,239 @@ export function registerRcaReadRoutes(server: FastifyInstance): void {
             chatCuid,
             phoneHash,
             sessionHashed,
-            channel,
+            channel: conv !== null ? channelFor(conv, channel) : channel,
             startedAt,
             endedAt,
             durationMs: Number.isFinite(startMs) && Number.isFinite(endMs) ? endMs - startMs : null,
           },
           llm,
-          adj: adj.map((row) => ({
-            recordedAt: iso(row.recorded_at),
-            kind: str(row.kind),
-            decisionKind: str(row.decision_kind),
-            refusalCode: str(row.refusal_code),
-            taint: str(row.taint),
-          })),
+          adj: adj.map((row) => {
+            const sup = row.supersedes_jsonb as Record<string, unknown> | null | undefined;
+            return {
+              recordedAt: iso(row.recorded_at),
+              kind: str(row.kind),
+              decisionKind: str(row.decision_kind),
+              refusalKind: str(row.refusal_kind),
+              refusalCode: str(row.refusal_code),
+              taint: str(row.taint),
+              principal: str(row.principal),
+              decisionBasis: strArr(row.decision_basis),
+              durationMs: num(row.duration_ms),
+              nonce: str(row.nonce),
+              intentHash: str(row.intent_hash),
+              scope: str(row.scope),
+              supersedes:
+                sup != null && typeof sup === "object"
+                  ? {
+                      reason: str(sup.reason),
+                      predecessorIntentHash: str(sup.predecessorIntentHash),
+                      predecessorAt: iso(sup.predecessorAt),
+                    }
+                  : null,
+            };
+          }),
           vl: vl.map((l) => ({
             time: iso(l._time),
             level: l.level == null ? null : String(l.level),
             component: str(l.component),
             msg: str(l._msg),
+            fields: vlFields(l),
           })),
+          degraded,
         },
       };
     },
   );
+
+  // ── find a message by text (ibx-find-msg.sh as a route) ───────────────────
+  // Searches the audit ledger's archived message content (populated on
+  // conversation.message.append envelopes; carries BOTH roles — a hit may be
+  // an assistant/store message, not the user's text), then resolves each hit
+  // to the turn whose span the message landed in so the rail can jump straight
+  // to it. Content is server-redacted like every other string served here.
+  server.get<{ Querystring: { text?: string; limit?: string; from?: string; to?: string } }>(
+    "/internal/qa/rca/find",
+    RL,
+    async (request, reply) => {
+      const text =
+        typeof request.query.text === "string" ? request.query.text.trim().slice(0, 120) : "";
+      if (text.length < 2) return reply.code(400).send({ error: "text must be at least 2 characters" });
+      const limit = Math.min(Math.max(num(request.query.limit) ?? 20, 1), 50);
+      const from = isoParam(request.query.from);
+      const to = isoParam(request.query.to);
+
+      // Escape LIKE wildcards so the user's text is a literal substring match.
+      const needle = `%${text.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+      const params: unknown[] = [needle];
+      let range = "";
+      if (from !== null) {
+        params.push(from);
+        range += ` AND recorded_at >= $${params.length}`;
+      }
+      if (to !== null) {
+        params.push(to);
+        range += ` AND recorded_at <= $${params.length}`;
+      }
+      params.push(limit);
+      const { rows } = await pool().query(
+        `SELECT recorded_at, decision_kind, nonce,
+                envelope_jsonb->'payload'->>'role' AS role,
+                envelope_jsonb->'payload'->>'content' AS content,
+                envelope_jsonb->'payload'->>'conversationId' AS chat_cuid
+         FROM intent_audit
+         WHERE envelope_jsonb->'payload'->>'content' ILIKE $1${range}
+         ORDER BY recorded_at DESC LIMIT $${params.length}`,
+        params,
+      );
+
+      // Archiver nonces are `<sessionId>:<sentAt>:<idx>` — but the ops plane's
+      // sessionId is itself `admin:<staffId>`, so the conversation-id candidate
+      // is the first segment OR the first two joined. Try both against
+      // turn_trace; whichever exists there is the real conversation_id.
+      const hits = rows.map((r) => {
+        const row = r as Record<string, unknown>;
+        const content = str(row.content);
+        const nonceParts = (str(row.nonce) ?? "").split(":");
+        const candidates = [nonceParts[0] ?? ""];
+        if (nonceParts.length > 2) candidates.push(`${nonceParts[0]}:${nonceParts[1]}`);
+        // Best pre-resolution guess for the conversation id: the ops plane's
+        // sessionId is itself `admin:<staffId>` (two segments), so single-segment
+        // `admin` is never a real conversation id. Resolution below overrides this
+        // once a candidate matches turn_trace; this only shapes the unresolved row.
+        const defaultConv =
+          nonceParts[0] === "admin" && nonceParts.length > 2
+            ? `${nonceParts[0]}:${nonceParts[1]}`
+            : (nonceParts[0] ?? null);
+        return {
+          recordedAt: iso(row.recorded_at),
+          atMs:
+            row.recorded_at instanceof Date
+              ? row.recorded_at.getTime()
+              : Date.parse(str(row.recorded_at) ?? ""),
+          candidates: candidates.filter((c) => c.length > 0),
+          role: str(row.role),
+          decisionKind: str(row.decision_kind),
+          text: content !== null ? redactText(content).slice(0, 160) : null,
+          sessionId: defaultConv,
+          chatCuid: str(row.chat_cuid),
+          turnId: null as string | null,
+        };
+      });
+
+      // Resolve each hit to the latest turn of its conversation that started
+      // before the message landed (+15s slack: the archiver's assistant append
+      // is recorded just after the turn's last trace row). Best-effort.
+      const ids = [...new Set(hits.flatMap((h) => h.candidates))];
+      if (ids.length > 0) {
+        try {
+          const t = await pool().query(
+            `SELECT conversation_id, turn_id, min(recorded_at) AS started_at
+             FROM turn_trace WHERE conversation_id = ANY($1)
+             GROUP BY conversation_id, turn_id ORDER BY started_at`,
+            [ids],
+          );
+          const byConv = new Map<string, Array<{ turnId: string; startMs: number }>>();
+          for (const r of t.rows as Array<Record<string, unknown>>) {
+            const conv = str(r.conversation_id) ?? "";
+            const turnId = str(r.turn_id) ?? "";
+            const startMs =
+              r.started_at instanceof Date ? r.started_at.getTime() : Date.parse(str(r.started_at) ?? "");
+            if (!Number.isFinite(startMs) || turnId.length === 0) continue;
+            const list = byConv.get(conv) ?? [];
+            list.push({ turnId, startMs });
+            byConv.set(conv, list);
+          }
+          for (const h of hits) {
+            const conv = h.candidates.find((c) => byConv.has(c));
+            if (conv === undefined || !Number.isFinite(h.atMs)) continue;
+            h.sessionId = conv;
+            let best: string | null = null;
+            for (const tr of byConv.get(conv)!) {
+              if (tr.startMs <= h.atMs + 15_000) best = tr.turnId;
+              else break;
+            }
+            h.turnId = best;
+          }
+        } catch (err) {
+          logger.warn({ component: "qa-rca", err: (err as Error).message }, "find turn resolution skipped");
+        }
+      }
+
+      return { hits: hits.map(({ atMs: _a, candidates: _c, ...h }) => h) };
+    },
+  );
+
+  // ── redacted transcript of one conversation ────────────────────────────────
+  // The archived domain messages (both roles, sent order) — content is NOT
+  // redacted at write, so every string passes the audit redactor here. The
+  // ops plane has no domain row → empty transcript, degraded:false. A domain
+  // schema outage degrades to empty WITH the flag (absence-is-signal rule).
+  server.get<{ Params: { conv: string }; Querystring: { limit?: string } }>(
+    "/internal/qa/rca/conversations/:conv/messages",
+    RL,
+    async (request, reply) => {
+      const conv = request.params.conv;
+      if (!SAFE_ID.test(conv)) return reply.code(400).send({ error: "invalid conversation id" });
+      const limit = Math.min(Math.max(num(request.query.limit) ?? 200, 1), 500);
+      try {
+        const { rows } = await pool().query(
+          `SELECT m.role, m.content, m.sent_at
+           FROM ibx_domain.conversations c
+           JOIN ibx_domain.conversation_messages m ON m.conversation_id = c.id
+           WHERE c.session_id = $1 ORDER BY m.sent_at LIMIT $2`,
+          [conv, limit],
+        );
+        return {
+          messages: rows.map((r) => {
+            const row = r as Record<string, unknown>;
+            const content = str(row.content);
+            return {
+              role: str(row.role),
+              sentAt: iso(row.sent_at),
+              text: content !== null ? redactText(content).slice(0, 2000) : null,
+            };
+          }),
+          degraded: false,
+        };
+      } catch (err) {
+        logger.warn({ component: "qa-rca", err: (err as Error).message }, "transcript degraded to empty");
+        return { messages: [], degraded: true };
+      }
+    },
+  );
+
+  // ── preflight status (the skill's step-0 discipline as an endpoint) ───────
+  // One cheap reachability probe per store the workbench joins across, plus
+  // the two env facts that silently reshape what the lanes can show: the
+  // audit-redact secret (arm 2 of the ADJ bridge recomputes its hash — unset
+  // here while set on the writer means arm 2 misses everything) and the
+  // claims-pipeline flag (claims-ON turns run 3 LLM calls, not 2).
+  server.get("/internal/qa/rca/status", RL, async () => {
+    const [turnTrace, intentAudit, domain, victoriaLogs] = await Promise.all([
+      probeStore(() => pool().query("SELECT 1 FROM turn_trace LIMIT 1")),
+      probeStore(() => pool().query("SELECT 1 FROM intent_audit LIMIT 1")),
+      probeStore(() => pool().query("SELECT 1 FROM ibx_domain.conversation_messages LIMIT 1")),
+      probeStore(async () => {
+        const res = await fetch(`${stripTrailingSlashes(VICTORIALOGS_URL)}/health`, {
+          signal: AbortSignal.timeout(3_000),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      }),
+    ]);
+    return {
+      status: {
+        turnTrace,
+        intentAudit,
+        domain,
+        victoriaLogs,
+        flags: {
+          redactSecretSet: (process.env.AUDIT_REDACT_SECRET ?? "") !== "",
+          // Same check as claimsPipelineEnabled() (claustrum/claims-pipeline.ts)
+          // — read directly so this dev-only route doesn't import the claims
+          // pipeline wiring just for one env flag.
+          claimsPipeline: process.env.ENABLE_CLAIMS_PIPELINE === "true",
+        },
+      },
+    };
+  });
 }

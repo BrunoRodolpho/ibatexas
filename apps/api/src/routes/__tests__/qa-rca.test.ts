@@ -133,16 +133,26 @@ describe("qa-rca — merged turn view", () => {
               recorded_at: "2026-07-09T10:00:01.000Z",
               kind: "read.store.open_now",
               decision_kind: "VALIDATED",
+              refusal_kind: null,
               refusal_code: null,
               taint: null,
+              principal: "llm",
+              decision_basis: ["schema:version_supported"],
+              duration_ms: 3,
+              nonce: "conv-abc:2026-07-09T10:00:00.000Z:0",
               session_id: "sess-hash-xyz",
+              intent_hash: null,
+              supersedes_jsonb: null,
+              scope: "system",
             },
           ],
         };
       }
-      // domain enrichment (conversations).
+      // domain enrichment (conversations). NOTE: no phone_hash column exists on
+      // this table — the route must not select it (the pre-scan version did and
+      // silently nulled channel/chatCuid on every turn).
       if (sql.includes("ibx_domain.conversations")) {
-        return { rows: [{ chat_cuid: "chat_1", channel: "web", phone_hash: "ph_1" }] };
+        return { rows: [{ chat_cuid: "chat_1", channel: "web" }] };
       }
       return { rows: [] };
     };
@@ -158,16 +168,28 @@ describe("qa-rca — merged turn view", () => {
     expect(ctx.sessionHashed).toBe("sess-hash-xyz");
     expect(ctx.conversationId).toBe("conv-abc");
     expect(ctx.noncePrefix).toBe("conv-abc:");
-    // [ADJ] lane surfaced the kernel decision row.
+    expect(ctx.channel).toBe("web");
+    expect(ctx.chatCuid).toBe("chat_1");
+    // [ADJ] lane surfaced the kernel decision row, with the forensic columns.
     expect(res.json().turn.adj).toEqual([
       {
         recordedAt: "2026-07-09T10:00:01.000Z",
         kind: "read.store.open_now",
         decisionKind: "VALIDATED",
+        refusalKind: null,
         refusalCode: null,
         taint: null,
+        principal: "llm",
+        decisionBasis: ["schema:version_supported"],
+        durationMs: 3,
+        nonce: "conv-abc:2026-07-09T10:00:00.000Z:0",
+        intentHash: null,
+        scope: "system",
+        supersedes: null,
       },
     ]);
+    // VL is stubbed unreachable in tests → the lane degrades AND is flagged.
+    expect(res.json().turn.degraded).toEqual({ adj: false, vl: true });
     await app.close();
   });
 
@@ -186,6 +208,229 @@ describe("qa-rca — merged turn view", () => {
     });
     expect(res.statusCode).toBe(200);
     expect(res.json().turn.context.sessionHashed).toBeNull();
+    await app.close();
+  });
+});
+
+// ── find-by-text ──────────────────────────────────────────────────────────────
+
+describe("qa-rca — find message by text", () => {
+  it("400s when the search text is shorter than 2 characters", async () => {
+    const app = await build();
+    const res = await app.inject({
+      method: "GET",
+      url: "/internal/qa/rca/find?text=x",
+      headers: AUTH,
+    });
+    expect(res.statusCode).toBe(400);
+    await app.close();
+  });
+
+  it("resolves hits to turns via the nonce prefix — both planes", async () => {
+    db.query = async (sql: string) => {
+      // ledger content search (archiver message.append envelopes).
+      if (sql.includes("envelope_jsonb->'payload'->>'content' ILIKE")) {
+        return {
+          rows: [
+            {
+              recorded_at: "2026-07-09T10:00:03.000Z",
+              decision_kind: "EXECUTE",
+              // customer plane: nonce prefix IS the conversation uuid.
+              nonce: "conv-1:2026-07-09T10:00:02.000Z:0",
+              role: "user",
+              content: "quero meu pedido",
+              chat_cuid: "chat_9",
+            },
+            {
+              recorded_at: "2026-07-09T11:00:03.000Z",
+              decision_kind: "EXECUTE",
+              // ops plane: sessionId is itself admin:<staffId>, so the
+              // conversation-id candidate is the first TWO segments.
+              nonce: "admin:staff1:2026-07-09T11:00:02.000Z:0",
+              role: "assistant",
+              content: "pedido cancelado",
+              chat_cuid: null,
+            },
+          ],
+        };
+      }
+      // turn resolution over turn_trace.
+      if (sql.includes("GROUP BY conversation_id, turn_id")) {
+        return {
+          rows: [
+            { conversation_id: "conv-1", turn_id: "turn-A", started_at: "2026-07-09T09:59:00.000Z" },
+            { conversation_id: "conv-1", turn_id: "turn-B", started_at: "2026-07-09T10:00:01.000Z" },
+            { conversation_id: "admin:staff1", turn_id: "turn-OPS", started_at: "2026-07-09T11:00:00.000Z" },
+          ],
+        };
+      }
+      return { rows: [] };
+    };
+
+    const app = await build();
+    const res = await app.inject({
+      method: "GET",
+      url: "/internal/qa/rca/find?text=pedido",
+      headers: AUTH,
+    });
+    expect(res.statusCode).toBe(200);
+    const hits = res.json().hits;
+    expect(hits).toHaveLength(2);
+    // Latest turn started before the hit wins — not the first.
+    expect(hits[0]).toMatchObject({
+      sessionId: "conv-1",
+      turnId: "turn-B",
+      role: "user",
+      decisionKind: "EXECUTE",
+      chatCuid: "chat_9",
+    });
+    expect(hits[0].text).toContain("pedido");
+    // Ops plane resolved through the two-segment candidate.
+    expect(hits[1]).toMatchObject({ sessionId: "admin:staff1", turnId: "turn-OPS" });
+    await app.close();
+  });
+
+  it("leaves turnId null when no trace matches the nonce prefix", async () => {
+    db.query = async (sql: string) => {
+      if (sql.includes("envelope_jsonb->'payload'->>'content' ILIKE")) {
+        return {
+          rows: [
+            {
+              recorded_at: "2026-07-09T10:00:03.000Z",
+              decision_kind: "EXECUTE",
+              nonce: "orphan-uuid",
+              role: "user",
+              content: "sem turno",
+              chat_cuid: null,
+            },
+          ],
+        };
+      }
+      return { rows: [] };
+    };
+    const app = await build();
+    const res = await app.inject({
+      method: "GET",
+      url: "/internal/qa/rca/find?text=sem+turno",
+      headers: AUTH,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().hits[0]).toMatchObject({ sessionId: "orphan-uuid", turnId: null });
+    await app.close();
+  });
+
+  it("defaults an unresolved ops hit to admin:<staffId>, never the bare 'admin' segment", async () => {
+    db.query = async (sql: string) => {
+      if (sql.includes("envelope_jsonb->'payload'->>'content' ILIKE")) {
+        return {
+          rows: [
+            {
+              recorded_at: "2026-07-09T11:00:03.000Z",
+              decision_kind: "EXECUTE",
+              nonce: "admin:staff1:2026-07-09T11:00:02.000Z:0",
+              role: "assistant",
+              content: "pedido cancelado",
+              chat_cuid: null,
+            },
+          ],
+        };
+      }
+      // no turn_trace match → resolution can't override the default.
+      return { rows: [] };
+    };
+    const app = await build();
+    const res = await app.inject({
+      method: "GET",
+      url: "/internal/qa/rca/find?text=cancelado",
+      headers: AUTH,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().hits[0]).toMatchObject({ sessionId: "admin:staff1", turnId: null });
+    await app.close();
+  });
+});
+
+// ── transcript ────────────────────────────────────────────────────────────────
+
+describe("qa-rca — conversation transcript", () => {
+  it("400s a hostile conversation id", async () => {
+    const app = await build();
+    const res = await app.inject({
+      method: "GET",
+      url: `/internal/qa/rca/conversations/${encodeURIComponent("bad id!")}/messages`,
+      headers: AUTH,
+    });
+    expect(res.statusCode).toBe(400);
+    await app.close();
+  });
+
+  it("serves the archived messages in sent order (server-redacted)", async () => {
+    db.query = async (sql: string) => {
+      if (sql.includes("ibx_domain.conversation_messages")) {
+        return {
+          rows: [
+            { role: "user", content: "oi", sent_at: "2026-07-09T10:00:00.000Z" },
+            { role: "assistant", content: "olá!", sent_at: "2026-07-09T10:00:02.000Z" },
+          ],
+        };
+      }
+      return { rows: [] };
+    };
+    const app = await build();
+    const res = await app.inject({
+      method: "GET",
+      url: "/internal/qa/rca/conversations/conv-abc/messages",
+      headers: AUTH,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({
+      messages: [
+        { role: "user", sentAt: "2026-07-09T10:00:00.000Z", text: "oi" },
+        { role: "assistant", sentAt: "2026-07-09T10:00:02.000Z", text: "olá!" },
+      ],
+      degraded: false,
+    });
+    await app.close();
+  });
+
+  it("degrades to empty WITH the flag when the domain schema is unreachable", async () => {
+    db.query = async () => {
+      throw new Error("schema missing");
+    };
+    const app = await build();
+    const res = await app.inject({
+      method: "GET",
+      url: "/internal/qa/rca/conversations/conv-abc/messages",
+      headers: AUTH,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ messages: [], degraded: true });
+    await app.close();
+  });
+});
+
+// ── preflight status ──────────────────────────────────────────────────────────
+
+describe("qa-rca — preflight status", () => {
+  it("probes all three stores + VictoriaLogs and surfaces the env flags", async () => {
+    vi.stubEnv("AUDIT_REDACT_SECRET", "test-secret");
+    vi.stubEnv("ENABLE_CLAIMS_PIPELINE", "true");
+    const app = await build();
+    const res = await app.inject({
+      method: "GET",
+      url: "/internal/qa/rca/status",
+      headers: AUTH,
+    });
+    expect(res.statusCode).toBe(200);
+    const status = res.json().status;
+    // pg probes run against the mocked pool (resolves) — reachable.
+    expect(status.turnTrace.ok).toBe(true);
+    expect(status.intentAudit.ok).toBe(true);
+    expect(status.domain.ok).toBe(true);
+    // fetch is stubbed to reject → VictoriaLogs down, with the error carried.
+    expect(status.victoriaLogs.ok).toBe(false);
+    expect(status.victoriaLogs.error).toContain("no VL in tests");
+    expect(status.flags).toEqual({ redactSecretSet: true, claimsPipeline: true });
     await app.close();
   });
 });

@@ -8,6 +8,7 @@
 // compiled-in default when absent).
 
 import { useEffect, useMemo, useState, type KeyboardEvent } from "react"
+import { currentRoute, replaceRoute } from "../lib/nav"
 import {
   fetchPrompt,
   fetchPrompts,
@@ -45,7 +46,22 @@ export function PromptsWorkbench() {
   const [prompts, setPrompts] = useState<PromptSummary[]>([])
   const [listErr, setListErr] = useState<string | null>(null)
   const [q, setQ] = useState("")
-  const [selId, setSelId] = useState<string | null>(null)
+  // Deep-linkable: #prompts/<id> selects a prompt (RCA's LLM rows jump here).
+  const [selId, setSelId] = useState<string | null>(() => {
+    const r = currentRoute()
+    return r?.section === "prompts" && r.promptId !== undefined ? r.promptId : null
+  })
+  useEffect(() => {
+    replaceRoute({ section: "prompts", ...(selId !== null ? { promptId: selId } : {}) })
+  }, [selId])
+  useEffect(() => {
+    const onHash = () => {
+      const r = currentRoute()
+      if (r?.section === "prompts" && r.promptId !== undefined) setSelId(r.promptId)
+    }
+    window.addEventListener("hashchange", onHash)
+    return () => window.removeEventListener("hashchange", onHash)
+  }, [])
   const [detail, setDetail] = useState<PromptDetail | null>(null)
   const [text, setText] = useState("")
   const [status, setStatus] = useState<{ kind: "ok" | "err" | "info"; msg: string } | null>(null)
