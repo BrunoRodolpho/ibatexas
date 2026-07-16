@@ -4,7 +4,7 @@
   "digests": {
     "ibatexas/pack-customer-onboarding": "399a5988b5d8a0f4aabc6b01c043e62ac58314cee9bcbdfbff6af77aa301b8e6",
     "ibatexas/pack-ops": "f995702bcc1e4711902b4366a719935dd9f9e834852060e52a136101e3d6ed49",
-    "ibatexas/pack-orders": "fcdee1eeb81d3ec12b27d032b87afe442d962d228de700ba30cfb3e90f86c362",
+    "ibatexas/pack-orders": "d4b1c5a70d334e2394808db24272039263908b9389b70205612aad9c8ad59c12",
     "ibatexas/pack-payments": "9c3b80526ebb75af3b672c95c56e9ca68ba4720af481035ce9166f71b824860c",
     "ibatexas/pack-reservations": "0b2b76bab6de0295cbfedfa5e23a16ccf8d9a75728b5f6d85bb71f90671e59dd",
     "ibatexas/pack-whatsapp": "ee4620f0643462d9c6bf7e00b1cada0ca44cf924f33758d8769c302499a2c06f",
@@ -24,7 +24,7 @@
     {
       "packId": "ibatexas/pack-orders",
       "packVersion": "1.1.0",
-      "digest": "fcdee1eeb81d3ec12b27d032b87afe442d962d228de700ba30cfb3e90f86c362"
+      "digest": "d4b1c5a70d334e2394808db24272039263908b9389b70205612aad9c8ad59c12"
     },
     {
       "packId": "ibatexas/pack-payments",
