@@ -101,7 +101,10 @@ import {
 } from "./closed-hours.js";
 import type { StoreHoursRead, StoreHoursForDateRead } from "./turn-reads.js";
 import { resolveQueriedScheduleDate } from "./schedule-date-resolver.js";
-import { PINNED_COMPLETION_TEMPERATURE } from "./model-call-defaults.js";
+import {
+  EXTRACTION_FAILURE_KIND,
+  PINNED_COMPLETION_TEMPERATURE,
+} from "./model-call-defaults.js";
 import { completeWithEmptyRetry, isEmptyCompletion } from "./complete-with-retry.js";
 
 // Re-export so existing importers (tests, registry) keep their import site.
@@ -137,23 +140,26 @@ function isGenuinelyEmptyCompletion(completion: Completion): boolean {
   );
 }
 
-/**
- * FE-T01 (D3/D4) — sentinel intent kind for an extraction-wire FAILURE (a
- * malformed tool-call JSON that survived the frozen provider's `{raw}`
- * passthrough, or a genuinely empty completion that survived the bounded
- * repair attempt above). No installed pack owns this kind, so
- * `composePolicyRouter`'s documented unowned-kind fail-closed path (SYSTEM
- * taint floor + `default: "REFUSE"` — capability-policy.ts) REFUSEs it
- * through the SAME audited kernel `adjudicate()` call every real envelope
- * goes through: an explicit, AUDITED REFUSE turn (pt-BR "Não posso realizar
- * essa ação com a informação disponível." via
- * `@adjudicate/locales-pt-br`'s `taint_level_insufficient` mapping) — never a
- * silent drop to a respond-only reply. Because `plan.envelopes.length > 0`,
- * the responder's REFUSE branch renders it VERBATIM via the explainer
- * (ibatexas-responder.ts's "a real action refusal" branch), not the
- * REFUSE-on-empty-plan small-talk branch.
- */
-export const EXTRACTION_FAILURE_KIND = "system.extraction_failure";
+// FE-T01 (D3/D4) — sentinel intent kind for an extraction-wire FAILURE (a
+// malformed tool-call JSON that survived the frozen provider's `{raw}`
+// passthrough, or a genuinely empty completion that survived the bounded
+// repair attempt above). No installed pack owns this kind, so
+// `composePolicyRouter`'s documented unowned-kind fail-closed path (SYSTEM
+// taint floor + `default: "REFUSE"` — capability-policy.ts) REFUSEs it
+// through the SAME audited kernel `adjudicate()` call every real envelope
+// goes through: an explicit, AUDITED REFUSE turn (pt-BR "Não posso realizar
+// essa ação com a informação disponível." via
+// `@adjudicate/locales-pt-br`'s `taint_level_insufficient` mapping) — never a
+// silent drop to a respond-only reply. Because `plan.envelopes.length > 0`,
+// the responder's REFUSE branch renders it VERBATIM via the explainer
+// (ibatexas-responder.ts's "a real action refusal" branch), not the
+// REFUSE-on-empty-plan small-talk branch.
+//
+// Defined in `model-call-defaults.ts` (dependency-light) so
+// `kernel-metrics-sink.ts` can allowlist it out of the taxonomy-drift
+// counter without importing this whole module; re-exported here so
+// existing import sites (tests, registry) are unaffected.
+export { EXTRACTION_FAILURE_KIND };
 
 type ExtractionFailureReason = "malformed_tool_call" | "empty_completion";
 
@@ -648,7 +654,9 @@ function translateToolCalls(args: {
   for (const call of args.toolCalls ?? []) {
     if (call.name === EXPRESS_INTENT_TOOL) {
       if (!isExpressIntentInput(call.input)) {
-        dropped.push(`${EXPRESS_INTENT_TOOL}(malformed)`);
+        // FE-T01 (NIT-1) — the SAME constant the extraction-failure REFUSE
+        // check below reads, so producer and consumer cannot drift apart.
+        dropped.push(MALFORMED_EXPRESS_INTENT_MARKER);
         continue;
       }
       const { capability, payload } = call.input;
