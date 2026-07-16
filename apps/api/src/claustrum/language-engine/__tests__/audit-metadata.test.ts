@@ -461,6 +461,19 @@ describe("buildLanguageEngineAuditMetadata — order.checkout.create (FE-T12)", 
     });
   });
 
+  it("a checkout with NO paymentMethod mentioned (team-lead review: the field is optional) derives an EMPTY extractionIR payload — never a fabricated method", () => {
+    const meta = buildLanguageEngineAuditMetadata(
+      record(
+        "order.checkout.create",
+        { cartId: "cart_1" },
+        { kind: "REFUSE", basis: [] } as unknown as Decision,
+      ),
+    );
+    const le = languageEngineOf(meta);
+    expect(le.extractionIR.payload).toEqual({});
+    expect(le.hydratedIntentIR.payload).toEqual({ cartId: "cart_1" });
+  });
+
   it("derives HydratedIntentIR: cartId=resolver/AUTHORITATIVE (session-derived, never a guess), paymentMethod stays model/untrusted", () => {
     const meta = buildLanguageEngineAuditMetadata(
       record(

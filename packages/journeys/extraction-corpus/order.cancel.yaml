@@ -1,13 +1,12 @@
 # order.cancel — the FE-T12 orders governance-tier extraction corpus.
 #
-# LIVE-DRIVE STATUS (honest disclosure, FE-T12): `order.cancel` is a
-# CUSTOMER-plane capability (auth: customer, advertised by pack-orders' own
-# planner — never pack-ops). `ibx journey extraction-accuracy`'s driver
-# (accuracy-runner.ts) is hardcoded to the ops/staff-plane chat route — see
-# `order.checkout.create.yaml`'s identical disclosure for the full context
-# (same gap, same T09 precedent of shipping without a live-run corpus). This
-# corpus is AUTHORED/PINNED (independent-truth discipline per FE-2.1) but NOT
-# YET calibrated against the live 4B pending a customer-session drive path.
+# LIVE-DRIVE STATUS: `order.cancel` is a CUSTOMER-plane capability (auth:
+# customer, advertised by pack-orders' own planner — never pack-ops). FE-T12
+# added a customer-session drive path (`driveExtractionCorpusOverCustomerChat`,
+# accuracy-runner.ts) — see `plane: customer` below, which routes it there.
+# This corpus is AUTHORED/PINNED (independent-truth discipline per FE-2.1);
+# live calibration against the 4B is pending the team lead's live-lane token
+# (asked for separately — see the PR body).
 #
 # Scope (order-cancel.schema.ts's own header): NO order-reference field —
 # `orderId` is ALWAYS auto-resolved to the customer's most-recent order
@@ -36,7 +35,14 @@
 # criteria):
 #   1. `reason` (when mentioned) extracts correctly across register
 #      diversity; when omitted, extractionIR's payload is correctly EMPTY
-#      (no fabricated reason).
+#      (no fabricated reason) — asserted directly on every `bare-*` case
+#      below (team-lead review: reason absence must be a first-class
+#      assertion, not merely untested).
+#   1b. FIDELITY (team-lead review): every reason-bearing case's expected
+#      `payload.reason` is a SUBSTANTIVELY VERBATIM substring of the
+#      utterance itself, never a paraphrase/summary in different words — the
+#      model must copy what the customer said, not editorialize it. Check
+#      each `reason-*` case below against its own `utterance`.
 #   2. PII (cpf) mentioned inside a cancellation's stated reason is NEVER
 #      structurally model-populated as an identifier field — it can
 #      legitimately land in the free-text `reason` (Directive-class note
@@ -48,6 +54,7 @@
 #      is preserved unchanged.
 capability: order.cancel
 source: tickets/language-engine/issues/12-rollout-orders-governance-tier.md
+plane: customer
 cases:
   - id: bare-por-favor
     utterance: Quero cancelar meu pedido, por favor.

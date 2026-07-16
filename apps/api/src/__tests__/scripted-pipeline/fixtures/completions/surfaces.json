@@ -63,12 +63,9 @@
                           "card",
                           "cash"
                         ],
-                        "description": "Forma de pagamento — EXATAMENTE um destes valores em inglês (contrato fechado; o guard não normaliza): pix, card, cash."
+                        "description": "Forma de pagamento — EXATAMENTE um destes valores em inglês (contrato fechado; o guard não normaliza): pix, card, cash. Omita se o cliente não mencionar uma forma de pagamento — NUNCA escolha uma por conta própria."
                       }
                     },
-                    "required": [
-                      "paymentMethod"
-                    ],
                     "additionalProperties": false
                   }
                 }

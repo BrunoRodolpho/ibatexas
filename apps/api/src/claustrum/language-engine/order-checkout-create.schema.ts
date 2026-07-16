@@ -26,6 +26,19 @@
 // cart total regardless of what the model extracted. This ticket asserts it
 // stays intact via corpus `decision` expectations only — zero edits to
 // pack-orders' guards.
+//
+// `paymentMethod` is OPTIONAL (team-lead review, FE-T12) — NOT required, even
+// though the wire contract's `OrderCheckoutCreatePayload.paymentMethod` is a
+// non-optional TS field. A REQUIRED closed-enum extraction field invites the
+// 4B to FABRICATE a value on an utterance that names none ("quero fechar o
+// pedido" mentions no method at all) — exactly the class of confident-wrong
+// completion the extraction-schema contract exists to prevent. Absence flows
+// to the EXISTING, unmodified honest path: `validatePaymentMethod`
+// (pack-orders/src/policies.ts) REFUSEs with `refuseCheckoutMissingPaymentMethod`
+// when `payload.paymentMethod` is null/undefined — a real, already-audited
+// refusal code, not an invented default. The corpus asserts this directly
+// (method-absent cases expect `extractionIR.payload` EMPTY and
+// `decision: REFUSE`).
 
 import {
   type CapabilityExtractionSchema,
@@ -62,9 +75,11 @@ export const ORDER_CHECKOUT_CREATE_EXTRACTION_SCHEMA: CapabilityExtractionSchema
           enum: [...ORDER_CHECKOUT_CREATE_PAYMENT_METHODS],
           description:
             "Forma de pagamento — EXATAMENTE um destes valores em inglês " +
-            "(contrato fechado; o guard não normaliza): pix, card, cash.",
+            "(contrato fechado; o guard não normaliza): pix, card, cash. " +
+            "Omita se o cliente não mencionar uma forma de pagamento — " +
+            "NUNCA escolha uma por conta própria.",
         },
-        required: true,
+        required: false,
       },
     ],
     example: {

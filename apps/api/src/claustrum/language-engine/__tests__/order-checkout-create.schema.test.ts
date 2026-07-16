@@ -30,11 +30,11 @@ describe("ORDER_CHECKOUT_CREATE_EXTRACTION_SCHEMA", () => {
     expect(names.has("cpf")).toBe(false);
   });
 
-  it("declares paymentMethod REQUIRED with the closed pix/card/cash enum", () => {
+  it("declares paymentMethod OPTIONAL (team-lead review: a required closed enum invites fabrication on a method-absent utterance) with the closed pix/card/cash enum", () => {
     const field = ORDER_CHECKOUT_CREATE_EXTRACTION_SCHEMA.fields.find(
       (f) => f.name === "paymentMethod",
     );
-    expect(field?.required).toBe(true);
+    expect(field?.required).toBe(false);
     expect(field?.jsonSchema.enum).toEqual(["pix", "card", "cash"]);
     expect(ORDER_CHECKOUT_CREATE_PAYMENT_METHODS).toEqual(["pix", "card", "cash"]);
   });
@@ -45,7 +45,7 @@ describe("ORDER_CHECKOUT_CREATE_EXTRACTION_SCHEMA", () => {
     }
   });
 
-  it("builds a closed wire payload schema — paymentMethod required, no other properties", () => {
+  it("builds a closed wire payload schema — paymentMethod optional (no required array), no other properties", () => {
     const wire = toPayloadJsonSchema(ORDER_CHECKOUT_CREATE_EXTRACTION_SCHEMA);
     expect(wire).toEqual({
       type: "object",
@@ -56,9 +56,9 @@ describe("ORDER_CHECKOUT_CREATE_EXTRACTION_SCHEMA", () => {
           description: expect.any(String),
         },
       },
-      required: ["paymentMethod"],
       additionalProperties: false,
     });
+    expect(wire).not.toHaveProperty("required");
   });
 
   it("the worked example matches the schema's fields and carries no forbidden name", () => {

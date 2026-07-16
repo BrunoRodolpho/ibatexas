@@ -21,6 +21,7 @@ function corpusOf(capability: string, caseIds: string[]): ExtractionCorpusFile {
   return {
     capability,
     source: "test-fixture",
+    plane: "ops",
     cases: caseIds.map((id) => ({
       id,
       utterance: `utterance for ${id}`,

@@ -45,3 +45,48 @@ describe("createOpsHistoryClearer", () => {
     expect(warnings[0]).toContain("isolation NOT guaranteed")
   })
 })
+
+// ── FE-T12 — createCustomerHistoryClearer (the customer/web-plane sibling) ──
+
+describe("createCustomerHistoryClearer", () => {
+  it("clears BOTH the web conversation-history key AND the claustrum session key, keyed by sessionId (NOT customerId)", async () => {
+    // Module-level delMock/rkMock are shared across this file's describe
+    // blocks (vitest does not auto-reset vi.fn() call counts between tests) —
+    // clear the accumulated call history from the OpsHistoryClearer tests
+    // above before asserting an exact call count here.
+    delMock.mockClear()
+    rkMock.mockClear()
+    vi.resetModules()
+    vi.doMock("@ibatexas/tools", () => ({
+      getRedisClient: vi.fn(async () => ({ del: delMock })),
+      rk: rkMock,
+    }))
+    const { createCustomerHistoryClearer } = await import("../accuracy-cli.js")
+    const clear = createCustomerHistoryClearer(() => undefined)
+    await clear("sess-1")
+
+    expect(rkMock).toHaveBeenCalledWith("session:sess-1")
+    expect(rkMock).toHaveBeenCalledWith("claustrum:session:sess-1")
+    expect(delMock).toHaveBeenCalledWith("ibx:session:sess-1")
+    expect(delMock).toHaveBeenCalledWith("ibx:claustrum:session:sess-1")
+    expect(delMock).toHaveBeenCalledTimes(2)
+  })
+
+  it("warns ONCE and re-throws on every call when Redis is unreachable (isolation must never silently degrade)", async () => {
+    vi.resetModules()
+    vi.doMock("@ibatexas/tools", () => ({
+      getRedisClient: vi.fn(async () => {
+        throw new Error("connection refused")
+      }),
+      rk: rkMock,
+    }))
+    const { createCustomerHistoryClearer } = await import("../accuracy-cli.js")
+    const warnings: string[] = []
+    const clear = createCustomerHistoryClearer((line) => warnings.push(line))
+
+    await expect(clear("sess-1")).rejects.toThrow("connection refused")
+    await expect(clear("sess-1")).rejects.toThrow("connection refused")
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0]).toContain("isolation NOT guaranteed")
+  })
+})

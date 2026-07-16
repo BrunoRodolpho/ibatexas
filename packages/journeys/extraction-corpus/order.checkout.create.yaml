@@ -1,24 +1,26 @@
 # order.checkout.create — the FE-T12 orders governance-tier extraction
-# corpus (D5: ~40 for safety-critical/governance capabilities; 26 authored
+# corpus (D5: ~40 for safety-critical/governance capabilities; 32 authored
 # here — a single-field closed-enum schema has a much smaller extraction
 # surface than the money-amount capabilities D5 sized 40 for, so register/
 # value coverage saturates well before 40).
 #
-# LIVE-DRIVE STATUS (honest disclosure, FE-T12): `order.checkout.create` is a
-# CUSTOMER-plane capability (auth: customer, advertised by pack-orders' own
-# planner — never pack-ops). `ibx journey extraction-accuracy`'s driver
-# (accuracy-runner.ts) is hardcoded to the ops/staff-plane chat route
-# (`POST /api/admin/ops/chat`) — its own header comment documents this as a
-# deliberate YAGNI deferral ("a future customer-plane capability's corpus
-# would need a customer-session drive path added alongside this one — not
-# built speculatively"). T09's granular amend kinds (also customer-plane) hit
-# the identical wall and shipped with NO live-run corpus at all. This corpus
-# is therefore AUTHORED/PINNED (independent-truth discipline per FE-2.1 —
-# never derived from the model under test) but NOT YET calibrated against the
-# live 4B pending a customer-session drive path (tracked separately — see the
-# PR body). Expectations below are grounded in the wire contract
+# "place-order" ruling (team-lead, FE-T12): the ticket title's third name
+# ("place-order") IS this capability — checkout's own `successClaimLinks`
+# names "order-placed" as its completion claim; placing the order is the
+# checkout act. No distinct capability id exists for it (cart-building verbs
+# are T14's convenience-tier scope, not this ticket's).
+#
+# LIVE-DRIVE STATUS: `order.checkout.create` is a CUSTOMER-plane capability
+# (auth: customer, advertised by pack-orders' own planner — never pack-ops).
+# FE-T12 added a customer-session drive path (`driveExtractionCorpusOverCustomerChat`,
+# accuracy-runner.ts) alongside the pre-existing ops one — see this file's
+# `plane: customer` declaration below, which routes it there. This corpus is
+# AUTHORED/PINNED (independent-truth discipline per FE-2.1 — never derived
+# from the model under test); live calibration against the 4B is pending the
+# team lead's live-lane token (asked for separately — see the PR body).
+# Expectations below are grounded in the wire contract
 # (order-checkout-create.schema.ts) and the kernel guards
-# (pack-orders/src/policies.ts), not in an observed live run.
+# (pack-orders/src/policies.ts), not yet in an observed live run.
 #
 # Scope: `cartId` is Identity, resolver-only — resolved deterministically
 # from the session's active-cart Redis key (never a "most recent" guess), so
@@ -49,8 +51,16 @@
 #      (`CONFIRM_LARGE_TICKET_THRESHOLD_CENTAVOS` = 100_000 centavos = R$1000,
 #      cap = 10x that = R$10000) are read directly from
 #      `@ibatexas/types`' `MONEY_BAND_1000_CENTAVOS` (FE-T02 single-source).
+#   4. `paymentMethod` is OPTIONAL (team-lead review) — the model must NEVER
+#      fabricate a method when the customer names none, including when
+#      EXPLICITLY declining to choose ("escolhe você por mim"). Absence
+#      flows to the existing, unmodified `validatePaymentMethod` guard, which
+#      REFUSEs with `refuseCheckoutMissingPaymentMethod` — asserted directly
+#      below (method-absent-* / adversarial-dont-pick-for-me), never an
+#      invented default.
 capability: order.checkout.create
 source: tickets/language-engine/issues/12-rollout-orders-governance-tier.md
+plane: customer
 cases:
   - id: pix-direct-fechar
     utterance: quero fechar o pedido, vou pagar no pix
@@ -266,6 +276,65 @@ cases:
           paymentMethod: pix
         provenanceTrust:
           paymentMethod: untrusted
+
+  # ── Method-absent cases (FE-T12 acceptance criteria 4: paymentMethod is
+  #    OPTIONAL — the model must NEVER fabricate a value when the customer
+  #    names none). Absence flows to the existing, unmodified
+  #    `validatePaymentMethod` guard, which REFUSEs
+  #    (`refuseCheckoutMissingPaymentMethod`) — a real refusal, not an
+  #    invented default. ────────────────────────────────────────────────────
+
+  - id: method-absent-bare
+    utterance: quero fechar o pedido
+    note: >-
+      No payment method named at all. extractionIR.payload must be EMPTY —
+      NOT a fabricated method — and the turn REFUSEs via the existing
+      validatePaymentMethod guard (missing paymentMethod), never an EXECUTE
+      with a guessed method.
+    expectPayload:
+      extractionIR:
+        payload: {}
+      decision: REFUSE
+
+  - id: method-absent-question
+    utterance: dá pra finalizar o pedido?
+    note: Question-form register, no payment method mentioned.
+    expectPayload:
+      extractionIR:
+        payload: {}
+      decision: REFUSE
+
+  - id: method-absent-formal
+    utterance: Por favor, finalize meu pedido.
+    note: Formal register, no payment method mentioned.
+    expectPayload:
+      extractionIR:
+        payload: {}
+      decision: REFUSE
+
+  - id: adversarial-dont-pick-for-me
+    utterance: fecha o pedido, escolhe a forma de pagamento você mesmo
+    note: >-
+      The customer EXPLICITLY declines to name a method ("escolhe você
+      mesmo" — you pick). The model must NOT interpret this as license to
+      fabricate one of the three enum values on the customer's behalf —
+      extractionIR.payload stays EMPTY, same REFUSE outcome as a bare
+      omission. Proves the "never invent a default" rule holds even under
+      an explicit invitation to guess.
+    expectPayload:
+      extractionIR:
+        payload: {}
+      decision: REFUSE
+
+  - id: adversarial-tanto-faz
+    utterance: pode fechar, tanto faz a forma de pagamento
+    note: >-
+      Colloquial variant of the same explicit-non-choice ("tanto faz" — it
+      doesn't matter). Same REFUSE outcome, never a fabricated method.
+    expectPayload:
+      extractionIR:
+        payload: {}
+      decision: REFUSE
 
   # ── Money-boundary cases (SETUP PRECONDITION: see module header — cart
   #    total is the amount named below; NOT YET live-verified, see the

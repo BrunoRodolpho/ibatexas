@@ -10,7 +10,10 @@ import { describe, expect, it, vi } from "vitest"
 import type { AuditRecord } from "@adjudicate/core"
 import type { ExtractionCorpusFile } from "../schema.js"
 import type { AuditReader, RunSessionScope, FetchAuditRecordsOptions } from "../../oracle/audit-reader.js"
-import { driveExtractionCorpusOverOpsChat } from "../accuracy-runner.js"
+import {
+  driveExtractionCorpusOverOpsChat,
+  driveExtractionCorpusOverCustomerChat,
+} from "../accuracy-runner.js"
 
 function fakeRecord(intentHashSuffix: string, capability: string, newStatus: string): AuditRecord {
   const intentHash = ("a".repeat(63) + intentHashSuffix).slice(0, 64)
@@ -67,6 +70,7 @@ function corpusOf(cases: Array<{ id: string; utterance: string; newStatus: strin
   return {
     capability: "order.status.transition",
     source: "test-fixture",
+    plane: "ops",
     cases: cases.map((c) => ({
       id: c.id,
       utterance: c.utterance,
@@ -280,6 +284,269 @@ describe("driveExtractionCorpusOverOpsChat — test isolation", () => {
       { capability: "order.status.transition", caseId: "case-b", detail: "REDIS_URL env var required" },
     ])
     // NOT aborted: both cases still drove and scored normally.
+    expect(results).toHaveLength(2)
+    expect(results[0]).toMatchObject({ caseId: "case-a", ok: true })
+    expect(results[1]).toMatchObject({ caseId: "case-b", ok: true })
+  })
+})
+
+// ── FE-T12 — driveExtractionCorpusOverCustomerChat (the customer-plane sibling) ──
+
+function fakeCancelRecord(intentHashSuffix: string, reason: string | undefined): AuditRecord {
+  const intentHash = ("b".repeat(63) + intentHashSuffix).slice(0, 64)
+  const payload: Record<string, unknown> = reason !== undefined ? { reason } : {}
+  return {
+    version: 5,
+    intentHash,
+    envelope: {
+      kind: "order.cancel",
+      payload: {},
+      actor: { principal: "user", sessionId: "sess-1" },
+      taint: "UNTRUSTED",
+      nonce: `n-${intentHashSuffix}`,
+      createdAt: "2026-07-16T12:00:00.000Z",
+      intentHash,
+    } as unknown as AuditRecord["envelope"],
+    decision: { kind: "REQUEST_CONFIRMATION", prompt: "Confirma?" } as unknown as AuditRecord["decision"],
+    decision_basis: [],
+    at: "2026-07-16T12:00:00.000Z",
+    durationMs: 10,
+    metadata: {
+      languageEngine: {
+        extractionIR: {
+          capability: "order.cancel",
+          payload,
+          provenance:
+            reason !== undefined
+              ? { reason: { producer: "model", confidence: "explicit", trust: "untrusted" } }
+              : {},
+        },
+        hydratedIntentIR: {
+          capability: "order.cancel",
+          payload: { ...payload, orderId: "order_1" },
+          provenance: {
+            orderId: { producer: "resolver", confidence: "resolved", trust: "grounded" },
+            ...(reason !== undefined
+              ? { reason: { producer: "model", confidence: "explicit", trust: "untrusted" } }
+              : {}),
+          },
+          confirmationRequired: true,
+        },
+      },
+    },
+  }
+}
+
+function customerCorpusOf(
+  cases: Array<{ id: string; utterance: string; reason?: string }>,
+): ExtractionCorpusFile {
+  return {
+    capability: "order.cancel",
+    source: "test-fixture",
+    plane: "customer",
+    cases: cases.map((c) => ({
+      id: c.id,
+      utterance: c.utterance,
+      expectPayload: {
+        extractionIR: c.reason !== undefined ? { payload: { reason: c.reason } } : { payload: {} },
+        hydratedIntentIR: {
+          payloadPresent: ["orderId"],
+          provenanceTrust: { orderId: "grounded" as const },
+          confirmationRequired: true,
+        },
+        decision: "REQUEST_CONFIRMATION" as const,
+      },
+    })),
+  }
+}
+
+describe("driveExtractionCorpusOverCustomerChat — happy path", () => {
+  it("drives each case over POST /api/chat/messages, matches its NEW settled record, and scores it via the real evaluateExpectPayload", async () => {
+    const corpus = customerCorpusOf([
+      { id: "case-a", utterance: "cancela meu pedido" },
+      { id: "case-b", utterance: "cancela, mudei de ideia", reason: "mudei de ideia" },
+    ])
+    let call = 0
+    const records: AuditRecord[] = []
+    const audit = fakeAuditReader(() => records)
+    const requestUrls: string[] = []
+
+    const { results } = await driveExtractionCorpusOverCustomerChat([corpus], {
+      apiBaseUrl: "http://fake",
+      customerCookie: "token=abc",
+      sessionId: "sess-1",
+      audit,
+      scope: SCOPE,
+      fetchImpl: (async (url: string, init?: RequestInit) => {
+        call += 1
+        requestUrls.push(String(url))
+        JSON.parse(String(init?.body)) // proves the body parses as JSON — never throws here
+        records.push(fakeCancelRecord(String(records.length), call === 1 ? undefined : "mudei de ideia"))
+        return new Response(JSON.stringify({ messageId: "m-1" }), { status: 200 })
+      }) as unknown as typeof fetch,
+      settleTimeoutMs: 2000,
+      settlePollMs: 10,
+      interCaseDelayMs: 0,
+    })
+
+    expect(results).toHaveLength(2)
+    expect(results[0]).toMatchObject({ capability: "order.cancel", caseId: "case-a", ok: true })
+    expect(results[1]).toMatchObject({ capability: "order.cancel", caseId: "case-b", ok: true })
+    expect(requestUrls).toEqual([
+      "http://fake/api/chat/messages",
+      "http://fake/api/chat/messages",
+    ])
+  })
+
+  it("never re-matches an already-seen intentHash across cases sharing one capability + one reused session", async () => {
+    const corpus = customerCorpusOf([
+      { id: "case-a", utterance: "cancela meu pedido" },
+      { id: "case-b", utterance: "cancela, mudei de ideia", reason: "mudei de ideia" },
+    ])
+    const firstRecord = fakeCancelRecord("1", undefined)
+    let secondRecordAppeared = false
+    const audit = fakeAuditReader(() => {
+      const rows = [firstRecord]
+      if (secondRecordAppeared) rows.push(fakeCancelRecord("2", "mudei de ideia"))
+      return rows
+    })
+    let calls = 0
+    const fetchImpl = (async () => {
+      calls += 1
+      if (calls === 2) secondRecordAppeared = true
+      return new Response(JSON.stringify({ messageId: "m-1" }), { status: 200 })
+    }) as unknown as typeof fetch
+
+    const { results } = await driveExtractionCorpusOverCustomerChat([corpus], {
+      apiBaseUrl: "http://fake",
+      customerCookie: "token=abc",
+      sessionId: "sess-1",
+      audit,
+      scope: SCOPE,
+      fetchImpl,
+      settleTimeoutMs: 2000,
+      settlePollMs: 5,
+      interCaseDelayMs: 0,
+    })
+
+    expect(results[0]?.caseId).toBe("case-a")
+    expect(results[1]?.caseId).toBe("case-b")
+    expect(results[1]?.ok).toBe(true)
+  })
+})
+
+describe("driveExtractionCorpusOverCustomerChat — failure modes never throw", () => {
+  it("a non-2xx customer-chat response becomes a failing case result, not a thrown exception", async () => {
+    const corpus = customerCorpusOf([{ id: "case-a", utterance: "x" }])
+    const audit = fakeAuditReader(() => [])
+    const fetchImpl = (async () => new Response("Acesso negado.", { status: 403 })) as unknown as typeof fetch
+
+    const { results } = await driveExtractionCorpusOverCustomerChat([corpus], {
+      apiBaseUrl: "http://fake",
+      customerCookie: "token=abc",
+      sessionId: "sess-1",
+      audit,
+      scope: SCOPE,
+      fetchImpl,
+      interCaseDelayMs: 0,
+    })
+
+    expect(results).toHaveLength(1)
+    expect(results[0]?.ok).toBe(false)
+    expect(results[0]?.failures[0]).toContain("HTTP 403")
+  })
+
+  it("a settle timeout (no new audit record ever appears — e.g. the async fire-and-forget turn never lands) becomes a failing case result, not a thrown exception or a hang", async () => {
+    const corpus = customerCorpusOf([{ id: "case-a", utterance: "x" }])
+    const audit = fakeAuditReader(() => []) // never settles
+    const fetchImpl = (async () => new Response(JSON.stringify({ messageId: "m-1" }), { status: 200 })) as unknown as typeof fetch
+
+    const { results } = await driveExtractionCorpusOverCustomerChat([corpus], {
+      apiBaseUrl: "http://fake",
+      customerCookie: "token=abc",
+      sessionId: "sess-1",
+      audit,
+      scope: SCOPE,
+      fetchImpl,
+      settleTimeoutMs: 50,
+      settlePollMs: 10,
+      interCaseDelayMs: 0,
+    })
+
+    expect(results).toHaveLength(1)
+    expect(results[0]?.ok).toBe(false)
+    expect(results[0]?.failures[0]).toContain("no NEW")
+  })
+})
+
+describe("driveExtractionCorpusOverCustomerChat — test isolation (FE-D13)", () => {
+  it("calls clearHistory (keyed by the reused sessionId) before EVERY case (never just the first)", async () => {
+    const corpus = customerCorpusOf([
+      { id: "case-a", utterance: "x" },
+      { id: "case-b", utterance: "y", reason: "mudei de ideia" },
+    ])
+    let n = 0
+    const records: AuditRecord[] = []
+    const audit = fakeAuditReader(() => records)
+    const fetchImpl = (async () => {
+      n += 1
+      records.push(fakeCancelRecord(String(n), n === 1 ? undefined : "mudei de ideia"))
+      return new Response(JSON.stringify({ messageId: "m-1" }), { status: 200 })
+    }) as unknown as typeof fetch
+    const clearHistory = vi.fn(async () => undefined)
+
+    await driveExtractionCorpusOverCustomerChat([corpus], {
+      apiBaseUrl: "http://fake",
+      customerCookie: "token=abc",
+      sessionId: "sess-1",
+      audit,
+      scope: SCOPE,
+      fetchImpl,
+      clearHistory,
+      settleTimeoutMs: 1000,
+      settlePollMs: 5,
+      interCaseDelayMs: 0,
+    })
+
+    expect(clearHistory).toHaveBeenCalledTimes(2)
+    expect(clearHistory).toHaveBeenNthCalledWith(1, "sess-1")
+    expect(clearHistory).toHaveBeenNthCalledWith(2, "sess-1")
+  })
+
+  it("a clearHistory throw is caught, attributed as an isolationFailure per case, and does NOT abort the run — a lingering park must never silently execute a later case's utterance", async () => {
+    const corpus = customerCorpusOf([
+      { id: "case-a", utterance: "x" },
+      { id: "case-b", utterance: "y", reason: "mudei de ideia" },
+    ])
+    let n = 0
+    const records: AuditRecord[] = []
+    const audit = fakeAuditReader(() => records)
+    const fetchImpl = (async () => {
+      n += 1
+      records.push(fakeCancelRecord(String(n), n === 1 ? undefined : "mudei de ideia"))
+      return new Response(JSON.stringify({ messageId: "m-1" }), { status: 200 })
+    }) as unknown as typeof fetch
+    const clearHistory = vi.fn(async () => {
+      throw new Error("REDIS_URL env var required")
+    })
+
+    const { results, isolationFailures } = await driveExtractionCorpusOverCustomerChat([corpus], {
+      apiBaseUrl: "http://fake",
+      customerCookie: "token=abc",
+      sessionId: "sess-1",
+      audit,
+      scope: SCOPE,
+      fetchImpl,
+      clearHistory,
+      settleTimeoutMs: 1000,
+      settlePollMs: 5,
+      interCaseDelayMs: 0,
+    })
+
+    expect(isolationFailures).toEqual([
+      { capability: "order.cancel", caseId: "case-a", detail: "REDIS_URL env var required" },
+      { capability: "order.cancel", caseId: "case-b", detail: "REDIS_URL env var required" },
+    ])
     expect(results).toHaveLength(2)
     expect(results[0]).toMatchObject({ caseId: "case-a", ok: true })
     expect(results[1]).toMatchObject({ caseId: "case-b", ok: true })

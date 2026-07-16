@@ -63,6 +63,10 @@
 #     prioritized, not a blocker for this ticket's acceptance criteria.
 capability: payment.refund.issue
 source: tickets/language-engine/issues/10-safety-critical-extraction-schema-lint.md
+# FE-T12: explicit plane declaration — this capability is ops-plane
+# (advertised solely via pack-ops's staff allowlist), so it drives over
+# POST /api/admin/ops/chat.
+plane: ops
 cases:
   - id: basic-formal-ten
     utterance: reembolsa 10 reais do pedido 810001
