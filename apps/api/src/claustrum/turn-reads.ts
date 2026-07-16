@@ -466,13 +466,23 @@ export function createDomainTriadReadBackend(
     async listActiveReservationIds(customerId) {
       // OWNER-SCOPED (FE-T17b): `listByCustomer` filters on `customerId`, so this
       // only ever returns the AUTHENTICATED customer's own reservations — never a
-      // model/session id, never another owner's reservation. Bounded + filtered to
-      // non-terminal statuses (ACTIVE_RESERVATION_STATUSES). No `status` filter is
-      // passed to the query (it accepts only ONE status), so client-side filtering
-      // (like `listActiveOrderIds`) is required to admit all three active statuses.
+      // model/session id, never another owner's reservation.
+      //
+      // REVIEW FIX (pagination-burying) — the status filter MUST be applied
+      // SERVER-SIDE, not only client-side after the fetch. `listByCustomer`
+      // orders `timeSlot.date` DESC (farthest-future FIRST), so with only a
+      // client-side filter, a customer with >20 future-dated NON-active
+      // reservations (e.g. cancelled) sorts ahead of a near-future ACTIVE one —
+      // the active row falls off the `take: 20` page before the client-side
+      // filter ever sees it, producing a silent false abstain. Passing
+      // `status: [...ACTIVE_RESERVATION_STATUSES]` makes the DB apply the status
+      // filter BEFORE `take`, so the limit is spent only on rows that could
+      // actually be relevant. The client-side filter below is kept as
+      // belt-and-braces (defense in depth — never trust a single layer to
+      // enforce "active-only"), not as the primary filtering mechanism.
       const { reservations } = await createReservationService().listByCustomer(
         customerId,
-        { limit: 20 },
+        { limit: 20, status: [...ACTIVE_RESERVATION_STATUSES] },
       );
       return reservations
         .filter((r) => ACTIVE_RESERVATION_STATUSES.has(String(r.status)))
