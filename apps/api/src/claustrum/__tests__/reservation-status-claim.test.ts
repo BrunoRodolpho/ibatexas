@@ -34,6 +34,7 @@ import type {
   ClaimPlannerInput,
   CognitiveState,
   Completion,
+  InvestigateInput,
   ModelProvider,
   Plan,
 } from "@claustrum/core";
@@ -51,8 +52,16 @@ import {
   type ClaimAuthContext,
 } from "../ibatexas-planner.js";
 import { createIbatexasClaimPlanner } from "../ibatexas-claim-planner.js";
-import { createPerTurnClaimsKernelDeps } from "../ibatexas-claims-kernel-deps.js";
+import {
+  buildPerTurnOwnsFromLedger,
+  createPerTurnClaimsKernelDeps,
+} from "../ibatexas-claims-kernel-deps.js";
 import { render } from "../renderer-from-claims.js";
+import {
+  createFirstPartyTurnReads,
+  createIbatexasInvestigator,
+} from "../ibatexas-investigator.js";
+import type { TriadReadBackend } from "../turn-reads.js";
 
 // ── Test doubles ──────────────────────────────────────────────────────────────
 
@@ -465,5 +474,202 @@ describe("FE-T17 FIX 2 — MULTIPLE owned reservations, no unambiguous model mat
     const plan = await p.proposeClaims(state("como está minha reserva de amanhã?"), auth);
     expect(plan.forcedTerminal).toBeUndefined();
     expect((plan.candidates[0] as CandidateClaim).subject).toBe("res-A2");
+  });
+});
+
+// ── (8) FE-T17b — discovery-fed end-to-end (live-disproof follow-up) ───────────
+//
+// FE-T17's original tests above (sections 3/6/7) all hand-seed the ledger via
+// `recordReservation()` or construct `auth.ownedByBaseKey` directly — they never
+// drive the REAL investigator/discovery path. That is exactly the blind spot the
+// live drive found: `get_my_reservations` is a no-param LIST call, so
+// `extractTurnResourceIds` structurally never populates a reservationId for a
+// status question, and — before this fix — the reservation per-resource read loop
+// iterated an ALWAYS-EMPTY list, so `reservation_status:{id}` was NEVER recorded.
+// These tests close that gap: they drive the REAL `createIbatexasInvestigator` +
+// `createFirstPartyTurnReads` (never hand-seeding the ledger), then the REAL
+// claim-planner adapter (`createIbatexasClaimPlanner`, whose FIX 2 subject
+// correction reads `ownedResourceIdsByBaseKey(ledger)` off THIS SAME
+// investigator-populated ledger), then the REAL per-turn kernel deps
+// (`buildPerTurnOwnsFromLedger`, which also derives `owns` from THIS SAME
+// ledger) — the full production chain, start to finish.
+describe("FE-T17b — discovery-fed end-to-end (dev @ a063661b, turnIds 30c78409-b843-4b5a-8239-e36c925233f2 / 91adbe43-5fa2-4c0a-9560-0e376d7aeb84)", () => {
+  /** A full TriadReadBackend stub (no DB) — only the reservation-relevant methods
+   *  vary per test; the schedule methods always run (createFirstPartyTurnReads
+   *  reads them unconditionally) so they need a safe, inert default. */
+  function stubTriadBackend(over: Partial<TriadReadBackend> = {}): TriadReadBackend {
+    return {
+      readSchedule: async () => ({ isClosed: false, mealPeriod: "dinner" }),
+      readScheduleOverride: async () => null,
+      readStoreHours: async () => ({ hoursText: "11h–15h / 18h–23h" }),
+      readHoliday: async () => null,
+      readHoursForDate: async () => ({ hoursText: "11h–15h / 18h–23h" }),
+      readHolidayForDate: async () => null,
+      readScheduleOverrideForDate: async () => null,
+      readOrderFulfillment: async () => null,
+      readPaymentStatus: async () => null,
+      readReservation: async () => null,
+      listActiveOrderIds: async () => [],
+      listActiveReservationIds: async () => [],
+      countActivePayments: async () => 0,
+      ...over,
+    };
+  }
+
+  function investigateInput(ledger: EvidenceLedger, customerId: string): InvestigateInput {
+    return {
+      cognition: state("qual minha reserva?"),
+      plan: { envelopes: [] } as Plan,
+      customerId,
+      channel: "web",
+      ledger,
+    };
+  }
+
+  it("(a) 1 owned reservation, model supplies NO id → discovery → FIX 2 auto-bind → VALIDATED render", async () => {
+    const CUSTOMER = "cust-disc-a";
+    const backend = stubTriadBackend({
+      listActiveReservationIds: async (customerId) =>
+        customerId === CUSTOMER ? ["res-disc-1"] : [],
+      readReservation: async (reservationId, customerId) =>
+        reservationId === "res-disc-1" && customerId === CUSTOMER
+          ? { reservationId, status: "confirmed", partySize: 2 }
+          : null,
+    });
+
+    // Step 1 — the REAL investigator, driven by discovery alone (the model never
+    // extracted a reservationId anywhere in the plan).
+    const ledger = new EvidenceLedger("turn-disc-a");
+    const investigator = createIbatexasInvestigator({
+      gatherReads: createFirstPartyTurnReads(backend),
+    });
+    await investigator.investigate(investigateInput(ledger, CUSTOMER));
+    expect(ledger.resolve("reservation_status:res-disc-1").state).toBe("present");
+
+    // Step 2 — the REAL claim-planner adapter. The model's propose_claim carries an
+    // EMPTY subject (exactly the get_my_reservations shape); FIX 2 must resolve it
+    // from `ownedResourceIdsByBaseKey(ledger)` — the SAME ledger discovery just filled.
+    const adapter = createIbatexasClaimPlanner(
+      planner([claimCall({ type: "RESERVATION_STATUS", subject: "" })]),
+    );
+    const input: ClaimPlannerInput = {
+      cognition: state("qual minha reserva?"),
+      plan: { envelopes: [] } as Plan,
+      customerId: CUSTOMER,
+      ledger,
+    };
+    const { candidates, forcedTerminal } = normalizeClaimPlannerResult(
+      await adapter.propose(input),
+    );
+    expect(forcedTerminal).toBeUndefined();
+    expect(candidates).toHaveLength(1);
+    const candidate = candidates[0] as CandidateClaim;
+    expect(candidate.subject).toBe("res-disc-1");
+    expect(candidate.value).toMatchObject({ status: "confirmed" });
+
+    // Step 3 — the REAL per-turn kernel deps: `owns` derived from THIS SAME ledger
+    // (buildPerTurnOwnsFromLedger), not a hand-constructed ownership set.
+    const base = createPerTurnClaimsKernelDeps({
+      now: NOW,
+      ownership: { principal: CUSTOMER, ownedResources: new Set() },
+      outcomes: [],
+    });
+    const deps = buildPerTurnOwnsFromLedger({ ledger, customerId: CUSTOMER, base });
+    const result = runClaimsKernel(ledger, candidates, deps);
+
+    expect(result.perClaim[0]?.verdict).toBe("VALIDATED");
+    expect(result.terminal).toBe("RENDER");
+    const out = render(result.renderableCanonical, result.terminal);
+    expect(out.text).toBe("O status da sua reserva é: confirmada.");
+  });
+
+  it("(b) ZERO owned reservations → discovery yields empty → NO ledger entry → honest SAFE_UNKNOWN (never a false render)", async () => {
+    const CUSTOMER = "cust-disc-b";
+    const backend = stubTriadBackend({
+      listActiveReservationIds: async () => [],
+    });
+
+    const ledger = new EvidenceLedger("turn-disc-b");
+    const investigator = createIbatexasInvestigator({
+      gatherReads: createFirstPartyTurnReads(backend),
+    });
+    await investigator.investigate(investigateInput(ledger, CUSTOMER));
+    // No reservation was ever discovered or model-extracted — no key at all.
+    const reservationKeys = [...ledger.keys()].filter((k) =>
+      k.startsWith("reservation_status:"),
+    );
+    expect(reservationKeys).toEqual([]);
+
+    const adapter = createIbatexasClaimPlanner(
+      planner([claimCall({ type: "RESERVATION_STATUS", subject: "" })]),
+    );
+    const input: ClaimPlannerInput = {
+      cognition: state("qual minha reserva?"),
+      plan: { envelopes: [] } as Plan,
+      customerId: CUSTOMER,
+      ledger,
+    };
+    const { candidates, forcedTerminal } = normalizeClaimPlannerResult(
+      await adapter.propose(input),
+    );
+    // 0 owned → FIX 2 keeps the model's (empty) subject as-is — never a guess.
+    expect(forcedTerminal).toBeUndefined();
+    expect(candidates).toHaveLength(1);
+
+    const base = createPerTurnClaimsKernelDeps({
+      now: NOW,
+      ownership: { principal: CUSTOMER, ownedResources: new Set() },
+      outcomes: [],
+    });
+    const deps = buildPerTurnOwnsFromLedger({ ledger, customerId: CUSTOMER, base });
+    const result = runClaimsKernel(ledger, candidates, deps);
+
+    // No backing evidence was ever recorded → honest ignorance, never a fabricated
+    // fact (the exact abstain the live drive needed preserved once discovery exists).
+    expect(result.perClaim[0]?.verdict).toBe("UNKNOWN");
+    expect(result.renderable).toHaveLength(0);
+    const out = render(result.renderableCanonical, result.terminal);
+    expect(out.text).toBe(
+      "Não localizei essa informação confirmada agora. Quer que eu verifique?",
+    );
+  });
+
+  it("(c) ≥2 owned reservations, discovery feeds BOTH real ids, model supplies NO id → forced CLARIFY (never a guess)", async () => {
+    const CUSTOMER = "cust-disc-c";
+    const backend = stubTriadBackend({
+      listActiveReservationIds: async () => ["res-disc-c1", "res-disc-c2"],
+      readReservation: async (reservationId) => ({
+        reservationId,
+        status: "pending",
+        partySize: 3,
+      }),
+    });
+
+    const ledger = new EvidenceLedger("turn-disc-c");
+    const investigator = createIbatexasInvestigator({
+      gatherReads: createFirstPartyTurnReads(backend),
+    });
+    await investigator.investigate(investigateInput(ledger, CUSTOMER));
+    expect(ledger.resolve("reservation_status:res-disc-c1").state).toBe("present");
+    expect(ledger.resolve("reservation_status:res-disc-c2").state).toBe("present");
+
+    const adapter = createIbatexasClaimPlanner(
+      planner([claimCall({ type: "RESERVATION_STATUS", subject: "" })]),
+    );
+    const input: ClaimPlannerInput = {
+      cognition: state("qual minha reserva?"),
+      plan: { envelopes: [] } as Plan,
+      customerId: CUSTOMER,
+      ledger,
+    };
+    const { candidates, forcedTerminal } = normalizeClaimPlannerResult(
+      await adapter.propose(input),
+    );
+
+    // ≥2 owned + no unambiguous model match → CLARIFY, no candidate — the SAME
+    // disambiguation semantics as the FIX 2 tests above, now proven with the ids
+    // sourced from REAL discovery rather than a hand-constructed ownedByBaseKey Map.
+    expect(forcedTerminal).toBe("CLARIFY");
+    expect(candidates.some((c) => c.type === "RESERVATION_STATUS")).toBe(false);
   });
 });

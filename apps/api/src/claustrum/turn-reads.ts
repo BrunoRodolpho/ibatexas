@@ -187,6 +187,20 @@ export interface TriadReadBackend {
    */
   listActiveOrderIds(customerId: string): Promise<string[]>;
   /**
+   * FE-T17b — the RESERVATION mirror of {@link listActiveOrderIds} (live-disproof
+   * follow-up; PR #249's investigator wiring closes the discovery gap that made
+   * RESERVATION_STATUS structurally unreachable — see the investigator's FIX-2
+   * discovery-fallback union for the mechanism). Enumerate the AUTHENTICATED
+   * customer's OWN, RELEVANT (non-terminal) reservation ids. OWNER-SCOPED by
+   * construction: the underlying `listByCustomer(customerId)` filters on
+   * `customerId`, so only the customer's own reservations are ever returned —
+   * never a model/session id. "Relevant" = a non-terminal reservation status (one
+   * the customer would ask the status of — pending/confirmed/seated), so a long
+   * completed/cancelled/no-show history does not force a perpetual CLARIFY.
+   * Returns `[]` for a customer with no active reservations.
+   */
+  listActiveReservationIds(customerId: string): Promise<string[]>;
+  /**
    * Count the AUTHENTICATED customer's OWN payments (BKL-079 — the PAYMENT mirror of
    * {@link listActiveOrderIds}; the provable-empty enumeration count). OWNER-SCOPED
    * by construction: the underlying `countByCustomer(customerId)` counts via the
@@ -219,6 +233,25 @@ const ACTIVE_FULFILLMENT_STAGES: ReadonlySet<string> = new Set<string>([
   "preparing",
   "ready",
   "in_delivery",
+]);
+
+/**
+ * FE-T17b — the non-terminal ("active") reservation statuses, the RESERVATION
+ * mirror of {@link ACTIVE_FULFILLMENT_STAGES}. A reservation in one of these is a
+ * RELEVANT owned reservation for the discovery-fallback enumeration (the kind a
+ * customer asks the status of — one that hasn't concluded yet): `pending`
+ * (awaiting confirmation), `confirmed` (upcoming), `seated` (currently dining).
+ * `completed` / `cancelled` / `no_show` are TERMINAL/historical and excluded —
+ * mirroring why orders exclude `delivered` / `canceled`: a customer asking "what
+ * is my reservation" almost always means an upcoming or in-progress one, and
+ * including a long completed/cancelled/no-show history would force ambiguity
+ * (CLARIFY) rather than the honest answer for the one that still matters. Mirrors
+ * the `ReservationStatus` enum (@ibatexas/types · packages/domain/prisma).
+ */
+const ACTIVE_RESERVATION_STATUSES: ReadonlySet<string> = new Set<string>([
+  "pending",
+  "confirmed",
+  "seated",
 ]);
 
 /** Today's local date as "YYYY-MM-DD" in `tz` (mirrors schedule-helpers' private
@@ -428,6 +461,22 @@ export function createDomainTriadReadBackend(
       return orders
         .filter((o) => ACTIVE_FULFILLMENT_STAGES.has(String(o.fulfillmentStatus)))
         .map((o) => o.id);
+    },
+
+    async listActiveReservationIds(customerId) {
+      // OWNER-SCOPED (FE-T17b): `listByCustomer` filters on `customerId`, so this
+      // only ever returns the AUTHENTICATED customer's own reservations — never a
+      // model/session id, never another owner's reservation. Bounded + filtered to
+      // non-terminal statuses (ACTIVE_RESERVATION_STATUSES). No `status` filter is
+      // passed to the query (it accepts only ONE status), so client-side filtering
+      // (like `listActiveOrderIds`) is required to admit all three active statuses.
+      const { reservations } = await createReservationService().listByCustomer(
+        customerId,
+        { limit: 20 },
+      );
+      return reservations
+        .filter((r) => ACTIVE_RESERVATION_STATUSES.has(String(r.status)))
+        .map((r) => r.id);
     },
 
     async countActivePayments(customerId) {

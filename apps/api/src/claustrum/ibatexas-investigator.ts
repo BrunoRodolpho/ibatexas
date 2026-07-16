@@ -479,7 +479,61 @@ export function createFirstPartyTurnReads(
       });
     }
 
-    for (const reservationId of reservationIds) {
+    // FE-T17b (live-disproof follow-up; DISPROVEN 2026-07-16, turnIds 30c78409-…
+    // / 91adbe43-…) — the RESERVATION mirror of the FIX 2 order-discovery fallback
+    // above. `get_my_reservations` is a no-param LIST call (its input carries no
+    // `reservationId`), so `extractTurnResourceIds` structurally NEVER populates
+    // `reservationIds` for a status question — unlike an order/payment question,
+    // where the model at least ATTEMPTS to extract an id into a read-tool param.
+    // Without this fallback the reservation per-resource loop below iterates an
+    // ALWAYS-EMPTY list, no `reservation_status:{id}` entry is ever recorded, and
+    // RESERVATION_STATUS can never acquire evidence — proposal, registry row, and
+    // template were all correct, but the claim was structurally unreachable.
+    // Independently enumerate the AUTHENTICATED customer's OWN active reservations
+    // (owner-scoped — keyed ONLY by `customerId`) and union them in, so the ledger
+    // carries the owner's real reservations regardless of the model's (necessarily
+    // absent) extraction. IDOR-safe: every id here is the customer's own; the
+    // per-resource read below stays owner-scoped too. Same defensive shape as the
+    // order fallback: a failed enumeration degrades to the (empty) model-extracted
+    // ids rather than throwing the turn — the honest-abstain path this closes for
+    // (zero reservations → this stays `[]` → no ledger entry → SAFE_UNKNOWN) is
+    // unaffected by an enumeration failure either.
+    let activeReservations: { ok: true; ids: string[] } | { ok: false; reason: string };
+    try {
+      activeReservations = { ok: true, ids: await b.listActiveReservationIds(customerId) };
+    } catch (err) {
+      activeReservations = { ok: false, reason: reasonOf(err) };
+    }
+    const ownedActiveReservationIds = activeReservations.ok ? activeReservations.ids : [];
+    const allReservationIds: string[] = [...reservationIds];
+    for (const id of ownedActiveReservationIds) {
+      if (!allReservationIds.includes(id)) allReservationIds.push(id);
+    }
+
+    // FE-T17b — the EXACT MIRROR of the BKL-073/BKL-079 provable-empty markers, for
+    // the RESERVATION dimension. A pure SIGNAL carrier, NOT an owner resource: its
+    // key `active_reservations:{customerId}` matches NO OWNER_SCOPED_KEY_PREFIXES
+    // (`order_fulfillment_stage:` / `payment_status:` / `reservation_status:`), so
+    // it never attributes ownership. Recorded for observability/audit parity with
+    // the order/payment markers; NOT (yet) consumed by a completeness-drop rule
+    // (RESERVATION_STATUS is required only by its own RESERVATION_STATUS_Q span —
+    // no unrelated span class force-requires it the way PICKUP_Q forces
+    // ORDER_FULFILLMENT_STAGE — so the #8/BKL-073-style "drop a wrongly-forced
+    // companion" problem does not exist for reservations today; wiring this into
+    // `activeResourcesFromLedger` is a separate, not-yet-requested change).
+    reads.push({
+      key: `active_reservations:${customerId}`,
+      source: "reservation.listActiveReservationIds",
+      origin: "TRUSTED",
+      originProvenance: "FIRST_PARTY",
+      sourceMode: "live",
+      read: () => {
+        if (!activeReservations.ok) throw new Error(activeReservations.reason);
+        return { count: activeReservations.ids.length };
+      },
+    });
+
+    for (const reservationId of allReservationIds) {
       reads.push({
         key: RESERVATION_KEY(reservationId),
         source: "reservation.getById",
