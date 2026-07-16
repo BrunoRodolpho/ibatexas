@@ -5,6 +5,9 @@ import {
   IBATEXAS_COMPOSED_PACKS,
   composedIntentKinds,
 } from "../index.js"
+import { CONFIRM_LARGE_TICKET_THRESHOLD_CENTAVOS } from "@ibatexas/pack-orders"
+import { getRefundEscalateThresholdCentavos } from "@ibatexas/pack-payments"
+import { MONEY_BAND_1000_CENTAVOS } from "@ibatexas/types"
 
 describe("@ibatexas/packs-composed", () => {
   it("composes exactly the six first-party packs, with distinct ids", () => {
@@ -48,5 +51,18 @@ describe("@ibatexas/packs-composed", () => {
         "product.availability.set",
       ]),
     )
+  })
+
+  // FE-T02 — pack-orders' checkout-confirm ladder and pack-payments'
+  // refund-escalate ladder must resolve the SAME R$1000 money-band
+  // boundary from the shared `@ibatexas/types` constant, not independent
+  // literals. Env unset here, so payments resolves its (env-overridable)
+  // default — which must equal the shared constant too.
+  it("pack-orders and pack-payments resolve the same R$1000 money-band constant", () => {
+    expect(MONEY_BAND_1000_CENTAVOS).toBe(100_000)
+    expect(CONFIRM_LARGE_TICKET_THRESHOLD_CENTAVOS).toBe(
+      MONEY_BAND_1000_CENTAVOS,
+    )
+    expect(getRefundEscalateThresholdCentavos()).toBe(MONEY_BAND_1000_CENTAVOS)
   })
 })

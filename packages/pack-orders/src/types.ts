@@ -36,6 +36,7 @@
  */
 
 import { createSystemTaintPolicy } from "@adjudicate/primitives"
+import { MONEY_BAND_1000_CENTAVOS } from "@ibatexas/types"
 
 /**
  * W5-2 expansion: adds the lifecycle / projection / granular-amend
@@ -413,8 +414,12 @@ export const orderTaintPolicy = createSystemTaintPolicy({
  * REQUEST_CONFIRMATION trigger for large-ticket checkouts. R$ 1.000 by
  * default — orders at or above this prompt the user for explicit
  * confirmation before EXECUTE. Centavos integer.
+ *
+ * FE-T02: single-sourced from `@ibatexas/types`' `MONEY_BAND_1000_CENTAVOS`
+ * — the same boundary `@ibatexas/pack-payments`' refund-escalate ladder
+ * reads (with its own, currently-divergent, `>` comparator).
  */
-export const CONFIRM_LARGE_TICKET_THRESHOLD_CENTAVOS = 100_000
+export const CONFIRM_LARGE_TICKET_THRESHOLD_CENTAVOS = MONEY_BAND_1000_CENTAVOS
 
 /**
  * ESCALATE trigger for refund-equivalent flows in the order domain — a

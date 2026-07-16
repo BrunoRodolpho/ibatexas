@@ -24,7 +24,8 @@
     "@adjudicate/core": "^1.6.0",
     "@adjudicate/locales-pt-br": "^0.2.3",
     "@adjudicate/pack-payments-pix": "^0.3.0",
-    "@adjudicate/primitives": "^0.4.0"
+    "@adjudicate/primitives": "^0.4.0",
+    "@ibatexas/types": "workspace:*"
   },
   "devDependencies": {
     "@adjudicate/analyze": "^0.4.2",

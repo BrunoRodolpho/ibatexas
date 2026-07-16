@@ -1016,6 +1016,9 @@ importers:
       '@adjudicate/primitives':
         specifier: ^0.4.0
         version: 0.4.0
+      '@ibatexas/types':
+        specifier: workspace:*
+        version: link:../types
     devDependencies:
       '@adjudicate/analyze':
         specifier: ^0.4.2
@@ -1125,6 +1128,9 @@ importers:
       '@ibatexas/eslint-config':
         specifier: workspace:*
         version: link:../eslint-config
+      '@ibatexas/types':
+        specifier: workspace:*
+        version: link:../types
       '@vitest/coverage-v8':
         specifier: ^3.2.0
         version: 3.2.4(vitest@3.2.4(@types/node@26.1.0)(happy-dom@20.10.2)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.48.0)(tsx@4.21.0)(yaml@2.8.3))

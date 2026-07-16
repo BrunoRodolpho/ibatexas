@@ -37,6 +37,7 @@ import {
   type PolicyBundle,
 } from "@adjudicate/core/kernel"
 import { requireTenantBinding } from "@adjudicate/primitives"
+import { isAboveMoneyBand } from "@ibatexas/types"
 import {
   refundAlreadyExhausted,
   refundNotInRefundableState,
@@ -427,7 +428,10 @@ const refundMagnitudeGuard: PaymentGuard = (envelope, state) => {
   }
 
   const escalateThreshold = getRefundEscalateThresholdCentavos()
-  if (payload.refundAmountCentavos > escalateThreshold) {
+  // FE-T02: routed through the shared comparator helper so the FE-T03 flip
+  // to `isAtOrAboveMoneyBand` (reconciling this ladder with pack-orders'
+  // checkout-confirm `>=`) is a single-line change.
+  if (isAboveMoneyBand(payload.refundAmountCentavos, escalateThreshold)) {
     // ── AUT-017 — ESCALATE→OWNER-approve→executable-resume overlay ──────────
     //
     // When (and ONLY when) an OWNER has approved THIS exact escalated refund
