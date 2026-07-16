@@ -21,6 +21,10 @@ import { buildEnvelope } from "@adjudicate/core";
 import type { ToolDefinition } from "@claustrum/core";
 import { composedIntentKinds } from "@ibatexas/packs-composed";
 import {
+  CAPABILITY_DEFINITIONS,
+  generateOpsForbiddenDestructiveKinds,
+} from "@ibatexas/packs-composed/capability-definitions";
+import {
   opsCapabilityPlanner,
   OPS_ALERT_RESOLVE_STAFF_KIND,
   OPS_FOREIGN_ADVERTISED_KIND,
@@ -42,17 +46,16 @@ import {
   listOpsToolDefinitions,
   type OpsToolRegistryDeps,
 } from "../ops-tool-registry.js";
-import {
-  excludedKindsForScope,
-  FORBIDDEN_OPS_DESTRUCTIVE_KINDS,
-  scopeCapabilityPlanner,
-} from "../ops-verb-scope.js";
+import { excludedKindsForScope, scopeCapabilityPlanner } from "../ops-verb-scope.js";
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────
 
-/** The pack-owned destructive verb kinds this contract forbids — taken from the
- *  source-of-truth constant so the assertions below track any edit to it. */
-const FORBIDDEN = [...FORBIDDEN_OPS_DESTRUCTIVE_KINDS];
+// FE-4 CONTRACT (FE-T26): the pack-owned destructive verb kinds this
+// contract forbids — the hand-authored FORBIDDEN_OPS_DESTRUCTIVE_KINDS this
+// used to read from is deleted; the source-of-truth is now
+// `CapabilityDefinition.opsForbiddenDestructive: true`, projected here.
+const FORBIDDEN_KINDS = generateOpsForbiddenDestructiveKinds(CAPABILITY_DEFINITIONS);
+const FORBIDDEN = [...FORBIDDEN_KINDS];
 
 /** The eight governed ops verbs the persona MAY drive today (the positive
  *  control set — the drift test must confirm these ARE advertised so an empty
@@ -133,7 +136,7 @@ describe("BKL-096 — forbidden verbs are absent from the ops tool registry", ()
   const intentKinds = OPS_TOOLS.map((t) => String(t.intentKind));
 
   it("pins the forbidden set to exactly the three two-person destructive verbs", () => {
-    expect([...FORBIDDEN_OPS_DESTRUCTIVE_KINDS].sort()).toEqual([
+    expect([...FORBIDDEN_KINDS].sort()).toEqual([
       "order.cancel",
       "payment.status.force",
       "payment.waive",
@@ -202,6 +205,7 @@ describe("BKL-096 — opsPlaneDriftProblems fails closed on a forbidden ops tool
       composedIntentKinds: composedIntentKinds(),
       // Both staff-advertised reads (NEW-032 + NEW-012) have registered executors.
       readExecutorKeys: ["ops_snapshot", "ops_sales_analytics"],
+      forbiddenOpsKinds: FORBIDDEN_KINDS,
     });
     expect(problems).toEqual([]);
   });
@@ -225,6 +229,7 @@ describe("BKL-096 — opsPlaneDriftProblems fails closed on a forbidden ops tool
       opsTools: [...OPS_TOOLS, forbiddenTool],
       composedIntentKinds: composedIntentKinds(),
       readExecutorKeys: ["ops_snapshot", "ops_sales_analytics"],
+      forbiddenOpsKinds: FORBIDDEN_KINDS,
     });
     expect(problems.length).toBeGreaterThan(0);
     const joined = problems.join("\n");

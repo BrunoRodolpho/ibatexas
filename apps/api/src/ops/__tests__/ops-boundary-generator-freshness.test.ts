@@ -1,28 +1,28 @@
-// FE-T24 — FE-4 MIGRATE 4b (the FINAL migrate batch): ops-boundary family,
-// target 2 — FORBIDDEN_OPS_DESTRUCTIVE_KINDS freshness + boot-gate
-// equivalence.
+// FE-4 CONTRACT (FE-T26) — ops-boundary family, target 2: the BKL-096
+// forbidden-verb boot gate, now sourced SOLELY from `CapabilityDefinition`.
 //
-// `FORBIDDEN_OPS_DESTRUCTIVE_KINDS` (../ops-verb-scope.ts, BKL-096) is
-// apps/api-owned, so its freshness test lives here (packages cannot import
-// apps/*) — `generateOpsForbiddenDestructiveKinds`'s pure behavior is
-// covered in packages/packs-composed's own
-// capability-definitions.ops-boundary-family.test.ts.
+// History: FE-T24 authored `generateOpsForbiddenDestructiveKinds` and
+// proved it byte-identical to the hand-authored `FORBIDDEN_OPS_
+// DESTRUCTIVE_KINDS` (`../ops-verb-scope.ts`); FE-T25 extracted the
+// forbidden-verb check into `forbiddenOpsVerbProblems` and repointed the
+// real boot call to the generated set while keeping the hand constant
+// alive as the function's DEFAULT parameter. This ticket (FE-T26) DELETES
+// `FORBIDDEN_OPS_DESTRUCTIVE_KINDS` — its 3 kinds now live as
+// `CapabilityDefinition.opsForbiddenDestructive: true` — and makes
+// `forbiddenOpsVerbProblems`'s `forbidden` parameter REQUIRED (no default),
+// so this file's old "byte-identical to the real constant" comparisons no
+// longer have a second, independent side to diff against — RETIRED below,
+// with rationale, rather than left referencing a deleted symbol.
 //
-// This file does TWO things generate-and-diff alone cannot:
-//   1. Byte-identity against the REAL committed constant.
-//   2. Proves the ops-plane boot gate would behave IDENTICALLY if fed the
-//      generated set instead of the hand-authored one — WITHOUT repointing
-//      production code (the ticket's "nothing repointed" constraint).
-//      `opsPlaneDriftProblems`'s BKL-096 forbidden-verb check is extracted
-//      to `forbiddenOpsVerbProblems(opsTools, forbidden = FORBIDDEN_OPS_
-//      DESTRUCTIVE_KINDS)` (ops-verb-scope.ts, review fix) — a pure,
-//      parameterized function, not a hand-copied re-implementation that
-//      could silently drift from the real message text. This test drives
-//      that REAL function directly with the generated set, against the same
-//      two probes ops-forbidden-destructive-drift.test.ts already exercises
-//      against the real constant: the real 8-verb registry (must stay
-//      GREEN) and a synthetic forbidden-tool injection (must FLAG, with
-//      byte-identical problem text to the real-constant run).
+// What SURVIVES: `generateOpsForbiddenDestructiveKinds`'s pure behavior is
+// covered in packages/packs-composed's own capability-definitions.
+// ops-boundary-family.test.ts (unaffected by this ticket). This file keeps
+// the REAL boot-gate proof — `opsPlaneDriftProblems` (the actual export
+// claustrum-bootstrap.ts calls), driven with the generated set, still
+// fails closed on a real runtime/DI mismatch (a synthetic forbidden ops
+// tool injected into the registry) — the genuine independent-runtime-
+// materialization check FE-4.3 requires (`opsTools` is the real DI
+// registry; only `forbidden` is CapabilityDefinition-derived).
 
 import { describe, expect, it } from "vitest";
 import type { ToolDefinition } from "@claustrum/core";
@@ -33,10 +33,7 @@ import {
 } from "@ibatexas/packs-composed/capability-definitions";
 
 import { opsPlaneDriftProblems } from "../ops-conductor.js";
-import {
-  FORBIDDEN_OPS_DESTRUCTIVE_KINDS,
-  forbiddenOpsVerbProblems,
-} from "../ops-verb-scope.js";
+import { forbiddenOpsVerbProblems } from "../ops-verb-scope.js";
 import {
   listOpsToolDefinitions,
   type OpsToolRegistryDeps,
@@ -89,15 +86,11 @@ const REGISTRY_DEPS: OpsToolRegistryDeps = {
 };
 
 const OPS_TOOLS = listOpsToolDefinitions(REGISTRY_DEPS);
+const FORBIDDEN_KINDS = generateOpsForbiddenDestructiveKinds(CAPABILITY_DEFINITIONS);
 
-describe("generateOpsForbiddenDestructiveKinds — byte-identical to the real FORBIDDEN_OPS_DESTRUCTIVE_KINDS (FE-T24)", () => {
-  it("projects a Set equal to the real committed constant", () => {
-    const generated = generateOpsForbiddenDestructiveKinds(CAPABILITY_DEFINITIONS);
-    expect(generated).toEqual(FORBIDDEN_OPS_DESTRUCTIVE_KINDS);
-  });
-
-  it("pins the real constant's contents too, guarding against both sides drifting together silently", () => {
-    expect([...FORBIDDEN_OPS_DESTRUCTIVE_KINDS].sort()).toEqual([
+describe("generateOpsForbiddenDestructiveKinds — the single source (FE-T26)", () => {
+  it("projects exactly the 3 known forbidden kinds", () => {
+    expect([...FORBIDDEN_KINDS].sort()).toEqual([
       "order.cancel",
       "payment.status.force",
       "payment.waive",
@@ -105,18 +98,12 @@ describe("generateOpsForbiddenDestructiveKinds — byte-identical to the real FO
   });
 });
 
-describe("BKL-096 boot-gate equivalence — the GENERATED forbidden set drives the REAL forbiddenOpsVerbProblems identically to the real constant (FE-T24)", () => {
-  const generatedForbidden = generateOpsForbiddenDestructiveKinds(CAPABILITY_DEFINITIONS);
-
-  it("is GREEN on the real 8-verb ops registry using the GENERATED set (matches the real constant's own green boot state)", () => {
-    expect(forbiddenOpsVerbProblems(OPS_TOOLS, generatedForbidden)).toEqual([]);
-    // Same real registry, same real (hand-authored) constant, same REAL
-    // function called with its own default — the baseline this proves
-    // equivalence AGAINST.
-    expect(forbiddenOpsVerbProblems(OPS_TOOLS)).toEqual([]);
+describe("forbiddenOpsVerbProblems — driven by the sole (generated) source (FE-T26)", () => {
+  it("is GREEN on the real 8-verb ops registry", () => {
+    expect(forbiddenOpsVerbProblems(OPS_TOOLS, FORBIDDEN_KINDS)).toEqual([]);
   });
 
-  it("FLAGS a synthetic forbidden ops tool using the GENERATED set — byte-identical problem text to the real constant", () => {
+  it("FLAGS a synthetic forbidden ops tool, message text intact", () => {
     const forbiddenTool = {
       id: "ibatexas.ops.forceCancel.v1",
       capability: "order.cancel" as never,
@@ -128,46 +115,32 @@ describe("BKL-096 boot-gate equivalence — the GENERATED forbidden set drives t
       execute: async () => ({}),
     } as unknown as ToolDefinition<unknown, unknown>;
 
-    const withForbiddenTool = [...OPS_TOOLS, forbiddenTool];
-    // Real function, generated set.
-    const generatedProblems = forbiddenOpsVerbProblems(withForbiddenTool, generatedForbidden);
-    // Real function, its own default (FORBIDDEN_OPS_DESTRUCTIVE_KINDS) —
-    // exactly what opsPlaneDriftProblems calls in production.
-    const realProblems = forbiddenOpsVerbProblems(withForbiddenTool);
-
-    expect(generatedProblems.length).toBeGreaterThan(0);
-    // Byte-identical outcome — including the full "…owner ratifies a
-    // propose-path (OPS-007/008/011)…" message text, since both runs go
-    // through the SAME real function — not just "both non-empty".
-    expect(generatedProblems).toEqual(realProblems);
-    expect(generatedProblems.join("\n")).toContain("order.cancel");
-    expect(generatedProblems.join("\n")).toContain("OPS-007/008/011");
+    const problems = forbiddenOpsVerbProblems([...OPS_TOOLS, forbiddenTool], FORBIDDEN_KINDS);
+    expect(problems.length).toBeGreaterThan(0);
+    expect(problems.join("\n")).toContain("order.cancel");
+    expect(problems.join("\n")).toContain("OPS-007/008/011");
   });
 });
 
-// ── FE-T25 (FE-4.3) — the FULL opsPlaneDriftProblems gate, repointed ─────────
+// ── the FULL opsPlaneDriftProblems gate (FE-T25, re-verified post-CONTRACT) ──
 //
-// The above proves the extracted forbiddenOpsVerbProblems helper is
-// equivalent under the generated set. This section drives the FULL
-// opsPlaneDriftProblems function (the actual boot-anchor export
-// claustrum-bootstrap.ts calls) with its new `forbiddenOpsKinds` parameter
-// — the real production wiring, not a helper-level probe — proving the
-// repointed gate fails closed on a real runtime/DI mismatch end-to-end.
+// Drives the actual boot-anchor export claustrum-bootstrap.ts calls, with
+// its REQUIRED `forbiddenOpsKinds` parameter — the real production wiring,
+// proving the gate still fails closed on a real runtime/DI mismatch
+// end-to-end, now that the generated set is the ONLY set.
 
-describe("FE-T25 — the FULL opsPlaneDriftProblems gate, repointed to the GENERATED forbidden set", () => {
-  const generatedForbidden = generateOpsForbiddenDestructiveKinds(CAPABILITY_DEFINITIONS);
-
-  it("is GREEN on the real 8-verb ops registry when forbiddenOpsKinds is the GENERATED set — matches production behavior after the repoint", () => {
+describe("the FULL opsPlaneDriftProblems gate, sourced solely from CapabilityDefinition (FE-T26)", () => {
+  it("is GREEN on the real 8-verb ops registry", () => {
     const problems = opsPlaneDriftProblems({
       opsTools: OPS_TOOLS,
       composedIntentKinds: composedIntentKinds(),
       readExecutorKeys: ["ops_snapshot", "ops_sales_analytics"],
-      forbiddenOpsKinds: generatedForbidden,
+      forbiddenOpsKinds: FORBIDDEN_KINDS,
     });
     expect(problems).toEqual([]);
   });
 
-  it("REGRESSION PROOF: a REAL runtime/DI mismatch (a synthetic forbidden ops tool injected into the registry) FAILS CLOSED through the FULL gate with the GENERATED set — the repoint is load-bearing end-to-end, not just at the helper level", () => {
+  it("REGRESSION PROOF: a REAL runtime/DI mismatch (a synthetic forbidden ops tool injected into the registry) FAILS CLOSED through the FULL gate — load-bearing end-to-end, not just at the helper level", () => {
     const forbiddenTool = {
       id: "ibatexas.ops.forceCancel.v1",
       capability: "order.cancel" as never,
@@ -183,21 +156,11 @@ describe("FE-T25 — the FULL opsPlaneDriftProblems gate, repointed to the GENER
       opsTools: [...OPS_TOOLS, forbiddenTool],
       composedIntentKinds: composedIntentKinds(),
       readExecutorKeys: ["ops_snapshot", "ops_sales_analytics"],
-      forbiddenOpsKinds: generatedForbidden,
+      forbiddenOpsKinds: FORBIDDEN_KINDS,
     });
     expect(problems.length).toBeGreaterThan(0);
     const joined = problems.join("\n");
     expect(joined).toContain("FORBIDDEN");
     expect(joined).toContain("order.cancel");
-  });
-
-  it("omitting forbiddenOpsKinds entirely preserves the PRE-FE-T25 default behavior (the real hand-authored constant) — every existing caller that doesn't pass it is unchanged", () => {
-    const problems = opsPlaneDriftProblems({
-      opsTools: OPS_TOOLS,
-      composedIntentKinds: composedIntentKinds(),
-      readExecutorKeys: ["ops_snapshot", "ops_sales_analytics"],
-      // forbiddenOpsKinds intentionally omitted.
-    });
-    expect(problems).toEqual([]);
   });
 });

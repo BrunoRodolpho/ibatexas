@@ -7,11 +7,19 @@
 import { describe, expect, it } from "vitest";
 import type { ToolDefinition } from "@claustrum/core";
 import { composedIntentKinds } from "@ibatexas/packs-composed";
+import {
+  CAPABILITY_DEFINITIONS,
+  generateOpsForbiddenDestructiveKinds,
+} from "@ibatexas/packs-composed/capability-definitions";
 import { opsPlaneDriftProblems } from "../ops-conductor.js";
 import {
   listOpsToolDefinitions,
   type OpsToolRegistryDeps,
 } from "../ops-tool-registry.js";
+
+// FE-4 CONTRACT (FE-T26): opsPlaneDriftProblems's forbiddenOpsKinds is now
+// REQUIRED — every call below supplies the real generated set.
+const FORBIDDEN_KINDS = generateOpsForbiddenDestructiveKinds(CAPABILITY_DEFINITIONS);
 
 const REGISTRY_DEPS: OpsToolRegistryDeps = {
   medusaAdjudicated: (async () => ({})) as never,
@@ -68,6 +76,7 @@ describe("opsPlaneDriftProblems", () => {
       // Both staff-advertised reads (NEW-032 ops_snapshot + NEW-012
       // ops_sales_analytics) must have a registered executor.
       readExecutorKeys: ["ops_snapshot", "ops_sales_analytics"],
+      forbiddenOpsKinds: FORBIDDEN_KINDS,
     });
     expect(problems).toEqual([]);
   });
@@ -91,6 +100,7 @@ describe("opsPlaneDriftProblems", () => {
       opsTools: OPS_TOOLS,
       composedIntentKinds: composedIntentKinds(),
       readExecutorKeys: [], // ← dangling advertised read
+      forbiddenOpsKinds: FORBIDDEN_KINDS,
     });
     expect(problems.length).toBeGreaterThan(0);
     expect(problems.join("\n")).toContain("ops_snapshot");
@@ -103,6 +113,7 @@ describe("opsPlaneDriftProblems", () => {
       opsTools: OPS_TOOLS,
       composedIntentKinds: composedIntentKinds(),
       readExecutorKeys: ["ops_snapshot", "ops_sales_analytics"],
+      forbiddenOpsKinds: FORBIDDEN_KINDS,
     });
     expect(problems).toEqual([]);
   });
@@ -114,6 +125,7 @@ describe("opsPlaneDriftProblems", () => {
       readExecutorKeys: ["ops_snapshot", "ops_sales_analytics"],
       // ops_sales_analytics is advertised but has no render template here.
       renderableReadKeys: ["ops_snapshot"],
+      forbiddenOpsKinds: FORBIDDEN_KINDS,
     });
     expect(problems.length).toBeGreaterThan(0);
     expect(problems.join("\n")).toContain("ops_sales_analytics");
@@ -135,6 +147,7 @@ describe("opsPlaneDriftProblems", () => {
       opsTools: [...OPS_TOOLS, danglingTool],
       composedIntentKinds: composedIntentKinds(),
       readExecutorKeys: ["ops_snapshot", "ops_sales_analytics"],
+      forbiddenOpsKinds: FORBIDDEN_KINDS,
     });
     expect(problems.length).toBeGreaterThan(0);
     expect(problems.join("\n")).toContain("ops.bogus.kind");

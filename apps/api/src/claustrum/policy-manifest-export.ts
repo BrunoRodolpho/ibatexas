@@ -13,6 +13,17 @@
  * (`ibx policy export`) owns path resolution + writing the artifact.
  *
  * Requires `@adjudicate/analyze >= 0.4.0` (the `describeInstalledPacks` surface).
+ *
+ * FE-4 CONTRACT (FE-T26) — DELIBERATELY NOT repointed to
+ * `@ibatexas/packs-composed`'s `generateToolToIntentMap`/`CapabilityDefinition`.
+ * The five `*_TOOL_TO_INTENT` imports below read each pack's OWN live export
+ * directly, which is the strongest possible source for a diagnostic manifest
+ * whose entire purpose (see above) is zero-drift-from-production.
+ * `CapabilityDefinition.legacyNames` is itself only a checked MIRROR of these
+ * same pack-owned maps (the pack is the root source — see
+ * `docs/architecture/design/fe4-drift-gates.md`, deletion-inventory item 7);
+ * routing this file through that mirror would add an indirection ("exactly as
+ * fresh as" the pack, not "is" the pack) for no benefit. Left unchanged.
  */
 
 import {

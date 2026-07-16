@@ -16,14 +16,7 @@
 
 import { describe, expect, it } from "vitest";
 import { CHAT_DRIVABLE_TOOL_KINDS } from "@ibatexas/packs-composed";
-import {
-  CAPABILITY_DEFINITIONS,
-  generateCapabilityDescriptions,
-} from "@ibatexas/packs-composed/capability-definitions";
-import {
-  IBATEXAS_CAPABILITY_DESCRIPTIONS,
-  listIbatexasToolPacks,
-} from "../tools/register-ibatexas-tool-packs.js";
+import { listIbatexasToolPacks } from "../tools/register-ibatexas-tool-packs.js";
 
 describe("T1a-2 — chat-drivable roster drift", () => {
   it("CHAT_DRIVABLE_TOOL_KINDS has no duplicates", () => {
@@ -60,26 +53,18 @@ describe("T1a-2 — chat-drivable roster drift", () => {
   });
 });
 
-/**
- * FE-T21 — the VALUE side of "the registered tool roster" family member:
- * `IBATEXAS_CAPABILITY_DESCRIPTIONS` (this file's own module, keyed by
- * `capability` — same keys the tests above already pin). Lives here, not
- * in packages/packs-composed, because `IBATEXAS_CAPABILITY_DESCRIPTIONS`
- * is an apps/api export and packages cannot import apps/api (the reverse
- * of the normal dependency direction) — mirrors why
- * `assertCapabilityGuardRefsWired`'s own tests (FE-T19) live in apps/api
- * too, not in packs-composed.
- */
-describe("FE-T21 — generateCapabilityDescriptions vs the real IBATEXAS_CAPABILITY_DESCRIPTIONS", () => {
-  it("reproduces the real, live description map byte-for-byte (all 18 entries)", () => {
-    const generated = generateCapabilityDescriptions(CAPABILITY_DEFINITIONS);
-    expect(generated).toEqual(IBATEXAS_CAPABILITY_DESCRIPTIONS);
-  });
-
-  it("has exactly 18 entries, matching the pinned roster size", () => {
-    expect(Object.keys(IBATEXAS_CAPABILITY_DESCRIPTIONS)).toHaveLength(18);
-    expect(
-      Object.keys(generateCapabilityDescriptions(CAPABILITY_DEFINITIONS)),
-    ).toHaveLength(18);
-  });
-});
+// FE-4 CONTRACT (FE-T26) — RETIRED-AS-TAUTOLOGICAL: the "FE-T21 —
+// generateCapabilityDescriptions vs the real IBATEXAS_CAPABILITY_
+// DESCRIPTIONS" describe block that lived here compared
+// `generateCapabilityDescriptions(CAPABILITY_DEFINITIONS)` against
+// `IBATEXAS_CAPABILITY_DESCRIPTIONS` (register-ibatexas-tool-packs.ts).
+// This ticket repointed that constant to literally BE
+// `generateCapabilityDescriptions(CAPABILITY_DEFINITIONS)` — the two sides
+// are now the same expression, so the comparison always passes by
+// construction and proves nothing (FE-4.3's "generated-vs-generated"
+// tautology). Retired rather than left in place vacuously passing; the
+// surviving independent check for this data is `claustrum/prompts/
+// __tests__/ibatexas-prompts.capability-fragments.test.ts` (FE-T22),
+// which verifies the descriptions actually drive the REAL rendered prompt
+// fragments — a genuine runtime-materialization check this repoint didn't
+// touch. Recorded in docs/architecture/design/fe4-drift-gates.md.
