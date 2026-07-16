@@ -194,6 +194,28 @@ describe("FE-T25 — assertPackCoverage's generated walked-set repoint", () => {
     expect(missing).toEqual(expect.arrayContaining(["payment.pix.regenerate"]))
     expect(missing.length).toBeGreaterThan(0)
   })
+
+  it("REGRESSION PROOF (pix positive control): omitting the installed PIX pack itself still fails closed against the GENERATED set — a full roster-removal is caught even though the repoint made the pix sub-leg same-source (see fe4-drift-gates.md's MINOR-2 note)", () => {
+    const withoutPix = [
+      { pack: ordersPack },
+      { pack: reservationsPack },
+      { pack: whatsappPack },
+      { pack: customerOnboardingPack },
+      { pack: paymentsPack },
+      { pack: opsPack },
+      // paymentsPix omitted.
+    ]
+    let caught: unknown = null
+    try {
+      assertPackCoverage(withoutPix, generatedPackRegistered)
+    } catch (err) {
+      caught = err
+    }
+    expect(caught).toBeInstanceOf(PackCoverageError)
+    const missing = (caught as PackCoverageError).missingKinds
+    expect(missing.some((kind) => kind.startsWith("pix.charge."))).toBe(true)
+    expect(missing.length).toBeGreaterThan(0)
+  })
 })
 
 // ── Audit-postgres preflight ─────────────────────────────────────────────────

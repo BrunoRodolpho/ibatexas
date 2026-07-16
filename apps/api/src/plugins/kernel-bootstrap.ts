@@ -629,7 +629,14 @@ export async function bootstrapKernel(server: FastifyInstance): Promise<void> {
       {
         event: "kernel.bootstrap.pack_coverage_validated",
         knownIntentCount: KNOWN_INTENT_KINDS.size,
-        packRegisteredCount: GENERATED_PACK_REGISTERED_INTENT_KINDS.size,
+        // FE-T25 review fix: log BOTH counts — packRegisteredCount is the
+        // hand-authored PACK_REGISTERED_INTENT_KINDS (kept genuinely IN USE,
+        // not merely defined, restoring the both-sources-alive invariant this
+        // ticket requires); generatedPackRegisteredCount is the set the gate
+        // actually walks post-repoint. A boot-time divergence between the two
+        // (which the freshness test also pins) would show up here too.
+        packRegisteredCount: PACK_REGISTERED_INTENT_KINDS.size,
+        generatedPackRegisteredCount: GENERATED_PACK_REGISTERED_INTENT_KINDS.size,
       },
       "[kernel-bootstrap] pack coverage validated",
     )

@@ -31,7 +31,28 @@ recorded rationale FE-4.3 requires either way.
 
 | # | Gate | Location | Side that WAS a dying hand list | Side that is (and stays) runtime-independent | Classification | This ticket's change |
 |---|------|----------|----------------------------------|------------------------------------------------|-----------------|-----------------------|
-| 1 | `assertPackCoverage` | `apps/api/src/plugins/kernel-bootstrap.ts` | `knownKinds` argument — `PACK_REGISTERED_INTENT_KINDS`, derived from `KNOWN_INTENT_KINDS` (`@ibatexas/intent-kinds`) | `declared` — union of every **installed Pack's own** `pack.intents[]`, read live inside `assertPackCoverage`'s own body | **needs-repoint** | Real boot call now passes `GENERATED_PACK_REGISTERED_INTENT_KINDS` (`generateKnownIntentKinds(CAPABILITY_DEFINITIONS, {pixIntentKinds: paymentsPixPack.intents, loyaltyIntentKinds})`, minus loyalty kinds) instead. `PACK_REGISTERED_INTENT_KINDS` stays defined (still logged, still the freshness-pin target) — both sources alive. |
+| 1 | `assertPackCoverage` | `apps/api/src/plugins/kernel-bootstrap.ts` | `knownKinds` argument — `PACK_REGISTERED_INTENT_KINDS`, derived from `KNOWN_INTENT_KINDS` (`@ibatexas/intent-kinds`) | `declared` — union of every **installed Pack's own** `pack.intents[]`, read live inside `assertPackCoverage`'s own body | **needs-repoint** | Real boot call now passes `GENERATED_PACK_REGISTERED_INTENT_KINDS` (`generateKnownIntentKinds(CAPABILITY_DEFINITIONS, {pixIntentKinds: paymentsPixPack.intents, loyaltyIntentKinds})`, minus loyalty kinds) instead. `PACK_REGISTERED_INTENT_KINDS` stays defined and genuinely IN USE (both counts now logged) — both sources alive. |
+
+> **MINOR-2 (accepted, not fixed further) — the PIX sub-leg of gate 1 is now SAME-SOURCE.**
+> Before this repoint, the walked side's pix kinds came from `KNOWN_INTENT_KINDS`'s own
+> hand-typed `PIX_INTENT_KINDS` literal (`@ibatexas/intent-kinds`) — a value typed
+> independently of the real `@adjudicate/pack-payments-pix`'s own `.intents`, so
+> `assertPackCoverage`'s pix sub-check was genuinely hand-vs-runtime. This ticket's
+> repoint passes `paymentsPixPack.intents` (the REAL pix pack's own array) as the
+> generator's `pixIntentKinds` external input — so for the 3 pix kinds specifically,
+> the walked side and the `declared` side now both trace back to the *exact same*
+> live object. That narrows what this one gate can catch for pix: a hypothetical
+> future divergence between the hand-typed `PIX_INTENT_KINDS` and the real pack's
+> `.intents` would no longer be caught HERE. Accepted because (a) a full pix-pack
+> **removal** is still caught — proven by a dedicated forced-mismatch test (see
+> below) — and (b) the hand-vs-runtime pix drift class this sub-leg used to catch is
+> still pinned elsewhere: `generateKnownIntentKinds`'s own FE-T20 freshness test in
+> `packages/packs-composed` diffs `generateKnownIntentKinds(CAPABILITY_DEFINITIONS,
+> {pixIntentKinds: paymentsPixPack.intents, ...})` against the real, hand-authored
+> `KNOWN_INTENT_KINDS` — so a `PIX_INTENT_KINDS` hand-typo would still fail THAT test.
+> Net: no coverage gap, just a relocated one — but it is exactly the class of
+> same-sourcing this ticket exists to police, so it is called out here rather than
+> left implicit.
 | 2a | `toolRosterDrift` — check 1 (`registered ⊆ pack-owned`) | `apps/api/src/tools/register-ibatexas-tool-packs.ts`, called from `claustrum-bootstrap.ts` | *(none)* | `tools` = `listIbatexasToolPacks()` (the real DI tool container); `packIntentKinds` = `composedIntentKinds()` (real union of `IBATEXAS_COMPOSED_PACKS[*].intents`, itself runtime-derived — not a mirrored hand list) | **survives-as-is** | No change. Neither side was ever a FE-4 hand list. |
 | 2b | `toolRosterDrift` — context-aware leg + `chatSurfacedKinds` exemption | same | `chatSurfacedKinds` | `planners` = `IBATEXAS_COMPOSED_CAPABILITY_PLANNERS` (real, live `.plan()` calls); the checked `kind` values come from the real registered tools and the real advertised-intents output | **already-repointed (FE-T22)** | `chatSurfacedKinds` has been `new Set(generateChatDrivableToolKinds(CAPABILITY_DEFINITIONS))` since FE-T22 — confirmed still independent, because the OTHER side of this specific check (registered/advertised kinds) is genuinely runtime-real, not itself generated. No further action; re-verified as part of this ticket's audit. |
 | 3 | `readToolRosterDrift` | same, called from `claustrum-bootstrap.ts` | *(none)* | `planners` = real; `readExecutorKeys` = `Object.keys(IBATEXAS_READ_TOOL_EXECUTORS)` (real executor registration) | **survives-as-is** | No change. READ tools are entirely out of `CapabilityDefinition`'s scope (it models `mutating` capabilities only — see `types.ts`), so this gate never touched a FE-4 hand list at all. |
@@ -60,6 +81,41 @@ recorded rationale FE-4.3 requires either way.
   not `CapabilityDefinition` data — reconfirmed here as out of scope for the same
   reason.
 
+## CONTRACT (T26) sequence — per constant this ticket touched
+
+This ticket keeps both sources alive (nothing repointed at T26's level — production
+now READS the generated projection, but the hand-authored constants stay defined,
+referenced, and freshness-pinned). T26 must not simply delete them and let the
+compiler tell it what broke — each has a load-bearing NON-boot dependency a
+compile error would not explain on its own:
+
+1. **`FORBIDDEN_OPS_DESTRUCTIVE_KINDS`** (`ops-verb-scope.ts`) — is still
+   `forbiddenOpsVerbProblems`'s DEFAULT parameter value
+   (`forbidden: ReadonlySet<string> = FORBIDDEN_OPS_DESTRUCTIVE_KINDS`). Deleting
+   the constant breaks that default EXPRESSION at compile time — a real signal, but
+   an implementer under time pressure could "fix" it by pasting in
+   `generateOpsForbiddenDestructiveKinds(CAPABILITY_DEFINITIONS)` as the new
+   default WITHOUT registering that this silently changes every OTHER caller of
+   `forbiddenOpsVerbProblems` that does not pass an explicit `forbidden` argument
+   (any test or future call site that relies on the bare default). **Required T26
+   action:** either (a) make `forbidden` a REQUIRED parameter (no default at all —
+   forces every call site to state its intent explicitly, the safer option), or
+   (b) flip the default to the generated set as a DELIBERATE, reviewed decision,
+   not an incidental fix. Either way, `opsPlaneDriftProblems`'s own default (when
+   `forbiddenOpsKinds` is omitted) must also be re-derived from the generator at
+   that point — its current default-through-`forbiddenOpsVerbProblems`'s-default
+   chain is the same landmine one level up.
+2. **`PACK_REGISTERED_INTENT_KINDS`** (`kernel-bootstrap.ts`) — depends on
+   `KNOWN_INTENT_KINDS` (`@ibatexas/intent-kinds`), which T26 also deletes. Its
+   deletion is gated by the info-log dependency THIS review fix restored
+   (`packRegisteredCount: PACK_REGISTERED_INTENT_KINDS.size` — the hand-authored
+   count, logged alongside `generatedPackRegisteredCount`). **Required T26
+   sequence:** (a) decide the log's final shape first — drop the hand-authored
+   `packRegisteredCount` field, or collapse to a single field once there is only
+   one source of truth — THEN (b) delete `PACK_REGISTERED_INTENT_KINDS` itself.
+   Deleting step (b) before resolving (a) reproduces this exact review's BLOCKER
+   (an orphaned `const` → `no-unused-vars` lint failure).
+
 ## Forced-mismatch evidence (AC: "observe each repointed gate fail-closed at boot")
 
 - **Gate 1 (`assertPackCoverage`)** —
@@ -68,7 +124,10 @@ recorded rationale FE-4.3 requires either way.
   7-pack roster (pack-payments omitted — a real DI mismatch, not a synthetic toy)
   probed against the GENERATED walked set still throws `PackCoverageError`, with
   a positive control (`payment.pix.regenerate` appears in `missingKinds`) proving
-  the failure is real, not vacuous.
+  the failure is real, not vacuous. A SECOND test omits the installed PIX pack
+  itself and confirms a `pix.charge.*` kind appears in `missingKinds` — the
+  positive-control evidence backing MINOR-2's "roster-removal still caught" claim
+  above.
 - **Gate 4b (`opsPlaneDriftProblems`'s forbidden-verb check)** —
   `apps/api/src/ops/__tests__/ops-boundary-generator-freshness.test.ts`, describe
   block `"FE-T25 — the FULL opsPlaneDriftProblems gate, repointed to the GENERATED
@@ -87,8 +146,8 @@ recorded rationale FE-4.3 requires either way.
 
 ## Test counts (post-repoint, this ticket)
 
-- `apps/api/src/plugins/__tests__/kernel-bootstrap.test.ts`: 18/18 (15 pre-existing
-  + 3 new).
+- `apps/api/src/plugins/__tests__/kernel-bootstrap.test.ts`: 19/19 (15 pre-existing
+  + 4 new, incl. the pix positive-control test added in review).
 - `apps/api/src/ops/__tests__/ops-boundary-generator-freshness.test.ts`: 7/7 (4
   pre-existing FE-T24 + 3 new).
 - `apps/api/src/__tests__/tool-roster-integrity.test.ts`: 31/31 (unchanged, re-run
