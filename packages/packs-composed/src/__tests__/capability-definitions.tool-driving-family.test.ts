@@ -9,10 +9,14 @@
 //                                   === intentKind, RC-A1 Phase A); the
 //                                   VALUE side (pt-BR descriptions) is
 //                                   generateCapabilityDescriptions — its
-//                                   cross-boundary freshness test against
-//                                   the real apps/api roster lives in
-//                                   apps/api/src/tools/__tests__/ (packages
-//                                   cannot import apps/api).
+//                                   freshness test compares directly
+//                                   against the real, EXPORTED
+//                                   IBATEXAS_CAPABILITY_DESCRIPTIONS
+//                                   (register-ibatexas-tool-packs.ts:400)
+//                                   in apps/api/src/__tests__/chat-
+//                                   drivable-roster-drift.test.ts
+//                                   (extended, not a new file) — packages
+//                                   cannot import apps/api.
 //   3. Per-pack tool→intent maps — generateToolToIntentMap, vs each pack's
 //                                   real exported `*_TOOL_TO_INTENT`.
 //   4. Mutating classification   — generateMutatingToolNames, vs each
@@ -94,10 +98,11 @@ describe("generateCapabilityDescriptions — the registered tool roster's VALUE 
     }
   })
 
-  // The cross-boundary freshness test against the REAL apps/api
-  // `IBATEXAS_CAPABILITY_DESCRIPTIONS` (built from `listIbatexasToolPacks()`)
-  // lives in apps/api/src/tools/__tests__/capability-descriptions-
-  // freshness.test.ts — packages/packs-composed cannot import apps/api.
+  // The cross-boundary freshness test — a direct `toEqual` against the
+  // real, EXPORTED `IBATEXAS_CAPABILITY_DESCRIPTIONS`
+  // (register-ibatexas-tool-packs.ts:400) — lives in apps/api/src/
+  // __tests__/chat-drivable-roster-drift.test.ts (extended, not a new
+  // file): packages/packs-composed cannot import apps/api.
 })
 
 // ── Per-pack tool→intent maps ────────────────────────────────────────────

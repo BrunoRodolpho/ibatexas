@@ -51,7 +51,11 @@
 import type { CapabilityDefinition } from "./types.js"
 
 /**
- * Project the pack's `MUTATING` tool-name set: every `legacyNames` entry
+ * Project the pack's `MUTATING` tool-name set: EVERY `legacyNames` entry
+ * (plural — deliberately not just `legacyNames[0]`, unlike `generate-tool-
+ * to-intent-map.ts`'s 1:1 map projection; see that file's doc for why the
+ * two generators read the same field differently and why today's
+ * ≤1-name-per-instance reality makes them behave identically in practice)
  * across all instances (chat-tier + the narrow identity-tier exceptions)
  * that pack owns, UNIONED with the caller-supplied `extraToolNames` (tool
  * names with no kind mapping at all — see module doc). Returns a

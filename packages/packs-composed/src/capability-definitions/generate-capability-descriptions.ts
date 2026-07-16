@@ -17,16 +17,15 @@
  * `CapabilityDefinition.description` (populated for exactly the 18
  * chat-tier instances, the same 18 `IBATEXAS_TOOLS` registers).
  *
- * Freshness target lives in `apps/api` (`IBATEXAS_CAPABILITY_DESCRIPTIONS`
- * is not exported there today — the freshness test imports
- * `listIbatexasToolPacks()`, which IS exported, and rebuilds the same
- * `{capability: description}` shape from it — an independent
- * materialization of the real registered roster, not a re-derivation of
- * this generator's own output). packs-composed cannot import from
- * apps/api (apps depend on packages, never the reverse), so that test
- * lives in `apps/api/src/tools/__tests__/`, not here — mirroring FE-T19's
- * `assertCapabilityGuardRefsWired` tests, which live in apps/api for the
- * same reason.
+ * `IBATEXAS_CAPABILITY_DESCRIPTIONS` IS exported (`register-ibatexas-
+ * tool-packs.ts:400`), so its freshness test compares this generator's
+ * output against it DIRECTLY (`toEqual`) — not indirectly rebuilt from
+ * `listIbatexasToolPacks()`. That test lives in `apps/api/src/__tests__/
+ * chat-drivable-roster-drift.test.ts` (extended, not a new file — that
+ * file already covers the CAPABILITY-KEY side of this same registered-
+ * tool-roster artifact), not here: packs-composed cannot import from
+ * apps/api (apps depend on packages, never the reverse), mirroring why
+ * FE-T19's `assertCapabilityGuardRefsWired` tests live in apps/api too.
  */
 
 import type { CapabilityDefinition } from "./types.js"
