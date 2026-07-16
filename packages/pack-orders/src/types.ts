@@ -428,6 +428,11 @@ export const CONFIRM_LARGE_TICKET_THRESHOLD_CENTAVOS = MONEY_BAND_1000_CENTAVOS
  * a human. Below this threshold, the cancel is REFUSEd by the
  * cancel-eligibility guard; above it, the escalate-on-shipped guard
  * takes precedence.
+ *
+ * Numerically the same R$1000 boundary as `MONEY_BAND_1000_CENTAVOS` in
+ * `@ibatexas/types`, but a structurally separate band (order.cancel, not
+ * checkout) — NOT single-sourced here; its single-sourcing + comparator
+ * audit is deferred as tracker item FE-D01.
  */
 export const ESCALATE_CANCEL_AMOUNT_CENTAVOS = 100_000
 

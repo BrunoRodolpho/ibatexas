@@ -7,7 +7,11 @@ import {
 } from "../index.js"
 import { CONFIRM_LARGE_TICKET_THRESHOLD_CENTAVOS } from "@ibatexas/pack-orders"
 import { getRefundEscalateThresholdCentavos } from "@ibatexas/pack-payments"
-import { MONEY_BAND_1000_CENTAVOS } from "@ibatexas/types"
+import {
+  isAboveMoneyBand,
+  isAtOrAboveMoneyBand,
+  MONEY_BAND_1000_CENTAVOS,
+} from "@ibatexas/types"
 
 describe("@ibatexas/packs-composed", () => {
   it("composes exactly the six first-party packs, with distinct ids", () => {
@@ -64,5 +68,16 @@ describe("@ibatexas/packs-composed", () => {
       MONEY_BAND_1000_CENTAVOS,
     )
     expect(getRefundEscalateThresholdCentavos()).toBe(MONEY_BAND_1000_CENTAVOS)
+  })
+
+  // Pins the exact-R$1000 boundary behavior of each comparator: pack-payments'
+  // CURRENT strict `>` (isAboveMoneyBand) excludes the boundary amount itself
+  // — an exact-R$1000 refund does NOT escalate today. pack-orders' `>=`
+  // (isAtOrAboveMoneyBand) includes it. FE-T03 deliberately flips payments to
+  // isAtOrAboveMoneyBand, which would flip this exact-boundary case from
+  // false to true — this test locks the pre-flip behavior it changes.
+  it("comparator helpers diverge at the exact R$1000 boundary", () => {
+    expect(isAboveMoneyBand(100_000, 100_000)).toBe(false)
+    expect(isAtOrAboveMoneyBand(100_000, 100_000)).toBe(true)
   })
 })
