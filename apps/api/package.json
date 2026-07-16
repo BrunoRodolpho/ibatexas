@@ -77,11 +77,11 @@
     "@ibatexas/eslint-config": "workspace:*",
     "@types/pg": "^8.11.0",
     "@types/uuid": "^10.0.0",
-    "@vitest/coverage-v8": "^3.2.0",
+    "@vitest/coverage-v8": "^3.2.6",
     "eslint": "^9.0.0",
     "testcontainers": "^12.0.0",
     "tsx": "^4.21.0",
     "typescript": "^5.9.0",
-    "vitest": "^3.2.0"
+    "vitest": "^3.2.6"
   }
 }

@@ -36,6 +36,7 @@
  */
 
 import { createSystemTaintPolicy } from "@adjudicate/primitives"
+import { MONEY_BAND_1000_CENTAVOS } from "@ibatexas/types"
 
 /**
  * W5-2 expansion: adds the lifecycle / projection / granular-amend
@@ -413,8 +414,12 @@ export const orderTaintPolicy = createSystemTaintPolicy({
  * REQUEST_CONFIRMATION trigger for large-ticket checkouts. R$ 1.000 by
  * default — orders at or above this prompt the user for explicit
  * confirmation before EXECUTE. Centavos integer.
+ *
+ * FE-T02: single-sourced from `@ibatexas/types`' `MONEY_BAND_1000_CENTAVOS`
+ * — the same boundary `@ibatexas/pack-payments`' refund-escalate ladder
+ * reads (with its own, currently-divergent, `>` comparator).
  */
-export const CONFIRM_LARGE_TICKET_THRESHOLD_CENTAVOS = 100_000
+export const CONFIRM_LARGE_TICKET_THRESHOLD_CENTAVOS = MONEY_BAND_1000_CENTAVOS
 
 /**
  * ESCALATE trigger for refund-equivalent flows in the order domain — a
@@ -423,6 +428,11 @@ export const CONFIRM_LARGE_TICKET_THRESHOLD_CENTAVOS = 100_000
  * a human. Below this threshold, the cancel is REFUSEd by the
  * cancel-eligibility guard; above it, the escalate-on-shipped guard
  * takes precedence.
+ *
+ * Numerically the same R$1000 boundary as `MONEY_BAND_1000_CENTAVOS` in
+ * `@ibatexas/types`, but a structurally separate band (order.cancel, not
+ * checkout) — NOT single-sourced here; its single-sourcing + comparator
+ * audit is deferred as tracker item FE-D01.
  */
 export const ESCALATE_CANCEL_AMOUNT_CENTAVOS = 100_000
 
