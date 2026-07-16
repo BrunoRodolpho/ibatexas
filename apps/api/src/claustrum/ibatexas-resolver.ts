@@ -44,6 +44,10 @@ export function createIbatexasResolver(): ResolverPort {
           // re-route — never a crash that would take the whole turn down).
           cognition.perception?.text,
           customerId,
+          // MAJOR-1 (post-#268) — the SAME conversation handle resolveAndAssemble
+          // uses below to key the active-cart Redis read (BKL-028); powers the
+          // bare-"no pedido"-vs-active-cart disambiguation.
+          cognition.conversationId,
         );
         const kind = correction?.kind ?? env.kind;
         const rawPayload = correction?.payload ?? ((env.payload ?? {}) as Record<string, unknown>);

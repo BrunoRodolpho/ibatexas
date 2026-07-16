@@ -27,10 +27,22 @@
  * and requires an EXPLICIT existing-order anchor — never a bare "pedido"
  * substring test ("quero fazer um pedido de coca", placing a NEW order,
  * contains the word "pedido" but matches none of these).
+ *
+ * Review fix (post-#268, MAJOR-1 — both-states ambiguity): the bare
+ * `\bno pedido\b` marker alone is genuinely ambiguous for a MID-CART
+ * customer — "põe mais uma coca no pedido" colloquially means their
+ * IN-PROGRESS cart, not a placed order. The 3 EXPLICIT markers (`meu
+ * pedido` / `pedido que já fiz` / `pedido \d+`) unambiguously name an
+ * already-placed order and always re-route regardless of cart state; when
+ * bare `no pedido` is the ONLY marker that fired, a non-empty active cart
+ * wins (favor the cart — see `hasNonEmptyActiveCart`, resolve-and-
+ * assemble.ts) and the correction is a no-op.
  */
 
 import { canPerformAction, type CustomerAction, type OrderFulfillmentStatus } from "@ibatexas/types";
 import { createOrderQueryService } from "@ibatexas/domain";
+import { hasNonEmptyActiveCart } from "./resolve-and-assemble.js";
+import { logger } from "../lib/logger.js";
 
 export type Ctx = Record<string, unknown>;
 
@@ -52,34 +64,60 @@ const AMEND_ACTION_FOR_KIND: Readonly<Record<string, CustomerAction>> = {
   "order.item.remove": "amend_remove_item",
 };
 
+/** A single marker's name + pattern, so a caller can tell WHICH phrasing
+ *  fired (needed for the both-states cart-vs-order disambiguation below,
+ *  and for the audit log's `matchedMarkers` field). */
+interface ExistingOrderMarker {
+  readonly name: string;
+  readonly pattern: RegExp;
+}
+
 /**
  * BKL-154 deterministic markers — pt-BR phrasing that references an
  * ALREADY-PLACED order, never the in-progress cart:
- *   - `meu pedido` — possessive singular; the customer names an existing
+ *   - `meuPedido` — possessive singular; the customer names an existing
  *     order as theirs, not "an order" in the abstract.
- *   - `pedido que (eu )?(já )?fiz` — explicit past-tense reference ("the
- *     order I('ve) made"); covers all 4 combinations (eu/já both optional).
- *   - `pedido \d+` — an explicit numbered reference ("o pedido 910226").
- *   - `no pedido` — "in/on the order"; narrower phrasings that also say
+ *   - `pedidoQueFiz` — explicit past-tense reference ("the order I('ve)
+ *     made"); covers all 4 combinations (eu/já both optional).
+ *   - `pedidoNumero` — an explicit numbered reference ("o pedido 910226").
+ *   - `noPedido` — "in/on the order"; narrower phrasings that also say
  *     "meu"/"que já fiz"/a number already match the markers above, so this
  *     one catches the bare "adiciona X no pedido" shape Drive F's utterance
- *     combined with "que eu já fiz".
+ *     combined with "que eu já fiz". UNLIKE the other three, this one is
+ *     NOT unambiguous on its own — see `EXPLICIT_MARKER_NAMES` below.
  * Deliberately NOT a bare `/pedido/` substring test: "quero fazer um
  * pedido de coca" (placing a brand-new order) contains the word "pedido"
  * but anchors to none of these four phrasings.
  */
-const EXISTING_ORDER_MARKERS: readonly RegExp[] = [
-  /\bmeu pedido\b/,
-  /\bpedido que (eu )?(j[áa] )?fiz\b/,
-  /\bpedido \d+\b/,
-  /\bno pedido\b/,
+const EXISTING_ORDER_MARKERS: readonly ExistingOrderMarker[] = [
+  { name: "meuPedido", pattern: /\bmeu pedido\b/ },
+  { name: "pedidoQueFiz", pattern: /\bpedido que (eu )?(j[áa] )?fiz\b/ },
+  { name: "pedidoNumero", pattern: /\bpedido \d+\b/ },
+  { name: "noPedido", pattern: /\bno pedido\b/ },
 ];
 
-/** Pure — no IO/clock/RNG. Case-insensitive; matches on the raw utterance
- *  text (`cognition.perception.text` at the resolver seam). */
-export function referencesExistingOrder(text: string): boolean {
+/** Markers that unambiguously name an ALREADY-PLACED order regardless of
+ *  cart state — possessive, past-tense, or numbered. `noPedido` is
+ *  deliberately excluded (MAJOR-1): it is the one marker a mid-cart
+ *  customer plausibly uses to mean their in-progress cart. */
+const EXPLICIT_MARKER_NAMES: ReadonlySet<string> = new Set([
+  "meuPedido",
+  "pedidoQueFiz",
+  "pedidoNumero",
+]);
+
+/** Pure — no IO/clock/RNG. Case-insensitive. Returns every marker NAME that
+ *  fired (order-independent; a caller checks membership, not position). */
+export function matchedExistingOrderMarkers(text: string): readonly string[] {
   const t = text.toLowerCase();
-  return EXISTING_ORDER_MARKERS.some((m) => m.test(t));
+  return EXISTING_ORDER_MARKERS.filter((m) => m.pattern.test(t)).map((m) => m.name);
+}
+
+/** Pure — no IO/clock/RNG. `true` iff at least one existing-order marker
+ *  fired (case-insensitive). Matches on the raw utterance text
+ *  (`cognition.perception.text` at the resolver seam). */
+export function referencesExistingOrder(text: string): boolean {
+  return matchedExistingOrderMarkers(text).length > 0;
 }
 
 /** First non-empty trimmed string among the candidates — mirrors
@@ -125,8 +163,16 @@ export interface AmendPreferenceCorrection {
  * The correction: given a planner-proposed cart-op kind + payload + the raw
  * utterance, decide whether to re-route to the granular amend sibling.
  * Returns the corrected `{kind, payload}` or `undefined` when no correction
- * applies (the overwhelmingly common case — ordinary cart-building, or a
- * kind this correction doesn't watch, passes through untouched).
+ * applies (the overwhelmingly common case — ordinary cart-building, a kind
+ * this correction doesn't watch, or the both-states cart-vs-order tie
+ * favoring the cart — passes through untouched).
+ *
+ * `sessionId` powers the MAJOR-1 both-states check (`hasNonEmptyActiveCart`,
+ * the SAME BKL-028 active-cart key `resolveAndAssemble`'s own cart loader
+ * uses) — `undefined` is treated as "no cart" (fail-closed to the SAFER
+ * side for the cart-vs-order tie, i.e. still eligible to re-route on a
+ * bare `no pedido`, matching HTTP callers that never carry a conductor
+ * session at all).
  *
  * Payload remap: cart-op kinds and the granular amend kinds both expect a
  * loose NL `item` reference (no authored extraction schema governs
@@ -137,16 +183,36 @@ export interface AmendPreferenceCorrection {
  * `resolve-and-assemble.ts`'s existing hydration re-derives the real
  * target (variantId via `resolveProductForItem`, or a live order-line
  * itemId via `resolveOrderLineItem`) fresh from the NL `item` string.
+ *
+ * MAJOR-2 (audit honesty) — a rewrite is silent to the kernel BY DESIGN
+ * (the rebuilt envelope is indistinguishable from a genuine model
+ * proposal, so the guard chain adjudicates it exactly like one), so this
+ * is the ONLY seam that ever observes the substitution. Every actual
+ * correction is logged (`component: "resolver", event:
+ * "amend_preference_correction"`) — never on a pass-through, so the log
+ * volume tracks real corrections one-to-one.
  */
 export async function correctAmendPreference(
   kind: string,
   payload: Ctx,
   utteranceText: string | undefined,
   customerId: string,
+  sessionId?: string,
 ): Promise<AmendPreferenceCorrection | undefined> {
   const amendKind = CART_TO_AMEND_KIND[kind];
   if (amendKind === undefined) return undefined;
-  if (utteranceText === undefined || !referencesExistingOrder(utteranceText)) return undefined;
+  if (utteranceText === undefined) return undefined;
+
+  const matched = matchedExistingOrderMarkers(utteranceText);
+  if (matched.length === 0) return undefined;
+
+  // MAJOR-1 — the both-states tie: ONLY the ambiguous bare "no pedido"
+  // fired (no explicit possessive/past-tense/numbered marker), AND the
+  // customer has items sitting in their active cart right now. Favor the
+  // cart — a mid-cart "põe mais uma coca no pedido" almost certainly means
+  // the cart, not a placed order.
+  const hasExplicitMarker = matched.some((m) => EXPLICIT_MARKER_NAMES.has(m));
+  if (!hasExplicitMarker && (await hasNonEmptyActiveCart(sessionId))) return undefined;
 
   const action = AMEND_ACTION_FOR_KIND[kind]!;
   if (!(await hasAmendableOrder(customerId, action))) return undefined;
@@ -161,6 +227,18 @@ export async function correctAmendPreference(
   const rerouted: Ctx = {};
   if (item !== undefined) rerouted.item = item;
   if (payload.quantity !== undefined) rerouted.quantity = payload.quantity;
+
+  logger.info(
+    {
+      component: "resolver",
+      event: "amend_preference_correction",
+      fromKind: kind,
+      toKind: amendKind,
+      matchedMarkers: matched,
+      customerId,
+    },
+    "amend-preference correction re-routed a cart-op proposal to its granular amend sibling (BKL-154)",
+  );
 
   return { kind: amendKind, payload: rerouted };
 }

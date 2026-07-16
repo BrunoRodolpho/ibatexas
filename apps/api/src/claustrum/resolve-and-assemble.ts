@@ -359,6 +359,30 @@ export async function loadCartCtx(
   return buildCartCtx(base, payload, await loadCart(cartId));
 }
 
+/**
+ * FE-T09b review fix (MAJOR-1) — "does this session have a cart with items
+ * in it RIGHT NOW?" Reuses the exact same BKL-028 active-cart key + fetch
+ * as `loadCartCtx` (never a second source of truth for "what is the
+ * active cart"). Exported for `amend-preference-correction.ts`'s
+ * both-states disambiguation: a bare "no pedido" reference from a
+ * mid-cart customer ("põe mais uma coca no pedido") colloquially means
+ * their IN-PROGRESS cart, not a placed order — favor the cart. Fail-
+ * CLOSED to `false` (no cart) on any read error, same posture as
+ * `loadCartCtx` itself.
+ */
+export async function hasNonEmptyActiveCart(sessionId: string | undefined): Promise<boolean> {
+  if (sessionId === undefined) return false;
+  try {
+    const redis = await getRedisClient();
+    const cartId = await redis.get(rk(`cart:active:session:${sessionId}`));
+    if (cartId === null) return false;
+    const { cart } = await loadCart(cartId);
+    return cart !== null && !cart.completed_at && (cart.items?.length ?? 0) > 0;
+  } catch {
+    return false;
+  }
+}
+
 // ── Reservations (reservation.* targeting a slot / existing reservation) ─────
 function slotFromRow(
   row: { id: string; date: Date; startTime: string; maxCovers: number; reservedCovers: number } | null,
@@ -703,10 +727,18 @@ function normalizeTokens(s: string): string[] {
  * "xyzzy" still returned A product) — the systemic arbitrary-match defect
  * is FE-D17 (search-layer fix, not this ticket's scope); this is the
  * resolver-level floor that refuses to attach an UNRELATED product's
- * variant/allergens to the customer's request in the meantime. Deliberately
- * PERMISSIVE, never REJECTS a genuine loose/partial match: any shared
- * normalized token, OR either string containing the other, counts as
- * overlap. Only a TOTAL mismatch (zero shared tokens, no containment) fails.
+ * variant/allergens to the customer's request in the meantime. Permissive
+ * by TOKEN/CONTAINMENT overlap (any shared normalized token, or either
+ * string containing the other) — but this is NOT the same as "never
+ * rejects a genuine partial match": a pt-BR DIMINUTIVE ("coquinha" for
+ * "coca") shares no token and no substring with "Coca-Cola" and is treated
+ * as a mismatch (REFUSED) exactly like "xyzzy" today. That is an ACCEPTED
+ * INTERIM COST, not an oversight — a real fuzzy/stemmed match belongs in
+ * the search layer itself (FE-D17), not reimplemented here; this floor's
+ * job is only to stop an UNRELATED top hit from being trusted blindly. See
+ * the "coquinha" regression in resolve-and-assemble.test.ts, which pins
+ * today's refuse behavior deliberately so a future change to this
+ * function is a conscious choice, not an accidental regression either way.
  */
 function hasLexicalOverlap(query: string, product: { title?: string; tags?: readonly string[] }): boolean {
   const queryTokens = normalizeTokens(query);

@@ -14,19 +14,51 @@ let orderListByCustomer: (
   opts?: unknown,
 ) => Promise<{ orders: ReadonlyArray<{ id: string; fulfillmentStatus: string }>; count: number }> =
   async () => ({ orders: [], count: 0 });
+let redisGet: (key: string) => Promise<string | null> = async () => null;
+let medusaStoreFetch: (path: string) => Promise<unknown> = async () => ({});
+const mockLoggerInfo = vi.fn();
 
 vi.mock("@ibatexas/domain", () => ({
   createOrderQueryService: () => ({
     listByCustomer: (customerId: string, opts?: unknown) => orderListByCustomer(customerId, opts),
   }),
+  createOrderService: () => ({ getOrder: async () => { throw new Error("not used"); } }),
+  createPaymentQueryService: () => ({
+    getById: async () => null,
+    getActiveByOrderId: async () => null,
+    listByOrderId: async () => ({ payments: [], count: 0 }),
+  }),
+  createCustomerService: () => ({ getById: async () => null }),
+  createReservationService: () => ({
+    getById: async () => { throw new Error("not found"); },
+    listByCustomer: async () => ({ reservations: [], total: 0 }),
+  }),
+  prisma: { timeSlot: { findUnique: async () => null } },
+}));
+// `amend-preference-correction.ts` imports `hasNonEmptyActiveCart` from
+// resolve-and-assemble.ts, which pulls in @ibatexas/tools too — mocked here
+// so the both-states cart check (MAJOR-1) is deterministic in tests.
+vi.mock("@ibatexas/tools", () => ({
+  rk: (s: string) => s,
+  getRedisClient: async () => ({ get: (k: string) => redisGet(k) }),
+  medusaAdmin: {},
+  medusaStore: (path: string) => medusaStoreFetch(path),
+  reaisToCentavos: (reais: number) => Math.round(reais * 100),
+  searchProducts: async () => ({ products: [] }),
+}));
+vi.mock("../../lib/logger.js", () => ({
+  default: { info: mockLoggerInfo, warn: vi.fn(), error: vi.fn() },
+  logger: { info: mockLoggerInfo, warn: vi.fn(), error: vi.fn() },
 }));
 
-const { referencesExistingOrder, correctAmendPreference, CART_TO_AMEND_KIND } = await import(
-  "../amend-preference-correction.js"
-);
+const { referencesExistingOrder, matchedExistingOrderMarkers, correctAmendPreference, CART_TO_AMEND_KIND } =
+  await import("../amend-preference-correction.js");
 
 beforeEach(() => {
   orderListByCustomer = async () => ({ orders: [], count: 0 });
+  redisGet = async () => null;
+  medusaStoreFetch = async () => ({});
+  mockLoggerInfo.mockClear();
 });
 
 describe("CART_TO_AMEND_KIND — the 3 watched cart-op kinds", () => {
@@ -92,6 +124,31 @@ describe("referencesExistingOrder — BKL-154 deterministic markers", () => {
   // below (kind-gate tests) rather than folded into the pure-marker corpus.
   it("DOES fire on 'meu pedido' even inside a cancel-shaped sentence (marker is pure text matching; the kind gate does the real disambiguation)", () => {
     expect(referencesExistingOrder("quero cancelar meu pedido")).toBe(true);
+  });
+});
+
+describe("matchedExistingOrderMarkers — MAJOR-1 explicit-vs-bare marker tracking", () => {
+  it("names each explicit marker distinctly", () => {
+    expect(matchedExistingOrderMarkers("meu pedido")).toEqual(["meuPedido"]);
+    expect(matchedExistingOrderMarkers("pedido que eu já fiz")).toEqual(["pedidoQueFiz"]);
+    expect(matchedExistingOrderMarkers("pedido 4242")).toEqual(["pedidoNumero"]);
+  });
+
+  it("names the bare marker alone when nothing explicit accompanies it", () => {
+    expect(matchedExistingOrderMarkers("adiciona uma coca no pedido")).toEqual(["noPedido"]);
+  });
+
+  it("names BOTH when an explicit marker and the bare marker co-occur (Drive F's utterance)", () => {
+    const matched = matchedExistingOrderMarkers(
+      "quero adicionar um refrigerante no pedido que eu já fiz, o pedido 910226",
+    );
+    expect(matched).toContain("noPedido");
+    expect(matched).toContain("pedidoQueFiz");
+    expect(matched).toContain("pedidoNumero");
+  });
+
+  it("returns an empty list for ordinary cart-building", () => {
+    expect(matchedExistingOrderMarkers("quero uma coca")).toEqual([]);
   });
 });
 
@@ -286,5 +343,148 @@ describe("correctAmendPreference — orchestration (kind gate + marker + amendab
     );
     expect(result?.payload).toEqual({ item: "coca" });
     expect("quantity" in (result?.payload ?? {})).toBe(false);
+  });
+});
+
+// ── MAJOR-1 (post-#268 review) — both-states cart-vs-order disambiguation ──
+//
+// A bare "no pedido" reference is genuinely ambiguous for a MID-CART
+// customer: "põe mais uma coca no pedido" plausibly means their IN-PROGRESS
+// cart, not a placed order. The 3 explicit markers never have this
+// ambiguity (possessive/past-tense/numbered all unambiguously name an
+// already-placed order) and re-route regardless of cart state.
+describe("correctAmendPreference — MAJOR-1 both-states cart-vs-order disambiguation", () => {
+  const AMENDABLE_ORDER = { id: "o1", fulfillmentStatus: "pending" };
+  const NON_EMPTY_CART = { id: "cart-1", items: [{ variant_id: "v1", quantity: 1, unit_price: 20 }] };
+
+  function primeAmendableOrderAndCart(): void {
+    orderListByCustomer = async () => ({ orders: [AMENDABLE_ORDER], count: 1 });
+    redisGet = async (key) => (key === "cart:active:session:sess-1" ? "cart-1" : null);
+    medusaStoreFetch = async () => ({ cart: NON_EMPTY_CART });
+  }
+
+  it("mid-cart + amendable order + bare 'no pedido' -> NO re-route (favors the cart)", async () => {
+    primeAmendableOrderAndCart();
+    const result = await correctAmendPreference(
+      "order.item.add",
+      { item: "coca" },
+      "põe mais uma coca no pedido",
+      "c1",
+      "sess-1",
+    );
+    expect(result).toBeUndefined();
+  });
+
+  it("SAME mid-cart + amendable-order state, but 'meu pedido' (explicit) -> STILL re-routes", async () => {
+    primeAmendableOrderAndCart();
+    const result = await correctAmendPreference(
+      "order.item.add",
+      { item: "coca" },
+      "põe mais uma coca no meu pedido",
+      "c1",
+      "sess-1",
+    );
+    expect(result?.kind).toBe("order.amend.add_item");
+  });
+
+  it("no-cart (or no sessionId at all) + bare 'no pedido' -> re-routes (nothing to favor over the placed order)", async () => {
+    orderListByCustomer = async () => ({ orders: [AMENDABLE_ORDER], count: 1 });
+    redisGet = async () => null; // no active cart key for this session
+    const withSession = await correctAmendPreference(
+      "order.item.add",
+      { item: "coca" },
+      "adiciona uma coca no pedido",
+      "c1",
+      "sess-empty-cart",
+    );
+    expect(withSession?.kind).toBe("order.amend.add_item");
+
+    const withoutSession = await correctAmendPreference(
+      "order.item.add",
+      { item: "coca" },
+      "adiciona uma coca no pedido",
+      "c1",
+      undefined,
+    );
+    expect(withoutSession?.kind).toBe("order.amend.add_item");
+  });
+
+  it("mid-cart with an EMPTY (not non-empty) active cart + bare 'no pedido' -> still re-routes (an empty/checked-out cart doesn't count as 'mid-cart')", async () => {
+    orderListByCustomer = async () => ({ orders: [AMENDABLE_ORDER], count: 1 });
+    redisGet = async (key) => (key === "cart:active:session:sess-1" ? "cart-1" : null);
+    medusaStoreFetch = async () => ({ cart: { id: "cart-1", items: [] } });
+    const result = await correctAmendPreference(
+      "order.item.add",
+      { item: "coca" },
+      "adiciona uma coca no pedido",
+      "c1",
+      "sess-1",
+    );
+    expect(result?.kind).toBe("order.amend.add_item");
+  });
+});
+
+// ── MAJOR-2 (post-#268 review) — audit honesty ──────────────────────────
+describe("correctAmendPreference — MAJOR-2 audit log", () => {
+  it("logs component:resolver event:amend_preference_correction with from/to kinds + matched markers + customerId WHEN a correction fires", async () => {
+    orderListByCustomer = async () => ({
+      orders: [{ id: "o1", fulfillmentStatus: "pending" }],
+      count: 1,
+    });
+    await correctAmendPreference(
+      "order.item.add",
+      { item: "coca" },
+      "meu pedido",
+      "c1",
+    );
+    expect(mockLoggerInfo).toHaveBeenCalledTimes(1);
+    const [fields] = mockLoggerInfo.mock.calls[0]!;
+    expect(fields).toMatchObject({
+      component: "resolver",
+      event: "amend_preference_correction",
+      fromKind: "order.item.add",
+      toKind: "order.amend.add_item",
+      matchedMarkers: ["meuPedido"],
+      customerId: "c1",
+    });
+  });
+
+  it("does NOT log on pass-through — ordinary cart-building (no marker)", async () => {
+    orderListByCustomer = async () => ({
+      orders: [{ id: "o1", fulfillmentStatus: "pending" }],
+      count: 1,
+    });
+    await correctAmendPreference("order.item.add", { item: "coca" }, "quero uma coca", "c1");
+    expect(mockLoggerInfo).not.toHaveBeenCalled();
+  });
+
+  it("does NOT log on pass-through — a kind this correction doesn't watch", async () => {
+    await correctAmendPreference("order.cancel", {}, "meu pedido", "c1");
+    expect(mockLoggerInfo).not.toHaveBeenCalled();
+  });
+
+  it("does NOT log on pass-through — no amendable order", async () => {
+    orderListByCustomer = async () => ({ orders: [], count: 0 });
+    await correctAmendPreference("order.item.add", { item: "coca" }, "meu pedido", "c1");
+    expect(mockLoggerInfo).not.toHaveBeenCalled();
+  });
+
+  it("does NOT log on pass-through — MAJOR-1's both-states tie favoring the cart", async () => {
+    orderListByCustomer = async () => ({
+      orders: [{ id: "o1", fulfillmentStatus: "pending" }],
+      count: 1,
+    });
+    redisGet = async (key) => (key === "cart:active:session:sess-1" ? "cart-1" : null);
+    medusaStoreFetch = async () => ({
+      cart: { id: "cart-1", items: [{ variant_id: "v1", quantity: 1, unit_price: 20 }] },
+    });
+    await correctAmendPreference(
+      "order.item.add",
+      { item: "coca" },
+      "põe mais uma coca no pedido",
+      "c1",
+      "sess-1",
+    );
+    expect(mockLoggerInfo).not.toHaveBeenCalled();
   });
 });

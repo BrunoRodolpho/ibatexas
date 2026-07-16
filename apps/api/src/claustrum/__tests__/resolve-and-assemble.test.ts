@@ -544,6 +544,32 @@ describe("resolve-and-assemble — NL→variantId (BKL-061)", () => {
     });
     expect((payload as { variantId?: string }).variantId).toBe("var_zero");
   });
+
+  // Review MINOR (post-#268): the overlap floor is permissive by TOKEN/
+  // CONTAINMENT, not by fuzzy/stemmed matching — a pt-BR DIMINUTIVE
+  // ("coquinha" for "coca") shares no token and no substring with
+  // "Coca-Cola" and is refused today, exactly like "xyzzy". This is an
+  // ACCEPTED INTERIM COST (a real stemmed/fuzzy match belongs in the
+  // search layer itself — FE-D17 — not reimplemented in this resolver-
+  // level floor), pinned here explicitly so a future change to
+  // hasLexicalOverlap's behavior on diminutives is a conscious choice.
+  it("REFUSES a pt-BR diminutive ('coquinha') against its base-form product — accepted interim cost of the token/containment floor, not a genuine-match regression", async () => {
+    searchProductsMock = async () => ({
+      products: [
+        { id: "prod_coke", title: "Coca-Cola 350ml", variants: [{ id: "var_coke" }], allergens: ["gluten"] },
+      ],
+    });
+    const { payload } = await resolveAndAssemble({
+      kind: "order.item.add",
+      payload: { item: "coquinha" },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    const p = payload as { variantId?: string; allergens?: string[] };
+    expect(p.variantId).toBeUndefined();
+    expect(p.allergens).toBeUndefined();
+  });
 });
 
 // ── FE-T09 (D-a) — the granular post-checkout amend kinds' item hydration ───

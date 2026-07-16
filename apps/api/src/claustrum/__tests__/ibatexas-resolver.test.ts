@@ -30,12 +30,13 @@ let orderListByCustomer: (cid: string, input?: unknown) => Promise<{ orders: unk
   async () => ({ orders: [], count: 0 });
 let searchProductsMock: (input: unknown, ctx?: unknown) => Promise<unknown> = async () => ({ products: [] });
 let redisGet: (key: string) => Promise<string | null> = async () => null;
+let medusaStoreFetch: (path: string) => Promise<unknown> = async () => ({});
 
 vi.mock("@ibatexas/tools", () => ({
   rk: (s: string) => s,
   getRedisClient: async () => ({ get: (k: string) => redisGet(k) }),
   medusaAdmin: {},
-  medusaStore: async () => ({}),
+  medusaStore: (path: string) => medusaStoreFetch(path),
   reaisToCentavos: (reais: number) => Math.round(reais * 100),
   searchProducts: (input: unknown, ctx?: unknown) => searchProductsMock(input, ctx),
 }));
@@ -82,6 +83,7 @@ beforeEach(() => {
   orderListByCustomer = async () => ({ orders: [], count: 0 });
   searchProductsMock = async () => ({ products: [] });
   redisGet = async () => null;
+  medusaStoreFetch = async () => ({});
 });
 
 /** Minimal CognitiveState — only `perception.text` + `conversationId` are
@@ -200,5 +202,58 @@ describe("createIbatexasResolver — FE-T09b amend-preference re-route (BKL-154)
     });
 
     expect(resolved[0]!.envelope.kind).toBe("order.item.add");
+  });
+});
+
+// ── MAJOR-1 (post-#268 review) — both-states cart-vs-order, wired end to
+// end through the real resolver (the unit-level proof lives in
+// amend-preference-correction.test.ts; this confirms cognition.
+// conversationId actually threads through to the cart-key lookup).
+describe("createIbatexasResolver — MAJOR-1 both-states cart-vs-order disambiguation", () => {
+  it("mid-cart + amendable order + bare 'no pedido' -> stays order.item.add (favors the cart)", async () => {
+    orderListByCustomer = async () => ({ orders: [AMENDABLE_ORDER], count: 1 });
+    redisGet = async (key) => (key === "cart:active:session:conv-1" ? "cart-1" : null);
+    medusaStoreFetch = async () => ({
+      cart: { items: [{ variant_id: "v1", quantity: 1, unit_price: 20 }] },
+    });
+    searchProductsMock = async () => ({
+      products: [{ id: "prod_2", title: "Coca-Cola 350ml", variants: [{ id: "var_coke" }], allergens: [] }],
+    });
+
+    const plan = cartAddItemPlan("coca", 1);
+    const cognition = cognitionWithText("põe mais uma coca no pedido");
+
+    const resolved = await createIbatexasResolver().resolve({
+      plan,
+      cognition,
+      customerId: "c1",
+      channel: "web",
+    });
+
+    expect(resolved[0]!.envelope.kind).toBe("order.item.add");
+  });
+
+  it("SAME mid-cart state, but 'meu pedido' (explicit marker) -> still re-routes to order.amend.add_item", async () => {
+    orderListByCustomer = async () => ({ orders: [AMENDABLE_ORDER], count: 1 });
+    orderGetById = async () => OWNED_ORDER_PROJECTION;
+    redisGet = async (key) => (key === "cart:active:session:conv-1" ? "cart-1" : null);
+    medusaStoreFetch = async () => ({
+      cart: { items: [{ variant_id: "v1", quantity: 1, unit_price: 20 }] },
+    });
+    searchProductsMock = async () => ({
+      products: [{ id: "prod_2", title: "Coca-Cola 350ml", variants: [{ id: "var_coke" }], allergens: [] }],
+    });
+
+    const plan = cartAddItemPlan("coca", 1);
+    const cognition = cognitionWithText("põe mais uma coca no meu pedido");
+
+    const resolved = await createIbatexasResolver().resolve({
+      plan,
+      cognition,
+      customerId: "c1",
+      channel: "web",
+    });
+
+    expect(resolved[0]!.envelope.kind).toBe("order.amend.add_item");
   });
 });
