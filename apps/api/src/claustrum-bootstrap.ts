@@ -328,6 +328,8 @@ import {
   buildOpsRefundResumeState,
   buildOpsPriceResumeState,
   buildOpsSpecialResumeState,
+  buildOpsOrderStatusTransitionResumeState,
+  toOpsResolverOrder,
 } from "./ops/ops-resolver.js";
 import {
   readOpsProductPricing,
@@ -809,7 +811,14 @@ async function readSpecialProductViaMedusa(
  * The parked envelope carries the RESOLVED id, so we re-load its entity state
  * (scoped to customerId). Fail-safe: falls back to the supplied state on any gap.
  */
-async function enrichResumeState(
+// FE-T05b — exported (was module-private) so e2e tests can exercise the REAL
+// resume state-assembly dispatch directly (ops-e2e-harness.ts's
+// `projectResumeState`), instead of a hand-authored mirror of it. A
+// hand-rolled mirror is exactly what let the live-disproved order.status.
+// transition wiring gap (intent_audit 3362/3366) ship undetected — it
+// "mirrored" a wrong assumption about this function's behaviour rather than
+// calling the function itself. Pure export addition; no behavior change.
+export async function enrichResumeState(
   envelope: IntentEnvelope,
   state: unknown,
 ): Promise<unknown> {
@@ -910,6 +919,43 @@ async function enrichResumeState(
     } catch {
       // Fail-closed: a read error re-projects a not-found state ⇒ REFUSE.
       return buildOpsSpecialResumeState(null, { staffId, tenantId });
+    }
+  }
+
+  // FE-T05b (live-disproof follow-up) — the OPS-plane order.status.transition
+  // confirm-resume (an `admin:`-session kitchen-advance parked by
+  // `requireConfirmationOnGroundedStatusTransition`, pack-orders/policies.ts)
+  // re-projects its own `{ ctx }` from a FRESH order read of the parked
+  // (resolver-pinned, trusted) orderId — NOT the customer-scoped
+  // `resolveAndAssemble` below (the ops plane's `staff:<id>` is not a real
+  // customerId, so that path's type guard silently no-ops below and returns
+  // the capsule's BARE state — no `ctx.orderId` at all — so
+  // `requireOrderIdForMutation` REFUSEd `order.not_found` on every resume,
+  // live-disproved at intent_audit rows 3362/3366: the parked payload and the
+  // order both carried the right id, and `metadata_jsonb`'s hydratedIntentIR
+  // still showed the correct grounded orderId on the SAME refused turn). The
+  // fresh read is state-safe: an order that vanished or whose status changed
+  // since parking still REFUSEs on resume (requireOrderIdForMutation on a
+  // null order; requireLegalStatusTransition on a FRESH fulfillmentStatus
+  // that no longer permits the parked target) — never a stale-state EXECUTE.
+  if (
+    envelope.kind === "order.status.transition" &&
+    envelope.actor.sessionId.startsWith("admin:")
+  ) {
+    const payload = (envelope.payload ?? {}) as Record<string, unknown>;
+    const orderId = typeof payload.orderId === "string" ? payload.orderId : "";
+    if (orderId === "") {
+      return buildOpsOrderStatusTransitionResumeState("", null);
+    }
+    try {
+      const order = await createOrderQueryService().getById(orderId);
+      return buildOpsOrderStatusTransitionResumeState(
+        orderId,
+        order === null ? null : toOpsResolverOrder(order),
+      );
+    } catch {
+      // Fail-closed: a read error re-projects a not-found state ⇒ REFUSE.
+      return buildOpsOrderStatusTransitionResumeState(orderId, null);
     }
   }
 
@@ -3275,21 +3321,14 @@ export async function bootstrapClaustrum(
             status: p.status,
           }));
         },
+        // BKL-090 — fulfillmentStatus is the CURRENT status the kitchen-advance
+        // legality guard reads (projected into pack-orders' ctx.fulfillmentStatus).
+        // FE-T05b: mapped via the SHARED `toOpsResolverOrder` (also used by the
+        // order.status.transition RESUME re-projection below) so the plan-stage
+        // and resume paths can never independently drift on this shape.
         lookupOrder: async (orderId) => {
           const order = await createOrderQueryService().getById(orderId);
-          return order === null
-            ? null
-            : {
-                customerId: order.customerId,
-                paymentMethod:
-                  (order.paymentMethod as string | null) ?? null,
-                paymentStatus: order.paymentStatus,
-                totalInCentavos: order.totalInCentavos,
-                // BKL-090 — the CURRENT status the kitchen-advance legality
-                // guard reads (projected into pack-orders' ctx.fulfillmentStatus).
-                fulfillmentStatus:
-                  (order.fulfillmentStatus as string | null) ?? null,
-              };
+          return order === null ? null : toOpsResolverOrder(order);
         },
         // BKL-085 — the ACTIVE payment for the refunds-by-message path. Reuses the
         // SAME deterministic read the admin refund route relies on

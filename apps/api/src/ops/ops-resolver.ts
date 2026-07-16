@@ -1052,6 +1052,72 @@ export function buildOpsSpecialResumeState(
 }
 
 /**
+ * FE-T05b (live-disproof follow-up) — map a raw first-party order-projection
+ * read into the {@link OpsResolverOrder} shape. Pulled out as a named,
+ * SHARED function (rather than the inline object-literal each call site
+ * previously hand-rolled) so the plan-stage `lookupOrder` wiring and the
+ * `order.status.transition` RESUME re-projection
+ * ({@link buildOpsOrderStatusTransitionResumeState}) read the SAME shape
+ * off the SAME first-party fields — the two paths must never independently
+ * drift on what "the order's ops-relevant state" means.
+ */
+export function toOpsResolverOrder(order: {
+  readonly customerId: string | null;
+  readonly paymentMethod: unknown;
+  readonly paymentStatus: string | null;
+  readonly totalInCentavos: number;
+  readonly fulfillmentStatus: unknown;
+}): OpsResolverOrder {
+  return {
+    customerId: order.customerId,
+    paymentMethod: (order.paymentMethod as string | null) ?? null,
+    paymentStatus: order.paymentStatus,
+    totalInCentavos: order.totalInCentavos,
+    fulfillmentStatus: (order.fulfillmentStatus as string | null) ?? null,
+  };
+}
+
+/**
+ * FE-T05b (live-disproof follow-up) — build the `order.status.transition` ops
+ * `SystemState` for the RESUME path ("sim"). Live-disproved (intent_audit
+ * 3362/3366): the ops confirm-resume re-adjudicates the VERBATIM parked
+ * envelope, but the SHARED customer-plane resume enrichment
+ * (`resolveAndAssemble` in claustrum-bootstrap.ts) is scoped to a REAL
+ * `customerId` — the ops plane's `staff:<id>` is not one, so that path's type
+ * guard silently no-ops (returns the capsule's bare `{channel:"system",
+ * customerId:"staff:<id>"}` state, carrying NO `ctx.orderId` at all) and
+ * `requireOrderIdForMutation` REFUSEs `order.not_found` on EVERY resume, even
+ * though the order exists and the parked payload carries its (resolver-
+ * pinned, trusted) id. This builder re-projects the SAME `{ ctx }` shape the
+ * plan-stage resolver's `order.status.transition` branch builds
+ * (`opsStateForEnvelope`, mirrors `toOpsResolverOrder`'s field set) from a
+ * FRESH read of the PINNED `orderId` — money/state-safe: an order that
+ * vanished or changed status since parking REFUSEs on resume via
+ * `requireOrderIdForMutation` (null order) / `requireLegalStatusTransition`
+ * (a FRESH `fulfillmentStatus` that no longer permits the parked target).
+ * `orderResolutionTrust` / `displayId` are deliberately OMITTED here (unlike
+ * the plan-stage projection): the id is no longer a guess by resume time — it
+ * was already confirmed once — so `requireConfirmationOnGroundedStatusTransition`
+ * must NOT fire a second time; omitting the field is a no-op for that guard
+ * (its engagement predicate is `=== "grounded"`), and the transition falls
+ * through to the ordinary EXECUTE path once legality passes.
+ */
+export function buildOpsOrderStatusTransitionResumeState(
+  orderId: string,
+  order: OpsResolverOrder | null,
+): unknown {
+  return {
+    ctx: {
+      channel: "web",
+      customerId: order?.customerId ?? null,
+      cartId: null,
+      orderId: order === null ? null : orderId,
+      fulfillmentStatus: order?.fulfillmentStatus ?? null,
+    },
+  };
+}
+
+/**
  * Build the per-kind ops `SystemState` for one planned envelope, plus an
  * OPTIONAL rewritten payload (BKL-089 availability name-resolution). Returns
  * `state: undefined` for an unrecognized kind so the loop falls back to the

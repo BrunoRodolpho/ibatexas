@@ -144,10 +144,19 @@ export function makeCapturingAuditSink(): CapturingAuditSink {
  * confirm-resume it RE-PROJECTS the ops state (fresh DB read) from the parked
  * envelope before re-adjudicating with the confirmation receipt (CONFIRM→EXECUTE).
  * Availability passes no projector (it EXECUTEs on the first turn — never parks).
+ *
+ * FE-T05b — MAY return a `Promise<unknown>` (awaited below) so a scenario can
+ * wire in the REAL, exported `enrichResumeState` from claustrum-bootstrap.ts
+ * directly (a DB-backed async re-projection), rather than a hand-authored
+ * synchronous mirror of it — the live-disprove root cause (intent_audit
+ * 3362/3366) was a WIRING gap inside `enrichResumeState` itself that a
+ * hand-rolled mirror could not have caught (it "mirrored" a wrong assumption
+ * instead of exercising the real dispatch). Existing synchronous projectors
+ * are unaffected — `await`ing a non-Promise value resolves immediately.
  */
 export function makeAuditedAdjudicator(opts: {
   sink: AuditSink;
-  projectResumeState?: (envelope: IntentEnvelope) => unknown;
+  projectResumeState?: (envelope: IntentEnvelope) => unknown | Promise<unknown>;
 }): Adjudicator {
   const { sink, projectResumeState } = opts;
   const decideWith = async (
@@ -190,7 +199,7 @@ export function makeAuditedAdjudicator(opts: {
     resume: async (envelope, state, policy, receipt) => {
       const env = envelope as IntentEnvelope;
       const resumeState = projectResumeState
-        ? projectResumeState(env)
+        ? await projectResumeState(env)
         : state;
       return decideWith(env, resumeState, policy, receipt as ConfirmationReceipt);
     },
