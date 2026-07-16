@@ -57,6 +57,8 @@ import { STORE_OPEN_NOW_CLOSURE } from "./claimdefs/store-open-now.generated.js"
  *     unaffected).
  *   - `ORDER_STATUS_Q`   — "cadê meu pedido?" → ORDER_FULFILLMENT_STAGE.
  *   - `PAYMENT_STATUS_Q` — "meu pagamento foi aprovado?" → PAYMENT_STATUS.
+ *   - `RESERVATION_STATUS_Q` — "qual minha reserva?" / "minha mesa está confirmada?"
+ *     → RESERVATION_STATUS (FE-T17).
  *   - `PICKUP_Q`         — a PICKUP / "posso retirar agora?" question logically
  *     requires BOTH the store-open companion AND the order stage (you can only
  *     retrieve a ready order from an OPEN store) → {STORE_OPEN_NOW,
@@ -68,6 +70,7 @@ export type SpanClass =
   | "STORE_HOURS_FOR_DATE_Q"
   | "ORDER_STATUS_Q"
   | "PAYMENT_STATUS_Q"
+  | "RESERVATION_STATUS_Q"
   | "PICKUP_Q";
 
 /**
@@ -89,6 +92,12 @@ export const REQUIRED_CLAIM_CLOSURE = {
   STORE_HOURS_FOR_DATE_Q: ["STORE_HOURS_FOR_DATE"],
   ORDER_STATUS_Q: ["ORDER_FULFILLMENT_STAGE"],
   PAYMENT_STATUS_Q: ["PAYMENT_STATUS"],
+  // FE-T17 — a reservation-status question requires the reservation claim. This row
+  // ALSO auto-enrols RESERVATION_STATUS into the claim-planner's
+  // RELEVANCE_GOVERNED_TYPES (ibatexas-claim-planner.ts BKL-110) via the closure-value
+  // union, so an over-proposed reservation claim is DEMOTED on a turn whose
+  // reservation span did not fire, yet KEPT when it did.
+  RESERVATION_STATUS_Q: ["RESERVATION_STATUS"],
   // §O#15 worked example — a pickup question requires BOTH companions.
   PICKUP_Q: ["STORE_OPEN_NOW", "ORDER_FULFILLMENT_STAGE"],
 } satisfies Record<SpanClass, readonly RegistryClaimType[]>;
@@ -165,6 +174,12 @@ export function classifyRequestSpans(text: string): SpanClass[] {
 
   if (orderPhrasing) classes.push("ORDER_STATUS_Q");
   if (paymentPhrasing) classes.push("PAYMENT_STATUS_Q");
+
+  // FE-T17 — reservation-bearing phrasing: "reserva" / "reservei" / "reservado(a)".
+  // An explicit marker (not folded into the bare-"status" polysemy resolution below —
+  // reservation questions name "reserva" directly, unlike the order/payment "status"
+  // ambiguity this file's F2 fix disambiguates).
+  if (/reserva/.test(t)) classes.push("RESERVATION_STATUS_Q");
 
   // Bare "status" with NO payment/order discriminator → over-include BOTH (never
   // silently drop either companion). If a discriminator is present, the precise
