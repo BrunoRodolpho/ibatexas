@@ -364,8 +364,8 @@ const PRE_DELETION_WHITELIST_PAIRS: ReadonlyArray<{
 ];
 
 describe("FE-T22 — chatSurfacedKinds replaces ADVERTISED_NOT_REGISTERED_WHITELIST (pinned equivalence)", () => {
-  it("the surface-derived set is exactly the 18 chat-tier kinds (T19's CHAT_DRIVABLE_TOOL_KINDS exemplar)", () => {
-    expect(CHAT_SURFACED_KINDS.size).toBe(18);
+  it("the surface-derived set is exactly the 20 chat-tier kinds (T19's CHAT_DRIVABLE_TOOL_KINDS exemplar, post-FE-T09 D-a: 18→20)", () => {
+    expect(CHAT_SURFACED_KINDS.size).toBe(20);
   });
 
   it("none of the 10 pre-deletion whitelist kinds is chat-surfaced (every one is exempt by construction)", () => {

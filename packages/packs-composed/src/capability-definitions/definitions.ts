@@ -358,13 +358,21 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
   // (packages/pack-orders/src/capabilities.ts) still carry a real
   // `amend_order` entry unchanged, so dropping it here would make the
   // freshness-gate projections silently diverge from those hand-authored
-  // maps rather than reflect reality.
+  // maps rather than reflect reality. Also KEEPS `successClaimLinks:
+  // ["order-amended"]` (FE-T22's own grounding, ibatexas-responder.ts's
+  // real justifiedBy array lists all 4 order.amend.* kinds, not just the
+  // 3 granular ones) — `successClaimLinks` is optional on BOTH tiers
+  // (types.ts), so demoting the chat-facing fields does not require
+  // dropping this one; capability-definitions.success-claim-round-trip.
+  // test.ts's round-trip fidelity check would otherwise under-count
+  // "order-amended"'s real justifiedBy set by one member.
   {
     kind: "order.amend.request",
     pack: "ibatexas/pack-orders",
     mutating: true,
     tier: "identity",
     legacyNames: ["amend_order"],
+    successClaimLinks: ["order-amended"],
   },
   // FE-T09 (D-a) — the three granular kinds became the model targets,
   // moving from identity→chat (net, with order.amend.request's move out,
