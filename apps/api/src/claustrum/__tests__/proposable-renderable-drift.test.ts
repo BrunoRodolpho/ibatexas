@@ -39,10 +39,21 @@
 //   · gap SHRANK → a pinned type got a template (as BKL-121 did for STORE_HOURS).
 //     Good — update the pin to remove it (and, if non-Triad, the triadScoped block).
 // Adjust the pin as a conscious act; do not just re-sort it green.
+//
+// FE-T16 (FE-3.3) — this unit-test-only pin is now ALSO enforced as a REAL
+// fail-closed BOOT gate: `claimsRenderDriftProblems` (claims-render-drift.ts),
+// called from `claims-pipeline.ts` `buildClaimsSeams` whenever the claims
+// pipeline is on, so a future proposable-but-unrenderable type fails BOOT, not
+// merely CI. Both this test and the gate import the SAME
+// `KNOWN_CUSTOMER_UNRENDERABLE_TYPES` constant (single-sourced) so the pin here
+// and the gate's deliberate-exception list can never silently diverge — this
+// test stays (belt and braces): a real boot gate is a fresh-process assertion, a
+// fast unit test is the everyday drift signal.
 
 import { describe, expect, it } from "vitest";
 import { CLAIM_REGISTRY } from "../claim-registry.js";
 import { CLAIM_DEFINITIONS } from "../claim-definition-registry.js";
+import { KNOWN_CUSTOMER_UNRENDERABLE_TYPES } from "../claims-render-drift.js";
 import { VALIDATED_TEMPLATES } from "../slot-grammar.js";
 
 // ── The two sets, computed from the ACTUAL exported source of truth (never a
@@ -70,7 +81,8 @@ const sortedDiff = (a: readonly string[], b: ReadonlySet<string>): string[] =>
 // read_claim pending BKL-123 — decision-gated on a renderer list-slot capability + an
 // owner liability policy) and PURCHASE_COMPLETED (an action_claim rendered via the
 // responder's SUCCESS_CLAIM_CLASSES path, DELIBERATELY + PERMANENTLY untemplated).
-const KNOWN_UNRENDERABLE = ["MENU_ITEM_ALLERGENS", "PURCHASE_COMPLETED"];
+// Single-sourced from claims-render-drift.ts (FE-T16) — see the header note above.
+const KNOWN_UNRENDERABLE = KNOWN_CUSTOMER_UNRENDERABLE_TYPES;
 
 describe("BKL-112 — proposable ⊇ renderable: the known-unrenderable gap is pinned", () => {
   it("pins PROPOSABLE \\ RENDERABLE to exactly {MENU_ITEM_ALLERGENS, PURCHASE_COMPLETED}", () => {
