@@ -88,14 +88,17 @@ export type CapabilityAuthLevel = "guest" | "customer" | "staff" | "system"
  * How richly a capability's metadata is authored — FE-T20. The
  * discriminator on the {@link CapabilityDefinition} union.
  *
- * `"chat"` — the 18 chat-drivable instances FE-T19 authored: every
- * chat-facing field is REQUIRED (see {@link ChatCapabilityDefinition}) and
+ * `"chat"` — the 18 chat-drivable instances FE-T19 authored (20 today —
+ * FE-T09 (D-a) moved `order.amend.request` out and its three granular
+ * successors in, see `definitions.ts`'s FE-T09 addendum): every chat-facing
+ * field is REQUIRED (see {@link ChatCapabilityDefinition}) and
  * cross-checked against a real source (docs, registries, planner code).
  * `"identity"` — the FE-T20 identity-tier instances covering the remaining
- * 48 kinds across the 6 packs (see {@link IdentityCapabilityDefinition}):
- * ONLY `kind` / `pack` / `mutating` / `tier` (+ `plannerAdvertisedBy` where
- * grounded) exist — there is no chat tool, no docs entry, and no legacy
- * name to ground the chat-facing fields in, so populating them would be
+ * 48 kinds across the 6 packs (46 today, post-FE-T09) (see
+ * {@link IdentityCapabilityDefinition}): ONLY `kind` / `pack` / `mutating` /
+ * `tier` (+ `plannerAdvertisedBy` / `legacyNames` where grounded) exist —
+ * there is usually no chat tool, no docs entry, and no legacy name to
+ * ground the chat-facing fields in, so populating them would be
  * fabrication (FE-T20 ticket + FE-T19's own precedent: "guessing… would be
  * fabrication, not authoring").
  */

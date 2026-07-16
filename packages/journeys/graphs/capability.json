@@ -10,7 +10,7 @@
       "guest"
     ],
     "planners": 6,
-    "registeredTools": 18,
+    "registeredTools": 20,
     "unadvertised": [
       "order.review.submit",
       "whatsapp.handoff.request"
@@ -334,8 +334,10 @@
       "type": "intent",
       "label": "order.amend.add_item",
       "meta": {
-        "advertisedContexts": [],
-        "chatDrivable": false,
+        "advertisedContexts": [
+          "authed-customer"
+        ],
+        "chatDrivable": true,
         "composedPack": "ibatexas/pack-orders",
         "domain": "order",
         "flags": [],
@@ -355,28 +357,6 @@
       "id": "intent:order.amend.remove_item",
       "type": "intent",
       "label": "order.amend.remove_item",
-      "meta": {
-        "advertisedContexts": [],
-        "chatDrivable": false,
-        "composedPack": "ibatexas/pack-orders",
-        "domain": "order",
-        "flags": [],
-        "knownKind": true,
-        "plausibleDecisions": [
-          "EXECUTE",
-          "REFUSE",
-          "ESCALATE",
-          "REQUEST_CONFIRMATION",
-          "DEFER",
-          "REWRITE"
-        ],
-        "staffRoute": false
-      }
-    },
-    {
-      "id": "intent:order.amend.request",
-      "type": "intent",
-      "label": "order.amend.request",
       "meta": {
         "advertisedContexts": [
           "authed-customer"
@@ -398,12 +378,36 @@
       }
     },
     {
+      "id": "intent:order.amend.request",
+      "type": "intent",
+      "label": "order.amend.request",
+      "meta": {
+        "advertisedContexts": [],
+        "chatDrivable": false,
+        "composedPack": "ibatexas/pack-orders",
+        "domain": "order",
+        "flags": [],
+        "knownKind": true,
+        "plausibleDecisions": [
+          "EXECUTE",
+          "REFUSE",
+          "ESCALATE",
+          "REQUEST_CONFIRMATION",
+          "DEFER",
+          "REWRITE"
+        ],
+        "staffRoute": false
+      }
+    },
+    {
       "id": "intent:order.amend.update_qty",
       "type": "intent",
       "label": "order.amend.update_qty",
       "meta": {
-        "advertisedContexts": [],
-        "chatDrivable": false,
+        "advertisedContexts": [
+          "authed-customer"
+        ],
+        "chatDrivable": true,
         "composedPack": "ibatexas/pack-orders",
         "domain": "order",
         "flags": [],
@@ -1689,7 +1693,7 @@
       "label": "ibatexas/pack-orders capability planner",
       "meta": {
         "advertisedCounts": {
-          "authed-customer": 9,
+          "authed-customer": 11,
           "guest": 5
         },
         "pack": "ibatexas/pack-orders"
@@ -1750,11 +1754,29 @@
       }
     },
     {
-      "id": "tool:order.amend.request",
+      "id": "tool:order.amend.add_item",
       "type": "tool",
-      "label": "order.amend.request",
+      "label": "order.amend.add_item",
       "meta": {
-        "capability": "order.amend.request",
+        "capability": "order.amend.add_item",
+        "surface": "chat"
+      }
+    },
+    {
+      "id": "tool:order.amend.remove_item",
+      "type": "tool",
+      "label": "order.amend.remove_item",
+      "meta": {
+        "capability": "order.amend.remove_item",
+        "surface": "chat"
+      }
+    },
+    {
+      "id": "tool:order.amend.update_qty",
+      "type": "tool",
+      "label": "order.amend.update_qty",
+      "meta": {
+        "capability": "order.amend.update_qty",
         "surface": "chat"
       }
     },
@@ -1917,7 +1939,27 @@
     },
     {
       "from": "planner:ibatexas/pack-orders",
-      "to": "intent:order.amend.request",
+      "to": "intent:order.amend.add_item",
+      "type": "advertises",
+      "meta": {
+        "contexts": [
+          "authed-customer"
+        ]
+      }
+    },
+    {
+      "from": "planner:ibatexas/pack-orders",
+      "to": "intent:order.amend.remove_item",
+      "type": "advertises",
+      "meta": {
+        "contexts": [
+          "authed-customer"
+        ]
+      }
+    },
+    {
+      "from": "planner:ibatexas/pack-orders",
+      "to": "intent:order.amend.update_qty",
       "type": "advertises",
       "meta": {
         "contexts": [
@@ -2432,8 +2474,18 @@
       "type": "registers"
     },
     {
-      "from": "intent:order.amend.request",
-      "to": "tool:order.amend.request",
+      "from": "intent:order.amend.add_item",
+      "to": "tool:order.amend.add_item",
+      "type": "registers"
+    },
+    {
+      "from": "intent:order.amend.remove_item",
+      "to": "tool:order.amend.remove_item",
+      "type": "registers"
+    },
+    {
+      "from": "intent:order.amend.update_qty",
+      "to": "tool:order.amend.update_qty",
       "type": "registers"
     },
     {

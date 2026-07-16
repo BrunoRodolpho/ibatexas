@@ -62,6 +62,11 @@ export const FORBIDDEN_EXTRACTION_FIELD_NAMES: ReadonlySet<string> = new Set([
   "cartId",
   "paymentId",
   "variantId",
+  // FE-T09 — the granular amend kinds' resolver-filled order-line reference
+  // (OrderAmendUpdateQtyPayload/OrderAmendRemoveItemPayload). Same Identity
+  // class as variantId/orderId — resolved from the model's NL `item`
+  // reference, never authored onto an extraction schema.
+  "itemId",
   "reservationId",
   "sessionId",
   "actorId",

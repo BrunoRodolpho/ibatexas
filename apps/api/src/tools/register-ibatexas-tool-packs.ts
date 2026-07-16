@@ -41,6 +41,7 @@ import {
   getOrCreateCart,
   handoffToHuman,
   joinWaitlist,
+  medusaAdmin,
   modifyReservation,
   regeneratePix,
   removeFromCart,
@@ -49,6 +50,7 @@ import {
   updateCart,
   updatePreferences,
 } from "@ibatexas/tools";
+import { createOrderService } from "@ibatexas/domain";
 import {
   Channel,
   type AgentContext,
@@ -154,6 +156,63 @@ export function agentCtxFromCapsule(capsule: Capsule): AgentContext {
 }
 
 /**
+ * FE-T09 (D-a) — `order.amend.update_qty` / `order.amend.remove_item`'s
+ * `itemId` is now a REAL Medusa line-item id (resolve-and-assemble.ts's
+ * `resolveOrderLineItem`, resolved from the live order, never a title
+ * stand-in). `amendOrder`'s `handleUpdateQty`/`handleRemoveItem` still match
+ * by title (legacy `AmendOrderInput.itemTitle`, unchanged) — reversing the id
+ * back to a title here is a cheap live re-fetch, cheaper and lower-risk than
+ * teaching `amendOrder` an id-based path. Returns `undefined` when the id no
+ * longer resolves on this order (e.g. a stale/tampered id) — the caller turns
+ * that into an honest not-found response rather than passing an empty title
+ * through to `amendOrder`.
+ */
+/**
+ * FE-T09 review fix (post-#264) — order.amend.update_qty/remove_item: when
+ * `resolve-and-assemble.ts`'s `resolveOrderLineItem` found MULTIPLE
+ * same-titled lines on the order, it stamps `itemAmbiguousCount` on the
+ * payload instead of forcing a confirm (see that file's docblock on
+ * `resolveOrderLineItem` for why routing item-level ambiguity through the
+ * order-level auto-resolve confirm mechanism was dishonest — it implies a
+ * specific item was identified when none was, and confirming resumed into
+ * a lookup with no itemId, a dead end). Surface that as a specific, honest
+ * disambiguation reply BEFORE attempting the id→title reverse lookup below
+ * — `itemId` is unset in this case, so that lookup would just return the
+ * same generic not-found message this is avoiding.
+ */
+export function ambiguousItemReply(
+  input: unknown,
+): { success: false; message: string } | undefined {
+  const p = input as { itemAmbiguousCount?: unknown; item?: unknown };
+  if (typeof p.itemAmbiguousCount !== "number") return undefined;
+  const named =
+    typeof p.item === "string" && p.item.trim() !== "" ? ` "${p.item.trim()}"` : "";
+  return {
+    success: false,
+    message:
+      `Encontrei ${p.itemAmbiguousCount} itens${named} no pedido — qual deles? ` +
+      "Pode descrever com mais detalhes (ex.: valor ou posição no pedido)?",
+  };
+}
+
+async function resolveItemTitleForAmend(
+  orderId: string,
+  itemId: string,
+  customerId: string | undefined,
+): Promise<string | undefined> {
+  try {
+    const { order, ownershipValid } = await createOrderService(medusaAdmin).getOrder(
+      orderId,
+      customerId,
+    );
+    if (!ownershipValid) return undefined;
+    return order.items?.find((i) => i.id === itemId)?.title;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Wrap an existing ibatexas tool handler in the claustrum ToolDefinition shape.
  * The runtime hands `execute` the per-turn Capsule (typed `unknown` in the port
  * to avoid a cycle on Capsule); we narrow it here and pass the handler a derived
@@ -223,13 +282,15 @@ function makeReservationTool(opts: {
 // against its pack's `intents` array (pack-{orders,reservations,customer-
 // onboarding,payments}/src/index.ts) on the WS3 sweep.
 //
-// 18 LLM-callable mutating tools = the union of every pack CapabilityPlanner's
-// `allowedIntents` that has a `@ibatexas/tools` handler. The two payment kinds
-// that ship no handler were DE-ADVERTISED in pack-payments (P0-7) — the
+// 20 LLM-callable mutating tools (FE-T09 (D-a) replaced `order.amend.request`
+// with the three granular amend tools — net +2) = the union of every pack
+// CapabilityPlanner's `allowedIntents` that has a `@ibatexas/tools` handler.
+// The two payment kinds that ship no
+// handler were DE-ADVERTISED in pack-payments (P0-7) — the
 // context-aware leg of `toolRosterDrift()` below now fails the boot if a
 // planner ever advertises a kind with no registered tool.
 const IBATEXAS_TOOLS: ReadonlyArray<TD<unknown, unknown>> = [
-  // ── pack-orders (10) ──────────────────────────────────────────────────────
+  // ── pack-orders (12) ──────────────────────────────────────────────────────
   makeTool({
     id: "ibatexas.cart.ensure.v1",
     capability: "order.cart.ensure",
@@ -288,13 +349,76 @@ const IBATEXAS_TOOLS: ReadonlyArray<TD<unknown, unknown>> = [
     requiresConfirmation: true,
     execute: (input, ctx) => cancelOrder(input as never, ctx),
   }),
+  // FE-T09 (D-a, the amend inversion) — the three granular kinds became the
+  // model targets; `order.amend.request`'s tool entry is REMOVED here (it is
+  // no longer model-proposable per capabilities.ts). It stays a valid,
+  // adjudicable pack intent (ordersPack.intents[] still lists it, and its
+  // policy/guard entries are untouched) because the deterministic legacy HTTP
+  // amend route (apps/api/src/routes/order-actions.ts) builds its own
+  // envelope and calls `amendOrder()` via an inline `executor` callback,
+  // bypassing the ToolRegistry / `resolveTool` dispatch entirely — so no live
+  // caller ever resolves "order.amend.request" through this roster.
+  //
+  // Each granular executor maps its own narrow, resolver-hydrated payload
+  // onto `AmendOrderInput` (`@ibatexas/types`) and calls the SAME `amendOrder`
+  // the grouped kind already used — reusing its existing Medusa order-edit +
+  // PONR + PIX-regeneration logic rather than duplicating it. update_qty/
+  // remove_item's `itemId` is resolver-hydrated to a REAL Medusa line-item id
+  // (resolve-and-assemble.ts's `resolveOrderLineItem`, a live order fetch —
+  // never a catalog guess); `resolveItemTitleForAmend` below reverses that id
+  // back to a title here (a second cheap live fetch) because `amendOrder`'s
+  // `handleUpdateQty`/`handleRemoveItem` still match case-insensitively
+  // against the live order's titles via `AmendOrderInput.itemTitle`.
   makeTool({
-    id: "ibatexas.order.amend.v1",
-    capability: "order.amend.request",
-    intentKind: "order.amend.request",
-    description: "Solicitar alteração em um pedido já realizado.",
-    riskLevel: "medium",
-    execute: (input, ctx) => amendOrder(input as never, ctx),
+    id: "ibatexas.order.amend.addItem.v1",
+    capability: "order.amend.add_item",
+    intentKind: "order.amend.add_item",
+    description: "Adicionar um item a um pedido já feito (pós-checkout).",
+    riskLevel: "high",
+    execute: (input, ctx) => {
+      const p = input as { orderId: string; variantId: string; quantity: number };
+      return amendOrder(
+        { orderId: p.orderId, action: "add", variantId: p.variantId, quantity: p.quantity },
+        ctx,
+      );
+    },
+  }),
+  makeTool({
+    id: "ibatexas.order.amend.updateQty.v1",
+    capability: "order.amend.update_qty",
+    intentKind: "order.amend.update_qty",
+    description: "Alterar a quantidade de um item em um pedido já feito (pós-checkout).",
+    riskLevel: "high",
+    execute: async (input, ctx) => {
+      const ambiguous = ambiguousItemReply(input);
+      if (ambiguous) return ambiguous;
+      const p = input as { orderId: string; itemId: string; quantity: number };
+      const itemTitle = await resolveItemTitleForAmend(p.orderId, p.itemId, ctx.customerId);
+      if (itemTitle === undefined) {
+        return { success: false, message: "Item não encontrado no pedido." };
+      }
+      return amendOrder(
+        { orderId: p.orderId, action: "update_qty", itemTitle, quantity: p.quantity },
+        ctx,
+      );
+    },
+  }),
+  makeTool({
+    id: "ibatexas.order.amend.removeItem.v1",
+    capability: "order.amend.remove_item",
+    intentKind: "order.amend.remove_item",
+    description: "Remover um item de um pedido já feito (pós-checkout).",
+    riskLevel: "high",
+    execute: async (input, ctx) => {
+      const ambiguous = ambiguousItemReply(input);
+      if (ambiguous) return ambiguous;
+      const p = input as { orderId: string; itemId: string };
+      const itemTitle = await resolveItemTitleForAmend(p.orderId, p.itemId, ctx.customerId);
+      if (itemTitle === undefined) {
+        return { success: false, message: "Item não encontrado no pedido." };
+      }
+      return amendOrder({ orderId: p.orderId, action: "remove", itemTitle }, ctx);
+    },
   }),
   makeTool({
     id: "ibatexas.order.addNote.v1",

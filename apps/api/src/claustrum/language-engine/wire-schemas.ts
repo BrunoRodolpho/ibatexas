@@ -6,8 +6,9 @@
 // fix for "the model sees one mutation verb whose payload is an untyped,
 // empty-shaped object" (spec Problem Statement #1).
 //
-// Deliberately a ONE-ENTRY registry for this tracer (order.status.transition)
-// — later rollout slices (T11-14) add their capability's schema here as each
+// FE-T05 authored the first entry (order.status.transition); FE-T09 (D-a,
+// the amend inversion) adds the three granular post-checkout amend kinds.
+// Later rollout slices (T11-14) add their capability's schema here as each
 // is authored. Purely additive: a capability NOT in this map keeps today's
 // generic `payload` shape, byte-identical.
 
@@ -16,9 +17,17 @@ import {
   type CapabilityExtractionSchema,
 } from "./extraction-schema.js";
 import { ORDER_STATUS_TRANSITION_EXTRACTION_SCHEMA } from "./order-status-transition.schema.js";
+import {
+  ORDER_AMEND_ADD_ITEM_EXTRACTION_SCHEMA,
+  ORDER_AMEND_UPDATE_QTY_EXTRACTION_SCHEMA,
+  ORDER_AMEND_REMOVE_ITEM_EXTRACTION_SCHEMA,
+} from "./order-amend-granular.schema.js";
 
 const AUTHORED_SCHEMAS: readonly CapabilityExtractionSchema[] = [
   ORDER_STATUS_TRANSITION_EXTRACTION_SCHEMA,
+  ORDER_AMEND_ADD_ITEM_EXTRACTION_SCHEMA,
+  ORDER_AMEND_UPDATE_QTY_EXTRACTION_SCHEMA,
+  ORDER_AMEND_REMOVE_ITEM_EXTRACTION_SCHEMA,
 ];
 
 /** capability -> its wire `payload` JSON-Schema (pre-built, asserted sound). */

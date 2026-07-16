@@ -13,11 +13,22 @@
 //      generator's own pure behavior.
 //   2. Docs Auth rows — generateChatCapabilityAuthLevels, checked against
 //      the real committed docs/architecture/design/agent-tools.md (a plain
-//      repo file — reading it needs no apps/* import). Covers the 13 of 18
+//      repo file — reading it needs no apps/* import). Covers the 13 of 20
 //      chat-tier kinds whose `legacyNames[0]` matches a real H3 heading; the
-//      other 5 are documented KNOWN GAPS below (re-grounded fresh for this
+//      other 7 are documented KNOWN GAPS below (re-grounded fresh for this
 //      ticket, reported in the PR body per FE-4.3 — pin committed bytes,
 //      report staleness, never silently generate around it).
+//
+//      Rebase note (FE-T09 onto dev, PR #264): the chat-tier count moved
+//      18→20 — `order.amend.request` (one of the original 5 known gaps)
+//      moved OUT of chat tier entirely, and three brand-new granular
+//      `order.amend.*` kinds moved in with `legacyNames: []` (no pre-
+//      refactor name to search a doc heading by at all — a different KIND
+//      of gap than the other 4, not merely a missing row). Net non-matched:
+//      3 remaining "no doc entry" gaps (get_or_create_cart, save_pix_details,
+//      regenerate_pix) + 1 name-discrepancy-but-verified (whatsapp) + 3 new
+//      no-legacy-name gaps = 7. The `order.amend.request` gap test itself is
+//      REMOVED, not reworded — it no longer describes a chat-tier kind.
 //   3. Legacy snake_case name map — no new generator needed; fully covered
 //      by FE-T21's `generateToolToIntentMap` / `generateMutatingToolNames`
 //      (see capability-definitions.tool-driving-family.test.ts's existing
@@ -92,9 +103,9 @@ describe("generateAdminLabels — pure projection + external pix input (FE-T23 t
 // ── Target 2: docs Auth rows ──────────────────────────────────────────────
 
 describe("generateChatCapabilityAuthLevels — pure projection (FE-T23 target 2)", () => {
-  it("projects exactly 18 auth levels, one per chat-tier capability", () => {
+  it("projects exactly 20 auth levels, one per chat-tier capability (post-FE-T09 D-a: 18→20)", () => {
     expect(Object.keys(generateChatCapabilityAuthLevels(CAPABILITY_DEFINITIONS))).toHaveLength(
-      18,
+      20,
     )
   })
 
@@ -146,7 +157,7 @@ describe("docs/architecture/design/agent-tools.md Auth-row freshness (FE-T23 tar
     { kind: "customer.preferences.update", toolName: "update_preferences" },
   ]
 
-  it("covers exactly 13 of the 18 chat-tier kinds (the other 5 are documented known gaps below)", () => {
+  it("covers exactly 13 of the 20 chat-tier kinds (the other 7 are documented known gaps below)", () => {
     expect(MATCHED).toHaveLength(13)
   })
 
@@ -169,9 +180,25 @@ describe("docs/architecture/design/agent-tools.md Auth-row freshness (FE-T23 tar
     expect(docText).not.toContain("get_or_create_cart")
   })
 
-  it('KNOWN GAP: order.amend.request\'s legacy name "amend_order" has NO doc entry at all (absent from all 345 lines)', () => {
-    expect(extractDocAuthRow(docText, "amend_order")).toBeUndefined()
-    expect(docText).not.toContain("amend_order")
+  // FE-T09 (D-a, post-#264 rebase): order.amend.request moved OUT of chat
+  // tier entirely (the model no longer targets it — see
+  // capability-definitions/definitions.ts), so its own "no doc entry"
+  // known gap no longer belongs in this chat-tier accounting; replaced by
+  // the three granular successors below, a DIFFERENT kind of gap (no
+  // legacy name to search a heading by AT ALL, not merely a missing row).
+  it('KNOWN GAP (FE-T09 D-a): the three granular order.amend.* kinds carry legacyNames: [] (brand-new tools born under capability===intentKind, no pre-refactor snake_case name exists to search a doc heading by) and the doc has no row for them yet — tracked as a residual in PR #264\'s body, not silently generated around', () => {
+    for (const kind of [
+      "order.amend.add_item",
+      "order.amend.update_qty",
+      "order.amend.remove_item",
+    ] as const) {
+      const def = CAPABILITY_DEFINITIONS.find((d) => d.kind === kind)
+      expect(def?.legacyNames, kind).toEqual([])
+      expect(generatedAuth[kind], kind).toBe("customer")
+    }
+    expect(docText).not.toContain("order_amend_add_item")
+    expect(docText).not.toContain("order_amend_update_qty")
+    expect(docText).not.toContain("order_amend_remove_item")
   })
 
   it('KNOWN GAP: customer.pix.details.save\'s legacy name "save_pix_details" has NO doc entry at all', () => {
