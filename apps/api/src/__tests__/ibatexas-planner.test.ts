@@ -32,6 +32,7 @@ import { IBATEXAS_COMPOSED_CAPABILITY_PLANNERS } from "@ibatexas/packs-composed"
 import {
   createIbatexasPlanner,
   EXPRESS_INTENT_TOOL,
+  EXTRACTION_FAILURE_KIND,
   type StaffEnvelopeRole,
 } from "../claustrum/ibatexas-planner.js";
 import { STAFF_ROLES } from "../claustrum/staff-role-matrix.js";
@@ -72,7 +73,15 @@ function mockModel(toolCalls: ToolCall[] | ToolCall[][]): {
     return {
       model: "mock",
       stopReason: calls.length > 0 ? "tool_use" : "end_turn",
-      text: "",
+      // FE-T01 (D4): live-verified against nemotron-3-nano:4b — a tool-call
+      // completion has empty `content`, while a legitimate no-tool-call
+      // completion (small-talk / no proposable intent) still says SOMETHING
+      // in `text`. Mirroring that here keeps every existing "no mutation"
+      // fixture out of the new genuinely-empty-completion (text AND
+      // toolCalls both empty) repair-or-refuse path — see
+      // `isGenuinelyEmptyCompletion` in ibatexas-planner.ts. Tests that need
+      // a TRUE genuinely-empty completion use a bespoke inline double.
+      text: calls.length > 0 ? "" : "ok (mock conversational reply)",
       toolCalls: calls,
       inputTokens: 1,
       outputTokens: 1,
@@ -204,8 +213,14 @@ describe("createIbatexasPlanner — allowlist enforcement", () => {
     expect(plan.rationale).toMatch(/dropped out-of-plan \[order\.cancel\]/);
   });
 
-  it("drops a malformed express_intent payload without throwing", async () => {
-    const { model } = mockModel([
+  // FE-T01 (D3): a malformed express_intent payload (the frozen provider's
+  // JSON.parse-failure `{raw}` passthrough) used to be silently dropped to a
+  // respond-only reply. It now yields an explicit, AUDITED extraction-failure
+  // envelope — the unowned EXTRACTION_FAILURE_KIND fails closed through the
+  // kernel's real "no pack owns this kind" REFUSE path (capability-policy.ts),
+  // never a silent drop and never a real domain capability.
+  it("a malformed express_intent payload yields an explicit extraction-failure envelope, not a silent drop", async () => {
+    const { model, complete } = mockModel([
       { id: "bad", name: EXPRESS_INTENT_TOOL, input: { nope: true } },
       { id: "bad2", name: EXPRESS_INTENT_TOOL, input: "not-an-object" },
     ]);
@@ -216,7 +231,31 @@ describe("createIbatexasPlanner — allowlist enforcement", () => {
     });
 
     const plan = await planner.propose(mkState("???"));
-    expect(plan.envelopes).toEqual([]);
+    expect(plan.envelopes).toHaveLength(1);
+    const env = plan.envelopes[0]!;
+    expect(env.kind).toBe(EXTRACTION_FAILURE_KIND);
+    expect(env.payload).toEqual({ reason: "malformed_tool_call" });
+    expect(env.actor.principal).toBe("llm");
+    expect(env.taint).toBe("UNTRUSTED");
+    expect(plan.capabilities).toEqual([]);
+    // No retry for a malformed (non-empty toolCalls) completion — one call only.
+    expect(complete).toHaveBeenCalledTimes(1);
+  });
+
+  it("a malformed express_intent ALONGSIDE a valid one does not override the valid envelope", async () => {
+    const { model } = mockModel([
+      expressIntent("order.item.add", { sku: "x", qty: 1 }),
+      { id: "bad", name: EXPRESS_INTENT_TOOL, input: { nope: true } },
+    ]);
+    const planner = createIbatexasPlanner({
+      model,
+      modelId: "claude-test",
+      capabilityPlanners: [capPlanner(ORDER_READS, ORDER_INTENTS)],
+    });
+
+    const plan = await planner.propose(mkState("adiciona um x e também ???"));
+    expect(plan.envelopes).toHaveLength(1);
+    expect(plan.envelopes[0]!.kind).toBe("order.item.add");
   });
 
   it("skips the LLM call entirely when nothing is proposable or readable", async () => {
@@ -230,6 +269,117 @@ describe("createIbatexasPlanner — allowlist enforcement", () => {
     const plan = await planner.propose(mkState("oi"));
     expect(plan.envelopes).toEqual([]);
     expect(complete).not.toHaveBeenCalled(); // no proposable intents → no LLM spend
+  });
+});
+
+// ── FE-T01 — extraction-wire hardening (temperature, empty-repair-or-refuse) ─
+
+describe("createIbatexasPlanner — extraction-wire failures (FE-T01)", () => {
+  it("pins temperature on the outbound CompletionRequest", async () => {
+    const { model, complete } = mockModel([expressIntent("order.item.add")]);
+    const planner = createIbatexasPlanner({
+      model,
+      modelId: "claude-test",
+      capabilityPlanners: [capPlanner(ORDER_READS, ORDER_INTENTS)],
+    });
+
+    await planner.propose(mkState("quero um x"));
+    expect(complete).toHaveBeenCalledTimes(1);
+    const req = complete.mock.calls[0]![0] as CompletionRequest;
+    expect(req.temperature).toBe(0);
+  });
+
+  it("a genuinely empty completion (no text, no tool calls) that survives the bounded repair yields an explicit extraction-failure REFUSE, not a silent respond-only pass-through", async () => {
+    const complete = vi.fn(
+      async (): Promise<Completion> => ({
+        model: "mock",
+        stopReason: "end_turn",
+        text: "",
+        toolCalls: undefined,
+        inputTokens: 1,
+        outputTokens: 0,
+      }),
+    );
+    const model: ModelProvider = {
+      complete,
+      stream: () => {
+        throw new Error("stream not used by planner");
+      },
+      embed: async () => {
+        throw new Error("embed not used by planner");
+      },
+    };
+    const planner = createIbatexasPlanner({
+      model,
+      modelId: "claude-test",
+      capabilityPlanners: [capPlanner(ORDER_READS, ORDER_INTENTS)],
+    });
+
+    const plan = await planner.propose(mkState("quero um x"));
+    expect(plan.envelopes).toHaveLength(1);
+    const env = plan.envelopes[0]!;
+    expect(env.kind).toBe(EXTRACTION_FAILURE_KIND);
+    expect(env.payload).toEqual({ reason: "empty_completion" });
+    // Bounded repair: > 1 attempt (the default budget), never unbounded.
+    expect(complete.mock.calls.length).toBeGreaterThan(1);
+    expect(complete.mock.calls.length).toBeLessThanOrEqual(5);
+  });
+
+  it("recovers from a genuinely empty completion after one repair retry (no REFUSE)", async () => {
+    let call = 0;
+    const complete = vi.fn(async (): Promise<Completion> => {
+      call += 1;
+      if (call === 1) {
+        return {
+          model: "mock",
+          stopReason: "end_turn",
+          text: "",
+          toolCalls: undefined,
+          inputTokens: 1,
+          outputTokens: 0,
+        };
+      }
+      return {
+        model: "mock",
+        stopReason: "tool_use",
+        text: "",
+        toolCalls: [expressIntent("order.item.add", { sku: "x", qty: 1 })],
+        inputTokens: 1,
+        outputTokens: 1,
+      };
+    });
+    const model: ModelProvider = {
+      complete,
+      stream: () => {
+        throw new Error("stream not used by planner");
+      },
+      embed: async () => {
+        throw new Error("embed not used by planner");
+      },
+    };
+    const planner = createIbatexasPlanner({
+      model,
+      modelId: "claude-test",
+      capabilityPlanners: [capPlanner(ORDER_READS, ORDER_INTENTS)],
+    });
+
+    const plan = await planner.propose(mkState("quero um x"));
+    expect(plan.envelopes).toHaveLength(1);
+    expect(plan.envelopes[0]!.kind).toBe("order.item.add");
+    expect(complete).toHaveBeenCalledTimes(2);
+  });
+
+  it("does NOT retry/REFUSE a legitimate no-intent completion (empty toolCalls, non-empty text)", async () => {
+    const { model, complete } = mockModel([]); // mockModel now supplies non-empty text when calls=[]
+    const planner = createIbatexasPlanner({
+      model,
+      modelId: "claude-test",
+      capabilityPlanners: [capPlanner(ORDER_READS, ORDER_INTENTS)],
+    });
+
+    const plan = await planner.propose(mkState("qual o horário de vocês?"));
+    expect(plan.envelopes).toEqual([]);
+    expect(complete).toHaveBeenCalledTimes(1); // no retry fired
   });
 });
 

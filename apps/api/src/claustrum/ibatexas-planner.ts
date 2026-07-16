@@ -101,11 +101,79 @@ import {
 } from "./closed-hours.js";
 import type { StoreHoursRead, StoreHoursForDateRead } from "./turn-reads.js";
 import { resolveQueriedScheduleDate } from "./schedule-date-resolver.js";
+import { PINNED_COMPLETION_TEMPERATURE } from "./model-call-defaults.js";
+import { completeWithEmptyRetry, isEmptyCompletion } from "./complete-with-retry.js";
 
 // Re-export so existing importers (tests, registry) keep their import site.
 export { EXPRESS_INTENT_TOOL };
 
 const DEFAULT_MAX_TOKENS = 1024;
+
+// FE-T01 (D4) — total extraction-completion attempts (incl. the first) before
+// giving up to the explicit REFUSE below. Mirrors the responder's F6/BKL-031
+// idiom (ibatexas-responder.ts's EMPTY_COMPLETION_MAX_ATTEMPTS) — same env
+// var name pattern, config from process.env (Hard Rule #3), own env var so
+// the planner's retry budget can be tuned independently of the responder's.
+const EXTRACTION_EMPTY_RETRY_MAX_ATTEMPTS = Math.max(
+  1,
+  Number.parseInt(process.env.EXTRACTION_EMPTY_RETRY_MAX_ATTEMPTS ?? "2", 10) || 2,
+);
+
+/**
+ * FE-T01 (D4) — "genuinely empty" for the planner's extraction seam: text
+ * empty/whitespace-only AND no tool calls at all. NOT the same predicate as
+ * the responder's `isEmptyCompletion(text)` alone — a planner completion with
+ * empty `text` but a populated `toolCalls` is the NORMAL structured-tool-call
+ * shape (nothing to repair), and `propose()` only ever calls the model when
+ * ≥1 tool is offered, so a legitimate no-intent turn still has the model say
+ * SOMETHING in `text` (live-verified against nemotron-3-nano:4b — see the
+ * FE-T01 PR). Only text-AND-toolCalls-both-empty is the genuine BKL-031-style
+ * extraction dropout this repairs.
+ */
+function isGenuinelyEmptyCompletion(completion: Completion): boolean {
+  return (
+    isEmptyCompletion(completion.text) &&
+    (completion.toolCalls === undefined || completion.toolCalls.length === 0)
+  );
+}
+
+/**
+ * FE-T01 (D3/D4) — sentinel intent kind for an extraction-wire FAILURE (a
+ * malformed tool-call JSON that survived the frozen provider's `{raw}`
+ * passthrough, or a genuinely empty completion that survived the bounded
+ * repair attempt above). No installed pack owns this kind, so
+ * `composePolicyRouter`'s documented unowned-kind fail-closed path (SYSTEM
+ * taint floor + `default: "REFUSE"` — capability-policy.ts) REFUSEs it
+ * through the SAME audited kernel `adjudicate()` call every real envelope
+ * goes through: an explicit, AUDITED REFUSE turn (pt-BR "Não posso realizar
+ * essa ação com a informação disponível." via
+ * `@adjudicate/locales-pt-br`'s `taint_level_insufficient` mapping) — never a
+ * silent drop to a respond-only reply. Because `plan.envelopes.length > 0`,
+ * the responder's REFUSE branch renders it VERBATIM via the explainer
+ * (ibatexas-responder.ts's "a real action refusal" branch), not the
+ * REFUSE-on-empty-plan small-talk branch.
+ */
+export const EXTRACTION_FAILURE_KIND = "system.extraction_failure";
+
+type ExtractionFailureReason = "malformed_tool_call" | "empty_completion";
+
+/** Marker `translateToolCalls` pushes to `dropped` for a malformed
+ *  `express_intent` call — checked below to decide whether to REFUSE. */
+const MALFORMED_EXPRESS_INTENT_MARKER = `${EXPRESS_INTENT_TOOL}(malformed)`;
+
+function buildExtractionFailureEnvelope(
+  reason: ExtractionFailureReason,
+  actor: IntentActor,
+  nonce: string,
+): IntentEnvelope {
+  return buildEnvelope({
+    kind: EXTRACTION_FAILURE_KIND,
+    payload: { reason },
+    actor,
+    taint: "UNTRUSTED",
+    nonce,
+  });
+}
 
 // FIX B2 — enrichment-hop context bounds. A single read result (e.g. an
 // unprojected Medusa cart from get_cart) can be multiple KB; fed back raw it
@@ -750,14 +818,42 @@ export function createIbatexasPlanner(
       // touch.
       const envelopeActor = plannerEnvelopeActor(deps.staffEnvelopeActor, state);
       const startedAt = Date.now();
-      const completion = await deps.model.complete({
-        model: deps.modelId,
-        system,
-        messages: [{ role: "user", content: state.perception.text }],
-        tools,
-        maxTokens,
-      });
+      // FE-T01 (D3/D4) — pin temperature (deterministic wire) and wrap the
+      // call in the bounded empty-completion repair idiom, scoped to a
+      // GENUINELY empty result (text AND toolCalls both empty — see
+      // `isGenuinelyEmptyCompletion`); a legitimate no-intent/small-talk
+      // completion (non-empty text, no tool call) is never retried.
+      const { completion, attempts: extractionAttempts, recovered: extractionRecovered } =
+        await completeWithEmptyRetry(
+          () =>
+            deps.model.complete({
+              model: deps.modelId,
+              system,
+              messages: [{ role: "user", content: state.perception.text }],
+              tools,
+              maxTokens,
+              temperature: PINNED_COMPLETION_TEMPERATURE,
+            }),
+          {
+            maxAttempts: EXTRACTION_EMPTY_RETRY_MAX_ATTEMPTS,
+            isEmpty: isGenuinelyEmptyCompletion,
+          },
+        );
       const durationMs = Date.now() - startedAt;
+      if (extractionAttempts > 1) {
+        logger.warn(
+          {
+            component: "planner",
+            event: "empty_completion_retry",
+            turnId: state.turnId,
+            attempts: extractionAttempts,
+            recovered: extractionRecovered,
+          },
+          extractionRecovered
+            ? "planner recovered from a genuinely empty completion after retry"
+            : "planner exhausted empty-completion retries — extraction-failure REFUSE applies",
+        );
+      }
 
       // C1 — emit the planner-call LLMTrace (turnId is the correlation key; no
       // intentHash, as the intent is not yet formed at plan time). Best-effort.
@@ -776,7 +872,43 @@ export function createIbatexasPlanner(
           outputTokens: completion.outputTokens,
           durationMs,
           at: new Date().toISOString(),
+          temperature: PINNED_COMPLETION_TEMPERATURE,
         });
+      }
+
+      // FE-T01 (D4) — a genuinely empty completion that survived the repair
+      // attempt(s) above is an extraction-wire FAILURE, not a legitimate
+      // no-intent turn (which always has SOME text — see
+      // `isGenuinelyEmptyCompletion`). Explicit REFUSE, never a silent
+      // pass-through to the small-talk respond-only branch.
+      if (isGenuinelyEmptyCompletion(completion)) {
+        logger.warn(
+          {
+            component: "planner",
+            event: "extraction_failure",
+            turnId: state.turnId,
+            reason: "empty_completion",
+            attempts: extractionAttempts,
+          },
+          "planner: genuinely empty completion survived repair — extraction-failure REFUSE",
+        );
+        return {
+          envelopes: [
+            buildExtractionFailureEnvelope(
+              "empty_completion",
+              envelopeActor,
+              deriveNonce(state, 0),
+            ),
+          ],
+          rationale:
+            "ibatexas-planner: genuinely empty completion after repair — extraction-failure REFUSE",
+          capabilities: [],
+          readToolCalls: [],
+          usage: {
+            inputTokens: completion.inputTokens,
+            outputTokens: completion.outputTokens,
+          },
+        };
       }
 
       let { envelopes, capabilities, readToolCalls, dropped } =
@@ -878,6 +1010,8 @@ export function createIbatexasPlanner(
           ],
           tools: pass2Tools,
           maxTokens,
+          // FE-T01 (D3) — same wire pin as the first-pass call above.
+          temperature: PINNED_COMPLETION_TEMPERATURE,
         });
         const durationMs2 = Date.now() - startedAt2;
         readLoopUsage = {
@@ -906,6 +1040,7 @@ export function createIbatexasPlanner(
             outputTokens: completion2.outputTokens,
             durationMs: durationMs2,
             at: new Date().toISOString(),
+            temperature: PINNED_COMPLETION_TEMPERATURE,
           });
         }
         // The second pass SUPERSEDES the first for envelopes/capabilities (the
@@ -923,6 +1058,41 @@ export function createIbatexasPlanner(
         capabilities = second.capabilities;
         dropped = [...dropped, ...second.dropped];
         readToolCalls = [...readToolCalls, ...second.readToolCalls];
+      }
+
+      // FE-T01 (D3) — a malformed `express_intent` call (the frozen provider's
+      // `{raw}` JSON.parse-failure passthrough — see ollama-fetch-client.ts /
+      // @claustrum/openai's `fromResponse`) is an extraction-wire FAILURE, not
+      // an ordinary out-of-plan drop. Scoped to "nothing else salvaged this
+      // turn" (`envelopes.length === 0`): a malformed call ALONGSIDE a
+      // successfully-extracted envelope does not override the legitimate one.
+      if (envelopes.length === 0 && dropped.includes(MALFORMED_EXPRESS_INTENT_MARKER)) {
+        logger.warn(
+          {
+            component: "planner",
+            event: "extraction_failure",
+            turnId: state.turnId,
+            reason: "malformed_tool_call",
+            droppedOutOfPlan: dropped,
+          },
+          "planner: malformed tool-call JSON — extraction-failure REFUSE",
+        );
+        return {
+          envelopes: [
+            buildExtractionFailureEnvelope(
+              "malformed_tool_call",
+              envelopeActor,
+              deriveNonce(state, 0),
+            ),
+          ],
+          rationale: `ibatexas-planner: malformed tool-call JSON — extraction-failure REFUSE (dropped [${dropped.join(", ")}])`,
+          capabilities: [],
+          readToolCalls,
+          usage: {
+            inputTokens: completion.inputTokens + readLoopUsage.inputTokens,
+            outputTokens: completion.outputTokens + readLoopUsage.outputTokens,
+          },
+        };
       }
 
       const rationale =
@@ -1034,6 +1204,8 @@ export function createIbatexasPlanner(
         messages: [{ role: "user", content: state.perception.text }],
         tools: [claimTool],
         maxTokens,
+        // FE-T01 (D3) — same wire pin as the intent-path `propose()` calls.
+        temperature: PINNED_COMPLETION_TEMPERATURE,
       });
 
       // FIX 1 (actor) — the AUTHENTICATED principal for this turn. The candidate
@@ -1240,6 +1412,7 @@ export function createIbatexasPlanner(
           outputTokens: completion.outputTokens,
           durationMs: Date.now() - claimStartedAt,
           at: new Date().toISOString(),
+          temperature: PINNED_COMPLETION_TEMPERATURE,
         });
       }
 

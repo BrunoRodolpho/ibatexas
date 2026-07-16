@@ -144,6 +144,8 @@ describe("createIbatexasResponder", () => {
     expect(req.system).toBe(RESPONDER_PERSONA_PTBR);
     expect(req.messages).toEqual([{ role: "user", content: "Oi, tudo bem?" }]);
     expect(draft.usage).toEqual({ inputTokens: 11, outputTokens: 7 });
+    // FE-T01 (D3) — temperature is pinned on the wire, not left unset.
+    expect(req.temperature).toBe(0);
   });
 
   it("REQUEST_CONFIRMATION returns decision.prompt verbatim, model-free", async () => {
