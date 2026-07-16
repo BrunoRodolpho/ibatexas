@@ -37,6 +37,7 @@ import {
   type GaugeConfiguration,
   type HistogramConfiguration,
 } from "prom-client"
+import { EXTRACTION_FAILURE_KIND } from "../claustrum/model-call-defaults.js"
 
 // ── Public types ─────────────────────────────────────────────────────────────
 
@@ -490,7 +491,21 @@ export function createKernelMetricsSink(
       // W3-11: signal taxonomy drift when an emitted kind isn't in the
       // typo gate. Only fires when knownIntentKinds is provided — without
       // the set we can't tell "unknown" from "known but rare".
-      if (knownIntentKinds && !knownIntentKinds.has(event.intentKind)) {
+      //
+      // FE-T01 — EXTRACTION_FAILURE_KIND is excluded: it's a DELIBERATE
+      // unowned sentinel (an explicit REFUSE for a malformed/empty model
+      // completion, never registered in any pack's intents by design — see
+      // model-call-defaults.ts), not a registry/packaging bug. Counting it
+      // here would conflate expected runtime extraction failures with
+      // taxonomy drift and could false-trip the drift alert this counter
+      // backs. `kernel_decision_total`/`kernel_refusal_total` already carry
+      // `intent_kind: "system.extraction_failure"` unconditionally (below),
+      // so the rate is still observable without new metric plumbing.
+      if (
+        knownIntentKinds &&
+        !knownIntentKinds.has(event.intentKind) &&
+        event.intentKind !== EXTRACTION_FAILURE_KIND
+      ) {
         safeIncr("kernel_intent_kind_unknown_total", () => {
           metrics.intentKindUnknownTotal.inc({ kind: event.intentKind })
         })

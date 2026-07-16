@@ -288,11 +288,23 @@ export function scriptedModel(
     const isPlanner = (req.tools?.length ?? 0) > 0;
     const emit = isPlanner && !fired;
     if (emit) fired = true;
+    const emittedCalls = emit ? toolCalls : [];
     return {
       model: "mock",
       stopReason: "end_turn",
-      text: isPlanner ? "" : responderText,
-      toolCalls: emit ? [...toolCalls] : [],
+      // FE-T01 (D4): live-verified against nemotron-3-nano:4b — a planner pass
+      // that emits NO tool call still says SOMETHING in `text` (the real
+      // customer/ops reply is a SEPARATE responder completion; this text is
+      // never rendered). Empty text is realistic ONLY alongside an actual
+      // tool call. Mirroring that here keeps every "no additional intent"
+      // planner pass out of the genuinely-empty-completion repair-or-refuse
+      // path (`isGenuinelyEmptyCompletion` in ibatexas-planner.ts).
+      text: isPlanner
+        ? emittedCalls.length > 0
+          ? ""
+          : "ok (mock planner pass — nothing to propose)"
+        : responderText,
+      toolCalls: [...emittedCalls],
       inputTokens: 5,
       outputTokens: 4,
     };

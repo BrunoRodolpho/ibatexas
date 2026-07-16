@@ -45,6 +45,7 @@ import {
 } from "./prompts/ibatexas-prompts.js";
 import { emitModelCallTrace } from "./llm-trace.js";
 import { completeWithEmptyRetry } from "./complete-with-retry.js";
+import { PINNED_COMPLETION_TEMPERATURE } from "./model-call-defaults.js";
 import {
   closedHoursBackstop,
   closedHoursDisclosure,
@@ -916,6 +917,10 @@ export function createIbatexasResponder(
           maxTokens,
           system: args.system,
           messages: [{ role: "user", content: args.userText }],
+          // FE-T01 (D3) — pin temperature so the synthesis completion is
+          // deterministic on the wire instead of falling to Ollama's ~0.8
+          // default (temperature was never sent before this).
+          temperature: PINNED_COMPLETION_TEMPERATURE,
         }),
       { maxAttempts: EMPTY_COMPLETION_MAX_ATTEMPTS },
     );
@@ -941,6 +946,8 @@ export function createIbatexasResponder(
         outputTokens: completion.outputTokens,
         durationMs,
         at: new Date().toISOString(),
+        // FE-T01 — the SAME constant passed to `deps.model.complete()` above.
+        temperature: PINNED_COMPLETION_TEMPERATURE,
         ...(args.intentHash === undefined ? {} : { intentHash: args.intentHash }),
       });
     }
