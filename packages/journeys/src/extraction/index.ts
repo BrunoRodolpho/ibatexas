@@ -70,3 +70,18 @@ export {
   type ExtractionAccuracyCliResult,
   type RunExtractionAccuracyCliOptions,
 } from "./accuracy-cli.js"
+
+export {
+  ExtractionSchemaBindingSchema,
+  checkBaselineAgainstCorpus,
+  checkSchemaBinding,
+  checkSchemaBindingCompleteness,
+  recomputeSchemaBinding,
+  sha256Hex,
+  type BaselineCorpusConsistencyResult,
+  type ExtractionSchemaBinding,
+  type ExtractionSchemaBindingEntry,
+  type SchemaBindingCheckResult,
+  type SchemaBindingCompletenessResult,
+  type SchemaBindingDrift,
+} from "./static-gate.js"

@@ -18,7 +18,7 @@
 // exclui packages/cli). Import dinâmico para não pesar o startup do ibx.
 
 import { existsSync, realpathSync } from "node:fs"
-import { mkdir, readFile, writeFile } from "node:fs/promises"
+import { mkdir, readdir, readFile, writeFile } from "node:fs/promises"
 import { dirname, isAbsolute, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import type { Command } from "commander"
@@ -522,6 +522,196 @@ async function runJourneyExtractionAccuracy(opts: {
     }
     throw err
   }
+}
+
+// ── `ibx journey extraction-consistency` (FE-T08) ───────────────────────────
+// THIN registration: the CERTIFYING, per-commit, MODEL-FREE extraction gate
+// (contrast `extraction-accuracy`, which drives the LIVE model — this command
+// NEVER does). All pure logic lives in @ibatexas/journeys
+// (src/extraction/static-gate.ts); this command's only job is the
+// cross-package file I/O the check-bypass sanctioned exception (leg 6)
+// exists for: reading the apps/api golden-fragment file(s) the committed
+// schema-binding references, and the corpus/baseline/waivers files.
+//
+// Four checks, all offline (no network beyond what pnpm install already did):
+//   1. the corpus loads and schema-validates (loadExtractionCorpus, same
+//      loader `ibx journey extraction-accuracy` uses for a live run).
+//   2. the waivers file loads and schema-validates (computeAccuracyReport's
+//      own loader, driven with zero results so ONLY waivers-file problems
+//      can surface).
+//   3. every case the baseline claims `passing` still exists in the corpus
+//      (checkBaselineAgainstCorpus) — catches a corpus rename/removal that
+//      forgot to update the baseline.
+//   4. the committed schema-binding's recorded hash of each golden
+//      extraction-prompt fragment still matches that file's CURRENT bytes
+//      (checkSchemaBinding) — catches an extraction-schema/persona change
+//      whose golden fixture was correctly regenerated (so FE-T06's OWN
+//      golden gate is green) but whose accuracy impact was never reviewed.
+//
+// `--update-binding` recomputes the binding's hashes from the CURRENT golden
+// fragment bytes and writes them back — the acknowledgment step an author
+// runs (after reviewing `ibx journey extraction-accuracy`'s impact) once a
+// schema change is intentional.
+
+interface ExtractionConsistencyFlags {
+  json?: boolean
+  updateBinding?: boolean
+  corpusDir?: string
+  baseline?: string
+  waivers?: string
+  binding?: string
+}
+
+const DEFAULT_BASELINE_PATH = "packages/journeys/governance/extraction-accuracy-baseline.json"
+const DEFAULT_BINDING_PATH = "packages/journeys/governance/extraction-schema-binding.json"
+
+async function runJourneyExtractionConsistency(opts: ExtractionConsistencyFlags): Promise<void> {
+  const deps = await import("@ibatexas/journeys")
+  const {
+    loadExtractionCorpus,
+    computeAccuracyReport,
+    AccuracyBaselineSchema,
+    checkBaselineAgainstCorpus,
+    ExtractionSchemaBindingSchema,
+    checkSchemaBinding,
+    checkSchemaBindingCompleteness,
+    recomputeSchemaBinding,
+  } = deps
+
+  const corpusDirOpt = opts.corpusDir === undefined ? undefined : resolveUserPath(opts.corpusDir)
+  const baselinePath = resolveUserPath(opts.baseline ?? DEFAULT_BASELINE_PATH)
+  const waiversPath = opts.waivers === undefined ? undefined : resolveUserPath(opts.waivers)
+  const bindingPath = resolveUserPath(opts.binding ?? DEFAULT_BINDING_PATH)
+
+  const problems: string[] = []
+
+  // 1. Corpus loads + schema-validates.
+  let corpus: Awaited<ReturnType<typeof loadExtractionCorpus>> | undefined
+  try {
+    corpus = await loadExtractionCorpus(corpusDirOpt)
+  } catch (err) {
+    problems.push(`corpus: ${(err as Error).message}`)
+  }
+
+  // 2. Waivers load + schema-validate (zero results isolates JUST the waivers check).
+  const waiverReport = await computeAccuracyReport({
+    results: [],
+    ...(waiversPath === undefined ? {} : { waiversPath }),
+  })
+  for (const p of waiverReport.problems) problems.push(`waivers: ${p.code} — ${p.message}`)
+
+  // 3. Baseline loads + schema-validates + is consistent with the corpus.
+  let baseline: import("@ibatexas/journeys").AccuracyBaseline | undefined
+  try {
+    const raw: unknown = JSON.parse(await readFile(baselinePath, "utf-8"))
+    const parsed = AccuracyBaselineSchema.safeParse(raw)
+    if (!parsed.success) {
+      problems.push(`baseline: invalid shape (${baselinePath})`)
+    } else {
+      baseline = parsed.data
+    }
+  } catch (err) {
+    problems.push(`baseline: unreadable (${baselinePath}): ${(err as Error).message}`)
+  }
+  if (baseline !== undefined && corpus !== undefined) {
+    const consistency = checkBaselineAgainstCorpus(baseline, corpus)
+    for (const key of consistency.orphanedBaselineClaims) {
+      problems.push(
+        `baseline: orphaned claim "${key}" — no matching case in the committed corpus (renamed/removed/typo?)`,
+      )
+    }
+  }
+
+  // 4. Schema binding: load + schema-validate + hash-compare against the CURRENT golden fragment bytes.
+  let binding: import("@ibatexas/journeys").ExtractionSchemaBinding | undefined
+  try {
+    const raw: unknown = JSON.parse(await readFile(bindingPath, "utf-8"))
+    const parsed = ExtractionSchemaBindingSchema.safeParse(raw)
+    if (!parsed.success) {
+      problems.push(`schema-binding: invalid shape (${bindingPath})`)
+    } else {
+      binding = parsed.data
+    }
+  } catch (err) {
+    problems.push(`schema-binding: unreadable (${bindingPath}): ${(err as Error).message}`)
+  }
+
+  if (binding !== undefined) {
+    const goldenFragmentContents = new Map<string, string>()
+    for (const entry of binding.bindings) {
+      try {
+        goldenFragmentContents.set(
+          entry.goldenFragmentPath,
+          await readFile(resolveUserPath(entry.goldenFragmentPath), "utf-8"),
+        )
+      } catch {
+        problems.push(`schema-binding: golden fragment file missing: ${entry.goldenFragmentPath}`)
+      }
+    }
+
+    // Completeness (review MINOR, #266): checkSchemaBinding above only
+    // verifies entries ALREADY in the binding file — a brand-new
+    // capability's golden fragment, never bound at all, has nothing to
+    // drift FROM and would otherwise silently escape the acknowledgment
+    // layer entirely. Scan the director(y/ies) the EXISTING binding
+    // entries live in (no new hardcoded path to drift from the actual
+    // layout) for every *.json fragment, and require each one to have an
+    // entry.
+    const goldenDirs = new Set(binding.bindings.map((entry) => dirname(entry.goldenFragmentPath)))
+    const committedGoldenFragmentPaths: string[] = []
+    for (const dir of goldenDirs) {
+      try {
+        const names = await readdir(resolveUserPath(dir))
+        for (const name of names) {
+          if (name.endsWith(".json")) committedGoldenFragmentPaths.push(join(dir, name))
+        }
+      } catch (err) {
+        problems.push(`schema-binding: golden fragment directory unreadable (${dir}): ${(err as Error).message}`)
+      }
+    }
+    const completeness = checkSchemaBindingCompleteness(binding, committedGoldenFragmentPaths)
+    for (const path of completeness.unboundGoldenFragments) {
+      problems.push(
+        `schema-binding: UNBOUND golden fragment "${path}" — no binding entry exists for it at all ` +
+          "(a new capability's schema escaped the acknowledgment layer). Add an entry to " +
+          `${bindingPath} (capability, goldenFragmentPath, goldenFragmentSha256), then re-run ` +
+          "`ibx journey extraction-consistency --update-binding`.",
+      )
+    }
+
+    if (opts.updateBinding === true) {
+      const fresh = recomputeSchemaBinding(binding, goldenFragmentContents)
+      await writeFile(bindingPath, `${JSON.stringify(fresh, null, 2)}\n`)
+      console.log(chalk.green(`✓ schema-binding updated: ${bindingPath}`))
+      for (const p of problems) console.error(chalk.yellow(`⚠ (unrelated, still present) ${p}`))
+      if (problems.length > 0) process.exitCode = 1
+      return
+    }
+
+    const bindingCheck = checkSchemaBinding(binding, goldenFragmentContents)
+    for (const drift of bindingCheck.drift) {
+      problems.push(
+        `schema-binding: DRIFT for "${drift.capability}" (${drift.goldenFragmentPath}) — expected ` +
+          `${drift.expectedSha256.slice(0, 12)}…, actual ${drift.actualSha256.slice(0, 12)}… — the ` +
+          "extraction schema/persona changed since the corpus/baseline was last reviewed for accuracy " +
+          "impact. Re-run `ibx journey extraction-accuracy`, review the impact, then re-commit the " +
+          "binding: `ibx journey extraction-consistency --update-binding`.",
+      )
+    }
+  }
+
+  if (opts.json === true) {
+    console.log(JSON.stringify({ ok: problems.length === 0, problems }, null, 2))
+  } else if (problems.length === 0) {
+    console.log(
+      chalk.green(
+        "✓ extraction-consistency: corpus/baseline/waivers/schema-binding all consistent (no live model needed).",
+      ),
+    )
+  } else {
+    for (const p of problems) console.error(chalk.red(`✗ ${p}`))
+  }
+  if (problems.length > 0) process.exitCode = 1
 }
 
 // ── `ibx journey migrate` (T1b-5) ───────────────────────────────────────────
@@ -1208,4 +1398,34 @@ export function registerJourneyCommands(group: Command): void {
         await runJourneyExtractionAccuracy(opts)
       },
     )
+
+  group
+    .command("extraction-consistency")
+    .description(
+      "Gate CERTIFICANTE, por-commit, SEM MODELO (FE-T08): valida offline que o corpus de extração carrega, os waivers são válidos, a baseline não reivindica nenhum caso órfão (renomeado/removido do corpus), e o schema-binding (hash do golden fragment do FE-T06) ainda bate com os bytes atuais — sem isso, uma mudança de schema regenerada corretamente no golden gate passaria silenciosamente sem revisão de impacto na acurácia. --update-binding recomputa o hash e regrava o binding (rode após revisar `ibx journey extraction-accuracy`).",
+    )
+    .option("--json", "Emite o relatório em JSON")
+    .option(
+      "--update-binding",
+      "Recomputa o hash do schema-binding a partir dos golden fragments atuais e regrava o arquivo",
+    )
+    .option(
+      "--corpus-dir <path>",
+      "Diretório alternativo do corpus de extração (default: packages/journeys/extraction-corpus/)",
+    )
+    .option(
+      "--baseline <path>",
+      "Arquivo de baseline alternativo (default: packages/journeys/governance/extraction-accuracy-baseline.json)",
+    )
+    .option(
+      "--waivers <path>",
+      "Arquivo de waivers alternativo (default: packages/journeys/governance/extraction-accuracy-waivers.json)",
+    )
+    .option(
+      "--binding <path>",
+      "Arquivo de schema-binding alternativo (default: packages/journeys/governance/extraction-schema-binding.json)",
+    )
+    .action(async (opts: ExtractionConsistencyFlags) => {
+      await runJourneyExtractionConsistency(opts)
+    })
 }
