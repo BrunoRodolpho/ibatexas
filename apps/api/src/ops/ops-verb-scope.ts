@@ -107,25 +107,42 @@ export const WA_EXCLUDED_OPS_KINDS: ReadonlySet<string> = new Set<string>([
  * does NOT build a propose-path — it LOCKS the current forbid-state as a tested
  * contract; whether the persona may ever PROPOSE these is the separate, deferred
  * owner-ratification question.
+ *
+ * FE-4 CONTRACT (FE-T26): the hand-authored `FORBIDDEN_OPS_DESTRUCTIVE_KINDS`
+ * constant that used to live here is DELETED — its 3 kinds now live as
+ * `CapabilityDefinition.opsForbiddenDestructive: true` (`order.cancel`,
+ * `payment.waive`, `payment.status.force`; see `packages/packs-composed/
+ * src/capability-definitions/definitions.ts`), projected by
+ * `generateOpsForbiddenDestructiveKinds` (FE-T24). `forbiddenOpsVerbProblems`
+ * below now REQUIRES its `forbidden` argument (no default) — see that
+ * function's own doc for why a required param, not a flipped default, was
+ * the correct FE-T25-recommended, team-lead-concurred CONTRACT action.
  */
-export const FORBIDDEN_OPS_DESTRUCTIVE_KINDS: ReadonlySet<string> =
-  new Set<string>(["order.cancel", "payment.waive", "payment.status.force"]);
 
 /**
  * The BKL-096 forbidden-verb check `opsPlaneDriftProblems` (ops-conductor.ts)
- * runs at boot: fails CLOSED if any `forbidden` kind (default the real
- * `FORBIDDEN_OPS_DESTRUCTIVE_KINDS`) ever enters the ops REGISTRY, matched by
- * either `capability` or `intentKind`. Extracted to a pure, parameterized
- * function (FE-T24 review fix) so its freshness/equivalence test can drive
- * this SAME real check with a generated forbidden set, instead of a
- * hand-copied re-implementation that could silently drift from the real
- * message text. The default parameter means every existing caller
- * (`opsPlaneDriftProblems`) is BYTE-IDENTICAL to the pre-extraction inline
- * loop — zero behavior change, pinned by the existing ops-conductor tests.
+ * runs at boot: fails CLOSED if any `forbidden` kind ever enters the ops
+ * REGISTRY, matched by either `capability` or `intentKind`. Extracted to a
+ * pure, parameterized function (FE-T24 review fix) so its freshness/
+ * equivalence test can drive this SAME real check with a generated
+ * forbidden set, instead of a hand-copied re-implementation that could
+ * silently drift from the real message text.
+ *
+ * FE-4 CONTRACT (FE-T26): `forbidden` is now REQUIRED — it had a default
+ * (the hand-authored `FORBIDDEN_OPS_DESTRUCTIVE_KINDS`, now deleted) during
+ * FE-T25's repoint window, when both the hand list and the generated
+ * projection stayed alive side by side. A required param (over flipping the
+ * default to the generated set) was FE-T25's own recorded recommendation
+ * (`docs/architecture/design/fe4-drift-gates.md`'s CONTRACT sequence),
+ * because a flipped default would have silently changed the behavior of
+ * any OTHER caller that never passed an explicit `forbidden` argument —
+ * every call site must now say what it means, not inherit a hidden
+ * default. Every caller (the real boot call in claustrum-bootstrap.ts,
+ * every test) already passes an explicit set.
  */
 export function forbiddenOpsVerbProblems(
   opsTools: ReadonlyArray<ToolDefinition<unknown, unknown>>,
-  forbidden: ReadonlySet<string> = FORBIDDEN_OPS_DESTRUCTIVE_KINDS,
+  forbidden: ReadonlySet<string>,
 ): string[] {
   const problems: string[] = [];
   for (const tool of opsTools) {
@@ -136,7 +153,7 @@ export function forbiddenOpsVerbProblems(
         `ops registry advertises FORBIDDEN two-person destructive verb ` +
           `"${capability}" (tool ${tool.id}); these verbs must stay ops-unreachable ` +
           `until an owner ratifies a propose-path (OPS-007/008/011). See ` +
-          `FORBIDDEN_OPS_DESTRUCTIVE_KINDS.`,
+          `CapabilityDefinition.opsForbiddenDestructive.`,
       );
     }
   }

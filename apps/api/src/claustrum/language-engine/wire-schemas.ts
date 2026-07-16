@@ -6,11 +6,12 @@
 // fix for "the model sees one mutation verb whose payload is an untyped,
 // empty-shaped object" (spec Problem Statement #1).
 //
-// Grown from FE-T05's one-entry tracer (order.status.transition) by FE-T10's
-// money-tier slice (payment.refund.issue) — later rollout slices (T11-14) add
-// their capability's schema here as each is authored. Purely additive: a
-// capability NOT in this map keeps today's generic `payload` shape,
-// byte-identical.
+// FE-T05 authored the first entry (order.status.transition); FE-T09 (D-a,
+// the amend inversion) adds the three granular post-checkout amend kinds;
+// FE-T10 adds the money-tier slice (payment.refund.issue). Later rollout
+// slices (T11-14) add their capability's schema here as each is authored.
+// Purely additive: a capability NOT in this map keeps today's generic
+// `payload` shape, byte-identical.
 //
 // `AUTHORED_SCHEMAS` is exported so the schema-lint CI gate
 // (`__tests__/schema-lint-gate.test.ts`, FE-T10) can walk EVERY registered
@@ -22,12 +23,20 @@ import {
   type CapabilityExtractionSchema,
 } from "./extraction-schema.js";
 import { ORDER_STATUS_TRANSITION_EXTRACTION_SCHEMA } from "./order-status-transition.schema.js";
+import {
+  ORDER_AMEND_ADD_ITEM_EXTRACTION_SCHEMA,
+  ORDER_AMEND_UPDATE_QTY_EXTRACTION_SCHEMA,
+  ORDER_AMEND_REMOVE_ITEM_EXTRACTION_SCHEMA,
+} from "./order-amend-granular.schema.js";
 import { PAYMENT_REFUND_ISSUE_EXTRACTION_SCHEMA } from "./payment-refund-issue.schema.js";
 
 /** Every capability's authored extraction schema — the schema-lint gate's
  *  walk target (FE-T10). */
 export const AUTHORED_SCHEMAS: readonly CapabilityExtractionSchema[] = [
   ORDER_STATUS_TRANSITION_EXTRACTION_SCHEMA,
+  ORDER_AMEND_ADD_ITEM_EXTRACTION_SCHEMA,
+  ORDER_AMEND_UPDATE_QTY_EXTRACTION_SCHEMA,
+  ORDER_AMEND_REMOVE_ITEM_EXTRACTION_SCHEMA,
   PAYMENT_REFUND_ISSUE_EXTRACTION_SCHEMA,
 ];
 

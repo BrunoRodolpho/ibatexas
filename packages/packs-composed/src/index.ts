@@ -40,6 +40,19 @@ import {
   whatsappPack,
   whatsappCapabilityPlanner,
 } from "@ibatexas/pack-whatsapp"
+// FE-4 CONTRACT (FE-T26): CHAT_DRIVABLE_TOOL_KINDS below is now COMPUTED,
+// not hand-typed — see its own doc comment. Imports the two specific
+// modules directly, NOT the `./capability-definitions/index.js` barrel:
+// that barrel's `guard-resolution.ts` itself imports `IBATEXAS_COMPOSED_
+// PACKS` from THIS file (to verify guard refs against the live installed
+// packs) — importing the barrel here would form a genuine ESM circular
+// import (this file → the barrel → guard-resolution.ts → this file again),
+// which breaks at module-eval time (`generateChatDrivableToolKinds` reads
+// as `undefined` mid-cycle). Importing the two leaf modules directly
+// avoids pulling in guard-resolution.ts (and its eager `assertGuardRefs
+// Resolve` side effect) at all from this file.
+import { CAPABILITY_DEFINITIONS } from "./capability-definitions/definitions.js"
+import { generateChatDrivableToolKinds } from "./capability-definitions/generate-chat-drivable-tool-kinds.js"
 
 // ── Composed pack list ───────────────────────────────────────────────────────
 
@@ -112,41 +125,26 @@ export function composedIntentKinds(): ReadonlyArray<string> {
 // ── Chat-drivable registered tool roster (T1a-2) ─────────────────────────────
 
 /**
- * The 18 chat-drivable, LLM-callable mutating tool capability ids
+ * The 20 chat-drivable, LLM-callable mutating tool capability ids
  * (`capability := intentKind`) registered by apps/api's
  * `listIbatexasToolPacks()` (`apps/api/src/tools/register-ibatexas-tool-packs.ts`).
+ *
+ * FE-4 CONTRACT (FE-T26): COMPUTED from `CAPABILITY_DEFINITIONS` via
+ * `generateChatDrivableToolKinds` (FE-T19's original generator, the family
+ * exemplar) — this was the very first hand list FE-4 mirrored, and is now
+ * the first one CONTRACT repoints. Same export name, same shape, same pack
+ * -grouped order (the generator preserves declaration order deliberately —
+ * see its own doc) — every consumer of `CHAT_DRIVABLE_TOOL_KINDS` is
+ * unaffected by this change.
  *
  * That registry is an apps/api module — unreachable from packages/* by
  * design — but the journey gates (`ibx journey lint` / `coverage`, DR-5)
  * need the registered chat surface as data. This list mirrors it in the
  * composition home; the drift test
  * `apps/api/src/__tests__/chat-drivable-roster-drift.test.ts` pins it to the
- * live roster fail-closed (same spirit as `toolRosterDrift`). Adding or
- * dropping a registered tool MUST update this list deliberately, or the api
- * suite goes red.
+ * live roster fail-closed (same spirit as `toolRosterDrift`) — that gate,
+ * not a hand edit, is what would now need to change if the registered
+ * roster ever moves.
  */
-export const CHAT_DRIVABLE_TOOL_KINDS: ReadonlyArray<string> = [
-  // pack-orders (10)
-  "order.cart.ensure",
-  "order.item.add",
-  "order.item.update",
-  "order.item.remove",
-  "order.coupon.apply",
-  "order.checkout.create",
-  "order.cancel",
-  "order.amend.request",
-  "order.note.add",
-  "order.review.submit",
-  // pack-reservations (4)
-  "reservation.create",
-  "reservation.modify",
-  "reservation.cancel",
-  "reservation.waitlist.join",
-  // pack-customer-onboarding (2)
-  "customer.preferences.update",
-  "customer.pix.details.save",
-  // pack-payments (1)
-  "payment.pix.regenerate",
-  // pack-whatsapp (1) — BKL-030 customer-side escalation on-ramp
-  "whatsapp.handoff.request",
-]
+export const CHAT_DRIVABLE_TOOL_KINDS: ReadonlyArray<string> =
+  generateChatDrivableToolKinds(CAPABILITY_DEFINITIONS)

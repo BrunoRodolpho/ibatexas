@@ -16,6 +16,7 @@ import { buildEnvelope, createAuthorityGraphStore, type IntentEnvelope } from "@
 import {
   ordersPack,
   ordersPolicyBundle,
+  type OrderContext,
   type OrderIntentKind,
   type OrderPayload,
   type OrderState,
@@ -1106,6 +1107,43 @@ describe("ordersPack — PackV0 shape", () => {
         "get_ordered_together",
       ]).toContain(t)
     }
+  })
+})
+
+// ── FE-T09 (D-a): amend inversion — the model-visible capability re-route ──
+
+describe("ordersCapabilityPlanner — FE-T09 amend inversion", () => {
+  function authenticatedContext(): OrderContext {
+    return { channel: "web", customerId: "c-1", cartId: "cart-1", orderId: null }
+  }
+
+  it("the grouped order.amend.request has NO reachable model producer (authenticated)", () => {
+    const plan = ordersPack.planner.plan(state(), authenticatedContext())
+    expect(plan.allowedIntents).not.toContain("order.amend.request")
+  })
+
+  it("the three granular amend kinds ARE model-proposable (authenticated)", () => {
+    const plan = ordersPack.planner.plan(state(), authenticatedContext())
+    expect(plan.allowedIntents).toContain("order.amend.add_item")
+    expect(plan.allowedIntents).toContain("order.amend.update_qty")
+    expect(plan.allowedIntents).toContain("order.amend.remove_item")
+  })
+
+  it("no amend kind (grouped or granular) is proposable for an unauthenticated/guest context", () => {
+    const plan = ordersPack.planner.plan(state({ customerId: null }), {
+      channel: "web",
+      customerId: null,
+      cartId: "cart-1",
+      orderId: null,
+    })
+    expect(plan.allowedIntents).not.toContain("order.amend.request")
+    expect(plan.allowedIntents).not.toContain("order.amend.add_item")
+    expect(plan.allowedIntents).not.toContain("order.amend.update_qty")
+    expect(plan.allowedIntents).not.toContain("order.amend.remove_item")
+  })
+
+  it("order.amend.request is STILL in ordersPack.intents[] — kernel-adjudicable, just not model-proposable (the legacy HTTP route still builds it directly)", () => {
+    expect(ordersPack.intents).toContain("order.amend.request")
   })
 })
 

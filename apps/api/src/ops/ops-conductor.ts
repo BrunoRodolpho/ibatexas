@@ -324,20 +324,19 @@ export function opsPlaneDriftProblems(input: {
   readonly contexts?: ReadonlyArray<RosterDriftContext>;
   readonly onWarn?: (message: string) => void;
   /**
-   * FE-T25 (FE-4.3 — repoint the drift gates; full classification table +
-   * rationale at docs/architecture/design/fe4-drift-gates.md) — the BKL-096
-   * forbidden set to
-   * check the ops registry against, threaded to `forbiddenOpsVerbProblems`.
-   * `undefined` (the default) falls through to that function's own default
-   * (the hand-authored `FORBIDDEN_OPS_DESTRUCTIVE_KINDS`) — every existing
-   * caller that does not pass this is UNCHANGED. The real chat-registry boot
-   * call (`apps/api/src/claustrum-bootstrap.ts`) supplies the GENERATED
-   * equivalent, built from `@ibatexas/packs-composed/capability-
-   * definitions`'s `generateOpsForbiddenDestructiveKinds(CAPABILITY_
-   * DEFINITIONS)` — mirrors `toolRosterDrift`'s `chatSurfacedKinds` (FE-T22)
-   * threading pattern exactly.
+   * The BKL-096 forbidden set to check the ops registry against, threaded
+   * to `forbiddenOpsVerbProblems`.
+   *
+   * FE-4 CONTRACT (FE-T26): REQUIRED (was optional during FE-T25's repoint
+   * window, defaulting through to the hand-authored `FORBIDDEN_OPS_
+   * DESTRUCTIVE_KINDS`, now deleted). Every caller must now state its
+   * intent explicitly. The real chat-registry boot call (`apps/api/src/
+   * claustrum-bootstrap.ts`) supplies `generateOpsForbiddenDestructiveKinds
+   * (CAPABILITY_DEFINITIONS)` from `@ibatexas/packs-composed/capability-
+   * definitions` — mirrors `toolRosterDrift`'s `chatSurfacedKinds` (FE-T22)
+   * threading pattern.
    */
-  readonly forbiddenOpsKinds?: ReadonlySet<string>;
+  readonly forbiddenOpsKinds: ReadonlySet<string>;
 }): string[] {
   const opsPlanners = [
     opsCapabilityPlanner as CapabilityPlanner<unknown, unknown>,
@@ -367,12 +366,10 @@ export function opsPlaneDriftProblems(input: {
   // roster; it makes the exclusion EXPLICIT so a future PR that registers one as
   // an ops tool trips this gate rather than silently exposing it. The persona's
   // advertised SURFACE (planner allowlist, both ingress scopes) is pinned by the
-  // BKL-096 drift test — see FORBIDDEN_OPS_DESTRUCTIVE_KINDS. Extracted to
-  // `forbiddenOpsVerbProblems` (ops-verb-scope.ts, FE-T24 review fix) so a
-  // freshness test can drive this SAME real check with a generated forbidden
-  // set. FE-T25: `input.forbiddenOpsKinds` threads the caller's override
-  // through — `undefined` (no override) preserves the pre-FE-T25 behavior
-  // byte-for-byte via `forbiddenOpsVerbProblems`'s own default.
+  // BKL-096 drift test — see CapabilityDefinition.opsForbiddenDestructive.
+  // Extracted to `forbiddenOpsVerbProblems` (ops-verb-scope.ts, FE-T24 review
+  // fix) so a freshness test can drive this SAME real check with a generated
+  // forbidden set; `input.forbiddenOpsKinds` is REQUIRED (FE-T26 CONTRACT).
   problems.push(...forbiddenOpsVerbProblems(input.opsTools, input.forbiddenOpsKinds));
   // BKL-100 — advertised ⊆ renderable: every ops read the planner advertises MUST
   // have a deterministic render template (ops-read-render.ts), else a staff read

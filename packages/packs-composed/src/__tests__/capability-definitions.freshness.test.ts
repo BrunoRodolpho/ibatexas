@@ -1,26 +1,35 @@
 import { describe, expect, it } from "vitest"
 
-import { CHAT_DRIVABLE_TOOL_KINDS } from "../index.js"
 import { CAPABILITY_DEFINITIONS, generateChatDrivableToolKinds } from "../capability-definitions/index.js"
 import type { CapabilityDefinition } from "../capability-definitions/index.js"
 
-describe("codegen-freshness gate — CHAT_DRIVABLE_TOOL_KINDS exemplar (FE-4.3)", () => {
-  it("generateChatDrivableToolKinds(CAPABILITY_DEFINITIONS) reproduces the committed hand list byte-for-byte", () => {
-    const generated = generateChatDrivableToolKinds(CAPABILITY_DEFINITIONS)
-    // Array, not just Set, equality — CHAT_DRIVABLE_TOOL_KINDS's own doc
-    // comment groups entries by pack in a specific order ("pack-orders
-    // (10)", "pack-reservations (4)", …); an order regression is real
-    // drift the freshness gate must catch, not something a Set comparison
-    // would hide.
-    expect(generated).toEqual([...CHAT_DRIVABLE_TOOL_KINDS])
-  })
-
-  it("covers exactly the hand list's cardinality (18) — a silent drop or duplicate would still diff above, this pins the count independently", () => {
-    expect(CHAT_DRIVABLE_TOOL_KINDS).toHaveLength(18)
-    expect(generateChatDrivableToolKinds(CAPABILITY_DEFINITIONS)).toHaveLength(18)
-  })
-
-  it("the projection is a genuine derivation (mutating+chat filter), not a copy of the hand list: a non-chat or non-mutating definition is excluded", () => {
+// FE-4 CONTRACT (FE-T26) — RETIRED-AS-TAUTOLOGICAL: this describe block
+// used to be titled "codegen-freshness gate — CHAT_DRIVABLE_TOOL_KINDS
+// exemplar (FE-4.3)" and carried two tests comparing
+// `generateChatDrivableToolKinds(CAPABILITY_DEFINITIONS)` against the
+// hand-authored `CHAT_DRIVABLE_TOOL_KINDS` (`../index.js`) byte-for-byte
+// and by cardinality. This ticket repointed `CHAT_DRIVABLE_TOOL_KINDS`
+// itself to literally BE `generateChatDrivableToolKinds(CAPABILITY_
+// DEFINITIONS)` — the two sides of both comparisons are now the identical
+// expression, so they always pass by construction and prove nothing
+// (FE-4.3's own "generated-vs-generated" tautology, the exact failure
+// mode the spec warned CONTRACT could introduce). Retired rather than left
+// vacuously passing. The surviving independent check for this data is
+// `apps/api/src/__tests__/chat-drivable-roster-drift.test.ts`'s "mirrors
+// the live registered roster exactly (both directions)" test, which
+// compares the (now-generated) constant against `listIbatexasToolPacks()`
+// — the REAL registered DI tool container, a genuine runtime
+// materialization this repoint never touched. Recorded in docs/
+// architecture/design/fe4-drift-gates.md.
+//
+// The one test from that block that was NEVER tautological — it tests the
+// generator FUNCTION's filtering behavior directly, independent of what
+// CHAT_DRIVABLE_TOOL_KINDS's own source happens to be — survives below,
+// adjusted to compare two direct generator calls instead of referencing
+// the constant.
+describe("generateChatDrivableToolKinds — filter behavior (FE-4.3)", () => {
+  it("is a genuine derivation (mutating+chat filter), not an identity pass-through: a non-chat or non-mutating definition is excluded", () => {
+    const baseline = generateChatDrivableToolKinds(CAPABILITY_DEFINITIONS)
     const withExtraNonChatDef: readonly CapabilityDefinition[] = [
       ...CAPABILITY_DEFINITIONS,
       {
@@ -48,7 +57,11 @@ describe("codegen-freshness gate — CHAT_DRIVABLE_TOOL_KINDS exemplar (FE-4.3)"
         refusalCode: "order.default.deny",
       },
     ]
-    expect(generateChatDrivableToolKinds(withExtraNonChatDef)).toEqual([...CHAT_DRIVABLE_TOOL_KINDS])
+    expect(generateChatDrivableToolKinds(withExtraNonChatDef)).toEqual(baseline)
+  })
+
+  it("pins the real projection's cardinality (20, post-FE-T09 D-a: 18→20) — a silent drop or duplicate in CAPABILITY_DEFINITIONS would change this", () => {
+    expect(generateChatDrivableToolKinds(CAPABILITY_DEFINITIONS)).toHaveLength(20)
   })
 })
 

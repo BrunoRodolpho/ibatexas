@@ -17,11 +17,14 @@
 // rides the kernel contract" is upheld: `envelope.payload` itself never
 // carries a provenance key — only the SIDECAR `record.metadata` does).
 //
-// Deliberately narrow (this tracer's scope): only `order.status.transition`
-// is recognized; every other capability returns `undefined` (a no-op —
+// Deliberately narrow: only the capabilities explicitly dispatched below are
+// recognized; every other capability returns `undefined` (a no-op —
 // `attachAuditMetadata`/`metadataProvider` leave `record.metadata` absent
 // when the provider returns undefined), so this is 100% inert for every
-// other capability in the system. Later rollout slices (T11-14) extend the
+// other capability in the system. FE-T05 authored the first (
+// order.status.transition); FE-T09 (D-a) added the three granular
+// post-checkout amend kinds; FE-T10 added the money-tier slice
+// (payment.refund.issue). Later rollout slices (T11-14) extend the
 // capability set this function recognizes as their own extraction schemas
 // land — the shape (derive ExtractionIR + HydratedIntentIR from the final
 // envelope via the capability's `CapabilityExtractionSchema`) generalizes
@@ -44,6 +47,11 @@ import {
   type CapabilityExtractionSchema,
 } from "./extraction-schema.js";
 import { ORDER_STATUS_TRANSITION_EXTRACTION_SCHEMA } from "./order-status-transition.schema.js";
+import {
+  ORDER_AMEND_ADD_ITEM_EXTRACTION_SCHEMA,
+  ORDER_AMEND_UPDATE_QTY_EXTRACTION_SCHEMA,
+  ORDER_AMEND_REMOVE_ITEM_EXTRACTION_SCHEMA,
+} from "./order-amend-granular.schema.js";
 import {
   OPS_REFUND_DEFAULT_REASON,
   PAYMENT_REFUND_ISSUE_EXTRACTION_SCHEMA,
@@ -165,6 +173,79 @@ function deriveOrderStatusTransition(
 }
 
 /**
+ * FE-T09 (D-a) — `order.amend.add_item`'s resolver-stamped (Identity-class)
+ * fields: `orderId` (auto-resolved "most recent order", same grounded/guess
+ * semantics as `order.status.transition`'s) and `variantId` + `allergens`
+ * (resolved from the model's explicit NL `item` reference via
+ * `resolveProductForItem` — an EXPLICIT-reference resolution, not a guess,
+ * hence `authoritative` per FE-0.4's "a resolved identifier from an explicit
+ * reference" mapping, not `grounded`).
+ */
+const ORDER_AMEND_ADD_ITEM_RESOLVER_FIELDS: readonly string[] = [
+  "orderId",
+  "variantId",
+  "allergens",
+];
+
+/** `order.amend.update_qty` / `order.amend.remove_item` share the same
+ *  resolver-stamped fields: `orderId` (grounded) + `itemId` (authoritative —
+ *  resolved from the model's explicit NL `item` reference). */
+const ORDER_AMEND_UPDATE_QTY_RESOLVER_FIELDS: readonly string[] = ["orderId", "itemId"];
+const ORDER_AMEND_REMOVE_ITEM_RESOLVER_FIELDS: readonly string[] = ["orderId", "itemId"];
+
+/**
+ * Shared derivation shape for the three granular amend kinds (FE-T09) —
+ * mirrors `deriveOrderStatusTransition`'s structure exactly, parameterized by
+ * the capability's schema, its resolver-field allowlist, and which of those
+ * resolver fields get `authoritative` provenance (an explicit-reference
+ * resolution) vs. the default `grounded` (an auto-resolved guess — always
+ * `orderId` here, same as `order.status.transition`).
+ */
+function deriveGranularAmend(
+  schema: CapabilityExtractionSchema,
+  resolverFieldAllowlist: readonly string[],
+  authoritativeResolverFields: ReadonlySet<string>,
+  resolvedPayload: Readonly<Record<string, unknown>>,
+): LanguageEngineAuditMetadata {
+  const { extractionPayload } = splitResolvedPayload(schema, resolvedPayload);
+
+  const extractionProvenance: Record<string, ReturnType<typeof modelProvenance>> =
+    {};
+  for (const field of schema.fields) {
+    if (field.name in extractionPayload) {
+      extractionProvenance[field.name] = modelProvenance();
+    }
+  }
+  const extractionIR: ExtractionIR = {
+    capability: schema.capability,
+    payload: extractionPayload,
+    provenance: extractionProvenance,
+  };
+
+  const hydratedProvenance: Record<string, FieldProvenanceMap[string]> = {
+    ...extractionProvenance,
+  };
+  for (const key of resolverFieldAllowlist) {
+    if (!(key in resolvedPayload)) continue;
+    hydratedProvenance[key] = authoritativeResolverFields.has(key)
+      ? resolverAuthoritativeProvenance()
+      : resolverGroundedProvenance();
+  }
+  const hydratedIntentIR: HydratedIntentIR = {
+    capability: schema.capability,
+    payload: projectHydratedPayload(
+      extractionPayload,
+      resolvedPayload,
+      resolverFieldAllowlist,
+    ),
+    provenance: hydratedProvenance,
+    confirmationRequired: hasGroundedField(hydratedProvenance),
+  };
+
+  return { extractionIR, hydratedIntentIR };
+}
+
+/**
  * FE-T10 — the money-tier resolver-stamped fields `payment.refund.issue`
  * hydration adds beyond the extraction schema (STOP-GATE B,
  * `ops-resolver.ts`'s `resolveRefundTarget`): `paymentId` + the three
@@ -215,10 +296,10 @@ const PAYMENT_REFUND_ISSUE_RESOLVER_FIELDS: readonly string[] = [
  * (pack-payments/src/policies.ts), a kernel-level policy independent of
  * hydration's own grounded-guess reasoning. `record.decision.kind` is read
  * directly (this function receives the full `AuditRecord`, unlike
- * `deriveOrderStatusTransition`) so `confirmationRequired` stays an HONEST
- * union of BOTH sources — never overloading `hasGroundedField`'s documented
- * "auto-resolved guess" meaning, which order.status.transition's derivation
- * still relies on unchanged.
+ * `deriveOrderStatusTransition`/`deriveGranularAmend`) so
+ * `confirmationRequired` stays an HONEST union of BOTH sources — never
+ * overloading `hasGroundedField`'s documented "auto-resolved guess" meaning,
+ * which the other derivations still rely on unchanged.
  */
 function derivePaymentRefundIssue(record: AuditRecord): LanguageEngineAuditMetadata {
   const resolvedPayload = record.envelope.payload as Readonly<
@@ -330,6 +411,36 @@ export function buildLanguageEngineAuditMetadata(
 
   if (record.envelope.kind === "order.status.transition") {
     return { languageEngine: deriveOrderStatusTransition(payload) };
+  }
+  if (record.envelope.kind === "order.amend.add_item") {
+    return {
+      languageEngine: deriveGranularAmend(
+        ORDER_AMEND_ADD_ITEM_EXTRACTION_SCHEMA,
+        ORDER_AMEND_ADD_ITEM_RESOLVER_FIELDS,
+        new Set(["variantId", "allergens"]),
+        payload,
+      ),
+    };
+  }
+  if (record.envelope.kind === "order.amend.update_qty") {
+    return {
+      languageEngine: deriveGranularAmend(
+        ORDER_AMEND_UPDATE_QTY_EXTRACTION_SCHEMA,
+        ORDER_AMEND_UPDATE_QTY_RESOLVER_FIELDS,
+        new Set(["itemId"]),
+        payload,
+      ),
+    };
+  }
+  if (record.envelope.kind === "order.amend.remove_item") {
+    return {
+      languageEngine: deriveGranularAmend(
+        ORDER_AMEND_REMOVE_ITEM_EXTRACTION_SCHEMA,
+        ORDER_AMEND_REMOVE_ITEM_RESOLVER_FIELDS,
+        new Set(["itemId"]),
+        payload,
+      ),
+    };
   }
   if (record.envelope.kind === "payment.refund.issue") {
     return { languageEngine: derivePaymentRefundIssue(record) };

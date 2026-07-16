@@ -29,10 +29,21 @@ let orderListByCustomer: (cid: string, input?: unknown) => Promise<{ orders: unk
   async () => ({ orders: [], count: 0 });
 let reservationListByCustomer: (cid: string, opts?: unknown) => Promise<{ reservations: unknown[]; total: number }> =
   async () => ({ reservations: [], total: 0 });
+// FE-T09 (D-a) — order.amend.update_qty/remove_item's LIVE order-fetch +
+// title-match hydration (resolveOrderLineItem), distinct from the stored
+// OrderProjection `orderGetById` above.
+let orderServiceGetOrder: (
+  orderId: string,
+  customerId?: string,
+) => Promise<{ order: { items?: Array<{ id: string; title: string }> }; ownershipValid: boolean }> =
+  async () => {
+    throw new Error("order not found");
+  };
 
 vi.mock("@ibatexas/tools", () => ({
   rk: (s: string) => s,
   getRedisClient: async () => ({ get: (k: string) => redisGet(k) }),
+  medusaAdmin: {},
   medusaStore: (path: string) => medusaStoreFetch(path),
   reaisToCentavos: (reais: number) => Math.round(reais * 100),
   searchProducts: (input: unknown, ctx?: unknown) => searchProductsMock(input, ctx),
@@ -41,6 +52,9 @@ vi.mock("@ibatexas/domain", () => ({
   createOrderQueryService: () => ({
     getById: (id: string) => orderGetById(id),
     listByCustomer: (cid: string, input?: unknown) => orderListByCustomer(cid, input),
+  }),
+  createOrderService: () => ({
+    getOrder: (orderId: string, customerId?: string) => orderServiceGetOrder(orderId, customerId),
   }),
   createPaymentQueryService: () => ({
     getById: (id: string) => paymentGetById(id),
@@ -88,6 +102,9 @@ beforeEach(() => {
   searchProductsMock = async () => ({ products: [] });
   orderListByCustomer = async () => ({ orders: [], count: 0 });
   reservationListByCustomer = async () => ({ reservations: [], total: 0 });
+  orderServiceGetOrder = async () => {
+    throw new Error("order not found");
+  };
 });
 
 describe("resolve-and-assemble — F4 read side", () => {
@@ -389,7 +406,9 @@ describe("resolve-and-assemble — L1 payload threading (D-014)", () => {
 describe("resolve-and-assemble — NL→variantId (BKL-061)", () => {
   it("resolves a loose product name to variantId + explicit allergens + defaults quantity (BKL-061/067)", async () => {
     searchProductsMock = async () => ({
-      products: [{ id: "prod_1", variants: [{ id: "var_coke" }], allergens: ["gluten"] }],
+      products: [
+        { id: "prod_1", title: "Coca-Cola 350ml", variants: [{ id: "var_coke" }], allergens: ["gluten"] },
+      ],
     });
     const { payload } = await resolveAndAssemble({
       kind: "order.item.add",
@@ -407,7 +426,7 @@ describe("resolve-and-assemble — NL→variantId (BKL-061)", () => {
 
   it("injects an empty allergen array for a product with no allergens (still explicit)", async () => {
     searchProductsMock = async () => ({
-      products: [{ id: "p2", variants: [{ id: "var_water" }], allergens: [] }],
+      products: [{ id: "p2", title: "Água Mineral 500ml", variants: [{ id: "var_water" }], allergens: [] }],
     });
     const { payload } = await resolveAndAssemble({
       kind: "order.item.add",
@@ -457,6 +476,360 @@ describe("resolve-and-assemble — NL→variantId (BKL-061)", () => {
       sessionId: "conv-1",
     });
     expect((payload as { variantId?: string }).variantId).toBeUndefined();
+  });
+
+  // FE-T09b (FE-D17 interim floor, BKL-154 live-drive follow-up) — Typesense's
+  // fuzzy ranking is NOT trusted blindly: a NON-EMPTY result with zero lexical
+  // relationship to the query is treated exactly like no match at all. Live-
+  // demonstrated case: query "xyzzy" still returned A product (some unrelated
+  // top hit) — the resolver must refuse to attach that product's variant/
+  // allergens rather than guessing. This is DISTINCT from "leaves variantId
+  // unset when no product matches" above (an EMPTY result set) — here
+  // Typesense returns something, just not anything related.
+  it("leaves variantId/allergens unset when the top hit shares NO lexical relationship with the query (arbitrary-match floor, FE-D17 interim)", async () => {
+    searchProductsMock = async () => ({
+      products: [
+        {
+          id: "prod_unrelated",
+          title: "Costela Bovina Defumada",
+          variants: [{ id: "var_costela" }],
+          allergens: ["gluten"],
+        },
+      ],
+    });
+    const { payload } = await resolveAndAssemble({
+      kind: "order.item.add",
+      payload: { item: "xyzzy" },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    const p = payload as { variantId?: string; allergens?: string[] };
+    expect(p.variantId).toBeUndefined();
+    expect(p.allergens).toBeUndefined();
+  });
+
+  it("order.amend.add_item: the same arbitrary-match floor applies (unrelated top hit refused, not attached to the amend target)", async () => {
+    searchProductsMock = async () => ({
+      products: [
+        { id: "prod_unrelated", title: "Costela Bovina Defumada", variants: [{ id: "var_costela" }], allergens: [] },
+      ],
+    });
+    const { payload } = await resolveAndAssemble({
+      kind: "order.amend.add_item",
+      payload: { orderId: "ord_1", item: "xyzzy" },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    const p = payload as { variantId?: string; allergens?: string[] };
+    expect(p.variantId).toBeUndefined();
+    expect(p.allergens).toBeUndefined();
+  });
+
+  it("does NOT reject a genuine loose/partial match — a shared token is enough (permissive direction, never over-strict)", async () => {
+    searchProductsMock = async () => ({
+      products: [
+        { id: "prod_coke_zero", title: "Coca-Cola Zero 350ml", variants: [{ id: "var_zero" }], allergens: [] },
+      ],
+    });
+    const { payload } = await resolveAndAssemble({
+      kind: "order.item.add",
+      // The customer says just "coca" — a substring of "Coca-Cola", not the
+      // full title. The overlap floor must still accept this.
+      payload: { item: "coca" },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect((payload as { variantId?: string }).variantId).toBe("var_zero");
+  });
+
+  // Review MINOR (post-#268): the overlap floor is permissive by TOKEN/
+  // CONTAINMENT, not by fuzzy/stemmed matching — a pt-BR DIMINUTIVE
+  // ("coquinha" for "coca") shares no token and no substring with
+  // "Coca-Cola" and is refused today, exactly like "xyzzy". This is an
+  // ACCEPTED INTERIM COST (a real stemmed/fuzzy match belongs in the
+  // search layer itself — FE-D17 — not reimplemented in this resolver-
+  // level floor), pinned here explicitly so a future change to
+  // hasLexicalOverlap's behavior on diminutives is a conscious choice.
+  it("REFUSES a pt-BR diminutive ('coquinha') against its base-form product — accepted interim cost of the token/containment floor, not a genuine-match regression", async () => {
+    searchProductsMock = async () => ({
+      products: [
+        { id: "prod_coke", title: "Coca-Cola 350ml", variants: [{ id: "var_coke" }], allergens: ["gluten"] },
+      ],
+    });
+    const { payload } = await resolveAndAssemble({
+      kind: "order.item.add",
+      payload: { item: "coquinha" },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    const p = payload as { variantId?: string; allergens?: string[] };
+    expect(p.variantId).toBeUndefined();
+    expect(p.allergens).toBeUndefined();
+  });
+});
+
+// ── FE-T09 (D-a) — the granular post-checkout amend kinds' item hydration ───
+//
+// order.amend.add_item reuses the EXACT SAME resolveProductForItem path as
+// order.item.add (BKL-061/067) — the model's NL `item` reference resolves to
+// variantId + the product's EXPLICIT allergens, never the model itself.
+// order.amend.update_qty/remove_item resolve the NL reference to a line
+// ALREADY on the order (never a catalog-wide guess) via resolveOrderLineItem —
+// a LIVE Medusa order fetch + case-insensitive title match, mirroring
+// amend-order.ts's existing semantics, yielding a REAL Medusa line-item id
+// (never a title stand-in).
+describe("resolve-and-assemble — FE-T09 granular amend item hydration", () => {
+  it("order.amend.add_item resolves variantId + explicit allergens from the catalog (never model-populated)", async () => {
+    searchProductsMock = async () => ({
+      products: [{ id: "prod_1", title: "Coca-Cola 350ml", variants: [{ id: "var_coke" }], allergens: ["gluten"] }],
+    });
+    const { payload } = await resolveAndAssemble({
+      kind: "order.amend.add_item",
+      payload: { orderId: "ord_1", item: "coca" },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    const p = payload as { variantId?: string; allergens?: string[]; quantity?: number };
+    expect(p.variantId).toBe("var_coke");
+    expect(p.allergens).toEqual(["gluten"]);
+    expect(p.quantity).toBe(1);
+  });
+
+  it("order.amend.add_item leaves allergens/variantId UNSET when no catalog match — the kernel's requireExplicitAllergens REFUSEs rather than the resolver guessing", async () => {
+    searchProductsMock = async () => ({ products: [] });
+    const { payload } = await resolveAndAssemble({
+      kind: "order.amend.add_item",
+      payload: { orderId: "ord_1", item: "xyzzy nonexistent" },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    const p = payload as { variantId?: string; allergens?: string[] };
+    expect(p.variantId).toBeUndefined();
+    expect(p.allergens).toBeUndefined();
+  });
+
+  // Review finding (post-#264, MAJOR): the old `needsAllergens =
+  // !Array.isArray(out.allergens)` conditional treated ANY array already on
+  // the payload — including one smuggled in by an adversarial completion —
+  // as "already resolved" and skipped the authoritative fill entirely.
+  // requireExplicitAllergens (pack-orders) only checks the SHAPE (is it an
+  // array?), never the source, so a smuggled array would have defeated Hard
+  // Rule #1 / AC3 silently. These two regressions prove the fix: the
+  // resolver's product data always wins, both kinds, both outcomes.
+  it("order.item.add: a scripted completion smuggling allergens is OVERWRITTEN by the resolved product's allergens, never the model's (adversarial)", async () => {
+    searchProductsMock = async () => ({
+      products: [{ id: "prod_1", title: "Coca-Cola 350ml", variants: [{ id: "var_coke" }], allergens: ["gluten"] }],
+    });
+    const { payload } = await resolveAndAssemble({
+      kind: "order.item.add",
+      // Adversarial: the model schema never exposes `allergens`, but a
+      // malformed/adversarial completion could still carry the key.
+      payload: { item: "coca", allergens: [] },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect((payload as { allergens?: string[] }).allergens).toEqual(["gluten"]);
+  });
+
+  it("order.amend.add_item: a scripted completion smuggling a FABRICATED allergen claim is OVERWRITTEN by the resolved product's real allergens (adversarial)", async () => {
+    searchProductsMock = async () => ({
+      products: [{ id: "prod_1", title: "Coca-Cola 350ml", variants: [{ id: "var_coke" }], allergens: ["gluten"] }],
+    });
+    const { payload } = await resolveAndAssemble({
+      kind: "order.amend.add_item",
+      // Adversarial: the model claims NO allergens (or the wrong ones) —
+      // the resolver must never defer to it.
+      payload: { orderId: "ord_1", item: "coca", allergens: ["nuts"] },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect((payload as { allergens?: string[] }).allergens).toEqual(["gluten"]);
+  });
+
+  it("order.amend.add_item: a smuggled allergens array does NOT survive when the catalog lookup misses — stripped, never fallen back to, so requireExplicitAllergens still REFUSEs (adversarial + no match)", async () => {
+    searchProductsMock = async () => ({ products: [] });
+    const { payload } = await resolveAndAssemble({
+      kind: "order.amend.add_item",
+      payload: { orderId: "ord_1", item: "xyzzy nonexistent", allergens: [] },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect((payload as { allergens?: string[] }).allergens).toBeUndefined();
+  });
+
+  it("order.amend.update_qty resolves itemId (a REAL Medusa line-item id) from a UNIQUE matching line on the LIVE order", async () => {
+    orderServiceGetOrder = async () => ({
+      ownershipValid: true,
+      order: {
+        items: [
+          { id: "li_burger", title: "Hambúrguer", quantity: 1 },
+          { id: "li_fries", title: "Batata", quantity: 1 },
+        ],
+      },
+    });
+    const { payload } = await resolveAndAssemble({
+      kind: "order.amend.update_qty",
+      payload: { orderId: "ord_1", item: "hambúrguer", quantity: 2 },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    const p = payload as { itemId?: string; quantity?: number };
+    expect(p.itemId).toBe("li_burger");
+    expect(p.quantity).toBe(2);
+  });
+
+  it("order.amend.remove_item resolves itemId the same way (no quantity field)", async () => {
+    orderServiceGetOrder = async () => ({
+      ownershipValid: true,
+      order: { items: [{ id: "li_burger", title: "Hambúrguer", quantity: 1 }] },
+    });
+    const { payload } = await resolveAndAssemble({
+      kind: "order.amend.remove_item",
+      payload: { orderId: "ord_1", item: "hambúrguer" },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect((payload as { itemId?: string }).itemId).toBe("li_burger");
+  });
+
+  it("leaves itemId UNSET when no line on the LIVE order matches the NL reference (not found — never guesses, downstream honestly refuses)", async () => {
+    orderServiceGetOrder = async () => ({
+      ownershipValid: true,
+      order: { items: [{ id: "li_burger", title: "Hambúrguer", quantity: 1 }] },
+    });
+    const { payload } = await resolveAndAssemble({
+      kind: "order.amend.remove_item",
+      payload: { orderId: "ord_1", item: "algo que não pedi" },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect((payload as { itemId?: string }).itemId).toBeUndefined();
+  });
+
+  // Review fix (post-#264): the FIRST cut reused ctx.autoResolvedMoneyRef
+  // here (the ORDER-level "which order?" auto-resolve confirm mechanism),
+  // but item-level ambiguity identifies NO item at all — routing it through
+  // a yes/no confirm falsely implies a specific item was found, and
+  // confirming resumed into a lookup with itemId undefined (a dead end:
+  // "Item não encontrado" right after the customer said "yes"). Fixed:
+  // itemId stays unset, autoResolvedMoneyRef is NEVER touched (no park, no
+  // confirm), and itemAmbiguousCount is stamped instead so the executor
+  // (register-ibatexas-tool-packs.ts's ambiguousItemReply) can surface an
+  // honest, specific disambiguation reply — see that file's test for the
+  // reply text itself.
+  it("leaves itemId UNSET, does NOT touch ctx.autoResolvedMoneyRef, and stamps itemAmbiguousCount when two lines share a title (ambiguous — never guesses, never fakes a confirm)", async () => {
+    orderServiceGetOrder = async () => ({
+      ownershipValid: true,
+      order: {
+        items: [
+          { id: "li_burger_1", title: "Hambúrguer", quantity: 1 },
+          { id: "li_burger_2", title: "Hambúrguer", quantity: 1 },
+        ],
+      },
+    });
+    const { payload, ctx } = await resolveAndAssemble({
+      kind: "order.amend.update_qty",
+      payload: { orderId: "ord_1", item: "hambúrguer", quantity: 2 },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    const p = payload as { itemId?: string; itemAmbiguousCount?: number };
+    expect(p.itemId).toBeUndefined();
+    expect(p.itemAmbiguousCount).toBe(2);
+    expect((ctx as { autoResolvedMoneyRef?: boolean }).autoResolvedMoneyRef).toBeUndefined();
+  });
+
+  it("a THIRD same-titled line stamps itemAmbiguousCount: 3 (the count is real, not a fixed sentinel)", async () => {
+    orderServiceGetOrder = async () => ({
+      ownershipValid: true,
+      order: {
+        items: [
+          { id: "li_1", title: "Coca", quantity: 1 },
+          { id: "li_2", title: "Coca", quantity: 1 },
+          { id: "li_3", title: "Coca", quantity: 1 },
+        ],
+      },
+    });
+    const { payload } = await resolveAndAssemble({
+      kind: "order.amend.remove_item",
+      payload: { orderId: "ord_1", item: "coca" },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect((payload as { itemAmbiguousCount?: number }).itemAmbiguousCount).toBe(3);
+  });
+
+  it("does not smuggle a model-supplied itemAmbiguousCount through on a clean single match (always decided fresh)", async () => {
+    orderServiceGetOrder = async () => ({
+      ownershipValid: true,
+      order: { items: [{ id: "li_burger", title: "Hambúrguer", quantity: 1 }] },
+    });
+    const { payload } = await resolveAndAssemble({
+      kind: "order.amend.update_qty",
+      // An adversarial/malformed completion smuggling itemAmbiguousCount in
+      // directly — a real UNIQUE match must still clear it, not preserve it.
+      payload: { orderId: "ord_1", item: "hambúrguer", quantity: 2, itemAmbiguousCount: 99 },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    const p = payload as { itemId?: string; itemAmbiguousCount?: number };
+    expect(p.itemId).toBe("li_burger");
+    expect(p.itemAmbiguousCount).toBeUndefined();
+  });
+
+  it("leaves itemId UNSET when the order belongs to a different customer (ownership check fails — never a cross-customer leak)", async () => {
+    orderServiceGetOrder = async () => ({
+      ownershipValid: false,
+      order: { items: [{ id: "li_burger", title: "Hambúrguer", quantity: 1 }] },
+    });
+    const { payload } = await resolveAndAssemble({
+      kind: "order.amend.remove_item",
+      payload: { orderId: "ord_1", item: "hambúrguer" },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect((payload as { itemId?: string }).itemId).toBeUndefined();
+  });
+
+  it("swallows a live order-fetch error and leaves itemId unset (fail-closed, not a crash)", async () => {
+    orderServiceGetOrder = async () => {
+      throw new Error("medusa down");
+    };
+    const { payload } = await resolveAndAssemble({
+      kind: "order.amend.update_qty",
+      payload: { orderId: "ord_1", item: "hambúrguer", quantity: 2 },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect((payload as { itemId?: string }).itemId).toBeUndefined();
+  });
+
+  it("does not override an explicit itemId", async () => {
+    const { payload } = await resolveAndAssemble({
+      kind: "order.amend.update_qty",
+      payload: { orderId: "ord_1", itemId: "explicit-item", quantity: 2 },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect((payload as { itemId?: string }).itemId).toBe("explicit-item");
   });
 });
 
@@ -523,8 +896,17 @@ describe("resolve-and-assemble — order.item.add quantity coercion (B3)", () =>
 // BKL-038 — in-flight modify kinds share order.cancel's NL→id resolution
 // (resolveOrderId → most-recent order) and forced confirm-on-autoresolve. Same
 // list drives both the resolution assertions and the confirm-guard assertions.
+//
+// FE-T09 (D-a) — the granular amend kinds join this list: the model is never
+// shown orderId (order-amend-granular.schema.ts forbids it), so a
+// model-driven granular amend needs the SAME "most-recent order" auto-resolve
+// order.amend.request already gets (ORDER_AUTORESOLVE_KINDS,
+// AUTORESOLVE_CONFIRM_KINDS).
 const INFLIGHT_MODIFY_KINDS = [
   "order.amend.request",
+  "order.amend.add_item",
+  "order.amend.update_qty",
+  "order.amend.remove_item",
   "order.note.add",
   "order.address.change",
   "order.type.switch",

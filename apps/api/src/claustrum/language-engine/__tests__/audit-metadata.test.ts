@@ -1,8 +1,8 @@
 // audit-metadata.test.ts — the audit-record extension (the decided test
 // seam): `buildLanguageEngineAuditMetadata` derives {ExtractionIR,
 // HydratedIntentIR} PURELY from the final (post-resolution) AuditRecord, and
-// is INERT (returns undefined) for every capability besides
-// order.status.transition.
+// is INERT (returns undefined) for every capability besides the ones it
+// explicitly dispatches on.
 
 import { describe, expect, it } from "vitest";
 import type { AuditRecord, Decision } from "@adjudicate/core";
@@ -132,6 +132,142 @@ describe("buildLanguageEngineAuditMetadata — order.status.transition", () => {
       expect(ir).not.toHaveProperty("customerEmail");
       expect(ir).not.toHaveProperty("cpf");
     }
+  });
+});
+
+// ── FE-T09 (D-a) — the granular post-checkout amend kinds ───────────────────
+
+type LanguageEngineMeta = {
+  extractionIR: { capability: string; payload: Record<string, unknown>; provenance: unknown };
+  hydratedIntentIR: {
+    capability: string;
+    payload: Record<string, unknown>;
+    provenance: Record<string, { producer: string; confidence: string; trust: string }>;
+    confirmationRequired: boolean;
+  };
+};
+
+function languageEngineOf(meta: unknown): LanguageEngineMeta {
+  return (meta as { languageEngine: LanguageEngineMeta }).languageEngine;
+}
+
+describe("buildLanguageEngineAuditMetadata — order.amend.add_item (FE-T09)", () => {
+  it("derives ExtractionIR carrying ONLY {item, quantity} — no orderId/variantId/allergens, model/untrusted", () => {
+    const meta = buildLanguageEngineAuditMetadata(
+      record("order.amend.add_item", {
+        orderId: "order_9",
+        item: "coca",
+        quantity: 1,
+        variantId: "var_coke",
+        allergens: ["gluten"],
+      }),
+    );
+    const le = languageEngineOf(meta);
+    expect(le.extractionIR.capability).toBe("order.amend.add_item");
+    expect(le.extractionIR.payload).toEqual({ item: "coca", quantity: 1 });
+    expect(le.extractionIR.provenance).toEqual({
+      item: { producer: "model", confidence: "explicit", trust: "untrusted" },
+      quantity: { producer: "model", confidence: "explicit", trust: "untrusted" },
+    });
+  });
+
+  it("derives HydratedIntentIR: orderId=grounded, variantId/allergens=resolver/authoritative (explicit-reference resolution, not a guess), confirmationRequired=true (orderId is grounded)", () => {
+    const meta = buildLanguageEngineAuditMetadata(
+      record("order.amend.add_item", {
+        orderId: "order_9",
+        item: "coca",
+        quantity: 1,
+        variantId: "var_coke",
+        allergens: ["gluten"],
+      }),
+    );
+    const le = languageEngineOf(meta);
+    expect(le.hydratedIntentIR.payload).toEqual({
+      item: "coca",
+      quantity: 1,
+      orderId: "order_9",
+      variantId: "var_coke",
+      allergens: ["gluten"],
+    });
+    expect(le.hydratedIntentIR.provenance.orderId).toEqual({
+      producer: "resolver",
+      confidence: "resolved",
+      trust: "grounded",
+    });
+    expect(le.hydratedIntentIR.provenance.variantId).toEqual({
+      producer: "resolver",
+      confidence: "resolved",
+      trust: "authoritative",
+    });
+    expect(le.hydratedIntentIR.provenance.allergens).toEqual({
+      producer: "resolver",
+      confidence: "resolved",
+      trust: "authoritative",
+    });
+    expect(le.hydratedIntentIR.confirmationRequired).toBe(true);
+  });
+
+  it("a stray unexpected key (e.g. smuggled PII) is dropped from both IRs — not schema-declared, not the resolver-field allowlist", () => {
+    const meta = buildLanguageEngineAuditMetadata(
+      record("order.amend.add_item", {
+        orderId: "order_9",
+        item: "coca",
+        quantity: 1,
+        variantId: "var_coke",
+        allergens: ["gluten"],
+        cpf: "12345678900",
+      }),
+    );
+    const le = languageEngineOf(meta);
+    expect(le.extractionIR.payload).not.toHaveProperty("cpf");
+    expect(le.hydratedIntentIR.payload).not.toHaveProperty("cpf");
+  });
+});
+
+describe("buildLanguageEngineAuditMetadata — order.amend.update_qty / remove_item (FE-T09)", () => {
+  it("update_qty derives ExtractionIR {item, quantity} and HydratedIntentIR with orderId=grounded, itemId=authoritative", () => {
+    const meta = buildLanguageEngineAuditMetadata(
+      record("order.amend.update_qty", {
+        orderId: "order_9",
+        item: "hambúrguer",
+        quantity: 2,
+        itemId: "var_burger",
+      }),
+    );
+    const le = languageEngineOf(meta);
+    expect(le.extractionIR.payload).toEqual({ item: "hambúrguer", quantity: 2 });
+    expect(le.hydratedIntentIR.provenance.orderId?.trust).toBe("grounded");
+    expect(le.hydratedIntentIR.provenance.itemId).toEqual({
+      producer: "resolver",
+      confidence: "resolved",
+      trust: "authoritative",
+    });
+  });
+
+  it("remove_item derives ExtractionIR {item} only (no quantity) and the same orderId/itemId provenance shape", () => {
+    const meta = buildLanguageEngineAuditMetadata(
+      record("order.amend.remove_item", {
+        orderId: "order_9",
+        item: "hambúrguer",
+        itemId: "var_burger",
+      }),
+    );
+    const le = languageEngineOf(meta);
+    expect(le.extractionIR.payload).toEqual({ item: "hambúrguer" });
+    expect(le.hydratedIntentIR.provenance.itemId).toEqual({
+      producer: "resolver",
+      confidence: "resolved",
+      trust: "authoritative",
+    });
+  });
+
+  it("is undefined (unresolved itemId) when hydration never resolved a line — the payload just has no itemId key to project", () => {
+    const meta = buildLanguageEngineAuditMetadata(
+      record("order.amend.remove_item", { orderId: "order_9", item: "algo desconhecido" }),
+    );
+    const le = languageEngineOf(meta);
+    expect(le.hydratedIntentIR.payload).toEqual({ item: "algo desconhecido", orderId: "order_9" });
+    expect(le.hydratedIntentIR.provenance.itemId).toBeUndefined();
   });
 });
 

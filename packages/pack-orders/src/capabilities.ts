@@ -127,7 +127,18 @@ const rawOrdersCapabilityPlanner: CapabilityPlanner<OrderState, OrderContext> =
         allowedIntents.push(
           "order.checkout.create",
           "order.cancel",
-          "order.amend.request",
+          // FE-T09 (D-a, the amend inversion): the grouped
+          // `order.amend.request` is REMOVED as a model target —
+          // resolver-composed-only (its remaining producer is the
+          // deterministic legacy/HTTP amend route, unchanged by this Pack).
+          // The model instead proposes the three granular single-op amend
+          // kinds; each has an authored extraction schema
+          // (`order-amend-granular.schema.ts`) so the model only ever sees
+          // an NL item reference (+ quantity where relevant) — never
+          // orderId/variantId/itemId/allergens (FE-1.2).
+          "order.amend.add_item",
+          "order.amend.update_qty",
+          "order.amend.remove_item",
           "order.note.add",
         )
       }

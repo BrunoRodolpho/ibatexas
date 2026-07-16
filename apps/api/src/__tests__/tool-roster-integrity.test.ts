@@ -42,7 +42,13 @@ const PACK_INTENT_UNION: ReadonlyArray<string> = composedIntentKinds();
 // `@ibatexas/tools`. The count is the integrity anchor for (c) below: adding or
 // dropping a tool must update this set deliberately.
 const EXPECTED_CAPABILITIES = [
-  // pack-orders (10)
+  // pack-orders (12) — FE-T09 (D-a) replaced `order.amend.request`'s tool
+  // entry with the three granular amend kinds (net +2). order.amend.request
+  // stays a valid, adjudicable pack intent (kernel-adjudicable via the
+  // deterministic legacy HTTP amend route, which builds its own envelope and
+  // calls `amendOrder()` directly — bypassing this roster entirely) but is no
+  // longer registered here since no live caller resolves it through the
+  // ToolRegistry.
   "order.cart.ensure",
   "order.item.add",
   "order.item.update",
@@ -50,7 +56,9 @@ const EXPECTED_CAPABILITIES = [
   "order.coupon.apply",
   "order.checkout.create",
   "order.cancel",
-  "order.amend.request",
+  "order.amend.add_item",
+  "order.amend.update_qty",
+  "order.amend.remove_item",
   "order.note.add",
   "order.review.submit",
   // pack-reservations (4)
@@ -110,7 +118,7 @@ describe("RC-A1 Phase A — tool roster integrity", () => {
       (t) => t.capability as unknown as string,
     );
     expect(caps).toHaveLength(EXPECTED_CAPABILITIES.length);
-    expect(caps).toHaveLength(18);
+    expect(caps).toHaveLength(20);
     expect(new Set(caps)).toEqual(new Set(EXPECTED_CAPABILITIES));
   });
 
@@ -356,8 +364,8 @@ const PRE_DELETION_WHITELIST_PAIRS: ReadonlyArray<{
 ];
 
 describe("FE-T22 — chatSurfacedKinds replaces ADVERTISED_NOT_REGISTERED_WHITELIST (pinned equivalence)", () => {
-  it("the surface-derived set is exactly the 18 chat-tier kinds (T19's CHAT_DRIVABLE_TOOL_KINDS exemplar)", () => {
-    expect(CHAT_SURFACED_KINDS.size).toBe(18);
+  it("the surface-derived set is exactly the 20 chat-tier kinds (T19's CHAT_DRIVABLE_TOOL_KINDS exemplar, post-FE-T09 D-a: 18→20)", () => {
+    expect(CHAT_SURFACED_KINDS.size).toBe(20);
   });
 
   it("none of the 10 pre-deletion whitelist kinds is chat-surfaced (every one is exempt by construction)", () => {
