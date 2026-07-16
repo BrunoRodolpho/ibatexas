@@ -45,9 +45,9 @@ describe("generateRefusalCodes — grounded against each pack's real basisCodes 
     { pack: whatsappPack, name: "ibatexas/pack-whatsapp" as const },
   ]
 
-  it("projects exactly 18 refusal codes, one per chat-tier capability", () => {
+  it("projects exactly 20 refusal codes, one per chat-tier capability (post-FE-T09 D-a: 18→20)", () => {
     const generated = generateRefusalCodes(CAPABILITY_DEFINITIONS)
-    expect(Object.keys(generated)).toHaveLength(18)
+    expect(Object.keys(generated)).toHaveLength(20)
   })
 
   for (const { pack, name } of PACKS) {
