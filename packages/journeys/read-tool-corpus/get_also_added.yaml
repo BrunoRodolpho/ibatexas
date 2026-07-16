@@ -1,0 +1,81 @@
+# get_also_added — FE-T13 read-tool extraction corpus.
+# See check_availability.yaml's header for the format rationale + live-drive
+# status (same for every file in this directory).
+#
+# GET_ALSO_ADDED_READ_SCHEMA's one field, `productId`, is a State-class lookup
+# key the model relays from an EARLIER read result in the SAME conversation
+# (menu search / recommendation / cart) — never typed or invented by the
+# customer. A single isolated utterance therefore cannot determine the
+# CORRECT id value (that depends on which product the conversation already
+# established) — every case below represents the SECOND turn of a two-turn
+# conversation whose first turn already resolved a concrete product; the
+# `precedingContext` note documents that first turn, and `prod_XXX` is an
+# ILLUSTRATIVE placeholder for whatever id the earlier read actually
+# returned (a live-drive would substitute the real seeded catalog id — see
+# the format-note in check_availability.yaml on how driving this corpus live
+# would work). What's being calibrated is NOT the id string itself but
+# whether the model (a) calls get_also_added at all when the utterance asks
+# for it and (b) relays the SAME id the prior turn established rather than
+# inventing a new one or omitting the field.
+tool: get_also_added
+source: tickets/language-engine/issues/13-rollout-status-read-verbs.md
+cases:
+  - id: after-add-item-what-combines
+    precedingContext: "customer just added prod_burger to the cart"
+    utterance: o que combina com esse hambúrguer?
+    expectArgs:
+      productId: prod_burger
+
+  - id: after-add-item-formal
+    precedingContext: "customer just added prod_costela to the cart"
+    utterance: Você poderia me indicar algo que costuma ser pedido junto com essa costela?
+    expectArgs:
+      productId: prod_costela
+
+  - id: after-recommendation-colloquial
+    precedingContext: "get_recommendations just surfaced prod_pizza"
+    utterance: e o que mais combina com essa pizza?
+    expectArgs:
+      productId: prod_pizza
+
+  - id: after-search-question-form
+    precedingContext: "menu search just returned prod_suco as the top hit"
+    utterance: dá pra sugerir algo pra acompanhar esse suco?
+    expectArgs:
+      productId: prod_suco
+
+  - id: after-add-item-brusque
+    precedingContext: "customer just added prod_batata to the cart"
+    utterance: o que mais vai bem com isso?
+    note: elliptical reference ("isso") to the just-discussed item — still resolves to the SAME productId
+    expectArgs:
+      productId: prod_batata
+
+  - id: after-cart-view-context-embedded
+    precedingContext: "get_cart just showed prod_frango as the sole item"
+    utterance: to pensando em completar o pedido, o que combina com esse frango?
+    expectArgs:
+      productId: prod_frango
+
+  - id: after-add-item-polite
+    precedingContext: "customer just added prod_salada to the cart"
+    utterance: poderia me dizer o que os clientes costumam adicionar com essa salada?
+    expectArgs:
+      productId: prod_salada
+
+  - id: after-recommendation-casual
+    precedingContext: "get_recommendations just surfaced prod_sobremesa"
+    utterance: e pra acompanhar essa sobremesa, tem algo?
+    expectArgs:
+      productId: prod_sobremesa
+
+  - id: no-prior-product-context-abstains
+    utterance: o que combina com o que eu pedi?
+    note: NO earlier read established a concrete productId this conversation — a sound extraction abstains (no get_also_added call at all, not a guessed id); this case documents the NEGATIVE, not a productId value.
+    expectArgs: null
+
+  - id: after-add-item-genz-slang
+    precedingContext: "customer just added prod_hamburguer_duplo to the cart"
+    utterance: será que rola algo bom com esse hambúrguer duplo?
+    expectArgs:
+      productId: prod_hamburguer_duplo

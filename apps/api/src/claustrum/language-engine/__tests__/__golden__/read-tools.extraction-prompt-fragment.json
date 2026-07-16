@@ -1,0 +1,168 @@
+{
+  "reads": [
+    {
+      "name": "get_cart",
+      "description": "Ferramenta de leitura: get_cart. Apenas consulta, não altera dados.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_order_history",
+      "description": "Ferramenta de leitura: get_order_history. Apenas consulta, não altera dados.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "check_order_status",
+      "description": "Ferramenta de leitura: check_order_status. Apenas consulta, não altera dados.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_recommendations",
+      "description": "Ferramenta de leitura: get_recommendations. Apenas consulta, não altera dados.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "context": {
+            "type": "string",
+            "enum": [
+              "homepage",
+              "cart",
+              "product_page"
+            ],
+            "description": "Contexto da recomendação (opcional) — de onde a pergunta partiu."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_also_added",
+      "description": "Ferramenta de leitura: get_also_added. Apenas consulta, não altera dados.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "productId": {
+            "type": "string",
+            "description": "ID do produto — SEMPRE um id já retornado por uma leitura anterior nesta conversa (busca de cardápio, recomendação, carrinho), NUNCA inventado ou digitado pelo cliente."
+          }
+        },
+        "required": [
+          "productId"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_ordered_together",
+      "description": "Ferramenta de leitura: get_ordered_together. Apenas consulta, não altera dados.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "productId": {
+            "type": "string",
+            "description": "ID do produto — SEMPRE um id já retornado por uma leitura anterior nesta conversa (busca de cardápio, recomendação, carrinho), NUNCA inventado ou digitado pelo cliente."
+          }
+        },
+        "required": [
+          "productId"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_payment_status",
+      "description": "Ferramenta de leitura: get_payment_status. Apenas consulta, não altera dados.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_payment_history",
+      "description": "Ferramenta de leitura: get_payment_history. Apenas consulta, não altera dados.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "check_availability",
+      "description": "Ferramenta de leitura: check_availability. Apenas consulta, não altera dados.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "date": {
+            "type": "string",
+            "description": "Data desejada da reserva, formato YYYY-MM-DD."
+          },
+          "partySize": {
+            "type": "number",
+            "description": "Número de pessoas (1 a 20)."
+          },
+          "preferredTime": {
+            "type": "string",
+            "description": "Horário preferido, formato HH:MM (opcional)."
+          }
+        },
+        "required": [
+          "date",
+          "partySize"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_my_reservations",
+      "description": "Ferramenta de leitura: get_my_reservations. Apenas consulta, não altera dados.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "confirmed",
+              "seated",
+              "completed",
+              "cancelled",
+              "no_show"
+            ],
+            "description": "Filtrar por status da reserva (opcional)."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_my_profile",
+      "description": "Ferramenta de leitura: get_my_profile. Apenas consulta, não altera dados.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_my_preferences",
+      "description": "Ferramenta de leitura: get_my_preferences. Apenas consulta, não altera dados.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    }
+  ]
+}

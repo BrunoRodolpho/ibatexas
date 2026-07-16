@@ -107,6 +107,7 @@ import {
 } from "./model-call-defaults.js";
 import { completeWithEmptyRetry, isEmptyCompletion } from "./complete-with-retry.js";
 import { EXTRACTION_SCHEMAS_BY_CAPABILITY } from "./language-engine/wire-schemas.js";
+import { READ_TOOL_SCHEMAS_BY_NAME } from "./language-engine/read-tool-schemas.js";
 
 // Re-export so existing importers (tests, registry) keep their import site.
 export { EXPRESS_INTENT_TOOL };
@@ -567,11 +568,21 @@ function buildToolSurface(
   }
 
   if (includeReads) {
+    // FE-T13 — per-read-tool extraction schema on the wire. Mirrors the
+    // express_intent narrowing above, one step down: when a visible read
+    // tool has an AUTHORED schema (READ_TOOL_SCHEMAS_BY_NAME,
+    // read-tool-schemas.ts), the model sees that tool's real, typed shape
+    // instead of the generic `{type:"object", additionalProperties:true}`
+    // blob — additive over that same generic shape, kept as the fallback for
+    // any read tool without an authored schema yet (today: the 2 staff/ops-
+    // only reads, never chat-plane-visible anyway), so this is byte-identical
+    // for every turn that doesn't offer an unauthored read tool.
     for (const read of plan.visibleReadTools) {
+      const authoredSchema = READ_TOOL_SCHEMAS_BY_NAME.get(read);
       tools.push({
         name: read,
         description: `Ferramenta de leitura: ${read}. Apenas consulta, não altera dados.`,
-        inputSchema: { type: "object", additionalProperties: true },
+        inputSchema: authoredSchema ?? { type: "object", additionalProperties: true },
       });
     }
   }

@@ -563,8 +563,20 @@ const RESERVATION_AUTORESOLVE_KINDS = new Set(["reservation.cancel"]);
 // explicit paymentId — so it does NOT force a confirm like the NL autoresolve path.
 const REFUND_OWNERSHIP_KINDS = new Set(["payment.refund.issue", "payment.refund.confirm"]);
 
-/** NL→id: explicit orderId wins; else auto-resolve the customer's most-recent order. */
-async function resolveOrderId(
+/**
+ * NL→id: explicit orderId wins; else auto-resolve the customer's most-recent
+ * order. Exported (FE-T13) so the customer-plane READ executors
+ * (`check_order_status` / `get_payment_status`, claustrum-bootstrap.ts) can
+ * reuse the SAME "most recent order" resolution the mutating
+ * `ORDER_AUTORESOLVE_KINDS` path already relies on, rather than re-deriving a
+ * byte-parallel copy — those two reads now forbid a model-facing `orderId`
+ * field (Identity class, read-tool-schemas.ts), so they need the identical
+ * auto-resolve fallback this function already gives `order.amend.*`/
+ * `order.cancel`/etc. Passing `{}` (no explicit orderId) always takes the
+ * auto-resolve branch, which is exactly what a read-tool call needs since its
+ * schema can never carry one.
+ */
+export async function resolveOrderId(
   payload: Ctx,
   customerId: string,
 ): Promise<{ orderId: string | null; autoResolved: boolean }> {
