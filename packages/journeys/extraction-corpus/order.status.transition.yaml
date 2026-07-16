@@ -1,0 +1,37 @@
+# order.status.transition — the FE-T05 first-tracer capability's extraction
+# corpus (FE-T06, FE-2.1). One authored case for now (the T05 canonical
+# example); later rollout slices fan this out toward the N=20 default
+# denominator (D5) via the Sonnet paraphrase driver (FE-2.1/FE-2.3, a
+# separate ticket) — this file is the seed.
+#
+# Independent-truth discipline: `expectPayload` below is AUTHORED here, never
+# derived from the model under test (FE-2.1). It pins the FE-T05 contract:
+# the model extracts ONLY `newStatus` (never `orderId` — Identity class,
+# resolver-only); hydration auto-resolves "the most recent active order"
+# (no explicit reference given), tagging it `grounded` (a guess, never
+# `authoritative`) and forcing `confirmationRequired: true`.
+capability: order.status.transition
+source: tickets/language-engine/issues/05-first-tracer-order-status-transition-ir-foundation.md
+cases:
+  - id: most-recent-order-to-ready
+    utterance: muda o status do meu último pedido para pronto
+    note: >-
+      The ticket's canonical example utterance. No explicit order reference
+      is given, so hydration falls back to the most recent ACTIVE order
+      (ops-order-resolution.ts's resolveMostRecentActiveOrder) — a GUESS,
+      hence grounded + confirmationRequired.
+    expectPayload:
+      extractionIR:
+        payload:
+          newStatus: ready
+        provenanceTrust:
+          newStatus: untrusted
+      hydratedIntentIR:
+        payload:
+          newStatus: ready
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          orderId: grounded
+          newStatus: untrusted
+        confirmationRequired: true
