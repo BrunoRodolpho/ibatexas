@@ -43,6 +43,16 @@
 // right and so never exercised, and never would have caught, the actual
 // gap) — see also the focused DB-mocked unit test of `enrichResumeState`
 // itself: `apps/api/src/__tests__/claustrum-bootstrap-resume-order-status.test.ts`.
+//
+// FE-T05b review MAJOR follow-up — the "fresh status" half of the fix was
+// itself asserted-but-unproven END TO END: the unit test above projects a
+// changed `ctx.fulfillmentStatus` but never adjudicates against it. The
+// "since-parked STATUS CHANGE" test below drives the FULL park → resume
+// cycle through a REAL `requireLegalStatusTransition` re-run (a stateGuard,
+// so it re-runs on every resume regardless of the kernel's 2a confirmation
+// override) and proves the terminal-status REFUSE actually happens — the
+// exact class of gap ("the right ingredients are there but nothing was
+// proven to consume them") that shipped the original bug.
 
 import { describe, expect, it } from "vitest";
 import type { AuditRecord, DecisionKind, IntentEnvelope } from "@adjudicate/core";
@@ -88,9 +98,19 @@ function orderReferenceReads(): OrderReferenceReads {
  * vanishing (genuinely deleted / unowned) BEFORE "sim" resumes — the
  * true-negative the fix must NOT break: resume still honestly REFUSEs
  * `order.not_found`, never a stale/guessed EXECUTE.
+ *
+ * `orderStatusAtResume` (review MAJOR follow-up) — an independent toggle: the
+ * order stays FINDABLE at resume, but its `fulfillmentStatus` differs from
+ * what it was at park time (e.g. it reached a terminal status in between).
+ * PLANNING always resolves against `ACTIVE_ORDER.fulfillmentStatus` ("the
+ * most recent active order" read at turn 1 — `listRecentActive`); this
+ * override only changes what the FRESH resume-time read reports, proving the
+ * fix's fresh re-read (not the parked snapshot) is what
+ * `requireLegalStatusTransition` re-adjudicates against on "sim".
  */
-function buildHarness(opts: { orderFindableAtResume?: boolean } = {}) {
+function buildHarness(opts: { orderFindableAtResume?: boolean; orderStatusAtResume?: string } = {}) {
   const orderFindableAtResume = opts.orderFindableAtResume ?? true;
+  const orderStatusAtResume = opts.orderStatusAtResume ?? ACTIVE_ORDER.fulfillmentStatus;
   const sink = makeCapturingAuditSink();
   const session = makeStatefulSession();
   const { tools, spies } = buildOpsTools({}, sink);
@@ -125,7 +145,7 @@ function buildHarness(opts: { orderFindableAtResume?: boolean } = {}) {
           paymentMethod: ACTIVE_ORDER.paymentMethod,
           paymentStatus: ACTIVE_ORDER.paymentStatus,
           totalInCentavos: ACTIVE_ORDER.totalInCentavos,
-          fulfillmentStatus: ACTIVE_ORDER.fulfillmentStatus,
+          fulfillmentStatus: orderStatusAtResume,
         }),
       );
     },
@@ -242,6 +262,35 @@ describe("FE-T05 — order.status.transition first tracer: end-to-end park → c
     expect(t2.decision.kind).toBe("REFUSE");
     if (t2.decision.kind === "REFUSE") {
       expect(t2.decision.refusal.code).toBe("order.not_found");
+    }
+    expect(spies.writeAdjudicatedStatusTransition).not.toHaveBeenCalled();
+  });
+
+  it("FE-T05b MAJOR (review follow-up): a since-parked STATUS CHANGE (order reaches a terminal status) ⇒ resume still honestly REFUSEs the illegal transition, never a stale EXECUTE — proves requireLegalStatusTransition re-adjudicates against the FRESH resume-time status, not the parked snapshot", async () => {
+    // Parked while "preparing" (the plan-time read); by resume time the
+    // order has independently reached "delivered" — a TERMINAL status with
+    // no legal next state, regardless of the parked target ("ready").
+    const { deps, session, spies } = buildHarness({ orderStatusAtResume: "delivered" });
+    const sessionId = "system:staff:owner4";
+
+    const t1 = await runOpsTurn(deps, {
+      role: "OWNER",
+      staffId: "owner4",
+      text: "muda o status do meu último pedido para pronto",
+    });
+    expect(t1.decision.kind).toBe("REQUEST_CONFIRMATION");
+    expect(session.parksFor(sessionId)).toHaveLength(1);
+
+    // "sim" resumes the SAME (pinned) order — the fix's fresh re-read
+    // reports the order's CURRENT status ("delivered"), so
+    // `requireLegalStatusTransition` (a stateGuard, unaffected by the
+    // kernel's 2a confirmation override) re-refuses on resume exactly as it
+    // would on a first pass against that same fresh state — never a stale
+    // EXECUTE driven off the parked "preparing" snapshot.
+    const t2 = await runOpsTurn(deps, { role: "OWNER", staffId: "owner4", text: "sim, confirma" });
+    expect(t2.decision.kind).toBe("REFUSE");
+    if (t2.decision.kind === "REFUSE") {
+      expect(t2.decision.refusal.code).toBe("order.status.terminal");
     }
     expect(spies.writeAdjudicatedStatusTransition).not.toHaveBeenCalled();
   });

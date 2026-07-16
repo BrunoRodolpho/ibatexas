@@ -21,9 +21,27 @@ import { enrichResumeState } from "../claustrum-bootstrap.js";
 
 const mockGetById = vi.hoisted(() => vi.fn());
 
-vi.mock("@ibatexas/domain", () => ({
-  createOrderQueryService: () => ({ getById: mockGetById }),
-}));
+// A flat `vi.mock` providing only `createOrderQueryService` would silently
+// stub out the OTHER 10 named exports `claustrum-bootstrap.ts` imports from
+// `@ibatexas/domain` (`prisma`, `claustrumMemoryPrisma`,
+// `createOrderCommandService`, `createOrderEventLogService`,
+// `createPaymentCommandService`, `createPaymentQueryService`,
+// `createOpsAlertService`, `createIncidentService`, `createScheduleService`,
+// `createDailySpecialService`) as `undefined` — a real fragility risk given
+// this repo's vi.mock history (PR #248 saga: a flat domain mock silently
+// broke an unrelated code path that happened to share the mocked module).
+// `@ibatexas/domain`'s `prisma` / `claustrumMemoryPrisma` are lazy `Proxy`
+// singletons (see client.ts / claustrum-memory-client.ts — PrismaClient
+// construction defers to first property access) and `index.ts` has no
+// top-level side effects, so `importOriginal` is safe here: only
+// `createOrderQueryService` is overridden, every other export stays REAL
+// (inert — this test only ever constructs `order.status.transition`
+// envelopes, so no other `enrichResumeState` branch, and thus no other
+// domain factory, is ever invoked).
+vi.mock("@ibatexas/domain", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@ibatexas/domain")>();
+  return { ...actual, createOrderQueryService: () => ({ getById: mockGetById }) };
+});
 
 beforeEach(() => {
   mockGetById.mockReset();
