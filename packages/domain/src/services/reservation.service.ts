@@ -248,11 +248,26 @@ export function createReservationService(options?: ReservationServiceOptions) {
 
     async listByCustomer(
       customerId: string,
-      options?: { status?: string; limit?: number },
+      // FE-T17b review fix — `status` accepts EITHER a single status (existing
+      // callers: get_my_reservations' single-status filter) OR a status array
+      // (new: an owner-scoped ACTIVE-only discovery query). This MUST be applied
+      // server-side, not client-side after the fetch: `orderBy` sorts
+      // farthest-future FIRST, so a customer with >`limit` future-dated
+      // non-matching rows (e.g. cancelled) can bury a near-future MATCHING row
+      // past the `take` cutoff before any client-side filter ever sees it — the
+      // live pagination-burying bug this fix closes (see
+      // apps/api/src/claustrum/turn-reads.ts `listActiveReservationIds`).
+      options?: { status?: string | readonly string[]; limit?: number },
     ): Promise<{ reservations: ReservationDTO[]; total: number }> {
+      const statusClause =
+        options?.status === undefined
+          ? {}
+          : Array.isArray(options.status)
+            ? { status: { in: options.status as PrismaReservationStatus[] } }
+            : { status: options.status as PrismaReservationStatus };
       const where = {
         customerId,
-        ...(options?.status ? { status: options.status as PrismaReservationStatus } : {}),
+        ...statusClause,
       }
 
       const [reservations, total] = await Promise.all([

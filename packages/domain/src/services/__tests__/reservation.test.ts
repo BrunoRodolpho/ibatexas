@@ -11,11 +11,22 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const mockTransaction = vi.hoisted(() => vi.fn());
 const mockReservationFindUnique = vi.hoisted(() => vi.fn());
 const mockTimeSlotFindUnique = vi.hoisted(() => vi.fn());
+// FE-T17b review fix — listByCustomer's findMany/count, mocked separately so the
+// pagination-burying regression test can inject a FAITHFUL where/orderBy/take
+// simulation without touching the create/modify tests above.
+const mockReservationFindMany = vi.hoisted(() => vi.fn());
+const mockReservationCount = vi.hoisted(() => vi.fn());
 
 vi.mock("../../client.js", () => ({
   prisma: {
     $transaction: (...args: unknown[]) => mockTransaction(...args),
-    reservation: { create: vi.fn(), findUnique: (...args: unknown[]) => mockReservationFindUnique(...args), update: vi.fn() },
+    reservation: {
+      create: vi.fn(),
+      findUnique: (...args: unknown[]) => mockReservationFindUnique(...args),
+      update: vi.fn(),
+      findMany: (...args: unknown[]) => mockReservationFindMany(...args),
+      count: (...args: unknown[]) => mockReservationCount(...args),
+    },
     timeSlot: { update: vi.fn(), findUnique: (...args: unknown[]) => mockTimeSlotFindUnique(...args) },
     reservationTable: { findMany: vi.fn(), deleteMany: vi.fn() },
     table: { findMany: vi.fn() },
@@ -375,5 +386,137 @@ describe("ReservationService.modify — concurrency safety (TOCTOU)", () => {
     expect(text).toMatch(/FOR UPDATE/i);
     const joined = capturedSql!.values[0] as { __join: string[] };
     expect(joined.__join).toEqual(expect.arrayContaining(["slot_01", "slot_02"]));
+  });
+});
+
+// ── FE-T17b review fix — listByCustomer status filter + pagination-burying ─────
+//
+// `listByCustomer` orders by `timeSlot.date` DESC (farthest-future FIRST), so a
+// caller that fetches WITHOUT a status filter and applies `take` BEFORE any
+// client-side status filter can have a near-future MATCHING row buried past the
+// page by a block of far-future NON-matching rows (e.g. cancelled reservations
+// dated well ahead of an upcoming confirmed one). The fix threads `status` as a
+// query-level WHERE clause (Prisma `{ in: [...] }` for an array) so the DB filters
+// BEFORE `take` is applied — the limit is spent only on rows that could actually
+// match. This mock FAITHFULLY reproduces real Prisma where/orderBy/take semantics
+// (filter → sort → limit, in that order) so the test is a genuine regression
+// guard, not a tautology over a stub that already assumes the fix.
+describe("ReservationService.listByCustomer — status filter + pagination-burying fix (FE-T17b review)", () => {
+  const CUSTOMER = "cust_burying";
+
+  /** A single fixture row: a customer-owned reservation with an explicit
+   *  status + time-slot date/time (independent of the shared makeReservationRow
+   *  helper, whose timeSlot date is fixed — this test needs many distinct dates). */
+  function row(id: string, status: string, isoDate: string, startTime: string) {
+    return {
+      id,
+      customerId: CUSTOMER,
+      partySize: 2,
+      status,
+      specialRequests: [],
+      confirmedAt: null,
+      checkedInAt: null,
+      cancelledAt: null,
+      noShowAt: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      timeSlotId: `slot_${id}`,
+      timeSlot: {
+        id: `slot_${id}`,
+        date: new Date(`${isoDate}T00:00:00.000Z`),
+        startTime,
+        durationMinutes: 120,
+        maxCovers: 20,
+        reservedCovers: 2,
+        createdAt: new Date(),
+      },
+      tables: [],
+    };
+  }
+
+  // 22 CANCELLED reservations, far-future dated (2027-02-01 .. 2027-02-22) — every
+  // one sorts AHEAD of the confirmed row below under `orderBy timeSlot.date desc`.
+  // 22 > the service's `take: 20` default page — enough to bury a same-page target.
+  const buriedCancelled = Array.from({ length: 22 }, (_, i) =>
+    row(
+      `res_cancelled_${i}`,
+      "cancelled",
+      `2027-02-${String(i + 1).padStart(2, "0")}`,
+      "19:00",
+    ),
+  );
+  // The ONE near-future ACTIVE (confirmed) reservation — dated BEFORE all 22
+  // cancelled rows, so it sorts LAST among this customer's reservations.
+  const nearFutureConfirmed = row("res_confirmed", "confirmed", "2026-08-01", "19:30");
+
+  const fixture = [...buriedCancelled, nearFutureConfirmed];
+
+  /** A FAITHFUL (filter → sort → limit) simulation of the real Prisma query
+   *  `listByCustomer` issues — not a stub that special-cases the expected call. */
+  function simulateQuery(args: {
+    where?: { customerId?: string; status?: { in?: string[] } | string };
+    take?: number;
+  }): typeof fixture {
+    let rows = fixture.filter((r) => r.customerId === args.where?.customerId);
+    const statusArg = args.where?.status;
+    if (typeof statusArg === "string") {
+      rows = rows.filter((r) => r.status === statusArg);
+    } else if (statusArg && Array.isArray(statusArg.in)) {
+      rows = rows.filter((r) => statusArg.in!.includes(r.status));
+    }
+    rows = [...rows].sort((a, b) => {
+      const byDate = b.timeSlot.date.getTime() - a.timeSlot.date.getTime();
+      return byDate !== 0 ? byDate : b.timeSlot.startTime.localeCompare(a.timeSlot.startTime);
+    });
+    return args.take !== undefined ? rows.slice(0, args.take) : rows;
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockReservationFindMany.mockImplementation(async (args: Parameters<typeof simulateQuery>[0]) =>
+      simulateQuery(args),
+    );
+    mockReservationCount.mockImplementation(
+      async (args: Parameters<typeof simulateQuery>[0]) =>
+        simulateQuery({ ...args, take: undefined }).length,
+    );
+  });
+
+  it("NON-VACUITY — without a status filter, take:20 genuinely buries the confirmed row (proves the fixture reproduces the bug)", async () => {
+    const svc = createReservationService();
+    const { reservations } = await svc.listByCustomer(CUSTOMER, { limit: 20 });
+    expect(reservations.map((r) => r.id)).not.toContain("res_confirmed");
+    expect(reservations).toHaveLength(20);
+  });
+
+  it("THE FIX — status:[pending,confirmed,seated] filters server-side BEFORE take, so the confirmed row is never buried", async () => {
+    const svc = createReservationService();
+    const { reservations } = await svc.listByCustomer(CUSTOMER, {
+      limit: 20,
+      status: ["pending", "confirmed", "seated"],
+    });
+    expect(reservations.map((r) => r.id)).toEqual(["res_confirmed"]);
+  });
+
+  it("passes status as a Prisma `{ in: [...] }` clause when given an array", async () => {
+    const svc = createReservationService();
+    await svc.listByCustomer(CUSTOMER, { status: ["pending", "confirmed", "seated"] });
+    expect(mockReservationFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          status: { in: ["pending", "confirmed", "seated"] },
+        }),
+      }),
+    );
+  });
+
+  it("preserves the EXISTING single-status behavior (exact match, not `{ in: [...] }`) for backward compatibility", async () => {
+    const svc = createReservationService();
+    await svc.listByCustomer(CUSTOMER, { status: "confirmed" });
+    expect(mockReservationFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ status: "confirmed" }),
+      }),
+    );
   });
 });
