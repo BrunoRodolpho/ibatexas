@@ -37,7 +37,7 @@ import {
   type PolicyBundle,
 } from "@adjudicate/core/kernel"
 import { requireTenantBinding } from "@adjudicate/primitives"
-import { isAboveMoneyBand } from "@ibatexas/types"
+import { isAtOrAboveMoneyBand } from "@ibatexas/types"
 import {
   refundAlreadyExhausted,
   refundNotInRefundableState,
@@ -354,7 +354,7 @@ const refundFreshnessGuard: PaymentGuard = (envelope, state) => {
  *
  *   - amount ≤ 0                                    → REFUSE (invalid)
  *   - amount > refundable balance                   → REFUSE (over-refund)
- *   - amount > ESCALATE_REFUND_THRESHOLD_CENTAVOS   → ESCALATE
+ *   - amount ≥ ESCALATE_REFUND_THRESHOLD_CENTAVOS   → ESCALATE (FE-T03/D2)
  *   - taint === "UNTRUSTED" (BKL-085 overlay)       → REQUEST_CONFIRMATION
  *   - amount > CONFIRM_REFUND_THRESHOLD_CENTAVOS    → REQUEST_CONFIRMATION
  *   - else                                          → EXECUTE
@@ -428,10 +428,13 @@ const refundMagnitudeGuard: PaymentGuard = (envelope, state) => {
   }
 
   const escalateThreshold = getRefundEscalateThresholdCentavos()
-  // FE-T02: routed through the shared comparator helper so the FE-T03 flip
-  // to `isAtOrAboveMoneyBand` (reconciling this ladder with pack-orders'
-  // checkout-confirm `>=`) is a single-line change.
-  if (isAboveMoneyBand(payload.refundAmountCentavos, escalateThreshold)) {
+  // FE-T03/D2: flipped from `isAboveMoneyBand` (strict `>`) to
+  // `isAtOrAboveMoneyBand` (`>=`), reconciling this ladder with pack-orders'
+  // checkout-confirm comparator at the shared R$1000 boundary. An exact
+  // R$1000 (100_000 centavos) refund now ESCALATEs instead of parking at
+  // REQUEST_CONFIRMATION — see refund-magnitude-ladder.test.ts and
+  // conformance.test.ts for the pinned boundary behavior.
+  if (isAtOrAboveMoneyBand(payload.refundAmountCentavos, escalateThreshold)) {
     // ── AUT-017 — ESCALATE→OWNER-approve→executable-resume overlay ──────────
     //
     // When (and ONLY when) an OWNER has approved THIS exact escalated refund
