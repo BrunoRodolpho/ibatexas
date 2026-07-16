@@ -165,7 +165,11 @@ describe("FE-T05 — order.status.transition first tracer: end-to-end park → c
         | undefined;
       if (meta?.languageEngine === undefined) return false;
       const { extractionIR, hydratedIntentIR } = meta.languageEngine as {
-        extractionIR: { capability: string; payload: Record<string, unknown> };
+        extractionIR: {
+          capability: string;
+          payload: Record<string, unknown>;
+          provenance: Record<string, { producer: string; trust: string }>;
+        };
         hydratedIntentIR: {
           payload: Record<string, unknown>;
           provenance: Record<string, { producer: string; trust: string }>;
@@ -177,8 +181,10 @@ describe("FE-T05 — order.status.transition first tracer: end-to-end park → c
         // ExtractionIR carries ONLY {newStatus} — AC1.
         Object.keys(extractionIR.payload).length === 1 &&
         extractionIR.payload.newStatus === "ready" &&
+        extractionIR.provenance.newStatus?.trust === "untrusted" &&
         // HydratedIntentIR — AC2 + AC3.
         hydratedIntentIR.payload.orderId === "order_recent" &&
+        hydratedIntentIR.payload.newStatus === "ready" &&
         hydratedIntentIR.provenance.orderId?.trust === "grounded" &&
         hydratedIntentIR.provenance.newStatus?.trust === "untrusted" &&
         hydratedIntentIR.confirmationRequired === true

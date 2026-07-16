@@ -157,6 +157,44 @@ describe("evaluateExpectPayload — per-clause diagnostics", () => {
     expect(outcome.ok).toBe(false)
     expect(outcome.failures[0]).toMatch(/languageEngine is absent/)
   })
+
+  it("fails when payloadPresent references a field that's MISSING from the payload entirely (not merely empty)", () => {
+    const record = fixtureRecord({
+      kind: "order.status.transition",
+      metadata: {
+        languageEngine: {
+          ...MATCHING_METADATA.languageEngine,
+          hydratedIntentIR: {
+            ...MATCHING_METADATA.languageEngine.hydratedIntentIR,
+            payload: { newStatus: "ready" }, // orderId key omitted, not merely empty
+          },
+        },
+      },
+    })
+    const outcome = evaluateExpectPayload(EXPECTED, record)
+    expect(outcome.ok).toBe(false)
+    expect(outcome.failures.some((f) => f.includes("hydratedIntentIR.payload.orderId"))).toBe(true)
+  })
+
+  it("fails when provenanceTrust references a key ABSENT from the provenance map (not merely a wrong trust value)", () => {
+    const record = fixtureRecord({
+      kind: "order.status.transition",
+      metadata: {
+        languageEngine: {
+          ...MATCHING_METADATA.languageEngine,
+          hydratedIntentIR: {
+            ...MATCHING_METADATA.languageEngine.hydratedIntentIR,
+            // orderId key omitted from the provenance map entirely — distinct from the
+            // "wrong trust value" case above, where the key is present but mismatched.
+            provenance: { newStatus: MATCHING_METADATA.languageEngine.hydratedIntentIR.provenance.newStatus },
+          },
+        },
+      },
+    })
+    const outcome = evaluateExpectPayload(EXPECTED, record)
+    expect(outcome.ok).toBe(false)
+    expect(outcome.failures.some((f) => f.includes("hydratedIntentIR.provenance.orderId.trust"))).toBe(true)
+  })
 })
 
 describe("compileExpectPayload — wires into the REAL matchTrajectory oracle (FE-2.2)", () => {

@@ -113,4 +113,23 @@ describe("validateExtractionCorpus — named error codes", () => {
     )
     expect(result.ok).toBe(false)
   })
+
+  it("vacuous_extraction_ir: extractionIR with no assertion clauses at all is rejected, not silently accepted as a no-op pin", () => {
+    const result = validateExtractionCorpus(
+      validFile({
+        cases: [
+          {
+            id: "vacuous-case",
+            utterance: "x",
+            // No payload / payloadPresent / provenanceTrust — this would pass
+            // against ANY record carrying a languageEngine sidecar.
+            expectPayload: { extractionIR: {} },
+          },
+        ],
+      }),
+    )
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.errors.map((e) => e.code)).toContain("vacuous_extraction_ir")
+  })
 })

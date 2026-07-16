@@ -92,6 +92,18 @@ export const ExtractionCaseSchema = z
 
 export type ExtractionCase = z.infer<typeof ExtractionCaseSchema>
 
+/** True when an `IrExpectation` declares none of its assertion clauses — a
+ *  case authored this way would evaluate `ok: true` against ANY record
+ *  merely carrying a `languageEngine` sidecar, regardless of its actual
+ *  content (see `evaluateIr` in expect-payload.ts). A meaningless pin. */
+function isVacuousIrExpectation(expectation: IrExpectation): boolean {
+  return (
+    expectation.payload === undefined &&
+    expectation.payloadPresent === undefined &&
+    expectation.provenanceTrust === undefined
+  )
+}
+
 export const ExtractionCorpusFileSchema = z
   .object({
     /** The chat-drivable capability every case in this file targets. */
@@ -114,6 +126,13 @@ export const ExtractionCorpusFileSchema = z
         })
       }
       seen.add(c.id)
+      if (isVacuousIrExpectation(c.expectPayload.extractionIR)) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["cases", i, "expectPayload", "extractionIR"],
+          message: `vacuous_extraction_ir: case "${c.id}"'s extractionIR declares none of payload/payloadPresent/provenanceTrust — this assertion would pass against ANY record carrying a languageEngine sidecar, regardless of its content`,
+        })
+      }
     })
   })
 
@@ -125,6 +144,7 @@ export type ExtractionSchemaErrorCode =
   | "invalid_capability"
   | "invalid_case_id"
   | "duplicate_case_id"
+  | "vacuous_extraction_ir"
   | "schema_violation"
 
 export interface ExtractionSchemaError {
@@ -133,7 +153,7 @@ export interface ExtractionSchemaError {
   message: string
 }
 
-const CUSTOM_CODES: ReadonlySet<ExtractionSchemaErrorCode> = new Set(["duplicate_case_id"])
+const CUSTOM_CODES: ReadonlySet<ExtractionSchemaErrorCode> = new Set(["duplicate_case_id", "vacuous_extraction_ir"])
 
 function namedCode(issue: z.core.$ZodIssue): ExtractionSchemaErrorCode {
   if (issue.code === "custom") {
