@@ -196,7 +196,11 @@ export function assertGuardRefsResolve(
   resolutionMap: ReadonlyMap<string, ResolvedGuard> = buildGuardResolutionMap(),
 ): void {
   for (const def of defs) {
-    for (const ref of def.guardRefs) {
+    // FE-T20: `guardRefs` is optional (`tier: "identity"` instances never
+    // populate it — see types.ts). `undefined`/absent is valid-by-absence,
+    // NOT a dangling reference — there is nothing to resolve, so nothing to
+    // fail on. Only a NON-EMPTY guard-ref that fails to resolve is an error.
+    for (const ref of def.guardRefs ?? []) {
       const key = resolutionKey(def.pack, ref.phase, ref.name)
       if (!resolutionMap.has(key)) {
         throw new GuardRefResolutionError(

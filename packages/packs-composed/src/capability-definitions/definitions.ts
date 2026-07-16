@@ -1,20 +1,47 @@
 /**
- * Authored `CapabilityDefinition` instances — FE-4.1 EXPAND (FE-T19).
+ * Authored `CapabilityDefinition` instances — FE-4 EXPAND (FE-T19) +
+ * MIGRATE 1 (FE-T20).
  *
- * Covers the 18 chat-drivable, LLM-callable MUTATING capabilities —
- * `CHAT_DRIVABLE_TOOL_KINDS` (`../index.ts`) — the minimum the ticket
- * requires and the same roster `generate-chat-drivable-tool-kinds.ts`
- * projects back out byte-for-byte. Extending to the full 70-kind
- * `KNOWN_INTENT_KINDS` set is NOT done here — the spec's FE-4 section does
- * not ask for it in this step, and every field below (auth level, pt-BR
- * description, legacy tool name, claim link) is grounded in a REAL,
- * cross-checked source for these 18; guessing the same fields for the ~52
- * remaining kinds (many staff/system/webhook-only, with no chat tool, no
- * docs entry, and no claim-class link to check against) would be
- * fabrication, not authoring.
+ * Covers all 66 first-party-Pack-owned intent kinds (the 6 packs'
+ * `*_INTENT_KINDS` groupings in `@ibatexas/intent-kinds` — i.e.
+ * `KNOWN_INTENT_KINDS` minus the 3 `pix.*` kinds, which mirror the FROZEN
+ * external `@adjudicate/pack-payments-pix`, and `loyalty.stamp.add`, which
+ * is not Pack-owned at all — see `generate-known-intent-kinds.ts` for how
+ * those two stay explicit, non-fabricated inputs rather than being folded
+ * silently into this registry).
  *
- * Every field is either DATA or a reference to hand-authored code (P5) —
- * see `types.ts` for the per-field contract. Grounding for each field:
+ * Two tiers (`CapabilityTier`, `types.ts`):
+ *
+ *   - **`"chat"` (18)** — FE-T19's original chat-drivable roster
+ *     (`CHAT_DRIVABLE_TOOL_KINDS`). Every chat-facing field is populated and
+ *     cross-checked against a real source (docs, registries, planner code).
+ *   - **`"identity"` (48, FE-T20)** — the remaining kinds. ONLY `kind` /
+ *     `pack` / `mutating` / `tier` (+ `plannerAdvertisedBy` where grounded)
+ *     are populated — every chat-facing field is OMITTED (not merely
+ *     `undefined`; the shorter object is the tier's own visual signal).
+ *     Grounded STRICTLY in each pack's `*_INTENT_KINDS` groupings (also
+ *     each pack's own `intents[]` — byte-identical to the `*_INTENT_KINDS`
+ *     mirror, verified) and, for `plannerAdvertisedBy`, each pack's
+ *     `capabilities.ts` `CapabilityPlanner.plan()` body (all 6 read in
+ *     full for FE-T20) — no fabrication, per the FE-T19 precedent this
+ *     ticket extends ("guessing… would be fabrication, not authoring").
+ *
+ * **Declaration order is load-bearing.** Within each pack group the 66
+ * entries are declared in EXACTLY that pack's `*_INTENT_KINDS` order (not
+ * "chat entries first, identity entries appended") — `generate-pack-
+ * intents.ts` / `generate-pack-intent-kinds-mirror.ts` project this order
+ * byte-for-byte against the committed hand lists. The 18 chat-tier entries
+ * keep the exact relative order FE-T19 declared them in (never reordered by
+ * this ticket) — every one of them is independently verified to already be
+ * a valid subsequence of its pack's canonical order, so the 48 new entries
+ * slot in around them without moving anything `generate-chat-drivable-tool-
+ * kinds.ts` (FE-T19, untouched by this ticket) already depends on. Pack
+ * GROUP order across the whole array mirrors `generate-chat-drivable-tool-
+ * kinds.ts`'s own `PACK_GROUP_ORDER` (orders → reservations →
+ * customer-onboarding → payments → whatsapp), with `ops` appended last
+ * (zero chat-tier entries, so it cannot perturb that generator's output).
+ *
+ * Grounding for the chat-tier fields (unchanged from FE-T19):
  *
  *   - `kind` / `pack` / `mutating` / `legacyNames` / `description` — cross-
  *     checked against `apps/api/src/tools/register-ibatexas-tool-packs.ts`
@@ -36,6 +63,11 @@
  *     (unresolvable today — see `guard-resolution.ts`'s "Known gap").
  *   - `refusalCode` — each pack's `<domain>.default.deny` `basisCodes`
  *     entry.
+ *
+ * `plannerAdvertisedBy` (FE-T20, both tiers) — see its own doc in
+ * `types.ts` for the full contract, including the two "registered-but-
+ * unadvertised" chat-tier exceptions (`order.review.submit`,
+ * `whatsapp.handoff.request`) and the three ops-foreign-advertised kinds.
  */
 
 import type { CapabilityDefinition, CapabilityGuardRef } from "./types.js"
@@ -51,7 +83,9 @@ import type { CapabilityDefinition, CapabilityGuardRef } from "./types.js"
 //
 // One list per pack, reused across every capability instance that pack
 // owns (see `types.ts` `guardRefs` doc for why pack-wide is the correct
-// granularity, not a DRY shortcut of convenience).
+// granularity, not a DRY shortcut of convenience). Only the 18 chat-tier
+// instances reference these — `pack-ops` has no chat-tier capability, so
+// there is no `OPS_GUARD_REFS` constant.
 
 const ORDERS_GUARD_REFS: readonly CapabilityGuardRef[] = [
   { phase: "state", name: "requireCartIdForCartOps" },
@@ -168,11 +202,13 @@ const WHATSAPP_GUARD_REFS: readonly CapabilityGuardRef[] = [
 // ── Capability instances ─────────────────────────────────────────────────
 
 export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
-  // ── pack-orders (10) ─────────────────────────────────────────────────
+  // ── pack-orders (22 — matches ORDER_INTENT_KINDS / ordersPack.intents order) ──
   {
     kind: "order.cart.ensure",
     pack: "ibatexas/pack-orders",
     mutating: true,
+    tier: "chat",
+    plannerAdvertisedBy: ["ibatexas/pack-orders"],
     surfaces: ["chat"],
     // Always-proposable in `ordersCapabilityPlanner` regardless of
     // `isAuthenticated` — guest cart operations are supported.
@@ -187,6 +223,8 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     kind: "order.item.add",
     pack: "ibatexas/pack-orders",
     mutating: true,
+    tier: "chat",
+    plannerAdvertisedBy: ["ibatexas/pack-orders"],
     surfaces: ["chat"],
     auth: "guest",
     legacyNames: ["add_to_cart"],
@@ -199,6 +237,8 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     kind: "order.item.update",
     pack: "ibatexas/pack-orders",
     mutating: true,
+    tier: "chat",
+    plannerAdvertisedBy: ["ibatexas/pack-orders"],
     surfaces: ["chat"],
     auth: "guest",
     legacyNames: ["update_cart"],
@@ -211,6 +251,8 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     kind: "order.item.remove",
     pack: "ibatexas/pack-orders",
     mutating: true,
+    tier: "chat",
+    plannerAdvertisedBy: ["ibatexas/pack-orders"],
     surfaces: ["chat"],
     auth: "guest",
     legacyNames: ["remove_from_cart"],
@@ -219,10 +261,15 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     guardRefs: ORDERS_GUARD_REFS,
     refusalCode: "order.default.deny",
   },
+  // FE-T20 identity-tier — never in ORDER_TOOLS/ORDER_TOOL_TO_INTENT, no
+  // chat tool, absent from the planner's allowedIntents literal.
+  { kind: "order.cart.sync", pack: "ibatexas/pack-orders", mutating: true, tier: "identity" },
   {
     kind: "order.coupon.apply",
     pack: "ibatexas/pack-orders",
     mutating: true,
+    tier: "chat",
+    plannerAdvertisedBy: ["ibatexas/pack-orders"],
     surfaces: ["chat"],
     auth: "guest",
     legacyNames: ["apply_coupon"],
@@ -235,6 +282,8 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     kind: "order.checkout.create",
     pack: "ibatexas/pack-orders",
     mutating: true,
+    tier: "chat",
+    plannerAdvertisedBy: ["ibatexas/pack-orders"],
     surfaces: ["chat"],
     // Requires `isAuthenticated` OR guest CARD checkout (RC-A1 D-24 Ruling
     // 2, `isCardCheckout` in policies.ts) — modeled as "customer" (the
@@ -253,10 +302,13 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     guardRefs: ORDERS_GUARD_REFS,
     refusalCode: "order.default.deny",
   },
+  { kind: "order.pix.details.set", pack: "ibatexas/pack-orders", mutating: true, tier: "identity" },
   {
     kind: "order.cancel",
     pack: "ibatexas/pack-orders",
     mutating: true,
+    tier: "chat",
+    plannerAdvertisedBy: ["ibatexas/pack-orders"],
     surfaces: ["chat"],
     auth: "customer",
     legacyNames: ["cancel_order"],
@@ -265,10 +317,16 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     guardRefs: ORDERS_GUARD_REFS,
     refusalCode: "order.default.deny",
   },
+  // SYSTEM-only compensation cancel (payment-expiry / stale-order) — the
+  // orders planner comment is explicit: "NEVER LLM-proposable". No
+  // plannerAdvertisedBy by construction, not by omission.
+  { kind: "order.cancel.system", pack: "ibatexas/pack-orders", mutating: true, tier: "identity" },
   {
     kind: "order.amend.request",
     pack: "ibatexas/pack-orders",
     mutating: true,
+    tier: "chat",
+    plannerAdvertisedBy: ["ibatexas/pack-orders"],
     surfaces: ["chat"],
     auth: "customer",
     legacyNames: ["amend_order"],
@@ -277,10 +335,20 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     guardRefs: ORDERS_GUARD_REFS,
     refusalCode: "order.default.deny",
   },
+  { kind: "order.amend.add_item", pack: "ibatexas/pack-orders", mutating: true, tier: "identity" },
+  { kind: "order.amend.update_qty", pack: "ibatexas/pack-orders", mutating: true, tier: "identity" },
+  { kind: "order.amend.remove_item", pack: "ibatexas/pack-orders", mutating: true, tier: "identity" },
+  { kind: "order.address.change", pack: "ibatexas/pack-orders", mutating: true, tier: "identity" },
+  { kind: "order.type.switch", pack: "ibatexas/pack-orders", mutating: true, tier: "identity" },
   {
     kind: "order.note.add",
     pack: "ibatexas/pack-orders",
     mutating: true,
+    tier: "chat",
+    // BOTH: pack-orders' own planner advertises it to authenticated
+    // customers AND pack-ops' planner advertises it (foreign-owned, widens
+    // the staff/ops allowlist) — see types.ts `plannerAdvertisedBy` doc.
+    plannerAdvertisedBy: ["ibatexas/pack-orders", "ibatexas/pack-ops"],
     surfaces: ["chat"],
     auth: "customer",
     legacyNames: ["add_order_note"],
@@ -293,13 +361,17 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     kind: "order.review.submit",
     pack: "ibatexas/pack-orders",
     mutating: true,
-    // Registered as a chat tool (in CHAT_DRIVABLE_TOOL_KINDS) but the live
-    // `ordersCapabilityPlanner.allowedIntents` never advertises it — see
-    // `register-ibatexas-tool-packs.ts`'s roster-drift doc: "the orders
-    // planner never advertises it; reviews arrive via the web flow". `auth`
-    // reflects `docs/architecture/design/agent-tools.md` (`submit_review` →
-    // customer), which is the capability's DECLARED auth requirement
-    // independent of whether the chat planner currently offers it.
+    tier: "chat",
+    // Registered-but-unadvertised (see types.ts `plannerAdvertisedBy` doc):
+    // registered as a chat tool but the live `ordersCapabilityPlanner.
+    // allowedIntents` never includes it — see `register-ibatexas-tool-
+    // packs.ts`'s roster-drift doc: "the orders planner never advertises
+    // it; reviews arrive via the web flow".
+    plannerAdvertisedBy: undefined,
+    // `auth` reflects `docs/architecture/design/agent-tools.md`
+    // (`submit_review` → customer), the capability's DECLARED auth
+    // requirement independent of whether the chat planner currently
+    // offers it.
     surfaces: ["chat"],
     auth: "customer",
     legacyNames: ["submit_review"],
@@ -308,12 +380,26 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     guardRefs: ORDERS_GUARD_REFS,
     refusalCode: "order.default.deny",
   },
+  { kind: "order.reorder", pack: "ibatexas/pack-orders", mutating: true, tier: "identity" },
+  { kind: "order.projection.create", pack: "ibatexas/pack-orders", mutating: true, tier: "identity" },
+  // Ops-foreign-advertised ONLY (BKL-090): absent from orders' OWN planner
+  // literal — verified — advertised solely via pack-ops' staff allowlist.
+  {
+    kind: "order.status.transition",
+    pack: "ibatexas/pack-orders",
+    mutating: true,
+    tier: "identity",
+    plannerAdvertisedBy: ["ibatexas/pack-ops"],
+  },
+  { kind: "order.status.reconcile", pack: "ibatexas/pack-orders", mutating: true, tier: "identity" },
 
-  // ── pack-reservations (4) ────────────────────────────────────────────
+  // ── pack-reservations (8 — matches RESERVATION_INTENT_KINDS / reservationsPack.intents order) ──
   {
     kind: "reservation.create",
     pack: "ibatexas/pack-reservations",
     mutating: true,
+    tier: "chat",
+    plannerAdvertisedBy: ["ibatexas/pack-reservations"],
     surfaces: ["chat"],
     auth: "customer",
     legacyNames: ["create_reservation"],
@@ -326,6 +412,8 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     kind: "reservation.modify",
     pack: "ibatexas/pack-reservations",
     mutating: true,
+    tier: "chat",
+    plannerAdvertisedBy: ["ibatexas/pack-reservations"],
     surfaces: ["chat"],
     auth: "customer",
     legacyNames: ["modify_reservation"],
@@ -338,6 +426,8 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     kind: "reservation.cancel",
     pack: "ibatexas/pack-reservations",
     mutating: true,
+    tier: "chat",
+    plannerAdvertisedBy: ["ibatexas/pack-reservations"],
     surfaces: ["chat"],
     auth: "customer",
     legacyNames: ["cancel_reservation"],
@@ -348,10 +438,30 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     guardRefs: RESERVATIONS_GUARD_REFS,
     refusalCode: "reservation.default.deny",
   },
+  // Staff-plane kinds — reservations' OWN planner advertises both ONLY on
+  // a staff session (`isStaffSession`), never to a customer.
+  {
+    kind: "reservation.checkin",
+    pack: "ibatexas/pack-reservations",
+    mutating: true,
+    tier: "identity",
+    plannerAdvertisedBy: ["ibatexas/pack-reservations"],
+  },
+  {
+    kind: "reservation.complete",
+    pack: "ibatexas/pack-reservations",
+    mutating: true,
+    tier: "identity",
+    plannerAdvertisedBy: ["ibatexas/pack-reservations"],
+  },
+  // SYSTEM-only (cron) — never in the planner's allowedIntents.
+  { kind: "reservation.no_show.mark", pack: "ibatexas/pack-reservations", mutating: true, tier: "identity" },
   {
     kind: "reservation.waitlist.join",
     pack: "ibatexas/pack-reservations",
     mutating: true,
+    tier: "chat",
+    plannerAdvertisedBy: ["ibatexas/pack-reservations"],
     surfaces: ["chat"],
     auth: "customer",
     legacyNames: ["join_waitlist"],
@@ -360,12 +470,21 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     guardRefs: RESERVATIONS_GUARD_REFS,
     refusalCode: "reservation.default.deny",
   },
+  // SYSTEM-only (cron: waitlist-spot notification) — never in the
+  // planner's allowedIntents.
+  { kind: "reservation.waitlist.notify", pack: "ibatexas/pack-reservations", mutating: true, tier: "identity" },
 
-  // ── pack-customer-onboarding (2) ─────────────────────────────────────
+  // ── pack-customer-onboarding (8 — matches CUSTOMER_ONBOARDING_INTENT_KINDS / customerOnboardingPack.intents order) ──
+  // SYSTEM-only (OTP-flow seed) — never in the planner's allowedIntents.
+  { kind: "customer.create", pack: "ibatexas/pack-customer-onboarding", mutating: true, tier: "identity" },
+  // Web/admin-only, no LLM tool — never in the planner's allowedIntents.
+  { kind: "customer.profile.update", pack: "ibatexas/pack-customer-onboarding", mutating: true, tier: "identity" },
   {
     kind: "customer.preferences.update",
     pack: "ibatexas/pack-customer-onboarding",
     mutating: true,
+    tier: "chat",
+    plannerAdvertisedBy: ["ibatexas/pack-customer-onboarding"],
     surfaces: ["chat"],
     auth: "customer",
     legacyNames: ["update_preferences"],
@@ -378,6 +497,8 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     kind: "customer.pix.details.save",
     pack: "ibatexas/pack-customer-onboarding",
     mutating: true,
+    tier: "chat",
+    plannerAdvertisedBy: ["ibatexas/pack-customer-onboarding"],
     surfaces: ["chat"],
     auth: "customer",
     legacyNames: ["save_pix_details"],
@@ -386,12 +507,29 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     guardRefs: CUSTOMER_ONBOARDING_GUARD_REFS,
     refusalCode: "customer.default.deny",
   },
+  // Web-only, no LLM tool — never in the planner's allowedIntents.
+  { kind: "customer.address.add", pack: "ibatexas/pack-customer-onboarding", mutating: true, tier: "identity" },
+  { kind: "customer.address.remove", pack: "ibatexas/pack-customer-onboarding", mutating: true, tier: "identity" },
+  // HTTP-only (task 14 routes) — the destructive flow is NEVER LLM-callable;
+  // the planner omits it from allowedIntents regardless of state.
+  { kind: "customer.anonymize", pack: "ibatexas/pack-customer-onboarding", mutating: true, tier: "identity" },
+  { kind: "customer.anonymize.cancel", pack: "ibatexas/pack-customer-onboarding", mutating: true, tier: "identity" },
 
-  // ── pack-payments (1) ────────────────────────────────────────────────
+  // ── pack-payments (17 — matches PAYMENT_INTENT_KINDS / paymentsPack.intents order) ──
+  // Webhook/system-originated — never in the planner's allowedIntents
+  // (module doc: "most payment operations are NOT LLM-proposable").
+  { kind: "payment.create", pack: "ibatexas/pack-payments", mutating: true, tier: "identity" },
+  { kind: "payment.charge.create", pack: "ibatexas/pack-payments", mutating: true, tier: "identity" },
+  { kind: "payment.charge.confirm", pack: "ibatexas/pack-payments", mutating: true, tier: "identity" },
+  { kind: "payment.charge.fail", pack: "ibatexas/pack-payments", mutating: true, tier: "identity" },
+  { kind: "payment.charge.expire", pack: "ibatexas/pack-payments", mutating: true, tier: "identity" },
+  { kind: "payment.charge.cancel", pack: "ibatexas/pack-payments", mutating: true, tier: "identity" },
   {
     kind: "payment.pix.regenerate",
     pack: "ibatexas/pack-payments",
     mutating: true,
+    tier: "chat",
+    plannerAdvertisedBy: ["ibatexas/pack-payments"],
     surfaces: ["chat"],
     auth: "customer",
     legacyNames: ["regenerate_pix"],
@@ -400,12 +538,50 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     guardRefs: PAYMENTS_GUARD_REFS,
     refusalCode: "payment.default.deny",
   },
+  // De-advertised (P0-7): mapped + MUTATING-classified but NOT in the
+  // planner's `allowedIntents` literal — no chat tool is registered for
+  // either, so advertising would let the planner propose an envelope no
+  // tool can dispatch. WS4 backlog restores their planner entry.
+  { kind: "payment.method.switch", pack: "ibatexas/pack-payments", mutating: true, tier: "identity" },
+  { kind: "payment.retry", pack: "ibatexas/pack-payments", mutating: true, tier: "identity" },
+  // Ops-foreign-advertised ONLY (BKL-085): absent from payments' OWN
+  // planner literal — verified (only payment.pix.regenerate is there) —
+  // advertised solely via pack-ops' staff allowlist.
+  {
+    kind: "payment.refund.issue",
+    pack: "ibatexas/pack-payments",
+    mutating: true,
+    tier: "identity",
+    plannerAdvertisedBy: ["ibatexas/pack-ops"],
+  },
+  // Staff-route / webhook-originated — never in the planner's allowedIntents.
+  { kind: "payment.refund.confirm", pack: "ibatexas/pack-payments", mutating: true, tier: "identity" },
+  { kind: "payment.dispute.open", pack: "ibatexas/pack-payments", mutating: true, tier: "identity" },
+  { kind: "payment.cash.confirm", pack: "ibatexas/pack-payments", mutating: true, tier: "identity" },
+  { kind: "payment.waive", pack: "ibatexas/pack-payments", mutating: true, tier: "identity" },
+  { kind: "payment.status.force", pack: "ibatexas/pack-payments", mutating: true, tier: "identity" },
+  { kind: "payment.status.transition", pack: "ibatexas/pack-payments", mutating: true, tier: "identity" },
+  { kind: "payment.status.reconcile", pack: "ibatexas/pack-payments", mutating: true, tier: "identity" },
 
-  // ── pack-whatsapp (1) ────────────────────────────────────────────────
+  // ── pack-whatsapp (5 — matches WHATSAPP_INTENT_KINDS / whatsappPack.intents order) ──
+  // Subscriber-emitted (cart-intelligence / handoff-subscriber /
+  // notification.send) — module doc: "none of which are LLM-proposable".
+  { kind: "whatsapp.message.send", pack: "ibatexas/pack-whatsapp", mutating: true, tier: "identity" },
+  { kind: "whatsapp.template.send", pack: "ibatexas/pack-whatsapp", mutating: true, tier: "identity" },
+  { kind: "whatsapp.session.handover", pack: "ibatexas/pack-whatsapp", mutating: true, tier: "identity" },
+  { kind: "conversation.message.append", pack: "ibatexas/pack-whatsapp", mutating: true, tier: "identity" },
   {
     kind: "whatsapp.handoff.request",
     pack: "ibatexas/pack-whatsapp",
     mutating: true,
+    tier: "chat",
+    // Registered-but-unadvertised (see types.ts `plannerAdvertisedBy`
+    // doc): the whatsapp planner's `allowedIntents` is `[]` for EVERY
+    // session context, verbatim per its own comment: "the governed
+    // `whatsapp.handoff.request` intent is fully wired… but NOT yet
+    // advertised to the LLM". Activation = advertise here + regenerate
+    // the golden-conversation fixtures (BKL-030-activation).
+    plannerAdvertisedBy: undefined,
     surfaces: ["chat"],
     // The one guest-accessible tool in the roster —
     // `docs/architecture/design/agent-tools.md`'s `handoff_to_human` entry:
@@ -417,5 +593,53 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     successClaimLinks: undefined,
     guardRefs: WHATSAPP_GUARD_REFS,
     refusalCode: "whatsapp.default.deny",
+  },
+
+  // ── pack-ops (6 — matches OPS_INTENT_KINDS / opsPack.intents order; zero chat-tier) ──
+  // All 6 are OWNED by pack-ops and advertised by its OWN planner ONLY on
+  // a staff session (`isStaffSession`) — Chat-INVISIBLE by construction
+  // (never in CHAT_DRIVABLE_TOOL_KINDS), so every instance is
+  // `tier: "identity"`.
+  {
+    kind: "product.availability.set",
+    pack: "ibatexas/pack-ops",
+    mutating: true,
+    tier: "identity",
+    plannerAdvertisedBy: ["ibatexas/pack-ops"],
+  },
+  {
+    kind: "product.price.set",
+    pack: "ibatexas/pack-ops",
+    mutating: true,
+    tier: "identity",
+    plannerAdvertisedBy: ["ibatexas/pack-ops"],
+  },
+  {
+    kind: "menu.special.set",
+    pack: "ibatexas/pack-ops",
+    mutating: true,
+    tier: "identity",
+    plannerAdvertisedBy: ["ibatexas/pack-ops"],
+  },
+  {
+    kind: "ops.alert.resolve.staff",
+    pack: "ibatexas/pack-ops",
+    mutating: true,
+    tier: "identity",
+    plannerAdvertisedBy: ["ibatexas/pack-ops"],
+  },
+  {
+    kind: "incident.ticket.close.staff",
+    pack: "ibatexas/pack-ops",
+    mutating: true,
+    tier: "identity",
+    plannerAdvertisedBy: ["ibatexas/pack-ops"],
+  },
+  {
+    kind: "schedule.override.set",
+    pack: "ibatexas/pack-ops",
+    mutating: true,
+    tier: "identity",
+    plannerAdvertisedBy: ["ibatexas/pack-ops"],
   },
 ] as const

@@ -56,7 +56,10 @@ export function generateChatDrivableToolKinds(defs: readonly CapabilityDefinitio
     for (const def of defs) {
       if (def.pack !== pack) continue
       if (!def.mutating) continue
-      if (!def.surfaces.includes("chat")) continue
+      // FE-T20: `surfaces` is optional (`tier: "identity"` instances never
+      // populate it) — `?? []` so an identity-tier def is correctly
+      // excluded rather than throwing on `undefined.includes(...)`.
+      if (!(def.surfaces ?? []).includes("chat")) continue
       out.push(def.kind)
     }
   }

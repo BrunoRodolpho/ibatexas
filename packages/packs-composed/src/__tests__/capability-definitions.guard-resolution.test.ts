@@ -24,10 +24,21 @@ describe("capability-definitions — guard-ref boot assertion (FE-4.3)", () => {
   it("every authored guard-ref resolves to a distinct live guard in its pack+phase", () => {
     const map = buildGuardResolutionMap()
     for (const def of CAPABILITY_DEFINITIONS) {
-      for (const ref of def.guardRefs) {
+      // FE-T20: identity-tier definitions leave guardRefs undefined —
+      // nothing to resolve, not a failure.
+      for (const ref of def.guardRefs ?? []) {
         expect(map.has(`${def.pack}::${ref.phase}::${ref.name}`)).toBe(true)
       }
     }
+  })
+
+  it("FE-T20: identity-tier definitions (undefined guardRefs) do not break resolution — valid-by-absence, not dangling", () => {
+    const identityDefs = CAPABILITY_DEFINITIONS.filter((d) => d.tier === "identity")
+    expect(identityDefs.length).toBeGreaterThan(0)
+    for (const def of identityDefs) {
+      expect(def.guardRefs).toBeUndefined()
+    }
+    expect(() => assertGuardRefsResolve(identityDefs, buildGuardResolutionMap())).not.toThrow()
   })
 
   it("breaks: a renamed guard-ref fails the assertion (the negative direction the ticket requires)", () => {
@@ -37,7 +48,7 @@ describe("capability-definitions — guard-ref boot assertion (FE-4.3)", () => {
             ...def,
             guardRefs: [
               { phase: "business", name: "this_guard_name_does_not_exist_anywhere" },
-              ...def.guardRefs,
+              ...(def.guardRefs ?? []),
             ],
           }
         : def,
@@ -56,11 +67,11 @@ describe("capability-definitions — guard-ref boot assertion (FE-4.3)", () => {
     // resolution is keyed on (pack, phase, name), not just (pack, name).
     const ordersDef = CAPABILITY_DEFINITIONS.find((d) => d.kind === "order.cart.ensure")
     if (ordersDef === undefined) throw new Error("test fixture assumption violated: order.cart.ensure not found")
-    expect(ordersDef.guardRefs.some((r) => r.name === "executeCartOps" && r.phase === "business")).toBe(true)
+    expect((ordersDef.guardRefs ?? []).some((r) => r.name === "executeCartOps" && r.phase === "business")).toBe(true)
 
     const broken: readonly CapabilityDefinition[] = CAPABILITY_DEFINITIONS.map((def) =>
       def.kind === "order.cart.ensure"
-        ? { ...def, guardRefs: [{ phase: "state" as const, name: "executeCartOps" }, ...def.guardRefs] }
+        ? { ...def, guardRefs: [{ phase: "state" as const, name: "executeCartOps" }, ...(def.guardRefs ?? [])] }
         : def,
     )
     expect(() => assertGuardRefsResolve(broken, buildGuardResolutionMap())).toThrow(/Unresolved guard-ref/)
@@ -70,7 +81,7 @@ describe("capability-definitions — guard-ref boot assertion (FE-4.3)", () => {
     const map = buildGuardResolutionMap()
     for (const def of CAPABILITY_DEFINITIONS) {
       expect(map.has(`${def.pack}::auth::requireTenantBindingGuard`)).toBe(false)
-      expect(def.guardRefs.some((r) => r.name === "requireTenantBindingGuard")).toBe(false)
+      expect((def.guardRefs ?? []).some((r) => r.name === "requireTenantBindingGuard")).toBe(false)
     }
   })
 })
