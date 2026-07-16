@@ -43,6 +43,7 @@ import {
   type PolicyBundle,
 } from "@adjudicate/core/kernel"
 import { createSystemTaintPolicy } from "@adjudicate/primitives"
+import { isAtOrAboveMoneyBand } from "@ibatexas/types"
 
 // ── Intent kinds + payloads ────────────────────────────────────────────────
 
@@ -105,8 +106,8 @@ export interface PaymentMethodSwitchPayload {
  * `ESCALATE_REFUND_THRESHOLD_CENTAVOS = 100_000` in pack-payments-pix):
  *
  *   - amount ≤ R$500 (50_000 centavos)              → EXECUTE
- *   - R$500 < amount ≤ R$1000 (100_000 centavos)    → REQUEST_CONFIRMATION
- *   - amount > R$1000                               → ESCALATE
+ *   - R$500 < amount < R$1000 (100_000 centavos)    → REQUEST_CONFIRMATION
+ *   - amount ≥ R$1000                               → ESCALATE (FE-T03/D2)
  *
  * The route layer's two-step receipt protocol gates above the R$200
  * `REFUND_CONFIRMATION_THRESHOLD_CENTAVOS` operator-experience
@@ -179,7 +180,10 @@ export interface PaymentProjectionState {
  * `ESCALATE_REFUND_THRESHOLD_CENTAVOS = 100_000`.
  *
  * EXECUTE at or below CONFIRM threshold; REQUEST_CONFIRMATION between
- * CONFIRM and ESCALATE; ESCALATE above the escalate ceiling.
+ * CONFIRM and ESCALATE; ESCALATE at-or-above the escalate ceiling
+ * (FE-T03/D2 — comparator flipped from strict `>` to `>=`, matching
+ * `@ibatexas/pack-payments`' refund-escalate ladder for behavior-parity
+ * between the admin-HTTP path (this bundle) and the ops/WhatsApp path).
  *
  * Env overrides (set in `.env` or process env):
  *   REFUND_CONFIRM_THRESHOLD_CENTAVOS  — default 50_000 (R$500)
@@ -325,7 +329,7 @@ const executeAll: PaymentGuard = (envelope) => {
  *
  *   - amount ≤ 0                                    → REFUSE (invalid)
  *   - amount > refundable balance                   → REFUSE (over-refund)
- *   - amount > ESCALATE_REFUND_THRESHOLD_CENTAVOS   → ESCALATE
+ *   - amount ≥ ESCALATE_REFUND_THRESHOLD_CENTAVOS   → ESCALATE (FE-T03/D2)
  *   - amount > CONFIRM_REFUND_THRESHOLD_CENTAVOS    → REQUEST_CONFIRMATION
  *   - else                                          → EXECUTE
  *
@@ -402,7 +406,13 @@ const refundMagnitudeGuard: PaymentGuard = (envelope, state) => {
   }
 
   const escalateThreshold = getRefundEscalateThresholdCentavos()
-  if (payload.refundAmountCentavos > escalateThreshold) {
+  // FE-T03/D2: flipped from strict `>` to `isAtOrAboveMoneyBand` (`>=`),
+  // matching @ibatexas/pack-payments' refund-escalate ladder so an exact
+  // R$1000 refund ESCALATEs identically whether adjudicated via this
+  // domain-internal bundle (admin-HTTP route) or the pack-payments bundle
+  // (ops/WhatsApp route). The two bundles' guard bodies remain
+  // byte-parallel duplicates — see FE-D07 for the tracked consolidation.
+  if (isAtOrAboveMoneyBand(payload.refundAmountCentavos, escalateThreshold)) {
     return decisionEscalate(
       "human",
       "refund_above_escalate_threshold",

@@ -193,7 +193,8 @@ describe("BKL-085 refund taint-CONFIRM overlay — band × taint matrix", () => 
     })
   })
 
-  // ── R$500 < amount ≤ R$1000 band — CONFIRM for EVERY taint ─────────────────
+  // ── R$500 < amount < R$1000 band — CONFIRM for EVERY taint (FE-T03/D2:
+  // upper bound is now exclusive — an exact R$1000 refund ESCALATEs) ───────
   describe("R$500–R$1000 band: REQUEST_CONFIRMATION for every taint", () => {
     for (const taint of ALL_TAINTS) {
       it(`R$750 REQUEST_CONFIRMATION (${taint})`, () => {
