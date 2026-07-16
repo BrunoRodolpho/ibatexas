@@ -16,7 +16,14 @@
 
 import { describe, expect, it } from "vitest";
 import { CHAT_DRIVABLE_TOOL_KINDS } from "@ibatexas/packs-composed";
-import { listIbatexasToolPacks } from "../tools/register-ibatexas-tool-packs.js";
+import {
+  CAPABILITY_DEFINITIONS,
+  generateCapabilityDescriptions,
+} from "@ibatexas/packs-composed/capability-definitions";
+import {
+  IBATEXAS_CAPABILITY_DESCRIPTIONS,
+  listIbatexasToolPacks,
+} from "../tools/register-ibatexas-tool-packs.js";
 
 describe("T1a-2 — chat-drivable roster drift", () => {
   it("CHAT_DRIVABLE_TOOL_KINDS has no duplicates", () => {
@@ -50,5 +57,29 @@ describe("T1a-2 — chat-drivable roster drift", () => {
         kind,
       );
     }
+  });
+});
+
+/**
+ * FE-T21 — the VALUE side of "the registered tool roster" family member:
+ * `IBATEXAS_CAPABILITY_DESCRIPTIONS` (this file's own module, keyed by
+ * `capability` — same keys the tests above already pin). Lives here, not
+ * in packages/packs-composed, because `IBATEXAS_CAPABILITY_DESCRIPTIONS`
+ * is an apps/api export and packages cannot import apps/api (the reverse
+ * of the normal dependency direction) — mirrors why
+ * `assertCapabilityGuardRefsWired`'s own tests (FE-T19) live in apps/api
+ * too, not in packs-composed.
+ */
+describe("FE-T21 — generateCapabilityDescriptions vs the real IBATEXAS_CAPABILITY_DESCRIPTIONS", () => {
+  it("reproduces the real, live description map byte-for-byte (all 18 entries)", () => {
+    const generated = generateCapabilityDescriptions(CAPABILITY_DEFINITIONS);
+    expect(generated).toEqual(IBATEXAS_CAPABILITY_DESCRIPTIONS);
+  });
+
+  it("has exactly 18 entries, matching the pinned roster size", () => {
+    expect(Object.keys(IBATEXAS_CAPABILITY_DESCRIPTIONS)).toHaveLength(18);
+    expect(
+      Object.keys(generateCapabilityDescriptions(CAPABILITY_DEFINITIONS)),
+    ).toHaveLength(18);
   });
 });

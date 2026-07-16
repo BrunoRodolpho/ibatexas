@@ -201,6 +201,37 @@ interface CapabilityDefinitionCommon {
    * `extractionSchema`.
    */
   readonly successClaimLinks?: readonly string[]
+  /**
+   * Historical/legacy tool name(s) this capability was or is still
+   * addressed by outside the `capability === intentKind` convention (RC-A1
+   * Phase A) — e.g. `"add_to_cart"` for `order.item.add`. REQUIRED (never
+   * `undefined`) on {@link ChatCapabilityDefinition} — narrowed there, see
+   * its own doc.
+   *
+   * Optional here (not tier-discriminating) — FE-T21 found two genuine
+   * `tier: "identity"` exceptions where a real, structurally-grounded tool
+   * name exists despite there being no registered chat tool:
+   * `payment.method.switch` (`"switch_payment_method"`) and `payment.retry`
+   * (`"retry_payment"`) both have a real entry in `PAYMENT_TOOL_TO_INTENT`
+   * (`packages/pack-payments/src/capabilities.ts`) — they are DE-ADVERTISED
+   * (P0-7: no chat tool registered, so the planner never proposes them),
+   * not un-named. This is a narrower, better-grounded exception than
+   * `plannerAdvertisedBy`'s: it is populated ONLY where a STRUCTURED map
+   * entry exists, never inferred from prose. A similar-looking case in
+   * `pack-whatsapp` (`send_whatsapp_message` / `send_whatsapp_template` /
+   * `handover_whatsapp_session` — MUTATING-classified tool names the
+   * module doc correlates informally to `whatsapp.message.send` /
+   * `whatsapp.template.send` / `whatsapp.session.handover`) is
+   * DELIBERATELY NOT populated here: `WHATSAPP_TOOL_TO_INTENT` itself
+   * omits them (only `request_human_handoff` is mapped) — inferring a
+   * kind↔name pairing from doc prose the pack's OWN structured map does
+   * not assert would be fabrication, not authoring. See
+   * `generate-mutating-tool-names.ts`'s doc for how those three (and
+   * `order.reorder`'s `"reorder"`, a MUTATING tool name with NO kind
+   * mapping at all) are handled instead — as explicit, acknowledged
+   * "extra tool name" inputs, never invented `legacyNames` entries.
+   */
+  readonly legacyNames?: readonly string[]
 }
 
 /**
@@ -217,9 +248,9 @@ export interface ChatCapabilityDefinition extends CapabilityDefinitionCommon {
   /** Minimum auth level required to propose this capability. */
   readonly auth: CapabilityAuthLevel
   /**
-   * Historical/legacy tool name(s) this capability was or is still
-   * addressed by outside the `capability === intentKind` convention (RC-A1
-   * Phase A) — e.g. `"add_to_cart"` for `order.item.add`.
+   * Narrows {@link CapabilityDefinitionCommon.legacyNames} from optional to
+   * REQUIRED for the chat tier — every chat-drivable capability has at
+   * least one legacy tool name by construction (it IS a registered tool).
    */
   readonly legacyNames: readonly string[]
   /** pt-BR description (Hard Rule #4). Single-sourced from
@@ -259,14 +290,19 @@ export interface ChatCapabilityDefinition extends CapabilityDefinitionCommon {
 
 /**
  * An identity-only capability (48 instances, FE-T20) — one of the 52
- * remaining first-party kinds with no registered chat tool, no docs entry,
- * and no legacy name to ground a richer description in. Deliberately
+ * remaining first-party kinds with no registered chat tool and (almost
+ * always) no legacy name to ground a richer description in. Deliberately
  * carries NOTHING beyond {@link CapabilityDefinitionCommon} — no
- * `surfaces`/`auth`/`legacyNames`/`description`/`guardRefs`/`refusalCode`
- * property exists on this variant at all (not merely `undefined`):
- * TypeScript rejects assigning any of the six to an
- * `IdentityCapabilityDefinition` literal, keeping the "minimal, not
- * fabricated" boundary a structural fact, not a convention.
+ * `surfaces`/`auth`/`description`/`guardRefs`/`refusalCode` property exists
+ * on this variant at all (not merely `undefined`): TypeScript rejects
+ * assigning any of the five to an `IdentityCapabilityDefinition` literal,
+ * keeping the "minimal, not fabricated" boundary a structural fact, not a
+ * convention. `legacyNames` is the ONE common-base field an identity-tier
+ * instance may optionally carry (FE-T21) — see its doc on
+ * {@link CapabilityDefinitionCommon} for the two narrow, structurally-
+ * grounded exceptions (`payment.method.switch`, `payment.retry`) and why
+ * they don't weaken this boundary (populated only from a real, structured
+ * map entry, never inferred).
  */
 export interface IdentityCapabilityDefinition extends CapabilityDefinitionCommon {
   readonly tier: "identity"

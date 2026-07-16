@@ -1,12 +1,14 @@
 /**
  * `@ibatexas/packs-composed/capability-definitions` — FE-4 EXPAND (FE-T19)
- * + MIGRATE 1 (FE-T20) barrel. See `types.ts` for the field contract,
+ * + MIGRATE 1/2 (FE-T20/T21) barrel. See `types.ts` for the field contract,
  * `definitions.ts` for the authored data (18 chat-tier + 48 identity-tier),
- * `guard-resolution.ts` for the boot assertion, and the four
- * `generate-*.ts` modules for the intent-identity family projections
- * (`generate-chat-drivable-tool-kinds.ts` — FE-T19's original exemplar;
- * `generate-known-intent-kinds.ts`, `generate-pack-intent-kinds.ts`,
- * `generate-planner-allowed-intents.ts` — FE-T20).
+ * `guard-resolution.ts` for the boot assertion, and the `generate-*.ts`
+ * modules for the two generated families:
+ *   - Intent-identity (FE-T20): `generate-chat-drivable-tool-kinds.ts`
+ *     (FE-T19's original exemplar), `generate-known-intent-kinds.ts`,
+ *     `generate-pack-intent-kinds.ts`, `generate-planner-allowed-intents.ts`.
+ *   - Tool/driving (FE-T21): `generate-capability-descriptions.ts`,
+ *     `generate-tool-to-intent-map.ts`, `generate-mutating-tool-names.ts`.
  *
  * # This module IS the boot assertion
  *
@@ -54,6 +56,12 @@ export {
 } from "./generate-pack-intent-kinds.js"
 
 export { generatePlannerAllowedIntents } from "./generate-planner-allowed-intents.js"
+
+export { generateCapabilityDescriptions } from "./generate-capability-descriptions.js"
+
+export { generateToolToIntentMap } from "./generate-tool-to-intent-map.js"
+
+export { generateMutatingToolNames } from "./generate-mutating-tool-names.js"
 
 import { CAPABILITY_DEFINITIONS } from "./definitions.js"
 import { assertGuardRefsResolve } from "./guard-resolution.js"
