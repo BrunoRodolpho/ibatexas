@@ -24,7 +24,12 @@ import {
   validateClaimDefinitionRegistry,
 } from "../claim-definition-registry.js";
 
-const TRIAD = ["STORE_OPEN_NOW", "ORDER_FULFILLMENT_STAGE", "PAYMENT_STATUS"];
+const TRIAD = [
+  "STORE_OPEN_NOW",
+  "ORDER_FULFILLMENT_STAGE",
+  "PAYMENT_STATUS",
+  "RESERVATION_STATUS",
+];
 
 // A deep clone of the real definitions, mutable for fault injection.
 const cloneDefs = (): Record<string, ClaimDefinition> =>

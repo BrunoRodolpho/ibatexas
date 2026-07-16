@@ -146,6 +146,8 @@ const prop = (claimType: string, field: string): TemplateSlot => ({
 /** The representative claim types this kernel-foundation grammar models. */
 export const ORDER_FULFILLMENT_STAGE = "ORDER_FULFILLMENT_STAGE";
 export const PAYMENT_STATUS = "PAYMENT_STATUS";
+/** FE-T17 — the owner-scoped reservation-status read. */
+export const RESERVATION_STATUS = "RESERVATION_STATUS";
 /** Triad slice (Plan 1 Phase 3) — the override-aware "is it open right now" type. */
 export const STORE_OPEN_NOW = "STORE_OPEN_NOW";
 /** BKL-121 — the today's-hours read (public, non-Triad; override/holiday falsified). */
@@ -225,6 +227,26 @@ export const VALIDATED_TEMPLATES: Readonly<Record<string, Template>> = {
       lit("."),
     ],
   },
+  // FE-T17 — the reservation-status validated template. ONE proposition slot
+  // (self-type, "status"), mirroring PAYMENT_STATUS / ORDER_FULFILLMENT_STAGE
+  // exactly. NOT multi-field: the linked kernel's mint step (SDD §5 C6 / the
+  // published `runClaimsKernel` "F2" narrowing — `kernels.js`) reconstructs the
+  // CanonicalClaim's value carrying ONLY the C6-`valueBinding.path`-proven slice
+  // and drops every sibling field of the read as unvalidated content (by design —
+  // only the bound path was ever compared against the ledger). A second
+  // proposition slot reading a sibling field (e.g. `partySize`) would therefore
+  // ALWAYS be UNFILLABLE post-mint, aborting the whole template to UNKNOWN (Inv 6
+  // is all-or-nothing per template) — so this template, like every other Triad
+  // type here, renders exactly the one C6-bound field.
+  [RESERVATION_STATUS]: {
+    claimType: RESERVATION_STATUS,
+    posture: "validated",
+    slots: [
+      lit("O status da sua reserva é: "),
+      prop(RESERVATION_STATUS, "status"),
+      lit("."),
+    ],
+  },
   // NOTE: ORDER_ESTIMATED_ARRIVAL was REMOVED here (inv.18 validator wiring). It
   // had a `validated` template (a PROPOSITION slot prop(…, "etaMinutes")) but NO
   // registered ClaimDefinition — it is absent from CLAIM_REGISTRY/REGISTRY_SPECS
@@ -239,8 +261,9 @@ export const VALIDATED_TEMPLATES: Readonly<Record<string, Template>> = {
 
 // PROPOSABLE-BUT-UNRENDERABLE COVERAGE (BKL-112; the pin lives in
 // __tests__/proposable-renderable-drift.test.ts). The keys of VALIDATED_TEMPLATES
-// (STORE_OPEN_NOW, STORE_HOURS, ORDER_FULFILLMENT_STAGE, PAYMENT_STATUS) are a
-// STRICT SUBSET of the proposable CLAIM_REGISTRY enum (claim-registry.ts). TWO
+// (STORE_OPEN_NOW, STORE_HOURS, STORE_HOURS_FOR_DATE, ORDER_FULFILLMENT_STAGE,
+// PAYMENT_STATUS, RESERVATION_STATUS) are a STRICT SUBSET of the proposable
+// CLAIM_REGISTRY enum (claim-registry.ts). TWO
 // registered proposable types still have NO validated template, so a
 // genuinely-VALIDATED claim of one of them can only SAFE-DEGRADE to the UNKNOWN
 // template (renderer-from-claims.ts abstains an untemplated VALIDATED claim — §O#3,

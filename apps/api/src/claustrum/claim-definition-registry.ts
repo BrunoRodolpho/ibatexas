@@ -79,6 +79,7 @@ const TRIAD_SCOPED_TYPES: ReadonlySet<RegistryClaimType> = new Set<RegistryClaim
   "STORE_OPEN_NOW",
   "ORDER_FULFILLMENT_STAGE",
   "PAYMENT_STATUS",
+  "RESERVATION_STATUS",
 ]);
 
 /**
