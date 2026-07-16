@@ -12,26 +12,52 @@
 // into one Set. It lives in its own package — rather than inside any
 // consumer — so both apps/api and packages/cli can import it without a
 // dependency cycle, and so it outlived the deletion of the legacy
-// `@ibatexas/llm-provider` brain (claustrum-on-dev WS8). Its only deps are
-// the six Pack packages it type-mirrors below; nothing depends on it but
-// those two consumers, so it cannot introduce a cycle.
+// `@ibatexas/llm-provider` brain (claustrum-on-dev WS8). Its only RUNTIME
+// deps are the six Pack packages it type-mirrors below; nothing depends on
+// it but those two consumers, so it cannot introduce a cycle.
 //
-// # Scope (post W5)
+// # FE-4 CONTRACT (FE-T26) — this file is now GENERATED, in part
 //
-// Six intent unions are imported:
-//   - `OrderIntentKind`             from `@ibatexas/pack-orders`
-//   - `ReservationIntentKind`       from `@ibatexas/pack-reservations`
-//   - `WhatsAppIntentKind`          from `@ibatexas/pack-whatsapp`
-//   - `CustomerOnboardingIntentKind` from `@ibatexas/pack-customer-onboarding`
-//   - `PaymentIntentKind`           from `@ibatexas/pack-payments`  (NEW W5-1)
-//   - `PixIntentKind`               from `@adjudicate/pack-payments-pix`
+// The six `*_INTENT_KINDS` arrays + `KNOWN_INTENT_KINDS` below the
+// GENERATED_BEGIN marker are machine-written from `CapabilityDefinition`
+// by `packages/packs-composed/scripts/regenerate-intent-kinds.ts` — see
+// that file + `packages/packs-composed/src/codegen/build-generated-
+// region.ts` for the codegen, and `packages/packs-composed/src/__tests__/
+// regen-intent-kinds-freshness.test.ts` for the CI gate that fails if this file
+// drifts from a fresh regeneration. (The tooling lives in packs-composed,
+// not here, deliberately — it needs `CAPABILITY_DEFINITIONS` and reaches
+// this file by a plain relative filesystem path, never a package import,
+// so `@ibatexas/intent-kinds` itself gains NO new dependency and cannot
+// form a build-graph cycle with packs-composed, which already depends on
+// this package the other way for its own freshness tests.) Adding,
+// removing, or reordering a capability is now a ONE-PLACE edit to
+// `definitions.ts` + `pnpm --filter @ibatexas/packs-composed run
+// regen:intent-kinds` — hand-editing the region below is a wasted edit the
+// next regen silently overwrites, and the freshness gate catches a
+// hand-edit that ISN'T followed by a regen (the committed file would no
+// longer match a fresh regeneration).
 //
-// # Why explicit literal lists?
+// `PIX_INTENT_KINDS` and `LOYALTY_INTENT_KINDS` (declared BELOW, ABOVE the
+// generated region) are the two deliberate exceptions — genuine EXTERNAL
+// inputs `CapabilityDefinition` does not (and per FE-4.1 should not) model:
+// `PIX_INTENT_KINDS` mirrors the FROZEN external `@adjudicate/pack-
+// payments-pix`, not one of the six first-party Packs; `LOYALTY_
+// INTENT_KINDS` is a real kernel-gated mutation with no Pack at all (see
+// each constant's own doc for the full rationale, preserved from the
+// pre-CONTRACT file). Both stay hand-authored forever — the codegen
+// mandate (FE-4.3) never claimed to eliminate genuinely external data, only
+// the ~16 lists that duplicated `CapabilityDefinition`'s own first-party
+// scope.
+//
+// # Why `satisfies` clauses survive regeneration
 //
 // Type-only imports can't be enumerated at runtime — a `Set<OrderIntentKind>`
-// has no values until we list them. We pin a `... satisfies readonly OrderIntentKind[]`
-// expression so TypeScript fails the build if the Pack adds a new kind to
-// its union without also updating this list. That's the typo-guard guard.
+// has no values until we list them. Each generated array still carries its
+// own `... satisfies readonly OrderIntentKind[]` expression (emitted by the
+// regen script, not hand-typed) so TypeScript fails the build if a Pack's
+// own type union ever admits a kind `CAPABILITY_DEFINITIONS` doesn't cover
+// — the same typo-guard the pre-CONTRACT hand file carried, now compiler-
+// checked against GENERATED content instead of hand-typed content.
 //
 // # W5-7 policy decision: `medusa.*` namespace is EXCLUDED.
 //
@@ -51,21 +77,45 @@ import type { ReservationIntentKind } from "@ibatexas/pack-reservations"
 import type { WhatsAppIntentKind } from "@ibatexas/pack-whatsapp"
 import type { PixIntentKind } from "@adjudicate/pack-payments-pix"
 
-// ── Pack-orders intent surface (post W5-2 expansion) ────────────────────────
+// ── Pack-payments-pix intent surface (hand-authored EXTERNAL input) ─────────
 //
-// Mirrors the `OrderIntentKind` union in
-// `packages/pack-orders/src/types.ts`. If you add a kind there, add it here
-// too — `satisfies` will fail the build otherwise. W5-2 added 12 kinds:
-// granular amends, lifecycle (projection/status), and the order-extension
-// kinds the taxonomy lists.
+// Mirrors `PixIntentKind` in `@adjudicate/pack-payments-pix`. The PIX kinds
+// are a separate namespace (`pix.charge.*`) from the IbateXas-native
+// `payment.pix.*` kinds in `@ibatexas/pack-payments`. Both ship in
+// `KNOWN_INTENT_KINDS` — pix.* for the wire-PSP contract,
+// payment.pix.regenerate for the customer-driven composite kind in
+// pack-payments. NOT part of the generated region below (`@adjudicate/
+// pack-payments-pix` is a platform adopter Pack, not one of the six
+// first-party packs `CapabilityDefinition` covers) — cross-checked by
+// packs-composed's freshness test against `paymentsPixPack.intents` (a
+// runtime materialization of the same FROZEN external package), never
+// silently re-derived here.
+export const PIX_INTENT_KINDS = [
+  "pix.charge.create",
+  "pix.charge.confirm",
+  "pix.charge.refund",
+] as const satisfies readonly PixIntentKind[]
 
-// FE-T20: exported (previously module-private) so `@ibatexas/packs-composed`'s
-// `generate-pack-intent-kinds.ts` freshness gate can diff its
-// CapabilityDefinition-derived projection against this list byte-for-byte,
-// per pack, independent of the `KNOWN_INTENT_KINDS` union it feeds — a
-// direct, non-tautological freshness target rather than an indirect one
-// reconstructed only through the union. No other change: identical values,
-// identical order, identical `satisfies` guard.
+// ── Loyalty (hand-authored EXTERNAL input) ───────────────────────────────────
+//
+// audit-2026-05-25 (I13): loyalty.stamp.add is a real kernel-gated
+// domain mutation (cart-intelligence.ts, loyalty.service.ts,
+// loyalty-policy.ts) but is NOT Pack-registered at all (dispatched with a
+// domain-internal PolicyBundle straight to adjudicate()/withAdjudicate,
+// bypassing the Pack registry entirely) — there is no Pack to own it, so
+// no CapabilityDefinition.pack value could be honest here either. NOT part
+// of the generated region below — a real, permanent exception, not a
+// migration debt.
+export const LOYALTY_INTENT_KINDS: ReadonlySet<string> = new Set<string>([
+  "loyalty.stamp.add",
+])
+
+// ═══ GENERATED — regenerate via `pnpm --filter @ibatexas/packs-composed run regen:intent-kinds` after editing packages/packs-composed/src/capability-definitions/definitions.ts. DO NOT HAND-EDIT BELOW THIS LINE. ═══
+
+// ── Pack-orders intent surface ────────────────────────────────────────────────
+//
+// Mirrors OrderIntentKind (packages/pack-orders/src/types.ts),
+// projected from CAPABILITY_DEFINITIONS — see definitions.ts for per-kind rationale.
 export const ORDER_INTENT_KINDS = [
   "order.cart.ensure",
   "order.item.add",
@@ -91,12 +141,10 @@ export const ORDER_INTENT_KINDS = [
   "order.status.reconcile",
 ] as const satisfies readonly OrderIntentKind[]
 
-// ── Pack-reservations intent surface ─────────────────────────────────────────
+// ── Pack-reservations intent surface ──────────────────────────────────────────
 //
-// Mirrors `ReservationIntentKind` in `packages/pack-reservations/src/types.ts`.
-// Source: governance §"Domain: reservation".
-
-// FE-T20: exported — see ORDER_INTENT_KINDS's comment above.
+// Mirrors ReservationIntentKind (packages/pack-reservations/src/types.ts),
+// projected from CAPABILITY_DEFINITIONS — see definitions.ts for per-kind rationale.
 export const RESERVATION_INTENT_KINDS = [
   "reservation.create",
   "reservation.modify",
@@ -108,50 +156,22 @@ export const RESERVATION_INTENT_KINDS = [
   "reservation.waitlist.notify",
 ] as const satisfies readonly ReservationIntentKind[]
 
-// ── Pack-whatsapp intent surface (post W5-6) ────────────────────────────────
+// ── Pack-whatsapp intent surface ──────────────────────────────────────────────
 //
-// Mirrors `WhatsAppIntentKind` in `packages/pack-whatsapp/src/types.ts`.
-// W5-6 added `conversation.message.append` (persistence-side; distinct
-// from the wire-egress `whatsapp.message.send`).
-
-// FE-T20: exported — see ORDER_INTENT_KINDS's comment above.
+// Mirrors WhatsAppIntentKind (packages/pack-whatsapp/src/types.ts),
+// projected from CAPABILITY_DEFINITIONS — see definitions.ts for per-kind rationale.
 export const WHATSAPP_INTENT_KINDS = [
   "whatsapp.message.send",
   "whatsapp.template.send",
   "whatsapp.session.handover",
   "conversation.message.append",
-  // BKL-030: customer-side escalation on-ramp (LLM-proposable).
   "whatsapp.handoff.request",
 ] as const satisfies readonly WhatsAppIntentKind[]
 
-// ── Pack-payments-pix intent surface ─────────────────────────────────────────
+// ── Pack-payments intent surface ──────────────────────────────────────────────
 //
-// Mirrors `PixIntentKind` in `@adjudicate/pack-payments-pix`. The PIX kinds
-// are a separate namespace (`pix.charge.*`) from the IbateXas-native
-// `payment.pix.*` kinds in `@ibatexas/pack-payments`. Both ship in
-// `KNOWN_INTENT_KINDS` — pix.* for the wire-PSP contract,
-// payment.pix.regenerate for the customer-driven composite kind in
-// pack-payments.
-
-// FE-T20: exported so packs-composed's freshness test can independently
-// cross-check it against `paymentsPixPack.intents` (a runtime
-// materialization of the same FROZEN external package) — a belt-and-braces
-// check, since this list is NOT one of the 6 first-party packs the
-// CapabilityDefinition registry covers.
-export const PIX_INTENT_KINDS = [
-  "pix.charge.create",
-  "pix.charge.confirm",
-  "pix.charge.refund",
-] as const satisfies readonly PixIntentKind[]
-
-// ── Pack-payments intent surface (NEW — W5-1) ───────────────────────────────
-//
-// Mirrors `PaymentIntentKind` in `packages/pack-payments/src/types.ts`. 17
-// payment-domain kinds covering charge / refund / dispute / cash / waive /
-// status lifecycle. The legacy `paymentProjectionPolicyBundle` now re-exports
-// a subset of pack-payments' bundle for backwards compatibility (D8).
-
-// FE-T20: exported — see ORDER_INTENT_KINDS's comment above.
+// Mirrors PaymentIntentKind (packages/pack-payments/src/types.ts),
+// projected from CAPABILITY_DEFINITIONS — see definitions.ts for per-kind rationale.
 export const PAYMENT_INTENT_KINDS = [
   "payment.create",
   "payment.charge.create",
@@ -172,14 +192,10 @@ export const PAYMENT_INTENT_KINDS = [
   "payment.status.reconcile",
 ] as const satisfies readonly PaymentIntentKind[]
 
-// ── Pack-customer-onboarding intent surface ──────────────────────────────────
+// ── Pack-customer-onboarding intent surface ───────────────────────────────────
 //
-// Mirrors `CustomerOnboardingIntentKind`. The taxonomy enumerates more
-// customer.* kinds; this Pack covers the 8 identity-lifecycle kinds. The
-// remaining kinds (`customer.session.*`, `customer.loyalty.*`,
-// `customer.welcome_credit.*`) belong to future Packs.
-
-// FE-T20: exported — see ORDER_INTENT_KINDS's comment above.
+// Mirrors CustomerOnboardingIntentKind (packages/pack-customer-onboarding/src/types.ts),
+// projected from CAPABILITY_DEFINITIONS — see definitions.ts for per-kind rationale.
 export const CUSTOMER_ONBOARDING_INTENT_KINDS = [
   "customer.create",
   "customer.profile.update",
@@ -191,71 +207,24 @@ export const CUSTOMER_ONBOARDING_INTENT_KINDS = [
   "customer.anonymize.cancel",
 ] as const satisfies readonly CustomerOnboardingIntentKind[]
 
-// ── Pack-ops intent surface (NEW — NEW-032 slice C1) ────────────────────────
+// ── Pack-ops intent surface ───────────────────────────────────────────────────
 //
-// Mirrors `OpsIntentKind` in `packages/pack-ops/src/types.ts`. First-party
-// staff-plane ops verb — belongs in KNOWN_INTENT_KINDS (unlike the `medusa.*`
-// egress kinds deliberately excluded above). Chat-INVISIBLE by construction
-// (advertised only to a staff session; never in CHAT_DRIVABLE_TOOL_KINDS).
-
-// FE-T20: exported — see ORDER_INTENT_KINDS's comment above.
+// Mirrors OpsIntentKind (packages/pack-ops/src/types.ts),
+// projected from CAPABILITY_DEFINITIONS — see definitions.ts for per-kind rationale.
 export const OPS_INTENT_KINDS = [
   "product.availability.set",
-  // NEW-004 — the OWNED price-change verb (confirm-gated on UNTRUSTED taint).
-  // Chat-INVISIBLE like the availability verb; its executor re-prices via the
-  // same `medusa.admin.product.update` egress the availability verb uses.
   "product.price.set",
-  // SCN-114 — the OWNED daily-special-by-message verb (confirm-gated on
-  // UNTRUSTED taint). Chat-INVISIBLE like the availability/price verbs; its
-  // executor upserts a DailySpecial via the domain service (NO Medusa egress).
   "menu.special.set",
-  // BKL-088 — the two OWNED staff-plane RESOLUTION verbs. DISTINCT from the
-  // SYSTEM-only `ops.alert.resolve` / `incident.ticket.close` domain kinds
-  // (which stay ABSENT from KNOWN_INTENT_KINDS by design); these `*.staff`
-  // pack verbs are the composed-router-adjudicated STAFF layer whose executors
-  // then drive that SYSTEM write layer (the D10 two-layer posture).
   "ops.alert.resolve.staff",
   "incident.ticket.close.staff",
-  // SCN-127 — the OWNED schedule-override verb ("fecha amanhã" / custom hours).
-  // Chat-INVISIBLE like the other ops verbs; its executor drives the SAME
-  // `scheduleService.upsertOverride` the admin schedule route uses.
   "schedule.override.set",
 ] as const satisfies readonly OpsIntentKind[]
 
-// ── Combined set ─────────────────────────────────────────────────────────────
+// ── Combined set ────────────────────────────────────────────────────────────
 //
-// `validateEnforceConfig` accepts any `ReadonlySet<string>` — widening to
-// `string` here is intentional. The `satisfies` clauses above are the
-// load-bearing type-safety net.
-//
-// W5-4 target: ≥60 kinds total. Current count:
-//   22 (orders, post W5-2)
-//  + 8 (reservations)
-//  + 5 (whatsapp, post W5-6 + BKL-030 whatsapp.handoff.request)
-//  + 3 (pix-payments)
-//  + 17 (pack-payments, new W5-1)
-//  + 8 (customer-onboarding)
-//  + 6 (pack-ops — product.availability.set NEW-032 C1; product.price.set
-//       NEW-004; menu.special.set SCN-114; schedule.override.set SCN-127;
-//       ops.alert.resolve.staff + incident.ticket.close.staff BKL-088)
-//  = 69 distinct kinds (+1 loyalty = 70 KNOWN), ≥60 target met.
-//
-// Future Pack growth (`@ibatexas/pack-auth`, `@ibatexas/pack-loyalty`,
-// `@ibatexas/pack-ops`) extends this set from inside their own modules.
-
-// audit-2026-05-25 (I13): loyalty.stamp.add is a real kernel-gated
-// domain mutation (introduced this PR — cart-intelligence.ts:362,
-// loyalty.service.ts:93, loyalty-policy.ts:28) but was absent from
-// KNOWN_INTENT_KINDS. Absence excluded it from assertPackCoverage
-// boot-time check, the per-intent redactor conformance test, and the
-// kernel-metrics sink's knownIntentKinds list. Add it explicitly so
-// the existing T3 conformance test gates redaction rules for it
-// (covered by the global HASH_FIELDS rule on `customerId`) and
-// future loyalty kinds follow the same registration convention.
-export const LOYALTY_INTENT_KINDS: ReadonlySet<string> = new Set<string>([
-  "loyalty.stamp.add",
-])
-
+// PIX_INTENT_KINDS + LOYALTY_INTENT_KINDS are the two hand-authored EXTERNAL
+// inputs (declared ABOVE, outside this generated region) — see their own doc
+// comments for why neither is CapabilityDefinition-derivable.
 export const KNOWN_INTENT_KINDS: ReadonlySet<string> = new Set<string>([
   ...ORDER_INTENT_KINDS,
   ...RESERVATION_INTENT_KINDS,
@@ -266,3 +235,5 @@ export const KNOWN_INTENT_KINDS: ReadonlySet<string> = new Set<string>([
   ...OPS_INTENT_KINDS,
   ...LOYALTY_INTENT_KINDS,
 ])
+
+// ═══ END GENERATED REGION ═══

@@ -122,24 +122,31 @@ describe("assertPackCoverage — real boot roster", () => {
   })
 })
 
-// ── FE-T25 (FE-4.3) — assertPackCoverage repointed to a GENERATED walked set ──
+// ── FE-4 CONTRACT (FE-T26) — assertPackCoverage's sole source ────────────────
 //
-// The real boot call (kernel-bootstrap.ts) now walks
-// GENERATED_PACK_REGISTERED_INTENT_KINDS (projected from CAPABILITY_
-// DEFINITIONS) instead of the hand-authored PACK_REGISTERED_INTENT_KINDS.
-// The `declared` side (every installed Pack's real `.intents[]`, inside
-// assertPackCoverage's own body) is untouched — already a genuine runtime
-// materialization, independent of both. This suite proves (a) the
-// generated walked set is byte-identical to the hand-authored one it
-// replaces, and (b) a REAL runtime/DI mismatch (an incomplete pack roster)
-// still fails closed when probed with the GENERATED set — the repoint
-// didn't silently defang the gate.
+// FE-T25 repointed the real boot call (kernel-bootstrap.ts) to walk a
+// GENERATED set (`generateKnownIntentKinds(CAPABILITY_DEFINITIONS, …)`
+// directly) instead of the then-hand-authored `PACK_REGISTERED_INTENT_
+// KINDS` (derived from `KNOWN_INTENT_KINDS`). This ticket (FE-T26) deletes
+// that old, separately-maintained derivation from kernel-bootstrap.ts
+// entirely — there is now only ONE `PACK_REGISTERED_INTENT_KINDS`, computed
+// the generated way. `KNOWN_INTENT_KINDS` itself (`@ibatexas/intent-kinds`)
+// is NOT deleted — it is now ALSO machine-generated (via its own,
+// independent regen script, `packages/packs-composed/scripts/regenerate-
+// intent-kinds.ts`) — so the first test below still checks something real:
+// that deriving "known kinds minus loyalty" DIRECTLY from `CAPABILITY_
+// DEFINITIONS` agrees with deriving it INDIRECTLY through `KNOWN_INTENT_
+// KINDS`'s own (separately-invoked) codegen path — two independent
+// generation call sites reading the same underlying data, not a hand list
+// vs a generated one. The `declared` side of the gate itself (every
+// installed Pack's real `.intents[]`, inside `assertPackCoverage`'s own
+// body) remains untouched — a genuine runtime materialization.
 
-describe("FE-T25 — assertPackCoverage's generated walked-set repoint", () => {
+describe("FE-4 CONTRACT (FE-T26) — assertPackCoverage's sole (generated) source", () => {
   // Independently reconstructed here (not imported from kernel-bootstrap.ts,
-  // which keeps GENERATED_PACK_REGISTERED_INTENT_KINDS module-private) —
-  // mirrors this file's own established pattern of rebuilding
-  // PACK_REGISTERED_INTENT_KINDS's derivation above rather than importing it.
+  // which keeps `PACK_REGISTERED_INTENT_KINDS` module-private) — mirrors
+  // this file's own established pattern of rebuilding the derivation rather
+  // than importing it.
   const generatedPackRegistered = new Set(
     [
       ...generateKnownIntentKinds(CAPABILITY_DEFINITIONS, {
@@ -149,15 +156,15 @@ describe("FE-T25 — assertPackCoverage's generated walked-set repoint", () => {
     ].filter((kind) => !LOYALTY_INTENT_KINDS.has(kind)),
   )
 
-  const handAuthoredPackRegistered = new Set(
+  const viaKnownIntentKinds = new Set(
     [...KNOWN_INTENT_KINDS].filter((kind) => !LOYALTY_INTENT_KINDS.has(kind)),
   )
 
-  it("the generated walked set is byte-identical to the hand-authored PACK_REGISTERED_INTENT_KINDS it replaces", () => {
-    expect(generatedPackRegistered).toEqual(handAuthoredPackRegistered)
+  it("deriving directly from CAPABILITY_DEFINITIONS agrees with deriving indirectly through KNOWN_INTENT_KINDS's own (independent) regen path", () => {
+    expect(generatedPackRegistered).toEqual(viaKnownIntentKinds)
   })
 
-  it("the real 7-pack boot roster still covers the GENERATED walked set (matches the real boot call's new behavior)", () => {
+  it("the real 7-pack boot roster still covers the GENERATED walked set (matches the real boot call's behavior)", () => {
     const roster = [
       { pack: ordersPack },
       { pack: reservationsPack },

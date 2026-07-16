@@ -62,6 +62,13 @@ import type {
   ToolDefinition as TD,
   ToolRegistry as TR,
 } from "@claustrum/core";
+// FE-4 CONTRACT (FE-T26): IBATEXAS_CAPABILITY_DESCRIPTIONS below is now
+// COMPUTED from CAPABILITY_DEFINITIONS, not from IBATEXAS_TOOLS — see its
+// own doc comment.
+import {
+  CAPABILITY_DEFINITIONS,
+  generateCapabilityDescriptions,
+} from "@ibatexas/packs-composed/capability-definitions";
 
 function asCapability(s: string): CapId {
   return s as CapId;
@@ -392,17 +399,31 @@ const IBATEXAS_TOOLS: ReadonlyArray<TD<unknown, unknown>> = [
 
 /**
  * The pt-BR capability descriptions, keyed by `capability` (=== intentKind).
- * Single-sourced from {@link IBATEXAS_TOOLS} so the prompt-fragment registry
- * (claustrum/prompts/ibatexas-prompts.ts) and the tool roster never drift.
- * This is the prompt CONTENT that, per Hard Rule #4, stays in ibatexas — the
- * PromptComposer (claustrum) owns only the SHAPE.
+ *
+ * FE-4 CONTRACT (FE-T26): COMPUTED from `CAPABILITY_DEFINITIONS.description`
+ * via `generateCapabilityDescriptions` (FE-T21) — no longer read off
+ * {@link IBATEXAS_TOOLS}'s own `description` fields. Same keys, same
+ * values (FE-T21's freshness test proved byte-identity before this
+ * repoint; both sources described the same 18 tools). This is the prompt
+ * CONTENT that, per Hard Rule #4, stays in ibatexas — the PromptComposer
+ * (claustrum) owns only the SHAPE; see `claustrum/prompts/ibatexas-
+ * prompts.ts`'s `ibatexasPromptFragments()`, still the surviving
+ * independent check that this map correctly drives the real rendered
+ * prompt fragments (`claustrum/prompts/__tests__/ibatexas-prompts.
+ * capability-fragments.test.ts`).
+ *
+ * NOTE (accepted, recorded — see docs/architecture/design/fe4-drift-
+ * gates.md): each `makeTool({...description: "..."})` call below STILL
+ * carries its own inline `description` literal on the `TD` object (kept —
+ * `@claustrum/core`'s `ToolDefinition` may consume it internally, and nothing
+ * here proves it never will), but this map no longer reads from it. The two
+ * are DECOUPLED as of this repoint — previously "single-sourced from
+ * IBATEXAS_TOOLS" made them identical by construction; now a divergence
+ * between a tool's inline `description` and `CAPABILITY_DEFINITIONS`'s
+ * `description` for the same kind would go unnoticed by this file alone.
  */
 export const IBATEXAS_CAPABILITY_DESCRIPTIONS: Readonly<Record<string, string>> =
-  Object.freeze(
-    Object.fromEntries(
-      IBATEXAS_TOOLS.map((t) => [String(t.capability), t.description]),
-    ),
-  );
+  generateCapabilityDescriptions(CAPABILITY_DEFINITIONS);
 
 /**
  * Register all ibatexas tool packs onto the conductor's tool registry.
