@@ -41,6 +41,15 @@ let reservationGetById: (id: string, customerId: string) => Promise<unknown> = a
   if (customerId !== OWNER) throw new Error("forbidden");
   return { id, status: "confirmed", partySize: 4, customerId: OWNER };
 };
+// FE-T17b — the discovery-fallback query. Default: no reservations (tests that
+// exercise discovery override this).
+let reservationListByCustomer: (
+  customerId: string,
+  options?: { status?: string | readonly string[]; limit?: number },
+) => Promise<{ reservations: unknown[]; total: number }> = async () => ({
+  reservations: [],
+  total: 0,
+});
 // Per-turn schedule read-through call counter — proves the open/closed signal +
 // the override falsifier share ONE loadSchedule() per backend (turn).
 let loadScheduleCalls = 0;
@@ -55,6 +64,10 @@ vi.mock("@ibatexas/domain", () => ({
   }),
   createReservationService: () => ({
     getById: (id: string, customerId: string) => reservationGetById(id, customerId),
+    listByCustomer: (
+      customerId: string,
+      options?: { status?: string | readonly string[]; limit?: number },
+    ) => reservationListByCustomer(customerId, options),
   }),
 }));
 // BKL-121 default-backend controls: today's-hours value + the holiday table the
@@ -87,6 +100,7 @@ beforeEach(() => {
     if (customerId !== OWNER) throw new Error("forbidden");
     return { id, status: "confirmed", partySize: 4, customerId: OWNER };
   };
+  reservationListByCustomer = async () => ({ reservations: [], total: 0 });
   loadScheduleCalls = 0;
   todayHoursText = "11h\u201315h / 18h\u201323h";
   scheduleHolidays = [];
@@ -245,6 +259,79 @@ describe("turn-reads — order/reservation owner-scoping", () => {
       mealPeriod: "closed",
       nextOpenDay: "amanhã",
     });
+  });
+});
+
+// ── FE-T17b review fix — listActiveReservationIds status filter + pagination ───
+//
+// Closes the loop between the domain-level fix (reservation.test.ts
+// `listByCustomer` status-filter tests) and the caller: `listActiveReservationIds`
+// MUST pass `status: [...ACTIVE_RESERVATION_STATUSES]` to `listByCustomer` so the
+// DB filters BEFORE `take`, never relying on the client-side filter alone to
+// survive a pagination-burying scenario (a block of far-future non-active
+// reservations sorting ahead of a near-future active one).
+describe("turn-reads — listActiveReservationIds (FE-T17b discovery + pagination-burying fix)", () => {
+  it("passes the active-status set to listByCustomer as a server-side filter", async () => {
+    let capturedOptions: { status?: string | readonly string[]; limit?: number } | undefined;
+    reservationListByCustomer = async (customerId, options) => {
+      capturedOptions = options;
+      return { reservations: [], total: 0 };
+    };
+    const backend = createDomainTriadReadBackend();
+    await backend.listActiveReservationIds(OWNER);
+    expect(capturedOptions?.status).toEqual(
+      expect.arrayContaining(["pending", "confirmed", "seated"]),
+    );
+    expect(capturedOptions?.status).toHaveLength(3);
+  });
+
+  it("REGRESSION (pagination-burying) — discovery still yields the near-future confirmed id even behind >20 far-future cancelled reservations", async () => {
+    // FAITHFUL (filter → sort → limit) simulation of the real Prisma query, mirroring
+    // the domain-level reservation.test.ts fixture: 22 far-future CANCELLED rows
+    // (2027-02-01..22) that would bury a near-future (2026-08-01) CONFIRMED row past
+    // a `take:20` page if the status filter were only applied client-side.
+    const buried = Array.from({ length: 22 }, (_, i) => ({
+      id: `res_cancelled_${i}`,
+      status: "cancelled",
+      date: new Date(`2027-02-${String(i + 1).padStart(2, "0")}T00:00:00.000Z`),
+    }));
+    const nearFutureConfirmed = {
+      id: "res_confirmed",
+      status: "confirmed",
+      date: new Date("2026-08-01T00:00:00.000Z"),
+    };
+    const rows = [...buried, nearFutureConfirmed];
+
+    reservationListByCustomer = async (customerId, options) => {
+      if (customerId !== OWNER) return { reservations: [], total: 0 };
+      let filtered = rows;
+      const statusArg = options?.status;
+      if (typeof statusArg === "string") {
+        filtered = filtered.filter((r) => r.status === statusArg);
+      } else if (Array.isArray(statusArg)) {
+        filtered = filtered.filter((r) => statusArg.includes(r.status));
+      }
+      filtered = [...filtered].sort((a, b) => b.date.getTime() - a.date.getTime());
+      const paged = options?.limit !== undefined ? filtered.slice(0, options.limit) : filtered;
+      return {
+        reservations: paged.map((r) => ({ id: r.id, status: r.status, partySize: 2 })),
+        total: filtered.length,
+      };
+    };
+
+    const backend = createDomainTriadReadBackend();
+    const ids = await backend.listActiveReservationIds(OWNER);
+
+    // The fix: the confirmed row is discovered despite 22 far-future cancelled
+    // rows that would otherwise bury it past a client-side-only `take: 20` page.
+    expect(ids).toContain("res_confirmed");
+    expect(ids).not.toEqual(expect.arrayContaining(["res_cancelled_0"]));
+  });
+
+  it("a customer with zero active reservations returns []", async () => {
+    reservationListByCustomer = async () => ({ reservations: [], total: 0 });
+    const backend = createDomainTriadReadBackend();
+    expect(await backend.listActiveReservationIds(OWNER)).toEqual([]);
   });
 });
 

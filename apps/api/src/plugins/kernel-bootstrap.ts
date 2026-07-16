@@ -4,12 +4,14 @@
 // Boot anchor responsibilities:
 //
 // (Numbering note: the list below is a flat inventory of every exported
-// boot-anchor function — items 1 and 7 run outside `bootstrapKernel`'s own
-// body (1 from `buildServer()`; 7 IS `bootstrapKernel`), so they have no
+// boot-anchor function — items 1 and 8 run outside `bootstrapKernel`'s own
+// body (1 from `buildServer()`; 8 IS `bootstrapKernel`), so they have no
 // step-comment counterpart inside it. `bootstrapKernel`'s internal step
 // comments (further down) number ONLY what it runs, starting fresh at 1 —
-// item N here is step N-1 there. The two sequences are intentionally
-// separate counts, not a typo.)
+// item N here is step N-1 there, EXCEPT the final internal step (defer-
+// pending-gauge poll), which has no item-number counterpart here at all —
+// it's infrastructure, not a boot-anchor assertion. The two sequences are
+// intentionally separate counts, not a typo.)
 //
 //   1. `installKernelMetricsSink()` — called from `buildServer()` (server.ts)
 //      BEFORE routes are registered. Installs the real MetricsSink (PostHog
@@ -44,7 +46,20 @@
 //      `withAdjudicate` (@ibatexas/domain) — the command-service chokepoint
 //      every ops/admin/subscriber/job/LLM-tool mutation flows through.
 //
-//   7. `bootstrapKernel(server)` — called from `index.ts` after
+//   7. `assertCapabilityGuardRefsWired()` (FE-T19) — called from
+//      `bootstrapKernel()`. Asserts every `CapabilityGuardRef` on the
+//      authored `CapabilityDefinition` registry
+//      (`@ibatexas/packs-composed/capability-definitions`) resolves to a
+//      real, live guard function on the installed Packs' `PolicyBundle`s.
+//      Refuses to boot if a guard-ref was left dangling by a rename,
+//      removal, or phase move (`GuardRefResolutionError`). This is IN
+//      ADDITION to the same assertion already running eagerly at module-
+//      import time inside `capability-definitions/index.ts` — cheap, and
+//      redundant on purpose: the boot-time call is the one that actually
+//      fires in production if a future consumer of the registry forgets to
+//      import it before this point runs.
+//
+//   8. `bootstrapKernel(server)` — called from `index.ts` after
 //      `buildServer()` returns, before `server.listen()`. Composes the
 //      above into the boot sequence.
 
@@ -73,6 +88,14 @@ import { paymentsPixPack } from "@adjudicate/pack-payments-pix"
 import { reservationsPack } from "@ibatexas/pack-reservations"
 import { whatsappPack } from "@ibatexas/pack-whatsapp"
 import { KNOWN_INTENT_KINDS, LOYALTY_INTENT_KINDS } from "@ibatexas/intent-kinds"
+// FE-T19 — the FE-4 EXPAND CapabilityDefinition registry's guard-ref boot
+// assertion. See `assertCapabilityGuardRefsWired()` below.
+import {
+  assertGuardRefsResolve,
+  CAPABILITY_DEFINITIONS,
+  GuardRefResolutionError,
+  type CapabilityDefinition,
+} from "@ibatexas/packs-composed/capability-definitions"
 // WS5: the NX-park quota-exceeded hook setter MUST come from the same park-nx
 // module instance the live park calls go through — now the apps/api copy
 // (re-exported by the park-deferred-intent-nx seam). Importing it from
@@ -487,6 +510,34 @@ export async function assertCommandServiceBoundaryGateWired(
   }
 }
 
+// ── Capability guard-ref boot assertion (FE-T19) ─────────────────────────────
+//
+// `@ibatexas/packs-composed/capability-definitions` authors a per-capability
+// `CapabilityDefinition` whose `guardRefs` declaratively NAME the Pack guards
+// that apply to it. That data is checked against the LIVE `PolicyBundle`
+// guard arrays by `assertGuardRefsResolve` — an independent materialization,
+// not a re-derivation of the same source (FE-4.3) — but until something
+// actually IMPORTS the registry, that check never runs in production: the
+// package's own eager module-load self-check only fires for whichever
+// process happens to import it. This assertion makes it fire unconditionally
+// at API boot, matching the ticket's "break a guard-ref → BOOT fails"
+// acceptance criterion rather than "→ some other process's test suite
+// fails". `CAPABILITY_DEFINITIONS` is imported directly here (not merely
+// side-effect-imported) specifically so this file — not some future,
+// easy-to-forget consumer — is the one guaranteeing the check always runs.
+//
+// `defs` is dependency-injectable ONLY so a unit test can supply a
+// deliberately-broken stand-in list and prove this assertion actually
+// catches that regression — same rationale as `assertEnvelopeBoundaryGateWired`'s
+// injectable `runner` (FE-T04). The boot call site always uses the default
+// (the real, committed `CAPABILITY_DEFINITIONS`).
+
+export async function assertCapabilityGuardRefsWired(
+  defs: readonly CapabilityDefinition[] = CAPABILITY_DEFINITIONS,
+): Promise<void> {
+  assertGuardRefsResolve(defs)
+}
+
 // ── bootstrapKernel ─────────────────────────────────────────────────────────
 
 /**
@@ -611,7 +662,27 @@ export async function bootstrapKernel(server: FastifyInstance): Promise<void> {
     throw err
   }
 
-  // 6. Start the defer-pending gauge poll (W3-5). Real kernel behavior;
+  // 6. FE-T19 — assert every authored CapabilityDefinition guard-ref
+  //    resolves to a real, live guard on the just-installed Packs'
+  //    PolicyBundles. Fail CLOSED: a guard renamed, removed, or moved to a
+  //    different phase without updating the registry must never boot green.
+  try {
+    await assertCapabilityGuardRefsWired()
+    server.log.info(
+      { event: "kernel.bootstrap.capability_guard_refs_resolved" },
+      "[kernel-bootstrap] capability-definition guard-refs resolved",
+    )
+  } catch (err) {
+    if (err instanceof GuardRefResolutionError) {
+      server.log.fatal(
+        { err },
+        "[kernel-bootstrap] capability-definition guard-ref resolution failed — refusing to boot",
+      )
+    }
+    throw err
+  }
+
+  // 7. Start the defer-pending gauge poll (W3-5). Real kernel behavior;
   //    surfaces the count of `defer:pending:*` Redis keys.
   const recorder = getKernelMetricsRecorder()
   startDeferPendingGaugePoll(recorder, server.log)

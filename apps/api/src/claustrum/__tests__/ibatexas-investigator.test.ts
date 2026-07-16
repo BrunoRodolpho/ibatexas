@@ -284,6 +284,9 @@ function stubBackend(over: Partial<TriadReadBackend> = {}): TriadReadBackend {
     // FIX 2 — default: no auto-enumerated active orders (tests that exercise the
     // owner-order enumeration override this).
     listActiveOrderIds: async () => [],
+    // FE-T17b — default: no auto-enumerated active reservations (tests that
+    // exercise the owner-reservation discovery fallback override this).
+    listActiveReservationIds: async () => [],
     // BKL-079 — default: 0 payments (a provable-empty payment; tests that exercise
     // the payment marker override this).
     countActivePayments: async () => 0,
@@ -544,6 +547,103 @@ describe("ibatexas-investigator — BKL-079 provable-empty PAYMENT marker", () =
     });
     await investigator.investigate(triadInput({ envelopes: [] }, ledger, "guest:abc"));
     expect(ledger.resolve("active_payments:guest:abc").state).toBe("absent");
+  });
+});
+
+// ── FE-T17b: RESERVATION owner-scoped discovery fallback + provable-empty marker ──
+//
+// Live-disproof follow-up (dev @ a063661b, turnIds 30c78409-b843-4b5a-8239-
+// e36c925233f2 / 91adbe43-5fa2-4c0a-9560-0e376d7aeb84): `get_my_reservations` is a
+// no-param LIST call, so `extractTurnResourceIds` structurally never populates
+// `reservationIds` for a status question — unlike order/payment questions, the
+// model never even ATTEMPTS to extract a reservationId. Without the discovery
+// fallback the reservation per-resource read loop iterates an ALWAYS-EMPTY list,
+// so `reservation_status:{id}` is NEVER recorded and RESERVATION_STATUS can never
+// acquire evidence — the exact mechanism these tests pin, mirroring BKL-073.
+describe("ibatexas-investigator — FE-T17b reservation discovery + provable-empty marker", () => {
+  it("a SUCCESSFUL empty enumeration records the marker PRESENT with {count:0}", async () => {
+    const ledger = new EvidenceLedger("t");
+    const investigator = createIbatexasInvestigator({
+      gatherReads: createFirstPartyTurnReads(
+        stubBackend({ listActiveReservationIds: async () => [] }),
+      ),
+      now: () => 999,
+    });
+    await investigator.investigate(triadInput({ envelopes: [] }, ledger));
+
+    const marker = ledger.resolve("active_reservations:cust-1");
+    expect(marker.state).toBe("present"); // count 0 is a PRESENT provable-empty, not absence.
+    expect(marker.entry?.value).toEqual({ count: 0 });
+    expect(marker.entry?.taint).toBe("TRUSTED");
+    expect(marker.entry?.originProvenance).toBe("FIRST_PARTY");
+    // The disproven bug, closed: with NO model-extracted id AND zero discovered
+    // reservations, NO reservation_status:* key is ever recorded — the honest
+    // SAFE_UNKNOWN abstain the live drive flagged stays intact once discovery exists.
+    const reservationKeys = [...ledger.keys()].filter((k) =>
+      k.startsWith("reservation_status:"),
+    );
+    expect(reservationKeys).toEqual([]);
+  });
+
+  it("N≥1 owned active reservations records the marker PRESENT with the count, and reads each reservation — closing the live-disproof (the model supplied NO id)", async () => {
+    const ledger = new EvidenceLedger("t");
+    const investigator = createIbatexasInvestigator({
+      gatherReads: createFirstPartyTurnReads(
+        stubBackend({ listActiveReservationIds: async () => ["r1", "r2"] }),
+      ),
+    });
+    // The model-side plan carries NO reservationId anywhere (exactly the
+    // get_my_reservations shape that disproved the render path) — every
+    // reservation_status entry below can ONLY come from discovery.
+    await investigator.investigate(triadInput({ envelopes: [] }, ledger));
+
+    const marker = ledger.resolve("active_reservations:cust-1");
+    expect(marker.state).toBe("present");
+    expect(marker.entry?.value).toEqual({ count: 2 });
+    // The union carried the owner's real reservations into owner-scoped reads —
+    // this is the exact ledger state FIX 2 / ownedResourceIdsByBaseKey needed and
+    // never had before this fix.
+    expect(ledger.resolve("reservation_status:r1").state).toBe("present");
+    expect(ledger.resolve("reservation_status:r2").state).toBe("present");
+  });
+
+  it('an ERRORED enumeration records the marker as state "error" (Inv 7), and the union still reads a model-extracted reservation id', async () => {
+    const ledger = new EvidenceLedger("t");
+    // A read-tool call DID carry a reservationId (e.g. a follow-up read after an
+    // earlier turn resolved one) — the owner-enumeration ERRORS, and the union must
+    // degrade to the model/tool-extracted id exactly as the order mirror does.
+    const plan: Plan = {
+      envelopes: [],
+      readToolCalls: [{ name: "reservation.lookup", input: { reservationId: "r-known" } }],
+    };
+    const investigator = createIbatexasInvestigator({
+      gatherReads: createFirstPartyTurnReads(
+        stubBackend({
+          listActiveReservationIds: async () => {
+            throw new Error("reservation enumeration backend down");
+          },
+        }),
+      ),
+    });
+    await investigator.investigate(triadInput(plan, ledger));
+
+    const marker = ledger.resolve("active_reservations:cust-1");
+    expect(marker.state).toBe("error"); // "could not check" — NOT a provable empty.
+    expect(marker.entry).toBeUndefined();
+    expect(ledger.errorReason("active_reservations:cust-1")).toBe(
+      "reservation enumeration backend down",
+    );
+    // Union unchanged: the tool-extracted reservation was still read owner-scoped.
+    expect(ledger.resolve("reservation_status:r-known").state).toBe("present");
+  });
+
+  it("a GUEST turn records NO reservation marker (the enumeration short-circuits before it)", async () => {
+    const ledger = new EvidenceLedger("t");
+    const investigator = createIbatexasInvestigator({
+      gatherReads: createFirstPartyTurnReads(stubBackend()),
+    });
+    await investigator.investigate(triadInput({ envelopes: [] }, ledger, "guest:abc"));
+    expect(ledger.resolve("active_reservations:guest:abc").state).toBe("absent");
   });
 });
 

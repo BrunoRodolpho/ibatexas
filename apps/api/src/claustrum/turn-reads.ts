@@ -187,6 +187,20 @@ export interface TriadReadBackend {
    */
   listActiveOrderIds(customerId: string): Promise<string[]>;
   /**
+   * FE-T17b — the RESERVATION mirror of {@link listActiveOrderIds} (live-disproof
+   * follow-up; PR #249's investigator wiring closes the discovery gap that made
+   * RESERVATION_STATUS structurally unreachable — see the investigator's FIX-2
+   * discovery-fallback union for the mechanism). Enumerate the AUTHENTICATED
+   * customer's OWN, RELEVANT (non-terminal) reservation ids. OWNER-SCOPED by
+   * construction: the underlying `listByCustomer(customerId)` filters on
+   * `customerId`, so only the customer's own reservations are ever returned —
+   * never a model/session id. "Relevant" = a non-terminal reservation status (one
+   * the customer would ask the status of — pending/confirmed/seated), so a long
+   * completed/cancelled/no-show history does not force a perpetual CLARIFY.
+   * Returns `[]` for a customer with no active reservations.
+   */
+  listActiveReservationIds(customerId: string): Promise<string[]>;
+  /**
    * Count the AUTHENTICATED customer's OWN payments (BKL-079 — the PAYMENT mirror of
    * {@link listActiveOrderIds}; the provable-empty enumeration count). OWNER-SCOPED
    * by construction: the underlying `countByCustomer(customerId)` counts via the
@@ -219,6 +233,25 @@ const ACTIVE_FULFILLMENT_STAGES: ReadonlySet<string> = new Set<string>([
   "preparing",
   "ready",
   "in_delivery",
+]);
+
+/**
+ * FE-T17b — the non-terminal ("active") reservation statuses, the RESERVATION
+ * mirror of {@link ACTIVE_FULFILLMENT_STAGES}. A reservation in one of these is a
+ * RELEVANT owned reservation for the discovery-fallback enumeration (the kind a
+ * customer asks the status of — one that hasn't concluded yet): `pending`
+ * (awaiting confirmation), `confirmed` (upcoming), `seated` (currently dining).
+ * `completed` / `cancelled` / `no_show` are TERMINAL/historical and excluded —
+ * mirroring why orders exclude `delivered` / `canceled`: a customer asking "what
+ * is my reservation" almost always means an upcoming or in-progress one, and
+ * including a long completed/cancelled/no-show history would force ambiguity
+ * (CLARIFY) rather than the honest answer for the one that still matters. Mirrors
+ * the `ReservationStatus` enum (@ibatexas/types · packages/domain/prisma).
+ */
+const ACTIVE_RESERVATION_STATUSES: ReadonlySet<string> = new Set<string>([
+  "pending",
+  "confirmed",
+  "seated",
 ]);
 
 /** Today's local date as "YYYY-MM-DD" in `tz` (mirrors schedule-helpers' private
@@ -428,6 +461,32 @@ export function createDomainTriadReadBackend(
       return orders
         .filter((o) => ACTIVE_FULFILLMENT_STAGES.has(String(o.fulfillmentStatus)))
         .map((o) => o.id);
+    },
+
+    async listActiveReservationIds(customerId) {
+      // OWNER-SCOPED (FE-T17b): `listByCustomer` filters on `customerId`, so this
+      // only ever returns the AUTHENTICATED customer's own reservations — never a
+      // model/session id, never another owner's reservation.
+      //
+      // REVIEW FIX (pagination-burying) — the status filter MUST be applied
+      // SERVER-SIDE, not only client-side after the fetch. `listByCustomer`
+      // orders `timeSlot.date` DESC (farthest-future FIRST), so with only a
+      // client-side filter, a customer with >20 future-dated NON-active
+      // reservations (e.g. cancelled) sorts ahead of a near-future ACTIVE one —
+      // the active row falls off the `take: 20` page before the client-side
+      // filter ever sees it, producing a silent false abstain. Passing
+      // `status: [...ACTIVE_RESERVATION_STATUSES]` makes the DB apply the status
+      // filter BEFORE `take`, so the limit is spent only on rows that could
+      // actually be relevant. The client-side filter below is kept as
+      // belt-and-braces (defense in depth — never trust a single layer to
+      // enforce "active-only"), not as the primary filtering mechanism.
+      const { reservations } = await createReservationService().listByCustomer(
+        customerId,
+        { limit: 20, status: [...ACTIVE_RESERVATION_STATUSES] },
+      );
+      return reservations
+        .filter((r) => ACTIVE_RESERVATION_STATUSES.has(String(r.status)))
+        .map((r) => r.id);
     },
 
     async countActivePayments(customerId) {

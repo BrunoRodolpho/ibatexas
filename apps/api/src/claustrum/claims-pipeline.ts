@@ -22,6 +22,7 @@ import type {
   ConductorOptions,
 } from "@claustrum/core";
 import { assertClaimDefinitionRegistryValid } from "./claim-definition-registry.js";
+import { claimsRenderDriftProblems } from "./claims-render-drift.js";
 import {
   createIbatexasClaimsRenderer,
   createIbatexasClaimsRenderPrecedence,
@@ -180,6 +181,23 @@ export function buildClaimsSeams(deps: BuildClaimsSeamsDeps): ClaimsSeams {
   // This is what makes a dangling template (a template with no backing
   // ClaimDefinition) mechanically impossible at load.
   assertClaimDefinitionRegistryValid();
+  // FE-3.3 (FE-T16) — the customer-plane advertised-⊆-renderable BOOT gate,
+  // mirroring the ops plane's `opsPlaneDriftProblems` (ops-conductor.ts): every
+  // PROPOSABLE customer claim type (CLAIM_REGISTRY) not in the deliberate
+  // exception list must have a validated render template (slot-grammar.ts
+  // VALIDATED_TEMPLATES), else a validated read of that type could only ever
+  // dead-end in the honest-abstain UNKNOWN with no path to render the fact it
+  // proved. Promotes the pre-existing unit-test-only subset pin
+  // (proposable-renderable-drift.test.ts, BKL-112) into a REAL fail-closed boot
+  // guard, so a FUTURE proposable type shipped without a template fails boot,
+  // not merely CI.
+  const claimsRenderDrift = claimsRenderDriftProblems();
+  if (claimsRenderDrift.length > 0) {
+    throw new Error(
+      "[claims-pipeline] customer-plane render drift check failed (FE-3.3 / BKL-112):\n  " +
+        claimsRenderDrift.join("\n  "),
+    );
+  }
   // F2 observability (RCA 2026-06-29): the pipeline is ENABLED — surface a loud
   // warning if the LINKED kernels are below the egress-brand floor, so the
   // kernel-version drop point (silent store-open → UNKNOWN) is visible at boot.
