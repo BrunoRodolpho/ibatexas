@@ -723,6 +723,40 @@ describe("createKernelMetricsSink — W3 ghost metrics registration", () => {
     expect(out).not.toContain(`kernel_intent_kind_unknown_total{kind=`)
   })
 
+  // FE-T01 review fix (MINOR-2) — EXTRACTION_FAILURE_KIND is a deliberate
+  // unowned sentinel REFUSE kind (see model-call-defaults.ts), never
+  // registered in any pack's intents by design. It must NOT count as
+  // taxonomy drift, but the generic decision/refusal counters must still
+  // observe it (no new metric plumbing needed for that).
+  it("kernel_intent_kind_unknown_total — EXTRACTION_FAILURE_KIND is allowlisted out (not taxonomy drift)", async () => {
+    const { deps, register } = makeDeps({
+      knownIntentKinds: new Set(["order.item.add", "payment.refund.issue"]),
+    })
+    const sink = createKernelMetricsSink(deps)
+    sink.recordDecision(
+      mkDecision("REFUSE", { intentKind: "system.extraction_failure" }),
+    )
+    // A genuinely unregistered kind still increments (the allowlist is narrow).
+    sink.recordDecision(
+      mkDecision("EXECUTE", { intentKind: "rogue.unknown.kind" }),
+    )
+    const unknownOut = await register.getSingleMetricAsString(
+      "kernel_intent_kind_unknown_total",
+    )
+    expect(unknownOut).not.toContain(`kind="system.extraction_failure"`)
+    expect(unknownOut).toContain(
+      `kernel_intent_kind_unknown_total{kind="rogue.unknown.kind"} 1`,
+    )
+    // The generic decision counter still observes it unconditionally — the
+    // rate is queryable without inventing a new metric.
+    const decisionOut = await register.getSingleMetricAsString(
+      "kernel_decision_total",
+    )
+    expect(decisionOut).toContain(
+      `kernel_decision_total{kind="REFUSE",intent_kind="system.extraction_failure"} 1`,
+    )
+  })
+
   it("/metrics scrape exposes ALL 11 W3 ghost metrics", async () => {
     process.env.PROMETHEUS_TOKEN = "secret-w3"
     const server = Fastify({ logger: false })

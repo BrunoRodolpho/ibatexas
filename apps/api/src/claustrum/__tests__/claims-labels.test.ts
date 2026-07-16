@@ -11,6 +11,7 @@
  *   - PAYMENT_STATUS.status               → @ibatexas/types `PaymentStatus`
  *   - ORDER_FULFILLMENT_STAGE.fulfillmentStatus
  *                                         → @ibatexas/types `OrderFulfillmentStatus`
+ *   - RESERVATION_STATUS.status           → @ibatexas/types `ReservationStatus` (FE-T17)
  *   - STORE_OPEN_NOW.mealPeriod           → ScheduleSignal["mealPeriod"] union
  *                                           (compile-time exhaustiveness, below)
  *
@@ -24,6 +25,7 @@
 import { describe, expect, it } from "vitest";
 import { OrderFulfillmentStatus } from "@ibatexas/types";
 import { PaymentStatus } from "@ibatexas/types";
+import { ReservationStatus } from "@ibatexas/types";
 import type { ScheduleSignal } from "@ibatexas/tools";
 import {
   CLAIM_ENUM_DISPLAY_PT_BR,
@@ -36,6 +38,7 @@ const PAYMENT_STATUS_MEMBERS: readonly string[] = Object.values(PaymentStatus);
 const FULFILLMENT_MEMBERS: readonly string[] = Object.values(
   OrderFulfillmentStatus,
 );
+const RESERVATION_STATUS_MEMBERS: readonly string[] = Object.values(ReservationStatus);
 
 // mealPeriod has no runtime const (it is a string-literal union on ScheduleSignal),
 // so we list it AND prove the list is exhaustive over the union at COMPILE time:
@@ -59,6 +62,11 @@ const SLOT_DOMAINS: ReadonlyArray<{
     claimType: "ORDER_FULFILLMENT_STAGE",
     field: "fulfillmentStatus",
     members: FULFILLMENT_MEMBERS,
+  },
+  {
+    claimType: "RESERVATION_STATUS",
+    field: "status",
+    members: RESERVATION_STATUS_MEMBERS,
   },
   {
     claimType: "STORE_OPEN_NOW",

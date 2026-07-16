@@ -54,6 +54,15 @@ interface HttpError extends Error {
   status: number;
 }
 
+/**
+ * FE-T01 (D4) — the FROZEN `OpenAIChatCompletionsBody` (from `@claustrum/openai`)
+ * has no `response_format` field. This widens it for the ONE outbound `fetch`
+ * call this relay makes; the frozen type itself is never touched.
+ */
+type OllamaWireBody = OpenAIChatCompletionsBody & {
+  readonly response_format?: { readonly type: "json_object" };
+};
+
 function httpError(status: number, body: string): HttpError {
   const err = new Error(`Ollama ${status}: ${body}`.slice(0, 500)) as HttpError;
   err.status = status;
@@ -82,9 +91,42 @@ export class OllamaFetchClient implements OpenAIClientLike {
     return { "content-type": "application/json", authorization: `Bearer ${this.apiKey}` };
   }
 
-  /** Pin the served model when a model override was configured. */
-  private wireBody(body: OpenAIChatCompletionsBody): OpenAIChatCompletionsBody {
-    return this.model === undefined ? body : { ...body, model: this.model };
+  /**
+   * Pin the served model when a model override was configured, and (FE-T01,
+   * D4) enrich a tool-bearing body with Ollama's OpenAI-compat JSON mode.
+   *
+   * `@claustrum/openai`'s `OpenAIChatCompletionsBody` (the FROZEN wire type)
+   * has no `response_format` field, so this in-repo relay is the only seam
+   * that can add it. Scoped to bodies carrying `tools` (extraction/tool-call
+   * requests) — never the responder's tool-less synthesis calls, which must
+   * stay free-form pt-BR prose.
+   *
+   * LIVE-VERIFIED against nemotron-3-nano:4b (192.168.1.80): when the model
+   * DOES call a tool, `response_format: json_object` is a no-op — identical
+   * `tool_calls` id/name/arguments and `finish_reason` with or without it.
+   * When the model does NOT call a tool (the planner's tool-bearing calls
+   * legitimately hit this on every no-intent/small-talk turn — see
+   * `ibatexas-planner.ts`), `response_format: json_object` does NOT break
+   * tool-call emission, but it visibly degrades that branch: the model can no
+   * longer emit free-form `content`, and on this model that manifests as a
+   * fabricated tool-call-shaped JSON blob in `content` instead of prose (e.g.
+   * a plain "Oi, bom dia!" greeting produced `{"capability":"pix.refund",
+   * "payload":{"chargeId":"","amountCents":0}}` in `content` with NO
+   * `tool_calls` populated). That text never reaches the customer (the
+   * responder's synthesis call carries no `tools`, so it is unaffected) and
+   * never becomes an envelope (`toolCalls` stays empty either way), but it is
+   * real degradation of the planner's internal read-loop re-prompt context.
+   * Reported as a residual in the FE-T01 PR — applying this per the ticket
+   * (bodies carrying `tools`) is safe for the acceptance-critical path
+   * (tool_calls emission + REFUSE-on-malformed/empty), at the cost of that
+   * narrower, non-customer-facing quality hit.
+   */
+  private wireBody(body: OpenAIChatCompletionsBody): OllamaWireBody {
+    const modelPinned = this.model === undefined ? body : { ...body, model: this.model };
+    const wantsJsonMode = body.tools !== undefined && body.tools.length > 0;
+    return wantsJsonMode
+      ? { ...modelPinned, response_format: { type: "json_object" } }
+      : modelPinned;
   }
 
   readonly chat = {
@@ -141,7 +183,7 @@ export class OllamaFetchClient implements OpenAIClientLike {
 
   private async streamChat(
     url: string,
-    body: OpenAIChatCompletionsBody,
+    body: OllamaWireBody,
     signal?: AbortSignal,
   ): Promise<AsyncIterable<OpenAIChatCompletionChunk>> {
     const res = await fetch(url, {
