@@ -45,3 +45,46 @@ export const SHIPPING_RATE_DEFAULT: ShippingRate = {
   pac: { price: 2500, days: 7 },
   sedex: { price: 4200, days: 3 },
 }
+
+// ─── Money-band escalation boundary (centavos) ──────────────────────────
+// FE-T02: single source for the R$1000 (100_000 centavos) boundary shared
+// by `@ibatexas/pack-orders`' checkout-confirm ladder and
+// `@ibatexas/pack-payments`' refund-escalate ladder. The two ladders
+// currently apply DIVERGENT comparators at this exact boundary — orders
+// confirms AT-OR-ABOVE it (`>=`, via `@adjudicate/primitives`'
+// `createConfirmGuard({ comparator: ">=" })`), payments escalates
+// STRICTLY ABOVE it (`>`). This file pins the shared VALUE (and both
+// comparator directions, below) so the divergence is visible in one
+// place; each call site keeps evaluating its own comparator, so no
+// decision changes for any amount. FE-T03 will reconcile the divergence
+// (payments' refund-escalate call site flips to `isAtOrAboveMoneyBand`).
+
+/** R$1000 in centavos — the shared money-band escalation boundary. */
+export const MONEY_BAND_1000_CENTAVOS = 100_000
+
+/**
+ * `amountCentavos >= thresholdCentavos`. This is
+ * `@ibatexas/pack-orders`' checkout-confirm ladder's CURRENT comparator
+ * (expressed declaratively via `createConfirmGuard`'s `comparator: ">="`
+ * rather than a direct call to this helper) — documented here so both
+ * operators are visible in one place, and available as the FE-T03 flip
+ * target for the refund-escalate ladder below.
+ */
+export function isAtOrAboveMoneyBand(
+  amountCentavos: number,
+  thresholdCentavos: number,
+): boolean {
+  return amountCentavos >= thresholdCentavos
+}
+
+/**
+ * `amountCentavos > thresholdCentavos`. This is
+ * `@ibatexas/pack-payments`' refund-escalate ladder's CURRENT comparator
+ * (see `getRefundEscalateThresholdCentavos` in `@ibatexas/pack-payments`).
+ */
+export function isAboveMoneyBand(
+  amountCentavos: number,
+  thresholdCentavos: number,
+): boolean {
+  return amountCentavos > thresholdCentavos
+}
