@@ -243,3 +243,40 @@ export async function resolveOrderByReference(
   }
   return resolveByCustomerName(reference, reads);
 }
+
+/** Which reference kind a "most recent" resolution was attempted through. */
+export type MostRecentOrderResolution =
+  | { readonly kind: "resolved"; readonly order: OrderCandidate }
+  | { readonly kind: "none" };
+
+/**
+ * FE-T05 — resolve "the most recent order" DETERMINISTICALLY: the first
+ * ACTIVE (non-terminal) candidate in `listRecentActive()`'s result. The
+ * production read orders by `medusaCreatedAt DESC` (see the `orderCmdSvc`
+ * wiring in `claustrum-bootstrap.ts`), so the first row IS the most recent —
+ * this resolver additionally re-filters to active-only (defense in depth,
+ * mirroring `resolveByCustomerName`'s posture) rather than trust the read's
+ * pre-scoping.
+ *
+ * This is a GUESS, never an explicit reference — the caller is expected to
+ * tag its provenance `grounded` (never `authoritative`) and force a
+ * confirmation (FE-1.5). A read throw or an empty active set degrades to
+ * `{kind:"none"}` (fail-closed — never silently pick a stale/terminal order).
+ */
+export async function resolveMostRecentActiveOrder(
+  reads: OrderReferenceReads,
+): Promise<MostRecentOrderResolution> {
+  let rows: readonly OrderCandidate[];
+  try {
+    rows = await reads.listRecentActive();
+  } catch (err) {
+    logger.warn(
+      { component: "ops-order-resolution", via: "most_recent", err: (err as Error).message },
+      "most-recent-active order lookup failed — treating as no resolution (fail-closed)",
+    );
+    return { kind: "none" };
+  }
+  const active = validCandidates(rows).filter(isActiveOrder);
+  const mostRecent = active[0];
+  return mostRecent === undefined ? { kind: "none" } : { kind: "resolved", order: mostRecent };
+}

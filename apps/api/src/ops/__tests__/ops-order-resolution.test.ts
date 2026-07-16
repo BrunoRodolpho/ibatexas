@@ -13,6 +13,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   normalizeOrderRef,
   parseDisplayIdRef,
+  resolveMostRecentActiveOrder,
   resolveOrderByReference,
   type OrderCandidate,
   type OrderReferenceReads,
@@ -264,5 +265,54 @@ describe("resolveOrderByReference — fail-closed / guards", () => {
     const out = await resolveOrderByReference("4242", r);
     expect(out.kind).toBe("resolved");
     if (out.kind === "resolved") expect(out.order.id).toBe("order_ok");
+  });
+});
+
+// ── FE-T05 — "meu último pedido" / "the last order" auto-resolution ────────
+
+describe("resolveMostRecentActiveOrder", () => {
+  it("resolves the FIRST active candidate (the read is recency-DESC-ordered)", async () => {
+    const r = reads({
+      recentActive: [
+        order({ id: "order_newest", displayId: 4300, fulfillmentStatus: "preparing" }),
+        order({ id: "order_older", displayId: 4200, fulfillmentStatus: "confirmed" }),
+      ],
+    });
+    const out = await resolveMostRecentActiveOrder(r);
+    expect(out).toEqual({ kind: "resolved", order: expect.objectContaining({ id: "order_newest" }) });
+  });
+
+  it("skips a TERMINAL order at the front — the first ACTIVE one wins", async () => {
+    const r = reads({
+      recentActive: [
+        order({ id: "order_delivered", displayId: 4300, fulfillmentStatus: "delivered" }),
+        order({ id: "order_active", displayId: 4200, fulfillmentStatus: "preparing" }),
+      ],
+    });
+    const out = await resolveMostRecentActiveOrder(r);
+    expect(out).toEqual({ kind: "resolved", order: expect.objectContaining({ id: "order_active" }) });
+  });
+
+  it("no active order at all ⇒ none (fail-closed, never guessed)", async () => {
+    const r = reads({ recentActive: [order({ fulfillmentStatus: "delivered" })] });
+    const out = await resolveMostRecentActiveOrder(r);
+    expect(out).toEqual({ kind: "none" });
+  });
+
+  it("an empty recent-orders window ⇒ none", async () => {
+    const r = reads({ recentActive: [] });
+    const out = await resolveMostRecentActiveOrder(r);
+    expect(out).toEqual({ kind: "none" });
+  });
+
+  it("a read THROW is fail-closed to none (never propagated)", async () => {
+    const r: OrderReferenceReads = {
+      findByDisplayId: vi.fn(async () => []),
+      listRecentActive: vi.fn(async () => {
+        throw new Error("db down");
+      }),
+    };
+    const out = await resolveMostRecentActiveOrder(r);
+    expect(out).toEqual({ kind: "none" });
   });
 });

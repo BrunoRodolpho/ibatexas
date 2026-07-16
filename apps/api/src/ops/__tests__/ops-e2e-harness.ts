@@ -73,6 +73,7 @@ import {
 import { composeOpsConductor } from "../ops-conductor.js";
 import { createOpsToolRegistry } from "../ops-tool-registry.js";
 import { OpsSystemChannel } from "../ops-system-channel.js";
+import { buildLanguageEngineAuditMetadata } from "../../claustrum/language-engine/audit-metadata.js";
 
 /** Staff roles the ops matrix knows about. */
 export type StaffRole = "OWNER" | "MANAGER" | "ATTENDANT";
@@ -158,6 +159,10 @@ export function makeAuditedAdjudicator(opts: {
     (
       await adjudicateAndAudit(envelope, state as never, policy as never, {
         sink,
+        // FE-T05 — mirrors production's safeAuditedAdjudicate wiring
+        // (claustrum-bootstrap.ts) so the ops e2e harness observes the SAME
+        // AuditRecord.metadata shape a real turn would produce.
+        metadataProvider: buildLanguageEngineAuditMetadata,
         ...(receipt ? { confirmationReceipt: receipt } : {}),
       })
     ).decision;

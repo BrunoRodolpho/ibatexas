@@ -144,6 +144,15 @@ export interface CreateAuditReaderOptions {
 // ── pg-driver row normalization (rowToRecord expects the WRITER shape) ───────
 
 // Full column set incl. metadata_jsonb (v5) — mirrors P0-2's lossless SELECT.
+//
+// FE-T05 (Language Engine) — `metadata_jsonb` was DOCUMENTED as included here
+// but was actually missing from the list (a pre-existing gap: `RawAuditRow`
+// and `toIntentAuditRow` both already handled it, but nothing SELECTed it, so
+// `record.metadata` always read back `null`). Fixed so `record.metadata`
+// (the ADR-124 v5 governance/observability sidecar — see
+// `apps/api/src/claustrum/language-engine/audit-metadata.ts`) is actually
+// observable through the `where` predicate a journey scenario asserts with
+// (`audit-trail-matcher.ts`'s `ExpectedTrajectoryStep.where`).
 const AUDIT_SELECT_COLUMNS = [
   "intent_hash",
   "session_id",
@@ -169,6 +178,7 @@ const AUDIT_SELECT_COLUMNS = [
   "kernel_version",
   "audit_hash",
   "signature_jsonb",
+  "metadata_jsonb",
 ].join(", ")
 
 const DEFAULT_MAX_ROWS = 500

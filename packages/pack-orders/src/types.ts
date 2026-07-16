@@ -382,6 +382,29 @@ export interface OrderState {
      * KIND, never on an amount.
      */
     readonly amendItemConfirmed?: boolean
+    /**
+     * FE-T05 (Language Engine, HydratedIntentIR provenance) — how the target
+     * order for `order.status.transition` was resolved:
+     *   - `"authoritative"` — the staff gave an EXPLICIT reference (a display
+     *     number or a customer name; BKL-089 resolution).
+     *   - `"grounded"` — no reference was given; the host auto-resolved "the
+     *     most recent active order" (a GUESS). `requireConfirmationOnGrounded
+     *     StatusTransition` (`./policies.ts`) forces a REQUEST_CONFIRMATION
+     *     whenever this is `"grounded"` — a guessed target must never
+     *     silently EXECUTE a kitchen advance / cancel.
+     * Absent when no order resolved at all (requireOrderIdForMutation REFUSEs
+     * first) or for any other kind (inert everywhere else).
+     */
+    readonly orderResolutionTrust?: "authoritative" | "grounded"
+    /**
+     * FE-T05 review (MAJOR-2) — the resolved order's DISPLAY number, present
+     * whenever `orderResolutionTrust === "grounded"` (an auto-resolved
+     * guess). `requireConfirmationOnGroundedStatusTransition` (`./policies.ts`)
+     * names the order in its confirmation prompt with this — a staff member
+     * confirming a GUESSED target must be able to recognize (and reject) a
+     * wrong one. Absent for any other resolution path / kind.
+     */
+    readonly displayId?: number
   }
 }
 

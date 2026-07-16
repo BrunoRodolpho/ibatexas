@@ -302,6 +302,7 @@ import {
 } from "./claustrum/audit-read-paths.js";
 // ── NEW-032 ops-actor conductor plane (slice B) ─────────────────────────────
 import type { StaffEnvelopeActor } from "./claustrum/ibatexas-planner.js";
+import { buildLanguageEngineAuditMetadata } from "./claustrum/language-engine/audit-metadata.js";
 import {
   composeOpsConductor,
   opsPlaneDriftProblems,
@@ -1156,6 +1157,12 @@ async function safeAuditedAdjudicate(
         sink: deps.sink,
         ...(deps.ledger ? { ledger: deps.ledger } : {}),
         ...(receipt ? { confirmationReceipt: receipt } : {}),
+        // FE-T05 (Language Engine) — ADR-124 v5 synchronous metadata hook.
+        // Runs AFTER buildAuditRecord (so it sees the FINAL, post-resolution
+        // envelope) and BEFORE sink.emit; excluded from the auditHash
+        // pre-image. Inert (returns undefined) for every capability besides
+        // `order.status.transition` — see language-engine/audit-metadata.ts.
+        metadataProvider: buildLanguageEngineAuditMetadata,
       },
     );
     return result.decision;

@@ -60,6 +60,7 @@ import {
   type ListProductsByName,
 } from "./ops-product-resolution.js";
 import {
+  resolveMostRecentActiveOrder,
   resolveOrderByReference,
   type OrderReferenceReads,
 } from "./ops-order-resolution.js";
@@ -802,6 +803,87 @@ async function resolveOrderTarget(
 }
 
 /**
+ * FE-T05 — resolve the `order.status.transition` target. Under the FE-1.1
+ * extraction schema for this capability the model is NEVER shown an
+ * `orderId`/order-reference field (see
+ * `language-engine/order-status-transition.schema.ts`), so `payload.orderId`
+ * is always empty on this path today; the resolution below is written to
+ * degrade gracefully if a future rollout slice re-adds an explicit reference
+ * field to this schema.
+ *
+ *   1. Try the SAME explicit-reference resolution `order.note.add` uses
+ *      (`resolveOrderTarget` — direct id, then BKL-089 displayId/name). A hit
+ *      here is an EXPLICIT reference the staff gave ⇒ `authoritative`.
+ *   2. On a miss (including the empty-orderId case, which is this tracer's
+ *      only live path), fall back to the DETERMINISTIC "most recent active
+ *      order" resolution (`resolveMostRecentActiveOrder`) — a GUESS ⇒
+ *      `grounded`. The resolved id is REWRITTEN onto the payload (mirrors the
+ *      BKL-089 rewrite idiom) so the envelope's `intentHash` covers it and a
+ *      confirm-resume re-adjudicates the SAME order rather than re-guessing.
+ *   3. No candidate either way ⇒ `orderId: null` (honest `no_order` REFUSE —
+ *      never silently guessed).
+ */
+async function resolveStatusTransitionOrderTarget(
+  deps: OpsResolverDeps,
+  envelope: IntentEnvelope,
+  payload: Record<string, unknown>,
+): Promise<{
+  order: OpsResolverOrder | null;
+  orderId: string | null;
+  /** Absent when no order resolved (nothing to gate the confirm guard on). */
+  orderResolutionTrust?: "authoritative" | "grounded";
+  /**
+   * FE-T05 review (MAJOR-2) — the resolved order's DISPLAY number, present
+   * ONLY on the `"grounded"` (auto-resolved) path. Threaded into the
+   * `OrderState` ctx so `requireConfirmationOnGroundedStatusTransition`
+   * (pack-orders) can NAME the order in its confirmation prompt — a staff
+   * member confirming a GUESSED target must be able to recognize (and
+   * reject) a wrong one; a bare "vou usar o pedido mais recente" names
+   * nothing an operator could catch. Absent on the `"authoritative"` path:
+   * the staff already gave an explicit reference, so no re-identification
+   * is needed there (and that path never confirms).
+   */
+  displayId?: number;
+  payload?: Record<string, unknown>;
+}> {
+  const direct = await resolveOrderTarget(deps, envelope, payload);
+  if (direct.orderId !== null) {
+    return { ...direct, orderResolutionTrust: "authoritative" };
+  }
+  if (deps.orderReferenceReads === undefined) {
+    return { order: null, orderId: null };
+  }
+  const guess = await resolveMostRecentActiveOrder(deps.orderReferenceReads);
+  if (guess.kind !== "resolved") {
+    return { order: null, orderId: null };
+  }
+  logger.info(
+    {
+      component: "ops-resolver",
+      event: "order.status_transition.most_recent_resolved",
+      kind: envelope.kind,
+      to: guess.order.id,
+      displayId: guess.order.displayId,
+    },
+    "ops order.status.transition: no explicit reference — auto-resolved the most recent active order (grounded; forces confirmation)",
+  );
+  const o = guess.order;
+  return {
+    order: {
+      customerId: o.customerId,
+      paymentMethod: o.paymentMethod,
+      paymentStatus: o.paymentStatus,
+      totalInCentavos: o.totalInCentavos,
+      fulfillmentStatus: o.fulfillmentStatus,
+    },
+    orderId: o.id,
+    orderResolutionTrust: "grounded",
+    displayId: o.displayId,
+    payload: { ...payload, orderId: o.id },
+  };
+}
+
+/**
  * BKL-085 — resolve a refunds-by-message envelope into (a) the pack-payments
  * `PaymentState` the refund guards adjudicate against and (b) a fully-STAMPED
  * `PaymentRefundIssuePayload`. The model controls ONLY the order reference, the
@@ -1085,16 +1167,25 @@ async function opsStateForEnvelope(
   }
 
   if (envelope.kind === "order.status.transition") {
-    const { order, orderId, payload: rewritten } = await resolveOrderTarget(
-      deps,
-      envelope,
-      payload,
-    );
+    const {
+      order,
+      orderId,
+      orderResolutionTrust,
+      displayId,
+      payload: rewritten,
+    } = await resolveStatusTransitionOrderTarget(deps, envelope, payload);
     // The pack-orders OrderState the BKL-090 `requireLegalStatusTransition`
     // guard reads: `ctx.orderId` (requireOrderIdForMutation) + the CURRENT
     // `ctx.fulfillmentStatus` (the legality guard). Missing order ⇒ orderId:null
     // ⇒ requireOrderIdForMutation REFUSEs `no_order` BEFORE the legality guard;
     // and an absent status on this `admin:` plane fails the legality guard closed.
+    // FE-T05 — `orderResolutionTrust` is the HydratedIntentIR provenance signal
+    // the pack-orders `requireConfirmationOnGroundedStatusTransition` guard
+    // reads: a `grounded` (auto-resolved "most recent order") target forces a
+    // REQUEST_CONFIRMATION; `authoritative` (an explicit staff reference) does
+    // not. Absent (no order resolved at all) is a no-op — requireOrderIdForMutation
+    // REFUSEs first. `displayId` (MAJOR-2 review fix) rides alongside it so the
+    // confirm guard can NAME the order in its prompt.
     return {
       state: {
         ctx: {
@@ -1103,6 +1194,8 @@ async function opsStateForEnvelope(
           cartId: null,
           orderId,
           fulfillmentStatus: order?.fulfillmentStatus ?? null,
+          ...(orderResolutionTrust ? { orderResolutionTrust } : {}),
+          ...(displayId !== undefined ? { displayId } : {}),
         },
       },
       ...(rewritten ? { payload: rewritten } : {}),

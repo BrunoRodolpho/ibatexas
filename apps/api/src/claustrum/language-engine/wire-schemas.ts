@@ -1,0 +1,30 @@
+// wire-schemas.ts — the per-capability extraction schema -> `express_intent`
+// wire registry (FE-1.1 / FE-1.4). Consumed by `ibatexas-planner.ts`'s
+// `buildToolSurface`: when a turn's allowed-intent set contains a capability
+// registered here, the model sees that capability's real, narrowed `payload`
+// sub-schema instead of the generic `{type:"object"}` shape — the concrete
+// fix for "the model sees one mutation verb whose payload is an untyped,
+// empty-shaped object" (spec Problem Statement #1).
+//
+// Deliberately a ONE-ENTRY registry for this tracer (order.status.transition)
+// — later rollout slices (T11-14) add their capability's schema here as each
+// is authored. Purely additive: a capability NOT in this map keeps today's
+// generic `payload` shape, byte-identical.
+
+import {
+  toPayloadJsonSchema,
+  type CapabilityExtractionSchema,
+} from "./extraction-schema.js";
+import { ORDER_STATUS_TRANSITION_EXTRACTION_SCHEMA } from "./order-status-transition.schema.js";
+
+const AUTHORED_SCHEMAS: readonly CapabilityExtractionSchema[] = [
+  ORDER_STATUS_TRANSITION_EXTRACTION_SCHEMA,
+];
+
+/** capability -> its wire `payload` JSON-Schema (pre-built, asserted sound). */
+export const EXTRACTION_SCHEMAS_BY_CAPABILITY: ReadonlyMap<
+  string,
+  Record<string, unknown>
+> = new Map(
+  AUTHORED_SCHEMAS.map((schema) => [schema.capability, toPayloadJsonSchema(schema)]),
+);

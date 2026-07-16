@@ -536,6 +536,63 @@ const requireLegalStatusTransition: OrderGuard = (envelope, state) => {
   return null
 }
 
+/**
+ * FE-T05 (Language Engine) — a GROUNDED (auto-resolved "most recent order")
+ * `order.status.transition` target ALWAYS parks for confirmation, never
+ * silently EXECUTEs. Placed in `business` (after `requireLegalStatusTransition`
+ * in `stateGuards` already REFUSEd an illegal/terminal/unknown transition) so
+ * a guessed target is asked about ONLY when the transition would otherwise be
+ * legal — an illegal guess REFUSEs outright with the precise reason, never a
+ * confusing "confirm an action that would fail anyway" prompt.
+ *
+ * Engagement is `state.ctx.orderResolutionTrust === "grounded"` — set ONLY by
+ * the ops resolver's `resolveStatusTransitionOrderTarget` fallback
+ * (`ops-resolver.ts`) when the model gave NO order reference at all (this
+ * tracer's only live path today: the FE-1.1 extraction schema never shows the
+ * model an orderId/reference field for this capability). Absent/`"authoritative"`
+ * ⇒ null (pass-through) — an explicit staff reference (a future rollout slice
+ * may re-add that field) is NOT re-confirmed here.
+ *
+ * Resolved EXACTLY like the large-ticket checkout / paid-cancel confirms: the
+ * IDENTICAL envelope re-adjudicated with a matching `confirmationReceipt`
+ * flips this guard's verdict to EXECUTE via the kernel's 2a override, while
+ * every other guard (incl. `requireLegalStatusTransition`) re-runs in full —
+ * so a state change between park and confirm (e.g. the order already reached
+ * a terminal status) still REFUSEs on resume, never silently EXECUTEs.
+ */
+const requireConfirmationOnGroundedStatusTransition: OrderGuard = (
+  envelope,
+  state,
+) => {
+  if (envelope.kind !== "order.status.transition") return null
+  if (state.ctx.orderResolutionTrust !== "grounded") return null
+  const target = (envelope.payload as { newStatus?: unknown }).newStatus
+  const targetLabel = typeof target === "string" ? target : "esse status"
+  // FE-T05 review (MAJOR-2) — NAME the guessed order (its display number) so
+  // an operator confirming can actually recognize (and reject) a wrong
+  // guess; a prompt that names nothing defeats the point of forcing a
+  // confirmation. `displayId` is set by the resolver alongside
+  // `orderResolutionTrust: "grounded"` (ops-resolver.ts); the fallback below
+  // is defensive only — it should not be reachable in practice.
+  const orderLabel =
+    typeof state.ctx.displayId === "number"
+      ? `o pedido #${state.ctx.displayId}`
+      : "o pedido mais recente em aberto"
+  return decisionRequestConfirmation(
+    `Não me disseram qual pedido — vou usar ${orderLabel}. ` +
+      `Confirma avançar ${orderLabel} para "${targetLabel}"?`,
+    [
+      basis("business", BASIS_CODES.business.RULE_SATISFIED, {
+        reason: "grounded_order_resolution_requires_confirmation",
+        resolvedVia: "most_recent_active_order",
+        ...(typeof state.ctx.displayId === "number"
+          ? { displayId: state.ctx.displayId }
+          : {}),
+      }),
+    ],
+  )
+}
+
 const requireCancellable: OrderGuard = (envelope, state) => {
   if (
     envelope.kind !== "order.cancel" &&
@@ -1195,6 +1252,10 @@ export const ordersPolicyBundle: PolicyBundle<
     gatePaidCancel,
     escalateLargeCancel,
     confirmLargeTicket,
+    // FE-T05 — after requireLegalStatusTransition (stateGuards) already REFUSEd
+    // an illegal/terminal transition; a legal-but-GUESSED target still needs
+    // explicit confirmation before it can execute.
+    requireConfirmationOnGroundedStatusTransition,
     validateReviewRating,
     refuseCardPanInPix,
     redactPiiInPix,
