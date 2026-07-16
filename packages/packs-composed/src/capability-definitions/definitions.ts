@@ -317,6 +317,10 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     successClaimLinks: ["order-canceled"],
     guardRefs: ORDERS_GUARD_REFS,
     refusalCode: "order.default.deny",
+    // FE-T23: verbatim from apps/admin's committed INTENT_KIND_LABELS —
+    // deliberately different text from `description` above (separate
+    // audience: admin-inbox operator vs. chat prompt hint).
+    adminLabel: "Cancelar pedido",
   },
   // SYSTEM-only compensation cancel (payment-expiry / stale-order) — the
   // orders planner comment is explicit: "NEVER LLM-proposable". No
@@ -360,6 +364,8 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     successClaimLinks: ["note-added"],
     guardRefs: ORDERS_GUARD_REFS,
     refusalCode: "order.default.deny",
+    // FE-T23: verbatim from apps/admin's committed INTENT_KIND_LABELS.
+    adminLabel: "Adicionar observação ao pedido",
   },
   {
     kind: "order.review.submit",
@@ -394,6 +400,8 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     mutating: true,
     tier: "identity",
     plannerAdvertisedBy: ["ibatexas/pack-ops"],
+    // FE-T23: verbatim from apps/admin's committed INTENT_KIND_LABELS.
+    adminLabel: "Avançar status do pedido",
   },
   { kind: "order.status.reconcile", pack: "ibatexas/pack-orders", mutating: true, tier: "identity" },
 
@@ -548,6 +556,8 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     successClaimLinks: ["pix-generated"],
     guardRefs: PAYMENTS_GUARD_REFS,
     refusalCode: "payment.default.deny",
+    // FE-T23: verbatim from apps/admin's committed INTENT_KIND_LABELS.
+    adminLabel: "Regenerar cobrança PIX",
   },
   // De-advertised (P0-7): mapped + MUTATING-classified but NOT in the
   // planner's `allowedIntents` literal — no chat tool is registered for
@@ -574,9 +584,19 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     // (ibatexas-responder.ts) alongside payment.refund.confirm below —
     // grounded from that real export, not invented.
     successClaimLinks: ["refund-done"],
+    // FE-T23: verbatim from apps/admin's committed INTENT_KIND_LABELS.
+    adminLabel: "Emitir reembolso",
   },
   // Staff-route / webhook-originated — never in the planner's allowedIntents.
-  { kind: "payment.refund.confirm", pack: "ibatexas/pack-payments", mutating: true, tier: "identity", successClaimLinks: ["refund-done"] },
+  {
+    kind: "payment.refund.confirm",
+    pack: "ibatexas/pack-payments",
+    mutating: true,
+    tier: "identity",
+    successClaimLinks: ["refund-done"],
+    // FE-T23: verbatim from apps/admin's committed INTENT_KIND_LABELS.
+    adminLabel: "Confirmar reembolso",
+  },
   { kind: "payment.dispute.open", pack: "ibatexas/pack-payments", mutating: true, tier: "identity" },
   { kind: "payment.cash.confirm", pack: "ibatexas/pack-payments", mutating: true, tier: "identity", successClaimLinks: ["payment-settled"] },
   { kind: "payment.waive", pack: "ibatexas/pack-payments", mutating: true, tier: "identity" },
@@ -627,6 +647,8 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     mutating: true,
     tier: "identity",
     plannerAdvertisedBy: ["ibatexas/pack-ops"],
+    // FE-T23: verbatim from apps/admin's committed INTENT_KIND_LABELS.
+    adminLabel: "Disponibilidade de item (86 / liberar)",
   },
   {
     kind: "product.price.set",
@@ -634,6 +656,8 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     mutating: true,
     tier: "identity",
     plannerAdvertisedBy: ["ibatexas/pack-ops"],
+    // FE-T23: verbatim from apps/admin's committed INTENT_KIND_LABELS.
+    adminLabel: "Alterar preço de item",
   },
   {
     kind: "menu.special.set",

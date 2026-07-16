@@ -237,6 +237,21 @@ interface CapabilityDefinitionCommon {
    * "extra tool name" inputs, never invented `legacyNames` entries.
    */
   readonly legacyNames?: readonly string[]
+  /**
+   * FE-4 MIGRATE 4a (FE-T23) — pt-BR admin-inbox label, grounded in
+   * `apps/admin/src/domains/admin/agent-approvals.mappers.ts`'s
+   * `INTENT_KIND_LABELS` (the ONLY intentKind→label register on the admin
+   * surface — 59 admin API routes checked, confirmed client-side-only).
+   * Optional on both tiers (not tier-discriminating): `INTENT_KIND_LABELS`
+   * is a "best-effort, NON-exhaustive register" per its own doc — only 8 of
+   * this registry's 66 kinds have a real committed label (3 chat-tier, 5
+   * identity-tier; a 9th, `pix.charge.refund`, is outside this registry
+   * entirely — see `generate-admin-labels.ts`'s external-input doc). An
+   * unmapped kind is NOT missing data — `intentKindLabel()`'s own fallback
+   * (the raw kind string) is the correct, honest display, so `undefined`
+   * here for the other 58 kinds is correct, not an omission to fill in.
+   */
+  readonly adminLabel?: string
 }
 
 /**
