@@ -104,6 +104,18 @@
                   }
                 }
               }
+            },
+            {
+              "if": { "properties": { "capability": { "const": "payment.pix.regenerate" } } },
+              "then": {
+                "properties": {
+                  "payload": {
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": false
+                  }
+                }
+              }
             }
           ]
         }
