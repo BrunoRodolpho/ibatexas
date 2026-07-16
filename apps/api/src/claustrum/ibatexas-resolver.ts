@@ -7,12 +7,22 @@
  * envelope via `buildEnvelope` (so the kernel's intentHash re-derivation passes
  * and the resolved envelope is what gets adjudicated, dispatched, AND audited).
  *
+ * FE-T09b (BKL-154) — BEFORE resolving, each envelope's `kind`/`payload` pass
+ * through `correctAmendPreference`: a deterministic candidate-resolution
+ * correction that re-routes a cart-op proposal (`order.item.add/update/
+ * remove`) to its granular amend sibling when the utterance references an
+ * already-placed order AND the customer has one to amend (see that module's
+ * doc for the live-disproof this fixes). The corrected `kind`/`payload` — not
+ * `env.kind`/`env.payload` — drive `resolveAndAssemble` AND the envelope
+ * rebuild below, so a re-route is never silently lost.
+ *
  * Read-only. Wired into `createConductor({ resolver })` at the composition root.
  */
 
 import { buildEnvelope, type IntentEnvelope } from "@adjudicate/core";
 import type { ResolvedEnvelope, ResolverPort } from "@claustrum/core";
 import { resolveAndAssemble } from "./resolve-and-assemble.js";
+import { correctAmendPreference } from "./amend-preference-correction.js";
 import {
   buildCustomerAuthority,
   customerPrincipalForSession,
@@ -24,9 +34,27 @@ export function createIbatexasResolver(): ResolverPort {
     async resolve({ plan, cognition, customerId, channel }): Promise<ReadonlyArray<ResolvedEnvelope>> {
       const out: ResolvedEnvelope[] = [];
       for (const env of plan.envelopes) {
+        const correction = await correctAmendPreference(
+          env.kind,
+          (env.payload ?? {}) as Record<string, unknown>,
+          // Optional chaining, not a direct read: `CognitiveState.perception`
+          // is REQUIRED by the port's type, but defends against an
+          // incomplete/malformed cognition object anyway (fail-closed —
+          // no text ⇒ correctAmendPreference's own `undefined` branch ⇒ no
+          // re-route — never a crash that would take the whole turn down).
+          cognition.perception?.text,
+          customerId,
+          // MAJOR-1 (post-#268) — the SAME conversation handle resolveAndAssemble
+          // uses below to key the active-cart Redis read (BKL-028); powers the
+          // bare-"no pedido"-vs-active-cart disambiguation.
+          cognition.conversationId,
+        );
+        const kind = correction?.kind ?? env.kind;
+        const rawPayload = correction?.payload ?? ((env.payload ?? {}) as Record<string, unknown>);
+
         const { payload, ctx, owned, ownershipIndeterminate } = await resolveAndAssemble({
-          kind: env.kind,
-          payload: (env.payload ?? {}) as Record<string, unknown>,
+          kind,
+          payload: rawPayload,
           customerId,
           channel,
           // The active-cart Redis key uses the conversation handle (= the
@@ -45,15 +73,16 @@ export function createIbatexasResolver(): ResolverPort {
         const refs = ownershipIndeterminate
           ? undefined
           : resourceRefsForIntent(
-              env.kind,
+              kind,
               payload as Record<string, unknown>,
               customerId,
             );
         // Rebuild with the SAME nonce/actor/taint so the intentHash is canonical
         // (unchanged when payload didn't change; fresh when it did). createdAt is
-        // metadata-only (not hashed) — preserve it for the audit trail.
+        // metadata-only (not hashed) — preserve it for the audit trail. `kind` is
+        // the (possibly amend-preference-corrected) kind, never the raw `env.kind`.
         const resolved = buildEnvelope({
-          kind: env.kind,
+          kind,
           payload,
           actor: env.actor,
           taint: env.taint,

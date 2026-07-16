@@ -359,6 +359,30 @@ export async function loadCartCtx(
   return buildCartCtx(base, payload, await loadCart(cartId));
 }
 
+/**
+ * FE-T09b review fix (MAJOR-1) — "does this session have a cart with items
+ * in it RIGHT NOW?" Reuses the exact same BKL-028 active-cart key + fetch
+ * as `loadCartCtx` (never a second source of truth for "what is the
+ * active cart"). Exported for `amend-preference-correction.ts`'s
+ * both-states disambiguation: a bare "no pedido" reference from a
+ * mid-cart customer ("põe mais uma coca no pedido") colloquially means
+ * their IN-PROGRESS cart, not a placed order — favor the cart. Fail-
+ * CLOSED to `false` (no cart) on any read error, same posture as
+ * `loadCartCtx` itself.
+ */
+export async function hasNonEmptyActiveCart(sessionId: string | undefined): Promise<boolean> {
+  if (sessionId === undefined) return false;
+  try {
+    const redis = await getRedisClient();
+    const cartId = await redis.get(rk(`cart:active:session:${sessionId}`));
+    if (cartId === null) return false;
+    const { cart } = await loadCart(cartId);
+    return cart !== null && !cart.completed_at && (cart.items?.length ?? 0) > 0;
+  } catch {
+    return false;
+  }
+}
+
 // ── Reservations (reservation.* targeting a slot / existing reservation) ─────
 function slotFromRow(
   row: { id: string; date: Date; startTime: string; maxCovers: number; reservedCovers: number } | null,
@@ -684,6 +708,55 @@ function firstString(...vals: unknown[]): string | undefined {
   return undefined;
 }
 
+/** Lowercase, strip diacritics, split into alnum tokens — for lexical
+ *  comparison only (never customer-facing, never persisted). */
+function normalizeTokens(s: string): string[] {
+  return s
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((t) => t.length > 0);
+}
+
+/**
+ * FE-D17 interim defense (FE-T09b, BKL-154 live-drive follow-up) — a cheap
+ * lexical-overlap sanity floor over the search layer's ranking. Typesense's
+ * fuzzy/semantic ranking can return a best-effort top hit with NO real
+ * relationship to the query on a garbage input (live-demonstrated: query
+ * "xyzzy" still returned A product) — the systemic arbitrary-match defect
+ * is FE-D17 (search-layer fix, not this ticket's scope); this is the
+ * resolver-level floor that refuses to attach an UNRELATED product's
+ * variant/allergens to the customer's request in the meantime. Permissive
+ * by TOKEN/CONTAINMENT overlap (any shared normalized token, or either
+ * string containing the other) — but this is NOT the same as "never
+ * rejects a genuine partial match": a pt-BR DIMINUTIVE ("coquinha" for
+ * "coca") shares no token and no substring with "Coca-Cola" and is treated
+ * as a mismatch (REFUSED) exactly like "xyzzy" today. That is an ACCEPTED
+ * INTERIM COST, not an oversight — a real fuzzy/stemmed match belongs in
+ * the search layer itself (FE-D17), not reimplemented here; this floor's
+ * job is only to stop an UNRELATED top hit from being trusted blindly. See
+ * the "coquinha" regression in resolve-and-assemble.test.ts, which pins
+ * today's refuse behavior deliberately so a future change to this
+ * function is a conscious choice, not an accidental regression either way.
+ */
+function hasLexicalOverlap(query: string, product: { title?: string; tags?: readonly string[] }): boolean {
+  const queryTokens = normalizeTokens(query);
+  if (queryTokens.length === 0) return false;
+  const queryTokenSet = new Set(queryTokens);
+  const candidateTokens = new Set([
+    ...normalizeTokens(product.title ?? ""),
+    ...(product.tags ?? []).flatMap(normalizeTokens),
+  ]);
+  for (const t of queryTokenSet) {
+    if (candidateTokens.has(t)) return true;
+  }
+  const queryNorm = queryTokens.join(" ");
+  const titleNorm = normalizeTokens(product.title ?? "").join(" ");
+  if (titleNorm.length === 0) return false;
+  return titleNorm.includes(queryNorm) || queryNorm.includes(titleNorm);
+}
+
 /**
  * F3/L1 (BKL-061) — deterministic NL→variantId resolution (a READ; keeps this
  * module's read-only invariant). The 4B emits order.item.add with a LOOSE
@@ -691,6 +764,13 @@ function firstString(...vals: unknown[]): string | undefined {
  * Typesense (`searchProducts`) so the executor's schema (which requires
  * variantId) is satisfiable. Returns undefined on no-match/error → the tool
  * REFUSEs honestly ("não encontrei esse item") rather than adding the wrong one.
+ *
+ * FE-T09b (FE-D17 interim floor) — a non-empty result is no longer trusted
+ * blindly: `hasLexicalOverlap` must agree the top hit actually relates to
+ * `name` before its variantId/allergens are attached. A hit with zero
+ * lexical relationship to the query is treated exactly like no match at
+ * all (same undefined return, same downstream honest refuse) — this
+ * function's return contract is unchanged, only which hits qualify.
  */
 async function resolveProductForItem(
   name: string,
@@ -710,6 +790,7 @@ async function resolveProductForItem(
     );
     const product = out.products?.[0];
     if (product === undefined) return undefined;
+    if (!hasLexicalOverlap(name, product)) return undefined;
     // allergens = the product's EXPLICIT stored array (Hard Rule #1: authoritative
     // product data, NOT inferred from name/text). Same resolved product as the
     // variant, so they can never disagree.
