@@ -208,10 +208,21 @@ export interface RegistryClaimSpec {
    * public, single-key type whose `schedule:store_open_now` matches the
    * investigator verbatim) leaves this OMITTED — its keys are never parameterized.
    *
-   * NOTE: per-resource alignment is necessary-but-not-sufficient for these
-   * owner-scoped types to go LIVE; the per-turn `owns` threading is a conductor
-   * (`@claustrum/core`) republish (Wall 2, out of scope here). Until then
-   * ORDER/PAYMENT degrade SAFE to UNKNOWN (owns false / read-error / value-absent).
+   * FE-3.3 (FE-T16) — RETIRED CAVEAT: this note used to read "per-resource
+   * alignment is necessary-but-not-sufficient for these owner-scoped types to go
+   * LIVE; the per-turn `owns` threading is a conductor (`@claustrum/core`)
+   * republish (Wall 2, out of scope here); until then ORDER/PAYMENT degrade SAFE
+   * to UNKNOWN." That precondition has since LANDED and is WIRED: the REAL
+   * per-turn `owns` predicate (`buildPerTurnOwnsFromLedger`,
+   * ibatexas-claims-kernel-deps.ts) is threaded as the Conductor's
+   * `claimsKernelDepsForTurn` seam by `claims-pipeline.ts` `buildClaimsSeams`
+   * whenever the claims pipeline is on — it is NOT the process-wide fail-closed
+   * `owns → false` stub. A genuine owner with a PRESENT per-resource read now
+   * VALIDATEs and renders (see tracka-fix-actor-subject.test.ts,
+   * reservation-status-claim.test.ts). ORDER/PAYMENT/RESERVATION still degrade
+   * SAFE to UNKNOWN, but only for the reasons that remain genuinely true: no
+   * ownership attribution this turn, a read error, or an absent/mismatched value
+   * — never a pending upstream precondition.
    */
   readonly perResourceKey?: boolean;
 }
