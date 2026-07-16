@@ -1,0 +1,147 @@
+# Nemotron extraction-accuracy lane (FE-T08) — NON-CERTIFYING.
+#
+# A SEPARATE, non-blocking workflow that drives the extraction-accuracy
+# meter (FE-T07, `ibx journey extraction-accuracy`) against the REAL local
+# model (nemotron-3-nano:4b, LAN-only at 192.168.1.80) and reports drift as
+# ANNOTATION only (job summary + an uploaded JSON artifact) — it never gates
+# a merge. It is deliberately NOT referenced by any branch-protection
+# required-check rule, and lives in its own file rather than a job inside
+# ci.yml, so there is no way for it to become required by accident.
+#
+# WHY self-hosted at all: GitHub-hosted runners have no route to a LAN-only
+# box, so this lane can only ever run on a runner that itself has network
+# access to the model (and to a reachable dev/test API instance driving it).
+# `runs-on: [self-hosted, nemotron]` names that runner; it activates the
+# moment one is registered with that label (repo Settings → Actions →
+# Runners → New self-hosted runner, label `nemotron`) on a machine on the
+# same LAN as (or being) the Nemotron box.
+#
+# HONESTY NOTE (read before relying on this workflow — "honesty over
+# ceremony" per the ticket): this file's syntax/logic is reviewable and
+# believed correct, but it has NOT been end-to-end exercised in GitHub
+# Actions — registering the self-hosted runner requires a repo-admin action
+# (minting a registration token from the repo's Settings page) this agent
+# cannot perform, and there is currently no `nemotron`-labeled runner
+# registered, so `workflow_dispatch` on this file will sit QUEUED
+# indefinitely until one exists. Until that registration happens, the
+# IDENTICAL lane is fully usable RIGHT NOW via the documented local-
+# execution path — no runner needed:
+#
+#   docs/ops/runbooks/extraction-accuracy-nemotron-lane.md (setup + the
+#   exact `ibx journey extraction-accuracy` invocation)
+#   scripts/run-extraction-accuracy-lane.sh (the same invocation, scripted)
+#
+# That local path IS live-verified — FE-T07's PR #263 recorded 9 live runs
+# against the local 4B using this exact CLI command. This workflow is the
+# SAME command, wrapped for whenever a runner exists; it is not a
+# substitute for the local path today.
+#
+# Assumptions this workflow makes about the runner (documented, not
+# enforced by this file — see the runbook for the actual setup steps): a
+# reachable IBX dev/test API instance (default http://localhost:3001,
+# override via the workflow_dispatch input) and a `.env.test`-shaped
+# credentials file already present at the repo root on that runner (the
+# SAME file the local-execution path needs — see the runbook). This
+# workflow does NOT stand up an ephemeral stack (contrast journeys-nightly,
+# whose GH-hosted job boots one via docker-compose): a Nemotron-adjacent
+# machine is expected to be a persistent dev box with its stack already up,
+# not disposable CI infrastructure.
+
+name: nemotron-extraction-lane
+
+on:
+  workflow_dispatch:
+    inputs:
+      apiBaseUrl:
+        description: "SUT api base (the dev/test API reachable from the runner)"
+        required: false
+        default: "http://localhost:3001"
+      envFile:
+        description: "Path (on the runner) to the .env.test-shaped credentials file"
+        required: false
+        default: ".env.test"
+  # Deliberately NOT scheduled by default: with no `nemotron`-labeled runner
+  # registered yet, a cron entry would only ever produce indefinitely-queued
+  # runs — a silent no-signal state, worse than not scheduling at all.
+  # Uncomment once a runner is registered and a cadence is wanted:
+  # schedule:
+  #   - cron: "0 9 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  nemotron-extraction-accuracy:
+    runs-on: [self-hosted, nemotron]
+    # Never a required status check (branch protection does not reference
+    # this workflow); continue-on-error on the driving step is
+    # belt-and-suspenders on top of that so even a hard infra failure on the
+    # self-hosted box can never red-X anything upstream watches.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: pnpm/action-setup@5b4374b04084dc1f9032b52464284b769ac5059e # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - name: Build the CLI + workspace deps
+        run: pnpm --filter "@ibatexas/cli..." build
+
+      - name: Drive the extraction-accuracy meter against the LIVE local model
+        id: meter
+        continue-on-error: true
+        run: |
+          mkdir -p artifacts
+          node packages/cli/dist/index.js journey extraction-accuracy \
+            --env-file "${{ github.event.inputs.envFile || '.env.test' }}" \
+            --api-base-url "${{ github.event.inputs.apiBaseUrl || 'http://localhost:3001' }}" \
+            --verify-file packages/journeys/governance/extraction-accuracy-baseline.json \
+            --json > artifacts/extraction-accuracy-report.json \
+            || echo "meter_failed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Annotate the job summary (advisory only — never gates)
+        if: always()
+        run: |
+          node -e '
+            const fs = require("fs");
+            let report;
+            try {
+              report = JSON.parse(fs.readFileSync("artifacts/extraction-accuracy-report.json", "utf8"));
+            } catch {
+              fs.appendFileSync(
+                process.env.GITHUB_STEP_SUMMARY,
+                "# Extraction-accuracy meter — Nemotron lane (non-certifying)\n\n" +
+                "No report was produced — see the previous step'"'"'s log (likely: the runner could not reach the model/API, or a env-file/staff-seed precondition was unmet).\n",
+              );
+              return;
+            }
+            const lines = ["# Extraction-accuracy meter — Nemotron lane (non-certifying)", ""];
+            for (const c of report.byCapability ?? []) {
+              lines.push(`- **${c.capability}**: ${c.passing}/${c.total} (${(c.ratio * 100).toFixed(1)}%)`);
+            }
+            if (report.verify !== undefined) {
+              lines.push("");
+              lines.push(
+                report.verify.ok
+                  ? "no regression vs the committed baseline."
+                  : `${report.verify.regressions.length} regression(s) vs the committed baseline — ADVISORY ONLY, this lane never gates a merge. Investigate and, if genuine, follow the waiver/re-baseline policy (packages/journeys/governance/extraction-accuracy-waivers.json).`,
+              );
+            }
+            if ((report.problems ?? []).length > 0) {
+              lines.push("", `${report.problems.length} problem(s) reported (see the uploaded artifact for detail).`);
+            }
+            fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, lines.join("\n") + "\n");
+          '
+
+      - name: Upload the report artifact
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: nemotron-extraction-accuracy-${{ github.run_id }}
+          retention-days: 30
+          if-no-files-found: warn
+          path: artifacts/

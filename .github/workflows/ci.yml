@@ -90,6 +90,25 @@ jobs:
         run: node packages/cli/dist/index.js seal export --verify-file packages/cli/governance/seals/ibatexas.json
       - name: Policy-coherence artifact drift gate (ERDS-057)
         run: node packages/cli/dist/index.js coherence export --verify-file packages/cli/governance/coherence/ibatexas.json
+      # Extraction-accuracy CERTIFYING gate (FE-T08, FE-2.4). Deliberately
+      # MODEL-FREE — GitHub-hosted runners cannot reach the local Nemotron
+      # box, so this can never depend on a live drive. Verifies offline
+      # (packages/journeys/src/extraction/static-gate.ts, TDD'd with
+      # scripted fixtures): the corpus loads + schema-validates, the waivers
+      # file is valid, every case the committed baseline claims `passing`
+      # still exists in the corpus (no orphaned claim from a rename/removal),
+      # and the schema-binding's recorded hash of the FE-T06 golden
+      # extraction-prompt fragment still matches that file's CURRENT
+      # committed bytes. That last check is the one that actually catches an
+      # extraction-schema regression: FE-T06's OWN golden gate (above, via
+      # `pnpm test`) only fails if the fixture ISN'T regenerated to match a
+      # schema/persona edit — if it IS correctly regenerated, this binding
+      # check is what forces an explicit re-commit
+      # (`ibx journey extraction-consistency --update-binding`), i.e. an
+      # acknowledgment that the corpus/baseline were reviewed for accuracy
+      # impact. Needs the built CLI → after `pnpm build`.
+      - name: Extraction-accuracy consistency gate (FE-T08, model-free)
+        run: node packages/cli/dist/index.js journey extraction-consistency
       # Normalize per-package lcov SF paths to repo-root-relative so SonarCloud
       # can match coverage to sources. vitest emits SF paths relative to each
       # package (e.g. `SF:src/foo.ts` in packages/domain), but the scanner runs
