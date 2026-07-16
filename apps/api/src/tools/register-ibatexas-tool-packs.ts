@@ -450,13 +450,18 @@ export function listIbatexasToolPacks(): ReadonlyArray<TD<unknown, unknown>> {
  * de-advertised them. The documented staff-chat exception (`reservation.
  * checkin`/`.complete`, the 9 ops-plane verbs) is now SURFACE-DERIVED
  * (FE-T22) — see `options.chatSurfacedKinds` — rather than a hand-maintained
- * per-`(context, kind)` whitelist: a kind advertised-but-unregistered under
- * ANY probed context is EXPECTED (not drift) precisely when it is not meant
+ * per-`(context, kind)` whitelist: a kind advertised-but-unregistered under a
+ * `chatSurfaceExempt` probe (today just `"staff"` — see `RosterDriftContext.
+ * chatSurfaceExempt`) is EXPECTED (not drift) precisely when it is not meant
  * to be chat-surfaced at all, and `CapabilityDefinition.surfaces` is the
- * data that already says so. Registered-but-unadvertised kinds are WARN-only
- * via `options.onWarn` — unreachable via chat is dead weight, never a
- * dispatch failure (`order.review.submit` is the known case: the orders
- * planner never advertises it; reviews arrive via the web flow).
+ * data that already says so. Every OTHER probe (`"authed-customer"` today)
+ * stays STRICT regardless of `chatSurfacedKinds` — this is the P0-7
+ * fail-closed floor the leg exists to enforce, and it must not be silently
+ * widened by an exemption meant only for the staff/ops plane. Registered-
+ * but-unadvertised kinds are WARN-only via `options.onWarn` — unreachable
+ * via chat is dead weight, never a dispatch failure (`order.review.submit`
+ * is the known case: the orders planner never advertises it; reviews arrive
+ * via the web flow).
  *
  * Pure: the caller supplies the pack intent union, the planners, AND the
  * chat-surfaced-kinds set (the registrar deliberately does not import
@@ -467,11 +472,28 @@ export function listIbatexasToolPacks(): ReadonlyArray<TD<unknown, unknown>> {
  * problems; empty array means the roster is healthy.
  */
 export interface RosterDriftContext {
-  /** Stable name used in problem messages and the whitelist keys. */
+  /** Stable name used in problem messages. */
   readonly name: string;
   /** The (state, context) pair fed to each CapabilityPlanner.plan(). */
   readonly state: unknown;
   readonly context: unknown;
+  /**
+   * FE-T22 (post-review fix) — whether `options.chatSurfacedKinds` may
+   * exempt an advertised-but-unregistered kind under THIS probe. The retired
+   * `ADVERTISED_NOT_REGISTERED_WHITELIST` was keyed `<context>:<kind>`, and
+   * ALL 10 of its entries were `staff:<kind>` — the customer-facing probe
+   * never had an exemption. `chatSurfacedKinds` on its own is
+   * context-independent (it is just "the set of kinds meant to be
+   * chat-surfaced"), so without this flag it would ALSO exempt a
+   * non-chat-surfaced kind advertised under a customer-facing probe —
+   * silently defeating the P0-7 floor this gate exists to enforce (e.g. a
+   * future re-advertisement of `payment.method.switch` to authed customers,
+   * exactly the class of dangle P0-7 de-advertised, would go unflagged).
+   * Defaults to `false` (unset) — strict by default; only `ROSTER_DRIFT_
+   * CONTEXTS`'s `"staff"` entry opts in, mirroring the old whitelist's
+   * exclusively-staff coverage exactly.
+   */
+  readonly chatSurfaceExempt?: boolean;
 }
 
 /** Mirror of the union ctx shape `deriveIbatexasPlannerContext` builds. */
@@ -521,6 +543,10 @@ export const ROSTER_DRIFT_CONTEXTS: ReadonlyArray<RosterDriftContext> = [
       isAuthenticated: false,
     }),
     context: {},
+    // FE-T22: the ONLY context the chatSurfacedKinds exemption applies
+    // under — matches the retired whitelist, whose 10 entries were ALL
+    // staff:<kind> pairs. See RosterDriftContext.chatSurfaceExempt's doc.
+    chatSurfaceExempt: true,
   },
 ];
 
@@ -534,11 +560,13 @@ export const ROSTER_DRIFT_CONTEXTS: ReadonlyArray<RosterDriftContext> = [
 // every one of those 10 kinds: none of them is `tier: "chat"`, so none
 // carries `"chat"` in `surfaces`. `checkAdvertisedAgainstRegistered` below
 // now takes that as an explicit `chatSurfacedKinds` input (see
-// `ToolRosterDriftOptions`) instead of the hand-maintained per-pair
-// enumeration — a kind advertised-but-unregistered under ANY probed context
-// is EXPECTED precisely when it is not in that set. Verified byte-for-byte
-// equivalent to the retired whitelist (all 10 pre-deletion pairs pinned as
-// literals and proven still-exempt) in
+// `ToolRosterDriftOptions`), CONTEXT-SCOPED to `chatSurfaceExempt` probes
+// (post-review fix — `chatSurfacedKinds` alone is context-independent, and
+// ALL 10 retired pairs were `staff:<kind>`; a customer-facing probe must
+// stay strict, never gaining an exemption it never had) instead of the
+// hand-maintained per-pair enumeration. Verified byte-for-byte equivalent to
+// the retired whitelist (all 10 pre-deletion pairs pinned as literals and
+// proven still-exempt UNDER STAFF, still-flagged under authed-customer) in
 // apps/api/src/__tests__/tool-roster-integrity.test.ts.
 
 export interface ToolRosterDriftOptions {
@@ -560,13 +588,21 @@ export interface ToolRosterDriftOptions {
    * surfaces` includes `"chat"` for a `tier: "chat"` instance — in practice
    * this is `CHAT_DRIVABLE_TOOL_KINDS`'s membership). Replaces the retired
    * `ADVERTISED_NOT_REGISTERED_WHITELIST`: a kind advertised-but-unregistered
-   * under ANY probed context is EXPECTED (not a problem) precisely when it is
-   * NOT in this set — every staff/ops-plane verb that used to need a
-   * hand-written whitelist entry is, by construction, absent from it.
+   * under a `chatSurfaceExempt` probe (see `RosterDriftContext.
+   * chatSurfaceExempt` — today just `"staff"`, matching every one of the
+   * retired whitelist's 10 entries) is EXPECTED (not a problem) precisely
+   * when it is NOT in this set. This set is, by itself, CONTEXT-INDEPENDENT
+   * (just "the kinds meant to be chat-surfaced") — it is `RosterDriftContext.
+   * chatSurfaceExempt` that scopes WHERE the exemption is allowed to apply.
+   * Under a non-exempt probe (`"authed-customer"` today) this set is
+   * ignored entirely — every advertised-but-unregistered kind there is
+   * ALWAYS a problem (post-review fix: an earlier version of this option
+   * exempted by kind alone, regardless of probe, which would have silently
+   * widened the customer-facing P0-7 floor the leg exists to enforce).
    *
-   * `undefined` (the default) means NO exemption is granted — every
-   * advertised-but-unregistered kind is a problem, matching this leg's
-   * pre-FE-T22 behavior for any caller that does not opt in (e.g.
+   * `undefined` (the default) means NO exemption is granted under ANY probe
+   * — every advertised-but-unregistered kind is a problem, matching this
+   * leg's pre-FE-T22 behavior for any caller that does not opt in (e.g.
    * `opsPlaneDriftProblems` in `ops/ops-conductor.ts`, which never needs the
    * exemption: every kind its `opsCapabilityPlanner` advertises IS registered
    * in the OPS tool registry by construction — see `opsPlaneDriftProblems`'s
@@ -648,10 +684,18 @@ function checkAdvertisedAgainstRegistered(
     for (const kind of advertised) {
       advertisedAnywhere.add(kind);
       if (registered.has(kind)) continue;
-      // FE-T22: exempt when the kind is NOT meant to be chat-surfaced at
-      // all (surface-derived — see the option's own doc). `undefined` grants
-      // no exemption (every advertised-but-unregistered kind is a problem).
-      if (chatSurfacedKinds !== undefined && !chatSurfacedKinds.has(kind)) {
+      // FE-T22 (post-review fix): exempt ONLY when (a) this probe opts into
+      // the exemption (probe.chatSurfaceExempt — today just "staff", see its
+      // doc) AND (b) the kind is not meant to be chat-surfaced at all
+      // (surface-derived). Every OTHER probe (authed-customer today) stays
+      // STRICT regardless of chatSurfacedKinds — an advertised-but-
+      // unregistered kind there is ALWAYS a problem, which is the P0-7
+      // fail-closed floor this gate exists to enforce.
+      if (
+        probe.chatSurfaceExempt === true &&
+        chatSurfacedKinds !== undefined &&
+        !chatSurfacedKinds.has(kind)
+      ) {
         continue;
       }
       problems.push(

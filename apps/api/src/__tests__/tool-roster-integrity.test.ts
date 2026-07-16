@@ -257,10 +257,20 @@ describe("P0-7 — context-aware roster drift", () => {
     expect(warnings.every((w) => w.includes("WARN only"))).toBe(true);
   });
 
-  it("a synthetic planner-advertised-but-unregistered kind under authed-customer FAILS drift", () => {
+  it("a synthetic planner-advertised-but-unregistered kind under authed-customer FAILS drift, EVEN WITH the production chatSurfacedKinds wired in", () => {
     // Re-creates the exact dangle P0-7 de-advertised: a planner offers
-    // `payment.method.switch` (pack-owned, no registered tool) to an
-    // authenticated customer.
+    // `payment.method.switch` (pack-owned, no registered tool, NOT
+    // tier:"chat") to an authenticated customer.
+    //
+    // FE-T22 post-review load-bearing regression test: this MUST pass the
+    // real production chatSurfacedKinds (not omit it, leaving the leg in
+    // strict/undefined mode) — omitting it would never exercise the bug the
+    // review caught, where a context-independent chatSurfacedKinds exemption
+    // would have ALSO exempted this customer-facing dangle (payment.method.
+    // switch is not chat-surfaced, so it would wrongly pass under the old,
+    // unscoped exemption). Red under the pre-fix context-independent
+    // exemption; green after scoping the exemption to `chatSurfaceExempt`
+    // probes (today just "staff") via RosterDriftContext.chatSurfaceExempt.
     const synthetic: CapabilityPlanner<unknown, unknown> = {
       plan(state) {
         const ctx = (
@@ -276,9 +286,11 @@ describe("P0-7 — context-aware roster drift", () => {
         };
       },
     };
+    expect(CHAT_SURFACED_KINDS.has("payment.method.switch")).toBe(false);
     const problems = toolRosterDrift(listIbatexasToolPacks(), PACK_INTENT_UNION, {
       planners: [...IBATEXAS_COMPOSED_CAPABILITY_PLANNERS, synthetic],
       onWarn: () => {},
+      chatSurfacedKinds: CHAT_SURFACED_KINDS,
     });
     expect(problems.length).toBeGreaterThan(0);
     expect(
@@ -289,6 +301,31 @@ describe("P0-7 — context-aware roster drift", () => {
           p.includes("tool_unresolved"),
       ),
     ).toBe(true);
+  });
+
+  it("a synthetic planner-advertised-but-unregistered kind under staff IS exempted by the production chatSurfacedKinds (the mirror case — exemption still works where it should)", () => {
+    // Symmetric to the authed-customer test above: the SAME kind
+    // (payment.method.switch, not chat-surfaced), advertised under the
+    // STAFF probe instead, must be EXEMPTED — proving chatSurfaceExempt
+    // scoping didn't overcorrect into blanket strictness.
+    const synthetic: CapabilityPlanner<unknown, unknown> = {
+      plan(state) {
+        const ctx = (
+          state as { ctx?: { staffId?: string | null } }
+        ).ctx;
+        const isStaff = (ctx?.staffId ?? null) !== null;
+        return {
+          visibleReadTools: [],
+          allowedIntents: isStaff ? ["payment.method.switch"] : [],
+        };
+      },
+    };
+    const problems = toolRosterDrift(listIbatexasToolPacks(), PACK_INTENT_UNION, {
+      planners: [...IBATEXAS_COMPOSED_CAPABILITY_PLANNERS, synthetic],
+      onWarn: () => {},
+      chatSurfacedKinds: CHAT_SURFACED_KINDS,
+    });
+    expect(problems.some((p) => p.includes("payment.method.switch"))).toBe(false);
   });
 });
 
