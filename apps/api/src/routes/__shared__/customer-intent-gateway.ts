@@ -46,7 +46,6 @@ import {
   adjudicateAndAudit,
   buildAuditRecord,
   buildEnvelope,
-  isIntentEnvelope,
   localizeDecision,
   type AuditSink,
   type Decision,
@@ -54,6 +53,18 @@ import {
 } from "@adjudicate/core";
 import { adjudicate, type PolicyBundle } from "@adjudicate/core/kernel";
 import { randomUUID } from "node:crypto";
+import {
+  STRUCTURAL_REJECTION_CODE,
+  isStructurallyMalformed,
+} from "@ibatexas/domain";
+
+// Re-export so existing importers (kernel-bootstrap.ts, this file's own
+// tests) keep working unchanged — the canonical definition now lives in
+// `@ibatexas/domain` (see `envelope-structural-gate.ts` there) so it can be
+// reused by BOTH this HTTP-plane gateway and the `withAdjudicate`
+// command-service chokepoint (packages/domain depends on nothing in
+// apps/api, so the shared definition has to live on that side).
+export { STRUCTURAL_REJECTION_CODE, isStructurallyMalformed };
 
 // ── FE-T04 — canonical structural boundary gate ──────────────────────────
 //
@@ -81,19 +92,6 @@ import { randomUUID } from "node:crypto";
 // The gate can only fire on a value that bypassed construction entirely
 // (see `apps/api/src/routes/test-envelope-ingress.ts`, JOURNEY-008's
 // test-plane-only raw-envelope ingress).
-
-/** Stable error code surfaced on a structural-boundary rejection. */
-export const STRUCTURAL_REJECTION_CODE = "envelope_malformed" as const;
-
-/**
- * The named, asserted gate: `true` iff `envelope` is NOT a well-formed
- * `IntentEnvelope` per the kernel's own `isIntentEnvelope` predicate.
- * Exported so the boot-time self-check (`kernel-bootstrap.ts`) and tests
- * can exercise it directly without going through the full gateway.
- */
-export function isStructurallyMalformed(envelope: unknown): boolean {
-  return !isIntentEnvelope(envelope);
-}
 
 async function emitStructuralRejectionAudit(
   envelope: unknown,

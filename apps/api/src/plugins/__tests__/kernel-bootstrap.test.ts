@@ -16,6 +16,7 @@ import { paymentsPixPack } from "@adjudicate/pack-payments-pix"
 import { reservationsPack } from "@ibatexas/pack-reservations"
 import { whatsappPack } from "@ibatexas/pack-whatsapp"
 import { KNOWN_INTENT_KINDS, LOYALTY_INTENT_KINDS } from "@ibatexas/intent-kinds"
+import { withAdjudicate } from "@ibatexas/domain"
 import { runCustomerIntent } from "../../routes/__shared__/customer-intent-gateway.js"
 import {
   assertPackCoverage,
@@ -23,6 +24,7 @@ import {
   assertAuditPostgresReady,
   AuditPostgresPreflightError,
   assertEnvelopeBoundaryGateWired,
+  assertCommandServiceBoundaryGateWired,
   EnvelopeBoundaryGateNotWiredError,
 } from "../kernel-bootstrap.js"
 
@@ -186,5 +188,68 @@ describe("assertEnvelopeBoundaryGateWired", () => {
     await expect(assertEnvelopeBoundaryGateWired(wrongGate)).rejects.toThrow(
       EnvelopeBoundaryGateNotWiredError,
     )
+  })
+})
+
+// ── FE-T04: command-service (with-adjudicate) structural boundary gate ───────
+//
+// The OTHER convergence point: `withAdjudicate` (@ibatexas/domain) is the
+// command-service chokepoint every ops/admin/subscriber/job/LLM-tool
+// mutation flows through. Same dependency-injection idiom as
+// `assertEnvelopeBoundaryGateWired` above — the default (no-arg) call always
+// exercises the REAL, live `withAdjudicate`.
+
+describe("assertCommandServiceBoundaryGateWired", () => {
+  it("passes against the REAL withAdjudicate — proves the structural gate is wired on the live path", async () => {
+    await expect(assertCommandServiceBoundaryGateWired()).resolves.toBeUndefined()
+  })
+
+  it("throws EnvelopeBoundaryGateNotWiredError when the runner skips the structural gate entirely", async () => {
+    // Stand-in for what `withAdjudicate` would do if the gate call were
+    // deleted: it just runs the executor unconditionally regardless of
+    // envelope shape.
+    const gateRemoved = (async (
+      envelope: Parameters<typeof withAdjudicate>[0],
+      _state: unknown,
+      _policy: unknown,
+      executor: (payload: unknown) => Promise<unknown>,
+    ) => {
+      const result = await executor((envelope as { payload?: unknown }).payload)
+      return { decision: { kind: "EXECUTE", basis: [] }, result }
+    }) as unknown as typeof withAdjudicate
+
+    await expect(
+      assertCommandServiceBoundaryGateWired(gateRemoved),
+    ).rejects.toThrow(EnvelopeBoundaryGateNotWiredError)
+  })
+
+  it("throws when the runner refuses with the WRONG code (structural gate not what fired)", async () => {
+    const wrongGate = (async () => ({
+      decision: {
+        kind: "REFUSE",
+        refusal: { kind: "SECURITY", code: "some_other_code", userFacing: "x" },
+        basis: [],
+      },
+    })) as unknown as typeof withAdjudicate
+
+    await expect(
+      assertCommandServiceBoundaryGateWired(wrongGate),
+    ).rejects.toThrow(EnvelopeBoundaryGateNotWiredError)
+  })
+
+  it("throws when the runner EXECUTEs the malformed envelope (executor ran)", async () => {
+    const executedAnyway = (async (
+      _envelope: unknown,
+      _state: unknown,
+      _policy: unknown,
+      executor: (payload: unknown) => Promise<unknown>,
+    ) => {
+      const result = await executor(undefined)
+      return { decision: { kind: "EXECUTE", basis: [] }, result }
+    }) as unknown as typeof withAdjudicate
+
+    await expect(
+      assertCommandServiceBoundaryGateWired(executedAnyway),
+    ).rejects.toThrow(EnvelopeBoundaryGateNotWiredError)
   })
 })

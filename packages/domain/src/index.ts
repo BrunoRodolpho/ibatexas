@@ -249,6 +249,15 @@ export {
   type AdjudicatedResult,
   type WithAdjudicateOptions,
 } from "./services/__shared__/with-adjudicate.js"
+
+// FE-T04 — canonical isIntentEnvelope structural boundary gate. Reused by
+// `withAdjudicate` above AND by the customer-plane HTTP gateway
+// (apps/api/src/routes/__shared__/customer-intent-gateway.ts), which depends
+// on this package (never the reverse) so this is the single source of truth.
+export {
+  STRUCTURAL_REJECTION_CODE,
+  isStructurallyMalformed,
+} from "./services/__shared__/envelope-structural-gate.js"
 export {
   createOrderQueryService,
   type OrderQueryService,

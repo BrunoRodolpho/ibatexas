@@ -30,7 +30,13 @@
 //      gate (customer-intent-gateway.ts) actually rejects it. Refuses to
 //      boot if that gate has been silently removed or bypassed.
 //
-//   6. `bootstrapKernel(server)` — called from `index.ts` after
+//   6. `assertCommandServiceBoundaryGateWired()` (FE-T04) — called from
+//      `bootstrapKernel()`. Same self-check on the OTHER convergence point:
+//      drives a synthetic malformed envelope through the real
+//      `withAdjudicate` (@ibatexas/domain) — the command-service chokepoint
+//      every ops/admin/subscriber/job/LLM-tool mutation flows through.
+//
+//   7. `bootstrapKernel(server)` — called from `index.ts` after
 //      `buildServer()` returns, before `server.listen()`. Composes the
 //      above into the boot sequence.
 
@@ -73,7 +79,7 @@ import {
   setAuditSinkFailureHook,
   setAuditSinkSpillSizeHook,
 } from "@ibatexas/audit-sink"
-import { prisma } from "@ibatexas/domain"
+import { prisma, withAdjudicate } from "@ibatexas/domain"
 import * as Sentry from "@sentry/node"
 import { publishNatsEvent } from "@ibatexas/nats-client"
 import { Registry } from "prom-client"
@@ -441,6 +447,38 @@ export async function assertEnvelopeBoundaryGateWired(
   }
 }
 
+// `withAdjudicate` (@ibatexas/domain) is the OTHER convergence point the
+// structural gate covers — the command-service chokepoint every
+// ops/admin/subscriber/job/LLM-tool mutation flows through. Same idiom as
+// `assertEnvelopeBoundaryGateWired` above: drive a synthetic malformed
+// envelope through the REAL exported `withAdjudicate` and fail boot if the
+// executor ran or the decision isn't the expected structural REFUSE.
+// `runner` is dependency-injectable ONLY for the "broken wiring" unit test.
+export async function assertCommandServiceBoundaryGateWired(
+  runner: typeof withAdjudicate = withAdjudicate,
+): Promise<void> {
+  let executed = false
+  const outcome = await runner(
+    { notAnEnvelope: true } as unknown as IntentEnvelope,
+    {},
+    ENVELOPE_GATE_SELF_CHECK_POLICY,
+    async () => {
+      executed = true
+      return {}
+    },
+  )
+  const code =
+    outcome.decision.kind === "REFUSE" ? outcome.decision.refusal.code : undefined
+  if (executed || outcome.decision.kind !== "REFUSE" || code !== STRUCTURAL_REJECTION_CODE) {
+    throw new EnvelopeBoundaryGateNotWiredError(
+      `[kernel-bootstrap] command-service structural boundary gate self-check failed — ` +
+        `expected decision.kind="REFUSE" refusal.code="${STRUCTURAL_REJECTION_CODE}" with the executor never run, ` +
+        `got decision.kind=${outcome.decision.kind} code=${JSON.stringify(code)} executed=${executed}. ` +
+        `The isStructurallyMalformed gate in with-adjudicate.ts (@ibatexas/domain) appears to be unwired (FE-T04).`,
+    )
+  }
+}
+
 // ── bootstrapKernel ─────────────────────────────────────────────────────────
 
 /**
@@ -546,7 +584,26 @@ export async function bootstrapKernel(server: FastifyInstance): Promise<void> {
     throw err
   }
 
-  // 5. Start the defer-pending gauge poll (W3-5). Real kernel behavior;
+  // 5. FE-T04 — same self-check, on the OTHER convergence point: the
+  //    command-service chokepoint (`withAdjudicate`, @ibatexas/domain) every
+  //    ops/admin/subscriber/job/LLM-tool mutation flows through.
+  try {
+    await assertCommandServiceBoundaryGateWired()
+    server.log.info(
+      { event: "kernel.bootstrap.command_service_boundary_gate_wired" },
+      "[kernel-bootstrap] command-service structural boundary gate verified",
+    )
+  } catch (err) {
+    if (err instanceof EnvelopeBoundaryGateNotWiredError) {
+      server.log.fatal(
+        { err },
+        "[kernel-bootstrap] command-service boundary gate self-check failed — refusing to boot",
+      )
+    }
+    throw err
+  }
+
+  // 6. Start the defer-pending gauge poll (W3-5). Real kernel behavior;
   //    surfaces the count of `defer:pending:*` Redis keys.
   const recorder = getKernelMetricsRecorder()
   startDeferPendingGaugePoll(recorder, server.log)
