@@ -445,7 +445,11 @@ describe("buildLanguageEngineAuditMetadata — payment.refund.issue (FE-T10)", (
 // ── FE-T12 — order.checkout.create (orders governance-tier, customer-plane) ─
 
 describe("buildLanguageEngineAuditMetadata — order.checkout.create (FE-T12)", () => {
-  it("derives ExtractionIR carrying ONLY {paymentMethod} — no cartId/pixDetails, model/untrusted", () => {
+  it("derives ExtractionIR carrying ONLY {payment_method} (the WIRE name) — no cartId/pixDetails, model/untrusted", () => {
+    // The record() helper builds the RESOLVED/POST-HYDRATION envelope
+    // payload — `paymentMethod` (internal) is what resolve-and-assemble.ts's
+    // mapCheckoutPaymentMethodWireField renames the model's wire
+    // `payment_method` TO, before the kernel/guards ever see it.
     const meta = buildLanguageEngineAuditMetadata(
       record(
         "order.checkout.create",
@@ -455,13 +459,13 @@ describe("buildLanguageEngineAuditMetadata — order.checkout.create (FE-T12)", 
     );
     const le = languageEngineOf(meta);
     expect(le.extractionIR.capability).toBe("order.checkout.create");
-    expect(le.extractionIR.payload).toEqual({ paymentMethod: "pix" });
+    expect(le.extractionIR.payload).toEqual({ payment_method: "pix" });
     expect(le.extractionIR.provenance).toEqual({
-      paymentMethod: { producer: "model", confidence: "explicit", trust: "untrusted" },
+      payment_method: { producer: "model", confidence: "explicit", trust: "untrusted" },
     });
   });
 
-  it("a checkout with NO paymentMethod mentioned (team-lead review: the field is optional) derives an EMPTY extractionIR payload — never a fabricated method", () => {
+  it("a checkout with NO payment_method mentioned (team-lead review: the field is optional) derives an EMPTY extractionIR payload — never a fabricated method", () => {
     const meta = buildLanguageEngineAuditMetadata(
       record(
         "order.checkout.create",
@@ -474,7 +478,7 @@ describe("buildLanguageEngineAuditMetadata — order.checkout.create (FE-T12)", 
     expect(le.hydratedIntentIR.payload).toEqual({ cartId: "cart_1" });
   });
 
-  it("derives HydratedIntentIR: cartId=resolver/AUTHORITATIVE (session-derived, never a guess), paymentMethod stays model/untrusted", () => {
+  it("derives HydratedIntentIR: cartId=resolver/AUTHORITATIVE (session-derived, never a guess), payment_method stays model/untrusted", () => {
     const meta = buildLanguageEngineAuditMetadata(
       record(
         "order.checkout.create",
@@ -483,13 +487,13 @@ describe("buildLanguageEngineAuditMetadata — order.checkout.create (FE-T12)", 
       ),
     );
     const le = languageEngineOf(meta);
-    expect(le.hydratedIntentIR.payload).toEqual({ paymentMethod: "pix", cartId: "cart_1" });
+    expect(le.hydratedIntentIR.payload).toEqual({ payment_method: "pix", cartId: "cart_1" });
     expect(le.hydratedIntentIR.provenance.cartId).toEqual({
       producer: "resolver",
       confidence: "resolved",
       trust: "authoritative",
     });
-    expect(le.hydratedIntentIR.provenance.paymentMethod).toEqual({
+    expect(le.hydratedIntentIR.provenance.payment_method).toEqual({
       producer: "model",
       confidence: "explicit",
       trust: "untrusted",

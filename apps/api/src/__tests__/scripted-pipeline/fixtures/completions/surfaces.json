@@ -56,7 +56,7 @@
                   "payload": {
                     "type": "object",
                     "properties": {
-                      "paymentMethod": {
+                      "payment_method": {
                         "type": "string",
                         "enum": [
                           "pix",

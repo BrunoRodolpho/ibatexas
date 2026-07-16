@@ -71,10 +71,7 @@
 // (`session:<sessionId>` — conversation history, apps/api/src/session/
 // store.ts; `claustrum:session:<sessionId>` — the parked/deferred envelope,
 // apps/api/src/claustrum-bootstrap.ts's `claustrumSessionKey`) is keyed by
-// the CLIENT-SUPPLIED `sessionId`, not by `customerId`. This driver reuses
-// ONE seeded customer identity AND one `sessionId` across the whole run
-// (mirroring the ops driver's shape exactly, per FE-T12's "structure for
-// reuse" — T11/T13/T14 corpora should look the same). `clearHistory` MUST
+// the CLIENT-SUPPLIED `sessionId`, not by `customerId`. `clearHistory` MUST
 // clear BOTH keys before every case: a lingering park from case N that case
 // N+1's utterance lexically confirms (the same pt-BR affirmative-lexicon
 // hazard FE-T10 found on the ops plane) would EXECUTE a real mutation on the
@@ -82,7 +79,42 @@
 // A `clearHistory` failure is NEVER swallowed (mirrors `createOpsHistoryClearer`'s
 // loud warn-once + rethrow + `isolationFailures` attribution) — a silently
 // degraded customer-plane run must never read as trustworthy either.
+//
+// SESSION-PER-CASE ROTATION (team-lead ruling, post-live-calibration review):
+// this driver originally reused ONE `sessionId` across the whole run
+// (mirroring the ops driver's one reused `admin:<staffId>` identity). Live
+// calibration disproved that shape: each corpus case is an independent,
+// single-turn scenario, so a FRESH session per case is the semantically
+// correct calibration unit, not an optimization — it closes the stale-park
+// cross-case contamination hazard above categorically (no shared
+// `session:<id>`/`claustrum:session:<id>` state can leak between cases when
+// every case gets its own id) rather than relying solely on `clearHistory`
+// to race it closed. `clearHistory` is KEPT as belt-and-braces (a fresh
+// UUID could theoretically collide, and it still guards a mid-run retry of
+// the SAME generated id) — it is not made redundant by rotation, just no
+// longer the sole isolation mechanism. `sessionId` is therefore generated
+// PER CASE inside the loop (see `sessionIdFactory`, default `randomUUID`);
+// the caller supplies a `scopeForSession(sessionId)` factory instead of one
+// static `scope`, since the audit-reader scope (`hashedSessionId(...)`) must
+// be recomputed for each case's fresh id.
+//
+// KNOWN HARNESS FAILURE SIGNATURE — `token_budget.exhausted`: a live run
+// against the seeded calibration customer can REFUSE with
+// `refusal_code: 'token_budget.exhausted'` (compose-policy-packs.ts's
+// `sessionTokenBudgetGuard`, F4/ADR-120) partway through a long corpus. Do
+// NOT mistake this for an extraction miss — check `intent_audit.refusal_code`
+// before attributing a run of failures to the model. IMPORTANT: this
+// driver's session-per-case rotation does NOT reset that guard's counter —
+// `sessionTokenKey(channel, customerId)` (resolve-and-assemble.ts) is keyed
+// by `customerId`, not by `sessionId`, so every case in a run still meters
+// onto the ONE seeded calibration customer's cumulative total regardless of
+// how many fresh sessionIds this driver mints. A long enough run against a
+// single seeded customer can still exhaust the budget; this is a REAL
+// governance guard doing its job (never patched or exempted for harness
+// convenience — team-lead ruling), so the mitigation is bounding a single
+// run's total turns per customer, not defeating the counter.
 
+import { randomUUID } from "node:crypto"
 import { evaluateExpectPayload } from "./expect-payload.js"
 import type { ExtractionCorpusFile } from "./schema.js"
 import type { AccuracyCaseResult, IsolationFailure } from "./accuracy.js"
@@ -339,24 +371,33 @@ export interface DriveExtractionCorpusOverCustomerChatOptions {
   /** The `Cookie` header value (customer JWT — `cookieHeader(mintCustomerToken(...))`). */
   customerCookie: string
   /**
-   * The ONE web session (client-chosen UUID) reused for the whole run —
-   * mirrors the ops driver's single reused `admin:<staffId>` identity (see
-   * this module's header, "structure for reuse"). Every case POSTs
-   * `{sessionId, message, channel:"web"}` under this SAME sessionId; it is
-   * ALSO the key `clearHistory` clears before each case.
+   * Mints a fresh web sessionId for EACH case (module header,
+   * "SESSION-PER-CASE ROTATION") — never one id reused for the whole run.
+   * Defaults to `randomUUID`; injectable so tests get deterministic,
+   * enumerable ids instead of asserting against opaque UUIDs.
    */
-  sessionId: string
-  /** Reads back the driven turn's materialized IR (the FE-2 primary assertion seam). */
+  sessionIdFactory?: () => string
+  /**
+   * Reads back the driven turn's materialized IR (the FE-2 primary
+   * assertion seam).
+   */
   audit: AuditReader
-  /** The audit scope every case's records are read through — `{sessionIds: [hashedAuditSessionId(sessionId, ...)]}` (the customer/web actor's `sessionId` rides the envelope UNPREFIXED, unlike ops's `admin:<staffId>` — see the module header). */
-  scope: RunSessionScope
+  /**
+   * Computes the audit scope for a given case's freshly-minted sessionId —
+   * `(sessionId) => ({sessionIds: [hashedAuditSessionId(sessionId, ...)]})`
+   * (the customer/web actor's `sessionId` rides the envelope UNPREFIXED,
+   * unlike ops's `admin:<staffId>` — see the module header). A FACTORY,
+   * not a static `RunSessionScope`, because rotation means every case's
+   * scope differs.
+   */
+  scopeForSession: (sessionId: string) => RunSessionScope
   /** Injectable fetch (tests default to a scripted double). */
   fetchImpl?: typeof fetch
   /**
    * Clears BOTH the web conversation-history key (`session:<sessionId>`) AND
    * the claustrum parked-envelope key (`claustrum:session:<sessionId>`)
-   * before each case — see the module header's CONFIRM-KIND SEMANTICS +
-   * ISOLATION notes. Optional: a no-op default tolerates an environment
+   * before each case — belt-and-braces alongside session-per-case rotation
+   * (module header). Optional: a no-op default tolerates an environment
    * without Redis wired, at the cost of the isolation guarantee.
    */
   clearHistory?: (sessionId: string) => Promise<void>
@@ -418,6 +459,7 @@ export async function driveExtractionCorpusOverCustomerChat(
   opts: DriveExtractionCorpusOverCustomerChatOptions,
 ): Promise<DriveExtractionCorpusResult> {
   const fetchImpl = opts.fetchImpl ?? (globalThis.fetch as typeof fetch)
+  const sessionIdFactory = opts.sessionIdFactory ?? randomUUID
   const settleTimeoutMs = opts.settleTimeoutMs ?? DEFAULT_SETTLE_TIMEOUT_MS
   const settlePollMs = opts.settlePollMs ?? DEFAULT_SETTLE_POLL_MS
   const interCaseDelayMs = opts.interCaseDelayMs ?? DEFAULT_INTER_CASE_DELAY_MS
@@ -430,13 +472,20 @@ export async function driveExtractionCorpusOverCustomerChat(
     for (const kase of file.cases) {
       try {
         const startedAt = Date.now()
-        // Same 2s clock-skew slack as the ops driver, same rationale: the
-        // reused sessionId has prior activity within this run, so an
-        // unscoped fetch could match a stale record on the first poll.
+        // SESSION-PER-CASE ROTATION (module header): a fresh sessionId (and
+        // its derived scope) for EVERY case — never one id reused for the
+        // whole run. `seenIntentHashes` is kept as defense-in-depth, but a
+        // rotated scope structurally cannot match a PRIOR case's record —
+        // different sessionId -> different hashedSessionId -> the audit
+        // reader's scope filter excludes it outright.
+        const sessionId = sessionIdFactory()
+        const scope = opts.scopeForSession(sessionId)
+        // Same 2s clock-skew slack as the ops driver, same rationale: never
+        // exclude the record THIS case is about to produce.
         const caseSince = new Date(startedAt - 2_000).toISOString()
         if (opts.clearHistory !== undefined) {
           try {
-            await opts.clearHistory(opts.sessionId)
+            await opts.clearHistory(sessionId)
           } catch (err) {
             isolationFailures.push({
               capability: file.capability,
@@ -450,7 +499,7 @@ export async function driveExtractionCorpusOverCustomerChat(
           fetchImpl,
           opts.apiBaseUrl,
           opts.customerCookie,
-          opts.sessionId,
+          sessionId,
           kase.utterance,
         )
         if (!post.ok) {
@@ -475,7 +524,7 @@ export async function driveExtractionCorpusOverCustomerChat(
           | Awaited<ReturnType<AuditReader["fetchRecords"]>>[number]
           | undefined
         for (;;) {
-          const records = await opts.audit.fetchRecords(opts.scope, {
+          const records = await opts.audit.fetchRecords(scope, {
             intentKind: file.capability,
             since: caseSince,
           })

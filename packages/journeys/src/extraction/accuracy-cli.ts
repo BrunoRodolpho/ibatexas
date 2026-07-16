@@ -15,7 +15,7 @@
 // — see accuracy-runner.ts's header for the full design (fire-and-forget
 // route, confirm-kind semantics, session-scoped isolation).
 
-import { createHash, randomUUID } from "node:crypto"
+import { createHash } from "node:crypto"
 import { loadExtractionCorpus } from "./load.js"
 import type { ExtractionCorpusFile } from "./schema.js"
 import {
@@ -287,24 +287,25 @@ export async function runExtractionAccuracyCli(
         throw new ExtractionAccuracyCliError("JWT_SECRET is missing from the env (.env.test)")
       }
       const { cookie } = await resolveCustomerCookie(domain, jwtSecret)
-      // ONE reused sessionId for the whole customer-plane run (FE-T12 —
-      // "structure for reuse", mirrors the ops driver's single reused
-      // admin:<staffId> identity). The customer/web actor's sessionId rides
-      // the envelope UNPREFIXED (apps/api/src/claustrum/ibatexas-planner.ts:
+      onProgress(`customer: resolved seeded ${ACCURACY_RUN_CUSTOMER_PHONE}`)
+
+      // FE-T12 (team-lead ruling, post-live-calibration review): a FRESH
+      // sessionId is minted PER CASE by the driver itself
+      // (`sessionIdFactory`, default `randomUUID` — accuracy-runner.ts's
+      // "SESSION-PER-CASE ROTATION" note), never one id reused for the
+      // whole run. This CLI only supplies the scope-derivation function —
+      // the customer/web actor's sessionId rides the envelope UNPREFIXED
+      // (apps/api/src/claustrum/ibatexas-planner.ts:
       // `actor: { sessionId: state.conversationId }`, which IS the raw web
       // session id) — unlike ops's `admin:<staffId>` prefix.
-      const sessionId = randomUUID()
-      onProgress(
-        `customer: resolved seeded ${ACCURACY_RUN_CUSTOMER_PHONE}, session ${sessionId}`,
-      )
-
       const clearHistory = createCustomerHistoryClearer(onProgress)
       const cust = await driveExtractionCorpusOverCustomerChat(customerFiles, {
         apiBaseUrl,
         customerCookie: cookie,
-        sessionId,
         audit,
-        scope: { sessionIds: [hashedSessionId(sessionId, redactSecret)] },
+        scopeForSession: (sessionId) => ({
+          sessionIds: [hashedSessionId(sessionId, redactSecret)],
+        }),
         clearHistory,
         onProgress,
       })

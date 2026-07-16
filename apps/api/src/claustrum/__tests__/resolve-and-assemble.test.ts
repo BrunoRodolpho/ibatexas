@@ -313,6 +313,90 @@ describe("resolve-and-assemble — cart entity loads", () => {
   });
 });
 
+// ── FE-T12 (team-lead review) — mapCheckoutPaymentMethodWireField ──────────
+// The wire→internal rename that lets order.checkout.create's extraction
+// schema show the model `payment_method` (snake_case, the field name a live
+// calibration proved the 4B reliably produces) while
+// `validatePaymentMethod`/`OrderCheckoutCreatePayload` (pack-orders,
+// BYTE-UNTOUCHED) keep reading `paymentMethod` unchanged.
+describe("resolve-and-assemble — FE-T12 checkout payment_method wire rename", () => {
+  it("wire key present: payload.payment_method is renamed to payload.paymentMethod, and the wire key does NOT survive", async () => {
+    redisGet = async (k) => (k === "cart:active:session:conv-1" ? "cart_abc" : null);
+    medusaStoreFetch = async () => ({
+      cart: { items: [{ variant_id: "var_1", quantity: 1, unit_price: 10 }], total: 10, completed_at: null },
+    });
+    const { payload, ctx } = await resolveAndAssemble({
+      kind: "order.checkout.create",
+      payload: { payment_method: "pix" },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect(payload.paymentMethod).toBe("pix");
+    expect(payload).not.toHaveProperty("payment_method");
+    // End-to-end: the renamed key reaches ctx.paymentMethod (buildCartCtx),
+    // the SAME field `validatePaymentMethod` (pack-orders/src/policies.ts)
+    // reads — proving the rename actually unblocks the existing guard.
+    expect(ctx.paymentMethod).toBe("pix");
+  });
+
+  it("internal key absent from the wire: a payload with ONLY payment_method never carries paymentMethod before the rename runs (structural — the extraction schema never declares it)", async () => {
+    redisGet = async () => "cart_abc";
+    medusaStoreFetch = async () => ({ cart: { items: [], total: 0, completed_at: null } });
+    const { payload } = await resolveAndAssemble({
+      kind: "order.checkout.create",
+      payload: { payment_method: "card" },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    // The ONLY way `paymentMethod` appears on the resolved payload is via
+    // this rename — there is no OTHER path that could have produced it.
+    expect(payload.paymentMethod).toBe("card");
+  });
+
+  it("no payment_method mentioned: the payload passes through with neither key — never a fabricated method", async () => {
+    redisGet = async () => "cart_abc";
+    medusaStoreFetch = async () => ({ cart: { items: [], total: 0, completed_at: null } });
+    const { payload } = await resolveAndAssemble({
+      kind: "order.checkout.create",
+      payload: {},
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect(payload).not.toHaveProperty("paymentMethod");
+    expect(payload).not.toHaveProperty("payment_method");
+  });
+
+  it("defensive: if paymentMethod is ALREADY set (never happens on the real model-facing path), it is never overwritten by a co-present payment_method", async () => {
+    redisGet = async () => "cart_abc";
+    medusaStoreFetch = async () => ({ cart: { items: [], total: 0, completed_at: null } });
+    const { payload } = await resolveAndAssemble({
+      kind: "order.checkout.create",
+      payload: { paymentMethod: "cash", payment_method: "pix" },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect(payload.paymentMethod).toBe("cash");
+  });
+
+  it("kind-gated: a DIFFERENT capability's payload carrying payment_method is left alone (the rename is order.checkout.create-only)", async () => {
+    orderGetById = async () => ({ id: "order_9", customerId: "c1", fulfillmentStatus: "confirmed" });
+    orderListByCustomer = async () => ({ orders: [{ id: "order_9" }], count: 1 });
+    const { payload } = await resolveAndAssemble({
+      kind: "order.cancel",
+      payload: { payment_method: "pix" },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect(payload.payment_method).toBe("pix");
+    expect(payload).not.toHaveProperty("paymentMethod");
+  });
+});
+
 // ── F3/L1 (D-014) — thread resolved ids from ctx onto the executor payload ────
 // Without this the tool receives envelope.payload lacking cartId and throws a
 // ZodError after the kernel EXECUTEs — the "can't add an item by message" gap.

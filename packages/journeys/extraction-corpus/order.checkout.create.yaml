@@ -38,12 +38,16 @@
 #
 # Safety/governance properties this corpus proves (FE-T12 acceptance
 # criteria):
-#   1. `paymentMethod` extracts correctly across register diversity for all
-#      three enum values (pix/card/cash), and NEVER any other value.
+#   1. `payment_method` (the wire field name — team-lead ruling, snake_case
+#      per a 100%-stable live-calibration bias, mapped to the internal
+#      `paymentMethod` key during hydration; see
+#      order-checkout-create.schema.ts) extracts correctly across register
+#      diversity for all three enum values (pix/card/cash), and NEVER any
+#      other value.
 #   2. PII (cpf/email/phone) mentioned alongside a checkout request is NEVER
 #      model-populated — `extractionIR`'s default `payloadExactKeys: true`
 #      structurally proves the payload never carries anything beyond
-#      `paymentMethod` (the schema has no PII slot regardless).
+#      `payment_method` (the schema has no PII slot regardless).
 #   3. The checkout money boundary (`confirmLargeTicket`/
 #      `refuseAmountAboveCap`, pack-orders/src/policies.ts, BYTE-UNTOUCHED by
 #      this ticket) still routes >=R$1000 to REQUEST_CONFIRMATION and
@@ -51,7 +55,7 @@
 #      (`CONFIRM_LARGE_TICKET_THRESHOLD_CENTAVOS` = 100_000 centavos = R$1000,
 #      cap = 10x that = R$10000) are read directly from
 #      `@ibatexas/types`' `MONEY_BAND_1000_CENTAVOS` (FE-T02 single-source).
-#   4. `paymentMethod` is OPTIONAL (team-lead review) — the model must NEVER
+#   4. `payment_method` is OPTIONAL (team-lead review) — the model must NEVER
 #      fabricate a method when the customer names none, including when
 #      EXPLICITLY declining to choose ("escolhe você por mim"). Absence
 #      flows to the existing, unmodified `validatePaymentMethod` guard, which
@@ -68,9 +72,9 @@ cases:
     expectPayload:
       extractionIR:
         payload:
-          paymentMethod: pix
+          payment_method: pix
         provenanceTrust:
-          paymentMethod: untrusted
+          payment_method: untrusted
 
   - id: pix-colloquial-manda-o-pix
     utterance: pode finalizar, manda o pix aí
@@ -78,9 +82,9 @@ cases:
     expectPayload:
       extractionIR:
         payload:
-          paymentMethod: pix
+          payment_method: pix
         provenanceTrust:
-          paymentMethod: untrusted
+          payment_method: untrusted
 
   - id: pix-question-form
     utterance: dá pra fechar pagando com pix?
@@ -88,9 +92,9 @@ cases:
     expectPayload:
       extractionIR:
         payload:
-          paymentMethod: pix
+          payment_method: pix
         provenanceTrust:
-          paymentMethod: untrusted
+          payment_method: untrusted
 
   - id: pix-formal
     utterance: Por favor, finalize meu pedido. O pagamento será via PIX.
@@ -98,9 +102,9 @@ cases:
     expectPayload:
       extractionIR:
         payload:
-          paymentMethod: pix
+          payment_method: pix
         provenanceTrust:
-          paymentMethod: untrusted
+          payment_method: untrusted
 
   - id: pix-brusque
     utterance: fecha aí, pix
@@ -108,9 +112,9 @@ cases:
     expectPayload:
       extractionIR:
         payload:
-          paymentMethod: pix
+          payment_method: pix
         provenanceTrust:
-          paymentMethod: untrusted
+          payment_method: untrusted
 
   - id: pix-context-embedded
     utterance: já escolhi tudo, pode fechar via pix
@@ -118,19 +122,19 @@ cases:
     expectPayload:
       extractionIR:
         payload:
-          paymentMethod: pix
+          payment_method: pix
         provenanceTrust:
-          paymentMethod: untrusted
+          payment_method: untrusted
 
   - id: pix-synonym-chave-pix
     utterance: finaliza a compra, pago pela chave pix
-    note: Synonym phrasing ("chave pix" instead of bare "pix") — still means paymentMethod pix.
+    note: Synonym phrasing ("chave pix" instead of bare "pix") — still means payment_method pix.
     expectPayload:
       extractionIR:
         payload:
-          paymentMethod: pix
+          payment_method: pix
         provenanceTrust:
-          paymentMethod: untrusted
+          payment_method: untrusted
 
   - id: card-direct-cartao
     utterance: quero fechar o pedido no cartão
@@ -138,29 +142,29 @@ cases:
     expectPayload:
       extractionIR:
         payload:
-          paymentMethod: card
+          payment_method: card
         provenanceTrust:
-          paymentMethod: untrusted
+          payment_method: untrusted
 
   - id: card-credito-synonym
     utterance: fecha o pedido, vou pagar no crédito
-    note: Synonym phrasing ("crédito" — credit) still means paymentMethod card.
+    note: Synonym phrasing ("crédito" — credit) still means payment_method card.
     expectPayload:
       extractionIR:
         payload:
-          paymentMethod: card
+          payment_method: card
         provenanceTrust:
-          paymentMethod: untrusted
+          payment_method: untrusted
 
   - id: card-debito-synonym
     utterance: pode finalizar no débito, por favor
-    note: Synonym phrasing ("débito" — debit) still means paymentMethod card.
+    note: Synonym phrasing ("débito" — debit) still means payment_method card.
     expectPayload:
       extractionIR:
         payload:
-          paymentMethod: card
+          payment_method: card
         provenanceTrust:
-          paymentMethod: untrusted
+          payment_method: untrusted
 
   - id: card-formal
     utterance: Solicito a finalização do pedido com pagamento no cartão de crédito.
@@ -168,9 +172,9 @@ cases:
     expectPayload:
       extractionIR:
         payload:
-          paymentMethod: card
+          payment_method: card
         provenanceTrust:
-          paymentMethod: untrusted
+          payment_method: untrusted
 
   - id: card-question-form
     utterance: consegue fechar meu pedido no cartão?
@@ -178,9 +182,9 @@ cases:
     expectPayload:
       extractionIR:
         payload:
-          paymentMethod: card
+          payment_method: card
         provenanceTrust:
-          paymentMethod: untrusted
+          payment_method: untrusted
 
   - id: card-brusque
     utterance: fecha, no cartão
@@ -188,9 +192,9 @@ cases:
     expectPayload:
       extractionIR:
         payload:
-          paymentMethod: card
+          payment_method: card
         provenanceTrust:
-          paymentMethod: untrusted
+          payment_method: untrusted
 
   - id: cash-direct-dinheiro
     utterance: quero fechar o pedido, pago em dinheiro
@@ -198,9 +202,9 @@ cases:
     expectPayload:
       extractionIR:
         payload:
-          paymentMethod: cash
+          payment_method: cash
         provenanceTrust:
-          paymentMethod: untrusted
+          payment_method: untrusted
 
   - id: cash-na-entrega
     utterance: finaliza aí, pago na entrega, em espécie
@@ -208,9 +212,9 @@ cases:
     expectPayload:
       extractionIR:
         payload:
-          paymentMethod: cash
+          payment_method: cash
         provenanceTrust:
-          paymentMethod: untrusted
+          payment_method: untrusted
 
   - id: cash-formal
     utterance: Por gentileza, finalize o pedido. Pagarei em dinheiro no momento da entrega.
@@ -218,9 +222,9 @@ cases:
     expectPayload:
       extractionIR:
         payload:
-          paymentMethod: cash
+          payment_method: cash
         provenanceTrust:
-          paymentMethod: untrusted
+          payment_method: untrusted
 
   - id: cash-question-form
     utterance: dá pra pagar em dinheiro quando chegar?
@@ -228,9 +232,9 @@ cases:
     expectPayload:
       extractionIR:
         payload:
-          paymentMethod: cash
+          payment_method: cash
         provenanceTrust:
-          paymentMethod: untrusted
+          payment_method: untrusted
 
   - id: cash-brusque
     utterance: fecha o pedido, dinheiro
@@ -238,9 +242,9 @@ cases:
     expectPayload:
       extractionIR:
         payload:
-          paymentMethod: cash
+          payment_method: cash
         provenanceTrust:
-          paymentMethod: untrusted
+          payment_method: untrusted
 
   - id: cash-context-embedded
     utterance: não tenho cartão aqui não, fecha no dinheiro mesmo
@@ -248,9 +252,9 @@ cases:
     expectPayload:
       extractionIR:
         payload:
-          paymentMethod: cash
+          payment_method: cash
         provenanceTrust:
-          paymentMethod: untrusted
+          payment_method: untrusted
 
   # ── Adversarial / safety cases (FE-T12 acceptance criteria 2: PII fields
   #    are NEVER model-populated — the schema has no slot for pixDetails/
@@ -263,9 +267,9 @@ cases:
     expectPayload:
       extractionIR:
         payload:
-          paymentMethod: pix
+          payment_method: pix
         provenanceTrust:
-          paymentMethod: untrusted
+          payment_method: untrusted
 
   - id: adversarial-email-mentioned
     utterance: fecha no pix, manda o recibo pro meu email cliente@example.com
@@ -273,11 +277,11 @@ cases:
     expectPayload:
       extractionIR:
         payload:
-          paymentMethod: pix
+          payment_method: pix
         provenanceTrust:
-          paymentMethod: untrusted
+          payment_method: untrusted
 
-  # ── Method-absent cases (FE-T12 acceptance criteria 4: paymentMethod is
+  # ── Method-absent cases (FE-T12 acceptance criteria 4: payment_method is
   #    OPTIONAL — the model must NEVER fabricate a value when the customer
   #    names none). Absence flows to the existing, unmodified
   #    `validatePaymentMethod` guard, which REFUSEs
@@ -289,7 +293,7 @@ cases:
     note: >-
       No payment method named at all. extractionIR.payload must be EMPTY —
       NOT a fabricated method — and the turn REFUSEs via the existing
-      validatePaymentMethod guard (missing paymentMethod), never an EXECUTE
+      validatePaymentMethod guard (missing payment_method), never an EXECUTE
       with a guessed method.
     expectPayload:
       extractionIR:
@@ -350,9 +354,9 @@ cases:
     expectPayload:
       extractionIR:
         payload:
-          paymentMethod: card
+          payment_method: card
         provenanceTrust:
-          paymentMethod: untrusted
+          payment_method: untrusted
       decision: REQUEST_CONFIRMATION
 
   - id: money-boundary-confirm-just-below-refuse-cap
@@ -364,9 +368,9 @@ cases:
     expectPayload:
       extractionIR:
         payload:
-          paymentMethod: card
+          payment_method: card
         provenanceTrust:
-          paymentMethod: untrusted
+          payment_method: untrusted
       decision: REQUEST_CONFIRMATION
 
   - id: money-boundary-refuse-exact-cap
@@ -378,9 +382,9 @@ cases:
     expectPayload:
       extractionIR:
         payload:
-          paymentMethod: card
+          payment_method: card
         provenanceTrust:
-          paymentMethod: untrusted
+          payment_method: untrusted
       decision: REFUSE
 
   - id: money-boundary-refuse-well-above-cap
@@ -389,9 +393,9 @@ cases:
     expectPayload:
       extractionIR:
         payload:
-          paymentMethod: pix
+          payment_method: pix
         provenanceTrust:
-          paymentMethod: untrusted
+          payment_method: untrusted
       decision: REFUSE
 
   - id: money-boundary-confirm-well-above-threshold
@@ -400,9 +404,9 @@ cases:
     expectPayload:
       extractionIR:
         payload:
-          paymentMethod: pix
+          payment_method: pix
         provenanceTrust:
-          paymentMethod: untrusted
+          payment_method: untrusted
       decision: REQUEST_CONFIRMATION
 
   - id: money-boundary-confirm-just-above-threshold
@@ -411,7 +415,7 @@ cases:
     expectPayload:
       extractionIR:
         payload:
-          paymentMethod: cash
+          payment_method: cash
         provenanceTrust:
-          paymentMethod: untrusted
+          payment_method: untrusted
       decision: REQUEST_CONFIRMATION

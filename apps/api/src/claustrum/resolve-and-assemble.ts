@@ -686,6 +686,39 @@ async function bindRefundOwnership(kind: string, payload: Ctx): Promise<Ctx> {
 }
 
 /**
+ * FE-T12 (team-lead review) — rename `order.checkout.create`'s WIRE field
+ * `payment_method` (snake_case, `order-checkout-create.schema.ts`'s model-
+ * facing extraction schema) to the internal `paymentMethod` key
+ * `OrderCheckoutCreatePayload`/`validatePaymentMethod` (pack-orders/src/
+ * policies.ts, BYTE-UNTOUCHED) actually reads.
+ *
+ * WHY snake_case on the wire: live 4B calibration showed a 100%-stable bias
+ * toward `payment_method` over the originally-authored `paymentMethod` on
+ * EVERY observed call — a fact to accommodate deterministically (rename the
+ * wire contract to match what the model reliably produces) rather than fight
+ * with more prompt text. Mirrors the established BKL-094/BKL-089 rename
+ * idiom (payment.refund.issue's `orderReference`→`orderId`, `amount`→
+ * `refundAmountCentavos`): the WIRE name is consumed and REPLACED here, never
+ * left duplicated alongside the internal one — a stray `payment_method` key
+ * surviving into the resolved payload would leak past this seam into the
+ * envelope pack-orders never reads, dead weight at best.
+ *
+ * Pure rename, unconditional on any other resolution step (no auto-resolve,
+ * no ownership binding) — called first, before `applyAutoResolve`.
+ */
+function mapCheckoutPaymentMethodWireField(kind: string, payload: Ctx): Ctx {
+  if (kind !== "order.checkout.create") return payload;
+  if (typeof payload.payment_method !== "string") return payload;
+  // Defensive: a caller that already set the internal key (never happens on
+  // the real model-facing path — the extraction schema simply never declares
+  // `paymentMethod` as a field; only `payment_method` is ever shown to the
+  // model) never gets silently overwritten by the wire alias.
+  if (typeof payload.paymentMethod === "string") return payload;
+  const { payment_method: wireValue, ...rest } = payload;
+  return { ...rest, paymentMethod: wireValue };
+}
+
+/**
  * F3/L1 (D-014) — thread resolved ids from ctx back onto the outgoing payload.
  *
  * The Conductor hands the executor tool `envelope.payload`, but the session
@@ -1050,8 +1083,12 @@ export async function resolveAndAssemble(args: ResolveArgs): Promise<AssembledRe
   const agentTokens = await readAgentSessionTokens(channel, sessionId);
   if (agentTokens !== undefined) base.agentTokensConsumed = agentTokens;
 
+  // FE-T12 — wire→internal field rename for order.checkout.create, first and
+  // unconditional (no dependency on auto-resolve/ownership).
+  const normalizedPayload = mapCheckoutPaymentMethodWireField(kind, payload);
+
   // NL→id resolution (confirm-first) then the 034-F1 refund ownership binding.
-  const auto = await applyAutoResolve(kind, payload, customerId);
+  const auto = await applyAutoResolve(kind, normalizedPayload, customerId);
   const autoResolvedMoneyRef = auto.autoResolvedMoneyRef;
   const resolvedPayload = await bindRefundOwnership(kind, auto.payload);
 

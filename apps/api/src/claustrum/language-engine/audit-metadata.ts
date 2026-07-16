@@ -446,6 +446,25 @@ function deriveOrderCheckoutCreate(record: AuditRecord): LanguageEngineAuditMeta
       extractionProvenance[field.name] = modelProvenance();
     }
   }
+
+  // FE-T12 (team-lead review) — the schema's `payment_method` (wire, model-
+  // facing) is RENAMED to `paymentMethod` (internal) BEFORE this function
+  // ever sees the payload (`resolve-and-assemble.ts`'s
+  // `mapCheckoutPaymentMethodWireField`), so `splitResolvedPayload` (which
+  // only matches SCHEMA-declared names) can never surface it — without this,
+  // "the model extracted the payment method correctly" would be
+  // UNASSERTABLE by any corpus case (neither IR would ever carry the
+  // resolved value). Mirrors `derivePaymentRefundIssue`'s identical handling
+  // of `amount`→`refundAmountCentavos`: still fundamentally the model's
+  // Directive content (the resolver only renamed the KEY, never authored the
+  // VALUE), so it keeps `modelProvenance()` (untrusted) — surfaced under the
+  // WIRE name (`payment_method`), the one name the corpus/schema actually
+  // declares.
+  if (typeof resolvedPayload.paymentMethod === "string") {
+    extractionPayload.payment_method = resolvedPayload.paymentMethod;
+    extractionProvenance.payment_method = modelProvenance();
+  }
+
   const extractionIR: ExtractionIR = {
     capability: schema.capability,
     payload: extractionPayload,

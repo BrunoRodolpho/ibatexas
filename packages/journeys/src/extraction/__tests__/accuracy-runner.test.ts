@@ -292,6 +292,26 @@ describe("driveExtractionCorpusOverOpsChat — test isolation", () => {
 
 // ── FE-T12 — driveExtractionCorpusOverCustomerChat (the customer-plane sibling) ──
 
+/**
+ * Session-per-case rotation (team-lead ruling, post-live-calibration
+ * review): a deterministic, ENUMERABLE sessionId sequence for tests — each
+ * call to the returned factory yields `sess-1`, `sess-2`, ... A fresh
+ * instance per `it()` so assertions on per-call ids stay predictable
+ * (never a bare `randomUUID`, which the driver defaults to in production).
+ */
+function testSessionIdFactory(): () => string {
+  let n = 0
+  return () => {
+    n += 1
+    return `sess-${n}`
+  }
+}
+
+/** Mirrors accuracy-cli.ts's real `scopeForSession` shape — derives the scope from the case's rotated sessionId. */
+const SCOPE_FOR_SESSION = (sessionId: string): RunSessionScope => ({
+  sessionIds: [`hashed:${sessionId}`],
+})
+
 function fakeCancelRecord(intentHashSuffix: string, reason: string | undefined): AuditRecord {
   const intentHash = ("b".repeat(63) + intentHashSuffix).slice(0, 64)
   const payload: Record<string, unknown> = reason !== undefined ? { reason } : {}
@@ -374,9 +394,9 @@ describe("driveExtractionCorpusOverCustomerChat — happy path", () => {
     const { results } = await driveExtractionCorpusOverCustomerChat([corpus], {
       apiBaseUrl: "http://fake",
       customerCookie: "token=abc",
-      sessionId: "sess-1",
+      sessionIdFactory: testSessionIdFactory(),
       audit,
-      scope: SCOPE,
+      scopeForSession: SCOPE_FOR_SESSION,
       fetchImpl: (async (url: string, init?: RequestInit) => {
         call += 1
         requestUrls.push(String(url))
@@ -398,7 +418,7 @@ describe("driveExtractionCorpusOverCustomerChat — happy path", () => {
     ])
   })
 
-  it("never re-matches an already-seen intentHash across cases sharing one capability + one reused session", async () => {
+  it("never re-matches an already-seen intentHash, even though a fake AuditReader that ignores scope makes both records visible regardless of the (now distinct, rotated) per-case sessionId — the seenIntentHashes dedup stays as defense-in-depth", async () => {
     const corpus = customerCorpusOf([
       { id: "case-a", utterance: "cancela meu pedido" },
       { id: "case-b", utterance: "cancela, mudei de ideia", reason: "mudei de ideia" },
@@ -420,9 +440,9 @@ describe("driveExtractionCorpusOverCustomerChat — happy path", () => {
     const { results } = await driveExtractionCorpusOverCustomerChat([corpus], {
       apiBaseUrl: "http://fake",
       customerCookie: "token=abc",
-      sessionId: "sess-1",
+      sessionIdFactory: testSessionIdFactory(),
       audit,
-      scope: SCOPE,
+      scopeForSession: SCOPE_FOR_SESSION,
       fetchImpl,
       settleTimeoutMs: 2000,
       settlePollMs: 5,
@@ -444,9 +464,9 @@ describe("driveExtractionCorpusOverCustomerChat — failure modes never throw", 
     const { results } = await driveExtractionCorpusOverCustomerChat([corpus], {
       apiBaseUrl: "http://fake",
       customerCookie: "token=abc",
-      sessionId: "sess-1",
+      sessionIdFactory: testSessionIdFactory(),
       audit,
-      scope: SCOPE,
+      scopeForSession: SCOPE_FOR_SESSION,
       fetchImpl,
       interCaseDelayMs: 0,
     })
@@ -464,9 +484,9 @@ describe("driveExtractionCorpusOverCustomerChat — failure modes never throw", 
     const { results } = await driveExtractionCorpusOverCustomerChat([corpus], {
       apiBaseUrl: "http://fake",
       customerCookie: "token=abc",
-      sessionId: "sess-1",
+      sessionIdFactory: testSessionIdFactory(),
       audit,
-      scope: SCOPE,
+      scopeForSession: SCOPE_FOR_SESSION,
       fetchImpl,
       settleTimeoutMs: 50,
       settlePollMs: 10,
@@ -480,7 +500,7 @@ describe("driveExtractionCorpusOverCustomerChat — failure modes never throw", 
 })
 
 describe("driveExtractionCorpusOverCustomerChat — test isolation (FE-D13)", () => {
-  it("calls clearHistory (keyed by the reused sessionId) before EVERY case (never just the first)", async () => {
+  it("calls clearHistory before EVERY case, keyed by EACH case's OWN freshly-rotated sessionId (never a single reused id)", async () => {
     const corpus = customerCorpusOf([
       { id: "case-a", utterance: "x" },
       { id: "case-b", utterance: "y", reason: "mudei de ideia" },
@@ -498,9 +518,9 @@ describe("driveExtractionCorpusOverCustomerChat — test isolation (FE-D13)", ()
     await driveExtractionCorpusOverCustomerChat([corpus], {
       apiBaseUrl: "http://fake",
       customerCookie: "token=abc",
-      sessionId: "sess-1",
+      sessionIdFactory: testSessionIdFactory(),
       audit,
-      scope: SCOPE,
+      scopeForSession: SCOPE_FOR_SESSION,
       fetchImpl,
       clearHistory,
       settleTimeoutMs: 1000,
@@ -509,8 +529,9 @@ describe("driveExtractionCorpusOverCustomerChat — test isolation (FE-D13)", ()
     })
 
     expect(clearHistory).toHaveBeenCalledTimes(2)
+    // Rotated: case-a and case-b get DIFFERENT sessionIds, not one reused id.
     expect(clearHistory).toHaveBeenNthCalledWith(1, "sess-1")
-    expect(clearHistory).toHaveBeenNthCalledWith(2, "sess-1")
+    expect(clearHistory).toHaveBeenNthCalledWith(2, "sess-2")
   })
 
   it("a clearHistory throw is caught, attributed as an isolationFailure per case, and does NOT abort the run — a lingering park must never silently execute a later case's utterance", async () => {
@@ -533,9 +554,9 @@ describe("driveExtractionCorpusOverCustomerChat — test isolation (FE-D13)", ()
     const { results, isolationFailures } = await driveExtractionCorpusOverCustomerChat([corpus], {
       apiBaseUrl: "http://fake",
       customerCookie: "token=abc",
-      sessionId: "sess-1",
+      sessionIdFactory: testSessionIdFactory(),
       audit,
-      scope: SCOPE,
+      scopeForSession: SCOPE_FOR_SESSION,
       fetchImpl,
       clearHistory,
       settleTimeoutMs: 1000,
@@ -550,5 +571,71 @@ describe("driveExtractionCorpusOverCustomerChat — test isolation (FE-D13)", ()
     expect(results).toHaveLength(2)
     expect(results[0]).toMatchObject({ caseId: "case-a", ok: true })
     expect(results[1]).toMatchObject({ caseId: "case-b", ok: true })
+  })
+
+  it("derives EACH case's audit scope from that SAME case's rotated sessionId via scopeForSession — never a single static scope", async () => {
+    const corpus = customerCorpusOf([
+      { id: "case-a", utterance: "x" },
+      { id: "case-b", utterance: "y", reason: "mudei de ideia" },
+    ])
+    let n = 0
+    const records: AuditRecord[] = []
+    const audit = fakeAuditReader(() => records)
+    const fetchImpl = (async () => {
+      n += 1
+      records.push(fakeCancelRecord(String(n), n === 1 ? undefined : "mudei de ideia"))
+      return new Response(JSON.stringify({ messageId: "m-1" }), { status: 200 })
+    }) as unknown as typeof fetch
+    const scopeForSession = vi.fn(SCOPE_FOR_SESSION)
+
+    await driveExtractionCorpusOverCustomerChat([corpus], {
+      apiBaseUrl: "http://fake",
+      customerCookie: "token=abc",
+      sessionIdFactory: testSessionIdFactory(),
+      audit,
+      scopeForSession,
+      fetchImpl,
+      settleTimeoutMs: 1000,
+      settlePollMs: 5,
+      interCaseDelayMs: 0,
+    })
+
+    expect(scopeForSession).toHaveBeenNthCalledWith(1, "sess-1")
+    expect(scopeForSession).toHaveBeenNthCalledWith(2, "sess-2")
+  })
+
+  it("defaults sessionIdFactory to randomUUID when the caller supplies none — still one fresh id per case, not one static reused id", async () => {
+    const corpus = customerCorpusOf([
+      { id: "case-a", utterance: "x" },
+      { id: "case-b", utterance: "y", reason: "mudei de ideia" },
+    ])
+    let n = 0
+    const records: AuditRecord[] = []
+    const audit = fakeAuditReader(() => records)
+    const postedSessionIds: string[] = []
+    const fetchImpl = (async (_url: string, init?: RequestInit) => {
+      n += 1
+      const body = JSON.parse(String(init?.body)) as { sessionId: string }
+      postedSessionIds.push(body.sessionId)
+      records.push(fakeCancelRecord(String(n), n === 1 ? undefined : "mudei de ideia"))
+      return new Response(JSON.stringify({ messageId: "m-1" }), { status: 200 })
+    }) as unknown as typeof fetch
+
+    await driveExtractionCorpusOverCustomerChat([corpus], {
+      apiBaseUrl: "http://fake",
+      customerCookie: "token=abc",
+      audit,
+      scopeForSession: SCOPE_FOR_SESSION,
+      fetchImpl,
+      settleTimeoutMs: 1000,
+      settlePollMs: 5,
+      interCaseDelayMs: 0,
+    })
+
+    expect(postedSessionIds).toHaveLength(2)
+    expect(postedSessionIds[0]).not.toBe(postedSessionIds[1])
+    // A real randomUUID, not a placeholder — sanity-checks the default wiring.
+    expect(postedSessionIds[0]).toMatch(/^[0-9a-f-]{36}$/)
+    expect(postedSessionIds[1]).toMatch(/^[0-9a-f-]{36}$/)
   })
 })
