@@ -1,0 +1,479 @@
+/**
+ * FE-T18 (FE-3.0 / D1) — the classify-only grounded-read toggle
+ * (classify-only-reads.ts) + its wiring into `ibatexas-claim-planner.ts`.
+ *
+ * Two layers, per the ticket's acceptance criteria:
+ *
+ *   A. Unit tests of the pure toggle module: the flag reader (default OFF),
+ *      the classification/eligibility gate (`classifyOnlyRequiredTypes` —
+ *      empty / eligible / ineligible / mixed), and the deterministic subject
+ *      resolution (`buildClassifyOnlyCandidates` — one/zero/many owned).
+ *
+ *   B. Seam-level proof, mirroring FE-T15 (`PAYMENT_STATUS`, "O status do seu
+ *      pagamento é: pago.") and FE-T17 (`RESERVATION_STATUS`, "O status da sua
+ *      reserva é: confirmada." / the honest-abstain falsifier arm) EXACTLY —
+ *      driven through `createIbatexasClaimPlanner`, the real per-turn kernel
+ *      deps, and the real `createIbatexasClaimsRenderer` adapter:
+ *        - ON, read-classified → the SAME validated render as the pre-change
+ *          proofs, with ZERO calls to the planner's `proposeClaims` (the
+ *          propose_claim model call), asserted via a call-counting spy;
+ *        - ON, 0-owned → the SAME honest SAFE_UNKNOWN abstain, zero model calls;
+ *        - ON, ≥2-owned → CLARIFY (the same safe abstain text), zero model calls;
+ *        - OFF (default) → the model path runs exactly as before (spy called);
+ *        - ON, a non-read / mixed-span turn → falls through to the model path
+ *          (requirement: non-read turns and ineligible-mixed turns unchanged).
+ *
+ * Pure unit tests — a hand-built `ClaimAwarePlannerPort` spy + real
+ * `EvidenceLedger`; no DB / no live model.
+ */
+
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  EvidenceLedger,
+  runClaimsKernel,
+  type CandidateClaim,
+} from "@adjudicate/core";
+import type { ClaimPlannerInput, CognitiveState, Plan } from "@claustrum/core";
+import { normalizeClaimPlannerResult } from "@claustrum/core";
+import type {
+  ClaimAuthContext,
+  ClaimAwarePlannerPort,
+  ClaimPlan,
+} from "../ibatexas-planner.js";
+import { createIbatexasClaimPlanner } from "../ibatexas-claim-planner.js";
+import { createPerTurnClaimsKernelDeps } from "../ibatexas-claims-kernel-deps.js";
+import { createIbatexasClaimsRenderer } from "../claims-renderer-adapter.js";
+import {
+  buildClassifyOnlyCandidates,
+  CLASSIFY_ONLY_ELIGIBLE_TYPES,
+  CLASSIFY_ONLY_READS_ENABLED_ENV,
+  classifyOnlyReadsEnabled,
+  classifyOnlyRequiredTypes,
+} from "../classify-only-reads.js";
+import {
+  classifyRequestSpans,
+  decomposeRequiredClaims,
+} from "../required-claim-decomposer.js";
+
+// ── A. Pure toggle-module unit tests ────────────────────────────────────────
+
+describe("classifyOnlyReadsEnabled — flag reader (default OFF)", () => {
+  it("is OFF by default and only ON for the exact 'true' string", () => {
+    expect(classifyOnlyReadsEnabled({})).toBe(false);
+    expect(classifyOnlyReadsEnabled({ [CLASSIFY_ONLY_READS_ENABLED_ENV]: "1" })).toBe(false);
+    expect(classifyOnlyReadsEnabled({ [CLASSIFY_ONLY_READS_ENABLED_ENV]: "false" })).toBe(false);
+    expect(classifyOnlyReadsEnabled({ [CLASSIFY_ONLY_READS_ENABLED_ENV]: "true" })).toBe(true);
+  });
+});
+
+describe("classifyOnlyRequiredTypes — the eligibility gate", () => {
+  it("smalltalk / no matched span → undefined (not read-shaped)", () => {
+    expect(classifyOnlyRequiredTypes("oi, tudo bem?")).toBeUndefined();
+  });
+
+  it("a payment-status question → {PAYMENT_STATUS} (FE-T15 shape)", () => {
+    expect(classifyOnlyRequiredTypes("meu pagamento foi aprovado?")).toEqual(
+      new Set(["PAYMENT_STATUS"]),
+    );
+  });
+
+  it("a reservation question → {RESERVATION_STATUS} (FE-T17 shape)", () => {
+    expect(classifyOnlyRequiredTypes("qual minha reserva?")).toEqual(
+      new Set(["RESERVATION_STATUS"]),
+    );
+  });
+
+  it("a bare 'status' (no discriminator) → BOTH order+payment (still fully eligible)", () => {
+    expect(classifyOnlyRequiredTypes("qual o status?")).toEqual(
+      new Set(["ORDER_FULFILLMENT_STAGE", "PAYMENT_STATUS"]),
+    );
+  });
+
+  it("a schedule-only question → undefined (STORE_OPEN_NOW is NOT in the eligible set)", () => {
+    expect(classifyOnlyRequiredTypes("vocês estão abertos agora?")).toBeUndefined();
+  });
+
+  it("FE-D12 pin — an ELIGIBLE span co-occurring with an INELIGIBLE span in ONE message → undefined (declined wholesale, never a half-deterministic mix)", () => {
+    // "pagamento"/"aprovad" alone would classify to the fully-eligible
+    // {PAYMENT_STATUS}; "abertos" alone maps to the ineligible STORE_OPEN_NOW.
+    // The SAME message carrying BOTH must decline entirely — the classify-only
+    // path never handles part of a turn deterministically and the rest via the
+    // model (see classify-only-reads.ts FE-D12: this is also the boundary that
+    // bounds the residual safety-marker tradeoff — a mixed turn always falls
+    // through to the model path, where a safety marker CAN still self-report).
+    const required = decomposeRequiredClaims(
+      classifyRequestSpans("meu pagamento foi aprovado, vocês estão abertos agora?"),
+    );
+    // Sanity: the underlying classifier DID pick up both — proving this is a
+    // genuine mixed-span case, not an accidental miss of the payment marker.
+    expect(required.has("PAYMENT_STATUS")).toBe(true);
+    expect(required.has("STORE_OPEN_NOW")).toBe(true);
+    expect(
+      classifyOnlyRequiredTypes("meu pagamento foi aprovado, vocês estão abertos agora?"),
+    ).toBeUndefined();
+  });
+
+  it("a PICKUP_Q (pulls in the ineligible STORE_OPEN_NOW companion) → undefined (declined wholesale)", () => {
+    expect(classifyOnlyRequiredTypes("posso retirar meu pedido agora?")).toBeUndefined();
+  });
+
+  it("every eligible type is genuinely a registered, owner-scoped registry type", () => {
+    expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.size).toBe(3);
+    expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.has("ORDER_FULFILLMENT_STAGE")).toBe(true);
+    expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.has("PAYMENT_STATUS")).toBe(true);
+    expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.has("RESERVATION_STATUS")).toBe(true);
+  });
+});
+
+describe("buildClassifyOnlyCandidates — deterministic FIX-1/FIX-2 mirror (no model)", () => {
+  it("exactly ONE owned resource → binds it (the common case)", () => {
+    const auth: ClaimAuthContext = {
+      customerId: "cust-A",
+      ownedByBaseKey: new Map([["payment_status", ["pay-A"]]]),
+    };
+    const { candidates, forcedTerminal } = buildClassifyOnlyCandidates(
+      new Set(["PAYMENT_STATUS"]),
+      auth,
+      "conv-1",
+    );
+    expect(forcedTerminal).toBeUndefined();
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]?.subject).toBe("pay-A");
+    expect(candidates[0]?.soundness.actor).toMatchObject({ principal: "cust-A" });
+  });
+
+  it("ZERO owned → an empty subject (the kernel then honest-abstains, never a guess)", () => {
+    const auth: ClaimAuthContext = { customerId: "cust-A", ownedByBaseKey: new Map() };
+    const { candidates, forcedTerminal } = buildClassifyOnlyCandidates(
+      new Set(["RESERVATION_STATUS"]),
+      auth,
+      "conv-1",
+    );
+    expect(forcedTerminal).toBeUndefined();
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]?.subject).toBe("");
+  });
+
+  it("≥2 owned → CLARIFY, that type's candidate dropped (never a guess)", () => {
+    const auth: ClaimAuthContext = {
+      customerId: "cust-A",
+      ownedByBaseKey: new Map([["order_fulfillment_stage", ["order-A1", "order-A2"]]]),
+    };
+    const { candidates, forcedTerminal } = buildClassifyOnlyCandidates(
+      new Set(["ORDER_FULFILLMENT_STAGE"]),
+      auth,
+      "conv-1",
+    );
+    expect(forcedTerminal).toBe("CLARIFY");
+    expect(candidates).toHaveLength(0);
+  });
+
+  it("multiple required types resolve INDEPENDENTLY (order ambiguous, payment unambiguous)", () => {
+    const auth: ClaimAuthContext = {
+      customerId: "cust-A",
+      ownedByBaseKey: new Map([
+        ["order_fulfillment_stage", ["order-A1", "order-A2"]],
+        ["payment_status", ["pay-A"]],
+      ]),
+    };
+    const { candidates, forcedTerminal } = buildClassifyOnlyCandidates(
+      new Set(["ORDER_FULFILLMENT_STAGE", "PAYMENT_STATUS"]),
+      auth,
+      "conv-1",
+    );
+    expect(forcedTerminal).toBe("CLARIFY");
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]?.type).toBe("PAYMENT_STATUS");
+    expect(candidates[0]?.subject).toBe("pay-A");
+  });
+
+  it("unauthenticated (no customerId) → the fail-closed 'unauthenticated' principal", () => {
+    const { candidates } = buildClassifyOnlyCandidates(
+      new Set(["PAYMENT_STATUS"]),
+      {},
+      "conv-1",
+    );
+    expect(candidates[0]?.soundness.actor).toMatchObject({ principal: "unauthenticated" });
+  });
+});
+
+// ── B. Seam-level proof (createIbatexasClaimPlanner + the real kernel + the
+//    real adapter) — mirrors FE-T15 / FE-T17 exactly, plus the model-call
+//    call-count assertion the toggle exists to prove. ────────────────────────
+
+function state(text: string): CognitiveState {
+  return {
+    perception: { text, channel: "web", receivedAt: "2026-07-16T00:00:00.000Z" },
+    memory: {} as CognitiveState["memory"],
+    retrieval: {} as CognitiveState["retrieval"],
+    tenantId: "t1",
+    locale: "pt-BR",
+    conversationId: "conv-1",
+    turnId: "turn-1",
+  };
+}
+
+/** A `ClaimAwarePlannerPort` whose `proposeClaims` is a counting spy — the
+ *  model-call oracle: `spy.mock.calls.length` after driving a turn is the
+ *  ground truth for "was the propose_claim model call made this turn?" */
+function spyPlanner(plan: ClaimPlan = { candidates: [], completeness: [], droppedClaimTypes: [] }) {
+  const proposeClaimsSpy = vi.fn(async (): Promise<ClaimPlan> => plan);
+  const port: ClaimAwarePlannerPort = {
+    async propose(): Promise<Plan> {
+      return { envelopes: [] };
+    },
+    proposeClaims: proposeClaimsSpy,
+  };
+  return { port, proposeClaimsSpy };
+}
+
+const NOW = 40_000;
+
+function recordPayment(ledger: EvidenceLedger, orderId: string, status: string): void {
+  ledger.record({
+    key: `payment_status:${orderId}`,
+    value: { status },
+    source: "payment.getActiveByOrderId",
+    fetchedAt: NOW,
+    sourceMode: "live",
+    taint: "TRUSTED",
+    originProvenance: "FIRST_PARTY",
+  });
+}
+
+function recordReservation(ledger: EvidenceLedger, reservationId: string): void {
+  ledger.record({
+    key: `reservation_status:${reservationId}`,
+    value: { status: "confirmed", partySize: 2, date: "2026-07-20", startTime: "19:30" },
+    source: "reservation.getById",
+    fetchedAt: NOW,
+    sourceMode: "live",
+    taint: "TRUSTED",
+    originProvenance: "FIRST_PARTY",
+  });
+}
+
+const ENV_KEY = CLASSIFY_ONLY_READS_ENABLED_ENV;
+const originalEnv = process.env[ENV_KEY];
+
+afterEach(() => {
+  if (originalEnv === undefined) delete process.env[ENV_KEY];
+  else process.env[ENV_KEY] = originalEnv;
+});
+
+async function driveAndRender(params: {
+  readonly text: string;
+  readonly customerId: string;
+  readonly ledger: EvidenceLedger;
+}): Promise<{ text: string; forcedTerminal?: string; proposeClaimsSpy: ReturnType<typeof spyPlanner>["proposeClaimsSpy"] }> {
+  const { port, proposeClaimsSpy } = spyPlanner();
+  const adapter = createIbatexasClaimPlanner(port);
+  const input: ClaimPlannerInput = {
+    cognition: state(params.text),
+    plan: { envelopes: [] } as Plan,
+    customerId: params.customerId,
+    ledger: params.ledger,
+  };
+  const normalized = normalizeClaimPlannerResult(await adapter.propose(input));
+
+  const result = runClaimsKernel(
+    params.ledger,
+    normalized.candidates,
+    createPerTurnClaimsKernelDeps({
+      now: NOW,
+      ownership: {
+        principal: params.customerId,
+        // The adapter derives the OWNED set from the ledger's PRESENT owner-scoped
+        // entries (ownedResourceIdsByBaseKey) — mirror that here for the kernel's
+        // REAL per-turn owns, so this test exercises the SAME production shape.
+        ownedResources: new Set(
+          [...params.ledger.keys()]
+            .filter((k) => params.ledger.resolve(k).state === "present")
+            .map((k) => k.split(":").slice(1).join(":"))
+            .filter((id) => id.length > 0),
+        ),
+      },
+      outcomes: [],
+    }),
+  );
+
+  const rendered = createIbatexasClaimsRenderer().render(result, { requestText: params.text });
+  return {
+    text: rendered.text,
+    forcedTerminal: normalized.forcedTerminal,
+    proposeClaimsSpy,
+  };
+}
+
+describe("FE-T18 — classify-only ON: PAYMENT_STATUS matches FE-T15's proof, ZERO model calls", () => {
+  it('"meu pagamento foi aprovado?" + one owned payment → "O status do seu pagamento é: pago." (0 propose_claim calls)', async () => {
+    process.env[ENV_KEY] = "true";
+    const ledger = new EvidenceLedger("turn-1");
+    recordPayment(ledger, "pay-A", "paid");
+    const { text, proposeClaimsSpy } = await driveAndRender({
+      text: "meu pagamento foi aprovado?",
+      customerId: "cust-A",
+      ledger,
+    });
+    expect(text).toBe("O status do seu pagamento é: pago.");
+    expect(proposeClaimsSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe("FE-T18 — classify-only ON: RESERVATION_STATUS matches FE-T17's proof, ZERO model calls", () => {
+  it('"qual minha reserva?" + one owned reservation → "O status da sua reserva é: confirmada." (0 propose_claim calls)', async () => {
+    process.env[ENV_KEY] = "true";
+    const ledger = new EvidenceLedger("turn-2");
+    recordReservation(ledger, "res-A");
+    const { text, proposeClaimsSpy } = await driveAndRender({
+      text: "qual minha reserva?",
+      customerId: "cust-A",
+      ledger,
+    });
+    expect(text).toBe("O status da sua reserva é: confirmada.");
+    expect(proposeClaimsSpy).not.toHaveBeenCalled();
+  });
+
+  it("FE-T17 falsifier arm — ZERO reservations → the SAME honest abstain, 0 propose_claim calls", async () => {
+    process.env[ENV_KEY] = "true";
+    const ledger = new EvidenceLedger("turn-3"); // nothing recorded
+    const { text, proposeClaimsSpy } = await driveAndRender({
+      text: "qual minha reserva?",
+      customerId: "cust-A",
+      ledger,
+    });
+    expect(text).toBe(
+      "Não localizei essa informação confirmada agora. Quer que eu verifique?",
+    );
+    expect(proposeClaimsSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe("FE-T18 — classify-only ON: ambiguous ownership → CLARIFY (safe abstain), 0 model calls", () => {
+  it("≥2 owned orders + a bare 'status' → CLARIFY-shaped safe render, never a leaked guess", async () => {
+    process.env[ENV_KEY] = "true";
+    const { port, proposeClaimsSpy } = spyPlanner();
+    const adapter = createIbatexasClaimPlanner(port);
+    const ledger = new EvidenceLedger("turn-4");
+    ledger.record({
+      key: "order_fulfillment_stage:order-A1",
+      value: { fulfillmentStatus: "preparing" },
+      source: "order.getById",
+      fetchedAt: NOW,
+      sourceMode: "live",
+      taint: "TRUSTED",
+      originProvenance: "FIRST_PARTY",
+    });
+    ledger.record({
+      key: "order_fulfillment_stage:order-A2",
+      value: { fulfillmentStatus: "ready" },
+      source: "order.getById",
+      fetchedAt: NOW,
+      sourceMode: "live",
+      taint: "TRUSTED",
+      originProvenance: "FIRST_PARTY",
+    });
+    const input: ClaimPlannerInput = {
+      cognition: state("qual o status?"),
+      plan: { envelopes: [] } as Plan,
+      customerId: "cust-A",
+      ledger,
+    };
+    const normalized = normalizeClaimPlannerResult(await adapter.propose(input));
+    // ORDER_FULFILLMENT_STAGE dropped (ambiguous, ≥2 owned); PAYMENT_STATUS has
+    // zero owned so it still proposes (empty subject) — forcedTerminal CLARIFY
+    // outranks it regardless (BKL-077: CLAIMS-VALIDATE honors forcedTerminal even
+    // over a non-empty candidate set).
+    expect(normalized.forcedTerminal).toBe("CLARIFY");
+    expect(proposeClaimsSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe("FE-T18 — the toggle is OFF by default: the model path runs exactly as before", () => {
+  it("no env var set → propose_claim IS called (regression pin against 15/16/17)", async () => {
+    delete process.env[ENV_KEY];
+    const ledger = new EvidenceLedger("turn-5");
+    recordPayment(ledger, "pay-A", "paid");
+    const { proposeClaimsSpy } = await driveAndRender({
+      text: "meu pagamento foi aprovado?",
+      customerId: "cust-A",
+      ledger,
+    });
+    expect(proposeClaimsSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('ON but explicitly "false" → still calls the model (only the literal "true" string enables it)', async () => {
+    process.env[ENV_KEY] = "false";
+    const ledger = new EvidenceLedger("turn-6");
+    recordPayment(ledger, "pay-A", "paid");
+    const { proposeClaimsSpy } = await driveAndRender({
+      text: "meu pagamento foi aprovado?",
+      customerId: "cust-A",
+      ledger,
+    });
+    expect(proposeClaimsSpy).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("FE-T18 — classify-only ON: non-read / mixed-span turns are UNCHANGED (still call the model)", () => {
+  it("smalltalk → the model path still runs (requirement: non-read turns unchanged)", async () => {
+    process.env[ENV_KEY] = "true";
+    const ledger = new EvidenceLedger("turn-7");
+    const { proposeClaimsSpy } = await driveAndRender({
+      text: "oi, tudo bem?",
+      customerId: "cust-A",
+      ledger,
+    });
+    expect(proposeClaimsSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("a PICKUP_Q (mixed span pulling in the ineligible STORE_OPEN_NOW) → falls through to the model path", async () => {
+    process.env[ENV_KEY] = "true";
+    const ledger = new EvidenceLedger("turn-8");
+    const { proposeClaimsSpy } = await driveAndRender({
+      text: "posso retirar meu pedido agora?",
+      customerId: "cust-A",
+      ledger,
+    });
+    expect(proposeClaimsSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("FE-D12 pin — an ELIGIBLE payment span co-occurring with an INELIGIBLE schedule span → the model path is taken (bypass NOT taken)", async () => {
+    // Pins the exact boundary that bounds the FE-D12 residual (classify-only-
+    // reads.ts): a turn combining a fully-eligible PAYMENT_STATUS_Q phrase with
+    // an ineligible STORE_OPEN_NOW_Q phrase in the SAME message must decline
+    // the bypass WHOLESALE and reach the model's propose_claim call — so any
+    // safety-marker self-report the model would attach to THIS turn is never
+    // silently skipped just because part of the message also asked about a
+    // payment status.
+    process.env[ENV_KEY] = "true";
+    const ledger = new EvidenceLedger("turn-9");
+    recordPayment(ledger, "pay-A", "paid");
+    const { proposeClaimsSpy } = await driveAndRender({
+      text: "meu pagamento foi aprovado, vocês estão abertos agora?",
+      customerId: "cust-A",
+      ledger,
+    });
+    expect(proposeClaimsSpy).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── C. As-typed CandidateClaim sanity (defense-in-depth: the classify-only
+//    path never leaks an unvalidated value or skips the constrained-generation
+//    shape). ───────────────────────────────────────────────────────────────
+describe("FE-T18 — classify-only candidates are ordinary typed CandidateClaims (no bypass of downstream validation)", () => {
+  it("the candidate's value is undefined pre-bind (C6 still runs; never a model/self-authored value)", () => {
+    const auth: ClaimAuthContext = {
+      customerId: "cust-A",
+      ownedByBaseKey: new Map([["payment_status", ["pay-A"]]]),
+    };
+    const { candidates } = buildClassifyOnlyCandidates(
+      new Set(["PAYMENT_STATUS"]),
+      auth,
+      "conv-1",
+    );
+    const candidate = candidates[0] as CandidateClaim;
+    expect(candidate.value).toBeUndefined();
+    expect(candidate.type).toBe("PAYMENT_STATUS");
+  });
+});

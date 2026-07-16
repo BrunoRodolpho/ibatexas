@@ -69,6 +69,11 @@ import type {
   ClaimPlannerResult,
 } from "@claustrum/core";
 import { logger } from "../lib/logger.js";
+import {
+  buildClassifyOnlyCandidates,
+  classifyOnlyReadsEnabled,
+  classifyOnlyRequiredTypes,
+} from "./classify-only-reads.js";
 import { selectCandidateClaim, type RegistryClaimType } from "./claim-registry.js";
 import type { ClaimAuthContext, ClaimAwarePlannerPort } from "./ibatexas-planner.js";
 import { ownedResourceIdsByBaseKey } from "./ibatexas-claims-kernel-deps.js";
@@ -259,6 +264,18 @@ export function createIbatexasClaimPlanner(
           : { ownedByBaseKey: ownedResourceIdsByBaseKey(input.ledger) }),
       };
 
+      // FE-T18 (FE-3.0 / D1) — the classify-only read bypass. Gated OFF by
+      // default (ENABLE_CLASSIFY_ONLY_READS); when ON, a turn whose text
+      // classifies WHOLESALE into the narrow owner-scoped eligible set
+      // (classify-only-reads.ts) skips the model's `propose_claim` call
+      // entirely — the candidate claim is framed deterministically from the
+      // AUTHENTICATED owner-scoped context instead. Any OTHER turn (flag OFF,
+      // no read span matched, or a mixed/ineligible span) falls through to the
+      // EXISTING model-call path below, byte-identical to today.
+      const classifyOnlyRequired = classifyOnlyReadsEnabled()
+        ? classifyOnlyRequiredTypes(input.cognition.perception.text)
+        : undefined;
+
       // Delegate to the existing planner's registry-walled `proposeClaims` (the
       // `ClaimPlan.candidates` are the typed `@adjudicate/core` `CandidateClaim`s
       // that PASSED the constrained-generation wall — the `runClaimsKernel` input
@@ -266,7 +283,8 @@ export function createIbatexasClaimPlanner(
       // tool-call XML the model client THROWS on (~1/3 turns) — the FLAKE fail-open.
       // A SUCCESSFUL call (empty or not) is the planner's HONEST signal and is
       // surfaced UNCHANGED (see the `flaked` gate below); only a THROW triggers the
-      // safe-terminal synthesis.
+      // safe-terminal synthesis. SKIPPED ENTIRELY on the classify-only path — no
+      // model call is made, so there is nothing to flake.
       let candidates: ReadonlyArray<CandidateClaim>;
       // BKL-077 — the planner-FORCED turn terminal (§O#9 safety ESCALATE / P4-unmapped
       // or owner-scoped-ambiguity CLARIFY). `proposeClaims` already COMPUTES it; the
@@ -275,31 +293,56 @@ export function createIbatexasClaimPlanner(
       // ESCALATE outranks a would-be RENDER, and a forced CLARIFY is honored even on an
       // EMPTY candidate set (the 3-payments "which order?" turn). Stays `undefined` on
       // the flake (throw) path — the model produced no signal, so the turn still
-      // degrades to the synthesized safe UNKNOWN below, never a masked ESCALATE.
+      // degrades to the synthesized safe UNKNOWN below, never a masked ESCALATE. On the
+      // classify-only path a forced CLARIFY instead comes from FIX 2's ≥2-owned
+      // ambiguity (buildClassifyOnlyCandidates) — the deterministic mirror of the
+      // model path's OWN FIX 2 branch, never a safety ESCALATE (see
+      // classify-only-reads.ts's documented residual FE-D12: no model call ⟹
+      // no model-self-reported safety marker on this path).
       let forcedTerminal: ClaimPlannerForcedTerminal | undefined;
       let flaked = false;
-      try {
-        const plan = await planner.proposeClaims(input.cognition, auth);
-        candidates = plan.candidates;
-        forcedTerminal = plan.forcedTerminal;
-      } catch (err) {
-        flaked = true;
-        candidates = [];
-        forcedTerminal = undefined;
-        // OBSERVABILITY: the throw no longer escapes to @claustrum/core's
-        // claims-validate (which used to log the "degrading to no-claims" degrade),
-        // so the ~1/3-turn 4B tool-call flake would go SILENT in VictoriaLogs. Log
-        // it HERE instead, with a stable event marker the logging pipeline keys on.
-        // Best-effort + NEVER re-thrown (telemetry must not break a turn).
-        logger.warn(
+      if (classifyOnlyRequired !== undefined) {
+        const built = buildClassifyOnlyCandidates(
+          classifyOnlyRequired,
+          auth,
+          input.cognition.conversationId,
+        );
+        candidates = built.candidates;
+        forcedTerminal = built.forcedTerminal;
+        logger.info(
           {
             component: "claim-planner",
-            event: "claim_planner.propose_failed",
+            event: "claim_planner.classify_only",
             turnId: input.cognition.turnId,
-            err: err instanceof Error ? err.message : String(err),
+            candidateTypes: [...new Set(candidates.map((c) => c.type))],
+            ...(forcedTerminal === undefined ? {} : { forcedTerminal }),
           },
-          "claim-planner proposeClaims failed; synthesizing safe UNKNOWN candidates for required claim types",
+          "claim-planner: classify-only read path — propose_claim model call skipped",
         );
+      } else {
+        try {
+          const plan = await planner.proposeClaims(input.cognition, auth);
+          candidates = plan.candidates;
+          forcedTerminal = plan.forcedTerminal;
+        } catch (err) {
+          flaked = true;
+          candidates = [];
+          forcedTerminal = undefined;
+          // OBSERVABILITY: the throw no longer escapes to @claustrum/core's
+          // claims-validate (which used to log the "degrading to no-claims" degrade),
+          // so the ~1/3-turn 4B tool-call flake would go SILENT in VictoriaLogs. Log
+          // it HERE instead, with a stable event marker the logging pipeline keys on.
+          // Best-effort + NEVER re-thrown (telemetry must not break a turn).
+          logger.warn(
+            {
+              component: "claim-planner",
+              event: "claim_planner.propose_failed",
+              turnId: input.cognition.turnId,
+              err: err instanceof Error ? err.message : String(err),
+            },
+            "claim-planner proposeClaims failed; synthesizing safe UNKNOWN candidates for required claim types",
+          );
+        }
       }
       // BKL-111 — the model's proposal (constrained-generation survivors) BEFORE the
       // demote filter reassigns `candidates`, so the prose-preserved signal below can
