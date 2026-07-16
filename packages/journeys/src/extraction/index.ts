@@ -30,3 +30,43 @@ export {
   evaluateExpectPayload,
   type ExpectPayloadEvaluation,
 } from "./expect-payload.js"
+
+export {
+  ACCURACY_WAIVER_CATEGORIES,
+  AccuracyBaselineSchema,
+  AccuracyWaiversFileSchema,
+  DEFAULT_ACCURACY_WAIVERS_PATH,
+  accuracyBaseline,
+  accuracyCaseKey,
+  computeAccuracyReport,
+  verifyAccuracyBaseline,
+  type AccuracyBaseline,
+  type AccuracyBaselineResult,
+  type AccuracyCase,
+  type AccuracyCaseResult,
+  type AccuracyCaseState,
+  type AccuracyProblem,
+  type AccuracyProblemCode,
+  type AccuracyRegression,
+  type AccuracyReport,
+  type AccuracyWaiver,
+  type AccuracyWaiverCategory,
+  type CapabilityAccuracy,
+  type ComputeAccuracyReportOptions,
+  type IsolationFailure,
+} from "./accuracy.js"
+
+export {
+  AccuracyRunnerError,
+  driveExtractionCorpusOverOpsChat,
+  type DriveExtractionCorpusOptions,
+  type DriveExtractionCorpusResult,
+} from "./accuracy-runner.js"
+
+export {
+  ACCURACY_RUN_STAFF_PHONE,
+  ExtractionAccuracyCliError,
+  runExtractionAccuracyCli,
+  type ExtractionAccuracyCliResult,
+  type RunExtractionAccuracyCliOptions,
+} from "./accuracy-cli.js"

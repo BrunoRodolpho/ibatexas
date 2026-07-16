@@ -1,0 +1,16 @@
+{
+  "passing": [
+    "order.status.transition:most-recent-order-to-canceled",
+    "order.status.transition:most-recent-order-to-canceled-polite",
+    "order.status.transition:most-recent-order-to-delivered",
+    "order.status.transition:most-recent-order-to-delivered-brusque",
+    "order.status.transition:most-recent-order-to-in-delivery-context",
+    "order.status.transition:most-recent-order-to-in-delivery-formal",
+    "order.status.transition:most-recent-order-to-preparing",
+    "order.status.transition:most-recent-order-to-preparing-brusque",
+    "order.status.transition:most-recent-order-to-preparing-polite",
+    "order.status.transition:most-recent-order-to-ready",
+    "order.status.transition:most-recent-order-to-ready-brusque",
+    "order.status.transition:most-recent-order-to-ready-formal"
+  ]
+}

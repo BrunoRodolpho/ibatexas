@@ -333,6 +333,197 @@ async function runJourneyCoverage(opts: {
   reportCoverageClean(report, totalsLine, opts.json === true, deps)
 }
 
+// ── `ibx journey extraction-accuracy` (T07, FE-2.3/FE-2.4) ─────────────────
+// THIN registration: all composition lives in `@ibatexas/journeys`
+// (`src/extraction/accuracy-cli.ts` drives the live run;
+// `src/extraction/accuracy.ts` scores it + owns the baseline/waiver gate —
+// the coverage command's EXACT --json/--verify-file/--waivers/--out idiom,
+// re-keyed to extraction CASES (`capability:caseId`) instead of coverage
+// CELLS. Quarantine reuses `ibx journey flake --ledger <path>
+// --list-quarantined` unchanged — see accuracy.ts's header, no new ledger.
+
+type AccuracyCliResult = Awaited<ReturnType<JourneysModule["runExtractionAccuracyCli"]>>
+type AccuracyReport = AccuracyCliResult["report"]
+type AccuracyVerifyResult = ReturnType<JourneysModule["verifyAccuracyBaseline"]>
+
+function formatAccuracyTotalsLine(report: AccuracyReport): string {
+  if (report.byCapability.length === 0) return "0 casos rodados"
+  return report.byCapability
+    .map((c) => `${c.capability}: ${c.passing}/${c.total} (${(c.ratio * 100).toFixed(1)}%)`)
+    .join(", ")
+}
+
+function reportAccuracyProblems(report: AccuracyReport, json: boolean): void {
+  if (json) {
+    console.log(JSON.stringify(report, null, 2))
+    return
+  }
+  for (const p of report.problems) {
+    console.error(chalk.red(`✗ ${p.file}: ${p.code} — ${p.message}`))
+  }
+}
+
+async function writeAccuracyViews(
+  report: AccuracyReport,
+  outDir: string,
+  json: boolean,
+): Promise<void> {
+  await mkdir(outDir, { recursive: true })
+  await writeFile(
+    join(outDir, "accuracy-report.json"),
+    `${JSON.stringify(report, null, 2)}\n`,
+  )
+  await writeFile(
+    join(outDir, "accuracy-summary.json"),
+    `${JSON.stringify(report.byCapability, null, 2)}\n`,
+  )
+  if (!json) {
+    console.log(
+      chalk.dim(`views gravadas em ${outDir}/accuracy-report.json + accuracy-summary.json`),
+    )
+  }
+}
+
+function renderAccuracyVerifyHuman(
+  result: AccuracyVerifyResult,
+  totalsLine: string,
+  verifyFile: string,
+): void {
+  for (const r of result.regressions) {
+    console.error(chalk.red(`✗ regressão: ${r.case} estava passing na baseline, agora ${r.state}`))
+  }
+  for (const key of result.quarantinedClaims) {
+    console.warn(chalk.yellow(`⚠ ${key} passing na baseline, agora waived-quarantined (flake ledger)`))
+  }
+  for (const key of result.waivedClaims) {
+    console.warn(chalk.yellow(`⚠ ${key} passing na baseline, agora coberto por waiver`))
+  }
+  if (result.newlyPassing.length > 0) {
+    console.log(
+      chalk.dim(
+        `${result.newlyPassing.length} caso(s) passing ainda fora da baseline — atualize ${verifyFile} para reivindicá-los.`,
+      ),
+    )
+  }
+  if (result.ok) {
+    console.log(chalk.green(`✓ Sem regressão de acurácia. ${totalsLine}`))
+  } else {
+    console.error(chalk.red(`${result.regressions.length} regressão(ões) de acurácia. ${totalsLine}`))
+  }
+}
+
+async function verifyAccuracyCli(
+  report: AccuracyReport,
+  verifyFile: string,
+  totalsLine: string,
+  json: boolean,
+  deps: JourneysModule,
+): Promise<void> {
+  const verifyPath = resolveUserPath(verifyFile)
+  let baselineRaw: unknown
+  try {
+    baselineRaw = JSON.parse(await readFile(verifyPath, "utf-8"))
+  } catch {
+    console.error(chalk.red(`Baseline ilegível: ${verifyPath}`))
+    process.exitCode = 1
+    return
+  }
+  const baselineParsed = deps.AccuracyBaselineSchema.safeParse(baselineRaw)
+  if (!baselineParsed.success) {
+    console.error(chalk.red(`Baseline inválida (${verifyFile}): esperado {"passing": [...]}`))
+    process.exitCode = 1
+    return
+  }
+  const result = deps.verifyAccuracyBaseline(report, baselineParsed.data)
+
+  if (json) {
+    console.log(JSON.stringify({ ...report, verify: { file: verifyFile, ...result } }, null, 2))
+  } else {
+    renderAccuracyVerifyHuman(result, totalsLine, verifyFile)
+  }
+  if (!result.ok) process.exitCode = 1
+}
+
+function reportAccuracyClean(report: AccuracyReport, totalsLine: string, json: boolean, deps: JourneysModule): void {
+  if (json) {
+    console.log(JSON.stringify(report, null, 2))
+    return
+  }
+  console.log(chalk.green(`✓ ${totalsLine}`))
+  if (report.dormantWaivers.length > 0) {
+    console.log(
+      chalk.dim(
+        `waivers dormentes (capability/caseId fora do corpus atual): ${report.dormantWaivers
+          .map((w) => `${w.capability}${w.caseId ? `:${w.caseId}` : ""}`)
+          .join(", ")}`,
+      ),
+    )
+  }
+  console.log()
+  console.log(
+    chalk.dim("baseline (packages/journeys/governance/extraction-accuracy-baseline.json):"),
+  )
+  console.log(JSON.stringify(deps.accuracyBaseline(report), null, 2))
+}
+
+async function runJourneyExtractionAccuracy(opts: {
+  json?: boolean
+  verifyFile?: string
+  corpusDir?: string
+  apiBaseUrl?: string
+  envFile?: string
+  waivers?: string
+  out?: string
+  quarantined?: string
+}): Promise<void> {
+  const deps = await import("@ibatexas/journeys")
+  const { runExtractionAccuracyCli, ExtractionAccuracyCliError } = deps
+
+  const onProgress = (line: string): void => {
+    if (opts.json === true) process.stderr.write(`${line}\n`)
+    else console.log(chalk.dim(line))
+  }
+
+  try {
+    const { report } = await runExtractionAccuracyCli({
+      ...(opts.corpusDir === undefined ? {} : { corpusDir: resolveUserPath(opts.corpusDir) }),
+      ...(opts.apiBaseUrl === undefined ? {} : { apiBaseUrl: opts.apiBaseUrl }),
+      ...(opts.envFile === undefined
+        ? { envFile: resolveUserPath(join(MONOREPO_ROOT, ".env.test")) }
+        : { envFile: resolveUserPath(opts.envFile) }),
+      ...(opts.waivers === undefined ? {} : { waiversPath: resolveUserPath(opts.waivers) }),
+      ...(opts.quarantined === undefined ? {} : { quarantined: parseIdList(opts.quarantined) }),
+      onProgress,
+    })
+
+    if (!report.ok) {
+      reportAccuracyProblems(report, opts.json === true)
+      process.exitCode = 1
+      return
+    }
+
+    if (opts.out !== undefined) {
+      await writeAccuracyViews(report, resolveUserPath(opts.out), opts.json === true)
+    }
+
+    const totalsLine = formatAccuracyTotalsLine(report)
+
+    if (opts.verifyFile !== undefined) {
+      await verifyAccuracyCli(report, opts.verifyFile, totalsLine, opts.json === true, deps)
+      return
+    }
+
+    reportAccuracyClean(report, totalsLine, opts.json === true, deps)
+  } catch (err) {
+    if (err instanceof ExtractionAccuracyCliError) {
+      console.error(chalk.red(err.message))
+      process.exitCode = 1
+      return
+    }
+    throw err
+  }
+}
+
 // ── `ibx journey migrate` (T1b-5) ───────────────────────────────────────────
 // Aplica a camada sim do plano de teste (sim_runs/sim_results — registros
 // persistentes de execução, juntáveis ao intent_audit via os namespaces de
@@ -966,6 +1157,55 @@ export function registerJourneyCommands(group: Command): void {
         quarantined?: string
       }) => {
         await runJourneyCoverage(opts)
+      },
+    )
+
+  group
+    .command("extraction-accuracy")
+    .description(
+      "Meter de acurácia de extração (FE-2.3/FE-2.4, FE-T07): roda o corpus de extração (packages/journeys/extraction-corpus/*.yaml) contra o modelo AO VIVO via o canal ops-chat, materializa ExtractionIR/HydratedIntentIR via o audit-reader oracle, e reporta acurácia por capability. --verify-file falha (exit 1) em regressão passing→not-passing contra a baseline; waivers em packages/journeys/governance/extraction-accuracy-waivers.json; quarentena via `ibx journey flake --ledger <path> --list-quarantined` (mesma máquina do flake ledger, arquivo distinto).",
+    )
+    .option("--json", "Emite o relatório de acurácia em JSON")
+    .option(
+      "--verify-file <path>",
+      "Compara os casos passing contra a baseline commitada (CI gate; exit 1 em regressão)",
+    )
+    .option(
+      "--corpus-dir <path>",
+      "Diretório alternativo do corpus de extração (default: packages/journeys/extraction-corpus/)",
+    )
+    .option(
+      "--api-base-url <url>",
+      "Base da API AO VIVO a driblar (default: IBX_TEST_API_URL ou http://localhost:3001)",
+    )
+    .option(
+      "--env-file <path>",
+      "Arquivo .env do stack de teste (default: <repo>/.env.test; shell env tem precedência)",
+    )
+    .option(
+      "--waivers <path>",
+      "Arquivo de waivers alternativo (default: packages/journeys/governance/extraction-accuracy-waivers.json)",
+    )
+    .option(
+      "--out <dir>",
+      "Grava as duas views (accuracy-report.json + accuracy-summary.json) no diretório",
+    )
+    .option(
+      "--quarantined <ids>",
+      "Case keys (<capability>:<caseId>) em quarentena, separados por vírgula (seam — o flake ledger é a fonte autoritativa)",
+    )
+    .action(
+      async (opts: {
+        json?: boolean
+        verifyFile?: string
+        corpusDir?: string
+        apiBaseUrl?: string
+        envFile?: string
+        waivers?: string
+        out?: string
+        quarantined?: string
+      }) => {
+        await runJourneyExtractionAccuracy(opts)
       },
     )
 }
