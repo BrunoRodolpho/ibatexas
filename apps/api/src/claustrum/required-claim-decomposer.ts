@@ -57,6 +57,8 @@ import { STORE_OPEN_NOW_CLOSURE } from "./claimdefs/store-open-now.generated.js"
  *     unaffected).
  *   - `ORDER_STATUS_Q`   — "cadê meu pedido?" → ORDER_FULFILLMENT_STAGE.
  *   - `PAYMENT_STATUS_Q` — "meu pagamento foi aprovado?" → PAYMENT_STATUS.
+ *   - `RESERVATION_STATUS_Q` — "qual minha reserva?" / "minha mesa está confirmada?"
+ *     → RESERVATION_STATUS (FE-T17).
  *   - `PICKUP_Q`         — a PICKUP / "posso retirar agora?" question logically
  *     requires BOTH the store-open companion AND the order stage (you can only
  *     retrieve a ready order from an OPEN store) → {STORE_OPEN_NOW,
@@ -68,6 +70,7 @@ export type SpanClass =
   | "STORE_HOURS_FOR_DATE_Q"
   | "ORDER_STATUS_Q"
   | "PAYMENT_STATUS_Q"
+  | "RESERVATION_STATUS_Q"
   | "PICKUP_Q";
 
 /**
@@ -89,6 +92,12 @@ export const REQUIRED_CLAIM_CLOSURE = {
   STORE_HOURS_FOR_DATE_Q: ["STORE_HOURS_FOR_DATE"],
   ORDER_STATUS_Q: ["ORDER_FULFILLMENT_STAGE"],
   PAYMENT_STATUS_Q: ["PAYMENT_STATUS"],
+  // FE-T17 — a reservation-status question requires the reservation claim. This row
+  // ALSO auto-enrols RESERVATION_STATUS into the claim-planner's
+  // RELEVANCE_GOVERNED_TYPES (ibatexas-claim-planner.ts BKL-110) via the closure-value
+  // union, so an over-proposed reservation claim is DEMOTED on a turn whose
+  // reservation span did not fire, yet KEPT when it did.
+  RESERVATION_STATUS_Q: ["RESERVATION_STATUS"],
   // §O#15 worked example — a pickup question requires BOTH companions.
   PICKUP_Q: ["STORE_OPEN_NOW", "ORDER_FULFILLMENT_STAGE"],
 } satisfies Record<SpanClass, readonly RegistryClaimType[]>;
@@ -165,6 +174,33 @@ export function classifyRequestSpans(text: string): SpanClass[] {
 
   if (orderPhrasing) classes.push("ORDER_STATUS_Q");
   if (paymentPhrasing) classes.push("PAYMENT_STATUS_Q");
+
+  // FE-T17 — reservation-bearing phrasing. An explicit marker (not folded into the
+  // bare-"status" polysemy resolution below — reservation questions name "reserva"
+  // directly, unlike the order/payment "status" ambiguity this file's F2 fix
+  // disambiguates).
+  //
+  // ANCHORED, not a bare substring test (review fix — the original unanchored
+  // `/reserva/` false-fired on the unrelated preserv* family — "preservar" /
+  // "preservam" / "preservação" / "preservativo" all contain "reserva" as a
+  // substring — and, via the completeness gate, a false span match can degrade an
+  // otherwise-valid answer to a DIFFERENT question to UNKNOWN. It also did NOT
+  // actually match "reservei" / "reservou" despite the old comment claiming it did
+  // — `/reserva/` requires the literal substring "reserva", which neither verb form
+  // contains). The negative lookbehind `(?<![a-z])` requires the match start at a
+  // word boundary (never mid-word, closing the preserv* false-positive); the
+  // alternation covers the verb forms this domain actually sees: reserva(s)
+  // (noun/verb), reservar (infinitive), reservad-o/a (participle), reservam
+  // (3p-pl present), reservando (gerund), reservei / reservou (1s/3s preterite).
+  // The `(?!at)` lookahead right after "reserv" excludes "reservatório" (reservoir/
+  // tank) — a real word sharing the "reserva-" prefix but never the domain this
+  // decomposer models (a restaurant table reservation) — cheaply, since no verb
+  // form in the alternation is ever followed by "at". Verified empirically against
+  // both a must-fire and a must-not-fire word list (RESERVATION_STATUS_Q tests
+  // below).
+  if (/(?<![a-z])reserv(?!at)(a|ar|ad|am|as|ando|ei|ou)/.test(t)) {
+    classes.push("RESERVATION_STATUS_Q");
+  }
 
   // Bare "status" with NO payment/order discriminator → over-include BOTH (never
   // silently drop either companion). If a discriminator is present, the precise

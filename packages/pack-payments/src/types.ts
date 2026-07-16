@@ -84,6 +84,7 @@
  */
 
 import { createSystemTaintPolicy } from "@adjudicate/primitives"
+import { MONEY_BAND_1000_CENTAVOS } from "@ibatexas/types"
 
 export type PaymentIntentKind =
   | "payment.create"
@@ -386,9 +387,17 @@ export function getRefundConfirmThresholdCentavos(): number {
 /**
  * ESCALATE threshold for refunds. Default R$1000 (100_000 centavos).
  * Mirrors `pack-payments-pix`'s `ESCALATE_REFUND_THRESHOLD_CENTAVOS`.
+ *
+ * FE-T02: the default is single-sourced from `@ibatexas/types`'
+ * `MONEY_BAND_1000_CENTAVOS` — the same boundary `@ibatexas/pack-orders`'
+ * checkout-confirm ladder reads (with its own, currently-divergent, `>=`
+ * comparator). The env override above still wins when set.
  */
 export function getRefundEscalateThresholdCentavos(): number {
-  return readEnvCentavos("REFUND_ESCALATE_THRESHOLD_CENTAVOS", 100_000)
+  return readEnvCentavos(
+    "REFUND_ESCALATE_THRESHOLD_CENTAVOS",
+    MONEY_BAND_1000_CENTAVOS,
+  )
 }
 
 /**

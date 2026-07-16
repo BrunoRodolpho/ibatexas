@@ -3,3 +3,24 @@ packages:
   - "packages/*"
   - "examples/*"
   # @adjudicate/* packages are consumed from the npm registry — see ADR #13.
+
+# FE-D08 — pnpm 11's audit client (npx pnpm@11.13.1, pinned in ci.yml's
+# "Security audit" step; see comment there) reads auditConfig from a
+# workspace-level location, NOT package.json's "pnpm" field (pnpm 11 ignores
+# that field entirely). auditConfig.ignoreCves was renamed ignoreGhsas — the
+# bulk advisory endpoint pnpm 11 queries doesn't return CVE ids. This list is
+# the GHSA-mapped mirror of package.json's pnpm.auditConfig.ignoreCves/
+# ignoreGhsas (still present there for the prose "why" in ignoreCveNotes, and
+# tolerated harmlessly by pnpm 10 install/lint since neither field affects
+# resolution). Keep both in sync — see package.json's ignoreCveNotes for the
+# reasoning behind each entry.
+auditConfig:
+  ignoreGhsas:
+    - GHSA-mvf2-f6gm-w987 # fast-jwt, was CVE-2026-34950
+    - GHSA-hm7r-c7qw-ghp6 # fast-jwt, was CVE-2026-35042
+    - GHSA-cfw5-68c4-ffqp # @mikro-orm/knex, was CVE-2026-44680
+    - GHSA-gwhv-j974-6fxm # @mikro-orm/core
+    - GHSA-qpfv-44f3-qqx6 # @mikro-orm/core
+    - GHSA-fx2h-pf6j-xcff # vite (medusa's 5.x admin-bundler chain)
+    - GHSA-gv7w-rqvm-qjhr # esbuild
+    - GHSA-4w7w-66w2-5vf9 # vite path-traversal (medusa's 5.x chain, moderate)

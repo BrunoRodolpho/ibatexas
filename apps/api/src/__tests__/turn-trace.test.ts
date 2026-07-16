@@ -174,12 +174,20 @@ describe("LLM-trace capture", () => {
     });
     await planner.propose(mkState("quero adicionar costela"));
     expect(traces).toHaveLength(1);
-    const t = traces[0] as { turnId: string; promptManifest: string[]; intentHash?: string };
+    const t = traces[0] as {
+      turnId: string;
+      promptManifest: string[];
+      intentHash?: string;
+      temperature: number;
+    };
     expect(t.turnId).toBe("turn-1");
     expect(t.promptManifest).toEqual([
       expect.stringMatching(/^ibatexas\/planner\.persona@[0-9a-f]{12}$/),
     ]);
     expect(t.intentHash).toBeUndefined();
+    // FE-T01 — the trace records the temperature ACTUALLY sent on the wire
+    // (the planner pins 0), not a fictional hardcoded value.
+    expect(t.temperature).toBe(0);
   });
 
   it("the responder emits a grounded trace carrying the decision's intentHash", async () => {
@@ -201,11 +209,13 @@ describe("LLM-trace capture", () => {
     } as unknown as Plan;
     await responder.respond({ cognition: mkState("cancela"), decision, plan, acted: { kind: "executed", envelope: { kind: "order.cancel" } } });
     expect(traces).toHaveLength(1);
-    const t = traces[0] as { promptManifest: string[]; intentHash?: string };
+    const t = traces[0] as { promptManifest: string[]; intentHash?: string; temperature: number };
     expect(t.intentHash).toBe("deadbeef");
     expect(t.promptManifest).toContain(
       manifestWithHashes(composer.registry, ["ibatexas/responder.grounded"])[0],
     );
+    // FE-T01 — same honest-trace guarantee on the responder's synthesis call.
+    expect(t.temperature).toBe(0);
   });
 });
 

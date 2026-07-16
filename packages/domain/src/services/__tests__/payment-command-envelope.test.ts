@@ -576,6 +576,53 @@ describe("PaymentCommandService — envelope-typed entry points", () => {
       expect(mockPaymentUpdate).not.toHaveBeenCalled()
     })
 
+    // FE-T03/D2 — exact-boundary pins on the DOMAIN (admin-HTTP) path.
+    // This bundle's guard is a byte-parallel duplicate of
+    // @ibatexas/pack-payments' refundMagnitudeGuard (FE-D07 tracks
+    // consolidating them); these three pins prove the admin route now
+    // matches the ops/WhatsApp route's boundary behavior exactly.
+    it("REQUEST_CONFIRMATION: amount = R$ 999,99 (just below escalate threshold)", async () => {
+      const svc = createPaymentCommandService()
+      mockPaymentFindUnique.mockResolvedValue(paidRow())
+
+      const envelope = buildRefundEnvelope(99_999)
+      const outcome = await svc.issueRefundFromEnvelope(envelope)
+
+      expect(outcome.decision.kind).toBe("REQUEST_CONFIRMATION")
+      expect(mockPaymentUpdate).not.toHaveBeenCalled()
+    })
+
+    it("ESCALATE: amount = R$ 1.000 (boundary inclusive) — FE-T03/D2 flip", async () => {
+      const svc = createPaymentCommandService()
+      mockPaymentFindUnique.mockResolvedValue(paidRow())
+
+      const envelope = buildRefundEnvelope(100_000)
+      const outcome = await svc.issueRefundFromEnvelope(envelope)
+
+      expect(outcome.decision.kind).toBe("ESCALATE")
+      if (outcome.decision.kind === "ESCALATE") {
+        expect(outcome.decision.to).toBe("human")
+        expect(outcome.decision.reason).toBe(
+          "refund_above_escalate_threshold",
+        )
+      }
+      expect(mockPaymentUpdate).not.toHaveBeenCalled()
+    })
+
+    it("ESCALATE: amount = R$ 1.000,01 (just above escalate threshold)", async () => {
+      const svc = createPaymentCommandService()
+      mockPaymentFindUnique.mockResolvedValue(paidRow())
+
+      const envelope = buildRefundEnvelope(100_001)
+      const outcome = await svc.issueRefundFromEnvelope(envelope)
+
+      expect(outcome.decision.kind).toBe("ESCALATE")
+      if (outcome.decision.kind === "ESCALATE") {
+        expect(outcome.decision.to).toBe("human")
+      }
+      expect(mockPaymentUpdate).not.toHaveBeenCalled()
+    })
+
     it("REFUSE: refund amount > refundable balance", async () => {
       const svc = createPaymentCommandService()
       mockPaymentFindUnique.mockResolvedValue(

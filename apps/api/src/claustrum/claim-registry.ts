@@ -82,6 +82,12 @@ import { STORE_OPEN_NOW_REGISTRY_SPEC } from "./claimdefs/store-open-now.generat
  *     degrades SAFE to UNKNOWN pending per-resource PAYMENT key namespacing +
  *     F3 per-turn `owns`; the rows below declare the predicate, they do not by
  *     themselves prove a VALIDATED render fires this turn.
+ *   - `RESERVATION_STATUS` — a customer-scoped, live, first-party reservation
+ *     read (FE-T17; ownership required, `must_read_this_turn`). Owner-scoped +
+ *     per-resource like ORDER_FULFILLMENT_STAGE: keyed `reservation_status:{id}`
+ *     (the investigator's `RESERVATION_KEY`, already wired), falsified by a
+ *     present `reservation_cancelled` fact (the same defense-in-depth staleness
+ *     shape as ORDER_FULFILLMENT_STAGE's `order_cancelled`).
  *   - `PURCHASE_COMPLETED`  — an ACTION claim (`action_outcome`; does NOT imply
  *     settlement — SDD §E / §K Cluster F).
  *
@@ -95,6 +101,7 @@ export const CLAIM_REGISTRY = [
   "STORE_OPEN_NOW",
   "ORDER_FULFILLMENT_STAGE",
   "PAYMENT_STATUS",
+  "RESERVATION_STATUS",
   "PURCHASE_COMPLETED",
 ] as const;
 
@@ -434,6 +441,47 @@ export const REGISTRY_SPECS = {
     ],
     // C6 — bind the rendered status to the read's `status` field (ledger-sourced).
     valueBinding: { key: "payment_status", path: ["status"] },
+  },
+  // FE-T17 — the reservation-status read. Owner-scoped + per-resource, mirroring
+  // ORDER_FULFILLMENT_STAGE exactly: the base key `reservation_status` matches the
+  // investigator's `RESERVATION_KEY` (ibatexas-investigator.ts) and the owner-scope
+  // wiring already declared for it in `OWNER_SCOPED_KEY_PREFIXES` / FIX 2's
+  // `ownerScopedBaseKey` (ibatexas-claims-kernel-deps.ts / ibatexas-planner.ts) — both
+  // pre-date this row and needed no change to pick it up.
+  RESERVATION_STATUS: {
+    kind: "read_claim",
+    minSourceIntegrity: "structured",
+    requiredEvidence: [
+      {
+        key: "reservation_status",
+        // Ownership required via the reservation service's owner-scoped getById.
+        ownershipPolicy: "required",
+        freshnessPolicy: "must_read_this_turn",
+        sourceIntegrity: "structured",
+        provenancePolicy: "preserve",
+      },
+    ],
+    customerScoped: true,
+    // Parameterize by subject — matches the investigator's `reservation_status:{id}`.
+    perResourceKey: true,
+    // W6 — a present reservation CANCELLATION falsifies an in-progress reservation
+    // status read (the SAME defense-in-depth staleness shape as
+    // ORDER_FULFILLMENT_STAGE's `order_cancelled`: the read and this falsifier are
+    // honestly enumerated even though no investigator read populates it yet — see
+    // that type's identical note; the declaration is what escapes the W6 UNKNOWN-only
+    // cap, not a currently-wired second read).
+    falsifierComplete: true,
+    falsifiers: [
+      {
+        key: "reservation_cancelled",
+        ownershipPolicy: "required",
+        freshnessPolicy: "must_read_this_turn",
+        sourceIntegrity: "structured",
+        provenancePolicy: "preserve",
+      },
+    ],
+    // C6 — bind the rendered status to the read's `status` field (ledger-sourced).
+    valueBinding: { key: "reservation_status", path: ["status"] },
   },
   PURCHASE_COMPLETED: {
     kind: "action_claim",

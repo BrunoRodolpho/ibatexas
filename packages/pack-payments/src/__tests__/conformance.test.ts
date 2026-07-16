@@ -406,7 +406,7 @@ const corpus: ReadonlyArray<Fixture> = [
     expect: { kind: "REFUSE" },
   },
 
-  // ── REQUEST_CONFIRMATION (5 cases) ────────────────────────────────────
+  // ── REQUEST_CONFIRMATION (4 cases) ────────────────────────────────────
   {
     name: "REQUEST_CONFIRMATION: medium refund (R$500 < x ≤ R$1000)",
     envelope: env("payment.refund.issue", {
@@ -454,8 +454,12 @@ const corpus: ReadonlyArray<Fixture> = [
     state: existsState(),
     expect: { kind: "REQUEST_CONFIRMATION" },
   },
+
+  // ── ESCALATE (5 cases) ────────────────────────────────────────────────
   {
-    name: "REQUEST_CONFIRMATION: medium refund at R$1000 threshold",
+    // FE-T03/D2: exact-R$1000 flipped from REQUEST_CONFIRMATION to
+    // ESCALATE (comparator `>` → `>=` at the shared money-band boundary).
+    name: "ESCALATE: medium refund at R$1000 threshold — FE-T03/D2 flip",
     envelope: env("payment.refund.issue", {
       paymentId: "pay-1",
       refundAmountCentavos: 100_000,
@@ -465,10 +469,8 @@ const corpus: ReadonlyArray<Fixture> = [
       actor: "admin",
     }, "TRUSTED"),
     state: existsState({ refundedAmountCentavos: 0, amountInCentavos: 200_000 }),
-    expect: { kind: "REQUEST_CONFIRMATION" },
+    expect: { kind: "ESCALATE", escalateTo: "human" },
   },
-
-  // ── ESCALATE (4 cases) ────────────────────────────────────────────────
   {
     name: "ESCALATE: refund above R$1000 escalate threshold",
     envelope: env("payment.refund.issue", {

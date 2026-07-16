@@ -81,3 +81,40 @@ describe("completeWithEmptyRetry (F6/BKL-031)", () => {
     expect(sleep).toHaveBeenCalledWith(10);
   });
 });
+
+describe("completeWithEmptyRetry — custom isEmpty predicate (FE-T01)", () => {
+  it("uses the default text-only predicate when isEmpty is omitted (byte-identical to today)", async () => {
+    // text empty but toolCalls populated — the default predicate retries on
+    // text alone, unaware of toolCalls (the pre-FE-T01 responder behavior).
+    const complete = vi.fn(async () => ({ text: "", toolCalls: [{ id: "a" }] }));
+    const { attempts } = await completeWithEmptyRetry(complete, { maxAttempts: 2, ...noSleep });
+    expect(attempts).toBe(2); // still retries — default predicate ignores toolCalls
+  });
+
+  it("a caller-supplied isEmpty predicate overrides the default (does not retry a structured tool call)", async () => {
+    const complete = vi.fn(async () => ({ text: "", toolCalls: [{ id: "a" }] }));
+    const isEmpty = (c: { text: string; toolCalls?: unknown[] }) =>
+      isEmptyCompletion(c.text) && (c.toolCalls === undefined || c.toolCalls.length === 0);
+    const { attempts } = await completeWithEmptyRetry(complete, {
+      maxAttempts: 3,
+      isEmpty,
+      ...noSleep,
+    });
+    expect(attempts).toBe(1); // toolCalls present → not "empty" under the custom predicate
+    expect(complete).toHaveBeenCalledTimes(1);
+  });
+
+  it("a caller-supplied isEmpty predicate retries a genuinely empty (text AND toolCalls empty) completion", async () => {
+    const complete = vi.fn(async () => ({ text: "", toolCalls: [] as unknown[] }));
+    const isEmpty = (c: { text: string; toolCalls?: unknown[] }) =>
+      isEmptyCompletion(c.text) && (c.toolCalls === undefined || c.toolCalls.length === 0);
+    const { attempts, recovered } = await completeWithEmptyRetry(complete, {
+      maxAttempts: 3,
+      isEmpty,
+      ...noSleep,
+    });
+    expect(attempts).toBe(3);
+    expect(recovered).toBe(false);
+    expect(complete).toHaveBeenCalledTimes(3);
+  });
+});

@@ -6,11 +6,16 @@
  *   amount > refundable                   → REFUSE
  *   currentRefundedCentavos diverges      → REFUSE
  *   0 < amount ≤ R$500                    → EXECUTE
- *   R$500 < amount ≤ R$1000               → REQUEST_CONFIRMATION
- *   amount > R$1000                       → ESCALATE
+ *   R$500 < amount < R$1000               → REQUEST_CONFIRMATION
+ *   amount ≥ R$1000                       → ESCALATE
  *
  * Mirrors the W3 P0-1 spec; this guard is now owned by pack-payments
  * (was domain-internal under `paymentProjectionPolicyBundle`).
+ *
+ * FE-T03/D2 (2026-07): the R$1000 boundary comparator flipped from strict
+ * `>` to `>=`, so an EXACT R$1000 (100_000 centavos) refund now ESCALATEs
+ * instead of parking at REQUEST_CONFIRMATION — see "ESCALATE: amount =
+ * R$ 1.000" below.
  */
 
 import { describe, expect, it } from "vitest"
@@ -151,7 +156,27 @@ describe("refund magnitude ladder", () => {
     expect(decision.kind).toBe("REQUEST_CONFIRMATION")
   })
 
-  it("REQUEST_CONFIRMATION: amount = R$ 1.000 (boundary inclusive)", () => {
+  it("REQUEST_CONFIRMATION: amount = R$ 999,99 (just below escalate threshold)", () => {
+    const decision = adjudicate(
+      refundEnv({
+        paymentId: "p-1",
+        refundAmountCentavos: 99_999,
+        refundableBalanceCentavos: 200_000,
+        amountInCentavos: 200_000,
+        currentRefundedCentavos: 0,
+        actor: "admin",
+      }),
+      refundState(0, 200_000),
+      paymentsPolicyBundle,
+    )
+    expect(decision.kind).toBe("REQUEST_CONFIRMATION")
+  })
+
+  // FE-T03/D2: the R$1000 boundary comparator flipped from strict `>` to
+  // `>=` (single-sourced via `isAtOrAboveMoneyBand`), so this exact-boundary
+  // case moved from REQUEST_CONFIRMATION to ESCALATE. Regression pin for the
+  // flip — before the flip this decision.kind was "REQUEST_CONFIRMATION".
+  it("ESCALATE: amount = R$ 1.000 (boundary inclusive) — FE-T03/D2 flip", () => {
     const decision = adjudicate(
       refundEnv({
         paymentId: "p-1",
@@ -164,7 +189,23 @@ describe("refund magnitude ladder", () => {
       refundState(0, 200_000),
       paymentsPolicyBundle,
     )
-    expect(decision.kind).toBe("REQUEST_CONFIRMATION")
+    expect(decision.kind).toBe("ESCALATE")
+    if (decision.kind !== "ESCALATE") return
+    expect(decision.to).toBe("human")
+    // Audit record: the boundary case's decision carries the escalate
+    // basis (reason + amount + threshold), not the confirm-band basis.
+    expect(decision.basis).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          category: "business",
+          detail: expect.objectContaining({
+            reason: "refund_above_escalate_threshold",
+            amount: 100_000,
+            escalateThreshold: 100_000,
+          }),
+        }),
+      ]),
+    )
   })
 
   it("ESCALATE: amount = R$ 1.000,01 (just above escalate threshold)", () => {

@@ -32,6 +32,14 @@ export interface ModelCallTraceArgs {
   readonly outputTokens: number;
   readonly durationMs: number;
   readonly at: string;
+  /**
+   * FE-T01 — the temperature ACTUALLY sent on the wire for this call (the same
+   * value passed to `deps.model.complete({ temperature, ... })` at the call
+   * site — see `model-call-defaults.ts`'s `PINNED_COMPLETION_TEMPERATURE`).
+   * Required so the trace can never silently diverge from the request again
+   * (previously hardcoded to a fictional `0` regardless of what was sent).
+   */
+  readonly temperature: number;
   /** Optional — present on responder calls (the decision it replies to),
    * typically absent on planner calls (no intent formed yet). */
   readonly intentHash?: string;
@@ -53,7 +61,10 @@ export async function emitModelCallTrace(args: ModelCallTraceArgs): Promise<void
       turnId: args.turnId,
       promptManifest,
       model: args.model,
-      temperature: 0,
+      // FE-T01 — record the temperature actually sent, never a fictional
+      // hardcoded value (the wire body and the trace now share one source of
+      // truth: the caller passes the same constant to both).
+      temperature: args.temperature,
       inputTokens: args.inputTokens,
       outputTokens: args.outputTokens,
       completion: args.completionText,
