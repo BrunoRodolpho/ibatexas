@@ -17,10 +17,16 @@ import { reservationsPack } from "@ibatexas/pack-reservations"
 import { whatsappPack } from "@ibatexas/pack-whatsapp"
 import { KNOWN_INTENT_KINDS, LOYALTY_INTENT_KINDS } from "@ibatexas/intent-kinds"
 import {
+  CAPABILITY_DEFINITIONS,
+  GuardRefResolutionError,
+  type CapabilityDefinition,
+} from "@ibatexas/packs-composed/capability-definitions"
+import {
   assertPackCoverage,
   PackCoverageError,
   assertAuditPostgresReady,
   AuditPostgresPreflightError,
+  assertCapabilityGuardRefsWired,
 } from "../kernel-bootstrap.js"
 
 // ── Pack coverage ────────────────────────────────────────────────────────────
@@ -135,4 +141,28 @@ describe("assertAuditPostgresReady", () => {
   // Note: full live-table coverage requires a working Postgres connection and
   // is exercised in the audit-postgres-boot-preflight integration test (P2.4).
   // This unit suite covers the env-var guard and error type contract only.
+})
+
+// ── Capability guard-ref boot assertion (FE-T19) ─────────────────────────────
+
+describe("assertCapabilityGuardRefsWired", () => {
+  it("passes against the real, committed CAPABILITY_DEFINITIONS (the default boot call site)", async () => {
+    await expect(assertCapabilityGuardRefsWired()).resolves.toBeUndefined()
+  })
+
+  it("throws GuardRefResolutionError when an injected guard-ref does not resolve — proves the boot call site would actually catch a dangling ref, not just pass vacuously", async () => {
+    const first = CAPABILITY_DEFINITIONS[0]
+    if (first === undefined) {
+      throw new Error("test fixture assumption violated: CAPABILITY_DEFINITIONS is empty")
+    }
+    const broken: readonly CapabilityDefinition[] = [
+      {
+        ...first,
+        guardRefs: [{ phase: "business", name: "this_guard_does_not_exist_KB_TEST" }],
+      },
+    ]
+    await expect(assertCapabilityGuardRefsWired(broken)).rejects.toThrow(
+      GuardRefResolutionError,
+    )
+  })
 })

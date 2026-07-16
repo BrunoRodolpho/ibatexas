@@ -10,6 +10,11 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
+    },
+    "./capability-definitions": {
+      "types": "./dist/capability-definitions/index.d.ts",
+      "import": "./dist/capability-definitions/index.js",
+      "default": "./dist/capability-definitions/index.js"
     }
   },
   "scripts": {
