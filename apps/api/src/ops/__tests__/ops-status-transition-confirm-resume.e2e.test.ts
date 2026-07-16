@@ -53,6 +53,22 @@
 // override) and proves the terminal-status REFUSE actually happens — the
 // exact class of gap ("the right ingredients are there but nothing was
 // proven to consume them") that shipped the original bug.
+//
+// FE-T06 (declarative expectPayload + golden gate) AC2 — "the live-driven
+// ExtractionIR matches via expectPayload": this test's `assertWhere` check
+// below asserts EXACTLY the same clauses the authored corpus case
+// `packages/journeys/extraction-corpus/order.status.transition.yaml`
+// (case id `most-recent-order-to-ready`) declares via its `expectPayload`
+// block, driven through this same scripted-model harness — the seam-level
+// proof the ticket calls for (a live-4B drive is post-merge, orchestrator-
+// coordinated). `packages/journeys/src/extraction/expect-payload.test.ts`
+// proves the OTHER half: that the corpus file's declarative `expectPayload`
+// compiles into a `PayloadPredicate` that accepts a record shaped exactly
+// like the one this test produces (a hand-built fixture there, matching
+// this test's real one — apps/api cannot import @ibatexas/journeys to
+// literally share the predicate; TEST PLANE ONLY, check-bypass leg 6/7).
+// Keep the two lock-step: a change to the corpus case's expectations should
+// change this test's `assertWhere` clauses identically, and vice versa.
 
 import { describe, expect, it } from "vitest";
 import type { AuditRecord, DecisionKind, IntentEnvelope } from "@adjudicate/core";
@@ -208,13 +224,19 @@ describe("FE-T05 — order.status.transition first tracer: end-to-end park → c
     expect(Object.keys(parkedPayload).sort()).toEqual(["newStatus", "orderId"]);
 
     // KERNEL FACT — the audited CONFIRM record + the materialized IR pair.
+    // FE-T06 AC2 — mirrors extraction-corpus/order.status.transition.yaml's
+    // "most-recent-order-to-ready" case's expectPayload block clause for clause.
     assertWhere(sink.records, "order.status.transition", "REQUEST_CONFIRMATION", (_payload, record) => {
       const meta = record.metadata as
         | { languageEngine?: { extractionIR: unknown; hydratedIntentIR: unknown } }
         | undefined;
       if (meta?.languageEngine === undefined) return false;
       const { extractionIR, hydratedIntentIR } = meta.languageEngine as {
-        extractionIR: { capability: string; payload: Record<string, unknown> };
+        extractionIR: {
+          capability: string;
+          payload: Record<string, unknown>;
+          provenance: Record<string, { producer: string; trust: string }>;
+        };
         hydratedIntentIR: {
           payload: Record<string, unknown>;
           provenance: Record<string, { producer: string; trust: string }>;
@@ -226,8 +248,10 @@ describe("FE-T05 — order.status.transition first tracer: end-to-end park → c
         // ExtractionIR carries ONLY {newStatus} — AC1.
         Object.keys(extractionIR.payload).length === 1 &&
         extractionIR.payload.newStatus === "ready" &&
+        extractionIR.provenance.newStatus?.trust === "untrusted" &&
         // HydratedIntentIR — AC2 + AC3.
         hydratedIntentIR.payload.orderId === "order_recent" &&
+        hydratedIntentIR.payload.newStatus === "ready" &&
         hydratedIntentIR.provenance.orderId?.trust === "grounded" &&
         hydratedIntentIR.provenance.newStatus?.trust === "untrusted" &&
         hydratedIntentIR.confirmationRequired === true

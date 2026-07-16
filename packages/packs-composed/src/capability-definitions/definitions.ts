@@ -317,6 +317,10 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     successClaimLinks: ["order-canceled"],
     guardRefs: ORDERS_GUARD_REFS,
     refusalCode: "order.default.deny",
+    // FE-T23: verbatim from apps/admin's committed INTENT_KIND_LABELS —
+    // deliberately different text from `description` above (separate
+    // audience: admin-inbox operator vs. chat prompt hint).
+    adminLabel: "Cancelar pedido",
   },
   // SYSTEM-only compensation cancel (payment-expiry / stale-order) — the
   // orders planner comment is explicit: "NEVER LLM-proposable". No
@@ -336,9 +340,12 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     guardRefs: ORDERS_GUARD_REFS,
     refusalCode: "order.default.deny",
   },
-  { kind: "order.amend.add_item", pack: "ibatexas/pack-orders", mutating: true, tier: "identity" },
-  { kind: "order.amend.update_qty", pack: "ibatexas/pack-orders", mutating: true, tier: "identity" },
-  { kind: "order.amend.remove_item", pack: "ibatexas/pack-orders", mutating: true, tier: "identity" },
+  // FE-T22: these three are real justifiedBy members of the "order-amended"
+  // SUCCESS_CLAIM_CLASSES entry (ibatexas-responder.ts) alongside
+  // order.amend.request above — grounded from that real export, not invented.
+  { kind: "order.amend.add_item", pack: "ibatexas/pack-orders", mutating: true, tier: "identity", successClaimLinks: ["order-amended"] },
+  { kind: "order.amend.update_qty", pack: "ibatexas/pack-orders", mutating: true, tier: "identity", successClaimLinks: ["order-amended"] },
+  { kind: "order.amend.remove_item", pack: "ibatexas/pack-orders", mutating: true, tier: "identity", successClaimLinks: ["order-amended"] },
   { kind: "order.address.change", pack: "ibatexas/pack-orders", mutating: true, tier: "identity" },
   { kind: "order.type.switch", pack: "ibatexas/pack-orders", mutating: true, tier: "identity" },
   {
@@ -357,6 +364,8 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     successClaimLinks: ["note-added"],
     guardRefs: ORDERS_GUARD_REFS,
     refusalCode: "order.default.deny",
+    // FE-T23: verbatim from apps/admin's committed INTENT_KIND_LABELS.
+    adminLabel: "Adicionar observação ao pedido",
   },
   {
     kind: "order.review.submit",
@@ -391,6 +400,8 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     mutating: true,
     tier: "identity",
     plannerAdvertisedBy: ["ibatexas/pack-ops"],
+    // FE-T23: verbatim from apps/admin's committed INTENT_KIND_LABELS.
+    adminLabel: "Avançar status do pedido",
   },
   { kind: "order.status.reconcile", pack: "ibatexas/pack-orders", mutating: true, tier: "identity" },
 
@@ -447,6 +458,9 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     mutating: true,
     tier: "identity",
     plannerAdvertisedBy: ["ibatexas/pack-reservations"],
+    // FE-T22: a real justifiedBy member of "reservation-confirmed"
+    // (ibatexas-responder.ts), grounded from that real export.
+    successClaimLinks: ["reservation-confirmed"],
   },
   {
     kind: "reservation.complete",
@@ -454,6 +468,7 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     mutating: true,
     tier: "identity",
     plannerAdvertisedBy: ["ibatexas/pack-reservations"],
+    successClaimLinks: ["reservation-confirmed"],
   },
   // SYSTEM-only (cron) — never in the planner's allowedIntents.
   { kind: "reservation.no_show.mark", pack: "ibatexas/pack-reservations", mutating: true, tier: "identity" },
@@ -521,7 +536,10 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
   // (module doc: "most payment operations are NOT LLM-proposable").
   { kind: "payment.create", pack: "ibatexas/pack-payments", mutating: true, tier: "identity" },
   { kind: "payment.charge.create", pack: "ibatexas/pack-payments", mutating: true, tier: "identity" },
-  { kind: "payment.charge.confirm", pack: "ibatexas/pack-payments", mutating: true, tier: "identity" },
+  // FE-T22: a real justifiedBy member of "payment-settled"
+  // (ibatexas-responder.ts) alongside payment.cash.confirm below —
+  // grounded from that real export, not invented.
+  { kind: "payment.charge.confirm", pack: "ibatexas/pack-payments", mutating: true, tier: "identity", successClaimLinks: ["payment-settled"] },
   { kind: "payment.charge.fail", pack: "ibatexas/pack-payments", mutating: true, tier: "identity" },
   { kind: "payment.charge.expire", pack: "ibatexas/pack-payments", mutating: true, tier: "identity" },
   { kind: "payment.charge.cancel", pack: "ibatexas/pack-payments", mutating: true, tier: "identity" },
@@ -538,6 +556,8 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     successClaimLinks: ["pix-generated"],
     guardRefs: PAYMENTS_GUARD_REFS,
     refusalCode: "payment.default.deny",
+    // FE-T23: verbatim from apps/admin's committed INTENT_KIND_LABELS.
+    adminLabel: "Regenerar cobrança PIX",
   },
   // De-advertised (P0-7): mapped + MUTATING-classified but NOT in the
   // planner's `allowedIntents` literal — no chat tool is registered for
@@ -560,11 +580,25 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     mutating: true,
     tier: "identity",
     plannerAdvertisedBy: ["ibatexas/pack-ops"],
+    // FE-T22: a real justifiedBy member of "refund-done"
+    // (ibatexas-responder.ts) alongside payment.refund.confirm below —
+    // grounded from that real export, not invented.
+    successClaimLinks: ["refund-done"],
+    // FE-T23: verbatim from apps/admin's committed INTENT_KIND_LABELS.
+    adminLabel: "Emitir reembolso",
   },
   // Staff-route / webhook-originated — never in the planner's allowedIntents.
-  { kind: "payment.refund.confirm", pack: "ibatexas/pack-payments", mutating: true, tier: "identity" },
+  {
+    kind: "payment.refund.confirm",
+    pack: "ibatexas/pack-payments",
+    mutating: true,
+    tier: "identity",
+    successClaimLinks: ["refund-done"],
+    // FE-T23: verbatim from apps/admin's committed INTENT_KIND_LABELS.
+    adminLabel: "Confirmar reembolso",
+  },
   { kind: "payment.dispute.open", pack: "ibatexas/pack-payments", mutating: true, tier: "identity" },
-  { kind: "payment.cash.confirm", pack: "ibatexas/pack-payments", mutating: true, tier: "identity" },
+  { kind: "payment.cash.confirm", pack: "ibatexas/pack-payments", mutating: true, tier: "identity", successClaimLinks: ["payment-settled"] },
   { kind: "payment.waive", pack: "ibatexas/pack-payments", mutating: true, tier: "identity" },
   { kind: "payment.status.force", pack: "ibatexas/pack-payments", mutating: true, tier: "identity" },
   { kind: "payment.status.transition", pack: "ibatexas/pack-payments", mutating: true, tier: "identity" },
@@ -613,6 +647,8 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     mutating: true,
     tier: "identity",
     plannerAdvertisedBy: ["ibatexas/pack-ops"],
+    // FE-T23: verbatim from apps/admin's committed INTENT_KIND_LABELS.
+    adminLabel: "Disponibilidade de item (86 / liberar)",
   },
   {
     kind: "product.price.set",
@@ -620,6 +656,8 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     mutating: true,
     tier: "identity",
     plannerAdvertisedBy: ["ibatexas/pack-ops"],
+    // FE-T23: verbatim from apps/admin's committed INTENT_KIND_LABELS.
+    adminLabel: "Alterar preço de item",
   },
   {
     kind: "menu.special.set",

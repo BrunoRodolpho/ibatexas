@@ -107,8 +107,17 @@ export function isPlaneOffMessage(message: string | undefined): boolean {
 // the CONFIRM band today (refunds, PIX, 86/price, notes, kitchen/cancel). Any
 // kind absent here falls back to the RAW kind string — an honest, if unpolished,
 // display rather than a mislabel (Hard Rule #4 keeps the mapped ones pt-BR).
+//
+// Exported (FE-T23 review fix) so the CapabilityDefinition admin-label
+// freshness gate (agent-approvals.admin-label-freshness.test.ts) can pin
+// this map's own key set/size against the generated projection — a
+// one-directional freshness check (asserting only that the GENERATED keys'
+// values match) can't see a NEW entry added here without a matching
+// registry `adminLabel`; exporting the real map closes that gap. Still the
+// single source of truth — `intentKindLabel()` below remains the production
+// read path, unchanged.
 
-const INTENT_KIND_LABELS: Record<string, string> = {
+export const INTENT_KIND_LABELS: Record<string, string> = {
   'payment.pix.regenerate': 'Regenerar cobrança PIX',
   'pix.charge.refund': 'Reembolso PIX',
   'payment.refund.issue': 'Emitir reembolso',

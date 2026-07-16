@@ -2,7 +2,7 @@
 // (responder-trace-admin-plan.md — Phase B).
 //
 // Adopts claustrum's PromptComposer (`@claustrum/core`): the pt-BR prompt
-// CONTENT (personas + the 17 capability descriptions) is registered as
+// CONTENT (personas + the 18 capability descriptions) is registered as
 // `PromptFragment`s here in ibatexas; claustrum owns only the assembly SHAPE.
 // Each fragment carries a content `hash`, so the per-turn `fragmentManifest`
 // recorded in the `LLMTrace` / `turn_trace` pins the prompt VERSION (id@hash),

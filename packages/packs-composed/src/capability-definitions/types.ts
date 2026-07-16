@@ -15,8 +15,13 @@
  * The ~16 hand-maintained lists this registry will eventually replace
  * (`KNOWN_INTENT_KINDS`, `CHAT_DRIVABLE_TOOL_KINDS`, `CLAIM_REGISTRY`,
  * `SUCCESS_CLAIM_CLASSES`, per-pack `ToolClassification` / `*_TOOL_TO_INTENT`,
- * `ADVERTISED_NOT_REGISTERED_WHITELIST`, …) REMAIN authoritative today —
- * nothing here is consumed by production code yet (MIGRATE, not CONTRACT).
+ * …) REMAIN authoritative today — nothing here is consumed by production
+ * code yet (MIGRATE, not CONTRACT). The one exception is
+ * `ADVERTISED_NOT_REGISTERED_WHITELIST`, ELIMINATED in FE-T22: surface/plane
+ * membership is now `CapabilityDefinition.surfaces` data, so the hand-listed
+ * whitelist had no reason to keep existing alongside it — see
+ * `apps/api/src/tools/register-ibatexas-tool-packs.ts`'s
+ * `ToolRosterDriftOptions.chatSurfacedKinds`.
  *
  * Per FE-4.1/P5 (frozen principle — "guards IMPLEMENT policy, metadata
  * DESCRIBES capabilities"): every field here is DATA or a DECLARATIVE
@@ -232,6 +237,21 @@ interface CapabilityDefinitionCommon {
    * "extra tool name" inputs, never invented `legacyNames` entries.
    */
   readonly legacyNames?: readonly string[]
+  /**
+   * FE-4 MIGRATE 4a (FE-T23) — pt-BR admin-inbox label, grounded in
+   * `apps/admin/src/domains/admin/agent-approvals.mappers.ts`'s
+   * `INTENT_KIND_LABELS` (the ONLY intentKind→label register on the admin
+   * surface — 59 admin API routes checked, confirmed client-side-only).
+   * Optional on both tiers (not tier-discriminating): `INTENT_KIND_LABELS`
+   * is a "best-effort, NON-exhaustive register" per its own doc — only 8 of
+   * this registry's 66 kinds have a real committed label (3 chat-tier, 5
+   * identity-tier; a 9th, `pix.charge.refund`, is outside this registry
+   * entirely — see `generate-admin-labels.ts`'s external-input doc). An
+   * unmapped kind is NOT missing data — `intentKindLabel()`'s own fallback
+   * (the raw kind string) is the correct, honest display, so `undefined`
+   * here for the other 58 kinds is correct, not an omission to fill in.
+   */
+  readonly adminLabel?: string
 }
 
 /**
