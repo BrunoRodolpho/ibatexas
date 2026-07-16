@@ -141,6 +141,32 @@ vi.mock("@ibatexas/domain", () => ({
   createOrderQueryService: () => ({
     getById: mockOrderQueryGetById,
   }),
+  // routes/cart.ts's checkout handler constructs one; unexercised by any
+  // assertion in this file (no test here drives the order-command branch
+  // this powers), so a minimal callable stub is enough to satisfy the
+  // static import — see the two FE-T04 exports below for why this file's
+  // domain mock must be complete, not just "what's actually invoked".
+  createOrderCommandService: () => ({}),
+  // FE-T04 — `../routes/__shared__/customer-intent-gateway.js` (imported by
+  // routes/cart.ts) now imports these two from `@ibatexas/domain` (the
+  // canonical structural gate lives in
+  // packages/domain/services/__shared__/envelope-structural-gate.ts and is
+  // re-exported from the package root). `isStructurallyMalformed` must
+  // behave like the real predicate for these tests' well-formed envelopes —
+  // it always returns `false` here since every checkout/cart test builds its
+  // envelope through the real `buildCustomerEnvelope`, never a raw/malformed
+  // one; the structural-gate's own rejection behavior is covered by
+  // apps/api/src/routes/__tests__/test-envelope-ingress.test.ts and
+  // packages/domain/src/services/__tests__/with-adjudicate.test.ts, not here.
+  isStructurallyMalformed: () => false,
+  STRUCTURAL_REJECTION_CODE: "envelope_malformed",
+  // claustrum/resolve-and-assemble.js (imported by routes/cart.ts for
+  // identityCtx/loadCartCtx) statically imports this too. Unexercised by
+  // any assertion in this file — a minimal callable stub is enough.
+  createReservationService: () => ({
+    getById: vi.fn().mockResolvedValue(null),
+    listByCustomer: vi.fn().mockResolvedValue({ reservations: [] }),
+  }),
   prisma: {
     orderProjection: {
       findFirst: vi.fn().mockResolvedValue(null),

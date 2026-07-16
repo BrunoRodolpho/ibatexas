@@ -53,6 +53,102 @@ import {
 } from "@adjudicate/core";
 import { adjudicate, type PolicyBundle } from "@adjudicate/core/kernel";
 import { randomUUID } from "node:crypto";
+import {
+  STRUCTURAL_REJECTION_CODE,
+  isStructurallyMalformed,
+} from "@ibatexas/domain";
+
+// Re-export so existing importers (kernel-bootstrap.ts, this file's own
+// tests) keep working unchanged — the canonical definition now lives in
+// `@ibatexas/domain` (see `envelope-structural-gate.ts` there) so it can be
+// reused by BOTH this HTTP-plane gateway and the `withAdjudicate`
+// command-service chokepoint (packages/domain depends on nothing in
+// apps/api, so the shared definition has to live on that side).
+export { STRUCTURAL_REJECTION_CODE, isStructurallyMalformed };
+
+// ── FE-T04 — canonical structural boundary gate ──────────────────────────
+//
+// `isIntentEnvelope` (@adjudicate/core) is the kernel's OWN structural
+// predicate — the same one a v2-conformant adopter implementation is
+// expected to re-derive against `docs/specs/intent-envelope-v2.schema.json`.
+// Before this task it had zero production callers: the only thing standing
+// between a caller-controlled `unknown`/`as` envelope and `adjudicate()` was
+// the bespoke, narrowly-scoped `detectForgery` below (which reads exactly
+// two fields — `actor.principal` / `taint` — and assumes the value is at
+// least a plain object).
+//
+// This gate runs FIRST, before `detectForgery` reads anything off the
+// envelope, and rejects anything that is not a well-formed `IntentEnvelope`
+// at all (missing required keys, extra keys, wrong-typed fields, a
+// non-object). It is deliberately ADDITIVE, not a replacement:
+// `detectForgery` stays — defense-in-depth is a permanent property of this
+// boundary, never ranked below an "upstream" structural fix.
+//
+// Placement proof (never-false-reject): every real call site builds its
+// envelope via `buildEnvelope` / `buildCustomerEnvelope`, which ALWAYS
+// stamps the nine required fields (`origin` defaults to `DEFAULT_ORIGIN`
+// when omitted) before `runCustomerIntent` is ever invoked — so a
+// legitimate runtime envelope satisfies `isIntentEnvelope` by construction.
+// The gate can only fire on a value that bypassed construction entirely
+// (see `apps/api/src/routes/test-envelope-ingress.ts`, JOURNEY-008's
+// test-plane-only raw-envelope ingress).
+
+async function emitStructuralRejectionAudit(
+  envelope: unknown,
+  ctx: CustomerIntentContext,
+  auditSink: AuditSink | undefined,
+  durationMs: number,
+): Promise<void> {
+  if (!auditSink) return;
+  try {
+    // Re-stamp as a system-actor audit subject, mirroring the forgery
+    // trail below — the rejection record is never minted under whatever
+    // (possibly bogus) identity the malformed value carried.
+    const rawKind = (envelope as { kind?: unknown } | null)?.kind;
+    const safeOriginalKind = safeTruncate(
+      rawKind === undefined ? "<missing>" : String(rawKind),
+      FORGERY_KIND_MAX_LENGTH,
+    );
+    const rejection = buildEnvelope({
+      kind: safeTruncate(
+        `${safeOriginalKind}.structural_rejected`,
+        FORGERY_KIND_MAX_LENGTH,
+      ),
+      payload: { route: ctx.route, originalKind: safeOriginalKind },
+      actor: {
+        principal: "system",
+        sessionId: `customer-intent-gateway:${ctx.route}:${ctx.customerId}`,
+      },
+      taint: "SYSTEM",
+      nonce: randomUUID(),
+    });
+    const record = buildAuditRecord({
+      envelope: rejection,
+      decision: {
+        kind: "REFUSE",
+        refusal: {
+          kind: "SECURITY",
+          code: STRUCTURAL_REJECTION_CODE,
+          userFacing: "Requisição inválida.",
+          detail: "envelope failed the isIntentEnvelope structural check",
+        },
+        basis: [],
+      },
+      durationMs,
+    });
+    await auditSink.emit(record).catch((err: unknown) => {
+      ctx.log?.warn?.(
+        { route: ctx.route, customerId: ctx.customerId, err: (err as Error)?.message },
+        "[customer-intent-gateway] structural-rejection audit emit failed",
+      );
+    });
+  } catch (err) {
+    ctx.log?.warn?.(
+      { route: ctx.route, customerId: ctx.customerId, err: (err as Error)?.message },
+      "[customer-intent-gateway] structural-rejection audit record build failed",
+    );
+  }
+}
 
 // ── P2-6 + P2-7 (audit-2026-05-24) — forgery defenses ────────────────────
 //
@@ -440,6 +536,37 @@ export async function runCustomerIntent<R>(
   } = options;
 
   const startedAt = Date.now();
+
+  // ── Structural boundary gate — FE-T04 ───────────────────────────────────
+  // Runs BEFORE `detectForgery` reads any field off `envelope`: a value that
+  // is not envelope-shaped at all (missing keys, extra keys, wrong types, a
+  // non-object) is rejected here rather than risking an unchecked field
+  // access downstream or reaching the frozen kernel's `adjudicate()` with a
+  // malformed shape it was never contracted to validate.
+  if (isStructurallyMalformed(envelope)) {
+    void emitStructuralRejectionAudit(envelope, ctx, auditSink, Date.now() - startedAt);
+    ctx.log?.warn?.(
+      { route: ctx.route, customerId: ctx.customerId },
+      "[customer-intent-gateway] envelope_malformed rejected",
+    );
+    return {
+      statusCode: 400,
+      body: {
+        error: "Requisição inválida.",
+        code: STRUCTURAL_REJECTION_CODE,
+      },
+      decision: {
+        kind: "REFUSE",
+        refusal: {
+          kind: "SECURITY",
+          code: STRUCTURAL_REJECTION_CODE,
+          userFacing: "Requisição inválida.",
+          detail: "envelope failed the isIntentEnvelope structural check",
+        },
+        basis: [],
+      },
+    };
+  }
 
   // ── Runtime forgery guard — P2-6 + P2-7 ─────────────────────────────────
   const forgery = detectForgery(envelope);

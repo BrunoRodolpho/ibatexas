@@ -3,6 +3,16 @@
 //
 // Boot anchor responsibilities:
 //
+// (Numbering note: the list below is a flat inventory of every exported
+// boot-anchor function — items 1 and 8 run outside `bootstrapKernel`'s own
+// body (1 from `buildServer()`; 8 IS `bootstrapKernel`), so they have no
+// step-comment counterpart inside it. `bootstrapKernel`'s internal step
+// comments (further down) number ONLY what it runs, starting fresh at 1 —
+// item N here is step N-1 there, EXCEPT the final internal step (defer-
+// pending-gauge poll), which has no item-number counterpart here at all —
+// it's infrastructure, not a boot-anchor assertion. The two sequences are
+// intentionally separate counts, not a typo.)
+//
 //   1. `installKernelMetricsSink()` — called from `buildServer()` (server.ts)
 //      BEFORE routes are registered. Installs the real MetricsSink (PostHog
 //      via NATS + Sentry breadcrumbs + Prometheus counters) and returns the
@@ -24,7 +34,19 @@
 //      `ibx bootstrap`) to apply the @adjudicate/audit-postgres SQL
 //      migrations.
 //
-//   5. `assertCapabilityGuardRefsWired()` (FE-T19) — called from
+//   5. `assertEnvelopeBoundaryGateWired()` (FE-T04) — called from
+//      `bootstrapKernel()`. Drives a synthetic malformed envelope through the
+//      real `runCustomerIntent` and asserts the isIntentEnvelope structural
+//      gate (customer-intent-gateway.ts) actually rejects it. Refuses to
+//      boot if that gate has been silently removed or bypassed.
+//
+//   6. `assertCommandServiceBoundaryGateWired()` (FE-T04) — called from
+//      `bootstrapKernel()`. Same self-check on the OTHER convergence point:
+//      drives a synthetic malformed envelope through the real
+//      `withAdjudicate` (@ibatexas/domain) — the command-service chokepoint
+//      every ops/admin/subscriber/job/LLM-tool mutation flows through.
+//
+//   7. `assertCapabilityGuardRefsWired()` (FE-T19) — called from
 //      `bootstrapKernel()`. Asserts every `CapabilityGuardRef` on the
 //      authored `CapabilityDefinition` registry
 //      (`@ibatexas/packs-composed/capability-definitions`) resolves to a
@@ -37,11 +59,15 @@
 //      fires in production if a future consumer of the registry forgets to
 //      import it before this point runs.
 //
-//   6. `bootstrapKernel(server)` — called from `index.ts` after
+//   8. `bootstrapKernel(server)` — called from `index.ts` after
 //      `buildServer()` returns, before `server.listen()`. Composes the
 //      above into the boot sequence.
 
-import { installPack, PackConformanceError } from "@adjudicate/core"
+import {
+  installPack,
+  PackConformanceError,
+  type IntentEnvelope,
+} from "@adjudicate/core"
 
 /** Structural shape we read from an installed Pack. Avoids variance issues
  * when callers pass Packs with narrow literal kind unions. */
@@ -52,6 +78,7 @@ import {
   recordSinkFailure,
   setMetricsSink,
   type MetricsSink,
+  type PolicyBundle,
 } from "@adjudicate/core/kernel"
 import { customerOnboardingPack } from "@ibatexas/pack-customer-onboarding"
 import { opsPack } from "@ibatexas/pack-ops"
@@ -83,7 +110,7 @@ import {
   setAuditSinkFailureHook,
   setAuditSinkSpillSizeHook,
 } from "@ibatexas/audit-sink"
-import { prisma } from "@ibatexas/domain"
+import { prisma, withAdjudicate } from "@ibatexas/domain"
 import * as Sentry from "@sentry/node"
 import { publishNatsEvent } from "@ibatexas/nats-client"
 import { Registry } from "prom-client"
@@ -92,6 +119,10 @@ import { setAuditConsumerDedupHook } from "../subscribers/audit-consumer.js"
 import { setDeferQuotaExceededHook } from "../adapters/park-deferred-intent-nx.js"
 import { createIbatexasMetricsSink } from "../observability/metrics-sink.js"
 import { logger } from "../lib/logger.js"
+import {
+  runCustomerIntent,
+  STRUCTURAL_REJECTION_CODE,
+} from "../routes/__shared__/customer-intent-gateway.js"
 import {
   createKernelMetricsRecorder,
   createKernelMetricsSink,
@@ -382,6 +413,103 @@ export async function assertAuditPostgresReady(): Promise<void> {
   }
 }
 
+// ── FE-T04: envelope structural boundary gate self-check ────────────────────
+//
+// `runCustomerIntent` (customer-intent-gateway.ts) gates every customer
+// envelope through the canonical `isIntentEnvelope` structural check before
+// `detectForgery` or `adjudicate()` ever see it. That gate is a single `if`
+// inline in the function body — nothing stops a future edit from silently
+// deleting it (an accidental merge conflict resolution, a "simplify this"
+// refactor, …), and unlike a missing Pack policy it would NOT fail loudly:
+// a malformed envelope would just start reaching `detectForgery` / the
+// frozen kernel instead of being REFUSEd at the boundary.
+//
+// This is a live, non-mocked self-check: it drives a synthetic
+// structurally-invalid "envelope" through the REAL exported
+// `runCustomerIntent` and asserts the boundary contract holds. `runner` is
+// dependency-injectable ONLY so a unit test can supply a stand-in that
+// skips the gate and prove this assertion actually catches that
+// regression — the boot call site always uses the default (the real,
+// live-path function).
+
+export class EnvelopeBoundaryGateNotWiredError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = "EnvelopeBoundaryGateNotWiredError"
+  }
+}
+
+/** Minimal always-REFUSE policy — the self-check envelope is malformed and
+ * MUST be rejected by the structural gate before any policy is consulted;
+ * this exists only to satisfy `RunCustomerIntentOptions.policy`'s type. */
+const ENVELOPE_GATE_SELF_CHECK_POLICY: PolicyBundle<string, unknown, unknown> = {
+  stateGuards: [],
+  authGuards: [],
+  business: [],
+  taint: { minimumFor: () => "UNTRUSTED" },
+  default: "REFUSE",
+}
+
+export async function assertEnvelopeBoundaryGateWired(
+  runner: typeof runCustomerIntent = runCustomerIntent,
+): Promise<void> {
+  let executed = false
+  const reply = await runner({
+    envelope: { notAnEnvelope: true } as unknown as IntentEnvelope,
+    state: {},
+    policy: ENVELOPE_GATE_SELF_CHECK_POLICY,
+    executor: async () => {
+      executed = true
+      return {}
+    },
+    ctx: {
+      customerId: "kernel-bootstrap-self-check",
+      route: "boot.envelope-boundary-gate",
+    },
+  })
+  const code = (reply.body as { code?: unknown } | undefined)?.code
+  if (executed || reply.statusCode !== 400 || code !== STRUCTURAL_REJECTION_CODE) {
+    throw new EnvelopeBoundaryGateNotWiredError(
+      `[kernel-bootstrap] envelope structural boundary gate self-check failed — ` +
+        `expected statusCode=400 code="${STRUCTURAL_REJECTION_CODE}" with the executor never run, ` +
+        `got statusCode=${reply.statusCode} code=${JSON.stringify(code)} executed=${executed}. ` +
+        `The isIntentEnvelope gate in customer-intent-gateway.ts appears to be unwired (FE-T04).`,
+    )
+  }
+}
+
+// `withAdjudicate` (@ibatexas/domain) is the OTHER convergence point the
+// structural gate covers — the command-service chokepoint every
+// ops/admin/subscriber/job/LLM-tool mutation flows through. Same idiom as
+// `assertEnvelopeBoundaryGateWired` above: drive a synthetic malformed
+// envelope through the REAL exported `withAdjudicate` and fail boot if the
+// executor ran or the decision isn't the expected structural REFUSE.
+// `runner` is dependency-injectable ONLY for the "broken wiring" unit test.
+export async function assertCommandServiceBoundaryGateWired(
+  runner: typeof withAdjudicate = withAdjudicate,
+): Promise<void> {
+  let executed = false
+  const outcome = await runner(
+    { notAnEnvelope: true } as unknown as IntentEnvelope,
+    {},
+    ENVELOPE_GATE_SELF_CHECK_POLICY,
+    async () => {
+      executed = true
+      return {}
+    },
+  )
+  const code =
+    outcome.decision.kind === "REFUSE" ? outcome.decision.refusal.code : undefined
+  if (executed || outcome.decision.kind !== "REFUSE" || code !== STRUCTURAL_REJECTION_CODE) {
+    throw new EnvelopeBoundaryGateNotWiredError(
+      `[kernel-bootstrap] command-service structural boundary gate self-check failed — ` +
+        `expected decision.kind="REFUSE" refusal.code="${STRUCTURAL_REJECTION_CODE}" with the executor never run, ` +
+        `got decision.kind=${outcome.decision.kind} code=${JSON.stringify(code)} executed=${executed}. ` +
+        `The isStructurallyMalformed gate in with-adjudicate.ts (@ibatexas/domain) appears to be unwired (FE-T04).`,
+    )
+  }
+}
+
 // ── Capability guard-ref boot assertion (FE-T19) ─────────────────────────────
 //
 // `@ibatexas/packs-composed/capability-definitions` authors a per-capability
@@ -496,12 +624,45 @@ export async function bootstrapKernel(server: FastifyInstance): Promise<void> {
     throw err
   }
 
-  // 4. Start the defer-pending gauge poll (W3-5). Real kernel behavior;
-  //    surfaces the count of `defer:pending:*` Redis keys.
-  const recorder = getKernelMetricsRecorder()
-  startDeferPendingGaugePoll(recorder, server.log)
+  // 4. FE-T04 — assert the isIntentEnvelope structural boundary gate is
+  //    actually wired on the customer-intent-gateway live path. Fail CLOSED:
+  //    a silently-removed gate call must never boot green.
+  try {
+    await assertEnvelopeBoundaryGateWired()
+    server.log.info(
+      { event: "kernel.bootstrap.envelope_boundary_gate_wired" },
+      "[kernel-bootstrap] envelope structural boundary gate verified",
+    )
+  } catch (err) {
+    if (err instanceof EnvelopeBoundaryGateNotWiredError) {
+      server.log.fatal(
+        { err },
+        "[kernel-bootstrap] envelope boundary gate self-check failed — refusing to boot",
+      )
+    }
+    throw err
+  }
 
-  // 5. FE-T19 — assert every authored CapabilityDefinition guard-ref
+  // 5. FE-T04 — same self-check, on the OTHER convergence point: the
+  //    command-service chokepoint (`withAdjudicate`, @ibatexas/domain) every
+  //    ops/admin/subscriber/job/LLM-tool mutation flows through.
+  try {
+    await assertCommandServiceBoundaryGateWired()
+    server.log.info(
+      { event: "kernel.bootstrap.command_service_boundary_gate_wired" },
+      "[kernel-bootstrap] command-service structural boundary gate verified",
+    )
+  } catch (err) {
+    if (err instanceof EnvelopeBoundaryGateNotWiredError) {
+      server.log.fatal(
+        { err },
+        "[kernel-bootstrap] command-service boundary gate self-check failed — refusing to boot",
+      )
+    }
+    throw err
+  }
+
+  // 6. FE-T19 — assert every authored CapabilityDefinition guard-ref
   //    resolves to a real, live guard on the just-installed Packs'
   //    PolicyBundles. Fail CLOSED: a guard renamed, removed, or moved to a
   //    different phase without updating the registry must never boot green.
@@ -520,6 +681,11 @@ export async function bootstrapKernel(server: FastifyInstance): Promise<void> {
     }
     throw err
   }
+
+  // 7. Start the defer-pending gauge poll (W3-5). Real kernel behavior;
+  //    surfaces the count of `defer:pending:*` Redis keys.
+  const recorder = getKernelMetricsRecorder()
+  startDeferPendingGaugePoll(recorder, server.log)
 }
 
 // ── W3-5: defer-pending-gauge poll ──────────────────────────────────────────
