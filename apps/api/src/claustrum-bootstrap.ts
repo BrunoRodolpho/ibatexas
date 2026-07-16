@@ -228,6 +228,13 @@ import {
   IBATEXAS_COMPOSED_PACKS,
   composedIntentKinds,
 } from "@ibatexas/packs-composed";
+// FE-T22: the surface-derived chat-surfaced-kinds set, replacing the retired
+// ADVERTISED_NOT_REGISTERED_WHITELIST — see register-ibatexas-tool-packs.ts's
+// ToolRosterDriftOptions.chatSurfacedKinds for the full contract.
+import {
+  CAPABILITY_DEFINITIONS,
+  generateChatDrivableToolKinds,
+} from "@ibatexas/packs-composed/capability-definitions";
 import { paymentsPixPack } from "@adjudicate/pack-payments-pix";
 import { requireSecret } from "./utils/require-secret.js";
 import { requireEnv } from "./utils/require-env.js";
@@ -2672,6 +2679,13 @@ export async function bootstrapClaustrum(
       planners: IBATEXAS_COMPOSED_CAPABILITY_PLANNERS,
       onWarn: (message) =>
         logger.warn({ component: "claustrum-bootstrap" }, message),
+      // FE-T22: exempts every kind not meant to be chat-surfaced (surface-
+      // derived from CapabilityDefinition, replacing the retired hand-listed
+      // ADVERTISED_NOT_REGISTERED_WHITELIST) from the advertised-but-
+      // unregistered check.
+      chatSurfacedKinds: new Set(
+        generateChatDrivableToolKinds(CAPABILITY_DEFINITIONS),
+      ),
     },
   );
   if (rosterDrift.length > 0) {

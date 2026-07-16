@@ -9,6 +9,11 @@
  *     `generate-pack-intent-kinds.ts`, `generate-planner-allowed-intents.ts`.
  *   - Tool/driving (FE-T21): `generate-capability-descriptions.ts`,
  *     `generate-tool-to-intent-map.ts`, `generate-mutating-tool-names.ts`.
+ *   - Surface/claims/prompt (FE-T22): `generate-refusal-codes.ts`,
+ *     `generate-success-claim-justified-by.ts` (surface/plane membership
+ *     and prompt hints reuse `generate-chat-drivable-tool-kinds.ts` and
+ *     `generate-capability-descriptions.ts` respectively — see FE-T22's
+ *     PR body for why no new generator was needed for either).
  *
  * # This module IS the boot assertion
  *
@@ -62,6 +67,10 @@ export { generateCapabilityDescriptions } from "./generate-capability-descriptio
 export { generateToolToIntentMap } from "./generate-tool-to-intent-map.js"
 
 export { generateMutatingToolNames } from "./generate-mutating-tool-names.js"
+
+export { generateRefusalCodes } from "./generate-refusal-codes.js"
+
+export { generateJustifiedByForClaim } from "./generate-success-claim-justified-by.js"
 
 import { CAPABILITY_DEFINITIONS } from "./definitions.js"
 import { assertGuardRefsResolve } from "./guard-resolution.js"

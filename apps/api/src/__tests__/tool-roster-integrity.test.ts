@@ -23,6 +23,10 @@ import {
   composedIntentKinds,
 } from "@ibatexas/packs-composed";
 import {
+  CAPABILITY_DEFINITIONS,
+  generateChatDrivableToolKinds,
+} from "@ibatexas/packs-composed/capability-definitions";
+import {
   agentCtxFromCapsule,
   listIbatexasToolPacks,
   readToolRosterDrift,
@@ -167,12 +171,33 @@ describe("RC-A1 Phase A — tool roster integrity", () => {
 // IBATEXAS_COMPOSED_CAPABILITY_PLANNERS from @ibatexas/packs-composed, exactly
 // what claustrum-bootstrap passes.
 
-/** Run the gate over the real boot composition, capturing WARN output. */
-function runBootDrift(): { problems: string[]; warnings: string[] } {
+// FE-T22 — the real chat-surfaced-kinds set, computed exactly like
+// claustrum-bootstrap.ts computes it for the live boot call: every
+// tier:"chat" CapabilityDefinition whose surfaces includes "chat".
+const CHAT_SURFACED_KINDS: ReadonlySet<string> = new Set(
+  generateChatDrivableToolKinds(CAPABILITY_DEFINITIONS),
+);
+
+/**
+ * Run the gate over the real boot composition, capturing WARN output.
+ * Defaults `chatSurfacedKinds` to the real surface-derived set (matching
+ * live boot wiring) when the option is OMITTED. Pass `{ chatSurfacedKinds:
+ * undefined }` explicitly (an `in`-check, not `??`, distinguishes "omitted"
+ * from "present but undefined" — a bare optional-parameter default cannot,
+ * since JS substitutes the default for an explicitly-passed `undefined` too)
+ * to probe the gate's behavior with NO exemption granted (pre-FE-T22 shape,
+ * minus the retired hand-written whitelist).
+ */
+function runBootDrift(
+  options: { chatSurfacedKinds?: ReadonlySet<string> } = {},
+): { problems: string[]; warnings: string[] } {
   const warnings: string[] = [];
+  const chatSurfacedKinds =
+    "chatSurfacedKinds" in options ? options.chatSurfacedKinds : CHAT_SURFACED_KINDS;
   const problems = toolRosterDrift(listIbatexasToolPacks(), PACK_INTENT_UNION, {
     planners: IBATEXAS_COMPOSED_CAPABILITY_PLANNERS,
     onWarn: (m) => warnings.push(m),
+    chatSurfacedKinds,
   });
   return { problems, warnings };
 }
@@ -196,8 +221,9 @@ describe("P0-7 — context-aware roster drift", () => {
   // The staff-chat exception: reservation.checkin/complete are STAFF-ROUTE-ONLY
   // BY DESIGN (live chat pins staffId:null; admin routes build envelopes
   // directly), yet the reservations planner advertises them for a staff
-  // session. The whitelist must absorb that — and must not be vacuous.
-  it("the staff probe really advertises the whitelisted staff kinds (non-vacuous)", () => {
+  // session. The surface-derived `chatSurfacedKinds` exemption must absorb
+  // that — and must not be vacuous.
+  it("the staff probe really advertises the surface-exempted staff kinds (non-vacuous)", () => {
     const staff = ROSTER_DRIFT_CONTEXTS.find((c) => c.name === "staff");
     expect(staff).toBeDefined();
     const advertised = new Set(
@@ -208,11 +234,11 @@ describe("P0-7 — context-aware roster drift", () => {
     expect(advertised.has("reservation.checkin")).toBe(true);
     expect(advertised.has("reservation.complete")).toBe(true);
     // NEW-032 slice C1: the ops planner advertises product.availability.set
-    // under the staff probe — proves the whitelist entry is non-vacuous.
+    // under the staff probe — proves the exemption is non-vacuous.
     expect(advertised.has("product.availability.set")).toBe(true);
   });
 
-  it("whitelists reservation.checkin/complete under the staff context (no drift)", () => {
+  it("exempts reservation.checkin/complete under the staff context (no drift)", () => {
     const { problems } = runBootDrift();
     expect(
       problems.filter(
@@ -263,6 +289,84 @@ describe("P0-7 — context-aware roster drift", () => {
           p.includes("tool_unresolved"),
       ),
     ).toBe(true);
+  });
+});
+
+// ── FE-T22 — chatSurfacedKinds pinned equivalence to the retired whitelist ──
+//
+// The retired `ADVERTISED_NOT_REGISTERED_WHITELIST` hand-listed exactly these
+// 10 `<context>:<kind>` pairs (recovered from the pre-deletion const, all
+// under the "staff" context: reservation.checkin/.complete + 8 ops-plane
+// verbs). This is the safety net the ticket requires: pin the pre-deletion
+// set as literals, then prove the surface-derived `chatSurfacedKinds`
+// projection reproduces the exact same allowed (exempted) set — and that the
+// exemption is doing real work, not vacuously passing because nothing probes
+// it.
+const PRE_DELETION_WHITELIST_PAIRS: ReadonlyArray<{
+  readonly context: string;
+  readonly kind: string;
+}> = [
+  { context: "staff", kind: "reservation.checkin" },
+  { context: "staff", kind: "reservation.complete" },
+  { context: "staff", kind: "product.availability.set" },
+  { context: "staff", kind: "product.price.set" },
+  { context: "staff", kind: "menu.special.set" },
+  { context: "staff", kind: "order.status.transition" },
+  { context: "staff", kind: "payment.refund.issue" },
+  { context: "staff", kind: "ops.alert.resolve.staff" },
+  { context: "staff", kind: "incident.ticket.close.staff" },
+  { context: "staff", kind: "schedule.override.set" },
+];
+
+describe("FE-T22 — chatSurfacedKinds replaces ADVERTISED_NOT_REGISTERED_WHITELIST (pinned equivalence)", () => {
+  it("the surface-derived set is exactly the 18 chat-tier kinds (T19's CHAT_DRIVABLE_TOOL_KINDS exemplar)", () => {
+    expect(CHAT_SURFACED_KINDS.size).toBe(18);
+  });
+
+  it("none of the 10 pre-deletion whitelist kinds is chat-surfaced (every one is exempt by construction)", () => {
+    for (const { kind } of PRE_DELETION_WHITELIST_PAIRS) {
+      expect(CHAT_SURFACED_KINDS.has(kind), kind).toBe(false);
+    }
+  });
+
+  it("the composed planners still advertise all 10 pre-deletion kinds under their pinned context (the exemption is non-vacuous)", () => {
+    const advertisedByContext = new Map<string, Set<string>>();
+    for (const probe of ROSTER_DRIFT_CONTEXTS) {
+      advertisedByContext.set(
+        probe.name,
+        new Set(
+          IBATEXAS_COMPOSED_CAPABILITY_PLANNERS.flatMap((p) => [
+            ...p.plan(probe.state, probe.context).allowedIntents,
+          ]),
+        ),
+      );
+    }
+    for (const { context, kind } of PRE_DELETION_WHITELIST_PAIRS) {
+      expect(
+        advertisedByContext.get(context)?.has(kind),
+        `${context}:${kind} must still be advertised — else the exemption test below would be vacuous`,
+      ).toBe(true);
+    }
+  });
+
+  it("runBootDrift with the real surface-derived chatSurfacedKinds set reports zero problems for all 10 pairs (unchanged from the pre-deletion whitelist)", () => {
+    const { problems } = runBootDrift();
+    for (const { kind } of PRE_DELETION_WHITELIST_PAIRS) {
+      expect(
+        problems.some((p) => p.includes(kind)),
+        `${kind} must not be flagged now that the surface-derived exemption is wired in`,
+      ).toBe(false);
+    }
+  });
+
+  it("runBootDrift WITHOUT any exemption (chatSurfacedKinds explicitly undefined) FAILS on all 10 pre-deletion pairs — proving the exemption is load-bearing, not a no-op", () => {
+    const { problems } = runBootDrift({ chatSurfacedKinds: undefined });
+    for (const { context, kind } of PRE_DELETION_WHITELIST_PAIRS) {
+      expect(
+        problems.some((p) => p.includes(`"${context}"`) && p.includes(kind)),
+        `${context}:${kind} must be flagged as a problem with no exemption granted`,
+      ).toBe(true);
+    }
   });
 });
 

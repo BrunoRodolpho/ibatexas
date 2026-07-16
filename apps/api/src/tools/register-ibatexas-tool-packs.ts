@@ -447,16 +447,24 @@ export function listIbatexasToolPacks(): ReadonlyArray<TD<unknown, unknown>> {
  * (the planner would emit the envelope, the kernel would adjudicate it, and
  * dispatchDecision would `tool_unresolved` on EXECUTE). This is exactly the
  * dangle `payment.method.switch` / `payment.retry` shipped before P0-7
- * de-advertised them. The documented staff-chat exception is whitelisted
- * (see ADVERTISED_NOT_REGISTERED_WHITELIST); registered-but-unadvertised
- * kinds are WARN-only via `options.onWarn` — unreachable via chat is dead
- * weight, never a dispatch failure (`order.review.submit` is the known case:
- * the orders planner never advertises it; reviews arrive via the web flow).
+ * de-advertised them. The documented staff-chat exception (`reservation.
+ * checkin`/`.complete`, the 9 ops-plane verbs) is now SURFACE-DERIVED
+ * (FE-T22) — see `options.chatSurfacedKinds` — rather than a hand-maintained
+ * per-`(context, kind)` whitelist: a kind advertised-but-unregistered under
+ * ANY probed context is EXPECTED (not drift) precisely when it is not meant
+ * to be chat-surfaced at all, and `CapabilityDefinition.surfaces` is the
+ * data that already says so. Registered-but-unadvertised kinds are WARN-only
+ * via `options.onWarn` — unreachable via chat is dead weight, never a
+ * dispatch failure (`order.review.submit` is the known case: the orders
+ * planner never advertises it; reviews arrive via the web flow).
  *
- * Pure: the caller supplies the pack intent union AND the planners (the
- * registrar deliberately does not import `@ibatexas/pack-*` /
- * `@ibatexas/packs-composed` to stay dependency-light). Returns a list of
- * human-readable problems; empty array means the roster is healthy.
+ * Pure: the caller supplies the pack intent union, the planners, AND the
+ * chat-surfaced-kinds set (the registrar deliberately does not import
+ * `@ibatexas/pack-*` / `@ibatexas/packs-composed` to stay dependency-light —
+ * `apps/api/src/claustrum-bootstrap.ts` builds `chatSurfacedKinds` from
+ * `@ibatexas/packs-composed/capability-definitions` and passes it in, exactly
+ * like it already does for `planners`). Returns a list of human-readable
+ * problems; empty array means the roster is healthy.
  */
 export interface RosterDriftContext {
   /** Stable name used in problem messages and the whitelist keys. */
@@ -516,81 +524,22 @@ export const ROSTER_DRIFT_CONTEXTS: ReadonlyArray<RosterDriftContext> = [
   },
 ];
 
-// Documented staff-chat exception, keyed `<context>:<kind>`:
-// `reservation.checkin` / `reservation.complete` are STAFF-ROUTE-ONLY BY
-// DESIGN — the live chat planner pins staffId:null so neither is ever
-// proposable via chat, and the admin routes build their envelopes directly
-// (never through this tool registry). The reservations pack still advertises
-// them for a staff session (the pack ships the capability for adopters with
-// a staff chat surface), so under the synthetic "staff" probe they are
-// advertised-but-unregistered — EXPECTED, not drift.
-const ADVERTISED_NOT_REGISTERED_WHITELIST: ReadonlySet<string> = new Set([
-  "staff:reservation.checkin",
-  "staff:reservation.complete",
-  // NEW-032 slice C1: `product.availability.set` is the @ibatexas/pack-ops
-  // staff-plane verb. Its planner advertises it under the synthetic staff
-  // probe (staffId set), but it is NOT a chat tool — the ops persona proposes
-  // it through the future ops conductor, never the customer/LLM chat surface,
-  // so it has no registered chat tool. Advertised-but-unregistered here is
-  // EXPECTED, not drift — same rationale as the reservation staff kinds above.
-  "staff:product.availability.set",
-  // NEW-004: `product.price.set` (the price-change-by-message verb) — same
-  // posture as `product.availability.set`. Advertised by the ops planner under
-  // the staff probe, proposed through the OPS conductor + registered in the OPS
-  // tool registry, NEVER the customer/LLM chat surface (absent from
-  // CHAT_DRIVABLE_TOOL_KINDS), so it has no registered CHAT tool.
-  // Advertised-but-unregistered on the chat roster is EXPECTED, not drift.
-  // (`opsPlaneDriftProblems` separately verifies it IS registered on the OPS
-  // registry with capability===intentKind.)
-  "staff:product.price.set",
-  // SCN-114: `menu.special.set` (the daily-special-by-message verb) — same
-  // posture as `product.price.set`. Advertised by the ops planner under the staff
-  // probe, proposed through the OPS conductor + registered in the OPS tool
-  // registry, NEVER the customer/LLM chat surface (absent from
-  // CHAT_DRIVABLE_TOOL_KINDS), so it has no registered CHAT tool.
-  // Advertised-but-unregistered on the chat roster is EXPECTED, not drift.
-  // (`opsPlaneDriftProblems` separately verifies it IS registered on the OPS
-  // registry with capability===intentKind.)
-  "staff:menu.special.set",
-  // BKL-090: `order.status.transition` (the kitchen-advance verb) is now
-  // advertised by the ops planner under the staff probe (owned by pack-orders,
-  // routed via composition). Like `product.availability.set`, it is a
-  // STAFF/OPS-plane verb proposed through the OPS conductor + registered in the
-  // OPS tool registry — NEVER the customer/LLM chat surface, so it has no
-  // registered CHAT tool. Advertised-but-unregistered on the chat roster is
-  // EXPECTED, not drift. (The ops-plane drift parity gate,
-  // `opsPlaneDriftProblems`, separately verifies it IS registered on the OPS
-  // registry with capability===intentKind.)
-  "staff:order.status.transition",
-  // BKL-085: `payment.refund.issue` (the refunds-by-message verb) is advertised
-  // by the ops planner under the staff probe (owned by pack-payments, routed via
-  // composition). Like the two order kinds above, it is a STAFF/OPS-plane money
-  // verb proposed through the OPS conductor + registered in the OPS tool registry
-  // — NEVER the customer/LLM chat surface (it is deliberately absent from
-  // CHAT_DRIVABLE_TOOL_KINDS), so it has no registered CHAT tool.
-  // Advertised-but-unregistered on the chat roster is EXPECTED, not drift.
-  "staff:payment.refund.issue",
-  // BKL-088: `ops.alert.resolve.staff` + `incident.ticket.close.staff` (the
-  // two OWNED ops-plane RESOLUTION verbs) are advertised by the ops planner
-  // under the staff probe. Like `product.availability.set`, they are OPS-plane
-  // verbs proposed through the OPS conductor + registered in the OPS tool
-  // registry — NEVER the customer/LLM chat surface (absent from
-  // CHAT_DRIVABLE_TOOL_KINDS), so they have no registered CHAT tool.
-  // Advertised-but-unregistered on the chat roster is EXPECTED, not drift.
-  // (`opsPlaneDriftProblems` separately verifies they ARE registered on the OPS
-  // registry with capability===intentKind.)
-  "staff:ops.alert.resolve.staff",
-  "staff:incident.ticket.close.staff",
-  // SCN-127: `schedule.override.set` (the schedule-override-by-message verb) is
-  // advertised by the ops planner under the staff probe. Like the other OWNED
-  // ops verbs it is a STAFF/OPS-plane verb proposed through the OPS conductor +
-  // registered in the OPS tool registry — NEVER the customer/LLM chat surface
-  // (absent from CHAT_DRIVABLE_TOOL_KINDS), so it has no registered CHAT tool.
-  // Advertised-but-unregistered on the chat roster is EXPECTED, not drift.
-  // (`opsPlaneDriftProblems` separately verifies it IS registered on the OPS
-  // registry with capability===intentKind.)
-  "staff:schedule.override.set",
-]);
+// FE-T22 — ADVERTISED_NOT_REGISTERED_WHITELIST RETIRED. It used to hand-list
+// 10 `<context>:<kind>` pairs (reservation.checkin/.complete under "staff", +
+// 8 ops-plane verbs under "staff") that are advertised-but-unregistered BY
+// DESIGN — every one of them a STAFF/OPS-plane verb never meant to be
+// chat-surfaced at all (`product.availability.set` etc. are "Chat-INVISIBLE
+// by construction", per pack-ops's own module doc). `CapabilityDefinition.
+// surfaces` (FE-4.1 — "surfaces is modeled as data") already says so for
+// every one of those 10 kinds: none of them is `tier: "chat"`, so none
+// carries `"chat"` in `surfaces`. `checkAdvertisedAgainstRegistered` below
+// now takes that as an explicit `chatSurfacedKinds` input (see
+// `ToolRosterDriftOptions`) instead of the hand-maintained per-pair
+// enumeration — a kind advertised-but-unregistered under ANY probed context
+// is EXPECTED precisely when it is not in that set. Verified byte-for-byte
+// equivalent to the retired whitelist (all 10 pre-deletion pairs pinned as
+// literals and proven still-exempt) in
+// apps/api/src/__tests__/tool-roster-integrity.test.ts.
 
 export interface ToolRosterDriftOptions {
   /**
@@ -606,6 +555,29 @@ export interface ToolRosterDriftOptions {
    * to the returned problems. Defaults to console.warn.
    */
   readonly onWarn?: (message: string) => void;
+  /**
+   * FE-T22 — the kinds meant to be chat-surfaced (i.e. `CapabilityDefinition.
+   * surfaces` includes `"chat"` for a `tier: "chat"` instance — in practice
+   * this is `CHAT_DRIVABLE_TOOL_KINDS`'s membership). Replaces the retired
+   * `ADVERTISED_NOT_REGISTERED_WHITELIST`: a kind advertised-but-unregistered
+   * under ANY probed context is EXPECTED (not a problem) precisely when it is
+   * NOT in this set — every staff/ops-plane verb that used to need a
+   * hand-written whitelist entry is, by construction, absent from it.
+   *
+   * `undefined` (the default) means NO exemption is granted — every
+   * advertised-but-unregistered kind is a problem, matching this leg's
+   * pre-FE-T22 behavior for any caller that does not opt in (e.g.
+   * `opsPlaneDriftProblems` in `ops/ops-conductor.ts`, which never needs the
+   * exemption: every kind its `opsCapabilityPlanner` advertises IS registered
+   * in the OPS tool registry by construction — see `opsPlaneDriftProblems`'s
+   * own doc). The real chat-registry boot call
+   * (`apps/api/src/claustrum-bootstrap.ts`) supplies it, built from
+   * `@ibatexas/packs-composed/capability-definitions`'s
+   * `generateChatDrivableToolKinds(CAPABILITY_DEFINITIONS)` — the registrar
+   * itself still does not import packs-composed (stays dependency-light);
+   * the caller computes and injects the set, exactly like `planners`.
+   */
+  readonly chatSurfacedKinds?: ReadonlySet<string>;
 }
 
 /**
@@ -653,13 +625,16 @@ function advertisedKindsForProbe(
 /**
  * Context-aware leg (P0-7): `advertised ⊆ registered` per named context. Returns
  * a problem per dangling advertised kind; emits WARN (never a problem) for
- * registered-but-unadvertised kinds via `onWarn`.
+ * registered-but-unadvertised kinds via `onWarn`. `chatSurfacedKinds`
+ * (FE-T22) replaces the retired `ADVERTISED_NOT_REGISTERED_WHITELIST` — see
+ * `ToolRosterDriftOptions.chatSurfacedKinds`'s doc for the full contract.
  */
 function checkAdvertisedAgainstRegistered(
   tools: ReadonlyArray<TD<unknown, unknown>>,
   planners: ReadonlyArray<CapabilityPlanner<unknown, unknown>>,
   contexts: ReadonlyArray<RosterDriftContext>,
   onWarn: (message: string) => void,
+  chatSurfacedKinds: ReadonlySet<string> | undefined,
 ): string[] {
   const problems: string[] = [];
   // Registration is keyed by `capability` (resolveTool matches it against
@@ -673,7 +648,10 @@ function checkAdvertisedAgainstRegistered(
     for (const kind of advertised) {
       advertisedAnywhere.add(kind);
       if (registered.has(kind)) continue;
-      if (ADVERTISED_NOT_REGISTERED_WHITELIST.has(`${probe.name}:${kind}`)) {
+      // FE-T22: exempt when the kind is NOT meant to be chat-surfaced at
+      // all (surface-derived — see the option's own doc). `undefined` grants
+      // no exemption (every advertised-but-unregistered kind is a problem).
+      if (chatSurfacedKinds !== undefined && !chatSurfacedKinds.has(kind)) {
         continue;
       }
       problems.push(
@@ -710,7 +688,13 @@ export function toolRosterDrift(
     const contexts = options?.contexts ?? ROSTER_DRIFT_CONTEXTS;
     const onWarn = options?.onWarn ?? ((m: string) => console.warn(m));
     problems.push(
-      ...checkAdvertisedAgainstRegistered(tools, planners, contexts, onWarn),
+      ...checkAdvertisedAgainstRegistered(
+        tools,
+        planners,
+        contexts,
+        onWarn,
+        options?.chatSurfacedKinds,
+      ),
     );
   }
 
