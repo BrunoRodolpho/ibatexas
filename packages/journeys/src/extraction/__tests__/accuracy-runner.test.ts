@@ -100,7 +100,7 @@ describe("driveExtractionCorpusOverOpsChat — happy path", () => {
     const records: AuditRecord[] = []
     const audit = fakeAuditReader(() => records)
 
-    const results = await driveExtractionCorpusOverOpsChat([corpus], {
+    const { results } = await driveExtractionCorpusOverOpsChat([corpus], {
       apiBaseUrl: "http://fake",
       staffCookie: "staff_token=abc",
       staffId: "staff_1",
@@ -146,7 +146,7 @@ describe("driveExtractionCorpusOverOpsChat — happy path", () => {
       return new Response(JSON.stringify({ reply: "ok" }), { status: 200 })
     }) as unknown as typeof fetch
 
-    const results = await driveExtractionCorpusOverOpsChat([corpus], {
+    const { results } = await driveExtractionCorpusOverOpsChat([corpus], {
       apiBaseUrl: "http://fake",
       staffCookie: "staff_token=abc",
       staffId: "staff_1",
@@ -172,7 +172,7 @@ describe("driveExtractionCorpusOverOpsChat — failure modes never throw", () =>
     const audit = fakeAuditReader(() => [])
     const fetchImpl = (async () => new Response("Acesso restrito.", { status: 403 })) as unknown as typeof fetch
 
-    const results = await driveExtractionCorpusOverOpsChat([corpus], {
+    const { results } = await driveExtractionCorpusOverOpsChat([corpus], {
       apiBaseUrl: "http://fake",
       staffCookie: "staff_token=abc",
       staffId: "staff_1",
@@ -192,7 +192,7 @@ describe("driveExtractionCorpusOverOpsChat — failure modes never throw", () =>
     const audit = fakeAuditReader(() => []) // never settles
     const fetchImpl = (async () => new Response(JSON.stringify({ reply: "ok" }), { status: 200 })) as unknown as typeof fetch
 
-    const results = await driveExtractionCorpusOverOpsChat([corpus], {
+    const { results } = await driveExtractionCorpusOverOpsChat([corpus], {
       apiBaseUrl: "http://fake",
       staffCookie: "staff_token=abc",
       staffId: "staff_1",
@@ -242,5 +242,46 @@ describe("driveExtractionCorpusOverOpsChat — test isolation", () => {
     expect(clearHistory).toHaveBeenCalledTimes(2)
     expect(clearHistory).toHaveBeenNthCalledWith(1, "staff_1")
     expect(clearHistory).toHaveBeenNthCalledWith(2, "staff_1")
+  })
+
+  it("a clearHistory throw is caught, attributed as an isolationFailure per case, and does NOT abort the run (review MAJOR follow-up, #263 — the case still drives for diagnostic value; the CALLER decides whether the overall report is trustworthy)", async () => {
+    const corpus = corpusOf([
+      { id: "case-a", utterance: "x", newStatus: "ready" },
+      { id: "case-b", utterance: "y", newStatus: "confirmed" },
+    ])
+    let n = 0
+    const records: AuditRecord[] = []
+    const audit = fakeAuditReader(() => records)
+    const fetchImpl = (async () => {
+      n += 1
+      records.push(fakeRecord(String(n), "order.status.transition", n === 1 ? "ready" : "confirmed"))
+      return new Response(JSON.stringify({ reply: "ok" }), { status: 200 })
+    }) as unknown as typeof fetch
+    const clearHistory = vi.fn(async () => {
+      throw new Error("REDIS_URL env var required")
+    })
+
+    const { results, isolationFailures } = await driveExtractionCorpusOverOpsChat([corpus], {
+      apiBaseUrl: "http://fake",
+      staffCookie: "staff_token=abc",
+      staffId: "staff_1",
+      audit,
+      scope: SCOPE,
+      fetchImpl,
+      clearHistory,
+      settleTimeoutMs: 1000,
+      settlePollMs: 5,
+      interCaseDelayMs: 0,
+    })
+
+    // NOT swallowed: one isolationFailure per case, never silently dropped.
+    expect(isolationFailures).toEqual([
+      { capability: "order.status.transition", caseId: "case-a", detail: "REDIS_URL env var required" },
+      { capability: "order.status.transition", caseId: "case-b", detail: "REDIS_URL env var required" },
+    ])
+    // NOT aborted: both cases still drove and scored normally.
+    expect(results).toHaveLength(2)
+    expect(results[0]).toMatchObject({ caseId: "case-a", ok: true })
+    expect(results[1]).toMatchObject({ caseId: "case-b", ok: true })
   })
 })

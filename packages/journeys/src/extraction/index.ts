@@ -53,12 +53,14 @@ export {
   type AccuracyWaiverCategory,
   type CapabilityAccuracy,
   type ComputeAccuracyReportOptions,
+  type IsolationFailure,
 } from "./accuracy.js"
 
 export {
   AccuracyRunnerError,
   driveExtractionCorpusOverOpsChat,
   type DriveExtractionCorpusOptions,
+  type DriveExtractionCorpusResult,
 } from "./accuracy-runner.js"
 
 export {

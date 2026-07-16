@@ -21,9 +21,15 @@
 # (Identity class, resolver-only), so `payload.orderId` is ALWAYS empty for
 # this capability and that authoritative path is structurally unreachable
 # today. An "explicit order reference" corpus variant would therefore
-# exercise IDENTICAL extraction/hydration behavior to an implicit one — not
-# a real second axis until a future rollout slice adds an explicit-reference
-# field to this capability's schema. FE-2.1's "implicit/explicit forms"
+# exercise IDENTICAL HYDRATION behavior to an implicit one (the resolver
+# still falls back to "most recent active" either way) — not a real second
+# axis until a future rollout slice adds an explicit-reference field to
+# this capability's schema. (Extraction itself is a separate claim: the
+# model COULD still emit different raw output for an explicit-reference
+# utterance — e.g. over-extraction attempting to stuff the mentioned id
+# somewhere — even though the schema has no slot for it and hydration
+# ignores it regardless; only the hydration outcome is guaranteed
+# identical, not the extraction attempt.) FE-2.1's "implicit/explicit forms"
 # guidance is honored on the axis that DOES vary today: phrasing register
 # (formal/colloquial/brusque/question/context-embedded/casual) and the
 # target status, across all 6 enum values

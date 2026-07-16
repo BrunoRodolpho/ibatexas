@@ -29,7 +29,7 @@
 
 import { evaluateExpectPayload } from "./expect-payload.js"
 import type { ExtractionCorpusFile } from "./schema.js"
-import type { AccuracyCaseResult } from "./accuracy.js"
+import type { AccuracyCaseResult, IsolationFailure } from "./accuracy.js"
 import type { AuditReader, RunSessionScope } from "../oracle/audit-reader.js"
 
 export class AccuracyRunnerError extends Error {
@@ -125,6 +125,20 @@ async function postOpsChat(
   return { ok: res.ok, status: res.status, body, bodyText }
 }
 
+export interface DriveExtractionCorpusResult {
+  results: AccuracyCaseResult[]
+  /**
+   * Per-case `clearHistory` failures (review MAJOR, #263) — NEVER silently
+   * swallowed. A persistent failure (e.g. a missing `REDIS_URL` — the exact
+   * live cause found and fixed in this PR) contaminates every case
+   * identically, so a same-environment cross-run comparison alone can never
+   * catch it. The caller (accuracy-cli.ts) threads these into
+   * `computeAccuracyReport`, which turns each one into a hard
+   * `isolation_degraded` problem (`report.ok: false`) — never cosmetic.
+   */
+  isolationFailures: IsolationFailure[]
+}
+
 /**
  * Drive every case in `corpus` as ONE ops-chat turn each, in file/declaration
  * order (deterministic — no reordering across a run), scoring each against
@@ -132,12 +146,15 @@ async function postOpsChat(
  * compiler. Never throws on a per-case failure (an HTTP error, a settle
  * timeout, or a failed expectPayload evaluation all become a `{ok: false}`
  * result) — the ratio-runner contract (FE-2.3): "never breaking on first
- * miss."
+ * miss." A `clearHistory` failure does NOT abort the run either (the
+ * remaining cases still drive, for diagnostic value) — it is instead
+ * collected into `isolationFailures` so the caller can fail the OVERALL
+ * report, per the module header's isolation gotcha.
  */
 export async function driveExtractionCorpusOverOpsChat(
   corpus: readonly ExtractionCorpusFile[],
   opts: DriveExtractionCorpusOptions,
-): Promise<AccuracyCaseResult[]> {
+): Promise<DriveExtractionCorpusResult> {
   const fetchImpl = opts.fetchImpl ?? (globalThis.fetch as typeof fetch)
   const settleTimeoutMs = opts.settleTimeoutMs ?? DEFAULT_SETTLE_TIMEOUT_MS
   const settlePollMs = opts.settlePollMs ?? DEFAULT_SETTLE_POLL_MS
@@ -145,6 +162,7 @@ export async function driveExtractionCorpusOverOpsChat(
   const onProgress = opts.onProgress ?? (() => undefined)
   const seenIntentHashes = new Set<string>()
   const results: AccuracyCaseResult[] = []
+  const isolationFailures: IsolationFailure[] = []
 
   for (const file of corpus) {
     for (const kase of file.cases) {
@@ -163,7 +181,19 @@ export async function driveExtractionCorpusOverOpsChat(
         // silently scoring the WRONG case (live-caught: see PR report).
         const caseSince = new Date(startedAt - 2_000).toISOString()
         if (opts.clearHistory !== undefined) {
-          await opts.clearHistory(opts.staffId)
+          try {
+            await opts.clearHistory(opts.staffId)
+          } catch (err) {
+            // NOT swallowed (review MAJOR): recorded so the caller can fail
+            // the whole report, even though this case still drives —
+            // partial-degraded results stay diagnostically visible, but the
+            // report itself can never read as clean.
+            isolationFailures.push({
+              capability: file.capability,
+              caseId: kase.id,
+              detail: (err as Error).message,
+            })
+          }
         }
 
         const post = await postOpsChat(
@@ -235,5 +265,5 @@ export async function driveExtractionCorpusOverOpsChat(
     }
   }
 
-  return results
+  return { results, isolationFailures }
 }

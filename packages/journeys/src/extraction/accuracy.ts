@@ -108,12 +108,33 @@ export interface CapabilityAccuracy {
   ratio: number
 }
 
-export type AccuracyProblemCode = "waivers_unreadable" | "waivers_invalid" | "duplicate_case_key"
+export type AccuracyProblemCode =
+  | "waivers_unreadable"
+  | "waivers_invalid"
+  | "duplicate_case_key"
+  | "isolation_degraded"
 
 export interface AccuracyProblem {
   code: AccuracyProblemCode
   file: string
   message: string
+}
+
+/**
+ * One case's `clearHistory` failure (review MAJOR follow-up, #263). A
+ * degraded per-case isolation guarantee (accuracy-runner.ts's module header
+ * — the ops channel's persistent per-staffId history) is NOT cosmetic: a
+ * PERSISTENT clear failure (e.g. a missing `REDIS_URL` — the exact live
+ * cause found and fixed in this PR) contaminates every case IDENTICALLY,
+ * so a same-environment cross-run comparison can never detect it on its
+ * own — a wrong baseline could be committed silently. `computeAccuracyReport`
+ * therefore turns each one into a hard `AccuracyProblem` (`ok: false`),
+ * never a warn-and-continue.
+ */
+export interface IsolationFailure {
+  capability: string
+  caseId: string
+  detail: string
 }
 
 export interface AccuracyReport {
@@ -137,6 +158,13 @@ export interface ComputeAccuracyReportOptions {
    * quarantine state and supplies this list.
    */
   quarantined?: readonly string[]
+  /**
+   * Per-case `clearHistory` failures from the runner (see
+   * {@link IsolationFailure}). Each one becomes an `isolation_degraded`
+   * problem — a degraded run can never silently produce a trustworthy
+   * (`ok: true`) report.
+   */
+  isolationFailures?: readonly IsolationFailure[]
 }
 
 /** Load + validate the waivers file, recording any failure as a problem. */
@@ -223,6 +251,17 @@ export async function computeAccuracyReport(
 ): Promise<AccuracyReport> {
   const problems: AccuracyProblem[] = []
   const quarantinedKeys = new Set(options.quarantined ?? [])
+
+  // Isolation failures FIRST, unconditionally: a degraded run must never
+  // read as trustworthy regardless of what the waivers file or the driven
+  // results otherwise look like (review MAJOR, #263).
+  for (const failure of options.isolationFailures ?? []) {
+    problems.push({
+      code: "isolation_degraded",
+      file: accuracyCaseKey(failure.capability, failure.caseId),
+      message: `clearHistory failed before this case (isolation NOT guaranteed): ${failure.detail}`,
+    })
+  }
 
   const waiversPath = options.waiversPath ?? DEFAULT_ACCURACY_WAIVERS_PATH
   const waivers = await loadAccuracyWaivers(waiversPath, problems)

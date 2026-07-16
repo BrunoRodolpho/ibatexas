@@ -338,3 +338,60 @@ describe("accuracyBaseline + verifyAccuracyBaseline", () => {
     }
   })
 })
+
+describe("computeAccuracyReport — isolation failures (review MAJOR follow-up, #263)", () => {
+  it("a clearHistory failure produces a hard isolation_degraded problem and forces ok:false, even when every case otherwise passes — degraded isolation must never read as a trustworthy run", async () => {
+    const report = await computeAccuracyReport({
+      results: [result({ capability: "order.status.transition", caseId: "a", ok: true })],
+      waiversPath: EMPTY_WAIVERS_PATH,
+      isolationFailures: [
+        { capability: "order.status.transition", caseId: "a", detail: "REDIS_URL env var required" },
+      ],
+    })
+    expect(report.ok).toBe(false)
+    expect(report.problems).toEqual([
+      {
+        code: "isolation_degraded",
+        file: "order.status.transition:a",
+        message: expect.stringContaining("REDIS_URL env var required"),
+      },
+    ])
+    // The case itself still scores normally — isolation degradation is a
+    // report-level trust problem, not a silent per-case override. The CLI's
+    // `if (!report.ok)` gate (the SAME one waivers_unreadable/duplicate_case_key
+    // already rely on) is what turns this into a nonzero exit — including on
+    // the --verify-file path, since that check runs BEFORE any baseline
+    // comparison is even attempted.
+    expect(report.cases[0]?.state).toBe("passing")
+  })
+
+  it("multiple isolation failures each produce their own attributed problem", async () => {
+    const report = await computeAccuracyReport({
+      results: [
+        result({ capability: "order.status.transition", caseId: "a", ok: true }),
+        result({ capability: "order.status.transition", caseId: "b", ok: true }),
+      ],
+      waiversPath: EMPTY_WAIVERS_PATH,
+      isolationFailures: [
+        { capability: "order.status.transition", caseId: "a", detail: "boom-a" },
+        { capability: "order.status.transition", caseId: "b", detail: "boom-b" },
+      ],
+    })
+    expect(report.ok).toBe(false)
+    expect(report.problems).toHaveLength(2)
+    expect(report.problems.map((p) => p.code)).toEqual(["isolation_degraded", "isolation_degraded"])
+    expect(report.problems.map((p) => p.file)).toEqual([
+      "order.status.transition:a",
+      "order.status.transition:b",
+    ])
+  })
+
+  it("no isolationFailures option at all (the default) never adds a problem — an unaffected run stays trustworthy", async () => {
+    const report = await computeAccuracyReport({
+      results: [result({ capability: "order.status.transition", caseId: "a", ok: true })],
+      waiversPath: EMPTY_WAIVERS_PATH,
+    })
+    expect(report.ok).toBe(true)
+    expect(report.problems).toEqual([])
+  })
+})

@@ -83,34 +83,36 @@ async function resolveStaffCookie(
   return { cookie, staffId: staff.id }
 }
 
-/** Best-effort ops-history clear (Redis) — see accuracy-runner.ts's isolation note. Never throws: a failure only costs the isolation guarantee, must never break the run. */
-async function bestEffortClearOpsHistory(
+/**
+ * Ops-history clear (Redis) — see accuracy-runner.ts's isolation note.
+ * Review MAJOR (#263) follow-up: this NO LONGER swallows a failure. It
+ * warns loudly exactly once (for the human reading progress output — 20
+ * identical per-case warnings would drown the log) AND RE-THROWS every
+ * time, so the runner's own try/catch attributes it as an
+ * `IsolationFailure` per case, which `computeAccuracyReport` turns into a
+ * hard `isolation_degraded` problem (`report.ok: false`). A silently-
+ * degraded run must never read as trustworthy — the exact live gap a
+ * missing `REDIS_URL` produced in an earlier round of this PR (see the
+ * PR report's "confirmed-casual" contamination finding).
+ */
+function createOpsHistoryClearer(
   onProgress: (line: string) => void,
-): Promise<(staffId: string) => Promise<void>> {
+): (staffId: string) => Promise<void> {
   let warned = false
   const warnOnce = (detail: string): void => {
-    // Loud exactly ONCE (not per-case — 20 identical warnings would drown
-    // the progress log) — live-caught gap: a silently-swallowed clear
-    // degrades corpus isolation without any operator-visible signal (see
-    // the PR report's "confirmed-casual" cross-case contamination finding,
-    // caused by a missing REDIS_URL in an early run).
     if (warned) return
     warned = true
     onProgress(`⚠ ops-history clear degraded (isolation NOT guaranteed): ${detail}`)
   }
-  try {
-    const { getRedisClient, rk } = await import("@ibatexas/tools")
-    return async (staffId: string) => {
-      try {
-        const redis = await getRedisClient()
-        await redis.del(rk(`ops:chat:history:${staffId}`))
-      } catch (err) {
-        warnOnce((err as Error).message)
-      }
+  return async (staffId: string) => {
+    try {
+      const { getRedisClient, rk } = await import("@ibatexas/tools")
+      const redis = await getRedisClient()
+      await redis.del(rk(`ops:chat:history:${staffId}`))
+    } catch (err) {
+      warnOnce((err as Error).message)
+      throw err
     }
-  } catch (err) {
-    warnOnce((err as Error).message)
-    return async () => undefined
   }
 }
 
@@ -151,8 +153,8 @@ export async function runExtractionAccuracyCli(
     const { cookie, staffId } = await resolveStaffCookie(domain, staffJwtSecret)
     onProgress(`staff: resolved seeded ${ACCURACY_RUN_STAFF_PHONE} -> ${staffId}`)
 
-    const clearHistory = await bestEffortClearOpsHistory(onProgress)
-    const results = await driveExtractionCorpusOverOpsChat(corpus, {
+    const clearHistory = createOpsHistoryClearer(onProgress)
+    const { results, isolationFailures } = await driveExtractionCorpusOverOpsChat(corpus, {
       apiBaseUrl,
       staffCookie: cookie,
       staffId,
@@ -165,6 +167,7 @@ export async function runExtractionAccuracyCli(
     const computeOptions: ComputeAccuracyReportOptions = { results }
     if (options.waiversPath !== undefined) computeOptions.waiversPath = options.waiversPath
     if (options.quarantined !== undefined) computeOptions.quarantined = options.quarantined
+    if (isolationFailures.length > 0) computeOptions.isolationFailures = isolationFailures
     const report = await computeAccuracyReport(computeOptions)
 
     return { report, results }
