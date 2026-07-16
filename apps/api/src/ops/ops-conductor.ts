@@ -323,6 +323,21 @@ export function opsPlaneDriftProblems(input: {
   /** Probe contexts (defaults to the shared ROSTER_DRIFT_CONTEXTS). */
   readonly contexts?: ReadonlyArray<RosterDriftContext>;
   readonly onWarn?: (message: string) => void;
+  /**
+   * FE-T25 (FE-4.3 — repoint the drift gates; full classification table +
+   * rationale at docs/architecture/design/fe4-drift-gates.md) — the BKL-096
+   * forbidden set to
+   * check the ops registry against, threaded to `forbiddenOpsVerbProblems`.
+   * `undefined` (the default) falls through to that function's own default
+   * (the hand-authored `FORBIDDEN_OPS_DESTRUCTIVE_KINDS`) — every existing
+   * caller that does not pass this is UNCHANGED. The real chat-registry boot
+   * call (`apps/api/src/claustrum-bootstrap.ts`) supplies the GENERATED
+   * equivalent, built from `@ibatexas/packs-composed/capability-
+   * definitions`'s `generateOpsForbiddenDestructiveKinds(CAPABILITY_
+   * DEFINITIONS)` — mirrors `toolRosterDrift`'s `chatSurfacedKinds` (FE-T22)
+   * threading pattern exactly.
+   */
+  readonly forbiddenOpsKinds?: ReadonlySet<string>;
 }): string[] {
   const opsPlanners = [
     opsCapabilityPlanner as CapabilityPlanner<unknown, unknown>,
@@ -355,9 +370,10 @@ export function opsPlaneDriftProblems(input: {
   // BKL-096 drift test — see FORBIDDEN_OPS_DESTRUCTIVE_KINDS. Extracted to
   // `forbiddenOpsVerbProblems` (ops-verb-scope.ts, FE-T24 review fix) so a
   // freshness test can drive this SAME real check with a generated forbidden
-  // set — the default parameter here is byte-identical to the pre-extraction
-  // inline loop.
-  problems.push(...forbiddenOpsVerbProblems(input.opsTools));
+  // set. FE-T25: `input.forbiddenOpsKinds` threads the caller's override
+  // through — `undefined` (no override) preserves the pre-FE-T25 behavior
+  // byte-for-byte via `forbiddenOpsVerbProblems`'s own default.
+  problems.push(...forbiddenOpsVerbProblems(input.opsTools, input.forbiddenOpsKinds));
   // BKL-100 — advertised ⊆ renderable: every ops read the planner advertises MUST
   // have a deterministic render template (ops-read-render.ts), else a staff read
   // turn would fall back to model-authored prose — the exact confabulation this

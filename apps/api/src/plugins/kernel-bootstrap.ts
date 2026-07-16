@@ -93,6 +93,7 @@ import { KNOWN_INTENT_KINDS, LOYALTY_INTENT_KINDS } from "@ibatexas/intent-kinds
 import {
   assertGuardRefsResolve,
   CAPABILITY_DEFINITIONS,
+  generateKnownIntentKinds,
   GuardRefResolutionError,
   type CapabilityDefinition,
 } from "@ibatexas/packs-composed/capability-definitions"
@@ -350,6 +351,35 @@ const PACK_REGISTERED_INTENT_KINDS: ReadonlySet<string> = new Set(
 )
 
 /**
+ * FE-T25 (FE-4.3 — repoint the drift gates; full classification table +
+ * rationale at docs/architecture/design/fe4-drift-gates.md) — the GENERATED
+ * equivalent of
+ * `PACK_REGISTERED_INTENT_KINDS`, projected from `CAPABILITY_DEFINITIONS`
+ * instead of the hand-authored `KNOWN_INTENT_KINDS`. Same derivation
+ * (`generateKnownIntentKinds`'s union, minus the locally-adjudicated
+ * loyalty kinds) — `paymentsPixPack.intents` supplies the pix external
+ * input as a REAL runtime materialization (mirrors `generate-known-
+ * intent-kinds.ts`'s own freshness-test precedent), never a hand-retyped
+ * copy. The real `assertPackCoverage()` call below now consumes THIS set.
+ *
+ * `PACK_REGISTERED_INTENT_KINDS` itself stays defined and in use (the info
+ * log below, kernel-bootstrap.test.ts's existing freshness pin) — BOTH
+ * sources stay alive until T26 deletes `KNOWN_INTENT_KINDS`; this repoint
+ * only swaps which one the GATE itself walks. The gate's OTHER side
+ * (`declared` — every installed Pack's real `.intents[]`, inside
+ * `assertPackCoverage`'s own body) was already a genuine runtime
+ * materialization and needed no change.
+ */
+const GENERATED_PACK_REGISTERED_INTENT_KINDS: ReadonlySet<string> = new Set(
+  [
+    ...generateKnownIntentKinds(CAPABILITY_DEFINITIONS, {
+      pixIntentKinds: paymentsPixPack.intents,
+      loyaltyIntentKinds: [...LOYALTY_INTENT_KINDS],
+    }),
+  ].filter((kind) => !LOYALTY_INTENT_KINDS.has(kind)),
+)
+
+/**
  * Assert that every `KNOWN_INTENT_KINDS` entry is declared by at least one
  * installed Pack's `intents` list. Throws `PackCoverageError` if any kind
  * is uncovered.
@@ -579,6 +609,11 @@ export async function bootstrapKernel(server: FastifyInstance): Promise<void> {
   //    default-REFUSE legitimate traffic. Locally-adjudicated kinds (see
   //    PACK_REGISTERED_INTENT_KINDS) are excluded — they carry their bundle
   //    to `adjudicate()` directly and never hit the registry.
+  //    FE-T25: walks GENERATED_PACK_REGISTERED_INTENT_KINDS (projected from
+  //    CAPABILITY_DEFINITIONS) instead of the hand-authored
+  //    PACK_REGISTERED_INTENT_KINDS — the `declared` side (every installed
+  //    Pack's real `.intents[]`, inside assertPackCoverage's own body) is
+  //    untouched, already a genuine runtime materialization.
   try {
     const allPacks = [
       installedPacks.orders,
@@ -589,12 +624,19 @@ export async function bootstrapKernel(server: FastifyInstance): Promise<void> {
       installedPacks.ops,
       installedPacks.paymentsPix,
     ]
-    assertPackCoverage(allPacks, PACK_REGISTERED_INTENT_KINDS)
+    assertPackCoverage(allPacks, GENERATED_PACK_REGISTERED_INTENT_KINDS)
     server.log.info(
       {
         event: "kernel.bootstrap.pack_coverage_validated",
         knownIntentCount: KNOWN_INTENT_KINDS.size,
+        // FE-T25 review fix: log BOTH counts — packRegisteredCount is the
+        // hand-authored PACK_REGISTERED_INTENT_KINDS (kept genuinely IN USE,
+        // not merely defined, restoring the both-sources-alive invariant this
+        // ticket requires); generatedPackRegisteredCount is the set the gate
+        // actually walks post-repoint. A boot-time divergence between the two
+        // (which the freshness test also pins) would show up here too.
         packRegisteredCount: PACK_REGISTERED_INTENT_KINDS.size,
+        generatedPackRegisteredCount: GENERATED_PACK_REGISTERED_INTENT_KINDS.size,
       },
       "[kernel-bootstrap] pack coverage validated",
     )

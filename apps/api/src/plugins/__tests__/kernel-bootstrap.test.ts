@@ -20,6 +20,7 @@ import { withAdjudicate } from "@ibatexas/domain"
 import { runCustomerIntent } from "../../routes/__shared__/customer-intent-gateway.js"
 import {
   CAPABILITY_DEFINITIONS,
+  generateKnownIntentKinds,
   GuardRefResolutionError,
   type CapabilityDefinition,
 } from "@ibatexas/packs-composed/capability-definitions"
@@ -118,6 +119,102 @@ describe("assertPackCoverage — real boot roster", () => {
     expect((caught as PackCoverageError).missingKinds).toEqual([
       ...LOYALTY_INTENT_KINDS,
     ])
+  })
+})
+
+// ── FE-T25 (FE-4.3) — assertPackCoverage repointed to a GENERATED walked set ──
+//
+// The real boot call (kernel-bootstrap.ts) now walks
+// GENERATED_PACK_REGISTERED_INTENT_KINDS (projected from CAPABILITY_
+// DEFINITIONS) instead of the hand-authored PACK_REGISTERED_INTENT_KINDS.
+// The `declared` side (every installed Pack's real `.intents[]`, inside
+// assertPackCoverage's own body) is untouched — already a genuine runtime
+// materialization, independent of both. This suite proves (a) the
+// generated walked set is byte-identical to the hand-authored one it
+// replaces, and (b) a REAL runtime/DI mismatch (an incomplete pack roster)
+// still fails closed when probed with the GENERATED set — the repoint
+// didn't silently defang the gate.
+
+describe("FE-T25 — assertPackCoverage's generated walked-set repoint", () => {
+  // Independently reconstructed here (not imported from kernel-bootstrap.ts,
+  // which keeps GENERATED_PACK_REGISTERED_INTENT_KINDS module-private) —
+  // mirrors this file's own established pattern of rebuilding
+  // PACK_REGISTERED_INTENT_KINDS's derivation above rather than importing it.
+  const generatedPackRegistered = new Set(
+    [
+      ...generateKnownIntentKinds(CAPABILITY_DEFINITIONS, {
+        pixIntentKinds: paymentsPixPack.intents,
+        loyaltyIntentKinds: [...LOYALTY_INTENT_KINDS],
+      }),
+    ].filter((kind) => !LOYALTY_INTENT_KINDS.has(kind)),
+  )
+
+  const handAuthoredPackRegistered = new Set(
+    [...KNOWN_INTENT_KINDS].filter((kind) => !LOYALTY_INTENT_KINDS.has(kind)),
+  )
+
+  it("the generated walked set is byte-identical to the hand-authored PACK_REGISTERED_INTENT_KINDS it replaces", () => {
+    expect(generatedPackRegistered).toEqual(handAuthoredPackRegistered)
+  })
+
+  it("the real 7-pack boot roster still covers the GENERATED walked set (matches the real boot call's new behavior)", () => {
+    const roster = [
+      { pack: ordersPack },
+      { pack: reservationsPack },
+      { pack: whatsappPack },
+      { pack: customerOnboardingPack },
+      { pack: paymentsPack },
+      { pack: opsPack },
+      { pack: paymentsPixPack },
+    ]
+    expect(() => assertPackCoverage(roster, generatedPackRegistered)).not.toThrow()
+  })
+
+  it("REGRESSION PROOF: a REAL runtime/DI mismatch (an incomplete pack roster) still fails closed against the GENERATED set — proving the repoint is load-bearing, not vacuous", () => {
+    // Omit pack-payments — a real DI mismatch (the kind the ratified boot
+    // sequence would refuse to start on), not a synthetic toy fixture.
+    const incompleteRoster = [
+      { pack: ordersPack },
+      { pack: reservationsPack },
+      { pack: whatsappPack },
+      { pack: customerOnboardingPack },
+      { pack: opsPack },
+      { pack: paymentsPixPack },
+    ]
+    let caught: unknown = null
+    try {
+      assertPackCoverage(incompleteRoster, generatedPackRegistered)
+    } catch (err) {
+      caught = err
+    }
+    expect(caught).toBeInstanceOf(PackCoverageError)
+    // Positive control: every kind pack-payments owns is among the missing
+    // ones (proves this isn't an empty/vacuous failure).
+    const missing = (caught as PackCoverageError).missingKinds
+    expect(missing).toEqual(expect.arrayContaining(["payment.pix.regenerate"]))
+    expect(missing.length).toBeGreaterThan(0)
+  })
+
+  it("REGRESSION PROOF (pix positive control): omitting the installed PIX pack itself still fails closed against the GENERATED set — a full roster-removal is caught even though the repoint made the pix sub-leg same-source (see fe4-drift-gates.md's MINOR-2 note)", () => {
+    const withoutPix = [
+      { pack: ordersPack },
+      { pack: reservationsPack },
+      { pack: whatsappPack },
+      { pack: customerOnboardingPack },
+      { pack: paymentsPack },
+      { pack: opsPack },
+      // paymentsPix omitted.
+    ]
+    let caught: unknown = null
+    try {
+      assertPackCoverage(withoutPix, generatedPackRegistered)
+    } catch (err) {
+      caught = err
+    }
+    expect(caught).toBeInstanceOf(PackCoverageError)
+    const missing = (caught as PackCoverageError).missingKinds
+    expect(missing.some((kind) => kind.startsWith("pix.charge."))).toBe(true)
+    expect(missing.length).toBeGreaterThan(0)
   })
 })
 
