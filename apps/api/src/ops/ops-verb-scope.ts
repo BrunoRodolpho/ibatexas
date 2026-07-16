@@ -37,6 +37,7 @@ import type {
   ChannelMessage,
   ParkedMatch,
   Session,
+  ToolDefinition,
 } from "@claustrum/core";
 import { OPS_FOREIGN_ADVERTISED_REFUND_KIND } from "@ibatexas/pack-ops";
 
@@ -55,6 +56,12 @@ export type OpsVerbScope = "dashboard" | "whatsapp";
  * — rather than enumerating the WhatsApp-allowed verbs — fails CLOSED: a new ops
  * verb is reversible-by-default on WhatsApp only after a deliberate omission
  * here, but an irreversible one is dashboard-only the moment it is added.
+ *
+ * FE-T24: deliberately NOT generated from `CapabilityDefinition` — a genuine
+ * business-policy judgment (which verbs need a WhatsApp step-up factor), not
+ * a structural registry fact. See `generate-ops-boundary-kinds.ts`'s own doc
+ * for the full disposition (packages/packs-composed/src/capability-
+ * definitions/).
  */
 export const WA_EXCLUDED_OPS_KINDS: ReadonlySet<string> = new Set<string>([
   // payment.refund.issue — moves money out of the ledger; the BKL-085 refund
@@ -103,6 +110,38 @@ export const WA_EXCLUDED_OPS_KINDS: ReadonlySet<string> = new Set<string>([
  */
 export const FORBIDDEN_OPS_DESTRUCTIVE_KINDS: ReadonlySet<string> =
   new Set<string>(["order.cancel", "payment.waive", "payment.status.force"]);
+
+/**
+ * The BKL-096 forbidden-verb check `opsPlaneDriftProblems` (ops-conductor.ts)
+ * runs at boot: fails CLOSED if any `forbidden` kind (default the real
+ * `FORBIDDEN_OPS_DESTRUCTIVE_KINDS`) ever enters the ops REGISTRY, matched by
+ * either `capability` or `intentKind`. Extracted to a pure, parameterized
+ * function (FE-T24 review fix) so its freshness/equivalence test can drive
+ * this SAME real check with a generated forbidden set, instead of a
+ * hand-copied re-implementation that could silently drift from the real
+ * message text. The default parameter means every existing caller
+ * (`opsPlaneDriftProblems`) is BYTE-IDENTICAL to the pre-extraction inline
+ * loop — zero behavior change, pinned by the existing ops-conductor tests.
+ */
+export function forbiddenOpsVerbProblems(
+  opsTools: ReadonlyArray<ToolDefinition<unknown, unknown>>,
+  forbidden: ReadonlySet<string> = FORBIDDEN_OPS_DESTRUCTIVE_KINDS,
+): string[] {
+  const problems: string[] = [];
+  for (const tool of opsTools) {
+    const capability = String(tool.capability);
+    const intentKind = String(tool.intentKind);
+    if (forbidden.has(capability) || forbidden.has(intentKind)) {
+      problems.push(
+        `ops registry advertises FORBIDDEN two-person destructive verb ` +
+          `"${capability}" (tool ${tool.id}); these verbs must stay ops-unreachable ` +
+          `until an owner ratifies a propose-path (OPS-007/008/011). See ` +
+          `FORBIDDEN_OPS_DESTRUCTIVE_KINDS.`,
+      );
+    }
+  }
+  return problems;
+}
 
 /** The excluded kinds for an ingress scope (empty for `dashboard`). */
 export function excludedKindsForScope(scope: OpsVerbScope): ReadonlySet<string> {

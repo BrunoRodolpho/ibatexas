@@ -10,18 +10,19 @@
 //
 // This file does TWO things generate-and-diff alone cannot:
 //   1. Byte-identity against the REAL committed constant.
-//   2. Proves the ops-plane boot gate (`opsPlaneDriftProblems`'s BKL-096
-//      forbidden-verb check) would behave IDENTICALLY if fed the generated
-//      set instead of the hand-authored one — WITHOUT repointing production
-//      code (the ticket's "nothing repointed" constraint). `opsPlaneDrift
-//      Problems` reads `FORBIDDEN_OPS_DESTRUCTIVE_KINDS` as a module-level
-//      import, not a parameter, so this re-implements the EXACT check loop
-//      (see ops-conductor.ts's own BKL-096 comment) parameterized on a
-//      forbidden set, and runs it against the same two probes
-//      ops-forbidden-destructive-drift.test.ts already exercises against
-//      the real constant: the real 8-verb registry (must stay GREEN) and a
-//      synthetic forbidden-tool injection (must FLAG). Identical outcomes
-//      on both probes, using the GENERATED set, is the equivalence proof.
+//   2. Proves the ops-plane boot gate would behave IDENTICALLY if fed the
+//      generated set instead of the hand-authored one — WITHOUT repointing
+//      production code (the ticket's "nothing repointed" constraint).
+//      `opsPlaneDriftProblems`'s BKL-096 forbidden-verb check is extracted
+//      to `forbiddenOpsVerbProblems(opsTools, forbidden = FORBIDDEN_OPS_
+//      DESTRUCTIVE_KINDS)` (ops-verb-scope.ts, review fix) — a pure,
+//      parameterized function, not a hand-copied re-implementation that
+//      could silently drift from the real message text. This test drives
+//      that REAL function directly with the generated set, against the same
+//      two probes ops-forbidden-destructive-drift.test.ts already exercises
+//      against the real constant: the real 8-verb registry (must stay
+//      GREEN) and a synthetic forbidden-tool injection (must FLAG, with
+//      byte-identical problem text to the real-constant run).
 
 import { describe, expect, it } from "vitest";
 import type { ToolDefinition } from "@claustrum/core";
@@ -30,7 +31,10 @@ import {
   generateOpsForbiddenDestructiveKinds,
 } from "@ibatexas/packs-composed/capability-definitions";
 
-import { FORBIDDEN_OPS_DESTRUCTIVE_KINDS } from "../ops-verb-scope.js";
+import {
+  FORBIDDEN_OPS_DESTRUCTIVE_KINDS,
+  forbiddenOpsVerbProblems,
+} from "../ops-verb-scope.js";
 import {
   listOpsToolDefinitions,
   type OpsToolRegistryDeps,
@@ -99,42 +103,18 @@ describe("generateOpsForbiddenDestructiveKinds — byte-identical to the real FO
   });
 });
 
-/**
- * Re-implements opsPlaneDriftProblems's BKL-096 forbidden-verb check loop
- * verbatim (see ops-conductor.ts), parameterized on the forbidden set — the
- * substitution point production code does not expose, so equivalence is
- * proven by re-running the SAME probes against this local copy instead of
- * repointing the real function.
- */
-function forbiddenVerbProblems(
-  opsTools: ReadonlyArray<ToolDefinition<unknown, unknown>>,
-  forbidden: ReadonlySet<string>,
-): string[] {
-  const problems: string[] = [];
-  for (const tool of opsTools) {
-    const capability = String(tool.capability);
-    const intentKind = String(tool.intentKind);
-    if (forbidden.has(capability) || forbidden.has(intentKind)) {
-      problems.push(
-        `ops registry advertises FORBIDDEN two-person destructive verb ` +
-          `"${capability}" (tool ${tool.id})`,
-      );
-    }
-  }
-  return problems;
-}
-
-describe("BKL-096 boot-gate equivalence — the GENERATED forbidden set behaves identically to the real one (FE-T24)", () => {
+describe("BKL-096 boot-gate equivalence — the GENERATED forbidden set drives the REAL forbiddenOpsVerbProblems identically to the real constant (FE-T24)", () => {
   const generatedForbidden = generateOpsForbiddenDestructiveKinds(CAPABILITY_DEFINITIONS);
 
   it("is GREEN on the real 8-verb ops registry using the GENERATED set (matches the real constant's own green boot state)", () => {
-    expect(forbiddenVerbProblems(OPS_TOOLS, generatedForbidden)).toEqual([]);
-    // Same real registry, same real (hand-authored) constant — the baseline
-    // this proves equivalence AGAINST.
-    expect(forbiddenVerbProblems(OPS_TOOLS, FORBIDDEN_OPS_DESTRUCTIVE_KINDS)).toEqual([]);
+    expect(forbiddenOpsVerbProblems(OPS_TOOLS, generatedForbidden)).toEqual([]);
+    // Same real registry, same real (hand-authored) constant, same REAL
+    // function called with its own default — the baseline this proves
+    // equivalence AGAINST.
+    expect(forbiddenOpsVerbProblems(OPS_TOOLS)).toEqual([]);
   });
 
-  it("FLAGS a synthetic forbidden ops tool using the GENERATED set — identically to the real constant", () => {
+  it("FLAGS a synthetic forbidden ops tool using the GENERATED set — byte-identical problem text to the real constant", () => {
     const forbiddenTool = {
       id: "ibatexas.ops.forceCancel.v1",
       capability: "order.cancel" as never,
@@ -147,13 +127,18 @@ describe("BKL-096 boot-gate equivalence — the GENERATED forbidden set behaves 
     } as unknown as ToolDefinition<unknown, unknown>;
 
     const withForbiddenTool = [...OPS_TOOLS, forbiddenTool];
-    const generatedProblems = forbiddenVerbProblems(withForbiddenTool, generatedForbidden);
-    const realProblems = forbiddenVerbProblems(withForbiddenTool, FORBIDDEN_OPS_DESTRUCTIVE_KINDS);
+    // Real function, generated set.
+    const generatedProblems = forbiddenOpsVerbProblems(withForbiddenTool, generatedForbidden);
+    // Real function, its own default (FORBIDDEN_OPS_DESTRUCTIVE_KINDS) —
+    // exactly what opsPlaneDriftProblems calls in production.
+    const realProblems = forbiddenOpsVerbProblems(withForbiddenTool);
 
     expect(generatedProblems.length).toBeGreaterThan(0);
-    // Byte-identical outcome, not just "both non-empty" — proves the
-    // generated set isn't merely a superset/subset that happens to catch it.
+    // Byte-identical outcome — including the full "…owner ratifies a
+    // propose-path (OPS-007/008/011)…" message text, since both runs go
+    // through the SAME real function — not just "both non-empty".
     expect(generatedProblems).toEqual(realProblems);
     expect(generatedProblems.join("\n")).toContain("order.cancel");
+    expect(generatedProblems.join("\n")).toContain("OPS-007/008/011");
   });
 });
