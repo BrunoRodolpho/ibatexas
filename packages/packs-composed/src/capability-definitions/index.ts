@@ -19,6 +19,11 @@
  *     family's third named target) needed no new generator — fully covered
  *     by FE-T21's `generate-tool-to-intent-map.ts` /
  *     `generate-mutating-tool-names.ts` — see FE-T23's PR body.
+ *   - Ops-boundary (FE-T24, the FINAL migrate batch): `generate-ops-
+ *     boundary-kinds.ts` (`generateForeignAdvertisedKinds` +
+ *     `generateOpsForbiddenDestructiveKinds`). `WA_EXCLUDED_OPS_KINDS` — a
+ *     third ops-boundary set in the same source file — is traced but
+ *     deliberately NOT generated; see that module's own doc for why.
  *
  * # This module IS the boot assertion
  *
@@ -83,6 +88,11 @@ export {
 } from "./generate-admin-labels.js"
 
 export { generateChatCapabilityAuthLevels } from "./generate-auth-levels.js"
+
+export {
+  generateForeignAdvertisedKinds,
+  generateOpsForbiddenDestructiveKinds,
+} from "./generate-ops-boundary-kinds.js"
 
 import { CAPABILITY_DEFINITIONS } from "./definitions.js"
 import { assertGuardRefsResolve } from "./guard-resolution.js"
