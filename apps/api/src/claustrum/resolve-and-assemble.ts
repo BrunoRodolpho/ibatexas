@@ -684,6 +684,47 @@ function firstString(...vals: unknown[]): string | undefined {
   return undefined;
 }
 
+/** Lowercase, strip diacritics, split into alnum tokens — for lexical
+ *  comparison only (never customer-facing, never persisted). */
+function normalizeTokens(s: string): string[] {
+  return s
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((t) => t.length > 0);
+}
+
+/**
+ * FE-D17 interim defense (FE-T09b, BKL-154 live-drive follow-up) — a cheap
+ * lexical-overlap sanity floor over the search layer's ranking. Typesense's
+ * fuzzy/semantic ranking can return a best-effort top hit with NO real
+ * relationship to the query on a garbage input (live-demonstrated: query
+ * "xyzzy" still returned A product) — the systemic arbitrary-match defect
+ * is FE-D17 (search-layer fix, not this ticket's scope); this is the
+ * resolver-level floor that refuses to attach an UNRELATED product's
+ * variant/allergens to the customer's request in the meantime. Deliberately
+ * PERMISSIVE, never REJECTS a genuine loose/partial match: any shared
+ * normalized token, OR either string containing the other, counts as
+ * overlap. Only a TOTAL mismatch (zero shared tokens, no containment) fails.
+ */
+function hasLexicalOverlap(query: string, product: { title?: string; tags?: readonly string[] }): boolean {
+  const queryTokens = normalizeTokens(query);
+  if (queryTokens.length === 0) return false;
+  const queryTokenSet = new Set(queryTokens);
+  const candidateTokens = new Set([
+    ...normalizeTokens(product.title ?? ""),
+    ...(product.tags ?? []).flatMap(normalizeTokens),
+  ]);
+  for (const t of queryTokenSet) {
+    if (candidateTokens.has(t)) return true;
+  }
+  const queryNorm = queryTokens.join(" ");
+  const titleNorm = normalizeTokens(product.title ?? "").join(" ");
+  if (titleNorm.length === 0) return false;
+  return titleNorm.includes(queryNorm) || queryNorm.includes(titleNorm);
+}
+
 /**
  * F3/L1 (BKL-061) — deterministic NL→variantId resolution (a READ; keeps this
  * module's read-only invariant). The 4B emits order.item.add with a LOOSE
@@ -691,6 +732,13 @@ function firstString(...vals: unknown[]): string | undefined {
  * Typesense (`searchProducts`) so the executor's schema (which requires
  * variantId) is satisfiable. Returns undefined on no-match/error → the tool
  * REFUSEs honestly ("não encontrei esse item") rather than adding the wrong one.
+ *
+ * FE-T09b (FE-D17 interim floor) — a non-empty result is no longer trusted
+ * blindly: `hasLexicalOverlap` must agree the top hit actually relates to
+ * `name` before its variantId/allergens are attached. A hit with zero
+ * lexical relationship to the query is treated exactly like no match at
+ * all (same undefined return, same downstream honest refuse) — this
+ * function's return contract is unchanged, only which hits qualify.
  */
 async function resolveProductForItem(
   name: string,
@@ -710,6 +758,7 @@ async function resolveProductForItem(
     );
     const product = out.products?.[0];
     if (product === undefined) return undefined;
+    if (!hasLexicalOverlap(name, product)) return undefined;
     // allergens = the product's EXPLICIT stored array (Hard Rule #1: authoritative
     // product data, NOT inferred from name/text). Same resolved product as the
     // variant, so they can never disagree.

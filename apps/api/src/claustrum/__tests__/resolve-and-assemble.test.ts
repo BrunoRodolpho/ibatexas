@@ -406,7 +406,9 @@ describe("resolve-and-assemble — L1 payload threading (D-014)", () => {
 describe("resolve-and-assemble — NL→variantId (BKL-061)", () => {
   it("resolves a loose product name to variantId + explicit allergens + defaults quantity (BKL-061/067)", async () => {
     searchProductsMock = async () => ({
-      products: [{ id: "prod_1", variants: [{ id: "var_coke" }], allergens: ["gluten"] }],
+      products: [
+        { id: "prod_1", title: "Coca-Cola 350ml", variants: [{ id: "var_coke" }], allergens: ["gluten"] },
+      ],
     });
     const { payload } = await resolveAndAssemble({
       kind: "order.item.add",
@@ -424,7 +426,7 @@ describe("resolve-and-assemble — NL→variantId (BKL-061)", () => {
 
   it("injects an empty allergen array for a product with no allergens (still explicit)", async () => {
     searchProductsMock = async () => ({
-      products: [{ id: "p2", variants: [{ id: "var_water" }], allergens: [] }],
+      products: [{ id: "p2", title: "Água Mineral 500ml", variants: [{ id: "var_water" }], allergens: [] }],
     });
     const { payload } = await resolveAndAssemble({
       kind: "order.item.add",
@@ -475,6 +477,73 @@ describe("resolve-and-assemble — NL→variantId (BKL-061)", () => {
     });
     expect((payload as { variantId?: string }).variantId).toBeUndefined();
   });
+
+  // FE-T09b (FE-D17 interim floor, BKL-154 live-drive follow-up) — Typesense's
+  // fuzzy ranking is NOT trusted blindly: a NON-EMPTY result with zero lexical
+  // relationship to the query is treated exactly like no match at all. Live-
+  // demonstrated case: query "xyzzy" still returned A product (some unrelated
+  // top hit) — the resolver must refuse to attach that product's variant/
+  // allergens rather than guessing. This is DISTINCT from "leaves variantId
+  // unset when no product matches" above (an EMPTY result set) — here
+  // Typesense returns something, just not anything related.
+  it("leaves variantId/allergens unset when the top hit shares NO lexical relationship with the query (arbitrary-match floor, FE-D17 interim)", async () => {
+    searchProductsMock = async () => ({
+      products: [
+        {
+          id: "prod_unrelated",
+          title: "Costela Bovina Defumada",
+          variants: [{ id: "var_costela" }],
+          allergens: ["gluten"],
+        },
+      ],
+    });
+    const { payload } = await resolveAndAssemble({
+      kind: "order.item.add",
+      payload: { item: "xyzzy" },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    const p = payload as { variantId?: string; allergens?: string[] };
+    expect(p.variantId).toBeUndefined();
+    expect(p.allergens).toBeUndefined();
+  });
+
+  it("order.amend.add_item: the same arbitrary-match floor applies (unrelated top hit refused, not attached to the amend target)", async () => {
+    searchProductsMock = async () => ({
+      products: [
+        { id: "prod_unrelated", title: "Costela Bovina Defumada", variants: [{ id: "var_costela" }], allergens: [] },
+      ],
+    });
+    const { payload } = await resolveAndAssemble({
+      kind: "order.amend.add_item",
+      payload: { orderId: "ord_1", item: "xyzzy" },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    const p = payload as { variantId?: string; allergens?: string[] };
+    expect(p.variantId).toBeUndefined();
+    expect(p.allergens).toBeUndefined();
+  });
+
+  it("does NOT reject a genuine loose/partial match — a shared token is enough (permissive direction, never over-strict)", async () => {
+    searchProductsMock = async () => ({
+      products: [
+        { id: "prod_coke_zero", title: "Coca-Cola Zero 350ml", variants: [{ id: "var_zero" }], allergens: [] },
+      ],
+    });
+    const { payload } = await resolveAndAssemble({
+      kind: "order.item.add",
+      // The customer says just "coca" — a substring of "Coca-Cola", not the
+      // full title. The overlap floor must still accept this.
+      payload: { item: "coca" },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect((payload as { variantId?: string }).variantId).toBe("var_zero");
+  });
 });
 
 // ── FE-T09 (D-a) — the granular post-checkout amend kinds' item hydration ───
@@ -490,7 +559,7 @@ describe("resolve-and-assemble — NL→variantId (BKL-061)", () => {
 describe("resolve-and-assemble — FE-T09 granular amend item hydration", () => {
   it("order.amend.add_item resolves variantId + explicit allergens from the catalog (never model-populated)", async () => {
     searchProductsMock = async () => ({
-      products: [{ id: "prod_1", variants: [{ id: "var_coke" }], allergens: ["gluten"] }],
+      products: [{ id: "prod_1", title: "Coca-Cola 350ml", variants: [{ id: "var_coke" }], allergens: ["gluten"] }],
     });
     const { payload } = await resolveAndAssemble({
       kind: "order.amend.add_item",
@@ -529,7 +598,7 @@ describe("resolve-and-assemble — FE-T09 granular amend item hydration", () => 
   // resolver's product data always wins, both kinds, both outcomes.
   it("order.item.add: a scripted completion smuggling allergens is OVERWRITTEN by the resolved product's allergens, never the model's (adversarial)", async () => {
     searchProductsMock = async () => ({
-      products: [{ id: "prod_1", variants: [{ id: "var_coke" }], allergens: ["gluten"] }],
+      products: [{ id: "prod_1", title: "Coca-Cola 350ml", variants: [{ id: "var_coke" }], allergens: ["gluten"] }],
     });
     const { payload } = await resolveAndAssemble({
       kind: "order.item.add",
@@ -545,7 +614,7 @@ describe("resolve-and-assemble — FE-T09 granular amend item hydration", () => 
 
   it("order.amend.add_item: a scripted completion smuggling a FABRICATED allergen claim is OVERWRITTEN by the resolved product's real allergens (adversarial)", async () => {
     searchProductsMock = async () => ({
-      products: [{ id: "prod_1", variants: [{ id: "var_coke" }], allergens: ["gluten"] }],
+      products: [{ id: "prod_1", title: "Coca-Cola 350ml", variants: [{ id: "var_coke" }], allergens: ["gluten"] }],
     });
     const { payload } = await resolveAndAssemble({
       kind: "order.amend.add_item",
