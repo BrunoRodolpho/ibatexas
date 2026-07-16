@@ -21,6 +21,8 @@
 
 import {
   toPayloadJsonSchema,
+  extractionFieldNames,
+  legacyChannelFieldNames,
   type CapabilityExtractionSchema,
 } from "./extraction-schema.js";
 import { ORDER_STATUS_TRANSITION_EXTRACTION_SCHEMA } from "./order-status-transition.schema.js";
@@ -49,4 +51,24 @@ export const EXTRACTION_SCHEMAS_BY_CAPABILITY: ReadonlyMap<
   Record<string, unknown>
 > = new Map(
   AUTHORED_SCHEMAS.map((schema) => [schema.capability, toPayloadJsonSchema(schema)]),
+);
+
+/**
+ * FE-T11 (review) — capability -> the FULL set of payload key names the
+ * plan-time filter allows through (`ibatexas-planner.ts`'s
+ * `stripUnauthoredPayloadFields`): the schema's own extraction field names
+ * UNION any declared `legacyPayloadChannels` (the two known ops-plane
+ * explicit-reference exceptions — `payment.refund.issue` / `order.status.
+ * transition`'s `orderId`; see each schema's own doc). This is the single
+ * source of truth the filter reads — a schema author who adds a channel
+ * here (in the schema file) is automatically covered, no filter edit needed.
+ */
+export const ALLOWED_PAYLOAD_FIELD_NAMES_BY_CAPABILITY: ReadonlyMap<
+  string,
+  ReadonlySet<string>
+> = new Map(
+  AUTHORED_SCHEMAS.map((schema) => [
+    schema.capability,
+    new Set([...extractionFieldNames(schema), ...legacyChannelFieldNames(schema)]),
+  ]),
 );

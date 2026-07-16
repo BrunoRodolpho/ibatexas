@@ -106,7 +106,10 @@ import {
   PINNED_COMPLETION_TEMPERATURE,
 } from "./model-call-defaults.js";
 import { completeWithEmptyRetry, isEmptyCompletion } from "./complete-with-retry.js";
-import { EXTRACTION_SCHEMAS_BY_CAPABILITY } from "./language-engine/wire-schemas.js";
+import {
+  EXTRACTION_SCHEMAS_BY_CAPABILITY,
+  ALLOWED_PAYLOAD_FIELD_NAMES_BY_CAPABILITY,
+} from "./language-engine/wire-schemas.js";
 
 // Re-export so existing importers (tests, registry) keep their import site.
 export { EXPRESS_INTENT_TOOL };
@@ -414,6 +417,85 @@ function isExpressIntentInput(input: unknown): input is ExpressIntentInput {
 }
 
 /**
+ * FE-T11 (plan-time payload filter — the PARSE-seam enforcement half).
+ *
+ * `EXTRACTION_SCHEMAS_BY_CAPABILITY` (wire-schemas.ts) only narrows what is
+ * ADVERTISED to the model — `buildToolSurface`, above, embeds each authored
+ * capability's narrowed `payload` JSON-Schema into the `express_intent` tool
+ * definition. Nothing previously validated the model's ACTUAL tool-call
+ * `payload` against that schema before it became `IntentEnvelope.payload`:
+ * this stack has no grammar-constrained decoding (a completion's tool-call
+ * arguments are not enforced against `inputSchema` at the model layer), so a
+ * completion can freely emit a key its capability's authored schema never
+ * declared — e.g. a hallucinated `orderId` for `payment.pix.regenerate`,
+ * whose schema declares ZERO fields. Unfiltered, that key reached
+ * `resolveOrderId` (`resolve-and-assemble.ts`) and was read as an EXPLICIT
+ * customer reference, silently bypassing the auto-resolve confirm gate — the
+ * advertised schema alone did NOT close this; this filter is the missing
+ * enforcement half.
+ *
+ * Name-level strip ONLY — no type coercion, no repair; that stays the
+ * resolver's job (P3, one transformation per seam). A capability absent from
+ * `ALLOWED_PAYLOAD_FIELD_NAMES_BY_CAPABILITY` (no authored schema yet) passes
+ * its payload through completely UNCHANGED — zero behavior change until
+ * FE-1's rollout authors that capability's schema; the smuggling class stays
+ * open for those capabilities BY THE ROLLOUT'S OWN DESIGN, not by oversight
+ * (see the FE-T11 PR's rollout-tail note). A non-object payload (null,
+ * array, or any other shape a malformed completion might emit) is likewise
+ * passed through unchanged — there are no NAMED keys to filter, and
+ * downstream handles a malformed payload exactly as it always has.
+ *
+ * The allowlist is schema-field-names UNION any declared
+ * `legacyPayloadChannels` (`wire-schemas.ts`'s `ALLOWED_PAYLOAD_FIELD_NAMES_
+ * BY_CAPABILITY`, built from each schema's OWN declaration — see
+ * `payment-refund-issue.schema.ts` / `order-status-transition.schema.ts` for
+ * the two known ops-plane exceptions): a small number of capabilities have a
+ * SECOND, pre-existing resolver path that reads a raw identifier field (e.g.
+ * `orderId`) directly off the payload as an authoritative explicit
+ * reference, older than and independent of the authored-schema mechanism —
+ * a naive "strip anything not in the wire schema" filter breaks those
+ * capabilities outright (caught by the full apps/api suite before this
+ * shipped: 21 tests across payment.refund.issue's and order.status.
+ * transition's e2e coverage). Declaring the exception IN the schema file
+ * (not a floating map here) keeps one source of truth a reviewer sees
+ * alongside the schema it exempts.
+ *
+ * PLACEMENT IS LOAD-BEARING — this runs ONLY here, at PLAN time, before the
+ * payload is threaded anywhere downstream. Do NOT duplicate or move this
+ * into `resolveAndAssemble.ts` or the RESUME path (`enrichResumeState`,
+ * claustrum-bootstrap.ts): both legitimately ADD resolver-owned fields
+ * (cartId, variantId, itemId, orderId, allergens, …) onto this SAME payload
+ * shape AFTER this filter has already run once — filtering again there would
+ * strip the resolver's own grounded fields, not just the model's.
+ *
+ * Existing ad-hoc per-field strips (e.g. `threadResolvedIdsIntoPayload`'s
+ * unconditional `allergens` strip) are KEPT, not superseded — defense in
+ * depth is permanent policy here, not a stopgap this generic filter retires.
+ */
+function stripUnauthoredPayloadFields(
+  capability: string,
+  payload: unknown,
+): { filtered: unknown; stripped: readonly string[] } {
+  const allowedFields = ALLOWED_PAYLOAD_FIELD_NAMES_BY_CAPABILITY.get(capability);
+  if (allowedFields === undefined) {
+    return { filtered: payload, stripped: [] };
+  }
+  if (payload === null || typeof payload !== "object" || Array.isArray(payload)) {
+    return { filtered: payload, stripped: [] };
+  }
+  const filtered: Record<string, unknown> = {};
+  const stripped: string[] = [];
+  for (const [key, value] of Object.entries(payload as Record<string, unknown>)) {
+    if (allowedFields.has(key)) {
+      filtered[key] = value;
+    } else {
+      stripped.push(key);
+    }
+  }
+  return { filtered, stripped };
+}
+
+/**
  * The raw shape of a `propose_claim` tool call's `input` (Q6b — SDD §H). The
  * model proposes a `type` (a FREE string — it may hallucinate one outside the
  * registry; the constrained-generation wall constrains it) and a same-subject
@@ -691,10 +773,36 @@ function translateToolCalls(args: {
         dropped.push(capability);
         continue;
       }
+      // FE-T11 — the plan-time payload filter (see stripUnauthoredPayload
+      // Fields's doc): the ENFORCEMENT half of the authored extraction
+      // schemas, closing the class of bug where a smuggled key (e.g. a
+      // hallucinated orderId) rode the wire unfiltered straight into
+      // buildEnvelope. Runs BEFORE buildEnvelope, unconditionally, for every
+      // capability — a no-op for any capability with no authored schema.
+      const { filtered: filteredPayload, stripped } = stripUnauthoredPayloadFields(
+        capability,
+        payload ?? {},
+      );
+      if (stripped.length > 0) {
+        // SIGNAL — names only, NEVER values (the stripped value could be
+        // arbitrary model-generated text/PII): observability for how often a
+        // completion attempts to smuggle an unauthored field past a capability's
+        // narrowed wire schema.
+        logger.warn(
+          {
+            component: "planner",
+            event: "express_intent.payload_fields_stripped",
+            turnId: args.state.turnId,
+            capability,
+            strippedFields: stripped,
+          },
+          `planner stripped ${stripped.length} unauthored payload field(s) for "${capability}"`,
+        );
+      }
       envelopes.push(
         buildEnvelope({
           kind: capability,
-          payload: payload ?? {},
+          payload: filteredPayload ?? {},
           // Per-turn constant (customer plane: llm/conversation; ops plane:
           // user/admin:<staffId>/role). `payload` above is the ONLY thing the
           // model influences — never `actor`.
