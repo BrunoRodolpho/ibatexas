@@ -726,7 +726,7 @@ async function resolveProductForItem(
  *  order's line items — see `resolveOrderLineItem`. */
 type OrderLineItemResolution =
   | { readonly kind: "found"; readonly itemId: string }
-  | { readonly kind: "ambiguous" }
+  | { readonly kind: "ambiguous"; readonly count: number }
   | { readonly kind: "not_found" };
 
 /**
@@ -743,11 +743,23 @@ type OrderLineItemResolution =
  * Two safety upgrades over the legacy tool's exact-first-match:
  *   - zero matches → `"not_found"` (an honest refuse downstream — never a
  *     guess);
- *   - MULTIPLE matches (e.g. two "coca" lines) → `"ambiguous"` — the caller
- *     (`threadResolvedIdsIntoPayload` / `resolveAndAssemble`) feeds this into
- *     the SAME order-level autoresolve-confirm mechanism
- *     (`ctx.autoResolvedMoneyRef` / `confirmOnAutoResolveGuard`) so the
- *     kernel REQUEST_CONFIRMATIONs rather than silently picking one line.
+ *   - MULTIPLE matches (e.g. two "coca" lines) → `"ambiguous"` (carries the
+ *     match `count`) — review finding (post-#264): the FIRST cut of this
+ *     reused `ctx.autoResolvedMoneyRef` / `confirmOnAutoResolveGuard` (the
+ *     ORDER-level "which order?" auto-resolve's confirm mechanism) here too,
+ *     but that mechanism means "I GUESSED a value, please confirm the
+ *     guess" — item-level ambiguity picks NO item at all, so routing it
+ *     through a yes/no confirm falsely implies a specific item was
+ *     identified, and confirming resumed into a resolver call with
+ *     `itemId: undefined` — a dead end ("Item não encontrado" after the
+ *     customer just said "yes"). Fixed: `threadResolvedIdsIntoPayload`
+ *     leaves `itemId` unset AND does NOT touch `ctx.autoResolvedMoneyRef`
+ *     for this case; it instead stamps `itemAmbiguousCount` onto the
+ *     payload so the EXECUTOR (`register-ibatexas-tool-packs.ts`) can
+ *     return an honest, specific disambiguation reply immediately —
+ *     reusing the SAME "tool reports a business-level non-match" idiom the
+ *     `"not_found"` case already used (no new kernel Decision, no confirm,
+ *     no park).
  *
  * On a match, `itemId` is the matched line's REAL Medusa line-item id (the
  * same id the legacy tool's own Medusa PATCH/edit calls use) — the executor
@@ -772,7 +784,7 @@ async function resolveOrderLineItem(
       (i) => i.title.toLowerCase() === needle,
     );
     if (matches.length === 0) return { kind: "not_found" };
-    if (matches.length > 1) return { kind: "ambiguous" };
+    if (matches.length > 1) return { kind: "ambiguous", count: matches.length };
     return { kind: "found", itemId: matches[0]!.id };
   } catch {
     return { kind: "not_found" };
@@ -811,20 +823,36 @@ async function threadResolvedIdsIntoPayload(
   // ensures exists; order.amend.add_item instead carries orderId (already
   // resolved above by applyAutoResolve's ORDER_AUTORESOLVE_KINDS handling —
   // the model is never shown orderId, per order-amend-granular.schema.ts).
+  //
+  // Review finding (post-#264, MAJOR): `allergens` used to fill only when
+  // `!Array.isArray(out.allergens)` — a well-formed-but-adversarial
+  // completion smuggling `allergens: []` (or any array) past the extraction
+  // schema was treated as "already resolved" and SURVIVED untouched, and
+  // `requireExplicitAllergens` (pack-orders) only checks the SHAPE (is it
+  // an array?), never the provenance — so a smuggled array defeated the
+  // authoritative fill entirely (Hard Rule #1 / AC3: allergens must be
+  // impossible for the model to populate). Fixed: `allergens` is now
+  // UNCONDITIONALLY stripped from whatever the payload carries and refilled
+  // ONLY from the resolved product — a resolution miss leaves it absent
+  // (never falls back to the stripped value), so `requireExplicitAllergens`
+  // correctly REFUSEs rather than trusting an unverified array. `variantId`
+  // keeps its original conditional-preserve behavior (an explicit, non-NL
+  // variantId is a legitimate non-model input elsewhere — see "does not
+  // override an explicit variantId"); only `allergens` is in this review's
+  // "same one-line class" scope.
   if (kind === "order.item.add" || kind === "order.amend.add_item") {
     const needsVariant = typeof out.variantId !== "string";
-    const needsAllergens = !Array.isArray(out.allergens);
-    if (needsVariant || needsAllergens) {
-      const name = firstString(out.item, out.product, out.productName, out.name, out.query);
-      if (name) {
-        const resolved = await resolveProductForItem(name, channel, sessionId, customerId);
-        if (resolved !== undefined) {
-          if (needsVariant && resolved.variantId !== undefined) {
-            out = { ...out, variantId: resolved.variantId };
-          }
-          if (needsAllergens && Array.isArray(resolved.allergens)) {
-            out = { ...out, allergens: resolved.allergens };
-          }
+    const { allergens: _modelSuppliedAllergens, ...strippedOfAllergens } = out;
+    out = strippedOfAllergens;
+    const name = firstString(out.item, out.product, out.productName, out.name, out.query);
+    if (name) {
+      const resolved = await resolveProductForItem(name, channel, sessionId, customerId);
+      if (resolved !== undefined) {
+        if (needsVariant && resolved.variantId !== undefined) {
+          out = { ...out, variantId: resolved.variantId };
+        }
+        if (Array.isArray(resolved.allergens)) {
+          out = { ...out, allergens: resolved.allergens };
         }
       }
     }
@@ -841,28 +869,34 @@ async function threadResolvedIdsIntoPayload(
   // (never a catalog-wide guess) via `resolveOrderLineItem`, mirroring
   // amend-order.ts's existing title-match semantics with two safety
   // upgrades over the legacy exact-first-match: zero matches leave itemId
-  // unresolved so the kernel/guard layer REFUSEs (item not found) rather
-  // than executing against a guessed line; MULTIPLE matches set
-  // `ctx.autoResolvedMoneyRef` so `confirmOnAutoResolveGuard`
-  // (AUTORESOLVE_CONFIRM_KINDS) forces REQUEST_CONFIRMATION instead of
-  // silently guessing between e.g. two "coca" lines — the SAME order-level
-  // autoresolve-confirm pattern `applyAutoResolve` already uses above.
-  // Requires orderId to already be present (resolved above).
+  // unresolved so the executor reports an honest not-found (never executing
+  // against a guessed line); MULTIPLE matches stamp `itemAmbiguousCount` on
+  // the payload (never `ctx.autoResolvedMoneyRef` — see the docblock on
+  // `resolveOrderLineItem` for why that would be dishonest here) so the
+  // executor can surface a specific disambiguation reply instead of
+  // guessing between e.g. two "coca" lines. Requires orderId to already be
+  // present (resolved above).
   if (
     (kind === "order.amend.update_qty" || kind === "order.amend.remove_item") &&
     typeof out.itemId !== "string" &&
     typeof out.orderId === "string"
   ) {
+    const orderId = out.orderId;
+    // Always decided fresh below (found/ambiguous/not_found) — never
+    // preserved from a pre-existing value, so there is nothing here for an
+    // adversarial completion to smuggle in and have survive unexamined.
+    const { itemAmbiguousCount: _staleAmbiguousCount, ...strippedOfAmbiguity } = out;
+    out = strippedOfAmbiguity;
     const name = firstString(out.item, out.product, out.name, out.query);
     if (name) {
-      const resolution = await resolveOrderLineItem(out.orderId, name, customerId);
+      const resolution = await resolveOrderLineItem(orderId, name, customerId);
       if (resolution.kind === "found") {
         out = { ...out, itemId: resolution.itemId };
       } else if (resolution.kind === "ambiguous") {
-        ctx.autoResolvedMoneyRef = true;
+        out = { ...out, itemAmbiguousCount: resolution.count };
       }
       // resolution.kind === "not_found": itemId stays unresolved — the
-      // executor schema / kernel guard REFUSEs rather than guessing.
+      // executor reports an honest not-found rather than guessing.
     }
     if (kind === "order.amend.update_qty") {
       out = { ...out, quantity: coerceQuantity(out.quantity) };

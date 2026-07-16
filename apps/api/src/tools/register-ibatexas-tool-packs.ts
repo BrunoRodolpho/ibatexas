@@ -167,6 +167,34 @@ export function agentCtxFromCapsule(capsule: Capsule): AgentContext {
  * that into an honest not-found response rather than passing an empty title
  * through to `amendOrder`.
  */
+/**
+ * FE-T09 review fix (post-#264) — order.amend.update_qty/remove_item: when
+ * `resolve-and-assemble.ts`'s `resolveOrderLineItem` found MULTIPLE
+ * same-titled lines on the order, it stamps `itemAmbiguousCount` on the
+ * payload instead of forcing a confirm (see that file's docblock on
+ * `resolveOrderLineItem` for why routing item-level ambiguity through the
+ * order-level auto-resolve confirm mechanism was dishonest — it implies a
+ * specific item was identified when none was, and confirming resumed into
+ * a lookup with no itemId, a dead end). Surface that as a specific, honest
+ * disambiguation reply BEFORE attempting the id→title reverse lookup below
+ * — `itemId` is unset in this case, so that lookup would just return the
+ * same generic not-found message this is avoiding.
+ */
+export function ambiguousItemReply(
+  input: unknown,
+): { success: false; message: string } | undefined {
+  const p = input as { itemAmbiguousCount?: unknown; item?: unknown };
+  if (typeof p.itemAmbiguousCount !== "number") return undefined;
+  const named =
+    typeof p.item === "string" && p.item.trim() !== "" ? ` "${p.item.trim()}"` : "";
+  return {
+    success: false,
+    message:
+      `Encontrei ${p.itemAmbiguousCount} itens${named} no pedido — qual deles? ` +
+      "Pode descrever com mais detalhes (ex.: valor ou posição no pedido)?",
+  };
+}
+
 async function resolveItemTitleForAmend(
   orderId: string,
   itemId: string,
@@ -362,6 +390,8 @@ const IBATEXAS_TOOLS: ReadonlyArray<TD<unknown, unknown>> = [
     description: "Alterar a quantidade de um item em um pedido já feito (pós-checkout).",
     riskLevel: "high",
     execute: async (input, ctx) => {
+      const ambiguous = ambiguousItemReply(input);
+      if (ambiguous) return ambiguous;
       const p = input as { orderId: string; itemId: string; quantity: number };
       const itemTitle = await resolveItemTitleForAmend(p.orderId, p.itemId, ctx.customerId);
       if (itemTitle === undefined) {
@@ -380,6 +410,8 @@ const IBATEXAS_TOOLS: ReadonlyArray<TD<unknown, unknown>> = [
     description: "Remover um item de um pedido já feito (pós-checkout).",
     riskLevel: "high",
     execute: async (input, ctx) => {
+      const ambiguous = ambiguousItemReply(input);
+      if (ambiguous) return ambiguous;
       const p = input as { orderId: string; itemId: string };
       const itemTitle = await resolveItemTitleForAmend(p.orderId, p.itemId, ctx.customerId);
       if (itemTitle === undefined) {

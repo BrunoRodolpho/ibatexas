@@ -519,6 +519,58 @@ describe("resolve-and-assemble — FE-T09 granular amend item hydration", () => 
     expect(p.allergens).toBeUndefined();
   });
 
+  // Review finding (post-#264, MAJOR): the old `needsAllergens =
+  // !Array.isArray(out.allergens)` conditional treated ANY array already on
+  // the payload — including one smuggled in by an adversarial completion —
+  // as "already resolved" and skipped the authoritative fill entirely.
+  // requireExplicitAllergens (pack-orders) only checks the SHAPE (is it an
+  // array?), never the source, so a smuggled array would have defeated Hard
+  // Rule #1 / AC3 silently. These two regressions prove the fix: the
+  // resolver's product data always wins, both kinds, both outcomes.
+  it("order.item.add: a scripted completion smuggling allergens is OVERWRITTEN by the resolved product's allergens, never the model's (adversarial)", async () => {
+    searchProductsMock = async () => ({
+      products: [{ id: "prod_1", variants: [{ id: "var_coke" }], allergens: ["gluten"] }],
+    });
+    const { payload } = await resolveAndAssemble({
+      kind: "order.item.add",
+      // Adversarial: the model schema never exposes `allergens`, but a
+      // malformed/adversarial completion could still carry the key.
+      payload: { item: "coca", allergens: [] },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect((payload as { allergens?: string[] }).allergens).toEqual(["gluten"]);
+  });
+
+  it("order.amend.add_item: a scripted completion smuggling a FABRICATED allergen claim is OVERWRITTEN by the resolved product's real allergens (adversarial)", async () => {
+    searchProductsMock = async () => ({
+      products: [{ id: "prod_1", variants: [{ id: "var_coke" }], allergens: ["gluten"] }],
+    });
+    const { payload } = await resolveAndAssemble({
+      kind: "order.amend.add_item",
+      // Adversarial: the model claims NO allergens (or the wrong ones) —
+      // the resolver must never defer to it.
+      payload: { orderId: "ord_1", item: "coca", allergens: ["nuts"] },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect((payload as { allergens?: string[] }).allergens).toEqual(["gluten"]);
+  });
+
+  it("order.amend.add_item: a smuggled allergens array does NOT survive when the catalog lookup misses — stripped, never fallen back to, so requireExplicitAllergens still REFUSEs (adversarial + no match)", async () => {
+    searchProductsMock = async () => ({ products: [] });
+    const { payload } = await resolveAndAssemble({
+      kind: "order.amend.add_item",
+      payload: { orderId: "ord_1", item: "xyzzy nonexistent", allergens: [] },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect((payload as { allergens?: string[] }).allergens).toBeUndefined();
+  });
+
   it("order.amend.update_qty resolves itemId (a REAL Medusa line-item id) from a UNIQUE matching line on the LIVE order", async () => {
     orderServiceGetOrder = async () => ({
       ownershipValid: true,
@@ -571,7 +623,18 @@ describe("resolve-and-assemble — FE-T09 granular amend item hydration", () => 
     expect((payload as { itemId?: string }).itemId).toBeUndefined();
   });
 
-  it("leaves itemId UNSET and sets ctx.autoResolvedMoneyRef when two lines share a title (ambiguous — forces REQUEST_CONFIRMATION instead of silently picking one)", async () => {
+  // Review fix (post-#264): the FIRST cut reused ctx.autoResolvedMoneyRef
+  // here (the ORDER-level "which order?" auto-resolve confirm mechanism),
+  // but item-level ambiguity identifies NO item at all — routing it through
+  // a yes/no confirm falsely implies a specific item was found, and
+  // confirming resumed into a lookup with itemId undefined (a dead end:
+  // "Item não encontrado" right after the customer said "yes"). Fixed:
+  // itemId stays unset, autoResolvedMoneyRef is NEVER touched (no park, no
+  // confirm), and itemAmbiguousCount is stamped instead so the executor
+  // (register-ibatexas-tool-packs.ts's ambiguousItemReply) can surface an
+  // honest, specific disambiguation reply — see that file's test for the
+  // reply text itself.
+  it("leaves itemId UNSET, does NOT touch ctx.autoResolvedMoneyRef, and stamps itemAmbiguousCount when two lines share a title (ambiguous — never guesses, never fakes a confirm)", async () => {
     orderServiceGetOrder = async () => ({
       ownershipValid: true,
       order: {
@@ -588,8 +651,50 @@ describe("resolve-and-assemble — FE-T09 granular amend item hydration", () => 
       channel: "web",
       sessionId: "conv-1",
     });
-    expect((payload as { itemId?: string }).itemId).toBeUndefined();
-    expect((ctx as { autoResolvedMoneyRef?: boolean }).autoResolvedMoneyRef).toBe(true);
+    const p = payload as { itemId?: string; itemAmbiguousCount?: number };
+    expect(p.itemId).toBeUndefined();
+    expect(p.itemAmbiguousCount).toBe(2);
+    expect((ctx as { autoResolvedMoneyRef?: boolean }).autoResolvedMoneyRef).toBeUndefined();
+  });
+
+  it("a THIRD same-titled line stamps itemAmbiguousCount: 3 (the count is real, not a fixed sentinel)", async () => {
+    orderServiceGetOrder = async () => ({
+      ownershipValid: true,
+      order: {
+        items: [
+          { id: "li_1", title: "Coca", quantity: 1 },
+          { id: "li_2", title: "Coca", quantity: 1 },
+          { id: "li_3", title: "Coca", quantity: 1 },
+        ],
+      },
+    });
+    const { payload } = await resolveAndAssemble({
+      kind: "order.amend.remove_item",
+      payload: { orderId: "ord_1", item: "coca" },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect((payload as { itemAmbiguousCount?: number }).itemAmbiguousCount).toBe(3);
+  });
+
+  it("does not smuggle a model-supplied itemAmbiguousCount through on a clean single match (always decided fresh)", async () => {
+    orderServiceGetOrder = async () => ({
+      ownershipValid: true,
+      order: { items: [{ id: "li_burger", title: "Hambúrguer", quantity: 1 }] },
+    });
+    const { payload } = await resolveAndAssemble({
+      kind: "order.amend.update_qty",
+      // An adversarial/malformed completion smuggling itemAmbiguousCount in
+      // directly — a real UNIQUE match must still clear it, not preserve it.
+      payload: { orderId: "ord_1", item: "hambúrguer", quantity: 2, itemAmbiguousCount: 99 },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    const p = payload as { itemId?: string; itemAmbiguousCount?: number };
+    expect(p.itemId).toBe("li_burger");
+    expect(p.itemAmbiguousCount).toBeUndefined();
   });
 
   it("leaves itemId UNSET when the order belongs to a different customer (ownership check fails — never a cross-customer leak)", async () => {
