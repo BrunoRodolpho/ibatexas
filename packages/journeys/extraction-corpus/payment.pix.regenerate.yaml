@@ -305,7 +305,28 @@ cases:
       this schema (unlike payment.refund.issue's), so this must NOT survive
       into extractionIR; hydration still auto-resolves the most recent order
       exactly as every implicit case does (the number is not a real lookup key
-      here — the model has nowhere to put it).
+      here — the model has nowhere to put it). Team-lead ruling (FE-T11): this
+      is the headline adversarial case — it directly probes the
+      hallucinated-orderId bypass the empty schema is meant to close. Before
+      this schema, the generic {type:"object"} fallback let a model that
+      DECIDED to honor a spoken order number emit `payload:{orderId:"12345"}`
+      (a STRING, structurally indistinguishable from a genuinely resolved id)
+      straight into `resolve-and-assemble.ts`'s `resolveOrderId`, which reads
+      `payload.orderId` and — if present — treats it as an EXPLICIT customer
+      reference (`autoResolved:false`), silently skipping
+      `confirmOnAutoResolveGuard` entirely. The closed wire schema removes the
+      model's only legitimate avenue to populate that key at all.
+      KNOWN UX LIMITATION (documented, not fixed by this ticket): even with
+      the wire closed, the resolver still only ever auto-resolves to the
+      customer's MOST RECENT order — "pedido 12345" is never actually looked
+      up, so if 12345 is NOT the customer's most recent order, the flow
+      silently targets the wrong one. Safety is NOT extraction accuracy here;
+      it is the `confirmOnAutoResolveGuard` PARK — the customer sees which
+      order was actually picked (via the confirmation prompt's grounded
+      target) before anything executes, and can decline if it is not 12345.
+      A genuine explicit-reference resolver (mirroring payment.refund.issue's
+      BKL-089 orderReference idiom) is a real future improvement, not
+      required for this capability's safety property to hold today.
     expectPayload:
       extractionIR:
         payload: {}
