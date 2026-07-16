@@ -196,6 +196,15 @@ export function assertGuardRefsResolve(
   resolutionMap: ReadonlyMap<string, ResolvedGuard> = buildGuardResolutionMap(),
 ): void {
   for (const def of defs) {
+    // FE-T20: `guardRefs` exists ONLY on the `tier: "chat"` union member —
+    // an `IdentityCapabilityDefinition` has no such property at all (see
+    // types.ts). Narrowing on `tier` (rather than `"guardRefs" in def` or
+    // `?? []` against a type that no longer declares the field) is both
+    // the type-correct and the semantically-honest check: identity-tier
+    // instances have NOTHING to resolve — valid-by-absence, never a
+    // dangling reference — while a `tier: "chat"` instance's `guardRefs`
+    // is REQUIRED (non-optional) so it is always iterable here.
+    if (def.tier !== "chat") continue
     for (const ref of def.guardRefs) {
       const key = resolutionKey(def.pack, ref.phase, ref.name)
       if (!resolutionMap.has(key)) {

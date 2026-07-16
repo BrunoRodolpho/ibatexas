@@ -59,7 +59,14 @@ import type { PixIntentKind } from "@adjudicate/pack-payments-pix"
 // granular amends, lifecycle (projection/status), and the order-extension
 // kinds the taxonomy lists.
 
-const ORDER_INTENT_KINDS = [
+// FE-T20: exported (previously module-private) so `@ibatexas/packs-composed`'s
+// `generate-pack-intent-kinds.ts` freshness gate can diff its
+// CapabilityDefinition-derived projection against this list byte-for-byte,
+// per pack, independent of the `KNOWN_INTENT_KINDS` union it feeds — a
+// direct, non-tautological freshness target rather than an indirect one
+// reconstructed only through the union. No other change: identical values,
+// identical order, identical `satisfies` guard.
+export const ORDER_INTENT_KINDS = [
   "order.cart.ensure",
   "order.item.add",
   "order.item.update",
@@ -89,7 +96,8 @@ const ORDER_INTENT_KINDS = [
 // Mirrors `ReservationIntentKind` in `packages/pack-reservations/src/types.ts`.
 // Source: governance §"Domain: reservation".
 
-const RESERVATION_INTENT_KINDS = [
+// FE-T20: exported — see ORDER_INTENT_KINDS's comment above.
+export const RESERVATION_INTENT_KINDS = [
   "reservation.create",
   "reservation.modify",
   "reservation.cancel",
@@ -106,7 +114,8 @@ const RESERVATION_INTENT_KINDS = [
 // W5-6 added `conversation.message.append` (persistence-side; distinct
 // from the wire-egress `whatsapp.message.send`).
 
-const WHATSAPP_INTENT_KINDS = [
+// FE-T20: exported — see ORDER_INTENT_KINDS's comment above.
+export const WHATSAPP_INTENT_KINDS = [
   "whatsapp.message.send",
   "whatsapp.template.send",
   "whatsapp.session.handover",
@@ -124,7 +133,12 @@ const WHATSAPP_INTENT_KINDS = [
 // payment.pix.regenerate for the customer-driven composite kind in
 // pack-payments.
 
-const PIX_INTENT_KINDS = [
+// FE-T20: exported so packs-composed's freshness test can independently
+// cross-check it against `paymentsPixPack.intents` (a runtime
+// materialization of the same FROZEN external package) — a belt-and-braces
+// check, since this list is NOT one of the 6 first-party packs the
+// CapabilityDefinition registry covers.
+export const PIX_INTENT_KINDS = [
   "pix.charge.create",
   "pix.charge.confirm",
   "pix.charge.refund",
@@ -137,7 +151,8 @@ const PIX_INTENT_KINDS = [
 // status lifecycle. The legacy `paymentProjectionPolicyBundle` now re-exports
 // a subset of pack-payments' bundle for backwards compatibility (D8).
 
-const PAYMENT_INTENT_KINDS = [
+// FE-T20: exported — see ORDER_INTENT_KINDS's comment above.
+export const PAYMENT_INTENT_KINDS = [
   "payment.create",
   "payment.charge.create",
   "payment.charge.confirm",
@@ -164,7 +179,8 @@ const PAYMENT_INTENT_KINDS = [
 // remaining kinds (`customer.session.*`, `customer.loyalty.*`,
 // `customer.welcome_credit.*`) belong to future Packs.
 
-const CUSTOMER_ONBOARDING_INTENT_KINDS = [
+// FE-T20: exported — see ORDER_INTENT_KINDS's comment above.
+export const CUSTOMER_ONBOARDING_INTENT_KINDS = [
   "customer.create",
   "customer.profile.update",
   "customer.preferences.update",
@@ -182,7 +198,8 @@ const CUSTOMER_ONBOARDING_INTENT_KINDS = [
 // egress kinds deliberately excluded above). Chat-INVISIBLE by construction
 // (advertised only to a staff session; never in CHAT_DRIVABLE_TOOL_KINDS).
 
-const OPS_INTENT_KINDS = [
+// FE-T20: exported — see ORDER_INTENT_KINDS's comment above.
+export const OPS_INTENT_KINDS = [
   "product.availability.set",
   // NEW-004 — the OWNED price-change verb (confirm-gated on UNTRUSTED taint).
   // Chat-INVISIBLE like the availability verb; its executor re-prices via the

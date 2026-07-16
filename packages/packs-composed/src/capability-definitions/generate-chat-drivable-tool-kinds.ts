@@ -56,6 +56,11 @@ export function generateChatDrivableToolKinds(defs: readonly CapabilityDefinitio
     for (const def of defs) {
       if (def.pack !== pack) continue
       if (!def.mutating) continue
+      // FE-T20: `surfaces` exists ONLY on the `tier: "chat"` union member —
+      // narrowing on `tier` correctly excludes every identity-tier def
+      // (which has no `surfaces` property at all) rather than reaching for
+      // a fallback default.
+      if (def.tier !== "chat") continue
       if (!def.surfaces.includes("chat")) continue
       out.push(def.kind)
     }

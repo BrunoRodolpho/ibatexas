@@ -1125,9 +1125,15 @@ importers:
         specifier: workspace:*
         version: link:../pack-whatsapp
     devDependencies:
+      '@adjudicate/pack-payments-pix':
+        specifier: ^0.3.0
+        version: 0.3.0
       '@ibatexas/eslint-config':
         specifier: workspace:*
         version: link:../eslint-config
+      '@ibatexas/intent-kinds':
+        specifier: workspace:*
+        version: link:../intent-kinds
       '@ibatexas/types':
         specifier: workspace:*
         version: link:../types
