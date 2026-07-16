@@ -93,6 +93,12 @@ const AUTORESOLVE_CONFIRM_KINDS = new Set([
   // BKL-038 — same NL→id targeting → same confirm gate, so an auto-resolved
   // "meu pedido" is surfaced before the in-flight modify executes.
   "order.amend.request",
+  // FE-T09 (D-a) — the granular amend kinds now auto-resolve orderId too
+  // (resolve-and-assemble.ts's ORDER_AUTORESOLVE_KINDS), so they need the
+  // same confirm gate as order.amend.request.
+  "order.amend.add_item",
+  "order.amend.update_qty",
+  "order.amend.remove_item",
   "order.note.add",
   "order.address.change",
   "order.type.switch",

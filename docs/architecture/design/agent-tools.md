@@ -11,7 +11,7 @@ The agent interacts with the Restaurant and Intelligence contexts through typed 
 
 **Tool access model:** the LLM has zero state-mutation authority. It reads facts via read-only tools and proposes mutations only through the single `express_intent` tool (`apps/api/src/claustrum/ibatexas-planner.ts`), which the kernel `adjudicate()`s. Per-tool classification (READ_ONLY vs MUTATING) and per-state visibility are owned by each Pack's `ToolClassification` + `*CapabilityPlanner` (`@adjudicate/core/llm`, e.g. `packages/pack-orders/src/capabilities.ts`); kernel `PolicyBundle` guards (`canCancelOrder`, `canAmendOrder`, `hasOrderId` in `packages/pack-orders/src/policies.ts`) gate invalid operations. The full rationale and contract is **ADR #9 — Intent-Gated Execution** in [docs/architecture/decisions.md](../decisions.md).
 
-The roster below is the **18 LLM-callable mutating tools** plus the read-only tools, assembled by `apps/api/src/tools/register-ibatexas-tool-packs.ts` (`listIbatexasToolPacks()`).
+The roster below is the **20 LLM-callable mutating tools** plus the read-only tools, assembled by `apps/api/src/tools/register-ibatexas-tool-packs.ts` (`listIbatexasToolPacks()`). FE-T09 (D-a) replaced the grouped `amend_order` tool with three granular post-checkout amend tools (add item / update quantity / remove item on a placed order) — the model targets these directly now; the legacy grouped kind (`order.amend.request`) still exists at the kernel level but is reachable only via the deterministic legacy HTTP amend route, never through this tool roster. This doc is not yet updated with the granular tools' rows — see the ticket's residual notes.
 
 ---
 

@@ -44,32 +44,34 @@ import {
 } from "../capability-definitions/index.js"
 import type { CapabilityDefinition, CapabilityPackId } from "../capability-definitions/index.js"
 
-// ── Count assertions (ticket AC: "70 KNOWN / 18 CHAT_DRIVABLE") ─────────
+// ── Count assertions (ticket AC: "70 KNOWN / 18 CHAT_DRIVABLE", updated to
+// 20 CHAT_DRIVABLE by FE-T09 (D-a) — the amend inversion) ─────────
 
-describe("count assertions — 70 KNOWN / 18 CHAT_DRIVABLE pinned against the projections (FE-T21 AC)", () => {
+describe("count assertions — 70 KNOWN / 20 CHAT_DRIVABLE pinned against the projections (FE-T21 AC, FE-T09 D-a update)", () => {
   it("KNOWN_INTENT_KINDS has exactly 70 kinds", () => {
     expect(KNOWN_INTENT_KINDS.size).toBe(70)
   })
 
-  it("CHAT_DRIVABLE_TOOL_KINDS has exactly 18 kinds, and generateChatDrivableToolKinds(CAPABILITY_DEFINITIONS) reproduces it byte-for-byte", () => {
-    expect(CHAT_DRIVABLE_TOOL_KINDS).toHaveLength(18)
+  it("CHAT_DRIVABLE_TOOL_KINDS has exactly 20 kinds, and generateChatDrivableToolKinds(CAPABILITY_DEFINITIONS) reproduces it byte-for-byte", () => {
+    expect(CHAT_DRIVABLE_TOOL_KINDS).toHaveLength(20)
     const generated = generateChatDrivableToolKinds(CAPABILITY_DEFINITIONS)
-    expect(generated).toHaveLength(18)
+    expect(generated).toHaveLength(20)
     expect(generated).toEqual([...CHAT_DRIVABLE_TOOL_KINDS])
   })
 
-  it('the "17 vs 18" JSDoc drift is gone: packs-composed/src/index.ts documents 18, matching the real array length', async () => {
+  it('the chat-drivable count JSDoc is fresh: packs-composed/src/index.ts documents 20, matching the real array length (FE-T09 D-a)', async () => {
     // Read-the-source-as-text check (not just the runtime value, which
-    // trivially has length 18) — the ticket's AC is specifically about the
+    // trivially has length 20) — the ticket's AC is specifically about the
     // DOC COMMENT having drifted from the real count in the past (fixed as
-    // part of FE-T19's PR #245 rider). Verified here so a future edit that
-    // reintroduces "17" anywhere near the export is caught.
+    // part of FE-T19's PR #245 rider; re-verified after FE-T09's 18→20
+    // change). Verified here so a future edit that reintroduces a stale
+    // "18" anywhere near the export is caught.
     const fs = await import("node:fs/promises")
     const url = await import("node:url")
     const path = url.fileURLToPath(new URL("../index.ts", import.meta.url))
     const source = await fs.readFile(path, "utf-8")
-    expect(source).toContain("The 18 chat-drivable")
-    expect(source).not.toMatch(/The 17 chat-drivable/)
+    expect(source).toContain("The 20 chat-drivable")
+    expect(source).not.toMatch(/The 18 chat-drivable/)
   })
 
   it("the 66-kind CapabilityDefinition registry + KNOWN_INTENT_KINDS' 4 external kinds (3 pix + 1 loyalty) account for all 70", () => {
@@ -80,9 +82,9 @@ describe("count assertions — 70 KNOWN / 18 CHAT_DRIVABLE pinned against the pr
 // ── Registered tool roster — capability descriptions (value side) ───────
 
 describe("generateCapabilityDescriptions — the registered tool roster's VALUE side (FE-T21)", () => {
-  it("projects exactly 18 pt-BR descriptions, one per chat-tier capability", () => {
+  it("projects exactly 20 pt-BR descriptions, one per chat-tier capability", () => {
     const generated = generateCapabilityDescriptions(CAPABILITY_DEFINITIONS)
-    expect(Object.keys(generated)).toHaveLength(18)
+    expect(Object.keys(generated)).toHaveLength(20)
     for (const kind of CHAT_DRIVABLE_TOOL_KINDS) {
       expect(generated).toHaveProperty(kind)
       expect(typeof generated[kind]).toBe("string")

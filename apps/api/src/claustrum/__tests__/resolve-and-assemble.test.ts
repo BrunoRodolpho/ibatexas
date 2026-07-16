@@ -29,10 +29,21 @@ let orderListByCustomer: (cid: string, input?: unknown) => Promise<{ orders: unk
   async () => ({ orders: [], count: 0 });
 let reservationListByCustomer: (cid: string, opts?: unknown) => Promise<{ reservations: unknown[]; total: number }> =
   async () => ({ reservations: [], total: 0 });
+// FE-T09 (D-a) — order.amend.update_qty/remove_item's LIVE order-fetch +
+// title-match hydration (resolveOrderLineItem), distinct from the stored
+// OrderProjection `orderGetById` above.
+let orderServiceGetOrder: (
+  orderId: string,
+  customerId?: string,
+) => Promise<{ order: { items?: Array<{ id: string; title: string }> }; ownershipValid: boolean }> =
+  async () => {
+    throw new Error("order not found");
+  };
 
 vi.mock("@ibatexas/tools", () => ({
   rk: (s: string) => s,
   getRedisClient: async () => ({ get: (k: string) => redisGet(k) }),
+  medusaAdmin: {},
   medusaStore: (path: string) => medusaStoreFetch(path),
   reaisToCentavos: (reais: number) => Math.round(reais * 100),
   searchProducts: (input: unknown, ctx?: unknown) => searchProductsMock(input, ctx),
@@ -41,6 +52,9 @@ vi.mock("@ibatexas/domain", () => ({
   createOrderQueryService: () => ({
     getById: (id: string) => orderGetById(id),
     listByCustomer: (cid: string, input?: unknown) => orderListByCustomer(cid, input),
+  }),
+  createOrderService: () => ({
+    getOrder: (orderId: string, customerId?: string) => orderServiceGetOrder(orderId, customerId),
   }),
   createPaymentQueryService: () => ({
     getById: (id: string) => paymentGetById(id),
@@ -88,6 +102,9 @@ beforeEach(() => {
   searchProductsMock = async () => ({ products: [] });
   orderListByCustomer = async () => ({ orders: [], count: 0 });
   reservationListByCustomer = async () => ({ reservations: [], total: 0 });
+  orderServiceGetOrder = async () => {
+    throw new Error("order not found");
+  };
 });
 
 describe("resolve-and-assemble — F4 read side", () => {
@@ -460,6 +477,162 @@ describe("resolve-and-assemble — NL→variantId (BKL-061)", () => {
   });
 });
 
+// ── FE-T09 (D-a) — the granular post-checkout amend kinds' item hydration ───
+//
+// order.amend.add_item reuses the EXACT SAME resolveProductForItem path as
+// order.item.add (BKL-061/067) — the model's NL `item` reference resolves to
+// variantId + the product's EXPLICIT allergens, never the model itself.
+// order.amend.update_qty/remove_item resolve the NL reference to a line
+// ALREADY on the order (never a catalog-wide guess) via resolveOrderLineItem —
+// a LIVE Medusa order fetch + case-insensitive title match, mirroring
+// amend-order.ts's existing semantics, yielding a REAL Medusa line-item id
+// (never a title stand-in).
+describe("resolve-and-assemble — FE-T09 granular amend item hydration", () => {
+  it("order.amend.add_item resolves variantId + explicit allergens from the catalog (never model-populated)", async () => {
+    searchProductsMock = async () => ({
+      products: [{ id: "prod_1", variants: [{ id: "var_coke" }], allergens: ["gluten"] }],
+    });
+    const { payload } = await resolveAndAssemble({
+      kind: "order.amend.add_item",
+      payload: { orderId: "ord_1", item: "coca" },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    const p = payload as { variantId?: string; allergens?: string[]; quantity?: number };
+    expect(p.variantId).toBe("var_coke");
+    expect(p.allergens).toEqual(["gluten"]);
+    expect(p.quantity).toBe(1);
+  });
+
+  it("order.amend.add_item leaves allergens/variantId UNSET when no catalog match — the kernel's requireExplicitAllergens REFUSEs rather than the resolver guessing", async () => {
+    searchProductsMock = async () => ({ products: [] });
+    const { payload } = await resolveAndAssemble({
+      kind: "order.amend.add_item",
+      payload: { orderId: "ord_1", item: "xyzzy nonexistent" },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    const p = payload as { variantId?: string; allergens?: string[] };
+    expect(p.variantId).toBeUndefined();
+    expect(p.allergens).toBeUndefined();
+  });
+
+  it("order.amend.update_qty resolves itemId (a REAL Medusa line-item id) from a UNIQUE matching line on the LIVE order", async () => {
+    orderServiceGetOrder = async () => ({
+      ownershipValid: true,
+      order: {
+        items: [
+          { id: "li_burger", title: "Hambúrguer", quantity: 1 },
+          { id: "li_fries", title: "Batata", quantity: 1 },
+        ],
+      },
+    });
+    const { payload } = await resolveAndAssemble({
+      kind: "order.amend.update_qty",
+      payload: { orderId: "ord_1", item: "hambúrguer", quantity: 2 },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    const p = payload as { itemId?: string; quantity?: number };
+    expect(p.itemId).toBe("li_burger");
+    expect(p.quantity).toBe(2);
+  });
+
+  it("order.amend.remove_item resolves itemId the same way (no quantity field)", async () => {
+    orderServiceGetOrder = async () => ({
+      ownershipValid: true,
+      order: { items: [{ id: "li_burger", title: "Hambúrguer", quantity: 1 }] },
+    });
+    const { payload } = await resolveAndAssemble({
+      kind: "order.amend.remove_item",
+      payload: { orderId: "ord_1", item: "hambúrguer" },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect((payload as { itemId?: string }).itemId).toBe("li_burger");
+  });
+
+  it("leaves itemId UNSET when no line on the LIVE order matches the NL reference (not found — never guesses, downstream honestly refuses)", async () => {
+    orderServiceGetOrder = async () => ({
+      ownershipValid: true,
+      order: { items: [{ id: "li_burger", title: "Hambúrguer", quantity: 1 }] },
+    });
+    const { payload } = await resolveAndAssemble({
+      kind: "order.amend.remove_item",
+      payload: { orderId: "ord_1", item: "algo que não pedi" },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect((payload as { itemId?: string }).itemId).toBeUndefined();
+  });
+
+  it("leaves itemId UNSET and sets ctx.autoResolvedMoneyRef when two lines share a title (ambiguous — forces REQUEST_CONFIRMATION instead of silently picking one)", async () => {
+    orderServiceGetOrder = async () => ({
+      ownershipValid: true,
+      order: {
+        items: [
+          { id: "li_burger_1", title: "Hambúrguer", quantity: 1 },
+          { id: "li_burger_2", title: "Hambúrguer", quantity: 1 },
+        ],
+      },
+    });
+    const { payload, ctx } = await resolveAndAssemble({
+      kind: "order.amend.update_qty",
+      payload: { orderId: "ord_1", item: "hambúrguer", quantity: 2 },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect((payload as { itemId?: string }).itemId).toBeUndefined();
+    expect((ctx as { autoResolvedMoneyRef?: boolean }).autoResolvedMoneyRef).toBe(true);
+  });
+
+  it("leaves itemId UNSET when the order belongs to a different customer (ownership check fails — never a cross-customer leak)", async () => {
+    orderServiceGetOrder = async () => ({
+      ownershipValid: false,
+      order: { items: [{ id: "li_burger", title: "Hambúrguer", quantity: 1 }] },
+    });
+    const { payload } = await resolveAndAssemble({
+      kind: "order.amend.remove_item",
+      payload: { orderId: "ord_1", item: "hambúrguer" },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect((payload as { itemId?: string }).itemId).toBeUndefined();
+  });
+
+  it("swallows a live order-fetch error and leaves itemId unset (fail-closed, not a crash)", async () => {
+    orderServiceGetOrder = async () => {
+      throw new Error("medusa down");
+    };
+    const { payload } = await resolveAndAssemble({
+      kind: "order.amend.update_qty",
+      payload: { orderId: "ord_1", item: "hambúrguer", quantity: 2 },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect((payload as { itemId?: string }).itemId).toBeUndefined();
+  });
+
+  it("does not override an explicit itemId", async () => {
+    const { payload } = await resolveAndAssemble({
+      kind: "order.amend.update_qty",
+      payload: { orderId: "ord_1", itemId: "explicit-item", quantity: 2 },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect((payload as { itemId?: string }).itemId).toBe("explicit-item");
+  });
+});
+
 // ── Review B3 — order.item.add quantity coercion ─────────────────────────────
 // The old `typeof quantity !== "number" → 1` silently rewrote the 4B's string
 // emission ("2") to 1 — a customer asking for 2 items got 1. Positive-integer
@@ -523,8 +696,17 @@ describe("resolve-and-assemble — order.item.add quantity coercion (B3)", () =>
 // BKL-038 — in-flight modify kinds share order.cancel's NL→id resolution
 // (resolveOrderId → most-recent order) and forced confirm-on-autoresolve. Same
 // list drives both the resolution assertions and the confirm-guard assertions.
+//
+// FE-T09 (D-a) — the granular amend kinds join this list: the model is never
+// shown orderId (order-amend-granular.schema.ts forbids it), so a
+// model-driven granular amend needs the SAME "most-recent order" auto-resolve
+// order.amend.request already gets (ORDER_AUTORESOLVE_KINDS,
+// AUTORESOLVE_CONFIRM_KINDS).
 const INFLIGHT_MODIFY_KINDS = [
   "order.amend.request",
+  "order.amend.add_item",
+  "order.amend.update_qty",
+  "order.amend.remove_item",
   "order.note.add",
   "order.address.change",
   "order.type.switch",

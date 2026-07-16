@@ -485,6 +485,51 @@ describe("createIbatexasPlanner — buildToolSurface per-capability extraction s
     });
     expect((ei.inputSchema as { allOf?: unknown }).allOf).toBeUndefined();
   });
+
+  // FE-T09 (D-a, the amend inversion): the three granular post-checkout
+  // amend kinds each have an authored schema; the grouped order.amend.request
+  // does NOT — proving it contributes no allOf clause is the schema-level
+  // proof that it has no reachable model producer.
+  it("embeds one allOf/if-then clause PER granular amend kind; the grouped order.amend.request contributes NOTHING (FE-T09)", async () => {
+    const { model } = mockModel([]);
+    const planner = createIbatexasPlanner({
+      model,
+      modelId: "claude-test",
+      capabilityPlanners: [
+        capPlanner(
+          [],
+          [
+            "order.amend.request",
+            "order.amend.add_item",
+            "order.amend.update_qty",
+            "order.amend.remove_item",
+          ],
+        ),
+      ],
+    });
+
+    await planner.propose(mkState("oi"));
+    const req = (model.complete as ReturnType<typeof vi.fn>).mock.calls[0]![0] as CompletionRequest;
+    const ei = (req.tools ?? []).find((t) => t.name === EXPRESS_INTENT_TOOL)!;
+    const schema = ei.inputSchema as {
+      allOf?: ReadonlyArray<{
+        if: { properties: { capability: { const: string } } };
+        then: { properties: { payload: unknown } };
+      }>;
+    };
+
+    expect(schema.allOf).toHaveLength(3);
+    const discriminatedKinds = schema.allOf!.map((c) => c.if.properties.capability.const);
+    expect(discriminatedKinds.sort()).toEqual(
+      ["order.amend.add_item", "order.amend.remove_item", "order.amend.update_qty"].sort(),
+    );
+    expect(discriminatedKinds).not.toContain("order.amend.request");
+    for (const clause of schema.allOf!) {
+      expect(clause.then.properties.payload).toEqual(
+        EXTRACTION_SCHEMAS_BY_CAPABILITY.get(clause.if.properties.capability.const),
+      );
+    }
+  });
 });
 
 // ── Schema ───────────────────────────────────────────────────────────────────

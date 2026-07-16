@@ -30,6 +30,7 @@
 import type { AuditRecord } from "@adjudicate/core";
 import {
   modelProvenance,
+  resolverAuthoritativeProvenance,
   resolverGroundedProvenance,
 } from "./field-trust.js";
 import {
@@ -43,6 +44,11 @@ import {
   type CapabilityExtractionSchema,
 } from "./extraction-schema.js";
 import { ORDER_STATUS_TRANSITION_EXTRACTION_SCHEMA } from "./order-status-transition.schema.js";
+import {
+  ORDER_AMEND_ADD_ITEM_EXTRACTION_SCHEMA,
+  ORDER_AMEND_UPDATE_QTY_EXTRACTION_SCHEMA,
+  ORDER_AMEND_REMOVE_ITEM_EXTRACTION_SCHEMA,
+} from "./order-amend-granular.schema.js";
 
 /** The shape materialized under `record.metadata.languageEngine`. */
 export interface LanguageEngineAuditMetadata {
@@ -160,6 +166,79 @@ function deriveOrderStatusTransition(
 }
 
 /**
+ * FE-T09 (D-a) — `order.amend.add_item`'s resolver-stamped (Identity-class)
+ * fields: `orderId` (auto-resolved "most recent order", same grounded/guess
+ * semantics as `order.status.transition`'s) and `variantId` + `allergens`
+ * (resolved from the model's explicit NL `item` reference via
+ * `resolveProductForItem` — an EXPLICIT-reference resolution, not a guess,
+ * hence `authoritative` per FE-0.4's "a resolved identifier from an explicit
+ * reference" mapping, not `grounded`).
+ */
+const ORDER_AMEND_ADD_ITEM_RESOLVER_FIELDS: readonly string[] = [
+  "orderId",
+  "variantId",
+  "allergens",
+];
+
+/** `order.amend.update_qty` / `order.amend.remove_item` share the same
+ *  resolver-stamped fields: `orderId` (grounded) + `itemId` (authoritative —
+ *  resolved from the model's explicit NL `item` reference). */
+const ORDER_AMEND_UPDATE_QTY_RESOLVER_FIELDS: readonly string[] = ["orderId", "itemId"];
+const ORDER_AMEND_REMOVE_ITEM_RESOLVER_FIELDS: readonly string[] = ["orderId", "itemId"];
+
+/**
+ * Shared derivation shape for the three granular amend kinds (FE-T09) —
+ * mirrors `deriveOrderStatusTransition`'s structure exactly, parameterized by
+ * the capability's schema, its resolver-field allowlist, and which of those
+ * resolver fields get `authoritative` provenance (an explicit-reference
+ * resolution) vs. the default `grounded` (an auto-resolved guess — always
+ * `orderId` here, same as `order.status.transition`).
+ */
+function deriveGranularAmend(
+  schema: CapabilityExtractionSchema,
+  resolverFieldAllowlist: readonly string[],
+  authoritativeResolverFields: ReadonlySet<string>,
+  resolvedPayload: Readonly<Record<string, unknown>>,
+): LanguageEngineAuditMetadata {
+  const { extractionPayload } = splitResolvedPayload(schema, resolvedPayload);
+
+  const extractionProvenance: Record<string, ReturnType<typeof modelProvenance>> =
+    {};
+  for (const field of schema.fields) {
+    if (field.name in extractionPayload) {
+      extractionProvenance[field.name] = modelProvenance();
+    }
+  }
+  const extractionIR: ExtractionIR = {
+    capability: schema.capability,
+    payload: extractionPayload,
+    provenance: extractionProvenance,
+  };
+
+  const hydratedProvenance: Record<string, FieldProvenanceMap[string]> = {
+    ...extractionProvenance,
+  };
+  for (const key of resolverFieldAllowlist) {
+    if (!(key in resolvedPayload)) continue;
+    hydratedProvenance[key] = authoritativeResolverFields.has(key)
+      ? resolverAuthoritativeProvenance()
+      : resolverGroundedProvenance();
+  }
+  const hydratedIntentIR: HydratedIntentIR = {
+    capability: schema.capability,
+    payload: projectHydratedPayload(
+      extractionPayload,
+      resolvedPayload,
+      resolverFieldAllowlist,
+    ),
+    provenance: hydratedProvenance,
+    confirmationRequired: hasGroundedField(hydratedProvenance),
+  };
+
+  return { extractionIR, hydratedIntentIR };
+}
+
+/**
  * The `AdjudicateAndAuditDeps.metadataProvider` implementation: given the
  * FINAL, post-resolution `AuditRecord`, return the `{languageEngine: {...}}`
  * metadata to merge onto `record.metadata`, or `undefined` for every
@@ -175,6 +254,36 @@ export function buildLanguageEngineAuditMetadata(
 
   if (record.envelope.kind === "order.status.transition") {
     return { languageEngine: deriveOrderStatusTransition(payload) };
+  }
+  if (record.envelope.kind === "order.amend.add_item") {
+    return {
+      languageEngine: deriveGranularAmend(
+        ORDER_AMEND_ADD_ITEM_EXTRACTION_SCHEMA,
+        ORDER_AMEND_ADD_ITEM_RESOLVER_FIELDS,
+        new Set(["variantId", "allergens"]),
+        payload,
+      ),
+    };
+  }
+  if (record.envelope.kind === "order.amend.update_qty") {
+    return {
+      languageEngine: deriveGranularAmend(
+        ORDER_AMEND_UPDATE_QTY_EXTRACTION_SCHEMA,
+        ORDER_AMEND_UPDATE_QTY_RESOLVER_FIELDS,
+        new Set(["itemId"]),
+        payload,
+      ),
+    };
+  }
+  if (record.envelope.kind === "order.amend.remove_item") {
+    return {
+      languageEngine: deriveGranularAmend(
+        ORDER_AMEND_REMOVE_ITEM_EXTRACTION_SCHEMA,
+        ORDER_AMEND_REMOVE_ITEM_RESOLVER_FIELDS,
+        new Set(["itemId"]),
+        payload,
+      ),
+    };
   }
   return undefined;
 }

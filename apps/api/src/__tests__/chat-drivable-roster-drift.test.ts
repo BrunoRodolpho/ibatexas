@@ -2,10 +2,10 @@
  * T1a-2 — chat-drivable roster drift gate.
  *
  * `@ibatexas/packs-composed` exports `CHAT_DRIVABLE_TOOL_KINDS`: the data
- * mirror of the 18 LLM-callable mutating tool capability ids registered by
- * `listIbatexasToolPacks()` here in apps/api. The journey gates
- * (`ibx journey lint` / `coverage`, DR-5) consume the mirror because an
- * apps/api export is unreachable from packages/* by design.
+ * mirror of the 20 LLM-callable mutating tool capability ids registered by
+ * `listIbatexasToolPacks()` here in apps/api (post-FE-T09 D-a: 18→20). The
+ * journey gates (`ibx journey lint` / `coverage`, DR-5) consume the mirror
+ * because an apps/api export is unreachable from packages/* by design.
  *
  * This test is the fail-closed pin (same spirit as `toolRosterDrift`):
  * if the live roster and the mirror ever diverge — a tool added, dropped,
@@ -38,8 +38,8 @@ describe("T1a-2 — chat-drivable roster drift", () => {
     expect(new Set(CHAT_DRIVABLE_TOOL_KINDS)).toEqual(new Set(live));
   });
 
-  it("pins the verified WS3 roster size (18)", () => {
-    expect(CHAT_DRIVABLE_TOOL_KINDS).toHaveLength(18);
+  it("pins the verified WS3 roster size (20, post-FE-T09 D-a)", () => {
+    expect(CHAT_DRIVABLE_TOOL_KINDS).toHaveLength(20);
   });
 
   it("every mirrored kind keys capability === intentKind on the live tool", () => {

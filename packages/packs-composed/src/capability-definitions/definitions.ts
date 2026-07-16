@@ -12,19 +12,33 @@
  *
  * Two tiers (`CapabilityTier`, `types.ts`):
  *
- *   - **`"chat"` (18)** — FE-T19's original chat-drivable roster
- *     (`CHAT_DRIVABLE_TOOL_KINDS`). Every chat-facing field is populated and
- *     cross-checked against a real source (docs, registries, planner code).
- *   - **`"identity"` (48, FE-T20)** — the remaining kinds. ONLY `kind` /
- *     `pack` / `mutating` / `tier` (+ `plannerAdvertisedBy` where grounded)
- *     are populated — every chat-facing field is OMITTED (not merely
- *     `undefined`; the shorter object is the tier's own visual signal).
- *     Grounded STRICTLY in each pack's `*_INTENT_KINDS` groupings (also
- *     each pack's own `intents[]` — byte-identical to the `*_INTENT_KINDS`
- *     mirror, verified) and, for `plannerAdvertisedBy`, each pack's
+ *   - **`"chat"` (18 as FE-T19/T20 left it; 20 today — see the FE-T09
+ *     addendum below)** — the chat-drivable roster (`CHAT_DRIVABLE_TOOL_
+ *     KINDS`). Every chat-facing field is populated and cross-checked
+ *     against a real source (docs, registries, planner code).
+ *   - **`"identity"` (48 as FE-T19/T20 left it; 46 today)** — the remaining
+ *     kinds. ONLY `kind` / `pack` / `mutating` / `tier` (+
+ *     `plannerAdvertisedBy` / `legacyNames` where grounded) are populated —
+ *     every other chat-facing field is OMITTED (not merely `undefined`;
+ *     the shorter object is the tier's own visual signal). Grounded
+ *     STRICTLY in each pack's `*_INTENT_KINDS` groupings (also each pack's
+ *     own `intents[]` — byte-identical to the `*_INTENT_KINDS` mirror,
+ *     verified) and, for `plannerAdvertisedBy`, each pack's
  *     `capabilities.ts` `CapabilityPlanner.plan()` body (all 6 read in
  *     full for FE-T20) — no fabrication, per the FE-T19 precedent this
  *     ticket extends ("guessing… would be fabrication, not authoring").
+ *
+ * **FE-T09 (D-a, the amend inversion, post-FE-T20) moved 4 entries between
+ * tiers**, the first tier reassignment since FE-T19/T20: `order.amend.
+ * request` chat→identity (the model no longer targets it — capabilities.ts
+ * routes authenticated amend traffic to the three granular kinds below
+ * instead; it keeps `legacyNames: ["amend_order"]`, mirroring the
+ * `payment.method.switch`/`payment.retry` precedent, since `ORDER_TOOL_TO_
+ * INTENT`/`ORDER_TOOLS.MUTATING` still carry that real entry unchanged) and
+ * `order.amend.add_item`/`update_qty`/`remove_item` identity→chat (newly
+ * model-proposable, newly registered tools with NO legacy name —
+ * `legacyNames: []`, not fabricated). Net: chat 18→20, identity 48→46,
+ * total unchanged at 66.
  *
  * **Declaration order is load-bearing.** Within each pack group the 66
  * entries are declared in EXACTLY that pack's `*_INTENT_KINDS` order (not
@@ -48,8 +62,8 @@
  *     checked against `apps/api/src/tools/register-ibatexas-tool-packs.ts`
  *     (`IBATEXAS_TOOLS`, `IBATEXAS_CAPABILITY_DESCRIPTIONS`) and each
  *     pack's `*_TOOL_TO_INTENT` map in `capabilities.ts`.
- *   - `surfaces` — `["chat"]` for all 18, by construction: this list IS
- *     the chat-drivable roster.
+ *   - `surfaces` — `["chat"]` for all 20 (18 pre-FE-T09), by construction:
+ *     this list IS the chat-drivable roster.
  *   - `auth` — cross-checked against `docs/architecture/design/
  *     agent-tools.md` §"Auth levels" and, where the doc is silent or
  *     stale, each pack's `CapabilityPlanner.plan()` authentication gate
@@ -332,26 +346,84 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
   // orders planner comment is explicit: "NEVER LLM-proposable". No
   // plannerAdvertisedBy by construction, not by omission.
   { kind: "order.cancel.system", pack: "ibatexas/pack-orders", mutating: true, tier: "identity" },
+  // FE-T09 (D-a, the amend inversion) — `order.amend.request` moved OUT of
+  // the chat tier: the model no longer targets it (capabilities.ts's
+  // authenticated `allowedIntents` now lists the three granular kinds
+  // below instead), so it loses `plannerAdvertisedBy` along with every
+  // other chat-facing field. It stays a real, adjudicable pack intent (the
+  // deterministic legacy HTTP amend route still builds it directly) and
+  // KEEPS `legacyNames: ["amend_order"]` — the same narrow, structurally-
+  // grounded exception `types.ts` documents for `payment.method.switch` /
+  // `payment.retry`: `ORDER_TOOL_TO_INTENT` and `ORDER_TOOLS.MUTATING`
+  // (packages/pack-orders/src/capabilities.ts) still carry a real
+  // `amend_order` entry unchanged, so dropping it here would make the
+  // freshness-gate projections silently diverge from those hand-authored
+  // maps rather than reflect reality.
   {
     kind: "order.amend.request",
+    pack: "ibatexas/pack-orders",
+    mutating: true,
+    tier: "identity",
+    legacyNames: ["amend_order"],
+  },
+  // FE-T09 (D-a) — the three granular kinds became the model targets,
+  // moving from identity→chat (net, with order.amend.request's move out,
+  // CHAT_DRIVABLE goes 18→20). `legacyNames: []` (not `["amend_order"]`,
+  // not fabricated): these are brand-new tools born under the
+  // `capability === intentKind` convention — no pre-refactor snake_case
+  // name exists to ground one, so `generateToolToIntentMap`/
+  // `generateMutatingToolNames` correctly contribute nothing for them and
+  // `ORDER_TOOL_TO_INTENT`/`ORDER_TOOLS.MUTATING` need no new entries.
+  {
+    kind: "order.amend.add_item",
     pack: "ibatexas/pack-orders",
     mutating: true,
     tier: "chat",
     plannerAdvertisedBy: ["ibatexas/pack-orders"],
     surfaces: ["chat"],
     auth: "customer",
-    legacyNames: ["amend_order"],
-    description: "Solicitar alteração em um pedido já realizado.",
+    legacyNames: [],
+    description: "Adicionar um item a um pedido já feito (pós-checkout).",
     successClaimLinks: ["order-amended"],
     guardRefs: ORDERS_GUARD_REFS,
     refusalCode: "order.default.deny",
   },
-  // FE-T22: these three are real justifiedBy members of the "order-amended"
-  // SUCCESS_CLAIM_CLASSES entry (ibatexas-responder.ts) alongside
-  // order.amend.request above — grounded from that real export, not invented.
-  { kind: "order.amend.add_item", pack: "ibatexas/pack-orders", mutating: true, tier: "identity", successClaimLinks: ["order-amended"] },
-  { kind: "order.amend.update_qty", pack: "ibatexas/pack-orders", mutating: true, tier: "identity", successClaimLinks: ["order-amended"] },
-  { kind: "order.amend.remove_item", pack: "ibatexas/pack-orders", mutating: true, tier: "identity", successClaimLinks: ["order-amended"] },
+  {
+    kind: "order.amend.update_qty",
+    pack: "ibatexas/pack-orders",
+    mutating: true,
+    tier: "chat",
+    plannerAdvertisedBy: ["ibatexas/pack-orders"],
+    surfaces: ["chat"],
+    auth: "customer",
+    legacyNames: [],
+    description: "Alterar a quantidade de um item em um pedido já feito (pós-checkout).",
+    successClaimLinks: ["order-amended"],
+    guardRefs: ORDERS_GUARD_REFS,
+    refusalCode: "order.default.deny",
+  },
+  {
+    kind: "order.amend.remove_item",
+    pack: "ibatexas/pack-orders",
+    mutating: true,
+    tier: "chat",
+    plannerAdvertisedBy: ["ibatexas/pack-orders"],
+    surfaces: ["chat"],
+    auth: "customer",
+    legacyNames: [],
+    description: "Remover um item de um pedido já feito (pós-checkout).",
+    successClaimLinks: ["order-amended"],
+    guardRefs: ORDERS_GUARD_REFS,
+    refusalCode: "order.default.deny",
+  },
+  // Rebase note (FE-T09 onto dev post-FE-T22): FE-T22 (merged to dev while
+  // #264 was in review) independently enriched the THEN-identity-tier bare
+  // entries for these same three kinds with `successClaimLinks:
+  // ["order-amended"]` — the same grounding fact this PR's chat-tier
+  // entries above already carry. No duplicate identity-tier entries were
+  // reintroduced here; a duplicate `kind` would double-count these three in
+  // the 66-total and desync `generatePackIntents`'s declaration-order mirror
+  // of `ordersPack.intents[]`.
   { kind: "order.address.change", pack: "ibatexas/pack-orders", mutating: true, tier: "identity" },
   { kind: "order.type.switch", pack: "ibatexas/pack-orders", mutating: true, tier: "identity" },
   {

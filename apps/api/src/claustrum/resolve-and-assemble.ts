@@ -22,10 +22,11 @@
  *    not-found → null ctx fields → the owning pack's stateGuards REFUSE cleanly.
  */
 
-import { getRedisClient, rk, medusaStore, reaisToCentavos, searchProducts } from "@ibatexas/tools";
+import { getRedisClient, rk, medusaAdmin, medusaStore, reaisToCentavos, searchProducts } from "@ibatexas/tools";
 import { Channel } from "@ibatexas/types";
 import {
   createOrderQueryService,
+  createOrderService,
   createPaymentQueryService,
   createCustomerService,
   createReservationService,
@@ -507,13 +508,22 @@ export const ORDER_BY_ID_KINDS = new Set([
 // "muda o endereço do meu pedido" resolve to the most-recent order instead of
 // dead-ending. MUST stay in lockstep with AUTORESOLVE_CONFIRM_KINDS
 // (compose-policy-packs.ts): a kind auto-resolved here but not confirmed there
-// would EXECUTE against a silently-guessed target. The granular amend kinds
-// (add_item/update_qty/remove_item) are deliberately absent — they carry an
-// explicit orderId from the amend flow, so there is nothing to auto-resolve.
+// would EXECUTE against a silently-guessed target.
+//
+// FE-T09 (D-a, the amend inversion): the granular amend kinds
+// (add_item/update_qty/remove_item) are now MODEL-proposable — the model is
+// never shown an `orderId` field (it is Identity-class, forbidden by
+// `order-amend-granular.schema.ts`), so unlike the old assumption ("they
+// carry an explicit orderId from the amend flow"), a model-driven granular
+// amend needs the SAME "most-recent order" auto-resolve `order.amend.request`
+// already gets. Added here alongside it.
 const ORDER_AUTORESOLVE_KINDS = new Set([
   "order.cancel",
   "payment.pix.regenerate",
   "order.amend.request",
+  "order.amend.add_item",
+  "order.amend.update_qty",
+  "order.amend.remove_item",
   "order.note.add",
   "order.address.change",
   "order.type.switch",
@@ -712,6 +722,63 @@ async function resolveProductForItem(
   }
 }
 
+/** The three-way outcome of resolving an NL item reference against a live
+ *  order's line items — see `resolveOrderLineItem`. */
+type OrderLineItemResolution =
+  | { readonly kind: "found"; readonly itemId: string }
+  | { readonly kind: "ambiguous" }
+  | { readonly kind: "not_found" };
+
+/**
+ * FE-T09 (D-a) — NL→itemId resolution for the granular post-checkout amend
+ * kinds `order.amend.update_qty` / `order.amend.remove_item`. These operate
+ * on a line ALREADY on a placed order, not the catalog — a LIVE order fetch
+ * (mirroring the legacy `amend-order.ts` tool's `svc.getOrder`), case-
+ * insensitive title match against the model's raw NL `item` reference. The
+ * stored `OrderProjection.itemsJson` carries no stable per-line id
+ * (`medusa-order.mapper.ts` drops Medusa's own line-item id when building the
+ * projection); a data-model migration to persist one is tracked separately
+ * (FE-D15) — the live fetch sidesteps it, exactly as the legacy tool does.
+ *
+ * Two safety upgrades over the legacy tool's exact-first-match:
+ *   - zero matches → `"not_found"` (an honest refuse downstream — never a
+ *     guess);
+ *   - MULTIPLE matches (e.g. two "coca" lines) → `"ambiguous"` — the caller
+ *     (`threadResolvedIdsIntoPayload` / `resolveAndAssemble`) feeds this into
+ *     the SAME order-level autoresolve-confirm mechanism
+ *     (`ctx.autoResolvedMoneyRef` / `confirmOnAutoResolveGuard`) so the
+ *     kernel REQUEST_CONFIRMATIONs rather than silently picking one line.
+ *
+ * On a match, `itemId` is the matched line's REAL Medusa line-item id (the
+ * same id the legacy tool's own Medusa PATCH/edit calls use) — the executor
+ * (`register-ibatexas-tool-packs.ts`) does one cheap reverse (id→title)
+ * lookup against the same live order before delegating to the existing,
+ * tested `amendOrder()` (which is title-keyed), rather than re-implementing
+ * Medusa's order-edit mutation calls.
+ */
+async function resolveOrderLineItem(
+  orderId: string,
+  name: string,
+  customerId: string,
+): Promise<OrderLineItemResolution> {
+  try {
+    const { order, ownershipValid } = await createOrderService(medusaAdmin).getOrder(
+      orderId,
+      customerId,
+    );
+    if (!ownershipValid) return { kind: "not_found" };
+    const needle = name.trim().toLowerCase();
+    const matches = (order.items ?? []).filter(
+      (i) => i.title.toLowerCase() === needle,
+    );
+    if (matches.length === 0) return { kind: "not_found" };
+    if (matches.length > 1) return { kind: "ambiguous" };
+    return { kind: "found", itemId: matches[0]!.id };
+  } catch {
+    return { kind: "not_found" };
+  }
+}
+
 async function threadResolvedIdsIntoPayload(
   kind: string,
   payload: Ctx,
@@ -735,13 +802,16 @@ async function threadResolvedIdsIntoPayload(
   ) {
     out = { ...out, customerId };
   }
-  // BKL-061 + BKL-067: order.item.add — resolve a loose product name to the
-  // product (READ) and inject variantId + the product's EXPLICIT allergens
-  // (pack-orders requireExplicitAllergens; Hard Rule #1) + default quantity, so
-  // the executor schema {cartId,variantId,quantity} AND the allergen guard are
-  // satisfiable from the 4B's loose emission. cartId comes from BKL-028 (session
-  // cart) which BKL-066 ensures exists.
-  if (kind === "order.item.add") {
+  // BKL-061 + BKL-067 + FE-T09: order.item.add (cart) / order.amend.add_item
+  // (a placed order) — resolve a loose product name to the product (READ)
+  // and inject variantId + the product's EXPLICIT allergens (pack-orders
+  // requireExplicitAllergens; Hard Rule #1) + default quantity, so the
+  // executor schema AND the allergen guard are satisfiable from the 4B's
+  // loose emission. cartId comes from BKL-028 (session cart) which BKL-066
+  // ensures exists; order.amend.add_item instead carries orderId (already
+  // resolved above by applyAutoResolve's ORDER_AUTORESOLVE_KINDS handling —
+  // the model is never shown orderId, per order-amend-granular.schema.ts).
+  if (kind === "order.item.add" || kind === "order.amend.add_item") {
     const needsVariant = typeof out.variantId !== "string";
     const needsAllergens = !Array.isArray(out.allergens);
     if (needsVariant || needsAllergens) {
@@ -765,6 +835,38 @@ async function threadResolvedIdsIntoPayload(
     // AddToCartInputSchema refuses loudly and the customer gets a clarify —
     // never a silently different quantity.
     out = { ...out, quantity: coerceQuantity(out.quantity) };
+  }
+  // FE-T09 (D-a) — order.amend.update_qty / order.amend.remove_item: resolve
+  // the model's NL `item` reference against the LIVE order's line items
+  // (never a catalog-wide guess) via `resolveOrderLineItem`, mirroring
+  // amend-order.ts's existing title-match semantics with two safety
+  // upgrades over the legacy exact-first-match: zero matches leave itemId
+  // unresolved so the kernel/guard layer REFUSEs (item not found) rather
+  // than executing against a guessed line; MULTIPLE matches set
+  // `ctx.autoResolvedMoneyRef` so `confirmOnAutoResolveGuard`
+  // (AUTORESOLVE_CONFIRM_KINDS) forces REQUEST_CONFIRMATION instead of
+  // silently guessing between e.g. two "coca" lines — the SAME order-level
+  // autoresolve-confirm pattern `applyAutoResolve` already uses above.
+  // Requires orderId to already be present (resolved above).
+  if (
+    (kind === "order.amend.update_qty" || kind === "order.amend.remove_item") &&
+    typeof out.itemId !== "string" &&
+    typeof out.orderId === "string"
+  ) {
+    const name = firstString(out.item, out.product, out.name, out.query);
+    if (name) {
+      const resolution = await resolveOrderLineItem(out.orderId, name, customerId);
+      if (resolution.kind === "found") {
+        out = { ...out, itemId: resolution.itemId };
+      } else if (resolution.kind === "ambiguous") {
+        ctx.autoResolvedMoneyRef = true;
+      }
+      // resolution.kind === "not_found": itemId stays unresolved — the
+      // executor schema / kernel guard REFUSEs rather than guessing.
+    }
+    if (kind === "order.amend.update_qty") {
+      out = { ...out, quantity: coerceQuantity(out.quantity) };
+    }
   }
   return out;
 }
