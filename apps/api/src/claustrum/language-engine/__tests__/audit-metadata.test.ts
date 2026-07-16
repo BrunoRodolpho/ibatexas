@@ -441,3 +441,152 @@ describe("buildLanguageEngineAuditMetadata — payment.refund.issue (FE-T10)", (
     }
   });
 });
+
+// ── FE-T12 — order.checkout.create (orders governance-tier, customer-plane) ─
+
+describe("buildLanguageEngineAuditMetadata — order.checkout.create (FE-T12)", () => {
+  it("derives ExtractionIR carrying ONLY {paymentMethod} — no cartId/pixDetails, model/untrusted", () => {
+    const meta = buildLanguageEngineAuditMetadata(
+      record(
+        "order.checkout.create",
+        { cartId: "cart_1", paymentMethod: "pix" },
+        { kind: "EXECUTE", basis: [] } as unknown as Decision,
+      ),
+    );
+    const le = languageEngineOf(meta);
+    expect(le.extractionIR.capability).toBe("order.checkout.create");
+    expect(le.extractionIR.payload).toEqual({ paymentMethod: "pix" });
+    expect(le.extractionIR.provenance).toEqual({
+      paymentMethod: { producer: "model", confidence: "explicit", trust: "untrusted" },
+    });
+  });
+
+  it("derives HydratedIntentIR: cartId=resolver/AUTHORITATIVE (session-derived, never a guess), paymentMethod stays model/untrusted", () => {
+    const meta = buildLanguageEngineAuditMetadata(
+      record(
+        "order.checkout.create",
+        { cartId: "cart_1", paymentMethod: "pix" },
+        { kind: "EXECUTE", basis: [] } as unknown as Decision,
+      ),
+    );
+    const le = languageEngineOf(meta);
+    expect(le.hydratedIntentIR.payload).toEqual({ paymentMethod: "pix", cartId: "cart_1" });
+    expect(le.hydratedIntentIR.provenance.cartId).toEqual({
+      producer: "resolver",
+      confidence: "resolved",
+      trust: "authoritative",
+    });
+    expect(le.hydratedIntentIR.provenance.paymentMethod).toEqual({
+      producer: "model",
+      confidence: "explicit",
+      trust: "untrusted",
+    });
+  });
+
+  it("confirmationRequired is FALSE on a plain EXECUTE (cartId is authoritative, never grounded — no guess, no confirm/escalate decision)", () => {
+    const meta = buildLanguageEngineAuditMetadata(
+      record(
+        "order.checkout.create",
+        { cartId: "cart_1", paymentMethod: "cash" },
+        { kind: "EXECUTE", basis: [] } as unknown as Decision,
+      ),
+    );
+    const le = languageEngineOf(meta);
+    expect(le.hydratedIntentIR.confirmationRequired).toBe(false);
+  });
+
+  it("confirmationRequired is TRUE when the money-boundary ladder forces REQUEST_CONFIRMATION (>=R$1000 cart total), via the decision union, not a grounded guess", () => {
+    const meta = buildLanguageEngineAuditMetadata(
+      record(
+        "order.checkout.create",
+        { cartId: "cart_1", paymentMethod: "card" },
+        { kind: "REQUEST_CONFIRMATION", prompt: "Confirma?" } as unknown as Decision,
+      ),
+    );
+    const le = languageEngineOf(meta);
+    expect(
+      Object.values(le.hydratedIntentIR.provenance).some((p) => p.trust === "grounded"),
+    ).toBe(false);
+    expect(le.hydratedIntentIR.confirmationRequired).toBe(true);
+  });
+
+  it("confirmationRequired is TRUE for an ESCALATE decision too (>=R$10000 cart total)", () => {
+    const meta = buildLanguageEngineAuditMetadata(
+      record(
+        "order.checkout.create",
+        { cartId: "cart_1", paymentMethod: "card" },
+        { kind: "ESCALATE", to: "human", reason: "checkout_above_escalate_threshold" } as unknown as Decision,
+      ),
+    );
+    const le = languageEngineOf(meta);
+    expect(le.hydratedIntentIR.confirmationRequired).toBe(true);
+  });
+
+  it("pixDetails is NEVER materialized into either IR even when present on the resolved envelope payload — PII never rides the audit sidecar", () => {
+    const meta = buildLanguageEngineAuditMetadata(
+      record(
+        "order.checkout.create",
+        {
+          cartId: "cart_1",
+          paymentMethod: "pix",
+          pixDetails: { name: "Cliente Teste", email: "cliente@example.com", cpf: "12345678900" },
+        },
+        { kind: "EXECUTE", basis: [] } as unknown as Decision,
+      ),
+    );
+    const le = languageEngineOf(meta);
+    for (const ir of [le.extractionIR.payload, le.hydratedIntentIR.payload]) {
+      expect(ir).not.toHaveProperty("pixDetails");
+    }
+  });
+});
+
+// ── FE-T12 — order.cancel (orders governance-tier, customer-plane) ─────────
+
+describe("buildLanguageEngineAuditMetadata — order.cancel (FE-T12)", () => {
+  it("derives ExtractionIR carrying ONLY {reason} — no orderId, model/untrusted", () => {
+    const meta = buildLanguageEngineAuditMetadata(
+      record("order.cancel", { orderId: "order_9", reason: "mudei de ideia" }),
+    );
+    const le = languageEngineOf(meta);
+    expect(le.extractionIR.capability).toBe("order.cancel");
+    expect(le.extractionIR.payload).toEqual({ reason: "mudei de ideia" });
+    expect(le.extractionIR.provenance).toEqual({
+      reason: { producer: "model", confidence: "explicit", trust: "untrusted" },
+    });
+  });
+
+  it("a bare cancel with no reason mentioned derives an EMPTY extractionIR payload — reason is optional", () => {
+    const meta = buildLanguageEngineAuditMetadata(record("order.cancel", { orderId: "order_9" }));
+    const le = languageEngineOf(meta);
+    expect(le.extractionIR.payload).toEqual({});
+  });
+
+  it("derives HydratedIntentIR: orderId=resolver/GROUNDED (auto-resolved most-recent order, a guess), reason stays model/untrusted, confirmationRequired=true", () => {
+    const meta = buildLanguageEngineAuditMetadata(
+      record("order.cancel", { orderId: "order_9", reason: "mudei de ideia" }),
+    );
+    const le = languageEngineOf(meta);
+    expect(le.hydratedIntentIR.payload).toEqual({ reason: "mudei de ideia", orderId: "order_9" });
+    expect(le.hydratedIntentIR.provenance.orderId).toEqual({
+      producer: "resolver",
+      confidence: "resolved",
+      trust: "grounded",
+    });
+    expect(le.hydratedIntentIR.provenance.reason).toEqual({
+      producer: "model",
+      confidence: "explicit",
+      trust: "untrusted",
+    });
+    expect(le.hydratedIntentIR.confirmationRequired).toBe(true);
+  });
+
+  it("a stray unexpected key (e.g. smuggled PII) is dropped from both IRs — not schema-declared, not the resolver-field allowlist", () => {
+    const meta = buildLanguageEngineAuditMetadata(
+      record("order.cancel", { orderId: "order_9", reason: "mudei de ideia", cpf: "12345678900" }),
+    );
+    const le = languageEngineOf(meta);
+    expect(le.extractionIR.payload).not.toHaveProperty("cpf");
+    expect(le.hydratedIntentIR.payload).not.toHaveProperty("cpf");
+  });
+});

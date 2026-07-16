@@ -56,6 +56,8 @@ import {
   OPS_REFUND_DEFAULT_REASON,
   PAYMENT_REFUND_ISSUE_EXTRACTION_SCHEMA,
 } from "./payment-refund-issue.schema.js";
+import { ORDER_CHECKOUT_CREATE_EXTRACTION_SCHEMA } from "./order-checkout-create.schema.js";
+import { ORDER_CANCEL_EXTRACTION_SCHEMA } from "./order-cancel.schema.js";
 
 /** The shape materialized under `record.metadata.languageEngine`. */
 export interface LanguageEngineAuditMetadata {
@@ -396,6 +398,149 @@ function derivePaymentRefundIssue(record: AuditRecord): LanguageEngineAuditMetad
 }
 
 /**
+ * FE-T12 — `order.checkout.create`'s ONLY resolver-stamped field: `cartId`,
+ * ALWAYS resolved deterministically from the session's active-cart Redis key
+ * (`resolve-and-assemble.ts`'s `loadCartCtx`) — never a "most recent" guess
+ * among candidates, so its provenance is `authoritative`, never `grounded`
+ * (field-trust.ts: "a resolved identifier from an explicit reference").
+ *
+ * `pixDetails` is DELIBERATELY ABSENT from this allowlist — not an
+ * oversight. Unlike `allergens` (order.amend.add_item's resolver-stamped
+ * safety field, which the hydrated sidecar DOES surface for audit
+ * visibility), `pixDetails` carries raw PII (`name`/`email`/`cpf`) that the
+ * pack-orders redaction scanner (`policies.ts`'s `scannedFields`) only knows
+ * to scrub on `envelope.payload` — `record.metadata` (the ADR-124 v5
+ * sidecar this module writes to) is a SEPARATE surface that scanner never
+ * touches. Omitting `pixDetails` from the allowlist means
+ * `projectHydratedPayload` silently drops it if present (the same
+ * "a stray key is dropped here, never materialized" behavior the allowlist
+ * mechanism already guarantees for anything not explicitly listed) — the
+ * language-engine audit sidecar never becomes a second, unredacted PII leak
+ * surface.
+ */
+const ORDER_CHECKOUT_CREATE_RESOLVER_FIELDS: readonly string[] = ["cartId"];
+
+/**
+ * order.checkout.create-specific derivation (FE-T12). Like
+ * `derivePaymentRefundIssue`, this needs the FULL `AuditRecord` (not just the
+ * resolved payload): the checkout money boundary (`confirmLargeTicket`/
+ * `refuseAmountAboveCap`, pack-orders/src/policies.ts) is a KERNEL-level
+ * policy keyed on the cart total, wholly independent of hydration's own
+ * grounded-guess reasoning (`cartId` here is ALWAYS `authoritative`, never
+ * `grounded` — `hasGroundedField` alone would therefore always read
+ * `confirmationRequired: false`, which would be dishonest whenever the money
+ * ladder itself forced a REQUEST_CONFIRMATION or ESCALATE). Mirrors
+ * `derivePaymentRefundIssue`'s honest-union shape exactly.
+ */
+function deriveOrderCheckoutCreate(record: AuditRecord): LanguageEngineAuditMetadata {
+  const resolvedPayload = record.envelope.payload as Readonly<
+    Record<string, unknown>
+  >;
+  const schema = ORDER_CHECKOUT_CREATE_EXTRACTION_SCHEMA;
+  const { extractionPayload } = splitResolvedPayload(schema, resolvedPayload);
+
+  const extractionProvenance: Record<string, ReturnType<typeof modelProvenance>> =
+    {};
+  for (const field of schema.fields) {
+    if (field.name in extractionPayload) {
+      extractionProvenance[field.name] = modelProvenance();
+    }
+  }
+  const extractionIR: ExtractionIR = {
+    capability: schema.capability,
+    payload: extractionPayload,
+    provenance: extractionProvenance,
+  };
+
+  const hydratedProvenance: Record<string, FieldProvenanceMap[string]> = {
+    ...extractionProvenance,
+  };
+  if (typeof resolvedPayload.cartId === "string") {
+    hydratedProvenance.cartId = resolverAuthoritativeProvenance();
+  }
+  const hydratedIntentIR: HydratedIntentIR = {
+    capability: schema.capability,
+    payload: projectHydratedPayload(
+      extractionPayload,
+      resolvedPayload,
+      ORDER_CHECKOUT_CREATE_RESOLVER_FIELDS,
+    ),
+    provenance: hydratedProvenance,
+    confirmationRequired:
+      hasGroundedField(hydratedProvenance) ||
+      record.decision.kind === "REQUEST_CONFIRMATION" ||
+      record.decision.kind === "ESCALATE",
+  };
+
+  return { extractionIR, hydratedIntentIR };
+}
+
+/**
+ * FE-T12 — `order.cancel`'s ONLY resolver-stamped field: `orderId`, the SAME
+ * "most recent active order" auto-resolve `order.status.transition` gets
+ * (this ticket's schema deliberately adds no order-reference field — see
+ * `order-cancel.schema.ts`'s header), hence always `grounded`, never
+ * `authoritative`.
+ */
+const ORDER_CANCEL_RESOLVER_FIELDS: readonly string[] = ["orderId"];
+
+/**
+ * order.cancel-specific derivation (FE-T12). Takes the full `AuditRecord`
+ * (not just the payload), like `derivePaymentRefundIssue`: `gatePaidCancel`/
+ * `escalateLargeCancel` (pack-orders/src/policies.ts) are KERNEL-level
+ * policies keyed on the order's paid/total amount, independent of
+ * hydration's own grounded-guess reasoning — within THIS ticket's scope
+ * `orderId` is always auto-resolved (so `hasGroundedField` alone already
+ * reads `confirmationRequired: true` for every case), but the honest union
+ * is kept for the same forward-compatibility reason
+ * `derivePaymentRefundIssue`'s does: a future slice adding an explicit
+ * order-reference field to this schema must not silently regress this to a
+ * dishonest `false`.
+ */
+function deriveOrderCancel(record: AuditRecord): LanguageEngineAuditMetadata {
+  const resolvedPayload = record.envelope.payload as Readonly<
+    Record<string, unknown>
+  >;
+  const schema = ORDER_CANCEL_EXTRACTION_SCHEMA;
+  const { extractionPayload } = splitResolvedPayload(schema, resolvedPayload);
+
+  const extractionProvenance: Record<string, ReturnType<typeof modelProvenance>> =
+    {};
+  for (const field of schema.fields) {
+    if (field.name in extractionPayload) {
+      extractionProvenance[field.name] = modelProvenance();
+    }
+  }
+  const extractionIR: ExtractionIR = {
+    capability: schema.capability,
+    payload: extractionPayload,
+    provenance: extractionProvenance,
+  };
+
+  const hydratedProvenance: Record<string, FieldProvenanceMap[string]> = {
+    ...extractionProvenance,
+  };
+  if (typeof resolvedPayload.orderId === "string") {
+    hydratedProvenance.orderId = resolverGroundedProvenance();
+  }
+  const hydratedIntentIR: HydratedIntentIR = {
+    capability: schema.capability,
+    payload: projectHydratedPayload(
+      extractionPayload,
+      resolvedPayload,
+      ORDER_CANCEL_RESOLVER_FIELDS,
+    ),
+    provenance: hydratedProvenance,
+    confirmationRequired:
+      hasGroundedField(hydratedProvenance) ||
+      record.decision.kind === "REQUEST_CONFIRMATION" ||
+      record.decision.kind === "ESCALATE",
+  };
+
+  return { extractionIR, hydratedIntentIR };
+}
+
+/**
  * The `AdjudicateAndAuditDeps.metadataProvider` implementation: given the
  * FINAL, post-resolution `AuditRecord`, return the `{languageEngine: {...}}`
  * metadata to merge onto `record.metadata`, or `undefined` for every
@@ -444,6 +589,12 @@ export function buildLanguageEngineAuditMetadata(
   }
   if (record.envelope.kind === "payment.refund.issue") {
     return { languageEngine: derivePaymentRefundIssue(record) };
+  }
+  if (record.envelope.kind === "order.checkout.create") {
+    return { languageEngine: deriveOrderCheckoutCreate(record) };
+  }
+  if (record.envelope.kind === "order.cancel") {
+    return { languageEngine: deriveOrderCancel(record) };
   }
   return undefined;
 }

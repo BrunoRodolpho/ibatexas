@@ -11,15 +11,35 @@
 // `OPS_PLANNER_PERSONA` excerpt describing that capability (extracted by a
 // stable paragraph-boundary marker).
 //
-// TWO capabilities are covered: `order.status.transition` (FE-T05/T06, the
-// first tracer) and `payment.refund.issue` (FE-T10, the money-tier slice —
-// per the owner's ruling, a money-tier extraction schema is bound under this
-// gate FROM BIRTH, not deferred; T11-14 should follow the same precedent).
+// TWO capabilities were covered from FE-T06/T10: `order.status.transition`
+// (FE-T05/T06, the first tracer) and `payment.refund.issue` (FE-T10, the
+// money-tier slice — per the owner's ruling, a money-tier extraction schema
+// is bound under this gate FROM BIRTH, not deferred; T11-14 should follow
+// the same precedent). FE-T12 (the orders governance-tier rollout) adds the
+// FIRST two CUSTOMER-plane capabilities: `order.checkout.create` and
+// `order.cancel`.
+//
+// CUSTOMER-plane vs OPS-plane persona excerpt — a real difference, not an
+// oversight: `OPS_PLANNER_PERSONA` has bespoke "Em <capability>," paragraphs
+// per capability (the ops vocabulary is varied/imperative), so the two
+// functions above extract a STABLE, marker-delimited slice. The CUSTOMER
+// persona (`PLANNER_PERSONA`) has no such per-capability paragraphs — T09
+// (the granular post-checkout amend kinds, also customer-plane) did not add
+// any either, consistent with `PLANNER_PERSONA` being pinned byte-identical
+// against the golden scripted-pipeline fixture
+// (`apps/api/src/__tests__/scripted-pipeline/fixtures/completions/
+// surfaces.json`'s `planner.system` — see that module's own header comment).
+// So for a customer-plane capability there is nothing capability-specific to
+// excerpt: `personaExcerpt` is the FULL `PLANNER_PERSONA` text, identical
+// across every customer-plane capability's golden fixture. This still
+// catches drift (any edit to `PLANNER_PERSONA` fails every customer-plane
+// golden fixture) — the differentiator between customer-plane fixtures is
+// the tool's `inputSchema`, not the persona.
 
 import type { CognitiveState, Completion, CompletionRequest, ModelProvider } from "@claustrum/core";
 import type { CapabilityPlanner } from "@adjudicate/core/llm";
 import { createIbatexasPlanner, EXPRESS_INTENT_TOOL } from "../../ibatexas-planner.js";
-import { OPS_PLANNER_PERSONA } from "../../prompts/personas.js";
+import { OPS_PLANNER_PERSONA, PLANNER_PERSONA } from "../../prompts/personas.js";
 
 /** The composed artifact this golden gate pins — byte-identity target. */
 export interface ExtractionPromptFragment {
@@ -192,5 +212,72 @@ export async function computePaymentRefundIssueExtractionPromptFragment(): Promi
       inputSchema: tool.inputSchema,
     },
     personaExcerpt: extractPaymentRefundIssuePersonaExcerpt(OPS_PLANNER_PERSONA),
+  };
+}
+
+/**
+ * FE-T12 — the CUSTOMER-plane sibling of
+ * {@link computeOrderStatusTransitionExtractionPromptFragment}. Same
+ * methodology: drive the REAL `createIbatexasPlanner` with a capability
+ * planner that allows ONLY `order.checkout.create`, capture the
+ * `express_intent` tool's ACTUAL wire shape (sensitive to any drift in
+ * `wire-schemas.ts`'s registry, `order-checkout-create.schema.ts`, or
+ * `buildToolSurface` itself). `personaExcerpt` is the FULL `PLANNER_PERSONA`
+ * text (see the module header's "CUSTOMER-plane vs OPS-plane" note) — there
+ * is no per-capability paragraph to slice for a customer-plane capability.
+ */
+export async function computeOrderCheckoutCreateExtractionPromptFragment(): Promise<ExtractionPromptFragment> {
+  const { model, calls } = noToolCallModel();
+  const planner = createIbatexasPlanner({
+    model,
+    modelId: "claude-test",
+    capabilityPlanners: [capPlanner(["order.checkout.create"])],
+  });
+
+  await planner.propose(mkState("oi"));
+  const req = calls[0]!;
+  const tool = (req.tools ?? []).find((t) => t.name === EXPRESS_INTENT_TOOL);
+  if (tool === undefined) {
+    throw new Error("extraction-prompt golden: express_intent tool missing from buildToolSurface output");
+  }
+
+  return {
+    capability: "order.checkout.create",
+    expressIntentTool: {
+      name: tool.name,
+      description: tool.description,
+      inputSchema: tool.inputSchema,
+    },
+    personaExcerpt: PLANNER_PERSONA,
+  };
+}
+
+/**
+ * FE-T12 — the CUSTOMER-plane sibling for `order.cancel`. Same methodology
+ * as {@link computeOrderCheckoutCreateExtractionPromptFragment}.
+ */
+export async function computeOrderCancelExtractionPromptFragment(): Promise<ExtractionPromptFragment> {
+  const { model, calls } = noToolCallModel();
+  const planner = createIbatexasPlanner({
+    model,
+    modelId: "claude-test",
+    capabilityPlanners: [capPlanner(["order.cancel"])],
+  });
+
+  await planner.propose(mkState("oi"));
+  const req = calls[0]!;
+  const tool = (req.tools ?? []).find((t) => t.name === EXPRESS_INTENT_TOOL);
+  if (tool === undefined) {
+    throw new Error("extraction-prompt golden: express_intent tool missing from buildToolSurface output");
+  }
+
+  return {
+    capability: "order.cancel",
+    expressIntentTool: {
+      name: tool.name,
+      description: tool.description,
+      inputSchema: tool.inputSchema,
+    },
+    personaExcerpt: PLANNER_PERSONA,
   };
 }

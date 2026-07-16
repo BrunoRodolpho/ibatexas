@@ -44,7 +44,67 @@
           "additionalProperties": false,
           "allOf": [
             {
-              "if": { "properties": { "capability": { "const": "order.amend.add_item" } } },
+              "if": {
+                "properties": {
+                  "capability": {
+                    "const": "order.checkout.create"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "payload": {
+                    "type": "object",
+                    "properties": {
+                      "paymentMethod": {
+                        "type": "string",
+                        "enum": [
+                          "pix",
+                          "card",
+                          "cash"
+                        ],
+                        "description": "Forma de pagamento — EXATAMENTE um destes valores em inglês (contrato fechado; o guard não normaliza): pix, card, cash."
+                      }
+                    },
+                    "required": [
+                      "paymentMethod"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "capability": {
+                    "const": "order.cancel"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "payload": {
+                    "type": "object",
+                    "properties": {
+                      "reason": {
+                        "type": "string",
+                        "description": "Motivo do cancelamento, se mencionado (ex.: 'mudei de ideia', 'pedido errado'). Omita se não houver motivo explícito."
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "capability": {
+                    "const": "order.amend.add_item"
+                  }
+                }
+              },
               "then": {
                 "properties": {
                   "payload": {
@@ -59,14 +119,22 @@
                         "description": "Quantidade do item a adicionar (padrão: 1 se não informado)."
                       }
                     },
-                    "required": ["item"],
+                    "required": [
+                      "item"
+                    ],
                     "additionalProperties": false
                   }
                 }
               }
             },
             {
-              "if": { "properties": { "capability": { "const": "order.amend.update_qty" } } },
+              "if": {
+                "properties": {
+                  "capability": {
+                    "const": "order.amend.update_qty"
+                  }
+                }
+              },
               "then": {
                 "properties": {
                   "payload": {
@@ -81,14 +149,23 @@
                         "description": "Nova quantidade desejada para o item."
                       }
                     },
-                    "required": ["item", "quantity"],
+                    "required": [
+                      "item",
+                      "quantity"
+                    ],
                     "additionalProperties": false
                   }
                 }
               }
             },
             {
-              "if": { "properties": { "capability": { "const": "order.amend.remove_item" } } },
+              "if": {
+                "properties": {
+                  "capability": {
+                    "const": "order.amend.remove_item"
+                  }
+                }
+              },
               "then": {
                 "properties": {
                   "payload": {
@@ -99,7 +176,9 @@
                         "description": "Referência em linguagem natural ao item do pedido (ex.: \"coca\", \"o hambúrguer\"). NUNCA um ID — a referência é resolvida pelo runtime."
                       }
                     },
-                    "required": ["item"],
+                    "required": [
+                      "item"
+                    ],
                     "additionalProperties": false
                   }
                 }

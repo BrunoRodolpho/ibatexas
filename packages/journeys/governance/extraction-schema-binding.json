@@ -9,6 +9,16 @@
       "capability": "payment.refund.issue",
       "goldenFragmentPath": "apps/api/src/claustrum/language-engine/__tests__/__golden__/payment-refund-issue.extraction-prompt-fragment.json",
       "goldenFragmentSha256": "0a8b52187be819cff10aa12c2004294da6a84c935e121b5e89beb467e34125b9"
+    },
+    {
+      "capability": "order.checkout.create",
+      "goldenFragmentPath": "apps/api/src/claustrum/language-engine/__tests__/__golden__/order-checkout-create.extraction-prompt-fragment.json",
+      "goldenFragmentSha256": "9904f81a9784570b4a209dc076be6c9264403d6e6ab3559d97e23c23af1e7747"
+    },
+    {
+      "capability": "order.cancel",
+      "goldenFragmentPath": "apps/api/src/claustrum/language-engine/__tests__/__golden__/order-cancel.extraction-prompt-fragment.json",
+      "goldenFragmentSha256": "a30d0214a92d59756a4ecad65c3b1ec011e1d53354e56c2394a9a909630d269f"
     }
   ]
 }
