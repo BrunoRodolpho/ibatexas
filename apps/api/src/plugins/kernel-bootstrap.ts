@@ -24,11 +24,21 @@
 //      `ibx bootstrap`) to apply the @adjudicate/audit-postgres SQL
 //      migrations.
 //
-//   5. `bootstrapKernel(server)` — called from `index.ts` after
+//   5. `assertEnvelopeBoundaryGateWired()` (FE-T04) — called from
+//      `bootstrapKernel()`. Drives a synthetic malformed envelope through the
+//      real `runCustomerIntent` and asserts the isIntentEnvelope structural
+//      gate (customer-intent-gateway.ts) actually rejects it. Refuses to
+//      boot if that gate has been silently removed or bypassed.
+//
+//   6. `bootstrapKernel(server)` — called from `index.ts` after
 //      `buildServer()` returns, before `server.listen()`. Composes the
 //      above into the boot sequence.
 
-import { installPack, PackConformanceError } from "@adjudicate/core"
+import {
+  installPack,
+  PackConformanceError,
+  type IntentEnvelope,
+} from "@adjudicate/core"
 
 /** Structural shape we read from an installed Pack. Avoids variance issues
  * when callers pass Packs with narrow literal kind unions. */
@@ -39,6 +49,7 @@ import {
   recordSinkFailure,
   setMetricsSink,
   type MetricsSink,
+  type PolicyBundle,
 } from "@adjudicate/core/kernel"
 import { customerOnboardingPack } from "@ibatexas/pack-customer-onboarding"
 import { opsPack } from "@ibatexas/pack-ops"
@@ -71,6 +82,10 @@ import { setAuditConsumerDedupHook } from "../subscribers/audit-consumer.js"
 import { setDeferQuotaExceededHook } from "../adapters/park-deferred-intent-nx.js"
 import { createIbatexasMetricsSink } from "../observability/metrics-sink.js"
 import { logger } from "../lib/logger.js"
+import {
+  runCustomerIntent,
+  STRUCTURAL_REJECTION_CODE,
+} from "../routes/__shared__/customer-intent-gateway.js"
 import {
   createKernelMetricsRecorder,
   createKernelMetricsSink,
@@ -361,6 +376,71 @@ export async function assertAuditPostgresReady(): Promise<void> {
   }
 }
 
+// ── FE-T04: envelope structural boundary gate self-check ────────────────────
+//
+// `runCustomerIntent` (customer-intent-gateway.ts) gates every customer
+// envelope through the canonical `isIntentEnvelope` structural check before
+// `detectForgery` or `adjudicate()` ever see it. That gate is a single `if`
+// inline in the function body — nothing stops a future edit from silently
+// deleting it (an accidental merge conflict resolution, a "simplify this"
+// refactor, …), and unlike a missing Pack policy it would NOT fail loudly:
+// a malformed envelope would just start reaching `detectForgery` / the
+// frozen kernel instead of being REFUSEd at the boundary.
+//
+// This is a live, non-mocked self-check: it drives a synthetic
+// structurally-invalid "envelope" through the REAL exported
+// `runCustomerIntent` and asserts the boundary contract holds. `runner` is
+// dependency-injectable ONLY so a unit test can supply a stand-in that
+// skips the gate and prove this assertion actually catches that
+// regression — the boot call site always uses the default (the real,
+// live-path function).
+
+export class EnvelopeBoundaryGateNotWiredError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = "EnvelopeBoundaryGateNotWiredError"
+  }
+}
+
+/** Minimal always-REFUSE policy — the self-check envelope is malformed and
+ * MUST be rejected by the structural gate before any policy is consulted;
+ * this exists only to satisfy `RunCustomerIntentOptions.policy`'s type. */
+const ENVELOPE_GATE_SELF_CHECK_POLICY: PolicyBundle<string, unknown, unknown> = {
+  stateGuards: [],
+  authGuards: [],
+  business: [],
+  taint: { minimumFor: () => "UNTRUSTED" },
+  default: "REFUSE",
+}
+
+export async function assertEnvelopeBoundaryGateWired(
+  runner: typeof runCustomerIntent = runCustomerIntent,
+): Promise<void> {
+  let executed = false
+  const reply = await runner({
+    envelope: { notAnEnvelope: true } as unknown as IntentEnvelope,
+    state: {},
+    policy: ENVELOPE_GATE_SELF_CHECK_POLICY,
+    executor: async () => {
+      executed = true
+      return {}
+    },
+    ctx: {
+      customerId: "kernel-bootstrap-self-check",
+      route: "boot.envelope-boundary-gate",
+    },
+  })
+  const code = (reply.body as { code?: unknown } | undefined)?.code
+  if (executed || reply.statusCode !== 400 || code !== STRUCTURAL_REJECTION_CODE) {
+    throw new EnvelopeBoundaryGateNotWiredError(
+      `[kernel-bootstrap] envelope structural boundary gate self-check failed — ` +
+        `expected statusCode=400 code="${STRUCTURAL_REJECTION_CODE}" with the executor never run, ` +
+        `got statusCode=${reply.statusCode} code=${JSON.stringify(code)} executed=${executed}. ` +
+        `The isIntentEnvelope gate in customer-intent-gateway.ts appears to be unwired (FE-T04).`,
+    )
+  }
+}
+
 // ── bootstrapKernel ─────────────────────────────────────────────────────────
 
 /**
@@ -447,7 +527,26 @@ export async function bootstrapKernel(server: FastifyInstance): Promise<void> {
     throw err
   }
 
-  // 4. Start the defer-pending gauge poll (W3-5). Real kernel behavior;
+  // 4. FE-T04 — assert the isIntentEnvelope structural boundary gate is
+  //    actually wired on the customer-intent-gateway live path. Fail CLOSED:
+  //    a silently-removed gate call must never boot green.
+  try {
+    await assertEnvelopeBoundaryGateWired()
+    server.log.info(
+      { event: "kernel.bootstrap.envelope_boundary_gate_wired" },
+      "[kernel-bootstrap] envelope structural boundary gate verified",
+    )
+  } catch (err) {
+    if (err instanceof EnvelopeBoundaryGateNotWiredError) {
+      server.log.fatal(
+        { err },
+        "[kernel-bootstrap] envelope boundary gate self-check failed — refusing to boot",
+      )
+    }
+    throw err
+  }
+
+  // 5. Start the defer-pending gauge poll (W3-5). Real kernel behavior;
   //    surfaces the count of `defer:pending:*` Redis keys.
   const recorder = getKernelMetricsRecorder()
   startDeferPendingGaugePoll(recorder, server.log)
