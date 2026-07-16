@@ -26,10 +26,31 @@
 //     this mirrors the oracle's shape rather than importing it);
 //   - "sim, confirma" resumes → EXECUTE → `writeAdjudicatedStatusTransition`
 //     runs ONCE against the SAME (pinned) order.
+//
+// FE-T05b (live-disproof follow-up, 2026-07-16) — the resume half was
+// LIVE-DISPROVED on dev (intent_audit rows 3362/3366): park worked
+// perfectly, but "sim" REFUSEd `order.not_found` because
+// `claustrum-bootstrap.ts`'s `enrichResumeState` had NO
+// `order.status.transition` special case and silently fell through to the
+// customer-scoped `resolveAndAssemble`, which no-ops for the ops plane's
+// `staff:<id>` "customerId" (never a real one) and produces a ctx with no
+// `orderId` at all. `requireOrderIdForMutation` correctly REFUSEd that empty
+// ctx — the bug was upstream of the guard, in resume state ASSEMBLY. Fixed
+// by a new `buildOpsOrderStatusTransitionResumeState` builder + a matching
+// `enrichResumeState` branch (mirrors the existing refund/price/special
+// special cases). This test's `projectResumeState` now calls that REAL
+// builder (previously a hand-rolled ctx literal that happened to look
+// right and so never exercised, and never would have caught, the actual
+// gap) — see also the focused DB-mocked unit test of `enrichResumeState`
+// itself: `apps/api/src/__tests__/claustrum-bootstrap-resume-order-status.test.ts`.
 
 import { describe, expect, it } from "vitest";
-import type { AuditRecord, DecisionKind } from "@adjudicate/core";
-import { createOpsResolver } from "../ops-resolver.js";
+import type { AuditRecord, DecisionKind, IntentEnvelope } from "@adjudicate/core";
+import {
+  createOpsResolver,
+  buildOpsOrderStatusTransitionResumeState,
+  toOpsResolverOrder,
+} from "../ops-resolver.js";
 import type { OrderCandidate, OrderReferenceReads } from "../ops-order-resolution.js";
 import {
   buildOpsTools,
@@ -61,27 +82,53 @@ function orderReferenceReads(): OrderReferenceReads {
   };
 }
 
-function buildHarness() {
+/**
+ * FE-T05b — a mutable "is the order still findable AT RESUME TIME" toggle, so
+ * a test can park successfully (order present) and then simulate the order
+ * vanishing (genuinely deleted / unowned) BEFORE "sim" resumes — the
+ * true-negative the fix must NOT break: resume still honestly REFUSEs
+ * `order.not_found`, never a stale/guessed EXECUTE.
+ */
+function buildHarness(opts: { orderFindableAtResume?: boolean } = {}) {
+  const orderFindableAtResume = opts.orderFindableAtResume ?? true;
   const sink = makeCapturingAuditSink();
   const session = makeStatefulSession();
   const { tools, spies } = buildOpsTools({}, sink);
   const adjudicator = makeAuditedAdjudicator({
     sink,
-    // Mirrors production's `enrichResumeState` generic fallback for this kind
-    // (order.status.transition has no ops-specific resume special-case in
-    // claustrum-bootstrap.ts — see that module's `enrichResumeState`): the
-    // PINNED orderId (already rewritten onto the parked payload) is re-read
-    // directly, WITHOUT re-running the "most recent" auto-resolve — the
-    // resumed turn re-adjudicates the SAME target, never re-guesses.
-    projectResumeState: () => ({
-      ctx: {
-        channel: "web",
-        customerId: ACTIVE_ORDER.customerId,
-        cartId: null,
-        orderId: ACTIVE_ORDER.id,
-        fulfillmentStatus: ACTIVE_ORDER.fulfillmentStatus,
-      },
-    }),
+    // FE-T05b (live-disproof follow-up, intent_audit 3362/3366) — calls the
+    // REAL production builder (`buildOpsOrderStatusTransitionResumeState`,
+    // wired into `claustrum-bootstrap.ts`'s `enrichResumeState` for exactly
+    // this kind) against a MOCKED fresh order-read, rather than a
+    // hand-rolled ctx literal — the ORIGINAL version of this test hand-rolled
+    // the "correct" ctx directly and so never exercised (and never would
+    // have caught) the real wiring gap: `enrichResumeState` had NO
+    // order.status.transition special case at all and silently fell through
+    // to the customer-scoped `resolveAndAssemble`, which no-ops for the ops
+    // plane's `staff:<id>` "customerId" and produces a ctx with NO orderId.
+    // Re-reads the PINNED orderId (already rewritten onto the parked
+    // payload) fresh, WITHOUT re-running the "most recent" auto-resolve —
+    // the resumed turn re-adjudicates the SAME target, never re-guesses.
+    projectResumeState: (envelope: IntentEnvelope) => {
+      const payload = (envelope.payload ?? {}) as Record<string, unknown>;
+      const orderId = typeof payload.orderId === "string" ? payload.orderId : "";
+      if (orderId !== ACTIVE_ORDER.id || !orderFindableAtResume) {
+        // Fresh read misses ⇒ null order (mirrors a genuinely-deleted /
+        // unowned order — `buildOpsOrderStatusTransitionResumeState` maps
+        // this to `ctx.orderId: null`).
+        return buildOpsOrderStatusTransitionResumeState(orderId, null);
+      }
+      return buildOpsOrderStatusTransitionResumeState(
+        orderId,
+        toOpsResolverOrder({
+          customerId: ACTIVE_ORDER.customerId,
+          paymentMethod: ACTIVE_ORDER.paymentMethod,
+          paymentStatus: ACTIVE_ORDER.paymentStatus,
+          totalInCentavos: ACTIVE_ORDER.totalInCentavos,
+          fulfillmentStatus: ACTIVE_ORDER.fulfillmentStatus,
+        }),
+      );
+    },
   });
   const deps = composeOpsDeps({
     adjudicator,
@@ -174,6 +221,29 @@ describe("FE-T05 — order.status.transition first tracer: end-to-end park → c
     const [payload] = spies.writeAdjudicatedStatusTransition.mock.calls[0]!;
     expect(payload).toMatchObject({ orderId: "order_recent", newStatus: "ready" });
     expect(session.parksFor(sessionId)).toHaveLength(0);
+  });
+
+  it("FE-T05b true-negative: the order genuinely vanishes between park and resume ⇒ resume still honestly REFUSEs order.not_found (never a stale EXECUTE)", async () => {
+    const { deps, session, spies } = buildHarness({ orderFindableAtResume: false });
+    const sessionId = "system:staff:owner3";
+
+    const t1 = await runOpsTurn(deps, {
+      role: "OWNER",
+      staffId: "owner3",
+      text: "muda o status do meu último pedido para pronto",
+    });
+    expect(t1.decision.kind).toBe("REQUEST_CONFIRMATION");
+    expect(session.parksFor(sessionId)).toHaveLength(1);
+
+    // The order vanished (deleted / reassigned / unowned) since park — the
+    // FIX's fresh re-read at resume time must catch this, not the stale
+    // parked snapshot.
+    const t2 = await runOpsTurn(deps, { role: "OWNER", staffId: "owner3", text: "sim, confirma" });
+    expect(t2.decision.kind).toBe("REFUSE");
+    if (t2.decision.kind === "REFUSE") {
+      expect(t2.decision.refusal.code).toBe("order.not_found");
+    }
+    expect(spies.writeAdjudicatedStatusTransition).not.toHaveBeenCalled();
   });
 
   it("no active order in the system ⇒ honest REFUSE no_order — never a guessed EXECUTE", async () => {
