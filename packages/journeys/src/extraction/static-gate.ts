@@ -141,6 +141,31 @@ export function checkSchemaBinding(
   return { ok: drift.length === 0, drift }
 }
 
+export interface SchemaBindingCompletenessResult {
+  ok: boolean
+  /** Committed golden fragment paths with NO binding entry at all. */
+  unboundGoldenFragments: string[]
+}
+
+/**
+ * Review MINOR follow-up (#266): `checkSchemaBinding` only verifies entries
+ * ALREADY present in the binding file — a brand-new capability's schema
+ * (a new golden fragment, never bound at all) silently escapes the
+ * acknowledgment layer entirely, since there is no entry for it to drift.
+ * This is the REVERSE assertion: every committed golden fragment (the
+ * caller discovers these — see accuracy-cli/CLI's directory listing, leg 6
+ * sanctioned exception) must have a binding entry. A missing one names the
+ * fragment path so the author knows exactly which capability escaped.
+ */
+export function checkSchemaBindingCompleteness(
+  binding: ExtractionSchemaBinding,
+  committedGoldenFragmentPaths: readonly string[],
+): SchemaBindingCompletenessResult {
+  const boundPaths = new Set(binding.bindings.map((entry) => entry.goldenFragmentPath))
+  const unboundGoldenFragments = committedGoldenFragmentPaths.filter((path) => !boundPaths.has(path))
+  return { ok: unboundGoldenFragments.length === 0, unboundGoldenFragments }
+}
+
 /** Recompute the binding's hashes from the CURRENT golden fragment contents — the `--update-binding` capture path. */
 export function recomputeSchemaBinding(
   binding: ExtractionSchemaBinding,

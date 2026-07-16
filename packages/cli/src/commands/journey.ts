@@ -18,7 +18,7 @@
 // exclui packages/cli). Import dinâmico para não pesar o startup do ibx.
 
 import { existsSync, realpathSync } from "node:fs"
-import { mkdir, readFile, writeFile } from "node:fs/promises"
+import { mkdir, readdir, readFile, writeFile } from "node:fs/promises"
 import { dirname, isAbsolute, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import type { Command } from "commander"
@@ -574,6 +574,7 @@ async function runJourneyExtractionConsistency(opts: ExtractionConsistencyFlags)
     checkBaselineAgainstCorpus,
     ExtractionSchemaBindingSchema,
     checkSchemaBinding,
+    checkSchemaBindingCompleteness,
     recomputeSchemaBinding,
   } = deps
 
@@ -646,6 +647,36 @@ async function runJourneyExtractionConsistency(opts: ExtractionConsistencyFlags)
       } catch {
         problems.push(`schema-binding: golden fragment file missing: ${entry.goldenFragmentPath}`)
       }
+    }
+
+    // Completeness (review MINOR, #266): checkSchemaBinding above only
+    // verifies entries ALREADY in the binding file — a brand-new
+    // capability's golden fragment, never bound at all, has nothing to
+    // drift FROM and would otherwise silently escape the acknowledgment
+    // layer entirely. Scan the director(y/ies) the EXISTING binding
+    // entries live in (no new hardcoded path to drift from the actual
+    // layout) for every *.json fragment, and require each one to have an
+    // entry.
+    const goldenDirs = new Set(binding.bindings.map((entry) => dirname(entry.goldenFragmentPath)))
+    const committedGoldenFragmentPaths: string[] = []
+    for (const dir of goldenDirs) {
+      try {
+        const names = await readdir(resolveUserPath(dir))
+        for (const name of names) {
+          if (name.endsWith(".json")) committedGoldenFragmentPaths.push(join(dir, name))
+        }
+      } catch (err) {
+        problems.push(`schema-binding: golden fragment directory unreadable (${dir}): ${(err as Error).message}`)
+      }
+    }
+    const completeness = checkSchemaBindingCompleteness(binding, committedGoldenFragmentPaths)
+    for (const path of completeness.unboundGoldenFragments) {
+      problems.push(
+        `schema-binding: UNBOUND golden fragment "${path}" — no binding entry exists for it at all ` +
+          "(a new capability's schema escaped the acknowledgment layer). Add an entry to " +
+          `${bindingPath} (capability, goldenFragmentPath, goldenFragmentSha256), then re-run ` +
+          "`ibx journey extraction-consistency --update-binding`.",
+      )
     }
 
     if (opts.updateBinding === true) {

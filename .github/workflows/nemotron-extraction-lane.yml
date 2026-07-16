@@ -94,11 +94,22 @@ jobs:
       - name: Drive the extraction-accuracy meter against the LIVE local model
         id: meter
         continue-on-error: true
+        # Script-injection hygiene (review NIT, #266): workflow_dispatch
+        # inputs are attacker-controllable free text on any workflow that
+        # accepts them, so they're routed through `env:` (shell variable
+        # expansion, quoted) rather than interpolated directly into the
+        # `run:` block (which would splice the raw string into the shell
+        # script BEFORE it runs — a classic template-injection vector, even
+        # though this workflow's actual risk is low: only users who can
+        # already dispatch workflows on this repo can supply these inputs).
+        env:
+          LANE_ENV_FILE: ${{ github.event.inputs.envFile || '.env.test' }}
+          LANE_API_BASE_URL: ${{ github.event.inputs.apiBaseUrl || 'http://localhost:3001' }}
         run: |
           mkdir -p artifacts
           node packages/cli/dist/index.js journey extraction-accuracy \
-            --env-file "${{ github.event.inputs.envFile || '.env.test' }}" \
-            --api-base-url "${{ github.event.inputs.apiBaseUrl || 'http://localhost:3001' }}" \
+            --env-file "$LANE_ENV_FILE" \
+            --api-base-url "$LANE_API_BASE_URL" \
             --verify-file packages/journeys/governance/extraction-accuracy-baseline.json \
             --json > artifacts/extraction-accuracy-report.json \
             || echo "meter_failed=true" >> "$GITHUB_OUTPUT"

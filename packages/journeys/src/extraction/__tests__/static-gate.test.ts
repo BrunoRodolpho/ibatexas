@@ -9,6 +9,7 @@ import { describe, expect, it } from "vitest"
 import {
   checkBaselineAgainstCorpus,
   checkSchemaBinding,
+  checkSchemaBindingCompleteness,
   recomputeSchemaBinding,
   sha256Hex,
   ExtractionSchemaBindingSchema,
@@ -150,6 +151,62 @@ describe("checkSchemaBinding", () => {
     expect(result.ok).toBe(false)
     expect(result.drift).toHaveLength(1)
     expect(result.drift[0]?.capability).toBe("cap.b")
+  })
+})
+
+describe("checkSchemaBindingCompleteness (review MINOR follow-up, #266)", () => {
+  it("GREEN: every committed golden fragment has a binding entry", () => {
+    const binding: ExtractionSchemaBinding = {
+      bindings: [
+        { capability: "order.status.transition", goldenFragmentPath: "a.json", goldenFragmentSha256: "a".repeat(64) },
+      ],
+    }
+    const result = checkSchemaBindingCompleteness(binding, ["a.json"])
+    expect(result).toEqual({ ok: true, unboundGoldenFragments: [] })
+  })
+
+  it("RED: a NEW capability's golden fragment with NO binding entry at all silently escaping the acknowledgment layer — the AC1 gap checkSchemaBinding alone cannot catch (there's nothing to drift FROM)", () => {
+    const binding: ExtractionSchemaBinding = {
+      bindings: [
+        { capability: "order.status.transition", goldenFragmentPath: "a.json", goldenFragmentSha256: "a".repeat(64) },
+      ],
+    }
+    // Simulates exactly the scenario the review named: a parallel workstream
+    // authors a brand-new capability's extraction schema + golden fragment,
+    // but never adds a binding entry for it.
+    const result = checkSchemaBindingCompleteness(binding, ["a.json", "some-new-capability.json"])
+    expect(result.ok).toBe(false)
+    expect(result.unboundGoldenFragments).toEqual(["some-new-capability.json"])
+  })
+
+  it("REVERT: adding the missing binding entry makes the SAME committed-fragment set green again", () => {
+    const before: ExtractionSchemaBinding = {
+      bindings: [
+        { capability: "order.status.transition", goldenFragmentPath: "a.json", goldenFragmentSha256: "a".repeat(64) },
+      ],
+    }
+    expect(checkSchemaBindingCompleteness(before, ["a.json", "b.json"]).ok).toBe(false)
+    const after: ExtractionSchemaBinding = {
+      bindings: [
+        ...before.bindings,
+        { capability: "some.new.capability", goldenFragmentPath: "b.json", goldenFragmentSha256: "b".repeat(64) },
+      ],
+    }
+    expect(checkSchemaBindingCompleteness(after, ["a.json", "b.json"])).toEqual({
+      ok: true,
+      unboundGoldenFragments: [],
+    })
+  })
+
+  it("an empty binding with no committed golden fragments at all is trivially complete", () => {
+    const result = checkSchemaBindingCompleteness({ bindings: [] }, [])
+    expect(result).toEqual({ ok: true, unboundGoldenFragments: [] })
+  })
+
+  it("multiple unbound fragments are ALL named, never just the first", () => {
+    const result = checkSchemaBindingCompleteness({ bindings: [] }, ["x.json", "y.json", "z.json"])
+    expect(result.ok).toBe(false)
+    expect(result.unboundGoldenFragments).toEqual(["x.json", "y.json", "z.json"])
   })
 })
 
