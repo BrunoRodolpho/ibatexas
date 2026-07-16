@@ -1,14 +1,19 @@
 // audit-metadata.test.ts — the audit-record extension (the decided test
 // seam): `buildLanguageEngineAuditMetadata` derives {ExtractionIR,
 // HydratedIntentIR} PURELY from the final (post-resolution) AuditRecord, and
-// is INERT (returns undefined) for every capability besides
-// order.status.transition.
+// is INERT (returns undefined) for every capability besides the ones it
+// explicitly dispatches on.
 
 import { describe, expect, it } from "vitest";
-import type { AuditRecord } from "@adjudicate/core";
+import type { AuditRecord, Decision } from "@adjudicate/core";
 import { buildLanguageEngineAuditMetadata } from "../audit-metadata.js";
+import { OPS_REFUND_DEFAULT_REASON } from "../payment-refund-issue.schema.js";
 
-function record(kind: string, payload: Record<string, unknown>): AuditRecord {
+function record(
+  kind: string,
+  payload: Record<string, unknown>,
+  decision: Decision = { kind: "REQUEST_CONFIRMATION", prompt: "Confirma?" } as unknown as Decision,
+): AuditRecord {
   return {
     version: 5,
     intentHash: "h".repeat(64),
@@ -21,7 +26,7 @@ function record(kind: string, payload: Record<string, unknown>): AuditRecord {
       createdAt: "2026-07-16T12:00:00.000Z",
       intentHash: "h".repeat(64),
     } as unknown as AuditRecord["envelope"],
-    decision: { kind: "REQUEST_CONFIRMATION", prompt: "Confirma?" } as unknown as AuditRecord["decision"],
+    decision,
     decision_basis: [],
     at: "2026-07-16T12:00:00.000Z",
     durationMs: 10,
@@ -263,5 +268,176 @@ describe("buildLanguageEngineAuditMetadata — order.amend.update_qty / remove_i
     const le = languageEngineOf(meta);
     expect(le.hydratedIntentIR.payload).toEqual({ item: "algo desconhecido", orderId: "order_9" });
     expect(le.hydratedIntentIR.provenance.itemId).toBeUndefined();
+  });
+});
+
+// ── FE-T10 — payment.refund.issue (the money-tier slice) ───────────────────
+
+interface RefundLanguageEngineShape {
+  extractionIR: {
+    capability: string;
+    payload: Record<string, unknown>;
+    provenance: Record<string, { producer: string; confidence: string; trust: string }>;
+  };
+  hydratedIntentIR: {
+    capability: string;
+    payload: Record<string, unknown>;
+    provenance: Record<string, { producer: string; confidence: string; trust: string }>;
+    confirmationRequired: boolean;
+  };
+}
+
+function refundLanguageEngine(
+  meta: Readonly<Record<string, unknown>> | undefined,
+): RefundLanguageEngineShape {
+  return (meta as { languageEngine: RefundLanguageEngineShape }).languageEngine;
+}
+
+/** The resolved envelope payload `resolveRefundTarget` stamps (STOP-GATE B):
+ *  model-controlled orderReference/amount/reason are ALREADY GONE by this
+ *  point (the resolver rewrites orderReference -> orderId and amount ->
+ *  refundAmountCentavos) — this is the FINAL, post-resolution shape
+ *  buildLanguageEngineAuditMetadata receives, matching ops-resolver.ts's
+ *  `stampedPayload`. */
+function resolvedRefundPayload(over: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    refundAmountCentavos: 2000,
+    reason: "o cliente desistiu",
+    paymentId: "pay_1",
+    refundableBalanceCentavos: 5000,
+    amountInCentavos: 5000,
+    currentRefundedCentavos: 0,
+    actor: "admin",
+    actorId: "staff_1",
+    orderId: "order_9",
+    ...over,
+  };
+}
+
+describe("buildLanguageEngineAuditMetadata — payment.refund.issue (FE-T10)", () => {
+  it("derives ExtractionIR carrying {reason, refundAmountCentavos} — the amount survives under its WIRE name (orderReference is consumed by the resolver, never surfaced)", () => {
+    const meta = buildLanguageEngineAuditMetadata(
+      record("payment.refund.issue", resolvedRefundPayload()),
+    );
+    const le = refundLanguageEngine(meta);
+    expect(le.extractionIR.capability).toBe("payment.refund.issue");
+    // The schema declares {orderReference, amount, reason}; the RESOLVED
+    // payload no longer carries orderReference/amount under those names (the
+    // resolver rewrote them to orderId/refundAmountCentavos). `reason`
+    // survives under its own schema-declared name; `refundAmountCentavos` is
+    // the amount field's resolved wire projection — WITHOUT it, "the amount
+    // extracted correctly" would be unassertable by any corpus case.
+    expect(le.extractionIR.payload).toEqual({
+      reason: "o cliente desistiu",
+      refundAmountCentavos: 2000,
+    });
+    expect(le.extractionIR.provenance).toEqual({
+      reason: { producer: "model", confidence: "explicit", trust: "untrusted" },
+      refundAmountCentavos: { producer: "model", confidence: "explicit", trust: "untrusted" },
+    });
+  });
+
+  it("derives HydratedIntentIR: orderId=AUTHORITATIVE (explicit reference, never a guess), refundAmountCentavos stays model/untrusted, paymentId/balances resolver-stamped", () => {
+    const meta = buildLanguageEngineAuditMetadata(
+      record("payment.refund.issue", resolvedRefundPayload()),
+    );
+    const le = refundLanguageEngine(meta);
+    expect(le.hydratedIntentIR.payload).toMatchObject({
+      orderId: "order_9",
+      paymentId: "pay_1",
+      refundableBalanceCentavos: 5000,
+      amountInCentavos: 5000,
+      currentRefundedCentavos: 0,
+      reason: "o cliente desistiu",
+      refundAmountCentavos: 2000,
+    });
+    expect(le.hydratedIntentIR.provenance.orderId).toEqual({
+      producer: "resolver",
+      confidence: "resolved",
+      trust: "authoritative",
+    });
+    expect(le.hydratedIntentIR.provenance.refundAmountCentavos).toEqual({
+      producer: "model",
+      confidence: "explicit",
+      trust: "untrusted",
+    });
+  });
+
+  it("a RESOLVER-DEFAULTED reason (the model mentioned none) is excluded from ExtractionIR entirely and attributed to the RESOLVER (authoritative) in HydratedIntentIR — never misread as model output", () => {
+    const meta = buildLanguageEngineAuditMetadata(
+      record(
+        "payment.refund.issue",
+        resolvedRefundPayload({ reason: OPS_REFUND_DEFAULT_REASON }),
+      ),
+    );
+    const le = refundLanguageEngine(meta);
+    // The model extracted NOTHING here — extractionIR must not carry the
+    // resolver's own fallback text as if it were model output.
+    expect(le.extractionIR.payload).toEqual({ refundAmountCentavos: 2000 });
+    expect(le.extractionIR.provenance.reason).toBeUndefined();
+    // The hydrated intent still carries the (defaulted) reason — it IS the
+    // final intent — but with honest, non-model, non-guess provenance.
+    expect(le.hydratedIntentIR.payload.reason).toBe(OPS_REFUND_DEFAULT_REASON);
+    expect(le.hydratedIntentIR.provenance.reason).toEqual({
+      producer: "resolver",
+      confidence: "resolved",
+      trust: "authoritative",
+    });
+  });
+
+  it("confirmationRequired is TRUE via the decision (REQUEST_CONFIRMATION) — NOT via a grounded guess (order.status.transition's own mechanism)", () => {
+    const meta = buildLanguageEngineAuditMetadata(
+      record(
+        "payment.refund.issue",
+        resolvedRefundPayload(),
+        { kind: "REQUEST_CONFIRMATION", prompt: "Confirma?" } as unknown as Decision,
+      ),
+    );
+    const le = refundLanguageEngine(meta);
+    // No field is `grounded` here (the reference is authoritative) — proves
+    // confirmationRequired is NOT coming from hasGroundedField, only from
+    // the decision union.
+    expect(
+      Object.values(le.hydratedIntentIR.provenance).some((p) => p.trust === "grounded"),
+    ).toBe(false);
+    expect(le.hydratedIntentIR.confirmationRequired).toBe(true);
+  });
+
+  it("confirmationRequired is TRUE for an ESCALATE decision too (the ≥R$1000 band pre-empts CONFIRM, still counts as 'forces friction')", () => {
+    const meta = buildLanguageEngineAuditMetadata(
+      record(
+        "payment.refund.issue",
+        resolvedRefundPayload({ refundAmountCentavos: 150_000 }),
+        { kind: "ESCALATE", to: "human", reason: "refund_above_escalate_threshold" } as unknown as Decision,
+      ),
+    );
+    const le = refundLanguageEngine(meta);
+    expect(le.hydratedIntentIR.confirmationRequired).toBe(true);
+  });
+
+  it("confirmationRequired is FALSE when neither a grounded guess NOR a confirm/escalate decision applies (proves the union isn't unconditionally true)", () => {
+    const meta = buildLanguageEngineAuditMetadata(
+      record(
+        "payment.refund.issue",
+        resolvedRefundPayload(),
+        { kind: "EXECUTE", basis: [] } as unknown as Decision,
+      ),
+    );
+    const le = refundLanguageEngine(meta);
+    expect(le.hydratedIntentIR.confirmationRequired).toBe(false);
+  });
+
+  it("an extra unexpected payload key (adversarial/malformed completion) is NOT materialized into either IR", () => {
+    const meta = buildLanguageEngineAuditMetadata(
+      record(
+        "payment.refund.issue",
+        resolvedRefundPayload({ cpf: "12345678900", allergens: ["amendoim"] }),
+      ),
+    );
+    const le = refundLanguageEngine(meta);
+    for (const ir of [le.extractionIR.payload, le.hydratedIntentIR.payload]) {
+      expect(ir).not.toHaveProperty("cpf");
+      expect(ir).not.toHaveProperty("allergens");
+    }
   });
 });

@@ -26,6 +26,19 @@
 // direct Redis DEL of that key) resets the thread before each case, the
 // ops-plane equivalent of `ibx journey run`'s fresh-ChatClient-session-per-
 // attempt isolation.
+//
+// FE-T10 EXTENDED this same gotcha to a SECOND key: a REQUEST_CONFIRMATION a
+// case parks lives in the claustrum Session (`claustrum:session:admin:<id>`),
+// not the chat-history key above. `order.status.transition`'s 20 cases never
+// exposed this (none of them park), but a MONEY-TIER capability's cases
+// ALWAYS park (the BKL-085 UNTRUSTED-taint overlay), so `clearHistory`
+// callers (accuracy-cli.ts's `createOpsHistoryClearer`) now clear BOTH keys —
+// without the second, the ops confirmation-matcher's pt-BR affirmative
+// lexicon ("pode", "ok", "isso", "claro", "manda", "beleza"...) can silently
+// resolve an UNRELATED later case's ordinary utterance as a "confirm" of a
+// still-parked EARLIER case's refund (live-caught during FE-T10's corpus
+// authoring). Any FUTURE confirmation-parking capability (T11-14) gets this
+// isolation for free through the same `clearHistory` seam.
 
 import { evaluateExpectPayload } from "./expect-payload.js"
 import type { ExtractionCorpusFile } from "./schema.js"

@@ -4,6 +4,11 @@
       "capability": "order.status.transition",
       "goldenFragmentPath": "apps/api/src/claustrum/language-engine/__tests__/__golden__/order-status-transition.extraction-prompt-fragment.json",
       "goldenFragmentSha256": "c02bcc1b453218de13c535cd90599a596e4e2b6fb4b771bb8d67787bfdd150cc"
+    },
+    {
+      "capability": "payment.refund.issue",
+      "goldenFragmentPath": "apps/api/src/claustrum/language-engine/__tests__/__golden__/payment-refund-issue.extraction-prompt-fragment.json",
+      "goldenFragmentSha256": "0a8b52187be819cff10aa12c2004294da6a84c935e121b5e89beb467e34125b9"
     }
   ]
 }

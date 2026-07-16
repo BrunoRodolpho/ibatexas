@@ -55,10 +55,36 @@ export const IrExpectationSchema = z
 
 export type IrExpectation = z.infer<typeof IrExpectationSchema>
 
+/** Mirrors `Decision["kind"]` (@adjudicate/core) — duplicated here for the
+ *  same reason FieldTrustSchema is (this TEST-PLANE-ONLY package never
+ *  imports apps/*, and the kernel's closed decision-kind vocabulary is
+ *  small and frozen). */
+export const DECISION_KIND_VALUES = [
+  "EXECUTE",
+  "REWRITE",
+  "DEFER",
+  "REQUEST_CONFIRMATION",
+  "ESCALATE",
+  "REFUSE",
+] as const
+export const DecisionKindSchema = z.enum(DECISION_KIND_VALUES)
+export type DecisionKind = z.infer<typeof DecisionKindSchema>
+
 /**
  * `expectPayload` — the declarative assertion surface (FE-2.2). `extractionIR`
  * is required (every case pins what the model was expected to produce);
  * `hydratedIntentIR` is optional (a case may stop at the model's raw output).
+ *
+ * `decision` (FE-T10) — the expected `AuditRecord.decision.kind` for the
+ * case. Additive and optional: absent (every pre-FE-T10 case) evaluates
+ * byte-identically to before (no decision check runs). Money-tier capabilities
+ * need this because their "force confirmation" property is a KERNEL-level
+ * policy (e.g. payment.refund.issue's BKL-085 UNTRUSTED-taint CONFIRM
+ * overlay) independent of `hydratedIntentIR.confirmationRequired`, which
+ * documents WHY *hydration* asked for a confirm (an auto-resolved guess) —
+ * a distinct, narrower reason `confirmationRequired` must not be overloaded
+ * to also mean (see apps/api language-engine/audit-metadata.ts's derivation
+ * header for the full reasoning).
  */
 export const ExpectPayloadSchema = z
   .object({
@@ -71,6 +97,7 @@ export const ExpectPayloadSchema = z
       })
       .strict()
       .optional(),
+    decision: DecisionKindSchema.optional(),
   })
   .strict()
 

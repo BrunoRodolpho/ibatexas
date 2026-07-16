@@ -197,6 +197,55 @@ describe("evaluateExpectPayload — per-clause diagnostics", () => {
   })
 })
 
+// ── FE-T10 — the `decision` assertion (money-tier "force confirmation") ────
+describe("evaluateExpectPayload — the FE-T10 decision assertion", () => {
+  it("absent `decision` (every pre-FE-T10 case) runs no check — byte-identical", () => {
+    const record = fixtureRecord({
+      kind: "order.status.transition",
+      decision: "EXECUTE", // deliberately NOT what EXPECTED would ever assert
+      metadata: MATCHING_METADATA,
+    })
+    const outcome = evaluateExpectPayload(EXPECTED, record)
+    expect(outcome.ok).toBe(true)
+  })
+
+  it("passes when record.decision.kind matches the expected decision", () => {
+    const record = fixtureRecord({
+      kind: "payment.refund.issue",
+      decision: "REQUEST_CONFIRMATION",
+      metadata: MATCHING_METADATA,
+    })
+    const expected: ExpectPayload = { ...EXPECTED, decision: "REQUEST_CONFIRMATION" }
+    const outcome = evaluateExpectPayload(expected, record)
+    expect(outcome.ok).toBe(true)
+  })
+
+  it("fails, naming decision.kind, when record.decision.kind does NOT match", () => {
+    const record = fixtureRecord({
+      kind: "payment.refund.issue",
+      decision: "EXECUTE",
+      metadata: MATCHING_METADATA,
+    })
+    const expected: ExpectPayload = { ...EXPECTED, decision: "REQUEST_CONFIRMATION" }
+    const outcome = evaluateExpectPayload(expected, record)
+    expect(outcome.ok).toBe(false)
+    expect(outcome.failures.some((f) => f.includes("decision.kind"))).toBe(true)
+    expect(outcome.failures.some((f) => f.includes("REQUEST_CONFIRMATION"))).toBe(true)
+  })
+
+  it("proves the money-band ESCALATE case too (the ladder's escalate band pre-empts confirm)", () => {
+    const record = fixtureRecord({
+      kind: "payment.refund.issue",
+      decision: "ESCALATE",
+      metadata: MATCHING_METADATA,
+    })
+    const expected: ExpectPayload = { ...EXPECTED, decision: "ESCALATE" }
+    expect(evaluateExpectPayload(expected, record).ok).toBe(true)
+    const wrongExpected: ExpectPayload = { ...EXPECTED, decision: "REQUEST_CONFIRMATION" }
+    expect(evaluateExpectPayload(wrongExpected, record).ok).toBe(false)
+  })
+})
+
 describe("compileExpectPayload — wires into the REAL matchTrajectory oracle (FE-2.2)", () => {
   it("a matching record passes an EXACT trajectory match via the compiled where predicate", () => {
     const records = [fixtureRecord({ kind: "order.status.transition", metadata: MATCHING_METADATA })]

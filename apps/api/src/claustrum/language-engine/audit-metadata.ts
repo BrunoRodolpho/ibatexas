@@ -17,11 +17,14 @@
 // rides the kernel contract" is upheld: `envelope.payload` itself never
 // carries a provenance key — only the SIDECAR `record.metadata` does).
 //
-// Deliberately narrow (this tracer's scope): only `order.status.transition`
-// is recognized; every other capability returns `undefined` (a no-op —
+// Deliberately narrow: only the capabilities explicitly dispatched below are
+// recognized; every other capability returns `undefined` (a no-op —
 // `attachAuditMetadata`/`metadataProvider` leave `record.metadata` absent
 // when the provider returns undefined), so this is 100% inert for every
-// other capability in the system. Later rollout slices (T11-14) extend the
+// other capability in the system. FE-T05 authored the first (
+// order.status.transition); FE-T09 (D-a) added the three granular
+// post-checkout amend kinds; FE-T10 added the money-tier slice
+// (payment.refund.issue). Later rollout slices (T11-14) extend the
 // capability set this function recognizes as their own extraction schemas
 // land — the shape (derive ExtractionIR + HydratedIntentIR from the final
 // envelope via the capability's `CapabilityExtractionSchema`) generalizes
@@ -49,6 +52,10 @@ import {
   ORDER_AMEND_UPDATE_QTY_EXTRACTION_SCHEMA,
   ORDER_AMEND_REMOVE_ITEM_EXTRACTION_SCHEMA,
 } from "./order-amend-granular.schema.js";
+import {
+  OPS_REFUND_DEFAULT_REASON,
+  PAYMENT_REFUND_ISSUE_EXTRACTION_SCHEMA,
+} from "./payment-refund-issue.schema.js";
 
 /** The shape materialized under `record.metadata.languageEngine`. */
 export interface LanguageEngineAuditMetadata {
@@ -239,6 +246,156 @@ function deriveGranularAmend(
 }
 
 /**
+ * FE-T10 — the money-tier resolver-stamped fields `payment.refund.issue`
+ * hydration adds beyond the extraction schema (STOP-GATE B,
+ * `ops-resolver.ts`'s `resolveRefundTarget`): `paymentId` + the three
+ * balance-snapshot fields, ALWAYS stamped from the live DB payment row,
+ * NEVER from the model. `reason` is included too — NOT because it is
+ * resolver-owned in general (it usually is model content), but so its
+ * RESOLVER-DEFAULTED value (see `reasonIsResolverDefault` above) still
+ * appears in the hydrated payload after being deliberately stripped from
+ * `extractionPayload`; when `reason` IS genuine model content the spread in
+ * `projectHydratedPayload` below re-derives the identical value from
+ * `resolvedPayload`, a no-op overwrite. An explicit allowlist, exactly like
+ * `ORDER_STATUS_TRANSITION_RESOLVER_FIELDS` — a stray key an
+ * adversarial/malformed completion smuggled in is dropped here, never
+ * materialized into `HydratedIntentIR`.
+ *
+ * `orderId` is listed defensively/forward-compatibly: verified live (FE-T10
+ * calibration, psql against `intent_audit.envelope_jsonb`) that
+ * `resolveRefundTarget`'s `stampedPayload` (ops-resolver.ts) NEVER actually
+ * includes `orderId` today — the resolved order id is threaded only into the
+ * kernel's `state.ctx.orderId`, never the audited envelope payload. Keeping
+ * the entry costs nothing (an absent key is simply never copied by
+ * `projectHydratedPayload`) and means a future resolver change that DOES
+ * start stamping `orderId` onto the wire payload is picked up here for free,
+ * without a corresponding code change. The `hydratedProvenance.orderId`
+ * branch below is the same story: dead code today, not exercised by any
+ * live case in this ticket's corpus, kept for that same forward-compat reason.
+ */
+const PAYMENT_REFUND_ISSUE_RESOLVER_FIELDS: readonly string[] = [
+  "orderId",
+  "paymentId",
+  "refundableBalanceCentavos",
+  "amountInCentavos",
+  "currentRefundedCentavos",
+  "reason",
+];
+
+/**
+ * payment.refund.issue-specific derivation (FE-T10, the money-tier slice).
+ * Unlike `order.status.transition`'s ALWAYS-grounded "most recent order"
+ * auto-resolve, the refund order reference is resolved from an EXPLICIT
+ * model-supplied reference (a display number or customer name —
+ * `resolveOrderByReference`, BKL-089) — an authoritative resolution, not a
+ * guess (field-trust.ts's own distinction: "a resolved identifier from an
+ * explicit reference -> authoritative"). So `hasGroundedField` alone would
+ * (correctly) read `confirmationRequired: false` here — hydration itself
+ * made no guess. The turn STILL always confirms for a SEPARATE, already-
+ * proven reason: the BKL-085 UNTRUSTED-taint refund CONFIRM overlay
+ * (pack-payments/src/policies.ts), a kernel-level policy independent of
+ * hydration's own grounded-guess reasoning. `record.decision.kind` is read
+ * directly (this function receives the full `AuditRecord`, unlike
+ * `deriveOrderStatusTransition`/`deriveGranularAmend`) so
+ * `confirmationRequired` stays an HONEST union of BOTH sources — never
+ * overloading `hasGroundedField`'s documented "auto-resolved guess" meaning,
+ * which the other derivations still rely on unchanged.
+ */
+function derivePaymentRefundIssue(record: AuditRecord): LanguageEngineAuditMetadata {
+  const resolvedPayload = record.envelope.payload as Readonly<
+    Record<string, unknown>
+  >;
+  const schema = PAYMENT_REFUND_ISSUE_EXTRACTION_SCHEMA;
+  const { extractionPayload } = splitResolvedPayload(schema, resolvedPayload);
+
+  const extractionProvenance: Record<string, ReturnType<typeof modelProvenance>> =
+    {};
+  for (const field of schema.fields) {
+    if (field.name in extractionPayload) {
+      extractionProvenance[field.name] = modelProvenance();
+    }
+  }
+
+  // FE-T10 review — `reason` is OPTIONAL on the schema, and the resolver
+  // applies ITS OWN default (`OPS_REFUND_DEFAULT_REASON`, ops-resolver.ts)
+  // when the model supplied none — under the SAME wire key, so mere
+  // PRESENCE cannot distinguish "the model said this" from "the resolver
+  // defaulted it" the way a RENAMED field (orderReference->orderId,
+  // amount->refundAmountCentavos) unambiguously can. Recognize the exact
+  // default string and reclassify it: NOT model extraction (dropped from
+  // extractionIR entirely — the model produced nothing here); a genuinely
+  // RESOLVER-supplied value in the hydrated intent instead (see below).
+  let reasonIsResolverDefault = false;
+  if (extractionPayload.reason === OPS_REFUND_DEFAULT_REASON) {
+    delete extractionPayload.reason;
+    delete extractionProvenance.reason;
+    reasonIsResolverDefault = true;
+  }
+
+  // FE-T10 review — the schema's `amount` (reais) is REWRITTEN to the wire's
+  // `refundAmountCentavos` (BKL-094 coercion, ops-resolver.ts) BEFORE this
+  // function ever sees the payload, so `splitResolvedPayload` (which only
+  // matches SCHEMA-declared names) can never surface it — without this, "the
+  // amount extracted correctly" would be UNASSERTABLE by any corpus case
+  // (neither IR would ever carry the resolved cents value). The rewritten
+  // value is still fundamentally the model's Directive content — the
+  // resolver only changed its UNIT REPRESENTATION (reais -> exact centavos),
+  // never its authorship — so it keeps `modelProvenance()` (untrusted),
+  // exactly like the schema's OWN `amount`/`reason` fields, NOT
+  // `resolverAuthoritativeProvenance()` (which is reserved for a genuine
+  // reference LOOKUP, e.g. `orderId` below). Present in BOTH IRs under its
+  // WIRE name (`refundAmountCentavos`) — the one name every consumer
+  // (policies.ts's magnitude ladder, a corpus author) actually reads.
+  if (
+    typeof resolvedPayload.refundAmountCentavos === "number" &&
+    Number.isFinite(resolvedPayload.refundAmountCentavos)
+  ) {
+    extractionPayload.refundAmountCentavos = resolvedPayload.refundAmountCentavos;
+    extractionProvenance.refundAmountCentavos = modelProvenance();
+  }
+
+  const extractionIR: ExtractionIR = {
+    capability: schema.capability,
+    payload: extractionPayload,
+    provenance: extractionProvenance,
+  };
+
+  const hydratedProvenance: Record<string, FieldProvenanceMap[string]> = {
+    ...extractionProvenance,
+  };
+  if (typeof resolvedPayload.orderId === "string") {
+    // DEAD CODE TODAY (verified live, FE-T10): `resolveRefundTarget`'s
+    // `stampedPayload` never actually carries `orderId` — see the doc
+    // comment on `PAYMENT_REFUND_ISSUE_RESOLVER_FIELDS` above. Kept as
+    // defensive/forward-compatible handling for the day the resolver does
+    // stamp it — explicit reference resolution (BKL-089), never a "most
+    // recent order" guess, hence `authoritative` and not `grounded`.
+    hydratedProvenance.orderId = resolverAuthoritativeProvenance();
+  }
+  if (reasonIsResolverDefault) {
+    // A deterministic, fully-confident system default — not a guess (never
+    // `grounded`), and not model content (already excluded from
+    // extractionIR above).
+    hydratedProvenance.reason = resolverAuthoritativeProvenance();
+  }
+  const hydratedIntentIR: HydratedIntentIR = {
+    capability: schema.capability,
+    payload: projectHydratedPayload(
+      extractionPayload,
+      resolvedPayload,
+      PAYMENT_REFUND_ISSUE_RESOLVER_FIELDS,
+    ),
+    provenance: hydratedProvenance,
+    confirmationRequired:
+      hasGroundedField(hydratedProvenance) ||
+      record.decision.kind === "REQUEST_CONFIRMATION" ||
+      record.decision.kind === "ESCALATE",
+  };
+
+  return { extractionIR, hydratedIntentIR };
+}
+
+/**
  * The `AdjudicateAndAuditDeps.metadataProvider` implementation: given the
  * FINAL, post-resolution `AuditRecord`, return the `{languageEngine: {...}}`
  * metadata to merge onto `record.metadata`, or `undefined` for every
@@ -284,6 +441,9 @@ export function buildLanguageEngineAuditMetadata(
         payload,
       ),
     };
+  }
+  if (record.envelope.kind === "payment.refund.issue") {
+    return { languageEngine: derivePaymentRefundIssue(record) };
   }
   return undefined;
 }

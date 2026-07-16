@@ -9,6 +9,7 @@ import {
   buildOpsSpecialResumeState,
   type OpsResolverDeps,
 } from "../ops-resolver.js";
+import { OPS_REFUND_DEFAULT_REASON } from "../../claustrum/language-engine/payment-refund-issue.schema.js";
 import type { ProductCandidate } from "../ops-product-resolution.js";
 import type {
   OrderCandidate,
@@ -762,6 +763,10 @@ describe("ops resolver — payment.refund.issue (BKL-085)", () => {
     expect(p.refundAmountCentavos).toBe(6_000);
     expect(p.refundableBalanceCentavos).toBe(6_000);
     expect(p.currentRefundedCentavos).toBe(4_000);
+    // FE-T10: the reason falls back to the SAME exported constant
+    // audit-metadata.ts reads to recognize (and correctly attribute) a
+    // resolver-defaulted reason — pins the two never silently drift apart.
+    expect(p.reason).toBe(OPS_REFUND_DEFAULT_REASON);
   });
 
   it("no active payment ⇒ exists:false (REFUSE payment_not_found, never an executor throw)", async () => {
@@ -833,6 +838,76 @@ describe("ops resolver — payment.refund.issue (BKL-085)", () => {
     const p = resolved.envelope.payload as Record<string, unknown>;
     expect(p.paymentId).toBe("pay_db_1");
     expect((resolved.state as { ctx: { exists: boolean } }).ctx.exists).toBe(true);
+  });
+});
+
+// ── FE-T10 — orderReference alias (the money-tier extraction schema's field) ──
+// `payment-refund-issue.schema.ts` narrows the model-facing payload to
+// {orderReference, amount, reason} — `orderId` is a forbidden extraction-
+// schema field name, so the model can ONLY emit `orderReference` under the
+// new typed schema. `withOrderReferenceAlias` (ops-resolver.ts) rewrites it
+// to `orderId` before `resolveOrderTarget` runs, so resolution still works
+// — and the pre-existing bare-`orderId` path (no typed schema wired, or an
+// older client) still wins outright when BOTH are present.
+
+describe("ops resolver — FE-T10 orderReference alias (money-tier extraction schema)", () => {
+  it("orderReference alone resolves the order — direct-id shape", async () => {
+    const resolved = await resolveRefund(refundDeps(), {
+      orderReference: "order_direct",
+      amount: 20,
+    });
+    const p = resolved.envelope.payload as Record<string, unknown>;
+    expect(p.paymentId).toBe("pay_db_1");
+    // BKL-094: amount (reais) -> exact centavos, unaffected by the alias.
+    expect(p.refundAmountCentavos).toBe(2_000);
+    expect((resolved.state as { ctx: { exists: boolean } }).ctx.exists).toBe(true);
+  });
+
+  it("orderReference alone resolves via the BKL-089 displayId reference path too", async () => {
+    const candidate: OrderCandidate = {
+      id: "order_resolved",
+      displayId: 4242,
+      customerName: "Maria",
+      fulfillmentStatus: "confirmed",
+      customerId: "cust_1",
+      paymentMethod: "pix",
+      paymentStatus: "paid",
+      totalInCentavos: 10_000,
+    };
+    const lookupActivePayment = vi.fn(async (orderId: string) =>
+      orderId === "order_resolved" ? ACTIVE_PAID : null,
+    );
+    const refs: OrderReferenceReads = {
+      findByDisplayId: async (d) => (d === 4242 ? [candidate] : []),
+      listRecentActive: async () => [],
+    };
+    const resolved = await resolveRefund(
+      refundDeps({
+        lookupOrder: vi.fn(async () => null), // direct id miss ⇒ reference resolution
+        orderReferenceReads: refs,
+        lookupActivePayment,
+      }),
+      { orderReference: "4242", amount: 50 },
+    );
+    expect(lookupActivePayment).toHaveBeenCalledWith("order_resolved");
+    const p = resolved.envelope.payload as Record<string, unknown>;
+    expect(p.paymentId).toBe("pay_db_1");
+  });
+
+  it("a present orderId WINS over orderReference (the pre-existing unguided path is untouched)", async () => {
+    const resolved = await resolveRefund(refundDeps(), {
+      orderId: "order_direct",
+      orderReference: "should_be_ignored",
+      refundAmountCentavos: 1_000,
+    });
+    const p = resolved.envelope.payload as Record<string, unknown>;
+    expect(p.paymentId).toBe("pay_db_1");
+    expect(p.refundAmountCentavos).toBe(1_000);
+  });
+
+  it("neither orderId nor orderReference present ⇒ REFUSE payment_not_found, unchanged", async () => {
+    const resolved = await resolveRefund(refundDeps(), { amount: 20 });
+    expect((resolved.state as { ctx: { exists: boolean } }).ctx.exists).toBe(false);
   });
 });
 
