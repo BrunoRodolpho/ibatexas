@@ -123,19 +123,19 @@ export interface CapabilityDefinition {
    */
   readonly extractionSchema?: unknown
   /**
-   * The `SUCCESS_CLAIM_CLASSES` id (`apps/api/src/claustrum/
-   * ibatexas-responder.ts`) this capability's EXECUTE can justify, when one
-   * exists. Inverted from that registry's own `justifiedBy` arrays — NOT
-   * invented. `undefined` is a normal, common, and CORRECT value: the live
-   * claim registry covers only "a handful of proposable types" (per
-   * FE-4 Out-of-Scope — growing it is a separate claims-runtime
-   * workstream), so most capabilities legitimately have no claim link yet.
-   * When a capability's EXECUTE co-justifies more than one claim class
-   * (e.g. `order.checkout.create` also co-justifies `"purchase-completed"`
-   * and `"pix-generated"`), this field carries the PRIMARY class only —
-   * see the per-instance comment in `definitions.ts`.
+   * The `SUCCESS_CLAIM_CLASSES` ids (`apps/api/src/claustrum/
+   * ibatexas-responder.ts`) this capability's EXECUTE can justify. Inverted
+   * from that registry's own `justifiedBy` arrays — NOT invented, and NOT
+   * lossy: reality is 1:many (e.g. `order.checkout.create` co-justifies
+   * `"order-placed"`, `"purchase-completed"`, AND `"pix-generated"` — three
+   * separate classes list it in `justifiedBy`), so this is the FULL set,
+   * not a single "primary" pick. `undefined` is a normal, common, and
+   * CORRECT value: the live claim registry covers only "a handful of
+   * proposable types" (per FE-4 Out-of-Scope — growing it is a separate
+   * claims-runtime workstream), so most capabilities legitimately have no
+   * claim link yet.
    */
-  readonly successClaimLink?: string
+  readonly successClaimLinks?: readonly string[]
   /**
    * Declarative guard references — see {@link CapabilityGuardRef}. Per
    * capability, this is the OWNING PACK's full `stateGuards` /

@@ -26,10 +26,10 @@
  *     agent-tools.md` §"Auth levels" and, where the doc is silent or
  *     stale, each pack's `CapabilityPlanner.plan()` authentication gate
  *     (see per-instance comments below for the non-obvious cases).
- *   - `successClaimLink` — inverted from `SUCCESS_CLAIM_CLASSES.justifiedBy`
- *     (`apps/api/src/claustrum/ibatexas-responder.ts`) — `undefined` where
- *     no class lists this kind (a real, common, and correct state; see
- *     `types.ts`).
+ *   - `successClaimLinks` — the FULL inversion of `SUCCESS_CLAIM_CLASSES.
+ *     justifiedBy` (`apps/api/src/claustrum/ibatexas-responder.ts`) — every
+ *     class that lists this kind, not just one; `undefined` where no class
+ *     lists it (a real, common, and correct state; see `types.ts`).
  *   - `guardRefs` — each owning pack's full `stateGuards`/`authGuards`/
  *     `business` guard-name list (see `types.ts` for why this is the
  *     kernel-faithful granularity), EXCLUDING `requireTenantBindingGuard`
@@ -179,7 +179,7 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     auth: "guest",
     legacyNames: ["get_or_create_cart"],
     description: "Garantir um carrinho ativo para a sessão do cliente.",
-    successClaimLink: undefined,
+    successClaimLinks: undefined,
     guardRefs: ORDERS_GUARD_REFS,
     refusalCode: "order.default.deny",
   },
@@ -191,7 +191,7 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     auth: "guest",
     legacyNames: ["add_to_cart"],
     description: "Adicionar um item ao carrinho do cliente.",
-    successClaimLink: "cart-item-added",
+    successClaimLinks: ["cart-item-added"],
     guardRefs: ORDERS_GUARD_REFS,
     refusalCode: "order.default.deny",
   },
@@ -203,7 +203,7 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     auth: "guest",
     legacyNames: ["update_cart"],
     description: "Atualizar a quantidade de um item no carrinho.",
-    successClaimLink: "cart-item-added",
+    successClaimLinks: ["cart-item-added"],
     guardRefs: ORDERS_GUARD_REFS,
     refusalCode: "order.default.deny",
   },
@@ -215,7 +215,7 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     auth: "guest",
     legacyNames: ["remove_from_cart"],
     description: "Remover um item do carrinho do cliente.",
-    successClaimLink: "cart-item-added",
+    successClaimLinks: ["cart-item-added"],
     guardRefs: ORDERS_GUARD_REFS,
     refusalCode: "order.default.deny",
   },
@@ -227,7 +227,7 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     auth: "guest",
     legacyNames: ["apply_coupon"],
     description: "Aplicar um cupom de desconto ao carrinho.",
-    successClaimLink: undefined,
+    successClaimLinks: undefined,
     guardRefs: ORDERS_GUARD_REFS,
     refusalCode: "order.default.deny",
   },
@@ -245,11 +245,11 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     auth: "customer",
     legacyNames: ["create_checkout"],
     description: "Criar checkout (sessão de pagamento) a partir do carrinho.",
-    // Also co-justifies "purchase-completed" and "pix-generated" in
-    // SUCCESS_CLAIM_CLASSES; "order-placed" is the primary/most specific
-    // class (listed first, and the one the module's own regex comments
-    // treat as canonical for this kind).
-    successClaimLink: "order-placed",
+    // All three SUCCESS_CLAIM_CLASSES entries that list this kind in
+    // justifiedBy: "order-placed" and "purchase-completed" (both a bare
+    // checkout completion) plus "pix-generated" (a PIX checkout also
+    // stands up the QR code in the same EXECUTE).
+    successClaimLinks: ["order-placed", "purchase-completed", "pix-generated"],
     guardRefs: ORDERS_GUARD_REFS,
     refusalCode: "order.default.deny",
   },
@@ -261,7 +261,7 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     auth: "customer",
     legacyNames: ["cancel_order"],
     description: "Cancelar um pedido do cliente (irreversível).",
-    successClaimLink: "order-canceled",
+    successClaimLinks: ["order-canceled"],
     guardRefs: ORDERS_GUARD_REFS,
     refusalCode: "order.default.deny",
   },
@@ -273,7 +273,7 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     auth: "customer",
     legacyNames: ["amend_order"],
     description: "Solicitar alteração em um pedido já realizado.",
-    successClaimLink: "order-amended",
+    successClaimLinks: ["order-amended"],
     guardRefs: ORDERS_GUARD_REFS,
     refusalCode: "order.default.deny",
   },
@@ -285,7 +285,7 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     auth: "customer",
     legacyNames: ["add_order_note"],
     description: "Adicionar uma observação a um pedido.",
-    successClaimLink: "note-added",
+    successClaimLinks: ["note-added"],
     guardRefs: ORDERS_GUARD_REFS,
     refusalCode: "order.default.deny",
   },
@@ -304,7 +304,7 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     auth: "customer",
     legacyNames: ["submit_review"],
     description: "Enviar uma avaliação de um pedido concluído.",
-    successClaimLink: undefined,
+    successClaimLinks: undefined,
     guardRefs: ORDERS_GUARD_REFS,
     refusalCode: "order.default.deny",
   },
@@ -318,7 +318,7 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     auth: "customer",
     legacyNames: ["create_reservation"],
     description: "Criar uma reserva de mesa.",
-    successClaimLink: "reservation-confirmed",
+    successClaimLinks: ["reservation-confirmed"],
     guardRefs: RESERVATIONS_GUARD_REFS,
     refusalCode: "reservation.default.deny",
   },
@@ -330,7 +330,7 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     auth: "customer",
     legacyNames: ["modify_reservation"],
     description: "Modificar uma reserva existente.",
-    successClaimLink: "reservation-confirmed",
+    successClaimLinks: ["reservation-confirmed"],
     guardRefs: RESERVATIONS_GUARD_REFS,
     refusalCode: "reservation.default.deny",
   },
@@ -344,7 +344,7 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     description: "Cancelar uma reserva existente.",
     // No "reservation-canceled" class exists in SUCCESS_CLAIM_CLASSES today
     // (only "order-canceled" does) — genuinely undefined, not an omission.
-    successClaimLink: undefined,
+    successClaimLinks: undefined,
     guardRefs: RESERVATIONS_GUARD_REFS,
     refusalCode: "reservation.default.deny",
   },
@@ -356,7 +356,7 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     auth: "customer",
     legacyNames: ["join_waitlist"],
     description: "Entrar na lista de espera de um horário lotado.",
-    successClaimLink: undefined,
+    successClaimLinks: undefined,
     guardRefs: RESERVATIONS_GUARD_REFS,
     refusalCode: "reservation.default.deny",
   },
@@ -370,7 +370,7 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     auth: "customer",
     legacyNames: ["update_preferences"],
     description: "Atualizar as preferências do cliente.",
-    successClaimLink: undefined,
+    successClaimLinks: undefined,
     guardRefs: CUSTOMER_ONBOARDING_GUARD_REFS,
     refusalCode: "customer.default.deny",
   },
@@ -382,7 +382,7 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     auth: "customer",
     legacyNames: ["save_pix_details"],
     description: "Salvar os dados PIX do cliente para reembolsos.",
-    successClaimLink: undefined,
+    successClaimLinks: undefined,
     guardRefs: CUSTOMER_ONBOARDING_GUARD_REFS,
     refusalCode: "customer.default.deny",
   },
@@ -396,7 +396,7 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     auth: "customer",
     legacyNames: ["regenerate_pix"],
     description: "Gerar um novo código PIX para um pagamento pendente.",
-    successClaimLink: "pix-generated",
+    successClaimLinks: ["pix-generated"],
     guardRefs: PAYMENTS_GUARD_REFS,
     refusalCode: "payment.default.deny",
   },
@@ -414,7 +414,7 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     legacyNames: ["request_human_handoff"],
     description:
       "Transferir o atendimento para um atendente humano quando o cliente pedir para falar com uma pessoa.",
-    successClaimLink: undefined,
+    successClaimLinks: undefined,
     guardRefs: WHATSAPP_GUARD_REFS,
     refusalCode: "whatsapp.default.deny",
   },
