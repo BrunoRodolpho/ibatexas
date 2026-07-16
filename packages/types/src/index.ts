@@ -46,6 +46,9 @@ export {
   SHIPPING_RATES,
   SHIPPING_RATE_DEFAULT,
   type ShippingRate,
+  MONEY_BAND_1000_CENTAVOS,
+  isAtOrAboveMoneyBand,
+  isAboveMoneyBand,
 } from "./constants.js"
 
 // Cart types
