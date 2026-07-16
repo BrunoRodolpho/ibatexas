@@ -70,7 +70,7 @@ import { deriveOpsPlannerContext } from "./ops-planner-context.js";
 import { composeOpsPlannerSystem } from "./ops-history.js";
 import {
   excludedKindsForScope,
-  FORBIDDEN_OPS_DESTRUCTIVE_KINDS,
+  forbiddenOpsVerbProblems,
   scopeCapabilityPlanner,
   scopeResumeChannel,
   type OpsVerbScope,
@@ -348,26 +348,16 @@ export function opsPlaneDriftProblems(input: {
   // BKL-096 — defense in depth: fail boot CLOSED if a FORBIDDEN two-person
   // destructive verb (order.cancel / payment.waive / payment.status.force) ever
   // enters the ops REGISTRY. Today none is registered here NOR matrixed (two
-  // independent fail-closed layers), so this loop is inert on the real 8-verb
+  // independent fail-closed layers), so this check is inert on the real 8-verb
   // roster; it makes the exclusion EXPLICIT so a future PR that registers one as
   // an ops tool trips this gate rather than silently exposing it. The persona's
   // advertised SURFACE (planner allowlist, both ingress scopes) is pinned by the
-  // BKL-096 drift test — see FORBIDDEN_OPS_DESTRUCTIVE_KINDS.
-  for (const tool of input.opsTools) {
-    const capability = String(tool.capability);
-    const intentKind = String(tool.intentKind);
-    if (
-      FORBIDDEN_OPS_DESTRUCTIVE_KINDS.has(capability) ||
-      FORBIDDEN_OPS_DESTRUCTIVE_KINDS.has(intentKind)
-    ) {
-      problems.push(
-        `ops registry advertises FORBIDDEN two-person destructive verb ` +
-          `"${capability}" (tool ${tool.id}); these verbs must stay ops-unreachable ` +
-          `until an owner ratifies a propose-path (OPS-007/008/011). See ` +
-          `FORBIDDEN_OPS_DESTRUCTIVE_KINDS.`,
-      );
-    }
-  }
+  // BKL-096 drift test — see FORBIDDEN_OPS_DESTRUCTIVE_KINDS. Extracted to
+  // `forbiddenOpsVerbProblems` (ops-verb-scope.ts, FE-T24 review fix) so a
+  // freshness test can drive this SAME real check with a generated forbidden
+  // set — the default parameter here is byte-identical to the pre-extraction
+  // inline loop.
+  problems.push(...forbiddenOpsVerbProblems(input.opsTools));
   // BKL-100 — advertised ⊆ renderable: every ops read the planner advertises MUST
   // have a deterministic render template (ops-read-render.ts), else a staff read
   // turn would fall back to model-authored prose — the exact confabulation this

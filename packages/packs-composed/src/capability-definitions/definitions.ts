@@ -321,6 +321,12 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     // deliberately different text from `description` above (separate
     // audience: admin-inbox operator vs. chat prompt hint).
     adminLabel: "Cancelar pedido",
+    // FE-T24: a member of BKL-096's FORBIDDEN_OPS_DESTRUCTIVE_KINDS — this
+    // customer/LLM-chat-drivable kind must ALSO never be ops-plane
+    // advertised (the ops persona's own kitchen-advance projection,
+    // order.status.transition, is BKL-090-legality-gated to non-terminal
+    // transitions specifically so it can never reach a force-cancel).
+    opsForbiddenDestructive: true,
   },
   // SYSTEM-only compensation cancel (payment-expiry / stale-order) — the
   // orders planner comment is explicit: "NEVER LLM-proposable". No
@@ -599,8 +605,23 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
   },
   { kind: "payment.dispute.open", pack: "ibatexas/pack-payments", mutating: true, tier: "identity" },
   { kind: "payment.cash.confirm", pack: "ibatexas/pack-payments", mutating: true, tier: "identity", successClaimLinks: ["payment-settled"] },
-  { kind: "payment.waive", pack: "ibatexas/pack-payments", mutating: true, tier: "identity" },
-  { kind: "payment.status.force", pack: "ibatexas/pack-payments", mutating: true, tier: "identity" },
+  // FE-T24: both members of BKL-096's FORBIDDEN_OPS_DESTRUCTIVE_KINDS —
+  // OWNER-gated irreversible writes (debt write-off / status-lifecycle
+  // bypass) that must never be ops-plane advertised.
+  {
+    kind: "payment.waive",
+    pack: "ibatexas/pack-payments",
+    mutating: true,
+    tier: "identity",
+    opsForbiddenDestructive: true,
+  },
+  {
+    kind: "payment.status.force",
+    pack: "ibatexas/pack-payments",
+    mutating: true,
+    tier: "identity",
+    opsForbiddenDestructive: true,
+  },
   { kind: "payment.status.transition", pack: "ibatexas/pack-payments", mutating: true, tier: "identity" },
   { kind: "payment.status.reconcile", pack: "ibatexas/pack-payments", mutating: true, tier: "identity" },
 

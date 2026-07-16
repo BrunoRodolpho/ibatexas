@@ -252,6 +252,34 @@ interface CapabilityDefinitionCommon {
    * here for the other 58 kinds is correct, not an omission to fill in.
    */
   readonly adminLabel?: string
+  /**
+   * FE-4 MIGRATE 4b (FE-T24) — BKL-096's two-person / separation-of-duty
+   * DESTRUCTIVE-verb forbid, grounded in `apps/api/src/ops/ops-verb-scope.ts`'s
+   * `FORBIDDEN_OPS_DESTRUCTIVE_KINDS`: `true` for the exactly 3 pack-owned
+   * kinds (`order.cancel`, `payment.waive`, `payment.status.force`) that must
+   * NEVER enter the ops tool registry or the ops planner's advertised
+   * surface, on EITHER ingress scope, until an owner ratifies a propose-path
+   * (OPS-007/008/011). This is DISTINCT from `plannerAdvertisedBy` (which
+   * says who DOES advertise a kind) — this says a kind must NEVER be
+   * ops-advertised at all, a stronger, deliberately separate assertion.
+   * `undefined`/absent (the default, correct for the other 63 kinds) means
+   * no such forbid applies; optional on both tiers (`order.cancel` is
+   * chat-tier — a customer/LLM-driven kind can simultaneously be
+   * ops-forbidden, since the concerns are orthogonal planes).
+   *
+   * NOTE — traced but NOT modeled here: `WA_EXCLUDED_OPS_KINDS` (same file)
+   * is a THIRD, DISTINCT ops-boundary concept (WhatsApp-ingress-only
+   * dashboard-exclusion for IRREVERSIBLE money verbs, BKL-086) — today a
+   * single-element Set wrapping `OPS_FOREIGN_ADVERTISED_REFUND_KIND`
+   * (`payment.refund.issue`, already covered by `plannerAdvertisedBy`). It
+   * is a genuine, narrow business-policy judgment (which specific reversible
+   * -vs-irreversible verbs warrant a step-up factor), not a structural
+   * registry fact — adding a generic "reversibility" axis here to force a
+   * generator would be inventing structure the codebase does not otherwise
+   * model, the exact fabrication FE-4.1 forbids. See `generate-ops-boundary
+   * -kinds.ts`'s own doc for the full disposition.
+   */
+  readonly opsForbiddenDestructive?: true
 }
 
 /**
