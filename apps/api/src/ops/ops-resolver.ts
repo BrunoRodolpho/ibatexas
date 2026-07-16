@@ -53,6 +53,7 @@
 import { buildEnvelope, type IntentEnvelope } from "@adjudicate/core";
 import type { ResolvedEnvelope, ResolverPort } from "@claustrum/core";
 import { isTerminalPaymentStatus, type PaymentStatus } from "@ibatexas/types";
+import { OPS_REFUND_DEFAULT_REASON } from "../claustrum/language-engine/payment-refund-issue.schema.js";
 import { logger } from "../lib/logger.js";
 import { shiftYmd, todayInRestaurantTz } from "../routes/admin/_date-defaults.js";
 import {
@@ -368,6 +369,34 @@ function resolveRequestedRefundCentavos(
     if (centavos !== null) return centavos;
   }
   return fullRefundableBalance;
+}
+
+/**
+ * FE-T10 — the money-tier extraction schema for `payment.refund.issue`
+ * (`payment-refund-issue.schema.ts`) narrows the model-facing payload to
+ * `{orderReference, amount, reason}`; `orderReference` is DELIBERATELY not
+ * named `orderId` on that schema (FORBIDDEN_EXTRACTION_FIELD_NAMES — an
+ * unresolved NL reference is Directive class, not the resolved identifier the
+ * forbidden-name lint guards against). `resolveOrderTarget` below still only
+ * reads `payload.orderId`, so ADD `orderReference` as an ADDITIVE alias
+ * (BKL-094's exact shape: prefer the schema-correct name, fall back to the
+ * alias) before calling it — this is the ONLY change refund resolution needs:
+ * the pre-existing (unguided, `inputSchema: {}`) refund path, where a model
+ * has always been free to put a reference under `orderId` with no schema
+ * guiding it, keeps working byte-identically (an `orderId` payload key still
+ * wins outright); the NEW typed-schema path, where the model can ONLY emit
+ * `orderReference` (the narrowed schema forbids `orderId`), now also resolves.
+ * Pure projection — never mutates the caller's `payload`.
+ */
+function withOrderReferenceAlias(
+  payload: Record<string, unknown>,
+): Record<string, unknown> {
+  if (typeof payload.orderId === "string" && payload.orderId !== "") {
+    return payload;
+  }
+  const reference = payload.orderReference;
+  if (typeof reference !== "string" || reference === "") return payload;
+  return { ...payload, orderId: reference };
 }
 
 /**
@@ -928,8 +957,14 @@ async function resolveRefundTarget(
   }
 
   // Resolve the order REFERENCE → real order id (reuses the BKL-089 order
-  // resolution: direct id, then displayId / customer-name). We need only the id.
-  const { orderId } = await resolveOrderTarget(deps, envelope, payload);
+  // resolution: direct id, then displayId / customer-name). We need only the
+  // id. FE-T10: `orderReference` (the money-tier extraction schema's field
+  // name) is accepted as an alias for `orderId` first (withOrderReferenceAlias).
+  const { orderId } = await resolveOrderTarget(
+    deps,
+    envelope,
+    withOrderReferenceAlias(payload),
+  );
   if (orderId === null) {
     logger.info(
       { component: "ops-resolver", event: "refund.order_unresolved" },
@@ -968,7 +1003,7 @@ async function resolveRefundTarget(
   const reason =
     typeof rawReason === "string" && rawReason.trim().length > 0
       ? rawReason.slice(0, OPS_REFUND_REASON_MAX)
-      : "Reembolso solicitado pela operação (ops).";
+      : OPS_REFUND_DEFAULT_REASON;
 
   const stampedPayload: Record<string, unknown> = {
     // Model controls: the amount (numbers the staff confirms) + reason.

@@ -94,8 +94,24 @@ async function resolveStaffCookie(
  * degraded run must never read as trustworthy — the exact live gap a
  * missing `REDIS_URL` produced in an earlier round of this PR (see the
  * PR report's "confirmed-casual" contamination finding).
+ *
+ * FE-T10 live-caught (money-tier corpora): a REQUEST_CONFIRMATION a case
+ * parks survives in the claustrum Session (`claustrum:session:admin:<id>`,
+ * apps/api/src/claustrum-bootstrap.ts's `claustrumSessionKey`) — a SEPARATE
+ * Redis key from the chat-history one above. `order.status.transition`'s
+ * cases never surfaced this (none of its 20 cases park), but EVERY
+ * `payment.refund.issue` case does (the BKL-085 UNTRUSTED-taint overlay
+ * forces REQUEST_CONFIRMATION for every sub-escalate amount) — so without
+ * ALSO clearing this key, the ops confirmation-matcher's pt-BR affirmative
+ * lexicon (`ops-system-channel.ts` — "pode", "ok", "isso", "claro", "manda",
+ * "beleza"...) can silently resolve the NEXT case's ordinary utterance as a
+ * "confirm" of the PRIOR case's still-parked refund (live-caught: "pode
+ * devolver 40 reais...?" executed a DIFFERENT, earlier-parked amount).
+ * Cleared here too so any confirmation-parking capability (this ticket's
+ * money-tier precedent T11-14 reuses) gets the SAME isolation guarantee
+ * `order.status.transition` happened to get for free.
  */
-function createOpsHistoryClearer(
+export function createOpsHistoryClearer(
   onProgress: (line: string) => void,
 ): (staffId: string) => Promise<void> {
   let warned = false
@@ -109,6 +125,7 @@ function createOpsHistoryClearer(
       const { getRedisClient, rk } = await import("@ibatexas/tools")
       const redis = await getRedisClient()
       await redis.del(rk(`ops:chat:history:${staffId}`))
+      await redis.del(rk(`claustrum:session:admin:${staffId}`))
     } catch (err) {
       warnOnce((err as Error).message)
       throw err

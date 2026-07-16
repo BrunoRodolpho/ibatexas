@@ -56,6 +56,46 @@ describe("validateExtractionCorpus — happy path", () => {
   })
 })
 
+describe("validateExtractionCorpus — FE-T10 decision assertion", () => {
+  it("accepts a case declaring an expected decision kind", () => {
+    const result = validateExtractionCorpus(
+      validFile({
+        capability: "payment.refund.issue",
+        cases: [
+          {
+            id: "refund-forces-confirm",
+            utterance: "reembolsa 20 reais do pedido 12345",
+            expectPayload: {
+              extractionIR: { payload: { amount: 20 } },
+              decision: "REQUEST_CONFIRMATION",
+            },
+          },
+        ],
+      }),
+    )
+    expect(result.ok).toBe(true)
+  })
+
+  it("rejects an unrecognized decision kind (closed union)", () => {
+    const result = validateExtractionCorpus(
+      validFile({
+        capability: "payment.refund.issue",
+        cases: [
+          {
+            id: "bad-decision",
+            utterance: "x",
+            expectPayload: {
+              extractionIR: { payload: { amount: 20 } },
+              decision: "APPROVE", // not a real Decision["kind"] member
+            },
+          },
+        ],
+      }),
+    )
+    expect(result.ok).toBe(false)
+  })
+})
+
 describe("validateExtractionCorpus — named error codes", () => {
   it("invalid_capability: not dotted-lowercase", () => {
     const result = validateExtractionCorpus(validFile({ capability: "OrderStatusTransition" }))

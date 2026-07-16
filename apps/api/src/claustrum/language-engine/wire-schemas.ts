@@ -6,19 +6,29 @@
 // fix for "the model sees one mutation verb whose payload is an untyped,
 // empty-shaped object" (spec Problem Statement #1).
 //
-// Deliberately a ONE-ENTRY registry for this tracer (order.status.transition)
-// — later rollout slices (T11-14) add their capability's schema here as each
-// is authored. Purely additive: a capability NOT in this map keeps today's
-// generic `payload` shape, byte-identical.
+// Grown from FE-T05's one-entry tracer (order.status.transition) by FE-T10's
+// money-tier slice (payment.refund.issue) — later rollout slices (T11-14) add
+// their capability's schema here as each is authored. Purely additive: a
+// capability NOT in this map keeps today's generic `payload` shape,
+// byte-identical.
+//
+// `AUTHORED_SCHEMAS` is exported so the schema-lint CI gate
+// (`__tests__/schema-lint-gate.test.ts`, FE-T10) can walk EVERY registered
+// schema generically — a future capability added here is automatically
+// covered by that gate without any edit to the gate itself.
 
 import {
   toPayloadJsonSchema,
   type CapabilityExtractionSchema,
 } from "./extraction-schema.js";
 import { ORDER_STATUS_TRANSITION_EXTRACTION_SCHEMA } from "./order-status-transition.schema.js";
+import { PAYMENT_REFUND_ISSUE_EXTRACTION_SCHEMA } from "./payment-refund-issue.schema.js";
 
-const AUTHORED_SCHEMAS: readonly CapabilityExtractionSchema[] = [
+/** Every capability's authored extraction schema — the schema-lint gate's
+ *  walk target (FE-T10). */
+export const AUTHORED_SCHEMAS: readonly CapabilityExtractionSchema[] = [
   ORDER_STATUS_TRANSITION_EXTRACTION_SCHEMA,
+  PAYMENT_REFUND_ISSUE_EXTRACTION_SCHEMA,
 ];
 
 /** capability -> its wire `payload` JSON-Schema (pre-built, asserted sound). */

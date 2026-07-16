@@ -133,6 +133,17 @@ export function evaluateExpectPayload(expected: ExpectPayload, record: AuditReco
     }
   }
 
+  // FE-T10 — the kernel-level decision assertion (see schema.ts's
+  // ExpectPayloadSchema doc for why this is distinct from
+  // hydratedIntentIR.confirmationRequired). Absent `expected.decision` (every
+  // pre-FE-T10 case) runs no check — byte-identical to before.
+  if (expected.decision !== undefined) {
+    const actualKind = record.decision.kind
+    if (actualKind !== expected.decision) {
+      failures.push(`decision.kind: expected "${expected.decision}", got ${JSON.stringify(actualKind)}`)
+    }
+  }
+
   return { ok: failures.length === 0, failures }
 }
 
