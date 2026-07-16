@@ -442,6 +442,10 @@ describe("ops resolver — order.status.transition state (BKL-090)", () => {
         cartId: null,
         orderId: "order_1",
         fulfillmentStatus: "preparing",
+        // FE-T05 — a direct id hit (an explicit reference) is authoritative,
+        // never grounded: `requireConfirmationOnGroundedStatusTransition`
+        // does not fire.
+        orderResolutionTrust: "authoritative",
       },
     });
   });
@@ -591,6 +595,8 @@ describe("ops resolver — order reference→id resolution (BKL-089, orders scop
         cartId: null,
         orderId: "order_m",
         fulfillmentStatus: "preparing",
+        // FE-T05 — an explicit customer-name reference is authoritative.
+        orderResolutionTrust: "authoritative",
       },
     });
     expect(resolved!.envelope.payload).toEqual({ orderId: "order_m", newStatus: "ready" });

@@ -106,6 +106,7 @@ import {
   PINNED_COMPLETION_TEMPERATURE,
 } from "./model-call-defaults.js";
 import { completeWithEmptyRetry, isEmptyCompletion } from "./complete-with-retry.js";
+import { EXTRACTION_SCHEMAS_BY_CAPABILITY } from "./language-engine/wire-schemas.js";
 
 // Re-export so existing importers (tests, registry) keep their import site.
 export { EXPRESS_INTENT_TOOL };
@@ -518,6 +519,21 @@ function buildToolSurface(
   }> = [];
 
   if (plan.allowedIntents.length > 0) {
+    // FE-1.1/FE-1.4 — per-capability extraction schema on the wire. For each
+    // allowed intent that has an AUTHORED extraction schema
+    // (EXTRACTION_SCHEMAS_BY_CAPABILITY), narrow the `payload` shape the
+    // model sees via a `capability`-discriminated `if/then` clause — additive
+    // over the existing generic `payload:{type:"object"}` shape (kept as the
+    // base/fallback for every capability without an authored schema yet, so
+    // this is byte-identical for every turn that doesn't propose a capability
+    // in the registry).
+    const perCapabilitySchemas = plan.allowedIntents
+      .map((kind) => {
+        const payloadSchema = EXTRACTION_SCHEMAS_BY_CAPABILITY.get(kind);
+        return payloadSchema === undefined ? null : { kind, payloadSchema };
+      })
+      .filter((x): x is { kind: string; payloadSchema: Record<string, unknown> } => x !== null);
+
     tools.push({
       name: EXPRESS_INTENT_TOOL,
       description:
@@ -538,6 +554,14 @@ function buildToolSurface(
         },
         required: ["capability", "payload"],
         additionalProperties: false,
+        ...(perCapabilitySchemas.length > 0
+          ? {
+              allOf: perCapabilitySchemas.map(({ kind, payloadSchema }) => ({
+                if: { properties: { capability: { const: kind } } },
+                then: { properties: { payload: payloadSchema } },
+              })),
+            }
+          : {}),
       },
     });
   }
