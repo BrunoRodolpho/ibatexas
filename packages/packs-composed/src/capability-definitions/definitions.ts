@@ -543,8 +543,14 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
   // planner's `allowedIntents` literal — no chat tool is registered for
   // either, so advertising would let the planner propose an envelope no
   // tool can dispatch. WS4 backlog restores their planner entry.
-  { kind: "payment.method.switch", pack: "ibatexas/pack-payments", mutating: true, tier: "identity" },
-  { kind: "payment.retry", pack: "ibatexas/pack-payments", mutating: true, tier: "identity" },
+  //
+  // FE-T21: `legacyNames` IS populated here (the one common-base field an
+  // identity-tier instance may optionally carry — see types.ts) — both
+  // have a REAL entry in `PAYMENT_TOOL_TO_INTENT`
+  // (packages/pack-payments/src/capabilities.ts), de-advertised, not
+  // un-named.
+  { kind: "payment.method.switch", pack: "ibatexas/pack-payments", mutating: true, tier: "identity", legacyNames: ["switch_payment_method"] },
+  { kind: "payment.retry", pack: "ibatexas/pack-payments", mutating: true, tier: "identity", legacyNames: ["retry_payment"] },
   // Ops-foreign-advertised ONLY (BKL-085): absent from payments' OWN
   // planner literal — verified (only payment.pix.regenerate is there) —
   // advertised solely via pack-ops' staff allowlist.
