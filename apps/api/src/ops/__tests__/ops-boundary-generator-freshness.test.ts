@@ -26,11 +26,13 @@
 
 import { describe, expect, it } from "vitest";
 import type { ToolDefinition } from "@claustrum/core";
+import { composedIntentKinds } from "@ibatexas/packs-composed";
 import {
   CAPABILITY_DEFINITIONS,
   generateOpsForbiddenDestructiveKinds,
 } from "@ibatexas/packs-composed/capability-definitions";
 
+import { opsPlaneDriftProblems } from "../ops-conductor.js";
 import {
   FORBIDDEN_OPS_DESTRUCTIVE_KINDS,
   forbiddenOpsVerbProblems,
@@ -140,5 +142,62 @@ describe("BKL-096 boot-gate equivalence — the GENERATED forbidden set drives t
     expect(generatedProblems).toEqual(realProblems);
     expect(generatedProblems.join("\n")).toContain("order.cancel");
     expect(generatedProblems.join("\n")).toContain("OPS-007/008/011");
+  });
+});
+
+// ── FE-T25 (FE-4.3) — the FULL opsPlaneDriftProblems gate, repointed ─────────
+//
+// The above proves the extracted forbiddenOpsVerbProblems helper is
+// equivalent under the generated set. This section drives the FULL
+// opsPlaneDriftProblems function (the actual boot-anchor export
+// claustrum-bootstrap.ts calls) with its new `forbiddenOpsKinds` parameter
+// — the real production wiring, not a helper-level probe — proving the
+// repointed gate fails closed on a real runtime/DI mismatch end-to-end.
+
+describe("FE-T25 — the FULL opsPlaneDriftProblems gate, repointed to the GENERATED forbidden set", () => {
+  const generatedForbidden = generateOpsForbiddenDestructiveKinds(CAPABILITY_DEFINITIONS);
+
+  it("is GREEN on the real 8-verb ops registry when forbiddenOpsKinds is the GENERATED set — matches production behavior after the repoint", () => {
+    const problems = opsPlaneDriftProblems({
+      opsTools: OPS_TOOLS,
+      composedIntentKinds: composedIntentKinds(),
+      readExecutorKeys: ["ops_snapshot", "ops_sales_analytics"],
+      forbiddenOpsKinds: generatedForbidden,
+    });
+    expect(problems).toEqual([]);
+  });
+
+  it("REGRESSION PROOF: a REAL runtime/DI mismatch (a synthetic forbidden ops tool injected into the registry) FAILS CLOSED through the FULL gate with the GENERATED set — the repoint is load-bearing end-to-end, not just at the helper level", () => {
+    const forbiddenTool = {
+      id: "ibatexas.ops.forceCancel.v1",
+      capability: "order.cancel" as never,
+      intentKind: "order.cancel" as never,
+      description: "x",
+      inputSchema: {},
+      outputSchema: {},
+      riskLevel: "high",
+      execute: async () => ({}),
+    } as unknown as ToolDefinition<unknown, unknown>;
+
+    const problems = opsPlaneDriftProblems({
+      opsTools: [...OPS_TOOLS, forbiddenTool],
+      composedIntentKinds: composedIntentKinds(),
+      readExecutorKeys: ["ops_snapshot", "ops_sales_analytics"],
+      forbiddenOpsKinds: generatedForbidden,
+    });
+    expect(problems.length).toBeGreaterThan(0);
+    const joined = problems.join("\n");
+    expect(joined).toContain("FORBIDDEN");
+    expect(joined).toContain("order.cancel");
+  });
+
+  it("omitting forbiddenOpsKinds entirely preserves the PRE-FE-T25 default behavior (the real hand-authored constant) — every existing caller that doesn't pass it is unchanged", () => {
+    const problems = opsPlaneDriftProblems({
+      opsTools: OPS_TOOLS,
+      composedIntentKinds: composedIntentKinds(),
+      readExecutorKeys: ["ops_snapshot", "ops_sales_analytics"],
+      // forbiddenOpsKinds intentionally omitted.
+    });
+    expect(problems).toEqual([]);
   });
 });

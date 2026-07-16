@@ -231,9 +231,16 @@ import {
 // FE-T22: the surface-derived chat-surfaced-kinds set, replacing the retired
 // ADVERTISED_NOT_REGISTERED_WHITELIST — see register-ibatexas-tool-packs.ts's
 // ToolRosterDriftOptions.chatSurfacedKinds for the full contract.
+// FE-T25 (FE-4.3): generateOpsForbiddenDestructiveKinds repoints
+// opsPlaneDriftProblems's BKL-096 forbidden-verb check off the hand-
+// authored FORBIDDEN_OPS_DESTRUCTIVE_KINDS — see ops-conductor.ts's
+// OpsPlaneDriftProblems input `forbiddenOpsKinds` doc for the full contract,
+// and docs/architecture/design/fe4-drift-gates.md for the full per-gate
+// classification table across all four boot drift gates.
 import {
   CAPABILITY_DEFINITIONS,
   generateChatDrivableToolKinds,
+  generateOpsForbiddenDestructiveKinds,
 } from "@ibatexas/packs-composed/capability-definitions";
 import { paymentsPixPack } from "@adjudicate/pack-payments-pix";
 import { requireSecret } from "./utils/require-secret.js";
@@ -3231,6 +3238,9 @@ export async function bootstrapClaustrum(
     composedIntentKinds: composedIntentKinds(),
     readExecutorKeys: Object.keys(opsReadToolExecutors),
     onWarn: (message) => logger.warn({ component: "claustrum-bootstrap" }, message),
+    // FE-T25: repoints the BKL-096 forbidden-verb leg off the hand-authored
+    // FORBIDDEN_OPS_DESTRUCTIVE_KINDS onto the generated projection.
+    forbiddenOpsKinds: generateOpsForbiddenDestructiveKinds(CAPABILITY_DEFINITIONS),
   });
   if (opsDrift.length > 0) {
     throw new Error(
