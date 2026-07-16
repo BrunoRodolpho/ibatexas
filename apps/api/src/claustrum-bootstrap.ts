@@ -291,7 +291,11 @@ import {
   type TurnTraceWriter,
 } from "./claustrum/turn-trace-writer.js";
 import { createIbatexasResolver } from "./claustrum/ibatexas-resolver.js";
-import { sessionTokenKey, resolveAndAssemble, resolveOrderId } from "./claustrum/resolve-and-assemble.js";
+import {
+  sessionTokenKey,
+  resolveAndAssemble,
+  resolveCustomerOrderReference,
+} from "./claustrum/resolve-and-assemble.js";
 import {
   buildCustomerAuthority,
   customerPrincipalForSession,
@@ -1766,6 +1770,21 @@ function hasResolvableOrderId(input: unknown): input is { orderId: string } {
 }
 
 /**
+ * FE-T13 — read `check_order_status`/`get_payment_status`'s optional
+ * `orderReference` field (CHECK_ORDER_STATUS_READ_SCHEMA /
+ * GET_PAYMENT_STATUS_READ_SCHEMA, read-tool-schemas.ts's ONE model-facing
+ * field for these two tools — a display-number NL reference, e.g. "1234" /
+ * "#1234", NEVER the internal orderId). Returns `undefined` when absent or
+ * blank, so the caller's `resolveCustomerOrderReference` call takes its
+ * auto-resolve branch exactly as when no reference was given at all. Pure.
+ */
+function readOrderReference(input: unknown): string | undefined {
+  if (input === null || typeof input !== "object") return undefined;
+  const ref = (input as { orderReference?: unknown }).orderReference;
+  return typeof ref === "string" && ref.trim().length > 0 ? ref : undefined;
+}
+
+/**
  * Advertised-read-tool NAME → owner-scoped executor. Keys are the 12 advertised
  * read-tool names, each with a backing @ibatexas/tools handler (4 are aliases:
  * check_availability→checkTableAvailability, get_payment_status→checkPaymentStatus,
@@ -1807,20 +1826,25 @@ export const IBATEXAS_READ_TOOL_EXECUTORS: Readonly<
   // fabricates around (mirrors get_cart's null-with-marker shape).
   //
   // FE-T13 — `orderId` is now Identity-class and FORBIDDEN from this tool's
-  // model-facing schema (read-tool-schemas.ts: CHECK_ORDER_STATUS_READ_SCHEMA
-  // has zero fields), so an authenticated owner's call structurally never
-  // carries one anymore. Rather than dead-ending to the empty fact (the
-  // pre-FE-T13 behavior for "no orderId"), auto-resolve the customer's own
-  // most-recent order via `resolveOrderId` (resolve-and-assemble.ts) — the SAME
-  // "most recent order" fallback `order.amend.*`/`order.cancel` already use on
-  // the mutating side, reused here rather than re-derived (FE-D07 byte-parallel-
-  // duplication lesson). `hasResolvableOrderId`/`stripModelOwner` stay as
-  // defense-in-depth against a model that emits `orderId` anyway (schema
-  // guidance is not a hard wire-level enforcement): an explicit (non-forged)
-  // orderId still takes the direct path; a forged one is stripped first, same
-  // as before. checkOrderStatus's assertOrderOwnership IDOR guard still runs on
-  // every path — the auto-resolved id is looked up scoped to `ctx.customerId`
-  // to begin with, so it can never resolve to a foreign order.
+  // model-facing schema (read-tool-schemas.ts: CHECK_ORDER_STATUS_READ_SCHEMA's
+  // one field is `orderReference`, a display-number NL reference — never the
+  // internal id), so an authenticated owner's call structurally never carries
+  // a raw orderId anymore. Rather than dead-ending to the empty fact (the
+  // pre-FE-T13 behavior for "no orderId"), resolve via
+  // `resolveCustomerOrderReference` (resolve-and-assemble.ts): an explicit
+  // display-number reference wins (IDOR-checked against this customer) else
+  // auto-resolve the most-recent order — the SAME "most recent order" fallback
+  // `order.amend.*`/`order.cancel` already use on the mutating side, reused
+  // here rather than re-derived (FE-D07 byte-parallel-duplication lesson).
+  // `hasResolvableOrderId`/`stripModelOwner` stay as defense-in-depth against a
+  // model that emits a raw `orderId` anyway (schema guidance is not a hard
+  // wire-level enforcement, though `sanitizeReadToolInput` — ibatexas-planner.ts
+  // — now strips it before this executor ever sees it on the production
+  // dispatch path): an explicit (non-forged) orderId still takes the direct
+  // path; a forged one is stripped first, same as before. checkOrderStatus's
+  // assertOrderOwnership IDOR guard still runs on every path — the resolved id
+  // is looked up scoped to `ctx.customerId` to begin with, so it can never
+  // resolve to a foreign order.
   check_order_status: async (input, state) => {
     const ctx = agentCtxFromState(state);
     const stripped = stripModelOwner(input);
@@ -1830,7 +1854,10 @@ export const IBATEXAS_READ_TOOL_EXECUTORS: Readonly<
     if (hasResolvableOrderId(stripped)) {
       return checkOrderStatus(stripped as never, ctx);
     }
-    const { orderId } = await resolveOrderId({}, ctx.customerId);
+    const { orderId } = await resolveCustomerOrderReference(
+      readOrderReference(stripped),
+      ctx.customerId,
+    );
     if (!orderId) {
       return { order: null, reason: "no_orders_for_session" };
     }
@@ -1847,15 +1874,16 @@ export const IBATEXAS_READ_TOOL_EXECUTORS: Readonly<
   // scoped to you", NEVER a world-fact assertion that no payment EXISTS (a guest
   // may well have one they simply cannot see) — which keeps the read sound.
   //
-  // FE-T13 — same auto-resolve fix as check_order_status above: `orderId` is
-  // Identity-class and forbidden from this tool's model-facing schema
-  // (GET_PAYMENT_STATUS_READ_SCHEMA has zero fields), so an authenticated
-  // owner's call structurally never carries one anymore. Auto-resolve the
-  // customer's own most-recent order via the SAME `resolveOrderId` reuse
-  // rather than dead-ending to the empty fact. checkPaymentStatus's
-  // withOrderOwnership/assertOrderOwnership IDOR guard still runs on every
-  // path — the auto-resolved id is looked up scoped to `ctx.customerId` to
-  // begin with, so it can never resolve to a foreign order.
+  // FE-T13 — same reference-resolve fix as check_order_status above: `orderId`
+  // is Identity-class and forbidden from this tool's model-facing schema
+  // (GET_PAYMENT_STATUS_READ_SCHEMA's one field is `orderReference`), so an
+  // authenticated owner's call structurally never carries a raw orderId
+  // anymore. Resolve via the SAME `resolveCustomerOrderReference` reuse
+  // (explicit display-number reference wins, IDOR-checked, else auto-resolve
+  // the most-recent order) rather than dead-ending to the empty fact.
+  // checkPaymentStatus's withOrderOwnership/assertOrderOwnership IDOR guard
+  // still runs on every path — the resolved id is looked up scoped to
+  // `ctx.customerId` to begin with, so it can never resolve to a foreign order.
   get_payment_status: async (input, state) => {
     const ctx = agentCtxFromState(state);
     const stripped = stripModelOwner(input);
@@ -1865,7 +1893,10 @@ export const IBATEXAS_READ_TOOL_EXECUTORS: Readonly<
     if (hasResolvableOrderId(stripped)) {
       return checkPaymentStatus(stripped as never, ctx);
     }
-    const { orderId } = await resolveOrderId({}, ctx.customerId);
+    const { orderId } = await resolveCustomerOrderReference(
+      readOrderReference(stripped),
+      ctx.customerId,
+    );
     if (!orderId) {
       return { payment: null, reason: "no_payment_for_session" };
     }

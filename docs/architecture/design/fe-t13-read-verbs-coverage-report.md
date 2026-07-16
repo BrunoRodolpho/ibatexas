@@ -29,11 +29,11 @@ actually accepts. This is now fixed for all 12.
 |---|---|---|---|
 | `get_cart` | orders | none | cart id — session-scoped, always ignored input |
 | `get_order_history` | orders | none | owner from `ctx.customerId` |
-| `check_order_status` | orders | none | **orderId** — auto-resolved via `resolveOrderId` (see below) |
+| `check_order_status` | orders | `orderReference?` (directive, display-number NL reference) | **orderId** — resolved via `resolveCustomerOrderReference` (see below) |
 | `get_recommendations` | orders | `context?` enum (state) | owner from `ctx.customerId` |
 | `get_also_added` | orders | `productId` (state, public catalog lookup key) | n/a (no owner scope) |
 | `get_ordered_together` | orders | `productId` (state) | owner from `ctx.customerId` |
-| `get_payment_status` | payments | none | **orderId** — auto-resolved via `resolveOrderId` |
+| `get_payment_status` | payments | `orderReference?` (directive) | **orderId** — resolved via `resolveCustomerOrderReference` |
 | `get_payment_history` | payments | none | owner from `ctx.customerId` |
 | `check_availability` | reservations | `date`, `partySize` (directive, required); `preferredTime?` (directive) | n/a (guest-accessible, no owner scope) |
 | `get_my_reservations` | reservations | `status?` enum (directive) | owner from `ctx.customerId` |
@@ -53,24 +53,58 @@ sales-analytics, never chat-plane-visible) keeps the generic fallback.
 
 ## Why 2 of the 12 needed a real production fix, not just a schema
 
-`check_order_status` / `get_payment_status` structurally cannot accept
-`orderId` anymore (Identity class, forbidden). Pre-FE-T13, an authenticated
-customer calling either with no `orderId` dead-ended to the BKL-107/BKL-118
-typed-empty fact (`{order: null, reason: "no_orders_for_session"}` /
-`{payment: null, reason: "no_payment_for_session"}`) — correct for a guest,
-but now the ONLY possible outcome for an authenticated owner too, since the
-model can never supply the field. Fixed by auto-resolving the customer's own
-most-recent order, reusing `resolveOrderId`
-(`apps/api/src/claustrum/resolve-and-assemble.ts`, now exported) — the SAME
-"most recent order" fallback `order.amend.*` / `order.cancel` already rely on
-on the mutating side, rather than re-deriving a byte-parallel copy. Both
-executors (`claustrum-bootstrap.ts`'s `IBATEXAS_READ_TOOL_EXECUTORS`) now:
-guest → empty fact (unchanged); authenticated + no order to resolve → empty
-fact (new, but same shape); authenticated + a resolvable order → delegates to
-the real read with the resolved id (new — previously unreachable for these
-two tools' common case). `hasResolvableOrderId`/`stripModelOwner` stay as
-defense-in-depth against a model that emits `orderId` anyway (a JSON-Schema
-`additionalProperties:false` hint is not a wire-level enforcement).
+`check_order_status` / `get_payment_status` structurally cannot accept a raw
+`orderId` anymore (Identity class, forbidden). Their ONE model-facing field is
+`orderReference` — a Directive-class display-number NL reference ("1234",
+"#1234"), never the internal id. Pre-FE-T13, an authenticated customer
+calling either with no `orderId` dead-ended to the BKL-107/BKL-118 typed-empty
+fact (`{order: null, reason: "no_orders_for_session"}` / `{payment: null,
+reason: "no_payment_for_session"}`) — correct for a guest, but would now be
+the ONLY possible outcome for an authenticated owner too, since the model can
+never supply a raw id.
+
+Fixed via a NEW `resolveCustomerOrderReference`
+(`apps/api/src/claustrum/resolve-and-assemble.ts`): an explicit
+`orderReference` is parsed as a display number (reusing the ops-plane's
+`parseDisplayIdRef`, `ops-order-resolution.ts` — pure, no ops-specific
+dependency) and IDOR-checked against the caller's `customerId` before being
+trusted (unlike `OrderQueryService.findByDisplayId` itself, which has no
+owner scoping — the staff/internal path); absent, unparseable, or matching no
+order owned by the caller, it falls through to `resolveOrderId`'s existing
+"most recent order" auto-resolve — the SAME fallback `order.amend.*` /
+`order.cancel` already rely on on the mutating side, reused (via a thin new
+wrapper) rather than re-derived. Both executors
+(`claustrum-bootstrap.ts`'s `IBATEXAS_READ_TOOL_EXECUTORS`) now: guest → empty
+fact (unchanged); authenticated + no order to resolve → empty fact (new, but
+same shape); authenticated + a resolvable order (by reference or
+auto-resolved) → delegates to the real read with the resolved id (new —
+previously unreachable for these two tools' common case).
+`hasResolvableOrderId`/`stripModelOwner` stay as defense-in-depth against a
+model that emits a raw `orderId` anyway — see the P5 fix below for why that
+defense is now backed by real sanitization, not just schema guidance.
+
+## P5 fix: the advertised schema was advertisement-only (team-lead ruling)
+
+Team-lead flagged the P5 check ("metadata DESCRIBES, guards IMPLEMENT"):
+does anything actually VALIDATE a read tool's `call.input` against its
+advertised `inputSchema`, or is the typing purely cosmetic? Traced the
+dispatch path (`translateToolCalls`, `ibatexas-planner.ts:718`): a read call
+is pushed onto `readToolCalls` with `input: call.input` verbatim — no
+validation of any kind. `call.input` then flows straight into the executor
+(`executors[call.name](call.input, state)`). Confirmed: **nothing validated
+it** — the schema was advertisement-only.
+
+Fixed with `sanitizeReadToolInput` (`read-tool-schemas.ts`), wired into the
+ONE dispatch choke point (`ibatexas-planner.ts`'s read-loop invocation,
+~line 998): for a tool with an authored schema, drops any field not declared
+on it and drops any declared field whose runtime type/enum doesn't match
+(treated as absent, never coerced, never forwarded malformed); a tool with no
+authored schema is untouched. Never throws, never hard-fails a read — the
+worst case is an over-stripped call that behaves exactly like today's argless
+call (P4 — availability wins, reads are low-irreversibility). This is
+metadata enforcing a structural shape, not a business-logic decision —
+ownership/legality/money-threshold enforcement all stay exactly where they
+already lived (inside each real handler / kernel guard).
 
 ## What the ticket's ACs meant vs. what's structurally possible
 
@@ -135,13 +169,17 @@ independent-truth discipline as the mutating corpora); `expectArgs: null`
 documents a case where a SOUND extraction abstains entirely (no tool call)
 rather than guessing a lookup key with no grounding context.
 
-Authored for the **5 field-bearing tools only** — `check_availability` (12
-cases), `get_recommendations` (12), `get_also_added` (10), `get_ordered_together`
-(10), `get_my_reservations` (12). The other 7 tools have **zero fields to
-calibrate**: any phrasing produces the identical `{}` call by construction, so
-a corpus asserting extraction accuracy for them would be vacuous — their
-coverage is fully carried by the golden gate (proving the schema is wired)
-and the schema-lint gate (proving it stays sound), not a corpus.
+Authored for the **7 field-bearing tools** — `check_availability` (12 cases),
+`get_recommendations` (12), `get_also_added` (10), `get_ordered_together`
+(10), `get_my_reservations` (12), `check_order_status` (10), `get_payment_status`
+(9) — the last two added after the `orderReference` field landed (team-lead
+ruling), each covering BOTH arms: reference absent (the common case) and an
+explicit display-number reference present. The other 5 tools have **zero
+fields to calibrate**: any phrasing produces the identical `{}` call by
+construction, so a corpus asserting extraction accuracy for them would be
+vacuous — their coverage is fully carried by the golden gate (proving the
+schema is wired) and the schema-lint gate (proving it stays sound), not a
+corpus.
 
 Validated by `packages/journeys/src/read-tool-corpus/__tests__/load.test.ts`:
 every file loads and schema-validates, every `expectArgs` key is a real
@@ -149,47 +187,69 @@ declared field of its tool's schema (catches an authoring typo), every
 field-bearing tool has a committed corpus, every corpus has a real
 phrasing-diversity sample.
 
-## What's NOT built (deliberately deferred, flagged to team-lead before starting)
+## Calibration (team-lead ruling — minimal path, one extension)
 
-**A live-drive calibration runner against the local 4B.** The corpus above is
-authored but not wired to a live-drive harness. Building one needs either:
+Team-lead's ruling on the AC2 gap ("live-drive a representative sample"):
+take the minimal path rather than build the full corpus-fed accuracy-meter
+harness (structurally inapplicable here — see above).
 
-1. A new capture point recording a read tool's actual `call.input` — today
-   `ibatexas-planner.ts`'s `read_loop.executed` log line (~line 1001) only
-   logs tool NAMES, never args — plus a VictoriaLogs-backed runner to query
-   it back per turn, since there is no AuditReader-equivalent for reads; or
-2. Scoping this rollout slice's proof to the deterministic golden +
-   schema-lint gates (this report's posture) and deferring live calibration
-   to a follow-up ticket.
-
-This was flagged to team-lead before implementation began, with a stated
-default of (2) absent redirection, to avoid speculatively building a new
-logging + query pipeline mid-ticket. The corpus itself is real, committed,
-independently-authored value regardless of which path is chosen later — it
-documents the intended extraction behavior and is ready for either a future
-runner or manual spot-verification.
+1. **DONE** — `call.input` (sanitized, per the P5 fix) added to the
+   `read_loop.executed` log line (`ibatexas-planner.ts`), bounded to
+   authored-schema tools only and length-capped (`MAX_LOGGED_ARGS_CHARS`).
+   No PII/identifier field can appear by construction (the read-tool
+   schema-lint gate enforces it), so nothing here needs redaction. This line
+   previously logged only tool NAMES; it now gives a live drive something
+   concrete to score against.
+2. **PENDING THE LIVE-LANE TOKEN** — a small (~8-12 utterance) live
+   representative sample against the local 4B, NOT a full corpus harness:
+   the 3 arg-consuming tools most load-bearing to this ruling both arms
+   (`check_order_status`/`get_payment_status` reference present/absent,
+   `check_availability` fields present) plus 2 zero-field tools (asserting no
+   junk args land in the sanitized log line). Plan: drive the customer web
+   chat route (`apps/api/src/routes/chat.ts`) via `packages/journeys`'s
+   existing `ChatClient` + `mintCustomerToken`/`cookieHeader`
+   (`packages/journeys/src/clients/`) — the same live-drive infra
+   `chat-client.live.test.ts` already proves out, so no new plumbing is
+   needed — and read the sanitized `args` back off the new log line
+   (VictoriaLogs). Requested from team-lead; not yet executed.
+3. **DEFERRED (FE-D22)** — the full read-corpus-fed accuracy-meter
+   integration. The ticket's literal "corpus feeds the accuracy meter above
+   baseline" AC is inapplicable to reads (T07's meter is
+   express_intent/audit-sidecar-based, see above); its spirit is covered by
+   the golden gate + live sample + this carved-out follow-up ticket.
 
 ## Files touched
 
-- `apps/api/src/claustrum/language-engine/read-tool-schemas.ts` (new) — the 12 schemas + registry
-- `apps/api/src/claustrum/ibatexas-planner.ts` — `buildToolSurface` wired to the registry
-- `apps/api/src/claustrum/resolve-and-assemble.ts` — `resolveOrderId` exported
-- `apps/api/src/claustrum-bootstrap.ts` — `check_order_status`/`get_payment_status` executors auto-resolve
-- `apps/api/src/__tests__/check-order-status-executor.test.ts`, `get-payment-status-executor.test.ts` — updated for the auto-resolve behavior
+- `apps/api/src/claustrum/language-engine/read-tool-schemas.ts` (new) — the 12 schemas + registry + `sanitizeReadToolInput` (the P5 fix)
+- `apps/api/src/claustrum/ibatexas-planner.ts` — `buildToolSurface` wired to the registry; read-loop invocation sanitizes `call.input` before the executor; `read_loop.executed` log line carries sanitized `args`
+- `apps/api/src/claustrum/resolve-and-assemble.ts` — `resolveOrderId` exported; new `resolveCustomerOrderReference` (displayId-reference resolution, IDOR-checked, falls through to `resolveOrderId`)
+- `apps/api/src/claustrum-bootstrap.ts` — `check_order_status`/`get_payment_status` executors resolve via `resolveCustomerOrderReference`; new `readOrderReference` helper
+- `apps/api/src/__tests__/check-order-status-executor.test.ts`, `get-payment-status-executor.test.ts` — updated for the reference-resolve behavior (both arms)
+- `apps/api/src/claustrum/__tests__/resolve-and-assemble.test.ts` — new `resolveCustomerOrderReference` test block (displayId parse, IDOR check, fail-safe fallback)
 - `apps/api/src/claustrum/language-engine/__tests__/read-tool-extraction-prompt-fragment-support.ts`, `read-tool-extraction-prompt-golden.test.ts`, `__golden__/read-tools.extraction-prompt-fragment.json` (new)
-- `apps/api/src/claustrum/language-engine/__tests__/read-tool-schema-lint-gate.test.ts`, `read-tool-schemas.test.ts` (new)
-- `apps/api/src/__tests__/scripted-pipeline/fixtures/completions/surfaces.json` — re-recorded (the 12 read tools' `inputSchema` entries only; express_intent untouched) after the intentional tool-surface change, per that file's own "re-record if the change is intended" contract
-- `packages/journeys/read-tool-corpus/*.yaml` (new, 5 files)
+- `apps/api/src/claustrum/language-engine/__tests__/read-tool-schema-lint-gate.test.ts`, `read-tool-schemas.test.ts` (new; the latter includes `sanitizeReadToolInput` unit tests)
+- `apps/api/src/__tests__/scripted-pipeline/fixtures/completions/surfaces.json` — re-recorded TWICE (the 12 read tools' `inputSchema` entries only, then again for `check_order_status`/`get_payment_status` after the `orderReference` field landed; express_intent, tool count, and tool order verified byte-identical both times per the t12-relayed hazard)
+- `packages/journeys/read-tool-corpus/*.yaml` (new, 7 files — 5 original + `check_order_status`/`get_payment_status` added after the field landed)
 - `packages/journeys/src/read-tool-corpus/schema.ts`, `load.ts`, `index.ts`, `__tests__/load.test.ts` (new)
 - `packages/journeys/src/index.ts` — one-line barrel addition
 
 ## Verification
 
 `turbo run build --filter=@ibatexas/api --filter=@ibatexas/journeys`: clean.
-`vitest run` (apps/api, isolated): 327/327 files, 3986/3986 tests, 15 skipped
+`vitest run` (apps/api, isolated): 328/328 files, 4024/4024 tests, 15 skipped
 (Redis-gated). `vitest run` (packages/journeys): 44/44 files (3 live-skipped),
-497/497 tests. 3 unrelated CPU-contention timeouts observed under concurrent
-full-monorepo turbo load (`nx-park-conformance.test.ts`,
-`confirmations-route.test.ts` x2, `kernel-bootstrap-pack-failure.test.ts`,
-`staff.test.ts`) — confirmed pre-existing/environmental by isolated re-run
-(all pass cleanly alone); none touch any file this rollout slice changed.
+497/497 tests. A handful of unrelated CPU-contention timeouts (route/bootstrap
+tests hitting the vitest default 5000ms under concurrent full-monorepo turbo
+load — `nx-park-conformance.test.ts`, `confirmations-route.test.ts`,
+`kernel-bootstrap-pack-failure.test.ts`, `staff.test.ts`) were observed across
+several runs; each confirmed pre-existing/environmental by isolated re-run
+(all pass cleanly alone, several times), and none touch any file this rollout
+slice changed.
+
+One real regression was found and fixed during this verification pass:
+`ibatexas-planner.test.ts`'s read-loop enrichment test asserted the
+test-double `get_cart` executor received the model's raw `{cartId: "c1"}` —
+now sanitized to `{}` per the P5 fix (get_cart's authored schema has zero
+fields), exactly the intended behavior. Updated the assertion; `plan.
+readToolCalls` (the raw-call telemetry record, a separate, unsanitized field)
+is unaffected and still asserted verbatim by its own sibling test.

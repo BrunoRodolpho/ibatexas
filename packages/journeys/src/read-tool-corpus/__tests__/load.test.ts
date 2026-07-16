@@ -70,7 +70,7 @@ cases:
 
 // The exact 12-name chat-plane read-tool roster (apps/api/src/claustrum/
 // language-engine/read-tool-schemas.ts's READ_TOOL_AUTHORED_SCHEMAS) and,
-// for the 5 field-bearing tools, their exact declared field names — a small,
+// for the 7 field-bearing tools, their exact declared field names — a small,
 // stable, closed vocabulary DUPLICATED here (not imported: this package is
 // TEST-PLANE ONLY and never imports apps/api, check-bypass leg 7), same
 // justification field-trust.ts's own duplication note in ../../extraction/
@@ -96,18 +96,20 @@ const FIELD_NAMES_BY_TOOL: Readonly<Record<string, ReadonlySet<string>>> = {
   get_also_added: new Set(["productId"]),
   get_ordered_together: new Set(["productId"]),
   get_my_reservations: new Set(["status"]),
+  check_order_status: new Set(["orderReference"]),
+  get_payment_status: new Set(["orderReference"]),
 }
 
 describe("loadReadToolCorpus — the REAL committed FE-T13 corpus", () => {
   it("loads every committed file without errors", async () => {
     const files = await loadReadToolCorpus()
-    expect(files.length).toBeGreaterThanOrEqual(5)
+    expect(files.length).toBeGreaterThanOrEqual(7)
     for (const file of files) {
       expect(KNOWN_READ_TOOLS.has(file.tool), `unknown read tool "${file.tool}"`).toBe(true)
     }
   })
 
-  it("covers all 5 field-bearing read tools (the other 7 have no field to calibrate — see the FE-T13 coverage report)", async () => {
+  it("covers all 7 field-bearing read tools (the other 5 have no field to calibrate — see the FE-T13 coverage report)", async () => {
     const files = await loadReadToolCorpus()
     const covered = new Set(files.map((f) => f.tool))
     for (const tool of Object.keys(FIELD_NAMES_BY_TOOL)) {

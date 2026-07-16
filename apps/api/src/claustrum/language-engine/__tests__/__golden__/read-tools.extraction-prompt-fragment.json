@@ -23,7 +23,12 @@
       "description": "Ferramenta de leitura: check_order_status. Apenas consulta, não altera dados.",
       "inputSchema": {
         "type": "object",
-        "properties": {},
+        "properties": {
+          "orderReference": {
+            "type": "string",
+            "description": "Número do pedido, SOMENTE se o cliente mencionar um explicitamente (ex.: \"1234\", \"#1234\"). Deixe de fora se não for mencionado — resolve automaticamente para o pedido mais recente."
+          }
+        },
         "additionalProperties": false
       }
     },
@@ -85,7 +90,12 @@
       "description": "Ferramenta de leitura: get_payment_status. Apenas consulta, não altera dados.",
       "inputSchema": {
         "type": "object",
-        "properties": {},
+        "properties": {
+          "orderReference": {
+            "type": "string",
+            "description": "Número do pedido, SOMENTE se o cliente mencionar um explicitamente (ex.: \"1234\", \"#1234\"). Deixe de fora se não for mencionado — resolve automaticamente para o pedido mais recente."
+          }
+        },
         "additionalProperties": false
       }
     },

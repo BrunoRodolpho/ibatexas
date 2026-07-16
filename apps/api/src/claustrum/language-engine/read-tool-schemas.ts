@@ -49,6 +49,7 @@
 import {
   toPayloadJsonSchema,
   type CapabilityExtractionSchema,
+  type ExtractionFieldJsonSchema,
 } from "./extraction-schema.js";
 
 /** A read tool with no model-facing field at all — every value it needs is
@@ -77,14 +78,32 @@ export const GET_ORDER_HISTORY_READ_SCHEMA = emptyReadSchema(
   "quais foram meus últimos pedidos?",
 );
 
-/** `orderId` is Identity-class and forbidden — resolved server-side by the
- *  `check_order_status` executor (claustrum-bootstrap.ts), which now
- *  auto-resolves the customer's own most-recent order when the model (as it
- *  always will, having no field to fill) supplies none. */
-export const CHECK_ORDER_STATUS_READ_SCHEMA = emptyReadSchema(
-  "check_order_status",
-  "cadê meu pedido?",
-);
+/** `orderId` is Identity-class and forbidden — resolved server-side. The one
+ *  optional field, `orderReference`, is a Directive-class NL display-number
+ *  reference ("pedido 1234", "#1234") — NEVER the internal orderId itself;
+ *  `check_order_status`'s executor (claustrum-bootstrap.ts) resolves it via
+ *  `resolveCustomerOrderReference` (resolve-and-assemble.ts), which parses a
+ *  display number and IDOR-checks it against the caller before trusting it,
+ *  falling back to the customer's own most-recent order (same auto-resolve
+ *  as when the field is absent, which will be the common case). */
+export const CHECK_ORDER_STATUS_READ_SCHEMA: CapabilityExtractionSchema = {
+  capability: "check_order_status",
+  fields: [
+    {
+      name: "orderReference",
+      trustClass: "directive",
+      jsonSchema: {
+        type: "string",
+        description:
+          "Número do pedido, SOMENTE se o cliente mencionar um explicitamente " +
+          "(ex.: \"1234\", \"#1234\"). Deixe de fora se não for mencionado — " +
+          "resolve automaticamente para o pedido mais recente.",
+      },
+      required: false,
+    },
+  ],
+  example: { utterance: "cadê meu pedido?", payload: {} },
+};
 
 export const GET_RECOMMENDATIONS_READ_SCHEMA: CapabilityExtractionSchema = {
   capability: "get_recommendations",
@@ -153,13 +172,27 @@ export const GET_ORDERED_TOGETHER_READ_SCHEMA: CapabilityExtractionSchema = {
 
 // ── pack-payments reads ──────────────────────────────────────────────────
 
-/** `orderId` is Identity-class and forbidden — resolved server-side by the
- *  `get_payment_status` executor, same auto-resolve fix as
- *  `check_order_status` above. */
-export const GET_PAYMENT_STATUS_READ_SCHEMA = emptyReadSchema(
-  "get_payment_status",
-  "meu pagamento caiu?",
-);
+/** `orderId` is Identity-class and forbidden — same `orderReference`
+ *  NL-display-number field + resolution posture as
+ *  CHECK_ORDER_STATUS_READ_SCHEMA above. */
+export const GET_PAYMENT_STATUS_READ_SCHEMA: CapabilityExtractionSchema = {
+  capability: "get_payment_status",
+  fields: [
+    {
+      name: "orderReference",
+      trustClass: "directive",
+      jsonSchema: {
+        type: "string",
+        description:
+          "Número do pedido, SOMENTE se o cliente mencionar um explicitamente " +
+          "(ex.: \"1234\", \"#1234\"). Deixe de fora se não for mencionado — " +
+          "resolve automaticamente para o pedido mais recente.",
+      },
+      required: false,
+    },
+  ],
+  example: { utterance: "meu pagamento caiu?", payload: {} },
+};
 
 export const GET_PAYMENT_HISTORY_READ_SCHEMA = emptyReadSchema(
   "get_payment_history",
@@ -267,3 +300,62 @@ export const READ_TOOL_AUTHORED_SCHEMAS: readonly CapabilityExtractionSchema[] =
 export const READ_TOOL_SCHEMAS_BY_NAME: ReadonlyMap<string, Record<string, unknown>> = new Map(
   READ_TOOL_AUTHORED_SCHEMAS.map((schema) => [schema.capability, toPayloadJsonSchema(schema)]),
 );
+
+/** read-tool-name -> its full authored schema (fields + trust classes) —
+ *  the lookup {@link sanitizeReadToolInput} needs; `READ_TOOL_SCHEMAS_BY_NAME`
+ *  only carries the already-flattened wire JSON-Schema. */
+const READ_TOOL_SCHEMAS_FULL_BY_NAME: ReadonlyMap<string, CapabilityExtractionSchema> = new Map(
+  READ_TOOL_AUTHORED_SCHEMAS.map((schema) => [schema.capability, schema]),
+);
+
+/** Does `value`'s runtime type/enum membership match a field's declared
+ *  {@link ExtractionFieldJsonSchema}? Pure. */
+function matchesFieldSchema(js: ExtractionFieldJsonSchema, value: unknown): boolean {
+  if (js.type === "string" && typeof value !== "string") return false;
+  if (js.type === "number" && typeof value !== "number") return false;
+  if (js.type === "boolean" && typeof value !== "boolean") return false;
+  if (js.enum !== undefined && !js.enum.includes(value as string)) return false;
+  return true;
+}
+
+/**
+ * FE-T13 P5 fail-safe (team-lead ruling): the advertised `inputSchema` is
+ * currently ADVERTISEMENT-ONLY — nothing in the dispatch path
+ * (`translateToolCalls`, ibatexas-planner.ts) validates a read tool's
+ * `call.input` against it before invoking the executor; `call.input` flows
+ * through verbatim. Rather than let a model that emits an out-of-schema
+ * field (a forged identifier, a malformed enum value, an extra key) pass it
+ * straight to the real handler — which may or may not itself Zod-validate,
+ * and if it doesn't, would silently accept junk — this SANITIZES the input
+ * at the one dispatch choke point (ibatexas-planner.ts's read-loop
+ * invocation) for every tool with an AUTHORED schema:
+ *
+ *   - a field NOT declared on the schema is DROPPED (never forwarded);
+ *   - a declared field whose runtime type/enum doesn't match is DROPPED
+ *     (treated as absent — never coerced, never forwarded malformed);
+ *   - a tool with NO authored schema yet is untouched (today's behavior,
+ *     unaffected — the 2 staff/ops-only reads never reach the chat-plane
+ *     dispatch path anyway).
+ *
+ * Never throws, never hard-fails a read: the worst case is an
+ * over-stripped call that behaves exactly like today's argless call (P4 —
+ * availability wins; reads are low-irreversibility). This is METADATA
+ * enforcing a structural shape (P5: "metadata DESCRIBES, guards
+ * IMPLEMENT") — it is NOT a business-logic decision (ownership, legality,
+ * money thresholds all stay exactly where they already lived, inside each
+ * real handler / kernel guard).
+ */
+export function sanitizeReadToolInput(toolName: string, rawInput: unknown): Record<string, unknown> {
+  const schema = READ_TOOL_SCHEMAS_FULL_BY_NAME.get(toolName);
+  const input = rawInput !== null && typeof rawInput === "object" ? (rawInput as Record<string, unknown>) : {};
+  if (schema === undefined) return input;
+
+  const out: Record<string, unknown> = {};
+  for (const field of schema.fields) {
+    const value = input[field.name];
+    if (value === undefined) continue;
+    if (!matchesFieldSchema(field.jsonSchema, value)) continue;
+    out[field.name] = value;
+  }
+  return out;
+}

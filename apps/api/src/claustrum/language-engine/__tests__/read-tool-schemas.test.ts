@@ -25,6 +25,7 @@ import {
   GET_MY_RESERVATIONS_READ_SCHEMA,
   GET_MY_PROFILE_READ_SCHEMA,
   GET_MY_PREFERENCES_READ_SCHEMA,
+  sanitizeReadToolInput,
 } from "../read-tool-schemas.js";
 
 describe("every authored read-tool schema — table-driven basic invariants", () => {
@@ -50,12 +51,10 @@ describe("every authored read-tool schema — table-driven basic invariants", ()
     },
   );
 
-  it("the 8 zero-field reads produce a closed empty wire schema ({} properties, additionalProperties:false)", () => {
+  it("the 5 zero-field reads produce a closed empty wire schema ({} properties, additionalProperties:false)", () => {
     const zeroField = [
       GET_CART_READ_SCHEMA,
       GET_ORDER_HISTORY_READ_SCHEMA,
-      CHECK_ORDER_STATUS_READ_SCHEMA,
-      GET_PAYMENT_STATUS_READ_SCHEMA,
       GET_PAYMENT_HISTORY_READ_SCHEMA,
       GET_MY_PROFILE_READ_SCHEMA,
       GET_MY_PREFERENCES_READ_SCHEMA,
@@ -71,10 +70,21 @@ describe("every authored read-tool schema — table-driven basic invariants", ()
   });
 });
 
-describe("CHECK_ORDER_STATUS_READ_SCHEMA / GET_PAYMENT_STATUS_READ_SCHEMA — orderId forbidden by construction", () => {
-  it("neither schema has ANY field — orderId is resolver-only (claustrum-bootstrap.ts's resolveOrderId auto-resolve)", () => {
-    expect(extractionFieldNames(CHECK_ORDER_STATUS_READ_SCHEMA).size).toBe(0);
-    expect(extractionFieldNames(GET_PAYMENT_STATUS_READ_SCHEMA).size).toBe(0);
+describe("CHECK_ORDER_STATUS_READ_SCHEMA / GET_PAYMENT_STATUS_READ_SCHEMA — orderId forbidden, orderReference is the one optional field", () => {
+  it("neither schema declares orderId — it is resolver-only (claustrum-bootstrap.ts's resolveCustomerOrderReference)", () => {
+    expect(extractionFieldNames(CHECK_ORDER_STATUS_READ_SCHEMA).has("orderId")).toBe(false);
+    expect(extractionFieldNames(GET_PAYMENT_STATUS_READ_SCHEMA).has("orderId")).toBe(false);
+  });
+
+  it("both expose ONLY an optional {orderReference} display-number NL reference, Directive class", () => {
+    for (const schema of [CHECK_ORDER_STATUS_READ_SCHEMA, GET_PAYMENT_STATUS_READ_SCHEMA]) {
+      const names = extractionFieldNames(schema);
+      expect([...names]).toEqual(["orderReference"]);
+      expect(schema.fields[0]!.trustClass).toBe("directive");
+      const wire = toPayloadJsonSchema(schema);
+      expect(wire.required).toBeUndefined();
+      expect((wire.properties as { orderReference: { type: string } }).orderReference.type).toBe("string");
+    }
   });
 });
 
@@ -124,5 +134,54 @@ describe("GET_MY_RESERVATIONS_READ_SCHEMA", () => {
     expect(
       (wire.properties as { status: { enum: string[] } }).status.enum,
     ).toEqual(["pending", "confirmed", "seated", "completed", "cancelled", "no_show"]);
+  });
+});
+
+// FE-T13 (team-lead P5 ruling) — sanitizeReadToolInput is the fail-safe
+// dispatch-boundary validation this ruling required: nothing upstream
+// validates a read tool's call.input against its advertised inputSchema, so
+// this is the ONLY enforcement point. Never throws; strips rather than fails.
+describe("sanitizeReadToolInput", () => {
+  it("drops a field NOT declared on the tool's schema (a forged/unexpected key)", () => {
+    expect(sanitizeReadToolInput("check_availability", { date: "2026-07-18", partySize: 4, customerId: "victim" })).toEqual({
+      date: "2026-07-18",
+      partySize: 4,
+    });
+  });
+
+  it("drops a declared field whose runtime type doesn't match (never coerces, never forwards)", () => {
+    expect(sanitizeReadToolInput("check_availability", { date: "2026-07-18", partySize: "4" })).toEqual({
+      date: "2026-07-18",
+    });
+  });
+
+  it("drops a declared enum field whose value is outside the enum", () => {
+    expect(sanitizeReadToolInput("get_recommendations", { context: "checkout" })).toEqual({});
+    expect(sanitizeReadToolInput("get_recommendations", { context: "cart" })).toEqual({ context: "cart" });
+  });
+
+  it("a tool with NO authored schema is untouched (today's behavior, unaffected)", () => {
+    expect(sanitizeReadToolInput("ops_snapshot", { anything: "goes", here: 1 })).toEqual({
+      anything: "goes",
+      here: 1,
+    });
+  });
+
+  it("non-object / null input for an authored-schema tool sanitizes to {} rather than throwing", () => {
+    expect(sanitizeReadToolInput("get_cart", null)).toEqual({});
+    expect(sanitizeReadToolInput("get_cart", "not an object")).toEqual({});
+    expect(sanitizeReadToolInput("get_cart", undefined)).toEqual({});
+  });
+
+  it("a zero-field tool always sanitizes to {} regardless of what the model sent", () => {
+    expect(sanitizeReadToolInput("get_cart", { cartId: "victim-cart", extra: true })).toEqual({});
+  });
+
+  it("a required field that's present and well-typed passes through", () => {
+    expect(sanitizeReadToolInput("get_also_added", { productId: "prod_123" })).toEqual({ productId: "prod_123" });
+  });
+
+  it("a required field that's malformed is dropped (not coerced) — the downstream handler's own zod schema then reports the real missing-field error", () => {
+    expect(sanitizeReadToolInput("get_also_added", { productId: 123 })).toEqual({});
   });
 });

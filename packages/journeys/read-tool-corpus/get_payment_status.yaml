@@ -1,0 +1,49 @@
+# get_payment_status — FE-T13 read-tool extraction corpus.
+# See check_order_status.yaml's header for the shared `orderReference`
+# rationale (this tool is its billing sibling — same field, same
+# present/absent arms) and check_availability.yaml's header for the format +
+# live-drive status.
+tool: get_payment_status
+source: tickets/language-engine/issues/13-rollout-status-read-verbs.md
+cases:
+  - id: bare-ask-no-reference
+    utterance: meu pagamento caiu?
+    expectArgs: {}
+
+  - id: bare-ask-formal
+    utterance: Você poderia verificar se meu pagamento foi processado?
+    expectArgs: {}
+
+  - id: bare-ask-colloquial
+    utterance: meu pix já caiu?
+    expectArgs: {}
+
+  - id: bare-ask-question-form
+    utterance: será que meu cartão passou?
+    expectArgs: {}
+
+  - id: bare-ask-brusque
+    utterance: status do pagamento
+    expectArgs: {}
+
+  - id: explicit-display-number
+    utterance: o pagamento do pedido 1234 já caiu?
+    note: reference-PRESENT arm — a display number the customer names explicitly
+    expectArgs:
+      orderReference: "1234"
+
+  - id: explicit-display-number-hash-prefixed
+    utterance: verifica o pagamento do pedido #4242
+    note: reference-PRESENT arm, "#"-prefixed form
+    expectArgs:
+      orderReference: "4242"
+
+  - id: explicit-display-number-polite
+    utterance: poderia confirmar se o pagamento do pedido número 5555 foi aprovado?
+    note: reference-PRESENT arm, formal register
+    expectArgs:
+      orderReference: "5555"
+
+  - id: bare-ask-casual-slang
+    utterance: e aí, meu pagamento passou ou não?
+    expectArgs: {}
