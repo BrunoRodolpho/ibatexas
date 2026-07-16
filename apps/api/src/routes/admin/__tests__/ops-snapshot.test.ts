@@ -93,15 +93,17 @@ const DAY_SUMMARY = {
   netCentavos: 105_000,
 };
 
-// total (3) deliberately == reservations.length here (no BKL-127 paging
-// truncation in play) — the tally folds status in first-seen order.
+// total (47) deliberately DIFFERS from reservations.length (3): proves the
+// composer reads the service's authoritative count (BKL-127), not the page
+// length, e.g. when a 500-row page under-covers a busier day. The tally
+// still folds only the returned page, in first-seen order.
 const RESERVATIONS_RESULT = {
   reservations: [
     { status: "confirmed" },
     { status: "confirmed" },
     { status: "seated" },
   ],
-  total: 3,
+  total: 47,
 };
 
 function primeAllHappy(): void {
@@ -196,9 +198,11 @@ describe("GET /api/admin/ops/snapshot composes all five summaries", () => {
 
       // Reservations (BKL-127): total + per-status tally, first-seen order.
       // `date` comes from the restaurant-tz `today`, not the service return —
-      // asserted as a string only (mirrors `body.now` above).
+      // asserted as a string only (mirrors `body.now` above). total (47) !==
+      // reservations.length (3) proves this reads the service's authoritative
+      // count, not the page length.
       expect(typeof body.reservations.date).toBe("string");
-      expect(body.reservations.total).toBe(3);
+      expect(body.reservations.total).toBe(47);
       expect(body.reservations.byStatus).toEqual([
         { status: "confirmed", count: 2 },
         { status: "seated", count: 1 },
@@ -243,7 +247,7 @@ describe("GET /api/admin/ops/snapshot is resilient to one bad signal", () => {
       expect(body.opsAlerts.open).toBe(5);
       expect(body.incidents.open).toBe(2);
       expect(body.caixa.netCentavos).toBe(105_000);
-      expect(body.reservations.total).toBe(3);
+      expect(body.reservations.total).toBe(47);
     } finally {
       await server.close();
     }

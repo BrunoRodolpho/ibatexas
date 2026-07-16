@@ -68,9 +68,11 @@ vi.mock("@ibatexas/domain", async (importOriginal) => ({
 // flat replacement here throws "No <export> export is defined on the mock"
 // the moment @ibatexas/types gains any export the transitive graph touches —
 // spreading the real module means new exports can never break this factory.
+// No overrides: this suite doesn't need to stub anything on @ibatexas/types
+// (the real Channel enum is exactly what session.ts needs), and hand-pinning
+// Channel here would just silently shadow future changes to the real enum.
 vi.mock("@ibatexas/types", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@ibatexas/types")>()),
-  Channel: { Web: "web", WhatsApp: "whatsapp" },
 }));
 
 beforeEach(() => {
