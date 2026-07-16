@@ -51,8 +51,26 @@ jobs:
       # consolidated entry point explicitly so the gate is visible in CI logs.
       - name: Bypass-detection CI gate
         run: ./scripts/check-bypass.sh
+      # FE-D08 — pnpm 10's audit client targets the npm registry's legacy
+      # /v1/security/audits{,/quick} endpoints, retired (HTTP 410) since
+      # 2026-07-15. The fix (bulk /v1/security/advisories/bulk endpoint)
+      # landed in pnpm 11, but bumping the workspace's pinned packageManager
+      # to pnpm 11 is a real migration (pnpm 11 stops reading package.json's
+      # "pnpm" field entirely — overrides/onlyBuiltDependencies/auditConfig
+      # move to pnpm-workspace.yaml, and a --frozen-lockfile install fails
+      # until that migration lands), so this step alone invokes a pinned
+      # pnpm 11 via npx WITHOUT touching the workspace's pnpm 10 pin used by
+      # every other step. `pm-on-fail=ignore` is required: pnpm 11 otherwise
+      # self-re-execs the packageManager-pinned pnpm 10 on start (silently
+      # re-hitting the dead endpoint) — verified empirically, this is the
+      # ONLY way to actually run pnpm 11's binary in a pnpm-10-pinned repo.
+      # auditConfig.ignoreGhsas lives in pnpm-workspace.yaml (pnpm 11's read
+      # location for this config — pnpm 10 ignores that key harmlessly).
+      # Full workspace migration to pnpm 11 tracked as FE-D08.
       - name: Security audit
-        run: pnpm audit --audit-level=high
+        run: npx -y pnpm@11.13.1 audit --audit-level=high
+        env:
+          pnpm_config_pm_on_fail: ignore
       - run: pnpm build
       # Pack governance gates (F11/F12). The Tier-3 planner-coherence checks
       # already ride `pnpm test` (per-pack conformance suites); these add the
