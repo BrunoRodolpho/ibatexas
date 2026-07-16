@@ -175,11 +175,32 @@ export function classifyRequestSpans(text: string): SpanClass[] {
   if (orderPhrasing) classes.push("ORDER_STATUS_Q");
   if (paymentPhrasing) classes.push("PAYMENT_STATUS_Q");
 
-  // FE-T17 — reservation-bearing phrasing: "reserva" / "reservei" / "reservado(a)".
-  // An explicit marker (not folded into the bare-"status" polysemy resolution below —
-  // reservation questions name "reserva" directly, unlike the order/payment "status"
-  // ambiguity this file's F2 fix disambiguates).
-  if (/reserva/.test(t)) classes.push("RESERVATION_STATUS_Q");
+  // FE-T17 — reservation-bearing phrasing. An explicit marker (not folded into the
+  // bare-"status" polysemy resolution below — reservation questions name "reserva"
+  // directly, unlike the order/payment "status" ambiguity this file's F2 fix
+  // disambiguates).
+  //
+  // ANCHORED, not a bare substring test (review fix — the original unanchored
+  // `/reserva/` false-fired on the unrelated preserv* family — "preservar" /
+  // "preservam" / "preservação" / "preservativo" all contain "reserva" as a
+  // substring — and, via the completeness gate, a false span match can degrade an
+  // otherwise-valid answer to a DIFFERENT question to UNKNOWN. It also did NOT
+  // actually match "reservei" / "reservou" despite the old comment claiming it did
+  // — `/reserva/` requires the literal substring "reserva", which neither verb form
+  // contains). The negative lookbehind `(?<![a-z])` requires the match start at a
+  // word boundary (never mid-word, closing the preserv* false-positive); the
+  // alternation covers the verb forms this domain actually sees: reserva(s)
+  // (noun/verb), reservar (infinitive), reservad-o/a (participle), reservam
+  // (3p-pl present), reservando (gerund), reservei / reservou (1s/3s preterite).
+  // The `(?!at)` lookahead right after "reserv" excludes "reservatório" (reservoir/
+  // tank) — a real word sharing the "reserva-" prefix but never the domain this
+  // decomposer models (a restaurant table reservation) — cheaply, since no verb
+  // form in the alternation is ever followed by "at". Verified empirically against
+  // both a must-fire and a must-not-fire word list (RESERVATION_STATUS_Q tests
+  // below).
+  if (/(?<![a-z])reserv(?!at)(a|ar|ad|am|as|ando|ei|ou)/.test(t)) {
+    classes.push("RESERVATION_STATUS_Q");
+  }
 
   // Bare "status" with NO payment/order discriminator → over-include BOTH (never
   // silently drop either companion). If a discriminator is present, the precise

@@ -104,6 +104,64 @@ describe("classifyRequestSpans — BKL-138 STORE_HOURS_FOR_DATE_Q", () => {
   });
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// FE-T17 — RESERVATION_STATUS_Q (review fix, PR #249). The marker is ANCHORED
+// (`(?<![a-z])reserv(?!at)(a|ar|ad|am|as|ando|ei|ou)`), not a bare substring test:
+// the original unanchored `/reserva/` false-fired on the unrelated preserv* family
+// (both share the substring "reserva") and — via the completeness gate
+// (claims-renderer-adapter.ts) — a false span match can degrade an otherwise-valid
+// answer to a DIFFERENT question to UNKNOWN. It also did NOT actually match
+// "reservei" / "reservou" despite its old comment claiming coverage. These tests
+// pin BOTH directions: every verb form the domain sees fires, and the false-positive
+// family (plus "reservatório", a real word sharing the "reserva-" prefix but outside
+// this domain) does not.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("classifyRequestSpans — FE-T17 RESERVATION_STATUS_Q (anchored marker)", () => {
+  it("fires on every reservation verb form this domain sees", () => {
+    for (const text of [
+      "reserva",
+      "reservas",
+      "reservar",
+      "reservado",
+      "reservada",
+      "reservei",
+      "reservou",
+      "minha reserva",
+      "qual minha reserva?",
+      "como está minha reserva de amanhã?",
+      "quero reservar uma mesa",
+      "vocês reservam mesa para hoje?",
+    ]) {
+      expect(classifyRequestSpans(text), text).toContain("RESERVATION_STATUS_Q");
+    }
+  });
+
+  it("'qual minha reserva?' → RESERVATION_STATUS_Q → requires RESERVATION_STATUS", () => {
+    const spans = classifyRequestSpans("qual minha reserva?");
+    expect(spans).toContain("RESERVATION_STATUS_Q");
+    const required = decomposeRequiredClaims(spans);
+    expect(required.has("RESERVATION_STATUS")).toBe(true);
+  });
+
+  it("does NOT false-fire on the unrelated preserv* family (the anchoring fix)", () => {
+    for (const text of [
+      "preservar",
+      "preservam",
+      "preservação",
+      "preservativo",
+      "vamos preservar o meio ambiente",
+    ]) {
+      expect(classifyRequestSpans(text), text).not.toContain("RESERVATION_STATUS_Q");
+    }
+  });
+
+  it("does NOT fire on 'reservatório' (shares the reserva- prefix, outside this domain)", () => {
+    expect(classifyRequestSpans("o reservatório está vazando")).not.toContain(
+      "RESERVATION_STATUS_Q",
+    );
+  });
+});
+
 describe("required-claim decomposer — conservative-over-decomposing", () => {
   it("UNIONs across multiple span-classes (over-include, never under-include)", () => {
     const required = decomposeRequiredClaims(["PAYMENT_STATUS_Q", "PICKUP_Q"]);
