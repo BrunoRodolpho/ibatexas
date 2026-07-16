@@ -55,11 +55,14 @@ describe("claims-pipeline — buildClaimsSeams (byte-identical when OFF)", () =>
     expect(seams.claimsKernelDepsForTurn).toBeUndefined();
     // E-2 render-from-claims seam is ALSO gated OFF (no renderer wired).
     expect(seams.claimsRenderer).toBeUndefined();
+    // BKL-155/153 — the render-vs-draft precedence seam is PAIRED with the renderer
+    // and gated OFF with it.
+    expect(seams.claimsRenderPrecedence).toBeUndefined();
     // Spreading {} into the Conductor options adds no keys (byte-identical).
     expect(Object.keys(seams)).toHaveLength(0);
   });
 
-  it("ON → all five seams are injected (the host modules instantiate)", () => {
+  it("ON → all seams are injected (the host modules instantiate)", () => {
     const seams = buildClaimsSeams({ planner: stubPlanner, env: ON_ENV });
     expect(seams.investigator).toBeDefined();
     expect(seams.claimPlanner).toBeDefined();
@@ -68,6 +71,10 @@ describe("claims-pipeline — buildClaimsSeams (byte-identical when OFF)", () =>
     expect(seams.claimsKernelDepsForTurn).toBeDefined();
     // E-2 — the render-from-claims seam activates ATOMICALLY with the pipeline.
     expect(seams.claimsRenderer).toBeDefined();
+    // BKL-155/153 — the render-vs-draft precedence seam is PAIRED with the renderer
+    // (co-wired so it only runs where the render does — customer plane, claims-ON).
+    expect(seams.claimsRenderPrecedence).toBeDefined();
+    expect(typeof seams.claimsRenderPrecedence).toBe("function");
     // The seams are the published shapes the Conductor consumes.
     expect(typeof seams.investigator?.investigate).toBe("function");
     expect(typeof seams.claimPlanner?.propose).toBe("function");

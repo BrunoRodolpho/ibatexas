@@ -268,6 +268,12 @@ function stubBackend(over: Partial<TriadReadBackend> = {}): TriadReadBackend {
     // BKL-121 — default: today's hours present; no holiday today (falsifier inert).
     readStoreHours: async () => ({ hoursText: "11h–15h / 18h–23h" }),
     readHoliday: async () => null,
+    // BKL-138 — default: the queried date's hours present; no holiday/override on it
+    // (the per-date falsifiers are inert). Tests that exercise the date-hours chain
+    // override these.
+    readHoursForDate: async () => ({ hoursText: "11h–15h / 18h–23h" }),
+    readHolidayForDate: async () => null,
+    readScheduleOverrideForDate: async () => null,
     readOrderFulfillment: async (orderId) => ({ orderId, fulfillmentStatus: "preparing" }),
     readPaymentStatus: async (orderId) => ({ orderId, status: "paid", method: "pix" }),
     readReservation: async (reservationId) => ({

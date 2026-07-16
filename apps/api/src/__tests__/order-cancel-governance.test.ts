@@ -123,6 +123,16 @@ vi.mock("../middleware/auth.js", () => ({
   },
 }));
 
+// Capture audit emits so BKL-036 can assert that a kernel-routed cancel REFUSE
+// is AUDITED at the gateway seam (the whole point of moving the PONR check
+// behind the kernel). Partial mock — preserves __setAuditSinkDependencies so
+// the test setup's sink wiring still loads.
+const mockAuditEmit = vi.hoisted(() => vi.fn(async (_record: unknown) => {}));
+vi.mock("@ibatexas/audit-sink", async (orig) => {
+  const actual = (await orig()) as Record<string, unknown>;
+  return { ...actual, getAuditSink: () => ({ emit: mockAuditEmit }) };
+});
+
 // ── Server factory ─────────────────────────────────────────────────────────
 
 async function buildTestServer() {
@@ -284,5 +294,125 @@ describe("POST /api/orders/:id/cancel — envelope governance", () => {
     } finally {
       await app.close();
     }
+  });
+});
+
+// ── BKL-036 finding 1 — cancel PONR moved behind the kernel (audited 422) ─────
+//
+// The fulfillment-state / already-cancelled cancel refusals now reach the
+// kernel (so they are ADJUDICATED + AUDITED) and the route translates the
+// kernel's stable REFUSE codes back to the exact legacy 422 + code the client
+// saw when the check was a pre-kernel 422. The order-age (time-window) PONR
+// stays pre-kernel for pending/confirmed orders (unchanged 422/PONR_EXPIRED).
+
+describe("POST /api/orders/:id/cancel — BKL-036 kernel-routed PONR + paid-cancel", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    redisStorage.clear();
+    mockGetById.mockResolvedValue(makeOrder());
+    mockFindActiveByOrderId.mockResolvedValue(null);
+    mockPublishNatsEvent.mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  async function inject(fulfillmentStatus: string, decision: Record<string, unknown>) {
+    mockGetById.mockResolvedValue(makeOrder({ fulfillmentStatus }));
+    mockAdjudicate.mockReturnValue(decision);
+    const app = await buildTestServer();
+    try {
+      return await app.inject({
+        method: "POST",
+        url: "/api/orders/order_01/cancel",
+        headers: { "x-customer-id": "cust_01" },
+        payload: { reason: "x" },
+      });
+    } finally {
+      await app.close();
+    }
+  }
+
+  const pastPonrRefuse = {
+    kind: "REFUSE",
+    refusal: { kind: "STATE", code: "order.past_ponr", userFacing: "Passou do ponto de cancelamento." },
+    basis: [{ category: "state", code: "terminal_state" }],
+  };
+  const alreadyCancelledRefuse = {
+    kind: "REFUSE",
+    refusal: { kind: "STATE", code: "order.already_cancelled", userFacing: "Esse pedido já foi cancelado." },
+    basis: [{ category: "state", code: "terminal_state" }],
+  };
+
+  it("kernel REFUSE order.past_ponr on a ready order → 422 PAST_PONR (audited, executor NOT run)", async () => {
+    const res = await inject("ready", pastPonrRefuse);
+    expect(res.statusCode).toBe(422);
+    const body = res.json() as { code: string; fulfillmentStatus: string };
+    expect(body.code).toBe("PAST_PONR");
+    expect(body.fulfillmentStatus).toBe("ready");
+    // The refusal is AUDITED at the gateway seam.
+    const auditedRefuse = mockAuditEmit.mock.calls.find((c) => {
+      const rec = c[0] as { envelope?: { kind?: string }; decision?: { kind?: string } };
+      return rec?.envelope?.kind === "order.cancel" && rec?.decision?.kind === "REFUSE";
+    });
+    expect(auditedRefuse).toBeDefined();
+    // The destructive path did NOT run.
+    expect(mockTransitionStatus).not.toHaveBeenCalled();
+    expect(mockPublishNatsEvent).not.toHaveBeenCalled();
+  });
+
+  it("kernel REFUSE order.past_ponr on a preparing order → 422 PONR_EXPIRED (legacy escalate code)", async () => {
+    const res = await inject("preparing", pastPonrRefuse);
+    expect(res.statusCode).toBe(422);
+    expect((res.json() as { code: string }).code).toBe("PONR_EXPIRED");
+  });
+
+  it("kernel REFUSE order.already_cancelled → 422 PAST_PONR", async () => {
+    const res = await inject("canceled", alreadyCancelledRefuse);
+    expect(res.statusCode).toBe(422);
+    expect((res.json() as { code: string }).code).toBe("PAST_PONR");
+  });
+
+  it("a NON-PONR REFUSE is NOT translated — stays the gateway default 403", async () => {
+    const res = await inject("ready", {
+      kind: "REFUSE",
+      refusal: { kind: "SECURITY", code: "order.ownership_denied", userFacing: "Não é seu pedido." },
+      basis: [],
+    });
+    expect(res.statusCode).toBe(403);
+    expect((res.json() as { code: string }).code).toBe("order.ownership_denied");
+  });
+
+  it("PAID cancel → REQUEST_CONFIRMATION → 202 confirmationRequired (executor NOT run)", async () => {
+    const res = await inject("confirmed", {
+      kind: "REQUEST_CONFIRMATION",
+      prompt: "Esse pedido já foi pago (R$ 50,00). Cancelar implica reembolso — confirma?",
+      basis: [],
+    });
+    expect(res.statusCode).toBe(202);
+    const body = res.json() as { confirmationRequired: boolean; prompt: string };
+    expect(body.confirmationRequired).toBe(true);
+    expect(body.prompt).toMatch(/reembolso/);
+    expect(mockTransitionStatus).not.toHaveBeenCalled();
+    expect(mockPublishNatsEvent).not.toHaveBeenCalled();
+  });
+
+  it("PAID large cancel → ESCALATE → 503 (human review)", async () => {
+    const res = await inject("confirmed", {
+      kind: "ESCALATE",
+      to: "human",
+      reason: "paid_cancel_refund_above_escalate_threshold",
+      basis: [],
+    });
+    expect(res.statusCode).toBe(503);
+    expect(mockTransitionStatus).not.toHaveBeenCalled();
+  });
+
+  it("pending order within the time-window still cancels through the kernel (200)", async () => {
+    // pending + within PONR ⇒ pre-kernel time check passes ⇒ kernel EXECUTE ⇒ 200.
+    const res = await inject("pending", { kind: "EXECUTE", basis: [] });
+    expect(res.statusCode).toBe(200);
+    expect(mockAdjudicate).toHaveBeenCalledTimes(1);
   });
 });

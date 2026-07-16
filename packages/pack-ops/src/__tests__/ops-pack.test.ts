@@ -208,6 +208,164 @@ describe("opsPolicyBundle — taint floor is UNTRUSTED (authority is namespace+r
   })
 })
 
+// ── SCN-114: menu.special.set raw-bundle ─────────────────────────────────────
+
+/** The frozen "today" the special-state projects (matches DET_TIME's day). */
+const SPECIAL_TODAY = "2026-07-04"
+
+function specialEnv(
+  payload: Record<string, unknown>,
+  opts: {
+    taint?: "UNTRUSTED" | "TRUSTED"
+    sessionId?: string
+    role?: string
+    principal?: "user" | "llm"
+  } = {},
+): IntentEnvelope<OpsIntentKind, OpsPayload> {
+  const {
+    taint = "UNTRUSTED",
+    sessionId = "admin:staff_1",
+    role = "OWNER",
+    principal = "user",
+  } = opts
+  return buildEnvelope({
+    kind: "menu.special.set",
+    payload: payload as unknown as OpsPayload,
+    actor: { principal, sessionId, ...(role ? { role } : {}) },
+    taint,
+    nonce: "n-menu-special",
+    createdAt: DET_TIME,
+  })
+}
+
+/** A state projecting the special product (absent when product null) + today. */
+function specialState(
+  product: { id: string; status: string; name: string } | null = {
+    id: "prod_1",
+    status: "published",
+    name: "Feijoada",
+  },
+  todayYmd = SPECIAL_TODAY,
+): OpsState {
+  return {
+    ctx: { channel: "staff", customerId: null, staffId: "staff_1" },
+    special: { product, todayYmd },
+  }
+}
+
+const VALID_SPECIAL = {
+  productId: "prod_1",
+  date: "2026-07-10",
+  promoPriceCentavos: 4500,
+}
+
+describe("opsPolicyBundle — menu.special.set (SCN-114)", () => {
+  it("REQUEST_CONFIRMATION: UNTRUSTED + product present + future date + price (prompt names product + date + R$)", () => {
+    const d = adjudicate(specialEnv(VALID_SPECIAL), specialState(), opsPolicyBundle)
+    expect(d.kind).toBe("REQUEST_CONFIRMATION")
+    if (d.kind === "REQUEST_CONFIRMATION") {
+      expect(d.prompt).toContain("Feijoada")
+      expect(d.prompt).toContain("10/07/2026")
+      expect(d.prompt).toContain("R$ 45,00")
+    }
+  })
+
+  it("REQUEST_CONFIRMATION without a price → prompt says 'sem desconto'", () => {
+    const d = adjudicate(
+      specialEnv({ productId: "prod_1", date: "2026-07-10" }),
+      specialState(),
+      opsPolicyBundle,
+    )
+    expect(d.kind).toBe("REQUEST_CONFIRMATION")
+    if (d.kind === "REQUEST_CONFIRMATION")
+      expect(d.prompt).toContain("sem desconto")
+  })
+
+  it("EXECUTE: a TRUSTED envelope (no misparse risk) executes directly", () => {
+    const d = adjudicate(
+      specialEnv(VALID_SPECIAL, { taint: "TRUSTED" }),
+      specialState(),
+      opsPolicyBundle,
+    )
+    expect(d.kind).toBe("EXECUTE")
+  })
+
+  it("REFUSE: unknown payload key (closed contract)", () => {
+    const d = adjudicate(
+      specialEnv({ ...VALID_SPECIAL, foo: 1 }),
+      specialState(),
+      opsPolicyBundle,
+    )
+    expect(d.kind).toBe("REFUSE")
+    if (d.kind === "REFUSE")
+      expect(d.refusal.code).toBe("menu.special.payload_invalid")
+  })
+
+  it("REFUSE: a still-relative / non-YYYY-MM-DD date", () => {
+    const d = adjudicate(
+      specialEnv({ productId: "prod_1", date: "amanhã" }),
+      specialState(),
+      opsPolicyBundle,
+    )
+    expect(d.kind).toBe("REFUSE")
+    if (d.kind === "REFUSE")
+      expect(d.refusal.code).toBe("menu.special.payload_invalid")
+  })
+
+  it("REFUSE: promoPriceCentavos not a positive integer (0 / negative / float)", () => {
+    for (const bad of [0, -100, 45.5]) {
+      const d = adjudicate(
+        specialEnv({ productId: "prod_1", date: "2026-07-10", promoPriceCentavos: bad }),
+        specialState(),
+        opsPolicyBundle,
+      )
+      expect(d.kind).toBe("REFUSE")
+      if (d.kind === "REFUSE")
+        expect(d.refusal.code).toBe("menu.special.payload_invalid")
+    }
+  })
+
+  it("REFUSE: product absent → product_not_found", () => {
+    const d = adjudicate(specialEnv(VALID_SPECIAL), specialState(null), opsPolicyBundle)
+    expect(d.kind).toBe("REFUSE")
+    if (d.kind === "REFUSE")
+      expect(d.refusal.code).toBe("menu.special.product_not_found")
+  })
+
+  it("REFUSE: a past date → date_past", () => {
+    const d = adjudicate(
+      specialEnv({ productId: "prod_1", date: "2026-07-01", promoPriceCentavos: 4500 }),
+      specialState(),
+      opsPolicyBundle,
+    )
+    expect(d.kind).toBe("REFUSE")
+    if (d.kind === "REFUSE") expect(d.refusal.code).toBe("menu.special.date_past")
+  })
+
+  it("EXECUTE-band: today's date is NOT past (a TRUSTED same-day special executes)", () => {
+    const d = adjudicate(
+      specialEnv(
+        { productId: "prod_1", date: SPECIAL_TODAY, promoPriceCentavos: 4500 },
+        { taint: "TRUSTED" },
+      ),
+      specialState(),
+      opsPolicyBundle,
+    )
+    expect(d.kind).toBe("EXECUTE")
+  })
+
+  it("REFUSE: a non-admin session (the pack fence, AUTH) — before any special detail", () => {
+    const d = adjudicate(
+      specialEnv(VALID_SPECIAL, { principal: "llm", sessionId: "web:conv-1", role: "" }),
+      specialState(),
+      opsPolicyBundle,
+    )
+    expect(d.kind).toBe("REFUSE")
+    if (d.kind === "REFUSE")
+      expect(d.refusal.code).toBe("ops.admin_session_required")
+  })
+})
+
 // ── BKL-088: ops.alert.resolve.staff + incident.ticket.close.staff raw-bundle ─
 
 /** A resolution-verb envelope for an arbitrary owned kind (BKL-088). */
@@ -346,6 +504,166 @@ describe("opsPolicyBundle — incident.ticket.close.staff (BKL-088)", () => {
   })
 })
 
+// ── SCN-127: schedule.override.set raw-bundle ────────────────────────────────
+
+/** A schedule-override envelope (SCN-127). */
+function scheduleEnv(
+  payload: Record<string, unknown>,
+  opts: { sessionId?: string; role?: string; principal?: "user" | "llm" } = {},
+): IntentEnvelope<OpsIntentKind, OpsPayload> {
+  const { sessionId = "admin:staff_1", role = "OWNER", principal = "user" } = opts
+  return buildEnvelope({
+    kind: "schedule.override.set",
+    payload: payload as unknown as OpsPayload,
+    actor: { principal, sessionId, ...(role ? { role } : {}) },
+    taint: "UNTRUSTED",
+    nonce: "n-schedule",
+    createdAt: DET_TIME,
+  })
+}
+
+/** A state projecting the today-or-future reference (default 2026-07-04, the
+ *  DET_TIME business day). `null` ⇒ reference unavailable (fail-closed). */
+function scheduleState(today: string | null = "2026-07-04"): OpsState {
+  return {
+    ctx: { channel: "staff", customerId: null, staffId: "staff_1" },
+    schedule: today === null ? null : { today },
+  }
+}
+
+const DINNER_BLOCK = { label: "Jantar", start: "18:00", end: "23:00" }
+
+describe("opsPolicyBundle — schedule.override.set (SCN-127)", () => {
+  it("EXECUTE: admin: + close a future day (isOpen=false, no blocks)", () => {
+    const d = adjudicate(
+      scheduleEnv({ date: "2026-07-05", isOpen: false }),
+      scheduleState(),
+      opsPolicyBundle,
+    )
+    expect(d.kind).toBe("EXECUTE")
+  })
+  it("EXECUTE: open a future day with custom hours (isOpen=true + one block)", () => {
+    const d = adjudicate(
+      scheduleEnv({ date: "2026-07-05", isOpen: true, blocks: [DINNER_BLOCK], note: "evento" }),
+      scheduleState(),
+      opsPolicyBundle,
+    )
+    expect(d.kind).toBe("EXECUTE")
+  })
+  it("EXECUTE: TODAY is actionable (today-or-future is inclusive)", () => {
+    const d = adjudicate(
+      scheduleEnv({ date: "2026-07-04", isOpen: false }),
+      scheduleState(),
+      opsPolicyBundle,
+    )
+    expect(d.kind).toBe("EXECUTE")
+  })
+  it("REFUSE (AUTH): non-admin session — pack fail-closes without staffRoleGuard", () => {
+    const d = adjudicate(
+      scheduleEnv({ date: "2026-07-05", isOpen: false }, {
+        principal: "llm",
+        sessionId: "web:c1",
+        role: "",
+      }),
+      scheduleState(),
+      opsPolicyBundle,
+    )
+    expect(d.kind).toBe("REFUSE")
+    if (d.kind === "REFUSE") expect(d.refusal.code).toBe("ops.admin_session_required")
+  })
+  it("REFUSE: unknown key (closed contract)", () => {
+    const d = adjudicate(
+      scheduleEnv({ date: "2026-07-05", isOpen: false, sneaky: 1 }),
+      scheduleState(),
+      opsPolicyBundle,
+    )
+    expect(d.kind).toBe("REFUSE")
+    if (d.kind === "REFUSE") expect(d.refusal.code).toBe("ops.schedule_override.payload_invalid")
+  })
+  it("REFUSE: a relative word the resolver did not normalize (not an ISO date)", () => {
+    const d = adjudicate(
+      scheduleEnv({ date: "amanhã", isOpen: false }),
+      scheduleState(),
+      opsPolicyBundle,
+    )
+    expect(d.kind).toBe("REFUSE")
+    if (d.kind === "REFUSE") expect(d.refusal.code).toBe("ops.schedule_override.payload_invalid")
+  })
+  it("REFUSE: an impossible calendar date (2026-13-40)", () => {
+    const d = adjudicate(
+      scheduleEnv({ date: "2026-13-40", isOpen: false }),
+      scheduleState(),
+      opsPolicyBundle,
+    )
+    expect(d.kind).toBe("REFUSE")
+    if (d.kind === "REFUSE") expect(d.refusal.code).toBe("ops.schedule_override.payload_invalid")
+  })
+  it("REFUSE: an OPEN override with no blocks (open_requires_blocks)", () => {
+    const d = adjudicate(
+      scheduleEnv({ date: "2026-07-05", isOpen: true }),
+      scheduleState(),
+      opsPolicyBundle,
+    )
+    expect(d.kind).toBe("REFUSE")
+    if (d.kind === "REFUSE") expect(d.refusal.code).toBe("ops.schedule_override.payload_invalid")
+  })
+  it("REFUSE: a CLOSED override that carries blocks (closed_forbids_blocks)", () => {
+    const d = adjudicate(
+      scheduleEnv({ date: "2026-07-05", isOpen: false, blocks: [DINNER_BLOCK] }),
+      scheduleState(),
+      opsPolicyBundle,
+    )
+    expect(d.kind).toBe("REFUSE")
+    if (d.kind === "REFUSE") expect(d.refusal.code).toBe("ops.schedule_override.payload_invalid")
+  })
+  it("REFUSE: an incoherent time block (start >= end)", () => {
+    const d = adjudicate(
+      scheduleEnv({
+        date: "2026-07-05",
+        isOpen: true,
+        blocks: [{ label: "Jantar", start: "23:00", end: "18:00" }],
+      }),
+      scheduleState(),
+      opsPolicyBundle,
+    )
+    expect(d.kind).toBe("REFUSE")
+    if (d.kind === "REFUSE") expect(d.refusal.code).toBe("ops.schedule_override.payload_invalid")
+  })
+  it("REFUSE: a malformed HH:MM in a block", () => {
+    const d = adjudicate(
+      scheduleEnv({
+        date: "2026-07-05",
+        isOpen: true,
+        blocks: [{ label: "Jantar", start: "18h", end: "23:00" }],
+      }),
+      scheduleState(),
+      opsPolicyBundle,
+    )
+    expect(d.kind).toBe("REFUSE")
+    if (d.kind === "REFUSE") expect(d.refusal.code).toBe("ops.schedule_override.payload_invalid")
+  })
+  it("REFUSE: a PAST date (before today) — never write an override for a past day", () => {
+    const d = adjudicate(
+      scheduleEnv({ date: "2026-07-03", isOpen: false }),
+      scheduleState(),
+      opsPolicyBundle,
+    )
+    expect(d.kind).toBe("REFUSE")
+    if (d.kind === "REFUSE")
+      expect(d.refusal.code).toBe("ops.schedule_override.date_not_actionable")
+  })
+  it("REFUSE: the today-or-future reference is unavailable (fail-closed)", () => {
+    const d = adjudicate(
+      scheduleEnv({ date: "2026-07-05", isOpen: false }),
+      scheduleState(null),
+      opsPolicyBundle,
+    )
+    expect(d.kind).toBe("REFUSE")
+    if (d.kind === "REFUSE")
+      expect(d.refusal.code).toBe("ops.schedule_override.date_not_actionable")
+  })
+})
+
 describe("opsPolicyBundle — structure", () => {
   it("default polarity is REFUSE (Refusal-by-Design)", () => {
     expect(opsPolicyBundle.default).toBe("REFUSE")
@@ -420,16 +738,18 @@ describe("opsPack — policy coherence via analyzePolicy()", () => {
     expect(reportedForeign.has("payment.refund.issue")).toBe(true)
   })
 
-  it("all six ops verbs are reachable (advertised under the staff probe)", () => {
-    // Non-vacuous: a probe with a staff session must advertise all six — the
-    // three OWNED verbs (`product.availability.set` + the BKL-088
-    // `ops.alert.resolve.staff` / `incident.ticket.close.staff`) AND the three
-    // foreign-routed (`order.note.add` + `order.status.transition` +
-    // `payment.refund.issue`).
+  it("all ops verbs are reachable (advertised under the staff probe)", () => {
+    // Non-vacuous: a probe with a staff session must advertise every ops verb —
+    // the OWNED verbs (`product.availability.set` + `product.price.set` + the
+    // BKL-088 `ops.alert.resolve.staff` / `incident.ticket.close.staff` + the
+    // SCN-127 `schedule.override.set`) AND the three foreign-routed
+    // (`order.note.add` + `order.status.transition` + `payment.refund.issue`).
     const staffPlan = opsPack.planner.plan(probes[1]!.state, probes[1]!.context)
     expect(staffPlan.allowedIntents).toContain("product.availability.set")
+    expect(staffPlan.allowedIntents).toContain("product.price.set")
     expect(staffPlan.allowedIntents).toContain("ops.alert.resolve.staff")
     expect(staffPlan.allowedIntents).toContain("incident.ticket.close.staff")
+    expect(staffPlan.allowedIntents).toContain("schedule.override.set")
     expect(staffPlan.allowedIntents).toContain("order.note.add")
     expect(staffPlan.allowedIntents).toContain("order.status.transition")
     expect(staffPlan.allowedIntents).toContain("payment.refund.issue")

@@ -131,6 +131,9 @@ function makeExecutors(driver: PersonaDriver): ActExecutors {
     http: async () => {
       throw new Error("http executor not used in this test")
     },
+    rawEnvelope: async () => {
+      throw new Error("rawEnvelope executor not used in this test")
+    },
     fixture: async () => {
       throw new Error("fixture executor not used in this test")
     },

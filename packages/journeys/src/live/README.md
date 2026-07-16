@@ -70,6 +70,7 @@ Useful knobs (all defaulted, see the script header): `IBX_API`,
 | `OPS-86` | SCN-112 (86 an item) + SCN-113 (restore): `product.availability.set` EXECUTE + medusa egress, then revert. |
 | `OPS-ROLE` | SCN-125: an ATTENDANT staff command → REFUSE `staff_role_violation` (kernel AUTH), zero egress. |
 | `OPS-REFUND-PARK` | SCN-120 / OPS-009: refund → REQUEST_CONFIRMATION + DB-stamped park, then "não" clears it (nothing written). |
-| `OPS-REFUND-CONFIRM` | SCN-120 / OPS-009 / OPS-054: park → "sim" → EXECUTE, `refunded_amount` written, status-history row, auto-cancel subscriber. |
+| `OPS-REFUND-CONFIRM` | SCN-120 / OPS-009: a **partial** refund → park → "sim" → EXECUTE, `refunded_amount` written, `paid→partially_refunded` status-history row. (A partial refund keeps the payment `partially_refunded`, so the payment-lifecycle subscriber logs only — it does **not** exercise OPS-054; see the full-refund row below.) |
+| `OPS-REFUND-FULL-CANCEL` | SCN-120 / OPS-009 / **OPS-054** (BKL-132): a **full** refund → "sim" → EXECUTE, payment `paid→refunded`, `payment.status_changed(refunded)` → the payment-lifecycle subscriber AUTO-CANCELs the still-pending order (`order.status.transition` EXECUTE, order `fulfillment_status=canceled`, `pending→canceled` history). Closes the OPS-054 suite blind spot the partial-refund `CONFIRM` scenario left open. |
 | `OPS-REFUND-ESCALATE` | SCN-120 (≥R$1000 band): refund > R$1000 → ESCALATE, nothing parked/written. |
 | `OPS-PARTIAL` | BKL-094: "reembolsa 10 reais" threads to R$ 10,00 (not the full balance) and "sim" writes exactly 1000 centavos. |

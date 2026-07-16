@@ -48,6 +48,12 @@ export const DOMAIN_DELETE_ORDER = [
   // LlmTokenUsage) left open when they merged without a registry entry.
   "agentRedTeamRun",
   "llmTokenUsage",
+  // WS3A/WS3C broadcast tables — the customer marketing-consent registry (opt-out,
+  // phone-keyed @unique, no FK) + the per-blast send audit (no FK). Operational /
+  // compliance telemetry, wiped by a default clean (dev/test lifecycle only; `db
+  // clean` never runs in prod). No FK, so ordering within this group is free.
+  "customerBroadcastConsent",
+  "broadcastSend",
   "loyaltyAccount",
   "customer",
   "timeSlot",

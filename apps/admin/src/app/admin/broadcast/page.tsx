@@ -32,6 +32,50 @@ function statusColor(status: RecipientResult['status']): string {
   return 'text-gray-500'
 }
 
+// S5 — a human summary of the filters that were ACTUALLY applied, so the manager
+// can confirm the segment matches intent (and notice when a described clause the
+// keyword parser doesn't understand was silently dropped).
+function specSummary(spec: Record<string, string>): string {
+  const parts: string[] = []
+  if (spec.orderedFrom || spec.orderedTo)
+    parts.push(`pedidos de ${spec.orderedFrom ?? '…'} a ${spec.orderedTo ?? '…'}`)
+  if (spec.createdFrom || spec.createdTo)
+    parts.push(`cadastro de ${spec.createdFrom ?? '…'} a ${spec.createdTo ?? '…'}`)
+  if (spec.source) parts.push(`origem ${spec.source}`)
+  return parts.join(' · ')
+}
+
+// S5 — the date windows the keyword parser understands. Anything in the manager's
+// free text OTHER than these phrases (and pure connector words) is NOT applied as
+// a filter, so we surface it instead of letting the audience silently broaden.
+const RECOGNIZED_QUERY_PHRASES = [
+  'últimos 30 dias', 'ultimos 30 dias', 'mês passado', 'mes passado',
+  '30 dias', 'último mês', 'ultimo mes',
+] as const
+
+// Connector / descriptive words that carry no filter intent — a residual made
+// only of these is not flagged as "unrecognized".
+const QUERY_FILLER_WORDS = new Set([
+  'clientes', 'cliente', 'que', 'quem', 'pediram', 'pedido', 'pedidos', 'comprou',
+  'compraram', 'os', 'as', 'de', 'do', 'da', 'dos', 'das', 'em', 'no', 'na',
+  'todos', 'todas', 'quero', 'enviar', 'para', 'com',
+])
+
+/**
+ * Returns the meaningful part of the manager's description that the keyword
+ * parser did NOT understand (and therefore did not apply), or null when every
+ * word was either a recognized window or a filler connector.
+ */
+function unrecognizedQueryText(query: string): string | null {
+  let residual = query.toLowerCase()
+  for (const phrase of RECOGNIZED_QUERY_PHRASES) residual = residual.split(phrase).join(' ')
+  const leftover = residual
+    .split(/[\s,;.]+/)
+    .map((w) => w.trim())
+    .filter((w) => w.length > 1 && !QUERY_FILLER_WORDS.has(w))
+  return leftover.length > 0 ? leftover.join(' ') : null
+}
+
 export default function BroadcastPage(): React.JSX.Element {
   const [recipientsText, setRecipientsText] = useState('')
   const [template, setTemplate] = useState('')
@@ -40,6 +84,19 @@ export default function BroadcastPage(): React.JSX.Element {
   const [error, setError] = useState<string | null>(null)
   const [optOutPhone, setOptOutPhone] = useState('')
   const [optOutList, setOptOutList] = useState<OptOutRecipientView[]>([])
+  // LGPD consent revocation — the write must never fail silently, or the manager
+  // believes a customer was opted out when they were not.
+  const [optOutNotice, setOptOutNotice] = useState<{ ok: boolean; text: string } | null>(null)
+  // WS3D — audience builder
+  const [audienceQuery, setAudienceQuery] = useState('')
+  const [audienceSource, setAudienceSource] = useState('')
+  const [preview, setPreview] = useState<{ count: number; recipients: string[]; sample: string[] } | null>(null)
+  const [previewing, setPreviewing] = useState(false)
+  // S5 — the spec that produced the current preview (for the applied-filters line).
+  const [appliedSpec, setAppliedSpec] = useState<Record<string, string> | null>(null)
+  // S5 — the part of the description that was NOT understood (and thus dropped),
+  // so the manager confirms the real audience instead of a silently broader one.
+  const [audienceWarning, setAudienceWarning] = useState<string | null>(null)
 
   // Load the READ-ONLY opted-out recipient list (OPS-032). Silent on failure —
   // an unavailable read hides the section rather than toast-spamming a page load.
@@ -78,17 +135,90 @@ export default function BroadcastPage(): React.JSX.Element {
     }
   }, [recipientsText, template])
 
+  // WS3D — compile the (whitelisted) audience spec. The NL box is parsed for a
+  // few common Portuguese windows for v1; a full LLM NL→spec layer can replace
+  // this parser and POST the SAME structured spec to the same safe endpoint.
+  const buildSpec = useCallback((): Record<string, string> => {
+    const q = audienceQuery.toLowerCase()
+    const spec: Record<string, string> = {}
+    const ymd = (d: Date): string => d.toISOString().slice(0, 10)
+    const now = new Date()
+    if (q.includes('mês passado') || q.includes('mes passado')) {
+      spec.orderedFrom = ymd(new Date(now.getFullYear(), now.getMonth() - 1, 1))
+      spec.orderedTo = ymd(new Date(now.getFullYear(), now.getMonth(), 1)) // exclusive
+    } else if (q.includes('30 dias') || q.includes('último mês') || q.includes('ultimo mes')) {
+      const from = new Date(now)
+      from.setDate(now.getDate() - 30)
+      const to = new Date(now)
+      to.setDate(now.getDate() + 1)
+      spec.orderedFrom = ymd(from)
+      spec.orderedTo = ymd(to)
+    }
+    if (audienceSource) spec.source = audienceSource
+    return spec
+  }, [audienceQuery, audienceSource])
+
+  const previewAudience = useCallback(async () => {
+    const spec = buildSpec()
+    // S5 — never preview (or load) the ENTIRE base by accident. An empty spec means
+    // the described filter wasn't understood (or nothing was specified); tell the
+    // manager instead of silently querying everyone.
+    if (Object.keys(spec).length === 0) {
+      setPreview(null)
+      setAppliedSpec(null)
+      setAudienceWarning(null)
+      setError(
+        audienceQuery.trim()
+          ? 'Não entendi esse filtro. Use “mês passado” ou “últimos 30 dias” (por data do pedido) e/ou selecione uma origem.'
+          : 'Descreva um período (ex.: “mês passado”) ou selecione uma origem para montar o público.',
+      )
+      return
+    }
+    // Some clauses matched but the manager may have described more than the parser
+    // understands (e.g. "VIPs em Ibaté que pediram mês passado" → only the date is
+    // applied). Surface the dropped part so the audience is never silently broader.
+    setAudienceWarning(unrecognizedQueryText(audienceQuery))
+    setPreviewing(true)
+    setError(null)
+    try {
+      const res = (await apiFetch('/api/admin/broadcast/audience/preview', {
+        method: 'POST',
+        body: JSON.stringify(spec),
+      })) as { count: number; recipients: string[]; sample: string[] }
+      setPreview(res)
+      setAppliedSpec(spec)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Falha ao prever o público')
+    } finally {
+      setPreviewing(false)
+    }
+  }, [buildSpec, audienceQuery])
+
+  const useAudience = useCallback(() => {
+    if (preview) setRecipientsText(preview.recipients.join('\n'))
+  }, [preview])
+
   const addOptOut = useCallback(async () => {
     if (!optOutPhone.trim()) return
     setBusy(true)
+    setOptOutNotice(null)
     try {
+      const registered = optOutPhone.trim()
       await apiFetch('/api/admin/broadcast/optout', {
         method: 'POST',
-        body: JSON.stringify({ recipient: optOutPhone.trim() }),
+        body: JSON.stringify({ recipient: registered }),
       })
       setOptOutPhone('')
       // Keep the opted-out list in sync with the write that just landed.
       await loadOptOutList()
+      setOptOutNotice({ ok: true, text: `Opt-out registrado para ${registered}.` })
+    } catch {
+      // The consent revocation did NOT land — surface it explicitly so the
+      // manager does not assume the customer was opted out.
+      setOptOutNotice({
+        ok: false,
+        text: 'Falha ao registrar o opt-out. O cliente NÃO foi removido — tente novamente.',
+      })
     } finally {
       setBusy(false)
     }
@@ -101,6 +231,73 @@ export default function BroadcastPage(): React.JSX.Element {
         Use apenas templates aprovados / dentro da janela de 24h. Destinatários que
         optaram por não receber são ignorados automaticamente.
       </p>
+
+      {/* WS3D — audience builder: describe or filter a segment, preview the
+          consent-filtered count, then load it as recipients. */}
+      <div className="flex flex-col gap-2 rounded border border-blue-200 bg-blue-50/40 p-3">
+        <label htmlFor="audience-query" className="text-sm font-medium">
+          Montar público
+        </label>
+        <div className="flex flex-wrap items-center gap-2">
+          <input
+            id="audience-query"
+            value={audienceQuery}
+            onChange={(e) => setAudienceQuery(e.target.value)}
+            placeholder="descreva (ex.: clientes que pediram mês passado)"
+            className="min-w-[16rem] flex-1 rounded border px-2 py-1 text-sm"
+          />
+          <select
+            value={audienceSource}
+            onChange={(e) => setAudienceSource(e.target.value)}
+            className="rounded border px-2 py-1 text-sm"
+            aria-label="Origem do cliente"
+          >
+            <option value="">Qualquer origem</option>
+            <option value="whatsapp">WhatsApp</option>
+            <option value="web">Web</option>
+          </select>
+          <button
+            type="button"
+            onClick={() => void previewAudience()}
+            disabled={previewing}
+            className="rounded bg-blue-700 px-3 py-1 text-sm text-white disabled:opacity-50"
+          >
+            {previewing ? 'Prevendo…' : 'Prever público'}
+          </button>
+        </div>
+        {preview ? (
+          <div className="flex flex-col gap-1 text-xs text-gray-700">
+            {appliedSpec ? (
+              <span className="text-gray-500">Filtros aplicados: {specSummary(appliedSpec)}</span>
+            ) : null}
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span>
+                {preview.count} destinatário(s) — opt-outs já excluídos
+                {preview.sample.length > 0 ? ` · ex.: ${preview.sample.slice(0, 3).join(', ')}` : ''}
+              </span>
+              <button
+                type="button"
+                onClick={useAudience}
+                disabled={preview.count === 0}
+                className="rounded border border-blue-300 px-2 py-1 font-medium text-blue-700 disabled:opacity-50"
+              >
+                Usar como destinatários →
+              </button>
+            </div>
+          </div>
+        ) : (
+          <p className="text-xs text-gray-500">
+            Entende “mês passado” e “últimos 30 dias” (por data do pedido) + origem. Consulta
+            estruturada e parametrizada — nunca SQL livre; opt-outs são sempre removidos.
+          </p>
+        )}
+        {audienceWarning ? (
+          <p className="rounded border border-amber-300 bg-amber-50 px-2 py-1 text-xs text-amber-800">
+            Parte da sua descrição não foi reconhecida e foi ignorada: “{audienceWarning}”.
+            Confirme os filtros aplicados acima antes de enviar.
+          </p>
+        ) : null}
+      </div>
 
       <div className="flex gap-4">
         <div className="flex w-1/2 flex-col gap-2">
@@ -183,6 +380,13 @@ export default function BroadcastPage(): React.JSX.Element {
           >
             Opt-out
           </button>
+          {optOutNotice ? (
+            <span
+              className={`text-sm ${optOutNotice.ok ? 'text-green-700' : 'text-red-600'}`}
+            >
+              {optOutNotice.text}
+            </span>
+          ) : null}
         </div>
       </div>
 

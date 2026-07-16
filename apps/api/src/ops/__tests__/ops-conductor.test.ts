@@ -213,9 +213,22 @@ function buildDeps(opts: {
   alert?: { id: string; status: string } | null;
   /** BKL-088 — the incident the resolver projects for incident.ticket.close.staff. */
   incident?: { id: string; status: string } | null;
+  /** SCN-114 — the product snapshot the resolver projects for menu.special.set;
+   *  null ⇒ absent (⇒ REFUSE product_not_found). */
+  special?: { id: string; status: string; name: string } | null;
+  /** SCN-114 — daily-special upsert service spies (defaults applied when absent). */
+  dailySpecialList?: ReturnType<typeof vi.fn>;
+  dailySpecialCreate?: ReturnType<typeof vi.fn>;
+  dailySpecialUpdate?: ReturnType<typeof vi.fn>;
   /** BKL-088 — SYSTEM-write layer spies (defaults applied when absent). */
   resolveAlertFromEnvelope?: ReturnType<typeof vi.fn>;
   closeIncidentFromEnvelope?: ReturnType<typeof vi.fn>;
+  /** SCN-127 — schedule-override write + cache spies (defaults applied when absent). */
+  upsertOverride?: ReturnType<typeof vi.fn>;
+  invalidateScheduleCache?: ReturnType<typeof vi.fn>;
+  /** SCN-127 — the injected clock the resolver reads for NL-date normalization
+   *  + the today-or-future reference (defaults to the DET business day). */
+  now?: () => Date;
 }) {
   const tools = createOpsToolRegistry({
     medusaAdjudicated: opts.medusaAdjudicated as never,
@@ -225,6 +238,15 @@ function buildDeps(opts: {
       writeAdjudicatedNote: opts.writeAdjudicatedNote,
       writeAdjudicatedStatusTransition:
         opts.writeAdjudicatedStatusTransition ?? vi.fn(),
+    },
+    // SCN-114 — the daily-special upsert service (default: no existing row for
+    // the day ⇒ the upsert CREATEs).
+    dailySpecialSvc: {
+      list: (opts.dailySpecialList ?? vi.fn(async () => [])) as never,
+      create: (opts.dailySpecialCreate ??
+        vi.fn(async () => ({ id: "special_1" }))) as never,
+      update: (opts.dailySpecialUpdate ??
+        vi.fn(async () => ({ id: "special_1" }))) as never,
     },
     publishOrderStatusChanged: opts.publishOrderStatusChanged ?? vi.fn(),
     // BKL-085 — refund deps (defaults; the dedicated refunds-by-message e2e in
@@ -257,6 +279,17 @@ function buildDeps(opts: {
         opts.closeIncidentFromEnvelope ??
         (vi.fn(async () => ({ result: { status: "RESOLVED" } })) as never),
     },
+    // SCN-127 — the schedule-override write + cache invalidation.
+    scheduleSvc: {
+      upsertOverride:
+        opts.upsertOverride ??
+        (vi.fn(async (date: string, data: { isOpen: boolean }) => ({
+          date,
+          isOpen: data.isOpen,
+        })) as never),
+    },
+    invalidateScheduleCache:
+      opts.invalidateScheduleCache ?? (vi.fn(async () => ({ ok: true })) as never),
   });
   return {
     adjudicator: realKernelAdjudicator,
@@ -280,9 +313,14 @@ function buildDeps(opts: {
       createOpsResolver({
         staffId,
         tenantId: "ibatexas",
+        // SCN-127 — a FIXED clock so "amanhã" normalizes deterministically to
+        // 2026-07-05 and the today-or-future reference is 2026-07-04.
+        now: opts.now ?? (() => new Date("2026-07-04T12:00:00.000Z")),
         lookupProduct: async () => opts.product,
         lookupOrder: async () => opts.order ?? null,
         lookupActivePayment: async () => opts.activePayment ?? null,
+        // SCN-114 — the menu.special.set product snapshot; null ⇒ REFUSE.
+        lookupSpecialProduct: async () => opts.special ?? null,
         // BKL-088 — the alert/incident by-id reads (id-literal); null ⇒ REFUSE.
         lookupAlert: async () => opts.alert ?? null,
         lookupIncident: async () => opts.incident ?? null,
@@ -362,6 +400,9 @@ describe("ops conductor — the end-to-end kernel proof (NEW-032)", () => {
     const args = medusaAdjudicated.mock.calls[0]![0] as Record<string, unknown>;
     expect(args.payload).toEqual({ metadata: { inStock: false } });
     expect(args.sourceSubject).toBe("ops:product.availability.set:admin:staff_1");
+    // BKL-149 — the reply states what the verb DID deterministically (from the
+    // executed envelope's `available:false`), not model prose.
+    expect(out.response).toBe("Pronto — produto marcado como esgotado (86).");
   });
 
   it("ATTENDANT → REFUSE staff_role_violation; the executor NEVER runs; reply is the role-opaque refusal", async () => {
@@ -413,6 +454,153 @@ describe("ops conductor — the end-to-end kernel proof (NEW-032)", () => {
     const out = await runOpsTurn(deps, "MANAGER", "staff_2", "acabou a picanha");
     expect(out.kind).toBe("EXECUTE");
     expect(medusaAdjudicated).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── schedule.override.set — the SCN-127 end-to-end kernel proof ───────────────
+//
+// The scripted planner emits the owner's RELATIVE date word ("amanhã", per the
+// persona); the resolver normalizes it to a CONCRETE ISO date (2026-07-05, from
+// the fixed 2026-07-04 clock in RESTAURANT_TIMEZONE) BEFORE adjudication, so the
+// kernel adjudicates a concrete date and the executor's upsertOverride is called
+// with it. The layered role enforcement is proven the same way as availability.
+
+const SCHEDULE_CLOSE_CALL = {
+  id: "tc-sched",
+  name: "express_intent",
+  input: {
+    capability: "schedule.override.set",
+    payload: { date: "amanhã", isOpen: false, note: "feriado" },
+  },
+};
+
+describe("ops conductor — schedule.override.set end-to-end (SCN-127)", () => {
+  it("OWNER → EXECUTE; upsertOverride runs ONCE with the RESOLVED concrete date + cache invalidated", async () => {
+    const upsertOverride = vi.fn(async (date: string, data: { isOpen: boolean }) => ({
+      date,
+      isOpen: data.isOpen,
+    }));
+    const invalidateScheduleCache = vi.fn(async () => ({ ok: true }));
+    const { model } = scriptedModel([SCHEDULE_CLOSE_CALL]);
+    const deps = buildDeps({
+      model,
+      medusaAdjudicated: vi.fn(),
+      writeAdjudicatedNote: vi.fn(),
+      product: null,
+      upsertOverride,
+      invalidateScheduleCache,
+    });
+    const out = await runOpsTurn(deps, "OWNER", "staff_1", "fecha amanhã");
+    expect(out.kind).toBe("EXECUTE");
+    expect(upsertOverride).toHaveBeenCalledTimes(1);
+    const [date, data] = upsertOverride.mock.calls[0]!;
+    // "amanhã" normalized to the concrete next business day (fixed clock).
+    expect(date).toBe("2026-07-05");
+    expect(data).toEqual({ isOpen: false, blocks: [], note: "feriado" });
+    expect(invalidateScheduleCache).toHaveBeenCalledTimes(1);
+  });
+
+  it("BKL-149 — the EXECUTE reply is the DETERMINISTIC 'fechei em <date>', NOT the model's store-OPEN falsehood (turn 377ca7a1)", async () => {
+    const upsertOverride = vi.fn(async (date: string, data: { isOpen: boolean }) => ({
+      date,
+      isOpen: data.isOpen,
+    }));
+    // The scripted model would author the EXACT live falsehood — a store-OPEN
+    // sentence, wrong day, decoupled from the CLOSE the verb just committed. It must
+    // never reach the operator.
+    const { model, complete } = scriptedModel(
+      [SCHEDULE_CLOSE_CALL],
+      "Hoje, a loja estará aberta o dia inteiro, incluindo o intervalo de almoço.",
+    );
+    const deps = buildDeps({
+      model,
+      medusaAdjudicated: vi.fn(),
+      writeAdjudicatedNote: vi.fn(),
+      product: null,
+      upsertOverride,
+      invalidateScheduleCache: vi.fn(async () => ({ ok: true })),
+    });
+    const out = await runOpsTurn(deps, "OWNER", "staff_1", "fecha amanhã");
+    expect(out.kind).toBe("EXECUTE");
+    expect(upsertOverride).toHaveBeenCalledTimes(1);
+    // The reply states what the verb DID, rendered from the adjudicated envelope
+    // (isOpen:false + the RESOLVED 2026-07-05), never the model draft.
+    expect(out.response).toBe("Pronto — fechei a loja em 05/07/2026.");
+    // The exact falsehood is impossible: no OPEN state, no "hoje", no "dia inteiro".
+    const lower = out.response.toLowerCase();
+    expect(lower).not.toContain("aberta");
+    expect(lower).not.toContain("dia inteiro");
+    expect(lower).not.toContain("almoço");
+    expect(lower).not.toContain("hoje");
+    // Proof it was not a model completion: complete ran for the planner only (the
+    // responder synthesis was short-circuited by the deterministic render).
+    expect(complete).toHaveBeenCalledTimes(1);
+  });
+
+  it("ATTENDANT → REFUSE staff_role_violation; upsertOverride NEVER runs; reply is role-opaque", async () => {
+    const upsertOverride = vi.fn();
+    const { model } = scriptedModel([SCHEDULE_CLOSE_CALL]);
+    const deps = buildDeps({
+      model,
+      medusaAdjudicated: vi.fn(),
+      writeAdjudicatedNote: vi.fn(),
+      product: null,
+      upsertOverride,
+    });
+    const out = await runOpsTurn(deps, "ATTENDANT", "staff_9", "fecha amanhã");
+    expect(out.kind).toBe("REFUSE");
+    if (out.kind === "REFUSE") {
+      expect(out.refusal.code).toBe("staff_role_violation");
+      expect(out.response).toBe(out.refusal.userFacing);
+      expect(out.response.toLowerCase()).not.toContain("attendant");
+    }
+    expect(upsertOverride).not.toHaveBeenCalled();
+  });
+
+  it("MANAGER → EXECUTE (matrix permits OWNER+MANAGER)", async () => {
+    const upsertOverride = vi.fn(async (date: string, data: { isOpen: boolean }) => ({
+      date,
+      isOpen: data.isOpen,
+    }));
+    const { model } = scriptedModel([SCHEDULE_CLOSE_CALL]);
+    const deps = buildDeps({
+      model,
+      medusaAdjudicated: vi.fn(),
+      writeAdjudicatedNote: vi.fn(),
+      product: null,
+      upsertOverride,
+    });
+    const out = await runOpsTurn(deps, "MANAGER", "staff_2", "fecha amanhã");
+    expect(out.kind).toBe("EXECUTE");
+    expect(upsertOverride).toHaveBeenCalledTimes(1);
+  });
+
+  it("OWNER but an UNRESOLVABLE date → REFUSE payload_invalid; upsertOverride never runs", async () => {
+    const upsertOverride = vi.fn();
+    const { model } = scriptedModel([
+      {
+        id: "tc-sched-bad",
+        name: "express_intent",
+        input: {
+          capability: "schedule.override.set",
+          // A word the resolver can't normalize stays verbatim ⇒ not an ISO date.
+          payload: { date: "qualquer dia", isOpen: false },
+        },
+      },
+    ]);
+    const deps = buildDeps({
+      model,
+      medusaAdjudicated: vi.fn(),
+      writeAdjudicatedNote: vi.fn(),
+      product: null,
+      upsertOverride,
+    });
+    const out = await runOpsTurn(deps, "OWNER", "staff_1", "fecha algum dia");
+    expect(out.kind).toBe("REFUSE");
+    if (out.kind === "REFUSE") {
+      expect(out.refusal.code).toBe("ops.schedule_override.payload_invalid");
+    }
+    expect(upsertOverride).not.toHaveBeenCalled();
   });
 });
 
@@ -842,6 +1030,104 @@ describe("ops conductor — order.status.transition reachable end-to-end (BKL-09
   });
 });
 
+// ── BKL-144 — planner reachability regression (the fix teaches, doesn't loosen) ─
+//
+// A live probe (ops115prove, 2026-07-10) proved `order.status.transition` was
+// UNREACHABLE from staff speech on the 4B: the OPS persona had no mapping example
+// and the ToolDefinition an EMPTY inputSchema, so the model invented wrong field
+// names (status/transition/omitted) and pt-BR values (confirmado/cancel) across 5
+// drives — the guard read `payload.newStatus` verbatim and REFUSEd every one, so
+// ZERO valid transitions reached EXECUTE. The fix is planner-only (persona example
+// + documented inputSchema). These are the SCRIPTED-model kernel proofs that the
+// taught contract now (a) reaches EXECUTE, (b) still REFUSEs a pt-BR value — the
+// closed guard is NOT normalized — and (c) exercises the BKL-090 legality branch
+// the adversarial live leg short-circuited before reaching.
+
+describe("ops conductor — BKL-144 planner reachability regression", () => {
+  it("the taught 'accept' contract reaches EXECUTE: display-number + newStatus:'confirmed' (pending→confirmed) → write gets the RESOLVED id", async () => {
+    const writeAdjudicatedStatusTransition = transitionWriterSpy();
+    const { model } = scriptedModel([transitionCall("123", "confirmed")]);
+    const deps = buildDeps({
+      model,
+      medusaAdjudicated: vi.fn(),
+      writeAdjudicatedNote: vi.fn(),
+      writeAdjudicatedStatusTransition,
+      product: null,
+      order: null, // direct id lookup MISSES → display-number resolution engages
+      orderRefs: {
+        byDisplayId: [
+          orderRefCandidate({ id: "order_99", displayId: 123, fulfillmentStatus: "pending" }),
+        ],
+      },
+    });
+    const out = await runOpsTurn(deps, "OWNER", "staff_1", "aceita o pedido 123");
+    expect(out.kind).toBe("EXECUTE");
+    expect(writeAdjudicatedStatusTransition).toHaveBeenCalledTimes(1);
+    const [payload, extras] = writeAdjudicatedStatusTransition.mock.calls[0]!;
+    // The write targets the RESOLVED id + the English enum value, verbatim.
+    expect(payload).toEqual({ orderId: "order_99", newStatus: "confirmed" });
+    expect(extras.actor).toBe("admin");
+    expect(extras.actorId).toBe("staff_1");
+  });
+
+  it("a pt-BR value ('confirmado') is NOT normalized → REFUSE order.status.unknown; the write NEVER runs", async () => {
+    const writeAdjudicatedStatusTransition = transitionWriterSpy();
+    const publishOrderStatusChanged = vi.fn(async () => {});
+    const { model } = scriptedModel([transitionCall("order_1", "confirmado")]);
+    const deps = buildDeps({
+      model,
+      medusaAdjudicated: vi.fn(),
+      writeAdjudicatedNote: vi.fn(),
+      writeAdjudicatedStatusTransition,
+      publishOrderStatusChanged,
+      product: null,
+      order: orderAt("pending"), // a real order that COULD legally go to confirmed
+    });
+    const out = await runOpsTurn(
+      deps,
+      "OWNER",
+      "staff_1",
+      "avança o pedido order_1 para confirmado",
+    );
+    expect(out.kind).toBe("REFUSE");
+    if (out.kind === "REFUSE") {
+      // The pt-BR word is not one of the six known statuses → target unknown. This
+      // pins that NO pt→en normalization slipped into the closed contract: the
+      // planner must emit the English enum; the guard does not translate.
+      expect(out.refusal.code).toBe("order.status.unknown");
+    }
+    expect(writeAdjudicatedStatusTransition).not.toHaveBeenCalled();
+    expect(publishOrderStatusChanged).not.toHaveBeenCalled();
+  });
+
+  it("exercises the BKL-090 legality branch the live leg couldn't reach: illegal pending→delivered → REFUSE transition_illegal; the write NEVER runs", async () => {
+    const writeAdjudicatedStatusTransition = transitionWriterSpy();
+    const publishOrderStatusChanged = vi.fn(async () => {});
+    const { model } = scriptedModel([transitionCall("order_1", "delivered")]);
+    const deps = buildDeps({
+      model,
+      medusaAdjudicated: vi.fn(),
+      writeAdjudicatedNote: vi.fn(),
+      writeAdjudicatedStatusTransition,
+      publishOrderStatusChanged,
+      product: null,
+      order: orderAt("pending"), // pending → delivered is not a legal next state
+    });
+    const out = await runOpsTurn(
+      deps,
+      "OWNER",
+      "staff_1",
+      "marca o pedido order_1 como entregue",
+    );
+    expect(out.kind).toBe("REFUSE");
+    if (out.kind === "REFUSE") {
+      expect(out.refusal.code).toBe("order.status.transition_illegal");
+    }
+    expect(writeAdjudicatedStatusTransition).not.toHaveBeenCalled();
+    expect(publishOrderStatusChanged).not.toHaveBeenCalled();
+  });
+});
+
 // ── BKL-084 — history context threaded into the planner system ────────────────
 //
 // The per-request `historyBlock` (a pre-rendered, DATA-fenced pt-BR block) must
@@ -1246,5 +1532,174 @@ describe("ops conductor — incident.ticket.close.staff reachable end-to-end (BK
       expect(out.refusal.code).toBe("ops.incident_close.not_actionable");
     }
     expect(closeIncidentFromEnvelope).not.toHaveBeenCalled();
+  });
+});
+
+// ── menu.special.set (SCN-114) ───────────────────────────────────────────────
+//
+// The daily-special-by-message verb driven through composeOpsConductor + a full
+// handleTurn against the REAL composed router + REAL kernel. Proves the layered
+// posture END-TO-END: the model-parsed (UNTRUSTED) payload ALWAYS parks for
+// confirmation (nothing is written on the first turn); ATTENDANT → REFUSE
+// staff_role_violation; a missing product / a past date REFUSE before any write;
+// a garbage price degrades to a no-discount CONFIRM (never a silent wrong price).
+// The park→confirm-resume→upsert flow is proven in ops-special-confirm-resume.e2e.
+
+const SPECIAL_PRODUCT = { id: "prod_1", status: "published", name: "Feijoada" };
+
+function specialCall(payload: Record<string, unknown>) {
+  return {
+    id: "tc-special",
+    name: "express_intent",
+    input: { capability: "menu.special.set", payload },
+  };
+}
+
+describe("ops conductor — menu.special.set reachable end-to-end (SCN-114)", () => {
+  it("OWNER 'especial de hoje é feijoada por 45' → REQUEST_CONFIRMATION; nothing written yet", async () => {
+    const dailySpecialCreate = vi.fn(async () => ({ id: "special_1" }));
+    const dailySpecialUpdate = vi.fn(async () => ({ id: "special_1" }));
+    const { model } = scriptedModel([
+      specialCall({ productId: "feijoada", date: "hoje", promoPriceCentavos: 4500 }),
+    ]);
+    const deps = buildDeps({
+      model,
+      medusaAdjudicated: vi.fn(),
+      writeAdjudicatedNote: vi.fn(),
+      product: null,
+      special: SPECIAL_PRODUCT,
+      dailySpecialCreate,
+      dailySpecialUpdate,
+    });
+    const out = await runOpsTurn(
+      deps,
+      "OWNER",
+      "staff_1",
+      "o especial de hoje é feijoada por 45 reais",
+    );
+    expect(out.kind).toBe("REQUEST_CONFIRMATION");
+    // No write until the operator confirms.
+    expect(dailySpecialCreate).not.toHaveBeenCalled();
+    expect(dailySpecialUpdate).not.toHaveBeenCalled();
+  });
+
+  it("ATTENDANT → REFUSE staff_role_violation; the special service NEVER runs", async () => {
+    const dailySpecialCreate = vi.fn(async () => ({ id: "special_1" }));
+    const { model } = scriptedModel([
+      specialCall({ productId: "feijoada", date: "hoje", promoPriceCentavos: 4500 }),
+    ]);
+    const deps = buildDeps({
+      model,
+      medusaAdjudicated: vi.fn(),
+      writeAdjudicatedNote: vi.fn(),
+      product: null,
+      special: SPECIAL_PRODUCT,
+      dailySpecialCreate,
+    });
+    const out = await runOpsTurn(
+      deps,
+      "ATTENDANT",
+      "staff_9",
+      "o especial de hoje é feijoada por 45 reais",
+    );
+    expect(out.kind).toBe("REFUSE");
+    if (out.kind === "REFUSE") {
+      expect(out.refusal.code).toBe("staff_role_violation");
+    }
+    expect(dailySpecialCreate).not.toHaveBeenCalled();
+  });
+
+  it("MANAGER → REQUEST_CONFIRMATION (matrix permits OWNER+MANAGER)", async () => {
+    const { model } = scriptedModel([
+      specialCall({ productId: "feijoada", date: "amanhã", promoPriceCentavos: 4500 }),
+    ]);
+    const deps = buildDeps({
+      model,
+      medusaAdjudicated: vi.fn(),
+      writeAdjudicatedNote: vi.fn(),
+      product: null,
+      special: SPECIAL_PRODUCT,
+    });
+    const out = await runOpsTurn(
+      deps,
+      "MANAGER",
+      "staff_2",
+      "muda o especial de amanhã pra feijoada por 45",
+    );
+    expect(out.kind).toBe("REQUEST_CONFIRMATION");
+  });
+
+  it("product missing → REFUSE menu.special.product_not_found; nothing written", async () => {
+    const dailySpecialCreate = vi.fn(async () => ({ id: "special_1" }));
+    const { model } = scriptedModel([
+      specialCall({ productId: "inexistente", date: "hoje", promoPriceCentavos: 4500 }),
+    ]);
+    const deps = buildDeps({
+      model,
+      medusaAdjudicated: vi.fn(),
+      writeAdjudicatedNote: vi.fn(),
+      product: null,
+      special: null, // resolver ⇒ special.product null ⇒ REFUSE product_not_found
+      dailySpecialCreate,
+    });
+    const out = await runOpsTurn(
+      deps,
+      "OWNER",
+      "staff_1",
+      "o especial de hoje é inexistente",
+    );
+    expect(out.kind).toBe("REFUSE");
+    if (out.kind === "REFUSE") {
+      expect(out.refusal.code).toBe("menu.special.product_not_found");
+    }
+    expect(dailySpecialCreate).not.toHaveBeenCalled();
+  });
+
+  it("a PAST date → REFUSE menu.special.date_past; nothing written", async () => {
+    const dailySpecialCreate = vi.fn(async () => ({ id: "special_1" }));
+    const { model } = scriptedModel([
+      specialCall({ productId: "feijoada", date: "2020-01-01", promoPriceCentavos: 4500 }),
+    ]);
+    const deps = buildDeps({
+      model,
+      medusaAdjudicated: vi.fn(),
+      writeAdjudicatedNote: vi.fn(),
+      product: null,
+      special: SPECIAL_PRODUCT,
+      dailySpecialCreate,
+    });
+    const out = await runOpsTurn(
+      deps,
+      "OWNER",
+      "staff_1",
+      "põe feijoada como especial de 2020",
+    );
+    expect(out.kind).toBe("REFUSE");
+    if (out.kind === "REFUSE") {
+      expect(out.refusal.code).toBe("menu.special.date_past");
+    }
+    expect(dailySpecialCreate).not.toHaveBeenCalled();
+  });
+
+  it("a garbage/unparseable price degrades to a no-discount CONFIRM (never a silent wrong price)", async () => {
+    const { model } = scriptedModel([
+      specialCall({ productId: "feijoada", date: "hoje", promoPrice: "abacaxi" }),
+    ]);
+    const deps = buildDeps({
+      model,
+      medusaAdjudicated: vi.fn(),
+      writeAdjudicatedNote: vi.fn(),
+      product: null,
+      special: SPECIAL_PRODUCT,
+    });
+    const out = await runOpsTurn(
+      deps,
+      "OWNER",
+      "staff_1",
+      "o especial de hoje é feijoada",
+    );
+    // The unparseable price is DROPPED (not written as a wrong number); the verb
+    // still parks for confirmation (which shows "sem desconto").
+    expect(out.kind).toBe("REQUEST_CONFIRMATION");
   });
 });

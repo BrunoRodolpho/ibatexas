@@ -28,6 +28,7 @@ import type {
   Journey,
   JourneyAct,
   JsonValue,
+  RawEnvelopeAct,
 } from "../schema/index.js"
 
 // ── Contracts ────────────────────────────────────────────────────────────────
@@ -60,6 +61,8 @@ export type ActExecutor<A extends JourneyAct> = (
 export interface ActExecutors {
   chat: ActExecutor<ChatAct>
   http: ActExecutor<HttpAct>
+  /** TEST-PLANE forged-envelope probe (POSTs a raw envelope to the ingress). */
+  rawEnvelope: ActExecutor<RawEnvelopeAct>
   fixture: ActExecutor<FixtureAct>
 }
 
@@ -133,6 +136,8 @@ async function executeAct(
       return executors.chat(act, ctx)
     case "http":
       return executors.http(act, ctx)
+    case "raw-envelope":
+      return executors.rawEnvelope(act, ctx)
     case "fixture":
       return executors.fixture(act, ctx)
   }

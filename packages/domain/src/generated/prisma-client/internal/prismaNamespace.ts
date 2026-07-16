@@ -393,6 +393,8 @@ export const ModelName = {
   Staff: 'Staff',
   StaffShift: 'StaffShift',
   Customer: 'Customer',
+  CustomerBroadcastConsent: 'CustomerBroadcastConsent',
+  BroadcastSend: 'BroadcastSend',
   Address: 'Address',
   CustomerPreferences: 'CustomerPreferences',
   CustomerOrderItem: 'CustomerOrderItem',
@@ -433,7 +435,7 @@ export type TypeMap<ExtArgs extends runtime.Types.Extensions.InternalArgs = runt
     omit: GlobalOmitOptions
   }
   meta: {
-    modelProps: "table" | "timeSlot" | "reservation" | "reservationTable" | "waitlist" | "review" | "staff" | "staffShift" | "customer" | "address" | "customerPreferences" | "customerOrderItem" | "orderProjection" | "orderStatusHistory" | "orderEventLog" | "payment" | "paymentStatusHistory" | "orderNote" | "loyaltyAccount" | "conversation" | "conversationMessage" | "deliveryZone" | "ingredient" | "recipe" | "recipeIngredient" | "dailySpecial" | "weeklySchedule" | "holiday" | "scheduleOverride" | "agentRun" | "agentRedTeamRun" | "llmTokenUsage" | "conversationIncident" | "opsAlert"
+    modelProps: "table" | "timeSlot" | "reservation" | "reservationTable" | "waitlist" | "review" | "staff" | "staffShift" | "customer" | "customerBroadcastConsent" | "broadcastSend" | "address" | "customerPreferences" | "customerOrderItem" | "orderProjection" | "orderStatusHistory" | "orderEventLog" | "payment" | "paymentStatusHistory" | "orderNote" | "loyaltyAccount" | "conversation" | "conversationMessage" | "deliveryZone" | "ingredient" | "recipe" | "recipeIngredient" | "dailySpecial" | "weeklySchedule" | "holiday" | "scheduleOverride" | "agentRun" | "agentRedTeamRun" | "llmTokenUsage" | "conversationIncident" | "opsAlert"
     txIsolationLevel: TransactionIsolationLevel
   }
   model: {
@@ -1100,6 +1102,154 @@ export type TypeMap<ExtArgs extends runtime.Types.Extensions.InternalArgs = runt
         count: {
           args: Prisma.CustomerCountArgs<ExtArgs>
           result: runtime.Types.Utils.Optional<Prisma.CustomerCountAggregateOutputType> | number
+        }
+      }
+    }
+    CustomerBroadcastConsent: {
+      payload: Prisma.$CustomerBroadcastConsentPayload<ExtArgs>
+      fields: Prisma.CustomerBroadcastConsentFieldRefs
+      operations: {
+        findUnique: {
+          args: Prisma.CustomerBroadcastConsentFindUniqueArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$CustomerBroadcastConsentPayload> | null
+        }
+        findUniqueOrThrow: {
+          args: Prisma.CustomerBroadcastConsentFindUniqueOrThrowArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$CustomerBroadcastConsentPayload>
+        }
+        findFirst: {
+          args: Prisma.CustomerBroadcastConsentFindFirstArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$CustomerBroadcastConsentPayload> | null
+        }
+        findFirstOrThrow: {
+          args: Prisma.CustomerBroadcastConsentFindFirstOrThrowArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$CustomerBroadcastConsentPayload>
+        }
+        findMany: {
+          args: Prisma.CustomerBroadcastConsentFindManyArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$CustomerBroadcastConsentPayload>[]
+        }
+        create: {
+          args: Prisma.CustomerBroadcastConsentCreateArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$CustomerBroadcastConsentPayload>
+        }
+        createMany: {
+          args: Prisma.CustomerBroadcastConsentCreateManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        createManyAndReturn: {
+          args: Prisma.CustomerBroadcastConsentCreateManyAndReturnArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$CustomerBroadcastConsentPayload>[]
+        }
+        delete: {
+          args: Prisma.CustomerBroadcastConsentDeleteArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$CustomerBroadcastConsentPayload>
+        }
+        update: {
+          args: Prisma.CustomerBroadcastConsentUpdateArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$CustomerBroadcastConsentPayload>
+        }
+        deleteMany: {
+          args: Prisma.CustomerBroadcastConsentDeleteManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        updateMany: {
+          args: Prisma.CustomerBroadcastConsentUpdateManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        updateManyAndReturn: {
+          args: Prisma.CustomerBroadcastConsentUpdateManyAndReturnArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$CustomerBroadcastConsentPayload>[]
+        }
+        upsert: {
+          args: Prisma.CustomerBroadcastConsentUpsertArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$CustomerBroadcastConsentPayload>
+        }
+        aggregate: {
+          args: Prisma.CustomerBroadcastConsentAggregateArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.AggregateCustomerBroadcastConsent>
+        }
+        groupBy: {
+          args: Prisma.CustomerBroadcastConsentGroupByArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.CustomerBroadcastConsentGroupByOutputType>[]
+        }
+        count: {
+          args: Prisma.CustomerBroadcastConsentCountArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.CustomerBroadcastConsentCountAggregateOutputType> | number
+        }
+      }
+    }
+    BroadcastSend: {
+      payload: Prisma.$BroadcastSendPayload<ExtArgs>
+      fields: Prisma.BroadcastSendFieldRefs
+      operations: {
+        findUnique: {
+          args: Prisma.BroadcastSendFindUniqueArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$BroadcastSendPayload> | null
+        }
+        findUniqueOrThrow: {
+          args: Prisma.BroadcastSendFindUniqueOrThrowArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$BroadcastSendPayload>
+        }
+        findFirst: {
+          args: Prisma.BroadcastSendFindFirstArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$BroadcastSendPayload> | null
+        }
+        findFirstOrThrow: {
+          args: Prisma.BroadcastSendFindFirstOrThrowArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$BroadcastSendPayload>
+        }
+        findMany: {
+          args: Prisma.BroadcastSendFindManyArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$BroadcastSendPayload>[]
+        }
+        create: {
+          args: Prisma.BroadcastSendCreateArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$BroadcastSendPayload>
+        }
+        createMany: {
+          args: Prisma.BroadcastSendCreateManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        createManyAndReturn: {
+          args: Prisma.BroadcastSendCreateManyAndReturnArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$BroadcastSendPayload>[]
+        }
+        delete: {
+          args: Prisma.BroadcastSendDeleteArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$BroadcastSendPayload>
+        }
+        update: {
+          args: Prisma.BroadcastSendUpdateArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$BroadcastSendPayload>
+        }
+        deleteMany: {
+          args: Prisma.BroadcastSendDeleteManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        updateMany: {
+          args: Prisma.BroadcastSendUpdateManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        updateManyAndReturn: {
+          args: Prisma.BroadcastSendUpdateManyAndReturnArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$BroadcastSendPayload>[]
+        }
+        upsert: {
+          args: Prisma.BroadcastSendUpsertArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$BroadcastSendPayload>
+        }
+        aggregate: {
+          args: Prisma.BroadcastSendAggregateArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.AggregateBroadcastSend>
+        }
+        groupBy: {
+          args: Prisma.BroadcastSendGroupByArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.BroadcastSendGroupByOutputType>[]
+        }
+        count: {
+          args: Prisma.BroadcastSendCountArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.BroadcastSendCountAggregateOutputType> | number
         }
       }
     }
@@ -3122,6 +3272,33 @@ export const CustomerScalarFieldEnum = {
 export type CustomerScalarFieldEnum = (typeof CustomerScalarFieldEnum)[keyof typeof CustomerScalarFieldEnum]
 
 
+export const CustomerBroadcastConsentScalarFieldEnum = {
+  id: 'id',
+  phone: 'phone',
+  optedOut: 'optedOut',
+  source: 'source',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+} as const
+
+export type CustomerBroadcastConsentScalarFieldEnum = (typeof CustomerBroadcastConsentScalarFieldEnum)[keyof typeof CustomerBroadcastConsentScalarFieldEnum]
+
+
+export const BroadcastSendScalarFieldEnum = {
+  id: 'id',
+  senderStaffId: 'senderStaffId',
+  template: 'template',
+  totalCount: 'totalCount',
+  sentCount: 'sentCount',
+  skippedCount: 'skippedCount',
+  failedCount: 'failedCount',
+  results: 'results',
+  createdAt: 'createdAt'
+} as const
+
+export type BroadcastSendScalarFieldEnum = (typeof BroadcastSendScalarFieldEnum)[keyof typeof BroadcastSendScalarFieldEnum]
+
+
 export const AddressScalarFieldEnum = {
   id: 'id',
   customerId: 'customerId',
@@ -4019,6 +4196,8 @@ export type GlobalOmitConfig = {
   staff?: Prisma.StaffOmit
   staffShift?: Prisma.StaffShiftOmit
   customer?: Prisma.CustomerOmit
+  customerBroadcastConsent?: Prisma.CustomerBroadcastConsentOmit
+  broadcastSend?: Prisma.BroadcastSendOmit
   address?: Prisma.AddressOmit
   customerPreferences?: Prisma.CustomerPreferencesOmit
   customerOrderItem?: Prisma.CustomerOrderItemOmit

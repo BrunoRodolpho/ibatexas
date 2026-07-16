@@ -48,6 +48,8 @@ const mockOrderEventLogFindManyOuter = vi.hoisted(() => vi.fn())
 const mockLoyaltyAccountUpdateMany = vi.hoisted(() => vi.fn())
 const mockReservationUpdateMany = vi.hoisted(() => vi.fn())
 const mockExecuteRaw = vi.hoisted(() => vi.fn())
+// WS3 broadcast-PII erasure — customer_broadcast_consent scrub (raw phone key).
+const mockBroadcastConsentDeleteMany = vi.hoisted(() => vi.fn())
 
 const txClient = {
   customer: { update: mockCustomerUpdate },
@@ -106,6 +108,8 @@ vi.mock("../../client.js", () => ({
       findMany: mockOrderEventLogFindManyOuter,
       updateMany: mockOrderEventLogUpdateManyOuter,
     },
+    // WS3 broadcast-PII erasure: opt-out registry keyed by canonical phone.
+    customerBroadcastConsent: { deleteMany: mockBroadcastConsentDeleteMany },
   },
 }))
 
@@ -469,6 +473,9 @@ describe("anonymizeCustomer — H3 wave-a1 scope expansion (7 surfaces)", () => 
     mockLoyaltyAccountUpdateMany.mockResolvedValue({ count: 0 })
     mockReservationUpdateMany.mockResolvedValue({ count: 0 })
     mockExecuteRaw.mockResolvedValue(0)
+    // WS3 broadcast-PII default (customers carry no phone on the pre-tx read
+    // unless a test opts in, so the broadcast scrub stays inert by default).
+    mockBroadcastConsentDeleteMany.mockResolvedValue({ count: 0 })
     mockOrderProjectionFindManyOuter.mockResolvedValue([])
     mockConversationFindManyOuter.mockResolvedValue([])
     mockConversationMessageCount.mockResolvedValue(0)
@@ -602,6 +609,82 @@ describe("anonymizeCustomer — H3 wave-a1 scope expansion (7 surfaces)", () => 
       mockExecuteRaw.mockRejectedValue(new Error('relation "turn_trace" does not exist'))
       const res = await anonymizeCustomer("cust_01")
       // Erasure failure is swallowed — the rest of the scrub still succeeds.
+      expect(res).toEqual({ success: true })
+    })
+  })
+
+  // ── WS3: broadcast-PII erasure (customer_broadcast_consent + ────────
+  //         broadcast_send.results). Both key on the raw E.164 phone
+  //         outside the Customer record, so the core tx never touches them.
+
+  describe("WS3: broadcast-PII erasure", () => {
+    it("deletes the customer_broadcast_consent row(s) keyed by the canonical phone", async () => {
+      // The pre-tx read supplies the raw phone; anonymize canonicalizes it with
+      // toE164BR (strips spaces/formatting) to match the consent table key.
+      mockCustomerFindUnique.mockResolvedValue({
+        medusaId: null,
+        phone: "+55 11 99999-0000",
+      })
+      await anonymizeCustomer("cust_01")
+      expect(mockBroadcastConsentDeleteMany).toHaveBeenCalledWith({
+        where: { phone: "+5511999990000" },
+      })
+    })
+
+    it("redacts the phone inside broadcast_send.results via a surgical JSONB update", async () => {
+      mockCustomerFindUnique.mockResolvedValue({
+        medusaId: null,
+        phone: "+5511999990000",
+      })
+      await anonymizeCustomer("cust_01")
+      // A raw UPDATE targets ibx_domain.broadcast_send with a @> containment
+      // filter (only rows that reference this phone) — the aggregate row is
+      // NEVER deleted; only the matching recipient value is rewritten.
+      const sqlCall = mockExecuteRaw.mock.calls.find((c) => {
+        const template = c[0] as { join?: (s: string) => string } | string[]
+        const text = Array.isArray(template) ? template.join(" ") : String(template)
+        return text.includes("broadcast_send")
+      })
+      expect(sqlCall).toBeDefined()
+      const template = sqlCall![0] as string[]
+      const sqlText = template.join(" ")
+      expect(sqlText).toContain("UPDATE ibx_domain.broadcast_send")
+      expect(sqlText).not.toContain("DELETE FROM ibx_domain.broadcast_send")
+      // The canonical phone + the containment filter are bound params.
+      expect(sqlCall!.slice(1)).toContain("+5511999990000")
+      expect(sqlCall!.slice(1)).toContain('[{"recipient":"+5511999990000"}]')
+    })
+
+    it("no-ops the broadcast scrub for an already-anonymized phone (idempotent re-run)", async () => {
+      mockCustomerFindUnique.mockResolvedValue({
+        medusaId: null,
+        phone: "anonymized:deadbeefdeadbeef",
+      })
+      await anonymizeCustomer("cust_01")
+      expect(mockBroadcastConsentDeleteMany).not.toHaveBeenCalled()
+      const touchedBroadcast = mockExecuteRaw.mock.calls.some((c) => {
+        const template = c[0] as string[]
+        return Array.isArray(template) && template.join(" ").includes("broadcast_send")
+      })
+      expect(touchedBroadcast).toBe(false)
+    })
+
+    it("no-ops the broadcast scrub for a non-E.164 phone (toE164BR throws)", async () => {
+      mockCustomerFindUnique.mockResolvedValue({
+        medusaId: null,
+        phone: "not-a-phone",
+      })
+      await anonymizeCustomer("cust_01")
+      expect(mockBroadcastConsentDeleteMany).not.toHaveBeenCalled()
+    })
+
+    it("is fail-soft: a broadcast-consent delete error never aborts anonymize", async () => {
+      mockCustomerFindUnique.mockResolvedValue({
+        medusaId: null,
+        phone: "+5511999990000",
+      })
+      mockBroadcastConsentDeleteMany.mockRejectedValue(new Error("db down"))
+      const res = await anonymizeCustomer("cust_01")
       expect(res).toEqual({ success: true })
     })
   })

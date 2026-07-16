@@ -72,7 +72,7 @@ import { failSafeMemory } from "./claustrum/fail-safe-memory.js";
 import { noopGroundingProvider, noopMemoryProvider } from "./claustrum/noop-memory-grounding.js";
 import { OllamaFetchClient } from "./claustrum/ollama-fetch-client.js";
 import { providerCanEmbed } from "./claustrum/provider-embed-capability.js";
-import type { StoreHoursRead } from "./claustrum/turn-reads.js";
+import type { StoreHoursRead, StoreHoursForDateRead } from "./claustrum/turn-reads.js";
 import { WhatsAppChannel } from "@claustrum/channel-whatsapp";
 import { WebChannel } from "@claustrum/channel-web";
 
@@ -106,13 +106,15 @@ import {
   type RedisPubSubClient,
 } from "@adjudicate/audit";
 
-import { prisma, claustrumMemoryPrisma, createOrderCommandService, createOrderQueryService, createOrderEventLogService, createPaymentCommandService, createPaymentQueryService, createOpsAlertService, createIncidentService } from "@ibatexas/domain";
+import { prisma, claustrumMemoryPrisma, createOrderCommandService, createOrderQueryService, createOrderEventLogService, createPaymentCommandService, createPaymentQueryService, createOpsAlertService, createIncidentService, createScheduleService, createDailySpecialService } from "@ibatexas/domain";
 import { rehydratePaymentState } from "@ibatexas/pack-payments";
 import {
   emitLlmCall,
   getRedisClient,
   getScheduleSignal,
   getTodayHoursText,
+  getHoursTextForDate,
+  invalidateScheduleCache,
   loadSchedule,
   rk,
   type ScheduleSignal,
@@ -249,9 +251,27 @@ import {
   createIbatexasPlanner,
   type ClaimAwarePlannerPort,
 } from "./claustrum/ibatexas-planner.js";
-import { buildClaimsSeams, warnOncePerMessage } from "./claustrum/claims-pipeline.js";
+import {
+  buildClaimsSeams,
+  claimsPipelineEnabled,
+  warnOncePerMessage,
+} from "./claustrum/claims-pipeline.js";
 import { createIbatexasResponder } from "./claustrum/ibatexas-responder.js";
+// BKL-078 — the customer-plane question-shape SAFE-UNKNOWN gate (flag-gated in
+// buildResponder): the pure discriminator + the safe template render source.
+import { shouldDegradeToSafeUnknown } from "./claustrum/interrogative-discriminator.js";
+import {
+  renderPropositionFreeText,
+  SAFE_TEMPLATES,
+} from "./claustrum/slot-grammar.js";
+import { asksAboutStoreState, closedHoursDisclosure } from "./claustrum/closed-hours.js";
 import { createIbatexasPromptComposer } from "./claustrum/prompts/ibatexas-prompts.js";
+import {
+  closePromptOverridePool,
+  ensurePromptOverrideTable,
+  loadPromptOverrides,
+} from "./claustrum/prompts/prompt-overrides.js";
+import { closeRcaReadPool } from "./routes/qa-rca.js";
 import {
   createTurnTraceWriter,
   type TurnTraceWriter,
@@ -299,6 +319,7 @@ import {
   createOpsResolver,
   buildOpsRefundResumeState,
   buildOpsPriceResumeState,
+  buildOpsSpecialResumeState,
 } from "./ops/ops-resolver.js";
 import {
   readOpsProductPricing,
@@ -572,6 +593,17 @@ export interface ClaustrumBootstrapOptions {
     | Promise<StoreHoursRead | undefined>
     | StoreHoursRead
     | undefined;
+  /**
+   * BKL-138 — per-turn DAY-SPECIFIC operating-hours source for the claim planner's
+   * STORE_HOURS_FOR_DATE tag-then-derive (SCN-002/003). Default: the production
+   * resolver (Redis read-through `loadSchedule()` + env timezone →
+   * {@link getHoursTextForDate} for the QUERIED `isoDate`). Injectable so
+   * deterministic suites can PIN it. Return `undefined` to leave a
+   * STORE_HOURS_FOR_DATE candidate value-undefined (C6 ABSTAIN → honest UNKNOWN).
+   */
+  readonly resolveHoursForDate?: (
+    isoDate: string,
+  ) => Promise<StoreHoursForDateRead | undefined> | StoreHoursForDateRead | undefined;
 }
 
 /**
@@ -681,6 +713,16 @@ export async function resetClaustrumForTests(): Promise<ClaustrumResetReport> {
   _pgPool = null;
   _ownsPgPool = false;
 
+  // End the prompt-override store's module-singleton pool too (warmed at boot,
+  // not owned by _pgPool) so a bootstrap-harness leaves no open pg handle when it
+  // stops its postgres container — otherwise its idle connection raises an
+  // unhandled 57P01 at teardown. Re-creates lazily on the next store call.
+  await closePromptOverridePool();
+
+  // Same class of leak for the dev-only RCA read routes' module-singleton pool
+  // (lazily warmed on first /internal/qa/rca/* read, not owned by _pgPool).
+  await closeRcaReadPool();
+
   __resetAuditSink();
   _resetMetricsSink();
 
@@ -732,6 +774,23 @@ export interface AdjudicatorBridgeDeps {
    * (`sink`, fail-closed) is independent of this dep.
    */
   readonly auditReads?: AuditReadPaths;
+}
+
+/**
+ * SCN-114 — read a product's `{id,status,name}` snapshot by id via the admin
+ * catalog (the SAME `/admin/products/:id` read `menu.special.set`'s plan-stage
+ * `lookupSpecialProduct` uses). `null` when the product is absent. Shared by the
+ * plan-stage resolver AND the confirm-RESUME re-projection so plan + resume see
+ * one shape.
+ */
+async function readSpecialProductViaMedusa(
+  productId: string,
+): Promise<{ id: string; status: string; name: string } | null> {
+  const data = (await medusaAdmin(`/admin/products/${productId}`)) as {
+    product?: { id: string; status: string; title: string };
+  };
+  const p = data.product;
+  return p ? { id: p.id, status: p.status, name: p.title } : null;
 }
 
 /**
@@ -814,6 +873,35 @@ async function enrichResumeState(
     } catch {
       // Fail-closed: a read error re-projects a not-found state ⇒ REFUSE.
       return buildOpsPriceResumeState(null, { staffId, tenantId });
+    }
+  }
+
+  // SCN-114 — the OPS-plane daily-special confirm-resume (an `admin:`-session
+  // `menu.special.set` parked by the UNTRUSTED-taint CONFIRM overlay) re-projects
+  // its own `{ ctx, special }` from a FRESH product read of the parked (resolver-
+  // rewritten, trusted) productId + a FRESH today reading — NOT the customer-
+  // scoped `resolveAndAssemble` below (the ops plane's `staff:<id>` owns no
+  // products, so that path would project `special` absent and REFUSE a valid
+  // "sim"). The fresh reads are safe: a vanished product / a now-past date REFUSE
+  // on resume via the existence / not-past guards.
+  if (
+    envelope.kind === "menu.special.set" &&
+    envelope.actor.sessionId.startsWith("admin:")
+  ) {
+    const tenantId = process.env.KERNEL_TENANT_ID ?? "ibatexas";
+    const staffId = envelope.actor.sessionId.slice("admin:".length);
+    const payload = (envelope.payload ?? {}) as Record<string, unknown>;
+    const productId =
+      typeof payload.productId === "string" ? payload.productId : "";
+    if (productId === "") {
+      return buildOpsSpecialResumeState(null, { staffId, tenantId });
+    }
+    try {
+      const product = await readSpecialProductViaMedusa(productId);
+      return buildOpsSpecialResumeState(product, { staffId, tenantId });
+    } catch {
+      // Fail-closed: a read error re-projects a not-found state ⇒ REFUSE.
+      return buildOpsSpecialResumeState(null, { staffId, tenantId });
     }
   }
 
@@ -1124,12 +1212,36 @@ function installFirstPartyPacks(): SealablePackInput[] {
 // minimum — NOT guard function BODIES (describePolicyBundle emits only metadata).
 // It is a config-DRIFT tripwire complementary to golden vectors, not behavioral
 // attestation.
-function parseSealDigests(raw: string | undefined): Map<string, string> {
+// Exported for unit testing (config-seal.test.ts). BKL-129: hardened to FAIL
+// CLOSED on a malformed entry instead of silently skipping it — process-compose's
+// env-file parser hands a trailing `# comment` through as the VALUE whenever the
+// value is EMPTY (`CONFIG_SEAL_DIGESTS=   # e.g. …=<64hex>`). Left unchecked, the
+// comment parsed as a pinned pack id (`# e.g. ibatexas/pack-orders`) with a bogus
+// `<64hex>` digest and boot refused with a MISLEADING "pack config drift" error.
+export function parseSealDigests(raw: string | undefined): Map<string, string> {
   const map = new Map<string, string>();
-  if (!raw) return map;
+  // Genuinely empty/unset (incl. all-whitespace) ⇒ no enforcement (safe default).
+  if (!raw || raw.trim().length === 0) return map;
   for (const entry of raw.split(";")) {
-    const [id, hex] = entry.split("=").map((s) => s.trim());
-    if (id && hex) map.set(id, hex.toLowerCase());
+    const trimmed = entry.trim();
+    if (trimmed.length === 0) continue; // tolerate trailing/duplicate ';'
+    const [id, hex] = trimmed.split("=").map((s) => s.trim());
+    const malformed =
+      !id ||
+      !hex ||
+      id.startsWith("#") ||
+      !/^[0-9a-f]{64}$/.test(hex.toLowerCase());
+    if (malformed) {
+      throw new Error(
+        `[config-seal] CONFIG_SEAL_DIGESTS is malformed — refusing to boot. ` +
+          `Expected '<packId>=<64-hex-digest>[;<packId>=<64-hex-digest>…]' ` +
+          `(mint with \`ibx kernel seal\`). Offending entry: '${entry}'. ` +
+          `Did you leave an inline comment on an empty env value? process-compose ` +
+          `hands a trailing '# comment' through as the VALUE when the value is ` +
+          `empty — move the comment to its own line above the key.`,
+      );
+    }
+    map.set(id, hex.toLowerCase());
   }
   return map;
 }
@@ -2459,12 +2571,35 @@ export async function bootstrapClaustrum(
     new Pool({
       connectionString: process.env.DATABASE_URL,
     });
+  // A pg Pool emits 'error' when an IDLE client's backend dies (a transient
+  // network blip / server restart in prod, or the bootstrap-harness stopping its
+  // postgres container mid-run in tests). With no listener, node-pg re-throws it
+  // as an UNHANDLED error that crashes the process / fails the vitest run — the
+  // 57P01 "terminating connection due to administrator command" teardown race.
+  // Idle-connection loss is recoverable: the pool reconnects on the next acquire.
+  // Only attach to a bootstrap-CREATED pool (an injected one is caller-owned and
+  // would accumulate a listener per boot across a test file's repeated bootstraps).
+  if (!options.pgPool) {
+    pgPool.on("error", (err) => {
+      logger.warn(
+        { component: "bootstrap", error: String(err) },
+        "pg pool idle-client error (recoverable; pool reconnects on next use)",
+      );
+    });
+  }
   // Track for resetClaustrumForTests(): only a bootstrap-created pool is
   // OWNED (and therefore ended) by the reset hook; an injected pool stays
   // caller-owned.
   _pgPool = pgPool;
   _ownsPgPool = !options.pgPool;
   await assertAuditPostgresReady(pgPool);
+
+  // Prompt-override store (qa-viewer Prompts editor): create the table + warm
+  // the in-memory snapshot so resolvePrompt() serves any edited prompts. Both
+  // are best-effort and fail-safe — on error the runtime uses the compiled-in
+  // personas unchanged (byte-identical to today; golden + drift guards green).
+  await ensurePromptOverrideTable();
+  await loadPromptOverrides();
 
   const modelProvider = resolveModelProvider(options);
 
@@ -2701,6 +2836,23 @@ export async function bootstrapClaustrum(
         return undefined;
       }
     });
+  // BKL-138 — the per-turn DAY-SPECIFIC hours source the claim planner derives a
+  // STORE_HOURS_FOR_DATE candidate's `hoursText` from for a QUERIED ISO date (the SAME
+  // first-party read the investigator records under `schedule:store_hours:{date}`).
+  // Redis read-through schedule + env tz via `getHoursTextForDate`. Returns `undefined`
+  // on a schedule-load failure (never a fabricated string, BKL-026) → C6 ABSTAIN →
+  // honest UNKNOWN. Best-effort: never throws out of the turn.
+  const resolveHoursForDate =
+    options.resolveHoursForDate ??
+    (async (isoDate: string): Promise<StoreHoursForDateRead | undefined> => {
+      const tz = process.env.RESTAURANT_TIMEZONE ?? "America/Sao_Paulo";
+      try {
+        const hoursText = getHoursTextForDate(await loadSchedule(), tz, isoDate);
+        return hoursText === null ? undefined : { hoursText };
+      } catch {
+        return undefined;
+      }
+    });
   const buildPlanner = (model: ModelProvider): ClaimAwarePlannerPort =>
     createIbatexasPlanner({
       model,
@@ -2712,6 +2864,8 @@ export async function bootstrapClaustrum(
       resolveScheduleSignal,
       // BKL-121 — the STORE_HOURS tag-then-derive first-party read source.
       resolveStoreHours,
+      // BKL-138 — the STORE_HOURS_FOR_DATE per-date tag-then-derive read source.
+      resolveHoursForDate,
       // BKL-027 — activate the one-hop read-tool enrichment loop.
       readToolExecutors: IBATEXAS_READ_TOOL_EXECUTORS,
     });
@@ -2723,6 +2877,38 @@ export async function bootstrapClaustrum(
       promptComposer,
       telemetry,
       resolveScheduleSignal,
+      // BKL-078 — the customer-plane question-shape SAFE-UNKNOWN gate, wired ONLY
+      // when ENABLE_CLAIMS_PIPELINE is on (the SAME flag buildClaimsSeams reads).
+      // Closes the `prose_preserved` hallucination leak on the conversational
+      // fallback: a non-smalltalk info-question that produced no validated claim
+      // degrades to the deterministic proposition-free SAFE_UNKNOWN reply instead of
+      // a model-authored prose draft. The ops conductor NEVER wires this (D5,
+      // ops-conductor.ts). Flag-OFF → omitted → byte-identical.
+      ...(claimsPipelineEnabled()
+        ? {
+            safeUnknown: {
+              gate: (text: string) => shouldDegradeToSafeUnknown(text),
+              render: (
+                schedule: ScheduleSignal | undefined,
+                userText: string,
+              ): string => {
+                const base = renderPropositionFreeText(SAFE_TEMPLATES.unknown);
+                // D3 (relevance-gated) — append the closed-hours disclosure ONLY when
+                // the degraded question is about ordering / hours / availability. On a
+                // topically-unrelated question the scheduled-pickup offer is
+                // unsolicited noise, so the bare epistemic SAFE_UNKNOWN ships alone.
+                const orderingOrHours =
+                  asksAboutStoreState(userText) ||
+                  /\b(pedid|pedir|encomend|entreg|retirad|agend|compr|reserv|cardapio|card[aá]pio|menu)/i.test(
+                    userText,
+                  );
+                return schedule?.isClosed && orderingOrHours
+                  ? `${base} ${closedHoursDisclosure(schedule)}`
+                  : base;
+              },
+            },
+          }
+        : {}),
     });
 
   // B-PR1 — claims-runtime seams (SDD §M / §Q.6), FLAG DEFAULT-OFF. The planner
@@ -2869,6 +3055,12 @@ export async function bootstrapClaustrum(
         : read.brlVariants.map((v) => v.variantId);
     },
     orderCmdSvc: createOrderCommandService(),
+    // SCN-114 — the daily-special upsert service (the SAME service the NEW-005
+    // admin route uses). The menu.special.set executor upserts through it; no
+    // Medusa egress. The customer-facing read (GET /api/specials/today) reads the
+    // same rows fresh, so a set surfaces with zero extra wiring (bar the route's
+    // 30s HTTP Cache-Control).
+    dailySpecialSvc: createDailySpecialService(),
     // BKL-085 — the ops refund POST-adjudication ledger write (writeAdjudicatedRefund
     // does NO adjudication; the composed router already produced the Decision).
     paymentCmdSvc: createPaymentCommandService(),
@@ -2877,6 +3069,13 @@ export async function bootstrapClaustrum(
     // these, exactly like the admin ops-alerts / incidents resolve routes.
     opsAlertSvc,
     incidentSvc: opsIncidentSvc,
+    // SCN-127 — the schedule-override write path. Reuses the SAME
+    // createScheduleService().upsertOverride the admin schedule override route
+    // uses (a domain-service verb; NO Medusa egress), then invalidates the Redis
+    // schedule cache exactly like that route so the customer-facing hours/closed-
+    // notice reads pick the override up immediately (TTL bounds any lag).
+    scheduleSvc: createScheduleService(),
+    invalidateScheduleCache,
     // BKL-085 — publish payment.status_changed after a committed refund write,
     // exactly like the admin refund route (drives auto-cancel-on-full-refund).
     publishPaymentStatusChanged: (event) =>
@@ -3026,6 +3225,13 @@ export async function bootstrapClaustrum(
         // re-projection (enrichResumeState) so plan + resume see one shape.
         lookupProductPricing: async (productId) =>
           computeOpsPricingSnapshot(await readOpsProductPricing(medusaAdmin, productId)),
+        // SCN-114 — the `{id,status,name}` snapshot the menu.special.set guards +
+        // CONFIRM prompt read. Reuses the SAME admin product read the availability
+        // verb uses (via the shared readSpecialProductViaMedusa, which also backs
+        // the confirm-RESUME re-projection); a missing product ⇒ null ⇒ fail-closed
+        // REFUSE product_not_found. Name→id resolution reuses listProductsByName.
+        lookupSpecialProduct: async (productId) =>
+          readSpecialProductViaMedusa(productId),
         // BKL-089 — deterministic product NAME→id resolution candidate read.
         // Reuses the SAME admin catalog list read the admin products surface
         // uses (GET /api/admin/products → medusaAdmin('/admin/products?q=...')),

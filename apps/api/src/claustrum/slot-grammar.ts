@@ -101,6 +101,25 @@ export function isPropositionFree(template: Template): boolean {
   return template.slots.every((slot) => slot.kind !== "PROPOSITION");
 }
 
+/**
+ * Render a PROPOSITION-FREE template (a safe posture — unknown / refused / escalate)
+ * to its pt-BR text by concatenating its LITERAL slots. THROWS if handed a template
+ * carrying a PROPOSITION slot (those require a VALIDATED-claim binding — use the
+ * claims renderer, not this). Pure. Exists so a caller that needs the safe text
+ * WITHOUT the full renderer (the BKL-078 responder gate) reuses the ONE canonical
+ * template string instead of re-typing the literal (no drift from SAFE_TEMPLATES).
+ */
+export function renderPropositionFreeText(template: Template): string {
+  if (!isPropositionFree(template)) {
+    throw new Error(
+      `[slot-grammar] renderPropositionFreeText requires a proposition-free template; '${template.claimType}' carries a PROPOSITION slot`,
+    );
+  }
+  return template.slots
+    .map((slot) => (slot.kind === "LITERAL" ? slot.text : ""))
+    .join("");
+}
+
 /** Convenience constructors — keep the table below readable; pure, no behaviour. */
 const lit = (text: string): TemplateSlot => ({ kind: "LITERAL", text });
 const prop = (claimType: string, field: string): TemplateSlot => ({
@@ -131,6 +150,9 @@ export const PAYMENT_STATUS = "PAYMENT_STATUS";
 export const STORE_OPEN_NOW = "STORE_OPEN_NOW";
 /** BKL-121 — the today's-hours read (public, non-Triad; override/holiday falsified). */
 export const STORE_HOURS = "STORE_HOURS";
+/** BKL-138 — the DAY-SPECIFIC hours read (public, non-Triad; per-date override/holiday
+ *  falsified). The per-date twin of STORE_HOURS (SCN-002/003). */
+export const STORE_HOURS_FOR_DATE = "STORE_HOURS_FOR_DATE";
 
 /**
  * Per-type `validated` (asserting) templates, keyed by claim type. Each is the ONE
@@ -156,6 +178,25 @@ export const VALIDATED_TEMPLATES: Readonly<Record<string, Template>> = {
     slots: [
       lit("Hoje nosso horário de funcionamento é: "),
       prop(STORE_HOURS, "hoursText"),
+      lit("."),
+    ],
+  },
+  // BKL-138 — the DAY-SPECIFIC hours template (SCN-002/003). A SINGLE ledger-bound
+  // proposition prop(STORE_HOURS_FOR_DATE, "hoursText"), bound 1:1 to the C6
+  // value-binding FIELD (claim-registry.ts `valueBinding.path = ["hoursText"]`) — the
+  // per-date twin of STORE_HOURS. Deliberately DAY-GENERIC static text ("nesse dia" —
+  // the day the customer asked about): the single-proposition shape mirrors the proven
+  // STORE_HOURS chain and its ONE `buildClaimDefinition` value projection exactly, so
+  // it stays sound-by-construction (a second, differently-projected day-name
+  // proposition would fight the auto-assembled ClaimDefinition — see claim-definition-
+  // registry.ts). Renders the QUERIED date's REAL weekly hours; a holiday/override on
+  // that date already demoted the claim to UNKNOWN upstream (never reaches here).
+  [STORE_HOURS_FOR_DATE]: {
+    claimType: STORE_HOURS_FOR_DATE,
+    posture: "validated",
+    slots: [
+      lit("Nesse dia, nosso horário de funcionamento é: "),
+      prop(STORE_HOURS_FOR_DATE, "hoursText"),
       lit("."),
     ],
   },

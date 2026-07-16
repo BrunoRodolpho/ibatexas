@@ -520,6 +520,16 @@ describe("resolve-and-assemble — order.item.add quantity coercion (B3)", () =>
   });
 });
 
+// BKL-038 — in-flight modify kinds share order.cancel's NL→id resolution
+// (resolveOrderId → most-recent order) and forced confirm-on-autoresolve. Same
+// list drives both the resolution assertions and the confirm-guard assertions.
+const INFLIGHT_MODIFY_KINDS = [
+  "order.amend.request",
+  "order.note.add",
+  "order.address.change",
+  "order.type.switch",
+] as const;
+
 describe("resolve-and-assemble — NL→id confirm-first (auto-resolve money intents)", () => {
   it("order.cancel with NO orderId auto-resolves the most-recent order + flags autoResolvedMoneyRef", async () => {
     orderListByCustomer = async () => ({
@@ -592,12 +602,70 @@ describe("resolve-and-assemble — NL→id confirm-first (auto-resolve money int
     expect((two.payload as { reservationId?: string }).reservationId).toBeUndefined();
     expect(two.ctx.autoResolvedMoneyRef).toBeUndefined();
   });
+
+  // BKL-038 — the in-flight modify kinds resolve "meu pedido" exactly like
+  // order.cancel: unambiguous single-order → most-recent order + confirm flag.
+  it.each(INFLIGHT_MODIFY_KINDS)(
+    "%s with NO orderId auto-resolves the most-recent order + flags autoResolvedMoneyRef",
+    async (kind) => {
+      orderListByCustomer = async () => ({
+        orders: [{ id: "ord_recent", customerId: "c1" }],
+        count: 1,
+      });
+      orderGetById = async () => ({ customerId: "c1", paymentStatus: "paid", totalInCentavos: 5000 });
+      const { payload, ctx } = await resolveAndAssemble({
+        kind,
+        payload: {},
+        customerId: "c1",
+        channel: "whatsapp",
+      });
+      expect((payload as { orderId?: string }).orderId).toBe("ord_recent");
+      expect(ctx.autoResolvedMoneyRef).toBe(true);
+    },
+  );
+
+  it.each(INFLIGHT_MODIFY_KINDS)(
+    "%s with an EXPLICIT orderId does NOT auto-resolve (no confirm flag)",
+    async (kind) => {
+      orderGetById = async () => ({ customerId: "c1", paymentStatus: "paid", totalInCentavos: 5000 });
+      const { payload, ctx } = await resolveAndAssemble({
+        kind,
+        payload: { orderId: "ord_explicit" },
+        customerId: "c1",
+        channel: "whatsapp",
+      });
+      expect((payload as { orderId?: string }).orderId).toBe("ord_explicit");
+      expect(ctx.autoResolvedMoneyRef).toBeUndefined();
+    },
+  );
+
+  // (b) resolution failure keeps today's safe behavior: no order → no guessed
+  // target, no flag → the pack REFUSEs cleanly downstream (never a silent guess).
+  it.each(INFLIGHT_MODIFY_KINDS)(
+    "%s with NO orders → no auto-resolve, no flag (clean REFUSE downstream)",
+    async (kind) => {
+      orderListByCustomer = async () => ({ orders: [], count: 0 });
+      const { payload, ctx } = await resolveAndAssemble({
+        kind,
+        payload: {},
+        customerId: "c1",
+        channel: "whatsapp",
+      });
+      expect((payload as { orderId?: string }).orderId).toBeUndefined();
+      expect(ctx.autoResolvedMoneyRef).toBeUndefined();
+    },
+  );
 });
 
 describe("confirm-on-autoresolve guard (mirrors claustrum-bootstrap)", () => {
   const guard = createConfirmGuard<string, unknown, unknown>({
     matches: (env) =>
-      new Set(["order.cancel", "payment.pix.regenerate", "reservation.cancel"]).has(env.kind),
+      new Set([
+        "order.cancel",
+        "payment.pix.regenerate",
+        "reservation.cancel",
+        ...INFLIGHT_MODIFY_KINDS, // BKL-038 — mirrors AUTORESOLVE_CONFIRM_KINDS
+      ]).has(env.kind),
     extract: (_env, state) =>
       (state as { ctx?: { autoResolvedMoneyRef?: boolean } }).ctx?.autoResolvedMoneyRef ? 1 : 0,
     threshold: 1,
@@ -621,16 +689,37 @@ describe("confirm-on-autoresolve guard (mirrors claustrum-bootstrap)", () => {
     expect(guard(cancelEnv, { ctx: { autoResolvedMoneyRef: false } })).toBeNull();
     expect(guard(cancelEnv, { ctx: {} })).toBeNull();
   });
-  it("does not fire for non-money kinds", () => {
-    const noteEnv = buildEnvelope({
-      kind: "order.note.add",
+  it("does not fire for a kind outside the auto-resolve set", () => {
+    // order.review.submit is an order-by-id kind but is NOT auto-resolved, so the
+    // guard must never fire for it even if the flag were somehow present.
+    const reviewEnv = buildEnvelope({
+      kind: "order.review.submit",
       payload: {},
       actor: { principal: "llm", sessionId: "s" },
       taint: "UNTRUSTED",
       nonce: "n2",
     });
-    expect(guard(noteEnv, { ctx: { autoResolvedMoneyRef: true } })).toBeNull();
+    expect(guard(reviewEnv, { ctx: { autoResolvedMoneyRef: true } })).toBeNull();
   });
+
+  // BKL-038 — the in-flight modify kinds confirm their auto-resolved target just
+  // like order.cancel (flag set → REQUEST_CONFIRMATION; resume/no-flag → passes).
+  it.each(INFLIGHT_MODIFY_KINDS)(
+    "REQUEST_CONFIRMATION for auto-resolved in-flight modify %s",
+    (kind) => {
+      const env = buildEnvelope({
+        kind,
+        payload: {},
+        actor: { principal: "llm", sessionId: "s" },
+        taint: "UNTRUSTED",
+        nonce: `n-${kind}`,
+      });
+      expect(guard(env, { ctx: { autoResolvedMoneyRef: true } })?.kind).toBe(
+        "REQUEST_CONFIRMATION",
+      );
+      expect(guard(env, { ctx: {} })).toBeNull(); // resume (explicit id, no flag)
+    },
+  );
 });
 
 describe("resolve-and-assemble — 034-F1 ownership binding (review findings 6/7/11)", () => {

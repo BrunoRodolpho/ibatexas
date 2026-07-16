@@ -3,7 +3,7 @@
 // The two-person / separation-of-duty DESTRUCTIVE verbs (order.cancel force-
 // cancel, payment.waive, payment.status.force) are unreachable by the ops persona
 // TODAY via TWO independent fail-closed layers: (1) none is in the ops tool
-// registry (ops-tool-registry.ts advertises 7 verbs); (2) none is in the staff-
+// registry (ops-tool-registry.ts advertises 8 verbs); (2) none is in the staff-
 // role matrix (staff-role-matrix.ts), so an `admin:` envelope carrying one REFUSEs
 // `kind_not_in_staff_matrix` at the composed router. That posture is SOUND but
 // IMPLICIT. This suite makes the exclusion EXPLICIT + drift-guarded: it pins that
@@ -27,6 +27,7 @@ import {
   OPS_FOREIGN_ADVERTISED_REFUND_KIND,
   OPS_FOREIGN_ADVERTISED_TRANSITION_KIND,
   OPS_INCIDENT_CLOSE_STAFF_KIND,
+  OPS_SCHEDULE_OVERRIDE_SET_KIND,
   type OpsContext,
   type OpsState,
 } from "@ibatexas/pack-ops";
@@ -53,14 +54,17 @@ import {
  *  source-of-truth constant so the assertions below track any edit to it. */
 const FORBIDDEN = [...FORBIDDEN_OPS_DESTRUCTIVE_KINDS];
 
-/** The seven governed ops verbs the persona MAY drive today (the positive
+/** The eight governed ops verbs the persona MAY drive today (the positive
  *  control set — the drift test must confirm these ARE advertised so an empty
  *  allowlist can never make the ∩-with-forbidden assertions pass vacuously). */
 const ALLOWED_OPS_VERBS = [
   "product.availability.set",
   "product.price.set",
+  // SCN-114 — the daily-special-by-message verb.
+  "menu.special.set",
   OPS_ALERT_RESOLVE_STAFF_KIND,
   OPS_INCIDENT_CLOSE_STAFF_KIND,
+  OPS_SCHEDULE_OVERRIDE_SET_KIND,
   OPS_FOREIGN_ADVERTISED_KIND,
   OPS_FOREIGN_ADVERTISED_TRANSITION_KIND,
   OPS_FOREIGN_ADVERTISED_REFUND_KIND,
@@ -76,7 +80,7 @@ const STAFF_CTX: OpsContext = {
 };
 
 /** Minimal registry deps (mirrors ops-drift-parity.test.ts) — only the SHAPE of
- *  the 7 tool definitions matters here, never the executor bodies. */
+ *  the 8 tool definitions matters here, never the executor bodies. */
 const REGISTRY_DEPS: OpsToolRegistryDeps = {
   medusaAdjudicated: (async () => ({})) as never,
   auditSink: {} as never,
@@ -90,6 +94,11 @@ const REGISTRY_DEPS: OpsToolRegistryDeps = {
       displayId: 1,
       customerId: null,
     }),
+  },
+  dailySpecialSvc: {
+    list: async () => [],
+    create: async () => ({ id: "special_1" }),
+    update: async () => ({ id: "special_1" }),
   },
   publishOrderStatusChanged: async () => {},
   paymentCmdSvc: {
@@ -111,6 +120,8 @@ const REGISTRY_DEPS: OpsToolRegistryDeps = {
   incidentSvc: {
     closeIncidentFromEnvelope: async () => ({ result: { status: "RESOLVED" } }),
   },
+  scheduleSvc: { upsertOverride: async () => ({ date: "2026-07-10", isOpen: false }) },
+  invalidateScheduleCache: async () => ({ ok: true }),
 };
 
 const OPS_TOOLS = listOpsToolDefinitions(REGISTRY_DEPS);
@@ -136,7 +147,7 @@ describe("BKL-096 — forbidden verbs are absent from the ops tool registry", ()
     }
   });
 
-  it("POSITIVE control: the registry DOES advertise the seven governed ops verbs", () => {
+  it("POSITIVE control: the registry DOES advertise the eight governed ops verbs", () => {
     // Without this the "not.toContain" above could pass on an empty registry.
     for (const verb of ALLOWED_OPS_VERBS) {
       expect(capabilities).toContain(verb);
@@ -153,7 +164,7 @@ describe("BKL-096 — forbidden verbs are absent from the ops planner surface", 
     for (const forbidden of FORBIDDEN) {
       expect(plan.allowedIntents).not.toContain(forbidden);
     }
-    // POSITIVE control: the staff probe DOES advertise all seven governed verbs,
+    // POSITIVE control: the staff probe DOES advertise all eight governed verbs,
     // so the ∅-intersection above is a real subtraction, not a vacuous pass.
     for (const verb of ALLOWED_OPS_VERBS) {
       expect(plan.allowedIntents).toContain(verb);
@@ -170,7 +181,7 @@ describe("BKL-096 — forbidden verbs are absent from the ops planner surface", 
       for (const forbidden of FORBIDDEN) {
         expect(plan.allowedIntents).not.toContain(forbidden);
       }
-      // Positive control per scope: dashboard advertises all 7; whatsapp drops the
+      // Positive control per scope: dashboard advertises all 8; whatsapp drops the
       // irreversible refund (BKL-086) but still advertises the reversible verbs —
       // proving the scope filter never silently empties the allowlist.
       expect(plan.allowedIntents).toContain("product.availability.set");
@@ -185,7 +196,7 @@ describe("BKL-096 — forbidden verbs are absent from the ops planner surface", 
 // ── boot drift gate: the ops registry fails closed on a forbidden entry ──────
 
 describe("BKL-096 — opsPlaneDriftProblems fails closed on a forbidden ops tool", () => {
-  it("is GREEN on the real 7-verb ops registry (no forbidden false-positive)", () => {
+  it("is GREEN on the real 8-verb ops registry (no forbidden false-positive)", () => {
     const problems = opsPlaneDriftProblems({
       opsTools: OPS_TOOLS,
       composedIntentKinds: composedIntentKinds(),

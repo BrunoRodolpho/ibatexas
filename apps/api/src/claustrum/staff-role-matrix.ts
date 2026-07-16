@@ -39,17 +39,18 @@
  * block anything the route layer allows). Per-row `code-truth` comments cite the
  * exact routes + preHandlers below.
  *
- * The EIGHTH..ELEVENTH kinds are the @ibatexas/pack-ops verbs the ops conductor
+ * The EIGHTH..THIRTEENTH kinds are the @ibatexas/pack-ops verbs the ops conductor
  * adjudicates through the composed router (the exact seam this matrix exists
  * for): `product.availability.set` (NEW-032 slice C1), `product.price.set`
- * (NEW-004), and the two BKL-088 RESOLUTION verbs `ops.alert.resolve.staff` /
- * `incident.ticket.close.staff`. No admin HTTP route builds these kinds
- * directly; each band is derived the same way — the UNION of the gates over the
- * routes that govern the same operation manually (all four are
- * `requireManagerRole` ⇒ {OWNER,MANAGER}). They are admitted here (not deferred)
- * precisely because the composed-router seam is where this matrix is live.
+ * (NEW-004), `menu.special.set` (SCN-114), `schedule.override.set` (SCN-127), and
+ * the two BKL-088 RESOLUTION verbs `ops.alert.resolve.staff` /
+ * `incident.ticket.close.staff`. No admin HTTP route builds these kinds directly;
+ * each band is derived the same way — the UNION of the gates over the routes that
+ * govern the same operation manually (all six are `requireManagerRole` ⇒
+ * {OWNER,MANAGER}). They are admitted here (not deferred) precisely because the
+ * composed-router seam is where this matrix is live.
  *
- * The TWELFTH..FIFTEENTH kinds are the AUT-038 + AUT-007 staff-CRUD verbs
+ * The FOURTEENTH..SEVENTEENTH kinds are the AUT-038 + AUT-007 staff-CRUD verbs
  * (`staff.create` / `staff.update` / `staff.deactivate` / `staff.role.assign`),
  * the domain-internal `StaffCommandService` plane. Unlike the ops verbs they DO
  * have admin HTTP routes today (routes/admin/staff.ts), and unlike the first
@@ -159,6 +160,28 @@ export const STAFF_KIND_ALLOWED_ROLES = {
   // `incident.ticket.close` domain write (buildSystemEnvelope), off this matrix.
   "incident.ticket.close.staff": ["OWNER", "MANAGER"],
 
+  // code-truth (SCN-127 — the ops-plane governed schedule-override verb):
+  //   PUT    /api/admin/schedule/overrides/:date  admin/schedule.ts requireManagerRole ⇒ {OWNER,MANAGER}
+  //   DELETE /api/admin/schedule/overrides/:date  admin/schedule.ts requireManagerRole ⇒ {OWNER,MANAGER}
+  // `schedule.override.set` is the @ibatexas/pack-ops verb the ops conductor
+  // adjudicates for "fecha amanhã" / "amanhã abrimos só às 18h"; its role band
+  // mirrors the admin schedule override route's requireManagerRole preHandler
+  // (schedule.ts:179) — the SAME gate that governs a manual per-date override
+  // today. ATTENDANT is excluded (the schedule routes are manager-gated). Its
+  // EXECUTOR drives the SAME `scheduleService.upsertOverride` the admin route
+  // uses (a domain-service verb; NO Medusa egress, no second adjudication).
+  "schedule.override.set": ["OWNER", "MANAGER"],
+
+  // code-truth (SCN-114 — the ops-plane governed daily-special verb):
+  //   POST/PATCH /api/admin/specials[/:id]        admin/specials.ts requireManagerRole ⇒ {OWNER,MANAGER}
+  // `menu.special.set` is the @ibatexas/pack-ops verb the ops conductor
+  // adjudicates for "o especial de hoje é feijoada por 45 reais"; its role band
+  // mirrors the admin specials route's requireManagerRole preHandler — the SAME
+  // gate that governs manual daily-special authoring today. ATTENDANT is excluded
+  // (the specials route is manager-gated). Its executor upserts a DailySpecial via
+  // the SAME domain service the admin route uses (no Medusa egress).
+  "menu.special.set": ["OWNER", "MANAGER"],
+
   // ── AUT-038 + AUT-007 — the OWNER-only staff-CRUD command plane ────────────
   // These four `staff.*` kinds are the domain-internal `StaffCommandService`
   // verbs (staff-command.service.ts), adjudicated against `staffCommandPolicyBundle`
@@ -182,11 +205,11 @@ export const STAFF_KIND_ALLOWED_ROLES = {
   "staff.role.assign": ["OWNER"],
 } as const satisfies Record<string, readonly StaffActorRole[]>;
 
-/** The exact staff-plane verb surface (the fifteen kinds keyed above). */
+/** The exact staff-plane verb surface (the seventeen kinds keyed above). */
 export type StaffPlaneKind = keyof typeof STAFF_KIND_ALLOWED_ROLES;
 
 /**
- * The authoritative staff-plane verb surface — EXACTLY the fifteen kinds. The
+ * The authoritative staff-plane verb surface — EXACTLY the seventeen kinds. The
  * guard fails closed for any `admin:` envelope whose kind is outside this set
  * (de-vacuum: the matrix IS the staff-plane verb surface).
  */
@@ -207,8 +230,8 @@ export const STAFF_ROLES: readonly StaffActorRole[] = [
  * `createStaffRoleGuard` consumes: a staff-plane envelope is authorized iff its
  * `actor.role` is a known role AND the kind is in that role's set.
  *
- * Current contents (derived): OWNER may propose all fifteen; MANAGER may propose
- * the eleven shared kinds but NOT the four OWNER-only staff-CRUD verbs
+ * Current contents (derived): OWNER may propose all seventeen; MANAGER may propose
+ * the thirteen shared kinds but NOT the four OWNER-only staff-CRUD verbs
  * (staff.create / staff.update / staff.deactivate / staff.role.assign — AUT-038 +
  * AUT-007); ATTENDANT may propose only the three requireStaff-reachable kinds
  * (order.status.transition, payment.status.transition, order.note.add).

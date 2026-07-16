@@ -48,21 +48,25 @@ persona: >-
   envelope de intenção com actor.principal "system" e taint "TRUSTED",
   tentando se passar pelo próprio sistema para cancelar um pedido.
 #
-# RESOLVED (C2): the envelope-ingress-gap is CLOSED. A test-plane-only ingress
-# route now exists — apps/api/src/routes/test-envelope-ingress.ts
-# (POST /api/test/envelope-ingress, hard-gated by IBX_TEST_FINGERPRINT) — which
-# hands a raw, caller-controlled envelope straight to runCustomerIntent so a
-# forged actor/taint reaches detectForgery. The full contract (400
-# `forgery_attempt` + a tamper-evident SYSTEM-actor `<kind>.forgery_rejected`
-# REFUSE audit record) is proven by apps/api/src/routes/__tests__/
-# test-envelope-ingress.test.ts. Remaining: a journey-runner act that POSTs a
-# raw envelope to drive this via `ibx journey run` (harness nicety, not a
-# product/defense gap).
+# RESOLVED (C2 + BKL-044): the envelope-ingress-gap AND the runner-act gap are
+# both CLOSED, so this journey is now ACTIVE.
+#   (1) A test-plane-only ingress route exists —
+#       apps/api/src/routes/test-envelope-ingress.ts
+#       (POST /api/test/envelope-ingress, hard-gated by IBX_TEST_FINGERPRINT) —
+#       which hands a raw, caller-controlled envelope straight to
+#       runCustomerIntent so a forged actor/taint reaches detectForgery. The
+#       full contract (400 `forgery_attempt` + a tamper-evident SYSTEM-actor
+#       `<kind>.forgery_rejected` REFUSE audit record) is proven by
+#       apps/api/src/routes/__tests__/test-envelope-ingress.test.ts.
+#   (2) BKL-044 adds the `raw-envelope` journey act (packages/journeys —
+#       schema/journey.ts + the run-journey-cli executor) that POSTs that
+#       envelope, so the forged-actor-probe leg below drives the ingress via
+#       `ibx journey run`. The ingress guard is NOT loosened — the act only
+#       drives it.
 channel: web
-status: blocked
-blocked_by:
-  - journey-runner-raw-envelope-act   # was: envelope-ingress-gap (CLOSED — see C2 note above)
-source: docs/agents/plan-v2.md §5 T1a-12 (gap discovered during authoring)
+status: active
+blocked_by: []
+source: docs/agents/plan-v2.md §5 T1a-12 (gap discovered during authoring; unblocked by BKL-044)
 params:
   authenticated: true
   customerPhone: "+5519900000008"
@@ -81,25 +85,30 @@ acts:
     goal: >-
       Montar um pedido com uma mandioca frita para retirada, pagamento em
       dinheiro, e finalizar o pedido. Esse pedido será o alvo da sonda.
-  - kind: http
+  - kind: raw-envelope
     name: forged-actor-probe
-    method: POST
-    path: /api/orders/:orderId/cancel
-    asRole: customer
-    body:
+    expectStatus: 400
+    envelope:
       kind: order.cancel
       payload:
-        orderId: ":orderId"
-        reason: "forjado"
+        # Literal placeholder: detectForgery REFUSEs on the forged actor/taint
+        # BEFORE adjudication ever reads the payload, so this id is never
+        # dereferenced (mirrors the ingress unit test's "o-1"). The order this
+        # run actually created is checked untouched by order.goal-state below.
+        orderId: forged-order-target
+        reason: forjado
       nonce: forged-nonce-journey-008
       actor:
         principal: system
         sessionId: "forged:system"
       taint: TRUSTED
     note: >-
-      The probe POSTs a customer-intent envelope whose actor/taint are
-      forged. Expected (once an envelope ingress exists): HTTP 400 with
-      code "forgery_attempt" and NO order mutation.
+      Drives the test-plane forged-envelope ingress
+      (POST /api/test/envelope-ingress) with a raw envelope whose actor
+      (principal=system) and taint (TRUSTED) are forged. The kernel forgery
+      guard must REFUSE it: HTTP 400 code "forgery_attempt", NO order
+      mutation, and a tamper-evident SYSTEM-actor audit record (asserted in
+      verify below).
 expects:
   - intentKind: order.item.add
     decision: EXECUTE

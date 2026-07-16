@@ -581,19 +581,38 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
       const order = await orderQuerySvc.getById(id);
       if (!order) return reply.code(404).send({ error: "Pedido ainda sendo processado. Tente novamente em instantes." });
 
-      // Validate cancel action via centralized validator
-      const ponr = getEffectivePonr({});
-      const cancelCheck = canPerformAction("cancel_order", {
-        fulfillmentStatus: order.fulfillmentStatus as OrderFulfillmentStatus,
-        orderCreatedAt: order.createdAt,
-        ponrMinutes: ponr.cancelMinutes,
-      });
-      if (!cancelCheck.allowed) {
-        return reply.code(422).send({
-          error: cancelCheck.reason,
-          code: cancelCheck.escalate ? "PONR_EXPIRED" : "PAST_PONR",
-          fulfillmentStatus: order.fulfillmentStatus,
+      // ── Pre-kernel: order-age (time-window) cancel PONR ONLY (BKL-036 finding 1) ──
+      //
+      // The fulfillment-state PONR (ready / out-for-delivery / delivered /
+      // preparing) and the already-cancelled refusal are now adjudicated by the
+      // kernel's `requireCancellable` guard (pack-orders) so every such refusal
+      // is AUDITED — we translate the kernel's REFUSE back to the legacy 422
+      // contract after `runCustomerIntent` below, instead of pre-empting it here
+      // with an UNaudited 422. The order-AGE window stays pre-kernel: the
+      // kernel's OrderState ctx does not carry the order's createdAt /
+      // cancelMinutes (that ctx projection is BKL-036 tier b, out of scope), so
+      // dropping it would WEAKEN the guard. For a pending/confirmed order the
+      // only way `canPerformAction("cancel_order")` denies is the elapsed
+      // window, so this pre-empts exactly that case byte-identically (same
+      // reason + PONR_EXPIRED code) and lets every other status fall through to
+      // the kernel.
+      const isTimeWindowCancellableStatus =
+        order.fulfillmentStatus === "pending" ||
+        order.fulfillmentStatus === "confirmed";
+      if (isTimeWindowCancellableStatus) {
+        const ponr = getEffectivePonr({});
+        const cancelCheck = canPerformAction("cancel_order", {
+          fulfillmentStatus: order.fulfillmentStatus as OrderFulfillmentStatus,
+          orderCreatedAt: order.createdAt,
+          ponrMinutes: ponr.cancelMinutes,
         });
+        if (!cancelCheck.allowed) {
+          return reply.code(422).send({
+            error: cancelCheck.reason,
+            code: cancelCheck.escalate ? "PONR_EXPIRED" : "PAST_PONR",
+            fulfillmentStatus: order.fulfillmentStatus,
+          });
+        }
       }
 
       // ── Task 14 — wrap cancel in adjudicate envelope ───────────────────
@@ -801,6 +820,34 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
           refusalMessages: portugueseRefusalMessages,
         });
 
+        // ── Translate the AUDITED kernel cancel-PONR refusal back to the legacy
+        // 422 HTTP contract (BKL-036 finding 1). The kernel now OWNS the
+        // fulfillment-state + already-cancelled cancel refusals
+        // (`requireCancellable`), adjudicated + audited by runCustomerIntent
+        // above; here we map the two stable refusal codes onto the exact status
+        // + code clients saw when the check was pre-kernel: `preparing` →
+        // PONR_EXPIRED (was escalate=true), every other post-PONR /
+        // already-cancelled status → PAST_PONR. Any other REFUSE keeps the
+        // gateway default (403).
+        if (out.decision.kind === "REFUSE") {
+          const refusalCode = out.decision.refusal.code;
+          if (
+            refusalCode === "order.past_ponr" ||
+            refusalCode === "order.already_cancelled"
+          ) {
+            return reply.code(422).send({
+              error:
+                (out.body as { error?: string }).error ??
+                out.decision.refusal.userFacing,
+              code:
+                order.fulfillmentStatus === "preparing"
+                  ? "PONR_EXPIRED"
+                  : "PAST_PONR",
+              fulfillmentStatus: order.fulfillmentStatus,
+            });
+          }
+        }
+
         return reply.code(out.statusCode).send(out.body);
       } catch (err) {
         if (err instanceof PaymentCancelFailedError) {
@@ -980,11 +1027,25 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
         customerId,
       });
 
-      // Unified state contract (Phase 2): shared orders-ctx builder. This route's
-      // own logic enforces PONR before dispatch, so the kernel guard is additive
-      // here; the ctx SHAPE matches the conductor path (identity base + tenantId).
+      // Unified state contract (Phase 2): shared orders-ctx builder. Load the
+      // order projection so the kernel's `requireAmendable` guard can gate the
+      // amend point-of-no-return on `fulfillmentStatus` (BKL-036 finding 3) —
+      // the amend-window gating now REACHES the kernel instead of never running.
+      // This route carried NO pre-dispatch PONR check and passed a null
+      // projection, so the guard read no status and reduced to "order exists".
+      // Only the fulfillment status is projected (tier a); the order-age
+      // time-window (createdAt / amendPonrMinutes) is tier b, out of scope.
+      // Ownership was verified above; a null projection (race) keeps the guard
+      // inert, exactly as before.
+      const amendOrderProjection = await orderQuerySvc.getById(id);
       const orderState = {
-        ctx: buildOrderCtx(identityCtx(customerId, "web"), id, null),
+        ctx: buildOrderCtx(
+          identityCtx(customerId, "web"),
+          id,
+          amendOrderProjection
+            ? (amendOrderProjection as unknown as OrderProjectionLite)
+            : null,
+        ),
       };
 
       try {

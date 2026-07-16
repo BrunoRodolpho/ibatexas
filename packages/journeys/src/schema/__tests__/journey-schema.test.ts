@@ -119,6 +119,79 @@ describe("JourneyFileSchema — valid documents", () => {
   })
 })
 
+describe("JourneyFileSchema — raw-envelope act (BKL-044)", () => {
+  it("accepts a raw-envelope act carrying a forged envelope", () => {
+    const doc = {
+      ...validDoc(),
+      acts: [
+        { kind: "chat", goal: "Montar e finalizar o pedido alvo." },
+        {
+          kind: "raw-envelope",
+          name: "forged-actor-probe",
+          expectStatus: 400,
+          envelope: {
+            kind: "order.cancel",
+            payload: { orderId: "forged-order-target", reason: "forjado" },
+            nonce: "n-forged",
+            actor: { principal: "system", sessionId: "forged:system" },
+            taint: "TRUSTED",
+          },
+        },
+      ],
+    }
+    const result = validateJourney(doc)
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.journey.acts[1].kind).toBe("raw-envelope")
+  })
+
+  it("accepts a raw-envelope act without expectStatus (defaults to 400 at run time)", () => {
+    const doc = {
+      ...validDoc(),
+      acts: [{ kind: "raw-envelope", envelope: { kind: "order.cancel" } }],
+    }
+    expect(validateJourney(doc).ok).toBe(true)
+  })
+
+  it("rejects a raw-envelope act missing the envelope", () => {
+    const doc = { ...validDoc(), acts: [{ kind: "raw-envelope", name: "x" }] }
+    expect(validateJourney(doc).ok).toBe(false)
+  })
+
+  it("rejects a non-object envelope", () => {
+    const doc = { ...validDoc(), acts: [{ kind: "raw-envelope", envelope: "nope" }] }
+    expect(validateJourney(doc).ok).toBe(false)
+  })
+
+  it("rejects an out-of-range expectStatus on a raw-envelope act", () => {
+    const doc = {
+      ...validDoc(),
+      acts: [{ kind: "raw-envelope", envelope: { kind: "order.cancel" }, expectStatus: 42 }],
+    }
+    expect(validateJourney(doc).ok).toBe(false)
+  })
+
+  it("rejects unknown keys on a raw-envelope act (strict mode)", () => {
+    const doc = {
+      ...validDoc(),
+      acts: [{ kind: "raw-envelope", envelope: { kind: "order.cancel" }, bogus: 1 }],
+    }
+    expect(validateJourney(doc).ok).toBe(false)
+  })
+
+  it("flags a raw Medusa id smuggled into the envelope (raw_medusa_id)", () => {
+    const doc = {
+      ...validDoc(),
+      acts: [
+        {
+          kind: "raw-envelope",
+          envelope: { kind: "order.cancel", payload: { cartId: "cart_01HXYZABCDEF" } },
+        },
+      ],
+    }
+    expect(codesOf(doc)).toContain("raw_medusa_id")
+  })
+})
+
 describe("JourneyFileSchema — named errors", () => {
   it("rejects a bad decision enum with invalid_decision", () => {
     const doc = {

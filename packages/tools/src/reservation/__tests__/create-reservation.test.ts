@@ -17,14 +17,25 @@ const mockTimeSlotFindUnique = vi.hoisted(() => vi.fn())
 const mockCreateFromEnvelope = vi.hoisted(() => vi.fn())
 const mockPublishNatsEvent = vi.hoisted(() => vi.fn())
 const mockSendReservationConfirmation = vi.hoisted(() => vi.fn())
+// BKL-046: sentinel audit sink returned by the mocked `getAuditSink()`; the
+// factory-spy below asserts the tool threads it into `createReservationService`.
+const mockAuditSink = vi.hoisted(() => ({ emit: vi.fn() }))
+const mockGetAuditSink = vi.hoisted(() => vi.fn(() => mockAuditSink))
+const mockCreateReservationService = vi.hoisted(() =>
+  vi.fn((_options?: { auditSink?: unknown }) => ({
+    createFromEnvelope: mockCreateFromEnvelope,
+  })),
+)
 
 vi.mock("@ibatexas/domain", () => ({
   prisma: {
     timeSlot: { findUnique: mockTimeSlotFindUnique },
   },
-  createReservationService: () => ({
-    createFromEnvelope: mockCreateFromEnvelope,
-  }),
+  createReservationService: mockCreateReservationService,
+}))
+
+vi.mock("@ibatexas/audit-sink", () => ({
+  getAuditSink: mockGetAuditSink,
 }))
 
 vi.mock("@ibatexas/nats-client", () => ({
@@ -195,5 +206,21 @@ describe("createReservation", () => {
     expect(state.ctx.slot!.reservedCovers).toBe(0)
 
     expect(extras.customerId).toBe("cus_01")
+  })
+
+  // BKL-046: `createReservationService()` silently drops audit emission when no
+  // sink is supplied, so the kernel EXECUTE for `reservation.create` produced no
+  // intent_audit record. The tool must thread the configured AuditSink into the
+  // service factory. Regression: assert the factory receives the sink resolved
+  // via `getAuditSink()`.
+  it("constructs the reservation service with the configured audit sink", async () => {
+    setupHappyPath()
+
+    await createReservation(BASE_INPUT)
+
+    expect(mockGetAuditSink).toHaveBeenCalled()
+    expect(mockCreateReservationService).toHaveBeenCalledOnce()
+    const options = mockCreateReservationService.mock.calls[0]?.[0]
+    expect(options?.auditSink).toBe(mockAuditSink)
   })
 })

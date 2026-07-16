@@ -62,7 +62,12 @@
 // non-sequitur — the worst case is unchanged-from-today, never worse.
 
 import type { CandidateClaim, EvidenceLedger } from "@adjudicate/core";
-import type { ClaimPlannerInput, ClaimPlannerPort } from "@claustrum/core";
+import type {
+  ClaimPlannerForcedTerminal,
+  ClaimPlannerInput,
+  ClaimPlannerPort,
+  ClaimPlannerResult,
+} from "@claustrum/core";
 import { logger } from "../lib/logger.js";
 import { selectCandidateClaim, type RegistryClaimType } from "./claim-registry.js";
 import type { ClaimAuthContext, ClaimAwarePlannerPort } from "./ibatexas-planner.js";
@@ -237,7 +242,7 @@ export function createIbatexasClaimPlanner(
   return {
     async propose(
       input: ClaimPlannerInput,
-    ): Promise<ReadonlyArray<CandidateClaim>> {
+    ): Promise<ClaimPlannerResult> {
       // FIX 1 + FIX 2 — thread the AUTHENTICATED owner-scoped context to the
       // planner so an owner-scoped candidate's actor (the authenticated principal)
       // and subject (an owner-scoped PRESENT read) derive from the conductor's
@@ -263,12 +268,24 @@ export function createIbatexasClaimPlanner(
       // surfaced UNCHANGED (see the `flaked` gate below); only a THROW triggers the
       // safe-terminal synthesis.
       let candidates: ReadonlyArray<CandidateClaim>;
+      // BKL-077 — the planner-FORCED turn terminal (§O#9 safety ESCALATE / P4-unmapped
+      // or owner-scoped-ambiguity CLARIFY). `proposeClaims` already COMPUTES it; the
+      // adapter now CAPTURES it and returns it in the widened `ClaimPlannerProposal`
+      // shape so claustrum's CLAIMS-VALIDATE honors it (resolveTurnTerminal): a forced
+      // ESCALATE outranks a would-be RENDER, and a forced CLARIFY is honored even on an
+      // EMPTY candidate set (the 3-payments "which order?" turn). Stays `undefined` on
+      // the flake (throw) path — the model produced no signal, so the turn still
+      // degrades to the synthesized safe UNKNOWN below, never a masked ESCALATE.
+      let forcedTerminal: ClaimPlannerForcedTerminal | undefined;
       let flaked = false;
       try {
-        candidates = (await planner.proposeClaims(input.cognition, auth)).candidates;
+        const plan = await planner.proposeClaims(input.cognition, auth);
+        candidates = plan.candidates;
+        forcedTerminal = plan.forcedTerminal;
       } catch (err) {
         flaked = true;
         candidates = [];
+        forcedTerminal = undefined;
         // OBSERVABILITY: the throw no longer escapes to @claustrum/core's
         // claims-validate (which used to log the "degrading to no-claims" degrade),
         // so the ~1/3-turn 4B tool-call flake would go SILENT in VictoriaLogs. Log
@@ -284,13 +301,6 @@ export function createIbatexasClaimPlanner(
           "claim-planner proposeClaims failed; synthesizing safe UNKNOWN candidates for required claim types",
         );
       }
-      // BKL-077 (known adjacent bug — do NOT fix here): `proposeClaims` also returns
-      // `forcedTerminal` (§O#9 ESCALATE / P4 CLARIFY), which this published-port
-      // adapter DISCARDS (the `ClaimPlannerPort` surfaces only candidates). A turn
-      // that SHOULD ESCALATE/CLARIFY is masked to a safe UNKNOWN by the synthesis
-      // below — acceptable for now (still proposition-free, never prose); restoring
-      // ESCALATE/CLARIFY fidelity needs a port widening, tracked as BKL-077.
-
       // BKL-111 — the model's proposal (constrained-generation survivors) BEFORE the
       // demote filter reassigns `candidates`, so the prose-preserved signal below can
       // report WHAT collapsed. Empty on the flake path (candidates = []).
@@ -380,7 +390,16 @@ export function createIbatexasClaimPlanner(
       // per claims-engaged turn. OBSERVE-ONLY + PII-free: registry type names +
       // turnId only, never a claim value or request text. Byte-identical when the
       // flag is off (this adapter is only wired when ENABLE_CLAIMS_PIPELINE).
-      if (all.length === 0) {
+      //
+      // BKL-077 GUARD (`forcedTerminal === undefined`): a forced ESCALATE/CLARIFY on an
+      // EMPTY candidate set is NOT prose-preserved — claustrum's CLAIMS-VALIDATE runs
+      // the kernel over `[]` and STAMPS the forced terminal (it does NOT return
+      // undefined), so the render-path `claims.terminal` emitter fires downstream.
+      // Logging prose_preserved here too would both MIS-STATE the turn as prose and
+      // DOUBLE-EMIT, breaking the one-`claims.terminal`-per-engaged-turn invariant. So
+      // this emits ONLY when the turn genuinely falls through to prose (no forced
+      // terminal). When `forcedTerminal` is undefined this is byte-identical to before.
+      if (all.length === 0 && forcedTerminal === undefined) {
         logger.info(
           {
             component: "claims",
@@ -415,9 +434,22 @@ export function createIbatexasClaimPlanner(
       // bind ONLY when `value === undefined`) and keeps the owner-positive close
       // self-contained + unit-testable at the ibatexas adapter layer, and resilient
       // to a host that wires an older claustrum without the reconcile.
-      if (input.ledger === undefined) return all;
-      const ledger = input.ledger;
-      return all.map((c) => bindValueFromLedger(c, ledger));
+      let finalCandidates: ReadonlyArray<CandidateClaim> = all;
+      if (input.ledger !== undefined) {
+        const ledger = input.ledger;
+        finalCandidates = all.map((c) => bindValueFromLedger(c, ledger));
+      }
+
+      // WIDENED RETURN (BKL-077): emit the `{ candidates, forcedTerminal }` proposal
+      // ONLY when a terminal was forced; otherwise return the BARE array so every
+      // no-forced-terminal turn is BYTE-IDENTICAL to the pre-widening behavior
+      // (claustrum's `normalizeClaimPlannerResult` reads a bare array as
+      // `forcedTerminal: undefined`, and reference-identity of the surfaced array is
+      // preserved for the "surfaced unchanged" contract). This makes the "must not
+      // change a turn with no forced terminal" guarantee STRUCTURAL, not incidental.
+      return forcedTerminal === undefined
+        ? finalCandidates
+        : { candidates: finalCandidates, forcedTerminal };
     },
   };
 }

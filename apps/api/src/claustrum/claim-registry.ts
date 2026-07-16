@@ -63,7 +63,12 @@ import { STORE_OPEN_NOW_REGISTRY_SPEC } from "./claimdefs/store-open-now.generat
  *   - `MENU_ITEM_ALLERGENS` — a public, safety-critical INFORM read
  *     (floor `structured`; a free-text "sem alérgenos" must FAIL → UNKNOWN —
  *     SDD §E worked types).
- *   - `STORE_HOURS`         — a public, cacheable INFORM read.
+ *   - `STORE_HOURS`         — a public, cacheable INFORM read (TODAY's hours).
+ *   - `STORE_HOURS_FOR_DATE` — the DAY-SPECIFIC public hours read (BKL-138): the
+ *     per-date twin of STORE_HOURS, `perResourceKey`-keyed by the QUERIED ISO date
+ *     so a named-weekday / "amanhã" question is answered off the exact day, with a
+ *     holiday/override ON that date as its honest W6 falsifiers (today's exception
+ *     can never poison a future-date answer — the keys are date-suffixed).
  *   - `STORE_OPEN_NOW`      — the OVERRIDE-AWARE "is it open right now" read
  *     (public; W6-falsified by a present ScheduleOverride — Triad slice).
  *   - `ORDER_FULFILLMENT_STAGE` — a customer-scoped, live STATUS read
@@ -86,6 +91,7 @@ import { STORE_OPEN_NOW_REGISTRY_SPEC } from "./claimdefs/store-open-now.generat
 export const CLAIM_REGISTRY = [
   "MENU_ITEM_ALLERGENS",
   "STORE_HOURS",
+  "STORE_HOURS_FOR_DATE",
   "STORE_OPEN_NOW",
   "ORDER_FULFILLMENT_STAGE",
   "PAYMENT_STATUS",
@@ -281,6 +287,63 @@ export const REGISTRY_SPECS = {
     // C6 — bind the rendered value to the read's ACTUAL `hoursText` field
     // (ledger-sourced, never model-authored). `valueBinding.key` stays a member of
     // requiredEvidence so the kernel's C6 structural guard never throws.
+    valueBinding: { key: "schedule:store_hours", path: ["hoursText"] },
+  },
+  // BKL-138 — the DAY-SPECIFIC hours claim (SCN-002/003). The per-date twin of
+  // STORE_HOURS: identical evidence/falsifier/value-binding SHAPE, but `perResourceKey`
+  // so `selectCandidateClaim` suffixes EVERY key with `:{subject}` (the QUERIED ISO
+  // date) → the runtime keys are `schedule:store_hours:{date}` /
+  // `schedule:schedule_override:{date}` / `schedule:holiday:{date}`, matching the
+  // investigator's DATE-KEYED reads. This is the SCN-003 soundness pin: the falsifiers
+  // re-read the QUERIED date, so a holiday/override ON that date demotes to UNKNOWN
+  // while TODAY's holiday (recorded under the BARE `schedule:holiday` key STORE_HOURS
+  // uses) can NEVER poison a future-date answer — the two never collide. PUBLIC
+  // (owned by nobody): all evidence is `not_applicable` ownership, so
+  // `ownerScopedBaseKey` is undefined and the subject is the resolved date, never an
+  // owner id (its `schedule:*` key matches NO OWNER_SCOPED_KEY_PREFIXES → never an
+  // owned resource). Do NOT overload the live-proven TODAY STORE_HOURS (BKL-121 D3):
+  // an independent type keeps the two degrade paths decoupled.
+  STORE_HOURS_FOR_DATE: {
+    kind: "read_claim",
+    minSourceIntegrity: "trusted_service",
+    requiredEvidence: [
+      {
+        // SAME base key as STORE_HOURS — but `perResourceKey` suffixes it `:{date}`
+        // at select time, so the ledger keys never collide with today's bare entry.
+        key: "schedule:store_hours",
+        ownershipPolicy: "not_applicable",
+        // UNITS (BKL-121 / BKL-125 pin): the kernel enforces `cacheable` ttl in epoch-
+        // MILLISECONDS (a bare `3600` = a 3.6s window that demotes every real turn).
+        // 3_600_000 ms = the intended 1-hour bound (vacuous within a per-turn ledger).
+        freshnessPolicy: { kind: "cacheable", ttl: 3_600_000 },
+        sourceIntegrity: "trusted_service",
+        provenancePolicy: "preserve",
+      },
+    ],
+    customerScoped: false,
+    // Suffix every key by the candidate `subject` (the QUERIED ISO date).
+    perResourceKey: true,
+    // W6 — a per-date override OR a holiday ON THE QUERIED DATE falsifies that date's
+    // weekly-schedule hours (BOTH enumerated → honest completeness). The keys are
+    // date-suffixed in lockstep with requiredEvidence (`parameterizeKeysBySubject`).
+    falsifierComplete: true,
+    falsifiers: [
+      {
+        key: "schedule:schedule_override",
+        ownershipPolicy: "not_applicable",
+        freshnessPolicy: "must_read_this_turn",
+        sourceIntegrity: "trusted_service",
+        provenancePolicy: "preserve",
+      },
+      {
+        key: "schedule:holiday",
+        ownershipPolicy: "not_applicable",
+        freshnessPolicy: "must_read_this_turn",
+        sourceIntegrity: "trusted_service",
+        provenancePolicy: "preserve",
+      },
+    ],
+    // C6 — bind the rendered value to the QUERIED date's `hoursText` (ledger-sourced).
     valueBinding: { key: "schedule:store_hours", path: ["hoursText"] },
   },
   // Triad slice — STORE_OPEN_NOW is now GENERATED from its ClaimDefinition source
@@ -602,6 +665,13 @@ export interface FirstPartyDerivationReads {
    *  (C6); the re-read is byte-equal to the recorded entry so C6 passes BY
    *  CONSTRUCTION (a present override/holiday falsifier STILL demotes to UNKNOWN). */
   readonly storeHours?: { readonly hoursText?: unknown };
+  /** BKL-138 — the DAY-SPECIFIC hours read(s) for THIS turn, keyed by the QUERIED ISO
+   *  date (the candidate `subject`). The SAME `readHoursForDate(date)` the investigator
+   *  records under `schedule:store_hours:{date}`, so the derived `hoursText` is
+   *  byte-equal to the recorded ledger entry and C6 passes BY CONSTRUCTION (a present
+   *  holiday/override falsifier on that date STILL demotes to UNKNOWN). A candidate
+   *  whose `subject` is absent from this map keeps `value: undefined` (C6 ABSTAIN). */
+  readonly storeHoursForDate?: Readonly<Record<string, { readonly hoursText?: unknown }>>;
 }
 
 /**
@@ -644,6 +714,19 @@ export function deriveBoundValue(
     // override/holiday falsifier STILL demotes the derived claim to UNKNOWN (the
     // runtime arm is NOT skipped by derivation).
     return { ...candidate, value: { hoursText: reads.storeHours.hoursText } };
+  }
+
+  if (candidate.type === "STORE_HOURS_FOR_DATE") {
+    // BKL-138 — bind the QUERIED date's hours (the candidate `subject` is the ISO
+    // date). Project `hoursText` from the SAME per-date first-party read the
+    // investigator recorded under `schedule:store_hours:{date}` (two-arm byte-equal,
+    // like STORE_HOURS), so C6 passes by construction; a present holiday/override
+    // falsifier ON that date STILL demotes to UNKNOWN (the runtime arm is not skipped
+    // by derivation). No read for this subject (unresolved / absent) → value stays
+    // undefined → C6 ABSTAINs → honest UNKNOWN.
+    const read = reads.storeHoursForDate?.[candidate.subject];
+    if (read === undefined) return candidate;
+    return { ...candidate, value: { hoursText: read.hoursText } };
   }
 
   // Owner-scoped per-resource types have no planner-available first-party read

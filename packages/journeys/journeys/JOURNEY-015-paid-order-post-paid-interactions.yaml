@@ -19,26 +19,26 @@
 #     only checkout method that EXECUTEs on the test plane — so the journey
 #     asserts the PAYMENT plane (paid) and the order stays `pending`.
 #
-#  2. CANCEL-AFTER-PAID IS *NOT* KERNEL-GATED TODAY (JOURNEY-006's gap
-#     header re-checked; new product gap `cancel-after-paid-kernel-gating`,
-#     extending `order-cancel-kernel-ponr`): NO pack-orders guard reads the
-#     paid state for `order.cancel` — requireCancellable is lastAction-based
-#     (dead via web ctx: buildOrderCtx pins lastAction null, JOURNEY-006),
-#     escalateLargeCancel gates only totals >= R$1.000, and the route's
-#     canPerformAction PONR check reads fulfillmentStatus + clock, not
-#     payment. The route comment ("REQUEST_CONFIRMATION (paid orders)",
-#     order-actions.ts:454) describes a guard that does not exist. CODE-READ
-#     consequence of an actually-executed paid cancel: kernel order.cancel
-#     EXECUTE → executor transitions the ORDER to canceled, then tries
-#     payment paid→canceled — an ILLEGAL transition (VALID_PAYMENT_TRANSITIONS
-#     [paid] = refund/dispute only, packages/types/payment-status.ts:72) —
-#     so the route 409s (P2-LOGIC-CANCELPAY) leaving a CANCELED order with a
-#     LIVE paid payment, and the kernel has audited EXECUTE rows for it (the
-#     D-015 decision-vs-execution divergence class). The intended contract
-#     (the JOURNEY-006 REFUSE cell) needs a paid/PONR-aware ctx + guard;
-#     until then the REFUSE is unproducible and this journey does NOT drive
-#     the divergent HTTP path (a journey may pin a negative, not manufacture
-#     an inconsistent state on the shared stack).
+#  2. CANCEL-AFTER-PAID IS NOW KERNEL-GATED (BKL-036 finding 2 — CLOSED the gap
+#     this header previously documented as open). The pack-orders `gatePaidCancel`
+#     guard reads the settled payment state for `order.cancel`
+#     (state.ctx.paymentStatus ∈ paid/captured/confirmed/partially_refunded/
+#     disputed) and, because a paid cancel implies a refund of the total, NEVER
+#     lets it silently EXECUTE: it REQUEST_CONFIRMATIONs below the escalate band
+#     and ESCALATEs (human) at/above it (reusing the canonical
+#     @adjudicate/pack-payments-pix refund thresholds). The route comment the old
+#     header called a lie ("REQUEST_CONFIRMATION (paid orders)") now describes a
+#     real guard. HISTORICAL (pre-BKL-036) consequence — kept for the record: an
+#     actually-executed paid cancel drove kernel order.cancel EXECUTE → executor
+#     transitioned the ORDER to canceled, then tried payment paid→canceled — an
+#     ILLEGAL transition (VALID_PAYMENT_TRANSITIONS[paid] = refund/dispute only,
+#     packages/types/payment-status.ts:72) — so the route 409'd
+#     (P2-LOGIC-CANCELPAY) leaving a CANCELED order with a LIVE paid payment (the
+#     D-015 divergence class). gatePaidCancel reduces that reachability by parking
+#     the paid cancel; the executor's residual half-applied-state defect is
+#     tracked separately as BKL-130. This journey still does NOT drive the
+#     divergent path — it pins the REQUEST_CONFIRMATION cell (now ALSO backed by
+#     gatePaidCancel, not only the adopter auto-resolve confirm gate).
 #
 #  3. WHAT THE POST-PAID CHAT LEG PINS INSTEAD: the conversational cancel of
 #     a PAID order parks at the adopter confirm gate (auto-resolved money

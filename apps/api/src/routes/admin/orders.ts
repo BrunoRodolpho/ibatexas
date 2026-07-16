@@ -13,6 +13,7 @@ import {
   ConcurrencyError,
   ProjectionNotFoundError,
   InvalidTransitionError,
+  prisma,
   type OrderStatusTransitionPayload,
 } from "@ibatexas/domain";
 import { getAuditSink } from "@ibatexas/audit-sink";
@@ -36,6 +37,7 @@ const OrdersAdminQuery = z.object({
   fulfillment_status: z.string().optional(),
   date_from: z.string().optional(),
   date_to: z.string().optional(),
+  customer_id: z.string().optional(),
   limit: z.coerce.number().int().min(1).max(100).default(20),
   offset: z.coerce.number().int().min(0).default(0),
 });
@@ -365,6 +367,15 @@ export async function orderRoutes(server: FastifyInstance): Promise<void> {
   const paymentQuerySvc = createPaymentQueryService();
 
   // ── GET /api/admin/orders ──────────────────────────────────────────────────
+  // INTENTIONALLY open to any authenticated staff (no requireManagerRole),
+  // UNLIKE the sibling Conversas surface which is gated to MANAGER+. Orders are
+  // an ATTENDANT-facing fulfillment flow: the /admin/pedidos page is deliberately
+  // left ungated in AdminSidebar (Conversas/Clientes carry minRole:'MANAGER',
+  // Pedidos does not) and the ATTENDANT+ action routes it drives — advance /
+  // staff-notes / confirm-cash (order-actions.ts + payments.ts, requireStaff) —
+  // require first reading the order list/detail. Gating these GETs to MANAGER+
+  // would 403 the attendant workflow. The DOM-001 staff-JWT guard on the parent
+  // adminRoutes plugin still applies (authenticated staff only).
   app.get(
     "/api/admin/orders",
     {
@@ -375,7 +386,7 @@ export async function orderRoutes(server: FastifyInstance): Promise<void> {
       },
     },
     async (request, reply) => {
-      const { fulfillment_status, payment_status, date_from, date_to, limit, offset } = request.query;
+      const { fulfillment_status, payment_status, date_from, date_to, customer_id, limit, offset } = request.query;
 
       try {
         // Primary: read from projection
@@ -385,6 +396,7 @@ export async function orderRoutes(server: FastifyInstance): Promise<void> {
             paymentStatus: payment_status,
             dateFrom: date_from ? new Date(date_from) : undefined,
             dateTo: date_to ? new Date(date_to) : undefined,
+            customerId: customer_id,
             limit,
             offset,
           });
@@ -455,6 +467,22 @@ export async function orderRoutes(server: FastifyInstance): Promise<void> {
         if (payment_status) qs.set("payment_status[]", payment_status);
         if (date_from) qs.set("created_at[gte]", date_from);
         if (date_to) qs.set("created_at[lte]", date_to);
+        // S11 — the incoming customer_id is a DOMAIN Customer.id (cuid), but Medusa's
+        // ?customer_id expects the Medusa customer id (cus_*). Forwarding the cuid
+        // verbatim matched nothing (silent wrong-empty). Translate via
+        // Customer.medusaId; a customer with no Medusa mapping (or none at all) can
+        // have no Medusa orders, so return an empty page honestly rather than
+        // forwarding an id from the wrong space.
+        if (customer_id) {
+          const customer = await prisma.customer.findUnique({
+            where: { id: customer_id },
+            select: { medusaId: true },
+          });
+          if (!customer?.medusaId) {
+            return reply.send({ orders: [], count: 0 });
+          }
+          qs.set("customer_id", customer.medusaId);
+        }
 
         const data = await medusaAdmin(`/admin/orders?${qs}`) as Record<string, unknown>;
         const rawOrders = (data.orders ?? []) as Array<Record<string, unknown>>;
@@ -475,6 +503,11 @@ export async function orderRoutes(server: FastifyInstance): Promise<void> {
   );
 
   // ── GET /api/admin/orders/:id ─────────────────────────────────────────────
+  // INTENTIONALLY open to any authenticated staff (no requireManagerRole) — see
+  // the rationale on GET /api/admin/orders above: this detail read backs the
+  // ATTENDANT-facing /admin/pedidos fulfillment flow (advance / staff-notes /
+  // confirm-cash are all ATTENDANT+ and read the order first). DOM-001 staff-JWT
+  // guard on the parent plugin still applies.
   app.get(
     "/api/admin/orders/:id",
     {

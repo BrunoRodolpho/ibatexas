@@ -43,6 +43,15 @@
  *     by message ("resolve o alerta X"). Matrix row {OWNER,MANAGER}.
  *   - incident.ticket.close.staff — staff (BKL-088). Close a no-reply incident
  *     by message ("fecha o incidente Y"). Matrix row {OWNER,MANAGER}.
+ *   - schedule.override.set    — staff (SCN-127). Set a per-date schedule
+ *     override by message ("fecha amanhã" / "amanhã abrimos só às 18h"). Matrix
+ *     row {OWNER,MANAGER}. REVERSIBLE, non-money ⇒ WhatsApp-drivable (NOT in
+ *     WA_EXCLUDED_OPS_KINDS). An UPSERT — no entity-existence lookup; the ops
+ *     resolver normalizes the NL date to a concrete ISO date in
+ *     RESTAURANT_TIMEZONE and stamps it into the payload so the kernel
+ *     adjudicates a concrete date, never a relative word. The executor drives
+ *     the SAME `scheduleService.upsertOverride` the admin schedule route uses
+ *     (domain-service verb, like BKL-088 — NO Medusa egress).
  *
  * # BKL-088 — the LAYERED (D10) posture, and why the pack names are DISTINCT
  *
@@ -80,8 +89,10 @@ import { createSystemTaintPolicy } from "@adjudicate/primitives"
 export type OpsIntentKind =
   | "product.availability.set"
   | "product.price.set"
+  | "menu.special.set"
   | "ops.alert.resolve.staff"
   | "incident.ticket.close.staff"
+  | "schedule.override.set"
 
 // ── Payloads ────────────────────────────────────────────────────────────────
 
@@ -116,6 +127,37 @@ export interface ProductPriceSetPayload {
 }
 
 /**
+ * `menu.special.set` payload (SCN-114). The governed daily-special-by-message
+ * verb — "o especial de hoje é feijoada por 45 reais". Strict CLOSED contract —
+ * the business-phase `validateMenuSpecialPayload` guard REFUSEs anything that is
+ * not EXACTLY `{ productId: <non-empty string>, date: <YYYY-MM-DD>,
+ * promoPriceCentavos?: <integer > 0> }` (unknown keys rejected). Fields:
+ *   - `productId` is the Medusa product featured this business-day (the resolver
+ *     rewrites a spoken NAME → id, the same BKL-089 path `product.price.set`
+ *     uses; a null projection ⇒ REFUSE product_not_found);
+ *   - `date` is the concrete restaurant business-day LABEL `YYYY-MM-DD` — the
+ *     resolver resolves "hoje"/"amanhã" in RESTAURANT_TIMEZONE and STAMPS the
+ *     concrete date here BEFORE adjudication (a past date REFUSEs);
+ *   - `promoPriceCentavos` is the OPTIONAL promo price in INTEGER centavos (Hard
+ *     Rule #2 — never floats/reais on the wire; the resolver normalizes a spoken
+ *     reais amount → centavos, mirroring the BKL-094 refund path). OMITTED ⇒ the
+ *     item is FEATURED WITHOUT a discount (the DailySpecial `promoPriceCentavos`
+ *     column is NULL). Because the price is model-parsed it is UNTRUSTED, so the
+ *     verb ALWAYS REQUEST_CONFIRMATIONs (a misparse would set the wrong promo
+ *     live) — the confirm prompt states the product + date + parsed R$.
+ *
+ * Clearing/removing a special is DELIBERATELY out of this v1 slice (both SCN-114
+ * utterances are SET operations; pause/remove is already covered by the
+ * DailySpecial `active` flag + the NEW-005 admin route). A `menu.special.clear`
+ * verb is deferred until a message-driven removal case exists.
+ */
+export interface MenuSpecialSetPayload {
+  readonly productId: string
+  readonly date: string
+  readonly promoPriceCentavos?: number
+}
+
+/**
  * `ops.alert.resolve.staff` payload (BKL-088). The model controls ONLY the
  * alert reference + an optional free-form reason note. The executor stamps the
  * SYSTEM-write payload's `resolvedBy` from the authenticated Capsule staffId
@@ -141,12 +183,50 @@ export interface IncidentCloseStaffPayload {
   readonly reason?: string
 }
 
+/**
+ * One time window in a `schedule.override.set` open-day payload (SCN-127). A
+ * structural mirror of the domain `TimeBlock` (`@ibatexas/types`) — pack-ops is a
+ * dependency-free leaf, so the shape is redeclared here rather than imported.
+ * `start`/`end` are `"HH:MM"` 24h wall-clock in RESTAURANT_TIMEZONE; `label` is
+ * the human window name ("Jantar"). The strict validator REFUSEs a malformed
+ * block (bad `HH:MM`, empty `label`, or `start >= end`).
+ */
+export interface OpsScheduleBlock {
+  readonly label: string
+  readonly start: string
+  readonly end: string
+}
+
+/**
+ * `schedule.override.set` payload (SCN-127). Strict CLOSED contract — the
+ * business-phase `validateScheduleOverridePayload` guard REFUSEs anything that is
+ * not EXACTLY `{ date: <YYYY-MM-DD>, isOpen: <boolean>, blocks?: OpsScheduleBlock[],
+ * note?: <string> }` (unknown keys rejected).
+ *
+ * `date` is a CONCRETE ISO calendar date — the ops resolver normalizes the owner's
+ * relative word ("amanhã", "sexta") to a concrete date in RESTAURANT_TIMEZONE and
+ * stamps it here BEFORE adjudication, so the kernel never sees a relative word (a
+ * word the resolver could not resolve stays verbatim and REFUSEs at the validator,
+ * fail-closed). `isOpen` is the target day state: `false` closes the whole day
+ * (`blocks` MUST be empty/absent — "fecha amanhã"); `true` opens with the given
+ * `blocks` (which MUST be a non-empty list of coherent windows — "amanhã abrimos só
+ * às 18h"). `note` is an optional operator note persisted to the override row.
+ */
+export interface ScheduleOverrideSetPayload {
+  readonly date: string
+  readonly isOpen: boolean
+  readonly blocks?: OpsScheduleBlock[]
+  readonly note?: string
+}
+
 /** The Pack's payload union. */
 export type OpsPayload =
   | ProductAvailabilitySetPayload
   | ProductPriceSetPayload
+  | MenuSpecialSetPayload
   | OpsAlertResolveStaffPayload
   | IncidentCloseStaffPayload
+  | ScheduleOverrideSetPayload
 
 /** The keys the strict `product.availability.set` validator admits. */
 export const PRODUCT_AVAILABILITY_SET_KEYS: ReadonlySet<string> = new Set([
@@ -162,6 +242,13 @@ export const PRODUCT_PRICE_SET_KEYS: ReadonlySet<string> = new Set([
   "reason",
 ])
 
+/** The keys the strict `menu.special.set` validator admits (SCN-114). */
+export const MENU_SPECIAL_SET_KEYS: ReadonlySet<string> = new Set([
+  "productId",
+  "date",
+  "promoPriceCentavos",
+])
+
 /** The keys the strict `ops.alert.resolve.staff` validator admits (BKL-088). */
 export const OPS_ALERT_RESOLVE_STAFF_KEYS: ReadonlySet<string> = new Set([
   "alertId",
@@ -172,6 +259,14 @@ export const OPS_ALERT_RESOLVE_STAFF_KEYS: ReadonlySet<string> = new Set([
 export const INCIDENT_CLOSE_STAFF_KEYS: ReadonlySet<string> = new Set([
   "incidentId",
   "reason",
+])
+
+/** The keys the strict `schedule.override.set` validator admits (SCN-127). */
+export const SCHEDULE_OVERRIDE_SET_KEYS: ReadonlySet<string> = new Set([
+  "date",
+  "isOpen",
+  "blocks",
+  "note",
 ])
 
 // ── Context (per-turn caller identity / channel surface) ────────────────────
@@ -228,6 +323,35 @@ export interface OpsPriceProductSnapshot {
 }
 
 /**
+ * The product snapshot the pack's `menu.special.set` guards read (SCN-114).
+ * Projected by the ops resolver from the admin catalog read BEFORE adjudication:
+ * `id`/`status` prove existence (a null ⇒ REFUSE product_not_found) and `name`
+ * is the product display title the CONFIRM prompt states ("Confirmar especial …
+ * <Produto> …"). No price fields — a daily special's promo price is independent
+ * of the product's own price (it may feature an item WITHOUT a discount).
+ */
+export interface OpsSpecialProductSnapshot {
+  readonly id: string
+  readonly status: string
+  readonly name: string
+}
+
+/**
+ * The `menu.special.set` per-kind state (SCN-114). ONE field on {@link OpsState}
+ * carrying BOTH the projected product (`product`, null ⇒ REFUSE
+ * product_not_found) AND the resolver's clock reading (`todayYmd`, today's
+ * `YYYY-MM-DD` in RESTAURANT_TIMEZONE). Projecting "today" into the adjudicated
+ * state — rather than reading a clock inside the leaf guard — keeps the pack pure
+ * and makes the past-date decision an AUDITABLE function of the captured state
+ * (the same discipline the refund path uses for the DB balance): the
+ * `requireSpecialDateNotPast` guard REFUSEs when `payload.date < todayYmd`.
+ */
+export interface OpsSpecialState {
+  readonly product: OpsSpecialProductSnapshot | null
+  readonly todayYmd: string
+}
+
+/**
  * The alert snapshot the pack's `requireAlertActionable` guard reads (BKL-088).
  * `id` proves existence and `status` lets the guard fail closed on a terminal
  * (already-resolved) alert. Projected by the ops resolver from the OpsAlert
@@ -249,17 +373,33 @@ export interface OpsIncidentSnapshot {
 }
 
 /**
+ * The schedule reference the pack's `requireScheduleDateActionable` guard reads
+ * (SCN-127). Unlike the other kinds' snapshots this is NOT an entity read —
+ * `schedule.override.set` is an UPSERT with no row to look up. The ops resolver
+ * projects the CURRENT business-day date (`today`, `YYYY-MM-DD` in
+ * RESTAURANT_TIMEZONE) so the guard can fail closed on a PAST date deterministically
+ * (never reading the clock itself). A null snapshot ⇒ the reference is unavailable
+ * ⇒ REFUSE (fail-closed — the guard cannot prove today-or-future without it).
+ */
+export interface OpsScheduleSnapshot {
+  readonly today: string
+}
+
+/**
  * Per-kind SystemState the ops pack's guards adjudicate against. THE CONTRACT
  * THE OPS RESOLVER MUST BUILD (one branch per kind):
  *
  *   product.availability.set  → { ctx, product:  {id,status} | null }
  *   product.price.set         → { ctx, priceProduct: {id,status,name,…} | null }
+ *   menu.special.set          → { ctx, special: {product:{id,status,name}|null, todayYmd} | null }
  *   ops.alert.resolve.staff   → { ctx, alert:    {id,status} | null }
  *   incident.ticket.close.staff → { ctx, incident: {id,status} | null }
+ *   schedule.override.set     → { ctx, schedule: {today} | null }
  *
  * Each entity field is `null` when no row matches the payload reference — the
  * corresponding business guard turns that into a REFUSE (fail-closed; an
- * unprojected `undefined` is treated as not-found too).
+ * unprojected `undefined` is treated as not-found too). `schedule` carries no
+ * entity (the verb is an UPSERT); it projects the today-or-future reference only.
  */
 export interface OpsState {
   readonly ctx: OpsContext & {
@@ -270,10 +410,14 @@ export interface OpsState {
   readonly product?: OpsProductSnapshot | null
   /** The product-pricing snapshot the in-flight `product.price.set` targets. */
   readonly priceProduct?: OpsPriceProductSnapshot | null
+  /** The product + clock the in-flight `menu.special.set` targets (SCN-114). */
+  readonly special?: OpsSpecialState | null
   /** The alert the in-flight `ops.alert.resolve.staff` targets (BKL-088). */
   readonly alert?: OpsAlertSnapshot | null
   /** The incident the in-flight `incident.ticket.close.staff` targets (BKL-088). */
   readonly incident?: OpsIncidentSnapshot | null
+  /** The today-or-future reference the in-flight `schedule.override.set` reads (SCN-127). */
+  readonly schedule?: OpsScheduleSnapshot | null
 }
 
 // ── Entity lifecycle ────────────────────────────────────────────────────────

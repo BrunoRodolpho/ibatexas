@@ -315,11 +315,17 @@ export interface OpsToolSpies {
   writeAdjudicatedNote: ReturnType<typeof vi.fn>;
   writeAdjudicatedStatusTransition: ReturnType<typeof vi.fn>;
   publishOrderStatusChanged: ReturnType<typeof vi.fn>;
+  // SCN-114 — the daily-special upsert service spies (list/create/update).
+  dailySpecialList: ReturnType<typeof vi.fn>;
+  dailySpecialCreate: ReturnType<typeof vi.fn>;
+  dailySpecialUpdate: ReturnType<typeof vi.fn>;
   writeAdjudicatedRefund: ReturnType<typeof vi.fn>;
   publishPaymentStatusChanged: ReturnType<typeof vi.fn>;
   appendRefundEventLog: ReturnType<typeof vi.fn>;
   resolveAlertFromEnvelope: ReturnType<typeof vi.fn>;
   closeIncidentFromEnvelope: ReturnType<typeof vi.fn>;
+  upsertOverride: ReturnType<typeof vi.fn>;
+  invalidateScheduleCache: ReturnType<typeof vi.fn>;
 }
 
 /**
@@ -341,6 +347,13 @@ export function buildOpsTools(
     writeAdjudicatedStatusTransition:
       overrides.writeAdjudicatedStatusTransition ?? vi.fn(),
     publishOrderStatusChanged: overrides.publishOrderStatusChanged ?? vi.fn(),
+    // SCN-114 — default: no existing special for the day (list empty), so the
+    // upsert CREATEs; a dedicated e2e overrides these to assert the upsert path.
+    dailySpecialList: overrides.dailySpecialList ?? vi.fn(async () => []),
+    dailySpecialCreate:
+      overrides.dailySpecialCreate ?? vi.fn(async () => ({ id: "special_1" })),
+    dailySpecialUpdate:
+      overrides.dailySpecialUpdate ?? vi.fn(async () => ({ id: "special_1" })),
     writeAdjudicatedRefund:
       overrides.writeAdjudicatedRefund ??
       vi.fn(async () => ({
@@ -361,6 +374,14 @@ export function buildOpsTools(
     closeIncidentFromEnvelope:
       overrides.closeIncidentFromEnvelope ??
       vi.fn(async () => ({ result: { status: "RESOLVED" } })),
+    upsertOverride:
+      overrides.upsertOverride ??
+      vi.fn(async (date: string, data: { isOpen: boolean }) => ({
+        date,
+        isOpen: data.isOpen,
+      })),
+    invalidateScheduleCache:
+      overrides.invalidateScheduleCache ?? vi.fn(async () => ({ ok: true })),
   };
   const tools = createOpsToolRegistry({
     medusaAdjudicated: spies.medusaAdjudicated as never,
@@ -370,12 +391,19 @@ export function buildOpsTools(
       writeAdjudicatedNote: spies.writeAdjudicatedNote,
       writeAdjudicatedStatusTransition: spies.writeAdjudicatedStatusTransition,
     },
+    dailySpecialSvc: {
+      list: spies.dailySpecialList as never,
+      create: spies.dailySpecialCreate as never,
+      update: spies.dailySpecialUpdate as never,
+    },
     publishOrderStatusChanged: spies.publishOrderStatusChanged,
     paymentCmdSvc: { writeAdjudicatedRefund: spies.writeAdjudicatedRefund },
     publishPaymentStatusChanged: spies.publishPaymentStatusChanged,
     appendRefundEventLog: spies.appendRefundEventLog,
     opsAlertSvc: { resolveAlertFromEnvelope: spies.resolveAlertFromEnvelope },
     incidentSvc: { closeIncidentFromEnvelope: spies.closeIncidentFromEnvelope },
+    scheduleSvc: { upsertOverride: spies.upsertOverride as never },
+    invalidateScheduleCache: spies.invalidateScheduleCache as never,
   });
   return { tools, spies };
 }

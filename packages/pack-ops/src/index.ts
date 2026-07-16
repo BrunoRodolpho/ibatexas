@@ -3,13 +3,16 @@
  * operations) plane. Sixth first-party Pack after pack-orders /
  * pack-reservations / pack-whatsapp / pack-customer-onboarding / pack-payments.
  *
- * NEW-032 slice C1 + BKL-088 + NEW-004 — the governed-verb surface of the
- * ops-actor plane. It ships FOUR OWNED governed staff-plane verbs with the
+ * NEW-032 slice C1 + BKL-088 + NEW-004 + SCN-127 — the governed-verb surface of
+ * the ops-actor plane. It ships FIVE OWNED governed staff-plane verbs with the
  * kernel authority wiring: `product.availability.set` (86/un-86, NEW-032 slice
  * C1), `product.price.set` (price-change-by-message, NEW-004 — confirm-gated on
- * UNTRUSTED taint), and the two RESOLUTION verbs `ops.alert.resolve.staff` /
+ * UNTRUSTED taint), the two RESOLUTION verbs `ops.alert.resolve.staff` /
  * `incident.ticket.close.staff` (BKL-088), whose ops-tool executors drive the
- * SAME-named SYSTEM domain write layer (the D10 two-layer posture). The
+ * SAME-named SYSTEM domain write layer (the D10 two-layer posture), and
+ * `schedule.override.set` (per-date schedule override by message, SCN-127 —
+ * "fecha amanhã" / custom hours; its executor drives the SAME
+ * `scheduleService.upsertOverride` the admin schedule route uses). The
  * conductor ingress, LLM persona (which stamps `admin:${staffId}` +
  * `actor.role`), resolver, and tool executors live in apps/api.
  *
@@ -42,12 +45,15 @@ export {
   getPriceSanityMaxCentavos,
   INCIDENT_CLOSE_STAFF_KEYS,
   isOpsEntityActionable,
+  MENU_SPECIAL_SET_KEYS,
   OPS_ALERT_RESOLVE_STAFF_KEYS,
   OPS_ENTITY_NON_TERMINAL_STATUSES,
   opsTaintPolicy,
   PRODUCT_AVAILABILITY_SET_KEYS,
   PRODUCT_PRICE_SET_KEYS,
+  SCHEDULE_OVERRIDE_SET_KEYS,
   type IncidentCloseStaffPayload,
+  type MenuSpecialSetPayload,
   type OpsAlertResolveStaffPayload,
   type OpsAlertSnapshot,
   type OpsContext,
@@ -56,9 +62,14 @@ export {
   type OpsPayload,
   type OpsPriceProductSnapshot,
   type OpsProductSnapshot,
+  type OpsScheduleBlock,
+  type OpsScheduleSnapshot,
+  type OpsSpecialProductSnapshot,
+  type OpsSpecialState,
   type OpsState,
   type ProductAvailabilitySetPayload,
   type ProductPriceSetPayload,
+  type ScheduleOverrideSetPayload,
 } from "./types.js"
 
 export {
@@ -69,10 +80,15 @@ export {
   OPS_AVAILABILITY_PRODUCT_NOT_FOUND_CODE,
   OPS_INCIDENT_CLOSE_NOT_ACTIONABLE_CODE,
   OPS_INCIDENT_CLOSE_PAYLOAD_INVALID_CODE,
+  OPS_MENU_SPECIAL_DATE_PAST_CODE,
+  OPS_MENU_SPECIAL_PAYLOAD_INVALID_CODE,
+  OPS_MENU_SPECIAL_PRODUCT_NOT_FOUND_CODE,
   OPS_PRICE_OUT_OF_RANGE_CODE,
   OPS_PRICE_PAYLOAD_INVALID_CODE,
   OPS_PRICE_PER_VARIANT_UNSUPPORTED_CODE,
   OPS_PRICE_PRODUCT_NOT_FOUND_CODE,
+  OPS_SCHEDULE_OVERRIDE_DATE_NOT_ACTIONABLE_CODE,
+  OPS_SCHEDULE_OVERRIDE_PAYLOAD_INVALID_CODE,
   OPS_REFUSAL_CODES,
   refuseAdminSessionRequired,
   refuseAlertResolveNotActionable,
@@ -81,10 +97,15 @@ export {
   refuseAvailabilityProductNotFound,
   refuseIncidentCloseNotActionable,
   refuseIncidentClosePayloadInvalid,
+  refuseMenuSpecialDatePast,
+  refuseMenuSpecialPayloadInvalid,
+  refuseMenuSpecialProductNotFound,
   refusePriceOutOfRange,
   refusePricePayloadInvalid,
   refusePricePerVariantUnsupported,
   refusePriceProductNotFound,
+  refuseScheduleOverrideDateNotActionable,
+  refuseScheduleOverridePayloadInvalid,
   portugueseRefusalMessages,
 } from "./refusals.js"
 
@@ -96,6 +117,7 @@ export {
   OPS_SALES_ANALYTICS_READ_TOOL,
   OPS_ALERT_RESOLVE_STAFF_KIND,
   OPS_INCIDENT_CLOSE_STAFF_KIND,
+  OPS_SCHEDULE_OVERRIDE_SET_KIND,
   OPS_FOREIGN_ADVERTISED_KIND,
   OPS_FOREIGN_ADVERTISED_TRANSITION_KIND,
   OPS_FOREIGN_ADVERTISED_REFUND_KIND,
@@ -118,17 +140,25 @@ export {
  */
 export const opsPack = {
   id: "ibatexas/pack-ops",
-  version: "1.2.0",
+  version: "1.4.0",
   contract: "v0",
   intents: [
     "product.availability.set",
     // NEW-004 — the OWNED price-change verb (confirm-gated on UNTRUSTED taint;
     // executor re-prices via the same medusaAdjudicated admin egress).
     "product.price.set",
+    // SCN-114 — the OWNED daily-special-by-message verb (confirm-gated on
+    // UNTRUSTED taint; executor upserts a DailySpecial via the domain service,
+    // NO Medusa egress — the same service the NEW-005 admin route uses).
+    "menu.special.set",
     // BKL-088 — the two OWNED staff-plane RESOLUTION verbs (their executors
     // drive the SAME-named SYSTEM domain write layer; see types.ts header).
     "ops.alert.resolve.staff",
     "incident.ticket.close.staff",
+    // SCN-127 — the OWNED schedule-override verb ("fecha amanhã" / custom hours);
+    // its executor drives the SAME scheduleService.upsertOverride the admin
+    // schedule route uses (a domain-service verb; NO Medusa egress).
+    "schedule.override.set",
   ],
   policy: opsPolicyBundle,
   planner: opsCapabilityPlanner,

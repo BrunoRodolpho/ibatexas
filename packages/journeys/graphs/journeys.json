@@ -5,6 +5,7 @@
     "active": [
       "JOURNEY-001",
       "JOURNEY-005",
+      "JOURNEY-008",
       "JOURNEY-009",
       "JOURNEY-010",
       "JOURNEY-011",
@@ -20,7 +21,6 @@
       "JOURNEY-004",
       "JOURNEY-006",
       "JOURNEY-007",
-      "JOURNEY-008",
       "JOURNEY-017"
     ],
     "gaps": [
@@ -29,7 +29,6 @@
       "approvals-http-resolve",
       "chat-confirmation-resume",
       "handoff-port-noop",
-      "journey-runner-raw-envelope-act",
       "medusa-v2-order-edit-api",
       "order-cancel-kernel-ponr",
       "test-plane-live-stripe",
@@ -430,11 +429,10 @@
       "type": "act",
       "label": "forged-actor-probe",
       "meta": {
-        "asRole": "customer",
+        "envelopeKind": "order.cancel",
+        "expectStatus": 400,
         "index": 2,
-        "kind": "http",
-        "method": "POST",
-        "path": "/api/orders/:orderId/cancel"
+        "kind": "raw-envelope"
       }
     },
     {
@@ -1344,16 +1342,6 @@
       }
     },
     {
-      "id": "gap:journey-runner-raw-envelope-act",
-      "type": "gap",
-      "label": "journey-runner-raw-envelope-act",
-      "meta": {
-        "blocks": [
-          "JOURNEY-008"
-        ]
-      }
-    },
-    {
       "id": "gap:medusa-v2-order-edit-api",
       "type": "gap",
       "label": "medusa-v2-order-edit-api",
@@ -1565,16 +1553,14 @@
       "label": "JOURNEY-008 — Forged system-actor envelope is rejected 400 with a tamper-evident trail",
       "meta": {
         "actCount": 3,
-        "blockedBy": [
-          "journey-runner-raw-envelope-act"
-        ],
+        "blockedBy": [],
         "channel": "web",
         "expectCount": 2,
         "journeyId": "JOURNEY-008",
         "optionalExpectCount": 0,
         "personaContext": "authed-customer",
-        "source": "docs/agents/plan-v2.md §5 T1a-12 (gap discovered during authoring)",
-        "status": "blocked",
+        "source": "docs/agents/plan-v2.md §5 T1a-12 (gap discovered during authoring; unblocked by BKL-044)",
+        "status": "active",
         "verifyInvariants": [
           "audit.refusal-basis",
           "audit.kind-absent",
@@ -1814,11 +1800,6 @@
     {
       "from": "journey:JOURNEY-007",
       "to": "gap:web-pix-pending-ctx",
-      "type": "blocked-by"
-    },
-    {
-      "from": "journey:JOURNEY-008",
-      "to": "gap:journey-runner-raw-envelope-act",
       "type": "blocked-by"
     },
     {

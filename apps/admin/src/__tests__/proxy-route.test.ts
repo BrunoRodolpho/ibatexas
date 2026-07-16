@@ -47,6 +47,8 @@ describe("admin proxy route", () => {
       headers: {
         "content-type": "application/json",
         "idempotency-key": "idem-123",
+        // S1 — admin proxying now requires an authenticated staff session cookie.
+        cookie: "staff_token=t",
       },
       body: JSON.stringify({ reason: "teste" }),
     })
@@ -68,7 +70,7 @@ describe("admin proxy route", () => {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        cookie: "staff_jwt=abc",
+        cookie: "staff_token=abc",
         "x-evil": "nope",
       },
       body: JSON.stringify({}),
@@ -79,15 +81,35 @@ describe("admin proxy route", () => {
     const [, init] = upstreamFetch.mock.calls[0] as [string, RequestInit]
     const headers = init.headers as Headers
     expect(headers.get("content-type")).toBe("application/json")
-    expect(headers.get("cookie")).toBe("staff_jwt=abc")
+    expect(headers.get("cookie")).toBe("staff_token=abc")
     expect(headers.get("x-evil")).toBeNull()
+  })
+
+  it("never forwards a shared x-admin-key upstream (S1 — key is CLI-only)", async () => {
+    // The proxy previously injected the shared key on every forward, which let a
+    // forged, presence-only staff_token cookie ride it into the key-eligible
+    // staff/agents groups. Browser calls must authenticate with a real staff JWT
+    // (forwarded as the cookie); the key is never attached here.
+    const path = "api/admin/staff"
+    const request = makeRequest(path, {
+      method: "GET",
+      headers: { cookie: "staff_token=abc" },
+    })
+
+    await GET(request, contextFor(path))
+
+    const [, init] = upstreamFetch.mock.calls[0] as [string, RequestInit]
+    const headers = init.headers as Headers
+    expect(headers.get("x-admin-key")).toBeNull()
+    // The staff JWT cookie is still forwarded so the API's DOM-001 guard can auth it.
+    expect(headers.get("cookie")).toBe("staff_token=abc")
   })
 
   it("omits idempotency-key upstream when the client sent none", async () => {
     const path = "api/admin/orders/o1/force-cancel"
     const request = makeRequest(path, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", cookie: "staff_token=t" },
       body: JSON.stringify({}),
     })
 
@@ -96,6 +118,19 @@ describe("admin proxy route", () => {
     const [, init] = upstreamFetch.mock.calls[0] as [string, RequestInit]
     const headers = init.headers as Headers
     expect(headers.get("idempotency-key")).toBeNull()
+  })
+
+  it("401s an admin path without a staff session (S1 defense-in-depth)", async () => {
+    // No staff_token cookie → the proxy early-bounces the logged-out browser
+    // rather than forwarding to a raw upstream 401. The API's DOM-001 guard (which
+    // validates the JWT) is the real boundary; this is only a UX belt.
+    const path = "api/admin/orders"
+    const request = makeRequest(path, { method: "GET" })
+
+    const response = await GET(request, contextFor(path))
+
+    expect(response.status).toBe(401)
+    expect(upstreamFetch).not.toHaveBeenCalled()
   })
 
   it("still 403s non-admin paths", async () => {

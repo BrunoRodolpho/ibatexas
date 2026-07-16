@@ -432,6 +432,11 @@ export const INTENT_KIND_FIELD_RULES: Readonly<Record<string, ReadonlyArray<stri
   // corpus; the reason never reaches it.
   "ops.alert.resolve.staff": ["reason"],
   "incident.ticket.close.staff": ["reason"],
+  // SCN-127 — `ScheduleOverrideSetPayload` is bounded (date + isOpen + blocks of
+  // {label,start,end} HH:MM windows) EXCEPT the optional free-form `note`
+  // operator note, which an owner could type with a customer name / detail in it.
+  // Over-redact `note` (same posture as the other ops verbs' `reason`).
+  "schedule.override.set": ["note"],
 
   // ── AUT-038 staff-CRUD plane (HTTP-only, off KNOWN_INTENT_KINDS) ─────────
   // staff.create / staff.update payloads carry `hourlyRateCentavos` — employee
@@ -566,6 +571,9 @@ export const PII_FREE_KIND_ALLOWLIST: ReadonlySet<string> = new Set<string>([
   // pay data and are classified in INTENT_KIND_FIELD_RULES above.)
   "staff.deactivate", // staffId only
   "staff.role.assign", // staffId + role: closed {OWNER,MANAGER,ATTENDANT} enum
+
+  // ── Ops Pack (SCN-114) — id/date/centavos, no PII, no free-form field ──
+  "menu.special.set", // productId (opaque)/date (YYYY-MM-DD)/promoPriceCentavos (int)
 
   // ── WhatsApp Pack — phone fields are pre-hashed ─────────────────────
   // `WhatsAppSessionHandoverPayload.fromHashedPhone` is SHA-256 of the

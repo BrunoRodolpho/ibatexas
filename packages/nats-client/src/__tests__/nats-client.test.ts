@@ -429,6 +429,43 @@ describe("NATS Client — P0-12 authentication wiring", () => {
     }
   })
 
+  it("[BKL-129] THROWS naming NATS_CREDS_PATH when the value is comment-poisoned ('#…')", async () => {
+    // process-compose hands a trailing `# comment` through as the VALUE when the
+    // value is empty. Before the guard this ENOENT'd on a nonsense path; now it
+    // fails CLOSED with a message that names the var + the inline-comment gotcha.
+    process.env.NATS_CREDS_PATH =
+      "# path to a .creds file (JWT-bearer auth) — full nsc/JWT alternative for prod"
+    await expect(getNatsConnection()).rejects.toThrow(/NATS_CREDS_PATH/)
+    await expect(getNatsConnection()).rejects.toThrow(/inline comment/i)
+    // never attempted the connect
+    expect(mockConnect).not.toHaveBeenCalled()
+  })
+
+  it("[BKL-129] THROWS naming NATS_CREDS_PATH when the .creds file cannot be read", async () => {
+    // A path that the fs mock refuses (not a real '.creds' file) surfaces as a
+    // clear config error naming the var, not a bare ENOENT.
+    process.env.NATS_CREDS_PATH = "/etc/nats/missing-creds"
+    await expect(getNatsConnection()).rejects.toThrow(/NATS_CREDS_PATH/)
+    await expect(getNatsConnection()).rejects.toThrow(/could not\s+be read/i)
+  })
+
+  it("[BKL-129] THROWS naming NATS_TLS_CA when the value is comment-poisoned ('#…')", async () => {
+    // Same env-poisoning class on the TLS CA path (resolveTls). No auth is set,
+    // so resolveAuthenticator returns undefined and resolveTls is what fails.
+    process.env.NATS_TLS_CA = "# path to PEM CA cert for the NATS server"
+    await expect(getNatsConnection()).rejects.toThrow(/NATS_TLS_CA/)
+    await expect(getNatsConnection()).rejects.toThrow(/inline comment/i)
+    expect(mockConnect).not.toHaveBeenCalled()
+  })
+
+  it("[BKL-129] THROWS naming NATS_TLS_CA when the CA file cannot be read", async () => {
+    // A path the fs mock refuses (no '.pem'/'ca' substring) surfaces as a clear
+    // config error naming the var, not a bare ENOENT.
+    process.env.NATS_TLS_CA = "/etc/nats/missing-root-file"
+    await expect(getNatsConnection()).rejects.toThrow(/NATS_TLS_CA/)
+    await expect(getNatsConnection()).rejects.toThrow(/could not\s+be read/i)
+  })
+
   it("[P0-12] does NOT emit production warning when auth is configured", async () => {
     process.env.NODE_ENV = "production"
     process.env.NATS_CREDS_PATH = "/etc/nats/api.creds"

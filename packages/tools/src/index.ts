@@ -104,6 +104,7 @@ export {
   getFrozenPickupMessage,
   getScheduleSignal,
   getTodayHoursText,
+  getHoursTextForDate,
   type ScheduleSignal,
 } from "./schedule/schedule-helpers.js"
 

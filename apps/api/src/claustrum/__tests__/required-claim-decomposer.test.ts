@@ -37,12 +37,70 @@ describe("required-claim decomposer — closure table (SDD §O#15)", () => {
     expect([...decomposeRequiredClaims(["STORE_OPEN_NOW_Q"])]).toEqual([
       "STORE_OPEN_NOW",
     ]);
+    expect([...decomposeRequiredClaims(["STORE_HOURS_FOR_DATE_Q"])]).toEqual([
+      "STORE_HOURS_FOR_DATE",
+    ]);
     expect([...decomposeRequiredClaims(["ORDER_STATUS_Q"])]).toEqual([
       "ORDER_FULFILLMENT_STAGE",
     ]);
     expect([...decomposeRequiredClaims(["PAYMENT_STATUS_Q"])]).toEqual([
       "PAYMENT_STATUS",
     ]);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BKL-138 — the DAY-SPECIFIC hours span class (SCN-002/003). Fires ONLY on the
+// CONJUNCTION of a date anchor (named weekday / "amanhã" / "feriado") AND schedule
+// phrasing; demote-only safe (over-inclusion only forces the date-hours companion).
+// ─────────────────────────────────────────────────────────────────────────────
+describe("classifyRequestSpans — BKL-138 STORE_HOURS_FOR_DATE_Q", () => {
+  it("'qual o horário de domingo?' → STORE_HOURS_FOR_DATE_Q → requires STORE_HOURS_FOR_DATE", () => {
+    const spans = classifyRequestSpans("qual o horário de domingo?");
+    expect(spans).toContain("STORE_HOURS_FOR_DATE_Q");
+    const required = decomposeRequiredClaims(spans);
+    expect(required.has("STORE_HOURS_FOR_DATE")).toBe(true);
+  });
+
+  it("'vocês abrem amanhã no feriado?' → STORE_HOURS_FOR_DATE_Q (SCN-003)", () => {
+    const spans = classifyRequestSpans("vocês abrem amanhã no feriado?");
+    expect(spans).toContain("STORE_HOURS_FOR_DATE_Q");
+    // …and this phrasing does NOT trip STORE_OPEN_NOW_Q (no abert/que horas/funciona/horário).
+    expect(spans).not.toContain("STORE_OPEN_NOW_Q");
+  });
+
+  it("named-weekday variants with schedule context all fire", () => {
+    for (const text of [
+      "que horas abre segunda?",
+      "funcionam no sábado?",
+      "tem expediente na terça?",
+      "vocês atendem quarta-feira?",
+    ]) {
+      expect(classifyRequestSpans(text)).toContain("STORE_HOURS_FOR_DATE_Q");
+    }
+  });
+
+  it("a bare schedule question with NO date anchor does NOT fire (stays STORE_OPEN_NOW_Q)", () => {
+    const spans = classifyRequestSpans("que horas vocês funcionam?");
+    expect(spans).not.toContain("STORE_HOURS_FOR_DATE_Q");
+    expect(spans).toContain("STORE_OPEN_NOW_Q");
+  });
+
+  it("DEMOTE-ONLY safety: a greeting that merely names a day is NOT swept in", () => {
+    // No schedule phrasing → the date anchor alone must not force the companion.
+    for (const text of ["bom domingo pra você!", "até sábado, obrigado!", "feliz feriado!"]) {
+      expect(classifyRequestSpans(text)).not.toContain("STORE_HOURS_FOR_DATE_Q");
+    }
+  });
+
+  it("the BKL-005 statement corpus is not over-promoted by the date markers", () => {
+    for (const text of [
+      "meu pedido chegou, obrigado!",
+      "vou pagar com pix",
+      "adorei o pagode de sábado", // a weekday word but no schedule context
+    ]) {
+      expect(classifyRequestSpans(text)).not.toContain("STORE_HOURS_FOR_DATE_Q");
+    }
   });
 });
 

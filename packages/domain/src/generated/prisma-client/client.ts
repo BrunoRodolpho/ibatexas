@@ -99,6 +99,23 @@ export type StaffShift = Prisma.StaffShiftModel
  */
 export type Customer = Prisma.CustomerModel
 /**
+ * Model CustomerBroadcastConsent
+ * Marketing (broadcast) consent per phone (WS3A). DURABLE opt-out — replaces the
+ * volatile Redis-only registry so a cache flush can never silently lose consent
+ * (LGPD). Keyed by canonical E.164 phone (toE164BR); intentionally NOT a FK to
+ * Customer so it can also hold opt-outs for non-customer recipients.
+ * optedOut = true means "do not include in a broadcast".
+ */
+export type CustomerBroadcastConsent = Prisma.CustomerBroadcastConsentModel
+/**
+ * Model BroadcastSend
+ * Persisted audit of every broadcast blast (WS3C). Today the blast result was
+ * only logged, so there was no durable record of what was sent to whom — a
+ * compliance blind spot. One row per POST /api/admin/broadcast: the template,
+ * the sender, aggregate per-status counts, and the full per-recipient ledger.
+ */
+export type BroadcastSend = Prisma.BroadcastSendModel
+/**
  * Model Address
  * Delivery address for a customer.
  */

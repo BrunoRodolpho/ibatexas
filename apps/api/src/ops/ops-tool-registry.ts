@@ -47,6 +47,12 @@
 //   - incident.ticket.close.staff → `incidentSvc.closeIncidentFromEnvelope`
 //     (BKL-088; same D10 posture over the SYSTEM `incident.ticket.close` kind,
 //     the admin incidents resolve route's path). riskLevel "low".
+//   - schedule.override.set → `scheduleSvc.upsertOverride` (SCN-127; the SAME
+//     domain-service call the admin schedule override route uses — NO Medusa
+//     egress, NO second adjudication). The resolver already stamped a concrete
+//     ISO date; after the committed write it invalidates the Redis schedule cache
+//     (exactly like the admin route) so the customer-facing hours/closed-notice
+//     reads pick the override up immediately. riskLevel "low" (reversible).
 //
 // `staffId` (audit sourceSubject / note authorId) is read from the per-turn
 // `Capsule.actor.staffId` — the AUTHORITATIVE identity the ops route stamps from
@@ -79,15 +85,18 @@ import type {
 } from "@ibatexas/pack-orders";
 import type {
   IncidentCloseStaffPayload,
+  MenuSpecialSetPayload,
   OpsAlertResolveStaffPayload,
   ProductAvailabilitySetPayload,
   ProductPriceSetPayload,
+  ScheduleOverrideSetPayload,
 } from "@ibatexas/pack-ops";
 import { buildSystemEnvelope } from "../subscribers/__shared__/system-actor-envelope.js";
 import type {
   OrderFulfillmentStatus,
   OrderStatusChangedEvent,
   PaymentStatusChangedEvent,
+  TimeBlock,
 } from "@ibatexas/types";
 
 /** The injected `medusaAdjudicated` shape (typeof `@ibatexas/tools`'s export). */
@@ -202,6 +211,46 @@ export interface IncidentCloseWriter {
   ): Promise<{ readonly result?: { readonly status: string } | null }>;
 }
 
+/**
+ * SCN-127 — the single schedule-override write method the ops registry needs
+ * (structural subset of `ScheduleService.upsertOverride`, `@ibatexas/domain`).
+ * The `schedule.override.set` executor calls the SAME method the admin schedule
+ * override route (PUT /api/admin/schedule/overrides/:date) uses — a domain-service
+ * verb, NO Medusa egress. The caller MUST hold a positive composed-router
+ * Decision; this performs NO adjudication.
+ */
+export interface OpsScheduleOverrideWriter {
+  upsertOverride(
+    date: string,
+    data: { isOpen: boolean; blocks: TimeBlock[]; note?: string | null },
+  ): Promise<{ readonly date: string; readonly isOpen: boolean }>;
+}
+
+/**
+ * SCN-114 — the structural subset of `DailySpecialService` the `menu.special.set`
+ * executor drives. `list` finds an existing row for the (product, business-day)
+ * so the upsert can UPDATE rather than hit the `@@unique([medusaProductId,date])`
+ * on a re-run; `create`/`update` write the row. This is the SAME domain service
+ * the NEW-005 admin route (`routes/admin/specials.ts`) uses — NO Medusa egress
+ * (BKL-088 domain-service pattern). The composed router already produced the
+ * Decision at SUBMIT; this performs NO adjudication.
+ */
+export interface OpsDailySpecialWriter {
+  list(params: {
+    date?: string;
+    activeOnly?: boolean;
+  }): Promise<ReadonlyArray<{ id: string; medusaProductId: string }>>;
+  create(input: {
+    medusaProductId: string;
+    date: string;
+    promoPriceCentavos?: number | null;
+  }): Promise<{ id: string }>;
+  update(
+    id: string,
+    patch: { promoPriceCentavos?: number | null; active?: boolean },
+  ): Promise<{ id: string } | null>;
+}
+
 export interface OpsToolRegistryDeps {
   /** `medusaAdjudicated` (injected for testability). */
   readonly medusaAdjudicated: MedusaAdjudicatedFn;
@@ -224,6 +273,9 @@ export interface OpsToolRegistryDeps {
   ) => Promise<readonly string[] | null>;
   /** The order command service's POST-adjudication writers (note + transition). */
   readonly orderCmdSvc: OpsNoteWriter & OpsStatusWriter;
+  /** SCN-114 — the daily-special upsert service (the SAME service the NEW-005
+   *  admin route uses). The `menu.special.set` executor upserts through it. */
+  readonly dailySpecialSvc: OpsDailySpecialWriter;
   /** BKL-085 — the payment command service's POST-adjudication refund writer. */
   readonly paymentCmdSvc: OpsRefundWriter;
   /**
@@ -238,6 +290,25 @@ export interface OpsToolRegistryDeps {
    * `createIncidentService({ auditSink })`.
    */
   readonly incidentSvc: IncidentCloseWriter;
+  /**
+   * SCN-127 — the schedule-override write layer (the SAME service the admin
+   * schedule override route calls). Bootstrap wires it to
+   * `createScheduleService()`. The executor performs NO adjudication (the
+   * composed router already produced the Decision at SUBMIT).
+   */
+  readonly scheduleSvc: OpsScheduleOverrideWriter;
+  /**
+   * SCN-127 — invalidate the Redis schedule cache after a committed override
+   * write, EXACTLY like the admin schedule route (invalidateScheduleOrWarn). The
+   * customer-facing hours/closed-notice reads go through the read-through cache
+   * (`loadSchedule`, TTL SCHEDULE_CACHE_TTL_SECONDS default 300s), so without this
+   * an override could take up to the TTL to propagate. Returns `{ ok }` — `false`
+   * when the DEL was swallowed (circuit-open) even after a retry, so the executor
+   * can WARN that propagation may lag up to the TTL. Never throws (a failed
+   * invalidation must not fail the write — the TTL bounds staleness). Bootstrap
+   * wires it to `@ibatexas/tools`' `invalidateScheduleCache`.
+   */
+  readonly invalidateScheduleCache: () => Promise<{ readonly ok: boolean }>;
   /**
    * BKL-085 — publish `payment.status_changed` after a committed refund write,
    * exactly like the admin refund route (payments.ts:523-532). Its subscriber
@@ -384,6 +455,64 @@ async function executePriceSet(
     productId: payload.productId,
     priceCentavos: payload.priceCentavos,
     variantsUpdated: brlVariantIds.length,
+  };
+}
+
+/**
+ * Executor for `menu.special.set` (SCN-114) — the POST-adjudication UPSERT of a
+ * DailySpecial via the domain service (NO Medusa egress — the same service the
+ * NEW-005 admin route uses). The composed router already produced the Decision at
+ * SUBMIT (carrying `adminSessionOnlyGuard` + `staffRoleGuard` {OWNER,MANAGER} +
+ * the payload / not-past / existence guards + the UNTRUSTED-taint CONFIRM overlay
+ * — a REQUEST_CONFIRMATION parks and resumes via the ops matchToParked driver);
+ * this executor performs NO adjudication.
+ *
+ * Upsert keyed on the DB `@@unique([medusaProductId, date])`: it LISTS the day's
+ * specials (all, not active-only, so a paused row is found rather than colliding
+ * on create) and, if the product already has a row for that day, UPDATEs it
+ * (`active: true` re-affirms a paused one) — otherwise CREATEs a fresh one. An
+ * OMITTED `promoPriceCentavos` is left untouched on update (never silently
+ * cleared) and defaults to NULL (featured without a discount) on create.
+ */
+async function executeMenuSpecialSet(
+  deps: OpsToolRegistryDeps,
+  payload: MenuSpecialSetPayload,
+): Promise<{
+  specialId: string;
+  productId: string;
+  date: string;
+  created: boolean;
+}> {
+  const promoFields =
+    payload.promoPriceCentavos !== undefined
+      ? { promoPriceCentavos: payload.promoPriceCentavos }
+      : {};
+  const daySpecials = await deps.dailySpecialSvc.list({ date: payload.date });
+  const existing =
+    daySpecials.find((s) => s.medusaProductId === payload.productId) ?? null;
+
+  if (existing) {
+    await deps.dailySpecialSvc.update(existing.id, {
+      ...promoFields,
+      active: true,
+    });
+    return {
+      specialId: existing.id,
+      productId: payload.productId,
+      date: payload.date,
+      created: false,
+    };
+  }
+  const created = await deps.dailySpecialSvc.create({
+    medusaProductId: payload.productId,
+    date: payload.date,
+    ...promoFields,
+  });
+  return {
+    specialId: created.id,
+    productId: payload.productId,
+    date: payload.date,
+    created: true,
   };
 }
 
@@ -628,7 +757,45 @@ async function executeIncidentCloseStaff(
   return { incidentId: payload.incidentId, status: out.result?.status ?? null };
 }
 
-/** The seven governed ops MUTATING tools (capability === intentKind). */
+/**
+ * Executor for `schedule.override.set` (SCN-127) — writes a per-date schedule
+ * override via the SAME `scheduleService.upsertOverride` the admin schedule
+ * override route uses (a domain-service verb; NO Medusa egress, NO second
+ * adjudication — the composed router already produced the Decision at SUBMIT). The
+ * resolver already normalized `payload.date` to a CONCRETE ISO date; the pack
+ * validator guaranteed `blocks` are coherent with `isOpen` (open ⇒ non-empty,
+ * closed ⇒ none). After the committed write it invalidates the Redis schedule
+ * cache EXACTLY like the admin route, so the customer-facing hours/closed-notice
+ * reads pick the override up immediately; a swallowed invalidation is WARN-logged
+ * (with the Capsule staffId — never the payload) and the cache TTL bounds
+ * staleness. A failed invalidation NEVER fails the write (the override committed).
+ */
+async function executeScheduleOverrideSet(
+  deps: OpsToolRegistryDeps,
+  payload: ScheduleOverrideSetPayload,
+  staffId: string | null,
+): Promise<{ date: string; isOpen: boolean }> {
+  await deps.scheduleSvc.upsertOverride(payload.date, {
+    isOpen: payload.isOpen,
+    // A CLOSED day carries no windows; an OPEN day carries the validated blocks.
+    blocks: payload.isOpen ? (payload.blocks ?? []) : [],
+    note: payload.note ?? null,
+  });
+  const { ok } = await deps.invalidateScheduleCache();
+  if (!ok) {
+    deps.log?.warn?.(
+      {
+        event: "ops_schedule_override_cache_invalidation_failed",
+        date: payload.date,
+        staffId,
+      },
+      "Ops schedule override written but cache invalidation was swallowed — the edit may take up to SCHEDULE_CACHE_TTL_SECONDS (default 300s) to propagate to the bot.",
+    );
+  }
+  return { date: payload.date, isOpen: payload.isOpen };
+}
+
+/** The nine governed ops MUTATING tools (capability === intentKind). */
 function opsToolDefinitions(
   deps: OpsToolRegistryDeps,
 ): ReadonlyArray<ToolDefinition<unknown, unknown>> {
@@ -666,6 +833,18 @@ function opsToolDefinitions(
         ),
     },
     {
+      id: "ibatexas.ops.menuSpecialSet.v1",
+      capability: asCapability("menu.special.set"),
+      intentKind: asIntentKind("menu.special.set"),
+      description:
+        "Definir o especial do dia (ex.: o especial de hoje é feijoada por 45 reais).",
+      inputSchema: {},
+      outputSchema: {},
+      riskLevel: "low",
+      execute: (input) =>
+        executeMenuSpecialSet(deps, input as MenuSpecialSetPayload),
+    },
+    {
       id: "ibatexas.ops.orderNoteAdd.v1",
       capability: asCapability("order.note.add"),
       intentKind: asIntentKind("order.note.add"),
@@ -686,7 +865,40 @@ function opsToolDefinitions(
       intentKind: asIntentKind("order.status.transition"),
       description:
         "Avançar um pedido para o próximo status da cozinha/entrega (ex.: preparando → pronto).",
-      inputSchema: {},
+      // BKL-144 — the REAL model-facing shape. The runtime treats inputSchema
+      // opaquely (it is NOT surfaced to the LLM — the planner advertises only
+      // `capability` + a generic `payload`), so this documents the CLOSED contract
+      // the guard enforces rather than driving generation: the planner emits ONLY
+      // `orderId` + `newStatus`; `actor`/`actorId`/`reason` are Capsule-forced by
+      // the executor, never model-parsed. `newStatus` is one of the six English
+      // enum values VERBATIM — the BKL-090 guard reads `payload.newStatus`
+      // literally with NO pt→en / alias normalization (the fix teaches the planner,
+      // it does NOT loosen the guard).
+      inputSchema: {
+        type: "object",
+        properties: {
+          orderId: {
+            type: "string",
+            description:
+              "Pedido a transicionar — id, número de exibição ou nome do cliente (o resolver mapeia para o id real).",
+          },
+          newStatus: {
+            type: "string",
+            enum: [
+              "confirmed",
+              "preparing",
+              "ready",
+              "in_delivery",
+              "delivered",
+              "canceled",
+            ],
+            description:
+              "Status alvo — EXATAMENTE um destes valores em inglês (contrato fechado; o guard não normaliza).",
+          },
+        },
+        required: ["orderId", "newStatus"],
+        additionalProperties: false,
+      },
       outputSchema: {},
       riskLevel: "medium",
       execute: (input, ctx) =>
@@ -741,6 +953,23 @@ function opsToolDefinitions(
         executeIncidentCloseStaff(
           deps,
           input as IncidentCloseStaffPayload,
+          staffIdFromCapsule(ctx),
+        ),
+    },
+    {
+      id: "ibatexas.ops.scheduleOverrideSet.v1",
+      capability: asCapability("schedule.override.set"),
+      intentKind: asIntentKind("schedule.override.set"),
+      description:
+        "Definir uma exceção de horário para uma data (ex.: fecha amanhã / amanhã abrimos só às 18h).",
+      inputSchema: {},
+      outputSchema: {},
+      // Reversible, non-money (a per-date override the admin UI can correct/remove).
+      riskLevel: "low",
+      execute: (input, ctx) =>
+        executeScheduleOverrideSet(
+          deps,
+          input as ScheduleOverrideSetPayload,
           staffIdFromCapsule(ctx),
         ),
     },

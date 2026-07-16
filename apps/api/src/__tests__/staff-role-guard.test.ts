@@ -5,8 +5,8 @@
  *   - engagement is by the `admin:` sessionId NAMESPACE, not by kind: customer /
  *     LLM / managed-agent (`agent:`) / system-subscriber
  *     (`${sourceSubject}:${eventId}`, incl. incident.ticket.open) traffic is
- *     inert (null), even for the eleven staff-plane kinds;
- *   - per-role allow/deny for each of the eleven kinds (ATTENDANT is refused on
+ *     inert (null), even for the sixteen staff-plane kinds;
+ *   - per-role allow/deny for each of the sixteen kinds (ATTENDANT is refused on
  *     payment.refund.issue, product.availability.set and the three reservation
  *     kinds; OWNER/MANAGER pass);
  *   - fail-closed on the staff plane: absent role, unknown role value, and an
@@ -45,7 +45,7 @@ import {
 
 type Bundle = PolicyBundle<string, unknown, unknown>;
 
-/** The eleven OWNER+MANAGER-shared kinds (ATTENDANT reaches only three). */
+/** The twelve OWNER+MANAGER-shared kinds (ATTENDANT reaches only three). */
 const THE_SHARED_STAFF_KINDS = [
   "order.status.transition",
   "payment.status.transition",
@@ -58,9 +58,13 @@ const THE_SHARED_STAFF_KINDS = [
   "product.availability.set",
   // NEW-004 — the ops-plane price-change verb ({OWNER,MANAGER}).
   "product.price.set",
+  // SCN-114 — the ops-plane daily-special verb ({OWNER,MANAGER}).
+  "menu.special.set",
   // BKL-088 — the two ops-plane RESOLUTION verbs ({OWNER,MANAGER}).
   "ops.alert.resolve.staff",
   "incident.ticket.close.staff",
+  // SCN-127 — the ops-plane schedule-override verb ({OWNER,MANAGER}).
+  "schedule.override.set",
 ] as const;
 
 /** AUT-038 + AUT-007 — the four OWNER-ONLY staff-CRUD command verbs (MANAGER +
@@ -112,7 +116,7 @@ const guard = createStaffRoleGuard(STAFF_ROLE_CAPABILITY_MATRIX);
 // ── Engagement: `admin:` namespace only ─────────────────────────────────────
 
 describe("createStaffRoleGuard — engagement by `admin:` namespace", () => {
-  it("is inert (null) for every non-staff sessionId shape, even for the fifteen kinds", () => {
+  it("is inert (null) for every non-staff sessionId shape, even for the sixteen kinds", () => {
     const nonStaff = [
       "cust_001", // customer principal
       "hashed:ab12cd34", // redacted chat namespace
@@ -174,13 +178,13 @@ describe("createStaffRoleGuard — per-role capability matrix (code-truth)", () 
     }
   });
 
-  it("OWNER passes every one of the fifteen kinds", () => {
+  it("OWNER passes every one of the sixteen kinds", () => {
     for (const kind of THE_STAFF_KINDS) {
       expect(guard(staffEnv(kind, "OWNER"), {})).toBeNull();
     }
   });
 
-  it("MANAGER passes the eleven shared kinds but is REFUSED on the four OWNER-only staff-CRUD kinds", () => {
+  it("MANAGER passes the twelve shared kinds but is REFUSED on the four OWNER-only staff-CRUD kinds", () => {
     for (const kind of THE_SHARED_STAFF_KINDS) {
       expect(guard(staffEnv(kind, "MANAGER"), {})).toBeNull();
     }
@@ -300,11 +304,11 @@ describe("createStaffRoleGuard — determinism", () => {
 // ── Matrix structure (derivation is code-truth) ─────────────────────────────
 
 describe("STAFF_ROLE_CAPABILITY_MATRIX (derived structure)", () => {
-  it("the staff-plane surface is EXACTLY the fifteen staff kinds", () => {
+  it("the staff-plane surface is EXACTLY the sixteen staff kinds", () => {
     expect([...STAFF_PLANE_KINDS].sort()).toEqual([...THE_STAFF_KINDS].sort());
   });
 
-  it("OWNER may propose all fifteen; MANAGER the eleven shared; ATTENDANT only the three requireStaff kinds", () => {
+  it("OWNER may propose all sixteen; MANAGER the twelve shared; ATTENDANT only the three requireStaff kinds", () => {
     expect([...STAFF_ROLE_CAPABILITY_MATRIX.OWNER].sort()).toEqual(
       [...THE_STAFF_KINDS].sort(),
     );

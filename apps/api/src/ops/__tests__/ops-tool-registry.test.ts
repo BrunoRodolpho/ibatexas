@@ -11,6 +11,7 @@ import type {
   OrderStatusChangedEvent,
   PaymentStatusChangedEvent,
 } from "@ibatexas/types";
+import { isKnownOrderStatus } from "@ibatexas/types";
 import {
   createOpsToolRegistry,
   listOpsToolDefinitions,
@@ -32,6 +33,11 @@ function makeDeps(over: Partial<OpsToolRegistryDeps> = {}): {
   resolveAlertFromEnvelope: ReturnType<typeof vi.fn>;
   closeIncidentFromEnvelope: ReturnType<typeof vi.fn>;
   readProductBrlVariantIds: ReturnType<typeof vi.fn>;
+  upsertOverride: ReturnType<typeof vi.fn>;
+  invalidateScheduleCache: ReturnType<typeof vi.fn>;
+  dailySpecialList: ReturnType<typeof vi.fn>;
+  dailySpecialCreate: ReturnType<typeof vi.fn>;
+  dailySpecialUpdate: ReturnType<typeof vi.fn>;
 } {
   const medusaAdjudicated = vi.fn(async () => ({ product: { id: "prod_1" } }));
   // NEW-004 — default: a single BRL-priced variant (the common uniform product).
@@ -74,17 +80,36 @@ function makeDeps(over: Partial<OpsToolRegistryDeps> = {}): {
   const closeIncidentFromEnvelope = vi.fn(async () => ({
     result: { status: "RESOLVED" },
   }));
+  // SCN-127 — the schedule-override write returns the committed row shape.
+  const upsertOverride = vi.fn(async (date: string, data: { isOpen: boolean }) => ({
+    date,
+    isOpen: data.isOpen,
+  }));
+  const invalidateScheduleCache = vi.fn(async () => ({ ok: true }));
+  // SCN-114 — daily-special upsert spies (default: no existing row ⇒ CREATE path).
+  const dailySpecialList = vi.fn(
+    async (): Promise<ReadonlyArray<{ id: string; medusaProductId: string }>> => [],
+  );
+  const dailySpecialCreate = vi.fn(async () => ({ id: "special_1" }));
+  const dailySpecialUpdate = vi.fn(async () => ({ id: "special_1" }));
   const deps: OpsToolRegistryDeps = {
     medusaAdjudicated: medusaAdjudicated as never,
     auditSink: AUDIT_SINK,
     readProductBrlVariantIds: readProductBrlVariantIds as never,
     orderCmdSvc: { writeAdjudicatedNote, writeAdjudicatedStatusTransition },
+    dailySpecialSvc: {
+      list: dailySpecialList,
+      create: dailySpecialCreate,
+      update: dailySpecialUpdate,
+    },
     publishOrderStatusChanged,
     paymentCmdSvc: { writeAdjudicatedRefund },
     publishPaymentStatusChanged,
     appendRefundEventLog,
     opsAlertSvc: { resolveAlertFromEnvelope },
     incidentSvc: { closeIncidentFromEnvelope },
+    scheduleSvc: { upsertOverride: upsertOverride as never },
+    invalidateScheduleCache: invalidateScheduleCache as never,
     ...over,
   };
   return {
@@ -99,6 +124,11 @@ function makeDeps(over: Partial<OpsToolRegistryDeps> = {}): {
     resolveAlertFromEnvelope,
     closeIncidentFromEnvelope,
     readProductBrlVariantIds,
+    upsertOverride,
+    invalidateScheduleCache,
+    dailySpecialList,
+    dailySpecialCreate,
+    dailySpecialUpdate,
   };
 }
 
@@ -121,12 +151,14 @@ describe("ops tool registry — shape", () => {
     }
   });
 
-  it("registers exactly the seven governed ops verbs", () => {
+  it("registers exactly the nine governed ops verbs", () => {
     const { deps } = makeDeps();
     const registry = createOpsToolRegistry(deps);
     expect(registry.hasCapability("product.availability.set")).toBe(true);
     // NEW-004 — the price-change-by-message verb.
     expect(registry.hasCapability("product.price.set")).toBe(true);
+    // SCN-114 — the daily-special-by-message verb.
+    expect(registry.hasCapability("menu.special.set")).toBe(true);
     expect(registry.hasCapability("order.note.add")).toBe(true);
     expect(registry.hasCapability("order.status.transition")).toBe(true);
     // BKL-085 — the refunds-by-message verb.
@@ -134,6 +166,8 @@ describe("ops tool registry — shape", () => {
     // BKL-088 — the two OWNED resolution verbs.
     expect(registry.hasCapability("ops.alert.resolve.staff")).toBe(true);
     expect(registry.hasCapability("incident.ticket.close.staff")).toBe(true);
+    // SCN-127 — the schedule-override-by-message verb.
+    expect(registry.hasCapability("schedule.override.set")).toBe(true);
   });
 
   it("staffIdFromCapsule reads actor.staffId, never a model field", () => {
@@ -358,6 +392,46 @@ describe("order.status.transition executor — POST-adjudication kitchen-advance
     ).rejects.toThrow();
     expect(publishOrderStatusChanged).not.toHaveBeenCalled();
   });
+
+  // BKL-144 — the ToolDefinition now declares the REAL model-facing contract so
+  // the closed shape is documented (the live probe's empty inputSchema left the
+  // planner guessing field names + pt-BR values). This asserts the contract, NOT
+  // any runtime normalization — the guard still reads `newStatus` verbatim.
+  it("declares the closed contract in inputSchema: orderId + the six English newStatus targets, no pt/alias values", () => {
+    const { deps } = makeDeps();
+    const tool = toolByKind(deps, "order.status.transition");
+    const schema = tool.inputSchema as {
+      type: string;
+      properties: {
+        orderId: { type: string };
+        newStatus: { type: string; enum: string[] };
+      };
+      required: readonly string[];
+      additionalProperties: boolean;
+    };
+    expect(schema.type).toBe("object");
+    // Only orderId + newStatus are model-emitted; actor/actorId/reason are
+    // Capsule-forced by the executor, so the contract is closed to extras.
+    expect(schema.required).toEqual(["orderId", "newStatus"]);
+    expect(schema.additionalProperties).toBe(false);
+    expect(schema.properties.orderId.type).toBe("string");
+    // Exactly the six English fulfillment targets, verbatim — the enum the live
+    // probe's wrong field names + pt-BR values (confirmado/cancel) never reached.
+    const enumValues = schema.properties.newStatus.enum;
+    expect(enumValues).toEqual([
+      "confirmed",
+      "preparing",
+      "ready",
+      "in_delivery",
+      "delivered",
+      "canceled",
+    ]);
+    // Every advertised value is a real order status (no drift from the state
+    // machine), and none is a pt-BR word or the initial `pending` (never a target).
+    for (const v of enumValues) expect(isKnownOrderStatus(v)).toBe(true);
+    expect(enumValues).not.toContain("pending");
+    expect(enumValues).not.toContain("confirmado");
+  });
 });
 
 describe("payment.refund.issue executor — POST-adjudication refund write (BKL-085)", () => {
@@ -538,5 +612,73 @@ describe("incident.ticket.close.staff executor — D10 SYSTEM-write layer (BKL-0
       closingTurnId: null,
     });
     expect(out).toMatchObject({ incidentId: "inc_1", status: "RESOLVED" });
+  });
+});
+
+describe("schedule.override.set executor — domain-service write + cache invalidation (SCN-127)", () => {
+  it("closes a day: upsertOverride(date, {isOpen:false, blocks:[], note}) + invalidates the cache", async () => {
+    const { deps, upsertOverride, invalidateScheduleCache } = makeDeps();
+    const tool = toolByKind(deps, "schedule.override.set");
+    const out = await tool.execute(
+      { date: "2026-07-11", isOpen: false, note: "feriado" },
+      capsule("staff_1"),
+    );
+    expect(upsertOverride).toHaveBeenCalledTimes(1);
+    const [date, data] = upsertOverride.mock.calls[0]!;
+    expect(date).toBe("2026-07-11");
+    // A CLOSED day carries NO windows regardless of any blocks in the payload.
+    expect(data).toEqual({ isOpen: false, blocks: [], note: "feriado" });
+    // Cache invalidated so the customer-facing reads pick the override up now.
+    expect(invalidateScheduleCache).toHaveBeenCalledTimes(1);
+    expect(out).toEqual({ date: "2026-07-11", isOpen: false });
+  });
+
+  it("opens a day with custom hours: forwards the validated blocks; note defaults to null", async () => {
+    const { deps, upsertOverride } = makeDeps();
+    const tool = toolByKind(deps, "schedule.override.set");
+    await tool.execute(
+      {
+        date: "2026-07-11",
+        isOpen: true,
+        blocks: [{ label: "Jantar", start: "18:00", end: "23:00" }],
+      },
+      capsule("staff_1"),
+    );
+    const [date, data] = upsertOverride.mock.calls[0]!;
+    expect(date).toBe("2026-07-11");
+    expect(data).toEqual({
+      isOpen: true,
+      blocks: [{ label: "Jantar", start: "18:00", end: "23:00" }],
+      note: null,
+    });
+  });
+
+  it("drops any blocks on a CLOSED override (executor forces blocks:[] for isOpen:false)", async () => {
+    const { deps, upsertOverride } = makeDeps();
+    const tool = toolByKind(deps, "schedule.override.set");
+    await tool.execute(
+      // Defense in depth: even if a block sneaks through, a closed day writes none.
+      { date: "2026-07-11", isOpen: false, blocks: [{ label: "x", start: "18:00", end: "19:00" }] },
+      capsule("staff_1"),
+    );
+    const [, data] = upsertOverride.mock.calls[0]!;
+    expect((data as { blocks: unknown[] }).blocks).toEqual([]);
+  });
+
+  it("a swallowed cache invalidation NEVER fails the committed write (WARN only)", async () => {
+    const warn = vi.fn();
+    const { deps, upsertOverride } = makeDeps({
+      invalidateScheduleCache: vi.fn(async () => ({ ok: false })) as never,
+      log: { warn },
+    });
+    const tool = toolByKind(deps, "schedule.override.set");
+    await expect(
+      tool.execute({ date: "2026-07-11", isOpen: false }, capsule("staff_1")),
+    ).resolves.toEqual({ date: "2026-07-11", isOpen: false });
+    expect(upsertOverride).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledTimes(1);
+    // The WARN carries the Capsule staffId (audit of who), never a payload field.
+    const [ctx] = warn.mock.calls[0]!;
+    expect((ctx as { staffId?: string }).staffId).toBe("staff_1");
   });
 });

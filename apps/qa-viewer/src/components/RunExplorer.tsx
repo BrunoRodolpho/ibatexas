@@ -6,6 +6,7 @@
 
 import { useEffect, useMemo, useState, type ChangeEvent, type ReactNode } from "react"
 import { decisionColor } from "../lib/colors"
+import { navigate } from "../lib/nav"
 import {
   formatUsd,
   parseTraceJsonl,
@@ -281,6 +282,12 @@ export function RunExplorer({
             const ts = Date.parse(e.timestamp ?? "")
             const decision =
               typeof e["decision"] === "string" ? decisionColor(e["decision"]) : undefined
+            // Cross-surface jump: a chat turn's sessionId IS the RCA
+            // conversation id (turn_trace.conversation_id) — link them.
+            const rcaConv =
+              e.type.startsWith("chat.turn") && typeof e["sessionId"] === "string"
+                ? e["sessionId"]
+                : null
             return (
               <tr key={i} className={eventClass(e)}>
                 <td className="trace-table__ts">
@@ -294,7 +301,19 @@ export function RunExplorer({
                     {e.type}
                   </span>
                 </td>
-                <td className="trace-table__detail">{eventDetail(e)}</td>
+                <td className="trace-table__detail">
+                  {eventDetail(e)}
+                  {rcaConv !== null && (
+                    <button
+                      type="button"
+                      className="chip chip--mini"
+                      onClick={() => navigate({ section: "rca", conv: rcaConv })}
+                      title="Open this conversation in RCA turn forensics"
+                    >
+                      → RCA
+                    </button>
+                  )}
+                </td>
               </tr>
             )
           })}

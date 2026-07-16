@@ -49,6 +49,7 @@ import {
   OPS_RESPONDER_GROUNDED_PERSONA_PTBR,
   OPS_RESPONDER_PERSONA_PTBR,
 } from "../claustrum/prompts/personas.js";
+import { resolvePrompt } from "../claustrum/prompts/prompt-overrides.js";
 import {
   readToolRosterDrift,
   toolRosterDrift,
@@ -64,6 +65,7 @@ import {
   OPS_UNGROUNDED_CLAMP_PTBR,
   type CapturedOpsRead,
 } from "./ops-read-render.js";
+import { renderOpsActionAnswer } from "./ops-action-render.js";
 import { deriveOpsPlannerContext } from "./ops-planner-context.js";
 import { composeOpsPlannerSystem } from "./ops-history.js";
 import {
@@ -177,7 +179,10 @@ export function composeOpsConductor(
     // The staff-facing ops persona is the WHOLE system prompt (bypasses the
     // customer fragment graph); telemetry still emits the planner LLMTrace. The
     // per-request history block (if any) trails the persona as fenced DATA.
-    system: composeOpsPlannerSystem(OPS_PLANNER_PERSONA, context.historyBlock),
+    system: composeOpsPlannerSystem(
+      resolvePrompt("ops/planner.persona", OPS_PLANNER_PERSONA),
+      context.historyBlock,
+    ),
     telemetry: deps.telemetry,
     ...(deps.promptComposer ? { promptComposer: deps.promptComposer } : {}),
     ...(deps.resolveScheduleSignal
@@ -197,8 +202,8 @@ export function composeOpsConductor(
     // Staff-facing personas WIN over the composer (see IbatexasResponderDeps);
     // ESCALATE reuses the default handoff line (no ops override).
     personas: {
-      conversational: OPS_RESPONDER_PERSONA_PTBR,
-      grounded: OPS_RESPONDER_GROUNDED_PERSONA_PTBR,
+      conversational: resolvePrompt("ops/responder.persona", OPS_RESPONDER_PERSONA_PTBR),
+      grounded: resolvePrompt("ops/responder.grounded", OPS_RESPONDER_GROUNDED_PERSONA_PTBR),
     },
     // BKL-100 — the ops read-answer governor. `render` deterministically renders a
     // captured staff read (no model call, no authored number); `clampUngrounded`
@@ -207,6 +212,21 @@ export function composeOpsConductor(
     // `input.cognition.turnId`.
     readAnswer: {
       render: (turnId: string) => renderOpsReadAnswer(captures, turnId),
+      // BKL-149 — the deterministic mutation-success render. On a COMMITTED ops
+      // EXECUTE/REWRITE turn the statement of WHAT THE VERB DID is rendered from
+      // the adjudicated envelope (kind + resolved payload) + dispatch result, never
+      // authored by the model (closes the 377ca7a1 falsehood class on the action
+      // plane — the ACTION analog of `render` for reads). `undefined` when nothing
+      // committed (deferred / failed) → the responder keeps its honest grounded
+      // path. A MIXED read+act turn appends the deterministic read render (the read
+      // half must come from the ACTUAL captured read, never the model), mirroring
+      // `governGrounded`.
+      renderAction: (acted: unknown, turnId: string) => {
+        const action = renderOpsActionAnswer(acted);
+        if (action === undefined) return undefined;
+        const read = renderOpsReadAnswer(captures, turnId);
+        return read === undefined ? action : `${action}\n\n${read}`;
+      },
       clampUngrounded: clampUngroundedOpsFact,
       // Adversarial-review fix — the grounded (EXECUTE/REWRITE/DEFER) branch:
       // append the deterministic render of any read captured this turn + digit-run
@@ -328,7 +348,7 @@ export function opsPlaneDriftProblems(input: {
   // BKL-096 — defense in depth: fail boot CLOSED if a FORBIDDEN two-person
   // destructive verb (order.cancel / payment.waive / payment.status.force) ever
   // enters the ops REGISTRY. Today none is registered here NOR matrixed (two
-  // independent fail-closed layers), so this loop is inert on the real 7-verb
+  // independent fail-closed layers), so this loop is inert on the real 8-verb
   // roster; it makes the exclusion EXPLICIT so a future PR that registers one as
   // an ops tool trips this gate rather than silently exposing it. The persona's
   // advertised SURFACE (planner allowlist, both ingress scopes) is pinned by the

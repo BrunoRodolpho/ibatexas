@@ -6,7 +6,7 @@
   "digests": {
     "agent/pix-payment-failure-remediation": "966813a40cdbd77a4556ca80f2f8bb32654f6e36f32d34ed8ea637dda140bfcb",
     "ibatexas/pack-customer-onboarding": "203366b62ca1b7c438803ed5907e2ff43897b5b9e07d62c65246a49ab4e6b4fc",
-    "ibatexas/pack-ops": "19f6605e1788b2107b688915ab17bbbc0d1313d816695422052a042be19bf440",
+    "ibatexas/pack-ops": "6662a9a5147b214173d61fe9924ef53bd57ac827e832a1765a6b7b86372f74f3",
     "ibatexas/pack-orders": "381459a63cd339577b333587bf8e3d2e0d735aaa9f6b51666e07372ba6fdb9f1",
     "ibatexas/pack-payments": "b508b35667e5ca69ed61d95a0e862e11657a6cc8f32b442b8d0dd1111ab7cea5",
     "ibatexas/pack-reservations": "c0b9c555e776c2b80a629ca9c0e655d5e46a3ab42cda852beac8cd560ff0a163",
@@ -184,19 +184,24 @@
     {
       "bomVersion": "1.0",
       "packId": "ibatexas/pack-ops",
-      "packVersion": "1.2.0",
+      "packVersion": "1.4.0",
       "contract": "v0",
       "kernelMinVersion": "1.0.0",
       "kernelVersion": "1.3.0",
-      "fingerprint": "6d21a94dab1b9c1269691fa1099d29973756cf6d97f6665acf7985792df401ec",
+      "fingerprint": "3cfaa7ffb856bfeda32873b91d7ab66f492b79e77a089ccf311613791065dc86",
       "intents": [
         "incident.ticket.close.staff",
+        "menu.special.set",
         "ops.alert.resolve.staff",
         "product.availability.set",
-        "product.price.set"
+        "product.price.set",
+        "schedule.override.set"
       ],
       "signals": [],
       "basisCodes": [
+        "menu.special.date_past",
+        "menu.special.payload_invalid",
+        "menu.special.product_not_found",
         "ops.admin_session_required",
         "ops.alert_resolve.not_actionable",
         "ops.alert_resolve.payload_invalid",
@@ -207,11 +212,16 @@
         "ops.price.out_of_range",
         "ops.price.payload_invalid",
         "ops.price.per_variant_unsupported",
-        "ops.price.product_not_found"
+        "ops.price.product_not_found",
+        "ops.schedule_override.date_not_actionable",
+        "ops.schedule_override.payload_invalid"
       ],
       "tools": [
         {
           "name": "incident.ticket.close.staff"
+        },
+        {
+          "name": "menu.special.set"
         },
         {
           "name": "ops.alert.resolve.staff"
@@ -221,11 +231,26 @@
         },
         {
           "name": "product.price.set"
+        },
+        {
+          "name": "schedule.override.set"
         }
       ],
       "rag": [],
       "promptHashes": [],
       "guardrails": [
+        {
+          "basisCode": "menu.special.date_past",
+          "category": "menu"
+        },
+        {
+          "basisCode": "menu.special.payload_invalid",
+          "category": "menu"
+        },
+        {
+          "basisCode": "menu.special.product_not_found",
+          "category": "menu"
+        },
         {
           "basisCode": "ops.admin_session_required",
           "category": "ops"
@@ -269,6 +294,14 @@
         {
           "basisCode": "ops.price.product_not_found",
           "category": "ops"
+        },
+        {
+          "basisCode": "ops.schedule_override.date_not_actionable",
+          "category": "ops"
+        },
+        {
+          "basisCode": "ops.schedule_override.payload_invalid",
+          "category": "ops"
         }
       ],
       "conformance": {
@@ -276,7 +309,7 @@
         "total": 8,
         "passedCount": 8,
         "failedCount": 0,
-        "reportDigest": "b0cd576f22f64d972e9f35f035b6063b6519b6c3641cde155859fe59ddc38639"
+        "reportDigest": "ca3b170570b7564c13f0dca2435106ea337762a1ffd8af9079769fe44fa54d64"
       },
       "healthTier": "bronze",
       "healthScore": {
@@ -287,7 +320,7 @@
         "eu-ai-act",
         "nist-ai-rmf"
       ],
-      "bomDigest": "19f6605e1788b2107b688915ab17bbbc0d1313d816695422052a042be19bf440"
+      "bomDigest": "6662a9a5147b214173d61fe9924ef53bd57ac827e832a1765a6b7b86372f74f3"
     },
     {
       "bomVersion": "1.0",

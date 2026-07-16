@@ -113,6 +113,17 @@ async function buildTestServer() {
   app.setValidatorCompiler(validatorCompiler)
   app.setSerializerCompiler(serializerCompiler)
   await app.register(sensible)
+  // WS1/S1 — analytics/summary is a BROWSER route; the shared x-admin-key no
+  // longer authenticates browser routes (CLI-only now). This suite exercises
+  // route LOGIC, not auth (matrix in admin-auth.test.ts), so inject a valid
+  // staff session when the test key is present. optionalAuth leaves a pre-set
+  // identity untouched; the "401 without auth" cases still hit the guard denial.
+  app.addHook("preHandler", async (request) => {
+    if (request.headers["x-admin-key"] === "test-admin-key") {
+      request.staffId = "test-staff"
+      request.staffRole = "MANAGER"
+    }
+  })
   await app.register(adminRoutes)
   await app.ready()
   return app

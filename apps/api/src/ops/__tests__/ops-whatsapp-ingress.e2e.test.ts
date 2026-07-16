@@ -171,12 +171,19 @@ function buildPartADeps(opts: {
       writeAdjudicatedNote: vi.fn(),
       writeAdjudicatedStatusTransition: vi.fn(),
     },
+    dailySpecialSvc: {
+      list: vi.fn(async () => []) as never,
+      create: vi.fn(async () => ({ id: "special_1" })) as never,
+      update: vi.fn(async () => ({ id: "special_1" })) as never,
+    },
     publishOrderStatusChanged: vi.fn(),
     paymentCmdSvc: { writeAdjudicatedRefund: opts.writeAdjudicatedRefund },
     publishPaymentStatusChanged: vi.fn(),
     appendRefundEventLog: vi.fn(),
     opsAlertSvc: { resolveAlertFromEnvelope: vi.fn(async () => ({ result: { status: "RESOLVED" } })) },
     incidentSvc: { closeIncidentFromEnvelope: vi.fn(async () => ({ result: { status: "RESOLVED" } })) },
+    scheduleSvc: { upsertOverride: vi.fn(async () => ({ date: "2026-07-10", isOpen: false })) },
+    invalidateScheduleCache: vi.fn(async () => ({ ok: true })),
   });
   return {
     adjudicator: realKernelAdjudicator,
@@ -450,12 +457,19 @@ function buildPartBDeps(model: ModelProvider, session: SessionPort) {
     auditSink: noopSink as never,
     readProductBrlVariantIds: (async () => ["variant_1"]) as never,
     orderCmdSvc: { writeAdjudicatedNote: vi.fn(), writeAdjudicatedStatusTransition: vi.fn() },
+    dailySpecialSvc: {
+      list: vi.fn(async () => []) as never,
+      create: vi.fn(async () => ({ id: "special_1" })) as never,
+      update: vi.fn(async () => ({ id: "special_1" })) as never,
+    },
     publishOrderStatusChanged: vi.fn(),
     paymentCmdSvc: { writeAdjudicatedRefund },
     publishPaymentStatusChanged: vi.fn(),
     appendRefundEventLog: vi.fn(),
     opsAlertSvc: { resolveAlertFromEnvelope: vi.fn(async () => ({ result: { status: "RESOLVED" } })) },
     incidentSvc: { closeIncidentFromEnvelope: vi.fn(async () => ({ result: { status: "RESOLVED" } })) },
+    scheduleSvc: { upsertOverride: vi.fn(async () => ({ date: "2026-07-10", isOpen: false })) },
+    invalidateScheduleCache: vi.fn(async () => ({ ok: true })),
   });
   const deps = {
     adjudicator: auditedResumeAdjudicator(),

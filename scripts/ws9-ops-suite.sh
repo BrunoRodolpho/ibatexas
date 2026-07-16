@@ -11,9 +11,13 @@
 #   OPS-86            86 an item by name -> EXECUTE + egress, then revert
 #   OPS-ROLE          an ATTENDANT 86 -> REFUSE staff_role_violation, no egress
 #   OPS-REFUND-PARK   refund -> REQUEST_CONFIRMATION + park, then "não" clears it
-#   OPS-REFUND-CONFIRM refund -> park -> "sim" -> EXECUTE + refund written
+#   OPS-REFUND-CONFIRM partial refund -> park -> "sim" -> EXECUTE + refund written
+#   OPS-REFUND-FULL-CANCEL full refund -> "sim" -> EXECUTE + payment `refunded`
+#                     -> payment.status_changed -> OPS-054 subscriber AUTO-CANCELs the order
 #   OPS-REFUND-ESCALATE >R$1000 refund -> ESCALATE, nothing parks
 #   OPS-PARTIAL       "reembolsa 10 reais" -> R$ 10,00 parked (BKL-094 pin)
+#
+# Run one scenario only: WS9_ONLY=OPS-REFUND-FULL-CANCEL (comma/space list; default all).
 #
 # MODEL-FLAKE vs ASSERT-FAIL (the WS9 bar without CI held hostage to a 4B mood):
 #   The suite drives the REAL planner, which may wobble. If the planner never
@@ -42,6 +46,8 @@ IBX_API="${IBX_API:-http://localhost:3001}"
 WS9_ENV_FILE="${WS9_ENV_FILE:-$HOME/projects/ibatexas/.env}"
 WS9_RETRIES="${WS9_RETRIES:-2}"          # planner retries per scenario (distinct phrasings)
 WS9_HTTP_TIMEOUT="${WS9_HTTP_TIMEOUT:-90}"
+WS9_CANCEL_TIMEOUT="${WS9_CANCEL_TIMEOUT:-25}"  # seconds to await the async auto-cancel (NATS → subscriber)
+WS9_ONLY="${WS9_ONLY:-}"                  # run only these scenario ids (comma/space list); empty = all
 WS9_OWNER_PHONE="${WS9_OWNER_PHONE:-+12174174509}"     # Bruno R (OWNER) — seeded
 WS9_MANAGER_PHONE="${WS9_MANAGER_PHONE:-+5519900000900}" # Tainá (MANAGER) — seeded
 WS9_ATTENDANT_PHONE="${WS9_ATTENDANT_PHONE:-+5511970000097}" # suite-managed
@@ -69,7 +75,13 @@ WS9 ops-plane live suite — scenario → tracker row mapping
   OPS-ROLE           SCN-125 (OPS-15 "Non-staff / insufficient-role tries a staff command")
                      the ATTENDANT staff_role_violation refusal (kernel AUTH, zero egress)
   OPS-REFUND-PARK    SCN-120 (OPS-10 "Approve an escalated refund"), OPS-009 ("Refund payment")
-  OPS-REFUND-CONFIRM SCN-120, OPS-009, OPS-054 (payment.status_changed subscriber: refunded→cancel)
+  OPS-REFUND-CONFIRM SCN-120, OPS-009 — a PARTIAL refund (paid→partially_refunded); the
+                     payment-lifecycle subscriber logs only on a partial, so this row does NOT
+                     exercise OPS-054 (auto-cancel is OPS-REFUND-FULL-CANCEL below — BKL-132).
+  OPS-REFUND-FULL-CANCEL SCN-120, OPS-009, OPS-054 — a FULL refund (paid→refunded) →
+                     payment.status_changed(refunded) → the payment-lifecycle subscriber
+                     AUTO-CANCELs the pending order (order.status.transition EXECUTE, order
+                     fulfillment_status=canceled). Closes the BKL-132 OPS-054 suite blind spot.
   OPS-REFUND-ESCALATE SCN-120 (the ≥R$1000 ESCALATE band), OPS-009
   OPS-PARTIAL        OPS-009, BKL-094 (spoken partial-refund amount threading — live regression pin)
 EOF
@@ -137,6 +149,32 @@ park_payload_json() {
   val="$(redis_cli GET "$k")"
   [[ -z "$val" ]] && return 1
   printf '%s' "$val" | jq -c '.pendingConfirmations[0].envelope.payload // empty' 2>/dev/null
+}
+
+# An order's live fulfillment_status (empty if the row is gone).
+order_status() { q "select fulfillment_status from ibx_domain.order_projections where id = $(sql_lit "$1")"; }
+
+# A payment's live wire status (paid / partially_refunded / refunded / …).
+payment_status() { q "select status from ibx_domain.payments where id = $(sql_lit "$1")"; }
+
+# Await the ASYNC auto-cancel: the refund write publishes payment.status_changed
+# and the payment-lifecycle subscriber cancels the order over NATS — not on the
+# ops-chat request thread. Poll fulfillment_status up to WS9_CANCEL_TIMEOUT s.
+# Echoes the final observed status; returns 0 iff it reached $2 (canceled).
+poll_order_status() { # order_id target_status
+  local order_id="$1" target="$2" waited=0 st=""
+  while (( waited < WS9_CANCEL_TIMEOUT )); do
+    st="$(order_status "$order_id")"
+    [[ "$st" == "$target" ]] && { printf '%s' "$st"; return 0; }
+    sleep 1; (( waited++ ))
+  done
+  printf '%s' "$st"; return 1
+}
+
+# Compact forensic dump of a payment's status-history chain (for FAIL notes).
+payment_hist_chain() { # payment_id
+  q "select string_agg(from_status || '->' || to_status, ' | ' order by created_at)
+       from ibx_domain.payment_status_history where payment_id = $(sql_lit "$1")"
 }
 
 # ── HTTP: one ops-chat turn ──────────────────────────────────────────────────
@@ -329,12 +367,91 @@ scn_refund_confirm() {
   refunded="$(q "select refunded_amount_centavos from ibx_domain.payments where id = $(sql_lit "$pay")")"
   hist="$(q "select count(*) from ibx_domain.payment_status_history where payment_id = $(sql_lit "$pay") and to_status in ('refunded','partially_refunded')")"
   local exec_n; exec_n="$(audit_count "$start" "payment.refund.issue" "EXECUTE")"
-  # Best-effort: the payment.status_changed subscriber auto-cancels the order.
-  local subscriber; subscriber="$(audit_count "$start" "order.status.transition" "EXECUTE")"
+  # This is a PARTIAL refund (5000 of 10000): the payment stays partially_refunded,
+  # so the payment-lifecycle subscriber logs only and does NOT auto-cancel. The
+  # full-refund → auto-cancel path (OPS-054) is OPS-REFUND-FULL-CANCEL (BKL-132).
   if [[ "$dec" == "EXECUTE" && "${refunded:-0}" -eq 5000 && "${hist:-0}" -ge 1 && "${exec_n:-0}" -ge 1 ]]; then
-    record "$id" PASS "sim→EXECUTE: refunded_amount=5000, history row, refund audit EXECUTE; status_changed subscriber effects=$subscriber (SCN-120/OPS-054)"
+    record "$id" PASS "sim→EXECUTE: partial refund refunded_amount=5000, history row, refund audit EXECUTE (SCN-120/OPS-009)"
   else
     record "$id" FAIL "confirm decision=$dec refunded=$refunded history=$hist auditEXEC=$exec_n (expected EXECUTE/5000/≥1/≥1)"
+  fi
+}
+
+# OPS-REFUND-FULL-CANCEL (BKL-132) — a FULL refund flips the payment to `refunded`
+# (not partially_refunded), which emits payment.status_changed(refunded); the
+# OPS-054 payment-lifecycle subscriber then AUTO-CANCELs the still-pending order.
+# The committed suite only ever drove PARTIAL refunds, so the auto-cancel was a
+# structural no-op in every run — proven live only by a 2026-07-04 hand test.
+# This scenario closes that blind spot.
+#
+# Classification: the planner never proposing a FULL refund (partial amount, or
+# no payment.refund.issue at all) is a MODEL-FLAKE — the scenario's precondition
+# is a full refund, which the model must express. But once a full refund is
+# COMMITTED (payment=refunded), the auto-cancel is a governance invariant: a
+# missing cancel is an ASSERT-FAIL (money lifecycle regression), never a flake.
+scn_refund_full_cancel() {
+  local id="OPS-REFUND-FULL-CANCEL" owner_cookie seed disp pay order bal full_reais
+  owner_cookie="$(mint_cookie "$WS9_OWNER_PHONE")"; clear_park "$OWNER_ID"
+  # A fresh R$50-class order; the FULL balance is refunded so the payment reaches
+  # `refunded` and the order (seeded pending → cancelable) can be auto-canceled.
+  seed="$(seed_order 50)"
+  disp="$(jq -r '.displayId' <<<"$seed")"; pay="$(jq -r '.paymentId' <<<"$seed")"
+  order="$(jq -r '.orderId' <<<"$seed")"; bal="$(jq -r '.refundableBalanceCentavos' <<<"$seed")"
+  [[ -z "$disp" || "$disp" == "null" || -z "$order" || "$order" == "null" ]] && { record "$id" FAIL "seed failed"; return; }
+  full_reais=$(( bal / 100 ))
+  local start; start="$(db_now)"
+
+  # Reuse the proven refund phrasings (drive_refund) with the FULL reais total:
+  # "reembolsa 50 reais" on a R$50 order refunds the whole balance, so the
+  # payment reaches `refunded` (not partially_refunded) and OPS-054 can fire.
+  local resp dec
+  resp="$(drive_refund "$owner_cookie" "$full_reais" "$disp")" || { record "$id" FLAKE "planner never proposed payment.refund.issue"; return; }
+  dec="$(resp_decision "$resp")"
+  [[ "$dec" != "REQUEST_CONFIRMATION" ]] && { record "$id" FAIL "full refund on the ops channel expected REQUEST_CONFIRMATION, got $dec"; return; }
+
+  # Precondition guard: the parked amount MUST be the full balance. A partial
+  # parked amount means the planner did not propose a full refund — FLAKE (we
+  # can't exercise auto-cancel), NOT a fail. Best-effort read (redis shape).
+  local park_amt; park_amt="$(park_payload_json "$OWNER_ID" | jq -r '.refundAmountCentavos // empty' 2>/dev/null)"
+  if [[ -n "$park_amt" && "$park_amt" != "$bal" ]]; then
+    record "$id" FLAKE "planner parked a non-full amount ($park_amt of $bal) — need a full refund to exercise OPS-054 auto-cancel"; return
+  fi
+
+  # Confirm → the refund commits, payment → refunded, payment.status_changed fires.
+  local resp2 dec2; resp2="$(ops_chat "$owner_cookie" "sim, confirma" 2>/dev/null)"
+  dec2="$(resp_decision "$resp2")"
+  local refunded pstatus hist exec_n
+  refunded="$(q "select refunded_amount_centavos from ibx_domain.payments where id = $(sql_lit "$pay")")"
+  pstatus="$(payment_status "$pay")"
+  hist="$(q "select count(*) from ibx_domain.payment_status_history where payment_id = $(sql_lit "$pay") and to_status = 'refunded'")"
+  exec_n="$(audit_count "$start" "payment.refund.issue" "EXECUTE")"
+
+  # If the committed amount is not the full balance, the model proposed a partial
+  # after all (parked read may have been skipped) — FLAKE, not a fail.
+  if [[ "$dec2" == "EXECUTE" && -n "$refunded" && "${refunded:-0}" -lt "$bal" ]]; then
+    record "$id" FLAKE "planner committed a partial refund ($refunded of $bal) — full refund needed for OPS-054"; return
+  fi
+  # The refund half MUST be a clean full refund. Anything else here is an
+  # ASSERT-FAIL: a money write went wrong.
+  if [[ "$dec2" != "EXECUTE" || "${refunded:-0}" -ne "$bal" || "$pstatus" != "refunded" || "${hist:-0}" -lt 1 || "${exec_n:-0}" -lt 1 ]]; then
+    record "$id" FAIL "full refund confirm: decision=$dec2 refunded=$refunded/$bal payment_status=$pstatus refunded_hist=$hist auditEXEC=$exec_n (expected EXECUTE/full/refunded/≥1/≥1)"; return
+  fi
+
+  # ── OPS-054: the async auto-cancel. payment.status_changed(refunded) → the
+  # payment-lifecycle subscriber cancels the pending order over NATS. Poll for it.
+  local final_status; final_status="$(poll_order_status "$order" "canceled")"
+  local cancel_ok=$?
+  # The kernel-gated order.status.transition the subscriber ran, and the DB row.
+  local cancel_audit hist_row
+  cancel_audit="$(audit_count "$start" "order.status.transition" "EXECUTE")"
+  hist_row="$(q "select count(*) from ibx_domain.order_status_history where order_id = $(sql_lit "$order") and to_status = 'canceled' and from_status = 'pending'")"
+
+  if [[ "$cancel_ok" -eq 0 && "${cancel_audit:-0}" -ge 1 && "${hist_row:-0}" -ge 1 ]]; then
+    record "$id" PASS "full refund → payment=refunded (refunded_amount=$bal), payment.status_changed → OPS-054 subscriber AUTO-CANCELed order $disp (fulfillment=canceled, order.status.transition EXECUTE, history pending→canceled) (SCN-120/OPS-054)"
+  else
+    # The full refund COMMITTED but the order did not auto-cancel — a REAL finding
+    # (OPS-054 lifecycle regression), not a model flake. Capture forensics.
+    record "$id" FAIL "OPS-054 AUTO-CANCEL did NOT fire after a committed full refund: order $disp fulfillment=${final_status:-?} (expected canceled), order.status.transition EXECUTE=$cancel_audit, history pending→canceled=$hist_row. payment chain=[$(payment_hist_chain "$pay")]. Inspect the payment-lifecycle subscriber (VictoriaLogs :9428, subject payment.status_changed / '[payment-lifecycle]')."
   fi
 }
 
@@ -403,16 +520,25 @@ preflight() {
   step "OWNER staffId $OWNER_ID; ATTENDANT ensured ($WS9_ATTENDANT_PHONE)"
 }
 
+# WS9_ONLY filter: run a scenario iff WS9_ONLY is empty (all) or lists its id.
+# Comma- or space-separated; a wrapping-space match keeps it substring-safe.
+should_run() { # scenario_id
+  [[ -z "$WS9_ONLY" ]] && return 0
+  local norm=" ${WS9_ONLY//,/ } "
+  [[ "$norm" == *" $1 "* ]]
+}
+
 main() {
-  info "WS9 ops-plane live suite → $IBX_API  (retries=$WS9_RETRIES)"
+  info "WS9 ops-plane live suite → $IBX_API  (retries=$WS9_RETRIES${WS9_ONLY:+, only=$WS9_ONLY})"
   preflight
   info "Scenarios"
-  scn_ops86
-  scn_ops_role
-  scn_refund_park
-  scn_refund_confirm
-  scn_refund_escalate
-  scn_partial
+  should_run OPS-86                 && scn_ops86
+  should_run OPS-ROLE               && scn_ops_role
+  should_run OPS-REFUND-PARK        && scn_refund_park
+  should_run OPS-REFUND-CONFIRM     && scn_refund_confirm
+  should_run OPS-REFUND-FULL-CANCEL && scn_refund_full_cancel
+  should_run OPS-REFUND-ESCALATE    && scn_refund_escalate
+  should_run OPS-PARTIAL            && scn_partial
 
   # ── Summary ────────────────────────────────────────────────────────────────
   local pass=0 fail=0 flake=0 skip=0 i

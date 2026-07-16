@@ -9,7 +9,9 @@ export type ShortcutAction =
   | { type: "reservation" }
   | { type: "help" }
   | { type: "welcome" }
-  | { type: "loyalty" };
+  | { type: "loyalty" }
+  | { type: "optout" }
+  | { type: "optin" };
 
 /**
  * Normalize input for matching: lowercase, trim, remove accents.
@@ -19,7 +21,14 @@ function normalize(input: string): string {
     .toLowerCase()
     .trim()
     .normalize("NFD")
-    .replaceAll(/[\u0300-\u036f]/g, "");
+    .replaceAll(/[\u0300-\u036f]/g, "")
+    // S3 \u2014 collapse inner whitespace and strip leading/trailing punctuation so an
+    // opt-out like `Parar.` / `stop!` / `  parar  ` still matches its keyword. We
+    // strip only Unicode punctuation (\p{P}) + spaces, never symbols (so the `r$15`
+    // key survives), and keep WHOLE-MESSAGE exact matching (never substring) so a
+    // message like `n\u00e3o quero parar` can never be mis-read as an opt-out.
+    .replaceAll(/\s+/g, " ")
+    .replace(/^[\p{P}\s]+|[\p{P}\s]+$/gu, "");
 }
 
 const SHORTCUT_MAP: Record<string, ShortcutAction> = {
@@ -61,6 +70,37 @@ const SHORTCUT_MAP: Record<string, ShortcutAction> = {
   "primeira vez": { type: "welcome" },
   "quero meu credito": { type: "welcome" },
   "r$15": { type: "welcome" },
+
+  // WS3A — customer-initiated marketing opt-out (STOP). Whole-message exact
+  // match only (matchShortcut normalizes+exact-lookups), so these never fire
+  // mid-sentence. Bare "cancelar" is intentionally OMITTED — it collides with
+  // order cancellation; opt-out uses the unambiguous unsubscribe words.
+  parar: { type: "optout" },
+  pare: { type: "optout" },
+  stop: { type: "optout" },
+  sair: { type: "optout" },
+  descadastrar: { type: "optout" },
+  "me descadastrar": { type: "optout" },
+  "cancelar inscricao": { type: "optout" },
+  "cancelar promocoes": { type: "optout" },
+  "parar de receber": { type: "optout" },
+  "parar promocoes": { type: "optout" },
+  "quero parar": { type: "optout" },
+  "parar por favor": { type: "optout" },
+  "nao quero receber": { type: "optout" },
+  "nao quero mais receber": { type: "optout" },
+  "nao quero mais mensagens": { type: "optout" },
+  "remover meu numero": { type: "optout" },
+
+  // Re-subscribe (opt back in). Consent CHANGE requires an unambiguous token —
+  // bare "voltar" is intentionally OMITTED (it is one of the most common pt-BR
+  // navigation words: "go back"), so a customer typing "voltar" mid-flow can
+  // never silently re-subscribe after opting out. Re-subscription uses the
+  // explicit unsubscribe-reversing phrases below.
+  "quero receber": { type: "optin" },
+  "quero voltar a receber": { type: "optin" },
+  "receber promocoes": { type: "optin" },
+  "voltar a receber": { type: "optin" },
 };
 
 /**
@@ -92,6 +132,24 @@ export function buildWelcomeText(): string {
  */
 export function buildLoyaltyText(): string {
   return "Para ver seus selos, pergunte ao nosso assistente: 'quantos selos eu tenho?'";
+}
+
+/**
+ * Build the pt-BR confirmation sent after a customer-initiated marketing opt-out.
+ */
+export function buildOptOutConfirmationText(): string {
+  return [
+    "Pronto! Você não receberá mais mensagens promocionais. ✅",
+    "",
+    "Se quiser voltar a receber, é só responder *quero voltar a receber*. Você continua podendo fazer pedidos e falar com a gente normalmente.",
+  ].join("\n");
+}
+
+/**
+ * Build the pt-BR confirmation sent after a customer re-subscribes (opt-in).
+ */
+export function buildOptInConfirmationText(): string {
+  return "Feito! Você voltou a receber nossas novidades e promoções. 🥩";
 }
 
 /**

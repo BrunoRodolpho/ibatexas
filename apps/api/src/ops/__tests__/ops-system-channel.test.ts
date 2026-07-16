@@ -7,7 +7,9 @@
 import { describe, expect, it } from "vitest";
 import type { ChannelMessage, ParkedEnvelope, Session } from "@claustrum/core";
 import {
+  isAmbiguousOpsReply,
   matchOpsReplyToParked,
+  OPS_AMBIGUOUS_REPLY_CLARIFY_PTBR,
   OpsSystemChannel,
 } from "../ops-system-channel.js";
 
@@ -41,7 +43,7 @@ describe("matchOpsReplyToParked — pt-BR ops confirm-resume matcher", () => {
     },
   );
 
-  it.each(["não", "nao", "cancela", "para", "deixa", "negativo"])(
+  it.each(["não", "nao", "cancela", "cancelar", "pare", "negativo", "nega"])(
     "negative lexicon: %s → deny",
     (word) => {
       expect(matchOpsReplyToParked(word, [P1])?.userResolution).toBe("deny");
@@ -106,6 +108,156 @@ describe("matchOpsReplyToParked — pt-BR ops confirm-resume matcher", () => {
     // P2 (valid, most recent) must still win over the malformed entry.
     const m = matchOpsReplyToParked("sim", [bad, P2]);
     expect(m?.parked).toBe(P2);
+  });
+});
+
+// ── BKL-063: compound (multi-envelope) park → SEQUENTIAL, one-at-a-time resume ──
+//
+// claustrum 0.6.0 dispatch parks EVERY envelope of a compound REQUEST_CONFIRMATION
+// plan into `session.pendingConfirmations` (the adopter SessionStore appends each,
+// de-duped by intentHash — claustrum-bootstrap.ts:parkPendingConfirmation), so NO
+// envelope silently vanishes the way pre-0.6.0 dropped everything but envelopes[0].
+//
+// The RESUME is single-match by design and OWNED UPSTREAM: `matchToParked` returns
+// ONE `ParkedMatch` (the most-recently-parked on a bare "sim") and claustrum's
+// `resolveResume` (handle-turn.ts) re-adjudicates + audits exactly that one, then
+// unparks it. So a compound park is confirmed ONE ENVELOPE PER "sim", most-recent-
+// first — the MONEY-SAFE semantics: a single "sim" can never fire N money actions,
+// and each resumed EXECUTE is backed by its own fresh audited Decision. A specific
+// envelope can be targeted out-of-order by its `#hash` prefix. This test pins that
+// sequential behavior as PRODUCT behavior (unpark modeled as the store's pure
+// intentHash filter, mirroring redisSessionStore.unpark + resolveResume).
+describe("matchOpsReplyToParked — BKL-063 compound multi-park sequential resume", () => {
+  // The conductor's unpark-on-confirm, as a pure filter (redisSessionStore.unpark).
+  const unpark = (
+    list: ReadonlyArray<ParkedEnvelope>,
+    intentHash: string,
+  ): ParkedEnvelope[] => list.filter((p) => p.envelope.intentHash !== intentHash);
+
+  it("a single 'sim' resolves EXACTLY ONE envelope (most-recent), never both", () => {
+    const both = [P1, P2];
+    const m = matchOpsReplyToParked("sim", both);
+    expect(m?.userResolution).toBe("confirm");
+    expect(m?.parked).toBe(P2); // most recent only — P1 stays parked
+    // Money-safety: the matcher is pure — the park list is never mutated, so P1
+    // remains pending (the conductor unparks only the one it re-adjudicates).
+    expect(both).toEqual([P1, P2]);
+  });
+
+  it("both parked envelopes replay across TWO confirms (most-recent-first), none lost", () => {
+    // Turn 1: compound plan parked both → "sim" confirms the most recent (P2).
+    let pending: ParkedEnvelope[] = [P1, P2];
+    const first = matchOpsReplyToParked("sim", pending);
+    expect(first?.userResolution).toBe("confirm");
+    expect(first?.parked).toBe(P2);
+    // Conductor re-adjudicates + unparks P2.
+    pending = unpark(pending, P2.envelope.intentHash);
+    expect(pending).toEqual([P1]);
+    // Turn 2: the remaining envelope is still pending → the next "sim" confirms it.
+    const second = matchOpsReplyToParked("sim", pending);
+    expect(second?.userResolution).toBe("confirm");
+    expect(second?.parked).toBe(P1);
+    pending = unpark(pending, P1.envelope.intentHash);
+    expect(pending).toEqual([]); // both replayed — nothing silently vanished
+  });
+
+  it("a #hash prefix targets a SPECIFIC parked envelope out of the compound set", () => {
+    // Staff can confirm the older P1 first by addressing its hash — order-independent.
+    const m = matchOpsReplyToParked("#a4b8c1 confirma", [P1, P2]);
+    expect(m?.parked).toBe(P1);
+    expect(m?.userResolution).toBe("confirm");
+  });
+
+  it("a single 'não' denies EXACTLY ONE envelope (most-recent) — the rest stay parked", () => {
+    // Symmetry with confirm: a compound park is abandoned one envelope per reply, so
+    // a customer/staff never blanket-denies a whole compound plan with one word.
+    const m = matchOpsReplyToParked("não", [P1, P2]);
+    expect(m?.userResolution).toBe("deny");
+    expect(m?.parked).toBe(P2);
+  });
+});
+
+// ── Money-execution safety (BKL-085 hardening) ───────────────────────────────
+// A parked money action (e.g. a CONFIRM-band refund) may ONLY execute on a clear,
+// unambiguous yes; an unrelated fresh command must never abandon the park.
+describe("matchOpsReplyToParked — money-execution safety", () => {
+  it.each([
+    "não confirmo", // "I do not confirm" — refusal that contains "confirmo"
+    "não, pode deixar", // "no, you can leave it" — refusal that contains "pode"
+    "ok, cancela", // affirmative "ok" alongside the refusal "cancela"
+    "sim, mas não", // yes-but-no
+  ])(
+    "an explicit refusal containing an affirmative token is NEVER a confirm: %s",
+    (text) => {
+      const m = matchOpsReplyToParked(text, [P1]);
+      // Money must not execute on a refusal: resolves to NEITHER (null), which
+      // preserves the park (the conductor unparks only on deny/defer).
+      expect(m).toBeNull();
+      expect(m?.userResolution).not.toBe("confirm");
+    },
+  );
+
+  it.each([
+    "muda o preço da costela para R$ 89", // WS6 guided example (contains "para")
+    "avança o pedido 4242 para pronto", // WS6 guided example (contains "para")
+    "reserva a mesa 5 para hoje", // fresh command with the preposition "para"
+  ])(
+    "an unrelated fresh command containing 'para' is NOT a denial: %s",
+    (text) => {
+      // "para" the preposition must not eat the command as a deny → null (fresh
+      // utterance; the normal loop runs and the park is untouched).
+      expect(matchOpsReplyToParked(text, [P1])).toBeNull();
+    },
+  );
+
+  it.each(["sim", "sim, confirma", "confirmo", "pode confirmar", "ok", "beleza"])(
+    "a clean unambiguous confirm still resolves to confirm: %s",
+    (text) => {
+      expect(matchOpsReplyToParked(text, [P1])?.userResolution).toBe("confirm");
+    },
+  );
+
+  it("ambiguous (mixed affirmative + negative) input resolves to NEITHER, park preserved", () => {
+    const parkList = [P1];
+    const m = matchOpsReplyToParked("sim, mas não sei", parkList);
+    expect(m).toBeNull(); // neither confirm nor deny
+    // Pure matcher: the park list it was handed is never mutated (the durable
+    // park is untouched — only the conductor unparks, and only on deny/defer).
+    expect(parkList).toEqual([P1]);
+  });
+
+  it("keeps deny for a clean refusal with no affirmative token", () => {
+    expect(matchOpsReplyToParked("não", [P1])?.userResolution).toBe("deny");
+    expect(matchOpsReplyToParked("cancela o reembolso", [P1])?.userResolution).toBe(
+      "deny",
+    );
+  });
+});
+
+describe("isAmbiguousOpsReply + OPS_AMBIGUOUS_REPLY_CLARIFY_PTBR", () => {
+  it.each(["não confirmo", "ok, cancela", "sim, mas não"])(
+    "flags a mixed affirmative+negative reply as ambiguous: %s",
+    (text) => {
+      expect(isAmbiguousOpsReply(text)).toBe(true);
+    },
+  );
+
+  it.each(["sim", "confirma", "não", "cancela", "muda o preço para R$ 89", ""])(
+    "does NOT flag a clean confirm / clean deny / fresh command / empty as ambiguous: %s",
+    (text) => {
+      expect(isAmbiguousOpsReply(text)).toBe(false);
+    },
+  );
+
+  it("a defer phrase is a valid resolution, not ambiguous", () => {
+    // "sim, amanhã, não" carries a defer → matcher resolves to defer, not ambiguous.
+    expect(isAmbiguousOpsReply("sim, amanhã, não")).toBe(false);
+  });
+
+  it("the clarification is a non-empty pt-BR line offering confirm/cancel", () => {
+    expect(OPS_AMBIGUOUS_REPLY_CLARIFY_PTBR.length).toBeGreaterThan(0);
+    expect(OPS_AMBIGUOUS_REPLY_CLARIFY_PTBR).toMatch(/confirmar/i);
+    expect(OPS_AMBIGUOUS_REPLY_CLARIFY_PTBR).toMatch(/cancelar/i);
   });
 });
 

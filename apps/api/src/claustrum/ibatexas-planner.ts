@@ -89,6 +89,7 @@ import {
   EXPRESS_INTENT_TOOL,
   PLANNER_PERSONA,
 } from "./prompts/personas.js";
+import { resolvePrompt } from "./prompts/prompt-overrides.js";
 import {
   PLANNER_SURFACE,
   type IbatexasPromptComposer,
@@ -98,7 +99,8 @@ import {
   closedHoursPromptNote,
   type ScheduleSignal,
 } from "./closed-hours.js";
-import type { StoreHoursRead } from "./turn-reads.js";
+import type { StoreHoursRead, StoreHoursForDateRead } from "./turn-reads.js";
+import { resolveQueriedScheduleDate } from "./schedule-date-resolver.js";
 
 // Re-export so existing importers (tests, registry) keep their import site.
 export { EXPRESS_INTENT_TOOL };
@@ -254,6 +256,26 @@ export interface IbatexasPlannerDeps {
     | Promise<StoreHoursRead | undefined>
     | StoreHoursRead
     | undefined;
+  /**
+   * BKL-138 — resolve the QUERIED date's operating-hours read for THIS turn
+   * (tag-then-derive STEP 2 for STORE_HOURS_FOR_DATE). The SAME per-date
+   * `readHoursForDate(isoDate)` the investigator records under
+   * `schedule:store_hours:{isoDate}`, so the derived `hoursText` is byte-equal to the
+   * recorded ledger entry and C6 passes BY CONSTRUCTION (a present holiday/override
+   * falsifier on that date STILL demotes to UNKNOWN). Invoked per `proposeClaims()`
+   * with the resolved ISO date (the candidate subject). Omitted in unit tests →
+   * a STORE_HOURS_FOR_DATE candidate keeps `value: undefined` (C6 ABSTAIN → honest UNKNOWN).
+   */
+  readonly resolveHoursForDate?: (
+    isoDate: string,
+  ) => Promise<StoreHoursForDateRead | undefined> | StoreHoursForDateRead | undefined;
+  /**
+   * BKL-138 — the clock the day-specific date resolver reads "today" from (default
+   * `Date.now`). Injectable so a deterministic suite can FREEZE the resolved date (a
+   * named-weekday / "amanhã" question resolves relative to `now`). NOT the kernel
+   * clock (that stays downstream) — only the request-side NL date resolution.
+   */
+  readonly now?: () => number;
   /**
    * BKL-027 (F2) — one-hop read-tool executors. Map of advertised read-tool
    * NAME → an executor that runs that read for THIS turn, OWNER-SCOPED to the
@@ -708,13 +730,17 @@ export function createIbatexasPlanner(
         fragmentManifest = composed.fragmentManifest;
       }
 
-      // fix B (Stage 1) — soft layer: when the store is closed, tell the planner
-      // so it does not propose immediate-fulfillment intents / so the model knows
-      // the real state. Empty string when open → prompt byte-identical to today.
+      // fix B (Stage 1) — soft layer: a GATED pt-BR store-state note
+      // (closedHoursPromptNote). Tells the planner the real state so it does not
+      // propose immediate-fulfillment intents while closed. Relevance-gated on the
+      // turn text: "" on a small-talk greeting, and on the OPEN path "" unless the
+      // customer asks about open-state/hours — so the weak 4B does not over-weight an
+      // always-on note and blurt store status on unrelated turns. Absent text → note
+      // is byte-identical to the pre-gate behavior.
       const scheduleSignal = deps.resolveScheduleSignal
         ? ((await deps.resolveScheduleSignal()) ?? undefined)
         : undefined;
-      system += closedHoursPromptNote(scheduleSignal);
+      system += closedHoursPromptNote(scheduleSignal, state.perception.text);
 
       const allowed = new Set(plan.allowedIntents);
       // NEW-032 slice A — the per-turn envelope actor. Computed ONCE from the
@@ -998,7 +1024,7 @@ export function createIbatexasPlanner(
       // the intent persona (DEFAULT_SYSTEM_PROMPT) — the intent persona's "sua
       // única função é express_intent" SUPPRESSES the propose_claim call on a 4B
       // (verified live on nemotron-3-nano:4b). `deps.system` still overrides (tests).
-      const system = deps.system ?? CLAIM_PLANNER_PERSONA;
+      const system = deps.system ?? resolvePrompt("ibatexas/claim-planner.persona", CLAIM_PLANNER_PERSONA);
       // F2 observability: time the claim-planner completion so its LLMTrace
       // (emitted below) carries a real duration, like the intent `propose` path.
       const claimStartedAt = Date.now();
@@ -1020,6 +1046,12 @@ export function createIbatexasPlanner(
         auth?.customerId !== undefined && auth.customerId.trim() !== ""
           ? auth.customerId
           : "unauthenticated";
+
+      // BKL-138 — the request-side clock + tz for the deterministic NL date resolver
+      // (the SAME resolver the investigator drives its date-keyed reads off, so the
+      // candidate subject and the ledger key resolve to the IDENTICAL ISO date).
+      const dateTz = process.env.RESTAURANT_TIMEZONE ?? "America/Sao_Paulo";
+      const dateNow = new Date((deps.now ?? (() => Date.now()))());
 
       // Collect the model's proposals + the safety/span inputs from the call(s).
       const proposals: ProposedClaim[] = [];
@@ -1069,6 +1101,18 @@ export function createIbatexasPlanner(
             // owner-scoped `owns` refuses it → honest UNKNOWN/REFUSED, never a leak.
             subject = modelSubject;
           }
+        } else if (canonicalType === "STORE_HOURS_FOR_DATE") {
+          // BKL-138 (subject) — the date-hours claim's SUBJECT is the QUERIED ISO date,
+          // resolved DETERMINISTICALLY from the request text (never the 4B's unreliable
+          // date arithmetic — the model only CLASSIFIES; the resolver disposes). This is
+          // the schedule twin of FIX 2: the subject derives from a first-party pure
+          // function over `perception.text`, the SAME one the investigator uses, so the
+          // candidate subject == the ledger key `:date` suffix by construction. No
+          // resolvable date anchor (a bare "feriado", or a mis-tagged proposal) → DROP
+          // the proposal (no candidate) → honest degrade/CLARIFY, never a guessed day.
+          const resolved = resolveQueriedScheduleDate(state.perception.text, dateTz, dateNow);
+          if (resolved === null) continue;
+          subject = resolved.isoDate;
         }
 
         proposals.push({
@@ -1125,9 +1169,27 @@ export function createIbatexasPlanner(
       const storeHours = deps.resolveStoreHours
         ? ((await deps.resolveStoreHours()) ?? undefined)
         : undefined;
+      // BKL-138 — the SAME per-date hours read the investigator records under
+      // `schedule:store_hours:{date}`, keyed by each STORE_HOURS_FOR_DATE candidate's
+      // resolved subject (the ISO date). Read ONCE per distinct queried date this turn;
+      // a read that fails/returns undefined leaves that date's value undefined → C6
+      // ABSTAIN → honest UNKNOWN (never a fabricated hours string).
+      const storeHoursForDate: Record<string, StoreHoursForDateRead> = {};
+      if (deps.resolveHoursForDate !== undefined) {
+        const dates = new Set(
+          candidates
+            .filter((c) => c.type === "STORE_HOURS_FOR_DATE")
+            .map((c) => c.subject),
+        );
+        for (const isoDate of dates) {
+          const read = await deps.resolveHoursForDate(isoDate);
+          if (read !== undefined) storeHoursForDate[isoDate] = read;
+        }
+      }
       const derivedCandidates = deriveCandidateValues(candidates, {
         scheduleSignal,
         storeHours,
+        storeHoursForDate,
       });
 
       // POST-planning wall (SDD §C P4 / §J.8): every span gets a disposition; an

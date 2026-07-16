@@ -26,6 +26,7 @@ import type {
   ModelProvider,
   Plan,
 } from "@claustrum/core";
+import { normalizeClaimPlannerResult, resolveTurnTerminal } from "@claustrum/core";
 import { logger } from "../../lib/logger.js";
 import {
   createIbatexasPlanner,
@@ -90,6 +91,20 @@ function adapterInput(text: string): ClaimPlannerInput {
   return { cognition: cognition(text), plan: emptyPlan };
 }
 
+/**
+ * Propose + normalize to the candidate array. Post-BKL-077 `propose` returns the
+ * widened `ClaimPlannerResult` union (a bare array OR `{ candidates, forcedTerminal }`);
+ * the candidate-shape assertions below are all NO-forced-terminal turns, so normalize
+ * to the array. `normalizeClaimPlannerResult` passes a bare array through BY REFERENCE,
+ * so the "surfaced unchanged" reference contract is preserved.
+ */
+async function proposeCandidates(
+  adapter: ReturnType<typeof createIbatexasClaimPlanner>,
+  input: ClaimPlannerInput,
+): Promise<ReadonlyArray<CandidateClaim>> {
+  return normalizeClaimPlannerResult(await adapter.propose(input)).candidates;
+}
+
 // ── Reuse of the real Q6b planner + registry-constrained path ────────────────
 
 describe("ibatexas-claim-planner — delegates to Q6b + registry walls", () => {
@@ -102,7 +117,7 @@ describe("ibatexas-claim-planner — delegates to Q6b + registry walls", () => {
       ]),
     );
 
-    const candidates = await adapter.propose(adapterInput("o hamburguer tem glúten?"));
+    const candidates = await proposeCandidates(adapter,adapterInput("o hamburguer tem glúten?"));
 
     // Exactly the in-enum claim survived the constrained-generation wall.
     expect(candidates).toHaveLength(1);
@@ -114,7 +129,7 @@ describe("ibatexas-claim-planner — delegates to Q6b + registry walls", () => {
 
   it("returns an empty candidate set when the model proposes nothing", async () => {
     const adapter = createIbatexasClaimPlanner(plannerOver([]));
-    const candidates = await adapter.propose(adapterInput("oi"));
+    const candidates = await proposeCandidates(adapter,adapterInput("oi"));
     expect(candidates).toHaveLength(0);
   });
 
@@ -194,7 +209,7 @@ const KERNEL_NOW = 10_000;
 describe("ibatexas-claim-planner — F1 safe terminal (BKL-005)", () => {
   it("synthesizes a safe candidate when proposeClaims THROWS on a claim-requiring question", async () => {
     const adapter = createIbatexasClaimPlanner(throwingClaimPlanner());
-    const candidates = await adapter.propose(adapterInput("vocês estão abertos?"));
+    const candidates = await proposeCandidates(adapter,adapterInput("vocês estão abertos?"));
 
     // The flake no longer yields an EMPTY set → CLAIMS-VALIDATE runs (6a fires),
     // never the prose fall-through.
@@ -263,7 +278,7 @@ describe("ibatexas-claim-planner — F1 safe terminal (BKL-005)", () => {
     // PAYMENT_STATUS but SUCCEEDED. A successful partial proposal is HONEST framing
     // → the missing ORDER_FULFILLMENT_STAGE companion is NOT synthesized (promoting
     // it would risk a non-sequitur). The returned set is surfaced verbatim.
-    const candidates = await adapter.propose(adapterInput("qual o status?"));
+    const candidates = await proposeCandidates(adapter,adapterInput("qual o status?"));
 
     expect(candidates).toHaveLength(1);
     expect(candidates[0]?.type).toBe("PAYMENT_STATUS");
@@ -273,7 +288,7 @@ describe("ibatexas-claim-planner — F1 safe terminal (BKL-005)", () => {
   it("a synthesized candidate resolves UNKNOWN (not REFUSED) through the real claims kernel", async () => {
     const adapter = createIbatexasClaimPlanner(throwingClaimPlanner());
     // Bare "status" → two owner-scoped synthetics (ORDER_FULFILLMENT_STAGE + PAYMENT_STATUS).
-    const candidates = await adapter.propose(adapterInput("qual o status?"));
+    const candidates = await proposeCandidates(adapter,adapterInput("qual o status?"));
     expect(candidates.length).toBeGreaterThan(0);
 
     // Empty ledger: no owner-scoped read is PRESENT → §5 present(e) fails BEFORE the
@@ -306,7 +321,7 @@ describe("ibatexas-claim-planner — F1 safe terminal (BKL-005)", () => {
       taint: "TRUSTED",
       originProvenance: "FIRST_PARTY",
     });
-    const candidates = await adapter.propose({
+    const candidates = await proposeCandidates(adapter,{
       cognition: cognition("vocês estão abertos?"),
       plan: emptyPlan,
       ledger,
@@ -329,7 +344,7 @@ describe("ibatexas-claim-planner — F1 safe terminal (BKL-005)", () => {
 
   it("renders a proposition-free safe terminal on a planner flake (not prose)", async () => {
     const adapter = createIbatexasClaimPlanner(throwingClaimPlanner());
-    const candidates = await adapter.propose(adapterInput("qual o status?"));
+    const candidates = await proposeCandidates(adapter,adapterInput("qual o status?"));
     const ledger = new EvidenceLedger("turn-render");
     const result = runClaimsKernel(
       ledger,
@@ -469,7 +484,7 @@ describe("ibatexas-claim-planner — BKL-110 demote-only relevance filter", () =
         claimCall({ type: "PAYMENT_STATUS", subject: "order-7" }),
       ]),
     );
-    const candidates = await adapter.propose(
+    const candidates = await proposeCandidates(adapter,
       adapterInput("vocês estão abertos agora?"),
     );
     expect(candidates.map((c) => c.type)).toEqual(["STORE_OPEN_NOW"]);
@@ -482,7 +497,7 @@ describe("ibatexas-claim-planner — BKL-110 demote-only relevance filter", () =
     const adapter = createIbatexasClaimPlanner(
       plannerOver([claimCall({ type: "MENU_ITEM_ALLERGENS", subject: "burger" })]),
     );
-    const candidates = await adapter.propose(
+    const candidates = await proposeCandidates(adapter,
       adapterInput("o hamburguer tem glúten?"),
     );
     expect(candidates.map((c) => c.type)).toEqual(["MENU_ITEM_ALLERGENS"]);
@@ -495,7 +510,7 @@ describe("ibatexas-claim-planner — BKL-110 demote-only relevance filter", () =
     const adapter = createIbatexasClaimPlanner(
       plannerOver([claimCall({ type: "STORE_HOURS", subject: "loja" })]),
     );
-    const candidates = await adapter.propose(
+    const candidates = await proposeCandidates(adapter,
       adapterInput("que horas vocês fecham?"),
     );
     expect(candidates.map((c) => c.type)).toEqual(["STORE_HOURS"]);
@@ -510,7 +525,7 @@ describe("ibatexas-claim-planner — BKL-110 demote-only relevance filter", () =
     const adapter = createIbatexasClaimPlanner(
       plannerOver([claimCall({ type: "ORDER_FULFILLMENT_STAGE", subject: "order-9" })]),
     );
-    const candidates = await adapter.propose(
+    const candidates = await proposeCandidates(adapter,
       adapterInput("meu pedido chegou, obrigado!"),
     );
     expect(candidates.map((c) => c.type)).toContain("ORDER_FULFILLMENT_STAGE");
@@ -521,7 +536,7 @@ describe("ibatexas-claim-planner — BKL-110 demote-only relevance filter", () =
     // set is [] before the filter, so nothing is filtered and the required-non-empty
     // safe-terminal synthesis is unchanged: a hours flake still synthesizes STORE_OPEN_NOW.
     const adapter = createIbatexasClaimPlanner(throwingClaimPlanner());
-    const candidates = await adapter.propose(adapterInput("vocês estão abertos agora?"));
+    const candidates = await proposeCandidates(adapter,adapterInput("vocês estão abertos agora?"));
     expect(candidates.find((c) => c.type === "STORE_OPEN_NOW")).toBeDefined();
   });
 
@@ -635,5 +650,171 @@ describe("ibatexas-claim-planner — BKL-111 prose-preserved claims.terminal", (
     );
     const payloads = await proposeSpied(adapter, "vocês estão abertos agora?");
     expect(payloads).toHaveLength(0);
+  });
+});
+
+// ── BKL-077: forcedTerminal emission (safety ESCALATE / ambiguity CLARIFY) ────
+//
+// The adapter now RETURNS the planner-FORCED turn terminal in the widened
+// `ClaimPlannerProposal` shape `{ candidates, forcedTerminal }` instead of
+// discarding it. claustrum's CLAIMS-VALIDATE folds it via `resolveTurnTerminal`:
+// a forced ESCALATE OUTRANKS a would-be RENDER; a forced CLARIFY is honored even
+// on an EMPTY candidate set (the 3-payments "which order?" turn — live session
+// 1846a742, which pre-adoption delivered garbage prose where a CLARIFY belonged).
+// These tests assert the DELIVERED turn terminal (normalize → resolveTurnTerminal),
+// mirroring the loop's own fold (claims-validate `applyForcedTerminal`), not merely
+// the adapter's return, and pin the invariants: a NO-forced-terminal turn returns
+// the BARE array (byte-identical); the flake path emits no forced terminal; a
+// CLARIFY-on-empty does NOT double-emit the prose_preserved `claims.terminal`.
+
+/**
+ * A claim planner that FORCES a terminal alongside its candidates — mirrors the
+ * real planner's computed §O#9 safety ESCALATE / P4-unmapped-or-owner-ambiguity
+ * CLARIFY (ibatexas-planner.ts), whose `ClaimPlan.forcedTerminal` the adapter now
+ * surfaces. The 3-payments ambiguity is `forcingClaimPlanner([], "CLARIFY")`: the
+ * real planner drops the ambiguous owner-scoped proposal (candidates empty) and
+ * sets forcedTerminal CLARIFY.
+ */
+function forcingClaimPlanner(
+  candidates: CandidateClaim[],
+  forcedTerminal: "ESCALATE" | "CLARIFY",
+): ClaimAwarePlannerPort {
+  return {
+    async propose() {
+      return emptyPlan;
+    },
+    async proposeClaims(): Promise<ClaimPlan> {
+      return { candidates, completeness: [], droppedClaimTypes: [], forcedTerminal };
+    },
+  };
+}
+
+/**
+ * The turn terminal a proposal DELIVERS — the SAME fold claustrum's CLAIMS-VALIDATE
+ * applies (`resolveTurnTerminal(runClaimsKernel(...).terminal, forcedTerminal)`), so
+ * the assertion is the customer-delivered terminal, not just the adapter return.
+ */
+function deliveredTerminal(
+  result: Awaited<ReturnType<ReturnType<typeof createIbatexasClaimPlanner>["propose"]>>,
+  ledger: EvidenceLedger,
+): string {
+  const { candidates, forcedTerminal } = normalizeClaimPlannerResult(result);
+  const kernel = runClaimsKernel(
+    ledger,
+    candidates,
+    createIbatexasClaimsKernelDeps({ now: () => KERNEL_NOW, owns: () => false }),
+  );
+  return resolveTurnTerminal(kernel.terminal, forcedTerminal);
+}
+
+describe("ibatexas-claim-planner — BKL-077 forcedTerminal emission", () => {
+  it("a turn with NO forced terminal returns the BARE array (byte-identical widening)", async () => {
+    const adapter = createIbatexasClaimPlanner(
+      plannerOver([claimCall({ type: "MENU_ITEM_ALLERGENS", subject: "burger" })]),
+    );
+    const result = await adapter.propose(adapterInput("o hamburguer tem glúten?"));
+    // The non-forced path is a plain array; the normalizer reads it as
+    // forcedTerminal: undefined → no downstream terminal change.
+    expect(Array.isArray(result)).toBe(true);
+    expect(normalizeClaimPlannerResult(result).forcedTerminal).toBeUndefined();
+    expect(deliveredTerminal(result, new EvidenceLedger("t-legacy"))).not.toBe(
+      "CLARIFY",
+    );
+  });
+
+  it("the 3-payments AMBIGUITY delivers a CLARIFY terminal end-to-end (empty candidates)", async () => {
+    const adapter = createIbatexasClaimPlanner(forcingClaimPlanner([], "CLARIFY"));
+    const result = await adapter.propose(adapterInput("meu pagamento saiu?"));
+    // Widened return, not a bare array.
+    expect(Array.isArray(result)).toBe(false);
+    const norm = normalizeClaimPlannerResult(result);
+    expect(norm.candidates).toHaveLength(0);
+    expect(norm.forcedTerminal).toBe("CLARIFY");
+    // DELIVERED terminal: CLARIFY is honored on an EMPTY candidate set (it wins over
+    // the kernel's honest-ignorance UNKNOWN) — the pre-adoption prose fall-through.
+    const ledger = new EvidenceLedger("turn-clarify");
+    expect(deliveredTerminal(result, ledger)).toBe("CLARIFY");
+    // …and it renders a proposition-free safe pt-BR line (never prose / a fact).
+    const out = render([], "CLARIFY");
+    expect(out.terminal).toBe("CLARIFY");
+    expect(out.text.length).toBeGreaterThan(0);
+    expect(out.text).not.toContain("aprovado");
+  });
+
+  it("a real-planner UNMAPPED span drives CLARIFY through the adapter (genuine end-to-end)", async () => {
+    // Not a stub echo: the REAL planner computes forcedTerminal from a P4 unmapped
+    // span (SDD §J.8), and the adapter surfaces it unchanged.
+    const adapter = createIbatexasClaimPlanner(
+      plannerOver([
+        claimCall({
+          type: "STORE_HOURS",
+          subject: "store",
+          spans: [
+            { text: "que horas abre?", mappedClaimType: "STORE_HOURS" },
+            { text: "frase sem claim mapeado" }, // unmapped → CLARIFY
+          ],
+        }),
+      ]),
+    );
+    const result = await adapter.propose(
+      adapterInput("que horas abre? frase sem claim mapeado"),
+    );
+    expect(normalizeClaimPlannerResult(result).forcedTerminal).toBe("CLARIFY");
+  });
+
+  it("a SAFETY marker delivers an ESCALATE terminal end-to-end, outranking render", async () => {
+    // The real planner routes an unrecognized safety marker to ESCALATE (§O#9). The
+    // MENU_ITEM_ALLERGENS candidate is NOT demoted (outside the decomposer's domain),
+    // so candidates are NON-empty — yet a forced ESCALATE OUTRANKS a would-be RENDER.
+    const adapter = createIbatexasClaimPlanner(
+      plannerOver([
+        claimCall({
+          type: "MENU_ITEM_ALLERGENS",
+          subject: "burger",
+          safetyMarkers: ["unrecognized-health-marker"],
+        }),
+      ]),
+    );
+    const result = await adapter.propose(
+      adapterInput("tenho alergia grave, e isso aqui?"),
+    );
+    const norm = normalizeClaimPlannerResult(result);
+    expect(norm.forcedTerminal).toBe("ESCALATE");
+    const ledger = new EvidenceLedger("turn-escalate");
+    expect(deliveredTerminal(result, ledger)).toBe("ESCALATE");
+    // The human-handoff safe template, never a domain fact.
+    const out = render([], "ESCALATE");
+    expect(out.terminal).toBe("ESCALATE");
+    expect(out.text.toLowerCase()).toContain("atendente");
+  });
+
+  it("the FLAKE path emits NO forced terminal — synthesis returns the bare array (unchanged)", async () => {
+    const adapter = createIbatexasClaimPlanner(throwingClaimPlanner());
+    const result = await adapter.propose(adapterInput("qual o status?"));
+    // Bare array (not the widened object): a flake produced no planner signal, so the
+    // turn still degrades to the synthesized safe UNKNOWN, never a forced terminal.
+    expect(Array.isArray(result)).toBe(true);
+    expect(normalizeClaimPlannerResult(result).forcedTerminal).toBeUndefined();
+    expect((result as readonly CandidateClaim[]).length).toBeGreaterThan(0);
+  });
+
+  it("a CLARIFY on EMPTY candidates does NOT emit the prose_preserved claims.terminal (no double-emit)", async () => {
+    // With a forced terminal, claustrum's CLAIMS-VALIDATE runs the kernel over [] and
+    // STAMPS CLARIFY (the render-path emitter fires downstream). The adapter must NOT
+    // also log prose_preserved — that would mis-state the turn as prose AND break the
+    // one-claims.terminal-per-engaged-turn invariant.
+    const infoSpy = vi.spyOn(logger, "info").mockImplementation(() => logger);
+    try {
+      const adapter = createIbatexasClaimPlanner(forcingClaimPlanner([], "CLARIFY"));
+      await adapter.propose(adapterInput("meu pagamento saiu?"));
+      const prosePreserved = infoSpy.mock.calls
+        .map((c) => c[0] as Record<string, unknown>)
+        .filter(
+          (o) => o?.event === "claims.terminal" && o?.posture === "prose_preserved",
+        );
+      expect(prosePreserved).toHaveLength(0);
+    } finally {
+      infoSpy.mockRestore();
+    }
   });
 });

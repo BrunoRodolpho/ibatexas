@@ -1,6 +1,8 @@
 'use client'
 
 import { useState, useRef, useEffect, useCallback } from 'react'
+import Link from 'next/link'
+import { useSearchParams } from 'next/navigation'
 import { AdminPedidosPage, AdminOrderDetailDrawer, useToast } from '@ibatexas/ui'
 import type { OrderSummary } from '@ibatexas/types'
 import type { AdminOrderDetail } from '@ibatexas/ui'
@@ -65,8 +67,13 @@ async function postConfirmStep(
 
 export default function PedidosPage(): React.JSX.Element {
   const { addToast } = useToast()
+  // Deep-link support: /admin/pedidos?customerId=… filters the list to one
+  // customer (used by the Conversas/Clientes "Ver pedidos do cliente" links,
+  // which previously landed on an UNFILTERED list — the link was a no-op).
+  const searchParams = useSearchParams()
+  const customerId = searchParams.get('customerId') ?? undefined
   const { orders, loading, page, totalPages, statusFilter, dateFilter, onStatusFilter, onDateFilter, onPageChange, refetch } =
-    useAdminOrdersPage()
+    useAdminOrdersPage(customerId)
 
   const { updateStatus, updating } = useUpdateOrderStatus(refetch)
 
@@ -78,7 +85,6 @@ export default function PedidosPage(): React.JSX.Element {
   const [paymentHistory, setPaymentHistory] = useState<Array<{id: string; method: string; status: string; amountInCentavos: number; createdAt: string; version: number}>>([])
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- reset history when selection clears
     if (!selectedOrderId) { setPaymentHistory([]); return }
     apiFetch(`/api/admin/orders/${selectedOrderId}/payments`)
       .then((data: unknown) => {
@@ -93,7 +99,6 @@ export default function PedidosPage(): React.JSX.Element {
   const [notes, setNotes] = useState<AdminOrderNoteView[]>([])
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- reset notes when selection clears
     if (!selectedOrderId) { setNotes([]); return }
     apiFetch(`/api/admin/orders/${selectedOrderId}/notes`)
       .then((data: unknown) => setNotes(mapOrderNotes(data as AdminOrderNotesResponse)))
@@ -308,6 +313,15 @@ export default function PedidosPage(): React.JSX.Element {
 
   return (
     <>
+      {customerId ? (
+        <div className="mx-4 mt-4 flex items-center justify-between rounded border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-900">
+          <span>Mostrando apenas os pedidos deste cliente.</span>
+          <Link href="/admin/pedidos" className="font-medium underline">
+            Limpar filtro
+          </Link>
+        </div>
+      ) : null}
+
       <PendingConfirmationsPanel
         confirmations={confirmations}
         confirmingId={confirmingId}

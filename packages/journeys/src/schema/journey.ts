@@ -99,6 +99,15 @@ export const RAW_MEDUSA_ID_PATTERN = /(^|\W)(prod|variant|cart)_[A-Za-z0-9]{8,}/
 
 // ── Acts ─────────────────────────────────────────────────────────────────────
 
+/**
+ * The `raw-envelope` act's default expected HTTP status: the forgery
+ * rejection the test-plane ingress returns (apps/api
+ * `customer-intent-gateway.ts` FORGERY_REJECTION_CODE → 400). A forged
+ * probe's CORRECT outcome is non-2xx, so — unlike the `http` act — omitting
+ * `expectStatus` pins 400, not a 2xx pass.
+ */
+export const RAW_ENVELOPE_FORGERY_STATUS = 400
+
 const actBaseFields = {
   /** Optional stable label for traces; defaults to `act-<n>:<kind>` at run time. */
   name: z.string().min(1).optional(),
@@ -158,6 +167,42 @@ export const HttpActSchema = z
   .strict()
 
 /**
+ * `raw-envelope` act — TEST-PLANE forged-envelope probe (security journeys).
+ * POSTs a raw, caller-controlled `IntentEnvelope` (under `{ envelope }`) to
+ * the test-plane forged-envelope ingress
+ * (`POST /api/test/envelope-ingress`, apps/api
+ * `routes/test-envelope-ingress.ts`, HARD-GATED by `IBX_TEST_FINGERPRINT`)
+ * so a forged `actor`/`taint` reaches the runtime forgery guard that
+ * production customer routes STRUCTURALLY prevent reaching (the P2-6/P2-7
+ * `buildCustomerEnvelope` defense). The ingress posts the envelope VERBATIM
+ * (no zod stripping), so the whole point is that the `actor`/`taint` are
+ * caller-controlled — the forgery the probe injects. Unblocks JOURNEY-008.
+ *
+ * NOT a public surface: unlike `http`, this drives a test-only route, so it
+ * never contributes an asserted envelope to `expects[]` — the forged kind is
+ * asserted absent (`verify[]` audit.kind-absent) and the rejection is
+ * asserted in the audit trail.
+ */
+export const RawEnvelopeActSchema = z
+  .object({
+    kind: z.literal("raw-envelope"),
+    ...actBaseFields,
+    /**
+     * The raw envelope, posted verbatim. Its `actor`/`taint` are forged ON
+     * PURPOSE. String leaves that are exactly `:name` resolve from ctx.vars
+     * at execution time (same convention as `http` bodies).
+     */
+    envelope: z.record(z.string(), JsonValueSchema),
+    /**
+     * Expected HTTP status (exact match). Defaults to
+     * {@link RAW_ENVELOPE_FORGERY_STATUS} (400 — the forgery rejection);
+     * declare it only to pin a different ingress outcome.
+     */
+    expectStatus: z.number().int().min(100).max(599).optional(),
+  })
+  .strict()
+
+/**
  * `fixture` act — PRECONDITIONS ONLY (see governance header). Names an
  * existing seed helper plus its params; may never produce state that the
  * journey later asserts in `expects`/`verify`.
@@ -175,11 +220,13 @@ export const FixtureActSchema = z
 export const ActSchema = z.discriminatedUnion("kind", [
   ChatActSchema,
   HttpActSchema,
+  RawEnvelopeActSchema,
   FixtureActSchema,
 ])
 
 export type ChatAct = z.infer<typeof ChatActSchema>
 export type HttpAct = z.infer<typeof HttpActSchema>
+export type RawEnvelopeAct = z.infer<typeof RawEnvelopeActSchema>
 export type FixtureAct = z.infer<typeof FixtureActSchema>
 export type JourneyAct = z.infer<typeof ActSchema>
 export type ActKind = JourneyAct["kind"]

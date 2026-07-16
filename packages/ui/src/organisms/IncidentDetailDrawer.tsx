@@ -47,6 +47,9 @@ export interface AdminIncident {
   /** Optional display helpers resolved by the page/hook. */
   readonly customerName?: string | null
   readonly customerPhoneMasked?: string | null
+  /** WS4A — client-context enrichment (batched server-side). */
+  readonly hasActiveOrder?: boolean
+  readonly activeOrderDisplayId?: number | null
 }
 
 export interface IncidentTranscriptMessage {
@@ -224,6 +227,16 @@ export function IncidentDetailDrawer({
       incident.customerName ??
         incident.customerPhoneMasked ??
         (incident.senderRef ? maskHandle(incident.senderRef) : null),
+    ],
+    // WS4A — "order in progress" badge; the row is hidden when there is none
+    // (techRows renders only non-null values).
+    [
+      'Pedido em andamento',
+      incident.hasActiveOrder
+        ? incident.activeOrderDisplayId
+          ? `Sim — #${incident.activeOrderDisplayId}`
+          : 'Sim'
+        : null,
     ],
     [INCIDENT_LABELS.fieldSession, incident.sessionId],
     [INCIDENT_LABELS.fieldOpenedAt, formatDateTime(incident.openedAt)],

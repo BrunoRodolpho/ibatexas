@@ -20,6 +20,7 @@ export interface AdminOrdersFilters {
   fulfillment_status?: string
   date_from?: string
   date_to?: string
+  customer_id?: string
   limit?: number
   offset?: number
 }
@@ -96,6 +97,7 @@ export function buildAdminHooks(
       if (filters.fulfillment_status) params.set('fulfillment_status', filters.fulfillment_status)
       if (filters.date_from) params.set('date_from', filters.date_from)
       if (filters.date_to) params.set('date_to', filters.date_to)
+      if (filters.customer_id) params.set('customer_id', filters.customer_id)
       params.set('limit', String(filters.limit ?? 20))
       params.set('offset', String(filters.offset ?? 0))
       return params

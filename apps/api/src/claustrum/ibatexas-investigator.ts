@@ -37,6 +37,7 @@ import {
   extractTurnResourceIds,
   type TriadReadBackend,
 } from "./turn-reads.js";
+import { resolveQueriedScheduleDate } from "./schedule-date-resolver.js";
 
 /**
  * Map the read-layer 2-value {@link LedgerTaint} onto the 3-value
@@ -167,6 +168,17 @@ const STORE_HOURS_KEY = "schedule:store_hours";
 // the registry's STORE_HOURS `falsifiers[].key`. Recorded ONLY when today IS a
 // holiday; a non-holiday leaves the key ABSENT so the falsifier does not fire.
 const HOLIDAY_KEY = "schedule:holiday";
+// BKL-138 STORE_HOURS_FOR_DATE — the DATE-SUFFIXED keys, aligned VERBATIM with the
+// registry's `perResourceKey` parameterization (`${base}:${subject}` where subject =
+// the QUERIED ISO date; claim-registry.ts `parameterizeKeysBySubject`). Recorded ONLY
+// when a date subject was extracted from the request this turn (mirrors the
+// conditional per-resource order/payment reads). The `:{date}` suffix is what keeps a
+// future-date read from ever colliding with the BARE today STORE_HOURS/holiday keys.
+const STORE_HOURS_FOR_DATE_KEY = (isoDate: string): string =>
+  `schedule:store_hours:${isoDate}`;
+const HOLIDAY_FOR_DATE_KEY = (isoDate: string): string => `schedule:holiday:${isoDate}`;
+const OVERRIDE_FOR_DATE_KEY = (isoDate: string): string =>
+  `schedule:schedule_override:${isoDate}`;
 const ORDER_FULFILLMENT_KEY = (orderId: string): string =>
   `order_fulfillment_stage:${orderId}`;
 const PAYMENT_STATUS_KEY = (orderId: string): string => `payment_status:${orderId}`;
@@ -218,7 +230,15 @@ export class OwnerScopedReadUnavailable extends Error {
  */
 export function createFirstPartyTurnReads(
   backend?: TriadReadBackend,
+  opts?: {
+    /** Clock for the BKL-138 date resolver (default `Date.now`); inject to freeze it. */
+    readonly now?: () => number;
+    /** Restaurant timezone for the BKL-138 date resolver (default env / São Paulo). */
+    readonly tz?: string;
+  },
 ): TurnReadGatherer {
+  const now = opts?.now ?? (() => Date.now());
+  const tz = opts?.tz ?? process.env.RESTAURANT_TIMEZONE ?? "America/Sao_Paulo";
   return async (input: InvestigateInput): Promise<TurnRead[]> => {
     // PER-TURN backend when using the default: its owner-scoped order read + the
     // read-through schedule load memoize WITHIN this turn (single-flight, NO
@@ -289,6 +309,57 @@ export function createFirstPartyTurnReads(
       sourceMode: "live",
       read: async () => (await b.readHoliday()) ?? ABSENT_READ,
     });
+
+    // BKL-138 STORE_HOURS_FOR_DATE (SCN-002/003) — the DAY-SPECIFIC hours + its per-date
+    // falsifiers. GATED on a resolvable date subject in THIS turn's request (mirrors the
+    // conditional per-resource order/payment reads driven off `extractTurnResourceIds`):
+    // the SAME deterministic resolver the claim planner uses derives the QUERIED ISO date
+    // from `perception.text`, so the ledger key matches the candidate subject by
+    // construction (never the 4B's date arithmetic). A message with no date anchor
+    // resolves to `null` → NONE of these reads run (no per-turn cost added to an ordinary
+    // message; the today STORE_HOURS chain above is byte-untouched). Public first-party
+    // config; no owner → placed BEFORE the authenticated-customer gate (answers guests too).
+    const queried = resolveQueriedScheduleDate(
+      input.cognition.perception.text,
+      tz,
+      new Date(now()),
+    );
+    if (queried !== null) {
+      const isoDate = queried.isoDate;
+      // Evidence — the queried date's operating-hours. A schedule-load failure THROWS in
+      // `readHoursForDate` → recorded as a fail-closed read ERROR (Inv 7), never a
+      // fabricated hours string. On success this is the base the kernel's
+      // STORE_HOURS_FOR_DATE value-binding validates against.
+      reads.push({
+        key: STORE_HOURS_FOR_DATE_KEY(isoDate),
+        source: "schedule.getHoursTextForDate",
+        origin: "TRUSTED",
+        originProvenance: "FIRST_PARTY",
+        sourceMode: "live",
+        read: () => b.readHoursForDate(isoDate),
+      });
+      // FALSIFIER — a holiday ON THE QUERIED date (present iff that date is a holiday);
+      // absence → ABSENT_READ → the falsifier does NOT fire. This is the SCN-003
+      // soundness pin: the date-suffixed key means TODAY's holiday (recorded above under
+      // the BARE `schedule:holiday`) can never demote a clean future-date answer.
+      reads.push({
+        key: HOLIDAY_FOR_DATE_KEY(isoDate),
+        source: "schedule.readHolidayForDate",
+        origin: "TRUSTED",
+        originProvenance: "FIRST_PARTY",
+        sourceMode: "live",
+        read: async () => (await b.readHolidayForDate(isoDate)) ?? ABSENT_READ,
+      });
+      // FALSIFIER — a per-date ScheduleOverride ON THE QUERIED date; absence → ABSENT_READ.
+      reads.push({
+        key: OVERRIDE_FOR_DATE_KEY(isoDate),
+        source: "schedule.readScheduleOverrideForDate",
+        origin: "TRUSTED",
+        originProvenance: "FIRST_PARTY",
+        sourceMode: "live",
+        read: async () => (await b.readScheduleOverrideForDate(isoDate)) ?? ABSENT_READ,
+      });
+    }
 
     if (!isAuthenticatedCustomer(customerId)) return reads;
 

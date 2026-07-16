@@ -41,8 +41,20 @@ import { loadSession } from "../session/store.js";
 import { isNewEvent, withDedup } from "./dedup.js";
 import { pushToDlq } from "./dlq.js";
 import { buildSystemEnvelope } from "./__shared__/system-actor-envelope.js";
+import { shouldSuppressPromotionalSend } from "../broadcast/broadcast-optout.js";
 
 const RECENTLY_VIEWED_MAX = 20;
+
+// ── Promotional (marketing) notification.send types (WS3 / LGPD opt-out gate) ──
+// Only these are suppressed when the recipient has opted out of promotional
+// messages. Transactional/operational types (order_received, order_<status>,
+// payment_expired, payment_failed, …) are NEVER gated — an opt-out must not cost
+// an order-status update, receipt, or payment notice.
+const PROMOTIONAL_NOTIFICATION_TYPES = new Set<string>([
+  "cart_abandoned", // cart-recovery nudge
+  "loyalty_reward", // "R$20 … FIEL20" loyalty promo
+  "follow_up",      // re-engagement / marketing outreach
+]);
 
 // ── Sorted set pruning limits (internal tuning knobs) ───────────────────────
 const COPURCHASE_MAX_ENTRIES = 50;     // per-product copurchase sorted set
@@ -1116,6 +1128,20 @@ export async function startCartIntelligenceSubscribers(
         return;
       }
 
+      // WS3 / LGPD — honor the promotional opt-out on AUTOMATED promo sends.
+      // Only promotional types are gated; transactional/operational messages
+      // (order status, receipts, payment notices) always send.
+      if (
+        PROMOTIONAL_NOTIFICATION_TYPES.has(type) &&
+        (await shouldSuppressPromotionalSend(customer.phone, log))
+      ) {
+        log?.info(
+          { customerId, type },
+          "[cart-intelligence] notification.send — suppressed (customer opted out of promotional messages)",
+        );
+        return;
+      }
+
       // body (personalized) takes precedence over legacy message field, then falls back to template
       const text = (body && body.length > 0) ? body : (msgBody || buildNotificationMessage(type, cartId));
 
@@ -1202,6 +1228,15 @@ export async function startCartIntelligenceSubscribers(
       const customerSvc = createCustomerService();
       const customer = await customerSvc.getById(customerId).catch(() => null);
       if (!customer?.phone) return;
+
+      // WS3 / LGPD — review prompts are promotional; honor the opt-out.
+      if (await shouldSuppressPromotionalSend(customer.phone, log)) {
+        log?.info(
+          { customer_id: customerId },
+          "[cart-intelligence] review.prompt — suppressed (customer opted out of promotional messages)",
+        );
+        return;
+      }
 
       const APP_BASE_URL = process.env.APP_BASE_URL;
       if (!APP_BASE_URL) {

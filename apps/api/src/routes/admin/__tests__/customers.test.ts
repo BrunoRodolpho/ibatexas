@@ -47,6 +47,7 @@ interface StaffContext {
   readonly staffRole: "OWNER" | "MANAGER" | "ATTENDANT" | null;
 }
 
+const OWNER: StaffContext = { staffId: "staff_own_01", staffRole: "OWNER" };
 const MANAGER: StaffContext = { staffId: "staff_mgr_01", staffRole: "MANAGER" };
 const ATTENDANT: StaffContext = { staffId: "staff_att_01", staffRole: "ATTENDANT" };
 
@@ -137,7 +138,10 @@ function primeDetailHappy(): void {
   mockIsOptedOut.mockResolvedValue(true);
 }
 
-async function buildServer(staff: StaffContext): Promise<FastifyInstance> {
+async function buildServer(
+  staff: StaffContext,
+  opts?: { logWarn?: (...args: unknown[]) => void },
+): Promise<FastifyInstance> {
   const { adminCustomerRoutes } = await import("../customers.js");
   const app = Fastify({ logger: false });
   app.setValidatorCompiler(validatorCompiler);
@@ -147,6 +151,15 @@ async function buildServer(staff: StaffContext): Promise<FastifyInstance> {
       (req as unknown as { staffId: string | null }).staffId = staff.staffId;
       (req as unknown as { staffRole: string | null }).staffRole = staff.staffRole;
     }
+    // Optional per-request logger whose `warn` is spyable, so the audit event
+    // the CPF-reveal handler emits can be asserted (it inherits the real
+    // logger's other methods via the prototype).
+    if (opts?.logWarn) {
+      (req as unknown as { log: Record<string, unknown> }).log = Object.assign(
+        Object.create((req as unknown as { log: object }).log),
+        { warn: opts.logWarn },
+      );
+    }
   });
   await app.register(adminCustomerRoutes);
   await app.ready();
@@ -155,6 +168,56 @@ async function buildServer(staff: StaffContext): Promise<FastifyInstance> {
 
 beforeEach(() => vi.clearAllMocks());
 afterEach(() => vi.resetModules());
+
+// ── (c) X4 — OWNER-gated, audited CPF reveal ───────────────────────────────────
+
+describe("GET /api/admin/customers/:id/cpf — OWNER-only CPF reveal (X4)", () => {
+  it("returns the FULL cpf to an OWNER", async () => {
+    primeDetailHappy();
+    const server = await buildServer(OWNER);
+    try {
+      const res = await server.inject({ method: "GET", url: "/api/admin/customers/cust_01/cpf" });
+      expect(res.statusCode).toBe(200);
+      expect((res.json() as { cpf: string }).cpf).toBe("123.456.789-00");
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("emits a dedicated 'cpf_reveal' audit event with the staff identity", async () => {
+    // The reveal MUST leave a forensic trail naming WHO revealed WHICH CPF — this
+    // dedicated audit event cannot be removed without failing CI.
+    primeDetailHappy();
+    const warn = vi.fn();
+    const server = await buildServer(OWNER, { logWarn: warn });
+    try {
+      const res = await server.inject({ method: "GET", url: "/api/admin/customers/cust_01/cpf" });
+      expect(res.statusCode).toBe(200);
+      expect(warn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: "cpf_reveal",
+          customerId: "cust_01",
+          staffId: OWNER.staffId,
+          staffRole: "OWNER",
+        }),
+        expect.stringContaining("CPF"),
+      );
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("rejects a MANAGER with 403 (fail-closed) and never reads the CPF", async () => {
+    const server = await buildServer(MANAGER);
+    try {
+      const res = await server.inject({ method: "GET", url: "/api/admin/customers/cust_01/cpf" });
+      expect(res.statusCode).toBe(403);
+      expect(mockGetByIdForAdmin).not.toHaveBeenCalled();
+    } finally {
+      await server.close();
+    }
+  });
+});
 
 // ── (a) gate ─────────────────────────────────────────────────────────────────
 
@@ -264,7 +327,10 @@ describe("GET /api/admin/customers/:id (composed view)", () => {
       const body = res.json() as Record<string, unknown>;
 
       expect(body.id).toBe("cust_01");
-      expect(body.cpf).toBe("123.456.789-00"); // unmasked at the boundary (masked in UI)
+      // X4 — CPF is now masked SERVER-SIDE (last 2 digits only). The raw value
+      // never leaves the API on a routine detail read; it is disclosed only via
+      // the OWNER-gated GET /api/admin/customers/:id/cpf reveal route.
+      expect(body.cpf).toBe("•••.•••.•••-00");
       expect(body.preferences).toEqual({
         dietaryRestrictions: ["vegetariano"],
         allergenExclusions: ["amendoim"],

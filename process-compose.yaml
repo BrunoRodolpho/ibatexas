@@ -42,13 +42,17 @@ processes:
   # ── Package build (one-shot) ────────────────────────────────────────────────
   # Rebuild shared packages so dist/ matches source. Dependency order matters.
   build-packages:
+    # Build EVERY shared workspace package — not just types+tools — so no dev app
+    # (api / web / admin / qa-viewer, all of which depend on this step) ever boots
+    # against a STALE dist. Turbo is dep-graph aware (`build.dependsOn: ["^build"]`
+    # in turbo.json) and content-hash cached with declared `dist/**` outputs, so
+    # this is a no-op when nothing changed and rebuilds exactly what a pulled PR
+    # touched. Closes the gap where a new @ibatexas/domain export (e.g. PR #206's
+    # StaffMutationConflictError) was absent from a dist built before the pull,
+    # crashing the api at ESM link time (`does not provide an export named …`).
     command: |
-      echo "Cleaning dist caches…" &&
-      rm -rf packages/types/dist packages/tools/dist &&
-      echo "Building @ibatexas/types…" &&
-      cd packages/types && npx tsc --outDir dist && cd ../.. &&
-      echo "Building @ibatexas/tools…" &&
-      cd packages/tools && npx tsc --outDir dist && cd ../.. &&
+      echo "Building workspace packages (turbo, dep-graph aware)…" &&
+      pnpm turbo build --filter="./packages/*" &&
       echo "Package build complete ✓"
     availability:
       restart: "no"
