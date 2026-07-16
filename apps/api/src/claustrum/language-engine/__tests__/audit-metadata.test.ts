@@ -441,3 +441,52 @@ describe("buildLanguageEngineAuditMetadata — payment.refund.issue (FE-T10)", (
     }
   });
 });
+
+// ── FE-T11 — payment.pix.regenerate (the customer-plane money-tier slice) ──
+
+describe("buildLanguageEngineAuditMetadata — payment.pix.regenerate (FE-T11)", () => {
+  it("derives ExtractionIR carrying NOTHING — the schema declares zero model-fillable fields", () => {
+    const meta = buildLanguageEngineAuditMetadata(
+      record("payment.pix.regenerate", { orderId: "order_9" }),
+    );
+    const le = languageEngineOf(meta);
+    expect(le.extractionIR.capability).toBe("payment.pix.regenerate");
+    expect(le.extractionIR.payload).toEqual({});
+    expect(le.extractionIR.provenance).toEqual({});
+  });
+
+  it("derives HydratedIntentIR: orderId=grounded/auto-resolved, confirmationRequired=true", () => {
+    const meta = buildLanguageEngineAuditMetadata(
+      record("payment.pix.regenerate", { orderId: "order_9" }),
+    );
+    const le = languageEngineOf(meta);
+    expect(le.hydratedIntentIR.payload).toEqual({ orderId: "order_9" });
+    expect(le.hydratedIntentIR.provenance.orderId).toEqual({
+      producer: "resolver",
+      confidence: "resolved",
+      trust: "grounded",
+    });
+    expect(le.hydratedIntentIR.confirmationRequired).toBe(true);
+  });
+
+  it("an extra unexpected payload key is dropped from both IRs — not schema-declared, not the resolver-field allowlist", () => {
+    const meta = buildLanguageEngineAuditMetadata(
+      record("payment.pix.regenerate", {
+        orderId: "order_9",
+        cpf: "12345678900",
+      }),
+    );
+    const le = languageEngineOf(meta);
+    expect(le.extractionIR.payload).not.toHaveProperty("cpf");
+    expect(le.hydratedIntentIR.payload).not.toHaveProperty("cpf");
+    expect(le.hydratedIntentIR.payload).toEqual({ orderId: "order_9" });
+  });
+
+  it("is undefined (unresolved orderId) when hydration never carries one — the payload just has no orderId key to project", () => {
+    const meta = buildLanguageEngineAuditMetadata(record("payment.pix.regenerate", {}));
+    const le = languageEngineOf(meta);
+    expect(le.hydratedIntentIR.payload).toEqual({});
+    expect(le.hydratedIntentIR.provenance.orderId).toBeUndefined();
+    expect(le.hydratedIntentIR.confirmationRequired).toBe(false);
+  });
+});

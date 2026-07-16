@@ -1,13 +1,14 @@
 // wire-schemas.test.ts — the per-capability extraction schema -> wire
 // registry. FE-T09 (D-a) adds the three granular post-checkout amend kinds
 // alongside FE-T05's order.status.transition; FE-T10 adds the money-tier
-// slice (payment.refund.issue).
+// slice (payment.refund.issue); FE-T11 adds the customer-plane money-tier
+// slice (payment.pix.regenerate).
 
 import { describe, expect, it } from "vitest";
 import { EXTRACTION_SCHEMAS_BY_CAPABILITY } from "../wire-schemas.js";
 
 describe("EXTRACTION_SCHEMAS_BY_CAPABILITY", () => {
-  it("registers order.status.transition (FE-T05), the three granular amend kinds (FE-T09), and payment.refund.issue (FE-T10)", () => {
+  it("registers order.status.transition (FE-T05), the three granular amend kinds (FE-T09), payment.refund.issue (FE-T10), and payment.pix.regenerate (FE-T11)", () => {
     expect([...EXTRACTION_SCHEMAS_BY_CAPABILITY.keys()].sort()).toEqual(
       [
         "order.amend.add_item",
@@ -15,6 +16,7 @@ describe("EXTRACTION_SCHEMAS_BY_CAPABILITY", () => {
         "order.amend.update_qty",
         "order.status.transition",
         "payment.refund.issue",
+        "payment.pix.regenerate",
       ].sort(),
     );
   });
