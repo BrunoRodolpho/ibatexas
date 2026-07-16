@@ -3,6 +3,14 @@
 //
 // Boot anchor responsibilities:
 //
+// (Numbering note: the list below is a flat inventory of every exported
+// boot-anchor function — items 1 and 7 run outside `bootstrapKernel`'s own
+// body (1 from `buildServer()`; 7 IS `bootstrapKernel`), so they have no
+// step-comment counterpart inside it. `bootstrapKernel`'s internal step
+// comments (further down) number ONLY what it runs, starting fresh at 1 —
+// item N here is step N-1 there. The two sequences are intentionally
+// separate counts, not a typo.)
+//
 //   1. `installKernelMetricsSink()` — called from `buildServer()` (server.ts)
 //      BEFORE routes are registered. Installs the real MetricsSink (PostHog
 //      via NATS + Sentry breadcrumbs + Prometheus counters) and returns the

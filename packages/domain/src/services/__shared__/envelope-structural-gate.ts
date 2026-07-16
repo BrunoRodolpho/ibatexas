@@ -37,6 +37,13 @@ export const STRUCTURAL_REJECTION_CODE = "envelope_malformed" as const
  * required fields before an adjudication seam is ever invoked — so a
  * legitimate runtime envelope satisfies `isIntentEnvelope` by construction.
  * This gate can only fire on a value that bypassed construction entirely.
+ *
+ * Deliberately STRICTER than the kernel itself: `adjudicate()` only verifies
+ * `version` and re-derives `intentHash` — it never calls `isIntentEnvelope`,
+ * so an envelope carrying an extra top-level key still EXECUTEs at the raw
+ * kernel (the extra key feeds no hash or guard) but REFUSEs here. A caller
+ * threading `{ ...envelope, extraKey }` through a gated seam will start
+ * seeing `envelope_malformed` where the ungated kernel would have accepted it.
  */
 export function isStructurallyMalformed(envelope: unknown): boolean {
   return !isIntentEnvelope(envelope)
