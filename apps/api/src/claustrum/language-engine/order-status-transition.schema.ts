@@ -41,11 +41,14 @@ export const ORDER_STATUS_TRANSITION_EXTRACTION_SCHEMA: CapabilityExtractionSche
     fields: [
       {
         name: "newStatus",
-        // State class: the model reports the DIRECTIVE (the status the staff
-        // asked for); the runtime adjudicates it against the order's REAL
-        // current status (the BKL-090 `requireLegalStatusTransition` guard)
-        // before it can execute — never trusted outright.
-        trustClass: "state",
+        // FE-T05 review (MINOR-1) — Directive class per FE-0.3's table
+        // ("new status" is listed under Directive, alongside quantity /
+        // payment method / note text): user/model-produced content the
+        // runtime adjudicates before it can execute, NOT first-party State.
+        // The runtime still validates it against the order's REAL current
+        // status (the BKL-090 `requireLegalStatusTransition` guard) before
+        // it can execute — never trusted outright.
+        trustClass: "directive",
         jsonSchema: {
           type: "string",
           enum: [...ORDER_STATUS_TRANSITION_STATUSES],

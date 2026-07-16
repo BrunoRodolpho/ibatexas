@@ -127,6 +127,9 @@ describe("FE-T05 — order.status.transition first tracer: end-to-end park → c
     const t1 = await runOpsTurn(deps, { role: "OWNER", staffId: "owner1", text: "muda o status do meu último pedido para pronto" });
     expect(t1.decision.kind).toBe("REQUEST_CONFIRMATION");
     expect(spies.writeAdjudicatedStatusTransition).not.toHaveBeenCalled();
+    // MAJOR-2 (review) — the confirm prompt NAMES the guessed order (its
+    // display number) so an operator can recognize/reject a wrong guess.
+    expect(t1.response).toContain(`#${ACTIVE_ORDER.displayId}`);
 
     // The park carries the RESOLVED orderId (auto-resolve rewrite).
     const parks = session.parksFor(sessionId);

@@ -684,6 +684,31 @@ export function createAuditRedactor(
         hashSecret,
       )
 
+      // FE-T05 review (MAJOR-1a) — walk `record.metadata` (the ADR-124 v5
+      // governance/observability sidecar — e.g. the Language Engine's
+      // materialized ExtractionIR/HydratedIntentIR, `apps/api/src/claustrum/
+      // language-engine/audit-metadata.ts`) through the SAME global REDACT/
+      // HASH/regex defenses as the payload. No per-intent-kind path rules
+      // here (`kindFieldPaths` empty) — metadata's shape is a sidecar, not
+      // the payload, so path-relative kind rules don't apply, but the
+      // GLOBAL field-name (redactFields/hashFields) and regex (CPF/email/
+      // phone/card) defenses still catch anything PII-shaped at any depth —
+      // defense-in-depth alongside the schema-driven filter in
+      // `buildLanguageEngineAuditMetadata` (which limits what gets IN in
+      // the first place). Safe to recompute the hash afterward: `metadata`
+      // is EXCLUDED from the auditHash pre-image (v5+, ADR-124 — verified
+      // below in `recomputeAuditHash`), so redacting it can never invalidate
+      // tamper-evidence.
+      const redactedMetadata =
+        record.metadata === undefined
+          ? undefined
+          : (walk(record.metadata, "", {
+              redactFields,
+              hashFields,
+              kindFieldPaths: new Set<string>(),
+              hashSecret,
+            }) as Record<string, unknown>)
+
       // P1-2 (audit-2026-05-24 C-1): walk `decision.rewritten.payload`
       // with the SAME per-kind rule as `envelope.payload`.
       //
@@ -739,6 +764,10 @@ export function createAuditRedactor(
           payload: redactedPayload,
         },
         decision: redactedDecision,
+        // FE-T05 review (MAJOR-1a) — omit the key entirely when there was no
+        // metadata to begin with (hash-stable / no-`undefined`-key precision,
+        // matching the rest of this module's spread conventions).
+        ...(redactedMetadata === undefined ? {} : { metadata: redactedMetadata }),
       }
 
       // P0-15 Option A: recompute auditHash over the redacted record so
@@ -806,6 +835,11 @@ export function createAuditRedactor(
           payload: { __redactor_error: true },
         },
         decision: stubbedDecision,
+        // FE-T05 review (MAJOR-1a) — the fail-open path must not leak
+        // metadata PII either (mirrors the payload/decision stubbing above).
+        ...(record.metadata === undefined
+          ? {}
+          : { metadata: { __redactor_error: true } }),
       }
       // The fail-open stub payload also needs a recomputed auditHash so
       // `verifyAuditRecord` doesn't surface false-positive tamper warnings

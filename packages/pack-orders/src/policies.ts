@@ -568,13 +568,26 @@ const requireConfirmationOnGroundedStatusTransition: OrderGuard = (
   if (state.ctx.orderResolutionTrust !== "grounded") return null
   const target = (envelope.payload as { newStatus?: unknown }).newStatus
   const targetLabel = typeof target === "string" ? target : "esse status"
+  // FE-T05 review (MAJOR-2) — NAME the guessed order (its display number) so
+  // an operator confirming can actually recognize (and reject) a wrong
+  // guess; a prompt that names nothing defeats the point of forcing a
+  // confirmation. `displayId` is set by the resolver alongside
+  // `orderResolutionTrust: "grounded"` (ops-resolver.ts); the fallback below
+  // is defensive only — it should not be reachable in practice.
+  const orderLabel =
+    typeof state.ctx.displayId === "number"
+      ? `o pedido #${state.ctx.displayId}`
+      : "o pedido mais recente em aberto"
   return decisionRequestConfirmation(
-    `Não me disseram qual pedido — vou usar o pedido mais recente em aberto. ` +
-      `Confirma avançar esse pedido para "${targetLabel}"?`,
+    `Não me disseram qual pedido — vou usar ${orderLabel}. ` +
+      `Confirma avançar ${orderLabel} para "${targetLabel}"?`,
     [
       basis("business", BASIS_CODES.business.RULE_SATISFIED, {
         reason: "grounded_order_resolution_requires_confirmation",
         resolvedVia: "most_recent_active_order",
+        ...(typeof state.ctx.displayId === "number"
+          ? { displayId: state.ctx.displayId }
+          : {}),
       }),
     ],
   )

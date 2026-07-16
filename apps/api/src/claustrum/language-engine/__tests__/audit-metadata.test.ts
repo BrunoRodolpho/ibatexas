@@ -98,4 +98,34 @@ describe("buildLanguageEngineAuditMetadata — order.status.transition", () => {
     (withoutPayload.envelope as { payload?: unknown }).payload = undefined;
     expect(buildLanguageEngineAuditMetadata(withoutPayload)).toBeUndefined();
   });
+
+  it("MAJOR-1b review fix: an extra unexpected payload key is NOT materialized into either IR (not schema-declared, not the resolver-field allowlist)", () => {
+    // json-mode does not enforce additionalProperties:false, so a malformed
+    // or adversarial model completion could smuggle an extra key through to
+    // the resolved envelope payload. Neither IR may become a second,
+    // unfiltered leak surface for whatever happens to land there.
+    const meta = buildLanguageEngineAuditMetadata(
+      record("order.status.transition", {
+        orderId: "order_9",
+        newStatus: "ready",
+        customerEmail: "smuggled@example.com",
+        cpf: "12345678900",
+      }),
+    );
+    const le = (
+      meta as {
+        languageEngine: {
+          extractionIR: { payload: Record<string, unknown> };
+          hydratedIntentIR: { payload: Record<string, unknown> };
+        };
+      }
+    ).languageEngine;
+
+    expect(le.extractionIR.payload).toEqual({ newStatus: "ready" });
+    expect(le.hydratedIntentIR.payload).toEqual({ orderId: "order_9", newStatus: "ready" });
+    for (const ir of [le.extractionIR.payload, le.hydratedIntentIR.payload]) {
+      expect(ir).not.toHaveProperty("customerEmail");
+      expect(ir).not.toHaveProperty("cpf");
+    }
+  });
 });

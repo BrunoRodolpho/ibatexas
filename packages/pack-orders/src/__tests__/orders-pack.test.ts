@@ -1350,7 +1350,26 @@ describe("ordersPolicyBundle — transition legality (BKL-090)", () => {
 // ── FE-T05 — grounded-resolution confirmation forcing (Language Engine) ──
 
 describe("ordersPolicyBundle — requireConfirmationOnGroundedStatusTransition (FE-T05)", () => {
-  it("REQUEST_CONFIRMATION on a GROUNDED (auto-resolved) target, even though the transition is legal", () => {
+  it("REQUEST_CONFIRMATION on a GROUNDED (auto-resolved) target, even though the transition is legal — and NAMES the order (MAJOR-2)", () => {
+    const decision = adjudicate(
+      transitionEnv("ready"),
+      state({
+        orderId: "o-1",
+        fulfillmentStatus: "preparing",
+        orderResolutionTrust: "grounded",
+        displayId: 928379,
+      }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REQUEST_CONFIRMATION")
+    if (decision.kind !== "REQUEST_CONFIRMATION") return
+    expect(decision.prompt).toBe(
+      'Não me disseram qual pedido — vou usar o pedido #928379. ' +
+        'Confirma avançar o pedido #928379 para "ready"?',
+    )
+  })
+
+  it("REQUEST_CONFIRMATION with the generic phrasing when displayId is unavailable (defensive fallback — should not be reachable in practice)", () => {
     const decision = adjudicate(
       transitionEnv("ready"),
       state({
@@ -1361,6 +1380,8 @@ describe("ordersPolicyBundle — requireConfirmationOnGroundedStatusTransition (
       ordersPolicyBundle,
     )
     expect(decision.kind).toBe("REQUEST_CONFIRMATION")
+    if (decision.kind !== "REQUEST_CONFIRMATION") return
+    expect(decision.prompt).toContain("o pedido mais recente em aberto")
   })
 
   it("EXECUTE on an AUTHORITATIVE (explicit-reference) target — no re-confirmation", () => {

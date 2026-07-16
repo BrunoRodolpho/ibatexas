@@ -396,6 +396,15 @@ export interface OrderState {
      * first) or for any other kind (inert everywhere else).
      */
     readonly orderResolutionTrust?: "authoritative" | "grounded"
+    /**
+     * FE-T05 review (MAJOR-2) — the resolved order's DISPLAY number, present
+     * whenever `orderResolutionTrust === "grounded"` (an auto-resolved
+     * guess). `requireConfirmationOnGroundedStatusTransition` (`./policies.ts`)
+     * names the order in its confirmation prompt with this — a staff member
+     * confirming a GUESSED target must be able to recognize (and reject) a
+     * wrong one. Absent for any other resolution path / kind.
+     */
+    readonly displayId?: number
   }
 }
 

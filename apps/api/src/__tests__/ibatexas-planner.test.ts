@@ -45,6 +45,7 @@ import {
   withAuthenticatedOwner,
   IBATEXAS_READ_TOOL_EXECUTORS,
 } from "../claustrum-bootstrap.js";
+import { EXTRACTION_SCHEMAS_BY_CAPABILITY } from "../claustrum/language-engine/wire-schemas.js";
 import type { AgentContext } from "@ibatexas/types";
 
 // ── Doubles ──────────────────────────────────────────────────────────────────
@@ -415,6 +416,74 @@ describe("createIbatexasPlanner — LLM tool surface", () => {
       properties: { capability: { enum: string[] } };
     };
     expect(new Set(schema.properties.capability.enum)).toEqual(new Set(ORDER_INTENTS));
+  });
+});
+
+// ── FE-T05 review (MINOR-3) — the per-capability wire-schema embed ──────────
+
+describe("createIbatexasPlanner — buildToolSurface per-capability extraction schema (FE-1.1/FE-1.4)", () => {
+  it("embeds the allOf/if-then payload sub-schema when a registered capability is allowed", async () => {
+    const { model } = mockModel([]);
+    const planner = createIbatexasPlanner({
+      model,
+      modelId: "claude-test",
+      capabilityPlanners: [capPlanner([], ["order.status.transition", "order.note.add"])],
+    });
+
+    await planner.propose(mkState("oi"));
+    const req = (model.complete as ReturnType<typeof vi.fn>).mock.calls[0]![0] as CompletionRequest;
+    const ei = (req.tools ?? []).find((t) => t.name === EXPRESS_INTENT_TOOL)!;
+    const schema = ei.inputSchema as {
+      allOf?: ReadonlyArray<{
+        if: { properties: { capability: { const: string } } };
+        then: { properties: { payload: unknown } };
+      }>;
+    };
+
+    expect(schema.allOf).toBeDefined();
+    // Exactly one if/then clause — only order.status.transition has an
+    // authored schema; order.note.add (no authored schema yet) contributes
+    // NOTHING to allOf.
+    expect(schema.allOf).toHaveLength(1);
+    expect(schema.allOf![0]!.if.properties.capability.const).toBe(
+      "order.status.transition",
+    );
+    // The embedded payload sub-schema is EXACTLY the registered wire schema
+    // — proves the wiring, not just that SOME allOf exists.
+    expect(schema.allOf![0]!.then.properties.payload).toEqual(
+      EXTRACTION_SCHEMAS_BY_CAPABILITY.get("order.status.transition"),
+    );
+  });
+
+  it("is byte-identical to the pre-FE-T05 generic shape when NO allowed capability has an authored schema", async () => {
+    const { model } = mockModel([]);
+    const planner = createIbatexasPlanner({
+      model,
+      modelId: "claude-test",
+      capabilityPlanners: [capPlanner(ORDER_READS, ORDER_INTENTS)],
+    });
+
+    await planner.propose(mkState("oi"));
+    const req = (model.complete as ReturnType<typeof vi.fn>).mock.calls[0]![0] as CompletionRequest;
+    const ei = (req.tools ?? []).find((t) => t.name === EXPRESS_INTENT_TOOL)!;
+
+    expect(ei.inputSchema).toEqual({
+      type: "object",
+      properties: {
+        capability: {
+          type: "string",
+          enum: ORDER_INTENTS,
+          description: "A capability/intent kind a ser proposta.",
+        },
+        payload: {
+          type: "object",
+          description: "Dados da intenção (campos específicos da capability).",
+        },
+      },
+      required: ["capability", "payload"],
+      additionalProperties: false,
+    });
+    expect((ei.inputSchema as { allOf?: unknown }).allOf).toBeUndefined();
   });
 });
 

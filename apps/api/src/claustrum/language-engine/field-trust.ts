@@ -5,9 +5,18 @@
 // every later extraction slice (T11-14). It is IN-REPO front-end typing — it
 // describes how the Language Engine reasons about a field's origin and
 // trustworthiness BEFORE the field reaches the frozen `@adjudicate/core`
-// kernel. None of this rides the kernel contract: `HydratedIntentIR`'s
-// provenance is projected away at `buildEnvelope` (see envelope.ts in this
-// module) and is consumed only in-repo (validation, gating, audit).
+// kernel. None of this rides the kernel contract: `HydratedIntentIR` is never
+// constructed inline in the plan/resolve/build-envelope pipeline (there is no
+// live provenance object threaded through `buildEnvelope`) — it is
+// MATERIALIZED POST-HOC, at audit time, by `audit-metadata.ts`'s
+// `buildLanguageEngineAuditMetadata`, which re-derives {ExtractionIR,
+// HydratedIntentIR} from the FINAL, already-adjudicated `AuditRecord.envelope`
+// (kind + resolved payload) via the capability's `CapabilityExtractionSchema`
+// + a per-capability resolver-field allowlist. The result is attached to
+// `AuditRecord.metadata` (an ADR-124 v5 sidecar, EXCLUDED from the
+// `auditHash` pre-image) — so `envelope.payload` itself never carries a
+// provenance key; only the sidecar does, and only after the kernel has
+// already decided.
 //
 // ── The three field classes (FE-0.3) ────────────────────────────────────────
 //

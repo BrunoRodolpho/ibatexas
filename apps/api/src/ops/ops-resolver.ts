@@ -832,6 +832,18 @@ async function resolveStatusTransitionOrderTarget(
   orderId: string | null;
   /** Absent when no order resolved (nothing to gate the confirm guard on). */
   orderResolutionTrust?: "authoritative" | "grounded";
+  /**
+   * FE-T05 review (MAJOR-2) — the resolved order's DISPLAY number, present
+   * ONLY on the `"grounded"` (auto-resolved) path. Threaded into the
+   * `OrderState` ctx so `requireConfirmationOnGroundedStatusTransition`
+   * (pack-orders) can NAME the order in its confirmation prompt — a staff
+   * member confirming a GUESSED target must be able to recognize (and
+   * reject) a wrong one; a bare "vou usar o pedido mais recente" names
+   * nothing an operator could catch. Absent on the `"authoritative"` path:
+   * the staff already gave an explicit reference, so no re-identification
+   * is needed there (and that path never confirms).
+   */
+  displayId?: number;
   payload?: Record<string, unknown>;
 }> {
   const direct = await resolveOrderTarget(deps, envelope, payload);
@@ -851,6 +863,7 @@ async function resolveStatusTransitionOrderTarget(
       event: "order.status_transition.most_recent_resolved",
       kind: envelope.kind,
       to: guess.order.id,
+      displayId: guess.order.displayId,
     },
     "ops order.status.transition: no explicit reference — auto-resolved the most recent active order (grounded; forces confirmation)",
   );
@@ -865,6 +878,7 @@ async function resolveStatusTransitionOrderTarget(
     },
     orderId: o.id,
     orderResolutionTrust: "grounded",
+    displayId: o.displayId,
     payload: { ...payload, orderId: o.id },
   };
 }
@@ -1157,6 +1171,7 @@ async function opsStateForEnvelope(
       order,
       orderId,
       orderResolutionTrust,
+      displayId,
       payload: rewritten,
     } = await resolveStatusTransitionOrderTarget(deps, envelope, payload);
     // The pack-orders OrderState the BKL-090 `requireLegalStatusTransition`
@@ -1169,7 +1184,8 @@ async function opsStateForEnvelope(
     // reads: a `grounded` (auto-resolved "most recent order") target forces a
     // REQUEST_CONFIRMATION; `authoritative` (an explicit staff reference) does
     // not. Absent (no order resolved at all) is a no-op — requireOrderIdForMutation
-    // REFUSEs first.
+    // REFUSEs first. `displayId` (MAJOR-2 review fix) rides alongside it so the
+    // confirm guard can NAME the order in its prompt.
     return {
       state: {
         ctx: {
@@ -1179,6 +1195,7 @@ async function opsStateForEnvelope(
           orderId,
           fulfillmentStatus: order?.fulfillmentStatus ?? null,
           ...(orderResolutionTrust ? { orderResolutionTrust } : {}),
+          ...(displayId !== undefined ? { displayId } : {}),
         },
       },
       ...(rewritten ? { payload: rewritten } : {}),

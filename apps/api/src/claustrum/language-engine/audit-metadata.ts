@@ -78,6 +78,37 @@ function splitResolvedPayload(
 }
 
 /**
+ * FE-T05 review (MAJOR-1b) — the ONLY resolver-stamped (Identity-class)
+ * field `order.status.transition` hydration ever adds beyond the extraction
+ * schema, always from `resolveStatusTransitionOrderTarget`
+ * (`ops-resolver.ts`), NEVER from the model. This is an explicit ALLOWLIST,
+ * not a blanket pass-through: a stray key an adversarial/malformed model
+ * completion smuggled into the resolved payload (json-mode does not enforce
+ * `additionalProperties: false`) is DROPPED here, never materialized into
+ * `HydratedIntentIR` — the audit-metadata sidecar must not become a second,
+ * unfiltered leak surface for whatever the model happened to emit.
+ */
+const ORDER_STATUS_TRANSITION_RESOLVER_FIELDS: readonly string[] = ["orderId"];
+
+/**
+ * Project the resolved payload down to EXACTLY {schema-declared fields} ∪
+ * {the capability's explicit resolver-field allowlist} — never a verbatim
+ * copy of `resolvedPayload`. Every other key (however it got there) is
+ * dropped, silently, before it ever reaches `record.metadata`.
+ */
+function projectHydratedPayload(
+  extractionPayload: Readonly<Record<string, unknown>>,
+  resolvedPayload: Readonly<Record<string, unknown>>,
+  resolverFieldAllowlist: readonly string[],
+): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...extractionPayload };
+  for (const key of resolverFieldAllowlist) {
+    if (key in resolvedPayload) out[key] = resolvedPayload[key];
+  }
+  return out;
+}
+
+/**
  * order.status.transition-specific derivation (this tracer's one wired
  * capability). The resolved envelope payload is `{orderId, newStatus, ...}`
  * (see `ops-resolver.ts`'s `order.status.transition` branch — `orderId` is
@@ -116,7 +147,11 @@ function deriveOrderStatusTransition(
   }
   const hydratedIntentIR: HydratedIntentIR = {
     capability: schema.capability,
-    payload: resolvedPayload,
+    payload: projectHydratedPayload(
+      extractionPayload,
+      resolvedPayload,
+      ORDER_STATUS_TRANSITION_RESOLVER_FIELDS,
+    ),
     provenance: hydratedProvenance,
     confirmationRequired: hasGroundedField(hydratedProvenance),
   };
