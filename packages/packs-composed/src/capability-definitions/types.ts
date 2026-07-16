@@ -15,8 +15,13 @@
  * The ~16 hand-maintained lists this registry will eventually replace
  * (`KNOWN_INTENT_KINDS`, `CHAT_DRIVABLE_TOOL_KINDS`, `CLAIM_REGISTRY`,
  * `SUCCESS_CLAIM_CLASSES`, per-pack `ToolClassification` / `*_TOOL_TO_INTENT`,
- * `ADVERTISED_NOT_REGISTERED_WHITELIST`, …) REMAIN authoritative today —
- * nothing here is consumed by production code yet (MIGRATE, not CONTRACT).
+ * …) REMAIN authoritative today — nothing here is consumed by production
+ * code yet (MIGRATE, not CONTRACT). The one exception is
+ * `ADVERTISED_NOT_REGISTERED_WHITELIST`, ELIMINATED in FE-T22: surface/plane
+ * membership is now `CapabilityDefinition.surfaces` data, so the hand-listed
+ * whitelist had no reason to keep existing alongside it — see
+ * `apps/api/src/tools/register-ibatexas-tool-packs.ts`'s
+ * `ToolRosterDriftOptions.chatSurfacedKinds`.
  *
  * Per FE-4.1/P5 (frozen principle — "guards IMPLEMENT policy, metadata
  * DESCRIBES capabilities"): every field here is DATA or a DECLARATIVE
