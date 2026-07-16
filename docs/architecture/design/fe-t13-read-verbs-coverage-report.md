@@ -79,6 +79,21 @@ fact (unchanged); authenticated + no order to resolve → empty fact (new, but
 same shape); authenticated + a resolvable order (by reference or
 auto-resolved) → delegates to the real read with the resolved id (new —
 previously unreachable for these two tools' common case).
+**Known limitation, shipped as-is (team-lead ruling, carved as FE-D24):**
+`orderReference` resolves an explicit DISPLAY NUMBER only ("pedido 1234"). A
+customer naming a specific PAST order by relative date instead ("o pedido de
+ontem", not their most recent) still falls through to the most-recent-order
+auto-resolve, which can answer about the wrong order if they have several.
+Reads are low-irreversibility and the reply names the display id it answered
+about, so a most-recent fallback is honest-if-imperfect, not a silent wrong
+answer. `check_availability`'s `date` field is the emission precedent —
+the model already proves out converting a relative date phrase to an ISO
+date elsewhere in this same rollout — so extending `orderReference` (or a
+sibling field) to accept a date and match against it in
+`resolveCustomerOrderReference` is real, buildable, but out-of-scope-for-this-
+ticket new work: FE-D24 (date-based order-reference resolution for
+`check_order_status`/`get_payment_status`).
+
 `hasResolvableOrderId`/`stripModelOwner` stay as defense-in-depth against a
 model that emits a raw `orderId` anyway — see the P5 fix below for why that
 defense is now backed by real sanitization, not just schema guidance.
@@ -200,18 +215,39 @@ harness (structurally inapplicable here — see above).
    schema-lint gate enforces it), so nothing here needs redaction. This line
    previously logged only tool NAMES; it now gives a live drive something
    concrete to score against.
-2. **PENDING THE LIVE-LANE TOKEN** — a small (~8-12 utterance) live
-   representative sample against the local 4B, NOT a full corpus harness:
-   the 3 arg-consuming tools most load-bearing to this ruling both arms
-   (`check_order_status`/`get_payment_status` reference present/absent,
-   `check_availability` fields present) plus 2 zero-field tools (asserting no
-   junk args land in the sanitized log line). Plan: drive the customer web
-   chat route (`apps/api/src/routes/chat.ts`) via `packages/journeys`'s
-   existing `ChatClient` + `mintCustomerToken`/`cookieHeader`
-   (`packages/journeys/src/clients/`) — the same live-drive infra
-   `chat-client.live.test.ts` already proves out, so no new plumbing is
-   needed — and read the sanitized `args` back off the new log line
-   (VictoriaLogs). Requested from team-lead; not yet executed.
+2. **PENDING THE LIVE-LANE TOKEN** (queued behind a sibling ticket's
+   calibration on the same stack) — an 8-utterance live representative
+   sample against the local 4B, NOT a full corpus harness, pre-staged against
+   the live dev DB and ready to run the moment the token is granted:
+   1. `check_order_status`, reference absent → expect auto-resolve to the
+      caller's own most-recent order.
+   2. `check_order_status`, reference present, the caller's OWN order →
+      expect an exact match (`referenceMatched: true`).
+   3. `check_order_status`, reference present, **an order belonging to a
+      DIFFERENT seeded customer** (the IDOR arm, team-lead-mandated) →
+      expect the reply reflects the CALLER's own order (or an honest
+      fallback), **never** the other customer's data. This is not expected
+      to be a refusal — `resolveCustomerOrderReference`'s customerId-filtered
+      lookup finds no owned match and falls through to auto-resolve by
+      design (the composed live behavior of the resolver + the pre-existing
+      `assertOrderOwnership` guard), so the live proof is the SHAPE of the
+      answer (whose order it describes), not an error path.
+   4. `get_payment_status`, reference absent.
+   5. `get_payment_status`, reference present, own order.
+   6. `check_availability`, fields present (date + partySize extracted).
+   7. `get_cart`, zero-field control — assert the sanitized log line carries
+      no junk args even though a model could still emit any shape.
+   8. `get_my_profile`, zero-field control.
+
+   Plan: drive the customer web chat route (`apps/api/src/routes/chat.ts`)
+   via `packages/journeys`'s existing `ChatClient` +
+   `mintCustomerToken`/`cookieHeader` (`packages/journeys/src/clients/`) —
+   the same live-drive infra `chat-client.live.test.ts` already proves out,
+   so no new plumbing is needed — and read the sanitized `args` back off the
+   new log line (VictoriaLogs, `component:planner event:read_loop.executed`).
+   Seed data for the IDOR arm already exists in the dev DB (two distinct
+   seeded customers, each owning a real order with a known Medusa
+   `display_id`) — no new seeding needed.
 3. **DEFERRED (FE-D22)** — the full read-corpus-fed accuracy-meter
    integration. The ticket's literal "corpus feeds the accuracy meter above
    baseline" AC is inapplicable to reads (T07's meter is
