@@ -155,6 +155,13 @@ describe("assertCapabilityGuardRefsWired", () => {
     if (first === undefined) {
       throw new Error("test fixture assumption violated: CAPABILITY_DEFINITIONS is empty")
     }
+    // FE-T20's discriminated union: `guardRefs` exists only on the
+    // chat-tier variant, so it must be narrowed before being overridden —
+    // spreading the union type directly would be an excess-property error
+    // against the identity-tier member.
+    if (first.tier !== "chat") {
+      throw new Error(`test fixture assumption violated: "${first.kind}" is tier:"${first.tier}", expected "chat"`)
+    }
     const broken: readonly CapabilityDefinition[] = [
       {
         ...first,

@@ -27,7 +27,9 @@ export type {
   CapabilityPackId,
   CapabilitySurface,
   CapabilityTier,
+  ChatCapabilityDefinition,
   GuardPhase,
+  IdentityCapabilityDefinition,
 } from "./types.js"
 
 export { CAPABILITY_DEFINITIONS } from "./definitions.js"

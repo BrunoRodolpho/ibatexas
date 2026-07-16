@@ -28,9 +28,10 @@
  *
  * **Declaration order is load-bearing.** Within each pack group the 66
  * entries are declared in EXACTLY that pack's `*_INTENT_KINDS` order (not
- * "chat entries first, identity entries appended") — `generate-pack-
- * intents.ts` / `generate-pack-intent-kinds-mirror.ts` project this order
- * byte-for-byte against the committed hand lists. The 18 chat-tier entries
+ * "chat entries first, identity entries appended") —
+ * `generate-pack-intent-kinds.ts` (exports both `generatePackIntents` and
+ * `generateIntentKindsMirror`) projects this order byte-for-byte against
+ * the committed hand lists. The 18 chat-tier entries
  * keep the exact relative order FE-T19 declared them in (never reordered by
  * this ticket) — every one of them is independently verified to already be
  * a valid subsequence of its pack's canonical order, so the 48 new entries

@@ -9,8 +9,9 @@
  * extends coverage to the full 66-kind, 6-pack universe with minimal
  * **identity**-tier instances (see {@link CapabilityTier}) so the four
  * intent-identity generators (`generate-known-intent-kinds.ts`,
- * `generate-pack-intent-kinds-mirror.ts`, `generate-pack-intents.ts`,
- * `generate-planner-allowed-intents.ts`) have full-coverage source data.
+ * `generate-pack-intent-kinds.ts` — exports both `generateIntentKindsMirror`
+ * and `generatePackIntents` — and `generate-planner-allowed-intents.ts`)
+ * have full-coverage source data.
  * The ~16 hand-maintained lists this registry will eventually replace
  * (`KNOWN_INTENT_KINDS`, `CHAT_DRIVABLE_TOOL_KINDS`, `CLAIM_REGISTRY`,
  * `SUCCESS_CLAIM_CLASSES`, per-pack `ToolClassification` / `*_TOOL_TO_INTENT`,
@@ -21,6 +22,21 @@
  * DESCRIBES capabilities"): every field here is DATA or a DECLARATIVE
  * reference to hand-authored code. Nothing here re-implements a guard
  * predicate, a planner gate, or a claim-validation rule.
+ *
+ * # Discriminated union, not a flat optional-everything interface
+ *
+ * `CapabilityDefinition` is `ChatCapabilityDefinition |
+ * IdentityCapabilityDefinition`, discriminated on `tier`. A flat interface
+ * with every chat-facing field marked optional (the FE-T20-as-first-
+ * written shape) type-checks a `tier: "chat"` instance that OMITS
+ * `guardRefs` — it sails vacuously through the guard-ref boot assertion's
+ * valid-by-absence handling (nothing to resolve ⇒ no error) with no gate
+ * catching the completeness regression. The union restores that guarantee
+ * STRUCTURALLY: a `ChatCapabilityDefinition` REQUIRES `surfaces` / `auth` /
+ * `legacyNames` / `description` / `guardRefs` / `refusalCode` (exactly
+ * FE-T19's original required set); an `IdentityCapabilityDefinition` omits
+ * all six. A malformed chat-tier literal is a COMPILE error, not a silent
+ * pass-through.
  */
 
 import type { GuardPhase } from "@adjudicate/core/kernel"
@@ -64,24 +80,19 @@ export type CapabilitySurface = "chat" | "staff" | "ops" | "system"
 export type CapabilityAuthLevel = "guest" | "customer" | "staff" | "system"
 
 /**
- * How richly a capability's metadata is authored — FE-T20.
+ * How richly a capability's metadata is authored — FE-T20. The
+ * discriminator on the {@link CapabilityDefinition} union.
  *
- * `"chat"` — the 18 chat-drivable instances FE-T19 authored: every field is
- * populated and cross-checked against a real source (docs, registries,
- * planner code). `"identity"` — the FE-T20 identity-tier instances covering
- * the remaining 48 kinds across the 6 packs: ONLY `kind` / `pack` /
- * `mutating` / `tier` (+ `plannerAdvertisedBy` where grounded — see its own
- * doc) are populated; every chat-facing field (`surfaces`, `auth`,
- * `legacyNames`, `description`, `guardRefs`, `refusalCode`,
- * `successClaimLinks`, `extractionSchema`) is `undefined` — there is no
- * chat tool, no docs entry, and no legacy name to ground them in, so
- * populating them would be fabrication (FE-T20 ticket + FE-T19's own
- * precedent: "guessing… would be fabrication, not authoring").
- *
- * A discriminator (not just inferring "identity" from `surfaces` being
- * `undefined`) so the four intent-identity generators can filter
- * unambiguously (`defs.filter(d => d.tier === "identity")` etc.) rather than
- * reasoning about the ABSENCE of a field as a proxy for tier membership.
+ * `"chat"` — the 18 chat-drivable instances FE-T19 authored: every
+ * chat-facing field is REQUIRED (see {@link ChatCapabilityDefinition}) and
+ * cross-checked against a real source (docs, registries, planner code).
+ * `"identity"` — the FE-T20 identity-tier instances covering the remaining
+ * 48 kinds across the 6 packs (see {@link IdentityCapabilityDefinition}):
+ * ONLY `kind` / `pack` / `mutating` / `tier` (+ `plannerAdvertisedBy` where
+ * grounded) exist — there is no chat tool, no docs entry, and no legacy
+ * name to ground the chat-facing fields in, so populating them would be
+ * fabrication (FE-T20 ticket + FE-T19's own precedent: "guessing… would be
+ * fabrication, not authoring").
  */
 export type CapabilityTier = "chat" | "identity"
 
@@ -105,11 +116,9 @@ export interface CapabilityGuardRef {
 }
 
 /**
- * One capability's authored metadata. See the module doc for what "data
- * only" means and why every field either IS data or POINTS AT hand-authored
- * code rather than reimplementing it.
+ * Fields every capability carries regardless of tier.
  */
-export interface CapabilityDefinition {
+interface CapabilityDefinitionCommon {
   /** Canonical intent kind — `IntentEnvelope.kind`, e.g. `"order.cart.ensure"`. */
   readonly kind: string
   /** Owning first-party Pack id. */
@@ -124,8 +133,6 @@ export interface CapabilityDefinition {
    * somewhere to say `false`.
    */
   readonly mutating: boolean
-  /** How richly this instance's metadata is authored. See {@link CapabilityTier}. */
-  readonly tier: CapabilityTier
   /**
    * The pack id(s) whose `CapabilityPlanner.plan()` can include this kind
    * in a returned `allowedIntents` array, under AT LEAST one probed
@@ -144,7 +151,9 @@ export interface CapabilityDefinition {
    * `payment.refund.issue` — verified absent from their owning pack's OWN
    * planner literal); `order.note.add` carries BOTH
    * (`["ibatexas/pack-orders", "ibatexas/pack-ops"]`) since pack-orders'
-   * own planner ALSO advertises it to authenticated customers.
+   * own planner ALSO advertises it to authenticated customers. Applies to
+   * BOTH tiers — e.g. `product.availability.set` (identity-tier) and
+   * `order.note.add` (chat-tier) both populate it.
    *
    * `undefined` is the common, CORRECT value for two distinct reasons,
    * both real and verified, not assumed:
@@ -167,31 +176,14 @@ export interface CapabilityDefinition {
    * is NOT modeled here (P5 — that is business logic).
    */
   readonly plannerAdvertisedBy?: readonly CapabilityPackId[]
-  /** Plane(s) this capability is reachable from. See {@link CapabilitySurface}.
-   *  `undefined` for `tier: "identity"` instances — see {@link CapabilityTier}. */
-  readonly surfaces?: readonly CapabilitySurface[]
-  /** Minimum auth level required to propose this capability.
-   *  `undefined` for `tier: "identity"` instances — see {@link CapabilityTier}. */
-  readonly auth?: CapabilityAuthLevel
-  /**
-   * Historical/legacy tool name(s) this capability was or is still
-   * addressed by outside the `capability === intentKind` convention (RC-A1
-   * Phase A) — e.g. `"add_to_cart"` for `order.item.add`. `undefined` for
-   * `tier: "identity"` instances (no chat tool ⇒ no legacy tool name to
-   * ground this in — see {@link CapabilityTier}), not merely empty.
-   */
-  readonly legacyNames?: readonly string[]
-  /** pt-BR description (Hard Rule #4). Single-sourced from
-   *  `IBATEXAS_CAPABILITY_DESCRIPTIONS` where the capability has a
-   *  registered chat tool. `undefined` for `tier: "identity"` instances —
-   *  see {@link CapabilityTier}. */
-  readonly description?: string
   /**
    * FORWARD-DECLARED (FE-1 track) — the per-capability extraction schema.
-   * Left `undefined` for every instance authored in this EXPAND step; FE-1
-   * populates it incrementally in a LATER ticket. MUST NOT gate anything —
-   * see the freshness-gate test's explicit assertion that this field is
-   * absent from and irrelevant to the exemplar projection.
+   * `undefined` for every instance authored so far; FE-1 populates it
+   * incrementally in a LATER ticket. MUST NOT gate anything — see the
+   * freshness-gate test's explicit assertion that this field is absent
+   * from and irrelevant to the exemplar projection. Optional on both
+   * tiers (not tier-discriminating): even a `tier: "chat"` capability may
+   * legitimately not have one authored yet.
    */
   readonly extractionSchema?: unknown
   /**
@@ -205,9 +197,34 @@ export interface CapabilityDefinition {
    * CORRECT value: the live claim registry covers only "a handful of
    * proposable types" (per FE-4 Out-of-Scope — growing it is a separate
    * claims-runtime workstream), so most capabilities legitimately have no
-   * claim link yet.
+   * claim link yet. Optional on both tiers, same rationale as
+   * `extractionSchema`.
    */
   readonly successClaimLinks?: readonly string[]
+}
+
+/**
+ * A chat-drivable capability (18 instances, FE-T19). Every chat-facing
+ * field is REQUIRED — restores FE-T19's original completeness guarantee
+ * STRUCTURALLY: a `tier: "chat"` literal omitting any of these six fields
+ * is a compile error, not a value that silently sails through the guard-ref
+ * boot assertion's valid-by-absence handling.
+ */
+export interface ChatCapabilityDefinition extends CapabilityDefinitionCommon {
+  readonly tier: "chat"
+  /** Plane(s) this capability is reachable from. See {@link CapabilitySurface}. */
+  readonly surfaces: readonly CapabilitySurface[]
+  /** Minimum auth level required to propose this capability. */
+  readonly auth: CapabilityAuthLevel
+  /**
+   * Historical/legacy tool name(s) this capability was or is still
+   * addressed by outside the `capability === intentKind` convention (RC-A1
+   * Phase A) — e.g. `"add_to_cart"` for `order.item.add`.
+   */
+  readonly legacyNames: readonly string[]
+  /** pt-BR description (Hard Rule #4). Single-sourced from
+   *  `IBATEXAS_CAPABILITY_DESCRIPTIONS`. */
+  readonly description: string
   /**
    * Declarative guard references — see {@link CapabilityGuardRef}. Per
    * capability, this is the OWNING PACK's full `stateGuards` /
@@ -222,12 +239,11 @@ export interface CapabilityDefinition {
    * "generate guard bodies" move, and a second driftable source of "which
    * guards apply to which kind" that would itself need its own freshness
    * gate. The pack-wide list needs none: it is definitionally correct by
-   * construction. `undefined` for `tier: "identity"` instances — see
-   * {@link CapabilityTier}. The guard-ref boot assertion
-   * (`guard-resolution.ts`) treats `undefined`/absent identically to an
-   * empty array: valid-by-absence, never a dangling reference.
+   * construction. REQUIRED (never empty in practice — every chat-tier
+   * instance's owning pack has a non-trivial guard chain); the guard-ref
+   * boot assertion (`guard-resolution.ts`) resolves every entry.
    */
-  readonly guardRefs?: readonly CapabilityGuardRef[]
+  readonly guardRefs: readonly CapabilityGuardRef[]
   /**
    * The pack-level default-deny basis code this capability falls through
    * to when no guard in its chain reaches a terminal EXECUTE / CONFIRM /
@@ -236,12 +252,29 @@ export interface CapabilityDefinition {
    * FLOOR code, not an exhaustive enumeration of every refusal this
    * capability's guard chain can produce — per-guard refusal codes are
    * business logic (P5) and stay hand-authored in each pack's
-   * `refusals.ts`, never re-derived into metadata. `undefined` for
-   * `tier: "identity"` instances — deliberately, not because it would be
-   * hard to populate (every pack has exactly one `<domain>.default.deny`
-   * constant, trivially reusable), but to keep the identity tier's field
-   * boundary literal and unambiguous: `kind` / `pack` / `mutating` / `tier`
-   * (+ `plannerAdvertisedBy` where grounded) ONLY. See {@link CapabilityTier}.
+   * `refusals.ts`, never re-derived into metadata.
    */
-  readonly refusalCode?: string
+  readonly refusalCode: string
 }
+
+/**
+ * An identity-only capability (48 instances, FE-T20) — one of the 52
+ * remaining first-party kinds with no registered chat tool, no docs entry,
+ * and no legacy name to ground a richer description in. Deliberately
+ * carries NOTHING beyond {@link CapabilityDefinitionCommon} — no
+ * `surfaces`/`auth`/`legacyNames`/`description`/`guardRefs`/`refusalCode`
+ * property exists on this variant at all (not merely `undefined`):
+ * TypeScript rejects assigning any of the six to an
+ * `IdentityCapabilityDefinition` literal, keeping the "minimal, not
+ * fabricated" boundary a structural fact, not a convention.
+ */
+export interface IdentityCapabilityDefinition extends CapabilityDefinitionCommon {
+  readonly tier: "identity"
+}
+
+/**
+ * One capability's authored metadata — discriminated on `tier`. See the
+ * module doc for why this is a union, not a flat optional-everything
+ * interface.
+ */
+export type CapabilityDefinition = ChatCapabilityDefinition | IdentityCapabilityDefinition
