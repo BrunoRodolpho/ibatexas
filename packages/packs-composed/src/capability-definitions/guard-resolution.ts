@@ -112,6 +112,21 @@ function resolutionKey(pack: CapabilityPackId, phase: CapabilityGuardRef["phase"
 }
 
 /**
+ * Thrown by {@link assertGuardRefsResolve} when an authored `CapabilityGuardRef`
+ * does not resolve to a live guard. A dedicated class (not a plain `Error`)
+ * so callers — e.g. `apps/api/src/plugins/kernel-bootstrap.ts`'s boot
+ * sequence — can `instanceof`-discriminate it in a fatal-log branch, the
+ * same idiom that file's own `PackCoverageError` / `AuditPostgresPreflightError`
+ * / `EnvelopeBoundaryGateNotWiredError` already use.
+ */
+export class GuardRefResolutionError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = "GuardRefResolutionError"
+  }
+}
+
+/**
  * One resolvable guard's live materialization — kept alongside the map
  * entry for the (currently unused, forward-looking) case where a future
  * analyzer wants the actual function, not just proof it exists.
@@ -151,7 +166,7 @@ export function buildGuardResolutionMap(
         // (verified empirically across all 6 packs) — fail loudly if it
         // ever happens rather than silently keep the first one.
         if (map.has(key)) {
-          throw new Error(
+          throw new GuardRefResolutionError(
             `[capability-definitions] Ambiguous guard resolution: two guards in ` +
               `${packId} (${arrayPhase}) both resolve to the name "${name}". ` +
               `Guard-ref resolution requires unique names per pack+phase.`,
@@ -184,7 +199,7 @@ export function assertGuardRefsResolve(
     for (const ref of def.guardRefs) {
       const key = resolutionKey(def.pack, ref.phase, ref.name)
       if (!resolutionMap.has(key)) {
-        throw new Error(
+        throw new GuardRefResolutionError(
           `[capability-definitions] Unresolved guard-ref on capability "${def.kind}": ` +
             `no live guard named "${ref.name}" in ${def.pack}'s "${ref.phase}" phase. ` +
             `A guard-ref must name a guard that actually exists in that pack's ` +

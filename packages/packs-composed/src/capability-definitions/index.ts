@@ -32,6 +32,7 @@ export { CAPABILITY_DEFINITIONS } from "./definitions.js"
 export {
   assertGuardRefsResolve,
   buildGuardResolutionMap,
+  GuardRefResolutionError,
   type ResolvedGuard,
 } from "./guard-resolution.js"
 

@@ -4,6 +4,7 @@ import {
   CAPABILITY_DEFINITIONS,
   buildGuardResolutionMap,
   assertGuardRefsResolve,
+  GuardRefResolutionError,
 } from "../capability-definitions/index.js"
 import type { CapabilityDefinition } from "../capability-definitions/index.js"
 
@@ -40,6 +41,9 @@ describe("capability-definitions — guard-ref boot assertion (FE-4.3)", () => {
             ],
           }
         : def,
+    )
+    expect(() => assertGuardRefsResolve(broken, buildGuardResolutionMap())).toThrow(
+      GuardRefResolutionError,
     )
     expect(() => assertGuardRefsResolve(broken, buildGuardResolutionMap())).toThrow(
       /Unresolved guard-ref/,
