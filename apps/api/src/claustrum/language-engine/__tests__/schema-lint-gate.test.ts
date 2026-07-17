@@ -46,6 +46,58 @@ describe("schema-lint CI gate — every AUTHORED_SCHEMAS entry is sound", () => 
     expect(capabilitiesWithForbiddenFields).toEqual([]);
   });
 
+  // FE-T11 (review) — legacyPayloadChannels lint: every registered channel
+  // (today: payment.refund.issue / order.status.transition's orderId) must
+  // be disjoint from its own schema's fields and carry a non-empty reason —
+  // walked generically so a FUTURE capability that declares a channel is
+  // automatically covered.
+  it("GREEN: every registered legacyPayloadChannel is disjoint from its schema's own fields and has a non-empty reason", () => {
+    for (const schema of AUTHORED_SCHEMAS) {
+      const fieldNames = new Set(schema.fields.map((f) => f.name));
+      for (const channel of schema.legacyPayloadChannels ?? []) {
+        expect(
+          fieldNames.has(channel.field),
+          `capability "${schema.capability}"'s legacyPayloadChannel "${channel.field}" must not collide with its own extraction field`,
+        ).toBe(false);
+        expect(
+          channel.reason.trim().length,
+          `capability "${schema.capability}"'s legacyPayloadChannel "${channel.field}" must have a non-empty reason`,
+        ).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  it("RED: a legacyPayloadChannel colliding with the schema's own field fails the gate", () => {
+    const nonCompliant: CapabilityExtractionSchema = {
+      capability: "order.status.transition",
+      fields: [
+        {
+          name: "newStatus",
+          trustClass: "directive",
+          jsonSchema: { type: "string", description: "x" },
+          required: true,
+        },
+      ],
+      example: { utterance: "x", payload: { newStatus: "ready" } },
+      legacyPayloadChannels: [{ field: "newStatus", reason: "bogus" }],
+    };
+    expect(() => assertSoundExtractionSchema(nonCompliant)).toThrow(
+      UnsoundExtractionSchemaError,
+    );
+  });
+
+  it("RED: a legacyPayloadChannel with an empty/whitespace-only reason fails the gate", () => {
+    const nonCompliant: CapabilityExtractionSchema = {
+      capability: "payment.refund.issue",
+      fields: [],
+      example: { utterance: "x", payload: {} },
+      legacyPayloadChannels: [{ field: "orderId", reason: "" }],
+    };
+    expect(() => assertSoundExtractionSchema(nonCompliant)).toThrow(
+      UnsoundExtractionSchemaError,
+    );
+  });
+
   it("RED: a deliberately non-compliant schema (exposes a forbidden identifier) fails the gate", () => {
     const nonCompliant: CapabilityExtractionSchema = {
       capability: "payment.refund.issue",

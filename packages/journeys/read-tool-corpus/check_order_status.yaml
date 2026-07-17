@@ -1,0 +1,60 @@
+# check_order_status — FE-T13 read-tool extraction corpus.
+# See check_availability.yaml's header for the format rationale + live-drive
+# status (same for every file in this directory).
+#
+# CHECK_ORDER_STATUS_READ_SCHEMA's one optional field, `orderReference`, is a
+# Directive-class display-number reference ("1234", "#1234") — NEVER the
+# internal orderId. Two arms: reference ABSENT (the common case — resolves
+# to the customer's own most-recent order via
+# resolveCustomerOrderReference's auto-resolve fallback) and reference
+# PRESENT (a customer naming a specific order number, e.g. from a prior
+# confirmation message).
+tool: check_order_status
+source: tickets/language-engine/issues/13-rollout-status-read-verbs.md
+cases:
+  - id: bare-ask-no-reference
+    utterance: cadê meu pedido?
+    expectArgs: {}
+
+  - id: bare-ask-formal
+    utterance: Você poderia me informar o status do meu pedido?
+    expectArgs: {}
+
+  - id: bare-ask-colloquial
+    utterance: meu pedido tá como?
+    expectArgs: {}
+
+  - id: bare-ask-question-form
+    utterance: já saiu meu pedido?
+    expectArgs: {}
+
+  - id: bare-ask-brusque
+    utterance: status do pedido
+    expectArgs: {}
+
+  - id: explicit-display-number
+    utterance: qual o status do pedido 1234?
+    note: reference-PRESENT arm — a display number the customer names explicitly
+    expectArgs:
+      orderReference: "1234"
+
+  - id: explicit-display-number-hash-prefixed
+    utterance: cadê o pedido #4242?
+    note: reference-PRESENT arm, "#"-prefixed form
+    expectArgs:
+      orderReference: "4242"
+
+  - id: explicit-display-number-polite
+    utterance: você poderia verificar o pedido número 5555, por favor?
+    note: reference-PRESENT arm, formal register
+    expectArgs:
+      orderReference: "5555"
+
+  - id: bare-ask-most-recent-explicit
+    utterance: qual o status do meu último pedido?
+    note: the phrase "meu último pedido" is STILL the reference-ABSENT arm — same auto-resolve target, not a display number
+    expectArgs: {}
+
+  - id: bare-ask-casual-slang
+    utterance: e aí, meu pedido já chegou?
+    expectArgs: {}

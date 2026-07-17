@@ -63,6 +63,34 @@ export const ORDER_STATUS_TRANSITION_EXTRACTION_SCHEMA: CapabilityExtractionSche
       utterance: "muda o status do meu último pedido para pronto",
       payload: { newStatus: "ready" },
     },
+    // FE-T11 (review) — the plan-time payload filter (ibatexas-planner.ts's
+    // stripUnauthoredPayloadFields) would otherwise strip `orderId` from
+    // every payload as an undeclared field (the schema declares only
+    // `newStatus`). But BKL-089's "order reference resolution" idiom
+    // (`resolveStatusTransitionOrderTarget`, ops-resolver.ts) tries an
+    // AUTHORITATIVE direct lookup on a model-supplied `orderId` FIRST,
+    // before falling back to "most recent active order" — a real,
+    // pre-existing resolution path this schema's own header note ("a later
+    // rollout slice may add an optional NL order-reference field") did not
+    // anticipate needing to declare, because nothing enforced field
+    // membership before FE-T11's filter existed. OPS-plane reference-TO-
+    // VERIFY, not a customer-plane autoresolve hazard: this capability is
+    // ops-only (BKL-090 kitchen-advance), the resolver looks the named
+    // order up authoritatively and falls back (never guesses) if it
+    // doesn't resolve, and the confirm-on-autoresolve guard still applies
+    // whenever the FALLBACK path (not this explicit one) is what actually
+    // resolved the target.
+    legacyPayloadChannels: [
+      {
+        field: "orderId",
+        reason:
+          "BKL-089 order-reference-resolution — resolveStatusTransition" +
+          "OrderTarget (ops-resolver.ts) tries an authoritative direct " +
+          "lookup on a model-supplied orderId before falling back to " +
+          "\"most recent active order\"; an ops-plane authoritative " +
+          "lookup, not a customer-plane autoresolve hazard.",
+      },
+    ],
   };
 
 // Fail closed at import time: a schema that would leak orderId (or any other

@@ -1,14 +1,18 @@
 // wire-schemas.test.ts — the per-capability extraction schema -> wire
 // registry. FE-T09 (D-a) adds the three granular post-checkout amend kinds
 // alongside FE-T05's order.status.transition; FE-T10 adds the money-tier
-// slice (payment.refund.issue); FE-T12 adds the orders governance-tier
+// slice (payment.refund.issue); FE-T11 adds the customer-plane money-tier
+// slice (payment.pix.regenerate); FE-T12 adds the orders governance-tier
 // customer-plane slice (order.checkout.create, order.cancel).
 
 import { describe, expect, it } from "vitest";
-import { EXTRACTION_SCHEMAS_BY_CAPABILITY } from "../wire-schemas.js";
+import {
+  EXTRACTION_SCHEMAS_BY_CAPABILITY,
+  ALLOWED_PAYLOAD_FIELD_NAMES_BY_CAPABILITY,
+} from "../wire-schemas.js";
 
 describe("EXTRACTION_SCHEMAS_BY_CAPABILITY", () => {
-  it("registers order.status.transition (FE-T05), the three granular amend kinds (FE-T09), payment.refund.issue (FE-T10), and order.checkout.create/order.cancel (FE-T12)", () => {
+  it("registers order.status.transition (FE-T05), the three granular amend kinds (FE-T09), payment.refund.issue (FE-T10), payment.pix.regenerate (FE-T11), and order.checkout.create/order.cancel (FE-T12)", () => {
     expect([...EXTRACTION_SCHEMAS_BY_CAPABILITY.keys()].sort()).toEqual(
       [
         "order.amend.add_item",
@@ -16,6 +20,7 @@ describe("EXTRACTION_SCHEMAS_BY_CAPABILITY", () => {
         "order.amend.update_qty",
         "order.status.transition",
         "payment.refund.issue",
+        "payment.pix.regenerate",
         "order.checkout.create",
         "order.cancel",
       ].sort(),
@@ -66,5 +71,37 @@ describe("EXTRACTION_SCHEMAS_BY_CAPABILITY", () => {
     expect(wire.additionalProperties).toBe(false);
     expect(Object.keys(wire.properties ?? {})).toEqual(["reason"]);
     expect(wire).not.toHaveProperty("properties.orderId");
+  });
+});
+
+// FE-T11 (review) — the plan-time filter's allowlist source of truth
+// (ibatexas-planner.ts's stripUnauthoredPayloadFields reads this map).
+describe("ALLOWED_PAYLOAD_FIELD_NAMES_BY_CAPABILITY", () => {
+  it("is schema-field-names UNION declared legacyPayloadChannels — payment.pix.regenerate stays fully closed (no channel declared)", () => {
+    expect(ALLOWED_PAYLOAD_FIELD_NAMES_BY_CAPABILITY.get("payment.pix.regenerate")).toEqual(
+      new Set(),
+    );
+  });
+
+  it("order.status.transition allows newStatus (schema field) UNION orderId (declared legacy channel, BKL-089)", () => {
+    expect(ALLOWED_PAYLOAD_FIELD_NAMES_BY_CAPABILITY.get("order.status.transition")).toEqual(
+      new Set(["newStatus", "orderId"]),
+    );
+  });
+
+  it("payment.refund.issue allows orderReference/amount/reason (schema fields) UNION orderId/refundAmountCentavos/value/valor (declared legacy channels, BKL-094)", () => {
+    expect(ALLOWED_PAYLOAD_FIELD_NAMES_BY_CAPABILITY.get("payment.refund.issue")).toEqual(
+      new Set(["orderReference", "amount", "reason", "orderId", "refundAmountCentavos", "value", "valor"]),
+    );
+  });
+
+  it("the granular amend kinds declare no legacy channel — allowed set is exactly their schema fields", () => {
+    expect(ALLOWED_PAYLOAD_FIELD_NAMES_BY_CAPABILITY.get("order.amend.add_item")).toEqual(
+      new Set(["item", "quantity"]),
+    );
+  });
+
+  it("has no entry for an unauthored capability (the planner filter treats absence as pass-through)", () => {
+    expect(ALLOWED_PAYLOAD_FIELD_NAMES_BY_CAPABILITY.has("order.item.add")).toBe(false);
   });
 });

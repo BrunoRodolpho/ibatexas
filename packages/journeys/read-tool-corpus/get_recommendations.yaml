@@ -1,0 +1,66 @@
+# get_recommendations — FE-T13 read-tool extraction corpus.
+# See check_availability.yaml's header for the format rationale + live-drive
+# status (same for every file in this directory).
+#
+# GET_RECOMMENDATIONS_READ_SCHEMA has exactly one optional field (`context`,
+# an enum of ["homepage","cart","product_page"]) — most real utterances carry
+# NO explicit context marker at all (the customer just asks "o que vocês
+# recomendam?"), in which case the correct extraction is `{}` (context
+# omitted, not guessed) — the majority of cases below are exactly that; a
+# minority exercise an utterance where the conversational trigger point makes
+# the context marker genuinely inferable from the text itself.
+tool: get_recommendations
+source: tickets/language-engine/issues/13-rollout-status-read-verbs.md
+cases:
+  - id: bare-ask-no-context
+    utterance: o que vocês recomendam?
+    expectArgs: {}
+
+  - id: bare-ask-formal
+    utterance: Poderia me indicar algum prato especial?
+    expectArgs: {}
+
+  - id: bare-ask-colloquial
+    utterance: me indica algo bom aí
+    expectArgs: {}
+
+  - id: bare-ask-first-time
+    utterance: nunca pedi aqui, o que é bom?
+    expectArgs: {}
+
+  - id: bare-ask-question-form
+    utterance: tem alguma sugestão pra mim?
+    expectArgs: {}
+
+  - id: bare-ask-brusque
+    utterance: recomenda algo
+    expectArgs: {}
+
+  - id: cart-context-explicit
+    utterance: to montando meu carrinho, o que combina bem pra completar o pedido?
+    note: the "montando meu carrinho" framing is a genuine cart-context marker
+    expectArgs:
+      context: cart
+
+  - id: homepage-context-explicit
+    utterance: acabei de abrir o app, o que tem de bom hoje?
+    note: an opening/landing-moment marker maps to the homepage context
+    expectArgs:
+      context: homepage
+
+  - id: bare-ask-polite
+    utterance: você poderia sugerir alguma coisa, por favor?
+    expectArgs: {}
+
+  - id: bare-ask-casual-slang
+    utterance: bora, o que cê recomenda?
+    expectArgs: {}
+
+  - id: bare-ask-diet-adjacent
+    utterance: o que tem de mais pedido por aqui?
+    expectArgs: {}
+
+  - id: bare-ask-context-embedded
+    utterance: minha família chega em 20 minutos, o que vocês sugerem pra gente pedir?
+    note: context-embedded (a reason precedes the request) but no explicit UI-context marker — still {}
+    expectArgs: {}

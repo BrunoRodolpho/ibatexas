@@ -1,0 +1,116 @@
+# check_availability — FE-T13 read-tool extraction corpus.
+#
+# FORMAT NOTE (read this before authoring another file in this directory):
+# this is a DELIBERATELY NEW, LIGHTER format from packages/journeys/
+# extraction-corpus/*.yaml (schema.ts's ExtractionCorpusFileSchema) — that
+# format's `expectPayload.extractionIR`/`hydratedIntentIR` assertions read
+# `AuditRecord.metadata.languageEngine` (audit-metadata.ts), a sidecar built
+# ONLY for a capability that went through `adjudicate()`. A read-tool call
+# (check_availability, get_recommendations, ...) NEVER produces an
+# AuditRecord — reads don't mutate, so they never reach the kernel — so that
+# format is structurally inapplicable here (see the FE-T13 coverage report,
+# ~/projects/tickets/language-engine/issues/13-rollout-status-read-verbs.md's
+# companion report, for the full accounting).
+#
+# `expectArgs` is authored INDEPENDENTLY of the model under test (same
+# independent-truth discipline as the mutating corpora) — it pins the exact
+# `check_availability` tool-call arguments a correct extraction produces
+# against CHECK_AVAILABILITY_READ_SCHEMA
+# (apps/api/src/claustrum/language-engine/read-tool-schemas.ts).
+#
+# STATUS: authored, NOT YET wired to a live-drive runner. The mutating-verb
+# runner (packages/journeys/src/extraction/accuracy-runner.ts) polls for a
+# NEW AuditRecord by intentKind — unusable here for the reason above. Driving
+# this corpus live needs either (a) a new capture point recording a read
+# tool's actual `call.input` (today apps/api/src/claustrum/ibatexas-planner.ts's
+# `read_loop.executed` log line only logs tool NAMES, not args) plus a
+# VictoriaLogs-backed runner, or (b) team-lead's sign-off to defer live
+# calibration for this rollout slice and ship the deterministic golden gate
+# (read-tool-extraction-prompt-golden.test.ts) + schema-lint gate
+# (read-tool-schema-lint-gate.test.ts) as this slice's proof, same posture as
+# FE-T13's own coverage report documents.
+tool: check_availability
+source: tickets/language-engine/issues/13-rollout-status-read-verbs.md
+cases:
+  - id: four-people-explicit-date
+    utterance: tem mesa pra 4 pessoas no dia 2026-07-18?
+    expectArgs:
+      date: "2026-07-18"
+      partySize: 4
+
+  - id: two-people-saturday-formal
+    utterance: Gostaria de saber se há disponibilidade para 2 pessoas em 2026-07-19, por favor.
+    note: formal register
+    expectArgs:
+      date: "2026-07-19"
+      partySize: 2
+
+  - id: six-people-with-preferred-time
+    utterance: quero reservar pra 6 pessoas dia 2026-07-20 às 20:00, tem vaga?
+    expectArgs:
+      date: "2026-07-20"
+      partySize: 6
+      preferredTime: "20:00"
+
+  - id: eight-people-colloquial
+    utterance: dá pra arrumar mesa pra 8 no dia 2026-07-21?
+    note: colloquial "dá pra"
+    expectArgs:
+      date: "2026-07-21"
+      partySize: 8
+
+  - id: single-person-brusque
+    utterance: mesa pra 1, dia 2026-07-22
+    note: brusque/telegraphic register
+    expectArgs:
+      date: "2026-07-22"
+      partySize: 1
+
+  - id: family-of-five-with-time-window
+    utterance: minha família (5 pessoas) quer jantar dia 2026-07-23, de preferência às 19:30
+    expectArgs:
+      date: "2026-07-23"
+      partySize: 5
+      preferredTime: "19:30"
+
+  - id: twenty-people-max-party
+    utterance: preciso de mesa pra 20 pessoas em 2026-07-25, é pra um evento
+    note: upper bound of the accepted partySize range (1-20)
+    expectArgs:
+      date: "2026-07-25"
+      partySize: 20
+
+  - id: three-people-question-form
+    utterance: será que tem horário pra 3 pessoas amanhã, dia 2026-07-17?
+    note: question-form register, NL relative-date reference resolved to the explicit ISO date the model must still emit
+    expectArgs:
+      date: "2026-07-17"
+      partySize: 3
+
+  - id: two-people-lunch-time
+    utterance: mesa pra 2 no almoço, dia 2026-07-18, umas 12:30
+    expectArgs:
+      date: "2026-07-18"
+      partySize: 2
+      preferredTime: "12:30"
+
+  - id: ten-people-polite
+    utterance: poderia verificar se tem vaga pra 10 pessoas no dia 2026-07-24, por gentileza?
+    note: very polite/formal question register
+    expectArgs:
+      date: "2026-07-24"
+      partySize: 10
+
+  - id: four-people-casual-slang
+    utterance: rola mesa pra 4 hoje, dia 2026-07-16?
+    note: casual/slang register ("rola")
+    expectArgs:
+      date: "2026-07-16"
+      partySize: 4
+
+  - id: seven-people-dinner-late
+    utterance: quero ver disponibilidade pra 7 pessoas no dia 2026-07-26, jantar mais tarde, tipo 21:00
+    expectArgs:
+      date: "2026-07-26"
+      partySize: 7
+      preferredTime: "21:00"

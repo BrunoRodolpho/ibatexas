@@ -532,6 +532,135 @@ describe("createIbatexasPlanner — buildToolSurface per-capability extraction s
   });
 });
 
+// ── FE-T11 (review) — plan-time payload filter ──────────────────────────────
+
+describe("createIbatexasPlanner — plan-time payload filter (FE-T11 review)", () => {
+  it("payment.pix.regenerate: a smuggled orderId (no declared channel) is DROPPED — the empty schema's payload is always {}", async () => {
+    const { model } = mockModel([
+      expressIntent("payment.pix.regenerate", { orderId: "order_HALLUCINATED" }),
+    ]);
+    const planner = createIbatexasPlanner({
+      model,
+      modelId: "claude-test",
+      capabilityPlanners: [capPlanner([], ["payment.pix.regenerate"])],
+    });
+
+    const plan = await planner.propose(mkState("gera um pix novo"));
+    expect(plan.envelopes).toHaveLength(1);
+    expect(plan.envelopes[0]!.payload).toEqual({});
+  });
+
+  it("order.status.transition: orderId is a DECLARED legacy channel (BKL-089) and survives; allergens/cpf (undeclared junk) are DROPPED, newStatus (the real field) passes through", async () => {
+    const { model } = mockModel([
+      expressIntent("order.status.transition", {
+        orderId: "4242",
+        newStatus: "ready",
+        allergens: ["amendoim"],
+        cpf: "12345678900",
+      }),
+    ]);
+    const planner = createIbatexasPlanner({
+      model,
+      modelId: "claude-test",
+      capabilityPlanners: [capPlanner([], ["order.status.transition"])],
+    });
+
+    const plan = await planner.propose(mkState("avança o 4242"));
+    expect(plan.envelopes).toHaveLength(1);
+    expect(plan.envelopes[0]!.payload).toEqual({
+      orderId: "4242",
+      newStatus: "ready",
+    });
+  });
+
+  it("payment.refund.issue: orderId is a DECLARED legacy channel (the pre-existing refund-by-message path) and survives alongside orderReference/amount/reason; cpf/allergens (undeclared junk) are DROPPED", async () => {
+    const { model } = mockModel([
+      expressIntent("payment.refund.issue", {
+        orderId: "4242",
+        orderReference: "4242",
+        amount: 50,
+        reason: "cliente pediu",
+        cpf: "12345678900",
+        allergens: ["amendoim"],
+      }),
+    ]);
+    const planner = createIbatexasPlanner({
+      model,
+      modelId: "claude-test",
+      capabilityPlanners: [capPlanner([], ["payment.refund.issue"])],
+    });
+
+    const plan = await planner.propose(mkState("reembolsa 50 do pedido 4242"));
+    expect(plan.envelopes).toHaveLength(1);
+    expect(plan.envelopes[0]!.payload).toEqual({
+      orderId: "4242",
+      orderReference: "4242",
+      amount: 50,
+      reason: "cliente pediu",
+    });
+  });
+
+  it("payment.refund.issue: the BKL-094 amount aliases (refundAmountCentavos/value/valor) are DECLARED legacy channels and survive too — the exact shape the e2e refund suite's REFUND_CALL helper scripts (caught this live: a naive filter broke 21 tests here)", async () => {
+    const { model } = mockModel([
+      expressIntent("payment.refund.issue", {
+        orderId: "4242",
+        refundAmountCentavos: 5_000,
+        reason: "cliente pediu",
+        forgedField: "should be stripped",
+      }),
+    ]);
+    const planner = createIbatexasPlanner({
+      model,
+      modelId: "claude-test",
+      capabilityPlanners: [capPlanner([], ["payment.refund.issue"])],
+    });
+
+    const plan = await planner.propose(mkState("reembolsa 50 reais do pedido 4242"));
+    expect(plan.envelopes).toHaveLength(1);
+    expect(plan.envelopes[0]!.payload).toEqual({
+      orderId: "4242",
+      refundAmountCentavos: 5_000,
+      reason: "cliente pediu",
+    });
+  });
+
+  it("order.amend.add_item: no declared legacy channel — a smuggled orderId/variantId/allergens are ALL dropped, item/quantity (the real fields) pass through", async () => {
+    const { model } = mockModel([
+      expressIntent("order.amend.add_item", {
+        item: "coca",
+        quantity: 1,
+        orderId: "order_9",
+        variantId: "var_coke",
+        allergens: ["gluten"],
+      }),
+    ]);
+    const planner = createIbatexasPlanner({
+      model,
+      modelId: "claude-test",
+      capabilityPlanners: [capPlanner([], ["order.amend.add_item"])],
+    });
+
+    const plan = await planner.propose(mkState("adiciona uma coca no meu pedido"));
+    expect(plan.envelopes).toHaveLength(1);
+    expect(plan.envelopes[0]!.payload).toEqual({ item: "coca", quantity: 1 });
+  });
+
+  it("an UNAUTHORED capability's payload passes through completely VERBATIM (no authored schema yet — zero behavior change)", async () => {
+    const { model } = mockModel([
+      expressIntent("order.item.add", { sku: "x", qty: 2, anything: "goes" }),
+    ]);
+    const planner = createIbatexasPlanner({
+      model,
+      modelId: "claude-test",
+      capabilityPlanners: [capPlanner(ORDER_READS, ORDER_INTENTS)],
+    });
+
+    const plan = await planner.propose(mkState("quero adicionar 2 costelas"));
+    expect(plan.envelopes).toHaveLength(1);
+    expect(plan.envelopes[0]!.payload).toEqual({ sku: "x", qty: 2, anything: "goes" });
+  });
+});
+
 // ── Schema ───────────────────────────────────────────────────────────────────
 
 describe("createIbatexasPlanner — envelope schema", () => {
@@ -726,7 +855,16 @@ describe("createIbatexasPlanner — read-tool enrichment loop (BKL-027)", () => 
 
     expect(complete).toHaveBeenCalledTimes(2); // exactly one extra hop
     expect(execCalls).toHaveLength(1);
-    expect(execCalls[0]!.input).toEqual({ cartId: "c1" });
+    // FE-T13 (team-lead P5 ruling) — the executor receives the SANITIZED
+    // input, not the model's raw call: get_cart's authored schema
+    // (read-tool-schemas.ts) has ZERO fields, so sanitizeReadToolInput drops
+    // the model-supplied `cartId` before it ever reaches the executor
+    // (mirrors production: get_cart's real executor already ignores its
+    // input entirely, deriving the cart id from session state). The RAW
+    // model call is still recorded verbatim in `plan.readToolCalls` for
+    // telemetry (see the "does NOT loop" test below) — only the dispatched
+    // execution input is sanitized.
+    expect(execCalls[0]!.input).toEqual({});
     // The executor receives the AUTHENTICATED turn state (identity ← state).
     expect(execCalls[0]!.customerId).toBe("cus_1");
     expect(plan.envelopes.map((e) => e.kind)).toEqual(["order.item.add"]);

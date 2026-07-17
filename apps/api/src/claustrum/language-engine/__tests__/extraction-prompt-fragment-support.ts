@@ -11,26 +11,26 @@
 // `OPS_PLANNER_PERSONA` excerpt describing that capability (extracted by a
 // stable paragraph-boundary marker).
 //
-// TWO capabilities were covered from FE-T06/T10: `order.status.transition`
-// (FE-T05/T06, the first tracer) and `payment.refund.issue` (FE-T10, the
-// money-tier slice — per the owner's ruling, a money-tier extraction schema
-// is bound under this gate FROM BIRTH, not deferred; T11-14 should follow
-// the same precedent). FE-T12 (the orders governance-tier rollout) adds the
-// FIRST two CUSTOMER-plane capabilities: `order.checkout.create` and
-// `order.cancel`.
+// FIVE capabilities are covered: `order.status.transition` (FE-T05/T06, the
+// first tracer), `payment.refund.issue` (FE-T10, the money-tier slice — per
+// the owner's ruling, a money-tier extraction schema is bound under this
+// gate FROM BIRTH, not deferred; T11-14 should follow the same precedent),
+// `payment.pix.regenerate` (FE-T11, the customer-plane money-tier slice), and
+// FE-T12 (the orders governance-tier rollout)'s two CUSTOMER-plane
+// capabilities: `order.checkout.create` and `order.cancel`.
 //
-// CUSTOMER-plane vs OPS-plane persona excerpt — a real difference, not an
-// oversight: `OPS_PLANNER_PERSONA` has bespoke "Em <capability>," paragraphs
-// per capability (the ops vocabulary is varied/imperative), so the two
-// functions above extract a STABLE, marker-delimited slice. The CUSTOMER
-// persona (`PLANNER_PERSONA`) has no such per-capability paragraphs — T09
-// (the granular post-checkout amend kinds, also customer-plane) did not add
-// any either, consistent with `PLANNER_PERSONA` being pinned byte-identical
-// against the golden scripted-pipeline fixture
-// (`apps/api/src/__tests__/scripted-pipeline/fixtures/completions/
-// surfaces.json`'s `planner.system` — see that module's own header comment).
-// So for a customer-plane capability there is nothing capability-specific to
-// excerpt: `personaExcerpt` is the FULL `PLANNER_PERSONA` text, identical
+// `payment.pix.regenerate` was the FIRST of the five driven through the
+// CUSTOMER plane (not ops/staff); `order.checkout.create`/`order.cancel`
+// follow the same plane. Their persona is {@link PLANNER_PERSONA} (the
+// generic pt-BR semantic-parser prompt every customer capability shares),
+// never {@link OPS_PLANNER_PERSONA}. `PLANNER_PERSONA` carries no
+// per-capability paragraphs (unlike `OPS_PLANNER_PERSONA`, which is grown
+// with one marker-delimited paragraph per ops capability it describes) — it
+// is explicitly documented as "byte-identical to the … golden scripted-
+// pipeline surfaces" (personas.ts), a single inviolable fragment composed
+// unconditionally for EVERY customer-plane turn. So there is no paragraph to
+// excerpt-extract for any of the three customer-plane capabilities:
+// `personaExcerpt` is the FULL, unmodified `PLANNER_PERSONA` text, identical
 // across every customer-plane capability's golden fixture. This still
 // catches drift (any edit to `PLANNER_PERSONA` fails every customer-plane
 // golden fixture) — the differentiator between customer-plane fixtures is
@@ -212,6 +212,45 @@ export async function computePaymentRefundIssueExtractionPromptFragment(): Promi
       inputSchema: tool.inputSchema,
     },
     personaExcerpt: extractPaymentRefundIssuePersonaExcerpt(OPS_PLANNER_PERSONA),
+  };
+}
+
+/**
+ * FE-T11 — the customer-plane money-tier sibling of
+ * {@link computePaymentRefundIssueExtractionPromptFragment}. Same
+ * methodology: drive the REAL `createIbatexasPlanner` with a capability
+ * planner that allows ONLY `payment.pix.regenerate`, capture the
+ * `express_intent` tool's ACTUAL wire shape (sensitive to any drift in
+ * `wire-schemas.ts`'s registry, `payment-pix-regenerate.schema.ts`, or
+ * `buildToolSurface` itself). NO `staffEnvelopeActor` is supplied (the
+ * planner's documented customer-plane default), so the composed system
+ * prompt is `PLANNER_PERSONA` — the same fragment every customer capability
+ * shares, byte-identical, in full (see this module's header for why there is
+ * no marker-delimited paragraph to excerpt here).
+ */
+export async function computePaymentPixRegenerateExtractionPromptFragment(): Promise<ExtractionPromptFragment> {
+  const { model, calls } = noToolCallModel();
+  const planner = createIbatexasPlanner({
+    model,
+    modelId: "claude-test",
+    capabilityPlanners: [capPlanner(["payment.pix.regenerate"])],
+  });
+
+  await planner.propose(mkState("oi"));
+  const req = calls[0]!;
+  const tool = (req.tools ?? []).find((t) => t.name === EXPRESS_INTENT_TOOL);
+  if (tool === undefined) {
+    throw new Error("extraction-prompt golden: express_intent tool missing from buildToolSurface output");
+  }
+
+  return {
+    capability: "payment.pix.regenerate",
+    expressIntentTool: {
+      name: tool.name,
+      description: tool.description,
+      inputSchema: tool.inputSchema,
+    },
+    personaExcerpt: PLANNER_PERSONA,
   };
 }
 
