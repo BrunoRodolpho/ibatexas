@@ -1,8 +1,14 @@
 name: Deploy — Staging
 
 on:
-  push:
-    branches: [dev]
+  # Manual-only (BKL-157): there is no live staging environment right now — the
+  # program is validated locally against a local model. The old dev host still
+  # accepts the SSM deploy, but the API it serves answers 502, so the
+  # health-check job failed on every push to dev and painted the whole branch
+  # red. Gating to workflow_dispatch keeps the pipeline intact for the day a
+  # staging returns (Actions tab → "Run workflow", or `gh workflow run
+  # deploy-staging.yml`) without polluting CI signal on every merge.
+  workflow_dispatch:
 
 concurrency:
   group: deploy-staging
