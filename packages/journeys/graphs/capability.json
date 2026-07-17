@@ -12,8 +12,7 @@
     "planners": 6,
     "registeredTools": 20,
     "unadvertised": [
-      "order.review.submit",
-      "whatsapp.handoff.request"
+      "order.review.submit"
     ]
   },
   "nodes": [
@@ -1518,13 +1517,14 @@
       "type": "intent",
       "label": "whatsapp.handoff.request",
       "meta": {
-        "advertisedContexts": [],
+        "advertisedContexts": [
+          "authed-customer",
+          "guest"
+        ],
         "chatDrivable": true,
         "composedPack": "ibatexas/pack-whatsapp",
         "domain": "whatsapp",
-        "flags": [
-          "unadvertised"
-        ],
+        "flags": [],
         "knownKind": true,
         "plausibleDecisions": [
           "EXECUTE",
@@ -1729,8 +1729,8 @@
       "label": "ibatexas/pack-whatsapp capability planner",
       "meta": {
         "advertisedCounts": {
-          "authed-customer": 0,
-          "guest": 0
+          "authed-customer": 1,
+          "guest": 1
         },
         "pack": "ibatexas/pack-whatsapp"
       }
@@ -2100,6 +2100,17 @@
       "meta": {
         "contexts": [
           "authed-customer"
+        ]
+      }
+    },
+    {
+      "from": "planner:ibatexas/pack-whatsapp",
+      "to": "intent:whatsapp.handoff.request",
+      "type": "advertises",
+      "meta": {
+        "contexts": [
+          "authed-customer",
+          "guest"
         ]
       }
     },
