@@ -208,3 +208,30 @@ cases:
           orderId: grounded
           body: untrusted
         confirmationRequired: true
+
+  # ── Arm: absence — a bare invocation with NO note content at all. The
+  #    model must NOT fabricate a body (the schema's own instruction: "nunca
+  #    resuma, parafraseie ou invente conteúdo"); extractionIR correctly
+  #    omits the field. Since `body` is this capability's ONLY field and is
+  #    required, an honest omission is not a silent no-op: pack-orders'
+  #    `executeNoteAdd` guard (policies.ts) REFUSEs on an empty/missing body
+  #    (`note_body_empty`) — the closest this capability comes to a CLARIFY,
+  #    since the schema has no slot to ask a follow-up question through;
+  #    the customer sees an honest "what should the note say?" refusal
+  #    rather than a silently-created empty note. ──────────────────────────
+  - id: bare-no-content-absence
+    utterance: adiciona uma observação no meu pedido
+    note: >-
+      No note text anywhere in the utterance — just the bare capability
+      request. extractionIR.payload is correctly EMPTY (body absent, never
+      invented); the executeNoteAdd guard REFUSEs on the empty body.
+    expectPayload:
+      extractionIR:
+        payload: {}
+      hydratedIntentIR:
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          orderId: grounded
+        confirmationRequired: true
+      decision: REFUSE
