@@ -2,7 +2,6 @@
 // Uses OpenAI with a Redis cache; FAILS HONEST when no key is configured.
 
 import { getRedisClient } from "../redis/client.js"
-import { rk } from "../redis/key.js"
 import { EMBED_DIM } from "../config.js"
 
 /**
@@ -102,32 +101,4 @@ export async function generateEmbedding(
   }
 
   return embedding
-}
-
-/**
- * Batch embed multiple texts.
- * Returns array of embeddings; failed items logged.
- */
-export async function generateEmbeddingsBatch(
-  texts: Array<{ key: string; text: string }>,
-  ttlSeconds = Number.parseInt(process.env.EMBEDDINGS_CACHE_TTL_SECONDS || "2592000", 10)
-): Promise<{
-  embeddings: Map<string, number[]>
-  failures: Array<{ key: string; error: string }>
-}> {
-  const embeddings = new Map<string, number[]>()
-  const failures: Array<{ key: string; error: string }> = []
-
-  for (const { key, text } of texts) {
-    try {
-      const embedding = await generateEmbedding(text, rk(`embedding:${key}`), ttlSeconds)
-      embeddings.set(key, embedding)
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error)
-      failures.push({ key, error: msg })
-      console.warn(`Embedding failed for ${key}: ${msg}`)
-    }
-  }
-
-  return { embeddings, failures }
 }
