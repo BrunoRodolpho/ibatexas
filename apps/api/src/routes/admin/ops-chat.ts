@@ -39,6 +39,7 @@ import {
   buildOpsHistoryBlock,
   loadOpsHistory,
 } from "../../ops/ops-history.js";
+import { opsStaleResumeNotice } from "../../ops/ops-system-channel.js";
 
 const OpsChatBody = z.object({
   message: z
@@ -135,6 +136,43 @@ export async function adminOpsChatRoutes(server: FastifyInstance): Promise<void>
       });
 
       try {
+        // FE-D13 — honest stale-resume. If this reply signals a resume of an ops
+        // confirm that has EXPIRED (older than OPS_CONFIRM_PARK_TTL_SECONDS — already
+        // invisible to matchToParked), restate that the pending confirmation expired
+        // and was NOT executed instead of silently running the fresh loop. A still-
+        // fresh park the reply resumes takes precedence (handled inside). The turn is
+        // SKIPPED on a notice, so no turn_trace/intent_audit row is written — emit a
+        // structured warn for forensics and append the reply to history.
+        const pending = capsule.loadedSession?.pendingConfirmations ?? [];
+        const staleNotice = opsStaleResumeNotice({
+          text: message,
+          pendingConfirmations: pending,
+          nowIso: inbound.receivedAt,
+        });
+        if (staleNotice !== undefined) {
+          request.log.warn(
+            {
+              event: "ops_chat.stale_park_notice",
+              staff_id: staffId,
+              pending: pending.length,
+            },
+            "[ops-chat] stale confirm-park resume — restating expiry, skipping the turn",
+          );
+          try {
+            await appendOpsMessages(staffId, [
+              { role: "assistant", content: staleNotice },
+            ]);
+          } catch (err) {
+            request.log.warn(err, "[ops-chat] stale-notice history append failed (non-fatal)");
+          }
+          return reply.send({
+            reply: staleNotice,
+            decision: "STALE_PARK_EXPIRED",
+            executed: false,
+            proposedKinds: [],
+          });
+        }
+
         const turn = await handleTurn(capsule, inbound);
         // Persist the assistant reply AFTER a successful turn (best-effort).
         try {

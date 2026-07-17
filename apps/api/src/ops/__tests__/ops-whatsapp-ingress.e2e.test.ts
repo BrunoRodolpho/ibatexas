@@ -590,3 +590,158 @@ describe("BKL-086 defense in depth — a dashboard-parked refund is NOT resumabl
     expect(session.parksFor(sessionId)).toHaveLength(0);
   });
 });
+
+// ── Part C: FE-D13 honest stale-resume over the WhatsApp ingress ──────────────
+// The WhatsApp ingress builds inbound.receivedAt from the real clock, so a park
+// stamped an hour ago is comfortably past the 15-min confirm-TTL. The ingress must
+// restate the expiry (honest, deterministic pt-BR) instead of running the fresh
+// loop — but NEVER for an out-of-scope money park (BKL-086 parity: WhatsApp can
+// only restate what it could resume in the first place).
+
+/** A directly-seeded park carrying a `kind` + kernel prompt (turn is skipped, so a
+ *  fully-valid envelope is unnecessary — the ingress reads only kind + userPrompt). */
+function seededParkedEnvelope(
+  kind: string,
+  intentHash: string,
+  userPrompt: string,
+  parkedAt: string,
+): ParkedEnvelope {
+  return {
+    envelope: { kind, intentHash } as ParkedEnvelope["envelope"],
+    confirmationToken: `tok-${intentHash}`,
+    userPrompt,
+    parkedAt,
+  };
+}
+
+/** A SessionPort pre-seeded with fixed parks (load returns them; unpark filters). */
+function seededSession(
+  parks: ParkedEnvelope[],
+): SessionPort & { parksFor: (id: string) => ParkedEnvelope[] } {
+  const store = new Map<string, ParkedEnvelope[]>();
+  const sid = (customerId: string) => `system:${customerId}`;
+  return {
+    load: async (customerId) => ({
+      id: sid(customerId),
+      customerId,
+      channel: "system",
+      startedAt: "2026-07-04T00:00:00.000Z",
+      lastActivityAt: "2026-07-04T00:00:00.000Z",
+      pendingConfirmations: store.get(sid(customerId)) ?? parks,
+      deferredEnvelopes: [],
+      activeGoals: [],
+      workingMemory: { summary: "", facts: [], updatedAt: "2026-07-04T00:00:00.000Z" },
+    }),
+    save: async () => {},
+    parkPendingConfirmation: async () => {},
+    parkDeferred: async () => {},
+    unpark: async (sessionId, intentHash) => {
+      store.set(
+        sessionId,
+        (store.get(sessionId) ?? parks).filter((p) => p.envelope.intentHash !== intentHash),
+      );
+    },
+    parksFor: (sessionId) => store.get(sessionId) ?? parks,
+  };
+}
+
+describe("FE-D13 — honest stale-resume over the WhatsApp ingress", () => {
+  const OLD = new Date(Date.now() - 3_600_000).toISOString(); // 1h ago → past the 15-min TTL
+
+  it("a stale IN-SCOPE park + 'sim' → the expiry notice is sent, the turn is SKIPPED, history appended, park intact", async () => {
+    const expiredPark = seededParkedEnvelope(
+      "product.price.set",
+      "abc123abc123",
+      "Confirmar novo preço da costela para R$ 89,00?",
+      OLD,
+    );
+    const session = seededSession([expiredPark]);
+    const model = scriptedModel([]); // if the turn ran, the planner would be invoked
+    const { deps: conductorDeps } = buildPartBDeps(model, session);
+
+    const appended: Array<{ role: string; content: string }> = [];
+    const replies: string[] = [];
+    const waDeps: OpsWhatsAppIngressDeps = {
+      findStaffByPhone: async () => ({ id: "owner1", role: "OWNER", active: true }),
+      composeConductor: (actor, context) => composeOpsConductor(conductorDeps as never, actor, context),
+      acquireLock: async () => "lock",
+      releaseLock: async () => {},
+      loadHistoryBlock: async () => undefined,
+      appendHistory: async (_s, msgs) => {
+        for (const m of msgs) appended.push({ role: m.role, content: m.content });
+      },
+      sendReply: async (t) => {
+        replies.push(t);
+      },
+      sendError: async (t) => {
+        replies.push(t);
+      },
+    };
+
+    const out = await handleOpsWhatsAppMessage(waDeps, {
+      phone: "+5511999999999",
+      hash: "h",
+      text: "sim, confirma",
+      log,
+    });
+
+    expect(out).toEqual({ consumed: true });
+    // The honest expiry restatement was sent (deterministic pt-BR, names the park).
+    expect(replies).toHaveLength(1);
+    expect(replies[0]).toContain("expirou");
+    expect(replies[0]).toContain("Confirmar novo preço da costela para R$ 89,00?");
+    // The turn was SKIPPED — the planner model was never invoked.
+    expect(model.complete as unknown as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+    // The notice was appended to the shared ops thread (assistant role).
+    expect(appended).toContainEqual({ role: "assistant", content: replies[0]! });
+    // The park is NOT consumed (an expiry restatement never unparks).
+    expect(session.parksFor("system:staff:owner1")).toHaveLength(1);
+  });
+
+  it("BKL-086 parity: a stale DASHBOARD-scoped money park is NOT restated over WhatsApp", async () => {
+    const expiredRefund = seededParkedEnvelope(
+      "payment.refund.issue",
+      "ref0ref0ref0",
+      "Confirmar reembolso de R$ 50,00?",
+      OLD,
+    );
+    const session = seededSession([expiredRefund]);
+    const model = scriptedModel([]);
+    const { deps: conductorDeps, writeAdjudicatedRefund } = buildPartBDeps(model, session);
+
+    const replies: string[] = [];
+    const errors: string[] = [];
+    const waDeps: OpsWhatsAppIngressDeps = {
+      findStaffByPhone: async () => ({ id: "owner1", role: "OWNER", active: true }),
+      composeConductor: (actor, context) => composeOpsConductor(conductorDeps as never, actor, context),
+      acquireLock: async () => "lock",
+      releaseLock: async () => {},
+      loadHistoryBlock: async () => undefined,
+      appendHistory: async () => {},
+      sendReply: async (t) => {
+        replies.push(t);
+      },
+      sendError: async (t) => {
+        errors.push(t);
+      },
+    };
+
+    const out = await handleOpsWhatsAppMessage(waDeps, {
+      phone: "+5511999999999",
+      hash: "h",
+      text: "sim, confirma",
+      log,
+    });
+
+    expect(out).toEqual({ consumed: true });
+    // WhatsApp NEVER restates a dashboard-only money park (out-of-scope) — no expiry
+    // notice appears on any surface…
+    const allText = [...replies, ...errors].join("\n");
+    expect(allText).not.toContain("expirou");
+    // …and the refund never executes (excluded AND expired); the park is untouched.
+    expect(writeAdjudicatedRefund).not.toHaveBeenCalled();
+    expect(session.parksFor("system:staff:owner1")).toHaveLength(1);
+    // The owner still gets an honest (non-notice) reply from the normal loop.
+    expect(replies.length + errors.length).toBeGreaterThanOrEqual(1);
+  });
+});

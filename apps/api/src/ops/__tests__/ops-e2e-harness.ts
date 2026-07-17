@@ -78,6 +78,20 @@ import { buildLanguageEngineAuditMetadata } from "../../claustrum/language-engin
 /** Staff roles the ops matrix knows about. */
 export type StaffRole = "OWNER" | "MANAGER" | "ATTENDANT";
 
+/**
+ * The instant every harness park is stamped with (makeStatefulSession) AND the
+ * default inbound `receivedAt` — so a park is FRESH (age 0) under any confirm-TTL
+ * and the existing confirm-resume e2e arms are byte-identical after FE-D13. A stale
+ * arm passes a LATER `receivedAt` to `runOpsTurn`/`inbound` to age a park past the
+ * TTL; {@link staleReceivedAt} builds one deterministically (no fake timers).
+ */
+export const HARNESS_PARKED_AT = "2026-07-04T12:00:00.000Z";
+
+/** An inbound receivedAt `seconds` after {@link HARNESS_PARKED_AT} (FE-D13 stale arms). */
+export function staleReceivedAt(seconds: number): string {
+  return new Date(Date.parse(HARNESS_PARKED_AT) + seconds * 1000).toISOString();
+}
+
 /** A scripted planner tool call (express_intent, or a read tool like ops_snapshot). */
 export interface ScriptedToolCall {
   readonly id: string;
@@ -251,7 +265,7 @@ export function makeStatefulSession(): StatefulSession {
         envelope: envelope as IntentEnvelope,
         confirmationToken,
         userPrompt,
-        parkedAt: "2026-07-04T12:00:00.000Z",
+        parkedAt: HARNESS_PARKED_AT,
       });
       parks.set(sessionId, list);
     },
@@ -262,7 +276,7 @@ export function makeStatefulSession(): StatefulSession {
         signal,
         deferUntil,
         timeoutMs,
-        parkedAt: "2026-07-04T12:00:00.000Z",
+        parkedAt: HARNESS_PARKED_AT,
       });
       deferred.set(sessionId, list);
     },
@@ -490,15 +504,23 @@ export function composeOpsDeps(scenario: OpsDepsScenario) {
   };
 }
 
-/** The inbound "system"-channel staff message the ops conductor turns on. */
-export function inbound(staffId: string, text: string): ChannelMessage {
+/**
+ * The inbound "system"-channel staff message the ops conductor turns on. `receivedAt`
+ * defaults to {@link HARNESS_PARKED_AT} (age-0 vs a harness park — FRESH); a stale arm
+ * passes a later instant (see {@link staleReceivedAt}) to drive the FE-D13 TTL filter.
+ */
+export function inbound(
+  staffId: string,
+  text: string,
+  receivedAt: string = HARNESS_PARKED_AT,
+): ChannelMessage {
   return {
     channel: "system",
     customerId: `staff:${staffId}`,
     conversationId: `admin:${staffId}`,
     externalId: `ops-${staffId}-${randomUUID()}`,
     text,
-    receivedAt: "2026-07-04T12:00:00.000Z",
+    receivedAt,
     locale: "pt-BR",
   };
 }
@@ -518,11 +540,11 @@ export interface OpsTurnResult {
  */
 export async function runOpsTurn(
   deps: unknown,
-  args: { role: StaffRole; staffId: string; text: string },
+  args: { role: StaffRole; staffId: string; text: string; receivedAt?: string },
 ): Promise<OpsTurnResult> {
-  const { role, staffId, text } = args;
+  const { role, staffId, text, receivedAt } = args;
   const conductor = composeOpsConductor(deps as never, { staffId, role });
-  const message = inbound(staffId, text);
+  const message = inbound(staffId, text, receivedAt);
   const capsule = await conductor.openCapsule({
     channel: "system",
     customerId: `staff:${staffId}`,

@@ -50,6 +50,8 @@ import { getOpsConductorFactory } from "../claustrum-bootstrap.js";
 import { acquireAgentLock, releaseAgentLock } from "../whatsapp/session.js";
 import { sendText } from "../whatsapp/client.js";
 import { appendOpsMessages, buildOpsHistoryBlock } from "./ops-history.js";
+import { opsStaleResumeNotice } from "./ops-system-channel.js";
+import { excludedKindsForScope } from "./ops-verb-scope.js";
 import type { OpsConductorContext } from "./ops-conductor.js";
 
 type LogFn = {
@@ -244,6 +246,41 @@ async function runOpsTurn(
       inbound,
     });
     try {
+      // FE-D13 — honest stale-resume (with BKL-086 parity). Drop the out-of-scope
+      // money verbs FIRST (excludedKindsForScope — the SAME set scopeResumeChannel
+      // hides from matchToParked), so WhatsApp never restates a dashboard-only park
+      // it could not resume; then, if the reply signals a resume of an EXPIRED
+      // in-scope park, send the honest expiry restatement instead of running the
+      // fresh loop. The turn is SKIPPED on a notice (no turn_trace row) — emit a
+      // structured warn for forensics and append the reply to history.
+      const pending = capsule.loadedSession?.pendingConfirmations ?? [];
+      const staleNotice = opsStaleResumeNotice({
+        text: command,
+        pendingConfirmations: pending,
+        nowIso: inbound.receivedAt,
+        excludedKinds: excludedKindsForScope("whatsapp"),
+      });
+      if (staleNotice !== undefined) {
+        log.warn(
+          {
+            event: "ops_wa.stale_park_notice",
+            staff_id: staffId,
+            phone_hash: hash,
+            pending: pending.length,
+          },
+          "[ops-wa] stale confirm-park resume — restating expiry, skipping the turn",
+        );
+        try {
+          await deps.appendHistory(staffId, [
+            { role: "assistant", content: staleNotice },
+          ]);
+        } catch (err) {
+          log.warn(err, "[ops-wa] stale-notice history append failed (non-fatal)");
+        }
+        await deps.sendReply(staleNotice);
+        return;
+      }
+
       const turn = await handleTurn(capsule, inbound);
       // Persist the assistant reply AFTER a successful turn (best-effort).
       try {
