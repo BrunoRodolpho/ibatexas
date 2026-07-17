@@ -38,7 +38,7 @@
     {
       "capability": "customer-whatsapp-convenience:3-kind-group",
       "goldenFragmentPath": "apps/api/src/claustrum/language-engine/__tests__/__golden__/customer-whatsapp-convenience.extraction-prompt-fragment.json",
-      "goldenFragmentSha256": "c1807dad6544908214d5df0760230d61e9a1842ee6998fe820a621977ec31f7e"
+      "goldenFragmentSha256": "dbda0512c8ea3145275c91a432a5ae9608a6ab17f5477ac015dc4e942807e920"
     }
   ]
 }

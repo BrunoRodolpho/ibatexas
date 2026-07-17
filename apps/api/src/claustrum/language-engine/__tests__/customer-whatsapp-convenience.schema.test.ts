@@ -29,19 +29,19 @@ describe("CUSTOMER_PREFERENCES_UPDATE_EXTRACTION_SCHEMA", () => {
     expect(names.has("allergens")).toBe(false);
   });
 
-  it("both fields are array-typed and optional", () => {
+  it("both fields are array-typed, optional, and explicitly opt into freeform (open-vocabulary, not enum-constrained)", () => {
     const wire = toPayloadJsonSchema(CUSTOMER_PREFERENCES_UPDATE_EXTRACTION_SCHEMA);
     expect(wire).toEqual({
       type: "object",
       properties: {
         dietaryFlags: {
           type: "array",
-          items: { type: "string" },
+          items: { type: "string", freeform: true },
           description: expect.any(String),
         },
         favoriteCategories: {
           type: "array",
-          items: { type: "string" },
+          items: { type: "string", freeform: true },
           description: expect.any(String),
         },
       },

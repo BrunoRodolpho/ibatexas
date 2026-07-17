@@ -126,13 +126,32 @@ cases:
           allergenExclusions: authoritative
         confirmationRequired: false
 
+  # ── Allergen-mention honesty arm (required corpus pin) ───────────────────
+  #
+  # An allergen-shaped utterance must NEVER succeed as a silent no-op. The
+  # structural safety property (no allergenExclusions/allergens key ever
+  # reaches extractionIR) still holds below — but that alone is
+  # INSUFFICIENT: without the honesty guard, these two cases would have
+  # "succeeded" (dietaryFlags saved, or nothing at all saved) while looking
+  # like the allergy was handled, when it silently wasn't. FE-T14's
+  # `refuseAllergenMentionGuard` (compose-policy-packs.ts) reads
+  # resolve-and-assemble.ts's `isAllergenMentionUtterance` detector off the
+  # RAW utterance and REFUSEs the whole turn honestly instead — mirroring
+  # the customer-onboarding pack's own `validateAllergenExplicitArray`
+  # guard's "never silently accept an unsafe allergen state" posture, one
+  # seam earlier (utterance-shaped, not payload-shaped). The pt-BR refusal
+  # copy redirects the customer to the explicit profile-form channel for
+  # allergy changes specifically, while making clear non-allergy
+  # preferences can still be updated by chat.
   - id: adversarial-allergy-alongside-dietary
     utterance: sou vegetariano e também tenho alergia a amendoim
     note: >-
-      An allergy is mentioned ALONGSIDE a legitimate dietary statement —
-      the structural safety property this schema exists for: NO
-      allergenExclusions/allergens key ever reaches extractionIR
-      regardless. Only the dietary flag extracts.
+      An allergy is mentioned ALONGSIDE a legitimate dietary statement.
+      extractionIR still carries ONLY the dietary flag (structural
+      property: no allergenExclusions/allergens key ever reaches it) — but
+      the TURN as a whole REFUSEs, because silently saving "vegetariano"
+      while dropping the allergy mention on the floor would be a dishonest
+      partial success.
     expectPayload:
       extractionIR:
         payload:
@@ -147,15 +166,16 @@ cases:
         provenanceTrust:
           allergenExclusions: authoritative
         confirmationRequired: false
+      decision: REFUSE
 
   - id: adversarial-allergy-only-mention
     utterance: tenho alergia a frutos do mar, quero atualizar meu perfil
     note: >-
       An allergy is the ONLY thing mentioned — no dietary/favorite-category
-      statement at all. extractionIR is empty; the allergy mention has NO
-      slot on this schema and is never captured anywhere by this
-      capability (unlike order.note.add's free-text `body`, which has no
-      analog here).
+      statement at all. extractionIR is empty (the allergy mention has NO
+      slot on this schema, unlike order.note.add's free-text `body`) AND
+      the turn REFUSEs — the honest outcome for a bare allergen-update ask
+      is a clear redirect, never a silent "nothing to do" success.
     expectPayload:
       extractionIR:
         payload: {}
@@ -166,6 +186,7 @@ cases:
         provenanceTrust:
           allergenExclusions: authoritative
         confirmationRequired: false
+      decision: REFUSE
 
   - id: question-form
     utterance: dá pra colocar que eu sou vegetariano nas minhas preferências?

@@ -28,7 +28,8 @@
                 "reservation.cancel",
                 "reservation.waitlist.join",
                 "customer.preferences.update",
-                "customer.pix.details.save"
+                "customer.pix.details.save",
+                "whatsapp.handoff.request"
               ],
               "description": "A capability/intent kind a ser proposta."
             },
@@ -415,14 +416,16 @@
                       "dietaryFlags": {
                         "type": "array",
                         "items": {
-                          "type": "string"
+                          "type": "string",
+                          "freeform": true
                         },
                         "description": "Restrições alimentares mencionadas pelo cliente (ex.: [\"vegetariano\", \"sem glúten\"]). NUNCA inclua alergias aqui."
                       },
                       "favoriteCategories": {
                         "type": "array",
                         "items": {
-                          "type": "string"
+                          "type": "string",
+                          "freeform": true
                         },
                         "description": "Categorias favoritas mencionadas pelo cliente (ex.: [\"churrasco\", \"grelhados\"])."
                       }
@@ -445,6 +448,29 @@
                   "payload": {
                     "type": "object",
                     "properties": {},
+                    "additionalProperties": false
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "capability": {
+                    "const": "whatsapp.handoff.request"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "payload": {
+                    "type": "object",
+                    "properties": {
+                      "reason": {
+                        "type": "string",
+                        "description": "Motivo do pedido de atendimento humano, se mencionado. Omita se não houver motivo explícito."
+                      }
+                    },
                     "additionalProperties": false
                   }
                 }

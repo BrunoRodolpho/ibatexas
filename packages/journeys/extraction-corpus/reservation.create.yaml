@@ -19,6 +19,19 @@
 # reservation-convenience.schema.ts's header — data-integrity hazard,
 # scoped out of this rollout slice). NOT auto-resolved (a brand-new
 # resource, no existing target) — confirmationRequired is always false.
+#
+# THREE REQUIRED CORPUS ARMS (FE-T14 rulings, the timeSlotId reversal):
+#   (a) grounded-selection — a real prior check_availability turn, correct
+#       slot id relayed. The bulk of the cases below.
+#   (b) ungrounded/stale slot reference — the utterance LOOKS like it
+#       references a prior turn's slot, but that slot is no longer valid
+#       (already past). `requireSlotInFuture` REFUSEs regardless of
+#       whether extraction faithfully relayed the (now-stale) id — the
+#       KERNEL guard is the actual safety net here, independent of
+#       extraction fidelity.
+#   (c) absence — no prior read in context at all; the model has no id to
+#       relay and correctly omits the field (never invents one) —
+#       `requireSlotWithCapacity` REFUSEs on the null slot.
 capability: reservation.create
 source: tickets/language-engine/issues/14-rollout-convenience-mutating-verbs.md
 cases:
@@ -212,3 +225,53 @@ cases:
           timeSlotId: slot_123
           partySize: 7
         confirmationRequired: false
+
+  # ── Arm (b): ungrounded/stale slot reference — the guard, not
+  #    extraction, is the actual safety net. ────────────────────────────
+  - id: stale-slot-reference-guard-refuses
+    utterance: fecha aquele horário de ontem que vocês mostraram, pra 4 pessoas
+    note: >-
+      Second turn referencing a PAST turn's slot (slot_stale) that has
+      since lapsed — "de ontem" (from yesterday). The model faithfully
+      relays the id it was shown; the REFUSE comes from
+      requireSlotInFuture (the kernel guard), independent of whether
+      extraction itself was accurate. Proves the guard is the real
+      backstop, not extraction fidelity.
+    expectPayload:
+      extractionIR:
+        payload:
+          timeSlotId: slot_stale
+          partySize: 4
+        provenanceTrust:
+          timeSlotId: untrusted
+          partySize: untrusted
+      hydratedIntentIR:
+        payload:
+          timeSlotId: slot_stale
+          partySize: 4
+        confirmationRequired: false
+      decision: REFUSE
+
+  # ── Arm (c): absence — no prior read in context, model correctly omits
+  #    timeSlotId rather than inventing one. ─────────────────────────────
+  - id: no-prior-read-absence
+    utterance: quero reservar uma mesa pra 4 pessoas
+    note: >-
+      NO preceding check_availability turn at all — a bare "book me a
+      table" with no slot ever surfaced. The model has nothing to relay
+      and must NOT fabricate a timeSlotId (the schema's own instruction:
+      "SEMPRE um id já retornado... NUNCA inventado"). extractionIR omits
+      the field entirely; hydration adds nothing (no auto-resolve exists
+      for a brand-new resource); requireSlotWithCapacity REFUSEs on the
+      null slot.
+    expectPayload:
+      extractionIR:
+        payload:
+          partySize: 4
+        provenanceTrust:
+          partySize: untrusted
+      hydratedIntentIR:
+        payload:
+          partySize: 4
+        confirmationRequired: false
+      decision: REFUSE

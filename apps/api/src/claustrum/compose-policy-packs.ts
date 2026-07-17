@@ -30,7 +30,7 @@
  * exporter can import it without booting the conductor.
  */
 
-import type { PackV0 } from "@adjudicate/core";
+import { basis, BASIS_CODES, decisionRefuse, refuse, type PackV0 } from "@adjudicate/core";
 import { nameGuard, type Guard, type PolicyBundle } from "@adjudicate/core/kernel";
 import { createTokenBudgetGuard, createConfirmGuard } from "@adjudicate/primitives";
 import { AGENT_REGISTRY } from "@ibatexas/agents";
@@ -123,15 +123,65 @@ export const confirmOnAutoResolveGuard = nameGuard(
   }),
 );
 
+// FE-T14 — allergen-mention honesty guard for customer.preferences.update.
+// resolve-and-assemble.ts's `isAllergenMentionUtterance` detector stamps
+// `state.ctx.allergenMentionDetected` when the RAW utterance looks
+// allergen-shaped ("sou alérgico a amendoim, atualiza aí"); this guard turns
+// that flag into an honest, kernel-authoritative REFUSE.
+//
+// Why a guard, not a resolver-level short-circuit: CLAUDE.md rule #9 — the
+// kernel is the sole REFUSE authority, never the resolver. The resolver's
+// job (resolve-and-assemble.ts's own FE-T14 addition) is to UNCONDITIONALLY
+// strip whatever `allergenExclusions` the model supplied and refill it from
+// the customer's CURRENT saved value — by itself that make the turn always
+// "succeed" (the safety-critical allergen guard, pack-customer-onboarding's
+// `validateAllergenExplicitArray`, only fires on an ABSENT/malformed array,
+// never on a well-formed refill) — a dishonest silent no-op on exactly the
+// turn where the customer asked to change their allergies. This guard
+// closes that gap: an allergen-shaped ask REFUSEs honestly instead of
+// silently updating unrelated fields (or nothing at all) while looking like
+// a success.
+export const ALLERGEN_MENTION_REFUSAL_CODE = "allergen_mention_requires_explicit_flow";
+
+const ALLERGEN_MENTION_REFUSAL_PT_BR =
+  "Por segurança, alterações de alergia não podem ser feitas por aqui. " +
+  "Atualize suas preferências alimentares (não relacionadas a alergia) à vontade, " +
+  "mas para alergias, use o formulário do seu perfil.";
+
+export const refuseAllergenMentionGuard: Guard<string, unknown, unknown> = nameGuard(
+  "refuseAllergenMention",
+  (envelope, state) => {
+    if (envelope.kind !== "customer.preferences.update") return null;
+    if ((state as { ctx?: { allergenMentionDetected?: boolean } }).ctx?.allergenMentionDetected !== true) {
+      return null;
+    }
+    return decisionRefuse(
+      refuse("BUSINESS_RULE", ALLERGEN_MENTION_REFUSAL_CODE, ALLERGEN_MENTION_REFUSAL_PT_BR),
+      [
+        basis("business", BASIS_CODES.business.RULE_VIOLATED, {
+          rule: "allergen_mention_requires_explicit_flow",
+        }),
+      ],
+    );
+  },
+);
+
 /**
  * The adopter-level business guards prepended to EVERY pack, in evaluation
- * order: F4 token-budget (REFUSE over budget) → confirm-on-autoresolve
- * (REQUEST_CONFIRMATION). Both run before each pack's own business guards and
- * only fire for their matching kinds/flags.
+ * order: F4 token-budget (REFUSE over budget) → allergen-mention honesty
+ * (REFUSE an allergen-shaped customer.preferences.update) →
+ * confirm-on-autoresolve (REQUEST_CONFIRMATION). Allergen-mention sits
+ * BEFORE confirm-on-autoresolve so a turn that is BOTH allergen-shaped AND
+ * touches an auto-resolved kind (never true today — customer.preferences.
+ * update is not in AUTORESOLVE_CONFIRM_KINDS — but kept in this order for
+ * the same "REFUSE pre-empts a softer decision" ladder discipline the
+ * escalate/confirm money ladder already follows elsewhere). All three run
+ * before each pack's own business guards and only fire for their matching
+ * kinds/flags.
  */
 export const IBATEXAS_ADOPTER_BUSINESS_GUARDS: ReadonlyArray<
   Guard<string, unknown, unknown>
-> = [sessionTokenBudgetGuard, confirmOnAutoResolveGuard];
+> = [sessionTokenBudgetGuard, refuseAllergenMentionGuard, confirmOnAutoResolveGuard];
 
 // ── Managed-agent kill + scope + budget guards (T3-4/T3-5) — AUTH phase ─────
 // Built once over the composed AGENT_REGISTRY (@ibatexas/agents, T3-3) and

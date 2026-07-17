@@ -504,6 +504,46 @@ interface ResolveArgs {
    * need it; absent → no cart found → conservative ctx (guards REFUSE cleanly).
    */
   readonly sessionId?: string;
+  /**
+   * FE-T14 — the raw utterance text (`cognition.perception.text`,
+   * ibatexas-resolver.ts — the SAME source `correctAmendPreference` already
+   * reads). Used ONLY by the allergen-mention detector below
+   * (customer.preferences.update); every other kind ignores it. Optional and
+   * fail-closed-to-absent, mirroring `sessionId`'s own posture — a caller
+   * that omits it (e.g. an HTTP route with no conductor cognition) simply
+   * never trips the detector, never crashes.
+   */
+  readonly utteranceText?: string;
+}
+
+/**
+ * FE-T14 — deterministic allergen-mention detector for
+ * `customer.preferences.update` (mirrors amend-preference-correction.ts's
+ * marker-pattern idiom, one seam over: detection here stamps a ctx flag a
+ * composed ADOPTER guard interprets — refuseAllergenMentionGuard,
+ * compose-policy-packs.ts — rather than resolving/re-routing anything
+ * itself; the kernel stays the sole REFUSE authority, CLAUDE.md rule #9).
+ *
+ * Deliberately broad, not narrow: every Portuguese allergen-root word
+ * (alergia, alérgico/a, alergênico, alergista, anafilaxia is a DIFFERENT
+ * root so not covered — see the second pattern) shares the `alerg` stem,
+ * so a single case-insensitive substring test catches the whole family
+ * without a maintained word list. Over-triggering is the SAFE failure mode
+ * here (a false-positive REFUSE just redirects to the explicit channel,
+ * annoying but harmless); under-triggering would silently let an allergen-
+ * shaped ask succeed as a no-op — the exact "dishonest success reply"
+ * this detector exists to prevent.
+ *
+ * `al[eé]rg` (not a bare `alerg`): "alergia"/"alergênico"/"alergista" spell
+ * the stem WITHOUT an accent, but "alérgico"/"alérgica" (the far more
+ * common everyday adjective — "sou alérgico a amendoim") spell it WITH one
+ * — a plain `/alerg/i` silently misses every adjective form.
+ */
+const ALLERGEN_MENTION_PATTERN = /al[eé]rg|anafil/i;
+
+/** Pure — no IO/clock/RNG. Case-insensitive substring test. */
+export function isAllergenMentionUtterance(text: string | undefined): boolean {
+  return typeof text === "string" && ALLERGEN_MENTION_PATTERN.test(text);
 }
 
 // Order kinds resolved by id (→ loadOrderCtx, which confirms customer ownership
@@ -1215,7 +1255,7 @@ async function loadCtxForKind(
  * (guards needing entity state see null → REFUSE cleanly, never panic).
  */
 export async function resolveAndAssemble(args: ResolveArgs): Promise<AssembledResolution> {
-  const { kind, payload, customerId, channel, sessionId } = args;
+  const { kind, payload, customerId, channel, sessionId, utteranceText } = args;
   const base = identityCtx(customerId, channel);
   base.sessionTokensConsumed = await readSessionTokensConsumed(channel, customerId);
 
@@ -1242,6 +1282,16 @@ export async function resolveAndAssemble(args: ResolveArgs): Promise<AssembledRe
   );
 
   if (autoResolvedMoneyRef) ctx.autoResolvedMoneyRef = true;
+
+  // FE-T14 — stamp the allergen-mention ctx flag `refuseAllergenMentionGuard`
+  // (compose-policy-packs.ts, an ADOPTER business guard) reads to REFUSE an
+  // allergen-shaped customer.preferences.update honestly, rather than let
+  // the unconditional allergenExclusions strip+refill above silently
+  // succeed as a no-op on exactly the turn where the customer asked to
+  // change their allergies.
+  if (kind === "customer.preferences.update" && isAllergenMentionUtterance(utteranceText)) {
+    ctx.allergenMentionDetected = true;
+  }
 
   // 034-F1: the ownership-confirmed resource set for the kernel authority graph.
   // ONLY ids the customer-scoped load actually returned (resourceOwnerConfirmed)

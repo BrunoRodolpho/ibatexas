@@ -20,10 +20,11 @@
 // reservation is fully functional without it), so this rollout slice
 // scopes it OUT entirely (CRITICAL DESIGN RULE 4: "optional over
 // required... absence must flow to existing honest paths") rather than
-// build a value-shape resolver mapper for a non-essential field. A future
-// ticket that wants structured special-request capture from chat should
-// design that mapper deliberately, not inherit it from this scoping
-// decision.
+// build a value-shape resolver mapper for a non-essential field. Tracked
+// as FE-D27 (carved): the `{type, notes}` mapper for structured special-
+// request capture, PLUS a date/time-NL-fields grounding path as an
+// alternative to the same-turn check_availability requirement below, and
+// reservation.modify's own slot-change equivalent.
 //
 // ── reservation.create ────────────────────────────────────────────────────
 // Wire payload is `{timeSlotId, partySize, specialRequests?}`. `timeSlotId`

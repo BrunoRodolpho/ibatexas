@@ -67,9 +67,13 @@ export const CUSTOMER_PREFERENCES_UPDATE_EXTRACTION_SCHEMA: CapabilityExtraction
       {
         name: "dietaryFlags",
         trustClass: "directive",
+        // freeform: true — genuinely open-vocabulary preference words (any
+        // diet name a customer might say), not a fixed enum; see extraction-
+        // schema.ts's ExtractionFieldJsonSchema doc for why this must be an
+        // explicit opt-in, never a silent default.
         jsonSchema: {
           type: "array",
-          items: { type: "string" },
+          items: { type: "string", freeform: true },
           description:
             "Restrições alimentares mencionadas pelo cliente (ex.: " +
             "[\"vegetariano\", \"sem glúten\"]). NUNCA inclua alergias aqui.",
@@ -79,9 +83,10 @@ export const CUSTOMER_PREFERENCES_UPDATE_EXTRACTION_SCHEMA: CapabilityExtraction
       {
         name: "favoriteCategories",
         trustClass: "directive",
+        // freeform: true — same open-vocabulary reasoning as dietaryFlags.
         jsonSchema: {
           type: "array",
-          items: { type: "string" },
+          items: { type: "string", freeform: true },
           description:
             "Categorias favoritas mencionadas pelo cliente (ex.: " +
             "[\"churrasco\", \"grelhados\"]).",

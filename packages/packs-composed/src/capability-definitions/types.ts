@@ -170,13 +170,12 @@ interface CapabilityDefinitionCommon {
    *      route-direct/system-only kinds).
    *   2. "Registered-but-unadvertised": the kind HAS a registered chat
    *      tool (`tier: "chat"`) but its planner deliberately never includes
-   *      it — `order.review.submit` (orders planner comment: reviews
-   *      arrive via the web flow) and `whatsapp.handoff.request`
-   *      (whatsapp planner comment, verbatim: "the governed
-   *      `whatsapp.handoff.request` intent is fully wired… but NOT yet
-   *      advertised to the LLM"). Both are `tier: "chat"` with
-   *      `plannerAdvertisedBy: undefined` — a real, source-confirmed,
-   *      deliberately-not-generated boundary, not an oversight.
+   *      it — today's one remaining example is `order.review.submit`
+   *      (orders planner comment: reviews arrive via the web flow),
+   *      `tier: "chat"` with `plannerAdvertisedBy: undefined` — a real,
+   *      source-confirmed, deliberately-not-generated boundary, not an
+   *      oversight. (`whatsapp.handoff.request` was this class's other
+   *      member until FE-T14/BKL-030-activation advertised it.)
    *
    * See `generate-planner-allowed-intents.ts` for the generator this
    * field feeds and its own doc for why the planner's per-STATE gating

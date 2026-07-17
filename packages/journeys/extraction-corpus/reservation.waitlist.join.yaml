@@ -5,6 +5,11 @@
 # `slot_123` is an illustrative placeholder. `partySize` is Directive. Both
 # required. NOT auto-resolved (a new waitlist entry, no existing target) —
 # confirmationRequired is always false.
+#
+# Same THREE REQUIRED CORPUS ARMS as reservation.create.yaml (see its
+# header for the full rationale) — grounded-selection (the bulk below),
+# ungrounded/stale slot reference (guard REFUSEs regardless of extraction
+# fidelity), and absence (no prior read, model correctly omits the field).
 capability: reservation.waitlist.join
 source: tickets/language-engine/issues/14-rollout-convenience-mutating-verbs.md
 cases:
@@ -181,3 +186,46 @@ cases:
           timeSlotId: slot_123
           partySize: 12
         confirmationRequired: false
+
+  # ── Arm (b): ungrounded/stale slot reference. ──────────────────────────
+  - id: stale-slot-reference-guard-refuses
+    utterance: me coloca na lista de espera daquele horário de ontem, somos 4
+    note: >-
+      Second turn referencing a PAST turn's slot (slot_stale) — "de
+      ontem" (from yesterday). The model faithfully relays the id it was
+      shown; requireSlotInFuture REFUSEs regardless of extraction
+      fidelity.
+    expectPayload:
+      extractionIR:
+        payload:
+          timeSlotId: slot_stale
+          partySize: 4
+        provenanceTrust:
+          timeSlotId: untrusted
+          partySize: untrusted
+      hydratedIntentIR:
+        payload:
+          timeSlotId: slot_stale
+          partySize: 4
+        confirmationRequired: false
+      decision: REFUSE
+
+  # ── Arm (c): absence — no prior read in context. ───────────────────────
+  - id: no-prior-read-absence
+    utterance: quero entrar na lista de espera, somos 4
+    note: >-
+      NO preceding check_availability turn — no slot was ever surfaced to
+      reference. The model has nothing to relay and must NOT fabricate a
+      timeSlotId. extractionIR omits the field; no auto-resolve exists;
+      the guard REFUSEs on the null slot.
+    expectPayload:
+      extractionIR:
+        payload:
+          partySize: 4
+        provenanceTrust:
+          partySize: untrusted
+      hydratedIntentIR:
+        payload:
+          partySize: 4
+        confirmationRequired: false
+      decision: REFUSE

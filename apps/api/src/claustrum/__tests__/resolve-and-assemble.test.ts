@@ -32,6 +32,12 @@ let orderFindByDisplayId: (displayId: number) => Promise<Array<{ id: string; cus
   async () => [];
 let reservationListByCustomer: (cid: string, opts?: unknown) => Promise<{ reservations: unknown[]; total: number }> =
   async () => ({ reservations: [], total: 0 });
+// FE-T14 — customer.preferences.update's allergenExclusions-preservation
+// read (createCustomerService().getProfileData).
+let customerGetProfileData: (
+  cid: string,
+) => Promise<{ customerPrefs: { allergenExclusions: string[] } | null }> =
+  async () => ({ customerPrefs: null });
 // FE-T09 (D-a) — order.amend.update_qty/remove_item's LIVE order-fetch +
 // title-match hydration (resolveOrderLineItem), distinct from the stored
 // OrderProjection `orderGetById` above.
@@ -65,7 +71,10 @@ vi.mock("@ibatexas/domain", () => ({
     getActiveByOrderId: (orderId: string) => paymentGetActiveByOrderId(orderId),
     listByOrderId: async () => ({ payments: [], count: 0 }),
   }),
-  createCustomerService: () => ({ getById: async () => null }),
+  createCustomerService: () => ({
+    getById: async () => null,
+    getProfileData: (cid: string) => customerGetProfileData(cid),
+  }),
   createReservationService: () => ({
     getById: (id: string, customerId: string) => reservationGetById(id, customerId),
     listByCustomer: (cid: string, opts?: unknown) => reservationListByCustomer(cid, opts),
@@ -74,9 +83,8 @@ vi.mock("@ibatexas/domain", () => ({
 }));
 
 // Import AFTER mocks (vitest hoists vi.mock).
-const { resolveAndAssemble, sessionTokenKey, resolveCustomerOrderReference } = await import(
-  "../resolve-and-assemble.js"
-);
+const { resolveAndAssemble, sessionTokenKey, resolveCustomerOrderReference, isAllergenMentionUtterance } =
+  await import("../resolve-and-assemble.js");
 
 const BUDGET = 100_000;
 const f4Guard = createTokenBudgetGuard<string, unknown, unknown>({
@@ -112,6 +120,7 @@ beforeEach(() => {
   orderServiceGetOrder = async () => {
     throw new Error("order not found");
   };
+  customerGetProfileData = async () => ({ customerPrefs: null });
 });
 
 describe("resolve-and-assemble — F4 read side", () => {
@@ -1390,5 +1399,114 @@ describe("resolveCustomerOrderReference — FE-T13 customer-plane displayId refe
     orderListByCustomer = async () => ({ orders: [], count: 0 });
     const result = await resolveCustomerOrderReference(undefined, "c1");
     expect(result).toEqual({ orderId: null, autoResolved: false, referenceMatched: false });
+  });
+});
+
+// ── FE-T14 — customer.preferences.update: allergenExclusions preservation
+//    + the allergen-mention honesty detector ────────────────────────────────
+
+describe("isAllergenMentionUtterance — FE-T14 pure detector", () => {
+  it.each([
+    "sou alérgico a amendoim, atualiza aí",
+    "tenho alergia a lactose",
+    "minha filha é alérgica a glúten",
+    "cuidado, alergênico",
+    "ele teve uma reação anafilática",
+  ])("detects an allergen-shaped utterance: %s", (text) => {
+    expect(isAllergenMentionUtterance(text)).toBe(true);
+  });
+
+  it.each([
+    "sou vegetariano e adoro comida grelhada",
+    "quero atualizar minhas preferências",
+    "",
+    undefined,
+  ])("does NOT flag an ordinary preferences utterance: %s", (text) => {
+    expect(isAllergenMentionUtterance(text)).toBe(false);
+  });
+});
+
+describe("resolveAndAssemble — customer.preferences.update (FE-T14)", () => {
+  it("allergenExclusions is ALWAYS resolver-stamped from the customer's current saved value, never from the model", async () => {
+    customerGetProfileData = async () => ({
+      customerPrefs: { allergenExclusions: ["amendoim"] },
+    });
+    const { payload } = await resolveAndAssemble({
+      kind: "customer.preferences.update",
+      // Adversarial: the model smuggled its own allergenExclusions guess —
+      // it must be UNCONDITIONALLY discarded, never survive to the payload.
+      payload: { dietaryFlags: ["vegetariano"], allergenExclusions: ["smuggled"] },
+      customerId: "c1",
+      channel: "web",
+    });
+    expect((payload as { allergenExclusions?: string[] }).allergenExclusions).toEqual(["amendoim"]);
+    expect((payload as { dietaryFlags?: string[] }).dietaryFlags).toEqual(["vegetariano"]);
+  });
+
+  it("a customer with no saved preferences row defaults to allergenExclusions: [] (never REFUSEs a new customer)", async () => {
+    customerGetProfileData = async () => ({ customerPrefs: null });
+    const { payload } = await resolveAndAssemble({
+      kind: "customer.preferences.update",
+      payload: { favoriteCategories: ["churrasco"] },
+      customerId: "c1",
+      channel: "web",
+    });
+    expect((payload as { allergenExclusions?: string[] }).allergenExclusions).toEqual([]);
+  });
+
+  it("a transient read error fails CLOSED to allergenExclusions: [] rather than leaving the field unresolved", async () => {
+    customerGetProfileData = async () => {
+      throw new Error("db down");
+    };
+    const { payload } = await resolveAndAssemble({
+      kind: "customer.preferences.update",
+      payload: { dietaryFlags: ["vegano"] },
+      customerId: "c1",
+      channel: "web",
+    });
+    expect((payload as { allergenExclusions?: string[] }).allergenExclusions).toEqual([]);
+  });
+
+  it("an allergen-shaped utterance stamps ctx.allergenMentionDetected — refuseAllergenMentionGuard reads this to REFUSE honestly", async () => {
+    const { ctx } = await resolveAndAssemble({
+      kind: "customer.preferences.update",
+      payload: {},
+      customerId: "c1",
+      channel: "web",
+      utteranceText: "sou alérgico a amendoim, atualiza aí",
+    });
+    expect(ctx.allergenMentionDetected).toBe(true);
+  });
+
+  it("an ordinary preferences utterance does NOT stamp ctx.allergenMentionDetected", async () => {
+    const { ctx } = await resolveAndAssemble({
+      kind: "customer.preferences.update",
+      payload: { dietaryFlags: ["vegetariano"] },
+      customerId: "c1",
+      channel: "web",
+      utteranceText: "sou vegetariano e adoro comida grelhada",
+    });
+    expect(ctx.allergenMentionDetected).toBeUndefined();
+  });
+
+  it("an absent utteranceText (e.g. an HTTP caller with no conductor cognition) never trips the detector", async () => {
+    const { ctx } = await resolveAndAssemble({
+      kind: "customer.preferences.update",
+      payload: {},
+      customerId: "c1",
+      channel: "web",
+    });
+    expect(ctx.allergenMentionDetected).toBeUndefined();
+  });
+
+  it("the allergen-mention detector is INERT for every other kind, even with allergen-shaped text", async () => {
+    const { ctx } = await resolveAndAssemble({
+      kind: "order.note.add",
+      payload: { orderId: "o1", body: "sou alérgico a amendoim" },
+      customerId: "c1",
+      channel: "web",
+      utteranceText: "sou alérgico a amendoim",
+    });
+    expect(ctx.allergenMentionDetected).toBeUndefined();
   });
 });

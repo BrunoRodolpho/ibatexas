@@ -173,3 +173,78 @@ describe("ExtractionFieldJsonSchema — FE-T14 array-type extension", () => {
     expect(() => assertSoundExtractionSchema(bad)).toThrow(UnsoundExtractionSchemaError);
   });
 });
+
+describe("array-field lint rule — closed enum OR explicit freeform opt-in, never neither (FE-T14 rulings)", () => {
+  it("RED: an array field with no items.enum and no items.freeform fails the gate", () => {
+    const bad: CapabilityExtractionSchema = {
+      capability: "x",
+      fields: [
+        {
+          name: "someList",
+          trustClass: "directive",
+          jsonSchema: { type: "array", items: { type: "string" }, description: "x" },
+          required: false,
+        },
+      ],
+      example: { utterance: "x", payload: {} },
+    };
+    expect(() => assertSoundExtractionSchema(bad)).toThrow(UnsoundExtractionSchemaError);
+    expect(() => assertSoundExtractionSchema(bad)).toThrow(/items\.enum.*items\.freeform|freeform.*enum/);
+  });
+
+  it("GREEN: an array field with items.freeform: true (and no enum) passes", () => {
+    const good: CapabilityExtractionSchema = {
+      capability: "x",
+      fields: [
+        {
+          name: "someList",
+          trustClass: "directive",
+          jsonSchema: {
+            type: "array",
+            items: { type: "string", freeform: true },
+            description: "x",
+          },
+          required: false,
+        },
+      ],
+      example: { utterance: "x", payload: {} },
+    };
+    expect(() => assertSoundExtractionSchema(good)).not.toThrow();
+  });
+
+  it("GREEN: an array field with items.enum (and no freeform marker) passes", () => {
+    const good: CapabilityExtractionSchema = {
+      capability: "x",
+      fields: [
+        {
+          name: "someList",
+          trustClass: "directive",
+          jsonSchema: {
+            type: "array",
+            items: { type: "string", enum: ["a", "b"] },
+            description: "x",
+          },
+          required: false,
+        },
+      ],
+      example: { utterance: "x", payload: {} },
+    };
+    expect(() => assertSoundExtractionSchema(good)).not.toThrow();
+  });
+
+  it("a non-array field is never subject to this rule, even with no enum", () => {
+    const good: CapabilityExtractionSchema = {
+      capability: "x",
+      fields: [
+        {
+          name: "note",
+          trustClass: "directive",
+          jsonSchema: { type: "string", description: "x" },
+          required: false,
+        },
+      ],
+      example: { utterance: "x", payload: {} },
+    };
+    expect(() => assertSoundExtractionSchema(good)).not.toThrow();
+  });
+});

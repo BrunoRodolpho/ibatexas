@@ -46,14 +46,16 @@
                   "dietaryFlags": {
                     "type": "array",
                     "items": {
-                      "type": "string"
+                      "type": "string",
+                      "freeform": true
                     },
                     "description": "Restrições alimentares mencionadas pelo cliente (ex.: [\"vegetariano\", \"sem glúten\"]). NUNCA inclua alergias aqui."
                   },
                   "favoriteCategories": {
                     "type": "array",
                     "items": {
-                      "type": "string"
+                      "type": "string",
+                      "freeform": true
                     },
                     "description": "Categorias favoritas mencionadas pelo cliente (ex.: [\"churrasco\", \"grelhados\"])."
                   }

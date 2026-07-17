@@ -18,6 +18,7 @@ import {
   agentBudgetGuards,
   buildIbatexasPolicyPacks,
   confirmOnAutoResolveGuard,
+  refuseAllergenMentionGuard,
   sessionTokenBudgetGuard,
   IBATEXAS_ADOPTER_AUTH_GUARDS,
   type ErasedPack,
@@ -55,13 +56,17 @@ describe("buildIbatexasPolicyPacks", () => {
   const packs = [mkPack("ibatexas/pack-a", ["a.x"]), mkPack("ibatexas/pack-b", ["b.y"])];
   const composed = buildIbatexasPolicyPacks(packs);
 
-  it("prepends the two adopter guards to every pack's business, in order", () => {
+  it("prepends the three adopter guards to every pack's business, in order", () => {
     for (const p of composed) {
       const business = (p.policy as PolicyBundle<string, unknown, unknown>).business;
       expect(business[0]).toBe(sessionTokenBudgetGuard);
-      expect(business[1]).toBe(confirmOnAutoResolveGuard);
-      expect(business[2]).toBe(ownGuard); // the pack's own guard, unmoved
-      expect(business).toHaveLength(3);
+      // FE-T14 — allergen-mention honesty sits between token-budget and
+      // confirm-on-autoresolve; see IBATEXAS_ADOPTER_BUSINESS_GUARDS's own
+      // doc comment for the ladder-discipline reasoning.
+      expect(business[1]).toBe(refuseAllergenMentionGuard);
+      expect(business[2]).toBe(confirmOnAutoResolveGuard);
+      expect(business[3]).toBe(ownGuard); // the pack's own guard, unmoved
+      expect(business).toHaveLength(4);
     }
   });
 
@@ -88,7 +93,8 @@ describe("buildIbatexasPolicyPacks", () => {
   it("the prepended guards carry their stable names (visible in audit/trace)", () => {
     const bundle = composed[0]!.policy as PolicyBundle<string, unknown, unknown>;
     expect(readGuardMetadata(bundle.business[0]!)?.name).toBe("sessionTokenBudget");
-    expect(readGuardMetadata(bundle.business[1]!)?.name).toBe("confirmOnAutoResolvedRef");
+    expect(readGuardMetadata(bundle.business[1]!)?.name).toBe("refuseAllergenMention");
+    expect(readGuardMetadata(bundle.business[2]!)?.name).toBe("confirmOnAutoResolvedRef");
     expect(readGuardMetadata(bundle.authGuards[0]!)?.name).toBe("agentKillSwitch");
     expect(readGuardMetadata(bundle.authGuards[1]!)?.name).toBe("agentScope");
     for (const g of agentBudgetGuards) {
@@ -125,8 +131,42 @@ describe("buildIbatexasPolicyPacks", () => {
     const def = buildIbatexasPolicyPacks(packs);
     const bundle = def[0]!.policy as PolicyBundle<string, unknown, unknown>;
     expect(bundle.business[0]).toBe(sessionTokenBudgetGuard);
-    expect(bundle.business[1]).toBe(confirmOnAutoResolveGuard);
+    expect(bundle.business[1]).toBe(refuseAllergenMentionGuard);
+    expect(bundle.business[2]).toBe(confirmOnAutoResolveGuard);
     expect(bundle.authGuards[0]).toBe(agentKillSwitchGuard);
     expect(bundle.authGuards[1]).toBe(agentScopeGuard);
+  });
+});
+
+// ── FE-T14 — refuseAllergenMentionGuard ──────────────────────────────────
+
+describe("refuseAllergenMentionGuard", () => {
+  function mkEnvelope(kind: string): { kind: string; payload: Record<string, unknown> } {
+    return { kind, payload: {} };
+  }
+
+  it("REFUSEs a customer.preferences.update envelope when ctx.allergenMentionDetected is true", () => {
+    const decision = refuseAllergenMentionGuard(
+      mkEnvelope("customer.preferences.update") as never,
+      { ctx: { allergenMentionDetected: true } } as never,
+    );
+    expect(decision).not.toBeNull();
+    expect(decision?.kind).toBe("REFUSE");
+  });
+
+  it("passes through (null) when ctx.allergenMentionDetected is absent", () => {
+    const decision = refuseAllergenMentionGuard(
+      mkEnvelope("customer.preferences.update") as never,
+      { ctx: {} } as never,
+    );
+    expect(decision).toBeNull();
+  });
+
+  it("is INERT for every other kind, even with the flag set", () => {
+    const decision = refuseAllergenMentionGuard(
+      mkEnvelope("order.note.add") as never,
+      { ctx: { allergenMentionDetected: true } } as never,
+    );
+    expect(decision).toBeNull();
   });
 });

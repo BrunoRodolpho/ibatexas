@@ -80,9 +80,10 @@
  *     entry.
  *
  * `plannerAdvertisedBy` (FE-T20, both tiers) — see its own doc in
- * `types.ts` for the full contract, including the two "registered-but-
- * unadvertised" chat-tier exceptions (`order.review.submit`,
- * `whatsapp.handoff.request`) and the three ops-foreign-advertised kinds.
+ * `types.ts` for the full contract, including the one remaining
+ * "registered-but-unadvertised" chat-tier exception (`order.review.submit`
+ * — `whatsapp.handoff.request` was activated by FE-T14/BKL-030-activation)
+ * and the three ops-foreign-advertised kinds.
  */
 
 import type { CapabilityDefinition, CapabilityGuardRef } from "./types.js"
@@ -717,13 +718,12 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     pack: "ibatexas/pack-whatsapp",
     mutating: true,
     tier: "chat",
-    // Registered-but-unadvertised (see types.ts `plannerAdvertisedBy`
-    // doc): the whatsapp planner's `allowedIntents` is `[]` for EVERY
-    // session context, verbatim per its own comment: "the governed
-    // `whatsapp.handoff.request` intent is fully wired… but NOT yet
-    // advertised to the LLM". Activation = advertise here + regenerate
-    // the golden-conversation fixtures (BKL-030-activation).
-    plannerAdvertisedBy: undefined,
+    // FE-T14 (BKL-030-activation): previously registered-but-unadvertised
+    // (the whatsapp planner's `allowedIntents` was `[]` for EVERY session
+    // context). Now advertised unconditionally — see capabilities.ts's own
+    // module doc — the one guest-accessible, always-allowed verb in the
+    // roster.
+    plannerAdvertisedBy: ["ibatexas/pack-whatsapp"],
     surfaces: ["chat"],
     // The one guest-accessible tool in the roster —
     // `docs/architecture/design/agent-tools.md`'s `handoff_to_human` entry:

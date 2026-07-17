@@ -32,10 +32,25 @@ export interface ExtractionFieldJsonSchema {
   readonly type: "string" | "number" | "boolean" | "array";
   readonly enum?: readonly string[];
   readonly description: string;
-  /** Required when `type === "array"`; the array's element schema. */
+  /**
+   * Required when `type === "array"`; the array's element schema. MUST
+   * declare EITHER `enum` (a closed, bounded value set) OR `freeform: true`
+   * — an author who omits both gets a lint failure
+   * (`assertSoundExtractionSchema`), never a silently-unbounded array. This
+   * is a deliberate-opt-in, not a default: an array field with no enum and
+   * no `freeform` marker is far more likely an author who forgot to close
+   * the set than one who genuinely wants open text (CRITICAL DESIGN RULE
+   * from the FE-T14 rulings — "no unbounded junk arrays by default").
+   * `freeform: true` fields still carry a real bound in practice — the
+   * field's own `description` documents WHAT kind of free text is expected
+   * (see e.g. customer-whatsapp-convenience.schema.ts's `dietaryFlags`/
+   * `favoriteCategories` — genuinely open-vocabulary preference words, not
+   * a fixed enum, but never truly unconstrained junk either).
+   */
   readonly items?: {
     readonly type: "string" | "number" | "boolean";
     readonly enum?: readonly string[];
+    readonly freeform?: true;
   };
 }
 
@@ -133,6 +148,23 @@ export function assertSoundExtractionSchema(
         `extraction schema for "${schema.capability}" exposes forbidden ` +
           `field "${field.name}" (identifier / PII / safety-critical) to ` +
           `the model — see FORBIDDEN_EXTRACTION_FIELD_NAMES.`,
+      );
+    }
+    // FE-T14 rulings — an array field must be a CLOSED set (`items.enum`) or
+    // an explicit, deliberate opt-in to open text (`items.freeform: true`).
+    // Neither present is treated as an authoring oversight, not a valid
+    // "unbounded by default" shape — fails closed the same way an
+    // Identity-class or forbidden-name field does.
+    if (
+      field.jsonSchema.type === "array" &&
+      field.jsonSchema.items?.enum === undefined &&
+      field.jsonSchema.items?.freeform !== true
+    ) {
+      throw new UnsoundExtractionSchemaError(
+        `extraction schema for "${schema.capability}" declares array field ` +
+          `"${field.name}" with neither items.enum (a closed set) nor ` +
+          `items.freeform: true (an explicit open-text opt-in) — an array ` +
+          `field must declare one or the other, never neither.`,
       );
     }
   }
