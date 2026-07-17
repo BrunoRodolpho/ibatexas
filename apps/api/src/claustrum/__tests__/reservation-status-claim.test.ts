@@ -509,6 +509,27 @@ describe("FE-T17b — discovery-fed end-to-end (dev @ a063661b, turnIds 30c78409
       readOrderFulfillment: async () => null,
       readPaymentStatus: async () => null,
       readReservation: async () => null,
+      // BKL-006 — the falsifier reads default to owned + NOT fired (inert), so they
+      // NEVER change an existing test's verdict: a NOT-cancelled / un-refunded read
+      // leaves the falsifier key ABSENT (the arm does not fire). A test that wants a
+      // firing falsifier overrides the relevant one.
+      readPaymentRefund: async (orderId) => ({
+        orderId,
+        refunded: false,
+        refundedAmountCentavos: 0,
+        status: "",
+      }),
+      readPaymentChargeback: async (orderId) => ({ orderId, disputed: false, status: "" }),
+      readOrderCancelled: async (orderId) => ({
+        orderId,
+        cancelled: false,
+        fulfillmentStatus: "preparing",
+      }),
+      readReservationCancelled: async (reservationId) => ({
+        reservationId,
+        cancelled: false,
+        status: "confirmed",
+      }),
       listActiveOrderIds: async () => [],
       listActiveReservationIds: async () => [],
       countActivePayments: async () => 0,
