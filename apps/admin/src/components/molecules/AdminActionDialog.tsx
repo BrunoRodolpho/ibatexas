@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import { Modal, Button } from '@ibatexas/ui'
 import { reaisStringToCentavos, INVALID_AMOUNT_PT_BR } from '@/lib/money'
+import { FORCE_STATUS_OPTIONS } from '@/domains/admin/payment-status.mappers'
 
 /**
  * OPS-071 — shared confirm-step dialog for the two-phase destructive admin
@@ -29,12 +30,14 @@ export interface AdminActionDialogProps {
   readonly reasonRequired: boolean
   /** Show the optional refund-amount field (refund only). */
   readonly withAmount: boolean
+  /** Show the required target-status selector (force-status only). */
+  readonly withStatus?: boolean
   /** Server 202 prompt, shown in the confirm phase. */
   readonly prompt: string
   /** True while a step-1 or step-2 request is in flight. */
   readonly loading: boolean
-  /** Fire step 1 with the collected reason + (for refund) amount in reais as typed. */
-  readonly onSubmitCollect: (reason: string, amountReais: string) => void
+  /** Fire step 1 with the collected reason + (for refund) amount in reais + (for force-status) target status. */
+  readonly onSubmitCollect: (reason: string, amountReais: string, status: string) => void
   /** Fire step 2 (the second-operator confirmation). */
   readonly onConfirm: () => void
   readonly onCancel: () => void
@@ -46,6 +49,7 @@ export function AdminActionDialog({
   title,
   reasonRequired,
   withAmount,
+  withStatus = false,
   prompt,
   loading,
   onSubmitCollect,
@@ -58,8 +62,11 @@ export function AdminActionDialog({
   const [reason, setReason] = useState('')
   const [amount, setAmount] = useState('')
   const [amountError, setAmountError] = useState<string | null>(null)
+  const [status, setStatus] = useState('')
 
-  const canSubmit = !reasonRequired || reason.trim().length > 0
+  // force-status requires a target status; every action honours reasonRequired.
+  const canSubmit =
+    (!reasonRequired || reason.trim().length > 0) && (!withStatus || status.length > 0)
 
   // Blank amount is valid (full refund); anything typed must parse to
   // integer centavos or step 1 is blocked with an inline pt-BR error.
@@ -70,7 +77,7 @@ export function AdminActionDialog({
       return
     }
     setAmountError(null)
-    onSubmitCollect(reason.trim(), trimmedAmount)
+    onSubmitCollect(reason.trim(), trimmedAmount, status)
   }
 
   const footer =
@@ -104,6 +111,28 @@ export function AdminActionDialog({
     <Modal isOpen={open} onClose={onCancel} title={title} footer={footer} size="sm">
       {phase === 'collect' ? (
         <div className="flex flex-col gap-3">
+          {withStatus && (
+            <label className="flex flex-col gap-1 text-sm">
+              <span className="text-charcoal-700">Novo status do pagamento (obrigatório)</span>
+              <select
+                value={status}
+                onChange={(e) => setStatus(e.target.value)}
+                className="rounded-sm border border-smoke-200 px-2 py-1 text-charcoal-900"
+              >
+                <option value="" disabled>
+                  Selecione um status…
+                </option>
+                {FORCE_STATUS_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+              <span className="text-xs text-charcoal-700">
+                Esta ação ignora a máquina de estados normal e exige confirmação de um segundo operador.
+              </span>
+            </label>
+          )}
           {withAmount && (
             <label className="flex flex-col gap-1 text-sm">
               <span className="text-charcoal-700">Valor do reembolso (R$) — em branco reembolsa o total</span>
