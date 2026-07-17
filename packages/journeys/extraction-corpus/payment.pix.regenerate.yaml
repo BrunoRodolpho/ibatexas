@@ -50,6 +50,23 @@
 # the schema having no field to receive any of them — proving the closed
 # `additionalProperties:false` wire shape holds even when the model has a
 # tempting, superficially-relevant string to smuggle somewhere.
+# LIVE CALIBRATION (FE-T11, 2026-07-17, nemotron-3-nano:4b via an isolated
+# ephemeral test stack): 2 clean passes (pass 3 discarded — contaminated by
+# F4 token_budget.exhausted on the shared seeded customer from running 3
+# passes back-to-back with no --reset-customer-token-budget between them;
+# see ibx-cli-dev-flag-parsing-bug-style gotcha, not a model/extraction
+# finding). Stable-passing (both clean passes): 16/22 cases — the baseline
+# entry below. Two other buckets, deliberately NOT baselined:
+#   - STABLE FAILURES (missed both passes — real model-limitation signal,
+#     left unwaived per FE-1's own discipline, not silently patched):
+#     context-embedded-complaint, colloquial-bota, adversarial-phone-mentioned.
+#   - FLAKY (passed one pass, missed the other — inconclusive with only 2
+#     valid passes; needs a 3rd CLEAN pass, ideally on a --customer-index
+#     other than 0 or with --reset-customer-token-budget, before either
+#     baselining or writing off): brusque-telegraphic, minimal-two-words,
+#     adversarial-cpf-mentioned.
+# payment.refund.issue's 2 boundary-leg cases (separate file) passed both
+# clean passes (2/2 each run) — no instability observed there.
 capability: payment.pix.regenerate
 source: tickets/language-engine/issues/11-rollout-payments-money-tier.md
 cases:
