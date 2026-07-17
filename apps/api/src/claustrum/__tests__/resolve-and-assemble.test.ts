@@ -320,6 +320,290 @@ describe("resolve-and-assemble — cart entity loads", () => {
   });
 });
 
+// ── FE-T12 (team-lead review) — mapCheckoutPaymentMethodWireField ──────────
+// The wire→internal rename that lets order.checkout.create's extraction
+// schema show the model `payment_method` (snake_case, the field name a live
+// calibration proved the 4B reliably produces) while
+// `validatePaymentMethod`/`OrderCheckoutCreatePayload` (pack-orders,
+// BYTE-UNTOUCHED) keep reading `paymentMethod` unchanged.
+describe("resolve-and-assemble — FE-T12 checkout payment_method wire rename", () => {
+  it("wire key present: payload.payment_method is renamed to payload.paymentMethod, and the wire key does NOT survive", async () => {
+    redisGet = async (k) => (k === "cart:active:session:conv-1" ? "cart_abc" : null);
+    medusaStoreFetch = async () => ({
+      cart: { items: [{ variant_id: "var_1", quantity: 1, unit_price: 10 }], total: 10, completed_at: null },
+    });
+    const { payload, ctx } = await resolveAndAssemble({
+      kind: "order.checkout.create",
+      payload: { payment_method: "pix" },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    const p = payload as { paymentMethod?: string; payment_method?: string };
+    expect(p.paymentMethod).toBe("pix");
+    expect(payload).not.toHaveProperty("payment_method");
+    // End-to-end: the renamed key reaches ctx.paymentMethod (buildCartCtx),
+    // the SAME field `validatePaymentMethod` (pack-orders/src/policies.ts)
+    // reads — proving the rename actually unblocks the existing guard.
+    expect(ctx.paymentMethod).toBe("pix");
+  });
+
+  it("internal key absent from the wire: a payload with ONLY payment_method never carries paymentMethod before the rename runs (structural — the extraction schema never declares it)", async () => {
+    redisGet = async () => "cart_abc";
+    medusaStoreFetch = async () => ({ cart: { items: [], total: 0, completed_at: null } });
+    const { payload } = await resolveAndAssemble({
+      kind: "order.checkout.create",
+      payload: { payment_method: "card" },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    // The ONLY way `paymentMethod` appears on the resolved payload is via
+    // this rename — there is no OTHER path that could have produced it.
+    expect((payload as { paymentMethod?: string }).paymentMethod).toBe("card");
+  });
+
+  it("no payment_method mentioned: the payload passes through with neither key — never a fabricated method", async () => {
+    redisGet = async () => "cart_abc";
+    medusaStoreFetch = async () => ({ cart: { items: [], total: 0, completed_at: null } });
+    const { payload } = await resolveAndAssemble({
+      kind: "order.checkout.create",
+      payload: {},
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect(payload).not.toHaveProperty("paymentMethod");
+    expect(payload).not.toHaveProperty("payment_method");
+  });
+
+  it("defensive: if paymentMethod is ALREADY set (never happens on the real model-facing path), it is never overwritten by a co-present payment_method", async () => {
+    redisGet = async () => "cart_abc";
+    medusaStoreFetch = async () => ({ cart: { items: [], total: 0, completed_at: null } });
+    const { payload } = await resolveAndAssemble({
+      kind: "order.checkout.create",
+      payload: { paymentMethod: "cash", payment_method: "pix" },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect((payload as { paymentMethod?: string }).paymentMethod).toBe("cash");
+  });
+
+  it("kind-gated: a DIFFERENT capability's payload carrying payment_method is left alone (the rename is order.checkout.create-only)", async () => {
+    orderGetById = async () => ({ id: "order_9", customerId: "c1", fulfillmentStatus: "confirmed" });
+    orderListByCustomer = async () => ({ orders: [{ id: "order_9" }], count: 1 });
+    const { payload } = await resolveAndAssemble({
+      kind: "order.cancel",
+      payload: { payment_method: "pix" },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect((payload as { payment_method?: string }).payment_method).toBe("pix");
+    expect(payload).not.toHaveProperty("paymentMethod");
+  });
+});
+
+describe("resolve-and-assemble — FE-T12 checkout delivery_type wire rename", () => {
+  it("wire key present: payload.delivery_type is renamed to payload.deliveryType, and the wire key does NOT survive", async () => {
+    redisGet = async (k) => (k === "cart:active:session:conv-1" ? "cart_abc" : null);
+    medusaStoreFetch = async () => ({
+      cart: { items: [{ variant_id: "var_1", quantity: 1, unit_price: 10 }], total: 10, completed_at: null },
+    });
+    const { payload, ctx } = await resolveAndAssemble({
+      kind: "order.checkout.create",
+      payload: { delivery_type: "pickup" },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect((payload as { deliveryType?: string }).deliveryType).toBe("pickup");
+    expect(payload).not.toHaveProperty("delivery_type");
+    // End-to-end: the renamed key reaches ctx.fulfillment (buildCartCtx),
+    // the SAME field `requireSlotsFilledForCheckout` (pack-orders/src/
+    // policies.ts) reads — proving the rename actually unblocks the guard.
+    expect(ctx.fulfillment).toBe("pickup");
+  });
+
+  it("internal key absent from the wire: a payload with ONLY delivery_type never carries deliveryType before the rename runs (structural — the extraction schema never declares it)", async () => {
+    redisGet = async () => "cart_abc";
+    medusaStoreFetch = async () => ({ cart: { items: [], total: 0, completed_at: null } });
+    const { payload } = await resolveAndAssemble({
+      kind: "order.checkout.create",
+      payload: { delivery_type: "delivery" },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    // The ONLY way `deliveryType` appears on the resolved payload is via
+    // this rename — there is no OTHER path that could have produced it.
+    expect((payload as { deliveryType?: string }).deliveryType).toBe("delivery");
+  });
+
+  it("no delivery_type mentioned: the payload passes through with neither key — never a fabricated fulfillment slot", async () => {
+    redisGet = async () => "cart_abc";
+    medusaStoreFetch = async () => ({ cart: { items: [], total: 0, completed_at: null } });
+    const { payload } = await resolveAndAssemble({
+      kind: "order.checkout.create",
+      payload: {},
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect(payload).not.toHaveProperty("deliveryType");
+    expect(payload).not.toHaveProperty("delivery_type");
+  });
+
+  it("defensive: if deliveryType is ALREADY set (never happens on the real model-facing path), it is never overwritten by a co-present delivery_type", async () => {
+    redisGet = async () => "cart_abc";
+    medusaStoreFetch = async () => ({ cart: { items: [], total: 0, completed_at: null } });
+    const { payload } = await resolveAndAssemble({
+      kind: "order.checkout.create",
+      payload: { deliveryType: "pickup", delivery_type: "delivery" },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect((payload as { deliveryType?: string }).deliveryType).toBe("pickup");
+  });
+
+  it("kind-gated: a DIFFERENT capability's payload carrying delivery_type is left alone (the rename is order.checkout.create-only)", async () => {
+    orderGetById = async () => ({ id: "order_9", customerId: "c1", fulfillmentStatus: "confirmed" });
+    orderListByCustomer = async () => ({ orders: [{ id: "order_9" }], count: 1 });
+    const { payload } = await resolveAndAssemble({
+      kind: "order.cancel",
+      payload: { delivery_type: "pickup" },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect((payload as { delivery_type?: string }).delivery_type).toBe("pickup");
+    expect(payload).not.toHaveProperty("deliveryType");
+  });
+
+  it("both wire fields present together: payment_method AND delivery_type both rename independently in the same turn", async () => {
+    redisGet = async (k) => (k === "cart:active:session:conv-1" ? "cart_abc" : null);
+    medusaStoreFetch = async () => ({
+      cart: { items: [{ variant_id: "var_1", quantity: 1, unit_price: 10 }], total: 10, completed_at: null },
+    });
+    const { payload, ctx } = await resolveAndAssemble({
+      kind: "order.checkout.create",
+      payload: { payment_method: "card", delivery_type: "delivery" },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    const p = payload as { paymentMethod?: string; deliveryType?: string };
+    expect(p.paymentMethod).toBe("card");
+    expect(p.deliveryType).toBe("delivery");
+    expect(payload).not.toHaveProperty("payment_method");
+    expect(payload).not.toHaveProperty("delivery_type");
+    expect(ctx.paymentMethod).toBe("card");
+    expect(ctx.fulfillment).toBe("delivery");
+  });
+});
+
+// ── BKL-094 coercion class (team-lead ruling) — VALUE normalization, distinct
+//    from the KEY-rename tests above. A closed, deterministic synonym map —
+//    never a fuzzy/heuristic match. KEY drift (e.g. `payment` instead of
+//    `payment_method`) is NOT in scope here; only VALUE synonyms under the
+//    correct key. ──────────────────────────────────────────────────────────
+describe("resolve-and-assemble — FE-T12 payment_method/delivery_type VALUE normalization", () => {
+  const activeCartWithItems = (): void => {
+    redisGet = async (k) => (k === "cart:active:session:conv-1" ? "cart_abc" : null);
+    medusaStoreFetch = async () => ({
+      cart: { items: [{ variant_id: "var_1", quantity: 1, unit_price: 10 }], total: 10, completed_at: null },
+    });
+  };
+
+  it.each([
+    ["cartão", "card"],
+    ["cartao", "card"],
+    ["crédito", "card"],
+    ["credito", "card"],
+    ["débito", "card"],
+    ["debito", "card"],
+    ["credit", "card"],
+    ["debit", "card"],
+    ["dinheiro", "cash"],
+    // Already-canonical values pass through unchanged (identity entries).
+    ["pix", "pix"],
+    ["card", "card"],
+    ["cash", "cash"],
+  ])("payment_method %j normalizes to %j — reaches ctx.paymentMethod (validatePaymentMethod's own field)", async (raw, expected) => {
+    activeCartWithItems()
+    const { payload, ctx } = await resolveAndAssemble({
+      kind: "order.checkout.create",
+      payload: { payment_method: raw },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect((payload as { paymentMethod?: string }).paymentMethod).toBe(expected)
+    expect(ctx.paymentMethod).toBe(expected)
+  })
+
+  it.each([
+    ["retirada", "pickup"],
+    ["buscar", "pickup"],
+    ["entrega", "delivery"],
+    // Already-canonical values pass through unchanged (identity entries).
+    ["pickup", "pickup"],
+    ["delivery", "delivery"],
+  ])("delivery_type %j normalizes to %j — reaches ctx.fulfillment (requireSlotsFilledForCheckout's own field)", async (raw, expected) => {
+    activeCartWithItems()
+    const { payload, ctx } = await resolveAndAssemble({
+      kind: "order.checkout.create",
+      payload: { delivery_type: raw },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect((payload as { deliveryType?: string }).deliveryType).toBe(expected)
+    expect(ctx.fulfillment).toBe(expected)
+  })
+
+  it("is case- and whitespace-insensitive (the model's exact casing/spacing varies across turns)", async () => {
+    activeCartWithItems()
+    const { ctx } = await resolveAndAssemble({
+      kind: "order.checkout.create",
+      payload: { payment_method: "  CARTÃO  " },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    })
+    expect(ctx.paymentMethod).toBe("card")
+  })
+
+  it("an UNRECOGNIZED value passes through UNCHANGED — never mapped to null, never dropped (validatePaymentMethod's existing 'invalid' REFUSE path still catches it, unchanged from before this map existed)", async () => {
+    redisGet = async () => "cart_abc"
+    medusaStoreFetch = async () => ({ cart: { items: [], total: 0, completed_at: null } })
+    const { payload } = await resolveAndAssemble({
+      kind: "order.checkout.create",
+      payload: { payment_method: "boleto" },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    })
+    expect((payload as { paymentMethod?: string }).paymentMethod).toBe("boleto")
+  })
+
+  it("KEY drift is NOT normalized here — a wrong key (payment instead of payment_method) is untouched by this seam entirely (measurement, not repair, per the reason-drift ruling)", async () => {
+    redisGet = async () => "cart_abc"
+    medusaStoreFetch = async () => ({ cart: { items: [], total: 0, completed_at: null } })
+    const { payload } = await resolveAndAssemble({
+      kind: "order.checkout.create",
+      payload: { payment: "pix" },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    })
+    expect(payload).not.toHaveProperty("paymentMethod")
+    expect((payload as { payment?: string }).payment).toBe("pix")
+  })
+});
+
 // ── F3/L1 (D-014) — thread resolved ids from ctx onto the executor payload ────
 // Without this the tool receives envelope.payload lacking cartId and throws a
 // ZodError after the kernel EXECUTEs — the "can't add an item by message" gap.

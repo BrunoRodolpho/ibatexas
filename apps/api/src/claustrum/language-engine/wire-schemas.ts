@@ -9,10 +9,12 @@
 // FE-T05 authored the first entry (order.status.transition); FE-T09 (D-a,
 // the amend inversion) adds the three granular post-checkout amend kinds;
 // FE-T10 adds the money-tier slice (payment.refund.issue); FE-T11 adds the
-// customer-plane "pay-pix" money-tier slice (payment.pix.regenerate). Later
-// rollout slices (T12-14) add their capability's schema here as each is
-// authored. Purely additive: a capability NOT in this map keeps today's
-// generic `payload` shape, byte-identical.
+// customer-plane "pay-pix" money-tier slice (payment.pix.regenerate); FE-T12
+// (the orders governance-tier rollout) adds the two CUSTOMER-plane entries
+// below (order.checkout.create, order.cancel). Later rollout slices (T13-14)
+// add their capability's schema here as each is authored. Purely additive: a
+// capability NOT in this map keeps today's generic `payload` shape,
+// byte-identical.
 //
 // `AUTHORED_SCHEMAS` is exported so the schema-lint CI gate
 // (`__tests__/schema-lint-gate.test.ts`, FE-T10) can walk EVERY registered
@@ -33,6 +35,8 @@ import {
 } from "./order-amend-granular.schema.js";
 import { PAYMENT_REFUND_ISSUE_EXTRACTION_SCHEMA } from "./payment-refund-issue.schema.js";
 import { PAYMENT_PIX_REGENERATE_EXTRACTION_SCHEMA } from "./payment-pix-regenerate.schema.js";
+import { ORDER_CHECKOUT_CREATE_EXTRACTION_SCHEMA } from "./order-checkout-create.schema.js";
+import { ORDER_CANCEL_EXTRACTION_SCHEMA } from "./order-cancel.schema.js";
 
 /** Every capability's authored extraction schema — the schema-lint gate's
  *  walk target (FE-T10). */
@@ -43,6 +47,8 @@ export const AUTHORED_SCHEMAS: readonly CapabilityExtractionSchema[] = [
   ORDER_AMEND_REMOVE_ITEM_EXTRACTION_SCHEMA,
   PAYMENT_REFUND_ISSUE_EXTRACTION_SCHEMA,
   PAYMENT_PIX_REGENERATE_EXTRACTION_SCHEMA,
+  ORDER_CHECKOUT_CREATE_EXTRACTION_SCHEMA,
+  ORDER_CANCEL_EXTRACTION_SCHEMA,
 ];
 
 /** capability -> its wire `payload` JSON-Schema (pre-built, asserted sound). */

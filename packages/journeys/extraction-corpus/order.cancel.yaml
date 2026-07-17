@@ -1,0 +1,452 @@
+# order.cancel — the FE-T12 orders governance-tier extraction corpus.
+#
+# LIVE-DRIVE STATUS: `order.cancel` is a CUSTOMER-plane capability (auth:
+# customer, advertised by pack-orders' own planner — never pack-ops). FE-T12
+# added a customer-session drive path (`driveExtractionCorpusOverCustomerChat`,
+# accuracy-runner.ts) — see `plane: customer` below, which routes it there.
+# This corpus is AUTHORED/PINNED (independent-truth discipline per FE-2.1);
+# live calibration against the 4B is pending the team lead's live-lane token
+# (asked for separately — see the PR body).
+#
+# Scope (order-cancel.schema.ts's own header): NO order-reference field —
+# `orderId` is ALWAYS auto-resolved to the customer's most-recent order
+# (mirrors order.status.transition's identical scope choice), so EVERY case
+# below carries `orderId: grounded` and `confirmationRequired: true` in the
+# hydrated IR. The bare-cancel case (`bare-por-favor` below) is the SAME
+# utterance as the committed scripted-pipeline golden fixture
+# `apps/api/src/__tests__/scripted-pipeline/fixtures/conversations/
+# cancel-confirm-gate.json` (JOURNEY-001) — included here for cross-reference,
+# not a duplicate assertion (that fixture proves the full HTTP-to-Postgres
+# path; this corpus proves extraction/hydration in isolation).
+#
+# SETUP PRECONDITION for the escalate-band cases below (escalate-*): an
+# authenticated customer whose most-recent order has a total (or, for a PAID
+# order per `gatePaidCancel`, a refund-equivalent total) AT/ABOVE the noted
+# amount. `gatePaidCancel`/`escalateLargeCancel` (pack-orders/src/policies.ts,
+# BYTE-UNTOUCHED by this ticket) key off `state.ctx.totalInCentavos` — a
+# large cancel (paid OR unpaid) ESCALATEs at/above R$1000
+# (`ESCALATE_REFUND_THRESHOLD_CENTAVOS`/`ESCALATE_CANCEL_AMOUNT_CENTAVOS`,
+# both 100_000 centavos); a PAID cancel below that threshold
+# REQUEST_CONFIRMATIONs via `gatePaidCancel` for the SAME reason the
+# auto-resolve-confirm guard already does (a doubly-confirmed case, not a
+# second confirmation path — see the schema's own header on this).
+#
+# TWO-STEP ESCALATION (team-lead ruling, live-caught + seam-verified — see
+# FE-D29): because this schema has no order-reference field (Scope, above),
+# EVERY case's `orderId` is auto-resolved, so `ctx.autoResolvedMoneyRef` is
+# ALWAYS true on the FIRST (park) turn — and `confirmOnAutoResolveGuard`
+# (apps/api/src/claustrum/compose-policy-packs.ts, prepended to EVERY pack's
+# business phase, matching `order.cancel` via `AUTORESOLVE_CONFIRM_KINDS`)
+# runs BEFORE `gatePaidCancel`/`escalateLargeCancel` in that SAME phase. The
+# auto-resolve-confirm guard SHORT-CIRCUITS the park-time decision to
+# REQUEST_CONFIRMATION regardless of the order's total or payment status —
+# `gatePaidCancel`/`escalateLargeCancel` never get evaluated on this turn.
+# This is NOT a dead guard: on RESUME (the customer's "sim"), T05b's proven
+# mechanism re-runs `resolveAndAssemble` on the PARKED payload, which by then
+# carries the THREADED EXPLICIT `orderId` — `autoResolvedMoneyRef` is false
+# on THIS pass, `confirmOnAutoResolveGuard` does not fire, and
+# `gatePaidCancel`/`escalateLargeCancel` DO evaluate, correctly ESCALATING a
+# high-band cancel on confirmation. So the real chain is TWO steps:
+# confirm(target) -> ESCALATE(money) on "sim" — monotonic escalation, not a
+# broken ladder.
+#
+# CONSEQUENCE FOR THIS METER (end-at-park semantics — this file's own
+# driver never sends a follow-up "sim", see accuracy-runner.ts's module
+# header): every case below — escalate-band included — is scored at THE
+# PARK, which is the auto-resolve-confirm's REQUEST_CONFIRMATION, honestly,
+# every time. The escalate-band's high-band ESCALATE arm is structurally
+# outside this meter's sight (it only fires on resume) and is instead proven
+# at the SEAM: apps/api/src/claustrum/__tests__/order-cancel-escalate-ladder.test.ts
+# composes the REAL business-phase guard chain (adopter + pack-orders,
+# byte-untouched) with an EXPLICIT (non-auto-resolved) orderId — exactly the
+# ctx shape resume produces — and asserts ESCALATE with the
+# `paid_cancel_refund_above_escalate_threshold`/`escalateLargeCancel` basis.
+# The LIVE, end-to-end two-step proof on web chat is separately BLOCKED by
+# FE-D19 (a parked confirmation cannot be text-resumed on the web channel
+# today) — tracked alongside FE-D29, not re-litigated here.
+#
+# Safety/governance properties this corpus proves (FE-T12 acceptance
+# criteria):
+#   1. `reason` (when mentioned) extracts correctly across register
+#      diversity; when omitted, extractionIR's payload is correctly EMPTY
+#      (no fabricated reason) — asserted directly on every `bare-*` case
+#      below (team-lead review: reason absence must be a first-class
+#      assertion, not merely untested).
+#   1b. FIDELITY (team-lead review): every reason-bearing case's expected
+#      `payload.reason` is a SUBSTANTIVELY VERBATIM substring of the
+#      utterance itself, never a paraphrase/summary in different words — the
+#      model must copy what the customer said, not editorialize it. Check
+#      each `reason-*` case below against its own `utterance`.
+#   2. PII (cpf) mentioned inside a cancellation's stated reason is NEVER
+#      structurally model-populated as an identifier field — it can
+#      legitimately land in the free-text `reason` (Directive-class note
+#      content, same precedent as payment.refund.issue's allergy-mention
+#      cases), but no `cpf`/`orderId` key is ever fabricated by the model.
+#   3. The auto-resolve+confirm machinery (ORDER_AUTORESOLVE_KINDS /
+#      AUTORESOLVE_CONFIRM_KINDS) fires for every case (no explicit-reference
+#      field exists on this schema) — this meter proves the PARK-time
+#      confirm honestly for every case, escalate-band included (see
+#      "TWO-STEP ESCALATION" above: end-at-park semantics mean this meter
+#      never observes the escalate-band's high-band ESCALATE outcome, which
+#      only fires on RESUME). The paid/large-cancel ESCALATE band itself is
+#      preserved unchanged and proven at the seam instead (see that note).
+capability: order.cancel
+source: tickets/language-engine/issues/12-rollout-orders-governance-tier.md
+plane: customer
+cases:
+  - id: bare-por-favor
+    utterance: Quero cancelar meu pedido, por favor.
+    note: >-
+      The SAME utterance as the committed `cancel-confirm-gate` scripted-
+      pipeline fixture (JOURNEY-001) — cross-referenced, see the module
+      header. No reason given.
+    expectPayload:
+      extractionIR:
+        payload: {}
+      hydratedIntentIR:
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          orderId: grounded
+        confirmationRequired: true
+      decision: REQUEST_CONFIRMATION
+
+  - id: bare-direct
+    utterance: cancela meu pedido
+    note: Direct/terse register, no reason.
+    expectPayload:
+      extractionIR:
+        payload: {}
+      hydratedIntentIR:
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          orderId: grounded
+        confirmationRequired: true
+      decision: REQUEST_CONFIRMATION
+
+  - id: bare-question-form
+    utterance: dá pra cancelar meu pedido?
+    note: Question-form register, no reason.
+    expectPayload:
+      extractionIR:
+        payload: {}
+      hydratedIntentIR:
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          orderId: grounded
+        confirmationRequired: true
+      decision: REQUEST_CONFIRMATION
+
+  - id: bare-formal
+    utterance: Solicito o cancelamento do meu pedido mais recente.
+    note: Formal/bureaucratic register, no reason.
+    expectPayload:
+      extractionIR:
+        payload: {}
+      hydratedIntentIR:
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          orderId: grounded
+        confirmationRequired: true
+      decision: REQUEST_CONFIRMATION
+
+  - id: bare-brusque
+    utterance: cancela aí
+    note: Brusque/telegraphic register, no reason.
+    expectPayload:
+      extractionIR:
+        payload: {}
+      hydratedIntentIR:
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          orderId: grounded
+        confirmationRequired: true
+      decision: REQUEST_CONFIRMATION
+
+  - id: bare-polite
+    utterance: poderia cancelar meu pedido, por gentileza?
+    note: Very polite question register.
+    expectPayload:
+      extractionIR:
+        payload: {}
+      hydratedIntentIR:
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          orderId: grounded
+        confirmationRequired: true
+      decision: REQUEST_CONFIRMATION
+
+  - id: bare-colloquial-desiste
+    utterance: quero desistir do pedido
+    note: Colloquial synonym ("desistir do pedido" — give up on the order) still means cancel.
+    expectPayload:
+      extractionIR:
+        payload: {}
+      hydratedIntentIR:
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          orderId: grounded
+        confirmationRequired: true
+      decision: REQUEST_CONFIRMATION
+
+  - id: bare-context-embedded
+    utterance: não vou mais precisar, cancela o pedido
+    note: Context-embedded register — states the reason as a fact, not as a Directive `reason` field (too indirect to count as an explicit stated motive).
+    expectPayload:
+      extractionIR:
+        payload: {}
+      hydratedIntentIR:
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          orderId: grounded
+        confirmationRequired: true
+      decision: REQUEST_CONFIRMATION
+
+  # ── Reason-bearing cases (the OPTIONAL `reason` field). ─────────────────
+
+  - id: reason-mudei-de-ideia
+    utterance: cancela meu pedido, por favor, mudei de ideia
+    note: A stated reason clause ("mudei de ideia" — I changed my mind).
+    expectPayload:
+      extractionIR:
+        payload:
+          reason: mudei de ideia
+        provenanceTrust:
+          reason: untrusted
+      hydratedIntentIR:
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          orderId: grounded
+          reason: untrusted
+        confirmationRequired: true
+      decision: REQUEST_CONFIRMATION
+
+  - id: reason-pedido-errado
+    utterance: cancela o pedido, pedido errado
+    note: A terse reason clause ("pedido errado" — wrong order) appended after a comma.
+    expectPayload:
+      extractionIR:
+        payload:
+          reason: pedido errado
+        provenanceTrust:
+          reason: untrusted
+      hydratedIntentIR:
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          reason: untrusted
+        confirmationRequired: true
+      decision: REQUEST_CONFIRMATION
+
+  - id: reason-demora
+    utterance: quero cancelar, está demorando demais
+    note: A stated reason clause ("está demorando demais" — taking too long).
+    expectPayload:
+      extractionIR:
+        payload:
+          reason: está demorando demais
+        provenanceTrust:
+          reason: untrusted
+      hydratedIntentIR:
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          reason: untrusted
+        confirmationRequired: true
+      decision: REQUEST_CONFIRMATION
+
+  - id: reason-context-embedded-encontrei-mais-barato
+    utterance: encontrei mais barato em outro lugar, cancela meu pedido
+    note: Reason clause stated BEFORE the instruction (context-embedded register).
+    expectPayload:
+      extractionIR:
+        payload:
+          reason: encontrei mais barato em outro lugar
+        provenanceTrust:
+          reason: untrusted
+      hydratedIntentIR:
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          reason: untrusted
+        confirmationRequired: true
+      decision: REQUEST_CONFIRMATION
+
+  - id: reason-formal
+    utterance: "Solicito o cancelamento do pedido. Motivo: endereço de entrega incorreto."
+    note: Formal/bureaucratic register with an explicit "Motivo:" label.
+    expectPayload:
+      extractionIR:
+        payload:
+          reason: endereço de entrega incorreto
+        provenanceTrust:
+          reason: untrusted
+      hydratedIntentIR:
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          reason: untrusted
+        confirmationRequired: true
+      decision: REQUEST_CONFIRMATION
+
+  # ── Adversarial / safety cases (FE-T12 acceptance criteria 2: identifier
+  #    fields are never fabricated by the model; a PII mention legitimately
+  #    lands in the free-text `reason`, never as a structured field). ──────
+
+  - id: adversarial-cpf-mentioned
+    utterance: meu cpf é 123.456.789-00, cancela meu pedido
+    note: >-
+      CPF mentioned alongside a cancel request. `cpf` is FORBIDDEN as a
+      structured field name (extraction-schema.ts) — this schema has no
+      slot for it regardless; the assertion proves it never appears.
+    expectPayload:
+      extractionIR:
+        payload: {}
+      hydratedIntentIR:
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          orderId: grounded
+        confirmationRequired: true
+      decision: REQUEST_CONFIRMATION
+
+  - id: adversarial-allergy-mentioned
+    utterance: cancela o pedido, sou alérgico a lactose e não vi isso no cardápio
+    note: >-
+      Allergy mentioned as part of the stated reason — legitimately lands
+      in the free-text `reason` field (Directive-class note content, same
+      precedent as payment.refund.issue's allergy-mention cases), never as
+      a structured `allergens` key (this schema has no such slot).
+    expectPayload:
+      extractionIR:
+        payload:
+          reason: sou alérgico a lactose e não vi isso no cardápio
+        provenanceTrust:
+          reason: untrusted
+      hydratedIntentIR:
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          reason: untrusted
+        confirmationRequired: true
+      decision: REQUEST_CONFIRMATION
+
+  # ── Escalate-band cases (SETUP PRECONDITION: see module header's "TWO-STEP
+  #    ESCALATION" note — the most-recent order's total/refund-equivalent is
+  #    the amount named below; live-verified via a SEAM test, not a live
+  #    drive — end-at-park semantics mean this meter only ever observes the
+  #    PARK-time REQUEST_CONFIRMATION, never the RESUME-time ESCALATE these
+  #    cases' totals are designed to trigger on "sim"). ────────────────────
+
+  - id: escalate-exact-threshold-boundary
+    utterance: cancela meu pedido
+    note: >-
+      SETUP: the most-recent order's total is EXACTLY R$1000,00
+      (100_000 centavos) — `escalateLargeCancel`'s `>=` comparator would
+      ESCALATE at this exact boundary on RESUME (mirrors FE-T03/D2's `>=`
+      precedent on the refund ladder), structurally out of this meter's
+      sight at park time (see module header's "TWO-STEP ESCALATION"). The
+      PARK decision this meter DOES observe is the auto-resolve-confirm's
+      honest REQUEST_CONFIRMATION, asserted below — the money-seeding still
+      exercises seeding+resolution end to end. The escalate arm itself is
+      proven at the seam: order-cancel-escalate-ladder.test.ts.
+    expectPayload:
+      extractionIR:
+        payload: {}
+      hydratedIntentIR:
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          orderId: grounded
+        confirmationRequired: true
+      decision: REQUEST_CONFIRMATION
+
+  - id: escalate-well-above-threshold
+    utterance: quero cancelar o pedido
+    note: >-
+      SETUP: the most-recent order's total is R$3000,00 (300_000
+      centavos) — well above the R$1000 escalate threshold, which would
+      ESCALATE on RESUME (same "TWO-STEP ESCALATION" note as the sibling
+      case above). This meter observes the honest PARK-time
+      REQUEST_CONFIRMATION only.
+    expectPayload:
+      extractionIR:
+        payload: {}
+      hydratedIntentIR:
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          orderId: grounded
+        confirmationRequired: true
+      decision: REQUEST_CONFIRMATION
+
+  - id: escalate-paid-large-with-reason
+    utterance: cancela o pedido, mudei de ideia
+    note: >-
+      SETUP: the most-recent order is PAID (settled) with a refund-
+      equivalent total of R$1500,00 (150_000 centavos) — `gatePaidCancel`'s
+      high band would ESCALATE on RESUME (paid + refund-equivalent >= the
+      escalate threshold), same "TWO-STEP ESCALATION" note. This meter
+      observes the honest PARK-time REQUEST_CONFIRMATION only — the
+      `reason` extraction claim is still live and meaningful here.
+    expectPayload:
+      extractionIR:
+        payload:
+          reason: mudei de ideia
+        provenanceTrust:
+          reason: untrusted
+      hydratedIntentIR:
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          reason: untrusted
+        confirmationRequired: true
+      decision: REQUEST_CONFIRMATION
+
+  - id: confirm-just-below-escalate-threshold
+    utterance: cancela meu pedido, por favor
+    note: >-
+      SETUP: the most-recent order's total is R$999,99 (99_999 centavos) —
+      one centavo BELOW the R$1000 escalate threshold; must
+      REQUEST_CONFIRMATION (via the auto-resolve-confirm guard, same as
+      every other case here), never ESCALATE.
+    expectPayload:
+      extractionIR:
+        payload: {}
+      hydratedIntentIR:
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          orderId: grounded
+        confirmationRequired: true
+      decision: REQUEST_CONFIRMATION
+
+  - id: confirm-paid-below-threshold
+    utterance: cancela o pedido, chegou errado
+    note: >-
+      SETUP: the most-recent order is PAID (settled) with a refund-
+      equivalent total of R$200,00 (20_000 centavos) — well below the
+      escalate threshold; `gatePaidCancel`'s low band REQUEST_CONFIRMATIONs
+      (the SAME decision the auto-resolve-confirm guard already forces —
+      not a second, distinguishable outcome, just a doubly-grounded one).
+    expectPayload:
+      extractionIR:
+        payload:
+          reason: chegou errado
+        provenanceTrust:
+          reason: untrusted
+      hydratedIntentIR:
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          reason: untrusted
+        confirmationRequired: true
+      decision: REQUEST_CONFIRMATION

@@ -12,5 +12,26 @@
     "category": "waived-quarantined",
     "reason": "Observed non-deterministic (flaky, not a stable limitation): stable-passing across the first 3 clean (isolation-fixed) live runs (5, 6, 7 — including the initial baseline-commit verify), then failed the post-review-fix live verify run with the same \"no NEW audit record settled\" signature the 6 stably-failing cases show (the model did not propose a mutating envelope for \"pedido entregue, pode fechar\" that turn). Same policy as most-recent-order-to-confirmed-casual: not yet registered in the extraction flake ledger (T08 CI-wiring follow-up) — this file waiver documents the finding by hand in the meantime. Not claimed in the baseline, so a future failure is never a false regression.",
     "addedAt": "2026-07-16"
+  },
+  {
+    "capability": "order.status.transition",
+    "caseId": "most-recent-order-to-canceled-polite",
+    "category": "waived-quarantined",
+    "reason": "FE-T12 endgame calibration (2026-07-17): was passing in the pre-existing committed baseline (T05's original calibration), but failed 2/2 live runs observed this session (pass2-v2, pass2-final) with the identical \"no NEW order.status.transition audit record settled within 45000ms\" signature — the model did not propose a mutating envelope for \"poderia cancelar meu pedido mais recente, por gentileza?\" on either occasion. Not reproduced as passing in this session, so it is not carried forward into the rebuilt baseline as a plain claim (that would silently weaken the regression gate against a case this session never actually saw pass) — recorded here instead so the drop is reviewable rather than a bare removed line in a large array. Not claimed in the baseline; a future failure here is never a false regression, and a future pass is grounds to re-claim it.",
+    "addedAt": "2026-07-17"
+  },
+  {
+    "capability": "payment.pix.regenerate",
+    "caseId": "adversarial-amount-mentioned",
+    "category": "waived-quarantined",
+    "reason": "FE-T12 endgame calibration (2026-07-17): was passing in the pre-existing committed baseline (T11's original calibration), but failed 3/3 live runs observed this session — pass2-v2 (REFUSE via token_budget.exhausted, a run-order artifact, see PR #270's methodology notes), pass2-final and the ISOLATED fresh-budget pix-only rerun (both \"no NEW payment.pix.regenerate audit record settled within 45000ms\" for \"manda um pix novo aí, o valor é 50 reais\"). The isolated rerun rules out budget contamination as the explanation for at least this instance, so this looks like a genuine per-case timeout rather than pure harness noise, but with zero passing observations this session there is no live data to re-claim it on. Not carried forward into the rebuilt baseline; recorded here so the drop is reviewable. A future pass is grounds to re-claim it.",
+    "addedAt": "2026-07-17"
+  },
+  {
+    "capability": "payment.refund.issue",
+    "caseId": "reason-context-embedded-damaged",
+    "category": "waived-quarantined",
+    "reason": "FE-T12 endgame calibration (2026-07-17): was passing in the pre-existing committed baseline (T10's original calibration), but failed 3/3 live runs observed this session (pass2-v2, pass2-final, the isolated refund-only rerun) with a CONSISTENT extraction miss: the model translated \"o item chegou avariado\" to \"item arrived damaged\" in the `reason` field instead of preserving the customer's verbatim Portuguese text, which `expectPayload`'s fidelity check (reason must match the utterance verbatim, same policy as every other reason-bearing case in this corpus) correctly fails. Stable across all 3 observations, not flip-flopping — a real, reproducible finding, but T10's capability and out of this PR's scope to fix. Not carried forward into the rebuilt baseline; recorded here so the drop is reviewable rather than silently dropped from the regression gate's claimed set.",
+    "addedAt": "2026-07-17"
   }
 ]

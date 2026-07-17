@@ -36,6 +36,10 @@
 # (confirmed/preparing/ready/in_delivery/delivered/canceled).
 capability: order.status.transition
 source: tickets/language-engine/issues/07-extraction-accuracy-meter-baseline.md
+# FE-T12: explicit plane declaration — this capability is ops-plane
+# (advertised solely via pack-ops's staff allowlist; the model never sees it
+# on a customer turn), so it drives over POST /api/admin/ops/chat.
+plane: ops
 cases:
   - id: most-recent-order-to-ready
     utterance: muda o status do meu último pedido para pronto

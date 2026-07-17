@@ -1,5 +1,5 @@
 {
-  "capability": "payment.pix.regenerate",
+  "capability": "order.cancel",
   "expressIntentTool": {
     "name": "express_intent",
     "description": "Declarar uma intenção de mutação para o kernel adjudicar. Use `capability` (uma das opções do enum) e `payload` com os dados.",
@@ -9,7 +9,7 @@
         "capability": {
           "type": "string",
           "enum": [
-            "payment.pix.regenerate"
+            "order.cancel"
           ],
           "description": "A capability/intent kind a ser proposta."
         },
@@ -28,7 +28,7 @@
           "if": {
             "properties": {
               "capability": {
-                "const": "payment.pix.regenerate"
+                "const": "order.cancel"
               }
             }
           },
@@ -36,7 +36,12 @@
             "properties": {
               "payload": {
                 "type": "object",
-                "properties": {},
+                "properties": {
+                  "reason": {
+                    "type": "string",
+                    "description": "Motivo do cancelamento, se mencionado (ex.: 'mudei de ideia', 'pedido errado'). Omita se não houver motivo explícito."
+                  }
+                },
                 "additionalProperties": false
               }
             }

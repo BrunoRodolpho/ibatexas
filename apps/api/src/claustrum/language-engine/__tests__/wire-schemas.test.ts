@@ -2,7 +2,8 @@
 // registry. FE-T09 (D-a) adds the three granular post-checkout amend kinds
 // alongside FE-T05's order.status.transition; FE-T10 adds the money-tier
 // slice (payment.refund.issue); FE-T11 adds the customer-plane money-tier
-// slice (payment.pix.regenerate).
+// slice (payment.pix.regenerate); FE-T12 adds the orders governance-tier
+// customer-plane slice (order.checkout.create, order.cancel).
 
 import { describe, expect, it } from "vitest";
 import {
@@ -11,7 +12,7 @@ import {
 } from "../wire-schemas.js";
 
 describe("EXTRACTION_SCHEMAS_BY_CAPABILITY", () => {
-  it("registers order.status.transition (FE-T05), the three granular amend kinds (FE-T09), payment.refund.issue (FE-T10), and payment.pix.regenerate (FE-T11)", () => {
+  it("registers order.status.transition (FE-T05), the three granular amend kinds (FE-T09), payment.refund.issue (FE-T10), payment.pix.regenerate (FE-T11), and order.checkout.create/order.cancel (FE-T12)", () => {
     expect([...EXTRACTION_SCHEMAS_BY_CAPABILITY.keys()].sort()).toEqual(
       [
         "order.amend.add_item",
@@ -20,6 +21,8 @@ describe("EXTRACTION_SCHEMAS_BY_CAPABILITY", () => {
         "order.status.transition",
         "payment.refund.issue",
         "payment.pix.regenerate",
+        "order.checkout.create",
+        "order.cancel",
       ].sort(),
     );
   });
@@ -42,6 +45,32 @@ describe("EXTRACTION_SCHEMAS_BY_CAPABILITY", () => {
       expect(wire).not.toHaveProperty("properties.itemId");
       expect(wire).not.toHaveProperty("properties.allergens");
     }
+  });
+
+  it("FE-T12: order.checkout.create's wire payload is closed and exposes ONLY payment_method + delivery_type (snake_case — team-lead ruling per live-calibration bias)", () => {
+    const wire = EXTRACTION_SCHEMAS_BY_CAPABILITY.get("order.checkout.create") as {
+      properties?: Record<string, unknown>;
+      additionalProperties?: boolean;
+    };
+    expect(wire).toBeDefined();
+    expect(wire.additionalProperties).toBe(false);
+    expect(Object.keys(wire.properties ?? {})).toEqual(["payment_method", "delivery_type"]);
+    expect(wire).not.toHaveProperty("properties.paymentMethod");
+    expect(wire).not.toHaveProperty("properties.deliveryType");
+    expect(wire).not.toHaveProperty("properties.fulfillment");
+    expect(wire).not.toHaveProperty("properties.cartId");
+    expect(wire).not.toHaveProperty("properties.pixDetails");
+  });
+
+  it("FE-T12: order.cancel's wire payload is closed and exposes ONLY reason", () => {
+    const wire = EXTRACTION_SCHEMAS_BY_CAPABILITY.get("order.cancel") as {
+      properties?: Record<string, unknown>;
+      additionalProperties?: boolean;
+    };
+    expect(wire).toBeDefined();
+    expect(wire.additionalProperties).toBe(false);
+    expect(Object.keys(wire.properties ?? {})).toEqual(["reason"]);
+    expect(wire).not.toHaveProperty("properties.orderId");
   });
 });
 
