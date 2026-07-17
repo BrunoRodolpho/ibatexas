@@ -75,6 +75,62 @@ function pickMostRecentlyParked(
   return best ?? fallback;
 }
 
+/**
+ * Confirm-park freshness TTL, seconds (FE-D13). A bare-affirmative "sim" or a
+ * `#hash` reply may resume an ops confirm ONLY while its park is within this
+ * window; an older park is invisible to BOTH resume paths (money-safety — a
+ * forgotten park must never execute on a later unrelated "sim"; the two live
+ * FE-D13 incidents were HOURS-old parks). Default 900s (15 min); a lapsed park is
+ * simply re-issued by re-running the command (the ingress restates it honestly —
+ * see {@link expiredOpsParkNotice}). Env override `OPS_CONFIRM_PARK_TTL_SECONDS`.
+ * Byte-mirrors `getEscalationParkTtlSeconds` (escalation-park-store.ts) per Hard
+ * Rule #3 (config from process.env, never hardcoded).
+ */
+export function getOpsConfirmParkTtlSeconds(): number {
+  const raw = process.env.OPS_CONFIRM_PARK_TTL_SECONDS;
+  if (!raw) return 900;
+  const n = Number.parseInt(raw, 10);
+  if (Number.isNaN(n) || n < 1) return 900;
+  return n;
+}
+
+/** A park list split by freshness at a reference instant (FE-D13). */
+export interface PartitionedOpsParks {
+  readonly fresh: ParkedEnvelope[];
+  readonly expired: ParkedEnvelope[];
+}
+
+/**
+ * Split parked confirmations into `{ fresh, expired }` by age at `nowIso`. A park
+ * is EXPIRED once `age = Date.parse(nowIso) − Date.parse(park.parkedAt) ≥
+ * ttlSeconds*1000`. FAIL-CLOSED: a malformed `parkedAt` OR a malformed `nowIso`
+ * ⇒ EXPIRED — deliberately INVERTING {@link pickMostRecentlyParked}'s NaN
+ * keep-alive fallback for the EXPIRY decision (a park whose age cannot be
+ * established must never stay resumable). Determinism: callers pass the inbound
+ * `receivedAt` (never `Date.now()`), so the same message always partitions the
+ * same way. PURE — never mutates the input list.
+ */
+export function partitionOpsParksByFreshness(
+  parked: ReadonlyArray<ParkedEnvelope>,
+  nowIso: string,
+  ttlSeconds: number,
+): PartitionedOpsParks {
+  const now = Date.parse(nowIso);
+  const ttlMs = ttlSeconds * 1000;
+  const nowInvalid = !Number.isFinite(now);
+  const fresh: ParkedEnvelope[] = [];
+  const expired: ParkedEnvelope[] = [];
+  for (const park of parked) {
+    const parkedAt = Date.parse(park.parkedAt);
+    if (nowInvalid || !Number.isFinite(parkedAt) || now - parkedAt >= ttlMs) {
+      expired.push(park); // fail-closed on a malformed clock; else aged-out
+    } else {
+      fresh.push(park);
+    }
+  }
+  return { fresh, expired };
+}
+
 /** Infer the resolution a hash-prefix reply expresses from its surrounding text.
  *  Defer beats negative beats (default) confirm — addressing a park by hash
  *  without an explicit negative/defer is a positive act of attention. */
@@ -181,6 +237,87 @@ export function isAmbiguousOpsReply(text: string): boolean {
   return AFFIRMATIVE_RE.test(text) && NEGATIVE_RE.test(text);
 }
 
+// ── FE-D13: honest stale-resume restatement ──────────────────────────────────
+// Once the TTL makes a park invisible to matchToParked (above), a later "sim" (or
+// #hash, or "não") aimed at that park would otherwise silently run the fresh loop —
+// the operator believes their reply resumed the earlier action. These surfaces let
+// an ingress state plainly that the pending confirmation EXPIRED and was NOT
+// executed, so re-issuing the command re-parks against fresh state. Deterministic
+// pt-BR (Hard Rule #4), mirroring OPS_AMBIGUOUS_REPLY_CLARIFY_PTBR.
+
+const EXPIRED_OPS_PARK_NOTICE_PREFIX_PTBR =
+  "A confirmação pendente expirou e NÃO foi executada: ";
+const EXPIRED_OPS_PARK_NOTICE_SUFFIX_PTBR =
+  ". Por segurança, repita o comando se ainda quiser executá-lo.";
+
+/** Build the stale-resume restatement from the park's stored kernel prompt. */
+function buildExpiredOpsParkNotice(userPrompt: string): string {
+  return `${EXPIRED_OPS_PARK_NOTICE_PREFIX_PTBR}"${userPrompt}"${EXPIRED_OPS_PARK_NOTICE_SUFFIX_PTBR}`;
+}
+
+const EMPTY_EXCLUDED_KINDS: ReadonlySet<string> = new Set<string>();
+
+/**
+ * If an ops reply signals a resume (affirmative / `#hash` / negative — the SAME
+ * lexicon {@link matchOpsReplyToParked} uses) of an EXPIRED park, return the honest
+ * pt-BR restatement naming that park's stored kernel prompt; otherwise `undefined`
+ * (a no-signal fresh utterance must run the normal loop). Callers pass the
+ * ALREADY-expired parks (partitioned at `nowIso` via
+ * {@link partitionOpsParksByFreshness}). `nowIso` — the inbound `receivedAt` — is
+ * the freshness clock: with NO valid clock we cannot honestly assert expiry, so we
+ * stay silent (fail-safe) and let the normal loop run. PURE.
+ */
+export function expiredOpsParkNotice(
+  text: string,
+  expiredParks: ReadonlyArray<ParkedEnvelope>,
+  nowIso: string,
+): string | undefined {
+  if (expiredParks.length === 0) return undefined;
+  if (!Number.isFinite(Date.parse(nowIso))) return undefined;
+  const match = matchOpsReplyToParked(text, expiredParks);
+  if (!match) return undefined;
+  return buildExpiredOpsParkNotice(match.parked.userPrompt);
+}
+
+/**
+ * The ingress orchestrator for the honest stale-resume notice (FE-D13). Given the
+ * session's pending confirmations and the inbound `nowIso` (receivedAt), partitions
+ * by the confirm-TTL and returns:
+ *   - `undefined` when the reply would resume a still-FRESH in-scope park — the
+ *     normal loop resumes it (a fresh confirm must WIN over an older expired one,
+ *     so an expiry notice never shadows a legitimate fresh "sim");
+ *   - else the honest restatement ({@link expiredOpsParkNotice}) when the reply
+ *     signals a resume of an EXPIRED in-scope park;
+ *   - else `undefined` (an ordinary command → normal loop).
+ * `excludedKinds` drops out-of-scope parks (BKL-086 WhatsApp money-verb parity)
+ * from BOTH the fresh-precedence check AND the expired set — the ingress must never
+ * restate a park it could not resume in the first place (the driver's
+ * `scopeResumeChannel` applies the SAME exclusion). PURE; the clock is the inbound
+ * receivedAt (never `Date.now()`).
+ */
+export function opsStaleResumeNotice(input: {
+  readonly text: string;
+  readonly pendingConfirmations: ReadonlyArray<ParkedEnvelope>;
+  readonly nowIso: string;
+  readonly excludedKinds?: ReadonlySet<string>;
+  readonly ttlSeconds?: number;
+}): string | undefined {
+  const excluded = input.excludedKinds ?? EMPTY_EXCLUDED_KINDS;
+  const ttlSeconds = input.ttlSeconds ?? getOpsConfirmParkTtlSeconds();
+  const inScope = input.pendingConfirmations.filter(
+    (p) => !excluded.has(String(p.envelope.kind)),
+  );
+  const { fresh, expired } = partitionOpsParksByFreshness(
+    inScope,
+    input.nowIso,
+    ttlSeconds,
+  );
+  // A fresh in-scope park the reply resumes takes precedence — never shadow a
+  // legitimate fresh confirm with an expiry notice.
+  if (matchOpsReplyToParked(input.text, fresh) !== null) return undefined;
+  return expiredOpsParkNotice(input.text, expired, input.nowIso);
+}
+
 /**
  * The ops-plane system channel: SystemChannel VERBATIM plus a REAL pt-BR
  * `matchToParked`. Constructed exactly like SystemChannel (same config), so the
@@ -199,6 +336,16 @@ export class OpsSystemChannel extends SystemChannel {
     channelEvent: ChannelMessage,
     session: Session,
   ): ParkedMatch | null {
-    return matchOpsReplyToParked(channelEvent.text, session.pendingConfirmations);
+    // FE-D13 — a park older than the confirm-TTL is invisible to resume (bare
+    // affirmative AND #hash alike, consistent with the hash-miss no-fall-through):
+    // a forgotten park must never execute on a later "sim". The freshness clock is
+    // the inbound receivedAt (deterministic — never Date.now()), the exact
+    // session-filter idiom scopeResumeChannel uses (ops-verb-scope.ts).
+    const { fresh } = partitionOpsParksByFreshness(
+      session.pendingConfirmations,
+      channelEvent.receivedAt,
+      getOpsConfirmParkTtlSeconds(),
+    );
+    return matchOpsReplyToParked(channelEvent.text, fresh);
   }
 }
