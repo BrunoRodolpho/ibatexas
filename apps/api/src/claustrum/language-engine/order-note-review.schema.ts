@@ -16,7 +16,15 @@
 // `order.note.add` is ALREADY fully wired for auto-resolve (both
 // ORDER_AUTORESOLVE_KINDS, resolve-and-assemble.ts, and
 // AUTORESOLVE_CONFIRM_KINDS, compose-policy-packs.ts, already list it —
-// no resolver change needed here, unlike the cart/item family).
+// no resolver change needed here, unlike the cart/item family). It ALSO
+// shares the ops-plane explicit-reference channel `order.status.
+// transition` already declares (BKL-089, `resolveOrderTarget`,
+// ops-resolver.ts, explicitly documents the resolution branch as
+// "shared ... order.note.add / order.status.transition"): a staff
+// message can name an orderId directly (e.g. "adiciona uma nota no
+// pedido order_1"), and the plan-time filter must not strip it before
+// that authoritative direct-lookup runs — the same `legacyPayloadChannels`
+// exception, same reason, as order-status-transition.schema.ts's own.
 //
 // ── order.review.submit ──────────────────────────────────────────────────
 // Wire payload (`OrderReviewSubmitPayload`) is `{orderId, productId,
@@ -83,6 +91,32 @@ export const ORDER_NOTE_ADD_EXTRACTION_SCHEMA: CapabilityExtractionSchema = {
     utterance: "adiciona uma observação no meu pedido: sem cebola, por favor",
     payload: { body: "sem cebola, por favor" },
   },
+  legacyPayloadChannels: [
+    {
+      field: "orderId",
+      reason:
+        "BKL-089 order-reference-resolution — resolveOrderTarget " +
+        "(ops-resolver.ts) tries an authoritative direct lookup on a " +
+        "model/staff-supplied orderId (the SAME shared branch order." +
+        "status.transition uses) before falling back to auto-resolve; " +
+        "an ops-plane authoritative lookup, not a customer-plane " +
+        "autoresolve hazard.",
+    },
+    {
+      field: "isInternal",
+      reason:
+        "Pre-existing ops-plane staff directive, NOT a model-extractable " +
+        "field (stays off `fields`/FORBIDDEN_EXTRACTION_FIELD_NAMES-listed " +
+        "either way): `executeNote` (ops-tool-registry.ts) reads " +
+        "`payload.isInternal ?? true` so staff can explicitly write a " +
+        "PUBLIC note, defaulting to internal only when omitted. Safe to " +
+        "let survive the filter channel-agnostically — the customer-chat " +
+        "executor (`addOrderNote`, packages/tools/src/cart/add-order-" +
+        "note.ts) rebuilds its own payload from a typed input and never " +
+        "reads `isInternal` at all, so a customer-plane call can never " +
+        "have this key influence anything downstream.",
+    },
+  ],
 };
 
 export const ORDER_REVIEW_SUBMIT_EXTRACTION_SCHEMA: CapabilityExtractionSchema =

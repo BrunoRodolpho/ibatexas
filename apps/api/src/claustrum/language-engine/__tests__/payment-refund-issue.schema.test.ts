@@ -72,4 +72,21 @@ describe("PAYMENT_REFUND_ISSUE_EXTRACTION_SCHEMA", () => {
     expect(Object.keys(payload)).not.toContain("orderId");
     expect(Object.keys(payload)).not.toContain("paymentId");
   });
+
+  // FE-T11 (review) — the pre-existing refund-by-message orderId +
+  // BKL-094 amount-alias paths (orderId, refundAmountCentavos, value, valor)
+  it("declares legacyPayloadChannels for orderId + the three BKL-094 amount aliases, all disjoint from its own fields, each with a non-empty reason", () => {
+    const channels = PAYMENT_REFUND_ISSUE_EXTRACTION_SCHEMA.legacyPayloadChannels ?? [];
+    const channelFields = channels.map((c) => c.field).sort();
+    expect(channelFields).toEqual(
+      ["orderId", "refundAmountCentavos", "value", "valor"].sort(),
+    );
+    for (const channel of channels) {
+      expect(channel.reason.trim().length).toBeGreaterThan(0);
+    }
+    const ownFieldNames = extractionFieldNames(PAYMENT_REFUND_ISSUE_EXTRACTION_SCHEMA);
+    for (const field of channelFields) {
+      expect(ownFieldNames.has(field)).toBe(false);
+    }
+  });
 });

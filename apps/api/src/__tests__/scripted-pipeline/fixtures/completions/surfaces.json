@@ -292,6 +292,24 @@
               "if": {
                 "properties": {
                   "capability": {
+                    "const": "payment.pix.regenerate"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "payload": {
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": false
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "capability": {
                     "const": "reservation.create"
                   }
                 }

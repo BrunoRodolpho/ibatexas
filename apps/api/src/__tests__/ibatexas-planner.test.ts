@@ -130,7 +130,11 @@ function expressIntent(capability: string, payload: unknown = { ok: true }): Too
 
 describe("createIbatexasPlanner — intent extraction", () => {
   it("maps an in-plan express_intent to a matching IntentEnvelope", async () => {
-    const { model } = mockModel([expressIntent("order.item.add", { sku: "x", qty: 2 })]);
+    // Payload uses order.item.add's OWN authored schema fields (FE-T14:
+    // {item, quantity}) — this test asserts basic envelope-shape mapping
+    // (kind/actor/taint/payload passthrough of REAL fields), not the
+    // plan-time filter's junk-stripping behavior (covered elsewhere).
+    const { model } = mockModel([expressIntent("order.item.add", { item: "x", quantity: 2 })]);
     const planner = createIbatexasPlanner({
       model,
       modelId: "claude-test",
@@ -145,7 +149,7 @@ describe("createIbatexasPlanner — intent extraction", () => {
     expect(env.actor.principal).toBe("llm");
     expect(env.actor.sessionId).toBe("conv-1");
     expect(env.taint).toBe("UNTRUSTED");
-    expect(env.payload).toEqual({ sku: "x", qty: 2 });
+    expect(env.payload).toEqual({ item: "x", quantity: 2 });
     expect(plan.capabilities).toEqual(["order.item.add"]);
   });
 
@@ -569,6 +573,138 @@ describe("createIbatexasPlanner — buildToolSurface per-capability extraction s
         EXTRACTION_SCHEMAS_BY_CAPABILITY.get(clause.if.properties.capability.const),
       );
     }
+  });
+});
+
+// ── FE-T11 (review) — plan-time payload filter ──────────────────────────────
+
+describe("createIbatexasPlanner — plan-time payload filter (FE-T11 review)", () => {
+  it("payment.pix.regenerate: a smuggled orderId (no declared channel) is DROPPED — the empty schema's payload is always {}", async () => {
+    const { model } = mockModel([
+      expressIntent("payment.pix.regenerate", { orderId: "order_HALLUCINATED" }),
+    ]);
+    const planner = createIbatexasPlanner({
+      model,
+      modelId: "claude-test",
+      capabilityPlanners: [capPlanner([], ["payment.pix.regenerate"])],
+    });
+
+    const plan = await planner.propose(mkState("gera um pix novo"));
+    expect(plan.envelopes).toHaveLength(1);
+    expect(plan.envelopes[0]!.payload).toEqual({});
+  });
+
+  it("order.status.transition: orderId is a DECLARED legacy channel (BKL-089) and survives; allergens/cpf (undeclared junk) are DROPPED, newStatus (the real field) passes through", async () => {
+    const { model } = mockModel([
+      expressIntent("order.status.transition", {
+        orderId: "4242",
+        newStatus: "ready",
+        allergens: ["amendoim"],
+        cpf: "12345678900",
+      }),
+    ]);
+    const planner = createIbatexasPlanner({
+      model,
+      modelId: "claude-test",
+      capabilityPlanners: [capPlanner([], ["order.status.transition"])],
+    });
+
+    const plan = await planner.propose(mkState("avança o 4242"));
+    expect(plan.envelopes).toHaveLength(1);
+    expect(plan.envelopes[0]!.payload).toEqual({
+      orderId: "4242",
+      newStatus: "ready",
+    });
+  });
+
+  it("payment.refund.issue: orderId is a DECLARED legacy channel (the pre-existing refund-by-message path) and survives alongside orderReference/amount/reason; cpf/allergens (undeclared junk) are DROPPED", async () => {
+    const { model } = mockModel([
+      expressIntent("payment.refund.issue", {
+        orderId: "4242",
+        orderReference: "4242",
+        amount: 50,
+        reason: "cliente pediu",
+        cpf: "12345678900",
+        allergens: ["amendoim"],
+      }),
+    ]);
+    const planner = createIbatexasPlanner({
+      model,
+      modelId: "claude-test",
+      capabilityPlanners: [capPlanner([], ["payment.refund.issue"])],
+    });
+
+    const plan = await planner.propose(mkState("reembolsa 50 do pedido 4242"));
+    expect(plan.envelopes).toHaveLength(1);
+    expect(plan.envelopes[0]!.payload).toEqual({
+      orderId: "4242",
+      orderReference: "4242",
+      amount: 50,
+      reason: "cliente pediu",
+    });
+  });
+
+  it("payment.refund.issue: the BKL-094 amount aliases (refundAmountCentavos/value/valor) are DECLARED legacy channels and survive too — the exact shape the e2e refund suite's REFUND_CALL helper scripts (caught this live: a naive filter broke 21 tests here)", async () => {
+    const { model } = mockModel([
+      expressIntent("payment.refund.issue", {
+        orderId: "4242",
+        refundAmountCentavos: 5_000,
+        reason: "cliente pediu",
+        forgedField: "should be stripped",
+      }),
+    ]);
+    const planner = createIbatexasPlanner({
+      model,
+      modelId: "claude-test",
+      capabilityPlanners: [capPlanner([], ["payment.refund.issue"])],
+    });
+
+    const plan = await planner.propose(mkState("reembolsa 50 reais do pedido 4242"));
+    expect(plan.envelopes).toHaveLength(1);
+    expect(plan.envelopes[0]!.payload).toEqual({
+      orderId: "4242",
+      refundAmountCentavos: 5_000,
+      reason: "cliente pediu",
+    });
+  });
+
+  it("order.amend.add_item: no declared legacy channel — a smuggled orderId/variantId/allergens are ALL dropped, item/quantity (the real fields) pass through", async () => {
+    const { model } = mockModel([
+      expressIntent("order.amend.add_item", {
+        item: "coca",
+        quantity: 1,
+        orderId: "order_9",
+        variantId: "var_coke",
+        allergens: ["gluten"],
+      }),
+    ]);
+    const planner = createIbatexasPlanner({
+      model,
+      modelId: "claude-test",
+      capabilityPlanners: [capPlanner([], ["order.amend.add_item"])],
+    });
+
+    const plan = await planner.propose(mkState("adiciona uma coca no meu pedido"));
+    expect(plan.envelopes).toHaveLength(1);
+    expect(plan.envelopes[0]!.payload).toEqual({ item: "coca", quantity: 1 });
+  });
+
+  it("an UNAUTHORED capability's payload passes through completely VERBATIM (no authored schema yet — zero behavior change)", async () => {
+    // order.item.add was this test's original example — FE-T14 authored it,
+    // so this uses order.checkout.create instead (T12 territory, still
+    // unauthored on this branch) to preserve the test's original intent.
+    const { model } = mockModel([
+      expressIntent("order.checkout.create", { sku: "x", qty: 2, anything: "goes" }),
+    ]);
+    const planner = createIbatexasPlanner({
+      model,
+      modelId: "claude-test",
+      capabilityPlanners: [capPlanner(ORDER_READS, ["order.checkout.create"])],
+    });
+
+    const plan = await planner.propose(mkState("quero adicionar 2 costelas"));
+    expect(plan.envelopes).toHaveLength(1);
+    expect(plan.envelopes[0]!.payload).toEqual({ sku: "x", qty: 2, anything: "goes" });
   });
 });
 
@@ -1253,18 +1389,23 @@ describe("createIbatexasPlanner — staff envelope-actor (NEW-032 slice A)", () 
   });
 
   it("option ABSENT: intentHash is byte-identical to a direct buildEnvelope (regression pin)", async () => {
+    // order.item.add was this test's original example — FE-T14 authored it
+    // (sku/qty aren't its schema fields, so the plan-time filter would now
+    // strip them), so this uses order.checkout.create instead (T12
+    // territory, still unauthored on this branch) to preserve the test's
+    // original intent: envelope-hash regression pinning, not filter proof.
     const payload = { sku: "x", qty: 2 };
-    const { model } = mockModel([expressIntent("order.item.add", payload)]);
+    const { model } = mockModel([expressIntent("order.checkout.create", payload)]);
     const planner = createIbatexasPlanner({
       model,
       modelId: "claude-test",
-      capabilityPlanners: [capPlanner(ORDER_READS, ORDER_INTENTS)],
+      capabilityPlanners: [capPlanner(ORDER_READS, ["order.checkout.create"])],
       deriveNonce: FIXED_NONCE,
     });
 
     const env = (await planner.propose(mkState("quero 2 costelas"))).envelopes[0]!;
     const direct = buildEnvelope({
-      kind: "order.item.add",
+      kind: "order.checkout.create",
       payload,
       actor: { principal: "llm", sessionId: "conv-1" },
       taint: "UNTRUSTED",
@@ -1389,6 +1530,13 @@ describe("createIbatexasPlanner — staff envelope-actor (NEW-032 slice A)", () 
 
   // ── (3) adversarial: the model can never influence envelope.actor ───────────
   it("adversarial (option ABSENT): payload actor/role/principal keys never touch envelope.actor", async () => {
+    // order.item.add was this test's original "no authored schema yet"
+    // example — FE-T14 authored it (the plan-time filter now legitimately
+    // strips these junk keys), so this uses order.checkout.create instead
+    // (T12 territory, still unauthored on this branch) to preserve the
+    // test's original "payload passes through verbatim" premise: it proves
+    // actor-authority isolation, not the plan-time filter (that has its own
+    // dedicated coverage elsewhere).
     const evil = {
       sku: "x",
       actor: { principal: "system", sessionId: "admin:root", role: "OWNER" },
@@ -1396,11 +1544,11 @@ describe("createIbatexasPlanner — staff envelope-actor (NEW-032 slice A)", () 
       role: "OWNER",
       principal: "user",
     };
-    const { model } = mockModel([expressIntent("order.item.add", evil)]);
+    const { model } = mockModel([expressIntent("order.checkout.create", evil)]);
     const planner = createIbatexasPlanner({
       model,
       modelId: "claude-test",
-      capabilityPlanners: [capPlanner(ORDER_READS, ORDER_INTENTS)],
+      capabilityPlanners: [capPlanner(ORDER_READS, ["order.checkout.create"])],
       deriveNonce: FIXED_NONCE,
     });
 
@@ -1412,6 +1560,14 @@ describe("createIbatexasPlanner — staff envelope-actor (NEW-032 slice A)", () 
   });
 
   it("adversarial (option PRESENT): payload actor/role keys never override the injected staff actor", async () => {
+    // order.note.add was this test's original "no authored schema yet"
+    // example — FE-T14 authored it (and its explicit-reference `orderId`
+    // legacy channel would let a REAL orderId through, but the extra junk
+    // keys below are neither schema fields nor the legacy channel, so they'd
+    // now be legitimately stripped). Swapped to order.checkout.create (T12
+    // territory, still unauthored on this branch) to preserve the test's
+    // "payload passes through verbatim" premise — this proves staff-actor
+    // isolation, not the plan-time filter.
     const evil = {
       orderId: "o1",
       body: "x",
@@ -1420,11 +1576,11 @@ describe("createIbatexasPlanner — staff envelope-actor (NEW-032 slice A)", () 
       principal: "system",
       sessionId: "admin:root",
     };
-    const { model } = mockModel([expressIntent("order.note.add", evil)]);
+    const { model } = mockModel([expressIntent("order.checkout.create", evil)]);
     const planner = createIbatexasPlanner({
       model,
       modelId: "claude-test",
-      capabilityPlanners: [capPlanner([], ["order.note.add"])],
+      capabilityPlanners: [capPlanner([], ["order.checkout.create"])],
       staffEnvelopeActor: { staffId: "stf_9", role: "ATTENDANT" },
       deriveNonce: FIXED_NONCE,
     });

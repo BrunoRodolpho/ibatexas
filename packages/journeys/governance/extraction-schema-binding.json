@@ -11,6 +11,11 @@
       "goldenFragmentSha256": "0a8b52187be819cff10aa12c2004294da6a84c935e121b5e89beb467e34125b9"
     },
     {
+      "capability": "payment.pix.regenerate",
+      "goldenFragmentPath": "apps/api/src/claustrum/language-engine/__tests__/__golden__/payment-pix-regenerate.extraction-prompt-fragment.json",
+      "goldenFragmentSha256": "fd78002c972cd33ef72bbc6117604f0bdcff58ef0f7aad62afe845a7c6d9def5"
+    },
+    {
       "capability": "read-tools:12-tool-roster",
       "goldenFragmentPath": "apps/api/src/claustrum/language-engine/__tests__/__golden__/read-tools.extraction-prompt-fragment.json",
       "goldenFragmentSha256": "6546e992dbc59d28c3f820ddb4433956d8f0c8b7117f4a4138db24c673aeef89"

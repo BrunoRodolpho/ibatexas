@@ -56,6 +56,7 @@ import {
   OPS_REFUND_DEFAULT_REASON,
   PAYMENT_REFUND_ISSUE_EXTRACTION_SCHEMA,
 } from "./payment-refund-issue.schema.js";
+import { PAYMENT_PIX_REGENERATE_EXTRACTION_SCHEMA } from "./payment-pix-regenerate.schema.js";
 import {
   ORDER_CART_ENSURE_EXTRACTION_SCHEMA,
   ORDER_ITEM_ADD_EXTRACTION_SCHEMA,
@@ -420,6 +421,22 @@ function derivePaymentRefundIssue(record: AuditRecord): LanguageEngineAuditMetad
 }
 
 /**
+ * FE-T11 — `payment.pix.regenerate`'s ONLY resolver-stamped field: `orderId`,
+ * ALWAYS auto-resolved to the customer's most-recent order
+ * (`resolve-and-assemble.ts`'s `ORDER_AUTORESOLVE_KINDS` /
+ * `resolveOrderId`) — never from the model (the extraction schema declares
+ * zero fields; see `payment-pix-regenerate.schema.ts`'s header). Same
+ * "auto-resolved guess" semantics as `order.status.transition`'s own
+ * `orderId` (never `authoritative` — there is no explicit-reference
+ * resolution path for this capability, only the auto-resolve fallback), so
+ * this reuses `deriveGranularAmend`'s already-generalized shape with an
+ * EMPTY `authoritativeResolverFields` set, exactly like
+ * `deriveOrderStatusTransition` would if it too were expressed against the
+ * shared helper.
+ */
+const PAYMENT_PIX_REGENERATE_RESOLVER_FIELDS: readonly string[] = ["orderId"];
+
+/**
  * FE-T14 — the pack-orders cart/item family's resolver-stamped fields.
  * Unlike order.status.transition/the granular amend kinds, NONE of these
  * five are an auto-resolved "most recent X" GUESS: `cartId` is deterministic
@@ -532,6 +549,16 @@ export function buildLanguageEngineAuditMetadata(
   }
   if (record.envelope.kind === "payment.refund.issue") {
     return { languageEngine: derivePaymentRefundIssue(record) };
+  }
+  if (record.envelope.kind === "payment.pix.regenerate") {
+    return {
+      languageEngine: deriveGranularAmend(
+        PAYMENT_PIX_REGENERATE_EXTRACTION_SCHEMA,
+        PAYMENT_PIX_REGENERATE_RESOLVER_FIELDS,
+        new Set(), // orderId is always a GROUNDED auto-resolve guess, never authoritative.
+        payload,
+      ),
+    };
   }
   if (record.envelope.kind === "order.cart.ensure") {
     return {

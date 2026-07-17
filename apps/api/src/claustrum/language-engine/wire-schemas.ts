@@ -8,8 +8,9 @@
 //
 // FE-T05 authored the first entry (order.status.transition); FE-T09 (D-a,
 // the amend inversion) adds the three granular post-checkout amend kinds;
-// FE-T10 adds the money-tier slice (payment.refund.issue); FE-T14 adds the
-// remaining convenience mutating verbs (cart/item, note/review,
+// FE-T10 adds the money-tier slice (payment.refund.issue); FE-T11 adds the
+// customer-plane "pay-pix" money-tier slice (payment.pix.regenerate); FE-T14
+// adds the remaining convenience mutating verbs (cart/item, note/review,
 // reservations, customer/whatsapp). Purely additive: a capability NOT in
 // this map keeps today's generic `payload` shape, byte-identical.
 //
@@ -20,6 +21,8 @@
 
 import {
   toPayloadJsonSchema,
+  extractionFieldNames,
+  legacyChannelFieldNames,
   type CapabilityExtractionSchema,
 } from "./extraction-schema.js";
 import { ORDER_STATUS_TRANSITION_EXTRACTION_SCHEMA } from "./order-status-transition.schema.js";
@@ -29,6 +32,7 @@ import {
   ORDER_AMEND_REMOVE_ITEM_EXTRACTION_SCHEMA,
 } from "./order-amend-granular.schema.js";
 import { PAYMENT_REFUND_ISSUE_EXTRACTION_SCHEMA } from "./payment-refund-issue.schema.js";
+import { PAYMENT_PIX_REGENERATE_EXTRACTION_SCHEMA } from "./payment-pix-regenerate.schema.js";
 import {
   ORDER_CART_ENSURE_EXTRACTION_SCHEMA,
   ORDER_ITEM_ADD_EXTRACTION_SCHEMA,
@@ -60,6 +64,8 @@ export const AUTHORED_SCHEMAS: readonly CapabilityExtractionSchema[] = [
   ORDER_AMEND_UPDATE_QTY_EXTRACTION_SCHEMA,
   ORDER_AMEND_REMOVE_ITEM_EXTRACTION_SCHEMA,
   PAYMENT_REFUND_ISSUE_EXTRACTION_SCHEMA,
+  // FE-T11 — customer-plane pay-pix money-tier slice.
+  PAYMENT_PIX_REGENERATE_EXTRACTION_SCHEMA,
   // FE-T14 — pack-orders cart/item family.
   ORDER_CART_ENSURE_EXTRACTION_SCHEMA,
   ORDER_ITEM_ADD_EXTRACTION_SCHEMA,
@@ -86,4 +92,24 @@ export const EXTRACTION_SCHEMAS_BY_CAPABILITY: ReadonlyMap<
   Record<string, unknown>
 > = new Map(
   AUTHORED_SCHEMAS.map((schema) => [schema.capability, toPayloadJsonSchema(schema)]),
+);
+
+/**
+ * FE-T11 (review) — capability -> the FULL set of payload key names the
+ * plan-time filter allows through (`ibatexas-planner.ts`'s
+ * `stripUnauthoredPayloadFields`): the schema's own extraction field names
+ * UNION any declared `legacyPayloadChannels` (the two known ops-plane
+ * explicit-reference exceptions — `payment.refund.issue` / `order.status.
+ * transition`'s `orderId`; see each schema's own doc). This is the single
+ * source of truth the filter reads — a schema author who adds a channel
+ * here (in the schema file) is automatically covered, no filter edit needed.
+ */
+export const ALLOWED_PAYLOAD_FIELD_NAMES_BY_CAPABILITY: ReadonlyMap<
+  string,
+  ReadonlySet<string>
+> = new Map(
+  AUTHORED_SCHEMAS.map((schema) => [
+    schema.capability,
+    new Set([...extractionFieldNames(schema), ...legacyChannelFieldNames(schema)]),
+  ]),
 );

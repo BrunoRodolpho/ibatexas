@@ -759,6 +759,31 @@ cases:
         confirmationRequired: true
       decision: REQUEST_CONFIRMATION
 
+  # FE-T11 (ticket AC: "assert only the NON-flipped bands — 99_999 -> CONFIRM,
+  # 100_001 -> ESCALATE — leave the exact-R$1000 ladder decision to T03's
+  # regression, no hidden T03 coupling"). This is the mirror-image boundary
+  # case to the one above: one centavo ABOVE the threshold rather than AT it
+  # (escalate-exact-threshold-boundary, above, already covers the exact
+  # 100_000 tie itself — T03/D2's own case, not duplicated here). Together
+  # the 99_999/100_001 pair brackets the threshold without asserting on the
+  # boundary value itself.
+  - id: escalate-just-above-threshold-boundary
+    utterance: "reembolsa 1000,01 reais do pedido 810002"
+    note: R$1000,01 (100_001 centavos) — one centavo ABOVE the escalate threshold; must ESCALATE, same band as "well above".
+    expectPayload:
+      extractionIR:
+        payload:
+          refundAmountCentavos: 100001
+        provenanceTrust:
+          refundAmountCentavos: untrusted
+      hydratedIntentIR:
+        payload:
+          refundAmountCentavos: 100001
+        payloadPresent:
+          - paymentId
+        confirmationRequired: true
+      decision: ESCALATE
+
   - id: formal-second-order-large-amount
     utterance: "Solicito o reembolso de 200 reais referente ao pedido 810002."
     note: Formal register on the SECOND fixture order, an amount well below its own threshold band.
