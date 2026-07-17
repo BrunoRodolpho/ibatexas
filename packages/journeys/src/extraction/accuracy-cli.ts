@@ -34,6 +34,8 @@ import { createDomainReader, type DomainReader } from "../oracle/domain-reader.j
 import { loadTestEnv } from "../harness/test-env.js"
 import { seedCheckoutCart, targetCentavosForCase } from "../live/seed-checkout-cart.js"
 import { seedCancelableOrder, targetCentavosForCancelCase } from "../live/seed-cancelable-order.js"
+import { seedItemCart } from "../live/seed-item-cart.js"
+import { seedItemOrder } from "../live/seed-item-order.js"
 import {
   mintStaffToken,
   mintCustomerToken,
@@ -317,6 +319,28 @@ export function createCheckoutCartSeeder(
 }
 
 /**
+ * FE-T14 (team-lead ruling: the variantId-bridge live-calibration fix,
+ * "item-cart seeder... approved") — `order.item.update`/`order.item.remove`'s
+ * sibling seeder, same `beforeCase` capability-dispatch shape as
+ * `createCheckoutCartSeeder`. Seeds the SAME fixed 4-item cart
+ * (`seed-item-cart.ts`'s `ITEM_CART_PLAN`) for every case regardless of
+ * which of the corpus's 4 casual item names (coca/guaraná/hambúrguer/batata
+ * frita) that specific case references — see that module's header for the
+ * catalog-mapping rationale. Re-seeds a FRESH cart per case (mirroring the
+ * checkout seeder's per-case freshness): `driveExtractionCorpusOverCustomerChat`
+ * mints a new sessionId per case, and the cart↔session Redis binding means
+ * an un-reseeded case would simply find no active cart at all.
+ */
+export function createItemCartSeeder(
+  onProgress: (line: string) => void,
+): (sessionId: string, kase: { id: string }, capability: string) => Promise<void> {
+  return async (sessionId, _kase, capability) => {
+    if (capability !== "order.item.update" && capability !== "order.item.remove") return
+    await seedItemCart({ sessionId, onProgress })
+  }
+}
+
+/**
  * FE-T12 (team-lead ruling: "fix the cancel money-boundary seeding, don't
  * defer — those 2 cases are the live assertion of the cancel ladder's
  * ESCALATE arm, a core AC") — `order.cancel`'s sibling seeder, same
@@ -330,18 +354,55 @@ export function createCheckoutCartSeeder(
  * header for why a PAID seed via seed-refundable-order.ts is exact-outcome-
  * safe for every case, including the ones the corpus's SETUP notes describe
  * as needing an unpaid order).
+ *
+ * FE-T14 amend backfill (live-calibration methodology fix, caught before the
+ * scoped rerun that exposed it): `order.amend.add_item` shares this EXACT
+ * same auto-resolve-to-most-recent-order path (`ORDER_AUTORESOLVE_KINDS`,
+ * resolve-and-assemble.ts) — unlike `update_qty`/`remove_item`, add_item
+ * never matches against EXISTING line items (it resolves the NEW item via
+ * `resolveProductForItem` alone), so it needs only "an order exists," not
+ * `seed-item-order.ts`'s heavier real-Medusa-order-with-known-items fixture.
+ * Dispatching it through this lighter seeder (rather than leaving it
+ * unseeded, or over-provisioning via `createItemOrderSeeder`) mirrors
+ * `order.cancel`'s own precondition exactly, since both share the same
+ * resolver path.
  */
 export function createCancelOrderSeeder(
   customerId: string,
   onProgress: (line: string) => void,
 ): (sessionId: string, kase: { id: string }, capability: string) => Promise<void> {
   return async (_sessionId, kase, capability) => {
-    if (capability !== "order.cancel") return
+    if (capability !== "order.cancel" && capability !== "order.amend.add_item") return
     await seedCancelableOrder({
       customerId,
       targetCentavos: targetCentavosForCancelCase(kase.id),
       onProgress,
     })
+  }
+}
+
+/**
+ * FE-T14 (the variantId-bridge fix's "calibrate the 4 dependent files
+ * live") — `order.amend.update_qty`/`order.amend.remove_item`'s sibling
+ * seeder. UNLIKE `createCancelOrderSeeder`'s reuse of the existing
+ * projection-only WS9 fixture (order.cancel's auto-resolve only needs the
+ * order's EXISTENCE), these two capabilities' `resolveOrderLineItem` fetches
+ * the order straight from MEDUSA for its line items — `seed-item-order.ts`
+ * creates a REAL Medusa order (draft-order admin flow) carrying the SAME
+ * 4-item vocabulary `createItemCartSeeder` seeds into carts, then writes the
+ * matching `order_projections` row directly (see that module's header for
+ * the full two-halves rationale). Same "fresh order before EVERY case"
+ * posture as `createCancelOrderSeeder` (a case may mutate/remove a line,
+ * so reusing one order across cases would let case N's mutation bleed into
+ * case N+1's matching) — customer-keyed, ignores `sessionId` entirely.
+ */
+export function createItemOrderSeeder(
+  customerId: string,
+  onProgress: (line: string) => void,
+): (sessionId: string, kase: { id: string }, capability: string) => Promise<void> {
+  return async (_sessionId, _kase, capability) => {
+    if (capability !== "order.amend.update_qty" && capability !== "order.amend.remove_item") return
+    await seedItemOrder({ customerId, onProgress })
   }
 }
 
@@ -520,6 +581,8 @@ export async function runExtractionAccuracyCli(
       const beforeCase = composeBeforeCase(
         createCheckoutCartSeeder(onProgress),
         createCancelOrderSeeder(customerId, onProgress),
+        createItemCartSeeder(onProgress),
+        createItemOrderSeeder(customerId, onProgress),
       )
       const cust = await driveExtractionCorpusOverCustomerChat(customerFiles, {
         apiBaseUrl,

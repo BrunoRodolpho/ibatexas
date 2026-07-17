@@ -1,0 +1,296 @@
+# order.amend.add_item — FE-T14 BACKFILL. FE-T09 (D-a) authored this
+# capability's extraction schema (order-amend-granular.schema.ts) and wired
+# it onto the express_intent surface, but never grew a corpus for it — this
+# closes that gap, mirroring order.status.transition.yaml's low-risk
+# phrasing-diversity style (this is a "low-risk convenience" sibling per the
+# FE-T14 ticket, not a money/safety-tier capability, so N≈10 rather than the
+# N=20/N≈40 denominators those tiers use — matching FE-T13's read-tool-corpus
+# sizing for the same risk tier).
+#
+# CRITICAL PRECONDITION (BKL-154, amend-preference-correction.ts): the 4B
+# never spontaneously selects order.amend.add_item over its cart-building
+# sibling order.item.add — the runtime re-routes at the resolver seam ONLY
+# when the utterance contains an EXPLICIT existing-order marker (`meu
+# pedido` / `pedido que (eu) (já) fiz` / `pedido \d+`). Every utterance below
+# deliberately uses one of those three EXPLICIT markers (never the bare,
+# ambiguous `no pedido` alone) so the correction fires unconditionally,
+# regardless of the driving session's cart state.
+#
+# QUANTITY DEFAULT (live-calibration finding, FE-T14 backfill): the schema's
+# OWN worked example (order-amend-granular.schema.ts) shows `quantity: 1` for
+# this exact utterance ("adiciona uma coca no meu pedido") — the field
+# description explicitly instructs "padrão: 1 se não informado." Live driving
+# confirmed the model reliably follows that instruction: every case below
+# with no explicit quantity stated extracts `quantity: 1` (not an absent
+# field), matching the schema's own documented default. Cases that DO state
+# a quantity extract that value. Corpus originally (wrongly) expected the
+# field absent when unstated — corrected to match the schema's own contract,
+# a corpus-authoring fix, not a model defect (T10 payment.refund.issue
+# precedent for the same class of correction).
+#
+# Hydration (audit-metadata.ts's deriveGranularAmend): orderId is ALWAYS
+# resolver-filled via the "most recent order" auto-resolve (grounded, a
+# guess — same posture as order.status.transition), hence
+# confirmationRequired: true on every case. variantId is resolver-resolved
+# from the model's NL `item` reference (BKL-061, authoritative — an explicit
+# reference lookup, not a guess) — its PRESENCE is asserted
+# (`payloadPresent`), never its concrete value, since the real seeded-catalog
+# variantId is deployment/seed-data-dependent, not something this file can
+# pin ahead of a live run. `allergens` is deliberately NOT asserted at all:
+# per audit-metadata.ts's own header, a resolution miss (or a matched product
+# with no explicit allergens array) leaves it absent, and this file cannot
+# know the live catalog's exact seed state — asserting it would risk a false
+# RED unrelated to what this corpus exists to prove (extraction fidelity +
+# provenance, not catalog seed content).
+capability: order.amend.add_item
+source: tickets/language-engine/issues/14-rollout-convenience-mutating-verbs.md
+plane: customer
+cases:
+  - id: meu-pedido-basic
+    utterance: adiciona uma coca no meu pedido
+    note: >-
+      Canonical example (order-amend-granular.schema.ts's own worked
+      example) — the `meuPedido` explicit marker, direct register, default
+      quantity (not stated, model extracts the schema's documented default
+      of 1).
+    expectPayload:
+      extractionIR:
+        payload:
+          item: coca
+          quantity: 1
+        provenanceTrust:
+          item: untrusted
+          quantity: untrusted
+      hydratedIntentIR:
+        payload:
+          item: coca
+          quantity: 1
+        payloadPresent:
+          - orderId
+          - variantId
+        provenanceTrust:
+          orderId: grounded
+          variantId: authoritative
+          item: untrusted
+        confirmationRequired: true
+
+  - id: meu-pedido-with-quantity
+    utterance: bota duas cocas no meu pedido
+    note: Explicit quantity stated alongside the `meuPedido` marker.
+    expectPayload:
+      extractionIR:
+        payload:
+          item: coca
+          quantity: 2
+        provenanceTrust:
+          item: untrusted
+          quantity: untrusted
+      hydratedIntentIR:
+        payload:
+          item: coca
+          quantity: 2
+        payloadPresent:
+          - orderId
+          - variantId
+        provenanceTrust:
+          orderId: grounded
+          variantId: authoritative
+        confirmationRequired: true
+
+  - id: pedido-que-ja-fiz-formal
+    utterance: Por favor, adicione um hambúrguer ao pedido que eu já fiz.
+    note: >-
+      Formal register, `pedidoQueFiz` explicit marker, default quantity
+      (schema's documented default of 1).
+    expectPayload:
+      extractionIR:
+        payload:
+          item: hambúrguer
+          quantity: 1
+        provenanceTrust:
+          item: untrusted
+          quantity: untrusted
+      hydratedIntentIR:
+        payload:
+          item: hambúrguer
+          quantity: 1
+        payloadPresent:
+          - orderId
+          - variantId
+        provenanceTrust:
+          orderId: grounded
+          variantId: authoritative
+        confirmationRequired: true
+
+  - id: pedido-numero-explicit
+    utterance: adiciona uma batata frita no pedido 910226
+    note: >-
+      Numbered explicit reference (`pedidoNumero` marker) — direct register,
+      default quantity (schema's documented default of 1).
+    expectPayload:
+      extractionIR:
+        payload:
+          item: batata frita
+          quantity: 1
+        provenanceTrust:
+          item: untrusted
+          quantity: untrusted
+      hydratedIntentIR:
+        payload:
+          item: batata frita
+          quantity: 1
+        payloadPresent:
+          - orderId
+          - variantId
+        provenanceTrust:
+          orderId: grounded
+          variantId: authoritative
+        confirmationRequired: true
+
+  - id: colloquial-poe-mais
+    utterance: põe mais um guaraná no pedido que eu fiz
+    note: >-
+      Colloquial register ("põe mais"), `pedidoQueFiz` marker without "já",
+      default quantity (schema's documented default of 1).
+    expectPayload:
+      extractionIR:
+        payload:
+          item: guaraná
+          quantity: 1
+        provenanceTrust:
+          item: untrusted
+          quantity: untrusted
+      hydratedIntentIR:
+        payload:
+          item: guaraná
+          quantity: 1
+        payloadPresent:
+          - orderId
+          - variantId
+        provenanceTrust:
+          orderId: grounded
+          variantId: authoritative
+        confirmationRequired: true
+
+  - id: question-form
+    utterance: dá pra adicionar uma coca no meu pedido?
+    note: >-
+      Question-form register ("dá pra...?") — a non-imperative surface form,
+      default quantity (schema's documented default of 1).
+    expectPayload:
+      extractionIR:
+        payload:
+          item: coca
+          quantity: 1
+        provenanceTrust:
+          item: untrusted
+          quantity: untrusted
+      hydratedIntentIR:
+        payload:
+          item: coca
+          quantity: 1
+        payloadPresent:
+          - orderId
+          - variantId
+        provenanceTrust:
+          orderId: grounded
+          variantId: authoritative
+        confirmationRequired: true
+
+  - id: brusque-numbered
+    utterance: mais um hambúrguer no pedido 910226, valeu
+    note: >-
+      Brusque/casual register with the numbered explicit marker, default
+      quantity (schema's documented default of 1).
+    expectPayload:
+      extractionIR:
+        payload:
+          item: hambúrguer
+          quantity: 1
+        provenanceTrust:
+          item: untrusted
+          quantity: untrusted
+      hydratedIntentIR:
+        payload:
+          item: hambúrguer
+          quantity: 1
+        payloadPresent:
+          - orderId
+          - variantId
+        provenanceTrust:
+          orderId: grounded
+          variantId: authoritative
+        confirmationRequired: true
+
+  - id: polite-gentileza
+    utterance: por gentileza, adiciona uma batata frita no meu pedido
+    note: >-
+      Very polite register ("por gentileza"), `meuPedido` marker, default
+      quantity (schema's documented default of 1).
+    expectPayload:
+      extractionIR:
+        payload:
+          item: batata frita
+          quantity: 1
+        provenanceTrust:
+          item: untrusted
+          quantity: untrusted
+      hydratedIntentIR:
+        payload:
+          item: batata frita
+          quantity: 1
+        payloadPresent:
+          - orderId
+          - variantId
+        provenanceTrust:
+          orderId: grounded
+          variantId: authoritative
+        confirmationRequired: true
+
+  - id: context-embedded
+    utterance: esqueci de pedir um guaraná, adiciona no meu pedido
+    note: >-
+      Context-embedded register — states the reason before the instruction,
+      default quantity (schema's documented default of 1).
+    expectPayload:
+      extractionIR:
+        payload:
+          item: guaraná
+          quantity: 1
+        provenanceTrust:
+          item: untrusted
+          quantity: untrusted
+      hydratedIntentIR:
+        payload:
+          item: guaraná
+          quantity: 1
+        payloadPresent:
+          - orderId
+          - variantId
+        provenanceTrust:
+          orderId: grounded
+          variantId: authoritative
+        confirmationRequired: true
+
+  - id: three-quantity
+    utterance: adiciona três hambúrgueres no pedido que já fiz
+    note: Larger explicit quantity (3), `pedidoQueFiz` marker.
+    expectPayload:
+      extractionIR:
+        payload:
+          item: hambúrguer
+          quantity: 3
+        provenanceTrust:
+          item: untrusted
+          quantity: untrusted
+      hydratedIntentIR:
+        payload:
+          item: hambúrguer
+          quantity: 3
+        payloadPresent:
+          - orderId
+          - variantId
+        provenanceTrust:
+          orderId: grounded
+          variantId: authoritative
+        confirmationRequired: true

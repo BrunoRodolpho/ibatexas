@@ -11,8 +11,9 @@
 // FE-T10 adds the money-tier slice (payment.refund.issue); FE-T11 adds the
 // customer-plane "pay-pix" money-tier slice (payment.pix.regenerate); FE-T12
 // (the orders governance-tier rollout) adds the two CUSTOMER-plane entries
-// below (order.checkout.create, order.cancel). Later rollout slices (T13-14)
-// add their capability's schema here as each is authored. Purely additive: a
+// below (order.checkout.create, order.cancel); FE-T14 adds the remaining
+// convenience mutating verbs (cart/item, note/review, reservations,
+// customer/whatsapp) — the full drivable surface. Purely additive: a
 // capability NOT in this map keeps today's generic `payload` shape,
 // byte-identical.
 //
@@ -37,6 +38,28 @@ import { PAYMENT_REFUND_ISSUE_EXTRACTION_SCHEMA } from "./payment-refund-issue.s
 import { PAYMENT_PIX_REGENERATE_EXTRACTION_SCHEMA } from "./payment-pix-regenerate.schema.js";
 import { ORDER_CHECKOUT_CREATE_EXTRACTION_SCHEMA } from "./order-checkout-create.schema.js";
 import { ORDER_CANCEL_EXTRACTION_SCHEMA } from "./order-cancel.schema.js";
+import {
+  ORDER_CART_ENSURE_EXTRACTION_SCHEMA,
+  ORDER_ITEM_ADD_EXTRACTION_SCHEMA,
+  ORDER_ITEM_UPDATE_EXTRACTION_SCHEMA,
+  ORDER_ITEM_REMOVE_EXTRACTION_SCHEMA,
+  ORDER_COUPON_APPLY_EXTRACTION_SCHEMA,
+} from "./order-cart-item.schema.js";
+import {
+  ORDER_NOTE_ADD_EXTRACTION_SCHEMA,
+  ORDER_REVIEW_SUBMIT_EXTRACTION_SCHEMA,
+} from "./order-note-review.schema.js";
+import {
+  RESERVATION_CREATE_EXTRACTION_SCHEMA,
+  RESERVATION_MODIFY_EXTRACTION_SCHEMA,
+  RESERVATION_CANCEL_EXTRACTION_SCHEMA,
+  RESERVATION_WAITLIST_JOIN_EXTRACTION_SCHEMA,
+} from "./reservation-convenience.schema.js";
+import {
+  CUSTOMER_PREFERENCES_UPDATE_EXTRACTION_SCHEMA,
+  CUSTOMER_PIX_DETAILS_SAVE_EXTRACTION_SCHEMA,
+  WHATSAPP_HANDOFF_REQUEST_EXTRACTION_SCHEMA,
+} from "./customer-whatsapp-convenience.schema.js";
 
 /** Every capability's authored extraction schema — the schema-lint gate's
  *  walk target (FE-T10). */
@@ -46,9 +69,29 @@ export const AUTHORED_SCHEMAS: readonly CapabilityExtractionSchema[] = [
   ORDER_AMEND_UPDATE_QTY_EXTRACTION_SCHEMA,
   ORDER_AMEND_REMOVE_ITEM_EXTRACTION_SCHEMA,
   PAYMENT_REFUND_ISSUE_EXTRACTION_SCHEMA,
+  // FE-T11 — customer-plane pay-pix money-tier slice.
   PAYMENT_PIX_REGENERATE_EXTRACTION_SCHEMA,
+  // FE-T12 — orders governance-tier rollout (customer-plane).
   ORDER_CHECKOUT_CREATE_EXTRACTION_SCHEMA,
   ORDER_CANCEL_EXTRACTION_SCHEMA,
+  // FE-T14 — pack-orders cart/item family.
+  ORDER_CART_ENSURE_EXTRACTION_SCHEMA,
+  ORDER_ITEM_ADD_EXTRACTION_SCHEMA,
+  ORDER_ITEM_UPDATE_EXTRACTION_SCHEMA,
+  ORDER_ITEM_REMOVE_EXTRACTION_SCHEMA,
+  ORDER_COUPON_APPLY_EXTRACTION_SCHEMA,
+  // FE-T14 — pack-orders free-text family.
+  ORDER_NOTE_ADD_EXTRACTION_SCHEMA,
+  ORDER_REVIEW_SUBMIT_EXTRACTION_SCHEMA,
+  // FE-T14 — pack-reservations family.
+  RESERVATION_CREATE_EXTRACTION_SCHEMA,
+  RESERVATION_MODIFY_EXTRACTION_SCHEMA,
+  RESERVATION_CANCEL_EXTRACTION_SCHEMA,
+  RESERVATION_WAITLIST_JOIN_EXTRACTION_SCHEMA,
+  // FE-T14 — pack-customer-onboarding + pack-whatsapp family.
+  CUSTOMER_PREFERENCES_UPDATE_EXTRACTION_SCHEMA,
+  CUSTOMER_PIX_DETAILS_SAVE_EXTRACTION_SCHEMA,
+  WHATSAPP_HANDOFF_REQUEST_EXTRACTION_SCHEMA,
 ];
 
 /** capability -> its wire `payload` JSON-Schema (pre-built, asserted sound). */

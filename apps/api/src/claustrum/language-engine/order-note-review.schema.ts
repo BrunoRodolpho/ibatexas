@@ -1,0 +1,164 @@
+// order-note-review.schema.ts — FE-T14 (rollout: convenience mutating
+// verbs). The pack-orders free-text family: order.note.add, order.review.
+// submit. Both carry genuine free-text Directive content the model must
+// copy VERBATIM (never paraphrase, never invent) — the corpus for each
+// asserts verbatim-fidelity on positive cases and field-ABSENT on
+// no-content cases (CRITICAL DESIGN RULE 6, FE-T14).
+//
+// ── order.note.add ───────────────────────────────────────────────────────
+// Wire payload (`OrderNoteAddPayload`, pack-orders/src/types.ts) is
+// `{orderId, body, isInternal?}` — orderId is Identity-class (forbidden);
+// `isInternal` is EXPLICITLY on FORBIDDEN_EXTRACTION_FIELD_NAMES (the
+// customer-facing/internal-staff-only distinction is never a model
+// decision — always resolver-defaulted `false` for customer-originated
+// notes, per docs/architecture/design/agent-tools.md: "Note is stored as
+// customer-visible"). The model sees ONLY `{body}` — required, free text.
+// `order.note.add` is ALREADY fully wired for auto-resolve (both
+// ORDER_AUTORESOLVE_KINDS, resolve-and-assemble.ts, and
+// AUTORESOLVE_CONFIRM_KINDS, compose-policy-packs.ts, already list it —
+// no resolver change needed here, unlike the cart/item family). It ALSO
+// shares the ops-plane explicit-reference channel `order.status.
+// transition` already declares (BKL-089, `resolveOrderTarget`,
+// ops-resolver.ts, explicitly documents the resolution branch as
+// "shared ... order.note.add / order.status.transition"): a staff
+// message can name an orderId directly (e.g. "adiciona uma nota no
+// pedido order_1"), and the plan-time filter must not strip it before
+// that authoritative direct-lookup runs — the same `legacyPayloadChannels`
+// exception, same reason, as order-status-transition.schema.ts's own.
+//
+// ── order.review.submit ──────────────────────────────────────────────────
+// Wire payload (`OrderReviewSubmitPayload`) is `{orderId, productId,
+// rating, comment?}`. `orderId`/`productId` are Identity-class (forbidden)
+// — the model sees ONLY `{rating, comment?}`. UNLIKE every other kind in
+// this rollout slice, `order.review.submit` has NO resolver path for
+// EITHER identifier today: `SubmitReviewInputSchema.parse(input)`
+// (submit-review.ts) requires both directly, and neither
+// ORDER_AUTORESOLVE_KINDS nor any other resolver stamps them — this
+// capability is "registered-but-unadvertised" (definitions.ts,
+// register-ibatexas-tool-packs.ts: "the orders planner never advertises
+// it; reviews arrive via the web flow"), a stable, deliberate state, not
+// a bug this rollout slice is fixing. The schema is authored here for
+// COVERAGE (the ticket's AC3: every CHAT_DRIVABLE mutating capability has
+// an authored schema) and `productId` is added to FORBIDDEN_EXTRACTION_
+// FIELD_NAMES (extraction-schema.ts, via `EXEMPTABLE_IDENTIFIER_NAMES` —
+// see that file's header for the two-tier forbidden/never-exemptable
+// design) so no future schema can leak it by DEFAULT either — but the
+// capability stays deliberately UNADVERTISED (the customer planner never
+// offers it) and ships with NO corpus (an unadvertised kind can never be
+// live-driven — a corpus would be dead data).
+//
+// `productId`'s OTHER role — `get_also_added`/`get_ordered_together`'s
+// public catalog lookup key (read-tool-schemas.ts) — is a structurally
+// different, non-owner-scoped use of the SAME name; those two schemas
+// declare `permittedIdentifiers: ["productId"]`, a narrow, explicit,
+// auditable per-schema exception to the default-forbidden posture (never
+// the reverse — `NEVER_EXEMPTABLE_FIELD_NAMES`, the PII/safety-critical
+// half, admits no such exception, structurally, not just by convention).
+//
+// The full orderId/productId resolution + advertisement activation is
+// tracked as FE-D28 (carved): resolve the reviewed product from the
+// order's own line items via an NL `item` reference (mirroring the
+// granular amend kinds' itemId pattern) and an optional `order_reference`
+// display-number field reusing FE-T13's `resolveCustomerOrderReference`
+// (already on dev, IDOR-checked) — see the FE-T14 PR body for the full
+// reasoning. `productId` stays resolver-side when that lands: an
+// order-line lookup keyed off the NL `item` reference, exactly like
+// `variantId`/`itemId` elsewhere in this rollout — never a wire field
+// (and, unlike the read-tool pair above, this capability does NOT declare
+// `permittedIdentifiers` — its `productId` stays forbidden-by-default).
+
+import {
+  type CapabilityExtractionSchema,
+  assertSoundExtractionSchema,
+} from "./extraction-schema.js";
+
+export const ORDER_NOTE_ADD_EXTRACTION_SCHEMA: CapabilityExtractionSchema = {
+  capability: "order.note.add",
+  fields: [
+    {
+      name: "body",
+      trustClass: "directive",
+      jsonSchema: {
+        type: "string",
+        description:
+          "Texto da observação, EXATAMENTE como o cliente disse — nunca " +
+          "resuma, parafraseie ou invente conteúdo.",
+      },
+      required: true,
+    },
+  ],
+  example: {
+    utterance: "adiciona uma observação no meu pedido: sem cebola, por favor",
+    payload: { body: "sem cebola, por favor" },
+  },
+  legacyPayloadChannels: [
+    {
+      field: "orderId",
+      reason:
+        "BKL-089 order-reference-resolution — resolveOrderTarget " +
+        "(ops-resolver.ts) tries an authoritative direct lookup on a " +
+        "model/staff-supplied orderId (the SAME shared branch order." +
+        "status.transition uses) before falling back to auto-resolve; " +
+        "an ops-plane authoritative lookup, not a customer-plane " +
+        "autoresolve hazard.",
+    },
+    {
+      field: "isInternal",
+      reason:
+        "Pre-existing ops-plane staff directive, NOT a model-extractable " +
+        "field (stays off `fields`/FORBIDDEN_EXTRACTION_FIELD_NAMES-listed " +
+        "either way): `executeNote` (ops-tool-registry.ts) reads " +
+        "`payload.isInternal ?? true` so staff can explicitly write a " +
+        "PUBLIC note, defaulting to internal only when omitted. Safe to " +
+        "let survive the filter channel-agnostically — the customer-chat " +
+        "executor (`addOrderNote`, packages/tools/src/cart/add-order-" +
+        "note.ts) rebuilds its own payload from a typed input and never " +
+        "reads `isInternal` at all, so a customer-plane call can never " +
+        "have this key influence anything downstream.",
+    },
+  ],
+};
+
+export const ORDER_REVIEW_SUBMIT_EXTRACTION_SCHEMA: CapabilityExtractionSchema =
+  {
+    capability: "order.review.submit",
+    fields: [
+      {
+        name: "rating",
+        // `ExtractionFieldJsonSchema.enum` is string-only (mirrors the
+        // status-enum precedent, order-status-transition.schema.ts) — a
+        // 1-5 star rating is a `number` field, so the valid range is
+        // described in prose instead (same idiom as
+        // CHECK_AVAILABILITY_READ_SCHEMA's `partySize`, read-tool-
+        // schemas.ts, rather than a speculative numeric-enum extension for
+        // this one field).
+        trustClass: "directive",
+        jsonSchema: {
+          type: "number",
+          description: "Nota de 1 a 5 dada pelo cliente.",
+        },
+        required: true,
+      },
+      {
+        name: "comment",
+        trustClass: "directive",
+        jsonSchema: {
+          type: "string",
+          description:
+            "Comentário da avaliação, EXATAMENTE como o cliente disse. " +
+            "Omita se não houver comentário explícito.",
+        },
+        required: false,
+      },
+    ],
+    example: {
+      utterance: "dou 5 estrelas pro pedido, chegou rapidinho e quentinho",
+      payload: { rating: 5, comment: "chegou rapidinho e quentinho" },
+    },
+  };
+
+// Fail closed at import time — a schema that would leak orderId/productId/
+// isInternal (or any other identifier / PII field) can never even be
+// loaded onto the wire.
+assertSoundExtractionSchema(ORDER_NOTE_ADD_EXTRACTION_SCHEMA);
+assertSoundExtractionSchema(ORDER_REVIEW_SUBMIT_EXTRACTION_SCHEMA);

@@ -13,7 +13,7 @@
     {
       "capability": "payment.pix.regenerate",
       "goldenFragmentPath": "apps/api/src/claustrum/language-engine/__tests__/__golden__/payment-pix-regenerate.extraction-prompt-fragment.json",
-      "goldenFragmentSha256": "554d8f168db90973c7f57e53decbb22e03b3c340fde22d97da2c06dacd20b115"
+      "goldenFragmentSha256": "25d099155460fd18095676c341d1256a8ae6fe18140625ac9330da73a533dfe4"
     },
     {
       "capability": "read-tools:12-tool-roster",
@@ -23,12 +23,37 @@
     {
       "capability": "order.checkout.create",
       "goldenFragmentPath": "apps/api/src/claustrum/language-engine/__tests__/__golden__/order-checkout-create.extraction-prompt-fragment.json",
-      "goldenFragmentSha256": "dc77764b00505a08f6bac9999b59483894fd103a7fad8c7991ccd46922aa83c4"
+      "goldenFragmentSha256": "901aaff15f69e131d68610af497b136dda916a7d138a538a4281db50589d6963"
     },
     {
       "capability": "order.cancel",
       "goldenFragmentPath": "apps/api/src/claustrum/language-engine/__tests__/__golden__/order-cancel.extraction-prompt-fragment.json",
-      "goldenFragmentSha256": "50c6ab5bfa46e3f163873c0969a325fbc02e7e98d61bd289216cd7a8ad033dc4"
+      "goldenFragmentSha256": "142ed87e429d95431f32192dcbfee3841b124e16b8b7734e0ca911128a95300f"
+    },
+    {
+      "capability": "order-amend-granular:3-kind-group",
+      "goldenFragmentPath": "apps/api/src/claustrum/language-engine/__tests__/__golden__/order-amend-granular.extraction-prompt-fragment.json",
+      "goldenFragmentSha256": "a94fddd92a852a95638b3c5d037c59be1856db92f8ae70c22f4ed5ea8f61a4a2"
+    },
+    {
+      "capability": "order-cart-item:5-kind-group",
+      "goldenFragmentPath": "apps/api/src/claustrum/language-engine/__tests__/__golden__/order-cart-item.extraction-prompt-fragment.json",
+      "goldenFragmentSha256": "6a62a3d3ae8197791626c54594ff6a7ecbe7548dd1863c5391ec6b056c4c8524"
+    },
+    {
+      "capability": "order-note-review:2-kind-group",
+      "goldenFragmentPath": "apps/api/src/claustrum/language-engine/__tests__/__golden__/order-note-review.extraction-prompt-fragment.json",
+      "goldenFragmentSha256": "64ee5b1e993d2e402c522b4c5d018eca1ca87ffb583617ff105ae54e513a80b6"
+    },
+    {
+      "capability": "reservation-convenience:4-kind-group",
+      "goldenFragmentPath": "apps/api/src/claustrum/language-engine/__tests__/__golden__/reservation-convenience.extraction-prompt-fragment.json",
+      "goldenFragmentSha256": "2dac465d36cadbe69b925a3f6c716f39c0acafc5158e6341315f9845f0beca8d"
+    },
+    {
+      "capability": "customer-whatsapp-convenience:3-kind-group",
+      "goldenFragmentPath": "apps/api/src/claustrum/language-engine/__tests__/__golden__/customer-whatsapp-convenience.extraction-prompt-fragment.json",
+      "goldenFragmentSha256": "8a61e00e16e28a03119a8e3677e05f04d763c183cec43a81f920684191fe991d"
     }
   ]
 }

@@ -130,7 +130,11 @@ function expressIntent(capability: string, payload: unknown = { ok: true }): Too
 
 describe("createIbatexasPlanner — intent extraction", () => {
   it("maps an in-plan express_intent to a matching IntentEnvelope", async () => {
-    const { model } = mockModel([expressIntent("order.item.add", { sku: "x", qty: 2 })]);
+    // Payload uses order.item.add's OWN authored schema fields (FE-T14:
+    // {item, quantity}) — this test asserts basic envelope-shape mapping
+    // (kind/actor/taint/payload passthrough of REAL fields), not the
+    // plan-time filter's junk-stripping behavior (covered elsewhere).
+    const { model } = mockModel([expressIntent("order.item.add", { item: "x", quantity: 2 })]);
     const planner = createIbatexasPlanner({
       model,
       modelId: "claude-test",
@@ -145,7 +149,7 @@ describe("createIbatexasPlanner — intent extraction", () => {
     expect(env.actor.principal).toBe("llm");
     expect(env.actor.sessionId).toBe("conv-1");
     expect(env.taint).toBe("UNTRUSTED");
-    expect(env.payload).toEqual({ sku: "x", qty: 2 });
+    expect(env.payload).toEqual({ item: "x", quantity: 2 });
     expect(plan.capabilities).toEqual(["order.item.add"]);
   });
 
@@ -423,11 +427,19 @@ describe("createIbatexasPlanner — LLM tool surface", () => {
 
 describe("createIbatexasPlanner — buildToolSurface per-capability extraction schema (FE-1.1/FE-1.4)", () => {
   it("embeds the allOf/if-then payload sub-schema when a registered capability is allowed", async () => {
+    // order.note.add, then order.checkout.create, were this test's
+    // successive "no authored schema yet" examples (FE-T05, then T11/T12) —
+    // FE-T14 + T12 authored the entire real drivable surface (25/26 tickets
+    // done, this is the last one), so no REAL capability is unauthored
+    // anymore. Uses a capability name that will never be registered to
+    // preserve the test's original additive-proof intent permanently.
     const { model } = mockModel([]);
     const planner = createIbatexasPlanner({
       model,
       modelId: "claude-test",
-      capabilityPlanners: [capPlanner([], ["order.status.transition", "order.note.add"])],
+      capabilityPlanners: [
+        capPlanner([], ["order.status.transition", "nonexistent.capability.probe"]),
+      ],
     });
 
     await planner.propose(mkState("oi"));
@@ -442,8 +454,8 @@ describe("createIbatexasPlanner — buildToolSurface per-capability extraction s
 
     expect(schema.allOf).toBeDefined();
     // Exactly one if/then clause — only order.status.transition has an
-    // authored schema; order.note.add (no authored schema yet) contributes
-    // NOTHING to allOf.
+    // authored schema; nonexistent.capability.probe (no authored schema)
+    // contributes NOTHING to allOf.
     expect(schema.allOf).toHaveLength(1);
     expect(schema.allOf![0]!.if.properties.capability.const).toBe(
       "order.status.transition",
@@ -456,11 +468,17 @@ describe("createIbatexasPlanner — buildToolSurface per-capability extraction s
   });
 
   it("is byte-identical to the pre-FE-T05 generic shape when NO allowed capability has an authored schema", async () => {
+    // FE-T14 + T12 authored the entire real drivable surface, so this test
+    // — whose whole point is the NO-schema fallback path — needs
+    // permanently-synthetic capability names rather than a real "still
+    // unauthored" fixture (there isn't one anymore) or the shared
+    // ORDER_INTENTS constant the other ~30 planner-mechanics tests rely on.
+    const noSchemaIntents = ["nonexistent.capability.probe.a", "nonexistent.capability.probe.b"];
     const { model } = mockModel([]);
     const planner = createIbatexasPlanner({
       model,
       modelId: "claude-test",
-      capabilityPlanners: [capPlanner(ORDER_READS, ORDER_INTENTS)],
+      capabilityPlanners: [capPlanner(ORDER_READS, noSchemaIntents)],
     });
 
     await planner.propose(mkState("oi"));
@@ -472,7 +490,7 @@ describe("createIbatexasPlanner — buildToolSurface per-capability extraction s
       properties: {
         capability: {
           type: "string",
-          enum: ORDER_INTENTS,
+          enum: noSchemaIntents,
           description: "A capability/intent kind a ser proposta.",
         },
         payload: {
@@ -484,6 +502,35 @@ describe("createIbatexasPlanner — buildToolSurface per-capability extraction s
       additionalProperties: false,
     });
     expect((ei.inputSchema as { allOf?: unknown }).allOf).toBeUndefined();
+  });
+
+  it("FE-T14: embeds one allOf/if-then clause per authored order-cart-item kind when ORDER_INTENTS is in play", async () => {
+    const { model } = mockModel([]);
+    const planner = createIbatexasPlanner({
+      model,
+      modelId: "claude-test",
+      capabilityPlanners: [capPlanner(ORDER_READS, ORDER_INTENTS)],
+    });
+
+    await planner.propose(mkState("oi"));
+    const req = (model.complete as ReturnType<typeof vi.fn>).mock.calls[0]![0] as CompletionRequest;
+    const ei = (req.tools ?? []).find((t) => t.name === EXPRESS_INTENT_TOOL)!;
+    const schema = ei.inputSchema as {
+      allOf?: ReadonlyArray<{
+        if: { properties: { capability: { const: string } } };
+        then: { properties: { payload: unknown } };
+      }>;
+    };
+
+    expect(schema.allOf).toHaveLength(ORDER_INTENTS.length);
+    const clauseCapabilities = schema.allOf!.map((c) => c.if.properties.capability.const);
+    expect(new Set(clauseCapabilities)).toEqual(new Set(ORDER_INTENTS));
+    for (const kind of ORDER_INTENTS) {
+      const clause = schema.allOf!.find((c) => c.if.properties.capability.const === kind)!;
+      expect(clause.then.properties.payload).toEqual(
+        EXTRACTION_SCHEMAS_BY_CAPABILITY.get(kind),
+      );
+    }
   });
 
   // FE-T09 (D-a, the amend inversion): the three granular post-checkout
@@ -646,13 +693,17 @@ describe("createIbatexasPlanner — plan-time payload filter (FE-T11 review)", (
   });
 
   it("an UNAUTHORED capability's payload passes through completely VERBATIM (no authored schema yet — zero behavior change)", async () => {
+    // order.item.add, then order.checkout.create, were this test's
+    // successive examples — FE-T14 then T12 authored them both (the entire
+    // real drivable surface is now covered), so this uses a permanently
+    // unregistered capability name to preserve the test's original intent.
     const { model } = mockModel([
-      expressIntent("order.item.add", { sku: "x", qty: 2, anything: "goes" }),
+      expressIntent("nonexistent.capability.probe", { sku: "x", qty: 2, anything: "goes" }),
     ]);
     const planner = createIbatexasPlanner({
       model,
       modelId: "claude-test",
-      capabilityPlanners: [capPlanner(ORDER_READS, ORDER_INTENTS)],
+      capabilityPlanners: [capPlanner(ORDER_READS, ["nonexistent.capability.probe"])],
     });
 
     const plan = await planner.propose(mkState("quero adicionar 2 costelas"));
@@ -1342,18 +1393,24 @@ describe("createIbatexasPlanner — staff envelope-actor (NEW-032 slice A)", () 
   });
 
   it("option ABSENT: intentHash is byte-identical to a direct buildEnvelope (regression pin)", async () => {
+    // order.item.add, then order.checkout.create, were this test's
+    // successive examples — FE-T14 then T12 authored them both (sku/qty
+    // aren't either's schema fields, so the plan-time filter would now
+    // strip them), so this uses a permanently unregistered capability name
+    // to preserve the test's original intent: envelope-hash regression
+    // pinning, not filter proof.
     const payload = { sku: "x", qty: 2 };
-    const { model } = mockModel([expressIntent("order.item.add", payload)]);
+    const { model } = mockModel([expressIntent("nonexistent.capability.probe", payload)]);
     const planner = createIbatexasPlanner({
       model,
       modelId: "claude-test",
-      capabilityPlanners: [capPlanner(ORDER_READS, ORDER_INTENTS)],
+      capabilityPlanners: [capPlanner(ORDER_READS, ["nonexistent.capability.probe"])],
       deriveNonce: FIXED_NONCE,
     });
 
     const env = (await planner.propose(mkState("quero 2 costelas"))).envelopes[0]!;
     const direct = buildEnvelope({
-      kind: "order.item.add",
+      kind: "nonexistent.capability.probe",
       payload,
       actor: { principal: "llm", sessionId: "conv-1" },
       taint: "UNTRUSTED",
@@ -1478,6 +1535,13 @@ describe("createIbatexasPlanner — staff envelope-actor (NEW-032 slice A)", () 
 
   // ── (3) adversarial: the model can never influence envelope.actor ───────────
   it("adversarial (option ABSENT): payload actor/role/principal keys never touch envelope.actor", async () => {
+    // order.item.add, then order.checkout.create, were this test's
+    // successive "no authored schema yet" examples — FE-T14 then T12
+    // authored them both (the entire real drivable surface is now covered),
+    // so this uses a permanently unregistered capability name to preserve
+    // the test's original "payload passes through verbatim" premise: it
+    // proves actor-authority isolation, not the plan-time filter (that has
+    // its own dedicated coverage elsewhere).
     const evil = {
       sku: "x",
       actor: { principal: "system", sessionId: "admin:root", role: "OWNER" },
@@ -1485,11 +1549,11 @@ describe("createIbatexasPlanner — staff envelope-actor (NEW-032 slice A)", () 
       role: "OWNER",
       principal: "user",
     };
-    const { model } = mockModel([expressIntent("order.item.add", evil)]);
+    const { model } = mockModel([expressIntent("nonexistent.capability.probe", evil)]);
     const planner = createIbatexasPlanner({
       model,
       modelId: "claude-test",
-      capabilityPlanners: [capPlanner(ORDER_READS, ORDER_INTENTS)],
+      capabilityPlanners: [capPlanner(ORDER_READS, ["nonexistent.capability.probe"])],
       deriveNonce: FIXED_NONCE,
     });
 
@@ -1501,6 +1565,12 @@ describe("createIbatexasPlanner — staff envelope-actor (NEW-032 slice A)", () 
   });
 
   it("adversarial (option PRESENT): payload actor/role keys never override the injected staff actor", async () => {
+    // order.note.add, then order.checkout.create, were this test's
+    // successive "no authored schema yet" examples — FE-T14 then T12
+    // authored them both (the entire real drivable surface is now covered),
+    // so this uses a permanently unregistered capability name to preserve
+    // the test's "payload passes through verbatim" premise — this proves
+    // staff-actor isolation, not the plan-time filter.
     const evil = {
       orderId: "o1",
       body: "x",
@@ -1509,11 +1579,11 @@ describe("createIbatexasPlanner — staff envelope-actor (NEW-032 slice A)", () 
       principal: "system",
       sessionId: "admin:root",
     };
-    const { model } = mockModel([expressIntent("order.note.add", evil)]);
+    const { model } = mockModel([expressIntent("nonexistent.capability.probe", evil)]);
     const planner = createIbatexasPlanner({
       model,
       modelId: "claude-test",
-      capabilityPlanners: [capPlanner([], ["order.note.add"])],
+      capabilityPlanners: [capPlanner([], ["nonexistent.capability.probe"])],
       staffEnvelopeActor: { staffId: "stf_9", role: "ATTENDANT" },
       deriveNonce: FIXED_NONCE,
     });

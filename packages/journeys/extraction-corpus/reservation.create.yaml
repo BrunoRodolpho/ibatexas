@@ -1,0 +1,278 @@
+# reservation.create — FE-T14. `partySize` is a genuine Directive field a
+# customer states freely. `timeSlotId`, however, is State-class — a lookup
+# key the model relays from an EARLIER `check_availability` read this same
+# conversation (read-tool-schemas.ts's own precedent, mirrored exactly:
+# get_also_added's `productId`) — NEVER typed or invented by the customer.
+# A single isolated utterance therefore cannot determine the CORRECT id
+# value (that depends on which slot the conversation already established);
+# the mutating extraction-corpus schema (schema.ts's ExtractionCaseSchema,
+# `.strict()`) has no `precedingContext` field the way read-tool-corpus/
+# does — every case below documents the assumed preceding turn in its
+# `note` instead, and `slot_123` is an ILLUSTRATIVE placeholder for
+# whatever id that earlier `check_availability` call actually returned (a
+# live drive would seed a real slot and substitute its real id). What's
+# being calibrated is NOT the id string itself but whether the model (a)
+# calls reservation.create at all when the utterance confirms a shown
+# slot and (b) relays the SAME id the prior turn established rather than
+# inventing one or omitting the field — and, independently, that
+# `partySize` extracts correctly. No `specialRequests` (see
+# reservation-convenience.schema.ts's header — data-integrity hazard,
+# scoped out of this rollout slice). NOT auto-resolved (a brand-new
+# resource, no existing target) — confirmationRequired is always false.
+#
+# THREE REQUIRED CORPUS ARMS (FE-T14 rulings, the timeSlotId reversal):
+#   (a) grounded-selection — a real prior check_availability turn, correct
+#       slot id relayed. The bulk of the cases below.
+#   (b) ungrounded/stale slot reference — the utterance LOOKS like it
+#       references a prior turn's slot, but that slot is no longer valid
+#       (already past). `requireSlotInFuture` REFUSEs regardless of
+#       whether extraction faithfully relayed the (now-stale) id — the
+#       KERNEL guard is the actual safety net here, independent of
+#       extraction fidelity.
+#   (c) absence — no prior read in context at all; the model has no id to
+#       relay and correctly omits the field (never invents one) —
+#       `requireSlotWithCapacity` REFUSEs on the null slot.
+capability: reservation.create
+source: tickets/language-engine/issues/14-rollout-convenience-mutating-verbs.md
+plane: customer
+cases:
+  - id: basic-four-people
+    utterance: quero reservar aquele horário que vocês acharam, pra 4 pessoas
+    note: >-
+      Canonical shape (the schema's own worked example). Second turn of a
+      conversation whose first turn was check_availability returning a
+      single slot (slot_123) — "aquele horário" refers back to it.
+    expectPayload:
+      extractionIR:
+        payload:
+          timeSlotId: slot_123
+          partySize: 4
+        provenanceTrust:
+          timeSlotId: untrusted
+          partySize: untrusted
+      hydratedIntentIR:
+        payload:
+          timeSlotId: slot_123
+          partySize: 4
+        confirmationRequired: false
+
+  - id: formal-gostaria
+    utterance: Gostaria de confirmar a reserva daquele horário, seremos 2 pessoas.
+    note: >-
+      Formal/polite register. Second turn after check_availability
+      returned slot_123.
+    expectPayload:
+      extractionIR:
+        payload:
+          timeSlotId: slot_123
+          partySize: 2
+        provenanceTrust:
+          timeSlotId: untrusted
+          partySize: untrusted
+      hydratedIntentIR:
+        payload:
+          timeSlotId: slot_123
+          partySize: 2
+        confirmationRequired: false
+
+  - id: colloquial-fecha-esse
+    utterance: fecha esse horário aí pra mim, somos 6
+    note: >-
+      Colloquial register ("fecha esse horário aí"). Second turn after
+      check_availability returned slot_123.
+    expectPayload:
+      extractionIR:
+        payload:
+          timeSlotId: slot_123
+          partySize: 6
+        provenanceTrust:
+          timeSlotId: untrusted
+          partySize: untrusted
+      hydratedIntentIR:
+        payload:
+          timeSlotId: slot_123
+          partySize: 6
+        confirmationRequired: false
+
+  - id: question-form
+    utterance: dá pra confirmar essa reserva pra 3 pessoas?
+    note: >-
+      Question-form register ("dá pra...?"). Second turn after
+      check_availability returned slot_123.
+    expectPayload:
+      extractionIR:
+        payload:
+          timeSlotId: slot_123
+          partySize: 3
+        provenanceTrust:
+          timeSlotId: untrusted
+          partySize: untrusted
+      hydratedIntentIR:
+        payload:
+          timeSlotId: slot_123
+          partySize: 3
+        confirmationRequired: false
+
+  - id: brusque-reserva-ai
+    utterance: reserva aí, 5 pessoas
+    note: >-
+      Brusque/telegraphic register. Second turn after check_availability
+      returned slot_123.
+    expectPayload:
+      extractionIR:
+        payload:
+          timeSlotId: slot_123
+          partySize: 5
+        provenanceTrust:
+          timeSlotId: untrusted
+          partySize: untrusted
+      hydratedIntentIR:
+        payload:
+          timeSlotId: slot_123
+          partySize: 5
+        confirmationRequired: false
+
+  - id: polite-gentileza
+    utterance: por gentileza, confirma essa mesa pra 8 pessoas
+    note: >-
+      Very polite register ("por gentileza"). Second turn after
+      check_availability returned slot_123.
+    expectPayload:
+      extractionIR:
+        payload:
+          timeSlotId: slot_123
+          partySize: 8
+        provenanceTrust:
+          timeSlotId: untrusted
+          partySize: untrusted
+      hydratedIntentIR:
+        payload:
+          timeSlotId: slot_123
+          partySize: 8
+        confirmationRequired: false
+
+  - id: context-embedded
+    utterance: vamos comemorar um aniversário, fecha aquele horário pra 10 pessoas
+    note: >-
+      Context-embedded register — states the occasion before the request.
+      Second turn after check_availability returned slot_123.
+    expectPayload:
+      extractionIR:
+        payload:
+          timeSlotId: slot_123
+          partySize: 10
+        provenanceTrust:
+          timeSlotId: untrusted
+          partySize: untrusted
+      hydratedIntentIR:
+        payload:
+          timeSlotId: slot_123
+          partySize: 10
+        confirmationRequired: false
+
+  - id: formal-solicito
+    utterance: Solicito a confirmação da reserva para esse horário, para 4 pessoas.
+    note: >-
+      Formal/bureaucratic register. Second turn after check_availability
+      returned slot_123.
+    expectPayload:
+      extractionIR:
+        payload:
+          timeSlotId: slot_123
+          partySize: 4
+        provenanceTrust:
+          timeSlotId: untrusted
+          partySize: untrusted
+      hydratedIntentIR:
+        payload:
+          timeSlotId: slot_123
+          partySize: 4
+        confirmationRequired: false
+
+  - id: solo-diner
+    utterance: quero reservar esse horário só pra mim
+    note: >-
+      Minimum party size (1) — implied by "só pra mim", not a bare digit.
+      Second turn after check_availability returned slot_123.
+    expectPayload:
+      extractionIR:
+        payload:
+          timeSlotId: slot_123
+          partySize: 1
+        provenanceTrust:
+          timeSlotId: untrusted
+          partySize: untrusted
+      hydratedIntentIR:
+        payload:
+          timeSlotId: slot_123
+          partySize: 1
+        confirmationRequired: false
+
+  - id: casual-fecha-pra-nos
+    utterance: fecha esse aí pra nós, somos 7
+    note: >-
+      Casual register ("fecha esse aí pra nós"). Second turn after
+      check_availability returned slot_123.
+    expectPayload:
+      extractionIR:
+        payload:
+          timeSlotId: slot_123
+          partySize: 7
+        provenanceTrust:
+          timeSlotId: untrusted
+          partySize: untrusted
+      hydratedIntentIR:
+        payload:
+          timeSlotId: slot_123
+          partySize: 7
+        confirmationRequired: false
+
+  # ── Arm (b): ungrounded/stale slot reference — the guard, not
+  #    extraction, is the actual safety net. ────────────────────────────
+  - id: stale-slot-reference-guard-refuses
+    utterance: fecha aquele horário de ontem que vocês mostraram, pra 4 pessoas
+    note: >-
+      Second turn referencing a PAST turn's slot (slot_stale) that has
+      since lapsed — "de ontem" (from yesterday). The model faithfully
+      relays the id it was shown; the REFUSE comes from
+      requireSlotInFuture (the kernel guard), independent of whether
+      extraction itself was accurate. Proves the guard is the real
+      backstop, not extraction fidelity.
+    expectPayload:
+      extractionIR:
+        payload:
+          timeSlotId: slot_stale
+          partySize: 4
+        provenanceTrust:
+          timeSlotId: untrusted
+          partySize: untrusted
+      hydratedIntentIR:
+        payload:
+          timeSlotId: slot_stale
+          partySize: 4
+        confirmationRequired: false
+      decision: REFUSE
+
+  # ── Arm (c): absence — no prior read in context, model correctly omits
+  #    timeSlotId rather than inventing one. ─────────────────────────────
+  - id: no-prior-read-absence
+    utterance: quero reservar uma mesa pra 4 pessoas
+    note: >-
+      NO preceding check_availability turn at all — a bare "book me a
+      table" with no slot ever surfaced. The model has nothing to relay
+      and must NOT fabricate a timeSlotId (the schema's own instruction:
+      "SEMPRE um id já retornado... NUNCA inventado"). extractionIR omits
+      the field entirely; hydration adds nothing (no auto-resolve exists
+      for a brand-new resource); requireSlotWithCapacity REFUSEs on the
+      null slot.
+    expectPayload:
+      extractionIR:
+        payload:
+          partySize: 4
+        provenanceTrust:
+          partySize: untrusted
+      hydratedIntentIR:
+        payload:
+          partySize: 4
+        confirmationRequired: false
+      decision: REFUSE

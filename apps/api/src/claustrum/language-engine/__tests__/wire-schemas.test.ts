@@ -3,7 +3,10 @@
 // alongside FE-T05's order.status.transition; FE-T10 adds the money-tier
 // slice (payment.refund.issue); FE-T11 adds the customer-plane money-tier
 // slice (payment.pix.regenerate); FE-T12 adds the orders governance-tier
-// customer-plane slice (order.checkout.create, order.cancel).
+// customer-plane slice (order.checkout.create, order.cancel); FE-T14 adds
+// the pack-orders cart/item family (order.cart.ensure/item.add/item.update/
+// item.remove/coupon.apply) plus the note/review, reservation, and
+// customer/whatsapp families — the full drivable surface.
 
 import { describe, expect, it } from "vitest";
 import {
@@ -12,7 +15,7 @@ import {
 } from "../wire-schemas.js";
 
 describe("EXTRACTION_SCHEMAS_BY_CAPABILITY", () => {
-  it("registers order.status.transition (FE-T05), the three granular amend kinds (FE-T09), payment.refund.issue (FE-T10), payment.pix.regenerate (FE-T11), and order.checkout.create/order.cancel (FE-T12)", () => {
+  it("registers order.status.transition (FE-T05), the three granular amend kinds (FE-T09), payment.refund.issue (FE-T10), payment.pix.regenerate (FE-T11), order.checkout.create/order.cancel (FE-T12), and the FE-T14 convenience mutating verb families", () => {
     expect([...EXTRACTION_SCHEMAS_BY_CAPABILITY.keys()].sort()).toEqual(
       [
         "order.amend.add_item",
@@ -23,6 +26,20 @@ describe("EXTRACTION_SCHEMAS_BY_CAPABILITY", () => {
         "payment.pix.regenerate",
         "order.checkout.create",
         "order.cancel",
+        "order.cart.ensure",
+        "order.item.add",
+        "order.item.update",
+        "order.item.remove",
+        "order.coupon.apply",
+        "order.note.add",
+        "order.review.submit",
+        "reservation.create",
+        "reservation.modify",
+        "reservation.cancel",
+        "reservation.waitlist.join",
+        "customer.preferences.update",
+        "customer.pix.details.save",
+        "whatsapp.handoff.request",
       ].sort(),
     );
   });
@@ -102,6 +119,13 @@ describe("ALLOWED_PAYLOAD_FIELD_NAMES_BY_CAPABILITY", () => {
   });
 
   it("has no entry for an unauthored capability (the planner filter treats absence as pass-through)", () => {
-    expect(ALLOWED_PAYLOAD_FIELD_NAMES_BY_CAPABILITY.has("order.item.add")).toBe(false);
+    // order.checkout.create was this test's "still unauthored" fixture —
+    // FE-T12 authored it too (the drivable surface is now fully covered:
+    // 25/26 tickets done, this is the last one). No REAL capability is
+    // unauthored anymore, so this uses a capability name that will never be
+    // registered, to keep proving the absence branch permanently.
+    expect(ALLOWED_PAYLOAD_FIELD_NAMES_BY_CAPABILITY.has("nonexistent.capability.probe")).toBe(
+      false,
+    );
   });
 });

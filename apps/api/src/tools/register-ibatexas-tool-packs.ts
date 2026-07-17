@@ -313,7 +313,24 @@ const IBATEXAS_TOOLS: ReadonlyArray<TD<unknown, unknown>> = [
     intentKind: "order.item.update",
     description: "Atualizar a quantidade de um item no carrinho.",
     riskLevel: "low",
-    execute: (input, ctx) => updateCart(input as never, ctx),
+    // FE-T14 — order.item.update's extraction schema only ever gives the
+    // model a loose NL `item` reference (identifiers are model-forbidden);
+    // resolve-and-assemble.ts's `resolveCartLineItem` resolves it against
+    // the live cart BEFORE this executor runs. Mirrors the granular amend
+    // tools' `ambiguousItemReply` handling exactly (order.amend.update_qty
+    // below) — an ambiguous or unresolved NL reference must surface an
+    // honest reply, never call `updateCart` with a missing `itemId` (which
+    // would otherwise throw a raw ZodError the customer never sees
+    // explained).
+    execute: (input, ctx) => {
+      const ambiguous = ambiguousItemReply(input);
+      if (ambiguous) return Promise.resolve(ambiguous);
+      const p = input as { itemId?: string };
+      if (typeof p.itemId !== "string") {
+        return Promise.resolve({ success: false, message: "Item não encontrado no carrinho." });
+      }
+      return updateCart(input as never, ctx);
+    },
   }),
   makeTool({
     id: "ibatexas.cart.removeItem.v1",
@@ -321,7 +338,16 @@ const IBATEXAS_TOOLS: ReadonlyArray<TD<unknown, unknown>> = [
     intentKind: "order.item.remove",
     description: "Remover um item do carrinho do cliente.",
     riskLevel: "low",
-    execute: (input, ctx) => removeFromCart(input as never, ctx),
+    // FE-T14 — same NL→itemId resolution posture as order.item.update above.
+    execute: (input, ctx) => {
+      const ambiguous = ambiguousItemReply(input);
+      if (ambiguous) return Promise.resolve(ambiguous);
+      const p = input as { itemId?: string };
+      if (typeof p.itemId !== "string") {
+        return Promise.resolve({ success: false, message: "Item não encontrado no carrinho." });
+      }
+      return removeFromCart(input as never, ctx);
+    },
   }),
   makeTool({
     id: "ibatexas.cart.applyCoupon.v1",

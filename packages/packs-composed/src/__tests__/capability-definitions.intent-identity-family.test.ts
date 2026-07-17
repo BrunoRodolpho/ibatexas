@@ -249,15 +249,16 @@ describe("codegen-freshness gate — planner allowedIntents (FE-T20 family 4, ru
     )
   })
 
-  it("ibatexas/pack-whatsapp: the static union matches the real planner's output — empty, by construction, under every probe", () => {
+  it("ibatexas/pack-whatsapp: the static union matches the real planner's output — whatsapp.handoff.request, unconditionally, under every probe (FE-T14/BKL-030-activation)", () => {
     for (const probe of [ANONYMOUS_PROBE, AUTHED_CUSTOMER_PROBE, STAFF_PROBE]) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test-only probe cast, see module doc
-      expect(whatsappCapabilityPlanner.plan(probe as any, {} as any).allowedIntents).toEqual([])
+      expect(whatsappCapabilityPlanner.plan(probe as any, {} as any).allowedIntents).toEqual([
+        "whatsapp.handoff.request",
+      ])
     }
-    // `whatsapp.handoff.request` is `tier: "chat"` but deliberately
-    // `plannerAdvertisedBy: undefined` (registered-but-unadvertised) — the
-    // generator's projection for this pack must be empty too.
-    expect(generatePlannerAllowedIntents(CAPABILITY_DEFINITIONS, "ibatexas/pack-whatsapp")).toEqual([])
+    expect(generatePlannerAllowedIntents(CAPABILITY_DEFINITIONS, "ibatexas/pack-whatsapp")).toEqual([
+      "whatsapp.handoff.request",
+    ])
   })
 
   it("ibatexas/pack-ops: the static union matches the real planner's output under the staff probe (empty for non-staff, verified separately)", () => {
@@ -283,11 +284,14 @@ describe("codegen-freshness gate — planner allowedIntents (FE-T20 family 4, ru
     )
   })
 
-  it("registered-but-unadvertised: order.review.submit and whatsapp.handoff.request are tier:'chat' but excluded from EVERY pack's generated allowedIntents projection", () => {
+  it("registered-but-unadvertised: order.review.submit is tier:'chat' but excluded from EVERY pack's generated allowedIntents projection", () => {
+    // whatsapp.handoff.request was this class's other member until
+    // FE-T14/BKL-030-activation advertised it — see the dedicated
+    // pack-whatsapp test above, which now asserts the OPPOSITE (it IS
+    // advertised, unconditionally).
     for (const pack of ALL_PACKS) {
       const generated = generatePlannerAllowedIntents(CAPABILITY_DEFINITIONS, pack)
       expect(generated).not.toContain("order.review.submit")
-      expect(generated).not.toContain("whatsapp.handoff.request")
     }
   })
 })

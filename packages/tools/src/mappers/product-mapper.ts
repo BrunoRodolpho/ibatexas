@@ -80,11 +80,22 @@ export interface TypesenseProductDoc {
  * Medusa products have nested structure (variants → prices → amount).
  */
 export function medusaToTypesenseDoc(product: MedusaProductInput): TypesenseProductDoc {
-  // Extract tags: handle both object array `[{ id, value }]` and string array
-  const tags = extractTags(product)
-
   // Extract all variant prices and serialize to JSON for Typesense storage
   const variants = extractVariants(product)
+
+  // Extract tags: handle both object array `[{ id, value }]` and string array,
+  // MERGED with variant titles (live-calibration finding, FE-T14 amend
+  // backfill): customers order by variant/brand name ("coca", "guaraná"),
+  // never the generic product title ("Refrigerante") — but query_by (both
+  // here and search-products.ts) only covers title/description/tags, and
+  // variant titles previously lived ONLY in variantsJson (a serialized blob,
+  // never indexed as searchable text). Folding variant titles into tags
+  // makes them full-text-searchable via the SAME query_by + the existing
+  // lexical-overlap floor downstream (resolve-and-assemble.ts) — the floor
+  // remains the guard against wrong-product matches; this only widens what
+  // can be FOUND in the first place, same "first live contact fixes the
+  // seam" call as the resolver bridge.
+  const tags = mergeTags(extractTags(product), extractVariantTitleTags(variants))
 
   // Price = lowest variant price ("a partir de") for list views; 0 if no variants
   const price = variants.length > 0
@@ -141,6 +152,24 @@ function extractTags(product: MedusaProductInput): string[] {
     return product.tag_ids
   }
   return []
+}
+
+/** Extract variant titles as searchable tag values (live-calibration finding,
+ *  FE-T14 amend backfill) — e.g. `["Coca-Cola", "Guaraná Antarctica"]` for
+ *  "Refrigerante", so a customer search for "coca" or "guaraná" full-text
+ *  matches via query_by's `tags` field. Filters out null/empty variant
+ *  titles (a variant is not required to have one — e.g. single-variant
+ *  "size" products like "500ml").
+ */
+function extractVariantTitleTags(variants: ProductVariant[]): string[] {
+  return variants
+    .map((v) => v.title)
+    .filter((title): title is string => typeof title === "string" && title.trim().length > 0)
+}
+
+/** Merge tag lists, de-duplicated, order-preserving (explicit tags first). */
+function mergeTags(...lists: string[][]): string[] {
+  return [...new Set(lists.flat())]
 }
 
 /** Extract all variants with their prices from a Medusa product.

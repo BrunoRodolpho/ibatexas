@@ -32,16 +32,24 @@ let orderFindByDisplayId: (displayId: number) => Promise<Array<{ id: string; cus
   async () => [];
 let reservationListByCustomer: (cid: string, opts?: unknown) => Promise<{ reservations: unknown[]; total: number }> =
   async () => ({ reservations: [], total: 0 });
+// FE-T14 — customer.preferences.update's allergenExclusions-preservation
+// read (createCustomerService().getProfileData).
+let customerGetProfileData: (
+  cid: string,
+) => Promise<{ customerPrefs: { allergenExclusions: string[] } | null }> =
+  async () => ({ customerPrefs: null });
 // FE-T09 (D-a) — order.amend.update_qty/remove_item's LIVE order-fetch +
 // title-match hydration (resolveOrderLineItem), distinct from the stored
 // OrderProjection `orderGetById` above.
 let orderServiceGetOrder: (
   orderId: string,
   customerId?: string,
-) => Promise<{ order: { items?: Array<{ id: string; title: string }> }; ownershipValid: boolean }> =
-  async () => {
-    throw new Error("order not found");
-  };
+) => Promise<{
+  order: { items?: Array<{ id: string; title: string; variant_id?: string }> };
+  ownershipValid: boolean;
+}> = async () => {
+  throw new Error("order not found");
+};
 
 vi.mock("@ibatexas/tools", () => ({
   rk: (s: string) => s,
@@ -65,7 +73,10 @@ vi.mock("@ibatexas/domain", () => ({
     getActiveByOrderId: (orderId: string) => paymentGetActiveByOrderId(orderId),
     listByOrderId: async () => ({ payments: [], count: 0 }),
   }),
-  createCustomerService: () => ({ getById: async () => null }),
+  createCustomerService: () => ({
+    getById: async () => null,
+    getProfileData: (cid: string) => customerGetProfileData(cid),
+  }),
   createReservationService: () => ({
     getById: (id: string, customerId: string) => reservationGetById(id, customerId),
     listByCustomer: (cid: string, opts?: unknown) => reservationListByCustomer(cid, opts),
@@ -74,9 +85,8 @@ vi.mock("@ibatexas/domain", () => ({
 }));
 
 // Import AFTER mocks (vitest hoists vi.mock).
-const { resolveAndAssemble, sessionTokenKey, resolveCustomerOrderReference } = await import(
-  "../resolve-and-assemble.js"
-);
+const { resolveAndAssemble, sessionTokenKey, resolveCustomerOrderReference, isAllergenMentionUtterance } =
+  await import("../resolve-and-assemble.js");
 
 const BUDGET = 100_000;
 const f4Guard = createTokenBudgetGuard<string, unknown, unknown>({
@@ -112,6 +122,7 @@ beforeEach(() => {
   orderServiceGetOrder = async () => {
     throw new Error("order not found");
   };
+  customerGetProfileData = async () => ({ customerPrefs: null });
 });
 
 describe("resolve-and-assemble — F4 read side", () => {
@@ -1276,6 +1287,54 @@ describe("resolve-and-assemble — NL→id confirm-first (auto-resolve money int
     expect(two.ctx.autoResolvedMoneyRef).toBeUndefined();
   });
 
+  // FE-T14 — reservation.modify joins RESERVATION_AUTORESOLVE_KINDS
+  // (mirroring reservation.cancel's exact treatment): its extraction schema
+  // never shows the model a reservationId field, and before this change
+  // there was no auto-resolve path at all for this kind.
+  it("reservation.modify auto-resolves ONLY when exactly one active booking exists", async () => {
+    reservationListByCustomer = async () => ({
+      reservations: [{ id: "res_1", status: "confirmed" }],
+      total: 1,
+    });
+    const one = await resolveAndAssemble({
+      kind: "reservation.modify",
+      payload: { newPartySize: 6 },
+      customerId: "c1",
+      channel: "whatsapp",
+    });
+    expect((one.payload as { reservationId?: string }).reservationId).toBe("res_1");
+    expect((one.payload as { newPartySize?: number }).newPartySize).toBe(6);
+    expect(one.ctx.autoResolvedMoneyRef).toBe(true);
+
+    // Ambiguous (2 active) → do NOT auto-resolve (agent clarifies).
+    reservationListByCustomer = async () => ({
+      reservations: [
+        { id: "res_1", status: "confirmed" },
+        { id: "res_2", status: "pending" },
+      ],
+      total: 2,
+    });
+    const two = await resolveAndAssemble({
+      kind: "reservation.modify",
+      payload: { newPartySize: 6 },
+      customerId: "c1",
+      channel: "whatsapp",
+    });
+    expect((two.payload as { reservationId?: string }).reservationId).toBeUndefined();
+    expect(two.ctx.autoResolvedMoneyRef).toBeUndefined();
+  });
+
+  it("reservation.modify with an EXPLICIT reservationId does NOT auto-resolve (no confirm flag)", async () => {
+    const { payload, ctx } = await resolveAndAssemble({
+      kind: "reservation.modify",
+      payload: { reservationId: "res_explicit", newPartySize: 6 },
+      customerId: "c1",
+      channel: "whatsapp",
+    });
+    expect((payload as { reservationId?: string }).reservationId).toBe("res_explicit");
+    expect(ctx.autoResolvedMoneyRef).toBeUndefined();
+  });
+
   // BKL-038 — the in-flight modify kinds resolve "meu pedido" exactly like
   // order.cancel: unambiguous single-order → most-recent order + confirm flag.
   it.each(INFLIGHT_MODIFY_KINDS)(
@@ -1626,5 +1685,320 @@ describe("resolveCustomerOrderReference — FE-T13 customer-plane displayId refe
     orderListByCustomer = async () => ({ orders: [], count: 0 });
     const result = await resolveCustomerOrderReference(undefined, "c1");
     expect(result).toEqual({ orderId: null, autoResolved: false, referenceMatched: false });
+  });
+});
+
+// ── FE-T14 — customer.preferences.update: allergenExclusions preservation
+//    + the allergen-mention honesty detector ────────────────────────────────
+
+describe("isAllergenMentionUtterance — FE-T14 pure detector", () => {
+  it.each([
+    "sou alérgico a amendoim, atualiza aí",
+    "tenho alergia a lactose",
+    "minha filha é alérgica a glúten",
+    "cuidado, alergênico",
+    "ele teve uma reação anafilática",
+  ])("detects an allergen-shaped utterance: %s", (text) => {
+    expect(isAllergenMentionUtterance(text)).toBe(true);
+  });
+
+  it.each([
+    "sou vegetariano e adoro comida grelhada",
+    "quero atualizar minhas preferências",
+    "",
+    undefined,
+  ])("does NOT flag an ordinary preferences utterance: %s", (text) => {
+    expect(isAllergenMentionUtterance(text)).toBe(false);
+  });
+});
+
+describe("resolveAndAssemble — customer.preferences.update (FE-T14)", () => {
+  it("allergenExclusions is ALWAYS resolver-stamped from the customer's current saved value, never from the model", async () => {
+    customerGetProfileData = async () => ({
+      customerPrefs: { allergenExclusions: ["amendoim"] },
+    });
+    const { payload } = await resolveAndAssemble({
+      kind: "customer.preferences.update",
+      // Adversarial: the model smuggled its own allergenExclusions guess —
+      // it must be UNCONDITIONALLY discarded, never survive to the payload.
+      payload: { dietaryFlags: ["vegetariano"], allergenExclusions: ["smuggled"] },
+      customerId: "c1",
+      channel: "web",
+    });
+    expect((payload as { allergenExclusions?: string[] }).allergenExclusions).toEqual(["amendoim"]);
+    expect((payload as { dietaryFlags?: string[] }).dietaryFlags).toEqual(["vegetariano"]);
+  });
+
+  it("a customer with no saved preferences row defaults to allergenExclusions: [] (never REFUSEs a new customer)", async () => {
+    customerGetProfileData = async () => ({ customerPrefs: null });
+    const { payload } = await resolveAndAssemble({
+      kind: "customer.preferences.update",
+      payload: { favoriteCategories: ["churrasco"] },
+      customerId: "c1",
+      channel: "web",
+    });
+    expect((payload as { allergenExclusions?: string[] }).allergenExclusions).toEqual([]);
+  });
+
+  it("a transient read error fails CLOSED to allergenExclusions: [] rather than leaving the field unresolved", async () => {
+    customerGetProfileData = async () => {
+      throw new Error("db down");
+    };
+    const { payload } = await resolveAndAssemble({
+      kind: "customer.preferences.update",
+      payload: { dietaryFlags: ["vegano"] },
+      customerId: "c1",
+      channel: "web",
+    });
+    expect((payload as { allergenExclusions?: string[] }).allergenExclusions).toEqual([]);
+  });
+
+  it("an allergen-shaped utterance stamps ctx.allergenMentionDetected — refuseAllergenMentionGuard reads this to REFUSE honestly", async () => {
+    const { ctx } = await resolveAndAssemble({
+      kind: "customer.preferences.update",
+      payload: {},
+      customerId: "c1",
+      channel: "web",
+      utteranceText: "sou alérgico a amendoim, atualiza aí",
+    });
+    expect(ctx.allergenMentionDetected).toBe(true);
+  });
+
+  it("an ordinary preferences utterance does NOT stamp ctx.allergenMentionDetected", async () => {
+    const { ctx } = await resolveAndAssemble({
+      kind: "customer.preferences.update",
+      payload: { dietaryFlags: ["vegetariano"] },
+      customerId: "c1",
+      channel: "web",
+      utteranceText: "sou vegetariano e adoro comida grelhada",
+    });
+    expect(ctx.allergenMentionDetected).toBeUndefined();
+  });
+
+  it("an absent utteranceText (e.g. an HTTP caller with no conductor cognition) never trips the detector", async () => {
+    const { ctx } = await resolveAndAssemble({
+      kind: "customer.preferences.update",
+      payload: {},
+      customerId: "c1",
+      channel: "web",
+    });
+    expect(ctx.allergenMentionDetected).toBeUndefined();
+  });
+
+  it("the allergen-mention detector is INERT for every other kind, even with allergen-shaped text", async () => {
+    const { ctx } = await resolveAndAssemble({
+      kind: "order.note.add",
+      payload: { orderId: "o1", body: "sou alérgico a amendoim" },
+      customerId: "c1",
+      channel: "web",
+      utteranceText: "sou alérgico a amendoim",
+    });
+    expect(ctx.allergenMentionDetected).toBeUndefined();
+  });
+});
+
+// ── team-lead ruling — the variantId bridge (FE-T14 live-calibration finding) ─
+//
+// LIVE-CAUGHT: `resolveCartLineItem`/`resolveOrderLineItem`'s original
+// exact-title-only match compared the model's NL reference ("coca") against
+// each line's `.title`, which Medusa always sets to the PRODUCT title
+// ("Refrigerante") — never the variant title ("Coca-Cola") a casual
+// reference actually names. Every item.update/item.remove/amend.update_qty/
+// amend.remove_item case naming a variant this way resolved `not_found`
+// against the REAL catalog regardless of seeding (first live calibration
+// this resolver family ever had). Fix: `resolveLineItemByNameOrVariant`
+// (resolve-and-assemble.ts) tries exact-title first (fast path, no network),
+// then bridges through the SAME `resolveProductForItem`/`hasLexicalOverlap`
+// floor `order.item.add`/`order.amend.add_item` already use, matching lines
+// by the resolved `variant_id`. `resolveCartLineItem` (cart, order.item.*)
+// and `resolveOrderLineItem` (placed order, order.amend.*) share this ONE
+// core (FE-D07) — every arm below is asserted through BOTH capability
+// families driving the SAME shared function, never re-tested per resolver.
+describe("resolve-and-assemble — the variantId bridge (order.item.update/remove + order.amend.update_qty/remove_item)", () => {
+  it("[cart] variant-title match: exact-title finds nothing (line title is the PRODUCT name), the bridge resolves by variant_id", async () => {
+    redisGet = async (k) => (k === "cart:active:session:conv-1" ? "cart_abc" : null);
+    medusaStoreFetch = async () => ({
+      cart: {
+        items: [{ id: "cali_coke", title: "Refrigerante", variant_id: "var_coke" }],
+        total: 8,
+        completed_at: null,
+      },
+    });
+    searchProductsMock = async () => ({
+      products: [
+        { id: "prod_1", title: "Refrigerante", tags: ["coca", "coca-cola"], variants: [{ id: "var_coke" }] },
+      ],
+    });
+    const { payload } = await resolveAndAssemble({
+      kind: "order.item.update",
+      payload: { item: "coca", quantity: 3 },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect((payload as { itemId?: string }).itemId).toBe("cali_coke");
+  });
+
+  it("[order] variant-title match: same bridge resolves an EXISTING placed-order line by variant_id", async () => {
+    orderServiceGetOrder = async () => ({
+      ownershipValid: true,
+      order: { items: [{ id: "li_coke", title: "Refrigerante", variant_id: "var_coke" }] },
+    });
+    searchProductsMock = async () => ({
+      products: [
+        { id: "prod_1", title: "Refrigerante", tags: ["coca", "coca-cola"], variants: [{ id: "var_coke" }] },
+      ],
+    });
+    const { payload } = await resolveAndAssemble({
+      kind: "order.amend.remove_item",
+      payload: { orderId: "ord_1", item: "coca" },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect((payload as { itemId?: string }).itemId).toBe("li_coke");
+  });
+
+  it("[cart] product-title fallback: a literal, unambiguous title reference resolves via arm 1 WITHOUT ever calling the search bridge (no round-trip)", async () => {
+    redisGet = async () => "cart_abc";
+    let searchCalled = false;
+    medusaStoreFetch = async () => ({
+      cart: {
+        items: [{ id: "cali_soda", title: "Refrigerante", variant_id: "var_coke" }],
+        total: 8,
+        completed_at: null,
+      },
+    });
+    searchProductsMock = async () => {
+      searchCalled = true;
+      return { products: [] };
+    };
+    const { payload } = await resolveAndAssemble({
+      kind: "order.item.remove",
+      payload: { item: "Refrigerante" },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect((payload as { itemId?: string }).itemId).toBe("cali_soda");
+    expect(searchCalled).toBe(false);
+  });
+
+  it("[cart] ambiguous-across-lines: the bridge resolves a variant that matches TWO lines (the customer added \"coca\" twice) — ambiguous, never a guess", async () => {
+    redisGet = async () => "cart_abc";
+    medusaStoreFetch = async () => ({
+      cart: {
+        items: [
+          { id: "cali_coke_1", title: "Refrigerante", variant_id: "var_coke" },
+          { id: "cali_coke_2", title: "Refrigerante", variant_id: "var_coke" },
+        ],
+        total: 16,
+        completed_at: null,
+      },
+    });
+    searchProductsMock = async () => ({
+      products: [
+        { id: "prod_1", title: "Refrigerante", tags: ["coca", "coca-cola"], variants: [{ id: "var_coke" }] },
+      ],
+    });
+    const { payload } = await resolveAndAssemble({
+      kind: "order.item.remove",
+      payload: { item: "coca" },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    const p = payload as { itemId?: string; itemAmbiguousCount?: number };
+    expect(p.itemId).toBeUndefined();
+    expect(p.itemAmbiguousCount).toBe(2);
+  });
+
+  it("[order] ambiguous-across-lines: an exact-title tie the bridge CANNOT disambiguate (no catalog match) falls back to the original exact-title ambiguous count", async () => {
+    orderServiceGetOrder = async () => ({
+      ownershipValid: true,
+      order: {
+        items: [
+          { id: "li_1", title: "Hambúrguer", variant_id: "var_burger" },
+          { id: "li_2", title: "Hambúrguer", variant_id: "var_burger" },
+        ],
+      },
+    });
+    searchProductsMock = async () => ({ products: [] });
+    const { payload } = await resolveAndAssemble({
+      kind: "order.amend.update_qty",
+      payload: { orderId: "ord_1", item: "hambúrguer", quantity: 2 },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect((payload as { itemAmbiguousCount?: number }).itemAmbiguousCount).toBe(2);
+  });
+
+  it("[cart] not-found: neither exact-title nor the bridge resolves anything — never a guess", async () => {
+    redisGet = async () => "cart_abc";
+    medusaStoreFetch = async () => ({
+      cart: { items: [{ id: "cali_burger", title: "Smash Burger", variant_id: "var_burger" }], total: 30, completed_at: null },
+    });
+    searchProductsMock = async () => ({ products: [] });
+    const { payload } = await resolveAndAssemble({
+      kind: "order.item.update",
+      payload: { item: "sobremesa que não pedi", quantity: 1 },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect((payload as { itemId?: string }).itemId).toBeUndefined();
+  });
+
+  it("[order] floor-rejection: the bridge's top hit shares NO lexical relationship with the query — hasLexicalOverlap rejects it, treated exactly like no match", async () => {
+    orderServiceGetOrder = async () => ({
+      ownershipValid: true,
+      order: { items: [{ id: "li_1", title: "Refrigerante", variant_id: "var_coke" }] },
+    });
+    // Live-caught arbitrary-match defect's floor (FE-D17 interim, hasLexicalOverlap):
+    // an UNRELATED top hit (zero shared tokens/substrings with the query)
+    // must not be trusted — same posture as order.item.add's own coverage.
+    searchProductsMock = async () => ({
+      products: [{ id: "prod_9", title: "Kit Presente IbateXas", variants: [{ id: "var_gift" }] }],
+    });
+    const { payload } = await resolveAndAssemble({
+      kind: "order.amend.remove_item",
+      payload: { orderId: "ord_1", item: "xyzzy nonexistent" },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect((payload as { itemId?: string }).itemId).toBeUndefined();
+  });
+
+  it("[cart] the bridge is a genuine BROADENING: a reference that was `not_found` before this fix now resolves (prior-`not_found` -> `found`)", async () => {
+    redisGet = async () => "cart_abc";
+    medusaStoreFetch = async () => ({
+      cart: {
+        items: [{ id: "cali_guarana", title: "Refrigerante", variant_id: "var_guarana" }],
+        total: 8,
+        completed_at: null,
+      },
+    });
+    searchProductsMock = async () => ({
+      products: [
+        {
+          id: "prod_1",
+          title: "Refrigerante",
+          tags: ["guaraná", "guarana antarctica"],
+          variants: [{ id: "var_guarana" }],
+        },
+      ],
+    });
+    const { payload } = await resolveAndAssemble({
+      kind: "order.item.remove",
+      // Pre-fix: exact-title("guaraná") vs the line's title("Refrigerante")
+      // never matched — always not_found. Post-fix: the bridge resolves it.
+      payload: { item: "guaraná" },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect((payload as { itemId?: string }).itemId).toBe("cali_guarana");
   });
 });

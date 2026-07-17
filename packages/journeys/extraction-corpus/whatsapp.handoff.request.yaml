@@ -1,0 +1,130 @@
+# whatsapp.handoff.request — FE-T14. `reason` is the only model-extractable
+# field (Directive, optional, free text — audit-redacted per
+# docs/architecture/design/agent-tools.md). `sessionId` is Identity-class,
+# always runtime-injected by the executor, never resolver-stamped onto the
+# payload at all — so unlike every other kind in this rollout slice there
+# is no `payloadPresent`/resolver-provenance entry to assert here.
+# confirmationRequired is always false (no auto-resolved target at all).
+capability: whatsapp.handoff.request
+source: tickets/language-engine/issues/14-rollout-convenience-mutating-verbs.md
+plane: customer
+cases:
+  - id: basic-with-reason
+    utterance: quero falar com uma pessoa, meu pedido não chegou
+    note: Canonical shape (the schema's own worked example) — direct register.
+    expectPayload:
+      extractionIR:
+        payload:
+          reason: meu pedido não chegou
+        provenanceTrust:
+          reason: untrusted
+      hydratedIntentIR:
+        payload:
+          reason: meu pedido não chegou
+        confirmationRequired: false
+
+  - id: no-reason-bare
+    utterance: quero falar com um atendente
+    note: No reason mentioned at all — reason field absent.
+    expectPayload:
+      extractionIR:
+        payload: {}
+      hydratedIntentIR:
+        payload: {}
+        confirmationRequired: false
+
+  - id: formal-gostaria
+    utterance: Gostaria de ser transferido para um atendente humano, por favor.
+    note: Formal/polite register, no explicit reason.
+    expectPayload:
+      extractionIR:
+        payload: {}
+      hydratedIntentIR:
+        payload: {}
+        confirmationRequired: false
+
+  - id: colloquial-me-passa
+    utterance: me passa pra um humano, esse robô não tá me ajudando
+    note: Colloquial register — reason stated after the request.
+    expectPayload:
+      extractionIR:
+        payload:
+          reason: esse robô não tá me ajudando
+        provenanceTrust:
+          reason: untrusted
+      hydratedIntentIR:
+        payload:
+          reason: esse robô não tá me ajudando
+        confirmationRequired: false
+
+  - id: question-form
+    utterance: dá pra falar com uma pessoa de verdade?
+    note: Question-form register ("dá pra...?"), no explicit reason.
+    expectPayload:
+      extractionIR:
+        payload: {}
+      hydratedIntentIR:
+        payload: {}
+        confirmationRequired: false
+
+  - id: brusque-atendente-agora
+    utterance: quero um atendente, agora
+    note: Brusque/telegraphic register, no explicit reason.
+    expectPayload:
+      extractionIR:
+        payload: {}
+      hydratedIntentIR:
+        payload: {}
+        confirmationRequired: false
+
+  - id: polite-gentileza
+    utterance: por gentileza, transfere pra um atendente, tenho um problema com o pagamento
+    note: Very polite register ("por gentileza").
+    expectPayload:
+      extractionIR:
+        payload:
+          reason: tenho um problema com o pagamento
+        provenanceTrust:
+          reason: untrusted
+      hydratedIntentIR:
+        payload:
+          reason: tenho um problema com o pagamento
+        confirmationRequired: false
+
+  - id: context-embedded
+    utterance: já tentei de tudo e não resolveu, preciso falar com uma pessoa
+    note: Context-embedded register — states the frustration before the request.
+    expectPayload:
+      extractionIR:
+        payload:
+          reason: já tentei de tudo e não resolveu
+        provenanceTrust:
+          reason: untrusted
+      hydratedIntentIR:
+        payload:
+          reason: já tentei de tudo e não resolveu
+        confirmationRequired: false
+
+  - id: formal-solicito
+    utterance: Solicito o encaminhamento para um atendente humano em razão de um erro na cobrança.
+    note: Formal/bureaucratic register.
+    expectPayload:
+      extractionIR:
+        payload:
+          reason: um erro na cobrança
+        provenanceTrust:
+          reason: untrusted
+      hydratedIntentIR:
+        payload:
+          reason: um erro na cobrança
+        confirmationRequired: false
+
+  - id: casual-chama-alguem
+    utterance: chama alguém aí pra mim, por favor
+    note: Casual register ("chama alguém aí"), no explicit reason.
+    expectPayload:
+      extractionIR:
+        payload: {}
+      hydratedIntentIR:
+        payload: {}
+        confirmationRequired: false

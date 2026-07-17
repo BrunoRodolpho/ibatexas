@@ -540,17 +540,32 @@ describe("whatsappPack — PackV0 shape", () => {
     expect(whatsappPack.signals).toEqual([])
   })
 
-  it("planner exposes zero MUTATING tools to the LLM (handoff wired but not yet advertised — BKL-030)", () => {
+  it("planner advertises ONLY whatsapp.handoff.request, unconditionally (FE-T14/BKL-030-activation)", () => {
     const plan = whatsappPack.planner.plan(baseState(), {
       channel: "whatsapp",
       customerId: "c-1",
       staffId: null,
     })
-    // whatsapp.handoff.request is registered + adjudicable but advertisement is
-    // deferred (see capabilities.ts) until the golden-conversation fixtures can
-    // be regenerated for the new express_intent surface (BKL-030-activation).
+    // whatsapp.handoff.request is registered, adjudicable, AND now advertised
+    // (see capabilities.ts) — the one guest-accessible, always-allowed verb in
+    // the roster. Every other MUTATING kind in this domain stays LLM-invisible.
     expect(plan.visibleReadTools).toEqual([])
-    expect(plan.allowedIntents).toEqual([])
+    expect(plan.allowedIntents).toEqual(["whatsapp.handoff.request"])
+  })
+
+  it("advertises the same single intent regardless of staff/guest/customer state (unconditional activation)", () => {
+    const guestPlan = whatsappPack.planner.plan(baseState(), {
+      channel: "whatsapp",
+      customerId: null,
+      staffId: null,
+    })
+    const staffPlan = whatsappPack.planner.plan(baseState(), {
+      channel: "whatsapp",
+      customerId: null,
+      staffId: "staff-1",
+    })
+    expect(guestPlan.allowedIntents).toEqual(["whatsapp.handoff.request"])
+    expect(staffPlan.allowedIntents).toEqual(["whatsapp.handoff.request"])
   })
 
   it("24h window constant is at least 24h", () => {

@@ -183,3 +183,239 @@ describe("assertSoundExtractionSchema — the lint fires on a bad schema", () =>
     expect(() => assertSoundExtractionSchema(good)).not.toThrow();
   });
 });
+
+describe("ExtractionFieldJsonSchema — FE-T14 array-type extension", () => {
+  it("a sound schema with an array field (enum-constrained items) passes and builds the expected wire shape", () => {
+    const good: CapabilityExtractionSchema = {
+      capability: "customer.preferences.update",
+      fields: [
+        {
+          name: "dietaryFlags",
+          trustClass: "directive",
+          jsonSchema: {
+            type: "array",
+            items: { type: "string", enum: ["vegetarian", "vegan", "gluten_free"] },
+            description: "x",
+          },
+          required: false,
+        },
+      ],
+      example: { utterance: "x", payload: { dietaryFlags: ["vegetarian"] } },
+    };
+    expect(() => assertSoundExtractionSchema(good)).not.toThrow();
+    expect(toPayloadJsonSchema(good)).toEqual({
+      type: "object",
+      properties: {
+        dietaryFlags: {
+          type: "array",
+          items: { type: "string", enum: ["vegetarian", "vegan", "gluten_free"] },
+          description: "x",
+        },
+      },
+      additionalProperties: false,
+    });
+  });
+
+  it("a forbidden field name declared as an array still fails the gate (name check is type-agnostic)", () => {
+    const bad: CapabilityExtractionSchema = {
+      capability: "x",
+      fields: [
+        {
+          name: "allergens",
+          trustClass: "directive",
+          jsonSchema: { type: "array", items: { type: "string" }, description: "x" },
+          required: false,
+        },
+      ],
+      example: { utterance: "x", payload: {} },
+    };
+    expect(() => assertSoundExtractionSchema(bad)).toThrow(UnsoundExtractionSchemaError);
+  });
+});
+
+describe("array-field lint rule — closed enum OR explicit freeform opt-in, never neither (FE-T14 rulings)", () => {
+  it("RED: an array field with no items.enum and no items.freeform fails the gate", () => {
+    const bad: CapabilityExtractionSchema = {
+      capability: "x",
+      fields: [
+        {
+          name: "someList",
+          trustClass: "directive",
+          jsonSchema: { type: "array", items: { type: "string" }, description: "x" },
+          required: false,
+        },
+      ],
+      example: { utterance: "x", payload: {} },
+    };
+    expect(() => assertSoundExtractionSchema(bad)).toThrow(UnsoundExtractionSchemaError);
+    expect(() => assertSoundExtractionSchema(bad)).toThrow(/items\.enum.*items\.freeform|freeform.*enum/);
+  });
+
+  it("GREEN: an array field with items.freeform: true (and no enum) passes", () => {
+    const good: CapabilityExtractionSchema = {
+      capability: "x",
+      fields: [
+        {
+          name: "someList",
+          trustClass: "directive",
+          jsonSchema: {
+            type: "array",
+            items: { type: "string", freeform: true },
+            description: "x",
+          },
+          required: false,
+        },
+      ],
+      example: { utterance: "x", payload: {} },
+    };
+    expect(() => assertSoundExtractionSchema(good)).not.toThrow();
+  });
+
+  it("GREEN: an array field with items.enum (and no freeform marker) passes", () => {
+    const good: CapabilityExtractionSchema = {
+      capability: "x",
+      fields: [
+        {
+          name: "someList",
+          trustClass: "directive",
+          jsonSchema: {
+            type: "array",
+            items: { type: "string", enum: ["a", "b"] },
+            description: "x",
+          },
+          required: false,
+        },
+      ],
+      example: { utterance: "x", payload: {} },
+    };
+    expect(() => assertSoundExtractionSchema(good)).not.toThrow();
+  });
+
+  it("a non-array field is never subject to this rule, even with no enum", () => {
+    const good: CapabilityExtractionSchema = {
+      capability: "x",
+      fields: [
+        {
+          name: "note",
+          trustClass: "directive",
+          jsonSchema: { type: "string", description: "x" },
+          required: false,
+        },
+      ],
+      example: { utterance: "x", payload: {} },
+    };
+    expect(() => assertSoundExtractionSchema(good)).not.toThrow();
+  });
+});
+
+describe("permittedIdentifiers — the narrow, explicit escape hatch from FORBIDDEN_EXTRACTION_FIELD_NAMES (FE-T14)", () => {
+  it("RED: a forbidden field name still fails the gate when permittedIdentifiers is absent", () => {
+    const bad: CapabilityExtractionSchema = {
+      capability: "x",
+      fields: [
+        {
+          name: "productId",
+          trustClass: "state",
+          jsonSchema: { type: "string", description: "x" },
+          required: true,
+        },
+      ],
+      example: { utterance: "x", payload: {} },
+    };
+    expect(() => assertSoundExtractionSchema(bad)).toThrow(UnsoundExtractionSchemaError);
+  });
+
+  it("RED: a forbidden field name still fails the gate when permittedIdentifiers names a DIFFERENT field", () => {
+    const bad: CapabilityExtractionSchema = {
+      capability: "x",
+      fields: [
+        {
+          name: "productId",
+          trustClass: "state",
+          jsonSchema: { type: "string", description: "x" },
+          required: true,
+        },
+      ],
+      example: { utterance: "x", payload: {} },
+      permittedIdentifiers: ["someOtherField"],
+    };
+    expect(() => assertSoundExtractionSchema(bad)).toThrow(UnsoundExtractionSchemaError);
+  });
+
+  it("GREEN: a forbidden field name explicitly named in permittedIdentifiers passes", () => {
+    const good: CapabilityExtractionSchema = {
+      capability: "x",
+      fields: [
+        {
+          name: "productId",
+          trustClass: "state",
+          jsonSchema: { type: "string", description: "x" },
+          required: true,
+        },
+      ],
+      example: { utterance: "x", payload: { productId: "prod_123" } },
+      permittedIdentifiers: ["productId"],
+    };
+    expect(() => assertSoundExtractionSchema(good)).not.toThrow();
+    expect(toPayloadJsonSchema(good)).toEqual({
+      type: "object",
+      properties: { productId: { type: "string", description: "x" } },
+      required: ["productId"],
+      additionalProperties: false,
+    });
+  });
+
+  it("permittedIdentifiers does NOT exempt a field from the Identity-class trustClass check", () => {
+    const bad: CapabilityExtractionSchema = {
+      capability: "x",
+      fields: [
+        {
+          name: "productId",
+          trustClass: "identity",
+          jsonSchema: { type: "string", description: "x" },
+          required: true,
+        },
+      ],
+      example: { utterance: "x", payload: {} },
+      permittedIdentifiers: ["productId"],
+    };
+    expect(() => assertSoundExtractionSchema(bad)).toThrow(UnsoundExtractionSchemaError);
+  });
+
+  it("a genuinely safety-critical/PII name (allergens) is STILL forbidden even if permittedIdentifiers names it — this is a STRUCTURAL guarantee, not merely a review-time convention: permittedIdentifiers is only ever consulted for EXEMPTABLE_IDENTIFIER_NAMES, and NEVER_EXEMPTABLE_FIELD_NAMES is checked first, unconditionally", () => {
+    const stillBad: CapabilityExtractionSchema = {
+      capability: "x",
+      fields: [
+        {
+          name: "allergens",
+          trustClass: "directive",
+          jsonSchema: { type: "string", description: "x" },
+          required: false,
+        },
+      ],
+      example: { utterance: "x", payload: {} },
+      permittedIdentifiers: ["allergens"],
+    };
+    expect(() => assertSoundExtractionSchema(stillBad)).toThrow(UnsoundExtractionSchemaError);
+  });
+
+  it.each(["cpf", "email", "phone", "cardPan", "isInternal"])(
+    "%s is likewise never exemptable via permittedIdentifiers",
+    (name) => {
+      const stillBad: CapabilityExtractionSchema = {
+        capability: "x",
+        fields: [
+          {
+            name,
+            trustClass: "directive",
+            jsonSchema: { type: "string", description: "x" },
+            required: false,
+          },
+        ],
+        example: { utterance: "x", payload: {} },
+        permittedIdentifiers: [name],
+      };
+      expect(() => assertSoundExtractionSchema(stillBad)).toThrow(UnsoundExtractionSchemaError);
+    },
+  );
+});

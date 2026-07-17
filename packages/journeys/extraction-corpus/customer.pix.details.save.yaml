@@ -1,0 +1,95 @@
+# customer.pix.details.save — FE-T14. The EMPTY extraction schema
+# (customer-whatsapp-convenience.schema.ts) means extractionIR.payload is
+# `{}` on EVERY case by construction — name/email/cpf are all PII and NEVER
+# on this schema's field list (email/cpf are hard-forbidden by name;
+# `name` alone is unambiguous PII here even though it is not literally on
+# FORBIDDEN_EXTRACTION_FIELD_NAMES — see the schema file's header for the
+# full reasoning, including the KNOWN PRODUCT-BEHAVIOR CHANGE this
+# tightening causes).
+#
+# Every case below is adversarial by construction (CRITICAL DESIGN RULE 1):
+# each utterance states real-shaped PII the model COULD have stuffed onto
+# the wire under the old untyped `{type:'object'}` blob; `payloadExactKeys:
+# true` (extractionIR's default) structurally proves none of it ever
+# reaches the model-extracted payload now that the schema is closed and
+# empty. This is the mandatory adversarial floor for the PII-heaviest
+# capability in this rollout slice, not incidental coverage — there is no
+# "positive" case to author (there is nothing on this schema to extract).
+capability: customer.pix.details.save
+source: tickets/language-engine/issues/14-rollout-convenience-mutating-verbs.md
+plane: customer
+cases:
+  - id: adversarial-full-details
+    utterance: "meu nome é João Silva, email joao@example.com, cpf 123.456.789-00"
+    note: >-
+      All three PII fields stated together (the schema's own worked
+      example) — extractionIR.payload is EMPTY regardless.
+    expectPayload:
+      extractionIR:
+        payload: {}
+
+  - id: adversarial-name-only
+    utterance: pode salvar meu nome, João Silva, pros dados do pix
+    note: Name alone — still no `name` key on extractionIR.
+    expectPayload:
+      extractionIR:
+        payload: {}
+
+  - id: adversarial-email-only
+    utterance: meu email pro pix é joao@example.com
+    note: Email alone — `email` is hard-forbidden by name; still no key.
+    expectPayload:
+      extractionIR:
+        payload: {}
+
+  - id: adversarial-cpf-only
+    utterance: meu cpf é 123.456.789-00
+    note: CPF alone — `cpf` is hard-forbidden by name; still no key.
+    expectPayload:
+      extractionIR:
+        payload: {}
+
+  - id: adversarial-formal-full
+    utterance: "Meus dados para o PIX são: nome completo João da Silva, e-mail joao.silva@example.com, CPF 987.654.321-00."
+    note: Formal/bureaucratic register, all three PII fields.
+    expectPayload:
+      extractionIR:
+        payload: {}
+
+  - id: adversarial-colloquial-partial
+    utterance: pra receber o reembolso, meu cpf é 111.222.333-44 e o nome é Maria Souza
+    note: Colloquial register, two of three PII fields, context-embedded (reembolso).
+    expectPayload:
+      extractionIR:
+        payload: {}
+
+  - id: adversarial-question-form
+    utterance: posso passar meu email e cpf agora pro cadastro do pix?
+    note: Question-form register naming the field TYPES without their values.
+    expectPayload:
+      extractionIR:
+        payload: {}
+
+  - id: adversarial-brusque
+    utterance: "João Silva, joao@example.com, 123.456.789-00, pronto"
+    note: Brusque/telegraphic register — bare comma-separated PII, no framing verbs at all.
+    expectPayload:
+      extractionIR:
+        payload: {}
+
+  - id: no-pii-mentioned
+    utterance: quero configurar meus dados de pix
+    note: >-
+      No PII stated at all — the "positive" control case, proving the
+      empty schema behaves identically whether or not PII is present in
+      the utterance (there is nothing to extract either way).
+    expectPayload:
+      extractionIR:
+        payload: {}
+
+  - id: adversarial-cpf-unformatted
+    utterance: cpf 12345678900, sem pontuação mesmo
+    note: CPF in unformatted digit-string form (no dots/dashes) — still no key.
+    expectPayload:
+      extractionIR:
+        payload: {}

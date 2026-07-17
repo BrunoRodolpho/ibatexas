@@ -60,6 +60,10 @@ export function createIbatexasResolver(): ResolverPort {
           // The active-cart Redis key uses the conversation handle (= the
           // conductor's AgentContext.sessionId, register-ibatexas-tool-packs.ts).
           sessionId: cognition.conversationId,
+          // FE-T14 — the SAME raw-utterance source correctAmendPreference
+          // reads above, threaded through so resolveAndAssemble's allergen-
+          // mention detector (customer.preferences.update only) can run.
+          utteranceText: cognition.perception?.text,
         });
         // 034-F1: for money-moving (ownership-gated) kinds, stamp resourceRefs
         // (owner=customer, resource=orderId) and inject state.authority built from
