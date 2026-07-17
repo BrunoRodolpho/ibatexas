@@ -1,0 +1,67 @@
+# get_ordered_together — FE-T13 read-tool extraction corpus.
+# See get_also_added.yaml's header for the shared `productId` lookup-key
+# rationale (this tool is its personalized-history sibling — same field,
+# same "relayed from an earlier read this conversation" contract) and
+# check_availability.yaml's header for the format + live-drive status.
+tool: get_ordered_together
+source: tickets/language-engine/issues/13-rollout-status-read-verbs.md
+cases:
+  - id: after-add-item-what-do-i-usually-order
+    precedingContext: "customer just added prod_burger to the cart"
+    utterance: o que eu costumo pedir junto com hambúrguer?
+    expectArgs:
+      productId: prod_burger
+
+  - id: after-add-item-formal
+    precedingContext: "customer just added prod_pizza to the cart"
+    utterance: O que eu normalmente peço junto com essa pizza, baseado nos meus pedidos anteriores?
+    expectArgs:
+      productId: prod_pizza
+
+  - id: after-recommendation-colloquial
+    precedingContext: "get_recommendations just surfaced prod_costela"
+    utterance: e o que eu sempre pego com essa costela?
+    expectArgs:
+      productId: prod_costela
+
+  - id: after-search-question-form
+    precedingContext: "menu search just returned prod_suco as the top hit"
+    utterance: será que eu costumo pedir algo junto com esse suco?
+    expectArgs:
+      productId: prod_suco
+
+  - id: after-add-item-brusque
+    precedingContext: "customer just added prod_batata to the cart"
+    utterance: o que eu sempre peço com isso?
+    note: elliptical reference ("isso") — still resolves to the SAME productId
+    expectArgs:
+      productId: prod_batata
+
+  - id: after-cart-view-context-embedded
+    precedingContext: "get_cart just showed prod_frango as the sole item"
+    utterance: baseado no meu histórico, o que eu costumo pedir com esse frango?
+    expectArgs:
+      productId: prod_frango
+
+  - id: after-add-item-polite
+    precedingContext: "customer just added prod_salada to the cart"
+    utterance: você pode ver o que eu geralmente peço junto com essa salada?
+    expectArgs:
+      productId: prod_salada
+
+  - id: after-recommendation-casual
+    precedingContext: "get_recommendations just surfaced prod_sobremesa"
+    utterance: e o que eu sempre pego com essa sobremesa?
+    expectArgs:
+      productId: prod_sobremesa
+
+  - id: no-prior-product-context-abstains
+    utterance: o que eu costumo pedir junto?
+    note: NO earlier read established a concrete productId this conversation — a sound extraction abstains (no get_ordered_together call at all).
+    expectArgs: null
+
+  - id: after-add-item-genz-slang
+    precedingContext: "customer just added prod_hamburguer_duplo to the cart"
+    utterance: e o que eu geralmente peço com esse hambúrguer duplo?
+    expectArgs:
+      productId: prod_hamburguer_duplo

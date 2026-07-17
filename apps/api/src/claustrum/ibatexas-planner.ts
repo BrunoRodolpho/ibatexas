@@ -107,6 +107,10 @@ import {
 } from "./model-call-defaults.js";
 import { completeWithEmptyRetry, isEmptyCompletion } from "./complete-with-retry.js";
 import { EXTRACTION_SCHEMAS_BY_CAPABILITY } from "./language-engine/wire-schemas.js";
+import {
+  READ_TOOL_SCHEMAS_BY_NAME,
+  sanitizeReadToolInput,
+} from "./language-engine/read-tool-schemas.js";
 
 // Re-export so existing importers (tests, registry) keep their import site.
 export { EXPRESS_INTENT_TOOL };
@@ -189,6 +193,19 @@ function buildExtractionFailureEnvelope(
 // each with a "…(truncado)" marker.
 const MAX_READ_RESULT_CHARS = 1500;
 const MAX_ENRICHMENT_RESULTS_CHARS = 6000;
+
+// FE-T13 — bound for the `read_loop.executed` log line's new `args` field
+// (a read tool's sanitized call args, authored-schema tools only). Every
+// authored read field is 0-2 short scalars (see read-tool-schemas.ts), so
+// this is generous headroom, not a working limit — just a defensive cap
+// against a pathological string value.
+const MAX_LOGGED_ARGS_CHARS = 300;
+
+function truncateLoggedArgs(json: string): string {
+  return json.length > MAX_LOGGED_ARGS_CHARS
+    ? `${json.slice(0, MAX_LOGGED_ARGS_CHARS)}…(truncado)`
+    : json;
+}
 
 /**
  * The single CLAIM-proposing tool (Q6b — SDD §H/§P3; claim-registry v0.1 §1).
@@ -567,11 +584,21 @@ function buildToolSurface(
   }
 
   if (includeReads) {
+    // FE-T13 — per-read-tool extraction schema on the wire. Mirrors the
+    // express_intent narrowing above, one step down: when a visible read
+    // tool has an AUTHORED schema (READ_TOOL_SCHEMAS_BY_NAME,
+    // read-tool-schemas.ts), the model sees that tool's real, typed shape
+    // instead of the generic `{type:"object", additionalProperties:true}`
+    // blob — additive over that same generic shape, kept as the fallback for
+    // any read tool without an authored schema yet (today: the 2 staff/ops-
+    // only reads, never chat-plane-visible anyway), so this is byte-identical
+    // for every turn that doesn't offer an unauthored read tool.
     for (const read of plan.visibleReadTools) {
+      const authoredSchema = READ_TOOL_SCHEMAS_BY_NAME.get(read);
       tools.push({
         name: read,
         description: `Ferramenta de leitura: ${read}. Apenas consulta, não altera dados.`,
-        inputSchema: { type: "object", additionalProperties: true },
+        inputSchema: authoredSchema ?? { type: "object", additionalProperties: true },
       });
     }
   }
@@ -984,11 +1011,25 @@ export function createIbatexasPlanner(
         // executor closure takes the OWNER from `state`, never from input. Run the
         // executable reads concurrently (FIX B6 — order-preserving, best-effort per
         // read); a throw is captured as an error, never propagated.
+        //
+        // FE-T13 (team-lead P5 ruling) — sanitize each call's input against its
+        // AUTHORED schema (read-tool-schemas.ts's `sanitizeReadToolInput`) BEFORE
+        // it reaches the executor: nothing upstream (translateToolCalls) validates
+        // `call.input` against the advertised `inputSchema` — it is advertisement-
+        // only otherwise. A field not declared on the schema, or one whose runtime
+        // type/enum doesn't match, is dropped rather than forwarded; a tool with no
+        // authored schema yet is untouched. Never throws, never hard-fails a read —
+        // the worst case is an over-stripped call that behaves like today's
+        // argless call (P4 — availability wins).
+        const sanitizedCalls = executableReadCalls.map((call) => ({
+          name: call.name,
+          input: sanitizeReadToolInput(call.name, call.input),
+        }));
         const settled = await Promise.allSettled(
-          executableReadCalls.map((call) => executors[call.name](call.input, state)),
+          sanitizedCalls.map((call) => executors[call.name](call.input, state)),
         );
         const readResults: Array<{ name: string; result: unknown; error?: string }> =
-          executableReadCalls.map((call, idx) => {
+          sanitizedCalls.map((call, idx) => {
             const outcome = settled[idx]!;
             return outcome.status === "fulfilled"
               ? { name: call.name, result: outcome.value as unknown }
@@ -1004,6 +1045,19 @@ export function createIbatexasPlanner(
             event: "read_loop.executed",
             turnId: state.turnId,
             reads: readResults.map((r) => (r.error ? `${r.name}:${r.error}` : r.name)),
+            // FE-T13 (team-lead calibration ruling) — the SANITIZED args for
+            // every AUTHORED-schema read only (bounded: read-tool-schemas.ts's
+            // registry can never carry a PII/identifier field by construction —
+            // the read-tool schema-lint gate enforces it — so nothing here needs
+            // redaction, only a length cap against a runaway string value). A
+            // read with no authored schema yet is omitted — its shape is
+            // unbounded, logging it verbatim would reintroduce the "log
+            // whatever the model sent" risk this rollout slice exists to close.
+            // Gives a live calibration sample something concrete to score
+            // against (previously this line logged only tool NAMES).
+            args: sanitizedCalls
+              .filter((c) => READ_TOOL_SCHEMAS_BY_NAME.has(c.name))
+              .map((c) => `${c.name}:${truncateLoggedArgs(JSON.stringify(c.input))}`),
           },
           `planner read-loop executed ${readResults.length} read(s); re-prompting once`,
         );
