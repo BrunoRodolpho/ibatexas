@@ -1,0 +1,214 @@
+# reservation.create — FE-T14. `partySize` is a genuine Directive field a
+# customer states freely. `timeSlotId`, however, is State-class — a lookup
+# key the model relays from an EARLIER `check_availability` read this same
+# conversation (read-tool-schemas.ts's own precedent, mirrored exactly:
+# get_also_added's `productId`) — NEVER typed or invented by the customer.
+# A single isolated utterance therefore cannot determine the CORRECT id
+# value (that depends on which slot the conversation already established);
+# the mutating extraction-corpus schema (schema.ts's ExtractionCaseSchema,
+# `.strict()`) has no `precedingContext` field the way read-tool-corpus/
+# does — every case below documents the assumed preceding turn in its
+# `note` instead, and `slot_123` is an ILLUSTRATIVE placeholder for
+# whatever id that earlier `check_availability` call actually returned (a
+# live drive would seed a real slot and substitute its real id). What's
+# being calibrated is NOT the id string itself but whether the model (a)
+# calls reservation.create at all when the utterance confirms a shown
+# slot and (b) relays the SAME id the prior turn established rather than
+# inventing one or omitting the field — and, independently, that
+# `partySize` extracts correctly. No `specialRequests` (see
+# reservation-convenience.schema.ts's header — data-integrity hazard,
+# scoped out of this rollout slice). NOT auto-resolved (a brand-new
+# resource, no existing target) — confirmationRequired is always false.
+capability: reservation.create
+source: tickets/language-engine/issues/14-rollout-convenience-mutating-verbs.md
+cases:
+  - id: basic-four-people
+    utterance: quero reservar aquele horário que vocês acharam, pra 4 pessoas
+    note: >-
+      Canonical shape (the schema's own worked example). Second turn of a
+      conversation whose first turn was check_availability returning a
+      single slot (slot_123) — "aquele horário" refers back to it.
+    expectPayload:
+      extractionIR:
+        payload:
+          timeSlotId: slot_123
+          partySize: 4
+        provenanceTrust:
+          timeSlotId: untrusted
+          partySize: untrusted
+      hydratedIntentIR:
+        payload:
+          timeSlotId: slot_123
+          partySize: 4
+        confirmationRequired: false
+
+  - id: formal-gostaria
+    utterance: Gostaria de confirmar a reserva daquele horário, seremos 2 pessoas.
+    note: >-
+      Formal/polite register. Second turn after check_availability
+      returned slot_123.
+    expectPayload:
+      extractionIR:
+        payload:
+          timeSlotId: slot_123
+          partySize: 2
+        provenanceTrust:
+          timeSlotId: untrusted
+          partySize: untrusted
+      hydratedIntentIR:
+        payload:
+          timeSlotId: slot_123
+          partySize: 2
+        confirmationRequired: false
+
+  - id: colloquial-fecha-esse
+    utterance: fecha esse horário aí pra mim, somos 6
+    note: >-
+      Colloquial register ("fecha esse horário aí"). Second turn after
+      check_availability returned slot_123.
+    expectPayload:
+      extractionIR:
+        payload:
+          timeSlotId: slot_123
+          partySize: 6
+        provenanceTrust:
+          timeSlotId: untrusted
+          partySize: untrusted
+      hydratedIntentIR:
+        payload:
+          timeSlotId: slot_123
+          partySize: 6
+        confirmationRequired: false
+
+  - id: question-form
+    utterance: dá pra confirmar essa reserva pra 3 pessoas?
+    note: >-
+      Question-form register ("dá pra...?"). Second turn after
+      check_availability returned slot_123.
+    expectPayload:
+      extractionIR:
+        payload:
+          timeSlotId: slot_123
+          partySize: 3
+        provenanceTrust:
+          timeSlotId: untrusted
+          partySize: untrusted
+      hydratedIntentIR:
+        payload:
+          timeSlotId: slot_123
+          partySize: 3
+        confirmationRequired: false
+
+  - id: brusque-reserva-ai
+    utterance: reserva aí, 5 pessoas
+    note: >-
+      Brusque/telegraphic register. Second turn after check_availability
+      returned slot_123.
+    expectPayload:
+      extractionIR:
+        payload:
+          timeSlotId: slot_123
+          partySize: 5
+        provenanceTrust:
+          timeSlotId: untrusted
+          partySize: untrusted
+      hydratedIntentIR:
+        payload:
+          timeSlotId: slot_123
+          partySize: 5
+        confirmationRequired: false
+
+  - id: polite-gentileza
+    utterance: por gentileza, confirma essa mesa pra 8 pessoas
+    note: >-
+      Very polite register ("por gentileza"). Second turn after
+      check_availability returned slot_123.
+    expectPayload:
+      extractionIR:
+        payload:
+          timeSlotId: slot_123
+          partySize: 8
+        provenanceTrust:
+          timeSlotId: untrusted
+          partySize: untrusted
+      hydratedIntentIR:
+        payload:
+          timeSlotId: slot_123
+          partySize: 8
+        confirmationRequired: false
+
+  - id: context-embedded
+    utterance: vamos comemorar um aniversário, fecha aquele horário pra 10 pessoas
+    note: >-
+      Context-embedded register — states the occasion before the request.
+      Second turn after check_availability returned slot_123.
+    expectPayload:
+      extractionIR:
+        payload:
+          timeSlotId: slot_123
+          partySize: 10
+        provenanceTrust:
+          timeSlotId: untrusted
+          partySize: untrusted
+      hydratedIntentIR:
+        payload:
+          timeSlotId: slot_123
+          partySize: 10
+        confirmationRequired: false
+
+  - id: formal-solicito
+    utterance: Solicito a confirmação da reserva para esse horário, para 4 pessoas.
+    note: >-
+      Formal/bureaucratic register. Second turn after check_availability
+      returned slot_123.
+    expectPayload:
+      extractionIR:
+        payload:
+          timeSlotId: slot_123
+          partySize: 4
+        provenanceTrust:
+          timeSlotId: untrusted
+          partySize: untrusted
+      hydratedIntentIR:
+        payload:
+          timeSlotId: slot_123
+          partySize: 4
+        confirmationRequired: false
+
+  - id: solo-diner
+    utterance: quero reservar esse horário só pra mim
+    note: >-
+      Minimum party size (1) — implied by "só pra mim", not a bare digit.
+      Second turn after check_availability returned slot_123.
+    expectPayload:
+      extractionIR:
+        payload:
+          timeSlotId: slot_123
+          partySize: 1
+        provenanceTrust:
+          timeSlotId: untrusted
+          partySize: untrusted
+      hydratedIntentIR:
+        payload:
+          timeSlotId: slot_123
+          partySize: 1
+        confirmationRequired: false
+
+  - id: casual-fecha-pra-nos
+    utterance: fecha esse aí pra nós, somos 7
+    note: >-
+      Casual register ("fecha esse aí pra nós"). Second turn after
+      check_availability returned slot_123.
+    expectPayload:
+      extractionIR:
+        payload:
+          timeSlotId: slot_123
+          partySize: 7
+        provenanceTrust:
+          timeSlotId: untrusted
+          partySize: untrusted
+      hydratedIntentIR:
+        payload:
+          timeSlotId: slot_123
+          partySize: 7
+        confirmationRequired: false

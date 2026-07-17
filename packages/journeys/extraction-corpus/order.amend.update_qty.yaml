@@ -1,0 +1,249 @@
+# order.amend.update_qty — FE-T14 BACKFILL. See order.amend.add_item.yaml's
+# header for the full rationale (FE-T09 authored the schema, never grew a
+# corpus; N≈10 low-risk-tier sizing; every utterance uses an EXPLICIT
+# existing-order marker so amend-preference-correction.ts's BKL-154
+# re-route fires unconditionally).
+#
+# Hydration (audit-metadata.ts's deriveGranularAmend, ORDER_AMEND_UPDATE_QTY_
+# RESOLVER_FIELDS = [orderId, itemId]): orderId is grounded (auto-resolved
+# "most recent order" guess); itemId is resolved via resolveOrderLineItem
+# (a LIVE placed-order line-item title match against the model's NL `item`
+# reference) — authoritative (an explicit-reference resolution, not a
+# guess). Both `item` and `quantity` are REQUIRED on this schema (unlike
+# order.amend.add_item's optional quantity) — every case below states both.
+# Only presence is asserted for itemId (its concrete Medusa line-item id is
+# seed/run-dependent), never its value.
+capability: order.amend.update_qty
+source: tickets/language-engine/issues/14-rollout-convenience-mutating-verbs.md
+cases:
+  - id: meu-pedido-basic
+    utterance: muda a quantidade da coca pra duas no meu pedido
+    note: >-
+      Canonical shape — the `meuPedido` explicit marker, direct register,
+      new quantity 2.
+    expectPayload:
+      extractionIR:
+        payload:
+          item: coca
+          quantity: 2
+        provenanceTrust:
+          item: untrusted
+          quantity: untrusted
+      hydratedIntentIR:
+        payload:
+          item: coca
+          quantity: 2
+        payloadPresent:
+          - orderId
+          - itemId
+        provenanceTrust:
+          orderId: grounded
+          itemId: authoritative
+        confirmationRequired: true
+
+  - id: pedido-que-ja-fiz-formal
+    utterance: Por favor, altere a quantidade do hambúrguer para 3 no pedido que eu já fiz.
+    note: Formal register, `pedidoQueFiz` explicit marker.
+    expectPayload:
+      extractionIR:
+        payload:
+          item: hambúrguer
+          quantity: 3
+        provenanceTrust:
+          item: untrusted
+          quantity: untrusted
+      hydratedIntentIR:
+        payload:
+          item: hambúrguer
+          quantity: 3
+        payloadPresent:
+          - orderId
+          - itemId
+        provenanceTrust:
+          orderId: grounded
+          itemId: authoritative
+        confirmationRequired: true
+
+  - id: pedido-numero-explicit
+    utterance: muda a batata frita pra 1 no pedido 910226
+    note: Numbered explicit reference (`pedidoNumero` marker), decreasing to 1.
+    expectPayload:
+      extractionIR:
+        payload:
+          item: batata frita
+          quantity: 1
+        provenanceTrust:
+          item: untrusted
+          quantity: untrusted
+      hydratedIntentIR:
+        payload:
+          item: batata frita
+          quantity: 1
+        payloadPresent:
+          - orderId
+          - itemId
+        provenanceTrust:
+          orderId: grounded
+          itemId: authoritative
+        confirmationRequired: true
+
+  - id: colloquial-troca
+    utterance: troca pra 4 guaranás no pedido que eu fiz
+    note: Colloquial register ("troca pra"), `pedidoQueFiz` marker without "já".
+    expectPayload:
+      extractionIR:
+        payload:
+          item: guaraná
+          quantity: 4
+        provenanceTrust:
+          item: untrusted
+          quantity: untrusted
+      hydratedIntentIR:
+        payload:
+          item: guaraná
+          quantity: 4
+        payloadPresent:
+          - orderId
+          - itemId
+        provenanceTrust:
+          orderId: grounded
+          itemId: authoritative
+        confirmationRequired: true
+
+  - id: question-form
+    utterance: dá pra mudar a coca pra 3 no meu pedido?
+    note: Question-form register ("dá pra...?").
+    expectPayload:
+      extractionIR:
+        payload:
+          item: coca
+          quantity: 3
+        provenanceTrust:
+          item: untrusted
+          quantity: untrusted
+      hydratedIntentIR:
+        payload:
+          item: coca
+          quantity: 3
+        payloadPresent:
+          - orderId
+          - itemId
+        provenanceTrust:
+          orderId: grounded
+          itemId: authoritative
+        confirmationRequired: true
+
+  - id: brusque-numbered
+    utterance: hambúrguer pra 2 no pedido 910226, atualiza
+    note: Brusque/telegraphic register, numbered explicit marker.
+    expectPayload:
+      extractionIR:
+        payload:
+          item: hambúrguer
+          quantity: 2
+        provenanceTrust:
+          item: untrusted
+          quantity: untrusted
+      hydratedIntentIR:
+        payload:
+          item: hambúrguer
+          quantity: 2
+        payloadPresent:
+          - orderId
+          - itemId
+        provenanceTrust:
+          orderId: grounded
+          itemId: authoritative
+        confirmationRequired: true
+
+  - id: polite-gentileza
+    utterance: por gentileza, muda a batata frita pra 5 no meu pedido
+    note: Very polite register ("por gentileza"), `meuPedido` marker.
+    expectPayload:
+      extractionIR:
+        payload:
+          item: batata frita
+          quantity: 5
+        provenanceTrust:
+          item: untrusted
+          quantity: untrusted
+      hydratedIntentIR:
+        payload:
+          item: batata frita
+          quantity: 5
+        payloadPresent:
+          - orderId
+          - itemId
+        provenanceTrust:
+          orderId: grounded
+          itemId: authoritative
+        confirmationRequired: true
+
+  - id: context-embedded
+    utterance: a família cresceu, muda a coca pra 6 no meu pedido
+    note: Context-embedded register — states a reason before the instruction.
+    expectPayload:
+      extractionIR:
+        payload:
+          item: coca
+          quantity: 6
+        provenanceTrust:
+          item: untrusted
+          quantity: untrusted
+      hydratedIntentIR:
+        payload:
+          item: coca
+          quantity: 6
+        payloadPresent:
+          - orderId
+          - itemId
+        provenanceTrust:
+          orderId: grounded
+          itemId: authoritative
+        confirmationRequired: true
+
+  - id: down-to-one
+    utterance: deixa só 1 guaraná no pedido que eu já fiz
+    note: Decreasing to the minimum quantity (1), `pedidoQueFiz` marker.
+    expectPayload:
+      extractionIR:
+        payload:
+          item: guaraná
+          quantity: 1
+        provenanceTrust:
+          item: untrusted
+          quantity: untrusted
+      hydratedIntentIR:
+        payload:
+          item: guaraná
+          quantity: 1
+        payloadPresent:
+          - orderId
+          - itemId
+        provenanceTrust:
+          orderId: grounded
+          itemId: authoritative
+        confirmationRequired: true
+
+  - id: formal-solicito
+    utterance: Solicito a alteração da quantidade de hambúrguer para 2 no pedido 910226.
+    note: Formal/bureaucratic register, numbered explicit marker.
+    expectPayload:
+      extractionIR:
+        payload:
+          item: hambúrguer
+          quantity: 2
+        provenanceTrust:
+          item: untrusted
+          quantity: untrusted
+      hydratedIntentIR:
+        payload:
+          item: hambúrguer
+          quantity: 2
+        payloadPresent:
+          - orderId
+          - itemId
+        provenanceTrust:
+          orderId: grounded
+          itemId: authoritative
+        confirmationRequired: true

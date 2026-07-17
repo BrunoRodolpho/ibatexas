@@ -88,8 +88,15 @@ describe("buildLanguageEngineAuditMetadata — order.status.transition", () => {
   });
 
   it("is undefined (inert) for every other capability", () => {
+    // order.note.add was this test's original example (FE-T05) — FE-T14 wired
+    // it (see the dedicated `order.note.add` describe block below), so this
+    // now uses two still-unwired kinds instead: order.checkout.create
+    // (T11/T12 territory, not this ticket's scope) and product.availability.set
+    // (pack-ops, never chat-tier).
     expect(
-      buildLanguageEngineAuditMetadata(record("order.note.add", { orderId: "o-1", body: "x" })),
+      buildLanguageEngineAuditMetadata(
+        record("order.checkout.create", { cartId: "c-1", paymentMethod: "pix" }),
+      ),
     ).toBeUndefined();
     expect(
       buildLanguageEngineAuditMetadata(
@@ -439,5 +446,158 @@ describe("buildLanguageEngineAuditMetadata — payment.refund.issue (FE-T10)", (
       expect(ir).not.toHaveProperty("cpf");
       expect(ir).not.toHaveProperty("allergens");
     }
+  });
+});
+
+// ── FE-T14 — the pack-orders cart/item family ────────────────────────────────
+// None of these five are an auto-resolved "most recent X" guess (see
+// order-cart-item.schema.ts's header) — cartId/variantId/itemId are all
+// `authoritative`, never `grounded`, so confirmationRequired is always false.
+
+describe("buildLanguageEngineAuditMetadata — order.cart.ensure (FE-T14)", () => {
+  it("derives an empty ExtractionIR and a cartId-only HydratedIntentIR, confirmationRequired=false", () => {
+    const meta = buildLanguageEngineAuditMetadata(
+      record("order.cart.ensure", { cartId: "cart_1" }),
+    );
+    const le = languageEngineOf(meta);
+    expect(le.extractionIR.payload).toEqual({});
+    expect(le.hydratedIntentIR.payload).toEqual({ cartId: "cart_1" });
+    expect(le.hydratedIntentIR.provenance.cartId).toEqual({
+      producer: "resolver",
+      confidence: "resolved",
+      trust: "authoritative",
+    });
+    expect(le.hydratedIntentIR.confirmationRequired).toBe(false);
+  });
+});
+
+describe("buildLanguageEngineAuditMetadata — order.item.add (FE-T14)", () => {
+  it("derives ExtractionIR {item, quantity} and HydratedIntentIR with cartId/variantId/allergens all authoritative, confirmationRequired=false", () => {
+    const meta = buildLanguageEngineAuditMetadata(
+      record("order.item.add", {
+        cartId: "cart_1",
+        item: "coca",
+        quantity: 2,
+        variantId: "var_coke",
+        allergens: ["gluten"],
+      }),
+    );
+    const le = languageEngineOf(meta);
+    expect(le.extractionIR.payload).toEqual({ item: "coca", quantity: 2 });
+    expect(le.hydratedIntentIR.payload).toEqual({
+      item: "coca",
+      quantity: 2,
+      cartId: "cart_1",
+      variantId: "var_coke",
+      allergens: ["gluten"],
+    });
+    for (const key of ["cartId", "variantId", "allergens"]) {
+      expect(le.hydratedIntentIR.provenance[key]).toEqual({
+        producer: "resolver",
+        confidence: "resolved",
+        trust: "authoritative",
+      });
+    }
+    expect(le.hydratedIntentIR.confirmationRequired).toBe(false);
+  });
+});
+
+describe("buildLanguageEngineAuditMetadata — order.item.update / order.item.remove (FE-T14)", () => {
+  it("update derives ExtractionIR {item, quantity} and HydratedIntentIR with cartId/itemId authoritative", () => {
+    const meta = buildLanguageEngineAuditMetadata(
+      record("order.item.update", { cartId: "cart_1", itemId: "li_1", item: "coca", quantity: 3 }),
+    );
+    const le = languageEngineOf(meta);
+    expect(le.extractionIR.payload).toEqual({ item: "coca", quantity: 3 });
+    expect(le.hydratedIntentIR.provenance.cartId?.trust).toBe("authoritative");
+    expect(le.hydratedIntentIR.provenance.itemId?.trust).toBe("authoritative");
+    expect(le.hydratedIntentIR.confirmationRequired).toBe(false);
+  });
+
+  it("remove derives ExtractionIR {item} only (no quantity field on this schema)", () => {
+    const meta = buildLanguageEngineAuditMetadata(
+      record("order.item.remove", { cartId: "cart_1", itemId: "li_1", item: "coca" }),
+    );
+    const le = languageEngineOf(meta);
+    expect(le.extractionIR.payload).toEqual({ item: "coca" });
+    expect(le.hydratedIntentIR.confirmationRequired).toBe(false);
+  });
+});
+
+describe("buildLanguageEngineAuditMetadata — order.coupon.apply (FE-T14)", () => {
+  it("derives ExtractionIR {code} and HydratedIntentIR with cartId authoritative, confirmationRequired=false", () => {
+    const meta = buildLanguageEngineAuditMetadata(
+      record("order.coupon.apply", { cartId: "cart_1", code: "PROMO10" }),
+    );
+    const le = languageEngineOf(meta);
+    expect(le.extractionIR.payload).toEqual({ code: "PROMO10" });
+    expect(le.hydratedIntentIR.provenance.cartId).toEqual({
+      producer: "resolver",
+      confidence: "resolved",
+      trust: "authoritative",
+    });
+    expect(le.hydratedIntentIR.confirmationRequired).toBe(false);
+  });
+});
+
+// ── FE-T14 — the pack-orders free-text family ────────────────────────────────
+
+describe("buildLanguageEngineAuditMetadata — order.note.add (FE-T14)", () => {
+  it("derives ExtractionIR {body} and HydratedIntentIR with orderId=grounded (an auto-resolved guess), confirmationRequired=true", () => {
+    const meta = buildLanguageEngineAuditMetadata(
+      record("order.note.add", { orderId: "order_9", body: "sem cebola" }),
+    );
+    const le = languageEngineOf(meta);
+    expect(le.extractionIR.payload).toEqual({ body: "sem cebola" });
+    expect(le.hydratedIntentIR.payload).toEqual({ body: "sem cebola", orderId: "order_9" });
+    expect(le.hydratedIntentIR.provenance.orderId).toEqual({
+      producer: "resolver",
+      confidence: "resolved",
+      trust: "grounded",
+    });
+    expect(le.hydratedIntentIR.confirmationRequired).toBe(true);
+  });
+
+  it("isInternal is never materialized into either IR even if smuggled onto the resolved payload", () => {
+    const meta = buildLanguageEngineAuditMetadata(
+      record("order.note.add", { orderId: "order_9", body: "x", isInternal: true }),
+    );
+    const le = languageEngineOf(meta);
+    expect(le.extractionIR.payload).not.toHaveProperty("isInternal");
+    expect(le.hydratedIntentIR.payload).not.toHaveProperty("isInternal");
+  });
+});
+
+describe("buildLanguageEngineAuditMetadata — order.review.submit (FE-T14)", () => {
+  it("derives ExtractionIR {rating, comment} and HydratedIntentIR with orderId/productId authoritative (never grounded — no auto-resolve guess exists for this capability)", () => {
+    const meta = buildLanguageEngineAuditMetadata(
+      record("order.review.submit", {
+        orderId: "order_9",
+        productId: "prod_1",
+        rating: 5,
+        comment: "ótimo",
+      }),
+    );
+    const le = languageEngineOf(meta);
+    expect(le.extractionIR.payload).toEqual({ rating: 5, comment: "ótimo" });
+    expect(le.hydratedIntentIR.provenance.orderId).toEqual({
+      producer: "resolver",
+      confidence: "resolved",
+      trust: "authoritative",
+    });
+    expect(le.hydratedIntentIR.provenance.productId).toEqual({
+      producer: "resolver",
+      confidence: "resolved",
+      trust: "authoritative",
+    });
+  });
+
+  it("derives ExtractionIR {rating} only when no comment was given", () => {
+    const meta = buildLanguageEngineAuditMetadata(
+      record("order.review.submit", { orderId: "order_9", productId: "prod_1", rating: 3 }),
+    );
+    const le = languageEngineOf(meta);
+    expect(le.extractionIR.payload).toEqual({ rating: 3 });
+    expect(le.extractionIR.payload).not.toHaveProperty("comment");
   });
 });

@@ -1,0 +1,150 @@
+{
+  "capabilities": [
+    "reservation.create",
+    "reservation.modify",
+    "reservation.cancel",
+    "reservation.waitlist.join"
+  ],
+  "expressIntentTool": {
+    "name": "express_intent",
+    "description": "Declarar uma intenção de mutação para o kernel adjudicar. Use `capability` (uma das opções do enum) e `payload` com os dados.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "capability": {
+          "type": "string",
+          "enum": [
+            "reservation.create",
+            "reservation.modify",
+            "reservation.cancel",
+            "reservation.waitlist.join"
+          ],
+          "description": "A capability/intent kind a ser proposta."
+        },
+        "payload": {
+          "type": "object",
+          "description": "Dados da intenção (campos específicos da capability)."
+        }
+      },
+      "required": [
+        "capability",
+        "payload"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "capability": {
+                "const": "reservation.create"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "type": "object",
+                "properties": {
+                  "timeSlotId": {
+                    "type": "string",
+                    "description": "ID do horário — SEMPRE um id já retornado por uma leitura anterior nesta conversa (check_availability), NUNCA inventado ou digitado pelo cliente."
+                  },
+                  "partySize": {
+                    "type": "number",
+                    "description": "Número de pessoas (1 a 20)."
+                  }
+                },
+                "required": [
+                  "timeSlotId",
+                  "partySize"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "capability": {
+                "const": "reservation.modify"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "type": "object",
+                "properties": {
+                  "newTimeSlotId": {
+                    "type": "string",
+                    "description": "ID do novo horário — SEMPRE um id já retornado por uma leitura anterior nesta conversa (check_availability). Omita se o cliente não quiser mudar o horário."
+                  },
+                  "newPartySize": {
+                    "type": "number",
+                    "description": "Novo número de pessoas (1 a 20). Omita se o cliente não quiser mudar a quantidade de pessoas."
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "capability": {
+                "const": "reservation.cancel"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string",
+                    "description": "Motivo do cancelamento, se mencionado. Omita se não houver motivo explícito."
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "capability": {
+                "const": "reservation.waitlist.join"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "type": "object",
+                "properties": {
+                  "timeSlotId": {
+                    "type": "string",
+                    "description": "ID do horário — SEMPRE um id já retornado por uma leitura anterior nesta conversa (check_availability), NUNCA inventado ou digitado pelo cliente."
+                  },
+                  "partySize": {
+                    "type": "number",
+                    "description": "Número de pessoas (1 a 20)."
+                  }
+                },
+                "required": [
+                  "timeSlotId",
+                  "partySize"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

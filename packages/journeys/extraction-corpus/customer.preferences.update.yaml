@@ -1,0 +1,207 @@
+# customer.preferences.update — FE-T14. `dietaryFlags`/`favoriteCategories`
+# are the only model-extractable fields, BOTH optional arrays of strings.
+# `allergenExclusions` is REQUIRED on the wire but NEVER on this schema —
+# resolve-and-assemble.ts's FE-T14 addition always resolver-preserves the
+# customer's CURRENT saved value, so it is asserted `payloadPresent` +
+# `authoritative` on every case (never a value this file can pin ahead of
+# a live customer's saved row), confirmationRequired is always false.
+#
+# CRITICAL DESIGN RULE 1's own adversarial bar: several cases below mention
+# an allergy/allergen ALONGSIDE a legitimate dietary/favorite-category
+# statement — `payloadExactKeys: true` (extractionIR's default) structurally
+# proves no `allergenExclusions`/`allergens` key EVER reaches the model-
+# extracted payload, no matter how explicitly an allergen is named in the
+# same utterance.
+capability: customer.preferences.update
+source: tickets/language-engine/issues/14-rollout-convenience-mutating-verbs.md
+cases:
+  - id: basic-vegetarian-and-favorite
+    utterance: sou vegetariano e adoro comida grelhada
+    note: Canonical shape (the schema's own worked example) — direct register.
+    expectPayload:
+      extractionIR:
+        payload:
+          dietaryFlags: [vegetariano]
+          favoriteCategories: [grelhados]
+        provenanceTrust:
+          dietaryFlags: untrusted
+          favoriteCategories: untrusted
+      hydratedIntentIR:
+        payload:
+          dietaryFlags: [vegetariano]
+          favoriteCategories: [grelhados]
+        payloadPresent:
+          - allergenExclusions
+        provenanceTrust:
+          allergenExclusions: authoritative
+        confirmationRequired: false
+
+  - id: dietary-only-vegan
+    utterance: quero atualizar minhas preferências, sou vegano
+    note: Dietary-only change, no favorite category mentioned.
+    expectPayload:
+      extractionIR:
+        payload:
+          dietaryFlags: [vegano]
+        provenanceTrust:
+          dietaryFlags: untrusted
+      hydratedIntentIR:
+        payload:
+          dietaryFlags: [vegano]
+        payloadPresent:
+          - allergenExclusions
+        provenanceTrust:
+          allergenExclusions: authoritative
+        confirmationRequired: false
+
+  - id: favorite-category-only
+    utterance: adoro churrasco, salva isso nas minhas preferências
+    note: Favorite-category-only change, no dietary restriction mentioned.
+    expectPayload:
+      extractionIR:
+        payload:
+          favoriteCategories: [churrasco]
+        provenanceTrust:
+          favoriteCategories: untrusted
+      hydratedIntentIR:
+        payload:
+          favoriteCategories: [churrasco]
+        payloadPresent:
+          - allergenExclusions
+        provenanceTrust:
+          allergenExclusions: authoritative
+        confirmationRequired: false
+
+  - id: formal-gostaria
+    utterance: Gostaria de registrar que sou vegetariano em minhas preferências.
+    note: Formal/polite register.
+    expectPayload:
+      extractionIR:
+        payload:
+          dietaryFlags: [vegetariano]
+        provenanceTrust:
+          dietaryFlags: untrusted
+      hydratedIntentIR:
+        payload:
+          dietaryFlags: [vegetariano]
+        payloadPresent:
+          - allergenExclusions
+        provenanceTrust:
+          allergenExclusions: authoritative
+        confirmationRequired: false
+
+  - id: gluten-free-colloquial
+    utterance: não como glúten, pode anotar aí
+    note: Colloquial register ("pode anotar aí").
+    expectPayload:
+      extractionIR:
+        payload:
+          dietaryFlags: [sem glúten]
+        provenanceTrust:
+          dietaryFlags: untrusted
+      hydratedIntentIR:
+        payload:
+          dietaryFlags: [sem glúten]
+        payloadPresent:
+          - allergenExclusions
+        provenanceTrust:
+          allergenExclusions: authoritative
+        confirmationRequired: false
+
+  - id: multiple-favorite-categories
+    utterance: gosto muito de churrasco e também de comida japonesa
+    note: Multiple favorite categories in one utterance.
+    expectPayload:
+      extractionIR:
+        payload:
+          favoriteCategories: [churrasco, japonesa]
+        provenanceTrust:
+          favoriteCategories: untrusted
+      hydratedIntentIR:
+        payload:
+          favoriteCategories: [churrasco, japonesa]
+        payloadPresent:
+          - allergenExclusions
+        provenanceTrust:
+          allergenExclusions: authoritative
+        confirmationRequired: false
+
+  - id: adversarial-allergy-alongside-dietary
+    utterance: sou vegetariano e também tenho alergia a amendoim
+    note: >-
+      An allergy is mentioned ALONGSIDE a legitimate dietary statement —
+      the structural safety property this schema exists for: NO
+      allergenExclusions/allergens key ever reaches extractionIR
+      regardless. Only the dietary flag extracts.
+    expectPayload:
+      extractionIR:
+        payload:
+          dietaryFlags: [vegetariano]
+        provenanceTrust:
+          dietaryFlags: untrusted
+      hydratedIntentIR:
+        payload:
+          dietaryFlags: [vegetariano]
+        payloadPresent:
+          - allergenExclusions
+        provenanceTrust:
+          allergenExclusions: authoritative
+        confirmationRequired: false
+
+  - id: adversarial-allergy-only-mention
+    utterance: tenho alergia a frutos do mar, quero atualizar meu perfil
+    note: >-
+      An allergy is the ONLY thing mentioned — no dietary/favorite-category
+      statement at all. extractionIR is empty; the allergy mention has NO
+      slot on this schema and is never captured anywhere by this
+      capability (unlike order.note.add's free-text `body`, which has no
+      analog here).
+    expectPayload:
+      extractionIR:
+        payload: {}
+      hydratedIntentIR:
+        payload: {}
+        payloadPresent:
+          - allergenExclusions
+        provenanceTrust:
+          allergenExclusions: authoritative
+        confirmationRequired: false
+
+  - id: question-form
+    utterance: dá pra colocar que eu sou vegetariano nas minhas preferências?
+    note: Question-form register ("dá pra...?").
+    expectPayload:
+      extractionIR:
+        payload:
+          dietaryFlags: [vegetariano]
+        provenanceTrust:
+          dietaryFlags: untrusted
+      hydratedIntentIR:
+        payload:
+          dietaryFlags: [vegetariano]
+        payloadPresent:
+          - allergenExclusions
+        provenanceTrust:
+          allergenExclusions: authoritative
+        confirmationRequired: false
+
+  - id: formal-solicito-both
+    utterance: Solicito o registro das seguintes preferências, sou vegano e prefiro comida japonesa.
+    note: Formal/bureaucratic register, BOTH fields together.
+    expectPayload:
+      extractionIR:
+        payload:
+          dietaryFlags: [vegano]
+          favoriteCategories: [japonesa]
+        provenanceTrust:
+          dietaryFlags: untrusted
+          favoriteCategories: untrusted
+      hydratedIntentIR:
+        payload:
+          dietaryFlags: [vegano]
+          favoriteCategories: [japonesa]
+        payloadPresent:
+          - allergenExclusions
+        provenanceTrust:
+          allergenExclusions: authoritative
+        confirmationRequired: false

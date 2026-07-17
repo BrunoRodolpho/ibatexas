@@ -124,3 +124,52 @@ describe("assertSoundExtractionSchema — the lint fires on a bad schema", () =>
     expect(() => assertSoundExtractionSchema(good)).not.toThrow();
   });
 });
+
+describe("ExtractionFieldJsonSchema — FE-T14 array-type extension", () => {
+  it("a sound schema with an array field (enum-constrained items) passes and builds the expected wire shape", () => {
+    const good: CapabilityExtractionSchema = {
+      capability: "customer.preferences.update",
+      fields: [
+        {
+          name: "dietaryFlags",
+          trustClass: "directive",
+          jsonSchema: {
+            type: "array",
+            items: { type: "string", enum: ["vegetarian", "vegan", "gluten_free"] },
+            description: "x",
+          },
+          required: false,
+        },
+      ],
+      example: { utterance: "x", payload: { dietaryFlags: ["vegetarian"] } },
+    };
+    expect(() => assertSoundExtractionSchema(good)).not.toThrow();
+    expect(toPayloadJsonSchema(good)).toEqual({
+      type: "object",
+      properties: {
+        dietaryFlags: {
+          type: "array",
+          items: { type: "string", enum: ["vegetarian", "vegan", "gluten_free"] },
+          description: "x",
+        },
+      },
+      additionalProperties: false,
+    });
+  });
+
+  it("a forbidden field name declared as an array still fails the gate (name check is type-agnostic)", () => {
+    const bad: CapabilityExtractionSchema = {
+      capability: "x",
+      fields: [
+        {
+          name: "allergens",
+          trustClass: "directive",
+          jsonSchema: { type: "array", items: { type: "string" }, description: "x" },
+          required: false,
+        },
+      ],
+      example: { utterance: "x", payload: {} },
+    };
+    expect(() => assertSoundExtractionSchema(bad)).toThrow(UnsoundExtractionSchemaError);
+  });
+});

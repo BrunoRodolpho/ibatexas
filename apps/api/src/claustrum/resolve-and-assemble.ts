@@ -555,7 +555,18 @@ const ORDER_AUTORESOLVE_KINDS = new Set([
   "order.address.change",
   "order.type.switch",
 ]);
-const RESERVATION_AUTORESOLVE_KINDS = new Set(["reservation.cancel"]);
+// FE-T14 — reservation.modify's schema never shows the model a
+// `reservationId` field (Identity-class, forbidden) and, before this
+// change, had NO auto-resolve path at all: `resolveReservationId` below is
+// only invoked for kinds in this set, so `reservation.modify` could never
+// reach a reservationId from chat despite being advertised
+// (plannerAdvertisedBy, definitions.ts) and offered on the customer
+// planner's allowed-intent set (surfaces.json) — a live, customer-facing
+// gap. Added alongside reservation.cancel with IDENTICAL semantics: resolve
+// to the customer's one active reservation when unambiguous (never a guess
+// among several), forcing a confirm (AUTORESOLVE_CONFIRM_KINDS,
+// compose-policy-packs.ts, mirrors this addition).
+const RESERVATION_AUTORESOLVE_KINDS = new Set(["reservation.cancel", "reservation.modify"]);
 
 // 034-F1 (review finding 6/7): refund payloads (PaymentRefundIssuePayload /
 // PaymentRefundConfirmPayload) carry ONLY paymentId — never orderId. Since
@@ -926,6 +937,50 @@ async function resolveOrderLineItem(
   }
 }
 
+/**
+ * FE-T14 — NL→cart-line-itemId resolution for `order.item.update` /
+ * `order.item.remove`. These operate on the ACTIVE SESSION CART (unlike
+ * `resolveOrderLineItem`'s placed-order target), so this is a genuinely
+ * separate lookup — never a catalog-wide guess (`resolveProductForItem`,
+ * used by `order.item.add`, resolves a NEW catalog product; this resolves
+ * an EXISTING cart LINE). Same case-insensitive exact-title match + the
+ * same two safety properties as `resolveOrderLineItem`: zero matches →
+ * `"not_found"` (an honest refuse downstream, never a guess); multiple
+ * same-titled lines → `"ambiguous"` (never routed through the order-level
+ * auto-resolve confirm — same reasoning as the placed-order case: a
+ * yes/no confirm would falsely imply a specific line was identified).
+ *
+ * `medusaStore`'s raw `/store/carts/:id` response line items carry `id`
+ * (the real Medusa line-item id `update_cart`/`remove_from_cart`'s wire
+ * schema requires) and `title` (defaults to the variant/product title at
+ * add time) — a WIDER local shape than `MedusaCartLine` above, which only
+ * projects the fields `buildCartCtx` needs for guard purposes.
+ */
+interface MedusaCartLineWithTitle {
+  readonly id: string;
+  readonly title?: string;
+}
+
+async function resolveCartLineItem(
+  cartId: string,
+  name: string,
+): Promise<OrderLineItemResolution> {
+  try {
+    const data = (await medusaStore(`/store/carts/${cartId}`)) as {
+      cart?: { items?: ReadonlyArray<MedusaCartLineWithTitle> };
+    };
+    const needle = name.trim().toLowerCase();
+    const matches = (data.cart?.items ?? []).filter(
+      (i) => (i.title ?? "").toLowerCase() === needle,
+    );
+    if (matches.length === 0) return { kind: "not_found" };
+    if (matches.length > 1) return { kind: "ambiguous", count: matches.length };
+    return { kind: "found", itemId: matches[0]!.id };
+  } catch {
+    return { kind: "not_found" };
+  }
+}
+
 async function threadResolvedIdsIntoPayload(
   kind: string,
   payload: Ctx,
@@ -1035,6 +1090,71 @@ async function threadResolvedIdsIntoPayload(
     }
     if (kind === "order.amend.update_qty") {
       out = { ...out, quantity: coerceQuantity(out.quantity) };
+    }
+  }
+  // FE-T14 — order.item.update / order.item.remove: same NL→itemId shape as
+  // the granular amend block above, but resolved against the ACTIVE CART
+  // (resolveCartLineItem) rather than a placed order — `update_cart`/
+  // `remove_from_cart`'s wire schema requires a real Medusa cart line-item
+  // id, and the extraction schema only ever gives the model a loose NL
+  // `item` reference (identifiers are model-forbidden). Requires cartId to
+  // already be present (threaded above by the `kind.startsWith("order.")`
+  // block).
+  if (
+    (kind === "order.item.update" || kind === "order.item.remove") &&
+    typeof out.itemId !== "string" &&
+    typeof out.cartId === "string"
+  ) {
+    const cartId = out.cartId;
+    const { itemAmbiguousCount: _staleAmbiguousCount, ...strippedOfAmbiguity } = out;
+    out = strippedOfAmbiguity;
+    const name = firstString(out.item, out.product, out.name, out.query);
+    if (name) {
+      const resolution = await resolveCartLineItem(cartId, name);
+      if (resolution.kind === "found") {
+        out = { ...out, itemId: resolution.itemId };
+      } else if (resolution.kind === "ambiguous") {
+        out = { ...out, itemAmbiguousCount: resolution.count };
+      }
+      // resolution.kind === "not_found": itemId stays unresolved — the
+      // executor reports an honest not-found rather than guessing.
+    }
+    if (kind === "order.item.update") {
+      out = { ...out, quantity: coerceQuantity(out.quantity) };
+    }
+  }
+  // FE-T14 — customer.preferences.update: `allergenExclusions` is REQUIRED
+  // on the wire (`CustomerPreferencesUpdatePayload`) and the executor
+  // (update-preferences.ts) hard-REFUSEs when it is not an explicit array —
+  // but it is NEVER on this capability's extraction schema (safety-critical,
+  // Hard Rule #1: allergens are never model-inferred from conversation
+  // text). UNCONDITIONALLY stripped from whatever the payload carries
+  // (mirroring the order.item.add allergens precedent above — a smuggled
+  // array must never survive unexamined) and refilled from the customer's
+  // CURRENT saved preferences, so an ordinary "sou vegetariano" (touching
+  // only dietaryFlags/favoriteCategories) can never silently wipe out an
+  // already-declared allergy. A customer with no saved preferences row yet
+  // defaults to `[]` (the same "no exclusions" default the domain service's
+  // own upsert path uses) — never REFUSEs the turn just because the
+  // customer never explicitly set allergens before.
+  if (kind === "customer.preferences.update") {
+    const { allergenExclusions: _modelSuppliedAllergenExclusions, ...strippedOfAllergens } = out;
+    out = strippedOfAllergens;
+    try {
+      const { customerPrefs } = await createCustomerService().getProfileData(customerId);
+      out = {
+        ...out,
+        allergenExclusions: Array.isArray(customerPrefs?.allergenExclusions)
+          ? customerPrefs.allergenExclusions
+          : [],
+      };
+    } catch {
+      // Fail-closed to the safest "no exclusions known" default rather than
+      // leaving the field unresolved — the executor REFUSEs on a missing
+      // array either way, so a transient read error degrades to the same
+      // honest REFUSE the guard already produces for a genuinely new
+      // customer, never a silent bypass.
+      out = { ...out, allergenExclusions: [] };
     }
   }
   return out;

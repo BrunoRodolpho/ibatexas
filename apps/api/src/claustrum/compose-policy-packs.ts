@@ -102,6 +102,10 @@ const AUTORESOLVE_CONFIRM_KINDS = new Set([
   "order.note.add",
   "order.address.change",
   "order.type.switch",
+  // FE-T14 — reservation.modify now auto-resolves reservationId too
+  // (resolve-and-assemble.ts's RESERVATION_AUTORESOLVE_KINDS), so it needs
+  // the same confirm gate as reservation.cancel.
+  "reservation.modify",
 ]);
 export const confirmOnAutoResolveGuard = nameGuard(
   "confirmOnAutoResolvedRef",

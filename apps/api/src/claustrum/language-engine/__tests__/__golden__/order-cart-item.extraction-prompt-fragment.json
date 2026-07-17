@@ -1,0 +1,171 @@
+{
+  "capabilities": [
+    "order.cart.ensure",
+    "order.item.add",
+    "order.item.update",
+    "order.item.remove",
+    "order.coupon.apply"
+  ],
+  "expressIntentTool": {
+    "name": "express_intent",
+    "description": "Declarar uma intenção de mutação para o kernel adjudicar. Use `capability` (uma das opções do enum) e `payload` com os dados.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "capability": {
+          "type": "string",
+          "enum": [
+            "order.cart.ensure",
+            "order.item.add",
+            "order.item.update",
+            "order.item.remove",
+            "order.coupon.apply"
+          ],
+          "description": "A capability/intent kind a ser proposta."
+        },
+        "payload": {
+          "type": "object",
+          "description": "Dados da intenção (campos específicos da capability)."
+        }
+      },
+      "required": [
+        "capability",
+        "payload"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "capability": {
+                "const": "order.cart.ensure"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "capability": {
+                "const": "order.item.add"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "type": "object",
+                "properties": {
+                  "item": {
+                    "type": "string",
+                    "description": "Referência em linguagem natural ao item do carrinho (ex.: \"coca\", \"o hambúrguer\"). NUNCA um ID — a referência é resolvida pelo runtime."
+                  },
+                  "quantity": {
+                    "type": "number",
+                    "description": "Quantidade do item a adicionar (padrão: 1 se não informado)."
+                  }
+                },
+                "required": [
+                  "item"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "capability": {
+                "const": "order.item.update"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "type": "object",
+                "properties": {
+                  "item": {
+                    "type": "string",
+                    "description": "Referência em linguagem natural ao item do carrinho (ex.: \"coca\", \"o hambúrguer\"). NUNCA um ID — a referência é resolvida pelo runtime."
+                  },
+                  "quantity": {
+                    "type": "number",
+                    "description": "Nova quantidade desejada para o item no carrinho."
+                  }
+                },
+                "required": [
+                  "item",
+                  "quantity"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "capability": {
+                "const": "order.item.remove"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "type": "object",
+                "properties": {
+                  "item": {
+                    "type": "string",
+                    "description": "Referência em linguagem natural ao item do carrinho (ex.: \"coca\", \"o hambúrguer\"). NUNCA um ID — a referência é resolvida pelo runtime."
+                  }
+                },
+                "required": [
+                  "item"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "capability": {
+                "const": "order.coupon.apply"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "type": "object",
+                "properties": {
+                  "code": {
+                    "type": "string",
+                    "description": "Código do cupom de desconto informado pelo cliente."
+                  }
+                },
+                "required": [
+                  "code"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,223 @@
+# reservation.modify — FE-T14. `newPartySize` is Directive (a genuine
+# customer-authored number). `newTimeSlotId` is State-class — a lookup key
+# relayed from an EARLIER check_availability read (same framing as
+# reservation.create.yaml's header; see it for the full rationale) — cases
+# that change the slot document the assumed preceding turn in their `note`,
+# with `slot_456` as an illustrative placeholder for a NEW slot the
+# conversation already established (distinct from reservation.create.yaml's
+# `slot_123`, since this is a DIFFERENT capability's corpus). Both fields
+# are optional (a customer may change just the time, just the party size,
+# or both) — CRITICAL DESIGN RULE 4 ("optional over required").
+#
+# FE-T14 added reservation.modify to RESERVATION_AUTORESOLVE_KINDS /
+# AUTORESOLVE_CONFIRM_KINDS (mirroring reservation.cancel's existing
+# treatment) — `reservationId` is "the one active booking" GUESS, hence
+# `grounded` and confirmationRequired: true, same posture as
+# reservation.cancel/order.status.transition.
+capability: reservation.modify
+source: tickets/language-engine/issues/14-rollout-convenience-mutating-verbs.md
+cases:
+  - id: basic-party-size-only
+    utterance: muda minha reserva pra 6 pessoas
+    note: >-
+      Canonical shape (the schema's own worked example) — direct register,
+      party-size-only change, no slot lookup needed.
+    expectPayload:
+      extractionIR:
+        payload:
+          newPartySize: 6
+        provenanceTrust:
+          newPartySize: untrusted
+      hydratedIntentIR:
+        payload:
+          newPartySize: 6
+        payloadPresent:
+          - reservationId
+        provenanceTrust:
+          reservationId: grounded
+          newPartySize: untrusted
+        confirmationRequired: true
+
+  - id: formal-party-size
+    utterance: Gostaria de alterar minha reserva para 3 pessoas, por favor.
+    note: Formal/polite register, party-size-only change.
+    expectPayload:
+      extractionIR:
+        payload:
+          newPartySize: 3
+        provenanceTrust:
+          newPartySize: untrusted
+      hydratedIntentIR:
+        payload:
+          newPartySize: 3
+        payloadPresent:
+          - reservationId
+        provenanceTrust:
+          reservationId: grounded
+          newPartySize: untrusted
+        confirmationRequired: true
+
+  - id: colloquial-somos-mais
+    utterance: somos mais gente agora, muda pra 8 na minha reserva
+    note: Colloquial register — states the reason before the instruction.
+    expectPayload:
+      extractionIR:
+        payload:
+          newPartySize: 8
+        provenanceTrust:
+          newPartySize: untrusted
+      hydratedIntentIR:
+        payload:
+          newPartySize: 8
+        payloadPresent:
+          - reservationId
+        provenanceTrust:
+          reservationId: grounded
+          newPartySize: untrusted
+        confirmationRequired: true
+
+  - id: question-form
+    utterance: dá pra mudar minha reserva pra 2 pessoas?
+    note: Question-form register ("dá pra...?"), party-size-only change.
+    expectPayload:
+      extractionIR:
+        payload:
+          newPartySize: 2
+        provenanceTrust:
+          newPartySize: untrusted
+      hydratedIntentIR:
+        payload:
+          newPartySize: 2
+        payloadPresent:
+          - reservationId
+        provenanceTrust:
+          reservationId: grounded
+          newPartySize: untrusted
+        confirmationRequired: true
+
+  - id: brusque-party-size
+    utterance: minha reserva, muda pra 5, valeu
+    note: Brusque/telegraphic register.
+    expectPayload:
+      extractionIR:
+        payload:
+          newPartySize: 5
+        provenanceTrust:
+          newPartySize: untrusted
+      hydratedIntentIR:
+        payload:
+          newPartySize: 5
+        payloadPresent:
+          - reservationId
+        provenanceTrust:
+          reservationId: grounded
+          newPartySize: untrusted
+        confirmationRequired: true
+
+  - id: formal-solicito-party-size
+    utterance: Solicito a alteração do número de pessoas da minha reserva para 4.
+    note: Formal/bureaucratic register, party-size-only change.
+    expectPayload:
+      extractionIR:
+        payload:
+          newPartySize: 4
+        provenanceTrust:
+          newPartySize: untrusted
+      hydratedIntentIR:
+        payload:
+          newPartySize: 4
+        payloadPresent:
+          - reservationId
+        provenanceTrust:
+          reservationId: grounded
+          newPartySize: untrusted
+        confirmationRequired: true
+
+  - id: slot-change-only
+    utterance: muda minha reserva pra aquele outro horário que vocês acharam
+    note: >-
+      Slot-only change, no party size mentioned. Second turn of a
+      conversation whose first turn was check_availability returning a
+      NEW slot (slot_456) — "aquele outro horário" refers back to it.
+    expectPayload:
+      extractionIR:
+        payload:
+          newTimeSlotId: slot_456
+        provenanceTrust:
+          newTimeSlotId: untrusted
+      hydratedIntentIR:
+        payload:
+          newTimeSlotId: slot_456
+        payloadPresent:
+          - reservationId
+        provenanceTrust:
+          reservationId: grounded
+          newTimeSlotId: untrusted
+        confirmationRequired: true
+
+  - id: slot-change-formal
+    utterance: Gostaria de remarcar minha reserva para esse novo horário.
+    note: >-
+      Formal register, slot-only change. Second turn after
+      check_availability returned slot_456.
+    expectPayload:
+      extractionIR:
+        payload:
+          newTimeSlotId: slot_456
+        provenanceTrust:
+          newTimeSlotId: untrusted
+      hydratedIntentIR:
+        payload:
+          newTimeSlotId: slot_456
+        payloadPresent:
+          - reservationId
+        provenanceTrust:
+          reservationId: grounded
+          newTimeSlotId: untrusted
+        confirmationRequired: true
+
+  - id: slot-change-colloquial
+    utterance: troca minha reserva pra esse horário aí
+    note: >-
+      Colloquial register, slot-only change. Second turn after
+      check_availability returned slot_456.
+    expectPayload:
+      extractionIR:
+        payload:
+          newTimeSlotId: slot_456
+        provenanceTrust:
+          newTimeSlotId: untrusted
+      hydratedIntentIR:
+        payload:
+          newTimeSlotId: slot_456
+        payloadPresent:
+          - reservationId
+        provenanceTrust:
+          reservationId: grounded
+          newTimeSlotId: untrusted
+        confirmationRequired: true
+
+  - id: both-slot-and-party-size
+    utterance: muda minha reserva pra esse outro horário e pra 6 pessoas
+    note: >-
+      BOTH fields change together. Second turn after check_availability
+      returned slot_456.
+    expectPayload:
+      extractionIR:
+        payload:
+          newTimeSlotId: slot_456
+          newPartySize: 6
+        provenanceTrust:
+          newTimeSlotId: untrusted
+          newPartySize: untrusted
+      hydratedIntentIR:
+        payload:
+          newTimeSlotId: slot_456
+          newPartySize: 6
+        payloadPresent:
+          - reservationId
+        provenanceTrust:
+          reservationId: grounded
+          newTimeSlotId: untrusted
+          newPartySize: untrusted
+        confirmationRequired: true

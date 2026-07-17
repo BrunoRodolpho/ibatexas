@@ -56,6 +56,28 @@ import {
   OPS_REFUND_DEFAULT_REASON,
   PAYMENT_REFUND_ISSUE_EXTRACTION_SCHEMA,
 } from "./payment-refund-issue.schema.js";
+import {
+  ORDER_CART_ENSURE_EXTRACTION_SCHEMA,
+  ORDER_ITEM_ADD_EXTRACTION_SCHEMA,
+  ORDER_ITEM_UPDATE_EXTRACTION_SCHEMA,
+  ORDER_ITEM_REMOVE_EXTRACTION_SCHEMA,
+  ORDER_COUPON_APPLY_EXTRACTION_SCHEMA,
+} from "./order-cart-item.schema.js";
+import {
+  ORDER_NOTE_ADD_EXTRACTION_SCHEMA,
+  ORDER_REVIEW_SUBMIT_EXTRACTION_SCHEMA,
+} from "./order-note-review.schema.js";
+import {
+  RESERVATION_CREATE_EXTRACTION_SCHEMA,
+  RESERVATION_MODIFY_EXTRACTION_SCHEMA,
+  RESERVATION_CANCEL_EXTRACTION_SCHEMA,
+  RESERVATION_WAITLIST_JOIN_EXTRACTION_SCHEMA,
+} from "./reservation-convenience.schema.js";
+import {
+  CUSTOMER_PREFERENCES_UPDATE_EXTRACTION_SCHEMA,
+  CUSTOMER_PIX_DETAILS_SAVE_EXTRACTION_SCHEMA,
+  WHATSAPP_HANDOFF_REQUEST_EXTRACTION_SCHEMA,
+} from "./customer-whatsapp-convenience.schema.js";
 
 /** The shape materialized under `record.metadata.languageEngine`. */
 export interface LanguageEngineAuditMetadata {
@@ -194,12 +216,14 @@ const ORDER_AMEND_UPDATE_QTY_RESOLVER_FIELDS: readonly string[] = ["orderId", "i
 const ORDER_AMEND_REMOVE_ITEM_RESOLVER_FIELDS: readonly string[] = ["orderId", "itemId"];
 
 /**
- * Shared derivation shape for the three granular amend kinds (FE-T09) —
- * mirrors `deriveOrderStatusTransition`'s structure exactly, parameterized by
- * the capability's schema, its resolver-field allowlist, and which of those
- * resolver fields get `authoritative` provenance (an explicit-reference
- * resolution) vs. the default `grounded` (an auto-resolved guess — always
- * `orderId` here, same as `order.status.transition`).
+ * Shared derivation shape, originally authored for the three granular amend
+ * kinds (FE-T09) and reused as-is by FE-T14's cart/item family (the logic is
+ * fully capability-agnostic — a schema + a resolver-field allowlist + which
+ * of those fields are `authoritative`) — mirrors `deriveOrderStatusTransition`'s
+ * structure exactly, parameterized by the capability's schema, its
+ * resolver-field allowlist, and which of those resolver fields get
+ * `authoritative` provenance (an explicit-reference/deterministic
+ * resolution) vs. the default `grounded` (an auto-resolved guess).
  */
 function deriveGranularAmend(
   schema: CapabilityExtractionSchema,
@@ -396,6 +420,70 @@ function derivePaymentRefundIssue(record: AuditRecord): LanguageEngineAuditMetad
 }
 
 /**
+ * FE-T14 — the pack-orders cart/item family's resolver-stamped fields.
+ * Unlike order.status.transition/the granular amend kinds, NONE of these
+ * five are an auto-resolved "most recent X" GUESS: `cartId` is deterministic
+ * session resolution (BKL-028, exactly one active cart per session, never
+ * ambiguous), and `variantId`/`itemId` are resolved from the model's
+ * EXPLICIT NL `item` reference (BKL-061 / FE-T14's `resolveCartLineItem`) —
+ * the same "authoritative, not grounded" reasoning FE-T09 already
+ * established for the granular amend kinds' own variantId/itemId. None of
+ * these five kinds are in AUTORESOLVE_CONFIRM_KINDS (compose-policy-packs.ts)
+ * for exactly this reason, so `confirmationRequired` is correctly always
+ * `false` here (`hasGroundedField` finds nothing tagged `grounded`).
+ */
+const ORDER_CART_ENSURE_RESOLVER_FIELDS: readonly string[] = ["cartId"];
+const ORDER_ITEM_ADD_RESOLVER_FIELDS: readonly string[] = ["cartId", "variantId", "allergens"];
+const ORDER_ITEM_UPDATE_RESOLVER_FIELDS: readonly string[] = ["cartId", "itemId"];
+const ORDER_ITEM_REMOVE_RESOLVER_FIELDS: readonly string[] = ["cartId", "itemId"];
+const ORDER_COUPON_APPLY_RESOLVER_FIELDS: readonly string[] = ["cartId"];
+
+/**
+ * FE-T14 — order.note.add's resolver-stamped field. Unlike the cart/item
+ * family, `orderId` here IS an auto-resolved "most recent order" GUESS
+ * (ORDER_AUTORESOLVE_KINDS, resolve-and-assemble.ts already lists
+ * order.note.add, alongside AUTORESOLVE_CONFIRM_KINDS,
+ * compose-policy-packs.ts) — same `grounded` posture as
+ * order.status.transition's own orderId, not `authoritative`.
+ */
+const ORDER_NOTE_ADD_RESOLVER_FIELDS: readonly string[] = ["orderId"];
+
+/**
+ * FE-T14 — order.review.submit's resolver-stamped fields. UNLIKE every
+ * other kind in this rollout slice, there is no chat-reachable resolution
+ * path for either identifier today (see order-note-review.schema.ts's
+ * header) — `orderId`/`productId` are supplied directly by whichever
+ * caller built the envelope (today: the web review flow), never guessed,
+ * so both are `authoritative`, never `grounded`, if/when they appear in a
+ * resolved payload. This derivation is schema-driven and channel-agnostic
+ * — it materializes useful ExtractionIR/HydratedIntentIR observability for
+ * an order.review.submit audit record regardless of which caller produced
+ * it, without requiring a new chat-side resolver.
+ */
+const ORDER_REVIEW_SUBMIT_RESOLVER_FIELDS: readonly string[] = ["orderId", "productId"];
+
+/**
+ * FE-T14 — the pack-reservations family's resolver-stamped fields.
+ * reservation.create/waitlist.join have NONE (a brand-new resource, no
+ * existing target to resolve — hydratedIntentIR is byte-identical to
+ * extractionIR for these two). reservation.modify/cancel both auto-resolve
+ * `reservationId` (RESERVATION_AUTORESOLVE_KINDS, resolve-and-assemble.ts)
+ * — a GUESS, hence `grounded`, never `authoritative`, same posture as
+ * order.status.transition's own orderId.
+ */
+const RESERVATION_MODIFY_RESOLVER_FIELDS: readonly string[] = ["reservationId"];
+const RESERVATION_CANCEL_RESOLVER_FIELDS: readonly string[] = ["reservationId"];
+
+/**
+ * FE-T14 — customer.preferences.update's resolver-stamped field.
+ * `allergenExclusions` is ALWAYS resolver-preserved-from-current
+ * (resolve-and-assemble.ts's dedicated FE-T14 block) — a deterministic
+ * lookup of the customer's OWN saved row, never a guess among several
+ * candidates, hence `authoritative`, never `grounded`.
+ */
+const CUSTOMER_PREFERENCES_UPDATE_RESOLVER_FIELDS: readonly string[] = ["allergenExclusions"];
+
+/**
  * The `AdjudicateAndAuditDeps.metadataProvider` implementation: given the
  * FINAL, post-resolution `AuditRecord`, return the `{languageEngine: {...}}`
  * metadata to merge onto `record.metadata`, or `undefined` for every
@@ -444,6 +532,146 @@ export function buildLanguageEngineAuditMetadata(
   }
   if (record.envelope.kind === "payment.refund.issue") {
     return { languageEngine: derivePaymentRefundIssue(record) };
+  }
+  if (record.envelope.kind === "order.cart.ensure") {
+    return {
+      languageEngine: deriveGranularAmend(
+        ORDER_CART_ENSURE_EXTRACTION_SCHEMA,
+        ORDER_CART_ENSURE_RESOLVER_FIELDS,
+        new Set(["cartId"]),
+        payload,
+      ),
+    };
+  }
+  if (record.envelope.kind === "order.item.add") {
+    return {
+      languageEngine: deriveGranularAmend(
+        ORDER_ITEM_ADD_EXTRACTION_SCHEMA,
+        ORDER_ITEM_ADD_RESOLVER_FIELDS,
+        new Set(["cartId", "variantId", "allergens"]),
+        payload,
+      ),
+    };
+  }
+  if (record.envelope.kind === "order.item.update") {
+    return {
+      languageEngine: deriveGranularAmend(
+        ORDER_ITEM_UPDATE_EXTRACTION_SCHEMA,
+        ORDER_ITEM_UPDATE_RESOLVER_FIELDS,
+        new Set(["cartId", "itemId"]),
+        payload,
+      ),
+    };
+  }
+  if (record.envelope.kind === "order.item.remove") {
+    return {
+      languageEngine: deriveGranularAmend(
+        ORDER_ITEM_REMOVE_EXTRACTION_SCHEMA,
+        ORDER_ITEM_REMOVE_RESOLVER_FIELDS,
+        new Set(["cartId", "itemId"]),
+        payload,
+      ),
+    };
+  }
+  if (record.envelope.kind === "order.coupon.apply") {
+    return {
+      languageEngine: deriveGranularAmend(
+        ORDER_COUPON_APPLY_EXTRACTION_SCHEMA,
+        ORDER_COUPON_APPLY_RESOLVER_FIELDS,
+        new Set(["cartId"]),
+        payload,
+      ),
+    };
+  }
+  if (record.envelope.kind === "order.note.add") {
+    return {
+      languageEngine: deriveGranularAmend(
+        ORDER_NOTE_ADD_EXTRACTION_SCHEMA,
+        ORDER_NOTE_ADD_RESOLVER_FIELDS,
+        new Set(), // orderId is grounded (an auto-resolved guess), never authoritative.
+        payload,
+      ),
+    };
+  }
+  if (record.envelope.kind === "order.review.submit") {
+    return {
+      languageEngine: deriveGranularAmend(
+        ORDER_REVIEW_SUBMIT_EXTRACTION_SCHEMA,
+        ORDER_REVIEW_SUBMIT_RESOLVER_FIELDS,
+        new Set(["orderId", "productId"]),
+        payload,
+      ),
+    };
+  }
+  if (record.envelope.kind === "reservation.create") {
+    return {
+      languageEngine: deriveGranularAmend(
+        RESERVATION_CREATE_EXTRACTION_SCHEMA,
+        [],
+        new Set(),
+        payload,
+      ),
+    };
+  }
+  if (record.envelope.kind === "reservation.modify") {
+    return {
+      languageEngine: deriveGranularAmend(
+        RESERVATION_MODIFY_EXTRACTION_SCHEMA,
+        RESERVATION_MODIFY_RESOLVER_FIELDS,
+        new Set(), // reservationId is grounded (an auto-resolved guess), never authoritative.
+        payload,
+      ),
+    };
+  }
+  if (record.envelope.kind === "reservation.cancel") {
+    return {
+      languageEngine: deriveGranularAmend(
+        RESERVATION_CANCEL_EXTRACTION_SCHEMA,
+        RESERVATION_CANCEL_RESOLVER_FIELDS,
+        new Set(), // reservationId is grounded (an auto-resolved guess), never authoritative.
+        payload,
+      ),
+    };
+  }
+  if (record.envelope.kind === "reservation.waitlist.join") {
+    return {
+      languageEngine: deriveGranularAmend(
+        RESERVATION_WAITLIST_JOIN_EXTRACTION_SCHEMA,
+        [],
+        new Set(),
+        payload,
+      ),
+    };
+  }
+  if (record.envelope.kind === "customer.preferences.update") {
+    return {
+      languageEngine: deriveGranularAmend(
+        CUSTOMER_PREFERENCES_UPDATE_EXTRACTION_SCHEMA,
+        CUSTOMER_PREFERENCES_UPDATE_RESOLVER_FIELDS,
+        new Set(["allergenExclusions"]),
+        payload,
+      ),
+    };
+  }
+  if (record.envelope.kind === "customer.pix.details.save") {
+    return {
+      languageEngine: deriveGranularAmend(
+        CUSTOMER_PIX_DETAILS_SAVE_EXTRACTION_SCHEMA,
+        [],
+        new Set(),
+        payload,
+      ),
+    };
+  }
+  if (record.envelope.kind === "whatsapp.handoff.request") {
+    return {
+      languageEngine: deriveGranularAmend(
+        WHATSAPP_HANDOFF_REQUEST_EXTRACTION_SCHEMA,
+        [],
+        new Set(),
+        payload,
+      ),
+    };
   }
   return undefined;
 }

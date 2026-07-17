@@ -1,0 +1,110 @@
+{
+  "capabilities": [
+    "customer.preferences.update",
+    "customer.pix.details.save",
+    "whatsapp.handoff.request"
+  ],
+  "expressIntentTool": {
+    "name": "express_intent",
+    "description": "Declarar uma intenção de mutação para o kernel adjudicar. Use `capability` (uma das opções do enum) e `payload` com os dados.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "capability": {
+          "type": "string",
+          "enum": [
+            "customer.preferences.update",
+            "customer.pix.details.save",
+            "whatsapp.handoff.request"
+          ],
+          "description": "A capability/intent kind a ser proposta."
+        },
+        "payload": {
+          "type": "object",
+          "description": "Dados da intenção (campos específicos da capability)."
+        }
+      },
+      "required": [
+        "capability",
+        "payload"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "capability": {
+                "const": "customer.preferences.update"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "type": "object",
+                "properties": {
+                  "dietaryFlags": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Restrições alimentares mencionadas pelo cliente (ex.: [\"vegetariano\", \"sem glúten\"]). NUNCA inclua alergias aqui."
+                  },
+                  "favoriteCategories": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Categorias favoritas mencionadas pelo cliente (ex.: [\"churrasco\", \"grelhados\"])."
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "capability": {
+                "const": "customer.pix.details.save"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "capability": {
+                "const": "whatsapp.handoff.request"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string",
+                    "description": "Motivo do pedido de atendimento humano, se mencionado. Omita se não houver motivo explícito."
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

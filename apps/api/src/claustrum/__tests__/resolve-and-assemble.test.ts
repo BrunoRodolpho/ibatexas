@@ -992,6 +992,54 @@ describe("resolve-and-assemble — NL→id confirm-first (auto-resolve money int
     expect(two.ctx.autoResolvedMoneyRef).toBeUndefined();
   });
 
+  // FE-T14 — reservation.modify joins RESERVATION_AUTORESOLVE_KINDS
+  // (mirroring reservation.cancel's exact treatment): its extraction schema
+  // never shows the model a reservationId field, and before this change
+  // there was no auto-resolve path at all for this kind.
+  it("reservation.modify auto-resolves ONLY when exactly one active booking exists", async () => {
+    reservationListByCustomer = async () => ({
+      reservations: [{ id: "res_1", status: "confirmed" }],
+      total: 1,
+    });
+    const one = await resolveAndAssemble({
+      kind: "reservation.modify",
+      payload: { newPartySize: 6 },
+      customerId: "c1",
+      channel: "whatsapp",
+    });
+    expect((one.payload as { reservationId?: string }).reservationId).toBe("res_1");
+    expect((one.payload as { newPartySize?: number }).newPartySize).toBe(6);
+    expect(one.ctx.autoResolvedMoneyRef).toBe(true);
+
+    // Ambiguous (2 active) → do NOT auto-resolve (agent clarifies).
+    reservationListByCustomer = async () => ({
+      reservations: [
+        { id: "res_1", status: "confirmed" },
+        { id: "res_2", status: "pending" },
+      ],
+      total: 2,
+    });
+    const two = await resolveAndAssemble({
+      kind: "reservation.modify",
+      payload: { newPartySize: 6 },
+      customerId: "c1",
+      channel: "whatsapp",
+    });
+    expect((two.payload as { reservationId?: string }).reservationId).toBeUndefined();
+    expect(two.ctx.autoResolvedMoneyRef).toBeUndefined();
+  });
+
+  it("reservation.modify with an EXPLICIT reservationId does NOT auto-resolve (no confirm flag)", async () => {
+    const { payload, ctx } = await resolveAndAssemble({
+      kind: "reservation.modify",
+      payload: { reservationId: "res_explicit", newPartySize: 6 },
+      customerId: "c1",
+      channel: "whatsapp",
+    });
+    expect((payload as { reservationId?: string }).reservationId).toBe("res_explicit");
+    expect(ctx.autoResolvedMoneyRef).toBeUndefined();
+  });
+
   // BKL-038 — the in-flight modify kinds resolve "meu pedido" exactly like
   // order.cancel: unambiguous single-order → most-recent order + confirm flag.
   it.each(INFLIGHT_MODIFY_KINDS)(

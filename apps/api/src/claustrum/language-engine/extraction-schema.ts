@@ -13,11 +13,30 @@
 
 import type { FieldTrustClass } from "./field-trust.js";
 
-/** A minimal JSON-Schema fragment for one field's wire shape (draft-07-ish). */
+/**
+ * A minimal JSON-Schema fragment for one field's wire shape (draft-07-ish).
+ *
+ * FE-T14 adds `"array"` (with a required `items` sub-schema) — the first
+ * rollout slice whose model-facing fields are genuinely list-shaped
+ * (`dietaryFlags`/`favoriteCategories`, `specialRequests`). Deliberately
+ * narrow: `items` is itself string/number/boolean-only (no nested arrays,
+ * no object items) — every real array field this rollout needs is a flat
+ * list of scalars (usually an enum-constrained string), and the kernel-level
+ * wire types this schema class targets (`CustomerPreferencesUpdatePayload`,
+ * `ReservationCreatePayload`/`ReservationModifyPayload`) never carry a
+ * richer shape than `ReadonlyArray<string>` either — see the FE-T14 field
+ * schemas for the grounding. Additive: every existing string/number/boolean
+ * field and `assertSoundExtractionSchema`'s logic are untouched.
+ */
 export interface ExtractionFieldJsonSchema {
-  readonly type: "string" | "number" | "boolean";
+  readonly type: "string" | "number" | "boolean" | "array";
   readonly enum?: readonly string[];
   readonly description: string;
+  /** Required when `type === "array"`; the array's element schema. */
+  readonly items?: {
+    readonly type: "string" | "number" | "boolean";
+    readonly enum?: readonly string[];
+  };
 }
 
 /** One field an extraction schema declares. */

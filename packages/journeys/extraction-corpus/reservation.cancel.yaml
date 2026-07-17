@@ -1,0 +1,178 @@
+# reservation.cancel — FE-T14. `reason` is the only model-extractable field
+# (Directive, optional, free text). Already fully wired for auto-resolve
+# BEFORE this ticket (RESERVATION_AUTORESOLVE_KINDS + AUTORESOLVE_CONFIRM_
+# KINDS both already listed it) — `reservationId` is a "the one active
+# booking" GUESS, hence `grounded` and confirmationRequired: true, same
+# posture as order.status.transition.
+capability: reservation.cancel
+source: tickets/language-engine/issues/14-rollout-convenience-mutating-verbs.md
+cases:
+  - id: basic-with-reason
+    utterance: cancela minha reserva, surgiu um imprevisto
+    note: Canonical shape (the schema's own worked example) — direct register.
+    expectPayload:
+      extractionIR:
+        payload:
+          reason: surgiu um imprevisto
+        provenanceTrust:
+          reason: untrusted
+      hydratedIntentIR:
+        payload:
+          reason: surgiu um imprevisto
+        payloadPresent:
+          - reservationId
+        provenanceTrust:
+          reservationId: grounded
+          reason: untrusted
+        confirmationRequired: true
+
+  - id: no-reason-bare
+    utterance: cancela minha reserva
+    note: No reason mentioned at all — reason field absent.
+    expectPayload:
+      extractionIR:
+        payload: {}
+      hydratedIntentIR:
+        payload: {}
+        payloadPresent:
+          - reservationId
+        provenanceTrust:
+          reservationId: grounded
+        confirmationRequired: true
+
+  - id: formal-gostaria
+    utterance: Gostaria de cancelar minha reserva, por favor.
+    note: Formal/polite register, no explicit reason.
+    expectPayload:
+      extractionIR:
+        payload: {}
+      hydratedIntentIR:
+        payload: {}
+        payloadPresent:
+          - reservationId
+        provenanceTrust:
+          reservationId: grounded
+        confirmationRequired: true
+
+  - id: colloquial-nao-vou-conseguir
+    utterance: não vou conseguir ir, cancela a reserva
+    note: Colloquial register — reason stated before the instruction.
+    expectPayload:
+      extractionIR:
+        payload:
+          reason: não vou conseguir ir
+        provenanceTrust:
+          reason: untrusted
+      hydratedIntentIR:
+        payload:
+          reason: não vou conseguir ir
+        payloadPresent:
+          - reservationId
+        provenanceTrust:
+          reservationId: grounded
+          reason: untrusted
+        confirmationRequired: true
+
+  - id: question-form
+    utterance: dá pra cancelar minha reserva?
+    note: Question-form register ("dá pra...?"), no explicit reason.
+    expectPayload:
+      extractionIR:
+        payload: {}
+      hydratedIntentIR:
+        payload: {}
+        payloadPresent:
+          - reservationId
+        provenanceTrust:
+          reservationId: grounded
+        confirmationRequired: true
+
+  - id: brusque-cancela-ai
+    utterance: cancela aí, mudei de planos
+    note: Brusque/casual register.
+    expectPayload:
+      extractionIR:
+        payload:
+          reason: mudei de planos
+        provenanceTrust:
+          reason: untrusted
+      hydratedIntentIR:
+        payload:
+          reason: mudei de planos
+        payloadPresent:
+          - reservationId
+        provenanceTrust:
+          reservationId: grounded
+          reason: untrusted
+        confirmationRequired: true
+
+  - id: polite-gentileza
+    utterance: por gentileza, cancele minha reserva, fiquei doente
+    note: Very polite register ("por gentileza").
+    expectPayload:
+      extractionIR:
+        payload:
+          reason: fiquei doente
+        provenanceTrust:
+          reason: untrusted
+      hydratedIntentIR:
+        payload:
+          reason: fiquei doente
+        payloadPresent:
+          - reservationId
+        provenanceTrust:
+          reservationId: grounded
+          reason: untrusted
+        confirmationRequired: true
+
+  - id: formal-solicito
+    utterance: Solicito o cancelamento da minha reserva devido a um compromisso inadiável.
+    note: Formal/bureaucratic register.
+    expectPayload:
+      extractionIR:
+        payload:
+          reason: um compromisso inadiável
+        provenanceTrust:
+          reason: untrusted
+      hydratedIntentIR:
+        payload:
+          reason: um compromisso inadiável
+        payloadPresent:
+          - reservationId
+        provenanceTrust:
+          reservationId: grounded
+          reason: untrusted
+        confirmationRequired: true
+
+  - id: casual-nao-vai-dar
+    utterance: não vai dar pra ir mais, cancela pra mim
+    note: Casual register ("não vai dar pra ir mais").
+    expectPayload:
+      extractionIR:
+        payload:
+          reason: não vai dar pra ir mais
+        provenanceTrust:
+          reason: untrusted
+      hydratedIntentIR:
+        payload:
+          reason: não vai dar pra ir mais
+        payloadPresent:
+          - reservationId
+        provenanceTrust:
+          reservationId: grounded
+          reason: untrusted
+        confirmationRequired: true
+
+  - id: polite-poderia
+    utterance: poderia cancelar minha reserva, por gentileza?
+    note: Very polite question register ("poderia...?"), no explicit reason.
+    expectPayload:
+      extractionIR:
+        payload: {}
+      hydratedIntentIR:
+        payload: {}
+        payloadPresent:
+          - reservationId
+        provenanceTrust:
+          reservationId: grounded
+        confirmationRequired: true

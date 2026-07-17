@@ -1,0 +1,183 @@
+# reservation.waitlist.join — FE-T14. Same `timeSlotId` state-class
+# lookup-key framing as reservation.create.yaml (see its header for the
+# full rationale) — every case here is the second turn of a conversation
+# whose first turn already established a full slot via check_availability;
+# `slot_123` is an illustrative placeholder. `partySize` is Directive. Both
+# required. NOT auto-resolved (a new waitlist entry, no existing target) —
+# confirmationRequired is always false.
+capability: reservation.waitlist.join
+source: tickets/language-engine/issues/14-rollout-convenience-mutating-verbs.md
+cases:
+  - id: basic-four-people
+    utterance: coloca eu na lista de espera daquele horário, somos 4
+    note: >-
+      Canonical shape (the schema's own worked example). Second turn after
+      check_availability returned a FULL slot_123.
+    expectPayload:
+      extractionIR:
+        payload:
+          timeSlotId: slot_123
+          partySize: 4
+        provenanceTrust:
+          timeSlotId: untrusted
+          partySize: untrusted
+      hydratedIntentIR:
+        payload:
+          timeSlotId: slot_123
+          partySize: 4
+        confirmationRequired: false
+
+  - id: formal-gostaria
+    utterance: Gostaria de entrar na lista de espera para esse horário, seremos 2 pessoas.
+    note: Formal/polite register. Second turn after check_availability returned slot_123.
+    expectPayload:
+      extractionIR:
+        payload:
+          timeSlotId: slot_123
+          partySize: 2
+        provenanceTrust:
+          timeSlotId: untrusted
+          partySize: untrusted
+      hydratedIntentIR:
+        payload:
+          timeSlotId: slot_123
+          partySize: 2
+        confirmationRequired: false
+
+  - id: colloquial-me-poe-na-fila
+    utterance: me põe na fila desse horário aí, somos 5
+    note: Colloquial register ("me põe na fila"). Second turn after check_availability returned slot_123.
+    expectPayload:
+      extractionIR:
+        payload:
+          timeSlotId: slot_123
+          partySize: 5
+        provenanceTrust:
+          timeSlotId: untrusted
+          partySize: untrusted
+      hydratedIntentIR:
+        payload:
+          timeSlotId: slot_123
+          partySize: 5
+        confirmationRequired: false
+
+  - id: question-form
+    utterance: dá pra entrar na lista de espera desse horário, pra 3 pessoas?
+    note: Question-form register ("dá pra...?"). Second turn after check_availability returned slot_123.
+    expectPayload:
+      extractionIR:
+        payload:
+          timeSlotId: slot_123
+          partySize: 3
+        provenanceTrust:
+          timeSlotId: untrusted
+          partySize: untrusted
+      hydratedIntentIR:
+        payload:
+          timeSlotId: slot_123
+          partySize: 3
+        confirmationRequired: false
+
+  - id: brusque-entra-na-lista
+    utterance: entra na lista pra esse horário, 6 pessoas
+    note: Brusque/telegraphic register. Second turn after check_availability returned slot_123.
+    expectPayload:
+      extractionIR:
+        payload:
+          timeSlotId: slot_123
+          partySize: 6
+        provenanceTrust:
+          timeSlotId: untrusted
+          partySize: untrusted
+      hydratedIntentIR:
+        payload:
+          timeSlotId: slot_123
+          partySize: 6
+        confirmationRequired: false
+
+  - id: polite-gentileza
+    utterance: por gentileza, me coloca na espera desse horário pra 8 pessoas
+    note: Very polite register ("por gentileza"). Second turn after check_availability returned slot_123.
+    expectPayload:
+      extractionIR:
+        payload:
+          timeSlotId: slot_123
+          partySize: 8
+        provenanceTrust:
+          timeSlotId: untrusted
+          partySize: untrusted
+      hydratedIntentIR:
+        payload:
+          timeSlotId: slot_123
+          partySize: 8
+        confirmationRequired: false
+
+  - id: context-embedded
+    utterance: esse horário lotou, mas quero entrar na lista de espera pra 4 pessoas
+    note: >-
+      Context-embedded register — states the reason before the request.
+      Second turn after check_availability returned slot_123.
+    expectPayload:
+      extractionIR:
+        payload:
+          timeSlotId: slot_123
+          partySize: 4
+        provenanceTrust:
+          timeSlotId: untrusted
+          partySize: untrusted
+      hydratedIntentIR:
+        payload:
+          timeSlotId: slot_123
+          partySize: 4
+        confirmationRequired: false
+
+  - id: formal-solicito
+    utterance: Solicito a inclusão na lista de espera para esse horário, para 2 pessoas.
+    note: Formal/bureaucratic register. Second turn after check_availability returned slot_123.
+    expectPayload:
+      extractionIR:
+        payload:
+          timeSlotId: slot_123
+          partySize: 2
+        provenanceTrust:
+          timeSlotId: untrusted
+          partySize: untrusted
+      hydratedIntentIR:
+        payload:
+          timeSlotId: slot_123
+          partySize: 2
+        confirmationRequired: false
+
+  - id: casual-me-avisa
+    utterance: me avisa se abrir uma vaga nesse horário, somos 3
+    note: Casual register ("me avisa se abrir uma vaga"). Second turn after check_availability returned slot_123.
+    expectPayload:
+      extractionIR:
+        payload:
+          timeSlotId: slot_123
+          partySize: 3
+        provenanceTrust:
+          timeSlotId: untrusted
+          partySize: untrusted
+      hydratedIntentIR:
+        payload:
+          timeSlotId: slot_123
+          partySize: 3
+        confirmationRequired: false
+
+  - id: large-group
+    utterance: bota a gente na fila de espera, somos 12
+    note: Larger party size (12). Second turn after check_availability returned slot_123.
+    expectPayload:
+      extractionIR:
+        payload:
+          timeSlotId: slot_123
+          partySize: 12
+        provenanceTrust:
+          timeSlotId: untrusted
+          partySize: untrusted
+      hydratedIntentIR:
+        payload:
+          timeSlotId: slot_123
+          partySize: 12
+        confirmationRequired: false

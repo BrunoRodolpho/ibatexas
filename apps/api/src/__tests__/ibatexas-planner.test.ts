@@ -423,11 +423,15 @@ describe("createIbatexasPlanner — LLM tool surface", () => {
 
 describe("createIbatexasPlanner — buildToolSurface per-capability extraction schema (FE-1.1/FE-1.4)", () => {
   it("embeds the allOf/if-then payload sub-schema when a registered capability is allowed", async () => {
+    // order.note.add was this test's original "no authored schema yet"
+    // example (FE-T05) — FE-T14 authored it, so this now uses
+    // order.checkout.create instead (T11/T12 territory, still unauthored on
+    // this branch) to preserve the test's original additive-proof intent.
     const { model } = mockModel([]);
     const planner = createIbatexasPlanner({
       model,
       modelId: "claude-test",
-      capabilityPlanners: [capPlanner([], ["order.status.transition", "order.note.add"])],
+      capabilityPlanners: [capPlanner([], ["order.status.transition", "order.checkout.create"])],
     });
 
     await planner.propose(mkState("oi"));
@@ -442,8 +446,8 @@ describe("createIbatexasPlanner — buildToolSurface per-capability extraction s
 
     expect(schema.allOf).toBeDefined();
     // Exactly one if/then clause — only order.status.transition has an
-    // authored schema; order.note.add (no authored schema yet) contributes
-    // NOTHING to allOf.
+    // authored schema; order.checkout.create (no authored schema yet)
+    // contributes NOTHING to allOf.
     expect(schema.allOf).toHaveLength(1);
     expect(schema.allOf![0]!.if.properties.capability.const).toBe(
       "order.status.transition",
@@ -456,11 +460,18 @@ describe("createIbatexasPlanner — buildToolSurface per-capability extraction s
   });
 
   it("is byte-identical to the pre-FE-T05 generic shape when NO allowed capability has an authored schema", async () => {
+    // FE-T14 gave ORDER_INTENTS's own three kinds (order.item.add/cart.ensure/
+    // coupon.apply) authored schemas, so this test — whose whole point is the
+    // NO-schema fallback path — now needs its OWN fixture of still-unauthored
+    // order kinds (order.checkout.create/order.cancel, T12's territory,
+    // unmerged on this branch) rather than the shared ORDER_INTENTS constant
+    // the other ~30 planner-mechanics tests in this file still rely on.
+    const noSchemaIntents = ["order.checkout.create", "order.cancel"];
     const { model } = mockModel([]);
     const planner = createIbatexasPlanner({
       model,
       modelId: "claude-test",
-      capabilityPlanners: [capPlanner(ORDER_READS, ORDER_INTENTS)],
+      capabilityPlanners: [capPlanner(ORDER_READS, noSchemaIntents)],
     });
 
     await planner.propose(mkState("oi"));
@@ -472,7 +483,7 @@ describe("createIbatexasPlanner — buildToolSurface per-capability extraction s
       properties: {
         capability: {
           type: "string",
-          enum: ORDER_INTENTS,
+          enum: noSchemaIntents,
           description: "A capability/intent kind a ser proposta.",
         },
         payload: {
@@ -484,6 +495,35 @@ describe("createIbatexasPlanner — buildToolSurface per-capability extraction s
       additionalProperties: false,
     });
     expect((ei.inputSchema as { allOf?: unknown }).allOf).toBeUndefined();
+  });
+
+  it("FE-T14: embeds one allOf/if-then clause per authored order-cart-item kind when ORDER_INTENTS is in play", async () => {
+    const { model } = mockModel([]);
+    const planner = createIbatexasPlanner({
+      model,
+      modelId: "claude-test",
+      capabilityPlanners: [capPlanner(ORDER_READS, ORDER_INTENTS)],
+    });
+
+    await planner.propose(mkState("oi"));
+    const req = (model.complete as ReturnType<typeof vi.fn>).mock.calls[0]![0] as CompletionRequest;
+    const ei = (req.tools ?? []).find((t) => t.name === EXPRESS_INTENT_TOOL)!;
+    const schema = ei.inputSchema as {
+      allOf?: ReadonlyArray<{
+        if: { properties: { capability: { const: string } } };
+        then: { properties: { payload: unknown } };
+      }>;
+    };
+
+    expect(schema.allOf).toHaveLength(ORDER_INTENTS.length);
+    const clauseCapabilities = schema.allOf!.map((c) => c.if.properties.capability.const);
+    expect(new Set(clauseCapabilities)).toEqual(new Set(ORDER_INTENTS));
+    for (const kind of ORDER_INTENTS) {
+      const clause = schema.allOf!.find((c) => c.if.properties.capability.const === kind)!;
+      expect(clause.then.properties.payload).toEqual(
+        EXTRACTION_SCHEMAS_BY_CAPABILITY.get(kind),
+      );
+    }
   });
 
   // FE-T09 (D-a, the amend inversion): the three granular post-checkout
