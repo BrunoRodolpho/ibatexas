@@ -354,13 +354,25 @@ export function createItemCartSeeder(
  * header for why a PAID seed via seed-refundable-order.ts is exact-outcome-
  * safe for every case, including the ones the corpus's SETUP notes describe
  * as needing an unpaid order).
+ *
+ * FE-T14 amend backfill (live-calibration methodology fix, caught before the
+ * scoped rerun that exposed it): `order.amend.add_item` shares this EXACT
+ * same auto-resolve-to-most-recent-order path (`ORDER_AUTORESOLVE_KINDS`,
+ * resolve-and-assemble.ts) — unlike `update_qty`/`remove_item`, add_item
+ * never matches against EXISTING line items (it resolves the NEW item via
+ * `resolveProductForItem` alone), so it needs only "an order exists," not
+ * `seed-item-order.ts`'s heavier real-Medusa-order-with-known-items fixture.
+ * Dispatching it through this lighter seeder (rather than leaving it
+ * unseeded, or over-provisioning via `createItemOrderSeeder`) mirrors
+ * `order.cancel`'s own precondition exactly, since both share the same
+ * resolver path.
  */
 export function createCancelOrderSeeder(
   customerId: string,
   onProgress: (line: string) => void,
 ): (sessionId: string, kase: { id: string }, capability: string) => Promise<void> {
   return async (_sessionId, kase, capability) => {
-    if (capability !== "order.cancel") return
+    if (capability !== "order.cancel" && capability !== "order.amend.add_item") return
     await seedCancelableOrder({
       customerId,
       targetCentavos: targetCentavosForCancelCase(kase.id),

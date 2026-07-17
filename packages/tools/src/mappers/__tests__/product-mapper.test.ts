@@ -80,7 +80,9 @@ describe("medusaToTypesenseDoc", () => {
     expect(doc.price).toBe(18900)
     expect(doc.imageUrl).toBe("https://cdn.ibatexas.com/costela.jpg")
     expect(doc.images).toEqual(["https://cdn.ibatexas.com/costela.jpg", "https://cdn.ibatexas.com/costela-2.jpg"])
-    expect(doc.tags).toEqual(["popular", "sem_gluten"])
+    // Merged with the single variant's title (FE-T14 finding — variant
+    // titles are folded into tags so they're full-text-searchable).
+    expect(doc.tags).toEqual(["popular", "sem_gluten", "Porção família (1,2kg)"])
     expect(doc.availabilityWindow).toBe("jantar")
     expect(doc.allergens).toEqual([])
     expect(doc.productType).toBe("food")
@@ -144,9 +146,59 @@ describe("medusaToTypesenseDoc", () => {
     expect(doc.images).toEqual([])
   })
 
-  it("defaults tags to empty array when tag_ids missing", () => {
-    const doc = medusaToTypesenseDoc(makeMedusa({ tag_ids: undefined }))
+  it("defaults tags to empty array when tag_ids AND variants are both missing", () => {
+    const doc = medusaToTypesenseDoc(makeMedusa({ tag_ids: undefined, variants: [] }))
     expect(doc.tags).toEqual([])
+  })
+
+  it("tags fall back to variant titles alone when tag_ids is missing", () => {
+    const doc = medusaToTypesenseDoc(makeMedusa({ tag_ids: undefined }))
+    expect(doc.tags).toEqual(["Porção família (1,2kg)"])
+  })
+
+  // FE-T14 (live-calibration finding): variant titles are the ONLY place a
+  // customer's casual/brand reference ("coca", "guaraná") lives — the
+  // product-level title/description/tags for a product like "Refrigerante"
+  // never mention them. query_by (search-products.ts) only covers
+  // title/description/tags, so without this merge those references were
+  // permanently unsearchable regardless of extraction/resolver quality.
+  it("merges variant titles into tags, so a multi-variant product's brand names become searchable", () => {
+    const doc = medusaToTypesenseDoc(
+      makeMedusa({
+        title: "Refrigerante",
+        description: "Lata gelada 350ml à escolha.",
+        tag_ids: ["sem_gluten", "vegano"],
+        variants: [
+          { id: "v1", title: "Coca-Cola", prices: [{ amount: 8, currency_code: "brl" }] },
+          { id: "v2", title: "Guaraná Antarctica", prices: [{ amount: 8, currency_code: "brl" }] },
+        ],
+      }),
+    )
+    expect(doc.tags).toEqual(["sem_gluten", "vegano", "Coca-Cola", "Guaraná Antarctica"])
+  })
+
+  it("de-duplicates when a variant title collides with an explicit tag", () => {
+    const doc = medusaToTypesenseDoc(
+      makeMedusa({
+        tag_ids: ["Coca-Cola"],
+        variants: [{ id: "v1", title: "Coca-Cola", prices: [{ amount: 8, currency_code: "brl" }] }],
+      }),
+    )
+    expect(doc.tags).toEqual(["Coca-Cola"])
+  })
+
+  it("omits null/blank variant titles from tags", () => {
+    const doc = medusaToTypesenseDoc(
+      makeMedusa({
+        tag_ids: ["popular"],
+        variants: [
+          { id: "v1", title: null as unknown as string, prices: [{ amount: 8, currency_code: "brl" }] },
+          { id: "v2", title: "   ", prices: [{ amount: 8, currency_code: "brl" }] },
+          { id: "v3", title: "Coca-Cola", prices: [{ amount: 8, currency_code: "brl" }] },
+        ],
+      }),
+    )
+    expect(doc.tags).toEqual(["popular", "Coca-Cola"])
   })
 
   it("defaults productType to 'food' when metadata missing", () => {

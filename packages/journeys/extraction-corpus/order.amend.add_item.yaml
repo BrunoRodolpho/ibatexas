@@ -16,6 +16,18 @@
 # ambiguous `no pedido` alone) so the correction fires unconditionally,
 # regardless of the driving session's cart state.
 #
+# QUANTITY DEFAULT (live-calibration finding, FE-T14 backfill): the schema's
+# OWN worked example (order-amend-granular.schema.ts) shows `quantity: 1` for
+# this exact utterance ("adiciona uma coca no meu pedido") — the field
+# description explicitly instructs "padrão: 1 se não informado." Live driving
+# confirmed the model reliably follows that instruction: every case below
+# with no explicit quantity stated extracts `quantity: 1` (not an absent
+# field), matching the schema's own documented default. Cases that DO state
+# a quantity extract that value. Corpus originally (wrongly) expected the
+# field absent when unstated — corrected to match the schema's own contract,
+# a corpus-authoring fix, not a model defect (T10 payment.refund.issue
+# precedent for the same class of correction).
+#
 # Hydration (audit-metadata.ts's deriveGranularAmend): orderId is ALWAYS
 # resolver-filled via the "most recent order" auto-resolve (grounded, a
 # guess — same posture as order.status.transition), hence
@@ -39,16 +51,20 @@ cases:
     note: >-
       Canonical example (order-amend-granular.schema.ts's own worked
       example) — the `meuPedido` explicit marker, direct register, default
-      quantity (not stated).
+      quantity (not stated, model extracts the schema's documented default
+      of 1).
     expectPayload:
       extractionIR:
         payload:
           item: coca
+          quantity: 1
         provenanceTrust:
           item: untrusted
+          quantity: untrusted
       hydratedIntentIR:
         payload:
           item: coca
+          quantity: 1
         payloadPresent:
           - orderId
           - variantId
@@ -83,16 +99,21 @@ cases:
 
   - id: pedido-que-ja-fiz-formal
     utterance: Por favor, adicione um hambúrguer ao pedido que eu já fiz.
-    note: Formal register, `pedidoQueFiz` explicit marker.
+    note: >-
+      Formal register, `pedidoQueFiz` explicit marker, default quantity
+      (schema's documented default of 1).
     expectPayload:
       extractionIR:
         payload:
           item: hambúrguer
+          quantity: 1
         provenanceTrust:
           item: untrusted
+          quantity: untrusted
       hydratedIntentIR:
         payload:
           item: hambúrguer
+          quantity: 1
         payloadPresent:
           - orderId
           - variantId
@@ -103,16 +124,21 @@ cases:
 
   - id: pedido-numero-explicit
     utterance: adiciona uma batata frita no pedido 910226
-    note: Numbered explicit reference (`pedidoNumero` marker) — direct register.
+    note: >-
+      Numbered explicit reference (`pedidoNumero` marker) — direct register,
+      default quantity (schema's documented default of 1).
     expectPayload:
       extractionIR:
         payload:
           item: batata frita
+          quantity: 1
         provenanceTrust:
           item: untrusted
+          quantity: untrusted
       hydratedIntentIR:
         payload:
           item: batata frita
+          quantity: 1
         payloadPresent:
           - orderId
           - variantId
@@ -123,16 +149,21 @@ cases:
 
   - id: colloquial-poe-mais
     utterance: põe mais um guaraná no pedido que eu fiz
-    note: Colloquial register ("põe mais"), `pedidoQueFiz` marker without "já".
+    note: >-
+      Colloquial register ("põe mais"), `pedidoQueFiz` marker without "já",
+      default quantity (schema's documented default of 1).
     expectPayload:
       extractionIR:
         payload:
           item: guaraná
+          quantity: 1
         provenanceTrust:
           item: untrusted
+          quantity: untrusted
       hydratedIntentIR:
         payload:
           item: guaraná
+          quantity: 1
         payloadPresent:
           - orderId
           - variantId
@@ -143,16 +174,21 @@ cases:
 
   - id: question-form
     utterance: dá pra adicionar uma coca no meu pedido?
-    note: Question-form register ("dá pra...?") — a non-imperative surface form.
+    note: >-
+      Question-form register ("dá pra...?") — a non-imperative surface form,
+      default quantity (schema's documented default of 1).
     expectPayload:
       extractionIR:
         payload:
           item: coca
+          quantity: 1
         provenanceTrust:
           item: untrusted
+          quantity: untrusted
       hydratedIntentIR:
         payload:
           item: coca
+          quantity: 1
         payloadPresent:
           - orderId
           - variantId
@@ -163,16 +199,21 @@ cases:
 
   - id: brusque-numbered
     utterance: mais um hambúrguer no pedido 910226, valeu
-    note: Brusque/casual register with the numbered explicit marker.
+    note: >-
+      Brusque/casual register with the numbered explicit marker, default
+      quantity (schema's documented default of 1).
     expectPayload:
       extractionIR:
         payload:
           item: hambúrguer
+          quantity: 1
         provenanceTrust:
           item: untrusted
+          quantity: untrusted
       hydratedIntentIR:
         payload:
           item: hambúrguer
+          quantity: 1
         payloadPresent:
           - orderId
           - variantId
@@ -183,16 +224,21 @@ cases:
 
   - id: polite-gentileza
     utterance: por gentileza, adiciona uma batata frita no meu pedido
-    note: Very polite register ("por gentileza"), `meuPedido` marker.
+    note: >-
+      Very polite register ("por gentileza"), `meuPedido` marker, default
+      quantity (schema's documented default of 1).
     expectPayload:
       extractionIR:
         payload:
           item: batata frita
+          quantity: 1
         provenanceTrust:
           item: untrusted
+          quantity: untrusted
       hydratedIntentIR:
         payload:
           item: batata frita
+          quantity: 1
         payloadPresent:
           - orderId
           - variantId
@@ -203,16 +249,21 @@ cases:
 
   - id: context-embedded
     utterance: esqueci de pedir um guaraná, adiciona no meu pedido
-    note: Context-embedded register — states the reason before the instruction.
+    note: >-
+      Context-embedded register — states the reason before the instruction,
+      default quantity (schema's documented default of 1).
     expectPayload:
       extractionIR:
         payload:
           item: guaraná
+          quantity: 1
         provenanceTrust:
           item: untrusted
+          quantity: untrusted
       hydratedIntentIR:
         payload:
           item: guaraná
+          quantity: 1
         payloadPresent:
           - orderId
           - variantId

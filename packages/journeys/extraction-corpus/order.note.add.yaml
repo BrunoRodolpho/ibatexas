@@ -224,7 +224,16 @@ cases:
     note: >-
       No note text anywhere in the utterance — just the bare capability
       request. extractionIR.payload is correctly EMPTY (body absent, never
-      invented); the executeNoteAdd guard REFUSEs on the empty body.
+      invented — the FE-T14 persona-refinement finding this case exists to
+      pin: the model must NOT fabricate content for an empty field). Decision
+      is REQUEST_CONFIRMATION, not REFUSE — live-calibration finding: orderId
+      is auto-resolved ("most recent order"), and every auto-resolve kind
+      forces a park-for-confirmation BEFORE the executeNoteAdd empty-body
+      guard gets a chance to run (that guard only fires at EXECUTE time, on
+      confirm). This is a pre-existing sequencing property of the shared
+      auto-resolve-confirm path (order.cancel/note.add/amend all share it),
+      not a persona-lever regression — documented here rather than pinning a
+      decision this case never live-produces.
     expectPayload:
       extractionIR:
         payload: {}
@@ -234,4 +243,4 @@ cases:
         provenanceTrust:
           orderId: grounded
         confirmationRequired: true
-      decision: REFUSE
+      decision: REQUEST_CONFIRMATION

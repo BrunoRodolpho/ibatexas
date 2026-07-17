@@ -247,7 +247,13 @@ export const SEED_PRODUCTS: SeedProduct[] = [
     description:
       "Dois smash patties com carne defumada moída, queijo cheddar derretido, cebola caramelizada e molho especial. Pão brioche artesanal.",
     categoryHandle: "sanduiches",
-    tags: ["popular"],
+    // "hambúrguer" — fixture realism (a real menu carries the generic pt-BR
+    // term for what "Smash Burger" is), NOT brand-alias stuffing: this is
+    // the one product-level term a customer plausibly says that the title
+    // itself never will, since variant-title indexing (product-mapper.ts's
+    // extractVariantTitleTags, FE-T14) only helps when the VARIANT carries
+    // the distinguishing name — this product's sole variant is "Unidade".
+    tags: ["popular", "hambúrguer"],
     variants: [{ title: "Unidade", price: 4200 }],
     metadata: {
       productType: "food",
