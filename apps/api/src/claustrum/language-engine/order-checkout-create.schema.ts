@@ -123,7 +123,9 @@ export const ORDER_CHECKOUT_CREATE_EXTRACTION_SCHEMA: CapabilityExtractionSchema
           description:
             "Forma de pagamento — EXATAMENTE um destes valores em inglês " +
             "(contrato fechado; o guard não normaliza): pix, card, cash. " +
-            "Omita se o cliente não mencionar uma forma de pagamento — " +
+            'Se o cliente disser "no pix"/"cartão"/"em dinheiro" (ou similar), ' +
+            "inclua este campo — ex.: \"pago no pix\" => payment_method: \"pix\". " +
+            "Omita APENAS se o cliente não mencionar uma forma de pagamento — " +
             "NUNCA escolha uma por conta própria.",
         },
         required: false,
@@ -140,8 +142,10 @@ export const ORDER_CHECKOUT_CREATE_EXTRACTION_SCHEMA: CapabilityExtractionSchema
           description:
             "Tipo de entrega — EXATAMENTE um destes valores em inglês " +
             "(contrato fechado; o guard não normaliza): pickup, delivery. " +
-            "Omita se o cliente não mencionar retirada ou entrega — NUNCA " +
-            "escolha um por conta própria.",
+            'Se o cliente disser "retiro"/"buscar"/"entrega"/"manda pra casa" ' +
+            '(ou similar), inclua este campo — ex.: "retiro no balcão" => ' +
+            "delivery_type: \"pickup\". Omita APENAS se o cliente não mencionar " +
+            "retirada ou entrega — NUNCA escolha um por conta própria.",
         },
         required: false,
       },

@@ -13,7 +13,7 @@
     {
       "capability": "payment.pix.regenerate",
       "goldenFragmentPath": "apps/api/src/claustrum/language-engine/__tests__/__golden__/payment-pix-regenerate.extraction-prompt-fragment.json",
-      "goldenFragmentSha256": "fd78002c972cd33ef72bbc6117604f0bdcff58ef0f7aad62afe845a7c6d9def5"
+      "goldenFragmentSha256": "554d8f168db90973c7f57e53decbb22e03b3c340fde22d97da2c06dacd20b115"
     },
     {
       "capability": "read-tools:12-tool-roster",
@@ -23,12 +23,12 @@
     {
       "capability": "order.checkout.create",
       "goldenFragmentPath": "apps/api/src/claustrum/language-engine/__tests__/__golden__/order-checkout-create.extraction-prompt-fragment.json",
-      "goldenFragmentSha256": "9df302a004bd42e6167dfb09a821d9caf16569820adb63d975aad568fadcc95f"
+      "goldenFragmentSha256": "dc77764b00505a08f6bac9999b59483894fd103a7fad8c7991ccd46922aa83c4"
     },
     {
       "capability": "order.cancel",
       "goldenFragmentPath": "apps/api/src/claustrum/language-engine/__tests__/__golden__/order-cancel.extraction-prompt-fragment.json",
-      "goldenFragmentSha256": "a30d0214a92d59756a4ecad65c3b1ec011e1d53354e56c2394a9a909630d269f"
+      "goldenFragmentSha256": "50c6ab5bfa46e3f163873c0969a325fbc02e7e98d61bd289216cd7a8ad033dc4"
     }
   ]
 }
