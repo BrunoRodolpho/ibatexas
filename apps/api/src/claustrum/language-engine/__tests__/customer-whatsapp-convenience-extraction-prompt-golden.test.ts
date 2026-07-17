@@ -74,8 +74,8 @@ describe("extraction-prompt golden byte-identity gate (customer.preferences.upda
     // customer.pix.details.save is EMPTY — zero PII fields on the wire.
     expect(byCapability.get("customer.pix.details.save")!.properties).toEqual({});
     expect(Object.keys(byCapability.get("customer.preferences.update")!.properties).sort()).toEqual([
-      "dietaryFlags",
-      "favoriteCategories",
+      "dietary_restrictions",
+      "favorite_categories",
     ]);
     expect(Object.keys(byCapability.get("whatsapp.handoff.request")!.properties)).toEqual(["reason"]);
   });

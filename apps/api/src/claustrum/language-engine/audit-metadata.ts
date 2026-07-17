@@ -676,6 +676,67 @@ const RESERVATION_CANCEL_RESOLVER_FIELDS: readonly string[] = ["reservationId"];
 const CUSTOMER_PREFERENCES_UPDATE_RESOLVER_FIELDS: readonly string[] = ["allergenExclusions"];
 
 /**
+ * customer.preferences.update-specific derivation (team-lead ruling, the
+ * live-calibration wire-rename lever — same pattern as
+ * `deriveOrderCheckoutCreate`'s `payment_method`/`paymentMethod` handling,
+ * not `deriveGranularAmend`'s generic schema-driven split). The schema's
+ * OWN field names are now the wire names (`dietary_restrictions`/
+ * `favorite_categories`), but by the time this derivation sees the
+ * resolved envelope payload, `mapPreferencesUpdateWireFields`
+ * (resolve-and-assemble.ts) has ALREADY consumed those wire keys and
+ * renamed them to the STABLE internal keys (`dietaryFlags`/
+ * `favoriteCategories`) every other consumer reads — so a plain
+ * `splitResolvedPayload(schema, resolvedPayload)` would find NOTHING (the
+ * wire keys no longer exist on the resolved payload) and silently under-
+ * report accuracy. Fixed exactly like the checkout rename: re-surface the
+ * renamed value back under the WIRE name for BOTH IRs — "the one name the
+ * corpus/schema actually declares" (deriveOrderCheckoutCreate's own
+ * phrase) — so the audit trail can still assert what the model actually
+ * extracted, independent of which internal key production code reads.
+ */
+function deriveCustomerPreferencesUpdate(
+  resolvedPayload: Readonly<Record<string, unknown>>,
+): LanguageEngineAuditMetadata {
+  const schema = CUSTOMER_PREFERENCES_UPDATE_EXTRACTION_SCHEMA;
+  const { extractionPayload } = splitResolvedPayload(schema, resolvedPayload);
+
+  const extractionProvenance: Record<string, ReturnType<typeof modelProvenance>> =
+    {};
+  if (Array.isArray(resolvedPayload.dietaryFlags)) {
+    extractionPayload.dietary_restrictions = resolvedPayload.dietaryFlags;
+    extractionProvenance.dietary_restrictions = modelProvenance();
+  }
+  if (Array.isArray(resolvedPayload.favoriteCategories)) {
+    extractionPayload.favorite_categories = resolvedPayload.favoriteCategories;
+    extractionProvenance.favorite_categories = modelProvenance();
+  }
+  const extractionIR: ExtractionIR = {
+    capability: schema.capability,
+    payload: extractionPayload,
+    provenance: extractionProvenance,
+  };
+
+  const hydratedProvenance: Record<string, FieldProvenanceMap[string]> = {
+    ...extractionProvenance,
+  };
+  if ("allergenExclusions" in resolvedPayload) {
+    hydratedProvenance.allergenExclusions = resolverAuthoritativeProvenance();
+  }
+  const hydratedIntentIR: HydratedIntentIR = {
+    capability: schema.capability,
+    payload: projectHydratedPayload(
+      extractionPayload,
+      resolvedPayload,
+      CUSTOMER_PREFERENCES_UPDATE_RESOLVER_FIELDS,
+    ),
+    provenance: hydratedProvenance,
+    confirmationRequired: hasGroundedField(hydratedProvenance),
+  };
+
+  return { extractionIR, hydratedIntentIR };
+}
+
+/**
  * The `AdjudicateAndAuditDeps.metadataProvider` implementation: given the
  * FINAL, post-resolution `AuditRecord`, return the `{languageEngine: {...}}`
  * metadata to merge onto `record.metadata`, or `undefined` for every
@@ -852,14 +913,7 @@ export function buildLanguageEngineAuditMetadata(
     };
   }
   if (record.envelope.kind === "customer.preferences.update") {
-    return {
-      languageEngine: deriveGranularAmend(
-        CUSTOMER_PREFERENCES_UPDATE_EXTRACTION_SCHEMA,
-        CUSTOMER_PREFERENCES_UPDATE_RESOLVER_FIELDS,
-        new Set(["allergenExclusions"]),
-        payload,
-      ),
-    };
+    return { languageEngine: deriveCustomerPreferencesUpdate(payload) };
   }
   if (record.envelope.kind === "customer.pix.details.save") {
     return {

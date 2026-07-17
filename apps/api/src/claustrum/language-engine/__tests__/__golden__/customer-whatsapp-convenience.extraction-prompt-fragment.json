@@ -43,7 +43,7 @@
               "payload": {
                 "type": "object",
                 "properties": {
-                  "dietaryFlags": {
+                  "dietary_restrictions": {
                     "type": "array",
                     "items": {
                       "type": "string",
@@ -51,7 +51,7 @@
                     },
                     "description": "Restrições alimentares mencionadas pelo cliente (ex.: [\"vegetariano\", \"sem glúten\"]). NUNCA inclua alergias aqui."
                   },
-                  "favoriteCategories": {
+                  "favorite_categories": {
                     "type": "array",
                     "items": {
                       "type": "string",

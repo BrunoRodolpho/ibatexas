@@ -65,7 +65,19 @@ export const CUSTOMER_PREFERENCES_UPDATE_EXTRACTION_SCHEMA: CapabilityExtraction
     capability: "customer.preferences.update",
     fields: [
       {
-        name: "dietaryFlags",
+        // team-lead ruling (FE-T14 live-calibration, the T12 payment_method
+        // lesson applied): live 4B calibration showed the model emitting
+        // `dietary_restriction` (snake_case, a different word than the
+        // originally-authored `dietaryFlags`) on every observed call — the
+        // SAME wire-vs-natural-emission mismatch T12's checkout fields hit.
+        // Wire renamed to `dietary_restrictions` (snake_case, plural for the
+        // array) to match; resolve-and-assemble.ts's
+        // mapPreferencesUpdateWireFields renames it back to the STABLE
+        // internal `dietaryFlags` key every other consumer (pack-customer-
+        // onboarding/src/types.ts, routes/me.ts, admin-customer-compose.ts)
+        // already reads — mirrors mapCheckoutPaymentMethodWireField's exact
+        // KEY-rename-only idiom (no value normalization needed here).
+        name: "dietary_restrictions",
         trustClass: "directive",
         // freeform: true — genuinely open-vocabulary preference words (any
         // diet name a customer might say), not a fixed enum; see extraction-
@@ -81,9 +93,14 @@ export const CUSTOMER_PREFERENCES_UPDATE_EXTRACTION_SCHEMA: CapabilityExtraction
         required: false,
       },
       {
-        name: "favoriteCategories",
+        // Same wire-rename lever, applied to the sibling field on the same
+        // ruling — no live-observed mismatch confirmed for this one
+        // specifically, but the same camelCase-vs-snake_case bias is the
+        // most likely failure mode, so it's renamed alongside its sibling
+        // rather than left half-fixed.
+        name: "favorite_categories",
         trustClass: "directive",
-        // freeform: true — same open-vocabulary reasoning as dietaryFlags.
+        // freeform: true — same open-vocabulary reasoning as dietary_restrictions.
         jsonSchema: {
           type: "array",
           items: { type: "string", freeform: true },
@@ -96,7 +113,7 @@ export const CUSTOMER_PREFERENCES_UPDATE_EXTRACTION_SCHEMA: CapabilityExtraction
     ],
     example: {
       utterance: "sou vegetariano e adoro comida grelhada",
-      payload: { dietaryFlags: ["vegetariano"], favoriteCategories: ["grelhados"] },
+      payload: { dietary_restrictions: ["vegetariano"], favorite_categories: ["grelhados"] },
     },
   };
 

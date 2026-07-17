@@ -919,6 +919,33 @@ function mapCheckoutDeliveryTypeWireField(kind: string, payload: Ctx): Ctx {
 }
 
 /**
+ * team-lead ruling (FE-T14 live-calibration, the T12 payment_method lesson
+ * applied) — same wire-rename idiom as `mapCheckoutPaymentMethodWireField`
+ * (KEY rename only, no value normalization needed — these are freeform
+ * string arrays, not a closed synonym set), for `customer.preferences.
+ * update`'s two wire fields: `dietary_restrictions`/`favorite_categories`
+ * (snake_case, matching live-observed model emission — see customer-
+ * whatsapp-convenience.schema.ts's own doc) -> the STABLE internal
+ * `dietaryFlags`/`favoriteCategories` keys every other consumer (pack-
+ * customer-onboarding/src/types.ts, routes/me.ts, admin-customer-
+ * compose.ts) already reads. Pure rename, unconditional, called first
+ * alongside the checkout renames — before `applyAutoResolve`.
+ */
+function mapPreferencesUpdateWireFields(kind: string, payload: Ctx): Ctx {
+  if (kind !== "customer.preferences.update") return payload;
+  let out = payload;
+  if (Array.isArray(out.dietary_restrictions) && typeof out.dietaryFlags === "undefined") {
+    const { dietary_restrictions: wireValue, ...rest } = out;
+    out = { ...rest, dietaryFlags: wireValue };
+  }
+  if (Array.isArray(out.favorite_categories) && typeof out.favoriteCategories === "undefined") {
+    const { favorite_categories: wireValue, ...rest } = out;
+    out = { ...rest, favoriteCategories: wireValue };
+  }
+  return out;
+}
+
+/**
  * F3/L1 (D-014) — thread resolved ids from ctx back onto the outgoing payload.
  *
  * The Conductor hands the executor tool `envelope.payload`, but the session
@@ -1476,13 +1503,13 @@ export async function resolveAndAssemble(args: ResolveArgs): Promise<AssembledRe
   const agentTokens = await readAgentSessionTokens(channel, sessionId);
   if (agentTokens !== undefined) base.agentTokensConsumed = agentTokens;
 
-  // FE-T12 — wire→internal field renames for order.checkout.create, first
-  // and unconditional (no dependency on auto-resolve/ownership). Both
-  // fields are independent renames on the SAME payload; order between them
-  // doesn't matter (each only touches its own key).
-  const normalizedPayload = mapCheckoutDeliveryTypeWireField(
+  // FE-T12/FE-T14 — wire→internal field renames, first and unconditional
+  // (no dependency on auto-resolve/ownership). Every rename is independent
+  // on the SAME payload — order between them doesn't matter (each only
+  // touches its own key(s), and each is a no-op for every OTHER kind).
+  const normalizedPayload = mapPreferencesUpdateWireFields(
     kind,
-    mapCheckoutPaymentMethodWireField(kind, payload),
+    mapCheckoutDeliveryTypeWireField(kind, mapCheckoutPaymentMethodWireField(kind, payload)),
   );
 
   // NL→id resolution (confirm-first) then the 034-F1 refund ownership binding.

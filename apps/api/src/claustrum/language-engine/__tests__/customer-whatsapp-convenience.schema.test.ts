@@ -22,9 +22,9 @@ describe("CUSTOMER_PREFERENCES_UPDATE_EXTRACTION_SCHEMA", () => {
     ).not.toThrow();
   });
 
-  it("exposes ONLY {dietaryFlags, favoriteCategories}, both optional — NEVER allergenExclusions", () => {
+  it("exposes ONLY {dietary_restrictions, favorite_categories} (the live-calibration wire rename), both optional — NEVER allergenExclusions", () => {
     const names = extractionFieldNames(CUSTOMER_PREFERENCES_UPDATE_EXTRACTION_SCHEMA);
-    expect([...names].sort()).toEqual(["dietaryFlags", "favoriteCategories"]);
+    expect([...names].sort()).toEqual(["dietary_restrictions", "favorite_categories"]);
     expect(names.has("allergenExclusions")).toBe(false);
     expect(names.has("allergens")).toBe(false);
   });
@@ -34,12 +34,12 @@ describe("CUSTOMER_PREFERENCES_UPDATE_EXTRACTION_SCHEMA", () => {
     expect(wire).toEqual({
       type: "object",
       properties: {
-        dietaryFlags: {
+        dietary_restrictions: {
           type: "array",
           items: { type: "string", freeform: true },
           description: expect.any(String),
         },
-        favoriteCategories: {
+        favorite_categories: {
           type: "array",
           items: { type: "string", freeform: true },
           description: expect.any(String),

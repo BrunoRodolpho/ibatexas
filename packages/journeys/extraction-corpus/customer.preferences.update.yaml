@@ -1,4 +1,4 @@
-# customer.preferences.update — FE-T14. `dietaryFlags`/`favoriteCategories`
+# customer.preferences.update — FE-T14. `dietary_restrictions`/`favorite_categories`
 # are the only model-extractable fields, BOTH optional arrays of strings.
 # `allergenExclusions` is REQUIRED on the wire but NEVER on this schema —
 # resolve-and-assemble.ts's FE-T14 addition always resolver-preserves the
@@ -22,15 +22,15 @@ cases:
     expectPayload:
       extractionIR:
         payload:
-          dietaryFlags: [vegetariano]
-          favoriteCategories: [grelhados]
+          dietary_restrictions: [vegetariano]
+          favorite_categories: [grelhados]
         provenanceTrust:
-          dietaryFlags: untrusted
-          favoriteCategories: untrusted
+          dietary_restrictions: untrusted
+          favorite_categories: untrusted
       hydratedIntentIR:
         payload:
-          dietaryFlags: [vegetariano]
-          favoriteCategories: [grelhados]
+          dietary_restrictions: [vegetariano]
+          favorite_categories: [grelhados]
         payloadPresent:
           - allergenExclusions
         provenanceTrust:
@@ -43,12 +43,12 @@ cases:
     expectPayload:
       extractionIR:
         payload:
-          dietaryFlags: [vegano]
+          dietary_restrictions: [vegano]
         provenanceTrust:
-          dietaryFlags: untrusted
+          dietary_restrictions: untrusted
       hydratedIntentIR:
         payload:
-          dietaryFlags: [vegano]
+          dietary_restrictions: [vegano]
         payloadPresent:
           - allergenExclusions
         provenanceTrust:
@@ -61,12 +61,12 @@ cases:
     expectPayload:
       extractionIR:
         payload:
-          favoriteCategories: [churrasco]
+          favorite_categories: [churrasco]
         provenanceTrust:
-          favoriteCategories: untrusted
+          favorite_categories: untrusted
       hydratedIntentIR:
         payload:
-          favoriteCategories: [churrasco]
+          favorite_categories: [churrasco]
         payloadPresent:
           - allergenExclusions
         provenanceTrust:
@@ -79,12 +79,12 @@ cases:
     expectPayload:
       extractionIR:
         payload:
-          dietaryFlags: [vegetariano]
+          dietary_restrictions: [vegetariano]
         provenanceTrust:
-          dietaryFlags: untrusted
+          dietary_restrictions: untrusted
       hydratedIntentIR:
         payload:
-          dietaryFlags: [vegetariano]
+          dietary_restrictions: [vegetariano]
         payloadPresent:
           - allergenExclusions
         provenanceTrust:
@@ -97,12 +97,12 @@ cases:
     expectPayload:
       extractionIR:
         payload:
-          dietaryFlags: [sem glúten]
+          dietary_restrictions: [sem glúten]
         provenanceTrust:
-          dietaryFlags: untrusted
+          dietary_restrictions: untrusted
       hydratedIntentIR:
         payload:
-          dietaryFlags: [sem glúten]
+          dietary_restrictions: [sem glúten]
         payloadPresent:
           - allergenExclusions
         provenanceTrust:
@@ -115,12 +115,12 @@ cases:
     expectPayload:
       extractionIR:
         payload:
-          favoriteCategories: [churrasco, japonesa]
+          favorite_categories: [churrasco, japonesa]
         provenanceTrust:
-          favoriteCategories: untrusted
+          favorite_categories: untrusted
       hydratedIntentIR:
         payload:
-          favoriteCategories: [churrasco, japonesa]
+          favorite_categories: [churrasco, japonesa]
         payloadPresent:
           - allergenExclusions
         provenanceTrust:
@@ -133,7 +133,7 @@ cases:
   # structural safety property (no allergenExclusions/allergens key ever
   # reaches extractionIR) still holds below — but that alone is
   # INSUFFICIENT: without the honesty guard, these two cases would have
-  # "succeeded" (dietaryFlags saved, or nothing at all saved) while looking
+  # "succeeded" (dietary_restrictions saved, or nothing at all saved) while looking
   # like the allergy was handled, when it silently wasn't. FE-T14's
   # `refuseAllergenMentionGuard` (compose-policy-packs.ts) reads
   # resolve-and-assemble.ts's `isAllergenMentionUtterance` detector off the
@@ -156,12 +156,12 @@ cases:
     expectPayload:
       extractionIR:
         payload:
-          dietaryFlags: [vegetariano]
+          dietary_restrictions: [vegetariano]
         provenanceTrust:
-          dietaryFlags: untrusted
+          dietary_restrictions: untrusted
       hydratedIntentIR:
         payload:
-          dietaryFlags: [vegetariano]
+          dietary_restrictions: [vegetariano]
         payloadPresent:
           - allergenExclusions
         provenanceTrust:
@@ -195,12 +195,12 @@ cases:
     expectPayload:
       extractionIR:
         payload:
-          dietaryFlags: [vegetariano]
+          dietary_restrictions: [vegetariano]
         provenanceTrust:
-          dietaryFlags: untrusted
+          dietary_restrictions: untrusted
       hydratedIntentIR:
         payload:
-          dietaryFlags: [vegetariano]
+          dietary_restrictions: [vegetariano]
         payloadPresent:
           - allergenExclusions
         provenanceTrust:
@@ -213,15 +213,15 @@ cases:
     expectPayload:
       extractionIR:
         payload:
-          dietaryFlags: [vegano]
-          favoriteCategories: [japonesa]
+          dietary_restrictions: [vegano]
+          favorite_categories: [japonesa]
         provenanceTrust:
-          dietaryFlags: untrusted
-          favoriteCategories: untrusted
+          dietary_restrictions: untrusted
+          favorite_categories: untrusted
       hydratedIntentIR:
         payload:
-          dietaryFlags: [vegano]
-          favoriteCategories: [japonesa]
+          dietary_restrictions: [vegano]
+          favorite_categories: [japonesa]
         payloadPresent:
           - allergenExclusions
         provenanceTrust:

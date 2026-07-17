@@ -913,3 +913,63 @@ describe("buildLanguageEngineAuditMetadata — order.review.submit (FE-T14)", ()
     expect(le.extractionIR.payload).not.toHaveProperty("comment");
   });
 });
+
+// ── team-lead ruling — the live-calibration wire-rename lever ──────────────
+// customer.preferences.update's dedicated derivation (deriveCustomerPreferencesUpdate)
+// re-surfaces the renamed internal keys (dietaryFlags/favoriteCategories,
+// post mapPreferencesUpdateWireFields) back under the WIRE names
+// (dietary_restrictions/favorite_categories) the schema actually declares —
+// same pattern as order.checkout.create's payment_method handling. These
+// prove the round-trip: the audit trail must still assert what the model
+// extracted, independent of the internal key production code reads.
+describe("buildLanguageEngineAuditMetadata — customer.preferences.update (live-calibration wire rename)", () => {
+  it("re-surfaces the RESOLVED dietaryFlags/favoriteCategories under the WIRE names in both IRs", () => {
+    const meta = buildLanguageEngineAuditMetadata(
+      record("customer.preferences.update", {
+        dietaryFlags: ["vegetariano"],
+        favoriteCategories: ["churrasco"],
+        allergenExclusions: ["amendoim"],
+      }),
+    );
+    const le = languageEngineOf(meta);
+    expect(le.extractionIR.payload).toEqual({
+      dietary_restrictions: ["vegetariano"],
+      favorite_categories: ["churrasco"],
+    });
+    expect(le.extractionIR.provenance).toEqual({
+      dietary_restrictions: { producer: "model", confidence: "explicit", trust: "untrusted" },
+      favorite_categories: { producer: "model", confidence: "explicit", trust: "untrusted" },
+    });
+    expect(le.hydratedIntentIR.payload).toEqual({
+      dietary_restrictions: ["vegetariano"],
+      favorite_categories: ["churrasco"],
+      allergenExclusions: ["amendoim"],
+    });
+    expect(le.hydratedIntentIR.provenance.allergenExclusions).toEqual({
+      producer: "resolver",
+      confidence: "resolved",
+      trust: "authoritative",
+    });
+  });
+
+  it("derives an EMPTY extractionIR when only dietaryFlags is present (favoriteCategories genuinely absent, never fabricated)", () => {
+    const meta = buildLanguageEngineAuditMetadata(
+      record("customer.preferences.update", {
+        dietaryFlags: ["vegano"],
+        allergenExclusions: [],
+      }),
+    );
+    const le = languageEngineOf(meta);
+    expect(le.extractionIR.payload).toEqual({ dietary_restrictions: ["vegano"] });
+    expect(le.extractionIR.payload).not.toHaveProperty("favorite_categories");
+  });
+
+  it("derives an EMPTY extractionIR when neither preference field is present — only allergenExclusions resolved", () => {
+    const meta = buildLanguageEngineAuditMetadata(
+      record("customer.preferences.update", { allergenExclusions: [] }),
+    );
+    const le = languageEngineOf(meta);
+    expect(le.extractionIR.payload).toEqual({});
+    expect(le.hydratedIntentIR.payload).toEqual({ allergenExclusions: [] });
+  });
+});
