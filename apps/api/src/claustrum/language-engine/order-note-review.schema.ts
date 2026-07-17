@@ -20,29 +20,41 @@
 //
 // ── order.review.submit ──────────────────────────────────────────────────
 // Wire payload (`OrderReviewSubmitPayload`) is `{orderId, productId,
-// rating, comment?}`. `orderId`/`productId` are Identity-class (forbidden)
-// — the model sees ONLY `{rating, comment?}`. UNLIKE every other kind in
-// this rollout slice, `order.review.submit` has NO resolver path for
-// EITHER identifier today: `SubmitReviewInputSchema.parse(input)`
-// (submit-review.ts) requires both directly, and neither
+// rating, comment?}`. `orderId`/`productId` are Identity-class (forbidden
+// in spirit — see below) — the model sees ONLY `{rating, comment?}`.
+// UNLIKE every other kind in this rollout slice, `order.review.submit` has
+// NO resolver path for EITHER identifier today: `SubmitReviewInputSchema.
+// parse(input)` (submit-review.ts) requires both directly, and neither
 // ORDER_AUTORESOLVE_KINDS nor any other resolver stamps them — this
 // capability is "registered-but-unadvertised" (definitions.ts,
 // register-ibatexas-tool-packs.ts: "the orders planner never advertises
 // it; reviews arrive via the web flow"), a stable, deliberate state, not
 // a bug this rollout slice is fixing. The schema is authored here for
 // COVERAGE (the ticket's AC3: every CHAT_DRIVABLE mutating capability has
-// an authored schema) and `productId` is added to FORBIDDEN_EXTRACTION_
-// FIELD_NAMES (extraction-schema.ts) so no future schema can leak it
-// either — but the capability stays deliberately UNADVERTISED (the
+// an authored schema); the capability stays deliberately UNADVERTISED (the
 // customer planner never offers it) and ships with NO corpus (an
 // unadvertised kind can never be live-driven — a corpus would be dead
-// data). The full orderId/productId resolution + advertisement activation
-// is tracked as FE-D28 (carved): resolve the reviewed product from the
+// data).
+//
+// `productId` is deliberately NOT added to FORBIDDEN_EXTRACTION_FIELD_
+// NAMES — a name-ban was the wrong tool here (owner ruling): `productId`
+// is a genuinely different class for `get_also_added`/`get_ordered_
+// together` (a public catalog lookup key, read-tool-schemas.ts's own
+// precedent) than it would be for THIS capability, and this schema's own
+// field list (`{rating, comment?}`, no `productId`) is already the real
+// protection — a model-smuggled `productId` has nowhere to land on this
+// wire, and #272's parse-seam filter closes the remaining json-mode gap
+// (additionalProperties isn't strictly enforced) once it lands.
+//
+// The full orderId/productId resolution + advertisement activation is
+// tracked as FE-D28 (carved): resolve the reviewed product from the
 // order's own line items via an NL `item` reference (mirroring the
 // granular amend kinds' itemId pattern) and an optional `order_reference`
 // display-number field reusing FE-T13's `resolveCustomerOrderReference`
 // (already on dev, IDOR-checked) — see the FE-T14 PR body for the full
-// reasoning.
+// reasoning. `productId` stays resolver-side when that lands: an
+// order-line lookup keyed off the NL `item` reference, exactly like
+// `variantId`/`itemId` elsewhere in this rollout — never a wire field.
 
 import {
   type CapabilityExtractionSchema,
