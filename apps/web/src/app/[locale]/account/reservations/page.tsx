@@ -16,6 +16,7 @@ import { TimeslotGrid } from "./_components/TimeslotGrid"
 import { SpecialRequestsForm } from "./_components/SpecialRequestsForm"
 import { ReservationConfirmation } from "./_components/ReservationConfirmation"
 import { MyReservations } from "./_components/MyReservations"
+import { ModifyReservationForm } from "./_components/ModifyReservationForm"
 import { getApiBase } from "@/lib/api"
 
 // ── Step Progress Indicator ──────────────────────────────────────────────────
@@ -105,6 +106,9 @@ export default function ReservationsPage() {
     setCreating,
     setCreateError,
     setMyReservations,
+    modifyOriginal,
+    startModify,
+    applyModified,
     reset,
   } = useReservationStore()
 
@@ -214,11 +218,16 @@ export default function ReservationsPage() {
     }
   }
 
+  // Enter modify mode: seeds the shared form from the reservation and submits a
+  // PATCH on save (CUS-053) — no longer silently re-books via the create wizard.
   const handleModify = (reservation: ReservationDTO) => {
-    setDate(reservation.timeSlot.date)
-    setPartySize(reservation.partySize)
-    setSpecialRequests(reservation.specialRequests as { type: string; notes?: string }[])
-    setStep("date-party")
+    startModify(reservation)
+    globalThis.scrollTo({ top: 0, behavior: "smooth" })
+  }
+
+  const handleModified = (updated: ReservationDTO) => {
+    applyModified(updated)
+    fetchMyReservations()
     globalThis.scrollTo({ top: 0, behavior: "smooth" })
   }
 
@@ -325,7 +334,15 @@ export default function ReservationsPage() {
         </div>
       )}
 
-      {/* ── Booking form ─────────────────────────────────────────────────── */}
+      {/* ── Modify existing reservation (CUS-053) ────────────────────────── */}
+      {modifyOriginal && (
+        <div className="mb-12">
+          <ModifyReservationForm onSaved={handleModified} />
+        </div>
+      )}
+
+      {/* ── Booking form (hidden while modifying) ────────────────────────── */}
+      {!modifyOriginal && (
       <div>
         {/* Only show section heading when reservations exist above */}
         {hasReservations && (
@@ -471,6 +488,7 @@ export default function ReservationsPage() {
           </Card>
         )}
       </div>
+      )}
     </div>
   )
 }

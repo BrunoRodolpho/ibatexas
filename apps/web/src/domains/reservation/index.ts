@@ -5,3 +5,14 @@ export {
   type SpecialRequest,
   type CreatedReservation,
 } from './reservation.store'
+
+export {
+  specialRequestsEqual,
+  buildModifyPayload,
+  hasModifyChanges,
+  fetchAvailabilitySlots,
+  submitModify,
+  type ModifiableReservation,
+  type ModifyDraft,
+  type ModifyReservationBody,
+} from './modify'
