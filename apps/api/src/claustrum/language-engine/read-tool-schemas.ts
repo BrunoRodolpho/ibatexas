@@ -129,13 +129,18 @@ export const GET_RECOMMENDATIONS_READ_SCHEMA: CapabilityExtractionSchema = {
 /** `get_also_added` / `get_ordered_together` both key off `productId` — a
  *  PUBLIC catalog reference (not an owner-scoped resource id: no
  *  authorization decision is ever gated on trusting this string, unlike
- *  orderId/paymentId/cartId). It is NOT in `FORBIDDEN_EXTRACTION_FIELD_NAMES`
- *  for exactly that reason. Classified State (not Directive): the model
- *  relays an id it already holds from an EARLIER read this same
- *  conversation (a menu/search/recommendation result) — it is "consumed
- *  ONLY as a lookup key" into the copurchase/co-order data (field-trust.ts's
- *  own State definition, verbatim), never typed by the customer and never
- *  used to gate ownership. */
+ *  orderId/paymentId/cartId). FE-T14 added `productId` to
+ *  `FORBIDDEN_EXTRACTION_FIELD_NAMES` for a DIFFERENT capability
+ *  (order.review.submit's OWN productId — an owner-scoped, purchase-bound
+ *  reference, a structurally different role) — these two read schemas name
+ *  it in their own `permittedIdentifiers` below, a narrow per-capability
+ *  exception, not a reversal of the forbidden-by-default posture.
+ *  Classified State (not Directive): the model relays an id it already
+ *  holds from an EARLIER read this same conversation (a menu/search/
+ *  recommendation result) — it is "consumed ONLY as a lookup key" into the
+ *  copurchase/co-order data (field-trust.ts's own State definition,
+ *  verbatim), never typed by the customer and never used to gate
+ *  ownership. */
 const PRODUCT_ID_LOOKUP_KEY_JSON_SCHEMA = {
   type: "string" as const,
   description:
@@ -155,6 +160,7 @@ export const GET_ALSO_ADDED_READ_SCHEMA: CapabilityExtractionSchema = {
     },
   ],
   example: { utterance: "o que combina com esse hambúrguer?", payload: { productId: "prod_123" } },
+  permittedIdentifiers: ["productId"],
 };
 
 export const GET_ORDERED_TOGETHER_READ_SCHEMA: CapabilityExtractionSchema = {
@@ -168,6 +174,7 @@ export const GET_ORDERED_TOGETHER_READ_SCHEMA: CapabilityExtractionSchema = {
     },
   ],
   example: { utterance: "o que eu costumo pedir junto desse item?", payload: { productId: "prod_123" } },
+  permittedIdentifiers: ["productId"],
 };
 
 // ── pack-payments reads ──────────────────────────────────────────────────
