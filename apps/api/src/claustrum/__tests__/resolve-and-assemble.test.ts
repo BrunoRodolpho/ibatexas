@@ -968,6 +968,83 @@ describe("resolve-and-assemble — FE-T09 granular amend item hydration", () => 
     expect((payload as { allergens?: string[] }).allergens).toBeUndefined();
   });
 
+  // FE-D18 — no-match honesty floor for the amend path. When an amend
+  // "adiciona X no meu pedido" can't resolve X to a catalog variant, the
+  // resolver stamps ctx.amendItemUnresolved so the adopter
+  // refuseUnresolvedAmendItemGuard REFUSEs pre-park instead of parking a
+  // doomed envelope behind confirmOnAutoResolveGuard's found-implying prompt.
+  it("order.amend.add_item: stamps ctx.amendItemUnresolved when the catalog lookup misses (empty result)", async () => {
+    searchProductsMock = async () => ({ products: [] });
+    const { ctx } = await resolveAndAssemble({
+      kind: "order.amend.add_item",
+      payload: { orderId: "ord_1", item: "xyzzy nonexistent" },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect(ctx.amendItemUnresolved).toBe(true);
+  });
+
+  it("order.amend.add_item: stamps ctx.amendItemUnresolved when the lexical-overlap floor refuses an unrelated top hit", async () => {
+    searchProductsMock = async () => ({
+      products: [
+        { id: "prod_unrelated", title: "Costela Bovina Defumada", variants: [{ id: "var_costela" }], allergens: [] },
+      ],
+    });
+    const { ctx, payload } = await resolveAndAssemble({
+      kind: "order.amend.add_item",
+      payload: { orderId: "ord_1", item: "xyzzy" },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    // The arbitrary hit is refused (variantId unset) AND the honesty flag is set.
+    expect((payload as { variantId?: string }).variantId).toBeUndefined();
+    expect(ctx.amendItemUnresolved).toBe(true);
+  });
+
+  it("order.amend.add_item: does NOT stamp ctx.amendItemUnresolved when the item resolves", async () => {
+    searchProductsMock = async () => ({
+      products: [{ id: "prod_1", title: "Coca-Cola 350ml", variants: [{ id: "var_coke" }], allergens: ["gluten"] }],
+    });
+    const { ctx, payload } = await resolveAndAssemble({
+      kind: "order.amend.add_item",
+      payload: { orderId: "ord_1", item: "coca" },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect((payload as { variantId?: string }).variantId).toBe("var_coke");
+    expect(ctx.amendItemUnresolved).toBeUndefined();
+  });
+
+  it("order.amend.add_item: does NOT stamp when an explicit (non-model) variantId is present — the resume leg carries the resolved variantId", async () => {
+    // Even a stale/unrelated catalog hit must not matter: with variantId
+    // already present, needsVariant is false and the flag is never stamped.
+    searchProductsMock = async () => ({ products: [] });
+    const { ctx, payload } = await resolveAndAssemble({
+      kind: "order.amend.add_item",
+      payload: { orderId: "ord_1", variantId: "var_explicit" },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect((payload as { variantId?: string }).variantId).toBe("var_explicit");
+    expect(ctx.amendItemUnresolved).toBeUndefined();
+  });
+
+  it("order.item.add (cart sibling): never stamps ctx.amendItemUnresolved — only the amend path does", async () => {
+    searchProductsMock = async () => ({ products: [] });
+    const { ctx } = await resolveAndAssemble({
+      kind: "order.item.add",
+      payload: { item: "xyzzy nonexistent" },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect(ctx.amendItemUnresolved).toBeUndefined();
+  });
+
   it("order.amend.update_qty resolves itemId (a REAL Medusa line-item id) from a UNIQUE matching line on the LIVE order", async () => {
     orderServiceGetOrder = async () => ({
       ownershipValid: true,

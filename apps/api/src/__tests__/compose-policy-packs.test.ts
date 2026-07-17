@@ -19,8 +19,10 @@ import {
   buildIbatexasPolicyPacks,
   confirmOnAutoResolveGuard,
   refuseAllergenMentionGuard,
+  refuseUnresolvedAmendItemGuard,
   sessionTokenBudgetGuard,
   IBATEXAS_ADOPTER_AUTH_GUARDS,
+  IBATEXAS_ADOPTER_BUSINESS_GUARDS,
   type ErasedPack,
 } from "../claustrum/compose-policy-packs.js";
 import { paymentTransitionBandGuard, staffRoleGuard } from "../claustrum/staff-role-guard.js";
@@ -56,17 +58,21 @@ describe("buildIbatexasPolicyPacks", () => {
   const packs = [mkPack("ibatexas/pack-a", ["a.x"]), mkPack("ibatexas/pack-b", ["b.y"])];
   const composed = buildIbatexasPolicyPacks(packs);
 
-  it("prepends the three adopter guards to every pack's business, in order", () => {
+  it("prepends the four adopter guards to every pack's business, in order", () => {
     for (const p of composed) {
       const business = (p.policy as PolicyBundle<string, unknown, unknown>).business;
       expect(business[0]).toBe(sessionTokenBudgetGuard);
-      // FE-T14 — allergen-mention honesty sits between token-budget and
-      // confirm-on-autoresolve; see IBATEXAS_ADOPTER_BUSINESS_GUARDS's own
+      // FE-T14 — allergen-mention honesty sits after token-budget; FE-D18 —
+      // unresolved amend-item honesty follows it, and BOTH REFUSE honesty
+      // guards precede confirm-on-autoresolve so the "REFUSE pre-empts a
+      // softer decision" ladder holds (order.amend.add_item is in
+      // AUTORESOLVE_CONFIRM_KINDS). See IBATEXAS_ADOPTER_BUSINESS_GUARDS's own
       // doc comment for the ladder-discipline reasoning.
       expect(business[1]).toBe(refuseAllergenMentionGuard);
-      expect(business[2]).toBe(confirmOnAutoResolveGuard);
-      expect(business[3]).toBe(ownGuard); // the pack's own guard, unmoved
-      expect(business).toHaveLength(4);
+      expect(business[2]).toBe(refuseUnresolvedAmendItemGuard);
+      expect(business[3]).toBe(confirmOnAutoResolveGuard);
+      expect(business[4]).toBe(ownGuard); // the pack's own guard, unmoved
+      expect(business).toHaveLength(5);
     }
   });
 
@@ -94,7 +100,8 @@ describe("buildIbatexasPolicyPacks", () => {
     const bundle = composed[0]!.policy as PolicyBundle<string, unknown, unknown>;
     expect(readGuardMetadata(bundle.business[0]!)?.name).toBe("sessionTokenBudget");
     expect(readGuardMetadata(bundle.business[1]!)?.name).toBe("refuseAllergenMention");
-    expect(readGuardMetadata(bundle.business[2]!)?.name).toBe("confirmOnAutoResolvedRef");
+    expect(readGuardMetadata(bundle.business[2]!)?.name).toBe("refuseUnresolvedAmendItem");
+    expect(readGuardMetadata(bundle.business[3]!)?.name).toBe("confirmOnAutoResolvedRef");
     expect(readGuardMetadata(bundle.authGuards[0]!)?.name).toBe("agentKillSwitch");
     expect(readGuardMetadata(bundle.authGuards[1]!)?.name).toBe("agentScope");
     for (const g of agentBudgetGuards) {
@@ -132,7 +139,8 @@ describe("buildIbatexasPolicyPacks", () => {
     const bundle = def[0]!.policy as PolicyBundle<string, unknown, unknown>;
     expect(bundle.business[0]).toBe(sessionTokenBudgetGuard);
     expect(bundle.business[1]).toBe(refuseAllergenMentionGuard);
-    expect(bundle.business[2]).toBe(confirmOnAutoResolveGuard);
+    expect(bundle.business[2]).toBe(refuseUnresolvedAmendItemGuard);
+    expect(bundle.business[3]).toBe(confirmOnAutoResolveGuard);
     expect(bundle.authGuards[0]).toBe(agentKillSwitchGuard);
     expect(bundle.authGuards[1]).toBe(agentScopeGuard);
   });
@@ -168,5 +176,54 @@ describe("refuseAllergenMentionGuard", () => {
       { ctx: { allergenMentionDetected: true } } as never,
     );
     expect(decision).toBeNull();
+  });
+});
+
+// ── FE-D18 — refuseUnresolvedAmendItemGuard ───────────────────────────────
+
+describe("refuseUnresolvedAmendItemGuard", () => {
+  function mkEnvelope(kind: string): { kind: string; payload: Record<string, unknown> } {
+    return { kind, payload: {} };
+  }
+
+  it("REFUSEs an order.amend.add_item envelope when ctx.amendItemUnresolved is true, with an honest pt-BR reply", () => {
+    const decision = refuseUnresolvedAmendItemGuard(
+      mkEnvelope("order.amend.add_item") as never,
+      { ctx: { amendItemUnresolved: true } } as never,
+    );
+    expect(decision).not.toBeNull();
+    expect(decision?.kind).toBe("REFUSE");
+    // Hard Rule #4: user-facing text is pt-BR and honest (no fabricated "found").
+    const refusal = (decision as { refusal?: { userFacing?: string } }).refusal;
+    expect(refusal?.userFacing).toContain("Não encontrei esse item no cardápio");
+  });
+
+  it("passes through (null) when ctx.amendItemUnresolved is absent — the resume leg carries the resolved variantId", () => {
+    const decision = refuseUnresolvedAmendItemGuard(
+      mkEnvelope("order.amend.add_item") as never,
+      { ctx: {} } as never,
+    );
+    expect(decision).toBeNull();
+  });
+
+  it("is INERT for every other kind, even with the flag set", () => {
+    const decision = refuseUnresolvedAmendItemGuard(
+      mkEnvelope("order.item.add") as never,
+      { ctx: { amendItemUnresolved: true } } as never,
+    );
+    expect(decision).toBeNull();
+  });
+
+  // The load-bearing ordering pin: order.amend.add_item is in
+  // AUTORESOLVE_CONFIRM_KINDS, so confirmOnAutoResolveGuard WOULD fire on the
+  // same envelope. Because the REFUSE guard sits earlier in the business array,
+  // the kernel evaluates it first and REFUSEs pre-park — the confirm never
+  // dishonestly implies the item was found.
+  it("sits BEFORE confirmOnAutoResolveGuard in the adopter business ladder (REFUSE pre-empts the confirm-park)", () => {
+    const refuseIdx = IBATEXAS_ADOPTER_BUSINESS_GUARDS.indexOf(refuseUnresolvedAmendItemGuard);
+    const confirmIdx = IBATEXAS_ADOPTER_BUSINESS_GUARDS.indexOf(confirmOnAutoResolveGuard);
+    expect(refuseIdx).toBeGreaterThanOrEqual(0);
+    expect(confirmIdx).toBeGreaterThanOrEqual(0);
+    expect(refuseIdx).toBeLessThan(confirmIdx);
   });
 });

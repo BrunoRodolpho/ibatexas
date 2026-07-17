@@ -166,22 +166,74 @@ export const refuseAllergenMentionGuard: Guard<string, unknown, unknown> = nameG
   },
 );
 
+// FE-D18 — no-match honesty guard for order.amend.add_item. resolve-and-assemble
+// .ts stamps `state.ctx.amendItemUnresolved` when an amend "adiciona X no meu
+// pedido" cannot resolve X to a real catalog variant (name absent, no Typesense
+// match, or the lexical-overlap floor refused an arbitrary hit — the same floor
+// that today already leaves order.item.add's variantId/allergens unset). This
+// guard turns that flag into an honest, kernel-authoritative REFUSE.
+//
+// Why a guard, not a resolver short-circuit: CLAUDE.md rule #9 — the kernel is
+// the sole REFUSE authority. And why REFUSE HERE rather than let the parked
+// envelope die on resume: order.amend.add_item is in AUTORESOLVE_CONFIRM_KINDS,
+// so `confirmOnAutoResolveGuard` (below) would REQUEST_CONFIRMATION with a
+// found-implying "Identifiquei o item mais recente… Confirma?" prompt on an
+// envelope that carries no variantId/allergens and can never succeed. Composed
+// BEFORE confirmOnAutoResolveGuard so the REFUSE pre-empts that dishonest park
+// (the same "REFUSE pre-empts a softer decision" ladder the allergen guard
+// follows). Fires on the stamped ctx flag ONLY — never on naked variantId
+// absence: an explicit non-model variantId is legitimate, and the resume leg
+// carries the resolved variantId (flag absent) so it re-adjudicates normally.
+// The allergens-absent backstop (pack-orders' requireExplicitAllergens) is
+// untouched and still REFUSEs a resume that somehow lost its allergen array.
+export const UNRESOLVED_AMEND_ITEM_REFUSAL_CODE = "amend_add_item_not_found";
+
+const UNRESOLVED_AMEND_ITEM_REFUSAL_PT_BR =
+  "Não encontrei esse item no cardápio. Confira o nome e tente de novo, " +
+  "ou peça para eu listar as opções disponíveis.";
+
+export const refuseUnresolvedAmendItemGuard: Guard<string, unknown, unknown> = nameGuard(
+  "refuseUnresolvedAmendItem",
+  (envelope, state) => {
+    if (envelope.kind !== "order.amend.add_item") return null;
+    if ((state as { ctx?: { amendItemUnresolved?: boolean } }).ctx?.amendItemUnresolved !== true) {
+      return null;
+    }
+    return decisionRefuse(
+      refuse("BUSINESS_RULE", UNRESOLVED_AMEND_ITEM_REFUSAL_CODE, UNRESOLVED_AMEND_ITEM_REFUSAL_PT_BR),
+      [
+        basis("business", BASIS_CODES.business.RULE_VIOLATED, {
+          rule: "amend_add_item_requires_resolved_catalog_item",
+        }),
+      ],
+    );
+  },
+);
+
 /**
  * The adopter-level business guards prepended to EVERY pack, in evaluation
  * order: F4 token-budget (REFUSE over budget) → allergen-mention honesty
- * (REFUSE an allergen-shaped customer.preferences.update) →
- * confirm-on-autoresolve (REQUEST_CONFIRMATION). Allergen-mention sits
- * BEFORE confirm-on-autoresolve so a turn that is BOTH allergen-shaped AND
- * touches an auto-resolved kind (never true today — customer.preferences.
- * update is not in AUTORESOLVE_CONFIRM_KINDS — but kept in this order for
- * the same "REFUSE pre-empts a softer decision" ladder discipline the
- * escalate/confirm money ladder already follows elsewhere). All three run
- * before each pack's own business guards and only fire for their matching
- * kinds/flags.
+ * (REFUSE an allergen-shaped customer.preferences.update) → unresolved
+ * amend-item honesty (REFUSE an order.amend.add_item whose item didn't
+ * resolve to a catalog variant) → confirm-on-autoresolve
+ * (REQUEST_CONFIRMATION). The two REFUSE honesty guards sit BEFORE
+ * confirm-on-autoresolve so the "REFUSE pre-empts a softer decision" ladder
+ * holds: order.amend.add_item IS in AUTORESOLVE_CONFIRM_KINDS, so without
+ * this ordering an unresolved amend item would be parked behind a
+ * found-implying confirm prompt instead of honestly refused. The two REFUSE
+ * guards are mutually inert (disjoint kinds), so their relative order is not
+ * load-bearing — only their precedence over confirm-on-autoresolve is. All
+ * four run before each pack's own business guards and only fire for their
+ * matching kinds/flags.
  */
 export const IBATEXAS_ADOPTER_BUSINESS_GUARDS: ReadonlyArray<
   Guard<string, unknown, unknown>
-> = [sessionTokenBudgetGuard, refuseAllergenMentionGuard, confirmOnAutoResolveGuard];
+> = [
+  sessionTokenBudgetGuard,
+  refuseAllergenMentionGuard,
+  refuseUnresolvedAmendItemGuard,
+  confirmOnAutoResolveGuard,
+];
 
 // ── Managed-agent kill + scope + budget guards (T3-4/T3-5) — AUTH phase ─────
 // Built once over the composed AGENT_REGISTRY (@ibatexas/agents, T3-3) and

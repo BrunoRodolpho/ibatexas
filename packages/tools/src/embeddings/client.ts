@@ -1,15 +1,29 @@
 // Embeddings client with caching
-// Uses OpenAI with Redis cache and deterministic fallback
+// Uses OpenAI with a Redis cache; FAILS HONEST when no key is configured.
 
 import { getRedisClient } from "../redis/client.js"
 import { rk } from "../redis/key.js"
 import { EMBED_DIM } from "../config.js"
 
+/**
+ * Thrown when embeddings cannot be produced (no OPENAI_API_KEY, or an OpenAI
+ * error). FE-D17: the client NEVER substitutes a semantically-meaningless
+ * pseudo-vector — a fabricated embedding made vector search "match" unrelated
+ * products ('coca' and 'xyzzy' both hitting the same arbitrary item). Callers
+ * catch this and degrade to keyword-only search / index-without-embedding.
+ */
+export class EmbeddingsUnavailableError extends Error {
+  constructor(message = "OPENAI_API_KEY is not set — embeddings unavailable") {
+    super(message)
+    this.name = "EmbeddingsUnavailableError"
+  }
+}
+
 // Use OpenAI embeddings (most reliable)
 async function generateEmbeddingViaOpenAI(text: string): Promise<number[]> {
   const apiKey = process.env.OPENAI_API_KEY
   if (!apiKey) {
-    return generateDeterministicEmbedding(text)
+    throw new EmbeddingsUnavailableError()
   }
 
   const model = process.env.EMBEDDING_MODEL || process.env.CLAUDE_EMBEDDING_MODEL || "text-embedding-3-small"
@@ -42,28 +56,6 @@ async function generateEmbeddingViaOpenAI(text: string): Promise<number[]> {
   return data.data[0].embedding
 }
 
-// Fallback: deterministic embedding from text hash
-// WARNING: semantically meaningless — only used when OpenAI is unavailable.
-// Vector search will not work correctly with these embeddings.
-function generateDeterministicEmbedding(text: string): number[] {
-  let hash = 0
-  for (let i = 0; i < text.length; i++) {
-    const char = text.codePointAt(i) ?? 0
-    hash = ((hash << 5) - hash) + char
-    hash = hash & hash
-  }
-
-  const seed = Math.abs(hash)
-  const embedding: number[] = []
-
-  for (let i = 0; i < EMBED_DIM; i++) {
-    const x = Math.sin(seed + i) * 10000
-    embedding.push(x - Math.floor(x))
-  }
-
-  return embedding
-}
-
 /**
  * Generate embedding for text, caching in Redis.
  *
@@ -92,8 +84,11 @@ export async function generateEmbedding(
   try {
     embedding = await generateEmbeddingViaOpenAI(text)
   } catch (error) {
+    // FE-D17: fail honest — RETHROW rather than substitute a pseudo-vector.
+    // Callers degrade correctly: search-products.ts catches → keyword-only
+    // search; index-product.ts catches → indexes the doc without an embedding.
     console.error("[embeddings] Failed to generate embedding:", (error as Error).message)
-    embedding = generateDeterministicEmbedding(text)
+    throw error
   }
 
   if (!Array.isArray(embedding) || embedding.length !== EMBED_DIM) {

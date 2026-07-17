@@ -24,6 +24,7 @@ import { searchProducts, SearchProductsTool } from "../search-products.js"
 import {
   getExactQueryCache,
   getQueryCache,
+  logQuery,
 } from "../../cache/query-cache.js"
 
 // ── Hoisted mocks (available inside vi.mock factories before module loading) ───
@@ -220,6 +221,42 @@ describe("searchProducts", () => {
       const args = mockTypesenseSearch.mock.calls[0][0].searches[0]
       // vector_query should be absent or undefined (not empty brackets)
       expect(args.vector_query).toBeUndefined()
+    })
+  })
+
+  // ── FE-D17: fail-honest embeddings (no pseudo-vectors) ───────────────────────
+  describe("FE-D17 embeddings degradation", () => {
+    it("requests the query embedding under the v2 cache namespace (evicts poisoned pseudo-vectors)", async () => {
+      await searchProducts({ query: "costela bovina" })
+
+      expect(mockGenerateEmbedding).toHaveBeenCalledOnce()
+      const cacheKey = mockGenerateEmbedding.mock.calls[0][1] as string
+      // The v2 bump is what makes the fail-honest client fix reach warm caches;
+      // rk() prefixes the env, so assert on the namespace substring.
+      expect(cacheKey).toContain("embedding:query:v2:")
+    })
+
+    it("degrades to keyword-only search (products still returned) when the client throws", async () => {
+      mockGenerateEmbedding.mockRejectedValueOnce(
+        new Error("EmbeddingsUnavailableError: OPENAI_API_KEY is not set — embeddings unavailable"),
+      )
+
+      const result = await searchProducts({ query: "costela" })
+
+      expect(result.searchModel).toBe("keyword")
+      expect(result.products.length).toBeGreaterThan(0)
+      const args = mockTypesenseSearch.mock.calls[0][0].searches[0]
+      expect(args.vector_query).toBeUndefined()
+    })
+
+    it("logs the query under the 'no-embedding' bucket when the client throws", async () => {
+      mockGenerateEmbedding.mockRejectedValueOnce(new Error("embeddings unavailable"))
+
+      await searchProducts({ query: "costela" }, { sessionId: "s1", channel: Channel.Web })
+
+      const logCall = vi.mocked(logQuery).mock.calls[0]
+      // logQuery(sessionId, query, bucket, count, channel, userType)
+      expect(logCall[2]).toBe("no-embedding")
     })
   })
 
