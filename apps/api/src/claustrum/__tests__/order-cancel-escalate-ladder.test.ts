@@ -43,6 +43,15 @@
  * or explicit-id case still confirms/executes instead of escalating), that
  * is a REAL governance hole, not just a corpus-labeling question — see the
  * PR body / FE-D29 for the reporting protocol this file's result feeds.
+ *
+ * This is not just an inferred behavior — `compose-policy-packs.ts`'s own
+ * header comment on `confirmOnAutoResolveGuard` (lines 83-88) documents the
+ * two-step design verbatim: "On resume (after confirm) the parked envelope
+ * carries the EXPLICIT resolved id, so the flag is absent -> this guard
+ * passes -> the kernel re-adjudicates against fresh entity state." This file
+ * PINS that stated intent against the real composed chain, in both
+ * directions (confirm_threshold_reached basis on the park arm,
+ * paid_cancel/escalate basis on the resume arm).
  */
 
 import { describe, expect, it } from "vitest";
@@ -50,19 +59,27 @@ import { adjudicate } from "@adjudicate/core/kernel";
 import { buildEnvelope, type IntentEnvelope } from "@adjudicate/core";
 import { IBATEXAS_COMPOSED_PACKS } from "@ibatexas/packs-composed";
 import type { OrderIntentKind, OrderPayload, OrderState } from "@ibatexas/pack-orders";
-import { buildIbatexasPolicyPacks, type ErasedPack } from "../compose-policy-packs.js";
-import { composePolicyRouter } from "../capability-policy.js";
+import {
+  buildIbatexasPolicyPacks,
+  IBATEXAS_ADOPTER_BUSINESS_GUARDS,
+  IBATEXAS_ADOPTER_AUTH_GUARDS,
+  type ErasedPack,
+} from "../compose-policy-packs.js";
+import { composePolicyRouter, type CapabilityPolicyPack } from "../capability-policy.js";
 
 // The EXACT composed router production adjudicates every turn against —
-// mirrors ops-e2e-harness.ts's OPS_ROUTER precisely (same composition call),
-// just not wrapped in the ops-specific conductor/turn machinery: this file
-// only needs the POLICY decision for a given envelope+state, not a full
-// conversational turn.
-const ROUTER = composePolicyRouter(
-  buildIbatexasPolicyPacks(
-    IBATEXAS_COMPOSED_PACKS as unknown as ReadonlyArray<ErasedPack>,
-  ) as never,
-);
+// mirrors extraction-failure-kind.test.ts's REAL_PACKS/REAL_ROUTER template
+// (the canonical "real packs + real adjudicate()" pattern in this test
+// suite) and ops-e2e-harness.ts's OPS_ROUTER, same composition call, args
+// passed explicitly rather than relied on as defaults. Not wrapped in the
+// ops-specific conductor/turn machinery: this file only needs the POLICY
+// decision for a given envelope+state, not a full conversational turn.
+const REAL_PACKS = buildIbatexasPolicyPacks(
+  IBATEXAS_COMPOSED_PACKS as unknown as ReadonlyArray<ErasedPack>,
+  IBATEXAS_ADOPTER_BUSINESS_GUARDS,
+  IBATEXAS_ADOPTER_AUTH_GUARDS,
+) as unknown as ReadonlyArray<CapabilityPolicyPack>;
+const REAL_ROUTER = composePolicyRouter(REAL_PACKS);
 
 function cancelEnvelope(
   payload: Record<string, unknown>,
@@ -109,9 +126,22 @@ describe("order.cancel escalate ladder — TWO-STEP through the REAL composed po
           totalInCentavos: 150_000,
           autoResolvedMoneyRef: true,
         }),
-        ROUTER,
+        REAL_ROUTER,
       );
       expect(decision.kind).toBe("REQUEST_CONFIRMATION");
+      if (decision.kind !== "REQUEST_CONFIRMATION") return;
+      // Pins that THIS specific guard (confirmOnAutoResolveGuard, not some
+      // other REQUEST_CONFIRMATION source) is what fired — createConfirmGuard's
+      // default basis (@adjudicate/primitives guards.js) — proving the money
+      // guards genuinely never got a chance to run, not just that SOME guard
+      // happened to also land on REQUEST_CONFIRMATION.
+      expect(
+        decision.basis.some(
+          (b) =>
+            (b as { detail?: { rule?: string } }).detail?.rule ===
+            "confirm_threshold_reached",
+        ),
+      ).toBe(true);
     });
 
     it("auto-resolved + R$2000 UNPAID (would be escalateLargeCancel if reached) still REQUEST_CONFIRMATIONs", () => {
@@ -123,9 +153,17 @@ describe("order.cancel escalate ladder — TWO-STEP through the REAL composed po
           totalInCentavos: 200_000,
           autoResolvedMoneyRef: true,
         }),
-        ROUTER,
+        REAL_ROUTER,
       );
       expect(decision.kind).toBe("REQUEST_CONFIRMATION");
+      if (decision.kind !== "REQUEST_CONFIRMATION") return;
+      expect(
+        decision.basis.some(
+          (b) =>
+            (b as { detail?: { rule?: string } }).detail?.rule ===
+            "confirm_threshold_reached",
+        ),
+      ).toBe(true);
     });
   });
 
@@ -138,7 +176,7 @@ describe("order.cancel escalate ladder — TWO-STEP through the REAL composed po
           paymentStatus: "paid",
           totalInCentavos: 100_000,
         }),
-        ROUTER,
+        REAL_ROUTER,
       );
       expect(decision.kind).toBe("ESCALATE");
       if (decision.kind !== "ESCALATE") return;
@@ -160,7 +198,7 @@ describe("order.cancel escalate ladder — TWO-STEP through the REAL composed po
           paymentStatus: "paid",
           totalInCentavos: 150_000,
         }),
-        ROUTER,
+        REAL_ROUTER,
       );
       expect(decision.kind).toBe("ESCALATE");
       if (decision.kind !== "ESCALATE") return;
@@ -175,7 +213,7 @@ describe("order.cancel escalate ladder — TWO-STEP through the REAL composed po
           paymentStatus: null,
           totalInCentavos: 200_000,
         }),
-        ROUTER,
+        REAL_ROUTER,
       );
       expect(decision.kind).toBe("ESCALATE");
       if (decision.kind !== "ESCALATE") return;
@@ -190,7 +228,7 @@ describe("order.cancel escalate ladder — TWO-STEP through the REAL composed po
           paymentStatus: "paid",
           totalInCentavos: 5_000,
         }),
-        ROUTER,
+        REAL_ROUTER,
       );
       expect(decision.kind).toBe("REQUEST_CONFIRMATION");
     });
