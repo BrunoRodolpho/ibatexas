@@ -33,6 +33,9 @@ import {
   prisma,
 } from "@ibatexas/domain";
 import { parseAgentSessionNamespace } from "./agent-guards.js";
+// FE-T13 — reuse the ops-plane displayId parser (pure, no ops-specific
+// dependency) rather than re-deriving the same `#1234`-style parse rule.
+import { parseDisplayIdRef } from "../ops/ops-order-resolution.js";
 
 /**
  * Per-session LLM-token Redis counter key. Single source of truth (write side:
@@ -563,8 +566,20 @@ const RESERVATION_AUTORESOLVE_KINDS = new Set(["reservation.cancel"]);
 // explicit paymentId — so it does NOT force a confirm like the NL autoresolve path.
 const REFUND_OWNERSHIP_KINDS = new Set(["payment.refund.issue", "payment.refund.confirm"]);
 
-/** NL→id: explicit orderId wins; else auto-resolve the customer's most-recent order. */
-async function resolveOrderId(
+/**
+ * NL→id: explicit orderId wins; else auto-resolve the customer's most-recent
+ * order. Exported (FE-T13) so the customer-plane READ executors
+ * (`check_order_status` / `get_payment_status`, claustrum-bootstrap.ts) can
+ * reuse the SAME "most recent order" resolution the mutating
+ * `ORDER_AUTORESOLVE_KINDS` path already relies on, rather than re-deriving a
+ * byte-parallel copy — those two reads now forbid a model-facing `orderId`
+ * field (Identity class, read-tool-schemas.ts), so they need the identical
+ * auto-resolve fallback this function already gives `order.amend.*`/
+ * `order.cancel`/etc. Passing `{}` (no explicit orderId) always takes the
+ * auto-resolve branch, which is exactly what a read-tool call needs since its
+ * schema can never carry one.
+ */
+export async function resolveOrderId(
   payload: Ctx,
   customerId: string,
 ): Promise<{ orderId: string | null; autoResolved: boolean }> {
@@ -582,6 +597,45 @@ async function resolveOrderId(
   } catch {
     return { orderId: null, autoResolved: false };
   }
+}
+
+/**
+ * FE-T13 — resolve `check_order_status`/`get_payment_status`'s optional
+ * `orderReference` field (a display-number NL reference the customer may
+ * name, e.g. "pedido 1234" / "#1234" — CHECK_ORDER_STATUS_READ_SCHEMA /
+ * GET_PAYMENT_STATUS_READ_SCHEMA, read-tool-schemas.ts) to a concrete owned
+ * orderId. Mirrors the ops-plane displayId resolution idiom
+ * (`parseDisplayIdRef`, ops-order-resolution.ts) but customer-scoped: unlike
+ * `OrderQueryService.findByDisplayId` (no owner scoping — the internal/staff
+ * path), a match here is IDOR-checked against `customerId` before being
+ * trusted, since a customer could name ANOTHER customer's display number.
+ * Falls through to {@link resolveOrderId}'s "most recent order" auto-resolve
+ * (unchanged) when: no reference was given, it doesn't parse as a display
+ * number, or the parsed number matches no order owned by this customer —
+ * never returns a foreign order, and never throws (a lookup failure degrades
+ * to the auto-resolve fallback, fail-safe).
+ */
+export async function resolveCustomerOrderReference(
+  orderReference: string | undefined,
+  customerId: string,
+): Promise<{ orderId: string | null; autoResolved: boolean; referenceMatched: boolean }> {
+  if (typeof orderReference === "string") {
+    const displayId = parseDisplayIdRef(orderReference);
+    if (displayId !== null) {
+      try {
+        const candidates = await createOrderQueryService().findByDisplayId(displayId);
+        const owned = candidates.find((o) => o.customerId === customerId);
+        if (owned) {
+          return { orderId: owned.id, autoResolved: false, referenceMatched: true };
+        }
+      } catch {
+        // Fail-safe — fall through to auto-resolve below, same posture as
+        // resolveOrderId's own try/catch.
+      }
+    }
+  }
+  const { orderId, autoResolved } = await resolveOrderId({}, customerId);
+  return { orderId, autoResolved, referenceMatched: false };
 }
 
 /** 034-F1: resolve the orderId that OWNS a payment, for the refund ownership

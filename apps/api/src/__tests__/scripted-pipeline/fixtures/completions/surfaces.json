@@ -44,7 +44,13 @@
           "additionalProperties": false,
           "allOf": [
             {
-              "if": { "properties": { "capability": { "const": "order.amend.add_item" } } },
+              "if": {
+                "properties": {
+                  "capability": {
+                    "const": "order.amend.add_item"
+                  }
+                }
+              },
               "then": {
                 "properties": {
                   "payload": {
@@ -59,14 +65,22 @@
                         "description": "Quantidade do item a adicionar (padrão: 1 se não informado)."
                       }
                     },
-                    "required": ["item"],
+                    "required": [
+                      "item"
+                    ],
                     "additionalProperties": false
                   }
                 }
               }
             },
             {
-              "if": { "properties": { "capability": { "const": "order.amend.update_qty" } } },
+              "if": {
+                "properties": {
+                  "capability": {
+                    "const": "order.amend.update_qty"
+                  }
+                }
+              },
               "then": {
                 "properties": {
                   "payload": {
@@ -81,14 +95,23 @@
                         "description": "Nova quantidade desejada para o item."
                       }
                     },
-                    "required": ["item", "quantity"],
+                    "required": [
+                      "item",
+                      "quantity"
+                    ],
                     "additionalProperties": false
                   }
                 }
               }
             },
             {
-              "if": { "properties": { "capability": { "const": "order.amend.remove_item" } } },
+              "if": {
+                "properties": {
+                  "capability": {
+                    "const": "order.amend.remove_item"
+                  }
+                }
+              },
               "then": {
                 "properties": {
                   "payload": {
@@ -99,7 +122,9 @@
                         "description": "Referência em linguagem natural ao item do pedido (ex.: \"coca\", \"o hambúrguer\"). NUNCA um ID — a referência é resolvida pelo runtime."
                       }
                     },
-                    "required": ["item"],
+                    "required": [
+                      "item"
+                    ],
                     "additionalProperties": false
                   }
                 }
@@ -125,7 +150,8 @@
         "description": "Ferramenta de leitura: get_cart. Apenas consulta, não altera dados.",
         "inputSchema": {
           "type": "object",
-          "additionalProperties": true
+          "properties": {},
+          "additionalProperties": false
         }
       },
       {
@@ -133,7 +159,13 @@
         "description": "Ferramenta de leitura: check_order_status. Apenas consulta, não altera dados.",
         "inputSchema": {
           "type": "object",
-          "additionalProperties": true
+          "properties": {
+            "orderReference": {
+              "type": "string",
+              "description": "Número do pedido, SOMENTE se o cliente mencionar um explicitamente (ex.: \"1234\", \"#1234\"). Deixe de fora se não for mencionado — resolve automaticamente para o pedido mais recente."
+            }
+          },
+          "additionalProperties": false
         }
       },
       {
@@ -141,7 +173,18 @@
         "description": "Ferramenta de leitura: get_recommendations. Apenas consulta, não altera dados.",
         "inputSchema": {
           "type": "object",
-          "additionalProperties": true
+          "properties": {
+            "context": {
+              "type": "string",
+              "enum": [
+                "homepage",
+                "cart",
+                "product_page"
+              ],
+              "description": "Contexto da recomendação (opcional) — de onde a pergunta partiu."
+            }
+          },
+          "additionalProperties": false
         }
       },
       {
@@ -149,7 +192,8 @@
         "description": "Ferramenta de leitura: get_order_history. Apenas consulta, não altera dados.",
         "inputSchema": {
           "type": "object",
-          "additionalProperties": true
+          "properties": {},
+          "additionalProperties": false
         }
       },
       {
@@ -157,7 +201,16 @@
         "description": "Ferramenta de leitura: get_also_added. Apenas consulta, não altera dados.",
         "inputSchema": {
           "type": "object",
-          "additionalProperties": true
+          "properties": {
+            "productId": {
+              "type": "string",
+              "description": "ID do produto — SEMPRE um id já retornado por uma leitura anterior nesta conversa (busca de cardápio, recomendação, carrinho), NUNCA inventado ou digitado pelo cliente."
+            }
+          },
+          "required": [
+            "productId"
+          ],
+          "additionalProperties": false
         }
       },
       {
@@ -165,7 +218,16 @@
         "description": "Ferramenta de leitura: get_ordered_together. Apenas consulta, não altera dados.",
         "inputSchema": {
           "type": "object",
-          "additionalProperties": true
+          "properties": {
+            "productId": {
+              "type": "string",
+              "description": "ID do produto — SEMPRE um id já retornado por uma leitura anterior nesta conversa (busca de cardápio, recomendação, carrinho), NUNCA inventado ou digitado pelo cliente."
+            }
+          },
+          "required": [
+            "productId"
+          ],
+          "additionalProperties": false
         }
       },
       {
@@ -173,7 +235,13 @@
         "description": "Ferramenta de leitura: get_payment_status. Apenas consulta, não altera dados.",
         "inputSchema": {
           "type": "object",
-          "additionalProperties": true
+          "properties": {
+            "orderReference": {
+              "type": "string",
+              "description": "Número do pedido, SOMENTE se o cliente mencionar um explicitamente (ex.: \"1234\", \"#1234\"). Deixe de fora se não for mencionado — resolve automaticamente para o pedido mais recente."
+            }
+          },
+          "additionalProperties": false
         }
       },
       {
@@ -181,7 +249,8 @@
         "description": "Ferramenta de leitura: get_payment_history. Apenas consulta, não altera dados.",
         "inputSchema": {
           "type": "object",
-          "additionalProperties": true
+          "properties": {},
+          "additionalProperties": false
         }
       },
       {
@@ -189,7 +258,25 @@
         "description": "Ferramenta de leitura: check_availability. Apenas consulta, não altera dados.",
         "inputSchema": {
           "type": "object",
-          "additionalProperties": true
+          "properties": {
+            "date": {
+              "type": "string",
+              "description": "Data desejada da reserva, formato YYYY-MM-DD."
+            },
+            "partySize": {
+              "type": "number",
+              "description": "Número de pessoas (1 a 20)."
+            },
+            "preferredTime": {
+              "type": "string",
+              "description": "Horário preferido, formato HH:MM (opcional)."
+            }
+          },
+          "required": [
+            "date",
+            "partySize"
+          ],
+          "additionalProperties": false
         }
       },
       {
@@ -197,7 +284,21 @@
         "description": "Ferramenta de leitura: get_my_reservations. Apenas consulta, não altera dados.",
         "inputSchema": {
           "type": "object",
-          "additionalProperties": true
+          "properties": {
+            "status": {
+              "type": "string",
+              "enum": [
+                "pending",
+                "confirmed",
+                "seated",
+                "completed",
+                "cancelled",
+                "no_show"
+              ],
+              "description": "Filtrar por status da reserva (opcional)."
+            }
+          },
+          "additionalProperties": false
         }
       },
       {
@@ -205,7 +306,8 @@
         "description": "Ferramenta de leitura: get_my_profile. Apenas consulta, não altera dados.",
         "inputSchema": {
           "type": "object",
-          "additionalProperties": true
+          "properties": {},
+          "additionalProperties": false
         }
       },
       {
@@ -213,7 +315,8 @@
         "description": "Ferramenta de leitura: get_my_preferences. Apenas consulta, não altera dados.",
         "inputSchema": {
           "type": "object",
-          "additionalProperties": true
+          "properties": {},
+          "additionalProperties": false
         }
       }
     ]

@@ -291,7 +291,11 @@ import {
   type TurnTraceWriter,
 } from "./claustrum/turn-trace-writer.js";
 import { createIbatexasResolver } from "./claustrum/ibatexas-resolver.js";
-import { sessionTokenKey, resolveAndAssemble } from "./claustrum/resolve-and-assemble.js";
+import {
+  sessionTokenKey,
+  resolveAndAssemble,
+  resolveCustomerOrderReference,
+} from "./claustrum/resolve-and-assemble.js";
 import {
   buildCustomerAuthority,
   customerPrincipalForSession,
@@ -1766,6 +1770,21 @@ function hasResolvableOrderId(input: unknown): input is { orderId: string } {
 }
 
 /**
+ * FE-T13 — read `check_order_status`/`get_payment_status`'s optional
+ * `orderReference` field (CHECK_ORDER_STATUS_READ_SCHEMA /
+ * GET_PAYMENT_STATUS_READ_SCHEMA, read-tool-schemas.ts's ONE model-facing
+ * field for these two tools — a display-number NL reference, e.g. "1234" /
+ * "#1234", NEVER the internal orderId). Returns `undefined` when absent or
+ * blank, so the caller's `resolveCustomerOrderReference` call takes its
+ * auto-resolve branch exactly as when no reference was given at all. Pure.
+ */
+function readOrderReference(input: unknown): string | undefined {
+  if (input === null || typeof input !== "object") return undefined;
+  const ref = (input as { orderReference?: unknown }).orderReference;
+  return typeof ref === "string" && ref.trim().length > 0 ? ref : undefined;
+}
+
+/**
  * Advertised-read-tool NAME → owner-scoped executor. Keys are the 12 advertised
  * read-tool names, each with a backing @ibatexas/tools handler (4 are aliases:
  * check_availability→checkTableAvailability, get_payment_status→checkPaymentStatus,
@@ -1802,48 +1821,86 @@ export const IBATEXAS_READ_TOOL_EXECUTORS: Readonly<
   // get_my_preferences) parse — injecting `customerId` would make them throw.
   // BKL-107 — a session that cannot resolve an owner-scoped order owns nothing to
   // report: a GUEST/unauthenticated turn (no ctx.customerId — a guest owns no
-  // order) OR an authenticated owner whose call carries no orderId. Both would
-  // otherwise THROW inside checkOrderStatus (the schema parse rejects a missing
-  // orderId; the auth check rejects the guest) and the one-hop read-loop feeds that
-  // thrown message back as an "(indisponível: …)" error blob the planner fabricates
-  // around. Return a TYPED empty fact instead so the enrichment carries an honest
-  // "no orders for this session" (mirrors get_cart's null-with-marker shape). The
-  // AUTHENTICATED-owner + orderId path is UNTOUCHED → real status byte-identical,
-  // and checkOrderStatus's assertOrderOwnership IDOR guard still runs there; a guest
-  // with a model-forged orderId is short-circuited to empty here, so it can never
-  // reach a foreign order.
-  check_order_status: (input, state) => {
+  // order) owns nothing to report — a TYPED empty fact, never a thrown auth error
+  // the one-hop read-loop would turn into an "(indisponível: …)" blob the planner
+  // fabricates around (mirrors get_cart's null-with-marker shape).
+  //
+  // FE-T13 — `orderId` is now Identity-class and FORBIDDEN from this tool's
+  // model-facing schema (read-tool-schemas.ts: CHECK_ORDER_STATUS_READ_SCHEMA's
+  // one field is `orderReference`, a display-number NL reference — never the
+  // internal id), so an authenticated owner's call structurally never carries
+  // a raw orderId anymore. Rather than dead-ending to the empty fact (the
+  // pre-FE-T13 behavior for "no orderId"), resolve via
+  // `resolveCustomerOrderReference` (resolve-and-assemble.ts): an explicit
+  // display-number reference wins (IDOR-checked against this customer) else
+  // auto-resolve the most-recent order — the SAME "most recent order" fallback
+  // `order.amend.*`/`order.cancel` already use on the mutating side, reused
+  // here rather than re-derived (FE-D07 byte-parallel-duplication lesson).
+  // `hasResolvableOrderId`/`stripModelOwner` stay as defense-in-depth against a
+  // model that emits a raw `orderId` anyway (schema guidance is not a hard
+  // wire-level enforcement, though `sanitizeReadToolInput` — ibatexas-planner.ts
+  // — now strips it before this executor ever sees it on the production
+  // dispatch path): an explicit (non-forged) orderId still takes the direct
+  // path; a forged one is stripped first, same as before. checkOrderStatus's
+  // assertOrderOwnership IDOR guard still runs on every path — the resolved id
+  // is looked up scoped to `ctx.customerId` to begin with, so it can never
+  // resolve to a foreign order.
+  check_order_status: async (input, state) => {
     const ctx = agentCtxFromState(state);
     const stripped = stripModelOwner(input);
-    if (!ctx.customerId || !hasResolvableOrderId(stripped)) {
-      return Promise.resolve({ order: null, reason: "no_orders_for_session" });
+    if (!ctx.customerId) {
+      return { order: null, reason: "no_orders_for_session" };
     }
-    return checkOrderStatus(stripped as never, ctx);
+    if (hasResolvableOrderId(stripped)) {
+      return checkOrderStatus(stripped as never, ctx);
+    }
+    const { orderId } = await resolveCustomerOrderReference(
+      readOrderReference(stripped),
+      ctx.customerId,
+    );
+    if (!orderId) {
+      return { order: null, reason: "no_orders_for_session" };
+    }
+    return checkOrderStatus({ orderId } as never, ctx);
   },
   // BKL-118 — the billing twin of the BKL-107 check_order_status short-circuit.
   // get_payment_status delegates to checkPaymentStatus, whose handler REQUIRES an
   // authenticated owner (it throws NonRetryableError("Autenticação necessária.")
-  // when !ctx.customerId) and an orderId to key the payment read. A guest ("meu
-  // pagamento caiu?") reaches here with `{}`: pre-fix that threw the auth error, and
-  // the one-hop read-loop fed the thrown message back as an "(indisponível: …)" blob
-  // the planner FABRICATES a payment status around (same class as BKL-003). A session
-  // that cannot resolve an owner-scoped order owns no payment to report — a GUEST/
-  // unauthenticated turn (no ctx.customerId) OR an authenticated owner whose call
-  // carries no orderId — so return a TYPED empty fact instead. `payment: null`
-  // mirrors the sibling `order: null` null-with-marker shape and is an epistemic
-  // "nothing scoped to you", NEVER a world-fact assertion that no payment EXISTS (a
-  // guest may well have one they simply cannot see) — which keeps the read sound. The
-  // AUTHENTICATED-owner + orderId path is UNTOUCHED → real status byte-identical, and
-  // checkPaymentStatus's withOrderOwnership/assertOrderOwnership IDOR guard still runs
-  // there; a guest with a model-forged orderId is short-circuited to empty here, so it
-  // can never reach a foreign order.
-  get_payment_status: (input, state) => {
+  // when !ctx.customerId). A GUEST/unauthenticated turn owns no payment to
+  // report — a TYPED empty fact, never the thrown auth error the one-hop
+  // read-loop would turn into an "(indisponível: …)" blob the planner FABRICATES
+  // a payment status around (same class as BKL-003). `payment: null` mirrors the
+  // sibling `order: null` null-with-marker shape and is an epistemic "nothing
+  // scoped to you", NEVER a world-fact assertion that no payment EXISTS (a guest
+  // may well have one they simply cannot see) — which keeps the read sound.
+  //
+  // FE-T13 — same reference-resolve fix as check_order_status above: `orderId`
+  // is Identity-class and forbidden from this tool's model-facing schema
+  // (GET_PAYMENT_STATUS_READ_SCHEMA's one field is `orderReference`), so an
+  // authenticated owner's call structurally never carries a raw orderId
+  // anymore. Resolve via the SAME `resolveCustomerOrderReference` reuse
+  // (explicit display-number reference wins, IDOR-checked, else auto-resolve
+  // the most-recent order) rather than dead-ending to the empty fact.
+  // checkPaymentStatus's withOrderOwnership/assertOrderOwnership IDOR guard
+  // still runs on every path — the resolved id is looked up scoped to
+  // `ctx.customerId` to begin with, so it can never resolve to a foreign order.
+  get_payment_status: async (input, state) => {
     const ctx = agentCtxFromState(state);
     const stripped = stripModelOwner(input);
-    if (!ctx.customerId || !hasResolvableOrderId(stripped)) {
-      return Promise.resolve({ payment: null, reason: "no_payment_for_session" });
+    if (!ctx.customerId) {
+      return { payment: null, reason: "no_payment_for_session" };
     }
-    return checkPaymentStatus(stripped as never, ctx);
+    if (hasResolvableOrderId(stripped)) {
+      return checkPaymentStatus(stripped as never, ctx);
+    }
+    const { orderId } = await resolveCustomerOrderReference(
+      readOrderReference(stripped),
+      ctx.customerId,
+    );
+    if (!orderId) {
+      return { payment: null, reason: "no_payment_for_session" };
+    }
+    return checkPaymentStatus({ orderId } as never, ctx);
   },
   get_order_history: (input, state) => {
     const ctx = agentCtxFromState(state);

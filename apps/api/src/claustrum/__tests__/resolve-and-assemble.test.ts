@@ -27,6 +27,9 @@ let medusaStoreFetch: (path: string) => Promise<unknown> = async () => ({});
 let searchProductsMock: (input: unknown, ctx?: unknown) => Promise<unknown> = async () => ({ products: [] });
 let orderListByCustomer: (cid: string, input?: unknown) => Promise<{ orders: unknown[]; count: number }> =
   async () => ({ orders: [], count: 0 });
+// FE-T13 — resolveCustomerOrderReference's displayId-reference branch.
+let orderFindByDisplayId: (displayId: number) => Promise<Array<{ id: string; customerId: string | null }>> =
+  async () => [];
 let reservationListByCustomer: (cid: string, opts?: unknown) => Promise<{ reservations: unknown[]; total: number }> =
   async () => ({ reservations: [], total: 0 });
 // FE-T09 (D-a) — order.amend.update_qty/remove_item's LIVE order-fetch +
@@ -52,6 +55,7 @@ vi.mock("@ibatexas/domain", () => ({
   createOrderQueryService: () => ({
     getById: (id: string) => orderGetById(id),
     listByCustomer: (cid: string, input?: unknown) => orderListByCustomer(cid, input),
+    findByDisplayId: (displayId: number) => orderFindByDisplayId(displayId),
   }),
   createOrderService: () => ({
     getOrder: (orderId: string, customerId?: string) => orderServiceGetOrder(orderId, customerId),
@@ -70,7 +74,9 @@ vi.mock("@ibatexas/domain", () => ({
 }));
 
 // Import AFTER mocks (vitest hoists vi.mock).
-const { resolveAndAssemble, sessionTokenKey } = await import("../resolve-and-assemble.js");
+const { resolveAndAssemble, sessionTokenKey, resolveCustomerOrderReference } = await import(
+  "../resolve-and-assemble.js"
+);
 
 const BUDGET = 100_000;
 const f4Guard = createTokenBudgetGuard<string, unknown, unknown>({
@@ -101,6 +107,7 @@ beforeEach(() => {
   medusaStoreFetch = async () => ({});
   searchProductsMock = async () => ({ products: [] });
   orderListByCustomer = async () => ({ orders: [], count: 0 });
+  orderFindByDisplayId = async () => [];
   reservationListByCustomer = async () => ({ reservations: [], total: 0 });
   orderServiceGetOrder = async () => {
     throw new Error("order not found");
@@ -1273,5 +1280,67 @@ describe("resolve-and-assemble — agent-namespace token read (T3-4)", () => {
       sessionId: AGENT_SESSION,
     });
     expect(ctx.agentTokensConsumed).toBe(0);
+  });
+});
+
+// FE-T13 — resolveCustomerOrderReference: the customer-plane read executors'
+// (check_order_status/get_payment_status) reference-resolution helper. An
+// explicit display-number reference wins (IDOR-checked against the caller)
+// else falls through to resolveOrderId's own "most recent order" auto-resolve.
+describe("resolveCustomerOrderReference — FE-T13 customer-plane displayId reference resolution", () => {
+  it("no reference given → falls through to auto-resolve (most-recent order)", async () => {
+    orderListByCustomer = async () => ({ orders: [{ id: "ord_recent" }], count: 1 });
+    const result = await resolveCustomerOrderReference(undefined, "c1");
+    expect(result).toEqual({ orderId: "ord_recent", autoResolved: true, referenceMatched: false });
+  });
+
+  it("a reference that doesn't parse as a display number → falls through to auto-resolve", async () => {
+    orderListByCustomer = async () => ({ orders: [{ id: "ord_recent" }], count: 1 });
+    const result = await resolveCustomerOrderReference("de ontem", "c1");
+    expect(result).toEqual({ orderId: "ord_recent", autoResolved: true, referenceMatched: false });
+  });
+
+  it("a display-number reference matching an OWNED order → resolves it, IDOR-checked, no auto-resolve fallback", async () => {
+    let calls = 0;
+    orderFindByDisplayId = async () => {
+      calls++;
+      return [
+        { id: "ord_other_customer", customerId: "someone-else" },
+        { id: "ord_1234", customerId: "c1" },
+      ];
+    };
+    orderListByCustomer = async () => ({ orders: [{ id: "ord_recent" }], count: 1 });
+    const result = await resolveCustomerOrderReference("1234", "c1");
+    expect(result).toEqual({ orderId: "ord_1234", autoResolved: false, referenceMatched: true });
+    expect(calls).toBe(1);
+  });
+
+  it("a display-number reference matching ONLY another customer's order → IDOR-safe fallback to auto-resolve, NEVER the foreign order", async () => {
+    orderFindByDisplayId = async () => [{ id: "ord_foreign", customerId: "victim" }];
+    orderListByCustomer = async () => ({ orders: [{ id: "ord_recent" }], count: 1 });
+    const result = await resolveCustomerOrderReference("1234", "c1");
+    expect(result.orderId).toBe("ord_recent");
+    expect(result.referenceMatched).toBe(false);
+  });
+
+  it("a #-prefixed display-number reference parses the same as a bare number", async () => {
+    orderFindByDisplayId = async () => [{ id: "ord_1234", customerId: "c1" }];
+    const result = await resolveCustomerOrderReference("#1234", "c1");
+    expect(result).toEqual({ orderId: "ord_1234", autoResolved: false, referenceMatched: true });
+  });
+
+  it("a displayId lookup that throws degrades to auto-resolve (fail-safe, never propagates)", async () => {
+    orderFindByDisplayId = async () => {
+      throw new Error("db down");
+    };
+    orderListByCustomer = async () => ({ orders: [{ id: "ord_recent" }], count: 1 });
+    const result = await resolveCustomerOrderReference("1234", "c1");
+    expect(result.orderId).toBe("ord_recent");
+  });
+
+  it("no reference AND no order to auto-resolve → orderId: null", async () => {
+    orderListByCustomer = async () => ({ orders: [], count: 0 });
+    const result = await resolveCustomerOrderReference(undefined, "c1");
+    expect(result).toEqual({ orderId: null, autoResolved: false, referenceMatched: false });
   });
 });

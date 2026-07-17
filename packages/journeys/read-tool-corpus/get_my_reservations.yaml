@@ -1,0 +1,64 @@
+# get_my_reservations — FE-T13 read-tool extraction corpus.
+# See check_availability.yaml's header for the format rationale + live-drive
+# status (same for every file in this directory).
+#
+# GET_MY_RESERVATIONS_READ_SCHEMA has exactly one optional field (`status`,
+# an enum mirroring ReservationStatus). Most utterances carry no explicit
+# filter at all — the correct extraction is `{}` — a minority state an
+# explicit status filter.
+tool: get_my_reservations
+source: tickets/language-engine/issues/13-rollout-status-read-verbs.md
+cases:
+  - id: bare-ask-no-filter
+    utterance: quais são minhas reservas?
+    expectArgs: {}
+
+  - id: bare-ask-formal
+    utterance: Você poderia me informar quais reservas eu tenho?
+    expectArgs: {}
+
+  - id: bare-ask-colloquial
+    utterance: me mostra minhas reservas aí
+    expectArgs: {}
+
+  - id: confirmed-only-explicit
+    utterance: quais das minhas reservas estão confirmadas?
+    expectArgs:
+      status: confirmed
+
+  - id: pending-only-explicit
+    utterance: tenho alguma reserva pendente ainda?
+    expectArgs:
+      status: pending
+
+  - id: cancelled-only-explicit
+    utterance: quais reservas eu cancelei?
+    expectArgs:
+      status: cancelled
+
+  - id: bare-ask-question-form
+    utterance: dá pra ver minhas reservas?
+    expectArgs: {}
+
+  - id: bare-ask-brusque
+    utterance: minhas reservas
+    expectArgs: {}
+
+  - id: completed-only-explicit
+    utterance: quero ver as reservas que eu já usei
+    note: the phrase "já usei" maps to the completed status
+    expectArgs:
+      status: completed
+
+  - id: bare-ask-polite
+    utterance: poderia listar minhas reservas, por gentileza?
+    expectArgs: {}
+
+  - id: bare-ask-casual-slang
+    utterance: e aí, tenho reserva marcada?
+    expectArgs: {}
+
+  - id: no-show-only-explicit
+    utterance: em quais reservas eu não compareci?
+    expectArgs:
+      status: no_show

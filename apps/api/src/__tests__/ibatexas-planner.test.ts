@@ -855,7 +855,16 @@ describe("createIbatexasPlanner — read-tool enrichment loop (BKL-027)", () => 
 
     expect(complete).toHaveBeenCalledTimes(2); // exactly one extra hop
     expect(execCalls).toHaveLength(1);
-    expect(execCalls[0]!.input).toEqual({ cartId: "c1" });
+    // FE-T13 (team-lead P5 ruling) — the executor receives the SANITIZED
+    // input, not the model's raw call: get_cart's authored schema
+    // (read-tool-schemas.ts) has ZERO fields, so sanitizeReadToolInput drops
+    // the model-supplied `cartId` before it ever reaches the executor
+    // (mirrors production: get_cart's real executor already ignores its
+    // input entirely, deriving the cart id from session state). The RAW
+    // model call is still recorded verbatim in `plan.readToolCalls` for
+    // telemetry (see the "does NOT loop" test below) — only the dispatched
+    // execution input is sanitized.
+    expect(execCalls[0]!.input).toEqual({});
     // The executor receives the AUTHENTICATED turn state (identity ← state).
     expect(execCalls[0]!.customerId).toBe("cus_1");
     expect(plan.envelopes.map((e) => e.kind)).toEqual(["order.item.add"]);
