@@ -441,3 +441,97 @@ describe("buildLanguageEngineAuditMetadata — payment.refund.issue (FE-T10)", (
     }
   });
 });
+
+// ── FE-T11 — payment.pix.regenerate (the customer-plane money-tier slice) ──
+
+describe("buildLanguageEngineAuditMetadata — payment.pix.regenerate (FE-T11)", () => {
+  it("derives ExtractionIR carrying NOTHING — the schema declares zero model-fillable fields", () => {
+    const meta = buildLanguageEngineAuditMetadata(
+      record("payment.pix.regenerate", { orderId: "order_9" }),
+    );
+    const le = languageEngineOf(meta);
+    expect(le.extractionIR.capability).toBe("payment.pix.regenerate");
+    expect(le.extractionIR.payload).toEqual({});
+    expect(le.extractionIR.provenance).toEqual({});
+  });
+
+  it("derives HydratedIntentIR: orderId=grounded/auto-resolved, confirmationRequired=true", () => {
+    const meta = buildLanguageEngineAuditMetadata(
+      record("payment.pix.regenerate", { orderId: "order_9" }),
+    );
+    const le = languageEngineOf(meta);
+    expect(le.hydratedIntentIR.payload).toEqual({ orderId: "order_9" });
+    expect(le.hydratedIntentIR.provenance.orderId).toEqual({
+      producer: "resolver",
+      confidence: "resolved",
+      trust: "grounded",
+    });
+    expect(le.hydratedIntentIR.confirmationRequired).toBe(true);
+  });
+
+  it("an extra unexpected payload key is dropped from both IRs — not schema-declared, not the resolver-field allowlist", () => {
+    const meta = buildLanguageEngineAuditMetadata(
+      record("payment.pix.regenerate", {
+        orderId: "order_9",
+        cpf: "12345678900",
+      }),
+    );
+    const le = languageEngineOf(meta);
+    expect(le.extractionIR.payload).not.toHaveProperty("cpf");
+    expect(le.hydratedIntentIR.payload).not.toHaveProperty("cpf");
+    expect(le.hydratedIntentIR.payload).toEqual({ orderId: "order_9" });
+  });
+
+  it("is undefined (unresolved orderId) when hydration never carries one — the payload just has no orderId key to project", () => {
+    const meta = buildLanguageEngineAuditMetadata(record("payment.pix.regenerate", {}));
+    const le = languageEngineOf(meta);
+    expect(le.hydratedIntentIR.payload).toEqual({});
+    expect(le.hydratedIntentIR.provenance.orderId).toBeUndefined();
+    expect(le.hydratedIntentIR.confirmationRequired).toBe(false);
+  });
+
+  // ── Team-lead ruling (FE-T11) — the closure this schema is meant to prove:
+  // a model that hallucinates/smuggles `orderId` (or any other field this
+  // schema does not declare) gets ZERO credit for it in ExtractionIR — the
+  // audit trail can never be read as "the model correctly supplied
+  // orderId," regardless of how orderId ended up in the resolved envelope
+  // payload (auto-resolved by the resolver, OR a smuggled value that slipped
+  // past a non-grammar-constrained completion — audit-metadata cannot tell
+  // the two apart, and by design does not need to: schema.fields is empty,
+  // so splitResolvedPayload routes EVERY key, orderId included, to the
+  // resolver side, never extractionPayload). This is the audit-trail half of
+  // the bypass closure; the wire half is `payment-pix-regenerate.schema.
+  // test.ts`'s "structurally forces payload:{}" assertion — together they
+  // prove the model can neither ADVERTISE-request nor get CREDITED for an
+  // orderId, at the wire and the audit layers respectively.
+  it("CLOSURE: a smuggled orderId never contaminates ExtractionIR, no matter its true origin (resolver-grounded or model-hallucinated) — same for any other junk field", () => {
+    const smuggled = buildLanguageEngineAuditMetadata(
+      record("payment.pix.regenerate", { orderId: "order_HALLUCINATED_BY_MODEL" }),
+    );
+    const smuggledLe = languageEngineOf(smuggled);
+    expect(smuggledLe.extractionIR.payload).toEqual({});
+    expect(Object.keys(smuggledLe.extractionIR.payload)).not.toContain("orderId");
+
+    const junk = buildLanguageEngineAuditMetadata(
+      record("payment.pix.regenerate", {
+        orderId: "order_9",
+        reason: "cliente pediu",
+        amount: 50,
+        cpf: "12345678900",
+      }),
+    );
+    const junkLe = languageEngineOf(junk);
+    expect(junkLe.extractionIR.payload).toEqual({});
+    for (const forbidden of ["orderId", "reason", "amount", "cpf"]) {
+      expect(junkLe.extractionIR.payload).not.toHaveProperty(forbidden);
+      // hydratedIntentIR is the ALLOWLIST projection: only orderId (the one
+      // declared resolver field) survives — reason/amount/cpf are dropped
+      // there too, since they are neither schema-declared nor in
+      // PAYMENT_PIX_REGENERATE_RESOLVER_FIELDS.
+      if (forbidden !== "orderId") {
+        expect(junkLe.hydratedIntentIR.payload).not.toHaveProperty(forbidden);
+      }
+    }
+    expect(junkLe.hydratedIntentIR.payload).toEqual({ orderId: "order_9" });
+  });
+});

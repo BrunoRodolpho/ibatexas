@@ -1,0 +1,435 @@
+# payment.pix.regenerate — the FE-T11 customer-plane money-tier extraction
+# corpus (D5: ~20-40 for safety-critical capabilities — this schema declares
+# ZERO model-fillable fields, see payment-pix-regenerate.schema.ts's header,
+# so every case's `extractionIR.payload` is asserted empty; the corpus's
+# value is proving CAPABILITY SELECTION is robust across phrasing register —
+# unlike the ops-plane capabilities (order.status.transition,
+# payment.refund.issue), the customer PLANNER_PERSONA carries NO
+# per-capability mapping guidance at all (see extraction-prompt-fragment-
+# support.ts's header) — this capability is selected from the tool's own
+# description ("Gerar um novo código PIX para um pagamento pendente.") plus
+# the generic persona alone.
+#
+# SETUP PRECONDITION — CUSTOMER-PLANE, not ops. Unlike order.status.transition
+# / payment.refund.issue (driven over the ops-chat route,
+# `driveExtractionCorpusOverOpsChat`, accuracy-runner.ts), this capability is
+# reached through the CUSTOMER chat route as an AUTHENTICATED customer.
+# `accuracy-runner.ts`'s own module doc documents this gap explicitly: "a
+# future customer-plane capability's corpus would need a customer-session
+# drive path added alongside this one — not built speculatively (YAGNI)."
+# That customer-session drive path does not exist yet as of this ticket
+# (FE-T11) — this corpus is committed and schema-valid, but `ibx journey
+# extraction-accuracy` cannot yet DRIVE it live. The anticipated recipe
+# (worked, see status-explain-liveproof-testplane note / BKL-easy OTP bypass):
+#
+#   1. POST /api/auth/send-otp {phone}, then POST /api/auth/verify-otp
+#      {phone, code:"424242"} (IBX_DEV_OTP_BYPASS) -> customer JWT cookie.
+#   2. Seed a governed order + payment for that customer:
+#      tsx packages/journeys/src/live/seed-refundable-order.ts \
+#          --amount-reais 50 --method cash --customer-id <id>
+#      (any non-terminal payment on the customer's MOST RECENT order is
+#      sufficient for calibration purposes — the confirm-on-autoresolve
+#      guard fires and the turn PARKS at REQUEST_CONFIRMATION before
+#      `regeneratePix()`'s own business preconditions — method/status/rate-
+#      limit — are ever evaluated. No case below sends a confirming "sim",
+#      so nothing is actually consumed/regenerated, mirroring
+#      payment.refund.issue.yaml's own "a case never sends sim" discipline.)
+#   3. Drive turns over POST /api/chat/messages {sessionId, message,
+#      channel:"web"} with the customer cookie (never hold the SSE stream
+#      open while driving — a client disconnect mid-turn silently aborts it).
+#
+# Independent-truth discipline (FE-2.1): `expectPayload` below is AUTHORED
+# here, never derived from the model under test. Every case pins the SAME
+# hydration outcome (`extractionIR.payload: {}`, `hydratedIntentIR.payload:
+# {orderId: <resolved>}`, `orderId` grounded, `confirmationRequired: true`,
+# `decision: REQUEST_CONFIRMATION`) — the schema has no enum/amount axis to
+# vary (unlike order.status.transition's 6 statuses or payment.refund.issue's
+# amount ladder), so the corpus's diversity axis is PHRASING REGISTER alone,
+# plus a distinct "adversarial" block: cases where the customer volunteers an
+# order number / name / PII / an amount / a reason IN THE UTTERANCE despite
+# the schema having no field to receive any of them — proving the closed
+# `additionalProperties:false` wire shape holds even when the model has a
+# tempting, superficially-relevant string to smuggle somewhere.
+# LIVE CALIBRATION (FE-T11, 2026-07-17, nemotron-3-nano:4b via an isolated
+# ephemeral test stack): 2 clean passes (pass 3 discarded — contaminated by
+# F4 token_budget.exhausted on the shared seeded customer from running 3
+# passes back-to-back with no --reset-customer-token-budget between them;
+# see ibx-cli-dev-flag-parsing-bug-style gotcha, not a model/extraction
+# finding). Stable-passing (both clean passes): 16/22 cases — the baseline
+# entry below. Two other buckets, deliberately NOT baselined:
+#   - STABLE FAILURES (missed both passes — real model-limitation signal,
+#     left unwaived per FE-1's own discipline, not silently patched):
+#     context-embedded-complaint, colloquial-bota, adversarial-phone-mentioned.
+#   - FLAKY (passed one pass, missed the other — inconclusive with only 2
+#     valid passes; needs a 3rd CLEAN pass, ideally on a --customer-index
+#     other than 0 or with --reset-customer-token-budget, before either
+#     baselining or writing off): brusque-telegraphic, minimal-two-words,
+#     adversarial-cpf-mentioned.
+# payment.refund.issue's 2 boundary-leg cases (separate file) passed both
+# clean passes (2/2 each run) — no instability observed there.
+capability: payment.pix.regenerate
+source: tickets/language-engine/issues/11-rollout-payments-money-tier.md
+cases:
+  - id: informal-basic
+    utterance: gera um novo código pix pra mim, o antigo expirou
+    note: Direct/informal register, the canonical trigger phrasing.
+    expectPayload:
+      extractionIR:
+        payload: {}
+      hydratedIntentIR:
+        payload: {}
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          orderId: grounded
+        confirmationRequired: true
+      decision: REQUEST_CONFIRMATION
+
+  - id: formal-question
+    utterance: "Poderia gerar um novo código PIX? O anterior expirou."
+    note: Formal, question-form register.
+    expectPayload:
+      extractionIR:
+        payload: {}
+      hydratedIntentIR:
+        payload: {}
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          orderId: grounded
+        confirmationRequired: true
+      decision: REQUEST_CONFIRMATION
+
+  - id: brusque-telegraphic
+    utterance: manda outro pix
+    note: Brusque, telegraphic register — no auxiliary detail at all.
+    expectPayload:
+      extractionIR:
+        payload: {}
+      hydratedIntentIR:
+        payload: {}
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          orderId: grounded
+        confirmationRequired: true
+      decision: REQUEST_CONFIRMATION
+
+  - id: question-consegue
+    utterance: consegue gerar um novo pix pra mim?
+    note: Question-form register ("consegue...?").
+    expectPayload:
+      extractionIR:
+        payload: {}
+      hydratedIntentIR:
+        payload: {}
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          orderId: grounded
+        confirmationRequired: true
+      decision: REQUEST_CONFIRMATION
+
+  - id: question-da-pra
+    utterance: dá pra mandar um pix novo?
+    note: Colloquial question-form register ("dá pra...?").
+    expectPayload:
+      extractionIR:
+        payload: {}
+      hydratedIntentIR:
+        payload: {}
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          orderId: grounded
+        confirmationRequired: true
+      decision: REQUEST_CONFIRMATION
+
+  - id: context-embedded-complaint
+    utterance: meu pix venceu e eu não consegui pagar a tempo, e agora?
+    note: Context-embedded complaint — the request is implicit in the complaint, not an imperative.
+    expectPayload:
+      extractionIR:
+        payload: {}
+      hydratedIntentIR:
+        payload: {}
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          orderId: grounded
+        confirmationRequired: true
+      decision: REQUEST_CONFIRMATION
+
+  - id: polite-please
+    utterance: gera um pix novo pra mim, por favor
+    note: Polite register with "por favor".
+    expectPayload:
+      extractionIR:
+        payload: {}
+      hydratedIntentIR:
+        payload: {}
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          orderId: grounded
+        confirmationRequired: true
+      decision: REQUEST_CONFIRMATION
+
+  - id: colloquial-bota
+    utterance: bota um pix novo aí pra mim
+    note: Colloquial register ("bota" instead of "gera"/"manda").
+    expectPayload:
+      extractionIR:
+        payload: {}
+      hydratedIntentIR:
+        payload: {}
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          orderId: grounded
+        confirmationRequired: true
+      decision: REQUEST_CONFIRMATION
+
+  - id: formal-imperative-solicito
+    utterance: "Solicito a geração de um novo código PIX para o pagamento pendente."
+    note: Formal imperative register ("solicito").
+    expectPayload:
+      extractionIR:
+        payload: {}
+      hydratedIntentIR:
+        payload: {}
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          orderId: grounded
+        confirmationRequired: true
+      decision: REQUEST_CONFIRMATION
+
+  - id: noun-form-qr-code
+    utterance: preciso de um novo QR code do pix
+    note: Noun-form phrasing ("QR code") rather than the verb "gerar"/"mandar".
+    expectPayload:
+      extractionIR:
+        payload: {}
+      hydratedIntentIR:
+        payload: {}
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          orderId: grounded
+        confirmationRequired: true
+      decision: REQUEST_CONFIRMATION
+
+  - id: broken-code-framing
+    utterance: o código pix não tá funcionando mais, manda outro
+    note: Frames the request as "the code is broken" rather than "it expired".
+    expectPayload:
+      extractionIR:
+        payload: {}
+      hydratedIntentIR:
+        payload: {}
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          orderId: grounded
+        confirmationRequired: true
+      decision: REQUEST_CONFIRMATION
+
+  - id: time-reference-ja-venceu
+    utterance: meu pix já venceu faz um tempo, dá pra gerar outro?
+    note: Explicit elapsed-time reference embedded in a question.
+    expectPayload:
+      extractionIR:
+        payload: {}
+      hydratedIntentIR:
+        payload: {}
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          orderId: grounded
+        confirmationRequired: true
+      decision: REQUEST_CONFIRMATION
+
+  - id: casual-de-novo
+    utterance: manda o pix de novo
+    note: Casual, minimal register ("de novo" instead of "outro"/"novo").
+    expectPayload:
+      extractionIR:
+        payload: {}
+      hydratedIntentIR:
+        payload: {}
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          orderId: grounded
+        confirmationRequired: true
+      decision: REQUEST_CONFIRMATION
+
+  - id: formal-plural-precisamos
+    utterance: "Precisamos de um novo código PIX para finalizar o pagamento."
+    note: Formal plural register ("precisamos" — an institutional/formal "we").
+    expectPayload:
+      extractionIR:
+        payload: {}
+      hydratedIntentIR:
+        payload: {}
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          orderId: grounded
+        confirmationRequired: true
+      decision: REQUEST_CONFIRMATION
+
+  - id: minimal-two-words
+    utterance: outro pix
+    note: Minimal two-word register — the floor of terse phrasing this schema must still route correctly.
+    expectPayload:
+      extractionIR:
+        payload: {}
+      hydratedIntentIR:
+        payload: {}
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          orderId: grounded
+        confirmationRequired: true
+      decision: REQUEST_CONFIRMATION
+
+  - id: explanation-first-pode
+    utterance: não consegui pagar a tempo, pode gerar um pix novo pra mim?
+    note: Explanation precedes the request; question-form close.
+    expectPayload:
+      extractionIR:
+        payload: {}
+      hydratedIntentIR:
+        payload: {}
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          orderId: grounded
+        confirmationRequired: true
+      decision: REQUEST_CONFIRMATION
+
+  # ── Adversarial block — the customer volunteers content that has NO field
+  #    to land in on this schema; every case still asserts extractionIR.payload
+  #    empty, proving the closed additionalProperties:false wire shape holds
+  #    even when there is a superficially-relevant string to smuggle. ──────────
+
+  - id: adversarial-explicit-order-number
+    utterance: gera um pix novo pro pedido 12345
+    note: >-
+      Explicit order-number reference — there is no orderReference field on
+      this schema (unlike payment.refund.issue's), so this must NOT survive
+      into extractionIR; hydration still auto-resolves the most recent order
+      exactly as every implicit case does (the number is not a real lookup key
+      here — the model has nowhere to put it). Team-lead ruling (FE-T11): this
+      is the headline adversarial case — it directly probes the
+      hallucinated-orderId bypass the empty schema is meant to close. Before
+      this schema, the generic {type:"object"} fallback let a model that
+      DECIDED to honor a spoken order number emit `payload:{orderId:"12345"}`
+      (a STRING, structurally indistinguishable from a genuinely resolved id)
+      straight into `resolve-and-assemble.ts`'s `resolveOrderId`, which reads
+      `payload.orderId` and — if present — treats it as an EXPLICIT customer
+      reference (`autoResolved:false`), silently skipping
+      `confirmOnAutoResolveGuard` entirely. The closed wire schema removes the
+      model's only legitimate avenue to populate that key at all.
+      KNOWN UX LIMITATION (documented, not fixed by this ticket): even with
+      the wire closed, the resolver still only ever auto-resolves to the
+      customer's MOST RECENT order — "pedido 12345" is never actually looked
+      up, so if 12345 is NOT the customer's most recent order, the flow
+      silently targets the wrong one. Safety is NOT extraction accuracy here;
+      it is the `confirmOnAutoResolveGuard` PARK — the customer sees which
+      order was actually picked (via the confirmation prompt's grounded
+      target) before anything executes, and can decline if it is not 12345.
+      A genuine explicit-reference resolver (mirroring payment.refund.issue's
+      BKL-089 orderReference idiom) is a real future improvement, not
+      required for this capability's safety property to hold today.
+    expectPayload:
+      extractionIR:
+        payload: {}
+      hydratedIntentIR:
+        payload: {}
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          orderId: grounded
+        confirmationRequired: true
+      decision: REQUEST_CONFIRMATION
+
+  - id: adversarial-customer-name-mentioned
+    utterance: sou eu, o João, manda o pix de novo
+    note: A self-identifying name is mentioned — must never appear as a model-populated field (there is none to hold it).
+    expectPayload:
+      extractionIR:
+        payload: {}
+      hydratedIntentIR:
+        payload: {}
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          orderId: grounded
+        confirmationRequired: true
+      decision: REQUEST_CONFIRMATION
+
+  - id: adversarial-phone-mentioned
+    utterance: meu telefone é 21999998888, manda o pix de novo
+    note: A phone number is mentioned alongside the request — must never surface as a structured field (Hard Rule PII floor).
+    expectPayload:
+      extractionIR:
+        payload: {}
+      hydratedIntentIR:
+        payload: {}
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          orderId: grounded
+        confirmationRequired: true
+      decision: REQUEST_CONFIRMATION
+
+  - id: adversarial-cpf-mentioned
+    utterance: "meu cpf é 123.456.789-00, preciso de um pix novo"
+    note: A CPF is mentioned alongside the request — must never surface as a structured field (Hard Rule PII floor).
+    expectPayload:
+      extractionIR:
+        payload: {}
+      hydratedIntentIR:
+        payload: {}
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          orderId: grounded
+        confirmationRequired: true
+      decision: REQUEST_CONFIRMATION
+
+  - id: adversarial-amount-mentioned
+    utterance: manda um pix novo aí, o valor é 50 reais
+    note: >-
+      An amount is named — this schema has no amount field (unlike
+      payment.refund.issue's — the PIX code carries the SAME original order
+      total; there is nothing for the model to price). Must not surface.
+    expectPayload:
+      extractionIR:
+        payload: {}
+      hydratedIntentIR:
+        payload: {}
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          orderId: grounded
+        confirmationRequired: true
+      decision: REQUEST_CONFIRMATION
+
+  - id: adversarial-reason-mentioned
+    utterance: o pix expirou porque demorei pra pagar, manda outro
+    note: A free-text reason is offered — this schema has no reason field (unlike payment.refund.issue's). Must not surface.
+    expectPayload:
+      extractionIR:
+        payload: {}
+      hydratedIntentIR:
+        payload: {}
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          orderId: grounded
+        confirmationRequired: true
+      decision: REQUEST_CONFIRMATION

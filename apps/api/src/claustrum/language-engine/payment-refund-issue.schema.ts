@@ -128,6 +128,59 @@ export const PAYMENT_REFUND_ISSUE_EXTRACTION_SCHEMA: CapabilityExtractionSchema 
         reason: "o cliente desistiu",
       },
     },
+    // FE-T11 (review) — the plan-time payload filter (ibatexas-planner.ts's
+    // stripUnauthoredPayloadFields) would otherwise strip every one of these
+    // as undeclared fields (none is `orderReference`/`amount`, this schema's
+    // own field names). But `ops-resolver.ts` has always accepted them
+    // directly — this schema's own header already documents that the
+    // pre-existing, unguided refund-by-message path "keeps working
+    // unchanged." Declaring the channels here (rather than leaving them
+    // undeclared, accidentally-broken exceptions — caught live by the full
+    // e2e suite: REFUND_CALL's default test helper scripts `orderId` +
+    // `refundAmountCentavos` directly, not `orderReference`/`amount`) is
+    // what makes that claim still true now that the filter exists.
+    // OPS-plane reference/amount-TO-VERIFY, not a customer-plane
+    // autoresolve hazard: the resolver looks the named order up
+    // authoritatively and REFUSES/falls back if it doesn't resolve, and
+    // NEVER clamps an over-balance amount (it passes through so the pack
+    // REFUSEs) — the BKL-085 UNTRUSTED-taint confirm overlay + the refund
+    // guards still apply afterward regardless of which channel supplied
+    // the reference/amount.
+    legacyPayloadChannels: [
+      {
+        field: "orderId",
+        reason:
+          "Pre-existing refund-by-message explicit-reference path " +
+          "(resolveRefundTarget, ops-resolver.ts) — predates and is " +
+          "independent of this schema's orderReference field; an " +
+          "ops-plane authoritative lookup, not a customer-plane " +
+          "autoresolve hazard.",
+      },
+      {
+        field: "refundAmountCentavos",
+        reason:
+          "BKL-094 (resolveRequestedRefundCentavos, ops-resolver.ts) — " +
+          "the TOP-priority alias: a caller that already knows the exact " +
+          "integer-centavos figure (e.g. this repo's own e2e test " +
+          "helpers, or a future typed caller) may supply it directly, " +
+          "skipping the reais->centavos coercion this schema's own " +
+          "`amount` field exists to avoid asking the MODEL to do.",
+      },
+      {
+        field: "value",
+        reason:
+          "BKL-094 OPS_REFUND_REAIS_ALIASES (ops-resolver.ts) — a REAIS " +
+          "alias for `amount`, live-observed: a model occasionally " +
+          "spontaneously names the figure `value` instead of `amount`.",
+      },
+      {
+        field: "valor",
+        reason:
+          "BKL-094 OPS_REFUND_REAIS_ALIASES (ops-resolver.ts) — the pt-BR " +
+          "REAIS alias for `amount` (\"valor\" = \"value\"), live-observed " +
+          "model output.",
+      },
+    ],
   };
 
 // Fail closed at import time: a schema that would leak paymentId (or any
