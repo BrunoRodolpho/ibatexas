@@ -39,7 +39,10 @@ import {
   buildOpsHistoryBlock,
   loadOpsHistory,
 } from "../../ops/ops-history.js";
-import { opsStaleResumeNotice } from "../../ops/ops-system-channel.js";
+import {
+  opsStaleResumeNotice,
+  pruneExpiredOpsParks,
+} from "../../ops/ops-system-channel.js";
 
 const OpsChatBody = z.object({
   message: z
@@ -150,13 +153,33 @@ export async function adminOpsChatRoutes(server: FastifyInstance): Promise<void>
           nowIso: inbound.receivedAt,
         });
         if (staleNotice !== undefined) {
+          // FE-D33 — prune the now-inert expired parks from the session (hygiene;
+          // the FE-D13 partition is the enforcement point, so a prune failure is
+          // non-fatal). capsule.session.unpark is the sanctioned durable mutation;
+          // the Conductor re-reads on close, so this sticks.
+          let pruned = 0;
+          if (capsule.loadedSession) {
+            try {
+              pruned = (
+                await pruneExpiredOpsParks({
+                  session: capsule.session,
+                  sessionId: capsule.loadedSession.id,
+                  pendingConfirmations: pending,
+                  nowIso: inbound.receivedAt,
+                })
+              ).length;
+            } catch (err) {
+              request.log.warn(err, "[ops-chat] expired-park prune failed (non-fatal)");
+            }
+          }
           request.log.warn(
             {
               event: "ops_chat.stale_park_notice",
               staff_id: staffId,
               pending: pending.length,
+              pruned,
             },
-            "[ops-chat] stale confirm-park resume — restating expiry, skipping the turn",
+            "[ops-chat] stale confirm-park resume — restating expiry, pruning zombies, skipping the turn",
           );
           try {
             await appendOpsMessages(staffId, [

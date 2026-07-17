@@ -11,10 +11,13 @@ import {
   getOpsConfirmParkTtlSeconds,
   isAmbiguousOpsReply,
   matchOpsReplyToParked,
+  opsConfirmParkExpiresAt,
+  opsExpiredInScopeParks,
   opsStaleResumeNotice,
   OPS_AMBIGUOUS_REPLY_CLARIFY_PTBR,
   OpsSystemChannel,
   partitionOpsParksByFreshness,
+  pruneExpiredOpsParks,
 } from "../ops-system-channel.js";
 
 function parked(intentHash: string, parkedAt: string): ParkedEnvelope {
@@ -592,4 +595,136 @@ describe("getOpsConfirmParkTtlSeconds — env parse fallback", () => {
       expect(getOpsConfirmParkTtlSeconds()).toBe(900);
     },
   );
+});
+
+// ── FE-D33: expiresAt stamping + zombie-park pruning ─────────────────────────
+
+describe("opsConfirmParkExpiresAt — FE-D33 forward-compat stamping", () => {
+  const KEY = "OPS_CONFIRM_PARK_TTL_SECONDS";
+  const original = process.env[KEY];
+  afterEach(() => {
+    if (original === undefined) delete process.env[KEY];
+    else process.env[KEY] = original;
+  });
+
+  it("stamps an ops/system-plane park at parkedAt + the confirm TTL (default 900s)", () => {
+    delete process.env[KEY];
+    expect(opsConfirmParkExpiresAt("system:staff:s1", "2026-07-04T12:00:00.000Z")).toBe(
+      "2026-07-04T12:15:00.000Z",
+    );
+  });
+
+  it("honors the env TTL override", () => {
+    process.env[KEY] = "60";
+    expect(opsConfirmParkExpiresAt("system:staff:s1", "2026-07-04T12:00:00.000Z")).toBe(
+      "2026-07-04T12:01:00.000Z",
+    );
+  });
+
+  it.each(["whatsapp:cust_1", "web:sess_1"])(
+    "returns undefined for a customer-plane park (no confirm-freshness TTL): %s",
+    (sessionId) => {
+      expect(opsConfirmParkExpiresAt(sessionId, "2026-07-04T12:00:00.000Z")).toBeUndefined();
+    },
+  );
+
+  it("returns undefined for a malformed parkedAt (nothing truthful to stamp)", () => {
+    expect(opsConfirmParkExpiresAt("system:staff:s1", "not-a-date")).toBeUndefined();
+  });
+});
+
+describe("opsExpiredInScopeParks + pruneExpiredOpsParks — FE-D33 zombie pruning", () => {
+  const NOW = "2026-07-04T12:16:00.000Z"; // 16 min after 12:00 (> the 900s TTL)
+  const TTL = 900;
+  const oldAt = "2026-07-04T12:00:00.000Z"; // 16 min old → expired
+  const freshAt = "2026-07-04T12:15:30.000Z"; // 30s old → fresh
+
+  it("selects ONLY expired in-scope parks (fresh survive)", () => {
+    const expired = parkedKind("aaaa00000000", oldAt, "product.price.set");
+    const fresh = parkedKind("bbbb11112222", freshAt, "product.price.set");
+    expect(
+      opsExpiredInScopeParks({
+        pendingConfirmations: [expired, fresh],
+        nowIso: NOW,
+        ttlSeconds: TTL,
+      }),
+    ).toEqual([expired]);
+  });
+
+  it("never selects an out-of-scope park, even when expired (BKL-086 parity)", () => {
+    const refund = parkedKind("aaaa00000000", oldAt, "payment.refund.issue"); // expired but excluded
+    const price = parkedKind("bbbb11112222", oldAt, "product.price.set"); // expired in-scope
+    expect(
+      opsExpiredInScopeParks({
+        pendingConfirmations: [refund, price],
+        nowIso: NOW,
+        excludedKinds: new Set(["payment.refund.issue"]),
+        ttlSeconds: TTL,
+      }),
+    ).toEqual([price]);
+  });
+
+  it("prune unparks ONLY expired in-scope hashes and returns the pruned set", async () => {
+    const expired1 = parkedKind("aaaa00000000", oldAt, "product.price.set");
+    const fresh = parkedKind("bbbb11112222", freshAt, "product.price.set");
+    const expired2 = parkedKind("cccc00000000", oldAt, "order.status.transition");
+    const refundExpired = parkedKind("dddd00000000", oldAt, "payment.refund.issue");
+    const unparked: Array<{ sessionId: string; hash: string }> = [];
+    const session = {
+      unpark: async (sessionId: string, hash: string) => {
+        unparked.push({ sessionId, hash });
+      },
+    };
+    const pruned = await pruneExpiredOpsParks({
+      session,
+      sessionId: "system:staff:s1",
+      pendingConfirmations: [expired1, fresh, expired2, refundExpired],
+      nowIso: NOW,
+      excludedKinds: new Set(["payment.refund.issue"]),
+      ttlSeconds: TTL,
+    });
+    // Fresh (bbbb) and out-of-scope refund (dddd) survive; only aaaa + cccc pruned.
+    expect(pruned).toEqual([expired1, expired2]);
+    expect(unparked).toEqual([
+      { sessionId: "system:staff:s1", hash: "aaaa00000000" },
+      { sessionId: "system:staff:s1", hash: "cccc00000000" },
+    ]);
+  });
+
+  it("prune is a no-op (no unpark calls) when nothing is expired", async () => {
+    const fresh = parkedKind("bbbb11112222", freshAt, "product.price.set");
+    let calls = 0;
+    const session = {
+      unpark: async () => {
+        calls += 1;
+      },
+    };
+    const pruned = await pruneExpiredOpsParks({
+      session,
+      sessionId: "system:staff:s1",
+      pendingConfirmations: [fresh],
+      nowIso: NOW,
+      ttlSeconds: TTL,
+    });
+    expect(pruned).toEqual([]);
+    expect(calls).toBe(0);
+  });
+
+  it("prune propagates an unpark rejection (the INGRESS wraps it — fail-safe there)", async () => {
+    const expired = parkedKind("aaaa00000000", oldAt, "product.price.set");
+    const session = {
+      unpark: async () => {
+        throw new Error("redis down");
+      },
+    };
+    await expect(
+      pruneExpiredOpsParks({
+        session,
+        sessionId: "system:staff:s1",
+        pendingConfirmations: [expired],
+        nowIso: NOW,
+        ttlSeconds: TTL,
+      }),
+    ).rejects.toThrow("redis down");
+  });
 });

@@ -31,6 +31,7 @@ import type {
   ParkedEnvelope,
   ParkedMatch,
   Session,
+  SessionPort,
   UserResolution,
 } from "@claustrum/core";
 import { SystemChannel } from "../claustrum/system-channel.js";
@@ -92,6 +93,30 @@ export function getOpsConfirmParkTtlSeconds(): number {
   const n = Number.parseInt(raw, 10);
   if (Number.isNaN(n) || n < 1) return 900;
   return n;
+}
+
+/**
+ * FE-D33 — the confirm-park `expiresAt` for the SessionPort park-write site
+ * (claustrum-bootstrap.ts). FORWARD-COMPAT ONLY: nothing upstream READS it today —
+ * the {@link partitionOpsParksByFreshness} gate above stays the enforcement point,
+ * so stamping this NEVER changes matching semantics. Returns a value ONLY for the
+ * ops/system plane, whose confirm parks carry the freshness TTL
+ * ({@link getOpsConfirmParkTtlSeconds}); a CUSTOMER-plane park (`whatsapp:`/`web:`/…)
+ * has no confirm-freshness TTL, so `undefined` — never imply an unenforced
+ * guarantee. Keyed off the sessionId channel prefix (`system:` ⇔ the ops plane —
+ * the ops conductor keys sessions `system:staff:<id>`). A malformed `parkedAt` ⇒
+ * `undefined` (nothing truthful to stamp). NOTE: the escalation
+ * (`ESCALATION_PARK_TTL_SECONDS`) plane is a SEPARATE store
+ * (escalation-park-store.ts), not this SessionPort — it never reaches here.
+ */
+export function opsConfirmParkExpiresAt(
+  sessionId: string,
+  parkedAt: string,
+): string | undefined {
+  if (!sessionId.startsWith("system:")) return undefined;
+  const base = Date.parse(parkedAt);
+  if (!Number.isFinite(base)) return undefined;
+  return new Date(base + getOpsConfirmParkTtlSeconds() * 1000).toISOString();
 }
 
 /** A park list split by freshness at a reference instant (FE-D13). */
@@ -316,6 +341,58 @@ export function opsStaleResumeNotice(input: {
   // legitimate fresh confirm with an expiry notice.
   if (matchOpsReplyToParked(input.text, fresh) !== null) return undefined;
   return expiredOpsParkNotice(input.text, expired, input.nowIso);
+}
+
+// ── FE-D33: zombie-park pruning ──────────────────────────────────────────────
+// An expired park is already inert (invisible to matchToParked), but it lingers in
+// the session blob until the 24h/48h Redis TTL lapses. When an ingress surfaces the
+// stale-resume notice it is the natural moment to also remove the now-inert EXPIRED
+// IN-SCOPE parks, so the blob doesn't accrue zombies. This is pure HYGIENE — the
+// partition stays the enforcement point, and pruning failure is non-fatal (the
+// caller wraps it; a lingering expired park stays invisible either way).
+
+/**
+ * The EXPIRED IN-SCOPE parks in `pendingConfirmations` at `nowIso` — i.e. what an
+ * ingress may prune. `excludedKinds` drops out-of-scope parks (BKL-086 parity: a
+ * WhatsApp turn must not prune a dashboard-only money park). PURE; same partition +
+ * scope filter {@link opsStaleResumeNotice} uses, so the pruned set is EXACTLY the
+ * zombies the notice path leaves behind.
+ */
+export function opsExpiredInScopeParks(input: {
+  readonly pendingConfirmations: ReadonlyArray<ParkedEnvelope>;
+  readonly nowIso: string;
+  readonly excludedKinds?: ReadonlySet<string>;
+  readonly ttlSeconds?: number;
+}): ParkedEnvelope[] {
+  const excluded = input.excludedKinds ?? EMPTY_EXCLUDED_KINDS;
+  const ttlSeconds = input.ttlSeconds ?? getOpsConfirmParkTtlSeconds();
+  const inScope = input.pendingConfirmations.filter(
+    (p) => !excluded.has(String(p.envelope.kind)),
+  );
+  return partitionOpsParksByFreshness(inScope, input.nowIso, ttlSeconds).expired;
+}
+
+/**
+ * Prune the EXPIRED IN-SCOPE parks from the session via the SessionPort's `unpark`
+ * (the sanctioned durable mutation — the Conductor holds the per-session lock for
+ * the whole capsule and re-reads on close, so a prune here sticks). Removes ONLY
+ * expired in-scope parks; fresh and out-of-scope parks survive. Returns the pruned
+ * set (for logging/tests). Does NOT swallow — the ingress wraps the call so a prune
+ * failure is non-fatal to the notice/turn (the expired parks stay inert regardless).
+ */
+export async function pruneExpiredOpsParks(input: {
+  readonly session: Pick<SessionPort, "unpark">;
+  readonly sessionId: string;
+  readonly pendingConfirmations: ReadonlyArray<ParkedEnvelope>;
+  readonly nowIso: string;
+  readonly excludedKinds?: ReadonlySet<string>;
+  readonly ttlSeconds?: number;
+}): Promise<ParkedEnvelope[]> {
+  const expired = opsExpiredInScopeParks(input);
+  for (const park of expired) {
+    await input.session.unpark(input.sessionId, park.envelope.intentHash);
+  }
+  return expired;
 }
 
 /**

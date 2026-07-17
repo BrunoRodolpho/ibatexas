@@ -648,7 +648,7 @@ function seededSession(
 describe("FE-D13 — honest stale-resume over the WhatsApp ingress", () => {
   const OLD = new Date(Date.now() - 3_600_000).toISOString(); // 1h ago → past the 15-min TTL
 
-  it("a stale IN-SCOPE park + 'sim' → the expiry notice is sent, the turn is SKIPPED, history appended, park intact", async () => {
+  it("a stale IN-SCOPE park + 'sim' → the expiry notice is sent, the turn is SKIPPED, history appended, zombie pruned", async () => {
     const expiredPark = seededParkedEnvelope(
       "product.price.set",
       "abc123abc123",
@@ -694,8 +694,8 @@ describe("FE-D13 — honest stale-resume over the WhatsApp ingress", () => {
     expect(model.complete as unknown as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
     // The notice was appended to the shared ops thread (assistant role).
     expect(appended).toContainEqual({ role: "assistant", content: replies[0]! });
-    // The park is NOT consumed (an expiry restatement never unparks).
-    expect(session.parksFor("system:staff:owner1")).toHaveLength(1);
+    // FE-D33 — the now-inert expired in-scope park is PRUNED from the session.
+    expect(session.parksFor("system:staff:owner1")).toHaveLength(0);
   });
 
   it("BKL-086 parity: a stale DASHBOARD-scoped money park is NOT restated over WhatsApp", async () => {
@@ -740,6 +740,8 @@ describe("FE-D13 — honest stale-resume over the WhatsApp ingress", () => {
     expect(allText).not.toContain("expirou");
     // …and the refund never executes (excluded AND expired); the park is untouched.
     expect(writeAdjudicatedRefund).not.toHaveBeenCalled();
+    // FE-D33 parity: an out-of-scope money park is NOT pruned from the WhatsApp
+    // plane either (only the dashboard, which can resume it, may prune it).
     expect(session.parksFor("system:staff:owner1")).toHaveLength(1);
     // The owner still gets an honest (non-notice) reply from the normal loop.
     expect(replies.length + errors.length).toBeGreaterThanOrEqual(1);

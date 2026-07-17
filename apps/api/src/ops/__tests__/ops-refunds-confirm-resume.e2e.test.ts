@@ -172,6 +172,10 @@ describe("BKL-085 refunds-by-message — end-to-end park → confirm-resume → 
     // The park landed in the session store, keyed to THIS staff session.
     const parks = session.parksFor(sessionId);
     expect(parks).toHaveLength(1);
+    // FE-D33 — the park carries the forward-compat expiresAt (parkedAt 12:00 + the
+    // 900s ops confirm TTL = 12:15); nothing reads it yet — the freshness partition
+    // stays the enforcement point — but the write site now stamps it.
+    expect(parks[0]!.expiresAt).toBe("2026-07-04T12:15:00.000Z");
     // The reply carries the parsed amount + payment ref (the staff confirms the numbers).
     expect(t1.response).toContain("R$ 50,00");
     expect(t1.response).toContain("pay_db_1");

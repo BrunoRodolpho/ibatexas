@@ -346,7 +346,10 @@ import {
   readOpsProductPricing,
   computeOpsPricingSnapshot,
 } from "./ops/ops-price-read.js";
-import { OpsSystemChannel } from "./ops/ops-system-channel.js";
+import {
+  OpsSystemChannel,
+  opsConfirmParkExpiresAt,
+} from "./ops/ops-system-channel.js";
 import type { OrderCandidate } from "./ops/ops-order-resolution.js";
 import {
   createOpsSnapshotReadExecutor,
@@ -2089,6 +2092,10 @@ function redisSessionStore(): SessionPort {
       userPrompt,
     ) {
       const parkedAt = new Date().toISOString();
+      // FE-D33 — stamp expiresAt for forward-compat (nothing reads it yet; the
+      // FE-D13 freshness partition stays the enforcement point). Ops-plane parks
+      // only — a customer park has no confirm-freshness TTL, so it stays unset.
+      const expiresAt = opsConfirmParkExpiresAt(sessionId, parkedAt);
       await mutateSession(sessionId, (s) => ({
         ...s,
         pendingConfirmations: [
@@ -2096,7 +2103,13 @@ function redisSessionStore(): SessionPort {
           ...s.pendingConfirmations.filter(
             (p) => p.envelope.intentHash !== envelope.intentHash,
           ),
-          { envelope, confirmationToken, userPrompt, parkedAt },
+          {
+            envelope,
+            confirmationToken,
+            userPrompt,
+            parkedAt,
+            ...(expiresAt ? { expiresAt } : {}),
+          },
         ],
       }));
     },
