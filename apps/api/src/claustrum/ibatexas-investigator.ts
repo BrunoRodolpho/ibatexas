@@ -184,6 +184,20 @@ const ORDER_FULFILLMENT_KEY = (orderId: string): string =>
 const PAYMENT_STATUS_KEY = (orderId: string): string => `payment_status:${orderId}`;
 const RESERVATION_KEY = (reservationId: string): string =>
   `reservation_status:${reservationId}`;
+// BKL-006 FALSIFIER keys. Each is the registry BASE falsifier key suffixed with the
+// SAME `:{subject}` the registry's `parameterizeKeysBySubject` (claim-registry.ts)
+// applies to that type — so the recorded ledger key equals the parameterized
+// falsifier key the kernel's `resolveAgainstFalsifiers` looks up. A suffix mismatch
+// would leave the arm SILENTLY INERT (the ledger-key-lockstep pin test resolves
+// these through the REAL `selectCandidateClaim` output to catch exactly that). The
+// PAYMENT_STATUS subject is the ORDER id (its `payment_status` key is keyed by
+// orderId), so its refund/chargeback falsifiers are keyed by orderId too.
+const ORDER_CANCELLED_KEY = (orderId: string): string => `order_cancelled:${orderId}`;
+const PAYMENT_REFUND_KEY = (orderId: string): string => `payment_refund:${orderId}`;
+const PAYMENT_CHARGEBACK_KEY = (orderId: string): string =>
+  `payment_chargeback:${orderId}`;
+const RESERVATION_CANCELLED_KEY = (reservationId: string): string =>
+  `reservation_cancelled:${reservationId}`;
 
 const GUEST_ID_RE = /^(guest|anon|anonymous):/i;
 
@@ -477,6 +491,58 @@ export function createFirstPartyTurnReads(
           return v;
         },
       });
+
+      // BKL-006 FALSIFIERS (W6 CE#3 runtime arm) — the ORDER_FULFILLMENT_STAGE +
+      // PAYMENT_STATUS falsifiers the registry already DECLARED but no read populated,
+      // so the arm was structurally INERT (a refunded/disputed payment could VALIDATE
+      // `pago` while the claims flag is ON — the latent risk BKL-006 closes). Each is
+      // recorded PRESENT ONLY when the falsifying fact actually exists (order
+      // cancelled / refund / chargeback); a checked-and-NONE read returns ABSENT_READ
+      // → the investigator SKIPS it → the key stays ABSENT → `resolveAgainstFalsifiers`
+      // does NOT fire (never a fabricated "no refund" present value — the anti-pattern
+      // in the ABSENT_READ doc above). A cross-owner / absent read throws
+      // OwnerScopedReadUnavailable → fail-closed read ERROR (Inv 7): an unreadable
+      // falsifier cannot be proven not to have fired, so it demotes the base to
+      // UNKNOWN (symmetric with the base-key error axis) — never leaks another
+      // customer's data. DEMOTE-ONLY: firing can only turn a VALIDATED claim into
+      // UNKNOWN, never a confident wrong answer.
+      reads.push({
+        key: ORDER_CANCELLED_KEY(orderId),
+        source: "order.readOrderCancelled",
+        origin: "TRUSTED",
+        originProvenance: "FIRST_PARTY",
+        sourceMode: "live",
+        read: async () => {
+          const v = await b.readOrderCancelled(orderId, customerId);
+          if (v === null) throw new OwnerScopedReadUnavailable("order_cancelled", orderId);
+          return v.cancelled ? v : ABSENT_READ;
+        },
+      });
+      reads.push({
+        key: PAYMENT_REFUND_KEY(orderId),
+        source: "payment.readPaymentRefund",
+        origin: "TRUSTED",
+        originProvenance: "FIRST_PARTY",
+        sourceMode: "live",
+        read: async () => {
+          const v = await b.readPaymentRefund(orderId, customerId);
+          if (v === null) throw new OwnerScopedReadUnavailable("payment_refund", orderId);
+          return v.refunded ? v : ABSENT_READ;
+        },
+      });
+      reads.push({
+        key: PAYMENT_CHARGEBACK_KEY(orderId),
+        source: "payment.readPaymentChargeback",
+        origin: "TRUSTED",
+        originProvenance: "FIRST_PARTY",
+        sourceMode: "live",
+        read: async () => {
+          const v = await b.readPaymentChargeback(orderId, customerId);
+          if (v === null)
+            throw new OwnerScopedReadUnavailable("payment_chargeback", orderId);
+          return v.disputed ? v : ABSENT_READ;
+        },
+      });
     }
 
     // FE-T17b (live-disproof follow-up; DISPROVEN 2026-07-16, turnIds 30c78409-…
@@ -545,6 +611,24 @@ export function createFirstPartyTurnReads(
           const v = await b.readReservation(reservationId, customerId);
           if (v === null) throw new OwnerScopedReadUnavailable("reservation_status", reservationId);
           return v;
+        },
+      });
+      // BKL-006 FALSIFIER — the RESERVATION_STATUS cancellation falsifier (the
+      // reservation twin of order_cancelled). Recorded PRESENT ONLY when the
+      // reservation is cancelled; a non-cancelled reservation returns ABSENT_READ →
+      // the key stays ABSENT → the falsifier does NOT fire. A cross-owner / absent
+      // reservation throws → fail-closed read ERROR (Inv 7). Demote-only.
+      reads.push({
+        key: RESERVATION_CANCELLED_KEY(reservationId),
+        source: "reservation.readReservationCancelled",
+        origin: "TRUSTED",
+        originProvenance: "FIRST_PARTY",
+        sourceMode: "live",
+        read: async () => {
+          const v = await b.readReservationCancelled(reservationId, customerId);
+          if (v === null)
+            throw new OwnerScopedReadUnavailable("reservation_cancelled", reservationId);
+          return v.cancelled ? v : ABSENT_READ;
         },
       });
     }

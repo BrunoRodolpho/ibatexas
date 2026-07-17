@@ -281,6 +281,27 @@ function stubBackend(over: Partial<TriadReadBackend> = {}): TriadReadBackend {
       status: "confirmed",
       partySize: 4,
     }),
+    // BKL-006 — default: the owner-scoped FALSIFIER reads all resolve owned + NOT
+    // fired (no refund / no dispute / not cancelled), so the falsifier keys stay
+    // ABSENT and a clean claim VALIDATES. Tests that exercise a firing falsifier
+    // override the relevant one; a cross-owner test returns `null`.
+    readPaymentRefund: async (orderId) => ({
+      orderId,
+      refunded: false,
+      refundedAmountCentavos: 0,
+      status: "",
+    }),
+    readPaymentChargeback: async (orderId) => ({ orderId, disputed: false, status: "" }),
+    readOrderCancelled: async (orderId) => ({
+      orderId,
+      cancelled: false,
+      fulfillmentStatus: "preparing",
+    }),
+    readReservationCancelled: async (reservationId) => ({
+      reservationId,
+      cancelled: false,
+      status: "confirmed",
+    }),
     // FIX 2 — default: no auto-enumerated active orders (tests that exercise the
     // owner-order enumeration override this).
     listActiveOrderIds: async () => [],
@@ -818,5 +839,391 @@ describe("BKL-121 — investigator records STORE_HOURS + the holiday falsifier",
     // ABSENCE (sentinel skip), not error — the key was never recorded.
     expect(ledger.resolve("schedule:holiday").state).toBe("absent");
     expect(ledger.errorReason("schedule:holiday")).toBeUndefined();
+  });
+});
+
+// ── BKL-006 — falsifier-evidence recording (refund / chargeback / cancel) ──────
+//
+// The registry DECLARED PAYMENT_STATUS's `payment_refund`/`payment_chargeback`,
+// ORDER_FULFILLMENT_STAGE's `order_cancelled`, and RESERVATION_STATUS's
+// `reservation_cancelled` falsifiers (`falsifierComplete: true`) but NO investigator
+// read populated them, so the runtime arm was structurally INERT: a refunded/disputed
+// payment could VALIDATE `pago` while the claims flag is ON. These tests pin that the
+// investigator now records each falsifier PRESENT only when the falsifying fact
+// exists (checked-and-none → ABSENT; read error / cross-owner → state "error"), that
+// the arm actually DEMOTES the base to UNKNOWN end-to-end via `resolveAgainstFalsifiers`
+// (with NON-VACUITY: the same setup with no falsifier VALIDATES), and the KEY-LOCKSTEP
+// pin (the recorded key equals the REAL `selectCandidateClaim` parameterized key — a
+// suffix mismatch would leave the arm silently inert).
+describe("BKL-006 — falsifier-evidence recording (refund / chargeback / cancel)", () => {
+  const ORDER_PLAN: Plan = {
+    envelopes: [
+      { kind: "order.cancel", payload: { orderId: "order-42" } } as unknown as Plan["envelopes"][number],
+    ],
+  };
+  const RESERVATION_PLAN: Plan = {
+    envelopes: [],
+    readToolCalls: [{ name: "reservation.lookup", input: { reservationId: "r-7" } }],
+  };
+
+  /** Run INVESTIGATE (real triad reads over a stub backend) → runClaimsKernel over a
+   *  single owner-scoped candidate whose subject the owner owns — mirrors the F1
+   *  STORE_OPEN_NOW helper for the owner-scoped types. */
+  async function investigateThenValidate(opts: {
+    readonly plan: Plan;
+    readonly backend: Partial<TriadReadBackend>;
+    readonly type: string;
+    readonly subject: string;
+    readonly value: unknown;
+    readonly owned: readonly string[];
+    readonly customerId?: string;
+  }): Promise<{ verdict: string; terminal: string }> {
+    const customerId = opts.customerId ?? "cust-1";
+    const ledger = new EvidenceLedger("t-bkl006");
+    const investigator = createIbatexasInvestigator({
+      gatherReads: createFirstPartyTurnReads(stubBackend(opts.backend)),
+      now: () => 999,
+    });
+    await investigator.investigate(triadInput(opts.plan, ledger, customerId));
+
+    const candidate = selectCandidateClaim({
+      type: opts.type,
+      subject: opts.subject,
+      actor: { principal: customerId },
+      value: opts.value,
+    });
+    const deps = createPerTurnClaimsKernelDeps({
+      now: 999,
+      ownership: { principal: customerId, ownedResources: new Set(opts.owned) },
+      outcomes: [],
+    });
+    const result = runClaimsKernel(ledger, [candidate!], deps);
+    return {
+      verdict: result.perClaim[0]?.verdict ?? "MISSING",
+      terminal: result.terminal,
+    };
+  }
+
+  // ── recording: PRESENT / ABSENT / ERROR / cross-owner (the payment refund) ──────
+  describe("payment_refund — ledger recording states", () => {
+    it("records payment_refund PRESENT under the falsifier key when a refund fired", async () => {
+      const ledger = new EvidenceLedger("t");
+      const investigator = createIbatexasInvestigator({
+        gatherReads: createFirstPartyTurnReads(
+          stubBackend({
+            readPaymentRefund: async (orderId) => ({
+              orderId,
+              refunded: true,
+              refundedAmountCentavos: 1500,
+              status: "partially_refunded",
+            }),
+          }),
+        ),
+        now: () => 999,
+      });
+      await investigator.investigate(triadInput(ORDER_PLAN, ledger));
+
+      const refund = ledger.resolve("payment_refund:order-42");
+      expect(refund.state).toBe("present");
+      expect(refund.entry?.taint).toBe("TRUSTED");
+      expect(refund.entry?.originProvenance).toBe("FIRST_PARTY");
+      expect(refund.entry?.value).toMatchObject({ refunded: true });
+    });
+
+    it("checked-and-NO-refund leaves payment_refund ABSENT (never a fabricated present)", async () => {
+      const ledger = new EvidenceLedger("t");
+      const investigator = createIbatexasInvestigator({
+        gatherReads: createFirstPartyTurnReads(stubBackend()), // default: refunded false
+        now: () => 999,
+      });
+      await investigator.investigate(triadInput(ORDER_PLAN, ledger));
+
+      // ABSENCE (sentinel skip), not error — the falsifier stays inert.
+      expect(ledger.resolve("payment_refund:order-42").state).toBe("absent");
+      expect(ledger.errorReason("payment_refund:order-42")).toBeUndefined();
+    });
+
+    it('a FAILED refund read records state "error" (Inv 7), never a value', async () => {
+      const ledger = new EvidenceLedger("t");
+      const investigator = createIbatexasInvestigator({
+        gatherReads: createFirstPartyTurnReads(
+          stubBackend({
+            readPaymentRefund: async () => {
+              throw new Error("refund lookup backend down");
+            },
+          }),
+        ),
+        now: () => 999,
+      });
+      await investigator.investigate(triadInput(ORDER_PLAN, ledger));
+
+      const refund = ledger.resolve("payment_refund:order-42");
+      expect(refund.state).toBe("error");
+      expect(refund.entry).toBeUndefined();
+      expect(ledger.errorReason("payment_refund:order-42")).toContain(
+        "refund lookup backend down",
+      );
+    });
+
+    it("a CROSS-OWNER refund read (backend null) records a fail-closed ERROR, never a fabricated absent", async () => {
+      const ledger = new EvidenceLedger("t");
+      const plan: Plan = {
+        envelopes: [
+          { kind: "order.cancel", payload: { orderId: "order-99" } } as unknown as Plan["envelopes"][number],
+        ],
+      };
+      const investigator = createIbatexasInvestigator({
+        // The backend refuses the cross-owner read (null) — the IDOR close.
+        gatherReads: createFirstPartyTurnReads(
+          stubBackend({ readPaymentRefund: async () => null }),
+        ),
+        now: () => 999,
+      });
+      await investigator.investigate(triadInput(plan, ledger));
+
+      const refund = ledger.resolve("payment_refund:order-99");
+      // ERROR, not absent — an unreadable falsifier cannot be proven not to have fired.
+      expect(refund.state).toBe("error");
+      expect(refund.entry).toBeUndefined();
+      expect(ledger.errorReason("payment_refund:order-99")).toContain(
+        "not owned or absent",
+      );
+    });
+  });
+
+  // ── PAYMENT_STATUS end-to-end: the arm fires and demotes `pago` → UNKNOWN ────────
+  describe("PAYMENT_STATUS falsifier fires end-to-end (investigator → kernel)", () => {
+    it("NON-VACUITY: with NO refund/chargeback, PAYMENT_STATUS=paid VALIDATES", async () => {
+      const { verdict, terminal } = await investigateThenValidate({
+        plan: ORDER_PLAN,
+        backend: {}, // defaults: no refund, no dispute
+        type: "PAYMENT_STATUS",
+        subject: "order-42",
+        value: { status: "paid" },
+        owned: ["order-42"],
+      });
+      expect(verdict).toBe("VALIDATED");
+      expect(terminal).toBe("RENDER");
+    });
+
+    it("a PRESENT refund demotes PAYMENT_STATUS=paid to UNKNOWN (the latent-risk close)", async () => {
+      const { verdict } = await investigateThenValidate({
+        plan: ORDER_PLAN,
+        backend: {
+          readPaymentRefund: async (orderId) => ({
+            orderId,
+            refunded: true,
+            refundedAmountCentavos: 5000,
+            status: "refunded",
+          }),
+        },
+        type: "PAYMENT_STATUS",
+        subject: "order-42",
+        value: { status: "paid" },
+        owned: ["order-42"],
+      });
+      expect(verdict).toBe("UNKNOWN"); // never a confident wrong `pago`
+    });
+
+    it("RATIFIED — a PARTIAL refund fires the falsifier (demote-only to UNKNOWN)", async () => {
+      const { verdict } = await investigateThenValidate({
+        plan: ORDER_PLAN,
+        backend: {
+          readPaymentRefund: async (orderId) => ({
+            orderId,
+            refunded: true,
+            refundedAmountCentavos: 1200, // a PARTIAL refund (amount > 0)
+            status: "partially_refunded",
+          }),
+        },
+        type: "PAYMENT_STATUS",
+        subject: "order-42",
+        value: { status: "paid" },
+        owned: ["order-42"],
+      });
+      expect(verdict).toBe("UNKNOWN");
+    });
+
+    it("a PRESENT chargeback (dispute) demotes PAYMENT_STATUS=paid to UNKNOWN", async () => {
+      const { verdict } = await investigateThenValidate({
+        plan: ORDER_PLAN,
+        backend: {
+          readPaymentChargeback: async (orderId) => ({
+            orderId,
+            disputed: true,
+            status: "disputed",
+          }),
+        },
+        type: "PAYMENT_STATUS",
+        subject: "order-42",
+        value: { status: "paid" },
+        owned: ["order-42"],
+      });
+      expect(verdict).toBe("UNKNOWN");
+    });
+
+    it('a FAILED refund read (state "error") poisons the base to UNKNOWN, never renders `paid`', async () => {
+      const { verdict } = await investigateThenValidate({
+        plan: ORDER_PLAN,
+        backend: {
+          readPaymentRefund: async () => {
+            throw new Error("refund lookup backend down");
+          },
+        },
+        type: "PAYMENT_STATUS",
+        subject: "order-42",
+        value: { status: "paid" },
+        owned: ["order-42"],
+      });
+      // F6 symmetry: a falsifier that could NOT be read demotes the base (we cannot
+      // prove the refund did not fire) — never a confident `paid`.
+      expect(verdict).toBe("UNKNOWN");
+    });
+  });
+
+  // ── ORDER_FULFILLMENT_STAGE + RESERVATION_STATUS cancellation falsifiers ─────────
+  describe("cancellation falsifiers fire end-to-end", () => {
+    it("NON-VACUITY: a NOT-cancelled order VALIDATES its fulfillment stage", async () => {
+      const { verdict } = await investigateThenValidate({
+        plan: ORDER_PLAN,
+        backend: {}, // default: fulfillment "preparing", not cancelled
+        type: "ORDER_FULFILLMENT_STAGE",
+        subject: "order-42",
+        value: { fulfillmentStatus: "preparing" },
+        owned: ["order-42"],
+      });
+      expect(verdict).toBe("VALIDATED");
+      // The falsifier key is genuinely absent (not fired).
+    });
+
+    it("a PRESENT order cancellation demotes ORDER_FULFILLMENT_STAGE to UNKNOWN", async () => {
+      const { verdict } = await investigateThenValidate({
+        plan: ORDER_PLAN,
+        backend: {
+          readOrderFulfillment: async (orderId) => ({ orderId, fulfillmentStatus: "canceled" }),
+          readOrderCancelled: async (orderId) => ({
+            orderId,
+            cancelled: true,
+            fulfillmentStatus: "canceled",
+          }),
+        },
+        type: "ORDER_FULFILLMENT_STAGE",
+        subject: "order-42",
+        value: { fulfillmentStatus: "canceled" },
+        owned: ["order-42"],
+      });
+      expect(verdict).toBe("UNKNOWN");
+    });
+
+    it("NON-VACUITY: a NOT-cancelled reservation VALIDATES its status", async () => {
+      const { verdict } = await investigateThenValidate({
+        plan: RESERVATION_PLAN,
+        backend: {}, // default: reservation "confirmed", not cancelled
+        type: "RESERVATION_STATUS",
+        subject: "r-7",
+        value: { status: "confirmed" },
+        owned: ["r-7"],
+      });
+      expect(verdict).toBe("VALIDATED");
+    });
+
+    it("a PRESENT reservation cancellation demotes RESERVATION_STATUS to UNKNOWN", async () => {
+      const { verdict } = await investigateThenValidate({
+        plan: RESERVATION_PLAN,
+        backend: {
+          readReservation: async (reservationId) => ({
+            reservationId,
+            status: "cancelled",
+            partySize: 4,
+          }),
+          readReservationCancelled: async (reservationId) => ({
+            reservationId,
+            cancelled: true,
+            status: "cancelled",
+          }),
+        },
+        type: "RESERVATION_STATUS",
+        subject: "r-7",
+        value: { status: "cancelled" },
+        owned: ["r-7"],
+      });
+      expect(verdict).toBe("UNKNOWN");
+    });
+  });
+
+  // ── KEY-LOCKSTEP PIN (risk #2) ──────────────────────────────────────────────────
+  //
+  // The investigator's recorded falsifier key MUST equal the registry's parameterized
+  // falsifier key (`${base}:${subject}`), or the kernel's `resolveAgainstFalsifiers`
+  // looks up a DIFFERENT key, finds it absent, and the arm is SILENTLY INERT. This
+  // resolves the expected keys through the REAL production path (`selectCandidateClaim`
+  // → `parameterizeKeysBySubject`) and asserts the investigator recorded under EXACTLY
+  // those keys — a suffix change on EITHER side (registry base OR investigator builder)
+  // fails this test.
+  it("KEY-LOCKSTEP: the investigator records under EXACTLY the parameterized registry falsifier keys", async () => {
+    const ledger = new EvidenceLedger("t");
+    const investigator = createIbatexasInvestigator({
+      // Force EVERY falsifier to fire so each key is PRESENT (recorded) in the ledger.
+      gatherReads: createFirstPartyTurnReads(
+        stubBackend({
+          readPaymentRefund: async (orderId) => ({
+            orderId,
+            refunded: true,
+            refundedAmountCentavos: 100,
+            status: "partially_refunded",
+          }),
+          readPaymentChargeback: async (orderId) => ({ orderId, disputed: true, status: "disputed" }),
+          readOrderCancelled: async (orderId) => ({
+            orderId,
+            cancelled: true,
+            fulfillmentStatus: "canceled",
+          }),
+          readReservationCancelled: async (reservationId) => ({
+            reservationId,
+            cancelled: true,
+            status: "cancelled",
+          }),
+        }),
+      ),
+      now: () => 999,
+    });
+    const plan: Plan = {
+      envelopes: [
+        { kind: "order.cancel", payload: { orderId: "order-42" } } as unknown as Plan["envelopes"][number],
+      ],
+      readToolCalls: [{ name: "reservation.lookup", input: { reservationId: "r-7" } }],
+    };
+    await investigator.investigate(triadInput(plan, ledger));
+    const recorded = new Set(ledger.keys());
+
+    const falsifierKeysFor = (type: string, subject: string): string[] => {
+      const candidate = selectCandidateClaim({
+        type,
+        subject,
+        actor: { principal: "cust-1" },
+        value: undefined,
+      });
+      return (candidate!.soundness.falsifiers ?? []).map((f) => f.key);
+    };
+
+    // PAYMENT_STATUS's falsifiers are keyed by the ORDER subject (payment_status is).
+    const paymentFalsifierKeys = falsifierKeysFor("PAYMENT_STATUS", "order-42");
+    const orderFalsifierKeys = falsifierKeysFor("ORDER_FULFILLMENT_STAGE", "order-42");
+    const reservationFalsifierKeys = falsifierKeysFor("RESERVATION_STATUS", "r-7");
+
+    // Every REAL parameterized falsifier key was recorded by the investigator (lockstep).
+    for (const key of [
+      ...paymentFalsifierKeys,
+      ...orderFalsifierKeys,
+      ...reservationFalsifierKeys,
+    ]) {
+      expect(recorded.has(key)).toBe(true);
+    }
+    // Non-vacuity — the parameterized keys ARE the expected `${base}:${subject}` forms.
+    expect(paymentFalsifierKeys).toEqual(
+      expect.arrayContaining(["payment_refund:order-42", "payment_chargeback:order-42"]),
+    );
+    expect(orderFalsifierKeys).toContain("order_cancelled:order-42");
+    expect(reservationFalsifierKeys).toContain("reservation_cancelled:r-7");
   });
 });
