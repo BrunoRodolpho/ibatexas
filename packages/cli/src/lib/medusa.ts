@@ -139,6 +139,12 @@ export const ALLOWED_TAGS = [
   "exclusivo",
   "edicao_limitada",
   "kit",
+  // pt-BR customer-spoken product term, ASCII per the tag charset invariant
+  // (medusa.test.ts pins /^[a-z_]+$/); Typesense diacritic-folds queries so
+  // "hambúrguer" still matches. Carried by the "Smash Burger Defumado" seed
+  // fixture (FE-T14) because the title never says it and its sole variant
+  // ("Unidade") can't.
+  "hamburguer",
 ] as const
 
 export type AllowedTag = (typeof ALLOWED_TAGS)[number]
