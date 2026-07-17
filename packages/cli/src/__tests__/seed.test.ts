@@ -11,7 +11,7 @@ const VALID_AVAILABILITY_WINDOWS = ["almoco", "jantar", "congelados", "always"] 
 const VALID_TAGS = [
   "popular", "chef_choice", "sem_gluten", "sem_lactose",
   "vegano", "vegetariano", "novo", "congelado", "defumado",
-  "exclusivo", "edicao_limitada", "kit",
+  "exclusivo", "edicao_limitada", "kit", "hamburguer",
 ] as const
 const NUTRITIONAL_FIELDS = ["calories", "protein", "fat", "carbs", "sodium"] as const
 const KEBAB_REGEX = /^[a-z0-9]+(-[a-z0-9]+)*$/
