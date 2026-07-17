@@ -806,7 +806,36 @@ function opsToolDefinitions(
       intentKind: asIntentKind("product.availability.set"),
       description:
         "Marcar um produto como disponível/indisponível (86 / desfazer 86).",
-      inputSchema: {},
+      // BKL-147 — the REAL model-facing SUBMIT contract, documented. Like
+      // order.status.transition (BKL-144) it is NOT surfaced to the LLM (the ops
+      // persona is the teaching channel; the planner advertises only `capability`
+      // + a generic `payload`), so this documents the CLOSED contract the guard
+      // enforces rather than driving generation. The planner emits `productId`
+      // (product id OR the spoken NAME — the resolver rewrites name→id, BKL-089) +
+      // `available`; `reason` is an OPTIONAL operator note carried into audit. The
+      // pack's `validateAvailabilityPayload` guard REFUSEs unknown keys.
+      inputSchema: {
+        type: "object",
+        properties: {
+          productId: {
+            type: "string",
+            description:
+              "Produto a marcar — id do produto ou o NOME falado (o resolver mapeia o nome para o id real).",
+          },
+          available: {
+            type: "boolean",
+            description:
+              "Estado alvo — true = disponível (voltou), false = indisponível (86).",
+          },
+          reason: {
+            type: "string",
+            description:
+              "Motivo opcional do funcionário, registrado na auditoria.",
+          },
+        },
+        required: ["productId", "available"],
+        additionalProperties: false,
+      },
       outputSchema: {},
       riskLevel: "medium",
       execute: (input, ctx) =>
@@ -822,7 +851,35 @@ function opsToolDefinitions(
       intentKind: asIntentKind("product.price.set"),
       description:
         "Alterar o preço de um produto (ex.: aumenta o preço da picanha pra 95 reais).",
-      inputSchema: {},
+      // BKL-147 — documented model-facing SUBMIT contract (NOT surfaced to the
+      // LLM). The planner emits `productId` (id or spoken NAME → resolver rewrites
+      // name→id, BKL-089) + `priceCentavos` in INTEGER CENTAVOS (Hard Rule #2 — the
+      // persona instructs reais→centavos; the executor converts centavos→reais at
+      // the Medusa egress); `reason` optional audit note. Closed to extras
+      // (`validatePricePayload` REFUSEs unknown keys / a non-integer price).
+      inputSchema: {
+        type: "object",
+        properties: {
+          productId: {
+            type: "string",
+            description:
+              "Produto a reprecificar — id ou o NOME falado (o resolver mapeia o nome para o id).",
+          },
+          priceCentavos: {
+            type: "integer",
+            minimum: 1,
+            description:
+              "Novo preço em CENTAVOS inteiros (ex.: R$95,00 => 9500) — NUNCA reais/float (Hard Rule #2).",
+          },
+          reason: {
+            type: "string",
+            description:
+              "Motivo opcional do funcionário, registrado na auditoria.",
+          },
+        },
+        required: ["productId", "priceCentavos"],
+        additionalProperties: false,
+      },
       outputSchema: {},
       riskLevel: "medium",
       execute: (input, ctx) =>
@@ -838,7 +895,36 @@ function opsToolDefinitions(
       intentKind: asIntentKind("menu.special.set"),
       description:
         "Definir o especial do dia (ex.: o especial de hoje é feijoada por 45 reais).",
-      inputSchema: {},
+      // BKL-147 — documented model-facing SUBMIT contract (NOT surfaced to the
+      // LLM). The planner emits `productId` (id or spoken NAME → resolver rewrites
+      // name→id) + `date` (the spoken day "hoje"/"amanhã" OR a concrete YYYY-MM-DD —
+      // the resolver normalizes it to a concrete restaurant business-day before
+      // adjudication) + an OPTIONAL `promoPriceCentavos` in INTEGER CENTAVOS
+      // (omitted ⇒ featured WITHOUT a discount). Closed to extras
+      // (`validateMenuSpecialPayload`).
+      inputSchema: {
+        type: "object",
+        properties: {
+          productId: {
+            type: "string",
+            description:
+              "Produto do especial — id ou o NOME falado (o resolver mapeia o nome para o id).",
+          },
+          date: {
+            type: "string",
+            description:
+              'Dia do especial — "hoje"/"amanhã" ou uma data YYYY-MM-DD (o resolver converte para a data concreta do restaurante).',
+          },
+          promoPriceCentavos: {
+            type: "integer",
+            minimum: 1,
+            description:
+              "Preço promocional OPCIONAL em CENTAVOS inteiros (ex.: R$45,00 => 4500); omitir = especial sem desconto.",
+          },
+        },
+        required: ["productId", "date"],
+        additionalProperties: false,
+      },
       outputSchema: {},
       riskLevel: "low",
       execute: (input) =>
@@ -849,7 +935,27 @@ function opsToolDefinitions(
       capability: asCapability("order.note.add"),
       intentKind: asIntentKind("order.note.add"),
       description: "Adicionar uma observação (nota interna) a um pedido.",
-      inputSchema: {},
+      // BKL-147 — documented model-facing SUBMIT contract (NOT surfaced to the
+      // LLM). The planner emits `orderId` (the order id, the display number OR the
+      // customer NAME — the resolver maps it to the real id) + `body` (the pt-BR
+      // note text). `isInternal` is NOT model-emitted — the executor defaults it to
+      // internal (true) when omitted. Closed to extras.
+      inputSchema: {
+        type: "object",
+        properties: {
+          orderId: {
+            type: "string",
+            description:
+              "Pedido a anotar — id, número de exibição ou nome do cliente (o resolver mapeia para o id real).",
+          },
+          body: {
+            type: "string",
+            description: "Texto da observação em pt-BR (nota interna do pedido).",
+          },
+        },
+        required: ["orderId", "body"],
+        additionalProperties: false,
+      },
       outputSchema: {},
       riskLevel: "low",
       execute: (input, ctx) =>
@@ -914,7 +1020,38 @@ function opsToolDefinitions(
       intentKind: asIntentKind("payment.refund.issue"),
       description:
         "Emitir um reembolso de um pedido (envia dinheiro de volta ao cliente).",
-      inputSchema: {},
+      // BKL-147 — documented model-facing SUBMIT contract (NOT surfaced to the
+      // LLM). FE-T10: the money-tier extraction narrows the planner's payload to
+      // `{orderReference, amount, reason}`. The planner emits `orderReference` (the
+      // display number OR the customer NAME — NEVER the paymentId/orderId; the
+      // resolver maps it to `paymentId` and STAMPS the refund balance/limits from
+      // the DB row, STOP-GATE B) + an OPTIONAL `amount` in REAIS (omitted ⇒ FULL
+      // refund) + optional `reason`. `paymentId`/`refundAmountCentavos`/the balance
+      // fields and `actor`/`actorId` are resolver/Capsule-stamped on the canonical
+      // payload the executor writes — NEVER model-emitted.
+      inputSchema: {
+        type: "object",
+        properties: {
+          orderReference: {
+            type: "string",
+            description:
+              "Referência do pedido a reembolsar — número de exibição ou nome do cliente (o resolver mapeia para o paymentId).",
+          },
+          amount: {
+            type: "number",
+            exclusiveMinimum: 0,
+            description:
+              'Valor OPCIONAL do reembolso em REAIS (ex.: "10 reais" => 10; "R$10,50" => 10.5); omitir = reembolso total.',
+          },
+          reason: {
+            type: "string",
+            description:
+              "Motivo opcional do funcionário, registrado na auditoria.",
+          },
+        },
+        required: ["orderReference"],
+        additionalProperties: false,
+      },
       outputSchema: {},
       riskLevel: "high",
       execute: (input, ctx) =>
@@ -930,7 +1067,27 @@ function opsToolDefinitions(
       intentKind: asIntentKind("ops.alert.resolve.staff"),
       description:
         "Resolver (fechar) um alerta operacional pela mensagem (ex.: resolve o alerta X).",
-      inputSchema: {},
+      // BKL-147 — documented model-facing SUBMIT contract (NOT surfaced to the
+      // LLM). The planner emits `alertId` (the alert reference — id or number) + an
+      // OPTIONAL `reason`. The executor STAMPS `resolvedBy: "staff:<id>"` +
+      // `resolutionType: STAFF` from the Capsule (never the model). Closed to extras.
+      inputSchema: {
+        type: "object",
+        properties: {
+          alertId: {
+            type: "string",
+            description:
+              "Alerta a resolver — id ou referência do alerta operacional.",
+          },
+          reason: {
+            type: "string",
+            description:
+              "Motivo opcional do funcionário, registrado na auditoria.",
+          },
+        },
+        required: ["alertId"],
+        additionalProperties: false,
+      },
       outputSchema: {},
       riskLevel: "low",
       execute: (input, ctx) =>
@@ -946,7 +1103,27 @@ function opsToolDefinitions(
       intentKind: asIntentKind("incident.ticket.close.staff"),
       description:
         "Fechar (resolver) um incidente de não-resposta pela mensagem (ex.: fecha o incidente Y).",
-      inputSchema: {},
+      // BKL-147 — documented model-facing SUBMIT contract (NOT surfaced to the
+      // LLM). The planner emits `incidentId` (the incident reference) + an OPTIONAL
+      // `reason`. The executor STAMPS `resolvedBy` + `resolutionType: STAFF` from
+      // the Capsule. Closed to extras.
+      inputSchema: {
+        type: "object",
+        properties: {
+          incidentId: {
+            type: "string",
+            description:
+              "Incidente a fechar — id ou referência do incidente de não-resposta.",
+          },
+          reason: {
+            type: "string",
+            description:
+              "Motivo opcional do funcionário, registrado na auditoria.",
+          },
+        },
+        required: ["incidentId"],
+        additionalProperties: false,
+      },
       outputSchema: {},
       riskLevel: "low",
       execute: (input, ctx) =>
@@ -962,7 +1139,59 @@ function opsToolDefinitions(
       intentKind: asIntentKind("schedule.override.set"),
       description:
         "Definir uma exceção de horário para uma data (ex.: fecha amanhã / amanhã abrimos só às 18h).",
-      inputSchema: {},
+      // BKL-147 — documented model-facing SUBMIT contract (NOT surfaced to the
+      // LLM). The planner emits `date` (the spoken day "amanhã"/"sexta" OR a
+      // YYYY-MM-DD — the resolver normalizes it to a concrete ISO date in
+      // RESTAURANT_TIMEZONE before adjudication) + `isOpen` (false = close the whole
+      // day, WITHOUT `blocks`; true = open with the given `blocks`) + optional
+      // `blocks` (windows {label, start "HH:MM", end "HH:MM"}) + optional `note`.
+      // Closed to extras (`validateScheduleOverridePayload`).
+      inputSchema: {
+        type: "object",
+        properties: {
+          date: {
+            type: "string",
+            description:
+              'Data da exceção — "amanhã"/"sexta" ou YYYY-MM-DD (o resolver converte para a data ISO concreta).',
+          },
+          isOpen: {
+            type: "boolean",
+            description:
+              "Estado do dia — false fecha o dia inteiro (sem blocks); true abre com os blocks informados.",
+          },
+          blocks: {
+            type: "array",
+            description:
+              "Janelas de funcionamento quando isOpen=true (lista não-vazia; vazia/ausente quando isOpen=false).",
+            items: {
+              type: "object",
+              properties: {
+                label: {
+                  type: "string",
+                  description: 'Nome da janela (ex.: "Jantar").',
+                },
+                start: {
+                  type: "string",
+                  description: 'Início em HH:MM 24h (ex.: "18:00").',
+                },
+                end: {
+                  type: "string",
+                  description: 'Fim em HH:MM 24h (ex.: "23:00").',
+                },
+              },
+              required: ["label", "start", "end"],
+              additionalProperties: false,
+            },
+          },
+          note: {
+            type: "string",
+            description:
+              "Observação opcional do funcionário, persistida na exceção.",
+          },
+        },
+        required: ["date", "isOpen"],
+        additionalProperties: false,
+      },
       outputSchema: {},
       // Reversible, non-money (a per-date override the admin UI can correct/remove).
       riskLevel: "low",

@@ -434,6 +434,83 @@ describe("order.status.transition executor — POST-adjudication kitchen-advance
   });
 });
 
+// BKL-147 — the empty inputSchema on the OTHER ops verbs left the model-facing
+// contract taught ONLY by persona prose (a verb without one is planner-unreachable,
+// the BKL-144 class). Each verb now declares the CLOSED model-facing SUBMIT
+// contract (documentation + enum-test anchor; NOT surfaced to the LLM, NOT runtime
+// normalization — the resolver still rewrites references→ids and reais→centavos).
+// These anchors pin the required keys + closed-to-extras posture so a future edit
+// that loosens/renames a contract trips here.
+describe("BKL-147 — ops verbs declare a typed model-facing inputSchema (contract anchor)", () => {
+  interface JsonSchema {
+    type?: string;
+    properties?: Record<string, { type?: string }>;
+    required?: readonly string[];
+    additionalProperties?: boolean;
+  }
+
+  // Every governed ops verb → the model-emitted required keys the resolver needs.
+  const EXPECTED_REQUIRED: Record<string, readonly string[]> = {
+    "product.availability.set": ["productId", "available"],
+    "product.price.set": ["productId", "priceCentavos"],
+    "menu.special.set": ["productId", "date"],
+    "order.note.add": ["orderId", "body"],
+    "order.status.transition": ["orderId", "newStatus"],
+    "payment.refund.issue": ["orderReference"],
+    "ops.alert.resolve.staff": ["alertId"],
+    "incident.ticket.close.staff": ["incidentId"],
+    "schedule.override.set": ["date", "isOpen"],
+  };
+
+  it("every governed ops verb has a non-empty object inputSchema, closed to extras, with the expected required keys", () => {
+    const { deps } = makeDeps();
+    for (const [kind, required] of Object.entries(EXPECTED_REQUIRED)) {
+      const schema = toolByKind(deps, kind).inputSchema as JsonSchema;
+      expect(schema.type, kind).toBe("object");
+      expect(schema.properties, kind).toBeDefined();
+      // No verb still carries the empty placeholder that left the planner guessing.
+      expect(Object.keys(schema.properties ?? {}).length, kind).toBeGreaterThan(0);
+      // Closed CONTRACT — the pack's strict validators REFUSE unknown keys.
+      expect(schema.additionalProperties, kind).toBe(false);
+      expect(schema.required, kind).toEqual(required);
+      // Every required key is actually declared as a property.
+      for (const key of required) {
+        expect(schema.properties?.[key], `${kind}.${key}`).toBeDefined();
+      }
+    }
+  });
+
+  it("payment.refund.issue advertises the money-tier submit shape {orderReference, amount?, reason?} — never the canonical paymentId/refundAmountCentavos (resolver/Capsule-stamped)", () => {
+    const { deps } = makeDeps();
+    const schema = toolByKind(deps, "payment.refund.issue").inputSchema as JsonSchema;
+    const props = schema.properties ?? {};
+    expect(Object.keys(props).sort()).toEqual(["amount", "orderReference", "reason"]);
+    // The canonical/forced fields are NEVER model-emitted, so the doc contract
+    // must not advertise them (they are stamped by the resolver/executor).
+    for (const forbidden of [
+      "paymentId",
+      "refundAmountCentavos",
+      "refundableBalanceCentavos",
+      "actor",
+      "actorId",
+    ]) {
+      expect(props[forbidden], forbidden).toBeUndefined();
+    }
+  });
+
+  it("money fields are typed to their wire units: priceCentavos/promoPriceCentavos are integers, refund amount is reais (number)", () => {
+    const { deps } = makeDeps();
+    const price = toolByKind(deps, "product.price.set").inputSchema as JsonSchema;
+    expect(price.properties?.priceCentavos?.type).toBe("integer");
+    const special = toolByKind(deps, "menu.special.set").inputSchema as JsonSchema;
+    expect(special.properties?.promoPriceCentavos?.type).toBe("integer");
+    const refund = toolByKind(deps, "payment.refund.issue").inputSchema as JsonSchema;
+    // Refund amount is REAIS on the wire (the persona teaches reais; the resolver
+    // converts to centavos), so it is a number, not an integer.
+    expect(refund.properties?.amount?.type).toBe("number");
+  });
+});
+
 describe("payment.refund.issue executor — POST-adjudication refund write (BKL-085)", () => {
   it("calls writeAdjudicatedRefund with actor=admin + Capsule staffId; never the model actor/actorId", async () => {
     const { deps, writeAdjudicatedRefund } = makeDeps();
