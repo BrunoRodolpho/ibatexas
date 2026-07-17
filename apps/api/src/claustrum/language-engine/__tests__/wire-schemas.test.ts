@@ -2,9 +2,11 @@
 // registry. FE-T09 (D-a) adds the three granular post-checkout amend kinds
 // alongside FE-T05's order.status.transition; FE-T10 adds the money-tier
 // slice (payment.refund.issue); FE-T11 adds the customer-plane money-tier
-// slice (payment.pix.regenerate); FE-T14 adds the pack-orders cart/item
-// family (order.cart.ensure/item.add/item.update/item.remove/coupon.apply)
-// plus the note/review, reservation, and customer/whatsapp families.
+// slice (payment.pix.regenerate); FE-T12 adds the orders governance-tier
+// customer-plane slice (order.checkout.create, order.cancel); FE-T14 adds
+// the pack-orders cart/item family (order.cart.ensure/item.add/item.update/
+// item.remove/coupon.apply) plus the note/review, reservation, and
+// customer/whatsapp families — the full drivable surface.
 
 import { describe, expect, it } from "vitest";
 import {
@@ -13,7 +15,7 @@ import {
 } from "../wire-schemas.js";
 
 describe("EXTRACTION_SCHEMAS_BY_CAPABILITY", () => {
-  it("registers order.status.transition (FE-T05), the three granular amend kinds (FE-T09), payment.refund.issue (FE-T10), payment.pix.regenerate (FE-T11), and the FE-T14 convenience mutating verb families", () => {
+  it("registers order.status.transition (FE-T05), the three granular amend kinds (FE-T09), payment.refund.issue (FE-T10), payment.pix.regenerate (FE-T11), order.checkout.create/order.cancel (FE-T12), and the FE-T14 convenience mutating verb families", () => {
     expect([...EXTRACTION_SCHEMAS_BY_CAPABILITY.keys()].sort()).toEqual(
       [
         "order.amend.add_item",
@@ -22,6 +24,8 @@ describe("EXTRACTION_SCHEMAS_BY_CAPABILITY", () => {
         "order.status.transition",
         "payment.refund.issue",
         "payment.pix.regenerate",
+        "order.checkout.create",
+        "order.cancel",
         "order.cart.ensure",
         "order.item.add",
         "order.item.update",
@@ -59,6 +63,32 @@ describe("EXTRACTION_SCHEMAS_BY_CAPABILITY", () => {
       expect(wire).not.toHaveProperty("properties.allergens");
     }
   });
+
+  it("FE-T12: order.checkout.create's wire payload is closed and exposes ONLY payment_method + delivery_type (snake_case — team-lead ruling per live-calibration bias)", () => {
+    const wire = EXTRACTION_SCHEMAS_BY_CAPABILITY.get("order.checkout.create") as {
+      properties?: Record<string, unknown>;
+      additionalProperties?: boolean;
+    };
+    expect(wire).toBeDefined();
+    expect(wire.additionalProperties).toBe(false);
+    expect(Object.keys(wire.properties ?? {})).toEqual(["payment_method", "delivery_type"]);
+    expect(wire).not.toHaveProperty("properties.paymentMethod");
+    expect(wire).not.toHaveProperty("properties.deliveryType");
+    expect(wire).not.toHaveProperty("properties.fulfillment");
+    expect(wire).not.toHaveProperty("properties.cartId");
+    expect(wire).not.toHaveProperty("properties.pixDetails");
+  });
+
+  it("FE-T12: order.cancel's wire payload is closed and exposes ONLY reason", () => {
+    const wire = EXTRACTION_SCHEMAS_BY_CAPABILITY.get("order.cancel") as {
+      properties?: Record<string, unknown>;
+      additionalProperties?: boolean;
+    };
+    expect(wire).toBeDefined();
+    expect(wire.additionalProperties).toBe(false);
+    expect(Object.keys(wire.properties ?? {})).toEqual(["reason"]);
+    expect(wire).not.toHaveProperty("properties.orderId");
+  });
 });
 
 // FE-T11 (review) — the plan-time filter's allowlist source of truth
@@ -89,6 +119,13 @@ describe("ALLOWED_PAYLOAD_FIELD_NAMES_BY_CAPABILITY", () => {
   });
 
   it("has no entry for an unauthored capability (the planner filter treats absence as pass-through)", () => {
-    expect(ALLOWED_PAYLOAD_FIELD_NAMES_BY_CAPABILITY.has("order.checkout.create")).toBe(false);
+    // order.checkout.create was this test's "still unauthored" fixture —
+    // FE-T12 authored it too (the drivable surface is now fully covered:
+    // 25/26 tickets done, this is the last one). No REAL capability is
+    // unauthored anymore, so this uses a capability name that will never be
+    // registered, to keep proving the absence branch permanently.
+    expect(ALLOWED_PAYLOAD_FIELD_NAMES_BY_CAPABILITY.has("nonexistent.capability.probe")).toBe(
+      false,
+    );
   });
 });

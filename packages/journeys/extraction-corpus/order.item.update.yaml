@@ -9,6 +9,7 @@
 # `quantity` are BOTH required on this schema.
 capability: order.item.update
 source: tickets/language-engine/issues/14-rollout-convenience-mutating-verbs.md
+plane: customer
 cases:
   - id: muda-quantidade-basic
     utterance: muda a quantidade da coca pra 2

@@ -69,6 +69,7 @@
 # clean passes (2/2 each run) — no instability observed there.
 capability: payment.pix.regenerate
 source: tickets/language-engine/issues/11-rollout-payments-money-tier.md
+plane: customer
 cases:
   - id: informal-basic
     utterance: gera um novo código pix pra mim, o antigo expirou

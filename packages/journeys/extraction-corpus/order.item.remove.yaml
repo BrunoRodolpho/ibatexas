@@ -9,6 +9,7 @@
 # quantity field — removing a line removes the whole line).
 capability: order.item.remove
 source: tickets/language-engine/issues/14-rollout-convenience-mutating-verbs.md
+plane: customer
 cases:
   - id: tira-a-coca
     utterance: tira a coca do carrinho

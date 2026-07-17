@@ -9,12 +9,9 @@
 // are already fixed, authored text; this runner is a thin, single-turn HTTP
 // client + the SAME audit-reader oracle every other seam reads through.
 //
-// `order.status.transition` is the only chat-drivable capability wired to
-// the ops/staff plane today (FE-T05); the drive path below is therefore
-// staff-session-shaped (`admin:<staffId>` actor). A future customer-plane
-// capability's corpus would need a customer-session drive path added
-// alongside this one — not built speculatively (YAGNI): today's corpus has
-// exactly one capability, and it is ops-only.
+// `order.status.transition` was the only chat-drivable capability wired to
+// the ops/staff plane at FE-T05; the drive path below (`driveExtractionCorpusOverOpsChat`)
+// is therefore staff-session-shaped (`admin:<staffId>` actor).
 //
 // Test-isolation gotcha (BKL-084): the ops channel persists a PERSISTENT
 // per-staffId conversation thread (Redis, `ops:chat:history:<staffId>`) so
@@ -39,9 +36,96 @@
 // still-parked EARLIER case's refund (live-caught during FE-T10's corpus
 // authoring). Any FUTURE confirmation-parking capability (T11-14) gets this
 // isolation for free through the same `clearHistory` seam.
+//
+// ── `driveExtractionCorpusOverCustomerChat` (FE-T12 — the customer-plane
+//    drive path, SHARED infra for T11/T13/T14's customer-plane capabilities
+//    too) ──────────────────────────────────────────────────────────────────
+//
+// The customer/web plane is a genuinely different route: `POST /api/chat/
+// messages` (apps/api/src/routes/chat.ts) is FIRE-AND-FORGET — it returns
+// `{messageId, sessionToken?, sessionSecret?}` almost immediately and
+// delivers the actual reply asynchronously over SSE
+// (`GET /api/chat/stream/:sessionId`). This driver never consumes the SSE
+// stream: exactly like `driveExtractionCorpusOverOpsChat` (which ALSO never
+// reads `decision`/`reply` off the ops-chat response body for scoring), the
+// only signal that matters is the settle-polled `AuditRecord` — so the
+// async/sync distinction between the two routes doesn't change the scoring
+// mechanism, only the POST helper's response shape and the auth transport
+// (a customer JWT `token=` cookie, minted via `@ibatexas/journeys`'
+// `mintCustomerToken` — accuracy-cli.ts's `resolveCustomerCookie` — rather
+// than the staff `staff_token=` cookie).
+//
+// CONFIRM-KIND SEMANTICS (team-lead review; UPDATED post-cart-seeding/
+// delivery_type — see order.checkout.create.yaml's own header for the full
+// story): `order.cancel` is a confirm/park kind for every case in its
+// corpus (the auto-resolve-confirm guard fires unconditionally under this
+// ticket's schema scope). `order.checkout.create` is NO LONGER
+// confirm-only: once a case supplies BOTH `payment_method` AND
+// `delivery_type`, `requireSlotsFilledForCheckout` passes and the turn
+// reaches the money-band ladder — a sub-R$1000 full-slots case EXECUTEs
+// directly on ONE turn (no park at all), while the money-boundary cases
+// still REQUEST_CONFIRMATION/REFUSE per the existing `>=R$1000`/`>=R$10000`
+// ladder. This driver's own mechanics are UNCHANGED either way: it POSTs
+// the utterance ONCE, settle-polls for the resulting audit record
+// (whatever decision kind produced it — EXECUTE/REQUEST_CONFIRMATION/
+// ESCALATE/REFUSE all settle identically), and scores its `languageEngine`
+// sidecar — it NEVER sends a follow-up affirmative ("sim"/"pode"/...),
+// EXECUTE included. Every case in scope runs against the EPHEMERAL test
+// stack (never the shared dev stack) — a real EXECUTE there is expected and
+// safe; it is the exact "chat drives orders" capability this ticket exists
+// to prove, not a hazard to avoid.
+//
+// ISOLATION (FE-D13): unlike the ops plane's single reused `admin:<staffId>`
+// identity, the web plane's session-scoped state
+// (`session:<sessionId>` — conversation history, apps/api/src/session/
+// store.ts; `claustrum:session:<sessionId>` — the parked/deferred envelope,
+// apps/api/src/claustrum-bootstrap.ts's `claustrumSessionKey`) is keyed by
+// the CLIENT-SUPPLIED `sessionId`, not by `customerId`. `clearHistory` MUST
+// clear BOTH keys before every case: a lingering park from case N that case
+// N+1's utterance lexically confirms (the same pt-BR affirmative-lexicon
+// hazard FE-T10 found on the ops plane) would EXECUTE a real mutation on the
+// shared dev stack — the exact hazard this isolation seam exists to close.
+// A `clearHistory` failure is NEVER swallowed (mirrors `createOpsHistoryClearer`'s
+// loud warn-once + rethrow + `isolationFailures` attribution) — a silently
+// degraded customer-plane run must never read as trustworthy either.
+//
+// SESSION-PER-CASE ROTATION (team-lead ruling, post-live-calibration review):
+// this driver originally reused ONE `sessionId` across the whole run
+// (mirroring the ops driver's one reused `admin:<staffId>` identity). Live
+// calibration disproved that shape: each corpus case is an independent,
+// single-turn scenario, so a FRESH session per case is the semantically
+// correct calibration unit, not an optimization — it closes the stale-park
+// cross-case contamination hazard above categorically (no shared
+// `session:<id>`/`claustrum:session:<id>` state can leak between cases when
+// every case gets its own id) rather than relying solely on `clearHistory`
+// to race it closed. `clearHistory` is KEPT as belt-and-braces (a fresh
+// UUID could theoretically collide, and it still guards a mid-run retry of
+// the SAME generated id) — it is not made redundant by rotation, just no
+// longer the sole isolation mechanism. `sessionId` is therefore generated
+// PER CASE inside the loop (see `sessionIdFactory`, default `randomUUID`);
+// the caller supplies a `scopeForSession(sessionId)` factory instead of one
+// static `scope`, since the audit-reader scope (`hashedSessionId(...)`) must
+// be recomputed for each case's fresh id.
+//
+// KNOWN HARNESS FAILURE SIGNATURE — `token_budget.exhausted`: a live run
+// against the seeded calibration customer can REFUSE with
+// `refusal_code: 'token_budget.exhausted'` (compose-policy-packs.ts's
+// `sessionTokenBudgetGuard`, F4/ADR-120) partway through a long corpus. Do
+// NOT mistake this for an extraction miss — check `intent_audit.refusal_code`
+// before attributing a run of failures to the model. IMPORTANT: this
+// driver's session-per-case rotation does NOT reset that guard's counter —
+// `sessionTokenKey(channel, customerId)` (resolve-and-assemble.ts) is keyed
+// by `customerId`, not by `sessionId`, so every case in a run still meters
+// onto the ONE seeded calibration customer's cumulative total regardless of
+// how many fresh sessionIds this driver mints. A long enough run against a
+// single seeded customer can still exhaust the budget; this is a REAL
+// governance guard doing its job (never patched or exempted for harness
+// convenience — team-lead ruling), so the mitigation is bounding a single
+// run's total turns per customer, not defeating the counter.
 
+import { randomUUID } from "node:crypto"
 import { evaluateExpectPayload } from "./expect-payload.js"
-import type { ExtractionCorpusFile } from "./schema.js"
+import type { ExtractionCorpusFile, ExtractionCase } from "./schema.js"
 import type { AccuracyCaseResult, IsolationFailure } from "./accuracy.js"
 import type { AuditReader, RunSessionScope } from "../oracle/audit-reader.js"
 
@@ -237,6 +321,244 @@ export async function driveExtractionCorpusOverOpsChat(
           | undefined
         for (;;) {
           const records = await opts.audit.fetchRecords(opts.scope, {
+            intentKind: file.capability,
+            since: caseSince,
+          })
+          matched = records.find((r) => !seenIntentHashes.has(r.intentHash))
+          if (matched !== undefined || Date.now() >= deadline) break
+          await new Promise((r) => setTimeout(r, settlePollMs))
+        }
+
+        if (matched === undefined) {
+          const failure = `no NEW ${file.capability} audit record settled within ${settleTimeoutMs}ms`
+          onProgress(`  ✗ ${file.capability}:${kase.id} — ${failure}`)
+          results.push({
+            capability: file.capability,
+            caseId: kase.id,
+            utterance: kase.utterance,
+            ok: false,
+            failures: [failure],
+            durationMs: Date.now() - startedAt,
+          })
+          continue
+        }
+        seenIntentHashes.add(matched.intentHash)
+
+        const evaluation = evaluateExpectPayload(kase.expectPayload, matched)
+        onProgress(
+          `  ${evaluation.ok ? "✓" : "✗"} ${file.capability}:${kase.id} — "${truncate(kase.utterance, 60)}" (${matched.decision.kind})`,
+        )
+        results.push({
+          capability: file.capability,
+          caseId: kase.id,
+          utterance: kase.utterance,
+          ok: evaluation.ok,
+          failures: evaluation.failures,
+          durationMs: Date.now() - startedAt,
+        })
+      } finally {
+        await new Promise((r) => setTimeout(r, interCaseDelayMs))
+      }
+    }
+  }
+
+  return { results, isolationFailures }
+}
+
+// ── Customer-plane driver (FE-T12) ──────────────────────────────────────────
+
+/** Minimal `/api/chat/messages` POST response shape (route doc comment — never imported). */
+interface CustomerChatPostResponse {
+  messageId?: string
+  sessionToken?: string
+  sessionSecret?: string
+}
+
+export interface DriveExtractionCorpusOverCustomerChatOptions {
+  /** SUT api base, e.g. `http://localhost:3001`. */
+  apiBaseUrl: string
+  /** The `Cookie` header value (customer JWT — `cookieHeader(mintCustomerToken(...))`). */
+  customerCookie: string
+  /**
+   * Mints a fresh web sessionId for EACH case (module header,
+   * "SESSION-PER-CASE ROTATION") — never one id reused for the whole run.
+   * Defaults to `randomUUID`; injectable so tests get deterministic,
+   * enumerable ids instead of asserting against opaque UUIDs.
+   */
+  sessionIdFactory?: () => string
+  /**
+   * Reads back the driven turn's materialized IR (the FE-2 primary
+   * assertion seam).
+   */
+  audit: AuditReader
+  /**
+   * Computes the audit scope for a given case's freshly-minted sessionId —
+   * `(sessionId) => ({sessionIds: [hashedAuditSessionId(sessionId, ...)]})`
+   * (the customer/web actor's `sessionId` rides the envelope UNPREFIXED,
+   * unlike ops's `admin:<staffId>` — see the module header). A FACTORY,
+   * not a static `RunSessionScope`, because rotation means every case's
+   * scope differs.
+   */
+  scopeForSession: (sessionId: string) => RunSessionScope
+  /** Injectable fetch (tests default to a scripted double). */
+  fetchImpl?: typeof fetch
+  /**
+   * Clears BOTH the web conversation-history key (`session:<sessionId>`) AND
+   * the claustrum parked-envelope key (`claustrum:session:<sessionId>`)
+   * before each case — belt-and-braces alongside session-per-case rotation
+   * (module header). Optional: a no-op default tolerates an environment
+   * without Redis wired, at the cost of the isolation guarantee.
+   */
+  clearHistory?: (sessionId: string) => Promise<void>
+  /**
+   * Runs AFTER `clearHistory` but BEFORE the case's utterance is POSTed —
+   * the seam callers use to seed per-case state that must exist for THIS
+   * EXACT rotated `sessionId` (e.g. `order.checkout.create`'s cart-seeding:
+   * writing `cart:active:session:<sessionId>` in Redis to a real Medusa
+   * cart id — see `packages/journeys/src/live/seed-checkout-cart.ts`).
+   * Receives the case's OWN file's `capability` too (a corpus can mix
+   * capabilities — order.cancel shares this driver but never needs
+   * seeding) so ONE hook can dispatch by capability rather than the caller
+   * needing to pre-split the corpus. Optional: capabilities with no such
+   * precondition never need it. A throw here is NOT caught — unlike
+   * `clearHistory`'s isolation-degrades-but-continues contract, a failed
+   * seed makes the case's outcome meaningless (e.g. cart_empty REFUSE would
+   * masquerade as the case under test), so it surfaces exactly like a
+   * scored assertion failure would: loudly, not swallowed.
+   */
+  beforeCase?: (sessionId: string, kase: ExtractionCase, capability: string) => Promise<void>
+  /** Per-case audit-settle poll (mirrors the ops driver's same-named options). */
+  settleTimeoutMs?: number
+  settlePollMs?: number
+  /** Mandatory gap after each case, before the next one starts (see the ops driver's constant doc — identical rationale). */
+  interCaseDelayMs?: number
+  onProgress?: (line: string) => void
+}
+
+/** POST one utterance to the customer/web chat route. Never throws on a non-2xx — surfaced as a case failure.
+ *  The route is FIRE-AND-FORGET (see module header) — this never reads `decision`/`reply` off the body, exactly
+ *  like `postOpsChat` doesn't either; only `res.ok`/`res.status` matter here. */
+async function postCustomerChat(
+  fetchImpl: typeof fetch,
+  apiBaseUrl: string,
+  cookie: string,
+  sessionId: string,
+  message: string,
+): Promise<{
+  ok: boolean
+  status: number
+  body: CustomerChatPostResponse | undefined
+  bodyText: string
+}> {
+  const res = await fetchImpl(`${apiBaseUrl}/api/chat/messages`, {
+    method: "POST",
+    headers: { "content-type": "application/json", cookie },
+    body: JSON.stringify({ sessionId, message, channel: "web" }),
+  })
+  let bodyText = ""
+  try {
+    bodyText = await res.text()
+  } catch {
+    /* best-effort */
+  }
+  let body: CustomerChatPostResponse | undefined
+  try {
+    body =
+      bodyText === "" ? undefined : (JSON.parse(bodyText) as CustomerChatPostResponse)
+  } catch {
+    body = undefined
+  }
+  return { ok: res.ok, status: res.status, body, bodyText }
+}
+
+/**
+ * Drive every case in `corpus` as ONE customer/web-chat turn each — the
+ * FE-T12 customer-plane sibling of {@link driveExtractionCorpusOverOpsChat}.
+ * Same contract (never throws on a per-case failure; a `clearHistory`
+ * failure is collected into `isolationFailures`, never swallowed, and does
+ * NOT abort the run) and the SAME settle-poll-then-`evaluateExpectPayload`
+ * scoring mechanism — see the module header's CONFIRM-KIND SEMANTICS note
+ * for why this never sends a follow-up affirmative.
+ */
+export async function driveExtractionCorpusOverCustomerChat(
+  corpus: readonly ExtractionCorpusFile[],
+  opts: DriveExtractionCorpusOverCustomerChatOptions,
+): Promise<DriveExtractionCorpusResult> {
+  const fetchImpl = opts.fetchImpl ?? (globalThis.fetch as typeof fetch)
+  const sessionIdFactory = opts.sessionIdFactory ?? randomUUID
+  const settleTimeoutMs = opts.settleTimeoutMs ?? DEFAULT_SETTLE_TIMEOUT_MS
+  const settlePollMs = opts.settlePollMs ?? DEFAULT_SETTLE_POLL_MS
+  const interCaseDelayMs = opts.interCaseDelayMs ?? DEFAULT_INTER_CASE_DELAY_MS
+  const onProgress = opts.onProgress ?? (() => undefined)
+  const seenIntentHashes = new Set<string>()
+  const results: AccuracyCaseResult[] = []
+  const isolationFailures: IsolationFailure[] = []
+
+  for (const file of corpus) {
+    for (const kase of file.cases) {
+      try {
+        const startedAt = Date.now()
+        // SESSION-PER-CASE ROTATION (module header): a fresh sessionId (and
+        // its derived scope) for EVERY case — never one id reused for the
+        // whole run. `seenIntentHashes` is kept as defense-in-depth, but a
+        // rotated scope structurally cannot match a PRIOR case's record —
+        // different sessionId -> different hashedSessionId -> the audit
+        // reader's scope filter excludes it outright.
+        const sessionId = sessionIdFactory()
+        const scope = opts.scopeForSession(sessionId)
+        // Same 2s clock-skew slack as the ops driver, same rationale: never
+        // exclude the record THIS case is about to produce.
+        const caseSince = new Date(startedAt - 2_000).toISOString()
+        if (opts.clearHistory !== undefined) {
+          try {
+            await opts.clearHistory(sessionId)
+          } catch (err) {
+            isolationFailures.push({
+              capability: file.capability,
+              caseId: kase.id,
+              detail: (err as Error).message,
+            })
+          }
+        }
+
+        if (opts.beforeCase !== undefined) {
+          // NOT caught (see the option's own doc) — a failed seed makes the
+          // rest of this case meaningless, so it propagates like a thrown
+          // programmer error would, rather than being folded into a
+          // same-shaped-but-wrong case result.
+          await opts.beforeCase(sessionId, kase, file.capability)
+        }
+
+        const post = await postCustomerChat(
+          fetchImpl,
+          opts.apiBaseUrl,
+          opts.customerCookie,
+          sessionId,
+          kase.utterance,
+        )
+        if (!post.ok) {
+          const failure = `customer-chat POST -> HTTP ${post.status}${post.bodyText ? ` — ${truncate(post.bodyText)}` : ""}`
+          onProgress(`  ✗ ${file.capability}:${kase.id} — ${failure}`)
+          results.push({
+            capability: file.capability,
+            caseId: kase.id,
+            utterance: kase.utterance,
+            ok: false,
+            failures: [failure],
+            durationMs: Date.now() - startedAt,
+          })
+          continue
+        }
+
+        // Settle-poll for the NEW audit record this (async, fire-and-forget)
+        // turn produces — see the module header on why the POST response
+        // body is never the scoring signal for this route.
+        const deadline = Date.now() + settleTimeoutMs
+        let matched:
+          | Awaited<ReturnType<AuditReader["fetchRecords"]>>[number]
+          | undefined
+        for (;;) {
+          const records = await opts.audit.fetchRecords(scope, {
             intentKind: file.capability,
             since: caseSince,
           })

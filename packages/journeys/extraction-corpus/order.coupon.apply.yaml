@@ -4,6 +4,7 @@
 # is always false.
 capability: order.coupon.apply
 source: tickets/language-engine/issues/14-rollout-convenience-mutating-verbs.md
+plane: customer
 cases:
   - id: aplica-promo10
     utterance: aplica o cupom PROMO10

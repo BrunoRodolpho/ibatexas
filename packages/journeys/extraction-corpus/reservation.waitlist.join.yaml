@@ -12,6 +12,7 @@
 # fidelity), and absence (no prior read, model correctly omits the field).
 capability: reservation.waitlist.join
 source: tickets/language-engine/issues/14-rollout-convenience-mutating-verbs.md
+plane: customer
 cases:
   - id: basic-four-people
     utterance: coloca eu na lista de espera daquele horário, somos 4

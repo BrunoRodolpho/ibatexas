@@ -15,6 +15,7 @@
 # seed/run-dependent), never its value.
 capability: order.amend.update_qty
 source: tickets/language-engine/issues/14-rollout-convenience-mutating-verbs.md
+plane: customer
 cases:
   - id: meu-pedido-basic
     utterance: muda a quantidade da coca pra duas no meu pedido

@@ -16,6 +16,7 @@
 # reservation.cancel/order.status.transition.
 capability: reservation.modify
 source: tickets/language-engine/issues/14-rollout-convenience-mutating-verbs.md
+plane: customer
 cases:
   - id: basic-party-size-only
     utterance: muda minha reserva pra 6 pessoas

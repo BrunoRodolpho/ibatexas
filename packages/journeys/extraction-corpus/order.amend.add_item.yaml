@@ -32,6 +32,7 @@
 # provenance, not catalog seed content).
 capability: order.amend.add_item
 source: tickets/language-engine/issues/14-rollout-convenience-mutating-verbs.md
+plane: customer
 cases:
   - id: meu-pedido-basic
     utterance: adiciona uma coca no meu pedido

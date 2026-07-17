@@ -6,6 +6,7 @@
 # posture as order.status.transition.
 capability: reservation.cancel
 source: tickets/language-engine/issues/14-rollout-convenience-mutating-verbs.md
+plane: customer
 cases:
   - id: basic-with-reason
     utterance: cancela minha reserva, surgiu um imprevisto

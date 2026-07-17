@@ -11,6 +11,7 @@
 # denominators).
 capability: order.cart.ensure
 source: tickets/language-engine/issues/14-rollout-convenience-mutating-verbs.md
+plane: customer
 cases:
   - id: quero-fazer-pedido
     utterance: quero fazer um pedido

@@ -7,6 +7,7 @@ function validFile(overrides: Record<string, unknown> = {}) {
   return {
     capability: "order.status.transition",
     source: "tickets/language-engine/issues/05-first-tracer.md",
+    plane: "ops",
     cases: [
       {
         id: "most-recent-order-to-ready",
@@ -171,5 +172,28 @@ describe("validateExtractionCorpus — named error codes", () => {
     expect(result.ok).toBe(false)
     if (result.ok) return
     expect(result.errors.map((e) => e.code)).toContain("vacuous_extraction_ir")
+  })
+})
+
+describe("validateExtractionCorpus — FE-T12 plane declaration", () => {
+  it("accepts a file declaring plane: customer", () => {
+    const result = validateExtractionCorpus(validFile({ plane: "customer" }))
+    expect(result.ok).toBe(true)
+  })
+
+  it("accepts a file declaring plane: ops", () => {
+    const result = validateExtractionCorpus(validFile({ plane: "ops" }))
+    expect(result.ok).toBe(true)
+  })
+
+  it("rejects a missing plane — EXPLICIT per corpus file, never inferred/defaulted", () => {
+    const { plane: _plane, ...withoutPlane } = validFile()
+    const result = validateExtractionCorpus(withoutPlane)
+    expect(result.ok).toBe(false)
+  })
+
+  it("rejects an unrecognized plane value (closed union)", () => {
+    const result = validateExtractionCorpus(validFile({ plane: "staff" }))
+    expect(result.ok).toBe(false)
   })
 })

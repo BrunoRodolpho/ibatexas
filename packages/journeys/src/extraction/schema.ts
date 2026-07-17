@@ -131,6 +131,21 @@ function isVacuousIrExpectation(expectation: IrExpectation): boolean {
   )
 }
 
+/**
+ * FE-T12 — which live-drive route this capability's corpus runs over:
+ * `"ops"` (`POST /api/admin/ops/chat`, staff-session-shaped — T05/T10's
+ * established path) or `"customer"` (`POST /api/chat/messages`, the
+ * customer-session drive path this ticket adds). EXPLICIT per corpus file —
+ * never inferred from `auth`/`plannerAdvertisedBy` (a capability's OWN
+ * `CapabilityDefinition.auth` is a DECLARED-requirement field, not always the
+ * live-advertising plane — e.g. `order.note.add` is advertised on BOTH planes)
+ * — so `accuracy-cli.ts` can dispatch each corpus file to the right driver +
+ * credentials without guessing.
+ */
+export const EXTRACTION_CORPUS_PLANE_VALUES = ["ops", "customer"] as const
+export const ExtractionCorpusPlaneSchema = z.enum(EXTRACTION_CORPUS_PLANE_VALUES)
+export type ExtractionCorpusPlane = z.infer<typeof ExtractionCorpusPlaneSchema>
+
 export const ExtractionCorpusFileSchema = z
   .object({
     /** The chat-drivable capability every case in this file targets. */
@@ -139,6 +154,8 @@ export const ExtractionCorpusFileSchema = z
       .regex(INTENT_KIND_PATTERN, "capability must be dotted lowercase (e.g. order.status.transition)"),
     /** Provenance: which ticket/spec section authored this corpus. */
     source: z.string().min(1),
+    /** Which live-drive route this file's cases run over — see the type doc above. */
+    plane: ExtractionCorpusPlaneSchema,
     cases: z.array(ExtractionCaseSchema).min(1),
   })
   .strict()

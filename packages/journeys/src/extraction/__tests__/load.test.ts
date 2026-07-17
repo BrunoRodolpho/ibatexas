@@ -16,6 +16,7 @@ import {
 const VALID_YAML = `
 capability: order.status.transition
 source: tickets/language-engine/issues/05-first-tracer.md
+plane: ops
 cases:
   - id: most-recent-order-to-ready
     utterance: muda o status do meu último pedido para pronto

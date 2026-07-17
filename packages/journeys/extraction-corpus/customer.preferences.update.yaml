@@ -14,6 +14,7 @@
 # same utterance.
 capability: customer.preferences.update
 source: tickets/language-engine/issues/14-rollout-convenience-mutating-verbs.md
+plane: customer
 cases:
   - id: basic-vegetarian-and-favorite
     utterance: sou vegetariano e adoro comida grelhada

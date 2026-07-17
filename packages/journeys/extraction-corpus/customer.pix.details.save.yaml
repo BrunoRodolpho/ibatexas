@@ -17,6 +17,7 @@
 # "positive" case to author (there is nothing on this schema to extract).
 capability: customer.pix.details.save
 source: tickets/language-engine/issues/14-rollout-convenience-mutating-verbs.md
+plane: customer
 cases:
   - id: adversarial-full-details
     utterance: "meu nome é João Silva, email joao@example.com, cpf 123.456.789-00"
