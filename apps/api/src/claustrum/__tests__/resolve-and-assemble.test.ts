@@ -397,6 +397,104 @@ describe("resolve-and-assemble — FE-T12 checkout payment_method wire rename", 
   });
 });
 
+describe("resolve-and-assemble — FE-T12 checkout delivery_type wire rename", () => {
+  it("wire key present: payload.delivery_type is renamed to payload.deliveryType, and the wire key does NOT survive", async () => {
+    redisGet = async (k) => (k === "cart:active:session:conv-1" ? "cart_abc" : null);
+    medusaStoreFetch = async () => ({
+      cart: { items: [{ variant_id: "var_1", quantity: 1, unit_price: 10 }], total: 10, completed_at: null },
+    });
+    const { payload, ctx } = await resolveAndAssemble({
+      kind: "order.checkout.create",
+      payload: { delivery_type: "pickup" },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect(payload.deliveryType).toBe("pickup");
+    expect(payload).not.toHaveProperty("delivery_type");
+    // End-to-end: the renamed key reaches ctx.fulfillment (buildCartCtx),
+    // the SAME field `requireSlotsFilledForCheckout` (pack-orders/src/
+    // policies.ts) reads — proving the rename actually unblocks the guard.
+    expect(ctx.fulfillment).toBe("pickup");
+  });
+
+  it("internal key absent from the wire: a payload with ONLY delivery_type never carries deliveryType before the rename runs (structural — the extraction schema never declares it)", async () => {
+    redisGet = async () => "cart_abc";
+    medusaStoreFetch = async () => ({ cart: { items: [], total: 0, completed_at: null } });
+    const { payload } = await resolveAndAssemble({
+      kind: "order.checkout.create",
+      payload: { delivery_type: "delivery" },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    // The ONLY way `deliveryType` appears on the resolved payload is via
+    // this rename — there is no OTHER path that could have produced it.
+    expect(payload.deliveryType).toBe("delivery");
+  });
+
+  it("no delivery_type mentioned: the payload passes through with neither key — never a fabricated fulfillment slot", async () => {
+    redisGet = async () => "cart_abc";
+    medusaStoreFetch = async () => ({ cart: { items: [], total: 0, completed_at: null } });
+    const { payload } = await resolveAndAssemble({
+      kind: "order.checkout.create",
+      payload: {},
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect(payload).not.toHaveProperty("deliveryType");
+    expect(payload).not.toHaveProperty("delivery_type");
+  });
+
+  it("defensive: if deliveryType is ALREADY set (never happens on the real model-facing path), it is never overwritten by a co-present delivery_type", async () => {
+    redisGet = async () => "cart_abc";
+    medusaStoreFetch = async () => ({ cart: { items: [], total: 0, completed_at: null } });
+    const { payload } = await resolveAndAssemble({
+      kind: "order.checkout.create",
+      payload: { deliveryType: "pickup", delivery_type: "delivery" },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect(payload.deliveryType).toBe("pickup");
+  });
+
+  it("kind-gated: a DIFFERENT capability's payload carrying delivery_type is left alone (the rename is order.checkout.create-only)", async () => {
+    orderGetById = async () => ({ id: "order_9", customerId: "c1", fulfillmentStatus: "confirmed" });
+    orderListByCustomer = async () => ({ orders: [{ id: "order_9" }], count: 1 });
+    const { payload } = await resolveAndAssemble({
+      kind: "order.cancel",
+      payload: { delivery_type: "pickup" },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect(payload.delivery_type).toBe("pickup");
+    expect(payload).not.toHaveProperty("deliveryType");
+  });
+
+  it("both wire fields present together: payment_method AND delivery_type both rename independently in the same turn", async () => {
+    redisGet = async (k) => (k === "cart:active:session:conv-1" ? "cart_abc" : null);
+    medusaStoreFetch = async () => ({
+      cart: { items: [{ variant_id: "var_1", quantity: 1, unit_price: 10 }], total: 10, completed_at: null },
+    });
+    const { payload, ctx } = await resolveAndAssemble({
+      kind: "order.checkout.create",
+      payload: { payment_method: "card", delivery_type: "delivery" },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect(payload.paymentMethod).toBe("card");
+    expect(payload.deliveryType).toBe("delivery");
+    expect(payload).not.toHaveProperty("payment_method");
+    expect(payload).not.toHaveProperty("delivery_type");
+    expect(ctx.paymentMethod).toBe("card");
+    expect(ctx.fulfillment).toBe("delivery");
+  });
+});
+
 // ── F3/L1 (D-014) — thread resolved ids from ctx onto the executor payload ────
 // Without this the tool receives envelope.payload lacking cartId and throws a
 // ZodError after the kernel EXECUTEs — the "can't add an item by message" gap.

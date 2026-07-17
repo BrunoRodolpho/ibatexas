@@ -42,15 +42,17 @@ describe("EXTRACTION_SCHEMAS_BY_CAPABILITY", () => {
     }
   });
 
-  it("FE-T12: order.checkout.create's wire payload is closed and exposes ONLY payment_method (snake_case — team-lead ruling per live-calibration bias)", () => {
+  it("FE-T12: order.checkout.create's wire payload is closed and exposes ONLY payment_method + delivery_type (snake_case — team-lead ruling per live-calibration bias)", () => {
     const wire = EXTRACTION_SCHEMAS_BY_CAPABILITY.get("order.checkout.create") as {
       properties?: Record<string, unknown>;
       additionalProperties?: boolean;
     };
     expect(wire).toBeDefined();
     expect(wire.additionalProperties).toBe(false);
-    expect(Object.keys(wire.properties ?? {})).toEqual(["payment_method"]);
+    expect(Object.keys(wire.properties ?? {})).toEqual(["payment_method", "delivery_type"]);
     expect(wire).not.toHaveProperty("properties.paymentMethod");
+    expect(wire).not.toHaveProperty("properties.deliveryType");
+    expect(wire).not.toHaveProperty("properties.fulfillment");
     expect(wire).not.toHaveProperty("properties.cartId");
     expect(wire).not.toHaveProperty("properties.pixDetails");
   });

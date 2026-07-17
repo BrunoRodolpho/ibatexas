@@ -13,7 +13,7 @@
     {
       "capability": "order.checkout.create",
       "goldenFragmentPath": "apps/api/src/claustrum/language-engine/__tests__/__golden__/order-checkout-create.extraction-prompt-fragment.json",
-      "goldenFragmentSha256": "f5c2f2059a13e6d36af8b8bee9611f5844f13343646a580d672dbad6683e525a"
+      "goldenFragmentSha256": "9df302a004bd42e6167dfb09a821d9caf16569820adb63d975aad568fadcc95f"
     },
     {
       "capability": "order.cancel",

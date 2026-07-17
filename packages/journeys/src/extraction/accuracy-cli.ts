@@ -32,6 +32,8 @@ import {
 import { createAuditReader, type AuditReader } from "../oracle/audit-reader.js"
 import { createDomainReader, type DomainReader } from "../oracle/domain-reader.js"
 import { loadTestEnv } from "../harness/test-env.js"
+import { seedCheckoutCart, targetCentavosForCase } from "../live/seed-checkout-cart.js"
+import { seedCancelableOrder, targetCentavosForCancelCase } from "../live/seed-cancelable-order.js"
 import {
   mintStaffToken,
   mintCustomerToken,
@@ -50,15 +52,66 @@ export class ExtractionAccuracyCliError extends Error {
 export const ACCURACY_RUN_STAFF_PHONE = "+5519900000900"
 
 /**
- * The one seeded customer row every customer-chat drive authenticates as
- * (FE-T12). A literal duplicate of `SEED_CUSTOMERS[0].phone`
- * (packages/domain/src/seed-constants.ts) — NOT an import — mirroring
- * `ACCURACY_RUN_STAFF_PHONE`'s own convention: `packages/domain`'s public
- * surface (`src/index.ts`) does not re-export `seed-constants.ts`, so every
- * consumer outside `packages/domain` duplicates the value by hand rather
- * than reaching past the package boundary for an internal module.
+ * All 10 seeded customer rows a customer-chat drive CAN authenticate as
+ * (FE-T12 follow-up, team-lead ruling). Literal duplicates of
+ * `SEED_CUSTOMERS`' phones (packages/domain/src/seed-constants.ts) — NOT an
+ * import — same "duplicate rather than reach past the package boundary"
+ * convention as `ACCURACY_RUN_STAFF_PHONE`.
+ *
+ * Why a POOL, not one identity: the F4 session token-budget guard
+ * (`compose-policy-packs.ts`'s `sessionTokenBudgetGuard`) meters
+ * `llm:tokens:<channel>:<customerId>` — keyed by `customerId`, NOT
+ * `sessionId` — so every case in a customer-plane run accumulates onto
+ * whichever ONE customer authenticates, regardless of how many sessionIds
+ * `driveExtractionCorpusOverCustomerChat`'s per-case rotation mints. A
+ * single shared identity meant every ticket sharing this driver (T11/T13/
+ * T14, alongside this one) would meter onto the SAME customer's cumulative
+ * total and REFUSE with `token_budget.exhausted` on whichever corpus ran
+ * last — a real, live-caught hazard: FE-T12's own calibration exhausted the
+ * default 100,000-token budget (the counter read 184,892 after ~90 turns
+ * against index 0 alone). `--customer-index` (accuracy-cli.ts's CLI
+ * registration) lets each pass pick a DIFFERENT already-seeded, never-
+ * shared identity instead of every ticket inventing a divergent scratch
+ * workaround (the FE-D07 duplication-class hazard) or resetting anyone's
+ * counter.
  */
-export const ACCURACY_RUN_CUSTOMER_PHONE = "+5519900000001"
+export const ACCURACY_RUN_CUSTOMER_PHONES = [
+  "+5519900000001",
+  "+5519900000002",
+  "+5519900000003",
+  "+5519900000004",
+  "+5519900000005",
+  "+5519900000006",
+  "+5519900000007",
+  "+5519900000008",
+  "+5519900000009",
+  "+5519900000010",
+] as const
+
+/**
+ * Backward-compat alias — index 0, the ORIGINAL (and still default) single
+ * identity every existing caller resolves to when `customerIndex` is
+ * omitted. Nothing changes for any caller that doesn't pass `--customer-
+ * index`/`customerIndex`.
+ */
+export const ACCURACY_RUN_CUSTOMER_PHONE = ACCURACY_RUN_CUSTOMER_PHONES[0]
+
+/**
+ * Pure range-check, split out from `resolveCustomerCookie` so it's testable
+ * without a DomainReader/DB: an out-of-range `--customer-index` must fail
+ * with a clear, actionable error, not a silent `undefined` phone reaching
+ * `domain.customerByPhone`.
+ */
+export function resolveCustomerPhoneForIndex(customerIndex: number): string {
+  const phone = ACCURACY_RUN_CUSTOMER_PHONES[customerIndex]
+  if (phone === undefined) {
+    throw new ExtractionAccuracyCliError(
+      `--customer-index ${customerIndex} out of range — ACCURACY_RUN_CUSTOMER_PHONES has ` +
+        `${ACCURACY_RUN_CUSTOMER_PHONES.length} entries (valid indices: 0-${ACCURACY_RUN_CUSTOMER_PHONES.length - 1})`,
+    )
+  }
+  return phone
+}
 
 /** Byte-for-byte mirror of the audit sink's salted sessionId hash (see oracle/domain-reader.ts's own copy — duplicated here rather than imported to keep this a single, self-contained composition point). */
 function hashedSessionId(sessionId: string, redactSecret: string): string {
@@ -79,6 +132,25 @@ export interface RunExtractionAccuracyCliOptions {
   waiversPath?: string
   /** Quarantined case keys (`<capability>:<caseId>`) — see accuracy.ts's seam doc. */
   quarantined?: readonly string[]
+  /**
+   * Which `ACCURACY_RUN_CUSTOMER_PHONES` entry the customer-plane half
+   * authenticates as (default: 0, `ACCURACY_RUN_CUSTOMER_PHONE` — unchanged
+   * behavior for every existing caller). See that constant's doc for why a
+   * pool exists: the token-budget guard metes per customerId, so a ticket
+   * whose corpus runs after another's on the SAME index inherits its
+   * accumulated usage.
+   */
+  customerIndex?: number
+  /**
+   * Opt-in ONLY (default false): resets the resolved customer-plane
+   * calibration identity's token-budget counter BEFORE this run drives —
+   * see "Opt-in customer-plane token-budget reset" above for the full
+   * rationale/constraints (`shouldResetCustomerTokenBudget`,
+   * `resetCustomerTokenBudgetCounter`). Never fires mid-pass; a single pass
+   * exhausting the budget on its own is report-and-stop, not a trigger for
+   * this flag.
+   */
+  resetCustomerTokenBudget?: boolean
   onProgress?: (line: string) => void
 }
 
@@ -119,15 +191,17 @@ async function resolveStaffCookie(
 async function resolveCustomerCookie(
   domain: DomainReader,
   jwtSecret: string,
-): Promise<{ cookie: string; customerId: string }> {
-  const customer = await domain.customerByPhone(ACCURACY_RUN_CUSTOMER_PHONE)
+  customerIndex: number,
+): Promise<{ cookie: string; customerId: string; phone: string }> {
+  const phone = resolveCustomerPhoneForIndex(customerIndex)
+  const customer = await domain.customerByPhone(phone)
   if (customer === null) {
     throw new ExtractionAccuracyCliError(
-      `no seeded customer with phone ${ACCURACY_RUN_CUSTOMER_PHONE} — run \`ibx test seed\` (seed-homepage upserts SEED_CUSTOMERS)`,
+      `no seeded customer with phone ${phone} (index ${customerIndex}) — run \`ibx test seed\` (seed-homepage upserts SEED_CUSTOMERS)`,
     )
   }
   const cookie = cookieHeader(mintCustomerToken({ customerId: customer.id, jwtSecret }))
-  return { cookie, customerId: customer.id }
+  return { cookie, customerId: customer.id, phone }
 }
 
 /**
@@ -219,6 +293,143 @@ export function createCustomerHistoryClearer(
 }
 
 /**
+ * FE-T12 — the `beforeCase` hook `driveExtractionCorpusOverCustomerChat`
+ * calls per case (accuracy-runner.ts). Dispatches by CAPABILITY: only
+ * `order.checkout.create` needs a seeded cart (`requireCartItemsForCheckout`/
+ * `requireSlotsFilledForCheckout`, pack-orders/src/policies.ts) — every
+ * OTHER capability sharing this driver is a no-op here, since the hook
+ * receives every case's capability regardless of which file it came from.
+ * `targetCentavosForCase` (seed-checkout-cart.ts) maps the 6 named
+ * money-boundary case ids to their specific band-straddling total and
+ * everything else to the modest R$50,00 default.
+ */
+export function createCheckoutCartSeeder(
+  onProgress: (line: string) => void,
+): (sessionId: string, kase: { id: string }, capability: string) => Promise<void> {
+  return async (sessionId, kase, capability) => {
+    if (capability !== "order.checkout.create") return
+    await seedCheckoutCart({
+      sessionId,
+      targetCentavos: targetCentavosForCase(kase.id),
+      onProgress,
+    })
+  }
+}
+
+/**
+ * FE-T12 (team-lead ruling: "fix the cancel money-boundary seeding, don't
+ * defer — those 2 cases are the live assertion of the cancel ladder's
+ * ESCALATE arm, a core AC") — `order.cancel`'s sibling seeder, same
+ * `beforeCase` capability-dispatch shape as `createCheckoutCartSeeder`.
+ * `order.cancel`'s auto-resolve targets the customer's chronologically
+ * MOST-RECENT order (resolve-and-assemble.ts's `resolveOrderId`), so this
+ * seeds a FRESH order before EVERY `order.cancel` case — never just once —
+ * exactly mirroring the checkout cart seeder's per-case freshness. Ignores
+ * `sessionId` entirely (unlike the checkout seeder): the cancel precondition
+ * is keyed by CUSTOMER, not by session (see seed-cancelable-order.ts's own
+ * header for why a PAID seed via seed-refundable-order.ts is exact-outcome-
+ * safe for every case, including the ones the corpus's SETUP notes describe
+ * as needing an unpaid order).
+ */
+export function createCancelOrderSeeder(
+  customerId: string,
+  onProgress: (line: string) => void,
+): (sessionId: string, kase: { id: string }, capability: string) => Promise<void> {
+  return async (_sessionId, kase, capability) => {
+    if (capability !== "order.cancel") return
+    await seedCancelableOrder({
+      customerId,
+      targetCentavos: targetCentavosForCancelCase(kase.id),
+      onProgress,
+    })
+  }
+}
+
+/**
+ * Composes N `beforeCase` hooks into one, each dispatching by capability
+ * (a no-op for a capability it doesn't own) — `driveExtractionCorpusOverCustomerChat`
+ * takes exactly ONE `beforeCase`, so a corpus mixing capabilities (this
+ * ticket's order.checkout.create + order.cancel) needs its per-capability
+ * seeders run in sequence, not just the last one wired in and the others
+ * silently dropped.
+ */
+export function composeBeforeCase(
+  ...hooks: ReadonlyArray<(sessionId: string, kase: { id: string }, capability: string) => Promise<void>>
+): (sessionId: string, kase: { id: string }, capability: string) => Promise<void> {
+  return async (sessionId, kase, capability) => {
+    for (const hook of hooks) {
+      await hook(sessionId, kase, capability)
+    }
+  }
+}
+
+// ── Opt-in customer-plane token-budget reset (team-lead budget ruling (b)) ──
+//
+// See accuracy-runner.ts's "KNOWN HARNESS FAILURE SIGNATURE — token_budget.
+// exhausted" note: the F4 session token-budget guard
+// (compose-policy-packs.ts's sessionTokenBudgetGuard) meters
+// `llm:tokens:<channel>:<customerId>` (resolve-and-assemble.ts's
+// sessionTokenKey) — keyed by customerId, not sessionId — so it accumulates
+// across an ENTIRE run regardless of this driver's per-case session
+// rotation. Live-caught: the seeded calibration customer's counter read
+// 184,892 against the 100,000 default budget after ~90 turns.
+//
+// This is harness-state isolation on the EPHEMERAL test stack's own Redis —
+// NOT a governance weakening. The guard itself, its threshold
+// (SESSION_TOKEN_BUDGET), and every production code path are completely
+// untouched; this clears the harness's own accumulated test-usage between
+// independent calibration RUNS, the same category of thing
+// createCustomerHistoryClearer already does for conversation state, just a
+// different key. Constraints (team-lead ruling):
+//   1. DELs ONLY sessionTokenKey(channel, <calibration customer>) via the
+//      SAME injected getRedisClient/rk mechanism the history clearers use.
+//   2. BETWEEN PASSES only, never mid-pass — called once, before
+//      driveExtractionCorpusOverCustomerChat starts, never from inside its
+//      per-case loop. If a single pass exhausts the budget on its own,
+//      that's a report-and-stop signal, never grounds for a mid-pass DEL.
+//   3. Opt-in ONLY (default false) — `RunExtractionAccuracyCliOptions.
+//      resetCustomerTokenBudget` / the CLI's `--reset-customer-token-budget`
+//      flag. `shouldResetCustomerTokenBudget` is the single, pure,
+//      unit-tested decision point every caller goes through.
+//   4. Logs loudly every time it fires (never a warn-once suppression — this
+//      is a deliberate, opt-in action a human chose to take, not a
+//      degraded-isolation failure to avoid spamming).
+
+/** Pure decision: does THIS run reset the counter? Opt-in only — default false/undefined. */
+export function shouldResetCustomerTokenBudget(
+  options: Pick<RunExtractionAccuracyCliOptions, "resetCustomerTokenBudget">,
+): boolean {
+  return options.resetCustomerTokenBudget === true
+}
+
+/**
+ * DELs the ONE customer-plane token-budget key for `customerId` on
+ * `channel` (the customer/web chat route always posts `channel: "web"` —
+ * see accuracy-runner.ts's `postCustomerChat`). Byte-for-byte mirrors
+ * `sessionTokenKey(channel, customerId)`'s key shape
+ * (resolve-and-assemble.ts) via the SAME `rk()` helper — duplicated rather
+ * than imported (apps/api is out of bounds for this package, check-bypass
+ * leg 7). Called AT MOST ONCE per CLI invocation, before driving — never
+ * per-case.
+ */
+export async function resetCustomerTokenBudgetCounter(
+  customerId: string,
+  channel: string,
+  onProgress: (line: string) => void,
+): Promise<void> {
+  const { getRedisClient, rk } = await import("@ibatexas/tools")
+  const redis = await getRedisClient()
+  const key = rk(`llm:tokens:${channel}:${customerId}`)
+  const deleted = await redis.del(key)
+  onProgress(
+    `⚠ --reset-customer-token-budget: cleared token-budget counter for customer ${customerId} ` +
+      `on channel "${channel}" (${deleted > 0 ? "counter existed" : "counter was already absent"}). ` +
+      "Harness-state isolation on this ephemeral stack's own Redis between passes — the guard, its " +
+      "threshold, and every production code path are untouched.",
+  )
+}
+
+/**
  * The full live run: load env + corpus, split by each file's declared
  * `plane`, resolve the seeded staff/customer as needed, drive each half over
  * its own route, merge, score. Callers needing the baseline-regression
@@ -286,8 +497,15 @@ export async function runExtractionAccuracyCli(
       if (jwtSecret === undefined || jwtSecret === "") {
         throw new ExtractionAccuracyCliError("JWT_SECRET is missing from the env (.env.test)")
       }
-      const { cookie } = await resolveCustomerCookie(domain, jwtSecret)
-      onProgress(`customer: resolved seeded ${ACCURACY_RUN_CUSTOMER_PHONE}`)
+      const customerIndex = options.customerIndex ?? 0
+      const { cookie, customerId, phone } = await resolveCustomerCookie(domain, jwtSecret, customerIndex)
+      onProgress(`customer: resolved seeded ${phone} (index ${customerIndex})`)
+
+      // Opt-in ONLY, BETWEEN passes, never mid-pass — see "Opt-in
+      // customer-plane token-budget reset" above for the full rationale.
+      if (shouldResetCustomerTokenBudget(options)) {
+        await resetCustomerTokenBudgetCounter(customerId, "web", onProgress)
+      }
 
       // FE-T12 (team-lead ruling, post-live-calibration review): a FRESH
       // sessionId is minted PER CASE by the driver itself
@@ -299,6 +517,10 @@ export async function runExtractionAccuracyCli(
       // `actor: { sessionId: state.conversationId }`, which IS the raw web
       // session id) — unlike ops's `admin:<staffId>` prefix.
       const clearHistory = createCustomerHistoryClearer(onProgress)
+      const beforeCase = composeBeforeCase(
+        createCheckoutCartSeeder(onProgress),
+        createCancelOrderSeeder(customerId, onProgress),
+      )
       const cust = await driveExtractionCorpusOverCustomerChat(customerFiles, {
         apiBaseUrl,
         customerCookie: cookie,
@@ -307,6 +529,7 @@ export async function runExtractionAccuracyCli(
           sessionIds: [hashedSessionId(sessionId, redactSecret)],
         }),
         clearHistory,
+        beforeCase,
         onProgress,
       })
       results.push(...cust.results)

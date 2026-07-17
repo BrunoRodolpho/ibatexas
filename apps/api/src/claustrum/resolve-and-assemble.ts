@@ -719,6 +719,38 @@ function mapCheckoutPaymentMethodWireField(kind: string, payload: Ctx): Ctx {
 }
 
 /**
+ * FE-T12 (team-lead ruling, cart-seeding investigation follow-up) — same
+ * wire-rename idiom as `mapCheckoutPaymentMethodWireField`, for the SECOND
+ * checkout wire field: `delivery_type` (snake_case, same live-calibration
+ * bias-accommodation logic) -> the internal `deliveryType` key
+ * `buildCartCtx` reads (`payload.deliveryType ?? payload.fulfillment` ->
+ * `ctx.fulfillment`).
+ *
+ * WHY this field exists at all: `requireSlotsFilledForCheckout`
+ * (pack-orders/src/policies.ts, a STATE guard that runs BEFORE
+ * `validatePaymentMethod`/the money-band guards) REFUSEs
+ * `order.checkout.slots_incomplete` whenever `ctx.fulfillment` is null — and
+ * `ctx.fulfillment` was ONLY ever populated from `payload.deliveryType`/
+ * `payload.fulfillment`, a slot the HTTP cart route threads explicitly but
+ * the chat planner never had a schema field for. Chat checkout therefore
+ * structurally could never pass this guard, regardless of payment_method or
+ * cart contents — a real gap live-caught during this ticket's own
+ * cart-seeding investigation, not a pre-existing one this ticket
+ * introduced. This wire field closes it: the model may now supply
+ * pickup/delivery in the same turn as payment_method, and BOTH slots being
+ * spoken lets a chat checkout progress all the way to the money-band
+ * guards — no new confirm path, no guard changes, the same ladder the HTTP
+ * route always had.
+ */
+function mapCheckoutDeliveryTypeWireField(kind: string, payload: Ctx): Ctx {
+  if (kind !== "order.checkout.create") return payload;
+  if (typeof payload.delivery_type !== "string") return payload;
+  if (typeof payload.deliveryType === "string") return payload;
+  const { delivery_type: wireValue, ...rest } = payload;
+  return { ...rest, deliveryType: wireValue };
+}
+
+/**
  * F3/L1 (D-014) — thread resolved ids from ctx back onto the outgoing payload.
  *
  * The Conductor hands the executor tool `envelope.payload`, but the session
@@ -1083,9 +1115,14 @@ export async function resolveAndAssemble(args: ResolveArgs): Promise<AssembledRe
   const agentTokens = await readAgentSessionTokens(channel, sessionId);
   if (agentTokens !== undefined) base.agentTokensConsumed = agentTokens;
 
-  // FE-T12 — wire→internal field rename for order.checkout.create, first and
-  // unconditional (no dependency on auto-resolve/ownership).
-  const normalizedPayload = mapCheckoutPaymentMethodWireField(kind, payload);
+  // FE-T12 — wire→internal field renames for order.checkout.create, first
+  // and unconditional (no dependency on auto-resolve/ownership). Both
+  // fields are independent renames on the SAME payload; order between them
+  // doesn't matter (each only touches its own key).
+  const normalizedPayload = mapCheckoutDeliveryTypeWireField(
+    kind,
+    mapCheckoutPaymentMethodWireField(kind, payload),
+  );
 
   // NL→id resolution (confirm-first) then the 034-F1 refund ownership binding.
   const auto = await applyAutoResolve(kind, normalizedPayload, customerId);

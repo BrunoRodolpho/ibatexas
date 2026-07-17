@@ -55,16 +55,25 @@
 // `mintCustomerToken` — accuracy-cli.ts's `resolveCustomerCookie` — rather
 // than the staff `staff_token=` cookie).
 //
-// CONFIRM-KIND SEMANTICS (team-lead review): `order.checkout.create` and
-// `order.cancel` are BOTH confirm/park kinds for every case in their
-// corpora (checkout: no money-boundary case reaches EXECUTE without extra
-// unmodeled cart/session state; cancel: the auto-resolve-confirm guard fires
-// unconditionally under this ticket's schema scope). Every case therefore
-// ENDS AT THE PARK: this driver POSTs the utterance ONCE, settle-polls for
-// the resulting REQUEST_CONFIRMATION (or ESCALATE/REFUSE) audit record, and
-// scores its `languageEngine` sidecar — it NEVER sends a follow-up
-// affirmative ("sim"/"pode"/...). No case in scope ever executes a real
-// mutation on the shared dev stack.
+// CONFIRM-KIND SEMANTICS (team-lead review; UPDATED post-cart-seeding/
+// delivery_type — see order.checkout.create.yaml's own header for the full
+// story): `order.cancel` is a confirm/park kind for every case in its
+// corpus (the auto-resolve-confirm guard fires unconditionally under this
+// ticket's schema scope). `order.checkout.create` is NO LONGER
+// confirm-only: once a case supplies BOTH `payment_method` AND
+// `delivery_type`, `requireSlotsFilledForCheckout` passes and the turn
+// reaches the money-band ladder — a sub-R$1000 full-slots case EXECUTEs
+// directly on ONE turn (no park at all), while the money-boundary cases
+// still REQUEST_CONFIRMATION/REFUSE per the existing `>=R$1000`/`>=R$10000`
+// ladder. This driver's own mechanics are UNCHANGED either way: it POSTs
+// the utterance ONCE, settle-polls for the resulting audit record
+// (whatever decision kind produced it — EXECUTE/REQUEST_CONFIRMATION/
+// ESCALATE/REFUSE all settle identically), and scores its `languageEngine`
+// sidecar — it NEVER sends a follow-up affirmative ("sim"/"pode"/...),
+// EXECUTE included. Every case in scope runs against the EPHEMERAL test
+// stack (never the shared dev stack) — a real EXECUTE there is expected and
+// safe; it is the exact "chat drives orders" capability this ticket exists
+// to prove, not a hazard to avoid.
 //
 // ISOLATION (FE-D13): unlike the ops plane's single reused `admin:<staffId>`
 // identity, the web plane's session-scoped state
@@ -116,7 +125,7 @@
 
 import { randomUUID } from "node:crypto"
 import { evaluateExpectPayload } from "./expect-payload.js"
-import type { ExtractionCorpusFile } from "./schema.js"
+import type { ExtractionCorpusFile, ExtractionCase } from "./schema.js"
 import type { AccuracyCaseResult, IsolationFailure } from "./accuracy.js"
 import type { AuditReader, RunSessionScope } from "../oracle/audit-reader.js"
 
@@ -401,6 +410,23 @@ export interface DriveExtractionCorpusOverCustomerChatOptions {
    * without Redis wired, at the cost of the isolation guarantee.
    */
   clearHistory?: (sessionId: string) => Promise<void>
+  /**
+   * Runs AFTER `clearHistory` but BEFORE the case's utterance is POSTed —
+   * the seam callers use to seed per-case state that must exist for THIS
+   * EXACT rotated `sessionId` (e.g. `order.checkout.create`'s cart-seeding:
+   * writing `cart:active:session:<sessionId>` in Redis to a real Medusa
+   * cart id — see `packages/journeys/src/live/seed-checkout-cart.ts`).
+   * Receives the case's OWN file's `capability` too (a corpus can mix
+   * capabilities — order.cancel shares this driver but never needs
+   * seeding) so ONE hook can dispatch by capability rather than the caller
+   * needing to pre-split the corpus. Optional: capabilities with no such
+   * precondition never need it. A throw here is NOT caught — unlike
+   * `clearHistory`'s isolation-degrades-but-continues contract, a failed
+   * seed makes the case's outcome meaningless (e.g. cart_empty REFUSE would
+   * masquerade as the case under test), so it surfaces exactly like a
+   * scored assertion failure would: loudly, not swallowed.
+   */
+  beforeCase?: (sessionId: string, kase: ExtractionCase, capability: string) => Promise<void>
   /** Per-case audit-settle poll (mirrors the ops driver's same-named options). */
   settleTimeoutMs?: number
   settlePollMs?: number
@@ -493,6 +519,14 @@ export async function driveExtractionCorpusOverCustomerChat(
               detail: (err as Error).message,
             })
           }
+        }
+
+        if (opts.beforeCase !== undefined) {
+          // NOT caught (see the option's own doc) — a failed seed makes the
+          // rest of this case meaningless, so it propagates like a thrown
+          // programmer error would, rather than being folded into a
+          // same-shaped-but-wrong case result.
+          await opts.beforeCase(sessionId, kase, file.capability)
         }
 
         const post = await postCustomerChat(

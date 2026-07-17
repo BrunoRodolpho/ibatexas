@@ -64,6 +64,14 @@
                           "cash"
                         ],
                         "description": "Forma de pagamento — EXATAMENTE um destes valores em inglês (contrato fechado; o guard não normaliza): pix, card, cash. Omita se o cliente não mencionar uma forma de pagamento — NUNCA escolha uma por conta própria."
+                      },
+                      "delivery_type": {
+                        "type": "string",
+                        "enum": [
+                          "pickup",
+                          "delivery"
+                        ],
+                        "description": "Tipo de entrega — EXATAMENTE um destes valores em inglês (contrato fechado; o guard não normaliza): pickup, delivery. Omita se o cliente não mencionar retirada ou entrega — NUNCA escolha um por conta própria."
                       }
                     },
                     "additionalProperties": false

@@ -57,13 +57,13 @@ describe("extraction-prompt golden byte-identity gate (order.checkout.create)", 
     expect(canonicalize(fresh)).toBe(readGoldenRaw());
   });
 
-  it("exposes ONLY payment_method (snake_case) on the wire — never paymentMethod/cartId/pixDetails/email/cpf", async () => {
+  it("exposes ONLY payment_method + delivery_type (snake_case) on the wire — never paymentMethod/deliveryType/fulfillment/cartId/pixDetails/email/cpf", async () => {
     const fresh = await computeOrderCheckoutCreateExtractionPromptFragment();
     const schema = fresh.expressIntentTool.inputSchema as {
       allOf: Array<{ then: { properties: { payload: { properties: Record<string, unknown> } } } }>;
     };
     const payloadProps = schema.allOf[0]!.then.properties.payload.properties;
-    expect(Object.keys(payloadProps)).toEqual(["payment_method"]);
+    expect(Object.keys(payloadProps)).toEqual(["payment_method", "delivery_type"]);
   });
 
   it("the personaExcerpt is the FULL PLANNER_PERSONA text (no per-capability paragraph exists on the customer plane)", async () => {

@@ -639,3 +639,107 @@ describe("driveExtractionCorpusOverCustomerChat — test isolation (FE-D13)", ()
     expect(postedSessionIds[1]).toMatch(/^[0-9a-f-]{36}$/)
   })
 })
+
+// ── beforeCase (cart-seeding integration seam) ───────────────────────────────
+
+describe("driveExtractionCorpusOverCustomerChat — beforeCase (per-case seeding hook)", () => {
+  it("calls beforeCase with THIS case's OWN rotated sessionId and the case itself, AFTER clearHistory and BEFORE the POST", async () => {
+    const corpus = customerCorpusOf([
+      { id: "case-a", utterance: "x" },
+      { id: "case-b", utterance: "y", reason: "mudei de ideia" },
+    ])
+    let n = 0
+    const records: AuditRecord[] = []
+    const audit = fakeAuditReader(() => records)
+    const callOrder: string[] = []
+    const clearHistory = vi.fn(async (sessionId: string) => {
+      callOrder.push(`clearHistory:${sessionId}`)
+    })
+    const beforeCase = vi.fn(async (sessionId: string, kase: { id: string }, capability: string) => {
+      callOrder.push(`beforeCase:${sessionId}:${kase.id}:${capability}`)
+    })
+    const fetchImpl = (async () => {
+      n += 1
+      callOrder.push(`post:${n}`)
+      records.push(fakeCancelRecord(String(n), n === 1 ? undefined : "mudei de ideia"))
+      return new Response(JSON.stringify({ messageId: "m-1" }), { status: 200 })
+    }) as unknown as typeof fetch
+
+    await driveExtractionCorpusOverCustomerChat([corpus], {
+      apiBaseUrl: "http://fake",
+      customerCookie: "token=abc",
+      sessionIdFactory: testSessionIdFactory(),
+      audit,
+      scopeForSession: SCOPE_FOR_SESSION,
+      fetchImpl,
+      clearHistory,
+      beforeCase,
+      settleTimeoutMs: 1000,
+      settlePollMs: 5,
+      interCaseDelayMs: 0,
+    })
+
+    expect(beforeCase).toHaveBeenCalledTimes(2)
+    expect(beforeCase).toHaveBeenNthCalledWith(1, "sess-1", expect.objectContaining({ id: "case-a" }), "order.cancel")
+    expect(beforeCase).toHaveBeenNthCalledWith(2, "sess-2", expect.objectContaining({ id: "case-b" }), "order.cancel")
+    expect(callOrder).toEqual([
+      "clearHistory:sess-1",
+      "beforeCase:sess-1:case-a:order.cancel",
+      "post:1",
+      "clearHistory:sess-2",
+      "beforeCase:sess-2:case-b:order.cancel",
+      "post:2",
+    ])
+  })
+
+  it("omitted beforeCase changes nothing — existing callers (order.cancel, no seeding precondition) are unaffected", async () => {
+    const corpus = customerCorpusOf([{ id: "case-a", utterance: "x" }])
+    const records: AuditRecord[] = []
+    const audit = fakeAuditReader(() => records)
+    const fetchImpl = (async () => {
+      records.push(fakeCancelRecord("1", undefined))
+      return new Response(JSON.stringify({ messageId: "m-1" }), { status: 200 })
+    }) as unknown as typeof fetch
+
+    const { results } = await driveExtractionCorpusOverCustomerChat([corpus], {
+      apiBaseUrl: "http://fake",
+      customerCookie: "token=abc",
+      sessionIdFactory: testSessionIdFactory(),
+      audit,
+      scopeForSession: SCOPE_FOR_SESSION,
+      fetchImpl,
+      settleTimeoutMs: 1000,
+      settlePollMs: 5,
+      interCaseDelayMs: 0,
+    })
+
+    expect(results).toHaveLength(1)
+    expect(results[0]).toMatchObject({ caseId: "case-a", ok: true })
+  })
+
+  it("a beforeCase throw is NOT caught — it propagates out of the whole drive, unlike a clearHistory failure (a failed seed makes the case meaningless, never folded into a same-shaped case result)", async () => {
+    const corpus = customerCorpusOf([{ id: "case-a", utterance: "x" }])
+    const audit = fakeAuditReader(() => [])
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ messageId: "m-1" }), { status: 200 })) as unknown as typeof fetch
+    const beforeCase = vi.fn(async () => {
+      throw new Error("cart seed failed: no product variants found")
+    })
+
+    await expect(
+      driveExtractionCorpusOverCustomerChat([corpus], {
+        apiBaseUrl: "http://fake",
+        customerCookie: "token=abc",
+        sessionIdFactory: testSessionIdFactory(),
+        audit,
+        scopeForSession: SCOPE_FOR_SESSION,
+        fetchImpl,
+        beforeCase,
+        settleTimeoutMs: 1000,
+        settlePollMs: 5,
+        interCaseDelayMs: 0,
+      }),
+    ).rejects.toThrow("cart seed failed: no product variants found")
+    // Never even POSTed — the seed failure blocks the turn entirely.
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+})

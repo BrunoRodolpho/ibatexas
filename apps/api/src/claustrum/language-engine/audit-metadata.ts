@@ -465,6 +465,17 @@ function deriveOrderCheckoutCreate(record: AuditRecord): LanguageEngineAuditMeta
     extractionProvenance.payment_method = modelProvenance();
   }
 
+  // FE-T12 (cart-seeding investigation follow-up) — same handling as
+  // payment_method above, for the SECOND renamed wire field: `delivery_type`
+  // -> `deliveryType` (`resolve-and-assemble.ts`'s
+  // `mapCheckoutDeliveryTypeWireField`). Surfaced under the WIRE name for
+  // the identical reason: still the model's Directive content, only the KEY
+  // was renamed, never the VALUE.
+  if (typeof resolvedPayload.deliveryType === "string") {
+    extractionPayload.delivery_type = resolvedPayload.deliveryType;
+    extractionProvenance.delivery_type = modelProvenance();
+  }
+
   const extractionIR: ExtractionIR = {
     capability: schema.capability,
     payload: extractionPayload,

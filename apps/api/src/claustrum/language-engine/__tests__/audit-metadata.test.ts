@@ -556,6 +556,57 @@ describe("buildLanguageEngineAuditMetadata — order.checkout.create (FE-T12)", 
       expect(ir).not.toHaveProperty("pixDetails");
     }
   });
+
+  // ── delivery_type (cart-seeding investigation follow-up) ──────────────────
+
+  it("derives ExtractionIR carrying {payment_method, delivery_type} (BOTH wire names) when the resolved payload has both internal keys — model/untrusted", () => {
+    const meta = buildLanguageEngineAuditMetadata(
+      record(
+        "order.checkout.create",
+        { cartId: "cart_1", paymentMethod: "pix", deliveryType: "pickup" },
+        { kind: "EXECUTE", basis: [] } as unknown as Decision,
+      ),
+    );
+    const le = languageEngineOf(meta);
+    expect(le.extractionIR.payload).toEqual({ payment_method: "pix", delivery_type: "pickup" });
+    expect(le.extractionIR.provenance).toEqual({
+      payment_method: { producer: "model", confidence: "explicit", trust: "untrusted" },
+      delivery_type: { producer: "model", confidence: "explicit", trust: "untrusted" },
+    });
+  });
+
+  it("a checkout with delivery_type but NO payment_method derives an extractionIR carrying ONLY delivery_type — each field's absence is independent, never a fabricated sibling", () => {
+    const meta = buildLanguageEngineAuditMetadata(
+      record(
+        "order.checkout.create",
+        { cartId: "cart_1", deliveryType: "delivery" },
+        { kind: "REFUSE", basis: [] } as unknown as Decision,
+      ),
+    );
+    const le = languageEngineOf(meta);
+    expect(le.extractionIR.payload).toEqual({ delivery_type: "delivery" });
+  });
+
+  it("derives HydratedIntentIR carrying delivery_type alongside payment_method and the resolver-authoritative cartId", () => {
+    const meta = buildLanguageEngineAuditMetadata(
+      record(
+        "order.checkout.create",
+        { cartId: "cart_1", paymentMethod: "card", deliveryType: "delivery" },
+        { kind: "EXECUTE", basis: [] } as unknown as Decision,
+      ),
+    );
+    const le = languageEngineOf(meta);
+    expect(le.hydratedIntentIR.payload).toEqual({
+      payment_method: "card",
+      delivery_type: "delivery",
+      cartId: "cart_1",
+    });
+    expect(le.hydratedIntentIR.provenance.delivery_type).toEqual({
+      producer: "model",
+      confidence: "explicit",
+      trust: "untrusted",
+    });
+  });
 });
 
 // ── FE-T12 — order.cancel (orders governance-tier, customer-plane) ─────────

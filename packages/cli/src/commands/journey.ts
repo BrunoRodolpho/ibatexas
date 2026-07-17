@@ -475,6 +475,8 @@ async function runJourneyExtractionAccuracy(opts: {
   waivers?: string
   out?: string
   quarantined?: string
+  customerIndex?: string
+  resetCustomerTokenBudget?: boolean
 }): Promise<void> {
   const deps = await import("@ibatexas/journeys")
   const { runExtractionAccuracyCli, ExtractionAccuracyCliError } = deps
@@ -493,6 +495,12 @@ async function runJourneyExtractionAccuracy(opts: {
         : { envFile: resolveUserPath(opts.envFile) }),
       ...(opts.waivers === undefined ? {} : { waiversPath: resolveUserPath(opts.waivers) }),
       ...(opts.quarantined === undefined ? {} : { quarantined: parseIdList(opts.quarantined) }),
+      ...(opts.customerIndex === undefined
+        ? {}
+        : { customerIndex: Number.parseInt(opts.customerIndex, 10) }),
+      ...(opts.resetCustomerTokenBudget === undefined
+        ? {}
+        : { resetCustomerTokenBudget: opts.resetCustomerTokenBudget }),
       onProgress,
     })
 
@@ -1384,6 +1392,14 @@ export function registerJourneyCommands(group: Command): void {
       "--quarantined <ids>",
       "Case keys (<capability>:<caseId>) em quarentena, separados por vírgula (seam — o flake ledger é a fonte autoritativa)",
     )
+    .option(
+      "--customer-index <n>",
+      "Índice em ACCURACY_RUN_CUSTOMER_PHONES (0-9, default 0) — a identidade seeded que o lado customer-plane autentica. Pool existe porque o F4 token-budget guard mede por customerId, não sessionId: uma corrida longa (ou várias tickets) contra o MESMO índice acumula no mesmo contador e eventualmente REFUSE com token_budget.exhausted (ver accuracy-runner.ts).",
+    )
+    .option(
+      "--reset-customer-token-budget",
+      "Opt-in: limpa o contador de token-budget da identidade customer-plane resolvida ANTES desta corrida (uma vez, nunca no meio de um pass). Isolamento de estado do harness no Redis do stack efêmero — o guard/threshold/código de produção ficam intocados (ver accuracy-cli.ts).",
+    )
     .action(
       async (opts: {
         json?: boolean
@@ -1394,6 +1410,8 @@ export function registerJourneyCommands(group: Command): void {
         waivers?: string
         out?: string
         quarantined?: string
+        customerIndex?: string
+        resetCustomerTokenBudget?: boolean
       }) => {
         await runJourneyExtractionAccuracy(opts)
       },

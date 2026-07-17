@@ -54,6 +54,25 @@
 // audit-metadata sidecar stays honest: `deriveOrderCheckoutCreate` surfaces
 // the value under the WIRE name (`payment_method`) in `extractionIR`, since
 // that is what the model actually produced.
+//
+// `delivery_type` (team-lead ruling, cart-seeding investigation follow-up):
+// a SECOND optional Directive field, same snake_case bias-accommodation
+// logic as `payment_method`. Exists because `requireSlotsFilledForCheckout`
+// (pack-orders/src/policies.ts, a STATE guard that runs BEFORE
+// `validatePaymentMethod`/the money-band guards) REFUSEs
+// `order.checkout.slots_incomplete` whenever `ctx.fulfillment` is null — and
+// `ctx.fulfillment` is populated ONLY from `payload.deliveryType`/
+// `payload.fulfillment` (`resolve-and-assemble.ts`'s `buildCartCtx`). The
+// HTTP cart route always threads this slot explicitly; the chat planner
+// never had a schema field for it, so chat checkout structurally could
+// never progress past this guard regardless of payment_method or cart
+// contents — live-caught during this ticket's own cart-seeding
+// investigation, not a pre-existing gap this ticket introduced. Adding this
+// field lets a chat customer supply BOTH slots in one turn and reach the
+// SAME money-band guards the HTTP route always could — no new confirm path,
+// no guard changes, the existing ladder. Absence flows to the existing
+// `refuseSlotsIncomplete` refusal, same "never fabricate, let the honest
+// guard fire" posture as `payment_method`'s absence handling.
 
 import {
   type CapabilityExtractionSchema,
@@ -73,6 +92,19 @@ export const ORDER_CHECKOUT_CREATE_PAYMENT_METHODS = [
 
 export type OrderCheckoutCreatePaymentMethod =
   (typeof ORDER_CHECKOUT_CREATE_PAYMENT_METHODS)[number];
+
+/**
+ * The two fulfillment slots `buildCartCtx`'s `ctx.fulfillment` accepts
+ * (resolve-and-assemble.ts — `fulfillmentRaw === "pickup" || fulfillmentRaw
+ * === "delivery"`) — a closed enum, same contract as payment methods above.
+ */
+export const ORDER_CHECKOUT_CREATE_DELIVERY_TYPES = [
+  "pickup",
+  "delivery",
+] as const;
+
+export type OrderCheckoutCreateDeliveryType =
+  (typeof ORDER_CHECKOUT_CREATE_DELIVERY_TYPES)[number];
 
 export const ORDER_CHECKOUT_CREATE_EXTRACTION_SCHEMA: CapabilityExtractionSchema =
   {
@@ -96,10 +128,28 @@ export const ORDER_CHECKOUT_CREATE_EXTRACTION_SCHEMA: CapabilityExtractionSchema
         },
         required: false,
       },
+      {
+        name: "delivery_type",
+        // Directive — same posture as payment_method: model/user-produced
+        // content the runtime still adjudicates (requireSlotsFilledForCheckout)
+        // before it can execute.
+        trustClass: "directive",
+        jsonSchema: {
+          type: "string",
+          enum: [...ORDER_CHECKOUT_CREATE_DELIVERY_TYPES],
+          description:
+            "Tipo de entrega — EXATAMENTE um destes valores em inglês " +
+            "(contrato fechado; o guard não normaliza): pickup, delivery. " +
+            "Omita se o cliente não mencionar retirada ou entrega — NUNCA " +
+            "escolha um por conta própria.",
+        },
+        required: false,
+      },
     ],
     example: {
-      utterance: "quero fechar o pedido, vou pagar no pix",
-      payload: { payment_method: "pix" },
+      utterance:
+        "quero fechar o pedido, vou pagar no pix, vou retirar no balcão",
+      payload: { payment_method: "pix", delivery_type: "pickup" },
     },
   };
 
