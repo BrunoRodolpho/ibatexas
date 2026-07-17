@@ -350,9 +350,14 @@ async function checkL0Cache(
 async function generateQueryEmbedding(query: string, isWildcard: boolean): Promise<number[]> {
   if (isWildcard) return []
   try {
+    // FE-D17: `v2:` namespace bump evicts pseudo-vector garbage cached under
+    // the old key. generateEmbedding reads the cache BEFORE generating (30-day
+    // TTL) and stored vectors carry no provenance, so without the bump a
+    // key-less box would keep serving fabricated embeddings for warm queries
+    // and the fail-honest fix would be inert.
     return await generateEmbedding(
       query,
-      rk(`embedding:query:${Buffer.from(query).toString("base64")}`)
+      rk(`embedding:query:v2:${Buffer.from(query).toString("base64")}`)
     )
   } catch (error) {
     console.warn("[Search] Query embedding failed; falling back to keyword search:", (error as Error).message)

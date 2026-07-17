@@ -1332,6 +1332,24 @@ async function threadResolvedIdsIntoPayload(
     // AddToCartInputSchema refuses loudly and the customer gets a clarify —
     // never a silently different quantity.
     out = { ...out, quantity: coerceQuantity(out.quantity) };
+    // FE-D18 — no-match honesty floor for the amend path. The cart sibling
+    // order.item.add already REFUSEs honestly on an unresolvable item (it is
+    // NOT in AUTORESOLVE_CONFIRM_KINDS → immediate adjudication → the
+    // allergens-absent requireExplicitAllergens REFUSE). order.amend.add_item
+    // IS in that set, so confirmOnAutoResolveGuard would otherwise park a
+    // doomed envelope — no variantId, no allergens — behind a found-implying
+    // "Confirma?" prompt, and the kernel only REFUSEs it on resume. Stamp the
+    // ctx flag `refuseUnresolvedAmendItemGuard` (compose-policy-packs.ts) reads
+    // to REFUSE pre-park with an honest "não encontrei esse item" reply.
+    // Fires ONLY on this stamped-flag path: variantId still absent after
+    // hydration (name absent, no catalog match, or the lexical-overlap floor
+    // refused an arbitrary Typesense hit). An explicit non-model variantId
+    // (needsVariant was false) — including the resolved variantId the resume
+    // leg carries — leaves variantId present, so the flag is never stamped and
+    // the resume re-adjudicates normally.
+    if (kind === "order.amend.add_item" && typeof out.variantId !== "string") {
+      ctx.amendItemUnresolved = true;
+    }
   }
   // FE-T09 (D-a) — order.amend.update_qty / order.amend.remove_item: resolve
   // the model's NL `item` reference against the LIVE order's line items

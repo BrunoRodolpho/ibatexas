@@ -25,11 +25,18 @@ export async function indexProduct(
 
   // Generate embedding for vector search
   // Fallback: index without embedding if API is unavailable (keyword search still works)
+  //
+  // FE-D17: `product_embedding:v2:` evicts the pseudo-vector garbage cached
+  // under the old key. NOTE: Typesense docs indexed before this fix still hold
+  // FAKE stored embeddings — inert under keyword-only queries (no real key ⇒ no
+  // query vector ⇒ no vector search), but if a real OPENAI_API_KEY is ever
+  // enabled (BKL-034, owner-gated) those stale fake stored vectors must be
+  // purged by a full reindex before hybrid search is trustworthy.
   try {
     const embeddingText = [product.title, product.description || ""].join(". ")
     doc.embedding = await embedFn(
       embeddingText,
-      rk(`product_embedding:${product.id}`),
+      rk(`product_embedding:v2:${product.id}`),
       Number.parseInt(process.env.EMBEDDINGS_CACHE_TTL_SECONDS || "2592000", 10)
     )
   } catch (error) {
@@ -76,7 +83,9 @@ export async function indexProductsBatch(
       const doc: TypesenseProductDoc & { embedding?: number[] } = medusaToTypesenseDoc(product)
       try {
         const embeddingText = [product.title, product.description || ""].join(". ")
-        doc.embedding = await embedFn(embeddingText, rk(`product_embedding:${product.id}`), ttl)
+        // FE-D17: v2 namespace bump — see indexProduct's note on evicting
+        // cached pseudo-vectors and the reindex needed if a real key lands.
+        doc.embedding = await embedFn(embeddingText, rk(`product_embedding:v2:${product.id}`), ttl)
       } catch (error) {
         console.warn(`[Typesense] Embedding skipped for ${product.id}:`, (error as Error).message)
       }
