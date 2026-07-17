@@ -44,10 +44,12 @@ let customerGetProfileData: (
 let orderServiceGetOrder: (
   orderId: string,
   customerId?: string,
-) => Promise<{ order: { items?: Array<{ id: string; title: string }> }; ownershipValid: boolean }> =
-  async () => {
-    throw new Error("order not found");
-  };
+) => Promise<{
+  order: { items?: Array<{ id: string; title: string; variant_id?: string }> };
+  ownershipValid: boolean;
+}> = async () => {
+  throw new Error("order not found");
+};
 
 vi.mock("@ibatexas/tools", () => ({
   rk: (s: string) => s,
@@ -1792,5 +1794,211 @@ describe("resolveAndAssemble — customer.preferences.update (FE-T14)", () => {
       utteranceText: "sou alérgico a amendoim",
     });
     expect(ctx.allergenMentionDetected).toBeUndefined();
+  });
+});
+
+// ── team-lead ruling — the variantId bridge (FE-T14 live-calibration finding) ─
+//
+// LIVE-CAUGHT: `resolveCartLineItem`/`resolveOrderLineItem`'s original
+// exact-title-only match compared the model's NL reference ("coca") against
+// each line's `.title`, which Medusa always sets to the PRODUCT title
+// ("Refrigerante") — never the variant title ("Coca-Cola") a casual
+// reference actually names. Every item.update/item.remove/amend.update_qty/
+// amend.remove_item case naming a variant this way resolved `not_found`
+// against the REAL catalog regardless of seeding (first live calibration
+// this resolver family ever had). Fix: `resolveLineItemByNameOrVariant`
+// (resolve-and-assemble.ts) tries exact-title first (fast path, no network),
+// then bridges through the SAME `resolveProductForItem`/`hasLexicalOverlap`
+// floor `order.item.add`/`order.amend.add_item` already use, matching lines
+// by the resolved `variant_id`. `resolveCartLineItem` (cart, order.item.*)
+// and `resolveOrderLineItem` (placed order, order.amend.*) share this ONE
+// core (FE-D07) — every arm below is asserted through BOTH capability
+// families driving the SAME shared function, never re-tested per resolver.
+describe("resolve-and-assemble — the variantId bridge (order.item.update/remove + order.amend.update_qty/remove_item)", () => {
+  it("[cart] variant-title match: exact-title finds nothing (line title is the PRODUCT name), the bridge resolves by variant_id", async () => {
+    redisGet = async (k) => (k === "cart:active:session:conv-1" ? "cart_abc" : null);
+    medusaStoreFetch = async () => ({
+      cart: {
+        items: [{ id: "cali_coke", title: "Refrigerante", variant_id: "var_coke" }],
+        total: 8,
+        completed_at: null,
+      },
+    });
+    searchProductsMock = async () => ({
+      products: [
+        { id: "prod_1", title: "Refrigerante", tags: ["coca", "coca-cola"], variants: [{ id: "var_coke" }] },
+      ],
+    });
+    const { payload } = await resolveAndAssemble({
+      kind: "order.item.update",
+      payload: { item: "coca", quantity: 3 },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect((payload as { itemId?: string }).itemId).toBe("cali_coke");
+  });
+
+  it("[order] variant-title match: same bridge resolves an EXISTING placed-order line by variant_id", async () => {
+    orderServiceGetOrder = async () => ({
+      ownershipValid: true,
+      order: { items: [{ id: "li_coke", title: "Refrigerante", variant_id: "var_coke" }] },
+    });
+    searchProductsMock = async () => ({
+      products: [
+        { id: "prod_1", title: "Refrigerante", tags: ["coca", "coca-cola"], variants: [{ id: "var_coke" }] },
+      ],
+    });
+    const { payload } = await resolveAndAssemble({
+      kind: "order.amend.remove_item",
+      payload: { orderId: "ord_1", item: "coca" },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect((payload as { itemId?: string }).itemId).toBe("li_coke");
+  });
+
+  it("[cart] product-title fallback: a literal, unambiguous title reference resolves via arm 1 WITHOUT ever calling the search bridge (no round-trip)", async () => {
+    redisGet = async () => "cart_abc";
+    let searchCalled = false;
+    medusaStoreFetch = async () => ({
+      cart: {
+        items: [{ id: "cali_soda", title: "Refrigerante", variant_id: "var_coke" }],
+        total: 8,
+        completed_at: null,
+      },
+    });
+    searchProductsMock = async () => {
+      searchCalled = true;
+      return { products: [] };
+    };
+    const { payload } = await resolveAndAssemble({
+      kind: "order.item.remove",
+      payload: { item: "Refrigerante" },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect((payload as { itemId?: string }).itemId).toBe("cali_soda");
+    expect(searchCalled).toBe(false);
+  });
+
+  it("[cart] ambiguous-across-lines: the bridge resolves a variant that matches TWO lines (the customer added \"coca\" twice) — ambiguous, never a guess", async () => {
+    redisGet = async () => "cart_abc";
+    medusaStoreFetch = async () => ({
+      cart: {
+        items: [
+          { id: "cali_coke_1", title: "Refrigerante", variant_id: "var_coke" },
+          { id: "cali_coke_2", title: "Refrigerante", variant_id: "var_coke" },
+        ],
+        total: 16,
+        completed_at: null,
+      },
+    });
+    searchProductsMock = async () => ({
+      products: [
+        { id: "prod_1", title: "Refrigerante", tags: ["coca", "coca-cola"], variants: [{ id: "var_coke" }] },
+      ],
+    });
+    const { payload } = await resolveAndAssemble({
+      kind: "order.item.remove",
+      payload: { item: "coca" },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    const p = payload as { itemId?: string; itemAmbiguousCount?: number };
+    expect(p.itemId).toBeUndefined();
+    expect(p.itemAmbiguousCount).toBe(2);
+  });
+
+  it("[order] ambiguous-across-lines: an exact-title tie the bridge CANNOT disambiguate (no catalog match) falls back to the original exact-title ambiguous count", async () => {
+    orderServiceGetOrder = async () => ({
+      ownershipValid: true,
+      order: {
+        items: [
+          { id: "li_1", title: "Hambúrguer", variant_id: "var_burger" },
+          { id: "li_2", title: "Hambúrguer", variant_id: "var_burger" },
+        ],
+      },
+    });
+    searchProductsMock = async () => ({ products: [] });
+    const { payload } = await resolveAndAssemble({
+      kind: "order.amend.update_qty",
+      payload: { orderId: "ord_1", item: "hambúrguer", quantity: 2 },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect((payload as { itemAmbiguousCount?: number }).itemAmbiguousCount).toBe(2);
+  });
+
+  it("[cart] not-found: neither exact-title nor the bridge resolves anything — never a guess", async () => {
+    redisGet = async () => "cart_abc";
+    medusaStoreFetch = async () => ({
+      cart: { items: [{ id: "cali_burger", title: "Smash Burger", variant_id: "var_burger" }], total: 30, completed_at: null },
+    });
+    searchProductsMock = async () => ({ products: [] });
+    const { payload } = await resolveAndAssemble({
+      kind: "order.item.update",
+      payload: { item: "sobremesa que não pedi", quantity: 1 },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect((payload as { itemId?: string }).itemId).toBeUndefined();
+  });
+
+  it("[order] floor-rejection: the bridge's top hit shares NO lexical relationship with the query — hasLexicalOverlap rejects it, treated exactly like no match", async () => {
+    orderServiceGetOrder = async () => ({
+      ownershipValid: true,
+      order: { items: [{ id: "li_1", title: "Refrigerante", variant_id: "var_coke" }] },
+    });
+    // Live-caught arbitrary-match defect's floor (FE-D17 interim, hasLexicalOverlap):
+    // an UNRELATED top hit (zero shared tokens/substrings with the query)
+    // must not be trusted — same posture as order.item.add's own coverage.
+    searchProductsMock = async () => ({
+      products: [{ id: "prod_9", title: "Kit Presente IbateXas", variants: [{ id: "var_gift" }] }],
+    });
+    const { payload } = await resolveAndAssemble({
+      kind: "order.amend.remove_item",
+      payload: { orderId: "ord_1", item: "xyzzy nonexistent" },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect((payload as { itemId?: string }).itemId).toBeUndefined();
+  });
+
+  it("[cart] the bridge is a genuine BROADENING: a reference that was `not_found` before this fix now resolves (prior-`not_found` -> `found`)", async () => {
+    redisGet = async () => "cart_abc";
+    medusaStoreFetch = async () => ({
+      cart: {
+        items: [{ id: "cali_guarana", title: "Refrigerante", variant_id: "var_guarana" }],
+        total: 8,
+        completed_at: null,
+      },
+    });
+    searchProductsMock = async () => ({
+      products: [
+        {
+          id: "prod_1",
+          title: "Refrigerante",
+          tags: ["guaraná", "guarana antarctica"],
+          variants: [{ id: "var_guarana" }],
+        },
+      ],
+    });
+    const { payload } = await resolveAndAssemble({
+      kind: "order.item.remove",
+      // Pre-fix: exact-title("guaraná") vs the line's title("Refrigerante")
+      // never matched — always not_found. Post-fix: the bridge resolves it.
+      payload: { item: "guaraná" },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect((payload as { itemId?: string }).itemId).toBe("cali_guarana");
   });
 });

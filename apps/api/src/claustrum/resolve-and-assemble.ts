@@ -1043,37 +1043,115 @@ type OrderLineItemResolution =
   | { readonly kind: "ambiguous"; readonly count: number }
   | { readonly kind: "not_found" };
 
+/** A live order/cart line's minimal identifying shape both resolvers below
+ *  match against — see `resolveLineItemByNameOrVariant`. */
+interface ResolvableLineItem {
+  readonly id: string;
+  readonly title?: string;
+  readonly variant_id?: string;
+}
+
+/**
+ * team-lead ruling (FE-T14 live-calibration finding, the variantId bridge) —
+ * the shared NL→line-item matching core BOTH `resolveOrderLineItem` and
+ * `resolveCartLineItem` thread through, so the two can never drift (FE-D07:
+ * duplicated matching logic is exactly the hazard class that ruling warned
+ * against).
+ *
+ * LIVE-CAUGHT DEFECT this closes: the original exact-title-only match
+ * compared the model's casual NL reference ("coca", "guaraná") against each
+ * line's `.title`, which Medusa always sets to the PRODUCT title
+ * ("Refrigerante") — NEVER the variant title ("Coca-Cola") or a customer's
+ * casual single-word reference. Every case in this rollout's item.update/
+ * item.remove/amend.update_qty/amend.remove_item corpora that named a
+ * specific variant this way therefore resolved `not_found` against the REAL
+ * catalog regardless of seeding — a structural gap, not a seeding problem
+ * (first live calibration for this whole capability family; see the PR
+ * body's live-calibration section for the full finding).
+ *
+ * FIX — two arms, tried in order:
+ *   1. Exact-title match FIRST (fast path, no network round-trip): if it
+ *      resolves to EXACTLY one line, done — covers a customer naming the
+ *      literal product title directly ("remove o Refrigerante" with only
+ *      one refrigerante line in the cart).
+ *   2. The variantId bridge: `resolveProductForItem` (the SAME Typesense +
+ *      lexical-overlap-floor search `order.item.add`/`order.amend.add_item`
+ *      already use) resolves the NL reference to a real catalog variantId
+ *      ("coca" -> the Coca-Cola variant), then lines are matched by
+ *      `variant_id` — this is what actually disambiguates two same-titled
+ *      "Refrigerante" lines by which SPECIFIC variant the customer named,
+ *      the exact scenario exact-title-only can never resolve. Only runs
+ *      when arm 1 didn't cleanly resolve (0 or >1 exact-title matches) —
+ *      cheap literal references never pay the round-trip cost.
+ *
+ * The found/ambiguous/not_found contract is preserved EXACTLY: this
+ * BROADENS which references resolve to `found` (a prior `not_found` can now
+ * resolve) but never narrows an existing `found`/`ambiguous` outcome — the
+ * bridge only ever RUNS when arm 1 didn't already conclusively resolve, and
+ * arm 1's own tie (`ambiguous`) is preserved as the fallback result if the
+ * bridge doesn't resolve it to exactly one line either. `hasLexicalOverlap`'s
+ * existing arbitrary-match floor (inside `resolveProductForItem`) still
+ * guards this path — an unrelated top hit still yields `undefined`, which
+ * this function treats as "the bridge didn't help," never a guess.
+ */
+async function resolveLineItemByNameOrVariant(
+  items: readonly ResolvableLineItem[],
+  name: string,
+  channel: string,
+  sessionId: string | undefined,
+  customerId: string,
+): Promise<OrderLineItemResolution> {
+  const needle = name.trim().toLowerCase();
+  const exactMatches = items.filter((i) => (i.title ?? "").toLowerCase() === needle);
+  if (exactMatches.length === 1) return { kind: "found", itemId: exactMatches[0]!.id };
+
+  const resolved = await resolveProductForItem(name, channel, sessionId, customerId);
+  if (resolved?.variantId !== undefined) {
+    const variantMatches = items.filter((i) => i.variant_id === resolved.variantId);
+    if (variantMatches.length === 1) {
+      return { kind: "found", itemId: variantMatches[0]!.id };
+    }
+    if (variantMatches.length > 1) {
+      return { kind: "ambiguous", count: variantMatches.length };
+    }
+  }
+
+  if (exactMatches.length > 1) return { kind: "ambiguous", count: exactMatches.length };
+  return { kind: "not_found" };
+}
+
 /**
  * FE-T09 (D-a) — NL→itemId resolution for the granular post-checkout amend
  * kinds `order.amend.update_qty` / `order.amend.remove_item`. These operate
  * on a line ALREADY on a placed order, not the catalog — a LIVE order fetch
- * (mirroring the legacy `amend-order.ts` tool's `svc.getOrder`), case-
- * insensitive title match against the model's raw NL `item` reference. The
- * stored `OrderProjection.itemsJson` carries no stable per-line id
- * (`medusa-order.mapper.ts` drops Medusa's own line-item id when building the
- * projection); a data-model migration to persist one is tracked separately
- * (FE-D15) — the live fetch sidesteps it, exactly as the legacy tool does.
+ * (mirroring the legacy `amend-order.ts` tool's `svc.getOrder`), matched via
+ * `resolveLineItemByNameOrVariant` (see that function's header for the full
+ * exact-title + variantId-bridge design). The stored `OrderProjection.
+ * itemsJson` carries no stable per-line id (`medusa-order.mapper.ts` drops
+ * Medusa's own line-item id when building the projection); a data-model
+ * migration to persist one is tracked separately (FE-D15) — the live fetch
+ * sidesteps it, exactly as the legacy tool does. `MedusaOrder.items[]`
+ * already carries `variant_id` per line (order.service.ts), so no extra
+ * fetch is needed for the bridge's variant-matching arm.
  *
- * Two safety upgrades over the legacy tool's exact-first-match:
- *   - zero matches → `"not_found"` (an honest refuse downstream — never a
- *     guess);
- *   - MULTIPLE matches (e.g. two "coca" lines) → `"ambiguous"` (carries the
- *     match `count`) — review finding (post-#264): the FIRST cut of this
- *     reused `ctx.autoResolvedMoneyRef` / `confirmOnAutoResolveGuard` (the
- *     ORDER-level "which order?" auto-resolve's confirm mechanism) here too,
- *     but that mechanism means "I GUESSED a value, please confirm the
- *     guess" — item-level ambiguity picks NO item at all, so routing it
- *     through a yes/no confirm falsely implies a specific item was
- *     identified, and confirming resumed into a resolver call with
- *     `itemId: undefined` — a dead end ("Item não encontrado" after the
- *     customer just said "yes"). Fixed: `threadResolvedIdsIntoPayload`
- *     leaves `itemId` unset AND does NOT touch `ctx.autoResolvedMoneyRef`
- *     for this case; it instead stamps `itemAmbiguousCount` onto the
- *     payload so the EXECUTOR (`register-ibatexas-tool-packs.ts`) can
- *     return an honest, specific disambiguation reply immediately —
- *     reusing the SAME "tool reports a business-level non-match" idiom the
- *     `"not_found"` case already used (no new kernel Decision, no confirm,
- *     no park).
+ * Two safety upgrades over the legacy tool's exact-first-match, both
+ * PRESERVED by the shared core: zero matches → `"not_found"` (an honest
+ * refuse downstream — never a guess); MULTIPLE matches (e.g. two "coca"
+ * lines) → `"ambiguous"` (carries the match `count`) — review finding
+ * (post-#264): the FIRST cut of this reused `ctx.autoResolvedMoneyRef` /
+ * `confirmOnAutoResolveGuard` (the ORDER-level "which order?" auto-resolve's
+ * confirm mechanism) here too, but that mechanism means "I GUESSED a value,
+ * please confirm the guess" — item-level ambiguity picks NO item at all, so
+ * routing it through a yes/no confirm falsely implies a specific item was
+ * identified, and confirming resumed into a resolver call with
+ * `itemId: undefined` — a dead end ("Item não encontrado" after the
+ * customer just said "yes"). Fixed: `threadResolvedIdsIntoPayload` leaves
+ * `itemId` unset AND does NOT touch `ctx.autoResolvedMoneyRef` for this
+ * case; it instead stamps `itemAmbiguousCount` onto the payload so the
+ * EXECUTOR (`register-ibatexas-tool-packs.ts`) can return an honest,
+ * specific disambiguation reply immediately — reusing the SAME "tool
+ * reports a business-level non-match" idiom the `"not_found"` case already
+ * used (no new kernel Decision, no confirm, no park).
  *
  * On a match, `itemId` is the matched line's REAL Medusa line-item id (the
  * same id the legacy tool's own Medusa PATCH/edit calls use) — the executor
@@ -1086,6 +1164,8 @@ async function resolveOrderLineItem(
   orderId: string,
   name: string,
   customerId: string,
+  channel: string,
+  sessionId: string | undefined,
 ): Promise<OrderLineItemResolution> {
   try {
     const { order, ownershipValid } = await createOrderService(medusaAdmin).getOrder(
@@ -1093,13 +1173,13 @@ async function resolveOrderLineItem(
       customerId,
     );
     if (!ownershipValid) return { kind: "not_found" };
-    const needle = name.trim().toLowerCase();
-    const matches = (order.items ?? []).filter(
-      (i) => i.title.toLowerCase() === needle,
+    return await resolveLineItemByNameOrVariant(
+      order.items ?? [],
+      name,
+      channel,
+      sessionId,
+      customerId,
     );
-    if (matches.length === 0) return { kind: "not_found" };
-    if (matches.length > 1) return { kind: "ambiguous", count: matches.length };
-    return { kind: "found", itemId: matches[0]!.id };
   } catch {
     return { kind: "not_found" };
   }
@@ -1111,39 +1191,43 @@ async function resolveOrderLineItem(
  * `resolveOrderLineItem`'s placed-order target), so this is a genuinely
  * separate lookup — never a catalog-wide guess (`resolveProductForItem`,
  * used by `order.item.add`, resolves a NEW catalog product; this resolves
- * an EXISTING cart LINE). Same case-insensitive exact-title match + the
- * same two safety properties as `resolveOrderLineItem`: zero matches →
- * `"not_found"` (an honest refuse downstream, never a guess); multiple
- * same-titled lines → `"ambiguous"` (never routed through the order-level
- * auto-resolve confirm — same reasoning as the placed-order case: a
- * yes/no confirm would falsely imply a specific line was identified).
+ * an EXISTING cart LINE) — but matched via the SAME
+ * `resolveLineItemByNameOrVariant` core as `resolveOrderLineItem`, kept
+ * mirrored deliberately (FE-D07) rather than re-implementing the exact-
+ * title + variantId-bridge logic a second time.
  *
  * `medusaStore`'s raw `/store/carts/:id` response line items carry `id`
  * (the real Medusa line-item id `update_cart`/`remove_from_cart`'s wire
- * schema requires) and `title` (defaults to the variant/product title at
- * add time) — a WIDER local shape than `MedusaCartLine` above, which only
+ * schema requires), `title` (defaults to the PRODUCT title at add time —
+ * never the variant title, the exact defect the shared core's bridge
+ * closes), and `variant_id` (the real Medusa variant id the bridge matches
+ * against) — a WIDER local shape than `MedusaCartLine` above, which only
  * projects the fields `buildCartCtx` needs for guard purposes.
  */
 interface MedusaCartLineWithTitle {
   readonly id: string;
   readonly title?: string;
+  readonly variant_id?: string;
 }
 
 async function resolveCartLineItem(
   cartId: string,
   name: string,
+  channel: string,
+  sessionId: string | undefined,
+  customerId: string,
 ): Promise<OrderLineItemResolution> {
   try {
     const data = (await medusaStore(`/store/carts/${cartId}`)) as {
       cart?: { items?: ReadonlyArray<MedusaCartLineWithTitle> };
     };
-    const needle = name.trim().toLowerCase();
-    const matches = (data.cart?.items ?? []).filter(
-      (i) => (i.title ?? "").toLowerCase() === needle,
+    return await resolveLineItemByNameOrVariant(
+      data.cart?.items ?? [],
+      name,
+      channel,
+      sessionId,
+      customerId,
     );
-    if (matches.length === 0) return { kind: "not_found" };
-    if (matches.length > 1) return { kind: "ambiguous", count: matches.length };
-    return { kind: "found", itemId: matches[0]!.id };
   } catch {
     return { kind: "not_found" };
   }
@@ -1247,7 +1331,7 @@ async function threadResolvedIdsIntoPayload(
     out = strippedOfAmbiguity;
     const name = firstString(out.item, out.product, out.name, out.query);
     if (name) {
-      const resolution = await resolveOrderLineItem(orderId, name, customerId);
+      const resolution = await resolveOrderLineItem(orderId, name, customerId, channel, sessionId);
       if (resolution.kind === "found") {
         out = { ...out, itemId: resolution.itemId };
       } else if (resolution.kind === "ambiguous") {
@@ -1278,7 +1362,7 @@ async function threadResolvedIdsIntoPayload(
     out = strippedOfAmbiguity;
     const name = firstString(out.item, out.product, out.name, out.query);
     if (name) {
-      const resolution = await resolveCartLineItem(cartId, name);
+      const resolution = await resolveCartLineItem(cartId, name, channel, sessionId, customerId);
       if (resolution.kind === "found") {
         out = { ...out, itemId: resolution.itemId };
       } else if (resolution.kind === "ambiguous") {
