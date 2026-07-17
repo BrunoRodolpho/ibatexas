@@ -686,11 +686,66 @@ async function bindRefundOwnership(kind: string, payload: Ctx): Promise<Ctx> {
 }
 
 /**
+ * BKL-094 coercion class (team-lead ruling — distinct from the `reason`/
+ * `payment_method`-vs-`payment` KEY-drift question, which stays UNMAPPED
+ * per that ruling): live calibration showed the 4B reliably uses the RIGHT
+ * wire KEY but sometimes a Portuguese/English SYNONYM instead of the closed
+ * enum value itself ("cartão", "crédito", "débito", "credit", "debit",
+ * "dinheiro" for payment_method; "retirada"/"buscar" for delivery_type).
+ * Deterministic, CLOSED synonym maps — never a fuzzy/heuristic match — so an
+ * UNRECOGNIZED value passes through UNCHANGED to `validatePaymentMethod`'s
+ * existing "not in VALID_PAYMENT_METHODS" REFUSE path exactly as before
+ * these maps existed (never mapped to null, never silently dropped).
+ *
+ * WHY this doesn't break "the sidecar stays honest": there is only ONE
+ * payload flowing through this whole pipeline into BOTH the adjudicated
+ * envelope AND `audit-metadata.ts`'s post-hoc sidecar derivation — no
+ * separate "raw wire" channel survives past this seam (by design; see the
+ * ADR-124 v5 sidecar's own doc). Normalizing the VALUE here, before
+ * anything else ever reads it, means `extractionIR.payload.payment_method`
+ * correctly shows the POST-NORMALIZATION value ("card") the guards actually
+ * acted on — "honest" means the sidecar's `provenance` stays
+ * `{producer:"model", trust:"untrusted"}` (never silently promoted to
+ * resolver/authoritative just because it passed through a synonym map), not
+ * that the pre-normalization string survives somewhere for the corpus to
+ * assert against. The corpus therefore asserts POST-normalization values.
+ */
+const PAYMENT_METHOD_VALUE_SYNONYMS: ReadonlyMap<string, string> = new Map([
+  ["pix", "pix"],
+  ["card", "card"],
+  ["cartão", "card"],
+  ["cartao", "card"],
+  ["crédito", "card"],
+  ["credito", "card"],
+  ["débito", "card"],
+  ["debito", "card"],
+  ["credit", "card"],
+  ["debit", "card"],
+  ["cash", "cash"],
+  ["dinheiro", "cash"],
+]);
+
+const DELIVERY_TYPE_VALUE_SYNONYMS: ReadonlyMap<string, string> = new Map([
+  ["pickup", "pickup"],
+  ["retirada", "pickup"],
+  ["buscar", "pickup"],
+  ["delivery", "delivery"],
+  ["entrega", "delivery"],
+]);
+
+/** Case/whitespace-insensitive closed-map lookup; an unrecognized value passes through UNCHANGED (never null, never dropped) — see the synonym maps' own doc for why. */
+function normalizeSynonymValue(value: string, synonyms: ReadonlyMap<string, string>): string {
+  return synonyms.get(value.trim().toLowerCase()) ?? value;
+}
+
+/**
  * FE-T12 (team-lead review) — rename `order.checkout.create`'s WIRE field
  * `payment_method` (snake_case, `order-checkout-create.schema.ts`'s model-
  * facing extraction schema) to the internal `paymentMethod` key
  * `OrderCheckoutCreatePayload`/`validatePaymentMethod` (pack-orders/src/
- * policies.ts, BYTE-UNTOUCHED) actually reads.
+ * policies.ts, BYTE-UNTOUCHED) actually reads, THEN normalizes the VALUE
+ * through `PAYMENT_METHOD_VALUE_SYNONYMS` (see that map's own doc for the
+ * key-vs-value distinction and why this doesn't compromise sidecar honesty).
  *
  * WHY snake_case on the wire: live 4B calibration showed a 100%-stable bias
  * toward `payment_method` over the originally-authored `paymentMethod` on
@@ -703,8 +758,9 @@ async function bindRefundOwnership(kind: string, payload: Ctx): Promise<Ctx> {
  * surviving into the resolved payload would leak past this seam into the
  * envelope pack-orders never reads, dead weight at best.
  *
- * Pure rename, unconditional on any other resolution step (no auto-resolve,
- * no ownership binding) — called first, before `applyAutoResolve`.
+ * Pure rename+normalize, unconditional on any other resolution step (no
+ * auto-resolve, no ownership binding) — called first, before
+ * `applyAutoResolve`.
  */
 function mapCheckoutPaymentMethodWireField(kind: string, payload: Ctx): Ctx {
   if (kind !== "order.checkout.create") return payload;
@@ -715,12 +771,16 @@ function mapCheckoutPaymentMethodWireField(kind: string, payload: Ctx): Ctx {
   // model) never gets silently overwritten by the wire alias.
   if (typeof payload.paymentMethod === "string") return payload;
   const { payment_method: wireValue, ...rest } = payload;
-  return { ...rest, paymentMethod: wireValue };
+  return {
+    ...rest,
+    paymentMethod: normalizeSynonymValue(wireValue, PAYMENT_METHOD_VALUE_SYNONYMS),
+  };
 }
 
 /**
  * FE-T12 (team-lead ruling, cart-seeding investigation follow-up) — same
- * wire-rename idiom as `mapCheckoutPaymentMethodWireField`, for the SECOND
+ * wire-rename idiom as `mapCheckoutPaymentMethodWireField` (KEY rename +
+ * VALUE normalization via `DELIVERY_TYPE_VALUE_SYNONYMS`), for the SECOND
  * checkout wire field: `delivery_type` (snake_case, same live-calibration
  * bias-accommodation logic) -> the internal `deliveryType` key
  * `buildCartCtx` reads (`payload.deliveryType ?? payload.fulfillment` ->
@@ -747,7 +807,10 @@ function mapCheckoutDeliveryTypeWireField(kind: string, payload: Ctx): Ctx {
   if (typeof payload.delivery_type !== "string") return payload;
   if (typeof payload.deliveryType === "string") return payload;
   const { delivery_type: wireValue, ...rest } = payload;
-  return { ...rest, deliveryType: wireValue };
+  return {
+    ...rest,
+    deliveryType: normalizeSynonymValue(wireValue, DELIVERY_TYPE_VALUE_SYNONYMS),
+  };
 }
 
 /**
