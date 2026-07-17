@@ -79,34 +79,18 @@ export interface CapabilityExtractionSchema {
   readonly capability: string;
   readonly fields: readonly ExtractionFieldSpec[];
   readonly example: ExtractionSchemaExample;
-  /**
-   * FE-T14 — a narrow, explicit, per-schema escape hatch from
-   * `FORBIDDEN_EXTRACTION_FIELD_NAMES`, for a field name that is forbidden
-   * by DEFAULT (an owner-scoped identifier / PII in the common case) but is
-   * a PUBLIC, non-owner-scoped lookup key for THIS specific capability — the
-   * same distinction `field-trust.ts`'s State class already draws for
-   * `get_also_added`/`get_ordered_together`'s `productId` (a catalog
-   * reference the model relays from an earlier read, never an
-   * authorization-gating identifier). An author MUST name here, verbatim,
-   * every forbidden field name their schema declares — silently exempting
-   * everything would defeat the list's purpose; this is a per-field,
-   * per-capability, auditable opt-in, never a blanket bypass. Absent
-   * (`undefined`) is the overwhelmingly common, correct value — only
-   * read-tool-schemas.ts's two catalog-adjacency reads use this today.
-   */
-  readonly permittedIdentifiers?: readonly string[];
 }
 
 /**
- * Identity-class names — resolver-only, model-forbidden. Unlike the
- * safety-critical/PII set below, a name in THIS set MAY be exempted for a
- * specific schema via `CapabilityExtractionSchema.permittedIdentifiers` —
- * some identifiers are owner-scoped for one capability and a public,
- * non-owner-scoped lookup key for another (see `productId`'s two roles:
- * order.review.submit's own reviewed-product reference vs.
- * read-tool-schemas.ts's catalog-adjacency reads).
+ * Names that must NEVER appear as a field on an authored extraction schema —
+ * resolved identifiers (Identity class: resolver-only, model-forbidden) and
+ * safety-critical / PII content the governance user stories (10-13) forbid
+ * the model from filling. Extend this list as later slices add capabilities;
+ * `assertSoundExtractionSchema` fails closed on any name in this set
+ * regardless of the `trustClass` the author declared.
  */
-export const EXEMPTABLE_IDENTIFIER_NAMES: ReadonlySet<string> = new Set([
+export const FORBIDDEN_EXTRACTION_FIELD_NAMES: ReadonlySet<string> = new Set([
+  // Identity — resolver-only.
   "orderId",
   "customerId",
   "cartId",
@@ -122,49 +106,13 @@ export const EXEMPTABLE_IDENTIFIER_NAMES: ReadonlySet<string> = new Set([
   "actorId",
   "tenantId",
   "nonce",
-  // FE-T14 — order.review.submit's resolver-filled reviewed-product
-  // reference (OrderReviewSubmitPayload.productId). See order-note-
-  // review.schema.ts's header: FE-D28 (carved) resolves it from the
-  // order's own line items via an NL `item` reference, mirroring the
-  // granular amend kinds' itemId pattern. Forbidden by DEFAULT — but see
-  // `CapabilityExtractionSchema.permittedIdentifiers` for the narrow,
-  // explicit exception read-tool-schemas.ts's `get_also_added`/
-  // `get_ordered_together` use (a PUBLIC catalog lookup key, not an
-  // owner-scoped identifier — a structurally different role than
-  // order.review.submit's own productId).
-  "productId",
-]);
-
-/**
- * Safety-critical / PII names — never model-synthesized, NEVER exemptable
- * by `permittedIdentifiers` regardless of what an author lists there (see
- * the lint check below: this set is checked SEPARATELY and unconditionally
- * — the exemption mechanism only ever consults `EXEMPTABLE_IDENTIFIER_
- * NAMES`). CLAUDE.md Hard Rule #1 ("Allergens: always explicit array —
- * never infer") and the governance user stories (10-13) admit no
- * capability-specific exception, unlike an Identity-class field's role,
- * which genuinely can differ by capability.
- */
-export const NEVER_EXEMPTABLE_FIELD_NAMES: ReadonlySet<string> = new Set([
+  // Safety-critical / PII — never model-synthesized.
   "allergens",
   "cpf",
   "email",
   "phone",
   "cardPan",
   "isInternal",
-]);
-
-/**
- * Names that must NEVER appear as a field on an authored extraction schema —
- * the union of `EXEMPTABLE_IDENTIFIER_NAMES` and `NEVER_EXEMPTABLE_FIELD_
- * NAMES`. Extend one of those two sets as later slices add capabilities,
- * never this one directly — `assertSoundExtractionSchema` fails closed on
- * any name in this set regardless of the `trustClass` the author declared,
- * honoring `permittedIdentifiers` ONLY for the identity-class half.
- */
-export const FORBIDDEN_EXTRACTION_FIELD_NAMES: ReadonlySet<string> = new Set([
-  ...EXEMPTABLE_IDENTIFIER_NAMES,
-  ...NEVER_EXEMPTABLE_FIELD_NAMES,
 ]);
 
 export class UnsoundExtractionSchemaError extends Error {
@@ -195,27 +143,11 @@ export function assertSoundExtractionSchema(
           `extraction schema (FE-0.3).`,
       );
     }
-    if (NEVER_EXEMPTABLE_FIELD_NAMES.has(field.name)) {
-      // Checked FIRST, unconditionally — permittedIdentifiers is never even
-      // consulted for this set (CLAUDE.md Hard Rule #1 and the PII fields
-      // admit no capability-specific exception).
+    if (FORBIDDEN_EXTRACTION_FIELD_NAMES.has(field.name)) {
       throw new UnsoundExtractionSchemaError(
         `extraction schema for "${schema.capability}" exposes forbidden ` +
-          `field "${field.name}" (safety-critical / PII) to the model — ` +
-          `this name is NEVER exemptable, regardless of permittedIdentifiers.`,
-      );
-    }
-    if (
-      EXEMPTABLE_IDENTIFIER_NAMES.has(field.name) &&
-      !schema.permittedIdentifiers?.includes(field.name)
-    ) {
-      throw new UnsoundExtractionSchemaError(
-        `extraction schema for "${schema.capability}" exposes forbidden ` +
-          `field "${field.name}" (identifier) to the model — see ` +
-          `FORBIDDEN_EXTRACTION_FIELD_NAMES. If this field is genuinely a ` +
-          `public, non-owner-scoped lookup key for THIS capability ` +
-          `specifically, name it in this schema's permittedIdentifiers ` +
-          `with a comment explaining why.`,
+          `field "${field.name}" (identifier / PII / safety-critical) to ` +
+          `the model — see FORBIDDEN_EXTRACTION_FIELD_NAMES.`,
       );
     }
     // FE-T14 rulings — an array field must be a CLOSED set (`items.enum`) or
