@@ -31,6 +31,8 @@ vi.mock("../../typesense/client.js", () => ({
 
 vi.mock("../../embeddings/client.js", () => ({
   generateEmbedding: mockGenerateEmbedding,
+  // Real class shape so search-products' `instanceof` narrowing works in tests.
+  EmbeddingsUnavailableError: class EmbeddingsUnavailableError extends Error {},
 }))
 
 vi.mock("../../cache/query-cache.js", () => ({

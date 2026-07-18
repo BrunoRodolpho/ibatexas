@@ -137,3 +137,55 @@ describe("generateEmbedding", () => {
     })
   })
 })
+
+// ── REVIEW FIX (2026-07-17): the success arm — generation → EMBED_DIM check →
+// cache write — was untested (the suite covered only failure paths).
+describe("success arm (generation → dim check → cache write)", () => {
+  // This describe sits OUTSIDE the "generateEmbedding" block above, so its
+  // beforeEach does not apply here — reset the shared mocks locally.
+  beforeEach(() => {
+    getMock = vi.fn(async () => null)
+    setExMock = vi.fn(async () => undefined)
+  })
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    if (ORIGINAL_KEY === undefined) delete process.env.OPENAI_API_KEY
+    else process.env.OPENAI_API_KEY = ORIGINAL_KEY
+  })
+
+  it("resolves with the generated vector and caches it via setEx(key, ttl, JSON)", async () => {
+    process.env.OPENAI_API_KEY = "test-key"
+    const { EMBED_DIM } = await import("../../config.js")
+    const vector = Array.from({ length: EMBED_DIM }, (_, i) => i / EMBED_DIM)
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        json: async () => ({ data: [{ embedding: vector }] }),
+      })),
+    )
+
+    const result = await generateEmbedding("costela", "k:ok", 123)
+
+    expect(result).toEqual(vector)
+    expect(setExMock).toHaveBeenCalledTimes(1)
+    const [key, ttl, json] = setExMock.mock.calls[0]
+    expect(key).toBe("k:ok")
+    expect(ttl).toBe(123)
+    expect(JSON.parse(json)).toEqual(vector)
+  })
+
+  it("rejects a wrong-dimension vector with /Invalid embedding/ and caches nothing", async () => {
+    process.env.OPENAI_API_KEY = "test-key"
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        json: async () => ({ data: [{ embedding: [0.1, 0.2, 0.3] }] }),
+      })),
+    )
+
+    await expect(generateEmbedding("costela", "k:short")).rejects.toThrow(/Invalid embedding/)
+    expect(setExMock).not.toHaveBeenCalled()
+  })
+})

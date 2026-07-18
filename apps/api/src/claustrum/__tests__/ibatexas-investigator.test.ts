@@ -292,16 +292,6 @@ function stubBackend(over: Partial<TriadReadBackend> = {}): TriadReadBackend {
       status: "",
     }),
     readPaymentChargeback: async (orderId) => ({ orderId, disputed: false, status: "" }),
-    readOrderCancelled: async (orderId) => ({
-      orderId,
-      cancelled: false,
-      fulfillmentStatus: "preparing",
-    }),
-    readReservationCancelled: async (reservationId) => ({
-      reservationId,
-      cancelled: false,
-      status: "confirmed",
-    }),
     // FIX 2 — default: no auto-enumerated active orders (tests that exercise the
     // owner-order enumeration override this).
     listActiveOrderIds: async () => [],
@@ -1081,8 +1071,12 @@ describe("BKL-006 — falsifier-evidence recording (refund / chargeback / cancel
     });
   });
 
-  // ── ORDER_FULFILLMENT_STAGE + RESERVATION_STATUS cancellation falsifiers ─────────
-  describe("cancellation falsifiers fire end-to-end", () => {
+  // ── Cancellation falsifiers are DELIBERATELY UNREAD (review ruling 2026-07-17) ──
+  // The #277 order_cancelled/reservation_cancelled reads were removed as a
+  // same-row tautology: they shared the base read's memoized row, so they demoted
+  // every TRUTHFUL cancelled render while catching zero staleness. These tests pin
+  // the ruling: a truthful cancelled status now VALIDATES (renders honestly).
+  describe("cancellation statuses render truthfully (tautological falsifiers removed)", () => {
     it("NON-VACUITY: a NOT-cancelled order VALIDATES its fulfillment stage", async () => {
       const { verdict } = await investigateThenValidate({
         plan: ORDER_PLAN,
@@ -1096,23 +1090,18 @@ describe("BKL-006 — falsifier-evidence recording (refund / chargeback / cancel
       // The falsifier key is genuinely absent (not fired).
     });
 
-    it("a PRESENT order cancellation demotes ORDER_FULFILLMENT_STAGE to UNKNOWN", async () => {
+    it("a TRUTHFUL cancelled order VALIDATES (no tautological self-demotion)", async () => {
       const { verdict } = await investigateThenValidate({
         plan: ORDER_PLAN,
         backend: {
           readOrderFulfillment: async (orderId) => ({ orderId, fulfillmentStatus: "canceled" }),
-          readOrderCancelled: async (orderId) => ({
-            orderId,
-            cancelled: true,
-            fulfillmentStatus: "canceled",
-          }),
         },
         type: "ORDER_FULFILLMENT_STAGE",
         subject: "order-42",
         value: { fulfillmentStatus: "canceled" },
         owned: ["order-42"],
       });
-      expect(verdict).toBe("UNKNOWN");
+      expect(verdict).toBe("VALIDATED");
     });
 
     it("NON-VACUITY: a NOT-cancelled reservation VALIDATES its status", async () => {
@@ -1127,7 +1116,7 @@ describe("BKL-006 — falsifier-evidence recording (refund / chargeback / cancel
       expect(verdict).toBe("VALIDATED");
     });
 
-    it("a PRESENT reservation cancellation demotes RESERVATION_STATUS to UNKNOWN", async () => {
+    it("a TRUTHFUL cancelled reservation VALIDATES (no tautological self-demotion)", async () => {
       const { verdict } = await investigateThenValidate({
         plan: RESERVATION_PLAN,
         backend: {
@@ -1136,18 +1125,13 @@ describe("BKL-006 — falsifier-evidence recording (refund / chargeback / cancel
             status: "cancelled",
             partySize: 4,
           }),
-          readReservationCancelled: async (reservationId) => ({
-            reservationId,
-            cancelled: true,
-            status: "cancelled",
-          }),
         },
         type: "RESERVATION_STATUS",
         subject: "r-7",
         value: { status: "cancelled" },
         owned: ["r-7"],
       });
-      expect(verdict).toBe("UNKNOWN");
+      expect(verdict).toBe("VALIDATED");
     });
   });
 
@@ -1173,16 +1157,6 @@ describe("BKL-006 — falsifier-evidence recording (refund / chargeback / cancel
             status: "partially_refunded",
           }),
           readPaymentChargeback: async (orderId) => ({ orderId, disputed: true, status: "disputed" }),
-          readOrderCancelled: async (orderId) => ({
-            orderId,
-            cancelled: true,
-            fulfillmentStatus: "canceled",
-          }),
-          readReservationCancelled: async (reservationId) => ({
-            reservationId,
-            cancelled: true,
-            status: "cancelled",
-          }),
         }),
       ),
       now: () => 999,
@@ -1211,19 +1185,22 @@ describe("BKL-006 — falsifier-evidence recording (refund / chargeback / cancel
     const orderFalsifierKeys = falsifierKeysFor("ORDER_FULFILLMENT_STAGE", "order-42");
     const reservationFalsifierKeys = falsifierKeysFor("RESERVATION_STATUS", "r-7");
 
-    // Every REAL parameterized falsifier key was recorded by the investigator (lockstep).
-    for (const key of [
-      ...paymentFalsifierKeys,
-      ...orderFalsifierKeys,
-      ...reservationFalsifierKeys,
-    ]) {
+    // Every REAL parameterized PAYMENT falsifier key was recorded (lockstep).
+    for (const key of paymentFalsifierKeys) {
       expect(recorded.has(key)).toBe(true);
     }
     // Non-vacuity — the parameterized keys ARE the expected `${base}:${subject}` forms.
     expect(paymentFalsifierKeys).toEqual(
       expect.arrayContaining(["payment_refund:order-42", "payment_chargeback:order-42"]),
     );
+    // REVIEW RULING PIN (2026-07-17): the cancellation falsifiers stay DECLARED in
+    // the registry (their parameterized keys exist) but are DELIBERATELY UNREAD —
+    // the investigator must NOT record them (same-row tautology; see
+    // claim-registry.ts + BKL-160). A future INDEPENDENT cancellation signal
+    // flips these expectations.
     expect(orderFalsifierKeys).toContain("order_cancelled:order-42");
     expect(reservationFalsifierKeys).toContain("reservation_cancelled:r-7");
+    expect(recorded.has("order_cancelled:order-42")).toBe(false);
+    expect(recorded.has("reservation_cancelled:r-7")).toBe(false);
   });
 });

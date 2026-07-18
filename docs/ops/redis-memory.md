@@ -182,9 +182,10 @@ resumes them on a signal. Implemented in `@adjudicate/runtime`, driven by IbateX
 | `search_exact:{channel}:{hash}` | String (JSON) | 5 min | L0 exact query result cache (sha256 of normalized query + filters). | `packages/tools/src/cache/query-cache.ts` |
 | `search_cache:{channel}:{bucket}:...` | String (JSON) | 1 h | L1 semantic bucket cache (djb2 of quantized embedding + filters). | `packages/tools/src/cache/query-cache.ts` |
 | `query_log:{timestamp}:{sessionId}:{hash}` | String (JSON) | 7 d | Query log entries for analytics. | `packages/tools/src/cache/query-cache.ts` |
-| `embedding:{key}` | String | configurable | Generic cached embedding vector (batch embed helper). | `packages/tools/src/embeddings/client.ts` |
-| `embedding:query:{base64}` | String | 30 d | Cached query embedding vector for semantic search. | `packages/tools/src/search/search-products.ts` |
-| `product_embedding:{productId}` | String | configurable | Cached product embedding for Typesense indexing. | `packages/tools/src/typesense/index-product.ts` |
+| `embedding:query:v2:{base64}` | String | 30 d | Cached query embedding vector for semantic search. `v2` namespace since FE-D17 (PR #275) — evicts pseudo-vector poisoned v1 entries. | `packages/tools/src/search/search-products.ts` |
+| `product_embedding:v2:{productId}` | String | configurable | Cached product embedding for Typesense indexing. `v2` since FE-D17 (PR #275). | `packages/tools/src/typesense/index-product.ts` |
+
+> **FE-D17 residue notes:** (1) abandoned v1 keys (`embedding:query:{base64}`, `product_embedding:{productId}`, and the removed batch helper's `embedding:{key}`) self-expire within 30 days and may be purged early; (2) L0/L1 **result** caches (`search_exact:*`, `search_cache:*`) written from pre-fix pseudo-vector searches were NOT namespace-bumped — a poisoned exact-match result can serve for up to its 5-min TTL after the fix lands (L1 entries are unreachable key-less); (3) Typesense documents indexed before the fix still hold fake stored embeddings — enabling a real `OPENAI_API_KEY` (BKL-034) requires a full reindex before hybrid search is trustworthy.
 | `cache:stats:l0:hit` / `:l0:miss` | Counter | 30 d | L0 exact cache hit/miss counters. | `packages/tools/src/cache/query-cache.ts` |
 | `cache:stats:l1:hit` / `:l1:miss` | Counter | 30 d | L1 semantic cache hit/miss counters. | `packages/tools/src/cache/query-cache.ts` |
 | `cache:stats:embed:hit` / `:embed:miss` | Counter | 30 d | Embedding cache hit/miss counters (read by `getCacheStats()`). | `packages/tools/src/cache/query-cache.ts` |

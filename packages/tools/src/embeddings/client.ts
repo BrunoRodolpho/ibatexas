@@ -18,6 +18,9 @@ export class EmbeddingsUnavailableError extends Error {
   }
 }
 
+/** Once-per-process latch for the expected key-less degradation warning. */
+let keylessWarnedOnce = false
+
 // Use OpenAI embeddings (most reliable)
 async function generateEmbeddingViaOpenAI(text: string): Promise<number[]> {
   const apiKey = process.env.OPENAI_API_KEY
@@ -86,7 +89,16 @@ export async function generateEmbedding(
     // FE-D17: fail honest — RETHROW rather than substitute a pseudo-vector.
     // Callers degrade correctly: search-products.ts catches → keyword-only
     // search; index-product.ts catches → indexes the doc without an embedding.
-    console.error("[embeddings] Failed to generate embedding:", (error as Error).message)
+    // A missing OPENAI_API_KEY is the EXPECTED state on the local stack and
+    // hits every non-wildcard search — warn once per process, not per call.
+    if (error instanceof EmbeddingsUnavailableError) {
+      if (!keylessWarnedOnce) {
+        keylessWarnedOnce = true
+        console.warn("[embeddings] OPENAI_API_KEY not set — keyword-only search for this process (logged once)")
+      }
+    } else {
+      console.error("[embeddings] Failed to generate embedding:", (error as Error).message)
+    }
     throw error
   }
 
