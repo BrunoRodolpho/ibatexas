@@ -1206,6 +1206,104 @@ export function buildOpsOrderNoteAddResumeState(
   };
 }
 
+// ── BKL-164 — the four remaining ops kinds, PRE-WIRED for confirm-resume ──────
+//
+// product.availability.set / ops.alert.resolve.staff / incident.ticket.close.
+// staff / schedule.override.set share the SAME latent `enrichResumeState` hole
+// FE-T05b (order.status.transition) + FE-D14 (order.note.add) already fixed: the
+// customer-scoped `resolveAndAssemble` resume fallback no-ops for the ops
+// plane's `staff:<id>` "customerId" (never a real one), so it would project the
+// per-kind state absent and REFUSE a valid "sim". These are LATENT today — NO
+// confirm-forcing guard parks any of them (unlike order.status.transition's
+// `requireConfirmationOnGroundedStatusTransition`), so no resume cycle is ever
+// exercised live — but pre-wired via the shared `enrichResumeState` table so
+// that ANY future confirm/park on one of these kinds resumes correctly (from a
+// FRESH re-read of the parked, resolver-trusted reference) instead of a spurious
+// REFUSE. Each re-projects the SAME per-kind `{ ctx, <slot> }` shape its
+// plan-stage branch in `opsStateForEnvelope` builds; a null read ⇒ the clean
+// not-found REFUSE the plan stage would also give.
+
+/**
+ * BKL-164 — `product.availability.set` RESUME state. Mirrors the plan-stage
+ * `{ ctx, product }` (a FRESH product read of the parked productId; null ⇒
+ * product_not_found REFUSE). LATENT — see the header above.
+ */
+export function buildOpsAvailabilityResumeState(
+  product: OpsResolverProduct | null,
+  opts: { staffId: string; tenantId: string },
+): unknown {
+  return {
+    ctx: {
+      channel: "staff",
+      customerId: null,
+      staffId: opts.staffId,
+      tenantId: opts.tenantId,
+    },
+    product,
+  };
+}
+
+/**
+ * BKL-164 — `ops.alert.resolve.staff` RESUME state. Mirrors the plan-stage
+ * `{ ctx, alert }` (a FRESH alert read of the parked alertId; null ⇒
+ * not_actionable REFUSE). LATENT — see the header above.
+ */
+export function buildOpsAlertResumeState(
+  alert: OpsResolverAlert | null,
+  opts: { staffId: string; tenantId: string },
+): unknown {
+  return {
+    ctx: {
+      channel: "staff",
+      customerId: null,
+      staffId: opts.staffId,
+      tenantId: opts.tenantId,
+    },
+    alert,
+  };
+}
+
+/**
+ * BKL-164 — `incident.ticket.close.staff` RESUME state. Mirrors the plan-stage
+ * `{ ctx, incident }` (a FRESH incident read of the parked incidentId; null ⇒
+ * not_actionable REFUSE). LATENT — see the header above.
+ */
+export function buildOpsIncidentResumeState(
+  incident: OpsResolverIncident | null,
+  opts: { staffId: string; tenantId: string },
+): unknown {
+  return {
+    ctx: {
+      channel: "staff",
+      customerId: null,
+      staffId: opts.staffId,
+      tenantId: opts.tenantId,
+    },
+    incident,
+  };
+}
+
+/**
+ * BKL-164 — `schedule.override.set` RESUME state. Mirrors the plan-stage
+ * `{ ctx, schedule: { today } }`. This kind is a keyless UPSERT — no entity to
+ * re-read — so the resume re-projects the ctx + a FRESH `today` (RESTAURANT_
+ * TIMEZONE) that `requireScheduleDateActionable` re-reads on resume, so a
+ * parked date that is now in the past REFUSEs. LATENT — see the header above.
+ */
+export function buildOpsScheduleResumeState(
+  opts: { staffId: string; tenantId: string },
+): unknown {
+  return {
+    ctx: {
+      channel: "staff",
+      customerId: null,
+      staffId: opts.staffId,
+      tenantId: opts.tenantId,
+    },
+    schedule: { today: todayInRestaurantTz() },
+  };
+}
+
 /** The ops order-mutation kinds whose `payload.orderId` the model can bleed
  *  across turns from the conversation-history block (BKL-150a). */
 const ORDER_REF_BLEED_KINDS: ReadonlySet<string> = new Set([

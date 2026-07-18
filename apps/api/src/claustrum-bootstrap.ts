@@ -341,6 +341,10 @@ import {
   buildOpsSpecialResumeState,
   buildOpsOrderStatusTransitionResumeState,
   buildOpsOrderNoteAddResumeState,
+  buildOpsAvailabilityResumeState,
+  buildOpsAlertResumeState,
+  buildOpsIncidentResumeState,
+  buildOpsScheduleResumeState,
   toOpsResolverOrder,
 } from "./ops/ops-resolver.js";
 import {
@@ -818,6 +822,149 @@ async function readSpecialProductViaMedusa(
   return p ? { id: p.id, status: p.status, name: p.title } : null;
 }
 
+// ── BKL-164 — the ops-plane confirm-resume state table ────────────────────────
+//
+// One row per governed ops kind, replacing five (now nine) near-byte-identical
+// `enrichResumeState` branches. Every ops kind's resume RE-PROJECTS its OWN
+// per-kind SystemState from a FRESH re-read of the parked (resolver-trusted)
+// reference — NOT the customer-scoped `resolveAndAssemble` fallback, which is
+// scoped to a real `customerId` and no-ops for the ops plane's `staff:<id>`
+// (projecting the state absent ⇒ a spurious REFUSE on a valid "sim"). The
+// shared wrapper below owns the invariant outer shape (admin-session guard,
+// staffId/tenantId derivation, empty-reference short-circuit, and the
+// fail-closed try/catch); each entry supplies only what varies — the payload
+// key, the fresh read, and the builder. Behavior is byte-identical to the prior
+// per-branch code for the five wired kinds (refund/price/special/status/note),
+// pinned by their existing unit + e2e suites.
+interface OpsResumeCtx {
+  readonly staffId: string;
+  readonly tenantId: string;
+}
+
+interface OpsResumeEntry {
+  /** The payload key holding the parked entity reference. ABSENT for a keyless
+   *  UPSERT kind (`schedule.override.set`) whose resume re-projects fixed ctx. */
+  readonly payloadKey?: string;
+  /** Re-project the resume state from a non-empty reference. Called inside the
+   *  shared try/catch — a throw ⇒ `notFound` (fail-closed). */
+  readonly project: (ref: string, ctx: OpsResumeCtx) => Promise<unknown>;
+  /** The empty-reference / read-threw state (a clean not-found ⇒ REFUSE). */
+  readonly notFound: (ctx: OpsResumeCtx) => unknown;
+}
+
+const OPS_RESUME_TABLE: Readonly<Record<string, OpsResumeEntry>> = {
+  // BKL-085 — refunds-by-message. The parked payload's `paymentId` was DB-stamped
+  // by the ops resolver (trusted); a FRESH read is money-safe (a since-parked
+  // terminal / partial refund still REFUSEs via the terminal / divergence guard).
+  // Uses only `tenantId` (no staffId in the PaymentState ctx).
+  "payment.refund.issue": {
+    payloadKey: "paymentId",
+    notFound: ({ tenantId }) => buildOpsRefundResumeState(null, tenantId),
+    project: async (paymentId, { tenantId }) => {
+      const p = await createPaymentQueryService().getById(paymentId);
+      return buildOpsRefundResumeState(
+        p === null
+          ? null
+          : {
+              status: p.status,
+              amountInCentavos: p.amountInCentavos,
+              refundedAmountCentavos: p.refundedAmountCentavos ?? 0,
+              method: p.method,
+              version: p.version,
+              orderId: p.orderId,
+            },
+        tenantId,
+      );
+    },
+  },
+  // NEW-004 — price. A since-parked change to divergent variants / a vanished
+  // product REFUSEs on resume via the uniform / existence guards.
+  "product.price.set": {
+    payloadKey: "productId",
+    notFound: (ctx) => buildOpsPriceResumeState(null, ctx),
+    project: async (productId, ctx) =>
+      buildOpsPriceResumeState(
+        computeOpsPricingSnapshot(await readOpsProductPricing(medusaAdmin, productId)),
+        ctx,
+      ),
+  },
+  // SCN-114 — daily special. A vanished product / now-past date REFUSEs on resume
+  // via the existence / not-past guards (the builder re-reads a FRESH today).
+  "menu.special.set": {
+    payloadKey: "productId",
+    notFound: (ctx) => buildOpsSpecialResumeState(null, ctx),
+    project: async (productId, ctx) =>
+      buildOpsSpecialResumeState(await readSpecialProductViaMedusa(productId), ctx),
+  },
+  // FE-T05b — kitchen-advance. A vanished / status-changed order REFUSEs on resume
+  // via requireOrderIdForMutation / requireLegalStatusTransition on the FRESH read.
+  "order.status.transition": {
+    payloadKey: "orderId",
+    notFound: () => buildOpsOrderStatusTransitionResumeState("", null),
+    project: async (orderId) => {
+      const order = await createOrderQueryService().getById(orderId);
+      return buildOpsOrderStatusTransitionResumeState(
+        orderId,
+        order === null ? null : toOpsResolverOrder(order),
+      );
+    },
+  },
+  // FE-D14 — note.add (latent: no confirm-forcing guard parks it today, but wired
+  // identically so a future one resumes correctly).
+  "order.note.add": {
+    payloadKey: "orderId",
+    notFound: () => buildOpsOrderNoteAddResumeState("", null),
+    project: async (orderId) => {
+      const order = await createOrderQueryService().getById(orderId);
+      return buildOpsOrderNoteAddResumeState(
+        orderId,
+        order === null ? null : toOpsResolverOrder(order),
+      );
+    },
+  },
+  // ── BKL-164 — the four remaining LATENT kinds (no confirm-forcing guard parks
+  // them today; pre-wired so any future one resumes correctly instead of a
+  // spurious REFUSE). Each mirrors its plan-stage `opsStateForEnvelope` shape. ──
+  "product.availability.set": {
+    payloadKey: "productId",
+    notFound: (ctx) => buildOpsAvailabilityResumeState(null, ctx),
+    project: async (productId, ctx) => {
+      const p = await readSpecialProductViaMedusa(productId);
+      return buildOpsAvailabilityResumeState(
+        p === null ? null : { id: p.id, status: p.status },
+        ctx,
+      );
+    },
+  },
+  "ops.alert.resolve.staff": {
+    payloadKey: "alertId",
+    notFound: (ctx) => buildOpsAlertResumeState(null, ctx),
+    project: async (alertId, ctx) => {
+      const a = await createOpsAlertService().get(alertId);
+      return buildOpsAlertResumeState(
+        a === null ? null : { id: a.id, status: a.status },
+        ctx,
+      );
+    },
+  },
+  "incident.ticket.close.staff": {
+    payloadKey: "incidentId",
+    notFound: (ctx) => buildOpsIncidentResumeState(null, ctx),
+    project: async (incidentId, ctx) => {
+      const i = await createIncidentService().get(incidentId);
+      return buildOpsIncidentResumeState(
+        i === null ? null : { id: i.id, status: i.status },
+        ctx,
+      );
+    },
+  },
+  // Keyless UPSERT — no entity to re-read; re-project ctx + a FRESH today.
+  "schedule.override.set": {
+    notFound: (ctx) => buildOpsScheduleResumeState(ctx),
+    project: async (_ref, ctx) => buildOpsScheduleResumeState(ctx),
+  },
+};
+
 /**
  * Re-assemble the per-envelope SystemState ctx for a parked (already-resolved)
  * envelope on the resume path. The claustrum resume path adjudicates against
@@ -837,174 +984,46 @@ export async function enrichResumeState(
   envelope: IntentEnvelope,
   state: unknown,
 ): Promise<unknown> {
-  // BKL-085 — the OPS-plane confirm-resume (an `admin:`-session `payment.refund.issue`
-  // parked by the UNTRUSTED-taint overlay) re-projects its own PaymentState from the
-  // payment row, NOT the customer-scoped `resolveAndAssemble` below (whose reads are
-  // scoped to a real `customerId`; the ops plane's `staff:<id>`/`admin:<id>` owns no
-  // customer resources, so that path would project `exists:false` and REFUSE a valid
-  // "sim"). The parked payload's `paymentId` was DB-stamped by the ops resolver
-  // (trusted); a FRESH read here is money-safe (a since-parked terminal / partial
-  // refund still REFUSEs via the terminal guard / the divergence check).
-  if (
-    envelope.kind === "payment.refund.issue" &&
-    envelope.actor.sessionId.startsWith("admin:")
-  ) {
-    const payload = (envelope.payload ?? {}) as Record<string, unknown>;
-    const paymentId =
-      typeof payload.paymentId === "string" ? payload.paymentId : "";
-    if (paymentId === "") return buildOpsRefundResumeState(null, (process.env.KERNEL_TENANT_ID ?? "ibatexas"));
-    try {
-      const p = await createPaymentQueryService().getById(paymentId);
-      return buildOpsRefundResumeState(
-        p === null
-          ? null
-          : {
-              status: p.status,
-              amountInCentavos: p.amountInCentavos,
-              refundedAmountCentavos: p.refundedAmountCentavos ?? 0,
-              method: p.method,
-              version: p.version,
-              orderId: p.orderId,
-            },
-        (process.env.KERNEL_TENANT_ID ?? "ibatexas"),
-      );
-    } catch {
-      // Fail-closed: a read error re-projects a not-found state ⇒ REFUSE, never
-      // a stale/authorized resume.
-      return buildOpsRefundResumeState(null, (process.env.KERNEL_TENANT_ID ?? "ibatexas"));
-    }
-  }
-
-  // NEW-004 — the OPS-plane price confirm-resume (an `admin:`-session
-  // `product.price.set` parked by the UNTRUSTED-taint CONFIRM overlay)
-  // re-projects its own `{ ctx, priceProduct }` from a FRESH pricing read of the
-  // parked (resolver-rewritten, trusted) productId — NOT the customer-scoped
-  // `resolveAndAssemble` below (the ops plane's `staff:<id>` owns no products, so
-  // that path would project priceProduct absent and REFUSE a valid "sim"). The
-  // fresh read is safe: a since-parked change to differently-priced variants / a
-  // vanished product REFUSEs on resume via the uniform / existence guards.
-  if (
-    envelope.kind === "product.price.set" &&
-    envelope.actor.sessionId.startsWith("admin:")
-  ) {
-    const tenantId = process.env.KERNEL_TENANT_ID ?? "ibatexas";
-    // The parked envelope's actor.sessionId is `admin:<staffId>` (stamped by the
-    // planner from the authenticated JWT); the staffId is the suffix.
-    const staffId = envelope.actor.sessionId.slice("admin:".length);
-    const payload = (envelope.payload ?? {}) as Record<string, unknown>;
-    const productId =
-      typeof payload.productId === "string" ? payload.productId : "";
-    if (productId === "") {
-      return buildOpsPriceResumeState(null, { staffId, tenantId });
-    }
-    try {
-      const pricing = computeOpsPricingSnapshot(
-        await readOpsProductPricing(medusaAdmin, productId),
-      );
-      return buildOpsPriceResumeState(pricing, { staffId, tenantId });
-    } catch {
-      // Fail-closed: a read error re-projects a not-found state ⇒ REFUSE.
-      return buildOpsPriceResumeState(null, { staffId, tenantId });
-    }
-  }
-
-  // SCN-114 — the OPS-plane daily-special confirm-resume (an `admin:`-session
-  // `menu.special.set` parked by the UNTRUSTED-taint CONFIRM overlay) re-projects
-  // its own `{ ctx, special }` from a FRESH product read of the parked (resolver-
-  // rewritten, trusted) productId + a FRESH today reading — NOT the customer-
-  // scoped `resolveAndAssemble` below (the ops plane's `staff:<id>` owns no
-  // products, so that path would project `special` absent and REFUSE a valid
-  // "sim"). The fresh reads are safe: a vanished product / a now-past date REFUSE
-  // on resume via the existence / not-past guards.
-  if (
-    envelope.kind === "menu.special.set" &&
-    envelope.actor.sessionId.startsWith("admin:")
-  ) {
-    const tenantId = process.env.KERNEL_TENANT_ID ?? "ibatexas";
-    const staffId = envelope.actor.sessionId.slice("admin:".length);
-    const payload = (envelope.payload ?? {}) as Record<string, unknown>;
-    const productId =
-      typeof payload.productId === "string" ? payload.productId : "";
-    if (productId === "") {
-      return buildOpsSpecialResumeState(null, { staffId, tenantId });
-    }
-    try {
-      const product = await readSpecialProductViaMedusa(productId);
-      return buildOpsSpecialResumeState(product, { staffId, tenantId });
-    } catch {
-      // Fail-closed: a read error re-projects a not-found state ⇒ REFUSE.
-      return buildOpsSpecialResumeState(null, { staffId, tenantId });
-    }
-  }
-
-  // FE-T05b (live-disproof follow-up) — the OPS-plane order.status.transition
-  // confirm-resume (an `admin:`-session kitchen-advance parked by
-  // `requireConfirmationOnGroundedStatusTransition`, pack-orders/policies.ts)
-  // re-projects its own `{ ctx }` from a FRESH order read of the parked
-  // (resolver-pinned, trusted) orderId — NOT the customer-scoped
-  // `resolveAndAssemble` below (the ops plane's `staff:<id>` is not a real
-  // customerId, so that path's type guard silently no-ops below and returns
-  // the capsule's BARE state — no `ctx.orderId` at all — so
-  // `requireOrderIdForMutation` REFUSEd `order.not_found` on every resume,
-  // live-disproved at intent_audit rows 3362/3366: the parked payload and the
-  // order both carried the right id, and `metadata_jsonb`'s hydratedIntentIR
-  // still showed the correct grounded orderId on the SAME refused turn). The
-  // fresh read is state-safe: an order that vanished or whose status changed
-  // since parking still REFUSEs on resume (requireOrderIdForMutation on a
-  // null order; requireLegalStatusTransition on a FRESH fulfillmentStatus
-  // that no longer permits the parked target) — never a stale-state EXECUTE.
-  if (
-    envelope.kind === "order.status.transition" &&
-    envelope.actor.sessionId.startsWith("admin:")
-  ) {
-    const payload = (envelope.payload ?? {}) as Record<string, unknown>;
-    const orderId = typeof payload.orderId === "string" ? payload.orderId : "";
-    if (orderId === "") {
-      return buildOpsOrderStatusTransitionResumeState("", null);
-    }
-    try {
-      const order = await createOrderQueryService().getById(orderId);
-      return buildOpsOrderStatusTransitionResumeState(
-        orderId,
-        order === null ? null : toOpsResolverOrder(order),
-      );
-    } catch {
-      // Fail-closed: a read error re-projects a not-found state ⇒ REFUSE.
-      return buildOpsOrderStatusTransitionResumeState(orderId, null);
-    }
-  }
-
-  // FE-D14 — the OPS-plane order.note.add confirm-resume shares the SAME latent
-  // gap FE-T05b fixed above for order.status.transition: without a per-kind
-  // branch it falls through to the customer-scoped `resolveAndAssemble` below,
-  // which no-ops for the ops plane's `staff:<id>` "customerId" and returns the
-  // capsule's BARE state (no `ctx.orderId`), so `requireOrderIdForMutation`
-  // would REFUSE `order.not_found` on every resume even though the parked
-  // payload carries the resolver-pinned orderId. UNREACHABLE today (no
-  // confirm-forcing guard parks an order.note.add — unlike status.transition's
-  // requireConfirmationOnGroundedStatusTransition — so this resume cycle is
-  // never exercised live), but pre-wired via the SAME shared `toOpsResolverOrder`
-  // mapper so ANY future confirm/park on this kind resumes correctly. The fresh
-  // read is state-safe: an order that vanished since parking re-projects a
-  // not-found state ⇒ requireOrderIdForMutation REFUSEs, never a stale EXECUTE.
-  if (
-    envelope.kind === "order.note.add" &&
-    envelope.actor.sessionId.startsWith("admin:")
-  ) {
-    const payload = (envelope.payload ?? {}) as Record<string, unknown>;
-    const orderId = typeof payload.orderId === "string" ? payload.orderId : "";
-    if (orderId === "") {
-      return buildOpsOrderNoteAddResumeState("", null);
-    }
-    try {
-      const order = await createOrderQueryService().getById(orderId);
-      return buildOpsOrderNoteAddResumeState(
-        orderId,
-        order === null ? null : toOpsResolverOrder(order),
-      );
-    } catch {
-      // Fail-closed: a read error re-projects a not-found state ⇒ REFUSE.
-      return buildOpsOrderNoteAddResumeState(orderId, null);
+  // BKL-164 — the OPS-plane confirm-resume re-projects its OWN per-kind
+  // SystemState via OPS_RESUME_TABLE (was five near-byte-identical branches),
+  // NOT the customer-scoped `resolveAndAssemble` below (whose reads are scoped to
+  // a real `customerId`; the ops plane's `staff:<id>`/`admin:<id>` owns no
+  // customer resources, so that path would project the state absent and REFUSE a
+  // valid "sim"). Each entry re-reads the parked (resolver-trusted) reference
+  // FRESH — money/state-safe: a since-parked terminal / vanished / illegal target
+  // still REFUSEs, never a stale-state EXECUTE. The four LATENT kinds
+  // (availability/alert/incident/schedule) have no confirm-forcing guard parking
+  // them today, but resume correctly the moment one ever does.
+  if (envelope.actor.sessionId.startsWith("admin:")) {
+    const entry = OPS_RESUME_TABLE[envelope.kind];
+    if (entry !== undefined) {
+      const ctx: OpsResumeCtx = {
+        // The parked envelope's actor.sessionId is `admin:<staffId>` (planner-
+        // stamped from the authenticated JWT); the staffId is the suffix.
+        staffId: envelope.actor.sessionId.slice("admin:".length),
+        tenantId: process.env.KERNEL_TENANT_ID ?? "ibatexas",
+      };
+      // A keyless kind (schedule.override.set — a stateless UPSERT) always
+      // re-projects; a keyed kind short-circuits to `notFound` on an
+      // absent/malformed reference (WITHOUT a read), else re-reads it fresh.
+      if (entry.payloadKey !== undefined) {
+        const payload = (envelope.payload ?? {}) as Record<string, unknown>;
+        const raw = payload[entry.payloadKey];
+        const ref = typeof raw === "string" ? raw : "";
+        if (ref === "") return entry.notFound(ctx);
+        try {
+          return await entry.project(ref, ctx);
+        } catch {
+          // Fail-closed: a read error re-projects a not-found state ⇒ REFUSE,
+          // never a stale/authorized resume.
+          return entry.notFound(ctx);
+        }
+      }
+      try {
+        return await entry.project("", ctx);
+      } catch {
+        return entry.notFound(ctx);
+      }
     }
   }
 
