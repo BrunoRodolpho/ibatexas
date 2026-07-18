@@ -86,6 +86,14 @@ vi.mock("@ibatexas/domain", () => ({
     }
   },
   getEffectivePonr: () => ({ cancelMinutes: 30 }),
+  // BKL-041 — the method route now adjudicates the `payment.method.switch`
+  // composite kind through the customer-intent-gateway (`runCustomerIntent`),
+  // which statically imports `isStructurallyMalformed` / `STRUCTURAL_REJECTION_CODE`
+  // from @ibatexas/domain. The mock mirrors real behavior for this file's
+  // well-formed envelopes (always `false`); the gate's own rejection logic is
+  // covered by test-envelope-ingress.test.ts, not here.
+  isStructurallyMalformed: () => false,
+  STRUCTURAL_REJECTION_CODE: "envelope_malformed",
 }));
 
 vi.mock("@ibatexas/nats-client", () => ({
