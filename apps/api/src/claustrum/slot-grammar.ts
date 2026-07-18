@@ -157,6 +157,9 @@ export const STORE_HOURS = "STORE_HOURS";
 export const STORE_HOURS_FOR_DATE = "STORE_HOURS_FOR_DATE";
 /** BKL-139 — the owner-scoped IN-PROGRESS cart read (pre-composed summary scalar). */
 export const CART_CONTENTS = "CART_CONTENTS";
+/** FE-D03 slice C — the owner-scoped list/history reads (pre-composed summary scalar). */
+export const ORDER_HISTORY = "ORDER_HISTORY";
+export const PAYMENT_HISTORY = "PAYMENT_HISTORY";
 /** BKL-142 — the PUBLIC per-item menu price read (pre-composed pt-BR scalar). */
 export const MENU_ITEM_PRICE = "MENU_ITEM_PRICE";
 /** BKL-142 — the PUBLIC per-item menu contents read (first-party description scalar). */
@@ -269,6 +272,31 @@ export const VALIDATED_TEMPLATES: Readonly<Record<string, Template>> = {
     slots: [
       lit("No seu carrinho: "),
       prop(CART_CONTENTS, "itemsSummaryText"),
+      lit("."),
+    ],
+  },
+  // FE-D03 slice C — the ORDER_HISTORY / PAYMENT_HISTORY validated templates. ONE
+  // proposition slot each, bound 1:1 to the C6 valueBinding FIELD (`historySummaryText`,
+  // claim-registry.ts). The value is a DETERMINISTICALLY PRE-COMPOSED, bounded
+  // most-recent-N pt-BR summary (turn-reads.ts composeOrderHistorySummary /
+  // composePaymentHistorySummary) — never an enum, never model-authored. Same
+  // single-C6-field shape as CART_CONTENTS (the frozen single-scalar kernel drops every
+  // sibling field post-mint, so a list renders as one bound string).
+  [ORDER_HISTORY]: {
+    claimType: ORDER_HISTORY,
+    posture: "validated",
+    slots: [
+      lit("Seu histórico de pedidos: "),
+      prop(ORDER_HISTORY, "historySummaryText"),
+      lit("."),
+    ],
+  },
+  [PAYMENT_HISTORY]: {
+    claimType: PAYMENT_HISTORY,
+    posture: "validated",
+    slots: [
+      lit("Seu histórico de pagamentos: "),
+      prop(PAYMENT_HISTORY, "historySummaryText"),
       lit("."),
     ],
   },

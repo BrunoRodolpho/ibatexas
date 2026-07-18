@@ -103,6 +103,15 @@ export const CLASSIFY_ONLY_ELIGIBLE_TYPES: ReadonlySet<RegistryClaimType> =
     // co-occurring with an unclassifiable safety marker in the SAME message would not
     // ESCALATE via that channel while classify-only is ON — surfaced, owner-veto-able.
     "CART_CONTENTS",
+    // FE-D03 slice C — the owner-scoped list/history reads join the eligible set (the
+    // same conscious growth). Subject = the authenticated customerId, resolved from the
+    // present order_history:/payment_history:{customerId} owner-scoped read
+    // (ownerScopedBaseKey → "order_history"/"payment_history"). FE-D12 residual grows
+    // identically: a pure history-read turn skips the model's §O#9 self-report — a
+    // history question co-occurring with an unclassifiable safety marker would not
+    // ESCALATE via that channel while classify-only is ON (surfaced, owner-veto-able).
+    "ORDER_HISTORY",
+    "PAYMENT_HISTORY",
   ]);
 
 /**

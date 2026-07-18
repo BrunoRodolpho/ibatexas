@@ -97,6 +97,21 @@ describe("classifyOnlyRequiredTypes — the eligibility gate", () => {
     ).toBeUndefined();
   });
 
+  it("FE-D03 — a history question → {ORDER_HISTORY} / {PAYMENT_HISTORY} (eligible, singular suppressed)", () => {
+    expect(classifyOnlyRequiredTypes("meu histórico de pedidos")).toEqual(
+      new Set(["ORDER_HISTORY"]),
+    );
+    expect(classifyOnlyRequiredTypes("meus últimos pagamentos")).toEqual(
+      new Set(["PAYMENT_HISTORY"]),
+    );
+  });
+
+  it("FE-D03 — a history question co-occurring with a schedule span → undefined (declined wholesale)", () => {
+    expect(
+      classifyOnlyRequiredTypes("meu histórico de pedidos e vocês estão abertos?"),
+    ).toBeUndefined();
+  });
+
   it("a bare 'status' (no discriminator) → BOTH order+payment (still fully eligible)", () => {
     expect(classifyOnlyRequiredTypes("qual o status?")).toEqual(
       new Set(["ORDER_FULFILLMENT_STAGE", "PAYMENT_STATUS"]),
@@ -132,10 +147,13 @@ describe("classifyOnlyRequiredTypes — the eligibility gate", () => {
   });
 
   it("every eligible type is genuinely a registered, owner-scoped registry type", () => {
-    expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.size).toBe(4);
+    expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.size).toBe(6);
     expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.has("ORDER_FULFILLMENT_STAGE")).toBe(true);
     expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.has("PAYMENT_STATUS")).toBe(true);
     expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.has("RESERVATION_STATUS")).toBe(true);
+    // FE-D03 slice C — the owner-scoped list/history reads.
+    expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.has("ORDER_HISTORY")).toBe(true);
+    expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.has("PAYMENT_HISTORY")).toBe(true);
     // BKL-139 — the owner-scoped cart read joined the eligible set.
     expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.has("CART_CONTENTS")).toBe(true);
   });

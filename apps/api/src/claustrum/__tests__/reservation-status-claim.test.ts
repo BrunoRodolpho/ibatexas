@@ -521,6 +521,8 @@ describe("FE-T17b — discovery-fed end-to-end (dev @ a063661b, turnIds 30c78409
       }),
       readPaymentChargeback: async (orderId) => ({ orderId, disputed: false, status: "" }),
       readCartContents: async () => ({ itemsSummaryText: "", hasItems: false }),
+      readOrderHistory: async () => ({ historySummaryText: "", hasHistory: false }),
+      readPaymentHistory: async () => ({ historySummaryText: "", hasHistory: false }),
       listActiveOrderIds: async () => [],
       listActiveReservationIds: async () => [],
       countActivePayments: async () => 0,
