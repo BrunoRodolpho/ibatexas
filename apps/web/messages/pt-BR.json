@@ -507,7 +507,13 @@
     "location_indoor": "Salão interno",
     "location_outdoor": "Área externa",
     "location_bar": "Bar",
-    "location_terrace": "Terraço"
+    "location_terrace": "Terraço",
+    "modify_title": "Modificar reserva",
+    "modify_change_time": "Alterar horário",
+    "modify_save": "Salvar alterações",
+    "modify_saving": "Salvando…",
+    "modify_no_changes": "Nenhuma alteração para salvar.",
+    "modify_error": "Erro ao modificar reserva."
   },
   "shop": {
     "title": "Loja ― Produtos IbateXas",
