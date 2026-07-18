@@ -51,6 +51,13 @@ const mockMedusaAdjudicated = vi.hoisted(() => vi.fn());
 // from the kernel decision; default to EXECUTE so the EXECUTE/REWRITE
 // branch of `runCustomerIntent` falls through to the route's own logic.
 const mockAdjudicate = vi.hoisted(() => vi.fn());
+// BKL-180 — the checkout sync leg hydrates each item's DECLARED allergens from the
+// catalog (Typesense) before the order.cart.sync adjudication. Default: a hit with a
+// declared empty allergens array (valid explicit-empty) so parity checkouts proceed;
+// a REFUSE test overrides to `{ hits: [] }` (no declared allergens → fail-closed).
+const mockTypesenseSearch = vi.hoisted(() =>
+  vi.fn(async () => ({ hits: [{ document: { allergens: [] as string[] } }] })),
+);
 // The checkout-confirm RESUME path routes through the AUDITED kernel verb
 // `adjudicateAndAudit` (from `@adjudicate/core`), not the pure `adjudicate`.
 // Mock it so confirm tests control the resolved decision without the real
@@ -127,6 +134,13 @@ vi.mock("@ibatexas/tools", async () => {
     // guards are exercised faithfully (HMAC sign+verify, not a stubbed true).
     createOrderAccessToken: actual.createOrderAccessToken,
     verifyOrderAccessToken: actual.verifyOrderAccessToken,
+    // BKL-180 — catalog allergen hydration for the checkout sync leg.
+    COLLECTION: "products",
+    getTypesenseClient: () => ({
+      collections: () => ({
+        documents: () => ({ search: mockTypesenseSearch }),
+      }),
+    }),
   };
 });
 
@@ -1176,6 +1190,77 @@ describe("guest card tracking — pi_ read authorized by the bound per-order tok
 });
 
 // ── SEC-001: Cash/PIX checkout auth gate ────────────────────────────────────
+
+describe("POST /api/cart/checkout — BKL-180 order.cart.sync wire", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
+    mockAdjudicate.mockReturnValue({ kind: "EXECUTE", basis: [] });
+    // A clean, non-completed existing cart → checkoutCartNeedsReplacement=false → the
+    // sync leg runs the hydrate + order.cart.sync adjudication path.
+    mockMedusaStore.mockResolvedValue({ cart: { items: [] } });
+    // Line-item adds (addLocalItemsToCart) + createCheckout succeed.
+    mockMedusaAdjudicated.mockResolvedValue({ success: true });
+    // Default: catalog returns a declared (empty) allergens array so hydration succeeds.
+    mockTypesenseSearch.mockResolvedValue({ hits: [{ document: { allergens: [] } }] });
+  });
+
+  it("syncs local items through ONE governed order.cart.sync envelope (not N line-item envelopes)", async () => {
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/cart/checkout",
+      payload: {
+        cartId: "cart_01",
+        paymentMethod: "card",
+        items: [
+          { variantId: "var_1", quantity: 2 },
+          { variantId: "var_2", quantity: 1 },
+        ],
+      },
+    });
+
+    expect(res.statusCode).toBe(200);
+    // Allergens were catalog-HYDRATED (one lookup per item) before adjudication.
+    expect(mockTypesenseSearch).toHaveBeenCalledTimes(2);
+    // Exactly ONE order.cart.sync envelope was adjudicated (the N per-line
+    // medusa.cart.* decomposition is gone — those now run inside the executor).
+    const syncAdjudications = mockAdjudicate.mock.calls.filter((call) =>
+      call.some((arg) => (arg as { kind?: string })?.kind === "order.cart.sync"),
+    );
+    expect(syncAdjudications).toHaveLength(1);
+    const syncEnvelope = syncAdjudications[0]?.find(
+      (arg) => (arg as { kind?: string })?.kind === "order.cart.sync",
+    ) as { payload: { items: Array<{ variantId: string; allergens: string[] }> } };
+    // The ONE envelope carries the full item set, each with its hydrated allergens.
+    expect(syncEnvelope.payload.items.map((i) => i.variantId)).toEqual(["var_1", "var_2"]);
+    expect(syncEnvelope.payload.items.every((i) => Array.isArray(i.allergens))).toBe(true);
+  });
+
+  it("FAIL-CLOSED: a variant with no declared catalog allergens → 422, never checked out", async () => {
+    // The first item's catalog lookup yields no declared allergens array.
+    mockTypesenseSearch.mockResolvedValueOnce({ hits: [] });
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/cart/checkout",
+      payload: {
+        cartId: "cart_01",
+        paymentMethod: "card",
+        items: [{ variantId: "var_missing", quantity: 1 }],
+      },
+    });
+
+    expect(res.statusCode).toBe(422);
+    expect(res.json().code).toBe("CART_SYNC_ALLERGENS_UNAVAILABLE");
+    // Fail-closed BEFORE adjudication — no order.cart.sync envelope was ever proposed.
+    const syncAdjudications = mockAdjudicate.mock.calls.filter((call) =>
+      call.some((arg) => (arg as { kind?: string })?.kind === "order.cart.sync"),
+    );
+    expect(syncAdjudications).toHaveLength(0);
+  });
+});
 
 describe("POST /api/cart/checkout — SEC-001 cash/PIX auth", () => {
   beforeEach(() => {

@@ -288,6 +288,52 @@ const corpus: ReadonlyArray<Fixture> = [
       refusalCode: "order.item.allergens_not_explicit",
     },
   },
+  // ── BKL-180 — order.cart.sync BULK allergen completeness (Hard Rule #1) ──
+  {
+    name: "EXECUTE: order.cart.sync with every item carrying explicit allergens",
+    envelope: env("order.cart.sync", {
+      cartId: "cart-1",
+      items: [
+        { variantId: "v-1", quantity: 2, allergens: [] },
+        { variantId: "v-2", quantity: 1, allergens: ["gluten"] },
+      ],
+    }),
+    state: authenticatedState({ customerId: null, channel: "web" }), // guest-allowed
+    expect: { kind: "EXECUTE" },
+  },
+  {
+    name: "EXECUTE: order.cart.sync with empty items (no-op pass)",
+    envelope: env("order.cart.sync", { cartId: "cart-1", items: [] }),
+    state: authenticatedState(),
+    expect: { kind: "EXECUTE" },
+  },
+  {
+    name: "REFUSE: order.cart.sync with one item missing allergens (names v-2)",
+    envelope: env("order.cart.sync", {
+      cartId: "cart-1",
+      items: [
+        { variantId: "v-1", quantity: 1, allergens: [] },
+        { variantId: "v-2", quantity: 1 }, // missing allergens
+      ],
+    }),
+    state: authenticatedState(),
+    expect: { kind: "REFUSE", refusalCode: "order.item.allergens_not_explicit" },
+  },
+  {
+    name: "REFUSE: order.cart.sync with an item's allergens inferred as a string",
+    envelope: env("order.cart.sync", {
+      cartId: "cart-1",
+      items: [{ variantId: "v-1", quantity: 1, allergens: "contains nuts" }],
+    }),
+    state: authenticatedState(),
+    expect: { kind: "REFUSE", refusalCode: "order.item.allergens_not_explicit" },
+  },
+  {
+    name: "REFUSE: order.cart.sync with items field missing entirely",
+    envelope: env("order.cart.sync", { cartId: "cart-1" }),
+    state: authenticatedState(),
+    expect: { kind: "REFUSE", refusalCode: "order.item.allergens_not_explicit" },
+  },
   {
     name: "REFUSE: order.item.add with quantity=0",
     envelope: env("order.item.add", {

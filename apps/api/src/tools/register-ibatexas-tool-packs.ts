@@ -307,6 +307,12 @@ const IBATEXAS_TOOLS: ReadonlyArray<TD<unknown, unknown>> = [
     riskLevel: "low",
     execute: (input, ctx) => addToCart(input as never, ctx),
   }),
+  // BKL-180 — order.cart.sync has NO registered tool: it is identity-tier/unadvertised
+  // (buildToolSurface excludes it) so the toolRosterDrift gate does not require one, and
+  // its ONLY caller (the checkout route's syncLocalCartForCheckout) adjudicates the
+  // envelope with its own inline wrapped-legacy executor. Registering an uncalled tool
+  // here would be a dead handler (the BKL-179 class). A future non-checkout caller
+  // registers a tool THEN, against whatever contract that path needs.
   makeTool({
     id: "ibatexas.cart.updateItem.v1",
     capability: "order.item.update",

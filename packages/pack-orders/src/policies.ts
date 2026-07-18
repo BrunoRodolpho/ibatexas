@@ -748,6 +748,52 @@ const KINDS_REQUIRING_EXPLICIT_ALLERGENS: ReadonlySet<string> = new Set([
 ])
 
 const requireExplicitAllergens: OrderGuard = (envelope) => {
+  // BULK (order.cart.sync) — EVERY line item must carry an explicit `allergens`
+  // string[] (Hard Rule #1: never infer allergens from a product name/text). This
+  // is the precondition BKL-180 wires the kind over: fail-closed REFUSE listing the
+  // offending items. Handled BEFORE the single-payload early-return below because a
+  // cart-sync payload carries `items`, not a top-level `allergens`. A MISSING/non-array
+  // `items` REFUSEs (fail-closed); an EMPTY items array is a no-op pass (nothing to
+  // sync — the checkout edge-handling around syncLocalCartForCheckout owns that case).
+  if (envelope.kind === "order.cart.sync") {
+    const items = (envelope.payload as { items?: unknown }).items
+    if (!Array.isArray(items)) {
+      return decisionRefuse(
+        refuseAllergensNotExplicit(`cart_sync_items_not_array got=${typeof items}`),
+        [
+          basis("business", BASIS_CODES.business.RULE_VIOLATED, {
+            rule: "cart_sync_items_must_be_array",
+            got: typeof items,
+          }),
+        ],
+      )
+    }
+    const offending: string[] = []
+    items.forEach((item, i) => {
+      const raw = item as { variantId?: unknown; allergens?: unknown } | null
+      const allergens = raw?.allergens
+      const explicit =
+        Array.isArray(allergens) && allergens.every((e) => typeof e === "string")
+      if (!explicit) {
+        const vid = raw?.variantId
+        offending.push(typeof vid === "string" && vid !== "" ? vid : `index_${i}`)
+      }
+    })
+    if (offending.length > 0) {
+      return decisionRefuse(
+        refuseAllergensNotExplicit(
+          `cart_sync_items_missing_allergens: ${offending.join(",")}`,
+        ),
+        [
+          basis("business", BASIS_CODES.business.RULE_VIOLATED, {
+            rule: "cart_sync_items_must_carry_explicit_allergens",
+            offendingItems: offending,
+          }),
+        ],
+      )
+    }
+    return null
+  }
   if (!KINDS_REQUIRING_EXPLICIT_ALLERGENS.has(envelope.kind)) return null
   const payload = envelope.payload as { allergens?: unknown }
   const value = payload.allergens
@@ -775,7 +821,6 @@ const requireExplicitAllergens: OrderGuard = (envelope) => {
       )
     }
   }
-  // For cart.sync, also validate each item carries explicit allergens.
   return null
 }
 
