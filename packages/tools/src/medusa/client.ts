@@ -15,8 +15,22 @@
 // subscribers, catalog enrichment. Throws MedusaRequestError with structured
 // fields (statusCode, responseText).
 
-const MEDUSA_URL = process.env.MEDUSA_URL ?? "http://localhost:9000"
 const DEFAULT_TIMEOUT_MS = 10_000
+
+/**
+ * Base URL for the Medusa API — read at CALL time, never captured at module
+ * import (FE-D26). Out-of-process tooling (the CLI's `loadTestEnv()`) sets
+ * MEDUSA_URL AFTER `@ibatexas/tools` is transitively evaluated by a journeys
+ * barrel import, so a module-level `const` froze dev's :9000 default and
+ * silently targeted the WRONG stack (cart-seeder 401s traced to real admin
+ * logins against DEV's commerce). A lazy read preserves behavior whenever the
+ * env is stable (set before the first call) — every non-tooling path.
+ *
+ * Exported for direct unit testing (not re-exported from the package barrel).
+ */
+export function medusaBaseUrl(): string {
+  return process.env.MEDUSA_URL ?? "http://localhost:9000"
+}
 
 /** Convert Medusa v2 price (reais, e.g. 89.00) to centavos (8900). */
 export function reaisToCentavos(amount: number): number {
@@ -66,7 +80,7 @@ async function getAdminToken(forceRefresh = false): Promise<string> {
         "MEDUSA_ADMIN_EMAIL / MEDUSA_ADMIN_PASSWORD must be set for Medusa admin auth",
       )
     }
-    const res = await fetch(`${MEDUSA_URL}/auth/user/emailpass`, {
+    const res = await fetch(`${medusaBaseUrl()}/auth/user/emailpass`, {
       method: "POST",
       signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
       headers: { "Content-Type": "application/json" },
@@ -95,7 +109,7 @@ async function getAdminToken(forceRefresh = false): Promise<string> {
 export async function medusaAdmin(path: string, options?: RequestInit): Promise<unknown> {
   const run = async (forceRefresh: boolean): Promise<Response> => {
     const token = await getAdminToken(forceRefresh)
-    return fetch(`${MEDUSA_URL}${path}`, {
+    return fetch(`${medusaBaseUrl()}${path}`, {
       ...options,
       signal: options?.signal ?? AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
       headers: {
@@ -150,7 +164,7 @@ async function getPublishableKey(forceRefresh = false): Promise<string> {
 export async function medusaStore(path: string, options?: RequestInit): Promise<unknown> {
   const run = async (forceRefresh: boolean): Promise<Response> => {
     const key = await getPublishableKey(forceRefresh)
-    return fetch(`${MEDUSA_URL}${path}`, {
+    return fetch(`${medusaBaseUrl()}${path}`, {
       ...options,
       signal: options?.signal ?? AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
       headers: {

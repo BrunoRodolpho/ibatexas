@@ -21,9 +21,10 @@
 #
 # Requirements: .env.test (generate with ./scripts/gen-env-test.sh — it
 # interpolates ANTHROPIC_API_KEY from your dev .env; apps/api hard-requires it
-# at boot), docker, process-compose, ibx, curl. App ports 3001/9000 must be
-# free (the test profile binds the same app ports as the dev stack — they
-# cannot coexist; infra ports are distinct so infra can).
+# at boot), docker, process-compose, ibx, curl. The app ports default to
+# 3001/9000 but are env-parameterized (TEST_API_PORT / TEST_COMMERCE_PORT in
+# .env.test) — FE-D25: set a free pair to run this stack ALONGSIDE a dev stack
+# that already holds :3001/:9000. The chosen pair must be free at bring-up.
 #
 # Knobs (env, all defaulted):
 #   IBX_TEST_COMPOSE_PROJECT  compose project name (default ibx-test; use a
@@ -67,21 +68,13 @@ done
 [[ -f "$ENV_FILE" ]] || fail "$ENV_FILE not found — generate it with ./scripts/gen-env-test.sh"
 [[ -f "$PC_FILE" ]] || fail "$PC_FILE not found — run from the repo root"
 
-APP_PORTS=(3001 9000)
-if [[ "$E2E" == "1" ]]; then
-  [[ -f "$PC_E2E_FILE" ]] || fail "$PC_E2E_FILE not found — run from the repo root"
-  APP_PORTS+=(3000)
-fi
-
-for port in "${APP_PORTS[@]}"; do
-  if lsof -ti ":$port" >/dev/null 2>&1; then
-    fail "port $port is busy — the test profile binds the same app ports as dev; stop the dev stack (ibx dev stop) first"
-  fi
-done
-
-# Export the full T1a-11a env contract BEFORE anything boots: rk() captures
-# APP_ENV at module load, and the ibx CLI's dotenv load never overrides shell
-# env (shell > root .env), so every child process below sees the test values.
+# Export the full T1a-11a env contract BEFORE anything boots: apps load no
+# dotenv of their own; the ibx CLI's dotenv load never overrides shell env
+# (shell > root .env); and process-compose expands ${TEST_*_PORT} in the app
+# profile from THIS shell's environment — so every child process AND the
+# readiness probes see the test values. Sourced before the port preflight so
+# TEST_API_PORT / TEST_COMMERCE_PORT are known. (FE-D26 made @ibatexas/tools
+# read stack-targeting env at call time; this contract still supplies it.)
 set -a
 # shellcheck disable=SC1090
 . "./$ENV_FILE"
@@ -90,6 +83,20 @@ set +a
 # apps/api/src/config.ts hard-requires ANTHROPIC_API_KEY at boot. Presence
 # check only — the value is never printed.
 [[ -n "${ANTHROPIC_API_KEY:-}" ]] || fail "ANTHROPIC_API_KEY is empty in $ENV_FILE — regenerate with ./scripts/gen-env-test.sh (interpolates it from .env)"
+
+# FE-D25: env-parameterized app ports (defaults 3001/9000, sourced above from
+# .env.test) so the ephemeral stack can coexist with a running dev stack.
+APP_PORTS=("${TEST_API_PORT:-3001}" "${TEST_COMMERCE_PORT:-9000}")
+if [[ "$E2E" == "1" ]]; then
+  [[ -f "$PC_E2E_FILE" ]] || fail "$PC_E2E_FILE not found — run from the repo root"
+  APP_PORTS+=(3000)
+fi
+
+for port in "${APP_PORTS[@]}"; do
+  if lsof -ti ":$port" >/dev/null 2>&1; then
+    fail "port $port is busy — set TEST_API_PORT / TEST_COMMERCE_PORT (in .env.test) to a free pair to coexist with dev, or stop the dev stack (ibx dev stop) first"
+  fi
+done
 
 wait_http() {
   # wait_http <url> <name> — poll until 2xx (curl -f also rejects the api's
@@ -151,8 +158,11 @@ if [[ "$E2E" == "1" ]]; then
 fi
 echo "[3/4] apps: process-compose up ${PC_FILE_ARGS[*]} -e $ENV_FILE -D -p $PC_PORT"
 process-compose up "${PC_FILE_ARGS[@]}" -e "$ENV_FILE" -D -p "$PC_PORT"
-wait_http "http://localhost:9000/health" "commerce (:9000)"
-wait_http "http://localhost:3001/health" "api (:3001)"
+# FE-D25: poll the parameterized ports — polling the hardcoded :9000/:3001 would
+# silently succeed against DEV's already-healthy endpoints (a false-green that
+# never waits for THIS stack) whenever the ports were reassigned to coexist.
+wait_http "http://localhost:${TEST_COMMERCE_PORT:-9000}/health" "commerce (:${TEST_COMMERCE_PORT:-9000})"
+wait_http "http://localhost:${TEST_API_PORT:-3001}/health" "api (:${TEST_API_PORT:-3001})"
 if [[ "$E2E" == "1" ]]; then
   wait_http "http://localhost:3000/" "web (:3000)"
 fi
