@@ -169,6 +169,20 @@ const validateAvailabilityPayload: OpsGuard = (envelope) => {
     )
   }
 
+  // BKL-156 — `productName` is a resolver-stamped display-only field; admitted
+  // (see PRODUCT_AVAILABILITY_SET_KEYS) but only validated as an optional string.
+  if (raw.productName !== undefined && typeof raw.productName !== "string") {
+    return decisionRefuse(
+      refuseAvailabilityPayloadInvalid("productName must be a string when present"),
+      [
+        basis("schema", BASIS_CODES.schema.PAYLOAD_INVALID, {
+          field: "productName",
+          reason: "not_string",
+        }),
+      ],
+    )
+  }
+
   return null
 }
 
@@ -279,6 +293,19 @@ const validatePricePayload: OpsGuard = (envelope) => {
       [
         basis("schema", BASIS_CODES.schema.PAYLOAD_INVALID, {
           field: "reason",
+          reason: "not_string",
+        }),
+      ],
+    )
+  }
+
+  // BKL-156 — resolver-stamped display-only field; validated as optional string.
+  if (raw.productName !== undefined && typeof raw.productName !== "string") {
+    return decisionRefuse(
+      refusePricePayloadInvalid("productName must be a string when present"),
+      [
+        basis("schema", BASIS_CODES.schema.PAYLOAD_INVALID, {
+          field: "productName",
           reason: "not_string",
         }),
       ],
@@ -495,6 +522,19 @@ const validateMenuSpecialPayload: OpsGuard = (envelope) => {
         basis("schema", BASIS_CODES.schema.PAYLOAD_INVALID, {
           field: "promoPriceCentavos",
           reason: "not_positive_integer",
+        }),
+      ],
+    )
+  }
+
+  // BKL-156 — resolver-stamped display-only field; validated as optional string.
+  if (raw.productName !== undefined && typeof raw.productName !== "string") {
+    return decisionRefuse(
+      refuseMenuSpecialPayloadInvalid("productName must be a string when present"),
+      [
+        basis("schema", BASIS_CODES.schema.PAYLOAD_INVALID, {
+          field: "productName",
+          reason: "not_string",
         }),
       ],
     )

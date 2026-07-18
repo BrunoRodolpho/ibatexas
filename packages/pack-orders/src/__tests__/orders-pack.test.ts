@@ -1350,6 +1350,25 @@ describe("ordersPolicyBundle — transition legality (BKL-090)", () => {
     expect(decision.refusal.code).toBe("order.status.unknown")
   })
 
+  it("BKL-150(b): the guard itself does NOT normalize — a RAW en-GB 'cancelled' is an unknown target here; only the ops resolver's normalizeOrderStatusToken maps it to 'canceled' upstream, keeping this guard strict", () => {
+    const decision = adjudicate(
+      transitionEnv("cancelled"),
+      state({ orderId: "o-1", fulfillmentStatus: "preparing" }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REFUSE")
+    if (decision.kind !== "REFUSE") return
+    expect(decision.refusal.code).toBe("order.status.unknown")
+    // The canonical token IS accepted (preparing → canceled is legal) — proving
+    // the ONLY thing missing for the raw token was the resolver-side spelling fix.
+    const ok = adjudicate(
+      transitionEnv("canceled"),
+      state({ orderId: "o-1", fulfillmentStatus: "preparing" }),
+      ordersPolicyBundle,
+    )
+    expect(ok.kind).not.toBe("REFUSE")
+  })
+
   it("REFUSE an ABSENT current status on the admin: ops plane (fail-closed)", () => {
     const decision = adjudicate(
       transitionEnv("ready"),

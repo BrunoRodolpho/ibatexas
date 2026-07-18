@@ -1037,11 +1037,16 @@ describe("ops conductor — order.status.transition reachable end-to-end (BKL-09
 // and the ToolDefinition an EMPTY inputSchema, so the model invented wrong field
 // names (status/transition/omitted) and pt-BR values (confirmado/cancel) across 5
 // drives — the guard read `payload.newStatus` verbatim and REFUSEd every one, so
-// ZERO valid transitions reached EXECUTE. The fix is planner-only (persona example
-// + documented inputSchema). These are the SCRIPTED-model kernel proofs that the
-// taught contract now (a) reaches EXECUTE, (b) still REFUSEs a pt-BR value — the
-// closed guard is NOT normalized — and (c) exercises the BKL-090 legality branch
-// the adversarial live leg short-circuited before reaching.
+// ZERO valid transitions reached EXECUTE. The original BKL-144 fix was
+// planner-only (persona example + documented inputSchema). BKL-150(b) then added
+// a resolver-side safety net: `normalizeOrderStatusToken` (@ibatexas/types)
+// canonicalizes a locale/pt-BR alias (cancelled→canceled, confirmado→confirmed,
+// …) BEFORE adjudication, so a slipped alias reaches EXECUTE instead of a
+// confusing REFUSE. These SCRIPTED-model kernel proofs show the taught contract
+// now (a) reaches EXECUTE, (b) NORMALIZES a pt-BR alias at the resolver while the
+// GUARD stays strict (it only ever sees the canonical enum — the pack-orders pin
+// proves the raw token still REFUSEs at the guard), and (c) exercises the BKL-090
+// legality branch the adversarial live leg short-circuited before reaching.
 
 describe("ops conductor — BKL-144 planner reachability regression", () => {
   it("the taught 'accept' contract reaches EXECUTE: display-number + newStatus:'confirmed' (pending→confirmed) → write gets the RESOLVED id", async () => {
@@ -1070,7 +1075,7 @@ describe("ops conductor — BKL-144 planner reachability regression", () => {
     expect(extras.actorId).toBe("staff_1");
   });
 
-  it("a pt-BR value ('confirmado') is NOT normalized → REFUSE order.status.unknown; the write NEVER runs", async () => {
+  it("BKL-150(b): a pt-BR alias ('confirmado') is NORMALIZED to the en-US enum at the resolver → reaches EXECUTE (the guard still only ever sees the canonical 'confirmed')", async () => {
     const writeAdjudicatedStatusTransition = transitionWriterSpy();
     const publishOrderStatusChanged = vi.fn(async () => {});
     const { model } = scriptedModel([transitionCall("order_1", "confirmado")]);
@@ -1081,7 +1086,7 @@ describe("ops conductor — BKL-144 planner reachability regression", () => {
       writeAdjudicatedStatusTransition,
       publishOrderStatusChanged,
       product: null,
-      order: orderAt("pending"), // a real order that COULD legally go to confirmed
+      order: orderAt("pending"), // pending → confirmed is legal
     });
     const out = await runOpsTurn(
       deps,
@@ -1089,15 +1094,16 @@ describe("ops conductor — BKL-144 planner reachability regression", () => {
       "staff_1",
       "avança o pedido order_1 para confirmado",
     );
-    expect(out.kind).toBe("REFUSE");
-    if (out.kind === "REFUSE") {
-      // The pt-BR word is not one of the six known statuses → target unknown. This
-      // pins that NO pt→en normalization slipped into the closed contract: the
-      // planner must emit the English enum; the guard does not translate.
-      expect(out.refusal.code).toBe("order.status.unknown");
-    }
-    expect(writeAdjudicatedStatusTransition).not.toHaveBeenCalled();
-    expect(publishOrderStatusChanged).not.toHaveBeenCalled();
+    // BKL-150(b) ruling — the ops resolver's `normalizeOrderStatusToken` maps the
+    // pt-BR 'confirmado' → 'confirmed' BEFORE adjudication (single-source, in
+    // @ibatexas/types), so the taught intent now reaches EXECUTE instead of a
+    // confusing order.status.unknown REFUSE. The GUARD stays strict — it never
+    // sees 'confirmado' (the pack-orders pin proves the RAW token still REFUSEs
+    // at the guard); only the resolver seam normalizes.
+    expect(out.kind).toBe("EXECUTE");
+    expect(writeAdjudicatedStatusTransition).toHaveBeenCalledTimes(1);
+    const [payload] = writeAdjudicatedStatusTransition.mock.calls[0]!;
+    expect(payload).toEqual({ orderId: "order_1", newStatus: "confirmed" });
   });
 
   it("exercises the BKL-090 legality branch the live leg couldn't reach: illegal pending→delivered → REFUSE transition_illegal; the write NEVER runs", async () => {
