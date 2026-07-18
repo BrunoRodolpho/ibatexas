@@ -80,14 +80,15 @@ describe("ibx kernel status", () => {
     expect(parsed).toHaveProperty("audit")
     // claustrum-on-dev WS9: KNOWN_INTENT_KINDS is now sourced from the
     // `@ibatexas/intent-kinds` leaf package (post W5 Pack expansion), which
-    // composes 70 kinds across the first-party Packs + the PIX adopter Pack
+    // composes 65 kinds across the first-party Packs + the PIX adopter Pack
     // (orders 22, reservations 8, whatsapp 5 incl. BKL-030
-    // whatsapp.handoff.request, pix 3, payments 17, customer-onboarding 8,
+    // whatsapp.handoff.request, pix 3, payments 12 (BKL-176 retired the 5 dead
+    // payment.charge.*), customer-onboarding 8,
     // ops 6 (NEW-032 product.availability.set + NEW-004 product.price.set +
     // SCN-114 menu.special.set + SCN-127 schedule.override.set + BKL-088
     // ops.alert.resolve.staff / incident.ticket.close.staff), loyalty 1). The
     // pre-cutover `32` was stale.
-    expect(parsed.knownIntentKinds.count).toBe(70)
+    expect(parsed.knownIntentKinds.count).toBe(65)
   })
 
   it("renders human-readable text when --json is absent", async () => {
@@ -110,7 +111,7 @@ describe("ibx kernel status", () => {
     expect(out).toMatch(/em\s+7\s+packs/)
   })
 
-  it("includes all 70 KNOWN_INTENT_KINDS in the JSON list", async () => {
+  it("includes all 65 KNOWN_INTENT_KINDS in the JSON list", async () => {
     await cmd.parseAsync(["status", "--json"], { from: "user" })
     const out = stdout.getOutput()
     const parsed = JSON.parse(out)

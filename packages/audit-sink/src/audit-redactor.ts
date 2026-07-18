@@ -369,11 +369,10 @@ export const INTENT_KIND_FIELD_RULES: Readonly<Record<string, ReadonlyArray<stri
   "payment.waive": ["reason"],
   "payment.status.force": ["reason"],
   "pix.charge.refund": ["reason"],
-  // Defense-in-depth — these `reason` fields are typed but technically
-  // closed enums in pack-payments. We still over-redact in case a Pack
-  // bump introduces a free-form string in the future.
-  "payment.charge.fail": ["reason"],
-  "payment.charge.cancel": ["reason"],
+  // Defense-in-depth — this `reason` field is typed but technically a
+  // closed enum in pack-payments. We still over-redact in case a Pack
+  // bump introduces a free-form string in the future. (BKL-176 removed the
+  // retired payment.charge.fail/cancel entries here.)
   "payment.status.transition": ["reason"],
 
   // ── Order-domain free-form text fields (F-6) ───────────────────────────
@@ -585,10 +584,8 @@ export const PII_FREE_KIND_ALLOWLIST: ReadonlySet<string> = new Set<string>([
   // boundary; no kind is allowlisted in this section today.
 
   // ── Payment Pack — opaque-id-only or closed-enum reason payloads ─────
+  // (BKL-176 removed the retired payment.charge.create/confirm/expire entries.)
   "payment.create", // orderId/paymentId/method enum/amountCentavos/stripePaymentIntentId
-  "payment.charge.create", // alias of payment.create — same shape
-  "payment.charge.confirm", // paymentId/wireStatus/stripeEventId
-  "payment.charge.expire", // paymentId + reason: closed enum ("pix_expired")
   "payment.pix.regenerate", // orderId/paymentId/currentRegenerationCount
   "payment.method.switch", // customerId covered by global HASH_FIELDS
   "payment.retry", // orderId/previousPaymentId/newMethod enum

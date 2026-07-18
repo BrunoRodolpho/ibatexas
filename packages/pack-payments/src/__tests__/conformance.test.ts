@@ -105,55 +105,9 @@ const corpus: ReadonlyArray<Fixture> = [
     state: freshState(),
     expect: { kind: "EXECUTE" },
   },
-  {
-    name: "EXECUTE: payment.charge.create (SYSTEM) — valid card",
-    envelope: env("payment.charge.create", {
-      orderId: "ord-1",
-      method: "card",
-      amountInCentavos: 25_000,
-    }),
-    state: freshState(),
-    expect: { kind: "EXECUTE" },
-  },
-  {
-    name: "EXECUTE: payment.charge.confirm (SYSTEM) — Stripe webhook",
-    envelope: env("payment.charge.confirm", {
-      orderId: "ord-1",
-      paymentId: "pay-1",
-      wireStatus: "succeeded",
-      stripeEventId: "evt_1",
-    }),
-    state: existsState(),
-    expect: { kind: "EXECUTE" },
-  },
-  {
-    name: "EXECUTE: payment.charge.fail (SYSTEM) — Stripe webhook",
-    envelope: env("payment.charge.fail", {
-      orderId: "ord-1",
-      paymentId: "pay-1",
-      reason: "card_declined",
-    }),
-    state: existsState(),
-    expect: { kind: "EXECUTE" },
-  },
-  {
-    name: "EXECUTE: payment.charge.expire (SYSTEM) — PIX expiry",
-    envelope: env("payment.charge.expire", {
-      paymentId: "pay-1",
-      reason: "pix_expired",
-    }),
-    state: existsState(),
-    expect: { kind: "EXECUTE" },
-  },
-  {
-    name: "EXECUTE: payment.charge.cancel (SYSTEM) — Stripe webhook",
-    envelope: env("payment.charge.cancel", {
-      paymentId: "pay-1",
-      reason: "user_request",
-    }),
-    state: existsState(),
-    expect: { kind: "EXECUTE" },
-  },
+  // BKL-176 — the 5 `payment.charge.*` EXECUTE conformance cases were removed
+  // with the retired kinds (dead taxonomy; the live path is `payment.create` /
+  // `payment.status.*`).
   {
     name: "EXECUTE: payment.pix.regenerate (UNTRUSTED) — within cap",
     envelope: env(
@@ -577,7 +531,7 @@ describe("paymentsPack — kernel invariants via runConformance()", () => {
 // System-only kinds (taint minimum above UNTRUSTED) are intentionally not
 // planner-proposable; the analyzer auto-excludes them from `unreachable_intent`
 // via `pack.policy.taint.minimumFor`. We pin that carve-out so a future drop of
-// `payment.charge.confirm` from the taint policy fails loudly here.
+// `payment.refund.confirm` from the taint policy fails loudly here.
 //
 // NOTE: we deliberately do NOT assert `summary.warning === 0` — the planner
 // omits the many declared, non-system intents (refund.issue, cash.confirm,
@@ -620,10 +574,11 @@ describe("paymentsPack — policy coherence via analyzePolicy() (AJD-301)", () =
     expect(report.summary.error).toBe(0)
   })
 
-  it("system-only kinds (payment.charge.confirm, …) are carved out", () => {
+  it("system-only kinds (payment.refund.confirm, …) are carved out", () => {
     const report = analyzePolicy({ pack: paymentsPack, plannerProbes: probes })
-    // Guard against a vacuous pass: the carve-out subject must really be system-only.
-    expect(systemOnlyKinds).toContain("payment.charge.confirm")
+    // Guard against a vacuous pass: the carve-out subject must really be
+    // system-only. (BKL-176 repointed this from the retired payment.charge.confirm.)
+    expect(systemOnlyKinds).toContain("payment.refund.confirm")
     for (const kind of systemOnlyKinds) {
       const unreachable = report.diagnostics.find(
         (d) =>

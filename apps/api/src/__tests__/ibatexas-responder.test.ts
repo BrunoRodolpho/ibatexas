@@ -332,7 +332,8 @@ describe("createIbatexasResponder", () => {
 
   it("F1b: flags 'pagamento confirmado' when only a checkout executed (checkout != settlement)", async () => {
     // Claiming the payment settled while the runtime only created the checkout is
-    // a confabulation — settlement is justified ONLY by payment.charge/cash/refund.confirm.
+    // a confabulation — settlement is justified ONLY by payment.cash.confirm
+    // (BKL-176 retired payment.charge.confirm; never by a refund/checkout/QR).
     const { model } = mockModel("Pagamento confirmado e aprovado!");
     const responder = createIbatexasResponder({ model, modelId: "m", explainer });
     const decision = { kind: "EXECUTE", basis: [] } as unknown as Decision;
@@ -347,9 +348,9 @@ describe("createIbatexasResponder", () => {
     const { model } = mockModel("Pagamento confirmado! Tudo certo.");
     const responder = createIbatexasResponder({ model, modelId: "m", explainer });
     const decision = { kind: "EXECUTE", basis: [] } as unknown as Decision;
-    const acted = { kind: "executed", envelope: { kind: "payment.charge.confirm" }, result: {} };
+    const acted = { kind: "executed", envelope: { kind: "payment.cash.confirm" }, result: {} };
     const draft = await responder.respond(
-      mkInput({ decision, envelopeKinds: ["payment.charge.confirm"], acted }),
+      mkInput({ decision, envelopeKinds: ["payment.cash.confirm"], acted }),
     );
     expect(draft.text).toBe("Pagamento confirmado! Tudo certo.");
   });
@@ -451,7 +452,7 @@ describe("createIbatexasResponder", () => {
     const responder = createIbatexasResponder({ model, modelId: "m", explainer });
     const decision = { kind: "EXECUTE", basis: [] } as unknown as Decision;
     const acted = { kind: "failed", phase: "EXECUTE", code: "tool_threw", message: "boom" };
-    const draft = await responder.respond(mkInput({ decision, envelopeKinds: ["payment.charge.confirm"], acted }));
+    const draft = await responder.respond(mkInput({ decision, envelopeKinds: ["payment.cash.confirm"], acted }));
     expect(draft.text).toBe("O pagamento ainda não foi devidamente aprovado.");
   });
 

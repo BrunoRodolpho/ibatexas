@@ -11,9 +11,9 @@
 //  - `fulfillment-claimed.justifiedBy` is the EMPTY array by design — no action ever
 //    earns a delivery/pickup claim; permanently unearnable; never droppable.
 //  - `payment-settled.justifiedBy` EXCLUDES `payment.refund.confirm` (opposite money
-//    direction) and INCLUDES the inbound-settlement confirms
-//    (`payment.charge.confirm`, `payment.cash.confirm`). The refund confirm backs
-//    `refund-done` only.
+//    direction) and INCLUDES the inbound-settlement confirm
+//    (`payment.cash.confirm`; `payment.charge.confirm` was retired in BKL-176).
+//    The refund confirm backs `refund-done` only.
 //
 // NON-VACUITY: each of the three invariants below was verified RED under a mutation
 // of the source array (push a 12th class; set `fulfillment-claimed.justifiedBy` to a
@@ -56,8 +56,9 @@ describe("SUCCESS_CLAIM_CLASSES guard mirror (registry v0.1 §6 Cluster F + §K)
     const paymentSettled = classById("payment-settled");
     // Refund is the OPPOSITE money direction — it must NOT justify "pagamento aprovado".
     expect(paymentSettled.justifiedBy).not.toContain("payment.refund.confirm");
-    // The class IS earned by an inbound charge/cash settlement.
-    expect(paymentSettled.justifiedBy).toContain("payment.charge.confirm");
+    // The class IS earned by an inbound cash settlement (BKL-176 retired the
+    // payment.charge.confirm justifier; payment.cash.confirm remains).
+    expect(paymentSettled.justifiedBy).not.toContain("payment.charge.confirm");
     expect(paymentSettled.justifiedBy).toContain("payment.cash.confirm");
 
     // Sanity: the refund confirm maps to `refund-done`, not to `payment-settled`.

@@ -14,7 +14,7 @@
  *   - `express_intent` — the single mutation-proposing tool. Its `capability`
  *     argument is constrained (enum) to the union of the installed packs'
  *     `allowedIntents` for THIS turn's state. Those allowed intents are domain
- *     intent KINDS (`order.item.add`, `payment.charge.create`, …) — the
+ *     intent KINDS (`order.item.add`, `payment.pix.regenerate`, …) — the
  *     capability-level contract. Internal tool ids (`ibatexas.cart.addItem.v1`,
  *     `medusa.cart.add`) are NEVER exposed.
  *   - the turn's visible READ tools — read-only enrichment the LLM may call.

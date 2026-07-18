@@ -190,7 +190,9 @@ describe("paymentsPolicyBundle — taint policy", () => {
     expect(paymentsPolicyBundle.taint.minimumFor("payment.create")).toBe(
       "TRUSTED",
     )
-    expect(paymentsPolicyBundle.taint.minimumFor("payment.charge.confirm")).toBe(
+    // BKL-176 — payment.charge.confirm retired; payment.status.reconcile is a
+    // remaining system-only kind.
+    expect(paymentsPolicyBundle.taint.minimumFor("payment.status.reconcile")).toBe(
       "TRUSTED",
     )
     expect(paymentsPolicyBundle.taint.minimumFor("payment.dispute.open")).toBe(
@@ -491,8 +493,9 @@ describe("paymentsPack — PackV0 shape", () => {
     expect(paymentsPack.version).toBe("1.0.0")
   })
 
-  it("declares 17 unique intent kinds", () => {
-    expect(paymentsPack.intents.length).toBe(17)
+  it("declares 12 unique intent kinds", () => {
+    // BKL-176 — 17 before retiring the 5 dead payment.charge.* kinds.
+    expect(paymentsPack.intents.length).toBe(12)
     const unique = new Set(paymentsPack.intents)
     expect(unique.size).toBe(paymentsPack.intents.length)
   })

@@ -2,7 +2,9 @@
  * Authored `CapabilityDefinition` instances — FE-4 EXPAND (FE-T19) +
  * MIGRATE 1 (FE-T20).
  *
- * Covers all 66 first-party-Pack-owned intent kinds (the 6 packs'
+ * Covers all 61 first-party-Pack-owned intent kinds (66 before BKL-176
+ * retired the 5 dead `payment.charge.*` kinds — see the pack-payments group
+ * below) (the 6 packs'
  * `*_INTENT_KINDS` groupings in `@ibatexas/intent-kinds` — i.e.
  * `KNOWN_INTENT_KINDS` minus the 3 `pix.*` kinds, which mirror the FROZEN
  * external `@adjudicate/pack-payments-pix`, and `loyalty.stamp.add`, which
@@ -16,7 +18,8 @@
  *     addendum below)** — the chat-drivable roster (`CHAT_DRIVABLE_TOOL_
  *     KINDS`). Every chat-facing field is populated and cross-checked
  *     against a real source (docs, registries, planner code).
- *   - **`"identity"` (48 as FE-T19/T20 left it; 46 today)** — the remaining
+ *   - **`"identity"` (48 as FE-T19/T20 left it; 46 post-FE-T09; 41 today —
+ *     BKL-176 retired the 5 `payment.charge.*` identity kinds)** — the remaining
  *     kinds. ONLY `kind` / `pack` / `mutating` / `tier` (+
  *     `plannerAdvertisedBy` / `legacyNames` where grounded) are populated —
  *     every other chat-facing field is OMITTED (not merely `undefined`;
@@ -38,7 +41,8 @@
  * `order.amend.add_item`/`update_qty`/`remove_item` identity→chat (newly
  * model-proposable, newly registered tools with NO legacy name —
  * `legacyNames: []`, not fabricated). Net: chat 18→20, identity 48→46,
- * total unchanged at 66.
+ * total 66. BKL-176 then RETIRED the 5 dead `payment.charge.*` identity kinds
+ * → identity 41, total 61.
  *
  * **Declaration order is load-bearing.** Within each pack group the 66
  * entries are declared in EXACTLY that pack's `*_INTENT_KINDS` order (not
@@ -618,18 +622,20 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
   { kind: "customer.anonymize", pack: "ibatexas/pack-customer-onboarding", mutating: true, tier: "identity" },
   { kind: "customer.anonymize.cancel", pack: "ibatexas/pack-customer-onboarding", mutating: true, tier: "identity" },
 
-  // ── pack-payments (17 — matches PAYMENT_INTENT_KINDS / paymentsPack.intents order) ──
+  // ── pack-payments (12 — matches PAYMENT_INTENT_KINDS / paymentsPack.intents order) ──
   // Webhook/system-originated — never in the planner's allowedIntents
   // (module doc: "most payment operations are NOT LLM-proposable").
+  // BKL-176 (2026-07-18) — the 5 dead `payment.charge.*` kinds were RETIRED
+  // (zero-emitter sweep): a governance-only SHADOW of the live `payment.create`
+  // / `payment.status.*` taxonomy with no emitter or executor anywhere
+  // (`payment.charge.create` even self-documented as an alias of
+  // `payment.create`). `payment.charge.confirm` was the only removed
+  // `payment-settled` success-claim justifier — the remaining (still zero-
+  // emitter, so anti-confabulation-safe) justifier is `payment.cash.confirm`
+  // below; nothing was repointed onto the direction-agnostic
+  // `payment.status.reconcile`, which handles refunds too and would break
+  // `payment-settled`'s refund-direction exclusion (CLAUDE.md).
   { kind: "payment.create", pack: "ibatexas/pack-payments", mutating: true, tier: "identity" },
-  { kind: "payment.charge.create", pack: "ibatexas/pack-payments", mutating: true, tier: "identity" },
-  // FE-T22: a real justifiedBy member of "payment-settled"
-  // (ibatexas-responder.ts) alongside payment.cash.confirm below —
-  // grounded from that real export, not invented.
-  { kind: "payment.charge.confirm", pack: "ibatexas/pack-payments", mutating: true, tier: "identity", successClaimLinks: ["payment-settled"] },
-  { kind: "payment.charge.fail", pack: "ibatexas/pack-payments", mutating: true, tier: "identity" },
-  { kind: "payment.charge.expire", pack: "ibatexas/pack-payments", mutating: true, tier: "identity" },
-  { kind: "payment.charge.cancel", pack: "ibatexas/pack-payments", mutating: true, tier: "identity" },
   {
     kind: "payment.pix.regenerate",
     pack: "ibatexas/pack-payments",
