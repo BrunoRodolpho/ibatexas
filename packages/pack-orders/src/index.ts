@@ -172,7 +172,6 @@ export const ordersPack = {
     "order.checkout.create",
     "order.pix.details.set",
     "order.cancel",
-    "order.cancel.system",
     "order.amend.request",
     "order.amend.add_item",
     "order.amend.update_qty",

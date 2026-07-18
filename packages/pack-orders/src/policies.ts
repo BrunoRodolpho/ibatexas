@@ -189,9 +189,9 @@ const POST_PONR_FULFILLMENT: ReadonlySet<string> = new Set([
 // CUSTOMER-facing PONR additionally includes "preparing": once the kitchen is
 // preparing, a customer self-serve cancel is DENIED + escalated — mirrors the
 // route-layer canPerformAction("cancel_order") rule (order-action-validator.ts,
-// "Cozinha já está preparando"). A SYSTEM actor (order.cancel.system: payment-
-// expiry / stale-order compensation) is NOT bound by the preparing PONR and may
-// still cancel a preparing order.
+// "Cozinha já está preparando"). System/compensation cancels (payment-expiry /
+// stale-order) are NOT bound by the preparing PONR, but they run through
+// `order.status.transition`→CANCELED, not order.cancel (retired BKL-177).
 const CUSTOMER_POST_PONR_FULFILLMENT: ReadonlySet<string> = new Set([
   ...POST_PONR_FULFILLMENT,
   "preparing",
@@ -277,14 +277,12 @@ const requireTenantBindingGuard: OrderGuard = requireTenantBinding<
 /**
  * Most user-touching intents require a known customer principal. The
  * exceptions are `order.cart.ensure` (anonymous get-or-create) and the
- * system-only kinds (`order.cancel.system`, `order.projection.create`,
- * `order.status.reconcile`); the taint gate enforces TRUSTED for those
- * separately. `order.status.transition` is admin/system; auth is at
- * the route layer.
+ * system-only kinds (`order.projection.create`, `order.status.reconcile`);
+ * the taint gate enforces TRUSTED for those separately.
+ * `order.status.transition` is admin/system; auth is at the route layer.
  */
 const SYSTEM_OR_ANON_KINDS: ReadonlySet<string> = new Set([
   "order.cart.ensure",
-  "order.cancel.system",
   "order.projection.create",
   "order.status.transition",
   "order.status.reconcile",
@@ -402,7 +400,6 @@ const requireSlotsFilledForCheckout: OrderGuard = (envelope, state) => {
 
 const ORDER_OPS_REQUIRING_ORDER_ID: ReadonlySet<string> = new Set([
   "order.cancel",
-  "order.cancel.system",
   "order.amend.request",
   "order.amend.add_item",
   "order.amend.update_qty",
@@ -594,17 +591,15 @@ const requireConfirmationOnGroundedStatusTransition: OrderGuard = (
 }
 
 const requireCancellable: OrderGuard = (envelope, state) => {
-  if (
-    envelope.kind !== "order.cancel" &&
-    envelope.kind !== "order.cancel.system"
-  ) {
+  if (envelope.kind !== "order.cancel") {
     return null
   }
-  // System/compensation cancels (order.cancel.system, actor.principal="system")
-  // may still cancel a "preparing" order; a customer self-serve cancel may not
-  // (route denies + escalates). actor.principal is forgery-checked upstream.
-  const isSystem = envelope.actor.principal === "system"
-  if (canCancelOrder(state, isSystem)) return null
+  // A customer self-serve cancel is PONR-gated: a "preparing" (or later) order
+  // may NOT be cancelled here (the route denies + escalates). The
+  // system/compensation cancel of a still-preparing order is delivered by
+  // `order.status.transition`→CANCELED (stale-order-checker), adjudicated on
+  // its own path — order.cancel.system was retired as a dead duplicate (BKL-177).
+  if (canCancelOrder(state, false)) return null
   // Distinguish an already-cancelled order from one past the point-of-no-return
   // so the audit basis is accurate.
   if (orderAlreadyCancelled(state)) {
@@ -958,9 +953,10 @@ const confirmLargeTicket = nameGuard(
  * REQUEST_CONFIRMATION is resolved exactly like the large-ticket checkout
  * confirm — the identical envelope re-adjudicated with a matching
  * `confirmationReceipt`, which the kernel's 2a override flips to EXECUTE while
- * still re-running every state/taint/auth guard. `order.cancel.system` (cron /
- * subscriber compensation) is not matched — a system auto-cancel never asks the
- * customer to confirm a refund. The `CONFIRM_REFUND_THRESHOLD_CENTAVOS` band
+ * still re-running every state/taint/auth guard. This guard matches only the
+ * customer `order.cancel` — system/compensation cancels run through
+ * `order.status.transition` and never ask the customer to confirm a refund.
+ * The `CONFIRM_REFUND_THRESHOLD_CENTAVOS` band
  * boundary is carried on the audit basis for provenance; because even a
  * sub-confirm-threshold paid cancel parks, it does not change the two-band
  * verdict (a paid cancel below the escalate threshold always confirms).
@@ -1019,8 +1015,8 @@ const gatePaidCancel: OrderGuard = (envelope, state) => {
 /**
  * Refund-equivalent ESCALATION: customer-initiated `order.cancel` on a
  * large-ticket order (>= R$ 1.000) escalates to a human agent rather
- * than auto-cancelling. `order.cancel.system` (cron / subscriber) is
- * exempt — system auto-cancels don't escalate.
+ * than auto-cancelling. Only the customer `order.cancel` is matched;
+ * system/compensation cancels run through `order.status.transition`.
  */
 const escalateLargeCancel = nameGuard(
   "escalateLargeCancel",
@@ -1150,10 +1146,7 @@ const executeCheckout: OrderGuard = (envelope) => {
 }
 
 const executeCancel: OrderGuard = (envelope) => {
-  if (
-    envelope.kind === "order.cancel" ||
-    envelope.kind === "order.cancel.system"
-  ) {
+  if (envelope.kind === "order.cancel") {
     return decisionExecute([
       basis("business", BASIS_CODES.business.RULE_SATISFIED, {
         kind: envelope.kind,

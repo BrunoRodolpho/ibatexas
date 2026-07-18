@@ -279,9 +279,6 @@ describe("reservationsPolicyBundle — taint policy for system-only kinds", () =
       reservationsPolicyBundle.taint.minimumFor("reservation.no_show.mark"),
     ).toBe("TRUSTED")
     expect(
-      reservationsPolicyBundle.taint.minimumFor("reservation.waitlist.notify"),
-    ).toBe("TRUSTED")
-    expect(
       reservationsPolicyBundle.taint.minimumFor("reservation.create"),
     ).toBe("UNTRUSTED")
   })

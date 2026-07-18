@@ -126,7 +126,6 @@ export const ORDER_INTENT_KINDS = [
   "order.checkout.create",
   "order.pix.details.set",
   "order.cancel",
-  "order.cancel.system",
   "order.amend.request",
   "order.amend.add_item",
   "order.amend.update_qty",
@@ -153,7 +152,6 @@ export const RESERVATION_INTENT_KINDS = [
   "reservation.complete",
   "reservation.no_show.mark",
   "reservation.waitlist.join",
-  "reservation.waitlist.notify",
 ] as const satisfies readonly ReservationIntentKind[]
 
 // ── Pack-whatsapp intent surface ──────────────────────────────────────────────

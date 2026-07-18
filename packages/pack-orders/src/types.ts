@@ -25,8 +25,6 @@
  *   - order.checkout.create   — UNTRUSTED. Finalize cart → order. Composes
  *                                createPixPendingDeferGuard against PIX flow.
  *   - order.cancel            — UNTRUSTED. Customer-initiated cancel.
- *   - order.cancel.system     — SYSTEM-only. Cron / subscriber auto-cancel
- *                                (e.g., stale / pix_expired).
  *   - order.amend.request     — UNTRUSTED. Modify a placed order within the
  *                                amend window.
  *   - order.note.add          — UNTRUSTED. Add a note to an order.
@@ -77,7 +75,6 @@ export type OrderIntentKind =
   | "order.checkout.create"
   | "order.pix.details.set"
   | "order.cancel"
-  | "order.cancel.system"
   | "order.amend.request"
   | "order.amend.add_item"
   | "order.amend.update_qty"
@@ -412,10 +409,12 @@ export interface OrderState {
 
 /**
  * Customer-initiated kinds tolerate UNTRUSTED (the LLM proposes them on
- * the user's behalf; the policy decides). `order.cancel.system` is the
- * only system-only kind in this Pack — cron / subscriber callers (e.g.,
- * `stale-order-checker.ts`) emit it with TRUSTED taint; the LLM must
- * never be able to forge a system auto-cancel.
+ * the user's behalf; the policy decides). The system-only kinds
+ * (`order.projection.create`, `order.status.reconcile`) require TRUSTED
+ * taint; the LLM must never be able to forge them. (The former system
+ * auto-cancel kind `order.cancel.system` was retired as a dead duplicate —
+ * BKL-177: `stale-order-checker.ts` drives compensation cancels via
+ * `order.status.transition`→CANCELED, not a bespoke system-cancel kind.)
  *
  * Note that the LEGACY `orderPolicyBundle` mapped `payment.send` and
  * `refund.issue` to TRUSTED; those kinds belong to the `payment` domain
@@ -424,7 +423,6 @@ export interface OrderState {
  */
 export const orderTaintPolicy = createSystemTaintPolicy({
   systemOnlyKinds: [
-    "order.cancel.system",
     "order.projection.create",
     "order.status.reconcile",
   ],

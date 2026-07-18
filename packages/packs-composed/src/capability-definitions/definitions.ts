@@ -350,7 +350,6 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
   // SYSTEM-only compensation cancel (payment-expiry / stale-order) — the
   // orders planner comment is explicit: "NEVER LLM-proposable". No
   // plannerAdvertisedBy by construction, not by omission.
-  { kind: "order.cancel.system", pack: "ibatexas/pack-orders", mutating: true, tier: "identity" },
   // FE-T09 (D-a, the amend inversion) — `order.amend.request` moved OUT of
   // the chat tier: the model no longer targets it (capabilities.ts's
   // authenticated `allowedIntents` now lists the three granular kinds
@@ -579,7 +578,6 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
   },
   // SYSTEM-only (cron: waitlist-spot notification) — never in the
   // planner's allowedIntents.
-  { kind: "reservation.waitlist.notify", pack: "ibatexas/pack-reservations", mutating: true, tier: "identity" },
 
   // ── pack-customer-onboarding (8 — matches CUSTOMER_ONBOARDING_INTENT_KINDS / customerOnboardingPack.intents order) ──
   // SYSTEM-only (OTP-flow seed) — never in the planner's allowedIntents.

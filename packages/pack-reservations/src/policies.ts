@@ -464,10 +464,7 @@ const executeNoShow: ReservationGuard = (envelope) => {
 }
 
 const executeWaitlist: ReservationGuard = (envelope) => {
-  if (
-    envelope.kind === "reservation.waitlist.join" ||
-    envelope.kind === "reservation.waitlist.notify"
-  ) {
+  if (envelope.kind === "reservation.waitlist.join") {
     return decisionExecute([
       basis("business", BASIS_CODES.business.RULE_SATISFIED, {
         kind: envelope.kind,

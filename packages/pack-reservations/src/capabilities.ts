@@ -67,10 +67,9 @@ export const RESERVATION_TOOLS: ToolClassification = {
  * `RESERVATION_TOOLS` so "what gates this tool?" is one lookup.
  *
  * Note: only the 4 customer-facing tools are listed. Staff-only kinds
- * (`reservation.checkin`, `reservation.complete`) and SYSTEM-only
- * kinds (`reservation.no_show.mark`, `reservation.waitlist.notify`)
- * have no LLM-callable tool entry — they're invoked directly by
- * staff endpoints and cron jobs respectively.
+ * (`reservation.checkin`, `reservation.complete`) and the SYSTEM-only
+ * kind (`reservation.no_show.mark`) have no LLM-callable tool entry —
+ * they're invoked directly by staff endpoints and cron jobs respectively.
  */
 export const RESERVATION_TOOL_TO_INTENT: Readonly<
   Record<string, ReservationIntentKind>
@@ -116,10 +115,9 @@ const rawReservationsCapabilityPlanner: CapabilityPlanner<
     if (isStaffSession) {
       allowedIntents.push("reservation.checkin", "reservation.complete")
     }
-    // `reservation.no_show.mark` and `reservation.waitlist.notify` are
-    // NEVER LLM-proposable — the taint gate enforces TRUSTED for
-    // system-only kinds (see types.ts taint policy); the planner omits
-    // them for defence in depth.
+    // `reservation.no_show.mark` is NEVER LLM-proposable — the taint gate
+    // enforces TRUSTED for system-only kinds (see types.ts taint policy);
+    // the planner omits it for defence in depth.
     void context
 
     return {

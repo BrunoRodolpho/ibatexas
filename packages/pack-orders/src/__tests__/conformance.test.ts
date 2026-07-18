@@ -193,16 +193,6 @@ const corpus: ReadonlyArray<Fixture> = [
     expect: { kind: "EXECUTE" },
   },
   {
-    name: "EXECUTE: TRUSTED order.cancel.system on existing order",
-    envelope: env(
-      "order.cancel.system",
-      { orderId: "o-1", reason: "stale" },
-      "TRUSTED",
-    ),
-    state: authenticatedState(),
-    expect: { kind: "EXECUTE" },
-  },
-  {
     name: "EXECUTE: small-ticket order.amend.request",
     envelope: env("order.amend.request", {
       orderId: "o-1",
@@ -410,17 +400,6 @@ const corpus: ReadonlyArray<Fixture> = [
     }),
     state: authenticatedState({ orderId: "o-1", fulfillmentStatus: "delivered" }),
     expect: { kind: "REFUSE", refusalCode: "order.already_shipped" },
-  },
-  {
-    name: "REFUSE: UNTRUSTED order.cancel.system (taint gate)",
-    envelope: env(
-      "order.cancel.system",
-      { orderId: "o-1", reason: "stale" },
-      "UNTRUSTED",
-    ),
-    state: authenticatedState(),
-    // Kernel emits `taint_level_insufficient` on this path.
-    expect: { kind: "REFUSE" },
   },
   {
     name: "REFUSE: order.item.add with missing cartId",
@@ -866,7 +845,7 @@ describe("ordersPack — kernel invariants via runConformance()", () => {
 // System-only kinds (taint minimum above UNTRUSTED) are intentionally not
 // planner-proposable; the analyzer auto-excludes them from `unreachable_intent`
 // via `pack.policy.taint.minimumFor`. We pin that carve-out so a future drop of
-// `order.cancel.system` from the taint policy fails loudly here.
+// `order.projection.create` from the taint policy fails loudly here.
 //
 // NOTE: we deliberately do NOT assert `summary.warning === 0` — the planner
 // omits several declared, non-system intents (cart.sync, pix.details.set,
@@ -910,10 +889,10 @@ describe("ordersPack — policy coherence via analyzePolicy() (AJD-301)", () => 
     expect(report.summary.error).toBe(0)
   })
 
-  it("system-only kinds (order.cancel.system, …) are carved out", () => {
+  it("system-only kinds (order.projection.create, …) are carved out", () => {
     const report = analyzePolicy({ pack: ordersPack, plannerProbes: probes })
     // Guard against a vacuous pass: the carve-out subject must really be system-only.
-    expect(systemOnlyKinds).toContain("order.cancel.system")
+    expect(systemOnlyKinds).toContain("order.projection.create")
     for (const kind of systemOnlyKinds) {
       const unreachable = report.diagnostics.find(
         (d) =>

@@ -188,7 +188,6 @@ export const reservationsPack = {
     "reservation.complete",
     "reservation.no_show.mark",
     "reservation.waitlist.join",
-    "reservation.waitlist.notify",
   ],
   policy: reservationsPolicyBundle,
   planner: reservationsCapabilityPlanner,

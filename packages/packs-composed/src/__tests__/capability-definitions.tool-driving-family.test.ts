@@ -45,12 +45,14 @@ import {
 import type { CapabilityDefinition, CapabilityPackId } from "../capability-definitions/index.js"
 
 // ── Count assertions (ticket AC: "70 KNOWN / 18 CHAT_DRIVABLE", updated to
-// 20 CHAT_DRIVABLE by FE-T09 (D-a) — the amend inversion) ─────────
+// 20 CHAT_DRIVABLE by FE-T09 (D-a) — the amend inversion; KNOWN 70→65 (BKL-176
+// retired 5 payment.charge.*) → 63 (BKL-177 PR-A retired order.cancel.system +
+// reservation.waitlist.notify) ──
 
-describe("count assertions — 65 KNOWN / 20 CHAT_DRIVABLE pinned against the projections (FE-T21 AC, FE-T09 D-a update; BKL-176 retired 5)", () => {
-  it("KNOWN_INTENT_KINDS has exactly 65 kinds", () => {
-    // BKL-176 — 70 before retiring the 5 dead payment.charge.* kinds.
-    expect(KNOWN_INTENT_KINDS.size).toBe(65)
+describe("count assertions — 63 KNOWN / 20 CHAT_DRIVABLE pinned against the projections (FE-T21 AC, FE-T09 D-a update; BKL-176 + BKL-177)", () => {
+  it("KNOWN_INTENT_KINDS has exactly 63 kinds", () => {
+    // 70 → 65 (BKL-176: 5 dead payment.charge.*) → 63 (BKL-177 PR-A: 2 kinds).
+    expect(KNOWN_INTENT_KINDS.size).toBe(63)
   })
 
   it("CHAT_DRIVABLE_TOOL_KINDS has exactly 20 kinds, and generateChatDrivableToolKinds(CAPABILITY_DEFINITIONS) reproduces it byte-for-byte", () => {
@@ -75,9 +77,9 @@ describe("count assertions — 65 KNOWN / 20 CHAT_DRIVABLE pinned against the pr
     expect(source).not.toMatch(/The 18 chat-drivable/)
   })
 
-  it("the 61-kind CapabilityDefinition registry + KNOWN_INTENT_KINDS' 4 external kinds (3 pix + 1 loyalty) account for all 65", () => {
-    // BKL-176 — 66 before retiring the 5 dead payment.charge.* kinds.
-    expect(CAPABILITY_DEFINITIONS).toHaveLength(61)
+  it("the 59-kind CapabilityDefinition registry + KNOWN_INTENT_KINDS' 4 external kinds (3 pix + 1 loyalty) account for all 63", () => {
+    // 66 → 61 (BKL-176: 5 dead payment.charge.*) → 59 (BKL-177 PR-A: 2 kinds).
+    expect(CAPABILITY_DEFINITIONS).toHaveLength(59)
   })
 })
 
