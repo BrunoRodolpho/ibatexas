@@ -131,6 +131,29 @@ describe("getRedisClient — connect timeout + bounded reconnect", () => {
     expect(strategy(2)).toBeInstanceOf(Error);
   });
 
+  it("honors REDIS_RECONNECT_BASE_DELAY_MS override", async () => {
+    // base=500 (vs the 100 default): attempt 0 -> [500, 1000) (base + jitter<base).
+    // The floor of that range distinguishes the override from the default's [100,200).
+    process.env.REDIS_RECONNECT_BASE_DELAY_MS = "500";
+    const cfg = await construct();
+    const first = cfg.socket.reconnectStrategy(0) as number;
+    expect(first).toBeGreaterThanOrEqual(500);
+    expect(first).toBeLessThan(1_000);
+  });
+
+  it("clamps REDIS_RECONNECT_BASE_DELAY_MS to a minimum of 1 (no zero-delay reconnect burst)", async () => {
+    // A 0 base would make backoff + jitter both collapse to 0, busy-looping the
+    // reconnect. The clamp keeps every attempt's delay strictly positive.
+    process.env.REDIS_RECONNECT_BASE_DELAY_MS = "0";
+    const cfg = await construct();
+    const strategy = cfg.socket.reconnectStrategy;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const delay = strategy(attempt) as number;
+      expect(typeof delay).toBe("number");
+      expect(delay).toBeGreaterThanOrEqual(1);
+    }
+  });
+
   it("logs a structured, ops-visible signal on each reconnect attempt", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const cfg = await construct();

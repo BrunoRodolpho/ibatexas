@@ -397,7 +397,14 @@ describe("order.status.transition executor — POST-adjudication kitchen-advance
   // the closed shape is documented (the live probe's empty inputSchema left the
   // planner guessing field names + pt-BR values). This asserts the contract, NOT
   // any runtime normalization — the guard still reads `newStatus` verbatim.
-  it("declares the closed contract in inputSchema: orderId + the six English newStatus targets, no pt/alias values", () => {
+  //
+  // BKL-166 — reconciled with the authored wire schema
+  // (`order-status-transition.schema.ts`, FE-T05): `newStatus` is the ONLY
+  // required model-emitted field; `orderId` is an OPTIONAL order-reference channel
+  // (the BKL-089 resolver tries it first, else falls back to the context order),
+  // NOT required. The earlier `required: ["orderId", "newStatus"]` overstated
+  // orderId as mandatory and contradicted the authored schema's declared fields.
+  it("declares the closed contract in inputSchema: required newStatus (six English targets), optional orderId, no pt/alias values", () => {
     const { deps } = makeDeps();
     const tool = toolByKind(deps, "order.status.transition");
     const schema = tool.inputSchema as {
@@ -410,11 +417,14 @@ describe("order.status.transition executor — POST-adjudication kitchen-advance
       additionalProperties: boolean;
     };
     expect(schema.type).toBe("object");
-    // Only orderId + newStatus are model-emitted; actor/actorId/reason are
+    // newStatus is the sole required model field; actor/actorId/reason are
     // Capsule-forced by the executor, so the contract is closed to extras.
-    expect(schema.required).toEqual(["orderId", "newStatus"]);
+    expect(schema.required).toEqual(["newStatus"]);
     expect(schema.additionalProperties).toBe(false);
+    // orderId stays a documented, OPTIONAL property (a resolver-tried reference),
+    // never listed in `required` — matching the authored wire schema.
     expect(schema.properties.orderId.type).toBe("string");
+    expect(schema.required).not.toContain("orderId");
     // Exactly the six English fulfillment targets, verbatim — the enum the live
     // probe's wrong field names + pt-BR values (confirmado/cancel) never reached.
     const enumValues = schema.properties.newStatus.enum;
@@ -455,7 +465,9 @@ describe("BKL-147 — ops verbs declare a typed model-facing inputSchema (contra
     "product.price.set": ["productId", "priceCentavos"],
     "menu.special.set": ["productId", "date"],
     "order.note.add": ["orderId", "body"],
-    "order.status.transition": ["orderId", "newStatus"],
+    // BKL-166 — only newStatus is required; orderId is an optional resolver
+    // channel (reconciled with order-status-transition.schema.ts, FE-T05).
+    "order.status.transition": ["newStatus"],
     "payment.refund.issue": ["orderReference"],
     "ops.alert.resolve.staff": ["alertId"],
     "incident.ticket.close.staff": ["incidentId"],

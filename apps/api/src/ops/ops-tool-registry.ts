@@ -974,9 +974,16 @@ function opsToolDefinitions(
       // BKL-144 — the REAL model-facing shape. The runtime treats inputSchema
       // opaquely (it is NOT surfaced to the LLM — the planner advertises only
       // `capability` + a generic `payload`), so this documents the CLOSED contract
-      // the guard enforces rather than driving generation: the planner emits ONLY
-      // `orderId` + `newStatus`; `actor`/`actorId`/`reason` are Capsule-forced by
-      // the executor, never model-parsed. `newStatus` is one of the six English
+      // the guard enforces rather than driving generation: `newStatus` is the ONLY
+      // required model-emitted field; `orderId` is an OPTIONAL order reference — the
+      // BKL-089 resolver (`resolveStatusTransitionOrderTarget`) tries an
+      // authoritative lookup on a model-supplied `orderId` first, else falls back to
+      // the context order ("meu último pedido"), so a payload of just `{ newStatus }`
+      // is valid. This mirrors the authored wire schema
+      // (`order-status-transition.schema.ts`, FE-T05), whose declared field is
+      // `newStatus` alone with `orderId` carried as a `legacyPayloadChannels`
+      // entry — NOT a required field. `actor`/`actorId`/`reason` are Capsule-forced
+      // by the executor, never model-parsed. `newStatus` is one of the six English
       // enum values VERBATIM — the BKL-090 guard reads `payload.newStatus`
       // literally with NO pt→en / alias normalization (the fix teaches the planner,
       // it does NOT loosen the guard).
@@ -986,7 +993,7 @@ function opsToolDefinitions(
           orderId: {
             type: "string",
             description:
-              "Pedido a transicionar — id, número de exibição ou nome do cliente (o resolver mapeia para o id real).",
+              "Referência OPCIONAL do pedido — id, número de exibição ou nome do cliente (o resolver mapeia para o id real; se ausente, usa o pedido do contexto).",
           },
           newStatus: {
             type: "string",
@@ -1002,7 +1009,7 @@ function opsToolDefinitions(
               "Status alvo — EXATAMENTE um destes valores em inglês (contrato fechado; o guard não normaliza).",
           },
         },
-        required: ["orderId", "newStatus"],
+        required: ["newStatus"],
         additionalProperties: false,
       },
       outputSchema: {},
