@@ -56,6 +56,7 @@ import {
   createOrderService,
   createPaymentCommandService,
   createPaymentQueryService,
+  type PaymentDisputeOpenPayload,
   createOrderEventLogService,
   type PaymentStatusReconcilePayload,
 } from "@ibatexas/domain";
@@ -116,6 +117,37 @@ function buildReconcileEnvelope(args: {
   };
   return buildEnvelope({
     kind: "payment.status.reconcile" as const,
+    payload,
+    nonce: args.event.id,
+    actor: {
+      principal: "system",
+      sessionId: `stripe-webhook:${args.event.id}`,
+    },
+    taint: "SYSTEM",
+  });
+}
+
+/**
+ * BKL-178 — the system-actor `payment.dispute.open` envelope minted for a
+ * `charge.dispute.created` event, ALONGSIDE the DISPUTED reconcile. It carries
+ * no state mutation (adjudicate-only); `escalateAlwaysOnDispute` ESCALATEs it
+ * for human review. `nonce = event.id` keeps redelivery idempotent at the
+ * Execution Ledger even past the Redis 7-day window (same Stripe event → same
+ * intentHash). Distinct kind from the reconcile, so sharing the nonce does not
+ * collide (intentHash folds in `kind`).
+ */
+function buildDisputeOpenEnvelope(args: {
+  readonly paymentId: string;
+  readonly disputeAmountCentavos: number;
+  readonly event: Stripe.Event;
+}) {
+  const payload: PaymentDisputeOpenPayload = {
+    paymentId: args.paymentId,
+    stripeEventId: args.event.id,
+    disputeAmountCentavos: args.disputeAmountCentavos,
+  };
+  return buildEnvelope({
+    kind: "payment.dispute.open" as const,
     payload,
     nonce: args.event.id,
     actor: {
@@ -672,6 +704,82 @@ async function handleChargeRefunded(
   );
 }
 
+/**
+ * BKL-178 — the governed dispute-escalation edge. Resolves the Payment row the
+ * chargeback is about (the same lookup the reconcile uses), adjudicates a
+ * system-actor `payment.dispute.open` envelope, and on the kernel's ESCALATE
+ * decision publishes `support.handoff_requested` so the dispute lands on the
+ * owner-visible Escalações queue (+ `pendingEscalations` KPI) via the existing
+ * handoff-subscriber — which also fires the staff WhatsApp ping (one governed
+ * record + one ping). Idempotent on `event.id` (envelope nonce) and
+ * `dispute.id` (handoff sessionId), so Stripe redelivery never double-escalates.
+ */
+async function escalateDisputeOpen(
+  dispute: Stripe.Dispute,
+  piId: string,
+  orderId: string | undefined,
+  event: Stripe.Event,
+  logger: WebhookLogger,
+): Promise<void> {
+  const paymentQuerySvc = createPaymentQueryService();
+  const payment = await resolvePaymentForReconcile(
+    paymentQuerySvc,
+    piId,
+    orderId,
+    event,
+    logger,
+  );
+  if (!payment) {
+    // No local Payment row (e.g. a PIX cart that never completed). The
+    // order.disputed event still fires downstream; without a paymentId there is
+    // no governed envelope to build, so log rather than escalate a phantom.
+    logger.warn(
+      { event_id: event.id, dispute_id: dispute.id, stripe_pi: piId },
+      "[stripe-webhook] dispute opened but no local Payment row — no governed dispute.open envelope",
+    );
+    return;
+  }
+
+  const paymentCmdSvc = createPaymentCommandService(logger, {
+    auditSink: getAuditSink(),
+  });
+  const envelope = buildDisputeOpenEnvelope({
+    paymentId: payment.id,
+    disputeAmountCentavos: dispute.amount,
+    event,
+  });
+  const outcome = await paymentCmdSvc.disputeOpenFromEnvelope(envelope);
+
+  if (outcome.decision.kind === "ESCALATE") {
+    // The missing edge — route the audited ESCALATE to the owner escalation
+    // surface. sessionId is a synthetic non-conversation key; the handoff
+    // subscriber records it (Escalações + KPI) and pings staff. A transcript
+    // lookup on this sessionId 404s harmlessly (no conversation exists).
+    await publishNatsEvent("support.handoff_requested", {
+      sessionId: `dispute:${dispute.id}`,
+      reason: "payment_disputed",
+    });
+    logger.warn(
+      { event_id: event.id, dispute_id: dispute.id, paymentId: payment.id },
+      "[stripe-webhook] payment.dispute.open ESCALATEd — support handoff published",
+    );
+    return;
+  }
+
+  // Defensive: dispute.open is always-ESCALATE by policy. Any other decision is
+  // a policy-contract change — surface loudly. The reconcile already wrote the
+  // DISPUTED status truth, so nothing is silently lost.
+  logger.error(
+    {
+      event_id: event.id,
+      dispute_id: dispute.id,
+      paymentId: payment.id,
+      decision: outcome.decision.kind,
+    },
+    "[stripe-webhook] payment.dispute.open did not ESCALATE — unexpected policy decision",
+  );
+}
+
 async function handleChargeDisputeCreated(
   event: Stripe.Event,
   startMs: number,
@@ -686,12 +794,17 @@ async function handleChargeDisputeCreated(
     "Stripe charge.dispute.created received — dispute opened",
   );
 
-  // Reconcile payment → disputed
+  // Reconcile payment → disputed (status truth)
   const piId = typeof dispute.payment_intent === "string"
     ? dispute.payment_intent
     : dispute.payment_intent?.id;
   if (piId) {
     await reconcilePaymentFromStripe(piId, PaymentStatus.DISPUTED, event, logger);
+    // BKL-178 — governed dispute escalation: mint + adjudicate a system-actor
+    // payment.dispute.open envelope (always ESCALATEs) and, on ESCALATE, surface
+    // it to the owner escalation queue via support.handoff_requested. Runs after
+    // the reconcile so the resolved Payment row is authoritative.
+    await escalateDisputeOpen(dispute, piId, orderId, event, logger);
   }
 
   await publishNatsEvent("order.disputed", {

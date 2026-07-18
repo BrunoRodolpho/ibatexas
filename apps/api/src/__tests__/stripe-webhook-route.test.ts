@@ -32,6 +32,7 @@ const mockMedusaAdjudicated = vi.hoisted(() => vi.fn());
 const mockCapturePayment = vi.hoisted(() => vi.fn());
 const mockReconcileFromWebhook = vi.hoisted(() => vi.fn());
 const mockReconcileFromWebhookFromEnvelope = vi.hoisted(() => vi.fn());
+const mockDisputeOpenFromEnvelope = vi.hoisted(() => vi.fn());
 const mockGetByStripePaymentIntentId = vi.hoisted(() => vi.fn());
 // T2-1: orderId fallback for the reconcile PI lookup — hoisted so the
 // fallback suite can assert adoption/non-adoption.
@@ -122,6 +123,7 @@ vi.mock("@ibatexas/domain", () => ({
     transitionStatus: vi.fn().mockResolvedValue({ id: "pay_01", version: 1 }),
     reconcileFromWebhook: mockReconcileFromWebhook,
     reconcileFromWebhookFromEnvelope: mockReconcileFromWebhookFromEnvelope,
+    disputeOpenFromEnvelope: mockDisputeOpenFromEnvelope,
   }),
   createPaymentQueryService: () => ({
     getActiveByOrderId: mockGetActiveByOrderId,
@@ -134,6 +136,10 @@ vi.mock("@ibatexas/domain", () => ({
 
 vi.mock("@ibatexas/nats-client", () => ({
   publishNatsEvent: mockPublishNatsEvent,
+}));
+
+vi.mock("@ibatexas/audit-sink", () => ({
+  getAuditSink: () => ({ emit: mockGetAuditSinkEmit }),
 }));
 
 vi.mock("../jobs/pix-expiry-monitor.js", () => ({
@@ -808,6 +814,135 @@ describe("POST /api/webhooks/stripe — charge.dispute.created", () => {
         reason: "product_not_received",
       }),
     );
+  });
+
+  it("BKL-178: ESCALATE → mints the dispute.open envelope and publishes support.handoff_requested", async () => {
+    const event = {
+      id: "evt_dispute_03",
+      livemode: false,
+      created: 1_700_000_000,
+      type: "charge.dispute.created",
+      data: {
+        object: {
+          id: "dp_test_789",
+          amount: 12000,
+          reason: "fraudulent",
+          payment_intent: "pi_disputed_1",
+          metadata: { medusaOrderId: "order_03" },
+        },
+      },
+    };
+    mockConstructEvent.mockReturnValue(event);
+    const mockRedis = createMockRedis({ set: vi.fn().mockResolvedValue("OK") });
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+    mockPublishNatsEvent.mockResolvedValue(undefined);
+    // The chargeback's Payment row resolves (reconcile + dispute.open both find it).
+    mockGetByStripePaymentIntentId.mockResolvedValue({
+      id: "pay_09",
+      orderId: "order_03",
+      status: "disputed",
+      method: "pix",
+      stripePaymentIntentId: "pi_disputed_1",
+    });
+    mockReconcileFromWebhookFromEnvelope.mockResolvedValue({
+      decision: { kind: "EXECUTE" },
+      result: { version: 2 },
+    });
+    mockDisputeOpenFromEnvelope.mockResolvedValue({
+      decision: { kind: "ESCALATE", reason: "dispute_opened_requires_review" },
+    });
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/webhooks/stripe",
+      headers: {
+        "content-type": "application/json",
+        "stripe-signature": "t=123,v1=valid",
+      },
+      payload: Buffer.from("{}"),
+    });
+
+    expect(res.statusCode).toBe(200);
+    // The system-actor dispute.open envelope carries the resolved paymentId, the
+    // Stripe event.id as both stripeEventId + nonce, and the chargeback amount.
+    expect(mockDisputeOpenFromEnvelope).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "payment.dispute.open",
+        payload: expect.objectContaining({
+          paymentId: "pay_09",
+          stripeEventId: "evt_dispute_03",
+          disputeAmountCentavos: 12000,
+        }),
+        nonce: "evt_dispute_03",
+        actor: expect.objectContaining({ principal: "system" }),
+        taint: "SYSTEM",
+      }),
+    );
+    // The missing edge — the audited ESCALATE surfaces on the owner escalation
+    // queue via the handoff subscriber (which also pings staff).
+    expect(mockPublishNatsEvent).toHaveBeenCalledWith(
+      "support.handoff_requested",
+      expect.objectContaining({
+        sessionId: "dispute:dp_test_789",
+        reason: "payment_disputed",
+      }),
+    );
+  });
+
+  it("BKL-178: a non-ESCALATE dispute.open decision publishes NO handoff (fires on ESCALATE only)", async () => {
+    const event = {
+      id: "evt_dispute_04",
+      livemode: false,
+      created: 1_700_000_000,
+      type: "charge.dispute.created",
+      data: {
+        object: {
+          id: "dp_test_999",
+          amount: 7000,
+          reason: "fraudulent",
+          payment_intent: "pi_disputed_2",
+          metadata: { medusaOrderId: "order_04" },
+        },
+      },
+    };
+    mockConstructEvent.mockReturnValue(event);
+    const mockRedis = createMockRedis({ set: vi.fn().mockResolvedValue("OK") });
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+    mockPublishNatsEvent.mockResolvedValue(undefined);
+    mockGetByStripePaymentIntentId.mockResolvedValue({
+      id: "pay_10",
+      orderId: "order_04",
+      status: "disputed",
+      method: "pix",
+      stripePaymentIntentId: "pi_disputed_2",
+    });
+    mockReconcileFromWebhookFromEnvelope.mockResolvedValue({
+      decision: { kind: "EXECUTE" },
+      result: { version: 2 },
+    });
+    // Defensive branch — a policy-contract change that stops escalating. The
+    // handoff must NOT fire; the reconcile still recorded the DISPUTED truth.
+    mockDisputeOpenFromEnvelope.mockResolvedValue({
+      decision: { kind: "REFUSE", refusal: { code: "x", kind: "BUSINESS_RULE", userFacing: "x" } },
+    });
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/webhooks/stripe",
+      headers: {
+        "content-type": "application/json",
+        "stripe-signature": "t=123,v1=valid",
+      },
+      payload: Buffer.from("{}"),
+    });
+
+    expect(res.statusCode).toBe(200);
+    const handoffCalls = mockPublishNatsEvent.mock.calls.filter(
+      (c) => c[0] === "support.handoff_requested",
+    );
+    expect(handoffCalls).toHaveLength(0);
   });
 });
 
