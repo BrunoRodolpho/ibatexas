@@ -41,6 +41,59 @@ export function isKnownOrderStatus(s: string): s is OrderFulfillmentStatus {
 }
 
 /**
+ * BKL-150(b) — locale/alias aliases of the fulfillment-status tokens the ops
+ * planner may emit for `order.status.transition`, mapped to the canonical en-US
+ * enum value. Keyed by the NORMALIZED token (lowercased, diacritic-stripped,
+ * whitespace-collapsed — see {@link normalizeOrderStatusToken}).
+ *
+ * Two families, both grounded (never invented): the en-GB spelling `cancelled`
+ * (the sole enum value with an en-GB/en-US split — the live-observed defect),
+ * and the pt-BR words the ops persona teaches / the 4B slips to despite the
+ * "copie a string em inglês" instruction (`cancelar`/`cancelado`,
+ * `confirmar`/`confirmado`, `preparar`/`preparando`, `pronto`, `entregue`, `em
+ * entrega`). Anything NOT listed here is left verbatim so the strict kernel
+ * guard still fails closed on a genuinely unknown token — this maps only known
+ * alternate spellings of ALREADY-VALID values, it never widens the enum.
+ */
+const ORDER_STATUS_TOKEN_ALIASES: Readonly<Record<string, OrderFulfillmentStatus>> = {
+  // en-GB spelling → en-US.
+  cancelled: OrderFulfillmentStatus.CANCELED,
+  // pt-BR (persona-taught) → en-US enum.
+  cancelar: OrderFulfillmentStatus.CANCELED,
+  cancelado: OrderFulfillmentStatus.CANCELED,
+  confirmar: OrderFulfillmentStatus.CONFIRMED,
+  confirmado: OrderFulfillmentStatus.CONFIRMED,
+  preparar: OrderFulfillmentStatus.PREPARING,
+  preparando: OrderFulfillmentStatus.PREPARING,
+  pronto: OrderFulfillmentStatus.READY,
+  entregue: OrderFulfillmentStatus.DELIVERED,
+  "em entrega": OrderFulfillmentStatus.IN_DELIVERY,
+  em_entrega: OrderFulfillmentStatus.IN_DELIVERY,
+}
+
+/**
+ * BKL-150(b) — canonicalize an order-status token to the en-US enum value the
+ * strict kernel legality guard (`@ibatexas/pack-orders`
+ * `requireLegalStatusTransition`) reads. Normalizes casing / diacritics /
+ * whitespace, passes an already-known enum value through, maps a KNOWN en-GB or
+ * pt-BR alias ({@link ORDER_STATUS_TOKEN_ALIASES}) onto its canonical form, and
+ * returns an UNKNOWN token VERBATIM so the guard still fails closed. Called ONLY
+ * from the ops resolver's `order.status.transition` branch (before adjudication,
+ * on the rebuilt envelope) — the guard itself performs NO normalization, keeping
+ * one canonicalization seam and a strict guard.
+ */
+export function normalizeOrderStatusToken(raw: string): string {
+  const key = raw
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim()
+  if (isKnownOrderStatus(key)) return key
+  return ORDER_STATUS_TOKEN_ALIASES[key] ?? raw
+}
+
+/**
  * Is `status` terminal — i.e. has NO legal next state? Derived from the SAME
  * `VALID_TRANSITIONS` table (`delivered` / `canceled` map to `[]`), so terminal
  * membership is defined in exactly one place. The kernel legality guard emits a

@@ -52,7 +52,11 @@
 
 import { buildEnvelope, type IntentEnvelope } from "@adjudicate/core";
 import type { ResolvedEnvelope, ResolverPort } from "@claustrum/core";
-import { isTerminalPaymentStatus, type PaymentStatus } from "@ibatexas/types";
+import {
+  isTerminalPaymentStatus,
+  normalizeOrderStatusToken,
+  type PaymentStatus,
+} from "@ibatexas/types";
 import { OPS_REFUND_DEFAULT_REASON } from "../claustrum/language-engine/payment-refund-issue.schema.js";
 import { logger } from "../lib/logger.js";
 import { shiftYmd, todayInRestaurantTz } from "../routes/admin/_date-defaults.js";
@@ -61,6 +65,7 @@ import {
   type ListProductsByName,
 } from "./ops-product-resolution.js";
 import {
+  orderReferenceAppearsInMessage,
   resolveMostRecentActiveOrder,
   resolveOrderByReference,
   type OrderReferenceReads,
@@ -544,9 +549,19 @@ async function resolveAvailabilityTarget(
       },
       "ops product name resolved to id (payload productId rewritten before adjudication)",
     );
+    // BKL-156 — stamp the resolved display name (a by-product of name→id
+    // resolution) so the deterministic EXECUTE render can name the product
+    // truthfully. Only on the name-resolved path — a direct-id hit's
+    // `lookupProduct` projection carries no name (that wiring lives in the
+    // FENCED bootstrap), so it degrades to the generic render, never fabricated.
+    const productName = resolution.product.title.trim();
     return {
       product: { id: resolution.product.id, status: resolution.product.status },
-      payload: { ...payload, productId: resolution.product.id },
+      payload: {
+        ...payload,
+        productId: resolution.product.id,
+        ...(productName !== "" ? { productName } : {}),
+      },
     };
   }
   logger.info(
@@ -1191,18 +1206,93 @@ export function buildOpsOrderNoteAddResumeState(
   };
 }
 
+/** The ops order-mutation kinds whose `payload.orderId` the model can bleed
+ *  across turns from the conversation-history block (BKL-150a). */
+const ORDER_REF_BLEED_KINDS: ReadonlySet<string> = new Set([
+  "order.status.transition",
+  "order.note.add",
+]);
+
+/**
+ * BKL-150(a) — detect a STALE cross-turn order-reference BLEED: on a staff
+ * session the model can copy a PRIOR turn's order reference (a display NUMBER or
+ * a customer NAME) out of the fenced conversation-history block (ops-history.ts,
+ * prompt CONTEXT only) into a NEW turn's `payload.orderId`, even when the CURRENT
+ * message names no such order — the resolver would then resolve that stale
+ * reference authoritatively and the guard would REFUSE (order not found /
+ * illegal), MASKING the staff's actual request.
+ *
+ * A model-supplied reference is HONORED only when it is grounded in the current
+ * message (`orderReferenceAppearsInMessage` — display-id digits, or every
+ * normalized name token, present); a reference the message does not contain is a
+ * bleed. Fail-safe: an absent/empty message ⇒ NOT a bleed (we cannot classify,
+ * so we HONOR the reference exactly as before — production always supplies the
+ * text; every text-less caller/test stays byte-identical).
+ */
+function isStaleOrderRefBleed(
+  rawOrderId: unknown,
+  requestText: string,
+): boolean {
+  if (typeof rawOrderId !== "string" || rawOrderId.trim() === "") return false;
+  if (requestText.trim() === "") return false; // no message → cannot classify → honor (legacy)
+  return !orderReferenceAppearsInMessage(rawOrderId, requestText);
+}
+
+/**
+ * BKL-150(a) — strip a stale cross-turn order-reference bleed from an ops
+ * order-mutation payload BEFORE resolution, so the turn never silently acts on
+ * (or refuses because of) a prior-turn order. With `orderId` gone,
+ * `order.status.transition` falls through to the auto-resolve-most-recent path
+ * (a GROUNDED target that FORCES a confirmation NAMING the order — a wrong one is
+ * catchable, never silently acted on — demote-only, never a bleed-specific hard
+ * refuse), and `order.note.add` (which has no auto-resolve) REFUSEs `no_order`
+ * honestly ("which order?") — the same honest path any unresolvable note-add
+ * takes, never a silent write to the stale order. Only the two
+ * {@link ORDER_REF_BLEED_KINDS} are scrubbed; every other kind (and a reference
+ * the current message DOES contain) is returned verbatim.
+ */
+function scrubStaleOrderBleed(
+  kind: string,
+  payload: Record<string, unknown>,
+  requestText: string,
+): Record<string, unknown> {
+  if (!ORDER_REF_BLEED_KINDS.has(kind)) return payload;
+  if (!isStaleOrderRefBleed(payload.orderId, requestText)) return payload;
+  logger.info(
+    {
+      component: "ops-resolver",
+      event: "order.stale_ref_bleed_scrubbed",
+      kind,
+      from: payload.orderId,
+    },
+    "ops order reference is a stale cross-turn bleed (absent from the current message) — scrubbed so this turn does not act on a prior-turn order (BKL-150a)",
+  );
+  const { orderId: _dropped, ...rest } = payload;
+  return rest;
+}
+
 /**
  * Build the per-kind ops `SystemState` for one planned envelope, plus an
  * OPTIONAL rewritten payload (BKL-089 availability name-resolution). Returns
  * `state: undefined` for an unrecognized kind so the loop falls back to the
  * turn's `resolution.state` (the composed router still REFUSEs an off-surface
  * kind via `staffRoleGuard`'s de-vacuum, so this never widens authority).
+ *
+ * `requestText` is the CURRENT staff message (`cognition.perception.text`) —
+ * used ONLY by the BKL-150a stale-order-number-bleed scrub; empty when a caller
+ * supplies no perception (then the scrub is inert, legacy behavior).
  */
 async function opsStateForEnvelope(
   deps: OpsResolverDeps,
   envelope: IntentEnvelope,
+  requestText: string,
 ): Promise<OpsEnvelopeResolution> {
-  const payload = (envelope.payload ?? {}) as Record<string, unknown>;
+  const rawPayload = (envelope.payload ?? {}) as Record<string, unknown>;
+  const payload = scrubStaleOrderBleed(envelope.kind, rawPayload, requestText);
+  // A stale-bleed scrub must reach the WIRE (not only the resolution), so a
+  // branch that otherwise leaves the payload untouched still emits the scrubbed
+  // one — the audited envelope never carries the dropped stale number.
+  const wasScrubbed = payload !== rawPayload;
 
   if (envelope.kind === "product.availability.set") {
     const { product, payload: rewritten } = await resolveAvailabilityTarget(
@@ -1233,6 +1323,15 @@ async function opsStateForEnvelope(
       deps,
       payload,
     );
+    // BKL-156 — stamp the resolved display name for the EXECUTE render, ONLY on
+    // the name-resolved path (`rewritten` present), mirroring availability: a
+    // direct-id hit stays byte-identical (the render degrades to the generic
+    // form). Absent/blank name ⇒ no stamp (degrade, never fabricate).
+    const priceName = priceProduct?.name?.trim();
+    const pricePayload =
+      rewritten !== undefined && priceName !== undefined && priceName !== ""
+        ? { ...rewritten, productName: priceName }
+        : rewritten;
     return {
       state: {
         ctx: {
@@ -1243,7 +1342,7 @@ async function opsStateForEnvelope(
         },
         priceProduct,
       },
-      ...(rewritten ? { payload: rewritten } : {}),
+      ...(pricePayload ? { payload: pricePayload } : {}),
     };
   }
 
@@ -1261,11 +1360,17 @@ async function opsStateForEnvelope(
     const todayYmd = todayInRestaurantTz();
     const { product } = await resolveSpecialTarget(deps, productIdRaw);
     const promoCentavos = resolveSpecialPromoCentavos(payload);
+    // BKL-156 — the special product lookup carries the display name; stamp it
+    // for the EXECUTE render (blank/absent ⇒ no stamp, degrade never fabricate).
+    const specialName = product?.name?.trim();
     const canonical: Record<string, unknown> = {
       productId: product ? product.id : productIdRaw,
       date: resolveSpecialDateYmd(dateRaw, todayYmd),
       ...(promoCentavos !== undefined
         ? { promoPriceCentavos: promoCentavos }
+        : {}),
+      ...(specialName !== undefined && specialName !== ""
+        ? { productName: specialName }
         : {}),
     };
     return {
@@ -1302,7 +1407,7 @@ async function opsStateForEnvelope(
           totalInCentavos: order?.totalInCentavos ?? 0,
         },
       },
-      ...(rewritten ? { payload: rewritten } : {}),
+      ...(rewritten ? { payload: rewritten } : wasScrubbed ? { payload } : {}),
     };
   }
 
@@ -1312,8 +1417,37 @@ async function opsStateForEnvelope(
       orderId,
       orderResolutionTrust,
       displayId,
-      payload: rewritten,
+      payload: resolvedPayload,
     } = await resolveStatusTransitionOrderTarget(deps, envelope, payload);
+    // BKL-150(b) — normalize a locale/pt-BR status token (cancelled → canceled;
+    // cancelado/pronto/… → the en-US enum) via the single-source
+    // `normalizeOrderStatusToken` (@ibatexas/types) so the strict BKL-090 guard
+    // sees the canonical token. Applied over the (possibly orderId-rewritten)
+    // payload; only rewrites when the token actually differs, else the payload
+    // passes through unchanged (byte-identical). An UNKNOWN token is returned
+    // verbatim by the normalizer, so the guard still fails closed on it.
+    const base = resolvedPayload ?? payload;
+    const rawNewStatus = base.newStatus;
+    const normStatus =
+      typeof rawNewStatus === "string"
+        ? normalizeOrderStatusToken(rawNewStatus)
+        : rawNewStatus;
+    const statusChanged =
+      typeof rawNewStatus === "string" && normStatus !== rawNewStatus;
+    const rewritten = statusChanged
+      ? { ...base, newStatus: normStatus }
+      : (resolvedPayload ?? (wasScrubbed ? payload : undefined));
+    if (statusChanged) {
+      logger.info(
+        {
+          component: "ops-resolver",
+          event: "order.status_transition.token_normalized",
+          from: rawNewStatus,
+          to: normStatus,
+        },
+        "ops order.status.transition: normalized a locale/pt-BR status token to the canonical en-US enum before adjudication (BKL-150b)",
+      );
+    }
     // The pack-orders OrderState the BKL-090 `requireLegalStatusTransition`
     // guard reads: `ctx.orderId` (requireOrderIdForMutation) + the CURRENT
     // `ctx.fulfillmentStatus` (the legality guard). Missing order ⇒ orderId:null
@@ -1444,10 +1578,17 @@ async function opsStateForEnvelope(
  */
 export function createOpsResolver(deps: OpsResolverDeps): ResolverPort {
   return {
-    async resolve({ plan }): Promise<ReadonlyArray<ResolvedEnvelope>> {
+    async resolve({ plan, cognition }): Promise<ReadonlyArray<ResolvedEnvelope>> {
+      // BKL-150a — the CURRENT staff message, used only by the stale-order-
+      // number-bleed scrub. Read defensively (a text-less caller/test supplies
+      // no perception ⇒ "" ⇒ the scrub is inert, byte-identical legacy path).
+      const perceptionText = (
+        cognition as { perception?: { text?: unknown } } | undefined
+      )?.perception?.text;
+      const requestText = typeof perceptionText === "string" ? perceptionText : "";
       const out: ResolvedEnvelope[] = [];
       for (const env of plan.envelopes) {
-        const { state, payload } = await opsStateForEnvelope(deps, env);
+        const { state, payload } = await opsStateForEnvelope(deps, env, requestText);
         // Rebuild with the SAME actor/taint/nonce/createdAt so the intentHash is
         // canonical and the ops authority (admin:<staffId> + role) is preserved.
         // `payload` is the BKL-089 name-resolution rewrite when it fired (the

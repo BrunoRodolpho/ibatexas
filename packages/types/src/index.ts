@@ -120,6 +120,7 @@ export {
   getNextStatus,
   isKnownOrderStatus,
   isTerminalOrderStatus,
+  normalizeOrderStatusToken,
   ORDER_STATUS_LABELS_PT,
 } from "./order-status.js"
 

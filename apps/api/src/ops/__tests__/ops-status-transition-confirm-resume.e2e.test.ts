@@ -124,9 +124,24 @@ function orderReferenceReads(): OrderReferenceReads {
  * fix's fresh re-read (not the parked snapshot) is what
  * `requireLegalStatusTransition` re-adjudicates against on "sim".
  */
-function buildHarness(opts: { orderFindableAtResume?: boolean; orderStatusAtResume?: string } = {}) {
+function buildHarness(opts: {
+  orderFindableAtResume?: boolean;
+  orderStatusAtResume?: string;
+  /** BKL-150(b) — the status token the model emits (default "ready"). */
+  modelNewStatus?: string;
+  /** BKL-150(a) — a model-supplied orderId reference (default: none — the
+   *  FE-1.1 auto-resolve path). Used to drive the stale-bleed case. */
+  modelOrderId?: string;
+  /** Override the injected order reference reads (default: the single
+   *  ACTIVE_ORDER via listRecentActive; findByDisplayId empty). */
+  references?: OrderReferenceReads;
+} = {}) {
   const orderFindableAtResume = opts.orderFindableAtResume ?? true;
   const orderStatusAtResume = opts.orderStatusAtResume ?? ACTIVE_ORDER.fulfillmentStatus;
+  const modelPayload: Record<string, unknown> = {
+    newStatus: opts.modelNewStatus ?? "ready",
+  };
+  if (opts.modelOrderId !== undefined) modelPayload.orderId = opts.modelOrderId;
   const sink = makeCapturingAuditSink();
   const session = makeStatefulSession();
   const { tools, spies } = buildOpsTools({}, sink);
@@ -174,7 +189,7 @@ function buildHarness(opts: { orderFindableAtResume?: boolean; orderStatusAtResu
       {
         id: "tc-status",
         name: "express_intent",
-        input: { capability: "order.status.transition", payload: { newStatus: "ready" } },
+        input: { capability: "order.status.transition", payload: modelPayload },
       } satisfies ScriptedToolCall,
     ]),
     buildResolver: (staffId: string) =>
@@ -185,7 +200,7 @@ function buildHarness(opts: { orderFindableAtResume?: boolean; orderStatusAtResu
         // No direct id / reference given by the model ⇒ MISS ⇒ the
         // resolver falls back to resolveMostRecentActiveOrder.
         lookupOrder: async () => null,
-        orderReferenceReads: orderReferenceReads(),
+        orderReferenceReads: opts.references ?? orderReferenceReads(),
       }),
   });
   return { deps, session, spies, sink };
@@ -352,5 +367,53 @@ describe("FE-T05 — order.status.transition first tracer: end-to-end park → c
     }
     expect(spies.writeAdjudicatedStatusTransition).not.toHaveBeenCalled();
     expect(session.parksFor("system:staff:owner2")).toHaveLength(0);
+  });
+
+  it("BKL-150(b) e2e: the model emits en-GB 'cancelled' ⇒ normalized to 'canceled' before adjudication; the full park → confirm → EXECUTE cycle proceeds (preparing → canceled is legal; guard stays strict on the canonical token)", async () => {
+    const { deps, session, spies } = buildHarness({ modelNewStatus: "cancelled" });
+    const sessionId = "system:staff:owner5";
+
+    const t1 = await runOpsTurn(deps, { role: "OWNER", staffId: "owner5", text: "cancela o último pedido" });
+    expect(t1.decision.kind).toBe("REQUEST_CONFIRMATION");
+    // The parked payload carries the NORMALIZED en-US token, never "cancelled".
+    const parked = session.parksFor(sessionId);
+    expect(parked).toHaveLength(1);
+    expect(parked[0]!.envelope.payload).toEqual({ orderId: "order_recent", newStatus: "canceled" });
+
+    const t2 = await runOpsTurn(deps, { role: "OWNER", staffId: "owner5", text: "sim, confirma" });
+    expect(t2.decision.kind).toBe("EXECUTE");
+    expect(spies.writeAdjudicatedStatusTransition).toHaveBeenCalledTimes(1);
+    const [payload] = spies.writeAdjudicatedStatusTransition.mock.calls[0]!;
+    expect(payload).toMatchObject({ orderId: "order_recent", newStatus: "canceled" });
+  });
+
+  it("BKL-150(a) e2e: a bled prior-turn display number the CURRENT message does not name is dropped ⇒ falls back to auto-resolve most-recent (grounded ⇒ forced confirmation), never a silent authoritative EXECUTE on the stale order", async () => {
+    // The model bled "#9999" from history; findByDisplayId WOULD resolve it to a
+    // DIFFERENT (stale) order — but the current message names no order, so the
+    // resolver drops it and auto-resolves ACTIVE_ORDER (order_recent) instead.
+    const staleOrder: OrderCandidate = { ...ACTIVE_ORDER, id: "order_stale", displayId: 9999 };
+    const { deps, session, spies } = buildHarness({
+      modelOrderId: "9999",
+      references: {
+        findByDisplayId: async (id: number) => (id === 9999 ? [staleOrder] : []),
+        listRecentActive: async () => [ACTIVE_ORDER],
+      },
+    });
+    const sessionId = "system:staff:owner6";
+
+    const t1 = await runOpsTurn(deps, { role: "OWNER", staffId: "owner6", text: "muda o status pra pronto" });
+    // Grounded auto-resolve ⇒ forced confirmation on the CURRENT most-recent
+    // order, NOT an authoritative EXECUTE on the stale #9999.
+    expect(t1.decision.kind).toBe("REQUEST_CONFIRMATION");
+    const parked = session.parksFor(sessionId);
+    expect(parked).toHaveLength(1);
+    expect((parked[0]!.envelope.payload as Record<string, unknown>).orderId).toBe("order_recent");
+    expect(spies.writeAdjudicatedStatusTransition).not.toHaveBeenCalled();
+
+    // "sim" resumes the SAME (pinned) current order → EXECUTE (never the stale one).
+    const t2 = await runOpsTurn(deps, { role: "OWNER", staffId: "owner6", text: "sim, confirma" });
+    expect(t2.decision.kind).toBe("EXECUTE");
+    const [payload] = spies.writeAdjudicatedStatusTransition.mock.calls[0]!;
+    expect(payload).toMatchObject({ orderId: "order_recent", newStatus: "ready" });
   });
 });

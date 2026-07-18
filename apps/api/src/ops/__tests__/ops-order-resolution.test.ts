@@ -12,6 +12,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   normalizeOrderRef,
+  orderReferenceAppearsInMessage,
   parseDisplayIdRef,
   resolveMostRecentActiveOrder,
   resolveOrderByReference,
@@ -314,5 +315,37 @@ describe("resolveMostRecentActiveOrder", () => {
     };
     const out = await resolveMostRecentActiveOrder(r);
     expect(out).toEqual({ kind: "none" });
+  });
+});
+
+describe("orderReferenceAppearsInMessage — BKL-150(a) anti-bleed grounding check", () => {
+  it("a DISPLAY-ID number present in the message (bare / #-prefixed / leading zeros) → true", () => {
+    expect(orderReferenceAppearsInMessage("4242", "avança o pedido 4242")).toBe(true);
+    expect(orderReferenceAppearsInMessage("4242", "avança o #4242 pra pronto")).toBe(true);
+    expect(orderReferenceAppearsInMessage("#4242", "manda o 4242 pra cozinha")).toBe(true);
+    expect(orderReferenceAppearsInMessage("04242", "pedido 4242 pronto")).toBe(true);
+  });
+
+  it("a DISPLAY-ID number ABSENT from the message → false (the bleed case)", () => {
+    expect(orderReferenceAppearsInMessage("4242", "esse pedido pode ser cancelado?")).toBe(false);
+    // Not a digit substring of a larger number.
+    expect(orderReferenceAppearsInMessage("4242", "o pedido 42420 está pronto")).toBe(false);
+    expect(orderReferenceAppearsInMessage("424", "pedido 4242 pronto")).toBe(false);
+  });
+
+  it("a NAME reference: every normalized token must be a whole token of the message", () => {
+    expect(orderReferenceAppearsInMessage("Maria", "anota no pedido da Maria")).toBe(true);
+    // diacritic/case-insensitive.
+    expect(orderReferenceAppearsInMessage("José", "o pedido do jose")).toBe(true);
+    // whole-token, not substring: "ana" ⊄ "banana".
+    expect(orderReferenceAppearsInMessage("ana", "quero uma banana")).toBe(false);
+    // a full-name ref the message only half-names → not honored.
+    expect(orderReferenceAppearsInMessage("Maria Silva", "pedido da Maria")).toBe(false);
+    expect(orderReferenceAppearsInMessage("Maria", "avança esse pedido")).toBe(false);
+  });
+
+  it("empty message or empty reference → false", () => {
+    expect(orderReferenceAppearsInMessage("4242", "")).toBe(false);
+    expect(orderReferenceAppearsInMessage("", "pedido 4242")).toBe(false);
   });
 });

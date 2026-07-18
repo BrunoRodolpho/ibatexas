@@ -134,6 +134,41 @@ function tokensSubset(a: readonly string[], b: readonly string[]): boolean {
   return a.every((t) => set.has(t));
 }
 
+/**
+ * BKL-150(a) — does the CURRENT staff message contain the order REFERENCE the
+ * model put in the payload? A deterministic anti-bleed check reusing this
+ * module's own reference forms (the ops resolver honors a model-supplied
+ * `orderId` ONLY when it is grounded in the current message; a reference the
+ * message does not contain is a cross-turn bleed to drop):
+ *   - a DISPLAY-ID number (`parseDisplayIdRef`) must appear as a STANDALONE
+ *     integer token (optional leading `#` / leading zeros), never a digit
+ *     substring of a larger number;
+ *   - a NAME / free-text reference must have EVERY normalized token
+ *     (`normalizeOrderRef`) present as a WHOLE token of the normalized message
+ *     — the same whole-token idiom `resolveByCustomerName` uses, so "ana" never
+ *     matches "banana" and a full-name ref the message only half-names is not
+ *     falsely honored.
+ * Returns `false` for an empty message or empty reference (the caller treats an
+ * absent message as "cannot classify" and keeps the legacy honor-the-ref path).
+ */
+export function orderReferenceAppearsInMessage(
+  rawRef: string,
+  messageText: string,
+): boolean {
+  const text = messageText.trim();
+  if (text === "" || rawRef.trim() === "") return false;
+
+  const displayId = parseDisplayIdRef(rawRef);
+  if (displayId !== null) {
+    return new RegExp(`(?<!\\d)#?0*${displayId}(?!\\d)`).test(text);
+  }
+
+  const refTokens = nameTokens(rawRef);
+  if (refTokens.length === 0) return false;
+  const messageTokens = new Set(nameTokens(text));
+  return refTokens.every((t) => messageTokens.has(t));
+}
+
 /** Keep only well-formed candidates (the read is first-party but its runtime
  *  shape is not guaranteed by the type system). */
 function validCandidates(
