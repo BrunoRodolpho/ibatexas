@@ -340,6 +340,7 @@ import {
   buildOpsPriceResumeState,
   buildOpsSpecialResumeState,
   buildOpsOrderStatusTransitionResumeState,
+  buildOpsOrderNoteAddResumeState,
   toOpsResolverOrder,
 } from "./ops/ops-resolver.js";
 import {
@@ -970,6 +971,40 @@ export async function enrichResumeState(
     } catch {
       // Fail-closed: a read error re-projects a not-found state ⇒ REFUSE.
       return buildOpsOrderStatusTransitionResumeState(orderId, null);
+    }
+  }
+
+  // FE-D14 — the OPS-plane order.note.add confirm-resume shares the SAME latent
+  // gap FE-T05b fixed above for order.status.transition: without a per-kind
+  // branch it falls through to the customer-scoped `resolveAndAssemble` below,
+  // which no-ops for the ops plane's `staff:<id>` "customerId" and returns the
+  // capsule's BARE state (no `ctx.orderId`), so `requireOrderIdForMutation`
+  // would REFUSE `order.not_found` on every resume even though the parked
+  // payload carries the resolver-pinned orderId. UNREACHABLE today (no
+  // confirm-forcing guard parks an order.note.add — unlike status.transition's
+  // requireConfirmationOnGroundedStatusTransition — so this resume cycle is
+  // never exercised live), but pre-wired via the SAME shared `toOpsResolverOrder`
+  // mapper so ANY future confirm/park on this kind resumes correctly. The fresh
+  // read is state-safe: an order that vanished since parking re-projects a
+  // not-found state ⇒ requireOrderIdForMutation REFUSEs, never a stale EXECUTE.
+  if (
+    envelope.kind === "order.note.add" &&
+    envelope.actor.sessionId.startsWith("admin:")
+  ) {
+    const payload = (envelope.payload ?? {}) as Record<string, unknown>;
+    const orderId = typeof payload.orderId === "string" ? payload.orderId : "";
+    if (orderId === "") {
+      return buildOpsOrderNoteAddResumeState("", null);
+    }
+    try {
+      const order = await createOrderQueryService().getById(orderId);
+      return buildOpsOrderNoteAddResumeState(
+        orderId,
+        order === null ? null : toOpsResolverOrder(order),
+      );
+    } catch {
+      // Fail-closed: a read error re-projects a not-found state ⇒ REFUSE.
+      return buildOpsOrderNoteAddResumeState(orderId, null);
     }
   }
 

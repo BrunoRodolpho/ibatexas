@@ -1153,6 +1153,45 @@ export function buildOpsOrderStatusTransitionResumeState(
 }
 
 /**
+ * FE-D14 — build the `order.note.add` ops `SystemState` for the RESUME path.
+ * `order.note.add` shares the SAME latent `enrichResumeState` gap FE-T05b
+ * live-disproved (intent_audit 3362/3366) for `order.status.transition`: the
+ * ops confirm-resume re-adjudicates the VERBATIM parked envelope, but the
+ * SHARED customer-plane resume enrichment (`resolveAndAssemble` in
+ * claustrum-bootstrap.ts) is scoped to a REAL `customerId` — the ops plane's
+ * `staff:<id>` is not one, so that path's type guard silently no-ops (returns
+ * the capsule's bare `{channel:"system", customerId:"staff:<id>"}` state,
+ * carrying NO `ctx.orderId` at all) and `requireOrderIdForMutation` REFUSEs
+ * `order.not_found` on EVERY resume, even though the order exists and the
+ * parked payload carries its (resolver-pinned, trusted) id. UNREACHABLE today
+ * (no confirm-forcing guard parks an `order.note.add`, so no resume cycle is
+ * ever exercised — unlike `order.status.transition`'s
+ * `requireConfirmationOnGroundedStatusTransition`), but pre-wired so ANY
+ * future confirm/park on this ops order kind resumes correctly instead of a
+ * spurious `order.not_found` REFUSE. Re-projects the SAME `{ ctx }` shape the
+ * plan-stage resolver's `order.note.add` branch builds (`opsStateForEnvelope`,
+ * mirrors `adjudicateAdminNote`'s `noteOrderState`) from a FRESH read of the
+ * PINNED `orderId` — state-safe: an order that vanished since parking REFUSEs
+ * on resume via `requireOrderIdForMutation` (null order ⇒ orderId:null).
+ */
+export function buildOpsOrderNoteAddResumeState(
+  orderId: string,
+  order: OpsResolverOrder | null,
+): unknown {
+  return {
+    ctx: {
+      channel: "web",
+      customerId: order?.customerId ?? null,
+      cartId: null,
+      orderId: order === null ? null : orderId,
+      paymentMethod: order?.paymentMethod ?? null,
+      paymentStatus: order?.paymentStatus ?? null,
+      totalInCentavos: order?.totalInCentavos ?? 0,
+    },
+  };
+}
+
+/**
  * Build the per-kind ops `SystemState` for one planned envelope, plus an
  * OPTIONAL rewritten payload (BKL-089 availability name-resolution). Returns
  * `state: undefined` for an unrecognized kind so the loop falls back to the
