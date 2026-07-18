@@ -7,6 +7,10 @@ import {
   assertSoundExtractionSchema,
   extractionFieldNames,
   toPayloadJsonSchema,
+  forbiddenPiiAliasStem,
+  normalizeExtractionFieldName,
+  PII_ALIAS_STEMS,
+  NEVER_EXEMPTABLE_FIELD_NAMES,
   UnsoundExtractionSchemaError,
   type CapabilityExtractionSchema,
 } from "../extraction-schema.js";
@@ -418,4 +422,113 @@ describe("permittedIdentifiers — the narrow, explicit escape hatch from FORBID
       expect(() => assertSoundExtractionSchema(stillBad)).toThrow(UnsoundExtractionSchemaError);
     },
   );
+});
+
+// FE-D21 — the aliasing-heuristic arm: NEVER_EXEMPTABLE_FIELD_NAMES is an
+// exact-name set, so an aliased spelling of the same PII/safety concept
+// (emailAddress vs email) must also be rejected. See extraction-schema.ts's
+// PII_ALIAS_STEMS doc for the scope/derivation rationale.
+describe("FE-D21 aliasing hardening — a NEVER_EXEMPTABLE concept is caught under aliased spellings", () => {
+  const oneField = (name: string): CapabilityExtractionSchema => ({
+    capability: "x",
+    fields: [
+      {
+        name,
+        trustClass: "directive",
+        jsonSchema: { type: "string", description: "x" },
+        required: false,
+      },
+    ],
+    example: { utterance: "x", payload: {} },
+  });
+
+  // RED fixtures: the variant forms the old exact-match let through.
+  it.each([
+    "emailAddress",
+    "customerEmail",
+    "cpfNumber",
+    "customerCpf",
+    "cpf_digits",
+    "phoneNumber",
+    "customerPhone",
+    "allergenInfo",
+    "allergensList",
+    "cardPanLast4",
+    "card_pan",
+    "internalOnly",
+    "isInternalNote",
+  ])("RED: aliased field name %s fails the gate", (name) => {
+    expect(() => assertSoundExtractionSchema(oneField(name))).toThrow(
+      UnsoundExtractionSchemaError,
+    );
+    expect(() => assertSoundExtractionSchema(oneField(name))).toThrow(/FE-D21/);
+  });
+
+  // GREEN: every field name any real authored/read-tool schema declares today
+  // stays sound — the heuristic adds zero false positives.
+  it.each([
+    "newStatus",
+    "orderReference",
+    "timeSlotId",
+    "newTimeSlotId",
+    "partySize",
+    "newPartySize",
+    "quantity",
+    "amount",
+    "reason",
+    "comment",
+    "rating",
+    "delivery_type",
+    "payment_method",
+    "dietary_restrictions",
+    "favorite_categories",
+    "preferredTime",
+    "productId", // an exempted identifier, unaffected by the PII heuristic
+  ])("GREEN: real field name %s is not flagged as a PII alias", (name) => {
+    expect(forbiddenPiiAliasStem(name)).toBeUndefined();
+  });
+
+  it("forbiddenPiiAliasStem returns the specific stem it matched", () => {
+    expect(forbiddenPiiAliasStem("emailAddress")).toBe("email");
+    expect(forbiddenPiiAliasStem("customerCpf")).toBe("cpf");
+    expect(forbiddenPiiAliasStem("cpf_digits")).toBe("cpf");
+    expect(forbiddenPiiAliasStem("allergenInfo")).toBe("allergen");
+    expect(forbiddenPiiAliasStem("cardPanLast4")).toBe("cardpan");
+    expect(forbiddenPiiAliasStem("newStatus")).toBeUndefined();
+  });
+
+  it("normalizeExtractionFieldName lowercases and strips non-alphanumerics", () => {
+    expect(normalizeExtractionFieldName("cpf_digits")).toBe("cpfdigits");
+    expect(normalizeExtractionFieldName("card-Pan")).toBe("cardpan");
+    expect(normalizeExtractionFieldName("CustomerEmail")).toBe("customeremail");
+  });
+
+  it("the allowlist escape suppresses a coincidental collision (mechanism proven via an injected allowlist)", () => {
+    // The real PII_ALIAS_ALLOWLIST is empty; prove the escape path works by
+    // injecting one, without adding a live (dead) allowlist entry.
+    const injected = new Set([normalizeExtractionFieldName("emailAddress")]);
+    expect(forbiddenPiiAliasStem("emailAddress", injected)).toBeUndefined();
+    // …and only for the allowlisted token — a different alias still trips.
+    expect(forbiddenPiiAliasStem("customerCpf", injected)).toBe("cpf");
+  });
+
+  it("COVERAGE: every NEVER_EXEMPTABLE name is itself caught by a PII_ALIAS_STEMS stem (stems stay in sync with the set)", () => {
+    for (const name of NEVER_EXEMPTABLE_FIELD_NAMES) {
+      const normalized = normalizeExtractionFieldName(name);
+      const covered = PII_ALIAS_STEMS.some((stem) => normalized.includes(stem));
+      expect(covered, `NEVER_EXEMPTABLE name "${name}" must be covered by a PII_ALIAS_STEMS stem`).toBe(
+        true,
+      );
+    }
+  });
+
+  it("the alias heuristic does NOT weaken the exact NEVER_EXEMPTABLE guarantee: an exact PII name still throws even if allowlisted", () => {
+    // `email` is an exact NEVER_EXEMPTABLE name — the unconditional exact
+    // check upstream fires first, so no allowlist/heuristic path can admit it.
+    const bad: CapabilityExtractionSchema = {
+      ...oneField("email"),
+      permittedIdentifiers: ["email"],
+    };
+    expect(() => assertSoundExtractionSchema(bad)).toThrow(UnsoundExtractionSchemaError);
+  });
 });

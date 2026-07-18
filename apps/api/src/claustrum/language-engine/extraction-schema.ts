@@ -214,6 +214,84 @@ export const FORBIDDEN_EXTRACTION_FIELD_NAMES: ReadonlySet<string> = new Set([
   ...NEVER_EXEMPTABLE_FIELD_NAMES,
 ]);
 
+/**
+ * FE-D21 (the aliasing-heuristic arm) — `NEVER_EXEMPTABLE_FIELD_NAMES` is an
+ * EXACT-name set, so an author (or a future auto-generated schema) could dodge
+ * it by ALIASING the same safety-critical concept under a different name:
+ * `emailAddress`, `customerEmail`, `cpfNumber`, `customerCpf`, `cpf_digits`,
+ * `phoneNumber`, `allergenInfo`, `cardPanLast4` all name a NEVER_EXEMPTABLE
+ * concept but slip past an exact-match. This closes that gap for the
+ * safety-critical / PII half via a normalized SUBSTRING match against the
+ * morphological STEM of each never-exemptable name.
+ *
+ * Scope is deliberate — the aliasing heuristic covers the NEVER_EXEMPTABLE set
+ * ONLY, never `EXEMPTABLE_IDENTIFIER_NAMES`. Identifier names are already
+ * exemptable per-capability (`permittedIdentifiers`), and their stems are
+ * id-shaped: a substring rule over them would false-positive on legitimate
+ * fields (`timeSlotId`/`newTimeSlotId` both embed `id`) while adding no safety
+ * value (an aliased identifier leaks a reference, never PII, and the resolver
+ * trust model already governs references). PII/safety concepts, by contrast,
+ * must NEVER reach the model under ANY spelling.
+ *
+ * Stems are MORPHOLOGICAL roots of the real list, not SEMANTIC synonyms:
+ * `emailAddress` (contains `email`) is caught; a pt-BR synonym like `telefone`
+ * or `nome` (shares no substring with `phone`/`name`) is NOT — semantic-
+ * synonym coverage is unbounded and false-positive-prone, so it stays a
+ * reviewer-vigilance concern (the standing T11-14 review instruction to flag
+ * near-alias field names), not a lint rule with an ever-growing hand-list.
+ * The `pii-alias-stems cover every NEVER_EXEMPTABLE name` self-test pins the
+ * 1:1 coverage, so adding a never-exemptable name without a matching stem
+ * fails the build.
+ */
+export const PII_ALIAS_STEMS: readonly string[] = [
+  "allergen", // allergens  (singular stem → allergens, allergenInfo, ...)
+  "cpf", // cpf        → cpfNumber, customerCpf, cpf_digits, ...
+  "email", // email      → emailAddress, customerEmail, ...
+  "phone", // phone      → phoneNumber, customerPhone, ...
+  "cardpan", // cardPan    → cardPanLast4, card_pan, ...  (kept whole: bare
+  //                        `pan` would false-positive on panela/expand/...)
+  "internal", // isInternal → internalOnly, isInternalNote, markInternal, ...
+];
+
+/**
+ * FE-D21 — the narrow, centralized escape hatch for the aliasing heuristic: a
+ * NORMALIZED field name that embeds a stem only COINCIDENTALLY (the token is
+ * not the PII/safety concept). Currently empty — no authored schema field
+ * trips the heuristic. An entry here MUST carry a comment justifying why the
+ * token is a false positive, and must NEVER be used to re-admit a genuine
+ * alias of a NEVER_EXEMPTABLE field (that is what the exact, unconditional
+ * NEVER_EXEMPTABLE check upstream guarantees can never happen for the exact
+ * names). Centralized (not per-schema) because a coincidental collision is a
+ * property of the token, not the capability, and one auditable list is the
+ * single place a security review sweeps.
+ */
+export const PII_ALIAS_ALLOWLIST: ReadonlySet<string> = new Set<string>([
+  // (intentionally empty)
+]);
+
+/** Normalize a field name for the aliasing heuristic: lowercase and strip
+ *  every non-alphanumeric char, so `cpf_digits`, `card-pan` and `CardPan`
+ *  all collapse onto the same comparable token (`cpfdigits` / `cardpan`). */
+export function normalizeExtractionFieldName(name: string): string {
+  return name.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+/**
+ * FE-D21 — the PII/safety stem a field name embeds (i.e. the name reads as an
+ * alias of a NEVER_EXEMPTABLE field), or `undefined` if it is clean. Honors
+ * {@link PII_ALIAS_ALLOWLIST} (a coincidental-collision escape). The
+ * `allowlist` param defaults to the module allowlist and exists so the escape
+ * path is unit-testable without a live allowlist entry.
+ */
+export function forbiddenPiiAliasStem(
+  name: string,
+  allowlist: ReadonlySet<string> = PII_ALIAS_ALLOWLIST,
+): string | undefined {
+  const normalized = normalizeExtractionFieldName(name);
+  if (allowlist.has(normalized)) return undefined;
+  return PII_ALIAS_STEMS.find((stem) => normalized.includes(stem));
+}
+
 export class UnsoundExtractionSchemaError extends Error {
   constructor(message: string) {
     super(message);
@@ -272,6 +350,28 @@ export function assertSoundExtractionSchema(
           `public, non-owner-scoped lookup key for THIS capability ` +
           `specifically, name it in this schema's permittedIdentifiers ` +
           `with a comment explaining why.`,
+      );
+    }
+    // FE-D21 — aliasing hardening: a name that EMBEDS a NEVER_EXEMPTABLE stem
+    // (emailAddress→email, customerCpf→cpf, allergenInfo→allergen, ...) is an
+    // alias of a safety-critical/PII concept and is rejected the same way the
+    // exact name is. Checked AFTER the exact NEVER_EXEMPTABLE/identifier
+    // checks above so an exact forbidden name still reports via its own
+    // (clearer, unconditional) message; this catches only the aliases those
+    // exact checks miss. Never consulted for the identifier half (see
+    // PII_ALIAS_STEMS' doc for why identifiers are out of scope).
+    const aliasStem = forbiddenPiiAliasStem(field.name);
+    if (aliasStem !== undefined) {
+      throw new UnsoundExtractionSchemaError(
+        `extraction schema for "${schema.capability}" exposes field ` +
+          `"${field.name}" whose normalized name embeds the forbidden ` +
+          `PII/safety stem "${aliasStem}" (FE-D21 alias hardening) — this ` +
+          `reads as an alias of a NEVER_EXEMPTABLE field (e.g. ` +
+          `emailAddress→email, customerCpf→cpf, cpf_digits→cpf, ` +
+          `allergenInfo→allergen). Rename the field so it does not embed a ` +
+          `PII/safety concept. A genuine COINCIDENTAL collision (the token is ` +
+          `not the concept) may be added to PII_ALIAS_ALLOWLIST with a ` +
+          `justifying comment — never use it to re-admit a real alias.`,
       );
     }
     // FE-T14 rulings — an array field must be a CLOSED set (`items.enum`) or
