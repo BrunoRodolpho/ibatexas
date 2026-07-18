@@ -56,10 +56,20 @@ import {
   type OrderState,
   type OrderTypeSwitchPayload,
 } from "@ibatexas/pack-orders";
+import {
+  paymentsPolicyBundle,
+  type PaymentMethodSwitchPayload,
+  type PaymentRetryPayload,
+  type PaymentState,
+} from "@ibatexas/pack-payments";
 import { getAuditSink } from "@ibatexas/audit-sink";
 import { type AgentContext, Channel } from "@ibatexas/types";
 import { requireAuth } from "../middleware/auth.js";
-import { buildCustomerEnvelope, runCustomerIntent } from "./__shared__/customer-intent-gateway.js";
+import {
+  buildCustomerEnvelope,
+  runCustomerIntent,
+  type CustomerIntentReply,
+} from "./__shared__/customer-intent-gateway.js";
 import { createOrderCancelConfirmationStore } from "./order-cancel-confirmation-store.js";
 import {
   identityCtx,
@@ -199,6 +209,55 @@ async function replaceActivePayment(args: {
       return { kind: "orphaned", error, compensationError };
     }
   }
+}
+
+/**
+ * BKL-041 — composite-kind adjudication seam for the two customer payment-
+ * replacement routes (PATCH …/payment/method + POST …/payment/retry).
+ *
+ * Before BKL-041 both routes ran {@link replaceActivePayment} DIRECTLY — the
+ * "two-envelope decomposition" (an inner cancel + create) executed without the
+ * route ever adjudicating the `payment.method.switch` / `payment.retry` composite
+ * kind the Pack registers, so `validateMethodSwitch` / `retryDailyCapGuard` were
+ * unreachable (the WS4 executor gap). This helper closes it: it builds the
+ * composite UNTRUSTED customer envelope, adjudicates it through
+ * `paymentsPolicyBundle` (the same kernel `adjudicate()` the Pack ships), and on
+ * EXECUTE runs the supplied executor — the route's `replaceActivePayment` closure.
+ *
+ * The inner cancel + create envelopes inside `replaceActivePayment` REMAIN the
+ * authoritative single-active-payment enforcement; this outer adjudication is
+ * additive composite-kind governance, never a replacement for them. The kinds
+ * stay identity-tier / de-advertised (P0-7): no chat tool is registered, so this
+ * HTTP surface is their only emitter.
+ */
+async function adjudicatePaymentReplacement<R>(args: {
+  kind: "payment.method.switch" | "payment.retry";
+  payload: PaymentMethodSwitchPayload | PaymentRetryPayload;
+  customerId: string;
+  ctx: PaymentState["ctx"];
+  route: string;
+  executor: () => Promise<R>;
+  log: FastifyInstance["log"];
+}): Promise<CustomerIntentReply<R | Record<string, unknown>>> {
+  const envelope = buildCustomerEnvelope<
+    "payment.method.switch" | "payment.retry",
+    PaymentMethodSwitchPayload | PaymentRetryPayload
+  >({
+    kind: args.kind,
+    payload: args.payload,
+    nonce: randomUUID(),
+    customerId: args.customerId,
+  });
+  return runCustomerIntent<R>({
+    envelope,
+    state: { ctx: args.ctx },
+    policy: paymentsPolicyBundle as unknown as Parameters<
+      typeof runCustomerIntent
+    >[0]["policy"],
+    executor: async () => args.executor(),
+    ctx: { customerId: args.customerId, route: args.route, log: args.log },
+    auditSink: getAuditSink(),
+  });
 }
 
 /**
@@ -1488,35 +1547,77 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
         });
       }
 
-      // ── W3 P0-2 (audit remediation) ──────────────────────────────────
+      // ── BKL-041 — governed `payment.retry` composite kind (WS4) ───────
       //
-      // The previous flow chained THREE bypasses: bare-arg
-      // `paymentCmdSvc.transitionStatus` + bare-arg `paymentCmdSvc.create`
-      // + zero kernel adjudication. Now every mutation is an envelope
-      // run through `*FromEnvelope`. Each step's failure surfaces a
-      // pt-BR refusal via the kernel decision.
+      // Pre-BKL-041 this route ran `replaceActivePayment` directly (an inner
+      // cancel + create) and never adjudicated the `payment.retry` composite kind
+      // the Pack registers — so `retryDailyCapGuard` was unreachable (the two-
+      // envelope decomposition the old "Wave 5" note anticipated). We now build the
+      // composite UNTRUSTED customer envelope and adjudicate it through
+      // `paymentsPolicyBundle` first; on EXECUTE the SAME `replaceActivePayment`
+      // logic runs as the kind's executor. The inner cancel + create envelopes
+      // remain the authoritative single-active-payment enforcement.
       //
-      // Wave 5 will replace this two-envelope decomposition with a
-      // composite `payment.retry` intent kind in pack-payments (see
-      // `migration/remediation/W3-INTENT-GAPS.md`).
+      // `retryDailyCapGuard` reads `ctx.dailyRetryCount` (default cap 3, env
+      // `MAX_PAYMENT_RETRIES_PER_DAY`) projected from Redis
+      // (`payment-retry:{customerId}:{YYYY-MM-DD}`); the counter is bumped only
+      // after a retry actually executes. The per-order lifetime cap (`RETRY_LIMIT`,
+      // 10 attempts) stays the fast-fail above.
+      const redis = await getRedisClient();
+      const retryDay = new Date().toISOString().slice(0, 10);
+      const retryCountKey = rk(`payment-retry:${customerId}:${retryDay}`);
+      const dailyRetryCount = Number((await redis.get(retryCountKey)) ?? 0) || 0;
 
-      // Cancel current payment + create the retry attempt as a single
-      // compensating sequence (P1-ERR-PAYSWITCH). Retry uses the SAME method,
-      // so the replacement and the compensation target are identical — the only
-      // distinct outcomes are `ok` and `orphaned`.
+      // Retry uses the SAME method, so the replacement and the compensation target
+      // are identical — the only distinct executor outcomes are `ok` and `orphaned`
+      // (P1-ERR-PAYSWITCH).
       const method = currentPayment.method as PaymentMethodLiteral;
-      const result = await replaceActivePayment({
-        paymentCmdSvc,
+      const retryPayload: PaymentRetryPayload = {
         orderId: id,
-        currentPaymentId: currentPayment.id,
-        currentMethod: method,
+        previousPaymentId: currentPayment.id,
         newMethod: method,
-        amountInCentavos: currentPayment.amountInCentavos,
+      };
+      const out = await adjudicatePaymentReplacement<ReplacePaymentResult>({
+        kind: "payment.retry",
+        payload: retryPayload,
         customerId,
-        cancelReason: "Nova tentativa de pagamento",
+        ctx: {
+          actor: { principal: "user", id: customerId },
+          exists: true,
+          currentStatus: currentPayment.status,
+          currentMethod: method,
+          orderId: id,
+          dailyRetryCount,
+        },
+        route: "payment.retry",
         log: server.log,
+        executor: () =>
+          replaceActivePayment({
+            paymentCmdSvc,
+            orderId: id,
+            currentPaymentId: currentPayment.id,
+            currentMethod: method,
+            newMethod: method,
+            amountInCentavos: currentPayment.amountInCentavos,
+            customerId,
+            cancelReason: "Nova tentativa de pagamento",
+            log: server.log,
+          }),
       });
 
+      // Kernel REFUSE — the daily-retry cap maps to the legacy 429 surface
+      // (RETRY_LIMIT already lives there); any other refusal keeps the gateway 403.
+      if (out.decision.kind === "REFUSE") {
+        if (out.decision.refusal.code === "retry.cap_exceeded") {
+          return reply.code(429).send({
+            error: out.decision.refusal.userFacing,
+            code: "RETRY_CAP",
+          });
+        }
+        return reply.code(out.statusCode).send(out.body);
+      }
+
+      const result = out.body as ReplacePaymentResult;
       if (result.kind === "orphaned") {
         // Both create and compensation failed — actionable error, not a 500.
         return reply.code(503).send({
@@ -1524,6 +1625,11 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
           code: "PAYMENT_RETRY_FAILED",
         });
       }
+
+      // The retry executed — bump the daily-retry counter (date-scoped key, 24h
+      // TTL). Best-effort: a counter blip must not fail a completed retry.
+      const bumped = await redis.incr(retryCountKey);
+      if (bumped === 1) await redis.expire(retryCountKey, 86_400);
 
       return reply.send({
         success: true,
@@ -1715,81 +1821,102 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
         });
       }
 
-      // ── NEW-P0-X4 (W1 correctness remediation) ───────────────────────
+      // ── BKL-041 — governed `payment.method.switch` composite kind (WS4) ──
       //
-      // The previous flow chained THREE bypasses: bare-arg
-      // `paymentCmdSvc.transitionStatus` × 2 + bare-arg `paymentCmdSvc.create`.
-      // `payment.method.switch` is a registered kind in @ibatexas/pack-payments
-      // (W5) but the route never adjudicated it. We now:
-      //
-      //   1. Build a `payment.method.switch` envelope. (We don't run it
-      //      through the customer-intent-gateway because that gateway is
-      //      for the customer-onboarding/orders kinds; payment kinds go
-      //      directly through the payments policy bundle. This mirrors
-      //      payment-retry / regenerate-pix.)
-      //   2. Cancel-old via `transitionStatusFromEnvelope` and create-new
-      //      via `createFromEnvelope`.
-      //   3. The HTTP-layer pre-checks (paid, same-method, switchable
-      //      states) stay as fast-fails before kernel dispatch.
-
-      // Compensating cancel→create of the ORIGINAL method on create() failure so
-      // the customer is never left with no active payment (P1-ERR-PAYSWITCH).
-      // Held under the per-payment lock so the whole switching_method → cancel →
-      // create → compensate sequence is serialized (cycle-2 invariant).
+      // Pre-BKL-041 this route ran `replaceActivePayment` directly (the
+      // switching_method → cancel → create decomposition) and never adjudicated
+      // the `payment.method.switch` composite kind the Pack registers — so
+      // `validateMethodSwitch` was unreachable (the aspirational "build a
+      // payment.method.switch envelope" note that used to sit here). We now build
+      // the composite UNTRUSTED customer envelope and adjudicate it through
+      // `paymentsPolicyBundle` first; on EXECUTE the SAME `replaceActivePayment`
+      // logic runs as the kind's executor, held under the per-payment lock so the
+      // whole switching_method → cancel → create → compensate sequence stays
+      // serialized (cycle-2 invariant). The inner cancel + create envelopes remain
+      // the authoritative single-active-payment enforcement; the HTTP pre-checks
+      // (paid, same-method, switchable) stay the fast-fails above.
       const currentMethod = currentPayment.method as PaymentMethodLiteral;
-      const result = await withLock(`payment:${currentPayment.id}`, async () => {
-        const replaced = await replaceActivePayment({
-          paymentCmdSvc,
+      const out = await adjudicatePaymentReplacement<ReplacePaymentResult | null>({
+        kind: "payment.method.switch",
+        payload: {
           orderId: id,
-          currentPaymentId: currentPayment.id,
-          currentMethod,
-          newMethod,
-          amountInCentavos: currentPayment.amountInCentavos,
+          fromMethod: currentMethod,
+          toMethod: newMethod,
           customerId,
-          cancelReason: `Troca de método: ${currentMethod} → ${newMethod}`,
-          // Transition old payment → switching_method before canceling (if the
-          // current state allows it). Tolerate a non-EXECUTE here — the cancel +
-          // create inside replaceActivePayment are the authoritative steps.
-          preCancel: canTransitionPayment(currentPayment.status as PaymentStatus, PaymentStatus.SWITCHING_METHOD)
-            ? async () => {
-                const switchingEnvelope = buildEnvelope<
-                  "payment.status.transition",
-                  PaymentStatusTransitionPayload
-                >({
-                  kind: "payment.status.transition",
-                  payload: {
-                    paymentId: currentPayment.id,
-                    newStatus: PaymentStatus.SWITCHING_METHOD,
-                    actor: "customer",
-                    actorId: customerId,
-                    reason: `Troca de ${currentMethod} para ${newMethod}`,
-                  },
-                  nonce: randomUUID(),
-                  actor: { principal: "user", sessionId: customerId },
-                  taint: "TRUSTED",
-                });
-                await paymentCmdSvc.transitionStatusFromEnvelope(switchingEnvelope).catch(ignoreError);
-              }
-            : undefined,
-          log: server.log,
-        });
+        },
+        customerId,
+        ctx: {
+          actor: { principal: "user", id: customerId },
+          exists: true,
+          currentStatus: currentPayment.status,
+          currentMethod,
+          orderId: id,
+        },
+        route: "payment.method.switch",
+        log: server.log,
+        executor: () =>
+          withLock(`payment:${currentPayment.id}`, async () => {
+            const replaced = await replaceActivePayment({
+              paymentCmdSvc,
+              orderId: id,
+              currentPaymentId: currentPayment.id,
+              currentMethod,
+              newMethod,
+              amountInCentavos: currentPayment.amountInCentavos,
+              customerId,
+              cancelReason: `Troca de método: ${currentMethod} → ${newMethod}`,
+              // Transition old payment → switching_method before canceling (if the
+              // current state allows it). Tolerate a non-EXECUTE here — the cancel +
+              // create inside replaceActivePayment are the authoritative steps.
+              preCancel: canTransitionPayment(currentPayment.status as PaymentStatus, PaymentStatus.SWITCHING_METHOD)
+                ? async () => {
+                    const switchingEnvelope = buildEnvelope<
+                      "payment.status.transition",
+                      PaymentStatusTransitionPayload
+                    >({
+                      kind: "payment.status.transition",
+                      payload: {
+                        paymentId: currentPayment.id,
+                        newStatus: PaymentStatus.SWITCHING_METHOD,
+                        actor: "customer",
+                        actorId: customerId,
+                        reason: `Troca de ${currentMethod} para ${newMethod}`,
+                      },
+                      nonce: randomUUID(),
+                      actor: { principal: "user", sessionId: customerId },
+                      taint: "TRUSTED",
+                    });
+                    await paymentCmdSvc.transitionStatusFromEnvelope(switchingEnvelope).catch(ignoreError);
+                  }
+                : undefined,
+              log: server.log,
+            });
 
-        // Only emit method_changed when the NEW method actually became active.
-        // On compensation the original method is restored, so the method did NOT
-        // change and no event is published.
-        if (replaced.kind === "ok") {
-          await publishNatsEvent("payment.method_changed", {
-            eventType: "payment.method_changed",
-            orderId: id,
-            paymentId: replaced.payment.id,
-            previousMethod: currentMethod,
-            newMethod,
-            timestamp: new Date().toISOString(),
-          });
-        }
+            // Only emit method_changed when the NEW method actually became active.
+            // On compensation the original method is restored, so the method did NOT
+            // change and no event is published.
+            if (replaced.kind === "ok") {
+              await publishNatsEvent("payment.method_changed", {
+                eventType: "payment.method_changed",
+                orderId: id,
+                paymentId: replaced.payment.id,
+                previousMethod: currentMethod,
+                newMethod,
+                timestamp: new Date().toISOString(),
+              });
+            }
 
-        return replaced;
-      }, 15);
+            return replaced;
+          }, 15),
+      });
+
+      // Kernel REFUSE (e.g. the `validateMethodSwitch` shape guard) → surface the
+      // gateway's localized decision (403). No mutation ran.
+      if (out.decision.kind === "REFUSE") {
+        return reply.code(out.statusCode).send(out.body);
+      }
+
+      const result = out.body as ReplacePaymentResult | null;
 
       if (!result) {
         return reply.code(409).send({ error: "Operação em andamento. Tente novamente.", code: "LOCK_CONFLICT" });

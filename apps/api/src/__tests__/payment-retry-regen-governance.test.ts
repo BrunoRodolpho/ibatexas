@@ -43,13 +43,15 @@ const mockPublishNatsEvent = vi.hoisted(() => vi.fn());
 
 const mockRedisIncr = vi.hoisted(() => vi.fn(async () => 1));
 const mockRedisExpire = vi.hoisted(() => vi.fn(async () => 1));
+// BKL-041 — the daily-retry counter projection (`payment-retry:{cust}:{day}`).
+const mockRedisGet = vi.hoisted(() => vi.fn(async () => null as string | null));
 
 vi.mock("@ibatexas/tools", () => ({
   getRedisClient: vi.fn(async () => ({
     incr: mockRedisIncr,
     expire: mockRedisExpire,
     del: vi.fn(),
-    get: vi.fn(async () => null),
+    get: mockRedisGet,
     set: vi.fn(async () => "OK"),
   })),
   rk: (k: string) => `ibatexas:${k}`,
@@ -94,6 +96,14 @@ vi.mock("@ibatexas/domain", () => ({
     }
   },
   getEffectivePonr: () => ({ cancelMinutes: 30 }),
+  // BKL-041 — the retry route now adjudicates the `payment.retry` composite kind
+  // through the customer-intent-gateway (`runCustomerIntent`), which statically
+  // imports `isStructurallyMalformed` / `STRUCTURAL_REJECTION_CODE` from
+  // @ibatexas/domain. The mock mirrors real behavior for this file's well-formed
+  // envelopes (always `false`); the gate's own rejection logic is covered by
+  // test-envelope-ingress.test.ts, not here.
+  isStructurallyMalformed: () => false,
+  STRUCTURAL_REJECTION_CODE: "envelope_malformed",
 }));
 
 vi.mock("@ibatexas/nats-client", () => ({
@@ -277,6 +287,59 @@ describe("POST /api/orders/:id/payment/retry — W3 P0-2 envelope path", () => {
       expect(body.code).toBe("PAYMENT_RETRY_FAILED");
       expect(body.error).toMatch(/Tente novamente/);
       expect(mockPaymentUpdate).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  // ── BKL-041 — route → kernel decision mapping (the composite `payment.retry`
+  // kind is now adjudicated, so `retryDailyCapGuard` actually gates) ──────────
+  it("REFUSE at the daily-retry cap → 429 RETRY_CAP (guard now reachable)", async () => {
+    // Project a daily-retry count already at the default cap (3): the kernel's
+    // retryDailyCapGuard REFUSEs (3 + 1 > 3) BEFORE any mutation runs. The ONLY
+    // way this 429 arises is the route building + adjudicating the real
+    // `payment.retry` envelope — pinning that the composite kind is emitted.
+    mockRedisGet.mockResolvedValueOnce("3");
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/orders/order_01/payment/retry",
+        headers: { "x-customer-id": "cust_01" },
+      });
+      expect(res.statusCode).toBe(429);
+      const body = res.json() as { error: string; code: string };
+      expect(body.code).toBe("RETRY_CAP");
+      expect(body.error).toMatch(/Limite diário/);
+      // The cap REFUSE precedes any mutation — no cancel/create envelope ran.
+      expect(mockTransitionStatusFromEnvelope).not.toHaveBeenCalled();
+      expect(mockCreateFromEnvelope).not.toHaveBeenCalled();
+      // And the counter is NOT bumped on a refused retry.
+      expect(mockRedisIncr).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("bumps the date-scoped daily-retry counter (24h TTL) after a retry executes", async () => {
+    const today = new Date().toISOString().slice(0, 10);
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/orders/order_01/payment/retry",
+        headers: { "x-customer-id": "cust_01" },
+      });
+      expect(res.statusCode).toBe(200);
+      // The counter is bumped exactly once, on the date-scoped key (rk-prefixed),
+      // and the first bump of the day sets the 24h expiry.
+      expect(mockRedisIncr).toHaveBeenCalledWith(
+        `ibatexas:payment-retry:cust_01:${today}`,
+      );
+      expect(mockRedisExpire).toHaveBeenCalledWith(
+        `ibatexas:payment-retry:cust_01:${today}`,
+        86_400,
+      );
     } finally {
       await app.close();
     }
