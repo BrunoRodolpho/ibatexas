@@ -89,6 +89,10 @@ describe("referencesExistingOrder — BKL-154 deterministic markers", () => {
       "pedido 910226",
       "quero mudar o pedido 4242",
       "adiciona uma coca no pedido",
+      // BKL-154 marker extension — the "do pedido" / "ao pedido" anchors.
+      "tira uma coca do pedido",
+      "remove a batata do pedido",
+      "adiciona uma coca ao pedido",
     ]) {
       expect(referencesExistingOrder(text), text).toBe(true);
     }
@@ -136,6 +140,11 @@ describe("matchedExistingOrderMarkers — MAJOR-1 explicit-vs-bare marker tracki
 
   it("names the bare marker alone when nothing explicit accompanies it", () => {
     expect(matchedExistingOrderMarkers("adiciona uma coca no pedido")).toEqual(["noPedido"]);
+  });
+
+  it("names the BKL-154 'do pedido' / 'ao pedido' markers distinctly (bare, no explicit anchor)", () => {
+    expect(matchedExistingOrderMarkers("tira uma coca do pedido")).toEqual(["doPedido"]);
+    expect(matchedExistingOrderMarkers("adiciona uma coca ao pedido")).toEqual(["aoPedido"]);
   });
 
   it("names BOTH when an explicit marker and the bare marker co-occur (Drive F's utterance)", () => {
@@ -419,6 +428,47 @@ describe("correctAmendPreference — MAJOR-1 both-states cart-vs-order disambigu
       "adiciona uma coca no pedido",
       "c1",
       "sess-1",
+    );
+    expect(result?.kind).toBe("order.amend.add_item");
+  });
+
+  // BKL-154 — the new 'do pedido' / 'ao pedido' markers take the SAME
+  // cart-favoring tie-break as the bare 'no pedido' (they are ambiguous, not
+  // explicit): mid-cart favors the cart, no-cart re-routes to the amend sibling.
+  it("mid-cart + bare 'do pedido' (remove-from-order phrasing) -> NO re-route (favors the cart)", async () => {
+    primeAmendableOrderAndCart();
+    const result = await correctAmendPreference(
+      "order.item.remove",
+      { item: "coca" },
+      "tira uma coca do pedido",
+      "c1",
+      "sess-1",
+    );
+    expect(result).toBeUndefined();
+  });
+
+  it("no-cart + bare 'do pedido' -> re-routes order.item.remove to order.amend.remove_item", async () => {
+    orderListByCustomer = async () => ({ orders: [AMENDABLE_ORDER], count: 1 });
+    redisGet = async () => null;
+    const result = await correctAmendPreference(
+      "order.item.remove",
+      { item: "coca" },
+      "tira uma coca do pedido",
+      "c1",
+      "sess-empty-cart",
+    );
+    expect(result?.kind).toBe("order.amend.remove_item");
+  });
+
+  it("no-cart + bare 'ao pedido' -> re-routes order.item.add to order.amend.add_item", async () => {
+    orderListByCustomer = async () => ({ orders: [AMENDABLE_ORDER], count: 1 });
+    redisGet = async () => null;
+    const result = await correctAmendPreference(
+      "order.item.add",
+      { item: "coca" },
+      "adiciona uma coca ao pedido",
+      "c1",
+      "sess-empty-cart",
     );
     expect(result?.kind).toBe("order.amend.add_item");
   });

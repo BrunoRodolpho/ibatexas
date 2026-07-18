@@ -28,15 +28,24 @@
  * substring test ("quero fazer um pedido de coca", placing a NEW order,
  * contains the word "pedido" but matches none of these).
  *
- * Review fix (post-#268, MAJOR-1 — both-states ambiguity): the bare
- * `\bno pedido\b` marker alone is genuinely ambiguous for a MID-CART
- * customer — "põe mais uma coca no pedido" colloquially means their
- * IN-PROGRESS cart, not a placed order. The 3 EXPLICIT markers (`meu
- * pedido` / `pedido que já fiz` / `pedido \d+`) unambiguously name an
- * already-placed order and always re-route regardless of cart state; when
- * bare `no pedido` is the ONLY marker that fired, a non-empty active cart
+ * Review fix (post-#268, MAJOR-1 — both-states ambiguity): a bare
+ * preposition+"pedido" marker (`no pedido` / `do pedido` / `ao pedido`) is
+ * genuinely ambiguous for a MID-CART customer — "põe mais uma coca no pedido"
+ * colloquially means their IN-PROGRESS cart, not a placed order. The 3
+ * EXPLICIT markers (`meu pedido` / `pedido que já fiz` / `pedido \d+`)
+ * unambiguously name an already-placed order and always re-route regardless of
+ * cart state; when ONLY an ambiguous bare marker fired, a non-empty active cart
  * wins (favor the cart — see `hasNonEmptyActiveCart`, resolve-and-
  * assemble.ts) and the correction is a no-op.
+ *
+ * BKL-154 (marker extension): the ticket's anchor class is
+ * "no meu pedido / do pedido / pedido que já fiz". `do pedido` ("tira uma coca
+ * DO pedido" — remove FROM the order) and `ao pedido` ("adiciona uma coca AO
+ * pedido" — add TO the order) join the ambiguous set alongside `no pedido`:
+ * they anchor an amend of an existing order but a mid-cart customer could mean
+ * their in-progress cart, so they get the SAME cart-favoring tie-break. They
+ * stay narrow — "quero fazer um pedido de coca" (a NEW order) is "pedido de",
+ * not "do/ao/no pedido", so it still matches none of these.
  */
 
 import { canPerformAction, type CustomerAction, type OrderFulfillmentStatus } from "@ibatexas/types";
@@ -80,26 +89,32 @@ interface ExistingOrderMarker {
  *   - `pedidoQueFiz` — explicit past-tense reference ("the order I('ve)
  *     made"); covers all 4 combinations (eu/já both optional).
  *   - `pedidoNumero` — an explicit numbered reference ("o pedido 910226").
- *   - `noPedido` — "in/on the order"; narrower phrasings that also say
- *     "meu"/"que já fiz"/a number already match the markers above, so this
- *     one catches the bare "adiciona X no pedido" shape Drive F's utterance
- *     combined with "que eu já fiz". UNLIKE the other three, this one is
- *     NOT unambiguous on its own — see `EXPLICIT_MARKER_NAMES` below.
+ *   - `noPedido` / `doPedido` / `aoPedido` — "in/from/to the order"; the bare
+ *     preposition+"pedido" shapes ("adiciona X no pedido", "tira X do pedido",
+ *     "adiciona X ao pedido"). Narrower phrasings that also say
+ *     "meu"/"que já fiz"/a number already match the markers above. UNLIKE the
+ *     first three, these three are NOT unambiguous on their own (a mid-cart
+ *     customer could mean their in-progress cart) — see `EXPLICIT_MARKER_NAMES`.
  * Deliberately NOT a bare `/pedido/` substring test: "quero fazer um
  * pedido de coca" (placing a brand-new order) contains the word "pedido"
- * but anchors to none of these four phrasings.
+ * but anchors to none of these phrasings ("pedido de", not "no/do/ao pedido").
  */
 const EXISTING_ORDER_MARKERS: readonly ExistingOrderMarker[] = [
   { name: "meuPedido", pattern: /\bmeu pedido\b/ },
   { name: "pedidoQueFiz", pattern: /\bpedido que (eu )?(j[áa] )?fiz\b/ },
   { name: "pedidoNumero", pattern: /\bpedido \d+\b/ },
   { name: "noPedido", pattern: /\bno pedido\b/ },
+  // BKL-154 — the "do pedido" / "ao pedido" anchors (ambiguous, cart-favoring).
+  { name: "doPedido", pattern: /\bdo pedido\b/ },
+  { name: "aoPedido", pattern: /\bao pedido\b/ },
 ];
 
 /** Markers that unambiguously name an ALREADY-PLACED order regardless of
- *  cart state — possessive, past-tense, or numbered. `noPedido` is
- *  deliberately excluded (MAJOR-1): it is the one marker a mid-cart
- *  customer plausibly uses to mean their in-progress cart. */
+ *  cart state — possessive, past-tense, or numbered. The bare
+ *  preposition+"pedido" markers (`noPedido` / `doPedido` / `aoPedido`) are
+ *  deliberately excluded (MAJOR-1): they are the ones a mid-cart customer
+ *  plausibly uses to mean their in-progress cart, so they take the
+ *  cart-favoring tie-break instead of always re-routing. */
 const EXPLICIT_MARKER_NAMES: ReadonlySet<string> = new Set([
   "meuPedido",
   "pedidoQueFiz",
