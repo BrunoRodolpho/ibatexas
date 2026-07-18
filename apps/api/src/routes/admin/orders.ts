@@ -68,7 +68,15 @@ function mapProjectionItems(itemsJson: unknown): Array<Record<string, unknown>> 
   if (!Array.isArray(itemsJson)) return [];
   return (itemsJson as Array<Record<string, unknown>>).map((i, idx) => ({
     ...i,
-    id: (i as { variantId?: string }).variantId ?? `item-${idx}`,
+    // FE-D15 / BKL-167 — prefer Medusa's STABLE line-item id (`OrderEventItem.id`,
+    // threaded through the projection since #295) so admin line references are
+    // precise. Additive + backward-compatible: a pre-FE-D15 row (no `id`) falls back
+    // to the prior variantId-or-index fake, so legacy rows are byte-unchanged until
+    // the BKL-167 backfill populates their ids.
+    id:
+      (i as { id?: string }).id ??
+      (i as { variantId?: string }).variantId ??
+      `item-${idx}`,
     unit_price: (i as { priceInCentavos?: number }).priceInCentavos ?? 0,
   }));
 }
