@@ -47,15 +47,22 @@
                 "properties": {
                   "timeSlotId": {
                     "type": "string",
-                    "description": "ID do horário — SEMPRE um id já retornado por uma leitura anterior nesta conversa (check_availability), NUNCA inventado ou digitado pelo cliente."
+                    "description": "ID do horário — um id já retornado por uma leitura anterior nesta conversa (check_availability), NUNCA inventado ou digitado pelo cliente. Como ALTERNATIVA, deixe de fora e informe `date` (e `time`): o sistema encontra o horário disponível para essa data."
                   },
                   "partySize": {
                     "type": "number",
                     "description": "Número de pessoas (1 a 20)."
+                  },
+                  "date": {
+                    "type": "string",
+                    "description": "Data desejada da reserva no formato YYYY-MM-DD (ex.: \"2026-03-15\"), quando o cliente disser a data em vez de escolher um horário já listado. Omita se um timeSlotId já foi escolhido."
+                  },
+                  "time": {
+                    "type": "string",
+                    "description": "Horário desejado no formato HH:MM (ex.: \"20:00\"), se o cliente mencionar. Omita se não houver horário específico."
                   }
                 },
                 "required": [
-                  "timeSlotId",
                   "partySize"
                 ],
                 "additionalProperties": false
@@ -83,6 +90,14 @@
                   "newPartySize": {
                     "type": "number",
                     "description": "Novo número de pessoas (1 a 20). Omita se o cliente não quiser mudar a quantidade de pessoas."
+                  },
+                  "newDate": {
+                    "type": "string",
+                    "description": "Nova data no formato YYYY-MM-DD (ex.: \"2026-03-15\"), quando o cliente quiser mudar o dia sem escolher um horário já listado. Omita se não mudar o horário ou se um newTimeSlotId já foi escolhido."
+                  },
+                  "newTime": {
+                    "type": "string",
+                    "description": "Novo horário no formato HH:MM (ex.: \"20:00\"), se o cliente mencionar. Omita se não houver horário específico."
                   }
                 },
                 "additionalProperties": false
@@ -128,15 +143,22 @@
                 "properties": {
                   "timeSlotId": {
                     "type": "string",
-                    "description": "ID do horário — SEMPRE um id já retornado por uma leitura anterior nesta conversa (check_availability), NUNCA inventado ou digitado pelo cliente."
+                    "description": "ID do horário — um id já retornado por uma leitura anterior nesta conversa (check_availability), NUNCA inventado ou digitado pelo cliente. Como ALTERNATIVA, deixe de fora e informe `date` (e `time`): o sistema encontra o horário disponível para essa data."
                   },
                   "partySize": {
                     "type": "number",
                     "description": "Número de pessoas (1 a 20)."
+                  },
+                  "date": {
+                    "type": "string",
+                    "description": "Data desejada da reserva no formato YYYY-MM-DD (ex.: \"2026-03-15\"), quando o cliente disser a data em vez de escolher um horário já listado. Omita se um timeSlotId já foi escolhido."
+                  },
+                  "time": {
+                    "type": "string",
+                    "description": "Horário desejado no formato HH:MM (ex.: \"20:00\"), se o cliente mencionar. Omita se não houver horário específico."
                   }
                 },
                 "required": [
-                  "timeSlotId",
                   "partySize"
                 ],
                 "additionalProperties": false

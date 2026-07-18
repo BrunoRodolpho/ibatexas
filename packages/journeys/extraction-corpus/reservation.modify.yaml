@@ -222,3 +222,63 @@ cases:
           newTimeSlotId: untrusted
           newPartySize: untrusted
         confirmationRequired: true
+
+  # ── FE-D27 NL slot-change: the customer states a NEW date (+ optional time)
+  #    instead of a listed newTimeSlotId; the resolver grounds newDate+newTime →
+  #    a REAL newTimeSlotId (sized against newPartySize, else the reservation's
+  #    own party size). Extraction target = {newDate (ISO), newTime?, newPartySize?};
+  #    the slot grounding is FE-D31-deferred (needs a seeded availability drive —
+  #    single-turn, no seed → checkAvailability empty → nothing to change).
+  - id: nl-new-date-time
+    utterance: muda minha reserva pra sexta, dia 20 de março, às 20h
+    note: >-
+      Slot change by NL date+time (keep the party size). reservationId is the
+      one-active-booking auto-resolve (grounded, confirm). Grounding FE-D31-deferred.
+    expectPayload:
+      extractionIR:
+        payload:
+          newDate: "2026-03-20"
+          newTime: "20:00"
+        provenanceTrust:
+          newDate: untrusted
+          newTime: untrusted
+      hydratedIntentIR:
+        payload:
+          newDate: "2026-03-20"
+          newTime: "20:00"
+        payloadPresent:
+          - reservationId
+        provenanceTrust:
+          reservationId: grounded
+          newDate: untrusted
+          newTime: untrusted
+        confirmationRequired: true
+
+  - id: nl-new-date-and-party
+    utterance: passa minha reserva pra 6 pessoas no dia 21/03 às 19h
+    note: >-
+      Slot change by NL date+time AND a party-size change in one turn.
+      Extraction target = {newDate, newTime, newPartySize}; grounding FE-D31-deferred.
+    expectPayload:
+      extractionIR:
+        payload:
+          newDate: "2026-03-21"
+          newTime: "19:00"
+          newPartySize: 6
+        provenanceTrust:
+          newDate: untrusted
+          newTime: untrusted
+          newPartySize: untrusted
+      hydratedIntentIR:
+        payload:
+          newDate: "2026-03-21"
+          newTime: "19:00"
+          newPartySize: 6
+        payloadPresent:
+          - reservationId
+        provenanceTrust:
+          reservationId: grounded
+          newDate: untrusted
+          newTime: untrusted
+          newPartySize: untrusted
+        confirmationRequired: true

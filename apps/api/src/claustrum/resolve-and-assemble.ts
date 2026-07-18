@@ -619,6 +619,16 @@ const ORDER_AUTORESOLVE_KINDS = new Set([
 // compose-policy-packs.ts, mirrors this addition).
 const RESERVATION_AUTORESOLVE_KINDS = new Set(["reservation.cancel", "reservation.modify"]);
 
+// FE-D27 — the kinds whose timeSlotId may be grounded from an NL date/time pair
+// (the pure-chat "mesa pra 4 sexta às 20h" path) instead of a listed slot id.
+// reservation.modify is handled separately (its slot key is `newTimeSlotId`).
+const RESERVATION_SLOT_RESOLVE_KINDS = new Set([
+  "reservation.create",
+  "reservation.waitlist.join",
+]);
+/** The ISO calendar-date shape check_availability's own `date` field uses (YYYY-MM-DD). */
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
 // 034-F1 (review finding 6/7): refund payloads (PaymentRefundIssuePayload /
 // PaymentRefundConfirmPayload) carry ONLY paymentId — never orderId. Since
 // ownership flows through the order, the kernel ownership guard had no resource to
@@ -946,6 +956,82 @@ async function applyAutoResolve(
     }
   }
   return { payload, autoResolvedMoneyRef: false };
+}
+
+/**
+ * FE-D27 — the party size to size availability against. create/waitlist carry a
+ * required `partySize`; a modify may change only the time, so its size falls back to
+ * the (already auto-resolved) reservation's own party size — a slot must fit the same
+ * cover count. Returns undefined when no size can be established (→ no resolution,
+ * honest refuse downstream).
+ */
+async function resolveSlotPartySize(
+  kind: string,
+  payload: Ctx,
+  customerId: string,
+): Promise<number | undefined> {
+  if (kind === "reservation.modify") {
+    if (typeof payload.newPartySize === "number") return payload.newPartySize;
+    const rid = typeof payload.reservationId === "string" ? payload.reservationId : null;
+    if (rid === null) return undefined;
+    const r = await createReservationService().getById(rid, customerId).catch(() => null);
+    return r && typeof r.partySize === "number" ? r.partySize : undefined;
+  }
+  return typeof payload.partySize === "number" ? payload.partySize : undefined;
+}
+
+/**
+ * FE-D27 — NL slot-booking: ground an NL date (+optional time) to a REAL timeSlotId
+ * so a pure-chat "mesa pra 4 sexta às 20h" can book without a prior check_availability
+ * read. Reuses the SAME authoritative `checkAvailability` lookup (the availability
+ * surface is PUBLIC — no IDOR; the reservation WRITE stays governed) with the
+ * UTC-calendar-date discipline FE-D11 fixed. Only when the caller did NOT already pick
+ * a listed slot:
+ *   - exactly one available slot → stamp the slot key (authoritative);
+ *   - ≥2 → stamp `slotAmbiguousCount` (mirrors the amend `itemAmbiguousCount` marker);
+ *     the slot stays UNSTAMPED so the reservation guard REFUSEs, and the count lets a
+ *     CLARIFY consumer name the options;
+ *   - 0 → payload unchanged (unstamped slot → the existing honest no-availability
+ *     refuse). Fail-safe: a lookup error degrades to no resolution, never throws.
+ * The date must be ISO (YYYY-MM-DD) — the shape check_availability's `date` field
+ * already proves the 4B emits; a non-ISO value is left for the honest refuse (FE-D24's
+ * relative parser is deliberately NOT reused here — it is BACKWARD-looking for past
+ * orders, wrong for FUTURE reservations).
+ */
+export async function resolveReservationSlot(
+  kind: string,
+  payload: Ctx,
+  customerId: string,
+): Promise<Ctx> {
+  const isCreate = RESERVATION_SLOT_RESOLVE_KINDS.has(kind);
+  const isModify = kind === "reservation.modify";
+  if (!isCreate && !isModify) return payload;
+
+  const slotKey = isModify ? "newTimeSlotId" : "timeSlotId";
+  const dateKey = isModify ? "newDate" : "date";
+  const timeKey = isModify ? "newTime" : "time";
+  // Already grounded (a listed slot was chosen) → nothing to resolve.
+  if (typeof payload[slotKey] === "string") return payload;
+
+  const date = payload[dateKey];
+  if (typeof date !== "string" || !ISO_DATE_RE.test(date)) return payload;
+  const partySize = await resolveSlotPartySize(kind, payload, customerId);
+  if (partySize === undefined) return payload;
+  const time = typeof payload[timeKey] === "string" ? payload[timeKey] : undefined;
+
+  let slots;
+  try {
+    slots = await createReservationService().checkAvailability(date, partySize, time);
+  } catch {
+    return payload; // fail-safe → honest refuse downstream
+  }
+  if (slots.length === 1) {
+    return { ...payload, [slotKey]: slots[0]!.timeSlotId };
+  }
+  if (slots.length >= 2) {
+    return { ...payload, slotAmbiguousCount: slots.length };
+  }
+  return payload; // 0 slots → honest no-availability refuse (slot unstamped)
 }
 
 /**
@@ -1814,7 +1900,11 @@ export async function resolveAndAssemble(args: ResolveArgs): Promise<AssembledRe
   // NL→id resolution (confirm-first) then the 034-F1 refund ownership binding.
   const auto = await applyAutoResolve(kind, normalizedPayload, customerId);
   const autoResolvedMoneyRef = auto.autoResolvedMoneyRef;
-  const resolvedPayload = await bindRefundOwnership(kind, auto.payload);
+  const boundPayload = await bindRefundOwnership(kind, auto.payload);
+  // FE-D27 — ground an NL date/time to a REAL timeSlotId (create/waitlist) or
+  // newTimeSlotId (modify) when no listed slot was chosen. Runs AFTER applyAutoResolve
+  // so a modify's reservationId (its party-size source) is already resolved.
+  const resolvedPayload = await resolveReservationSlot(kind, boundPayload, customerId);
 
   const orderId =
     typeof resolvedPayload.orderId === "string" ? resolvedPayload.orderId : null;

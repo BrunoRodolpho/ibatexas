@@ -48,7 +48,7 @@
     {
       "capability": "reservation-convenience:4-kind-group",
       "goldenFragmentPath": "apps/api/src/claustrum/language-engine/__tests__/__golden__/reservation-convenience.extraction-prompt-fragment.json",
-      "goldenFragmentSha256": "2dac465d36cadbe69b925a3f6c716f39c0acafc5158e6341315f9845f0beca8d"
+      "goldenFragmentSha256": "a10643fedb132b6b87db09b814f214e31b989b9cadaa16af6c20941902a9b81f"
     },
     {
       "capability": "customer-whatsapp-convenience:3-kind-group",
