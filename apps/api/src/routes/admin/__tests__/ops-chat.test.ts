@@ -23,6 +23,7 @@ import type { ParkedEnvelope } from "@claustrum/core";
 const mockHandleTurn = vi.hoisted(() => vi.fn());
 const mockOpenCapsule = vi.hoisted(() => vi.fn());
 const mockCloseCapsule = vi.hoisted(() => vi.fn());
+const mockUnpark = vi.hoisted(() => vi.fn());
 const mockConductorFactory = vi.hoisted(() =>
   vi.fn(() => ({ openCapsule: mockOpenCapsule, closeCapsule: mockCloseCapsule })),
 );
@@ -82,13 +83,16 @@ beforeEach(() => {
   mockBuildOpsHistoryBlock.mockResolvedValue(undefined);
   mockAppendOpsMessages.mockResolvedValue(undefined);
   mockCloseCapsule.mockResolvedValue(undefined);
+  mockUnpark.mockResolvedValue(undefined);
 });
 afterEach(() => vi.resetModules());
 
 describe("POST /api/admin/ops/chat — FE-D13 honest stale-resume", () => {
-  it("a 'sim' against an EXPIRED park → the expiry notice, handleTurn SKIPPED, notice appended", async () => {
+  it("a 'sim' against an EXPIRED park → the expiry notice, handleTurn SKIPPED, notice appended, zombie pruned", async () => {
     mockOpenCapsule.mockResolvedValue({
+      session: { unpark: mockUnpark },
       loadedSession: {
+        id: "system:staff:owner1",
         pendingConfirmations: [
           expiredPark("payment.refund.issue", "Confirmar reembolso de R$ 50,00?"),
         ],
@@ -110,10 +114,42 @@ describe("POST /api/admin/ops/chat — FE-D13 honest stale-resume", () => {
       expect(body.proposedKinds).toEqual([]);
       // The kernel turn was SKIPPED (no turn_trace/intent_audit row for this message).
       expect(mockHandleTurn).not.toHaveBeenCalled();
+      // FE-D33 — the expired zombie was pruned via the SessionPort's unpark.
+      expect(mockUnpark).toHaveBeenCalledWith("system:staff:owner1", "abc123abc123");
       // The notice was appended to the ops thread (assistant), and the capsule closed.
       expect(mockAppendOpsMessages).toHaveBeenCalledWith("owner1", [
         { role: "assistant", content: body.reply },
       ]);
+      expect(mockCloseCapsule).toHaveBeenCalledTimes(1);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("FE-D33 — a prune failure is NON-FATAL: the notice still returns 200", async () => {
+    mockOpenCapsule.mockResolvedValue({
+      session: {
+        unpark: mockUnpark.mockRejectedValueOnce(new Error("redis down")),
+      },
+      loadedSession: {
+        id: "system:staff:owner1",
+        pendingConfirmations: [
+          expiredPark("payment.refund.issue", "Confirmar reembolso de R$ 50,00?"),
+        ],
+      },
+    });
+    const server = await buildServer(OWNER);
+    try {
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/admin/ops/chat",
+        payload: { message: "sim, confirma" },
+      });
+      // The prune threw, but the notice is still delivered and the turn skipped.
+      expect(res.statusCode).toBe(200);
+      expect(res.json().reply).toContain("expirou");
+      expect(res.json().decision).toBe("STALE_PARK_EXPIRED");
+      expect(mockHandleTurn).not.toHaveBeenCalled();
       expect(mockCloseCapsule).toHaveBeenCalledTimes(1);
     } finally {
       await server.close();

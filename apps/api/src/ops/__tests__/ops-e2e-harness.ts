@@ -72,7 +72,10 @@ import {
 } from "../../claustrum/noop-memory-grounding.js";
 import { composeOpsConductor } from "../ops-conductor.js";
 import { createOpsToolRegistry } from "../ops-tool-registry.js";
-import { OpsSystemChannel } from "../ops-system-channel.js";
+import {
+  OpsSystemChannel,
+  opsConfirmParkExpiresAt,
+} from "../ops-system-channel.js";
 import { buildLanguageEngineAuditMetadata } from "../../claustrum/language-engine/audit-metadata.js";
 
 /** Staff roles the ops matrix knows about. */
@@ -261,11 +264,16 @@ export function makeStatefulSession(): StatefulSession {
       userPrompt,
     ) => {
       const list = parks.get(sessionId) ?? [];
+      // Mirror the production SessionPort (claustrum-bootstrap.ts): stamp the
+      // FE-D33 forward-compat expiresAt on the ops plane so a real park-flow e2e
+      // observes the same entry shape a production park would produce.
+      const expiresAt = opsConfirmParkExpiresAt(sessionId, HARNESS_PARKED_AT);
       list.push({
         envelope: envelope as IntentEnvelope,
         confirmationToken,
         userPrompt,
         parkedAt: HARNESS_PARKED_AT,
+        ...(expiresAt ? { expiresAt } : {}),
       });
       parks.set(sessionId, list);
     },

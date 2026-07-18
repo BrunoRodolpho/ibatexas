@@ -50,7 +50,10 @@ import { getOpsConductorFactory } from "../claustrum-bootstrap.js";
 import { acquireAgentLock, releaseAgentLock } from "../whatsapp/session.js";
 import { sendText } from "../whatsapp/client.js";
 import { appendOpsMessages, buildOpsHistoryBlock } from "./ops-history.js";
-import { opsStaleResumeNotice } from "./ops-system-channel.js";
+import {
+  opsStaleResumeNotice,
+  pruneExpiredOpsParks,
+} from "./ops-system-channel.js";
 import { excludedKindsForScope } from "./ops-verb-scope.js";
 import type { OpsConductorContext } from "./ops-conductor.js";
 
@@ -254,21 +257,44 @@ async function runOpsTurn(
       // fresh loop. The turn is SKIPPED on a notice (no turn_trace row) — emit a
       // structured warn for forensics and append the reply to history.
       const pending = capsule.loadedSession?.pendingConfirmations ?? [];
+      const waExcluded = excludedKindsForScope("whatsapp");
       const staleNotice = opsStaleResumeNotice({
         text: command,
         pendingConfirmations: pending,
         nowIso: inbound.receivedAt,
-        excludedKinds: excludedKindsForScope("whatsapp"),
+        excludedKinds: waExcluded,
       });
       if (staleNotice !== undefined) {
+        // FE-D33 — prune the now-inert expired IN-SCOPE parks (hygiene; the FE-D13
+        // partition is the enforcement point, so a prune failure is non-fatal). The
+        // SAME whatsapp exclusion is applied, so an out-of-scope dashboard-only money
+        // park is never pruned from here (BKL-086 parity). capsule.session.unpark is
+        // the sanctioned durable mutation; the Conductor re-reads on close.
+        let pruned = 0;
+        if (capsule.loadedSession) {
+          try {
+            pruned = (
+              await pruneExpiredOpsParks({
+                session: capsule.session,
+                sessionId: capsule.loadedSession.id,
+                pendingConfirmations: pending,
+                nowIso: inbound.receivedAt,
+                excludedKinds: waExcluded,
+              })
+            ).length;
+          } catch (err) {
+            log.warn(err, "[ops-wa] expired-park prune failed (non-fatal)");
+          }
+        }
         log.warn(
           {
             event: "ops_wa.stale_park_notice",
             staff_id: staffId,
             phone_hash: hash,
             pending: pending.length,
+            pruned,
           },
-          "[ops-wa] stale confirm-park resume — restating expiry, skipping the turn",
+          "[ops-wa] stale confirm-park resume — restating expiry, pruning zombies, skipping the turn",
         );
         try {
           await deps.appendHistory(staffId, [
