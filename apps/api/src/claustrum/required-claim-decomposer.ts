@@ -310,11 +310,16 @@ const OWNERSHIP_GATED_TYPES = {
  * signal. When supplied, an ownership-gated companion ({@link OWNERSHIP_GATED_TYPES}
  * — `ORDER_FULFILLMENT_STAGE` / `PAYMENT_STATUS`) is DROPPED from the required set
  * iff its flag is a POSITIVE `false` (the customer PROVABLY has no such active
- * resource). This is the only place the required set SHRINKS, and it is sound: a
- * companion about a non-existent resource can never validate and hides nothing.
- * When `ownership` is omitted (the default — the signal is not yet threaded to
- * this layer; see DEFER note below) or a flag is `true`, NOTHING is dropped and
- * the behavior is byte-identical to the pre-#8 over-including decomposer.
+ * resource). It is sound: a companion about a non-existent resource can never
+ * validate and hides nothing. When `ownership` is omitted (the default — the signal
+ * is not yet threaded to this layer; see DEFER note below) or a flag is `true`,
+ * NOTHING is dropped and the behavior is byte-identical to the pre-#8 over-including
+ * decomposer.
+ *
+ * The required set SHRINKS in exactly TWO demote-only places: this ownership gate,
+ * and the BKL-152 DATE-ANCHOR suppression below (a date-specific hours question drops
+ * the STORE_OPEN_NOW "is it open right now" companion). Both only REMOVE a companion
+ * that cannot soundly be required — neither adds a claim or prose authority.
  */
 export function decomposeRequiredClaims(
   spanClasses: readonly string[],
@@ -335,6 +340,44 @@ export function decomposeRequiredClaims(
     ) as (keyof typeof OWNERSHIP_GATED_TYPES)[]) {
       if (ownership[OWNERSHIP_GATED_TYPES[type]] === false) required.delete(type);
     }
+  }
+
+  // BKL-152 — DATE-ANCHOR companion suppression (SCN-002 blocker). A DATE-ANCHORED
+  // hours question ("que horas vocês abrem amanhã?", "qual o horário de domingo?")
+  // trips STORE_HOURS_FOR_DATE_Q, but its "horário"/"abrem"/"que horas" wording ALSO
+  // trips STORE_OPEN_NOW_Q (the generated store-open-now markers). The required set
+  // would then demand the TODAY open-now companion the planner never resolves for a
+  // FUTURE-date question, completeness-degrading an otherwise-VALIDATED
+  // STORE_HOURS_FOR_DATE render to UNKNOWN (the live-proven defect). A date-SPECIFIC
+  // hours question does NOT semantically require "is it open right now", so SUPPRESS
+  // the STORE_OPEN_NOW companion when a date-for span is present. DEMOTE-ONLY: this
+  // REMOVES a required companion (never adds a claim or prose authority) — the
+  // date-specific hours still render; suppression can never create a lie.
+  //
+  // GUARDS (why this keeps STORE_OPEN_NOW for the open-now-relevant cases):
+  //   - PICKUP_Q ABSENT: a pickup question ("que horas posso retirar amanhã?")
+  //     genuinely requires STORE_OPEN_NOW (you can only pick up from an OPEN store) —
+  //     when PICKUP_Q is present, keep the companion.
+  //   - "hoje"/undated questions never fire STORE_HOURS_FOR_DATE_Q at all (the
+  //     date-anchor regex is weekday|amanhã|feriado, NOT "hoje"), so STORE_OPEN_NOW
+  //     stays for "que horas abrem hoje?" and bare "vocês estão abertos?" — no clock
+  //     is needed here to keep the today/undated open-now companion.
+  //
+  // EDGE (documented + accepted): a named weekday that happens to BE today (today is
+  // Sunday, "abrem domingo?") ALSO suppresses STORE_OPEN_NOW — this PURE rule cannot
+  // tell weekday==today from weekday==future without resolving the date, and this
+  // decomposer is CONTRACTUALLY pure (no clock/RNG/IO; the sole completeness-gate
+  // caller, claims-renderer-adapter.ts, is likewise clock-pure). Suppressing on that
+  // rare edge is defensible: the named day's hours fully answer the question asked.
+  // A true weekday==today distinction would require threading the RESOLVED date
+  // (resolveQueriedScheduleDate, which needs the clock) through the FROZEN, published
+  // ClaimsRenderContext — the SAME claustrum-seam class as BKL-117 (turnId threading);
+  // one seam bump could carry both. Not pursued for this rare, ambiguous edge.
+  if (
+    spanClasses.includes("STORE_HOURS_FOR_DATE_Q") &&
+    !spanClasses.includes("PICKUP_Q")
+  ) {
+    required.delete("STORE_OPEN_NOW");
   }
 
   return required;
