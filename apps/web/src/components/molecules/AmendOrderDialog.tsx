@@ -6,6 +6,8 @@ import { Button } from '@ibatexas/ui/atoms'
 import { Modal } from '@ibatexas/ui/molecules'
 import { apiFetch } from '@/lib/api'
 import { formatBRL as formatBRLLib } from '@/lib/format'
+import { submitAmendAdd } from '@/domains/cart'
+import { AddItemPicker } from './AddItemPicker'
 import type { OrderActionItem } from './OrderActions'
 
 interface AmendOrderDialogProps {
@@ -17,7 +19,7 @@ interface AmendOrderDialogProps {
   readonly onMutate: () => void
 }
 
-type Step = 'edit' | 'review'
+type Step = 'edit' | 'review' | 'add'
 type SubmitState = 'idle' | 'loading' | 'error'
 
 function formatBRL(centavos: number): string {
@@ -52,6 +54,48 @@ export function AmendOrderDialog({ orderId, items, fulfillmentStatus, isOpen, on
     setConfirmingRemoveId(null)
     onClose()
   }, [items, onClose])
+
+  // ── Add-item step (CUS-039) ────────────────────────────────────────────
+  //
+  // Adds cannot ride the atomic batch route (its enum rejects `add`); each add
+  // goes through the SINGLE, kernel-governed route via `submitAmendAdd`, which
+  // classifies the reply. A 202 park (`confirmation_required`) is NEVER shown
+  // as success — mirrors the paid-cancel BKL-036 honesty rule.
+  const handleAddSubmit = useCallback(
+    async (variantId: string, quantity: number) => {
+      setSubmitState('loading')
+      setErrorMsg('')
+
+      const result = await submitAmendAdd({ orderId, variantId, quantity })
+
+      switch (result.kind) {
+        case 'executed':
+          setSubmitState('idle')
+          onMutate()
+          handleClose()
+          return
+        case 'confirmation_required':
+          setErrorMsg(t('amend_add_needs_confirmation'))
+          setSubmitState('idle')
+          setStep('edit')
+          onMutate() // refresh — the order state may have advanced
+          return
+        case 'not_allowed':
+          setErrorMsg(result.message ?? t('amend_add_not_allowed'))
+          setSubmitState('idle')
+          return
+        case 'rate_limited':
+          setErrorMsg(t('amend_rate_limited'))
+          setSubmitState('idle')
+          return
+        default:
+          setErrorMsg(t('amend_error'))
+          setSubmitState('idle')
+          return
+      }
+    },
+    [orderId, onMutate, handleClose, t],
+  )
 
   // ── Edit step helpers ──────────────────────────────────────────────────
 
@@ -208,13 +252,24 @@ export function AmendOrderDialog({ orderId, items, fulfillmentStatus, isOpen, on
   // ── Visible (non-removed) items for edit step ──────────────────────────
   const visibleItems = items.filter(i => !removedIds.has(i.id))
 
+  // The add step renders its own inline Back / Add actions (they need the
+  // picker's local selection), so the Modal footer is suppressed there.
+  let modalFooter: ReactNode
+  if (step === 'edit') {
+    modalFooter = editFooter
+  } else if (step === 'review') {
+    modalFooter = reviewFooter
+  } else {
+    modalFooter = undefined
+  }
+
   return (
     <Modal
       isOpen={isOpen}
       onClose={handleClose}
       title={t('modify_dialog_title')}
       size="md"
-      footer={step === 'edit' ? editFooter : reviewFooter}
+      footer={modalFooter}
     >
       {errorMsg && (
         <p className="text-xs text-accent-red mb-3">{errorMsg}</p>
@@ -285,7 +340,21 @@ export function AmendOrderDialog({ orderId, items, fulfillmentStatus, isOpen, on
           {visibleItems.length === 0 && (
             <p className="text-sm text-smoke-400 text-center py-4">{t('amend_no_changes')}</p>
           )}
+
+          {/* Add-item affordance (CUS-039) */}
+          <Button variant="secondary" size="sm" className="w-full mt-3" onClick={() => { setErrorMsg(''); setStep('add') }}>
+            + {t('amend_add')}
+          </Button>
         </div>
+      )}
+
+      {/* ── Add Step (CUS-039) ─────────────────────────────────────── */}
+      {step === 'add' && (
+        <AddItemPicker
+          onAdd={handleAddSubmit}
+          onBack={() => { setErrorMsg(''); setStep('edit') }}
+          isSubmitting={submitState === 'loading'}
+        />
       )}
 
       {/* ── Review Step ────────────────────────────────────────────── */}
