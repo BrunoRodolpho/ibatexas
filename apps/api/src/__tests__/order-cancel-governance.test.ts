@@ -397,16 +397,26 @@ describe("POST /api/orders/:id/cancel — BKL-036 kernel-routed PONR + paid-canc
     expect((res.json() as { code: string }).code).toBe("order.ownership_denied");
   });
 
-  it("PAID cancel → REQUEST_CONFIRMATION → 202 confirmationRequired (executor NOT run)", async () => {
+  it("PAID cancel → REQUEST_CONFIRMATION → parks + 202 {confirmationRequired, confirmationId, ttlSeconds} (executor NOT run) (BKL-146)", async () => {
     const res = await inject("confirmed", {
       kind: "REQUEST_CONFIRMATION",
       prompt: "Esse pedido já foi pago (R$ 50,00). Cancelar implica reembolso — confirma?",
       basis: [],
     });
     expect(res.statusCode).toBe(202);
-    const body = res.json() as { confirmationRequired: boolean; prompt: string };
+    const body = res.json() as {
+      confirmationRequired: boolean;
+      confirmationId: string;
+      prompt: string;
+      ttlSeconds: number;
+    };
     expect(body.confirmationRequired).toBe(true);
     expect(body.prompt).toMatch(/reembolso/);
+    // BKL-146 — the park receipt lets the customer COMPLETE the cancel via
+    // POST /api/orders/:id/cancel/confirm (the 202 now carries the id + TTL).
+    expect(typeof body.confirmationId).toBe("string");
+    expect(body.confirmationId.length).toBeGreaterThan(0);
+    expect(body.ttlSeconds).toBe(600);
     expect(mockTransitionStatus).not.toHaveBeenCalled();
     expect(mockPublishNatsEvent).not.toHaveBeenCalled();
   });

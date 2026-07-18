@@ -60,6 +60,7 @@ import { getAuditSink } from "@ibatexas/audit-sink";
 import { type AgentContext, Channel } from "@ibatexas/types";
 import { requireAuth } from "../middleware/auth.js";
 import { buildCustomerEnvelope, runCustomerIntent } from "./__shared__/customer-intent-gateway.js";
+import { createOrderCancelConfirmationStore } from "./order-cancel-confirmation-store.js";
 import {
   identityCtx,
   buildOrderCtx,
@@ -573,6 +574,8 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
   const orderQuerySvc = createOrderQueryService();
   const paymentCmdSvc = createPaymentCommandService(server.log);
   const paymentQuerySvc = createPaymentQueryService();
+  // BKL-146 — single-use store for parked PAID cancels (REQUEST_CONFIRMATION).
+  const cancelConfirmationStore = createOrderCancelConfirmationStore();
 
   // ── Ownership helper ──────────────────────────────────────────────────────
   async function verifyOwnership(orderId: string, customerId: string): Promise<boolean> {
@@ -851,6 +854,32 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
           refusalMessages: portugueseRefusalMessages,
         });
 
+        // ── BKL-146 — PAID cancel parks (kernel REQUEST_CONFIRMATION, BKL-036
+        // gatePaidCancel): the executor did NOT run. Store the cancel under a
+        // single-use receipt and enrich the 202 with the confirmationId so the
+        // customer can COMPLETE it via POST /api/orders/:id/cancel/confirm — the
+        // kernel stays the confirm authority (the confirm route re-adjudicates
+        // the IDENTICAL envelope with a confirmationReceipt). Mirrors the
+        // checkout-confirm park (cart.ts).
+        if (out.decision.kind === "REQUEST_CONFIRMATION") {
+          const prompt = out.decision.prompt;
+          const parked = await cancelConfirmationStore.create({
+            kind: "order.cancel",
+            orderId: id,
+            payload: cancelPayload,
+            idempotencyKey: cancelIdempotencyKey,
+            customerId,
+            prompt,
+            createdAt: new Date().toISOString(),
+          });
+          return reply.code(202).send({
+            confirmationRequired: true,
+            confirmationId: parked.confirmationId,
+            prompt,
+            ttlSeconds: parked.ttlSeconds,
+          });
+        }
+
         // ── Translate the AUDITED kernel cancel-PONR refusal back to the legacy
         // 422 HTTP contract (BKL-036 finding 1). The kernel now OWNS the
         // fulfillment-state + already-cancelled cancel refusals
@@ -885,6 +914,134 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
           // P2-LOGIC-CANCELPAY: order row was canceled but the payment is still
           // live; order.canceled was withheld. Surface an actionable error so the
           // cancel is retried / escalated.
+          return reply.code(409).send({
+            error: "Não foi possível cancelar o pagamento do pedido. Tente novamente em instantes.",
+            code: "PAYMENT_CANCEL_FAILED",
+          });
+        }
+        if (err instanceof InvalidTransitionError) {
+          return reply.code(422).send({ error: "Transição de status inválida.", from: err.from, to: err.to });
+        }
+        throw err;
+      }
+    },
+  );
+
+  // ── POST /api/orders/:id/cancel/confirm — complete a parked PAID cancel ─────
+  //
+  // BKL-146 — resume the parked cancel (the REQUEST_CONFIRMATION reply from
+  // POST /api/orders/:id/cancel). The single-use receipt is consumed, ownership
+  // re-checked, the order re-loaded FRESH, and the IDENTICAL order.cancel
+  // envelope rebuilt + re-adjudicated through the AUDITED kernel carrying a
+  // confirmationReceipt — so the kernel substitutes EXECUTE for the matching
+  // intentHash while STILL enforcing every state/taint/auth guard (an order that
+  // moved past the cancel PONR since the park is still REFUSEd here; the receipt
+  // substitutes the confirmation, never bypasses a guard). Mirrors POST
+  // /api/cart/checkout/confirm. On EXECUTE the SHARED executeOrderCancel runs the
+  // identical money-path the direct route runs.
+  app.post(
+    "/api/orders/:id/cancel/confirm",
+    {
+      schema: {
+        tags: ["orders"],
+        summary: "Confirmar cancelamento de pedido pago (cliente)",
+        params: OrderIdParams,
+        body: z.object({ confirmationId: z.string().min(1).max(64) }),
+      },
+      preHandler: requireAuth,
+    },
+    async (request, reply) => {
+      const { id } = request.params;
+      const customerId = request.customerId!;
+
+      // Single-use consume — unknown / expired / already-confirmed → 410 Gone.
+      const pending = await cancelConfirmationStore.consume(request.body.confirmationId);
+      if (!pending) {
+        return reply.status(410).send({
+          statusCode: 410,
+          error: "Gone",
+          message: "Esta confirmação expirou ou já foi utilizada. Refaça o cancelamento.",
+          code: "CONFIRMATION_EXPIRED",
+        });
+      }
+
+      // ── Money-safety ownership (IDOR) ────────────────────────────────────
+      // The receipt binds the parked customerId + orderId. A different logged-in
+      // customer (or a guest holding a leaked receipt) cannot confirm someone
+      // else's cancel, and a receipt cannot be replayed against a different order.
+      if (pending.customerId !== customerId || pending.orderId !== id) {
+        return reply.status(403).send({
+          statusCode: 403,
+          error: "Forbidden",
+          message: "Esta confirmação pertence a outro pedido ou usuário.",
+        });
+      }
+      // Projection-ownership parity with the cancel route (defense-in-depth).
+      if (!(await verifyOwnership(id, customerId))) {
+        return reply.code(404).send({ error: "Pedido não encontrado." });
+      }
+
+      // Re-load the order FRESH so a since-changed status re-adjudicates.
+      const order = await orderQuerySvc.getById(id);
+      if (!order) return reply.code(404).send({ error: "Pedido não encontrado." });
+
+      // Rebuild the IDENTICAL envelope — same kind/payload/nonce/actor → same
+      // intentHash — so the receipt matches and the kernel resolves the confirm.
+      const envelope = buildCustomerEnvelope<"order.cancel", OrderCancelPayload>({
+        kind: "order.cancel",
+        payload: pending.payload,
+        nonce: deriveNonce(pending.idempotencyKey),
+        customerId,
+      });
+      const orderState = {
+        ctx: buildOrderCtx(
+          identityCtx(customerId, "web"),
+          id,
+          order as unknown as OrderProjectionLite,
+        ),
+      };
+
+      try {
+        const out = await runCustomerIntent({
+          envelope,
+          state: orderState,
+          policy: ordersPolicyBundle as unknown as Parameters<typeof runCustomerIntent>[0]["policy"],
+          executor: async () =>
+            executeOrderCancel({
+              orderId: id,
+              customerId,
+              reason: pending.payload.reason ?? "Cancelado pelo cliente",
+              order,
+              orderCmdSvc,
+              paymentCmdSvc,
+              log: server.log,
+            }),
+          ctx: { customerId, route: "order.cancel.confirm", log: server.log },
+          auditSink: getAuditSink(),
+          refusalMessages: portugueseRefusalMessages,
+          confirmationReceipt: {
+            intentHash: envelope.intentHash,
+            at: new Date().toISOString(),
+            token: request.body.confirmationId,
+          },
+        });
+
+        // A since-changed order can now REFUSE (e.g. moved past the PONR) — map
+        // the cancel-PONR codes onto the same 422 contract the direct route uses.
+        if (out.decision.kind === "REFUSE") {
+          const refusalCode = out.decision.refusal.code;
+          if (refusalCode === "order.past_ponr" || refusalCode === "order.already_cancelled") {
+            return reply.code(422).send({
+              error: (out.body as { error?: string }).error ?? out.decision.refusal.userFacing,
+              code: order.fulfillmentStatus === "preparing" ? "PONR_EXPIRED" : "PAST_PONR",
+              fulfillmentStatus: order.fulfillmentStatus,
+            });
+          }
+        }
+
+        return reply.code(out.statusCode).send(out.body);
+      } catch (err) {
+        if (err instanceof PaymentCancelFailedError) {
           return reply.code(409).send({
             error: "Não foi possível cancelar o pagamento do pedido. Tente novamente em instantes.",
             code: "PAYMENT_CANCEL_FAILED",
