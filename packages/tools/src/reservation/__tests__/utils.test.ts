@@ -33,6 +33,24 @@ describe("formatDateBR", () => {
     const result = formatDateBR(new Date("2025-12-20T12:00:00Z")) // Saturday in São Paulo
     expect(result).toMatch(/sábado/i)
   })
+
+  // ── FE-D11: a @db.Date (UTC midnight) must NOT roll back a day ──────────────
+  it("formats a UTC-midnight @db.Date as its OWN calendar day (no TZ rollback)", () => {
+    // reservation.timeSlot.date is a @db.Date returned as UTC midnight. Before the
+    // fix, formatting it in America/Sao_Paulo (UTC-3) rolled 2026-07-16 back to the
+    // 15th — the confirmation-copy off-by-one. It must name the 16th, matching
+    // buildDateTime's UTC date extraction.
+    const result = formatDateBR(new Date("2026-07-16")) // UTC midnight — the @db.Date shape
+    expect(result).toMatch(/16 de julho de 2026/)
+    expect(result).not.toMatch(/15 de julho/)
+  })
+
+  it("the label's day agrees with buildDateTime's date part (FE-D11 consistency)", () => {
+    const date = new Date("2026-07-16")
+    const dateTime = buildDateTime(date, "19:30") // "2026-07-16T19:30:00"
+    const dayFromDateTime = dateTime.split("T")[0]!.split("-")[2]! // "16"
+    expect(formatDateBR(date)).toContain(`${dayFromDateTime} de julho`)
+  })
 })
 
 // ── locationLabel ─────────────────────────────────────────────────────────────
