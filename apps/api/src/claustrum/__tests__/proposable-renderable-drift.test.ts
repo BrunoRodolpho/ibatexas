@@ -131,24 +131,38 @@ describe("BKL-112 — RENDERABLE ⊆ PROPOSABLE: no dangling template", () => {
 // ∪ {STORE_HOURS, STORE_HOURS_FOR_DATE}: the guard is EXTENDED (not deleted) to allow
 // exactly these two deliberate additions; any OTHER divergence (a Triad type losing its
 // template, or a THIRD non-Triad type gaining one) still trips CI as a decision point.
-const NON_TRIAD_RENDERABLE = ["STORE_HOURS", "STORE_HOURS_FOR_DATE"] as const;
+// BKL-142 EXTENDS the deliberate non-Triad renderable set with the PUBLIC menu reads
+// MENU_ITEM_PRICE / MENU_ITEM_CONTENTS: each carries a validated pre-composed-scalar
+// template but is `not_applicable`-ownership (public catalog, owned by nobody) and so
+// intentionally OUT of TRIAD_SCOPED_TYPES — exactly like STORE_HOURS / STORE_HOURS_FOR_
+// DATE. Any OTHER divergence still trips CI as a decision point.
+const NON_TRIAD_RENDERABLE = [
+  "STORE_HOURS",
+  "STORE_HOURS_FOR_DATE",
+  "MENU_ITEM_PRICE",
+  "MENU_ITEM_CONTENTS",
+] as const;
 
-describe("BKL-112 — context: RENDERABLE == the triadScoped definitions ∪ {STORE_HOURS, STORE_HOURS_FOR_DATE}", () => {
+describe("BKL-112 — context: RENDERABLE == the triadScoped definitions ∪ the deliberate non-Triad public reads", () => {
   it("the renderable set equals exactly triadScoped ∪ the deliberate non-Triad types", () => {
     // Derived from the real exported CLAIM_DEFINITIONS.triadScoped flags, not
-    // hardcoded — plus the BKL-121/-138 non-Triad allowances. If any OTHER type
+    // hardcoded — plus the BKL-121/-138/-142 non-Triad allowances. If any OTHER type
     // diverges, this documents it as the same deliberate decision point.
     const triadScoped = [...CLAIM_REGISTRY].filter(
       (type) => CLAIM_DEFINITIONS[type].triadScoped,
     );
     const expected = [...triadScoped, ...NON_TRIAD_RENDERABLE].sort();
     expect([...RENDERABLE].sort()).toEqual(expected);
-    // POSITIVE controls: both are genuinely renderable AND genuinely NON-Triad (so the
+    // POSITIVE controls: each is genuinely renderable AND genuinely NON-Triad (so the
     // extension is not vacuously masking a Triad-flag flip).
     expect(RENDERABLE.has("STORE_HOURS")).toBe(true);
     expect(CLAIM_DEFINITIONS.STORE_HOURS.triadScoped).toBe(false);
     expect(RENDERABLE.has("STORE_HOURS_FOR_DATE")).toBe(true);
     expect(CLAIM_DEFINITIONS.STORE_HOURS_FOR_DATE.triadScoped).toBe(false);
+    expect(RENDERABLE.has("MENU_ITEM_PRICE")).toBe(true);
+    expect(CLAIM_DEFINITIONS.MENU_ITEM_PRICE.triadScoped).toBe(false);
+    expect(RENDERABLE.has("MENU_ITEM_CONTENTS")).toBe(true);
+    expect(CLAIM_DEFINITIONS.MENU_ITEM_CONTENTS.triadScoped).toBe(false);
   });
 });
 

@@ -157,6 +157,10 @@ export const STORE_HOURS = "STORE_HOURS";
 export const STORE_HOURS_FOR_DATE = "STORE_HOURS_FOR_DATE";
 /** BKL-139 — the owner-scoped IN-PROGRESS cart read (pre-composed summary scalar). */
 export const CART_CONTENTS = "CART_CONTENTS";
+/** BKL-142 — the PUBLIC per-item menu price read (pre-composed pt-BR scalar). */
+export const MENU_ITEM_PRICE = "MENU_ITEM_PRICE";
+/** BKL-142 — the PUBLIC per-item menu contents read (first-party description scalar). */
+export const MENU_ITEM_CONTENTS = "MENU_ITEM_CONTENTS";
 
 /**
  * Per-type `validated` (asserting) templates, keyed by claim type. Each is the ONE
@@ -266,6 +270,24 @@ export const VALIDATED_TEMPLATES: Readonly<Record<string, Template>> = {
       lit("."),
     ],
   },
+  // BKL-142 — the menu price/contents validated templates. ONE proposition slot each,
+  // bound 1:1 to the C6 valueBinding FIELD (`priceText` / `contentsText`, claim-
+  // registry.ts). The value is a DETERMINISTICALLY PRE-COMPOSED pt-BR scalar
+  // (menu-item-resolver.ts `composeMenuPriceText` / `composeMenuContentsText`) — the
+  // full clause ("Costela Defumada custa R$ 89,00"), evidence-bound from the resolved
+  // product, never an enum, never model-authored. Same single-C6-field shape as
+  // CART_CONTENTS / STORE_HOURS_FOR_DATE (the frozen single-scalar kernel drops every
+  // sibling read field post-mint).
+  [MENU_ITEM_PRICE]: {
+    claimType: MENU_ITEM_PRICE,
+    posture: "validated",
+    slots: [prop(MENU_ITEM_PRICE, "priceText"), lit(".")],
+  },
+  [MENU_ITEM_CONTENTS]: {
+    claimType: MENU_ITEM_CONTENTS,
+    posture: "validated",
+    slots: [prop(MENU_ITEM_CONTENTS, "contentsText"), lit(".")],
+  },
   // NOTE: ORDER_ESTIMATED_ARRIVAL was REMOVED here (inv.18 validator wiring). It
   // had a `validated` template (a PROPOSITION slot prop(…, "etaMinutes")) but NO
   // registered ClaimDefinition — it is absent from CLAIM_REGISTRY/REGISTRY_SPECS
@@ -302,9 +324,11 @@ export const VALIDATED_TEMPLATES: Readonly<Record<string, Template>> = {
 // STORE_HOURS GRADUATED (BKL-121): it now has the validated template above (the full
 // read→evidence→falsifier→derive→template chain), so it is NO LONGER in the gap — a
 // today's-hours question renders today's real hours instead of dead-ending at
-// SAFE_UNKNOWN. The drift test pin was shrunk to {MENU_ITEM_ALLERGENS,
-// PURCHASE_COMPLETED} to match, and its RENDERABLE==triadScoped block was updated to
-// allow STORE_HOURS as the ONE deliberate non-Triad renderable (see that test).
+// SAFE_UNKNOWN. The drift test pin stays {MENU_ITEM_ALLERGENS, PURCHASE_COMPLETED}
+// (the only proposable types with no validated template), and its
+// RENDERABLE==triadScoped block allows the DELIBERATE non-Triad renderables — the
+// public read types STORE_HOURS / STORE_HOURS_FOR_DATE + BKL-142's MENU_ITEM_PRICE /
+// MENU_ITEM_CONTENTS (all `not_applicable` ownership, never Triad-scoped).
 //
 // The drift test pins this exact gap so a future proposable type added without a
 // template (or a template added/removed for a pinned type) trips CI.

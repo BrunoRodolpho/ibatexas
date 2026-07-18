@@ -102,6 +102,12 @@ import {
 import type { StoreHoursRead, StoreHoursForDateRead } from "./turn-reads.js";
 import { resolveQueriedScheduleDate } from "./schedule-date-resolver.js";
 import {
+  resolveMenuItem,
+  composeMenuPriceText,
+  composeMenuContentsText,
+  type ResolvedMenuItem,
+} from "./menu-item-resolver.js";
+import {
   EXTRACTION_FAILURE_KIND,
   PINNED_COMPLETION_TEMPERATURE,
 } from "./model-call-defaults.js";
@@ -1568,6 +1574,27 @@ export function createIbatexasPlanner(
           const resolved = resolveQueriedScheduleDate(state.perception.text, dateTz, dateNow);
           if (resolved === null) continue;
           subject = resolved.isoDate;
+        } else if (
+          canonicalType === "MENU_ITEM_PRICE" ||
+          canonicalType === "MENU_ITEM_CONTENTS"
+        ) {
+          // BKL-142 (subject) — the menu claim's SUBJECT is the RESOLVED product id,
+          // resolved DETERMINISTICALLY from the request text via the SHARED
+          // resolveMenuItem (the SAME turnId+text the investigator uses, memoized, so the
+          // candidate subject == the `menu:item_*:{id}` ledger key by construction). No
+          // lexically-related product → DROP the proposal (no candidate) → honest UNKNOWN,
+          // never a guessed/arbitrary item.
+          const resolvedItem = await resolveMenuItem(
+            state.turnId,
+            state.perception.text,
+            {
+              channel: state.perception.channel,
+              sessionId: state.conversationId,
+              customerId: authPrincipal,
+            },
+          );
+          if (resolvedItem === undefined) continue;
+          subject = resolvedItem.id;
         }
 
         proposals.push({
@@ -1641,10 +1668,45 @@ export function createIbatexasPlanner(
           if (read !== undefined) storeHoursForDate[isoDate] = read;
         }
       }
+      // BKL-142 — the SAME per-item reads the investigator records under
+      // `menu:item_*:{id}`, keyed by the resolved product id (each menu candidate's
+      // subject). resolveMenuItem is memoized on turnId+text, so this REUSES the read the
+      // subject-resolution branch already made (ONE searchProducts per turn) and yields
+      // the IDENTICAL product → the derived `priceText`/`contentsText` are byte-equal to
+      // the investigator's ledger entry (C6 passes by construction). Composed here from
+      // integer centavos (Hard Rule 2) / the first-party description — never model-authored.
+      const menuItemPrice: Record<string, { priceText: string }> = {};
+      const menuItemContents: Record<string, { contentsText: string }> = {};
+      const menuCandidateTypes = new Set(candidates.map((c) => c.type));
+      if (
+        menuCandidateTypes.has("MENU_ITEM_PRICE") ||
+        menuCandidateTypes.has("MENU_ITEM_CONTENTS")
+      ) {
+        const resolvedItem: ResolvedMenuItem | undefined = await resolveMenuItem(
+          state.turnId,
+          state.perception.text,
+          {
+            channel: state.perception.channel,
+            sessionId: state.conversationId,
+            customerId: authPrincipal,
+          },
+        );
+        if (resolvedItem !== undefined) {
+          menuItemPrice[resolvedItem.id] = {
+            priceText: composeMenuPriceText(resolvedItem),
+          };
+          const contentsText = composeMenuContentsText(resolvedItem);
+          if (contentsText !== undefined) {
+            menuItemContents[resolvedItem.id] = { contentsText };
+          }
+        }
+      }
       const derivedCandidates = deriveCandidateValues(candidates, {
         scheduleSignal,
         storeHours,
         storeHoursForDate,
+        menuItemPrice,
+        menuItemContents,
       });
 
       // POST-planning wall (SDD §C P4 / §J.8): every span gets a disposition; an
