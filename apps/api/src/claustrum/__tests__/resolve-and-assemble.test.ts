@@ -1003,6 +1003,20 @@ describe("resolve-and-assemble — FE-T09 granular amend item hydration", () => 
     expect(ctx.amendItemUnresolved).toBe(true);
   });
 
+  // REVIEW FIX (2026-07-17): the third stamp arm — payload carries NO item name
+  // at all (and no variantId) — was implemented but untested.
+  it("order.amend.add_item: stamps ctx.amendItemUnresolved when the payload has no item name", async () => {
+    searchProductsMock = async () => ({ products: [] });
+    const { ctx } = await resolveAndAssemble({
+      kind: "order.amend.add_item",
+      payload: { orderId: "ord_1" },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+    });
+    expect(ctx.amendItemUnresolved).toBe(true);
+  });
+
   it("order.amend.add_item: does NOT stamp ctx.amendItemUnresolved when the item resolves", async () => {
     searchProductsMock = async () => ({
       products: [{ id: "prod_1", title: "Coca-Cola 350ml", variants: [{ id: "var_coke" }], allergens: ["gluten"] }],

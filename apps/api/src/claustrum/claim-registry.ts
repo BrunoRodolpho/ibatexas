@@ -391,6 +391,13 @@ export const REGISTRY_SPECS = {
     // The investigator records the schedule-style PER-RESOURCE key — parameterize.
     perResourceKey: true,
     // W6 — a present order CANCELLATION falsifies any in-progress fulfillment stage.
+    // DELIBERATELY UNREAD (review ruling 2026-07-17, post-#277): no investigator
+    // read populates `order_cancelled` — the only available read derives from the
+    // SAME per-turn order row as the base ORDER_FULFILLMENT_STAGE read, so firing
+    // it is a tautology that demotes every TRUTHFUL "cancelado" render to UNKNOWN
+    // while catching zero staleness the base misses. The declaration stays for a
+    // future INDEPENDENT cancellation signal (e.g. the order-events stream);
+    // rendering cancellation as a first-class claim is tracked as BKL-160.
     falsifierComplete: true,
     falsifiers: [
       {
@@ -476,11 +483,12 @@ export const REGISTRY_SPECS = {
     // Parameterize by subject — matches the investigator's `reservation_status:{id}`.
     perResourceKey: true,
     // W6 — a present reservation CANCELLATION falsifies an in-progress reservation
-    // status read (the SAME defense-in-depth staleness shape as
-    // ORDER_FULFILLMENT_STAGE's `order_cancelled`: the read and this falsifier are
-    // honestly enumerated even though no investigator read populates it yet — see
-    // that type's identical note; the declaration is what escapes the W6 UNKNOWN-only
-    // cap, not a currently-wired second read).
+    // status read. DELIBERATELY UNREAD (review ruling 2026-07-17, post-#277) —
+    // same-row tautology as ORDER_FULFILLMENT_STAGE's `order_cancelled` (see that
+    // type's note): the only available read shares the base read's per-turn
+    // reservation memo, so firing it would demote every truthful "cancelada"
+    // render while catching nothing. Declaration retained for a future
+    // INDEPENDENT signal; render-vs-demote decision = BKL-160.
     falsifierComplete: true,
     falsifiers: [
       {

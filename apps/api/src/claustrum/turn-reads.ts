@@ -41,14 +41,9 @@ import {
   type ScheduleSignal,
 } from "@ibatexas/tools";
 import type { HolidayEntry, ScheduleOverrideEntry } from "@ibatexas/types";
-// BKL-006 — the falsifier-fact enum VALUES (not just types): the payment refund /
-// chargeback / cancellation predicates test payment/order/reservation status against
-// these canonical members rather than magic strings.
-import {
-  OrderFulfillmentStatus,
-  PaymentStatus,
-  ReservationStatus,
-} from "@ibatexas/types";
+// (BKL-006 falsifier predicates moved into the domain service's findFirst
+// probes — see findRefundBearingByOrderId/findDisputedByOrderId; no status-enum
+// comparison happens in this file anymore.)
 
 // ── Read value shapes (concrete; the renderer fills 1:1 from validated claims) ─
 
@@ -170,28 +165,16 @@ export interface PaymentChargebackRead {
   readonly status: string;
 }
 
-/**
- * ORDER_FULFILLMENT_STAGE falsifier — the owner-scoped order is cancelled.
- * `cancelled` iff `fulfillmentStatus === "canceled"`. A present cancellation
- * contradicts any in-progress fulfillment stage → demote to UNKNOWN (claim-registry
- * declares this as the same defense-in-depth staleness shape as the payment refund).
- */
-export interface OrderCancelledRead {
-  readonly orderId: string;
-  readonly cancelled: boolean;
-  readonly fulfillmentStatus: string | null;
-}
-
-/**
- * RESERVATION_STATUS falsifier — the owner-scoped reservation is cancelled.
- * `cancelled` iff `status === "cancelled"`. A present cancellation contradicts any
- * in-progress reservation status → demote to UNKNOWN.
- */
-export interface ReservationCancelledRead {
-  readonly reservationId: string;
-  readonly cancelled: boolean;
-  readonly status: string;
-}
+// REVIEW FIX (PRs #275/#277 adversarial review, 2026-07-17): the order_cancelled /
+// reservation_cancelled falsifier READS shipped in #277 were REMOVED as a
+// shared-read tautology — they derived from the SAME memoized row (same instant,
+// same freshness) as the base ORDER_FULFILLMENT_STAGE / RESERVATION_STATUS reads,
+// so they could never catch staleness the base didn't already see, while actively
+// demoting every TRUTHFUL "cancelado/cancelada" render to UNKNOWN. The registry
+// falsifier declarations remain (deliberately unread — see claim-registry.ts);
+// rendering cancellation as a first-class claim is BKL-160. The refund/chargeback
+// falsifiers below are KEPT: they carry value-distinct signals (a refund on a
+// still-'paid' row) the base read does not assert.
 
 /**
  * The first-party read backend for the Trustworthiness-Triad scope. Every
@@ -276,24 +259,6 @@ export interface TriadReadBackend {
     orderId: string,
     customerId: string,
   ): Promise<PaymentChargebackRead | null>;
-  /**
-   * BKL-006 ORDER_FULFILLMENT_STAGE falsifier — the owner-scoped order-cancellation
-   * read. `cancelled` says whether the order is cancelled; `null` when not owned /
-   * absent.
-   */
-  readOrderCancelled(
-    orderId: string,
-    customerId: string,
-  ): Promise<OrderCancelledRead | null>;
-  /**
-   * BKL-006 RESERVATION_STATUS falsifier — the owner-scoped reservation-cancellation
-   * read. `cancelled` says whether the reservation is cancelled; `null` when not
-   * owned / absent.
-   */
-  readReservationCancelled(
-    reservationId: string,
-    customerId: string,
-  ): Promise<ReservationCancelledRead | null>;
   /**
    * Enumerate the AUTHENTICATED customer's OWN, RELEVANT (non-terminal) order ids
    * (FIX 2 — owner-scoped subject resolution; the BUG-2 close). OWNER-SCOPED by
@@ -518,43 +483,19 @@ export function createDomainTriadReadBackend(
     return p;
   };
 
-  // BKL-006 — per-turn memo of the OWNER-SCOPED all-payments read for an order. The
-  // `payment_refund` AND `payment_chargeback` falsifiers both scan the SAME payment
-  // list, so run `listByOrderId` ONCE per (owner, order) this turn (single-flight
-  // under the parallel investigator). GATED through the SAME owner-scoped order read
-  // as the base PAYMENT_STATUS (the IDOR close): a cross-owner / absent order
-  // resolves to `null` and the payment table is NEVER read. `null` therefore means
-  // "not owned" (→ a fail-closed read error at the investigator), distinct from an
-  // owned order that simply has no refund/dispute. Caches the in-flight PROMISE.
-  const orderPaymentsReads = new Map<
-    string,
-    Promise<
-      | Awaited<
-          ReturnType<ReturnType<typeof createPaymentQueryService>["listByOrderId"]>
-        >["payments"]
-      | null
-    >
-  >();
-  const readOwnerScopedOrderPaymentsOnce = (orderId: string, customerId: string) => {
-    const cacheKey = JSON.stringify([customerId, orderId]);
-    let p = orderPaymentsReads.get(cacheKey);
-    if (p === undefined) {
-      p = (async () => {
-        const order = await readOwnerScopedOrderOnce(orderId, customerId);
-        if (order === null || order.customerId !== customerId) return null;
-        const { payments } = await createPaymentQueryService().listByOrderId(orderId);
-        return payments;
-      })();
-      orderPaymentsReads.set(cacheKey, p);
-    }
-    return p;
-  };
+  // BKL-006 — the refund/chargeback falsifier reads are IDOR-gated through the
+  // SAME owner-scoped order memo as the base PAYMENT_STATUS read: a cross-owner /
+  // absent order returns `null` (→ fail-closed read error at the investigator)
+  // and the payment table is NEVER queried. REVIEW FIX (BKL-159, 2026-07-17):
+  // the shared listByOrderId page scan (a $transaction with an unused count,
+  // truncated to the most-recent 20 rows) was replaced by predicate-shaped
+  // findFirst probes in the domain service — complete by construction (a
+  // where-clause sees every row) and cheaper (no transaction, no count).
 
-  // BKL-006 — per-turn memo of the OWNER-SCOPED reservation read. The status read AND
-  // the `reservation_cancelled` falsifier both need the SAME reservation, so run its
-  // owner-scoped `getById` ONCE per (owner, reservation) this turn. `getById` is
-  // owner-scoped (asserts ownership, throws on a cross-owner id) → caught → `null`
-  // (refused), never another customer's reservation. Caches the in-flight PROMISE.
+  // Per-turn memo of the OWNER-SCOPED reservation read. `getById` is
+  // owner-scoped (asserts ownership, throws on a cross-owner id) → caught →
+  // `null` (refused), never another customer's reservation. Caches the
+  // in-flight PROMISE (single-flight under the parallel investigator).
   const reservationReads = new Map<
     string,
     Promise<
@@ -636,62 +577,30 @@ export function createDomainTriadReadBackend(
       // a refund status. RATIFIED (BKL-006): a PARTIAL refund fires — demote-only to
       // UNKNOWN is safe (see PaymentRefundRead). A `refunded: false` result leaves the
       // ledger key ABSENT at the investigator (the falsifier does not fire).
-      const payments = await readOwnerScopedOrderPaymentsOnce(orderId, customerId);
-      if (payments === null) return null;
-      const refundBearing = payments.find(
-        (p) =>
-          p.refundedAmountCentavos > 0 ||
-          p.status === PaymentStatus.REFUNDED ||
-          p.status === PaymentStatus.PARTIALLY_REFUNDED,
-      );
+      const order = await readOwnerScopedOrderOnce(orderId, customerId);
+      if (order === null || order.customerId !== customerId) return null;
+      const refundBearing =
+        await createPaymentQueryService().findRefundBearingByOrderId(orderId);
       return {
         orderId,
-        refunded: refundBearing !== undefined,
+        refunded: refundBearing !== null,
         refundedAmountCentavos: refundBearing?.refundedAmountCentavos ?? 0,
-        status: refundBearing === undefined ? "" : String(refundBearing.status),
+        status: refundBearing === null ? "" : String(refundBearing.status),
       };
     },
 
     async readPaymentChargeback(orderId, customerId) {
-      // BKL-006 — owner-scoped chargeback falsifier. Same IDOR gate + memo as the
-      // refund read; `null` = not owned → fail-closed read error. FIRES iff any
-      // payment for the order is `disputed` (the platform's chargeback signal).
-      const payments = await readOwnerScopedOrderPaymentsOnce(orderId, customerId);
-      if (payments === null) return null;
-      const disputed = payments.find((p) => p.status === PaymentStatus.DISPUTED);
-      return {
-        orderId,
-        disputed: disputed !== undefined,
-        status: disputed === undefined ? "" : String(disputed.status),
-      };
-    },
-
-    async readOrderCancelled(orderId, customerId) {
-      // BKL-006 — owner-scoped order-cancellation falsifier. Shares the per-turn order
-      // memo with readOrderFulfillment; `null` = not owned → fail-closed read error.
-      // FIRES iff the order's fulfillment status is `canceled`.
+      // BKL-006 — owner-scoped chargeback falsifier. Same IDOR gate as the refund
+      // read; `null` = not owned → fail-closed read error. FIRES iff any payment
+      // for the order is `disputed` (the platform's chargeback signal).
       const order = await readOwnerScopedOrderOnce(orderId, customerId);
       if (order === null || order.customerId !== customerId) return null;
-      const fulfillmentStatus =
-        order.fulfillmentStatus === null ? null : String(order.fulfillmentStatus);
+      const disputed =
+        await createPaymentQueryService().findDisputedByOrderId(orderId);
       return {
         orderId,
-        cancelled: fulfillmentStatus === OrderFulfillmentStatus.CANCELED,
-        fulfillmentStatus,
-      };
-    },
-
-    async readReservationCancelled(reservationId, customerId) {
-      // BKL-006 — owner-scoped reservation-cancellation falsifier. Shares the per-turn
-      // reservation memo with readReservation; `null` = not owned → fail-closed read
-      // error. FIRES iff the reservation's status is `cancelled`.
-      const r = await readOwnerScopedReservationOnce(reservationId, customerId);
-      if (r === null) return null;
-      const status = String(r.status);
-      return {
-        reservationId,
-        cancelled: status === ReservationStatus.CANCELLED,
-        status,
+        disputed: disputed !== null,
+        status: disputed === null ? "" : String(disputed.status),
       };
     },
 

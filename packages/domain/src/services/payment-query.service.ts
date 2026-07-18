@@ -72,6 +72,17 @@ export interface PaymentQueryService {
   /** List all payment attempts for an order (most recent first). */
   listByOrderId(orderId: string, opts?: { limit?: number; offset?: number }): Promise<ListByOrderResult>
 
+  /**
+   * BKL-159 falsifier probes: predicate-shaped findFirst existence reads for the
+   * claims falsifier arm — no $transaction, no count, and complete by
+   * construction (a where-clause sees EVERY row, unlike a page of listByOrderId).
+   * Most-recent match returned for audit fields; null = no such signal.
+   */
+  findRefundBearingByOrderId(orderId: string): Promise<Payment | null>
+
+  /** BKL-159: most-recent disputed (chargeback-signal) payment for an order, or null. */
+  findDisputedByOrderId(orderId: string): Promise<Payment | null>
+
   /** Get full status history for a payment (paginated, chronological). */
   getStatusHistory(paymentId: string, opts?: { limit?: number; offset?: number }): Promise<PaymentStatusHistory[]>
 
@@ -166,6 +177,26 @@ export function createPaymentQueryService(): PaymentQueryService {
       ])
 
       return { payments, count }
+    },
+
+    async findRefundBearingByOrderId(orderId) {
+      return prisma.payment.findFirst({
+        where: {
+          orderId,
+          OR: [
+            { refundedAmountCentavos: { gt: 0 } },
+            { status: { in: ["refunded", "partially_refunded"] as PrismaPaymentStatus[] } },
+          ],
+        },
+        orderBy: { createdAt: "desc" },
+      })
+    },
+
+    async findDisputedByOrderId(orderId) {
+      return prisma.payment.findFirst({
+        where: { orderId, status: "disputed" as PrismaPaymentStatus },
+        orderBy: { createdAt: "desc" },
+      })
     },
 
     async getStatusHistory(paymentId, opts) {

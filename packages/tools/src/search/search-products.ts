@@ -35,7 +35,7 @@ import {
   embeddingToBucket,
   type CacheFilterContext,
 } from "../cache/query-cache.js"
-import { generateEmbedding } from "../embeddings/client.js"
+import { EmbeddingsUnavailableError, generateEmbedding } from "../embeddings/client.js"
 import { typesenseDocToDTO, type TypesenseProductDoc } from "../mappers/product-mapper.js"
 import { rk } from "../redis/key.js"
 import { getTypesenseClient, COLLECTION } from "../typesense/client.js"
@@ -360,7 +360,11 @@ async function generateQueryEmbedding(query: string, isWildcard: boolean): Promi
       rk(`embedding:query:v2:${Buffer.from(query).toString("base64")}`)
     )
   } catch (error) {
-    console.warn("[Search] Query embedding failed; falling back to keyword search:", (error as Error).message)
+    // Key-less degradation is the EXPECTED local state and hits every search —
+    // the client already warned once per process; only log unexpected failures.
+    if (!(error instanceof EmbeddingsUnavailableError)) {
+      console.warn("[Search] Query embedding failed; falling back to keyword search:", (error as Error).message)
+    }
     return []
   }
 }
