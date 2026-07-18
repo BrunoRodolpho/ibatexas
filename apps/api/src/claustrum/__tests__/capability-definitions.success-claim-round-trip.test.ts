@@ -14,8 +14,9 @@
 // (ibatexas-responder.ts), so this test lives here, not in packages/
 // packs-composed (packages cannot import apps/api).
 //
-// This test caught a real grounding gap during authoring: 9 identity-tier
-// CapabilityDefinition entries (payment.charge.confirm, payment.cash.confirm,
+// This test caught a real grounding gap during authoring: identity-tier
+// CapabilityDefinition entries (payment.cash.confirm — payment.charge.confirm
+// was retired in BKL-176 —,
 // payment.refund.issue, payment.refund.confirm, reservation.checkin,
 // reservation.complete, order.amend.add_item, order.amend.update_qty,
 // order.amend.remove_item) are real justifiedBy members of a claim class but
@@ -56,9 +57,12 @@ describe("generateJustifiedByForClaim — round-trip fidelity against the REAL S
   it("payment-settled excludes payment.refund.confirm (opposite money direction) — the generator agrees", () => {
     const generated = generateJustifiedByForClaim(CAPABILITY_DEFINITIONS, "payment-settled");
     expect(generated).not.toContain("payment.refund.confirm");
+    // BKL-176 — payment.charge.confirm retired; payment.cash.confirm is the
+    // sole remaining inbound-settlement justifier.
     expect(generated).toEqual(
-      expect.arrayContaining(["payment.charge.confirm", "payment.cash.confirm"]),
+      expect.arrayContaining(["payment.cash.confirm"]),
     );
+    expect(generated).not.toContain("payment.charge.confirm");
   });
 
   it("no CapabilityDefinition links to a claim id SUCCESS_CLAIM_CLASSES does not define (no orphaned forward link)", () => {

@@ -842,7 +842,7 @@ describe("createIbatexasPlanner — invariants (property)", () => {
       "order.item.add",
       "order.cart.ensure",
       "order.coupon.apply",
-      "payment.charge.create",
+      "payment.create",
       "reservation.book",
     ];
     let checked = 0;

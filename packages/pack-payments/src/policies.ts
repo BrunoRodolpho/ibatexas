@@ -62,7 +62,6 @@ import {
   getRefundConfirmThresholdCentavos,
   getRefundEscalateThresholdCentavos,
   paymentsTaintPolicy,
-  type PaymentChargeCreatePayload,
   type PaymentCreatePayload,
   type PaymentIntentKind,
   type PaymentMethodSwitchPayload,
@@ -94,15 +93,10 @@ const requireTenantBindingGuard: PaymentGuard = requireTenantBinding<
 
 /**
  * Most payment kinds require an existing Payment row. The exceptions
- * are creation kinds (`payment.create` / `payment.charge.create`) and
- * the method-switch kind (which can run BEFORE the new method's payment
- * row exists).
+ * are the creation kind (`payment.create`) and the method-switch kind
+ * (which can run BEFORE the new method's payment row exists).
  */
 const KINDS_REQUIRING_PAYMENT_EXISTS: ReadonlySet<PaymentIntentKind> = new Set([
-  "payment.charge.confirm",
-  "payment.charge.fail",
-  "payment.charge.expire",
-  "payment.charge.cancel",
   "payment.pix.regenerate",
   "payment.retry",
   "payment.refund.issue",
@@ -198,10 +192,10 @@ const refuseTerminalTransition: PaymentGuard = (envelope, state) => {
 const VALID_METHODS = new Set(["pix", "card", "cash"])
 
 const validateCreateMethod: PaymentGuard = (envelope) => {
-  if (envelope.kind !== "payment.create" && envelope.kind !== "payment.charge.create") {
+  if (envelope.kind !== "payment.create") {
     return null
   }
-  const payload = envelope.payload as PaymentCreatePayload | PaymentChargeCreatePayload
+  const payload = envelope.payload as PaymentCreatePayload
   if (typeof payload.method !== "string" || !VALID_METHODS.has(payload.method)) {
     return decisionRefuse(refuseMethodInvalid(payload.method), [
       basis("business", BASIS_CODES.business.RULE_VIOLATED, {
@@ -696,11 +690,6 @@ const confirmAlwaysOnStatusForce: PaymentGuard = (envelope) => {
 const executeAll: PaymentGuard = (envelope) => {
   switch (envelope.kind) {
     case "payment.create":
-    case "payment.charge.create":
-    case "payment.charge.confirm":
-    case "payment.charge.fail":
-    case "payment.charge.expire":
-    case "payment.charge.cancel":
     case "payment.pix.regenerate":
     case "payment.method.switch":
     case "payment.retry":

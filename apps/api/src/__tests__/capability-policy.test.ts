@@ -68,7 +68,7 @@ function envelope(
 const ordersPack = (overrides: PackOverrides = {}) =>
   mkPack("fixture/orders", ["order.item.add", "order.checkout.create"], overrides);
 const paymentsPack = (overrides: PackOverrides = {}) =>
-  mkPack("fixture/payments", ["payment.charge.create"], overrides);
+  mkPack("fixture/payments", ["payment.create"], overrides);
 
 // ── resolveCapabilityPolicy ─────────────────────────────────────────────────
 
@@ -80,7 +80,7 @@ describe("resolveCapabilityPolicy", () => {
       resolveCapabilityPolicy([orders, payments], "order.item.add"),
     ).toBe(orders.policy);
     expect(
-      resolveCapabilityPolicy([orders, payments], "payment.charge.create"),
+      resolveCapabilityPolicy([orders, payments], "payment.create"),
     ).toBe(payments.policy);
   });
 
@@ -131,7 +131,7 @@ describe("composePolicyRouter — taint dispatch", () => {
     const router = composePolicyRouter([orders, paymentsPack()]);
     expect(router.taint.minimumFor("order.checkout.create")).toBe("TRUSTED");
     expect(router.taint.minimumFor("order.item.add")).toBe("UNTRUSTED");
-    expect(router.taint.minimumFor("payment.charge.create")).toBe("UNTRUSTED");
+    expect(router.taint.minimumFor("payment.create")).toBe("UNTRUSTED");
     // Unowned kind → most restrictive floor (nothing can propose it).
     expect(router.taint.minimumFor("totally.unknown")).toBe("SYSTEM");
   });

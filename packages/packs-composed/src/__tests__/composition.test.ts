@@ -48,7 +48,7 @@ describe("@ibatexas/packs-composed", () => {
     expect(kinds).toEqual(
       expect.arrayContaining([
         "order.cart.ensure",
-        "payment.charge.create",
+        "payment.create",
         "reservation.create",
         "customer.create",
         "whatsapp.message.send",

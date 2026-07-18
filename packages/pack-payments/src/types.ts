@@ -16,19 +16,13 @@
  * # Intent surface (governance §"payment" + W3 + W5 additions)
  *
  *   - payment.create                — SYSTEM. Initial Payment row for an
- *                                     order. Charge-create umbrella for
- *                                     the legacy `paymentCmdSvc.create`
- *                                     path.
- *   - payment.charge.create         — SYSTEM. Taxonomy-canonical alias for
- *                                     `payment.create`; carried for symmetry
- *                                     with the rest of `payment.charge.*`.
- *   - payment.charge.confirm        — SYSTEM/WEBHOOK. Stripe
- *                                     `payment_intent.succeeded`.
- *   - payment.charge.fail           — SYSTEM/WEBHOOK. Stripe
- *                                     `payment_intent.payment_failed`.
- *   - payment.charge.expire         — SYSTEM. PIX expiry checker.
- *   - payment.charge.cancel         — SYSTEM/WEBHOOK. Stripe
- *                                     `payment_intent.canceled`.
+ *                                     order (the `paymentCmdSvc.create` path).
+ *   - (BKL-176: the 5 `payment.charge.*` kinds were RETIRED — a governance-
+ *     only shadow of the live `payment.create` / `payment.status.*` taxonomy
+ *     with zero emitters/executors; `payment.charge.create` was merely an
+ *     alias of `payment.create`. The live lifecycle uses `payment.create`
+ *     (creation), `payment.status.reconcile` (Stripe succeeded/failed/canceled/
+ *     refunded), and `payment.status.transition` (PIX expiry / jobs).)
  *   - payment.pix.regenerate        — UNTRUSTED. Customer-driven PIX QR
  *                                     regeneration. Composite (cancel-old
  *                                     + create-new + bump-counter); the
@@ -88,11 +82,6 @@ import { MONEY_BAND_1000_CENTAVOS } from "@ibatexas/types"
 
 export type PaymentIntentKind =
   | "payment.create"
-  | "payment.charge.create"
-  | "payment.charge.confirm"
-  | "payment.charge.fail"
-  | "payment.charge.expire"
-  | "payment.charge.cancel"
   | "payment.pix.regenerate"
   | "payment.method.switch"
   | "payment.retry"
@@ -115,37 +104,6 @@ export interface PaymentCreatePayload {
   readonly stripePaymentIntentId?: string
   readonly pixExpiresAt?: string
   readonly idempotencyKey?: string
-}
-
-/**
- * Symmetric alias of `PaymentCreatePayload`. Taxonomy uses
- * `payment.charge.create` for the canonical charge-creation kind; the
- * legacy `payment.create` literal is also in the surface to preserve
- * existing audit-record vocabulary. Both share this payload shape.
- */
-export type PaymentChargeCreatePayload = PaymentCreatePayload
-
-export interface PaymentChargeConfirmPayload {
-  readonly orderId: string
-  readonly paymentId: string
-  readonly wireStatus: string
-  readonly stripeEventId: string
-}
-
-export interface PaymentChargeFailPayload {
-  readonly orderId: string
-  readonly paymentId: string
-  readonly reason: string
-}
-
-export interface PaymentChargeExpirePayload {
-  readonly paymentId: string
-  readonly reason: "pix_expired"
-}
-
-export interface PaymentChargeCancelPayload {
-  readonly paymentId: string
-  readonly reason: string
 }
 
 /**
@@ -256,11 +214,6 @@ export interface PaymentStatusReconcilePayload {
  */
 export type PaymentPayload =
   | PaymentCreatePayload
-  | PaymentChargeCreatePayload
-  | PaymentChargeConfirmPayload
-  | PaymentChargeFailPayload
-  | PaymentChargeExpirePayload
-  | PaymentChargeCancelPayload
   | PaymentPixRegeneratePayload
   | PaymentMethodSwitchPayload
   | PaymentRetryPayload
@@ -296,7 +249,7 @@ export interface PaymentContext {
  *
  * # Fields
  *   - `exists`                    Payment row exists in the projection.
- *                                  False for `payment.create` / `.charge.create`.
+ *                                  False for `payment.create`.
  *   - `currentStatus`              Current wire status (e.g. "pending", "paid").
  *   - `currentMethod`              Current settlement method.
  *   - `version`                    Optimistic-concurrency version.
@@ -436,19 +389,13 @@ export function getMaxPaymentRetriesPerDay(): number {
  * `payment.waive`, `payment.status.force`) require TRUSTED — the route
  * layer attaches that taint after `requireManagerRole` succeeds.
  *
- * Webhook-only kinds (`payment.charge.confirm/fail/cancel`,
- * `payment.refund.confirm`, `payment.dispute.open`) flow through the
- * SYSTEM-tainted bucket (Stripe signature verification happens at the
- * route layer).
+ * Webhook-only kinds (`payment.refund.confirm`, `payment.dispute.open`) flow
+ * through the SYSTEM-tainted bucket (Stripe signature verification happens at
+ * the route layer). (BKL-176 retired the `payment.charge.*` webhook kinds.)
  */
 export const paymentsTaintPolicy = createSystemTaintPolicy({
   systemOnlyKinds: [
     "payment.create",
-    "payment.charge.create",
-    "payment.charge.confirm",
-    "payment.charge.fail",
-    "payment.charge.expire",
-    "payment.charge.cancel",
     "payment.refund.confirm",
     "payment.dispute.open",
     "payment.status.reconcile",

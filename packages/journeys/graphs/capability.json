@@ -3,7 +3,7 @@
   "graph": "capability",
   "meta": {
     "dangling": [],
-    "intentKinds": 70,
+    "intentKinds": 65,
     "packs": 6,
     "personaContexts": [
       "authed-customer",
@@ -840,116 +840,6 @@
       }
     },
     {
-      "id": "intent:payment.charge.cancel",
-      "type": "intent",
-      "label": "payment.charge.cancel",
-      "meta": {
-        "advertisedContexts": [],
-        "chatDrivable": false,
-        "composedPack": "ibatexas/pack-payments",
-        "domain": "payment",
-        "flags": [],
-        "knownKind": true,
-        "plausibleDecisions": [
-          "EXECUTE",
-          "REFUSE",
-          "ESCALATE",
-          "REQUEST_CONFIRMATION",
-          "DEFER",
-          "REWRITE"
-        ],
-        "staffRoute": false
-      }
-    },
-    {
-      "id": "intent:payment.charge.confirm",
-      "type": "intent",
-      "label": "payment.charge.confirm",
-      "meta": {
-        "advertisedContexts": [],
-        "chatDrivable": false,
-        "composedPack": "ibatexas/pack-payments",
-        "domain": "payment",
-        "flags": [],
-        "knownKind": true,
-        "plausibleDecisions": [
-          "EXECUTE",
-          "REFUSE",
-          "ESCALATE",
-          "REQUEST_CONFIRMATION",
-          "DEFER",
-          "REWRITE"
-        ],
-        "staffRoute": false
-      }
-    },
-    {
-      "id": "intent:payment.charge.create",
-      "type": "intent",
-      "label": "payment.charge.create",
-      "meta": {
-        "advertisedContexts": [],
-        "chatDrivable": false,
-        "composedPack": "ibatexas/pack-payments",
-        "domain": "payment",
-        "flags": [],
-        "knownKind": true,
-        "plausibleDecisions": [
-          "EXECUTE",
-          "REFUSE",
-          "ESCALATE",
-          "REQUEST_CONFIRMATION",
-          "DEFER",
-          "REWRITE"
-        ],
-        "staffRoute": false
-      }
-    },
-    {
-      "id": "intent:payment.charge.expire",
-      "type": "intent",
-      "label": "payment.charge.expire",
-      "meta": {
-        "advertisedContexts": [],
-        "chatDrivable": false,
-        "composedPack": "ibatexas/pack-payments",
-        "domain": "payment",
-        "flags": [],
-        "knownKind": true,
-        "plausibleDecisions": [
-          "EXECUTE",
-          "REFUSE",
-          "ESCALATE",
-          "REQUEST_CONFIRMATION",
-          "DEFER",
-          "REWRITE"
-        ],
-        "staffRoute": false
-      }
-    },
-    {
-      "id": "intent:payment.charge.fail",
-      "type": "intent",
-      "label": "payment.charge.fail",
-      "meta": {
-        "advertisedContexts": [],
-        "chatDrivable": false,
-        "composedPack": "ibatexas/pack-payments",
-        "domain": "payment",
-        "flags": [],
-        "knownKind": true,
-        "plausibleDecisions": [
-          "EXECUTE",
-          "REFUSE",
-          "ESCALATE",
-          "REQUEST_CONFIRMATION",
-          "DEFER",
-          "REWRITE"
-        ],
-        "staffRoute": false
-      }
-    },
-    {
       "id": "intent:payment.create",
       "type": "intent",
       "label": "payment.create",
@@ -1636,7 +1526,7 @@
       "type": "pack",
       "label": "ibatexas/pack-payments",
       "meta": {
-        "intentCount": 17,
+        "intentCount": 12,
         "policyDefault": "REFUSE",
         "version": "1.0.0"
       }
@@ -2305,31 +2195,6 @@
     {
       "from": "pack:ibatexas/pack-payments",
       "to": "intent:payment.cash.confirm",
-      "type": "declares"
-    },
-    {
-      "from": "pack:ibatexas/pack-payments",
-      "to": "intent:payment.charge.cancel",
-      "type": "declares"
-    },
-    {
-      "from": "pack:ibatexas/pack-payments",
-      "to": "intent:payment.charge.confirm",
-      "type": "declares"
-    },
-    {
-      "from": "pack:ibatexas/pack-payments",
-      "to": "intent:payment.charge.create",
-      "type": "declares"
-    },
-    {
-      "from": "pack:ibatexas/pack-payments",
-      "to": "intent:payment.charge.expire",
-      "type": "declares"
-    },
-    {
-      "from": "pack:ibatexas/pack-payments",
-      "to": "intent:payment.charge.fail",
       "type": "declares"
     },
     {

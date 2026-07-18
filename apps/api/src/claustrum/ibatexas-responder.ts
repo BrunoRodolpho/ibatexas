@@ -335,9 +335,11 @@ export function groundedReplyContradicts(text: string): string | null {
 // {executed, rewritten_and_executed, executed_plan} (a kernel EXECUTE decision is
 // NOT enough — dispatch can still be "failed"), AND the executed envelope kind is
 // one that justifies that specific claim. Critically, "pagamento aprovado/
-// confirmado" is justified ONLY by a settlement intent (payment.charge/cash/
-// refund.confirm) — NEVER by order.checkout.create or payment.pix.regenerate
-// (those create a checkout/QR; they do not settle money).
+// confirmado" is justified ONLY by an inbound settlement intent
+// (payment.cash.confirm; payment.charge.confirm was retired in BKL-176) —
+// NEVER by order.checkout.create or payment.pix.regenerate (those create a
+// checkout/QR; they do not settle money), and NEVER by a refund (opposite money
+// direction — CLAUDE.md excludes it).
 //
 // Conservative by design: it flags only clear domain success-claims that lack a
 // matching execution (minimising false blocks); anything it doesn't recognise
@@ -400,7 +402,14 @@ export const SUCCESS_CLAIM_CLASSES: ReadonlyArray<SuccessClaimClass> = [
   // is the opposite money direction and must NOT justify a "pagamento aprovado"
   // claim (review finding 12) — it justifies only the `refund-done` class below.
   // Wider negation window (30) so honest-failure phrasings aren't mis-substituted.
-  claimClass("payment-settled", "pagamento", "aprov|confirm|realiz|efetu|conclu|liquid|quit", ["payment.charge.confirm", "payment.cash.confirm"], [/\b(?:esta|ta|ja)\s+pago\b/, /\bpix\s+pago\b/, /\bpaguei\b/], 30),
+  // BKL-176 — `payment.charge.confirm` was RETIRED (dead taxonomy); the sole
+  // remaining justifier is the inbound `payment.cash.confirm`. Deliberately NOT
+  // repointed onto `payment.status.reconcile`: that kind is direction-agnostic
+  // (it also reconciles refunds), so admitting it would break `payment-settled`'s
+  // refund-direction exclusion (CLAUDE.md). Both remaining justifiers are still
+  // zero-emitter today, so a "pagamento confirmado" claim degrades to UNKNOWN
+  // absent a real settle event — the intended anti-confabulation posture.
+  claimClass("payment-settled", "pagamento", "aprov|confirm|realiz|efetu|conclu|liquid|quit", ["payment.cash.confirm"], [/\b(?:esta|ta|ja)\s+pago\b/, /\bpix\s+pago\b/, /\bpaguei\b/], 30),
   claimClass("order-canceled", "pedido", "cancel", ["order.cancel"], [/\bcancelamento\b[^.!?]{0,20}\b(?:realizad|efetuad|concluid)\w*/]),
   claimClass("cart-item-added", "carrinho", "adicion|inclu|atualiz", ["order.item.add", "order.item.update", "order.item.remove"], [/\bitem\b[^.!?]{0,15}\badicionad\w*/]),
   claimClass("refund-done", "reembolso", "process|emit|realiz|efetu|conclu|confirm|aprov", ["payment.refund.issue", "payment.refund.confirm"]),

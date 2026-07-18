@@ -174,11 +174,6 @@ export const WHATSAPP_INTENT_KINDS = [
 // projected from CAPABILITY_DEFINITIONS — see definitions.ts for per-kind rationale.
 export const PAYMENT_INTENT_KINDS = [
   "payment.create",
-  "payment.charge.create",
-  "payment.charge.confirm",
-  "payment.charge.fail",
-  "payment.charge.expire",
-  "payment.charge.cancel",
   "payment.pix.regenerate",
   "payment.method.switch",
   "payment.retry",

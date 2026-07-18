@@ -206,7 +206,7 @@ describe("createKernelMetricsSink — kernel_intent_kind_coverage gauge (W5-9)",
         "order.item.add",
         "order.cancel",
         "payment.refund.issue",
-        "payment.charge.confirm",
+        "payment.status.reconcile",
       ]),
     })
     const sink = createKernelMetricsSink(deps)
