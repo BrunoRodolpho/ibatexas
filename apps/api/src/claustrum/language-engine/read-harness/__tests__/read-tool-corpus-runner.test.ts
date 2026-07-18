@@ -14,7 +14,7 @@ import {
 import {
   reportReadToolAccuracy,
   runReadToolCorpus,
-} from "../read-tool-corpus-runner.js"
+} from "./read-tool-corpus-runner.js"
 
 const FIXTURE_DIR = fileURLToPath(new URL("./fixtures/", import.meta.url))
 // Empty read-tools waivers (matches the committed governance file — no entries).

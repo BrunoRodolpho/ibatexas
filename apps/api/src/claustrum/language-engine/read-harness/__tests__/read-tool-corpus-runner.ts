@@ -1,4 +1,8 @@
 // read-harness/read-tool-corpus-runner.ts — FE-D22: the IN-PROCESS read-tool
+// NOTE: lives in the __tests__ tree BY DESIGN — the check-bypass forward-
+// containment gate (leg 6) forbids app SOURCES from importing @ibatexas/journeys;
+// the test plane exemption (__tests__/, *.test.ts) is the sanctioned home for a
+// journeys-importing harness. Never import this from production src.
 // extraction-calibration runner.
 //
 // T07's extraction-accuracy meter scores the express_intent AUDIT SIDECAR
@@ -62,8 +66,8 @@ import {
   type ReadToolCorpusCase,
   type ReadToolCorpusFile,
 } from "@ibatexas/journeys"
-import { createIbatexasPlanner } from "../../ibatexas-planner.js"
-import { sanitizeReadToolInput } from "../read-tool-schemas.js"
+import { createIbatexasPlanner } from "../../../ibatexas-planner.js"
+import { sanitizeReadToolInput } from "../../read-tool-schemas.js"
 
 /** The dry-run-capable per-case seeding hook (live window: e.g. `seedOwnedOrder`). */
 export type ReadHarnessBeforeCase = (ctx: {
