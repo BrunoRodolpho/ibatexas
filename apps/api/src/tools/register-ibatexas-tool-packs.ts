@@ -32,6 +32,7 @@
 import {
   addOrderNote,
   addToCart,
+  syncCart,
   amendOrder,
   applyCoupon,
   cancelOrder,
@@ -306,6 +307,18 @@ const IBATEXAS_TOOLS: ReadonlyArray<TD<unknown, unknown>> = [
     description: "Adicionar um item ao carrinho do cliente.",
     riskLevel: "low",
     execute: (input, ctx) => addToCart(input as never, ctx),
+  }),
+  // BKL-180 — the order.cart.sync EXECUTOR: bulk-add the client's local cart items
+  // behind ONE governed envelope (the pack's cart.sync bulk-allergen validator gates
+  // it). Identity tier — NOT LLM-advertised (buildToolSurface excludes it); registered
+  // so the fail-closed toolRosterDrift boot gate has an executor for the wired kind.
+  makeTool({
+    id: "ibatexas.cart.sync.v1",
+    capability: "order.cart.sync",
+    intentKind: "order.cart.sync",
+    description: "Sincronizar (em lote) os itens do carrinho do cliente.",
+    riskLevel: "low",
+    execute: (input, ctx) => syncCart(input as never, ctx),
   }),
   makeTool({
     id: "ibatexas.cart.updateItem.v1",

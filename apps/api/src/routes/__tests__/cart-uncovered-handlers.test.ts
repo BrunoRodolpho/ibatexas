@@ -42,6 +42,12 @@ const mockMedusaAdmin = vi.hoisted(() => vi.fn());
 const mockMedusaAdjudicated = vi.hoisted(() => vi.fn());
 const mockAdjudicate = vi.hoisted(() => vi.fn());
 const mockAdjudicateAndAudit = vi.hoisted(() => vi.fn());
+// BKL-180 — the checkout sync leg hydrates DECLARED allergens from the catalog
+// (Typesense) before the order.cart.sync adjudication. Default: a declared empty
+// allergens array so the sync-chain checkouts proceed.
+const mockTypesenseSearch = vi.hoisted(() =>
+  vi.fn(async () => ({ hits: [{ document: { allergens: [] as string[] } }] })),
+);
 const mockCreateCheckout = vi.hoisted(() => vi.fn());
 const mockEstimateDelivery = vi.hoisted(() => vi.fn());
 const mockGetMealPeriod = vi.hoisted(() => vi.fn());
@@ -115,6 +121,11 @@ vi.mock("@ibatexas/tools", async () => {
     normalizeCpf: actual.normalizeCpf,
     createOrderAccessToken: actual.createOrderAccessToken,
     verifyOrderAccessToken: actual.verifyOrderAccessToken,
+    // BKL-180 — catalog allergen hydration for the checkout sync leg.
+    COLLECTION: "products",
+    getTypesenseClient: () => ({
+      collections: () => ({ documents: () => ({ search: mockTypesenseSearch }) }),
+    }),
   };
 });
 
