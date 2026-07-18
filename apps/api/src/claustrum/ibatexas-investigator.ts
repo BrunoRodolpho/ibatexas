@@ -38,6 +38,11 @@ import {
   type TriadReadBackend,
 } from "./turn-reads.js";
 import { resolveQueriedScheduleDate } from "./schedule-date-resolver.js";
+import {
+  resolveMenuItem,
+  composeMenuPriceText,
+  composeMenuContentsText,
+} from "./menu-item-resolver.js";
 import { classifyRequestSpans } from "./required-claim-decomposer.js";
 
 /**
@@ -180,6 +185,14 @@ const STORE_HOURS_FOR_DATE_KEY = (isoDate: string): string =>
 const HOLIDAY_FOR_DATE_KEY = (isoDate: string): string => `schedule:holiday:${isoDate}`;
 const OVERRIDE_FOR_DATE_KEY = (isoDate: string): string =>
   `schedule:schedule_override:${isoDate}`;
+// BKL-142 MENU_ITEM_PRICE / MENU_ITEM_CONTENTS — the PRODUCT-ID-SUFFIXED keys, aligned
+// VERBATIM with the registry's `perResourceKey` parameterization (`${base}:${subject}`
+// where subject = the RESOLVED product id; claim-registry.ts). Recorded ONLY when a
+// menu span fired AND the item resolved this turn (the same resolveMenuItem the claim
+// planner drives, so key == candidate subject by construction).
+const MENU_ITEM_PRICE_KEY = (productId: string): string => `menu:item_price:${productId}`;
+const MENU_ITEM_CONTENTS_KEY = (productId: string): string =>
+  `menu:item_contents:${productId}`;
 const ORDER_FULFILLMENT_KEY = (orderId: string): string =>
   `order_fulfillment_stage:${orderId}`;
 const PAYMENT_STATUS_KEY = (orderId: string): string => `payment_status:${orderId}`;
@@ -381,6 +394,62 @@ export function createFirstPartyTurnReads(
         sourceMode: "live",
         read: async () => (await b.readScheduleOverrideForDate(isoDate)) ?? ABSENT_READ,
       });
+    }
+
+    // BKL-142 MENU_ITEM_PRICE / MENU_ITEM_CONTENTS — PUBLIC per-item catalog reads.
+    // GATED on a MENU_ITEM_PRICE_Q / MENU_ITEM_CONTENTS_Q span (the SAME
+    // classifyRequestSpans classifier the claim planner + decomposer use), mirroring the
+    // STORE_HOURS_FOR_DATE date-gate: a non-menu turn adds NO catalog cost. The subject
+    // is the RESOLVED product id (the SHARED resolveMenuItem over perception.text — same
+    // turnId+text ⇒ same product as the claim planner, so the ledger key matches the
+    // candidate subject by construction). No lexically-related product → `undefined` →
+    // NO reads → the claim resolves ABSENT → honest UNKNOWN, never a wrong item/price.
+    // Public first-party catalog; no owner → placed BEFORE the authenticated-customer
+    // gate (answers guests too). The `menu:item_unpublished` W6 falsifier is
+    // DELIBERATELY UNREAD (claim-registry.ts) — never pushed here.
+    const menuSpans = classifyRequestSpans(input.cognition.perception.text);
+    const wantsMenuPrice = menuSpans.includes("MENU_ITEM_PRICE_Q");
+    const wantsMenuContents = menuSpans.includes("MENU_ITEM_CONTENTS_Q");
+    if (wantsMenuPrice || wantsMenuContents) {
+      const resolved = await resolveMenuItem(
+        input.cognition.turnId,
+        input.cognition.perception.text,
+        {
+          channel: input.cognition.perception.channel,
+          sessionId: input.cognition.conversationId,
+          customerId,
+        },
+      );
+      if (resolved !== undefined) {
+        if (wantsMenuPrice) {
+          // Compose the C6-bound scalar ONCE, up front (byte-equal to the claim
+          // planner's derived value — same composer, same resolved product).
+          const priceText = composeMenuPriceText(resolved);
+          reads.push({
+            key: MENU_ITEM_PRICE_KEY(resolved.id),
+            source: "catalog.itemPrice",
+            origin: "TRUSTED",
+            originProvenance: "FIRST_PARTY",
+            sourceMode: "live",
+            read: async () => ({ priceText }),
+          });
+        }
+        if (wantsMenuContents) {
+          const contentsText = composeMenuContentsText(resolved);
+          // No first-party description → record NO evidence → honest UNKNOWN (never a
+          // fabricated blurb). Only push when the catalog actually has contents text.
+          if (contentsText !== undefined) {
+            reads.push({
+              key: MENU_ITEM_CONTENTS_KEY(resolved.id),
+              source: "catalog.itemContents",
+              origin: "TRUSTED",
+              originProvenance: "FIRST_PARTY",
+              sourceMode: "live",
+              read: async () => ({ contentsText }),
+            });
+          }
+        }
+      }
     }
 
     if (!isAuthenticatedCustomer(customerId)) return reads;

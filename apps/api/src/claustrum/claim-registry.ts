@@ -110,6 +110,17 @@ export const CLAIM_REGISTRY = [
   // The money in that string is composed in code from INTEGER CENTAVOS (Hard Rule 2),
   // NEVER model-authored (FE-D04 / BKL-149).
   "CART_CONTENTS",
+  // BKL-142 — the PUBLIC menu-catalog reads ("quanto custa a costela?" / "o que vem
+  // no combo?"). perResourceKey by the RESOLVED product id (the shared
+  // menu-item-resolver.ts), ownershipPolicy not_applicable (owned by nobody, like
+  // STORE_HOURS_FOR_DATE), C6-bound to a DETERMINISTICALLY PRE-COMPOSED scalar
+  // (priceText from integer centavos — Hard Rule 2; contentsText from the first-party
+  // description). The dietary-tags twin (MENU_DIETARY_OPTIONS) is DELIBERATELY absent
+  // — "sem glúten/lactose" is allergen-adjacent legal territory behind the BKL-143/
+  // BKL-123 owner gate. MENU_OVERVIEW (menu-wide list) is a follow-up (distinct
+  // catalog-listing read, not the per-item resolver).
+  "MENU_ITEM_PRICE",
+  "MENU_ITEM_CONTENTS",
   "PURCHASE_COMPLETED",
 ] as const;
 
@@ -563,6 +574,82 @@ export const REGISTRY_SPECS = {
     // field (ledger-sourced, deterministic; never model-authored).
     valueBinding: { key: "cart_contents", path: ["itemsSummaryText"] },
   },
+  // BKL-142 — MENU_ITEM_PRICE: a PUBLIC per-item catalog read. Clones
+  // STORE_HOURS_FOR_DATE's public (`not_applicable`, `perResourceKey`) shape + the
+  // CART_CONTENTS pre-composed-scalar `valueBinding` (`priceText`, "R$ 89,00" composed
+  // in code from integer centavos — Hard Rule 2, NEVER model-authored). The subject is
+  // the RESOLVED product id (the shared menu-item-resolver.ts drives BOTH the claim
+  // planner's candidate subject AND the investigator's `menu:item_price:{id}` key, so
+  // they match by construction); an unresolvable item → no candidate/absent evidence →
+  // honest UNKNOWN, never an arbitrary product.
+  MENU_ITEM_PRICE: {
+    kind: "read_claim",
+    minSourceIntegrity: "structured",
+    requiredEvidence: [
+      {
+        key: "menu:item_price",
+        ownershipPolicy: "not_applicable",
+        // UNITS (BKL-121/BKL-125 pin): `cacheable` ttl is enforced in epoch-MILLISECONDS.
+        // 300_000 ms = the ratified 5-minute catalog-freshness bound (vacuous within a
+        // per-turn ledger, honest if an entry ever outlives a turn).
+        freshnessPolicy: { kind: "cacheable", ttl: 300_000 },
+        sourceIntegrity: "structured",
+        provenancePolicy: "preserve",
+      },
+    ],
+    customerScoped: false,
+    perResourceKey: true,
+    // W6 — `menu:item_unpublished` is DECLARED (so this type escapes the W6 UNKNOWN-only
+    // cap and can VALIDATE) but DELIBERATELY UNREAD by the investigator — the SAME
+    // disposition CART_CONTENTS's `cart_cleared` / ORDER_FULFILLMENT_STAGE's
+    // `order_cancelled` took after the #290/#291 review: a "this product row is
+    // unpublished" signal derived from the SAME product row the price came from is a
+    // TAUTOLOGY (an unpublished item already reads ABSENT ⇒ no present base to demote)
+    // AND would re-introduce the exact same-row-tautology class those PRs removed.
+    // Declaring-without-reading is sound: the runtime arm resolves an always-absent key
+    // ⇒ never fires ⇒ demote-only safety is preserved. A future INDEPENDENT signal (a
+    // catalog `product.unpublished` event, not this row) could wire the read.
+    falsifierComplete: true,
+    falsifiers: [
+      {
+        key: "menu:item_unpublished",
+        ownershipPolicy: "not_applicable",
+        freshnessPolicy: "must_read_this_turn",
+        sourceIntegrity: "structured",
+        provenancePolicy: "preserve",
+      },
+    ],
+    valueBinding: { key: "menu:item_price", path: ["priceText"] },
+  },
+  // BKL-142 — MENU_ITEM_CONTENTS: same PUBLIC per-item shape, C6-bound to the
+  // first-party `contentsText` (the product description). Same deliberately-unread
+  // `menu:item_unpublished` falsifier disposition as MENU_ITEM_PRICE.
+  MENU_ITEM_CONTENTS: {
+    kind: "read_claim",
+    minSourceIntegrity: "structured",
+    requiredEvidence: [
+      {
+        key: "menu:item_contents",
+        ownershipPolicy: "not_applicable",
+        freshnessPolicy: { kind: "cacheable", ttl: 300_000 },
+        sourceIntegrity: "structured",
+        provenancePolicy: "preserve",
+      },
+    ],
+    customerScoped: false,
+    perResourceKey: true,
+    falsifierComplete: true,
+    falsifiers: [
+      {
+        key: "menu:item_unpublished",
+        ownershipPolicy: "not_applicable",
+        freshnessPolicy: "must_read_this_turn",
+        sourceIntegrity: "structured",
+        provenancePolicy: "preserve",
+      },
+    ],
+    valueBinding: { key: "menu:item_contents", path: ["contentsText"] },
+  },
   PURCHASE_COMPLETED: {
     kind: "action_claim",
     minSourceIntegrity: "structured",
@@ -800,6 +887,15 @@ export interface FirstPartyDerivationReads {
    *  holiday/override falsifier on that date STILL demotes to UNKNOWN). A candidate
    *  whose `subject` is absent from this map keeps `value: undefined` (C6 ABSTAIN). */
   readonly storeHoursForDate?: Readonly<Record<string, { readonly hoursText?: unknown }>>;
+  /** BKL-142 — the per-item PRICE read(s) for THIS turn, keyed by the RESOLVED product
+   *  id (the candidate `subject`). The SAME resolved product the investigator records
+   *  under `menu:item_price:{id}`, so the derived `priceText` is byte-equal to the
+   *  recorded ledger entry and C6 passes BY CONSTRUCTION. A candidate whose `subject`
+   *  is absent from this map keeps `value: undefined` (C6 ABSTAIN → honest UNKNOWN). */
+  readonly menuItemPrice?: Readonly<Record<string, { readonly priceText?: unknown }>>;
+  /** BKL-142 — the per-item CONTENTS read(s) for THIS turn, keyed by resolved product
+   *  id; the SAME product the investigator records under `menu:item_contents:{id}`. */
+  readonly menuItemContents?: Readonly<Record<string, { readonly contentsText?: unknown }>>;
 }
 
 /**
@@ -855,6 +951,23 @@ export function deriveBoundValue(
     const read = reads.storeHoursForDate?.[candidate.subject];
     if (read === undefined) return candidate;
     return { ...candidate, value: { hoursText: read.hoursText } };
+  }
+
+  if (candidate.type === "MENU_ITEM_PRICE") {
+    // BKL-142 — bind the resolved item's `priceText` (the candidate `subject` is the
+    // resolved product id). Project `priceText` from the SAME per-item first-party read
+    // the investigator recorded under `menu:item_price:{id}` (byte-equal), so C6 passes
+    // by construction. No read for this subject (unresolvable item) → value stays
+    // undefined → C6 ABSTAINs → honest UNKNOWN.
+    const read = reads.menuItemPrice?.[candidate.subject];
+    if (read === undefined) return candidate;
+    return { ...candidate, value: { priceText: read.priceText } };
+  }
+
+  if (candidate.type === "MENU_ITEM_CONTENTS") {
+    const read = reads.menuItemContents?.[candidate.subject];
+    if (read === undefined) return candidate;
+    return { ...candidate, value: { contentsText: read.contentsText } };
   }
 
   // Owner-scoped per-resource types have no planner-available first-party read

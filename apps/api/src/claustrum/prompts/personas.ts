@@ -75,6 +75,8 @@ export const CLAIM_PLANNER_PERSONA = [
   "  e o `subject` deve ser a DATA no formato ISO AAAA-MM-DD (ex.: 2026-07-12); se não",
   "  souber a data exata, use o nome do dia — o sistema resolve a data da fonte primária.",
   "- alérgenos/ingredientes de um item => MENU_ITEM_ALLERGENS",
+  "- quanto custa / qual o preço de um item do cardápio, e o `subject` é o item => MENU_ITEM_PRICE",
+  "- o que vem/acompanha um item, do que é feito, composição do prato => MENU_ITEM_CONTENTS",
   "- em que etapa está o pedido => ORDER_FULFILLMENT_STAGE",
   "- situação do pagamento de um pedido => PAYMENT_STATUS",
   "- qual é/como está a minha reserva, situação da reserva => RESERVATION_STATUS",

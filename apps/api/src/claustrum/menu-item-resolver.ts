@@ -95,6 +95,40 @@ function isGuestCustomerId(customerId: string): boolean {
   return customerId.startsWith("guest:");
 }
 
+// ── Deterministic scalar composers (renderer-sole-author C6 values) ─────────────
+// The menu claims render ONE pre-composed pt-BR scalar bound 1:1 to the ledger
+// (Inv 6 / C6). These composers are the SINGLE source of that scalar — called by
+// BOTH the investigator (records the evidence) AND the claim planner (derives the
+// candidate value), so the two are byte-equal by construction. Pure; first-party
+// product fields only; NEVER model-authored.
+
+/** Format integer centavos as pt-BR currency ("R$ 89,00", "R$ 1.234,50") — Hard
+ *  Rule #2 (integer centavos, never floats). Pure. */
+export function formatCentavosBRL(centavos: number): string {
+  const cents = Math.round(centavos);
+  const sign = cents < 0 ? "-" : "";
+  const abs = Math.abs(cents);
+  const reais = Math.floor(abs / 100);
+  const rem = abs % 100;
+  const reaisGrouped = String(reais).replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+  return `${sign}R$ ${reaisGrouped},${String(rem).padStart(2, "0")}`;
+}
+
+/** MENU_ITEM_PRICE scalar: "Costela Defumada custa R$ 89,00" — first-party title +
+ *  centavos-formatted price. Deterministic; the C6-bound `priceText`. */
+export function composeMenuPriceText(item: ResolvedMenuItem): string {
+  return `${item.title} custa ${formatCentavosBRL(item.price)}`;
+}
+
+/** MENU_ITEM_CONTENTS scalar: the product's first-party description, prefixed with
+ *  its title. When the catalog has no description, the composer returns `undefined`
+ *  → the caller records NO evidence → honest UNKNOWN (never a fabricated blurb). */
+export function composeMenuContentsText(item: ResolvedMenuItem): string | undefined {
+  const desc = item.description?.trim();
+  if (desc === undefined || desc.length === 0) return undefined;
+  return `${item.title}: ${desc}`;
+}
+
 // ── Per-turn memo ───────────────────────────────────────────────────────────────
 // Keyed `${turnId}::${normalizedText}` so the claim planner + investigator resolve
 // IDENTICALLY within a turn (the same-resolver-same-text invariant) and entries never

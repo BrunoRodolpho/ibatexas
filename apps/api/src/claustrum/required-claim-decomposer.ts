@@ -68,6 +68,8 @@ import { STORE_OPEN_NOW_CLOSURE } from "./claimdefs/store-open-now.generated.js"
 export type SpanClass =
   | "STORE_OPEN_NOW_Q"
   | "STORE_HOURS_FOR_DATE_Q"
+  | "MENU_ITEM_PRICE_Q"
+  | "MENU_ITEM_CONTENTS_Q"
   | "ORDER_STATUS_Q"
   | "PAYMENT_STATUS_Q"
   | "RESERVATION_STATUS_Q"
@@ -105,6 +107,12 @@ export const REQUIRED_CLAIM_CLOSURE = {
   // RELEVANCE_GOVERNED_TYPES via the closure-value union (an over-proposed cart claim is
   // DEMOTED on a turn whose cart span did not fire, KEPT when it did).
   CART_CONTENTS_Q: ["CART_CONTENTS"],
+  // BKL-142 — a menu question requires ONLY its own PUBLIC claim (no unrelated span
+  // force-requires it; like CART_CONTENTS_Q / RESERVATION_STATUS_Q). An unresolvable
+  // item → ABSENT evidence → honest UNKNOWN; it never demotes a co-occurring answer
+  // beyond its own span. Public (`not_applicable`) → never Triad-scoped.
+  MENU_ITEM_PRICE_Q: ["MENU_ITEM_PRICE"],
+  MENU_ITEM_CONTENTS_Q: ["MENU_ITEM_CONTENTS"],
   // §O#15 worked example — a pickup question requires BOTH companions.
   PICKUP_Q: ["STORE_OPEN_NOW", "ORDER_FULFILLMENT_STAGE"],
 } satisfies Record<SpanClass, readonly RegistryClaimType[]>;
@@ -172,6 +180,23 @@ export function classifyRequestSpans(text: string): SpanClass[] {
   const scheduleContext =
     /hor[áa]rio|que horas|abre|abrem|abert|fecha|funciona|expediente|atend/.test(t);
   if (dateAnchor && scheduleContext) classes.push("STORE_HOURS_FOR_DATE_Q");
+
+  // BKL-142 — PUBLIC menu-catalog questions. DISJOINT from the BKL-152 date-anchor
+  // suppression above (which only touches the schedule spans). Guarded away from the
+  // cart/order/delivery families so a "quanto custa a ENTREGA" or "o que tem no
+  // CARRINHO" is NOT swept in as an item question (those already route to their own
+  // spans). Over-inclusion is DEMOTE-ONLY safe: an item that doesn't resolve →
+  // resolveMenuItem `undefined` → ABSENT evidence → honest UNKNOWN, never a wrong price.
+  const notOrderScoped = !/pedido|carrinho|entrega|frete/.test(t);
+  if (notOrderScoped && /quanto custa|quanto (custam|é|fica|sai|tá|ta)|qual (o |é o )?pre[çc]o|pre[çc]o d[aoe]/.test(t)) {
+    classes.push("MENU_ITEM_PRICE_Q");
+  }
+  // NB: allergen-family phrasing ("ingredientes", "contém glúten/lactose") is
+  // DELIBERATELY excluded — it routes to the carved-out MENU_ITEM_ALLERGENS
+  // (honest-UNKNOWN + staff handoff, BKL-123/143), never a rendered CONTENTS answer.
+  if (notOrderScoped && !/al[ée]rg|gl[úu]ten|lactose|cont[ée]m/.test(t) && /o que (vem|tem|acompanha)|do que (é|e) (é |)feit|que vem (n|em)|composi[çc][ãa]o d/.test(t)) {
+    classes.push("MENU_ITEM_CONTENTS_Q");
+  }
 
   // Precise discriminators that DISAMBIGUATE the polysemous "status" (A's F2 fix —
   // do NOT regress to a coarse `/pedido|cad[êe]|status/` rule that misroutes a
