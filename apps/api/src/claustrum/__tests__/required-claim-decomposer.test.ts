@@ -105,6 +105,79 @@ describe("classifyRequestSpans — BKL-138 STORE_HOURS_FOR_DATE_Q", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// BKL-152 — DATE-ANCHOR companion suppression (SCN-002 blocker). A date-anchored
+// hours question trips STORE_HOURS_FOR_DATE_Q AND (via "horário"/"que horas")
+// STORE_OPEN_NOW_Q; the TODAY open-now companion is irrelevant to a FUTURE-date
+// question and the planner never resolves it → the §O#15 completeness gate
+// demote-degraded an otherwise-VALIDATED date-hours render to UNKNOWN. The decomposer
+// SUPPRESSES STORE_OPEN_NOW iff STORE_HOURS_FOR_DATE_Q ∈ spans AND PICKUP_Q ∉ spans.
+// Demote-only: the date-specific hours still render. All four directions pinned.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("required-claim decomposer — BKL-152 date-anchor STORE_OPEN_NOW suppression", () => {
+  it("SUPPRESS (end-to-end): 'que horas vocês abrem amanhã?' drops STORE_OPEN_NOW, keeps STORE_HOURS_FOR_DATE", () => {
+    const spans = classifyRequestSpans("que horas vocês abrem amanhã?");
+    // Premise — BOTH spans fire: "que horas" trips STORE_OPEN_NOW_Q; amanhã+schedule
+    // trips the date-for span. Pre-fix this forced the STORE_OPEN_NOW companion.
+    expect(spans).toContain("STORE_HOURS_FOR_DATE_Q");
+    expect(spans).toContain("STORE_OPEN_NOW_Q");
+    const required = decomposeRequiredClaims(spans);
+    expect(required.has("STORE_HOURS_FOR_DATE")).toBe(true);
+    expect(required.has("STORE_OPEN_NOW")).toBe(false);
+  });
+
+  it("SUPPRESS (end-to-end): 'qual o horário de domingo?' → only STORE_HOURS_FOR_DATE (the exact SCN-002 phrasing)", () => {
+    const spans = classifyRequestSpans("qual o horário de domingo?");
+    expect(spans).toContain("STORE_HOURS_FOR_DATE_Q");
+    // "horário" trips STORE_OPEN_NOW_Q (store-open-now.generated markers /hor[áa]rio/).
+    expect(spans).toContain("STORE_OPEN_NOW_Q");
+    expect([...decomposeRequiredClaims(spans)]).toEqual(["STORE_HOURS_FOR_DATE"]);
+  });
+
+  it("SUPPRESS (unit): STORE_HOURS_FOR_DATE_Q + STORE_OPEN_NOW_Q → only STORE_HOURS_FOR_DATE", () => {
+    expect(
+      [...decomposeRequiredClaims(["STORE_OPEN_NOW_Q", "STORE_HOURS_FOR_DATE_Q"])],
+    ).toEqual(["STORE_HOURS_FOR_DATE"]);
+  });
+
+  it("KEEP (today): 'que horas vocês abrem hoje?' keeps STORE_OPEN_NOW ('hoje' never fires the date-for span)", () => {
+    const spans = classifyRequestSpans("que horas vocês abrem hoje?");
+    expect(spans).not.toContain("STORE_HOURS_FOR_DATE_Q");
+    expect(spans).toContain("STORE_OPEN_NOW_Q");
+    expect(decomposeRequiredClaims(spans).has("STORE_OPEN_NOW")).toBe(true);
+  });
+
+  it("KEEP (undated): 'vocês estão abertos agora?' keeps STORE_OPEN_NOW", () => {
+    const spans = classifyRequestSpans("vocês estão abertos agora?");
+    expect(spans).not.toContain("STORE_HOURS_FOR_DATE_Q");
+    expect(decomposeRequiredClaims(spans).has("STORE_OPEN_NOW")).toBe(true);
+  });
+
+  it("KEEP (pickup, unit): a date-for span alongside PICKUP_Q keeps STORE_OPEN_NOW (pickup needs open-now)", () => {
+    const required = decomposeRequiredClaims([
+      "PICKUP_Q",
+      "STORE_OPEN_NOW_Q",
+      "STORE_HOURS_FOR_DATE_Q",
+    ]);
+    expect(required.has("STORE_OPEN_NOW")).toBe(true);
+    expect(required.has("ORDER_FULFILLMENT_STAGE")).toBe(true);
+    expect(required.has("STORE_HOURS_FOR_DATE")).toBe(true);
+  });
+
+  it("KEEP (pickup, end-to-end): 'que horas posso retirar amanhã?' keeps STORE_OPEN_NOW", () => {
+    const spans = classifyRequestSpans("que horas posso retirar amanhã?");
+    expect(spans).toContain("PICKUP_Q");
+    expect(spans).toContain("STORE_HOURS_FOR_DATE_Q");
+    expect(decomposeRequiredClaims(spans).has("STORE_OPEN_NOW")).toBe(true);
+  });
+
+  it("NO-OP: a lone STORE_HOURS_FOR_DATE_Q (no open-now span) is unchanged (delete is a no-op)", () => {
+    expect([...decomposeRequiredClaims(["STORE_HOURS_FOR_DATE_Q"])]).toEqual([
+      "STORE_HOURS_FOR_DATE",
+    ]);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // FE-T17 — RESERVATION_STATUS_Q (review fix, PR #249). The marker is ANCHORED
 // (`(?<![a-z])reserv(?!at)(a|ar|ad|am|as|ando|ei|ou)`), not a bare substring test:
 // the original unanchored `/reserva/` false-fired on the unrelated preserv* family
