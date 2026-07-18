@@ -1610,10 +1610,12 @@ function extractPaymentDetailsFromParked(parked: ParkedEnvelopeShape): {
   paymentId: string
   orderId: string
 } {
-  // PIX-deferred envelopes (the only kind the responder parks today —
-  // `order.tool.propose` with a `set_pix_details` payload) carry the
-  // paymentId + orderId in the payload's `input`. We do a structural
-  // walk because the payload is `unknown`.
+  // Legacy PIX-deferred parks (the pre-claustrum `order.tool.propose` form,
+  // retired in ACT-071 — the responder now parks canonical taxonomy kinds)
+  // carried the paymentId + orderId in the payload's `input`. This manual
+  // `defer-resume` reader still structurally walks `input` for any such blob;
+  // the payload is `unknown`, and it falls back to synthesized CLI-scoped ids
+  // when the fields are absent.
   const p = parked.envelope.payload as
     | {
         input?: {
