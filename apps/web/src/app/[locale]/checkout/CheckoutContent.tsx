@@ -6,7 +6,7 @@ import { useTranslations } from "next-intl"
 import { loadStripe } from "@stripe/stripe-js"
 import { Elements, CardElement, useStripe, useElements } from "@stripe/react-stripe-js"
 import { useCartStore, hasKitchenOnlyFood, getKitchenItems } from '@/domains/cart'
-import { mergeItemInstructionsIntoNotes, CHECKOUT_NOTES_MAX } from '@/domains/checkout'
+import { mergeItemInstructionsIntoNotes, CHECKOUT_NOTES_MAX, defaultPaymentMethod, isGuestEligiblePaymentMethod, guestNeedsLogin, CHECKOUT_LOGIN_HREF } from '@/domains/checkout'
 import { useSessionStore } from '@/domains/session'
 import { useKitchenStatus } from '@/domains/schedule'
 import { Link } from "@/i18n/navigation"
@@ -135,7 +135,12 @@ function CheckoutForm() {
   const stripe = useStripe()
   const elements = useElements()
   const { items, getTotal, cep, setCep, deliveryFee, estimatedDeliveryMinutes, setDeliveryEstimate: persistDeliveryEstimate, medusaCartId, setMedusaCartId, clearCart, termsAccepted, setTermsAccepted, removeItem, updateItem, couponCode } = useCartStore()
-  const { customerId, isAuthenticated } = useSessionStore()
+  const { isAuthenticated } = useSessionStore()
+  // CUS-023 — guest (unauthenticated) checkout. The API supports a card-only
+  // guest checkout (R0a): guests may pay by card, but SEC-001 401s PIX / cash
+  // without a customerId. So we no longer hard-redirect guests to /entrar — we
+  // gate the payment method (card only) and prompt sign-in for PIX / cash.
+  const isGuest = !isAuthenticated()
   const { saveOrder } = useOrderHistory()
   const { data: kitchenStatus } = useKitchenStatus()
   const isKitchenClosed = kitchenStatus?.mealPeriod === 'closed'
@@ -144,7 +149,9 @@ function CheckoutForm() {
 
   const [stage, setStage] = useState<Stage>("checkout")
   const [notes, setNotes] = useState("")
-  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("pix")
+  // Guests default to card (the only method the API lets them complete);
+  // authenticated customers keep the PIX default.
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>(defaultPaymentMethod(!isGuest))
   const [tipPercent, setTipPercent] = useState(0)
   const [deliveryType, setDeliveryType] = useState<DeliveryType>("delivery")
   const [cepInput, setCepInput] = useState(cep ?? "")
@@ -176,12 +183,6 @@ function CheckoutForm() {
   // silently loses an instruction (e.g. an allergy note).
   const mergedNotes = mergeItemInstructionsIntoNotes(notes, items)
   const notesRemaining = CHECKOUT_NOTES_MAX - mergedNotes.notes.length
-
-  useEffect(() => {
-    if (!isAuthenticated()) {
-      router.push(`/entrar?next=/checkout`)
-    }
-  }, [customerId]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Kitchen closed: auto-switch from pickup/dine-in to delivery ──────
   useEffect(() => {
@@ -884,6 +885,9 @@ function CheckoutForm() {
               .filter((method) => {
                 // Cash not available for shipping (outside delivery zone)
                 if (method === 'cash' && isShipping) return false
+                // CUS-023 — guests may only pay by card (SEC-001 401s PIX / cash
+                // without a customerId); offer card only and prompt sign-in below.
+                if (isGuest && !isGuestEligiblePaymentMethod(method)) return false
                 return true
               })
               .map((method) => (
@@ -900,6 +904,17 @@ function CheckoutForm() {
           </div>
           {isShipping && (
             <p className="text-xs text-smoke-400">{t('payment_cash_unavailable')}</p>
+          )}
+
+          {/* CUS-023 — guest checkout: card-only, with a sign-in prompt to
+              unlock PIX / cash (which the API 401s for guests per SEC-001). */}
+          {isGuest && (
+            <div className="rounded-sm border border-brand-200 bg-brand-50/30 p-3 space-y-1">
+              <p className="text-xs text-smoke-500">{t('guest_card_only')}</p>
+              <Link href={CHECKOUT_LOGIN_HREF} className="text-xs font-medium text-brand-600 hover:underline">
+                {t('guest_login_prompt')}
+              </Link>
+            </div>
           )}
 
           {/* PIX billing fields */}
@@ -1003,7 +1018,7 @@ function CheckoutForm() {
           size="lg"
           className="w-full min-h-[44px]"
           onClick={handleCheckout}
-          disabled={loading || !termsAccepted || (deliveryType === "delivery" && !deliveryEstimate) || !pixFieldsValid || (isKitchenClosed && cartHasKitchenFood) || mergedNotes.overflow}
+          disabled={loading || !termsAccepted || (deliveryType === "delivery" && !deliveryEstimate) || !pixFieldsValid || (isKitchenClosed && cartHasKitchenFood) || mergedNotes.overflow || guestNeedsLogin(!isGuest, paymentMethod)}
         >
           {loading ? t('processing') : t('confirm_order', { total: formatBRL(total) })}
         </Button>
