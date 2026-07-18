@@ -10,8 +10,8 @@ export { getProductDetails, GetProductDetailsTool } from "./catalog/get-product-
 export { estimateDelivery, EstimateDeliveryTool, invalidateDeliveryCache } from "./catalog/estimate-delivery.js"
 export { reverseGeocode } from "./catalog/reverse-geocode.js"
 export type { ReverseGeocodeResult } from "./catalog/reverse-geocode.js"
-export { checkInventory, CheckInventoryTool } from "./catalog/check-inventory.js"
-export { getNutritionalInfo, GetNutritionalInfoTool } from "./catalog/get-nutritional-info.js"
+// BKL-179 — checkInventory / getNutritionalInfo were dead ToolDefinitions
+// (no conductor/route/internal caller, only these barrel re-exports); removed.
 
 // ── Ownership guards ──────────────────────────────────────────────────────────
 export { assertOrderOwnership, assertReservationOwnership } from "./guards/ownership.js"
