@@ -117,10 +117,12 @@ export const CLAIM_REGISTRY = [
   // (priceText from integer centavos — Hard Rule 2; contentsText from the first-party
   // description). The dietary-tags twin (MENU_DIETARY_OPTIONS) is DELIBERATELY absent
   // — "sem glúten/lactose" is allergen-adjacent legal territory behind the BKL-143/
-  // BKL-123 owner gate. MENU_OVERVIEW (menu-wide list) is a follow-up (distinct
-  // catalog-listing read, not the per-item resolver).
+  // BKL-123 owner gate. MENU_OVERVIEW (the menu-wide list) is the fixed-subject twin
+  // (distinct catalog-LISTING read via the wildcard `searchProducts` path, not the
+  // per-item resolver) — public, single-key, like STORE_HOURS.
   "MENU_ITEM_PRICE",
   "MENU_ITEM_CONTENTS",
+  "MENU_OVERVIEW",
   "PURCHASE_COMPLETED",
 ] as const;
 
@@ -650,6 +652,49 @@ export const REGISTRY_SPECS = {
     ],
     valueBinding: { key: "menu:item_contents", path: ["contentsText"] },
   },
+  // BKL-142 — MENU_OVERVIEW: the menu-WIDE overview ("o que tem no cardápio?"). PUBLIC
+  // and FIXED-SUBJECT like STORE_HOURS (single key, NOT perResourceKey) — the evidence
+  // is a deterministic listing of the whole catalog, not a per-item read. C6-bound to a
+  // pre-composed scalar (`overviewText` — first-party titles + centavos prices, composed
+  // in menu-item-resolver.ts; NO allergen/dietary — those stay carved out). Same
+  // deliberately-unread `menu:item_unpublished` falsifier disposition as the per-item
+  // menu claims.
+  MENU_OVERVIEW: {
+    kind: "read_claim",
+    minSourceIntegrity: "structured",
+    requiredEvidence: [
+      {
+        key: "menu:overview",
+        ownershipPolicy: "not_applicable",
+        // ttl in epoch-MILLISECONDS (BKL-121/BKL-125 pin) — 300_000 ms = the ratified
+        // 5-minute catalog-freshness bound (vacuous within a per-turn ledger).
+        freshnessPolicy: { kind: "cacheable", ttl: 300_000 },
+        sourceIntegrity: "structured",
+        provenancePolicy: "preserve",
+      },
+    ],
+    customerScoped: false,
+    // W6 — `menu:item_unpublished` is DECLARED (so MENU_OVERVIEW escapes the W6
+    // UNKNOWN-only cap and can VALIDATE) but DELIBERATELY UNREAD — the SAME disposition
+    // the per-item menu claims + CART_CONTENTS's `cart_cleared` took after the #290/#291
+    // review: an "unpublished item" signal derived from the SAME catalog rows the
+    // overview came from is a same-row TAUTOLOGY (an unpublished item already reads
+    // ABSENT from the published listing ⇒ no present base to demote) that would
+    // re-introduce the exact class those PRs removed. Declaring-without-reading is sound:
+    // the runtime arm resolves an always-absent key ⇒ never fires ⇒ demote-only safety
+    // preserved. A future INDEPENDENT catalog `product.unpublished` event could wire it.
+    falsifierComplete: true,
+    falsifiers: [
+      {
+        key: "menu:item_unpublished",
+        ownershipPolicy: "not_applicable",
+        freshnessPolicy: "must_read_this_turn",
+        sourceIntegrity: "structured",
+        provenancePolicy: "preserve",
+      },
+    ],
+    valueBinding: { key: "menu:overview", path: ["overviewText"] },
+  },
   PURCHASE_COMPLETED: {
     kind: "action_claim",
     minSourceIntegrity: "structured",
@@ -896,6 +941,11 @@ export interface FirstPartyDerivationReads {
   /** BKL-142 — the per-item CONTENTS read(s) for THIS turn, keyed by resolved product
    *  id; the SAME product the investigator records under `menu:item_contents:{id}`. */
   readonly menuItemContents?: Readonly<Record<string, { readonly contentsText?: unknown }>>;
+  /** BKL-142 — the menu-WIDE overview read for THIS turn (fixed subject, single-key,
+   *  like STORE_HOURS). The SAME `overviewText` the investigator records under
+   *  `menu:overview`, so the derived value is byte-equal (C6 passes by construction).
+   *  Absent (empty/unreadable catalog) → value stays undefined → C6 ABSTAIN → UNKNOWN. */
+  readonly menuOverview?: { readonly overviewText?: unknown };
 }
 
 /**
@@ -968,6 +1018,14 @@ export function deriveBoundValue(
     const read = reads.menuItemContents?.[candidate.subject];
     if (read === undefined) return candidate;
     return { ...candidate, value: { contentsText: read.contentsText } };
+  }
+
+  if (candidate.type === "MENU_OVERVIEW") {
+    // BKL-142 — FIXED subject (single-key, like STORE_HOURS): bind `overviewText` from
+    // the single menu-wide read, NOT a per-subject map. Absent read (empty/unreadable
+    // catalog) → value stays undefined → C6 ABSTAINs → honest UNKNOWN.
+    if (reads.menuOverview === undefined) return candidate;
+    return { ...candidate, value: { overviewText: reads.menuOverview.overviewText } };
   }
 
   // Owner-scoped per-resource types have no planner-available first-party read

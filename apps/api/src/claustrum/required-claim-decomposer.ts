@@ -70,6 +70,7 @@ export type SpanClass =
   | "STORE_HOURS_FOR_DATE_Q"
   | "MENU_ITEM_PRICE_Q"
   | "MENU_ITEM_CONTENTS_Q"
+  | "MENU_OVERVIEW_Q"
   | "ORDER_STATUS_Q"
   | "PAYMENT_STATUS_Q"
   | "RESERVATION_STATUS_Q"
@@ -113,6 +114,10 @@ export const REQUIRED_CLAIM_CLOSURE = {
   // beyond its own span. Public (`not_applicable`) → never Triad-scoped.
   MENU_ITEM_PRICE_Q: ["MENU_ITEM_PRICE"],
   MENU_ITEM_CONTENTS_Q: ["MENU_ITEM_CONTENTS"],
+  // BKL-142 — a menu-WIDE overview question requires ONLY its own PUBLIC claim (like the
+  // per-item menu spans). Empty catalog → ABSENT evidence → honest UNKNOWN; never demotes
+  // a co-occurring answer. Public (`not_applicable`) → never Triad-scoped.
+  MENU_OVERVIEW_Q: ["MENU_OVERVIEW"],
   // §O#15 worked example — a pickup question requires BOTH companions.
   PICKUP_Q: ["STORE_OPEN_NOW", "ORDER_FULFILLMENT_STAGE"],
 } satisfies Record<SpanClass, readonly RegistryClaimType[]>;
@@ -188,13 +193,26 @@ export function classifyRequestSpans(text: string): SpanClass[] {
   // spans). Over-inclusion is DEMOTE-ONLY safe: an item that doesn't resolve →
   // resolveMenuItem `undefined` → ABSENT evidence → honest UNKNOWN, never a wrong price.
   const notOrderScoped = !/pedido|carrinho|entrega|frete/.test(t);
+  // BKL-142 — a menu-WIDE overview question ("o que tem no cardápio?", "me mostra o
+  // menu", "quais os pratos?"). Anchored on the WHOLE-menu markers (cardápio/menu) or a
+  // bare "o que vocês têm/servem", DISJOINT from the per-item spans below and from the
+  // BKL-152 date-anchor family (which only touches the schedule spans). Over-inclusion is
+  // DEMOTE-ONLY safe: an empty/unreadable catalog → ABSENT evidence → honest UNKNOWN.
+  const isMenuOverview =
+    notOrderScoped &&
+    !/al[ée]rg|gl[úu]ten|lactose|cont[ée]m/.test(t) &&
+    /\bcard[áa]pio\b|\bmenu\b|o que (voc[êe]s )?(t[êe]m|servem)( (pra|para) comer)?|quais (os |as )?(pratos|op[çc][õo]es)/.test(t);
+  if (isMenuOverview) classes.push("MENU_OVERVIEW_Q");
+
   if (notOrderScoped && /quanto custa|quanto (custam|é|fica|sai|tá|ta)|qual (o |é o )?pre[çc]o|pre[çc]o d[aoe]/.test(t)) {
     classes.push("MENU_ITEM_PRICE_Q");
   }
   // NB: allergen-family phrasing ("ingredientes", "contém glúten/lactose") is
   // DELIBERATELY excluded — it routes to the carved-out MENU_ITEM_ALLERGENS
   // (honest-UNKNOWN + staff handoff, BKL-123/143), never a rendered CONTENTS answer.
-  if (notOrderScoped && !/al[ée]rg|gl[úu]ten|lactose|cont[ée]m/.test(t) && /o que (vem|tem|acompanha)|do que (é|e) (é |)feit|que vem (n|em)|composi[çc][ãa]o d/.test(t)) {
+  // `!isMenuOverview` keeps a WHOLE-menu question ("o que tem no cardápio") disjoint from
+  // the per-ITEM contents span ("o que vem no combo") — the overview owns it.
+  if (notOrderScoped && !isMenuOverview && !/al[ée]rg|gl[úu]ten|lactose|cont[ée]m/.test(t) && /o que (vem|tem|acompanha)|do que (é|e) (é |)feit|que vem (n|em)|composi[çc][ãa]o d/.test(t)) {
     classes.push("MENU_ITEM_CONTENTS_Q");
   }
 

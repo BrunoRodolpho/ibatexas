@@ -10,7 +10,12 @@ vi.mock("@ibatexas/tools", () => ({
   searchProducts: (input: unknown, ctx: unknown) => searchProductsMock(input, ctx),
 }));
 
-const { resolveMenuItem, __resetMenuItemMemoForTest } = await import("../menu-item-resolver.js");
+const {
+  resolveMenuItem,
+  __resetMenuItemMemoForTest,
+  resolveMenuOverviewText,
+  __resetMenuOverviewMemoForTest,
+} = await import("../menu-item-resolver.js");
 
 const product = (overrides: Record<string, unknown> = {}) => ({
   id: "prod_coke",
@@ -27,10 +32,46 @@ const CTX = { channel: "web", sessionId: "sess-1", customerId: "c1" };
 
 beforeEach(() => {
   __resetMenuItemMemoForTest();
+  __resetMenuOverviewMemoForTest();
   searchProductsMock.mockReset();
 });
 afterEach(() => {
   __resetMenuItemMemoForTest();
+  __resetMenuOverviewMemoForTest();
+});
+
+// ── MENU_OVERVIEW read (fixed subject, wildcard listing) ────────────────────────
+describe("resolveMenuOverviewText — wildcard listing, per-turn memo, fail-closed", () => {
+  it("reads the wildcard catalog and composes a bounded first-party overview scalar", async () => {
+    searchProductsMock.mockResolvedValue({
+      products: [
+        product({ id: "p1", title: "Costela", price: 8900, categoryHandle: "carnes" }),
+        product({ id: "p2", title: "Farofa", price: 1500, categoryHandle: "acompanhamentos" }),
+      ],
+    });
+    const text = await resolveMenuOverviewText("turn-1", CTX);
+    expect(text).toBe("No nosso cardápio: Farofa — R$ 15,00; Costela — R$ 89,00.");
+    // The wildcard path — same source the catalog route uses.
+    expect(searchProductsMock.mock.calls[0]![0]).toMatchObject({ query: "*" });
+  });
+
+  it("memoizes on turnId: two calls in the same turn coalesce onto ONE read (byte-equal)", async () => {
+    searchProductsMock.mockResolvedValue({ products: [product({ title: "Costela", price: 8900 })] });
+    const a = await resolveMenuOverviewText("turn-1", CTX);
+    const b = await resolveMenuOverviewText("turn-1", CTX);
+    expect(a).toBe(b);
+    expect(searchProductsMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("empty catalog → undefined (honest UNKNOWN, never a fabricated menu)", async () => {
+    searchProductsMock.mockResolvedValue({ products: [] });
+    expect(await resolveMenuOverviewText("turn-1", CTX)).toBeUndefined();
+  });
+
+  it("catalog read error → undefined (fail-closed)", async () => {
+    searchProductsMock.mockRejectedValue(new Error("typesense down"));
+    expect(await resolveMenuOverviewText("turn-1", CTX)).toBeUndefined();
+  });
 });
 
 describe("resolveMenuItem — lexical-overlap floor", () => {
