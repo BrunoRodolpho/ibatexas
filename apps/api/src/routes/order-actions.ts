@@ -234,6 +234,177 @@ class PaymentCancelFailedError extends Error {
 }
 
 /**
+ * The order.cancel EXECUTE money-path — extracted verbatim (BKL-146) from the
+ * `POST /api/orders/:id/cancel` executor so the two-phase confirm route
+ * (`POST /api/orders/:id/cancel/confirm`) runs the IDENTICAL side effects: the
+ * projection-level order + payment transitions, the P2-LOGIC-CANCELPAY
+ * terminality guard, the C3 best-effort Medusa-native cancel, and the
+ * `order.canceled` NATS emit. No behavior change — a byte-for-byte move; both
+ * routes call this so the direct-EXECUTE and confirmed-EXECUTE paths can never
+ * drift (the finalizeCheckout precedent). Throws propagate to each route's
+ * try/catch (PaymentCancelFailedError → 409, InvalidTransitionError → 422).
+ */
+async function executeOrderCancel(args: {
+  readonly orderId: string;
+  readonly customerId: string;
+  readonly reason: string;
+  readonly order: { readonly fulfillmentStatus: string; readonly displayId: number };
+  readonly orderCmdSvc: ReturnType<typeof createOrderCommandService>;
+  readonly paymentCmdSvc: ReturnType<typeof createPaymentCommandService>;
+  readonly log: FastifyInstance["log"];
+}): Promise<{ success: true; version: number; fulfillmentStatus: string }> {
+  const { orderId, customerId, reason, order, orderCmdSvc, paymentCmdSvc, log } = args;
+  // ── R1-DELETE (sibling fix) ────────────────────────────────
+  // Inner mutations migrated from bare-arg `transitionStatus`
+  // to envelope-typed `transitionStatusFromEnvelope`. The
+  // outer `order.cancel` envelope is already adjudicated by
+  // runCustomerIntent; these inner envelopes adjudicate the
+  // projection-level transitions (order + payment).
+  const orderTransitionEnvelope = buildCustomerEnvelope<
+    "order.status.transition",
+    OrderStatusTransitionPayload
+  >({
+    kind: "order.status.transition",
+    payload: {
+      orderId,
+      newStatus: OrderFulfillmentStatus.CANCELED,
+      actor: "customer",
+      actorId: customerId,
+      reason,
+    },
+    nonce: randomUUID(),
+    customerId,
+  });
+  const orderOutcome = await orderCmdSvc.transitionStatusFromEnvelope(
+    orderTransitionEnvelope,
+  );
+  if (
+    orderOutcome.decision.kind !== "EXECUTE" &&
+    orderOutcome.decision.kind !== "REWRITE"
+  ) {
+    // Inner adjudication refused — propagate as transition error.
+    throw new InvalidTransitionError(
+      orderId,
+      order.fulfillmentStatus,
+      OrderFulfillmentStatus.CANCELED,
+    );
+  }
+  const result = orderOutcome.result!;
+
+  // Cancel the active payment so a canceled order never retains a LIVE
+  // payment that could later reconcile to `paid` (P2-LOGIC-CANCELPAY).
+  // We must NOT emit `order.canceled` unless the payment is actually
+  // terminal afterward — otherwise a swallowed cancel failure leaves a
+  // billable payment behind an order the customer believes is canceled.
+  const activePayment = await paymentCmdSvc.findActiveByOrderId(orderId);
+  let paymentTerminal = true; // no active payment ⇒ nothing left to settle
+  if (activePayment && !isTerminalPaymentStatus(activePayment.status as PaymentStatus)) {
+    paymentTerminal = false;
+    try {
+      const paymentCancelEnvelope = buildEnvelope<
+        "payment.status.transition",
+        PaymentStatusTransitionPayload
+      >({
+        kind: "payment.status.transition",
+        payload: {
+          paymentId: activePayment.id,
+          newStatus: PaymentStatus.CANCELED,
+          actor: "customer",
+          actorId: customerId,
+          reason: "Pedido cancelado pelo cliente",
+          // P2-CONC-CONFIRMVER: pin the version we validated against so
+          // a concurrent transition (e.g. a webhook flipping the payment
+          // to `paid`) can't be silently clobbered — it surfaces as a
+          // concurrency error and we re-check terminality below.
+          expectedVersion: activePayment.version,
+        },
+        nonce: randomUUID(),
+        actor: { principal: "user", sessionId: customerId },
+        taint: "TRUSTED",
+      });
+      const cancelOutcome = await paymentCmdSvc.transitionStatusFromEnvelope(paymentCancelEnvelope);
+      // EXECUTE/REWRITE ⇒ canceled (terminal). A REFUSE means the kernel
+      // declined (e.g. already terminal) — re-read below rather than assume.
+      paymentTerminal =
+        cancelOutcome.decision.kind === "EXECUTE" ||
+        cancelOutcome.decision.kind === "REWRITE";
+    } catch {
+      // May have failed because the payment is already terminal (benign)
+      // OR because it concurrently moved to a live state like `paid`
+      // (NOT benign). Re-read authoritative state below.
+      paymentTerminal = false;
+    }
+    if (!paymentTerminal) {
+      // Authoritative re-read: no active (non-terminal) payment now ⇒ it
+      // settled to a terminal state ⇒ safe. A still-active payment ⇒ unsafe.
+      const after = await paymentCmdSvc.findActiveByOrderId(orderId);
+      paymentTerminal = after === null;
+    }
+  }
+
+  if (!paymentTerminal) {
+    // Order row is CANCELED but the payment is still live. Do NOT emit
+    // `order.canceled` (downstream treats it as fully settled). Throw so
+    // the route surfaces an actionable 409 — the cancel is retried /
+    // escalated rather than leaving a canceled order with a billable
+    // payment (P2-LOGIC-CANCELPAY).
+    log.error(
+      { orderId, paymentId: activePayment?.id },
+      "order canceled but active payment is not terminal — withholding order.canceled (P2-LOGIC-CANCELPAY)",
+    );
+    throw new PaymentCancelFailedError(activePayment?.id);
+  }
+
+  // C3 (CQRS dual-write): cancel the Medusa-native order too, so the
+  // public."order" row reflects canceled (status + canceled_at) instead
+  // of reading stale `pending`. Kernel-gated like every Medusa mutation.
+  // Best-effort: the domain projection is already authoritative and the
+  // payment is terminal — a Medusa hiccup must NOT undo a successful
+  // cancel (that would resurrect a billable order), so we log and let
+  // the projection + NATS remain the source of truth.
+  //
+  // FIRE-AND-FORGET (finding 29): the result is only logged, so awaiting
+  // it just adds a Medusa admin round-trip to the customer's cancel
+  // response latency for no observable benefit. Run it in a background
+  // async IIFE (persistent Fastify server — the promise survives) whose
+  // try/catch absorbs BOTH a synchronous throw and an async rejection, so
+  // a Medusa hiccup never becomes an unhandled rejection or a 500.
+  void (async () => {
+    try {
+      await medusaAdjudicated({
+        scope: "admin",
+        method: "POST",
+        path: `/admin/orders/${orderId}/cancel`,
+        idempotencyKey: `${orderId}:medusa-cancel:${customerId}`,
+        sourceSubject: "route:order.cancel",
+        auditSink: getAuditSink(),
+      });
+    } catch (err) {
+      log.error(
+        { orderId, error: String(err) },
+        "domain order canceled but Medusa-native cancel failed — public.order may read stale; projection remains authoritative (C3)",
+      );
+    }
+  })();
+
+  await publishNatsEvent("order.canceled", {
+    eventType: "order.canceled",
+    orderId,
+    displayId: order.displayId,
+    customerId,
+    reason,
+    canceledBy: "customer",
+    timestamp: new Date().toISOString(),
+  });
+
+  return {
+    success: true,
+    version: result.version,
+    fulfillmentStatus: result.newStatus,
+  };
+}
+
+/**
  * Prefer the caller's explicit `Idempotency-Key` HTTP header when
  * supplied (industry standard for client-driven dedup, e.g. Stripe).
  * Otherwise fall back to the route's derived key. Returns the resolved
@@ -661,156 +832,16 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
           envelope,
           state: orderState,
           policy: ordersPolicyBundle as unknown as Parameters<typeof runCustomerIntent>[0]["policy"],
-          executor: async () => {
-            // ── R1-DELETE (sibling fix) ────────────────────────────────
-            // Inner mutations migrated from bare-arg `transitionStatus`
-            // to envelope-typed `transitionStatusFromEnvelope`. The
-            // outer `order.cancel` envelope is already adjudicated by
-            // runCustomerIntent; these inner envelopes adjudicate the
-            // projection-level transitions (order + payment).
-            const orderTransitionEnvelope = buildCustomerEnvelope<
-              "order.status.transition",
-              OrderStatusTransitionPayload
-            >({
-              kind: "order.status.transition",
-              payload: {
-                orderId: id,
-                newStatus: OrderFulfillmentStatus.CANCELED,
-                actor: "customer",
-                actorId: customerId,
-                reason: request.body.reason ?? "Cancelado pelo cliente",
-              },
-              nonce: randomUUID(),
-              customerId,
-            });
-            const orderOutcome = await orderCmdSvc.transitionStatusFromEnvelope(
-              orderTransitionEnvelope,
-            );
-            if (
-              orderOutcome.decision.kind !== "EXECUTE" &&
-              orderOutcome.decision.kind !== "REWRITE"
-            ) {
-              // Inner adjudication refused — propagate as transition error.
-              throw new InvalidTransitionError(
-                id,
-                order.fulfillmentStatus,
-                OrderFulfillmentStatus.CANCELED,
-              );
-            }
-            const result = orderOutcome.result!;
-
-            // Cancel the active payment so a canceled order never retains a LIVE
-            // payment that could later reconcile to `paid` (P2-LOGIC-CANCELPAY).
-            // We must NOT emit `order.canceled` unless the payment is actually
-            // terminal afterward — otherwise a swallowed cancel failure leaves a
-            // billable payment behind an order the customer believes is canceled.
-            const activePayment = await paymentCmdSvc.findActiveByOrderId(id);
-            let paymentTerminal = true; // no active payment ⇒ nothing left to settle
-            if (activePayment && !isTerminalPaymentStatus(activePayment.status as PaymentStatus)) {
-              paymentTerminal = false;
-              try {
-                const paymentCancelEnvelope = buildEnvelope<
-                  "payment.status.transition",
-                  PaymentStatusTransitionPayload
-                >({
-                  kind: "payment.status.transition",
-                  payload: {
-                    paymentId: activePayment.id,
-                    newStatus: PaymentStatus.CANCELED,
-                    actor: "customer",
-                    actorId: customerId,
-                    reason: "Pedido cancelado pelo cliente",
-                    // P2-CONC-CONFIRMVER: pin the version we validated against so
-                    // a concurrent transition (e.g. a webhook flipping the payment
-                    // to `paid`) can't be silently clobbered — it surfaces as a
-                    // concurrency error and we re-check terminality below.
-                    expectedVersion: activePayment.version,
-                  },
-                  nonce: randomUUID(),
-                  actor: { principal: "user", sessionId: customerId },
-                  taint: "TRUSTED",
-                });
-                const cancelOutcome = await paymentCmdSvc.transitionStatusFromEnvelope(paymentCancelEnvelope);
-                // EXECUTE/REWRITE ⇒ canceled (terminal). A REFUSE means the kernel
-                // declined (e.g. already terminal) — re-read below rather than assume.
-                paymentTerminal =
-                  cancelOutcome.decision.kind === "EXECUTE" ||
-                  cancelOutcome.decision.kind === "REWRITE";
-              } catch {
-                // May have failed because the payment is already terminal (benign)
-                // OR because it concurrently moved to a live state like `paid`
-                // (NOT benign). Re-read authoritative state below.
-                paymentTerminal = false;
-              }
-              if (!paymentTerminal) {
-                // Authoritative re-read: no active (non-terminal) payment now ⇒ it
-                // settled to a terminal state ⇒ safe. A still-active payment ⇒ unsafe.
-                const after = await paymentCmdSvc.findActiveByOrderId(id);
-                paymentTerminal = after === null;
-              }
-            }
-
-            if (!paymentTerminal) {
-              // Order row is CANCELED but the payment is still live. Do NOT emit
-              // `order.canceled` (downstream treats it as fully settled). Throw so
-              // the route surfaces an actionable 409 — the cancel is retried /
-              // escalated rather than leaving a canceled order with a billable
-              // payment (P2-LOGIC-CANCELPAY).
-              server.log.error(
-                { orderId: id, paymentId: activePayment?.id },
-                "order canceled but active payment is not terminal — withholding order.canceled (P2-LOGIC-CANCELPAY)",
-              );
-              throw new PaymentCancelFailedError(activePayment?.id);
-            }
-
-            // C3 (CQRS dual-write): cancel the Medusa-native order too, so the
-            // public."order" row reflects canceled (status + canceled_at) instead
-            // of reading stale `pending`. Kernel-gated like every Medusa mutation.
-            // Best-effort: the domain projection is already authoritative and the
-            // payment is terminal — a Medusa hiccup must NOT undo a successful
-            // cancel (that would resurrect a billable order), so we log and let
-            // the projection + NATS remain the source of truth.
-            //
-            // FIRE-AND-FORGET (finding 29): the result is only logged, so awaiting
-            // it just adds a Medusa admin round-trip to the customer's cancel
-            // response latency for no observable benefit. Run it in a background
-            // async IIFE (persistent Fastify server — the promise survives) whose
-            // try/catch absorbs BOTH a synchronous throw and an async rejection, so
-            // a Medusa hiccup never becomes an unhandled rejection or a 500.
-            void (async () => {
-              try {
-                await medusaAdjudicated({
-                  scope: "admin",
-                  method: "POST",
-                  path: `/admin/orders/${id}/cancel`,
-                  idempotencyKey: `${id}:medusa-cancel:${customerId}`,
-                  sourceSubject: "route:order.cancel",
-                  auditSink: getAuditSink(),
-                });
-              } catch (err) {
-                server.log.error(
-                  { orderId: id, error: String(err) },
-                  "domain order canceled but Medusa-native cancel failed — public.order may read stale; projection remains authoritative (C3)",
-                );
-              }
-            })();
-
-            await publishNatsEvent("order.canceled", {
-              eventType: "order.canceled",
+          executor: async () =>
+            executeOrderCancel({
               orderId: id,
-              displayId: order.displayId,
               customerId,
               reason: request.body.reason ?? "Cancelado pelo cliente",
-              canceledBy: "customer",
-              timestamp: new Date().toISOString(),
-            });
-
-            return {
-              success: true,
-              version: result.version,
-              fulfillmentStatus: result.newStatus,
-            };
-          },
+              order,
+              orderCmdSvc,
+              paymentCmdSvc,
+              log: server.log,
+            }),
           ctx: {
             customerId,
             route: "order.cancel",
