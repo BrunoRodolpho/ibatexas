@@ -11,9 +11,7 @@
     ],
     "planners": 6,
     "registeredTools": 20,
-    "unadvertised": [
-      "order.review.submit"
-    ]
+    "unadvertised": []
   },
   "nodes": [
     {
@@ -734,13 +732,13 @@
       "type": "intent",
       "label": "order.review.submit",
       "meta": {
-        "advertisedContexts": [],
+        "advertisedContexts": [
+          "authed-customer"
+        ],
         "chatDrivable": true,
         "composedPack": "ibatexas/pack-orders",
         "domain": "order",
-        "flags": [
-          "unadvertised"
-        ],
+        "flags": [],
         "knownKind": true,
         "plausibleDecisions": [
           "EXECUTE",
@@ -1693,7 +1691,7 @@
       "label": "ibatexas/pack-orders capability planner",
       "meta": {
         "advertisedCounts": {
-          "authed-customer": 11,
+          "authed-customer": 12,
           "guest": 5
         },
         "pack": "ibatexas/pack-orders"
@@ -2045,6 +2043,16 @@
     {
       "from": "planner:ibatexas/pack-orders",
       "to": "intent:order.note.add",
+      "type": "advertises",
+      "meta": {
+        "contexts": [
+          "authed-customer"
+        ]
+      }
+    },
+    {
+      "from": "planner:ibatexas/pack-orders",
+      "to": "intent:order.review.submit",
       "type": "advertises",
       "meta": {
         "contexts": [

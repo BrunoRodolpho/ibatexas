@@ -293,12 +293,14 @@ describe("waiver application", () => {
     })
     expect(report.ok).toBe(true)
     // payment.method.switch + payment.retry are dormant until WS4 restores
-    // them to the chat surface; order.review.submit waives live cells.
+    // them to the chat surface. FE-D28 removed the order.review.submit waiver
+    // (review-by-chat activated — it is now an advertised live cell, no longer
+    // waived-unadvertised), so no waived-unadvertised cells remain.
     expect(report.dormantWaivers.map((w) => w.kind).sort()).toEqual([
       "payment.method.switch",
       "payment.retry",
     ])
-    expect(report.totals["waived-unadvertised"]).toBe(6)
+    expect(report.totals["waived-unadvertised"]).toBe(0)
   })
 })
 

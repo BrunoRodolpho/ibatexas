@@ -102,6 +102,11 @@ const AUTORESOLVE_CONFIRM_KINDS = new Set([
   "order.note.add",
   "order.address.change",
   "order.type.switch",
+  // FE-D28 — order.review.submit auto-resolves its reviewed order too
+  // (resolve-and-assemble.ts's ORDER_AUTORESOLVE_KINDS), so it needs the same
+  // confirm gate: the customer sees the resolved order + product before a
+  // public review posts.
+  "order.review.submit",
   // FE-T14 — reservation.modify now auto-resolves reservationId too
   // (resolve-and-assemble.ts's RESERVATION_AUTORESOLVE_KINDS), so it needs
   // the same confirm gate as reservation.cancel.
@@ -210,21 +215,64 @@ export const refuseUnresolvedAmendItemGuard: Guard<string, unknown, unknown> = n
   },
 );
 
+// FE-D28 — no-match / ambiguous honesty guard for order.review.submit.
+// resolve-and-assemble.ts stamps `state.ctx.reviewProductUnresolved` when the
+// reviewed order has MORE than one product and the customer's NL `item`
+// reference matched none (or several) of its lines — so the (Identity-class)
+// productId could not be resolved to a single purchased product. Like the
+// amend guard above, this turns that flag into an honest, kernel-authoritative
+// REFUSE, composed BEFORE confirmOnAutoResolveGuard so it pre-empts a doomed
+// "Confirma?" park on an envelope that carries no productId and can never
+// write a review. Fires on the stamped ctx flag ONLY (a single-product order
+// resolves without any reference, and an explicit match leaves the flag unset),
+// so an ordinary review never trips it.
+export const UNRESOLVED_REVIEW_PRODUCT_REFUSAL_CODE = "review_product_ambiguous";
+
+const UNRESOLVED_REVIEW_PRODUCT_REFUSAL_PT_BR =
+  "Seu pedido tem mais de um produto. Qual deles você quer avaliar? " +
+  "Diga o nome do item (ex.: \"a costela\") para eu registrar a avaliação certa.";
+
+export const refuseUnresolvedReviewProductGuard: Guard<string, unknown, unknown> = nameGuard(
+  "refuseUnresolvedReviewProduct",
+  (envelope, state) => {
+    if (envelope.kind !== "order.review.submit") return null;
+    if (
+      (state as { ctx?: { reviewProductUnresolved?: boolean } }).ctx?.reviewProductUnresolved !==
+      true
+    ) {
+      return null;
+    }
+    return decisionRefuse(
+      refuse(
+        "BUSINESS_RULE",
+        UNRESOLVED_REVIEW_PRODUCT_REFUSAL_CODE,
+        UNRESOLVED_REVIEW_PRODUCT_REFUSAL_PT_BR,
+      ),
+      [
+        basis("business", BASIS_CODES.business.RULE_VIOLATED, {
+          rule: "review_requires_resolved_ordered_product",
+        }),
+      ],
+    );
+  },
+);
+
 /**
  * The adopter-level business guards prepended to EVERY pack, in evaluation
  * order: F4 token-budget (REFUSE over budget) → allergen-mention honesty
  * (REFUSE an allergen-shaped customer.preferences.update) → unresolved
  * amend-item honesty (REFUSE an order.amend.add_item whose item didn't
- * resolve to a catalog variant) → confirm-on-autoresolve
- * (REQUEST_CONFIRMATION). The two REFUSE honesty guards sit BEFORE
- * confirm-on-autoresolve so the "REFUSE pre-empts a softer decision" ladder
- * holds: order.amend.add_item IS in AUTORESOLVE_CONFIRM_KINDS, so without
- * this ordering an unresolved amend item would be parked behind a
- * found-implying confirm prompt instead of honestly refused. The two REFUSE
- * guards are mutually inert (disjoint kinds), so their relative order is not
- * load-bearing — only their precedence over confirm-on-autoresolve is. All
- * four run before each pack's own business guards and only fire for their
- * matching kinds/flags.
+ * resolve to a catalog variant) → unresolved review-product honesty (REFUSE an
+ * order.review.submit whose reviewed product couldn't be resolved from the
+ * order's line items) → confirm-on-autoresolve (REQUEST_CONFIRMATION). The
+ * three REFUSE honesty guards sit BEFORE confirm-on-autoresolve so the "REFUSE
+ * pre-empts a softer decision" ladder holds: both order.amend.add_item AND
+ * order.review.submit are in AUTORESOLVE_CONFIRM_KINDS, so without this ordering
+ * an unresolved item/product would be parked behind a found-implying confirm
+ * prompt instead of honestly refused. The REFUSE guards are mutually inert
+ * (disjoint kinds), so their relative order is not load-bearing — only their
+ * precedence over confirm-on-autoresolve is. All run before each pack's own
+ * business guards and only fire for their matching kinds/flags.
  */
 export const IBATEXAS_ADOPTER_BUSINESS_GUARDS: ReadonlyArray<
   Guard<string, unknown, unknown>
@@ -232,6 +280,7 @@ export const IBATEXAS_ADOPTER_BUSINESS_GUARDS: ReadonlyArray<
   sessionTokenBudgetGuard,
   refuseAllergenMentionGuard,
   refuseUnresolvedAmendItemGuard,
+  refuseUnresolvedReviewProductGuard,
   confirmOnAutoResolveGuard,
 ];
 

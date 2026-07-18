@@ -29,43 +29,42 @@
 // ── order.review.submit ──────────────────────────────────────────────────
 // Wire payload (`OrderReviewSubmitPayload`) is `{orderId, productId,
 // rating, comment?}`. `orderId`/`productId` are Identity-class (forbidden)
-// — the model sees ONLY `{rating, comment?}`. UNLIKE every other kind in
-// this rollout slice, `order.review.submit` has NO resolver path for
-// EITHER identifier today: `SubmitReviewInputSchema.parse(input)`
-// (submit-review.ts) requires both directly, and neither
-// ORDER_AUTORESOLVE_KINDS nor any other resolver stamps them — this
-// capability is "registered-but-unadvertised" (definitions.ts,
-// register-ibatexas-tool-packs.ts: "the orders planner never advertises
-// it; reviews arrive via the web flow"), a stable, deliberate state, not
-// a bug this rollout slice is fixing. The schema is authored here for
-// COVERAGE (the ticket's AC3: every CHAT_DRIVABLE mutating capability has
-// an authored schema) and `productId` is added to FORBIDDEN_EXTRACTION_
-// FIELD_NAMES (extraction-schema.ts, via `EXEMPTABLE_IDENTIFIER_NAMES` —
-// see that file's header for the two-tier forbidden/never-exemptable
-// design) so no future schema can leak it by DEFAULT either — but the
-// capability stays deliberately UNADVERTISED (the customer planner never
-// offers it) and ships with NO corpus (an unadvertised kind can never be
-// live-driven — a corpus would be dead data).
+// — the model sees `{rating, comment?}` PLUS two Directive-class NL
+// reference fields it MAY name (`orderReference`, `item`), never the
+// internal ids themselves.
 //
-// `productId`'s OTHER role — `get_also_added`/`get_ordered_together`'s
-// public catalog lookup key (read-tool-schemas.ts) — is a structurally
-// different, non-owner-scoped use of the SAME name; those two schemas
-// declare `permittedIdentifiers: ["productId"]`, a narrow, explicit,
-// auditable per-schema exception to the default-forbidden posture (never
-// the reverse — `NEVER_EXEMPTABLE_FIELD_NAMES`, the PII/safety-critical
-// half, admits no such exception, structurally, not just by convention).
+// FE-D28 (ACTIVATION) — review-by-chat is now real. Both identifiers are
+// resolved server-side, mirroring the established idioms of this rollout
+// slice (never a wire field, `productId` stays forbidden-by-default —
+// unlike the read-tool `permittedIdentifiers` pair below):
+//   - `orderId`: `resolveCustomerOrderReference` (resolve-and-assemble.ts,
+//     FE-T13) parses the optional `orderReference` display number ("pedido
+//     1234"), IDOR-checks it against the caller, and falls back to the
+//     customer's most-recent order when absent — the SAME auto-resolve
+//     `order.note.add`/`order.amend.*` already use (grounded → forces a
+//     REQUEST_CONFIRMATION so a wrong "which order?" guess never
+//     auto-executes).
+//   - `productId`: resolved from the order's OWN line items — a review is
+//     purchase-bound, you can only review a product you bought. When the
+//     order has exactly one distinct product it resolves unambiguously; a
+//     multi-product order is disambiguated by the model's NL `item`
+//     reference against those lines (the SAME exact-title + variantId
+//     bridge `resolveLineItemByNameOrVariant` gives the granular amend
+//     kinds — `resolveReviewedProduct`, resolve-and-assemble.ts). A
+//     no-match / still-ambiguous reference resolves to no product (an
+//     honest disambiguation reply downstream), never a guess.
 //
-// The full orderId/productId resolution + advertisement activation is
-// tracked as FE-D28 (carved): resolve the reviewed product from the
-// order's own line items via an NL `item` reference (mirroring the
-// granular amend kinds' itemId pattern) and an optional `order_reference`
-// display-number field reusing FE-T13's `resolveCustomerOrderReference`
-// (already on dev, IDOR-checked) — see the FE-T14 PR body for the full
-// reasoning. `productId` stays resolver-side when that lands: an
-// order-line lookup keyed off the NL `item` reference, exactly like
-// `variantId`/`itemId` elsewhere in this rollout — never a wire field
-// (and, unlike the read-tool pair above, this capability does NOT declare
-// `permittedIdentifiers` — its `productId` stays forbidden-by-default).
+// `productId` remains on FORBIDDEN_EXTRACTION_FIELD_NAMES (extraction-
+// schema.ts, via `EXEMPTABLE_IDENTIFIER_NAMES`) so no future schema can
+// leak it by DEFAULT. Its OTHER role — `get_also_added`/
+// `get_ordered_together`'s public catalog lookup key (read-tool-schemas.ts)
+// — is a structurally different, non-owner-scoped use of the SAME name;
+// those two schemas declare `permittedIdentifiers: ["productId"]`, a
+// narrow, explicit, auditable per-schema exception (never the reverse —
+// `NEVER_EXEMPTABLE_FIELD_NAMES`, the PII/safety-critical half, admits no
+// such exception, structurally). This capability declares NO
+// `permittedIdentifiers`: its `productId` stays forbidden-by-default and
+// is only ever resolver-stamped.
 
 import {
   type CapabilityExtractionSchema,
@@ -147,6 +146,39 @@ export const ORDER_REVIEW_SUBMIT_EXTRACTION_SCHEMA: CapabilityExtractionSchema =
           description:
             "Comentário da avaliação, EXATAMENTE como o cliente disse. " +
             "Omita se não houver comentário explícito.",
+        },
+        required: false,
+      },
+      {
+        // FE-D28 — optional NL product reference; the runtime matches it
+        // against the reviewed order's OWN line items to resolve the
+        // (Identity-class, forbidden) productId. Omit when the order has a
+        // single product (resolved unambiguously) or the customer names no
+        // specific item — NEVER an id.
+        name: "item",
+        trustClass: "directive",
+        jsonSchema: {
+          type: "string",
+          description:
+            "Referência em linguagem natural ao item avaliado do pedido " +
+            "(ex.: \"a costela\", \"o hambúrguer\"), SOMENTE se o cliente " +
+            "citar um. NUNCA um ID — a referência é resolvida pelo runtime. " +
+            "Deixe de fora se a avaliação for do pedido como um todo.",
+        },
+        required: false,
+      },
+      {
+        // FE-D28 — optional NL display-number reference for the reviewed
+        // order (same Directive-class idiom as CHECK_ORDER_STATUS_READ_
+        // SCHEMA's orderReference; resolved + IDOR-checked server-side).
+        name: "orderReference",
+        trustClass: "directive",
+        jsonSchema: {
+          type: "string",
+          description:
+            "Número do pedido avaliado, SOMENTE se o cliente mencionar um " +
+            "explicitamente (ex.: \"1234\", \"#1234\"). Deixe de fora se não " +
+            "for mencionado — resolve automaticamente para o pedido mais recente.",
         },
         required: false,
       },

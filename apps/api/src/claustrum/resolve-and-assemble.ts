@@ -23,7 +23,7 @@
  */
 
 import { getRedisClient, rk, medusaAdmin, medusaStore, reaisToCentavos, searchProducts } from "@ibatexas/tools";
-import { Channel } from "@ibatexas/types";
+import { Channel, type OrderEventItem } from "@ibatexas/types";
 import {
   createOrderQueryService,
   createOrderService,
@@ -594,6 +594,13 @@ const ORDER_AUTORESOLVE_KINDS = new Set([
   "order.note.add",
   "order.address.change",
   "order.type.switch",
+  // FE-D28 — order.review.submit's orderId is Identity-class (never model-
+  // emitted); the reviewed order is auto-resolved to the customer's most-recent
+  // order (or an explicit `orderReference` display number — see
+  // `applyAutoResolve`'s review special-case). Same confirm-first posture as
+  // the modify kinds: the customer sees the resolved order + product before a
+  // public review posts. MUST stay in lockstep with AUTORESOLVE_CONFIRM_KINDS.
+  "order.review.submit",
 ]);
 // FE-T14 — reservation.modify's schema never shows the model a
 // `reservationId` field (Identity-class, forbidden) and, before this
@@ -757,6 +764,22 @@ async function applyAutoResolve(
   customerId: string,
 ): Promise<{ payload: Ctx; autoResolvedMoneyRef: boolean }> {
   if (ORDER_AUTORESOLVE_KINDS.has(kind)) {
+    // FE-D28 — order.review.submit resolves its reviewed order via the FE-T13
+    // display-number path: an explicit `orderReference` ("pedido 1234") is
+    // looked up authoritatively + IDOR-checked, falling back to the customer's
+    // most-recent order when absent/unmatched. Either way the turn confirms the
+    // resolved target (a public review posts against it), so `autoResolvedMoneyRef`
+    // is set whenever an order was resolved — not only on the blind fallback.
+    if (kind === "order.review.submit") {
+      const r = await resolveCustomerOrderReference(
+        typeof payload.orderReference === "string" ? payload.orderReference : undefined,
+        customerId,
+      );
+      if (r.orderId !== null) {
+        return { payload: { ...payload, orderId: r.orderId }, autoResolvedMoneyRef: true };
+      }
+      return { payload, autoResolvedMoneyRef: false };
+    }
     const r = await resolveOrderId(payload, customerId);
     if (r.autoResolved && r.orderId !== null) {
       return { payload: { ...payload, orderId: r.orderId }, autoResolvedMoneyRef: true };
@@ -1260,6 +1283,83 @@ async function resolveCartLineItem(
   }
 }
 
+/** FE-D28 — the three-way outcome of resolving the reviewed product from an
+ *  order's OWN line items (a review is purchase-bound). Mirrors
+ *  `OrderLineItemResolution`'s found/ambiguous/not_found contract, but returns
+ *  the catalog `productId` (what a review attaches to) rather than a line id. */
+type ReviewedProductResolution =
+  | { readonly kind: "found"; readonly productId: string }
+  | { readonly kind: "ambiguous" }
+  | { readonly kind: "not_found" };
+
+/**
+ * FE-D28 — resolve `order.review.submit`'s (Identity-class, forbidden)
+ * productId from the reviewed order's OWN line items. `getById` is owner-scoped
+ * (SDD §N P0-3), so a non-owner / unattributed order yields no items and
+ * nothing resolves — a customer can only review a product they bought.
+ *
+ *   - Exactly ONE distinct product on the order → resolves unambiguously (no
+ *     `item` reference needed: "dou 5 estrelas pro pedido").
+ *   - A multi-product order is disambiguated by the model's NL `item` reference
+ *     ("a costela"), matched lexically against the lines' titles (the same
+ *     both-ways substring test `hasLexicalOverlap` uses). A single distinct
+ *     product match resolves; multiple → ambiguous; none → not_found.
+ *
+ * NEVER guesses: an ambiguous/no-match reference resolves to nothing and the
+ * caller stamps a ctx marker so the kernel REFUSEs/clarifies honestly (the same
+ * posture the granular-amend itemId not-found/ambiguous path takes). Fail-safe
+ * to `not_found` on any read error.
+ */
+async function resolveReviewedProduct(
+  orderId: string,
+  itemName: string | undefined,
+  customerId: string,
+): Promise<ReviewedProductResolution> {
+  try {
+    const order = await createOrderQueryService().getById(orderId, { customerId });
+    // itemsJson is a Prisma JsonArray on the projection (denormalized line
+    // items, OrderEventItem shape) — cast through unknown per the me.ts review
+    // route's own `itemsJson` access idiom.
+    const items = (
+      Array.isArray(order?.itemsJson) ? order.itemsJson : []
+    ) as unknown as OrderEventItem[];
+    const distinctProductIds = [
+      ...new Set(
+        items
+          .map((it) => it?.productId)
+          .filter((id): id is string => typeof id === "string" && id.length > 0),
+      ),
+    ];
+    if (distinctProductIds.length === 0) return { kind: "not_found" };
+    if (distinctProductIds.length === 1) {
+      return { kind: "found", productId: distinctProductIds[0]! };
+    }
+
+    // Multi-product order: an explicit item reference is required to disambiguate.
+    const needleNorm = normalizeTokens(itemName ?? "").join(" ");
+    if (needleNorm.length === 0) return { kind: "ambiguous" };
+    const matchedProductIds = [
+      ...new Set(
+        items
+          .filter((it) => {
+            const titleNorm = normalizeTokens(it?.title ?? "").join(" ");
+            return (
+              titleNorm.length > 0 &&
+              (titleNorm.includes(needleNorm) || needleNorm.includes(titleNorm))
+            );
+          })
+          .map((it) => it?.productId)
+          .filter((id): id is string => typeof id === "string" && id.length > 0),
+      ),
+    ];
+    if (matchedProductIds.length === 1) return { kind: "found", productId: matchedProductIds[0]! };
+    if (matchedProductIds.length > 1) return { kind: "ambiguous" };
+    return { kind: "not_found" };
+  } catch {
+    return { kind: "not_found" };
+  }
+}
+
 async function threadResolvedIdsIntoPayload(
   kind: string,
   payload: Ctx,
@@ -1418,6 +1518,35 @@ async function threadResolvedIdsIntoPayload(
     }
     if (kind === "order.item.update") {
       out = { ...out, quantity: coerceQuantity(out.quantity) };
+    }
+  }
+  // FE-D28 — order.review.submit: resolve the (Identity-class) productId from
+  // the reviewed order's OWN line items (a purchase-bound review), keyed off the
+  // model's optional NL `item` reference. orderId was already resolved by
+  // applyAutoResolve's review special-case (resolveCustomerOrderReference — an
+  // explicit `orderReference` display number or the most-recent fallback). A
+  // single-product order resolves without an item reference; a multi-product
+  // order needs one. NEVER guesses: an ambiguous/no-match resolution leaves
+  // productId unset AND stamps `ctx.reviewProductUnresolved`, so the kernel
+  // REFUSEs honestly (refuseUnresolvedReviewProductGuard, compose-policy-packs.ts)
+  // rather than parking a doomed "Confirma?" behind confirmOnAutoResolveGuard —
+  // the same honest-floor posture as order.amend.add_item's FE-D18 guard. The
+  // model's `item`/`orderReference` reference fields ride along unstripped (the
+  // wire tool's SubmitReviewInputSchema.parse drops them from the Prisma write);
+  // keeping them mirrors the granular-amend `item` precedent and preserves the
+  // audited extraction IR. When orderId did NOT resolve, the flag is left unset
+  // so requireOrderIdForMutation surfaces the specific "which order?" reply.
+  if (
+    kind === "order.review.submit" &&
+    typeof out.productId !== "string" &&
+    typeof out.orderId === "string"
+  ) {
+    const name = firstString(out.item, out.product, out.name, out.query);
+    const resolution = await resolveReviewedProduct(out.orderId, name, customerId);
+    if (resolution.kind === "found") {
+      out = { ...out, productId: resolution.productId };
+    } else {
+      ctx.reviewProductUnresolved = true;
     }
   }
   // FE-T14 — customer.preferences.update: `allergenExclusions` is REQUIRED

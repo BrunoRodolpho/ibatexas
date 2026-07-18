@@ -80,10 +80,10 @@
  *     entry.
  *
  * `plannerAdvertisedBy` (FE-T20, both tiers) — see its own doc in
- * `types.ts` for the full contract, including the one remaining
- * "registered-but-unadvertised" chat-tier exception (`order.review.submit`
- * — `whatsapp.handoff.request` was activated by FE-T14/BKL-030-activation)
- * and the three ops-foreign-advertised kinds.
+ * `types.ts` for the full contract. As of FE-D28 there is no remaining
+ * "registered-but-unadvertised" chat-tier exception: `order.review.submit`
+ * was activated by FE-D28 and `whatsapp.handoff.request` by
+ * FE-T14/BKL-030-activation. The three ops-foreign-advertised kinds remain.
  */
 
 import type { CapabilityDefinition, CapabilityGuardRef } from "./types.js"
@@ -459,16 +459,16 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     pack: "ibatexas/pack-orders",
     mutating: true,
     tier: "chat",
-    // Registered-but-unadvertised (see types.ts `plannerAdvertisedBy` doc):
-    // registered as a chat tool but the live `ordersCapabilityPlanner.
-    // allowedIntents` never includes it — see `register-ibatexas-tool-
-    // packs.ts`'s roster-drift doc: "the orders planner never advertises
-    // it; reviews arrive via the web flow".
-    plannerAdvertisedBy: undefined,
+    // FE-D28 — review-by-chat activated. `ordersCapabilityPlanner.allowedIntents`
+    // now advertises it to authenticated customers (capabilities.ts): the
+    // resolver stamps the Identity-class orderId (resolveCustomerOrderReference)
+    // + productId (from the reviewed order's line items), so the model only ever
+    // emits rating/comment + the NL item/orderReference references
+    // (order-note-review.schema.ts). Reviews still ALSO arrive via the web flow
+    // (me.ts POST /api/me/reviews).
+    plannerAdvertisedBy: ["ibatexas/pack-orders"],
     // `auth` reflects `docs/architecture/design/agent-tools.md`
-    // (`submit_review` → customer), the capability's DECLARED auth
-    // requirement independent of whether the chat planner currently
-    // offers it.
+    // (`submit_review` → customer), the capability's DECLARED auth requirement.
     surfaces: ["chat"],
     auth: "customer",
     legacyNames: ["submit_review"],

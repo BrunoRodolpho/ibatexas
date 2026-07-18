@@ -255,14 +255,15 @@ describe("P0-7 — context-aware roster drift", () => {
     ).toEqual([]);
   });
 
-  // WARN-only on registered-but-unadvertised: order.review.submit has a
-  // registered tool but no planner advertises it under any probed context
-  // (reviews arrive via the web flow) — dead chat weight, never a failure.
-  it("WARNs (never fails) on registered-but-unadvertised kinds — order.review.submit", () => {
+  // FE-D28 — order.review.submit is now ADVERTISED (review-by-chat activated:
+  // the orderId/productId resolver landed and pack-orders' planner offers it),
+  // so the REAL boot composition no longer WARNs about it — it is a normal
+  // advertised+registered kind. The WARN-only path for any FUTURE registered-
+  // but-unadvertised kind is exercised synthetically below.
+  it("does NOT warn on order.review.submit anymore — it is advertised + registered (FE-D28), so the real boot drift is clean for it", () => {
     const { problems, warnings } = runBootDrift();
     expect(problems).toEqual([]);
-    expect(warnings.some((w) => w.includes("order.review.submit"))).toBe(true);
-    expect(warnings.every((w) => w.includes("WARN only"))).toBe(true);
+    expect(warnings.some((w) => w.includes("order.review.submit"))).toBe(false);
   });
 
   it("a synthetic planner-advertised-but-unregistered kind under authed-customer FAILS drift, EVEN WITH the production chatSurfacedKinds wired in", () => {

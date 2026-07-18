@@ -140,6 +140,11 @@ const rawOrdersCapabilityPlanner: CapabilityPlanner<OrderState, OrderContext> =
           "order.amend.update_qty",
           "order.amend.remove_item",
           "order.note.add",
+          // FE-D28 — review-by-chat is now real: the resolver stamps the
+          // (Identity-class) orderId + productId (order-note-review.schema.ts
+          // exposes only rating/comment + the NL item/orderReference refs), so
+          // the orders planner advertises it to authenticated customers.
+          "order.review.submit",
         )
       }
       // `order.cancel.system` is NEVER LLM-proposable — the taint gate

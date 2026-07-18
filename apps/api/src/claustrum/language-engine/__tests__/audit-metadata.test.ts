@@ -880,8 +880,8 @@ describe("buildLanguageEngineAuditMetadata — order.note.add (FE-T14)", () => {
   });
 });
 
-describe("buildLanguageEngineAuditMetadata — order.review.submit (FE-T14)", () => {
-  it("derives ExtractionIR {rating, comment} and HydratedIntentIR with orderId/productId authoritative (never grounded — no auto-resolve guess exists for this capability)", () => {
+describe("buildLanguageEngineAuditMetadata — order.review.submit (FE-D28)", () => {
+  it("derives ExtractionIR {rating, comment} and HydratedIntentIR with orderId=grounded (auto-resolved order — a guess), productId=authoritative (resolved from the order's line items), confirmationRequired=true", () => {
     const meta = buildLanguageEngineAuditMetadata(
       record("order.review.submit", {
         orderId: "order_9",
@@ -892,16 +892,21 @@ describe("buildLanguageEngineAuditMetadata — order.review.submit (FE-T14)", ()
     );
     const le = languageEngineOf(meta);
     expect(le.extractionIR.payload).toEqual({ rating: 5, comment: "ótimo" });
+    // FE-D28 — orderId is auto-resolved (most-recent / display-number) → grounded,
+    // so the turn honestly confirms the target; productId is resolved from the
+    // reviewed order's own line items (explicit-reference/single-product) →
+    // authoritative.
     expect(le.hydratedIntentIR.provenance.orderId).toEqual({
       producer: "resolver",
       confidence: "resolved",
-      trust: "authoritative",
+      trust: "grounded",
     });
     expect(le.hydratedIntentIR.provenance.productId).toEqual({
       producer: "resolver",
       confidence: "resolved",
       trust: "authoritative",
     });
+    expect(le.hydratedIntentIR.confirmationRequired).toBe(true);
   });
 
   it("derives ExtractionIR {rating} only when no comment was given", () => {

@@ -43,7 +43,7 @@
     {
       "capability": "order-note-review:2-kind-group",
       "goldenFragmentPath": "apps/api/src/claustrum/language-engine/__tests__/__golden__/order-note-review.extraction-prompt-fragment.json",
-      "goldenFragmentSha256": "64ee5b1e993d2e402c522b4c5d018eca1ca87ffb583617ff105ae54e513a80b6"
+      "goldenFragmentSha256": "e98e2b54b1c0d51081b4dc33b15d59af9b590aaea0cf6b230edf52655c18b389"
     },
     {
       "capability": "reservation-convenience:4-kind-group",

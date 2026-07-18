@@ -1,0 +1,276 @@
+# order.review.submit — FE-D28 (activation). FE-T14 authored this
+# capability's extraction schema (order-note-review.schema.ts) for COVERAGE
+# but left it registered-but-unadvertised (no resolver for either id, no
+# corpus). FE-D28 activates review-by-chat: both identifiers are now
+# resolved server-side, so the capability is advertised on the customer
+# planner and grows this corpus. Low-risk convenience sibling (N≈10, matching
+# order.amend.add_item.yaml / FE-T13's read-tool-corpus sizing for the tier).
+#
+# EXTRACTION (what the 4B emits): the model sees ONLY the Directive-class
+# fields — `rating` (required, 1-5), `comment?` (verbatim, CRITICAL DESIGN
+# RULE 6 — copy exactly, omit when absent), and the two optional NL reference
+# fields `item?` (the reviewed product, e.g. "a costela") and `orderReference?`
+# (a display number, e.g. "pedido 1234"). It NEVER sees orderId/productId
+# (Identity-class, FORBIDDEN_EXTRACTION_FIELD_NAMES).
+#
+# HYDRATION (resolve-and-assemble.ts's resolveReviewedProduct, reusing the
+# deriveGranularAmend audit shape): `orderId` is resolver-filled — from the NL
+# `orderReference` display number when named (authoritative, IDOR-checked via
+# resolveCustomerOrderReference) else auto-resolved to the customer's most-
+# recent DELIVERED order (grounded, a guess). `productId` is resolved from the
+# reviewed order's OWN line items — unambiguous when the order has a single
+# product, else matched from the NL `item` reference (authoritative, an
+# explicit-reference lookup, never a guess). Because the common path auto-
+# resolves orderId (grounded), confirmationRequired: true on every case (the
+# customer sees the resolved order + product and confirms).
+#
+# Assertions follow the granular-amend precedent: the resolved id VALUES are
+# seed-data-dependent (the real orderId/productId depend on live catalog +
+# order state), so only their PRESENCE is pinned (`payloadPresent`), never a
+# concrete value; the model-extracted `rating`/`comment`/`item` values ARE
+# pinned (extraction fidelity is what this file proves). `orderReference` is a
+# model-facing reference the resolver consumes into orderId — asserted in the
+# extraction IR (what the model emitted), not the hydrated payload.
+capability: order.review.submit
+source: tickets/language-engine/issues/14-rollout-convenience-mutating-verbs.md
+plane: customer
+cases:
+  - id: five-stars-with-comment
+    utterance: dou 5 estrelas pro pedido, chegou rapidinho e quentinho
+    note: >-
+      Canonical example (the schema's own worked example) — rating + a
+      verbatim comment, no explicit item (single-product order resolves
+      unambiguously), no explicit order reference (auto-resolve most-recent).
+    expectPayload:
+      extractionIR:
+        payload:
+          rating: 5
+          comment: chegou rapidinho e quentinho
+        provenanceTrust:
+          rating: untrusted
+          comment: untrusted
+      hydratedIntentIR:
+        payload:
+          rating: 5
+          comment: chegou rapidinho e quentinho
+        payloadPresent:
+          - orderId
+          - productId
+        provenanceTrust:
+          orderId: grounded
+          productId: authoritative
+          rating: untrusted
+        confirmationRequired: true
+
+  - id: rating-only-no-comment
+    utterance: avalia meu pedido com 4 estrelas
+    note: Rating only, comment ABSENT (never fabricated) — field-absent case.
+    expectPayload:
+      extractionIR:
+        payload:
+          rating: 4
+        provenanceTrust:
+          rating: untrusted
+      hydratedIntentIR:
+        payload:
+          rating: 4
+        payloadPresent:
+          - orderId
+          - productId
+        provenanceTrust:
+          orderId: grounded
+          productId: authoritative
+        confirmationRequired: true
+
+  - id: item-reference-multi-product
+    utterance: dou 5 estrelas pra costela do meu pedido, defumada no ponto
+    note: >-
+      Explicit NL `item` reference ("costela") disambiguates the reviewed
+      product in a multi-product order; verbatim comment retained.
+    expectPayload:
+      extractionIR:
+        payload:
+          rating: 5
+          item: costela
+          comment: defumada no ponto
+        provenanceTrust:
+          rating: untrusted
+          item: untrusted
+          comment: untrusted
+      hydratedIntentIR:
+        payload:
+          rating: 5
+          item: costela
+          comment: defumada no ponto
+        payloadPresent:
+          - orderId
+          - productId
+        provenanceTrust:
+          orderId: grounded
+          productId: authoritative
+          item: untrusted
+        confirmationRequired: true
+
+  - id: order-reference-display-number
+    utterance: avalia o pedido 1234 com 5 estrelas, atendimento excelente
+    note: >-
+      Explicit `orderReference` display number — resolver resolves the owned
+      order authoritatively (IDOR-checked) rather than auto-resolving.
+    expectPayload:
+      extractionIR:
+        payload:
+          rating: 5
+          orderReference: "1234"
+          comment: atendimento excelente
+        provenanceTrust:
+          rating: untrusted
+          orderReference: untrusted
+          comment: untrusted
+      hydratedIntentIR:
+        payload:
+          rating: 5
+          comment: atendimento excelente
+        payloadPresent:
+          - orderId
+          - productId
+        provenanceTrust:
+          productId: authoritative
+          rating: untrusted
+        confirmationRequired: true
+
+  - id: one-star-complaint
+    utterance: só dou 1 estrela, veio frio e demorou demais
+    note: Low rating with a verbatim complaint comment — honest capture, no softening.
+    expectPayload:
+      extractionIR:
+        payload:
+          rating: 1
+          comment: veio frio e demorou demais
+        provenanceTrust:
+          rating: untrusted
+          comment: untrusted
+      hydratedIntentIR:
+        payload:
+          rating: 1
+          comment: veio frio e demorou demais
+        payloadPresent:
+          - orderId
+          - productId
+        provenanceTrust:
+          orderId: grounded
+          productId: authoritative
+        confirmationRequired: true
+
+  - id: polite-register
+    utterance: por gentileza, gostaria de avaliar meu pedido com 5 estrelas
+    note: Very polite register ("por gentileza"), rating only, auto-resolve.
+    expectPayload:
+      extractionIR:
+        payload:
+          rating: 5
+        provenanceTrust:
+          rating: untrusted
+      hydratedIntentIR:
+        payload:
+          rating: 5
+        payloadPresent:
+          - orderId
+          - productId
+        provenanceTrust:
+          orderId: grounded
+          productId: authoritative
+        confirmationRequired: true
+
+  - id: colloquial-nota
+    utterance: dá nota 4 pro hambúrguer que pedi, tava bom
+    note: >-
+      Colloquial "dá nota N" register; NL `item` reference ("hambúrguer") plus
+      a short verbatim comment.
+    expectPayload:
+      extractionIR:
+        payload:
+          rating: 4
+          item: hambúrguer
+          comment: tava bom
+        provenanceTrust:
+          rating: untrusted
+          item: untrusted
+          comment: untrusted
+      hydratedIntentIR:
+        payload:
+          rating: 4
+          item: hambúrguer
+          comment: tava bom
+        payloadPresent:
+          - orderId
+          - productId
+        provenanceTrust:
+          orderId: grounded
+          productId: authoritative
+          item: untrusted
+        confirmationRequired: true
+
+  - id: question-form
+    utterance: dá pra avaliar meu último pedido com 5 estrelas?
+    note: Question-form surface ("dá pra...?"), rating only, auto-resolve.
+    expectPayload:
+      extractionIR:
+        payload:
+          rating: 5
+        provenanceTrust:
+          rating: untrusted
+      hydratedIntentIR:
+        payload:
+          rating: 5
+        payloadPresent:
+          - orderId
+          - productId
+        provenanceTrust:
+          orderId: grounded
+          productId: authoritative
+        confirmationRequired: true
+
+  - id: three-stars-neutral
+    utterance: avalio com 3 estrelas, foi ok
+    note: Mid rating with a brief verbatim comment.
+    expectPayload:
+      extractionIR:
+        payload:
+          rating: 3
+          comment: foi ok
+        provenanceTrust:
+          rating: untrusted
+          comment: untrusted
+      hydratedIntentIR:
+        payload:
+          rating: 3
+          comment: foi ok
+        payloadPresent:
+          - orderId
+          - productId
+        provenanceTrust:
+          orderId: grounded
+          productId: authoritative
+        confirmationRequired: true
+
+  - id: context-embedded
+    utterance: chegou tudo certo, quero dar 5 estrelas
+    note: >-
+      Context-embedded register — states the experience before the rating
+      instruction; rating extracted, no explicit comment field.
+    expectPayload:
+      extractionIR:
+        payload:
+          rating: 5
+        provenanceTrust:
+          rating: untrusted
+      hydratedIntentIR:
+        payload:
+          rating: 5
+        payloadPresent:
+          - orderId
+          - productId
+        provenanceTrust:
+          orderId: grounded
+          productId: authoritative
+        confirmationRequired: true

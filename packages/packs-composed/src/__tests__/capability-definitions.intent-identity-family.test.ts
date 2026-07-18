@@ -284,12 +284,18 @@ describe("codegen-freshness gate — planner allowedIntents (FE-T20 family 4, ru
     )
   })
 
-  it("registered-but-unadvertised: order.review.submit is tier:'chat' but excluded from EVERY pack's generated allowedIntents projection", () => {
-    // whatsapp.handoff.request was this class's other member until
-    // FE-T14/BKL-030-activation advertised it — see the dedicated
-    // pack-whatsapp test above, which now asserts the OPPOSITE (it IS
-    // advertised, unconditionally).
+  it("FE-D28 — order.review.submit is now advertised by pack-orders' OWN planner projection (review-by-chat activated), and by no other pack", () => {
+    // Was the last "registered-but-unadvertised" chat-tier kind until FE-D28
+    // wired the orderId/productId resolver (resolve-and-assemble.ts) and flipped
+    // plannerAdvertisedBy to ["ibatexas/pack-orders"]. Mirrors how
+    // whatsapp.handoff.request's test inverted after FE-T14/BKL-030-activation.
+    const ordersGenerated = generatePlannerAllowedIntents(
+      CAPABILITY_DEFINITIONS,
+      "ibatexas/pack-orders",
+    )
+    expect(ordersGenerated).toContain("order.review.submit")
     for (const pack of ALL_PACKS) {
+      if (pack === "ibatexas/pack-orders") continue
       const generated = generatePlannerAllowedIntents(CAPABILITY_DEFINITIONS, pack)
       expect(generated).not.toContain("order.review.submit")
     }
