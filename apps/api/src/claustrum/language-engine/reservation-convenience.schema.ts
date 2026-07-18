@@ -71,8 +71,10 @@ import {
 const TIME_SLOT_ID_LOOKUP_KEY_JSON_SCHEMA = {
   type: "string" as const,
   description:
-    "ID do horário — SEMPRE um id já retornado por uma leitura anterior " +
-    "nesta conversa (check_availability), NUNCA inventado ou digitado pelo cliente.",
+    "ID do horário — um id já retornado por uma leitura anterior nesta conversa " +
+    "(check_availability), NUNCA inventado ou digitado pelo cliente. " +
+    "Como ALTERNATIVA, deixe de fora e informe `date` (e `time`): o sistema " +
+    "encontra o horário disponível para essa data.",
 };
 
 const PARTY_SIZE_JSON_SCHEMA = {
@@ -80,15 +82,37 @@ const PARTY_SIZE_JSON_SCHEMA = {
   description: "Número de pessoas (1 a 20).",
 };
 
+// FE-D27 — the NL date/time ALTERNATIVE to a check_availability-grounded timeSlotId,
+// so a pure-chat "mesa pra 4 sexta às 20h" can book without a prior availability read.
+// `date` mirrors CHECK_AVAILABILITY_READ_SCHEMA's own ISO field (the precedent that
+// the 4B emits YYYY-MM-DD); the resolver (resolve-and-assemble.ts) grounds date+time
+// → a REAL timeSlotId via the SAME `checkAvailability` lookup check_availability uses.
+const RESERVATION_DATE_JSON_SCHEMA = {
+  type: "string" as const,
+  description:
+    "Data desejada da reserva no formato YYYY-MM-DD (ex.: \"2026-03-15\"), quando o " +
+    "cliente disser a data em vez de escolher um horário já listado. " +
+    "Omita se um timeSlotId já foi escolhido.",
+};
+const RESERVATION_TIME_JSON_SCHEMA = {
+  type: "string" as const,
+  description:
+    "Horário desejado no formato HH:MM (ex.: \"20:00\"), se o cliente mencionar. " +
+    "Omita se não houver horário específico.",
+};
+
 export const RESERVATION_CREATE_EXTRACTION_SCHEMA: CapabilityExtractionSchema =
   {
     capability: "reservation.create",
     fields: [
       {
+        // FE-D27 — now OPTIONAL: the customer either picks a listed slot
+        // (timeSlotId, State) OR states the date/time (date+time, Directive)
+        // and the resolver grounds it to a real timeSlotId.
         name: "timeSlotId",
         trustClass: "state",
         jsonSchema: TIME_SLOT_ID_LOOKUP_KEY_JSON_SCHEMA,
-        required: true,
+        required: false,
       },
       {
         name: "partySize",
@@ -96,10 +120,22 @@ export const RESERVATION_CREATE_EXTRACTION_SCHEMA: CapabilityExtractionSchema =
         jsonSchema: PARTY_SIZE_JSON_SCHEMA,
         required: true,
       },
+      {
+        name: "date",
+        trustClass: "directive",
+        jsonSchema: RESERVATION_DATE_JSON_SCHEMA,
+        required: false,
+      },
+      {
+        name: "time",
+        trustClass: "directive",
+        jsonSchema: RESERVATION_TIME_JSON_SCHEMA,
+        required: false,
+      },
     ],
     example: {
-      utterance: "quero reservar aquele horário que vocês acharam, pra 4 pessoas",
-      payload: { timeSlotId: "slot_123", partySize: 4 },
+      utterance: "quero uma mesa pra 4 pessoas dia 20/03 às 20h",
+      payload: { date: "2026-03-20", time: "20:00", partySize: 4 },
     },
   };
 
@@ -130,10 +166,35 @@ export const RESERVATION_MODIFY_EXTRACTION_SCHEMA: CapabilityExtractionSchema =
         },
         required: false,
       },
+      {
+        // FE-D27 — the NL alternative to newTimeSlotId for a slot change: state the
+        // new date/time and the resolver grounds it to a real newTimeSlotId.
+        name: "newDate",
+        trustClass: "directive",
+        jsonSchema: {
+          type: "string",
+          description:
+            "Nova data no formato YYYY-MM-DD (ex.: \"2026-03-15\"), quando o cliente " +
+            "quiser mudar o dia sem escolher um horário já listado. " +
+            "Omita se não mudar o horário ou se um newTimeSlotId já foi escolhido.",
+        },
+        required: false,
+      },
+      {
+        name: "newTime",
+        trustClass: "directive",
+        jsonSchema: {
+          type: "string",
+          description:
+            "Novo horário no formato HH:MM (ex.: \"20:00\"), se o cliente mencionar. " +
+            "Omita se não houver horário específico.",
+        },
+        required: false,
+      },
     ],
     example: {
-      utterance: "muda minha reserva pra 6 pessoas",
-      payload: { newPartySize: 6 },
+      utterance: "muda minha reserva pra sexta, dia 20/03, às 20h",
+      payload: { newDate: "2026-03-20", newTime: "20:00" },
     },
   };
 
@@ -163,16 +224,30 @@ export const RESERVATION_WAITLIST_JOIN_EXTRACTION_SCHEMA: CapabilityExtractionSc
     capability: "reservation.waitlist.join",
     fields: [
       {
+        // FE-D27 — OPTIONAL (mirrors reservation.create): a listed slot (timeSlotId)
+        // OR the stated date/time, grounded to a real timeSlotId by the resolver.
         name: "timeSlotId",
         trustClass: "state",
         jsonSchema: TIME_SLOT_ID_LOOKUP_KEY_JSON_SCHEMA,
-        required: true,
+        required: false,
       },
       {
         name: "partySize",
         trustClass: "directive",
         jsonSchema: PARTY_SIZE_JSON_SCHEMA,
         required: true,
+      },
+      {
+        name: "date",
+        trustClass: "directive",
+        jsonSchema: RESERVATION_DATE_JSON_SCHEMA,
+        required: false,
+      },
+      {
+        name: "time",
+        trustClass: "directive",
+        jsonSchema: RESERVATION_TIME_JSON_SCHEMA,
+        required: false,
       },
     ],
     example: {

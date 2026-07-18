@@ -68,10 +68,12 @@ describe("extraction-prompt golden byte-identity gate (reservation.create/modify
       expect(keys).not.toContain("reservationId");
       expect(keys).not.toContain("specialRequests");
     }
-    expect(byCapability.get("reservation.create")!.required).toEqual(["timeSlotId", "partySize"]);
+    // FE-D27 — timeSlotId is now optional (the NL date/time alternative), so only
+    // partySize is required for create/waitlist.
+    expect(byCapability.get("reservation.create")!.required).toEqual(["partySize"]);
     expect(byCapability.get("reservation.modify")!.required).toBeUndefined();
     expect(byCapability.get("reservation.cancel")!.required).toBeUndefined();
-    expect(byCapability.get("reservation.waitlist.join")!.required).toEqual(["timeSlotId", "partySize"]);
+    expect(byCapability.get("reservation.waitlist.join")!.required).toEqual(["partySize"]);
   });
 
   it("RED: a mutated wire schema (an extra leaked field) is NOT byte-identical to the golden fixture", async () => {

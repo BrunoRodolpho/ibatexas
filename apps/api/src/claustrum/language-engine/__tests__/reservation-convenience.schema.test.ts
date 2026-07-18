@@ -21,19 +21,21 @@ describe("RESERVATION_CREATE_EXTRACTION_SCHEMA", () => {
     expect(() => assertSoundExtractionSchema(RESERVATION_CREATE_EXTRACTION_SCHEMA)).not.toThrow();
   });
 
-  it("exposes ONLY {timeSlotId, partySize}, both required — no reservationId, no specialRequests", () => {
+  it("FE-D27: exposes {timeSlotId?, partySize, date?, time?} — only partySize required (timeSlotId now optional, the NL date/time alternative); no reservationId/specialRequests", () => {
     const names = extractionFieldNames(RESERVATION_CREATE_EXTRACTION_SCHEMA);
-    expect([...names].sort()).toEqual(["partySize", "timeSlotId"]);
+    expect([...names].sort()).toEqual(["date", "partySize", "time", "timeSlotId"]);
     expect(names.has("reservationId")).toBe(false);
     expect(names.has("specialRequests")).toBe(false);
     const wire = toPayloadJsonSchema(RESERVATION_CREATE_EXTRACTION_SCHEMA);
-    expect(wire.required).toEqual(["timeSlotId", "partySize"]);
+    expect(wire.required).toEqual(["partySize"]);
   });
 
-  it("timeSlotId is State class (a lookup key), partySize is Directive", () => {
+  it("timeSlotId is State (a lookup key); partySize/date/time are Directive", () => {
     const byName = new Map(RESERVATION_CREATE_EXTRACTION_SCHEMA.fields.map((f) => [f.name, f]));
     expect(byName.get("timeSlotId")?.trustClass).toBe("state");
     expect(byName.get("partySize")?.trustClass).toBe("directive");
+    expect(byName.get("date")?.trustClass).toBe("directive");
+    expect(byName.get("time")?.trustClass).toBe("directive");
   });
 });
 
@@ -42,9 +44,9 @@ describe("RESERVATION_MODIFY_EXTRACTION_SCHEMA", () => {
     expect(() => assertSoundExtractionSchema(RESERVATION_MODIFY_EXTRACTION_SCHEMA)).not.toThrow();
   });
 
-  it("exposes ONLY {newTimeSlotId, newPartySize}, BOTH optional — no reservationId, no specialRequests", () => {
+  it("FE-D27: exposes {newTimeSlotId?, newPartySize?, newDate?, newTime?}, ALL optional — no reservationId/specialRequests", () => {
     const names = extractionFieldNames(RESERVATION_MODIFY_EXTRACTION_SCHEMA);
-    expect([...names].sort()).toEqual(["newPartySize", "newTimeSlotId"]);
+    expect([...names].sort()).toEqual(["newDate", "newPartySize", "newTime", "newTimeSlotId"]);
     expect(names.has("reservationId")).toBe(false);
     expect(names.has("specialRequests")).toBe(false);
     const wire = toPayloadJsonSchema(RESERVATION_MODIFY_EXTRACTION_SCHEMA);
@@ -69,10 +71,10 @@ describe("RESERVATION_WAITLIST_JOIN_EXTRACTION_SCHEMA", () => {
     expect(() => assertSoundExtractionSchema(RESERVATION_WAITLIST_JOIN_EXTRACTION_SCHEMA)).not.toThrow();
   });
 
-  it("exposes ONLY {timeSlotId, partySize}, both required", () => {
+  it("FE-D27: exposes {timeSlotId?, partySize, date?, time?} — only partySize required (mirrors reservation.create)", () => {
     const names = extractionFieldNames(RESERVATION_WAITLIST_JOIN_EXTRACTION_SCHEMA);
-    expect([...names].sort()).toEqual(["partySize", "timeSlotId"]);
+    expect([...names].sort()).toEqual(["date", "partySize", "time", "timeSlotId"]);
     const wire = toPayloadJsonSchema(RESERVATION_WAITLIST_JOIN_EXTRACTION_SCHEMA);
-    expect(wire.required).toEqual(["timeSlotId", "partySize"]);
+    expect(wire.required).toEqual(["partySize"]);
   });
 });

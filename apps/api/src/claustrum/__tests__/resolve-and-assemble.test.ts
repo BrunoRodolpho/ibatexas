@@ -22,6 +22,12 @@ let paymentGetActiveByOrderId: (orderId: string) => Promise<unknown> = async () 
 let reservationGetById: (id: string, customerId: string) => Promise<unknown> = async () => {
   throw new Error("not found");
 };
+// FE-D27 — the availability lookup the reservation slot resolver reuses.
+let reservationCheckAvailability: (
+  date: string,
+  partySize: number,
+  time?: string,
+) => Promise<Array<{ timeSlotId: string }>> = async () => [];
 let timeSlotFindUnique: (args: unknown) => Promise<unknown> = async () => null;
 let medusaStoreFetch: (path: string) => Promise<unknown> = async () => ({});
 let searchProductsMock: (input: unknown, ctx?: unknown) => Promise<unknown> = async () => ({ products: [] });
@@ -80,6 +86,8 @@ vi.mock("@ibatexas/domain", () => ({
   createReservationService: () => ({
     getById: (id: string, customerId: string) => reservationGetById(id, customerId),
     listByCustomer: (cid: string, opts?: unknown) => reservationListByCustomer(cid, opts),
+    checkAvailability: (date: string, partySize: number, time?: string) =>
+      reservationCheckAvailability(date, partySize, time),
   }),
   prisma: { timeSlot: { findUnique: (args: unknown) => timeSlotFindUnique(args) } },
 }));
@@ -90,6 +98,7 @@ const {
   sessionTokenKey,
   resolveCustomerOrderReference,
   parseRelativeOrderDate,
+  resolveReservationSlot,
   isAllergenMentionUtterance,
 } = await import("../resolve-and-assemble.js");
 
@@ -118,6 +127,7 @@ beforeEach(() => {
   reservationGetById = async () => {
     throw new Error("not found");
   };
+  reservationCheckAvailability = async () => [];
   timeSlotFindUnique = async () => null;
   medusaStoreFetch = async () => ({});
   searchProductsMock = async () => ({ products: [] });
@@ -2209,5 +2219,166 @@ describe("resolve-and-assemble — the variantId bridge (order.item.update/remov
       sessionId: "conv-1",
     });
     expect((payload as { itemId?: string }).itemId).toBe("cali_guarana");
+  });
+});
+
+// FE-D27 — NL slot-booking: date/time → a REAL timeSlotId via the SAME
+// checkAvailability lookup, with honest no-availability + CLARIFY-on-ambiguity.
+describe("resolveReservationSlot — FE-D27 NL date/time → timeSlotId", () => {
+  const CUSTOMER = "c1";
+
+  it("create: exactly ONE available slot → stamps the real timeSlotId", async () => {
+    reservationCheckAvailability = async (date, partySize) => {
+      expect(date).toBe("2026-03-20");
+      expect(partySize).toBe(4);
+      return [{ timeSlotId: "slot_real_1" }];
+    };
+    const out = await resolveReservationSlot(
+      "reservation.create",
+      { date: "2026-03-20", time: "20:00", partySize: 4 },
+      CUSTOMER,
+    );
+    expect(out.timeSlotId).toBe("slot_real_1");
+    expect(out.slotAmbiguousCount).toBeUndefined();
+  });
+
+  it("create: ZERO slots → payload unchanged (no timeSlotId → honest no-availability refuse)", async () => {
+    reservationCheckAvailability = async () => [];
+    const out = await resolveReservationSlot(
+      "reservation.create",
+      { date: "2026-03-20", partySize: 4 },
+      CUSTOMER,
+    );
+    expect(out.timeSlotId).toBeUndefined();
+    expect(out.slotAmbiguousCount).toBeUndefined();
+  });
+
+  it("create: ≥2 slots → slotAmbiguousCount marker, slot stays UNSTAMPED (CLARIFY)", async () => {
+    reservationCheckAvailability = async () => [
+      { timeSlotId: "a" },
+      { timeSlotId: "b" },
+      { timeSlotId: "c" },
+    ];
+    const out = await resolveReservationSlot(
+      "reservation.create",
+      { date: "2026-03-20", partySize: 4 },
+      CUSTOMER,
+    );
+    expect(out.timeSlotId).toBeUndefined();
+    expect(out.slotAmbiguousCount).toBe(3);
+  });
+
+  it("create: an already-chosen timeSlotId is NEVER overridden (the listed-slot path)", async () => {
+    let called = false;
+    reservationCheckAvailability = async () => {
+      called = true;
+      return [{ timeSlotId: "other" }];
+    };
+    const out = await resolveReservationSlot(
+      "reservation.create",
+      { timeSlotId: "slot_listed", date: "2026-03-20", partySize: 4 },
+      CUSTOMER,
+    );
+    expect(out.timeSlotId).toBe("slot_listed");
+    expect(called).toBe(false);
+  });
+
+  it("create: a non-ISO date is never queried → payload unchanged (FE-D24's backward parser is deliberately not reused)", async () => {
+    let called = false;
+    reservationCheckAvailability = async () => {
+      called = true;
+      return [{ timeSlotId: "x" }];
+    };
+    const out = await resolveReservationSlot(
+      "reservation.create",
+      { date: "sexta", partySize: 4 },
+      CUSTOMER,
+    );
+    expect(out.timeSlotId).toBeUndefined();
+    expect(called).toBe(false);
+  });
+
+  it("create: an absent partySize is never queried (nothing to size availability against)", async () => {
+    let called = false;
+    reservationCheckAvailability = async () => {
+      called = true;
+      return [{ timeSlotId: "x" }];
+    };
+    const out = await resolveReservationSlot("reservation.create", { date: "2026-03-20" }, CUSTOMER);
+    expect(out.timeSlotId).toBeUndefined();
+    expect(called).toBe(false);
+  });
+
+  it("create: the optional time threads through to the availability filter", async () => {
+    let seenTime: string | undefined;
+    reservationCheckAvailability = async (_d, _p, time) => {
+      seenTime = time;
+      return [{ timeSlotId: "s" }];
+    };
+    await resolveReservationSlot(
+      "reservation.create",
+      { date: "2026-03-20", time: "20:00", partySize: 2 },
+      CUSTOMER,
+    );
+    expect(seenTime).toBe("20:00");
+  });
+
+  it("create: a lookup error is fail-safe → payload unchanged (never throws)", async () => {
+    reservationCheckAvailability = async () => {
+      throw new Error("db down");
+    };
+    const out = await resolveReservationSlot(
+      "reservation.create",
+      { date: "2026-03-20", partySize: 4 },
+      CUSTOMER,
+    );
+    expect(out.timeSlotId).toBeUndefined();
+  });
+
+  it("waitlist.join: same grounding as create (exactly-one → timeSlotId)", async () => {
+    reservationCheckAvailability = async () => [{ timeSlotId: "wl_slot" }];
+    const out = await resolveReservationSlot(
+      "reservation.waitlist.join",
+      { date: "2026-03-20", partySize: 2 },
+      CUSTOMER,
+    );
+    expect(out.timeSlotId).toBe("wl_slot");
+  });
+
+  it("modify: newDate+newPartySize → newTimeSlotId (not timeSlotId)", async () => {
+    reservationCheckAvailability = async (_d, partySize) => {
+      expect(partySize).toBe(6);
+      return [{ timeSlotId: "new_slot" }];
+    };
+    const out = await resolveReservationSlot(
+      "reservation.modify",
+      { reservationId: "r1", newDate: "2026-03-20", newPartySize: 6 },
+      CUSTOMER,
+    );
+    expect(out.newTimeSlotId).toBe("new_slot");
+    expect(out.timeSlotId).toBeUndefined();
+  });
+
+  it("modify: a time-only change sizes against the reservation's OWN partySize", async () => {
+    reservationGetById = async (id) =>
+      id === "r1" ? { id: "r1", partySize: 3, status: "confirmed", timeSlot: { id: "old" } } : null;
+    let seenSize: number | undefined;
+    reservationCheckAvailability = async (_d, partySize) => {
+      seenSize = partySize;
+      return [{ timeSlotId: "new_slot" }];
+    };
+    const out = await resolveReservationSlot(
+      "reservation.modify",
+      { reservationId: "r1", newDate: "2026-03-20", newTime: "20:00" },
+      CUSTOMER,
+    );
+    expect(seenSize).toBe(3);
+    expect(out.newTimeSlotId).toBe("new_slot");
+  });
+
+  it("a non-reservation kind is a no-op (same reference back)", async () => {
+    const payload = { date: "2026-03-20", partySize: 4 };
+    const out = await resolveReservationSlot("order.checkout.create", payload, CUSTOMER);
+    expect(out).toBe(payload);
   });
 });

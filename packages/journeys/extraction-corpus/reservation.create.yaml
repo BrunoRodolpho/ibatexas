@@ -276,3 +276,82 @@ cases:
           partySize: 4
         confirmationRequired: false
       decision: REFUSE
+
+  # ── Arm (d): FE-D27 NL date/time grounding — the customer states the DATE
+  #    (+ optional TIME) instead of picking a listed slot; the resolver
+  #    (resolve-and-assemble.ts resolveReservationSlot) grounds date+time → a
+  #    REAL timeSlotId via the SAME checkAvailability lookup. These cases assert
+  #    the EXTRACTION only: the model emits {date (ISO), time?, partySize}.
+  #    date is ISO YYYY-MM-DD (the CHECK_AVAILABILITY precedent that the 4B emits
+  #    ISO; the year is 4B-inferred to the next occurrence). The SLOT-GROUNDING
+  #    hydration (date+time → timeSlotId) needs a live availability seed and is
+  #    FE-D31-deferred (single-turn, no seeded slot → checkAvailability empty →
+  #    the honest no-availability REFUSE below; a seeded live drive resolves the
+  #    real slot, ≥2 → CLARIFY via slotAmbiguousCount).
+  - id: nl-date-time-full
+    utterance: quero uma mesa pra 4 pessoas no dia 20 de março às 20h
+    note: >-
+      The core FE-D27 flow: date + time + party size in one pure-chat turn, no
+      prior check_availability read. Extraction target = {date, time, partySize};
+      slot grounding is FE-D31-deferred (needs a seeded availability drive).
+    expectPayload:
+      extractionIR:
+        payload:
+          date: "2026-03-20"
+          time: "20:00"
+          partySize: 4
+        provenanceTrust:
+          date: untrusted
+          time: untrusted
+          partySize: untrusted
+      hydratedIntentIR:
+        payload:
+          date: "2026-03-20"
+          time: "20:00"
+          partySize: 4
+        confirmationRequired: false
+      decision: REFUSE
+
+  - id: nl-date-only-no-time
+    utterance: dá pra reservar pra 2 pessoas dia 15 de março?
+    note: >-
+      Date + party size, NO time — the resolver would list every slot that day
+      for the size (live: exactly-one → book, ≥2 → CLARIFY). Extraction target =
+      {date, partySize}; grounding FE-D31-deferred.
+    expectPayload:
+      extractionIR:
+        payload:
+          date: "2026-03-15"
+          partySize: 2
+        provenanceTrust:
+          date: untrusted
+          partySize: untrusted
+      hydratedIntentIR:
+        payload:
+          date: "2026-03-15"
+          partySize: 2
+        confirmationRequired: false
+      decision: REFUSE
+
+  - id: nl-date-time-colloquial
+    utterance: fecha uma mesa pra 6 no dia 21/03 lá pras 19h30
+    note: >-
+      Colloquial register with a slashed date + informal time ("lá pras 19h30").
+      Extraction target = {date (ISO), time HH:MM, partySize}; grounding FE-D31-deferred.
+    expectPayload:
+      extractionIR:
+        payload:
+          date: "2026-03-21"
+          time: "19:30"
+          partySize: 6
+        provenanceTrust:
+          date: untrusted
+          time: untrusted
+          partySize: untrusted
+      hydratedIntentIR:
+        payload:
+          date: "2026-03-21"
+          time: "19:30"
+          partySize: 6
+        confirmationRequired: false
+      decision: REFUSE
