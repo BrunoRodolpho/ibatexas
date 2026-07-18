@@ -161,6 +161,8 @@ export const CART_CONTENTS = "CART_CONTENTS";
 export const MENU_ITEM_PRICE = "MENU_ITEM_PRICE";
 /** BKL-142 — the PUBLIC per-item menu contents read (first-party description scalar). */
 export const MENU_ITEM_CONTENTS = "MENU_ITEM_CONTENTS";
+/** BKL-142 — the PUBLIC menu-WIDE overview read (deterministic first-party listing scalar). */
+export const MENU_OVERVIEW = "MENU_OVERVIEW";
 
 /**
  * Per-type `validated` (asserting) templates, keyed by claim type. Each is the ONE
@@ -287,6 +289,14 @@ export const VALIDATED_TEMPLATES: Readonly<Record<string, Template>> = {
     claimType: MENU_ITEM_CONTENTS,
     posture: "validated",
     slots: [prop(MENU_ITEM_CONTENTS, "contentsText"), lit(".")],
+  },
+  // BKL-142 — the menu-WIDE overview validated template. ONE proposition slot bound
+  // 1:1 to the C6 `overviewText` (the deterministic first-party listing composed in
+  // menu-item-resolver.ts `composeMenuOverviewText`), never model-authored.
+  [MENU_OVERVIEW]: {
+    claimType: MENU_OVERVIEW,
+    posture: "validated",
+    slots: [prop(MENU_OVERVIEW, "overviewText")],
   },
   // NOTE: ORDER_ESTIMATED_ARRIVAL was REMOVED here (inv.18 validator wiring). It
   // had a `validated` template (a PROPOSITION slot prop(…, "etaMinutes")) but NO

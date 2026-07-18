@@ -137,6 +137,7 @@ describe("BKL-112 — RENDERABLE ⊆ PROPOSABLE: no dangling template", () => {
 // intentionally OUT of TRIAD_SCOPED_TYPES — exactly like STORE_HOURS / STORE_HOURS_FOR_
 // DATE. Any OTHER divergence still trips CI as a decision point.
 const NON_TRIAD_RENDERABLE = [
+  "MENU_OVERVIEW",
   "STORE_HOURS",
   "STORE_HOURS_FOR_DATE",
   "MENU_ITEM_PRICE",

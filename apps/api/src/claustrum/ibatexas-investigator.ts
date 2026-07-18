@@ -40,6 +40,7 @@ import {
 import { resolveQueriedScheduleDate } from "./schedule-date-resolver.js";
 import {
   resolveMenuItem,
+  resolveMenuOverviewText,
   composeMenuPriceText,
   composeMenuContentsText,
 } from "./menu-item-resolver.js";
@@ -193,6 +194,9 @@ const OVERRIDE_FOR_DATE_KEY = (isoDate: string): string =>
 const MENU_ITEM_PRICE_KEY = (productId: string): string => `menu:item_price:${productId}`;
 const MENU_ITEM_CONTENTS_KEY = (productId: string): string =>
   `menu:item_contents:${productId}`;
+// BKL-142 — MENU_OVERVIEW is FIXED-SUBJECT (single-key, like STORE_HOURS): no `:{id}`
+// suffix. The menu-wide overview read is recorded under this bare key.
+const MENU_OVERVIEW_KEY = "menu:overview";
 const ORDER_FULFILLMENT_KEY = (orderId: string): string =>
   `order_fulfillment_stage:${orderId}`;
 const PAYMENT_STATUS_KEY = (orderId: string): string => `payment_status:${orderId}`;
@@ -449,6 +453,31 @@ export function createFirstPartyTurnReads(
             });
           }
         }
+      }
+    }
+
+    // BKL-142 — MENU_OVERVIEW: the menu-WIDE overview ("o que tem no cardápio?").
+    // GATED on a MENU_OVERVIEW_Q span. FIXED subject (no resolveMenuItem — the read is a
+    // wildcard catalog LISTING, not a per-item lookup), keyed by the bare `menu:overview`
+    // key. Public first-party catalog → placed BEFORE the authenticated-customer gate
+    // (answers guests too). Empty/unreadable catalog → resolveMenuOverviewText undefined
+    // → NO evidence → honest UNKNOWN (never a fabricated menu). The `menu:item_unpublished`
+    // W6 falsifier is DELIBERATELY UNREAD (claim-registry.ts) — never pushed here.
+    if (menuSpans.includes("MENU_OVERVIEW_Q")) {
+      const overviewText = await resolveMenuOverviewText(input.cognition.turnId, {
+        channel: input.cognition.perception.channel,
+        sessionId: input.cognition.conversationId,
+        customerId,
+      });
+      if (overviewText !== undefined) {
+        reads.push({
+          key: MENU_OVERVIEW_KEY,
+          source: "catalog.overview",
+          origin: "TRUSTED",
+          originProvenance: "FIRST_PARTY",
+          sourceMode: "live",
+          read: async () => ({ overviewText }),
+        });
       }
     }
 

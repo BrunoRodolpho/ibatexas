@@ -103,6 +103,7 @@ import type { StoreHoursRead, StoreHoursForDateRead } from "./turn-reads.js";
 import { resolveQueriedScheduleDate } from "./schedule-date-resolver.js";
 import {
   resolveMenuItem,
+  resolveMenuOverviewText,
   composeMenuPriceText,
   composeMenuContentsText,
   type ResolvedMenuItem,
@@ -1701,12 +1702,26 @@ export function createIbatexasPlanner(
           }
         }
       }
+      // BKL-142 — MENU_OVERVIEW derivation read (FIXED subject): the SAME menu-wide
+      // `overviewText` the investigator records under `menu:overview`, memoized on
+      // turnId so this REUSES the investigator's ONE wildcard read → byte-equal value
+      // (C6 passes by construction). Empty/unreadable catalog → undefined → C6 ABSTAIN.
+      let menuOverview: { overviewText: string } | undefined;
+      if (menuCandidateTypes.has("MENU_OVERVIEW")) {
+        const overviewText = await resolveMenuOverviewText(state.turnId, {
+          channel: state.perception.channel,
+          sessionId: state.conversationId,
+          customerId: authPrincipal,
+        });
+        if (overviewText !== undefined) menuOverview = { overviewText };
+      }
       const derivedCandidates = deriveCandidateValues(candidates, {
         scheduleSignal,
         storeHours,
         storeHoursForDate,
         menuItemPrice,
         menuItemContents,
+        ...(menuOverview !== undefined ? { menuOverview } : {}),
       });
 
       // POST-planning wall (SDD §C P4 / §J.8): every span gets a disposition; an

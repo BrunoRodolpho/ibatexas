@@ -13,6 +13,7 @@ import {
   formatCentavosBRL,
   composeMenuPriceText,
   composeMenuContentsText,
+  composeMenuOverviewText,
   type ResolvedMenuItem,
 } from "../menu-item-resolver.js";
 
@@ -125,5 +126,102 @@ describe("BKL-142 decomposer — span classification (disjoint from cart/order/a
   it("each menu span requires ONLY its own public claim (no unrelated coupling)", () => {
     expect(REQUIRED_CLAIM_CLOSURE.MENU_ITEM_PRICE_Q).toEqual(["MENU_ITEM_PRICE"]);
     expect(REQUIRED_CLAIM_CLOSURE.MENU_ITEM_CONTENTS_Q).toEqual(["MENU_ITEM_CONTENTS"]);
+  });
+});
+
+// ── BKL-142 — MENU_OVERVIEW (the menu-wide, fixed-subject claim) ─────────────────
+describe("BKL-142 MENU_OVERVIEW registry — PUBLIC, FIXED-subject (like STORE_HOURS)", () => {
+  it("is an in-enum proposable type", () => {
+    expect(CLAIM_REGISTRY).toContain("MENU_OVERVIEW");
+    expect(isRegistryClaimType("MENU_OVERVIEW")).toBe(true);
+  });
+
+  it("is PUBLIC (not_applicable), FIXED-key (NOT perResourceKey), ttl 300_000ms, scalar valueBinding", () => {
+    const spec = REGISTRY_SPECS.MENU_OVERVIEW;
+    expect(spec.kind).toBe("read_claim");
+    expect(spec.customerScoped).toBe(false);
+    // Fixed-subject, unlike the per-item claims: no perResourceKey suffixing.
+    expect((spec as { perResourceKey?: boolean }).perResourceKey).toBeUndefined();
+    expect(spec.requiredEvidence[0]!.key).toBe("menu:overview");
+    expect(spec.requiredEvidence[0]!.ownershipPolicy).toBe("not_applicable");
+    expect(spec.requiredEvidence[0]!.freshnessPolicy).toEqual({ kind: "cacheable", ttl: 300_000 });
+    expect(spec.valueBinding).toEqual({ key: "menu:overview", path: ["overviewText"] });
+    expect(spec.requiredEvidence.map((e) => e.key)).toContain(spec.valueBinding!.key);
+  });
+
+  it("declares falsifierComplete with the DELIBERATELY-UNREAD menu:item_unpublished key (escapes W6; #290/#291 precedent)", () => {
+    const spec = REGISTRY_SPECS.MENU_OVERVIEW;
+    expect(spec.falsifierComplete).toBe(true);
+    expect(spec.falsifiers?.map((f) => f.key)).toEqual(["menu:item_unpublished"]);
+    expect(spec.requiredEvidence.map((e) => e.key)).not.toContain("menu:item_unpublished");
+  });
+
+  it("binds exactly one proposition to overviewText (Inv 6)", () => {
+    const tpl = VALIDATED_TEMPLATES.MENU_OVERVIEW;
+    expect(tpl).toBeDefined();
+    expect(tpl!.posture).toBe("validated");
+    const propSlots = tpl!.slots.filter((s) => (s as { kind?: string }).kind === "PROPOSITION");
+    expect(propSlots).toHaveLength(1);
+    expect((propSlots[0] as { field?: string }).field).toBe("overviewText");
+  });
+});
+
+describe("BKL-142 composeMenuOverviewText — deterministic bounded first-party listing", () => {
+  const listing = [
+    { title: "Farofa", price: 1500, categoryHandle: "acompanhamentos" },
+    { title: "Costela", price: 8900, categoryHandle: "carnes" },
+    { title: "Linguiça", price: 4500, categoryHandle: "carnes" },
+  ];
+
+  it("composes a pt-BR list of first-party titles + centavos prices, deterministically (category then title order)", () => {
+    const text = composeMenuOverviewText(listing);
+    // Sorted by categoryHandle (acompanhamentos < carnes) then title.
+    expect(text).toBe("No nosso cardápio: Farofa — R$ 15,00; Costela — R$ 89,00; Linguiça — R$ 45,00.");
+  });
+
+  it("is order-independent of the input (same set → byte-equal, so investigator + planner never diverge)", () => {
+    const shuffled = [listing[2]!, listing[0]!, listing[1]!];
+    expect(composeMenuOverviewText(shuffled)).toBe(composeMenuOverviewText(listing));
+  });
+
+  it("returns undefined for an empty catalog → honest UNKNOWN, never a fabricated menu", () => {
+    expect(composeMenuOverviewText([])).toBeUndefined();
+  });
+
+  it("bounds a large catalog and honestly notes the remainder", () => {
+    const many = Array.from({ length: 40 }, (_, i) => ({
+      title: `Item ${String(i).padStart(2, "0")}`,
+      price: 1000 + i,
+      categoryHandle: `cat_${i % 8}`,
+    }));
+    const text = composeMenuOverviewText(many)!;
+    expect(text).toMatch(/e mais \d+ itens no cardápio/);
+    // Never leaks allergen/dietary; prices are centavos-formatted.
+    expect(text).toContain("R$ ");
+  });
+});
+
+describe("BKL-142 MENU_OVERVIEW decomposer — whole-menu span, disjoint from per-item", () => {
+  it("classifies a whole-menu question", () => {
+    expect(classifyRequestSpans("o que tem no cardápio?")).toContain("MENU_OVERVIEW_Q");
+    expect(classifyRequestSpans("me mostra o menu")).toContain("MENU_OVERVIEW_Q");
+    expect(classifyRequestSpans("quais os pratos de vocês?")).toContain("MENU_OVERVIEW_Q");
+  });
+
+  it("a whole-menu question does NOT also fire the per-ITEM contents span (disjoint)", () => {
+    expect(classifyRequestSpans("o que tem no cardápio?")).not.toContain("MENU_ITEM_CONTENTS_Q");
+  });
+
+  it("a per-item contents question does NOT fire the overview span", () => {
+    expect(classifyRequestSpans("o que vem no combo?")).not.toContain("MENU_OVERVIEW_Q");
+  });
+
+  it("does NOT sweep in cart/order/allergen questions", () => {
+    expect(classifyRequestSpans("o que tem no meu carrinho?")).not.toContain("MENU_OVERVIEW_Q");
+    expect(classifyRequestSpans("o cardápio tem algo com glúten?")).not.toContain("MENU_OVERVIEW_Q");
+  });
+
+  it("the overview span requires ONLY MENU_OVERVIEW", () => {
+    expect(REQUIRED_CLAIM_CLOSURE.MENU_OVERVIEW_Q).toEqual(["MENU_OVERVIEW"]);
   });
 });

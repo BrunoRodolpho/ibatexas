@@ -129,6 +129,56 @@ export function composeMenuContentsText(item: ResolvedMenuItem): string | undefi
   return `${item.title}: ${desc}`;
 }
 
+// ── MENU_OVERVIEW — the menu-wide catalog listing (fixed subject) ────────────────
+// A DISTINCT read path from the per-item resolver above: a wildcard catalog LISTING
+// (the SAME `searchProducts({ query: "*" })` the catalog route uses — catalog.ts),
+// not an NL item lookup. Composed into ONE pre-composed pt-BR scalar (`overviewText`)
+// bound 1:1 to the MENU_OVERVIEW claim's C6 valueBinding. PUBLIC + FIXED-SUBJECT (like
+// STORE_HOURS — no per-item resolver / no `perResourceKey`). Bounds keep a large
+// catalog from blowing the rendered scalar / model context; the ordering is
+// DETERMINISTIC (sorted by category then title, NOT the search ranking) so the
+// investigator's recorded value and the claim planner's derived value are byte-equal.
+
+/** Max items surfaced PER category (breadth), and the overall cap. */
+const MENU_OVERVIEW_PER_CATEGORY = 4;
+const MENU_OVERVIEW_MAX_ITEMS = 20;
+/** How many published items to pull from the wildcard listing before bounding. */
+const MENU_OVERVIEW_WILDCARD_LIMIT = 60;
+
+/** MENU_OVERVIEW scalar: a bounded, DETERMINISTIC pt-BR list of first-party catalog
+ *  titles + centavos prices, top-N per category. `undefined` for an empty catalog →
+ *  the caller records NO evidence → honest UNKNOWN (never a fabricated menu). NO
+ *  allergen/dietary info — first-party titles + prices only. Pure. */
+export function composeMenuOverviewText(
+  items: ReadonlyArray<Pick<ResolvedMenuItem, "title" | "price" | "categoryHandle">>,
+): string | undefined {
+  if (items.length === 0) return undefined;
+  // Deterministic order — never the (non-deterministic) search ranking, so the two
+  // call sites (investigator + planner) compose the IDENTICAL string.
+  const sorted = [...items].sort((a, b) => {
+    const ca = a.categoryHandle ?? "";
+    const cb = b.categoryHandle ?? "";
+    if (ca !== cb) return ca < cb ? -1 : 1;
+    return a.title < b.title ? -1 : a.title > b.title ? 1 : 0;
+  });
+  // Top-N per category for breadth, capped at the overall bound.
+  const perCat = new Map<string, number>();
+  const picked: Array<{ title: string; price: number }> = [];
+  for (const it of sorted) {
+    if (picked.length >= MENU_OVERVIEW_MAX_ITEMS) break;
+    const cat = it.categoryHandle ?? "";
+    const n = perCat.get(cat) ?? 0;
+    if (n >= MENU_OVERVIEW_PER_CATEGORY) continue;
+    perCat.set(cat, n + 1);
+    picked.push({ title: it.title, price: it.price });
+  }
+  if (picked.length === 0) return undefined;
+  const parts = picked.map((p) => `${p.title} — ${formatCentavosBRL(p.price)}`);
+  const remaining = items.length - picked.length;
+  const more = remaining > 0 ? ` (e mais ${remaining} ${remaining === 1 ? "item" : "itens"} no cardápio)` : "";
+  return `No nosso cardápio: ${parts.join("; ")}${more}.`;
+}
+
 // ── Per-turn memo ───────────────────────────────────────────────────────────────
 // Keyed `${turnId}::${normalizedText}` so the claim planner + investigator resolve
 // IDENTICALLY within a turn (the same-resolver-same-text invariant) and entries never
@@ -209,5 +259,70 @@ export function resolveMenuItem(
   if (cached !== undefined) return cached;
   const pending = resolveUncached(itemText, ctx);
   memoSet(key, pending);
+  return pending;
+}
+
+// ── MENU_OVERVIEW per-turn memo + read ──────────────────────────────────────────
+// FIXED subject (no per-item text) ⇒ the memo is keyed on turnId ALONE: ONE wildcard
+// catalog read per turn, shared by the investigator (records evidence) and the claim
+// planner (derives the candidate value), so their `overviewText` is byte-equal by
+// construction. Bounded FIFO; turn-scoped (never leaks across turns).
+
+const MENU_OVERVIEW_MEMO_MAX = 256;
+const overviewMemo = new Map<string, Promise<string | undefined>>();
+
+function overviewMemoSet(key: string, value: Promise<string | undefined>): void {
+  overviewMemo.set(key, value);
+  if (overviewMemo.size > MENU_OVERVIEW_MEMO_MAX) {
+    const oldest = overviewMemo.keys().next().value;
+    if (oldest !== undefined) overviewMemo.delete(oldest);
+  }
+}
+
+/** Test-only: clear the per-turn overview memo between cases. */
+export function __resetMenuOverviewMemoForTest(): void {
+  overviewMemo.clear();
+}
+
+async function resolveOverviewUncached(ctx: MenuItemResolveContext): Promise<string | undefined> {
+  let products: ReadonlyArray<ProductDTO> = [];
+  try {
+    // The SAME wildcard path the catalog route uses (query "*" ⇒ keyword-only, no
+    // embedding — FE-D17-safe on a key-less box). searchProducts already filters to
+    // published + in-stock. A read error → MISS → honest UNKNOWN (fail-closed).
+    const out = await searchProducts(
+      { query: "*", limit: MENU_OVERVIEW_WILDCARD_LIMIT },
+      {
+        channel: ctx.channel === "whatsapp" ? Channel.WhatsApp : Channel.Web,
+        sessionId: ctx.sessionId ?? ctx.customerId,
+        ...(isGuestCustomerId(ctx.customerId) ? {} : { userId: ctx.customerId }),
+        userType: "customer",
+      },
+    );
+    products = out.products ?? [];
+  } catch {
+    return undefined;
+  }
+  return composeMenuOverviewText(
+    products.map((p) => ({ title: p.title, price: p.price, categoryHandle: p.categoryHandle })),
+  );
+}
+
+/**
+ * Resolve the menu-wide overview scalar for the given turn, or `undefined` when the
+ * catalog is empty / unreadable (honest no-answer → UNKNOWN, never a fabricated menu).
+ *
+ * `turnId` scopes the memo: the investigator and the claim planner MUST pass the SAME
+ * turnId (`cognition.turnId`) so they compose the IDENTICAL `overviewText` — the
+ * fixed-subject twin of `resolveMenuItem`'s same-resolver-same-text invariant.
+ */
+export function resolveMenuOverviewText(
+  turnId: string,
+  ctx: MenuItemResolveContext,
+): Promise<string | undefined> {
+  const cached = overviewMemo.get(turnId);
+  if (cached !== undefined) return cached;
+  const pending = resolveOverviewUncached(ctx);
+  overviewMemoSet(turnId, pending);
   return pending;
 }

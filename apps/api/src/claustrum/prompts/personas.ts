@@ -77,6 +77,7 @@ export const CLAIM_PLANNER_PERSONA = [
   "- alérgenos/ingredientes de um item => MENU_ITEM_ALLERGENS",
   "- quanto custa / qual o preço de um item do cardápio, e o `subject` é o item => MENU_ITEM_PRICE",
   "- o que vem/acompanha um item, do que é feito, composição do prato => MENU_ITEM_CONTENTS",
+  "- o que tem no cardápio / me mostra o menu / quais os pratos (o cardápio INTEIRO, não um item) => MENU_OVERVIEW",
   "- em que etapa está o pedido => ORDER_FULFILLMENT_STAGE",
   "- situação do pagamento de um pedido => PAYMENT_STATUS",
   "- qual é/como está a minha reserva, situação da reserva => RESERVATION_STATUS",
