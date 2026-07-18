@@ -119,6 +119,61 @@ describe("reservationsPolicyBundle — slot capacity for reservation.create", ()
   })
 })
 
+// ── BKL-174 — ambiguous NL-grounded slot → disambiguation CLARIFY ────────
+
+describe("reservationsPolicyBundle — BKL-174 ambiguous-slot CLARIFY", () => {
+  it("REFUSE reservation.create voicing the candidate times when the slot is ambiguous", () => {
+    const decision = adjudicate(
+      env("reservation.create", {
+        partySize: 4,
+        slotAmbiguousCount: 3,
+        slotAmbiguousTimes: ["18:30", "20:00", "21:30"],
+      }),
+      // Ambiguous grounding leaves the slot UNSTAMPED → ctx.slot is null; WITHOUT
+      // BKL-174 the bundle REFUSEs slot.not_found. The new guard fires FIRST.
+      baseState({ slot: null }),
+      reservationsPolicyBundle,
+    )
+    expect(decision.kind).toBe("REFUSE")
+    if (decision.kind !== "REFUSE") return
+    expect(decision.refusal.code).toBe("reservation.slot.ambiguous")
+    // Names the first-party candidate times, pt-BR formatted (on-the-hour → "20h").
+    expect(decision.refusal.userFacing).toContain("18h30")
+    expect(decision.refusal.userFacing).toContain("20h")
+    expect(decision.refusal.userFacing).toContain("21h30")
+  })
+
+  it("REFUSE reservation.waitlist.join voicing the candidate times (kind coverage)", () => {
+    const decision = adjudicate(
+      env("reservation.waitlist.join", {
+        partySize: 2,
+        slotAmbiguousCount: 2,
+        slotAmbiguousTimes: ["19:00", "20:30"],
+      }),
+      baseState({ slot: null }),
+      reservationsPolicyBundle,
+    )
+    expect(decision.kind).toBe("REFUSE")
+    if (decision.kind !== "REFUSE") return
+    expect(decision.refusal.code).toBe("reservation.slot.ambiguous")
+    expect(decision.refusal.userFacing).toContain("19h")
+    expect(decision.refusal.userFacing).toContain("20h30")
+  })
+
+  // NON-VACUOUS: without the ambiguity marker, a missing slot REFUSEs slot.not_found
+  // (the guard is scoped to the marker; dropping it from stateGuards restores this).
+  it("does NOT fire without the ambiguity marker (missing slot → slot.not_found)", () => {
+    const decision = adjudicate(
+      env("reservation.create", { partySize: 4 }),
+      baseState({ slot: null }),
+      reservationsPolicyBundle,
+    )
+    expect(decision.kind).toBe("REFUSE")
+    if (decision.kind !== "REFUSE") return
+    expect(decision.refusal.code).toBe("reservation.slot.not_found")
+  })
+})
+
 // ── REQUEST_CONFIRMATION on last-minute cancel ──────────────────────────
 
 describe("reservationsPolicyBundle — REQUEST_CONFIRMATION on last-minute cancel", () => {

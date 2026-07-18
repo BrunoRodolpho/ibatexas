@@ -988,9 +988,10 @@ async function resolveSlotPartySize(
  * UTC-calendar-date discipline FE-D11 fixed. Only when the caller did NOT already pick
  * a listed slot:
  *   - exactly one available slot → stamp the slot key (authoritative);
- *   - ≥2 → stamp `slotAmbiguousCount` (mirrors the amend `itemAmbiguousCount` marker);
- *     the slot stays UNSTAMPED so the reservation guard REFUSEs, and the count lets a
- *     CLARIFY consumer name the options;
+ *   - ≥2 → stamp `slotAmbiguousCount` + `slotAmbiguousTimes` (the first-party candidate
+ *     `startTime`s; mirrors the amend `itemAmbiguousCount` marker); the slot stays
+ *     UNSTAMPED so the reservation guard REFUSEs, and the pack-side CLARIFY guard
+ *     (BKL-174) names the candidate times instead of a bare slot-missing refuse;
  *   - 0 → payload unchanged (unstamped slot → the existing honest no-availability
  *     refuse). Fail-safe: a lookup error degrades to no resolution, never throws.
  * The date must be ISO (YYYY-MM-DD) — the shape check_availability's `date` field
@@ -1029,7 +1030,16 @@ export async function resolveReservationSlot(
     return { ...payload, [slotKey]: slots[0]!.timeSlotId };
   }
   if (slots.length >= 2) {
-    return { ...payload, slotAmbiguousCount: slots.length };
+    // BKL-174 — carry the first-party candidate TIMES (the availability read's own
+    // `startTime`s, never model-authored) alongside the count so the pack-side
+    // CLARIFY guard can NAME the options ("qual horário: 18h30, 20h…?") instead of a
+    // bare slot-missing refuse. The slot key stays UNSTAMPED → the slot guard still
+    // fails closed.
+    return {
+      ...payload,
+      slotAmbiguousCount: slots.length,
+      slotAmbiguousTimes: slots.map((s) => s.startTime),
+    };
   }
   return payload; // 0 slots → honest no-availability refuse (slot unstamped)
 }

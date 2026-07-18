@@ -2253,11 +2253,11 @@ describe("resolveReservationSlot — FE-D27 NL date/time → timeSlotId", () => 
     expect(out.slotAmbiguousCount).toBeUndefined();
   });
 
-  it("create: ≥2 slots → slotAmbiguousCount marker, slot stays UNSTAMPED (CLARIFY)", async () => {
+  it("create: ≥2 slots → slotAmbiguousCount + first-party candidate times, slot UNSTAMPED (CLARIFY)", async () => {
     reservationCheckAvailability = async () => [
-      { timeSlotId: "a" },
-      { timeSlotId: "b" },
-      { timeSlotId: "c" },
+      { timeSlotId: "a", startTime: "18:30" },
+      { timeSlotId: "b", startTime: "20:00" },
+      { timeSlotId: "c", startTime: "21:30" },
     ];
     const out = await resolveReservationSlot(
       "reservation.create",
@@ -2266,6 +2266,9 @@ describe("resolveReservationSlot — FE-D27 NL date/time → timeSlotId", () => 
     );
     expect(out.timeSlotId).toBeUndefined();
     expect(out.slotAmbiguousCount).toBe(3);
+    // BKL-174 — the availability read's own `startTime`s ride along so the pack
+    // CLARIFY guard can NAME the options (first-party, never model-authored).
+    expect(out.slotAmbiguousTimes).toEqual(["18:30", "20:00", "21:30"]);
   });
 
   it("create: an already-chosen timeSlotId is NEVER overridden (the listed-slot path)", async () => {
