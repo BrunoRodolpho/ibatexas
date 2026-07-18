@@ -62,12 +62,15 @@ describe("graph views — all four committed T2-4 fixtures", () => {
   it("renders the capability roster flags visually distinct", () => {
     const doc = readJson<GraphDocument>(GRAPH_FIXTURES.capability)
     const { container } = render(<GraphView doc={doc} />)
-    // The committed graph carries the P0-7 unadvertised fact
-    // (order.review.submit) — it must surface as a flagged node.
+    // FE-D28 (PR #305) advertised order.review.submit — the last
+    // registered-but-unadvertised kind — so the committed graph's
+    // unadvertised set may legitimately be EMPTY now. The invariant is
+    // flag-count EQUALITY with the meta fact, not non-emptiness (the
+    // visually-distinct rendering itself stays pinned by the journeys
+    // blocked/gap test below, whose classes are non-empty).
     const unadvertised = Array.isArray(doc.meta["unadvertised"])
       ? doc.meta["unadvertised"]
       : []
-    expect(unadvertised.length).toBeGreaterThan(0)
     expect(
       container.querySelectorAll(".react-flow__node.qa-flag--unadvertised").length,
     ).toBe(unadvertised.length)
