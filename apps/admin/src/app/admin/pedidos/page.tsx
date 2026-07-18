@@ -6,7 +6,7 @@ import { useSearchParams } from 'next/navigation'
 import { AdminPedidosPage, AdminOrderDetailDrawer, useToast } from '@ibatexas/ui'
 import type { OrderSummary } from '@ibatexas/types'
 import type { AdminOrderDetail } from '@ibatexas/ui'
-import { useAdminOrdersPage, useUpdateOrderStatus, useAdminOrderDetail } from '@/domains/admin/admin.hooks'
+import { useAdminOrdersPage, useUpdateOrderStatus, useAdminOrderDetail, useStaffRole } from '@/domains/admin/admin.hooks'
 import { apiFetch } from '@/lib/api'
 import {
   mapOrderNotes,
@@ -21,31 +21,36 @@ import {
   type PendingConfirmation,
 } from '@/components/molecules/PendingConfirmationsPanel'
 
-// OPS-071 — two-phase destructive admin actions. Each triggers a collect →
-// (optional) confirm flow: step 1 (`POST path`) either executes directly or
-// parks a receipt and returns 202 `{ confirmationId, prompt }`; step 2
-// (`POST path/confirm`) must be issued by a different operator.
-type TwoPhaseAction = 'force-cancel' | 'refund' | 'waive'
+// OPS-071 / OPS-011 — two-phase destructive admin actions. Each triggers a
+// collect → (optional) confirm flow: step 1 (`<method> path`) either executes
+// directly or parks a receipt and returns 202 `{ confirmationId, prompt }`;
+// step 2 (`POST path/confirm`) must be issued by a different operator.
+// Most step-1 calls are POST; force-status's step 1 is PATCH (`method`).
+type TwoPhaseAction = 'force-cancel' | 'refund' | 'waive' | 'force-status'
 
 const ACTION_META: Record<TwoPhaseAction, {
   title: string
   path: (orderId: string) => string
+  method: 'POST' | 'PATCH'
   reasonRequired: boolean
   withAmount: boolean
+  withStatus: boolean
 }> = {
-  'force-cancel': { title: 'Forçar cancelamento', path: (id) => `/api/admin/orders/${id}/force-cancel`, reasonRequired: false, withAmount: false },
-  'refund': { title: 'Reembolsar pagamento', path: (id) => `/api/admin/orders/${id}/payment/refund`, reasonRequired: false, withAmount: true },
-  'waive': { title: 'Isentar pagamento', path: (id) => `/api/admin/orders/${id}/waive`, reasonRequired: true, withAmount: false },
+  'force-cancel': { title: 'Forçar cancelamento', path: (id) => `/api/admin/orders/${id}/force-cancel`, method: 'POST', reasonRequired: false, withAmount: false, withStatus: false },
+  'refund': { title: 'Reembolsar pagamento', path: (id) => `/api/admin/orders/${id}/payment/refund`, method: 'POST', reasonRequired: false, withAmount: true, withStatus: false },
+  'waive': { title: 'Isentar pagamento', path: (id) => `/api/admin/orders/${id}/waive`, method: 'POST', reasonRequired: true, withAmount: false, withStatus: false },
+  // OPS-011 — OWNER-only forced payment-status override. Step 1 is PATCH and
+  // carries a required target status + reason; step 2 confirms on the same path.
+  'force-status': { title: 'Forçar status de pagamento', path: (id) => `/api/admin/orders/${id}/payment/status`, method: 'PATCH', reasonRequired: true, withAmount: false, withStatus: true },
 }
 
-// Step-2 confirm path per receipt route key. The three dialog-driven actions
-// reuse ACTION_META; force-status has no collect dialog on this page but its
-// parked receipts must still be confirmable here.
+// Step-2 confirm path per receipt route key. All four actions reuse ACTION_META
+// — force-status now has its own OWNER-gated collect trigger (OPS-011) too.
 const CONFIRM_PATH_BY_ROUTE: Record<string, (orderId: string) => string> = {
   'force-cancel': ACTION_META['force-cancel'].path,
   'refund': ACTION_META['refund'].path,
   'waive': ACTION_META['waive'].path,
-  'force-status': (id) => `/api/admin/orders/${id}/payment/status`,
+  'force-status': ACTION_META['force-status'].path,
 }
 
 // Step-2 POST shared by the dialog flow and the pending-confirmations panel.
@@ -76,6 +81,10 @@ export default function PedidosPage(): React.JSX.Element {
     useAdminOrdersPage(customerId)
 
   const { updateStatus, updating } = useUpdateOrderStatus(refetch)
+
+  // OPS-011 — the forced payment-status override is OWNER-only. The server
+  // enforces it (403 for non-OWNER); this client gate just hides the trigger.
+  const staffRole = useStaffRole()
 
   // Drawer state
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null)
@@ -227,9 +236,10 @@ export default function PedidosPage(): React.JSX.Element {
     }
   }, [selectedOrderId, refetchDetail, addToast])
 
-  // Step 1 — POST the destructive action. A 202 receipt (confirmationId) means
-  // it was PARKED pending a second operator; anything else means it executed.
-  const submitCollectAction = useCallback(async (reason: string, amountReais: string) => {
+  // Step 1 — fire the destructive action (POST, or PATCH for force-status). A
+  // 202 receipt (confirmationId) means it was PARKED pending a second operator;
+  // anything else means it executed.
+  const submitCollectAction = useCallback(async (reason: string, amountReais: string, status: string) => {
     if (!pendingAction) return
     const payload: Record<string, unknown> = {}
     if (reason) payload.reason = reason
@@ -243,13 +253,22 @@ export default function PedidosPage(): React.JSX.Element {
       }
       payload.amountInCentavos = cents
     }
+    if (pendingAction.kind === 'force-status') {
+      // The route requires a target status; the dialog blocks submit until one
+      // is picked, so an empty value here would only ever be a wiring bug.
+      if (!status) {
+        addToast({ type: 'error', message: 'Selecione o novo status do pagamento.' })
+        return
+      }
+      payload.status = status
+    }
     setActionLoading(true)
     try {
       // Refund step 1 requires an Idempotency-Key header (400 otherwise).
       const headers: Record<string, string> =
         pendingAction.kind === 'refund' ? { 'Idempotency-Key': crypto.randomUUID() } : {}
       const result = (await apiFetch(pendingAction.path, {
-        method: 'POST',
+        method: ACTION_META[pendingAction.kind].method,
         headers,
         body: JSON.stringify(payload),
       })) as { confirmationId?: string; prompt?: string }
@@ -355,6 +374,22 @@ export default function PedidosPage(): React.JSX.Element {
         notes={notes}
       />
 
+      {/* OPS-011 — OWNER-only "Forçar status de pagamento" trigger. The drawer's
+          hardcoded action list lives in packages/ui, so until a later PR moves
+          this into it, the trigger floats over the open drawer. Server enforces
+          the OWNER gate; this only decides whether to show the button. */}
+      {staffRole === 'OWNER' && selectedOrderId !== null && (
+        <div className="fixed bottom-4 right-4 z-[60]">
+          <button
+            type="button"
+            className="rounded-sm bg-charcoal-700 px-4 py-2 text-sm font-medium text-white shadow-lg transition-colors hover:bg-charcoal-600"
+            onClick={() => void handleAdminAction(selectedOrderId, 'force-status')}
+          >
+            Forçar status de pagamento
+          </button>
+        </div>
+      )}
+
       <AdminActionDialog
         key={dialogKey}
         open={pendingAction !== null}
@@ -362,6 +397,7 @@ export default function PedidosPage(): React.JSX.Element {
         title={pendingAction ? ACTION_META[pendingAction.kind].title : ''}
         reasonRequired={pendingAction ? ACTION_META[pendingAction.kind].reasonRequired : false}
         withAmount={pendingAction ? ACTION_META[pendingAction.kind].withAmount : false}
+        withStatus={pendingAction ? ACTION_META[pendingAction.kind].withStatus : false}
         prompt={pendingAction?.prompt ?? ''}
         loading={actionLoading}
         onSubmitCollect={submitCollectAction}
