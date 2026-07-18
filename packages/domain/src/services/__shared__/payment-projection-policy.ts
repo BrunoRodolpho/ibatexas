@@ -43,7 +43,10 @@ import {
   type PolicyBundle,
 } from "@adjudicate/core/kernel"
 import { createSystemTaintPolicy } from "@adjudicate/primitives"
-import { isAtOrAboveMoneyBand } from "@ibatexas/types"
+import {
+  classifyRefundMagnitudeBand,
+  MONEY_BAND_1000_CENTAVOS,
+} from "@ibatexas/types"
 
 // ── Intent kinds + payloads ────────────────────────────────────────────────
 
@@ -202,7 +205,14 @@ export function getRefundConfirmThresholdCentavos(): number {
 }
 
 export function getRefundEscalateThresholdCentavos(): number {
-  return readEnvCentavos("REFUND_ESCALATE_THRESHOLD_CENTAVOS", 100_000)
+  // FE-D07: fallback single-sourced from `@ibatexas/types`'
+  // `MONEY_BAND_1000_CENTAVOS` (=== 100_000), the same value the
+  // `@ibatexas/pack-payments` getter reads, so the escalate boundary can't
+  // drift by channel. Env override still wins when set.
+  return readEnvCentavos(
+    "REFUND_ESCALATE_THRESHOLD_CENTAVOS",
+    MONEY_BAND_1000_CENTAVOS,
+  )
 }
 
 /**
@@ -406,13 +416,19 @@ const refundMagnitudeGuard: PaymentGuard = (envelope, state) => {
   }
 
   const escalateThreshold = getRefundEscalateThresholdCentavos()
-  // FE-T03/D2: flipped from strict `>` to `isAtOrAboveMoneyBand` (`>=`),
-  // matching @ibatexas/pack-payments' refund-escalate ladder so an exact
-  // R$1000 refund ESCALATEs identically whether adjudicated via this
-  // domain-internal bundle (admin-HTTP route) or the pack-payments bundle
-  // (ops/WhatsApp route). The two bundles' guard bodies remain
-  // byte-parallel duplicates — see FE-D07 for the tracked consolidation.
-  if (isAtOrAboveMoneyBand(payload.refundAmountCentavos, escalateThreshold)) {
+  const confirmThreshold = getRefundConfirmThresholdCentavos()
+  // FE-D07: the EXECUTE / CONFIRM / ESCALATE band mapping is single-sourced
+  // in `@ibatexas/types.classifyRefundMagnitudeBand`, shared byte-for-byte
+  // with the ops/WhatsApp `@ibatexas/pack-payments` bundle so this admin-HTTP
+  // route can never fork the money bands. FE-T03/D2 lives inside the helper:
+  // escalate uses `>=`, so an exact R$1000 refund ESCALATEs identically on
+  // both channels (pinned by apps/api's refund-band-channel-parity.test.ts).
+  const band = classifyRefundMagnitudeBand(
+    payload.refundAmountCentavos,
+    confirmThreshold,
+    escalateThreshold,
+  )
+  if (band === "ESCALATE") {
     return decisionEscalate(
       "human",
       "refund_above_escalate_threshold",
@@ -426,8 +442,7 @@ const refundMagnitudeGuard: PaymentGuard = (envelope, state) => {
     )
   }
 
-  const confirmThreshold = getRefundConfirmThresholdCentavos()
-  if (payload.refundAmountCentavos > confirmThreshold) {
+  if (band === "CONFIRM") {
     const reais = (payload.refundAmountCentavos / 100)
       .toFixed(2)
       .replace(".", ",")
