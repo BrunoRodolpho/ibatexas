@@ -18,3 +18,12 @@ export {
   ReadToolCorpusLoadError,
   loadReadToolCorpus,
 } from "./load.js"
+
+// FE-D22 — the pure scoring adapter + the SEPARATE read-tools baseline/waivers paths.
+export {
+  DEFAULT_READ_TOOL_ACCURACY_BASELINE_PATH,
+  DEFAULT_READ_TOOL_ACCURACY_WAIVERS_PATH,
+  deepEqualArgs,
+  scoreReadToolCase,
+  type EmittedReadToolCall,
+} from "./score.js"
