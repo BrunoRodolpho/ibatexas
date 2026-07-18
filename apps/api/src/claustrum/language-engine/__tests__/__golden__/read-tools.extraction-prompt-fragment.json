@@ -26,7 +26,7 @@
         "properties": {
           "orderReference": {
             "type": "string",
-            "description": "Número do pedido, SOMENTE se o cliente mencionar um explicitamente (ex.: \"1234\", \"#1234\"). Deixe de fora se não for mencionado — resolve automaticamente para o pedido mais recente."
+            "description": "Referência do pedido, SOMENTE se o cliente mencionar uma explicitamente: o número (ex.: \"1234\", \"#1234\") OU uma data relativa (ex.: \"de ontem\", \"de terça\"). Deixe de fora se não for mencionada — resolve automaticamente para o pedido ativo do cliente."
           }
         },
         "additionalProperties": false
@@ -93,7 +93,7 @@
         "properties": {
           "orderReference": {
             "type": "string",
-            "description": "Número do pedido, SOMENTE se o cliente mencionar um explicitamente (ex.: \"1234\", \"#1234\"). Deixe de fora se não for mencionado — resolve automaticamente para o pedido mais recente."
+            "description": "Referência do pedido, SOMENTE se o cliente mencionar uma explicitamente: o número (ex.: \"1234\", \"#1234\") OU uma data relativa (ex.: \"de ontem\", \"de terça\"). Deixe de fora se não for mencionada — resolve automaticamente para o pedido ativo do cliente."
           }
         },
         "additionalProperties": false

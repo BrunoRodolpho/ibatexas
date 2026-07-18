@@ -350,7 +350,7 @@ export interface TriadReadBackend {
  * of). `delivered` / `canceled` are TERMINAL and excluded. Mirrors the
  * `OrderFulfillmentStatus` enum (packages/domain/prisma/schema.prisma).
  */
-const ACTIVE_FULFILLMENT_STAGES: ReadonlySet<string> = new Set<string>([
+export const ACTIVE_FULFILLMENT_STAGES: ReadonlySet<string> = new Set<string>([
   "pending",
   "confirmed",
   "preparing",

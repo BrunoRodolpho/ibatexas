@@ -85,8 +85,13 @@ vi.mock("@ibatexas/domain", () => ({
 }));
 
 // Import AFTER mocks (vitest hoists vi.mock).
-const { resolveAndAssemble, sessionTokenKey, resolveCustomerOrderReference, isAllergenMentionUtterance } =
-  await import("../resolve-and-assemble.js");
+const {
+  resolveAndAssemble,
+  sessionTokenKey,
+  resolveCustomerOrderReference,
+  parseRelativeOrderDate,
+  isAllergenMentionUtterance,
+} = await import("../resolve-and-assemble.js");
 
 const BUDGET = 100_000;
 const f4Guard = createTokenBudgetGuard<string, unknown, unknown>({
@@ -1717,24 +1722,27 @@ describe("resolve-and-assemble — agent-namespace token read (T3-4)", () => {
   });
 });
 
-// FE-T13 — resolveCustomerOrderReference: the customer-plane read executors'
-// (check_order_status/get_payment_status) reference-resolution helper. An
-// explicit display-number reference wins (IDOR-checked against the caller)
-// else falls through to resolveOrderId's own "most recent order" auto-resolve.
-describe("resolveCustomerOrderReference — FE-T13 customer-plane displayId reference resolution", () => {
-  it("no reference given → falls through to auto-resolve (most-recent order)", async () => {
-    orderListByCustomer = async () => ({ orders: [{ id: "ord_recent" }], count: 1 });
-    const result = await resolveCustomerOrderReference(undefined, "c1");
-    expect(result).toEqual({ orderId: "ord_recent", autoResolved: true, referenceMatched: false });
-  });
+// resolveCustomerOrderReference: the customer-plane read executors'
+// (check_order_status/get_payment_status) reference-resolution helper.
+//   FE-T13 — an explicit display-number reference wins (IDOR-checked).
+//   BKL-140 — the id-less path is ACTIVE-order-aware: one active order → resolve;
+//             ≥2 active → ambiguous (disambiguate, never guess); 0 active but orders
+//             exist → most-recent (honest); no orders → null.
+//   FE-D24 — a relative-date reference filters the caller's OWN orders by day.
+// Active fulfillment stages: pending/confirmed/preparing/ready/in_delivery.
+const ACTIVE = "preparing"; // an active (non-terminal) fulfillment stage
+const TERMINAL = "delivered"; // a terminal stage (never "active")
+function ord(
+  id: string,
+  displayId: number,
+  fulfillmentStatus: string,
+  medusaCreatedAt = new Date("2026-07-10T12:00:00Z"),
+) {
+  return { id, displayId, fulfillmentStatus, medusaCreatedAt };
+}
 
-  it("a reference that doesn't parse as a display number → falls through to auto-resolve", async () => {
-    orderListByCustomer = async () => ({ orders: [{ id: "ord_recent" }], count: 1 });
-    const result = await resolveCustomerOrderReference("de ontem", "c1");
-    expect(result).toEqual({ orderId: "ord_recent", autoResolved: true, referenceMatched: false });
-  });
-
-  it("a display-number reference matching an OWNED order → resolves it, IDOR-checked, no auto-resolve fallback", async () => {
+describe("resolveCustomerOrderReference — displayId reference (FE-T13)", () => {
+  it("a display-number reference matching an OWNED order → resolves it, IDOR-checked", async () => {
     let calls = 0;
     orderFindByDisplayId = async () => {
       calls++;
@@ -1743,39 +1751,149 @@ describe("resolveCustomerOrderReference — FE-T13 customer-plane displayId refe
         { id: "ord_1234", customerId: "c1" },
       ];
     };
-    orderListByCustomer = async () => ({ orders: [{ id: "ord_recent" }], count: 1 });
+    orderListByCustomer = async () => ({ orders: [ord("ord_recent", 9, ACTIVE)], count: 1 });
     const result = await resolveCustomerOrderReference("1234", "c1");
-    expect(result).toEqual({ orderId: "ord_1234", autoResolved: false, referenceMatched: true });
+    expect(result).toMatchObject({ orderId: "ord_1234", referenceMatched: true, ambiguous: false });
     expect(calls).toBe(1);
   });
 
-  it("a display-number reference matching ONLY another customer's order → IDOR-safe fallback to auto-resolve, NEVER the foreign order", async () => {
+  it("a display-number matching ONLY another customer's order → IDOR-safe fallback, NEVER the foreign order", async () => {
     orderFindByDisplayId = async () => [{ id: "ord_foreign", customerId: "victim" }];
-    orderListByCustomer = async () => ({ orders: [{ id: "ord_recent" }], count: 1 });
+    orderListByCustomer = async () => ({ orders: [ord("ord_recent", 9, ACTIVE)], count: 1 });
     const result = await resolveCustomerOrderReference("1234", "c1");
     expect(result.orderId).toBe("ord_recent");
     expect(result.referenceMatched).toBe(false);
   });
 
-  it("a #-prefixed display-number reference parses the same as a bare number", async () => {
+  it("a #-prefixed display-number parses the same as a bare number", async () => {
     orderFindByDisplayId = async () => [{ id: "ord_1234", customerId: "c1" }];
     const result = await resolveCustomerOrderReference("#1234", "c1");
-    expect(result).toEqual({ orderId: "ord_1234", autoResolved: false, referenceMatched: true });
+    expect(result).toMatchObject({ orderId: "ord_1234", referenceMatched: true });
   });
 
-  it("a displayId lookup that throws degrades to auto-resolve (fail-safe, never propagates)", async () => {
+  it("a displayId lookup that throws degrades to the id-less fallback (fail-safe)", async () => {
     orderFindByDisplayId = async () => {
       throw new Error("db down");
     };
-    orderListByCustomer = async () => ({ orders: [{ id: "ord_recent" }], count: 1 });
+    orderListByCustomer = async () => ({ orders: [ord("ord_recent", 9, ACTIVE)], count: 1 });
     const result = await resolveCustomerOrderReference("1234", "c1");
     expect(result.orderId).toBe("ord_recent");
   });
+});
 
-  it("no reference AND no order to auto-resolve → orderId: null", async () => {
+describe("resolveCustomerOrderReference — BKL-140 id-less active-order resolution", () => {
+  it("exactly ONE active order → resolves it (autoResolved)", async () => {
+    orderListByCustomer = async () => ({
+      orders: [ord("ord_active", 10, ACTIVE), ord("ord_old", 8, TERMINAL)],
+      count: 2,
+    });
+    const result = await resolveCustomerOrderReference(undefined, "c1");
+    expect(result).toMatchObject({
+      orderId: "ord_active",
+      autoResolved: true,
+      ambiguous: false,
+      referenceMatched: false,
+    });
+  });
+
+  it("TWO active orders → ambiguous, no orderId, candidates carry the display numbers", async () => {
+    orderListByCustomer = async () => ({
+      orders: [ord("ord_a", 11, ACTIVE), ord("ord_b", 12, ACTIVE), ord("ord_old", 5, TERMINAL)],
+      count: 3,
+    });
+    const result = await resolveCustomerOrderReference(undefined, "c1");
+    expect(result.orderId).toBeNull();
+    expect(result.ambiguous).toBe(true);
+    expect(result.candidates).toEqual([
+      { orderId: "ord_a", displayId: 11 },
+      { orderId: "ord_b", displayId: 12 },
+    ]);
+  });
+
+  it("ZERO orders → honest no-order result (orderId null, NOT ambiguous)", async () => {
     orderListByCustomer = async () => ({ orders: [], count: 0 });
     const result = await resolveCustomerOrderReference(undefined, "c1");
-    expect(result).toEqual({ orderId: null, autoResolved: false, referenceMatched: false });
+    expect(result).toMatchObject({ orderId: null, ambiguous: false, autoResolved: false });
+  });
+
+  it("orders exist but NONE active → most-recent fallback (honest 'your last order …')", async () => {
+    orderListByCustomer = async () => ({
+      orders: [ord("ord_last", 20, TERMINAL), ord("ord_older", 19, "canceled")],
+      count: 2,
+    });
+    const result = await resolveCustomerOrderReference(undefined, "c1");
+    expect(result).toMatchObject({ orderId: "ord_last", autoResolved: true, ambiguous: false });
+  });
+
+  it("a reference that is neither a display number nor a date → id-less resolution", async () => {
+    orderListByCustomer = async () => ({ orders: [ord("ord_active", 10, ACTIVE)], count: 1 });
+    const result = await resolveCustomerOrderReference("meu pedido", "c1");
+    expect(result).toMatchObject({ orderId: "ord_active", autoResolved: true });
+  });
+});
+
+describe("resolveCustomerOrderReference — FE-D24 relative-date reference", () => {
+  // Tie the order dates to the resolver's OWN date computation so the arm is
+  // deterministic regardless of the run date (noon-UTC on the target day is the
+  // same restaurant-TZ calendar day, UTC-3).
+  const yesterday = parseRelativeOrderDate("de ontem")!;
+  const onYesterday = (id: string, displayId: number) =>
+    ord(id, displayId, ACTIVE, new Date(`${yesterday}T12:00:00Z`));
+
+  it("'de ontem' matching exactly ONE order that day → resolves it (referenceMatched)", async () => {
+    orderListByCustomer = async () => ({
+      orders: [onYesterday("ord_yst", 30), ord("ord_today", 31, ACTIVE, new Date())],
+      count: 2,
+    });
+    const result = await resolveCustomerOrderReference("o pedido de ontem", "c1");
+    expect(result).toMatchObject({ orderId: "ord_yst", referenceMatched: true, ambiguous: false });
+  });
+
+  it("'de ontem' matching TWO orders that day → ambiguous with candidates", async () => {
+    orderListByCustomer = async () => ({
+      orders: [onYesterday("ord_y1", 40), onYesterday("ord_y2", 41)],
+      count: 2,
+    });
+    const result = await resolveCustomerOrderReference("de ontem", "c1");
+    expect(result.ambiguous).toBe(true);
+    expect(result.candidates.map((c) => c.orderId)).toEqual(["ord_y1", "ord_y2"]);
+  });
+
+  it("'de ontem' matching NO order that day → falls through to id-less resolution", async () => {
+    orderListByCustomer = async () => ({ orders: [ord("ord_active", 50, ACTIVE, new Date())], count: 1 });
+    const result = await resolveCustomerOrderReference("de ontem", "c1");
+    // 0 orders yesterday → id-less: the one active (today) order resolves.
+    expect(result).toMatchObject({ orderId: "ord_active", autoResolved: true, referenceMatched: false });
+  });
+});
+
+describe("parseRelativeOrderDate — FE-D24 deterministic pt-BR past-date parser", () => {
+  const today = parseRelativeOrderDate("hoje")!;
+  const shift = (ymd: string, delta: number) => {
+    const d = new Date(`${ymd}T00:00:00Z`);
+    d.setUTCDate(d.getUTCDate() + delta);
+    return d.toISOString().slice(0, 10);
+  };
+
+  it("'hoje' → today; 'ontem' → today-1; 'anteontem' → today-2", () => {
+    expect(parseRelativeOrderDate("hoje")).toBe(today);
+    expect(parseRelativeOrderDate("o pedido de ontem")).toBe(shift(today, -1));
+    expect(parseRelativeOrderDate("anteontem")).toBe(shift(today, -2));
+  });
+
+  it("a named weekday → its most-recent occurrence on-or-before today (offset 0..6)", () => {
+    const target = parseRelativeOrderDate("de terça")!;
+    const todayDow = new Date(`${today}T00:00:00Z`).getUTCDay();
+    const targetDow = new Date(`${target}T00:00:00Z`).getUTCDay();
+    expect(targetDow).toBe(2); // terça = Tuesday
+    // never in the future
+    expect(target <= today).toBe(true);
+    expect(shift(today, -((todayDow - 2 + 7) % 7))).toBe(target);
+  });
+
+  it("no recognized date marker → null (a bare display number is NOT a date)", () => {
+    expect(parseRelativeOrderDate("1234")).toBeNull();
+    expect(parseRelativeOrderDate("meu pedido")).toBeNull();
   });
 });
 

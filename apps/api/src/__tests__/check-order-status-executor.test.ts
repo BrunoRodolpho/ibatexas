@@ -85,6 +85,8 @@ beforeEach(() => {
     orderId: null,
     autoResolved: false,
     referenceMatched: false,
+    ambiguous: false,
+    candidates: [],
   });
 });
 
@@ -195,6 +197,32 @@ describe("check_order_status executor — BKL-107 typed-empty vs real read", () 
     const result = await checkOrderStatusExecutor({ orderReference: "9999" }, stateWithCustomer("cus_1"));
     expect(result).toEqual(EMPTY_FACT);
     expect(mockResolveCustomerOrderReference).toHaveBeenCalledWith("9999", "cus_1");
+    expect(mockCheckOrderStatus).not.toHaveBeenCalled();
+  });
+
+  // BKL-140 — ≥2 owned orders matched an ambiguous id-less/date reference: the
+  // executor returns a disambiguation-shaped fact (never guesses one) and the real
+  // read is NEVER called.
+  it("AMBIGUOUS resolution (≥2 orders) → disambiguation-shaped fact; the real read is NEVER called", async () => {
+    mockResolveCustomerOrderReference.mockResolvedValue({
+      orderId: null,
+      autoResolved: false,
+      referenceMatched: false,
+      ambiguous: true,
+      candidates: [
+        { orderId: "ord_a", displayId: 11 },
+        { orderId: "ord_b", displayId: 12 },
+      ],
+    });
+    const result = await checkOrderStatusExecutor({}, stateWithCustomer("cus_1"));
+    expect(result).toEqual({
+      order: null,
+      reason: "multiple_orders",
+      candidates: [
+        { orderId: "ord_a", displayId: 11 },
+        { orderId: "ord_b", displayId: 12 },
+      ],
+    });
     expect(mockCheckOrderStatus).not.toHaveBeenCalled();
   });
 
