@@ -83,6 +83,20 @@ describe("classifyOnlyRequiredTypes — the eligibility gate", () => {
     );
   });
 
+  it("BKL-139 — a cart-contents question → {CART_CONTENTS} (eligible)", () => {
+    expect(classifyOnlyRequiredTypes("o que tem no meu carrinho?")).toEqual(
+      new Set(["CART_CONTENTS"]),
+    );
+  });
+
+  it("BKL-139 — a cart question co-occurring with a schedule span → undefined (declined wholesale)", () => {
+    // "carrinho" alone → the fully-eligible {CART_CONTENTS}; "abertos" alone maps to the
+    // ineligible STORE_OPEN_NOW → the mixed turn declines entirely (FE-D12 boundary).
+    expect(
+      classifyOnlyRequiredTypes("o que tem no meu carrinho e vocês estão abertos?"),
+    ).toBeUndefined();
+  });
+
   it("a bare 'status' (no discriminator) → BOTH order+payment (still fully eligible)", () => {
     expect(classifyOnlyRequiredTypes("qual o status?")).toEqual(
       new Set(["ORDER_FULFILLMENT_STAGE", "PAYMENT_STATUS"]),
@@ -118,10 +132,12 @@ describe("classifyOnlyRequiredTypes — the eligibility gate", () => {
   });
 
   it("every eligible type is genuinely a registered, owner-scoped registry type", () => {
-    expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.size).toBe(3);
+    expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.size).toBe(4);
     expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.has("ORDER_FULFILLMENT_STAGE")).toBe(true);
     expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.has("PAYMENT_STATUS")).toBe(true);
     expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.has("RESERVATION_STATUS")).toBe(true);
+    // BKL-139 — the owner-scoped cart read joined the eligible set.
+    expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.has("CART_CONTENTS")).toBe(true);
   });
 });
 

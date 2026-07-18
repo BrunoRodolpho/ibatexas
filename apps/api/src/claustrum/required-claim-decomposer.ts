@@ -71,6 +71,7 @@ export type SpanClass =
   | "ORDER_STATUS_Q"
   | "PAYMENT_STATUS_Q"
   | "RESERVATION_STATUS_Q"
+  | "CART_CONTENTS_Q"
   | "PICKUP_Q";
 
 /**
@@ -98,6 +99,12 @@ export const REQUIRED_CLAIM_CLOSURE = {
   // union, so an over-proposed reservation claim is DEMOTED on a turn whose
   // reservation span did not fire, yet KEPT when it did.
   RESERVATION_STATUS_Q: ["RESERVATION_STATUS"],
+  // BKL-139 — a cart-contents question requires the cart claim. Like
+  // RESERVATION_STATUS_Q, CART_CONTENTS is required ONLY by its own span (no unrelated
+  // span force-requires it), so it also auto-enrols CART_CONTENTS into the claim-planner's
+  // RELEVANCE_GOVERNED_TYPES via the closure-value union (an over-proposed cart claim is
+  // DEMOTED on a turn whose cart span did not fire, KEPT when it did).
+  CART_CONTENTS_Q: ["CART_CONTENTS"],
   // §O#15 worked example — a pickup question requires BOTH companions.
   PICKUP_Q: ["STORE_OPEN_NOW", "ORDER_FULFILLMENT_STAGE"],
 } satisfies Record<SpanClass, readonly RegistryClaimType[]>;
@@ -201,6 +208,21 @@ export function classifyRequestSpans(text: string): SpanClass[] {
   if (/(?<![a-z])reserv(?!at)(a|ar|ad|am|as|ando|ei|ou)/.test(t)) {
     classes.push("RESERVATION_STATUS_Q");
   }
+
+  // BKL-139 — a cart-CONTENTS question ("o que tem no meu carrinho?", "minha sacola").
+  // ANCHORED to a word boundary (never mid-word) and EXCLUDING cart-MUTATION verbs, so
+  // this fires ONLY on a cart-READ, never a cart write. The exclusion is load-bearing:
+  // classify-only would otherwise skip the model path for a mutation turn ("adicione uma
+  // coca ao carrinho") and mis-frame it as a read. The read-vs-mutation split is the
+  // BKL-153 must-not-fire discipline (verified against must-fire + must-not-fire word
+  // lists in required-claim-decomposer.test.ts). A gratitude / order-status turn contains
+  // no cart word, so it is untouched.
+  const cartRef = /(?<![a-z])(carrinho|carrinhos|cesta|cestas|sacola|sacolas)/.test(t);
+  const cartMutationVerb =
+    /(?<![a-z])(adicion|acrescent|remov|coloc|p[õo]e|p[õo]r|limp|esvazi|aument|diminu|troc)/.test(
+      t,
+    );
+  if (cartRef && !cartMutationVerb) classes.push("CART_CONTENTS_Q");
 
   // Bare "status" with NO payment/order discriminator → over-include BOTH (never
   // silently drop either companion). If a discriminator is present, the precise

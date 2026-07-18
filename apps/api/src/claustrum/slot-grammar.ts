@@ -155,6 +155,8 @@ export const STORE_HOURS = "STORE_HOURS";
 /** BKL-138 — the DAY-SPECIFIC hours read (public, non-Triad; per-date override/holiday
  *  falsified). The per-date twin of STORE_HOURS (SCN-002/003). */
 export const STORE_HOURS_FOR_DATE = "STORE_HOURS_FOR_DATE";
+/** BKL-139 — the owner-scoped IN-PROGRESS cart read (pre-composed summary scalar). */
+export const CART_CONTENTS = "CART_CONTENTS";
 
 /**
  * Per-type `validated` (asserting) templates, keyed by claim type. Each is the ONE
@@ -244,6 +246,23 @@ export const VALIDATED_TEMPLATES: Readonly<Record<string, Template>> = {
     slots: [
       lit("O status da sua reserva é: "),
       prop(RESERVATION_STATUS, "status"),
+      lit("."),
+    ],
+  },
+  // BKL-139 — the cart-contents validated template. ONE proposition slot binding 1:1
+  // to the C6 valueBinding FIELD (`itemsSummaryText`, claim-registry.ts
+  // `valueBinding.path = ["itemsSummaryText"]`). The value is a DETERMINISTICALLY
+  // PRE-COMPOSED pt-BR summary ("2x Costela — total R$123,00"), evidence-bound from the
+  // owner-scoped cart read (turn-reads.ts `composeCartItemsSummary`) — never an enum
+  // (so no claims-labels localization), never model-authored (FE-D04 / BKL-149). Same
+  // single-C6-field shape as STORE_HOURS_FOR_DATE / RESERVATION_STATUS (the frozen
+  // single-scalar kernel drops every sibling read field post-mint).
+  [CART_CONTENTS]: {
+    claimType: CART_CONTENTS,
+    posture: "validated",
+    slots: [
+      lit("No seu carrinho: "),
+      prop(CART_CONTENTS, "itemsSummaryText"),
       lit("."),
     ],
   },

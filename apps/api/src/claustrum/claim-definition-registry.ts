@@ -80,6 +80,10 @@ const TRIAD_SCOPED_TYPES: ReadonlySet<RegistryClaimType> = new Set<RegistryClaim
   "ORDER_FULFILLMENT_STAGE",
   "PAYMENT_STATUS",
   "RESERVATION_STATUS",
+  // BKL-139 — CART_CONTENTS is an owner-scoped live read; INV-4 REQUIRES it to appear
+  // in some REQUIRED_CLAIM_CLOSURE row (the CART_CONTENTS_Q closure), or boot rejects
+  // it as DECOMPOSITION_UNREACHABLE (the FE-T17 gate).
+  "CART_CONTENTS",
 ]);
 
 /**

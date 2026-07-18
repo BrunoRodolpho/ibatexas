@@ -249,6 +249,12 @@ export const OWNER_SCOPED_KEY_PREFIXES = [
   "order_fulfillment_stage:",
   "payment_status:",
   "reservation_status:",
+  // BKL-139 — CART_CONTENTS is owner-scoped, keyed `cart_contents:{customerId}` (the
+  // cart is 1-per-customer, resolved server-side from the session — never a model id).
+  // Listing it here makes the present cart read attribute ownership (the customerId
+  // subject enters `ownedResources` → the kernel's owns predicate passes for the legit
+  // owner) and makes the customerId subject an admissible classify-only subject.
+  "cart_contents:",
 ] as const;
 
 /**

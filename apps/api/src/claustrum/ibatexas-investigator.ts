@@ -38,6 +38,7 @@ import {
   type TriadReadBackend,
 } from "./turn-reads.js";
 import { resolveQueriedScheduleDate } from "./schedule-date-resolver.js";
+import { classifyRequestSpans } from "./required-claim-decomposer.js";
 
 /**
  * Map the read-layer 2-value {@link LedgerTaint} onto the 3-value
@@ -200,6 +201,11 @@ const RESERVATION_KEY = (reservationId: string): string =>
 const PAYMENT_REFUND_KEY = (orderId: string): string => `payment_refund:${orderId}`;
 const PAYMENT_CHARGEBACK_KEY = (orderId: string): string =>
   `payment_chargeback:${orderId}`;
+// BKL-139 CART_CONTENTS key. Keyed by the AUTHENTICATED customerId (the cart is
+// 1-per-customer, resolved server-side from the session's conversationId — never a
+// model id), so the subject is the customerId in lockstep with parameterizeKeysBySubject.
+// (The declared `cart_cleared` falsifier is deliberately UNREAD — see the cart block.)
+const CART_CONTENTS_KEY = (customerId: string): string => `cart_contents:${customerId}`;
 
 const GUEST_ID_RE = /^(guest|anon|anonymous):/i;
 
@@ -378,6 +384,65 @@ export function createFirstPartyTurnReads(
     }
 
     if (!isAuthenticatedCustomer(customerId)) return reads;
+
+    // BKL-139 CART_CONTENTS — the authenticated customer's IN-PROGRESS cart, keyed by
+    // the customerId subject (the cart is 1-per-customer, resolved server-side from the
+    // session's conversationId — IDOR-safe by session-scoping, never a model cart id).
+    // A guest never reaches here (gated above) → cart_contents absent → honest UNKNOWN
+    // (the fail-closed ownership ruling). GATED on a CART_CONTENTS_Q span in THIS turn's
+    // request (the SAME deterministic classifier the decomposer/classify-only path uses,
+    // mirroring the STORE_HOURS_FOR_DATE date-gate): a non-cart turn adds NO Medusa/Redis
+    // cost and records no cart keys. Both reads (cart_contents + the active_cart marker)
+    // share the per-turn cart memo (one Medusa fetch). `readCartContents` returns `null`
+    // ONLY on an UNAVAILABLE read (Redis/Medusa error) → OwnerScopedReadUnavailable →
+    // fail-closed ERROR (Inv 7); an empty/absent cart returns `hasItems: false` →
+    // ABSENT_READ → honest UNKNOWN.
+    const asksAboutCart = classifyRequestSpans(input.cognition.perception.text).includes(
+      "CART_CONTENTS_Q",
+    );
+    const conversationId = input.cognition.conversationId;
+    if (asksAboutCart) {
+      reads.push({
+        key: CART_CONTENTS_KEY(customerId),
+        source: "cart.readCartContents",
+        origin: "TRUSTED",
+        originProvenance: "FIRST_PARTY",
+        sourceMode: "live",
+        read: async () => {
+          const v = await b.readCartContents(conversationId, customerId);
+          if (v === null) throw new OwnerScopedReadUnavailable("cart_contents", customerId);
+          // PRESENT only when the cart actually has items — an empty/absent cart leaves
+          // the key ABSENT (honest UNKNOWN), never a fabricated summary.
+          return v.hasItems ? { itemsSummaryText: v.itemsSummaryText } : ABSENT_READ;
+        },
+      });
+      // CART_CONTENTS falsifier `cart_cleared` — DECLARED in the registry (so
+      // CART_CONTENTS escapes the W6 UNKNOWN-only cap) but DELIBERATELY UNREAD: a
+      // same-cart-row "cleared" signal is tautological AND inert (a cleared/checked-out
+      // cart already resolves `hasItems: false` ⇒ `cart_contents` ABSENT ⇒ there is no
+      // present base to demote). Wiring it would only re-introduce the shared-read
+      // tautology the order_cancelled/reservation_cancelled review-fix removed. So there
+      // is no cart_cleared read here — the key stays absent and the arm never fires.
+      // CART provable-empty marker — observability/audit parity with the
+      // active_orders/active_payments/active_reservations markers (FE-T17b idiom). NOT
+      // (yet) consumed by a completeness-drop rule: CART_CONTENTS is required only by
+      // its own CART_CONTENTS_Q span — no unrelated span force-requires it — so the
+      // wrongly-forced-companion problem the order/payment markers solve does not exist
+      // for the cart today. Its key matches NO OWNER_SCOPED_KEY_PREFIXES → never an
+      // owner resource. A failed read records state error (Inv 7 — "could not check").
+      reads.push({
+        key: `active_cart:${customerId}`,
+        source: "cart.readCartContents.marker",
+        origin: "TRUSTED",
+        originProvenance: "FIRST_PARTY",
+        sourceMode: "live",
+        read: async () => {
+          const v = await b.readCartContents(conversationId, customerId);
+          if (v === null) throw new OwnerScopedReadUnavailable("active_cart", customerId);
+          return { hasItems: v.hasItems };
+        },
+      });
+    }
 
     const { orderIds, reservationIds } = extractTurnResourceIds({
       envelopes: input.plan.envelopes,
