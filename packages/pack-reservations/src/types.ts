@@ -31,8 +31,6 @@
  *                                     emits with TRUSTED taint). LLM must
  *                                     never be able to forge a no-show.
  *   - reservation.waitlist.join    — UNTRUSTED. Customer joins waitlist.
- *   - reservation.waitlist.notify  — SYSTEM-only. `promoteWaitlist` job
- *                                     fires this after a slot frees up.
  *
  * # Source of existing logic
  *
@@ -53,7 +51,6 @@ export type ReservationIntentKind =
   | "reservation.complete"
   | "reservation.no_show.mark"
   | "reservation.waitlist.join"
-  | "reservation.waitlist.notify"
 
 // ── Payloads ────────────────────────────────────────────────────────────
 
@@ -212,8 +209,6 @@ export interface ReservationState {
  * decides). `reservation.no_show.mark` is the canonical example of a
  * SYSTEM-only kind — only the no-show-checker cron at
  * `apps/api/src/jobs/no-show-checker.ts` may emit it, with TRUSTED taint.
- * `reservation.waitlist.notify` is similarly SYSTEM-only (the
- * `promoteWaitlist` background job runs it).
  *
  * `reservation.checkin` and `reservation.complete` are staff-only kinds
  * — the auth guard enforces `staffId !== null`, but they remain
@@ -221,7 +216,7 @@ export interface ReservationState {
  * propose them; the auth + state guards catch the abuse).
  */
 export const reservationTaintPolicy = createSystemTaintPolicy({
-  systemOnlyKinds: ["reservation.no_show.mark", "reservation.waitlist.notify"],
+  systemOnlyKinds: ["reservation.no_show.mark"],
   userMinimum: "UNTRUSTED",
 })
 

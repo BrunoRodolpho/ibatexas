@@ -191,16 +191,6 @@ const corpus: ReadonlyArray<Fixture> = [
     expect: { kind: "EXECUTE" },
   },
   {
-    name: "EXECUTE: TRUSTED reservation.waitlist.notify (system actor)",
-    envelope: env(
-      "reservation.waitlist.notify",
-      { waitlistId: "w-1" },
-      "TRUSTED",
-    ),
-    state: baseState(),
-    expect: { kind: "EXECUTE" },
-  },
-  {
     name: "EXECUTE: staff reservation.checkin on confirmed booking",
     envelope: env(
       "reservation.checkin",
@@ -351,16 +341,6 @@ const corpus: ReadonlyArray<Fixture> = [
         timeSlotId: "ts-1",
       },
     }),
-    expect: { kind: "REFUSE" },
-  },
-  {
-    name: "REFUSE: UNTRUSTED reservation.waitlist.notify (taint gate)",
-    envelope: env(
-      "reservation.waitlist.notify",
-      { waitlistId: "w-1" },
-      "UNTRUSTED",
-    ),
-    state: baseState(),
     expect: { kind: "REFUSE" },
   },
   {

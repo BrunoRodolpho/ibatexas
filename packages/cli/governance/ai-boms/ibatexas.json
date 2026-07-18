@@ -7,9 +7,9 @@
     "agent/pix-payment-failure-remediation": "966813a40cdbd77a4556ca80f2f8bb32654f6e36f32d34ed8ea637dda140bfcb",
     "ibatexas/pack-customer-onboarding": "203366b62ca1b7c438803ed5907e2ff43897b5b9e07d62c65246a49ab4e6b4fc",
     "ibatexas/pack-ops": "6662a9a5147b214173d61fe9924ef53bd57ac827e832a1765a6b7b86372f74f3",
-    "ibatexas/pack-orders": "381459a63cd339577b333587bf8e3d2e0d735aaa9f6b51666e07372ba6fdb9f1",
+    "ibatexas/pack-orders": "cec958542010435b058ac4d491b1d859eff826985d803953d7a03ed9431dc77b",
     "ibatexas/pack-payments": "04a8422bf2588b5f82e8ae4171c6da320c689935a8fdda51c6f2e3aa2262b018",
-    "ibatexas/pack-reservations": "c0b9c555e776c2b80a629ca9c0e655d5e46a3ab42cda852beac8cd560ff0a163",
+    "ibatexas/pack-reservations": "2ccf7b7f225947006e3b6f02832872f9a735e0389ecdc4a5d8e1bb73b622e8fe",
     "ibatexas/pack-whatsapp": "a96900e0b7584d9994ebdade1d6f9de04ab749b071e3f61579cb6a349de6eb35",
     "pack-payments-pix": "d6a71ea6796ccada541ff88849bfdea8214918e982576278e9d9ed854f40a16b"
   },
@@ -329,7 +329,7 @@
       "contract": "v0",
       "kernelMinVersion": "1.0.0",
       "kernelVersion": "1.3.0",
-      "fingerprint": "9c3ea0c6ef5915a2e3de39550ae07b4659c4fb71cd0caea251c6235d71866abd",
+      "fingerprint": "9148345aba53c6eb275d1759615e151b201d0accede517f00b90b488a60dcc73",
       "intents": [
         "order.address.change",
         "order.amend.add_item",
@@ -337,7 +337,6 @@
         "order.amend.request",
         "order.amend.update_qty",
         "order.cancel",
-        "order.cancel.system",
         "order.cart.ensure",
         "order.cart.sync",
         "order.checkout.create",
@@ -396,9 +395,6 @@
         },
         {
           "name": "order.cancel"
-        },
-        {
-          "name": "order.cancel.system"
         },
         {
           "name": "order.cart.ensure"
@@ -531,7 +527,7 @@
         "total": 8,
         "passedCount": 8,
         "failedCount": 0,
-        "reportDigest": "73eaa904b01b158af438f762e20981927937990ce3142eac5bce2eacb12e6b42"
+        "reportDigest": "1dc1cfccae2b6ad19c3a1107d37454214e25ad9940d4331560c8c04b0658c1e7"
       },
       "healthTier": "bronze",
       "healthScore": {
@@ -542,7 +538,7 @@
         "eu-ai-act",
         "nist-ai-rmf"
       ],
-      "bomDigest": "381459a63cd339577b333587bf8e3d2e0d735aaa9f6b51666e07372ba6fdb9f1"
+      "bomDigest": "cec958542010435b058ac4d491b1d859eff826985d803953d7a03ed9431dc77b"
     },
     {
       "bomVersion": "1.0",
@@ -711,7 +707,7 @@
       "contract": "v0",
       "kernelMinVersion": "1.0.0",
       "kernelVersion": "1.3.0",
-      "fingerprint": "88186a9b73c8257aec17d133a134cbd5ec9192777acfdc69f66d2c77a55c5e9f",
+      "fingerprint": "ab127e31156d46f46d2264ad0883addf636d2acac5d23272f52f62f004ca4291",
       "intents": [
         "reservation.cancel",
         "reservation.checkin",
@@ -719,8 +715,7 @@
         "reservation.create",
         "reservation.modify",
         "reservation.no_show.mark",
-        "reservation.waitlist.join",
-        "reservation.waitlist.notify"
+        "reservation.waitlist.join"
       ],
       "signals": [],
       "basisCodes": [
@@ -757,9 +752,6 @@
         },
         {
           "name": "reservation.waitlist.join"
-        },
-        {
-          "name": "reservation.waitlist.notify"
         }
       ],
       "rag": [],
@@ -815,7 +807,7 @@
         "total": 8,
         "passedCount": 8,
         "failedCount": 0,
-        "reportDigest": "2573a1dbd6cb9a2d7750f36feb8d974ca02fa7afade33190a9339491e6f3f38e"
+        "reportDigest": "43541ab90234413a64f547cfa82fc5a2d981bcae3a2e8f8092a69fd77c09290a"
       },
       "healthTier": "bronze",
       "healthScore": {
@@ -826,7 +818,7 @@
         "eu-ai-act",
         "nist-ai-rmf"
       ],
-      "bomDigest": "c0b9c555e776c2b80a629ca9c0e655d5e46a3ab42cda852beac8cd560ff0a163"
+      "bomDigest": "2ccf7b7f225947006e3b6f02832872f9a735e0389ecdc4a5d8e1bb73b622e8fe"
     },
     {
       "bomVersion": "1.0",

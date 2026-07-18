@@ -3,7 +3,7 @@
   "graph": "capability",
   "meta": {
     "dangling": [],
-    "intentKinds": 65,
+    "intentKinds": 63,
     "packs": 6,
     "personaContexts": [
       "authed-customer",
@@ -429,28 +429,6 @@
           "authed-customer"
         ],
         "chatDrivable": true,
-        "composedPack": "ibatexas/pack-orders",
-        "domain": "order",
-        "flags": [],
-        "knownKind": true,
-        "plausibleDecisions": [
-          "EXECUTE",
-          "REFUSE",
-          "ESCALATE",
-          "REQUEST_CONFIRMATION",
-          "DEFER",
-          "REWRITE"
-        ],
-        "staffRoute": false
-      }
-    },
-    {
-      "id": "intent:order.cancel.system",
-      "type": "intent",
-      "label": "order.cancel.system",
-      "meta": {
-        "advertisedContexts": [],
-        "chatDrivable": false,
         "composedPack": "ibatexas/pack-orders",
         "domain": "order",
         "flags": [],
@@ -1357,28 +1335,6 @@
       }
     },
     {
-      "id": "intent:reservation.waitlist.notify",
-      "type": "intent",
-      "label": "reservation.waitlist.notify",
-      "meta": {
-        "advertisedContexts": [],
-        "chatDrivable": false,
-        "composedPack": "ibatexas/pack-reservations",
-        "domain": "reservation",
-        "flags": [],
-        "knownKind": true,
-        "plausibleDecisions": [
-          "EXECUTE",
-          "REFUSE",
-          "ESCALATE",
-          "REQUEST_CONFIRMATION",
-          "DEFER",
-          "REWRITE"
-        ],
-        "staffRoute": false
-      }
-    },
-    {
       "id": "intent:schedule.override.set",
       "type": "intent",
       "label": "schedule.override.set",
@@ -1516,7 +1472,7 @@
       "type": "pack",
       "label": "ibatexas/pack-orders",
       "meta": {
-        "intentCount": 22,
+        "intentCount": 21,
         "policyDefault": "REFUSE",
         "version": "1.1.0"
       }
@@ -1536,7 +1492,7 @@
       "type": "pack",
       "label": "ibatexas/pack-reservations",
       "meta": {
-        "intentCount": 8,
+        "intentCount": 7,
         "policyDefault": "REFUSE",
         "version": "1.0.0"
       }
@@ -2114,11 +2070,6 @@
     },
     {
       "from": "pack:ibatexas/pack-orders",
-      "to": "intent:order.cancel.system",
-      "type": "declares"
-    },
-    {
-      "from": "pack:ibatexas/pack-orders",
       "to": "intent:order.cart.ensure",
       "type": "declares"
     },
@@ -2285,11 +2236,6 @@
     {
       "from": "pack:ibatexas/pack-reservations",
       "to": "intent:reservation.waitlist.join",
-      "type": "declares"
-    },
-    {
-      "from": "pack:ibatexas/pack-reservations",
-      "to": "intent:reservation.waitlist.notify",
       "type": "declares"
     },
     {

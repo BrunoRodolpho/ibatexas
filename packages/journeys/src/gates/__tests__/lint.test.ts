@@ -202,7 +202,7 @@ describe("lintJourney — expectation reachability (checks 2 + 3)", () => {
       acts: [
         { kind: "http", method: "POST", path: "/api/orders/intent", asRole: "customer" },
       ],
-      expects: [{ intentKind: "order.cancel.system", decision: "REFUSE" }],
+      expects: [{ intentKind: "order.cancel", decision: "REFUSE" }],
     })
     expect(lintJourney(journey, "in-memory.yaml")).toEqual([])
   })

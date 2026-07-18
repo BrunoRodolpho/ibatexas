@@ -147,9 +147,10 @@ const rawOrdersCapabilityPlanner: CapabilityPlanner<OrderState, OrderContext> =
           "order.review.submit",
         )
       }
-      // `order.cancel.system` is NEVER LLM-proposable — the taint gate
-      // enforces TRUSTED for system-only kinds (see types.ts taint
-      // policy); the planner omits it for defence in depth.
+      // The system-only kinds (`order.projection.create`,
+      // `order.status.reconcile`) are NEVER LLM-proposable — the taint gate
+      // enforces TRUSTED for them (see types.ts taint policy); the planner
+      // omits them for defence in depth.
       void context
 
       return {

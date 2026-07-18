@@ -547,7 +547,6 @@ export const PII_FREE_KIND_ALLOWLIST: ReadonlySet<string> = new Set<string>([
   "order.coupon.apply", // cartId/code; code is a short opaque promo handle
   "order.checkout.create", // PII in pixDetails covered by global REDACT (name/email/cpf)
   "order.pix.details.set", // PII in name/email/cpf covered by global REDACT_FIELDS
-  "order.cancel.system", // orderId + reason: closed enum ("stale"|"pix_expired")
   "order.amend.request", // orderId + changes[] (op enum + variantId/itemId)
   "order.amend.add_item", // orderId/variantId/quantity/allergens
   "order.amend.update_qty", // orderId/itemId/quantity
@@ -563,7 +562,6 @@ export const PII_FREE_KIND_ALLOWLIST: ReadonlySet<string> = new Set<string>([
   "reservation.complete", // reservationId only
   "reservation.no_show.mark", // reservationId only
   "reservation.waitlist.join", // timeSlotId/partySize
-  "reservation.waitlist.notify", // waitlistId only
 
   // ── AUT-038 staff-CRUD plane — id-only / closed-enum payloads ────────
   // (staff.create / staff.update are NOT here — they carry hourlyRateCentavos

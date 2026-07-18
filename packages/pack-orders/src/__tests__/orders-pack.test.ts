@@ -247,28 +247,6 @@ describe("ordersPolicyBundle — state guards", () => {
     expect(decision.refusal.code).toBe("order.past_ponr")
   })
 
-  it("ALLOW a SYSTEM order.cancel.system of a preparing order (compensation exempt)", () => {
-    // pix-expiry / stale-order jobs build order.cancel.system (actor.principal=
-    // "system") and must be able to cancel a preparing order as compensation.
-    const sysEnv = buildEnvelope({
-      kind: "order.cancel.system",
-      payload: { orderId: "o-1" } as OrderPayload,
-      actor: { principal: "system", sessionId: "stale-order-checker:evt-1" },
-      taint: "SYSTEM",
-      nonce: "n-sys",
-      createdAt: DET_TIME,
-    })
-    const decision = adjudicate(
-      sysEnv,
-      state({ orderId: "o-1", fulfillmentStatus: "preparing" }),
-      ordersPolicyBundle,
-    )
-    // The cancellability guard does NOT block a system cancel of a preparing order.
-    if (decision.kind === "REFUSE") {
-      expect(decision.refusal.code).not.toBe("order.past_ponr")
-    }
-  })
-
   it("REFUSE order.cancel on a canceled fulfillment status as already-cancelled", () => {
     const decision = adjudicate(
       env("order.cancel", { orderId: "o-1" }),
@@ -360,9 +338,14 @@ describe("ordersPolicyBundle — state guards", () => {
 // ── Taint phase ─────────────────────────────────────────────────────────
 
 describe("ordersPolicyBundle — taint policy", () => {
-  it("system-only kind order.cancel.system requires TRUSTED taint", () => {
+  it("system-only kinds require TRUSTED taint; customer kinds tolerate UNTRUSTED", () => {
+    // order.cancel.system was retired (BKL-177); the remaining system-only
+    // kinds still require TRUSTED, and customer kinds still tolerate UNTRUSTED.
     expect(
-      ordersPolicyBundle.taint.minimumFor("order.cancel.system"),
+      ordersPolicyBundle.taint.minimumFor("order.projection.create"),
+    ).toBe("TRUSTED")
+    expect(
+      ordersPolicyBundle.taint.minimumFor("order.status.reconcile"),
     ).toBe("TRUSTED")
     expect(ordersPolicyBundle.taint.minimumFor("order.cancel")).toBe(
       "UNTRUSTED",
@@ -370,32 +353,6 @@ describe("ordersPolicyBundle — taint policy", () => {
     expect(ordersPolicyBundle.taint.minimumFor("order.item.add")).toBe(
       "UNTRUSTED",
     )
-  })
-
-  it("UNTRUSTED-tainted order.cancel.system is REFUSEd by the taint gate", () => {
-    const decision = adjudicate(
-      env(
-        "order.cancel.system",
-        { orderId: "o-1", reason: "stale" },
-        "UNTRUSTED",
-      ),
-      state({ orderId: "o-1" }),
-      ordersPolicyBundle,
-    )
-    expect(decision.kind).toBe("REFUSE")
-  })
-
-  it("TRUSTED-tainted order.cancel.system is accepted by the taint gate", () => {
-    const decision = adjudicate(
-      env(
-        "order.cancel.system",
-        { orderId: "o-1", reason: "stale" },
-        "TRUSTED",
-      ),
-      state({ orderId: "o-1" }),
-      ordersPolicyBundle,
-    )
-    expect(decision.kind).toBe("EXECUTE")
   })
 })
 
@@ -691,24 +648,6 @@ describe("ordersPolicyBundle — BKL-036 paid-state cancel (J015)", () => {
       )
       expect(decision.kind).toBe("EXECUTE")
     }
-  })
-
-  it("gatePaidCancel does NOT touch order.cancel.system (system compensation)", () => {
-    const sysEnv = buildEnvelope({
-      kind: "order.cancel.system",
-      payload: { orderId: "o-1" } as OrderPayload,
-      actor: { principal: "system", sessionId: "stale-order-checker:evt-1" },
-      taint: "SYSTEM",
-      nonce: "n-sys",
-      createdAt: DET_TIME,
-    })
-    const decision = adjudicate(
-      sysEnv,
-      state({ orderId: "o-1", fulfillmentStatus: "confirmed", paymentStatus: "paid", totalInCentavos: 5_000 }),
-      ordersPolicyBundle,
-    )
-    // A paid state must not turn a system auto-cancel into a customer confirm.
-    expect(decision.kind).not.toBe("REQUEST_CONFIRMATION")
   })
 
   it("CONFIRM-RESUME: the identical paid-cancel envelope + confirmationReceipt re-adjudicates to EXECUTE", async () => {
