@@ -42,8 +42,17 @@ else
 fi
 
 # App ports should be free now; orphans would block the next run.
+# FE-D25: the app ports are env-parameterized (TEST_API_PORT / TEST_COMMERCE_
+# PORT). Source .env.test if it is still present so this check targets the SAME
+# pair `up` used — checking the hardcoded 3001/9000 would false-warn "still
+# busy" every teardown whenever a dev stack (which permanently holds them) runs
+# alongside a coexisting test stack on reassigned ports.
+if [[ -f "$ENV_FILE" ]]; then
+  # shellcheck disable=SC1090
+  set -a && . "./$ENV_FILE" && set +a
+fi
 sleep 1
-for port in 3001 9000; do
+for port in "${TEST_API_PORT:-3001}" "${TEST_COMMERCE_PORT:-9000}"; do
   if lsof -ti ":$port" >/dev/null 2>&1; then
     echo "warning: port $port still busy after process-compose down — kill manually (lsof -ti :$port | xargs kill)" >&2
     rc=1
