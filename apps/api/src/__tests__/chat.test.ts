@@ -32,6 +32,10 @@ const mockGetConductor = vi.hoisted(() => vi.fn());
 const mockHandleTurn = vi.hoisted(() => vi.fn());
 const mockOpenCapsule = vi.hoisted(() => vi.fn());
 const mockCloseCapsule = vi.hoisted(() => vi.fn());
+// BKL-168 — spy the no-reply incident recorders (keep the REAL pure classifiers) so
+// the escaped-throw backstop test can assert an incident is opened.
+const mockEmitNoDelivery = vi.hoisted(() => vi.fn());
+const mockOpenIncidentInline = vi.hoisted(() => vi.fn());
 
 vi.mock("../claustrum-bootstrap.js", () => ({ getConductor: mockGetConductor }));
 vi.mock("@claustrum/core", () => ({ handleTurn: mockHandleTurn }));
@@ -64,6 +68,12 @@ vi.mock("@ibatexas/tools", async (importOriginal) => {
     getRedisClient: mockGetRedisClient,
   };
 });
+// Keep the REAL pure classifiers (classifyCatchError / classifyTurnDelivery); only
+// the two infra-touching recorders are spied so the backstop test asserts the incident.
+vi.mock("../conversation/no-delivery.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../conversation/no-delivery.js")>();
+  return { ...actual, emitNoDelivery: mockEmitNoDelivery, openIncidentInline: mockOpenIncidentInline };
+});
 
 // ── Server factory ─────────────────────────────────────────────────────────────
 
@@ -90,6 +100,8 @@ describe("POST /api/chat/messages", () => {
     mockPushChunk.mockReturnValue(undefined);
     mockAcquireWebAgentLock.mockResolvedValue(true);
     mockReleaseWebAgentLock.mockResolvedValue(undefined);
+    mockEmitNoDelivery.mockResolvedValue(undefined);
+    mockOpenIncidentInline.mockResolvedValue(undefined);
     mockGetRedisClient.mockResolvedValue({
       get: vi.fn().mockResolvedValue(null),
       set: vi.fn().mockResolvedValue("OK"),
@@ -154,7 +166,10 @@ describe("POST /api/chat/messages", () => {
     expect(res.statusCode).toBe(400);
   });
 
-  it("pushes error chunk when agent throws", async () => {
+  // BKL-168 — the LAST-RESORT never-silent backstop: a throw that escapes handleTurn
+  // must deliver an honest deterministic pt-BR fallback frame AND open a governed
+  // incident — NEVER the bare {type:error} void.
+  it("agent throws → honest pt-BR fallback frame + governed incident, NEVER a bare error frame", async () => {
     mockHandleTurn.mockRejectedValue(new Error("Agent crashed"));
 
     const app = await buildTestServer();
@@ -168,13 +183,33 @@ describe("POST /api/chat/messages", () => {
       },
     });
 
-    // Wait for the fire-and-forget to settle
-    await vi.waitFor(() => {
-      expect(mockPushChunk).toHaveBeenCalledWith(
-        VALID_SESSION_ID,
-        expect.objectContaining({ type: "error" }),
-      );
-    }, { timeout: 500 });
+    // A governed incident is opened for the escaped throw (the no-reply plane SEES it):
+    // send_failed (the frozen "not delivered" cause), customer-impacted.
+    await vi.waitFor(
+      () => {
+        expect(mockOpenIncidentInline).toHaveBeenCalledWith(
+          expect.objectContaining({ cause: "send_failed", customerImpacted: true }),
+          expect.anything(),
+        );
+      },
+      { timeout: 500 },
+    );
+    expect(mockEmitNoDelivery).toHaveBeenCalledWith(
+      expect.objectContaining({ cause: "send_failed", customerImpacted: true }),
+      expect.anything(),
+    );
+
+    // The customer sees an honest pt-BR fallback (text_delta + done) — never {type:error}.
+    const chunkTypes = mockPushChunk.mock.calls.map(
+      ([, chunk]) => (chunk as { type: string }).type,
+    );
+    expect(chunkTypes).toContain("text_delta");
+    expect(chunkTypes).toContain("done");
+    expect(chunkTypes).not.toContain("error");
+    const fallbackChunk = mockPushChunk.mock.calls
+      .map(([, chunk]) => chunk as { type: string; delta?: { text?: string } })
+      .find((c) => c.type === "text_delta");
+    expect(fallbackChunk?.delta?.text).toContain("não consegui montar uma resposta");
   });
 });
 

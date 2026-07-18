@@ -140,7 +140,10 @@ describe("completeWithResilience (BKL-162 — completion-boundary error resilien
       .fn()
       .mockRejectedValueOnce(new Error("Ollama 500: XML syntax error"))
       .mockResolvedValueOnce({ text: "recuperado" });
-    const result = await completeWithResilience(complete, { maxAttempts: 2, ...noSleep });
+    // Explicit T: `completeWithResilience` is now unconstrained (it also wraps the
+    // claim-planner's non-`{text}` ClaimPlan), so an untyped vi.fn no longer floors
+    // T to `{text:string}` by inference — pin it for the `.completion.text` read.
+    const result = await completeWithResilience<{ text: string }>(complete, { maxAttempts: 2, ...noSleep });
     expect(result).toMatchObject({ ok: true, attempts: 2, recovered: true });
     if (result.ok) expect(result.completion.text).toBe("recuperado");
     expect(complete).toHaveBeenCalledTimes(2);

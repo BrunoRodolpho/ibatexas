@@ -22,7 +22,7 @@
  * without changing the responder's byte-identical default behavior.
  */
 
-export interface EmptyRetryOptions<T extends { text: string } = { text: string }> {
+export interface EmptyRetryOptions<T = { text: string }> {
   /** Total attempts including the first (coerced to >= 1). */
   readonly maxAttempts: number;
   /** Delay (ms) before attempt N+1, given the completed attempt count `n`. */
@@ -107,7 +107,7 @@ export type ResilientCompletionResult<T> =
   | { readonly ok: true; readonly completion: T; readonly attempts: number; readonly recovered: boolean }
   | { readonly ok: false; readonly error: unknown; readonly attempts: number };
 
-export async function completeWithResilience<T extends { text: string }>(
+export async function completeWithResilience<T>(
   complete: (attempt: number) => Promise<T>,
   options: EmptyRetryOptions<T>,
 ): Promise<ResilientCompletionResult<T>> {

@@ -15,7 +15,8 @@
 //     - zod body validation → 400
 //     - fire-and-forget runConductorTurn: normal turn (text_delta + done +
 //       assistant persistence + capsule close + cleanup + lock release),
-//       bot-paused short-circuit, handleTurn failure → error chunk, empty reply.
+//       bot-paused short-circuit, handleTurn failure → BKL-168 incident + honest
+//       pt-BR fallback frame (never a bare error), empty reply.
 //   GET /api/chat/stream/:sessionId (hijacked SSE)
 //     - CORS allowlist header is reflected only for an allowed Origin
 //     - authenticated non-owner / guest secret-mismatch → "Acesso negado." frame
@@ -412,12 +413,32 @@ describe("POST /api/chat/messages — Conductor turn delivery (fire-and-forget)"
     expect(mockCleanupStream).toHaveBeenCalledWith(SID);
   });
 
-  it("handleTurn failure: emits an error chunk, still closes the capsule and releases the lock", async () => {
+  it("handleTurn failure: opens a governed incident + delivers an honest pt-BR fallback (BKL-168), still closes the capsule and releases the lock", async () => {
     mockHandleTurn.mockRejectedValue(new Error("planner exploded"));
     await postGuest();
     await waitFor(() => mockReleaseLock.mock.calls.length > 0);
+    await waitFor(() => mockOpenIncidentInline.mock.calls.length > 0);
 
-    expect(mockPushChunk).toHaveBeenCalledWith(SID, { type: "error", message: "Erro interno." });
+    // BKL-168 — an escaped handleTurn throw is now a governed no-reply incident
+    // (send_failed, customer-impacted) + an honest deterministic pt-BR fallback frame
+    // (text_delta + done), NEVER the bare {type:error} void.
+    expect(mockOpenIncidentInline).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cause: "send_failed",
+        channel: "web",
+        customerImpacted: true,
+        sessionId: SID,
+      }),
+      expect.anything(),
+    );
+    const types = mockPushChunk.mock.calls.map(([, c]) => (c as { type: string }).type);
+    expect(types).toContain("text_delta");
+    expect(types).toContain("done");
+    expect(types).not.toContain("error");
+    const fallback = mockPushChunk.mock.calls
+      .map(([, c]) => c as { type: string; delta?: { text?: string } })
+      .find((c) => c.type === "text_delta");
+    expect(fallback?.delta?.text).toContain("não consegui montar uma resposta");
     // The inner try/finally closed the capsule before the error propagated.
     expect(mockCloseCapsule).toHaveBeenCalledTimes(1);
     expect(assistantWasPersisted()).toBe(false);
@@ -733,11 +754,18 @@ describe("POST /api/chat/messages — W1 supersession (F1) & catch parity (F2)",
     await app.close();
   });
 
-  it("M5: a pre-result internal throw (turn_error) opens NO incident but still degrades to {type:error} — WhatsApp :1057 parity", async () => {
-    // A non-aborted conductor throw before any result is `turn_error`, which is
-    // OUTSIDE the frozen IncidentCause taxonomy. WhatsApp drops it (canned apology
-    // only, no incident); the web plane must match — it previously coerced it into
-    // a self-contradictory `send_failed` incident (no send was attempted).
+  it("BKL-168: a pre-result internal throw (turn_error) opens a send_failed incident + an honest pt-BR fallback (never a bare error)", async () => {
+    // BKL-168 (the never-silent backstop) DELIBERATELY reverses the old M5 behavior:
+    // a non-aborted conductor throw before any result reached the customer means the
+    // customer is OWED a reply and got nothing. The web plane now opens a governed
+    // incident (turn_error mapped to the frozen `send_failed` cause — the closest
+    // "not delivered" cause; customer-impacted) AND delivers an honest deterministic
+    // pt-BR fallback frame, never the bare {type:error} void.
+    //
+    // WHATSAPP :1057 PARITY (open follow-up): the WhatsApp path still drops a
+    // pre-send `turn_error` incident-less (canned apology only). Whether it should
+    // gain the same backstop is flagged as a follow-up row in the PR body, not
+    // expanded into this change.
     mockHandleTurn.mockRejectedValue(new Error("conductor exploded"));
 
     const app = await buildApp();
@@ -748,13 +776,23 @@ describe("POST /api/chat/messages — W1 supersession (F1) & catch parity (F2)",
     });
     expect(res.statusCode).toBe(200);
     await waitFor(() => mockReleaseLock.mock.calls.length > 0);
+    await waitFor(() => mockOpenIncidentInline.mock.calls.length > 0);
 
-    // turn_error → NO governed incident (WhatsApp parity), NO NATS fan-out.
-    expect(mockOpenIncidentInline).not.toHaveBeenCalled();
-    expect(mockEmitNoDelivery).not.toHaveBeenCalled();
+    // A governed incident IS opened now (send_failed, customer-impacted) + NATS fan-out.
+    expect(mockOpenIncidentInline).toHaveBeenCalledWith(
+      expect.objectContaining({ cause: "send_failed", channel: "web", customerImpacted: true, sessionId: SID }),
+      expect.anything(),
+    );
+    expect(mockEmitNoDelivery).toHaveBeenCalledWith(
+      expect.objectContaining({ cause: "send_failed", customerImpacted: true }),
+      expect.anything(),
+    );
 
-    // The degraded {type:error} still reached the client; nothing was persisted.
-    expect(mockPushChunk).toHaveBeenCalledWith(SID, { type: "error", message: "Erro interno." });
+    // The honest pt-BR fallback reached the client (text_delta + done), never {type:error}.
+    const types = mockPushChunk.mock.calls.map(([, c]) => (c as { type: string }).type);
+    expect(types).toContain("text_delta");
+    expect(types).toContain("done");
+    expect(types).not.toContain("error");
     expect(assistantWasPersisted()).toBe(false);
     expect(mockCloseCapsule).toHaveBeenCalledTimes(1);
     await app.close();
