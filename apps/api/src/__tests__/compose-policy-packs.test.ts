@@ -20,6 +20,7 @@ import {
   confirmOnAutoResolveGuard,
   refuseAllergenMentionGuard,
   refuseUnresolvedAmendItemGuard,
+  refuseUnresolvedReviewProductGuard,
   sessionTokenBudgetGuard,
   IBATEXAS_ADOPTER_AUTH_GUARDS,
   IBATEXAS_ADOPTER_BUSINESS_GUARDS,
@@ -58,21 +59,24 @@ describe("buildIbatexasPolicyPacks", () => {
   const packs = [mkPack("ibatexas/pack-a", ["a.x"]), mkPack("ibatexas/pack-b", ["b.y"])];
   const composed = buildIbatexasPolicyPacks(packs);
 
-  it("prepends the four adopter guards to every pack's business, in order", () => {
+  it("prepends the five adopter guards to every pack's business, in order", () => {
     for (const p of composed) {
       const business = (p.policy as PolicyBundle<string, unknown, unknown>).business;
       expect(business[0]).toBe(sessionTokenBudgetGuard);
       // FE-T14 — allergen-mention honesty sits after token-budget; FE-D18 —
-      // unresolved amend-item honesty follows it, and BOTH REFUSE honesty
+      // unresolved amend-item honesty follows it; FE-D28 — unresolved
+      // review-product honesty follows that; and ALL THREE REFUSE honesty
       // guards precede confirm-on-autoresolve so the "REFUSE pre-empts a
-      // softer decision" ladder holds (order.amend.add_item is in
-      // AUTORESOLVE_CONFIRM_KINDS). See IBATEXAS_ADOPTER_BUSINESS_GUARDS's own
-      // doc comment for the ladder-discipline reasoning.
+      // softer decision" ladder holds (order.amend.add_item AND
+      // order.review.submit are in AUTORESOLVE_CONFIRM_KINDS). See
+      // IBATEXAS_ADOPTER_BUSINESS_GUARDS's own doc comment for the
+      // ladder-discipline reasoning.
       expect(business[1]).toBe(refuseAllergenMentionGuard);
       expect(business[2]).toBe(refuseUnresolvedAmendItemGuard);
-      expect(business[3]).toBe(confirmOnAutoResolveGuard);
-      expect(business[4]).toBe(ownGuard); // the pack's own guard, unmoved
-      expect(business).toHaveLength(5);
+      expect(business[3]).toBe(refuseUnresolvedReviewProductGuard);
+      expect(business[4]).toBe(confirmOnAutoResolveGuard);
+      expect(business[5]).toBe(ownGuard); // the pack's own guard, unmoved
+      expect(business).toHaveLength(6);
     }
   });
 
@@ -101,7 +105,8 @@ describe("buildIbatexasPolicyPacks", () => {
     expect(readGuardMetadata(bundle.business[0]!)?.name).toBe("sessionTokenBudget");
     expect(readGuardMetadata(bundle.business[1]!)?.name).toBe("refuseAllergenMention");
     expect(readGuardMetadata(bundle.business[2]!)?.name).toBe("refuseUnresolvedAmendItem");
-    expect(readGuardMetadata(bundle.business[3]!)?.name).toBe("confirmOnAutoResolvedRef");
+    expect(readGuardMetadata(bundle.business[3]!)?.name).toBe("refuseUnresolvedReviewProduct");
+    expect(readGuardMetadata(bundle.business[4]!)?.name).toBe("confirmOnAutoResolvedRef");
     expect(readGuardMetadata(bundle.authGuards[0]!)?.name).toBe("agentKillSwitch");
     expect(readGuardMetadata(bundle.authGuards[1]!)?.name).toBe("agentScope");
     for (const g of agentBudgetGuards) {
@@ -140,7 +145,8 @@ describe("buildIbatexasPolicyPacks", () => {
     expect(bundle.business[0]).toBe(sessionTokenBudgetGuard);
     expect(bundle.business[1]).toBe(refuseAllergenMentionGuard);
     expect(bundle.business[2]).toBe(refuseUnresolvedAmendItemGuard);
-    expect(bundle.business[3]).toBe(confirmOnAutoResolveGuard);
+    expect(bundle.business[3]).toBe(refuseUnresolvedReviewProductGuard);
+    expect(bundle.business[4]).toBe(confirmOnAutoResolveGuard);
     expect(bundle.authGuards[0]).toBe(agentKillSwitchGuard);
     expect(bundle.authGuards[1]).toBe(agentScopeGuard);
   });
