@@ -36,6 +36,10 @@ import { parseAgentSessionNamespace } from "./agent-guards.js";
 // FE-T13 — reuse the ops-plane displayId parser (pure, no ops-specific
 // dependency) rather than re-deriving the same `#1234`-style parse rule.
 import { parseDisplayIdRef } from "../ops/ops-order-resolution.js";
+// BKL-140 — reuse the SINGLE non-terminal-stage set the discovery-fallback read
+// already uses (turn-reads.ts), rather than re-deriving a byte-parallel copy
+// (FE-D07 duplication lesson). No cycle: turn-reads never imports this module.
+import { ACTIVE_FULFILLMENT_STAGES } from "./turn-reads.js";
 
 /**
  * Per-session LLM-token Redis counter key. Single source of truth (write side:
@@ -673,27 +677,175 @@ export async function resolveOrderId(
  * never returns a foreign order, and never throws (a lookup failure degrades
  * to the auto-resolve fallback, fail-safe).
  */
+/** A disambiguation candidate for the read executor's CLARIFY-shaped result. */
+export interface OrderReferenceCandidate {
+  readonly orderId: string;
+  readonly displayId: number;
+}
+
+/**
+ * The outcome of resolving a customer's order reference for a read tool. Adds two
+ * BKL-140 fields to the FE-T13 shape (both default false/[]), so existing callers
+ * that destructure `{ orderId }` are unaffected:
+ *  - `ambiguous` — an id-less/date reference matched ≥2 owned orders; the executor
+ *    returns a disambiguation-shaped result instead of silently guessing one.
+ *  - `candidates` — the ambiguous orders' `{orderId, displayId}` (display numbers
+ *    the CLARIFY copy can name).
+ */
+export interface ResolvedOrderReference {
+  readonly orderId: string | null;
+  readonly autoResolved: boolean;
+  readonly referenceMatched: boolean;
+  readonly ambiguous: boolean;
+  readonly candidates: ReadonlyArray<OrderReferenceCandidate>;
+}
+
+const NO_ORDER_REFERENCE: ResolvedOrderReference = {
+  orderId: null,
+  autoResolved: false,
+  referenceMatched: false,
+  ambiguous: false,
+  candidates: [],
+};
+
+/** The order-row fields the reference resolver reads (a narrow of OrderProjection). */
+interface OrderRefRow {
+  readonly id: string;
+  readonly displayId: number;
+  readonly fulfillmentStatus: string | null;
+  readonly medusaCreatedAt: Date;
+}
+
+function toOrderCandidate(o: OrderRefRow): OrderReferenceCandidate {
+  return { orderId: o.id, displayId: o.displayId };
+}
+
+/** The restaurant-timezone calendar day (`YYYY-MM-DD`) for an instant — the same
+ *  `Intl` idiom the schedule/date-anchor code uses (schedule-date-resolver.ts). */
+function restaurantDayStr(instant: Date | string): string {
+  const tz = process.env.RESTAURANT_TIMEZONE || "America/Sao_Paulo";
+  const d = typeof instant === "string" ? new Date(instant) : instant;
+  return new Intl.DateTimeFormat("en-CA", { timeZone: tz }).format(d);
+}
+
+/** Shift a `YYYY-MM-DD` calendar day by whole days (deterministic, TZ-free). */
+function shiftDayStr(ymd: string, deltaDays: number): string {
+  const d = new Date(`${ymd}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + deltaDays);
+  return d.toISOString().slice(0, 10);
+}
+
+// FE-D24 — pt-BR weekday markers → day-of-week (0=Sun … 6=Sat). Ordered for a
+// stable scan; diacritic + `-feira`/plural variants explicit. Mirrors the
+// schedule-date-resolver marker idiom, but this resolver looks BACKWARD (orders are
+// past), where schedule-date-resolver looks forward (reservations are future).
+const ORDER_WEEKDAY_MARKERS: ReadonlyArray<{ re: RegExp; dow: number }> = [
+  { re: /\bdomingos?\b/i, dow: 0 },
+  { re: /\bsegunda(?:s|-feiras?)?\b/i, dow: 1 },
+  { re: /\bter[çc]a(?:s|-feiras?)?\b/i, dow: 2 },
+  { re: /\bquarta(?:s|-feiras?)?\b/i, dow: 3 },
+  { re: /\bquinta(?:s|-feiras?)?\b/i, dow: 4 },
+  { re: /\bsexta(?:s|-feiras?)?\b/i, dow: 5 },
+  { re: /\bs[áa]bados?\b/i, dow: 6 },
+];
+
+/**
+ * FE-D24 — DETERMINISTIC (no model) parse of a relative-date order reference to the
+ * restaurant-TZ calendar day (`YYYY-MM-DD`) it names, or null when the text carries
+ * no recognized date marker. Backward-looking: "hoje"/"ontem"/"anteontem" and a
+ * named weekday → its most-recent occurrence on-or-before today (orders are past).
+ */
+export function parseRelativeOrderDate(text: string): string | null {
+  const today = restaurantDayStr(new Date());
+  if (/\banteontem\b/i.test(text)) return shiftDayStr(today, -2);
+  if (/\bontem\b/i.test(text)) return shiftDayStr(today, -1);
+  if (/\bhoje\b/i.test(text)) return today;
+  for (const { re, dow } of ORDER_WEEKDAY_MARKERS) {
+    if (re.test(text)) {
+      const todayDow = new Date(`${today}T00:00:00Z`).getUTCDay();
+      const offset = (todayDow - dow + 7) % 7; // 0 when today IS that weekday
+      return shiftDayStr(today, -offset);
+    }
+  }
+  return null;
+}
+
+/** Load the customer's own recent orders (owner-scoped → IDOR-closed), [] on error. */
+async function loadCustomerOrderRows(customerId: string, limit: number): Promise<OrderRefRow[]> {
+  try {
+    const { orders } = await createOrderQueryService().listByCustomer(customerId, { limit });
+    return orders as unknown as OrderRefRow[];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * BKL-140 — the id-less resolution: no display number, no date. Prefer the customer's
+ * ONE active (non-terminal) order — the order they're almost certainly asking about;
+ * ≥2 active → ambiguous (disambiguate, never guess); 0 active but orders exist → the
+ * most-recent order (an honest "your last order …", unchanged from FE-T13); truly no
+ * orders → the honest no-order result.
+ */
+function resolveIdless(orders: OrderRefRow[]): ResolvedOrderReference {
+  const active = orders.filter((o) => ACTIVE_FULFILLMENT_STAGES.has(String(o.fulfillmentStatus)));
+  if (active.length === 1) {
+    return { ...NO_ORDER_REFERENCE, orderId: active[0]!.id, autoResolved: true };
+  }
+  if (active.length >= 2) {
+    return { ...NO_ORDER_REFERENCE, ambiguous: true, candidates: active.map(toOrderCandidate) };
+  }
+  if (orders.length === 0) return NO_ORDER_REFERENCE;
+  return { ...NO_ORDER_REFERENCE, orderId: orders[0]!.id, autoResolved: true };
+}
+
+/**
+ * FE-T13 (+ BKL-140 / FE-D24) — resolve `check_order_status`/`get_payment_status`'s
+ * optional `orderReference` field to a concrete OWNED orderId. Priority:
+ *   1. a display number ("pedido 1234"/"#1234") → the order with that display id
+ *      OWNED by this customer (IDOR-checked — a customer may name another's number).
+ *   2. FE-D24 — a relative date ("de ontem"/"de terça", {@link parseRelativeOrderDate},
+ *      deterministic) → the customer's own order(s) created that restaurant-TZ day
+ *      (owner-scoped → IDOR-closed): exactly one → that order; ≥2 → ambiguous.
+ *   3. BKL-140 — no resolvable reference → {@link resolveIdless} (one active order,
+ *      else disambiguate/most-recent/no-order).
+ * Every branch is customer-scoped, so a foreign order is NEVER returned; a lookup
+ * error degrades to the id-less fallback (fail-safe), never throws.
+ */
 export async function resolveCustomerOrderReference(
   orderReference: string | undefined,
   customerId: string,
-): Promise<{ orderId: string | null; autoResolved: boolean; referenceMatched: boolean }> {
+): Promise<ResolvedOrderReference> {
   if (typeof orderReference === "string") {
+    // 1. Explicit display-number reference (IDOR-checked) — unchanged (FE-T13).
     const displayId = parseDisplayIdRef(orderReference);
     if (displayId !== null) {
       try {
         const candidates = await createOrderQueryService().findByDisplayId(displayId);
         const owned = candidates.find((o) => o.customerId === customerId);
         if (owned) {
-          return { orderId: owned.id, autoResolved: false, referenceMatched: true };
+          return { ...NO_ORDER_REFERENCE, orderId: owned.id, referenceMatched: true };
         }
       } catch {
-        // Fail-safe — fall through to auto-resolve below, same posture as
-        // resolveOrderId's own try/catch.
+        // Fail-safe — fall through, same posture as resolveOrderId's own try/catch.
       }
     }
+    // 2. FE-D24 — a relative-date reference filters the customer's OWN orders by day.
+    const targetDay = parseRelativeOrderDate(orderReference);
+    if (targetDay !== null) {
+      const rows = await loadCustomerOrderRows(customerId, 50);
+      const onDay = rows.filter((o) => restaurantDayStr(o.medusaCreatedAt) === targetDay);
+      if (onDay.length === 1) {
+        return { ...NO_ORDER_REFERENCE, orderId: onDay[0]!.id, referenceMatched: true };
+      }
+      if (onDay.length >= 2) {
+        return { ...NO_ORDER_REFERENCE, ambiguous: true, candidates: onDay.map(toOrderCandidate) };
+      }
+      // 0 orders that day → fall through to the id-less resolution below.
+    }
   }
-  const { orderId, autoResolved } = await resolveOrderId({}, customerId);
-  return { orderId, autoResolved, referenceMatched: false };
+  // 3. BKL-140 — id-less active-order-aware resolution.
+  return resolveIdless(await loadCustomerOrderRows(customerId, 20));
 }
 
 /** 034-F1: resolve the orderId that OWNS a payment, for the refund ownership

@@ -79,13 +79,14 @@ export const GET_ORDER_HISTORY_READ_SCHEMA = emptyReadSchema(
 );
 
 /** `orderId` is Identity-class and forbidden — resolved server-side. The one
- *  optional field, `orderReference`, is a Directive-class NL display-number
- *  reference ("pedido 1234", "#1234") — NEVER the internal orderId itself;
- *  `check_order_status`'s executor (claustrum-bootstrap.ts) resolves it via
- *  `resolveCustomerOrderReference` (resolve-and-assemble.ts), which parses a
- *  display number and IDOR-checks it against the caller before trusting it,
- *  falling back to the customer's own most-recent order (same auto-resolve
- *  as when the field is absent, which will be the common case). */
+ *  optional field, `orderReference`, is a Directive-class NL reference — a display
+ *  number ("pedido 1234", "#1234") OR a relative date ("de ontem", "de terça",
+ *  FE-D24) — NEVER the internal orderId itself; `check_order_status`'s executor
+ *  (claustrum-bootstrap.ts) resolves it via `resolveCustomerOrderReference`
+ *  (resolve-and-assemble.ts): a display number is IDOR-checked against the caller,
+ *  a date filters the caller's OWN orders by created-at day, and an id-less call
+ *  auto-resolves the customer's ONE active order (BKL-140; ≥2 → an honest
+ *  disambiguation), the common case being the field absent. */
 export const CHECK_ORDER_STATUS_READ_SCHEMA: CapabilityExtractionSchema = {
   capability: "check_order_status",
   fields: [
@@ -95,9 +96,10 @@ export const CHECK_ORDER_STATUS_READ_SCHEMA: CapabilityExtractionSchema = {
       jsonSchema: {
         type: "string",
         description:
-          "Número do pedido, SOMENTE se o cliente mencionar um explicitamente " +
-          "(ex.: \"1234\", \"#1234\"). Deixe de fora se não for mencionado — " +
-          "resolve automaticamente para o pedido mais recente.",
+          "Referência do pedido, SOMENTE se o cliente mencionar uma explicitamente: " +
+          "o número (ex.: \"1234\", \"#1234\") OU uma data relativa " +
+          "(ex.: \"de ontem\", \"de terça\"). Deixe de fora se não for mencionada — " +
+          "resolve automaticamente para o pedido ativo do cliente.",
       },
       required: false,
     },
@@ -179,8 +181,8 @@ export const GET_ORDERED_TOGETHER_READ_SCHEMA: CapabilityExtractionSchema = {
 
 // ── pack-payments reads ──────────────────────────────────────────────────
 
-/** `orderId` is Identity-class and forbidden — same `orderReference`
- *  NL-display-number field + resolution posture as
+/** `orderId` is Identity-class and forbidden — same `orderReference` NL reference
+ *  (display number OR relative date, FE-D24) + resolution posture as
  *  CHECK_ORDER_STATUS_READ_SCHEMA above. */
 export const GET_PAYMENT_STATUS_READ_SCHEMA: CapabilityExtractionSchema = {
   capability: "get_payment_status",
@@ -191,9 +193,10 @@ export const GET_PAYMENT_STATUS_READ_SCHEMA: CapabilityExtractionSchema = {
       jsonSchema: {
         type: "string",
         description:
-          "Número do pedido, SOMENTE se o cliente mencionar um explicitamente " +
-          "(ex.: \"1234\", \"#1234\"). Deixe de fora se não for mencionado — " +
-          "resolve automaticamente para o pedido mais recente.",
+          "Referência do pedido, SOMENTE se o cliente mencionar uma explicitamente: " +
+          "o número (ex.: \"1234\", \"#1234\") OU uma data relativa " +
+          "(ex.: \"de ontem\", \"de terça\"). Deixe de fora se não for mencionada — " +
+          "resolve automaticamente para o pedido ativo do cliente.",
       },
       required: false,
     },

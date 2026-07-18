@@ -83,10 +83,30 @@ beforeEach(() => {
     orderId: null,
     autoResolved: false,
     referenceMatched: false,
+    ambiguous: false,
+    candidates: [],
   });
 });
 
 describe("get_payment_status executor — BKL-118 typed-empty vs real read", () => {
+  // BKL-140 — ≥2 owned orders matched an ambiguous reference: disambiguation-shaped
+  // fact (never guess), the real read is NEVER called (billing twin of check_order_status).
+  it("AMBIGUOUS resolution (≥2 orders) → disambiguation-shaped fact; the real read is NEVER called", async () => {
+    mockResolveCustomerOrderReference.mockResolvedValue({
+      orderId: null,
+      autoResolved: false,
+      referenceMatched: false,
+      ambiguous: true,
+      candidates: [{ orderId: "ord_a", displayId: 11 }, { orderId: "ord_b", displayId: 12 }],
+    });
+    const result = await getPaymentStatusExecutor({}, stateWithCustomer("cus_1"));
+    expect(result).toEqual({
+      payment: null,
+      reason: "multiple_orders",
+      candidates: [{ orderId: "ord_a", displayId: 11 }, { orderId: "ord_b", displayId: 12 }],
+    });
+    expect(mockCheckPaymentStatus).not.toHaveBeenCalled();
+  });
   it("AUTHENTICATED owner + orderId → delegates to the real checkPaymentStatus (byte-identical); forged customerId stripped; identity from state", async () => {
     const real = {
       hasPayment: true,

@@ -1911,14 +1911,20 @@ export const IBATEXAS_READ_TOOL_EXECUTORS: Readonly<
     if (hasResolvableOrderId(stripped)) {
       return checkOrderStatus(stripped as never, ctx);
     }
-    const { orderId } = await resolveCustomerOrderReference(
+    const resolved = await resolveCustomerOrderReference(
       readOrderReference(stripped),
       ctx.customerId,
     );
-    if (!orderId) {
+    // BKL-140 — ≥2 owned orders matched an ambiguous id-less/date reference: return a
+    // disambiguation-shaped fact (never guess one) the renderer/CLARIFY path can voice
+    // with the candidate display numbers, rather than silently resolving the wrong one.
+    if (resolved.ambiguous) {
+      return { order: null, reason: "multiple_orders", candidates: resolved.candidates };
+    }
+    if (!resolved.orderId) {
       return { order: null, reason: "no_orders_for_session" };
     }
-    return checkOrderStatus({ orderId } as never, ctx);
+    return checkOrderStatus({ orderId: resolved.orderId } as never, ctx);
   },
   // BKL-118 — the billing twin of the BKL-107 check_order_status short-circuit.
   // get_payment_status delegates to checkPaymentStatus, whose handler REQUIRES an
@@ -1950,14 +1956,19 @@ export const IBATEXAS_READ_TOOL_EXECUTORS: Readonly<
     if (hasResolvableOrderId(stripped)) {
       return checkPaymentStatus(stripped as never, ctx);
     }
-    const { orderId } = await resolveCustomerOrderReference(
+    const resolved = await resolveCustomerOrderReference(
       readOrderReference(stripped),
       ctx.customerId,
     );
-    if (!orderId) {
+    // BKL-140 — disambiguation-shaped fact for ≥2 ambiguous matches (see
+    // check_order_status above); the billing twin, keyed on the same resolved order.
+    if (resolved.ambiguous) {
+      return { payment: null, reason: "multiple_orders", candidates: resolved.candidates };
+    }
+    if (!resolved.orderId) {
       return { payment: null, reason: "no_payment_for_session" };
     }
-    return checkPaymentStatus({ orderId } as never, ctx);
+    return checkPaymentStatus({ orderId: resolved.orderId } as never, ctx);
   },
   get_order_history: (input, state) => {
     const ctx = agentCtxFromState(state);
