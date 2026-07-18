@@ -37,7 +37,7 @@ import {
   type PolicyBundle,
 } from "@adjudicate/core/kernel"
 import { requireTenantBinding } from "@adjudicate/primitives"
-import { isAtOrAboveMoneyBand } from "@ibatexas/types"
+import { classifyRefundMagnitudeBand } from "@ibatexas/types"
 import {
   refundAlreadyExhausted,
   refundNotInRefundableState,
@@ -428,13 +428,25 @@ const refundMagnitudeGuard: PaymentGuard = (envelope, state) => {
   }
 
   const escalateThreshold = getRefundEscalateThresholdCentavos()
-  // FE-T03/D2: flipped from `isAboveMoneyBand` (strict `>`) to
-  // `isAtOrAboveMoneyBand` (`>=`), reconciling this ladder with pack-orders'
-  // checkout-confirm comparator at the shared R$1000 boundary. An exact
-  // R$1000 (100_000 centavos) refund now ESCALATEs instead of parking at
-  // REQUEST_CONFIRMATION — see refund-magnitude-ladder.test.ts and
-  // conformance.test.ts for the pinned boundary behavior.
-  if (isAtOrAboveMoneyBand(payload.refundAmountCentavos, escalateThreshold)) {
+  const confirmThreshold = getRefundConfirmThresholdCentavos()
+  // FE-D07: the EXECUTE / CONFIRM / ESCALATE band mapping is single-sourced
+  // in `@ibatexas/types.classifyRefundMagnitudeBand` and shared byte-for-byte
+  // with the domain admin-HTTP bundle (`paymentProjectionPolicyBundle`), so
+  // the money bands can never fork by channel again (the FE-T03 lockstep pair
+  // is now ONE comparator). FE-T03/D2 lives inside that helper: escalate uses
+  // `>=` (`isAtOrAboveMoneyBand`), so an exact R$1000 (100_000 centavos)
+  // refund ESCALATEs instead of parking at REQUEST_CONFIRMATION — see
+  // refund-magnitude-ladder.test.ts, conformance.test.ts, and the cross-bundle
+  // parity pin in apps/api (refund-band-channel-parity.test.ts). The
+  // channel-specific overlays below (AUT-017 owner-approval, BKL-085 UNTRUSTED
+  // taint) stay ordered exactly as before around the shared band.
+  const band = classifyRefundMagnitudeBand(
+    payload.refundAmountCentavos,
+    confirmThreshold,
+    escalateThreshold,
+  )
+
+  if (band === "ESCALATE") {
     // ── AUT-017 — ESCALATE→OWNER-approve→executable-resume overlay ──────────
     //
     // When (and ONLY when) an OWNER has approved THIS exact escalated refund
@@ -531,8 +543,7 @@ const refundMagnitudeGuard: PaymentGuard = (envelope, state) => {
     )
   }
 
-  const confirmThreshold = getRefundConfirmThresholdCentavos()
-  if (payload.refundAmountCentavos > confirmThreshold) {
+  if (band === "CONFIRM") {
     const reais = (payload.refundAmountCentavos / 100)
       .toFixed(2)
       .replace(".", ",")

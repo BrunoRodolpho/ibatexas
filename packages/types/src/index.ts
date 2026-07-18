@@ -49,6 +49,8 @@ export {
   MONEY_BAND_1000_CENTAVOS,
   isAtOrAboveMoneyBand,
   isAboveMoneyBand,
+  classifyRefundMagnitudeBand,
+  type RefundMagnitudeBand,
 } from "./constants.js"
 
 // Cart types
