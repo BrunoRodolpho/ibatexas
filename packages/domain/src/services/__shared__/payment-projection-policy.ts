@@ -555,9 +555,18 @@ const regenerationCountCapGuard: PaymentGuard = (envelope, state) => {
  * BKL-178 — chargebacks ALWAYS ESCALATE. A `charge.dispute.created` from
  * Stripe is too serious to auto-process: the payment is reconciled to
  * DISPUTED (status truth, a separate `payment.status.reconcile` envelope)
- * and this guard routes the dispute itself to human review. Behavior-parity
- * mirror of `@ibatexas/pack-payments`' `escalateAlwaysOnDispute` (FE-D07
- * tracked duplication) — reads no state, so it fires uniformly.
+ * and this guard routes the dispute itself to human review. Reads no state,
+ * so it fires uniformly.
+ *
+ * FE-D07 PARALLEL SET (byte-parallel twin — keep in lockstep): this mirrors
+ * `@ibatexas/pack-payments`' `escalateAlwaysOnDispute`
+ * (`ESCALATE("human", "dispute_opened_requires_review")`). The domain
+ * projection deliberately duplicates rather than imports the pack (no
+ * domain→pack dependency), exactly like the refund-magnitude + regeneration
+ * guards above. A future promote-wave single-sources the pair (the #289
+ * `classifyRefundMagnitudeBand` shape); until then, the cross-bundle parity
+ * pin in `apps/api/src/__tests__/dispute-escalate-bundle-parity.test.ts`
+ * fails the moment the two guards fork.
  */
 const escalateAlwaysOnDispute: PaymentGuard = (envelope) => {
   if (envelope.kind !== "payment.dispute.open") return null
