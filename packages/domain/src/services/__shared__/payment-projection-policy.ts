@@ -63,6 +63,11 @@ export type PaymentProjectionIntentKind =
   // separate envelope so the bump is kernel-visible. Wave 5 will fold
   // this into a composite `payment.pix.regenerate` kind.
   | "payment.regeneration.count.increment"
+  // BKL-178: chargeback opened at Stripe — ADJUDICATE-ONLY, always
+  // ESCALATEs for human review. Behavior-parity mirror of
+  // `@ibatexas/pack-payments`' `escalateAlwaysOnDispute` (FE-D07 tracked
+  // duplication); Wave 5 promotes this to the pack.
+  | "payment.dispute.open"
 
 /** Supported payment instruments (CLAUDE.md PIX-first). */
 export type PaymentMethod = "pix" | "card" | "cash"
@@ -145,6 +150,23 @@ export interface PaymentRegenerationCountIncrementPayload {
   readonly currentCount: number
 }
 
+/**
+ * BKL-178: chargeback opened at Stripe (`charge.dispute.created`). A
+ * system-actor envelope the webhook mints ALONGSIDE the DISPUTED reconcile.
+ * Carries NO state mutation of its own — the domain guard
+ * `escalateAlwaysOnDispute` ALWAYS ESCALATEs it for human review, and the
+ * payment's DISPUTED status is written by `payment.status.reconcile` (status
+ * truth). Behavior-parity with `@ibatexas/pack-payments`'
+ * `PaymentDisputeOpenPayload`/`escalateAlwaysOnDispute` (FE-D07 tracked
+ * duplication); Wave 5 promotes it to the pack.
+ */
+export interface PaymentDisputeOpenPayload {
+  readonly paymentId: string
+  readonly stripeEventId: string
+  /** Chargeback amount in centavos (Stripe `dispute.amount`). */
+  readonly disputeAmountCentavos?: number
+}
+
 export type PaymentProjectionPayload =
   | PaymentCreatePayload
   | PaymentStatusTransitionPayload
@@ -152,6 +174,7 @@ export type PaymentProjectionPayload =
   | PaymentMethodSwitchPayload
   | PaymentRefundIssuePayload
   | PaymentRegenerationCountIncrementPayload
+  | PaymentDisputeOpenPayload
 
 // ── State ──────────────────────────────────────────────────────────────────
 
@@ -248,6 +271,8 @@ export const paymentProjectionTaintPolicy = createSystemTaintPolicy({
     "payment.create",
     "payment.status.reconcile",
     "payment.regeneration.count.increment",
+    // BKL-178 — dispute.open is minted only by the Stripe webhook (SYSTEM).
+    "payment.dispute.open",
   ],
   userMinimum: "UNTRUSTED",
 })
@@ -526,6 +551,33 @@ const regenerationCountCapGuard: PaymentGuard = (envelope, state) => {
   ])
 }
 
+/**
+ * BKL-178 — chargebacks ALWAYS ESCALATE. A `charge.dispute.created` from
+ * Stripe is too serious to auto-process: the payment is reconciled to
+ * DISPUTED (status truth, a separate `payment.status.reconcile` envelope)
+ * and this guard routes the dispute itself to human review. Reads no state,
+ * so it fires uniformly.
+ *
+ * FE-D07 PARALLEL SET (byte-parallel twin — keep in lockstep): this mirrors
+ * `@ibatexas/pack-payments`' `escalateAlwaysOnDispute`
+ * (`ESCALATE("human", "dispute_opened_requires_review")`). The domain
+ * projection deliberately duplicates rather than imports the pack (no
+ * domain→pack dependency), exactly like the refund-magnitude + regeneration
+ * guards above. A future promote-wave single-sources the pair (the #289
+ * `classifyRefundMagnitudeBand` shape); until then, the cross-bundle parity
+ * pin in `apps/api/src/__tests__/dispute-escalate-bundle-parity.test.ts`
+ * fails the moment the two guards fork.
+ */
+const escalateAlwaysOnDispute: PaymentGuard = (envelope) => {
+  if (envelope.kind !== "payment.dispute.open") return null
+  return decisionEscalate("human", "dispute_opened_requires_review", [
+    basis("business", BASIS_CODES.business.RULE_VIOLATED, {
+      reason: "dispute_opened",
+      kind: envelope.kind,
+    }),
+  ])
+}
+
 // ── PolicyBundle ──────────────────────────────────────────────────────────
 
 export const paymentProjectionPolicyBundle: PolicyBundle<
@@ -536,6 +588,11 @@ export const paymentProjectionPolicyBundle: PolicyBundle<
   stateGuards: [requirePaymentExists, refuseTerminalTransition],
   authGuards: [],
   taint: paymentProjectionTaintPolicy,
-  business: [refundMagnitudeGuard, regenerationCountCapGuard, executeAll],
+  business: [
+    escalateAlwaysOnDispute,
+    refundMagnitudeGuard,
+    regenerationCountCapGuard,
+    executeAll,
+  ],
   default: "REFUSE",
 }

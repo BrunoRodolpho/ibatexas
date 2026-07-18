@@ -332,4 +332,25 @@ describe("handoff-subscriber", () => {
     const [, message] = mockSendText.mock.calls[0] as [string, { text: string }]
     expect(message.text).not.toContain("Aprovar/recusar:")
   })
+
+  // ── BKL-178 — a payment dispute ESCALATE lands on the owner escalation queue ──
+
+  it("records a payment.dispute.open handoff on the escalation store (Escalações + KPI surface)", async () => {
+    delete process.env.STAFF_NOTIFICATION_PHONE
+    const callback = await getRegisteredCallback()
+
+    // The webhook publishes this on the kernel's dispute ESCALATE: a synthetic
+    // non-conversation sessionId + the fixed reason. The subscriber records it
+    // so the dispute appears in Escalações and the pendingEscalations KPI.
+    await callback({ sessionId: "dispute:dp_test_789", reason: "payment_disputed" })
+
+    expect(mockRecordHandoff).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: "dispute:dp_test_789",
+        reason: "payment_disputed",
+      }),
+    )
+    // No parked money intent rides a dispute handoff — it is not an approval park.
+    expect(mockAppendPendingIntent).not.toHaveBeenCalled()
+  })
 })

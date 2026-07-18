@@ -297,6 +297,7 @@ export {
   type PaymentMethodSwitchPayload,
   type PaymentRefundIssuePayload,
   type PaymentRegenerationCountIncrementPayload,
+  type PaymentDisputeOpenPayload,
 } from "./services/__shared__/payment-projection-policy.js"
 export {
   createPaymentQueryService,
