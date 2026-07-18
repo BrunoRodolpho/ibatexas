@@ -77,11 +77,33 @@ import {
 import { selectCandidateClaim, type RegistryClaimType } from "./claim-registry.js";
 import type { ClaimAuthContext, ClaimAwarePlannerPort } from "./ibatexas-planner.js";
 import { ownedResourceIdsByBaseKey } from "./ibatexas-claims-kernel-deps.js";
+import { completeWithResilience } from "./complete-with-retry.js";
 import {
   classifyRequestSpans,
   decomposeRequiredClaims,
   REQUIRED_CLAIM_CLOSURE,
 } from "./required-claim-decomposer.js";
+
+// BKL-168 — total proposeClaims completion attempts (incl. the first) before the F1
+// safe-terminal degrade. The F1 catch already guarantees never-silent (a throw →
+// synthesized safe UNKNOWN); this adds a bounded jittered RETRY before that degrade
+// so a transient 4B tool-call-XML flake self-heals instead of always degrading.
+// Reuses the planner's EXISTING extraction retry budget (same planner-layer
+// completion-retry concern, already an .env.example knob) rather than minting a new
+// env var — config-from-env (Hard Rule #3), no new knob to document.
+const PROPOSE_CLAIMS_RETRY_MAX_ATTEMPTS = Math.max(
+  1,
+  Number.parseInt(process.env.EXTRACTION_EMPTY_RETRY_MAX_ATTEMPTS ?? "2", 10) || 2,
+);
+
+/** BKL-168 — test seam: injectable retry timing for the proposeClaims resilience
+ *  wrap, so a forced-throw test drives the retry without real timers. Defaults
+ *  (production): the shared bounded/jittered sleep + the env-tuned attempt budget. */
+export interface ClaimPlannerCompletionRetryOptions {
+  readonly maxAttempts?: number;
+  readonly sleep?: (ms: number) => Promise<void>;
+  readonly delayForAttempt?: (n: number) => number;
+}
 
 /**
  * BKL-110 — the claim types the §O#15 decomposer has DEMOTE-AUTHORITY over: the
@@ -243,6 +265,7 @@ function synthesizeSafeTerminalCandidates(
  */
 export function createIbatexasClaimPlanner(
   planner: ClaimAwarePlannerPort,
+  options: { readonly completionRetry?: ClaimPlannerCompletionRetryOptions } = {},
 ): ClaimPlannerPort {
   return {
     async propose(
@@ -320,27 +343,48 @@ export function createIbatexasClaimPlanner(
           "claim-planner: classify-only read path — propose_claim model call skipped",
         );
       } else {
-        try {
-          const plan = await planner.proposeClaims(input.cognition, auth);
-          candidates = plan.candidates;
-          forcedTerminal = plan.forcedTerminal;
-        } catch (err) {
+        // BKL-168 — a bounded, jittered RETRY around the completion boundary BEFORE
+        // the F1 safe-terminal degrade: a transient 4B tool-call-XML flake (the
+        // ~1/3-turn Ollama throw) self-heals on a re-prompt instead of ALWAYS
+        // degrading. `completeWithResilience` CAPTURES the throw internally, so there
+        // is NO duplicate catch layer — `ok:false` arrives only after every attempt
+        // threw, and is then the SAME safe-UNKNOWN degrade as before (flaked = true),
+        // now with a structured completion_error event.
+        const retry = options.completionRetry ?? {};
+        const proposeResult = await completeWithResilience(
+          () => planner.proposeClaims(input.cognition, auth),
+          {
+            maxAttempts: retry.maxAttempts ?? PROPOSE_CLAIMS_RETRY_MAX_ATTEMPTS,
+            ...(retry.sleep ? { sleep: retry.sleep } : {}),
+            ...(retry.delayForAttempt ? { delayForAttempt: retry.delayForAttempt } : {}),
+          },
+        );
+        if (proposeResult.ok) {
+          candidates = proposeResult.completion.candidates;
+          forcedTerminal = proposeResult.completion.forcedTerminal;
+        } else {
           flaked = true;
           candidates = [];
           forcedTerminal = undefined;
           // OBSERVABILITY: the throw no longer escapes to @claustrum/core's
           // claims-validate (which used to log the "degrading to no-claims" degrade),
           // so the ~1/3-turn 4B tool-call flake would go SILENT in VictoriaLogs. Log
-          // it HERE instead, with a stable event marker the logging pipeline keys on.
-          // Best-effort + NEVER re-thrown (telemetry must not break a turn).
+          // it HERE with a stable, STRUCTURED completion_error marker (reason +
+          // attempts, mirroring the planner's extraction_failure seam). Best-effort +
+          // NEVER re-thrown (telemetry must not break a turn).
           logger.warn(
             {
               component: "claim-planner",
               event: "claim_planner.propose_failed",
+              reason: "completion_error",
               turnId: input.cognition.turnId,
-              err: err instanceof Error ? err.message : String(err),
+              attempts: proposeResult.attempts,
+              err:
+                proposeResult.error instanceof Error
+                  ? proposeResult.error.message
+                  : String(proposeResult.error),
             },
-            "claim-planner proposeClaims failed; synthesizing safe UNKNOWN candidates for required claim types",
+            "claim-planner proposeClaims failed after retry; synthesizing safe UNKNOWN candidates for required claim types",
           );
         }
       }

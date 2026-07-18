@@ -206,6 +206,69 @@ function fixedClaimPlanner(candidates: CandidateClaim[]): ClaimAwarePlannerPort 
 
 const KERNEL_NOW = 10_000;
 
+describe("ibatexas-claim-planner — BKL-168 resilient completion boundary", () => {
+  it("RETRIES proposeClaims to the budget before the F1 degrade, then emits a structured completion_error event", async () => {
+    let calls = 0;
+    const flakingPlanner: ClaimAwarePlannerPort = {
+      async propose() {
+        return emptyPlan;
+      },
+      async proposeClaims(): Promise<ClaimPlan> {
+        calls += 1;
+        throw new Error("simulated 4B tool-call XML parse flake");
+      },
+    };
+    const warnSpy = vi.spyOn(logger, "warn");
+    const adapter = createIbatexasClaimPlanner(flakingPlanner, {
+      completionRetry: { maxAttempts: 3, sleep: async () => {}, delayForAttempt: () => 0 },
+    });
+
+    const candidates = await proposeCandidates(adapter, adapterInput("vocês estão abertos?"));
+
+    // Retried to the budget (3 attempts) before giving up…
+    expect(calls).toBe(3);
+    // …then degraded to the SAME F1 safe terminal (never silence): a synthesized
+    // proposition-free UNKNOWN candidate for the required claim type.
+    expect(candidates.length).toBeGreaterThan(0);
+    expect(candidates.find((c) => c.type === "STORE_OPEN_NOW")).toBeDefined();
+    // A STRUCTURED, VictoriaLogs-queryable completion_error event with the attempt count.
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "claim_planner.propose_failed",
+        reason: "completion_error",
+        attempts: 3,
+      }),
+      expect.any(String),
+    );
+    warnSpy.mockRestore();
+  });
+
+  it("a RECOVERED retry (throws once, then a successful proposal) surfaces it — NO F1 degrade", async () => {
+    let calls = 0;
+    const recoveringPlanner: ClaimAwarePlannerPort = {
+      async propose() {
+        return emptyPlan;
+      },
+      async proposeClaims(): Promise<ClaimPlan> {
+        calls += 1;
+        if (calls === 1) throw new Error("transient flake");
+        return { candidates: [], completeness: [], droppedClaimTypes: [] };
+      },
+    };
+    const adapter = createIbatexasClaimPlanner(recoveringPlanner, {
+      completionRetry: { maxAttempts: 3, sleep: async () => {}, delayForAttempt: () => 0 },
+    });
+
+    // A claim-requiring question, but the SECOND attempt succeeds with an honest EMPTY
+    // proposal → the F1 synthesis must NOT fire (a successful empty is surfaced
+    // unchanged — the BKL-078 gap). Proves the retry converted a would-be degrade
+    // into a recovered success.
+    const candidates = await proposeCandidates(adapter, adapterInput("vocês estão abertos?"));
+    expect(calls).toBe(2);
+    expect(candidates).toHaveLength(0);
+  });
+});
+
 describe("ibatexas-claim-planner — F1 safe terminal (BKL-005)", () => {
   it("synthesizes a safe candidate when proposeClaims THROWS on a claim-requiring question", async () => {
     const adapter = createIbatexasClaimPlanner(throwingClaimPlanner());
