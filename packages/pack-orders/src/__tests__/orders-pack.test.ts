@@ -1145,6 +1145,21 @@ describe("ordersCapabilityPlanner — FE-T09 amend inversion", () => {
   it("order.amend.request is STILL in ordersPack.intents[] — kernel-adjudicable, just not model-proposable (the legacy HTTP route still builds it directly)", () => {
     expect(ordersPack.intents).toContain("order.amend.request")
   })
+
+  // FE-D28 — review-by-chat activation: order.review.submit joins the
+  // authenticated allowedIntents (the resolver stamps the Identity-class
+  // orderId/productId; the model only emits rating/comment + NL item/orderRef).
+  it("order.review.submit IS model-proposable for an authenticated customer, never for a guest", () => {
+    const authedPlan = ordersPack.planner.plan(state(), authenticatedContext())
+    expect(authedPlan.allowedIntents).toContain("order.review.submit")
+    const guestPlan = ordersPack.planner.plan(state({ customerId: null }), {
+      channel: "web",
+      customerId: null,
+      cartId: "cart-1",
+      orderId: null,
+    })
+    expect(guestPlan.allowedIntents).not.toContain("order.review.submit")
+  })
 })
 
 // ── order.review.submit ─────────────────────────────────────────────────

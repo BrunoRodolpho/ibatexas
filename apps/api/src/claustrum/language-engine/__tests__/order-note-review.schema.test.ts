@@ -49,17 +49,23 @@ describe("ORDER_REVIEW_SUBMIT_EXTRACTION_SCHEMA", () => {
     expect(() => assertSoundExtractionSchema(ORDER_REVIEW_SUBMIT_EXTRACTION_SCHEMA)).not.toThrow();
   });
 
-  it("exposes ONLY {rating, comment} — no orderId or productId", () => {
+  // FE-D28 — the model now also sees the optional Directive-class NL
+  // reference fields `item` (reviewed-product disambiguation) and
+  // `orderReference` (display-number). Both resolve server-side; the
+  // Identity-class ids `orderId`/`productId` are still never model-facing.
+  it("exposes {rating, comment, item, orderReference} — never orderId or productId", () => {
     const names = extractionFieldNames(ORDER_REVIEW_SUBMIT_EXTRACTION_SCHEMA);
-    expect([...names].sort()).toEqual(["comment", "rating"]);
+    expect([...names].sort()).toEqual(["comment", "item", "orderReference", "rating"]);
     expect(names.has("orderId")).toBe(false);
     expect(names.has("productId")).toBe(false);
   });
 
-  it("declares rating required and comment optional", () => {
+  it("declares rating required and comment/item/orderReference optional", () => {
     const byName = new Map(ORDER_REVIEW_SUBMIT_EXTRACTION_SCHEMA.fields.map((f) => [f.name, f]));
     expect(byName.get("rating")?.required).toBe(true);
     expect(byName.get("comment")?.required).toBe(false);
+    expect(byName.get("item")?.required).toBe(false);
+    expect(byName.get("orderReference")?.required).toBe(false);
     expect(byName.get("rating")?.jsonSchema.type).toBe("number");
   });
 
@@ -70,6 +76,8 @@ describe("ORDER_REVIEW_SUBMIT_EXTRACTION_SCHEMA", () => {
       properties: {
         rating: { type: "number", description: expect.any(String) },
         comment: { type: "string", description: expect.any(String) },
+        item: { type: "string", description: expect.any(String) },
+        orderReference: { type: "string", description: expect.any(String) },
       },
       required: ["rating"],
       additionalProperties: false,

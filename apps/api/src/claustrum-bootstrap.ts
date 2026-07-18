@@ -2834,7 +2834,8 @@ export async function bootstrapClaustrum(
   // P0-7: the same gate also probes the composed capability planners under the
   // named contexts (authed-customer / staff) so a planner-advertised kind with
   // no registered tool fails the boot; registered-but-unadvertised kinds are
-  // WARN-only (order.review.submit — web-flow-reached, no chat advertisement).
+  // WARN-only (as of FE-D28 order.review.submit is advertised + resolver-wired,
+  // so there is currently no such kind — the WARN path stays for future ones).
   const toolRegistry = createToolRegistry();
   registerIbatexasToolPacks(toolRegistry);
   const rosterDrift = toolRosterDrift(

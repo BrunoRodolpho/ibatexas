@@ -641,16 +641,16 @@ const ORDER_COUPON_APPLY_RESOLVER_FIELDS: readonly string[] = ["cartId"];
 const ORDER_NOTE_ADD_RESOLVER_FIELDS: readonly string[] = ["orderId"];
 
 /**
- * FE-T14 — order.review.submit's resolver-stamped fields. UNLIKE every
- * other kind in this rollout slice, there is no chat-reachable resolution
- * path for either identifier today (see order-note-review.schema.ts's
- * header) — `orderId`/`productId` are supplied directly by whichever
- * caller built the envelope (today: the web review flow), never guessed,
- * so both are `authoritative`, never `grounded`, if/when they appear in a
- * resolved payload. This derivation is schema-driven and channel-agnostic
- * — it materializes useful ExtractionIR/HydratedIntentIR observability for
- * an order.review.submit audit record regardless of which caller produced
- * it, without requiring a new chat-side resolver.
+ * order.review.submit's resolver-stamped fields (FE-D28 activation). Both are
+ * Identity-class and resolver-filled at the chat seam (resolve-and-assemble.ts):
+ * `orderId` is auto-resolved to the customer's most-recent order (or a
+ * display-number `orderReference` match) — a guess in the common case, hence
+ * GROUNDED (the `authoritative` set in the dispatch excludes it); `productId`
+ * is resolved from the reviewed order's OWN line items (single-product, or an
+ * explicit NL `item` match) — an explicit-reference resolution, hence
+ * AUTHORITATIVE. The derivation is schema-driven and channel-agnostic, so a
+ * web-flow envelope (me.ts, which supplies both ids directly) audits through
+ * the same path.
  */
 const ORDER_REVIEW_SUBMIT_RESOLVER_FIELDS: readonly string[] = ["orderId", "productId"];
 
@@ -867,7 +867,12 @@ export function buildLanguageEngineAuditMetadata(
       languageEngine: deriveGranularAmend(
         ORDER_REVIEW_SUBMIT_EXTRACTION_SCHEMA,
         ORDER_REVIEW_SUBMIT_RESOLVER_FIELDS,
-        new Set(["orderId", "productId"]),
+        // FE-D28 — productId is resolved from the reviewed order's line items
+        // (an explicit-reference/single-product resolution → authoritative);
+        // orderId is auto-resolved (most-recent, or a display-number match) and
+        // stays GROUNDED so the turn's confirmationRequired is honest (the same
+        // posture as order.note.add / the granular amend kinds' orderId).
+        new Set(["productId"]),
         payload,
       ),
     };

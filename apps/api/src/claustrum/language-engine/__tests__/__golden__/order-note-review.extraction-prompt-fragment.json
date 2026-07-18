@@ -74,6 +74,14 @@
                   "comment": {
                     "type": "string",
                     "description": "Comentário da avaliação, EXATAMENTE como o cliente disse. Omita se não houver comentário explícito."
+                  },
+                  "item": {
+                    "type": "string",
+                    "description": "Referência em linguagem natural ao item avaliado do pedido (ex.: \"a costela\", \"o hambúrguer\"), SOMENTE se o cliente citar um. NUNCA um ID — a referência é resolvida pelo runtime. Deixe de fora se a avaliação for do pedido como um todo."
+                  },
+                  "orderReference": {
+                    "type": "string",
+                    "description": "Número do pedido avaliado, SOMENTE se o cliente mencionar um explicitamente (ex.: \"1234\", \"#1234\"). Deixe de fora se não for mencionado — resolve automaticamente para o pedido mais recente."
                   }
                 },
                 "required": [

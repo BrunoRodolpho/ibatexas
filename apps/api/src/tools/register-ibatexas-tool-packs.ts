@@ -630,9 +630,10 @@ export function listIbatexasToolPacks(): ReadonlyArray<TD<unknown, unknown>> {
  * fail-closed floor the leg exists to enforce, and it must not be silently
  * widened by an exemption meant only for the staff/ops plane. Registered-
  * but-unadvertised kinds are WARN-only via `options.onWarn` — unreachable
- * via chat is dead weight, never a dispatch failure (`order.review.submit`
- * is the known case: the orders planner never advertises it; reviews arrive
- * via the web flow).
+ * via chat is dead weight, never a dispatch failure. As of FE-D28 there is no
+ * such kind (`order.review.submit`, the former example, is now advertised by
+ * the orders planner); the WARN path stays for any future registered-but-
+ * unadvertised capability.
  *
  * Pure: the caller supplies the pack intent union, the planners, AND the
  * chat-surfaced-kinds set (the registrar deliberately does not import
