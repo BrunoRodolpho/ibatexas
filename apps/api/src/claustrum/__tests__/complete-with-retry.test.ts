@@ -5,7 +5,11 @@
  * still fires, and never retries a first-attempt non-empty.
  */
 import { describe, it, expect, vi } from "vitest";
-import { completeWithEmptyRetry, isEmptyCompletion } from "../complete-with-retry.js";
+import {
+  completeWithEmptyRetry,
+  completeWithResilience,
+  isEmptyCompletion,
+} from "../complete-with-retry.js";
 
 const noSleep = { sleep: async () => {}, delayForAttempt: () => 0 };
 
@@ -116,5 +120,94 @@ describe("completeWithEmptyRetry — custom isEmpty predicate (FE-T01)", () => {
     expect(attempts).toBe(3);
     expect(recovered).toBe(false);
     expect(complete).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe("completeWithResilience (BKL-162 — completion-boundary error resilience)", () => {
+  const genuinelyEmpty = (c: { text: string; toolCalls?: unknown[] }): boolean =>
+    isEmptyCompletion(c.text) && (c.toolCalls === undefined || c.toolCalls.length === 0);
+
+  it("returns ok:true on a first-attempt success without retrying", async () => {
+    const complete = vi.fn(async () => ({ text: "olá!" }));
+    const result = await completeWithResilience(complete, { maxAttempts: 2, ...noSleep });
+    expect(result).toMatchObject({ ok: true, attempts: 1, recovered: false });
+    if (result.ok) expect(result.completion.text).toBe("olá!");
+    expect(complete).toHaveBeenCalledTimes(1);
+  });
+
+  it("CAPTURES a thrown error and retries, recovering on a later success (never propagates)", async () => {
+    const complete = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("Ollama 500: XML syntax error"))
+      .mockResolvedValueOnce({ text: "recuperado" });
+    const result = await completeWithResilience(complete, { maxAttempts: 2, ...noSleep });
+    expect(result).toMatchObject({ ok: true, attempts: 2, recovered: true });
+    if (result.ok) expect(result.completion.text).toBe("recuperado");
+    expect(complete).toHaveBeenCalledTimes(2);
+  });
+
+  it("returns ok:false with the last error when every attempt throws (bounded)", async () => {
+    const boom = new Error("Ollama 500: XML syntax error on line 3");
+    const complete = vi.fn().mockRejectedValue(boom);
+    const result = await completeWithResilience(complete, { maxAttempts: 2, ...noSleep });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toBe(boom);
+      expect(result.attempts).toBe(2);
+    }
+    expect(complete).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not retry a throw when maxAttempts is 1 (retry disabled)", async () => {
+    const complete = vi.fn().mockRejectedValue(new Error("500"));
+    const result = await completeWithResilience(complete, { maxAttempts: 1, ...noSleep });
+    expect(result).toMatchObject({ ok: false, attempts: 1 });
+    expect(complete).toHaveBeenCalledTimes(1);
+  });
+
+  it("default (no isEmpty) treats an empty-text completion as a VALID result — pure error-retry", async () => {
+    // A structured/tool-call completion legitimately has empty text; it must not
+    // be retried under the default predicate.
+    const complete = vi.fn(async () => ({ text: "", toolCalls: [{ id: "a" }] }));
+    const result = await completeWithResilience(complete, { maxAttempts: 3, ...noSleep });
+    expect(result).toMatchObject({ ok: true, attempts: 1 });
+    expect(complete).toHaveBeenCalledTimes(1);
+  });
+
+  it("with an isEmpty predicate, retries a genuinely empty completion then returns ok:true with it (caller REFUSEs on empty)", async () => {
+    const complete = vi.fn(async () => ({ text: "", toolCalls: [] as unknown[] }));
+    const result = await completeWithResilience(complete, {
+      maxAttempts: 2,
+      isEmpty: genuinelyEmpty,
+      ...noSleep,
+    });
+    expect(result).toMatchObject({ ok: true, attempts: 2, recovered: false });
+    if (result.ok) expect(genuinelyEmpty(result.completion)).toBe(true);
+    expect(complete).toHaveBeenCalledTimes(2);
+  });
+
+  it("a trailing throw after an earlier empty yields ok:false (the error is the terminal state)", async () => {
+    const complete = vi
+      .fn()
+      .mockResolvedValueOnce({ text: "", toolCalls: [] as unknown[] })
+      .mockRejectedValueOnce(new Error("500"));
+    const result = await completeWithResilience(complete, {
+      maxAttempts: 2,
+      isEmpty: genuinelyEmpty,
+      ...noSleep,
+    });
+    expect(result.ok).toBe(false);
+    expect(complete).toHaveBeenCalledTimes(2);
+  });
+
+  it("sleeps between retries using the injected sleep", async () => {
+    const sleep = vi.fn(async () => {});
+    const complete = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("500"))
+      .mockResolvedValueOnce({ text: "ok" });
+    await completeWithResilience(complete, { maxAttempts: 3, sleep, delayForAttempt: (n) => n * 10 });
+    expect(sleep).toHaveBeenCalledTimes(1);
+    expect(sleep).toHaveBeenCalledWith(10);
   });
 });

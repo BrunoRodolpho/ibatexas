@@ -388,6 +388,107 @@ describe("createIbatexasPlanner — extraction-wire failures (FE-T01)", () => {
   });
 });
 
+// ── BKL-162 — completion-boundary resilience (silent-turn defect) ────────────
+// Live-reproduced 2/2: on the read-tool surface the 4B emits malformed tool-call
+// XML → Ollama HTTP 500 → the completion call THROWS → the turn aborted before
+// turn_trace with no reply and no incident (silent-customer class). The planner
+// must CAPTURE the throw, retry once (the read-surface repair), then degrade to
+// the same honest extraction-failure REFUSE the empty/malformed seams use.
+describe("createIbatexasPlanner — completion-boundary resilience (BKL-162)", () => {
+  /** A model whose `complete` behaves per-call — used to inject a throw that
+   *  mimics the local Ollama endpoint 500-ing on malformed tool-call XML. */
+  function scriptedModel(
+    behavior: (call: number) => Completion,
+  ): { model: ModelProvider; complete: ReturnType<typeof vi.fn> } {
+    let call = 0;
+    const complete = vi.fn(async (): Promise<Completion> => behavior((call += 1)));
+    const model: ModelProvider = {
+      complete,
+      stream: () => {
+        throw new Error("stream not used by planner");
+      },
+      embed: async () => {
+        throw new Error("embed not used by planner");
+      },
+    };
+    return { model, complete };
+  }
+
+  const ollama500 = (): never => {
+    throw new Error(
+      "Ollama 500: XML syntax error on line 3: element <function> closed by </parameter>",
+    );
+  };
+
+  const toolCallCompletion = (calls: ToolCall[]): Completion => ({
+    model: "mock",
+    stopReason: "tool_use",
+    text: "",
+    toolCalls: calls,
+    inputTokens: 1,
+    outputTokens: 1,
+  });
+
+  it("pass-1 completion that throws on every attempt degrades to an honest extraction-failure REFUSE — the throw is captured, never propagated", async () => {
+    const { model, complete } = scriptedModel(() => ollama500());
+    const planner = createIbatexasPlanner({
+      model,
+      modelId: "claude-test",
+      capabilityPlanners: [capPlanner(ORDER_READS, ORDER_INTENTS)],
+    });
+
+    // propose() RESOLVES (does not throw) — the silent abort is gone.
+    const plan = await planner.propose(mkState("qual o status do meu pedido?"));
+    expect(plan.envelopes).toHaveLength(1);
+    expect(plan.envelopes[0]!.kind).toBe(EXTRACTION_FAILURE_KIND);
+    expect(plan.envelopes[0]!.payload).toEqual({ reason: "completion_error" });
+    // Bounded retry: > 1 attempt, never unbounded.
+    expect(complete.mock.calls.length).toBeGreaterThan(1);
+    expect(complete.mock.calls.length).toBeLessThanOrEqual(5);
+  });
+
+  it("pass-1 completion that throws once then succeeds recovers (no REFUSE)", async () => {
+    const { model, complete } = scriptedModel((call) =>
+      call === 1
+        ? ollama500()
+        : toolCallCompletion([expressIntent("order.item.add", { item: "x", quantity: 1 })]),
+    );
+    const planner = createIbatexasPlanner({
+      model,
+      modelId: "claude-test",
+      capabilityPlanners: [capPlanner(ORDER_READS, ORDER_INTENTS)],
+    });
+
+    const plan = await planner.propose(mkState("quero um x"));
+    expect(plan.envelopes).toHaveLength(1);
+    expect(plan.envelopes[0]!.kind).toBe("order.item.add");
+    expect(complete).toHaveBeenCalledTimes(2);
+  });
+
+  it("read-loop pass-2 completion that throws degrades to an honest extraction-failure REFUSE, with the executed reads still surfaced", async () => {
+    const { model, complete } = scriptedModel((call) =>
+      call === 1
+        ? toolCallCompletion([readCall("get_cart", { cartId: "c1" })]) // pass 1: reads only
+        : ollama500(), // pass 2 (and its bounded retry) throw
+    );
+    const planner = createIbatexasPlanner({
+      model,
+      modelId: "claude-test",
+      capabilityPlanners: [capPlanner(ORDER_READS, ORDER_INTENTS)],
+      readToolExecutors: { get_cart: async () => ({ cart: { items: [] } }) },
+    });
+
+    const plan = await planner.propose(mkStateWithCustomer("cus_1"));
+    expect(plan.envelopes).toHaveLength(1);
+    expect(plan.envelopes[0]!.kind).toBe(EXTRACTION_FAILURE_KIND);
+    expect(plan.envelopes[0]!.payload).toEqual({ reason: "completion_error" });
+    // pass-1 (1 call) + pass-2 bounded retry (>= 2 calls).
+    expect(complete.mock.calls.length).toBeGreaterThanOrEqual(3);
+    // The owner-scoped read that DID execute before the failure is still recorded.
+    expect(plan.readToolCalls?.map((c) => c.name)).toContain("get_cart");
+  });
+});
+
 // ── claustrum Hard Rule #1 / #7 — tool surface ───────────────────────────────
 
 describe("createIbatexasPlanner — LLM tool surface", () => {
