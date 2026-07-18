@@ -1,0 +1,7 @@
+tool: get_my_reservations
+source: fe-d22-runner-fixture
+cases:
+  - id: argless-ok
+    utterance: "quais sao minhas reservas cadastradas"
+    expectArgs: {}
+    note: "argless list call — get_my_reservations authors no fields, so sanitized args are {}"

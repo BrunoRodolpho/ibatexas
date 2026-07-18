@@ -304,6 +304,9 @@ importers:
       '@ibatexas/eslint-config':
         specifier: workspace:*
         version: link:../../packages/eslint-config
+      '@ibatexas/journeys':
+        specifier: workspace:*
+        version: link:../../packages/journeys
       '@types/pg':
         specifier: ^8.11.0
         version: 8.20.0
