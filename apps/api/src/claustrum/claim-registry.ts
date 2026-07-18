@@ -102,6 +102,14 @@ export const CLAIM_REGISTRY = [
   "ORDER_FULFILLMENT_STAGE",
   "PAYMENT_STATUS",
   "RESERVATION_STATUS",
+  // BKL-139 / FE-D03 — the owner-scoped IN-PROGRESS CART read ("o que tem no meu
+  // carrinho?"). Owner-scoped + per-resource like RESERVATION_STATUS, but its C6
+  // proposition is a DETERMINISTICALLY PRE-COMPOSED summary scalar (itemsSummaryText,
+  // "2x Costela — total R$123,00") — the STORE_HOURS_FOR_DATE `hoursText` precedent for
+  // rendering a list-shaped read as ONE C6 field under the frozen single-scalar kernel.
+  // The money in that string is composed in code from INTEGER CENTAVOS (Hard Rule 2),
+  // NEVER model-authored (FE-D04 / BKL-149).
+  "CART_CONTENTS",
   "PURCHASE_COMPLETED",
 ] as const;
 
@@ -501,6 +509,59 @@ export const REGISTRY_SPECS = {
     ],
     // C6 — bind the rendered status to the read's `status` field (ledger-sourced).
     valueBinding: { key: "reservation_status", path: ["status"] },
+  },
+  // BKL-139 / FE-D03 — the owner-scoped IN-PROGRESS CART read. Structurally the
+  // RESERVATION_STATUS idiom (owner-scoped, per-resource, must_read_this_turn,
+  // falsifier-complete), BUT its C6 value is a DETERMINISTICALLY PRE-COMPOSED summary
+  // scalar (`itemsSummaryText`), following the STORE_HOURS_FOR_DATE `hoursText`
+  // precedent: a list-shaped read (N cart lines) rendered as ONE C6-bound string under
+  // the frozen single-scalar kernel (FE-D09). The subject is the AUTHENTICATED
+  // customerId (the cart is 1-per-customer, resolved server-side from the session's
+  // conversationId — never a model-extracted id), so the investigator records
+  // `cart_contents:{customerId}` and the owner-scope wiring lists `cart_contents:` in
+  // OWNER_SCOPED_KEY_PREFIXES (ibatexas-claims-kernel-deps.ts). A guest owns no cart →
+  // the read is skipped (isAuthenticatedCustomer gate) → the claim resolves ABSENT →
+  // honest UNKNOWN (the fail-closed ownership ruling). The money in `itemsSummaryText`
+  // is composed in code from integer centavos (Hard Rule 2), NEVER model-authored
+  // (FE-D04 / BKL-149).
+  CART_CONTENTS: {
+    kind: "read_claim",
+    minSourceIntegrity: "structured",
+    requiredEvidence: [
+      {
+        key: "cart_contents",
+        // Ownership required — the cart is the authenticated customer's own
+        // (session-resolved, never a model id); the owner-scope wiring gates it.
+        ownershipPolicy: "required",
+        freshnessPolicy: "must_read_this_turn",
+        sourceIntegrity: "structured",
+        provenancePolicy: "preserve",
+      },
+    ],
+    customerScoped: true,
+    // Parameterize by subject — matches the investigator's `cart_contents:{customerId}`.
+    perResourceKey: true,
+    // W6 — the `cart_cleared` falsifier is DECLARED (so CART_CONTENTS escapes the W6
+    // UNKNOWN-only cap and can VALIDATE), but DELIBERATELY UNREAD by the investigator —
+    // the SAME disposition as ORDER_FULFILLMENT_STAGE's `order_cancelled` /
+    // RESERVATION_STATUS's `reservation_cancelled` after their review-fix: a
+    // same-cart-row "cleared" signal is tautological AND inert (a cleared/checked-out
+    // cart already reads `hasItems: false` ⇒ `cart_contents` ABSENT ⇒ no present base to
+    // demote). Declaring-without-reading is sound: the runtime arm resolves an
+    // always-absent key ⇒ never fires ⇒ demote-only safety is preserved.
+    falsifierComplete: true,
+    falsifiers: [
+      {
+        key: "cart_cleared",
+        ownershipPolicy: "required",
+        freshnessPolicy: "must_read_this_turn",
+        sourceIntegrity: "structured",
+        provenancePolicy: "preserve",
+      },
+    ],
+    // C6 — bind the rendered summary to the read's PRE-COMPOSED `itemsSummaryText`
+    // field (ledger-sourced, deterministic; never model-authored).
+    valueBinding: { key: "cart_contents", path: ["itemsSummaryText"] },
   },
   PURCHASE_COMPLETED: {
     kind: "action_claim",

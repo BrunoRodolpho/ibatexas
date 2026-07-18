@@ -94,6 +94,15 @@ export const CLASSIFY_ONLY_ELIGIBLE_TYPES: ReadonlySet<RegistryClaimType> =
     "ORDER_FULFILLMENT_STAGE",
     "PAYMENT_STATUS",
     "RESERVATION_STATUS",
+    // BKL-139 — the owner-scoped cart read joins the eligible set (the deliberate,
+    // conscious growth the module header calls out). Its subject is the authenticated
+    // customerId, resolved by buildClassifyOnlyCandidates from the present
+    // `cart_contents:{customerId}` owner-scoped read (ownerScopedBaseKey → "cart_contents").
+    // NOTE (FE-D12): every eligible-set addition widens the classify-only no-safety-marker
+    // residual (a pure cart-read turn skips the model's §O#9 self-report). A cart question
+    // co-occurring with an unclassifiable safety marker in the SAME message would not
+    // ESCALATE via that channel while classify-only is ON — surfaced, owner-veto-able.
+    "CART_CONTENTS",
   ]);
 
 /**

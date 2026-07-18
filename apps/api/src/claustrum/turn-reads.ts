@@ -38,6 +38,10 @@ import {
   getTodayHoursText,
   getHoursTextForDate,
   loadSchedule,
+  getRedisClient,
+  rk,
+  medusaStore,
+  reaisToCentavos,
   type ScheduleSignal,
 } from "@ibatexas/tools";
 import type { HolidayEntry, ScheduleOverrideEntry } from "@ibatexas/types";
@@ -177,6 +181,31 @@ export interface PaymentChargebackRead {
 // still-'paid' row) the base read does not assert.
 
 /**
+ * CART_CONTENTS (BKL-139 / FE-D03) — the authenticated customer's IN-PROGRESS cart,
+ * as a DETERMINISTICALLY PRE-COMPOSED summary scalar (the STORE_HOURS_FOR_DATE
+ * `hoursText` precedent for a list-shaped read under the single-scalar kernel).
+ *
+ *   - `itemsSummaryText` — the pt-BR summary ("2x Costela, 1x Farofa — total
+ *     R$123,00"). Composed IN CODE from item titles/quantities + the cart total in
+ *     INTEGER CENTAVOS (Hard Rule 2); NEVER model-authored (FE-D04 / BKL-149). Empty
+ *     string when the cart has no active items.
+ *   - `hasItems` — the cart has ≥1 active, non-completed line (present-vs-absent
+ *     discriminant: the investigator records `cart_contents` PRESENT only when `true`,
+ *     else leaves it ABSENT → honest UNKNOWN). A cleared/checked-out cart
+ *     (`completed_at` set) has NO active items ⇒ `hasItems: false`.
+ *
+ * NOTE (cart_cleared falsifier): the registry DECLARES `cart_cleared` (so CART_CONTENTS
+ * escapes the W6 UNKNOWN-only cap), but there is NO `cleared` field here and no wired
+ * read — a same-cart-row "cleared" signal is tautological AND inert (a cleared cart
+ * already yields `hasItems: false` ⇒ `cart_contents` ABSENT ⇒ nothing to demote). This
+ * mirrors the deliberately-unread `order_cancelled` / `reservation_cancelled` falsifiers.
+ */
+export interface CartContentsRead {
+  readonly itemsSummaryText: string;
+  readonly hasItems: boolean;
+}
+
+/**
  * The first-party read backend for the Trustworthiness-Triad scope. Every
  * resource read is OWNER-SCOPED to `customerId`; a cross-owner / absent resource
  * resolves to `null` (the caller records that as a fail-closed read error — Inv 7
@@ -260,6 +289,16 @@ export interface TriadReadBackend {
     customerId: string,
   ): Promise<PaymentChargebackRead | null>;
   /**
+   * BKL-139 CART_CONTENTS — the authenticated customer's IN-PROGRESS cart. Resolved
+   * SERVER-SIDE from the session's `conversationId` (never a model cart id →
+   * IDOR-safe by session-scoping). `null` ONLY on an UNAVAILABLE read (Redis/Medusa
+   * error → fail-closed ERROR); an empty/absent cart returns `{ hasItems: false }`.
+   */
+  readCartContents(
+    conversationId: string,
+    customerId: string,
+  ): Promise<CartContentsRead | null>;
+  /**
    * Enumerate the AUTHENTICATED customer's OWN, RELEVANT (non-terminal) order ids
    * (FIX 2 — owner-scoped subject resolution; the BUG-2 close). OWNER-SCOPED by
    * construction: the underlying `listByCustomer(customerId)` filters on
@@ -342,6 +381,46 @@ const ACTIVE_RESERVATION_STATUSES: ReadonlySet<string> = new Set<string>([
  *  `getLocalDateStr`; en-CA yields YYYY-MM-DD). The override is keyed by date. */
 function localDateStr(tz: string): string {
   return new Intl.DateTimeFormat("en-CA", { timeZone: tz }).format(new Date());
+}
+
+// ── BKL-139 CART_CONTENTS — the DETERMINISTIC money-summary composer ────────────
+//
+// Composes the cart summary IN CODE from item titles/quantities + the cart total in
+// INTEGER CENTAVOS (Hard Rule 2), so no model-authored digit can ever reach the
+// rendered proposition (FE-D04 10x-slip class / BKL-149). PURE — no float money math
+// (the reais/centavos split is integer-only).
+
+/** A raw Medusa `/store/carts/:id` line the summary reads (title + quantity). */
+interface RawCartLine {
+  readonly title?: string;
+  readonly quantity?: number;
+}
+interface RawCart {
+  readonly items?: ReadonlyArray<RawCartLine>;
+  readonly total?: number;
+  readonly completed_at?: string | null;
+}
+
+/** Format INTEGER centavos as pt-BR "R$123,00" — integer-only (no float money).
+ *  Exported for the BKL-139 composer unit test (no model-authored digit). */
+export function formatCentavosBRL(centavos: number): string {
+  const reais = Math.trunc(centavos / 100);
+  const cents = Math.abs(centavos % 100);
+  return `R$${reais},${String(cents).padStart(2, "0")}`;
+}
+
+/**
+ * Compose the pt-BR cart summary ("2x Costela, 1x Farofa — total R$123,00") from the
+ * raw Medusa cart lines + total. The total is formatted from INTEGER CENTAVOS
+ * (reais→centavos at the boundary); item titles are first-party Medusa data, never
+ * model text. PURE. Exported for the BKL-139 composer unit test.
+ */
+export function composeCartItemsSummary(items: ReadonlyArray<RawCartLine>, totalCentavos: number): string {
+  const parts = items
+    .filter((i) => (i.quantity ?? 0) > 0 && typeof i.title === "string" && i.title.trim() !== "")
+    .map((i) => `${i.quantity}x ${i.title}`);
+  const itemsPart = parts.join(", ");
+  return `${itemsPart} — total ${formatCentavosBRL(totalCentavos)}`;
 }
 
 export interface DomainTriadReadBackendDeps {
@@ -518,6 +597,54 @@ export function createDomainTriadReadBackend(
     return p;
   };
 
+  // BKL-139 — per-turn memo of the CART read (single-flight under the parallel
+  // investigator; the cart_contents read + the active_cart marker share it, ONE Medusa
+  // fetch per turn). Caches the in-flight PROMISE. `null` = the read was UNAVAILABLE
+  // (Redis/Medusa error); a resolved value carries the `hasItems` discriminant.
+  const cartReads = new Map<string, Promise<CartContentsRead | null>>();
+  const readCartContentsOnce = (conversationId: string, customerId: string) => {
+    const cacheKey = JSON.stringify([customerId, conversationId]);
+    let p = cartReads.get(cacheKey);
+    if (p === undefined) {
+      p = (async (): Promise<CartContentsRead | null> => {
+        // A2 (IDOR) — resolve the session's OWN active cart id from Redis (the SAME
+        // key resolve-and-assemble / get_cart use), NEVER a model-supplied cart id.
+        // A Redis failure is an UNAVAILABLE read → null → fail-closed ERROR (Inv 7).
+        let cartId: string | null;
+        try {
+          const redis = await getRedisClient();
+          cartId = await redis.get(rk(`cart:active:session:${conversationId}`));
+        } catch {
+          return null;
+        }
+        // No active cart for this session — a genuine ABSENCE (honest UNKNOWN), NOT an
+        // error: the customer simply has no cart right now.
+        if (cartId === null) return { itemsSummaryText: "", hasItems: false };
+        // Fetch ONLY the session-resolved cart. A Medusa failure is UNAVAILABLE → null.
+        let cart: RawCart | null;
+        try {
+          const data = (await medusaStore(`/store/carts/${cartId}`)) as { cart?: RawCart };
+          cart = data.cart ?? null;
+        } catch {
+          return null;
+        }
+        if (cart === null) return { itemsSummaryText: "", hasItems: false };
+        // A cleared/checked-out cart (`completed_at` set) has NO active items — so it
+        // resolves `hasItems: false` (ABSENT → honest UNKNOWN), never a stale summary.
+        const cleared = cart.completed_at != null;
+        const items = cart.items ?? [];
+        const hasItems = !cleared && items.length > 0;
+        const totalCentavos = reaisToCentavos(cart.total ?? 0);
+        return {
+          itemsSummaryText: hasItems ? composeCartItemsSummary(items, totalCentavos) : "",
+          hasItems,
+        };
+      })();
+      cartReads.set(cacheKey, p);
+    }
+    return p;
+  };
+
   return {
     readSchedule,
     readScheduleOverride,
@@ -602,6 +729,13 @@ export function createDomainTriadReadBackend(
         disputed: disputed !== null,
         status: disputed === null ? "" : String(disputed.status),
       };
+    },
+
+    async readCartContents(conversationId, customerId) {
+      // BKL-139 — the session-scoped cart read (per-turn memoized). IDOR-safe by
+      // construction: the cart is resolved from the session's conversationId, never a
+      // model id.
+      return readCartContentsOnce(conversationId, customerId);
     },
 
     async listActiveOrderIds(customerId) {

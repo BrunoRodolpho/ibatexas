@@ -292,6 +292,9 @@ function stubBackend(over: Partial<TriadReadBackend> = {}): TriadReadBackend {
       status: "",
     }),
     readPaymentChargeback: async (orderId) => ({ orderId, disputed: false, status: "" }),
+    // BKL-139 — default: an empty cart (inert). Tests that exercise the cart read
+    // override this; the read is only invoked on a CART_CONTENTS_Q-span turn.
+    readCartContents: async () => ({ itemsSummaryText: "", hasItems: false }),
     // FIX 2 — default: no auto-enumerated active orders (tests that exercise the
     // owner-order enumeration override this).
     listActiveOrderIds: async () => [],

@@ -162,6 +162,56 @@ describe("classifyRequestSpans — FE-T17 RESERVATION_STATUS_Q (anchored marker)
   });
 });
 
+// BKL-139 — CART_CONTENTS_Q (anchored marker; read-vs-mutation split). The marker
+// fires on a cart-READ question and is SUPPRESSED by a cart-mutation verb, so
+// classify-only never mis-frames a cart write ("adicione ao carrinho") as a read.
+describe("classifyRequestSpans — BKL-139 CART_CONTENTS_Q (read-only, anchored)", () => {
+  it("MUST-FIRE on cart-contents READ questions", () => {
+    for (const text of [
+      "o que tem no meu carrinho?",
+      "quanto está meu carrinho?",
+      "ver meu carrinho",
+      "minha sacola",
+      "o que tem na cesta?",
+      "quais itens tem no carrinho",
+    ]) {
+      expect(classifyRequestSpans(text), text).toContain("CART_CONTENTS_Q");
+    }
+  });
+
+  it("'o que tem no meu carrinho?' → CART_CONTENTS_Q → requires CART_CONTENTS", () => {
+    const spans = classifyRequestSpans("o que tem no meu carrinho?");
+    expect(spans).toContain("CART_CONTENTS_Q");
+    const required = decomposeRequiredClaims(spans);
+    expect([...required]).toEqual(["CART_CONTENTS"]);
+  });
+
+  it("MUST-NOT-FIRE on cart MUTATIONS (the read-vs-write split — BKL-153)", () => {
+    for (const text of [
+      "adicione uma coca ao carrinho",
+      "acrescenta um refri no carrinho",
+      "remova a farofa do carrinho",
+      "coloca mais uma costela no carrinho",
+      "limpa o carrinho",
+      "esvazia minha sacola",
+      "troca o item do carrinho",
+    ]) {
+      expect(classifyRequestSpans(text), text).not.toContain("CART_CONTENTS_Q");
+    }
+  });
+
+  it("MUST-NOT-FIRE on gratitude / order-status / payment turns (no cart word)", () => {
+    for (const text of [
+      "obrigado pelo atendimento",
+      "muito obrigada!",
+      "cadê meu pedido?",
+      "qual o status do meu pagamento?",
+    ]) {
+      expect(classifyRequestSpans(text), text).not.toContain("CART_CONTENTS_Q");
+    }
+  });
+});
+
 describe("required-claim decomposer — conservative-over-decomposing", () => {
   it("UNIONs across multiple span-classes (over-include, never under-include)", () => {
     const required = decomposeRequiredClaims(["PAYMENT_STATUS_Q", "PICKUP_Q"]);
