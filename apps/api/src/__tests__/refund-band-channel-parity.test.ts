@@ -123,8 +123,8 @@ describe("FE-D07 refund-band channel parity (ops vs admin-HTTP)", () => {
     // amount → the band both channels must agree on.
     const cases: ReadonlyArray<readonly [number, string]> = [
       [100, "EXECUTE"], // R$1
-      [50_000, "EXECUTE"], // R$500 — confirm-band inclusive lower edge
-      [50_001, "REQUEST_CONFIRMATION"], // just above confirm threshold
+      [50_000, "EXECUTE"], // R$500 — EXACTLY the confirm threshold, still EXECUTE (CONFIRM uses strict >, so the boundary value is not yet confirm)
+      [50_001, "REQUEST_CONFIRMATION"], // just above confirm threshold — first CONFIRM
       [99_999, "REQUEST_CONFIRMATION"], // just below escalate
       [100_000, "ESCALATE"], // exact R$1000 (FE-T03/D2)
       [100_001, "ESCALATE"], // just above escalate

@@ -32,7 +32,14 @@ export async function getRedisClient(): Promise<RedisClientType> {
     // hanging callers indefinitely. All knobs are env-configurable (Hard Rule #3).
     const connectTimeout = readIntEnv("REDIS_CONNECT_TIMEOUT_MS", 5_000)
     const maxReconnectAttempts = readIntEnv("REDIS_MAX_RECONNECT_ATTEMPTS", 10)
-    const baseReconnectDelay = readIntEnv("REDIS_RECONNECT_BASE_DELAY_MS", 100)
+    // Floor at 1ms: readIntEnv accepts 0, but a 0 base collapses both the backoff
+    // (base * 2**retries) and the jitter (random * base) to 0 — turning the
+    // reconnect strategy into a zero-delay busy-loop that hammers a downed Redis
+    // every tick. The clamp keeps the backoff strictly positive.
+    const baseReconnectDelay = Math.max(
+      1,
+      readIntEnv("REDIS_RECONNECT_BASE_DELAY_MS", 100),
+    )
     const maxReconnectDelay = readIntEnv("REDIS_RECONNECT_MAX_DELAY_MS", 3_000)
 
     const client = createClient({
