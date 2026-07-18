@@ -133,8 +133,6 @@ function stubBackend(over: Partial<TriadReadBackend> = {}): TriadReadBackend {
       status: "",
     }),
     readPaymentChargeback: async (orderId) => ({ orderId, disputed: false, status: "" }),
-    readOrderCancelled: async () => null,
-    readReservationCancelled: async () => null,
     // Default: an empty cart (inert). Tests override this.
     readCartContents: async () => ({ itemsSummaryText: "", hasItems: false }),
     listActiveOrderIds: async () => [],
