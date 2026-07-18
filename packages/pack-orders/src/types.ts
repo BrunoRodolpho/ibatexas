@@ -452,12 +452,15 @@ export const CONFIRM_LARGE_TICKET_THRESHOLD_CENTAVOS = MONEY_BAND_1000_CENTAVOS
  * cancel-eligibility guard; above it, the escalate-on-shipped guard
  * takes precedence.
  *
- * Numerically the same R$1000 boundary as `MONEY_BAND_1000_CENTAVOS` in
- * `@ibatexas/types`, but a structurally separate band (order.cancel, not
- * checkout) — NOT single-sourced here; its single-sourcing + comparator
- * audit is deferred as tracker item FE-D01.
+ * The same R$1000 boundary as `MONEY_BAND_1000_CENTAVOS` in
+ * `@ibatexas/types`, structurally a separate band (order.cancel, not
+ * checkout) but numerically identical — FE-D01 single-sources the VALUE
+ * so it can never drift from the checkout / refund ladders. Its comparator
+ * is already the canonical `>=` (`escalateLargeCancel` in `./policies.ts`
+ * uses `createEscalateGuard({ comparator: ">=" })`), consistent with
+ * FE-T03/D2's exact-R$1000-escalates decision — no comparator flip needed.
  */
-export const ESCALATE_CANCEL_AMOUNT_CENTAVOS = 100_000
+export const ESCALATE_CANCEL_AMOUNT_CENTAVOS = MONEY_BAND_1000_CENTAVOS
 
 // ── Domain constants ────────────────────────────────────────────────────
 
