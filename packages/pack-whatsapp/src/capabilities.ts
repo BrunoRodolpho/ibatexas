@@ -5,15 +5,16 @@
  * never sees MUTATING tools (CLAUDE.md rule #9); MUTATING calls are
  * captured as `IntentEnvelope`s and adjudicated through the kernel.
  *
- * The WhatsApp channel-level intents (`whatsapp.message.send`,
- * `whatsapp.template.send`, `whatsapp.session.handover`) stay wholly
- * LLM-invisible — they are emitted by:
+ * The WhatsApp system-emitted intents (`whatsapp.session.handover`,
+ * `conversation.message.append`) stay wholly LLM-invisible — they are
+ * emitted by:
  *
- *   - the `cart-intelligence` NATS subscriber (templated outreach),
  *   - the `handoff-subscriber` (session handover),
- *   - the `notification.send` subscriber (templated customer messages),
+ *   - the conversation-archiver subscriber (message append),
  *
- * none of which are LLM-proposable.
+ * neither of which is LLM-proposable. (BKL-177 retired the channel-egress
+ * kinds `whatsapp.message.send` + `whatsapp.template.send`; live egress
+ * runs through `twilio.message.send`, not this Pack.)
  *
  * FE-T14 (BKL-030-activation): `whatsapp.handoff.request` IS now
  * advertised, unconditionally, for every session context — the governed

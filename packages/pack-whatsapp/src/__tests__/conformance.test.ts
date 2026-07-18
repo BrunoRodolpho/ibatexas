@@ -88,84 +88,11 @@ type Fixture = {
 const PHONE_HASH = "abc123def456"
 
 const corpus: ReadonlyArray<Fixture> = [
-  // ── EXECUTE (8 cases) ────────────────────────────────────────────────
-  {
-    name: "EXECUTE: whatsapp.message.send to customer inside 24h window",
-    envelope: env("whatsapp.message.send", {
-      to: "+5511999999999",
-      body: "Olá! Seu pedido está pronto.",
-      senderRole: "system",
-    }),
-    state: baseState(),
-    expect: { kind: "EXECUTE" },
-  },
-  {
-    name: "EXECUTE: whatsapp.message.send with template hint outside 24h window",
-    envelope: env("whatsapp.message.send", {
-      to: "+5511999999999",
-      body: "Olá {{1}}, seu pedido #{{2}}.",
-      senderRole: "system",
-      templateName: "order_ready_v1",
-      templateVariables: { "1": "Maria", "2": "1234" },
-    }),
-    state: baseState({
-      lastCustomerMessageAt: new Date("2026-05-20T10:00:00.000Z"),
-    }),
-    expect: { kind: "EXECUTE" },
-  },
-  {
-    name: "EXECUTE: whatsapp.message.send at exactly 24h since last customer message",
-    envelope: env("whatsapp.message.send", {
-      to: "+5511999999999",
-      body: "Olá, atualização ao final do dia.",
-      senderRole: "system",
-    }),
-    state: baseState({
-      // 24h exactly — still inside (grace bumps the cutoff up).
-      lastCustomerMessageAt: new Date("2026-05-21T12:00:00.000Z"),
-    }),
-    expect: { kind: "EXECUTE" },
-  },
-  {
-    name: "EXECUTE: whatsapp.message.send from staff",
-    envelope: env("whatsapp.message.send", {
-      to: "+5511999999999",
-      body: "Oi! Aqui é da equipe.",
-      senderRole: "staff",
-    }),
-    state: baseState({ channel: "staff", staffId: "staff-1" }),
-    expect: { kind: "EXECUTE" },
-  },
-  {
-    name: "EXECUTE: TRUSTED whatsapp.template.send (system actor)",
-    envelope: env(
-      "whatsapp.template.send",
-      {
-        to: "+5511999999999",
-        templateName: "order_ready_v1",
-        templateVariables: { "1": "Maria", "2": "1234" },
-      },
-      "TRUSTED",
-    ),
-    state: baseState(),
-    expect: { kind: "EXECUTE" },
-  },
-  {
-    name: "EXECUTE: TRUSTED whatsapp.template.send outside 24h window (templates bypass)",
-    envelope: env(
-      "whatsapp.template.send",
-      {
-        to: "+5511999999999",
-        templateName: "winback_v2",
-        templateVariables: { "1": "Maria" },
-      },
-      "TRUSTED",
-    ),
-    state: baseState({
-      lastCustomerMessageAt: new Date("2026-05-15T10:00:00.000Z"),
-    }),
-    expect: { kind: "EXECUTE" },
-  },
+  // BKL-177: whatsapp.message.send + whatsapp.template.send retired — their
+  // corpus cases (24h-window / template-validity / customer→staff sanitize)
+  // were removed with the kinds. The surviving kinds are the handover /
+  // handoff / conversation.append family.
+  // ── EXECUTE (handover producers) ─────────────────────────────────────
   {
     name: "EXECUTE: TRUSTED whatsapp.session.handover (1st in window)",
     envelope: env(
@@ -201,67 +128,7 @@ const corpus: ReadonlyArray<Fixture> = [
     expect: { kind: "EXECUTE" },
   },
 
-  // ── REFUSE (10 cases) ────────────────────────────────────────────────
-  {
-    name: "REFUSE: whatsapp.message.send 25h after last customer message",
-    envelope: env("whatsapp.message.send", {
-      to: "+5511999999999",
-      body: "Tarde demais.",
-      senderRole: "system",
-    }),
-    state: baseState({
-      lastCustomerMessageAt: new Date("2026-05-21T10:00:00.000Z"),
-    }),
-    expect: { kind: "REFUSE", refusalCode: "whatsapp.window.expired" },
-  },
-  {
-    name: "REFUSE: whatsapp.message.send with no prior customer message",
-    envelope: env("whatsapp.message.send", {
-      to: "+5511999999999",
-      body: "Cold outreach attempt.",
-      senderRole: "system",
-    }),
-    state: baseState({ lastCustomerMessageAt: null }),
-    expect: { kind: "REFUSE", refusalCode: "whatsapp.window.expired" },
-  },
-  {
-    name: "REFUSE: whatsapp.message.send 48h after last customer message",
-    envelope: env("whatsapp.message.send", {
-      to: "+5511999999999",
-      body: "Two-day-stale outreach.",
-      senderRole: "system",
-    }),
-    state: baseState({
-      lastCustomerMessageAt: new Date("2026-05-20T12:00:00.000Z"),
-    }),
-    expect: { kind: "REFUSE", refusalCode: "whatsapp.window.expired" },
-  },
-  {
-    name: "REFUSE: whatsapp.message.send outside window even with no body",
-    envelope: env("whatsapp.message.send", {
-      to: "+5511999999999",
-      body: "",
-      senderRole: "system",
-    }),
-    state: baseState({
-      lastCustomerMessageAt: new Date("2026-05-21T11:00:00.000Z"),
-    }),
-    expect: { kind: "REFUSE", refusalCode: "whatsapp.window.expired" },
-  },
-  {
-    name: "REFUSE: UNTRUSTED whatsapp.template.send (taint gate)",
-    envelope: env(
-      "whatsapp.template.send",
-      {
-        to: "+5511999999999",
-        templateName: "order_ready_v1",
-        templateVariables: { "1": "Maria" },
-      },
-      "UNTRUSTED",
-    ),
-    state: baseState(),
-    expect: { kind: "REFUSE" },
-  },
+  // ── REFUSE (handover taint + rate-limit) ─────────────────────────────
   {
     name: "REFUSE: UNTRUSTED whatsapp.session.handover (taint gate)",
     envelope: env(
@@ -276,20 +143,6 @@ const corpus: ReadonlyArray<Fixture> = [
     ),
     state: baseState(),
     expect: { kind: "REFUSE" },
-  },
-  {
-    name: "REFUSE: whatsapp.template.send with missing templateName",
-    envelope: env(
-      "whatsapp.template.send",
-      {
-        to: "+5511999999999",
-        templateName: "",
-        templateVariables: { "1": "Maria" },
-      },
-      "TRUSTED",
-    ),
-    state: baseState(),
-    expect: { kind: "REFUSE", refusalCode: "whatsapp.template.invalid" },
   },
   {
     name: "REFUSE: whatsapp.session.handover at the refuse threshold",
@@ -330,34 +183,6 @@ const corpus: ReadonlyArray<Fixture> = [
       kind: "REFUSE",
       refusalCode: "whatsapp.handoff.rate_limited",
     },
-  },
-  {
-    name: "REFUSE: whatsapp.template.send with whitespace-only templateName",
-    envelope: env(
-      "whatsapp.template.send",
-      {
-        to: "+5511999999999",
-        templateName: "",
-        templateVariables: { "1": "x" },
-      },
-      "TRUSTED",
-    ),
-    state: baseState(),
-    expect: { kind: "REFUSE", refusalCode: "whatsapp.template.invalid" },
-  },
-  {
-    name: "REFUSE: whatsapp.template.send with non-object templateVariables",
-    envelope: env(
-      "whatsapp.template.send",
-      {
-        to: "+5511999999999",
-        templateName: "order_ready_v1",
-        templateVariables: null,
-      },
-      "TRUSTED",
-    ),
-    state: baseState(),
-    expect: { kind: "REFUSE", refusalCode: "whatsapp.template.invalid" },
   },
 
   // ── REQUEST_CONFIRMATION (3 cases) ───────────────────────────────────
@@ -415,66 +240,7 @@ const corpus: ReadonlyArray<Fixture> = [
     expect: { kind: "REQUEST_CONFIRMATION" },
   },
 
-  // ── REWRITE (4 cases — exercise sanitization path) ───────────────────
-  //
-  // The customer→staff sanitization REWRITE fires for relayed
-  // `whatsapp.message.send` envelopes where `senderRole = "customer"`
-  // and `state.ctx.recipientType = "staff"` — the canonical
-  // "customer-controlled `reason` echoed into staff WhatsApp" path
-  // from investigation 08 P1 #4. The REWRITE emits the sanitized
-  // envelope; the executor then sends the sanitized body.
-  {
-    name: "REWRITE: customer→staff body with markdown chars",
-    envelope: env("whatsapp.message.send", {
-      to: "+5511888888888",
-      body: "*urgent*\n_help_~now~",
-      senderRole: "customer",
-    }),
-    state: baseState({ recipientType: "staff" }),
-    expect: { kind: "REWRITE" },
-  },
-  {
-    name: "REWRITE: customer→staff body with newline + markdown",
-    envelope: env("whatsapp.message.send", {
-      to: "+5511888888888",
-      body: "linha1\n*bold*\nlinha3",
-      senderRole: "customer",
-    }),
-    state: baseState({ recipientType: "staff" }),
-    expect: { kind: "REWRITE" },
-  },
-  {
-    name: "REWRITE: customer→staff body exceeding 100-char cap",
-    envelope: env("whatsapp.message.send", {
-      to: "+5511888888888",
-      body: "a".repeat(150),
-      senderRole: "customer",
-    }),
-    state: baseState({ recipientType: "staff" }),
-    expect: { kind: "REWRITE" },
-  },
-  {
-    name: "EXECUTE: customer→staff body already clean (no REWRITE needed)",
-    envelope: env("whatsapp.message.send", {
-      to: "+5511888888888",
-      body: "preciso de ajuda",
-      senderRole: "customer",
-    }),
-    state: baseState({ recipientType: "staff" }),
-    expect: { kind: "EXECUTE" },
-  },
-
-  // ── Extra coverage (2 cases) ─────────────────────────────────────────
-  {
-    name: "EXECUTE: whatsapp.message.send body within length cap",
-    envelope: env("whatsapp.message.send", {
-      to: "+5511999999999",
-      body: "Curto e direto.",
-      senderRole: "system",
-    }),
-    state: baseState(),
-    expect: { kind: "EXECUTE" },
-  },
+  // ── Extra coverage (handover) ────────────────────────────────────────
   {
     name: "EXECUTE: TRUSTED whatsapp.session.handover with empty count map",
     envelope: env(
@@ -492,9 +258,9 @@ const corpus: ReadonlyArray<Fixture> = [
   },
 ]
 
-describe("whatsappPack — corpus (25+ cases across decision kinds)", () => {
-  it("corpus is at least 25 cases (acceptance criterion)", () => {
-    expect(corpus.length).toBeGreaterThanOrEqual(25)
+describe("whatsappPack — corpus (handover/handoff family across decision kinds)", () => {
+  it("corpus covers the surviving kinds across decision kinds (BKL-177: message/template retired)", () => {
+    expect(corpus.length).toBeGreaterThanOrEqual(8)
   })
 
   for (const fixture of corpus) {
@@ -548,12 +314,11 @@ describe("whatsappPack — kernel invariants via runConformance()", () => {
 // System-only kinds (taint minimum above UNTRUSTED) are intentionally not
 // planner-proposable; the analyzer auto-excludes them from `unreachable_intent`
 // via `pack.policy.taint.minimumFor`. We pin that carve-out so a future drop of
-// `whatsapp.template.send` from the taint policy fails loudly here.
+// `whatsapp.session.handover` from the taint policy fails loudly here.
 //
-// NOTE: we deliberately do NOT assert `summary.warning === 0` — the planner
-// omits the declared non-system intent (`whatsapp.message.send`, reached only
-// via routed/system egress flows), a benign `unreachable_intent` warning.
-// `report.passed` stays true (error === 0).
+// NOTE (BKL-177): whatsapp.message.send + whatsapp.template.send were retired;
+// every surviving mutating kind is either system-only (handover / append) or the
+// UNTRUSTED handoff request. `report.passed` stays true (error === 0).
 
 describe("whatsappPack — policy coherence via analyzePolicy() (AJD-301)", () => {
   // The planner does not branch on session state (`plan()` voids both
@@ -607,10 +372,10 @@ describe("whatsappPack — policy coherence via analyzePolicy() (AJD-301)", () =
     expect(report.summary.error).toBe(0)
   })
 
-  it("system-only kinds (whatsapp.template.send, …) are carved out", () => {
+  it("system-only kinds (whatsapp.session.handover, …) are carved out", () => {
     const report = analyzePolicy({ pack: whatsappPack, plannerProbes: probes })
     // Guard against a vacuous pass: the carve-out subject must really be system-only.
-    expect(systemOnlyKinds).toContain("whatsapp.template.send")
+    expect(systemOnlyKinds).toContain("whatsapp.session.handover")
     for (const kind of systemOnlyKinds) {
       const unreachable = report.diagnostics.find(
         (d) =>

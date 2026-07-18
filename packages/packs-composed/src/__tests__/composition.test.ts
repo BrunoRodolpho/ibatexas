@@ -51,7 +51,7 @@ describe("@ibatexas/packs-composed", () => {
         "payment.create",
         "reservation.create",
         "customer.create",
-        "whatsapp.message.send",
+        "whatsapp.session.handover",
         "product.availability.set",
       ]),
     )

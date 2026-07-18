@@ -299,9 +299,11 @@ describe("audit-redactor — regex defense for unmatched field names", () => {
 // ── Per-intent-kind rules ────────────────────────────────────────────────────
 
 describe("audit-redactor — per-intent-kind field rules", () => {
-  it("redacts whatsapp.message.send body even when content has no PII regex hit", () => {
+  it("redacts twilio.message.send body even when content has no PII regex hit", () => {
+    // BKL-177: whatsapp.message.send retired; twilio.message.send is the live
+    // WhatsApp egress wrapper carrying the identical body/variable redaction.
     const r = createAuditRedactor({ hashSecret: "salt", warn: vi.fn() })
-    const record = makeRecord("whatsapp.message.send", {
+    const record = makeRecord("twilio.message.send", {
       to: "+5511999999999",
       template: "order_confirmation_v2",
       body: "Olá Maria, seu pedido está pronto.",

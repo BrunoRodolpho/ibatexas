@@ -19,10 +19,14 @@
  *
  *   1. Canonical-Pack-intent (recommended): import `whatsappPack`,
  *      dispatch envelopes against `whatsappPack.policy`. The Pack's
- *      intent kinds (`whatsapp.message.send`, `whatsapp.template.send`,
- *      `whatsapp.session.handover`) are the wire contract; the master
- *      taxonomy at `docs/adjudicate-migration/governance/01-intent-taxonomy.md`
- *      §"Domain: whatsapp" is authoritative.
+ *      intent kinds (`whatsapp.session.handover`,
+ *      `conversation.message.append`, `whatsapp.handoff.request`) are the
+ *      wire contract; the master taxonomy at
+ *      `docs/adjudicate-migration/governance/01-intent-taxonomy.md`
+ *      §"Domain: whatsapp" is authoritative. (BKL-177 retired the
+ *      channel-egress kinds `whatsapp.message.send` +
+ *      `whatsapp.template.send`; live egress runs through
+ *      `twilio.message.send`.)
  *
  *   2. Bundle-only: import `whatsappPolicyBundle` and feed to
  *      `adjudicate()` directly. Task 16's NATS-subscriber refactor uses
@@ -39,12 +43,15 @@
  *
  * # Scope
  *
- * Per investigation 05 §"Packs ibatexas should write" this Pack covers
- * three of the six whatsapp-domain intent kinds in the master taxonomy.
- * The remaining three (`whatsapp.handoff.request`,
- * `whatsapp.followup.schedule`, `whatsapp.outreach.send`) are owned by
- * later tasks; the `handover` rate-limit machinery in this Pack will
- * generalize there.
+ * Post-BKL-177 this Pack governs three surviving intent kinds:
+ * `whatsapp.session.handover` (system/subscriber-emitted, taint-gated),
+ * `conversation.message.append` (system-emitted archival append), and
+ * `whatsapp.handoff.request` (the one customer-proposable, always-allowed
+ * escalation on-ramp — BKL-030). The channel-egress kinds
+ * (`whatsapp.message.send`, `whatsapp.template.send`) and their 24h-window
+ * / template-validation / sanitization guards were retired as dead
+ * duplicates; live WhatsApp egress runs through `twilio.message.send`
+ * (`packages/tools/src/twilio`), which this Pack does not touch.
  */
 
 import type { PackV0 } from "@adjudicate/core"
@@ -173,8 +180,6 @@ export const whatsappPack = {
   version: "1.1.0",
   contract: "v0",
   intents: [
-    "whatsapp.message.send",
-    "whatsapp.template.send",
     "whatsapp.session.handover",
     "conversation.message.append",
     "whatsapp.handoff.request",

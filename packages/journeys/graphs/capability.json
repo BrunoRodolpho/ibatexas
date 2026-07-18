@@ -1382,53 +1382,9 @@
       }
     },
     {
-      "id": "intent:whatsapp.message.send",
-      "type": "intent",
-      "label": "whatsapp.message.send",
-      "meta": {
-        "advertisedContexts": [],
-        "chatDrivable": false,
-        "composedPack": "ibatexas/pack-whatsapp",
-        "domain": "whatsapp",
-        "flags": [],
-        "knownKind": true,
-        "plausibleDecisions": [
-          "EXECUTE",
-          "REFUSE",
-          "ESCALATE",
-          "REQUEST_CONFIRMATION",
-          "DEFER",
-          "REWRITE"
-        ],
-        "staffRoute": false
-      }
-    },
-    {
       "id": "intent:whatsapp.session.handover",
       "type": "intent",
       "label": "whatsapp.session.handover",
-      "meta": {
-        "advertisedContexts": [],
-        "chatDrivable": false,
-        "composedPack": "ibatexas/pack-whatsapp",
-        "domain": "whatsapp",
-        "flags": [],
-        "knownKind": true,
-        "plausibleDecisions": [
-          "EXECUTE",
-          "REFUSE",
-          "ESCALATE",
-          "REQUEST_CONFIRMATION",
-          "DEFER",
-          "REWRITE"
-        ],
-        "staffRoute": false
-      }
-    },
-    {
-      "id": "intent:whatsapp.template.send",
-      "type": "intent",
-      "label": "whatsapp.template.send",
       "meta": {
         "advertisedContexts": [],
         "chatDrivable": false,
@@ -1502,7 +1458,7 @@
       "type": "pack",
       "label": "ibatexas/pack-whatsapp",
       "meta": {
-        "intentCount": 5,
+        "intentCount": 3,
         "policyDefault": "REFUSE",
         "version": "1.1.0"
       }
@@ -2250,17 +2206,7 @@
     },
     {
       "from": "pack:ibatexas/pack-whatsapp",
-      "to": "intent:whatsapp.message.send",
-      "type": "declares"
-    },
-    {
-      "from": "pack:ibatexas/pack-whatsapp",
       "to": "intent:whatsapp.session.handover",
-      "type": "declares"
-    },
-    {
-      "from": "pack:ibatexas/pack-whatsapp",
-      "to": "intent:whatsapp.template.send",
       "type": "declares"
     },
     {
