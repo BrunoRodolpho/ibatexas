@@ -9,6 +9,7 @@ import {
   hasModifyChanges,
   fetchAvailabilitySlots,
   submitModify,
+  toStrictSpecialRequests,
 } from "@/domains/reservation"
 import type { ReservationDTO } from "@ibatexas/types"
 import { DatePicker } from "./DatePicker"
@@ -73,7 +74,10 @@ export function ModifyReservationForm({ onSaved }: Props) {
     const body = buildModifyPayload(modifyOriginal, {
       selectedTimeSlotId: selectedSlot?.timeSlotId,
       partySize,
-      specialRequests,
+      // Store shape is loose (`type: string`); the PATCH body requires the
+      // strict enum — narrow at the boundary (soundness, nothing dropped for
+      // the form's seven literal options).
+      specialRequests: toStrictSpecialRequests(specialRequests),
     })
 
     if (!hasModifyChanges(body)) {

@@ -41,6 +41,9 @@ vi.mock("@/domains/reservation", () => ({
   hasModifyChanges: h.hasModifyChanges,
   fetchAvailabilitySlots: h.fetchAvailabilitySlots,
   submitModify: h.submitModify,
+  // Pass-through: the strict-narrowing boundary is unit-tested in modify.test.ts;
+  // these component tests assert the handleSave wiring, not the narrowing.
+  toStrictSpecialRequests: (reqs: unknown) => reqs,
 }))
 
 import { ModifyReservationForm } from "../ModifyReservationForm"

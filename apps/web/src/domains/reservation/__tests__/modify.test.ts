@@ -15,6 +15,7 @@ import {
   hasModifyChanges,
   fetchAvailabilitySlots,
   submitModify,
+  toStrictSpecialRequests,
   type ModifiableReservation,
 } from "../modify"
 
@@ -129,5 +130,27 @@ describe("submitModify", () => {
       vi.fn().mockResolvedValue({ ok: false, json: async () => { throw new Error("no body") } }),
     )
     await expect(submitModify("r1", { newPartySize: 5 })).rejects.toThrow("Erro ao modificar reserva.")
+  })
+})
+
+describe("toStrictSpecialRequests (build-fix: store loose type -> strict enum)", () => {
+  it("maps all seven form literals through unchanged", () => {
+    const loose = [
+      { type: "birthday", notes: "50 anos" },
+      { type: "anniversary" },
+      { type: "allergy_warning", notes: "amendoim" },
+      { type: "highchair" },
+      { type: "window_seat" },
+      { type: "accessible" },
+      { type: "other", notes: "mesa quieta" },
+    ]
+    const strict = toStrictSpecialRequests(loose)
+    expect(strict).toHaveLength(7)
+    expect(strict.map((r) => r.type)).toEqual(loose.map((r) => r.type))
+    expect(strict[0].notes).toBe("50 anos")
+  })
+
+  it("drops an unknown literal (type soundness, honest diff)", () => {
+    expect(toStrictSpecialRequests([{ type: "not_a_request" }])).toEqual([])
   })
 })

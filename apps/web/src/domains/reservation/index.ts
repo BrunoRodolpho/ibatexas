@@ -12,6 +12,7 @@ export {
   hasModifyChanges,
   fetchAvailabilitySlots,
   submitModify,
+  toStrictSpecialRequests,
   type ModifiableReservation,
   type ModifyDraft,
   type ModifyReservationBody,
