@@ -13,11 +13,22 @@
 //      generator's own pure behavior.
 //   2. Docs Auth rows — generateChatCapabilityAuthLevels, checked against
 //      the real committed docs/architecture/design/agent-tools.md (a plain
-//      repo file — reading it needs no apps/* import). Covers the 13 of 20
+//      repo file — reading it needs no apps/* import). Covers the 17 of 20
 //      chat-tier kinds whose `legacyNames[0]` matches a real H3 heading; the
-//      other 7 are documented KNOWN GAPS below (re-grounded fresh for this
-//      ticket, reported in the PR body per FE-4.3 — pin committed bytes,
-//      report staleness, never silently generate around it).
+//      remaining 3 are the granular `order.amend.*` kinds (legacyNames: [],
+//      no name to key a heading by — asserted present, not absent, below).
+//
+//      FE-D16 UPDATE: FE-T23 originally pinned 7 of these as KNOWN GAPS and
+//      reported them (per FE-4.3 — "pin committed bytes, report staleness,
+//      never silently generate around it"). FE-D16 is the fix ticket: the doc
+//      now carries a row for get_or_create_cart / save_pix_details /
+//      regenerate_pix (moved into MATCHED), the handoff heading was renamed
+//      handoff_to_human → request_human_handoff (also MATCHED now), and the
+//      three granular amend kinds got descriptive-heading rows. The two
+//      "orphans" (change_delivery_address / switch_order_type) turned out to
+//      be REAL order-actions-HTTP-route tools (not chat capabilities), so
+//      their rows are KEPT but annotated not-LLM-callable, not deleted. The
+//      former known-gap tests below are flipped to pin the RECONCILED state.
 //
 //      Rebase note (FE-T09 onto dev, PR #264): the chat-tier count moved
 //      18→20 — `order.amend.request` (one of the original 5 known gaps)
@@ -155,10 +166,19 @@ describe("docs/architecture/design/agent-tools.md Auth-row freshness (FE-T23 tar
     { kind: "reservation.cancel", toolName: "cancel_reservation" },
     { kind: "reservation.waitlist.join", toolName: "join_waitlist" },
     { kind: "customer.preferences.update", toolName: "update_preferences" },
+    // FE-D16 reconcile — these 4 previously-KNOWN-GAP kinds now carry a real,
+    // byte-identical doc row (added / renamed in this PR):
+    { kind: "order.cart.ensure", toolName: "get_or_create_cart" },
+    { kind: "customer.pix.details.save", toolName: "save_pix_details" },
+    { kind: "payment.pix.regenerate", toolName: "regenerate_pix" },
+    // handoff heading renamed handoff_to_human → request_human_handoff (its
+    // real legacyNames[0]); the Auth value already agreed (guest), so it is a
+    // plain MATCHED row now.
+    { kind: "whatsapp.handoff.request", toolName: "request_human_handoff" },
   ]
 
-  it("covers exactly 13 of the 20 chat-tier kinds (the other 7 are documented known gaps below)", () => {
-    expect(MATCHED).toHaveLength(13)
+  it("covers exactly 17 of the 20 chat-tier kinds (the remaining 3 are the granular order.amend.* kinds — no legacy name to key a heading by; asserted present below)", () => {
+    expect(MATCHED).toHaveLength(17)
   })
 
   for (const { kind, toolName } of MATCHED) {
@@ -169,24 +189,19 @@ describe("docs/architecture/design/agent-tools.md Auth-row freshness (FE-T23 tar
     })
   }
 
-  // ── Known gaps (FE-T23 re-grounding findings) — REPORTED, not fixed ──────
+  // ── FE-D16 reconcile: the FE-T23 known gaps are now FIXED ────────────────
   //
-  // Per FE-4.3 / the ticket's own instruction: pin CURRENT COMMITTED BYTES;
-  // real staleness gets reported (PR body), never silently patched around.
+  // FE-T23 pinned these as absences (per FE-4.3 — "report staleness, never
+  // silently generate around it"). FE-D16 is the fix ticket; each assertion
+  // below now pins the RECONCILED state (the row exists / the orphan is
+  // gone) — the flip-on-fix the FE-D16 tracker row called for.
 
-  it('KNOWN GAP: order.cart.ensure\'s legacy name "get_or_create_cart" has no matching doc heading at all — the doc\'s own "get_cart" is a DIFFERENT, read-only tool ("Retrieve the current cart contents", no ensure/create semantics)', () => {
-    expect(extractDocAuthRow(docText, "get_or_create_cart")).toBeUndefined()
+  it('FIXED (was KNOWN GAP): order.cart.ensure now has a "get_or_create_cart" doc row (byte-identical Auth pinned in MATCHED above); the read-only "get_cart" row still exists and is a DIFFERENT tool', () => {
+    expect(extractDocAuthRow(docText, "get_or_create_cart")).toBeDefined()
     expect(docText).toContain("### `get_cart`")
-    expect(docText).not.toContain("get_or_create_cart")
   })
 
-  // FE-T09 (D-a, post-#264 rebase): order.amend.request moved OUT of chat
-  // tier entirely (the model no longer targets it — see
-  // capability-definitions/definitions.ts), so its own "no doc entry"
-  // known gap no longer belongs in this chat-tier accounting; replaced by
-  // the three granular successors below, a DIFFERENT kind of gap (no
-  // legacy name to search a heading by AT ALL, not merely a missing row).
-  it('KNOWN GAP (FE-T09 D-a): the three granular order.amend.* kinds carry legacyNames: [] (brand-new tools born under capability===intentKind, no pre-refactor snake_case name exists to search a doc heading by) and the doc has no row for them yet — tracked as a residual in PR #264\'s body, not silently generated around', () => {
+  it("FIXED (was KNOWN GAP): the three granular order.amend.* kinds now have doc rows, though they still carry legacyNames: [] (no legacy name to key a MATCHED heading by — documented under descriptive headings instead)", () => {
     for (const kind of [
       "order.amend.add_item",
       "order.amend.update_qty",
@@ -196,35 +211,40 @@ describe("docs/architecture/design/agent-tools.md Auth-row freshness (FE-T23 tar
       expect(def?.legacyNames, kind).toEqual([])
       expect(generatedAuth[kind], kind).toBe("customer")
     }
-    expect(docText).not.toContain("order_amend_add_item")
-    expect(docText).not.toContain("order_amend_update_qty")
-    expect(docText).not.toContain("order_amend_remove_item")
+    expect(docText).toContain("### `amend_order_add_item`")
+    expect(docText).toContain("### `amend_order_update_qty`")
+    expect(docText).toContain("### `amend_order_remove_item`")
   })
 
-  it('KNOWN GAP: customer.pix.details.save\'s legacy name "save_pix_details" has NO doc entry at all', () => {
-    expect(extractDocAuthRow(docText, "save_pix_details")).toBeUndefined()
-    expect(docText).not.toContain("save_pix_details")
+  it('FIXED (was KNOWN GAP): customer.pix.details.save now has a "save_pix_details" doc row (Auth pinned in MATCHED above)', () => {
+    expect(extractDocAuthRow(docText, "save_pix_details")).toBeDefined()
   })
 
-  it('KNOWN GAP: payment.pix.regenerate\'s legacy name "regenerate_pix" has NO doc entry at all', () => {
-    expect(extractDocAuthRow(docText, "regenerate_pix")).toBeUndefined()
-    expect(docText).not.toContain("regenerate_pix")
+  it('FIXED (was KNOWN GAP): payment.pix.regenerate now has a "regenerate_pix" doc row (Auth pinned in MATCHED above)', () => {
+    expect(extractDocAuthRow(docText, "regenerate_pix")).toBeDefined()
   })
 
-  it('KNOWN NAME DISCREPANCY: whatsapp.handoff.request\'s legacy name "request_human_handoff" never appears in the doc — the doc heading is "handoff_to_human" instead, though its OWN prose cites the real kind by name and the Auth VALUE still agrees', () => {
-    expect(docText).not.toContain("request_human_handoff")
-    const docAuth = extractDocAuthRow(docText, "handoff_to_human")
-    expect(docAuth, 'doc must have a "handoff_to_human" H3 section with an Auth row').toBeDefined()
-    expect(docAuth).toBe(generatedAuth["whatsapp.handoff.request"])
+  it('FIXED (was KNOWN NAME DISCREPANCY): whatsapp.handoff.request\'s doc heading is now "request_human_handoff" (its real legacyNames[0]); the old "handoff_to_human" heading is gone and the prose still cites the kind by name', () => {
+    expect(docText).not.toContain("### `handoff_to_human`")
+    expect(extractDocAuthRow(docText, "request_human_handoff")).toBe(
+      generatedAuth["whatsapp.handoff.request"],
+    )
     expect(docText).toContain("`whatsapp.handoff.request`")
   })
 
-  it("the two orphaned doc entries (change_delivery_address, switch_order_type) match NO CapabilityDefinition legacyName — real doc rows with zero registry backing, reported in the PR body, not asserted against any generated value here", () => {
+  it("RECONCILED (were mislabeled 'orphans'): change_delivery_address / switch_order_type are REAL tools (invoked from apps/api/src/routes/order-actions.ts), NOT chat capabilities — the doc KEEPS their rows but now annotates them not-LLM-callable; they still match NO CapabilityDefinition legacyName and map to the identity-tier kernel kinds order.address.change / order.type.switch", () => {
     const allLegacyNames = new Set(CAPABILITY_DEFINITIONS.flatMap((d) => d.legacyNames ?? []))
     expect(allLegacyNames.has("change_delivery_address")).toBe(false)
     expect(allLegacyNames.has("switch_order_type")).toBe(false)
+    // Rows remain (they are real customer tools), now annotated not-LLM-callable.
     expect(docText).toContain("### `change_delivery_address`")
     expect(docText).toContain("### `switch_order_type`")
+    expect(docText).toContain("**Not LLM-callable**")
+    // The underlying kernel kinds are real but identity-tier (never chat tools).
+    for (const kind of ["order.address.change", "order.type.switch"] as const) {
+      const def = CAPABILITY_DEFINITIONS.find((d) => d.kind === kind)
+      expect(def?.tier, kind).toBe("identity")
+    }
   })
 })
 
