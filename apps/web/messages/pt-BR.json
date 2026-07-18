@@ -352,7 +352,9 @@
     "notes_label": "Observações",
     "notes_placeholder": "Ex: sem cebola, ponto da carne, interfone 42...",
     "notes_remaining": "{count} caracteres restantes (incluindo observações dos itens)",
-    "notes_too_long": "Observações muito longas — reduza o texto (máximo {max} caracteres no total)"
+    "notes_too_long": "Observações muito longas — reduza o texto (máximo {max} caracteres no total)",
+    "guest_card_only": "Comprando como convidado: pagamento apenas com cartão.",
+    "guest_login_prompt": "Entre com WhatsApp para pagar com PIX ou dinheiro →"
   },
   "account": {
     "title": "Minha Conta",
