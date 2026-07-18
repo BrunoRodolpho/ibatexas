@@ -73,6 +73,39 @@ export function refuseSlotNotFound(): Refusal {
   return refuse("STATE", "reservation.slot.not_found", "Horário não encontrado.")
 }
 
+/**
+ * BKL-174 — pt-BR time display for a slot `startTime` ("HH:MM", 24h). "20:00" →
+ * "20h"; "18:30" → "18h30". Deterministic; a non-"HH:MM" value passes through
+ * unchanged (defensive — the times are first-party DB `startTime`s).
+ */
+function formatSlotTime(startTime: string): string {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(startTime)
+  if (m === null) return startTime
+  const [, hour, minute] = m
+  return minute === "00" ? `${hour}h` : `${hour}h${minute}`
+}
+
+/** Max candidate times voiced inline before summarising the remainder. */
+const MAX_AMBIGUOUS_TIMES_SHOWN = 6
+
+/**
+ * BKL-174 — a specific "which time?" refusal for an NL date/time that grounded to
+ * ≥2 available slots (`resolveReservationSlot`). The candidate `times` are the
+ * availability read's own first-party `startTime`s — NEVER model-authored — so
+ * naming them asserts no unbacked fact; it converts the bare
+ * `refuseSlotNotFound` into a useful disambiguation ask (mirrors the amend
+ * `ambiguousItemReply` marker). pt-BR (Hard Rule #4).
+ */
+export function refuseSlotAmbiguous(times: readonly string[]): Refusal {
+  const shown = times.slice(0, MAX_AMBIGUOUS_TIMES_SHOWN).map(formatSlotTime).join(", ")
+  const more = times.length > MAX_AMBIGUOUS_TIMES_SHOWN ? ", entre outros" : ""
+  const userFacing =
+    shown === ""
+      ? "Há mais de um horário disponível para essa data. Qual você prefere?"
+      : `Há mais de um horário disponível para essa data: ${shown}${more}. Qual você prefere?`
+  return refuse("STATE", "reservation.slot.ambiguous", userFacing, `count=${times.length}`)
+}
+
 export function refuseSlotInPast(): Refusal {
   return refuse(
     "STATE",

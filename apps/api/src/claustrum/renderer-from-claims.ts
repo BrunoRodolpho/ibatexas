@@ -289,17 +289,24 @@ export function renderRenderables(
  * terminal template is the entire customer-facing output.
  *
  * §I terminals are DISTINCT (RENDER · UNKNOWN · ESCALATE · CLARIFY): only a true
- * human-handoff ESCALATE renders the handoff copy; an honest-ignorance UNKNOWN —
- * and a CLARIFY — render the epistemic SELF-REPORT (registry §5, Inv 6), never
- * "vou encaminhar para um atendente". Conflating UNKNOWN with ESCALATE would
- * mis-assert that the system is escalating when it is merely reporting that it
- * could not confirm.
+ * human-handoff ESCALATE renders the handoff copy; an honest-ignorance UNKNOWN
+ * renders the epistemic SELF-REPORT, and a CLARIFY renders the disambiguation ASK
+ * (BKL-148) — both proposition-free (registry §5, Inv 6), never "vou encaminhar
+ * para um atendente". Conflating UNKNOWN with ESCALATE would mis-assert that the
+ * system is escalating when it is merely reporting that it could not confirm; and
+ * (pre-BKL-148) collapsing CLARIFY into UNKNOWN answered a disambiguation turn with
+ * a bare "não localizei" instead of asking which record the customer means.
  */
 function renderTerminalResult(
   terminal: TurnTerminal,
   _suppressions: readonly SuppressionRecord[],
 ): RenderResult {
-  const template = terminal === "ESCALATE" ? SAFE_TEMPLATES.escalate : SAFE_TEMPLATES.unknown;
+  const template =
+    terminal === "ESCALATE"
+      ? SAFE_TEMPLATES.escalate
+      : terminal === "CLARIFY"
+        ? SAFE_TEMPLATES.clarify
+        : SAFE_TEMPLATES.unknown;
   // Defensive: a TERMINAL template MUST be proposition-free (it cannot carry a
   // domain fact). If somehow it weren't, abstain to the bare unknown line rather
   // than risk a leak.

@@ -247,12 +247,14 @@ describe("renderer-from-claims — §Q.7 pure template-filler", () => {
 //
 // SDD Inv 6 (render-template purity: UNKNOWN/REFUSED templates assert nothing
 // factual) + §I (the turn terminals RENDER · UNKNOWN · ESCALATE · CLARIFY are
-// DISTINCT, first-class). The prior `terminal === "CLARIFY" ? unknown : escalate`
-// routed UNKNOWN to the escalate copy ("vou encaminhar para um atendente"),
-// conflating "não consegui confirmar" with "estou escalando para um humano".
-// The fix is `terminal === "ESCALATE" ? escalate : unknown`: ESCALATE → handoff;
-// UNKNOWN and CLARIFY → the self-report. These tests are NON-VACUOUS — reverting
-// the ternary turns (a) RED (UNKNOWN would render the handoff copy).
+// DISTINCT, first-class). The routing is now three-way (BKL-148):
+// `ESCALATE → escalate; CLARIFY → clarify; else (UNKNOWN) → unknown`. ESCALATE
+// renders the handoff copy; UNKNOWN the honest-ignorance self-report; and CLARIFY
+// a DISTINCT disambiguation ASK ("tenho mais de um registro possível — pode me
+// dizer o número…?"). Pre-BKL-148, CLARIFY collapsed into the UNKNOWN self-report,
+// answering a disambiguation turn with a bare "não localizei". All three copies are
+// proposition-free. These tests are NON-VACUOUS — collapsing CLARIFY back into
+// UNKNOWN turns (c) RED (the clarify ask would be replaced by "não localizei").
 // ─────────────────────────────────────────────────────────────────────────────
 describe("renderer-from-claims — R3 terminal routing (Inv 6; §I distinct terminals)", () => {
   const UNKNOWN: TurnTerminal = "UNKNOWN";
@@ -262,6 +264,7 @@ describe("renderer-from-claims — R3 terminal routing (Inv 6; §I distinct term
   // Distinguishing copy fragments (sourced from slot-grammar's SAFE_TEMPLATES).
   const SELF_REPORT = "Não localizei"; // unique to SAFE_TEMPLATES.unknown
   const HANDOFF = "encaminhar para um atendente"; // unique to SAFE_TEMPLATES.escalate
+  const CLARIFY_ASK = "mais de um registro possível"; // unique to SAFE_TEMPLATES.clarify
 
   // The exact rendered string of a proposition-free safe template = its LITERAL
   // text. Deriving it from SAFE_TEMPLATES ties each assertion to the grammar
@@ -300,27 +303,32 @@ describe("renderer-from-claims — R3 terminal routing (Inv 6; §I distinct term
     expect(out.text).not.toContain(SELF_REPORT);
   });
 
-  // (c) CLARIFY is unchanged — still the self-report (no distinct clarify copy).
-  it("terminal CLARIFY renders SAFE_TEMPLATES.unknown (self-report, unchanged) (c)", () => {
+  // (c) BKL-148: CLARIFY now renders the DISTINCT disambiguation ask
+  // (SAFE_TEMPLATES.clarify) — NOT the UNKNOWN self-report, and NOT the handoff.
+  it("terminal CLARIFY renders SAFE_TEMPLATES.clarify (disambiguation ask), NOT unknown/handoff (c)", () => {
     const out = renderRenderables(
       [claim(ORDER_FULFILLMENT_STAGE, "VALIDATED", { fulfillmentStatus: "em preparo" })],
       CLARIFY,
     );
     expect(out.terminal).toBe("CLARIFY");
     expect(out.lines[0]?.kind).toBe("TERMINAL");
-    expect(out.text).toBe(literalText(SAFE_TEMPLATES.unknown));
-    expect(out.text).toContain(SELF_REPORT);
+    // It IS the clarify disambiguation ask, byte-for-byte…
+    expect(out.text).toBe(literalText(SAFE_TEMPLATES.clarify));
+    expect(out.text).toContain(CLARIFY_ASK);
+    // …and is explicitly NEITHER the generic UNKNOWN self-report NOR the handoff.
+    expect(out.text).not.toContain(SELF_REPORT);
     expect(out.text).not.toContain(HANDOFF);
   });
 
-  // (d) Inv 6: the chosen UNKNOWN/ESCALATE templates are proposition-free — they
-  // assert nothing factual about an order/payment, even with real claims in hand.
-  it("the UNKNOWN and ESCALATE terminal templates remain proposition-free (d; Inv 6)", () => {
-    // Structural: both safe templates carry ZERO proposition slots.
+  // (d) Inv 6: the chosen UNKNOWN/ESCALATE/CLARIFY templates are proposition-free —
+  // they assert nothing factual about an order/payment, even with real claims in hand.
+  it("the UNKNOWN, ESCALATE and CLARIFY terminal templates remain proposition-free (d; Inv 6)", () => {
+    // Structural: all three safe templates carry ZERO proposition slots.
     expect(isPropositionFree(SAFE_TEMPLATES.unknown)).toBe(true);
     expect(isPropositionFree(SAFE_TEMPLATES.escalate)).toBe(true);
+    expect(isPropositionFree(SAFE_TEMPLATES.clarify)).toBe(true);
     // Behavioural: with real domain claims present, NO order/payment fact leaks.
-    for (const terminal of [UNKNOWN, ESCALATE] as const) {
+    for (const terminal of [UNKNOWN, ESCALATE, CLARIFY] as const) {
       const out = renderRenderables(
         [
           claim(ORDER_FULFILLMENT_STAGE, "VALIDATED", { fulfillmentStatus: "entregue" }),

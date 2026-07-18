@@ -47,6 +47,7 @@ import {
   refuseReservationNotCancellable,
   refuseReservationNotFound,
   refuseReservationNotModifiable,
+  refuseSlotAmbiguous,
   refuseSlotFull,
   refuseSlotInPast,
   refuseSlotNotFound,
@@ -154,6 +155,46 @@ const requireStaff: ReservationGuard = (envelope, state) => {
 }
 
 // ── State guards ────────────────────────────────────────────────────────
+
+/**
+ * BKL-174 — the slot-resolving kinds whose NL date/time may ground to ≥2 available
+ * slots (`resolve-and-assemble.ts` `resolveReservationSlot`). `reservation.modify`
+ * grounds `newTimeSlotId`; create/waitlist ground `timeSlotId`.
+ */
+const SLOT_AMBIGUITY_KINDS: ReadonlySet<ReservationIntentKind> = new Set([
+  "reservation.create",
+  "reservation.waitlist.join",
+  "reservation.modify",
+])
+
+/**
+ * BKL-174 — disambiguation CLARIFY for an NL date/time that grounded to ≥2 available
+ * slots. `resolveReservationSlot` leaves the slot key UNSTAMPED (so the slot guards
+ * below still fail closed) and stamps `slotAmbiguousCount` + the first-party
+ * candidate `slotAmbiguousTimes` on the payload. This guard voices those times as a
+ * specific "which time?" refusal — mirroring the amend `ambiguousItemReply` marker —
+ * INSTEAD of the bare `refuseSlotNotFound`. It runs FIRST in the state phase so the
+ * disambiguation pre-empts the generic slot-missing refusal. The times are the DB
+ * slots' own `startTime`s (first-party, never model-authored), so the refusal
+ * asserts no unbacked fact.
+ */
+const clarifyAmbiguousSlot: ReservationGuard = (envelope) => {
+  if (!SLOT_AMBIGUITY_KINDS.has(envelope.kind)) return null
+  const payload = envelope.payload as {
+    slotAmbiguousCount?: unknown
+    slotAmbiguousTimes?: unknown
+  }
+  if (typeof payload.slotAmbiguousCount !== "number") return null
+  const times = Array.isArray(payload.slotAmbiguousTimes)
+    ? payload.slotAmbiguousTimes.filter((t): t is string => typeof t === "string")
+    : []
+  return decisionRefuse(refuseSlotAmbiguous(times), [
+    basis("state", BASIS_CODES.state.TRANSITION_ILLEGAL, {
+      reason: "slot_ambiguous",
+      count: payload.slotAmbiguousCount,
+    }),
+  ])
+}
 
 /**
  * `reservation.create` requires a known slot with remaining capacity for
@@ -491,6 +532,9 @@ export const reservationsPolicyBundle: PolicyBundle<
   ReservationState
 > = {
   stateGuards: [
+    // BKL-174 — voice the candidate times for an ambiguous NL-grounded slot BEFORE
+    // the generic slot-missing / slot-full refusals fire.
+    clarifyAmbiguousSlot,
     requireReservationPresent,
     requireReservationModifiable,
     requireReservationCancellable,

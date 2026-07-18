@@ -69,8 +69,13 @@ export type TemplateSlot =
  *   - `unknown`   — epistemic self-report + offer; proposition-free.
  *   - `refused`   — epistemic self-report (cannot confirm); proposition-free.
  *   - `escalate`  — safe handoff template; proposition-free (the §O#5 render-half).
+ *   - `clarify`   — disambiguation self-report + ask (BKL-148); proposition-free.
+ *                   Asks the customer for a disambiguating detail WITHOUT asserting
+ *                   any domain fact (it never says WHICH/HOW MANY records exist —
+ *                   that would be a proposition; it reports only the system's own
+ *                   "more than one possible match" state and offers to confirm).
  */
-export type TemplatePosture = "validated" | "unknown" | "refused" | "escalate";
+export type TemplatePosture = "validated" | "unknown" | "refused" | "escalate" | "clarify";
 
 /**
  * A declarative template: an ordered list of typed slots, plus the posture it
@@ -381,6 +386,15 @@ export const VALIDATED_TEMPLATES: Readonly<Record<string, Template>> = {
  *   - REFUSED  — could-not-confirm; a self-report, no domain assertion.
  *   - ESCALATE — safe human handoff (the §O#5 render-half: carries NO suppressed
  *                proposition, only the system's posture).
+ *   - CLARIFY  — disambiguation ask (BKL-148): the system reports it has more than
+ *                one possible match and asks for a specifying detail. Like UNKNOWN,
+ *                it asserts NO domain fact — it never names or counts the candidate
+ *                records (that would be a proposition); it speaks only about the
+ *                system's own ambiguity. This replaces the pre-BKL-148 CLARIFY→UNKNOWN
+ *                fallback, so a forced-CLARIFY turn asks a useful question instead of
+ *                the generic "não localizei". (Naming the SPECIFIC candidate display
+ *                numbers is BKL-170, BLOCKED on the @claustrum/core ClaimsRenderContext
+ *                seam-bump — the candidates never reach this renderer today.)
  *
  * Keyed `posture → Template`. `claimType` is the literal posture name because these
  * templates are NOT keyed to a domain type — they are the system speaking about
@@ -405,6 +419,15 @@ export const SAFE_TEMPLATES: Readonly<Record<Exclude<TemplatePosture, "validated
     slots: [
       lit(
         "Não consegui confirmar isso com segurança agora — vou encaminhar para um atendente verificar. Posso ajudar em mais alguma coisa?",
+      ),
+    ],
+  },
+  clarify: {
+    claimType: "__SAFE_CLARIFY__",
+    posture: "clarify",
+    slots: [
+      lit(
+        "Tenho mais de um registro possível para isso — pode me dizer o número do pedido ou da reserva para eu confirmar o certo?",
       ),
     ],
   },

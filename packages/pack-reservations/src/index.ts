@@ -150,6 +150,7 @@ export {
   refuseReservationNotCancellable,
   refuseReservationNotFound,
   refuseReservationNotModifiable,
+  refuseSlotAmbiguous,
   refuseSlotFull,
   refuseSlotInPast,
   refuseSlotNotFound,
