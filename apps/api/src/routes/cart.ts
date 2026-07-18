@@ -653,13 +653,11 @@ async function lookupDeclaredAllergensByVariant(variantId: string): Promise<stri
 
 /** The per-line replay leg of the checkout sync. BKL-180 wires ONE governed
  *  `order.cart.sync` envelope IN FRONT of this (see `syncLocalCartForCheckout`); this
- *  function is the EXECUTE-side executor, preserving the exact per-item
- *  `medusaAdjudicated` egress + `productType` metadata (no availability re-check at
- *  checkout). NOTE (dual-executor divergence, BKL-180): the registered
- *  `order.cart.sync` tool (`syncCart` in `@ibatexas/tools`) is a SEPARATE
- *  implementation composing `addToCart` — it DOES run the per-variant availability
- *  check and drops `productType`. The two cannot share code (cross-package boundary)
- *  and are deliberately different per the ruling; keep them in sync consciously. */
+ *  function is the SOLE EXECUTE-side executor for that envelope, preserving the exact
+ *  per-item `medusaAdjudicated` egress + `productType` metadata (no availability
+ *  re-check at checkout — the checkout composition guard already ran). order.cart.sync
+ *  is identity-tier/unadvertised and has no other caller, so there is no registered
+ *  tool executor (a future non-checkout caller would register one THEN). */
 async function addLocalItemsToCart(args: {
   cartId: string;
   localItems: Array<{ variantId: string; quantity: number; productType?: string }>;

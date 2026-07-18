@@ -32,7 +32,6 @@
 import {
   addOrderNote,
   addToCart,
-  syncCart,
   amendOrder,
   applyCoupon,
   cancelOrder,
@@ -308,18 +307,12 @@ const IBATEXAS_TOOLS: ReadonlyArray<TD<unknown, unknown>> = [
     riskLevel: "low",
     execute: (input, ctx) => addToCart(input as never, ctx),
   }),
-  // BKL-180 — the order.cart.sync EXECUTOR: bulk-add the client's local cart items
-  // behind ONE governed envelope (the pack's cart.sync bulk-allergen validator gates
-  // it). Identity tier — NOT LLM-advertised (buildToolSurface excludes it); registered
-  // so the fail-closed toolRosterDrift boot gate has an executor for the wired kind.
-  makeTool({
-    id: "ibatexas.cart.sync.v1",
-    capability: "order.cart.sync",
-    intentKind: "order.cart.sync",
-    description: "Sincronizar (em lote) os itens do carrinho do cliente.",
-    riskLevel: "low",
-    execute: (input, ctx) => syncCart(input as never, ctx),
-  }),
+  // BKL-180 — order.cart.sync has NO registered tool: it is identity-tier/unadvertised
+  // (buildToolSurface excludes it) so the toolRosterDrift gate does not require one, and
+  // its ONLY caller (the checkout route's syncLocalCartForCheckout) adjudicates the
+  // envelope with its own inline wrapped-legacy executor. Registering an uncalled tool
+  // here would be a dead handler (the BKL-179 class). A future non-checkout caller
+  // registers a tool THEN, against whatever contract that path needs.
   makeTool({
     id: "ibatexas.cart.updateItem.v1",
     capability: "order.item.update",
