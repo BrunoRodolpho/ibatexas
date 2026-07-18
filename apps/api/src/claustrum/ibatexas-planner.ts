@@ -105,7 +105,7 @@ import {
   EXTRACTION_FAILURE_KIND,
   PINNED_COMPLETION_TEMPERATURE,
 } from "./model-call-defaults.js";
-import { completeWithEmptyRetry, isEmptyCompletion } from "./complete-with-retry.js";
+import { completeWithResilience, isEmptyCompletion } from "./complete-with-retry.js";
 import {
   EXTRACTION_SCHEMAS_BY_CAPABILITY,
   ALLOWED_PAYLOAD_FIELD_NAMES_BY_CAPABILITY,
@@ -169,7 +169,7 @@ function isGenuinelyEmptyCompletion(completion: Completion): boolean {
 // existing import sites (tests, registry) are unaffected.
 export { EXTRACTION_FAILURE_KIND };
 
-type ExtractionFailureReason = "malformed_tool_call" | "empty_completion";
+type ExtractionFailureReason = "malformed_tool_call" | "empty_completion" | "completion_error";
 
 /** Marker `translateToolCalls` pushes to `dropped` for a malformed
  *  `express_intent` call — checked below to decide whether to REFUSE. */
@@ -990,23 +990,69 @@ export function createIbatexasPlanner(
       // GENUINELY empty result (text AND toolCalls both empty — see
       // `isGenuinelyEmptyCompletion`); a legitimate no-intent/small-talk
       // completion (non-empty text, no tool call) is never retried.
-      const { completion, attempts: extractionAttempts, recovered: extractionRecovered } =
-        await completeWithEmptyRetry(
-          () =>
-            deps.model.complete({
-              model: deps.modelId,
-              system,
-              messages: [{ role: "user", content: state.perception.text }],
-              tools,
-              maxTokens,
-              temperature: PINNED_COMPLETION_TEMPERATURE,
-            }),
-          {
-            maxAttempts: EXTRACTION_EMPTY_RETRY_MAX_ATTEMPTS,
-            isEmpty: isGenuinelyEmptyCompletion,
-          },
-        );
+      // BKL-162 — resilient completion boundary: capture a thrown CompletionError
+      // (e.g. Ollama HTTP 500 from malformed tool-call XML on the read-tool
+      // surface), retry once (bounded), and degrade to an honest REFUSE below —
+      // NEVER let the throw propagate and abort the turn silently pre-turn_trace.
+      // Also keeps FE-T01's genuine-empty repair via isGenuinelyEmptyCompletion.
+      const extraction = await completeWithResilience(
+        () =>
+          deps.model.complete({
+            model: deps.modelId,
+            system,
+            messages: [{ role: "user", content: state.perception.text }],
+            tools,
+            maxTokens,
+            temperature: PINNED_COMPLETION_TEMPERATURE,
+          }),
+        {
+          maxAttempts: EXTRACTION_EMPTY_RETRY_MAX_ATTEMPTS,
+          isEmpty: isGenuinelyEmptyCompletion,
+        },
+      );
       const durationMs = Date.now() - startedAt;
+
+      // BKL-162 — the completion boundary failed (threw) on every attempt: the
+      // local-model endpoint is down / 500-ing on this turn's tool surface.
+      // Degrade to the SAME honest extraction-failure REFUSE the empty/malformed
+      // seams use (renders pt-BR "Não posso realizar essa ação..." + writes
+      // turn_trace + reaches the no-delivery classify), plus a structured,
+      // VictoriaLogs-queryable event — the guarantee is: a completion failure is
+      // an honest reply, never customer silence.
+      if (!extraction.ok) {
+        logger.warn(
+          {
+            component: "planner",
+            event: "extraction_failure",
+            turnId: state.turnId,
+            reason: "completion_error",
+            attempts: extraction.attempts,
+            error:
+              extraction.error instanceof Error
+                ? extraction.error.message
+                : String(extraction.error),
+          },
+          "planner: completion boundary failed after retry — extraction-failure REFUSE",
+        );
+        return {
+          envelopes: [
+            buildExtractionFailureEnvelope(
+              "completion_error",
+              envelopeActor,
+              deriveNonce(state, 0),
+            ),
+          ],
+          rationale:
+            "ibatexas-planner: model completion error after retry — extraction-failure REFUSE",
+          capabilities: [],
+          readToolCalls: [],
+          usage: { inputTokens: 0, outputTokens: 0 },
+        };
+      }
+
+      const completion = extraction.completion;
+      const extractionAttempts = extraction.attempts;
+      const extractionRecovered = extraction.recovered;
       if (extractionAttempts > 1) {
         logger.warn(
           {
@@ -1194,19 +1240,62 @@ export function createIbatexasPlanner(
         // exactly one hop, so a hop-2 read would be traced-but-never-executed.
         const pass2Tools = buildToolSurface(plan, false);
         const startedAt2 = Date.now();
-        const completion2 = await deps.model.complete({
-          model: deps.modelId,
-          system,
-          messages: [
-            { role: "user", content: state.perception.text },
-            { role: "assistant", content: assistantTurn },
-            { role: "user", content: enrichmentPrompt },
-          ],
-          tools: pass2Tools,
-          maxTokens,
-          // FE-T01 (D3) — same wire pin as the first-pass call above.
-          temperature: PINNED_COMPLETION_TEMPERATURE,
-        });
+        // BKL-162 — the read-loop re-prompt is the OTHER completion boundary that
+        // can throw on the read-tool surface (the malformed-XML 500 was live-
+        // reproduced here on order-status drives). Same resilient boundary:
+        // error-retry only (an empty pass-2 is legitimate — it just proposes no
+        // intent — so no isEmpty predicate), then degrade to an honest REFUSE.
+        const pass2 = await completeWithResilience(
+          () =>
+            deps.model.complete({
+              model: deps.modelId,
+              system,
+              messages: [
+                { role: "user", content: state.perception.text },
+                { role: "assistant", content: assistantTurn },
+                { role: "user", content: enrichmentPrompt },
+              ],
+              tools: pass2Tools,
+              maxTokens,
+              // FE-T01 (D3) — same wire pin as the first-pass call above.
+              temperature: PINNED_COMPLETION_TEMPERATURE,
+            }),
+          { maxAttempts: EXTRACTION_EMPTY_RETRY_MAX_ATTEMPTS },
+        );
+        if (!pass2.ok) {
+          logger.warn(
+            {
+              component: "planner",
+              event: "extraction_failure",
+              turnId: state.turnId,
+              reason: "completion_error",
+              readLoop: true,
+              attempts: pass2.attempts,
+              error:
+                pass2.error instanceof Error ? pass2.error.message : String(pass2.error),
+            },
+            "planner: read-loop completion boundary failed after retry — extraction-failure REFUSE",
+          );
+          return {
+            envelopes: [
+              buildExtractionFailureEnvelope(
+                "completion_error",
+                envelopeActor,
+                deriveNonce(state, 0),
+              ),
+            ],
+            rationale:
+              "ibatexas-planner: read-loop completion error after retry — extraction-failure REFUSE",
+            capabilities: [],
+            // The pass-1 reads DID execute (owner-scoped, best-effort); surface them.
+            readToolCalls,
+            usage: {
+              inputTokens: completion.inputTokens,
+              outputTokens: completion.outputTokens,
+            },
+          };
+        }
+        const completion2 = pass2.completion;
         const durationMs2 = Date.now() - startedAt2;
         readLoopUsage = {
           inputTokens: completion2.inputTokens,

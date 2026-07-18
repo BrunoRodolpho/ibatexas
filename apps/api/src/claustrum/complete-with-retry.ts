@@ -80,3 +80,69 @@ export async function completeWithEmptyRetry<T extends { text: string }>(
     recovered: attempts > 1 && !isEmpty(completion),
   };
 }
+
+/**
+ * BKL-162 — resilience for the PLANNER's completion boundary.
+ *
+ * `completeWithEmptyRetry` above retries an EMPTY completion but PROPAGATES a
+ * thrown error — which is exactly the silent-turn defect on the planner: the
+ * self-hosted 4B emits malformed tool-call XML on the read-tool surface →
+ * Ollama returns HTTP 500 → the completion call THROWS a `CompletionError` →
+ * the turn aborts before `turn_trace`, with no reply and no incident.
+ *
+ * This variant CAPTURES a thrown error and retries (bounded, jittered), so a
+ * completion failure never propagates past the planner. It also retries an
+ * empty result when an `isEmpty` predicate is supplied (default: never — pure
+ * error-retry, so a legitimate structured/tool-call completion is untouched).
+ * It returns a discriminated result: `ok:true` with the completion (possibly a
+ * trailing EMPTY, so the caller's empty-repair REFUSE still fires, byte-
+ * identical to `completeWithEmptyRetry`), or `ok:false` with the last error so
+ * the caller degrades to an honest extraction-failure REFUSE — never silence.
+ *
+ * The single re-prompt IS the read-surface "repair": a 500 yields no model
+ * output to parse-repair, so a bounded deterministic retry is the only honest
+ * repair available (FE-T01 repair-or-refuse parity for the read frame).
+ */
+export type ResilientCompletionResult<T> =
+  | { readonly ok: true; readonly completion: T; readonly attempts: number; readonly recovered: boolean }
+  | { readonly ok: false; readonly error: unknown; readonly attempts: number };
+
+export async function completeWithResilience<T extends { text: string }>(
+  complete: (attempt: number) => Promise<T>,
+  options: EmptyRetryOptions<T>,
+): Promise<ResilientCompletionResult<T>> {
+  const maxAttempts = Math.max(1, Math.floor(options.maxAttempts));
+  const sleep = options.sleep ?? DEFAULT_SLEEP;
+  const delayForAttempt = options.delayForAttempt ?? DEFAULT_DELAY;
+  // Default: never treat a completion as empty — pure error-retry. Callers that
+  // ALSO want empty-repair (the extraction pass) pass isGenuinelyEmptyCompletion.
+  const isEmpty = options.isEmpty ?? ((): boolean => false);
+
+  let attempts = 0;
+  let lastEmpty: T | undefined;
+  let lastError: unknown;
+
+  while (attempts < maxAttempts) {
+    attempts += 1;
+    try {
+      const completion = await complete(attempts);
+      if (!isEmpty(completion)) {
+        return { ok: true, completion, attempts, recovered: attempts > 1 };
+      }
+      lastEmpty = completion;
+      lastError = undefined;
+    } catch (err) {
+      lastError = err;
+      lastEmpty = undefined;
+    }
+    if (attempts < maxAttempts) await sleep(delayForAttempt(attempts));
+  }
+
+  // Exhausted. A trailing EMPTY is still a usable completion (the caller's
+  // empty-repair REFUSE fires on it); a trailing THROW leaves no completion →
+  // ok:false so the caller REFUSEs on the error rather than the turn aborting.
+  if (lastEmpty !== undefined) {
+    return { ok: true, completion: lastEmpty, attempts, recovered: false };
+  }
+  return { ok: false, error: lastError, attempts };
+}
