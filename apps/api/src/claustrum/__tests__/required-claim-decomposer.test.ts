@@ -285,6 +285,56 @@ describe("classifyRequestSpans — BKL-139 CART_CONTENTS_Q (read-only, anchored)
   });
 });
 
+// FE-D03 slice C — ORDER_HISTORY_Q / PAYMENT_HISTORY_Q: history/list phrasing fires the
+// list span and SUPPRESSES the co-fired singular status span (a history ask is not a
+// single-subject status ask — the list type replaces the ≥2-owned CLARIFY). The singular
+// family stays untouched on singular phrasing (both directions pinned).
+describe("classifyRequestSpans — FE-D03 history spans (suppress the singular)", () => {
+  it("MUST-FIRE ORDER_HISTORY_Q on history/plural order phrasing", () => {
+    for (const text of [
+      "meu histórico de pedidos",
+      "quero ver o histórico dos meus pedidos",
+      "meus últimos pedidos",
+      "me mostra todos os meus pedidos",
+    ]) {
+      expect(classifyRequestSpans(text), text).toContain("ORDER_HISTORY_Q");
+    }
+  });
+
+  it("MUST-FIRE PAYMENT_HISTORY_Q on history/plural payment phrasing", () => {
+    for (const text of [
+      "meu histórico de pagamentos",
+      "meus últimos pagamentos",
+      "histórico de pagamentos por favor",
+    ]) {
+      expect(classifyRequestSpans(text), text).toContain("PAYMENT_HISTORY_Q");
+    }
+  });
+
+  it("SUPPRESSES the singular: 'meus pedidos' → ORDER_HISTORY_Q, NOT ORDER_STATUS_Q", () => {
+    const spans = classifyRequestSpans("meus pedidos");
+    expect(spans).toContain("ORDER_HISTORY_Q");
+    expect(spans).not.toContain("ORDER_STATUS_Q");
+    expect([...decomposeRequiredClaims(spans)]).toEqual(["ORDER_HISTORY"]);
+  });
+
+  it("SUPPRESSES the singular: 'meus pagamentos' → PAYMENT_HISTORY_Q, NOT PAYMENT_STATUS_Q", () => {
+    const spans = classifyRequestSpans("meus pagamentos");
+    expect(spans).toContain("PAYMENT_HISTORY_Q");
+    expect(spans).not.toContain("PAYMENT_STATUS_Q");
+    expect([...decomposeRequiredClaims(spans)]).toEqual(["PAYMENT_HISTORY"]);
+  });
+
+  it("MUST-NOT-FIRE on singular status asks (the singular family stays)", () => {
+    const order = classifyRequestSpans("cadê meu pedido?");
+    expect(order).toContain("ORDER_STATUS_Q");
+    expect(order).not.toContain("ORDER_HISTORY_Q");
+    const payment = classifyRequestSpans("meu pagamento foi aprovado?");
+    expect(payment).toContain("PAYMENT_STATUS_Q");
+    expect(payment).not.toContain("PAYMENT_HISTORY_Q");
+  });
+});
+
 describe("required-claim decomposer — conservative-over-decomposing", () => {
   it("UNIONs across multiple span-classes (over-include, never under-include)", () => {
     const required = decomposeRequiredClaims(["PAYMENT_STATUS_Q", "PICKUP_Q"]);

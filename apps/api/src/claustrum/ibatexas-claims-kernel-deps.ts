@@ -255,6 +255,13 @@ export const OWNER_SCOPED_KEY_PREFIXES = [
   // subject enters `ownedResources` → the kernel's owns predicate passes for the legit
   // owner) and makes the customerId subject an admissible classify-only subject.
   "cart_contents:",
+  // FE-D03 slice C — ORDER_HISTORY / PAYMENT_HISTORY are owner-scoped, keyed
+  // `{order,payment}_history:{customerId}` (per-customer list reads). Listing them here
+  // makes the present history read attribute ownership (the customerId subject enters
+  // `ownedResources` → owns passes for the legit owner) and an admissible classify-only
+  // subject, in lockstep with the parameterized registry keys.
+  "order_history:",
+  "payment_history:",
 ] as const;
 
 /**

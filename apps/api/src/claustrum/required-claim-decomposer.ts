@@ -75,6 +75,8 @@ export type SpanClass =
   | "PAYMENT_STATUS_Q"
   | "RESERVATION_STATUS_Q"
   | "CART_CONTENTS_Q"
+  | "ORDER_HISTORY_Q"
+  | "PAYMENT_HISTORY_Q"
   | "PICKUP_Q";
 
 /**
@@ -108,6 +110,12 @@ export const REQUIRED_CLAIM_CLOSURE = {
   // RELEVANCE_GOVERNED_TYPES via the closure-value union (an over-proposed cart claim is
   // DEMOTED on a turn whose cart span did not fire, KEPT when it did).
   CART_CONTENTS_Q: ["CART_CONTENTS"],
+  // FE-D03 slice C — a history/list question requires its own list-shaped claim. Like
+  // CART_CONTENTS_Q, each is required ONLY by its own span (no unrelated span
+  // force-requires it), so it auto-enrols into the claim-planner RELEVANCE_GOVERNED_TYPES
+  // via the closure-value union (over-proposed history claim demoted on a non-history turn).
+  ORDER_HISTORY_Q: ["ORDER_HISTORY"],
+  PAYMENT_HISTORY_Q: ["PAYMENT_HISTORY"],
   // BKL-142 — a menu question requires ONLY its own PUBLIC claim (no unrelated span
   // force-requires it; like CART_CONTENTS_Q / RESERVATION_STATUS_Q). An unresolvable
   // item → ABSENT evidence → honest UNKNOWN; it never demotes a co-occurring answer
@@ -275,6 +283,33 @@ export function classifyRequestSpans(text: string): SpanClass[] {
     if (!classes.includes("PAYMENT_STATUS_Q")) classes.push("PAYMENT_STATUS_Q");
   }
 
+  // FE-D03 slice C — history/LIST phrasing ("meu histórico de pedidos", "meus últimos
+  // pagamentos"). Fires on a plural/history marker and SUPPRESSES the co-fired singular
+  // status span: a history ask is NOT a single-subject status ask, and leaving
+  // ORDER_STATUS_Q/PAYMENT_STATUS_Q would force the ≥2-owned CLARIFY the list-shaped
+  // type exists to REPLACE (the FE-D03 defect). A singular "cadê meu pedido" / "meu
+  // pagamento foi aprovado?" carries no history marker → the singular stays untouched
+  // (both directions pinned in the tests). "meus pedidos"/"meus pagamentos" trip the
+  // order/payment phrasing above, so the suppression (not mere over-inclusion) is what
+  // routes them to the history claim.
+  const orderHistoryRef =
+    /hist[óo]rico[^.!?]{0,25}pedido|pedido[^.!?]{0,25}hist[óo]rico|(?<![a-z])(meus|todos os meus|[úu]ltimos)\s+pedidos/.test(
+      t,
+    );
+  const paymentHistoryRef =
+    /hist[óo]rico[^.!?]{0,25}(pagamento|pagar)|(?<![a-z])(meus|todos os meus|[úu]ltimos)\s+pagamentos/.test(
+      t,
+    );
+  if (orderHistoryRef) {
+    classes.push("ORDER_HISTORY_Q");
+    const i = classes.indexOf("ORDER_STATUS_Q");
+    if (i !== -1) classes.splice(i, 1);
+  }
+  if (paymentHistoryRef) {
+    classes.push("PAYMENT_HISTORY_Q");
+    const i = classes.indexOf("PAYMENT_STATUS_Q");
+    if (i !== -1) classes.splice(i, 1);
+  }
 
   return classes;
 }

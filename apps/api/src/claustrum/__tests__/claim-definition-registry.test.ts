@@ -31,6 +31,9 @@ const TRIAD = [
   "RESERVATION_STATUS",
   // BKL-139 — the owner-scoped cart read joins the Triad-scoped set (INV-4 closure).
   "CART_CONTENTS",
+  // FE-D03 slice C — the owner-scoped list/history reads (INV-4 closure).
+  "ORDER_HISTORY",
+  "PAYMENT_HISTORY",
 ];
 
 // A deep clone of the real definitions, mutable for fault injection.

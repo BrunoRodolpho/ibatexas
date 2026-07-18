@@ -110,6 +110,16 @@ export const CLAIM_REGISTRY = [
   // The money in that string is composed in code from INTEGER CENTAVOS (Hard Rule 2),
   // NEVER model-authored (FE-D04 / BKL-149).
   "CART_CONTENTS",
+  // FE-D03 slice C — the owner-scoped LIST/HISTORY reads ("meu histórico de pedidos" /
+  // "meus últimos pagamentos"). The plural/list siblings of ORDER_FULFILLMENT_STAGE /
+  // PAYMENT_STATUS: instead of a single-subject status they render a
+  // DETERMINISTICALLY PRE-COMPOSED, bounded most-recent-N summary scalar
+  // (historySummaryText) — the CART_CONTENTS serialized-scalar idiom for a list-shaped
+  // read under the frozen single-C6-field kernel (FE-D09). Owner-scoped by the
+  // authenticated customerId (order/payment listByCustomer); money composed in code
+  // from INTEGER CENTAVOS (Hard Rule 2), NEVER model-authored.
+  "ORDER_HISTORY",
+  "PAYMENT_HISTORY",
   // BKL-142 — the PUBLIC menu-catalog reads ("quanto custa a costela?" / "o que vem
   // no combo?"). perResourceKey by the RESOLVED product id (the shared
   // menu-item-resolver.ts), ownershipPolicy not_applicable (owned by nobody, like
@@ -575,6 +585,81 @@ export const REGISTRY_SPECS = {
     // C6 — bind the rendered summary to the read's PRE-COMPOSED `itemsSummaryText`
     // field (ledger-sourced, deterministic; never model-authored).
     valueBinding: { key: "cart_contents", path: ["itemsSummaryText"] },
+  },
+  // FE-D03 slice C — ORDER_HISTORY: the owner-scoped list read ("meu histórico de
+  // pedidos"). Structurally the CART_CONTENTS idiom (owner-scoped, must_read_this_turn,
+  // perResourceKey by the authenticated customerId), but its C6 proposition is a
+  // DETERMINISTICALLY PRE-COMPOSED bounded most-recent-N summary scalar
+  // (historySummaryText, "Pedido #1042 (entregue, R$89,00), … — mostrando os N mais
+  // recentes") derived from order listByCustomer (owner-scoped). The
+  // `order_history_changed` falsifier is DECLARED (so ORDER_HISTORY escapes the W6
+  // UNKNOWN-only cap and can VALIDATE) but DELIBERATELY UNREAD — the CART_CONTENTS
+  // `cart_cleared` disposition: the summary is a must_read_this_turn SNAPSHOT that
+  // already reflects each order's current status, so a same-read "changed" signal is
+  // tautological AND inert (an always-absent key never fires; demote-only safety holds).
+  ORDER_HISTORY: {
+    kind: "read_claim",
+    minSourceIntegrity: "structured",
+    requiredEvidence: [
+      {
+        key: "order_history",
+        ownershipPolicy: "required",
+        freshnessPolicy: "must_read_this_turn",
+        sourceIntegrity: "structured",
+        provenancePolicy: "preserve",
+      },
+    ],
+    customerScoped: true,
+    // Parameterize by subject — matches the investigator's `order_history:{customerId}`.
+    perResourceKey: true,
+    falsifierComplete: true,
+    falsifiers: [
+      {
+        key: "order_history_changed",
+        ownershipPolicy: "required",
+        freshnessPolicy: "must_read_this_turn",
+        sourceIntegrity: "structured",
+        provenancePolicy: "preserve",
+      },
+    ],
+    // C6 — bind the rendered summary to the read's PRE-COMPOSED `historySummaryText`.
+    valueBinding: { key: "order_history", path: ["historySummaryText"] },
+  },
+  // FE-D03 slice C — PAYMENT_HISTORY: the owner-scoped payment-list read ("meus últimos
+  // pagamentos"). The exact ORDER_HISTORY shape over payment listByCustomer (owner-scoped
+  // via the Payment→OrderProjection.customerId join; includes terminal/refunded rows —
+  // it is billing HISTORY). `payment_history_changed` is likewise DECLARED-but-UNREAD:
+  // must_read_this_turn re-reads each payment's current status (incl. refunded/disputed —
+  // the same facts BKL-006's per-order refund/chargeback probes surface), so the summary
+  // already reflects them and a separate falsifier would demote a snapshot that is
+  // already current — no independent cross-read contradiction (re-verified: the refund/
+  // chargeback probes are per-ORDER and this is a per-CUSTOMER snapshot; wiring them
+  // here would be tautological). Declared-unread, mirroring cart_cleared.
+  PAYMENT_HISTORY: {
+    kind: "read_claim",
+    minSourceIntegrity: "structured",
+    requiredEvidence: [
+      {
+        key: "payment_history",
+        ownershipPolicy: "required",
+        freshnessPolicy: "must_read_this_turn",
+        sourceIntegrity: "structured",
+        provenancePolicy: "preserve",
+      },
+    ],
+    customerScoped: true,
+    perResourceKey: true,
+    falsifierComplete: true,
+    falsifiers: [
+      {
+        key: "payment_history_changed",
+        ownershipPolicy: "required",
+        freshnessPolicy: "must_read_this_turn",
+        sourceIntegrity: "structured",
+        provenancePolicy: "preserve",
+      },
+    ],
+    valueBinding: { key: "payment_history", path: ["historySummaryText"] },
   },
   // BKL-142 — MENU_ITEM_PRICE: a PUBLIC per-item catalog read. Clones
   // STORE_HOURS_FOR_DATE's public (`not_applicable`, `perResourceKey`) shape + the

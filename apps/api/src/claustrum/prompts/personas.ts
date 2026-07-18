@@ -82,6 +82,8 @@ export const CLAIM_PLANNER_PERSONA = [
   "- situação do pagamento de um pedido => PAYMENT_STATUS",
   "- qual é/como está a minha reserva, situação da reserva => RESERVATION_STATUS",
   "- o que tem no meu carrinho, itens da sacola/cesta => CART_CONTENTS",
+  "- meu histórico de pedidos, meus últimos pedidos => ORDER_HISTORY",
+  "- meu histórico de pagamentos, meus últimos pagamentos => PAYMENT_HISTORY",
   "- a compra foi concluída => PURCHASE_COMPLETED",
   "",
   "REGRA ABSOLUTA: NUNCA escreva o valor/proposição da resposta — o sistema deriva o",

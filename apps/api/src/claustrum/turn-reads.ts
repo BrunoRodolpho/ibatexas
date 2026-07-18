@@ -45,6 +45,9 @@ import {
   type ScheduleSignal,
 } from "@ibatexas/tools";
 import type { HolidayEntry, ScheduleOverrideEntry } from "@ibatexas/types";
+// FE-D03 slice C — the pt-BR status label maps for the deterministic ORDER_HISTORY /
+// PAYMENT_HISTORY summary composers (never hardcode a pt-BR status string, Hard Rule 4).
+import { ORDER_STATUS_LABELS_PT, PAYMENT_STATUS_LABELS_PT } from "@ibatexas/types";
 // (BKL-006 falsifier predicates moved into the domain service's findFirst
 // probes — see findRefundBearingByOrderId/findDisputedByOrderId; no status-enum
 // comparison happens in this file anymore.)
@@ -206,6 +209,25 @@ export interface CartContentsRead {
 }
 
 /**
+ * ORDER_HISTORY / PAYMENT_HISTORY (FE-D03 slice C) — the authenticated customer's
+ * owner-scoped LIST read, as a DETERMINISTICALLY PRE-COMPOSED bounded most-recent-N
+ * summary scalar (the CART_CONTENTS serialized-scalar idiom for a list-shaped read).
+ *
+ *   - `historySummaryText` — the pt-BR summary ("Pedido #1042 (entregue, R$89,00), …
+ *     — mostrando os N mais recentes"). Composed IN CODE from the owner-scoped
+ *     listByCustomer rows: display numbers + INTEGER-CENTAVOS totals (Hard Rule 2) +
+ *     pt-BR status labels; NEVER model-authored. Empty string when the customer has no
+ *     rows.
+ *   - `hasHistory` — the customer has ≥1 row (present-vs-absent discriminant: the
+ *     investigator records the key PRESENT only when `true`, else ABSENT → honest
+ *     UNKNOWN, mirroring the CART_CONTENTS empty-cart path).
+ */
+export interface HistoryRead {
+  readonly historySummaryText: string;
+  readonly hasHistory: boolean;
+}
+
+/**
  * The first-party read backend for the Trustworthiness-Triad scope. Every
  * resource read is OWNER-SCOPED to `customerId`; a cross-owner / absent resource
  * resolves to `null` (the caller records that as a fail-closed read error — Inv 7
@@ -298,6 +320,19 @@ export interface TriadReadBackend {
     conversationId: string,
     customerId: string,
   ): Promise<CartContentsRead | null>;
+  /**
+   * FE-D03 slice C ORDER_HISTORY — the authenticated customer's owner-scoped order
+   * list (`listByCustomer`, most-recent-first, bounded). `hasHistory: false` when the
+   * customer has no orders. A DB read failure REJECTS (recorded as a fail-closed
+   * ERROR, Inv 7) — there is no cross-owner case (the key is the customerId itself).
+   */
+  readOrderHistory(customerId: string): Promise<HistoryRead>;
+  /**
+   * FE-D03 slice C PAYMENT_HISTORY — the authenticated customer's owner-scoped payment
+   * list (`listByCustomer`, most-recent-first, bounded; billing HISTORY incl. terminal
+   * rows). `hasHistory: false` when none; a DB failure REJECTS → fail-closed ERROR.
+   */
+  readPaymentHistory(customerId: string): Promise<HistoryRead>;
   /**
    * Enumerate the AUTHENTICATED customer's OWN, RELEVANT (non-terminal) order ids
    * (FIX 2 — owner-scoped subject resolution; the BUG-2 close). OWNER-SCOPED by
@@ -421,6 +456,79 @@ export function composeCartItemsSummary(items: ReadonlyArray<RawCartLine>, total
     .map((i) => `${i.quantity}x ${i.title}`);
   const itemsPart = parts.join(", ");
   return `${itemsPart} — total ${formatCentavosBRL(totalCentavos)}`;
+}
+
+// ── FE-D03 slice C — the DETERMINISTIC ORDER_HISTORY / PAYMENT_HISTORY composers ─────
+//
+// A list-shaped read rendered as ONE C6 scalar (the CART_CONTENTS idiom): compose a
+// bounded most-recent-N pt-BR summary IN CODE from the owner-scoped listByCustomer rows
+// — display numbers + INTEGER-CENTAVOS money (Hard Rule 2) + the canonical pt-BR status
+// labels — so no model-authored digit or label reaches the rendered proposition. PURE.
+
+/** The bounded most-recent-N window a history summary renders (the listByCustomer
+ *  calls are ALSO bounded — this caps the RENDERED lines). */
+export const HISTORY_SUMMARY_LIMIT = 5;
+
+/** One order row the ORDER_HISTORY summary reads (owner-scoped OrderProjection). */
+interface OrderHistoryRow {
+  readonly displayId: number;
+  readonly fulfillmentStatus: string;
+  readonly totalInCentavos: number;
+}
+/** One payment row the PAYMENT_HISTORY summary reads (owner-scoped Payment). */
+interface PaymentHistoryRow {
+  readonly amountInCentavos: number;
+  readonly method: string;
+  readonly status: string;
+}
+
+/** pt-BR fulfillment label for a status string (canonical map; falls back to the raw
+ *  status rather than inventing one — never a fabricated label). */
+function orderStatusLabel(status: string): string {
+  return (ORDER_STATUS_LABELS_PT as Record<string, string>)[status] ?? status;
+}
+function paymentStatusLabel(status: string): string {
+  return (PAYMENT_STATUS_LABELS_PT as Record<string, string>)[status] ?? status;
+}
+
+/** " — mostrando os N mais recentes" / " — mostrando o mais recente" suffix. */
+function historyTailSuffix(shown: number): string {
+  return shown === 1
+    ? " — mostrando o mais recente"
+    : ` — mostrando os ${shown} mais recentes`;
+}
+
+/**
+ * Compose the pt-BR ORDER history summary ("Pedido #1042 (entregue, R$89,00), Pedido
+ * #1039 (preparando, R$123,00) — mostrando os 2 mais recentes") from the owner-scoped
+ * order rows (already most-recent-first). Bounded to {@link HISTORY_SUMMARY_LIMIT}.
+ * Money from INTEGER CENTAVOS; labels from the canonical map. PURE. Exported for the
+ * composer unit test.
+ */
+export function composeOrderHistorySummary(rows: ReadonlyArray<OrderHistoryRow>): string {
+  const shown = rows.slice(0, HISTORY_SUMMARY_LIMIT);
+  const parts = shown.map(
+    (o) =>
+      `Pedido #${o.displayId} (${orderStatusLabel(o.fulfillmentStatus)}, ${formatCentavosBRL(o.totalInCentavos)})`,
+  );
+  return `${parts.join(", ")}${historyTailSuffix(shown.length)}`;
+}
+
+/**
+ * Compose the pt-BR PAYMENT history summary ("Pagamento de R$89,00 (pix, pago),
+ * Pagamento de R$40,00 (pix, reembolsado) — mostrando os 2 mais recentes") from the
+ * owner-scoped payment rows (already most-recent-first). Bounded, integer-centavos,
+ * canonical labels. PURE. Exported for the composer unit test.
+ */
+export function composePaymentHistorySummary(
+  rows: ReadonlyArray<PaymentHistoryRow>,
+): string {
+  const shown = rows.slice(0, HISTORY_SUMMARY_LIMIT);
+  const parts = shown.map(
+    (p) =>
+      `Pagamento de ${formatCentavosBRL(p.amountInCentavos)} (${p.method}, ${paymentStatusLabel(p.status)})`,
+  );
+  return `${parts.join(", ")}${historyTailSuffix(shown.length)}`;
 }
 
 export interface DomainTriadReadBackendDeps {
@@ -736,6 +844,42 @@ export function createDomainTriadReadBackend(
       // construction: the cart is resolved from the session's conversationId, never a
       // model id.
       return readCartContentsOnce(conversationId, customerId);
+    },
+
+    async readOrderHistory(customerId) {
+      // FE-D03 slice C — OWNER-SCOPED order list (listByCustomer filters on customerId,
+      // most-recent-first). The summary is composed deterministically in code. A DB
+      // failure REJECTS → the investigator records a fail-closed ERROR (Inv 7).
+      const { orders } = await createOrderQueryService().listByCustomer(customerId, {
+        limit: HISTORY_SUMMARY_LIMIT,
+      });
+      const rows: OrderHistoryRow[] = orders.map((o) => ({
+        displayId: o.displayId,
+        fulfillmentStatus: String(o.fulfillmentStatus),
+        totalInCentavos: o.totalInCentavos,
+      }));
+      return {
+        hasHistory: rows.length > 0,
+        historySummaryText: rows.length > 0 ? composeOrderHistorySummary(rows) : "",
+      };
+    },
+
+    async readPaymentHistory(customerId) {
+      // FE-D03 slice C — OWNER-SCOPED payment list (listByCustomer joins on
+      // order.customerId, most-recent-first; billing HISTORY incl. terminal rows). A DB
+      // failure REJECTS → fail-closed ERROR.
+      const payments = await createPaymentQueryService().listByCustomer(customerId, {
+        limit: HISTORY_SUMMARY_LIMIT,
+      });
+      const rows: PaymentHistoryRow[] = payments.map((p) => ({
+        amountInCentavos: p.amountInCentavos,
+        method: String(p.method),
+        status: String(p.status),
+      }));
+      return {
+        hasHistory: rows.length > 0,
+        historySummaryText: rows.length > 0 ? composePaymentHistorySummary(rows) : "",
+      };
     },
 
     async listActiveOrderIds(customerId) {

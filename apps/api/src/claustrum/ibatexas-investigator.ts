@@ -223,6 +223,13 @@ const PAYMENT_CHARGEBACK_KEY = (orderId: string): string =>
 // model id), so the subject is the customerId in lockstep with parameterizeKeysBySubject.
 // (The declared `cart_cleared` falsifier is deliberately UNREAD — see the cart block.)
 const CART_CONTENTS_KEY = (customerId: string): string => `cart_contents:${customerId}`;
+// FE-D03 slice C ORDER_HISTORY / PAYMENT_HISTORY keys. Keyed by the AUTHENTICATED
+// customerId (the list is per-customer, owner-scoped via listByCustomer) — the subject
+// is the customerId in lockstep with parameterizeKeysBySubject. The declared
+// order_history_changed / payment_history_changed falsifiers are deliberately UNREAD
+// (see the history block + registry: a must_read_this_turn snapshot is already current).
+const ORDER_HISTORY_KEY = (customerId: string): string => `order_history:${customerId}`;
+const PAYMENT_HISTORY_KEY = (customerId: string): string => `payment_history:${customerId}`;
 
 const GUEST_ID_RE = /^(guest|anon|anonymous):/i;
 
@@ -538,6 +545,44 @@ export function createFirstPartyTurnReads(
           const v = await b.readCartContents(conversationId, customerId);
           if (v === null) throw new OwnerScopedReadUnavailable("active_cart", customerId);
           return { hasItems: v.hasItems };
+        },
+      });
+    }
+
+    // FE-D03 slice C ORDER_HISTORY / PAYMENT_HISTORY — the owner-scoped LIST reads,
+    // keyed by the authenticated customerId. GATED on the *_HISTORY_Q span (same
+    // deterministic classifier + span-gate discipline as CART_CONTENTS): a non-history
+    // turn adds no DB cost and records no history keys. Each records PRESENT only when
+    // the customer has rows (hasHistory) — an empty history leaves the key ABSENT →
+    // honest UNKNOWN; a DB read failure REJECTS → fail-closed ERROR (Inv 7). A guest
+    // never reaches here (gated above) → honest UNKNOWN. The declared
+    // order_history_changed / payment_history_changed falsifiers are deliberately UNREAD
+    // (registry note): the summary is a must_read_this_turn snapshot already reflecting
+    // each row's current status, so a same-read "changed" signal is tautological/inert.
+    const spans = classifyRequestSpans(input.cognition.perception.text);
+    if (spans.includes("ORDER_HISTORY_Q")) {
+      reads.push({
+        key: ORDER_HISTORY_KEY(customerId),
+        source: "order.readOrderHistory",
+        origin: "TRUSTED",
+        originProvenance: "FIRST_PARTY",
+        sourceMode: "live",
+        read: async () => {
+          const v = await b.readOrderHistory(customerId);
+          return v.hasHistory ? { historySummaryText: v.historySummaryText } : ABSENT_READ;
+        },
+      });
+    }
+    if (spans.includes("PAYMENT_HISTORY_Q")) {
+      reads.push({
+        key: PAYMENT_HISTORY_KEY(customerId),
+        source: "payment.readPaymentHistory",
+        origin: "TRUSTED",
+        originProvenance: "FIRST_PARTY",
+        sourceMode: "live",
+        read: async () => {
+          const v = await b.readPaymentHistory(customerId);
+          return v.hasHistory ? { historySummaryText: v.historySummaryText } : ABSENT_READ;
         },
       });
     }
