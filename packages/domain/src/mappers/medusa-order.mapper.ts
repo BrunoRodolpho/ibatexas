@@ -78,6 +78,10 @@ export function toOrderEventItems(
 ): OrderEventItem[] {
   if (!Array.isArray(medusaItems)) return []
   return medusaItems.map((i) => ({
+    // FE-D15 — preserve Medusa's stable line-item id through the projection (only
+    // when present, so the field is truly additive: a Medusa payload without an id
+    // yields no `id` key rather than an empty-string fake).
+    ...(i.id !== undefined ? { id: i.id } : {}),
     productId: i.product_id ?? "",
     variantId: i.variant_id ?? "",
     title: i.title ?? "",

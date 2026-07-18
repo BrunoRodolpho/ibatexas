@@ -10,6 +10,13 @@ import type { OrderFulfillmentStatus } from "./order-status.js"
 
 /** Denormalized line item included in order events. */
 export interface OrderEventItem {
+  /**
+   * Medusa's stable line-item id (`line_item.id`) — FE-D15. Lets post-checkout item
+   * operations (amend hydration, admin item references) target an EXACT line instead
+   * of live-fetching + title-matching. OPTIONAL: projections written before FE-D15
+   * lack it (no backfill), so every consumer must tolerate its absence.
+   */
+  id?: string
   productId: string
   variantId: string
   title: string
