@@ -64,3 +64,17 @@ const INCIDENT_STATUS_VARIANTS: Record<string, BadgeVariant> = {
 export function incidentStatusVariant(status: string): BadgeVariant {
   return INCIDENT_STATUS_VARIANTS[status] ?? 'default'
 }
+
+// NEW-014 — fiscal (NFC-e) badge variants. `rejected` is the loud one (human
+// review required); `timeout`/`error` warn (retriable under the cap).
+const FISCAL_STATUS_VARIANTS: Record<string, BadgeVariant> = {
+  pending: 'default',
+  approved: 'success',
+  rejected: 'danger',
+  timeout: 'warning',
+  error: 'warning',
+}
+
+export function fiscalVariant(status: string): BadgeVariant {
+  return FISCAL_STATUS_VARIANTS[status] ?? 'default'
+}

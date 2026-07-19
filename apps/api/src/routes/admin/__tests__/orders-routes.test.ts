@@ -75,6 +75,11 @@ const MockInvalidTransitionError = vi.hoisted(
 // ── Module mocks ─────────────────────────────────────────────────────────────
 
 vi.mock("@ibatexas/domain", () => ({
+  // NEW-014 PR2 — the admin detail route consumes this directly (fiscal badge);
+  // default: no fiscal record (fiscal: null on the response).
+  createFiscalDocumentService: () => ({
+    getByOrderId: vi.fn().mockResolvedValue(null),
+  }),
   createOrderQueryService: () => ({
     listAll: mockListAll,
     getById: mockGetById,

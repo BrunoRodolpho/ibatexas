@@ -68,6 +68,7 @@ export const ModelName = {
   OrderProjection: 'OrderProjection',
   OrderStatusHistory: 'OrderStatusHistory',
   OrderEventLog: 'OrderEventLog',
+  FiscalDocument: 'FiscalDocument',
   Payment: 'Payment',
   PaymentStatusHistory: 'PaymentStatusHistory',
   OrderNote: 'OrderNote',
@@ -360,6 +361,23 @@ export const OrderEventLogScalarFieldEnum = {
 } as const
 
 export type OrderEventLogScalarFieldEnum = (typeof OrderEventLogScalarFieldEnum)[keyof typeof OrderEventLogScalarFieldEnum]
+
+
+export const FiscalDocumentScalarFieldEnum = {
+  id: 'id',
+  orderId: 'orderId',
+  status: 'status',
+  provider: 'provider',
+  attempts: 'attempts',
+  accessKey: 'accessKey',
+  xmlUrl: 'xmlUrl',
+  pdfUrl: 'pdfUrl',
+  rejectionReason: 'rejectionReason',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+} as const
+
+export type FiscalDocumentScalarFieldEnum = (typeof FiscalDocumentScalarFieldEnum)[keyof typeof FiscalDocumentScalarFieldEnum]
 
 
 export const PaymentScalarFieldEnum = {

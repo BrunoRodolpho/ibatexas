@@ -130,6 +130,7 @@ export {
   ORDER_STATUS_LABELS_PT,
   PAYMENT_STATUS_LABELS_PT,
   RESERVATION_STATUS_LABELS_PT,
+  FISCAL_STATUS_LABELS_PT,
   ORDER_STATUS_LABELS_PT_CUSTOMER,
   PAYMENT_STATUS_LABELS_PT_CUSTOMER,
   RESERVATION_STATUS_LABELS_PT_CUSTOMER,
@@ -164,6 +165,13 @@ export {
   isTerminalPaymentStatus,
   canTransitionPayment,
 } from "./payment-status.js"
+
+// Fiscal status (NEW-014)
+export {
+  FiscalStatus,
+  TERMINAL_FISCAL_STATUSES,
+  type TerminalFiscalStatus,
+} from "./fiscal-status.js"
 
 // Order type
 export {

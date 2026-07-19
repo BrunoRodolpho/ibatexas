@@ -401,6 +401,7 @@ export const ModelName = {
   OrderProjection: 'OrderProjection',
   OrderStatusHistory: 'OrderStatusHistory',
   OrderEventLog: 'OrderEventLog',
+  FiscalDocument: 'FiscalDocument',
   Payment: 'Payment',
   PaymentStatusHistory: 'PaymentStatusHistory',
   OrderNote: 'OrderNote',
@@ -435,7 +436,7 @@ export type TypeMap<ExtArgs extends runtime.Types.Extensions.InternalArgs = runt
     omit: GlobalOmitOptions
   }
   meta: {
-    modelProps: "table" | "timeSlot" | "reservation" | "reservationTable" | "waitlist" | "review" | "staff" | "staffShift" | "customer" | "customerBroadcastConsent" | "broadcastSend" | "address" | "customerPreferences" | "customerOrderItem" | "orderProjection" | "orderStatusHistory" | "orderEventLog" | "payment" | "paymentStatusHistory" | "orderNote" | "loyaltyAccount" | "conversation" | "conversationMessage" | "deliveryZone" | "ingredient" | "recipe" | "recipeIngredient" | "dailySpecial" | "weeklySchedule" | "holiday" | "scheduleOverride" | "agentRun" | "agentRedTeamRun" | "llmTokenUsage" | "conversationIncident" | "opsAlert"
+    modelProps: "table" | "timeSlot" | "reservation" | "reservationTable" | "waitlist" | "review" | "staff" | "staffShift" | "customer" | "customerBroadcastConsent" | "broadcastSend" | "address" | "customerPreferences" | "customerOrderItem" | "orderProjection" | "orderStatusHistory" | "orderEventLog" | "fiscalDocument" | "payment" | "paymentStatusHistory" | "orderNote" | "loyaltyAccount" | "conversation" | "conversationMessage" | "deliveryZone" | "ingredient" | "recipe" | "recipeIngredient" | "dailySpecial" | "weeklySchedule" | "holiday" | "scheduleOverride" | "agentRun" | "agentRedTeamRun" | "llmTokenUsage" | "conversationIncident" | "opsAlert"
     txIsolationLevel: TransactionIsolationLevel
   }
   model: {
@@ -1694,6 +1695,80 @@ export type TypeMap<ExtArgs extends runtime.Types.Extensions.InternalArgs = runt
         count: {
           args: Prisma.OrderEventLogCountArgs<ExtArgs>
           result: runtime.Types.Utils.Optional<Prisma.OrderEventLogCountAggregateOutputType> | number
+        }
+      }
+    }
+    FiscalDocument: {
+      payload: Prisma.$FiscalDocumentPayload<ExtArgs>
+      fields: Prisma.FiscalDocumentFieldRefs
+      operations: {
+        findUnique: {
+          args: Prisma.FiscalDocumentFindUniqueArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$FiscalDocumentPayload> | null
+        }
+        findUniqueOrThrow: {
+          args: Prisma.FiscalDocumentFindUniqueOrThrowArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$FiscalDocumentPayload>
+        }
+        findFirst: {
+          args: Prisma.FiscalDocumentFindFirstArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$FiscalDocumentPayload> | null
+        }
+        findFirstOrThrow: {
+          args: Prisma.FiscalDocumentFindFirstOrThrowArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$FiscalDocumentPayload>
+        }
+        findMany: {
+          args: Prisma.FiscalDocumentFindManyArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$FiscalDocumentPayload>[]
+        }
+        create: {
+          args: Prisma.FiscalDocumentCreateArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$FiscalDocumentPayload>
+        }
+        createMany: {
+          args: Prisma.FiscalDocumentCreateManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        createManyAndReturn: {
+          args: Prisma.FiscalDocumentCreateManyAndReturnArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$FiscalDocumentPayload>[]
+        }
+        delete: {
+          args: Prisma.FiscalDocumentDeleteArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$FiscalDocumentPayload>
+        }
+        update: {
+          args: Prisma.FiscalDocumentUpdateArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$FiscalDocumentPayload>
+        }
+        deleteMany: {
+          args: Prisma.FiscalDocumentDeleteManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        updateMany: {
+          args: Prisma.FiscalDocumentUpdateManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        updateManyAndReturn: {
+          args: Prisma.FiscalDocumentUpdateManyAndReturnArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$FiscalDocumentPayload>[]
+        }
+        upsert: {
+          args: Prisma.FiscalDocumentUpsertArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$FiscalDocumentPayload>
+        }
+        aggregate: {
+          args: Prisma.FiscalDocumentAggregateArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.AggregateFiscalDocument>
+        }
+        groupBy: {
+          args: Prisma.FiscalDocumentGroupByArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.FiscalDocumentGroupByOutputType>[]
+        }
+        count: {
+          args: Prisma.FiscalDocumentCountArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.FiscalDocumentCountAggregateOutputType> | number
         }
       }
     }
@@ -3399,6 +3474,23 @@ export const OrderEventLogScalarFieldEnum = {
 export type OrderEventLogScalarFieldEnum = (typeof OrderEventLogScalarFieldEnum)[keyof typeof OrderEventLogScalarFieldEnum]
 
 
+export const FiscalDocumentScalarFieldEnum = {
+  id: 'id',
+  orderId: 'orderId',
+  status: 'status',
+  provider: 'provider',
+  attempts: 'attempts',
+  accessKey: 'accessKey',
+  xmlUrl: 'xmlUrl',
+  pdfUrl: 'pdfUrl',
+  rejectionReason: 'rejectionReason',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+} as const
+
+export type FiscalDocumentScalarFieldEnum = (typeof FiscalDocumentScalarFieldEnum)[keyof typeof FiscalDocumentScalarFieldEnum]
+
+
 export const PaymentScalarFieldEnum = {
   id: 'id',
   orderId: 'orderId',
@@ -3898,6 +3990,20 @@ export type ListEnumOrderActorFieldRefInput<$PrismaModel> = FieldRefInputType<$P
 
 
 /**
+ * Reference to a field of type 'FiscalStatus'
+ */
+export type EnumFiscalStatusFieldRefInput<$PrismaModel> = FieldRefInputType<$PrismaModel, 'FiscalStatus'>
+    
+
+
+/**
+ * Reference to a field of type 'FiscalStatus[]'
+ */
+export type ListEnumFiscalStatusFieldRefInput<$PrismaModel> = FieldRefInputType<$PrismaModel, 'FiscalStatus[]'>
+    
+
+
+/**
  * Reference to a field of type 'PaymentStatus'
  */
 export type EnumPaymentStatusFieldRefInput<$PrismaModel> = FieldRefInputType<$PrismaModel, 'PaymentStatus'>
@@ -4204,6 +4310,7 @@ export type GlobalOmitConfig = {
   orderProjection?: Prisma.OrderProjectionOmit
   orderStatusHistory?: Prisma.OrderStatusHistoryOmit
   orderEventLog?: Prisma.OrderEventLogOmit
+  fiscalDocument?: Prisma.FiscalDocumentOmit
   payment?: Prisma.PaymentOmit
   paymentStatusHistory?: Prisma.PaymentStatusHistoryOmit
   orderNote?: Prisma.OrderNoteOmit

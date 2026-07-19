@@ -28,6 +28,7 @@
 // CI. Divergence-by-drift becomes structurally impossible; a cross-register wording
 // difference becomes a deliberate, reviewed fact.
 
+import { FiscalStatus } from "./fiscal-status.js"
 import { OrderFulfillmentStatus } from "./order-status.js"
 import { PaymentStatus } from "./payment-status.js"
 import { ReservationStatus } from "./reservation.types.js"
@@ -70,6 +71,16 @@ export const RESERVATION_STATUS_LABELS_PT: Record<ReservationStatus, string> = {
   [ReservationStatus.COMPLETED]: "Completa",
   [ReservationStatus.CANCELLED]: "Cancelada",
   [ReservationStatus.NO_SHOW]: "No Show",
+}
+
+/** pt-BR STAFF (Title Case) display labels for each fiscal (NFC-e) status —
+ *  NEW-014; admin-only surface today (no customer register yet). */
+export const FISCAL_STATUS_LABELS_PT: Record<FiscalStatus, string> = {
+  [FiscalStatus.PENDING]: "Pendente",
+  [FiscalStatus.APPROVED]: "Autorizada",
+  [FiscalStatus.REJECTED]: "Rejeitada",
+  [FiscalStatus.TIMEOUT]: "Processando",
+  [FiscalStatus.ERROR]: "Erro",
 }
 
 // ── CUSTOMER register (sentence-voice — the claims renderer's voice) ─────────────

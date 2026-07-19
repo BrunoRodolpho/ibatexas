@@ -28,7 +28,9 @@ describe("MockFiscalProvider — scenarios + determinism", () => {
     expect(r.status).toBe("approved");
     // MOCK- prefix so a mock emission can never be read as a real 44-digit
     // SEFAZ chave downstream (NEW-014 safety requirement).
-    expect(r.accessKey).toMatch(/^MOCK-\d{44}$/);
+    // …and the body's leading pair is "00" (no real chave starts 00 — UF codes
+    // are 11–53), so even a stripped body can never read as a real SEFAZ key.
+    expect(r.accessKey).toMatch(/^MOCK-00\d{42}$/);
     expect(r.xmlUrl).toContain(r.accessKey!);
     expect(r.pdfUrl).toContain(r.accessKey!);
     expect(r.rejectionReason).toBeUndefined();

@@ -223,6 +223,14 @@ export {
   MissingEventVersionError,
 } from "./services/order-command.service.js"
 
+// NEW-014 — fiscal document (NFC-e) record service.
+export {
+  createFiscalDocumentService,
+  type FiscalDocumentService,
+  type FiscalDocumentRecord,
+  type FiscalOutcomeInput,
+} from "./services/fiscal-document.service.js"
+
 // Envelope-typed surface — Task 15 (M3). Payload types for callers
 // building IntentEnvelopes for the OrderCommandService envelope-typed
 // methods. The Pack types (OrderNoteAddPayload, OrderIntentKind, etc.)

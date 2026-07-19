@@ -50,6 +50,7 @@ import {
   ordersPolicyBundle,
   type OrderState,
   type OrderNoteAddPayload,
+  type OrderFiscalEmitPayload,
 } from "@ibatexas/pack-orders"
 import {
   withAdjudicate,
@@ -254,6 +255,26 @@ export interface OrderCommandService {
     orderState: OrderState,
     extras: NoteAuthorExtras,
   ): Promise<AdjudicatedResult<AddNoteResult>>
+
+  /**
+   * NEW-014 — envelope-typed entry point for the SYSTEM-only
+   * `order.fiscal.emit` intent. Adjudicates against `ordersPolicyBundle`
+   * (which carries `requireFiscalEligibleState` — delivered-only — and
+   * `fiscalEmitRetryCapGuard` reading `orderState.ctx.fiscalEmitAttempts`,
+   * both landed in NEW-014 PR1), mirroring {@link addNoteFromEnvelope}'s
+   * caller-supplied-state shape — NEVER `transitionStatusFromEnvelope`'s
+   * domain-internal bundle (order.fiscal.emit is not a member of it).
+   *
+   * The EXECUTOR is caller-supplied: the fiscal-emitter subscriber owns the
+   * provider call (`FiscalProviderPort.emit`) + the record persistence
+   * (fiscal-document.service). The domain method contributes exactly the
+   * adjudication + audit chokepoint.
+   */
+  emitFiscalFromEnvelope<T>(
+    envelope: IntentEnvelope<"order.fiscal.emit", OrderFiscalEmitPayload>,
+    orderState: OrderState,
+    executor: (payload: OrderFiscalEmitPayload) => Promise<T>,
+  ): Promise<AdjudicatedResult<T>>
 
   /**
    * Persist an OrderNote for an `order.note.add` the caller has ALREADY
@@ -737,6 +758,19 @@ export function createOrderCommandService(
         orderState,
         ordersPolicyBundle,
         (payload) => writeAdjudicatedNote(payload, extras),
+        adjudicateOptions,
+      )
+    },
+
+    async emitFiscalFromEnvelope(envelope, orderState, executor) {
+      // NEW-014 — the fiscal emit adjudicates against the PACK bundle (the
+      // eligibility + retry-cap guards live there); the caller-supplied
+      // executor performs the provider emission + record write POST-decision.
+      return withAdjudicate(
+        envelope,
+        orderState,
+        ordersPolicyBundle,
+        (payload) => executor(payload),
         adjudicateOptions,
       )
     },

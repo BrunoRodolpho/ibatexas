@@ -15,6 +15,9 @@ const mockReviewFindMany = vi.hoisted(() => vi.fn())
 const mockReviewCount = vi.hoisted(() => vi.fn())
 
 vi.mock("@ibatexas/domain", () => ({
+  // NEW-014 PR2 — the fiscal-emitter subscriber (registered at server start)
+  // imports this from @ibatexas/domain; handler only fires on (mocked) NATS events.
+  createFiscalDocumentService: () => ({}),
   FROZEN_CAUSES: ["empty_completion", "whitespace_only", "send_failed", "retry_exhausted", "timeout"],
   // AUT-038 + AUT-007 — the OWNER-gated admin staff routes construct this at
   // server onReady; the full-admin-server build needs it present in the mock.

@@ -35,7 +35,11 @@ function deriveAccessKey(orderId: string): string {
   const hex = createHash("sha256").update(`nfce:${orderId}`).digest("hex");
   // Map hex → 44 decimal digits deterministically (BigInt, zero-padded).
   const digits = BigInt(`0x${hex}`).toString().padStart(44, "0").slice(-44);
-  return `MOCK-${digits}`;
+  // NEW-014 review gate — DOUBLE distinguishability: the MOCK- prefix AND a
+  // "00" leading pair inside the 44-digit body (a real chave de acesso starts
+  // with the IBGE UF code, 11–53 — never 00), so even the bare body can never
+  // be mistaken for a real SEFAZ key if the prefix is ever stripped downstream.
+  return `MOCK-00${digits.slice(2)}`;
 }
 
 /** Resolve which scenario applies to this order (per-order override wins). */
