@@ -636,6 +636,82 @@ describe("handleMessageAsync — conductor turn", () => {
       { EX: 86400 },
     );
     expect(mockReleaseAgentLock).toHaveBeenCalledWith(HASH, "lock-uuid");
+    // BKL-175 — never-silent PARITY: the pre-send escape now opens a GOVERNED
+    // incident (turn_error mapped into the frozen `send_failed`), mirroring the
+    // web backstop. The apology above delivered → NOT a full ghost.
+    expect(mockEmitNoDelivery).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cause: "send_failed",
+        channel: "whatsapp",
+        customerImpacted: false,
+      }),
+      expect.anything(),
+    );
+    expect(mockOpenIncidentInline).toHaveBeenCalledWith(
+      expect.objectContaining({ cause: "send_failed", customerImpacted: false }),
+      expect.anything(),
+    );
+  }, 15000);
+
+  it("BKL-175 full ghost: pre-send failure AND the apology send fails → customerImpacted:true", async () => {
+    mockHandleTurn.mockRejectedValue(new Error("conductor exploded pre-send"));
+    mockSendText.mockRejectedValue(new Error("twilio down"));
+
+    const app = await buildTestServer();
+    const res = await post(app, "MessageSid=SM_GHOST&From=whatsapp%3A%2B5511999999999&Body=oi");
+    expect(res.statusCode).toBe(200);
+
+    await vi.waitFor(() => {
+      expect(mockOpenIncidentInline).toHaveBeenCalledWith(
+        expect.objectContaining({
+          cause: "send_failed",
+          channel: "whatsapp",
+          customerImpacted: true,
+        }),
+        expect.anything(),
+      );
+    }, { timeout: 4000 });
+    expect(mockEmitNoDelivery).toHaveBeenCalledWith(
+      expect.objectContaining({ cause: "send_failed", customerImpacted: true }),
+      expect.anything(),
+    );
+  }, 15000);
+
+  it("BKL-175 F2 pin: a POST-send throw (already-served) stays incident-less — apology only", async () => {
+    // Turn succeeds, the reply is DELIVERED (sendText resolves), then the
+    // assistant-append AFTER sendCompleted throws. The customer was served —
+    // opening an incident (or mapping to send_failed) here would be the exact
+    // F2 false-positive the exclusion protects. The fix must NOT widen into this.
+    mockHandleTurn.mockResolvedValue({
+      response: { text: "Seu pedido está confirmado." },
+      acted: null,
+      decision: { kind: "EXECUTE" },
+    });
+    // mockReset clears any queued Once implementations so this chain is exact:
+    // call 1 = the user-message append (pre-send) resolves; call 2 = the
+    // assistant append AFTER sendCompleted rejects; later calls resolve.
+    mockAppendMessages.mockReset();
+    mockAppendMessages
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("session store write failed"))
+      .mockResolvedValue(undefined);
+
+    const app = await buildTestServer();
+    const res = await post(app, "MessageSid=SM_POSTSEND&From=whatsapp%3A%2B5511999999999&Body=oi");
+    expect(res.statusCode).toBe(200);
+
+    await vi.waitFor(() => {
+      expect(mockReleaseAgentLock).toHaveBeenCalledWith(HASH, "lock-uuid");
+    }, { timeout: 4000 });
+
+    // The real reply reached the customer…
+    expect(mockSendText).toHaveBeenCalledWith(
+      `whatsapp:${PHONE}`,
+      textContaining("Seu pedido está confirmado."),
+    );
+    // …so NO governed incident and NO no-delivery signal (F2 already-served).
+    expect(mockEmitNoDelivery).not.toHaveBeenCalled();
+    expect(mockOpenIncidentInline).not.toHaveBeenCalled();
   }, 15000);
 
   it("D2 bot-pause: a human takeover suppresses the bot reply but still confirms idempotency", async () => {

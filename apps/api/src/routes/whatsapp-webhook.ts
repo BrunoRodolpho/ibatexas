@@ -1051,11 +1051,13 @@ async function handleMessageAsync(
 
   // ── Media handling ──────────────────────────────────────────────────────────
   if (numMedia > 0 && !messageBody) {
-    await sendText(
+    // BKL-175 (BKL-134 residual) — best-effort, not bare sendText: a Twilio
+    // failure here used to escape to the incident-less outer catch. The reply is
+    // deterministic and pre-session, so best-effort is the strongest available
+    // posture (no session yet → no well-formed NoDeliverySignal to open).
+    await sendBestEffort(
       `whatsapp:${phone}`,
-      mintFallbackReply(
-        "Recebi sua mídia 👍\n\nAinda não consigo analisar imagens ou áudio.\nPode me explicar em palavras?",
-      ),
+      "Recebi sua mídia 👍\n\nAinda não consigo analisar imagens ou áudio.\nPode me explicar em palavras?",
     );
     return;
   }
@@ -1325,9 +1327,12 @@ async function handleMessageAsync(
       sendEntered,
       sendCompleted,
     });
-    // `turn_error` is OUT of the frozen taxonomy → canned apology only, no
-    // incident. `timeout` / `send_failed` open a governed incident.
-    if (cause === "timeout" || cause === "send_failed") {
+    // BKL-175 — never-silent PARITY with the web backstop (chat.ts): a PRE-SEND
+    // escape (`!sendEntered` — the turn died before any reply left) is mapped
+    // INTO the frozen taxonomy as `send_failed` and opens a governed incident,
+    // exactly as web's catch-block does. Only the POST-send `turn_error`
+    // (already-served, F2) stays incident-less — the customer got the reply.
+    if (cause === "timeout" || cause === "send_failed" || !sendEntered) {
       // Send the canned apology FIRST and track whether it actually reached the
       // customer: a delivered apology means this is NOT a full ghost (degraded, not
       // silence) → customerImpacted:false (mirrors the delivered-holding case). The
@@ -1346,7 +1351,10 @@ async function handleMessageAsync(
       }
       const signal = {
         sessionId: session.sessionId,
-        cause,
+        // BKL-175 — map the out-of-taxonomy pre-send `turn_error` into the
+        // frozen `send_failed` (mirrors web chat.ts's catch mapping); `timeout`
+        // keeps its own cause.
+        cause: cause === "timeout" ? ("timeout" as const) : ("send_failed" as const),
         customerImpacted: !apologyDelivered,
         channel: "whatsapp",
         customerId: session.customerId,
@@ -1358,7 +1366,9 @@ async function handleMessageAsync(
       await emitNoDelivery(signal, log);
       await openIncidentInline(signal, log);
     } else {
-      // turn_error (already-served or pre-send exception) → canned apology only.
+      // POST-send turn_error ONLY (sendEntered — the customer was already served;
+      // F2 already-served exclusion): canned apology, never an incident. The
+      // pre-send arm above (BKL-175) now owns every silent-exit path.
       await sendBestEffort(
         `whatsapp:${phone}`,
         "Desculpe, estou com um problema técnico. Tente novamente em alguns instantes.",

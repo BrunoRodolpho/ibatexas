@@ -762,10 +762,11 @@ describe("POST /api/chat/messages — W1 supersession (F1) & catch parity (F2)",
     // "not delivered" cause; customer-impacted) AND delivers an honest deterministic
     // pt-BR fallback frame, never the bare {type:error} void.
     //
-    // WHATSAPP :1057 PARITY (open follow-up): the WhatsApp path still drops a
-    // pre-send `turn_error` incident-less (canned apology only). Whether it should
-    // gain the same backstop is flagged as a follow-up row in the PR body, not
-    // expanded into this change.
+    // WHATSAPP PARITY (BKL-175 — CLOSED): the WhatsApp catch now mirrors this
+    // backstop — a pre-send escape maps into the frozen `send_failed`, opens the
+    // governed incident, and sends the apology-first fallback; only the POST-send
+    // already-served `turn_error` stays incident-less (F2). Pinned in
+    // whatsapp-webhook-async.test.ts.
     mockHandleTurn.mockRejectedValue(new Error("conductor exploded"));
 
     const app = await buildApp();
