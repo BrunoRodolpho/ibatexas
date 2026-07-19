@@ -63,6 +63,9 @@ vi.mock("@ibatexas/tools", () => ({
 }));
 
 vi.mock("@ibatexas/domain", () => ({
+  // NEW-014 PR2 — the fiscal-emitter subscriber (registered at server start)
+  // imports this from @ibatexas/domain; handler only fires on (mocked) NATS events.
+  createFiscalDocumentService: () => ({}),
   createOrderCommandService: () => ({
     transitionStatus: vi.fn(),
   }),
