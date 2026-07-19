@@ -73,7 +73,7 @@ import { noopGroundingProvider, noopMemoryProvider } from "./claustrum/noop-memo
 import { OllamaFetchClient } from "./claustrum/ollama-fetch-client.js";
 import { providerCanEmbed } from "./claustrum/provider-embed-capability.js";
 import { WhatsAppChannel } from "@claustrum/channel-whatsapp";
-import { WebChannel } from "@claustrum/channel-web";
+import { WebConfirmChannel } from "./claustrum/web-confirm-channel.js";
 
 // Kernel types — @adjudicate/core is the source of truth for envelope +
 // decision shapes. The runtime imports them as types ONLY (per claustrum
@@ -2660,9 +2660,11 @@ async function resolveGroundingPort(
 
 /**
  * Build the ChannelDriver[] (WhatsApp when TWILIO_* is configured, plus the
- * Web channel). Extracted from bootstrapClaustrum (complexity); unchanged.
+ * Web channel). Extracted from bootstrapClaustrum (complexity). Exported for the
+ * BKL-033 wiring guard test (the web driver MUST be a WebConfirmChannel, not the
+ * bare WebChannel whose matchToParked is null).
  */
-function buildChannelDrivers(): ChannelDriver[] {
+export function buildChannelDrivers(): ChannelDriver[] {
   const channels: ChannelDriver[] = [];
 
   if (
@@ -2691,7 +2693,10 @@ function buildChannelDrivers(): ChannelDriver[] {
   // emitter; the WebChannel.render just hands the response back to the
   // route handler via a sink callback set up per-request. For now, no-op.
   channels.push(
-    new WebChannel({
+    // BKL-033 — WebConfirmChannel = WebChannel + a real customer-plane
+    // matchToParked so a chat "sim" resumes a parked REQUEST_CONFIRMATION
+    // (the bare WebChannel returns null unconditionally). Same config.
+    new WebConfirmChannel({
       // Require a real signing key — no source-committed default. A known key
       // would let anyone mint web-gateway messages the conductor trusts. Fails
       // closed in prod/dev when WEB_GATEWAY_SIGNING_KEY is unset.
