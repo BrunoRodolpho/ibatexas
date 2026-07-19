@@ -444,10 +444,11 @@ model OrderProjection {
 
   currentPaymentId    String?              @map("current_payment_id")
 
-  customer      Customer?            @relation(fields: [customerId], references: [id], onDelete: SetNull)
-  statusHistory OrderStatusHistory[]
-  payments      Payment[]
-  notes         OrderNote[]
+  customer       Customer?            @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  statusHistory  OrderStatusHistory[]
+  payments       Payment[]
+  notes          OrderNote[]
+  fiscalDocument FiscalDocument?
 
   @@index([customerId])
   @@index([fulfillmentStatus])
@@ -503,6 +504,49 @@ model OrderEventLog {
   @@index([orderId, eventType])
   @@index([eventType, timestamp])
   @@map("order_event_log")
+  @@schema("ibx_domain")
+}
+
+// ─── Fiscal (NEW-014 — NFC-e emission) ────────────────────────────────
+
+/// NEW-014 — fiscal document (NFC-e) emission status. Mirrors the const in
+/// @ibatexas/types (fiscal-status.ts); kept in sync by
+/// fiscal-status-enum-sync.test.ts. `pending` = record created, no provider
+/// outcome yet; `rejected` is TERMINAL for automation (never auto-retried);
+/// `timeout`/`error` are retriable, bounded by FISCAL_EMIT_MAX_ATTEMPTS.
+enum FiscalStatus {
+  pending
+  approved
+  rejected
+  timeout
+  error
+
+  @@schema("ibx_domain")
+}
+
+/// NEW-014 — ONE fiscal document record per order (attempt-tracking + outcome).
+/// Written ONLY by the fiscal-emitter subscriber's post-adjudication executor
+/// (order.fiscal.emit EXECUTE). `provider` is persisted on EVERY record so a
+/// mock emission can never read as fiscal truth (NEW-014 review gate — the
+/// admin surface labels provider "mock" as "NFC-e SIMULADA"). `attempts` feeds
+/// the pack's fiscalEmitRetryCapGuard via ctx.fiscalEmitAttempts.
+model FiscalDocument {
+  id              String       @id @default(cuid())
+  orderId         String       @unique @map("order_id")
+  status          FiscalStatus @default(pending)
+  provider        String       // "mock" | "focusnfe" — persisted on every record
+  attempts        Int          @default(0)
+  accessKey       String?      @map("access_key")
+  xmlUrl          String?      @map("xml_url")
+  pdfUrl          String?      @map("pdf_url")
+  rejectionReason String?      @map("rejection_reason")
+  createdAt       DateTime     @default(now()) @map("created_at")
+  updatedAt       DateTime     @updatedAt @map("updated_at")
+
+  order OrderProjection @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([status])
+  @@map("fiscal_documents")
   @@schema("ibx_domain")
 }
 

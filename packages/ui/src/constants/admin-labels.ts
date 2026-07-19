@@ -15,6 +15,7 @@
 import {
   ADMIN_ORDER_STATUS_EXTRA,
   ADMIN_PAYMENT_STATUS_EXTRA,
+  FISCAL_STATUS_LABELS_PT,
   ORDER_STATUS_LABELS_PT,
   PAYMENT_STATUS_LABELS_PT,
   RESERVATION_STATUS_LABELS_PT,
@@ -32,6 +33,14 @@ export const ORDER_STATUS_LABELS: Record<string, string> = {
 export const PAYMENT_STATUS_LABELS: Record<string, string> = {
   ...PAYMENT_STATUS_LABELS_PT,
   ...ADMIN_PAYMENT_STATUS_EXTRA,
+}
+
+// ---------------------------------------------------------------------------
+// Fiscal (NFC-e) status — NEW-014
+// ---------------------------------------------------------------------------
+
+export const FISCAL_STATUS_LABELS: Record<string, string> = {
+  ...FISCAL_STATUS_LABELS_PT,
 }
 
 // ---------------------------------------------------------------------------

@@ -15,6 +15,7 @@ import { startIncidentSubscriber } from "./subscribers/incident-subscriber.js";
 import { startIncidentNotificationSubscriber } from "./subscribers/incident-notification-subscriber.js";
 import { startConversationArchiver } from "./subscribers/conversation-archiver.js";
 import { startPaymentLifecycleSubscriber } from "./subscribers/payment-lifecycle.js";
+import { startFiscalEmitSubscriber } from "./subscribers/fiscal-emitter.js";
 import { startDeferResolverSubscriber } from "./subscribers/defer-resolver.js";
 import { startAnonymizeGraceResolverSubscriber } from "./subscribers/anonymize-grace-resolver.js";
 import { startCustomerAnonymizeMedusaResolverSubscriber } from "./subscribers/customer-anonymize-medusa-resolver.js";
@@ -191,6 +192,8 @@ const start = async (): Promise<void> => {
       await startIncidentNotificationSubscriber(server.log);
       await startConversationArchiver(server.log);
       await startPaymentLifecycleSubscriber(server.log);
+      // NEW-014 — fiscal (NFC-e) emission on order delivery (mock-first).
+      await startFiscalEmitSubscriber(server.log);
       // [task 03] defer-resolver wired after payment-lifecycle so the lifecycle
       // subscriber has already settled the payment row before defer-resolver
       // re-executes the parked envelope. See docs/adjudicate-migration/tasks/03-*.

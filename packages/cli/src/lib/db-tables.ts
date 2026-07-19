@@ -42,6 +42,11 @@ export const DOMAIN_DELETE_ORDER = [
   // of its own. Operational schedule data, wiped by a default clean; listed before
   // its parent `staff` (in DOMAIN_REFERENCE) for child-first FK-safety.
   "staffShift",
+  // NEW-014 fiscal document record — FK → order_projections(id) ON DELETE
+  // CASCADE, one row per order. Order-lifecycle data, wiped by a default clean;
+  // listed BEFORE its parent `orderProjection` (child-first FK-safety, the
+  // paymentStatusHistory/payment precedent).
+  "fiscalDocument",
   "orderProjection",
   // Observability/telemetry tables (no FK to other domain tables). Registered
   // here to close the pre-existing db-tables drift their models (AgentRedTeamRun,

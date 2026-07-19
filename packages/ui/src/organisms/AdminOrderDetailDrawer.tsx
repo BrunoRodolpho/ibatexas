@@ -3,8 +3,8 @@
 import { useEffect, useRef } from 'react'
 import { X, Clock } from 'lucide-react'
 import { Badge } from '../atoms/Badge'
-import { ORDER_STATUS_LABELS, PAYMENT_STATUS_LABELS, ACTION_LABELS } from '../constants/admin-labels'
-import { statusVariant, paymentVariant } from '../utils/status-variant'
+import { ORDER_STATUS_LABELS, PAYMENT_STATUS_LABELS, FISCAL_STATUS_LABELS, ACTION_LABELS } from '../constants/admin-labels'
+import { statusVariant, paymentVariant, fiscalVariant } from '../utils/status-variant'
 import { getNextStatus, formatOrderId, ORDER_STATUS_LABELS_PT, type OrderFulfillmentStatus } from '@ibatexas/types'
 
 function formatBRL(centavos: number) {
@@ -82,6 +82,16 @@ export interface AdminOrderDetail {
     amountInCentavos: number
     pixExpiresAt?: string | null
     version?: number
+  } | null
+  // NEW-014 — the order's fiscal (NFC-e) record; null until an emission runs.
+  fiscal?: {
+    status: string
+    provider: string
+    attempts: number
+    accessKey?: string | null
+    xmlUrl?: string | null
+    pdfUrl?: string | null
+    rejectionReason?: string | null
   } | null
   statusHistory?: StatusHistoryEntry[]
   items?: Array<{
@@ -214,6 +224,23 @@ export function AdminOrderDetailDrawer({
               <span className="text-xs text-smoke-400">
                 {currentPaymentMethodLabel(order.currentPayment.method)}
               </span>
+            </div>
+          )}
+
+          {/* Fiscal (NEW-014) — a MOCK emission is explicitly labeled SIMULADA so
+              it can never read as fiscal truth to the owner (review gate). */}
+          {order.fiscal && (
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-semibold uppercase tracking-wide text-smoke-400">Nota fiscal</span>
+                <Badge variant={fiscalVariant(order.fiscal.status)}>
+                  {FISCAL_STATUS_LABELS[order.fiscal.status] ?? order.fiscal.status}
+                  {order.fiscal.provider === "mock" ? " — SIMULADA (mock)" : ""}
+                </Badge>
+              </div>
+              {order.fiscal.rejectionReason && (
+                <span className="text-xs text-smoke-400">{order.fiscal.rejectionReason}</span>
+              )}
             </div>
           )}
 
