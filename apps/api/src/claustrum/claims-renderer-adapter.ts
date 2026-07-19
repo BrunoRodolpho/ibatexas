@@ -43,6 +43,7 @@ import {
   classifyRequestSpans,
   decomposeRequiredClaims,
   isAllergenFamilyAsk,
+  isMedicalEmergencyAsk,
 } from "./required-claim-decomposer.js";
 import { PROVABLY_EMPTY_KIND } from "./ibatexas-claims-kernel-deps.js";
 import { render } from "./renderer-from-claims.js";
@@ -198,12 +199,24 @@ export interface IbatexasClaimsRendererOptions {
    * decision. Default (unset / tests) → the pure #301 date-anchor rule, byte-identical.
    */
   readonly renderCarriersActive?: boolean;
+  /**
+   * BKL-209 — a best-effort, fire-and-forget SAFETY sink invoked when the render
+   * resolves to a medical-EMERGENCY ESCALATE (deterministic net + ESCALATE
+   * terminal). The adapter never awaits it and swallows nothing of the returned
+   * text (it is an OBSERVE-side channel exactly like {@link emitClaimsTerminal}'s
+   * log — the render TEXT stays a pure function of the inputs). Bootstrap wires it
+   * to publish `support.handoff_requested` so an emergency reaches staff; unset
+   * (tests) → no surface, render byte-identical. The sink itself MUST NOT throw
+   * (a throw here would break the render); wire it to swallow its own errors.
+   */
+  readonly onSafetyEmergency?: (ctx: { readonly turnId?: string }) => void;
 }
 
 export function createIbatexasClaimsRenderer(
   opts?: IbatexasClaimsRendererOptions,
 ): ClaimsRendererPort {
   const renderCarriersActive = opts?.renderCarriersActive === true;
+  const onSafetyEmergency = opts?.onSafetyEmergency;
   return {
     render(
       claims: ClaimsKernelResult,
@@ -254,6 +267,10 @@ export function createIbatexasClaimsRenderer(
       // the turnId (0.8.0 ClaimsRenderContext) so the terminal joins to turn_trace.
       emitClaimsTerminal(claims, degrade, context?.turnId);
 
+      // BKL-209 — deterministic medical-emergency detection (the SAME net the
+      // planner uses to force the §O#9 ESCALATE), for the emergency template +
+      // the staff-surface sink. Absent requestText → false → byte-identical.
+      const emergencyAsk = isMedicalEmergencyAsk(context?.requestText ?? "");
       const result = render(
         // inv.17 — the renderer's REQUIRED input is the kernel-MINTED CanonicalClaim
         // set (`renderableCanonical`, 1:1 with `renderable`), NOT the raw renderable
@@ -273,7 +290,21 @@ export function createIbatexasClaimsRenderer(
         // abstain-plus-handoff-offer variant (the classifier's own net decides;
         // absent requestText → false → generic UNKNOWN, byte-identical).
         isAllergenFamilyAsk(context?.requestText ?? ""),
+        // BKL-209 — a medical-emergency ask landing on ESCALATE renders the
+        // emergency safe variant (deterministic net; absent requestText → false →
+        // generic escalate, byte-identical).
+        emergencyAsk,
       );
+      // BKL-209 — fire the best-effort SAFETY sink when the turn resolved to a
+      // medical-emergency ESCALATE, so staff are notified ("vou avisar nossa
+      // equipe" is TRUE). Fire-and-forget + never throws into the render path.
+      if (emergencyAsk && result.terminal === "ESCALATE" && onSafetyEmergency !== undefined) {
+        try {
+          onSafetyEmergency({ ...(context?.turnId === undefined ? {} : { turnId: context.turnId }) });
+        } catch {
+          // Observe-side channel — a sink failure never breaks the customer render.
+        }
+      }
       return { text: result.text };
     },
   };

@@ -27,6 +27,7 @@ import {
   PAYMENT_STATUS,
   SAFE_TEMPLATES,
   SAFE_UNKNOWN_ALLERGEN_TEMPLATE,
+  SAFE_ESCALATE_EMERGENCY_TEMPLATE,
   STORE_OPEN_NOW,
   type Template,
 } from "../slot-grammar.js";
@@ -582,5 +583,42 @@ describe("BKL-184 — allergen-ask UNKNOWN renders the abstain-plus-offer varian
 
   it("the variant template is structurally proposition-free (the §O#3 mechanical guarantee)", () => {
     expect(isPropositionFree(SAFE_UNKNOWN_ALLERGEN_TEMPLATE)).toBe(true);
+  });
+});
+
+
+describe("BKL-209 — medical-emergency ESCALATE renders the emergency safe variant", () => {
+  it("emergencyAsk=true + ESCALATE renders the emergency template (no medical advice, no phone number)", () => {
+    // renderRenderables(claims, terminal, suppressions, candidates, allergenAsk, emergencyAsk)
+    const out = renderRenderables([], "ESCALATE", [], [], false, true);
+    expect(out.terminal).toBe("ESCALATE");
+    expect(out.lines).toHaveLength(1);
+    expect(out.text).toBe(
+      "Isto parece uma emergência médica e eu não posso orientar sobre isso. Se você ou alguém aí está passando mal, procure atendimento médico de emergência imediatamente. Vou avisar nossa equipe para ajudar.",
+    );
+    // The safe, number-free directive + honest limit + staff notice.
+    expect(out.text).toContain("emergência médica");
+    expect(out.text).toContain("atendimento médico de emergência");
+    expect(out.text).toContain("avisar nossa equipe");
+    // NEVER a hallucinated emergency number (the live bug) or medical instruction.
+    expect(out.text).not.toMatch(/\b(1\d\d|samu)\b/i);
+    // Proposition-free by construction.
+    expect(isPropositionFree(SAFE_ESCALATE_EMERGENCY_TEMPLATE)).toBe(true);
+  });
+
+  it("emergencyAsk=false + ESCALATE renders the GENERIC escalate line (byte-identical)", () => {
+    const generic = renderRenderables([], "ESCALATE", [], [], false, false);
+    expect(generic.text).toBe(
+      renderRenderables([], "ESCALATE", []).text,
+    );
+    expect(generic.text).not.toContain("emergência médica");
+  });
+
+  it("emergencyAsk=true but a NON-escalate terminal ignores the emergency variant", () => {
+    // A medical-emergency net firing on a turn that (somehow) resolved UNKNOWN must
+    // not render the escalate template — the terminal governs the template.
+    const unknown = renderRenderables([], "UNKNOWN", [], [], false, true);
+    expect(unknown.terminal).toBe("UNKNOWN");
+    expect(unknown.text).not.toContain("emergência médica");
   });
 });

@@ -207,6 +207,47 @@ export function isAllergenFamilyAsk(text: string): boolean {
   return ALLERGEN_FAMILY_RE.test(text.toLowerCase());
 }
 
+/**
+ * BKL-209 — the DETERMINISTIC medical-EMERGENCY / distress net (SDD §O#9 safety).
+ * A customer in medical distress ("estou tendo uma reação alérgica", "não consigo
+ * respirar", "minha garganta está fechando") must route to a §O#9 safety-ESCALATE
+ * regardless of what the 4B flags — the old path relied on the model emitting a
+ * `safetyMarkers` array (model luck) and, when it didn't, degraded to a
+ * MENU_ITEM_ALLERGENS read-claim with responder-authored medical prose (a live
+ * hallucinated "190"). This net is DELIBERATELY DISJOINT from the allergen-INFO
+ * net: it keys on active-distress / emergency language, NOT on merely naming an
+ * allergen — so "tem amendoim?" / "sou alérgico a leite, tem no brownie?" (info
+ * questions) do NOT fire it and keep the BKL-184 conservative abstain+offer path.
+ * Err toward escalate: a false-positive escalate is safe, a missed emergency is not.
+ *
+ * Distress markers (word-bounded / stemmed pt-BR): anaphylaxis; an ACTIVE allergic
+ * reaction; breathing distress; throat/tongue/lip/face swelling or closing;
+ * choking; fainting/passing-out; hives; and explicit help/emergency words.
+ */
+const MEDICAL_EMERGENCY_RE =
+  /anafila|anafil[áa]tic|choque anafil|rea[çc][ãa]o al[ée]rgica|al[ée]rgic[ao] agora|passando mal|passar mal|me sinto mal|mal s[úu]bito|n[ãa]o (?:consigo|estou conseguindo|to|t[ôo]) respir|falta de ar|dificuldade (?:para|pra|de) respir|sem ar\b|garganta (?:inchan|incha|inchou|fechan|fecha|fechou|apertan|aperta)|(?:l[íi]ngua|garganta|boca|l[áa]bios?|rosto|cara|olhos?)[^.!?]{0,15}(?:inchan|incha|inchou|inchad|inchaç)|engasg|desmai|urtic[áa]ria|socorro|emerg[êe]ncia|urg[êe]ncia m[ée]dica|ambul[âa]ncia|samu\b/;
+
+/**
+ * BKL-209 — does this request text signal a medical EMERGENCY / distress? Pure.
+ * When true, the planner forces a §O#9 ESCALATE (deterministic, not model-flagged)
+ * and the renderer selects the emergency safe template + fires the staff surface.
+ */
+export function isMedicalEmergencyAsk(text: string): boolean {
+  return MEDICAL_EMERGENCY_RE.test(text.toLowerCase());
+}
+
+/**
+ * BKL-209 — the deterministic §O#8/§O#9 marker contribution for a medical
+ * emergency. Returns the closed-taxonomy marker `"medical-emergency"` when the
+ * distress net fires (which `routeSafety` escalates on — it is NOT in the
+ * recognized-non-escalate set, and there is no non-escalate terminal for it),
+ * else `[]`. Merged with the model's flagged markers so the ESCALATE never
+ * depends on 4B luck. Pure.
+ */
+export function detectMedicalEmergencyMarkers(text: string): string[] {
+  return isMedicalEmergencyAsk(text) ? ["medical-emergency"] : [];
+}
+
 export function classifyRequestSpans(text: string): SpanClass[] {
   const t = text.toLowerCase();
   const classes: SpanClass[] = [];

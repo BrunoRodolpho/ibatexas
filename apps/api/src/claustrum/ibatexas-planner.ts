@@ -84,6 +84,7 @@ import {
   type SafetyRoutingInput,
   type SpanCompleteness,
 } from "./claim-registry.js";
+import { detectMedicalEmergencyMarkers } from "./required-claim-decomposer.js";
 import {
   CLAIM_PLANNER_PERSONA,
   EXPRESS_INTENT_TOOL,
@@ -1501,7 +1502,18 @@ export function createIbatexasPlanner(
       // to a SINGLE owned resource because the authenticated customer owns ≥2
       // relevant ones → CLARIFY (ask which), never a guess.
       let ownerScopedAmbiguous = false;
-      const safety: SafetyRoutingInput = { markers: collectSafetyMarkers(completion.toolCalls) };
+      // BKL-209 — the safety markers are the UNION of (a) what the 4B flagged via
+      // `propose_claim.safetyMarkers` (a bounded probabilistic §O#8 input) and (b) a
+      // DETERMINISTIC medical-emergency net over the request text. Relying on (a)
+      // alone made an allergy emergency escalate only by model luck; the
+      // deterministic net forces the §O#9 ESCALATE regardless of the model. Distinct
+      // from allergen-INFO ("tem amendoim?"), which stays the BKL-184 abstain path.
+      const safety: SafetyRoutingInput = {
+        markers: [
+          ...collectSafetyMarkers(completion.toolCalls),
+          ...detectMedicalEmergencyMarkers(state.perception.text),
+        ],
+      };
       for (const call of completion.toolCalls ?? []) {
         if (call.name !== PROPOSE_CLAIM_TOOL || !isProposeClaimInput(call.input)) {
           continue;

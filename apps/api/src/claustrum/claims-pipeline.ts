@@ -160,6 +160,15 @@ export interface BuildClaimsSeamsDeps {
    * best-effort runtime resolver; tests inject a fixed map.
    */
   readonly resolveKernelVersions?: () => ResolvedKernelVersions;
+  /**
+   * BKL-209 — best-effort SAFETY sink invoked when a turn resolves to a medical-
+   * emergency ESCALATE (the deterministic distress net + ESCALATE terminal), so
+   * the emergency reaches staff. Threaded into the render adapter; the boot root
+   * wires it to publish `support.handoff_requested`. Fire-and-forget + MUST NOT
+   * throw (the adapter also guards it). Omitted (the per-trigger factory / tests)
+   * → no staff surface, render byte-identical.
+   */
+  readonly onSafetyEmergency?: (ctx: { readonly turnId?: string }) => void;
 }
 
 /**
@@ -324,7 +333,14 @@ export function buildClaimsSeams(deps: BuildClaimsSeamsDeps): ClaimsSeams {
     // superseding the model draft. On no-renderable-claim the claustrum loop
     // falls back to the operational responder draft (never raw model prose as a
     // confident fact; never silence). Inert while the flag is COMMITTED OFF.
-    claimsRenderer: createIbatexasClaimsRenderer({ renderCarriersActive: true }),
+    claimsRenderer: createIbatexasClaimsRenderer({
+      renderCarriersActive: true,
+      // BKL-209 — the emergency staff-surface sink (support.handoff_requested),
+      // wired by the boot root; unset on the per-trigger factory → no surface.
+      ...(deps.onSafetyEmergency === undefined
+        ? {}
+        : { onSafetyEmergency: deps.onSafetyEmergency }),
+    }),
     // BKL-155/153 (@claustrum/core 0.7.0) — the RENDER-vs-DRAFT precedence seam,
     // PAIRED with `claimsRenderer` above so it is only consulted on the SAME
     // claims-ON customer plane where the render runs (the OPS conductor keeps its

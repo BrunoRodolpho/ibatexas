@@ -489,6 +489,32 @@ export const SAFE_UNKNOWN_ALLERGEN_TEMPLATE: Template = {
 };
 
 /**
+ * BKL-209 — the medical-EMERGENCY ESCALATE variant. Selected ONLY when the request
+ * carries medical-distress phrasing (required-claim-decomposer.ts
+ * `isMedicalEmergencyAsk` — the SAME deterministic net that forces the §O#9 ESCALATE
+ * in the planner) AND the terminal is ESCALATE; every other ESCALATE renders the
+ * generic {@link SAFE_TEMPLATES}.escalate, byte-identical.
+ *
+ * PROPOSITION-FREE BY CONSTRUCTION (Inv 6 / §O#5): it asserts NO domain/world fact
+ * and — critically — NO medical instruction and NO phone number (the live bug was a
+ * responder-authored, hallucinated "190"). It states the ONE universally-safe,
+ * number-free directive (seek emergency medical care immediately), the system's
+ * honest limit ("não posso orientar"), and offers a human. The staff surface
+ * (support.handoff_requested) is fired by the render adapter's best-effort sink, so
+ * "vou avisar nossa equipe" is TRUE. Standalone const (SAFE_TEMPLATES is closed over
+ * the posture union).
+ */
+export const SAFE_ESCALATE_EMERGENCY_TEMPLATE: Template = {
+  claimType: "__SAFE_ESCALATE_EMERGENCY__",
+  posture: "escalate",
+  slots: [
+    lit(
+      "Isto parece uma emergência médica e eu não posso orientar sobre isso. Se você ou alguém aí está passando mal, procure atendimento médico de emergência imediatamente. Vou avisar nossa equipe para ajudar.",
+    ),
+  ],
+};
+
+/**
  * BKL-170 (CLARIFY-with-candidates, @claustrum/core 0.8.0 `disambiguationCandidates`
  * carrier) — the proposition-free CLARIFY *ask* that VOICES the specific candidate
  * handles the customer can pick, superseding the generic {@link SAFE_TEMPLATES}.clarify
