@@ -3130,6 +3130,31 @@ export async function bootstrapClaustrum(
     // process's claims-pipeline state is readable from the boot log (a stale-env
     // tsx respawn is otherwise indistinguishable from an enabled boot).
     info: (message) => logger.info({ component: "startup" }, message),
+    // BKL-209 — a medical-emergency §O#9 ESCALATE fires this best-effort sink to
+    // put the emergency on the staff surface (support.handoff_requested → the
+    // handoff-subscriber → Escalações + staff WhatsApp), so "vou avisar nossa
+    // equipe" is TRUE. Session-keyed by turnId so each emergency turn pages once
+    // (no cross-turn dedup — every reported emergency should reach staff). Fully
+    // fire-and-forget: swallow all errors; a publish failure never breaks the
+    // customer's (already-safe) render.
+    onSafetyEmergency: (ctx) => {
+      const sessionId = `safety-emergency:${ctx.turnId ?? "unknown"}`;
+      void publishNatsEvent("support.handoff_requested", {
+        sessionId,
+        reason: "EMERGÊNCIA MÉDICA relatada no chat — atenda imediatamente.",
+      }).then(
+        () =>
+          logger.warn(
+            { component: "safety", turnId: ctx.turnId },
+            "medical-emergency ESCALATE surfaced — support.handoff_requested published (BKL-209)",
+          ),
+        (err: unknown) =>
+          logger.error(
+            { component: "safety", turnId: ctx.turnId, err: String(err) },
+            "medical-emergency surfacing FAILED — escalation is render-only (BKL-209)",
+          ),
+      );
+    },
   });
   // AUT-017 — the ESCALATE PARK deps shared by the customer + ops conductors.
   // On a resumable money-intent ESCALATE the HandoffPort parks the FULL envelope

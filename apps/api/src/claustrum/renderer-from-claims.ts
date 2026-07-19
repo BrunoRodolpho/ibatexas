@@ -55,6 +55,7 @@ import {
   isPropositionFree,
   SAFE_TEMPLATES,
   SAFE_UNKNOWN_ALLERGEN_TEMPLATE,
+  SAFE_ESCALATE_EMERGENCY_TEMPLATE,
   type Template,
   type TemplateSlot,
   VALIDATED_TEMPLATES,
@@ -253,6 +254,10 @@ export function render(
   // computes it via the classifier's own net), an UNKNOWN terminal renders the
   // allergen abstain-plus-handoff-offer variant. Default false → byte-identical.
   allergenAsk: boolean = false,
+  // BKL-209 — when the request carries medical-emergency phrasing (the adapter
+  // computes it via the deterministic net), an ESCALATE terminal renders the
+  // emergency safe template. Default false → byte-identical.
+  emergencyAsk: boolean = false,
 ): RenderResult {
   // ── inv.17 ENTRY BRAND: the renderer's REQUIRED input is the kernel-minted
   // CanonicalClaim. `unwrapCanonical` asserts WeakSet provenance and THROWS on a
@@ -265,7 +270,14 @@ export function render(
     const { subject, type, value } = unwrapCanonical(c);
     return { subject, type, value, verdict: "VALIDATED" as const };
   });
-  return renderRenderables(renderableClaims, terminal, suppressions, candidates, allergenAsk);
+  return renderRenderables(
+    renderableClaims,
+    terminal,
+    suppressions,
+    candidates,
+    allergenAsk,
+    emergencyAsk,
+  );
 }
 
 /**
@@ -282,10 +294,11 @@ export function renderRenderables(
   suppressions: readonly SuppressionRecord[] = [],
   candidates: readonly RenderDisambiguationCandidate[] = [],
   allergenAsk: boolean = false,
+  emergencyAsk: boolean = false,
 ): RenderResult {
   // ── 1. §O#5 render-half: a non-RENDER terminal emits ONLY the safe template. ──
   if (terminal !== "RENDER") {
-    return renderTerminalResult(terminal, suppressions, candidates, allergenAsk);
+    return renderTerminalResult(terminal, suppressions, candidates, allergenAsk, emergencyAsk);
   }
 
   // ── 2. RENDER path: index by type for the Inv 6 1:1 proposition lookup, then
@@ -321,6 +334,7 @@ function renderTerminalResult(
   _suppressions: readonly SuppressionRecord[],
   candidates: readonly RenderDisambiguationCandidate[] = [],
   allergenAsk: boolean = false,
+  emergencyAsk: boolean = false,
 ): RenderResult {
   // BKL-170 — a CLARIFY the adopter enriched with first-party, owner-scoped
   // disambiguation candidates (0.8.0 `disambiguationCandidates` carrier) renders the
@@ -338,7 +352,13 @@ function renderTerminalResult(
   // renders the generic template, byte-identical.
   const template =
     terminal === "ESCALATE"
-      ? SAFE_TEMPLATES.escalate
+      ? // BKL-209 — a medical-emergency ESCALATE renders the emergency safe
+        // variant (number-free directive to seek emergency care + honest limit +
+        // staff notice); every other ESCALATE renders the generic handoff line,
+        // byte-identical.
+        emergencyAsk
+        ? SAFE_ESCALATE_EMERGENCY_TEMPLATE
+        : SAFE_TEMPLATES.escalate
       : terminal === "CLARIFY"
         ? SAFE_TEMPLATES.clarify
         : allergenAsk

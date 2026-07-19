@@ -15,6 +15,9 @@ import {
   checkRequiredClaimCompleteness,
   classifyRequestSpans,
   decomposeRequiredClaims,
+  detectMedicalEmergencyMarkers,
+  isAllergenFamilyAsk,
+  isMedicalEmergencyAsk,
   isSpanClass,
   REQUIRED_CLAIM_CLOSURE,
 } from "../required-claim-decomposer.js";
@@ -877,5 +880,51 @@ describe("required-claim decomposer — #8 ownership-aware companions", () => {
     });
     expect(onlyPayment.has("ORDER_FULFILLMENT_STAGE")).toBe(false);
     expect(onlyPayment.has("PAYMENT_STATUS")).toBe(true);
+  });
+});
+
+
+describe("BKL-209 — deterministic medical-EMERGENCY net (§O#9 safety)", () => {
+  const EMERGENCIES = [
+    "estou tendo uma reação alérgica",
+    "acho que é uma reação alérgica ao amendoim, minha garganta está fechando",
+    "não consigo respirar",
+    "to passando mal depois de comer aqui",
+    "minha língua está inchando",
+    "socorro, acho que é anafilaxia",
+    "preciso de uma ambulância",
+    "estou com falta de ar e o rosto inchou",
+    "engasguei e não consigo respirar direito",
+  ];
+  for (const text of EMERGENCIES) {
+    it(`fires on distress phrasing: "${text}"`, () => {
+      expect(isMedicalEmergencyAsk(text)).toBe(true);
+      expect(detectMedicalEmergencyMarkers(text)).toEqual(["medical-emergency"]);
+    });
+  }
+
+  // The BOUNDARY: allergen-INFO questions must NOT fire the emergency net — they
+  // keep the BKL-184 conservative abstain+offer path. A missed emergency is the
+  // only unsafe direction, but over-firing on plain info questions would degrade
+  // every allergen question to an emergency escalate.
+  const INFO_NOT_EMERGENCY = [
+    "tem amendoim?",
+    "o brownie tem leite?",
+    "sou alérgico a lactose, tem no cardápio algo sem?",
+    "quais pratos são sem glúten?",
+    "tem nozes nesse doce?",
+  ];
+  for (const text of INFO_NOT_EMERGENCY) {
+    it(`does NOT fire on allergen-INFO: "${text}"`, () => {
+      expect(isMedicalEmergencyAsk(text)).toBe(false);
+      expect(detectMedicalEmergencyMarkers(text)).toEqual([]);
+      // …and the allergen-info net still routes it to the BKL-184 path.
+      expect(isAllergenFamilyAsk(text)).toBe(true);
+    });
+  }
+
+  it("an ordinary non-safety request fires neither net", () => {
+    expect(isMedicalEmergencyAsk("qual o horário de domingo?")).toBe(false);
+    expect(detectMedicalEmergencyMarkers("qual o horário de domingo?")).toEqual([]);
   });
 });
