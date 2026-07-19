@@ -302,7 +302,14 @@ export function ownedResourceIdsByBaseKey(
  *  avoids importing the full ledger type here. */
 export interface EvidenceLedgerLike {
   keys(): Iterable<string>;
-  resolve(key: string): { readonly state: string };
+  // `entry` (optional) exposes the concrete PRESENT value the same way the full
+  // `EvidenceResolution` does (only carried on `state === "present"`); read-only
+  // consumers that inspect only `state` are unaffected, and a tiny stub may omit
+  // it. BKL-203 reads `entry.value.displayId` off owner-scoped order reads.
+  resolve(key: string): {
+    readonly state: string;
+    readonly entry?: { readonly value: unknown };
+  };
 }
 
 /**

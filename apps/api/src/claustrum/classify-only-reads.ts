@@ -67,6 +67,7 @@
 // the narrow eligible set.
 
 import type { CandidateClaim, EvidenceLedger } from "@adjudicate/core";
+import { orderReferenceAppearsInMessage } from "../ops/ops-order-resolution.js";
 import {
   ownerScopedBaseKey,
   selectCandidateClaim,
@@ -271,11 +272,64 @@ export function presentPublicItemIds(
   return ids;
 }
 
+/**
+ * The owner-scoped BASE keys whose subject is an ORDER id, keyed by a value the
+ * investigator records with a numeric `displayId` (turn-reads.ts widening).
+ * `order_fulfillment_stage` and `payment_status` are both order-keyed;
+ * `reservation_status` is EXCLUDED — reservations carry no display vocabulary, so
+ * an ambiguous reservation turn keeps the generic CLARIFY (shared with BKL-170's
+ * voicing gate {@link ORDER_SUBJECT_BASE_KEYS} below).
+ */
+const ORDER_SUBJECT_BASE_KEYS: ReadonlySet<string> = new Set([
+  "order_fulfillment_stage",
+  "payment_status",
+]);
+
+/**
+ * BKL-203 — resolve an EXPLICITLY-NAMED owned order to its subject id when a
+ * customer with ≥2 owned orders references ONE of them by display number. The
+ * customer-plane analog of the ops `orderReferenceAppearsInMessage` (BKL-150a /
+ * #342): a ≥2-owned ambiguity is NOT a dead-end when the message names one.
+ *
+ * OWNER-SCOPED / IDOR-safe BY CONSTRUCTION — the ONLY displayIds ever tested are
+ * those of the customer's OWN orders (`ownedIds`, read off the authenticated
+ * owner-scoped ledger entries), so a message naming SOMEONE ELSE's order number
+ * can never bind a subject (SCN-036 stays honest-UNKNOWN — a foreign number is
+ * simply not in `ownedIds`). Applies ONLY to {@link ORDER_SUBJECT_BASE_KEYS}
+ * (whose ledger value carries a numeric displayId); reservations keep the generic
+ * CLARIFY. Reuses the ops whole-token matcher, so "933869" never matches a digit
+ * substring of a larger number (and a bare CEP is not a match).
+ *
+ * Returns the SINGLE matched owned id, or `undefined` (0 or ≥2 matches → the
+ * caller keeps the ambiguity CLARIFY — never a guess). Pure over (data, ledger).
+ */
+export function resolveNamedOwnedOrderSubject(
+  baseKey: string,
+  ownedIds: readonly string[],
+  ledger: EvidenceLedgerLike,
+  messageText: string,
+): string | undefined {
+  if (!ORDER_SUBJECT_BASE_KEYS.has(baseKey)) return undefined;
+  const text = messageText.trim();
+  if (text === "") return undefined;
+  const matched: string[] = [];
+  for (const id of ownedIds) {
+    const res = ledger.resolve(`${baseKey}:${id}`);
+    if (res.state !== "present") continue;
+    const displayId = (res.entry?.value as { displayId?: unknown } | undefined)
+      ?.displayId;
+    if (typeof displayId !== "number") continue;
+    if (orderReferenceAppearsInMessage(String(displayId), text)) matched.push(id);
+  }
+  return matched.length === 1 ? matched[0] : undefined;
+}
+
 export function buildClassifyOnlyCandidates(
   required: ReadonlySet<RegistryClaimType>,
   auth: ClaimAuthContext,
   sessionId: string,
   ledger?: EvidenceLedgerLike,
+  messageText?: string,
 ): {
   candidates: CandidateClaim[];
   forcedTerminal?: "CLARIFY";
@@ -306,11 +360,25 @@ export function buildClassifyOnlyCandidates(
       if (owned.length === 1) {
         subject = owned[0] as string;
       } else if (owned.length > 1) {
-        // BKL-189 — keep the DROPPED ambiguity's data so the caller can label the
-        // owned candidates for the CLARIFY render (the candidate claim itself
-        // stays dropped — never a guess).
-        ambiguousOwnedSets.push({ type, baseKey, ownedIds: [...owned] });
-        continue;
+        // BKL-203 — before dropping to the ≥2-owned CLARIFY, honor an
+        // EXPLICITLY-NAMED owned order: if the message references exactly one of
+        // THESE owned orders by displayId, bind it (the customer-plane analog of
+        // the ops #342 fix — a multi-order customer must not be dead-ended when
+        // they NAMED the order). Owner-scoped: only the customer's own ids are
+        // ever tested (IDOR-safe). No / ambiguous reference → the CLARIFY stands.
+        const named =
+          messageText === undefined || ledger === undefined
+            ? undefined
+            : resolveNamedOwnedOrderSubject(baseKey, owned, ledger, messageText);
+        if (named !== undefined) {
+          subject = named;
+        } else {
+          // BKL-189 — keep the DROPPED ambiguity's data so the caller can label the
+          // owned candidates for the CLARIFY render (the candidate claim itself
+          // stays dropped — never a guess).
+          ambiguousOwnedSets.push({ type, baseKey, ownedIds: [...owned] });
+          continue;
+        }
       } else {
         subject = "";
       }
@@ -359,19 +427,6 @@ export interface DisambiguationCandidate {
   readonly id: string;
   readonly label: string;
 }
-
-/**
- * The owner-scoped BASE keys whose subject is an ORDER id — the ambiguity classes
- * BKL-170 voices by "#displayId". `payment_status` is keyed by orderId too (the
- * PAYMENT_STATUS subject IS the order), so a payment-ambiguous turn labels the
- * same way. `reservation_status` is deliberately EXCLUDED: reservations have no
- * displayId vocabulary, so an ambiguous reservation turn keeps the generic
- * proposition-free CLARIFY (byte-identical to #324).
- */
-const ORDER_SUBJECT_BASE_KEYS: ReadonlySet<string> = new Set([
-  "order_fulfillment_stage",
-  "payment_status",
-]);
 
 /**
  * Turn the ambiguous owned-sets into LABELED render candidates, synchronously,

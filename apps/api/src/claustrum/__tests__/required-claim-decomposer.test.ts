@@ -473,6 +473,107 @@ describe("classifyRequestSpans — FE-D03 history spans (suppress the singular)"
   });
 });
 
+describe("classifyRequestSpans — BKL-204 capability questions don't force the owner read", () => {
+  it("delivery COVERAGE questions do NOT fire ORDER_STATUS_Q (capability, not the customer's order)", () => {
+    for (const text of [
+      "vocês entregam no CEP 13560-000?",
+      "fazem entrega no centro?",
+      "entregam na minha região?",
+      "vocês entregam pra Ibaté?",
+    ]) {
+      expect(classifyRequestSpans(text), text).not.toContain("ORDER_STATUS_Q");
+    }
+  });
+
+  it("delivery FEE questions do NOT fire ORDER_STATUS_Q", () => {
+    for (const text of [
+      "quanto custa a entrega?",
+      "quanto fica a entrega pro centro?",
+      "qual o valor da entrega?",
+      "qual a taxa de entrega?",
+    ]) {
+      expect(classifyRequestSpans(text), text).not.toContain("ORDER_STATUS_Q");
+    }
+  });
+
+  it("payment-method ACCEPTANCE questions do NOT fire PAYMENT_STATUS_Q", () => {
+    for (const text of [
+      "aceitam vale-refeição? e PIX parcelado?",
+      "aceitam pix?",
+      "quais as formas de pagamento?",
+      "vocês aceitam cartão de crédito?",
+    ]) {
+      expect(classifyRequestSpans(text), text).not.toContain("PAYMENT_STATUS_Q");
+    }
+  });
+
+  it("GENUINE self-status asks STILL fire (the possessive / order-number self-reference)", () => {
+    // A possessive keeps the DUAL tokens firing…
+    expect(classifyRequestSpans("cadê minha entrega?")).toContain("ORDER_STATUS_Q");
+    expect(classifyRequestSpans("a entrega do meu pedido saiu?")).toContain(
+      "ORDER_STATUS_Q",
+    );
+    expect(classifyRequestSpans("paguei no pix, meu pagamento caiu?")).toContain(
+      "PAYMENT_STATUS_Q",
+    );
+    // …and an explicit order number is a self-reference (BKL-203's own case).
+    expect(classifyRequestSpans("status do pedido 933869?")).toContain(
+      "ORDER_STATUS_Q",
+    );
+  });
+
+  it("STRONG tokens fire regardless of a capability-shaped tail (a named order wins)", () => {
+    // "meu pedido" (possessive) never reads as a capability question.
+    expect(classifyRequestSpans("cadê meu pedido, vocês entregam rápido?")).toContain(
+      "ORDER_STATUS_Q",
+    );
+  });
+});
+
+describe("classifyRequestSpans — BKL-206 order/payment MUTATION imperatives don't ride the status reads", () => {
+  it("'cancela meu pedido' (imperative) does NOT fire ORDER_STATUS_Q → routes to the mutation path", () => {
+    const spans = classifyRequestSpans("cancela meu pedido");
+    expect(spans).not.toContain("ORDER_STATUS_Q");
+    expect(spans).not.toContain("PAYMENT_STATUS_Q");
+  });
+
+  it("'cancela o pedido 933869' (imperative + named order) still routes to mutation, not status", () => {
+    expect(classifyRequestSpans("cancela o pedido 933869")).not.toContain(
+      "ORDER_STATUS_Q",
+    );
+  });
+
+  it("an amend imperative on a placed order does NOT read status ('muda meu pedido pra entrega')", () => {
+    expect(classifyRequestSpans("muda meu pedido pra entrega")).not.toContain(
+      "ORDER_STATUS_Q",
+    );
+  });
+
+  it("'como cancelo meu pedido?' (interrogative how-to) routes to the model path (gets help), not a status read", () => {
+    // The how-to question is not a status ask; suppressing the read routes it to
+    // the model, which answers "how do I cancel" — it is not dead-ended.
+    const spans = classifyRequestSpans("como cancelo meu pedido?");
+    expect(spans).not.toContain("ORDER_STATUS_Q");
+  });
+
+  it("a GENUINE status ask still fires (no mutation verb) — the fix is surgical", () => {
+    expect(classifyRequestSpans("cadê meu pedido?")).toContain("ORDER_STATUS_Q");
+    expect(classifyRequestSpans("status do pedido 933869?")).toContain(
+      "ORDER_STATUS_Q",
+    );
+    expect(classifyRequestSpans("meu pagamento foi aprovado?")).toContain(
+      "PAYMENT_STATUS_Q",
+    );
+  });
+
+  it("a bare 'status' with a cancel imperative does NOT fire the status fallback", () => {
+    // "cancela o status atual" — a mutation must not ride the bare-"status" over-include.
+    expect(classifyRequestSpans("cancela o status atual do pedido")).not.toContain(
+      "ORDER_STATUS_Q",
+    );
+  });
+});
+
 describe("required-claim decomposer — conservative-over-decomposing", () => {
   it("UNIONs across multiple span-classes (over-include, never under-include)", () => {
     const required = decomposeRequiredClaims(["PAYMENT_STATUS_Q", "PICKUP_Q"]);
