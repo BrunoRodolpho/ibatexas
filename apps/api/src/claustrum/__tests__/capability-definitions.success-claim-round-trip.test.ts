@@ -36,8 +36,8 @@ import {
 import { SUCCESS_CLAIM_CLASSES } from "../ibatexas-responder.js";
 
 describe("generateJustifiedByForClaim — round-trip fidelity against the REAL SUCCESS_CLAIM_CLASSES (FE-T22 family 4)", () => {
-  it("SUCCESS_CLAIM_CLASSES has exactly the 11 documented classes (guards a hollowed probe)", () => {
-    expect(SUCCESS_CLAIM_CLASSES).toHaveLength(11);
+  it("SUCCESS_CLAIM_CLASSES has exactly the 19 documented classes — 11 §K seed + 8 BKL-194 (guards a hollowed probe)", () => {
+    expect(SUCCESS_CLAIM_CLASSES).toHaveLength(19);
   });
 
   for (const cls of SUCCESS_CLAIM_CLASSES) {

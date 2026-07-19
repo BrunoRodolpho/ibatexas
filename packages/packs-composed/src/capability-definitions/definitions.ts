@@ -295,7 +295,7 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     auth: "guest",
     legacyNames: ["apply_coupon"],
     description: "Aplicar um cupom de desconto ao carrinho.",
-    successClaimLinks: undefined,
+    successClaimLinks: ["coupon-applied"],
     guardRefs: ORDERS_GUARD_REFS,
     refusalCode: "order.default.deny",
   },
@@ -437,8 +437,8 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
   // reintroduced here; a duplicate `kind` would double-count these three in
   // the 66-total and desync `generatePackIntents`'s declaration-order mirror
   // of `ordersPack.intents[]`.
-  { kind: "order.address.change", pack: "ibatexas/pack-orders", mutating: true, tier: "identity" },
-  { kind: "order.type.switch", pack: "ibatexas/pack-orders", mutating: true, tier: "identity" },
+  { kind: "order.address.change", pack: "ibatexas/pack-orders", mutating: true, tier: "identity", successClaimLinks: ["address-updated"] },
+  { kind: "order.type.switch", pack: "ibatexas/pack-orders", mutating: true, tier: "identity", successClaimLinks: ["order-amended"] },
   {
     kind: "order.note.add",
     pack: "ibatexas/pack-orders",
@@ -477,11 +477,11 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     auth: "customer",
     legacyNames: ["submit_review"],
     description: "Enviar uma avaliação de um pedido concluído.",
-    successClaimLinks: undefined,
+    successClaimLinks: ["review-received"],
     guardRefs: ORDERS_GUARD_REFS,
     refusalCode: "order.default.deny",
   },
-  { kind: "order.reorder", pack: "ibatexas/pack-orders", mutating: true, tier: "identity" },
+  { kind: "order.reorder", pack: "ibatexas/pack-orders", mutating: true, tier: "identity", successClaimLinks: ["order-placed"] },
   { kind: "order.projection.create", pack: "ibatexas/pack-orders", mutating: true, tier: "identity" },
   // Ops-foreign-advertised ONLY (BKL-090): absent from orders' OWN planner
   // literal — verified — advertised solely via pack-ops' staff allowlist.
@@ -497,7 +497,7 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
   { kind: "order.status.reconcile", pack: "ibatexas/pack-orders", mutating: true, tier: "identity" },
   // NEW-014 — fiscal (NFC-e/NFe) emission. SYSTEM-only (subscriber-emitted on
   // order delivery); never LLM-proposable → plannerAdvertisedBy stays undefined.
-  { kind: "order.fiscal.emit", pack: "ibatexas/pack-orders", mutating: true, tier: "identity" },
+  { kind: "order.fiscal.emit", pack: "ibatexas/pack-orders", mutating: true, tier: "identity", successClaimLinks: ["fiscal-emitted"] },
 
   // ── pack-reservations (8 — matches RESERVATION_INTENT_KINDS / reservationsPack.intents order) ──
   {
@@ -540,7 +540,7 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     description: "Cancelar uma reserva existente.",
     // No "reservation-canceled" class exists in SUCCESS_CLAIM_CLASSES today
     // (only "order-canceled" does) — genuinely undefined, not an omission.
-    successClaimLinks: undefined,
+    successClaimLinks: ["reservation-canceled"],
     guardRefs: RESERVATIONS_GUARD_REFS,
     refusalCode: "reservation.default.deny",
   },
@@ -598,7 +598,7 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     auth: "customer",
     legacyNames: ["update_preferences"],
     description: "Atualizar as preferências do cliente.",
-    successClaimLinks: undefined,
+    successClaimLinks: ["preferences-saved"],
     guardRefs: CUSTOMER_ONBOARDING_GUARD_REFS,
     refusalCode: "customer.default.deny",
   },
@@ -617,11 +617,11 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     refusalCode: "customer.default.deny",
   },
   // Web-only, no LLM tool — never in the planner's allowedIntents.
-  { kind: "customer.address.add", pack: "ibatexas/pack-customer-onboarding", mutating: true, tier: "identity" },
-  { kind: "customer.address.remove", pack: "ibatexas/pack-customer-onboarding", mutating: true, tier: "identity" },
+  { kind: "customer.address.add", pack: "ibatexas/pack-customer-onboarding", mutating: true, tier: "identity", successClaimLinks: ["address-updated"] },
+  { kind: "customer.address.remove", pack: "ibatexas/pack-customer-onboarding", mutating: true, tier: "identity", successClaimLinks: ["address-updated"] },
   // HTTP-only (task 14 routes) — the destructive flow is NEVER LLM-callable;
   // the planner omits it from allowedIntents regardless of state.
-  { kind: "customer.anonymize", pack: "ibatexas/pack-customer-onboarding", mutating: true, tier: "identity" },
+  { kind: "customer.anonymize", pack: "ibatexas/pack-customer-onboarding", mutating: true, tier: "identity", successClaimLinks: ["data-anonymized"] },
   { kind: "customer.anonymize.cancel", pack: "ibatexas/pack-customer-onboarding", mutating: true, tier: "identity" },
 
   // ── pack-payments (12 — matches PAYMENT_INTENT_KINDS / paymentsPack.intents order) ──
@@ -664,7 +664,7 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
   // have a REAL entry in `PAYMENT_TOOL_TO_INTENT`
   // (packages/pack-payments/src/capabilities.ts), de-advertised, not
   // un-named.
-  { kind: "payment.method.switch", pack: "ibatexas/pack-payments", mutating: true, tier: "identity", legacyNames: ["switch_payment_method"] },
+  { kind: "payment.method.switch", pack: "ibatexas/pack-payments", mutating: true, tier: "identity", legacyNames: ["switch_payment_method"], successClaimLinks: ["payment-method-switched"] },
   { kind: "payment.retry", pack: "ibatexas/pack-payments", mutating: true, tier: "identity", legacyNames: ["retry_payment"] },
   // Ops-foreign-advertised ONLY (BKL-085): absent from payments' OWN
   // planner literal — verified (only payment.pix.regenerate is there) —
