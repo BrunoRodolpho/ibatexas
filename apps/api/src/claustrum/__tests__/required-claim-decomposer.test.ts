@@ -530,6 +530,50 @@ describe("classifyRequestSpans — BKL-204 capability questions don't force the 
   });
 });
 
+describe("classifyRequestSpans — BKL-206 order/payment MUTATION imperatives don't ride the status reads", () => {
+  it("'cancela meu pedido' (imperative) does NOT fire ORDER_STATUS_Q → routes to the mutation path", () => {
+    const spans = classifyRequestSpans("cancela meu pedido");
+    expect(spans).not.toContain("ORDER_STATUS_Q");
+    expect(spans).not.toContain("PAYMENT_STATUS_Q");
+  });
+
+  it("'cancela o pedido 933869' (imperative + named order) still routes to mutation, not status", () => {
+    expect(classifyRequestSpans("cancela o pedido 933869")).not.toContain(
+      "ORDER_STATUS_Q",
+    );
+  });
+
+  it("an amend imperative on a placed order does NOT read status ('muda meu pedido pra entrega')", () => {
+    expect(classifyRequestSpans("muda meu pedido pra entrega")).not.toContain(
+      "ORDER_STATUS_Q",
+    );
+  });
+
+  it("'como cancelo meu pedido?' (interrogative how-to) routes to the model path (gets help), not a status read", () => {
+    // The how-to question is not a status ask; suppressing the read routes it to
+    // the model, which answers "how do I cancel" — it is not dead-ended.
+    const spans = classifyRequestSpans("como cancelo meu pedido?");
+    expect(spans).not.toContain("ORDER_STATUS_Q");
+  });
+
+  it("a GENUINE status ask still fires (no mutation verb) — the fix is surgical", () => {
+    expect(classifyRequestSpans("cadê meu pedido?")).toContain("ORDER_STATUS_Q");
+    expect(classifyRequestSpans("status do pedido 933869?")).toContain(
+      "ORDER_STATUS_Q",
+    );
+    expect(classifyRequestSpans("meu pagamento foi aprovado?")).toContain(
+      "PAYMENT_STATUS_Q",
+    );
+  });
+
+  it("a bare 'status' with a cancel imperative does NOT fire the status fallback", () => {
+    // "cancela o status atual" — a mutation must not ride the bare-"status" over-include.
+    expect(classifyRequestSpans("cancela o status atual do pedido")).not.toContain(
+      "ORDER_STATUS_Q",
+    );
+  });
+});
+
 describe("required-claim decomposer — conservative-over-decomposing", () => {
   it("UNIONs across multiple span-classes (over-include, never under-include)", () => {
     const required = decomposeRequiredClaims(["PAYMENT_STATUS_Q", "PICKUP_Q"]);

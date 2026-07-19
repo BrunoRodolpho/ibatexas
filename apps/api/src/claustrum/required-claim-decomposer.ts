@@ -223,8 +223,13 @@ export function classifyRequestSpans(text: string): SpanClass[] {
   // is fail-SAFE: a false positive only routes a read to the model path (mild
   // inefficiency), never a wrong render; a false negative (the pre-BKL-201 state)
   // drops a customer's mutation.
+  // BKL-206 — `cancel` joins the net so an ORDER cancel imperative ("cancela meu
+  // pedido") is recognised as a mutation and routed off the owner-scoped STATUS
+  // read spans (gated below), not just the cart/menu reads. A how-to interrogative
+  // ("como cancelo meu pedido?") also matches and routes to the model path, where
+  // it gets a helpful answer — the fail-SAFE direction (model, never a wrong read).
   const mutationImperative =
-    /(?<![a-z])(adicion|acrescent|remov|tir|coloc|p[õo]e|p[õo]r|mud|troc|limp|esvazi|aument|diminu)/.test(
+    /(?<![a-z])(adicion|acrescent|remov|tir|coloc|p[õo]e|p[õo]r|mud|troc|limp|esvazi|aument|diminu|cancel)/.test(
       t,
     );
 
@@ -339,8 +344,13 @@ export function classifyRequestSpans(text: string): SpanClass[] {
   const orderPhrasing = orderStatusStrong || (/entrega/.test(t) && !capabilityQuestion);
   const paymentPhrasing = paymentStatusStrong || (/pix/.test(t) && !capabilityQuestion);
 
-  if (orderPhrasing) classes.push("ORDER_STATUS_Q");
-  if (paymentPhrasing) classes.push("PAYMENT_STATUS_Q");
+  // BKL-206 — an imperative ORDER/PAYMENT MUTATION ("cancela meu pedido") must
+  // route to the model/mutation path, never ride the owner-scoped STATUS read
+  // spans (the read-span-captures-mutation class #349 closed for cart/menu,
+  // applied here to the status spans via the same shared `mutationImperative`
+  // net). Genuine status asks carry no mutation verb, so they fire unchanged.
+  if (orderPhrasing && !mutationImperative) classes.push("ORDER_STATUS_Q");
+  if (paymentPhrasing && !mutationImperative) classes.push("PAYMENT_STATUS_Q");
 
   // FE-T17 — reservation-bearing phrasing. An explicit marker (not folded into the
   // bare-"status" polysemy resolution below — reservation questions name "reserva"
@@ -384,7 +394,9 @@ export function classifyRequestSpans(text: string): SpanClass[] {
   // Bare "status" with NO payment/order discriminator → over-include BOTH (never
   // silently drop either companion). If a discriminator is present, the precise
   // branch above already routed it; we add nothing here to avoid the old misroute.
-  if (/status/.test(t) && !paymentPhrasing && !orderPhrasing) {
+  // BKL-206 — an imperative mutation ("cancela") never rides the status reads,
+  // even via the bare-"status" fallback (routes to the model/mutation path).
+  if (/status/.test(t) && !mutationImperative && !paymentPhrasing && !orderPhrasing) {
     if (!classes.includes("ORDER_STATUS_Q")) classes.push("ORDER_STATUS_Q");
     if (!classes.includes("PAYMENT_STATUS_Q")) classes.push("PAYMENT_STATUS_Q");
   }
