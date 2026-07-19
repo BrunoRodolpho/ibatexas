@@ -163,7 +163,12 @@ describe("seedOwnedOrder — idempotent reuse", () => {
     vi.resetModules()
     const medusaAdmin = vi.fn(async (path: string) => {
       if (path.startsWith("/admin/orders?metadata[seedKey]")) {
-        return { orders: [{ id: "order_prior", display_id: 900_999 }] }
+        // The hardened reuse verifies the candidate's stamped seedKey (BKL-187).
+        return {
+          orders: [
+            { id: "order_prior", display_id: 900_999, metadata: { seedKey: "bkl141-owned-cust_owner-hp" } },
+          ],
+        }
       }
       if (path === "/admin/orders/order_prior") {
         return { order: { id: "order_prior", display_id: 900_999, items: [{}, {}, {}, {}] } }
@@ -186,7 +191,12 @@ describe("seedOwnedOrder — idempotent reuse", () => {
     vi.resetModules()
     const medusaAdmin = vi.fn(async (path: string) => {
       if (path.startsWith("/admin/orders?metadata[seedKey]")) {
-        return { orders: [{ id: "order_prior", display_id: 900_999 }] }
+        // The hardened reuse verifies the candidate's stamped seedKey (BKL-187).
+        return {
+          orders: [
+            { id: "order_prior", display_id: 900_999, metadata: { seedKey: "bkl141-owned-cust_owner-hp" } },
+          ],
+        }
       }
       if (path === "/admin/orders/order_prior") {
         return { order: { id: "order_prior", display_id: 900_999, items: [{}, {}, {}, {}] } }
@@ -265,5 +275,129 @@ describe("seedOwnedOrder — error paths (never silently produces an unowned/par
     mockDomain()
     const { seedOwnedOrder } = await import("../seed-owned-order.js")
     await expect(seedOwnedOrder({ customerId: "cust_owner" })).rejects.toThrow(/convert-to-order returned no order id/)
+  })
+})
+
+// ── BKL-187 — the --fresh-window flag (PONR-safe fresh order) ────────────────
+// The PONR check reads the PROJECTION row's own createdAt (@default(now())),
+// so freshness == a genuinely NEW row; the flag's whole job is bypassing the
+// (customer,label) idempotent REUSE via a per-invocation label suffix. Proven
+// IO-free through the dry-run plan (the same derivation the live path stamps).
+describe("BKL-187 — freshWindow uniquifies the seedKey (never reuses a stale order)", () => {
+  it("dry-run: freshWindow yields a time-suffixed seedKey DIFFERENT from the plain label's", async () => {
+    const { seedOwnedOrder } = await import("../seed-owned-order.js")
+    const plain = await seedOwnedOrder({ customerId: "cus_1", label: "unpaid-200", dryRun: true })
+    const fresh = await seedOwnedOrder({
+      customerId: "cus_1",
+      label: "unpaid-200",
+      dryRun: true,
+      freshWindow: true,
+    })
+    expect(fresh.seedKey).not.toBe(plain.seedKey)
+    expect(fresh.seedKey).toMatch(/-w\d{8}T\d/)
+  })
+
+  it("dry-run: the PLAN's seedKey + stamped metadata match the returned seedKey (no lookup/stamp mismatch)", async () => {
+    const { seedOwnedOrder } = await import("../seed-owned-order.js")
+    const fresh = await seedOwnedOrder({ customerId: "cus_1", dryRun: true, freshWindow: true })
+    expect(fresh.plan?.seedKey).toBe(fresh.seedKey)
+    expect(fresh.plan?.metadata.seedKey).toBe(fresh.seedKey)
+    expect(fresh.plan?.lookupPath).toContain(encodeURIComponent(fresh.seedKey))
+  })
+
+  it("without the flag the derivation is byte-identical to before (default label)", async () => {
+    const { seedOwnedOrder } = await import("../seed-owned-order.js")
+    const a = await seedOwnedOrder({ customerId: "cus_1", dryRun: true })
+    const b = await seedOwnedOrder({ customerId: "cus_1", dryRun: true })
+    expect(a.seedKey).toBe(b.seedKey)
+  })
+})
+
+// ── BKL-187 hardening — the idempotency lookup must never SPURIOUSLY reuse ───
+// Smoke-caught on the live stack: Medusa's `metadata[seedKey]` query filter can
+// return an ARBITRARY order (the filter silently not filtering), so a blind
+// orders[0] reuse hands back someone else's stale order — the exact stale-age
+// trap. The reuse now verifies the candidate's stamped metadata.seedKey; a
+// freshWindow run skips the lookup entirely (unique key — nothing to re-find).
+describe("BKL-187 — spurious-reuse hardening", () => {
+  it("REJECTS a lookup candidate whose stamped seedKey does not match (creates fresh instead)", async () => {
+    vi.resetModules()
+    const medusaAdmin = vi.fn(async (path: string) => {
+      if (path.startsWith("/admin/orders?metadata[seedKey]")) {
+        // The broken-filter case: an unrelated order comes back.
+        return { orders: [{ id: "order_unrelated", display_id: 1, metadata: { seedKey: "someone-elses" } }] }
+      }
+      if (path === "/admin/regions") return { regions: [{ id: "reg_1" }] }
+      if (path === "/admin/sales-channels")
+        return { sales_channels: [{ id: "sc_1", name: "Loja Online" }] }
+      if (path.startsWith("/admin/products?handle=")) {
+        return {
+          products: [
+            {
+              id: "prod_1",
+              handle: "x",
+              variants: [
+                { id: "var_1", title: "Unidade" },
+                { id: "var_2", title: "Coca-Cola" },
+                { id: "var_3", title: "Guaraná Antarctica" },
+                { id: "var_4", title: "Porção" },
+              ],
+            },
+          ],
+        }
+      }
+      if (path === "/admin/draft-orders") return { draft_order: { id: "draft_1" } }
+      if (path === "/admin/draft-orders/draft_1/convert-to-order")
+        return { order: { id: "order_new", display_id: 2 } }
+      if (path === "/admin/orders/order_new")
+        return { order: { id: "order_new", display_id: 2, items: [{}] } }
+      throw new Error(`unexpected path: ${path}`)
+    })
+    mockTools(medusaAdmin)
+    mockDomain()
+    const { seedOwnedOrder } = await import("../seed-owned-order.js")
+
+    const result = await seedOwnedOrder({ customerId: "cust_owner", label: "hp" })
+    expect(result).toMatchObject({ orderId: "order_new", reused: false })
+  })
+
+  it("freshWindow SKIPS the idempotency lookup entirely (no metadata[seedKey] GET)", async () => {
+    vi.resetModules()
+    const medusaAdmin = vi.fn(async (path: string) => {
+      if (path === "/admin/regions") return { regions: [{ id: "reg_1" }] }
+      if (path === "/admin/sales-channels")
+        return { sales_channels: [{ id: "sc_1", name: "Loja Online" }] }
+      if (path.startsWith("/admin/products?handle=")) {
+        return {
+          products: [
+            {
+              id: "prod_1",
+              handle: "x",
+              variants: [
+                { id: "var_1", title: "Unidade" },
+                { id: "var_2", title: "Coca-Cola" },
+                { id: "var_3", title: "Guaraná Antarctica" },
+                { id: "var_4", title: "Porção" },
+              ],
+            },
+          ],
+        }
+      }
+      if (path === "/admin/draft-orders") return { draft_order: { id: "draft_1" } }
+      if (path === "/admin/draft-orders/draft_1/convert-to-order")
+        return { order: { id: "order_new", display_id: 3 } }
+      if (path === "/admin/orders/order_new")
+        return { order: { id: "order_new", display_id: 3, items: [{}] } }
+      throw new Error(`unexpected path: ${path}`)
+    })
+    mockTools(medusaAdmin)
+    mockDomain()
+    const { seedOwnedOrder } = await import("../seed-owned-order.js")
+
+    const result = await seedOwnedOrder({ customerId: "cust_owner", freshWindow: true })
+    expect(result.reused).toBe(false)
+    expect(
+      medusaAdmin.mock.calls.some(([p]) => String(p).startsWith("/admin/orders?metadata[seedKey]")),
+    ).toBe(false)
   })
 })
