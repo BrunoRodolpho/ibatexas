@@ -45,6 +45,7 @@ import {
   refuseInvalidPartySize,
   refuseNotAuthenticated,
   refuseReservationNotCancellable,
+  refuseReservationAmbiguous,
   refuseReservationNotFound,
   refuseReservationNotModifiable,
   refuseSlotAmbiguous,
@@ -262,6 +263,44 @@ const MUTATION_KINDS_REQUIRING_RESERVATION: ReadonlySet<ReservationIntentKind> =
     "reservation.complete",
     "reservation.no_show.mark",
   ])
+
+/**
+ * BKL-223 — the reservation-mutation kinds that AUTORESOLVE the customer's own
+ * reservation (RESERVATION_AUTORESOLVE_KINDS in resolve-and-assemble.ts). When ≥2
+ * are active, the resolver declines to guess and stamps `reservationAmbiguous*`.
+ */
+const RESERVATION_AMBIGUITY_KINDS: ReadonlySet<ReservationIntentKind> = new Set([
+  "reservation.cancel",
+  "reservation.modify",
+])
+
+/**
+ * BKL-223 — voice the candidate reservations for a customer with ≥2 active bookings
+ * whose NL mutation gave no explicit id. `resolveReservationId` leaves the
+ * reservationId UNSTAMPED (so `requireReservationPresent` below still fails closed)
+ * and stamps `reservationAmbiguousCount` + the first-party candidate
+ * `reservationAmbiguousLabels`. This runs FIRST so the disambiguation pre-empts the
+ * generic not_found refuse — mirroring `clarifyAmbiguousSlot`. The labels are the DB
+ * timeSlots' own date/time (first-party, never model-authored), so the refusal
+ * asserts no unbacked fact.
+ */
+const clarifyAmbiguousReservation: ReservationGuard = (envelope) => {
+  if (!RESERVATION_AMBIGUITY_KINDS.has(envelope.kind)) return null
+  const payload = envelope.payload as {
+    reservationAmbiguousCount?: unknown
+    reservationAmbiguousLabels?: unknown
+  }
+  if (typeof payload.reservationAmbiguousCount !== "number") return null
+  const labels = Array.isArray(payload.reservationAmbiguousLabels)
+    ? payload.reservationAmbiguousLabels.filter((l): l is string => typeof l === "string")
+    : []
+  return decisionRefuse(refuseReservationAmbiguous(labels), [
+    basis("state", BASIS_CODES.state.TRANSITION_ILLEGAL, {
+      reason: "reservation_ambiguous",
+      count: payload.reservationAmbiguousCount,
+    }),
+  ])
+}
 
 const requireReservationPresent: ReservationGuard = (envelope, state) => {
   if (!MUTATION_KINDS_REQUIRING_RESERVATION.has(envelope.kind)) return null
@@ -535,6 +574,9 @@ export const reservationsPolicyBundle: PolicyBundle<
     // BKL-174 — voice the candidate times for an ambiguous NL-grounded slot BEFORE
     // the generic slot-missing / slot-full refusals fire.
     clarifyAmbiguousSlot,
+    // BKL-223 — voice the candidate reservations for a ≥2-active customer BEFORE the
+    // generic not_found refuse (the reservations were found; the resolver won't guess).
+    clarifyAmbiguousReservation,
     requireReservationPresent,
     requireReservationModifiable,
     requireReservationCancellable,

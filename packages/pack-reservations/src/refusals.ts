@@ -51,6 +51,28 @@ export function refuseReservationNotFound(): Refusal {
   )
 }
 
+/**
+ * BKL-223 — a specific "which reservation?" refusal for a customer with ≥2 active
+ * reservations whose NL mutation ("cancela minha reserva") gave no explicit id.
+ * `resolveReservationId` declines to guess and stamps `reservationAmbiguousCount` +
+ * the first-party candidate `reservationAmbiguousLabels` ("20/07 às 18h30", composed
+ * from the DB timeSlot — never model-authored). This voices them INSTEAD of the bare
+ * `refuseReservationNotFound` (the reservations WERE found; the resolver just would
+ * not pick one). Mirrors `refuseSlotAmbiguous`.
+ */
+export function refuseReservationAmbiguous(labels: readonly string[]): Refusal {
+  const shown = labels.slice(0, MAX_AMBIGUOUS_RESERVATIONS_SHOWN).join(", ")
+  const more = labels.length > MAX_AMBIGUOUS_RESERVATIONS_SHOWN ? ", entre outras" : ""
+  const userFacing =
+    shown === ""
+      ? "Você tem mais de uma reserva. Qual delas?"
+      : `Você tem mais de uma reserva: ${shown}${more}. Qual delas?`
+  return refuse("STATE", "reservation.ambiguous", userFacing, `count=${labels.length}`)
+}
+
+/** Max candidate reservations voiced inline before summarising the remainder. */
+const MAX_AMBIGUOUS_RESERVATIONS_SHOWN = 6
+
 export function refuseReservationNotModifiable(status: string): Refusal {
   return refuse(
     "STATE",
