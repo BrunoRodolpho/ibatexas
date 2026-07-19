@@ -35,9 +35,11 @@ import {
   InvalidTransitionError,
   type OrderStatusTransitionPayload,
   type PaymentCreatePayload,
+  type PaymentRefundIssuePayload,
   type PaymentRegenerationCountIncrementPayload,
   type PaymentStatusTransitionPayload,
 } from "@ibatexas/domain";
+import { buildSystemEnvelope } from "../subscribers/__shared__/system-actor-envelope.js";
 import {
   OrderFulfillmentStatus,
   PaymentStatus,
@@ -294,6 +296,25 @@ class PaymentCancelFailedError extends Error {
 }
 
 /**
+ * BKL-130 — thrown from the cancel executor when a PAID order's adjudicated
+ * refund did NOT settle (the kernel returned ESCALATE / REQUEST_CONFIRMATION /
+ * REFUSE — e.g. the FE-T03 ≥R$1000 money band escalates a big-ticket refund).
+ * The executor throws BEFORE the order→canceled transition, so state stays
+ * WHOLE (order untouched, payment untouched); the route surfaces it as an
+ * actionable "refund needs review" response. No-half-apply cuts both ways: no
+ * settled refund ⇒ no cancel.
+ */
+export class PaidCancelRefundNotSettledError extends Error {
+  constructor(
+    public readonly orderId: string,
+    public readonly decisionKind: string,
+  ) {
+    super(`paid cancel refund not settled (kernel decision: ${decisionKind})`);
+    this.name = "PaidCancelRefundNotSettledError";
+  }
+}
+
+/**
  * The order.cancel EXECUTE money-path — extracted verbatim (BKL-146) from the
  * `POST /api/orders/:id/cancel` executor so the two-phase confirm route
  * (`POST /api/orders/:id/cancel/confirm`) runs the IDENTICAL side effects: the
@@ -304,16 +325,76 @@ class PaymentCancelFailedError extends Error {
  * drift (the finalizeCheckout precedent). Throws propagate to each route's
  * try/catch (PaymentCancelFailedError → 409, InvalidTransitionError → 422).
  */
-async function executeOrderCancel(args: {
+export async function executeOrderCancel(args: {
   readonly orderId: string;
   readonly customerId: string;
   readonly reason: string;
   readonly order: { readonly fulfillmentStatus: string; readonly displayId: number };
   readonly orderCmdSvc: ReturnType<typeof createOrderCommandService>;
   readonly paymentCmdSvc: ReturnType<typeof createPaymentCommandService>;
+  readonly paymentQuerySvc: ReturnType<typeof createPaymentQueryService>;
   readonly log: FastifyInstance["log"];
 }): Promise<{ success: true; version: number; fulfillmentStatus: string }> {
-  const { orderId, customerId, reason, order, orderCmdSvc, paymentCmdSvc, log } = args;
+  const { orderId, customerId, reason, order, orderCmdSvc, paymentCmdSvc, paymentQuerySvc, log } = args;
+
+  // ── BKL-130: a PAID order must be REFUNDED (adjudicated) BEFORE the cancel
+  // transition ──────────────────────────────────────────────────────────────
+  // Root cause: the executor used to transition order→CANCELED FIRST, then
+  // attempt the payment cancel; a PAID payment's paid→canceled transition is
+  // ILLEGAL (409), leaving a CANCELED order with a LIVE paid payment (a
+  // half-applied money-safety hole — live-reproduced on both CARD and CASH).
+  // paid→canceled stays illegal (never legalized); the money-reversal is a
+  // REFUND. We BUILD + ADJUDICATE a refund envelope THROUGH THE KERNEL first, so
+  // the FE-T03 magnitude bands stay live — a ≥R$1000 refund ESCALATEs, so a
+  // big-ticket paid cancel parks/escalates instead of silently refunding. The
+  // refund WRITE is ledger-only (no Stripe/PIX egress — the provider refund is
+  // the inbound charge.refunded webhook reconcile), so this works identically
+  // for CARD and CASH; a cash refund is recorded operationally, never the
+  // paid→canceled attempt that 409'd. No-half-apply cuts BOTH ways: unless the
+  // refund SETTLES (EXECUTE), the order is NOT canceled either.
+  const paidActive = await paymentCmdSvc.findActiveByOrderId(orderId);
+  if (paidActive && paidActive.status === PaymentStatus.PAID) {
+    const payment = await paymentQuerySvc.getById(paidActive.id);
+    if (payment === null) {
+      throw new PaidCancelRefundNotSettledError(orderId, "payment_not_found");
+    }
+    const currentRefunded = payment.refundedAmountCentavos ?? 0;
+    const refundable = payment.amountInCentavos - currentRefunded;
+    // System-completion actor (the payload actor enum is admin|system; the
+    // cancel-triggered refund is issued BY THE SYSTEM on the customer's behalf).
+    const refundEnvelope = buildSystemEnvelope<"payment.refund.issue", PaymentRefundIssuePayload>({
+      kind: "payment.refund.issue",
+      payload: {
+        paymentId: payment.id,
+        refundAmountCentavos: refundable,
+        refundableBalanceCentavos: refundable,
+        amountInCentavos: payment.amountInCentavos,
+        currentRefundedCentavos: currentRefunded,
+        actor: "system",
+        reason,
+      },
+      sourceSubject: "order.cancel.refund",
+      eventId: `${orderId}:${payment.id}:cancel-refund`,
+    });
+    const refundOutcome = await paymentCmdSvc.issueRefundFromEnvelope(refundEnvelope);
+    if (
+      refundOutcome.decision.kind !== "EXECUTE" &&
+      refundOutcome.decision.kind !== "REWRITE"
+    ) {
+      // Band ESCALATE / REQUEST_CONFIRMATION / REFUSE (e.g. ≥R$1000): do NOT
+      // cancel. State whole — no order transition, payment untouched.
+      log.warn(
+        { orderId, paymentId: payment.id, decision: refundOutcome.decision.kind, refundable },
+        "paid cancel: kernel did not settle the refund (band escalate/refuse) — order NOT canceled (BKL-130)",
+      );
+      throw new PaidCancelRefundNotSettledError(orderId, refundOutcome.decision.kind);
+    }
+    // EXECUTE ⇒ the paid payment is now REFUNDED (terminal). The existing
+    // payment-terminality block below sees no active payment (findActiveByOrderId
+    // → null) ⇒ never attempts the illegal paid→canceled transition ⇒ the old
+    // 409 is no longer reachable for a paid order.
+  }
+
   // ── R1-DELETE (sibling fix) ────────────────────────────────
   // Inner mutations migrated from bare-arg `transitionStatus`
   // to envelope-typed `transitionStatusFromEnvelope`. The
@@ -902,6 +983,7 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
               order,
               orderCmdSvc,
               paymentCmdSvc,
+              paymentQuerySvc,
               log: server.log,
             }),
           ctx: {
@@ -969,6 +1051,16 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
 
         return reply.code(out.statusCode).send(out.body);
       } catch (err) {
+        if (err instanceof PaidCancelRefundNotSettledError) {
+          // BKL-130 — a PAID order's refund did not settle (kernel band
+          // escalate/refuse, e.g. ≥R$1000). The order was NOT canceled and the
+          // payment is untouched (state whole); the refund needs human review.
+          return reply.code(409).send({
+            error:
+              "O reembolso deste pedido precisa de revisão da equipe. Nada foi alterado; avisaremos você.",
+            code: "REFUND_REQUIRES_REVIEW",
+          });
+        }
         if (err instanceof PaymentCancelFailedError) {
           // P2-LOGIC-CANCELPAY: order row was canceled but the payment is still
           // live; order.canceled was withheld. Surface an actionable error so the
@@ -1073,6 +1165,7 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
               order,
               orderCmdSvc,
               paymentCmdSvc,
+              paymentQuerySvc,
               log: server.log,
             }),
           ctx: { customerId, route: "order.cancel.confirm", log: server.log },
@@ -1100,6 +1193,16 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
 
         return reply.code(out.statusCode).send(out.body);
       } catch (err) {
+        if (err instanceof PaidCancelRefundNotSettledError) {
+          // BKL-130 — a PAID order's refund did not settle (kernel band
+          // escalate/refuse, e.g. ≥R$1000). The order was NOT canceled and the
+          // payment is untouched (state whole); the refund needs human review.
+          return reply.code(409).send({
+            error:
+              "O reembolso deste pedido precisa de revisão da equipe. Nada foi alterado; avisaremos você.",
+            code: "REFUND_REQUIRES_REVIEW",
+          });
+        }
         if (err instanceof PaymentCancelFailedError) {
           return reply.code(409).send({
             error: "Não foi possível cancelar o pagamento do pedido. Tente novamente em instantes.",
