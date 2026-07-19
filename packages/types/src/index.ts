@@ -121,8 +121,21 @@ export {
   isKnownOrderStatus,
   isTerminalOrderStatus,
   normalizeOrderStatusToken,
-  ORDER_STATUS_LABELS_PT,
 } from "./order-status.js"
+
+// Status labels — the single source (BKL-016). STAFF (Title Case) registers keep
+// the existing names (byte-identical for the ops/admin consumers); CUSTOMER
+// (sentence-voice) registers + the admin-extension maps are new.
+export {
+  ORDER_STATUS_LABELS_PT,
+  PAYMENT_STATUS_LABELS_PT,
+  RESERVATION_STATUS_LABELS_PT,
+  ORDER_STATUS_LABELS_PT_CUSTOMER,
+  PAYMENT_STATUS_LABELS_PT_CUSTOMER,
+  RESERVATION_STATUS_LABELS_PT_CUSTOMER,
+  ADMIN_ORDER_STATUS_EXTRA,
+  ADMIN_PAYMENT_STATUS_EXTRA,
+} from "./status-labels.js"
 
 // Order events (typed NATS event contracts)
 export type {
@@ -150,7 +163,6 @@ export {
   type TerminalPaymentStatus,
   isTerminalPaymentStatus,
   canTransitionPayment,
-  PAYMENT_STATUS_LABELS_PT,
 } from "./payment-status.js"
 
 // Order type

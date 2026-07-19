@@ -90,21 +90,9 @@ export function canTransitionPayment(from: PaymentStatus, to: PaymentStatus): bo
   return VALID_PAYMENT_TRANSITIONS[from]?.includes(to) ?? false
 }
 
-/** pt-BR display labels for each payment status. */
-export const PAYMENT_STATUS_LABELS_PT: Record<PaymentStatus, string> = {
-  [PaymentStatus.AWAITING_PAYMENT]: "Aguardando pagamento",
-  [PaymentStatus.PAYMENT_PENDING]: "Pagamento pendente",
-  [PaymentStatus.PAYMENT_EXPIRED]: "Pagamento expirado",
-  [PaymentStatus.PAYMENT_FAILED]: "Pagamento falhou",
-  [PaymentStatus.CASH_PENDING]: "Dinheiro (pendente)",
-  [PaymentStatus.PAID]: "Pago",
-  [PaymentStatus.SWITCHING_METHOD]: "Trocando forma de pagamento",
-  [PaymentStatus.PARTIALLY_REFUNDED]: "Reembolso parcial",
-  [PaymentStatus.REFUNDED]: "Reembolsado",
-  [PaymentStatus.DISPUTED]: "Em disputa",
-  [PaymentStatus.CANCELED]: "Cancelado",
-  [PaymentStatus.WAIVED]: "Isento",
-}
+// BKL-016 — PAYMENT_STATUS_LABELS_PT now lives in ./status-labels.ts (the single
+// source for all pt-BR status labels). It is re-exported from the package index
+// under the same name, so consumers see byte-identical strings.
 
 /** Payment methods supported by the platform. */
 export const PaymentMethod = {
