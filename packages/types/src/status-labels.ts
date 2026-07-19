@@ -118,18 +118,21 @@ export const RESERVATION_STATUS_LABELS_PT_CUSTOMER: Record<ReservationStatus, st
 // enums. Keyed by values DISJOINT from the core enums (the exhaustiveness test pins
 // the disjointness, so an extension key can never silently shadow a core status).
 
-/** Non-core order-status keys the admin UI renders (aggregate/legacy states). */
+/** Non-core order-status keys the admin UI renders (aggregate/legacy states).
+ *  Title Case like the staff register — the extension must never reintroduce the
+ *  intra-admin case inconsistency BKL-016 removed. */
 export const ADMIN_ORDER_STATUS_EXTRA: Record<string, string> = {
-  completed: "concluído",
-  requires_action: "ação necessária",
+  completed: "Concluído",
+  requires_action: "Ação necessária",
 }
 
-/** Non-core payment-status keys the admin UI renders (legacy Medusa states). */
+/** Non-core payment-status keys the admin UI renders (legacy Medusa states).
+ *  Title Case like the staff register (see ADMIN_ORDER_STATUS_EXTRA note). */
 export const ADMIN_PAYMENT_STATUS_EXTRA: Record<string, string> = {
-  captured: "pago",
-  pending: "pendente",
-  cash_on_delivery: "dinheiro",
-  cancelado: "cancelado",
-  requires_action: "ação necessária",
-  not_paid: "não pago",
+  captured: "Pago",
+  pending: "Pendente",
+  cash_on_delivery: "Dinheiro",
+  cancelado: "Cancelado",
+  requires_action: "Ação necessária",
+  not_paid: "Não pago",
 }
