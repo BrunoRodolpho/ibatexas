@@ -72,7 +72,6 @@ import { failSafeMemory } from "./claustrum/fail-safe-memory.js";
 import { noopGroundingProvider, noopMemoryProvider } from "./claustrum/noop-memory-grounding.js";
 import { OllamaFetchClient } from "./claustrum/ollama-fetch-client.js";
 import { providerCanEmbed } from "./claustrum/provider-embed-capability.js";
-import type { StoreHoursRead, StoreHoursForDateRead } from "./claustrum/turn-reads.js";
 import { WhatsAppChannel } from "@claustrum/channel-whatsapp";
 import { WebChannel } from "@claustrum/channel-web";
 
@@ -112,8 +111,6 @@ import {
   emitLlmCall,
   getRedisClient,
   getScheduleSignal,
-  getTodayHoursText,
-  getHoursTextForDate,
   invalidateScheduleCache,
   loadSchedule,
   rk,
@@ -612,29 +609,8 @@ export interface ClaustrumBootstrapOptions {
     | Promise<ScheduleSignal | undefined>
     | ScheduleSignal
     | undefined;
-  /**
-   * BKL-121 — per-turn TODAY's operating-hours source for the claim planner's
-   * STORE_HOURS tag-then-derive. Default: the production resolver (Redis read-through
-   * `loadSchedule()` + env timezone → {@link getTodayHoursText}). Injectable so
-   * deterministic suites can PIN it (the production resolver depends on wall-clock
-   * time). Return `undefined` to leave a STORE_HOURS candidate value-undefined (C6
-   * ABSTAIN → honest UNKNOWN).
-   */
-  readonly resolveStoreHours?: () =>
-    | Promise<StoreHoursRead | undefined>
-    | StoreHoursRead
-    | undefined;
-  /**
-   * BKL-138 — per-turn DAY-SPECIFIC operating-hours source for the claim planner's
-   * STORE_HOURS_FOR_DATE tag-then-derive (SCN-002/003). Default: the production
-   * resolver (Redis read-through `loadSchedule()` + env timezone →
-   * {@link getHoursTextForDate} for the QUERIED `isoDate`). Injectable so
-   * deterministic suites can PIN it. Return `undefined` to leave a
-   * STORE_HOURS_FOR_DATE candidate value-undefined (C6 ABSTAIN → honest UNKNOWN).
-   */
-  readonly resolveHoursForDate?: (
-    isoDate: string,
-  ) => Promise<StoreHoursForDateRead | undefined> | StoreHoursForDateRead | undefined;
+  // BKL-126 — resolveStoreHours / resolveHoursForDate options removed (values
+  // bind from the investigator ledger at core stage 4b; no fresh re-read).
 }
 
 /**
@@ -3070,42 +3046,12 @@ export async function bootstrapClaustrum(
         }
       }
     });
-  // BKL-121 — the per-turn TODAY's-hours source the claim planner derives a STORE_HOURS
-  // candidate's `hoursText` from (the SAME first-party read the investigator records).
-  // Sourced from the Redis read-through schedule cache + env timezone via
-  // `getTodayHoursText`. Returns `undefined` on a schedule-load failure (never a
-  // fabricated hours string, BKL-026) so the derived STORE_HOURS value stays undefined
-  // → the kernel's C6 ABSTAINs → honest UNKNOWN (the investigator separately records the
-  // fail-closed read ERROR, Inv 7). Best-effort: never throws out of the turn.
-  const resolveStoreHours =
-    options.resolveStoreHours ??
-    (async (): Promise<StoreHoursRead | undefined> => {
-      const tz = process.env.RESTAURANT_TIMEZONE ?? "America/Sao_Paulo";
-      try {
-        const hoursText = getTodayHoursText(await loadSchedule(), tz);
-        return hoursText === null ? undefined : { hoursText };
-      } catch {
-        // Schedule unavailable → no derived value; the claim degrades SAFE to UNKNOWN.
-        return undefined;
-      }
-    });
-  // BKL-138 — the per-turn DAY-SPECIFIC hours source the claim planner derives a
-  // STORE_HOURS_FOR_DATE candidate's `hoursText` from for a QUERIED ISO date (the SAME
-  // first-party read the investigator records under `schedule:store_hours:{date}`).
-  // Redis read-through schedule + env tz via `getHoursTextForDate`. Returns `undefined`
-  // on a schedule-load failure (never a fabricated string, BKL-026) → C6 ABSTAIN →
-  // honest UNKNOWN. Best-effort: never throws out of the turn.
-  const resolveHoursForDate =
-    options.resolveHoursForDate ??
-    (async (isoDate: string): Promise<StoreHoursForDateRead | undefined> => {
-      const tz = process.env.RESTAURANT_TIMEZONE ?? "America/Sao_Paulo";
-      try {
-        const hoursText = getHoursTextForDate(await loadSchedule(), tz, isoDate);
-        return hoursText === null ? undefined : { hoursText };
-      } catch {
-        return undefined;
-      }
-    });
+  // BKL-126 — the resolveStoreHours / resolveHoursForDate derive sources were
+  // REMOVED: the schedule-family candidate values now bind at @claustrum/core
+  // claims-validate stage 4b from the investigator's OWN recorded ledger entries
+  // (the reads turn-reads.ts already makes) — one schedule load per turn, no
+  // divergence window. resolveScheduleSignal stays: it feeds ONLY the
+  // closed-hours prompt note (prompt-side, not a C6 value source).
   const buildPlanner = (model: ModelProvider): ClaimAwarePlannerPort =>
     createIbatexasPlanner({
       model,
@@ -3115,10 +3061,6 @@ export async function bootstrapClaustrum(
       promptComposer,
       telemetry,
       resolveScheduleSignal,
-      // BKL-121 — the STORE_HOURS tag-then-derive first-party read source.
-      resolveStoreHours,
-      // BKL-138 — the STORE_HOURS_FOR_DATE per-date tag-then-derive read source.
-      resolveHoursForDate,
       // BKL-027 — activate the one-hop read-tool enrichment loop.
       readToolExecutors: IBATEXAS_READ_TOOL_EXECUTORS,
     });

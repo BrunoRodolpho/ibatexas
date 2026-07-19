@@ -99,7 +99,6 @@ import {
   closedHoursPromptNote,
   type ScheduleSignal,
 } from "./closed-hours.js";
-import type { StoreHoursRead, StoreHoursForDateRead } from "./turn-reads.js";
 import { resolveQueriedScheduleDate } from "./schedule-date-resolver.js";
 import { resolveStoreInfoText } from "./store-info-resolver.js";
 import {
@@ -346,32 +345,11 @@ export interface IbatexasPlannerDeps {
     | Promise<ScheduleSignal | undefined>
     | ScheduleSignal
     | undefined;
-  /**
-   * BKL-121 — resolve TODAY's operating-hours read for THIS turn (tag-then-derive
-   * STEP 2 for STORE_HOURS). The SAME first-party `readStoreHours()` the investigator
-   * records under `schedule:store_hours`, so the derived `hoursText` value is
-   * byte-equal to the recorded ledger entry and the kernel's C6 value-binding passes
-   * BY CONSTRUCTION (a present override/holiday falsifier STILL demotes to UNKNOWN).
-   * Time-dependent, so it is invoked per `proposeClaims()`. Omitted in unit tests →
-   * a STORE_HOURS candidate keeps `value: undefined` (C6 ABSTAIN → honest UNKNOWN).
-   */
-  readonly resolveStoreHours?: () =>
-    | Promise<StoreHoursRead | undefined>
-    | StoreHoursRead
-    | undefined;
-  /**
-   * BKL-138 — resolve the QUERIED date's operating-hours read for THIS turn
-   * (tag-then-derive STEP 2 for STORE_HOURS_FOR_DATE). The SAME per-date
-   * `readHoursForDate(isoDate)` the investigator records under
-   * `schedule:store_hours:{isoDate}`, so the derived `hoursText` is byte-equal to the
-   * recorded ledger entry and C6 passes BY CONSTRUCTION (a present holiday/override
-   * falsifier on that date STILL demotes to UNKNOWN). Invoked per `proposeClaims()`
-   * with the resolved ISO date (the candidate subject). Omitted in unit tests →
-   * a STORE_HOURS_FOR_DATE candidate keeps `value: undefined` (C6 ABSTAIN → honest UNKNOWN).
-   */
-  readonly resolveHoursForDate?: (
-    isoDate: string,
-  ) => Promise<StoreHoursForDateRead | undefined> | StoreHoursForDateRead | undefined;
+  // BKL-126 — resolveStoreHours / resolveHoursForDate were REMOVED: the
+  // schedule-family candidate values now bind at @claustrum/core claims-validate
+  // stage 4b from the investigator's recorded ledger entries (no fresh re-read,
+  // no divergence window). resolveScheduleSignal above remains ONLY for the
+  // closed-hours prompt note.
   /**
    * BKL-138 — the clock the day-specific date resolver reads "today" from (default
    * `Date.now`). Injectable so a deterministic suite can FREEZE the resolved date (a
@@ -1644,32 +1622,16 @@ export function createIbatexasPlanner(
       // (C6 + falsifier/CE#3 + provenance + freshness) over these candidates, so
       // C6 passes BY CONSTRUCTION (derived value == the ledger value C6 compares)
       // while a present falsifier STILL demotes the claim to UNKNOWN.
-      const scheduleSignal = deps.resolveScheduleSignal
-        ? ((await deps.resolveScheduleSignal()) ?? undefined)
-        : undefined;
-      // BKL-121 — the SAME first-party today's-hours read the investigator records,
-      // so STORE_HOURS's derived `hoursText` is byte-equal to the ledger entry (C6
-      // passes by construction; a present override/holiday falsifier still demotes).
-      const storeHours = deps.resolveStoreHours
-        ? ((await deps.resolveStoreHours()) ?? undefined)
-        : undefined;
-      // BKL-138 — the SAME per-date hours read the investigator records under
-      // `schedule:store_hours:{date}`, keyed by each STORE_HOURS_FOR_DATE candidate's
-      // resolved subject (the ISO date). Read ONCE per distinct queried date this turn;
-      // a read that fails/returns undefined leaves that date's value undefined → C6
-      // ABSTAIN → honest UNKNOWN (never a fabricated hours string).
-      const storeHoursForDate: Record<string, StoreHoursForDateRead> = {};
-      if (deps.resolveHoursForDate !== undefined) {
-        const dates = new Set(
-          candidates
-            .filter((c) => c.type === "STORE_HOURS_FOR_DATE")
-            .map((c) => c.subject),
-        );
-        for (const isoDate of dates) {
-          const read = await deps.resolveHoursForDate(isoDate);
-          if (read !== undefined) storeHoursForDate[isoDate] = read;
-        }
-      }
+      // BKL-126 — the schedule-family derives (STORE_OPEN_NOW / STORE_HOURS /
+      // STORE_HOURS_FOR_DATE) were REMOVED here: they re-loaded the schedule +
+      // clock FRESH at this stage, 5-20s after the investigator's recorded read
+      // (a mid-turn schedule edit / midnight rollover in the window → C6
+      // REFUSED mis-audited as a model over-claim). Those candidates now leave
+      // this stage with `value: undefined`; @claustrum/core claims-validate
+      // stage 4b binds the value from the investigator's OWN recorded ledger
+      // entry — C6 byte-equal BY CONSTRUCTION, divergence window deleted,
+      // falsifier arms untouched. (resolveScheduleSignal remains a dep ONLY for
+      // the closed-hours prompt note — a prompt-side concern, not C6.)
       // BKL-142 — the SAME per-item reads the investigator records under
       // `menu:item_*:{id}`, keyed by the resolved product id (each menu candidate's
       // subject). resolveMenuItem is memoized on turnId+text, so this REUSES the read the
@@ -1726,9 +1688,6 @@ export function createIbatexasPlanner(
         if (infoText !== undefined) storeInfo = { infoText };
       }
       const derivedCandidates = deriveCandidateValues(candidates, {
-        scheduleSignal,
-        storeHours,
-        storeHoursForDate,
         menuItemPrice,
         menuItemContents,
         ...(menuOverview !== undefined ? { menuOverview } : {}),

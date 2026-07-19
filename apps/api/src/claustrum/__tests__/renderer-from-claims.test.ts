@@ -26,6 +26,7 @@ import {
   ORDER_FULFILLMENT_STAGE,
   PAYMENT_STATUS,
   SAFE_TEMPLATES,
+  SAFE_UNKNOWN_ALLERGEN_TEMPLATE,
   STORE_OPEN_NOW,
   type Template,
 } from "../slot-grammar.js";
@@ -547,5 +548,39 @@ describe("renderer-from-claims — render() requires a kernel-minted CanonicalCl
     expect(result.renderableCanonical).toHaveLength(1);
     const out = render(result.renderableCanonical, RENDER);
     expect(out.text).toBe("No momento, o período de funcionamento é: jantar.");
+  });
+});
+
+// ── BKL-184 — the allergen-ask UNKNOWN variant (abstain + human-handoff OFFER) ──
+// Gated ONLY by the adapter-computed `allergenAsk` flag AND an UNKNOWN terminal;
+// every other posture/flag combination is byte-identical to the generic templates.
+describe("BKL-184 — allergen-ask UNKNOWN renders the abstain-plus-offer variant", () => {
+  it("UNKNOWN + allergenAsk → the allergen offer copy (proposition-free)", () => {
+    const out = renderRenderables([], "UNKNOWN", [], [], true);
+    expect(out.text).toBe(
+      "Não localizei essa informação de alérgenos confirmada agora — por segurança, prefiro não arriscar uma resposta. Quer que eu peça para um atendente confirmar com a cozinha?",
+    );
+    // The conservative allergen ruling: never a negative assurance.
+    expect(out.text).not.toContain("não contém");
+  });
+
+  it("UNKNOWN without the flag → the generic template, byte-identical", () => {
+    const flagged = renderRenderables([], "UNKNOWN", [], [], false);
+    const bare = renderRenderables([], "UNKNOWN");
+    expect(flagged.text).toBe(bare.text);
+    expect(bare.text).toBe("Não localizei essa informação confirmada agora. Quer que eu verifique?");
+  });
+
+  it("the flag NEVER touches other terminals (ESCALATE/CLARIFY byte-identical)", () => {
+    expect(renderRenderables([], "ESCALATE", [], [], true).text).toBe(
+      renderRenderables([], "ESCALATE").text,
+    );
+    expect(renderRenderables([], "CLARIFY", [], [], true).text).toBe(
+      renderRenderables([], "CLARIFY").text,
+    );
+  });
+
+  it("the variant template is structurally proposition-free (the §O#3 mechanical guarantee)", () => {
+    expect(isPropositionFree(SAFE_UNKNOWN_ALLERGEN_TEMPLATE)).toBe(true);
   });
 });

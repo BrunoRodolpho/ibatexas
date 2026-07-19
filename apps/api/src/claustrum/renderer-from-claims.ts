@@ -54,6 +54,7 @@ import {
   clarifyWithCandidatesText,
   isPropositionFree,
   SAFE_TEMPLATES,
+  SAFE_UNKNOWN_ALLERGEN_TEMPLATE,
   type Template,
   type TemplateSlot,
   VALIDATED_TEMPLATES,
@@ -248,6 +249,10 @@ export function render(
   terminal: TurnTerminal,
   suppressions: readonly SuppressionRecord[] = [],
   candidates: readonly RenderDisambiguationCandidate[] = [],
+  // BKL-184 — when the request carries allergen-family phrasing (the adapter
+  // computes it via the classifier's own net), an UNKNOWN terminal renders the
+  // allergen abstain-plus-handoff-offer variant. Default false → byte-identical.
+  allergenAsk: boolean = false,
 ): RenderResult {
   // ── inv.17 ENTRY BRAND: the renderer's REQUIRED input is the kernel-minted
   // CanonicalClaim. `unwrapCanonical` asserts WeakSet provenance and THROWS on a
@@ -260,7 +265,7 @@ export function render(
     const { subject, type, value } = unwrapCanonical(c);
     return { subject, type, value, verdict: "VALIDATED" as const };
   });
-  return renderRenderables(renderableClaims, terminal, suppressions, candidates);
+  return renderRenderables(renderableClaims, terminal, suppressions, candidates, allergenAsk);
 }
 
 /**
@@ -276,10 +281,11 @@ export function renderRenderables(
   terminal: TurnTerminal,
   suppressions: readonly SuppressionRecord[] = [],
   candidates: readonly RenderDisambiguationCandidate[] = [],
+  allergenAsk: boolean = false,
 ): RenderResult {
   // ── 1. §O#5 render-half: a non-RENDER terminal emits ONLY the safe template. ──
   if (terminal !== "RENDER") {
-    return renderTerminalResult(terminal, suppressions, candidates);
+    return renderTerminalResult(terminal, suppressions, candidates, allergenAsk);
   }
 
   // ── 2. RENDER path: index by type for the Inv 6 1:1 proposition lookup, then
@@ -314,6 +320,7 @@ function renderTerminalResult(
   terminal: TurnTerminal,
   _suppressions: readonly SuppressionRecord[],
   candidates: readonly RenderDisambiguationCandidate[] = [],
+  allergenAsk: boolean = false,
 ): RenderResult {
   // BKL-170 — a CLARIFY the adopter enriched with first-party, owner-scoped
   // disambiguation candidates (0.8.0 `disambiguationCandidates` carrier) renders the
@@ -325,12 +332,18 @@ function renderTerminalResult(
     const text = clarifyWithCandidatesText(candidates.map((c) => c.label));
     return { text, terminal, lines: [{ kind: "TERMINAL", text }] };
   }
+  // BKL-184 — an allergen-family ask that lands on honest ignorance renders the
+  // abstain-plus-handoff-offer variant (still proposition-free — the defensive
+  // isPropositionFree gate below applies to it identically). Every other UNKNOWN
+  // renders the generic template, byte-identical.
   const template =
     terminal === "ESCALATE"
       ? SAFE_TEMPLATES.escalate
       : terminal === "CLARIFY"
         ? SAFE_TEMPLATES.clarify
-        : SAFE_TEMPLATES.unknown;
+        : allergenAsk
+          ? SAFE_UNKNOWN_ALLERGEN_TEMPLATE
+          : SAFE_TEMPLATES.unknown;
   // Defensive: a TERMINAL template MUST be proposition-free (it cannot carry a
   // domain fact). If somehow it weren't, abstain to the bare unknown line rather
   // than risk a leak.

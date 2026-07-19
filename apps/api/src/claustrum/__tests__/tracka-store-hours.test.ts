@@ -32,12 +32,14 @@ import {
   runClaimsKernel,
   type CandidateClaim,
 } from "@adjudicate/core";
-import type { CognitiveState, Completion, ModelProvider } from "@claustrum/core";
+import type { ClaimPlannerInput, CognitiveState, Completion, ModelProvider, Plan } from "@claustrum/core";
+import { normalizeClaimPlannerResult } from "@claustrum/core";
 import {
   createIbatexasPlanner,
   PROPOSE_CLAIM_TOOL,
 } from "../ibatexas-planner.js";
 import { selectCandidateClaim } from "../claim-registry.js";
+import { createIbatexasClaimPlanner } from "../ibatexas-claim-planner.js";
 import { createIbatexasClaimsKernelDeps } from "../ibatexas-claims-kernel-deps.js";
 import { render, renderRenderables } from "../renderer-from-claims.js";
 
@@ -80,6 +82,33 @@ function claimCall(input: unknown): NonNullable<Completion["toolCalls"]>[number]
   return { id: "tc-1", name: PROPOSE_CLAIM_TOOL, input };
 }
 
+/**
+ * BKL-126 — propose through the REAL claim-planner ADAPTER with THIS turn's
+ * ledger: the planner no longer re-reads the schedule (the divergence-window
+ * deletion); the candidate's value binds ONLY from the ledger entry the
+ * investigator recorded (`bindValueFromLedger`, only-undefined), exactly the
+ * production path. Returns the bound candidates.
+ */
+async function proposeBoundCandidates(
+  model: ModelProvider,
+  text: string,
+  ledger: EvidenceLedger,
+): Promise<readonly CandidateClaim[]> {
+  const planner = createIbatexasPlanner({
+    model,
+    modelId: "mock",
+    capabilityPlanners: [],
+  });
+  const adapter = createIbatexasClaimPlanner(planner);
+  const input: ClaimPlannerInput = {
+    cognition: state(text),
+    plan: { envelopes: [] } as Plan,
+    ledger,
+  };
+  const { candidates } = normalizeClaimPlannerResult(await adapter.propose(input));
+  return candidates;
+}
+
 const NOW = 10_000;
 
 /** Today's operating-hours read the investigator would record + the planner derives. */
@@ -115,19 +144,20 @@ function recordFalsifier(ledger: EvidenceLedger, key: string, value: unknown): v
 
 describe("BKL-121 — tag→derive→VALIDATED for STORE_HOURS (through the real kernel)", () => {
   it("derives hoursText from the first-party read though the model emitted NONE, then VALIDATEs + renders today's hours", async () => {
-    // The 4B emits ONLY the type tag + subject — NO value. The planner re-reads the
-    // SAME today's-hours the investigator does (resolveStoreHours).
-    const planner = createIbatexasPlanner({
-      model: mockModel([claimCall({ type: "STORE_HOURS", subject: "loja" })]),
-      modelId: "mock",
-      capabilityPlanners: [],
-      resolveStoreHours: () => HOURS_READ,
-    });
-    const plan = await planner.proposeClaims(state("qual o horário de funcionamento?"));
+    // The 4B emits ONLY the type tag + subject — NO value. BKL-126: the planner
+    // no longer re-reads the schedule; the value binds from the INVESTIGATOR's
+    // recorded ledger entry through the real adapter (bindValueFromLedger).
+    const ledger = new EvidenceLedger("turn-1");
+    recordStoreHours(ledger, HOURS_READ);
+    const candidates = await proposeBoundCandidates(
+      mockModel([claimCall({ type: "STORE_HOURS", subject: "loja" })]),
+      "qual o horário de funcionamento?",
+      ledger,
+    );
 
-    // The value was DERIVED (model authored none): hoursText from the read.
-    expect(plan.candidates).toHaveLength(1);
-    const candidate = plan.candidates[0] as CandidateClaim;
+    // The value was BOUND from the recorded entry (model authored none).
+    expect(candidates).toHaveLength(1);
+    const candidate = candidates[0] as CandidateClaim;
     expect(candidate.type).toBe("STORE_HOURS");
     expect(candidate.value).toEqual({ hoursText: "11h–15h / 18h–23h" });
     // The eligibility cap is real: the spec declares falsifierComplete + falsifiers.
@@ -137,14 +167,12 @@ describe("BKL-121 — tag→derive→VALIDATED for STORE_HOURS (through the real
       "schedule:holiday",
     ]);
 
-    // Feed the derived candidate through the REAL kernel against a ledger whose bound
-    // entry is byte-equal to the derived value → C6 PASSes by construction, and with
-    // NO override/holiday present both falsifiers are inert → VALIDATED.
-    const ledger = new EvidenceLedger("turn-1");
-    recordStoreHours(ledger, HOURS_READ);
+    // Feed the bound candidate through the REAL kernel against the SAME ledger —
+    // C6 PASSes BY CONSTRUCTION (the value IS the entry), and with NO
+    // override/holiday present both falsifiers are inert → VALIDATED.
     const result = runClaimsKernel(
       ledger,
-      plan.candidates,
+      candidates,
       createIbatexasClaimsKernelDeps({ now: () => NOW }),
     );
 
@@ -159,20 +187,18 @@ describe("BKL-121 — tag→derive→VALIDATED for STORE_HOURS (through the real
   });
 
   it("VALIDATEs a 'fechado' today's-hours value the same way (evidence-bound, not an absence)", async () => {
-    const planner = createIbatexasPlanner({
-      model: mockModel([claimCall({ type: "STORE_HOURS", subject: "loja" })]),
-      modelId: "mock",
-      capabilityPlanners: [],
-      resolveStoreHours: () => ({ hoursText: "fechado" }),
-    });
-    const plan = await planner.proposeClaims(state("que horas abre hoje?"));
-    expect((plan.candidates[0] as CandidateClaim).value).toEqual({ hoursText: "fechado" });
-
     const ledger = new EvidenceLedger("turn-fechado");
     recordStoreHours(ledger, { hoursText: "fechado" });
+    const candidates = await proposeBoundCandidates(
+      mockModel([claimCall({ type: "STORE_HOURS", subject: "loja" })]),
+      "que horas abre hoje?",
+      ledger,
+    );
+    expect((candidates[0] as CandidateClaim).value).toEqual({ hoursText: "fechado" });
+
     const result = runClaimsKernel(
       ledger,
-      plan.candidates,
+      candidates,
       createIbatexasClaimsKernelDeps({ now: () => NOW }),
     );
     expect(result.perClaim[0]?.verdict).toBe("VALIDATED");
@@ -187,19 +213,16 @@ describe("BKL-121 — tag→derive→VALIDATED for STORE_HOURS (through the real
   // read and validation exceeded a 3.6s window and demoted every real turn to
   // UNKNOWN. The registry now declares 3_600_000 (1 hour in ms).
   it("VALIDATEs with realistic model latency between the read and validation (ttl is enforced in ms)", async () => {
-    const planner = createIbatexasPlanner({
-      model: mockModel([claimCall({ type: "STORE_HOURS", subject: "loja" })]),
-      modelId: "mock",
-      capabilityPlanners: [],
-      resolveStoreHours: () => HOURS_READ,
-    });
-    const plan = await planner.proposeClaims(state("qual o horário de hoje?"));
-
     const ledger = new EvidenceLedger("turn-latency");
     recordStoreHours(ledger, HOURS_READ); // fetchedAt = NOW
+    const candidates = await proposeBoundCandidates(
+      mockModel([claimCall({ type: "STORE_HOURS", subject: "loja" })]),
+      "qual o horário de hoje?",
+      ledger,
+    );
     const result = runClaimsKernel(
       ledger,
-      plan.candidates,
+      candidates,
       // Validation runs 15 SECONDS after the read — normal 4B claims latency.
       createIbatexasClaimsKernelDeps({ now: () => NOW + 15_000 }),
     );
@@ -207,19 +230,16 @@ describe("BKL-121 — tag→derive→VALIDATED for STORE_HOURS (through the real
   });
 
   it("demotes to UNKNOWN when the evidence is GENUINELY stale (older than the 1h bound)", async () => {
-    const planner = createIbatexasPlanner({
-      model: mockModel([claimCall({ type: "STORE_HOURS", subject: "loja" })]),
-      modelId: "mock",
-      capabilityPlanners: [],
-      resolveStoreHours: () => HOURS_READ,
-    });
-    const plan = await planner.proposeClaims(state("qual o horário de hoje?"));
-
     const ledger = new EvidenceLedger("turn-stale");
     recordStoreHours(ledger, HOURS_READ); // fetchedAt = NOW
+    const candidates = await proposeBoundCandidates(
+      mockModel([claimCall({ type: "STORE_HOURS", subject: "loja" })]),
+      "qual o horário de hoje?",
+      ledger,
+    );
     const result = runClaimsKernel(
       ledger,
-      plan.candidates,
+      candidates,
       createIbatexasClaimsKernelDeps({ now: () => NOW + 2 * 3_600_000 }), // 2h later
     );
     expect(result.perClaim[0]?.verdict).toBe("UNKNOWN"); // stale, never a render
@@ -230,24 +250,25 @@ describe("BKL-121 — tag→derive→VALIDATED for STORE_HOURS (through the real
 // ── (2) FALSIFIER STILL DEMOTES — derivation did NOT bypass the conjunct ────────
 
 describe("BKL-121 — a present override OR holiday STILL demotes the derived claim (D1)", () => {
-  async function derivedCandidates(): Promise<readonly CandidateClaim[]> {
-    const planner = createIbatexasPlanner({
-      model: mockModel([claimCall({ type: "STORE_HOURS", subject: "loja" })]),
-      modelId: "mock",
-      capabilityPlanners: [],
-      resolveStoreHours: () => HOURS_READ,
-    });
-    const plan = await planner.proposeClaims(state("qual o horário?"));
-    expect((plan.candidates[0] as CandidateClaim).value).toEqual({
+  // BKL-126 — candidates now bind from EACH test's ledger (the adapter path).
+  async function derivedCandidates(
+    ledger: EvidenceLedger,
+  ): Promise<readonly CandidateClaim[]> {
+    const candidates = await proposeBoundCandidates(
+      mockModel([claimCall({ type: "STORE_HOURS", subject: "loja" })]),
+      "qual o horário?",
+      ledger,
+    );
+    expect((candidates[0] as CandidateClaim).value).toEqual({
       hoursText: "11h–15h / 18h–23h",
     });
-    return plan.candidates;
+    return candidates;
   }
 
   it("UNKNOWN when a ScheduleOverride is present, even with a VALID derived value", async () => {
-    const candidates = await derivedCandidates();
     const ledger = new EvidenceLedger("turn-override");
     recordStoreHours(ledger, HOURS_READ);
+    const candidates = await derivedCandidates(ledger);
     // A PRESENT per-date override contradicts today's weekly hours (D1 falsifier).
     recordFalsifier(ledger, "schedule:schedule_override", {
       date: "2026-06-29",
@@ -267,9 +288,9 @@ describe("BKL-121 — a present override OR holiday STILL demotes the derived cl
   });
 
   it("UNKNOWN when a holiday is present, even with a VALID derived value", async () => {
-    const candidates = await derivedCandidates();
     const ledger = new EvidenceLedger("turn-holiday");
     recordStoreHours(ledger, HOURS_READ);
+    const candidates = await derivedCandidates(ledger);
     // A PRESENT holiday contradicts today's weekly hours (D1 falsifier).
     recordFalsifier(ledger, "schedule:holiday", {
       date: "2026-12-25",

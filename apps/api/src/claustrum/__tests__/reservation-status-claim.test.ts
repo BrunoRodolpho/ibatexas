@@ -62,6 +62,7 @@ import {
   createIbatexasInvestigator,
 } from "../ibatexas-investigator.js";
 import type { TriadReadBackend } from "../turn-reads.js";
+import { composeReservationStatusLine } from "../turn-reads.js";
 
 // ── Test doubles ──────────────────────────────────────────────────────────────
 
@@ -118,6 +119,8 @@ const RESERVATION_VALUE = {
   partySize: 4,
   date: "2026-07-20",
   startTime: "19:30",
+  // BKL-185 — the pre-composed pt-BR C6-bound scalar the real read produces.
+  statusLine: "confirmada — 20/07 às 19:30, para 4 pessoas",
 };
 
 /** Record the per-resource RESERVATION_STATUS entry the investigator mints —
@@ -170,7 +173,7 @@ describe("FE-T17 — RESERVATION_STATUS registry row", () => {
   it("binds the rendered value to the read's `status` field (ledger-sourced)", () => {
     expect(REGISTRY_SPECS.RESERVATION_STATUS.valueBinding).toEqual({
       key: "reservation_status",
-      path: ["status"],
+      path: ["statusLine"],
     });
     // valueBinding.key stays a member of requiredEvidence (C6 structural guard).
     expect(
@@ -265,7 +268,7 @@ describe("FE-T17 — a seeded reservation VALIDATES and renders (end-to-end via 
     const out = render(result.renderableCanonical, result.terminal);
     // F3 — the DISPLAYED status is pt-BR localized; the raw English enum never
     // reaches the customer.
-    expect(out.text).toBe("O status da sua reserva é: confirmada.");
+    expect(out.text).toBe("O status da sua reserva é: confirmada — 20/07 às 19:30, para 4 pessoas.");
     expect(out.text).not.toContain("confirmed");
     // F2 (linked kernel narrowing, kernels.js) — the mint carries ONLY the
     // C6-bound `status` field; the ledger entry's OTHER fields (partySize,
@@ -274,7 +277,7 @@ describe("FE-T17 — a seeded reservation VALIDATES and renders (end-to-end via 
     // stylistic choice but load-bearing: those siblings are structurally
     // unreachable via `unwrapCanonical` post-mint.
     expect(out.text).not.toContain("res-A");
-    expect(result.renderableCanonical[0]?.value).toEqual({ status: "confirmed" });
+    expect(result.renderableCanonical[0]?.value).toEqual({ statusLine: "confirmada — 20/07 às 19:30, para 4 pessoas" });
   });
 });
 
@@ -326,7 +329,7 @@ describe("FE-T17 — the validator (C6) REJECTS a tampered reservation claim", (
       subject: "res-A",
       actor: "cust-A",
       resources: { "reservation_status:res-A": "res-A" },
-      value: { status: "cancelled" },
+      value: { statusLine: "cancelada" },
     }) as CandidateClaim;
 
     const ledger = new EvidenceLedger("turn-3");
@@ -547,7 +550,7 @@ describe("FE-T17b — discovery-fed end-to-end (dev @ a063661b, turnIds 30c78409
         customerId === CUSTOMER ? ["res-disc-1"] : [],
       readReservation: async (reservationId, customerId) =>
         reservationId === "res-disc-1" && customerId === CUSTOMER
-          ? { reservationId, status: "confirmed", partySize: 2 }
+          ? { reservationId, status: "confirmed", partySize: 2, statusLine: "confirmada" }
           : null,
     });
 
@@ -594,6 +597,8 @@ describe("FE-T17b — discovery-fed end-to-end (dev @ a063661b, turnIds 30c78409
     expect(result.perClaim[0]?.verdict).toBe("VALIDATED");
     expect(result.terminal).toBe("RENDER");
     const out = render(result.renderableCanonical, result.terminal);
+    // The discovery stub's read carries a BARE statusLine (no slot detail) — the
+    // render degrades to the pre-BKL-185 status-only form, byte-identical.
     expect(out.text).toBe("O status da sua reserva é: confirmada.");
   });
 
@@ -656,6 +661,7 @@ describe("FE-T17b — discovery-fed end-to-end (dev @ a063661b, turnIds 30c78409
         reservationId,
         status: "pending",
         partySize: 3,
+        statusLine: "pendente",
       }),
     });
 
@@ -685,5 +691,45 @@ describe("FE-T17b — discovery-fed end-to-end (dev @ a063661b, turnIds 30c78409
     // sourced from REAL discovery rather than a hand-constructed ownedByBaseKey Map.
     expect(forcedTerminal).toBe("CLARIFY");
     expect(candidates.some((c) => c.type === "RESERVATION_STATUS")).toBe(false);
+  });
+});
+
+// ── BKL-185 — composeReservationStatusLine (the pre-composed C6-bound scalar) ──
+describe("BKL-185 — composeReservationStatusLine", () => {
+  it("composes the enriched pt-BR line from status + slot detail (localized via the single-source register)", () => {
+    expect(
+      composeReservationStatusLine({
+        status: "confirmed",
+        partySize: 2,
+        isoDate: "2026-07-20",
+        startTime: "19:30",
+      }),
+    ).toBe("confirmada — 20/07 às 19:30, para 2 pessoas");
+  });
+
+  it("singular party: 'para 1 pessoa'", () => {
+    expect(
+      composeReservationStatusLine({
+        status: "pending",
+        partySize: 1,
+        isoDate: "2026-01-05",
+        startTime: "12:00",
+      }),
+    ).toBe("pendente — 05/01 às 12:00, para 1 pessoa");
+  });
+
+  it("missing slot detail degrades to the BARE localized status (byte-identical pre-BKL-185 render)", () => {
+    expect(composeReservationStatusLine({ status: "confirmed", partySize: 2 })).toBe(
+      "confirmada",
+    );
+    expect(
+      composeReservationStatusLine({ status: "cancelled", partySize: 3, isoDate: "2026-07-20" }),
+    ).toBe("cancelada");
+  });
+
+  it("an unmapped status member falls back RAW (never a crash, never an invented label)", () => {
+    expect(composeReservationStatusLine({ status: "mystery_status", partySize: 2 })).toBe(
+      "mystery_status",
+    );
   });
 });

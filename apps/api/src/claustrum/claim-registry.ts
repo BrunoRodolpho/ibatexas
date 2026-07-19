@@ -548,8 +548,13 @@ export const REGISTRY_SPECS = {
         provenancePolicy: "preserve",
       },
     ],
-    // C6 — bind the rendered status to the read's `status` field (ledger-sourced).
-    valueBinding: { key: "reservation_status", path: ["status"] },
+    // C6 — bind the rendered scalar to the read's pre-composed `statusLine`
+    // (BKL-185, the ORDER_HISTORY serialized-scalar idiom): status + optional
+    // "— DD/MM às HH:MM, para N pessoa(s)" detail, composed DETERMINISTICALLY in
+    // the read (turn-reads.ts composeReservationStatusLine — no clock, no model).
+    // Detail-absent → the scalar IS the bare status → the render is byte-identical
+    // to the pre-BKL-185 status-only form. Ledger-sourced, never model-authored.
+    valueBinding: { key: "reservation_status", path: ["statusLine"] },
   },
   // BKL-139 / FE-D03 — the owner-scoped IN-PROGRESS CART read. Structurally the
   // RESERVATION_STATUS idiom (owner-scoped, per-resource, must_read_this_turn,
@@ -1106,21 +1111,19 @@ export function constrainClaimGeneration(
  * kernel's C6 value-binding passes BY CONSTRUCTION — without skipping C6.
  */
 export interface FirstPartyDerivationReads {
-  /** The schedule signal — the SAME `readSchedule()` the investigator records
-   *  (`ibatexas-investigator.ts` SCHEDULE_KEY). Only `mealPeriod` is bound (C6). */
-  readonly scheduleSignal?: { readonly mealPeriod?: unknown };
-  /** BKL-121 — today's operating-hours read (the SAME `readStoreHours()` the
-   *  investigator records under `schedule:store_hours`). Only `hoursText` is bound
-   *  (C6); the re-read is byte-equal to the recorded entry so C6 passes BY
-   *  CONSTRUCTION (a present override/holiday falsifier STILL demotes to UNKNOWN). */
-  readonly storeHours?: { readonly hoursText?: unknown };
-  /** BKL-138 — the DAY-SPECIFIC hours read(s) for THIS turn, keyed by the QUERIED ISO
-   *  date (the candidate `subject`). The SAME `readHoursForDate(date)` the investigator
-   *  records under `schedule:store_hours:{date}`, so the derived `hoursText` is
-   *  byte-equal to the recorded ledger entry and C6 passes BY CONSTRUCTION (a present
-   *  holiday/override falsifier on that date STILL demotes to UNKNOWN). A candidate
-   *  whose `subject` is absent from this map keeps `value: undefined` (C6 ABSTAIN). */
-  readonly storeHoursForDate?: Readonly<Record<string, { readonly hoursText?: unknown }>>;
+  // BKL-126 — the schedule-family derives (scheduleSignal / storeHours /
+  // storeHoursForDate) were REMOVED from this bag: unlike the memoized menu/
+  // store-info reads below, they were FRESH loadSchedule()+clock loads at
+  // claims-validate time, 5-20s (model latency) after the investigator's
+  // recorded read — a mid-turn schedule edit or midnight rollover in that
+  // window diverged the two arms into a C6 REFUSED mis-audited as a model
+  // over-claim. The schedule-family candidates now leave the planner with
+  // `value: undefined` and @claustrum/core claims-validate stage 4b binds the
+  // value from the investigator's OWN recorded ledger entry (only-undefined,
+  // full-entry, same-path projection) — C6 passes BY CONSTRUCTION with the
+  // divergence window deleted, and the override/holiday falsifier arms are
+  // untouched (a present falsifier still demotes). No recorded entry (span
+  // didn't fire / read failed) → value stays undefined → honest UNKNOWN.
   /** BKL-142 — the per-item PRICE read(s) for THIS turn, keyed by the RESOLVED product
    *  id (the candidate `subject`). The SAME resolved product the investigator records
    *  under `menu:item_price:{id}`, so the derived `priceText` is byte-equal to the
@@ -1168,35 +1171,10 @@ export function deriveBoundValue(
   // No binding ⟹ §5 is value-agnostic for this type — never re-author its value.
   if (candidate.soundness.valueBinding === undefined) return candidate;
 
-  if (candidate.type === "STORE_OPEN_NOW") {
-    if (reads.scheduleSignal === undefined) return candidate;
-    // C6 binds path ["mealPeriod"] against `schedule:store_open_now`; project the
-    // SAME field from the first-party read so claimSide === evidenceSide (PASS).
-    return { ...candidate, value: { mealPeriod: reads.scheduleSignal.mealPeriod } };
-  }
-
-  if (candidate.type === "STORE_HOURS") {
-    if (reads.storeHours === undefined) return candidate;
-    // BKL-121 — C6 binds path ["hoursText"] against `schedule:store_hours`; project
-    // the SAME field from the first-party read so claimSide === evidenceSide (PASS).
-    // Public, single-key, re-readable in the planner (like STORE_OPEN_NOW). A present
-    // override/holiday falsifier STILL demotes the derived claim to UNKNOWN (the
-    // runtime arm is NOT skipped by derivation).
-    return { ...candidate, value: { hoursText: reads.storeHours.hoursText } };
-  }
-
-  if (candidate.type === "STORE_HOURS_FOR_DATE") {
-    // BKL-138 — bind the QUERIED date's hours (the candidate `subject` is the ISO
-    // date). Project `hoursText` from the SAME per-date first-party read the
-    // investigator recorded under `schedule:store_hours:{date}` (two-arm byte-equal,
-    // like STORE_HOURS), so C6 passes by construction; a present holiday/override
-    // falsifier ON that date STILL demotes to UNKNOWN (the runtime arm is not skipped
-    // by derivation). No read for this subject (unresolved / absent) → value stays
-    // undefined → C6 ABSTAINs → honest UNKNOWN.
-    const read = reads.storeHoursForDate?.[candidate.subject];
-    if (read === undefined) return candidate;
-    return { ...candidate, value: { hoursText: read.hoursText } };
-  }
+  // BKL-126 — the STORE_OPEN_NOW / STORE_HOURS / STORE_HOURS_FOR_DATE branches
+  // were removed: their values now bind at @claustrum/core claims-validate stage
+  // 4b from the investigator's recorded ledger entry (see the
+  // FirstPartyDerivationReads note) — same C6 outcome, no divergence window.
 
   if (candidate.type === "MENU_ITEM_PRICE") {
     // BKL-142 — bind the resolved item's `priceText` (the candidate `subject` is the

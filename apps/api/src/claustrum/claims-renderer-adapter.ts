@@ -42,6 +42,7 @@ import {
   checkRequiredClaimCompleteness,
   classifyRequestSpans,
   decomposeRequiredClaims,
+  isAllergenFamilyAsk,
 } from "./required-claim-decomposer.js";
 import { PROVABLY_EMPTY_KIND } from "./ibatexas-claims-kernel-deps.js";
 import { render } from "./renderer-from-claims.js";
@@ -268,6 +269,10 @@ export function createIbatexasClaimsRenderer(
         // specific handles. Absent → the generic clarify (byte-identical). Only ever
         // voiced on a CLARIFY terminal; ignored on every other terminal.
         context?.disambiguationCandidates ?? [],
+        // BKL-184 — an allergen-family ask landing on UNKNOWN renders the
+        // abstain-plus-handoff-offer variant (the classifier's own net decides;
+        // absent requestText → false → generic UNKNOWN, byte-identical).
+        isAllergenFamilyAsk(context?.requestText ?? ""),
       );
       return { text: result.text };
     },
