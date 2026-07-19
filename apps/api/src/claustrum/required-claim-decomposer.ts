@@ -301,8 +301,43 @@ export function classifyRequestSpans(text: string): SpanClass[] {
   // Precise discriminators that DISAMBIGUATE the polysemous "status" (A's F2 fix —
   // do NOT regress to a coarse `/pedido|cad[êe]|status/` rule that misroutes a
   // payment "status" to ORDER-only).
-  const paymentPhrasing = /pagamento|pago|pix|cobran[çc]a|pagar|paguei|aprovad/.test(t);
-  const orderPhrasing = /pedido|entrega|preparo|sa[ií]u|chegou|cad[êe]/.test(t);
+  //
+  // BKL-204 — a CAPABILITY / POLICY question about what the restaurant OFFERS
+  // ("vocês entregam no CEP X?", "aceitam vale-refeição?", "quanto custa a
+  // entrega?") mentions delivery/payment vocabulary but is NOT about the
+  // customer's OWN order/payment. Without a SELF-REFERENCE (a possessive or an
+  // explicit order number) it must NOT force the owner-scoped ORDER/PAYMENT read —
+  // for a ≥2-order customer that dead-ends in the candidates CLARIFY. Only the two
+  // DUAL-USE tokens carry the over-match: "entrega" (order) and "pix" (payment);
+  // every STRONG status token (`pedido`, `pago`, `pagamento`, `sa[ií]u`, `chegou`,
+  // `cad[êe]`, …) is unambiguously about an EXISTING order/payment and fires as
+  // before. A false positive only costs the model path (never a wrong render).
+  // A SELF-REFERENCE is a possessive attached to an order/payment/delivery NOUN
+  // ("meu pedido", "minha entrega", "meu pagamento") or an explicit order number —
+  // NOT any bare possessive ("minha região" is a coverage question, not the
+  // customer's order). It disables the capability guard so a genuine self-status
+  // ask with a dual token still fires.
+  const selfReference =
+    /(?<![a-z])(meu|minha|meus|minhas)\s+(pedido|pagamento|entrega|reserva)/.test(t) ||
+    /(?<![a-z])pedido\s*n?[ºo°.]?\s*#?\d{2,}|#\d{2,}/.test(t);
+  const capabilityQuestion =
+    !selfReference &&
+    /voc[êe]s\s+(entregam|aceit\w*|fazem)|fazem\s+entrega|entregam?\s+(em|no|na|pra|para|at[ée])|aceit\w*\s+(vale|ticket|refei|cart|pix|dinheiro|pagamento|d[ée]bito|cr[ée]dito)|quais?\s+(as\s+|os\s+)?(formas?|op[çc][õo]es)\s+de\s+pagamento|quanto\s+(custa|fica|sai|[ée]|vale)\s+(a\s+entrega|o\s+frete)|taxa\s+de\s+entrega|valor\s+d[oa]\s+(entrega|frete)/.test(
+      t,
+    );
+  // STRONG status tokens — unambiguously about an EXISTING order/payment, fire
+  // regardless of the capability shape. `pagamento` is strong EXCEPT in "formas /
+  // opções de pagamento" (a payment-METHODS acceptance question — a capability),
+  // where it names the concept, not the customer's payment.
+  const paymentMethodsQuestion = /(formas?|op[çc][õo]es)\s+de\s+pagamento/.test(t);
+  const orderStatusStrong = /pedido|preparo|sa[ií]u|chegou|cad[êe]/.test(t);
+  const paymentStatusStrong =
+    /pago|cobran[çc]a|pagar|paguei|aprovad/.test(t) ||
+    (/pagamento/.test(t) && !paymentMethodsQuestion);
+  // DUAL-USE tokens (also capability vocabulary) fire status ONLY when this is NOT
+  // a capability question.
+  const orderPhrasing = orderStatusStrong || (/entrega/.test(t) && !capabilityQuestion);
+  const paymentPhrasing = paymentStatusStrong || (/pix/.test(t) && !capabilityQuestion);
 
   if (orderPhrasing) classes.push("ORDER_STATUS_Q");
   if (paymentPhrasing) classes.push("PAYMENT_STATUS_Q");

@@ -52,6 +52,7 @@ import {
   deriveDisambiguationCandidates,
   presentPublicItemIds,
   publicPerItemBaseKey,
+  resolveNamedOwnedOrderSubject,
 } from "../classify-only-reads.js";
 import { ownerScopedBaseKey } from "../claim-registry.js";
 import {
@@ -897,5 +898,196 @@ describe("BKL-189 — ambiguousOwnedSets + deriveDisambiguationCandidates", () =
       ledger,
     );
     expect(out).toEqual([]);
+  });
+});
+
+// ── BKL-203 — the ≥2-owned customer NAMES an order (no dead-end) ─────────────────
+describe("BKL-203 — resolveNamedOwnedOrderSubject + the named-order bind", () => {
+  const NOW3 = 42_000;
+  const orderLedger = (
+    entries: ReadonlyArray<{ id: string; displayId?: number }>,
+  ): EvidenceLedger => {
+    const ledger = new EvidenceLedger("bkl203");
+    for (const { id, displayId } of entries) {
+      ledger.record({
+        key: `order_fulfillment_stage:${id}`,
+        value:
+          displayId === undefined
+            ? { orderId: id, fulfillmentStatus: "preparing" }
+            : { orderId: id, displayId, fulfillmentStatus: "preparing" },
+        source: "order.getById",
+        fetchedAt: NOW3,
+        sourceMode: "live",
+        taint: "TRUSTED",
+        originProvenance: "FIRST_PARTY",
+      });
+    }
+    return ledger;
+  };
+  const OWNED = ["order-A", "order-B"];
+  const ledger = orderLedger([
+    { id: "order-A", displayId: 933869 },
+    { id: "order-B", displayId: 988896 },
+  ]);
+
+  // ── the pure matcher ──
+  it("binds the single owned order whose displayId is named in the message", () => {
+    expect(
+      resolveNamedOwnedOrderSubject(
+        "order_fulfillment_stage",
+        OWNED,
+        ledger,
+        "status do pedido 933869?",
+      ),
+    ).toBe("order-A");
+  });
+
+  it("IDOR — a displayId NOT in the owned set never binds (SCN-036 stays honest)", () => {
+    // 111111 is some OTHER customer's order number — not in this customer's ledger.
+    expect(
+      resolveNamedOwnedOrderSubject(
+        "order_fulfillment_stage",
+        OWNED,
+        ledger,
+        "status do pedido 111111?",
+      ),
+    ).toBeUndefined();
+  });
+
+  it("no in-message reference → undefined (the ambiguity CLARIFY stands)", () => {
+    expect(
+      resolveNamedOwnedOrderSubject(
+        "order_fulfillment_stage",
+        OWNED,
+        ledger,
+        "como estão meus pedidos?",
+      ),
+    ).toBeUndefined();
+  });
+
+  it("a whole-token match only — '93386' does not match displayId 933869", () => {
+    expect(
+      resolveNamedOwnedOrderSubject(
+        "order_fulfillment_stage",
+        OWNED,
+        ledger,
+        "pedido 93386",
+      ),
+    ).toBeUndefined();
+  });
+
+  it("a non-order base (reservation) never resolves by displayId", () => {
+    expect(
+      resolveNamedOwnedOrderSubject(
+        "reservation_status",
+        ["res-A", "res-B"],
+        ledger,
+        "reserva 933869",
+      ),
+    ).toBeUndefined();
+  });
+
+  it("an entry without a numeric displayId is skipped (no false bind)", () => {
+    const noDisplay = orderLedger([
+      { id: "order-A" },
+      { id: "order-B", displayId: 988896 },
+    ]);
+    // Naming the ONLY labelable order still binds it…
+    expect(
+      resolveNamedOwnedOrderSubject(
+        "order_fulfillment_stage",
+        OWNED,
+        noDisplay,
+        "pedido 988896",
+      ),
+    ).toBe("order-B");
+    // …but the displayId-less order can never be named/bound.
+    expect(
+      resolveNamedOwnedOrderSubject(
+        "order_fulfillment_stage",
+        OWNED,
+        noDisplay,
+        "pedido 933869",
+      ),
+    ).toBeUndefined();
+  });
+
+  // ── the integration into buildClassifyOnlyCandidates ──
+  it("≥2 owned + NAMED order → binds the named subject, NO CLARIFY", () => {
+    const { candidates, forcedTerminal } = buildClassifyOnlyCandidates(
+      new Set(["ORDER_FULFILLMENT_STAGE"]),
+      {
+        customerId: "cust-A",
+        ownedByBaseKey: new Map([["order_fulfillment_stage", OWNED]]),
+      },
+      "conv-1",
+      ledger,
+      "status do pedido 988896?",
+    );
+    expect(forcedTerminal).toBeUndefined();
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]?.type).toBe("ORDER_FULFILLMENT_STAGE");
+    expect(candidates[0]?.subject).toBe("order-B");
+  });
+
+  it("≥2 owned + FOREIGN order number → still CLARIFY (IDOR-safe, no cross-owner bind)", () => {
+    const { candidates, forcedTerminal, ambiguousOwnedSets } =
+      buildClassifyOnlyCandidates(
+        new Set(["ORDER_FULFILLMENT_STAGE"]),
+        {
+          customerId: "cust-A",
+          ownedByBaseKey: new Map([["order_fulfillment_stage", OWNED]]),
+        },
+        "conv-1",
+        ledger,
+        "status do pedido 111111?",
+      );
+    expect(forcedTerminal).toBe("CLARIFY");
+    expect(candidates).toHaveLength(0);
+    expect(ambiguousOwnedSets).toHaveLength(1);
+  });
+
+  it("≥2 owned + NO message text (backward-compat call) → CLARIFY unchanged", () => {
+    const { forcedTerminal } = buildClassifyOnlyCandidates(
+      new Set(["ORDER_FULFILLMENT_STAGE"]),
+      {
+        customerId: "cust-A",
+        ownedByBaseKey: new Map([["order_fulfillment_stage", OWNED]]),
+      },
+      "conv-1",
+      ledger,
+      // messageText omitted
+    );
+    expect(forcedTerminal).toBe("CLARIFY");
+  });
+
+  it("payment_status also binds a named order (PAYMENT_STATUS subject IS the order)", () => {
+    const payLedger = new EvidenceLedger("bkl203-pay");
+    for (const [id, displayId] of [
+      ["order-A", 933869],
+      ["order-B", 988896],
+    ] as const) {
+      payLedger.record({
+        key: `payment_status:${id}`,
+        value: { orderId: id, displayId, status: "paid" },
+        source: "payment.getByOrderId",
+        fetchedAt: NOW3,
+        sourceMode: "live",
+        taint: "TRUSTED",
+        originProvenance: "FIRST_PARTY",
+      });
+    }
+    const { candidates, forcedTerminal } = buildClassifyOnlyCandidates(
+      new Set(["PAYMENT_STATUS"]),
+      {
+        customerId: "cust-A",
+        ownedByBaseKey: new Map([["payment_status", OWNED]]),
+      },
+      "conv-1",
+      payLedger,
+      "o pagamento do pedido 933869 foi aprovado?",
+    );
+    expect(forcedTerminal).toBeUndefined();
+    expect(candidates[0]?.subject).toBe("order-A");
   });
 });

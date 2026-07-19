@@ -473,6 +473,63 @@ describe("classifyRequestSpans — FE-D03 history spans (suppress the singular)"
   });
 });
 
+describe("classifyRequestSpans — BKL-204 capability questions don't force the owner read", () => {
+  it("delivery COVERAGE questions do NOT fire ORDER_STATUS_Q (capability, not the customer's order)", () => {
+    for (const text of [
+      "vocês entregam no CEP 13560-000?",
+      "fazem entrega no centro?",
+      "entregam na minha região?",
+      "vocês entregam pra Ibaté?",
+    ]) {
+      expect(classifyRequestSpans(text), text).not.toContain("ORDER_STATUS_Q");
+    }
+  });
+
+  it("delivery FEE questions do NOT fire ORDER_STATUS_Q", () => {
+    for (const text of [
+      "quanto custa a entrega?",
+      "quanto fica a entrega pro centro?",
+      "qual o valor da entrega?",
+      "qual a taxa de entrega?",
+    ]) {
+      expect(classifyRequestSpans(text), text).not.toContain("ORDER_STATUS_Q");
+    }
+  });
+
+  it("payment-method ACCEPTANCE questions do NOT fire PAYMENT_STATUS_Q", () => {
+    for (const text of [
+      "aceitam vale-refeição? e PIX parcelado?",
+      "aceitam pix?",
+      "quais as formas de pagamento?",
+      "vocês aceitam cartão de crédito?",
+    ]) {
+      expect(classifyRequestSpans(text), text).not.toContain("PAYMENT_STATUS_Q");
+    }
+  });
+
+  it("GENUINE self-status asks STILL fire (the possessive / order-number self-reference)", () => {
+    // A possessive keeps the DUAL tokens firing…
+    expect(classifyRequestSpans("cadê minha entrega?")).toContain("ORDER_STATUS_Q");
+    expect(classifyRequestSpans("a entrega do meu pedido saiu?")).toContain(
+      "ORDER_STATUS_Q",
+    );
+    expect(classifyRequestSpans("paguei no pix, meu pagamento caiu?")).toContain(
+      "PAYMENT_STATUS_Q",
+    );
+    // …and an explicit order number is a self-reference (BKL-203's own case).
+    expect(classifyRequestSpans("status do pedido 933869?")).toContain(
+      "ORDER_STATUS_Q",
+    );
+  });
+
+  it("STRONG tokens fire regardless of a capability-shaped tail (a named order wins)", () => {
+    // "meu pedido" (possessive) never reads as a capability question.
+    expect(classifyRequestSpans("cadê meu pedido, vocês entregam rápido?")).toContain(
+      "ORDER_STATUS_Q",
+    );
+  });
+});
+
 describe("required-claim decomposer — conservative-over-decomposing", () => {
   it("UNIONs across multiple span-classes (over-include, never under-include)", () => {
     const required = decomposeRequiredClaims(["PAYMENT_STATUS_Q", "PICKUP_Q"]);

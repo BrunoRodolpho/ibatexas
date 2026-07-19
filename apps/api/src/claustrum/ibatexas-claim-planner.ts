@@ -349,6 +349,10 @@ export function createIbatexasClaimPlanner(
           // turn's ledger (the investigator's own deterministic reads); owner
           // subjects keep riding `auth.ownedByBaseKey`, unchanged.
           input.ledger,
+          // BKL-203 — the request text lets a ≥2-owned-order customer bind an
+          // EXPLICITLY-NAMED order by displayId instead of dead-ending in the
+          // ambiguity CLARIFY (owner-scoped match — never cross-owner).
+          input.cognition.perception.text,
         );
         candidates = built.candidates;
         forcedTerminal = built.forcedTerminal;
