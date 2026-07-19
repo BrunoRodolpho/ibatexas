@@ -127,6 +127,26 @@ ibx dev restart web   # restart web without touching others
 ibx dev restart       # restart all app services
 ```
 
+### After pulling / merging (dependency refresh) — BKL-151
+
+Any merge that touches a `package.json` or `pnpm-lock.yaml` changes the dependency
+tree. Running the stack against a stale `node_modules` surfaces as an opaque
+downstream ghost (e.g. a claims-validate `TypeError` on a shape a newer dep
+added), not an obvious "deps are stale" message. **Always refresh in this order
+after pulling:**
+
+```bash
+git pull
+pnpm install          # re-sync node_modules to the updated lockfile
+ibx dev stop          # tear the running stack down
+ibx dev start         # bring it back up on the fresh deps
+```
+
+Guard rail: `ibx dev build` (the build-packages path) now **fails closed** when
+`pnpm-lock.yaml` is newer than `node_modules`, printing
+`pnpm-lock.yaml is newer than node_modules — … Run: pnpm install` instead of
+proceeding with a stale build. If you see that error, run `pnpm install` and retry.
+
 ---
 
 ## Local URLs
