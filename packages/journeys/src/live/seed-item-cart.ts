@@ -35,6 +35,7 @@
 //                          floor accepts it via the shared "frita" token)
 
 import { fileURLToPath } from "node:url"
+import { resolveDefaultSalesChannelId } from "./_store-channel.js"
 
 interface MedusaVariant {
   readonly id: string
@@ -143,13 +144,19 @@ async function seedItemCartOnce(
   opts: SeedItemCartOptions,
   onProgress: (line: string) => void,
 ): Promise<SeedItemCartResult> {
-  const { medusaStore, getRedisClient, rk } = await import("@ibatexas/tools")
+  const { medusaStore, medusaAdmin, getRedisClient, rk } = await import("@ibatexas/tools")
 
   const regionId = await resolveRegionId(medusaStore)
 
+  // BKL-193 defense-in-depth: pass the store's default channel explicitly so a
+  // multi-channel publishable key can't 400 the bare cart create.
+  const salesChannelId = await resolveDefaultSalesChannelId(medusaAdmin)
   const cartRes = (await medusaStore("/store/carts", {
     method: "POST",
-    body: JSON.stringify({ region_id: regionId }),
+    body: JSON.stringify({
+      region_id: regionId,
+      ...(salesChannelId === undefined ? {} : { sales_channel_id: salesChannelId }),
+    }),
   })) as { cart?: MedusaCart }
   const cartId = cartRes.cart?.id
   if (cartId === undefined) {
