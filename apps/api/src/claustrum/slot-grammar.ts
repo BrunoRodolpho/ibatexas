@@ -173,6 +173,8 @@ export const MENU_ITEM_PRICE = "MENU_ITEM_PRICE";
 export const MENU_ITEM_CONTENTS = "MENU_ITEM_CONTENTS";
 /** BKL-142 — the PUBLIC menu-WIDE overview read (deterministic first-party listing scalar). */
 export const MENU_OVERVIEW = "MENU_OVERVIEW";
+/** BKL-214 — the PUBLIC dietary-preference read (pre-composed tagged-product list). */
+export const MENU_DIETARY = "MENU_DIETARY";
 /** BKL-136 — the PUBLIC store-info read (owner-attested address/parking scalar). */
 export const STORE_INFO = "STORE_INFO";
 
@@ -353,6 +355,15 @@ export const VALIDATED_TEMPLATES: Readonly<Record<string, Template>> = {
     claimType: MENU_OVERVIEW,
     posture: "validated",
     slots: [prop(MENU_OVERVIEW, "overviewText")],
+  },
+  // BKL-214 — the dietary-preference validated template. ONE proposition slot bound
+  // 1:1 to the C6 `dietaryText` (the deterministic tagged-product list composed in
+  // menu-item-resolver.ts `composeDietaryOptionsText`), never model-authored. A positive
+  // preference list only — the scalar NEVER contains a "não contém X" allergen assurance.
+  [MENU_DIETARY]: {
+    claimType: MENU_DIETARY,
+    posture: "validated",
+    slots: [prop(MENU_DIETARY, "dietaryText")],
   },
   // BKL-136 — the store-info validated template. ONE proposition slot bound 1:1 to
   // the C6 valueBinding FIELD (`infoText`, claim-registry.ts) — the deterministic

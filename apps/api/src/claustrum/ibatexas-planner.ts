@@ -105,6 +105,8 @@ import { resolveStoreInfoText } from "./store-info-resolver.js";
 import {
   resolveMenuItem,
   resolveMenuOverviewText,
+  resolveDietaryOptionsText,
+  detectDietaryPreferenceTags,
   composeMenuPriceText,
   composeMenuContentsText,
   type ResolvedMenuItem,
@@ -1690,6 +1692,21 @@ export function createIbatexasPlanner(
         });
         if (overviewText !== undefined) menuOverview = { overviewText };
       }
+      // BKL-214 — MENU_DIETARY derivation read (per-TAG): the SAME per-tag `dietaryText`
+      // the investigator records under `menu:dietary:{tag}`, memoized on turnId+tag so
+      // this REUSES the investigator's faceted read → byte-equal value (C6 by
+      // construction). No tagged product → undefined → C6 ABSTAIN → honest UNKNOWN.
+      const menuDietary: Record<string, { dietaryText: string }> = {};
+      if (menuCandidateTypes.has("MENU_DIETARY")) {
+        for (const tag of detectDietaryPreferenceTags(state.perception.text)) {
+          const dietaryText = await resolveDietaryOptionsText(state.turnId, tag, {
+            channel: state.perception.channel,
+            sessionId: state.conversationId,
+            customerId: authPrincipal,
+          });
+          if (dietaryText !== undefined) menuDietary[tag] = { dietaryText };
+        }
+      }
       // BKL-136 — STORE_INFO derivation read (FIXED subject): the SAME `infoText`
       // the investigator records under `store:info`, memoized on turnId so this
       // REUSES the investigator's ONE Medusa admin read → byte-equal value (C6
@@ -1702,6 +1719,7 @@ export function createIbatexasPlanner(
       const derivedCandidates = deriveCandidateValues(candidates, {
         menuItemPrice,
         menuItemContents,
+        ...(Object.keys(menuDietary).length > 0 ? { menuDietary } : {}),
         ...(menuOverview !== undefined ? { menuOverview } : {}),
         ...(storeInfo !== undefined ? { storeInfo } : {}),
       });

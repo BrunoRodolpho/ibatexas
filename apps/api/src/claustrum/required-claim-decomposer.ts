@@ -71,6 +71,7 @@ export type SpanClass =
   | "MENU_ITEM_PRICE_Q"
   | "MENU_ITEM_CONTENTS_Q"
   | "MENU_OVERVIEW_Q"
+  | "MENU_DIETARY_Q"
   | "STORE_INFO_Q"
   | "ORDER_STATUS_Q"
   | "PAYMENT_STATUS_Q"
@@ -136,6 +137,11 @@ export const REQUIRED_CLAIM_CLOSURE = {
   // per-item menu spans). Empty catalog → ABSENT evidence → honest UNKNOWN; never demotes
   // a co-occurring answer. Public (`not_applicable`) → never Triad-scoped.
   MENU_OVERVIEW_Q: ["MENU_OVERVIEW"],
+  // BKL-214 — a dietary-PREFERENCE question ("tem opção vegetariana?") requires the
+  // MENU_DIETARY claim. Its own span, no unrelated span force-requires it, so it
+  // auto-enrols into RELEVANCE_GOVERNED_TYPES like the other menu claims. Allergen-
+  // adjacent diets (glúten/lactose) never reach this span (ALLERGEN_FAMILY_RE gate).
+  MENU_DIETARY_Q: ["MENU_DIETARY"],
   // BKL-136 — a store-location/parking question requires ONLY its own PUBLIC claim
   // (like the menu spans). Absent/blank store metadata → ABSENT evidence → honest
   // UNKNOWN; never demotes a co-occurring answer. Public (`not_applicable`) → never
@@ -323,6 +329,22 @@ export function classifyRequestSpans(text: string): SpanClass[] {
   // the per-ITEM contents span ("o que vem no combo") — the overview owns it.
   if (notOrderScoped && !mutationImperative && !isMenuOverview && !ALLERGEN_FAMILY_RE.test(t) && /o que (vem|tem|acompanha)|do que (é|e) (é |)feit|que vem (n|em)|composi[çc][ãa]o d/.test(t)) {
     classes.push("MENU_ITEM_CONTENTS_Q");
+  }
+
+  // BKL-214 — a dietary-PREFERENCE question ("tem opção vegetariana?", "prato vegano?").
+  // RESTRICTED to pure-preference tags (vegetariano/vegano) — matches ONLY those stems.
+  // GATED on `!ALLERGEN_FAMILY_RE`: an allergen-adjacent diet ("sem glúten", "sem
+  // lactose", "contém…") trips the allergen net and routes to the carved-out conservative
+  // abstain path (BKL-143/123), NEVER a rendered dietary list. `!mutationImperative` keeps
+  // "tira o vegetariano do carrinho" on the mutation path. Over-inclusion is DEMOTE-ONLY
+  // safe: no tagged product → ABSENT evidence → honest UNKNOWN, never a fabricated option.
+  if (
+    notOrderScoped &&
+    !mutationImperative &&
+    !ALLERGEN_FAMILY_RE.test(t) &&
+    /vegetarian[ao]?|\bvegan[ao]?\b/.test(t)
+  ) {
+    classes.push("MENU_DIETARY_Q");
   }
 
   // BKL-136 — a store-LOCATION/parking question ("onde fica o restaurante?", "qual o

@@ -143,6 +143,14 @@ export const CLAIM_REGISTRY = [
   "MENU_ITEM_PRICE",
   "MENU_ITEM_CONTENTS",
   "MENU_OVERVIEW",
+  // BKL-214 — the PUBLIC dietary-PREFERENCE read ("tem opção vegetariana?"). PUBLIC
+  // per-item like MENU_ITEM_PRICE, but the "item" is the dietary TAG (vegetariano/
+  // vegano) resolved deterministically from the utterance; C6-bound to a pre-composed
+  // pt-BR list of tagged product titles (`dietaryText`). RESTRICTED to pure-preference
+  // tags — `sem_gluten`/`sem_lactose` are allergen-adjacent (BKL-143/123 conservative
+  // gate) and never reach this claim (they route to the honest-abstain path). A tag is a
+  // positive PREFERENCE attribute, NEVER a "não contém X" allergen assurance.
+  "MENU_DIETARY",
   // BKL-136 — the PUBLIC store-info read ("onde fica o restaurante?" / "tem
   // estacionamento?"). The STORE_HOURS/MENU_OVERVIEW fixed-subject public shape:
   // single key `store:info`, owned by nobody, C6-bound to a DETERMINISTICALLY
@@ -808,6 +816,38 @@ export const REGISTRY_SPECS = {
     ],
     valueBinding: { key: "menu:item_contents", path: ["contentsText"] },
   },
+  // BKL-214 — MENU_DIETARY: the PUBLIC dietary-preference read. Same PUBLIC per-item
+  // shape as MENU_ITEM_PRICE/CONTENTS (perResourceKey, ownershipPolicy not_applicable),
+  // but the "resource id" is the dietary TAG (vegetariano/vegano). C6-bound to the
+  // pre-composed `dietaryText` (first-party tagged-product titles, menu-item-resolver.ts).
+  // Same deliberately-unread `menu:item_unpublished` falsifier disposition. Empty tag →
+  // ABSENT evidence → honest UNKNOWN (never a fabricated "we have vegetarian options").
+  MENU_DIETARY: {
+    kind: "read_claim",
+    minSourceIntegrity: "structured",
+    requiredEvidence: [
+      {
+        key: "menu:dietary",
+        ownershipPolicy: "not_applicable",
+        freshnessPolicy: { kind: "cacheable", ttl: 300_000 },
+        sourceIntegrity: "structured",
+        provenancePolicy: "preserve",
+      },
+    ],
+    customerScoped: false,
+    perResourceKey: true,
+    falsifierComplete: true,
+    falsifiers: [
+      {
+        key: "menu:item_unpublished",
+        ownershipPolicy: "not_applicable",
+        freshnessPolicy: "must_read_this_turn",
+        sourceIntegrity: "structured",
+        provenancePolicy: "preserve",
+      },
+    ],
+    valueBinding: { key: "menu:dietary", path: ["dietaryText"] },
+  },
   // BKL-142 — MENU_OVERVIEW: the menu-WIDE overview ("o que tem no cardápio?"). PUBLIC
   // and FIXED-SUBJECT like STORE_HOURS (single key, NOT perResourceKey) — the evidence
   // is a deterministic listing of the whole catalog, not a per-item read. C6-bound to a
@@ -1133,6 +1173,11 @@ export interface FirstPartyDerivationReads {
   /** BKL-142 — the per-item CONTENTS read(s) for THIS turn, keyed by resolved product
    *  id; the SAME product the investigator records under `menu:item_contents:{id}`. */
   readonly menuItemContents?: Readonly<Record<string, { readonly contentsText?: unknown }>>;
+  /** BKL-214 — the per-TAG dietary read(s) for THIS turn, keyed by the dietary tag
+   *  (vegetariano/vegano); the SAME `dietaryText` the investigator records under
+   *  `menu:dietary:{tag}`, so the derived value is byte-equal (C6 passes by
+   *  construction). Absent tag → value stays undefined → C6 ABSTAIN → honest UNKNOWN. */
+  readonly menuDietary?: Readonly<Record<string, { readonly dietaryText?: unknown }>>;
   /** BKL-142 — the menu-WIDE overview read for THIS turn (fixed subject, single-key,
    *  like STORE_HOURS). The SAME `overviewText` the investigator records under
    *  `menu:overview`, so the derived value is byte-equal (C6 passes by construction).
@@ -1191,6 +1236,15 @@ export function deriveBoundValue(
     const read = reads.menuItemContents?.[candidate.subject];
     if (read === undefined) return candidate;
     return { ...candidate, value: { contentsText: read.contentsText } };
+  }
+
+  if (candidate.type === "MENU_DIETARY") {
+    // BKL-214 — PUBLIC per-item keyed by the dietary tag (candidate.subject). Bind
+    // `dietaryText` from the per-tag read map. Absent (no tagged product) → value stays
+    // undefined → C6 ABSTAINs → honest UNKNOWN, never a fabricated dietary list.
+    const read = reads.menuDietary?.[candidate.subject];
+    if (read === undefined) return candidate;
+    return { ...candidate, value: { dietaryText: read.dietaryText } };
   }
 
   if (candidate.type === "MENU_OVERVIEW") {

@@ -155,7 +155,7 @@ describe("classifyOnlyRequiredTypes — the eligibility gate", () => {
   });
 
   it("every eligible type is registered with a DETERMINISTIC subject path (owner-scoped, public per-item, or fixed-key)", () => {
-    expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.size).toBe(11);
+    expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.size).toBe(12);
     expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.has("ORDER_FULFILLMENT_STAGE")).toBe(true);
     expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.has("PAYMENT_STATUS")).toBe(true);
     expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.has("RESERVATION_STATUS")).toBe(true);
@@ -172,6 +172,8 @@ describe("classifyOnlyRequiredTypes — the eligibility gate", () => {
     expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.has("MENU_ITEM_PRICE")).toBe(true);
     expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.has("MENU_ITEM_CONTENTS")).toBe(true);
     expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.has("MENU_OVERVIEW")).toBe(true);
+    // BKL-214 — the dietary-preference read (public per-item by the dietary tag).
+    expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.has("MENU_DIETARY")).toBe(true);
     expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.has("STORE_INFO")).toBe(true);
     // The SAFETY carve-out is structural: MENU_ITEM_ALLERGENS is NOT eligible
     // (no decomposer span ever requires it — allergen asks keep the model path).
