@@ -35,6 +35,7 @@ export type RenderPrecedenceMechanism =
   | "claims_escalate_or_suppression" // rule 1 — safety-first / no-leak
   | "live_action_decision" // rule 2 — the deterministic kernel reply wins
   | "validated_render" // rule 3 — never withhold a validated fact
+  | "committed_mutation_action" // rule 3b — a committed mutation's action reply wins over a degenerate render
   | "safe_degrade" // rule 4 — a question degrades honestly
   | "conversational_prose"; // rule 4 — a statement's prose stands
 
@@ -106,9 +107,31 @@ export function decideRenderPrecedence(
     return { decision: "keep_draft", mechanism: "live_action_decision" };
   }
 
-  // Rule 3 — a validated terminal render: never withhold a validated fact.
+  // Rule 3 — a validated terminal render: never withhold a validated fact. Checked
+  // BEFORE rule 3b so a genuinely-validated read on a mixed read+act turn still wins.
   if (claims.terminal === "RENDER") {
     return { decision: "render", mechanism: "validated_render" };
+  }
+
+  // Rule 3b (BKL-225) — a COMMITTED MUTATION's deterministic action reply is the
+  // deliverable and must WIN over a DEGENERATE (non-RENDER) claims render. An
+  // EXECUTE / REWRITE carrying ≥1 envelope committed a mutation this turn; the
+  // responder's deterministic action render (customer-action-render.ts / BKL-215,
+  // ops-action-render.ts / BKL-149 — never a model author) states WHAT THE VERB DID
+  // and must not be clobbered by the UNKNOWN/CLARIFY render the mutation turn's own
+  // (read-less) claims degrade to. The lattice predated those deterministic action
+  // renders, so EXECUTE/REWRITE fell through rule 2 to here — the exact gap that
+  // let a resumed amend EXECUTE ("sim" → the parked add executes) deliver a
+  // degenerate render instead of "Pronto! Adicionei o item ao seu pedido." Rule 1
+  // (suppression/ESCALATE) and rule 3 (validated read) are already peeled off above,
+  // so this only ever fires on the safe degenerate-render case. Mirrors rule 2's
+  // REFUSE-with-envelopes: a live mutation decision's deterministic reply is the
+  // turn's deliverable.
+  if (
+    (ctx.decision.kind === "EXECUTE" || ctx.decision.kind === "REWRITE") &&
+    ctx.plan.envelopes.length >= 1
+  ) {
+    return { decision: "keep_draft", mechanism: "committed_mutation_action" };
   }
 
   // Rule 4 — a conversational degrade: the request SHAPE decides render-safe vs prose.
