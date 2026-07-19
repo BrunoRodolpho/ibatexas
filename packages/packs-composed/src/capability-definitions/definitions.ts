@@ -205,15 +205,16 @@ const CUSTOMER_ONBOARDING_GUARD_REFS: readonly CapabilityGuardRef[] = [
 ] as const
 
 const WHATSAPP_GUARD_REFS: readonly CapabilityGuardRef[] = [
-  { phase: "state", name: "requireWindowOpen" },
+  // BKL-177: the state-phase `requireWindowOpen`, auth-phase
+  // `refuseUnprojectedStaffRouting`, and business-phase `validateTemplate` /
+  // `sanitizeCustomerToStaff` / `executeMessageSend` / `executeTemplateSend`
+  // guards were retired alongside whatsapp.message.send + whatsapp.template.send
+  // (the pack's stateGuards phase is now empty; live egress runs through
+  // twilio.message.send). The surviving guards below serve the handover /
+  // append / handoff-request kinds.
   // authGuards[0] `requireTenantBindingGuard` omitted — see guard-resolution.ts.
-  { phase: "auth", name: "refuseUnprojectedStaffRouting" },
-  { phase: "business", name: "validateTemplate" },
   { phase: "business", name: "refuseExcessiveHandoff" },
   { phase: "business", name: "confirmRepeatedHandoff" },
-  { phase: "business", name: "sanitizeCustomerToStaff" },
-  { phase: "business", name: "executeMessageSend" },
-  { phase: "business", name: "executeTemplateSend" },
   { phase: "business", name: "executeSessionHandover" },
   { phase: "business", name: "executeConversationAppend" },
   { phase: "business", name: "executeHandoffRequest" },
@@ -710,11 +711,12 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
   { kind: "payment.status.transition", pack: "ibatexas/pack-payments", mutating: true, tier: "identity" },
   { kind: "payment.status.reconcile", pack: "ibatexas/pack-payments", mutating: true, tier: "identity" },
 
-  // ── pack-whatsapp (5 — matches WHATSAPP_INTENT_KINDS / whatsappPack.intents order) ──
-  // Subscriber-emitted (cart-intelligence / handoff-subscriber /
-  // notification.send) — module doc: "none of which are LLM-proposable".
-  { kind: "whatsapp.message.send", pack: "ibatexas/pack-whatsapp", mutating: true, tier: "identity" },
-  { kind: "whatsapp.template.send", pack: "ibatexas/pack-whatsapp", mutating: true, tier: "identity" },
+  // ── pack-whatsapp (3 — matches WHATSAPP_INTENT_KINDS / whatsappPack.intents order) ──
+  // BKL-177: whatsapp.message.send + whatsapp.template.send RETIRED (dead
+  // duplicates with no emitter; live WhatsApp egress runs through
+  // twilio.message.send, packages/tools/src/twilio). The surviving kinds are
+  // subscriber/system-emitted (session.handover / conversation.append) or the
+  // customer-proposable whatsapp.handoff.request.
   { kind: "whatsapp.session.handover", pack: "ibatexas/pack-whatsapp", mutating: true, tier: "identity" },
   { kind: "conversation.message.append", pack: "ibatexas/pack-whatsapp", mutating: true, tier: "identity" },
   {

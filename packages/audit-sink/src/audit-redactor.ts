@@ -261,7 +261,7 @@ export interface AuditRedactorOptions {
   /**
    * Per-intent-kind hook. Returns a list of field paths (dot-joined or
    * bracket-notation) to redact regardless of name match. Used by Packs
-   * that ship semi-structured payloads (e.g. `whatsapp.message.send.body`).
+   * that ship semi-structured payloads (e.g. `twilio.message.send.body`).
    *
    * Today implemented inline via {@link INTENT_KIND_FIELD_RULES}; the option
    * is exposed for future per-deployment overrides without code changes.
@@ -306,8 +306,9 @@ function classifyRedactorError(err: unknown): AuditRedactorFailureReason {
 //
 //   1. `whatsapp.session.handover.*` — free-form reason text that often quotes
 //      a customer's last message (which may contain CPF/email).
-//   2. `whatsapp.message.send.body` — the actual outbound message body. The
-//      template name is fine; the rendered body is not.
+//   2. `twilio.message.send.body` — the actual outbound message body (the
+//      live WhatsApp egress wrapper). The template name is fine; the
+//      rendered body is not.
 //   3. `customer.anonymize.customerId` — already covered by HASH_FIELDS, but
 //      listed here to document the intent.
 //
@@ -339,15 +340,11 @@ function classifyRedactorError(err: unknown): AuditRedactorFailureReason {
 //      hope the regex catches every leak.
 
 export const INTENT_KIND_FIELD_RULES: Readonly<Record<string, ReadonlyArray<string>>> = {
-  // ── WhatsApp body, variables, and handover reason fields ───────────────
-  // F-5: WhatsAppMessageSendPayload's variable map is `templateVariables`,
-  // not `variables`. We keep `variables` as an alias for defense-in-depth
-  // against any payload variant that uses the shorter name.
-  "whatsapp.message.send": ["body", "text", "templateVariables", "variables"],
-  // F-5: WhatsAppTemplateSendPayload's variable map is `templateVariables`.
-  // `to` is hashed via HASH_FIELDS if it ever lands as a phone; the rule
-  // here covers the rendered variable values.
-  "whatsapp.template.send": ["templateVariables", "variables"],
+  // ── WhatsApp handover reason / append body fields ──────────────────────
+  // BKL-177: the whatsapp.message.send + whatsapp.template.send rules were
+  // retired with those kinds. The identical body/text/variable redaction for
+  // LIVE WhatsApp egress lives on the `twilio.message.send` wrapper rule
+  // below (exempt `twilio.` prefix) — no live PII vector is uncovered.
   // F-5: the staff-driven takeover kind. `reason`/`lastMessage` carry
   // free-form text that often quotes the customer.
   "whatsapp.session.handover": ["reason", "lastMessage"],
@@ -356,8 +353,8 @@ export const INTENT_KIND_FIELD_RULES: Readonly<Record<string, ReadonlyArray<stri
   "whatsapp.handoff.request": ["reason"],
   // F-6: persistence-side conversation append. The `body` field carries
   // the literal customer-typed text (often CPF/email/name fragments). The
-  // wire-egress `whatsapp.message.send.body` was already covered; this is
-  // the missing archival sibling per pack-whatsapp's W5-6 design.
+  // live wire-egress `twilio.message.send.body` is covered below; this is
+  // the archival sibling per pack-whatsapp's W5-6 design.
   "conversation.message.append": ["body", "text"],
 
   // ── Payment-domain free-form reasons (F-6) ──────────────────────────────
@@ -1032,7 +1029,7 @@ function walk(value: unknown, path: string, ctx: WalkContext): unknown {
 
 // String leaf. If this string is at a path that the per-intent-kind rule names,
 // it gets the full `[REDACTED]` treatment regardless of content. This is how we
-// scrub `whatsapp.message.send.body` even when the body is a fully-formed
+// scrub `twilio.message.send.body` even when the body is a fully-formed
 // sentence with no PII regex match. Otherwise the regex/length defenses run.
 function walkString(value: string, path: string, ctx: WalkContext): string {
   if (path.length > 0 && pathMatchesKindRule(path, ctx.kindFieldPaths)) {

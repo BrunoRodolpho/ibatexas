@@ -247,61 +247,6 @@
       }
     },
     {
-      "note": "whatsapp: template send as system actor (deep basis chain)",
-      "envelope": {
-        "version": 2,
-        "kind": "whatsapp.template.send",
-        "payload": {
-          "to": "+5511999990000",
-          "template": "order_update",
-          "params": [
-            "ord_golden_01"
-          ]
-        },
-        "createdAt": "2026-06-12T00:00:00.000Z",
-        "nonce": "golden-whatsapp.template.send-v1",
-        "actor": {
-          "principal": "system",
-          "sessionId": "golden:replay-baseline"
-        },
-        "taint": "SYSTEM",
-        "intentHash": "32b4bc47acbe6bd3e81fa441923e1d923486029c61b661021545f87d0e7af289"
-      },
-      "decision": {
-        "kind": "REFUSE",
-        "refusal": {
-          "kind": "SECURITY",
-          "code": "guard_panic",
-          "userFacing": "System is temporarily unavailable.",
-          "detail": "Guard panic in auth phase[0]: TypeError: Cannot read properties of undefined (reading 'tenantId')"
-        },
-        "basis": [
-          {
-            "category": "schema",
-            "code": "version_supported"
-          },
-          {
-            "category": "state",
-            "code": "transition_valid"
-          },
-          {
-            "category": "taint",
-            "code": "level_permitted"
-          },
-          {
-            "category": "kernel",
-            "code": "guard_panic",
-            "detail": {
-              "phase": "auth",
-              "index": 0,
-              "errorName": "TypeError",
-              "message": "Cannot read properties of undefined (reading 'tenantId')"
-            }
-          }
-        ]
-      }
-    },
-    {
       "note": "onboarding: customer create (taint leg)",
       "envelope": {
         "version": 2,

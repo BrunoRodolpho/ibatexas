@@ -26,17 +26,12 @@
  *
  * # Intent surface (this Pack)
  *
- *   - whatsapp.message.send       — sys, s. Free-form WhatsApp text. The
- *                                    24-hour customer-initiated window
- *                                    rule (Meta/Twilio Business API)
- *                                    restricts non-template messages to
- *                                    sessions where the customer wrote
- *                                    in the last 24h. Outside the window,
- *                                    REFUSE — only templated messages
- *                                    are permitted by Twilio.
- *   - whatsapp.template.send      — sys. Templated WhatsApp message that
- *                                    bypasses the 24h window. SYSTEM-only
- *                                    (no LLM-proposable path).
+ *   (BKL-177: `whatsapp.message.send` + `whatsapp.template.send` were
+ *   RETIRED — dead duplicates with no emitter; the live WhatsApp egress
+ *   runs through `twilio.message.send` (packages/tools/src/twilio). The
+ *   24h-window + template + customer→staff sanitization guards that served
+ *   those kinds were removed with them.)
+ *
  *   - whatsapp.session.handover   — sys. Staff bridge. SYSTEM-only;
  *                                    initiated by a staff command or the
  *                                    handoff subscriber. The Pack
@@ -65,11 +60,8 @@
 import { createSystemTaintPolicy } from "@adjudicate/primitives"
 
 export type WhatsAppIntentKind =
-  | "whatsapp.message.send"
-  | "whatsapp.template.send"
   | "whatsapp.session.handover"
-  // W5-6: persistence-side append (system-actor). Distinct from
-  // `whatsapp.message.send` (which is the wire-egress event). The
+  // W5-6: persistence-side append (system-actor). The
   // conversation-archiver subscriber emits this for archival; the LLM
   // never proposes it.
   | "conversation.message.append"
@@ -261,18 +253,14 @@ export interface WhatsAppState {
 // ── Taint policy ────────────────────────────────────────────────────────
 
 /**
- * SYSTEM-only kinds: `whatsapp.template.send` (only the templated
- * outreach + cart-intelligence jobs may emit it) and
- * `whatsapp.session.handover` (only the staff bridge / handoff subscriber
- * emits it). The LLM must never forge a template message or a handover.
- *
- * `whatsapp.message.send` is UNTRUSTED-tolerant — the LLM can propose a
- * customer-bound message, but the window + sanitization guards in
- * `policies.ts` decide whether to admit / rewrite / refuse it.
+ * SYSTEM-only kinds: `whatsapp.session.handover` (only the staff bridge /
+ * handoff subscriber emits it) and `conversation.message.append` (only the
+ * conversation-archiver subscriber emits it). The LLM must never forge a
+ * handover or an archival append. `whatsapp.handoff.request` is the sole
+ * UNTRUSTED-tolerant kind — the customer can propose a governed handoff.
  */
 export const whatsappTaintPolicy = createSystemTaintPolicy({
   systemOnlyKinds: [
-    "whatsapp.template.send",
     "whatsapp.session.handover",
     "conversation.message.append",
   ],

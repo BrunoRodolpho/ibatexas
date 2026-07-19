@@ -159,8 +159,6 @@ export const RESERVATION_INTENT_KINDS = [
 // Mirrors WhatsAppIntentKind (packages/pack-whatsapp/src/types.ts),
 // projected from CAPABILITY_DEFINITIONS — see definitions.ts for per-kind rationale.
 export const WHATSAPP_INTENT_KINDS = [
-  "whatsapp.message.send",
-  "whatsapp.template.send",
   "whatsapp.session.handover",
   "conversation.message.append",
   "whatsapp.handoff.request",

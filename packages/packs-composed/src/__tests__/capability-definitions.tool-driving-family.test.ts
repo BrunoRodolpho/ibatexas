@@ -49,10 +49,10 @@ import type { CapabilityDefinition, CapabilityPackId } from "../capability-defin
 // retired 5 payment.charge.*) → 63 (BKL-177 PR-A retired order.cancel.system +
 // reservation.waitlist.notify) ──
 
-describe("count assertions — 63 KNOWN / 20 CHAT_DRIVABLE pinned against the projections (FE-T21 AC, FE-T09 D-a update; BKL-176 + BKL-177)", () => {
-  it("KNOWN_INTENT_KINDS has exactly 63 kinds", () => {
-    // 70 → 65 (BKL-176: 5 dead payment.charge.*) → 63 (BKL-177 PR-A: 2 kinds).
-    expect(KNOWN_INTENT_KINDS.size).toBe(63)
+describe("count assertions — 61 KNOWN / 20 CHAT_DRIVABLE pinned against the projections (FE-T21 AC, FE-T09 D-a update; BKL-176 + BKL-177)", () => {
+  it("KNOWN_INTENT_KINDS has exactly 61 kinds", () => {
+    // 70 → 65 (BKL-176: 5 dead payment.charge.*) → 63 (BKL-177 PR-A: 2 kinds) → 61 (PR-B: whatsapp.message.send + template.send).
+    expect(KNOWN_INTENT_KINDS.size).toBe(61)
   })
 
   it("CHAT_DRIVABLE_TOOL_KINDS has exactly 20 kinds, and generateChatDrivableToolKinds(CAPABILITY_DEFINITIONS) reproduces it byte-for-byte", () => {
@@ -77,9 +77,9 @@ describe("count assertions — 63 KNOWN / 20 CHAT_DRIVABLE pinned against the pr
     expect(source).not.toMatch(/The 18 chat-drivable/)
   })
 
-  it("the 59-kind CapabilityDefinition registry + KNOWN_INTENT_KINDS' 4 external kinds (3 pix + 1 loyalty) account for all 63", () => {
-    // 66 → 61 (BKL-176: 5 dead payment.charge.*) → 59 (BKL-177 PR-A: 2 kinds).
-    expect(CAPABILITY_DEFINITIONS).toHaveLength(59)
+  it("the 57-kind CapabilityDefinition registry + KNOWN_INTENT_KINDS' 4 external kinds (3 pix + 1 loyalty) account for all 61", () => {
+    // 66 → 61 (BKL-176: 5 dead payment.charge.*) → 59 (BKL-177 PR-A: 2 kinds) → 57 (PR-B: 2 whatsapp kinds).
+    expect(CAPABILITY_DEFINITIONS).toHaveLength(57)
   })
 })
 
