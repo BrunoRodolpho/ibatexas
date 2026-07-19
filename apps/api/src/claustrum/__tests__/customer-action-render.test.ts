@@ -64,7 +64,38 @@ describe("renderCustomerActionAnswer — BKL-215 amend success (false-FAILURE fi
   });
 });
 
+describe("renderCustomerActionAnswer — BKL-231 reservation.modify success", () => {
+  it("reservation.modify with newPartySize → grounded 'alterada para N pessoas' (was NO reply on resume)", () => {
+    const text = renderCustomerActionAnswer(
+      executed("reservation.modify", { reservationId: "r1", newPartySize: 4 }),
+    )!;
+    expect(text).toBe("Pronto! Sua reserva foi alterada para 4 pessoas.");
+  });
+
+  it("reservation.modify newPartySize=1 → singular 'pessoa'", () => {
+    const text = renderCustomerActionAnswer(
+      executed("reservation.modify", { reservationId: "r1", newPartySize: 1 }),
+    )!;
+    expect(text).toBe("Pronto! Sua reserva foi alterada para 1 pessoa.");
+  });
+
+  it("reservation.modify time-only (newTimeSlotId, no party) → grounded generic, NO fabricated time", () => {
+    const text = renderCustomerActionAnswer(
+      executed("reservation.modify", { reservationId: "r1", newTimeSlotId: "slot_20h" }),
+    )!;
+    expect(text).toBe("Pronto! Sua reserva foi atualizada.");
+    expect(text).not.toContain("slot_20h");
+    expect(text).not.toMatch(/\d{1,2}h|\d{1,2}:\d{2}/); // never invents a clock time
+  });
+});
+
 describe("renderCustomerActionAnswer — byte-identical fall-through (scope guard)", () => {
+  it("reservation.cancel → undefined (its model-prose success draft is the working precedent, unchanged)", () => {
+    expect(
+      renderCustomerActionAnswer(executed("reservation.cancel", { reservationId: "r1" })),
+    ).toBeUndefined();
+  });
+
   it("a non-amend committed kind (order.item.add) → undefined (model path unchanged)", () => {
     expect(
       renderCustomerActionAnswer(
