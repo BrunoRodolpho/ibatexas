@@ -184,3 +184,79 @@ describe("POST /api/admin/ops/chat — FE-D13 honest stale-resume", () => {
     }
   });
 });
+
+describe("POST /api/admin/ops/chat — FE-D32 soft-affirmative restatement", () => {
+  // A FRESH park: stamped just now (well within the confirm-park TTL).
+  function freshPark(kind: string, userPrompt: string): ParkedEnvelope {
+    return {
+      envelope: { kind, intentHash: "fresh1fresh1" } as ParkedEnvelope["envelope"],
+      confirmationToken: "tok-fresh",
+      userPrompt,
+      parkedAt: new Date(Date.now() - 5000).toISOString(), // 5s ago → fresh
+    };
+  }
+
+  it("a bare 'pode' against a FRESH park → SOFT_AFFIRM_RESTATE (executed:false), handleTurn SKIPPED, park NOT pruned", async () => {
+    mockOpenCapsule.mockResolvedValue({
+      session: { unpark: mockUnpark },
+      loadedSession: {
+        id: "system:staff:owner1",
+        pendingConfirmations: [
+          freshPark("payment.refund.issue", "Confirmar reembolso de R$ 50,00?"),
+        ],
+      },
+    });
+    const server = await buildServer(OWNER);
+    try {
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/admin/ops/chat",
+        payload: { message: "pode" },
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.decision).toBe("SOFT_AFFIRM_RESTATE");
+      expect(body.executed).toBe(false);
+      expect(body.reply).toContain("Confirmar reembolso de R$ 50,00?"); // restates the prompt
+      expect(body.reply).toContain('"sim"'); // asks for an explicit confirm
+      // The kernel turn was SKIPPED, and the FRESH park was NOT pruned — it survives
+      // so a follow-up "sim" executes it.
+      expect(mockHandleTurn).not.toHaveBeenCalled();
+      expect(mockUnpark).not.toHaveBeenCalled();
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("a subsequent explicit 'sim' against the SAME fresh park runs the normal turn (executes)", async () => {
+    mockOpenCapsule.mockResolvedValue({
+      loadedSession: {
+        id: "system:staff:owner1",
+        pendingConfirmations: [
+          freshPark("payment.refund.issue", "Confirmar reembolso de R$ 50,00?"),
+        ],
+      },
+    });
+    mockHandleTurn.mockResolvedValue({
+      response: { text: "Reembolso confirmado." },
+      decision: { kind: "EXECUTE" },
+      acted: { kind: "executed" },
+      plan: { envelopes: [] },
+    });
+    const server = await buildServer(OWNER);
+    try {
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/admin/ops/chat",
+        payload: { message: "sim" },
+      });
+      expect(res.statusCode).toBe(200);
+      // An explicit confirm is NOT restated — it runs the normal loop (which resumes
+      // the still-fresh park).
+      expect(res.json().decision).not.toBe("SOFT_AFFIRM_RESTATE");
+      expect(mockHandleTurn).toHaveBeenCalledTimes(1);
+    } finally {
+      await server.close();
+    }
+  });
+});

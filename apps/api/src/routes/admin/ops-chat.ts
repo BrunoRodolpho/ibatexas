@@ -40,6 +40,7 @@ import {
   loadOpsHistory,
 } from "../../ops/ops-history.js";
 import {
+  opsSoftAffirmativeRestateNotice,
   opsStaleResumeNotice,
   pruneExpiredOpsParks,
 } from "../../ops/ops-system-channel.js";
@@ -191,6 +192,39 @@ export async function adminOpsChatRoutes(server: FastifyInstance): Promise<void>
           return reply.send({
             reply: staleNotice,
             decision: "STALE_PARK_EXPIRED",
+            executed: false,
+            proposedKinds: [],
+          });
+        }
+
+        // FE-D32 — a bare SOFT affirmative ("pode"/"ok"/…) aimed at a still-FRESH
+        // park is too weak to EXECUTE: restate the parked action and ask for an
+        // explicit "sim"/"confirmo". Do NOT prune/unpark — the fresh park survives
+        // so a follow-up "sim" executes it. The turn is SKIPPED (no turn_trace row).
+        const softRestate = opsSoftAffirmativeRestateNotice({
+          text: message,
+          pendingConfirmations: pending,
+          nowIso: inbound.receivedAt,
+        });
+        if (softRestate !== undefined) {
+          request.log.warn(
+            {
+              event: "ops_chat.soft_affirm_restate",
+              staff_id: staffId,
+              pending: pending.length,
+            },
+            "[ops-chat] soft affirmative on a fresh park — restating, awaiting explicit confirm, skipping the turn",
+          );
+          try {
+            await appendOpsMessages(staffId, [
+              { role: "assistant", content: softRestate },
+            ]);
+          } catch (err) {
+            request.log.warn(err, "[ops-chat] soft-restate history append failed (non-fatal)");
+          }
+          return reply.send({
+            reply: softRestate,
+            decision: "SOFT_AFFIRM_RESTATE",
             executed: false,
             proposedKinds: [],
           });

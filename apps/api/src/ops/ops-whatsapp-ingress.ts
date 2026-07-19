@@ -51,6 +51,7 @@ import { acquireAgentLock, releaseAgentLock } from "../whatsapp/session.js";
 import { sendText } from "../whatsapp/client.js";
 import { appendOpsMessages, buildOpsHistoryBlock } from "./ops-history.js";
 import {
+  opsSoftAffirmativeRestateNotice,
   opsStaleResumeNotice,
   pruneExpiredOpsParks,
 } from "./ops-system-channel.js";
@@ -304,6 +305,37 @@ async function runOpsTurn(
           log.warn(err, "[ops-wa] stale-notice history append failed (non-fatal)");
         }
         await deps.sendReply(staleNotice);
+        return;
+      }
+
+      // FE-D32 — a bare SOFT affirmative ("pode"/"ok"/…) aimed at a still-FRESH
+      // in-scope park is too weak to EXECUTE: restate the parked action and ask for
+      // an explicit "sim"/"confirmo". Do NOT prune/unpark — the fresh park survives
+      // so a follow-up "sim" executes it. The turn is SKIPPED (no turn_trace row).
+      const softRestate = opsSoftAffirmativeRestateNotice({
+        text: command,
+        pendingConfirmations: pending,
+        nowIso: inbound.receivedAt,
+        excludedKinds: waExcluded,
+      });
+      if (softRestate !== undefined) {
+        log.warn(
+          {
+            event: "ops_wa.soft_affirm_restate",
+            staff_id: staffId,
+            phone_hash: hash,
+            pending: pending.length,
+          },
+          "[ops-wa] soft affirmative on a fresh park — restating, awaiting explicit confirm, skipping the turn",
+        );
+        try {
+          await deps.appendHistory(staffId, [
+            { role: "assistant", content: softRestate },
+          ]);
+        } catch (err) {
+          log.warn(err, "[ops-wa] soft-restate history append failed (non-fatal)");
+        }
+        await deps.sendReply(softRestate);
         return;
       }
 
