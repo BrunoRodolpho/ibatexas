@@ -29,7 +29,13 @@
 // live e2e usage is deferred (owner skip-live directive).
 //
 //   tsx packages/journeys/src/live/seed-owned-order.ts --customer-id <domainCustomerId>
-//     [--label happy-path] [--customer-phone +55...] [--dry-run]
+//     [--label happy-path] [--customer-phone +55...] [--dry-run] [--fresh-window]
+//
+// BKL-187 `--fresh-window`: uniquifies the label per invocation so the
+// idempotent (customer,label) REUSE is bypassed and a brand-new order +
+// projection row are created NOW — createdAt lands inside the 5-min customer
+// cancel window (PONR reads the projection's own created_at). Governed: no
+// timestamp surgery, just a fresh row.
 //   -> {"orderId":"order_...","displayId":...,"itemCount":4,
 //       "customerId":"<domainCustomerId>","seedKey":"bkl141-owned-...","reused":false}
 //
@@ -43,6 +49,7 @@
 import { fileURLToPath } from "node:url"
 import {
   OWNED_ORDER_ITEM_PLAN,
+  OWNED_ORDER_SEED_KEY_FIELD,
   buildOwnedOrderDraftPayload,
   buildOwnedOrderDryRunPlan,
   deriveOwnedOrderSeedKey,
@@ -73,6 +80,16 @@ interface MedusaProduct {
 export interface SeedOwnedOrderOptions extends OwnedOrderSeedOptions {
   /** IO-free plan only — no Medusa / prisma / network. Returns a dry-run result. */
   readonly dryRun?: boolean
+  /**
+   * BKL-187 — guarantee an order INSIDE the customer cancel window (PONR).
+   * The PONR check reads the PROJECTION row's `createdAt` (`@default(now())`),
+   * so a genuinely FRESH seed is in-window by construction — the only reason a
+   * "fresh" run landed stale was the (customer,label) idempotent REUSE of an
+   * old order. This flag uniquifies the label per invocation (time-suffixed),
+   * bypassing reuse so a NEW Medusa order + projection are created NOW. Fully
+   * governed: no timestamp surgery anywhere.
+   */
+  readonly freshWindow?: boolean
   readonly onProgress?: (line: string) => void
 }
 
@@ -155,10 +172,23 @@ export async function seedOwnedOrder(opts: SeedOwnedOrderOptions): Promise<SeedO
   if (customerId === "") {
     throw new SeedOwnedOrderError("seedOwnedOrder: --customer-id must be non-empty")
   }
-  const seedKey = deriveOwnedOrderSeedKey(customerId, opts.label)
+  // BKL-187 — a fresh-window seed must NEVER reuse: uniquify the label so the
+  // deterministic seedKey misses every prior order and a brand-new projection
+  // row (createdAt=now, inside PONR) is created. The suffix is second-granular
+  // ISO (sanitized to the seedKey charset) — unique per invocation in practice
+  // and readable in the returned seedKey.
+  const effectiveLabel =
+    opts.freshWindow === true
+      ? `${opts.label ?? "fresh"}-w${new Date().toISOString().replace(/[:.\-]/g, "").slice(0, 18)}`
+      : opts.label
+  // Thread the effective label through EVERY derivation (lookup, dry-run plan,
+  // draft metadata) so the stamped metadata.seedKey and the returned seedKey
+  // stay one value — never a lookup/stamp mismatch.
+  const seedOpts: OwnedOrderSeedOptions = { ...opts, label: effectiveLabel }
+  const seedKey = deriveOwnedOrderSeedKey(customerId, effectiveLabel)
 
   if (opts.dryRun === true) {
-    const plan = buildOwnedOrderDryRunPlan(opts)
+    const plan = buildOwnedOrderDryRunPlan(seedOpts)
     onProgress(`  ✓ [dry-run] owned-order plan for customer ${customerId} (seedKey ${seedKey})`)
     return {
       orderId: `dry-run:${seedKey}`,
@@ -176,10 +206,27 @@ export async function seedOwnedOrder(opts: SeedOwnedOrderOptions): Promise<SeedO
   const { prisma, toOrderProjectionData } = await import("@ibatexas/domain")
 
   // ── Idempotency: re-find a prior seed by its deterministic seedKey ──────────
-  const existing = (await medusaAdmin(ownedOrderLookupPath(seedKey))) as {
-    orders?: Array<{ id: string; display_id?: number }>
+  // BKL-187 hardening (smoke-caught): on some stacks Medusa's `metadata[...]`
+  // query filter does NOT filter (returns an arbitrary order), so a blind
+  // `orders[0]` reuse is SPURIOUS — it silently returns someone else's stale
+  // order (exactly the stale-age trap this flag exists to break). Two guards:
+  //   1. freshWindow skips the lookup entirely (its key is unique-per-run —
+  //      there is nothing legitimate to re-find).
+  //   2. every reuse VERIFIES the candidate's stamped metadata.seedKey equals
+  //      the derived key (the lookup already requests `metadata` in fields).
+  let existingOrder: { id: string; display_id?: number } | undefined
+  if (opts.freshWindow !== true) {
+    const existing = (await medusaAdmin(ownedOrderLookupPath(seedKey))) as {
+      orders?: Array<{
+        id: string
+        display_id?: number
+        metadata?: Record<string, unknown>
+      }>
+    }
+    existingOrder = existing.orders?.find(
+      (o) => o.metadata?.[OWNED_ORDER_SEED_KEY_FIELD] === seedKey,
+    )
   }
-  const existingOrder = existing.orders?.[0]
   if (existingOrder !== undefined) {
     const itemCount = await ensureProjection(medusaAdmin, prisma, toOrderProjectionData, existingOrder.id, customerId)
     onProgress(
@@ -205,7 +252,7 @@ export async function seedOwnedOrder(opts: SeedOwnedOrderOptions): Promise<SeedO
     })),
   )
 
-  const draftPayload = buildOwnedOrderDraftPayload(opts, { regionId, salesChannelId, lineItems })
+  const draftPayload = buildOwnedOrderDraftPayload(seedOpts, { regionId, salesChannelId, lineItems })
   const draftRes = (await medusaAdmin("/admin/draft-orders", {
     method: "POST",
     body: JSON.stringify(draftPayload),
@@ -313,6 +360,7 @@ interface CliArgs {
   customerName?: string
   customerPhone?: string
   dryRun: boolean
+  freshWindow: boolean
 }
 
 function parseArgs(argv: readonly string[]): CliArgs {
@@ -322,6 +370,7 @@ function parseArgs(argv: readonly string[]): CliArgs {
   let customerName: string | undefined
   let customerPhone: string | undefined
   let dryRun = false
+  let freshWindow = false
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
     const next = (): string => {
@@ -349,12 +398,15 @@ function parseArgs(argv: readonly string[]): CliArgs {
       case "--dry-run":
         dryRun = true
         break
+      case "--fresh-window":
+        freshWindow = true
+        break
       default:
         throw new Error(`unknown argument: ${a}`)
     }
   }
   if (customerId === undefined) throw new Error("--customer-id is required")
-  return { customerId, label, customerEmail, customerName, customerPhone, dryRun }
+  return { customerId, label, customerEmail, customerName, customerPhone, dryRun, freshWindow }
 }
 
 async function main(): Promise<void> {
@@ -376,6 +428,7 @@ async function main(): Promise<void> {
     customerName: args.customerName,
     customerPhone: args.customerPhone,
     dryRun: args.dryRun,
+    freshWindow: args.freshWindow,
     onProgress: (line) => process.stderr.write(`${line}\n`),
   })
   process.stdout.write(`${JSON.stringify(result)}\n`)
