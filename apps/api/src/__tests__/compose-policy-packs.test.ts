@@ -26,7 +26,11 @@ import {
   IBATEXAS_ADOPTER_BUSINESS_GUARDS,
   type ErasedPack,
 } from "../claustrum/compose-policy-packs.js";
-import { paymentTransitionBandGuard, staffRoleGuard } from "../claustrum/staff-role-guard.js";
+import {
+  orderStatusTransitionBandGuard,
+  paymentTransitionBandGuard,
+  staffRoleGuard,
+} from "../claustrum/staff-role-guard.js";
 
 const ownGuard: Guard<string, unknown, unknown> = function ownBusinessGuard() {
   return null;
@@ -80,7 +84,7 @@ describe("buildIbatexasPolicyPacks", () => {
     }
   });
 
-  it("prepends the adopter AUTH guards (kill switch, agent scope, per-agent budgets, staff-role, then payment banding) to every pack's auth phase", () => {
+  it("prepends the adopter AUTH guards (kill switch, agent scope, per-agent budgets, staff-role, then payment + order banding) to every pack's auth phase", () => {
     for (const p of composed) {
       const auth = (p.policy as PolicyBundle<string, unknown, unknown>).authGuards;
       // T3-5: a killed agent REFUSEs before scope/budget are even considered.
@@ -94,8 +98,10 @@ describe("buildIbatexasPolicyPacks", () => {
       expect(auth[2 + agentBudgetGuards.length]).toBe(staffRoleGuard);
       // BKL-075: the payment.status.transition banding companion follows staffRole.
       expect(auth[2 + agentBudgetGuards.length + 1]).toBe(paymentTransitionBandGuard);
+      // BKL-131: the order.status.transition (reject) banding companion follows it.
+      expect(auth[2 + agentBudgetGuards.length + 2]).toBe(orderStatusTransitionBandGuard);
       // The pack's own auth guard follows, unmoved.
-      expect(auth[2 + agentBudgetGuards.length + 2]).toBe(ownAuthGuard);
+      expect(auth[2 + agentBudgetGuards.length + 3]).toBe(ownAuthGuard);
       expect(auth).toHaveLength(IBATEXAS_ADOPTER_AUTH_GUARDS.length + 1);
     }
   });
@@ -118,6 +124,9 @@ describe("buildIbatexasPolicyPacks", () => {
     expect(
       readGuardMetadata(bundle.authGuards[2 + agentBudgetGuards.length + 1]!)?.name,
     ).toBe("paymentTransitionBand");
+    expect(
+      readGuardMetadata(bundle.authGuards[2 + agentBudgetGuards.length + 2]!)?.name,
+    ).toBe("orderStatusTransitionBand");
   });
 
   it("preserves state/taint/default and pack identity untouched", () => {

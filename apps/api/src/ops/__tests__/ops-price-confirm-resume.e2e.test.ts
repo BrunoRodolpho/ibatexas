@@ -172,6 +172,28 @@ describe("NEW-004 price-change-by-message — end-to-end park → confirm-resume
     expect(sink.hasBasis("product.price.set", "received")).toBe(true);
   });
 
+  it("FE-D32: a bare 'pode' after a park does NOT execute the egress (too soft); an explicit 'sim' still does", async () => {
+    const { deps, session, spies } = buildHarness({
+      toolCalls: [PRICE_CALL("picanha", 9500), PRICE_CALL("picanha", 9500)],
+    });
+    const sessionId = "system:staff:owner1";
+
+    // Turn 1 — parks for confirmation.
+    const t1 = await runTurn(deps, "OWNER", "owner1", "muda o preço da picanha pra 95");
+    expect(t1.decision.kind).toBe("REQUEST_CONFIRMATION");
+    expect(session.parksFor(sessionId).length).toBeGreaterThanOrEqual(1);
+
+    // Turn 2 — a bare SOFT affirmative does NOT resume the park (matchOpsReplyToParked
+    // is explicit-only, FE-D32): the money egress NEVER runs on "pode".
+    await runTurn(deps, "OWNER", "owner1", "pode");
+    expect(spies.medusaAdjudicated).not.toHaveBeenCalled();
+
+    // Turn 3 — an explicit "sim, confirma" resumes → EXECUTE → the egress runs ONCE.
+    const t3 = await runTurn(deps, "OWNER", "owner1", "sim, confirma");
+    expect(t3.decision.kind).toBe("EXECUTE");
+    expect(spies.medusaAdjudicated).toHaveBeenCalledTimes(1);
+  });
+
   it("'não' after a park → deny → unparked, the egress NEVER runs", async () => {
     const { deps, session, spies } = buildHarness({
       toolCalls: [PRICE_CALL("picanha", 9500)],

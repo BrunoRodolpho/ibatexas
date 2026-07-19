@@ -38,8 +38,21 @@ import { SystemChannel } from "../claustrum/system-channel.js";
 
 // pt-BR lexicons — word-boundary-anchored so a token never matches inside a
 // larger word. Diacritic variants are listed explicitly (staff type both).
-const AFFIRMATIVE_RE =
-  /\b(sim|confirmo|confirmar|confirma|confirmado|pode|ok|okay|isso|claro|aprovo|aprovar|aprovado|manda|beleza)\b/i;
+//
+// FE-D32 — the affirmative lexicon is SPLIT by strength. Only an EXPLICIT confirm
+// ("sim"/"confirmo"/… — an unambiguous yes) or a `#hash` may EXECUTE a parked
+// money/ops action; a bare conversational SOFT affirmative ("pode"/"ok"/"manda"/…)
+// is too weak to execute — the ingress RESTATES the parked action and asks for an
+// explicit confirm. The BROAD union (either) is kept for the ambiguity check and
+// the expired-park resume DETECTION (which must still recognize a soft "pode" as an
+// attempted resume of an already-expired park).
+const EXPLICIT_CONFIRM_RE =
+  /\b(sim|confirmo|confirmar|confirma|confirmado|aprovo|aprovar|aprovado)\b/i;
+const SOFT_AFFIRMATIVE_RE = /\b(pode|ok|okay|isso|claro|manda|beleza)\b/i;
+/** BROAD affirmative = explicit confirm OR soft affirmative (the pre-FE-D32 union). */
+function hasBroadAffirmative(text: string): boolean {
+  return EXPLICIT_CONFIRM_RE.test(text) || SOFT_AFFIRMATIVE_RE.test(text);
+}
 // NEGATIVE lexicon — refusals ONLY. The bare preposition "para" ("para o jantar",
 // "para R$ 89") and the imperative "deixa" ("deixa disponível") were REMOVED: they
 // are over-broad and match ordinary FRESH ops commands — including the WS6 guided
@@ -187,6 +200,11 @@ function inferResolutionFromText(text: string): UserResolution {
 export function matchOpsReplyToParked(
   text: string,
   parked: ReadonlyArray<ParkedEnvelope>,
+  // FE-D32 — "explicit" (default): only "sim"/"confirmo"/… or `#hash` CONFIRM (the
+  // execute path). "broad": the pre-FE-D32 union incl. soft "pode"/"ok"/… — used
+  // ONLY by the expired-park resume DETECTION, which must still recognize a soft
+  // affirmative as an attempted resume of an already-expired park.
+  affirmativeMode: "explicit" | "broad" = "explicit",
 ): ParkedMatch | null {
   if (typeof text !== "string" || text.length === 0) return null;
   if (!parked || parked.length === 0) return null;
@@ -225,10 +243,17 @@ export function matchOpsReplyToParked(
   // AMBIGUOUS and resolves to NEITHER (`null`): the parked money action is never
   // executed on a refusal, and `null` keeps the park (the conductor unparks only
   // on `deny`/`defer`, so the pending confirmation is NOT silently abandoned).
-  const hasAffirmative = AFFIRMATIVE_RE.test(text);
+  // AMBIGUITY uses the BROAD lexicon so a soft affirmative MIXED with a refusal
+  // ("não, pode deixar", "ok, cancela") is still NEITHER (money-safety — never
+  // execute a refusal, keep the park). The CONFIRM branch uses the MODE's lexicon:
+  // EXPLICIT for the execute path (a soft affirmative ALONE → null → the ingress
+  // restates it, FE-D32), BROAD for the expired-resume detection path.
+  const hasBroadAff = hasBroadAffirmative(text);
+  const hasConfirmAffirmative =
+    affirmativeMode === "broad" ? hasBroadAff : EXPLICIT_CONFIRM_RE.test(text);
   const hasNegative = NEGATIVE_RE.test(text);
-  if (hasAffirmative && hasNegative) return null; // ambiguous → keep the park
-  if (hasAffirmative) return { parked: mostRecent, userResolution: "confirm" };
+  if (hasBroadAff && hasNegative) return null; // ambiguous → keep the park
+  if (hasConfirmAffirmative) return { parked: mostRecent, userResolution: "confirm" };
   if (hasNegative) return { parked: mostRecent, userResolution: "deny" };
   return null;
 }
@@ -259,7 +284,7 @@ export const OPS_AMBIGUOUS_REPLY_CLARIFY_PTBR =
 export function isAmbiguousOpsReply(text: string): boolean {
   if (typeof text !== "string" || text.length === 0) return false;
   if (DEFER_RE.test(text)) return false; // a defer phrase is a valid resolution
-  return AFFIRMATIVE_RE.test(text) && NEGATIVE_RE.test(text);
+  return hasBroadAffirmative(text) && NEGATIVE_RE.test(text);
 }
 
 // ── FE-D13: honest stale-resume restatement ──────────────────────────────────
@@ -299,7 +324,9 @@ export function expiredOpsParkNotice(
 ): string | undefined {
   if (expiredParks.length === 0) return undefined;
   if (!Number.isFinite(Date.parse(nowIso))) return undefined;
-  const match = matchOpsReplyToParked(text, expiredParks);
+  // BROAD detection — a soft "pode" aimed at an EXPIRED park is still an attempted
+  // resume the operator must be told expired (FE-D32 keeps the expiry path broad).
+  const match = matchOpsReplyToParked(text, expiredParks, "broad");
   if (!match) return undefined;
   return buildExpiredOpsParkNotice(match.parked.userPrompt);
 }
@@ -338,9 +365,66 @@ export function opsStaleResumeNotice(input: {
     ttlSeconds,
   );
   // A fresh in-scope park the reply resumes takes precedence — never shadow a
-  // legitimate fresh confirm with an expiry notice.
-  if (matchOpsReplyToParked(input.text, fresh) !== null) return undefined;
+  // legitimate fresh confirm (or a fresh soft-affirmative that will RESTATE, FE-D32)
+  // with an expiry notice. BROAD so a fresh soft "pode" also suppresses the notice.
+  if (matchOpsReplyToParked(input.text, fresh, "broad") !== null) return undefined;
   return expiredOpsParkNotice(input.text, expired, input.nowIso);
+}
+
+// ── FE-D32: soft-affirmative restatement ──────────────────────────────────────
+// A bare conversational affirmative ("pode"/"ok"/"manda"/"beleza" — NOT "sim"/
+// "confirmo"/#hash) aimed at a still-FRESH in-scope money/ops park is too weak to
+// EXECUTE the action. Instead the ingress RESTATES the parked action and asks for
+// an explicit confirm. Deterministic pt-BR (Hard Rule #4), mirroring the FE-D13
+// stale-resume surfaces — but note it does NOT prune/unpark the fresh park (the
+// park survives, so a follow-up "sim" executes it).
+
+const SOFT_AFFIRM_RESTATE_PREFIX_PTBR = "Só confirmando — você quer que eu execute ";
+const SOFT_AFFIRM_RESTATE_SUFFIX_PTBR =
+  '? Responda "sim" ou "confirmo" para eu executar.';
+
+/** Build the soft-affirmative restatement from the park's stored kernel prompt. */
+function buildSoftAffirmativeRestateNotice(userPrompt: string): string {
+  return `${SOFT_AFFIRM_RESTATE_PREFIX_PTBR}"${userPrompt}"${SOFT_AFFIRM_RESTATE_SUFFIX_PTBR}`;
+}
+
+/**
+ * FE-D32 — the ingress orchestrator for the soft-affirmative restatement. A bare
+ * SOFT affirmative ("pode"/"ok"/"manda"/… — NOT an explicit "sim"/"confirmo" or a
+ * `#hash`) aimed at a still-FRESH in-scope park RESTATES that park's stored prompt
+ * and asks for an explicit confirm — it never executes and never unparks (the fresh
+ * park survives so a later "sim" executes it). Returns the restatement, or
+ * `undefined` for: an explicit confirm / `#hash` / negative / defer (resolved by the
+ * normal loop), a mixed/ambiguous reply (handled by {@link isAmbiguousOpsReply}), a
+ * reply with no fresh in-scope park, or an ordinary command. `excludedKinds` drops
+ * out-of-scope parks (BKL-086 parity). PURE; clock = `nowIso` (never `Date.now()`).
+ */
+export function opsSoftAffirmativeRestateNotice(input: {
+  readonly text: string;
+  readonly pendingConfirmations: ReadonlyArray<ParkedEnvelope>;
+  readonly nowIso: string;
+  readonly excludedKinds?: ReadonlySet<string>;
+  readonly ttlSeconds?: number;
+}): string | undefined {
+  if (typeof input.text !== "string" || input.text.length === 0) return undefined;
+  if (!Number.isFinite(Date.parse(input.nowIso))) return undefined;
+  // Soft-ONLY: anything the normal loop resolves (explicit confirm / #hash /
+  // negative / defer) is deferred to it; a non-soft utterance is an ordinary command.
+  if (EXPLICIT_CONFIRM_RE.test(input.text)) return undefined;
+  if (HASH_PREFIX_RE.test(input.text)) return undefined;
+  if (NEGATIVE_RE.test(input.text)) return undefined;
+  if (DEFER_RE.test(input.text)) return undefined;
+  if (!SOFT_AFFIRMATIVE_RE.test(input.text)) return undefined;
+
+  const excluded = input.excludedKinds ?? EMPTY_EXCLUDED_KINDS;
+  const ttlSeconds = input.ttlSeconds ?? getOpsConfirmParkTtlSeconds();
+  const inScope = input.pendingConfirmations.filter(
+    (p) => !excluded.has(String(p.envelope.kind)),
+  );
+  const { fresh } = partitionOpsParksByFreshness(inScope, input.nowIso, ttlSeconds);
+  const mostRecent = pickMostRecentlyParked(fresh);
+  if (!mostRecent) return undefined; // no fresh in-scope park to restate
+  return buildSoftAffirmativeRestateNotice(mostRecent.userPrompt);
 }
 
 // ── FE-D33: zombie-park pruning ──────────────────────────────────────────────

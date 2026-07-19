@@ -39,7 +39,11 @@ import {
   createAgentKillSwitchGuard,
   createAgentScopeGuard,
 } from "./agent-guards.js";
-import { paymentTransitionBandGuard, staffRoleGuard } from "./staff-role-guard.js";
+import {
+  orderStatusTransitionBandGuard,
+  paymentTransitionBandGuard,
+  staffRoleGuard,
+} from "./staff-role-guard.js";
 
 /** A first-party pack with its K/P/S/C generics erased for heterogeneous storage. */
 export type ErasedPack = PackV0<string, unknown, unknown, unknown>;
@@ -352,6 +356,9 @@ export const IBATEXAS_ADOPTER_AUTH_GUARDS: ReadonlyArray<
   // BKL-075 — payload-aware banding companion (payment.status.transition force/
   // waive → OWNER); composed alongside staffRoleGuard on the conductor router.
   paymentTransitionBandGuard,
+  // BKL-131 — payload-aware banding companion (order.status.transition → canceled,
+  // a staff reject, requires MANAGER+); composed alongside staffRoleGuard.
+  orderStatusTransitionBandGuard,
 ];
 
 /**

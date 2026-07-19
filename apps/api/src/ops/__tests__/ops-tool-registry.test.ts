@@ -284,7 +284,7 @@ describe("order.note.add executor — POST-adjudication note write", () => {
     expect(extras).toEqual({ author: "staff", authorId: "staff_7" });
   });
 
-  it("preserves an explicit isInternal:false (default applies only when omitted)", async () => {
+  it("forces isInternal to true even when the payload carries false (FE-D30 — ops notes always internal)", async () => {
     const { deps, writeAdjudicatedNote } = makeDeps();
     const tool = toolByKind(deps, "order.note.add");
     await tool.execute(
@@ -292,7 +292,7 @@ describe("order.note.add executor — POST-adjudication note write", () => {
       capsule("staff_7"),
     );
     const [payload] = writeAdjudicatedNote.mock.calls[0]!;
-    expect((payload as { isInternal?: boolean }).isInternal).toBe(false);
+    expect((payload as { isInternal?: boolean }).isInternal).toBe(true);
   });
 
   it("omits authorId when the Capsule carries no staffId (never fabricates one)", async () => {

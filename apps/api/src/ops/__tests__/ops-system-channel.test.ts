@@ -13,6 +13,7 @@ import {
   matchOpsReplyToParked,
   opsConfirmParkExpiresAt,
   opsExpiredInScopeParks,
+  opsSoftAffirmativeRestateNotice,
   opsStaleResumeNotice,
   OPS_AMBIGUOUS_REPLY_CLARIFY_PTBR,
   OpsSystemChannel,
@@ -43,10 +44,17 @@ describe("matchOpsReplyToParked — pt-BR ops confirm-resume matcher", () => {
     expect(m?.parked).toBe(P2); // most recent by parkedAt
   });
 
-  it.each(["sim", "confirma", "confirmo", "pode", "ok", "isso", "beleza", "manda"])(
-    "affirmative lexicon: %s → confirm",
+  it.each(["sim", "confirma", "confirmo", "aprovo"])(
+    "EXPLICIT affirmative lexicon: %s → confirm (FE-D32)",
     (word) => {
       expect(matchOpsReplyToParked(word, [P1])?.userResolution).toBe("confirm");
+    },
+  );
+
+  it.each(["pode", "ok", "isso", "beleza", "manda"])(
+    "SOFT affirmative lexicon: %s → null (FE-D32 — too weak to execute; the ingress restates)",
+    (word) => {
+      expect(matchOpsReplyToParked(word, [P1])).toBeNull();
     },
   );
 
@@ -217,10 +225,17 @@ describe("matchOpsReplyToParked — money-execution safety", () => {
     },
   );
 
-  it.each(["sim", "sim, confirma", "confirmo", "pode confirmar", "ok", "beleza"])(
-    "a clean unambiguous confirm still resolves to confirm: %s",
+  it.each(["sim", "sim, confirma", "confirmo", "pode confirmar"])(
+    "a clean EXPLICIT confirm still resolves to confirm: %s",
     (text) => {
       expect(matchOpsReplyToParked(text, [P1])?.userResolution).toBe("confirm");
+    },
+  );
+
+  it.each(["ok", "beleza"])(
+    "a bare SOFT affirmative no longer resolves to confirm (FE-D32): %s",
+    (text) => {
+      expect(matchOpsReplyToParked(text, [P1])).toBeNull();
     },
   );
 
@@ -453,6 +468,52 @@ describe("OpsSystemChannel.matchToParked — FE-D13 TTL freshness gate", () => {
     );
     expect(m?.parked).toBe(P3);
     expect(m?.userResolution).toBe("confirm");
+  });
+});
+
+describe("opsSoftAffirmativeRestateNotice — FE-D32 soft-affirmative restatement", () => {
+  const FRESH_NOW = "2026-07-04T12:00:30.000Z"; // 30s after P1's park → fresh
+
+  it.each(["pode", "ok", "manda", "beleza", "isso", "claro"])(
+    "a bare SOFT affirmative on a fresh park RESTATES (names the prompt, asks for explicit): %s",
+    (text) => {
+      const notice = opsSoftAffirmativeRestateNotice({
+        text,
+        pendingConfirmations: [P1],
+        nowIso: FRESH_NOW,
+      });
+      expect(notice).toBeDefined();
+      expect(notice).toContain(P1.userPrompt); // "Confirmar?"
+      expect(notice).toContain('"sim"'); // asks for an explicit confirm
+    },
+  );
+
+  it.each(["sim", "confirmo", "sim, confirma", "#a4b8c1"])(
+    "an EXPLICIT confirm / #hash is deferred to the normal loop (undefined — it executes): %s",
+    (text) => {
+      expect(
+        opsSoftAffirmativeRestateNotice({ text, pendingConfirmations: [P1], nowIso: FRESH_NOW }),
+      ).toBeUndefined();
+    },
+  );
+
+  it.each(["não", "cancela", "amanhã", "muda o preço da costela para 89"])(
+    "a negative / defer / ordinary command → undefined (normal loop): %s",
+    (text) => {
+      expect(
+        opsSoftAffirmativeRestateNotice({ text, pendingConfirmations: [P1], nowIso: FRESH_NOW }),
+      ).toBeUndefined();
+    },
+  );
+
+  it("no fresh in-scope park → undefined (soft reply is a fresh utterance; the stale path owns expired parks)", () => {
+    expect(
+      opsSoftAffirmativeRestateNotice({ text: "pode", pendingConfirmations: [], nowIso: FRESH_NOW }),
+    ).toBeUndefined();
+    const EXPIRED_NOW = "2026-07-04T13:00:00.000Z";
+    expect(
+      opsSoftAffirmativeRestateNotice({ text: "pode", pendingConfirmations: [P1], nowIso: EXPIRED_NOW }),
+    ).toBeUndefined();
   });
 });
 

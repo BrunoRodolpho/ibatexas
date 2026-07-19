@@ -518,10 +518,12 @@ async function executeMenuSpecialSet(
 
 /**
  * Executor for `order.note.add` — the POST-adjudication write via
- * `writeAdjudicatedNote`. Staff notes are INTERNAL by default: `isInternal` is
- * defaulted true on the PAYLOAD passed to the writer (the envelope is untouched)
- * when the model omitted it. `authorId` is the closure/Capsule staffId, never a
- * model field.
+ * `writeAdjudicatedNote`. FE-D30 — ops-plane notes are ALWAYS INTERNAL:
+ * `isInternal` is forced `true` on the PAYLOAD passed to the writer (the envelope
+ * is untouched), never read from the model / ops-plane payload (its extraction
+ * channel was dropped from `legacyPayloadChannels`). A public note is a
+ * deterministic staff-UI toggle on the admin HTTP path only. `authorId` is the
+ * closure/Capsule staffId, never a model field.
  */
 async function executeNote(
   deps: OpsToolRegistryDeps,
@@ -530,8 +532,10 @@ async function executeNote(
 ): Promise<AddNoteResult> {
   const notePayload: OrderNoteAddPayload = {
     ...payload,
-    // Staff notes default to internal; set on the payload, not the envelope.
-    isInternal: payload.isInternal ?? true,
+    // FE-D30 — ops-plane notes fail-closed to internal ALWAYS (never a model /
+    // ops-plane decision). Force true unconditionally; a public note is a
+    // deterministic staff-UI toggle on the admin HTTP path only.
+    isInternal: true,
   };
   return deps.orderCmdSvc.writeAdjudicatedNote(notePayload, {
     author: "staff",
@@ -938,8 +942,8 @@ function opsToolDefinitions(
       // BKL-147 — documented model-facing SUBMIT contract (NOT surfaced to the
       // LLM). The planner emits `orderId` (the order id, the display number OR the
       // customer NAME — the resolver maps it to the real id) + `body` (the pt-BR
-      // note text). `isInternal` is NOT model-emitted — the executor defaults it to
-      // internal (true) when omitted. Closed to extras.
+      // note text). `isInternal` is NOT model-emitted — FE-D30, the executor forces
+      // notes to internal (true) ALWAYS. Closed to extras.
       inputSchema: {
         type: "object",
         properties: {

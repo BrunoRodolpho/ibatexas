@@ -801,7 +801,7 @@ describe("ops conductor — order.note.add reachable end-to-end (NEW-032 verbs-v
     expect(writeAdjudicatedNote).not.toHaveBeenCalled();
   });
 
-  it("payload isInternal:false is respected (not force-defaulted to internal)", async () => {
+  it("payload isInternal:false is force-overridden to internal (FE-D30 — ops notes always internal)", async () => {
     const writeAdjudicatedNote = noteWriterSpy();
     const { model } = scriptedModel([
       {
@@ -832,7 +832,9 @@ describe("ops conductor — order.note.add reachable end-to-end (NEW-032 verbs-v
     );
     expect(out.kind).toBe("EXECUTE");
     expect(writeAdjudicatedNote).toHaveBeenCalledTimes(1);
-    expect(writeAdjudicatedNote.mock.calls[0]![0].isInternal).toBe(false);
+    // FE-D30 — the model's isInternal:false is stripped at the parse seam (channel
+    // dropped) and the executor forces internal; the written note is internal.
+    expect(writeAdjudicatedNote.mock.calls[0]![0].isInternal).toBe(true);
   });
 });
 
