@@ -47,7 +47,11 @@ import {
 import type { HolidayEntry, ScheduleOverrideEntry } from "@ibatexas/types";
 // FE-D03 slice C — the pt-BR status label maps for the deterministic ORDER_HISTORY /
 // PAYMENT_HISTORY summary composers (never hardcode a pt-BR status string, Hard Rule 4).
-import { ORDER_STATUS_LABELS_PT, PAYMENT_STATUS_LABELS_PT } from "@ibatexas/types";
+import {
+  ORDER_STATUS_LABELS_PT,
+  PAYMENT_STATUS_LABELS_PT,
+  RESERVATION_STATUS_LABELS_PT_CUSTOMER,
+} from "@ibatexas/types";
 // (BKL-006 falsifier predicates moved into the domain service's findFirst
 // probes — see findRefundBearingByOrderId/findDisputedByOrderId; no status-enum
 // comparison happens in this file anymore.)
@@ -129,6 +133,54 @@ export interface ReservationRead {
   readonly reservationId: string;
   readonly status: string;
   readonly partySize: number;
+  /**
+   * BKL-185 — the DETERMINISTICALLY pre-composed pt-BR status line the
+   * RESERVATION_STATUS template renders (the C6-bound scalar, ORDER_HISTORY's
+   * serialized-scalar idiom): `"confirmada — 19/07 às 18:30, para 2 pessoas"`
+   * when the slot detail is present, or EXACTLY the bare `status` when it is
+   * not — so the detail-absent render is byte-identical to the pre-BKL-185
+   * status-only form. Pure string composition off the DTO (no clock, no tz
+   * math); never model-authored.
+   */
+  readonly statusLine: string;
+}
+
+/**
+ * BKL-185 — compose the reservation status line. Pure. The status word is
+ * LOCALIZED here from the single-source CUSTOMER register (BKL-016 — the same
+ * pt-BR wording the pre-BKL-185 render-time enum localization produced; raw
+ * fallback for an unmapped member, never a crash), because the composed scalar
+ * is the C6-bound value the template renders VERBATIM (the ORDER_HISTORY
+ * pre-composed pt-BR serialized-scalar idiom — enum lookup cannot localize a
+ * composed string). Date arrives as the DTO's ISO `YYYY-MM-DD` (sliced, never
+ * parsed through a clock/tz); `startTime` is the slot's literal `HH:MM`. Any
+ * missing piece degrades to the bare localized status — byte-identical to the
+ * pre-enrichment render.
+ */
+export function composeReservationStatusLine(args: {
+  readonly status: string;
+  readonly partySize: number;
+  readonly isoDate?: string;
+  readonly startTime?: string;
+}): string {
+  const { status, partySize, isoDate, startTime } = args;
+  const localized =
+    (RESERVATION_STATUS_LABELS_PT_CUSTOMER as Readonly<Record<string, string>>)[
+      status
+    ] ?? status;
+  const dateParts = isoDate?.split("-");
+  if (
+    dateParts === undefined ||
+    dateParts.length !== 3 ||
+    startTime === undefined ||
+    startTime.length === 0
+  ) {
+    return localized;
+  }
+  const [, month, day] = dateParts;
+  if (month === undefined || day === undefined) return localized;
+  const pessoas = partySize === 1 ? "1 pessoa" : `${partySize} pessoas`;
+  return `${localized} — ${day}/${month} às ${startTime}, para ${pessoas}`;
 }
 
 // ── BKL-006 owner-scoped FALSIFIER read shapes (refund / chargeback / cancel) ──
@@ -808,10 +860,19 @@ export function createDomainTriadReadBackend(
       // Shares the per-turn reservation memo with the cancellation falsifier.
       const r = await readOwnerScopedReservationOnce(reservationId, customerId);
       if (r === null) return null;
+      const status = String(r.status);
       return {
         reservationId,
-        status: String(r.status),
+        status,
         partySize: r.partySize,
+        // BKL-185 — the C6-bound enriched scalar (bare `status` when the slot
+        // detail is missing → byte-identical to the pre-enrichment render).
+        statusLine: composeReservationStatusLine({
+          status,
+          partySize: r.partySize,
+          isoDate: r.timeSlot?.date,
+          startTime: r.timeSlot?.startTime,
+        }),
       };
     },
 

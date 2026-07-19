@@ -185,6 +185,28 @@ for (const types of Object.values(REQUIRED_CLAIM_CLOSURE)) {
  * decomposing — the decomposer is a TCB member, so over-include is safe and
  * under-include is not; neither required companion is ever silently dropped).
  */
+/**
+ * BKL-184 — the allergen-family phrasing net (shared): the SAME pattern the
+ * span classifier uses to keep allergen questions OUT of the contents/overview
+ * spans (they route to the carved-out MENU_ITEM_ALLERGENS honest-UNKNOWN,
+ * BKL-123/143). Exported as a predicate so the render seam can give the
+ * allergen abstain its human-handoff OFFER copy without a second, drifting
+ * regex. Applies the classifier's own normalization (lowercase).
+ */
+// Stems (alérg*/glúten/lactose/contém) + the WORD-BOUNDED common allergen nouns
+// customers actually ask with ("tem amendoim?", "tem leite?" — the SCN-008 live
+// phrasings): boundaries prevent substring hits (\bovo\b never fires inside
+// "provolone"). Widening is demote-only-safe for the span exclusions (an
+// allergen-ish ask routes AWAY from a confident contents render) and gates the
+// BKL-184 offer copy.
+const ALLERGEN_FAMILY_RE =
+  /al[ée]rg|gl[úu]ten|lactose|cont[ée]m|\b(?:amendoim|nozes|castanhas?|camar[ãa]o|mariscos?|soja|ovos?|leite)\b/;
+
+/** BKL-184 — does this request text carry allergen-family phrasing? Pure. */
+export function isAllergenFamilyAsk(text: string): boolean {
+  return ALLERGEN_FAMILY_RE.test(text.toLowerCase());
+}
+
 export function classifyRequestSpans(text: string): SpanClass[] {
   const t = text.toLowerCase();
   const classes: SpanClass[] = [];
@@ -223,7 +245,7 @@ export function classifyRequestSpans(text: string): SpanClass[] {
   // DEMOTE-ONLY safe: an empty/unreadable catalog → ABSENT evidence → honest UNKNOWN.
   const isMenuOverview =
     notOrderScoped &&
-    !/al[ée]rg|gl[úu]ten|lactose|cont[ée]m/.test(t) &&
+    !ALLERGEN_FAMILY_RE.test(t) &&
     /\bcard[áa]pio\b|\bmenu\b|o que (voc[êe]s )?(t[êe]m|servem)( (pra|para) comer)?|quais (os |as )?(pratos|op[çc][õo]es)/.test(t);
   if (isMenuOverview) classes.push("MENU_OVERVIEW_Q");
 
@@ -235,7 +257,7 @@ export function classifyRequestSpans(text: string): SpanClass[] {
   // (honest-UNKNOWN + staff handoff, BKL-123/143), never a rendered CONTENTS answer.
   // `!isMenuOverview` keeps a WHOLE-menu question ("o que tem no cardápio") disjoint from
   // the per-ITEM contents span ("o que vem no combo") — the overview owns it.
-  if (notOrderScoped && !isMenuOverview && !/al[ée]rg|gl[úu]ten|lactose|cont[ée]m/.test(t) && /o que (vem|tem|acompanha)|do que (é|e) (é |)feit|que vem (n|em)|composi[çc][ãa]o d/.test(t)) {
+  if (notOrderScoped && !isMenuOverview && !ALLERGEN_FAMILY_RE.test(t) && /o que (vem|tem|acompanha)|do que (é|e) (é |)feit|que vem (n|em)|composi[çc][ãa]o d/.test(t)) {
     classes.push("MENU_ITEM_CONTENTS_Q");
   }
 

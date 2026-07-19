@@ -285,7 +285,7 @@ function recordPayment(ledger: EvidenceLedger, orderId: string, status: string):
 function recordReservation(ledger: EvidenceLedger, reservationId: string): void {
   ledger.record({
     key: `reservation_status:${reservationId}`,
-    value: { status: "confirmed", partySize: 2, date: "2026-07-20", startTime: "19:30" },
+    value: { status: "confirmed", partySize: 2, date: "2026-07-20", startTime: "19:30", statusLine: "confirmada — 20/07 às 19:30, para 2 pessoas" },
     source: "reservation.getById",
     fetchedAt: NOW,
     sourceMode: "live",
@@ -371,7 +371,7 @@ describe("FE-T18 — classify-only ON: RESERVATION_STATUS matches FE-T17's proof
       customerId: "cust-A",
       ledger,
     });
-    expect(text).toBe("O status da sua reserva é: confirmada.");
+    expect(text).toBe("O status da sua reserva é: confirmada — 20/07 às 19:30, para 2 pessoas.");
     expect(proposeClaimsSpy).not.toHaveBeenCalled();
   });
 

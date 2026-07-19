@@ -666,3 +666,36 @@ describe("claims-renderer-adapter — BKL-111 claims.terminal signal", () => {
     expect(degradeFor(inactive, { requestText: "que horas vocês abrem amanhã?" })).toBe(false);
   });
 });
+
+// ── BKL-184 — the adapter selects the allergen UNKNOWN variant from requestText ──
+describe("BKL-184 — allergen-ask UNKNOWN via the adapter (requestText-gated)", () => {
+  /** A kernel result whose terminal is an intrinsic UNKNOWN (no renderables). */
+  const unknownResult = (): ClaimsKernelResult => ({
+    perClaim: [],
+    renderable: [],
+    renderableCanonical: [],
+    terminal: "UNKNOWN",
+    consistency: { renderable: [], terminal: "UNKNOWN", suppressions: [] },
+  });
+
+  it("an allergen question landing on UNKNOWN renders the abstain-plus-offer variant", () => {
+    const renderer = createIbatexasClaimsRenderer();
+    const out = renderer.render(unknownResult(), {
+      requestText: "o brownie tem amendoim?",
+    });
+    expect(out.text).toContain("alérgenos");
+    expect(out.text).toContain("atendente");
+    // Never a negative assurance (the conservative allergen ruling).
+    expect(out.text).not.toContain("não contém");
+  });
+
+  it("a NON-allergen question landing on UNKNOWN renders the generic template, byte-identical", () => {
+    const renderer = createIbatexasClaimsRenderer();
+    const out = renderer.render(unknownResult(), {
+      requestText: "cadê meu pedido?",
+    });
+    expect(out.text).toBe(
+      "Não localizei essa informação confirmada agora. Quer que eu verifique?",
+    );
+  });
+});

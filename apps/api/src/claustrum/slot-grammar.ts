@@ -258,12 +258,16 @@ export const VALIDATED_TEMPLATES: Readonly<Record<string, Template>> = {
   // ALWAYS be UNFILLABLE post-mint, aborting the whole template to UNKNOWN (Inv 6
   // is all-or-nothing per template) — so this template, like every other Triad
   // type here, renders exactly the one C6-bound field.
+  // BKL-185 — the ONE proposition slot binds the pre-composed `statusLine`
+  // (status + optional "— DD/MM às HH:MM, para N pessoa(s)" detail; see the
+  // registry's valueBinding note). Detail-absent → statusLine === status → the
+  // render is byte-identical to the pre-BKL-185 status-only form.
   [RESERVATION_STATUS]: {
     claimType: RESERVATION_STATUS,
     posture: "validated",
     slots: [
       lit("O status da sua reserva é: "),
-      prop(RESERVATION_STATUS, "status"),
+      prop(RESERVATION_STATUS, "statusLine"),
       lit("."),
     ],
   },
@@ -460,6 +464,28 @@ export const SAFE_TEMPLATES: Readonly<Record<Exclude<TemplatePosture, "validated
       ),
     ],
   },
+};
+
+/**
+ * BKL-184 — the ALLERGEN-ask UNKNOWN variant: the honest abstain PLUS the
+ * human-handoff OFFER. Selected ONLY when the request carries allergen-family
+ * phrasing (required-claim-decomposer.ts `isAllergenFamilyAsk` — the SAME net the
+ * span classifier uses to route allergen questions away from a contents render)
+ * AND the terminal is UNKNOWN; every other UNKNOWN renders the generic
+ * {@link SAFE_TEMPLATES}.unknown, byte-identical. Proposition-free BY
+ * CONSTRUCTION: it asserts NOTHING about any product's contents (the CONSERVATIVE
+ * allergen ruling stands — never a "não contém X" from tags); it speaks only the
+ * system's epistemic state, its safety posture, and an offer. Standalone const
+ * (not a SAFE_TEMPLATES member — that Record is closed over the posture union).
+ */
+export const SAFE_UNKNOWN_ALLERGEN_TEMPLATE: Template = {
+  claimType: "__SAFE_UNKNOWN_ALLERGEN__",
+  posture: "unknown",
+  slots: [
+    lit(
+      "Não localizei essa informação de alérgenos confirmada agora — por segurança, prefiro não arriscar uma resposta. Quer que eu peça para um atendente confirmar com a cozinha?",
+    ),
+  ],
 };
 
 /**

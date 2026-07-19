@@ -246,6 +246,8 @@ describe("turn-reads — order/reservation owner-scoping", () => {
       reservationId: "r-1",
       status: "confirmed",
       partySize: 4,
+      // BKL-185 — the pre-composed localized scalar (bare: the DTO stub has no slot).
+      statusLine: "confirmada",
     });
     expect(await backend.readReservation("r-1", ATTACKER)).toBeNull();
   });

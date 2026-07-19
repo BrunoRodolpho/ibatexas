@@ -120,10 +120,12 @@ describe("proposeClaims — F2 claim-planner LLM-call observability", () => {
 
     const plan = await planner.proposeClaims(cognition("vocês estão abertos?"));
 
-    // The candidate reached the kernel carrying a DERIVED (not model-authored) value.
+    // BKL-126 — the candidate leaves the planner with value UNDEFINED (the
+    // schedule-family derive was removed; the value now binds downstream from
+    // the investigator's recorded ledger entry at claims-validate stage 4b).
     expect(plan.candidates).toHaveLength(1);
     expect(plan.candidates[0]?.type).toBe("STORE_OPEN_NOW");
-    expect(plan.candidates[0]?.value).toEqual({ mealPeriod: "lunch" });
+    expect(plan.candidates[0]?.value).toBeUndefined();
 
     // Exactly one claim-planner trace was emitted, correlated by turnId.
     expect(traces).toHaveLength(1);
@@ -144,9 +146,10 @@ describe("proposeClaims — F2 claim-planner LLM-call observability", () => {
     expect(payload.stage).toBe("claims-validate/proposeClaims");
     // The raw tag the model emitted is recorded verbatim.
     expect(payload.toolCalls[0]?.input.type).toBe("STORE_OPEN_NOW");
-    // The derived candidate (post tag-then-derive) is recorded with its value.
+    // BKL-126 — the trace records the candidate as it leaves this stage: value
+    // absent (bound later from the ledger, not authored here).
     expect(payload.derivedCandidates).toEqual([
-      { type: "STORE_OPEN_NOW", subject: "loja", value: { mealPeriod: "lunch" } },
+      { type: "STORE_OPEN_NOW", subject: "loja" },
     ]);
     expect(payload.droppedClaimTypes).toEqual([]);
   });
@@ -184,7 +187,8 @@ describe("proposeClaims — F2 claim-planner LLM-call observability", () => {
 
     // Planning output is identical to the wired case — telemetry is side-channel.
     expect(plan.candidates).toHaveLength(1);
-    expect(plan.candidates[0]?.value).toEqual({ mealPeriod: "lunch" });
+    // BKL-126 — value undefined at this stage (see above).
+    expect(plan.candidates[0]?.value).toBeUndefined();
     expect(emitSpy).not.toHaveBeenCalled();
   });
 

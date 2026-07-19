@@ -280,6 +280,7 @@ function stubBackend(over: Partial<TriadReadBackend> = {}): TriadReadBackend {
       reservationId,
       status: "confirmed",
       partySize: 4,
+      statusLine: "confirmada",
     }),
     // BKL-006 — default: the owner-scoped FALSIFIER reads all resolve owned + NOT
     // fired (no refund / no dispute / not cancelled), so the falsifier keys stay
@@ -419,7 +420,7 @@ describe("ibatexas-investigator — first-party triad gatherer", () => {
 
     const res = ledger.resolve("reservation_status:r-7");
     expect(res.state).toBe("present");
-    expect(res.entry?.value).toEqual({ reservationId: "r-7", status: "confirmed", partySize: 4 });
+    expect(res.entry?.value).toEqual({ reservationId: "r-7", status: "confirmed", partySize: 4, statusLine: "confirmada" });
   });
 });
 
@@ -1116,7 +1117,7 @@ describe("BKL-006 — falsifier-evidence recording (refund / chargeback / cancel
         backend: {}, // default: reservation "confirmed", not cancelled
         type: "RESERVATION_STATUS",
         subject: "r-7",
-        value: { status: "confirmed" },
+        value: { statusLine: "confirmada" },
         owned: ["r-7"],
       });
       expect(verdict).toBe("VALIDATED");
@@ -1130,11 +1131,12 @@ describe("BKL-006 — falsifier-evidence recording (refund / chargeback / cancel
             reservationId,
             status: "cancelled",
             partySize: 4,
+            statusLine: "cancelada",
           }),
         },
         type: "RESERVATION_STATUS",
         subject: "r-7",
-        value: { status: "cancelled" },
+        value: { statusLine: "cancelada" },
         owned: ["r-7"],
       });
       expect(verdict).toBe("VALIDATED");
