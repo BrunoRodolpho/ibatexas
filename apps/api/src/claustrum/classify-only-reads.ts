@@ -17,15 +17,19 @@
 // a turn this module declines) falls through to the EXISTING
 // `ibatexas-planner.ts` `proposeClaims` model call, byte-identical to today.
 //
-// SCOPE (deliberately narrow — a vertical slice, not the full closure table):
-// eligible ONLY for the Trustworthiness-Triad OWNER-SCOPED read types this
-// ticket proves (ORDER_FULFILLMENT_STAGE, PAYMENT_STATUS, RESERVATION_STATUS —
-// FE-T15/17 live-proofs). A turn whose deterministic classification pulls in
-// ANY type outside {@link CLASSIFY_ONLY_ELIGIBLE_TYPES} (e.g. PICKUP_Q ⇒
-// STORE_OPEN_NOW, or a bare schedule question) is declined WHOLESALE — the
-// caller falls through to the model path rather than handling a MIXED turn
-// half-deterministically, half not. Growing the eligible set (e.g. to
-// STORE_OPEN_NOW) is a conscious follow-up, not a byproduct of this change.
+// SCOPE (grown by conscious acts, never byproduct — each addition is dated in
+// the set below): the original Trustworthiness-Triad OWNER-SCOPED slice
+// (ORDER_FULFILLMENT_STAGE, PAYMENT_STATUS, RESERVATION_STATUS — FE-T15/17
+// live-proofs), the cart pair (BKL-139/163), the history list reads (FE-D03),
+// and — BKL-183 — the PUBLIC menu/store reads (MENU_ITEM_PRICE,
+// MENU_ITEM_CONTENTS, MENU_OVERVIEW, STORE_INFO), whose subjects derive from
+// the investigator's own deterministic reads, never a model extraction. A turn
+// whose deterministic classification pulls in ANY type outside
+// {@link CLASSIFY_ONLY_ELIGIBLE_TYPES} (e.g. PICKUP_Q ⇒ STORE_OPEN_NOW, or a
+// bare schedule question), or ANY allergen-family phrasing (the BKL-184 net —
+// see classifyOnlyRequiredTypes), is declined WHOLESALE — the caller falls
+// through to the model path rather than handling a MIXED turn
+// half-deterministically, half not.
 //
 // RESIDUAL / KNOWN TRADEOFF — tracked as FE-D12 (owner-ruled: PROCEED, do not
 // invent a detector; surfaced, not hidden). The ONLY existing §O#9
@@ -66,12 +70,16 @@ import type { CandidateClaim, EvidenceLedger } from "@adjudicate/core";
 import {
   ownerScopedBaseKey,
   selectCandidateClaim,
+  REGISTRY_SPECS,
+  type RegistryClaimSpec,
   type RegistryClaimType,
 } from "./claim-registry.js";
+import type { EvidenceLedgerLike } from "./ibatexas-claims-kernel-deps.js";
 import type { ClaimAuthContext } from "./ibatexas-planner.js";
 import {
   classifyRequestSpans,
   decomposeRequiredClaims,
+  isAllergenFamilyAsk,
 } from "./required-claim-decomposer.js";
 
 /** Env flag gating the classify-only read path (default OFF). */
@@ -122,6 +130,35 @@ export const CLASSIFY_ONLY_ELIGIBLE_TYPES: ReadonlySet<RegistryClaimType> =
     // ESCALATE via that channel while classify-only is ON (surfaced, owner-veto-able).
     "ORDER_HISTORY",
     "PAYMENT_HISTORY",
+    // BKL-183 — the PUBLIC menu/store reads join the eligible set (the same
+    // conscious growth; the SCN-030 live trace proved classify-only BYPASSES the
+    // 4B read-dispatch variance entirely, which is exactly the flake that held
+    // SCN-006/007 at ~50%/0%). Subjects are NOT owner-scoped:
+    //   - MENU_OVERVIEW / STORE_INFO are FIXED single-key (`menu:overview` /
+    //     `store:info`) — the candidate subject is "" and the spec is never
+    //     parameterized, so evidence resolves at the bare key the investigator
+    //     records (exactly the STORE_OPEN_NOW shape).
+    //   - MENU_ITEM_PRICE / MENU_ITEM_CONTENTS are PUBLIC per-item
+    //     (`perResourceKey`, ownership not_applicable): the subject is the
+    //     productId of the PRESENT `menu:item_price:{id}` / `menu:item_contents:{id}`
+    //     ledger read the investigator recorded after its OWN deterministic
+    //     `resolveMenuItem` NL resolution — the ledger, never the model, names
+    //     the item (see `presentPublicItemIds` in buildClassifyOnlyCandidates).
+    //     No resolved item → empty subject → ABSENT evidence → honest UNKNOWN.
+    // FE-D12 residual grows with each addition (a pure menu/store read turn skips
+    // the model's §O#9 self-report — surfaced, owner-veto-able). MITIGATION for
+    // the SAFETY-CRITICAL family: `classifyOnlyRequiredTypes` now declines
+    // WHOLESALE on ANY allergen-family phrasing (`isAllergenFamilyAsk` — the
+    // BKL-184 net), so "quanto custa o brownie? tem amendoim?" keeps the model
+    // path's probabilistic §O#9 chance AND the allergen abstain+offer machinery.
+    // MENU_ITEM_ALLERGENS itself is DELIBERATELY NOT eligible: no decomposer span
+    // ever requires it (the closure carve-out routes allergen asks away from
+    // rendered answers), so listing it would be dead code that misleadingly
+    // implies allergen asks can ride the deterministic path.
+    "MENU_ITEM_PRICE",
+    "MENU_ITEM_CONTENTS",
+    "MENU_OVERVIEW",
+    "STORE_INFO",
   ]);
 
 /**
@@ -143,6 +180,14 @@ export const CLASSIFY_ONLY_ELIGIBLE_TYPES: ReadonlySet<RegistryClaimType> =
 export function classifyOnlyRequiredTypes(
   text: string,
 ): ReadonlySet<RegistryClaimType> | undefined {
+  // BKL-183/BKL-184 — the SAFETY-CRITICAL carve-out: any allergen-family
+  // phrasing declines WHOLESALE, even when a menu span co-fires ("quanto custa o
+  // brownie? tem amendoim?" trips MENU_ITEM_PRICE_Q — the allergen half must
+  // keep the model path's probabilistic §O#9 self-report chance and the BKL-184
+  // abstain+offer machinery, never ride a deterministic price render that
+  // silently answers around it). Deterministic, word-bounded net; a false
+  // positive only costs the model path (never a wrong render).
+  if (isAllergenFamilyAsk(text)) return undefined;
   const required = decomposeRequiredClaims(classifyRequestSpans(text));
   if (required.size === 0) return undefined;
   for (const type of required) {
@@ -186,10 +231,51 @@ export interface AmbiguousOwnedSet {
   readonly ownedIds: readonly string[];
 }
 
+/**
+ * BKL-183 — the PUBLIC per-item BASE key for an eligible type: defined IFF the
+ * type is `perResourceKey` but NOT owner-scoped (its required evidence carries
+ * `ownershipPolicy: "not_applicable"` — MENU_ITEM_PRICE / MENU_ITEM_CONTENTS).
+ * The complement of {@link ownerScopedBaseKey} over the per-resource types, so
+ * exactly one of the two is defined for any per-resource member. Pure.
+ */
+export function publicPerItemBaseKey(type: RegistryClaimType): string | undefined {
+  // Widen the `as const` member to the interface so the OPTIONAL perResourceKey
+  // is readable on every member (the ownerScopedBaseKey idiom).
+  const spec: RegistryClaimSpec = REGISTRY_SPECS[type];
+  if (spec.perResourceKey !== true) return undefined;
+  if (ownerScopedBaseKey(type) !== undefined) return undefined;
+  return spec.requiredEvidence[0]?.key;
+}
+
+/**
+ * BKL-183 — the PRESENT public per-item subjects for a base key, read off THIS
+ * turn's ledger: the `{id}` suffixes of PRESENT `${base}:{id}` entries. The
+ * investigator records these ONLY after its own deterministic `resolveMenuItem`
+ * NL resolution (ibatexas-investigator.ts), so the LEDGER — never the model —
+ * names the admissible item. Mirrors `ownedResourceIdsByBaseKey`'s present-only
+ * discipline (an unresolved/absent read never yields a subject). Pure.
+ */
+export function presentPublicItemIds(
+  ledger: EvidenceLedgerLike,
+  baseKey: string,
+): string[] {
+  const prefix = `${baseKey}:`;
+  const ids: string[] = [];
+  for (const key of ledger.keys()) {
+    if (!key.startsWith(prefix)) continue;
+    const id = key.slice(prefix.length);
+    if (id === "") continue;
+    if (ledger.resolve(key).state !== "present") continue;
+    if (!ids.includes(id)) ids.push(id);
+  }
+  return ids;
+}
+
 export function buildClassifyOnlyCandidates(
   required: ReadonlySet<RegistryClaimType>,
   auth: ClaimAuthContext,
   sessionId: string,
+  ledger?: EvidenceLedgerLike,
 ): {
   candidates: CandidateClaim[];
   forcedTerminal?: "CLARIFY";
@@ -203,26 +289,50 @@ export function buildClassifyOnlyCandidates(
 
   const candidates: CandidateClaim[] = [];
   const ambiguousOwnedSets: AmbiguousOwnedSet[] = [];
+  // BKL-183 — a PUBLIC per-item ambiguity (≥2 present menu-item reads) forces
+  // the GENERIC CLARIFY: menu items have no `#displayId` voicing vocabulary, so
+  // it never joins `ambiguousOwnedSets` (that carrier is the BKL-170
+  // order-voicing path). Defensive today — the investigator resolves at most
+  // ONE item per turn — but a future multi-item resolver must not guess.
+  let publicAmbiguity = false;
   for (const type of required) {
     const baseKey = ownerScopedBaseKey(type);
-    // Every CLASSIFY_ONLY_ELIGIBLE_TYPES member is owner-scoped/per-resource
-    // (ORDER_FULFILLMENT_STAGE / PAYMENT_STATUS / RESERVATION_STATUS all
-    // declare `perResourceKey: true` — claim-registry.ts REGISTRY_SPECS), so
-    // `baseKey` is defined by construction; the `[]` fallback is defense-in-
-    // depth against a future eligible-set edit that adds a public type.
-    const owned = baseKey === undefined ? [] : (auth.ownedByBaseKey?.get(baseKey) ?? []);
+    const publicBase = baseKey === undefined ? publicPerItemBaseKey(type) : undefined;
     let subject: string;
-    if (owned.length === 1) {
-      subject = owned[0] as string;
-    } else if (owned.length > 1) {
-      // BKL-189 — keep the DROPPED ambiguity's data so the caller can label the
-      // owned candidates for the CLARIFY render (the candidate claim itself
-      // stays dropped — never a guess).
-      if (baseKey !== undefined) {
+    if (baseKey !== undefined) {
+      // OWNER-SCOPED per-resource (FIX 2, unchanged): subjects come ONLY from
+      // the authenticated owner-scoped PRESENT reads.
+      const owned = auth.ownedByBaseKey?.get(baseKey) ?? [];
+      if (owned.length === 1) {
+        subject = owned[0] as string;
+      } else if (owned.length > 1) {
+        // BKL-189 — keep the DROPPED ambiguity's data so the caller can label the
+        // owned candidates for the CLARIFY render (the candidate claim itself
+        // stays dropped — never a guess).
         ambiguousOwnedSets.push({ type, baseKey, ownedIds: [...owned] });
+        continue;
+      } else {
+        subject = "";
       }
-      continue;
+    } else if (publicBase !== undefined) {
+      // BKL-183 — PUBLIC per-item (menu items): the subject is the productId of
+      // the PRESENT `${publicBase}:{id}` read the investigator recorded after
+      // its own deterministic NL resolution. No ledger (an unwired host) or no
+      // resolved item → empty subject → parameterized keys match nothing →
+      // ABSENT evidence → honest UNKNOWN, never an arbitrary product.
+      const present = ledger === undefined ? [] : presentPublicItemIds(ledger, publicBase);
+      if (present.length === 1) {
+        subject = present[0] as string;
+      } else if (present.length > 1) {
+        publicAmbiguity = true;
+        continue;
+      } else {
+        subject = "";
+      }
     } else {
+      // FIXED single-key public (MENU_OVERVIEW / STORE_INFO): no subject — the
+      // spec is never parameterized, so evidence resolves at the bare key the
+      // investigator records.
       subject = "";
     }
     const candidate = selectCandidateClaim({ type, subject, actor, value: undefined });
@@ -231,8 +341,13 @@ export function buildClassifyOnlyCandidates(
     // always yields a candidate — the guard is defense-in-depth.
     if (candidate !== undefined) candidates.push(candidate);
   }
-  return ambiguousOwnedSets.length > 0
-    ? { candidates, forcedTerminal: "CLARIFY", ambiguousOwnedSets }
+  const forcedClarify = ambiguousOwnedSets.length > 0 || publicAmbiguity;
+  return forcedClarify
+    ? {
+        candidates,
+        forcedTerminal: "CLARIFY",
+        ...(ambiguousOwnedSets.length > 0 ? { ambiguousOwnedSets } : {}),
+      }
     : { candidates };
 }
 

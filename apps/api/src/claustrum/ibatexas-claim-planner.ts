@@ -345,6 +345,10 @@ export function createIbatexasClaimPlanner(
           classifyOnlyRequired,
           auth,
           input.cognition.conversationId,
+          // BKL-183 — the PUBLIC per-item subjects (menu items) resolve from THIS
+          // turn's ledger (the investigator's own deterministic reads); owner
+          // subjects keep riding `auth.ownedByBaseKey`, unchanged.
+          input.ledger,
         );
         candidates = built.candidates;
         forcedTerminal = built.forcedTerminal;
