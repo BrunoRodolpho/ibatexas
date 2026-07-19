@@ -3,45 +3,35 @@
  *
  * All user-facing strings that appear in admin pages live here so they can
  * be maintained (and eventually translated) in a single place.
+ *
+ * BKL-016 — the STATUS labels below are now sourced from the single owner,
+ * `@ibatexas/types` (status-labels.ts): the STAFF (Title Case) registers plus the
+ * admin-only non-core extensions. This normalizes admin's previously
+ * internally-inconsistent badges (lowercase order labels next to Title-Case
+ * reservations — already a bug) onto the one Title-Case staff voice, and makes
+ * drift-by-divergence structurally impossible (the types exhaustiveness test).
  */
+
+import {
+  ADMIN_ORDER_STATUS_EXTRA,
+  ADMIN_PAYMENT_STATUS_EXTRA,
+  ORDER_STATUS_LABELS_PT,
+  PAYMENT_STATUS_LABELS_PT,
+  RESERVATION_STATUS_LABELS_PT,
+} from '@ibatexas/types'
 
 // ---------------------------------------------------------------------------
 // Order status
 // ---------------------------------------------------------------------------
 
 export const ORDER_STATUS_LABELS: Record<string, string> = {
-  pending: 'pendente',
-  confirmed: 'confirmado',
-  preparing: 'preparando',
-  ready: 'pronto',
-  in_delivery: 'em entrega',
-  delivered: 'entregue',
-  canceled: 'cancelado',
-  completed: 'concluído',
-  requires_action: 'ação necessária',
+  ...ORDER_STATUS_LABELS_PT,
+  ...ADMIN_ORDER_STATUS_EXTRA,
 }
 
 export const PAYMENT_STATUS_LABELS: Record<string, string> = {
-  // New canonical payment statuses (from PaymentStatus enum)
-  awaiting_payment: 'aguardando pagamento',
-  payment_pending: 'pagamento pendente',
-  payment_expired: 'pagamento expirado',
-  payment_failed: 'pagamento falhou',
-  cash_pending: 'dinheiro (pendente)',
-  paid: 'pago',
-  switching_method: 'trocando pagamento',
-  partially_refunded: 'reembolso parcial',
-  refunded: 'reembolsado',
-  disputed: 'em disputa',
-  canceled: 'cancelado',
-  waived: 'isento',
-  // Legacy Medusa statuses (backward compat during transition)
-  captured: 'pago',
-  pending: 'pendente',
-  cash_on_delivery: 'dinheiro',
-  cancelado: 'cancelado',
-  requires_action: 'aç��o necessária',
-  not_paid: 'não pago',
+  ...PAYMENT_STATUS_LABELS_PT,
+  ...ADMIN_PAYMENT_STATUS_EXTRA,
 }
 
 // ---------------------------------------------------------------------------
@@ -49,12 +39,7 @@ export const PAYMENT_STATUS_LABELS: Record<string, string> = {
 // ---------------------------------------------------------------------------
 
 export const RESERVATION_STATUS_LABELS: Record<string, string> = {
-  pending: 'Pendente',
-  confirmed: 'Confirmada',
-  seated: 'Sentada',
-  completed: 'Completa',
-  cancelled: 'Cancelada',
-  no_show: 'No Show',
+  ...RESERVATION_STATUS_LABELS_PT,
 }
 
 // ---------------------------------------------------------------------------

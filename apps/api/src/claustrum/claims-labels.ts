@@ -18,6 +18,16 @@
 // PURE & self-contained: no clock / RNG / IO, no model import. This module is on
 // the renderer's import path, which the §O#3 "no model prose" guard scans — it
 // contains only static lookup tables + a pure function.
+//
+// BKL-016 — the per-status-enum CUSTOMER (sentence-voice) registers are OWNED by
+// `@ibatexas/types` (status-labels.ts), the single source. The strings below are
+// byte-identical to the pre-BKL-016 inline maps; only ownership moved.
+
+import {
+  ORDER_STATUS_LABELS_PT_CUSTOMER,
+  PAYMENT_STATUS_LABELS_PT_CUSTOMER,
+  RESERVATION_STATUS_LABELS_PT_CUSTOMER,
+} from "@ibatexas/types";
 
 /**
  * Per-`(claimType, field)` enum → pt-BR DISPLAY map. The key is `${claimType}.${field}`
@@ -47,52 +57,23 @@
 export const CLAIM_ENUM_DISPLAY_PT_BR: Readonly<
   Record<string, Readonly<Record<string, string>>>
 > = {
-  // PAYMENT_STATUS.status — the full Payment lifecycle enum (raw ledger values,
-  // i.e. the Prisma `PaymentStatus` member name; `canceled`, not the @map column
-  // value `pay_canceled`). EXHAUSTIVE over PaymentStatus (12 members).
-  "PAYMENT_STATUS.status": {
-    awaiting_payment: "aguardando pagamento",
-    payment_pending: "pagamento pendente",
-    payment_expired: "pagamento expirado",
-    payment_failed: "pagamento falhou",
-    cash_pending: "pagamento em dinheiro pendente",
-    paid: "pago",
-    switching_method: "trocando forma de pagamento",
-    partially_refunded: "parcialmente reembolsado",
-    refunded: "reembolsado",
-    disputed: "em disputa",
-    canceled: "cancelado",
-    waived: "isento",
-  },
+  // PAYMENT_STATUS.status — the full Payment lifecycle enum. The CUSTOMER register
+  // (@ibatexas/types) is EXHAUSTIVE over PaymentStatus (12 members) — pinned there.
+  "PAYMENT_STATUS.status": PAYMENT_STATUS_LABELS_PT_CUSTOMER,
   // STORE_OPEN_NOW.mealPeriod — the deterministic meal-period / open-state signal.
+  // Customer-only (NOT a status enum) → kept inline here, out of the BKL-016 scope.
   // EXHAUSTIVE over ScheduleSignal["mealPeriod"] ("lunch" | "dinner" | "closed").
   "STORE_OPEN_NOW.mealPeriod": {
     lunch: "almoço",
     dinner: "jantar",
     closed: "fechado",
   },
-  // ORDER_FULFILLMENT_STAGE.fulfillmentStatus — the order fulfillment-stage enum
-  // (Prisma `OrderFulfillmentStatus` member name). EXHAUSTIVE over the 7 members.
-  "ORDER_FULFILLMENT_STAGE.fulfillmentStatus": {
-    pending: "pendente",
-    confirmed: "confirmado",
-    preparing: "em preparo",
-    ready: "pronto",
-    in_delivery: "saiu para entrega",
-    delivered: "entregue",
-    canceled: "cancelado",
-  },
-  // RESERVATION_STATUS.status — the reservation-status enum (Prisma
-  // `ReservationStatus` member name, @ibatexas/types). EXHAUSTIVE over the 6
-  // members (FE-T17).
-  "RESERVATION_STATUS.status": {
-    pending: "pendente",
-    confirmed: "confirmada",
-    seated: "sentados",
-    completed: "concluída",
-    cancelled: "cancelada",
-    no_show: "não compareceu",
-  },
+  // ORDER_FULFILLMENT_STAGE.fulfillmentStatus — the CUSTOMER register (EXHAUSTIVE
+  // over the 7 OrderFulfillmentStatus members — pinned in @ibatexas/types).
+  "ORDER_FULFILLMENT_STAGE.fulfillmentStatus": ORDER_STATUS_LABELS_PT_CUSTOMER,
+  // RESERVATION_STATUS.status — the CUSTOMER register (EXHAUSTIVE over the 6
+  // ReservationStatus members — pinned in @ibatexas/types; FE-T17).
+  "RESERVATION_STATUS.status": RESERVATION_STATUS_LABELS_PT_CUSTOMER,
 };
 
 /**

@@ -110,13 +110,6 @@ export function getNextStatus(current: OrderFulfillmentStatus): OrderFulfillment
   return targets.find((s) => s !== OrderFulfillmentStatus.CANCELED) ?? null
 }
 
-/** pt-BR display labels for each status. */
-export const ORDER_STATUS_LABELS_PT: Record<OrderFulfillmentStatus, string> = {
-  [OrderFulfillmentStatus.PENDING]: "Pendente",
-  [OrderFulfillmentStatus.CONFIRMED]: "Confirmado",
-  [OrderFulfillmentStatus.PREPARING]: "Preparando",
-  [OrderFulfillmentStatus.READY]: "Pronto",
-  [OrderFulfillmentStatus.IN_DELIVERY]: "Em entrega",
-  [OrderFulfillmentStatus.DELIVERED]: "Entregue",
-  [OrderFulfillmentStatus.CANCELED]: "Cancelado",
-}
+// BKL-016 — ORDER_STATUS_LABELS_PT now lives in ./status-labels.ts (the single
+// source for all pt-BR status labels). It is re-exported from the package index
+// under the same name, so consumers see byte-identical strings.
