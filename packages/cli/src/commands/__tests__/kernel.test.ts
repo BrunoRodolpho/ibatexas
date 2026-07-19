@@ -80,7 +80,7 @@ describe("ibx kernel status", () => {
     expect(parsed).toHaveProperty("audit")
     // claustrum-on-dev WS9: KNOWN_INTENT_KINDS is now sourced from the
     // `@ibatexas/intent-kinds` leaf package (post W5 Pack expansion), which
-    // composes 63 kinds across the first-party Packs + the PIX adopter Pack
+    // composes 61 kinds across the first-party Packs + the PIX adopter Pack
     // (BKL-176 retired the 5 dead payment.charge.* → payments 12; BKL-177 PR-A
     // retired order.cancel.system + reservation.waitlist.notify → orders 21,
     // reservations 7; whatsapp 5 incl. BKL-030
@@ -89,7 +89,7 @@ describe("ibx kernel status", () => {
     // SCN-114 menu.special.set + SCN-127 schedule.override.set + BKL-088
     // ops.alert.resolve.staff / incident.ticket.close.staff), loyalty 1). The
     // pre-cutover `32` was stale.
-    expect(parsed.knownIntentKinds.count).toBe(63)
+    expect(parsed.knownIntentKinds.count).toBe(61)
   })
 
   it("renders human-readable text when --json is absent", async () => {
@@ -112,13 +112,14 @@ describe("ibx kernel status", () => {
     expect(out).toMatch(/em\s+7\s+packs/)
   })
 
-  it("includes all 63 KNOWN_INTENT_KINDS in the JSON list", async () => {
+  it("includes all 61 KNOWN_INTENT_KINDS in the JSON list", async () => {
     await cmd.parseAsync(["status", "--json"], { from: "user" })
     const out = stdout.getOutput()
     const parsed = JSON.parse(out)
     expect(parsed.knownIntentKinds.kinds).toContain("order.checkout.create")
     expect(parsed.knownIntentKinds.kinds).toContain("reservation.create")
-    expect(parsed.knownIntentKinds.kinds).toContain("whatsapp.message.send")
+    // BKL-177 PR-B retired whatsapp.message.send/template.send — session.handover survives.
+    expect(parsed.knownIntentKinds.kinds).toContain("whatsapp.session.handover")
     // BKL-030: the customer-side escalation on-ramp added by the PR.
     expect(parsed.knownIntentKinds.kinds).toContain("whatsapp.handoff.request")
     expect(parsed.knownIntentKinds.kinds).toContain("customer.create")
@@ -147,7 +148,7 @@ describe("ibx kernel status", () => {
     // whatsapp.* prefix group = 4 (message.send, template.send,
     // session.handover, BKL-030 handoff.request); the pack's 5th kind
     // (conversation.message.append) groups under the `conversation` prefix.
-    expect(out).toMatch(/whatsapp \(4\)/)
+    expect(out).toMatch(/whatsapp \(2\)/)
     expect(out).toMatch(/customer \(8\)/)
     expect(out).toMatch(/pix \(3\)/)
   })

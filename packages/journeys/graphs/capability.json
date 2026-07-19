@@ -3,7 +3,7 @@
   "graph": "capability",
   "meta": {
     "dangling": [],
-    "intentKinds": 63,
+    "intentKinds": 61,
     "packs": 6,
     "personaContexts": [
       "authed-customer",

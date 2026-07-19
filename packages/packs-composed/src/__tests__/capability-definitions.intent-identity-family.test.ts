@@ -61,7 +61,7 @@ const ALL_PACKS: readonly CapabilityPackId[] = [
 // ── Family 1: KNOWN_INTENT_KINDS ─────────────────────────────────────────
 
 describe("codegen-freshness gate — KNOWN_INTENT_KINDS (FE-T20 family 1)", () => {
-  it("reproduces KNOWN_INTENT_KINDS byte-for-byte (set contents) from the 59 authored definitions + the two real external inputs", () => {
+  it("reproduces KNOWN_INTENT_KINDS byte-for-byte (set contents) from the 57 authored definitions + the two real external inputs", () => {
     const generated = generateKnownIntentKinds(CAPABILITY_DEFINITIONS, {
       // Real runtime materialization — the actual installed PIX pack's own
       // declared intents, never a hand-retyped literal.
@@ -75,15 +75,15 @@ describe("codegen-freshness gate — KNOWN_INTENT_KINDS (FE-T20 family 1)", () =
     expect([...paymentsPixPack.intents].sort()).toEqual([...PIX_INTENT_KINDS].sort())
   })
 
-  it("the 59 authored definitions alone (no external inputs) cover exactly KNOWN_INTENT_KINDS minus the 3 pix + 1 loyalty kinds", () => {
-    // 66 → 61 (BKL-176 retired 5 dead payment.charge.*) → 59 (BKL-177 PR-A
+  it("the 57 authored definitions alone (no external inputs) cover exactly KNOWN_INTENT_KINDS minus the 3 pix + 1 loyalty kinds", () => {
+    // 66 → 61 (BKL-176 retired 5 dead payment.charge.*) → 57 (BKL-177 PR-A
     // retired order.cancel.system + reservation.waitlist.notify).
-    expect(CAPABILITY_DEFINITIONS).toHaveLength(59)
+    expect(CAPABILITY_DEFINITIONS).toHaveLength(57)
     const registryOnly = generateKnownIntentKinds(CAPABILITY_DEFINITIONS, {
       pixIntentKinds: [],
       loyaltyIntentKinds: [],
     })
-    expect(registryOnly.size).toBe(59)
+    expect(registryOnly.size).toBe(57)
     const pixSet = new Set<string>(PIX_INTENT_KINDS)
     const expected = new Set(
       [...KNOWN_INTENT_KINDS].filter((k) => !pixSet.has(k) && !LOYALTY_INTENT_KINDS.has(k)),
