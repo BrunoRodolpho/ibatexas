@@ -257,3 +257,88 @@ describe("createIbatexasResolver — MAJOR-1 both-states cart-vs-order disambigu
     expect(resolved[0]!.envelope.kind).toBe("order.amend.add_item");
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BKL-213 — multi-ITEM fan-out for a compound "X e Y" cart add. The 4B emits a
+// SINGLE order.item.add (first item only); the resolver recovers the dropped
+// items deterministically from the utterance. Cart-add only, single-add-gated
+// (never double-adds when the planner already split), distinct-product-guarded.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("createIbatexasResolver — BKL-213 compound cart-add fan-out", () => {
+  // A catalog keyed by query content: a farofa and a distinct refrigerante.
+  const twoProductCatalog = async (input: unknown) => {
+    const q = String((input as { query?: unknown }).query ?? "").toLowerCase();
+    if (q.includes("farofa")) {
+      return { products: [{ id: "p_farofa", title: "Farofa de Bacon", variants: [{ id: "var_farofa" }], allergens: [] }] };
+    }
+    if (q.includes("refrigerante")) {
+      return { products: [{ id: "p_refri", title: "Refrigerante", variants: [{ id: "var_refri" }], allergens: [] }] };
+    }
+    return { products: [] };
+  };
+
+  it("recovers the dropped item: 'duas farofas e tres refrigerantes' (model captured only farofa) -> TWO adds, correct variants + quantities", async () => {
+    searchProductsMock = twoProductCatalog;
+    const plan = cartAddItemPlan("farofa"); // the 4B's single under-decomposed add
+    const cognition = cognitionWithText("quero duas farofas e tres refrigerantes");
+
+    const resolved = await createIbatexasResolver().resolve({ plan, cognition, customerId: "c1", channel: "web" });
+
+    const adds = resolved.filter((r) => r.envelope.kind === "order.item.add");
+    expect(adds).toHaveLength(2);
+    const variants = adds.map((r) => (r.envelope.payload as { variantId?: string }).variantId).sort();
+    expect(variants).toEqual(["var_farofa", "var_refri"]);
+    // Quantities recovered per item (BKL-199 seam runs on each): farofa 2, refri 3.
+    const byVariant = new Map(adds.map((r) => {
+      const p = r.envelope.payload as { variantId?: string; quantity?: number };
+      return [p.variantId, p.quantity];
+    }));
+    expect(byVariant.get("var_farofa")).toBe(2);
+    expect(byVariant.get("var_refri")).toBe(3);
+    // The recovered add carries a DISTINCT nonce (canonical intentHash).
+    expect(new Set(adds.map((r) => r.envelope.nonce)).size).toBe(2);
+  });
+
+  it("single-item add is untouched: 'quero uma farofa' -> exactly ONE add (no conjunction, no fan-out)", async () => {
+    searchProductsMock = twoProductCatalog;
+    const plan = cartAddItemPlan("farofa");
+    const cognition = cognitionWithText("quero uma farofa");
+
+    const resolved = await createIbatexasResolver().resolve({ plan, cognition, customerId: "c1", channel: "web" });
+    expect(resolved.filter((r) => r.envelope.kind === "order.item.add")).toHaveLength(1);
+  });
+
+  it("no double-add: when the planner ALREADY emitted two adds, the fan-out is inert", async () => {
+    searchProductsMock = twoProductCatalog;
+    const plan: Plan = {
+      envelopes: [
+        buildEnvelope({ kind: "order.item.add", payload: { item: "farofa" }, actor: { principal: "llm", sessionId: "conv-1" }, taint: "UNTRUSTED", nonce: "n-1" }),
+        buildEnvelope({ kind: "order.item.add", payload: { item: "refrigerante" }, actor: { principal: "llm", sessionId: "conv-1" }, taint: "UNTRUSTED", nonce: "n-2" }),
+      ],
+    };
+    const cognition = cognitionWithText("quero duas farofas e tres refrigerantes");
+
+    const resolved = await createIbatexasResolver().resolve({ plan, cognition, customerId: "c1", channel: "web" });
+    // Exactly the two the planner emitted — never four.
+    expect(resolved.filter((r) => r.envelope.kind === "order.item.add")).toHaveLength(2);
+  });
+
+  it("one-dish guard: fragments resolving to the SAME variant do not spawn a duplicate add", async () => {
+    // "arroz e feijão" where BOTH fragments resolve to one combo product.
+    searchProductsMock = async () => ({ products: [{ id: "p_combo", title: "Arroz e Feijão", variants: [{ id: "var_combo" }], allergens: [] }] });
+    const plan = cartAddItemPlan("arroz");
+    const cognition = cognitionWithText("quero arroz e feijão");
+
+    const resolved = await createIbatexasResolver().resolve({ plan, cognition, customerId: "c1", channel: "web" });
+    expect(resolved.filter((r) => r.envelope.kind === "order.item.add")).toHaveLength(1);
+  });
+
+  it("non-resolving fragment is dropped, not added: 'farofa e xyzzy' -> one add (xyzzy has no product)", async () => {
+    searchProductsMock = twoProductCatalog; // xyzzy -> no products
+    const plan = cartAddItemPlan("farofa");
+    const cognition = cognitionWithText("quero uma farofa e um xyzzy");
+
+    const resolved = await createIbatexasResolver().resolve({ plan, cognition, customerId: "c1", channel: "web" });
+    expect(resolved.filter((r) => r.envelope.kind === "order.item.add")).toHaveLength(1);
+  });
+});

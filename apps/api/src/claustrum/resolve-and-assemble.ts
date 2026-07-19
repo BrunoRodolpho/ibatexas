@@ -1334,6 +1334,87 @@ async function resolveProductForItem(
   }
 }
 
+// ── BKL-213 — multi-ITEM decomposition for a compound cart add ──────────────
+// The 4B routinely under-decomposes "duas Farofas E tres Refrigerantes" into a
+// SINGLE order.item.add (Farofa only), dropping the trailing item entirely —
+// distinct from BKL-199 (quantity, already fixed): here whole ITEMS vanish, so
+// a customer asking for two products gets one. Same discipline as NL→variantId
+// and NL→quantity: never trust the model to enumerate — recover the dropped
+// items DETERMINISTICALLY from the customer's own words. The caller (the
+// resolver) emits one more order.item.add per recovered item, each independently
+// re-run through `resolveAndAssemble` (allergen strip/refill, quantity derive,
+// ownership) and adjudicated, so no guard is bypassed. Cart-scoped and reversible
+// (pre-checkout); a mis-recovery adds a cart line the customer can remove.
+
+/** pt-BR item-list conjunction separators: " e ", ",", " mais " (word-bounded so
+ *  "mais" as a size adjective inside a name is not a false split; substring "e"
+ *  inside a word never matches). */
+const ITEM_CONJUNCTION_RE = /\s+e\s+|\s*,\s*|\s+mais\s+/i;
+
+/** A recovered fragment must carry a content word (≥3 chars, not a pure
+ *  quantity/stopword) or it can't name a product. */
+function fragmentHasContentWord(fragment: string): boolean {
+  for (const tok of normalizeTokens(fragment)) {
+    if (tok.length >= 3 && !ITEM_REF_STOPWORDS.has(tok) && quantityFromToken(tok) === undefined) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** Max ADDITIONAL cart items recovered from one compound add (5-line chat order
+ *  is already implausible; bounds a pathological utterance). */
+const MAX_ADDITIONAL_CART_ITEMS = 4;
+
+/**
+ * BKL-213 — recover the ADDITIONAL cart-item names a compound "X e Y" add
+ * dropped. Split the full utterance on pt-BR list conjunctions, resolve each
+ * fragment against the catalog, and return the fragment names that resolve to a
+ * DISTINCT product — different variantId from the primary (already added) AND
+ * from each other. Returns `[]` (the safe default) for a single-item utterance,
+ * a one-dish name ("arroz e feijão" resolving to ONE combo → its fragments both
+ * hit the same variant → deduped away), or when nothing distinct resolves. The
+ * caller re-runs `resolveAndAssemble` on each returned name for identical
+ * treatment. Pure of side effects beyond the catalog reads.
+ */
+export async function deriveAdditionalCartItemNames(args: {
+  readonly utteranceText: string | undefined;
+  readonly primaryVariantId: string | undefined;
+  readonly channel: string;
+  readonly sessionId: string | undefined;
+  readonly customerId: string;
+}): Promise<string[]> {
+  const { utteranceText, primaryVariantId, channel, sessionId, customerId } = args;
+  if (typeof utteranceText !== "string" || utteranceText.trim() === "") return [];
+  const fragments = utteranceText
+    .split(ITEM_CONJUNCTION_RE)
+    .map((f) => f.trim())
+    .filter((f) => f.length > 0 && fragmentHasContentWord(f));
+  // A single fragment ⇒ no conjunction ⇒ nothing to recover (the common case).
+  if (fragments.length < 2) return [];
+
+  const names: string[] = [];
+  const seenVariants = new Set<string>();
+  // The primary product is already in the cart via the model's own add — never
+  // re-add it (the "quero duas farofas" fragment resolves to the primary variant
+  // and is dropped here).
+  if (typeof primaryVariantId === "string") seenVariants.add(primaryVariantId);
+
+  for (const fragment of fragments) {
+    if (names.length >= MAX_ADDITIONAL_CART_ITEMS) break;
+    const resolved = await resolveProductForItem(fragment, channel, sessionId, customerId);
+    const variantId = resolved?.variantId;
+    // Only a fragment that resolves to a DISTINCT product becomes an extra add —
+    // this is the "don't split inside an item name / one dish" guard: a
+    // non-resolving fragment, or one that hits an already-covered variant, is
+    // skipped, so over-splitting can never invent a spurious line.
+    if (typeof variantId !== "string" || seenVariants.has(variantId)) continue;
+    seenVariants.add(variantId);
+    names.push(fragment);
+  }
+  return names;
+}
+
 /** The three-way outcome of resolving an NL item reference against a live
  *  order's line items — see `resolveOrderLineItem`. */
 type OrderLineItemResolution =
