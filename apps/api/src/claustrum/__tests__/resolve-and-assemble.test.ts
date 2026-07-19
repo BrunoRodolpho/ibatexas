@@ -268,6 +268,94 @@ describe("resolve-and-assemble — reservation entity loads", () => {
     expect(ctx.slot).toBeNull();
   });
 
+  // ── BKL-223 — reservation-mutation autoresolve: 3-way (one / ambiguous / none) ──
+  it("single active reservation → autoresolves the reservationId (unchanged)", async () => {
+    reservationListByCustomer = async () => ({
+      reservations: [
+        { id: "r-only", status: "confirmed", timeSlot: { date: "2026-07-20", startTime: "18:30" } },
+      ],
+      total: 1,
+    });
+    reservationGetById = async (id) => ({ id, status: "confirmed", startAt: new Date() });
+    const { payload } = await resolveAndAssemble({
+      kind: "reservation.cancel",
+      payload: {}, // no explicit reservationId → autoresolve
+      customerId: "c1",
+      channel: "whatsapp",
+    });
+    expect((payload as { reservationId?: string }).reservationId).toBe("r-only");
+    expect((payload as { reservationAmbiguousCount?: number }).reservationAmbiguousCount).toBeUndefined();
+  });
+
+  it("≥2 active reservations → stamps reservationAmbiguous* with first-party labels, NOT a reservationId", async () => {
+    reservationListByCustomer = async () => ({
+      reservations: [
+        { id: "r-a", status: "confirmed", timeSlot: { date: "2026-07-20", startTime: "18:30" } },
+        { id: "r-b", status: "pending", timeSlot: { date: "2026-07-21", startTime: "20:00" } },
+      ],
+      total: 2,
+    });
+    const { payload } = await resolveAndAssemble({
+      kind: "reservation.cancel",
+      payload: {},
+      customerId: "c1",
+      channel: "whatsapp",
+    });
+    const p = payload as { reservationId?: string; reservationAmbiguousCount?: number; reservationAmbiguousLabels?: string[] };
+    expect(p.reservationId).toBeUndefined(); // never guesses among ≥2
+    expect(p.reservationAmbiguousCount).toBe(2);
+    // Labels composed from the DB timeSlot (DD/MM às HHhMM), first-party only.
+    expect(p.reservationAmbiguousLabels).toEqual(["20/07 às 18h30", "21/07 às 20h"]);
+  });
+
+  it("reservation.modify with ≥2 active → same ambiguity marker (kind coverage)", async () => {
+    reservationListByCustomer = async () => ({
+      reservations: [
+        { id: "r-a", status: "confirmed", timeSlot: { date: "2026-07-20", startTime: "18:30" } },
+        { id: "r-b", status: "confirmed", timeSlot: { date: "2026-07-22", startTime: "19:30" } },
+      ],
+      total: 2,
+    });
+    const { payload } = await resolveAndAssemble({
+      kind: "reservation.modify",
+      payload: { newTime: "21:00" },
+      customerId: "c1",
+      channel: "whatsapp",
+    });
+    expect((payload as { reservationAmbiguousCount?: number }).reservationAmbiguousCount).toBe(2);
+  });
+
+  it("0 active reservations → no reservationId, no ambiguity marker (honest not-found downstream)", async () => {
+    reservationListByCustomer = async () => ({ reservations: [], total: 0 });
+    const { payload } = await resolveAndAssemble({
+      kind: "reservation.cancel",
+      payload: {},
+      customerId: "c1",
+      channel: "whatsapp",
+    });
+    const p = payload as { reservationId?: string; reservationAmbiguousCount?: number };
+    expect(p.reservationId).toBeUndefined();
+    expect(p.reservationAmbiguousCount).toBeUndefined();
+  });
+
+  it("explicit reservationId → never enumerates / never marks ambiguous (owner-scoped getById path)", async () => {
+    let listCalled = false;
+    reservationListByCustomer = async () => {
+      listCalled = true;
+      return { reservations: [], total: 0 };
+    };
+    reservationGetById = async (id) => ({ id, status: "confirmed", startAt: new Date() });
+    const { payload } = await resolveAndAssemble({
+      kind: "reservation.cancel",
+      payload: { reservationId: "r-explicit" },
+      customerId: "c1",
+      channel: "whatsapp",
+    });
+    expect((payload as { reservationId?: string }).reservationId).toBe("r-explicit");
+    expect((payload as { reservationAmbiguousCount?: number }).reservationAmbiguousCount).toBeUndefined();
+    expect(listCalled).toBe(false);
+  });
+
   it("loads the target slot for a create (no reservationId)", async () => {
     timeSlotFindUnique = async () => ({
       id: "ts9",

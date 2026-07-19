@@ -870,11 +870,35 @@ async function resolvePaymentOrderId(paymentId: string): Promise<string | null> 
   }
 }
 
-/** NL→id: explicit reservationId wins; else auto-resolve the only ACTIVE reservation. */
+/**
+ * BKL-223 — a deterministic, first-party label for an ambiguous reservation
+ * candidate ("20/07 às 18h30"), composed from the DB timeSlot's OWN date +
+ * startTime (never model-authored). Mirrors BKL-174's `slotAmbiguousTimes` but
+ * carries the pre-composed string (a reservation needs date + time to
+ * disambiguate, unlike a same-date slot which needs only the time).
+ */
+function reservationCandidateLabel(date: string, startTime: string): string {
+  // date is ISO YYYY-MM-DD (DTO); render DD/MM. startTime is HH:MM → HHh / HHhMM.
+  const d = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
+  const dm = d === null ? date : `${d[3]}/${d[2]}`;
+  const t = /^(\d{1,2}):(\d{2})$/.exec(startTime);
+  const hm = t === null ? startTime : t[2] === "00" ? `${t[1]}h` : `${t[1]}h${t[2]}`;
+  return `${dm} às ${hm}`;
+}
+
+/**
+ * NL→id: explicit reservationId wins; else auto-resolve the customer's ONE active
+ * reservation. BKL-223 — a THREE-way outcome (mirrors {@link resolveIdless} for
+ * orders): resolved-one / AMBIGUOUS-many (carry first-party candidate labels for a
+ * CLARIFY, never a guess) / none. Collapsing ≥2 into `reservationId:null` here would
+ * — as before this fix — render `reservation.not_found` even though the reservations
+ * WERE found; the pack-side `clarifyAmbiguousReservation` guard voices the candidates
+ * instead. Owner-scoped (only THIS customer's reservations); fail-safe on read error.
+ */
 async function resolveReservationId(
   payload: Ctx,
   customerId: string,
-): Promise<{ reservationId: string | null; autoResolved: boolean }> {
+): Promise<{ reservationId: string | null; autoResolved: boolean; ambiguousLabels?: string[] }> {
   if (typeof payload.reservationId === "string") {
     return { reservationId: payload.reservationId, autoResolved: false };
   }
@@ -882,14 +906,29 @@ async function resolveReservationId(
     const { reservations } = await createReservationService().listByCustomer(customerId, {
       limit: 10,
     });
-    const active = (reservations as Array<{ id: string; status: string }>).filter(
-      (r) => r.status === "pending" || r.status === "confirmed",
-    );
-    // Only auto-resolve when unambiguous (exactly one active booking); otherwise
-    // leave it for the agent to clarify which one.
-    return active.length === 1
-      ? { reservationId: active[0]!.id, autoResolved: true }
-      : { reservationId: null, autoResolved: false };
+    const active = (
+      reservations as Array<{
+        id: string;
+        status: string;
+        timeSlot: { date: string; startTime: string };
+      }>
+    ).filter((r) => r.status === "pending" || r.status === "confirmed");
+    if (active.length === 1) {
+      return { reservationId: active[0]!.id, autoResolved: true };
+    }
+    if (active.length >= 2) {
+      // ≥2 active → ambiguous: carry the first-party candidate labels for the CLARIFY
+      // (never guess which one). The reservationId stays null so the slot/present
+      // guards still fail closed; the clarify guard pre-empts the not_found refuse.
+      return {
+        reservationId: null,
+        autoResolved: false,
+        ambiguousLabels: active.map((r) =>
+          reservationCandidateLabel(r.timeSlot.date, r.timeSlot.startTime),
+        ),
+      };
+    }
+    return { reservationId: null, autoResolved: false };
   } catch {
     return { reservationId: null, autoResolved: false };
   }
@@ -952,6 +991,21 @@ async function applyAutoResolve(
       return {
         payload: { ...payload, reservationId: r.reservationId },
         autoResolvedMoneyRef: true,
+      };
+    }
+    // BKL-223 — ≥2 active reservations: stamp the ambiguity marker (mirrors
+    // `resolveReservationSlot`'s `slotAmbiguous*`) so the pack-side
+    // `clarifyAmbiguousReservation` guard voices the candidates as a CLARIFY
+    // instead of a bare not_found REFUSE. NOT an autoresolve (no forced confirm) —
+    // the reservationId stays unstamped so the present/slot guards fail closed.
+    if (r.ambiguousLabels !== undefined && r.ambiguousLabels.length >= 2) {
+      return {
+        payload: {
+          ...payload,
+          reservationAmbiguousCount: r.ambiguousLabels.length,
+          reservationAmbiguousLabels: r.ambiguousLabels,
+        },
+        autoResolvedMoneyRef: false,
       };
     }
   }
