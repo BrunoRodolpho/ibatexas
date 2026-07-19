@@ -1,61 +1,74 @@
-# JOURNEY-013 — order note via chat + review attempt as a pinned negative
-# (plan §5 T2-2a).
+# JOURNEY-013 — order note via chat + review attempt (plan §5 T2-2a),
+# REWORKED 2026-07-19 (BKL-172): both original chat pins went stale as the
+# product moved under them — this revision re-pins the CURRENT contracts.
 #
-# ── T2-2a AUTHORING CORRECTIONS (executable-spec principle, D-014/D-015):
+# ── T2-2a AUTHORING CORRECTIONS, RECALIBRATED (executable-spec principle,
+#    D-014/D-015 — each stale pin cites the PR that moved it):
 #
-#  1. CHAT NOTE-ADD CANNOT BIND ITS TARGET (product gap
-#     `chat-note-autoresolve`): order.note.add IS planner-advertised to
-#     authed customers (pack-orders capabilities.ts:131) and IS in
-#     CHAT_DRIVABLE_TOOL_KINDS — but the resolver's NL→id leg auto-resolves
-#     ONLY order.cancel / payment.pix.regenerate / reservation.cancel
-#     (resolve-and-assemble.ts ORDER_AUTORESOLVE_KINDS:419), so a
-#     conversational note for "my order" (no id quoted — customers don't
-#     know ids) reaches the kernel with ctx.orderId = null and
-#     requireOrderIdForMutation REFUSEs `order.not_found` (pack-orders
-#     policies.ts:343, state phase — deterministic). Unblock: add
-#     order.note.add to the auto-resolve set (non-money kind — no confirm
-#     gate needed). This run PINS the gap as the audited chat REFUSE.
+#  1. CHAT NOTE-ADD NOW BINDS ITS TARGET — the original pin (kernel REFUSE
+#     `order.not_found`: no NL→id auto-resolve leg for order.note.add) was
+#     CLOSED by PR #220 (BKL-038): order.note.add is in
+#     ORDER_AUTORESOLVE_KINDS (resolve-and-assemble.ts), so a conversational
+#     note for "my most recent order" (no id quoted — customers don't know
+#     ids) auto-resolves the customer's most-recent order and flags
+#     `ctx.autoResolvedMoneyRef`. The adopter `confirmOnAutoResolveGuard`
+#     (compose-policy-packs.ts AUTORESOLVE_CONFIRM_KINDS — order.note.add is
+#     a member) then PARKS it: the audited chat row is
+#     REQUEST_CONFIRMATION, not REFUSE. The park stays chat-unresumable
+#     (chat-confirmation-resume, the JOURNEY-001/014 precedent — BKL-033
+#     still open), so the RC row IS the deliverable and the persona is
+#     instructed NOT to confirm (deterministic terminal, the JOURNEY-014
+#     idiom).
 #
-#  2. THE NOTE EXECUTES OVER THE DOCUMENTED PUBLIC ROUTE: POST
-#     /api/orders/:id/notes (order-actions.ts:898) — requireAuth +
-#     route-side ownership, kernel order.note.add EXECUTE via
-#     addNoteFromEnvelope with getAuditSink() injected. ROUTE QUIRK
-#     (recorded): the route passes `customer:${customerId}` as the
-#     envelope's customerId (order-actions.ts:935), so the EXECUTE row
-#     lands in the hashed(`customer:<id>`) namespace, NOT
+#  2. THE NOTE EXECUTES OVER THE DOCUMENTED PUBLIC ROUTE (unchanged): POST
+#     /api/orders/:id/notes (order-actions.ts) — requireAuth + route-side
+#     ownership, kernel order.note.add EXECUTE via addNoteFromEnvelope with
+#     getAuditSink() injected. ROUTE QUIRK (recorded): the route passes
+#     `customer:${customerId}` as the envelope's customerId, so the EXECUTE
+#     row lands in the hashed(`customer:<id>`) namespace, NOT
 #     hashed(customerId) like the cancel route — this journey declares
 #     params.auditScopeCustomerTool: true so the harness scopes that
 #     namespace into the run (T2-2a harness extension).
 #
-#  3. REVIEW-SUBMIT IS REGISTERED-BUT-UNADVERTISED (stays
-#     `waived-unadvertised` in coverage, per the plan): order.review.submit
-#     is in CHAT_DRIVABLE_TOOL_KINDS but NO planner ever advertises it
-#     (reviews arrive via the web flow) — the SUT's LLM can never propose
-#     it, so nothing reaches the kernel and nothing is audited
-#     (the JOURNEY-009 negative pattern: planner surface, not refusal
-#     message, is the control). The persona explicitly ASKS for a 5-star
-#     review via chat; the deterministic negative is audit-side ABSENCE
-#     (audit.kind-absent), and the kind's coverage waiver stays in place.
+#  3. REVIEW-SUBMIT IS NOW ADVERTISED — the original negative (planner
+#     surface control: order.review.submit registered-but-unadvertised, so
+#     the chat ask produced NO envelope and the pin was audit-side ABSENCE)
+#     was CLOSED by PR #305 (FE-D28: order.review.submit end-to-end chat
+#     wiring + activation). The orders planner now advertises it to
+#     authenticated customers; the resolver stamps the Identity-class
+#     orderId + productId (order-note-review.schema.ts exposes only
+#     rating/comment + NL refs), and order.review.submit is ALSO in
+#     AUTORESOLVE_CONFIRM_KINDS — the customer sees the resolved order +
+#     product before a public review posts. The chat review ask therefore
+#     now REACHES the kernel and parks: REQUEST_CONFIRMATION replaces the
+#     old `audit.kind-absent` pin (same unconfirmed-terminal discipline as
+#     correction 1). The kind's coverage stance moves from
+#     waived-unadvertised to RC-covered-by-chat.
 #
 # Decision-trajectory derivation (IN_ORDER over hashed(chat session) +
 # hashed(customerId) + hashed(`customer:<id>`) — D-012 + correction 2):
 #   * order.checkout.create — EXECUTE (storefront assembly, cash + pickup —
 #     the JOURNEY-001 verified derivation).
-#   * order.note.add — REFUSE via chat (`order.not_found`; correction 1).
-#     The persona may re-ask — extra REFUSE rows share the declared tuple
-#     (tuple-level reconciliation) and IN_ORDER tolerates them.
+#   * order.note.add — REQUEST_CONFIRMATION via chat (auto-resolved
+#     most-recent order; correction 1). Re-asks may re-park — extra RC rows
+#     share the declared tuple (tuple-level reconciliation) and IN_ORDER
+#     tolerates them.
+#   * order.review.submit — REQUEST_CONFIRMATION via chat (FE-D28;
+#     correction 3). Never confirmed in this run.
 #   * order.note.add — EXECUTE via the public route (correction 2); 201 +
 #     the audited row; the note row itself is route-confirmed (the response
 #     carries the persisted content).
 id: JOURNEY-013
-title: Customer asks for an order note in chat, completes it on the site — review stays unproposable
+title: Customer asks for an order note in chat (parked for confirmation), completes it on the site — review-by-chat parks the same way
 businessCase: >-
   Kitchen notes are an allergy-adjacent safety surface ("sem cebola") — the
-  business needs them kernel-audited whichever surface carries them. Chat
-  understands the ask but cannot bind the target order today (pinned here
-  as the audited REFUSE), the public route completes it; and the same run
-  pins that no conversation can produce a review envelope — the review tool
-  stays registered-but-unadvertised, a deliberate planner-surface control.
+  business needs them kernel-audited whichever surface carries them. Chat now
+  binds the target order (auto-resolve, PR #220) but parks behind the
+  explicit-confirmation gate before mutating (pinned here as the audited
+  REQUEST_CONFIRMATION); the public route completes it; and the same run pins
+  that a chat review ask reaches the kernel and parks behind the SAME gate
+  (FE-D28, PR #305) — no unconfirmed auto-resolved reference ever mutates or
+  posts a public review.
 persona: >-
   Carlos Pereira, cliente autenticado, acabou de fechar um pedido de
   costela para retirada e quer avisar a cozinha: sem cebola na farofa.
@@ -122,19 +135,22 @@ acts:
       que você acabou de fazer: "sem cebola na farofa" (ex.: "Acabei de
       fazer um pedido — pode adicionar a observação 'sem cebola na farofa',
       por favor?"). NUNCA cite números, códigos ou IDs do pedido; se o
-      agente pedir o número, diga que é o seu pedido MAIS RECENTE. Depois,
-      em outra mensagem, peça para deixar uma AVALIAÇÃO 5 estrelas do
-      restaurante pelo chat. Envie no máximo 3 mensagens ao todo e então
-      encerre a conversa, independentemente das respostas (a observação
-      será registrada por outro canal).
+      agente pedir o número, diga que é o seu pedido MAIS RECENTE. Se o
+      agente pedir CONFIRMAÇÃO, NÃO confirme — não diga "sim"; siga para a
+      próxima mensagem. Depois, em outra mensagem, peça para deixar uma
+      AVALIAÇÃO 5 estrelas do restaurante pelo chat; novamente, se pedirem
+      confirmação, NÃO confirme. Envie no máximo 3 mensagens ao todo e
+      então encerre a conversa, independentemente das respostas (a
+      observação será registrada por outro canal).
     note: >-
-      Two pinned behaviors in one leg: (a) the conversational note-add is
-      kernel-REFUSED order.not_found — no auto-resolve leg for
-      order.note.add (chat-note-autoresolve gap, header correction 1),
-      asserted via the trajectory; (b) no review envelope can exist
-      (audit.kind-absent — order.review.submit is unadvertised, header
-      correction 3). ADVISORY only (llm-judge-excluded): the reply should
-      steer the customer to the site for both.
+      Two pinned behaviors in one leg: (a) the conversational note-add
+      auto-resolves the most-recent order and PARKS —
+      REQUEST_CONFIRMATION, asserted via the trajectory, never by reply
+      text (correction 1; the park is chat-unresumable, so not confirming
+      keeps the terminal deterministic); (b) the review ask now reaches
+      the kernel and parks behind the SAME gate (FE-D28 — correction 3).
+      ADVISORY only (llm-judge-excluded): the reply should surface the
+      confirmation ask in pt-BR.
   - kind: http
     name: add-note-via-route
     method: POST
@@ -143,7 +159,7 @@ acts:
     body:
       content: "Sem cebola na farofa, por favor."
     note: >-
-      The documented public note route (order-actions.ts:898): :orderId
+      The documented public note route (order-actions.ts): :orderId
       resolves to the run's own order via the projection barrier;
       ownership + kernel order.note.add EXECUTE (audited in the
       hashed(customer:<id>) namespace — header correction 2). The 201
@@ -152,17 +168,17 @@ expects:
   - intentKind: order.checkout.create
     decision: EXECUTE
   - intentKind: order.note.add
-    decision: REFUSE
+    decision: REQUEST_CONFIRMATION
+  - intentKind: order.review.submit
+    decision: REQUEST_CONFIRMATION
   - intentKind: order.note.add
     decision: EXECUTE
 verify:
   - invariant: audit.trajectory.in_order
     args:
       note: >-
-        checkout EXECUTE, chat note REFUSE, route note EXECUTE — a
-        subsequence of the run's merged hashed namespaces
+        checkout EXECUTE, chat note REQUEST_CONFIRMATION, chat review
+        REQUEST_CONFIRMATION, route note EXECUTE — a subsequence of the
+        run's merged hashed namespaces
   - invariant: audit.record.verified
     args: {}
-  - invariant: audit.kind-absent
-    args:
-      intentKind: order.review.submit

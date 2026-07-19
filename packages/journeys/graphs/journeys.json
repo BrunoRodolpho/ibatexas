@@ -1202,12 +1202,21 @@
       }
     },
     {
-      "id": "expect:order.note.add:REFUSE",
+      "id": "expect:order.note.add:REQUEST_CONFIRMATION",
       "type": "expectation",
-      "label": "order.note.add → REFUSE",
+      "label": "order.note.add → REQUEST_CONFIRMATION",
       "meta": {
-        "decision": "REFUSE",
+        "decision": "REQUEST_CONFIRMATION",
         "intentKind": "order.note.add"
+      }
+    },
+    {
+      "id": "expect:order.review.submit:REQUEST_CONFIRMATION",
+      "type": "expectation",
+      "label": "order.review.submit → REQUEST_CONFIRMATION",
+      "meta": {
+        "decision": "REQUEST_CONFIRMATION",
+        "intentKind": "order.review.submit"
       }
     },
     {
@@ -1656,12 +1665,12 @@
     {
       "id": "journey:JOURNEY-013",
       "type": "journey",
-      "label": "JOURNEY-013 — Customer asks for an order note in chat, completes it on the site — review stays unproposable",
+      "label": "JOURNEY-013 — Customer asks for an order note in chat (parked for confirmation), completes it on the site — review-by-chat parks the same way",
       "meta": {
         "actCount": 7,
         "blockedBy": [],
         "channel": "web",
-        "expectCount": 3,
+        "expectCount": 4,
         "journeyId": "JOURNEY-013",
         "optionalExpectCount": 0,
         "personaContext": "authed-customer",
@@ -1669,8 +1678,7 @@
         "status": "active",
         "verifyInvariants": [
           "audit.trajectory.in_order",
-          "audit.record.verified",
-          "audit.kind-absent"
+          "audit.record.verified"
         ]
       }
     },
@@ -2139,7 +2147,15 @@
     },
     {
       "from": "journey:JOURNEY-013",
-      "to": "expect:order.note.add:REFUSE",
+      "to": "expect:order.note.add:REQUEST_CONFIRMATION",
+      "type": "expects",
+      "meta": {
+        "optional": false
+      }
+    },
+    {
+      "from": "journey:JOURNEY-013",
+      "to": "expect:order.review.submit:REQUEST_CONFIRMATION",
       "type": "expects",
       "meta": {
         "optional": false
