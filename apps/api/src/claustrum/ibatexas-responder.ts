@@ -291,10 +291,21 @@ function draftLeaksCapabilityId(
 // completeWith(), so an override remains forensically visible.
 
 /** Neutral, audit-accurate line substituted when the grounded reply contradicts
- *  the authoritative decision. Claims only that the request was registered —
- *  never a specific success/failure outcome. */
+ *  the authoritative decision on a turn that ACTUALLY COMMITTED a mutation. Claims
+ *  only that the request was registered — honest here because a real EXECUTE ran
+ *  (the contradiction case: the model wrongly said "no access" after the runtime
+ *  acted). NEVER used on a no-op turn — see BKL-210. */
 export const GROUNDED_SAFE_FALLBACK_PTBR =
   "Recebi sua solicitação e ela foi registrada. Se precisar de mais detalhes, posso ajudar.";
+
+/** BKL-210 — the HONEST fallback for a clamped draft on a turn that committed
+ *  NOTHING (no executed kind). The old single fallback claimed "foi registrada"
+ *  even when nothing was adjudicated — live-caught firing for an injection probe
+ *  AND an LGPD-erasure ask (a real false reassurance: the customer believed the
+ *  request was on file). This variant asserts NO world-state change and offers
+ *  the honest next step, never a receipt. */
+export const NO_CAPABILITY_HONEST_FALLBACK_PTBR =
+  "Não consegui concluir essa solicitação por aqui. Se preferir, posso te encaminhar para um atendente.";
 
 const NO_AUTHORITY_PATTERNS: ReadonlyArray<RegExp> = [
   /\bnao (tenho|possuo|teria) acesso\b/,
@@ -703,20 +714,40 @@ export function replyLeaksSpanish(text: string): string | null {
   return null;
 }
 
+/** BKL-210 — pick the neutral fallback by OUTCOME: the audit-accurate
+ *  "registrada" line ONLY when a mutation genuinely committed this turn (the
+ *  contradiction-after-EXECUTE case, where a "couldn't do it" line would be a
+ *  false FAILURE); otherwise the HONEST no-op line (nothing was registered, so
+ *  claiming so is a false success — the injection / LGPD-noop case). */
+function neutralFallbackFor(acted: unknown): string {
+  return executedKinds(acted).size > 0
+    ? GROUNDED_SAFE_FALLBACK_PTBR
+    : NO_CAPABILITY_HONEST_FALLBACK_PTBR;
+}
+
+/** True when `text` is either neutral fallback — used by the closed-hours /
+ *  rewrite guards to detect "the success guard already clobbered this draft",
+ *  now that the clobber target is outcome-dependent (BKL-210). */
+function isNeutralFallback(text: string): boolean {
+  return text === GROUNDED_SAFE_FALLBACK_PTBR || text === NO_CAPABILITY_HONEST_FALLBACK_PTBR;
+}
+
 /** Apply the deterministic post-completion guards to a model-produced draft:
- *  substitute the neutral, audit-accurate line if the reply makes a no-authority
- *  claim (F1) or claims a success the runtime did not grant (F1b). Preserves the
- *  draft's token usage so the loop's cost accounting stays correct. This is a FULL
- *  replacement (not `withText`): a confabulated draft's artifacts/meta are
- *  deliberately discarded — only the cost accounting (usage) survives. */
+ *  substitute the neutral line (outcome-aware, BKL-210) if the reply makes a
+ *  no-authority claim (F1) or claims a success the runtime did not grant (F1b).
+ *  Preserves the draft's token usage so the loop's cost accounting stays correct.
+ *  This is a FULL replacement (not `withText`): a confabulated draft's
+ *  artifacts/meta are deliberately discarded — only the cost accounting (usage)
+ *  survives. */
 function guardDraft(draft: DraftResponse, acted: unknown): DraftResponse {
   if (
     groundedReplyContradicts(draft.text) !== null ||
     replyClaimsUnearnedSuccess(draft.text, acted) !== null
   ) {
+    const fallback = neutralFallbackFor(acted);
     return draft.usage === undefined
-      ? { text: GROUNDED_SAFE_FALLBACK_PTBR }
-      : { text: GROUNDED_SAFE_FALLBACK_PTBR, usage: draft.usage };
+      ? { text: fallback }
+      : { text: fallback, usage: draft.usage };
   }
   // F6 (BKL-064): a Spanish-leaked draft slips past the pt-BR lexicons above —
   // clamp it to a neutral pt-BR line that asserts no domain fact.
@@ -770,14 +801,17 @@ function observedGuardDraft(
 function clampCapabilityIdLeak(
   draft: DraftResponse,
   turnId: string | undefined,
+  acted: unknown,
 ): DraftResponse {
   logger.warn(
     { component: "responder", event: "success_guard.clamp", turnId, guard: "capability_id_leak" },
     "responder clamped a draft that echoed a raw capability id",
   );
+  // BKL-210 — outcome-aware: the accurate "registrada" only if a mutation ran.
+  const fallback = neutralFallbackFor(acted);
   return draft.usage === undefined
-    ? { text: GROUNDED_SAFE_FALLBACK_PTBR }
-    : { text: GROUNDED_SAFE_FALLBACK_PTBR, usage: draft.usage };
+    ? { text: fallback }
+    : { text: fallback, usage: draft.usage };
 }
 
 /** Closed-hours delivery guard. Runs the deterministic `closedHoursBackstop`
@@ -810,13 +844,13 @@ function closedHoursDeliveryGuard(
   // `scheduled.accepted` is true ONLY for a proven scheduled PICKUP (never a
   // delivery/immediate order that also EXECUTEs while closed → those keep the degrade).
   const clobbered =
-    repaired.text !== draft.text || repaired.text === GROUNDED_SAFE_FALLBACK_PTBR;
+    repaired.text !== draft.text || isNeutralFallback(repaired.text);
   if (scheduled.accepted && clobbered) {
     const text = closedHoursScheduledConfirmation(signal, scheduled.awaitingPixPayment);
     return repaired.usage === undefined ? { text } : { text, usage: repaired.usage };
   }
 
-  if (repaired.text === GROUNDED_SAFE_FALLBACK_PTBR) {
+  if (isNeutralFallback(repaired.text)) {
     const text = closedHoursDisclosure(signal);
     return repaired.usage === undefined ? { text } : { text, usage: repaired.usage };
   }
@@ -838,7 +872,7 @@ function surfaceRewriteClamp(
   // Finding 21: guardDraft (F1/F1b) runs BEFORE this and may have substituted the
   // neutral fallback. Appending a specific clamp reason onto that generic line reads
   // as contradictory — the fallback already supersedes the clamp note, so leave it.
-  if (draft.text === GROUNDED_SAFE_FALLBACK_PTBR) return draft;
+  if (isNeutralFallback(draft.text)) return draft;
   const reason = typeof decision.reason === "string" ? decision.reason.trim() : "";
   if (reason.length === 0 || /\b(pii|mascar)/i.test(reason)) return draft;
   // Finding 9: only suppress the clamp notice when the model ALREADY conveyed THIS
@@ -1232,7 +1266,7 @@ export function createIbatexasResponder(
           // ② defense-in-depth: if the model still echoed a raw capability id, clamp
           // it to the neutral fallback before it can reach the customer.
           const draft = draftLeaksCapabilityId(rawDraft.text, capabilities)
-            ? clampCapabilityIdLeak(rawDraft, turnId)
+            ? clampCapabilityIdLeak(rawDraft, turnId, input.acted)
             : rawDraft;
           // F1 + F1b: post-completion guards. The grounded prompt is only a soft
           // instruction — never let a model reply that contradicts the audited
