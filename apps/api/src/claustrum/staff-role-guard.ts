@@ -247,3 +247,58 @@ export const paymentTransitionBandGuard: Guard<string, unknown, unknown> =
       ],
     );
   });
+
+// ── BKL-131: payload-aware banding for order.status.transition (reject = MANAGER+) ─
+//
+// The matrix row for `order.status.transition` is the UNION {OWNER,MANAGER,
+// ATTENDANT} because ATTENDANT legitimately advances orders via
+// POST /api/admin/orders/:id/advance (requireStaff) — and `/advance` structurally
+// CANNOT emit `canceled` (`getNextStatus` never returns it). Rejecting a pending
+// order (→ `canceled`) is a MANAGER+ operation (the force-cancel / PATCH routes are
+// already requireManager). At kind granularity the matrix cannot distinguish an
+// ATTENDANT advance from an ATTENDANT reject, so this companion narrows the kernel
+// gate by PAYLOAD: an `order.status.transition` to `canceled` requires MANAGER+,
+// closing the kind-granularity gap AT THE KERNEL. Mirrors paymentTransitionBandGuard.
+
+/** The one order.status.transition target that is MANAGER+ (staff reject of a
+ *  pending order → `canceled`). String literal = the OrderFulfillmentStatus
+ *  `canceled` DB value (avoids a value import into this conductor-loaded module). */
+const ORDER_CANCEL_STATUS = "canceled";
+
+/**
+ * AUTH-phase companion to {@link staffRoleGuard} (BKL-131). REFUSEs an
+ * `order.status.transition` whose `newStatus` is `canceled` (a staff reject) unless
+ * the actor.role is OWNER or MANAGER. Composed ALONGSIDE `staffRoleGuard`. INERT
+ * unless an `admin:` session — system/customer/LLM/managed-agent transitions are
+ * untouched. Every non-`canceled` transition (the ATTENDANT-allowed `/advance`
+ * path) stays any-staff. Pure (no I/O).
+ */
+export const orderStatusTransitionBandGuard: Guard<string, unknown, unknown> =
+  nameGuard("orderStatusTransitionBand", (envelope, _state) => {
+    const { sessionId, role } = envelope.actor;
+    // Staff-plane only — inert for system / customer / LLM / managed-agent.
+    if (!sessionId.startsWith(STAFF_SESSION_NAMESPACE)) return null;
+    if (envelope.kind !== "order.status.transition") return null;
+
+    const newStatus = (envelope.payload as { newStatus?: unknown }).newStatus;
+    // Only the reject (→ `canceled`) is banded; every other transition (advance)
+    // stays any-staff (the base matrix already allows ATTENDANT).
+    if (newStatus !== ORDER_CANCEL_STATUS) return null;
+    // Reject requires MANAGER+ (OWNER or MANAGER).
+    if (role === "OWNER" || role === "MANAGER") return null;
+
+    return decisionRefuse(
+      refuseStaffRole(
+        `order.status.transition to "canceled" (reject) requires MANAGER; role "${String(role)}"`,
+      ),
+      [
+        basis("auth", BASIS_CODES.auth.SCOPE_INSUFFICIENT, {
+          sessionId,
+          kind: envelope.kind,
+          role,
+          newStatus,
+          reason: "order_cancel_manager_only",
+        }),
+      ],
+    );
+  });
