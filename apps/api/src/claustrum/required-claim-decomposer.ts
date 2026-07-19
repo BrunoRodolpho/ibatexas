@@ -416,7 +416,24 @@ export function classifyRequestSpans(text: string): SpanClass[] {
   // form in the alternation is ever followed by "at". Verified empirically against
   // both a must-fire and a must-not-fire word list (RESERVATION_STATUS_Q tests
   // below).
-  if (/(?<![a-z])reserv(?!at)(a|ar|ad|am|as|ando|ei|ou)/.test(t)) {
+  //
+  // BKL-217 — EXCLUDE reservation MUTATIONS via the shared `mutationImperative`
+  // net (the same read-vs-mutation split #349/BKL-201 applied to the cart span
+  // and BKL-206 to the order/payment status spans). RESERVATION_STATUS is
+  // classify-only-eligible, so without this gate "cancela minha reserva" / "muda
+  // minha reserva para 20h" fire RESERVATION_STATUS_Q → classify-only answers the
+  // READ and SILENTLY DROPS the reservation.cancel / reservation.modify (the
+  // reservation sibling of the BKL-201 hole — live-caught: a seeded-reservation
+  // "cancelar minha reserva das 18:30" degraded to "não encontrei" with zero
+  // adjudication). Gating on `!mutationImperative` routes those to the model /
+  // mutation path; a genuine reservation QUESTION ("minha reserva está
+  // confirmada?", "qual minha reserva?") has no mutation verb and still fires.
+  // A how-to interrogative ("como cancelo minha reserva?") also routes to the
+  // model for a helpful answer — the fail-SAFE direction (never a wrong read).
+  if (
+    !mutationImperative &&
+    /(?<![a-z])reserv(?!at)(a|ar|ad|am|as|ando|ei|ou)/.test(t)
+  ) {
     classes.push("RESERVATION_STATUS_Q");
   }
 

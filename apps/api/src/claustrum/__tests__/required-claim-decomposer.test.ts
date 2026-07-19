@@ -291,6 +291,39 @@ describe("classifyRequestSpans — FE-T17 RESERVATION_STATUS_Q (anchored marker)
       "RESERVATION_STATUS_Q",
     );
   });
+
+  // BKL-217 — read-vs-mutation split (the reservation sibling of BKL-201/206): a
+  // reservation MUTATION must NOT fire the READ span, or classify-only answers the
+  // read and silently drops the reservation.cancel / reservation.modify. Gated on
+  // the shared `mutationImperative` net (cancel/mud/troc/…).
+  it("does NOT fire on reservation MUTATIONS (routes to the mutation/model path)", () => {
+    for (const text of [
+      "cancela minha reserva",
+      "cancelar minha reserva das 18:30",
+      "quero cancelar minha reserva",
+      "muda minha reserva para 20h",
+      "mudar minha reserva para amanhã",
+      "troca minha reserva para 4 pessoas",
+    ]) {
+      expect(classifyRequestSpans(text), text).not.toContain("RESERVATION_STATUS_Q");
+    }
+  });
+
+  it("a how-to interrogative ('como cancelo minha reserva?') routes to the model (fail-safe, no read span)", () => {
+    expect(classifyRequestSpans("como cancelo minha reserva?")).not.toContain(
+      "RESERVATION_STATUS_Q",
+    );
+  });
+
+  it("a genuine reservation QUESTION still fires (the gate only excludes mutations)", () => {
+    for (const text of [
+      "minha reserva está confirmada?",
+      "qual minha reserva?",
+      "como está minha reserva de amanhã?",
+    ]) {
+      expect(classifyRequestSpans(text), text).toContain("RESERVATION_STATUS_Q");
+    }
+  });
 });
 
 // BKL-139 — CART_CONTENTS_Q (anchored marker; read-vs-mutation split). The marker
