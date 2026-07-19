@@ -68,6 +68,8 @@ import {
   refuseInvalidRating,
   refuseNoCartId,
   refuseNoOrderToMutate,
+  refuseFiscalNotEligible,
+  refuseFiscalRetryExceeded,
   refuseNotAuthenticated,
   refuseOrderAlreadyCancelled,
   refuseOrderAlreadyShipped,
@@ -286,6 +288,9 @@ const SYSTEM_OR_ANON_KINDS: ReadonlySet<string> = new Set([
   "order.projection.create",
   "order.status.transition",
   "order.status.reconcile",
+  // NEW-014 — fiscal emission is system-driven; auth is via the TRUSTED taint
+  // gate (orderTaintPolicy.systemOnlyKinds), not a customer principal.
+  "order.fiscal.emit",
 ])
 
 /**
@@ -410,6 +415,8 @@ const ORDER_OPS_REQUIRING_ORDER_ID: ReadonlySet<string> = new Set([
   "order.review.submit",
   "order.status.transition",
   "order.status.reconcile",
+  // NEW-014 — fiscal emission targets a specific order.
+  "order.fiscal.emit",
 ])
 
 const requireOrderIdForMutation: OrderGuard = (envelope, state) => {
@@ -1244,6 +1251,67 @@ const executeW5Kinds: OrderGuard = (envelope) => {
   ])
 }
 
+// ── NEW-014 — fiscal emission (order.fiscal.emit) ────────────────────────
+
+/**
+ * Fulfillment states from which a fiscal document may be emitted — an order is
+ * fiscally emittable only once the sale is CONSUMMATED (delivered). PR2's
+ * subscriber triggers on order.status_changed→delivered, but the POLICY is the
+ * authority: a fiscal.emit against any other state REFUSEs (no auto-emit for an
+ * incomplete sale). A named set so the subscriber can share it; adjust here if
+ * the fiscal-eligible point moves (e.g. to a payment-settled trigger).
+ */
+const FISCAL_ELIGIBLE_FULFILLMENT_STATUSES: ReadonlySet<string> = new Set([
+  "delivered",
+])
+
+/** Bounded fiscal-emit retries — fail closed at/above the cap rather than
+ *  hammer SEFAZ / the provider on a persistent rejection. */
+export const FISCAL_EMIT_MAX_ATTEMPTS = 5
+
+/** STATE guard — REFUSE `order.fiscal.emit` unless the order reached a
+ *  fiscal-eligible state. */
+const requireFiscalEligibleState: OrderGuard = (envelope, state) => {
+  if (envelope.kind !== "order.fiscal.emit") return null
+  const fs = state.ctx.fulfillmentStatus
+  if (typeof fs === "string" && FISCAL_ELIGIBLE_FULFILLMENT_STATUSES.has(fs)) {
+    return null
+  }
+  return decisionRefuse(refuseFiscalNotEligible(fs ?? "unknown"), [
+    basis("state", BASIS_CODES.state.TRANSITION_ILLEGAL, {
+      kind: envelope.kind,
+      fulfillmentStatus: fs ?? null,
+    }),
+  ])
+}
+
+/** BUSINESS guard — REFUSE `order.fiscal.emit` at/above the retry cap (the
+ *  adopter supplies `fiscalEmitAttempts` from the persisted fiscal record). */
+const fiscalEmitRetryCapGuard: OrderGuard = (envelope, state) => {
+  if (envelope.kind !== "order.fiscal.emit") return null
+  const attempts = state.ctx.fiscalEmitAttempts ?? 0
+  if (attempts < FISCAL_EMIT_MAX_ATTEMPTS) return null
+  return decisionRefuse(refuseFiscalRetryExceeded(`attempts=${attempts}`), [
+    basis("business", BASIS_CODES.business.RULE_VIOLATED, {
+      kind: envelope.kind,
+      attempts,
+      cap: FISCAL_EMIT_MAX_ATTEMPTS,
+    }),
+  ])
+}
+
+/** EXECUTE producer — `order.fiscal.emit` that passed state (eligible) + taint
+ *  (TRUSTED system) + retry-cap. The subscriber performs the actual emission
+ *  through the FiscalProviderPort AFTER the kernel EXECUTEs. */
+const executeFiscalEmit: OrderGuard = (envelope) => {
+  if (envelope.kind !== "order.fiscal.emit") return null
+  return decisionExecute([
+    basis("business", BASIS_CODES.business.RULE_SATISFIED, {
+      kind: envelope.kind,
+    }),
+  ])
+}
+
 // ── PolicyBundle ────────────────────────────────────────────────────────
 
 /**
@@ -1271,6 +1339,8 @@ export const ordersPolicyBundle: PolicyBundle<
     requireLegalStatusTransition,
     requireCancellable,
     requireAmendable,
+    // NEW-014 — fiscal.emit only from a fiscal-eligible (delivered) order.
+    requireFiscalEligibleState,
     requireCartItemsForCheckout,
     requireSlotsFilledForCheckout,
     deferOnPendingPix,
@@ -1298,11 +1368,14 @@ export const ordersPolicyBundle: PolicyBundle<
     refuseCardPanInPix,
     redactPiiInPix,
     requireAmendItemDisambiguation,
+    // NEW-014 — bounded fiscal-emit retries BEFORE the fiscal EXECUTE producer.
+    fiscalEmitRetryCapGuard,
     executeCartOps,
     executeCheckout,
     executeCancel,
     executeAmend,
     executeNoteAdd,
+    executeFiscalEmit,
     executeW5Kinds,
   ],
   /**

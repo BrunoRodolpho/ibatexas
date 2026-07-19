@@ -111,6 +111,31 @@ const corpus: ReadonlyArray<Fixture> = [
     state: authenticatedState({ customerId: null, channel: "web" }),
     expect: { kind: "EXECUTE" },
   },
+  // ── NEW-014 fiscal.emit (4 bands) ────────────────────────────────────
+  {
+    name: "EXECUTE: TRUSTED order.fiscal.emit on a delivered (fiscal-eligible) order",
+    envelope: env("order.fiscal.emit", { orderId: "o-1" }, "TRUSTED"),
+    state: authenticatedState({ fulfillmentStatus: "delivered" }),
+    expect: { kind: "EXECUTE" },
+  },
+  {
+    name: "REFUSE: UNTRUSTED order.fiscal.emit (system-only taint gate)",
+    envelope: env("order.fiscal.emit", { orderId: "o-1" }, "UNTRUSTED"),
+    state: authenticatedState({ fulfillmentStatus: "delivered" }),
+    expect: { kind: "REFUSE" },
+  },
+  {
+    name: "REFUSE: order.fiscal.emit on a NON-eligible (preparing) order",
+    envelope: env("order.fiscal.emit", { orderId: "o-1" }, "TRUSTED"),
+    state: authenticatedState({ fulfillmentStatus: "preparing" }),
+    expect: { kind: "REFUSE", refusalCode: "order.fiscal.not_eligible" },
+  },
+  {
+    name: "REFUSE: order.fiscal.emit over the bounded retry cap",
+    envelope: env("order.fiscal.emit", { orderId: "o-1" }, "TRUSTED"),
+    state: authenticatedState({ fulfillmentStatus: "delivered", fiscalEmitAttempts: 5 }),
+    expect: { kind: "REFUSE", refusalCode: "order.fiscal.retry_exceeded" },
+  },
   {
     name: "EXECUTE: order.item.add with explicit empty allergens",
     envelope: env("order.item.add", {

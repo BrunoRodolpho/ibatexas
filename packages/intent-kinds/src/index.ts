@@ -138,6 +138,7 @@ export const ORDER_INTENT_KINDS = [
   "order.projection.create",
   "order.status.transition",
   "order.status.reconcile",
+  "order.fiscal.emit",
 ] as const satisfies readonly OrderIntentKind[]
 
 // ── Pack-reservations intent surface ──────────────────────────────────────────

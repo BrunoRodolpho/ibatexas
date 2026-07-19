@@ -87,6 +87,7 @@ export type OrderIntentKind =
   | "order.projection.create"
   | "order.status.transition"
   | "order.status.reconcile"
+  | "order.fiscal.emit"
 
 // ── Payloads ────────────────────────────────────────────────────────────
 
@@ -147,6 +148,16 @@ export interface OrderCancelPayload {
 export interface OrderCancelSystemPayload {
   readonly orderId: string
   readonly reason: "stale" | "pix_expired"
+}
+
+/**
+ * NEW-014 — `order.fiscal.emit` (SYSTEM-only). Emit the fiscal document
+ * (NFC-e/NFe) for a delivered order. The subscriber (PR2) builds this from the
+ * order.status_changed→delivered event with a system actor; the resolver stamps
+ * the order state (fulfillmentStatus + fiscalEmitAttempts) the policy reads.
+ */
+export interface OrderFiscalEmitPayload {
+  readonly orderId: string
 }
 
 export interface OrderAmendRequestPayload {
@@ -301,6 +312,7 @@ export type OrderPayload =
   | OrderNoteAddPayload
   | OrderReviewSubmitPayload
   | OrderReorderPayload
+  | OrderFiscalEmitPayload
   | OrderProjectionCreatePayload
   | OrderStatusTransitionPayload
   | OrderStatusReconcilePayload
@@ -356,8 +368,16 @@ export interface OrderState {
     /** Marker recorded after a successful cancel — guards subsequent cancels. */
     readonly lastAction?: "cancelled" | "amended" | null
     /** Order fulfillment status — drives the kernel cancel point-of-no-return
-     *  guard (mirrors the route-layer canPerformAction rule). */
+     *  guard (mirrors the route-layer canPerformAction rule). NEW-014 also
+     *  reads it for the fiscal-eligible gate on `order.fiscal.emit`. */
     readonly fulfillmentStatus?: string | null
+    /**
+     * NEW-014 — how many fiscal-emit attempts this order already had (the
+     * adopter supplies it from the persisted fiscal record / a counter). The
+     * bounded-retry guard REFUSEs `order.fiscal.emit` at/above the cap so a
+     * rejecting SEFAZ is never hammered. Absent ⇒ 0 (first attempt).
+     */
+    readonly fiscalEmitAttempts?: number
     /**
      * SDD §O#10 (adjacent-type confident-wrong) disambiguation signal.
      *
@@ -425,6 +445,8 @@ export const orderTaintPolicy = createSystemTaintPolicy({
   systemOnlyKinds: [
     "order.projection.create",
     "order.status.reconcile",
+    // NEW-014 — fiscal emission is SYSTEM-only; the LLM must never forge it.
+    "order.fiscal.emit",
   ],
   userMinimum: "UNTRUSTED",
 })

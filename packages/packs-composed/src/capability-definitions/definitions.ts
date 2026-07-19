@@ -495,6 +495,9 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     adminLabel: "Avançar status do pedido",
   },
   { kind: "order.status.reconcile", pack: "ibatexas/pack-orders", mutating: true, tier: "identity" },
+  // NEW-014 — fiscal (NFC-e/NFe) emission. SYSTEM-only (subscriber-emitted on
+  // order delivery); never LLM-proposable → plannerAdvertisedBy stays undefined.
+  { kind: "order.fiscal.emit", pack: "ibatexas/pack-orders", mutating: true, tier: "identity" },
 
   // ── pack-reservations (8 — matches RESERVATION_INTENT_KINDS / reservationsPack.intents order) ──
   {

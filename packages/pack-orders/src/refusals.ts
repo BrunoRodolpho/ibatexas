@@ -158,6 +158,31 @@ export function refuseCheckoutMissingPaymentMethod(): Refusal {
   )
 }
 
+// ── Fiscal refusals (NEW-014) ───────────────────────────────────────────
+
+/** `order.fiscal.emit` on an order that has NOT reached a fiscal-eligible
+ *  state (delivered) — a fiscal document must never be emitted for an
+ *  incomplete sale. System-emitted; the userFacing is for audit/observability. */
+export function refuseFiscalNotEligible(detail?: string): Refusal {
+  return refuse(
+    "STATE",
+    "order.fiscal.not_eligible",
+    "O pedido ainda não está em um estado fiscalmente elegível para emissão.",
+    detail,
+  )
+}
+
+/** `order.fiscal.emit` that exceeded the bounded retry cap — fail-closed
+ *  rather than hammer SEFAZ / the provider. */
+export function refuseFiscalRetryExceeded(detail?: string): Refusal {
+  return refuse(
+    "BUSINESS_RULE",
+    "order.fiscal.retry_exceeded",
+    "Número máximo de tentativas de emissão fiscal atingido para este pedido.",
+    detail,
+  )
+}
+
 // ── Business refusals (BUSINESS_RULE) ───────────────────────────────────
 
 /**

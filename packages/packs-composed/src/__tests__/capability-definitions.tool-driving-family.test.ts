@@ -47,12 +47,16 @@ import type { CapabilityDefinition, CapabilityPackId } from "../capability-defin
 // ── Count assertions (ticket AC: "70 KNOWN / 18 CHAT_DRIVABLE", updated to
 // 20 CHAT_DRIVABLE by FE-T09 (D-a) — the amend inversion; KNOWN 70→65 (BKL-176
 // retired 5 payment.charge.*) → 63 (BKL-177 PR-A retired order.cancel.system +
-// reservation.waitlist.notify) ──
+// reservation.waitlist.notify) → 61 (BKL-177 PR-B retired whatsapp.message.send
+// + template.send) → 62 (NEW-014 added the system-only order.fiscal.emit — NOT
+// chat-drivable, so CHAT_DRIVABLE stays 20) ──
 
-describe("count assertions — 61 KNOWN / 20 CHAT_DRIVABLE pinned against the projections (FE-T21 AC, FE-T09 D-a update; BKL-176 + BKL-177)", () => {
-  it("KNOWN_INTENT_KINDS has exactly 61 kinds", () => {
-    // 70 → 65 (BKL-176: 5 dead payment.charge.*) → 63 (BKL-177 PR-A: 2 kinds) → 61 (PR-B: whatsapp.message.send + template.send).
-    expect(KNOWN_INTENT_KINDS.size).toBe(61)
+describe("count assertions — 62 KNOWN / 20 CHAT_DRIVABLE pinned against the projections (FE-T21 AC, FE-T09 D-a update; BKL-176 + BKL-177 + NEW-014)", () => {
+  it("KNOWN_INTENT_KINDS has exactly 62 kinds", () => {
+    // 70 → 65 (BKL-176: 5 dead payment.charge.*) → 63 (BKL-177 PR-A: 2 kinds)
+    // → 61 (BKL-177 PR-B: whatsapp.message.send + template.send) → 62
+    // (NEW-014: +order.fiscal.emit).
+    expect(KNOWN_INTENT_KINDS.size).toBe(62)
   })
 
   it("CHAT_DRIVABLE_TOOL_KINDS has exactly 20 kinds, and generateChatDrivableToolKinds(CAPABILITY_DEFINITIONS) reproduces it byte-for-byte", () => {
@@ -77,9 +81,10 @@ describe("count assertions — 61 KNOWN / 20 CHAT_DRIVABLE pinned against the pr
     expect(source).not.toMatch(/The 18 chat-drivable/)
   })
 
-  it("the 57-kind CapabilityDefinition registry + KNOWN_INTENT_KINDS' 4 external kinds (3 pix + 1 loyalty) account for all 61", () => {
-    // 66 → 61 (BKL-176: 5 dead payment.charge.*) → 59 (BKL-177 PR-A: 2 kinds) → 57 (PR-B: 2 whatsapp kinds).
-    expect(CAPABILITY_DEFINITIONS).toHaveLength(57)
+  it("the 58-kind CapabilityDefinition registry + KNOWN_INTENT_KINDS' 4 external kinds (3 pix + 1 loyalty) account for all 62", () => {
+    // 66 → 61 (BKL-176: 5 dead payment.charge.*) → 59 (BKL-177 PR-A: 2 kinds)
+    // → 57 (BKL-177 PR-B: 2 whatsapp kinds) → 58 (NEW-014: +order.fiscal.emit).
+    expect(CAPABILITY_DEFINITIONS).toHaveLength(58)
   })
 })
 

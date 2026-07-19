@@ -3,7 +3,7 @@
   "graph": "capability",
   "meta": {
     "dangling": [],
-    "intentKinds": 61,
+    "intentKinds": 62,
     "packs": 6,
     "personaContexts": [
       "authed-customer",
@@ -525,6 +525,28 @@
           "guest"
         ],
         "chatDrivable": true,
+        "composedPack": "ibatexas/pack-orders",
+        "domain": "order",
+        "flags": [],
+        "knownKind": true,
+        "plausibleDecisions": [
+          "EXECUTE",
+          "REFUSE",
+          "ESCALATE",
+          "REQUEST_CONFIRMATION",
+          "DEFER",
+          "REWRITE"
+        ],
+        "staffRoute": false
+      }
+    },
+    {
+      "id": "intent:order.fiscal.emit",
+      "type": "intent",
+      "label": "order.fiscal.emit",
+      "meta": {
+        "advertisedContexts": [],
+        "chatDrivable": false,
         "composedPack": "ibatexas/pack-orders",
         "domain": "order",
         "flags": [],
@@ -1428,7 +1450,7 @@
       "type": "pack",
       "label": "ibatexas/pack-orders",
       "meta": {
-        "intentCount": 21,
+        "intentCount": 22,
         "policyDefault": "REFUSE",
         "version": "1.1.0"
       }
@@ -2042,6 +2064,11 @@
     {
       "from": "pack:ibatexas/pack-orders",
       "to": "intent:order.coupon.apply",
+      "type": "declares"
+    },
+    {
+      "from": "pack:ibatexas/pack-orders",
+      "to": "intent:order.fiscal.emit",
       "type": "declares"
     },
     {

@@ -34,7 +34,7 @@
           "kind": "SECURITY",
           "code": "guard_panic",
           "userFacing": "System is temporarily unavailable.",
-          "detail": "Guard panic in state phase[5] (requireCartItemsForCheckout): TypeError: Cannot read properties of undefined (reading 'items')"
+          "detail": "Guard panic in state phase[6] (requireCartItemsForCheckout): TypeError: Cannot read properties of undefined (reading 'items')"
         },
         "basis": [
           {
@@ -46,7 +46,7 @@
             "code": "guard_panic",
             "detail": {
               "phase": "state",
-              "index": 5,
+              "index": 6,
               "guardName": "requireCartItemsForCheckout",
               "errorName": "TypeError",
               "message": "Cannot read properties of undefined (reading 'items')"
@@ -80,7 +80,7 @@
           "kind": "SECURITY",
           "code": "guard_panic",
           "userFacing": "System is temporarily unavailable.",
-          "detail": "Guard panic in state phase[7] (deferOnPendingPix): TypeError: Cannot read properties of undefined (reading 'paymentStatus')"
+          "detail": "Guard panic in state phase[8] (deferOnPendingPix): TypeError: Cannot read properties of undefined (reading 'paymentStatus')"
         },
         "basis": [
           {
@@ -92,7 +92,7 @@
             "code": "guard_panic",
             "detail": {
               "phase": "state",
-              "index": 7,
+              "index": 8,
               "guardName": "deferOnPendingPix",
               "errorName": "TypeError",
               "message": "Cannot read properties of undefined (reading 'paymentStatus')"
@@ -172,7 +172,7 @@
           "kind": "SECURITY",
           "code": "guard_panic",
           "userFacing": "System is temporarily unavailable.",
-          "detail": "Guard panic in state phase[3] (requireSlotInFuture): TypeError: Cannot read properties of undefined (reading 'slot')"
+          "detail": "Guard panic in state phase[4] (requireSlotInFuture): TypeError: Cannot read properties of undefined (reading 'slot')"
         },
         "basis": [
           {
@@ -184,7 +184,7 @@
             "code": "guard_panic",
             "detail": {
               "phase": "state",
-              "index": 3,
+              "index": 4,
               "guardName": "requireSlotInFuture",
               "errorName": "TypeError",
               "message": "Cannot read properties of undefined (reading 'slot')"
