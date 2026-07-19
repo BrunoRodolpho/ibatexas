@@ -353,7 +353,47 @@ async function stopDockerContainers(): Promise<void> {
 
 // ── Build/test runner ────────────────────────────────────────────────────────
 
+/**
+ * BKL-151 (local half) — fail CLOSED on a dependency skew before building.
+ *
+ * When `pnpm-lock.yaml` is NEWER than `node_modules` the lockfile changed (a
+ * merge touched a package.json / a dep bump) but `pnpm install` never ran, so
+ * `node_modules` is stale. Building against a stale tree surfaces DOWNSTREAM as
+ * an opaque ghost (the claims-validate `TypeError` on a shape that a newer dep
+ * added) rather than an actionable message. Turn that into a DETERMINISTIC,
+ * self-explaining skew error at the build seam. Returns the reason string when
+ * skewed (for testing); `null` when in sync or indeterminate (fresh clone /
+ * missing path → let pnpm itself surface it). Exported for unit testing.
+ */
+export function depsSkewReason(root: string = ROOT): string | null {
+  try {
+    const lockMtime = fs.statSync(path.join(root, "pnpm-lock.yaml")).mtimeMs
+    const nmMtime = fs.statSync(path.join(root, "node_modules")).mtimeMs
+    if (lockMtime > nmMtime) {
+      return "pnpm-lock.yaml is newer than node_modules — dependencies changed but were not installed"
+    }
+    return null
+  } catch {
+    // Missing lockfile or node_modules (e.g. a fresh clone) — not a skew we can
+    // assert; let the build / pnpm surface the real problem.
+    return null
+  }
+}
+
+/** Print the skew error and exit(1) fail-closed when deps are out of sync. */
+function assertDepsInstalled(): void {
+  const reason = depsSkewReason()
+  if (reason !== null) {
+    console.error(chalk.red(`\n  ${reason}.`))
+    console.error(chalk.yellow("  Run: pnpm install   (then retry)\n"))
+    process.exit(1)
+  }
+}
+
 async function runPnpmCommand(rawFilter: string | undefined, command: "build" | "test"): Promise<void> {
+  // BKL-151 — before building packages, fail closed on a lockfile↔node_modules
+  // skew so a stale build never surfaces later as the claims-validate ghost.
+  if (command === "build") assertDepsInstalled()
   const filter = rawFilter ? resolveFilter(rawFilter) : undefined
   const args = filter
     ? ["--filter", filter, command]
@@ -506,6 +546,12 @@ async function printDevUrls(): Promise<void> {
 // ── Command registration ────────────────────────────────────────────────────
 
 export function registerDevCommands(dev: Command) {
+
+  // FE-D05 — with the root program (index.ts), enable positional options on
+  // `dev` too so `ibx dev start [services] --no-tui -y` routes both flags to
+  // the `start` subcommand rather than the parent `dev` default action (which
+  // declares the same options and otherwise shadows them → silent flag drop).
+  dev.enablePositionalOptions()
 
   // ── ibx dev [services...]  (default action) ──────────────────────────────
   dev
