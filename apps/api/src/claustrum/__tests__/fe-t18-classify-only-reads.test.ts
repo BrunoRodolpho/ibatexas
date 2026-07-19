@@ -50,7 +50,10 @@ import {
   classifyOnlyReadsEnabled,
   classifyOnlyRequiredTypes,
   deriveDisambiguationCandidates,
+  presentPublicItemIds,
+  publicPerItemBaseKey,
 } from "../classify-only-reads.js";
+import { ownerScopedBaseKey } from "../claim-registry.js";
 import {
   classifyRequestSpans,
   decomposeRequiredClaims,
@@ -150,8 +153,8 @@ describe("classifyOnlyRequiredTypes — the eligibility gate", () => {
     expect(classifyOnlyRequiredTypes("posso retirar meu pedido agora?")).toBeUndefined();
   });
 
-  it("every eligible type is genuinely a registered, owner-scoped registry type", () => {
-    expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.size).toBe(7);
+  it("every eligible type is registered with a DETERMINISTIC subject path (owner-scoped, public per-item, or fixed-key)", () => {
+    expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.size).toBe(11);
     expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.has("ORDER_FULFILLMENT_STAGE")).toBe(true);
     expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.has("PAYMENT_STATUS")).toBe(true);
     expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.has("RESERVATION_STATUS")).toBe(true);
@@ -163,6 +166,163 @@ describe("classifyOnlyRequiredTypes — the eligibility gate", () => {
     // BKL-163 — the provable-empty complement joined in lockstep (the closure row
     // requires the pair; omitting it would decline every cart turn wholesale).
     expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.has("CART_EMPTY")).toBe(true);
+    // BKL-183 — the PUBLIC menu/store reads (per-item subjects off the ledger;
+    // fixed-key for overview/store-info).
+    expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.has("MENU_ITEM_PRICE")).toBe(true);
+    expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.has("MENU_ITEM_CONTENTS")).toBe(true);
+    expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.has("MENU_OVERVIEW")).toBe(true);
+    expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.has("STORE_INFO")).toBe(true);
+    // The SAFETY carve-out is structural: MENU_ITEM_ALLERGENS is NOT eligible
+    // (no decomposer span ever requires it — allergen asks keep the model path).
+    expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.has("MENU_ITEM_ALLERGENS")).toBe(false);
+  });
+
+  it("BKL-183 — owner-scoped and public-per-item subject mechanisms are mutually exclusive over the eligible set (no type ever needs a model-authored subject)", () => {
+    for (const type of CLASSIFY_ONLY_ELIGIBLE_TYPES) {
+      const hasOwner = ownerScopedBaseKey(type) !== undefined;
+      const hasPublicItem = publicPerItemBaseKey(type) !== undefined;
+      // At most one mechanism; NEITHER ⇒ fixed-key (subject "" resolves the
+      // bare investigator key). Both ⇒ a registry-shape contradiction.
+      expect(hasOwner && hasPublicItem).toBe(false);
+    }
+    expect(publicPerItemBaseKey("MENU_ITEM_PRICE")).toBe("menu:item_price");
+    expect(publicPerItemBaseKey("MENU_ITEM_CONTENTS")).toBe("menu:item_contents");
+    // Owner-scoped and fixed-key types have NO public per-item base.
+    expect(publicPerItemBaseKey("ORDER_FULFILLMENT_STAGE")).toBeUndefined();
+    expect(publicPerItemBaseKey("MENU_OVERVIEW")).toBeUndefined();
+    expect(publicPerItemBaseKey("STORE_INFO")).toBeUndefined();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BKL-183 — the PUBLIC menu/store family rides classify-only (the SCN-030 trace
+// proved the mechanism bypasses the 4B read-dispatch variance; SCN-006/007's
+// flake class). Eligibility-gate + subject-resolution + allergen carve-out.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("BKL-183 — menu/store classify-only eligibility", () => {
+  it("a menu-price question → {MENU_ITEM_PRICE} (the SCN-006 shape)", () => {
+    expect(classifyOnlyRequiredTypes("quanto custa o Brisket Americano?")).toEqual(
+      new Set(["MENU_ITEM_PRICE"]),
+    );
+  });
+
+  it("a menu-contents question → {MENU_ITEM_CONTENTS} (the SCN-007 shape)", () => {
+    expect(classifyOnlyRequiredTypes("o que vem no Smash Burger Defumado?")).toEqual(
+      new Set(["MENU_ITEM_CONTENTS"]),
+    );
+  });
+
+  it("a menu-overview question → {MENU_OVERVIEW}; store-info → {STORE_INFO}", () => {
+    expect(classifyOnlyRequiredTypes("o que tem no cardápio?")).toEqual(
+      new Set(["MENU_OVERVIEW"]),
+    );
+    expect(classifyOnlyRequiredTypes("onde fica o restaurante?")).toEqual(
+      new Set(["STORE_INFO"]),
+    );
+  });
+
+  it("SAFETY carve-out: pure allergen asks decline (model path keeps §O#9 + the BKL-184 offer)", () => {
+    expect(classifyOnlyRequiredTypes("o brownie tem amendoim?")).toBeUndefined();
+    expect(classifyOnlyRequiredTypes("contém glúten?")).toBeUndefined();
+    expect(classifyOnlyRequiredTypes("tem leite na farofa?")).toBeUndefined();
+  });
+
+  it("SAFETY carve-out: a MIXED price+allergen ask declines WHOLESALE (never a price render that answers around the allergen half)", () => {
+    // "quanto custa" alone → eligible {MENU_ITEM_PRICE}; the allergen noun makes
+    // the WHOLE turn decline — the allergen half must keep the model path.
+    expect(
+      classifyOnlyRequiredTypes("quanto custa o brownie? tem amendoim?"),
+    ).toBeUndefined();
+  });
+
+  it("a menu span co-occurring with an INELIGIBLE schedule span still declines wholesale", () => {
+    expect(
+      classifyOnlyRequiredTypes("o que tem no cardápio e vocês estão abertos?"),
+    ).toBeUndefined();
+  });
+});
+
+describe("BKL-183 — public per-item subject resolution (ledger-derived, never model-authored)", () => {
+  const stubLedger = (entries: Record<string, "present" | "absent">) => ({
+    keys: () => Object.keys(entries),
+    resolve: (key: string) => ({ state: entries[key] ?? "absent" }),
+  });
+  const auth: ClaimAuthContext = { customerId: "cust-A", ownedByBaseKey: new Map() };
+
+  it("presentPublicItemIds — present-only, prefix-exact, deduped", () => {
+    const ledger = stubLedger({
+      "menu:item_price:prod-1": "present",
+      "menu:item_price:prod-gone": "absent",
+      "menu:item_contents:prod-2": "present",
+      "menu:item_price:": "present", // empty suffix never yields a subject
+    });
+    expect(presentPublicItemIds(ledger, "menu:item_price")).toEqual(["prod-1"]);
+    expect(presentPublicItemIds(ledger, "menu:item_contents")).toEqual(["prod-2"]);
+  });
+
+  it("ONE present menu-item read → the candidate subject is that productId (keys parameterized to match the investigator)", () => {
+    const ledger = stubLedger({ "menu:item_price:prod-1": "present" });
+    const { candidates, forcedTerminal } = buildClassifyOnlyCandidates(
+      new Set(["MENU_ITEM_PRICE"]),
+      auth,
+      "conv-1",
+      ledger,
+    );
+    expect(forcedTerminal).toBeUndefined();
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]?.subject).toBe("prod-1");
+  });
+
+  it("NO present read (unresolved item) → empty subject → honest UNKNOWN downstream, never an arbitrary product", () => {
+    const { candidates, forcedTerminal } = buildClassifyOnlyCandidates(
+      new Set(["MENU_ITEM_CONTENTS"]),
+      auth,
+      "conv-1",
+      stubLedger({}),
+    );
+    expect(forcedTerminal).toBeUndefined();
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]?.subject).toBe("");
+  });
+
+  it("NO ledger (unwired host) → empty subject (fail-closed), same honest-abstain shape", () => {
+    const { candidates } = buildClassifyOnlyCandidates(
+      new Set(["MENU_ITEM_PRICE"]),
+      auth,
+      "conv-1",
+    );
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]?.subject).toBe("");
+  });
+
+  it("≥2 present item reads (defensive — the resolver records ≤1 today) → GENERIC CLARIFY, candidate dropped, NO order-voicing stash", () => {
+    const ledger = stubLedger({
+      "menu:item_price:prod-1": "present",
+      "menu:item_price:prod-2": "present",
+    });
+    const { candidates, forcedTerminal, ambiguousOwnedSets } = buildClassifyOnlyCandidates(
+      new Set(["MENU_ITEM_PRICE"]),
+      auth,
+      "conv-1",
+      ledger,
+    );
+    expect(forcedTerminal).toBe("CLARIFY");
+    expect(candidates).toHaveLength(0);
+    // Menu ambiguity has no #displayId vocabulary — it must NOT ride the
+    // BKL-170 order-voicing carrier.
+    expect(ambiguousOwnedSets).toBeUndefined();
+  });
+
+  it("FIXED-key public types (MENU_OVERVIEW / STORE_INFO) → subject '' and UNPARAMETERIZED keys (the bare investigator key)", () => {
+    const { candidates, forcedTerminal } = buildClassifyOnlyCandidates(
+      new Set(["MENU_OVERVIEW", "STORE_INFO"]),
+      auth,
+      "conv-1",
+      stubLedger({}),
+    );
+    expect(forcedTerminal).toBeUndefined();
+    expect(candidates).toHaveLength(2);
+    for (const c of candidates) expect(c.subject).toBe("");
   });
 });
 
@@ -387,6 +547,108 @@ describe("FE-T18 — classify-only ON: RESERVATION_STATUS matches FE-T17's proof
       "Não localizei essa informação confirmada agora. Quer que eu verifique?",
     );
     expect(proposeClaimsSpy).not.toHaveBeenCalled();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BKL-183 — the PUBLIC menu/store family end-to-end through the REAL adapter →
+// kernel → renderer chain (the SCN-006/007/004/005 shapes): grounded read →
+// deterministic candidate → VALIDATED render, ZERO propose_claim model calls —
+// the 4B read-dispatch variance structurally bypassed.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("BKL-183 — classify-only ON: the menu/store family renders with ZERO model calls", () => {
+  function recordPublic(ledger: EvidenceLedger, key: string, value: unknown): void {
+    ledger.record({
+      key,
+      value,
+      source: "catalog.read",
+      fetchedAt: NOW,
+      sourceMode: "live",
+      taint: "TRUSTED",
+      originProvenance: "FIRST_PARTY",
+    });
+  }
+
+  it('menu PRICE (SCN-006): grounded item read → "Brisket Americano custa R$ 78,00." (0 model calls)', async () => {
+    process.env[ENV_KEY] = "true";
+    const ledger = new EvidenceLedger("turn-mp");
+    recordPublic(ledger, "menu:item_price:prod-1", {
+      priceText: "Brisket Americano custa R$ 78,00",
+    });
+    const { text, proposeClaimsSpy } = await driveAndRender({
+      text: "quanto custa o Brisket Americano?",
+      customerId: "cust-A",
+      ledger,
+    });
+    expect(text).toBe("Brisket Americano custa R$ 78,00.");
+    expect(proposeClaimsSpy).not.toHaveBeenCalled();
+  });
+
+  it("menu CONTENTS (SCN-007): grounded description → the contents render (0 model calls)", async () => {
+    process.env[ENV_KEY] = "true";
+    const ledger = new EvidenceLedger("turn-mc");
+    recordPublic(ledger, "menu:item_contents:prod-2", {
+      contentsText: "Smash Burger Defumado: blend 160g, queijo, picles",
+    });
+    const { text, proposeClaimsSpy } = await driveAndRender({
+      text: "o que vem no Smash Burger Defumado?",
+      customerId: "cust-A",
+      ledger,
+    });
+    expect(text).toBe("Smash Burger Defumado: blend 160g, queijo, picles.");
+    expect(proposeClaimsSpy).not.toHaveBeenCalled();
+  });
+
+  it("menu OVERVIEW (SCN-005) + STORE_INFO (SCN-004): fixed-key reads render bare (0 model calls)", async () => {
+    process.env[ENV_KEY] = "true";
+    const ledgerOv = new EvidenceLedger("turn-ov");
+    recordPublic(ledgerOv, "menu:overview", {
+      overviewText: "No nosso cardápio: Costela — R$ 89,00.",
+    });
+    const ov = await driveAndRender({
+      text: "o que tem no cardápio?",
+      customerId: "cust-A",
+      ledger: ledgerOv,
+    });
+    expect(ov.text).toBe("No nosso cardápio: Costela — R$ 89,00.");
+    expect(ov.proposeClaimsSpy).not.toHaveBeenCalled();
+
+    const ledgerSi = new EvidenceLedger("turn-si");
+    recordPublic(ledgerSi, "store:info", {
+      infoText: "Estamos em Rua Santa Cruz, 456 — Centro, Ibaté/SP.",
+    });
+    const si = await driveAndRender({
+      text: "onde fica o restaurante?",
+      customerId: "cust-A",
+      ledger: ledgerSi,
+    });
+    expect(si.text).toBe("Estamos em Rua Santa Cruz, 456 — Centro, Ibaté/SP.");
+    expect(si.proposeClaimsSpy).not.toHaveBeenCalled();
+  });
+
+  it("UNRESOLVED item (no present read) → the honest abstain, 0 model calls", async () => {
+    process.env[ENV_KEY] = "true";
+    const ledger = new EvidenceLedger("turn-mu"); // nothing recorded
+    const { text, proposeClaimsSpy } = await driveAndRender({
+      text: "qual o preço do X-Tudo?",
+      customerId: "cust-A",
+      ledger,
+    });
+    expect(text).toBe(
+      "Não localizei essa informação confirmada agora. Quer que eu verifique?",
+    );
+    expect(proposeClaimsSpy).not.toHaveBeenCalled();
+  });
+
+  it("SAFETY carve-out end-to-end: an allergen-family ask DOES call the model path (the §O#9 chance is preserved)", async () => {
+    process.env[ENV_KEY] = "true";
+    const ledger = new EvidenceLedger("turn-al");
+    const { proposeClaimsSpy } = await driveAndRender({
+      text: "quanto custa o brownie? tem amendoim?",
+      customerId: "cust-A",
+      ledger,
+    });
+    expect(proposeClaimsSpy).toHaveBeenCalledTimes(1);
   });
 });
 
