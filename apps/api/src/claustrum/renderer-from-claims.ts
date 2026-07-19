@@ -51,6 +51,7 @@ import type {
 import { unwrapCanonical } from "@adjudicate/core";
 import { localizeClaimEnum } from "./claims-labels.js";
 import {
+  clarifyWithCandidatesText,
   isPropositionFree,
   SAFE_TEMPLATES,
   type Template,
@@ -232,10 +233,21 @@ export interface RenderedLine {
  * The output `text` is the joined lines. NO branch calls a model (§O#3); every
  * output byte is a static template literal or a VALIDATED field value.
  */
+/**
+ * BKL-170 — the render-only view of a `disambiguationCandidates` carrier entry: the
+ * renderer reads ONLY the customer-facing `label` (the `kind`/`id` are the adopter's
+ * routing handles, opaque here). Structural, so the fuller 0.8.0 context type is
+ * assignable.
+ */
+export interface RenderDisambiguationCandidate {
+  readonly label: string;
+}
+
 export function render(
   canonicalClaims: readonly CanonicalClaim[],
   terminal: TurnTerminal,
   suppressions: readonly SuppressionRecord[] = [],
+  candidates: readonly RenderDisambiguationCandidate[] = [],
 ): RenderResult {
   // ── inv.17 ENTRY BRAND: the renderer's REQUIRED input is the kernel-minted
   // CanonicalClaim. `unwrapCanonical` asserts WeakSet provenance and THROWS on a
@@ -248,7 +260,7 @@ export function render(
     const { subject, type, value } = unwrapCanonical(c);
     return { subject, type, value, verdict: "VALIDATED" as const };
   });
-  return renderRenderables(renderableClaims, terminal, suppressions);
+  return renderRenderables(renderableClaims, terminal, suppressions, candidates);
 }
 
 /**
@@ -263,10 +275,11 @@ export function renderRenderables(
   renderableClaims: readonly RenderableClaim[],
   terminal: TurnTerminal,
   suppressions: readonly SuppressionRecord[] = [],
+  candidates: readonly RenderDisambiguationCandidate[] = [],
 ): RenderResult {
   // ── 1. §O#5 render-half: a non-RENDER terminal emits ONLY the safe template. ──
   if (terminal !== "RENDER") {
-    return renderTerminalResult(terminal, suppressions);
+    return renderTerminalResult(terminal, suppressions, candidates);
   }
 
   // ── 2. RENDER path: index by type for the Inv 6 1:1 proposition lookup, then
@@ -300,7 +313,18 @@ export function renderRenderables(
 function renderTerminalResult(
   terminal: TurnTerminal,
   _suppressions: readonly SuppressionRecord[],
+  candidates: readonly RenderDisambiguationCandidate[] = [],
 ): RenderResult {
+  // BKL-170 — a CLARIFY the adopter enriched with first-party, owner-scoped
+  // disambiguation candidates (0.8.0 `disambiguationCandidates` carrier) renders the
+  // proposition-free CLARIFY-with-candidates ask that VOICES the specific handles,
+  // superseding the generic clarify. Absent/empty → the generic clarify (byte-identical
+  // to pre-0.8.0). The labels are ADOPTER carrier vocabulary (never a claim value / a
+  // suppressed-value re-leak), so this stays within §O#5.
+  if (terminal === "CLARIFY" && candidates.length > 0) {
+    const text = clarifyWithCandidatesText(candidates.map((c) => c.label));
+    return { text, terminal, lines: [{ kind: "TERMINAL", text }] };
+  }
   const template =
     terminal === "ESCALATE"
       ? SAFE_TEMPLATES.escalate

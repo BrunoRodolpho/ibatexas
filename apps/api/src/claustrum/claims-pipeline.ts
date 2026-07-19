@@ -20,6 +20,7 @@
 import type {
   ClaimsKernelDepsForTurn,
   ConductorOptions,
+  RenderCarriersForTurn,
 } from "@claustrum/core";
 import { assertClaimDefinitionRegistryValid } from "./claim-definition-registry.js";
 import { claimsRenderDriftProblems } from "./claims-render-drift.js";
@@ -39,6 +40,10 @@ import {
   createPerTurnClaimsKernelDeps,
 } from "./ibatexas-claims-kernel-deps.js";
 import { createIbatexasInvestigator } from "./ibatexas-investigator.js";
+import {
+  localDateParts,
+  resolveQueriedScheduleDate,
+} from "./schedule-date-resolver.js";
 import type { ClaimAwarePlannerPort } from "./ibatexas-planner.js";
 
 /** Env flag that opts a boot into the claims pipeline (default off). */
@@ -60,6 +65,34 @@ export function claimsPipelineEnabled(
  * CLAIMS-VALIDATE stages also ran (handleTurn 6a guards on a `claims` result),
  * so a partial wiring can never render from an absent claim set.
  */
+/**
+ * BKL-152-edge (ibatexas rider / @claustrum/core 0.8.0 `renderCarriersForTurn`
+ * carrier seam) — thread the RESOLVED queried schedule date so the required-claim
+ * decomposer's STORE_OPEN_NOW suppression is EXACT on `weekday == today` (see
+ * `required-claim-decomposer.ts` `DateAnchorSignal`). `resolvedQueryDate` is
+ * PRESENT ⟺ the request resolves to a CONFIRMED NON-TODAY day; a today/unresolvable
+ * anchor OMITS it, and the decomposer — told the seam is ACTIVE via
+ * `createIbatexasClaimsRenderer({ renderCarriersActive: true })` — reads
+ * absent-under-active as "today → KEEP STORE_OPEN_NOW". Clock-pure boundary: THIS
+ * callback owns the clock (`new Date()`) and the tz (`RESTAURANT_TIMEZONE`);
+ * @claustrum/core threads the result verbatim (no clock/RNG/IO crosses the seam).
+ *
+ * `disambiguationCandidates` (BKL-170) is deliberately NOT sourced here: the
+ * multi-order ambiguity is detected in the classify-only OWNED-SET path
+ * (`classify-only-reads.ts`), which does not flow to this ledger+text callback, and
+ * on a forced-CLARIFY turn the candidate is dropped so the ledger holds no order
+ * entries to read. Absent → the CLARIFY renderer keeps its proposition-free generic
+ * variant (byte-identical). See the BKL-170 producer follow-up.
+ */
+const ibatexasRenderCarriersForTurn: RenderCarriersForTurn = ({ requestText }) => {
+  const tz = process.env.RESTAURANT_TIMEZONE ?? "America/Sao_Paulo";
+  const now = new Date();
+  const resolved = resolveQueriedScheduleDate(requestText, tz, now);
+  if (resolved === null) return {};
+  if (resolved.isoDate === localDateParts(tz, now).isoDate) return {};
+  return { resolvedQueryDate: resolved.isoDate };
+};
+
 export type ClaimsSeams = Pick<
   ConductorOptions,
   | "investigator"
@@ -69,6 +102,7 @@ export type ClaimsSeams = Pick<
   | "claimsRenderer"
   | "claimsRenderPrecedence"
   | "activeResourcesForTurn"
+  | "renderCarriersForTurn"
 >;
 
 export interface BuildClaimsSeamsDeps {
@@ -241,6 +275,12 @@ export function buildClaimsSeams(deps: BuildClaimsSeamsDeps): ClaimsSeams {
     // present-only IDOR filter as `buildPerTurnOwnsFromLedger`. Inert while the
     // flag is OFF (this whole seam set is only wired when ENABLE_CLAIMS_PIPELINE).
     activeResourcesForTurn: activeResourcesFromLedger,
+    // BKL-152-edge (@claustrum/core 0.8.0 carrier seam) — thread the resolved
+    // queried schedule date into `ClaimsRenderContext.resolvedQueryDate` so the
+    // decomposer's STORE_OPEN_NOW suppression is EXACT on weekday==today. Pure
+    // passthrough on claustrum's side; the clock lives in this callback. Absent
+    // (unwired) → the decomposer keeps its pure #301 rule (byte-identical).
+    renderCarriersForTurn: ibatexasRenderCarriersForTurn,
     // E-2 render-from-claims (SDD §B / §Q.7) — the loop-level closure of the
     // "claims-not-prose" thesis. When ON, `handleTurn` stage 6a renders the reply
     // TEXT from the VALIDATED claim set via the pure `renderer-from-claims`
@@ -248,7 +288,7 @@ export function buildClaimsSeams(deps: BuildClaimsSeamsDeps): ClaimsSeams {
     // superseding the model draft. On no-renderable-claim the claustrum loop
     // falls back to the operational responder draft (never raw model prose as a
     // confident fact; never silence). Inert while the flag is COMMITTED OFF.
-    claimsRenderer: createIbatexasClaimsRenderer(),
+    claimsRenderer: createIbatexasClaimsRenderer({ renderCarriersActive: true }),
     // BKL-155/153 (@claustrum/core 0.7.0) — the RENDER-vs-DRAFT precedence seam,
     // PAIRED with `claimsRenderer` above so it is only consulted on the SAME
     // claims-ON customer plane where the render runs (the OPS conductor keeps its

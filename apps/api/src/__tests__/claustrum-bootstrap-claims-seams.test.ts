@@ -1,7 +1,7 @@
 // BKL-101 — boot-level regression guard for the customer conductor's claims-seam
 // spread.
 //
-// The gap this closes: `buildClaimsSeams(flag ON)` returns the six claims-runtime
+// The gap this closes: `buildClaimsSeams(flag ON)` returns the claims-runtime
 // seams and `claims-pipeline.test.ts` proves that SHAPE; `live-agent-conductor.
 // test.ts` proves the AGENT plane spreads them (BKL-003 / PR #187). But NOTHING
 // proved the CUSTOMER (main) `bootstrapClaustrum` actually SPREADS those seams
@@ -157,7 +157,7 @@ describe.skipIf(!RUN_BOOTSTRAP_HARNESS)(
       await harness?.teardown();
     }, 60_000);
 
-    it("sanity: buildClaimsSeams(ON) yields exactly the seven documented claims seams", () => {
+    it("sanity: buildClaimsSeams(ON) yields exactly the eight documented claims seams", () => {
       // Anchors the derived SEAM_KEYS to the named contract — if a seam is
       // renamed/dropped in buildClaimsSeams, this fails loudly here first.
       expect([...SEAM_KEYS].sort()).toEqual(
@@ -170,6 +170,8 @@ describe.skipIf(!RUN_BOOTSTRAP_HARNESS)(
           // BKL-155/153 — the render-vs-draft precedence seam, PAIRED with claimsRenderer.
           "claimsRenderPrecedence",
           "investigator",
+          // BKL-152-edge — the @claustrum/core 0.8.0 render-carrier seam (resolvedQueryDate).
+          "renderCarriersForTurn",
         ].sort(),
       );
     });

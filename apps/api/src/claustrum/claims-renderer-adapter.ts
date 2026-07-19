@@ -79,15 +79,19 @@ function distinctTypes(types: readonly string[]): string[] {
  * intrinsic kernel UNKNOWN — the exact distinction the two live-validation rounds
  * had to reconstruct by byte-matching delivered text against slot templates.
  *
- * NOT observable at THIS ibatexas seam (published `ClaimsRenderContext` carries
- * only `requestText` + `activeResources`, never the turn id): the `turnId`. So a
- * RENDER-path `claims.terminal` cannot be joined to `turn_trace` / the BKL-110
- * `claim_planner.candidate_demoted` event by id — closing that needs a claustrum
- * change to thread `turnId` into `ClaimsRenderContext` (or `handleTurn` to pass
- * it). Registered as a follow-up; the published package is NOT widened here. The
- * `prose_preserved` companion (planner seam) DOES carry `turnId`.
+ * BKL-117 (CLOSED — @claustrum/core 0.8.0): `ClaimsRenderContext` now carries the
+ * `turnId` (claustrum populates it from `Capsule.turnId`), so the RENDER-path
+ * `claims.terminal` is now JOINABLE by id to `turn_trace` / the BKL-110
+ * `claim_planner.candidate_demoted` event (which the `prose_preserved` companion
+ * planner seam already carries). Threaded in `render` below and emitted here as the
+ * `turnId` field WHEN PRESENT; absent (seam unwired / pre-0.8.0) → the field is
+ * omitted → byte-identical to the pre-BKL-117 log line.
  */
-function emitClaimsTerminal(claims: ClaimsKernelResult, degraded: boolean): void {
+function emitClaimsTerminal(
+  claims: ClaimsKernelResult,
+  degraded: boolean,
+  turnId?: string,
+): void {
   const finalTerminal = degraded ? "UNKNOWN" : claims.terminal;
   const posture =
     finalTerminal === "RENDER" ? "VALIDATED_RENDER" : finalTerminal;
@@ -98,6 +102,9 @@ function emitClaimsTerminal(claims: ClaimsKernelResult, degraded: boolean): void
     {
       component: "claims",
       event: "claims.terminal",
+      // BKL-117 — the turn_trace join key (present since @claustrum/core 0.8.0
+      // threads ClaimsRenderContext.turnId); omitted when the seam is unwired.
+      ...(turnId === undefined ? {} : { turnId }),
       posture,
       // The RAW kernel terminal, so `kernelTerminal: RENDER` + `posture: UNKNOWN`
       // uniquely identifies a §O#15 completeness-gate degrade.
@@ -181,7 +188,21 @@ export function ownershipFromActiveResources(
  * set). DEMOTE-ONLY: the gate only turns a `RENDER` into `UNKNOWN`; it never
  * upgrades, and never touches an already-safe ESCALATE/CLARIFY/UNKNOWN terminal.
  */
-export function createIbatexasClaimsRenderer(): ClaimsRendererPort {
+/** Construction opts for the ibatexas claims renderer. */
+export interface IbatexasClaimsRendererOptions {
+  /**
+   * BKL-152-edge — set `true` ONLY where the adopter wired the RenderCarriersForTurn
+   * seam (claustrum-bootstrap), so the completeness gate can read the seam's
+   * clock-resolved `resolvedQueryDate` for the EXACT weekday==today STORE_OPEN_NOW
+   * decision. Default (unset / tests) → the pure #301 date-anchor rule, byte-identical.
+   */
+  readonly renderCarriersActive?: boolean;
+}
+
+export function createIbatexasClaimsRenderer(
+  opts?: IbatexasClaimsRendererOptions,
+): ClaimsRendererPort {
+  const renderCarriersActive = opts?.renderCarriersActive === true;
   return {
     render(
       claims: ClaimsKernelResult,
@@ -191,9 +212,18 @@ export function createIbatexasClaimsRenderer(): ClaimsRendererPort {
       // the #8 ownership signal (provable-empty sentinels on `activeResources`) drops
       // an ownership-gated companion the customer PROVABLY cannot have; undefined
       // (seam unwired) keeps the pre-#8 over-including behavior byte-identical.
+      // BKL-152-edge: the dateAnchor signal (seam-active + the 0.8.0 clock-resolved
+      // resolvedQueryDate) makes the date-anchor STORE_OPEN_NOW suppression exact on
+      // weekday==today; seam-inactive falls back to the pure #301 rule.
       const required = decomposeRequiredClaims(
         classifyRequestSpans(context?.requestText ?? ""),
         ownershipFromActiveResources(context?.activeResources),
+        {
+          seamActive: renderCarriersActive,
+          ...(context?.resolvedQueryDate === undefined
+            ? {}
+            : { resolvedQueryDate: context.resolvedQueryDate }),
+        },
       );
       // §O#15 completeness reads a per-TYPE verdict map. When one turn resolves
       // MULTIPLE claims of the SAME type (e.g. a multi-order request that binds two
@@ -219,8 +249,9 @@ export function createIbatexasClaimsRenderer(): ClaimsRendererPort {
       // BKL-111 — one structured `claims.terminal` signal per RENDER-path turn
       // (observe-only; see {@link emitClaimsTerminal}). Emitted BEFORE the pure
       // `render` call so the log reflects the same terminal the render uses; it
-      // reads only structural identity and never the rendered text.
-      emitClaimsTerminal(claims, degrade);
+      // reads only structural identity and never the rendered text. BKL-117 — thread
+      // the turnId (0.8.0 ClaimsRenderContext) so the terminal joins to turn_trace.
+      emitClaimsTerminal(claims, degrade, context?.turnId);
 
       const result = render(
         // inv.17 — the renderer's REQUIRED input is the kernel-MINTED CanonicalClaim
@@ -232,6 +263,11 @@ export function createIbatexasClaimsRenderer(): ClaimsRendererPort {
         // UNKNOWN; otherwise the kernel's own terminal stands.
         degrade ? "UNKNOWN" : claims.terminal,
         claims.consistency.suppressions,
+        // BKL-170 — pass the 0.8.0 owner-scoped disambiguation candidates so a CLARIFY
+        // renders the proposition-free CLARIFY-with-candidates ask that voices the
+        // specific handles. Absent → the generic clarify (byte-identical). Only ever
+        // voiced on a CLARIFY terminal; ignored on every other terminal.
+        context?.disambiguationCandidates ?? [],
       );
       return { text: result.text };
     },
