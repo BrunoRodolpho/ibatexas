@@ -114,7 +114,9 @@ export function classifyTurnDelivery(
  * `true` immediately before `sendText` (NOT by wrapping+swallowing it — that
  * breaks Twilio retry/idempotency). `sendCompleted` MUST be set `true`
  * immediately AFTER `sendText` returns. A pre-send turn exception → `turn_error`,
- * which is OUT of the frozen taxonomy (canned apology only, no incident).
+ * which is OUT of the frozen taxonomy — but BOTH planes now map it INTO the
+ * frozen `send_failed` for the governed incident (web: chat.ts catch; WhatsApp:
+ * the BKL-175 `!sendEntered` arm), so a pre-send escape is never incident-less.
  *
  * `send_failed` is classified ONLY when `sendEntered && !sendCompleted` — i.e.
  * the throw happened inside `sendText`. A POST-send throw (`sendEntered &&
