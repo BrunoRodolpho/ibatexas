@@ -51,6 +51,8 @@ import { acquireAgentLock, releaseAgentLock } from "../whatsapp/session.js";
 import { sendText } from "../whatsapp/client.js";
 import { appendOpsMessages, buildOpsHistoryBlock } from "./ops-history.js";
 import {
+  OPS_NEGATIVE_DECLINE_ACK_PTBR,
+  opsNegativeDeclineTarget,
   opsSoftAffirmativeRestateNotice,
   opsStaleResumeNotice,
   pruneExpiredOpsParks,
@@ -337,6 +339,53 @@ async function runOpsTurn(
         }
         await deps.sendReply(softRestate);
         return;
+      }
+
+      // BKL-191 — a PURE-negative reply on a fresh in-scope park DECLINES it at
+      // the ingress: unpark + acknowledge, SKIP the turn (the planner never sees
+      // the negative text — claustrum's own deny path re-plans it into the live
+      // re-prompt). Scope-filtered like every park read here (BKL-086 parity).
+      // Fail-honest: unpark failure falls through to the normal loop.
+      const declineTarget = opsNegativeDeclineTarget({
+        text: command,
+        pendingConfirmations: pending,
+        nowIso: inbound.receivedAt,
+        excludedKinds: waExcluded,
+      });
+      if (declineTarget !== undefined && capsule.loadedSession) {
+        let unparked = false;
+        try {
+          await capsule.session.unpark(
+            capsule.loadedSession.id,
+            declineTarget.envelope.intentHash,
+          );
+          unparked = true;
+        } catch (err) {
+          log.warn(
+            err,
+            "[ops-wa] negative-decline unpark failed — falling through to the normal loop (BKL-191)",
+          );
+        }
+        if (unparked) {
+          log.warn(
+            {
+              event: "ops_wa.negative_declined_park",
+              staff_id: staffId,
+              phone_hash: hash,
+              kind: String(declineTarget.envelope.kind),
+            },
+            "[ops-wa] negative reply on a fresh park — declined + unparked, skipping the turn (BKL-191)",
+          );
+          try {
+            await deps.appendHistory(staffId, [
+              { role: "assistant", content: OPS_NEGATIVE_DECLINE_ACK_PTBR },
+            ]);
+          } catch (err) {
+            log.warn(err, "[ops-wa] decline-ack history append failed (non-fatal)");
+          }
+          await deps.sendReply(OPS_NEGATIVE_DECLINE_ACK_PTBR);
+          return;
+        }
       }
 
       const turn = await handleTurn(capsule, inbound);

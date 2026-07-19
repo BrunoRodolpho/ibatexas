@@ -40,6 +40,8 @@ import {
   loadOpsHistory,
 } from "../../ops/ops-history.js";
 import {
+  OPS_NEGATIVE_DECLINE_ACK_PTBR,
+  opsNegativeDeclineTarget,
   opsSoftAffirmativeRestateNotice,
   opsStaleResumeNotice,
   pruneExpiredOpsParks,
@@ -228,6 +230,57 @@ export async function adminOpsChatRoutes(server: FastifyInstance): Promise<void>
             executed: false,
             proposedKinds: [],
           });
+        }
+
+        // BKL-191 — a PURE-negative reply ("não, cancela essa ação") on a fresh
+        // park DECLINES it at the ingress: unpark + acknowledge, and SKIP the
+        // turn so the negative text never reaches the planner (claustrum's own
+        // deny path unparks but then re-plans the "no" as a fresh command — the
+        // live re-prompt). Fail-honest: if the unpark fails, fall through to the
+        // normal loop (claustrum's deny still unparks there) rather than claim
+        // a cancellation that did not stick.
+        const declineTarget = opsNegativeDeclineTarget({
+          text: message,
+          pendingConfirmations: pending,
+          nowIso: inbound.receivedAt,
+        });
+        if (declineTarget !== undefined && capsule.loadedSession) {
+          let unparked = false;
+          try {
+            await capsule.session.unpark(
+              capsule.loadedSession.id,
+              declineTarget.envelope.intentHash,
+            );
+            unparked = true;
+          } catch (err) {
+            request.log.warn(
+              err,
+              "[ops-chat] negative-decline unpark failed — falling through to the normal loop (BKL-191)",
+            );
+          }
+          if (unparked) {
+            request.log.warn(
+              {
+                event: "ops_chat.negative_declined_park",
+                staff_id: staffId,
+                kind: String(declineTarget.envelope.kind),
+              },
+              "[ops-chat] negative reply on a fresh park — declined + unparked, skipping the turn (BKL-191)",
+            );
+            try {
+              await appendOpsMessages(staffId, [
+                { role: "assistant", content: OPS_NEGATIVE_DECLINE_ACK_PTBR },
+              ]);
+            } catch (err) {
+              request.log.warn(err, "[ops-chat] decline-ack history append failed (non-fatal)");
+            }
+            return reply.send({
+              reply: OPS_NEGATIVE_DECLINE_ACK_PTBR,
+              decision: "NEGATIVE_DECLINED_PARK",
+              executed: false,
+              proposedKinds: [],
+            });
+          }
         }
 
         const turn = await handleTurn(capsule, inbound);

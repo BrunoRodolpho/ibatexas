@@ -422,6 +422,15 @@ export interface OrderState {
      * wrong one. Absent for any other resolution path / kind.
      */
     readonly displayId?: number
+    /**
+     * BKL-190 — present alongside `displayId` on the `"grounded"` path: TRUE
+     * when the CURRENT staff message actually contains the resolved order's
+     * display number (the ops resolver's `orderReferenceAppearsInMessage`
+     * check). The confirm prompt splits its frame on this — a staff message
+     * that DID name the order must not be told "não me disseram qual pedido"
+     * (the extraction schema simply has no field for the reference to ride).
+     */
+    readonly orderNamedInMessage?: boolean
   }
 }
 
