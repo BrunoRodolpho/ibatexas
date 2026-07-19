@@ -178,6 +178,61 @@ describe("required-claim decomposer — BKL-152 date-anchor STORE_OPEN_NOW suppr
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// BKL-152-EDGE — EXACT weekday==today suppression (@claustrum/core 0.8.0
+// `resolvedQueryDate` carrier / `DateAnchorSignal`). The pure #301 rule above
+// suppresses STORE_OPEN_NOW for ANY date-anchored hours question — including a
+// named weekday that resolves to TODAY, where the open-now companion IS relevant.
+// When the carrier seam is ACTIVE the decomposer reads the clock-resolved date:
+// SUPPRESS only for a CONFIRMED NON-TODAY day (resolvedQueryDate PRESENT); KEEP when
+// the resolved day is TODAY (resolvedQueryDate ABSENT under an active seam). Seam
+// INACTIVE (or no dateAnchor arg at all) → the pure #301 rule, byte-identical.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("required-claim decomposer — BKL-152-edge exact date-anchor (0.8.0 carrier)", () => {
+  const dateSpans = ["STORE_OPEN_NOW_Q", "STORE_HOURS_FOR_DATE_Q"] as const;
+
+  it("seam ACTIVE + resolvedQueryDate PRESENT (confirmed non-today) → SUPPRESS STORE_OPEN_NOW", () => {
+    const required = decomposeRequiredClaims([...dateSpans], undefined, {
+      seamActive: true,
+      resolvedQueryDate: "2026-07-25",
+    });
+    expect([...required]).toEqual(["STORE_HOURS_FOR_DATE"]);
+    expect(required.has("STORE_OPEN_NOW")).toBe(false);
+  });
+
+  it("seam ACTIVE + resolvedQueryDate ABSENT (weekday==today) → KEEP STORE_OPEN_NOW", () => {
+    const required = decomposeRequiredClaims([...dateSpans], undefined, {
+      seamActive: true,
+    });
+    expect(required.has("STORE_OPEN_NOW")).toBe(true);
+    expect(required.has("STORE_HOURS_FOR_DATE")).toBe(true);
+  });
+
+  it("seam INACTIVE ({seamActive:false}) → pure #301 SUPPRESS (byte-identical fallback)", () => {
+    expect([
+      ...decomposeRequiredClaims([...dateSpans], undefined, { seamActive: false }),
+    ]).toEqual(["STORE_HOURS_FOR_DATE"]);
+  });
+
+  it("no dateAnchor arg (1-arg call) → pure #301 SUPPRESS (existing callers unchanged)", () => {
+    expect([...decomposeRequiredClaims([...dateSpans])]).toEqual([
+      "STORE_HOURS_FOR_DATE",
+    ]);
+  });
+
+  it("PICKUP wins over the date suppression regardless of the seam (today OR non-today)", () => {
+    const today = decomposeRequiredClaims(["PICKUP_Q", ...dateSpans], undefined, {
+      seamActive: true,
+    });
+    const nonToday = decomposeRequiredClaims(["PICKUP_Q", ...dateSpans], undefined, {
+      seamActive: true,
+      resolvedQueryDate: "2026-07-25",
+    });
+    expect(today.has("STORE_OPEN_NOW")).toBe(true);
+    expect(nonToday.has("STORE_OPEN_NOW")).toBe(true);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // FE-T17 — RESERVATION_STATUS_Q (review fix, PR #249). The marker is ANCHORED
 // (`(?<![a-z])reserv(?!at)(a|ar|ad|am|as|ando|ei|ou)`), not a bare substring test:
 // the original unanchored `/reserva/` false-fired on the unrelated preserv* family

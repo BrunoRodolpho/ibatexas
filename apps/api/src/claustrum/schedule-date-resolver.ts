@@ -87,8 +87,10 @@ export function resolveQueriedScheduleDate(
 }
 
 /** Today's ISO date + day-of-week in `tz` for the injected `now` (en-CA yields
- *  `YYYY-MM-DD`; the short weekday maps to 0..6). Pure. */
-function localDateParts(tz: string, now: Date): { isoDate: string; dayOfWeek: number } {
+ *  `YYYY-MM-DD`; the short weekday maps to 0..6). Pure. Exported (BKL-152-edge)
+ *  so the `renderCarriersForTurn` carrier callback can compare a resolved queried
+ *  date against today WITHOUT re-deriving the tz-format (single source, no drift). */
+export function localDateParts(tz: string, now: Date): { isoDate: string; dayOfWeek: number } {
   const isoDate = new Intl.DateTimeFormat("en-CA", { timeZone: tz }).format(now);
   const dayStr = new Intl.DateTimeFormat("en-US", { timeZone: tz, weekday: "short" }).format(now);
   const dayMap: Record<string, number> = {

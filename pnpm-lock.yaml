@@ -181,8 +181,8 @@ importers:
         specifier: ^0.3.0
         version: 0.3.0(@adjudicate/core@1.9.0)(@adjudicate/runtime@0.4.0)
       '@claustrum/core':
-        specifier: ^0.7.0
-        version: 0.7.0(@adjudicate/core@1.9.0)(@adjudicate/runtime@0.4.0)
+        specifier: ^0.8.0
+        version: 0.8.0(@adjudicate/core@1.9.0)(@adjudicate/runtime@0.4.0)
       '@claustrum/grounding-pgvector':
         specifier: ^0.1.4
         version: 0.1.4(@adjudicate/core@1.9.0)(@adjudicate/runtime@0.4.0)
@@ -1714,8 +1714,8 @@ packages:
       '@adjudicate/core': 1.9.0
       '@adjudicate/runtime': ^0.2.0
 
-  '@claustrum/core@0.7.0':
-    resolution: {integrity: sha512-nf5mtUFH0aKwb1TFlrztWBJwiYF239BqekGdVFkoszLMoRoFkO8xGGBZI69g7dYFzVSIgJdqlSZx0ykVNYJ17w==}
+  '@claustrum/core@0.8.0':
+    resolution: {integrity: sha512-JJpLTcRZfgRR4Tn3mNY1L+vGh1ATK0iKXnbOadpYL0YmCklWrQ40eSPqFsf5NkQMd2EuTvl3R13jPwRvqGvDfQ==}
     engines: {node: '>=20.0.0'}
     peerDependencies:
       '@adjudicate/core': 1.9.0
@@ -12305,7 +12305,7 @@ snapshots:
       '@adjudicate/core': 1.9.0
       '@adjudicate/runtime': 0.4.0
 
-  '@claustrum/core@0.7.0(@adjudicate/core@1.9.0)(@adjudicate/runtime@0.4.0)':
+  '@claustrum/core@0.8.0(@adjudicate/core@1.9.0)(@adjudicate/runtime@0.4.0)':
     dependencies:
       '@adjudicate/core': 1.9.0
       '@adjudicate/runtime': 0.4.0

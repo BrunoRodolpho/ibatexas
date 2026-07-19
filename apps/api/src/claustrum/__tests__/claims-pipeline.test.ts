@@ -14,6 +14,7 @@
  */
 
 import { describe, expect, it, vi } from "vitest";
+import { EvidenceLedger } from "@adjudicate/core";
 import type { CognitiveState, Plan } from "@claustrum/core";
 import type { ClaimAwarePlannerPort, ClaimPlan } from "../ibatexas-planner.js";
 import {
@@ -58,6 +59,8 @@ describe("claims-pipeline — buildClaimsSeams (byte-identical when OFF)", () =>
     // BKL-155/153 — the render-vs-draft precedence seam is PAIRED with the renderer
     // and gated OFF with it.
     expect(seams.claimsRenderPrecedence).toBeUndefined();
+    // BKL-152-edge — the render-carrier seam (resolvedQueryDate) is gated OFF too.
+    expect(seams.renderCarriersForTurn).toBeUndefined();
     // Spreading {} into the Conductor options adds no keys (byte-identical).
     expect(Object.keys(seams)).toHaveLength(0);
   });
@@ -84,6 +87,46 @@ describe("claims-pipeline — buildClaimsSeams (byte-identical when OFF)", () =>
     // claimsKernelDepsForTurn is the per-turn rebuild function the Conductor calls.
     expect(typeof seams.claimsKernelDepsForTurn).toBe("function");
     expect(typeof seams.claimsRenderer?.render).toBe("function");
+    // BKL-152-edge — the render-carrier seam (resolvedQueryDate) wires with the pipeline.
+    expect(seams.renderCarriersForTurn).toBeDefined();
+    expect(typeof seams.renderCarriersForTurn).toBe("function");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BKL-152-edge — the `renderCarriersForTurn` carrier callback (@claustrum/core
+// 0.8.0). It closes over its OWN clock + tz and returns `resolvedQueryDate` ONLY for
+// a CONFIRMED NON-TODAY day (a today/unresolvable anchor omits it, so the decomposer
+// reads absent-under-active as "today → KEEP"). It never sources
+// `disambiguationCandidates` (BKL-170 producer is a deeper, separate change).
+// Deterministic assertions only — "amanhã" is always today+1 (never today) and
+// "hoje" is always today, independent of the wall clock.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("claims-pipeline — BKL-152-edge renderCarriersForTurn (resolvedQueryDate carrier)", () => {
+  const carrier = buildClaimsSeams({ planner: stubPlanner, env: ON_ENV }).renderCarriersForTurn;
+  const call = (requestText: string) =>
+    carrier?.({ ledger: new EvidenceLedger(), customerId: "cust_1", requestText });
+  const todayIso = (): string =>
+    new Intl.DateTimeFormat("en-CA", {
+      timeZone: process.env.RESTAURANT_TIMEZONE ?? "America/Sao_Paulo",
+    }).format(new Date());
+
+  it("a relative NON-TODAY anchor ('amanhã') → resolvedQueryDate PRESENT (≠ today)", () => {
+    const out = call("vocês abrem amanhã?");
+    expect(out?.resolvedQueryDate).toBeDefined();
+    expect(out?.resolvedQueryDate).not.toBe(todayIso());
+  });
+
+  it("a TODAY anchor ('hoje') → resolvedQueryDate ABSENT (weekday==today ⇒ decomposer KEEPs)", () => {
+    expect(call("que horas vocês abrem hoje?")?.resolvedQueryDate).toBeUndefined();
+  });
+
+  it("NO date anchor → resolvedQueryDate ABSENT (nothing to thread)", () => {
+    expect(call("vocês estão abertos agora?")?.resolvedQueryDate).toBeUndefined();
+  });
+
+  it("never threads disambiguationCandidates (the BKL-170 producer is a separate seam)", () => {
+    expect(call("vocês abrem amanhã?")?.disambiguationCandidates).toBeUndefined();
   });
 });
 

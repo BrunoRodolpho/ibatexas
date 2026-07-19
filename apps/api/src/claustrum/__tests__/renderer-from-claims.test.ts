@@ -350,6 +350,69 @@ describe("renderer-from-claims — R3 terminal routing (Inv 6; §I distinct term
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// BKL-170 — CLARIFY-with-candidates (@claustrum/core 0.8.0 `disambiguationCandidates`
+// carrier). When the adopter threads first-party, owner-scoped candidate labels, a
+// CLARIFY renders the proposition-free ask that VOICES the specific handles,
+// superseding the generic clarify. Absent/empty candidates → the generic clarify
+// (byte-identical to pre-0.8.0). NON-VACUOUS: dropping the candidates branch turns
+// (a) RED (the voiced labels would vanish); passing candidates on a non-CLARIFY
+// terminal must NOT change the output (b).
+// ─────────────────────────────────────────────────────────────────────────────
+describe("renderer-from-claims — BKL-170 CLARIFY-with-candidates (0.8.0 carrier)", () => {
+  const CLARIFY: TurnTerminal = "CLARIFY";
+  const literalText = (t: Template): string =>
+    t.slots.map((s) => (s.kind === "LITERAL" ? s.text : "")).join("");
+  const anyClaim = [
+    claim(ORDER_FULFILLMENT_STAGE, "VALIDATED", { fulfillmentStatus: "em preparo" }),
+  ];
+  const candidates = [
+    { kind: "order", id: "order_01A", label: "#1042" },
+    { kind: "order", id: "order_01B", label: "#1043" },
+  ];
+
+  it("(a) CLARIFY + candidates → voices the specific labels (supersedes generic clarify)", () => {
+    const out = renderRenderables(anyClaim, CLARIFY, [], candidates);
+    expect(out.terminal).toBe("CLARIFY");
+    expect(out.lines).toHaveLength(1);
+    expect(out.lines[0]?.kind).toBe("TERMINAL");
+    // Both first-party labels are voiced, joined pt-BR ("… #1042 ou #1043?").
+    expect(out.text).toContain("#1042");
+    expect(out.text).toContain("#1043");
+    expect(out.text).toContain(" ou ");
+    // It is NOT the generic clarify copy (which asks the customer to TYPE the number).
+    expect(out.text).not.toBe(literalText(SAFE_TEMPLATES.clarify));
+    expect(out.text).not.toContain("pode me dizer o número");
+    // Still proposition-free: it asserts NO domain fact about either order.
+    expect(out.text).not.toContain("em preparo");
+    expect(out.text).not.toContain("etapa");
+  });
+
+  it("(a') three candidates render the pt-BR enumerated join ('a, b ou c')", () => {
+    const three = [
+      { kind: "order", id: "o1", label: "#1" },
+      { kind: "order", id: "o2", label: "#2" },
+      { kind: "order", id: "o3", label: "#3" },
+    ];
+    const out = renderRenderables(anyClaim, CLARIFY, [], three);
+    expect(out.text).toContain("#1, #2 ou #3");
+  });
+
+  it("(b) candidates on a NON-CLARIFY terminal are ignored (byte-identical)", () => {
+    const withCands = renderRenderables(anyClaim, "UNKNOWN", [], candidates);
+    const without = renderRenderables(anyClaim, "UNKNOWN", []);
+    expect(withCands.text).toBe(without.text);
+    expect(withCands.text).toBe(literalText(SAFE_TEMPLATES.unknown));
+  });
+
+  it("(c) BYTE-IDENTICAL-ABSENT: CLARIFY with empty/omitted candidates → the generic clarify", () => {
+    const omitted = renderRenderables(anyClaim, CLARIFY);
+    const empty = renderRenderables(anyClaim, CLARIFY, [], []);
+    expect(omitted.text).toBe(literalText(SAFE_TEMPLATES.clarify));
+    expect(empty.text).toBe(literalText(SAFE_TEMPLATES.clarify));
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // F1 — ORDER_FULFILLMENT_STAGE renderer field alignment (slot reads
 // `fulfillmentStatus`, the C6 value-binding field). A VALIDATED ORDER claim now
 // RENDERS instead of abstaining to UNKNOWN.

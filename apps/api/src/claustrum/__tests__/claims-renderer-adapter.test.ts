@@ -583,4 +583,86 @@ describe("claims-renderer-adapter — BKL-111 claims.terminal signal", () => {
     // suppressedTypes is omitted (not `[]`) when there are no suppressions.
     expect(payloads[0]).not.toHaveProperty("suppressedTypes");
   });
+
+  // ── BKL-117 (Rider A) — the 0.8.0 ClaimsRenderContext.turnId flows into the
+  // claims.terminal event, giving the terminal↔turn_trace join key. ──
+  it("BKL-117: context.turnId flows into the claims.terminal event (the turn_trace join key)", () => {
+    const { payloads } = renderSpied(
+      resultOf({
+        perClaim: [{ type: ORDER_FULFILLMENT_STAGE, verdict: "VALIDATED" }],
+        renderable: [
+          claim(ORDER_FULFILLMENT_STAGE, "VALIDATED", { fulfillmentStatus: "preparing" }),
+        ],
+        terminal: "RENDER",
+      }),
+      { turnId: "turn-abc-123" },
+    );
+    expect(payloads).toHaveLength(1);
+    expect(payloads[0]).toMatchObject({ turnId: "turn-abc-123", posture: "VALIDATED_RENDER" });
+    // PII-free contract preserved: turnId is an opaque loop id, never a claim value.
+    expect(JSON.stringify(payloads[0])).not.toContain("preparing");
+  });
+
+  it("BKL-117 BYTE-IDENTICAL-ABSENT: no context.turnId → the event OMITS the turnId key", () => {
+    const { payloads } = renderSpied(
+      resultOf({
+        perClaim: [{ type: ORDER_FULFILLMENT_STAGE, verdict: "VALIDATED" }],
+        renderable: [
+          claim(ORDER_FULFILLMENT_STAGE, "VALIDATED", { fulfillmentStatus: "preparing" }),
+        ],
+        terminal: "RENDER",
+      }),
+    );
+    expect(payloads).toHaveLength(1);
+    expect(payloads[0]).not.toHaveProperty("turnId");
+  });
+
+  // ── BKL-152-edge (Rider C) — the construction-time `renderCarriersActive` flag +
+  // the 0.8.0 `resolvedQueryDate` carrier both reach the required-claim decomposer,
+  // making the STORE_OPEN_NOW date-anchor suppression EXACT on weekday==today. Proved
+  // via the completeness DEGRADE: STORE_HOURS_FOR_DATE VALIDATED + STORE_OPEN_NOW
+  // UNKNOWN on a date-anchored hours question — suppressed ⇒ complete (no degrade);
+  // kept ⇒ incomplete (degrade). The two directions differ ONLY by the carrier. ──
+  const STORE_HOURS_FOR_DATE = "STORE_HOURS_FOR_DATE";
+  const dateHoursResult = () =>
+    resultOf({
+      perClaim: [
+        { type: STORE_HOURS_FOR_DATE, verdict: "VALIDATED" },
+        { type: STORE_OPEN_NOW, verdict: "UNKNOWN" },
+      ],
+      renderable: [],
+      terminal: "RENDER",
+    });
+  const degradeFor = (
+    renderer: ReturnType<typeof createIbatexasClaimsRenderer>,
+    context: Parameters<ReturnType<typeof createIbatexasClaimsRenderer>["render"]>[1],
+  ): boolean => {
+    const infoSpy = vi.spyOn(logger, "info").mockImplementation(() => logger);
+    try {
+      renderer.render(dateHoursResult(), context);
+      return terminalPayloads(infoSpy)[0]?.degradedFromRender === true;
+    } finally {
+      infoSpy.mockRestore();
+    }
+  };
+
+  it("BKL-152-edge WIRING: seam active + resolvedQueryDate PRESENT (non-today) → suppressed → NO degrade", () => {
+    const active = createIbatexasClaimsRenderer({ renderCarriersActive: true });
+    expect(
+      degradeFor(active, {
+        requestText: "que horas vocês abrem amanhã?",
+        resolvedQueryDate: "2026-07-24",
+      }),
+    ).toBe(false);
+  });
+
+  it("BKL-152-edge WIRING: seam active + resolvedQueryDate ABSENT (today) → kept → DEGRADE", () => {
+    const active = createIbatexasClaimsRenderer({ renderCarriersActive: true });
+    expect(degradeFor(active, { requestText: "que horas vocês abrem amanhã?" })).toBe(true);
+  });
+
+  it("BKL-152-edge BYTE-IDENTICAL-ABSENT: default renderer (seam inactive) → pure #301 suppress → NO degrade", () => {
+    const inactive = createIbatexasClaimsRenderer();
+    expect(degradeFor(inactive, { requestText: "que horas vocês abrem amanhã?" })).toBe(false);
+  });
 });

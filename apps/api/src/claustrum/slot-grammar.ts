@@ -461,3 +461,28 @@ export const SAFE_TEMPLATES: Readonly<Record<Exclude<TemplatePosture, "validated
     ],
   },
 };
+
+/**
+ * BKL-170 (CLARIFY-with-candidates, @claustrum/core 0.8.0 `disambiguationCandidates`
+ * carrier) — the proposition-free CLARIFY *ask* that VOICES the specific candidate
+ * handles the customer can pick, superseding the generic {@link SAFE_TEMPLATES}.clarify
+ * ("pode me dizer o número do pedido") when the render context carries first-party,
+ * owner-scoped candidate labels. The labels are IDOR-closed by construction — the
+ * resolver only ever lists the AUTHENTICATED customer's OWN records (the read-executor
+ * multi-order / ≥2-owned CLARIFY path), never a cross-owner id.
+ *
+ * PROPOSITION-FREE (Inv 6 / §O#5): the frame asserts NO domain/world fact about any
+ * candidate — it lists their opaque display LABELS and asks which one. The labels are
+ * ADOPTER carrier vocabulary (not model prose, not a suppressed-value re-leak). The
+ * caller keeps the generic clarify on an EMPTY list (this builder is never called with
+ * `[]`). Deterministic + pure.
+ */
+export function clarifyWithCandidatesText(labels: readonly string[]): string {
+  return `Tenho mais de um registro possível para isso — qual deles: ${joinPtBrList(labels)}?`;
+}
+
+/** pt-BR enumerated list join: `[a]`→"a"; `[a,b]`→"a ou b"; `[a,b,c]`→"a, b ou c". Pure. */
+function joinPtBrList(items: readonly string[]): string {
+  if (items.length <= 1) return items[0] ?? "";
+  return `${items.slice(0, -1).join(", ")} ou ${items[items.length - 1]}`;
+}
