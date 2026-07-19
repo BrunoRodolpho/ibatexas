@@ -348,3 +348,123 @@ export function resolveMenuOverviewText(
   overviewMemoSet(turnId, pending);
   return pending;
 }
+
+// ── MENU_DIETARY — dietary-PREFERENCE options (vegetariano / vegano) ──────────────
+// BKL-214: a dietary-preference question ("tem opção vegetariana?") reads the products
+// carrying the requested dietary TAG and lists them. RESTRICTED to the PURE-PREFERENCE
+// tags {vegetariano, vegano}: `sem_gluten` / `sem_lactose` are ALLERGEN-ADJACENT medical
+// territory (celiac / lactose-intolerance) — a "sem glúten" list is a "não contém glúten"
+// assurance by another name, which the RATIFIED BKL-143/BKL-123 conservative rulings
+// forbid, and the registry's own MENU_DIETARY_OPTIONS carve-out comment already gated.
+// Those asks trip `ALLERGEN_FAMILY_RE` (glúten|lactose) in the span classifier and NEVER
+// reach this read — they route to the conservative honest-abstain path. This claim only
+// ever asserts a PREFERENCE attribute ("is tagged vegetarian"), never a health guarantee.
+
+/** The dietary-PREFERENCE tags MENU_DIETARY may render. Deliberately EXCLUDES the
+ *  allergen-adjacent `sem_gluten`/`sem_lactose` (BKL-143/123 conservative gate). */
+export const DIETARY_PREFERENCE_TAGS = ["vegetariano", "vegano"] as const;
+export type DietaryPreferenceTag = (typeof DIETARY_PREFERENCE_TAGS)[number];
+
+/** pt-BR label for the rendered list header, per tag (plural, matches the tag noun). */
+const DIETARY_TAG_LABEL: Readonly<Record<DietaryPreferenceTag, string>> = {
+  vegetariano: "vegetarianas",
+  vegano: "veganas",
+};
+
+/** Deterministically detect the requested dietary-PREFERENCE tags from the utterance.
+ *  Disjoint stems (`vegan` ≠ `vegetari`); returns the tags present (usually one).
+ *  Allergen-adjacent diets are NOT here (they route away before this is called). Pure. */
+export function detectDietaryPreferenceTags(text: string): DietaryPreferenceTag[] {
+  const t = text.toLowerCase();
+  const tags: DietaryPreferenceTag[] = [];
+  // `vegan` stem — "vegano"/"vegana"/"vegan"; NOT contained in "vegetariano". Check first.
+  if (/\bvegan[ao]?\b/.test(t)) tags.push("vegano");
+  if (/vegetarian[ao]?/.test(t)) tags.push("vegetariano");
+  return tags;
+}
+
+/** How many published tagged items to pull before bounding the rendered list. */
+const MENU_DIETARY_WILDCARD_LIMIT = 60;
+const MENU_DIETARY_MAX_ITEMS = 20;
+
+/** MENU_DIETARY scalar: a bounded DETERMINISTIC pt-BR list of first-party product titles
+ *  carrying the requested dietary-PREFERENCE tag. `undefined` when NO published product
+ *  carries the tag → the caller records NO evidence → honest UNKNOWN (never a fabricated
+ *  "we have vegetarian options"). Titles only — NO price/allergen assertion. NEVER a
+ *  "does not contain X" claim: a tag is a positive preference attribute, not a guarantee.
+ *  Pure. */
+export function composeDietaryOptionsText(
+  tag: DietaryPreferenceTag,
+  items: ReadonlyArray<Pick<ResolvedMenuItem, "title" | "categoryHandle">>,
+): string | undefined {
+  // Food only (drop the "Loja" merch tree — mirrors composeMenuOverviewText).
+  const food = items.filter((it) => !NON_FOOD_CATEGORY_HANDLES.has(it.categoryHandle ?? ""));
+  if (food.length === 0) return undefined;
+  const sorted = [...food].sort((a, b) => (a.title < b.title ? -1 : a.title > b.title ? 1 : 0));
+  const picked = sorted.slice(0, MENU_DIETARY_MAX_ITEMS);
+  const remaining = food.length - picked.length;
+  const more =
+    remaining > 0 ? ` (e mais ${remaining} ${remaining === 1 ? "opção" : "opções"})` : "";
+  return `Temos estas opções ${DIETARY_TAG_LABEL[tag]}: ${picked.map((p) => p.title).join("; ")}${more}.`;
+}
+
+// Per-turn dietary memo, keyed `${turnId}::${tag}` so investigator + planner compose the
+// IDENTICAL scalar for a given tag (the same-resolver-same-text invariant, per tag).
+const dietaryMemo = new Map<string, Promise<string | undefined>>();
+function dietaryMemoSet(key: string, value: Promise<string | undefined>): void {
+  dietaryMemo.set(key, value);
+  if (dietaryMemo.size > MENU_ITEM_MEMO_MAX) {
+    const oldest = dietaryMemo.keys().next().value;
+    if (oldest !== undefined) dietaryMemo.delete(oldest);
+  }
+}
+/** Test-only: clear the per-turn dietary memo between cases. */
+export function __resetMenuDietaryMemoForTest(): void {
+  dietaryMemo.clear();
+}
+
+async function resolveDietaryUncached(
+  tag: DietaryPreferenceTag,
+  ctx: MenuItemResolveContext,
+): Promise<string | undefined> {
+  let products: ReadonlyArray<ProductDTO> = [];
+  try {
+    // Faceted read: the SAME Typesense `tags` facet BKL-137 uses. Wildcard query +
+    // tag filter ⇒ every published product carrying the preference tag. A read error →
+    // MISS → honest UNKNOWN (fail-closed).
+    const out = await searchProducts(
+      { query: "*", tags: [tag], limit: MENU_DIETARY_WILDCARD_LIMIT },
+      {
+        channel: ctx.channel === "whatsapp" ? Channel.WhatsApp : Channel.Web,
+        sessionId: ctx.sessionId ?? ctx.customerId,
+        ...(isGuestCustomerId(ctx.customerId) ? {} : { userId: ctx.customerId }),
+        userType: "customer",
+      },
+    );
+    products = out.products ?? [];
+  } catch {
+    return undefined;
+  }
+  return composeDietaryOptionsText(
+    tag,
+    products.map((p) => ({ title: p.title, categoryHandle: p.categoryHandle })),
+  );
+}
+
+/**
+ * Resolve the dietary-options scalar for a given tag + turn, or `undefined` when no
+ * product carries the tag (honest no-answer → UNKNOWN). `turnId` scopes the memo so the
+ * investigator and the claim planner compose the IDENTICAL scalar for that tag.
+ */
+export function resolveDietaryOptionsText(
+  turnId: string,
+  tag: DietaryPreferenceTag,
+  ctx: MenuItemResolveContext,
+): Promise<string | undefined> {
+  const key = `${turnId}::${tag}`;
+  const cached = dietaryMemo.get(key);
+  if (cached !== undefined) return cached;
+  const pending = resolveDietaryUncached(tag, ctx);
+  dietaryMemoSet(key, pending);
+  return pending;
+}

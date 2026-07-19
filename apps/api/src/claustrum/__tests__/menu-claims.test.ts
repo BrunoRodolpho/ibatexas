@@ -14,6 +14,9 @@ import {
   composeMenuPriceText,
   composeMenuContentsText,
   composeMenuOverviewText,
+  composeDietaryOptionsText,
+  detectDietaryPreferenceTags,
+  DIETARY_PREFERENCE_TAGS,
   type ResolvedMenuItem,
 } from "../menu-item-resolver.js";
 
@@ -265,5 +268,99 @@ describe("BKL-142 MENU_OVERVIEW decomposer — whole-menu span, disjoint from pe
 
   it("the overview span requires ONLY MENU_OVERVIEW", () => {
     expect(REQUIRED_CLAIM_CLOSURE.MENU_OVERVIEW_Q).toEqual(["MENU_OVERVIEW"]);
+  });
+});
+
+
+describe("BKL-214 MENU_DIETARY — dietary-PREFERENCE claim (vegetariano/vegano only)", () => {
+  it("is a registered, renderable claim type with a single-proposition validated template", () => {
+    expect(isRegistryClaimType("MENU_DIETARY")).toBe(true);
+    expect(CLAIM_REGISTRY).toContain("MENU_DIETARY");
+    const spec = REGISTRY_SPECS.MENU_DIETARY;
+    expect(spec.kind).toBe("read_claim");
+    expect(spec.perResourceKey).toBe(true); // PUBLIC per-item, subject = the dietary tag
+    expect(spec.customerScoped).toBe(false);
+    expect(spec.valueBinding).toEqual({ key: "menu:dietary", path: ["dietaryText"] });
+    const tpl = VALIDATED_TEMPLATES.MENU_DIETARY;
+    expect(tpl.posture).toBe("validated");
+    expect(tpl.slots).toHaveLength(1); // exactly ONE proposition slot (Inv 6)
+  });
+
+  it("REQUIRED_CLAIM_CLOSURE maps MENU_DIETARY_Q → MENU_DIETARY", () => {
+    expect(REQUIRED_CLAIM_CLOSURE.MENU_DIETARY_Q).toEqual(["MENU_DIETARY"]);
+  });
+
+  it("restricts the renderable tags to pure PREFERENCE — vegetariano/vegano ONLY (no allergen-adjacent diets)", () => {
+    expect([...DIETARY_PREFERENCE_TAGS].sort()).toEqual(["vegano", "vegetariano"]);
+    expect(DIETARY_PREFERENCE_TAGS as readonly string[]).not.toContain("sem_gluten");
+    expect(DIETARY_PREFERENCE_TAGS as readonly string[]).not.toContain("sem_lactose");
+  });
+
+  it("detects the dietary-preference tag deterministically (disjoint vegan/vegetarian stems)", () => {
+    expect(detectDietaryPreferenceTags("tem opção vegetariana?")).toEqual(["vegetariano"]);
+    expect(detectDietaryPreferenceTags("vocês têm prato vegano?")).toEqual(["vegano"]);
+    expect(detectDietaryPreferenceTags("é vegetariano ou vegano?")).toContain("vegetariano");
+    expect(detectDietaryPreferenceTags("é vegetariano ou vegano?")).toContain("vegano");
+    expect(detectDietaryPreferenceTags("quanto custa a costela?")).toEqual([]);
+    // "vegano" stem must NOT match inside "vegetariano" and vice-versa.
+    expect(detectDietaryPreferenceTags("tem prato vegetariano?")).toEqual(["vegetariano"]);
+  });
+
+  describe("span classification", () => {
+    it("a dietary-preference question fires MENU_DIETARY_Q", () => {
+      expect(classifyRequestSpans("tem opção vegetariana?")).toContain("MENU_DIETARY_Q");
+      expect(classifyRequestSpans("vocês têm prato vegano?")).toContain("MENU_DIETARY_Q");
+    });
+
+    it("★ the allergen boundary — an allergen-adjacent diet NEVER fires MENU_DIETARY_Q (routes to the conservative abstain path)", () => {
+      // "sem glúten"/"sem lactose" trip ALLERGEN_FAMILY_RE (glúten|lactose) → excluded.
+      expect(classifyRequestSpans("tem opção sem glúten?")).not.toContain("MENU_DIETARY_Q");
+      expect(classifyRequestSpans("tem prato sem lactose?")).not.toContain("MENU_DIETARY_Q");
+      // A mixed ask (vegetarian + allergen) also declines wholesale — safety wins.
+      expect(classifyRequestSpans("tem opção vegetariana sem glúten?")).not.toContain("MENU_DIETARY_Q");
+    });
+
+    it("an imperative cart mutation near a dietary word routes to the mutation path, not the read", () => {
+      expect(classifyRequestSpans("tira o prato vegetariano do carrinho")).not.toContain("MENU_DIETARY_Q");
+    });
+
+    it("a non-dietary question does not fire MENU_DIETARY_Q", () => {
+      expect(classifyRequestSpans("o que tem no cardápio?")).not.toContain("MENU_DIETARY_Q");
+      expect(classifyRequestSpans("quanto custa a costela?")).not.toContain("MENU_DIETARY_Q");
+    });
+  });
+
+  describe("composeDietaryOptionsText — deterministic first-party list, never an allergen assurance", () => {
+    const veg = [
+      { title: "Farofa de Bacon", categoryHandle: "acompanhamentos" },
+      { title: "Salada Verde", categoryHandle: "acompanhamentos" },
+    ];
+    it("composes a pt-BR list of tagged product titles (deterministic, sorted)", () => {
+      const text = composeDietaryOptionsText("vegetariano", veg)!;
+      expect(text).toBe("Temos estas opções vegetarianas: Farofa de Bacon; Salada Verde.");
+    });
+    it("uses the correct tag label for vegano", () => {
+      expect(composeDietaryOptionsText("vegano", [{ title: "Salada Verde", categoryHandle: "acompanhamentos" }])!)
+        .toBe("Temos estas opções veganas: Salada Verde.");
+    });
+    it("★ NEVER renders a 'não contém'/allergen assurance — a positive preference list only", () => {
+      const text = composeDietaryOptionsText("vegetariano", veg)!;
+      expect(text.toLowerCase()).not.toContain("não contém");
+      expect(text.toLowerCase()).not.toContain("sem glúten");
+      expect(text.toLowerCase()).not.toContain("sem lactose");
+      expect(text.toLowerCase()).not.toContain("seguro");
+    });
+    it("returns undefined when NO product carries the tag → honest UNKNOWN (never a fabricated option)", () => {
+      expect(composeDietaryOptionsText("vegetariano", [])).toBeUndefined();
+    });
+    it("order-independent of the input (investigator + planner compose byte-equal)", () => {
+      const shuffled = [veg[1]!, veg[0]!];
+      expect(composeDietaryOptionsText("vegetariano", shuffled)).toBe(composeDietaryOptionsText("vegetariano", veg));
+    });
+    it("drops merch from the list (food-only, like the overview)", () => {
+      const withMerch = [...veg, { title: "Camiseta Vegana", categoryHandle: "camisetas" }];
+      const text = composeDietaryOptionsText("vegetariano", withMerch)!;
+      expect(text).not.toContain("Camiseta");
+    });
   });
 });

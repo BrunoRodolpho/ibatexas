@@ -147,6 +147,8 @@ const NON_TRIAD_RENDERABLE = [
   "STORE_HOURS_FOR_DATE",
   "MENU_ITEM_PRICE",
   "MENU_ITEM_CONTENTS",
+  // BKL-214 — the dietary-preference read, non-Triad public like MENU_OVERVIEW.
+  "MENU_DIETARY",
 ] as const;
 
 describe("BKL-112 — context: RENDERABLE == the triadScoped definitions ∪ the deliberate non-Triad public reads", () => {

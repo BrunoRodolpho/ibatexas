@@ -41,6 +41,8 @@ import { resolveQueriedScheduleDate } from "./schedule-date-resolver.js";
 import {
   resolveMenuItem,
   resolveMenuOverviewText,
+  resolveDietaryOptionsText,
+  detectDietaryPreferenceTags,
   composeMenuPriceText,
   composeMenuContentsText,
 } from "./menu-item-resolver.js";
@@ -198,6 +200,11 @@ const MENU_ITEM_CONTENTS_KEY = (productId: string): string =>
 // BKL-142 — MENU_OVERVIEW is FIXED-SUBJECT (single-key, like STORE_HOURS): no `:{id}`
 // suffix. The menu-wide overview read is recorded under this bare key.
 const MENU_OVERVIEW_KEY = "menu:overview";
+// BKL-214 — MENU_DIETARY is PUBLIC per-item keyed by the dietary TAG (vegetariano/vegano),
+// mirroring MENU_ITEM_PRICE's per-resource key. The investigator records the read under
+// `menu:dietary:{tag}` only after deterministic tag detection, so the LEDGER names the
+// admissible tag (classify-only's presentPublicItemIds picks it up).
+const MENU_DIETARY_KEY = (tag: string): string => `menu:dietary:${tag}`;
 // BKL-136 — the fixed public store-info key (claim-registry.ts STORE_INFO evidence).
 const STORE_INFO_KEY = "store:info";
 const ORDER_FULFILLMENT_KEY = (orderId: string): string =>
@@ -488,6 +495,34 @@ export function createFirstPartyTurnReads(
           sourceMode: "live",
           read: async () => ({ overviewText }),
         });
+      }
+    }
+
+    // BKL-214 — MENU_DIETARY: the dietary-PREFERENCE read ("tem opção vegetariana?").
+    // GATED on a MENU_DIETARY_Q span. The tag(s) are detected DETERMINISTICALLY from the
+    // text (vegetariano/vegano — allergen-adjacent diets are excluded upstream by the span
+    // gate). For each detected tag, a faceted read of the tagged products; an empty tag →
+    // resolveDietaryOptionsText undefined → NO evidence → honest UNKNOWN (never a
+    // fabricated "we have vegetarian options"). Public first-party → BEFORE the
+    // authenticated gate (answers guests too). Keyed per-tag like the menu-item reads.
+    if (menuSpans.includes("MENU_DIETARY_Q")) {
+      const tags = detectDietaryPreferenceTags(input.cognition.perception.text);
+      for (const tag of tags) {
+        const dietaryText = await resolveDietaryOptionsText(input.cognition.turnId, tag, {
+          channel: input.cognition.perception.channel,
+          sessionId: input.cognition.conversationId,
+          customerId,
+        });
+        if (dietaryText !== undefined) {
+          reads.push({
+            key: MENU_DIETARY_KEY(tag),
+            source: "catalog.dietary",
+            origin: "TRUSTED",
+            originProvenance: "FIRST_PARTY",
+            sourceMode: "live",
+            read: async () => ({ dietaryText }),
+          });
+        }
       }
     }
 
