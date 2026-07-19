@@ -358,6 +358,12 @@ export interface SuccessClaimClass {
   /** The class's domain noun (a regex fragment). Guards the F1b FALSE-FAILURE mirror
    *  so a shared verb root does not cross-flag a different-noun honest failure. */
   readonly noun?: string;
+  /** BKL-194 — RECEIPT-semantics class: the action COMPLETES on receipt ("avaliação
+   *  recebida" IS the success, not an in-flight status), so the PENDING_STATUS mood
+   *  exemption must NOT rescue its claims ("recebid…" is this class's own completion
+   *  verb — the exemption would swallow the exact live false-success). Future/
+   *  conditional clauses still exempt (an honest "vou registrar" stays unflagged). */
+  readonly receiptIsCompletion?: true;
 }
 
 /** Build a claim class from a domain noun + a verb-root alternation. Matches BOTH
@@ -396,7 +402,9 @@ function claimClass(
 // Completion-verb ROOTS per domain (the builder appends -ado/-ido/-ei/-ou…).
 // Irregulars (feito/feita) are added as `extra` literals.
 export const SUCCESS_CLAIM_CLASSES: ReadonlyArray<SuccessClaimClass> = [
-  claimClass("order-placed", "pedido", "registr|confirm|realiz|finaliz|efetu|conclu|fech|cri", ["order.checkout.create"], [/\bpedido\b[^.!?]{0,30}\bfeito\b/, /\bfeito\b[^.!?]{0,15}\b(?:o |seu )?pedido\b/]),
+  // BKL-194 — order.reorder ALSO genuinely places an order, so it justifies the
+  // order-placed family (a reorder-executed turn saying "pedido criado" is honest).
+  claimClass("order-placed", "pedido", "registr|confirm|realiz|finaliz|efetu|conclu|fech|cri", ["order.checkout.create", "order.reorder"], [/\bpedido\b[^.!?]{0,30}\bfeito\b/, /\bfeito\b[^.!?]{0,15}\b(?:o |seu )?pedido\b/]),
   claimClass("purchase-completed", "compra", "finaliz|conclu|realiz|confirm|efetu|fech", ["order.checkout.create"], [/\bcompra\b[^.!?]{0,20}\bfeita\b/]),
   // payment-settled = an INBOUND payment was approved/settled. A REFUND confirmation
   // is the opposite money direction and must NOT justify a "pagamento aprovado"
@@ -414,12 +422,55 @@ export const SUCCESS_CLAIM_CLASSES: ReadonlyArray<SuccessClaimClass> = [
   claimClass("cart-item-added", "carrinho", "adicion|inclu|atualiz", ["order.item.add", "order.item.update", "order.item.remove"], [/\bitem\b[^.!?]{0,15}\badicionad\w*/]),
   claimClass("refund-done", "reembolso", "process|emit|realiz|efetu|conclu|confirm|aprov", ["payment.refund.issue", "payment.refund.confirm"]),
   claimClass("note-added", String.raw`observac\w*`, "adicion", ["order.note.add"]),
-  claimClass("order-amended", "pedido", "alter|atualiz", ["order.amend.request", "order.amend.add_item", "order.amend.update_qty", "order.amend.remove_item"], [/\badicionad\w*\b[^.!?]{0,15}\bao pedido\b/, /\baltera\w*\b[^.!?]{0,22}\b(?:registrad|realizad)\w*/]),
+  // BKL-194 — order.type.switch IS an order amendment ("pedido alterado para
+  // retirada"), so it joins the justifier set (prevents a latent false-clamp of an
+  // honest type-switch confirmation).
+  claimClass("order-amended", "pedido", "alter|atualiz", ["order.amend.request", "order.amend.add_item", "order.amend.update_qty", "order.amend.remove_item", "order.type.switch"], [/\badicionad\w*\b[^.!?]{0,15}\bao pedido\b/, /\baltera\w*\b[^.!?]{0,22}\b(?:registrad|realizad)\w*/]),
   claimClass("reservation-confirmed", "reserva", "confirm|garant|realiz|efetu|conclu", ["reservation.create", "reservation.modify", "reservation.checkin", "reservation.complete"], [/\breserva\b[^.!?]{0,20}\bfeita\b/, /\bmesa\b[^.!?]{0,20}\b(?:reservad|garantid|confirmad)\w*/, /\bcheck-?in\b[^.!?]{0,15}\b(?:feito|confirmad|realizad)\w*/, /\b(?:agendad\w*|agendamento)\b[^.!?]{0,25}\b(?:confirmad|realizad|feito|concluid)\w*/]),
   // PIX code/QR generation — justified by a checkout (PIX) or a regenerate.
   { id: "pix-generated", claim: [/\b(?:codigo )?pix\b[^.!?]{0,18}\b(?:gerad|criad|criei|gerei)\w*/, /\bgerei\b[^.!?]{0,15}\bpix\b/], negated: [/\b(?:nao|nunca|jamais)\b[^.!?]{0,14}\b(?:gerad|criad|gerei)\w*/], justifiedBy: ["order.checkout.create", "payment.pix.regenerate"], noun: "pix" },
   // Fulfillment is NEVER performed by the chat responder — any such claim is unearned.
   { id: "fulfillment-claimed", claim: [/\b(?:a caminho|saiu pra entrega|saiu para entrega|em preparo|no preparo|mandei pro preparo|ja separei|esta sendo preparad|pronto pra retirar|pronto para retirar|pode (?:vir )?(?:retirar|buscar))\b/], negated: [/\bnao\b[^.!?]{0,10}\b(?:a caminho|saiu|pronto)\b/], justifiedBy: [] },
+  // ── BKL-194 sweep additions (the taxonomy outgrew the original 11 classes) ──
+  //
+  // review-received — THE live false-success (session 9ff869ed): "Sua avaliação de
+  // 5 estrelas…foi recebida e registrada" with ZERO order.review.submit rows.
+  // RECEIPT-semantics: `receiptIsCompletion` disables the PENDING_STATUS exemption
+  // ("recebid…" is this class's completion verb, not an in-flight status — the
+  // exemption would swallow the exact live prose). The rating sense of "nota"
+  // ("sua nota foi registrada") rides here via a `nota(?! fiscal)` extra so it can
+  // never cross-match the fiscal class below. Wide 60-char extra: the live gap
+  // between "avaliação" and its verb was exactly 40 chars (a longer displayId
+  // would have slipped the builder's default window).
+  {
+    ...claimClass("review-received", String.raw`avaliac\w*`, "receb|registr|envi|grav|comput", ["order.review.submit"], [
+      /\bavaliac\w*\b[^.!?]{0,60}\b(?:recebid|registrad|enviad|gravad|computad)\w*/,
+      /\b(?:sua |a )?nota(?! fiscal)\b[^.!?]{0,25}\b(?:recebid|registrad|enviad|gravad|computad)\w*/,
+      /\bobrigad[oa]\b[^.!?]{0,20}\bavaliac\w*/,
+    ]),
+    receiptIsCompletion: true,
+  },
+  // reservation-canceled — "sua reserva foi cancelada" (the order-canceled twin;
+  // that class's noun guard is "pedido", so reservations were unguarded).
+  claimClass("reservation-canceled", "reserva", "cancel", ["reservation.cancel"]),
+  // coupon-applied — "cupom aplicado" / "desconto aplicado".
+  claimClass("coupon-applied", "cupom", "aplic|ativ|adicion|resgat", ["order.coupon.apply"], [/\bdesconto\b[^.!?]{0,20}\baplicad\w*/]),
+  // address-updated — "endereço atualizado/alterado/cadastrado/removido".
+  claimClass("address-updated", String.raw`endereco\w*`, "atualiz|alter|salv|cadastr|adicion|remov", ["customer.address.add", "customer.address.remove", "order.address.change"]),
+  // preferences-saved — "preferências atualizadas"; the irregular short participle
+  // "salvas" (not "salvadas") needs the extra literal.
+  claimClass("preferences-saved", "preferencias?", "salv|atualiz|registr|grav", ["customer.preferences.update"], [/\bpreferencias?\b[^.!?]{0,25}\bsalvas?\b/]),
+  // payment-method-switched — "forma de pagamento alterada". Distinct from
+  // payment-settled (different verb family; the full-phrase noun keeps the bare
+  // "pagamento" classes from cross-matching).
+  claimClass("payment-method-switched", "(?:forma|metodo|meio)s? de pagamento", "alter|troc|mud|atualiz", ["payment.method.switch"]),
+  // fiscal-emitted — "nota fiscal emitida/gerada". SYSTEM-only kind: it can never
+  // execute inside a chat turn, so in practice this is unearnable on the customer
+  // plane (the honest justifier is listed for the day a read surfaces real state).
+  claimClass("fiscal-emitted", "nota fiscal", "emit|ger", ["order.fiscal.emit"], [/\b(?:nfc-?e|nfe|danfe)\b[^.!?]{0,30}\b(?:emitid|gerad)\w*/]),
+  // data-anonymized — LGPD: "seus dados foram apagados/anonimizados/excluídos".
+  // A confabulated deletion promise is a privacy harm, not just UX.
+  claimClass("data-anonymized", "dados", "apag|anonimiz|exclu|remov|delet", ["customer.anonymize"]),
 ];
 
 /** The envelope kinds the runtime ACTUALLY executed this turn (empty unless the
@@ -513,12 +564,14 @@ function clauseAround(sentence: string, start: number): string {
  *  clause ("…, se precisar de algo avise") no longer suppresses a completed claim
  *  in a DIFFERENT clause (review finding 5). A clause that asserts definite success
  *  ("…com sucesso") is never pending-exempt (finding 8). */
-function claimIsMoodExempt(sentence: string, claimRe: RegExp): boolean {
+function claimIsMoodExempt(sentence: string, claimRe: RegExp, skipPending = false): boolean {
   const m = claimRe.exec(sentence);
   if (m === null) return false;
   const clause = clauseAround(sentence, m.index);
   if (FUTURE_OR_CONDITIONAL.test(clause) || FUTURE_OR_CONDITIONAL_SE.test(clause)) return true;
-  if (PENDING_STATUS.test(clause) && !DEFINITE_SUCCESS.test(clause)) return true;
+  // BKL-194 — receipt-semantics classes (`receiptIsCompletion`) skip the pending
+  // exemption: "recebid…" is their completion verb, not an in-flight status.
+  if (!skipPending && PENDING_STATUS.test(clause) && !DEFINITE_SUCCESS.test(clause)) return true;
   return false;
 }
 
@@ -582,7 +635,7 @@ function unearnedClaimInSentence(
     // elsewhere in the sentence no longer blanket-suppresses a completed claim.
     const matched = cls.claim.find((re) => re.test(sentenceText));
     if (matched === undefined) continue;
-    if (claimIsMoodExempt(sentenceText, matched)) continue; // future/conditional/pending clause
+    if (claimIsMoodExempt(sentenceText, matched, cls.receiptIsCompletion === true)) continue; // future/conditional(/pending) clause
     if (!cls.justifiedBy.some((k) => executed.has(k))) return cls.id;
   }
   return null;

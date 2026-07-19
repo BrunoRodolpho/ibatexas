@@ -38,10 +38,14 @@ describe("SUCCESS_CLAIM_CLASSES guard mirror (registry v0.1 §6 Cluster F + §K)
     const distinctIds = new Set(SUCCESS_CLAIM_CLASSES.map((c) => c.id));
     expect(distinctIds.size, "every guard class id must be distinct").toBe(enumeratedCount);
 
-    // §K: the guard mirror must equal the code's 11 classes. If the enumeration ever
-    // yields a number other than 11 this asserts the enumerated reality (the test is
-    // a faithful mirror), surfacing the drift instead of force-passing against 11.
-    expect(enumeratedCount, "guard must govern the 11 §K success classes").toBe(11);
+    // §K: the guard mirror must equal the code's class count. 11 §K seed classes
+    // + 8 BKL-194 sweep additions (review-received, reservation-canceled,
+    // coupon-applied, address-updated, preferences-saved, payment-method-switched,
+    // fiscal-emitted, data-anonymized) = 19 — the taxonomy outgrew the seed set
+    // and the live 9ff869ed false-success proved the review gap. If the
+    // enumeration ever yields another number this surfaces the drift instead of
+    // force-passing.
+    expect(enumeratedCount, "guard must govern the 11 §K + 8 BKL-194 success classes").toBe(19);
   });
 
   it("fulfillment-claimed.justifiedBy deep-equals [] — permanently unearnable (the strongest anti-confabulation guard)", () => {
