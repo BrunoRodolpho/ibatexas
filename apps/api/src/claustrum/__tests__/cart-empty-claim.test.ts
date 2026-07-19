@@ -16,7 +16,7 @@
 //      NON-EMPTY cart → CART_CONTENTS renders, CART_EMPTY drops.
 
 import { describe, expect, it } from "vitest";
-import { EvidenceLedger, type CandidateClaim } from "@adjudicate/core";
+import { EvidenceLedger } from "@adjudicate/core";
 import { runClaimsKernel } from "@adjudicate/core";
 import type {
   ClaimPlannerInput,
