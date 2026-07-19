@@ -188,6 +188,48 @@ describe("BKL-142 composeMenuOverviewText — deterministic bounded first-party 
     expect(composeMenuOverviewText([])).toBeUndefined();
   });
 
+  // BKL-182 — the "cardápio" overview is FOOD-only: merch (the seed "Loja" tree —
+  // camisetas/acessorios/kits) is dropped before composing, and the "e mais N"
+  // remainder counts food only. Live-caught in the SCN-005 drive (Avental/Boné/
+  // Camiseta polluting the food list).
+  it("BKL-182: drops merch categories from the overview (food-only listing)", () => {
+    const withMerch = [
+      ...listing,
+      { title: "Avental IbateXas", price: 12000, categoryHandle: "acessorios" },
+      { title: "Camiseta Logo", price: 7900, categoryHandle: "camisetas" },
+      { title: "Kit Churrasco", price: 25000, categoryHandle: "kits" },
+    ];
+    const text = composeMenuOverviewText(withMerch)!;
+    expect(text).toBe(composeMenuOverviewText(listing));
+    expect(text).not.toContain("Avental");
+    expect(text).not.toContain("Camiseta");
+    expect(text).not.toContain("Kit Churrasco");
+  });
+
+  it("BKL-182: the remainder count excludes merch (never inflated by non-food items)", () => {
+    const manyFood = Array.from({ length: 30 }, (_, i) => ({
+      title: `Prato ${String(i).padStart(2, "0")}`,
+      price: 1000 + i,
+      categoryHandle: `food_${i % 8}`,
+    }));
+    const merch = Array.from({ length: 10 }, (_, i) => ({
+      title: `Merch ${i}`,
+      price: 5000,
+      categoryHandle: "camisetas",
+    }));
+    const foodOnly = composeMenuOverviewText(manyFood)!;
+    const mixed = composeMenuOverviewText([...manyFood, ...merch])!;
+    expect(mixed).toBe(foodOnly);
+  });
+
+  it("BKL-182: an ALL-merch catalog composes undefined → honest UNKNOWN (no merch-as-menu)", () => {
+    expect(
+      composeMenuOverviewText([
+        { title: "Avental", price: 12000, categoryHandle: "acessorios" },
+      ]),
+    ).toBeUndefined();
+  });
+
   it("bounds a large catalog and honestly notes the remainder", () => {
     const many = Array.from({ length: 40 }, (_, i) => ({
       title: `Item ${String(i).padStart(2, "0")}`,

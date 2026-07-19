@@ -142,6 +142,22 @@ export function composeMenuContentsText(item: ResolvedMenuItem): string | undefi
 /** Max items surfaced PER category (breadth), and the overall cap. */
 const MENU_OVERVIEW_PER_CATEGORY = 4;
 const MENU_OVERVIEW_MAX_ITEMS = 20;
+
+/**
+ * BKL-182 — the "cardápio" overview lists FOOD, not merch. These are the child
+ * category handles under seed-data.ts's "Loja" tree (parent `loja`); items in
+ * them (Avental/Boné/Camiseta…) are real catalog products but not menu items,
+ * and the SCN-005 live drive showed them polluting the food overview. Filtered
+ * at the COMPOSER (both call sites — investigator + claim planner — stay
+ * byte-equal); explicit merch questions ride searchProducts, untouched.
+ * DRIFT NOTE: adding a new merch child category to seed-data.ts "Loja" requires
+ * adding its handle here (closed set — the composer only sees child handles).
+ */
+const NON_FOOD_CATEGORY_HANDLES: ReadonlySet<string> = new Set([
+  "camisetas",
+  "acessorios",
+  "kits",
+]);
 /** How many published items to pull from the wildcard listing before bounding. */
 const MENU_OVERVIEW_WILDCARD_LIMIT = 60;
 
@@ -152,10 +168,16 @@ const MENU_OVERVIEW_WILDCARD_LIMIT = 60;
 export function composeMenuOverviewText(
   items: ReadonlyArray<Pick<ResolvedMenuItem, "title" | "price" | "categoryHandle">>,
 ): string | undefined {
-  if (items.length === 0) return undefined;
+  // BKL-182 — drop merch BEFORE composing: the food-only set drives the listing
+  // AND the "e mais N itens" remainder count (a merch item must not inflate it).
+  // An all-merch catalog composes `undefined` → NO evidence → honest UNKNOWN.
+  const food = items.filter(
+    (it) => !NON_FOOD_CATEGORY_HANDLES.has(it.categoryHandle ?? ""),
+  );
+  if (food.length === 0) return undefined;
   // Deterministic order — never the (non-deterministic) search ranking, so the two
   // call sites (investigator + planner) compose the IDENTICAL string.
-  const sorted = [...items].sort((a, b) => {
+  const sorted = [...food].sort((a, b) => {
     const ca = a.categoryHandle ?? "";
     const cb = b.categoryHandle ?? "";
     if (ca !== cb) return ca < cb ? -1 : 1;
@@ -174,7 +196,7 @@ export function composeMenuOverviewText(
   }
   if (picked.length === 0) return undefined;
   const parts = picked.map((p) => `${p.title} — ${formatCentavosBRL(p.price)}`);
-  const remaining = items.length - picked.length;
+  const remaining = food.length - picked.length;
   const more = remaining > 0 ? ` (e mais ${remaining} ${remaining === 1 ? "item" : "itens"} no cardápio)` : "";
   return `No nosso cardápio: ${parts.join("; ")}${more}.`;
 }
