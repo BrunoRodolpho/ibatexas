@@ -260,3 +260,109 @@ describe("POST /api/admin/ops/chat — FE-D32 soft-affirmative restatement", () 
     }
   });
 });
+
+describe("POST /api/admin/ops/chat — BKL-191 negative declines the park", () => {
+  function freshPark(kind: string, userPrompt: string): ParkedEnvelope {
+    return {
+      envelope: { kind, intentHash: "fresh1fresh1" } as ParkedEnvelope["envelope"],
+      confirmationToken: "tok-fresh",
+      userPrompt,
+      parkedAt: new Date(Date.now() - 5000).toISOString(), // 5s ago → fresh
+    };
+  }
+
+  it("'não, cancela essa ação' on a FRESH park → declined + UNPARKED, handleTurn SKIPPED", async () => {
+    mockOpenCapsule.mockResolvedValue({
+      session: { unpark: mockUnpark },
+      loadedSession: {
+        id: "system:staff:owner1",
+        pendingConfirmations: [
+          freshPark("payment.refund.issue", "Confirmar reembolso de R$ 50,00?"),
+        ],
+      },
+    });
+    const server = await buildServer(OWNER);
+    try {
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/admin/ops/chat",
+        payload: { message: "não, cancela essa ação" },
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.decision).toBe("NEGATIVE_DECLINED_PARK");
+      expect(body.executed).toBe(false);
+      expect(body.reply).toBe("Ok, cancelei a ação pendente — nada foi executado.");
+      // The staff "no" STUCK: park cleared via the SessionPort, and the negative
+      // text never reached the planner (the live re-prompt bug this closes).
+      expect(mockUnpark).toHaveBeenCalledWith("system:staff:owner1", "fresh1fresh1");
+      expect(mockHandleTurn).not.toHaveBeenCalled();
+      expect(mockAppendOpsMessages).toHaveBeenCalledWith("owner1", [
+        { role: "assistant", content: body.reply },
+      ]);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("a MIXED 'não, pode deixar' does NOT decline (ambiguity clarify keeps the park)", async () => {
+    mockOpenCapsule.mockResolvedValue({
+      session: { unpark: mockUnpark },
+      loadedSession: {
+        id: "system:staff:owner1",
+        pendingConfirmations: [
+          freshPark("payment.refund.issue", "Confirmar reembolso de R$ 50,00?"),
+        ],
+      },
+    });
+    const server = await buildServer(OWNER);
+    try {
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/admin/ops/chat",
+        payload: { message: "não, pode deixar" },
+      });
+      expect(res.statusCode).toBe(200);
+      // Resolved by the AMBIGUITY clarify (or the loop) — never the decline branch.
+      expect(res.json().decision).not.toBe("NEGATIVE_DECLINED_PARK");
+      expect(mockUnpark).not.toHaveBeenCalled();
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("unpark FAILURE is fail-honest: falls through to the normal loop (no false 'cancelei')", async () => {
+    mockOpenCapsule.mockResolvedValue({
+      session: {
+        unpark: mockUnpark.mockRejectedValueOnce(new Error("redis down")),
+      },
+      loadedSession: {
+        id: "system:staff:owner1",
+        pendingConfirmations: [
+          freshPark("payment.refund.issue", "Confirmar reembolso de R$ 50,00?"),
+        ],
+      },
+    });
+    mockHandleTurn.mockResolvedValue({
+      response: { text: "Ação pendente cancelada." },
+      decision: { kind: "REFUSE", refusal: { code: "declined" } },
+      acted: undefined,
+      plan: { envelopes: [] },
+    });
+    const server = await buildServer(OWNER);
+    try {
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/admin/ops/chat",
+        payload: { message: "não, cancela essa ação" },
+      });
+      expect(res.statusCode).toBe(200);
+      // The decline ack was NOT sent (the unpark did not stick); the normal loop ran
+      // (claustrum's own deny path unparks there).
+      expect(res.json().decision).not.toBe("NEGATIVE_DECLINED_PARK");
+      expect(mockHandleTurn).toHaveBeenCalledTimes(1);
+    } finally {
+      await server.close();
+    }
+  });
+});

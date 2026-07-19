@@ -427,6 +427,58 @@ export function opsSoftAffirmativeRestateNotice(input: {
   return buildSoftAffirmativeRestateNotice(mostRecent.userPrompt);
 }
 
+// ── BKL-191: negative declines the park at the INGRESS ───────────────────────
+// claustrum's own deny path (handle-turn resolveResume) unparks and then runs the
+// "no" text through the NORMAL cognitive loop — where the planner re-reads
+// "não, cancela essa ação" as a fresh command and re-proposes/re-parks the same
+// action (the live re-prompt w-cal3 observed). The fix is ingress-side: a
+// PURE-negative reply aimed at a fresh in-scope park is answered by the ingress
+// itself — unpark + acknowledge — and the turn is SKIPPED so the negative text
+// never reaches the planner. A staff "no" sticks.
+
+/** pt-BR acknowledgment for a declined park (BKL-191). */
+export const OPS_NEGATIVE_DECLINE_ACK_PTBR =
+  "Ok, cancelei a ação pendente — nada foi executado.";
+
+/**
+ * BKL-191 — the FRESH in-scope park a PURE-NEGATIVE reply declines, or
+ * `undefined` when this branch must not engage. Mirrors `matchOpsReplyToParked`'s
+ * deny resolution EXACTLY (so the ingress and the matcher can never disagree):
+ *   - a `#hash` / defer ("amanhã") / explicit-or-soft affirmative reply →
+ *     `undefined` (the normal loop or its own branch resolves those);
+ *   - a MIXED reply (broad affirmative + negative, "não, pode deixar") →
+ *     `undefined` (ambiguous — money-safety, the park survives and
+ *     {@link isAmbiguousOpsReply} clarifies);
+ *   - a NEGATIVE with no fresh in-scope park → `undefined` (ordinary utterance).
+ * KNOWN TRADEOFF (documented): a decline that ALSO embeds a brand-new command
+ * ("não quero, cancela o pedido 42") is swallowed with the acknowledgment — the
+ * staff re-sends the command against a clean slate; the alternative (running the
+ * loop) is the live re-prompt bug this closes. PURE; clock = `nowIso`.
+ */
+export function opsNegativeDeclineTarget(input: {
+  readonly text: string;
+  readonly pendingConfirmations: ReadonlyArray<ParkedEnvelope>;
+  readonly nowIso: string;
+  readonly excludedKinds?: ReadonlySet<string>;
+  readonly ttlSeconds?: number;
+}): ParkedEnvelope | undefined {
+  if (typeof input.text !== "string" || input.text.length === 0) return undefined;
+  if (!Number.isFinite(Date.parse(input.nowIso))) return undefined;
+  if (HASH_PREFIX_RE.test(input.text)) return undefined;
+  if (DEFER_RE.test(input.text)) return undefined;
+  if (!NEGATIVE_RE.test(input.text)) return undefined;
+  // Mixed affirmative+negative is AMBIGUOUS (the matcher's null) — never decline.
+  if (hasBroadAffirmative(input.text)) return undefined;
+
+  const excluded = input.excludedKinds ?? EMPTY_EXCLUDED_KINDS;
+  const ttlSeconds = input.ttlSeconds ?? getOpsConfirmParkTtlSeconds();
+  const inScope = input.pendingConfirmations.filter(
+    (p) => !excluded.has(String(p.envelope.kind)),
+  );
+  const { fresh } = partitionOpsParksByFreshness(inScope, input.nowIso, ttlSeconds);
+  return pickMostRecentlyParked(fresh) ?? undefined;
+}
+
 // ── FE-D33: zombie-park pruning ──────────────────────────────────────────────
 // An expired park is already inert (invisible to matchToParked), but it lingers in
 // the session blob until the 24h/48h Redis TTL lapses. When an ingress surfaces the

@@ -871,6 +871,7 @@ async function resolveStatusTransitionOrderTarget(
   deps: OpsResolverDeps,
   envelope: IntentEnvelope,
   payload: Record<string, unknown>,
+  requestText: string,
 ): Promise<{
   order: OpsResolverOrder | null;
   orderId: string | null;
@@ -888,6 +889,15 @@ async function resolveStatusTransitionOrderTarget(
    * is needed there (and that path never confirms).
    */
   displayId?: number;
+  /**
+   * BKL-190 — present ONLY on the `"grounded"` path: did the CURRENT staff
+   * message actually contain the resolved order's display number (the
+   * `orderReferenceAppearsInMessage` check the BKL-150a scrub uses)? The model
+   * cannot pass a reference through for this capability (the FE-1.1 schema has
+   * no field), so a staff message that DID name the order still lands here —
+   * the confirm prompt must not then claim "não me disseram qual pedido".
+   */
+  orderNamedInMessage?: boolean;
   payload?: Record<string, unknown>;
 }> {
   const direct = await resolveOrderTarget(deps, envelope, payload);
@@ -923,6 +933,10 @@ async function resolveStatusTransitionOrderTarget(
     orderId: o.id,
     orderResolutionTrust: "grounded",
     displayId: o.displayId,
+    orderNamedInMessage: orderReferenceAppearsInMessage(
+      String(o.displayId),
+      requestText,
+    ),
     payload: { ...payload, orderId: o.id },
   };
 }
@@ -1515,8 +1529,9 @@ async function opsStateForEnvelope(
       orderId,
       orderResolutionTrust,
       displayId,
+      orderNamedInMessage,
       payload: resolvedPayload,
-    } = await resolveStatusTransitionOrderTarget(deps, envelope, payload);
+    } = await resolveStatusTransitionOrderTarget(deps, envelope, payload, requestText);
     // BKL-150(b) — normalize a locale/pt-BR status token (cancelled → canceled;
     // cancelado/pronto/… → the en-US enum) via the single-source
     // `normalizeOrderStatusToken` (@ibatexas/types) so the strict BKL-090 guard
@@ -1568,6 +1583,7 @@ async function opsStateForEnvelope(
           fulfillmentStatus: order?.fulfillmentStatus ?? null,
           ...(orderResolutionTrust ? { orderResolutionTrust } : {}),
           ...(displayId !== undefined ? { displayId } : {}),
+          ...(orderNamedInMessage !== undefined ? { orderNamedInMessage } : {}),
         },
       },
       ...(rewritten ? { payload: rewritten } : {}),

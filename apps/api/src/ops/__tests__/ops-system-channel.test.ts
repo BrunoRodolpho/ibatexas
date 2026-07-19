@@ -13,6 +13,7 @@ import {
   matchOpsReplyToParked,
   opsConfirmParkExpiresAt,
   opsExpiredInScopeParks,
+  opsNegativeDeclineTarget,
   opsSoftAffirmativeRestateNotice,
   opsStaleResumeNotice,
   OPS_AMBIGUOUS_REPLY_CLARIFY_PTBR,
@@ -787,5 +788,74 @@ describe("opsExpiredInScopeParks + pruneExpiredOpsParks — FE-D33 zombie prunin
         ttlSeconds: TTL,
       }),
     ).rejects.toThrow("redis down");
+  });
+});
+
+// ── BKL-191 — the ingress-side negative decline target ───────────────────────
+// A PURE-negative reply on a fresh in-scope park is declined AT THE INGRESS
+// (unpark + ack, turn skipped) so the planner never re-reads "não, cancela essa
+// ação" as a fresh command (the live re-prompt). The target selection mirrors
+// matchOpsReplyToParked's deny resolution exactly.
+describe("opsNegativeDeclineTarget — BKL-191 pure-negative park decline", () => {
+  const NOW = "2026-07-04T12:06:00.000Z"; // both P1/P2 fresh at the default TTL
+
+  it("a pure negative targets the most-recent fresh park", () => {
+    const target = opsNegativeDeclineTarget({
+      text: "não, cancela essa ação",
+      pendingConfirmations: [P1, P2],
+      nowIso: NOW,
+    });
+    expect(target).toBe(P2);
+  });
+
+  it("a MIXED reply ('não, pode deixar') is ambiguous → undefined (park survives)", () => {
+    expect(
+      opsNegativeDeclineTarget({
+        text: "não, pode deixar",
+        pendingConfirmations: [P1, P2],
+        nowIso: NOW,
+      }),
+    ).toBeUndefined();
+  });
+
+  it("explicit confirm / soft affirmative / #hash / defer never decline", () => {
+    for (const text of ["sim", "pode", "#a4b8", "não, amanhã"]) {
+      expect(
+        opsNegativeDeclineTarget({
+          text,
+          pendingConfirmations: [P1, P2],
+          nowIso: NOW,
+        }),
+      ).toBeUndefined();
+    }
+  });
+
+  it("a negative with NO fresh park is an ordinary utterance → undefined", () => {
+    expect(
+      opsNegativeDeclineTarget({
+        text: "não",
+        pendingConfirmations: [],
+        nowIso: NOW,
+      }),
+    ).toBeUndefined();
+    // Expired-only parks: invisible to decline, same as to resume.
+    expect(
+      opsNegativeDeclineTarget({
+        text: "não",
+        pendingConfirmations: [P1],
+        nowIso: "2026-07-05T12:00:00.000Z", // >> TTL past P1.parkedAt
+      }),
+    ).toBeUndefined();
+  });
+
+  it("out-of-scope parks are excluded (BKL-086 parity)", () => {
+    expect(
+      opsNegativeDeclineTarget({
+        text: "não, cancela",
+        pendingConfirmations: [P2],
+        nowIso: NOW,
+        excludedKinds: new Set([String(P2.envelope.kind)]),
+      }),
+    ).toBeUndefined();
   });
 });

@@ -1380,6 +1380,44 @@ describe("ordersPolicyBundle — requireConfirmationOnGroundedStatusTransition (
     )
   })
 
+  it("BKL-190: a grounded target the CURRENT message NAMED confirms WITHOUT the false 'não me disseram' frame", () => {
+    const decision = adjudicate(
+      transitionEnv("ready"),
+      state({
+        orderId: "o-1",
+        fulfillmentStatus: "preparing",
+        orderResolutionTrust: "grounded",
+        displayId: 928379,
+        orderNamedInMessage: true,
+      }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REQUEST_CONFIRMATION")
+    if (decision.kind !== "REQUEST_CONFIRMATION") return
+    expect(decision.prompt).toBe('Confirma avançar o pedido #928379 para "ready"?')
+    expect(decision.prompt).not.toContain("Não me disseram")
+  })
+
+  it("BKL-190: orderNamedInMessage false/absent keeps the honest 'não me disseram' frame verbatim", () => {
+    const decision = adjudicate(
+      transitionEnv("ready"),
+      state({
+        orderId: "o-1",
+        fulfillmentStatus: "preparing",
+        orderResolutionTrust: "grounded",
+        displayId: 928379,
+        orderNamedInMessage: false,
+      }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REQUEST_CONFIRMATION")
+    if (decision.kind !== "REQUEST_CONFIRMATION") return
+    expect(decision.prompt).toBe(
+      'Não me disseram qual pedido — vou usar o pedido #928379. ' +
+        'Confirma avançar o pedido #928379 para "ready"?',
+    )
+  })
+
   it("REQUEST_CONFIRMATION with the generic phrasing when displayId is unavailable (defensive fallback — should not be reachable in practice)", () => {
     const decision = adjudicate(
       transitionEnv("ready"),

@@ -592,9 +592,20 @@ const requireConfirmationOnGroundedStatusTransition: OrderGuard = (
     typeof state.ctx.displayId === "number"
       ? `o pedido #${state.ctx.displayId}`
       : "o pedido mais recente em aberto"
+  // BKL-190 — split the frame on whether the CURRENT staff message named the
+  // resolved order (ctx.orderNamedInMessage, resolver-computed). The model
+  // cannot pass a reference through for this capability, so a staff message
+  // that explicitly said "o pedido #42 tá pronto" still lands on this grounded
+  // path — telling that operator "não me disseram qual pedido" is factually
+  // wrong and reads as the system ignoring them. Named → a plain confirmation
+  // naming the order; unnamed → the honest "you didn't say which" frame.
+  const prompt =
+    state.ctx.orderNamedInMessage === true
+      ? `Confirma avançar ${orderLabel} para "${targetLabel}"?`
+      : `Não me disseram qual pedido — vou usar ${orderLabel}. ` +
+        `Confirma avançar ${orderLabel} para "${targetLabel}"?`
   return decisionRequestConfirmation(
-    `Não me disseram qual pedido — vou usar ${orderLabel}. ` +
-      `Confirma avançar ${orderLabel} para "${targetLabel}"?`,
+    prompt,
     [
       basis("business", BASIS_CODES.business.RULE_SATISFIED, {
         reason: "grounded_order_resolution_requires_confirmation",
