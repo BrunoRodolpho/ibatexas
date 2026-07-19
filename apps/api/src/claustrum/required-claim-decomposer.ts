@@ -544,6 +544,33 @@ export interface RequiredCompletenessResult {
 }
 
 /**
+ * BKL-163 (reopened) — PRESENCE-COMPLEMENT PAIRS. Each pair reads COMPLEMENTARY
+ * evidence keys off the SAME owner-scoped read (`cart_contents:` vs `cart_empty:` —
+ * exactly one is PRESENT after a successful cart read), so BY CONSTRUCTION exactly
+ * one member can ever VALIDATE in a turn. Requiring both (the CART_CONTENTS_Q
+ * closure row) therefore made completeness STRUCTURALLY unsatisfiable — every cart
+ * turn, empty or full, degraded RENDER→UNKNOWN (the live SCN-030 non-render).
+ *
+ * A pair member's requirement is SATISFIED when its partner VALIDATED: the two are
+ * mutually-exclusive dispositions of ONE underlying fact, so rendering the
+ * validated member omits nothing — the §O#15 "render the easy half" hole needs an
+ * INDEPENDENT companion fact, which a presence-complement partner is not. Types
+ * outside this list keep the strict every-type-VALIDATED rule unchanged.
+ */
+const PRESENCE_COMPLEMENT_PAIRS: ReadonlyArray<
+  readonly [RegistryClaimType, RegistryClaimType]
+> = [["CART_CONTENTS", "CART_EMPTY"]];
+
+/** Partner lookup for {@link PRESENCE_COMPLEMENT_PAIRS} (symmetric). */
+function presenceComplementPartner(type: RegistryClaimType): RegistryClaimType | undefined {
+  for (const [a, b] of PRESENCE_COMPLEMENT_PAIRS) {
+    if (type === a) return b;
+    if (type === b) return a;
+  }
+  return undefined;
+}
+
+/**
  * The P4 COMPLETENESS check quantified over the REQUIRED set (SDD §O#15) — NOT the
  * planner's chosen candidates. `resolved` maps each produced claim type to its
  * kernel verdict; any required type absent from the map is treated as `"ABSENT"`.
@@ -551,8 +578,10 @@ export interface RequiredCompletenessResult {
  * A required companion resolving ABSENT / UNKNOWN / REFUSED DEGRADES the turn —
  * the turn must NOT render the literal-true subset while silently omitting the
  * companion (the §O#15 "render the easy half" hole). `complete` is `true` IFF
- * EVERY required type is VALIDATED. Pure; order-stable over the required set's
- * insertion order.
+ * EVERY required type is VALIDATED — except a {@link PRESENCE_COMPLEMENT_PAIRS}
+ * member, whose requirement is ALSO satisfied by its partner validating (exactly
+ * one of the pair can ever validate; see the pair doc above). Pure; order-stable
+ * over the required set's insertion order.
  */
 export function checkRequiredClaimCompleteness(
   required: ReadonlySet<RegistryClaimType>,
@@ -561,7 +590,10 @@ export function checkRequiredClaimCompleteness(
   const unsatisfied: RegistryClaimType[] = [];
   for (const type of required) {
     const verdict: RequiredClaimResolution = resolved.get(type) ?? "ABSENT";
-    if (verdict !== "VALIDATED") unsatisfied.push(type);
+    if (verdict === "VALIDATED") continue;
+    const partner = presenceComplementPartner(type);
+    if (partner !== undefined && resolved.get(partner) === "VALIDATED") continue;
+    unsatisfied.push(type);
   }
   return { complete: unsatisfied.length === 0, unsatisfied };
 }
