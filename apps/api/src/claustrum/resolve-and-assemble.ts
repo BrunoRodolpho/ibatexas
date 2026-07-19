@@ -2086,6 +2086,62 @@ function deriveItemQuantity(
   return coerceQuantity(modelQuantity);
 }
 
+/** Party-size head nouns a "para N pessoas" phrase attaches to. */
+const PARTY_SIZE_NOUNS: readonly string[] = [
+  "pessoas", "pessoa", "lugares", "lugar", "convidados", "convidado", "gente",
+];
+
+/** Change-target prepositions: the count that follows one is the NEW party size
+ *  ("muda para 4 pessoas"). A count after "de"/"da"/"do" is the CURRENT/descriptive
+ *  size ("muda a reserva DE 4 pessoas para as 20h") — must NOT be treated as the
+ *  new value, so a time-only modify is never corrupted into a party-size change. */
+const PARTY_SIZE_TARGET_PREPOSITIONS: ReadonlySet<string> = new Set(["para", "pra", "pro"]);
+const PARTY_SIZE_SKIP_BEFORE_COUNT: ReadonlySet<string> = new Set([
+  "as", "os", "a", "o", "de", "da", "do",
+]);
+
+/** BKL-227 — recover a reservation party-size the model DROPPED. Same class as
+ *  BKL-199's item quantity: the 4B emits `reservation.modify` for "muda minha
+ *  reserva para 4 pessoas" but leaves `newPartySize` unset, so the modify EXECUTEs
+ *  as a NO-OP (nothing changes). Scan for a party-size head noun, read the count in
+ *  the slot before it, and accept it ONLY when governed by a change-target
+ *  preposition ("para"/"pra") — never a "de N pessoas" descriptive/current mention.
+ *  Reservation party range is 1–20; a match outside it is ignored. */
+function partySizeFromUtterance(utterance: string | undefined): number | undefined {
+  if (!utterance) return undefined;
+  const toks = normalizeTokens(utterance);
+  for (let i = 1; i < toks.length; i++) {
+    if (!PARTY_SIZE_NOUNS.includes(toks[i]!)) continue;
+    // Walk back to the count immediately before the noun, skipping filler
+    // ("para 4 [as] pessoas"). Track the token governing the count.
+    let j = i - 1;
+    while (j >= 0 && PARTY_SIZE_SKIP_BEFORE_COUNT.has(toks[j]!) && quantityFromToken(toks[j]!) === undefined) j--;
+    if (j < 0) continue;
+    const n = quantityFromToken(toks[j]!);
+    if (n === undefined || n < 1 || n > 20) continue;
+    // Require a change-target preposition somewhere in the two tokens before the
+    // count (allows "para 4 pessoas" and "para as 4 pessoas"); reject "de 4 pessoas".
+    const governing = [toks[j - 1], toks[j - 2]].filter((x): x is string => x !== undefined);
+    if (governing.some((g) => PARTY_SIZE_TARGET_PREPOSITIONS.has(g))) return n;
+    if (governing.some((g) => g === "de" || g === "da" || g === "do")) continue;
+    // No explicit preposition ("reserva 4 pessoas") — accept (the common bare form).
+    return n;
+  }
+  return undefined;
+}
+
+/** BKL-227 — for reservation.modify only, stamp a utterance-recovered
+ *  `newPartySize` when the model didn't emit one, so the change actually applies.
+ *  Byte-identical for every other kind and whenever the model DID emit the field
+ *  (its value wins) or the utterance carries no parseable party size. */
+function recoverModifyPartySize(kind: string, payload: Ctx, utteranceText: string | undefined): Ctx {
+  if (kind !== "reservation.modify") return payload;
+  if (typeof payload.newPartySize === "number") return payload;
+  const n = partySizeFromUtterance(utteranceText);
+  if (n === undefined) return payload;
+  return { ...payload, newPartySize: n };
+}
+
 /**
  * Dispatch by kind to the right loader. Unknown / whatsapp kinds get the identity
  * base only (guards needing entity state see null → REFUSE cleanly, never panic).
@@ -2141,9 +2197,13 @@ export async function resolveAndAssemble(args: ResolveArgs): Promise<AssembledRe
   // (no dependency on auto-resolve/ownership). Every rename is independent
   // on the SAME payload — order between them doesn't matter (each only
   // touches its own key(s), and each is a no-op for every OTHER kind).
-  const normalizedPayload = mapPreferencesUpdateWireFields(
+  const normalizedPayload = recoverModifyPartySize(
     kind,
-    mapCheckoutDeliveryTypeWireField(kind, mapCheckoutPaymentMethodWireField(kind, payload)),
+    mapPreferencesUpdateWireFields(
+      kind,
+      mapCheckoutDeliveryTypeWireField(kind, mapCheckoutPaymentMethodWireField(kind, payload)),
+    ),
+    utteranceText,
   );
 
   // NL→id resolution (confirm-first) then the 034-F1 refund ownership binding.

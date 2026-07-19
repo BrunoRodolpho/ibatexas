@@ -135,8 +135,16 @@ export const confirmOnAutoResolveGuard = nameGuard(
     // an explicitly-named order is deferred to the mutation-plane order-reference
     // resolution fix (BKL-216) — until the resolver honors the named order, a "#N"
     // here could confidently show the wrong (most-recent) order's number.
-    prompt: () =>
-      "Identifiquei o seu pedido mais recente para esta ação. Confirma que é esse mesmo? Responda sim para continuar.",
+    //
+    // BKL-226 — this same guard fronts the RESERVATION autoresolve kinds
+    // (reservation.cancel / reservation.modify are in AUTORESOLVE_CONFIRM_KINDS),
+    // where "o seu pedido" is the wrong noun. Make it kind-aware from the envelope
+    // (the prompt callback receives it): a reservation kind says "a sua reserva"
+    // (feminine agreement → "essa mesma"), everything else keeps "o seu pedido".
+    prompt: (_value, _threshold, env) =>
+      env.kind.startsWith("reservation.")
+        ? "Identifiquei a sua reserva mais recente para esta ação. Confirma que é essa mesma? Responda sim para continuar."
+        : "Identifiquei o seu pedido mais recente para esta ação. Confirma que é esse mesmo? Responda sim para continuar.",
   }),
 );
 

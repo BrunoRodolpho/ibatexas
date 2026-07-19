@@ -2551,3 +2551,59 @@ describe("resolveReservationSlot — FE-D27 NL date/time → timeSlotId", () => 
     expect(out).toBe(payload);
   });
 });
+
+// ── BKL-227 — reservation.modify party-size recovery (the model drops the count) ──
+// The 4B emits reservation.modify for "muda minha reserva para 4 pessoas" but leaves
+// newPartySize unset → a NO-OP EXECUTE. resolveAndAssemble recovers it deterministically
+// from the utterance, gated on the change-target preposition so a descriptive "de N
+// pessoas" (a time-only change) never corrupts into a party-size change.
+describe("resolve-and-assemble — BKL-227 reservation.modify party-size recovery", () => {
+  const modify = (utteranceText: string, payload: Record<string, unknown> = {}) =>
+    resolveAndAssemble({ kind: "reservation.modify", payload, customerId: "c-227", channel: "web", utteranceText });
+
+  it("recovers newPartySize from 'muda minha reserva para 4 pessoas' (was a no-op)", async () => {
+    const { payload } = await modify("muda minha reserva para 4 pessoas");
+    expect((payload as { newPartySize?: number }).newPartySize).toBe(4);
+  });
+
+  it("recovers a pt-BR cardinal ('para duas pessoas' → 2) and 'lugares' synonym", async () => {
+    expect(((await modify("muda para duas pessoas")).payload as { newPartySize?: number }).newPartySize).toBe(2);
+    expect(((await modify("muda minha reserva para 8 lugares")).payload as { newPartySize?: number }).newPartySize).toBe(8);
+  });
+
+  it("skips filler between the preposition and the count ('para as 6 pessoas' → 6)", async () => {
+    const { payload } = await modify("muda minha reserva para as 6 pessoas");
+    expect((payload as { newPartySize?: number }).newPartySize).toBe(6);
+  });
+
+  it("does NOT treat a descriptive 'de N pessoas' as the new size (time-only modify unchanged)", async () => {
+    const { payload } = await modify("muda minha reserva de 4 pessoas para as 20h");
+    expect((payload as { newPartySize?: number }).newPartySize).toBeUndefined();
+  });
+
+  it("does NOT invent a party size from a time-only change ('para 20h')", async () => {
+    const { payload } = await modify("muda minha reserva para 20h");
+    expect((payload as { newPartySize?: number }).newPartySize).toBeUndefined();
+  });
+
+  it("the model's emitted newPartySize wins (never overwritten by the utterance)", async () => {
+    const { payload } = await modify("muda minha reserva para 4 pessoas", { newPartySize: 2 });
+    expect((payload as { newPartySize?: number }).newPartySize).toBe(2);
+  });
+
+  it("a value out of the reservation range (1–20) is ignored", async () => {
+    const { payload } = await modify("muda minha reserva para 40 pessoas");
+    expect((payload as { newPartySize?: number }).newPartySize).toBeUndefined();
+  });
+
+  it("reservation.create is untouched (recovery is modify-only)", async () => {
+    const { payload } = await resolveAndAssemble({
+      kind: "reservation.create",
+      payload: { date: "2026-03-20", time: "20:00" },
+      customerId: "c-227",
+      channel: "web",
+      utteranceText: "mesa para 4 pessoas",
+    });
+    expect((payload as { newPartySize?: number }).newPartySize).toBeUndefined();
+  });
+});

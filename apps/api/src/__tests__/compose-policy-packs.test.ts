@@ -271,4 +271,23 @@ describe("confirmOnAutoResolveGuard — BKL-197 prompt (pedido, not item)", () =
     ) => unknown)({ kind: "order.amend.add_item", payload: {} }, { ctx: {} });
     expect(d).toBeNull();
   });
+
+  // BKL-226 — the SAME guard fronts the reservation autoresolve kinds, where
+  // "o seu pedido" is the wrong noun. It must say "a sua reserva" (feminine).
+  it("a reservation autoresolve says 'a sua reserva' (never 'pedido')", () => {
+    for (const kind of ["reservation.cancel", "reservation.modify"]) {
+      const d = fire(kind);
+      expect(d?.kind).toBe("REQUEST_CONFIRMATION");
+      expect(d?.prompt).toContain("a sua reserva");
+      expect(d?.prompt).toContain("essa mesma"); // feminine agreement
+      expect(d?.prompt).not.toContain("pedido");
+      expect(d?.prompt).toContain("mais recente"); // honest to the most-recent resolution
+    }
+  });
+
+  it("an order autoresolve still says 'pedido' (the BKL-197 wording, unregressed)", () => {
+    const d = fire("order.amend.remove_item");
+    expect(d?.prompt).toContain("o seu pedido");
+    expect(d?.prompt).not.toContain("reserva");
+  });
 });
