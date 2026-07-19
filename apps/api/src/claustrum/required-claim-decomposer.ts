@@ -452,10 +452,16 @@ export function classifyRequestSpans(text: string): SpanClass[] {
   // confirmada?", "qual minha reserva?") has no mutation verb and still fires.
   // A how-to interrogative ("como cancelo minha reserva?") also routes to the
   // model for a helpful answer — the fail-SAFE direction (never a wrong read).
-  if (
-    !mutationImperative &&
-    /(?<![a-z])reserv(?!at)(a|ar|ad|am|as|ando|ei|ou)/.test(t)
-  ) {
+  //
+  // BKL-219/224 — the `mesa` (table) synonym: a customer asks about their booking
+  // by "mesa" as often as "reserva" ("minha mesa está confirmada?"). Anchored on
+  // BOTH sides (`(?<![a-z])mesas?(?![a-z])`) so it matches standalone "mesa"/"mesas"
+  // only — never mid-word ("mesada" allowance, "mesas" is fine). Hoisted to a const
+  // so the bare-"status" fallback below can de-shadow a reservation-status ask.
+  const reservationRef =
+    /(?<![a-z])reserv(?!at)(a|ar|ad|am|as|ando|ei|ou)/.test(t) ||
+    /(?<![a-z])mesas?(?![a-z])/.test(t);
+  if (!mutationImperative && reservationRef) {
     classes.push("RESERVATION_STATUS_Q");
   }
 
@@ -476,7 +482,17 @@ export function classifyRequestSpans(text: string): SpanClass[] {
   // branch above already routed it; we add nothing here to avoid the old misroute.
   // BKL-206 — an imperative mutation ("cancela") never rides the status reads,
   // even via the bare-"status" fallback (routes to the model/mutation path).
-  if (/status/.test(t) && !mutationImperative && !paymentPhrasing && !orderPhrasing) {
+  // BKL-224 — a RESERVATION-status ask ("qual o status da minha reserva?") already
+  // fired RESERVATION_STATUS_Q above; `!reservationRef` keeps the bare-"status"
+  // fallback from ALSO over-including ORDER/PAYMENT, which shadowed the reservation
+  // read into the ≥2-owned order candidates CLARIFY (live-caught).
+  if (
+    /status/.test(t) &&
+    !mutationImperative &&
+    !paymentPhrasing &&
+    !orderPhrasing &&
+    !reservationRef
+  ) {
     if (!classes.includes("ORDER_STATUS_Q")) classes.push("ORDER_STATUS_Q");
     if (!classes.includes("PAYMENT_STATUS_Q")) classes.push("PAYMENT_STATUS_Q");
   }
