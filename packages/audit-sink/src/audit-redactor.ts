@@ -553,6 +553,7 @@ export const PII_FREE_KIND_ALLOWLIST: ReadonlySet<string> = new Set<string>([
   "order.reorder", // previousOrderId + paymentMethod: closed enum
   "order.projection.create", // customerId covered by global HASH_FIELDS
   "order.status.reconcile", // orderId/newStatus(short status enum)/source: closed enum
+  "order.fiscal.emit", // NEW-014 — orderId only (customerTaxId lives in the PR2 provider input, never on the envelope)
 
   // ── Reservation Pack — opaque-id-only payloads ───────────────────────
   "reservation.checkin", // reservationId only

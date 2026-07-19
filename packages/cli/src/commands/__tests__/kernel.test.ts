@@ -80,16 +80,17 @@ describe("ibx kernel status", () => {
     expect(parsed).toHaveProperty("audit")
     // claustrum-on-dev WS9: KNOWN_INTENT_KINDS is now sourced from the
     // `@ibatexas/intent-kinds` leaf package (post W5 Pack expansion), which
-    // composes 61 kinds across the first-party Packs + the PIX adopter Pack
+    // composes 62 kinds across the first-party Packs + the PIX adopter Pack
     // (BKL-176 retired the 5 dead payment.charge.* → payments 12; BKL-177 PR-A
-    // retired order.cancel.system + reservation.waitlist.notify → orders 21,
-    // reservations 7; whatsapp 5 incl. BKL-030
-    // whatsapp.handoff.request, pix 3, payments 12, customer-onboarding 8,
-    // ops 6 (NEW-032 product.availability.set + NEW-004 product.price.set +
+    // retired order.cancel.system + reservation.waitlist.notify; NEW-014 added
+    // order.fiscal.emit → orders 22, reservations 7; BKL-177 PR-B retired
+    // whatsapp.message.send/template.send → whatsapp 2 (session.handover +
+    // BKL-030 handoff.request survive), pix 3, payments 12, customer-onboarding
+    // 8, ops 6 (NEW-032 product.availability.set + NEW-004 product.price.set +
     // SCN-114 menu.special.set + SCN-127 schedule.override.set + BKL-088
     // ops.alert.resolve.staff / incident.ticket.close.staff), loyalty 1). The
     // pre-cutover `32` was stale.
-    expect(parsed.knownIntentKinds.count).toBe(61)
+    expect(parsed.knownIntentKinds.count).toBe(62)
   })
 
   it("renders human-readable text when --json is absent", async () => {
@@ -112,7 +113,7 @@ describe("ibx kernel status", () => {
     expect(out).toMatch(/em\s+7\s+packs/)
   })
 
-  it("includes all 61 KNOWN_INTENT_KINDS in the JSON list", async () => {
+  it("includes all 62 KNOWN_INTENT_KINDS in the JSON list", async () => {
     await cmd.parseAsync(["status", "--json"], { from: "user" })
     const out = stdout.getOutput()
     const parsed = JSON.parse(out)
@@ -143,7 +144,8 @@ describe("ibx kernel status", () => {
     await cmd.parseAsync(["status"], { from: "user" })
     const out = stdout.getOutput()
     // Per-domain counts derived from @ibatexas/intent-kinds (post W5 expansion).
-    expect(out).toMatch(/order \(21\)/)
+    // NEW-014 lifts order.* to 22 (order.fiscal.emit joins the order prefix).
+    expect(out).toMatch(/order \(22\)/)
     expect(out).toMatch(/reservation \(7\)/)
     // whatsapp.* prefix group = 4 (message.send, template.send,
     // session.handover, BKL-030 handoff.request); the pack's 5th kind

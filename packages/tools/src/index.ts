@@ -247,6 +247,23 @@ export {
   type TwilioClientLike,
 } from "./twilio/adjudicated.js"
 
+// NEW-014 — the fiscal (NFC-e/NFe) provider port + mock/Focus NFe adapters +
+// env-driven selection. The subscriber (PR2) imports `createFiscalProvider`.
+export {
+  createFiscalProvider,
+  createMockFiscalProvider,
+  createFocusNFeProvider,
+  FiscalProviderNotConfiguredError,
+  type FiscalProviderPort,
+  type FiscalEmitInput,
+  type FiscalEmitResult,
+  type FiscalEmitStatus,
+  type FiscalLineItem,
+  type MockFiscalScenario,
+  type MockFiscalProviderConfig,
+  type FocusNFeConfig,
+} from "./fiscal/index.js"
+
 // ── Config ─────────────────────────────────────────────────────────────────────
 export { EMBED_DIM } from "./config.js"
 
