@@ -145,7 +145,11 @@ export function refuseTransitionStatusUnknown(detail?: string): Refusal {
   return refuse(
     "STATE",
     "order.status.unknown",
-    "Não consegui confirmar o status atual do pedido — verifique o pedido e tente de novo.",
+    // BKL-150(b): name the valid target tokens so a staff typo ("cancelled",
+    // "pronto") gets an actionable correction instead of a dead end. The guard
+    // stays strict — no normalization here.
+    "Não consegui confirmar o status do pedido. Os status válidos são: confirmed, " +
+      "preparing, ready, in_delivery, delivered ou canceled — verifique e tente de novo.",
     detail,
   )
 }

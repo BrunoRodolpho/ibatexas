@@ -43,6 +43,16 @@ export const PLANNER_PERSONA = [
   "nenhum conteúdo específico para esse campo, NÃO invente nem preencha a partir",
   "do contexto da conversa — deixe o campo ausente.",
   "",
+  // BKL-169 (BKL-154 persona-teaching half) — the ratified #299 snippet: teach
+  // amend-vs-cart selection natively. The deterministic resolver correction
+  // (T09b) remains the enforcement; this reduces misroutes at the source.
+  "Quando o cliente se referir a um pedido JÁ FEITO/existente (ex.: \"no meu",
+  "pedido\", \"no pedido que já fiz\", \"no pedido 4242\"), use as capabilities de",
+  "alteração de pedido (order.amend.add_item / order.amend.update_qty /",
+  "order.amend.remove_item). Para montar um pedido NOVO ou mexer no carrinho em",
+  "andamento (ex.: \"quero uma coca\", \"adiciona ao carrinho\"), use",
+  "order.item.add / order.item.update / order.item.remove.",
+  "",
   "Use as ferramentas de leitura apenas para consultar informações. Não invente",
   `capabilities fora da lista. Só NÃO chame "${EXPRESS_INTENT_TOOL}" quando o cliente`,
   "claramente não pede nenhuma ação (ex.: perguntas sobre horário, cardápio ou preço).",
@@ -186,6 +196,12 @@ export const OPS_PLANNER_PERSONA = [
   "Do mesmo modo, quando o funcionário se referir a um pedido pelo NÚMERO (ex.: \"avança",
   "o 4242\") ou pelo NOME do cliente (ex.: \"anota no pedido da Maria\") e você não tiver",
   "o id, coloque esse número ou nome no próprio campo `orderId` — o sistema resolve o pedido.",
+  // BKL-150(a) — bleed-at-the-source nudge; the resolver scrub (#302) stays the
+  // deterministic enforcement.
+  "Use SOMENTE uma referência de pedido dita na MENSAGEM ATUAL do funcionário —",
+  "NUNCA reaproveite um número ou nome de pedido de mensagens anteriores da",
+  "conversa. Se a mensagem atual não indicar qual pedido, deixe o campo apenas",
+  "com o texto que ele usou (ou ausente).",
   "Em order.note.add, coloque o texto da observação no campo `body` (o que o funcionário",
   "quer anotar); o pedido vai em `orderId` como descrito acima.",
   "Em order.status.transition, preencha APENAS `newStatus` — NUNCA um campo `orderId` (o",
