@@ -126,10 +126,11 @@ async function kernelAuthorizedMutation(
 // Both handlers wrap their kernel-gated transition + publish in an identical
 // try/catch. An EXPECTED transition error (Concurrency / InvalidTransition) means
 // another process already advanced the order — benign, info-level. Anything else
-// is money-at-risk (money moved but the order did not follow) and is escalated:
-// DLQ + an `order.escalation_needed` event. The skipped/failed log messages and
-// the escalation `reason` are the only per-call-site variations, passed in so the
-// emitted log content and event payload stay byte-identical to the inlined code.
+// is money-at-risk (money moved but the order did not follow): it is DLQ'd (+
+// error log) so a recovery scan can retry. BKL-181 — the old
+// `order.escalation_needed` publish was removed here: it had NO subscriber (a
+// dead event that evaporated). The DLQ is the durable recovery record; the honest
+// staff-escalation path is the #320 chain, not this event.
 async function escalateTransitionError(
   err: unknown,
   ctx: {
@@ -138,11 +139,10 @@ async function escalateTransitionError(
     rawPayload: Record<string, unknown>;
     skippedMsg: string;
     failedMsg: string;
-    escalationReason: string;
     log?: FastifyBaseLogger;
   },
 ): Promise<void> {
-  const { orderId, paymentId, rawPayload, skippedMsg, failedMsg, escalationReason, log } = ctx;
+  const { orderId, paymentId, rawPayload, skippedMsg, failedMsg, log } = ctx;
   if (isExpectedTransitionError(err)) {
     // ConcurrencyError / InvalidTransitionError — another process (or a prior
     // delivery) already advanced the order. Benign, info-level.
@@ -151,9 +151,8 @@ async function escalateTransitionError(
       skippedMsg,
     );
   } else {
-    // Unexpected: money moved but the order did NOT follow and nobody is
-    // watching. Escalate (DLQ + staff alert) like the disputed branch instead
-    // of letting the payload evaporate into a warn log.
+    // Unexpected: money moved but the order did NOT follow. DLQ it (+ error log)
+    // so a recovery scan can retry — the durable record, not a dead event.
     log?.error(
       { orderId, paymentId, error: String(err) },
       failedMsg,
@@ -164,13 +163,6 @@ async function escalateTransitionError(
       err,
       log,
     );
-    await publishNatsEvent("order.escalation_needed", {
-      eventType: "order.escalation_needed",
-      orderId,
-      reason: escalationReason,
-      paymentId,
-      timestamp: new Date().toISOString(),
-    });
   }
 }
 
@@ -249,8 +241,7 @@ async function handlePaymentPaid(
       paymentId,
       rawPayload,
       skippedMsg: "[payment-lifecycle] Auto-confirm skipped — order already advanced",
-      failedMsg: "[payment-lifecycle] Auto-confirm FAILED unexpectedly — escalating (DLQ + staff alert)",
-      escalationReason: "auto_confirm_failed",
+      failedMsg: "[payment-lifecycle] Auto-confirm FAILED unexpectedly — DLQ for recovery",
       log,
     });
   }
@@ -329,8 +320,7 @@ async function handlePaymentRefunded(
       paymentId,
       rawPayload,
       skippedMsg: "[payment-lifecycle] Auto-cancel skipped — order already advanced",
-      failedMsg: "[payment-lifecycle] Auto-cancel after refund FAILED unexpectedly — escalating (DLQ + staff alert)",
-      escalationReason: "refund_cancel_failed",
+      failedMsg: "[payment-lifecycle] Auto-cancel after refund FAILED unexpectedly — DLQ for recovery",
       log,
     });
   }
@@ -414,16 +404,13 @@ export async function startPaymentLifecycleSubscriber(
           break;
         }
 
-        // ── Payment disputed → escalate to staff ──────────────────────
+        // ── Payment disputed → log only ───────────────────────────────
+        // BKL-181 — the old `order.escalation_needed` publish here was removed:
+        // it had NO subscriber. Stripe chargebacks are escalated on the honest
+        // path — the `charge.dispute.created` webhook (stripe-webhook.ts) — not
+        // this dead event.
         case PaymentStatus.DISPUTED: {
-          await publishNatsEvent("order.escalation_needed", {
-            eventType: "order.escalation_needed",
-            orderId,
-            reason: "payment_disputed",
-            paymentId,
-            timestamp: new Date().toISOString(),
-          });
-          log?.warn({ orderId, paymentId }, "[payment-lifecycle] Payment disputed — staff notified");
+          log?.warn({ orderId, paymentId }, "[payment-lifecycle] Payment disputed — handled via the dispute webhook");
           break;
         }
 

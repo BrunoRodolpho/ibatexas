@@ -2,10 +2,10 @@
 //
 // Focus: when the kernel-gated auto-confirm / auto-cancel transition THROWS,
 // the handler must classify the error:
-//   - expected (ConcurrencyError / InvalidTransitionError) → info log, NO DLQ,
-//     NO escalation (another process already advanced the order).
-//   - unexpected (anything else) → pushToDlq + emit order.escalation_needed
-//     (money moved but the order didn't follow — a human must look).
+//   - expected (ConcurrencyError / InvalidTransitionError) → info log, NO DLQ
+//     (another process already advanced the order).
+//   - unexpected (anything else) → pushToDlq for recovery (BKL-181 removed the
+//     dead `order.escalation_needed` publish — it had no subscriber).
 //
 // withDedup is mocked to run the handler directly so we exercise the body.
 
@@ -110,15 +110,16 @@ describe("payment-lifecycle — auto-confirm failure escalation (P1-ERR-LIFECYCL
     await register();
   });
 
-  it("escalates (DLQ + order.escalation_needed) when auto-confirm throws an UNEXPECTED error", async () => {
+  it("DLQs (for recovery) when auto-confirm throws an UNEXPECTED error — no dead escalation event (BKL-181)", async () => {
     mockTransitionStatusFromEnvelope.mockRejectedValueOnce(new Error("db exploded"));
 
     await natsHandlers["payment.status_changed"](PAID_PAYLOAD);
 
     expect(mockPushToDlq).toHaveBeenCalledTimes(1);
-    expect(mockPublishNatsEvent).toHaveBeenCalledWith(
+    // BKL-181 — the subscriber-less order.escalation_needed is no longer published.
+    expect(mockPublishNatsEvent).not.toHaveBeenCalledWith(
       "order.escalation_needed",
-      expect.objectContaining({ orderId: "order_01", reason: "auto_confirm_failed", paymentId: "pay_01" }),
+      expect.anything(),
     );
   });
 

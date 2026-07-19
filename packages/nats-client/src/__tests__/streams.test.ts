@@ -72,7 +72,7 @@ describe("streamForSubject", () => {
       "conversation.message.appended", "customer.anonymize.medusa.pending",
       "follow-up.due", "intent.defer.timeout", "notification.send",
       "order.address_changed", "order.canceled", "order.disputed",
-      "order.escalation_needed", "order.note_added", "order.payment_failed",
+      "order.note_added", "order.payment_failed",
       "order.placed", "order.refunded", "order.status_changed", "order.type_changed",
       "outreach.sent", "payment.method_changed", "payment.status_changed",
       "product.intelligence.purge", "product.viewed", "reservation.cancelled",
