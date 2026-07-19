@@ -211,6 +211,23 @@ export function classifyRequestSpans(text: string): SpanClass[] {
   const t = text.toLowerCase();
   const classes: SpanClass[] = [];
 
+  // BKL-201 — an IMPERATIVE MUTATION verb ("tira/remove/muda/troca/adiciona/põe/
+  // coloca…") that co-occurs with a cart or menu noun must NOT let this text fire a
+  // classify-only-eligible READ span (CART_CONTENTS_Q / the #348 MENU + STORE_INFO
+  // spans). Otherwise a write turn ("tira o refrigerante do carrinho", "muda o preço
+  // do brisket") rides the deterministic read path, renders the read, and the
+  // mutation is SILENTLY DROPPED (no model call, no proposed intent) — live-caught as
+  // SCN-046. MUTATION verbs only — never a READ imperative ("mostra/mostre/diz/quero
+  // ver"), so "me mostra o cardápio" still fires MENU_OVERVIEW_Q. Word-boundary
+  // anchored so "retirar"/"partir"/"sentir" never false-match "tir". The suppression
+  // is fail-SAFE: a false positive only routes a read to the model path (mild
+  // inefficiency), never a wrong render; a false negative (the pre-BKL-201 state)
+  // drops a customer's mutation.
+  const mutationImperative =
+    /(?<![a-z])(adicion|acrescent|remov|tir|coloc|p[õo]e|p[õo]r|mud|troc|limp|esvazi|aument|diminu)/.test(
+      t,
+    );
+
   if (/retir|buscar|pegar/.test(t)) classes.push("PICKUP_Q");
   // inv.18 v2 — the STORE_OPEN_NOW_Q markers are GENERATED from the def source
   // (replaces the previously-handwritten /abert|fechad|.../ regex — the runtime
@@ -245,11 +262,12 @@ export function classifyRequestSpans(text: string): SpanClass[] {
   // DEMOTE-ONLY safe: an empty/unreadable catalog → ABSENT evidence → honest UNKNOWN.
   const isMenuOverview =
     notOrderScoped &&
+    !mutationImperative &&
     !ALLERGEN_FAMILY_RE.test(t) &&
     /\bcard[áa]pio\b|\bmenu\b|o que (voc[êe]s )?(t[êe]m|servem)( (pra|para) comer)?|quais (os |as )?(pratos|op[çc][õo]es)/.test(t);
   if (isMenuOverview) classes.push("MENU_OVERVIEW_Q");
 
-  if (notOrderScoped && /quanto custa|quanto (custam|é|fica|sai|tá|ta)|qual (o |é o )?pre[çc]o|pre[çc]o d[aoe]/.test(t)) {
+  if (notOrderScoped && !mutationImperative && /quanto custa|quanto (custam|é|fica|sai|tá|ta)|qual (o |é o )?pre[çc]o|pre[çc]o d[aoe]/.test(t)) {
     classes.push("MENU_ITEM_PRICE_Q");
   }
   // NB: allergen-family phrasing ("ingredientes", "contém glúten/lactose") is
@@ -257,7 +275,7 @@ export function classifyRequestSpans(text: string): SpanClass[] {
   // (honest-UNKNOWN + staff handoff, BKL-123/143), never a rendered CONTENTS answer.
   // `!isMenuOverview` keeps a WHOLE-menu question ("o que tem no cardápio") disjoint from
   // the per-ITEM contents span ("o que vem no combo") — the overview owns it.
-  if (notOrderScoped && !isMenuOverview && !ALLERGEN_FAMILY_RE.test(t) && /o que (vem|tem|acompanha)|do que (é|e) (é |)feit|que vem (n|em)|composi[çc][ãa]o d/.test(t)) {
+  if (notOrderScoped && !mutationImperative && !isMenuOverview && !ALLERGEN_FAMILY_RE.test(t) && /o que (vem|tem|acompanha)|do que (é|e) (é |)feit|que vem (n|em)|composi[çc][ãa]o d/.test(t)) {
     classes.push("MENU_ITEM_CONTENTS_Q");
   }
 
@@ -272,6 +290,7 @@ export function classifyRequestSpans(text: string): SpanClass[] {
   const notResourceScoped = !/pedido|entrega|frete|carrinho|reserva|pagamento/.test(t);
   if (
     notResourceScoped &&
+    !mutationImperative &&
     /onde (fica|é|estão|est[áa]|se localiza)|endere[çc]o|localiza[çc][ãa]o|localizad|estacionamento|estacionar|como (chego|chegar)/.test(
       t,
     )
@@ -316,19 +335,16 @@ export function classifyRequestSpans(text: string): SpanClass[] {
   }
 
   // BKL-139 — a cart-CONTENTS question ("o que tem no meu carrinho?", "minha sacola").
-  // ANCHORED to a word boundary (never mid-word) and EXCLUDING cart-MUTATION verbs, so
-  // this fires ONLY on a cart-READ, never a cart write. The exclusion is load-bearing:
-  // classify-only would otherwise skip the model path for a mutation turn ("adicione uma
-  // coca ao carrinho") and mis-frame it as a read. The read-vs-mutation split is the
-  // BKL-153 must-not-fire discipline (verified against must-fire + must-not-fire word
-  // lists in required-claim-decomposer.test.ts). A gratitude / order-status turn contains
-  // no cart word, so it is untouched.
+  // ANCHORED to a word boundary (never mid-word) and EXCLUDING cart-MUTATION verbs
+  // (the shared `mutationImperative` net above), so this fires ONLY on a cart-READ,
+  // never a cart write. The exclusion is load-bearing: classify-only would otherwise
+  // skip the model path for a mutation turn ("adicione uma coca ao carrinho", "tira o
+  // refrigerante do carrinho" — BKL-201) and mis-frame it as a read. The
+  // read-vs-mutation split is the BKL-153 must-not-fire discipline (verified against
+  // must-fire + must-not-fire word lists in required-claim-decomposer.test.ts). A
+  // gratitude / order-status turn contains no cart word, so it is untouched.
   const cartRef = /(?<![a-z])(carrinho|carrinhos|cesta|cestas|sacola|sacolas)/.test(t);
-  const cartMutationVerb =
-    /(?<![a-z])(adicion|acrescent|remov|coloc|p[õo]e|p[õo]r|limp|esvazi|aument|diminu|troc)/.test(
-      t,
-    );
-  if (cartRef && !cartMutationVerb) classes.push("CART_CONTENTS_Q");
+  if (cartRef && !mutationImperative) classes.push("CART_CONTENTS_Q");
 
   // Bare "status" with NO payment/order discriminator → over-include BOTH (never
   // silently drop either companion). If a discriminator is present, the precise

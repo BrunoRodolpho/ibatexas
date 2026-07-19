@@ -346,7 +346,7 @@ describe("classifyRequestSpans — BKL-139 CART_CONTENTS_Q (read-only, anchored)
     }
   });
 
-  it("MUST-NOT-FIRE on cart MUTATIONS (the read-vs-write split — BKL-153)", () => {
+  it("MUST-NOT-FIRE on cart MUTATIONS (the read-vs-write split — BKL-153 + BKL-201)", () => {
     for (const text of [
       "adicione uma coca ao carrinho",
       "acrescenta um refri no carrinho",
@@ -355,6 +355,13 @@ describe("classifyRequestSpans — BKL-139 CART_CONTENTS_Q (read-only, anchored)
       "limpa o carrinho",
       "esvazia minha sacola",
       "troca o item do carrinho",
+      // BKL-201 — live-caught (SCN-046): "tira"/"muda" leaked through the old net
+      // (which lacked tir/mud), so the removal/change rendered the cart list and the
+      // mutation was silently dropped.
+      "tira o refrigerante do carrinho",
+      "tira a coca da minha sacola",
+      "muda pra 2 refrigerantes no carrinho",
+      "diminui a quantidade no carrinho",
     ]) {
       expect(classifyRequestSpans(text), text).not.toContain("CART_CONTENTS_Q");
     }
@@ -369,6 +376,50 @@ describe("classifyRequestSpans — BKL-139 CART_CONTENTS_Q (read-only, anchored)
     ]) {
       expect(classifyRequestSpans(text), text).not.toContain("CART_CONTENTS_Q");
     }
+  });
+});
+
+// BKL-201 — imperative MUTATION verbs must not let a write turn ride a classify-only
+// READ span. #348 made the MENU family + STORE_INFO classify-only-eligible, so the same
+// read-vs-mutation split the cart span enforces now guards the menu/store spans: a write
+// ("muda o preço", "tira do cardápio") must reach the model/mutation path, never render
+// the read and silently drop the mutation.
+describe("classifyRequestSpans — BKL-201 imperative mutations suppress classify-only READ spans", () => {
+  it("MUST-NOT-FIRE the menu/store read spans on an imperative mutation", () => {
+    const cases: Array<[string, string]> = [
+      ["muda o preço do brisket", "MENU_ITEM_PRICE_Q"],
+      ["aumenta o preço do combo", "MENU_ITEM_PRICE_Q"],
+      ["diminui o valor da costela", "MENU_ITEM_PRICE_Q"],
+      ["tira o brisket do cardápio", "MENU_OVERVIEW_Q"],
+      ["remove a costela do menu", "MENU_OVERVIEW_Q"],
+      ["muda o endereço do restaurante", "STORE_INFO_Q"],
+    ];
+    for (const [text, span] of cases) {
+      expect(classifyRequestSpans(text), text).not.toContain(span);
+    }
+  });
+
+  it("STILL-FIRES the menu/store read spans on READ imperatives (mostra/ver) and interrogatives", () => {
+    // A READ imperative ("me mostra", "quero ver") is NOT a mutation — the split must
+    // key off mutation verbs only, never suppress a legitimate read.
+    expect(classifyRequestSpans("me mostra o cardápio"), "mostra").toContain(
+      "MENU_OVERVIEW_Q",
+    );
+    expect(classifyRequestSpans("quanto custa o brisket"), "price read").toContain(
+      "MENU_ITEM_PRICE_Q",
+    );
+    expect(classifyRequestSpans("onde fica o restaurante?"), "store read").toContain(
+      "STORE_INFO_Q",
+    );
+  });
+
+  it("word-boundary anchored — 'tir'/'mud' never false-match inside innocent words", () => {
+    // "retirar" (pickup), "partir", "sentir" contain 'tir' mid-word; none is a cart
+    // mutation, so a cart READ that co-occurs with them must still fire.
+    expect(
+      classifyRequestSpans("quero ver o carrinho antes de partir"),
+      "partir",
+    ).toContain("CART_CONTENTS_Q");
   });
 });
 
