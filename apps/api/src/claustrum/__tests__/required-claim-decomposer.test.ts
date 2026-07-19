@@ -324,6 +324,50 @@ describe("classifyRequestSpans — FE-T17 RESERVATION_STATUS_Q (anchored marker)
       expect(classifyRequestSpans(text), text).toContain("RESERVATION_STATUS_Q");
     }
   });
+
+  // BKL-219/224 — the 'mesa' (table) synonym: a customer refers to their booking by
+  // "mesa" as readily as "reserva". Anchored both sides → standalone only.
+  it("BKL-224 — fires on the 'mesa' (table) synonym", () => {
+    for (const text of [
+      "minha mesa está confirmada?",
+      "confirmaram a minha mesa?",
+      "qual o horário da minha mesa?",
+    ]) {
+      expect(classifyRequestSpans(text), text).toContain("RESERVATION_STATUS_Q");
+    }
+  });
+
+  it("BKL-224 — 'mesa' anchoring does not false-fire mid-word (mesada) or on a mesa mutation", () => {
+    expect(classifyRequestSpans("quero saber da minha mesada")).not.toContain(
+      "RESERVATION_STATUS_Q",
+    );
+    // a mesa MUTATION still routes to the model path (the shared mutationImperative gate)
+    expect(classifyRequestSpans("cancela a minha mesa")).not.toContain(
+      "RESERVATION_STATUS_Q",
+    );
+  });
+
+  // BKL-224 — the bare-"status" fallback must NOT shadow a reservation-status ask
+  // into the ORDER/PAYMENT candidates CLARIFY (live-caught: "qual o status da minha
+  // reserva?" returned the ≥2-owned order picker).
+  it("BKL-224 — 'status da minha reserva' fires RESERVATION_STATUS_Q ONLY (no ORDER/PAYMENT shadow)", () => {
+    for (const text of [
+      "qual o status da minha reserva?",
+      "status da minha mesa",
+    ]) {
+      const spans = classifyRequestSpans(text);
+      expect(spans, text).toContain("RESERVATION_STATUS_Q");
+      expect(spans, text).not.toContain("ORDER_STATUS_Q");
+      expect(spans, text).not.toContain("PAYMENT_STATUS_Q");
+    }
+  });
+
+  it("BKL-224 — a genuine bare-'status' order ask is UNAFFECTED (still over-includes order+payment)", () => {
+    const spans = classifyRequestSpans("qual o status?");
+    expect(spans).toContain("ORDER_STATUS_Q");
+    expect(spans).toContain("PAYMENT_STATUS_Q");
+    expect(spans).not.toContain("RESERVATION_STATUS_Q");
+  });
 });
 
 // BKL-139 — CART_CONTENTS_Q (anchored marker; read-vs-mutation split). The marker
