@@ -315,6 +315,46 @@ export class PaidCancelRefundNotSettledError extends Error {
 }
 
 /**
+ * BKL-103 — make the customer-facing "a human will handle it" promise TRUE.
+ * Both paid-cancel escalation exits (the BKL-036 kernel ESCALATE at step 1 and
+ * the BKL-130 executor's refund-not-settled 409) tell the customer staff will
+ * review — this publishes the BKL-178 `support.handoff_requested` recipe with a
+ * synthetic non-conversation sessionId keyed by the ORDER (the dispute:{id}
+ * precedent, stripe-webhook.ts), so the escalation lands in the escalation
+ * store → Escalações panel + pendingEscalations KPI and fires the staff
+ * WhatsApp ping via the existing handoff-subscriber. The subscriber dedups on
+ * `handoff:{sessionId}`, so a customer RETRYING the cancel surfaces exactly ONE
+ * staff record + ping. Best-effort by design: the customer reply must not fail
+ * on a NATS hiccup — a publish failure logs loudly (the kernel audit row is
+ * the fallback truth). No PII rides the event: displayId + amount only (the
+ * reason string renders verbatim on the Escalações row).
+ */
+async function publishPaidCancelEscalation(
+  orderId: string,
+  order: { readonly displayId: number; readonly totalInCentavos?: number | null },
+  log: FastifyInstance["log"],
+): Promise<void> {
+  const cents = order.totalInCentavos ?? null;
+  // Display-only formatting; the amount stays integer centavos everywhere else.
+  const amount = cents === null ? "" : ` de R$ ${(cents / 100).toFixed(2).replace(".", ",")}`;
+  try {
+    await publishNatsEvent("support.handoff_requested", {
+      sessionId: `order-cancel:${orderId}`,
+      reason: `Cancelamento de pedido pago requer aprovação — pedido #${order.displayId}, reembolso${amount}`,
+    });
+    log.warn(
+      { orderId },
+      "paid-cancel ESCALATE surfaced — support.handoff_requested published (BKL-103)",
+    );
+  } catch (err) {
+    log.error(
+      { orderId, err: (err as Error).message },
+      "paid-cancel ESCALATE surfacing FAILED — escalation is audit-row-only until the customer retries (BKL-103)",
+    );
+  }
+}
+
+/**
  * The order.cancel EXECUTE money-path — extracted verbatim (BKL-146) from the
  * `POST /api/orders/:id/cancel` executor so the two-phase confirm route
  * (`POST /api/orders/:id/cancel/confirm`) runs the IDENTICAL side effects: the
@@ -1049,12 +1089,20 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
           }
         }
 
+        // BKL-103 — the kernel ESCALATE (BKL-036 >=R$1000 paid-cancel guard)
+        // returns 503 "Operação requer atendimento humano": surface it to staff
+        // BEFORE replying, so the promise is true (dedup makes retries safe).
+        if (out.decision.kind === "ESCALATE") {
+          await publishPaidCancelEscalation(id, order, server.log);
+        }
         return reply.code(out.statusCode).send(out.body);
       } catch (err) {
         if (err instanceof PaidCancelRefundNotSettledError) {
           // BKL-130 — a PAID order's refund did not settle (kernel band
           // escalate/refuse, e.g. ≥R$1000). The order was NOT canceled and the
           // payment is untouched (state whole); the refund needs human review.
+          // BKL-103 — "avisaremos você" must be true: surface to staff first.
+          await publishPaidCancelEscalation(id, order, server.log);
           return reply.code(409).send({
             error:
               "O reembolso deste pedido precisa de revisão da equipe. Nada foi alterado; avisaremos você.",
@@ -1191,12 +1239,20 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
           }
         }
 
+        // BKL-103 — the kernel ESCALATE (BKL-036 >=R$1000 paid-cancel guard)
+        // returns 503 "Operação requer atendimento humano": surface it to staff
+        // BEFORE replying, so the promise is true (dedup makes retries safe).
+        if (out.decision.kind === "ESCALATE") {
+          await publishPaidCancelEscalation(id, order, server.log);
+        }
         return reply.code(out.statusCode).send(out.body);
       } catch (err) {
         if (err instanceof PaidCancelRefundNotSettledError) {
           // BKL-130 — a PAID order's refund did not settle (kernel band
           // escalate/refuse, e.g. ≥R$1000). The order was NOT canceled and the
           // payment is untouched (state whole); the refund needs human review.
+          // BKL-103 — "avisaremos você" must be true: surface to staff first.
+          await publishPaidCancelEscalation(id, order, server.log);
           return reply.code(409).send({
             error:
               "O reembolso deste pedido precisa de revisão da equipe. Nada foi alterado; avisaremos você.",
