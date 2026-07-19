@@ -1301,6 +1301,84 @@ describe("resolve-and-assemble — order.item.add quantity coercion (B3)", () =>
   });
 });
 
+// ── BKL-199 — deterministic pt-BR NL→quantity ────────────────────────────────
+// The live failure: the 4B DROPS the stated number ("dois Refrigerantes" / "40
+// Brisket" → quantity absent → coerceQuantity default 1), so a customer ordering
+// 2/3/40 silently got 1 (and the ≥R$1k confirm band was unreachable). The
+// customer's own words are ground truth (same discipline as NL→variantId): the
+// quantity is recovered from the item phrase, then from the utterance adjacent to
+// the item, before falling back to the model's (coerced) value.
+describe("resolve-and-assemble — BKL-199 NL→quantity", () => {
+  async function qtyFor(
+    payload: Record<string, unknown>,
+    utteranceText?: string,
+  ): Promise<unknown> {
+    // A non-catalog item name → resolveProductForItem finds nothing (searchProducts
+    // mocked empty by default), which is irrelevant here: quantity derivation runs
+    // regardless of variant resolution. An explicit variantId keeps the add block's
+    // other paths inert so the assertion isolates quantity.
+    const { payload: out } = await resolveAndAssemble({
+      kind: "order.item.add",
+      payload: { variantId: "var_explicit", allergens: [], ...payload },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "conv-1",
+      ...(utteranceText === undefined ? {} : { utteranceText }),
+    });
+    return (out as { quantity?: unknown }).quantity;
+  }
+
+  it("parses a pt-BR cardinal in the item phrase: 'dois refrigerantes' → 2", async () => {
+    expect(await qtyFor({ item: "dois refrigerantes" })).toBe(2);
+  });
+
+  it("parses a bare digit in the item phrase: '40 brisket' → 40", async () => {
+    expect(await qtyFor({ item: "40 brisket" })).toBe(40);
+  });
+
+  it("parses the 'Nx' form in the item phrase: '2x farofa' → 2", async () => {
+    expect(await qtyFor({ item: "2x farofa" })).toBe(2);
+  });
+
+  it("'uma coca' → 1", async () => {
+    expect(await qtyFor({ item: "uma coca" })).toBe(1);
+  });
+
+  it("recovers the number from the utterance when the model stripped it from item (cardinal)", async () => {
+    // Model emitted item "refrigerante" (number dropped); the utterance still says "dois".
+    expect(await qtyFor({ item: "refrigerante" }, "quero dois refrigerantes")).toBe(2);
+  });
+
+  it("recovers a bare digit adjacent to the item from the utterance: 'quero 40 brisket' → 40", async () => {
+    expect(await qtyFor({ item: "brisket" }, "quero 40 brisket")).toBe(40);
+  });
+
+  it("defaults to 1 when the customer stated no quantity: bare 'brisket' → 1", async () => {
+    expect(await qtyFor({ item: "brisket" }, "quero brisket")).toBe(1);
+  });
+
+  it("the stated NL quantity wins over a model that dropped it (quantity absent → 3)", async () => {
+    expect(await qtyFor({ item: "tres farofas" })).toBe(3);
+  });
+
+  it("does NOT capture an unrelated number that is not in the pre-item quantity slot ('600ml')", async () => {
+    // "o refrigerante de 600ml": the token before the head noun is a stopword then a
+    // non-quantity word → no quantity found → default 1 (600 is never considered).
+    expect(await qtyFor({ item: "refrigerante" }, "quero o refrigerante de 600ml")).toBe(1);
+  });
+
+  it("rejects an implausible >2-digit count as a likely misparse → default 1 ('100 brisket')", async () => {
+    // \d{1,2} structurally caps NL-parsed counts at 99; a 3-digit token is not a
+    // quantity (catering-scale orders are out of chat scope), so it falls through.
+    expect(await qtyFor({ item: "brisket" }, "quero 100 brisket")).toBe(1);
+  });
+
+  it("does not regress B3: a model string quantity with no NL number still coerces ('3' → 3)", async () => {
+    // No item phrase / no utterance number → falls through to coerceQuantity.
+    expect(await qtyFor({ item: "brisket", quantity: "3" }, "quero brisket")).toBe(3);
+  });
+});
+
 // BKL-038 — in-flight modify kinds share order.cancel's NL→id resolution
 // (resolveOrderId → most-recent order) and forced confirm-on-autoresolve. Same
 // list drives both the resolution assertions and the confirm-guard assertions.
