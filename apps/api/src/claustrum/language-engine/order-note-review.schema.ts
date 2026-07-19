@@ -7,12 +7,15 @@
 //
 // ── order.note.add ───────────────────────────────────────────────────────
 // Wire payload (`OrderNoteAddPayload`, pack-orders/src/types.ts) is
-// `{orderId, body, isInternal?}` — orderId is Identity-class (forbidden);
-// `isInternal` is EXPLICITLY on FORBIDDEN_EXTRACTION_FIELD_NAMES (the
-// customer-facing/internal-staff-only distinction is never a model
-// decision — always resolver-defaulted `false` for customer-originated
-// notes, per docs/architecture/design/agent-tools.md: "Note is stored as
-// customer-visible"). The model sees ONLY `{body}` — required, free text.
+// `{orderId, body, isInternal?}` — orderId is Identity-class (forbidden).
+// FE-D30 — `isInternal` is no longer a permitted payload channel here (its
+// `legacyPayloadChannels` entry was dropped): the customer-facing/internal
+// distinction is never a model OR ops-plane-model decision, so the ops-plane
+// executor (`executeNote`, ops-tool-registry.ts) now forces `isInternal: true`
+// (fail-closed to internal) unconditionally. A public note is a deterministic
+// staff-UI toggle on the admin HTTP path ONLY (no such UI toggle exists yet, so
+// ops-plane notes are simply always-internal). The model sees ONLY `{body}` —
+// required, free text.
 // `order.note.add` is ALREADY fully wired for auto-resolve (both
 // ORDER_AUTORESOLVE_KINDS, resolve-and-assemble.ts, and
 // AUTORESOLVE_CONFIRM_KINDS, compose-policy-packs.ts, already list it —
@@ -101,20 +104,6 @@ export const ORDER_NOTE_ADD_EXTRACTION_SCHEMA: CapabilityExtractionSchema = {
         "an ops-plane authoritative lookup, not a customer-plane " +
         "autoresolve hazard.",
     },
-    {
-      field: "isInternal",
-      reason:
-        "Pre-existing ops-plane staff directive, NOT a model-extractable " +
-        "field (stays off `fields`/FORBIDDEN_EXTRACTION_FIELD_NAMES-listed " +
-        "either way): `executeNote` (ops-tool-registry.ts) reads " +
-        "`payload.isInternal ?? true` so staff can explicitly write a " +
-        "PUBLIC note, defaulting to internal only when omitted. Safe to " +
-        "let survive the filter channel-agnostically — the customer-chat " +
-        "executor (`addOrderNote`, packages/tools/src/cart/add-order-" +
-        "note.ts) rebuilds its own payload from a typed input and never " +
-        "reads `isInternal` at all, so a customer-plane call can never " +
-        "have this key influence anything downstream.",
-    },
   ],
 };
 
@@ -189,8 +178,7 @@ export const ORDER_REVIEW_SUBMIT_EXTRACTION_SCHEMA: CapabilityExtractionSchema =
     },
   };
 
-// Fail closed at import time — a schema that would leak orderId/productId/
-// isInternal (or any other identifier / PII field) can never even be
-// loaded onto the wire.
+// Fail closed at import time — a schema that would leak orderId/productId
+// (or any other identifier / PII field) can never even be loaded onto the wire.
 assertSoundExtractionSchema(ORDER_NOTE_ADD_EXTRACTION_SCHEMA);
 assertSoundExtractionSchema(ORDER_REVIEW_SUBMIT_EXTRACTION_SCHEMA);
