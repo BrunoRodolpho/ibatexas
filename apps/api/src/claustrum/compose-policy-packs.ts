@@ -127,8 +127,16 @@ export const confirmOnAutoResolveGuard = nameGuard(
         : 0,
     threshold: 1,
     comparator: ">=",
+    // BKL-197 — the prompt referred to an ORDER as an "item" (wrong noun) and is
+    // shared across kinds that blind-resolve to the customer's MOST-RECENT order
+    // (the amend kinds' resolveOrderId ignores a named order — the mutation-plane
+    // sibling of BKL-203, tracked separately). Use the "pedido" noun and keep the
+    // wording honest to that most-recent resolution. Rendering a specific "#N" for
+    // an explicitly-named order is deferred to the mutation-plane order-reference
+    // resolution fix (BKL-216) — until the resolver honors the named order, a "#N"
+    // here could confidently show the wrong (most-recent) order's number.
     prompt: () =>
-      "Identifiquei o item mais recente para esta ação. Confirma que é esse mesmo? Responda sim para continuar.",
+      "Identifiquei o seu pedido mais recente para esta ação. Confirma que é esse mesmo? Responda sim para continuar.",
   }),
 );
 

@@ -242,3 +242,33 @@ describe("refuseUnresolvedAmendItemGuard", () => {
     expect(refuseIdx).toBeLessThan(confirmIdx);
   });
 });
+
+
+// BKL-197 — the customer autoresolve confirm prompt must NOT call an ORDER an
+// "item", and must stay honest to the most-recent resolution it performs.
+describe("confirmOnAutoResolveGuard — BKL-197 prompt (pedido, not item)", () => {
+  const fire = (kind: string) =>
+    (confirmOnAutoResolveGuard as unknown as (
+      env: { kind: string; payload: unknown },
+      state: { ctx: { autoResolvedMoneyRef: boolean } },
+    ) => { kind: string; prompt?: string } | null)(
+      { kind, payload: {} },
+      { ctx: { autoResolvedMoneyRef: true } },
+    );
+
+  it("REQUEST_CONFIRMATIONs an autoresolved amend with a 'pedido' prompt (never 'item mais recente')", () => {
+    const d = fire("order.amend.add_item");
+    expect(d?.kind).toBe("REQUEST_CONFIRMATION");
+    expect(d?.prompt).toContain("pedido");
+    expect(d?.prompt).not.toContain("item mais recente");
+    expect(d?.prompt).toContain("mais recente"); // honest to the most-recent resolution
+  });
+
+  it("does not fire when the ref was not autoresolved (byte-identical no-op)", () => {
+    const d = (confirmOnAutoResolveGuard as unknown as (
+      env: { kind: string; payload: unknown },
+      state: { ctx: { autoResolvedMoneyRef?: boolean } },
+    ) => unknown)({ kind: "order.amend.add_item", payload: {} }, { ctx: {} });
+    expect(d).toBeNull();
+  });
+});
