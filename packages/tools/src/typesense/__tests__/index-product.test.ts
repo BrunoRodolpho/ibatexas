@@ -114,6 +114,20 @@ describe("indexProduct", () => {
       expect(cacheKey).toContain(mockMedusaProduct.id)
     })
 
+    it("stores under the v3 namespace when EMBEDDINGS_PROVIDER=ollama (BKL-034 — 768-dim space never collides with v2)", async () => {
+      const saved = process.env.EMBEDDINGS_PROVIDER
+      process.env.EMBEDDINGS_PROVIDER = "ollama"
+      try {
+        await indexProduct(mockMedusaProduct, { generateEmbedding: mockGenerateEmbedding })
+        const cacheKey = mockGenerateEmbedding.mock.calls[0][1] as string
+        expect(cacheKey).toContain("product_embedding:v3:")
+        expect(cacheKey).not.toContain(":v2:")
+      } finally {
+        if (saved === undefined) delete process.env.EMBEDDINGS_PROVIDER
+        else process.env.EMBEDDINGS_PROVIDER = saved
+      }
+    })
+
     it("does not throw when embedding generation fails", async () => {
       await expect(
         indexProduct(mockMedusaProduct, { generateEmbedding: mockGenerateEmbeddingFailing })

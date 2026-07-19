@@ -35,7 +35,7 @@ import {
   embeddingToBucket,
   type CacheFilterContext,
 } from "../cache/query-cache.js"
-import { EmbeddingsUnavailableError, generateEmbedding } from "../embeddings/client.js"
+import { EmbeddingsUnavailableError, generateEmbedding, embeddingCacheVersion } from "../embeddings/client.js"
 import { typesenseDocToDTO, type TypesenseProductDoc } from "../mappers/product-mapper.js"
 import { rk } from "../redis/key.js"
 import { getTypesenseClient, COLLECTION } from "../typesense/client.js"
@@ -350,14 +350,16 @@ async function checkL0Cache(
 async function generateQueryEmbedding(query: string, isWildcard: boolean): Promise<number[]> {
   if (isWildcard) return []
   try {
-    // FE-D17: `v2:` namespace bump evicts pseudo-vector garbage cached under
-    // the old key. generateEmbedding reads the cache BEFORE generating (30-day
-    // TTL) and stored vectors carry no provenance, so without the bump a
-    // key-less box would keep serving fabricated embeddings for warm queries
-    // and the fail-honest fix would be inert.
+    // FE-D17: the namespace-version bump evicts pseudo-vector garbage cached
+    // under the old key. generateEmbedding reads the cache BEFORE generating
+    // (30-day TTL) and stored vectors carry no provenance, so without the bump a
+    // key-less box would keep serving fabricated embeddings for warm queries and
+    // the fail-honest fix would be inert. BKL-034: the version is PROVIDER-derived
+    // (openai→v2, ollama→v3) so a switch to the local 768-dim model never reads
+    // the OpenAI 1536-dim vectors from a different space (the FE-D17 poison class).
     return await generateEmbedding(
       query,
-      rk(`embedding:query:v2:${Buffer.from(query).toString("base64")}`)
+      rk(`embedding:query:${embeddingCacheVersion()}:${Buffer.from(query).toString("base64")}`)
     )
   } catch (error) {
     // Key-less degradation is the EXPECTED local state and hits every search —
