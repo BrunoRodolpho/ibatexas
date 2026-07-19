@@ -274,8 +274,8 @@ function stubBackend(over: Partial<TriadReadBackend> = {}): TriadReadBackend {
     readHoursForDate: async () => ({ hoursText: "11h–15h / 18h–23h" }),
     readHolidayForDate: async () => null,
     readScheduleOverrideForDate: async () => null,
-    readOrderFulfillment: async (orderId) => ({ orderId, fulfillmentStatus: "preparing" }),
-    readPaymentStatus: async (orderId) => ({ orderId, status: "paid", method: "pix" }),
+    readOrderFulfillment: async (orderId) => ({ orderId, displayId: 42, fulfillmentStatus: "preparing" }),
+    readPaymentStatus: async (orderId) => ({ orderId, displayId: 42, status: "paid", method: "pix" }),
     readReservation: async (reservationId) => ({
       reservationId,
       status: "confirmed",
@@ -356,11 +356,11 @@ describe("ibatexas-investigator — first-party triad gatherer", () => {
     const pay = ledger.resolve("payment_status:order-42");
     expect(pay.state).toBe("present");
     expect(pay.entry?.taint).toBe("TRUSTED");
-    expect(pay.entry?.value).toEqual({ orderId: "order-42", status: "paid", method: "pix" });
+    expect(pay.entry?.value).toEqual({ orderId: "order-42", displayId: 42, status: "paid", method: "pix" });
 
     const ful = ledger.resolve("order_fulfillment_stage:order-42");
     expect(ful.state).toBe("present");
-    expect(ful.entry?.value).toEqual({ orderId: "order-42", fulfillmentStatus: "preparing" });
+    expect(ful.entry?.value).toEqual({ orderId: "order-42", displayId: 42, fulfillmentStatus: "preparing" });
   });
 
   it("a CROSS-OWNER payment read (backend null) records a fail-closed ERROR, never a value", async () => {
@@ -1100,7 +1100,7 @@ describe("BKL-006 — falsifier-evidence recording (refund / chargeback / cancel
       const { verdict } = await investigateThenValidate({
         plan: ORDER_PLAN,
         backend: {
-          readOrderFulfillment: async (orderId) => ({ orderId, fulfillmentStatus: "canceled" }),
+          readOrderFulfillment: async (orderId) => ({ orderId, displayId: 42, fulfillmentStatus: "canceled" }),
         },
         type: "ORDER_FULFILLMENT_STAGE",
         subject: "order-42",

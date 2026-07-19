@@ -73,6 +73,8 @@ import {
   buildClassifyOnlyCandidates,
   classifyOnlyReadsEnabled,
   classifyOnlyRequiredTypes,
+  deriveDisambiguationCandidates,
+  type DisambiguationCandidate,
 } from "./classify-only-reads.js";
 import { selectCandidateClaim, type RegistryClaimType } from "./claim-registry.js";
 import type { ClaimAuthContext, ClaimAwarePlannerPort } from "./ibatexas-planner.js";
@@ -265,7 +267,21 @@ function synthesizeSafeTerminalCandidates(
  */
 export function createIbatexasClaimPlanner(
   planner: ClaimAwarePlannerPort,
-  options: { readonly completionRetry?: ClaimPlannerCompletionRetryOptions } = {},
+  options: {
+    readonly completionRetry?: ClaimPlannerCompletionRetryOptions;
+    /**
+     * BKL-189 — the per-turn disambiguation-candidate stash WRITER, injected by
+     * `buildClaimsSeams` (claims-pipeline.ts) which keys a WeakMap by THIS
+     * turn's EvidenceLedger — the one object identity shared with the
+     * `renderCarriersForTurn` callback. Called ONLY on the classify-only
+     * ambiguous-CLARIFY branch with ≥2 labeled candidates; absent (unwired
+     * host / tests) → byte-identical behavior.
+     */
+    readonly stashDisambiguationCandidates?: (
+      ledger: EvidenceLedger,
+      candidates: readonly DisambiguationCandidate[],
+    ) => void;
+  } = {},
 ): ClaimPlannerPort {
   return {
     async propose(
@@ -332,6 +348,25 @@ export function createIbatexasClaimPlanner(
         );
         candidates = built.candidates;
         forcedTerminal = built.forcedTerminal;
+        // BKL-189 — the CLARIFY-with-candidates PRODUCER: on the ambiguous
+        // branch, label the dropped owned set off THIS turn's ledger ("#displayId")
+        // and stash it keyed by the ledger for the renderCarriersForTurn callback
+        // (same per-turn object identity — see claims-pipeline.ts). <2 labelable
+        // candidates → no stash → the generic CLARIFY stays byte-identical.
+        if (
+          built.forcedTerminal === "CLARIFY" &&
+          built.ambiguousOwnedSets !== undefined &&
+          input.ledger !== undefined &&
+          options.stashDisambiguationCandidates !== undefined
+        ) {
+          const disambiguation = deriveDisambiguationCandidates(
+            built.ambiguousOwnedSets,
+            input.ledger,
+          );
+          if (disambiguation.length >= 2) {
+            options.stashDisambiguationCandidates(input.ledger, disambiguation);
+          }
+        }
         logger.info(
           {
             component: "claim-planner",
