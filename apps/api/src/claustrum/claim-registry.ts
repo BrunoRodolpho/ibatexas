@@ -110,6 +110,16 @@ export const CLAIM_REGISTRY = [
   // The money in that string is composed in code from INTEGER CENTAVOS (Hard Rule 2),
   // NEVER model-authored (FE-D04 / BKL-149).
   "CART_CONTENTS",
+  // BKL-163 — the PROVABLY-EMPTY cart twin ("o que tem no meu carrinho?" when the
+  // cart has no items). The presence-complement of CART_CONTENTS: the investigator
+  // records `cart_empty:{customerId}` PRESENT ONLY when the owner-scoped cart read
+  // resolved `hasItems: false` (a provable-empty witness — the FE-T17b marker idiom
+  // inverted into a claim-bearing key), so exactly ONE of the pair can ever
+  // VALIDATE in a turn. Answers "carrinho vazio" with a friendly VALIDATED render
+  // instead of the honest-UNKNOWN degrade (PR #291 deviation (a)) — without
+  // weakening soundness: an UNAVAILABLE read still fail-closes (Inv 7), a guest
+  // still resolves ABSENT → honest UNKNOWN (the fail-closed ownership ruling).
+  "CART_EMPTY",
   // FE-D03 slice C — the owner-scoped LIST/HISTORY reads ("meu histórico de pedidos" /
   // "meus últimos pagamentos"). The plural/list siblings of ORDER_FULFILLMENT_STAGE /
   // PAYMENT_STATUS: instead of a single-subject status they render a
@@ -133,6 +143,14 @@ export const CLAIM_REGISTRY = [
   "MENU_ITEM_PRICE",
   "MENU_ITEM_CONTENTS",
   "MENU_OVERVIEW",
+  // BKL-136 — the PUBLIC store-info read ("onde fica o restaurante?" / "tem
+  // estacionamento?"). The STORE_HOURS/MENU_OVERVIEW fixed-subject public shape:
+  // single key `store:info`, owned by nobody, C6-bound to a DETERMINISTICALLY
+  // pre-composed pt-BR scalar (`infoText`) derived from the OWNER-ATTESTED Medusa
+  // `store.metadata.address` / `.parking` (written by the committed seed or the
+  // admin — never inferred, never model-authored). Absent/blank metadata → ABSENT
+  // evidence → honest UNKNOWN ("can never ground" closes only when data exists).
+  "STORE_INFO",
   "PURCHASE_COMPLETED",
 ] as const;
 
@@ -586,6 +604,54 @@ export const REGISTRY_SPECS = {
     // field (ledger-sourced, deterministic; never model-authored).
     valueBinding: { key: "cart_contents", path: ["itemsSummaryText"] },
   },
+  // BKL-163 — CART_EMPTY: the provably-empty cart twin of CART_CONTENTS. The SAME
+  // owner-scoped, must_read_this_turn, perResourceKey shape (subject = the
+  // authenticated customerId), but its evidence key `cart_empty:{customerId}` is
+  // recorded PRESENT by the investigator ONLY when the cart read resolved
+  // `hasItems: false` — presence IS the provable-empty proposition, so the pair is
+  // complementary by construction (a cart with items leaves `cart_empty` ABSENT ⇒
+  // this claim resolves UNKNOWN ⇒ dropped when CART_CONTENTS validates; an empty
+  // cart leaves `cart_contents` ABSENT ⇒ CART_CONTENTS drops and THIS renders).
+  // The C6 proposition is a DETERMINISTIC code-composed scalar (`emptinessText`,
+  // the literal "vazio") — never model-authored.
+  CART_EMPTY: {
+    kind: "read_claim",
+    minSourceIntegrity: "structured",
+    requiredEvidence: [
+      {
+        key: "cart_empty",
+        // Ownership required — the (empty) cart is the authenticated customer's own
+        // (session-resolved, never a model id); the owner-scope wiring gates it.
+        ownershipPolicy: "required",
+        freshnessPolicy: "must_read_this_turn",
+        sourceIntegrity: "structured",
+        provenancePolicy: "preserve",
+      },
+    ],
+    customerScoped: true,
+    // Parameterize by subject — matches the investigator's `cart_empty:{customerId}`.
+    perResourceKey: true,
+    // W6 — `cart_item_added` is DECLARED (so CART_EMPTY escapes the W6 UNKNOWN-only
+    // cap and can VALIDATE) but DELIBERATELY UNREAD — the exact CART_CONTENTS
+    // `cart_cleared` disposition: a same-cart-row "item added" signal is tautological
+    // AND inert (a cart that gained an item already reads `hasItems: true` ⇒
+    // `cart_empty` ABSENT ⇒ no present base to demote). Declaring-without-reading is
+    // sound: the runtime arm resolves an always-absent key ⇒ never fires ⇒
+    // demote-only safety preserved.
+    falsifierComplete: true,
+    falsifiers: [
+      {
+        key: "cart_item_added",
+        ownershipPolicy: "required",
+        freshnessPolicy: "must_read_this_turn",
+        sourceIntegrity: "structured",
+        provenancePolicy: "preserve",
+      },
+    ],
+    // C6 — bind the rendered scalar to the read's code-composed `emptinessText`
+    // field (ledger-sourced, deterministic; never model-authored).
+    valueBinding: { key: "cart_empty", path: ["emptinessText"] },
+  },
   // FE-D03 slice C — ORDER_HISTORY: the owner-scoped list read ("meu histórico de
   // pedidos"). Structurally the CART_CONTENTS idiom (owner-scoped, must_read_this_turn,
   // perResourceKey by the authenticated customerId), but its C6 proposition is a
@@ -779,6 +845,44 @@ export const REGISTRY_SPECS = {
       },
     ],
     valueBinding: { key: "menu:overview", path: ["overviewText"] },
+  },
+  // BKL-136 — STORE_INFO: the store address/parking read ("onde fica?"). PUBLIC
+  // fixed-subject single-key like MENU_OVERVIEW (`ownershipPolicy: not_applicable`,
+  // NOT perResourceKey), cacheable at the same 5-minute config-freshness bound. The
+  // `store:info_changed` falsifier is DECLARED (escapes the W6 UNKNOWN-only cap so
+  // STORE_INFO can VALIDATE) but DELIBERATELY UNREAD — the MENU_OVERVIEW
+  // `menu:item_unpublished` disposition: a "changed" signal derived from the SAME
+  // store row the info came from is the same-row tautology #290/#291 removed (a
+  // changed address already reads as the NEW `infoText` — there is no stale present
+  // base to demote within a must-read turn). A future INDEPENDENT store-config
+  // change event could wire the read.
+  STORE_INFO: {
+    kind: "read_claim",
+    minSourceIntegrity: "structured",
+    requiredEvidence: [
+      {
+        key: "store:info",
+        ownershipPolicy: "not_applicable",
+        // ttl in epoch-MILLISECONDS (BKL-121/BKL-125 pin) — 300_000 ms = the same
+        // 5-minute config-freshness bound MENU_OVERVIEW ratified (vacuous within a
+        // per-turn ledger).
+        freshnessPolicy: { kind: "cacheable", ttl: 300_000 },
+        sourceIntegrity: "structured",
+        provenancePolicy: "preserve",
+      },
+    ],
+    customerScoped: false,
+    falsifierComplete: true,
+    falsifiers: [
+      {
+        key: "store:info_changed",
+        ownershipPolicy: "not_applicable",
+        freshnessPolicy: "must_read_this_turn",
+        sourceIntegrity: "structured",
+        provenancePolicy: "preserve",
+      },
+    ],
+    valueBinding: { key: "store:info", path: ["infoText"] },
   },
   PURCHASE_COMPLETED: {
     kind: "action_claim",
@@ -1031,6 +1135,12 @@ export interface FirstPartyDerivationReads {
    *  `menu:overview`, so the derived value is byte-equal (C6 passes by construction).
    *  Absent (empty/unreadable catalog) → value stays undefined → C6 ABSTAIN → UNKNOWN. */
   readonly menuOverview?: { readonly overviewText?: unknown };
+  /** BKL-136 — the store-info read for THIS turn (fixed subject, single-key, like
+   *  MENU_OVERVIEW). The SAME `infoText` the investigator records under `store:info`
+   *  (shared per-turn resolver memo), so the derived value is byte-equal (C6 passes
+   *  by construction). Absent (blank/unreadable metadata) → value stays undefined →
+   *  C6 ABSTAIN → honest UNKNOWN. */
+  readonly storeInfo?: { readonly infoText?: unknown };
 }
 
 /**
@@ -1111,6 +1221,15 @@ export function deriveBoundValue(
     // catalog) → value stays undefined → C6 ABSTAINs → honest UNKNOWN.
     if (reads.menuOverview === undefined) return candidate;
     return { ...candidate, value: { overviewText: reads.menuOverview.overviewText } };
+  }
+
+  if (candidate.type === "STORE_INFO") {
+    // BKL-136 — FIXED subject (single-key, like MENU_OVERVIEW): bind `infoText` from
+    // the single store-info read. Absent read (blank/unreadable store metadata) →
+    // value stays undefined → C6 ABSTAINs → honest UNKNOWN, never a fabricated
+    // address.
+    if (reads.storeInfo === undefined) return candidate;
+    return { ...candidate, value: { infoText: reads.storeInfo.infoText } };
   }
 
   // Owner-scoped per-resource types have no planner-available first-party read

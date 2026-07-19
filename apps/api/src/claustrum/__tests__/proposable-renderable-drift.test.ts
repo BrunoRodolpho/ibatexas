@@ -136,8 +136,13 @@ describe("BKL-112 — RENDERABLE ⊆ PROPOSABLE: no dangling template", () => {
 // template but is `not_applicable`-ownership (public catalog, owned by nobody) and so
 // intentionally OUT of TRIAD_SCOPED_TYPES — exactly like STORE_HOURS / STORE_HOURS_FOR_
 // DATE. Any OTHER divergence still trips CI as a decision point.
+// BKL-136 EXTENDS the deliberate non-Triad renderable set with STORE_INFO — the
+// PUBLIC owner-attested address/parking read: a validated pre-composed-scalar
+// template, `not_applicable` ownership (store config, owned by nobody), so
+// intentionally OUT of TRIAD_SCOPED_TYPES — exactly like MENU_OVERVIEW.
 const NON_TRIAD_RENDERABLE = [
   "MENU_OVERVIEW",
+  "STORE_INFO",
   "STORE_HOURS",
   "STORE_HOURS_FOR_DATE",
   "MENU_ITEM_PRICE",

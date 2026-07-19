@@ -255,6 +255,15 @@ export const OWNER_SCOPED_KEY_PREFIXES = [
   // subject enters `ownedResources` → the kernel's owns predicate passes for the legit
   // owner) and makes the customerId subject an admissible classify-only subject.
   "cart_contents:",
+  // BKL-163 — CART_EMPTY is owner-scoped, keyed `cart_empty:{customerId}` (the
+  // provable-empty twin of cart_contents — recorded PRESENT only when the
+  // owner-scoped cart read resolved hasItems:false). Listing it here makes the
+  // present empty-cart read attribute ownership (the customerId subject enters
+  // `ownedResources` → owns passes for the legit owner) and an admissible
+  // classify-only / FIX 2 subject. Its base has NO entry in
+  // OWNER_SCOPED_BASE_TO_RESOURCE_KIND, so an empty cart never fabricates a
+  // positive active-resource ref.
+  "cart_empty:",
   // FE-D03 slice C — ORDER_HISTORY / PAYMENT_HISTORY are owner-scoped, keyed
   // `{order,payment}_history:{customerId}` (per-customer list reads). Listing them here
   // makes the present history read attribute ownership (the customerId subject enters

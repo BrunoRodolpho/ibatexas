@@ -133,6 +133,8 @@ import {
   // NEW-032 ops plane — admin product read + kernel-gated egress.
   medusaAdmin,
   medusaAdjudicated,
+  // BKL-034 — boot-time embeddings provider/dimension gate.
+  assertEmbeddingProviderDimension,
 } from "@ibatexas/tools";
 import type { AgentContext, UserType } from "@ibatexas/types";
 import { publishNatsEvent } from "@ibatexas/nats-client";
@@ -2913,6 +2915,13 @@ export async function bootstrapClaustrum(
         readRosterDrift.join("\n  "),
     );
   }
+
+  // BKL-034 — embeddings provider/dimension boot gate. A configured provider whose
+  // probe vector length differs from EMBEDDING_DIMENSION would silently poison every
+  // Typesense upsert (dimension-mismatched vectors) — fail LOUD at boot instead. No
+  // provider configured → resolves cleanly (the keyword-only degrade stays legal on a
+  // bare stack), so this gate never blocks a key-less box.
+  await assertEmbeddingProviderDimension();
 
   // The ibx prisma/redis are real clients that legitimately lack the memory
   // adapter's structural slices (the claustrum_memory_* delegates / setex+pipeline),

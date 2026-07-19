@@ -654,6 +654,16 @@
                 "product_page"
               ],
               "description": "Contexto da recomendação (opcional) — de onde a pergunta partiu."
+            },
+            "dietaryTag": {
+              "type": "string",
+              "enum": [
+                "vegetariano",
+                "vegano",
+                "sem_gluten",
+                "sem_lactose"
+              ],
+              "description": "Filtro dietético, SOMENTE se o cliente pedir explicitamente opções vegetarianas/veganas/sem glúten/sem lactose. Deixe de fora em qualquer outro caso."
             }
           },
           "additionalProperties": false

@@ -252,11 +252,43 @@ describe("classifyRequestSpans — BKL-139 CART_CONTENTS_Q (read-only, anchored)
     }
   });
 
-  it("'o que tem no meu carrinho?' → CART_CONTENTS_Q → requires CART_CONTENTS", () => {
+  it("'o que tem no meu carrinho?' → CART_CONTENTS_Q → requires the complementary pair (BKL-163)", () => {
     const spans = classifyRequestSpans("o que tem no meu carrinho?");
     expect(spans).toContain("CART_CONTENTS_Q");
     const required = decomposeRequiredClaims(spans);
-    expect([...required]).toEqual(["CART_CONTENTS"]);
+    // BKL-163 — the row requires BOTH complements: exactly one can validate per
+    // turn (their evidence keys are presence-complementary), so requiring both is
+    // what lets an empty cart render the friendly VALIDATED "vazio" instead of the
+    // honest-UNKNOWN degrade — never a contradiction.
+    expect([...required].sort()).toEqual(["CART_CONTENTS", "CART_EMPTY"]);
+  });
+
+  it("BKL-136 — store-location/parking questions → STORE_INFO_Q → requires STORE_INFO", () => {
+    for (const text of [
+      "onde fica o restaurante?",
+      "qual o endereço de vocês?",
+      "tem estacionamento?",
+      "posso estacionar aí?",
+      "como chego até vocês?",
+      "qual a localização?",
+    ]) {
+      const spans = classifyRequestSpans(text);
+      expect(spans, text).toContain("STORE_INFO_Q");
+      expect([...decomposeRequiredClaims(spans)], text).toContain("STORE_INFO");
+    }
+  });
+
+  it("BKL-136 — MUST-NOT-FIRE when the location word targets a RESOURCE, not the store", () => {
+    // "onde fica meu PEDIDO" is an order-status ask — a VALIDATED store address
+    // there would be a confident non-answer to a different question.
+    for (const text of [
+      "onde fica meu pedido?",
+      "qual o endereço de entrega do meu pedido?",
+      "onde está minha reserva?",
+      "endereço de cobrança do pagamento",
+    ]) {
+      expect(classifyRequestSpans(text), text).not.toContain("STORE_INFO_Q");
+    }
   });
 
   it("MUST-NOT-FIRE on cart MUTATIONS (the read-vs-write split — BKL-153)", () => {

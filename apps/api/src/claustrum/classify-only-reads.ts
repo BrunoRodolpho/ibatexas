@@ -103,6 +103,16 @@ export const CLASSIFY_ONLY_ELIGIBLE_TYPES: ReadonlySet<RegistryClaimType> =
     // co-occurring with an unclassifiable safety marker in the SAME message would not
     // ESCALATE via that channel while classify-only is ON — surfaced, owner-veto-able.
     "CART_CONTENTS",
+    // BKL-163 — CART_EMPTY joins in LOCKSTEP with CART_CONTENTS: the CART_CONTENTS_Q
+    // closure row now requires BOTH (the provable-empty complement), and
+    // classifyOnlyRequiredTypes declines WHOLESALE when any required type is outside
+    // this set — omitting CART_EMPTY here would silently disable the classify-only
+    // path for every cart question. Subject resolves from the present
+    // `cart_empty:{customerId}` owner-scoped read (ownerScopedBaseKey → "cart_empty");
+    // a cart WITH items leaves it absent → empty subject → honest UNKNOWN → dropped
+    // when CART_CONTENTS validates. FE-D12 residual unchanged in KIND (the cart span
+    // already skipped the model's §O#9 self-report; this adds no new span).
+    "CART_EMPTY",
     // FE-D03 slice C — the owner-scoped list/history reads join the eligible set (the
     // same conscious growth). Subject = the authenticated customerId, resolved from the
     // present order_history:/payment_history:{customerId} owner-scoped read

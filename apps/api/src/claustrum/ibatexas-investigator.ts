@@ -44,6 +44,7 @@ import {
   composeMenuPriceText,
   composeMenuContentsText,
 } from "./menu-item-resolver.js";
+import { resolveStoreInfoText } from "./store-info-resolver.js";
 import { classifyRequestSpans } from "./required-claim-decomposer.js";
 
 /**
@@ -197,6 +198,8 @@ const MENU_ITEM_CONTENTS_KEY = (productId: string): string =>
 // BKL-142 — MENU_OVERVIEW is FIXED-SUBJECT (single-key, like STORE_HOURS): no `:{id}`
 // suffix. The menu-wide overview read is recorded under this bare key.
 const MENU_OVERVIEW_KEY = "menu:overview";
+// BKL-136 — the fixed public store-info key (claim-registry.ts STORE_INFO evidence).
+const STORE_INFO_KEY = "store:info";
 const ORDER_FULFILLMENT_KEY = (orderId: string): string =>
   `order_fulfillment_stage:${orderId}`;
 const PAYMENT_STATUS_KEY = (orderId: string): string => `payment_status:${orderId}`;
@@ -488,6 +491,28 @@ export function createFirstPartyTurnReads(
       }
     }
 
+    // BKL-136 STORE_INFO — the store address/parking read, GATED on a STORE_INFO_Q
+    // span. FIXED subject (single `store:info` key, like MENU_OVERVIEW), public
+    // first-party config → placed BEFORE the authenticated-customer gate (answers
+    // guests too). The shared per-turn-memoized resolver composes the scalar from
+    // OWNER-ATTESTED Medusa store.metadata; absent/blank metadata or an unreadable
+    // store → `undefined` → NO evidence → honest UNKNOWN (never a fabricated
+    // address). The `store:info_changed` W6 falsifier is DELIBERATELY UNREAD
+    // (claim-registry.ts) — never pushed here.
+    if (menuSpans.includes("STORE_INFO_Q")) {
+      const infoText = await resolveStoreInfoText(input.cognition.turnId);
+      if (infoText !== undefined) {
+        reads.push({
+          key: STORE_INFO_KEY,
+          source: "store.info",
+          origin: "TRUSTED",
+          originProvenance: "FIRST_PARTY",
+          sourceMode: "live",
+          read: async () => ({ infoText }),
+        });
+      }
+    }
+
     if (!isAuthenticatedCustomer(customerId)) return reads;
 
     // BKL-139 CART_CONTENTS — the authenticated customer's IN-PROGRESS cart, keyed by
@@ -545,6 +570,28 @@ export function createFirstPartyTurnReads(
           const v = await b.readCartContents(conversationId, customerId);
           if (v === null) throw new OwnerScopedReadUnavailable("active_cart", customerId);
           return { hasItems: v.hasItems };
+        },
+      });
+      // BKL-163 CART_EMPTY — the provable-empty CLAIM key (the FE-T17b marker idiom
+      // inverted into evidence): PRESENT ONLY when the cart read resolved
+      // `hasItems: false`, so presence IS the provable-empty proposition and the
+      // CART_CONTENTS/CART_EMPTY pair is complementary by construction (exactly one
+      // can validate in a turn). The `emptinessText` scalar is CODE-COMPOSED (the
+      // literal "vazio" the template's C6-bound slot renders), never model-authored.
+      // Shares the per-turn cart memo (no extra Medusa/Redis cost). `null` (an
+      // UNAVAILABLE read) → OwnerScopedReadUnavailable → fail-closed ERROR (Inv 7);
+      // a cart WITH items → ABSENT_READ (no present base — CART_EMPTY resolves
+      // honest UNKNOWN and is dropped when CART_CONTENTS validates).
+      reads.push({
+        key: `cart_empty:${customerId}`,
+        source: "cart.readCartContents.empty",
+        origin: "TRUSTED",
+        originProvenance: "FIRST_PARTY",
+        sourceMode: "live",
+        read: async () => {
+          const v = await b.readCartContents(conversationId, customerId);
+          if (v === null) throw new OwnerScopedReadUnavailable("cart_empty", customerId);
+          return v.hasItems ? ABSENT_READ : { emptinessText: "vazio" };
         },
       });
     }
