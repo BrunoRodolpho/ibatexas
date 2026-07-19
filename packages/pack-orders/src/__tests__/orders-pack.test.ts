@@ -1448,3 +1448,56 @@ describe("rehydrateOrderState", () => {
     expect(out).toEqual(s)
   })
 })
+
+// ── BKL-145 — the admin-session actor is an authenticated principal ─────────
+// The `admin:` sessionId namespace is minted only behind the staff JWT and the
+// actor is composition-stamped (NEW-032 slice-A pins), so a staff-plane note on
+// an UNRESOLVED order must fall through to the honest `order.not_found` — never
+// the customer-onboarding `auth.required`. Customer/guest planes byte-identical.
+
+function adminEnv(
+  kind: OrderIntentKind,
+  payload: Record<string, unknown>,
+): IntentEnvelope<OrderIntentKind, OrderPayload> {
+  return buildEnvelope({
+    kind,
+    payload: payload as OrderPayload,
+    actor: { principal: "user", sessionId: "admin:staff-1" },
+    taint: "UNTRUSTED",
+    nonce: "n-test-admin",
+    createdAt: DET_TIME,
+  })
+}
+
+describe("BKL-145 — admin-session note.add auth recognition", () => {
+  it("admin session + UNRESOLVED order → honest order.not_found (NOT auth.required)", () => {
+    const decision = adjudicate(
+      adminEnv("order.note.add", { orderId: "", body: "cliente vai atrasar" }),
+      state({ customerId: null, orderId: null }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REFUSE")
+    if (decision.kind !== "REFUSE") return
+    expect(decision.refusal.code).toBe("order.not_found")
+  })
+
+  it("admin session + RESOLVED order (customer null) → the note EXECUTEs", () => {
+    const decision = adjudicate(
+      adminEnv("order.note.add", { orderId: "ord-1", body: "cliente vai atrasar" }),
+      state({ customerId: null, orderId: "ord-1" }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("EXECUTE")
+  })
+
+  it("customer plane unchanged: a NON-admin unauthenticated session still gets auth.required", () => {
+    const decision = adjudicate(
+      env("order.note.add", { orderId: "ord-1", body: "oi" }),
+      state({ customerId: null, orderId: "ord-1" }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REFUSE")
+    if (decision.kind !== "REFUSE") return
+    expect(decision.refusal.code).toBe("auth.required")
+  })
+})

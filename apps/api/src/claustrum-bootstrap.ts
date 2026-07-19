@@ -1485,6 +1485,40 @@ async function assertAuditPostgresReady(pool: Pool): Promise<void> {
  * pt-BR by its stable `code`, via the `@adjudicate/locales-pt-br` registry.
  * Exported for unit testing (claustrum-explainer.test.ts).
  */
+/**
+ * BKL-145 — the STAFF-VOICED explainer overlay for the OPS plane only. The base
+ * explainer's copy is customer-voiced ("Preciso confirmar seu cadastro…" onboards
+ * a CUSTOMER), which is the wrong audience for a staff refusal on the manager
+ * channel. This decorator overlays a small staff-voiced pt-BR map for
+ * NON-SECURITY codes and falls through to the base for everything else —
+ * SECURITY renders are NEVER overlaid (the base's leak-proof branch stays the
+ * only author of those), and unmapped codes render base-identically. Injected in
+ * `opsConductorDeps` ONLY; every customer-plane conductor keeps the bare base
+ * (byte-identical).
+ */
+export function opsExplainer(base: ExplainerPort): ExplainerPort {
+  // Staff-voiced pt-BR overlays, keyed by stable refusal code. Keep this map
+  // SMALL and staff-actionable — it is not a second locale registry.
+  const OPS_REFUSAL_OVERLAY: Readonly<Record<string, string>> = {
+    // The customer copy asks for a WhatsApp number (onboarding). Staff need the
+    // actual unblock: identify the order.
+    "auth.required":
+      "Essa ação precisa de um pedido identificado — me diga o número do pedido.",
+    // The pack copy says "pra você" (customer-addressed); staff variant.
+    "order.not_found":
+      "Não encontrei esse pedido — confira o número e tente de novo.",
+  };
+  return {
+    render(refusal): string {
+      if (refusal.kind !== "SECURITY") {
+        const overlay = OPS_REFUSAL_OVERLAY[refusal.code];
+        if (overlay !== undefined) return overlay;
+      }
+      return base.render(refusal);
+    },
+  };
+}
+
 export function ibatexasExplainer(): ExplainerPort {
   // Generic, detail-free pt-BR fallbacks — used when the registry has no entry
   // for `code` (and, for SECURITY, instead of `userFacing`).
@@ -3397,7 +3431,9 @@ export async function bootstrapClaustrum(
     adjudicator,
     memory,
     grounding,
-    explainer: ibxExplainer,
+    // BKL-145 — staff-voiced refusal overlay (non-SECURITY only); the customer
+    // conductors above/below keep the bare base explainer byte-identical.
+    explainer: opsExplainer(ibxExplainer),
     // AUT-017 — the ops plane is where staff refunds ESCALATE; park the resumable
     // money intent so an OWNER can approve-and-execute it from the escalações UI.
     handoff: natsHandoff(publishNatsEvent, escalationHandoffParkDeps),
