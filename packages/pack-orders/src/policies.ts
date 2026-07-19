@@ -331,6 +331,16 @@ const requireAuthenticated: OrderGuard = (envelope, state) => {
   if (isCardCheckout(envelope)) {
     return null
   }
+  // BKL-145 — an admin-session actor IS an authenticated principal: the `admin:`
+  // sessionId namespace is minted only behind the route's staff JWT and the actor
+  // is composition-stamped (never model-controlled — the NEW-032 slice-A pins), so
+  // a staff-plane envelope must not fall into the CUSTOMER identity refusal (whose
+  // copy onboards a customer). An ops note on an UNRESOLVED order now falls
+  // through to `requireOrderIdForMutation`'s honest `order.not_found` instead of
+  // `auth.required`. Customer/guest planes are byte-identical (their sessionIds
+  // are never `admin:`-prefixed); a forged system-actor is refused tamper-evident
+  // upstream (J008), never adjudicated here.
+  if (envelope.actor.sessionId.startsWith("admin:")) return null
   if (isAuthenticated(state)) return null
   return decisionRefuse(refuseNotAuthenticated(), [
     basis("auth", BASIS_CODES.auth.IDENTITY_MISSING),
