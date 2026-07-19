@@ -84,6 +84,9 @@ const TRIAD_SCOPED_TYPES: ReadonlySet<RegistryClaimType> = new Set<RegistryClaim
   // in some REQUIRED_CLAIM_CLOSURE row (the CART_CONTENTS_Q closure), or boot rejects
   // it as DECOMPOSITION_UNREACHABLE (the FE-T17 gate).
   "CART_CONTENTS",
+  // BKL-163 — CART_EMPTY is the owner-scoped provable-empty twin; INV-4 satisfied by
+  // the same CART_CONTENTS_Q closure row (which requires the complementary pair).
+  "CART_EMPTY",
   // FE-D03 slice C — owner-scoped list reads; INV-4 requires each in a
   // REQUIRED_CLAIM_CLOSURE row (ORDER_HISTORY_Q / PAYMENT_HISTORY_Q).
   "ORDER_HISTORY",

@@ -162,6 +162,8 @@ export const STORE_HOURS = "STORE_HOURS";
 export const STORE_HOURS_FOR_DATE = "STORE_HOURS_FOR_DATE";
 /** BKL-139 — the owner-scoped IN-PROGRESS cart read (pre-composed summary scalar). */
 export const CART_CONTENTS = "CART_CONTENTS";
+/** BKL-163 — the provably-empty cart twin (presence-complement of CART_CONTENTS). */
+export const CART_EMPTY = "CART_EMPTY";
 /** FE-D03 slice C — the owner-scoped list/history reads (pre-composed summary scalar). */
 export const ORDER_HISTORY = "ORDER_HISTORY";
 export const PAYMENT_HISTORY = "PAYMENT_HISTORY";
@@ -171,6 +173,8 @@ export const MENU_ITEM_PRICE = "MENU_ITEM_PRICE";
 export const MENU_ITEM_CONTENTS = "MENU_ITEM_CONTENTS";
 /** BKL-142 — the PUBLIC menu-WIDE overview read (deterministic first-party listing scalar). */
 export const MENU_OVERVIEW = "MENU_OVERVIEW";
+/** BKL-136 — the PUBLIC store-info read (owner-attested address/parking scalar). */
+export const STORE_INFO = "STORE_INFO";
 
 /**
  * Per-type `validated` (asserting) templates, keyed by claim type. Each is the ONE
@@ -280,6 +284,21 @@ export const VALIDATED_TEMPLATES: Readonly<Record<string, Template>> = {
       lit("."),
     ],
   },
+  // BKL-163 — the provably-empty cart template. ONE proposition slot bound 1:1 to
+  // the C6 valueBinding FIELD (`emptinessText`, claim-registry.ts) — the
+  // code-composed literal "vazio" the investigator records ONLY when the
+  // owner-scoped cart read proved `hasItems: false`. Friendly VALIDATED answer for
+  // the empty cart (replacing the honest-UNKNOWN degrade of PR #291 deviation (a));
+  // the menu pointer is STATIC literal text (an offer, not a proposition).
+  [CART_EMPTY]: {
+    claimType: CART_EMPTY,
+    posture: "validated",
+    slots: [
+      lit("Seu carrinho está "),
+      prop(CART_EMPTY, "emptinessText"),
+      lit(" no momento — quer dar uma olhada no cardápio?"),
+    ],
+  },
   // FE-D03 slice C — the ORDER_HISTORY / PAYMENT_HISTORY validated templates. ONE
   // proposition slot each, bound 1:1 to the C6 valueBinding FIELD (`historySummaryText`,
   // claim-registry.ts). The value is a DETERMINISTICALLY PRE-COMPOSED, bounded
@@ -330,6 +349,16 @@ export const VALIDATED_TEMPLATES: Readonly<Record<string, Template>> = {
     claimType: MENU_OVERVIEW,
     posture: "validated",
     slots: [prop(MENU_OVERVIEW, "overviewText")],
+  },
+  // BKL-136 — the store-info validated template. ONE proposition slot bound 1:1 to
+  // the C6 valueBinding FIELD (`infoText`, claim-registry.ts) — the deterministic
+  // pre-composed pt-BR address/parking sentence (store-info-resolver.ts), derived
+  // from OWNER-ATTESTED Medusa store.metadata. Bare single-prop shape like
+  // MENU_OVERVIEW (the scalar is already a complete sentence).
+  [STORE_INFO]: {
+    claimType: STORE_INFO,
+    posture: "validated",
+    slots: [prop(STORE_INFO, "infoText")],
   },
   // NOTE: ORDER_ESTIMATED_ARRIVAL was REMOVED here (inv.18 validator wiring). It
   // had a `validated` template (a PROPOSITION slot prop(…, "etaMinutes")) but NO

@@ -59,6 +59,15 @@ async function ensureSalesChannel(
   )
 }
 
+// BKL-136 — the OWNER-ATTESTED store-info metadata the STORE_INFO claim grounds on
+// ("onde fica o restaurante?" / "tem estacionamento?"). Committed seed values for
+// the dev stack (the owner edits them via the Medusa admin in prod); consumed by
+// apps/api's store-info-resolver, which composes the customer-facing pt-BR scalar.
+const STORE_INFO_METADATA = {
+  address: "Rua Santa Cruz, 456 — Centro, Ibaté/SP",
+  parking: "Temos estacionamento próprio gratuito ao lado do restaurante",
+}
+
 async function ensureStore(
   storeModule: IStoreModuleService,
   salesChannelId: string,
@@ -77,11 +86,15 @@ async function ensureStore(
     ? await storeModule.updateStores(existingStore.id, {
         name: storeName,
         default_sales_channel_id: salesChannelId,
+        // Merge-preserve: keep any owner-edited metadata keys, only fill the
+        // store-info fields when absent (the seed must never clobber the owner).
+        metadata: { ...STORE_INFO_METADATA, ...(existingStore.metadata ?? {}) },
       })
     : await storeModule.createStores({
         name: storeName,
         supported_currencies: [{ currency_code: "brl", is_default: true }],
         default_sales_channel_id: salesChannelId,
+        metadata: { ...STORE_INFO_METADATA },
       })
 }
 

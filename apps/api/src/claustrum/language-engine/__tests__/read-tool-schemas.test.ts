@@ -89,14 +89,19 @@ describe("CHECK_ORDER_STATUS_READ_SCHEMA / GET_PAYMENT_STATUS_READ_SCHEMA — or
 });
 
 describe("GET_RECOMMENDATIONS_READ_SCHEMA", () => {
-  it("exposes ONLY an optional {context} enum", () => {
+  it("exposes ONLY the optional {context, dietaryTag} enums (BKL-137)", () => {
     const names = extractionFieldNames(GET_RECOMMENDATIONS_READ_SCHEMA);
-    expect([...names]).toEqual(["context"]);
+    expect([...names]).toEqual(["context", "dietaryTag"]);
     const wire = toPayloadJsonSchema(GET_RECOMMENDATIONS_READ_SCHEMA);
     expect(wire.required).toBeUndefined();
     expect(
       (wire.properties as { context: { enum: string[] } }).context.enum,
     ).toEqual(["homepage", "cart", "product_page"]);
+    // BKL-137 — the CLOSED owner-attested dietary-tag vocabulary (Directive class:
+    // customer-authored intent; the executor drops out-of-vocabulary values).
+    expect(
+      (wire.properties as { dietaryTag: { enum: string[] } }).dietaryTag.enum,
+    ).toEqual(["vegetariano", "vegano", "sem_gluten", "sem_lactose"]);
   });
 });
 

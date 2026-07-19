@@ -71,6 +71,7 @@ export type SpanClass =
   | "MENU_ITEM_PRICE_Q"
   | "MENU_ITEM_CONTENTS_Q"
   | "MENU_OVERVIEW_Q"
+  | "STORE_INFO_Q"
   | "ORDER_STATUS_Q"
   | "PAYMENT_STATUS_Q"
   | "RESERVATION_STATUS_Q"
@@ -109,7 +110,16 @@ export const REQUIRED_CLAIM_CLOSURE = {
   // span force-requires it), so it also auto-enrols CART_CONTENTS into the claim-planner's
   // RELEVANCE_GOVERNED_TYPES via the closure-value union (an over-proposed cart claim is
   // DEMOTED on a turn whose cart span did not fire, KEPT when it did).
-  CART_CONTENTS_Q: ["CART_CONTENTS"],
+  // BKL-163 — the row ALSO requires CART_EMPTY, the provable-empty complement:
+  // the two claims read COMPLEMENTARY keys (`cart_contents:` vs `cart_empty:` —
+  // exactly one is PRESENT after a successful owner-scoped cart read), so exactly
+  // one validates and the other resolves honest UNKNOWN and is dropped by the
+  // kernel's §D filter — never a rendered contradiction. Requiring both here is
+  // what auto-enrols CART_EMPTY into the classify-only candidate set (an
+  // empty-cart question deterministically frames the claim that CAN validate) and
+  // into RELEVANCE_GOVERNED_TYPES (an over-proposed CART_EMPTY demotes on a
+  // non-cart turn).
+  CART_CONTENTS_Q: ["CART_CONTENTS", "CART_EMPTY"],
   // FE-D03 slice C — a history/list question requires its own list-shaped claim. Like
   // CART_CONTENTS_Q, each is required ONLY by its own span (no unrelated span
   // force-requires it), so it auto-enrols into the claim-planner RELEVANCE_GOVERNED_TYPES
@@ -126,6 +136,11 @@ export const REQUIRED_CLAIM_CLOSURE = {
   // per-item menu spans). Empty catalog → ABSENT evidence → honest UNKNOWN; never demotes
   // a co-occurring answer. Public (`not_applicable`) → never Triad-scoped.
   MENU_OVERVIEW_Q: ["MENU_OVERVIEW"],
+  // BKL-136 — a store-location/parking question requires ONLY its own PUBLIC claim
+  // (like the menu spans). Absent/blank store metadata → ABSENT evidence → honest
+  // UNKNOWN; never demotes a co-occurring answer. Public (`not_applicable`) → never
+  // Triad-scoped.
+  STORE_INFO_Q: ["STORE_INFO"],
   // §O#15 worked example — a pickup question requires BOTH companions.
   PICKUP_Q: ["STORE_OPEN_NOW", "ORDER_FULFILLMENT_STAGE"],
 } satisfies Record<SpanClass, readonly RegistryClaimType[]>;
@@ -222,6 +237,24 @@ export function classifyRequestSpans(text: string): SpanClass[] {
   // the per-ITEM contents span ("o que vem no combo") — the overview owns it.
   if (notOrderScoped && !isMenuOverview && !/al[ée]rg|gl[úu]ten|lactose|cont[ée]m/.test(t) && /o que (vem|tem|acompanha)|do que (é|e) (é |)feit|que vem (n|em)|composi[çc][ãa]o d/.test(t)) {
     classes.push("MENU_ITEM_CONTENTS_Q");
+  }
+
+  // BKL-136 — a store-LOCATION/parking question ("onde fica o restaurante?", "qual o
+  // endereço?", "tem estacionamento?", "como chegar?"). GUARDED away from the
+  // order/delivery/cart/reservation/payment families: "onde fica meu PEDIDO" is an
+  // order-status ask, and letting STORE_INFO validate there would render the
+  // restaurant's address as a confident non-answer to a different question (a
+  // VALIDATED claim is not demote-only — the guard must be precise, not
+  // over-inclusive). A guarded miss degrades honestly (no span → no forced
+  // companion; the planner's own nets still run).
+  const notResourceScoped = !/pedido|entrega|frete|carrinho|reserva|pagamento/.test(t);
+  if (
+    notResourceScoped &&
+    /onde (fica|é|estão|est[áa]|se localiza)|endere[çc]o|localiza[çc][ãa]o|localizad|estacionamento|estacionar|como (chego|chegar)/.test(
+      t,
+    )
+  ) {
+    classes.push("STORE_INFO_Q");
   }
 
   // Precise discriminators that DISAMBIGUATE the polysemous "status" (A's F2 fix —

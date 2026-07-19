@@ -124,8 +124,29 @@ export const GET_RECOMMENDATIONS_READ_SCHEMA: CapabilityExtractionSchema = {
       },
       required: false,
     },
+    {
+      name: "dietaryTag",
+      // BKL-137 — Directive class: genuine customer-authored intent content
+      // ("tem opção vegetariana?"). CLOSED enum of owner-attested catalog
+      // tags (Typesense facet); the executor drops any out-of-vocabulary
+      // value, and a tag filter is a search narrowing — NEVER an allergen
+      // assurance (those stay behind the BKL-143/123 owner gate).
+      trustClass: "directive",
+      jsonSchema: {
+        type: "string",
+        enum: ["vegetariano", "vegano", "sem_gluten", "sem_lactose"],
+        description:
+          "Filtro dietético, SOMENTE se o cliente pedir explicitamente opções " +
+          "vegetarianas/veganas/sem glúten/sem lactose. Deixe de fora em qualquer " +
+          "outro caso.",
+      },
+      required: false,
+    },
   ],
-  example: { utterance: "o que vocês recomendam?", payload: {} },
+  example: {
+    utterance: "tem opção vegetariana?",
+    payload: { dietaryTag: "vegetariano" },
+  },
 };
 
 /** `get_also_added` / `get_ordered_together` both key off `productId` — a

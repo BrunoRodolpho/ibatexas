@@ -31,6 +31,8 @@ const TRIAD = [
   "RESERVATION_STATUS",
   // BKL-139 — the owner-scoped cart read joins the Triad-scoped set (INV-4 closure).
   "CART_CONTENTS",
+  // BKL-163 — the provable-empty cart twin (same CART_CONTENTS_Q closure row).
+  "CART_EMPTY",
   // FE-D03 slice C — the owner-scoped list/history reads (INV-4 closure).
   "ORDER_HISTORY",
   "PAYMENT_HISTORY",

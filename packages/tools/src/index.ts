@@ -139,6 +139,13 @@ export {
   type CacheFilterContext,
 } from "./cache/query-cache.js"
 
+// ── Embeddings ─────────────────────────────────────────────────────────────────
+// BKL-034 — the boot-time provider/dimension gate (apps consume it at bootstrap so
+// an EMBEDDINGS_PROVIDER / EMBEDDING_DIMENSION misconfig fails loud instead of
+// silently poisoning the Typesense index). Resolves cleanly when no provider is
+// configured (keyword-only degrade stays legal).
+export { assertEmbeddingProviderDimension } from "./embeddings/client.js"
+
 // ── Typesense ──────────────────────────────────────────────────────────────────
 export { getTypesenseClient, ensureCollectionExists, recreateCollection, PRODUCTS_COLLECTION_SCHEMA, COLLECTION } from "./typesense/client.js"
 export { indexProduct, deleteProductFromIndex, indexProductsBatch } from "./typesense/index-product.js"

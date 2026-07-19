@@ -18,7 +18,7 @@
     {
       "capability": "read-tools:12-tool-roster",
       "goldenFragmentPath": "apps/api/src/claustrum/language-engine/__tests__/__golden__/read-tools.extraction-prompt-fragment.json",
-      "goldenFragmentSha256": "383dfa45e42b15ea75db850d779b56b96f5aa8ac1720e3938c4956bd19690d9e"
+      "goldenFragmentSha256": "2c9daad1707799d4ee7e09b46b0f75364de5755d85f9b8bed9685602086f04dc"
     },
     {
       "capability": "order.checkout.create",

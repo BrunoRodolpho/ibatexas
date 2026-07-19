@@ -83,9 +83,12 @@ describe("classifyOnlyRequiredTypes — the eligibility gate", () => {
     );
   });
 
-  it("BKL-139 — a cart-contents question → {CART_CONTENTS} (eligible)", () => {
+  it("BKL-139/BKL-163 — a cart-contents question → the complementary pair (eligible)", () => {
+    // BKL-163 — the closure row requires BOTH complements; CART_EMPTY joined the
+    // eligible set in LOCKSTEP so the cart turn still classifies-only (omitting it
+    // would decline the whole family wholesale).
     expect(classifyOnlyRequiredTypes("o que tem no meu carrinho?")).toEqual(
-      new Set(["CART_CONTENTS"]),
+      new Set(["CART_CONTENTS", "CART_EMPTY"]),
     );
   });
 
@@ -147,7 +150,7 @@ describe("classifyOnlyRequiredTypes — the eligibility gate", () => {
   });
 
   it("every eligible type is genuinely a registered, owner-scoped registry type", () => {
-    expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.size).toBe(6);
+    expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.size).toBe(7);
     expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.has("ORDER_FULFILLMENT_STAGE")).toBe(true);
     expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.has("PAYMENT_STATUS")).toBe(true);
     expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.has("RESERVATION_STATUS")).toBe(true);
@@ -156,6 +159,9 @@ describe("classifyOnlyRequiredTypes — the eligibility gate", () => {
     expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.has("PAYMENT_HISTORY")).toBe(true);
     // BKL-139 — the owner-scoped cart read joined the eligible set.
     expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.has("CART_CONTENTS")).toBe(true);
+    // BKL-163 — the provable-empty complement joined in lockstep (the closure row
+    // requires the pair; omitting it would decline every cart turn wholesale).
+    expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.has("CART_EMPTY")).toBe(true);
   });
 });
 

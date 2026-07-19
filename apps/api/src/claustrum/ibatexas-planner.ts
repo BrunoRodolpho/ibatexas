@@ -101,6 +101,7 @@ import {
 } from "./closed-hours.js";
 import type { StoreHoursRead, StoreHoursForDateRead } from "./turn-reads.js";
 import { resolveQueriedScheduleDate } from "./schedule-date-resolver.js";
+import { resolveStoreInfoText } from "./store-info-resolver.js";
 import {
   resolveMenuItem,
   resolveMenuOverviewText,
@@ -1715,6 +1716,15 @@ export function createIbatexasPlanner(
         });
         if (overviewText !== undefined) menuOverview = { overviewText };
       }
+      // BKL-136 — STORE_INFO derivation read (FIXED subject): the SAME `infoText`
+      // the investigator records under `store:info`, memoized on turnId so this
+      // REUSES the investigator's ONE Medusa admin read → byte-equal value (C6
+      // passes by construction). Blank/unreadable metadata → undefined → C6 ABSTAIN.
+      let storeInfo: { infoText: string } | undefined;
+      if (menuCandidateTypes.has("STORE_INFO")) {
+        const infoText = await resolveStoreInfoText(state.turnId);
+        if (infoText !== undefined) storeInfo = { infoText };
+      }
       const derivedCandidates = deriveCandidateValues(candidates, {
         scheduleSignal,
         storeHours,
@@ -1722,6 +1732,7 @@ export function createIbatexasPlanner(
         menuItemPrice,
         menuItemContents,
         ...(menuOverview !== undefined ? { menuOverview } : {}),
+        ...(storeInfo !== undefined ? { storeInfo } : {}),
       });
 
       // POST-planning wall (SDD §C P4 / §J.8): every span gets a disposition; an
