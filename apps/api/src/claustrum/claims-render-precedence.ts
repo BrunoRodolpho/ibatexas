@@ -8,7 +8,7 @@
 // wrongly SUPERSEDING a good draft):
 //   · BKL-155 — a mutating turn parks REQUEST_CONFIRMATION, but the claim-planner
 //     ALSO over-proposes a spurious degrade-forcing claim → the safe-degrade render
-//     hides the kernel's 'Identifiquei o item mais recente… Confirma?' prompt →
+//     hides the kernel's 'Identifiquei o seu pedido mais recente… Confirma?' prompt →
 //     the confirm loop is silently un-completable. FIXED by rule 2.
 //   · BKL-153 — 'meu pedido chegou, obrigado!' is a gratitude STATEMENT the keyword
 //     net over-classifies as an order question → a guest-owns-no-order degrade →
