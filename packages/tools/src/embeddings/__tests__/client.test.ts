@@ -28,7 +28,8 @@ vi.mock("../../redis/key.js", () => ({
 }))
 
 // Import AFTER mocks (vitest hoists vi.mock).
-const { generateEmbedding, EmbeddingsUnavailableError } = await import("../client.js")
+const { generateEmbedding, EmbeddingsUnavailableError, embeddingCacheVersion, assertEmbeddingProviderDimension } =
+  await import("../client.js")
 
 const ORIGINAL_KEY = process.env.OPENAI_API_KEY
 
@@ -187,5 +188,125 @@ describe("success arm (generation → dim check → cache write)", () => {
 
     await expect(generateEmbedding("costela", "k:short")).rejects.toThrow(/Invalid embedding/)
     expect(setExMock).not.toHaveBeenCalled()
+  })
+})
+
+// ── BKL-034 — local Ollama embeddings provider ──────────────────────────────
+describe("EMBEDDINGS_PROVIDER=ollama (local embedder, BKL-034)", () => {
+  const SAVED = {
+    provider: process.env.EMBEDDINGS_PROVIDER,
+    url: process.env.OLLAMA_EMBED_URL,
+    model: process.env.OLLAMA_EMBED_MODEL,
+    key: process.env.OPENAI_API_KEY,
+  }
+
+  beforeEach(() => {
+    getMock = vi.fn(async () => null)
+    setExMock = vi.fn(async () => undefined)
+    process.env.EMBEDDINGS_PROVIDER = "ollama"
+    process.env.OLLAMA_EMBED_URL = "http://localhost:11434"
+    process.env.OLLAMA_EMBED_MODEL = "nomic-embed-text"
+    delete process.env.OPENAI_API_KEY // ollama needs no OpenAI key
+  })
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    const restore = (k: string, v: string | undefined) =>
+      v === undefined ? delete process.env[k] : (process.env[k] = v)
+    restore("EMBEDDINGS_PROVIDER", SAVED.provider)
+    restore("OLLAMA_EMBED_URL", SAVED.url)
+    restore("OLLAMA_EMBED_MODEL", SAVED.model)
+    restore("OPENAI_API_KEY", SAVED.key)
+  })
+
+  it("routes to the Ollama /api/embeddings endpoint with { model, prompt } and returns { embedding }", async () => {
+    // Return an EMBED_DIM-length vector so the per-call dimension guard passes
+    // (default EMBED_DIM = 1536); the point of this test is the routing + body.
+    const vec = Array.from({ length: 1536 }, () => 0.01)
+    const fetchMock = vi.fn(async () => ({ ok: true, json: async () => ({ embedding: vec }) }))
+    vi.stubGlobal("fetch", fetchMock)
+
+    const result = await generateEmbedding("costela", "k:ollama")
+
+    expect(result).toEqual(vec)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, { body: string }]
+    expect(url).toBe("http://localhost:11434/api/embeddings")
+    const body = JSON.parse(init.body)
+    expect(body).toEqual({ model: "nomic-embed-text", prompt: "costela" })
+  })
+
+  it("throws EmbeddingsUnavailableError (never a vector, never a fetch) when OLLAMA_EMBED_URL/MODEL is unset", async () => {
+    delete process.env.OLLAMA_EMBED_URL
+    const fetchMock = vi.fn()
+    vi.stubGlobal("fetch", fetchMock)
+
+    await expect(generateEmbedding("coca", "k:noollama")).rejects.toBeInstanceOf(EmbeddingsUnavailableError)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it("rethrows on an Ollama non-ok status (fail-honest — no pseudo-vector, no cache write)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({ ok: false, status: 500, statusText: "Server Error", text: async () => "boom" })),
+    )
+    await expect(generateEmbedding("coca", "k:ollamaerr")).rejects.toThrow(/Ollama embedding API failed/)
+    expect(setExMock).not.toHaveBeenCalled()
+  })
+})
+
+describe("embeddingCacheVersion (provider-derived namespace, BKL-034)", () => {
+  const SAVED = process.env.EMBEDDINGS_PROVIDER
+  afterEach(() => {
+    if (SAVED === undefined) delete process.env.EMBEDDINGS_PROVIDER
+    else process.env.EMBEDDINGS_PROVIDER = SAVED
+  })
+
+  it("is v2 for openai (default) and v3 for ollama — never the same space", () => {
+    delete process.env.EMBEDDINGS_PROVIDER
+    expect(embeddingCacheVersion()).toBe("v2")
+    process.env.EMBEDDINGS_PROVIDER = "openai"
+    expect(embeddingCacheVersion()).toBe("v2")
+    process.env.EMBEDDINGS_PROVIDER = "ollama"
+    expect(embeddingCacheVersion()).toBe("v3")
+    // read at CALL time (not frozen at import)
+    process.env.EMBEDDINGS_PROVIDER = "openai"
+    expect(embeddingCacheVersion()).toBe("v2")
+  })
+})
+
+describe("assertEmbeddingProviderDimension (startup sanity check, BKL-034)", () => {
+  const SAVED = {
+    provider: process.env.EMBEDDINGS_PROVIDER,
+    url: process.env.OLLAMA_EMBED_URL,
+    model: process.env.OLLAMA_EMBED_MODEL,
+    key: process.env.OPENAI_API_KEY,
+  }
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    const restore = (k: string, v: string | undefined) =>
+      v === undefined ? delete process.env[k] : (process.env[k] = v)
+    restore("EMBEDDINGS_PROVIDER", SAVED.provider)
+    restore("OLLAMA_EMBED_URL", SAVED.url)
+    restore("OLLAMA_EMBED_MODEL", SAVED.model)
+    restore("OPENAI_API_KEY", SAVED.key)
+  })
+
+  it("no-ops when no provider is configured (keyword-only degrade — nothing to check)", async () => {
+    process.env.EMBEDDINGS_PROVIDER = "openai"
+    delete process.env.OPENAI_API_KEY
+    const fetchMock = vi.fn()
+    vi.stubGlobal("fetch", fetchMock)
+    await expect(assertEmbeddingProviderDimension()).resolves.toBeUndefined()
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it("throws a loud dimension-mismatch error when the model dim != EMBEDDING_DIMENSION", async () => {
+    process.env.EMBEDDINGS_PROVIDER = "ollama"
+    process.env.OLLAMA_EMBED_URL = "http://localhost:11434"
+    process.env.OLLAMA_EMBED_MODEL = "nomic-embed-text"
+    // Default EMBED_DIM is 1536; return a 768-vector → mismatch.
+    const vec768 = Array.from({ length: 768 }, () => 0.01)
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, json: async () => ({ embedding: vec768 }) })))
+    await expect(assertEmbeddingProviderDimension()).rejects.toThrow(/dimension mismatch/i)
   })
 })

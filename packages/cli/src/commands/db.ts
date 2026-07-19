@@ -517,6 +517,15 @@ async function runReindex(fresh = false) {
     console.log(chalk.bold(`\n  ${chalk.cyan("→")} ${msg}`))
 
   // 1. Create or recreate the collection
+  //
+  // BKL-034: the collection's `embedding` field `num_dim` is baked from
+  // EMBED_DIM (EMBEDDING_DIMENSION) at creation. Switching the embeddings
+  // provider/model DIMENSION (e.g. OpenAI 1536 → local Ollama nomic-embed-text
+  // 768) therefore REQUIRES `ibx db reindex --fresh` — it drops + recreates the
+  // collection at the CURRENT EMBEDDING_DIMENSION and re-embeds every product,
+  // so stale different-dimension vectors are purged (the FE-D17 reindex caveat,
+  // now executing). A plain `ibx db reindex` (no --fresh) keeps the old
+  // collection dimension and would reject/skew the new vectors.
   if (fresh) {
     step("Recreating Typesense collection (--fresh)…")
     await recreateCollection()

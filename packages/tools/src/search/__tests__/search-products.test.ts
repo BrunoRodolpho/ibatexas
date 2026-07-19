@@ -48,6 +48,8 @@ vi.mock("../../typesense/client.js", () => ({
 
 vi.mock("../../embeddings/client.js", () => ({
   generateEmbedding: mockGenerateEmbedding,
+  // BKL-034: provider-derived cache-namespace version (openai→v2, ollama→v3).
+  embeddingCacheVersion: () => (process.env.EMBEDDINGS_PROVIDER === "ollama" ? "v3" : "v2"),
   // Real class shape so search-products' `instanceof` narrowing works in tests.
   EmbeddingsUnavailableError: class EmbeddingsUnavailableError extends Error {},
 }))
@@ -236,6 +238,20 @@ describe("searchProducts", () => {
       // The v2 bump is what makes the fail-honest client fix reach warm caches;
       // rk() prefixes the env, so assert on the namespace substring.
       expect(cacheKey).toContain("embedding:query:v2:")
+    })
+
+    it("requests the query embedding under the v3 namespace when EMBEDDINGS_PROVIDER=ollama (BKL-034 — different vector space never collides with v2)", async () => {
+      const saved = process.env.EMBEDDINGS_PROVIDER
+      process.env.EMBEDDINGS_PROVIDER = "ollama"
+      try {
+        await searchProducts({ query: "costela bovina" })
+        const cacheKey = mockGenerateEmbedding.mock.calls[0][1] as string
+        expect(cacheKey).toContain("embedding:query:v3:")
+        expect(cacheKey).not.toContain(":v2:")
+      } finally {
+        if (saved === undefined) delete process.env.EMBEDDINGS_PROVIDER
+        else process.env.EMBEDDINGS_PROVIDER = saved
+      }
     })
 
     it("degrades to keyword-only search (products still returned) when the client throws", async () => {
