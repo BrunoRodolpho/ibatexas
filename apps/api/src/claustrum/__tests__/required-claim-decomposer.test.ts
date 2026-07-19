@@ -499,6 +499,70 @@ describe("required-claim completeness — quantifies over the REQUIRED set (SDD 
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// BKL-163 (reopened) — the CART presence-complement pair. The CART_CONTENTS_Q
+// closure row requires BOTH members, but by construction exactly ONE can ever
+// VALIDATE (complementary `cart_contents:`/`cart_empty:` evidence off the SAME
+// read). The strict every-type rule made cart completeness structurally
+// unsatisfiable — every cart turn (empty OR full) degraded RENDER→UNKNOWN (the
+// live SCN-030 non-render). A pair member's requirement is satisfied by its
+// PARTNER validating; non-pair types keep the strict rule (last test pins it).
+// ─────────────────────────────────────────────────────────────────────────────
+describe("required-claim completeness — presence-complement pair (BKL-163)", () => {
+  const cartRequired = decomposeRequiredClaims(["CART_CONTENTS_Q"]); // {CART_CONTENTS, CART_EMPTY}
+  const resolved = (
+    entries: ReadonlyArray<[RegistryClaimType, ClaimVerdict]>,
+  ): ReadonlyMap<string, ClaimVerdict> => new Map(entries);
+
+  it("the closure row really does require the whole pair (the precondition)", () => {
+    expect(cartRequired.has("CART_CONTENTS")).toBe(true);
+    expect(cartRequired.has("CART_EMPTY")).toBe(true);
+  });
+
+  it("EMPTY cart: CART_EMPTY VALIDATED alone satisfies the pair (the SCN-030 turn renders)", () => {
+    // The partner resolved UNKNOWN (its cart_contents evidence is ABSENT on an
+    // empty cart) — the exact live trace that degraded before this fix.
+    const r = checkRequiredClaimCompleteness(
+      cartRequired,
+      resolved([
+        ["CART_EMPTY", "VALIDATED"],
+        ["CART_CONTENTS", "UNKNOWN"],
+      ]),
+    );
+    expect(r.complete).toBe(true);
+    expect(r.unsatisfied).toEqual([]);
+  });
+
+  it("FULL cart: CART_CONTENTS VALIDATED alone satisfies the pair (the with-items regression)", () => {
+    const r = checkRequiredClaimCompleteness(
+      cartRequired,
+      resolved([["CART_CONTENTS", "VALIDATED"]]),
+    );
+    expect(r.complete).toBe(true);
+    expect(r.unsatisfied).toEqual([]);
+  });
+
+  it("NEITHER member VALIDATED still DEGRADES (an unavailable/failed cart read stays honest)", () => {
+    const r = checkRequiredClaimCompleteness(
+      cartRequired,
+      resolved([["CART_CONTENTS", "UNKNOWN"]]),
+    );
+    expect(r.complete).toBe(false);
+    expect(r.unsatisfied).toEqual(["CART_CONTENTS", "CART_EMPTY"]);
+  });
+
+  it("NON-pair companions keep the strict rule (no accidental widening of §O#15)", () => {
+    // The PICKUP_Q pair {STORE_OPEN_NOW, ORDER_FULFILLMENT_STAGE} is NOT a
+    // presence-complement pair: one validating must NOT satisfy the other.
+    const r = checkRequiredClaimCompleteness(
+      decomposeRequiredClaims(["PICKUP_Q"]),
+      resolved([["STORE_OPEN_NOW", "VALIDATED"]]),
+    );
+    expect(r.complete).toBe(false);
+    expect(r.unsatisfied).toEqual(["ORDER_FULFILLMENT_STAGE"]);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // F2 — the polysemous "status" must route by its DISCRIMINATOR (payment vs order),
 // not unconditionally to ORDER. NON-VACUOUS: with the old `/pedido|cad[êe]|status/`
 // → ORDER_STATUS_Q rule, "status do meu pagamento" wrongly carried ORDER_STATUS_Q.
