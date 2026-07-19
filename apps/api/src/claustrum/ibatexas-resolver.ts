@@ -21,7 +21,7 @@
 
 import { buildEnvelope, type IntentEnvelope } from "@adjudicate/core";
 import type { ResolvedEnvelope, ResolverPort } from "@claustrum/core";
-import { resolveAndAssemble } from "./resolve-and-assemble.js";
+import { resolveAndAssemble, deriveAdditionalCartItemNames } from "./resolve-and-assemble.js";
 import { correctAmendPreference } from "./amend-preference-correction.js";
 import {
   buildCustomerAuthority,
@@ -33,6 +33,13 @@ export function createIbatexasResolver(): ResolverPort {
   return {
     async resolve({ plan, cognition, customerId, channel }): Promise<ReadonlyArray<ResolvedEnvelope>> {
       const out: ResolvedEnvelope[] = [];
+      // BKL-213 — fan out a compound cart add ONLY when the planner emitted
+      // exactly ONE order.item.add: if it already produced two adds it captured
+      // both items, and re-splitting would DOUBLE-add. Cart-add only (never the
+      // money-sensitive order.amend.add_item on a placed order).
+      const cartAddCount = plan.envelopes.filter(
+        (e) => e.kind === "order.item.add",
+      ).length;
       for (const env of plan.envelopes) {
         const correction = await correctAmendPreference(
           env.kind,
@@ -112,6 +119,79 @@ export function createIbatexasResolver(): ResolverPort {
                 ),
               };
         out.push({ envelope: resolved, state });
+
+        // BKL-213 — recover the ADDITIONAL items a compound "X e Y" cart add
+        // dropped. Gated: the resolved kind is a cart add, the planner emitted
+        // exactly one add, and the utterance is present. Each recovered item is
+        // re-run through the SAME resolveAndAssemble + resourceRefs + buildEnvelope
+        // path as the primary, so allergen-refill, quantity-derive, ownership and
+        // the kernel guards all apply identically; a distinct nonce gives each a
+        // canonical intentHash.
+        const utteranceText = cognition.perception?.text;
+        if (
+          kind === "order.item.add" &&
+          cartAddCount === 1 &&
+          typeof utteranceText === "string"
+        ) {
+          const primaryVariantId =
+            typeof (payload as Record<string, unknown>).variantId === "string"
+              ? ((payload as Record<string, unknown>).variantId as string)
+              : undefined;
+          const extraNames = await deriveAdditionalCartItemNames({
+            utteranceText,
+            primaryVariantId,
+            channel,
+            sessionId: cognition.conversationId,
+            customerId,
+          });
+          let extraIndex = 0;
+          for (const extraName of extraNames) {
+            extraIndex += 1;
+            const extra = await resolveAndAssemble({
+              kind: "order.item.add",
+              payload: { item: extraName },
+              customerId,
+              channel,
+              sessionId: cognition.conversationId,
+              utteranceText,
+            });
+            // Only emit an add that actually resolved a variant — never a doomed
+            // envelope (mirrors the primary path's allergens-absent honesty).
+            if (typeof (extra.payload as Record<string, unknown>).variantId !== "string") {
+              continue;
+            }
+            const extraRefs = extra.ownershipIndeterminate
+              ? undefined
+              : resourceRefsForIntent(
+                  "order.item.add",
+                  extra.payload as Record<string, unknown>,
+                  customerId,
+                );
+            const extraEnvelope = buildEnvelope({
+              kind: "order.item.add",
+              payload: extra.payload,
+              actor: env.actor,
+              taint: env.taint,
+              // Distinct nonce per recovered add → canonical, non-colliding
+              // intentHash (dedup-safe alongside the primary).
+              nonce: `${env.nonce}:i${extraIndex}`,
+              createdAt: env.createdAt,
+              ...(extraRefs === undefined ? {} : { resourceRefs: extraRefs }),
+            }) as IntentEnvelope;
+            const extraState =
+              extraRefs === undefined
+                ? { ctx: extra.ctx }
+                : {
+                    ctx: extra.ctx,
+                    authority: buildCustomerAuthority(
+                      customerId,
+                      extra.owned,
+                      customerPrincipalForSession(cognition.conversationId, customerId),
+                    ),
+                  };
+            out.push({ envelope: extraEnvelope, state: extraState });
+          }
+        }
       }
       return out;
     },
