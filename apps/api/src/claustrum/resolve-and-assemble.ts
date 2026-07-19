@@ -1615,6 +1615,7 @@ async function threadResolvedIdsIntoPayload(
   customerId: string,
   channel: string,
   sessionId: string | undefined,
+  utteranceText: string | undefined,
 ): Promise<Ctx> {
   let out = payload;
   if (
@@ -1673,13 +1674,16 @@ async function threadResolvedIdsIntoPayload(
         }
       }
     }
-    // Review B3: the 4B often emits quantity as a STRING ("2") — the old
-    // `typeof !== "number" → 1` silently rewrote "2 costelas" to quantity 1.
-    // Coerce a positive-integer string; default only when ABSENT. A present
-    // but invalid value (0, negatives, fractions, junk) is left untouched so
-    // AddToCartInputSchema refuses loudly and the customer gets a clarify —
-    // never a silently different quantity.
-    out = { ...out, quantity: coerceQuantity(out.quantity) };
+    // Review B3 + BKL-199: the 4B emits quantity as a STRING ("2") OR — the
+    // common live failure — DROPS the stated number entirely ("dois
+    // Refrigerantes"/"40 Brisket" → quantity absent → 1), silently
+    // under-delivering and making the ≥R$1k confirm band unreachable.
+    // `deriveItemQuantity` recovers the customer's stated count deterministically
+    // from their own words (the NL→variantId discipline for the integer), with
+    // coerceQuantity's string-coerce/default-1 as the fall-through. A present
+    // but invalid value with no parseable NL quantity is still left untouched so
+    // AddToCartInputSchema refuses loudly — never a silently different quantity.
+    out = { ...out, quantity: deriveItemQuantity(out.quantity, name, utteranceText) };
     // FE-D18 — no-match honesty floor for the amend path. The cart sibling
     // order.item.add already REFUSEs honestly on an unresolvable item (it is
     // NOT in AUTORESOLVE_CONFIRM_KINDS → immediate adjudication → the
@@ -1847,6 +1851,106 @@ function coerceQuantity(raw: unknown): unknown {
   return raw;
 }
 
+// BKL-199 — deterministic pt-BR NL→quantity parsing for order.item.add.
+// The 4B routinely DROPS the stated number ("dois Refrigerantes" / "40 Brisket"
+// → payload quantity absent → coerceQuantity defaults to 1), so a customer
+// ordering 2/3/40 silently gets 1 — and the ≥R$1k confirm band is unreachable
+// because no big order can be built. Same discipline as NL→variantId (BKL-061):
+// never trust the model to carry the integer; derive it deterministically from
+// the customer's own words. A resolution miss falls back to today's behavior
+// (coerceQuantity → 1), so this is a strict, safe superset.
+
+/** Accent-stripped pt-BR cardinals (normalizeTokens folds diacritics). A chat
+ *  order of one line item beyond ~twenty is implausible; digits cover the rest. */
+const PT_BR_CARDINALS: Readonly<Record<string, number>> = {
+  um: 1, uma: 1, dois: 2, duas: 2, tres: 3, quatro: 4, cinco: 5, seis: 6,
+  sete: 7, oito: 8, nove: 9, dez: 10, onze: 11, doze: 12, treze: 13,
+  catorze: 14, quatorze: 14, quinze: 15, dezesseis: 16, dezessete: 17,
+  dezoito: 18, dezenove: 19, vinte: 20,
+};
+
+// A parsed quantity above this is far likelier a misparse (a size/volume/price
+// token — "600" in "600ml") than a real per-line count, so it is NOT treated as
+// a quantity (falls back to the model value / default). "40 brisket" stays legit.
+const MAX_NL_QUANTITY = 99;
+
+/** Parse a single normalized token as a quantity: a pt-BR cardinal word, a bare
+ *  1-2 digit number, or an "Nx"/"xN" form. Returns undefined for anything else
+ *  or an out-of-range value. */
+function quantityFromToken(token: string): number | undefined {
+  const cardinal = PT_BR_CARDINALS[token];
+  if (cardinal !== undefined) return cardinal;
+  const digit = /^(\d{1,2})$/.exec(token) ?? /^(\d{1,2})x$/.exec(token) ?? /^x(\d{1,2})$/.exec(token);
+  if (digit) {
+    const n = Number.parseInt(digit[1]!, 10);
+    if (n >= 1 && n <= MAX_NL_QUANTITY) return n;
+  }
+  return undefined;
+}
+
+/** First quantity token anywhere in a SHORT phrase (the model's item reference —
+ *  e.g. "dois refrigerantes", "40 brisket", "2x farofa"). */
+function quantityInPhrase(phrase: string): number | undefined {
+  for (const tok of normalizeTokens(phrase)) {
+    const q = quantityFromToken(tok);
+    if (q !== undefined) return q;
+  }
+  return undefined;
+}
+
+/** Reference-position stopwords: skipped when locating the item head noun so a
+ *  quantity in the "N [de] ITEM" slot is still adjacent. */
+const ITEM_REF_STOPWORDS: ReadonlySet<string> = new Set([
+  "o", "a", "os", "as", "um", "uma", "de", "do", "da", "dos", "das", "mais",
+]);
+
+/** Locate the item's head noun in the full utterance and read the quantity in
+ *  the slot immediately before it (up to 2 tokens back, skipping stopwords). This
+ *  catches the common case where the model stripped the number from `item`
+ *  ("40 brisket" → item "brisket") but the utterance still says "…40 brisket…".
+ *  Position-bounded so an unrelated number ("600ml") never counts. */
+function quantityBeforeItem(utterance: string, itemRef: string): number | undefined {
+  const uttTokens = normalizeTokens(utterance);
+  const headTokens = normalizeTokens(itemRef).filter((t) => !ITEM_REF_STOPWORDS.has(t));
+  if (uttTokens.length === 0 || headTokens.length === 0) return undefined;
+  const head = headTokens[0]!;
+  // Forgiving match (singular/plural: item "refrigerante" vs utterance
+  // "refrigerantes") — substring both ways for content words ≥3 chars, exact
+  // otherwise (a 1-2 char token would over-match). Mirrors resolveReviewedProduct.
+  const matches = (t: string): boolean =>
+    head.length >= 3 ? t.includes(head) || head.includes(t) : t === head;
+  const idx = uttTokens.findIndex(matches);
+  if (idx <= 0) return undefined;
+  // Nearest first: the token right before the noun, then one more back past a stopword.
+  for (let back = 1; back <= 2 && idx - back >= 0; back++) {
+    const tok = uttTokens[idx - back]!;
+    const q = quantityFromToken(tok);
+    if (q !== undefined) return q;
+    if (!ITEM_REF_STOPWORDS.has(tok)) break; // a non-stopword, non-quantity token ends the slot
+  }
+  return undefined;
+}
+
+/** BKL-199 — resolve order.item.add quantity: the customer's stated number wins
+ *  over the model's (dropped) emission. Try the model's item phrase, then the
+ *  utterance adjacent to the item; only fall back to coerceQuantity (string
+ *  coerce / default 1) when the customer stated no parseable quantity. */
+function deriveItemQuantity(
+  modelQuantity: unknown,
+  itemRef: string | undefined,
+  utteranceText: string | undefined,
+): unknown {
+  if (itemRef) {
+    const inPhrase = quantityInPhrase(itemRef);
+    if (inPhrase !== undefined) return inPhrase;
+    if (utteranceText) {
+      const adjacent = quantityBeforeItem(utteranceText, itemRef);
+      if (adjacent !== undefined) return adjacent;
+    }
+  }
+  return coerceQuantity(modelQuantity);
+}
+
 /**
  * Dispatch by kind to the right loader. Unknown / whatsapp kinds get the identity
  * base only (guards needing entity state see null → REFUSE cleanly, never panic).
@@ -1968,6 +2072,7 @@ export async function resolveAndAssemble(args: ResolveArgs): Promise<AssembledRe
     customerId,
     channel,
     sessionId,
+    utteranceText,
   );
 
   return { payload: threadedPayload, ctx, owned, ownershipIndeterminate };
