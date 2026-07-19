@@ -22,6 +22,8 @@ import type {
   ConductorOptions,
   RenderCarriersForTurn,
 } from "@claustrum/core";
+import type { EvidenceLedger } from "@adjudicate/core";
+import type { DisambiguationCandidate } from "./classify-only-reads.js";
 import { assertClaimDefinitionRegistryValid } from "./claim-definition-registry.js";
 import { claimsRenderDriftProblems } from "./claims-render-drift.js";
 import {
@@ -77,21 +79,39 @@ export function claimsPipelineEnabled(
  * callback owns the clock (`new Date()`) and the tz (`RESTAURANT_TIMEZONE`);
  * @claustrum/core threads the result verbatim (no clock/RNG/IO crosses the seam).
  *
- * `disambiguationCandidates` (BKL-170) is deliberately NOT sourced here: the
- * multi-order ambiguity is detected in the classify-only OWNED-SET path
- * (`classify-only-reads.ts`), which does not flow to this ledger+text callback, and
- * on a forced-CLARIFY turn the candidate is dropped so the ledger holds no order
- * entries to read. Absent → the CLARIFY renderer keeps its proposition-free generic
- * variant (byte-identical). See the BKL-170 producer follow-up.
+ * `disambiguationCandidates` (BKL-170/BKL-189) IS sourced here — via the per-turn
+ * stash: the classify-only ambiguous branch cannot reach this ledger+text callback
+ * directly (its owned-set data lives in the claim-planner stage), so
+ * `buildClaimsSeams` keys a WeakMap by the turn's `EvidenceLedger` — the ONE
+ * object identity `handleTurn` passes to BOTH the claim planner (`propose` input)
+ * and this callback. The planner adapter writes ≥2 labeled candidates on the
+ * ambiguous-CLARIFY branch; this callback reads them. WeakMap semantics make the
+ * carrier request-scoped by construction: distinct turns hold distinct ledger
+ * instances (no cross-turn contamination) and entries are collected with the
+ * ledger (no teardown hook needed, no leak). No stash → the field is OMITTED —
+ * byte-identical to the pre-BKL-189 carrier (#332 pins hold).
  */
-const ibatexasRenderCarriersForTurn: RenderCarriersForTurn = ({ requestText }) => {
-  const tz = process.env.RESTAURANT_TIMEZONE ?? "America/Sao_Paulo";
-  const now = new Date();
-  const resolved = resolveQueriedScheduleDate(requestText, tz, now);
-  if (resolved === null) return {};
-  if (resolved.isoDate === localDateParts(tz, now).isoDate) return {};
-  return { resolvedQueryDate: resolved.isoDate };
-};
+export function createIbatexasRenderCarriersForTurn(
+  readDisambiguationCandidates?: (
+    ledger: EvidenceLedger,
+  ) => readonly DisambiguationCandidate[] | undefined,
+): RenderCarriersForTurn {
+  return ({ ledger, requestText }) => {
+    const tz = process.env.RESTAURANT_TIMEZONE ?? "America/Sao_Paulo";
+    const now = new Date();
+    const resolved = resolveQueriedScheduleDate(requestText, tz, now);
+    const dateCarrier =
+      resolved === null || resolved.isoDate === localDateParts(tz, now).isoDate
+        ? {}
+        : { resolvedQueryDate: resolved.isoDate };
+    const candidates = readDisambiguationCandidates?.(ledger);
+    const candidateCarrier =
+      candidates !== undefined && candidates.length > 0
+        ? { disambiguationCandidates: candidates }
+        : {};
+    return { ...dateCarrier, ...candidateCarrier };
+  };
+}
 
 export type ClaimsSeams = Pick<
   ConductorOptions,
@@ -236,9 +256,23 @@ export function buildClaimsSeams(deps: BuildClaimsSeamsDeps): ClaimsSeams {
   // warning if the LINKED kernels are below the egress-brand floor, so the
   // kernel-version drop point (silent store-open → UNKNOWN) is visible at boot.
   warnOnBelowFloorKernel(deps);
+  // BKL-189 — the per-turn disambiguation-candidate carrier: keyed by the turn's
+  // EvidenceLedger (the object identity shared by the claim-planner input and the
+  // renderCarriersForTurn callback), written by the planner adapter's ambiguous
+  // branch, read by the carriers callback below. One WeakMap per seam set (the
+  // managed-agent plane builds its own seams → its own stash); entries die with
+  // the ledger (request-scoped, concurrency-safe, leak-free by construction).
+  const disambiguationStash = new WeakMap<
+    EvidenceLedger,
+    readonly DisambiguationCandidate[]
+  >();
   return {
     investigator: createIbatexasInvestigator(),
-    claimPlanner: createIbatexasClaimPlanner(deps.planner),
+    claimPlanner: createIbatexasClaimPlanner(deps.planner, {
+      stashDisambiguationCandidates: (ledger, candidates) => {
+        disambiguationStash.set(ledger, candidates);
+      },
+    }),
     // W5a F2 — build the kernel deps via the REAL per-turn builder
     // (createPerTurnClaimsKernelDeps), not the process-wide fail-closed stub. The
     // R2a per-turn `now` is supplied PER TURN by the Conductor's `clock()` seam
@@ -280,7 +314,9 @@ export function buildClaimsSeams(deps: BuildClaimsSeamsDeps): ClaimsSeams {
     // decomposer's STORE_OPEN_NOW suppression is EXACT on weekday==today. Pure
     // passthrough on claustrum's side; the clock lives in this callback. Absent
     // (unwired) → the decomposer keeps its pure #301 rule (byte-identical).
-    renderCarriersForTurn: ibatexasRenderCarriersForTurn,
+    renderCarriersForTurn: createIbatexasRenderCarriersForTurn((ledger) =>
+      disambiguationStash.get(ledger),
+    ),
     // E-2 render-from-claims (SDD §B / §Q.7) — the loop-level closure of the
     // "claims-not-prose" thesis. When ON, `handleTurn` stage 6a renders the reply
     // TEXT from the VALIDATED claim set via the pure `renderer-from-claims`

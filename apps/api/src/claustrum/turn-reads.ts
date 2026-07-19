@@ -102,15 +102,24 @@ export type StoreHoursForDateRead = StoreHoursRead;
  */
 export type HolidayRead = HolidayEntry;
 
-/** ORDER_FULFILLMENT_STAGE — the owner-scoped order's current fulfillment stage. */
+/** ORDER_FULFILLMENT_STAGE — the owner-scoped order's current fulfillment stage.
+ *  BKL-189: carries the order's human-facing `displayId` (from the SAME memoized
+ *  owner-scoped projection read — zero extra reads) so the classify-only ambiguity
+ *  branch can label disambiguation candidates "#displayId" synchronously off the
+ *  ledger. Additive: the C6 valueBinding paths are untouched. */
 export interface OrderFulfillmentRead {
   readonly orderId: string;
+  readonly displayId: number;
   readonly fulfillmentStatus: string | null;
 }
 
-/** PAYMENT_STATUS — the owner-scoped order's active-payment status (IDOR-closed). */
+/** PAYMENT_STATUS — the owner-scoped order's active-payment status (IDOR-closed).
+ *  BKL-189: `displayId` for the same reason as {@link OrderFulfillmentRead} — the
+ *  payment ambiguity's subject IS an orderId, and a payment-only turn records no
+ *  fulfillment entries to borrow the label from. */
 export interface PaymentStatusRead {
   readonly orderId: string;
+  readonly displayId: number;
   readonly status: string;
   readonly method: string | null;
 }
@@ -770,6 +779,7 @@ export function createDomainTriadReadBackend(
       if (order === null || order.customerId !== customerId) return null;
       return {
         orderId,
+        displayId: order.displayId,
         fulfillmentStatus:
           order.fulfillmentStatus === null ? null : String(order.fulfillmentStatus),
       };
@@ -786,6 +796,7 @@ export function createDomainTriadReadBackend(
       if (active === null || active.status === null) return null;
       return {
         orderId,
+        displayId: order.displayId,
         status: String(active.status),
         method: active.method ?? null,
       };

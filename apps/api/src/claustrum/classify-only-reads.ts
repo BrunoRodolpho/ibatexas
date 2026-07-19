@@ -62,7 +62,7 @@
 // This does NOT weaken the OFF path (byte-identical) or any turn shape outside
 // the narrow eligible set.
 
-import type { CandidateClaim } from "@adjudicate/core";
+import type { CandidateClaim, EvidenceLedger } from "@adjudicate/core";
 import {
   ownerScopedBaseKey,
   selectCandidateClaim,
@@ -173,11 +173,28 @@ export function classifyOnlyRequiredTypes(
  *
  * Pure.
  */
+/**
+ * BKL-189 — one record per required type whose FIX 2 owned-set had ≥2 members:
+ * the owner-scoped BASE key plus the owned ids the ambiguous branch dropped.
+ * Pure DATA about the ambiguity (ids are the AUTHENTICATED customer's own,
+ * ledger-derived — never model output); {@link deriveDisambiguationCandidates}
+ * turns it into labeled render candidates against the same turn's ledger.
+ */
+export interface AmbiguousOwnedSet {
+  readonly type: RegistryClaimType;
+  readonly baseKey: string;
+  readonly ownedIds: readonly string[];
+}
+
 export function buildClassifyOnlyCandidates(
   required: ReadonlySet<RegistryClaimType>,
   auth: ClaimAuthContext,
   sessionId: string,
-): { candidates: CandidateClaim[]; forcedTerminal?: "CLARIFY" } {
+): {
+  candidates: CandidateClaim[];
+  forcedTerminal?: "CLARIFY";
+  ambiguousOwnedSets?: readonly AmbiguousOwnedSet[];
+} {
   const authPrincipal =
     auth.customerId !== undefined && auth.customerId.trim() !== ""
       ? auth.customerId
@@ -185,7 +202,7 @@ export function buildClassifyOnlyCandidates(
   const actor = { principal: authPrincipal, sessionId };
 
   const candidates: CandidateClaim[] = [];
-  let ambiguous = false;
+  const ambiguousOwnedSets: AmbiguousOwnedSet[] = [];
   for (const type of required) {
     const baseKey = ownerScopedBaseKey(type);
     // Every CLASSIFY_ONLY_ELIGIBLE_TYPES member is owner-scoped/per-resource
@@ -198,7 +215,12 @@ export function buildClassifyOnlyCandidates(
     if (owned.length === 1) {
       subject = owned[0] as string;
     } else if (owned.length > 1) {
-      ambiguous = true;
+      // BKL-189 — keep the DROPPED ambiguity's data so the caller can label the
+      // owned candidates for the CLARIFY render (the candidate claim itself
+      // stays dropped — never a guess).
+      if (baseKey !== undefined) {
+        ambiguousOwnedSets.push({ type, baseKey, ownedIds: [...owned] });
+      }
       continue;
     } else {
       subject = "";
@@ -209,5 +231,65 @@ export function buildClassifyOnlyCandidates(
     // always yields a candidate — the guard is defense-in-depth.
     if (candidate !== undefined) candidates.push(candidate);
   }
-  return ambiguous ? { candidates, forcedTerminal: "CLARIFY" } : { candidates };
+  return ambiguousOwnedSets.length > 0
+    ? { candidates, forcedTerminal: "CLARIFY", ambiguousOwnedSets }
+    : { candidates };
+}
+
+// ── BKL-189 — labeled disambiguation candidates off the per-turn ledger ─────────
+
+/** The 0.8.0 `ClaimsRenderContext.disambiguationCandidates` element (structural). */
+export interface DisambiguationCandidate {
+  readonly kind: string;
+  readonly id: string;
+  readonly label: string;
+}
+
+/**
+ * The owner-scoped BASE keys whose subject is an ORDER id — the ambiguity classes
+ * BKL-170 voices by "#displayId". `payment_status` is keyed by orderId too (the
+ * PAYMENT_STATUS subject IS the order), so a payment-ambiguous turn labels the
+ * same way. `reservation_status` is deliberately EXCLUDED: reservations have no
+ * displayId vocabulary, so an ambiguous reservation turn keeps the generic
+ * proposition-free CLARIFY (byte-identical to #324).
+ */
+const ORDER_SUBJECT_BASE_KEYS: ReadonlySet<string> = new Set([
+  "order_fulfillment_stage",
+  "payment_status",
+]);
+
+/**
+ * Turn the ambiguous owned-sets into LABELED render candidates, synchronously,
+ * against THIS turn's ledger — the BKL-189 producer. For each order-subject
+ * ambiguity, the label is `#displayId` read from the ledger entry the
+ * investigator ALREADY recorded for that owned id (turn-reads.ts widened the
+ * order/payment read values with `displayId` — zero new reads; a non-present
+ * entry or a value without a numeric displayId is SKIPPED, never guessed).
+ * Returns ≥2 candidates (deduped by orderId, sorted by displayId — the
+ * deterministic copy order) or `[]` — a single labelable candidate is not a
+ * disambiguation, so the generic CLARIFY stays. Pure over (data, ledger).
+ */
+export function deriveDisambiguationCandidates(
+  ambiguousOwnedSets: readonly AmbiguousOwnedSet[],
+  ledger: EvidenceLedger,
+): readonly DisambiguationCandidate[] {
+  const byId = new Map<string, { id: string; displayId: number }>();
+  for (const { baseKey, ownedIds } of ambiguousOwnedSets) {
+    if (!ORDER_SUBJECT_BASE_KEYS.has(baseKey)) continue;
+    for (const id of ownedIds) {
+      if (byId.has(id)) continue;
+      const res = ledger.resolve(`${baseKey}:${id}`);
+      if (res.state !== "present") continue;
+      const value = res.entry?.value as { displayId?: unknown } | undefined;
+      if (typeof value?.displayId !== "number") continue;
+      byId.set(id, { id, displayId: value.displayId });
+    }
+  }
+  const sorted = [...byId.values()].sort((a, b) => a.displayId - b.displayId);
+  if (sorted.length < 2) return [];
+  return sorted.map(({ id, displayId }) => ({
+    kind: "order",
+    id,
+    label: `#${displayId}`,
+  }));
 }

@@ -49,6 +49,7 @@ import {
   CLASSIFY_ONLY_READS_ENABLED_ENV,
   classifyOnlyReadsEnabled,
   classifyOnlyRequiredTypes,
+  deriveDisambiguationCandidates,
 } from "../classify-only-reads.js";
 import {
   classifyRequestSpans,
@@ -515,5 +516,124 @@ describe("FE-T18 — classify-only candidates are ordinary typed CandidateClaims
     const candidate = candidates[0] as CandidateClaim;
     expect(candidate.value).toBeUndefined();
     expect(candidate.type).toBe("PAYMENT_STATUS");
+  });
+});
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BKL-189 — the ambiguity DATA + the labeled-candidate deriver (producer units).
+// ─────────────────────────────────────────────────────────────────────────────
+describe("BKL-189 — ambiguousOwnedSets + deriveDisambiguationCandidates", () => {
+  const NOW2 = 41_000;
+  const recordOrderEntry = (
+    ledger: EvidenceLedger,
+    orderId: string,
+    displayId?: number,
+  ): void => {
+    ledger.record({
+      key: `order_fulfillment_stage:${orderId}`,
+      value:
+        displayId === undefined
+          ? { orderId, fulfillmentStatus: "preparing" }
+          : { orderId, displayId, fulfillmentStatus: "preparing" },
+      source: "order.getById",
+      fetchedAt: NOW2,
+      sourceMode: "live",
+      taint: "TRUSTED",
+      originProvenance: "FIRST_PARTY",
+    });
+  };
+
+  it("the ≥2-owned branch now carries the dropped owned-set data", () => {
+    const { forcedTerminal, ambiguousOwnedSets } = buildClassifyOnlyCandidates(
+      new Set(["ORDER_FULFILLMENT_STAGE"]),
+      {
+        customerId: "cust-A",
+        ownedByBaseKey: new Map([["order_fulfillment_stage", ["order-A1", "order-A2"]]]),
+      },
+      "conv-1",
+    );
+    expect(forcedTerminal).toBe("CLARIFY");
+    expect(ambiguousOwnedSets).toEqual([
+      {
+        type: "ORDER_FULFILLMENT_STAGE",
+        baseKey: "order_fulfillment_stage",
+        ownedIds: ["order-A1", "order-A2"],
+      },
+    ]);
+  });
+
+  it("unambiguous turns carry NO ambiguity data (field absent)", () => {
+    const built = buildClassifyOnlyCandidates(
+      new Set(["ORDER_FULFILLMENT_STAGE"]),
+      {
+        customerId: "cust-A",
+        ownedByBaseKey: new Map([["order_fulfillment_stage", ["order-A1"]]]),
+      },
+      "conv-1",
+    );
+    expect(built.forcedTerminal).toBeUndefined();
+    expect(built.ambiguousOwnedSets).toBeUndefined();
+  });
+
+  it("derives sorted #displayId candidates from PRESENT ledger entries", () => {
+    const ledger = new EvidenceLedger("t-1");
+    recordOrderEntry(ledger, "order-B", 205);
+    recordOrderEntry(ledger, "order-A", 101);
+    const out = deriveDisambiguationCandidates(
+      [
+        {
+          type: "ORDER_FULFILLMENT_STAGE",
+          baseKey: "order_fulfillment_stage",
+          ownedIds: ["order-A", "order-B"],
+        },
+      ],
+      ledger,
+    );
+    expect(out).toEqual([
+      { kind: "order", id: "order-A", label: "#101" },
+      { kind: "order", id: "order-B", label: "#205" },
+    ]);
+  });
+
+  it("an entry WITHOUT a numeric displayId is SKIPPED — <2 labelable → [] (generic clarify stays)", () => {
+    const ledger = new EvidenceLedger("t-2");
+    recordOrderEntry(ledger, "order-A", 101);
+    recordOrderEntry(ledger, "order-B"); // no displayId (e.g. a stale-dist value)
+    const out = deriveDisambiguationCandidates(
+      [
+        {
+          type: "ORDER_FULFILLMENT_STAGE",
+          baseKey: "order_fulfillment_stage",
+          ownedIds: ["order-A", "order-B"],
+        },
+      ],
+      ledger,
+    );
+    expect(out).toEqual([]);
+  });
+
+  it("a NON-order base (reservation) is skipped — no reservation candidates, generic clarify stays", () => {
+    const ledger = new EvidenceLedger("t-3");
+    ledger.record({
+      key: "reservation_status:res-A",
+      value: { status: "confirmed" },
+      source: "reservation.getById",
+      fetchedAt: NOW2,
+      sourceMode: "live",
+      taint: "TRUSTED",
+      originProvenance: "FIRST_PARTY",
+    });
+    const out = deriveDisambiguationCandidates(
+      [
+        {
+          type: "RESERVATION_STATUS",
+          baseKey: "reservation_status",
+          ownedIds: ["res-A", "res-B"],
+        },
+      ],
+      ledger,
+    );
+    expect(out).toEqual([]);
   });
 });
