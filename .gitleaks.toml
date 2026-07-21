@@ -1,0 +1,33 @@
+# IbateXas gitleaks configuration
+#
+# Extends the built-in gitleaks ruleset (useDefault = true) and adds allowlist
+# entries for known NON-secret values that the default rules match on entropy
+# alone. Keep this list surgical — every entry must be a provably-deterministic
+# fixture, never a real credential.
+#
+# Discovered automatically at the repo root by gitleaks/gitleaks-action (no
+# --config flag is passed in CI). The allowlist is applied at scan time to every
+# commit in the scanned range, so it also suppresses the finding in the historical
+# commit that introduced the fixture (an inline `gitleaks:allow` comment would not
+# — it only affects the commit it lives in).
+
+title = "IbateXas gitleaks config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = """
+Deterministic live-seeder test seed keys (BKL-141 / BKL-186 / BKL-187) are \
+reproducible, non-secret fixture identifiers used to make Medusa seeding \
+idempotent — they carry no credential value. The default `generic-api-key` rule \
+flags them purely on string entropy. Allowlisted by (a) the seeder test file and \
+(b) the `bklNNN-...` seed-key shape, so a real secret in the same file that does \
+NOT match the shape still fires.
+"""
+paths = [
+  '''packages/journeys/src/live/__tests__/seed-owned-order\.test\.ts''',
+]
+regexes = [
+  '''^bkl\d+-[a-z0-9_-]+$''',
+]
