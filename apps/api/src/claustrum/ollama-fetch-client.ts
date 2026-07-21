@@ -56,11 +56,13 @@ interface HttpError extends Error {
 
 /**
  * FE-T01 (D4) — the FROZEN `OpenAIChatCompletionsBody` (from `@claustrum/openai`)
- * has no `response_format` field. This widens it for the ONE outbound `fetch`
- * call this relay makes; the frozen type itself is never touched.
+ * has no `response_format` field, and no `reasoning_effort` either. This widens
+ * it for the ONE outbound `fetch` call this relay makes; the frozen type itself
+ * is never touched.
  */
 type OllamaWireBody = OpenAIChatCompletionsBody & {
   readonly response_format?: { readonly type: "json_object" };
+  readonly reasoning_effort?: "none";
 };
 
 function httpError(status: number, body: string): HttpError {
@@ -120,13 +122,28 @@ export class OllamaFetchClient implements OpenAIClientLike {
    * (bodies carrying `tools`) is safe for the acceptance-critical path
    * (tool_calls emission + REFUSE-on-malformed/empty), at the cost of that
    * narrower, non-customer-facing quality hit.
+   *
+   * Tool-LESS bodies (the responder's pt-BR synthesis calls) instead get
+   * `reasoning_effort: "none"`. nemotron-3-nano:4b thinks by default and
+   * Ollama's `/v1` splits that pass into `message.reasoning`, which the FROZEN
+   * `@claustrum/openai` provider never reads — so on short prompts the answer
+   * either starves inside the thinking budget (`finish_reason: length`, empty
+   * `content`) or lands wholesale in `reasoning` (`finish_reason: stop`, empty
+   * `content`). Either way the responder sees an empty completion, and with
+   * temperature pinned to 0 (FE-T01) every regenerate-on-empty retry replays
+   * the identical result, exhausting to the customer-facing holding fallback.
+   * NOTE: Ollama's native `think: false` toggle is silently IGNORED on the
+   * `/v1` OpenAI-compat path — `reasoning_effort: "none"` is the honored
+   * spelling there (live-verified: the greeting reply arrives in ~12 tokens
+   * with an empty reasoning field). Scoped to tool-less bodies: the planner's
+   * tool-bearing wire keeps thinking enabled, unchanged.
    */
   private wireBody(body: OpenAIChatCompletionsBody): OllamaWireBody {
     const modelPinned = this.model === undefined ? body : { ...body, model: this.model };
     const wantsJsonMode = body.tools !== undefined && body.tools.length > 0;
     return wantsJsonMode
       ? { ...modelPinned, response_format: { type: "json_object" } }
-      : modelPinned;
+      : { ...modelPinned, reasoning_effort: "none" };
   }
 
   readonly chat = {
