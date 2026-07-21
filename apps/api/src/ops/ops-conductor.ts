@@ -183,6 +183,9 @@ export function composeOpsConductor(
       resolvePrompt("ops/planner.persona", OPS_PLANNER_PERSONA),
       context.historyBlock,
     ),
+    // Wire Truth — name the injected persona in the trace manifest so ops
+    // planner rows stop reading `persona ?` in the workbench.
+    systemPromptId: "ops/planner.persona",
     telemetry: deps.telemetry,
     ...(deps.promptComposer ? { promptComposer: deps.promptComposer } : {}),
     ...(deps.resolveScheduleSignal
@@ -205,6 +208,18 @@ export function composeOpsConductor(
       conversational: resolvePrompt("ops/responder.persona", OPS_RESPONDER_PERSONA_PTBR),
       grounded: resolvePrompt("ops/responder.grounded", OPS_RESPONDER_GROUNDED_PERSONA_PTBR),
     },
+    // Wire Truth — catalog ids for the overrides above (truthful single-tag
+    // trace manifests instead of `[]`).
+    personaIds: {
+      conversational: "ops/responder.persona",
+      grounded: "ops/responder.grounded",
+    },
+    // Wire Truth — ops REFUSE conversational recovery: a kernel-refused
+    // proposed command (e.g. the BKL-233 hours-question misparse) synthesizes
+    // a reply to the operator's actual message instead of dead-ending in the
+    // canned refusal line; empty synthesis falls back to that line. Staff
+    // plane only — customer refusals stay model-free by doctrine.
+    conversationalRefusal: true,
     // BKL-100 — the ops read-answer governor. `render` deterministically renders a
     // captured staff read (no model call, no authored number); `clampUngrounded`
     // demotes an ungrounded domain number in the conversational fallback. Keyed on

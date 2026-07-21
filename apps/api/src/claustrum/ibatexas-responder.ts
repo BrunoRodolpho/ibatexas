@@ -120,6 +120,28 @@ export interface IbatexasResponderDeps {
     readonly escalate?: string;
   };
   /**
+   * Wire Truth — prompt-catalog ids for the persona overrides above, so a
+   * branch that runs on an injected persona still emits a truthful (single-tag)
+   * prompt manifest instead of `[]` (the workbench's `persona ?`). Bare ids are
+   * passed through `manifestWithHashes` unhashed — the fragment graph does not
+   * own these prompts, the catalog does. Absent → the pre-existing empty
+   * manifest, byte-identical.
+   */
+  readonly personaIds?: {
+    readonly conversational?: string;
+    readonly grounded?: string;
+  };
+  /**
+   * Wire Truth — ops-plane REFUSE conversational recovery. When true, a kernel
+   * REFUSE of a PROPOSED command (non-empty plan) routes through the same
+   * conversational synthesis branch the empty-plan path uses — with the
+   * refusal context and the operator's original inbound in the system — so a
+   * refused misparse still yields a helpful reply. Empty synthesis falls back
+   * to the deterministic explainer line (never silent). NEVER set on the
+   * customer plane: customer-facing refusals stay model-free by doctrine.
+   */
+  readonly conversationalRefusal?: boolean;
+  /**
    * BKL-100 — the ops-plane read-answer governor. Injected ONLY on the ops
    * conductor (the customer / WhatsApp planes never pass it, so their behavior is
    * BYTE-IDENTICAL — pinned by the responder-personas regression bar). It gives
@@ -958,6 +980,34 @@ export function statesUngroundedMoney(
 export const CUSTOMER_UNGROUNDED_MONEY_FALLBACK_PTBR =
   "Prefiro confirmar esse valor antes de te passar um número. Posso verificar para você?";
 
+/** Wire Truth — the REFUSE-recovery success lexicon. On a kernel-refused plan
+ *  NOTHING executed, so a completion assertion is a false success even when it
+ *  names no customer-domain noun — the 11-class mirror (customer-plane-tuned,
+ *  noun-anchored) deliberately does not catch it. Review-hardened: bare
+ *  done-words PLUS the ops action verbs (past/participle), with the negation
+ *  exemption scoped to a WINDOW directly before the match ("não foi alterado"
+ *  passes; "entendi, não posso — mas alterei o horário" is still clamped),
+ *  not sentence-wide — a sentence-wide `não` was a bypass. A false positive
+ *  merely degrades to the deterministic refusal line, so the lexicon errs
+ *  broad. */
+const REFUSAL_RECOVERY_SUCCESS_RE =
+  /\b(feito|prontinho|pronto|resolvido|concluid[oa]|executad[oa]|alterad[oa]|atualizad[oa]|marcad[oa]|registrad[oa]|cadastrad[oa]|removid[oa]|apliquei|alterei|atualizei|marquei|registrei|executei|cadastrei|removi|fiz)\b/g;
+
+export function refusalRecoveryClaimsSuccess(text: string): boolean {
+  if (typeof text !== "string") return false;
+  for (const sent of sentencesOf(normalizePtBr(text))) {
+    if (sent.question) continue;
+    const re = new RegExp(REFUSAL_RECOVERY_SUCCESS_RE.source, "g");
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(sent.text)) !== null) {
+      const before = sent.text.slice(Math.max(0, m.index - 24), m.index);
+      if (/\b(nao|nem|sem)\b/.test(before)) continue; // negated → honest report
+      return true;
+    }
+  }
+  return false;
+}
+
 export function createIbatexasResponder(
   deps: IbatexasResponderDeps,
 ): ResponderPort {
@@ -974,9 +1024,12 @@ export function createIbatexasResponder(
     cognition: unknown,
     capabilities: ReadonlyArray<string>,
     override?: string,
+    overrideId?: string,
   ): Promise<{ system: string; fragmentManifest: ReadonlyArray<string> }> {
     if (override !== undefined) {
-      return { system: override, fragmentManifest: [] };
+      // Wire Truth — a persona override carries its catalog id (when provided)
+      // as a single-tag manifest, so ops trace rows name their persona.
+      return { system: override, fragmentManifest: overrideId === undefined ? [] : [overrideId] };
     }
     if (deps.promptComposer === undefined) {
       return { system: fallback, fragmentManifest: [] };
@@ -1001,6 +1054,11 @@ export function createIbatexasResponder(
     userText: string;
     turnId: string;
     intentHash?: string;
+    /** Wire Truth — branches with a good deterministic fallback (the REFUSE
+     *  recovery) pass 1: an empty completion there should fall back, not burn
+     *  2 more full model calls (the F6 retry exists because the CUSTOMER
+     *  fallback ghosts; the refusal line does not). */
+    maxAttempts?: number;
   }): Promise<DraftResponse> {
     const startedAt = Date.now();
     // F6 (BKL-031): regenerate-on-empty — a single empty 4B completion ghosts
@@ -1018,7 +1076,7 @@ export function createIbatexasResponder(
           // default (temperature was never sent before this).
           temperature: PINNED_COMPLETION_TEMPERATURE,
         }),
-      { maxAttempts: EMPTY_COMPLETION_MAX_ATTEMPTS },
+      { maxAttempts: args.maxAttempts ?? EMPTY_COMPLETION_MAX_ATTEMPTS },
     );
     const durationMs = Date.now() - startedAt;
     if (attempts > 1) {
@@ -1178,6 +1236,7 @@ export function createIbatexasResponder(
               input.cognition,
               [],
               deps.personas?.conversational,
+              deps.personaIds?.conversational,
             );
             const system = base + closedNote;
             return clampUngroundedConversational(
@@ -1195,9 +1254,85 @@ export function createIbatexasResponder(
               [userText, closedNote],
             );
           }
+          // Wire Truth — ops-plane conversational recovery: a refused PROPOSED
+          // command (often a planner misparse — an hours QUESTION planned as a
+          // schedule-override WRITE, BKL-233) still deserves a reply to the
+          // operator's actual message. Review-hardened posture:
+          //  - SECURITY *and* AUTH refusals stay model-free: tamper lines and
+          //    the deliberately role-OPAQUE permission copy must render
+          //    verbatim, never be paraphrased by the 4B.
+          //  - The prompt carries the EXPLAINER-rendered line (locale registry
+          //    + the ops staff overlay), never the raw userFacing, and never
+          //    an internal capability kind (Hard Rule #9).
+          //  - ONE attempt, no empty-retry (the deterministic refusal line is
+          //    a good fallback — unlike the customer plane, nothing ghosts).
+          //  - If ANY guard rewrote the draft, or it claims success, or the
+          //    synthesis throws or returns empty → the deterministic line.
+          //    A guard substitution here would ship customer-voiced copy to
+          //    staff (the no-authority clamp's truth anchor does not hold on
+          //    a REFUSE turn), so a rewrite means fallback, not substitution.
+          const explained = deps.explainer.render(decision.refusal);
+          if (
+            deps.conversationalRefusal === true &&
+            decision.refusal.kind !== "SECURITY" &&
+            decision.refusal.kind !== "AUTH"
+          ) {
+            try {
+              const { system: base, fragmentManifest } = await composeSystem(
+                RESPONDER_CONVERSATIONAL_SURFACE,
+                RESPONDER_PERSONA_PTBR,
+                input.cognition,
+                [],
+                deps.personas?.conversational,
+                deps.personaIds?.conversational,
+              );
+              const refusalNote =
+                `\n\n[CONTEXTO DO TURNO] O comando proposto foi RECUSADO: ${explained}\n` +
+                `A ação NÃO foi executada — NUNCA afirme que foi.\n` +
+                `Responda à mensagem original do operador; se fizer sentido, ` +
+                `explique brevemente e ofereça o caminho certo (reformular ou consultar).`;
+              const system = base + closedNote + refusalNote;
+              const raw = await completeWith({
+                system,
+                fragmentManifest,
+                userText,
+                turnId,
+                maxAttempts: 1,
+                ...(intentHash === undefined ? {} : { intentHash }),
+              });
+              const guarded = clampUngroundedConversational(
+                closedHoursDeliveryGuard(
+                  observedGuardDraft(raw, input.acted, turnId),
+                  scheduleSignal,
+                  scheduled,
+                ),
+                [userText, closedNote],
+              );
+              const untouched = guarded.text === raw.text;
+              if (
+                untouched &&
+                raw.text.trim().length > 0 &&
+                !refusalRecoveryClaimsSuccess(raw.text)
+              ) {
+                return guarded;
+              }
+              logger.warn(
+                { component: "responder", event: "success_guard.clamp", turnId, guard: "refusal_recovery" },
+                "refusal-recovery draft empty, guard-rewritten, or success-claiming — deterministic refusal line applies",
+              );
+            } catch (err) {
+              // Pre-change this path was model-free and could not fail — a
+              // recovery synthesis throw must never abort the refused turn.
+              logger.warn(
+                { component: "responder", event: "refusal_recovery_error", turnId, error: String(err) },
+                "refusal-recovery synthesis threw — deterministic refusal line applies",
+              );
+            }
+          }
           // A real action refusal: render the pt-BR refusal VERBATIM (model-free,
-          // single-sourced, SECURITY-safe). This is the bug fix.
-          return { text: deps.explainer.render(decision.refusal) };
+          // single-sourced, SECURITY-safe). This is the bug fix — and the
+          // fallback for every recovery degradation above.
+          return { text: explained };
         }
 
         case "REQUEST_CONFIRMATION":
@@ -1240,6 +1375,7 @@ export function createIbatexasResponder(
             input.cognition,
             capabilities,
             deps.personas?.grounded,
+            deps.personaIds?.grounded,
           );
           // ② capability-id leak: the model-visible grounding context must NOT carry
           // raw internal capability KIND strings — the weak 4B parrots them into the
@@ -1303,6 +1439,7 @@ export function createIbatexasResponder(
             input.cognition,
             [],
             deps.personas?.conversational,
+            deps.personaIds?.conversational,
           );
           const system = base + closedNote;
           return clampUngroundedConversational(

@@ -40,6 +40,7 @@
 import { randomUUID } from "node:crypto";
 import type { AgentMessage } from "@ibatexas/types";
 import { handleTurn, type ChannelMessage, type Conductor } from "@claustrum/core";
+import { beginWireTurn } from "../claustrum/wire-capture.js";
 import { mintFallbackReply, wrapLegacyResponderText } from "@adjudicate/core";
 import { createStaffService } from "@ibatexas/domain";
 import type {
@@ -388,7 +389,7 @@ async function runOpsTurn(
         }
       }
 
-      const turn = await handleTurn(capsule, inbound);
+      const turn = await beginWireTurn(() => handleTurn(capsule, inbound));
       // Persist the assistant reply AFTER a successful turn (best-effort).
       try {
         await deps.appendHistory(staffId, [

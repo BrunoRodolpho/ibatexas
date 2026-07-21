@@ -33,6 +33,7 @@ import { parse as parseQuerystring } from "node:querystring";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import twilio from "twilio";
 import { handleTurn, type ChannelMessage } from "@claustrum/core";
+import { beginWireTurn } from "../claustrum/wire-capture.js";
 import {
   mintBroadcastReply,
   mintFallbackReply,
@@ -250,7 +251,7 @@ async function runConductorTurn(args: {
     inbound,
   });
   try {
-    const turn = await handleTurn(capsule, inbound);
+    const turn = await beginWireTurn(() => handleTurn(capsule, inbound));
     const pixData = extractPixData(turn.acted);
     // Classify the delivery outcome at the source (the only place that can tell
     // an empty completion from a whitespace-only one). The pause early-return

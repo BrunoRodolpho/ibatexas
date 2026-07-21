@@ -98,15 +98,33 @@ export interface VlLine {
   fields: Record<string, string> | null
 }
 
+/** Wire Truth — one durable wire ATTEMPT (llm_wire row): the relay's exact
+ *  outbound request + the raw provider response. Retry attempts share a
+ *  `callIndex` (the LlmCall they render into) across ascending `seq`. */
+export interface WireExchange {
+  seq: number
+  callIndex: number | null
+  model: string | null
+  request: unknown
+  response: unknown
+  requestHash: string | null
+  requestTruncated: boolean
+  responseTruncated: boolean
+  recordedAt: string | null
+}
+
 export interface RcaTurnDetail {
   context: InvestigationContext
   llm: LlmCall[]
   adj: AdjDecision[]
   vl: VlLine[]
+  /** Wire Truth lane — absent on pre-capture turns (degraded.wire then says
+   *  whether the store was unreachable vs the turn predating capture). */
+  wire: WireExchange[]
   /** Fail-safe lanes flag their outages — an empty degraded lane means "the
    *  store was unreachable", NOT "nothing happened" (absence-is-signal only
    *  holds when the lane actually answered). */
-  degraded: { adj: boolean; vl: boolean }
+  degraded: { adj: boolean; vl: boolean; wire: boolean }
 }
 
 // ── Fetchers ────────────────────────────────────────────────────────────────
@@ -296,6 +314,9 @@ export interface TimelineEvent {
   /** LLM rows only: the prompt-catalog id of the call's persona — the
    *  cross-tab jump target for the Prompts editor. */
   promptId?: string
+  /** Wire Truth — the durable wire attempts behind this LLM call (retries
+   *  included), rendered as structured sections in the expander. */
+  wire?: WireExchange[]
 }
 
 function ms(iso: string | null): number {
@@ -311,23 +332,44 @@ function ms(iso: string | null): number {
 export function mergeTimeline(d: RcaTurnDetail): TimelineEvent[] {
   const out: TimelineEvent[] = []
   // Tolerate a not-yet-restarted API serving the previous wire shape.
-  const degraded = d.degraded ?? { adj: false, vl: false }
+  const degraded = d.degraded ?? { adj: false, vl: false, wire: false }
+  const wire = d.wire ?? []
 
+  const matchedSeqs = new Set<number>()
   for (const c of d.llm) {
     const empty = callEmpty(c)
     const phase = personaPhase(c.persona) ?? `call ${c.callIndex}`
     const head = empty ? "<EMPTY>" : (c.completion ?? "").slice(0, 120)
     const promptId = promptIdForPersona(c.persona)
+    // Wire Truth: the durable attempts behind THIS call (retries share its
+    // callIndex). An LLM row with wire attached always expands.
+    const attempts = wire.filter((x) => x.callIndex === c.callIndex)
+    for (const x of attempts) matchedSeqs.add(x.seq)
     out.push({
       tMs: ms(c.recordedAt),
       ts: c.recordedAt ?? "",
       source: "LLM",
-      text: `call ${c.callIndex} ${phase} · ${c.persona ?? "?"} · in=${c.inputTokens ?? 0} out=${c.outputTokens ?? 0} · ${c.durationMs ?? "?"}ms :: ${head}`,
-      ...(c.completion !== null && c.completion.length > 0
-        ? { detail: c.completion }
-        : {}),
+      text: `call ${c.callIndex} ${phase} · ${c.persona ?? "?"} · in=${c.inputTokens ?? 0} out=${c.outputTokens ?? 0} · ${c.durationMs ?? "?"}ms :: ${head}${attempts.length > 0 ? ` · wire×${attempts.length}` : ""}`,
+      // Every LLM row expands (spec story 15): with wire attempts it shows
+      // them; without, the expander states the absence explicitly.
+      detail: c.completion ?? "",
       ...(empty ? { empty: true } : {}),
       ...(promptId !== null ? { promptId } : {}),
+      ...(attempts.length > 0 ? { wire: attempts } : {}),
+    })
+  }
+
+  // Wire attempts with no trace row to attach to (a call whose emit guard was
+  // off, or a count mismatch) — surfaced, never silently dropped.
+  for (const x of wire) {
+    if (matchedSeqs.has(x.seq)) continue
+    out.push({
+      tMs: ms(x.recordedAt),
+      ts: x.recordedAt ?? "",
+      source: "LLM",
+      text: `wire seq ${x.seq} (unmatched attempt) · ${x.model ?? "?"}`,
+      detail: "",
+      wire: [x],
     })
   }
 
@@ -399,6 +441,71 @@ export function mergeTimeline(d: RcaTurnDetail): TimelineEvent[] {
     if (Number.isNaN(y.tMs)) return -1
     return x.tMs - y.tMs
   })
+}
+
+// ── Derived: wire-exchange sections (Wire Truth) ────────────────────────────
+
+export interface WireSection {
+  /** One-line sampling params: model / temp / max_tokens / response_format /
+   *  reasoning_effort — whatever the wire body actually carried. */
+  params: string
+  /** Messages by role, persona (system) first — the component collapses it. */
+  messages: Array<{ role: string; content: string }>
+  /** Tool roster: name + pretty-printed schema per tool. */
+  tools: Array<{ name: string; schema: string }>
+  /** Raw provider response, pretty-printed. */
+  response: string
+  /** Non-OpenAI request bodies (a truncation marker, an unknown shape) land
+   *  here pretty-printed — rendered in a scroll-capped block, never inline in
+   *  the params line. */
+  raw?: string
+  truncated: { request: boolean; response: boolean }
+}
+
+function pretty(v: unknown): string {
+  try {
+    return JSON.stringify(v, null, 2) ?? "null"
+  } catch {
+    return String(v)
+  }
+}
+
+/** Build the structured expander sections for one wire exchange. Pure —
+ *  tolerates any body shape (a truncation marker, a non-OpenAI body) by
+ *  degrading to raw JSON in `params`/`response`. */
+export function buildWireSections(x: WireExchange): WireSection {
+  const req = (x.request ?? {}) as Record<string, unknown>
+  const paramKeys = ["model", "temperature", "max_tokens", "response_format", "reasoning_effort", "stop"]
+  const params = paramKeys
+    .filter((k) => req[k] !== undefined)
+    .map((k) => `${k}=${typeof req[k] === "object" ? JSON.stringify(req[k]) : String(req[k])}`)
+    .join(" · ")
+  const rawMessages = Array.isArray(req.messages) ? req.messages : []
+  const messages = rawMessages
+    .filter((m): m is Record<string, unknown> => m !== null && typeof m === "object")
+    .map((m) => ({
+      role: typeof m.role === "string" ? m.role : "?",
+      content: typeof m.content === "string" ? m.content : pretty(m.content),
+    }))
+  const rawTools = Array.isArray(req.tools) ? req.tools : []
+  const tools = rawTools
+    .filter((t): t is Record<string, unknown> => t !== null && typeof t === "object")
+    .map((t) => {
+      const fn = (t.function ?? {}) as Record<string, unknown>
+      return {
+        name: typeof fn.name === "string" ? fn.name : "?",
+        schema: pretty(fn.parameters ?? null),
+      }
+    })
+  const standardShape = params.length > 0 || messages.length > 0
+  return {
+    params: standardShape ? params : "(non-standard request body)",
+    messages,
+    tools,
+    response: pretty(x.response),
+    ...(standardShape ? {} : { raw: pretty(x.request) }),
+    truncated: { request: x.requestTruncated, response: x.responseTruncated },
+  }
 }
 
 // ── Derived: tri-state pipeline ─────────────────────────────────────────────

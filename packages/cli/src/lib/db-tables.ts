@@ -119,7 +119,22 @@ export const KERNEL_TABLES = [
   // responder-trace-admin (audit-postgres migration 011) — one row per LLM model
   // call; audit/trace data, so `db clean` truncates it like the others.
   "turn_trace",
+  // Wire Truth — one row per model-call ATTEMPT: the relay's exact outbound
+  // request + the raw provider response (redacted). Writer-owned DDL
+  // (apps/api llm-wire-writer ensureTable at boot — no platform migration:
+  // audit-postgres is frozen); trace-class data, `db clean` truncates it.
+  "llm_wire",
 ] as const
+
+/**
+ * KERNEL_TABLES entries whose DDL is owned by an in-repo writer (CREATE IF NOT
+ * EXISTS at boot) rather than a frozen-platform migration file. The drift guard
+ * exempts EXACTLY this set from the migrations bijection — every exemption must
+ * name its writer here, so a silent registry/migration mismatch still fails CI.
+ */
+export const WRITER_OWNED_KERNEL_TABLES: ReadonlySet<string> = new Set([
+  "llm_wire", // apps/api/src/claustrum/llm-wire-writer.ts
+])
 
 /**
  * Claustrum memory + grounding tables (raw SQL, @claustrum/*). The

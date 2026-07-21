@@ -687,6 +687,16 @@ code, pre { font-family: var(--mono); font-size: 12px; }
 .trace-row--detail td { background: var(--panel-3); padding: 0; }
 .tl-detail { margin: 0; padding: 10px 14px 10px 46px; font-family: var(--mono); font-size: 11px; line-height: 1.55; color: var(--ink-2); white-space: pre-wrap; word-break: break-word; max-height: 320px; overflow-y: auto; }
 
+/* Wire Truth — the durable request/response sections in an LLM row expander */
+.wire-x { border-top: 1px solid var(--line); padding: 8px 14px 10px 46px; }
+.wire-x__head { font-family: var(--mono); font-size: 10px; color: var(--ink-3); letter-spacing: 0.4px; text-transform: uppercase; margin-bottom: 4px; }
+.wire-x__head--absent { padding: 8px 14px 8px 46px; text-transform: none; letter-spacing: 0; }
+.wire-x__params { font-family: var(--mono); font-size: 11px; color: var(--accent, var(--ink-1)); margin-bottom: 6px; word-break: break-word; }
+.wire-x__block { margin: 4px 0; }
+.wire-x__block > summary { cursor: pointer; font-family: var(--mono); font-size: 10.5px; color: var(--ink-3); }
+.wire-x__block .tl-detail { padding-left: 14px; }
+.wire-x__role { display: inline-block; font-family: var(--mono); font-size: 10px; color: var(--ink-3); text-transform: uppercase; letter-spacing: 0.4px; margin: 2px 0; }
+
 /* cross-surface jump chips (run trace → RCA, LLM call → Prompts) */
 .chip--mini { font-size: 9.5px; padding: 0 6px; margin-left: 8px; vertical-align: 1px; }
 

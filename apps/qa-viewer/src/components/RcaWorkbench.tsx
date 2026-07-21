@@ -14,6 +14,7 @@ import { Fragment, useEffect, useMemo, useState, type KeyboardEvent } from "reac
 import { currentRoute, navigate, replaceRoute } from "../lib/nav"
 import {
   buildLinks,
+  buildWireSections,
   derivePipeline,
   fetchConversations,
   fetchStatus,
@@ -616,6 +617,7 @@ export function RcaWorkbench() {
                   )}
                   {detail.degraded?.adj === true && <span className="degraded-chip">ADJ lane degraded</span>}
                   {detail.degraded?.vl === true && <span className="degraded-chip">VL lane degraded</span>}
+                  {detail.degraded?.wire === true && <span className="degraded-chip">WIRE lane degraded</span>}
                 </div>
               </div>
               <button
@@ -628,7 +630,7 @@ export function RcaWorkbench() {
               </button>
             </div>
 
-            {(detail.degraded?.adj === true || detail.degraded?.vl === true) && (
+            {(detail.degraded?.adj === true || detail.degraded?.vl === true || detail.degraded?.wire === true) && (
               <div className="callout callout--warn">
                 A lane degraded to empty because its store was unreachable — absence is <b>not</b> a
                 signal on this view. Retry once the store is back.
@@ -860,7 +862,62 @@ export function RcaWorkbench() {
                       {expanded.has(i) && e.detail !== undefined && (
                         <tr className="trace-row--detail">
                           <td colSpan={3}>
-                            <pre className="tl-detail">{e.detail}</pre>
+                            {e.detail.length > 0 && <pre className="tl-detail">{e.detail}</pre>}
+                            {e.source === "LLM" && e.wire === undefined && (
+                              <div className="wire-x__head wire-x__head--absent">
+                                no wire capture for this call
+                                {detail?.degraded?.wire === true
+                                  ? " — the wire store was unreachable (retry once it is back)"
+                                  : " — the turn predates Wire Truth capture"}
+                              </div>
+                            )}
+                            {e.wire?.map((x) => {
+                              const s = buildWireSections(x)
+                              return (
+                                <div key={x.seq} className="wire-x">
+                                  <div className="wire-x__head">
+                                    wire seq {x.seq}
+                                    {x.requestHash !== null && ` · ${x.requestHash.slice(0, 12)}…`}
+                                    {s.truncated.request && " · request TRUNCATED"}
+                                    {s.truncated.response && " · response TRUNCATED"}
+                                  </div>
+                                  <div className="wire-x__params">{s.params}</div>
+                                  {s.raw !== undefined && (
+                                    <pre className="tl-detail">{s.raw}</pre>
+                                  )}
+                                  {s.messages.map((m, mi) =>
+                                    m.role === "system" ? (
+                                      <details key={mi} className="wire-x__block">
+                                        <summary>system ({m.content.length} chars)</summary>
+                                        <pre className="tl-detail">{m.content}</pre>
+                                      </details>
+                                    ) : (
+                                      <div key={mi} className="wire-x__block">
+                                        <span className="wire-x__role">{m.role}</span>
+                                        <pre className="tl-detail">{m.content}</pre>
+                                      </div>
+                                    ),
+                                  )}
+                                  {s.tools.length > 0 && (
+                                    <details className="wire-x__block">
+                                      <summary>
+                                        tools ({s.tools.map((t) => t.name).join(", ")})
+                                      </summary>
+                                      {s.tools.map((t) => (
+                                        <div key={t.name}>
+                                          <span className="wire-x__role">{t.name}</span>
+                                          <pre className="tl-detail">{t.schema}</pre>
+                                        </div>
+                                      ))}
+                                    </details>
+                                  )}
+                                  <details className="wire-x__block" open={s.messages.length === 0}>
+                                    <summary>raw response</summary>
+                                    <pre className="tl-detail">{s.response}</pre>
+                                  </details>
+                                </div>
+                              )
+                            })}
                           </td>
                         </tr>
                       )}
